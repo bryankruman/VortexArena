@@ -57,12 +57,20 @@ public static class WeaponFireDriver
         bool buttonAtck = input?.ButtonAttack1 ?? false;
         bool buttonAtck2 = input?.ButtonAttack2 ?? false;
 
+        // QC W_WeaponFrame (weaponsystem.qc:608-618): publish the +hook / offhand-fire button onto the player so
+        // the offhand-weapon think runs this tick — the grapple hook, the offhand blaster, and the nade
+        // prime/throw all read Entity.OffhandFirePressed from their PlayerPreThink hook (the headless analogue of
+        // the engine offhand_think dispatch). QC gates the key on `!actor.vehicle` and weaponUseForbidden; the
+        // seated case is already excluded by the caller (WeaponThink returns while p.Vehicle != null), and the
+        // forbidden gate below zeroes it alongside the fire buttons.
+        player.OffhandFirePressed = input?.ButtonHook ?? false;
+
         // QC W_WeaponFrame: weaponUseForbidden(actor) zeroes the fire buttons (round active-but-not-started OR
         // the ForbidWeaponUse mutator hook) but still allows weapon switching. The round_handler / Forbid
         // WeaponUse state isn't reachable from this driver, but honor the contract: a forbidden frame must not
         // fire while the switch machine below keeps running.
         if (WeaponUseForbidden(player))
-            buttonAtck = buttonAtck2 = false;
+            buttonAtck = buttonAtck2 = player.OffhandFirePressed = false;
 
         // QC W_WeaponFrame: if weaponLocked(actor) && state != WS_CLEAR -> run ONLY w_ready (become ready, no
         // fire, no switch) and return. weaponLocked covers game_stopped / player_blocked / Frozen / LockWeapon;

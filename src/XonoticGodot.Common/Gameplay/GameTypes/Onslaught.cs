@@ -601,6 +601,36 @@ public sealed class Onslaught : GameType
         WinningTeam = winner;
         if (winner != Teams.None)
             GS.AddToTeam(winner, GS.TeamSlotSecondary, 1); // QC TeamScore_AddToTeam(winner_team, ST_ONS_GENS, +1)
+
+        // QC Onslaught_CheckWinner round-decision cues (sv_onslaught.qc:1220-1234): the round-win/tie
+        // center+info to all + the win jingle (play2all(CTF_CAPTURE(winner_team))). Emitted once per round
+        // via the MatchEnded latch above, exactly like QC fires them at the moment the round is decided.
+        if (winner > 0)
+        {
+            string suffix = TeamSuffix(winner);
+            Notify(NotifBroadcast.All, MsgType.Center, $"ROUND_TEAM_WIN_{suffix}");
+            Notify(NotifBroadcast.All, MsgType.Info, $"ROUND_TEAM_WIN_{suffix}");
+            if (Api.Services is not null)
+                SoundSystem.PlayGlobal(Sounds.ByName($"CTF_CAPTURE_{suffix}")); // QC play2all(SND(CTF_CAPTURE(winner_team)))
+        }
+        else if (winner == -1)
+        {
+            Notify(NotifBroadcast.All, MsgType.Center, "ROUND_TIED");
+            Notify(NotifBroadcast.All, MsgType.Info, "ROUND_TIED");
+        }
+    }
+
+    /// <summary>QC <c>APP_TEAM_NUM</c> team-code → notification/sound suffix (RED/BLUE/YELLOW/PINK).</summary>
+    internal static string TeamSuffix(int team) => team switch
+    {
+        Teams.Red => "RED", Teams.Blue => "BLUE", Teams.Yellow => "YELLOW", Teams.Pink => "PINK", _ => "NEUTRAL",
+    };
+
+    /// <summary>QC Send_Notification(NOTIF_*, NULL, MSG_*, …) — broadcast a registered notification (server only).</summary>
+    internal static void Notify(NotifBroadcast broadcast, MsgType type, string name, params object[] args)
+    {
+        if (Api.Services is not null)
+            NotificationSystem.Send(broadcast, null, type, name, args);
     }
 
     /// <summary>Player kills don't decide Onslaught (the generators do); the handler just notifies the host.</summary>

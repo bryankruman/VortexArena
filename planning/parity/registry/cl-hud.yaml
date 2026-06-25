@@ -5,10 +5,9 @@ last_audited: "2026-06-22"
 summary:
   feature_count: 35
   worst_gaps:
-    - "VotePanel never appears in a match: no vote state is networked to the client; a real callvote shows no on-screen yes/no progress bar."
-    - "MapVotePanel never appears at intermission: NetGame has no mapvote feed, so the map-grid + vote counts + countdown are never shown."
-    - "RaceTimerPanel + CheckpointsPanel are dead: no race-split network feed, so live lap timer + checkpoint split deltas don't render in Race/CTS."
-    - "No HUD dock: hud_dock/dock_medium is registered + menu-exposed but never drawn."
+    - "CheckpointsPanel still dead: race_checkpoint_splits need per-checkpoint race-record storage the server doesn't keep; honest unresolved (Wave 5)."
+    - "RaceTimer split-vs-record deltas not fed (count-up lap clock IS live now): same per-checkpoint record-net blocker as checkpoints."
+    - "Vote + MapVote panels are now live on a listen server (fed from VoteController / MapVoting); a pure --connect client still has no vote net channel."
     - "Progress bars are flat fills, not the skin progressbar 9-slice with baralign 0/1/2/3 semantics."
 features:
   - id: cl-hud.engine.registry_and_order
@@ -163,18 +162,20 @@ features:
     layer: [presentation]
     base_refs:
       - "client/hud/hud.qc:HUD_Main"
-    port_refs: []
+    port_refs:
+      - "game/hud/HudDock.cs:_Draw"
+      - "game/hud/HudManager.cs:_Process (Dock feed)"
     constants:
-      - { name: "hud_dock", base: "0 (off); dock_medium art", port: "registered, never drawn", match: false }
-    status: { logic: missing, values: stub, timing: na, presentation: missing, audio: na, liveness: dead }
+      - { name: "hud_dock", base: "0 (off); dock_medium art", port: "drawn via HudDock when hud_dock != 0/''", match: true }
+    status: { logic: faithful, values: faithful, timing: na, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Enabling hud_dock (or the menu Dock slider) has no visual effect: the dock_medium full-screen background is never drawn."
+      - "shirt/pants colormap dock tint (hud_dock_color shirt/pants) not implemented; team + rgb tints are."
     verification:
-      - { kind: grep, ref: "hud_dock only in HudConfig register + menu, no draw", result: fail }
+      - { kind: code, ref: "HudDock._Draw fills the viewport with gfx/hud/<skin>/<dock>→dock_medium at hud_dock_alpha*hud_fade_alpha, added first in Hud (lowest z)", result: pass }
     confidence: high
-    notes: "Cvars registered + menu-exposed; draw path missing."
+    notes: "WIRED Wave 5: HudDock is a full-screen Control added behind every panel; self-blanks while hud_dock is off (the default)."
 
   - id: cl-hud.engine.configure_mode
     name: "HUD configure-mode editor (hud_config.qc)"
@@ -360,16 +361,17 @@ features:
       - "client/hud/panel/racetimer.qc:HUD_RaceTimer"
     port_refs:
       - "game/hud/RaceTimerPanel.cs"
+      - "game/net/NetGame.cs:UpdateRacePanels"
     constants: []
-    status: { logic: faithful, values: unknown, timing: unknown, presentation: faithful, audio: na, liveness: dead }
+    status: { logic: faithful, values: partial, timing: faithful, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No live feeder: the Race*/checkpoint-split API is never set (no race-split networking on the client), so the running lap timer + checkpoint split deltas never render in Race/CTS."
+      - "Running lap clock is now fed live (Race RaceState.LapStartTime / CTS RunStartTime + next checkpoint + penalty accumulator). The per-checkpoint split DELTAS (race_previousbesttime / race_nextbesttime via TE_CSQC_RACE) still need per-checkpoint record storage the server doesn't yet keep — so the count-up timer renders but the +/- vs-record anticipation split doesn't."
     verification:
-      - { kind: grep, ref: "no RaceTimer.* setter caller in game/ or src/", result: fail }
+      - { kind: code, ref: "NetGame.UpdateRacePanels feeds RaceTimer from the listen-server Race/Cts gametype state each frame", result: pass }
     confidence: high
-    notes: "Full render code exists and works when given data; purely a wire-up gap."
+    notes: "WIRED Wave 5: live count-up lap timer in Race/CTS; the split-vs-record deltas remain a server record-net gap."
 
   - id: cl-hud.panel.vote
     name: "Vote panel (#9)"
@@ -378,18 +380,19 @@ features:
       - "client/hud/panel/vote.qc:HUD_Vote"
     port_refs:
       - "game/hud/VotePanel.cs"
+      - "game/net/NetGame.cs:UpdateVotePanel"
     constants:
       - { name: "_alreadyvoted_alpha", base: "0.7 (hud_luma.cfg:201)", port: "0.75 default", match: false }
-    status: { logic: faithful, values: partial, timing: faithful, presentation: faithful, audio: na, liveness: dead }
+    status: { logic: faithful, values: partial, timing: faithful, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "VotePanel never appears in a match: no vote state is networked to the client (ClientNet has no vote fields) and NetGame never sets Vote.Active/CalledVote/YesCount/NoCount/Needed (verified: zero .Vote. references outside VotePanel.cs) — a real callvote shows no on-screen yes/no progress bar."
       - "AlreadyVoted alpha default is 0.75 vs Base luma 0.7 (draft mis-stated Base as 0.35)."
+      - "Vote state is fed from the in-process listen-server VoteController; a pure --connect client has no vote net channel yet, so the panel stays blank there."
     verification:
-      - { kind: grep, ref: "server VoteController exists but no client vote wire / no VotePanel feeder", result: fail }
+      - { kind: code, ref: "NetGame.UpdateVotePanel feeds Active/CalledVote/Yes-No/Needed/EndTime/Highlighted from GameWorld.Voting (VoteController) each frame", result: pass }
     confidence: high
-    notes: "Full render + key/yes/no/progress code present; the server has VoteController but vote state isn't sent to the client."
+    notes: "WIRED Wave 5: a real callvote now shows the yes/no progress bar + your-ballot dim on a listen server (VoteController.SelectionOf added for the highlight)."
 
   - id: cl-hud.panel.modicons
     name: "Mod icons panel (#10)"
@@ -636,11 +639,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No live feeder: race_checkpoint_splits is never networked to the client, so the checkpoint splits list never renders in Race/CTS."
+      - "Still no live feeder: race_checkpoint_splits requires per-checkpoint record storage + the StoreCheckpointSplits string build (built off the racetimer's vs-record deltas), which the server doesn't yet keep. The panel renders given data but the data source is the deferred race record-net subsystem (same blocker as the racetimer's split deltas). Left UNRESOLVED rather than faked — feeding empty/garbage splits would be worse than honest blank."
     verification:
-      - { kind: grep, ref: "no Checkpoints.* setter caller in game/ or src/", result: fail }
+      - { kind: grep, ref: "no Checkpoints.* setter caller; blocked on per-checkpoint race-record net (deferred)", result: fail }
     confidence: high
-    notes: "Full render code exists; purely a wire-up gap (same family as racetimer)."
+    notes: "Wave 5: NOT wired — depends on per-checkpoint race records (TE_CSQC_RACE split build) the server doesn't track; honest unresolved."
 
   - id: cl-hud.panel.mapvote
     name: "Map-vote panel"
@@ -650,16 +653,17 @@ features:
       - "client/mapvoting.qc:MapVote_Draw"
     port_refs:
       - "game/hud/MapVotePanel.cs"
+      - "game/net/NetGame.cs:UpdateMapVotePanel"
     constants: []
-    status: { logic: faithful, values: unknown, timing: unknown, presentation: faithful, audio: na, liveness: dead }
+    status: { logic: faithful, values: faithful, timing: faithful, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "MapVotePanel never appears at intermission: NetGame has zero MapVote/MapVotePanel references, so the intermission map-grid + mapshots + vote counts + countdown are never shown to the player."
+      - "Cell click-to-vote (cursor) isn't wired; votes are cast via impulses (Commands.cs MapVote.CastVote), so the panel shows the grid + counts + own-vote highlight + countdown but a mouse click on a cell doesn't cast. Pure --connect clients have no in-process MapVoting feed."
     verification:
-      - { kind: grep, ref: "no MapVote/MapVotePanel reference in NetGame", result: fail }
+      - { kind: code, ref: "NetGame.UpdateMapVotePanel builds the candidate grid from GameWorld.MapVote, feeds live counts/own-vote/winner each frame; MapVoting.SelectionOf added for the own-vote highlight", result: pass }
     confidence: high
-    notes: "Server has MapVoting.cs; the client panel renders when given data but is never fed at intermission."
+    notes: "WIRED Wave 5: the intermission map ballot (maps + level-shots + counts + countdown + winner reveal) now shows on a listen server when g_maplist_votable runs the vote."
 
   - id: cl-hud.panel.minigame
     name: "Minigame HUD panels (BOARD/STATUS/HELP/MENU)"

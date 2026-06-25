@@ -346,20 +346,20 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:SaveRaceLimits"
     constants: []
     status:
-      logic: stub
-      values: na
-      timing: missing
+      logic: faithful
+      values: partial
+      timing: partial
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "TransitionQualifyingToRace and SaveRaceLimits still have no caller anywhere; a qualifying-then-race warmup never converts to a real race in a live match."
+      - "Wave-5 wired SaveRaceLimits (at Race activation when g_race_qualifying==2) + a live caller for TransitionQualifyingToRace (GameWorld.RunCheckRulesWorld: the elapsed qualifying timelimit converts the session to a real race instead of ending). The qualifying-timelimit SOURCE (g_race_qualifying_timelimit → the qualifying-phase timelimit cvar) is still not wired, so the qualifying phase runs on the plain `timelimit`; the transition itself is faithful (restores stashed limits, re-runs score rules, resets racers)."
     verification:
-      - { kind: code, ref: "grep TransitionQualifyingToRace/SaveRaceLimits callers — none outside Race.cs", result: fail }
+      - { kind: code, ref: "GameWorld.cs Race activation calls SaveRaceLimits; RunCheckRulesWorld timelimit-elapsed branch calls race.TransitionQualifyingToRace() + re-arms GameStartTime", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. Method body is faithful, but it is dead code — the qualifying-timelimit elapse never invokes it."
+    notes: "FIXED in Wave-5 (was dead). The qualifying==2 transition now runs on the live match path: when the timelimit elapses in a qualifying-then-race match the session converts to a plain race (clears g_race_qualifying, restores fraglimit/leadlimit/timelimit, re-declares score rules, resets every racer) instead of going to intermission."
 
   - id: race.spawn.grid_respawn
     name: "Spawn grid by race_place + respawn at last checkpoint"
@@ -436,18 +436,17 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No net feed: the Race* stat properties are still never assigned outside the panel class (no TE_CSQC_RACE-equivalent), so the timer, splits, anticipation delta, penalty line, speed readout, and medal flash never appear in a live match. Wave-2 touched only the server."
-      - "Speed-at-checkpoint comparison baseline (race_checkpoint_splits_speed) is never populated by a real run."
+      - "On a pure (remote) client the feed is still absent — there is no TE_CSQC_RACE net message; the feed is host-side (NetGame.UpdateRacePanels reads the live Race gametype's RaceState + per-checkpoint record store). On a listen server the timer/splits/anticipation/speed/medal all render live."
     verification:
-      - { kind: code, ref: "grep external setters of RaceTimerPanel.Race* — none outside the class (only the menu dialog references the panel type)", result: fail }
+      - { kind: code, ref: "NetGame.UpdateRacePanels feeds RaceCheckpoint/RaceTime/RaceCheckpointTime/RacePreviousBestTime/RaceNextBestTime/RaceCheckpointSpeed/RaceStatus from Race.GetState + Race.CheckpointRecord* (server-side per-checkpoint records added in Race.RecordCheckpointSplit)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. Rendering (incl. MakeRaceString + medal art) is faithfully ported; the panel is dead for lack of a data feed."
+    notes: "FIXED in Wave-5 (was dead). The server Race gametype now keeps per-checkpoint split records (RecordCheckpointSplit, QC race_checkpoint_records[]) and the host feeds the split/anticipation/speed + the record-result medal flash (race_status 0/1/2/3) into the panel each frame. Rendering (MakeRaceString + medal art) was already faithful."
 
   - id: race.hud.checkpoint_splits
     name: "Checkpoints split list panel (#27)"
@@ -465,17 +464,17 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "SetSplits / StoreSplit are still never called by any net or race code, so the panel is always empty in a live match."
+      - "Host-side feed only (no TE_CSQC_RACE net path for a pure client). On a listen server StoreSplit is now called per crossing (QC StoreCheckpointSplits) and ClearSplits on a fresh lap, so the panel renders the live split list."
     verification:
-      - { kind: code, ref: "grep SetSplits/StoreSplit callers — none outside the class", result: fail }
+      - { kind: code, ref: "NetGame.UpdateRacePanels calls Checkpoints.StoreSplit(cp, label, delta) on each new crossing + ClearSplits on a fresh lap, deduped by the crossing stamp", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. Word-wrap + flip/align/fontscale rendering faithful; dead for lack of a feed."
+    notes: "FIXED in Wave-5 (was dead). StoreSplit is now fed from the live race path (the per-checkpoint record delta), once per crossing; ClearSplits fires on a lap restart. Word-wrap + flip/align/fontscale rendering was already faithful."
 
   - id: race.bot.role
     name: "Bot race role (navigate the checkpoint track)"

@@ -566,6 +566,43 @@ public sealed class GameWorld
         // map/gametype change. Was declared but never assigned, leaving the campaign branches dead.
         XonoticGodot.Common.Gameplay.TargetUtilities.IsCampaign = () => Cvars.Bool("g_campaign");
 
+        // QC target_changelevel / target_levelwarp host seams (common/mapobjects/target/{changelevel,levelwarp}.qc).
+        // The Common layer can't reach the server's match-end / campaign / changelevel plumbing, so it fires these
+        // delegates. Wired here (every Boot) so they never go stale across a map/gametype change; previously null,
+        // leaving the entities inert.
+        //
+        // empty-chmap target_changelevel → QC NextLevel(): end the match now. QC also flags campaign_forcewin when a
+        // REAL client triggered it (IS_REAL_CLIENT && g_campaign) so the stage counts as beaten — set Campaign.ForceWin
+        // before EndMatch so the campaign win/lose decision (CampaignPreIntermission, fired in NextLevel) credits it.
+        XonoticGodot.Common.Gameplay.TargetUtilities.NextLevelHandler = actor =>
+        {
+            if (Cvars.Bool("g_campaign") && actor is Player rp && !rp.IsBot)
+                Campaign.ForceWin = true; // QC: this counts as beating the map in a campaign stage
+            EndMatch();
+        };
+        // named-chmap target_changelevel → QC changelevel(chmap): switch to that map. Route through the same
+        // host changelevel pipeline the console `map`/`changelevel` command uses (resolved lazily — Commands is
+        // built at the tail of Boot).
+        XonoticGodot.Common.Gameplay.TargetUtilities.ChangeLevelHandler = chmap => Commands?.ChangeLevelHandler?.Invoke(chmap);
+        // CHANGELEVEL_MULTIPLAYER fraction (QC FOREACH_CLIENT IS_PLAYER && IS_REAL_CLIENT, counting chlevel_targ):
+        // supply the real-player count + how many voted for THIS changelevel target from the live roster.
+        XonoticGodot.Common.Gameplay.TargetUtilities.RealPlayerVoteCount = target =>
+        {
+            int real = 0, voted = 0;
+            foreach (Player p in Clients.Players)
+            {
+                if (p.IsBot || p.IsObserver) continue; // QC IS_PLAYER (joined, incl. dead) && IS_REAL_CLIENT (not bot)
+                real++;
+                if (ReferenceEquals(p.ChLevelTarg, target)) voted++;
+            }
+            return (real, voted);
+        };
+        // QC MapInfo_SwitchGameType(MapInfo_Type_FromString(this.gametype)): set the live `gametype` cvar so the
+        // next changelevel boots that mode (the port's switch equivalent — see Commands.CmdGameType).
+        XonoticGodot.Common.Gameplay.TargetUtilities.SwitchGameTypeHandler = gt => Cvars.Set("gametype", gt);
+        // QC target_levelwarp_use → CampaignLevelWarp(n): jump to a campaign level (n>=0 specific, -1 next).
+        XonoticGodot.Common.Gameplay.TargetUtilities.CampaignLevelWarpHandler = n => Campaign.LevelWarp(n);
+
         // [A2-review F13] Zero the process-global monster counters BEFORE the entity lump spawns any monster
         // (QC monsters_total/monsters_killed are server globals cleared when a new map spawns). Without this the
         // scoreboard map-stats row accumulates across every Invasion map played in one process run.
@@ -584,6 +621,11 @@ public sealed class GameWorld
         MapObjectsRegistry.RunPostSpawn();
         if (GameType is Assault assaultMode)
             assaultMode.ResolveObjectiveGraph();
+        // QC ons_DelayedLinkSetup (INITPRIO_FINDTARGET): now that every onslaught_generator/controlpoint has
+        // spawned + name-indexed its graph node, resolve the staged onslaught_link name pairs into power-graph
+        // edges and propagate power (UpdateLinks). Without this the graph is edgeless and nothing ever unshields.
+        if (GameType is Onslaught onsMode)
+            onsMode.ResolveLinks();
 
         // QC ka_SpawnBalls (sv_keepaway.qc) — the single world ball is spawned PROCEDURALLY at map start (unlike
         // Nexball, which places balls from map entities). SpawnBall had no caller, so no ball ever existed and no
@@ -682,6 +724,18 @@ public sealed class GameWorld
         // - COUNTDOWN_STOP_MINPLAYERS / COUNTDOWN_STOP_BADTEAMS (ReadyCount abort): broadcast on abort-to-warmup.
         Warmup.OnCountdownStop = arg =>
         {
+            // QC Announcer_Gamestart (announcer.qc:137): when the game-start countdown aborts back to warmup, the
+            // CPID_ROUND centerprint group is retracted with centerprint_Kill(CPID_ROUND) and the title cleared
+            // (Announcer_ClearTitle). The COUNTDOWN_STOP notifications below live under CPID_MISSING_PLAYERS, so
+            // they do NOT replace the running countdown line — without this kill the "Game starts in ^COUNT" line
+            // would hang until its own timer.
+            NotificationSystem.SendCenterKill(NotifBroadcast.All, null, "CPID_ROUND");
+            if (_gametypeTitleShown || _duelTitleLeft != "" || _duelTitleRight != "")
+            {
+                NotificationSystem.SendCenterTitle(NotifBroadcast.All, null, "");
+                _gametypeTitleShown = false;
+                _duelTitleLeft = _duelTitleRight = "";
+            }
             if (arg >= 0) // minplayers: arg = the required minimum count (the QC f1 argument)
                 NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Multi, "COUNTDOWN_STOP_MINPLAYERS", arg);
             else // -1 = bad teams (no argument)
@@ -814,7 +868,16 @@ public sealed class GameWorld
         Clients.OnClientSpawn = InfraClientSpawn;
         Clients.IsWarmup = () => Warmup.WarmupStage; // QC warmup_stage → the warmup gear-up loadout (SPAWN3)
         Clients.OnClientDisconnect = InfraClientDisconnect;
+
+        // QC LMS lms_AddPlayer / ForbidSpawn: gate the late-join + seed the joiner's lives. Wired only for an LMS
+        // match; for every other gametype the gate/seed stay null (no-op).
+        Clients.GametypeJoinGate = p => GameType is not LastManStanding lms || lms.CanJoin(p, LmsPreStart);
+        Clients.GametypeOnJoin = p => { if (GameType is LastManStanding lms) lms.AddPlayer(p, !LmsPreStart); };
     }
+
+    /// <summary>QC the LMS pre-start window (<c>warmup_stage || time &lt;= game_starttime</c>): before this passes,
+    /// LMS treats joins as free (full starting lives, no lockout) and disconnects as a no-op rank-wise.</summary>
+    private bool LmsPreStart => Warmup.WarmupStage || Time <= GameStartTime;
 
     /// <summary>QC the ClientConnect tail: enforce bans, init anticheat/timeout, log connect/join, register stats.</summary>
     private void InfraClientConnect(Player p)
@@ -841,6 +904,11 @@ public sealed class GameWorld
         if (PlayerStats.Enabled)
             PlayerStats.AddEvent($"kills-{p.PlayerId}"); // QC the per-player kills-<id> event slot
         Demo.OnClientConnect(p, MapName, GameType?.NetName ?? DefaultGameType);
+
+        // QC MUTATOR_HOOKFUNCTION(superspec, ClientConnect): seed the connect defaults, schedule the missing-UID
+        // hello, and load the per-client options file. Gated on the mutator being added (g_superspectate on).
+        if (Mutators.ByName("superspec") is SuperSpecMutator superspecConnect && superspecConnect.Added)
+            superspecConnect.OnClientConnect(p);
     }
 
     /// <summary>QC the PutPlayerInServer tail: start the alivetime clock + reset the anticheat view window.</summary>
@@ -874,12 +942,23 @@ public sealed class GameWorld
         // registered port analogue, broadcast by the NotificationSystem NET sink (registered but never emitted).
         NotificationSystem.Info("CHAT_DISCONNECT", p.NetName);
 
+        // QC MUTATOR_HOOKFUNCTION(lms, ClientDisconnect) → lms_RemovePlayer: rank the leaver + reshuffle the other
+        // ranks (and record last-forfeiter health/armor + broadcast INFO_LMS_NOLIVES). A disconnect sets
+        // lms_spectate=true in Base, so it's the voluntary path; a no-op during the LMS pre-start window.
+        if (GameType is LastManStanding lmsLeave)
+            lmsLeave.RemovePlayer(p, voluntary: true, warmupOrPreStart: LmsPreStart);
+
         PlayerStats.FinalizePlayer(p, Time, Teamplay.IsTeamGame);
         AntiCheat.Remove(p);
         Timeout.Remove(p);
         Voting.RemoveVoter(p);
         MapVote.RemoveVoter(p);
         Demo.OnClientDisconnect(p);
+
+        // QC MUTATOR_HOOKFUNCTION(superspec, ClientDisconnect) → superspec_save_client_conf: persist this client's
+        // superspec/autospec flags + itemfilter to its options file. Gated on the mutator being added.
+        if (Mutators.ByName("superspec") is SuperSpecMutator superspecDisc && superspecDisc.Added)
+            superspecDisc.OnClientDisconnect(p);
 
         // [T39] every bot removal path (fixcount trim, console remove, intermission teardown, a host kick)
         // funnels through this disconnect chain: drop the brain + notify the net host (BotRemoved).
@@ -1314,6 +1393,10 @@ public sealed class GameWorld
             // live roster each frame — feed it to the active round-based gametype BEFORE the handler polls them.
             _roundPrep?.Invoke();
             Rounds.Think();
+            // QC Announcer_Countdown:62-69 — when the round can't start (round_starttime == -1) show "Round cannot
+            // start" once, then kill the countdown line + title. Detect the rising edge of the -1 state here (the
+            // announcer is server-side) and re-arm once the handler leaves it (a fresh countdown re-arms).
+            BroadcastRoundStop(Rounds.RoundStartTime == -1f);
             // Mirror the live handler's round timing into the gametype's own RoundHandler so the gametype's
             // CheckWinner / overtime reads (e.g. CA's round-timelimit stalemate, Onslaught's overtime decay) see
             // the same round_endtime / rounds_played the live handler advanced (QC round_handler_GetEndTime()).
@@ -1354,11 +1437,30 @@ public sealed class GameWorld
     // arming (the countdown otherwise only decrements), and the terminal 0 (BEGIN) re-arms it.
     private int _gameStartCountdownArmed;
 
+    // [W5] the last duel-title pair broadcast for the current countdown, so the duel title is re-sent only when
+    // the two duelers change (QC Announcer_Duel: "if players haven't changed, stop here"). Cleared on BEGIN.
+    private string _duelTitleLeft = "";
+    private string _duelTitleRight = "";
+    private bool _gametypeTitleShown;
+
+    // [W5] QC Announcer_Countdown (announcer.qc:62-69): when the round handler reports it can't start the round
+    // (RoundStartTime == -1, e.g. a team emptied), CSQC shows CENTER_COUNTDOWN_ROUNDSTOP ("Round cannot start"),
+    // tears down the countdown and clears the title. The port drives the announcer server-side, so we detect the
+    // rising edge of RoundStartTime == -1 here and broadcast once (re-armed once it leaves the -1 state).
+    private bool _roundStopShown;
+
     private void BroadcastGameStartCountdown(int secondsLeft)
     {
         if (secondsLeft <= 0)
         {
             _gameStartCountdownArmed = 0; // BEGIN: re-arm so the next countdown speaks PREPARE again.
+            // QC Announcer_Countdown:80 clears the title once the match begins (Announcer_ClearTitle).
+            if (_gametypeTitleShown || _duelTitleLeft != "" || _duelTitleRight != "")
+            {
+                NotificationSystem.SendCenterTitle(NotifBroadcast.All, null, "");
+                _gametypeTitleShown = false;
+                _duelTitleLeft = _duelTitleRight = "";
+            }
             NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Multi, "BEGIN");
             return;
         }
@@ -1373,6 +1475,11 @@ public sealed class GameWorld
             if (secondsLeft > 5) AnnceIfEnabled("PREPARE");
         }
 
+        // QC Announcer_Gamestart:155-160: while the game-start countdown runs (not a round restart), show the
+        // gametype name as the centerprint title — OR, in duel (m_1v1), the "P1 vs P2" duel title (refreshed when
+        // the two duelers change, like Announcer_Duel). The port drives this server-side (no CSQC announcer timer).
+        BroadcastCountdownTitle();
+
         // QC Announcer_Countdown:104 gates the game-start number on `!roundstarttime` — round-based modes (a
         // RoundHandler is active) do NOT speak NUM_GAMESTART (only the COUNTDOWN_GAMESTART center is shown); the
         // round path speaks NUM_ROUNDSTART instead (BroadcastRoundStartCountdown).
@@ -1385,6 +1492,66 @@ public sealed class GameWorld
         if (secondsLeft <= 0) { NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Multi, "BEGIN"); return; }
         AnnceIfEnabled("NUM_ROUNDSTART_" + secondsLeft);
         NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "COUNTDOWN_ROUNDSTART", round + 1, secondsLeft);
+    }
+
+    /// <summary>
+    /// Set the centerprint title for the game-start countdown (QC client/announcer.qc Announcer_Gamestart:155-160
+    /// + Announcer_Duel). Duel (m_1v1) shows the two duelers' names ("P1 vs P2"), refreshed when they change; every
+    /// other gametype shows its display name once ("^BG&lt;Gametype&gt;"). Driven server-side as the port has no CSQC
+    /// announcer timer.
+    /// </summary>
+    private void BroadcastCountdownTitle()
+    {
+        if (GameType is Duel)
+        {
+            // QC Announcer_Duel: the top two non-spectator players (scoreboard order); "???" until they exist.
+            var duelers = new List<string>(2);
+            foreach (Player p in Clients.Players)
+            {
+                if (p.IsObserver || p.FragsStatus == Player.FragsSpectator) continue;
+                duelers.Add(string.IsNullOrEmpty(p.NetName) ? "???" : p.NetName);
+                if (duelers.Count == 2) break;
+            }
+            string left = duelers.Count > 0 ? duelers[0] : "???";
+            string right = duelers.Count > 1 ? duelers[1] : "???";
+            // Re-send only when the pair changes (QC: "Players haven't changed, stop here").
+            if (left == _duelTitleLeft && right == _duelTitleRight) return;
+            _duelTitleLeft = left;
+            _duelTitleRight = right;
+            NotificationSystem.SendCenterDuelTitle(NotifBroadcast.All, null, left, right);
+            return;
+        }
+
+        // QC: centerprint_SetTitle(strcat("^BG", MapInfo_Type_ToText(gametype))) — once per armed countdown.
+        if (_gametypeTitleShown) return;
+        _gametypeTitleShown = true;
+        string name = GameType?.DisplayName ?? "";
+        NotificationSystem.SendCenterTitle(NotifBroadcast.All, null, "^BG" + name);
+    }
+
+    /// <summary>
+    /// Broadcast the "Round cannot start" centerprint once when the round handler enters the can't-start state
+    /// (QC Announcer_Countdown:62-69, <c>roundstarttime == -1</c>): show CENTER_COUNTDOWN_ROUNDSTOP, retract the
+    /// running countdown line (CPID_ROUND) and clear any title (Announcer_ClearTitle). Re-arms once the handler
+    /// leaves the -1 state (a fresh countdown). Driven server-side as the port has no CSQC announcer timer.
+    /// </summary>
+    private void BroadcastRoundStop(bool cannotStart)
+    {
+        if (cannotStart == _roundStopShown)
+            return;
+        _roundStopShown = cannotStart;
+        if (!cannotStart)
+            return; // left the can't-start state; nothing to send, just re-armed.
+
+        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "COUNTDOWN_ROUNDSTOP");
+        // QC Announcer_ClearTitle: clear the title once the round is stopped.
+        if (_gametypeTitleShown || _duelTitleLeft != "" || _duelTitleRight != "")
+        {
+            NotificationSystem.SendCenterTitle(NotifBroadcast.All, null, "");
+            _gametypeTitleShown = false;
+            _duelTitleLeft = _duelTitleRight = "";
+        }
+        // The countdown line itself is replaced by the ROUNDSTOP center (both under CPID_ROUND), so no kill needed.
     }
 
     // =============================================================================================
@@ -1407,14 +1574,21 @@ public sealed class GameWorld
         _roundSync = null;
         // Clear any prior gametype's bot attack-veto (only the incoming gametype's arm below re-installs it).
         Bot.BotBrain.ForbidAttackHook = null;
-        // Tear down any prior gametype's global hook subscriptions before activating the new one, so a live
+        // Tear down EVERY gametype's global hook subscriptions before activating the new one, so a live
         // gametype switch (campaign level change, a gametype vote) doesn't leave the old mode's handlers
         // (e.g. CTS's Shotgun-only PlayerSpawn/PlayerPreThink) running on the new mode. Deactivate is
-        // idempotent per gametype, so deactivating all-but-the-incoming-one is safe (the incoming gametype's
-        // Activate() below re-subscribes it). Mirrors MutatorActivation reconciling the mutator hook set.
+        // idempotent per gametype (each guards on its own "was I subscribed?" flag), so this is safe.
+        //
+        // The INCOMING gametype is deactivated too — gametypes are process-wide Registry<GameType> SINGLETONS
+        // (the same Assault/CTF/… instance is re-resolved by every Boot), so re-booting the same mode finds the
+        // instance still "active" from the previous match. Each gametype's Activate() short-circuits its full
+        // state reset when it sees its hook still subscribed (`if (_deathHandler is not null) return;`), so we
+        // must clear that flag here first — otherwise stale match state (e.g. Assault's swapped attacker_team
+        // after a round-2 swap, the round counter, MatchEnded) survives into the fresh match. Deactivating the
+        // incoming one makes its Activate() below run the clean re-arm. Mirrors MutatorActivation reconciling
+        // the mutator hook set.
         foreach (GameType gt in Registry<GameType>.All)
-            if (!ReferenceEquals(gt, GameType))
-                gt.Deactivate();
+            gt.Deactivate();
         switch (GameType)
         {
             case Deathmatch dm:
@@ -1525,6 +1699,17 @@ public sealed class GameWorld
                 // mid-round respawns — both un-Base for Assault); the per-frame win check is driven below and the
                 // campaign predicate (TargetUtilities.IsCampaign) is wired globally in Boot.
                 aslt.GameStartTime = GameStartTime;
+                // QC assault_new_round → ReadyRestart_force(true) (sv_assault.qc:219): when round 2 begins, perform
+                // the engine round restart — reset every player + map object (incl. re-arming the objective chain's
+                // world entities) and re-stamp game_starttime so the round-2 clock runs from now. Assault's
+                // FirstRoundDestroyTime already drives DriveFrame's round-2 timelimit; here we just do the map reset.
+                // fakeRoundStart:true keeps the team objective scores (the 666 round-1 sentinel) across the swap.
+                aslt.OnSecondRoundRestart = () =>
+                {
+                    GameStartTime = Time;
+                    aslt.GameStartTime = GameStartTime;
+                    ResetMap(fakeRoundStart: true);
+                };
                 break;
 
             // ---- FFA / non-team modes that still own a scoring handler ----
@@ -1543,12 +1728,27 @@ public sealed class GameWorld
                     self is Player bot && targ is Player victim
                     && surv.StatusOf(bot) == surv.StatusOf(victim);
                 break;
-            case Invasion inv: inv.Activate(); EnableRounds(); break;
+            case Invasion inv:
+                inv.Activate();
+                EnableRounds();
+                // QC sv_invasion.qc Send_Notification(NOTIF_ALL, ...): the gametype decides WHAT to send
+                // (round over / round winner / supermonster arrival); the host wires those to the live
+                // broadcast NotificationSystem (the MSG_CENTER/MSG_INFO routing). Without this the decisions
+                // (CheckWinner / SpawnMonsterDef) reached a null sink and the prints never went out.
+                inv.Notifications = new InvasionNotifyHost();
+                break;
             case Race race:
                 race.Activate();
                 // QC the finish kill-delay re-teleport: re-place the racer at a (race-start) spawn point so they
                 // run again. Clients.Spawn goes through PutPlayerInServer, the host analogue of race_PreparePlayer.
                 race.OnFinishRetract = p => Clients.Spawn(p);
+                // QC rc_SetLimits (sv_race.qc:425-427): in the "qualifying THEN race" mode (g_race_qualifying==2)
+                // the live fraglimit/leadlimit/timelimit are STASHED (race_fraglimit/leadlimit/timelimit) so the
+                // transition can restore them when qualifying ends. Capture them now so TransitionQualifyingToRace
+                // (driven from RunCheckRulesWorld when the qualifying timelimit elapses) has the real race limits.
+                if (Cvars.FloatOr("g_race_qualifying", 0f) == 2f)
+                    race.SaveRaceLimits(Cvars.FloatOr("fraglimit", -1f), Cvars.FloatOr("leadlimit", -1f),
+                        Cvars.FloatOr("timelimit", -1f));
                 break;
             case Cts cts:
                 cts.Activate();
@@ -1601,16 +1801,19 @@ public sealed class GameWorld
                 switch (e.ClassName)
                 {
                     case "onslaught_generator":
-                        ons.CpCombat.SpawnGenerator((int)e.Team, e.Origin);
+                        // QC spawnfunc(onslaught_generator): the node is indexed by its .targetname so an
+                        // onslaught_link can resolve it in the post-spawn pass (ons.ResolveLinks below).
+                        ons.CpCombat.SpawnGenerator((int)e.Team, e.Origin, e.TargetName);
                         break;
                     case "onslaught_controlpoint":
-                        ons.CpCombat.SpawnControlPoint(_nextOnsCpId++, e.Origin);
+                        ons.CpCombat.SpawnControlPoint(_nextOnsCpId++, e.Origin, e.TargetName);
                         break;
                     case "onslaught_link":
-                        // QC onslaught_link targets two nodes by name; the deterministic graph links are wired by
-                        // the host/test via Onslaught.Link. With only target/target2 names on the placeholder and
-                        // no name index here, the link is recorded for the host to resolve (deferred — real-map
-                        // link parity is the stretch goal; the POJO graph + Link() is the must-pass path).
+                        // QC spawnfunc(onslaught_link) + ons_DelayedLinkSetup (INITPRIO_FINDTARGET): a link names
+                        // two nodes via .target/.target2; resolution is DEFERRED until every onslaught_* node has
+                        // spawned (spawn-order-independent, like Assault's objective chain). Stage the name pair
+                        // now; ons.ResolveLinks() turns them into graph edges in the post-spawn pass (Boot).
+                        ons.StageLink(e.Target, e.Target2);
                         break;
                 }
                 RetirePlaceholder(e);
@@ -1664,10 +1867,18 @@ public sealed class GameWorld
                         };
                         return; // keep the world wall; skip RetirePlaceholder.
                     case "func_assault_wall":
-                        // QC func_assault_wall: a cosmetic SOLID_BSP wall that toggles with its objective's health.
-                        // The collision/visual toggle is deferred presentation and never gates the win path — the
-                        // edict is simply consumed (no objective registered). (Recon: LOW priority.)
-                        break;
+                        // QC func_assault_wall (sv_assault.qc:364): a SOLID_BSP wall keyed to an objective (.target).
+                        // It is solid + visible while the objective lives and hides (model="" + SOLID_NOT) once the
+                        // objective is destroyed — opening a path the attackers earn by destroying that objective.
+                        // KEEP the edict alive (like a destructible) so DriveWalls can toggle its solid/model each
+                        // frame; stage the objective link (resolved spawn-order-independently in ResolveObjectiveGraph,
+                        // QC INITPRIO_FINDTARGET / assault_setenemytoobjective), then RETURN (skip RetirePlaceholder).
+                        e.Solid = Solid.Bsp;          // QC this.solid = SOLID_BSP;
+                        e.MoveType = MoveType.Push;
+                        if (!string.IsNullOrEmpty(e.Model))
+                            Api.Entities.SetModel(e, e.Model); // QC _setmodel(this, this.mdl): resolve "*N" brush bounds
+                        aslt.StageWall(e.Target, e.Model, e);
+                        return; // keep the world wall; skip RetirePlaceholder.
                     case "target_assault_roundend":
                         aslt.AddRoundEnd(); // QC target_assault_roundend: marks the chain's terminal target.
                         break;
@@ -1823,7 +2034,14 @@ public sealed class GameWorld
                 aslt.DriveFrame(Time);
                 break;
             case Keepaway ka: ka.Tick(Simulation.FrameTime); break;
-            case LastManStanding lms: lms.UpdateLeaders(); lms.CheckWinningCondition(); break;
+            case LastManStanding lms:
+                lms.UpdateLeaders();
+                // QC SV_StartFrame: the leader radar-visibility window + VISIBLE_LEADER/OTHER centerprint edges
+                // (suppressed during intermission, matching the QC early-return).
+                if (!Intermission.Running)
+                    lms.DriveLeaderVisibility();
+                lms.CheckWinningCondition();
+                break;
             case Survival surv:
                 surv.SetRoster(Clients.Players);   // the round handler assigns hidden roles from the roster
                 surv.Tick();                       // drive the survival round handler (role assign + side-wipe resolve)
@@ -1901,7 +2119,14 @@ public sealed class GameWorld
         // Death edge: compute the respawn timing once (RespawnTimeMax is reset to 0 on spawn, and Calculate sets
         // it > 0, so this runs exactly once per death). Overrides any flat delay a gametype obituary set.
         if (p.RespawnTimeMax <= 0f)
-            RespawnTiming.Calculate(p, Clients.Players, Teamplay.IsTeamGame, GameType?.NetName);
+        {
+            // QC MUTATOR_HOOKFUNCTION(lms, CalculateRespawnTime): an eliminated (0-lives) LMS player is denied a
+            // respawn (RESPAWN_SILENT), and a living player gets the dynamic delay (scaled by lives behind the
+            // leader). LMS owns the timing entirely (true) → skip the generic schedule; otherwise fall through.
+            bool handled = GameType is LastManStanding lmsRt && lmsRt.ApplyRespawnTiming(p);
+            if (!handled)
+                RespawnTiming.Calculate(p, Clients.Players, Teamplay.IsTeamGame, GameType?.NetName);
+        }
 
         // QC RESPAWN_DENY: respawning is blocked entirely; the player stays dead (e.g. eliminated in a round).
         if ((p.RespawnFlags & RespawnFlag.Deny) != 0)
@@ -2020,8 +2245,20 @@ public sealed class GameWorld
         }
         else if (timelimit != 0f && Time >= timelimit)
         {
-            // QC: the time limit elapsed with no latched winner → try to add an overtime (true) or arm
-            // sudden death (false). The race/qualifying branch is omitted (those modes don't reach here).
+            // QC CheckRules_World rc hook (sv_race.qc:360-378): in the "qualifying THEN race" mode the elapsed
+            // qualifying timelimit does NOT end the match — it CONVERTS the warmup-qualifying session into a real
+            // race (WinningCondition_QualifyingThenRace → reset_map → reset_map_global). Drive that transition
+            // here: TransitionQualifyingToRace clears g_race_qualifying, restores the stashed race limits, re-runs
+            // the score rules and resets every racer; then re-arm the match clock from now so the race phase runs
+            // its restored timelimit. Returns false (and falls through) when it's not a qualifying==2 race.
+            if (GameType is Race rcQual && rcQual.TransitionQualifyingToRace())
+            {
+                GameStartTime = Time;          // the race phase starts now (re-offsets the restored timelimit)
+                Warmup.GameStartTime = Time;
+                return;                        // skip the overtime/intermission cascade this tick
+            }
+            // QC: otherwise the time limit elapsed with no latched winner → try to add an overtime (true) or arm
+            // sudden death (false).
             wantOvertime |= OverTime.InitiateSuddenDeath(Time);
         }
 
@@ -2415,6 +2652,7 @@ public sealed class GameWorld
 
         if (f.TryGetValue("targetname", out var tn)) e.TargetName = tn;
         if (f.TryGetValue("target", out var tg)) e.Target = tg;
+        if (f.TryGetValue("target2", out var tg2)) e.Target2 = tg2; // QC .target2 (onslaught_link's second node ref)
         if (f.TryGetValue("killtarget", out var kt)) e.KillTarget = kt;
         if (f.TryGetValue("message", out var msg)) e.Message = msg;
         if (f.TryGetValue("model", out var mdl)) e.Model = mdl;
@@ -2627,7 +2865,13 @@ public sealed class GameWorld
         // [T38] QC end_minigames(): drop any live minigame sessions on a full map reset (not a fake round-start),
         // so a stale session doesn't leak across a restart on this persistent in-process world.
         if (!fakeRoundStart)
+        {
             Minigames.EndAll();
+            // QC Destroy_All_Notifications (all.qc:110-121) → MSG_CENTER_KILL CPID_Null → centerprint_KillAll():
+            // a real map/match restart retracts every lingering centerprint group so stale lines (a held countdown,
+            // a sticky message) don't survive the reset. CPID_Null (empty cpid) = kill all on the client.
+            NotificationSystem.SendCenterKill(NotifBroadcast.All, null, null);
+        }
     }
 
     /// <summary>
@@ -2762,5 +3006,34 @@ public sealed class GameWorld
             if (anyAlive) aliveTeams++;
         }
         return aliveTeams <= 1;
+    }
+
+    /// <summary>
+    /// Host sink for the Invasion broadcast notifications (QC sv_invasion.qc <c>Send_Notification(NOTIF_ALL, ...)</c>).
+    /// The gametype only decides WHAT to send; this routes those decisions to the live broadcast
+    /// <see cref="NotificationSystem"/> exactly as Base does — CENTER + INFO for the round-over / round-winner
+    /// pair, CENTER for the supermonster arrival. Assigned to <c>inv.Notifications</c> in <see cref="ActivateGameType"/>.
+    /// </summary>
+    private sealed class InvasionNotifyHost : Invasion.IInvasionNotifications
+    {
+        // QC: Send_Notification(NOTIF_ALL, NULL, MSG_CENTER, CENTER_ROUND_OVER);
+        //     Send_Notification(NOTIF_ALL, NULL, MSG_INFO,   INFO_ROUND_OVER);
+        public void RoundOver()
+        {
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "ROUND_OVER");
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "ROUND_OVER");
+        }
+
+        // QC: Send_Notification(NOTIF_ALL, NULL, MSG_CENTER, CENTER_ROUND_PLAYER_WIN, winner.netname);
+        //     Send_Notification(NOTIF_ALL, NULL, MSG_INFO,   INFO_ROUND_PLAYER_WIN,   winner.netname);
+        public void RoundPlayerWin(Player winner)
+        {
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "ROUND_PLAYER_WIN", winner.NetName);
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "ROUND_PLAYER_WIN", winner.NetName);
+        }
+
+        // QC: Send_Notification(NOTIF_ALL, NULL, MSG_CENTER, CENTER_INVASION_SUPERMONSTER, mon.m_name);
+        public void Supermonster(string name)
+            => NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "INVASION_SUPERMONSTER", name);
     }
 }

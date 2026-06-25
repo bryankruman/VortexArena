@@ -101,9 +101,16 @@ public sealed class OnslaughtControlPoint
     /// fire routes through the shared pipeline. Returns the world entity (null when no facade is wired — the
     /// gametype still tracks the generator via <see cref="Onslaught.AddGenerator"/>).
     /// </summary>
-    public Entity? SpawnGenerator(int team, Vector3 origin)
+    public Entity? SpawnGenerator(int team, Vector3 origin) => SpawnGenerator(team, origin, null);
+
+    /// <summary>
+    /// QC ons_GeneratorSetup with the generator's map <c>.targetname</c> (<paramref name="name"/>) so an
+    /// <c>onslaught_link</c> can reference it: same as <see cref="SpawnGenerator(int,Vector3)"/> but the graph
+    /// node is name-indexed (<see cref="Onslaught.NodeByName"/>) for deferred link resolution.
+    /// </summary>
+    public Entity? SpawnGenerator(int team, Vector3 origin, string? name)
     {
-        Onslaught.OnsNode node = _ons.GeneratorNode(team) ?? _ons.AddGenerator(team);
+        Onslaught.OnsNode node = _ons.GeneratorNode(team) ?? _ons.AddGenerator(team, name);
         float h = GenHealth;
         if (node.Gen is not null) { node.Gen.Health = h; node.Gen.MaxHealth = h; }
 
@@ -117,6 +124,9 @@ public sealed class OnslaughtControlPoint
             e.GtPointId = -team; // negative id namespace so it never collides with a control-point id
             e.TakeDamage = DamageMode.Aim;     // QC DAMAGE_AIM (shield is enforced inside GeneratorDamage)
             e.GtEventDamage = GeneratorDamage;
+            // QC ons_GeneratorSetup (sv_onslaught.qc:1117): gen.event_heal = ons_GeneratorHeal — a friendly heal
+            // (Arc beam / mage / bumblebee, via Combat.Heal) tops up the generator's GtObjHealth + graph health.
+            e.GtEventHeal = (targ, _, amount, limit) => GeneratorHeal(team, targ, amount, limit);
             _generators[team] = e;
         }
         return e;
@@ -144,12 +154,27 @@ public sealed class OnslaughtControlPoint
         bool unshieldedForSelf = false;
         if (!selfDamage)
         {
-            // QC: a shielded generator ignores the damage entirely (only the under-attack hint plays).
+            // QC: a shielded generator ignores the damage entirely (only the blocked-by-shield hint plays).
             if (node is not null && node.Shielded)
+            {
+                // QC ons_GeneratorDamage (sv_onslaught.qc:927-937): blocked-by-shield hint to the attacker.
+                if (attacker is Player blocked && Now > self.GtPainFinished)
+                {
+                    if (Api.Services is not null)
+                        SoundSystem.PlayOn(blocked, Sounds.ByName("ONS_DAMAGEBLOCKEDBYSHIELD"));
+                    self.GtPainFinished = Now + 1f;
+                }
                 return;
-            // QC under-attack notify debounce (pain_finished) — presentation, modeled as a timer tab only.
+            }
+            // QC ons_GeneratorDamage (sv_onslaught.qc:939-944): under-attack center (to the owning team) +
+            // play2team alarm, debounced by pain_finished (10 s).
             if (Now > self.GtPainFinished)
+            {
                 self.GtPainFinished = Now + 10f;
+                Onslaught.Notify(NotifBroadcast.All, MsgType.Center, "GENERATOR_UNDERATTACK");
+                if (Api.Services is not null)
+                    SoundSystem.PlayGlobal(Sounds.ByName("ONS_GENERATOR_UNDERATTACK"));
+            }
         }
         else if (node is { Shielded: true })
         {
@@ -172,11 +197,33 @@ public sealed class OnslaughtControlPoint
 
         if (destroyed)
         {
+            // QC ons_GeneratorDamage (sv_onslaught.qc:958-962): the generator-destroyed info notify, overtime
+            // (self-damage) vs normal kill. The SCORE +100 attacker credit is handled in DamageGenerator.
+            string suffix = Onslaught.TeamSuffix(team);
+            Onslaught.Notify(NotifBroadcast.All, MsgType.Info,
+                selfDamage ? $"ONSLAUGHT_GENDESTROYED_OVERTIME_{suffix}" : $"ONSLAUGHT_GENDESTROYED_{suffix}");
+            // QC ons_GeneratorDamage (:406-equivalent generator explode): explosion sound on death.
+            if (Api.Services is not null)
+                SoundSystem.PlayOn(self, Sounds.ByName("ONS_GENERATOR_EXPLODE"));
+
             // QC: takedamage = DAMAGE_NO; event_damage = func_null; setthink(func_null).
             self.TakeDamage = DamageMode.No;
             self.GtEventDamage = null;
             self.Think = null;
             self.NextThink = 0f;
+        }
+        else
+        {
+            // QC ons_GeneratorDamage (sv_onslaught.qc:986-999): a hit sound on every (non-fatal) hit — a flaming
+            // gib impact at chance damage/220, else ONS_HIT1/2 (random).
+            if (Api.Services is not null)
+            {
+                if (XonoticGodot.Common.Math.Prandom.Float() < damage / 220f)
+                    SoundSystem.PlayOn(self, Sounds.ByName("ONS_GENERATOR_EXPLODE")); // QC SND_ROCKET_IMPACT (port maps ONS explode→grenade_impact)
+                else
+                    SoundSystem.PlayOn(self, Sounds.ByName(
+                        XonoticGodot.Common.Math.Prandom.Float() < 0.5f ? "ONS_HIT1" : "ONS_HIT2"));
+            }
         }
     }
 
@@ -189,10 +236,17 @@ public sealed class OnslaughtControlPoint
     /// the <see cref="Onslaught"/> power graph AND spawn its world trigger so a player touching it can start a
     /// capture. Touch dispatches to <see cref="ControlPointTouch"/>. Returns the world entity (or null headless).
     /// </summary>
-    public Entity? SpawnControlPoint(int controlPointId, Vector3 origin)
+    public Entity? SpawnControlPoint(int controlPointId, Vector3 origin) => SpawnControlPoint(controlPointId, origin, null);
+
+    /// <summary>
+    /// QC ons_ControlPoint_Setup with the control point's map <c>.targetname</c> (<paramref name="name"/>) so an
+    /// <c>onslaught_link</c> can reference it: same as <see cref="SpawnControlPoint(int,Vector3)"/> but the graph
+    /// node is name-indexed (<see cref="Onslaught.NodeByName"/>) for deferred link resolution.
+    /// </summary>
+    public Entity? SpawnControlPoint(int controlPointId, Vector3 origin, string? name)
     {
         if (_ons.ControlPointNode(controlPointId) is null)
-            _ons.AddControlPoint(controlPointId);
+            _ons.AddControlPoint(controlPointId, name);
 
         Entity? e = GametypeEntities.SpawnObjective("onslaught_controlpoint", origin, Teams.None,
             new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 128f), touch: ControlPointTouchEntity);
@@ -265,6 +319,9 @@ public sealed class OnslaughtControlPoint
             icon.Solid = Solid.Not;            // QC SOLID_NOT while building (becomes SOLID_BBOX when built)
             icon.TakeDamage = DamageMode.Aim;  // QC DAMAGE_AIM — bot/weapon targetable
             icon.GtEventDamage = IconDamage;
+            // QC ons_ControlPoint_Icon_Spawn (sv_onslaught.qc:635): e.event_heal = ons_ControlPoint_Icon_Heal — a
+            // friendly heal (Arc beam / mage / bumblebee, via Combat.Heal) tops up the icon's GtObjHealth.
+            icon.GtEventHeal = (targ, _, amount, limit) => IconHeal(targ, amount, limit);
             icon.GtPainFinished = 0f;
             icon.NextThink = Now + CpThinkRate;
             _icons[cpId] = icon;
@@ -276,6 +333,10 @@ public sealed class OnslaughtControlPoint
         // tentative team on the cp ENTITY only, leaving the graph node neutral until completion.
         cpEnt.GtCapturer = player;       // QC cp.ons_toucher — the builder, credited on completion
         cpEnt.GtPointTeam = team;        // QC cp.team while building (display color)
+
+        // QC ons_ControlPoint_Icon_Spawn (sv_onslaught.qc:640): the build-start sound on the control point.
+        if (Api.Services is not null)
+            SoundSystem.PlayOn(cpEnt, Sounds.ByName("ONS_CONTROLPOINT_BUILD"));
         return icon;
     }
 
@@ -308,9 +369,24 @@ public sealed class OnslaughtControlPoint
             self.Solid = Solid.BBox;           // QC SOLID_BBOX once built
             self.Think = IconThink;
 
+            // QC ons_ControlPoint_Icon_BuildThink (sv_onslaught.qc:574): the "control point built" sound.
+            if (Api.Services is not null)
+                SoundSystem.PlayOn(self, Sounds.ByName("ONS_CONTROLPOINT_BUILT"));
+
             // QC: cp.iscaptured = true; capture credit to ons_toucher (SCORE +10 + ONS_CAPS); onslaught_updatelinks.
             Player? toucher = ControlPointBuilder(cpId);
             _ons.CaptureControlPoint(cpId, self.GtHomeTeam, toucher);
+
+            // QC ons_ControlPoint_Icon_BuildThink (sv_onslaught.qc:584-600): the capture notification. The port's
+            // control point carries no map .message (CP name), so emit the NONAME variants (faithful when message=="").
+            if (toucher is not null)
+            {
+                int t = self.GtHomeTeam;
+                Onslaught.Notify(NotifBroadcast.All, MsgType.Info, "ONSLAUGHT_CAPTURE_NONAME", toucher.NetName);
+                NotificationSystem.Send(NotifBroadcast.AllExcept, toucher, MsgType.Center,
+                    $"ONS_CAPTURE_TEAM_NONAME_{Onslaught.TeamSuffix(t)}");
+                NotificationSystem.Send(NotifBroadcast.One, toucher, MsgType.Center, "ONS_CAPTURE_NONAME");
+            }
         }
     }
 
@@ -346,18 +422,44 @@ public sealed class OnslaughtControlPoint
 
         // QC: this is protected by a shield → ignore the damage (only the blocked-by-shield hint plays).
         if (node is not null && node.Shielded)
+        {
+            // QC ons_ControlPoint_Icon_Damage (sv_onslaught.qc:369-381): play the blocked-by-shield hint to the
+            // attacker (debounced by pain_finished).
+            if (attacker is Player blocked && Now > self.GtPainFinished)
+            {
+                if (Api.Services is not null)
+                    SoundSystem.PlayOn(blocked, Sounds.ByName("ONS_DAMAGEBLOCKEDBYSHIELD"));
+                self.GtPainFinished = Now + 1f;
+            }
             return;
+        }
 
         self.GtObjHealth -= damage;
         self.GtPainFinished = Now + 1f;
 
+        // QC ons_ControlPoint_Icon_Damage (sv_onslaught.qc:399-402): a hit sound on every hit (random 1/2).
+        if (Api.Services is not null)
+            SoundSystem.PlayOn(self, Sounds.ByName(
+                    XonoticGodot.Common.Math.Prandom.Float() < 0.5f ? "ONS_HIT1" : "ONS_HIT2"),
+                SoundLevels.VolBase + 0.3f, SoundLevels.AttenNorm);
+
         if (self.GtObjHealth <= 0f)
         {
+            // QC ons_ControlPoint_Icon_Damage (sv_onslaught.qc:406): the destroy/explode sound.
+            if (Api.Services is not null)
+                SoundSystem.PlayOn(self, Sounds.ByName("ONS_GENERATOR_EXPLODE"));
+
             // QC: award the destroyer (unless self-inflicted), then reset the owner point to neutral.
             if (attacker is Player by && !ReferenceEquals(attacker, self))
             {
                 AddCol(by, "ONS_TAKES", 1); // QC GameRules_scoring_add(attacker, ONS_TAKES, 1)
                 by.ScoreFrags += 10;        // QC GameRules_scoring_add(attacker, SCORE, 10)
+
+                // QC ons_ControlPoint_Icon_Damage (sv_onslaught.qc:431-434): the CP-destroyed info notify. The
+                // port's CP has no map .message, so use the NONAME (by-attacker) variant.
+                int destroyedTeam = node?.Team ?? Teams.None;
+                Onslaught.Notify(NotifBroadcast.All, MsgType.Info,
+                    $"ONSLAUGHT_CPDESTROYED_NONAME_{Onslaught.TeamSuffix(destroyedTeam)}", by.NetName);
             }
 
             // QC: owner.goalentity = NULL; islinked = iscaptured = false; team = 0; onslaught_updatelinks().
@@ -393,6 +495,26 @@ public sealed class OnslaughtControlPoint
         return true;
     }
 
+    /// <summary>
+    /// QC ons_GeneratorHeal (sv_onslaught.qc:1005): heal a generator's RES_HEALTH toward its limit (a friendly
+    /// Arc beam / mage / bumblebee healgun, dispatched via <see cref="Combat.Heal"/>). Mirrors the topped-up
+    /// health onto BOTH the entity (GtObjHealth) and the graph <see cref="Onslaught.GeneratorState"/> so the
+    /// damage gate stays coherent. Returns true if any health was added. No-op once destroyed or full.
+    /// </summary>
+    public bool GeneratorHeal(int team, Entity gen, float amount, float limit = 0f)
+    {
+        // QC: true_limit = (limit != RES_LIMIT_NONE) ? limit : max_health. The port passes 0/Resources.LimitNone
+        // for "uncapped" → fall back to max_health, matching QC.
+        float trueLimit = limit > 0f ? limit : gen.GtObjMaxHealth;
+        if (gen.GtObjHealth <= 0f || gen.GtObjHealth >= trueLimit)
+            return false;
+        gen.GtObjHealth = MathF.Min(gen.GtObjHealth + amount, trueLimit);
+        Onslaught.GeneratorState? state = _ons.GeneratorFor(team);
+        if (state is not null)
+            state.Health = gen.GtObjHealth; // keep the graph source-of-truth in sync with the entity
+        return true;
+    }
+
     // ============================================================================================
     //  Overtime generator-decay (QC the stalemate branch of Onslaught_CheckWinner :1172)
     // ============================================================================================
@@ -407,6 +529,15 @@ public sealed class OnslaughtControlPoint
     /// </summary>
     public void OvertimeDecayTick()
     {
+        // QC Onslaught_CheckWinner overtime entry (sv_onslaught.qc:1178-1181): the FIRST tick after entering
+        // overtime center-prints OVERTIME_CONTROLPOINT to all + plays the generator-decay alarm once (the
+        // ons_stalemate edge). OvertimeAnnounced latches it so it fires exactly once per overtime spell.
+        if (!OvertimeAnnounced)
+        {
+            Onslaught.Notify(NotifBroadcast.All, MsgType.Center, "OVERTIME_CONTROLPOINT");
+            if (Api.Services is not null)
+                SoundSystem.PlayGlobal(Sounds.ByName("ONS_GENERATOR_DECAY"));
+        }
         OvertimeAnnounced = true;
         float window = MathF.Max(30f, 60f * GametypeEntities.Cvar(CvarSuddenDeath, DefSuddenDeath));
 

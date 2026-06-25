@@ -36,6 +36,16 @@ public static class SpriteRule
     public const int Spectator = 2;   // only spectators (item respawn timers etc.)
 }
 
+/// <summary>QC's three deployed-waypoint owner-fields (<c>.waypointsprite_deployed_personal/_deployed_fixed/_attached</c>):
+/// which slot a player-deployed waypoint occupies, so <c>waypoint_clear[_personal]</c> can scope its removal.</summary>
+public enum DeployKind
+{
+    None = 0,     // an objective marker, not player-deployed
+    Personal,     // waypointsprite_deployed_personal (only the owner sees it)
+    Fixed,        // waypointsprite_deployed_fixed (here/danger pings)
+    Attached,     // waypointsprite_attached (HELP ME, follows the owner)
+}
+
 /// <summary>The full WP_* registry (the subset the port wires; extend freely — adding a def is one line).</summary>
 public static class WaypointRegistry
 {
@@ -197,6 +207,11 @@ public sealed class WaypointSprite
     public bool Dead;                     // marked for removal (lifetime expired / killed)
     public float DeadAt;                  // sim time when fade-out completes → drop
 
+    /// <summary>The player who deployed this waypoint (QC <c>.owner</c>), for clear-by-owner; null for objectives.</summary>
+    public Player? DeployedBy;
+    /// <summary>Which QC owner-field this occupies (personal/fixed/attached), so <c>waypoint_clear</c> can scope it.</summary>
+    public DeployKind Kind = DeployKind.None;
+
     /// <summary>Optional per-waypoint visibility predicate (owner, viewer-player) → visible. Null = rule-based.</summary>
     public System.Func<Player?, bool>? VisibleForPlayer;
 
@@ -285,6 +300,86 @@ public static class WaypointSprites
     public static WaypointSprite AttachCarrier(string spriteName, Entity carrier, int team, Vector3 color,
         int radarIcon = 1, int rule = SpriteRule.Default)
         => Spawn(spriteName, 0f, 0f, carrier, new Vector3(0f, 0f, 64f), default, team, color, radarIcon, rule);
+
+    // ---- player-deployed pings (QC server/impulse.qc → waypointsprites.qc Deploy*) ---------------------
+
+    private static float DeployedLifetime => GametypeEntities.Cvar("sv_waypointsprite_deployed_lifetime", 10f);
+    private static float DeployedDeadLifetime => GametypeEntities.Cvar("sv_waypointsprite_deadlifetime", 1f);
+    private static float LimitedRange => GametypeEntities.Cvar("sv_waypointsprite_limitedrange", 5120f);
+
+    /// <summary>QC <c>WaypointSprite_DeployFixed</c> (waypointsprites.qc:1105): a stationary HERE/DANGER ping at
+    /// <paramref name="origin"/> with the deployed lifetime; team = the player's team in teamplay (the caller
+    /// passes <paramref name="team"/>, already resolved), else 0 (everyone). Only one fixed ping per player —
+    /// a new one replaces the old (QC owns it via <c>.waypointsprite_deployed_fixed</c>).</summary>
+    public static WaypointSprite DeployFixed(string spriteName, bool limitedRange, Player player, Vector3 origin,
+        int team, Vector3 color, int radarIcon = 1)
+    {
+        ClearKind(player, DeployKind.Fixed);
+        float maxdist = limitedRange ? LimitedRange : 0f;
+        WaypointSprite wp = Spawn(spriteName, DeployedLifetime, maxdist, null, default, origin, team, color, radarIcon);
+        wp.FadeTime = DeployedDeadLifetime;
+        wp.DeployedBy = player;
+        wp.Kind = DeployKind.Fixed;
+        return wp;
+    }
+
+    /// <summary>QC <c>WaypointSprite_DeployPersonal</c> (waypointsprites.qc:1126): a personal waypoint at
+    /// <paramref name="origin"/> visible ONLY to the deploying player (QC <c>showto = own</c>), never fading
+    /// (lifetime 0). Replaces the player's previous personal waypoint.</summary>
+    public static WaypointSprite DeployPersonal(string spriteName, Player player, Vector3 origin,
+        int radarIcon = 1)
+    {
+        ClearKind(player, DeployKind.Personal);
+        WaypointSprite wp = Spawn(spriteName, 0f, 0f, null, default, origin, 0, new Vector3(1f, 1f, 1f), radarIcon);
+        wp.DeployedBy = player;
+        wp.Kind = DeployKind.Personal;
+        // QC showto = own → visible only to the owner.
+        wp.VisibleForPlayer = viewer => ReferenceEquals(viewer, player);
+        return wp;
+    }
+
+    /// <summary>QC <c>WaypointSprite_Attach</c> (waypointsprites.qc:1136): a HELP-ME marker that follows the
+    /// player at the head offset for the deployed lifetime; team = the player's team in teamplay. Refused if a
+    /// flag/key carrier marker already rides the player (QC the <c>waypointsprite_attachedforcarrier</c> guard),
+    /// in which case the existing carrier marker's helpme flash is pinged instead. Returns null when refused.</summary>
+    public static WaypointSprite? Attach(string spriteName, Player player, bool limitedRange, int team,
+        Vector3 color, int radarIcon = 1)
+    {
+        // QC: can't attach to a flag/key carrier — find an existing carrier marker on this player and ping it.
+        foreach (WaypointSprite e in _active)
+            if (ReferenceEquals(e.Owner, player) && e.Kind == DeployKind.None)
+            {
+                HelpMePing(e, DeployedLifetime);
+                return null;
+            }
+        ClearKind(player, DeployKind.Attached);
+        float maxdist = limitedRange ? LimitedRange : 0f;
+        WaypointSprite wp = Spawn(spriteName, DeployedLifetime, maxdist, player, new Vector3(0f, 0f, 64f),
+            default, team, color, radarIcon);
+        wp.FadeTime = DeployedDeadLifetime;
+        wp.DeployedBy = player;
+        wp.Kind = DeployKind.Attached;
+        HelpMePing(wp, DeployedLifetime);
+        return wp;
+    }
+
+    /// <summary>QC <c>WaypointSprite_ClearPersonal</c>: remove the player's personal waypoint only.</summary>
+    public static void ClearPersonal(Player player) => ClearKind(player, DeployKind.Personal);
+
+    /// <summary>QC <c>WaypointSprite_ClearOwned</c>: remove every waypoint the player deployed (personal + here/danger + helpme).</summary>
+    public static void ClearOwned(Player player)
+    {
+        for (int i = _active.Count - 1; i >= 0; i--)
+            if (ReferenceEquals(_active[i].DeployedBy, player))
+                _active.RemoveAt(i);
+    }
+
+    private static void ClearKind(Player player, DeployKind kind)
+    {
+        for (int i = _active.Count - 1; i >= 0; i--)
+            if (_active[i].Kind == kind && ReferenceEquals(_active[i].DeployedBy, player))
+                _active.RemoveAt(i);
+    }
 
     // ---- update ---------------------------------------------------------------------------------------
 

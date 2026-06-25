@@ -103,7 +103,48 @@ public sealed class Race : GameType
 
         /// <summary>QC <c>race_lastpenalty</c>: the penalty entity last triggered (so a zone only fires once per pass).</summary>
         public Entity? LastPenalty;
+
+        // ---- per-checkpoint split state (QC race_SendTime client feed: server/race.qc:485) ----
+
+        /// <summary>QC <c>race_checkpoint</c> feed: the checkpoint index this racer most recently crossed
+        /// (0/finish = 255 on the wire, see <see cref="HudCheckpoint"/>). -1 = none crossed yet this lap.</summary>
+        public int LastCrossedCheckpoint = -1;
+
+        /// <summary>QC the absolute sim time of the most recent checkpoint crossing (drives the HUD split fade,
+        /// <c>race_checkpointtime</c>). 0 = none.</summary>
+        public float LastCheckpointTime;
+
+        /// <summary>QC <c>race_time</c>: the racer's split (seconds since lap start) at the last checkpoint.</summary>
+        public float LastSplit;
+
+        /// <summary>QC <c>race_timespeed</c>: the racer's planar speed (qu/s) when it crossed the last checkpoint.</summary>
+        public float LastCheckpointSpeed;
+
+        /// <summary>QC <c>e.race_checkpoint_record[cp]</c>: this racer's personal-best split (seconds) per checkpoint
+        /// index (sparse; 0 = none). Used for the HUD "my previous best" anticipation line.</summary>
+        public readonly Dictionary<int, float> PersonalCheckpointRecords = new();
     }
+
+    // ---- per-map / per-run checkpoint records (QC race_checkpoint_records[cp] et al, server/race.qc) ----
+
+    /// <summary>QC <c>race_checkpoint_records[cp]</c>: the best split (seconds) any racer has reached checkpoint
+    /// <c>cp</c> in this match (sparse; 0 = none). Drives the HUD "previous best" / anticipation deltas.</summary>
+    private readonly Dictionary<int, float> _checkpointRecords = new();
+
+    /// <summary>QC <c>race_checkpoint_recordspeeds[cp]</c>: the planar speed (qu/s) of the record-holding crossing.</summary>
+    private readonly Dictionary<int, float> _checkpointRecordSpeeds = new();
+
+    /// <summary>QC <c>race_checkpoint_recordholders[cp]</c>: the net name of the racer who set the record split.</summary>
+    private readonly Dictionary<int, string> _checkpointRecordHolders = new();
+
+    /// <summary>The best recorded split (seconds) to checkpoint <paramref name="cp"/> this match, 0 if none.</summary>
+    public float CheckpointRecord(int cp) => _checkpointRecords.TryGetValue(cp, out float v) ? v : 0f;
+
+    /// <summary>The speed (qu/s) of the record-holding crossing at checkpoint <paramref name="cp"/>, 0 if none.</summary>
+    public float CheckpointRecordSpeed(int cp) => _checkpointRecordSpeeds.TryGetValue(cp, out float v) ? v : 0f;
+
+    /// <summary>The net name of the racer holding the split record at checkpoint <paramref name="cp"/> ("" if none).</summary>
+    public string CheckpointRecordHolder(int cp) => _checkpointRecordHolders.TryGetValue(cp, out string? v) ? v : "";
 
     private readonly Dictionary<Player, RaceState> _states = new();
 
@@ -156,6 +197,10 @@ public sealed class Race : GameType
     public RaceRecordResult LastRecord { get; private set; }
     public Player? LastRecordPlayer { get; private set; }
 
+    /// <summary>Absolute sim time of the most recent finish-time record attempt (QC the race_SendStatus event
+    /// time; the HUD medal flash fades over this + 5s). 0 = none yet. Lets the client raise the medal once.</summary>
+    public float LastRecordTime { get; private set; }
+
     // Pending finish-retracts: racer -> absolute sim time at which to send them back to start (kill delay).
     private readonly Dictionary<Player, float> _retractAt = new();
 
@@ -180,6 +225,10 @@ public sealed class Race : GameType
         PenaltyZones.Clear();
         _punishWrongWay.Clear();
         HighestCheckpoint = 0;
+        // QC race_ClearRecords: a fresh map has no checkpoint split records yet.
+        _checkpointRecords.Clear();
+        _checkpointRecordSpeeds.Clear();
+        _checkpointRecordHolders.Clear();
     }
 
     /// <summary>
@@ -372,6 +421,13 @@ public sealed class Race : GameType
         RaceState st = GetState(p);
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
 
+        // QC race_SendTime (server/race.qc:485): every crossing — intermediate OR finish — files a split for the
+        // HUD race timer / checkpoints panel. The split is the elapsed lap time at this checkpoint (race_time);
+        // we stamp it (+ the racer's planar speed) and fold it into the per-checkpoint record store so the client
+        // can render the "Checkpoint N (+/-delta vs record)" line and the anticipation delta. A valid split needs
+        // a started lap (LapStartTime > 0); the very first start-line crossing only opens the clock (no split).
+        RecordCheckpointSplit(p, st, checkpointIndex, now);
+
         if (isFinishLine)
         {
             // Close the lap: a lap time exists only once we've crossed the line at least once before.
@@ -429,6 +485,50 @@ public sealed class Race : GameType
             // the highest checkpoint so the racer must cross the finish to close the lap.
             st.NextCheckpoint = checkpointIndex >= HighestCheckpoint ? 0 : checkpointIndex + 1;
         }
+    }
+
+    /// <summary>
+    /// QC <c>race_SendTime</c> (server/race.qc:485) checkpoint-split half: stamp the racer's split (lap-elapsed
+    /// time) + planar speed at <paramref name="checkpointIndex"/>, and fold it into both the per-match record
+    /// (<see cref="_checkpointRecords"/>, QC <c>race_checkpoint_records[cp]</c>) and this racer's personal-best
+    /// (<see cref="RaceState.PersonalCheckpointRecords"/>, QC <c>e.race_checkpoint_record[cp]</c>). Lower is
+    /// better. The HUD race-timer / checkpoints panels read these via <see cref="GetState"/> + the record getters.
+    /// A split is only meaningful once the lap clock has started (the first start-line crossing just opens it).
+    /// </summary>
+    private void RecordCheckpointSplit(Player p, RaceState st, int checkpointIndex, float now)
+    {
+        // No started lap yet ⇒ no split (the opening start-line crossing only stamps LapStartTime below).
+        if (st.LapStartTime <= 0f)
+            return;
+
+        float split = now - st.LapStartTime;        // QC race_time: lap-elapsed at this checkpoint
+        if (Qualifying)
+            split += st.PenaltyAccumulator;         // QC race_SendTime: qualifying adds the penalty accumulator
+        if (split <= 0f)
+            return;
+
+        // QC vlen(vec2(e.velocity)): the racer's PLANAR speed when crossing (qu/s).
+        var v = p.Velocity;
+        float speed = System.MathF.Sqrt(v.X * v.X + v.Y * v.Y);
+
+        st.LastCrossedCheckpoint = checkpointIndex;
+        st.LastCheckpointTime = now;
+        st.LastSplit = split;
+        st.LastCheckpointSpeed = speed;
+
+        // QC: per-checkpoint MATCH record (race_checkpoint_records[cp]) — keep the lowest split + its speed/holder.
+        float rec = CheckpointRecord(checkpointIndex);
+        if (rec <= 0f || split < rec)
+        {
+            _checkpointRecords[checkpointIndex] = split;
+            _checkpointRecordSpeeds[checkpointIndex] = speed;
+            _checkpointRecordHolders[checkpointIndex] = p.NetName;
+        }
+
+        // QC: per-racer PERSONAL best (e.race_checkpoint_record[cp]).
+        float prec = st.PersonalCheckpointRecords.TryGetValue(checkpointIndex, out float pv) ? pv : 0f;
+        if (prec <= 0f || split < prec)
+            st.PersonalCheckpointRecords[checkpointIndex] = split;
     }
 
     /// <summary>
@@ -504,6 +604,7 @@ public sealed class Race : GameType
         RaceRecordResult r = RaceRecords.SetTime(MapName, RecordType, time, uid, p.NetName);
         LastRecord = r;
         LastRecordPlayer = p;
+        LastRecordTime = Api.Services is not null ? Api.Clock.Time : 0f;
         SendRecordNotification(p, time, uid, r);
     }
 

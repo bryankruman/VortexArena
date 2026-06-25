@@ -37,7 +37,8 @@ namespace XonoticGodot.Common.Gameplay;
 ///    and the post-revive spawn shield (g_freezetag_revive_spawnshield);
 ///  - round warmup/countdown timing via the shared <see cref="RoundHandler"/> (QC round_handler_Spawn with
 ///    freezetag_CheckTeams / freezetag_CheckWinner), driven by <see cref="Tick"/>;
-///  - FT's start-loadout (<see cref="ApplyStartItems"/>, QC g_ft_start_health/armor 100/100 + ammo).
+///  - FT's start-loadout (<see cref="OnSetStartItems"/> via the live SetStartItems hook, QC g_ft_start_health/
+///    armor 100/100 + ammo).
 ///
 /// Deferred (NOTE — cross-boundary): the ice entity model + waypoint visuals (CSQC), and bot freeing roles.
 /// </summary>
@@ -127,6 +128,7 @@ public sealed class FreezeTag : GameType
     public int LeaderTeam { get; private set; }
 
     private HookHandler<DeathEvent>? _deathHandler;
+    private HookHandler<MutatorHooks.SetStartItemsArgs>? _startItemsHandler;
 
     public FreezeTag()
     {
@@ -139,7 +141,7 @@ public sealed class FreezeTag : GameType
     {
         // QC: GameRules_teams(true) + round_handler_Spawn(freezetag_CheckTeams, freezetag_CheckWinner) +
         // EliminatedPlayers_Init(freezetag_isEliminated). The round handler is created in Activate (needs the
-        // roster); start-items are applied per spawn via ApplyStartItems.
+        // roster); start-items are applied per spawn via the live SetStartItems hook (OnSetStartItems).
     }
 
     /// <summary>
@@ -203,6 +205,11 @@ public sealed class FreezeTag : GameType
 
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ft, SetStartItems): the FT spawn loadout — g_ft_start_health/armor (100/100) +
+        // full ammo (60/320/160/180/0). SpawnSystem.ComputeStartItems fires this live (the readplayerstartcvars seam).
+        _startItemsHandler = OnSetStartItems;
+        MutatorHooks.SetStartItems.Add(_startItemsHandler);
     }
 
     /// <summary>
@@ -217,6 +224,7 @@ public sealed class FreezeTag : GameType
             return;
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
+        if (_startItemsHandler is not null) { MutatorHooks.SetStartItems.Remove(_startItemsHandler); _startItemsHandler = null; }
     }
 
     public int AssignTeam(Player joiner, IReadOnlyList<Player> roster)
@@ -283,6 +291,19 @@ public sealed class FreezeTag : GameType
             targ.ScoreFrags -= 1;
         }
         // QC else: NULL / non-player attacker — got frozen by the gametype rules themselves → NO score change.
+
+        // QC PlayerDies (sv_freezetag.qc:516-525): announce the freeze. Self/NULL freeze → CENTER_FREEZETAG_SELF to
+        // the victim + INFO_FREEZETAG_SELF to all; an enemy/teammate freeze → INFO_FREEZETAG_FREEZE to all
+        // (kill-feed "X was frozen by Y").
+        if (ReferenceEquals(attacker, targ) || attacker is null)
+        {
+            NotificationSystem.Send(NotifBroadcast.One, targ, MsgType.Center, "FREEZETAG_SELF");
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "FREEZETAG_SELF", targ.NetName);
+        }
+        else
+        {
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "FREEZETAG_FREEZE", targ.NetName, attacker.NetName);
+        }
     }
 
     /// <summary>
@@ -462,12 +483,21 @@ public sealed class FreezeTag : GameType
 
             if (st.ReviveProgress >= 1f)
             {
+                // QC: frozen_time = time - freezetag_frozen_time, captured before Unfreeze resets the timer.
+                float frozenTime = System.MathF.Round(now - st.FrozenTime);
                 Unfreeze(frozen, spawnShield);
                 thawed++;
                 // QC: an auto-revive (n == -1) credits nobody; a manual revive credits EVERY nearby reviver with
                 // FREEZETAG_REVIVALS +1 (and, with t2s OFF, SCORE +1 — t2s ON already scored via the accrual).
-                if (n > 0)
+                if (n == -1)
                 {
+                    // QC sv_freezetag.qc:835-836: an auto-thaw of last resort — center to the player + info to all.
+                    NotificationSystem.Send(NotifBroadcast.One, frozen, MsgType.Center, "FREEZETAG_AUTO_REVIVED", frozenTime);
+                    NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "FREEZETAG_AUTO_REVIVED", frozen.NetName, frozenTime);
+                }
+                else if (n > 0)
+                {
+                    Player? firstReviver = null;
                     for (int j = 0; j < _roster.Count; j++)
                     {
                         Player it = _roster[j];
@@ -475,10 +505,19 @@ public sealed class FreezeTag : GameType
                             continue;
                         if (Teams.SameTeam(it, frozen) && InRevivingRange(frozen, it, extra))
                         {
+                            firstReviver ??= it;
                             AddRevival(it);
                             if (!t2s)
                                 it.ScoreFrags += 1;
                         }
+                    }
+                    // QC sv_freezetag.qc:849-851: center to the revived player (named by the first reviver), center to
+                    // the first reviver (named by the revived), and a kill-feed info line to all.
+                    if (firstReviver is not null)
+                    {
+                        NotificationSystem.Send(NotifBroadcast.One, frozen, MsgType.Center, "FREEZETAG_REVIVED", firstReviver.NetName);
+                        NotificationSystem.Send(NotifBroadcast.One, firstReviver, MsgType.Center, "FREEZETAG_REVIVE", frozen.NetName);
+                        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "FREEZETAG_REVIVED", frozen.NetName, firstReviver.NetName);
                     }
                 }
             }
@@ -513,20 +552,61 @@ public sealed class FreezeTag : GameType
     }
 
     /// <summary>
-    /// QC PutPlayerInServer FT branch: give the round's start loadout — g_ft_start_health/armor (100/100) and
-    /// full ammo. Called by the host when (re)spawning a player into an FT round.
+    /// QC freezetag_Freeze (WaypointSprite_Spawn WP_Frozen at '0 0 64', owner = the frozen player) + PlayerPreThink
+    /// (WaypointSprite_UpdateSprites swap to WP_Reviving + UpdateHealth(REVIVE_PROGRESS)): one overhead/radar sprite
+    /// per frozen player, following them, with a thaw-progress health bar. The sprite reads "Frozen!" (icy-blue),
+    /// switching to "Reviving" (orange) once thaw progress has started — the proxy for QC's n&gt;0 reviving state.
+    /// Rebuilt each tick like CTF's flag sprites; shipped via ServerNet.SendWaypoints (GameType.CollectWaypoints).
     /// </summary>
-    public void ApplyStartItems(Player p)
+    public override void CollectWaypoints(System.Collections.Generic.List<Waypoints.WaypointSprite> into)
     {
-        float h = StartHealth;
-        p.MaxHealth = h;
-        p.SetResource(ResourceType.Health, h);
-        p.SetResource(ResourceType.Armor, StartArmor);
-        p.SetResource(ResourceType.Shells,  TryCvar("g_ft_start_ammo_shells", out float s) ? s : 60f);
-        p.SetResource(ResourceType.Bullets, TryCvar("g_ft_start_ammo_nails", out float n) ? n : 320f);
-        p.SetResource(ResourceType.Rockets, TryCvar("g_ft_start_ammo_rockets", out float r) ? r : 160f);
-        p.SetResource(ResourceType.Cells,   TryCvar("g_ft_start_ammo_cells", out float c) ? c : 180f);
-        p.SetResource(ResourceType.Fuel,    TryCvar("g_ft_start_ammo_fuel", out float f) ? f : 0f);
+        for (int i = 0; i < _roster.Count; i++)
+        {
+            Player p = _roster[i];
+            if (!Frozen.TryGetValue(p, out var st) || !st.IsFrozen || p.IsDead)
+                continue;
+            int team = (int)p.Team;
+            bool reviving = st.ReviveProgress > 0f; // QC WP_Reviving once thaw progress is accruing
+            into.Add(new Waypoints.WaypointSprite
+            {
+                // QC WaypointSprite_Spawn(WP_Frozen, ..., '0 0 64', NULL, targ.team, targ, ...): owner = the frozen
+                // player so it follows them; offset 64 qu above the origin; radar tinted by the sprite color.
+                SpriteName = reviving ? "Reviving" : "Frozen",
+                Owner = p,
+                Offset = new Vector3(0f, 0f, 64f),
+                Team = team,
+                Color = reviving ? new Vector3(1f, 0.5f, 0f) : new Vector3(0.25f, 0.9f, 1f), // WP_REVIVING/FROZEN_COLOR
+                RadarIcon = 1,
+                // QC UpdateMaxHealth(1) + UpdateHealth(REVIVE_PROGRESS): the thaw-progress bar (0..1, pre-normalized).
+                Health = System.Math.Clamp(st.ReviveProgress, 0f, 1f),
+                MaxHealth = 1f,
+            });
+        }
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ft, SetStartItems)</c> (sv_freezetag.qc:912): the FT spawn loadout —
+    /// g_ft_start_health/armor (100/100) + full ammo (60/320/160/180/0). Strips the unlimited flags, then
+    /// grants unlimited ammo when g_use_ammunition is off (QC <c>if(!cvar("g_use_ammunition")) start_items |=
+    /// IT_UNLIMITED_AMMO</c>). SpawnSystem.ComputeStartItems fires this live (the readplayerstartcvars seam).
+    /// </summary>
+    private bool OnSetStartItems(ref MutatorHooks.SetStartItemsArgs args)
+    {
+        StartLoadout l = args.Loadout;
+        l.ItemFlags.Remove("UNLIMITED_AMMO");
+        l.ItemFlags.Remove("UNLIMITED_SUPERWEAPONS");
+        float useAmmunition = TryCvar("g_use_ammunition", out float use) ? use : 1f; // QC default 1 (consume ammo)
+        if (useAmmunition == 0f)
+            l.ItemFlags.Add("UNLIMITED_AMMO");
+
+        l.Health      = StartHealth;
+        l.Armor       = StartArmor;
+        l.AmmoShells  = TryCvar("g_ft_start_ammo_shells", out float s) ? s : 60f;
+        l.AmmoBullets = TryCvar("g_ft_start_ammo_nails", out float n) ? n : 320f;
+        l.AmmoRockets = TryCvar("g_ft_start_ammo_rockets", out float r) ? r : 160f;
+        l.AmmoCells   = TryCvar("g_ft_start_ammo_cells", out float c) ? c : 180f;
+        l.AmmoFuel    = TryCvar("g_ft_start_ammo_fuel", out float f) ? f : 0f;
+        return false;
     }
 
     /// <summary>

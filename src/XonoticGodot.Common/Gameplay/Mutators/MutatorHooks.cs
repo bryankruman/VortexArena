@@ -409,6 +409,36 @@ public static class MutatorHooks
     public static readonly HookChain<FilterItemDefinitionArgs> FilterItemDefinition = new();
 
     /// <summary>
+    /// EV_ItemTouch (server/mutators/events.qh) — fired from QC <c>Item_Touch</c> (server/items/items.qc:706),
+    /// AFTER the touch gate (FL_PICKUPITEMS / alive / SOLID_TRIGGER / owner / spawnshield) and BEFORE the
+    /// expiring-timer adjust + give, so a handler can react to a player about to collect a world item while the
+    /// item still carries its raw powerup timers (<see cref="Entity.StrengthFinished"/> /
+    /// <see cref="Entity.InvincibleFinished"/>). Slot0 the item entity, slot1 the toucher (the picking player).
+    /// QC returns a <c>MUT_ITEMTOUCH_*</c> code (CONTINUE/RETURN/PICKUP); the only stock subscriber (superspec)
+    /// always returns CONTINUE (never blocks the pickup), so the port models this as a notify-style chain (the
+    /// bool return is ignored by the item path).
+    /// </summary>
+    public struct ItemTouchArgs
+    {
+        public readonly Entity Item;      // MUTATOR_ARGV_0_entity
+        public readonly Entity Toucher;   // MUTATOR_ARGV_1_entity
+        public ItemTouchArgs(Entity item, Entity toucher) { Item = item; Toucher = toucher; }
+    }
+    public static readonly HookChain<ItemTouchArgs> ItemTouch = new();
+
+    /// <summary>
+    /// Fire <see cref="ItemTouch"/> for a player collecting a world item (QC <c>MUTATOR_CALLHOOK(ItemTouch,
+    /// this, toucher)</c>). The item-pickup owner (<c>ItemPickupRules.ItemTouch</c>) calls this stable entry
+    /// point at the same point in the gate the QC switch sits. The stock subscriber (superspec) never blocks
+    /// the pickup, so the return is informational only.
+    /// </summary>
+    public static bool FireItemTouch(Entity item, Entity toucher)
+    {
+        var a = new ItemTouchArgs(item, toucher);
+        return ItemTouch.Call(ref a);
+    }
+
+    /// <summary>
     /// EV_EditProjectile — lets mutators edit a just-fired projectile. Slot0 owner, slot1 projectile.
     /// (invincibleproj zeroes the projectile's health; rocketflying clears detonate delays.)
     /// </summary>

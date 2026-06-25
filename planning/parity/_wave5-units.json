@@ -1,0 +1,557 @@
+[
+{
+"unit": "mutator-nades",
+"notes": [
+"[DEAD] mutator-nades.throw.input_wire \u2014 Throw input (offhand +hook release / weapon_drop double-press): InputCommand.InputButtons (InputCommand.cs:11) has no nade/offhand/hook/weapon_drop bit (only Attack/Jump/Attack2/Zoom/Crouch/Use). Entity.OffhandFirePressed is assigned NOWHERE in src/ (verified by grep: only read by HookMutator/OffhandBlasterMutator/NadesMutator). NadeAltButton is set only inside ",
+"[DEAD] mutator-nades.prime.select \u2014 nade_prime: type selection (strength / bonus / client-select / cvar): g_nades_client_select / g_nades_bonus_client_select not honoured: the port always uses the server g_nades_nade_type / g_nades_bonus_type, never per-client cl_nade_type/cl_pokenade_type (the headless sim has no per-client cvar plumbed). PlayerSpawn's bonus_client_select bonus-type set is also omitted",
+"[DEAD] mutator-nades.throw.charge_force \u2014 Charge-throw force ramp + spread cone: Unreachable (dead throw input).",
+"[DEAD] mutator-nades.toss.projectile \u2014 toss_nade: launch physics (size, newton-style, health, fuse): Newton-style 0 is implemented as pure absolute _velocity rather than W_CalculateProjectileVelocity(e, e.velocity, _velocity, true); for non-default g_projectiles_newton_style this diverges from Base's velocity blending (style 0 is the shipped default, so identical at defaults).; Unreachable (dead th",
+"[DEAD] mutator-nades.touch.bounce_pickup_detonate \u2014 nade_touch: owner pass-through, pickup, bounce, impact detonate: ITEM_TOUCH_NEEDKILL (lava/void/nodraw content) delete branch is omitted (content-trace engine concern); a nade in a kill volume is not destroyed-to-normal-boom.; Bounce plays a single weapons/grenade_bounce1.wav; Base spamsound SND_GRENADE_BOUNCE_RANDOM picks randomly from a set.; Unreachable (dead ",
+"[DEAD] mutator-nades.damage.launch_destroy \u2014 nade_damage: shoot-to-launch / shoot-to-destroy interactions: The melee-slap branch (force*10, damage=max_health*0.1 for weapons flagged WEP_TYPE_MELEE_PRI / WEP_TYPE_MELEE_SEC) is omitted \u2014 the port's switch covers only blaster/vortex/mg/shotgun.; The Nade_Damage MUTATOR_CALLHOOK (overkill/custom damage adjust) is not invoked.; Blaster pure-force launch (dama",
+"[DEAD] mutator-nades.boom.dispatch \u2014 nade_boom: type dispatch + destroyed->normal fallback: The colored explosion particle (Send_Effect_Except with per-type EFFECT + player-color min/max via findbetterlocation) is omitted (render-only).; Base plays SND_Null on CH_SHOTS_SINGLE + SND_ROCKET_IMPACT on CH_SHOTS; the port plays only weapons/rocket_impact.wav.; Unreachable (dead throw input).",
+"[DEAD] mutator-nades.boom.normal \u2014 Normal nade explosion (RadiusDamage): Unreachable (dead throw input). DamageInfo (Damage_DamageInfo) network record omitted (render-only).",
+"[DEAD] mutator-nades.boom.napalm \u2014 Napalm: fireballs + fountain fire damage: g_nades_napalm_ball_damageforcescale (4) is not applied: napalm is modeled as the Burning status effect with no knockback, so the fireball/fountain damage-force push (QC proj.damageforcescale) is missing.; Water-contents velocity damping (pointcontents CONTENT_WATER -> velocity*0.5 / z=200) and the ",
+"[DEAD] mutator-nades.boom.ice \u2014 Ice: freeze field: The recently-revived skip (revival_time, time-revival_time < 1.5s) is omitted, so a just-unfrozen player can be immediately re-frozen (confirmed ice.qc:59).; The round-not-started delete guard is omitted (relevant only in CA/round modes). The muzzleflash/icefield particle gate omitted (render).; Unr",
+"[DEAD] mutator-nades.boom.translocate \u2014 Translocate: teleport thrower to detonation: move_out_of_solid is a minimal upward-nudge approximation (no builtin), so embedded-in-solid recovery is less robust than Base's full search.; MUTATOR_CALLHOOK(PortalTeleport) is not fired (no subscribers in port).; Unreachable (dead throw input).",
+"[DEAD] mutator-nades.boom.heal \u2014 Heal: healing orb (friend heal / foe harm / armor): EFFECT_HEALING particle omitted (render). Unreachable (dead throw input).",
+"[DEAD] mutator-nades.boom.ammo \u2014 Ammo: ammo orb (refill friend / drain foe): Per-weapon weapon_load[] persistent store collapsed onto each slot's live ClipLoad (port note). EFFECT_AMMO_REGEN particle omitted. Unreachable (dead throw input).",
+"[DEAD] mutator-nades.boom.entrap_veil_darkness \u2014 Entrap / Veil / Darkness orbs + fields: Entrap MonsterMove run/walk slow is omitted (no MonsterMove hook chain in the port).; Veil tint of enemies (render colormod) omitted; only the teammate alpha-hide is ported. Veil monster-alpha lapse omitted.; Darkness blind overlay (HUD_DarkBlinking full-screen fill) + SND_BLIND are CSQC-only and mi",
+"[DEAD] mutator-nades.boom.monster \u2014 Pokenade: spawn monster: monster_lifetime (150s timed despawn) has no field in the port's monster model \u2014 the summoned monster never auto-despawns.; Unreachable (dead throw input + requires g_monsters).",
+"[DEAD] mutator-nades.damage.freezetag_revive \u2014 Damage_Calculate: freezetag revive-nade: The port suppresses the self-nade damage+force but does NOT call freezetag_Unfreeze / set freezetag_revive_nade_health / send EFFECT_ICEORGLASS + INFO_FREEZETAG_REVIVED_NADE/CENTER_FREEZETAG_REVIVE_SELF notifications (documented cross-task seam \u2014 FreezeTag owns the unfreeze). So the revive-nade does",
+"[DEAD] mutator-nades.presentation.client \u2014 Client presentation: projectile/trail, orb model + 2D flash, darkness overlay, bonus ammo icon, charge ring: No nade projectile model/trail (nade_customize / nade_spawn CSQCProjectile + Nade_TrailEffect), no orb 3D model (orb_draw), no orb 2D full-screen color flash (orb_draw2d / hud_colorflash_alpha), no darkness blind overlay (HUD_DarkBlinking) + SND_BLIND, no spawn-loc EF_STARDUST render.; No DrawAmmoNa"
+]
+},
+{
+"unit": "mutator-dodging",
+"notes": [
+"[DEAD] mutator-dodging.input.double_tap \u2014 Double-tap detection (PM_dodging_checkpressedkeys): ROOT CAUSE UNCHANGED by Wave-2: reads player.MovementForward / player.MovementRight, but those Entity fields are STILL never written anywhere in src/** (verified post-change: zero `MovementForward =` / `MovementRight =` assignments; only reads in Dodging/Multijump/Bugrigs). Live input still flows th",
+"[DEAD] mutator-dodging.input.delay_state_gate \u2014 Delay cooldown + ground/wall/air state gating: The `if (cvar != 0) field = cvar` guards still mean explicitly setting one of the *_threshold/delay cvars to 0 is ignored and the hardcoded fallback used instead. NOTE: MaxSpeed/AirMaxSpeed are still read WITHOUT the !=0 guard (DodgingMutator.cs:117-118), so a 0 there is honoured correctly (= no cap",
+"[DEAD] mutator-dodging.force.scaling \u2014 Speed-to-force scaling (determine_force / map_bound_ranges): Unreachable on the live path (gated behind the dead detector).",
+"[DEAD] mutator-dodging.move.ramp_impulse \u2014 Per-frame ramp + one-shot up-impulse (PM_dodging): Never receives DodgingAction != 0 (the detector that would set it is dead), so the ramp/up-impulse early-returns every frame: no hop, no horizontal lunge ever applied on the live path.",
+"[DEAD] mutator-dodging.audio.jump_sound \u2014 Dodge jump sound (sv_dodging_sound): Never plays because the dodge never triggers (dead path).",
+"[DEAD] mutator-dodging.clientselect.opt_in \u2014 Client opt-in (sv_dodging_clientselect + cl_dodging + REPLICATE): REPLICATE still missing: cl_dodging / cl_dodging_timeout are NOT replicated client\u2192server. ClientDodgingEnabled() defaults to reading the SERVER-side cl_dodging cvar (a ClientDodgingProvider seam exists for a future replication layer but is unset). So on a real multi-client clientselect server every",
+"[DEAD] mutator-dodging.frozen.dodge \u2014 Frozen dodging (sv_dodging_frozen / _frozen_doubletap / horiz_force_frozen): Still unreachable on the live path: gated behind the dead double_tap detector (MovementForward/Right never written). Even with the frozen single-tap branch present, mvF/mvR are always 0 so the detector loop body never runs.; PlayerPhysics.cs:169 STILL zeroes a frozen player's wishmove (`move = Vecto"
+]
+},
+{
+"unit": "cl-centerprint",
+"notes": [
+"[DEAD] cl-centerprint.kill.group \u2014 centerprint_Kill \u2014 graceful group fade-out: CenterPrintPanel.Kill has zero callers (repo-wide grep) \u2014 no port path retracts a centerprint group; lines only expire on their own timer. Base calls centerprint_Kill on countdown abort (Announcer_Gamestart: centerprint_Kill(CPID_ROUND)) and CTF line retraction.",
+"[DEAD] cl-centerprint.kill.all_remote \u2014 MSG_CENTER_KILL \u2014 remote group / all kill from server: MSG_CENTER_KILL is not on the wire and not handled: the server cannot retract a centerprint group / clear all remotely. CenterPrintPanel.ClearAll is dead (no caller). Base uses this to clear CPID_ROUND on countdown abort, retract CTF lines, and on notification-queue clear (all.qc:116).",
+"[DEAD] cl-centerprint.title.gametype \u2014 Gametype title line (centerprint_SetTitle + Announcer driver): No port equivalent of Announcer()/Announcer_Gamestart, so the gametype-name title above the countdown is never set. SetTitle/DrawTitle exist but have zero callers (grep).",
+"[DEAD] cl-centerprint.title.duel \u2014 Duel title 'left vs right' (centerprint_SetDuelTitle + Announcer_Duel): No Announcer_Duel driver: the duel 'P1 vs P2' title is never set in Duel. SetDuelTitle/DrawTitle exist but are caller-less (grep).; Port DrawTitle does not shorten names to hud_panel_scoreboard_namesize (Base centerprint_SetDuelTitle uses textShortenToWidth) \u2014 long names would overflow the duel titl",
+"[DEAD] cl-centerprint.feed.engine_builtin \u2014 Raw engine centerprint() builtin \u2192 panel (map/trigger/door/item/MOTD text): The entire raw centerprint() builtin family is dead in the port: the centerprint TEXT half of map/trigger `.message`, locked-door 'you need the key' messages, item pickup hints, target_print, Q3-compat target_print, and the MOTD are never routed to the panel. The port's mapobject code explicitly com",
+"[DEAD] cl-centerprint.feed.chat_tell \u2014 Server chat 'tell'/private-message centerprint (cmsg/sourcecmsg): The 'X tells you:' private-message centerprint (Base server/chat.qc builds cmsgstr and centerprints it to the recipient) is RECORDED server-side onto Chat.DeliveredCenter but never networked to the client or routed to CenterPrintPanel \u2014 DeliveredCenter is only Add()'d and Clear()'d, with no consumer"
+]
+},
+{
+"unit": "lms",
+"notes": [
+"[DEAD] lms.join.new_player_lives_gate \u2014 Late-join lives gate (lowest-lives clamp + can't-join lockout): NewPlayerLives/LowestLives still have no caller: ClientManager.AddPlayer (line 172) calls MatchController.AddPlayer, which only appends to its own roster (MatchController.cs:75) and never forwards to LastManStanding. There is no PutClientInServer/ForbidSpawn LMS hook, so a late joiner is not given t",
+"[DEAD] lms.respawn.dynamic_delay \u2014 Dynamic respawn delay scaling with lives behind the leader: RespawnDelayFor still has no caller; respawn timing comes from the generic RespawnTiming.Calculate (DeadPlayerThink), so a far-behind player does not wait longer. UNCHANGED.; Base's 2-player special case (`if (pl_cnt == 1) max_lives = 0` \u21d2 flat base delay when only 2 alive) is NOT modeled in Respawn",
+"[DEAD] lms.leader.notifications \u2014 Leader visibility centerprints (VISIBLE_LEADER / VISIBLE_OTHER): CENTER_LMS_VISIBLE_LEADER (938) / CENTER_LMS_VISIBLE_OTHER (939) are defined in the notification list but never fired: there is no SV_StartFrame leader-visibility edge (the !prev && now-visible transition) to push them. UNCHANGED.",
+"[DEAD] lms.hud.no_lives_message \u2014 Info message: 'You have no more lives left' (eliminated local player): Base's DrawInfoMessages hook shows '^1You have no more lives left' on the InfoMessages panel whenever the local LMS player has a RANK (scores(ps_primary) > 0, i.e. eliminated). The port has no DrawInfoMessages-equivalent LMS hook; CENTER_LMS_NOLIVES (937) is defined but nothing pushes the line. UNCH",
+"[DEAD] lms.item.extra_life \u2014 Extra-life pickups grant lives: SpawnExtraLife has no caller: the FilterItemDefinition replacement keeps a HealthMega/extralife in place but does NOT swap a HealthMega edict for an item_extralife (Base's separate FilterItem + lms_replace_with_extralife), so extra-life items never appear; GiveExtraLife/ExtraLifeTouch are consequent",
+"[DEAD] lms.forfeit.remove_player \u2014 Disconnect/forfeit assigns a rank and reshuffles other ranks: Base lms_RemovePlayer (fired on disconnect / forced-observer) ranks a still-in-game leaver at pl_cnt+1, OR for a voluntary spectator decrements every out-of-game player's rank, records last_forfeiter health/armor, and broadcasts INFO_LMS_NOLIVES. The port's LastManStanding.RemovePlayer just does _st"
+]
+},
+{
+"unit": "cl-crosshair",
+"notes": [
+"[DEAD] cl-crosshair.anim.pickup_pulse \u2014 Item-pickup crosshair pulse (crosshair_pickup): DEAD: nothing calls CrosshairPanel.PulsePickup() (grep over game/+src/ finds no caller). The Base STAT(LAST_PICKUP) advance is never translated to the pulse, so the crosshair never bumps on item pickup.",
+"[DEAD] cl-crosshair.ring.vortex_charge \u2014 Vortex / Overkill-Nex charge ring (+ inner chargepool / moving-average ring): DEAD: no live caller assigns CrosshairPanel.ChargeFraction or .ChargePool (grep over game/+src/ finds zero panel assignments; ChargeRingValue returns 0). The Vortex charge ring + inner chargepool/moving-average ring never render.",
+"[DEAD] cl-crosshair.ring.reload_ammo \u2014 Reload / ammo (clip) ring (+ Rifle ring art): DEAD: no live caller assigns CrosshairPanel.ClipLoad / .ClipSize (grep finds zero panel assignments; clip state lives on the weapon STATE objects, never the panel). The ammo ring shown on every reloadable weapon in Base does not render.",
+"[DEAD] cl-crosshair.ring.minelayer_hagar_arc \u2014 Mine Layer / Hagar load / Arc heat rings: DEAD: no live caller assigns CrosshairPanel.MineCount, .HagarLoad, or .ArcHeat (grep finds zero panel assignments). Mine-count, Hagar burst-load, and Arc overheat rings never render.",
+"[DEAD] cl-crosshair.ring.switch_fade \u2014 Weapon-switch ring fade-out/in (wcross_ring_prev): Reachable only when a ring draws; since all weapon-stat rings are dead, this fade never runs in practice."
+]
+},
+{
+"unit": "cl-hud",
+"notes": [
+"[DEAD] cl-hud.engine.dock \u2014 HUD dock background (hud_dock): Enabling hud_dock (or the menu Dock slider) has no visual effect: the dock_medium full-screen background is never drawn.",
+"[DEAD] cl-hud.panel.racetimer \u2014 Race timer panel (#8): No live feeder: the Race*/checkpoint-split API is never set (no race-split networking on the client), so the running lap timer + checkpoint split deltas never render in Race/CTS.",
+"[DEAD] cl-hud.panel.vote \u2014 Vote panel (#9): VotePanel never appears in a match: no vote state is networked to the client (ClientNet has no vote fields) and NetGame never sets Vote.Active/CalledVote/YesCount/NoCount/Needed (verified: zero .Vote. references outside VotePanel.cs) \u2014 a real callvote shows no on-screen yes/no progress bar.; Already",
+"[DEAD] cl-hud.panel.checkpoints \u2014 Checkpoints panel (#27): No live feeder: race_checkpoint_splits is never networked to the client, so the checkpoint splits list never renders in Race/CTS.",
+"[DEAD] cl-hud.panel.mapvote \u2014 Map-vote panel: MapVotePanel never appears at intermission: NetGame has zero MapVote/MapVotePanel references, so the intermission map-grid + mapshots + vote counts + countdown are never shown to the player."
+]
+},
+{
+"unit": "cl-scoreboard",
+"notes": [
+"[DEAD] cl-scoreboard.fade.inout \u2014 Cross-fade in/out: The fade machinery (Active setter \u2192 _Process ramp \u2192 _everActive \u2192 PanelFade) is correct in isolation, but NetGame.UpdateScoreboard sets _scoreboard.Visible directly and NEVER sets _scoreboard.Active. ScoreboardPanel.Active has zero assignments in the entire port. So on the live path _everActive stay",
+"[DEAD] cl-scoreboard.field.packetloss \u2014 Packet-loss (pl) column: pl column always blank: GetField Pl returns empty string unconditionally; packet loss + movement loss are not networked. Base shows ceil(pl*100)~ceil(movementloss*100) red-tinted by severity, blank when both 0.",
+"[DEAD] cl-scoreboard.block.spectators \u2014 Spectator list: ScoreboardPanel.SetSpectators has NO caller anywhere in the port (grep across *.cs: zero hits) \u2192 the spectator list never populates in a real match.; spectators_position (0/1/2/3 placement around the blocks) and spectators_aligned column alignment not implemented.",
+"[DEAD] cl-scoreboard.block.rankings \u2014 Race/CTS rankings block: ScoreboardPanel.SetRankings has NO live caller (the only SetRankings call, NetGame.cs:2844, targets the ScorePanel overlay, not the scoreboard; race/CTS records are not networked) \u2192 the rankings block never shows on the real scoreboard.; No gold/silver/bronze rank colors, no speed-award line, no mul",
+"[DEAD] cl-scoreboard.block.respawn \u2014 Respawn-status line: ScoreboardPanel.RespawnRemaining has NO caller anywhere in the port \u2192 default stays -1 and DrawRespawn early-returns; the respawn line never appears.; Port draws only 'Respawning in N' / 'Respawning...'; QC's three-state line ('You are dead, wait N before respawning' / 'press jump to respawn') is co"
+]
+},
+{
+"unit": "mutator-superspec",
+"notes": [
+"[DEAD] superspec.persistence.options_file \u2014 Per-client options persistence (load on connect / save on disconnect, crypto_idfp-keyed): No ClientConnect/ClientDisconnect mutator hook chains exist, so no options-file load on connect or save on disconnect; no crypto_idfp-keyed persistence. The OptionsFileMagic const and the SSF_VERBOSE/\"\" connect defaults are declared but the load/save I/O (fopen/fputs/fgets, local vs remote filename)",
+"[DEAD] superspec.notify.missing_uid \u2014 Missing-UID notification (delayed-hello think at time+5 -> INFO_SUPERSPEC_MISSING_UID): The SUPERSPEC_MISSING_UID notification string is registered (faithful text) but still has no caller: no superspec_hello, no ClientConnect schedule, and no delayed-think scheduler. It can never fire.",
+"[DEAD] superspec.itemfilter.match \u2014 Item-message classname filter (superspec_filteritem; empty = all): FilterItem is a faithful port (empty filter = match all; else tokenized classname allowlist against item.ClassName), and the ItemFilter string it reads is now SETTABLE on the live path (the wired superspec_itemfilter command). But FilterItem itself still has NO live CALLER: it would be invoked from ",
+"[STUB] superspec.playerdies.followkiller \u2014 PlayerDies hook: followkiller auto-spectate the attacker: The hook is subscribed to the LIVE PlayerDies chain (Hook -> MutatorHooks.PlayerDies.Add; fired at DamageSystem.cs:589) AND its guarded body is now REACHABLE: ASF_FOLLOWKILLER is settable via the wired `autospec followkiller on` command, so a spectator following the victim auto-switches to the kille",
+"[STUB] superspec.commands.parse \u2014 Spectator console commands (superspec / autospec / superspec_itemfilter / followpowerup / followstrength / followshield): The console (sprint) form of every command-state/help message is now wired through PrintTo (host SendChatToPlayer); the CENTERED (centerprint) form of superspec_msg is still gated-but-stubbed (no centerprint-text server seam). The follow* scans use StatusEffectsCatalog.Has(Strength/Shield) which is "
+]
+},
+{
+"unit": "freezetag",
+"notes": [
+"[DEAD] freezetag.startitems \u2014 FT start loadout (g_ft_start_health/armor/ammo): ApplyStartItems STILL has NO live caller (only doc-comment references in FreezeTag.cs + ClanArena.cs; no spawn/PutPlayerInServer call site) \u2014 FT players do not actually receive the FT-specific 100/100 + ammo loadout.",
+"[DEAD] freezetag.presentation.waypoints \u2014 Frozen / Reviving waypoint sprites over frozen players: Waypoints catalog defines 'Frozen' (Frozen! / FrozenCol) and 'Reviving' (Orange/WP_REVIVING_COLOR) sprite types but nothing spawns them for a frozen player \u2014 no overhead/radar marker, no thaw-progress health bar.",
+"[DEAD] freezetag.presentation.notifications \u2014 Freeze/revive/self/auto-revive/spawn-late notifications (+ sounds): INFO/CENTER_FREEZETAG_FREEZE/REVIVE/REVIVE_SELF/REVIVED/AUTO_REVIVED/SELF/SPAWN_LATE are declared in NotificationsList but never sent on the live path \u2192 no kill-feed lines, no center prints, and none of their notification sounds for any FT event.",
+"[DEAD] freezetag.presentation.overlay_eventchase \u2014 Full-screen frozen overlay tint + cl_eventchase_frozen cam + damage HUD: No full-screen icy-blue overlay while frozen (with the thaw-progress alpha fade and color warming).; No cl_eventchase_frozen third-person camera while frozen.; The crosshair thaw ring is STILL dead: the server now mirrors FrozenState.ReviveProgress onto Player.ReviveProgress (ReviveTick ~493) and sh"
+]
+},
+{
+"unit": "monster-wyvern",
+"notes": [
+"[STUB] wyvern.pain \u2014 Pain reaction (0.5s window, pain anim): Pain window uses the generic 0.34s instead of the wyvern's 0.5s pain_finished (mr_pain not overridden).",
+"[STUB] wyvern.death \u2014 Death: die anim + random corpse launch scatter: anim_die1 falling-frame group is not played (logical MonsterAnim.Death only); CSQC monster frame playback deferred system-wide.",
+"[STUB] wyvern.deadthink \u2014 Dead-think: swap to anim_die2 once the corpse lands: die2 landed-corpse frame group is not played: the port's logical anim phase has no die1/die2 split (one MonsterAnim.Death), so the visible swap is CSQC-deferred. The landing IS detected and the hook IS driven.",
+"[DEAD] wyvern.anim.frame_table \u2014 Animation frame groups (mr_anim): Monster animation frame groups (mr_anim idle/walk/run/pain/shoot/die1/die2) are never driven \u2014 only a logical MonsterAnim phase exists (system-wide CSQC playback deferral)."
+]
+},
+{
+"unit": "mutator-waypoints",
+"notes": [
+"[DEAD] waypoints.server.manager_api \u2014 Server WaypointSprite_* spawn/update/kill API + manager: STILL DEAD: Spawn/SpawnFixed/AttachCarrier/UpdateSprites/UpdateHealth/UpdateRule/UpdateTeamRadar/UpdateBuildFinished/UpdateMaxHealth/HelpMePing/Ping/Disown/Kill/DetachCarrier still have ZERO callers; _active is always empty.; Only Reset() (map load) and Think() (per tick) are invoked \u2014 both no-op on",
+"[DEAD] waypoints.deploy.personal_here_danger \u2014 Player-deployed pings (waypoint_personal/here/danger impulses): STILL no server dispatch for waypoint_personal_here/_crosshair/_death, waypoint_here_*, waypoint_danger_*, waypoint_clear*. Strings appear only as QuickMenuPanel say_team macro text (QuickMenuPanel.cs:261-284); the server never routes them to DeployPersonal/DeployFixed.",
+"[DEAD] waypoints.deploy.helpme \u2014 Team HELP-ME attach + ping (waypoint_here_follow): STILL no waypoint_here_follow dispatch; WaypointSprite_Attach(WP_Helpme) + HelpMePing never called. The helpme flash exists in the client layer but no waypoint ever sets Helpme>0 (HelpmeUntil only set by the dead HelpMePing).",
+"[DEAD] waypoints.client.cvars_inert \u2014 Client tuning cvars (g_waypointsprite_*, cl_hidewaypoints) wiring: STILL: all g_waypointsprite_* cvars + cl_hidewaypoints exist as config defaults and are bound in DialogSettingsGame, but WaypointSpriteLayer reads none of them (only const EdgeInset/IconSize/FontSize; no Cvars.Get* calls) \u2014 the knobs have no effect."
+]
+},
+{
+"unit": "race",
+"notes": [
+"[DEAD] race.qualifying.transition \u2014 Qualifying-then-race transition (g_race_qualifying==2 -> 0): TransitionQualifyingToRace and SaveRaceLimits still have no caller anywhere; a qualifying-then-race warmup never converts to a real race in a live match.",
+"[DEAD] race.spawn.grid_respawn \u2014 Spawn grid by race_place + respawn at last checkpoint: No race_place grid: racers do not get ordered start positions in a multi-racer race.; Respawn does not return the racer to their last checkpoint / previous spawn (Base race_respawn_checkpoint/spotref + SPAWN_PRIO_RACE_PREVIOUS_SPAWN).; trigger_race_checkpoint_verify map-load validation (missing-spaw",
+"[DEAD] race.hud.split_timer \u2014 Race split timer HUD panel (#8): running clock, splits, anticipation, medals: No net feed: the Race* stat properties are still never assigned outside the panel class (no TE_CSQC_RACE-equivalent), so the timer, splits, anticipation delta, penalty line, speed readout, and medal flash never appear in a live match. Wave-2 touched only the server.; Speed-at-checkpoint comparison b",
+"[DEAD] race.hud.checkpoint_splits \u2014 Checkpoints split list panel (#27): SetSplits / StoreSplit are still never called by any net or race code, so the panel is always empty in a live match."
+]
+},
+{
+"unit": "sv-campaign",
+"notes": [
+"[DEAD] sv-campaign.mapentity.levelwarp \u2014 target_levelwarp / target_changelevel campaign win-credit (map-triggered): target_levelwarp does nothing in a campaign: CampaignLevelWarpHandler/IsCampaign seams are never wired by the host (dead).; target_changelevel campaign win-credit is dead: NextLevelHandler unassigned + the QC `campaign_forcewin = true` (real-client-touched stage win) line has no port equivalent, so ",
+"[DEAD] sv-campaign.mapentity.gametype_switch \u2014 target_changelevel next-map gametype switch (MapInfo_SwitchGameType on .gametype): When a target_changelevel sets a .gametype for the next map, Base applies MapInfo_SwitchGameType before the level change; the port only Log.Trace's '... (not ported)' and never switches the gametype. Compounded by the dead NextLevelHandler/ChangeLevelHandler seams, the whole entity is inert.",
+"[DEAD] sv-campaign.forceteam \u2014 g_campaign_forceteam: force the player onto a given team in campaign: Wave-2 ADDED Teamplay.DetermineForcedTeam (QC Player_DetermineForcedTeam) which reads g_campaign_forceteam when isCampaign and stores the 1..4 forced index, and AssignBestTeam (line 244) now honors HasRealForcedTeam. BUT DetermineForcedTeam has ZERO live callers anywhere in src/ + game/ \u2014 it is refe",
+"[DEAD] sv-campaign.welcome.levelnum \u2014 Campaign level number in the welcome/info message (Campaign_GetLevelNum): Wave-2 ADDED the Campaign.LevelNum property (QC Campaign_GetLevelNum = campaign_level + 1), but it is NEVER read or networked anywhere in src/ + game/. There is no SendWelcomeMessage equivalent that consults it, and DialogWelcome still has no campaign-level field. The value is computed but never rea"
+]
+},
+{
+"unit": "sv-teamplay",
+"notes": [
+"[STUB] sv-teamplay.join.skill_weighting \u2014 Inverse-variance skill-weighted balance (g_balance_teams_skill): No TrueSkill ratings: SkillProvider defaults to 5 for every player and variance is a flat 1, so weighting reduces to a plain count and has no observable effect.; No unranked-client factor (0.666) and no significance threshold (1.645) gate; threshold is treated as always met (SkillWeightingEnabled re",
+"[DEAD] sv-teamplay.balance.prevent_imbalance \u2014 Block switching to a stronger/larger team mid-match: DEAD: IsTeamAllowedForSwitch exists (Wave-2) and re-derives the best-team count gate correctly, but has ZERO callers. CmdSelectTeam (Commands.cs:1160), CmdMovePlayer (Commands.cs:1062), and CmdJoin all set Team directly with no gate, so a human can still manually switch to the larger/stronger team m",
+"[DEAD] sv-teamplay.forced.determine_team \u2014 Forced teams (g_forced_team_*, otherwise, campaign forceteam): DEAD for humans: DetermineForcedTeam (Wave-2) parses g_forced_team_red/blue/yellow/pink id|IP lists, g_forced_team_otherwise, and g_campaign_forceteam into a _forcedTeam table, and AssignBestTeam early-outs on HasRealForcedTeam \u2014 but DetermineForcedTeam has ZERO callers. The live connect path (Clien",
+"[DEAD] sv-teamplay.nagger.team_nagger \u2014 Unbalanced-teams nag + warmup hold (sv_teamnagger): DEAD: SizeDifference (QC TeamBalance_SizeDifference) and TeamsUnbalancedForNag (Wave-2) compute the max-min team gap correctly, but both have ZERO callers.; Warmup is NOT held open while unbalanced: WarmupController hardcodes `bool badteams = false` with a comment that the teamplay size-difference s"
+]
+},
+{
+"unit": "weapon-hagar",
+"notes": [
+"[DEAD] hagar.secondary.bounce \u2014 Non-loaded secondary: single bouncing rocket: STILL DEAD at stock balance: secondary_load=1 (Base) and SecondaryLoad=true (port), so WrThink always routes the secondary to AttackLoadRelease \u2014 AttackBounce/BounceTouch have no live caller in a normal match. Only reachable if g_balance_hagar_secondary_load is set to 0 (non-stock).; this.projectile",
+"[DEAD] hagar.secondary.load_audio \u2014 Load / beep / warning charge sounds: SND_HAGAR_LOAD (per-rocket load tick, VOL_BASE*0.8) never played.; SND_HAGAR_BEEP never played: last-rocket-loaded beep, abort beep, and the about-to-auto-release warning beep are all silent.",
+"[DEAD] hagar.hud.load_ring \u2014 Crosshair Hagar load ring: CrosshairPanel.HagarLoad is never assigned a real value (stays -1f, CrosshairPanel.cs:156), so the load ring never draws even though the draw code (CrosshairPanel.cs:906-909) exists.",
+"[DEAD] hagar.notifications.killmessages \u2014 Burst-vs-spray kill message + suicide message: No differentiation between WEAPON_HAGAR_MURDER_BURST (secondary) and WEAPON_HAGAR_MURDER_SPRAY (primary); WEAPON_HAGAR_SUICIDE not wired per-weapon.; this.projectiledeathtype |= HITTYPE_BOUNCE not set in BounceTouch, so even if kill messages existed the bounce-kill variant could not be distinguished"
+]
+},
+{
+"unit": "cl-announcer",
+"notes": [
+"[DEAD] cl-announcer.voice.cvars \u2014 cl_announcer (voice pack) + cl_announcer_antispam wiring: HudNotifications.AnnouncerVoice is hardcoded \"default\" and never assigned from the cl_announcer cvar; changing cl_announcer has no effect (value matches Base default, and only the 'default' pack ships, so harmless in stock content).; HudNotifications.AntiSpamInterval is hardcoded 2f and never assign",
+"[DEAD] cl-announcer.title.gametype \u2014 Gametype-name centerprint title above countdown: Announcer_Gamestart sets the centerprint title to the gametype display name during the pre-match countdown; CenterPrintPanel.SetTitle exists but has no live caller, so the title line above the countdown is blank.",
+"[DEAD] cl-announcer.title.duel \u2014 Duel title (A vs B) in 1v1 + ROUNDSTOP: Announcer_Duel / centerprint_SetDuelTitle is dead: in 1v1 the 'PlayerA vs PlayerB' title above the countdown never appears (CenterPrintPanel.SetDuelTitle has no live caller, and the top-two-players name diff/refresh logic is unported).; COUNTDOWN_ROUNDSTOP ('Round cannot start', the roundstarttime=="
+]
+},
+{
+"unit": "invasion",
+"notes": [
+"[DEAD] invasion.notify.supermonster \u2014 Center-print when a supermonster arrives (CENTER_INVASION_SUPERMONSTER): The supermonster-arrival decision is now LIVE (SpawnMonsterDef calls Notifications?.Supermonster(name) when IsSupermonster(def) \u2014 golem), but no host injects inv.Notifications on the net path (NetGame never sets it), so the CENTER_INVASION_SUPERMONSTER send is dead. The trigger source now exists (go",
+"[DEAD] invasion.notify.round_end \u2014 Round-over / round-winner center+info prints: The 'Round over' (timeout) and 'Player X wins the round' (top-KILLS) decisions are now LIVE in CheckWinner, but no host injects inv.Notifications \u2192 the MSG_CENTER/MSG_INFO sends never reach players (dead send). The decision/winner-pick (TopKillsPlayer) is correct.",
+"[DEAD] invasion.hud.monster_count \u2014 HUD monsters_total / monsters_killed publish (SV_StartFrame): For ROUND, Base SV_StartFrame sets monsters_total=inv_maxspawned / monsters_killed=inv_numkilled. The port's scoreboard is fed from MonsterAI.MonstersTotal/Killed (NetGame.cs:2981-2982), which only count NATURAL map-placed monsters (MonsterAI.cs:397 gates on !Spawned&&!Respawned). Invasion's wave mo"
+]
+},
+{
+"unit": "mapobject-target",
+"notes": [
+"[DEAD] mapobject-target.changelevel.use \u2014 target_changelevel \u2014 end / switch the level (multiplayer fraction): STILL DEAD on the live path: TargetUtilities.NextLevelHandler / ChangeLevelHandler / RealPlayerVoteCount are assigned ONLY in tests/TargetUtilitiesTests.cs (re-confirmed by grep 2026-06-22). The Server's Commands.ChangeLevelHandler (GameWorld.cs:2139, NetGame.cs:758/779) is a SEPARATE field for the ",
+"[DEAD] mapobject-target.levelwarp.use \u2014 target_levelwarp \u2014 campaign level warp: STILL DEAD on the live path: CampaignLevelWarpHandler and IsCampaign are never assigned outside tests (re-confirmed by grep 2026-06-22 \u2014 Assault.cs:465/569 only CONSUME IsCampaign, no assignment), so a campaign level-warp trigger does nothing. With IsCampaign unwired the handler also short-circuits ",
+"[STUB] mapobject-target.items.use \u2014 target_items \u2014 set/add items + resources + powerups via a token string: ItemsUse routes the QC centerprint(actor, message) through MapMover.Centerprint (the Wave-1 seam) \u2014 the bogus misc/talk.wav sound is gone, matching Base (the give has no sound, only centerprint text). BUT MapObjectsCommon.CenterprintHandler is NEVER ASSIGNED anywhere (grep 2026-06-22: zero assignmen"
+]
+},
+{
+"unit": "onslaught",
+"notes": [
+"[DEAD] onslaught.links.resolution \u2014 onslaught_link map entity \u2192 graph edges: Wave-2 ADDED a faithful-looking deferred link-resolution API on Onslaught.cs (StageLink stages target/target2 name pairs, ResolveLinks resolves them via NodeByName + Link() + UpdateLinks, mirroring QC ons_DelayedLinkSetup/INITPRIO_FINDTARGET; AddGenerator/AddControlPoint gained name-indexing overloa",
+"[DEAD] onslaught.cp.icon_heal \u2014 Capture-icon heal (Healer mutator / heal trigger): Logic faithful, but STILL VERIFIED dead: grep over src/ shows IconHeal has NO caller (only its definition at OnslaughtControlPoint.cs:387). The Healer mutator / heal-trigger path that would call it is not ported, so the method never runs on the live path. Unchanged by Wave-2.",
+"[DEAD] onslaught.audio.cues \u2014 Onslaught notifications + sounds emission: All Onslaught sound + notification cues are registered as data but NEVER emitted by the ported gameplay: no build/built/under-attack/blocked-by-shield/hit/spark/generator-alarm/decay/explode sounds, no capture/CP-destroyed/generator-destroyed/round-win/round-tied/shielded/overtime/teleport notificat"
+]
+},
+{
+"unit": "assault",
+"notes": [
+"[DEAD] assault.round.second_round \u2014 Two-round match: swap roles, re-clock round 2 to round 1 destruction time, 5s round delay: STILL DEAD: StartSecondRound() has ZERO live callers (grep across src/ tests/ game/ = only doc-comment references inside Assault.cs). DriveFrame is now driven per-frame (DriveGametypeFrame:1817), but nothing flips to round 2 when round 1 is decided \u2014 DriveFrame/DestroyFinalObjective record FirstRoun",
+"[DEAD] assault.mapobject.assault_wall \u2014 func_assault_wall cosmetic wall toggles with its objective's health: STILL a no-op: func_assault_wall edicts are consumed (GameWorld.cs:1666-1670, then RetirePlaceholder) with no behavior. The wall that should hide (model='' + SOLID_NOT) once its objective is destroyed and reappear otherwise does neither, so a path that QC opens by destroying an objective stays block"
+]
+},
+{
+"unit": "cl-shownames",
+"notes": [
+"[DEAD] cl-shownames.gate.self_spectatee \u2014 Own-tag in chase + spectatee-switch window: Local player is predicted, never in ClientNet.RemoteIds (HandleSnapshot skips LocalNetId), so the chase + hud_shownames_self self branch never executes: no own tag in third-person.; The spectatee-switch grace window (spectatee_status > 0 && time <= spectatee_status_changed_time + 1) is not implement",
+"[DEAD] cl-shownames.alpha.entcs_getalpha \u2014 entcs_GetAlpha model-alpha factor + ShowNames_Draw mutator hook: entcs_GetAlpha factor not applied: QC multiplies enemy/self tag alpha by the remote player's CSQC model render alpha (ent_cs.qh:164), so a fading model's tag fades with it; the port leaves the factor at 1, so the tag stays full-alpha while the model fades (spawn shield, invisibility, respawn fade).;"
+]
+},
+{
+"unit": "cl-view",
+"notes": [
+"[DEAD] cl-view.chase.classic_thirdperson \u2014 Classic chase_active third-person + spectator camera (chase_back/up/front/overhead; View_SpectatorCamera): No code anywhere sets CameraMode (verified: zero `CameraMode =` assignments in game/ or src/), so the user chase_active cam never engages in a match.; Even if engaged, chase_back/chase_up/chase_front/chase_overhead/chase_pitchangle are all ignored \u2014 the menu sliders for chase_back/chase_up (DialogSe",
+"[DEAD] cl-view.kick.punch_vector \u2014 Punch-vector recoil kick (view origin): The view origin never kicks: ServerNet does NOT write PunchVector (only PunchAngle, ServerNet:1980), ClientNet does NOT decode it, and nothing adds it to the rendered origin. The server-side decay runs but the value goes nowhere."
+]
+},
+{
+"unit": "clanarena",
+"notes": [
+"[DEAD] clanarena.round.grace_no_fire \u2014 Round-start grace period: weapons cannot be fired: Players can still fire during the inter-round grace countdown: WeaponUseForbidden is still a stub that always returns false (WeaponFireDriver.cs:316); no round-phase (active-but-not-started) gate is wired. Wave-2 changed WeaponFiring.cs but NOT this seam.",
+"[DEAD] clanarena.scoring.per_round_award \u2014 Per-player ROUNDS_PL award at round start: QC awards SP_ROUNDS_PL (+1) to every present player when a round begins. The live RoundHandler fires OnRoundCounted at cnt==0 (RoundHandler.cs:242), but EnableRounds only wires OnCountdownTick + OnRoundReset (GameWorld.cs:870-871) and CA's branch never assigns OnRoundCounted, so the per-player round"
+]
+},
+{
+"unit": "ctf",
+"notes": [
+"[DEAD] ctf.flag.throw \u2014 Throw the flag (+use, g_ctf_throw): HandleUseKey(player, roster) now dispatches a carrier's +use to ThrowFlag, but NOTHING calls HandleUseKey: the server's +use rising edge (ServerNet ProvideInput, the QC PlayerUseKey seam) only calls VehicleBoarding.UseKey. A player still cannot throw the flag in a live match.",
+"[DEAD] ctf.flag.remove_player \u2014 Carrier disconnect/observe/portal/vehicle drops flag: Ctf.RemovePlayer (drop the flag + clear pass_sender/pass_target/dropper back-links) is now ported and faithful, but has NO live caller: ClientManager.ClientDisconnect calls MatchController.RemovePlayer (which only does `_players.Remove(p)` \u2014 no gametype dispatch, GameType has no RemovePlayer virtual"
+]
+},
+{
+"unit": "cts",
+"notes": [
+"[DEAD] cts.records.notifications \u2014 Finish + record-set/improved/broken notifications (INFO_RACE_*) + medal status: Cts.FinishStage computes LastRecord/LastRecordPlayer (Cts.cs:279-280) but NO code consumes them for CTS, so no record-set/improved/broken or finished notification is ever sent.; The full INFO_RACE_* sender (Race.SendRecordNotification, Race.cs:514-550, firing RACE_NEW_SET/IMPROVED/BROKEN + RACE_FINI",
+"[DEAD] cts.hud.race_timer \u2014 Race timer HUD: running clock, checkpoint splits, anticipation, medal, PB/server-best: The panel is fully ported but nothing feeds its Race* properties for CTS, so a CTS player sees no lap clock, no checkpoint split, no anticipation delta, no medal flash, and no personal/server best. The panel is in HudManager.StartHiddenIds ('racetimer') and is never un-hidden for CTS (no ShowRaceTim"
+]
+},
+{
+"unit": "duel",
+"notes": [
+"[DEAD] duel.rules.player_limit_2 \u2014 Hard 1v1 player limit (GetPlayerLimit -> 2): STILL OPEN. The Wave-3 second-pass fix-up (commit 4be8357) touched ClientManager.cs and BotPopulation.cs but did NOT add a duel player-limit gate. A 3rd+ client can still +jump-join a duel and play simultaneously: ClientManager.JoinAllowed (ClientManager.cs:276-289) has only the MIN_SPEC_TIME / lock",
+"[DEAD] duel.presentation.duel_title \u2014 Duel 'playerA vs playerB' centerprint title: STILL OPEN. The characteristic 'name1 vs name2' duel title is never displayed: CenterPrintPanel.SetDuelTitle (CenterPrintPanel.cs:174) exists and renders left/right title halves, but there is no port equivalent of Announcer_Duel to call it. grep SetDuelTitle -> only the definition (CenterPrintPanel."
+]
+},
+{
+"unit": "fx-notifications",
+"notes": [
+"[DEAD] fx-notifications.center.durcnt \u2014 Centerprint durcnt (duration/count) + item_centerprinttime: The Notification class has no Durcnt/Duration field; Notifications.Center ignores the QC durcnt arg; NotificationDispatch/WriteNotification carry no duration. Every centerprint renders for the fixed DefaultDuration=3s instead of its declared duration (e.g. item pickups should show notification_item_",
+"[DEAD] fx-notifications.gentle.variants \u2014 Gentle-mode message-variant selection (normal_or_gentle / cl_gentle): NotificationSystem.GentleMode is never assigned anywhere (grep of src+game shows only the declaration at :107 and the read at :269/:270 \u2014 no `GentleMode =`), so SelectTemplate always returns the Normal text. Gentle players still receive the violent message text even though the gentle variants ARE st"
+]
+},
+{
+"unit": "keyhunt",
+"notes": [
+"[DEAD] keyhunt.capture.instant_path_dead \u2014 Instant capture-on-pickup path (no maxdist) \u2014 dead: STILL OPEN: AssignKey/CheckCapture implement an instant capture WITHOUT the maxdist check; Base has no such path. The live collect path goes KeyTouchEntity->CollectKey->CheckCaptureGeometry, so AssignKey/CheckCapture have no live caller (dead code that would mis-score if ever wired).",
+"[DEAD] keyhunt.bot.role \u2014 Bot KeyHunt role (carrier/defense/offense/freelancer goal rating): VERIFIED STILL DEAD (BotObjectiveRoles.cs not touched by any wave): RoleKeyHunt calls Api.Entities.FindByClass('keyhunt_key') (BotObjectiveRoles.cs:213) but keys spawn with classname 'item_kh_key' (KeyHunt.cs:553) -> the scan finds nothing every frame.; VERIFIED STILL: it reads key.Owner to locate t"
+]
+},
+{
+"unit": "mapobject-movers-platforms",
+"notes": [
+"[DEAD] mapobject-movers-platforms.plat.q3compat_defaults \u2014 Q3/Q3DF compat: speed 200, lip 8, dmg 2, medplat sounds, CPMA sound keys: q3compat plat defaults are unreachable: the q3compat const in PlatSetup (Platforms.cs:33) is hardcoded `false` (no live setter anywhere in this layer; CompatRemaps.cs:17). The Q3 algorithm is now DOCUMENTED inline (spawnflags=0, dmg 2, speed 200, lip 8, medplat sounds via ApplyPlatSounds), but every",
+"[DEAD] mapobject-movers-platforms.plat.outside_target_use \u2014 plat_outside_touch / plat_target_use (Q3 + mapper-wired): PlatTargetUse is implemented and faithful but DEAD: only PlatReset installs it, on the (targetname && q3compat) fork, and q3compat is hardcoded false \u2014 so no live path reaches it (reachable only with a real q3compat flag, or the commented-out CSQC plat link).; PlatOutsideTouch is implemented and fai"
+]
+},
+{
+"unit": "mutator-campcheck",
+"notes": [
+"[DEAD] campcheck.death.obituary \u2014 DEATH_CAMP obituary: 'Die camper!' / 'thought they found a nice camping ground': STILL OPEN: a campcheck kill uses deathtype \"camp\", but \"camp\" is NOT a registered special death in DeathTypes.cs, so EmitObituary (Scores.cs:565-566) routes it through SelectSpecial(\"camp\", murder:false) which (\"camp\" absent from both the registry and the switch) falls to the default branch and ret",
+"[DEAD] campcheck.lifecycle.misc \u2014 PlayerDies centerprint clear, CopyBody clone origin, BuildMutatorsString advertise: STILL OPEN: Death does not clear the 'Don't camp!' centerprint: OnPlayerDies is a no-op stub (returns false, sends nothing); Base does Kill_Notification(CPID_CAMPCHECK), so a lingering warning persists until its own timeout after the victim dies. Wave-2 left the body a stub.; CopyBody clone's campch"
+]
+},
+{
+"unit": "mutator-hook",
+"notes": [
+"[DEAD] mutator-hook.offhand.think_driver \u2014 Offhand think: drive the Hook grapple each frame while +hook is held: STILL OPEN after Wave-2: the +hook button never reaches the server. InputButtons (InputCommand.cs:11-20) has no hook bit (only Attack/Jump/Attack2/Zoom/Crouch/Use) and Entity.OffhandFirePressed is never assigned ANYWHERE in the codebase \u2014 grep across src/** + game/** for 'OffhandFirePressed =' retur",
+"[DEAD] mutator-hook.precedence.blaster_override \u2014 Precedence: offhand_blaster overrides grappling_hook when both enabled: Ordering is now traced and confirmed correct, but the precedence only resolves a moot tie: both PlayerSpawn handlers are downstream of the dead offhand-input path, so neither offhand weapon actually fires regardless of which OffhandWeapon value wins. The precedence becomes observable only once mutat"
+]
+},
+{
+"unit": "mutator-offhand_blaster",
+"notes": [
+"[DEAD] offhand_blaster.fire.offhand_think \u2014 Offhand fire: hold +hook to fire a Blaster shot without switching weapons: STILL DEAD on the live path (the baseline #1 gap is UNCHANGED): no input button maps to the offhand fire. InputButtons (src/XonoticGodot.Net/InputCommand.cs:11-20) still has only Attack/Jump/Attack2/Zoom/Crouch/Use \u2014 no hook/offhand bit \u2014 and the C2S Serialize payload carries no such bit. Entity.Off",
+"[DEAD] offhand_blaster.fire.blaster_attack \u2014 Blaster primary projectile fired by the offhand (damage/force/speed): Reachable from the offhand only through the dead offhand-fire button, so the offhand never actually spawns this projectile in a match. (The in-hand Blaster, covered by the weapon audit, IS live \u2014 this dead status is the offhand entry point only; UNCHANGED from baseline.)"
+]
+},
+{
+"unit": "survival",
+"notes": [
+"[DEAD] survival.presentation.player_colors_and_notifications \u2014 Player green/red coloring + role/win center & info notifications: The gametype-side signal exists: AssignRoles calls Notifications.Role(p, hunter) (Survival.cs:260-262) and CheckWinningCondition/EndRoundTimedOut call Notifications.RoundResult(side) (cs:420/516). BUT no host ever assigns surv.Notifications \u2014 grep over src/ + game/ for `Notifications =` finds zero a",
+"[DEAD] survival.notify.last_survivor_alone \u2014 Last living member of a side gets the 'you are alone' center notify: NotifyLastForTeam (Survival.cs:367-384), called from OnDeath (cs:310-311), implements the last-of-side detection and matches QC surv_LastPlayerForTeam (exactly-one-living-same-status-ally \u2192 notify). BUT it returns early on `Notifications is null` (Survival.cs:369) and Notifications is never wired \u2192 "
+]
+},
+{
+"unit": "sv-anticheat",
+"notes": [
+"[DEAD] sv-anticheat.report.eventlog \u2014 anticheat_report_to_eventlog (:anticheat: verdict lines on disconnect): anticheat_report_to_eventlog has no live caller: Base calls it on client disconnect (state.qc:88, ClientState_detach). The port's InfraClientDisconnect (GameWorld.cs:776) calls AntiCheat.Remove but never ReportToEventLog, so no :anticheat: verdict lines reach the event log on disconnect \u2014 only the e",
+"[DEAD] sv-anticheat.spectate.evade_angle_copy \u2014 anticheat_spectatecopy (spectator body follows spectatee evade angle): anticheat_spectatecopy has no live caller: a spectator's body angles do not inherit the spectatee's evade-tracked angle. The port's own ClientManager.SpectateCopy (ClientManager.cs:340) is a separate mirror that omits the anticheat angle-copy. Cosmetic (spectator body yaw) but a divergence from Base"
+]
+},
+{
+"unit": "sv-cheats",
+"notes": [
+"[DEAD] sv-cheats.cmd.usetarget \u2014 cmd usetarget \u2014 fire a named target (SUB_UseTargets): STILL DEAD on the live path: Wave-2 did NOT touch the routing. 'usetarget' is NOT Register()ed in Commands.cs (only god/notarget/noclip/fly/give at Commands.cs:604-608) and NOT in the ClientCommandRegistry allowlist (ClientCommandRegistry.cs:92). The Cheats.Command 'usetarget' case is therefore unre",
+"[DEAD] sv-cheats.cmd.killtarget \u2014 cmd killtarget \u2014 remove a named target (SUB_UseTargets killtarget): STILL DEAD on the live path: same as usetarget \u2014 'killtarget' is neither Register()ed nor in the ClientCommandRegistry allowlist, so the Cheats.Command 'killtarget' case is unreachable from a client cmd. Wave-2 did NOT wire it.; Same empty-arg caveat as usetarget (would AddCheats(1) on empty target "
+]
+},
+{
+"unit": "sv-clientkill",
+"notes": [
+"[DEAD] sv-clientkill.announcer.number \u2014 Spoken kill countdown announcer (ANNCE_NUM_KILL_n): The spoken 'ten\u2026one' kill countdown is never played; NUM_KILL_n announcer entries exist (NotificationsList.cs:115) but are registered disabled and have no caller.; AnnouncerController.PickCountdownNumber only handles GameStart/RoundStart kinds \u2014 there is no CNT_KILL branch or any NUM_KILL_n send pat",
+"[DEAD] sv-clientkill.centerprint.teamchange \u2014 Center-print 'Suicide/Changing to TEAM/Spectating in N': No countdown center-print with live ^COUNT is shown on suicide or team change; the notification strings exist (TEAMCHANGE_SUICIDE/SPECTATE/RED/BLUE/YELLOW/PINK with ^COUNT) but nothing sends them from a kill/teamchange countdown.; TEAMCHANGE_ALREADYBEST (CENTER, CPID_PREVENT_JOIN) is defined but unr"
+]
+},
+{
+"unit": "sv-intermission",
+"notes": [
+"[DEAD] sv-intermission.timer.input_early_exit \u2014 Player input skips the scoreboard (press fire/jump after the hold): RequestExit() exists but STILL has no caller (re-verified 2026-06-22: referenced only by its own definition + the class docs) \u2014 no input path (PHYS_INPUT_BUTTON_ATCK/JUMP/ATCK2/HOOK/USE) drives it, so a player cannot skip the intermission hold early. With no players (ExitTime=-1) the map can NEVER a",
+"[DEAD] sv-intermission.mapvote.client_ui \u2014 Client map-vote ballot UI (MapVote_Draw): MapVotePanel is registered in HudManager/HudRegistry/layout but STILL never fed: no decode path supplies candidates/counts/availability (SetVote/SetVotes/SetAvailability/SetReduce have zero callers outside the panel \u2014 the only `MapVote.*` callers in src/ are the SERVER-side MapVoting instance), so t"
+]
+},
+{
+"unit": "sv-spawnpoints",
+"notes": [
+"[DEAD] sv-spawnpoints.select.spawnpoint_targ \u2014 target_spawnpoint forced-spawn redirection: target_spawnpoint forced-spawn redirection is dead: target_spawnpoint_use sets Entity.SpawnPointTarg but SelectSpawnPoint never reads it (and PutPlayerInServer never clears it), so a map scripting a player's next spawn location has no effect. STILL OPEN.",
+"[DEAD] sv-spawnpoints.relocate.move_out_of_solid \u2014 relocate_spawnpoint move-out-of-solid: No move-out-of-solid relocation (g_spawnpoints_auto_move_out_of_solid, default 1): Base nudges an in-solid spawnpoint out at link time; the port only traces startsolid at selection time and drops the spot, so a map with all spots embedded can have every spot filtered out (then falls back to placing "
+]
+},
+{
+"unit": "vehicle-framework",
+"notes": [
+"[DEAD] vehicle-framework.combat.heal \u2014 vehicles_heal \u2014 health restore with limit + owner percentage mirror: HealVehicle (the framework .event_heal SINK) is faithful (limit fallback to max_health, dead/at-limit refusal, GiveResourceWithLimit, owner % mirror) but has NO live caller: SpawnVehicle/EnterVehicle never install a veh.event_heal, and there is no generic Heal/event_heal dispatch in the port. So fun",
+"[DEAD] vehicle-framework.presentation.hud_camera_xhair \u2014 Vehicles_drawHUD / drawCrosshair / AuxiliaryXhair / CSQCVehicleSetup + cockpit camera: VehicleHud is registered but STILL nothing on the live path calls ConfigureForVehicle / SetAuxiliaryXhair / sets the VEHICLESTAT_* mirror (grep: no caller outside the file). TE_CSQC_VEHICLESETUP / VEHICLESTAT_* networking is still unwired \u2014 a pilot has no vehicle HUD and no aux lock crosshairs. (des"
+]
+},
+{
+"unit": "weapon-machinegun",
+"notes": [
+"[DEAD] machinegun.fire.single_mode0 \u2014 Single 'first'/sustained shot (mode 0 primary + secondary snipe): mode 0 is not the bundled default (mode 1), so AttackSingle is dead on the live path.; The W_MachineGun_Attack_Frame auto-continuation loop (held-fire repeat for mode-0 primary) is not separately modeled \u2014 AttackSingle fires once per gated call rather than via a self-rescheduling frame think.",
+"[DEAD] machinegun.bot.wr_aim \u2014 Bot fire logic (wr_aim distance-based primary/secondary selection): Bots never use the MachineGun's long-range no-spread burst secondary: the per-weapon wr_aim (which presses ATCK2 beyond ~3000-skill*200 units) is still not ported; BotBrain fires primary only with ButtonAttack2=false (BotBrain.cs:382; comment at :342-343 confirms it is deferred). Unchanged by the fi"
+]
+},
+{
+"unit": "weapon-rifle",
+"notes": [
+"[DEAD] rifle.bot_aim \u2014 Bot aim \u2014 riflemooth primary/secondary toggle (wr_aim): UNCHANGED for the rifle. Wave-2 made BotAim read its generic aim-skill cvars (bot_ai_aimskill_*) live each frame, but did NOT add the rifle-specific wr_aim: the probabilistic primary/secondary 'riflemooth' toggle, the forced-primary-beyond-1000-units rule, and the bot_aim 1000000/0/0.001 tuning are ",
+"[DEAD] rifle.resetplayer \u2014 wr_resetplayer \u2014 burst accumulator reset on spawn: UNCHANGED by Wave-2. Rifle's wr_resetplayer (resets rifle_accumulator across all weapon slots to time - bursttime on spawn) is still not ported. Only OkNex/Vortex implement wr_resetplayer in the port. Benign at stock bursttime 0 (the accumulator's Bound() in WrThink self-corrects within a tick)."
+]
+},
+{
+"unit": "cl-csqcmodel",
+"notes": [
+"[DEAD] cl-csqcmodel.effects.jetpack_loop \u2014 Jetpack loop sound (MF_ROCKET): Only reachable when modelFlags carries MF_ROCKET, but DriveCsqcModelHooks hardcodes modelFlags:0 and MF_* is not networked, so the jetpack loop start/stop on the CSQC-model path never fires (it's dead on this path; the local jetpack sound, if any, is driven elsewhere)."
+]
+},
+{
+"unit": "cl-viewmodel",
+"notes": [
+"[DEAD] cl-viewmodel.casings.brass_eject \u2014 Brass / shell casings (eject, tumble, bounce, fade, bounce sounds): No brass/shell casings ever eject from any weapon: ShellCasings.cs sim is complete but DEAD (EffectSystem.SpawnCasing has zero callers, no server-side casings emit). Base shows tumbling/bouncing/fading casings on every machinegun/shotgun/rifle/vortex shot.; Casing bounce sounds (brass*/casings* on t"
+]
+},
+{
+"unit": "fx-deathtypes",
+"notes": [
+"[DEAD] fx-deathtypes.message.mapper_custom \u2014 HURTTRIGGER mapper message (msg_from_ent / DEATH_*_VOID_ENT) + DEATH_CUSTOM (deathmessage): EmitObituary/SelectSpecial have no msg_from_ent (ENT-variant) selection: Base's Obituary_SpecialDeath picks death_msg_ent_self/murder (DEATH_*_VOID_ENT) when a trigger_hurt carries inflictor.message/message2; the port always uses the fixed VOID line. The DEATH_SELF_VOID_ENT/DEATH_MURDER_VOID_ENT row"
+]
+},
+{
+"unit": "fx-sounds",
+"notes": [
+"[DEAD] fx-sounds.voice.persounds_manifest \u2014 LoadPlayerSounds .sounds manifest parse + per-model/skin reload: The .sounds manifest is never parsed: PlayerSoundSample builds sound/player/default.sounds/<id> by string concat instead of reading the key->file mapping in sound/player/default.sounds (which maps e.g. pain50 -> sound/player/espeak/player/pain50). The result is a path that does not exist on disk, so"
+]
+},
+{
+"unit": "keepaway",
+"notes": [
+"[DEAD] keepaway.bot.role \u2014 Bot ka roles (carrier/collector + ball goal rating + ForbidAttack): STILL OPEN / NOW REACHABLE-BUT-BROKEN: RoleKeepaway is wired into the live bot role table (BotRoles.cs:99 'ka'/'keepaway'/'tka' \u2192 RoleKeepaway), and a real ball entity now exists on the live path \u2014 BUT FindBall() (BotObjectiveRoles.cs:277) still queries classname 'keepaway_ball' while the live ball "
+]
+},
+{
+"unit": "mapobject-func",
+"notes": [
+"[DEAD] mapobject-func.reset \u2014 Map-object .reset / .reset2 pass on round/match restart (reset_map_global entity-reset): STILL DEAD after Wave-1/2. GameWorld.ResetMapObjects (GameWorld.cs:2544) body is UNCHANGED \u2014 it only removes 'projectile'/'weapon_proj*' entities; it never iterates map movers and never invokes any .Reset. Its comment still falsely claims 'doors/plats/buttons reset via MapObjectsCommon'; no such cal"
+]
+},
+{
+"unit": "monster-zombie",
+"notes": [
+"[DEAD] monster-zombie.presentation.animation \u2014 Zombie model animation (mr_anim frame groups): STILL UNCHANGED. None of the 14 mr_anim frame groups are mapped to Entity.Frame; the port keeps a 6-value logical MonsterAnim enum used only for server timing and never assigns Entity.Frame. Re-verified 2026-06-22: no `.Frame =` anywhere under src/**/Monsters/**, and MonsterAI.cs:1064 still carries "
+]
+},
+{
+"unit": "mutator-buffs",
+"notes": [
+"[DEAD] buffs.item.random_location \u2014 Random location / lifetime / randomize-on-reset (buff_Respawn / buff_Reset): No MoveToRandomMapLocation relocation, no SelectSpawnPoint fallback, no '0 0 200' launch, no lifetime-based re-spawn, no teamplay-gated randomize, no EFFECT_ELECTRO_COMBO x2, no WaypointSprite_Ping, no SND_KA_RESPAWN on relocation.; Port still always re-randomizes the buff type on respawn regardless"
+]
+},
+{
+"unit": "mutator-cloaked",
+"notes": [
+"[DEAD] mutator-cloaked.alpha.default_alpha_consumers \u2014 default_player_alpha / default_weapon_alpha applied at spawn, death, weapon entities, vehicle-exit; networked + rendered: STILL OPEN \u2014 server consumers ignore the seed: player spawn hardcodes p.Alpha=1f (SpawnSystem.cs:524) and PlayerDies hardcodes victim.Alpha=1f (DamageSystem.cs:618). Neither reads GameWorld.DefaultPlayerAlpha. (Structural barrier: DefaultPlayerAlpha is a Server-assembly GameWorld property; the spawn"
+]
+},
+{
+"unit": "mutator-damagetext",
+"notes": [
+"[DEAD] damagetext.cl.placement_2d_3d \u2014 2D-vs-3D placement heuristics (close-range / out-of-view / spectating, overlap stagger): The 2D path only triggers when the camera is null or the world point is behind the camera; the close-range (<125u), out-of-view, and spectating heuristics are never applied (no entcs/view_origin distance test, no projected_on_screen test, no spectatee_status check).; cl_damagetext_2d_overlap_offset "
+]
+},
+{
+"unit": "mutator-instagib",
+"notes": [
+"[DEAD] mutator-instagib.items.touch \u2014 ItemTouch: cells pickup full-heals to 100; ExtraLife grants armor lives: OnCellsTouch and OnExtraLifeTouch STILL have NO caller (grep across src/+game/+tests/ -> only the defs + a doc comment). The port still has no ItemTouch mutator hook chain (ItemPickupRules.cs:364 explicitly: 'the port has no ItemTouch hook chain yet'). Cells pickups won't full-heal and ExtraLife pic"
+]
+},
+{
+"unit": "mutator-itemstime",
+"notes": [
+"[DEAD] mutator-itemstime.net.csqc_sync \u2014 CSQC itemstime net message (per-client respawn-time sync): No itemstime net message exists in XonoticGodot.Net (REGISTER_NET_TEMP(itemstime) / IT_Write / NET_HANDLE not ported). Item times are fed directly from the local server mutator to the local HUD in NetGame.cs:2090-2093, guarded by `if (_server is not null)`. A pure remote client (dedicated/separate s"
+]
+},
+{
+"unit": "mutator-melee_only",
+"notes": [
+"[DEAD] melee_only.weapons.forbid_random_start \u2014 Forbid random start weapons (ForbidRandomStartWeapons -> true): STILL DEAD. A FireForbidRandomStartWeapons wrapper now exists (MutatorHooks.cs:356) but has ZERO callers; ForbidRandomStartWeapons.Call appears only inside that wrapper. The actual random-start path, GiveRandomWeapons (SpawnSystem.cs:941), is invoked from ApplyStartLoadout (SpawnSystem.cs:838-843) g"
+]
+},
+{
+"unit": "mutator-midair",
+"notes": [
+"[DEAD] mutator-midair.meta.mutator_strings \u2014 BuildMutatorsString / BuildMutatorsPrettyString (\":midair\" / \", Midair\"): STILL OPEN (unchanged by Wave-1/2). Base appends `:midair` to the server mutator-id string and `, Midair` to the pretty string (server browser / scoreboard). The port's only analog is GameLog.Init's `:gameinfo:mutators:LIST` line, and its sole caller GameWorld.cs:717 still passes NO mutators argumen"
+]
+},
+{
+"unit": "mutator-nix",
+"notes": [
+"[DEAD] mutator-nix.forbid.randomstart \u2014 ForbidRandomStartWeapons (suppress random start weapons): Handler returns true (faithful) but is DEAD: zero MutatorHooks.ForbidRandomStartWeapons.Call sites exist repo-wide (only Add/Remove in nix/instagib/melee_only/overkill). Effect is moot only while the port grants no random start weapons; becomes a live bug if such a system lands."
+]
+},
+{
+"unit": "mutator-overkill",
+"notes": [
+"[DEAD] overkill.forbid.random_start_weapons \u2014 ForbidRandomStartWeapons -> true: Handler exists and returns true, but the ForbidRandomStartWeapons chain only fires inside FireForbidRandomStartWeapons (MutatorHooks.cs:356-360), which has NO caller anywhere in the port (grep FireForbidRandomStartWeapons \u2192 only the definition). So it never runs. Instagib/Nix/MeleeOnly subscribe the"
+]
+},
+{
+"unit": "mutator-rocketminsta",
+"notes": [
+"[DEAD] mutator-rocketminsta.laser.projectile_render \u2014 RM laser projectile networking, model, trail, and team color: RM laser bolts are invisible: no CSQCProjectile/entity networking, no models/elaser.mdl, no EFFECT_ROCKETMINSTA_LASER trail attached, no team-color colormod. The trail effect string is registered (EffectsList.cs:241) but nothing emits it for these bolts."
+]
+},
+{
+"unit": "mutator-sandbox",
+"notes": [
+"[DEAD] mutator-sandbox.object.touch_material_fx \u2014 Object touch: material impact particles + impact sounds (velocity-scaled): STILL DEAD: ObjectTouch has NO live caller. ObjectSpawn now creates a real edict, and Entity.Touch (EntityTouch delegate) EXISTS as a wiring point, but ObjectSpawn never assigns e.Edict.Touch = ObjectTouch \u2014 so engine world-touches never route into it. Velocity-scaled impact sound/particles never fi"
+]
+},
+{
+"unit": "mutator-vampire",
+"notes": [
+"[DEAD] mutator-vampire.report.mutator_strings \u2014 Mutator-list strings + menu description (':Vampire' / ', Vampire' / MENUQC describe): BuildMutatorsString/BuildMutatorsPrettyString STILL not ported \u2014 no such hook chain exists in the port (only comments in CloakedMutator.cs:16, PowerupsMutator.cs:24, RocketFlyingMutator.cs:23, SuperSpecMutator.cs:38). 'Vampire' never appears in the machine or pretty mutator-list string (server brows"
+]
+},
+{
+"unit": "net-entity-state",
+"notes": [
+"[DEAD] net-entity-state.wepent.charges_clip_heat \u2014 wepent charge/clip/heat HUD fields (vortex/oknex charge+pool, clip_load/size, hagar_load, minelayer_mines, arc_heat): Weapon charge/clip/heat HUD rings never draw: CrosshairPanel charge setters (ClipLoad/ChargeFraction/ChargePool/HagarLoad/MineCount/ArcHeat) have no live feeder anywhere in game/ \u2014 the wepent charge/clip/heat fields are neither networked nor read from local prediction, so the Vortex charge ring, Hag"
+]
+},
+{
+"unit": "physics-player",
+"notes": [
+"[DEAD] physics-player.air.warsowbunny \u2014 Warsow-bunny air accel (PM_AirAccelerate): g_physics_clientselect non-default presets (CPMA/Warsow/etc.) \u2014 which is the ONLY way this Warsow-bunny path goes live \u2014 are wired (Resolve/FromValues/PresetProvider) but have NO golden-trace coverage; only the stock Xonotic preset is verified byte-exact, so this path's behavior under a real preset "
+]
+},
+{
+"unit": "sv-antilag",
+"notes": [
+"[DEAD] sv-antilag.setupshot.trueaim \u2014 W_SetupShot trueaim + shotorg traces are antilagged (g_antilag==2): W_SetupShot trueaim + shotorg traces are NOT antilagged in the port: Base runs them through WarpZone_traceline_antilag/tracebox_antilag at g_antilag==2, so w_shotend/w_shotorg/w_shotdir are computed against REWOUND enemy positions for every weapon (hitscan AND projectile); the port's WeaponFiring.Se"
+]
+},
+{
+"unit": "sv-chat",
+"notes": [
+"[DEAD] sv-chat.voice.say_coupling \u2014 VoiceMessage text routed through Say (flood-throttle + chat display + fake/real sound gating): A voice/radio command's optional message text is never run through Say: it does not appear in chat, is not flood-throttled via the chat flood field, and the spectator/flood-derived 'fake' gating of the voice sound (fake = IS_SPEC||IS_OBSERVER||flood<0) is absent.; Base aborts the voice sound entirel"
+]
+},
+{
+"unit": "sv-handicap",
+"notes": [
+"[DEAD] sv-handicap.xonstat.avg_sums \u2014 Per-player damage-weighted handicap avg for the game report: Xonstat handicapgiven/handicaptaken events are registered but never populated (no damage-weighted avg-sum accumulation)."
+]
+},
+{
+"unit": "sv-mapvoting",
+"notes": [
+"[DEAD] sv-mapvoting.client.draw \u2014 Client vote-screen panel (grid, thumbnails, counts, winner reveal): Panel is STILL never fed: SetVote/SetVotes/SetWinner/SetReduce/SetAvailability have ZERO callers anywhere in the repo (HudManager only does Get<MapVotePanel>()), so it never becomes Active in a real match -> the player never sees the vote screen.; MV_FADETIME selection-pulse easing, mv_winner_alpha "
+]
+},
+{
+"unit": "tka",
+"notes": [
+"[DEAD] tka.bot.role \u2014 Bot TKA roles (carrier/collector, team-aware goalrating, ForbidAttack): STILL BROKEN (unchanged this pass \u2014 BotObjectiveRoles.cs was not edited on this branch): RoleKeepaway is dispatched for 'tka' (BotRoles.cs:99, LIVE dispatch) but FindBall() (BotObjectiveRoles.cs:277) searches class 'keepaway_ball' while the now-live ball is spawned with classname 'keepawayball' (Bal"
+]
+},
+{
+"unit": "turret-phaser",
+"notes": [
+"[DEAD] turret-phaser.audio.beam_sound \u2014 Phaser beam sound (start + 2s re-trigger + silence-on-end) and impact cue: The characteristic phaser hum (SND_TUR_PHASER) is never played; the port plays a single weapons/electro_fire.wav at fire-start instead. No 2s re-trigger while burning, no neximpact impact cue, and no SND_Null stop on beam end. The TUR_PHASER sample is registered (SoundsList.cs:137) but never invoked"
+]
+},
+{
+"unit": "vehicle-bumblebee",
+"notes": [
+"[DEAD] vehicle-bumblebee.client.presentation \u2014 Client presentation: BRG beam, HUD, crosshairs, models, describe: The networked BRG_* healray/damage beam (the signature green/red ray; ENT_CLIENT_BUMBLE_RAYGUN, bumble_raygun_send/NET_HANDLE) + bumble_raygun_draw multi-segment Draw_CylindricLine cylinder NOT IMPLEMENTED (placeholder EffectEmitter.TeHealBeam/TeBeam stub only).; vr_hud bumble HUD + 'No right/left g"
+]
+},
+{
+"unit": "weapon-crylink",
+"notes": [
+"[DEAD] crylink.reload \u2014 Forced reload + clip system (wr_reload): The crylink.qc wr_think forced-reload pre-check (crylink.qc:495-498: if reload_ammo && clip_load < min(pri,sec) ammo -> wr_reload) is not mirrored in Crylink.WrThink; the base clip/reload machine covers reload generically. With reload_ammo default 0 the whole feature is INACTIVE \u2014 no live caller exe"
+]
+},
+{
+"unit": "weapon-electro",
+"notes": [
+"[DEAD] electro.primary.midaircombo \u2014 Primary bolt midair-combo (trigger orbs in flight): DEAD on the live path: midaircombo_radius defaults 0 (bal-wep-xonotic.cfg), so the BoltThink branch (Electro.cs:249-264) never runs with stock balance.; When force-enabled: no own/teammate/enemy team-gating (port triggers any non-self orb \u2014 Base branches on midaircombo_own/_teammate/_enemy).; When f"
+]
+},
+{
+"unit": "weapon-fireball",
+"notes": [
+"[DEAD] weapon-fireball.primary.shootable \u2014 Shootable fireball (event_damage destroys it; default health 0): Still gated on health>0: with the default health 0 the port never makes the fireball damageable (takedamage stays default), so this path is dead at defaults. Net effect matches Base (a 0-HP fireball dies on any hit) only because the port also never marks it shootable \u2014 a server raising fireball heal"
+]
+},
+{
+"unit": "weapon-hook",
+"notes": [
+"[DEAD] weapon-hook.offhand.mutator \u2014 Grappling Hook offhand mutator (g_grappling_hook): DEAD on the live path: the +hook offhand-fire button is never delivered to the server. InputButtons has no hook bit and Entity.OffhandFirePressed is never assigned anywhere in src/ or game/ (verified: only READS \u2014 HookMutator st.ButtonAttack=player.OffhandFirePressed, OffhandBlaster/Nades reads \u2014 NO"
+]
+},
+{
+"unit": "weapon-mortar",
+"notes": [
+"[DEAD] mortar.fx.projectile_visual \u2014 In-flight grenade model + trail (CSQCProjectile): The flying grenade still has no visible model and no smoke trail: Attack never sets a net Kind or model, and NetEntityKind.Projectile (NetEntity.cs:14) remains defined-but-assigned-nowhere across the whole codebase (CSQCProjectile is unimplemented for every weapon).; No primary-vs-bounce model disti"
+]
+},
+{
+"unit": "weapon-porto",
+"notes": [
+"[DEAD] weapon-porto.fire.aim_hold \u2014 Secondary aim-hold (porto_v_angle) in non-secondary mode: The hold is set on a Secondary tick and cleared when the held-angle shot is consumed (Porto.cs:117-132), but the QC release condition `if (!(fire & 2)) porto_v_angle_held = 0` cannot be reproduced from a Primary-only tick \u2014 the port can't observe an 'ATCK2 released' edge \u2014 so the hold is never relea"
+]
+},
+{
+"unit": "weapon-vortex",
+"notes": [
+"[DEAD] weapon-vortex.hud.charge_ring \u2014 Charge ring (+ chargepool inner ring) on the crosshair: The crosshair charge ring NEVER fills: DrawStatRing reads CrosshairPanel.ChargeFraction / ChargePool, which are never assigned anywhere in the repo (grep: zero writers), so ChargeRingValue always returns 0.; vortex_charge is server-only state (EntityWeaponState) and is not present in any network sna"
+]
+}
+]

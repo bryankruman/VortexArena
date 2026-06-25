@@ -488,7 +488,9 @@ public sealed class VoteController
         // NB: _masters persists (master status survives a vote, like QC's .vote_master).
     }
 
-    private int SelectionOf(Player p) => _selection.TryGetValue(p, out int s) ? s : SelectNull;
+    /// <summary>The local/given player's current ballot (QC <c>.vote_selection</c>): +1 yes, -1 no, -2 abstain,
+    /// 0 not voted. Surfaced for the client vote HUD's "you've already voted" dim + the yes/no highlight.</summary>
+    public int SelectionOf(Player p) => _selection.TryGetValue(p, out int s) ? s : SelectNull;
     private float WaitTimeOf(Player p) => _waitTime.TryGetValue(p, out float t) ? t : 0f;
     private static string CallerName(Player? p) => p?.NetName ?? "server";
     private bool SpectatorsAllowed

@@ -146,7 +146,9 @@ public static class NadeProjectile
         if (nade.GetResource(ResourceType.Health) == nade.MaxHealth)
         {
             if (Api.Services is not null)
-                Api.Sound.Play(nade, SoundChannel.Body, "weapons/grenade_bounce1.wav");
+                // QC spamsound(this, CH_SHOTS, SND_GRENADE_BOUNCE_RANDOM(), …): pick one of grenade_bounce1..6
+                // at random (SND_GRENADE_BOUNCE1.m_id + rint(random()*5)).
+                Api.Sound.Play(nade, SoundChannel.Body, $"weapons/grenade_bounce{Prandom.RangeInt(1, 7)}.wav");
             return;
         }
 
@@ -202,6 +204,19 @@ public static class NadeProjectile
             case "shotgun":
             case "okshotgun":
                 if (!secondary) damage = nade.MaxHealth * 1.15f; break;
+        }
+
+        // QC melee slaps (sv_nades.qc:279-285): a weapon whose attack is flagged WEP_TYPE_MELEE_PRI (primary)
+        // or WEP_TYPE_MELEE_SEC (secondary, e.g. the Shotgun's melee bash) slaps the nade hard (force ×10) and
+        // chips it for 10% of its max health.
+        if (Weapons.ByName(wep) is { } deathWep)
+        {
+            int meleeFlag = secondary ? WeaponFlags.TypeMeleeSec : WeaponFlags.TypeMeleePri;
+            if ((deathWep.SpawnFlags & meleeFlag) != 0)
+            {
+                force *= 10f;
+                damage = nade.MaxHealth * 0.1f;
+            }
         }
 
         // QC: this.velocity += force (the nade is pushed; DamageForceScale is 0 so the generic knockback didn't).

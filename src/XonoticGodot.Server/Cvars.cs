@@ -144,6 +144,13 @@ public static class Cvars
         new("g_balance_teams", "1", Save, "automatic team balance"),
         new("g_balance_teams_prevent_imbalance", "1", Save),
         new("g_balance_teams_skill", "1", Save, "weigh balance by player skill, not just count"),
+        // QC xonotic-server.cfg:297-298: skill-weighting tuning. The significance threshold is the z-score (in
+        // standard deviations) a team-vs-player skill gap must exceed before it is treated as real; the unranked
+        // factor scales the assumed skill of clients with no rating relative to the server average.
+        new("g_balance_teams_skill_significance_threshold", "1.645", Save,
+            "team/player skill differences count as significant past this many standard deviations"),
+        new("g_balance_teams_skill_unranked_factor", "0.666", Save,
+            "assumed skill of unranked clients as a fraction of the server-average skill"),
         new("g_changeteam_bantime", "30", Save),
         // QC sv_teamnagger (xonotic-server.cfg:300): team-size gap threshold for the unbalanced-teams nag; g_warmup
         // won't end while it's tripped. The warmup badteams gate (ReadyCount) reads this via Teamplay.

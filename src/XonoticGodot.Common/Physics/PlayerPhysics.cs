@@ -162,11 +162,24 @@ public sealed class PlayerPhysics : IPlayerPhysics
         // ----- per-frame water detection (QC _Movetype_CheckWater) -----
         CheckWater(player);
 
-        // ----- frozen movement clamp (QC PM_check_frozen) -----
+        // ----- frozen movement clamp (QC PM_check_frozen, common/physics/player.qc:649) -----
         Vector3 move = input.MoveValues;
         bool frozen = IsFrozen(player);
         if (frozen)
-            move = Vector3.Zero; // stock: frozen players can't steer (dodging-frozen sub-case omitted)
+        {
+            // QC: a frozen player normally can't steer (movement = '0 0 0'). EXCEPTION (dodging-frozen sub-case):
+            // when PHYS_DODGING_FROZEN (autocvar_sv_dodging_frozen) is set, bind movement to a very slow speed —
+            // bound(-2, .movement, 2) — rather than zeroing it, so the dodging mutator can still read .movement
+            // for its directional calculation (a frozen Freeze-Tag player can dodge). The input bridge below writes
+            // the RAW MoveValues onto the entity for the dodge detector; this clamps the player's ACTUAL motion.
+            if (Api.Services is not null && Api.Cvars.GetFloat("sv_dodging_frozen") != 0f)
+                move = new Vector3(
+                    QMath.Bound(-2f, move.X, 2f),
+                    QMath.Bound(-2f, move.Y, 2f),
+                    QMath.Bound(-2f, move.Z, 2f));
+            else
+                move = Vector3.Zero;
+        }
 
         // ----- typing / chat guard (QC PM_check_blocked) -----
         if (input.Typing)
@@ -186,6 +199,18 @@ public sealed class PlayerPhysics : IPlayerPhysics
         //       PlayerPhysics handler can use a pure multiplicative write to player.SpeedMultiplier (powerup
         //       speed, entrap-nade slow, buffs speed/disability) and the value stays frame-local. -----
         player.SpeedMultiplier = mp.HighSpeed;
+
+        // ----- INPUT BRIDGE: copy the usercmd intent onto the entity (QC PHYS_CS(this).movement / buttons / v_angle).
+        //       The movement-driven mutators read these off the entity each frame: the dodging double-tap detector
+        //       (DodgingMutator.CheckPressedKeys reads MovementForward/Right + PressedKeys + ButtonCrouch), the
+        //       multijump dodging-redirect, and the bugrigs throttle/steer. QC populates them from the usercmd before
+        //       the PlayerPhysics hook runs; the headless sim has no usercmd edict, so bridge them here, just before
+        //       the hook fires. Write the RAW input.MoveValues (not the frozen/typing-clamped `move` local) so a
+        //       frozen-dodge (sv_dodging_frozen) — which Base detects off the raw PHYS_CS movement — can still fire. -----
+        player.MovementForward = input.MoveValues.X;
+        player.MovementRight = input.MoveValues.Y;
+        player.ButtonCrouch = input.ButtonCrouch;
+        player.ViewAngles = input.ViewAngles;
 
         // ----- PlayerPhysics mutator hook (QC ecs/systems/physics.qc:56 MUTATOR_CALLHOOK(PlayerPhysics, this, dt))
         //       Fired after PM_check_frozen/PM_check_blocked + the conveyor velocity-fix and BEFORE the movement

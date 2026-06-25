@@ -363,22 +363,27 @@ public partial class CenterPrintPanel : HudPanel
         if (_titleLeft.Length > 0 || _titleRight.Length > 0)
         {
             // Duel title: "left   vs   right", centered as a block, with an underline under each name.
+            // QC centerprint_SetDuelTitle shortens each name to hud_panel_scoreboard_namesize * hud_fontsize.x
+            // (textShortenToWidth) so a long name can't overflow the title block.
+            float nameBudget = GlobalF("hud_panel_scoreboard_namesize", 15f) * Cfg.FontSize;
+            string lName = ShortenColored(_titleLeft, nameBudget, (int)titleFont);
+            string rName = ShortenColored(_titleRight, nameBudget, (int)titleFont);
             float pad = MeasureText(" ", (int)titleFont) * 2f;
-            float leftW = MeasuredColoredWidth(_titleLeft, (int)titleFont);
-            float rightW = MeasuredColoredWidth(_titleRight, (int)titleFont);
+            float leftW = MeasuredColoredWidth(lName, (int)titleFont);
+            float rightW = MeasuredColoredWidth(rName, (int)titleFont);
             float maxRl = Mathf.Max(leftW, rightW);
             float vsW = MeasureText("vs", (int)titleFont);
             float blockW = maxRl * 2f + pad * 6f + vsW;
             float bx = left + (width - blockW) * align;
 
             float lx = bx + pad + (leftW < rightW ? (maxRl - leftW) * 0.5f : 0f);
-            DrawColoredRun(new Vector2(lx, yRef), _titleLeft, col, (int)titleFont);
+            DrawColoredRun(new Vector2(lx, yRef), lName, col, (int)titleFont);
 
             float vx = bx + maxRl + pad * 3f;
             DrawText(new Vector2(vx, yRef), "vs", col, (int)titleFont);
 
             float rx = bx + blockW - pad - maxRl + (leftW >= rightW ? (maxRl - rightW) * 0.5f : 0f);
-            DrawColoredRun(new Vector2(rx, yRef), _titleRight, col, (int)titleFont);
+            DrawColoredRun(new Vector2(rx, yRef), rName, col, (int)titleFont);
 
             // advance, then underline under each name cell
             yRef += flip ? -(cpFont * TitleSpacing) : (titleFont + cpFont * TitleSpacing);
@@ -577,6 +582,42 @@ public partial class CenterPrintPanel : HudPanel
 
     /// <summary>Width of a color-coded string with the default font, codes stripped (QC <c>stringwidth_colors</c>).</summary>
     private float MeasuredColoredWidth(string text, int size) => MeasureText(HudText.Strip(text), size);
+
+    /// <summary>
+    /// Truncate a color-coded name to <paramref name="maxWidth"/> px, appending an ellipsis — QC
+    /// <c>textShortenToWidth</c> as used by <c>centerprint_SetDuelTitle</c>. Color codes (<c>^N</c>/<c>^xRGB</c>)
+    /// are copied through and do not count toward the visible width, so the surviving colors stay intact.
+    /// </summary>
+    private string ShortenColored(string text, float maxWidth, int size)
+    {
+        if (string.IsNullOrEmpty(text) || maxWidth <= 0f) return text;
+        if (MeasuredColoredWidth(text, size) <= maxWidth) return text;
+
+        const string ell = "…";
+        float budget = Mathf.Max(0f, maxWidth - MeasureText(ell, size));
+        var sb = new System.Text.StringBuilder(text.Length + 1);
+        float w = 0f;
+        for (int i = 0; i < text.Length; i++)
+        {
+            // Copy a color code verbatim without charging width (^^ literal, ^N digit, ^xRGB hex triplet).
+            if (text[i] == '^' && i + 1 < text.Length)
+            {
+                char n = text[i + 1];
+                if (n == '^') { sb.Append("^^"); i++; continue; }
+                if (char.IsDigit(n)) { sb.Append('^').Append(n); i++; continue; }
+                if (n == 'x' && i + 4 < text.Length && IsHex(text[i + 2]) && IsHex(text[i + 3]) && IsHex(text[i + 4]))
+                { sb.Append(text, i, 5); i += 4; continue; }
+            }
+            float cw = MeasureText(text[i].ToString(), size);
+            if (w + cw > budget) break;
+            sb.Append(text[i]);
+            w += cw;
+        }
+        sb.Append(ell);
+        return sb.ToString();
+    }
+
+    private static bool IsHex(char c) => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 
     /// <summary>Draw left-aligned text with an arbitrary font + drop shadow (mirrors the base <c>DrawText</c>
     /// but lets us swap to the bold font). Panel-local top-left origin.</summary>

@@ -30,7 +30,7 @@ public static class BindTable
     private static readonly Dictionary<string, string> _table = new(StringComparer.OrdinalIgnoreCase);
 
     // held-button state (cl_input.c kbutton_t), set/cleared by +/- commands.
-    private static bool _fwd, _back, _left, _right, _up, _down, _attack, _attack2, _zoom, _use;
+    private static bool _fwd, _back, _left, _right, _up, _down, _attack, _attack2, _zoom, _use, _hook;
 
     /// <summary>True while the scoreboard key (<c>+showscores</c>) is held — read by the HUD, not the sampler.</summary>
     public static bool ShowScores { get; private set; }
@@ -106,7 +106,7 @@ public static class BindTable
     public static void ReleaseAll()
     {
         _fwd = _back = _left = _right = _up = _down = false;
-        _attack = _attack2 = _zoom = _use = false;
+        _attack = _attack2 = _zoom = _use = _hook = false;
         ShowScores = false;
     }
 
@@ -126,6 +126,9 @@ public static class BindTable
             case "attack2": case "altattack": case "fire2": _attack2 = state; break;
             case "zoom": _zoom = state; break;
             case "use": _use = state; break;
+            // QC +hook (binds-xonotic.cfg: bind h +hook) -> PHYS_INPUT_BUTTON_HOOK. The +hook / offhand-fire
+            // button: drives the grapple hook, the offhand blaster, and the nade prime/throw each frame.
+            case "hook": _hook = state; break;
             case "showscores": case "score": ShowScores = state; break;
         }
     }
@@ -160,4 +163,8 @@ public static class BindTable
 
     /// <summary>True while use is held (InputButtons.Use).</summary>
     public static bool UseHeld => _use;
+
+    /// <summary>True while the +hook / offhand-fire button is held (InputButtons.Hook / PHYS_INPUT_BUTTON_HOOK).
+    /// Drives the offhand-weapon think (grapple hook, offhand blaster, nade prime/throw).</summary>
+    public static bool HookHeld => _hook;
 }

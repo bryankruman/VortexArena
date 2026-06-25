@@ -37,6 +37,7 @@ public partial class ViewEffects : CanvasLayer
     // ColorRects stretched across the whole viewport; their alpha is what we animate (the RGB is the tint).
     private ColorRect _damage = null!;
     private ColorRect _contents = null!;
+    private ColorRect _frozen = null!;
 
     // ---- HUD_Damage state (view.qc: myhealth / myhealth_flash / myhealth_prev) ----
     private float _myHealthFlash;   // the decaying damage accumulator
@@ -88,8 +89,10 @@ public partial class ViewEffects : CanvasLayer
 
         _contents = MakeFullScreenRect("ContentsTint");
         _damage = MakeFullScreenRect("DamageFlash");
+        _frozen = MakeFullScreenRect("FrozenOverlay");
         AddChild(_contents);
         AddChild(_damage); // damage on top of the liquid tint
+        AddChild(_frozen); // the Freeze-Tag icy overlay composites on top of both
 
         _myHealthPrev = 0f;
     }
@@ -276,6 +279,30 @@ public partial class ViewEffects : CanvasLayer
         _contentAvgAlpha = _contentAvgAlpha * (1f - a) + inContent * a;
 
         SetAlpha(_contents, _liquidColorPrev, _contentAvgAlpha * _liquidAlphaPrev);
+    }
+
+    /// <summary>
+    /// The Freeze-Tag full-screen icy overlay — port of <c>MUTATOR_HOOKFUNCTION(cl_ft, HUD_Draw_overlay)</c>
+    /// (common/gametypes/gametype/freezetag/cl_freezetag.qc): while the local player is frozen, fill the screen
+    /// with an icy-blue tint (<c>'0.25 0.90 1'</c>) whose colour warms (toward white) and whose alpha fades out as
+    /// the thaw ring (<c>STAT(REVIVE_PROGRESS)</c>) fills, so the player can see the world again as they thaw.
+    /// </summary>
+    /// <param name="frozen">True iff the local player currently has the Freeze-Tag freeze (QC STAT(FROZEN)).</param>
+    /// <param name="reviveProgress">The local player's 0..1 thaw progress (QC STAT(REVIVE_PROGRESS)).</param>
+    public void UpdateFrozenOverlay(bool frozen, float reviveProgress)
+    {
+        if (!frozen)
+        {
+            SetAlpha(_frozen, new Color(0f, 0f, 0f), 0f);
+            return;
+        }
+
+        float p = Mathf.Clamp(reviveProgress, 0f, 1f);
+        float colFade = Mathf.Max(0f, p * 2f - 1f);            // QC col_fade = max(0, REVIVE_PROGRESS*2 - 1)
+        float alphaFade = 0.3f + 0.7f * (1f - Mathf.Max(0f, p * 4f - 3f)); // QC alpha_fade
+        // QC base col '0.25 0.90 1'; as col_fade rises the tint warms (R up, G/B down toward white-ish).
+        Color col = new(0.25f + colFade, 0.90f - colFade, 1f - colFade);
+        SetAlpha(_frozen, col, alphaFade);
     }
 
     private static void SetAlpha(ColorRect rect, Color rgb, float alpha)

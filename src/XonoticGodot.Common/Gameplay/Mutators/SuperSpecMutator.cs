@@ -33,15 +33,22 @@ namespace XonoticGodot.Common.Gameplay;
 ///     This is what WRITES the per-client option store, so the followkiller hook + FilterItem + Msg are now
 ///     reachable in a real match. Console output goes through the host-wired <see cref="PrintTo"/> sprint seam.
 ///
+/// ALSO PORTED (Wave-5 fix-up):
+///   - The ItemTouch hook (<see cref="OnItemTouch"/>, via the new <c>MutatorHooks.ItemTouch</c> chain fired from
+///     <c>ItemPickupRules.ItemTouch</c>): the (filtered) pickup-announcement messages + auto-spectate on an item
+///     message (ASF_SSIM) or a Strength/Shield/Mega-Armor/Mega-Health/flag-grab grab, with observer_only suppression.
+///     This is the live caller for <see cref="FilterItem"/>, <see cref="Msg"/>, and <see cref="SpectateTransfer"/>.
+///   - The <c>superspec_msg</c> centered form: <see cref="Msg"/> now routes the gated centerprint through the
+///     notification CenterRaw channel (no host seam needed).
+///   - ClientConnect/ClientDisconnect (<see cref="OnClientConnect"/>/<see cref="OnClientDisconnect"/>, called by the
+///     server's client lifecycle): the connect defaults, the crypto_idfp-keyed options-file load/save (magic
+///     "SUPERSPEC_OPTIONSFILE_V1", via the host-wired <see cref="Store"/>), and the delayed superspec_hello firing
+///     INFO_SUPERSPEC_MISSING_UID (scheduled at time+5, driven off the SvStartFrame chain).
+///
 /// CROSS-FILE SEAMS THAT DO NOT EXIST YET (left as todos, NOT ported here):
-///   - ItemTouch shared hook (no <c>MutatorHooks.ItemTouch</c> chain): the pickup-message + auto-spectate-on-
-///     powerup/mega/flag behavior (superspec ItemTouch) has nowhere to attach. The message helper + filter +
-///     SpectateTransfer below are ready for it the moment the hook lands.
-///   - A spectator centerprint-text server API for <c>superspec_msg</c>'s centered form (the console <c>sprint</c>
-///     form is now wired through <see cref="PrintTo"/>; the centerprint form is still gated-but-stubbed).
-///   - ClientConnect/ClientDisconnect hooks + a crypto_idfp-keyed options file (superspec-*.options, magic
-///     "SUPERSPEC_OPTIONSFILE_V1") for persistence, plus the delayed superspec_hello firing the (currently dead)
-///     INFO_SUPERSPEC_MISSING_UID notification.
+///   - A robust IS_LOCAL (listen-host) discriminator: <see cref="IsLocalProvider"/> is left unset by the host, so
+///     the options file is crypto_idfp-keyed for everyone (a dedicated-server behaviour). An authenticated client
+///     persists; an unauthenticated remote client (and a listen host's local-file fast path) does not.
 ///   - BuildMutatorsString / BuildMutatorsPrettyString hooks for the ":SS" / ", Super Spectators" tags.
 /// </summary>
 [Mutator]
@@ -72,14 +79,46 @@ public sealed class SuperSpecMutator : MutatorBase
     // ===== host seams (wired by the server; null in tests / headless) =====
 
     /// <summary>QC <c>sprint(to, ..)</c> — one console line to a spectator (the host routes it to the client).
-    /// Wired by the server (NetGame.WireSuperspec). When null (tests/headless) <see cref="Msg"/> is a no-op,
-    /// exactly as before. The centered <c>centerprint</c> form has no seam yet (still gated-but-stubbed).</summary>
+    /// Wired by the server (NetGame.WireSuperspec). When null (tests/headless) the sprint line is dropped; the
+    /// centered <c>centerprint</c> form goes through the notification CenterRaw channel directly (no host seam).</summary>
     public Action<Player, string>? PrintTo { get; set; }
 
     /// <summary>QC <c>FOREACH_CLIENT</c> — the live client roster. The follow* commands and the followkiller scan
     /// pull from this; the host wires it (<c>() =&gt; Clients.Players</c>). Falls back to the option-store keys
     /// (tests) so the unit stays exercisable headless.</summary>
     public Func<IReadOnlyList<Player>>? RosterProvider { get; set; }
+
+    /// <summary>
+    /// QC the per-client options file IO (<c>fopen</c>/<c>fputs</c>/<c>fgets</c> in superspec_save_client_conf /
+    /// ClientConnect, sv_superspec.qc:33-61/378-419). Persists the per-client flags + itemfilter to
+    /// <c>superspec-local.options</c> (listen host) or <c>superspec-&lt;uri_escape(crypto_idfp)&gt;.options</c>
+    /// (an authenticated remote client). The host wires a file-backed store (NetGame); null (tests/headless) =
+    /// no persistence, exactly as a dedicated server with no writable conf dir. Read returns the file's lines
+    /// (or null on miss); Write replaces them.
+    /// </summary>
+    public IOptionsStore? Store { get; set; }
+
+    /// <summary>QC <c>.crypto_idfp</c> — the player's authentication UID (same field RaceRecords/Sandbox key by;
+    /// the port's <see cref="Player.PersistentId"/>). "" = unauthenticated (no remote persistence; a missing-UID
+    /// notification fires). The host wires it; the fallback reads <see cref="Player.PersistentId"/> directly.</summary>
+    public Func<Player, string>? CryptoIdfpProvider { get; set; }
+
+    /// <summary>QC <c>IS_LOCAL(player)</c> — is this the listen-server host (who persists to the fixed local file
+    /// regardless of UID)? The host wires it; the fallback treats nobody as local (dedicated-server behaviour).</summary>
+    public Func<Player, bool>? IsLocalProvider { get; set; }
+
+    private string CryptoIdfp(Player p) => CryptoIdfpProvider is not null ? CryptoIdfpProvider(p) : p.PersistentId;
+    private bool IsLocal(Player p) => IsLocalProvider is not null && IsLocalProvider(p);
+
+    /// <summary>The per-client options-file persistence seam (QC fopen/fputs/fgets). Implemented by the host over
+    /// the writable user dir; null in tests/headless.</summary>
+    public interface IOptionsStore
+    {
+        /// <summary>QC <c>fopen(fn, FILE_READ)</c> + <c>fgets</c> loop: the file's lines, or null if absent.</summary>
+        IReadOnlyList<string>? Read(string filename);
+        /// <summary>QC <c>fopen(fn, FILE_WRITE)</c> + <c>fputs</c>: replace the file with these lines.</summary>
+        void Write(string filename, IReadOnlyList<string> lines);
+    }
 
     private IReadOnlyList<Player> Roster()
     {
@@ -105,6 +144,11 @@ public sealed class SuperSpecMutator : MutatorBase
 
     private static readonly Dictionary<Player, Options> _options = new();
 
+    // QC superspec_delayed_hello: the (player, fire-time) of a scheduled missing-UID notification (think at
+    // time + 5). Drained by OnStartFrame once the fire-time passes — the port has no per-entity think scheduler
+    // reachable from the mutator, so the SvStartFrame chain stands in for the new_pure(...).nextthink entity.
+    private static readonly List<(Player Player, float When)> _pendingHello = new();
+
     private static Options Opt(Player p)
     {
         if (!_options.TryGetValue(p, out Options? o))
@@ -116,17 +160,26 @@ public sealed class SuperSpecMutator : MutatorBase
     }
 
     private HookHandler<MutatorHooks.PlayerDiesArgs>? _onPlayerDies;
+    private HookHandler<MutatorHooks.ItemTouchArgs>? _onItemTouch;
+    private HookHandler<MutatorHooks.SvStartFrameArgs>? _onStartFrame;
 
     public override void Hook()
     {
         _onPlayerDies ??= OnPlayerDies;
+        _onItemTouch ??= OnItemTouch;
+        _onStartFrame ??= OnStartFrame;
         MutatorHooks.PlayerDies.Add(_onPlayerDies);
+        MutatorHooks.ItemTouch.Add(_onItemTouch);
+        MutatorHooks.SvStartFrame.Add(_onStartFrame);
     }
 
     public override void Unhook()
     {
         if (_onPlayerDies is not null) MutatorHooks.PlayerDies.Remove(_onPlayerDies);
+        if (_onItemTouch is not null) MutatorHooks.ItemTouch.Remove(_onItemTouch);
+        if (_onStartFrame is not null) MutatorHooks.SvStartFrame.Remove(_onStartFrame);
         _options.Clear();
+        _pendingHello.Clear();
     }
 
     // QC superspec_Spectate(this, targ) -> Spectate(this, targ). The port has no engine Spectate() target-switch
@@ -171,9 +224,11 @@ public sealed class SuperSpecMutator : MutatorBase
         if (spamLevel > 1f && (flags & SSF_VERBOSE) == 0)
             return;
 
-        // centerprint(_to, strcat(centerTitle, msg)) — gated. (No port centerprint-text seam yet; see todos.)
-        _ = centerTitle;
-        _ = msg;
+        // centerprint(_to, strcat(centerTitle, msg)) — gated. Routed through the notification CenterRaw channel
+        // (the same MSG_CenterRaw path Chat.cs / map triggers use for a raw centerprint to one client), so the
+        // spectator gets the centered overlay too, not just the console line. NOTIF_ONE_ONLY targets exactly the
+        // recipient. Headless/tests reach the RecordingSink, so the unit stays observable without the net layer.
+        NotificationSystem.SendCenterRaw(NotifBroadcast.OneOnly, to, centerTitle + msg);
     }
 
     // MUTATOR_HOOKFUNCTION(superspec, PlayerDies) — followkiller (sv_superspec.qc:421-435). Any spectator
@@ -201,6 +256,77 @@ public sealed class SuperSpecMutator : MutatorBase
         return false;
     }
 
+    // MUTATOR_HOOKFUNCTION(superspec, ItemTouch) — sv_superspec.qc:91-139. Fired (via MutatorHooks.ItemTouch /
+    // ItemPickupRules.ItemTouch) when a player is about to collect a world item, BEFORE the give. For every
+    // spectator/observer: optionally print a (filtered) pickup message, and auto-switch the follow-cam onto the
+    // toucher on an item-message (ASF_SSIM) or on a Strength/Shield/Mega-Armor/Mega-Health/flag-grab trigger,
+    // honouring the observer_only suppression. QC returns MUT_ITEMTOUCH_CONTINUE (never blocks the pickup).
+    private bool OnItemTouch(ref MutatorHooks.ItemTouchArgs args)
+    {
+        if (args.Item is not { } item || args.Toucher is not Player toucher)
+            return false;
+
+        // QC item.netname is the item's human label (def.m_name). The port's world item carries the bare
+        // NetName (= def.NetName) for net keying, so reach the def's DisplayName for the message; fall back to
+        // NetName when there's no def. (item.classname stays the raw classname, faithful to QC.)
+        string itemLabel = !string.IsNullOrEmpty(item.Pickup?.DisplayName) ? item.Pickup!.DisplayName : item.NetName;
+
+        foreach (Player it in Roster())
+        {
+            // QC: if(!IS_SPEC(it) && !IS_OBSERVER(it)) continue; — only spectators/observers react.
+            if (!it.IsObserver)
+                continue;
+
+            Options o = Opt(it);
+
+            // ---- item-message (SSF_ITEMMSG) + the ASF_SSIM auto-follow ----
+            if ((o.SuperspecFlags & SSF_ITEMMSG) != 0 && FilterItem(it, item))
+            {
+                if ((o.SuperspecFlags & SSF_VERBOSE) != 0)
+                    Msg(it, "", "", $"Player {toucher.NetName}^7 just picked up ^3{itemLabel}\n", 1);
+                else
+                    Msg(it, "", "", $"Player {toucher.NetName}^7 just picked up ^3{itemLabel}\n^8({item.ClassName}^8)\n", 1);
+
+                if ((o.AutospecFlags & ASF_SSIM) != 0 && !ReferenceEquals(it.Spectatee, toucher))
+                {
+                    SpectateTransfer(it, toucher);
+                    continue; // QC: return MUT_ITEMTOUCH_CONTINUE (stops processing this spectator's other triggers)
+                }
+            }
+
+            // ---- the powerup / mega / flag auto-follow triggers ----
+            bool trigger =
+                (((o.AutospecFlags & ASF_SHIELD) != 0) && item.InvincibleFinished != 0f)
+                || (((o.AutospecFlags & ASF_STRENGTH) != 0) && item.StrengthFinished != 0f)
+                || (((o.AutospecFlags & ASF_MEGA_AR) != 0) && item.Pickup is ArmorMega)
+                || (((o.AutospecFlags & ASF_MEGA_HP) != 0) && item.Pickup is HealthMega)
+                || (((o.AutospecFlags & ASF_FLAG_GRAB) != 0) && item.ClassName == "item_flag_team");
+
+            // QC: if((it.enemy != toucher) || IS_OBSERVER(it)). In this port IS_OBSERVER (a pure, non-following
+            // observer) is IsObserver && Spectatee == null, so this gate reduces to "not already following the
+            // toucher" (a pure observer also satisfies Spectatee != toucher).
+            if (trigger && !ReferenceEquals(it.Spectatee, toucher))
+            {
+                // QC: ASF_OBSERVER_ONLY suppresses the switch unless the spectator is a true (non-following)
+                // observer — i.e. suppress for a FOLLOWING spectator (port: IsObserver && Spectatee != null).
+                if ((o.AutospecFlags & ASF_OBSERVER_ONLY) != 0 && it.Spectatee is not null)
+                {
+                    if ((o.SuperspecFlags & SSF_VERBOSE) != 0)
+                        Msg(it, "", "", $"^8Ignored that ^7{toucher.NetName}^8 grabbed {itemLabel}^8 since the observer_only option is ON\n", 2);
+                }
+                else
+                {
+                    if ((o.AutospecFlags & ASF_SHOWWHAT) != 0)
+                        Msg(it, "", "", $"^7Following {toucher.NetName}^7 due to picking up {itemLabel}\n", 2);
+
+                    SpectateTransfer(it, toucher);
+                }
+            }
+        }
+
+        return false; // MUT_ITEMTOUCH_CONTINUE — never blocks the pickup.
+    }
+
     // QC IS_SPEC(it): an observer that is currently following a live player (.enemy set, spectatee_status > 0).
     private static bool IsSpectator(Player p) => p.IsObserver && p.Spectatee is not null;
 
@@ -214,6 +340,128 @@ public sealed class SuperSpecMutator : MutatorBase
     /// <summary>QC <c>StatusEffects_active(STATUSEFFECT_Shield, it)</c> — has the Shield (invincible) powerup active.</summary>
     private static bool HasShield(Player p)
         => StatusEffectsCatalog.ByName("shield") is { } d && StatusEffectsCatalog.Has(p, d);
+
+    // =================================================================================================
+    //  Per-client lifecycle + options-file persistence (sv_superspec.qc:33-61, 370-419, 437-442).
+    //  Called by the server from its ClientConnect/ClientDisconnect chain (GameWorld.Infra*), gated on the
+    //  mutator being Added — the C# stand-in for the MUTATOR_HOOKFUNCTION(superspec, ClientConnect/Disconnect).
+    // =================================================================================================
+
+    private const string LocalOptionsFile = "superspec-local.options";
+
+    /// <summary>QC the superspec ClientConnect hook (sv_superspec.qc:378-419): seed the connect defaults
+    /// (superspec_flags = SSF_VERBOSE, itemfilter = ""), schedule the time+5 missing-UID hello, then load the
+    /// per-client options file (local for the listen host, crypto_idfp-keyed for an authenticated remote).</summary>
+    public void OnClientConnect(Player player)
+    {
+        // QC: if(!IS_REAL_CLIENT(player)) return; — bots/console never persist.
+        if (player.IsBot)
+            return;
+
+        // QC connect defaults (the options-file load overrides these if present).
+        Options opt = Opt(player);
+        opt.SuperspecFlags = SSF_VERBOSE;
+        opt.ItemFilter = "";
+
+        // QC: schedule superspec_hello at time + 5 (fires INFO_SUPERSPEC_MISSING_UID if the client has no UID).
+        _pendingHello.Add((player, (Api.Services is not null ? Api.Clock.Time : 0f) + 5f));
+
+        // QC: load superspec-local.options (host) or superspec-<uri_escape(crypto_idfp)>.options (remote w/ UID).
+        if (Store is null)
+            return;
+
+        string fn = LocalOptionsFile;
+        if (!IsLocal(player))
+        {
+            string idfp = CryptoIdfp(player);
+            if (string.IsNullOrEmpty(idfp))
+                return; // QC: no UID → cannot key a remote file → keep the connect defaults.
+            fn = $"superspec-{UriEscape(idfp)}.options";
+        }
+
+        IReadOnlyList<string>? lines = Store.Read(fn);
+        if (lines is null || lines.Count == 0)
+            return;
+
+        // QC: line0 = magic, line1 = autospec_flags, line2 = superspec_flags, line3 = itemfilter.
+        if (lines[0] != OptionsFileMagic)
+            return; // QC LOG_TRACE("unknown magic") and bail.
+        if (lines.Count > 1 && int.TryParse(lines[1], out int af)) opt.AutospecFlags = af;
+        if (lines.Count > 2 && int.TryParse(lines[2], out int sf)) opt.SuperspecFlags = sf;
+        if (lines.Count > 3) opt.ItemFilter = lines[3];
+    }
+
+    /// <summary>QC the superspec ClientDisconnect hook (sv_superspec.qc:437-442) → superspec_save_client_conf:
+    /// write the per-client flags + itemfilter back to the options file (local host or crypto_idfp-keyed remote;
+    /// an unauthenticated remote client is not saved).</summary>
+    public void OnClientDisconnect(Player player)
+    {
+        SaveClientConf(player);
+        _pendingHello.RemoveAll(h => ReferenceEquals(h.Player, player));
+        _options.Remove(player);
+    }
+
+    // QC superspec_save_client_conf(this) (sv_superspec.qc:33-61).
+    private void SaveClientConf(Player player)
+    {
+        if (Store is null || player.IsBot)
+            return;
+
+        string fn = LocalOptionsFile;
+        if (!IsLocal(player))
+        {
+            string idfp = CryptoIdfp(player);
+            if (string.IsNullOrEmpty(idfp))
+                return; // QC: no UID → don't save a remote client.
+            fn = $"superspec-{UriEscape(idfp)}.options";
+        }
+
+        Options opt = Opt(player);
+        Store.Write(fn, new[]
+        {
+            OptionsFileMagic,
+            opt.AutospecFlags.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            opt.SuperspecFlags.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            opt.ItemFilter,
+        });
+    }
+
+    // QC superspec_hello (sv_superspec.qc:370-376) driven off the SvStartFrame chain: once the scheduled
+    // time+5 passes, if the client still lacks a UID, fire INFO_SUPERSPEC_MISSING_UID to that client only.
+    private bool OnStartFrame(ref MutatorHooks.SvStartFrameArgs args)
+    {
+        if (_pendingHello.Count == 0)
+            return false;
+
+        float now = args.Time;
+        for (int i = _pendingHello.Count - 1; i >= 0; --i)
+        {
+            if (now < _pendingHello[i].When)
+                continue;
+            Player p = _pendingHello[i].Player;
+            _pendingHello.RemoveAt(i);
+            if (string.IsNullOrEmpty(CryptoIdfp(p)))
+                NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Info, "SUPERSPEC_MISSING_UID");
+        }
+        return false;
+    }
+
+    // QC uri_escape(s): percent-escape the bytes a filename can't safely carry. crypto_idfp is base64-ish (it can
+    // contain '/' and '+'), so escaping those keeps the filename single-segment + filesystem-safe, matching the
+    // intent of Base's uri_escape on the remote-options filename.
+    private static string UriEscape(string s)
+    {
+        var sb = new StringBuilder(s.Length);
+        foreach (char c in s)
+        {
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+                || c == '-' || c == '_' || c == '.' || c == '~')
+                sb.Append(c);
+            else
+                sb.Append('%').Append(((int)c).ToString("X2", System.Globalization.CultureInfo.InvariantCulture));
+        }
+        return sb.ToString();
+    }
 
     // =================================================================================================
     // MUTATOR_HOOKFUNCTION(superspec, SV_ParseClientCommand) — sv_superspec.qc:141-358. The spectator-only

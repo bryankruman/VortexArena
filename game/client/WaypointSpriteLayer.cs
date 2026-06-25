@@ -27,9 +27,18 @@ public partial class WaypointSpriteLayer : Control
     /// <summary>Supplies the live per-frame waypoint list (the host wires this to <c>ClientNet.Waypoints</c>).</summary>
     public Func<IReadOnlyList<WaypointNet>>? Source { get; set; }
 
-    private const float EdgeInset = 0.06f;   // g_waypointsprite_edgeoffset_* (fraction of the viewport)
-    private const float IconSize = 24f;      // g_waypointsprite_iconsize (px; gently smaller than QC's 32)
-    private const int FontSize = 13;         // g_waypointsprite_fontsize
+    // QC autocvar defaults (xonotic-client.cfg:502-560) — the fallbacks used when the cvar store isn't wired
+    // (headless tests). The port keeps its 'gently smaller than QC' icon/font defaults only as the fallback;
+    // the live g_waypointsprite_iconsize/fontsize values (32/12) take over when the store is present.
+    private const float DefEdgeInset = 0.06f; // g_waypointsprite_edgeoffset_*
+    private const float DefIconSize = 24f;    // g_waypointsprite_iconsize fallback (QC default is 32)
+    private const int DefFontSize = 13;       // g_waypointsprite_fontsize fallback (QC default is 12)
+
+    // ---- live g_waypointsprite_* / cl_hidewaypoints reads (QC WaypointSprite_Load + Draw_WaypointSprite) ----
+    private static bool HasCvars => XonoticGodot.Common.Services.Api.Services is not null;
+    private static float CvarF(string name, float fallback)
+        => HasCvars ? XonoticGodot.Common.Services.Api.Cvars.GetFloat(name) : fallback;
+    private static bool CvarOn(string name) => HasCvars && XonoticGodot.Common.Services.Api.Cvars.GetFloat(name) != 0f;
 
     public override void _Ready() => MouseFilter = MouseFilterEnum.Ignore; // QC hud_cursormode off
 
@@ -43,9 +52,27 @@ public partial class WaypointSpriteLayer : Control
         if (list.Count == 0)
             return;
 
+        // QC autocvar_cl_hidewaypoints >= 2 hides ALL in-world waypoints (radar only); == 1 hides only the
+        // hideflag&1 "fixed/static" waypoints (Hideable here), keeping team/objective markers.
+        int hideWaypoints = (int)CvarF("cl_hidewaypoints", 0f);
+        if (hideWaypoints >= 2)
+            return;
+
+        // QC WaypointSprite_Load: g_waypointsprite_alpha/scale/iconsize/fontsize/edgeoffset_* + g_waypointsprite_text/uppercase.
+        float globalAlpha = HasCvars ? Math.Clamp(CvarF("g_waypointsprite_alpha", 1f), 0f, 1f) : 1f;
+        float scale = HasCvars ? MathF.Max(0f, CvarF("g_waypointsprite_scale", 1f)) : 1f;
+        float iconSize = (HasCvars ? CvarF("g_waypointsprite_iconsize", DefIconSize) : DefIconSize) * scale;
+        int fontSize = Math.Max(1, (int)MathF.Round((HasCvars ? CvarF("g_waypointsprite_fontsize", DefFontSize) : DefFontSize) * scale));
+        bool forceText = CvarOn("g_waypointsprite_text");        // always show text instead of icons
+        bool uppercase = HasCvars ? CvarOn("g_waypointsprite_uppercase") : true; // QC default 1
+        float edgeL = HasCvars ? CvarF("g_waypointsprite_edgeoffset_left", DefEdgeInset) : DefEdgeInset;
+        float edgeT = HasCvars ? CvarF("g_waypointsprite_edgeoffset_top", DefEdgeInset) : DefEdgeInset;
+        float edgeR = HasCvars ? CvarF("g_waypointsprite_edgeoffset_right", DefEdgeInset) : DefEdgeInset;
+        float edgeB = HasCvars ? CvarF("g_waypointsprite_edgeoffset_bottom", DefEdgeInset) : DefEdgeInset;
+
         Vector2 vp = GetViewportRect().Size;
         Vector2 ctr = vp * 0.5f;
-        float l = vp.X * EdgeInset, t = vp.Y * EdgeInset, r = vp.X - vp.X * EdgeInset, b = vp.Y - vp.Y * EdgeInset;
+        float l = vp.X * edgeL, t = vp.Y * edgeT, r = vp.X - vp.X * edgeR, b = vp.Y - vp.Y * edgeB;
         NVec3 camQ = Coords.ToQuake(Camera.GlobalPosition);
         float now = NowSec();
         Font font = HudPanel.HudFont ?? ThemeDB.FallbackFont;
@@ -55,12 +82,15 @@ public partial class WaypointSpriteLayer : Control
         {
             if (!float.IsFinite(wp.Origin.X) || !float.IsFinite(wp.Origin.Y) || !float.IsFinite(wp.Origin.Z))
                 continue;
+            // QC: (hideflags & 1) && autocvar_cl_hidewaypoints → hide the fixed/static (Hideable) waypoints.
+            if (hideWaypoints >= 1 && wp.Hideable)
+                continue;
             WaypointDef def = WaypointRegistry.Get(wp.SpriteName);
 
-            // ---- alpha: lifetime fade × max-distance fade × blink/helpme (QC Draw_WaypointSprite) ----
+            // ---- alpha: lifetime fade × max-distance fade × blink/helpme × g_waypointsprite_alpha (QC Draw_WaypointSprite) ----
             float dx = wp.Origin.X - camQ.X, dy = wp.Origin.Y - camQ.Y, dz = wp.Origin.Z - camQ.Z;
             float dist = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
-            float a = Math.Clamp(wp.Fade, 0f, 1f);
+            float a = Math.Clamp(wp.Fade, 0f, 1f) * globalAlpha;
             if (wp.MaxDistance > 0f)
             {
                 if (dist >= wp.MaxDistance) continue;                       // QC max-distance cull
@@ -92,24 +122,25 @@ public partial class WaypointSpriteLayer : Control
             if (edge)
                 DrawArrow(sp, ang, col);
 
-            // ---- icon or text (QC: icon if the def has one, else the localized text) ----
-            Texture2D? icon = string.IsNullOrEmpty(def.Icon)
+            // ---- icon or text (QC: icon if the def has one AND !g_waypointsprite_text, else the localized text) ----
+            Texture2D? icon = (forceText || string.IsNullOrEmpty(def.Icon))
                 ? null
                 : TextureCache.GetFirst($"gfx/hud/{HudSkin.SkinName}/{def.Icon}", $"gfx/hud/default/{def.Icon}");
 
             float barY;
             if (icon is not null)
             {
-                var ir = new Rect2(sp - new Vector2(IconSize, IconSize) * 0.5f, new Vector2(IconSize, IconSize));
+                var ir = new Rect2(sp - new Vector2(iconSize, iconSize) * 0.5f, new Vector2(iconSize, iconSize));
                 DrawTextureRect(icon, ir, false, new Color(1f, 1f, 1f, a)); // QC iconcolor 0 → white icon
                 barY = ir.Position.Y - 6f;
             }
             else
             {
                 string txt = def.Text;
+                if (uppercase) txt = txt.ToUpperInvariant(); // QC g_waypointsprite_uppercase
                 if (wp.Helpme > 0f) txt = txt + "!";
-                DrawCenteredText(bold, sp, txt, col, FontSize);
-                barY = sp.Y - FontSize - 6f;
+                DrawCenteredText(bold, sp, txt, col, fontSize);
+                barY = sp.Y - fontSize - 6f;
             }
 
             // ---- health bar (objectives with health: Assault / FreezeTag revival / generators) ----

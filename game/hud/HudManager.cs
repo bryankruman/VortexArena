@@ -113,8 +113,17 @@ public partial class Hud : CanvasLayer
 
     private string _skin = "luma";
 
+    /// <summary>The full-screen HUD dock background (QC HUD_Main dock-draw block). Added first so it composites
+    /// behind every panel; self-blanks unless <c>hud_dock</c> is enabled. Driven each frame from the HUD fade.</summary>
+    public HudDock Dock { get; private set; } = null!;
+
     public override void _Ready()
     {
+        // The HUD dock background draws behind every panel (QC draws it before the panel walk). Add it FIRST so
+        // it's the lowest-z child; it self-blanks while hud_dock is off (the default).
+        Dock = new HudDock { Name = "Dock" };
+        AddChild(Dock);
+
         // Discover + create every panel (QC registered them at load). Reflection runs once (HudRegistry).
         foreach (Type t in HudRegistry.PanelTypes)
             Add(HudRegistry.Create(t));
@@ -191,6 +200,16 @@ public partial class Hud : CanvasLayer
         Vector2 vp = GetViewport().GetVisibleRect().Size;
         float fade = Mathf.Clamp(HudFadeAlpha, 0f, 1f);
         float sbFade = Mathf.Clamp(ScoreboardFade, 0f, 1f);
+
+        // Drive the HUD dock background (QC HUD_Main dock block): it draws at hud_dock_alpha * hud_fade_alpha,
+        // tinted by the local team color when hud_dock_color_team + teamplay. Self-blanks while hud_dock is off.
+        if (Dock is not null)
+        {
+            Dock.HudFadeAlpha = fade;
+            Dock.TeamColor = Player is { } dp && XonoticGodot.Common.Gameplay.Scoring.GameScores.Teamplay
+                ? HudDock.TeamRgb((int)dp.Team)
+                : (Color?)null;
+        }
 
         // Damage-keyed whole-HUD shake (QC Hud_Dynamic_Frame): nudge the HUD root by the per-frame shake offset.
         // QC added hud_dynamic_shake_realofs to hud_shift_current, which every panel's draw applied to its origin;

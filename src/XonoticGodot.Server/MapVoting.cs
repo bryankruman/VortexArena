@@ -268,6 +268,11 @@ public sealed class MapVoting
         return true;
     }
 
+    /// <summary>The given voter's current candidate index (QC client <c>.mapvote</c>), or -1 if they have not
+    /// voted (or abstained). Surfaced for the client map-vote HUD's own-vote highlight (QC <c>mv_ownvote</c>).</summary>
+    public int SelectionOf(object? voter)
+        => voter is not null && _votes.TryGetValue(voter, out int idx) ? idx : -1;
+
     /// <summary>Withdraw a voter (e.g. on disconnect) so their vote no longer counts.</summary>
     public void RemoveVoter(object voter)
     {

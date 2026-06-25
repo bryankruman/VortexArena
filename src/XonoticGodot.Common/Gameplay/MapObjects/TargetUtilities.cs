@@ -291,6 +291,13 @@ public static class TargetUtilities
     public static System.Func<Entity /*target*/, (int real, int voted)>? RealPlayerVoteCount;
 
     /// <summary>
+    /// Host seam (XonoticGodot.Server): apply the next map's gametype (QC <c>MapInfo_SwitchGameType</c>) when a
+    /// <c>target_changelevel</c> carries a <c>.gametype</c> NetName. On the listen server this sets the live
+    /// <c>gametype</c> cvar so the rebooted level comes up in that mode. Null = no switch (degrade to no-op).
+    /// </summary>
+    public static System.Action<string /*gametype NetName*/>? SwitchGameTypeHandler;
+
+    /// <summary>
     /// <c>spawnfunc(target_changelevel)</c> — ends the match (empty <c>.chmap</c>) or switches to <c>.chmap</c>.
     /// CHANGELEVEL_MULTIPLAYER requires a fraction (<c>.count</c>, default 0.7) of real players to trigger it.
     /// </summary>
@@ -301,12 +308,11 @@ public static class TargetUtilities
         this_.ClassName = "target_changelevel";
 
         // QC: if(!this.count) this.count = 0.7 — a fraction of real players. QC's .count is a FLOAT; the port
-        // splits QC's .count into Count (int, what the BSP loader binds the "count" key into) and the float
-        // MoverCnt used here. Seed the fraction from the int Count when a map gave one (an integer like 1 = "all
-        // players"), else use the 0.7 default. (A FRACTIONAL map "count" can't survive the int binder — that
-        // needs a float-count binder in the map loader; recorded in crossTaskNeeds. Maps virtually always use
-        // CHANGELEVEL_MULTIPLAYER with the default fraction, so this is the faithful common path.)
-        this_.MoverCnt = this_.Count != 0 ? this_.Count : 0.7f;
+        // binds the raw "count" key as a float onto ParticleCount (MapObjectFieldsExtra) AND truncated onto the
+        // int Count. Seed the fraction from the FLOAT count so a fractional map value (e.g. 0.5) survives — fall
+        // back to the int Count, then the 0.7 default. (Maps virtually always use the default fraction.)
+        float countKey = this_.ParticleCount != 0f ? this_.ParticleCount : this_.Count;
+        this_.MoverCnt = countKey != 0f ? countKey : 0.7f;
 
         MapMover.IndexRegister(this_);
         // QC: this.reset = target_changelevel_reset — dormant until reset infra exists.
@@ -346,10 +352,16 @@ public static class TargetUtilities
                 return;
         }
 
-        // QC: if(this.gametype != "") MapInfo_SwitchGameType(...) — MapInfo_SwitchGameType isn't ported; the
-        // next-map gametype switch is degradable. Record the request so a host can honor it.
+        // QC: if(this.gametype != "") MapInfo_SwitchGameType(MapInfo_Type_FromString(this.gametype)). On the
+        // listen server the host seam sets the live `gametype` cvar so the next changelevel boots that mode
+        // (the port's MapInfo_SwitchGameType equivalent). Unwired → degrades to no-op.
         if (!string.IsNullOrEmpty(self.ChLevelGameType))
-            Log.Trace($"target_changelevel: gametype switch to '{self.ChLevelGameType}' requested (not ported).");
+        {
+            if (SwitchGameTypeHandler is not null)
+                SwitchGameTypeHandler(self.ChLevelGameType);
+            else
+                Log.Trace($"target_changelevel: gametype switch to '{self.ChLevelGameType}' requested (unwired).");
+        }
 
         if (string.IsNullOrEmpty(self.ChMap))
         {

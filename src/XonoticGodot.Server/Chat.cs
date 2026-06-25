@@ -658,9 +658,16 @@ public sealed class Chat
         Delivered.Add((client, text));
     }
 
-    /// <summary>QC <c>centerprint(client, text)</c>: the HUD center-print channel (team/private cmsgstr). The
-    /// port records it on <see cref="DeliveredCenter"/>; a host wires the HUD channel via the same sink later.</summary>
-    private void CenterPrint(Player client, string text) => DeliveredCenter.Add((client, text));
+    /// <summary>QC <c>centerprint(client, text)</c>: the HUD center-print channel (team/private cmsgstr). Routed to
+    /// that client via the notification channel as a raw centerprint (<see cref="NotificationSystem.SendCenterRaw"/>
+    /// → MSG_CenterRaw → CenterPrintPanel.Add); also recorded on <see cref="DeliveredCenter"/> so headless tests can
+    /// observe routing without the net layer.</summary>
+    private void CenterPrint(Player client, string text)
+    {
+        DeliveredCenter.Add((client, text));
+        // NOTIF_ONE_ONLY: deliver to exactly this client (QC centerprint targets the single recipient).
+        NotificationSystem.SendCenterRaw(NotifBroadcast.OneOnly, client, text);
+    }
 
     /// <summary>QC <c>dedicated_print(text)</c>: echo a line to the SERVER console only (not the clients).</summary>
     private void DedicatedPrint(string text) => _world.Commands.ChatConsole?.Invoke(text);

@@ -66,9 +66,25 @@ public partial class ShowNamesLayer : Control
     /// own-name tag only draws in chase, exactly like <c>Draw_ShowNames</c>'s self branch.</summary>
     public bool ChaseActive { get; set; }
 
-    /// <summary>The local client's net id (QC <c>current_player + 1</c> / <c>player_localentnum</c>). Used to
-    /// pick out the local player's own tag (drawn only in chase, gated by <c>hud_shownames_self</c>).</summary>
+    /// <summary>The local client's net id (QC <c>player_localentnum</c>). Used to pick out the local player's own
+    /// tag (drawn only in chase, gated by <c>hud_shownames_self</c>) and to apply the QC enemy/self model-alpha
+    /// factor (the <c>this.sv_entnum == player_localentnum</c> arm of the entcs_GetAlpha branch).</summary>
     public int LocalNetId { get; set; }
+
+    /// <summary>The net id of the player the local client is currently VIEWING (QC <c>current_player + 1</c>): the
+    /// followed spectatee when spectating, else the local player. When this id is a remote in
+    /// <see cref="ClientNet.RemoteIds"/> (the spectatee case), its tag takes the QC self/spectatee branch — drawn
+    /// only with <c>hud_shownames_self</c> on, OR inside the 1-second spectatee-switch grace window.</summary>
+    public int CurrentViewedNetId { get; set; }
+
+    /// <summary>QC <c>spectatee_status</c> (0 = playing, &gt;0 = following a player). Together with
+    /// <see cref="SpectateeStatusChangedTime"/> it drives the 1-second grace window in which a freshly-followed
+    /// player's own tag stays visible even with <c>hud_shownames_self</c> off (<c>Draw_ShowNames</c>:48).</summary>
+    public int SpectateeStatus { get; set; }
+
+    /// <summary>QC <c>spectatee_status_changed_time</c>: the client time at which <see cref="SpectateeStatus"/> last
+    /// changed (drives the 1s grace window).</summary>
+    public float SpectateeStatusChangedTime { get; set; }
 
     /// <summary>Resolve a player's display name from its net id — the port's faithful <c>entcs_GetName</c>
     /// stand-in (the scoreboard name slice; the port has no separate entcs name stream). Returns "" when unknown;
@@ -153,16 +169,20 @@ public partial class ShowNamesLayer : Control
                 continue;
 
             bool isSelf = netId == LocalNetId;
-            // QC self branch (Draw_ShowNames: `if (this.sv_entnum == current_player + 1)`): the own tag draws only
-            // in chase, gated by hud_shownames_self. NOTE: the local player is predicted, not interpolated, so it is
-            // never in ClientNet.RemoteIds (HandleSnapshot skips netId == LocalNetId) — so on this path the self
-            // branch is effectively never reached. The gate is kept verbatim for parity (and so a future
-            // self-as-remote feed during chase/spectate slots in here unchanged); the chase own-tag is a deferral.
-            if (isSelf)
+            // QC self branch (Draw_ShowNames:42 `if (this.sv_entnum == current_player + 1)` — "self or spectatee"):
+            // the tag of the player you are VIEWING. When following a spectatee, current_player is that followed
+            // player, who IS a remote in ClientNet.RemoteIds — so this branch genuinely runs for the spectatee tag.
+            // (The truly-local predicted player is never in RemoteIds, so the chase own-tag still can't draw here;
+            // that case is a deferral, but the spectatee arm below is live.)
+            bool isViewed = netId == CurrentViewedNetId;
+            if (isViewed)
             {
                 if (!ChaseActive)
                     continue;
-                if (!CvarBool("hud_shownames_self"))
+                // QC:47-51 — suppress unless hud_shownames_self, OR we're inside the 1s spectatee-switch grace
+                // window (spectatee_status > 0 && time <= spectatee_status_changed_time + 1).
+                bool graceWindow = SpectateeStatus > 0 && now <= SpectateeStatusChangedTime + 1f;
+                if (!CvarBool("hud_shownames_self") && !graceWindow)
                     continue;
             }
 
@@ -170,8 +190,10 @@ public partial class ShowNamesLayer : Control
             bool sameteam = teamplay && (s.Colormap & 0xFF) == LocalTeam && !isSelf;
             bool dead = (s.Flags & NetEntityFlags.Dead) != 0;
 
-            // QC: `if (!this.sameteam && !autocvar_hud_shownames_enemies) return;`
-            if (!sameteam && !isSelf && !CvarBool("hud_shownames_enemies"))
+            // QC: `if (!this.sameteam && !autocvar_hud_shownames_enemies) return;`. The viewed player (self in chase
+            // / the followed spectatee) already passed the self-branch above — in QC it carries the private entcs
+            // slice (so sameteam) and is never enemy-gated here; exempt it the same way.
+            if (!sameteam && !isViewed && !CvarBool("hud_shownames_enemies"))
                 continue;
 
             TagState tag = GetTag(netId);
@@ -264,9 +286,20 @@ public partial class ShowNamesLayer : Control
                 tag.Alpha = MathF.Min(1f, tag.Alpha + SHOWNAMES_FADESPEED * frametime);
             }
 
-            // QC: a = autocvar_hud_shownames_alpha * this.alpha (entcs_GetAlpha factor is the remote model alpha,
-            // which the port doesn't expose per-remote — left at 1, the QC `if (f == 0) f = 1` no-op outcome).
+            // QC:131-138 — a = autocvar_hud_shownames_alpha * this.alpha, then for enemies OR the local player the
+            // tag alpha is scaled by entcs_GetAlpha(): the remote player's CSQC model render alpha, so a fading model
+            // (spawn shield / invisibility / Cloaked / respawn fade) fades its tag with it. The port's per-entity
+            // render alpha is NetEntityState.Alpha (0 = the default "opaque", networked as 1..254 = alpha/255).
             float a = CvarF("hud_shownames_alpha", 0.7f) * tag.Alpha;
+            if (!sameteam || netId == LocalNetId)
+            {
+                // QC entcs_GetAlpha: model alpha; `if (f == 0) f = 1; if (f < 0) f = 0;`. NetEntityState.Alpha 0
+                // means opaque (never networked) → f = 1; otherwise f = Alpha/255 (clamped 0..1).
+                float f = s.Alpha == 0 ? 1f : s.Alpha / 255f;
+                if (f < 0f) f = 0f;
+                if (f > 1f) f = 1f;
+                a *= f;
+            }
             if (a < AlphaMinVisible)
             {
                 tag.BoxValid = false;

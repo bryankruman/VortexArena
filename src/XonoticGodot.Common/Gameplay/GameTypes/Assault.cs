@@ -49,6 +49,11 @@ public sealed class Assault : GameType
     /// and 1e6 gates identically to Base.</summary>
     public const float ObjectiveInactive = 1000f;
 
+    /// <summary>QC <c>AS_ROUND_DELAY</c> (sv_assault.qc:12): the inter-round freeze, in seconds. After the
+    /// attackers destroy the core in round 1, the game is frozen for 5s (the <c>as_round</c> entity's nextthink)
+    /// before round 2 begins with the roles swapped.</summary>
+    public const float RoundDelay = 5f;
+
     /// <summary>
     /// Round/role state for a two-round Assault match (QC assault_attacker_team + the round counter and the
     /// attackers' best destruction time used to set round two's clock).
@@ -84,6 +89,24 @@ public sealed class Assault : GameType
 
     /// <summary>The winning team color code once decided, or 0 if none yet.</summary>
     public int WinningTeam { get; private set; }
+
+    /// <summary>
+    /// QC <c>as_round</c> entity: while the attackers have won round 1 (non-campaign) and the 5s
+    /// <see cref="RoundDelay"/> freeze is counting down, this is true and the match is frozen
+    /// (<c>game_stopped = true</c>). <see cref="DriveFrame"/> fires <see cref="StartSecondRound"/> once it elapses.
+    /// </summary>
+    public bool SecondRoundPending { get; private set; }
+
+    /// <summary>QC <c>as_round.nextthink</c>: the match-clock time the round-2 swap (<c>as_round_think</c>) fires.</summary>
+    private float _secondRoundDueAt;
+
+    /// <summary>
+    /// QC <c>assault_new_round</c> → <c>ReadyRestart_force(true)</c> (the host-only slice): the engine round
+    /// restart — reset every player + map object to its spawn state and re-stamp <c>game_starttime</c>. The pure
+    /// objective/role swap is done by <see cref="StartSecondRound"/>; this callback (assigned by the host) performs
+    /// the full map reset that this cross-boundary file can't do alone. No-op in a headless/POJO test.
+    /// </summary>
+    public System.Action? OnSecondRoundRestart;
 
     public Assault()
     {
@@ -131,10 +154,25 @@ public sealed class Assault : GameType
         public Framework.Entity? WorldEntity;
     }
 
+    /// <summary>
+    /// A cosmetic/collision wall keyed to an objective (QC func_assault_wall + assault_wall_think): it is SOLID_BSP
+    /// and visible while its objective is alive, and hides (model="" + SOLID_NOT) once the objective is destroyed
+    /// (RES_HEALTH &lt; 0) — typically opening a path the attackers earn by destroying that objective.
+    /// </summary>
+    public sealed class Wall
+    {
+        public string Target = "";        // QC .target — the objective targetname this wall watches (.enemy)
+        public Objective? ObjectiveRef;   // resolved objective (QC this.enemy)
+        public Framework.Entity? WorldEntity; // the func_assault_wall edict whose solid/model is toggled
+        public string Model = "";         // QC .mdl — the model restored when the wall is shown again
+        public bool Hidden;               // last applied state (so we only re-stamp on a transition)
+    }
+
     /// <summary>The objectives, decreasers, and destructibles on the map, keyed by name where needed.</summary>
     public readonly List<Objective> Objectives = new();
     public readonly List<Decreaser> Decreasers = new();
     public readonly List<Destructible> Destructibles = new();
+    public readonly List<Wall> Walls = new();
 
     // Deferred spawn staging (QC INITPRIO_FINDTARGET): the BSP entity lump spawns objectives, decreasers and
     // destructibles in ARBITRARY order, so a decreaser/destructible may be spawned before the objective/decreaser
@@ -145,6 +183,7 @@ public sealed class Assault : GameType
     // AddObjective/AddDecreaser/AddDestructible API where the spawn order is controlled.)
     private readonly List<(string name, string target, float dmg)> _pendingDecreasers = new();
     private readonly List<(string decreaserName, float health, Framework.Entity? world)> _pendingDestructibles = new();
+    private readonly List<(string objectiveName, string model, Framework.Entity? world)> _pendingWalls = new();
 
     /// <summary>QC target_assault_roundend present (the final objective's target). True once a round-end exists.</summary>
     public bool HasRoundEnd { get; private set; }
@@ -156,8 +195,10 @@ public sealed class Assault : GameType
         Objectives.Clear();
         Decreasers.Clear();
         Destructibles.Clear();
+        Walls.Clear();
         _pendingDecreasers.Clear();
         _pendingDestructibles.Clear();
+        _pendingWalls.Clear();
         HasRoundEnd = false;
     }
 
@@ -214,6 +255,17 @@ public sealed class Assault : GameType
         => _pendingDestructibles.Add((decreaserName, health > 0f ? health : 100f, worldEntity));
 
     /// <summary>
+    /// QC spawnfunc func_assault_wall (the deferred half): stage a cosmetic/collision wall whose .target
+    /// (<paramref name="objectiveName"/>) names the objective it watches (QC assault_setenemytoobjective sets
+    /// <c>this.enemy</c>). The wall stays SOLID_BSP + visible while that objective lives and hides once it is
+    /// destroyed (assault_wall_think). <paramref name="model"/> is QC <c>this.mdl</c> (restored when shown again),
+    /// <paramref name="worldEntity"/> the func_assault_wall edict whose solid/model is toggled by
+    /// <see cref="DriveWalls"/>. Linked to its objective in <see cref="ResolveObjectiveGraph"/>.
+    /// </summary>
+    public void StageWall(string objectiveName, string model, Framework.Entity? worldEntity = null)
+        => _pendingWalls.Add((objectiveName, model, worldEntity));
+
+    /// <summary>
     /// Map a damaged <c>func_assault_destructible</c> world edict back to its <see cref="Destructible"/> (QC the
     /// edict IS the destructible; the port keeps a POJO chain alongside the world entity). The live damage hook
     /// (a func_breakable event_damage / death bridge) calls this then <see cref="DamageDestructible"/>. Null if the
@@ -250,9 +302,53 @@ public sealed class Assault : GameType
         }
         _pendingDestructibles.Clear();
 
+        // 3) walls: .target → the objective by its targetname (QC assault_setenemytoobjective on func_assault_wall).
+        foreach (var (objectiveName, model, world) in _pendingWalls)
+        {
+            Objective? obj = Objectives.Find(o => o.Name == objectiveName);
+            if (obj is not null)
+                Walls.Add(new Wall { Target = objectiveName, ObjectiveRef = obj, WorldEntity = world, Model = model });
+            // else: dangling .target (bad map) — QC objerrors; we skip so the rest of the chain still works.
+        }
+        _pendingWalls.Clear();
+
         // QC target_assault_roundstart (assault_roundstart_use_this, INITPRIO_FINDTARGET): once the graph is built,
         // arm the chain so the attackers have a live first objective to assault at round start.
         ResetObjectives();
+        DriveWalls(); // QC assault_wall_think first tick (nextthink = time): stamp each wall's initial solid/model.
+    }
+
+    /// <summary>
+    /// QC assault_wall_think (sv_assault.qc:178, nextthink = time + 0.2): for each func_assault_wall, show it
+    /// (SOLID_BSP + its model) while its objective is alive (RES_HEALTH &gt;= 0) and hide it (model="" + SOLID_NOT)
+    /// once the objective is destroyed (RES_HEALTH &lt; 0). Driven from the per-frame Assault arm; the world edict
+    /// is only re-stamped on a state transition. The objective's destroyed health is QC -1 (RES_HEALTH &lt; 0),
+    /// which the port models as <see cref="Objective.Health"/> &lt;= 0.
+    /// </summary>
+    public void DriveWalls()
+    {
+        for (int i = 0; i < Walls.Count; i++)
+        {
+            Wall w = Walls[i];
+            if (w.ObjectiveRef is null || w.WorldEntity is not { } edict || edict.IsFreed)
+                continue;
+            bool hide = w.ObjectiveRef.Health < 0f; // QC GetResource(this.enemy, RES_HEALTH) < 0
+            if (hide == w.Hidden)
+                continue; // no transition — leave the edict as-is (QC re-stamps every think; we only on change)
+            w.Hidden = hide;
+            if (hide)
+            {
+                edict.Model = "";                  // QC this.model = "";
+                edict.Solid = Framework.Solid.Not; // QC this.solid = SOLID_NOT;
+            }
+            else
+            {
+                edict.Model = w.Model;             // QC this.model = this.mdl;
+                edict.Solid = Framework.Solid.Bsp; // QC this.solid = SOLID_BSP;
+                if (Api.Services is not null && !string.IsNullOrEmpty(w.Model))
+                    Api.Entities.SetModel(edict, w.Model); // re-resolve the brush bounds so traces clip it again
+            }
+        }
     }
 
     /// <summary>
@@ -355,7 +451,8 @@ public sealed class Assault : GameType
         // No next objective: the chain's terminal target is the round-end → attackers win the round.
         if (HasRoundEnd || string.IsNullOrEmpty(o.Target))
         {
-            float elapsed = Api.Services is not null ? Api.Clock.Time : 0f; // host supplies game_starttime offset
+            // QC ceil(time - game_starttime): the attack DURATION (used to clock round 2), not the raw clock.
+            float elapsed = Api.Services is not null ? System.Math.Max(0f, Api.Clock.Time - GameStartTime) : 0f;
             DestroyFinalObjective(elapsed, State.Round >= 1);
         }
     }
@@ -476,21 +573,54 @@ public sealed class Assault : GameType
         // attackers took (Send_Notification(NOTIF_ALL, ..., CENTER_ASSAULT_OBJ_DESTROYED, ceil(time-game_starttime))).
         NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "ASSAULT_OBJ_DESTROYED",
             (float)System.Math.Ceiling(elapsedAttackSeconds));
-        // Round is not yet over for the match — the host should call StartSecondRound to flip sides.
+
+        // QC WinningCondition_Assault: schedule the second round — create the `as_round` entity with
+        // nextthink = time + AS_ROUND_DELAY and freeze the game (game_stopped = true). DriveFrame fires the swap
+        // (as_round_think → assault_new_round) once the 5s delay elapses. The clock is the match clock; in a
+        // headless POJO (no Services) there is no live clock, so fall back to the elapsed attack time as the base.
+        float now = Api.Services is not null ? Api.Clock.Time : elapsedAttackSeconds;
+        SecondRoundPending = true;
+        _secondRoundDueAt = now + RoundDelay;
+
+        // QC: "make sure timelimit isn't hit while the game is blocked" — if the round's timelimit would lapse
+        // during the freeze, bump it by AS_ROUND_DELAY/60 minutes so the freeze can't trip a timelimit win.
+        if (Api.Services is not null)
+        {
+            float timelimit = Api.Cvars.GetFloat("timelimit");
+            if (timelimit > 0f && now + RoundDelay >= GameStartTime + timelimit * 60f)
+                SetTimelimitMinutes(timelimit + RoundDelay / 60f);
+        }
     }
 
     /// <summary>
-    /// QC assault_new_round: begin the second round with the attack/defend roles swapped. Round two's time
-    /// limit should be set by the host to <see cref="AssaultState.FirstRoundDestroyTime"/> so the new
-    /// attackers must beat the first team's destruction time. Resets the per-round win latch.
+    /// QC <c>assault_new_round</c> (run from <c>as_round_think</c>): begin the second round with the attack/defend
+    /// roles swapped. Round two's time limit is set to <see cref="AssaultState.FirstRoundDestroyTime"/> (QC
+    /// <c>cvar_set("timelimit", ftos(ceil(time - AS_ROUND_DELAY - game_starttime) / 60))</c>) so the new attackers
+    /// must beat the first team's destruction time. Resets the per-round win latch + objectives, then asks the host
+    /// to restart the map (<see cref="OnSecondRoundRestart"/> = QC <c>ReadyRestart_force(true)</c>).
     /// </summary>
     public void StartSecondRound()
     {
+        SecondRoundPending = false;
         State.Round = 1;
         State.AttackerTeam = DefenderTeam; // swap (QC NUM_TEAM_1 <-> NUM_TEAM_2)
         MatchEnded = false;
         WinningTeam = 0;
+
+        // QC: round 2's timelimit = round 1's destruction time (in minutes). DriveFrame already consults
+        // FirstRoundDestroyTime directly, but set the cvar too so the HUD/clock reads the round-2 limit.
+        if (State.FirstRoundDestroyTime > 0f)
+            SetTimelimitMinutes((float)System.Math.Ceiling(State.FirstRoundDestroyTime / 60f));
+
         ResetObjectives(); // QC assault_objective_reset on each new round
+        OnSecondRoundRestart?.Invoke(); // QC ReadyRestart_force(true): full map/player reset + game_starttime re-stamp
+    }
+
+    /// <summary>Set the live <c>timelimit</c> cvar (minutes); no-op in a headless POJO with no Services.</summary>
+    private static void SetTimelimitMinutes(float minutes)
+    {
+        if (Api.Services is not null)
+            Api.Cvars.Set("timelimit", minutes.ToString(System.Globalization.CultureInfo.InvariantCulture));
     }
 
     /// <summary>
@@ -508,6 +638,15 @@ public sealed class Assault : GameType
         {
             w.Health = w.MaxHealth;
             w.Active = false;
+            // QC ReadyRestart_force → the func_assault_destructible's func_breakable reset: a wall shot down in the
+            // previous round comes back solid + shootable for the new round. Re-arm its world edict to match the POJO.
+            if (w.WorldEntity is { } we && !we.IsFreed)
+            {
+                we.Health = w.MaxHealth;
+                we.MaxHealth = w.MaxHealth;
+                we.Solid = Framework.Solid.Bsp;
+                we.TakeDamage = Framework.DamageMode.Aim;
+            }
         }
         // The first objective is the one that nothing else targets (QC the roundstart-activated head).
         Objective? first = Objectives.Find(o => !Objectives.Exists(p => p.Target == o.Name));
@@ -517,16 +656,16 @@ public sealed class Assault : GameType
 
     /// <summary>
     /// QC WinningCondition_Assault (the defender branch): the round's time limit elapsed without the attackers
-    /// destroying the core, so the defenders win. In the final round this ends the match; otherwise the host
-    /// then swaps roles for round two.
+    /// destroying the core, so the defenders win. This ALWAYS ends the match: QC only ever starts a second round
+    /// off an attacker core-destruction (the <c>as_round</c> entity is created solely in the <c>ent.winning</c>
+    /// branch); a defender timelimit win has no second round, so it is terminal in both round 1 and round 2.
     /// </summary>
-    public void TimeLimitReached(bool isFinalRound)
+    public void TimeLimitReached(bool isFinalRound = true)
     {
-        if (MatchEnded)
+        if (MatchEnded || SecondRoundPending)
             return;
-        WinningTeam = DefenderTeam; // QC: assume the defending team wins if the timelimit passes
-        if (isFinalRound || State.Round >= 1)
-            MatchEnded = true;
+        WinningTeam = DefenderTeam; // QC: the defending team wins once the timelimit passes
+        MatchEnded = true;          // QC: a defender timelimit win is always the end of the match
     }
 
     /// <summary>QC game_starttime — when the (current round's) match clock begins. The host raises it for the
@@ -548,8 +687,23 @@ public sealed class Assault : GameType
     /// </summary>
     public bool DriveFrame(float now)
     {
+        // QC assault_wall_think runs on its own nextthink loop independently of the win check: toggle every
+        // func_assault_wall's solid/model with its objective's health each frame (cheap; only re-stamps on change).
+        DriveWalls();
+
         if (MatchEnded)
             return true;
+
+        // QC as_round_think (the as_round entity's nextthink): the attackers won round 1 and the 5s inter-round
+        // freeze is counting down. Once it elapses, un-freeze and swap roles for round 2 (assault_new_round). While
+        // it is pending WinningCondition_Assault returns WINNING_NO (the `if(as_round) return WINNING_NO;` guard).
+        if (SecondRoundPending)
+        {
+            if (now >= _secondRoundDueAt)
+                StartSecondRound();
+            return false; // round not decided for the match: round 2 will run
+        }
+
         if (WinningTeam != 0)
             return true; // attackers already destroyed the core this round (DestroyFinalObjective latched)
 
@@ -565,8 +719,9 @@ public sealed class Assault : GameType
         if (now - GameStartTime < limitSeconds)
             return false; // time still on the clock; the round continues
 
-        // Time elapsed with the core intact → the defenders win the round (QC default SetWinners(defender)).
-        TimeLimitReached(isFinalRound: State.Round >= 1 || (TargetUtilities.IsCampaign?.Invoke() ?? false));
+        // Time elapsed with the core intact → the defenders win and the match ends (QC default SetWinners(defender);
+        // a defender timelimit win is terminal — there is no second round off it in either round).
+        TimeLimitReached();
         return true;
     }
 

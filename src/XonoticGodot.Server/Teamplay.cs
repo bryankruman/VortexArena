@@ -14,9 +14,10 @@ namespace XonoticGodot.Server;
 ///
 /// QC <c>TeamBalance_FindBestTeam</c> weighs the smallest team first and, on a tie, the team with the lower
 /// total score (so a team that is both small and losing is preferred) — both rules are ported here. Also
-/// ported now: the inverse-variance skill weighting (<c>g_balance_teams_skill</c>:
-/// <see cref="TeamBalance_GetWeightedTeamCount"/> sums 1/variance-weighted skill so a strong player counts
-/// as "more" than a weak one, and the significance threshold gates whether skill is used at all), the bot
+/// ported now: the inverse-variance skill weighting (<c>g_balance_teams_skill</c>: <see cref="MeasureTeam"/>
+/// computes each team's weighted mean skill and <see cref="CompareTeams"/> breaks equal-size ties by strength
+/// only when the skill gap is statistically significant (z &gt; <c>..._significance_threshold</c> SDs), so a
+/// strong player counts as "more" than a weak one but skill never reorders teams of unequal size), the bot
 /// autobalance (<see cref="AutoBalanceBots"/>, QC <c>TeamBalance_AutoBalanceBots</c>: move the lowest-scoring
 /// bot from the largest to the smallest team when uneven), and <see cref="KillPlayerForTeamChange"/>
 /// (QC the forced death + score clear on a mid-match team move). A <see cref="SkillProvider"/> supplies each
@@ -252,11 +253,8 @@ public sealed class Teamplay
             }
         }
 
-        bool useSkill = SkillWeightingEnabled;
-
         int bestTeam = Teams.None;
-        float bestCount = float.MaxValue;
-        int bestScore = int.MaxValue;
+        TeamStrength best = default;
 
         int ti = 0;
         foreach (int team in Teams.Active(TeamCount))
@@ -264,17 +262,12 @@ public sealed class Teamplay
             if (!allowed[ti++])
                 continue; // QC: a banned team is never a candidate (bot_vs_human partition).
 
-            // QC TeamBalance_FindBestTeams: weigh by the (optionally skill-weighted) player count, then
-            // break ties by the lower team score (a small AND losing team is preferred), then lowest index.
-            float count = useSkill
-                ? TeamBalance_GetWeightedTeamCount(team, roster, joiner)
-                : TeamBalance.CountTeam(team, roster, joiner);
-            int score = _scores?.TeamScore(team) ?? 0;
-
-            if (count < bestCount || (count == bestCount && score < bestScore))
+            // QC TeamBalance_CompareTeamsInternal: order teams by player count first, then by team strength
+            // (skill+score) as a tiebreak — a smaller team wins outright; equal-size teams break to the weaker.
+            TeamStrength cand = MeasureTeam(team, roster, joiner);
+            if (bestTeam == Teams.None || CompareTeams(cand, best) < 0)
             {
-                bestCount = count;
-                bestScore = score;
+                best = cand;
                 bestTeam = team;
             }
         }
@@ -295,26 +288,87 @@ public sealed class Teamplay
         Api.Services is not null && Api.Cvars.GetFloat("g_balance_teams_skill") != 0f;
 
     /// <summary>
-    /// QC <c>TeamBalanceTeam_GetWeightedNumberOfPlayers</c> (the inverse-variance skill weighting): instead of
-    /// counting each player as 1, count each as its <c>1/variance</c> skill weight scaled by their skill mu,
-    /// so a strong player counts as "more team strength" than a weak one. With a flat variance here this
-    /// reduces to "sum of skills / a reference skill", giving the smallest <em>total skill</em> team. Excludes
-    /// <paramref name="ignore"/> (the joining player, counted via the caller's branch).
+    /// QC the per-team balance entity (teamplay.qc:840-931): the player count plus the inverse-variance weighted
+    /// mean skill (<c>m_skill_mu</c>, <c>m_skill_var = 1/mass</c>) and the team score, used by
+    /// <see cref="CompareTeams"/> to order candidate teams (size first, then skill+score strength).
     /// </summary>
-    private float TeamBalance_GetWeightedTeamCount(int team, IReadOnlyList<Player> roster, Player? ignore)
+    private readonly struct TeamStrength
     {
-        const float referenceSkill = 5f; // QC server_skill_average stand-in (mid skill = weight 1.0)
-        float total = 0f;
+        public readonly int Count;     // QC m_num_players
+        public readonly float SkillMu; // QC m_skill_mu (inverse-variance weighted mean skill; 0 = empty team)
+        public readonly float SkillVar;// QC m_skill_var (= 1/mass; 0 = no rated players)
+        public readonly int Score;     // QC m_team_score
+
+        public TeamStrength(int count, float skillMu, float skillVar, int score)
+        {
+            Count = count; SkillMu = skillMu; SkillVar = skillVar; Score = score;
+        }
+    }
+
+    /// <summary>
+    /// QC teamplay.qc:840-931 (TeamBalance_GetTeamCounts inner loop): tally a team's player count and its
+    /// inverse-variance weighted mean skill from <see cref="SkillProvider"/>, plus its current score. With the
+    /// flat per-player variance stand-in, <c>mass</c> is the rated-player count, the weighted mean is the plain
+    /// mean skill, and <c>m_skill_var = 1/mass</c>. Excludes <paramref name="ignore"/> (the joining/switching
+    /// player is scored against the team it would join, not counted as already on it).
+    /// </summary>
+    private TeamStrength MeasureTeam(int team, IReadOnlyList<Player> roster, Player? ignore)
+    {
+        int count = 0;
+        float muSum = 0f, mass = 0f;
         for (int i = 0; i < roster.Count; i++)
         {
             Player p = roster[i];
             if (ReferenceEquals(p, ignore)) continue;
             if ((int)p.Team != team) continue;
-            float weight = 1f / SkillVariance;                 // QC skill_weight = 1 / m_skill_var
-            float mu = System.Math.Max(0.1f, SkillProvider(p)); // QC m_skill_mu
-            total += weight * (mu / referenceSkill);
+            count++;
+            float mu = SkillProvider(p);
+            if (mu != 0f)
+            {
+                float weight = 1f / SkillVariance; // QC skill_weight = 1 / m_skill_var
+                muSum += mu * weight;
+                mass += weight;
+            }
         }
-        return total;
+        float skillMu = mass > 0f ? muSum / mass : 0f;     // QC m_skill_mu /= mass
+        float skillVar = mass > 0f ? 1f / mass : 0f;       // QC m_skill_var = 1 / mass
+        int score = _scores?.TeamScore(team) ?? 0;
+        return new TeamStrength(count, skillMu, skillVar, score);
+    }
+
+    /// <summary>
+    /// QC <c>TeamBalance_CompareTeamsInternal</c> (teamplay.qc:1299): order two candidate teams for a joiner —
+    /// negative if <paramref name="a"/> is the better (preferable, "lesser") team. Player count dominates; on a
+    /// tie, team strength (skill mu + score) breaks it, but skill only counts when the gap is statistically
+    /// significant (z-score > <c>g_balance_teams_skill_significance_threshold</c> SDs, squared for perf), exactly
+    /// like Base. Falls back to the lowest fixed index when fully equal (the foreach keeps the first seen).
+    /// </summary>
+    private int CompareTeams(in TeamStrength a, in TeamStrength b)
+    {
+        if (a.Count != b.Count)
+            return a.Count < b.Count ? -1 : 1; // QC: fewer players => preferable.
+
+        // QC: equal size — compare skill+score "strength". Skill applies only when significant.
+        bool skillEnabled = SkillWeightingEnabled;
+        float threshold = (Api.Services is not null)
+            ? Api.Cvars.GetFloat("g_balance_teams_skill_significance_threshold")
+            : 0f;
+        bool useSkill = skillEnabled && a.SkillVar != 0f && b.SkillVar != 0f
+            && ((a.SkillMu - b.SkillMu) * (a.SkillMu - b.SkillMu)) / (a.SkillVar + b.SkillVar)
+               > threshold * threshold;
+
+        float strengthA = useSkill ? a.SkillMu : 1f;
+        float strengthB = useSkill ? b.SkillMu : 1f;
+
+        // QC the score ramp uses time-into-match; without that scalar here we apply the team score directly as a
+        // strength bias (a team that is winning is "stronger" so the joiner avoids it), preserving the lower-score
+        // tiebreak the port already had.
+        strengthA *= 1f + a.Score * 0.0001f;
+        strengthB *= 1f + b.Score * 0.0001f;
+
+        if (strengthA < strengthB) return -1; // QC: weaker team => preferable.
+        if (strengthA > strengthB) return 1;
+        return 0;
     }
 
     /// <summary>QC <c>TeamBalance_GetNumberOfPlayers</c>: count the roster on a given team.</summary>
@@ -482,13 +536,13 @@ public sealed class Teamplay
             return true;
 
         bool[] allowed = AllowedTeams(switcher);
-        bool useSkill = SkillWeightingEnabled;
 
-        // QC TeamBalance_FindBestTeams: compute the best (smallest, then lowest-score) count, then accept the
-        // target only if its own count ties that best — i.e. switching there doesn't make teams more unbalanced.
-        float bestCount = float.MaxValue;
-        int bestScore = int.MaxValue;
-        float targetCount = float.MaxValue;
+        // QC TeamBalance_FindBestTeams: compute the best (by the size→strength ladder) candidate, then accept the
+        // target only if it ties that best — i.e. switching there doesn't make teams more unbalanced.
+        bool haveBest = false;
+        TeamStrength best = default;
+        TeamStrength target = default;
+        bool haveTarget = false;
 
         int ti = 0;
         foreach (int team in Teams.Active(TeamCount))
@@ -499,20 +553,21 @@ public sealed class Teamplay
                 if (team == targetTeam) return false; // banned team (bot_vs_human) is never switchable.
                 continue;
             }
-            float count = useSkill
-                ? TeamBalance_GetWeightedTeamCount(team, roster, switcher)
-                : TeamBalance.CountTeam(team, roster, switcher);
-            int score = _scores?.TeamScore(team) ?? 0;
-            if (count < bestCount || (count == bestCount && score < bestScore))
+            TeamStrength cand = MeasureTeam(team, roster, switcher);
+            if (!haveBest || CompareTeams(cand, best) < 0)
             {
-                bestCount = count;
-                bestScore = score;
+                best = cand;
+                haveBest = true;
             }
             if (team == targetTeam)
-                targetCount = count;
+            {
+                target = cand;
+                haveTarget = true;
+            }
         }
 
-        return targetCount <= bestCount;
+        // Target ties the best team (CompareTeams == 0 means equally preferable) → allow.
+        return haveTarget && haveBest && CompareTeams(target, best) <= 0;
     }
 
     // ----- balance scan helpers (QC TeamBalance_GetLargestTeamIndex / GetPlayerForTeamSwitch) -----

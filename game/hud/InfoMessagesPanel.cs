@@ -141,6 +141,13 @@ public partial class InfoMessagesPanel : HudPanel
     public string ReadyHint { get; set; } = "ready";
 
     /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(cl_lms, DrawInfoMessages): the local LMS player is eliminated (has an LMS rank,
+    /// <c>scores(ps_primary) &gt; 0</c>), so the "^1You have no more lives left" line is shown on this panel. Fed
+    /// each frame by the net layer from the local scoreboard row's LMS_RANK column. False for every other gametype.
+    /// </summary>
+    public bool LmsNoLives { get; set; }
+
+    /// <summary>
     /// True while the HUD editor is open (QC <c>autocvar__hud_configure</c>). When set the panel draws the QC
     /// editor help text instead of live state, so the panel is visible/positionable in the editor. Default false.
     /// </summary>
@@ -321,6 +328,11 @@ public partial class InfoMessagesPanel : HudPanel
                 }
             }
         }
+
+        // QC MUTATOR_HOOKFUNCTION(cl_lms, DrawInfoMessages): a locally-eliminated LMS player (has an LMS rank) is
+        // told they're out for the match.
+        if (LmsNoLives)
+            lines.Add(Line.Of("^1You have no more lives left, you have to wait until the next game"));
 
         // QC: if (time < GAMESTARTTIME) "^1Game starts in ^3%d^1 seconds".
         if (CountdownSeconds > 0f)

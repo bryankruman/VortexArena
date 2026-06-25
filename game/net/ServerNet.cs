@@ -1410,6 +1410,9 @@ public sealed class ServerNet : IDisposable
             ButtonAttack1 = (b & InputButtons.Attack) != 0,
             ButtonAttack2 = (b & InputButtons.Attack2) != 0,
             ButtonUse = (b & InputButtons.Use) != 0,
+            // PHYS_INPUT_BUTTON_HOOK — the +hook / offhand-fire button, driving the offhand-weapon think
+            // (grapple hook, offhand blaster, nade prime/throw) in WeaponFireDriver.Frame.
+            ButtonHook = (b & InputButtons.Hook) != 0,
             // Carry the one-shot impulse (QC CS(this).impulse) so the spectator free-flight speed ladder
             // (PlayerPhysics.SpectatorControl) sees it. For a live PLAYER the impulse was already dispatched as
             // a weapon command in ProvideInput; PlayerPhysics' spectator branch is gated on IsObserver, so this
@@ -1893,7 +1896,10 @@ public sealed class ServerNet : IDisposable
             // carry the entcs name/team slice so the client can label/group the row without an entcs stream
             // (the port has no entcs name source; the scoreboard would otherwise have an opaque net id).
             _scoreRows.Add(new XonoticGodot.Net.ScoreRowWire(NetIdFor(p),
-                XonoticGodot.Common.Gameplay.Scoring.GameScores.CaptureColumns(p), p.NetName, (int)p.Team));
+                XonoticGodot.Common.Gameplay.Scoring.GameScores.CaptureColumns(p), p.NetName, (int)p.Team,
+                // QC pl.team == NUM_SPECTATOR: an observer is listed in the scoreboard spectator block, not the
+                // score table. The port keeps the observer's last team color, so flag it explicitly here.
+                isSpectator: p.IsObserver || p.FragsStatus == Player.FragsSpectator));
         }
 
         _scoreTeams.Clear();
@@ -2356,7 +2362,7 @@ public sealed class ServerNet : IDisposable
     private void WriteNotification(BitWriter w, in NotificationDispatch d)
     {
         w.WriteUShort(d.Notification.RegistryId);
-        w.WriteByte((byte)d.Notification.Type);
+        w.WriteByte((byte)d.WireType); // normally d.Notification.Type; a CenterKill retraction overrides it
         w.WriteString(d.Text);
         w.WriteByte(d.StringArgs.Length);
         for (int i = 0; i < d.StringArgs.Length; i++) w.WriteString(d.StringArgs[i]);

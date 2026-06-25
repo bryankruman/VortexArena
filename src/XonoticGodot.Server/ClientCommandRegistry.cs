@@ -68,6 +68,13 @@ public static class ClientCommandRegistry
         // → `impulse N`), so they are legitimately client-invoked and must be allowed.
         "impulse",
         "weapon_next", "weapon_prev", "weaplast", "weapon_last", "weapon_best", "weapon_drop", "reload",
+        // Player-deployed waypoints (QC server/impulse.qc IMPULSE(waypoint_*) — engine impulses in DP). The port's
+        // QuickMenu/userbinds emit these named verbs through the client console, so they arrive as client commands
+        // and must be allowed (each drops/clears the caller's own waypoint sprite — a per-player action).
+        "waypoint_personal_here", "waypoint_personal_crosshair", "waypoint_personal_death",
+        "waypoint_here_follow", "waypoint_here_here", "waypoint_here_crosshair", "waypoint_here_death",
+        "waypoint_danger_here", "waypoint_danger_crosshair", "waypoint_danger_death",
+        "waypoint_clear_personal", "waypoint_clear",
 
         // ---- QC CommonCommand_* (server/command/common.qc) — client-reachable via CommonCommand_macro_command ----
         "cvar_changes",   // CommonCommand_cvar_changes

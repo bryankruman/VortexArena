@@ -325,7 +325,14 @@ public sealed class Arc : Weapon
                     // Previously this DROPPED the heal entirely once it would push past hmax instead of topping up
                     // to it — a real divergence right at the cap.
                     float hpLimit = isPlayer ? Beam.HealingHmax : Resources.LimitNone;
-                    hit.GiveResourceWithLimit(ResourceType.Health, hps * coefficient, hpLimit);
+                    // QC Heal() dispatches to trace_ent.event_heal when set: a non-player OBJECTIVE (Onslaught
+                    // generator / control-point icon) tracks its HP in GtObjHealth, NOT the Health resource, so
+                    // route it through Combat.Heal (→ event_heal) instead of writing the wrong field. Players +
+                    // ordinary creatures still use the direct resource give (their event_heal isn't modeled here).
+                    if (!isPlayer && hit.GtEventHeal is not null)
+                        XonoticGodot.Common.Gameplay.Damage.Combat.Heal(hit, actor, hps * coefficient, hpLimit);
+                    else
+                        hit.GiveResourceWithLimit(ResourceType.Health, hps * coefficient, hpLimit);
                 }
                 if (isPlayer && aps > 0f && hit.GetResource(ResourceType.Armor) <= Beam.HealingAmax)
                 {

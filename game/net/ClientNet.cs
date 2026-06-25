@@ -119,6 +119,11 @@ public sealed class ClientNet : IDisposable
     /// </summary>
     public int SpectateeStatus { get; private set; }
 
+    /// <summary>QC <c>spectatee_status_changed_time</c>: the client clock time at which <see cref="SpectateeStatus"/>
+    /// last changed. Drives the 1-second shownames grace window in which the freshly-followed player's own name tag
+    /// stays visible even with <c>hud_shownames_self</c> off (<c>Draw_ShowNames</c>).</summary>
+    public float SpectateeStatusChangedTime { get; private set; }
+
     /// <summary>QC STAT(MOVEVARS_HIGHSPEED) per-player: the server's resolved top-speed multiplier for the local
     /// player (Speed powerup / speed·disability buffs / entrap nade folded in). 1 while none are active. The host
     /// mirrors this onto the prediction carrier each frame so client prediction scales speed like authority.</summary>
@@ -794,7 +799,12 @@ public sealed class ClientNet : IDisposable
         Armor = r.ReadShort();
         ActiveWeaponId = r.ReadShort(); // owner block — same order as ServerNet.WriteOwnerState (viewmodel selector)
         RespawnTimeStat = r.ReadFloat(); // QC STAT(RESPAWN_TIME): dead respawn countdown / "press fire" prompt
-        SpectateeStatus = r.ReadShort(); // QC spectatee_status: 0 playing, own id observing, other id spectating
+        int newSpectatee = r.ReadShort(); // QC spectatee_status: 0 playing, own id observing, other id spectating
+        if (newSpectatee != SpectateeStatus)
+            // QC client/main.qc: spectatee_status_changed_time is stamped whenever spectatee_status changes (the
+            // 1s shownames grace window after switching who you follow).
+            SpectateeStatusChangedTime = Api.Services is not null ? Api.Clock.Time : SpectateeStatusChangedTime;
+        SpectateeStatus = newSpectatee;
         PunchAngle = r.ReadVector(NetPrecision.Float); // QC view punch (recoil kick) — added to the view angles
         LocalSpeedMultiplier = r.ReadFloat(); // QC STAT(MOVEVARS_HIGHSPEED) — mirrored onto the prediction carrier
 

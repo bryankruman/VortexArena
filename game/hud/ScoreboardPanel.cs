@@ -138,8 +138,19 @@ public partial class ScoreboardPanel : HudPanel
     public int SecretsFound { get; set; } = -1;
     public int SecretsTotal { get; set; } = -1;
 
-    /// <summary>QC the respawn-status line remaining seconds (RESPAWN_TIME stat); &lt; 0 = alive/no line. Settable by the match layer.</summary>
-    public float RespawnRemaining { get; set; } = -1f;
+    /// <summary>QC <c>STAT(RESPAWN_TIME)</c> (scoreboard.qc:2764) as networked to the owner
+    /// (ClientNet.RespawnTimeStat): 0 = alive (no respawn line); otherwise the absolute respawn time, NEGATED
+    /// while a respawn is imminent (DEAD_RESPAWNING). Fed by the match layer each frame; drives the three-state
+    /// respawn line. Counted down against <see cref="RespawnServerTime"/> (the networked server time).</summary>
+    public float RespawnStat { get; set; }
+
+    /// <summary>The latest networked server time (ClientNet.LatestServerTime) to count <see cref="RespawnStat"/>
+    /// down against (QC <c>time</c>). Fed alongside <see cref="RespawnStat"/>.</summary>
+    public float RespawnServerTime { get; set; }
+
+    /// <summary>QC <c>getcommandkey(_("jump"), "+jump")</c>: the key bound to +jump, shown in the "press X to
+    /// respawn" line. Fed by the match layer (keybind lookup); defaults to "jump".</summary>
+    public string RespawnJumpKey { get; set; } = "jump";
 
     // Accuracy grid (QC Scoreboard_AccuracyStats_Draw weapon_accuracy[]): per-weapon-id hit percentage [0..100],
     // -1 = the weapon was never fired (skipped). Networking the local player's accuracy is a follow-up
@@ -188,6 +199,7 @@ public partial class ScoreboardPanel : HudPanel
         IReadOnlyCollection<int>? eliminatedNetIds = null)
     {
         _rows.Clear();
+        _spectators.Clear();
         if (wire is not null)
         {
             IReadOnlyList<ScoreField> netFields = GameScores.NetworkedFields;
@@ -196,6 +208,15 @@ public partial class ScoreboardPanel : HudPanel
             ScoreField? deathsF = GameScores.Field("DEATHS");
             foreach (XonoticGodot.Net.ScoreRowWire wr in wire.Rows)
             {
+                // QC Scoreboard_Spectators_Draw (scoreboard.qc:2369): a spectator/observer is NOT a score-table
+                // row — list it in the spectator block instead. The wire carries the flag (the port has no
+                // NUM_SPECTATOR team sentinel). Ping isn't networked per row yet, so leave it unknown (-1).
+                if (wr.IsSpectator)
+                {
+                    _spectators.Add(new SpectatorRow(wr.Name, ping: -1));
+                    continue;
+                }
+
                 // expand the wire's NetworkedFields-ordered columns into a registry-indexed array. fieldCount can
                 // be 0 before the score registry is populated, and wr.Columns may be null (the ScoreRowWire ctor
                 // doesn't guard it) — both would crash the foreach below, so clamp/null-coalesce here.
@@ -1007,24 +1028,48 @@ public partial class ScoreboardPanel : HudPanel
     /// shown follow ..._respawntime_decimals (QC count_seconds_decs vs count_seconds(ceil)).</summary>
     private float DrawRespawn(float x, float w, float y, float fade)
     {
-        if (RespawnRemaining < 0f) return y;
+        // QC scoreboard.qc:2763-2796: float respawn_time = STAT(RESPAWN_TIME); the line shows only when not in
+        // intermission and respawn_time != 0. The stat is the absolute respawn time, NEGATED while awaiting respawn.
+        float respawnTime = RespawnStat;
+        if (respawnTime == 0f) return y;
         if (y > Size2.Y - 24f) return y;
+        float now = RespawnServerTime;
+
         string s;
-        if (RespawnRemaining <= 0f)
+        if (respawnTime < 0f)
         {
-            s = "^2Respawning...";
+            // QC: a negative number means we are awaiting respawn (time value still the same); un-mark it.
+            respawnTime = -respawnTime;
+            if (respawnTime < now)
+                s = ""; // QC: a few frames while the server is respawning — empty so the height doesn't jump
+            else
+                s = $"^1Respawning in ^3{FormatRespawnSeconds(respawnTime - now)}^1...";
+        }
+        else if (now < respawnTime)
+        {
+            // QC: "You are dead, wait N before respawning" (cooldown before a respawn is even allowed).
+            s = $"^7You are dead, wait ^3{FormatRespawnSeconds(respawnTime - now)}^7 before respawning";
         }
         else
         {
-            int dec = RespawnDecimals();
-            string t = dec > 0
-                ? RespawnRemaining.ToString("0." + new string('0', dec),
-                    System.Globalization.CultureInfo.InvariantCulture)
-                : Mathf.CeilToInt(RespawnRemaining).ToString();
-            s = $"^1Respawning in ^3{t}^1...";
+            // QC: time >= respawn_time → "You are dead, press JUMP to respawn".
+            s = $"^7You are dead, press ^2{RespawnJumpKey}^7 to respawn";
         }
+
+        if (s.Length == 0) return y + 22f; // keep the height stable (QC draws an empty string for one frame)
         DrawTextCentered2(new Vector2(x, y), w, s, new Color(1f, 0.9f, 0.4f, 0.95f * fade), 16);
         return y + 22f;
+    }
+
+    /// <summary>QC <c>count_seconds_decs(s, respawntime_decimals)</c> vs <c>count_seconds(ceil(s))</c>: the
+    /// respawn countdown number, with the configured decimals (..._respawntime_decimals) or whole-second ceil.</summary>
+    private string FormatRespawnSeconds(float seconds)
+    {
+        if (seconds < 0f) seconds = 0f;
+        int dec = RespawnDecimals();
+        return dec > 0
+            ? seconds.ToString("0." + new string('0', dec), System.Globalization.CultureInfo.InvariantCulture)
+            : Mathf.CeilToInt(seconds).ToString();
     }
 
     private float DrawAccuracy(float x, float w, float y, float fade)

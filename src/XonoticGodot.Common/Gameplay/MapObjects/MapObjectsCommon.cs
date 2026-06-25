@@ -60,7 +60,7 @@ namespace XonoticGodot.Common.Framework
         public float RespawnTimeMover;// QC .respawntime — breakable/counter re-enable delay
 
         // --- targeting (QC .target/.target2/.target3/.target4 .targetname .killtarget .delay) ---
-        public string Target2 = "";   // QC .target2
+        // Target2 is the shared field on Entity.cs; Target3/Target4 are mapobject-only extras:
         public string Target3 = "";   // QC .target3
         public string Target4 = "";   // QC .target4
         public string KillTarget = "";// QC .killtarget
@@ -379,10 +379,12 @@ namespace XonoticGodot.Common.Gameplay
             }
 
             // --- message: QC centerprints to a real client + plays the talk sound when no custom noise ---
-            // The centerprint TEXT is rendered client-side (CSQC); headless we faithfully play the audible
-            // half — play2(actor, SND(TALK)) — and leave the text to the presentation layer.
+            // (triggers.qc SUB_UseTargets: centerprint(activator, this.message); if (this.noise == "")
+            // play2(activator, SND(TALK))). The centerprint TEXT is routed to the activator via the raw-centerprint
+            // notification channel (→ CenterPrintPanel.Add); the audible half plays play2(actor, SND(TALK)).
             if (actor is not null && (actor.Flags & EntFlags.Client) != 0 && !string.IsNullOrEmpty(self.Message))
             {
+                MapMover.Centerprint(actor, self.Message);
                 if (string.IsNullOrEmpty(self.Noise))
                     Sound(actor, SoundChannel.Voice, "misc/talk.wav");
             }
@@ -794,6 +796,10 @@ namespace XonoticGodot.Common.Gameplay
                 return;
             if ((actor.Flags & EntFlags.Client) == 0)
                 return;
+            // Route the free-text centerprint to that client via the raw-centerprint notification channel
+            // (→ CenterPrintPanel.Add). NOTIF_ONE_ONLY targets exactly the activator, matching the engine
+            // centerprint(client, s) builtin. The optional host handler still fires for any extra wiring/tests.
+            NotificationSystem.SendCenterRaw(NotifBroadcast.OneOnly, actor, message);
             CenterprintHandler?.Invoke(actor, message);
         }
 

@@ -36,6 +36,7 @@ public sealed class NadesMutator : MutatorBase
     private HookHandler<MutatorHooks.PlayerDiesArgs>? _onDies;
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _onDamageCalc;
     private HookHandler<MutatorHooks.VehicleEnterArgs>? _onVehicleEnter;
+    private HookHandler<MutatorHooks.ForbidThrowCurrentWeaponArgs>? _onForbidThrow;
 
     public override void Hook()
     {
@@ -48,6 +49,7 @@ public sealed class NadesMutator : MutatorBase
         _onDies ??= OnPlayerDies;
         _onDamageCalc ??= OnDamageCalculate;
         _onVehicleEnter ??= OnVehicleEnter;
+        _onForbidThrow ??= OnForbidThrowCurrentWeapon;
 
         MutatorHooks.PlayerSpawn.Add(_onSpawn);
         MutatorHooks.PlayerPreThink.Add(_onPreThink);
@@ -56,6 +58,8 @@ public sealed class NadesMutator : MutatorBase
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
         // QC VehicleEnter (sv_nades.qc:667): boarding a vehicle tosses the held nade.
         MutatorHooks.VehicleEnter.Add(_onVehicleEnter);
+        // QC ForbidThrowCurrentWeapon CBC_ORDER_LAST (sv_nades.qc:715): the weapon_drop second-press throw path.
+        MutatorHooks.ForbidThrowCurrentWeapon.Add(_onForbidThrow, HookOrder.Last);
     }
 
     public override void Unhook()
@@ -65,6 +69,31 @@ public sealed class NadesMutator : MutatorBase
         if (_onDies is not null) MutatorHooks.PlayerDies.Remove(_onDies);
         if (_onDamageCalc is not null) MutatorHooks.DamageCalculate.Remove(_onDamageCalc);
         if (_onVehicleEnter is not null) MutatorHooks.VehicleEnter.Remove(_onVehicleEnter);
+        if (_onForbidThrow is not null) MutatorHooks.ForbidThrowCurrentWeapon.Remove(_onForbidThrow);
+    }
+
+    // =====================================================================================
+    //  ForbidThrowCurrentWeapon (sv_nades.qc:715, CBC_ORDER_LAST) — the weapon_drop second-press throw
+    // =====================================================================================
+    private bool OnForbidThrowCurrentWeapon(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args)
+    {
+        Entity player = args.Player;
+        if (Api.Services is null) return false;
+
+        // QC: if (offhand != OFFHAND_NADE || (WEAPONS & WEPSET(HOOK)) || g_nades_override_dropweapon)
+        //         { nades_CheckThrow(player); return true; }
+        // When the nade is NOT the player's offhand (the offhand is busy being the hook/blaster), or the player
+        // carries the HOOK weapon, or the override cvar is set, the weapon-drop bind primes/throws the nade and
+        // the actual weapon-drop is suppressed (return true). Otherwise the nade rides the +hook offhand path and
+        // the weapon-drop is left to its normal behaviour.
+        bool offhandIsNade = player.OffhandWeapon == "nade";
+        bool hasHookWeapon = Weapons.ByName("hook") is { } hookWep && Inventory.HasWeapon(player, hookWep);
+        if (!offhandIsNade || hasHookWeapon || Cvar("g_nades_override_dropweapon", 0f) != 0f)
+        {
+            NadeThrow.CheckThrow(player);
+            return true;
+        }
+        return false;
     }
 
     // =====================================================================================

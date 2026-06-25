@@ -891,17 +891,48 @@ public sealed partial class NetGame : Node3D
         if (_serverWorld is null) return;
         if (Mutators.ByName("superspec") is not SuperSpecMutator superspec) return;
 
-        // QC sprint(to, strcat(con_title, msg)): one console line to the spectator (the centered centerprint form
-        // has no server seam yet — see SuperSpecMutator.Msg).
+        // QC sprint(to, strcat(con_title, msg)): one console line to the spectator. (The centered centerprint form
+        // goes through the notification CenterRaw channel directly inside SuperSpecMutator.Msg — no host seam.)
         superspec.PrintTo = (p, msg) => _server?.SendChatToPlayer(p, msg);
 
-        // QC FOREACH_CLIENT: the live client roster the follow*/followkiller scans iterate.
+        // QC FOREACH_CLIENT: the live client roster the follow*/followkiller/ItemTouch scans iterate.
         superspec.RosterProvider = () =>
         {
             var list = new List<Player>();
             foreach (Player p in _serverWorld.Clients.Players) list.Add(p);
             return list;
         };
+
+        // QC .crypto_idfp — the player's auth UID, used to key the remote options file. PersistentId is the
+        // port's crypto_idfp (same field RaceRecords/Sandbox use); a bot's is "" (so it never persists).
+        superspec.CryptoIdfpProvider = p => p.PersistentId;
+
+        // QC the per-client options-file IO (fopen/fputs/fgets in superspec_save_client_conf / ClientConnect).
+        // Files live under the writable user dir (~/XonData/superspec/<filename>, DP's writable-gamedir analogue).
+        superspec.Store = new SuperspecOptionsStore();
+    }
+
+    /// <summary>The per-client options-file persistence seam for the superspec mutator (QC fopen/fputs/fgets in
+    /// superspec_save_client_conf / ClientConnect). Files live under the writable user dir
+    /// (<c>~/XonData/superspec/&lt;filename&gt;</c>), one line per field, exactly as the QC reader/writer expects.</summary>
+    private sealed class SuperspecOptionsStore : SuperSpecMutator.IOptionsStore
+    {
+        private static string PathFor(string filename) => UserPaths.Resolve($"superspec/{filename}");
+
+        public System.Collections.Generic.IReadOnlyList<string>? Read(string filename)
+        {
+            try
+            {
+                string p = PathFor(filename);
+                return System.IO.File.Exists(p) ? System.IO.File.ReadAllLines(p) : null;
+            }
+            catch { return null; }
+        }
+
+        public void Write(string filename, System.Collections.Generic.IReadOnlyList<string> lines)
+        {
+            try { System.IO.File.WriteAllLines(PathFor(filename), lines); } catch { /* read-only host */ }
+        }
     }
 
     /// <summary>The crosshair/forward trace seam for the sandbox mutator (QC crosshair_trace / WarpZone_TraceLine).
@@ -1350,11 +1381,24 @@ public sealed partial class NetGame : Node3D
         // into the full HUD's panels. Previously only MSG_ANNCE was handled (via a hidden host Hud); now the full
         // HUD lets HudNotifications render center/info text too. OnNotificationReceived forwards EVERY type.
         _notifications = new XonoticGodot.Game.Hud.HudNotifications(_fullHud);
+        // QC client/announcer.qh autocvar_cl_announcer (voice pack dir, "default") + autocvar_cl_announcer_antispam
+        // (2s same-sound dedup window). Read from the client cvar store so the user setting actually takes effect
+        // (HudNotifications consumes AnnouncerVoice in the sound/announcer/<voice>/ resolve and AntiSpamInterval in
+        // the QueueRun dedup). Defaults match xonotic-client.cfg:357-358 when the cvars are unset.
+        if (_sharedCvars is not null)
+        {
+            string voice = _sharedCvars.GetString("cl_announcer");
+            if (!string.IsNullOrWhiteSpace(voice))
+                _notifications.AnnouncerVoice = voice;
+            if (_sharedCvars.Has("cl_announcer_antispam"))
+                _notifications.AntiSpamInterval = _sharedCvars.GetFloat("cl_announcer_antispam");
+        }
         if (_assets is not null)
         {
             _notifications.AudioLoader = _assets.LoadSound; // sound/announcer/<voice>/<snd>.ogg from the mounted VFS
+            string fallbackVoice = _notifications.AnnouncerVoice;
             _notifications.AnnouncerResolver = name =>
-                string.IsNullOrWhiteSpace(name) ? null : $"res://sound/announcer/default/{name}.ogg";
+                string.IsNullOrWhiteSpace(name) ? null : $"res://sound/announcer/{fallbackVoice}/{name}.ogg";
         }
         if (_client is not null)
             _client.NotificationReceived += OnNotificationReceived;
@@ -2243,9 +2287,19 @@ public sealed partial class NetGame : Node3D
 
             // [T41] objective rings (QC view.qc HUD_Draw NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS): feed
             // the crosshair panel the local player's held-nade charge each frame (host path; the local Player
-            // carries STAT(NADE_TIMER) live). CAPTURE/REVIVE producers aren't wired yet (no capture/freeze stat on
-            // the local Player), so they stay 0 here — the panel hides those rings until a gametype feeds them.
+            // carries STAT(NADE_TIMER) live). The Freeze-Tag thaw ring reads STAT(REVIVE_PROGRESS), mirrored each
+            // frame onto the local Player by FreezeTag.ReviveTick (0 outside FT / when not frozen). CAPTURE has no
+            // producer yet, so it stays 0 and the panel hides that ring.
             _fullHud.Crosshair.NadeTimer = LocalServerPlayer?.NadeTimer ?? 0f;
+            _fullHud.Crosshair.ReviveProgress = LocalServerPlayer?.ReviveProgress ?? 0f;
+
+            // Weapon-stat crosshair rings (QC client/hud/crosshair.qc 476-557): feed the panel the active
+            // weapon slot's live charge/clip/load/heat off the host-side Player so the Vortex charge ring, the
+            // reload/ammo ring, the Hagar load + Mine Layer count rings, and the Arc overheat ring all render
+            // (host path; the per-slot weapon state is server-side, like QC's networked wepent fields). A pure
+            // remote client has no LocalServerPlayer here so the rings stay hidden (the wepent props would be
+            // the cross-client follow-up).
+            UpdateCrosshairWeaponRings();
         }
 
         // Advance the announcer queue (play the next queued voice if the current one finished).
@@ -2596,6 +2650,15 @@ public sealed partial class NetGame : Node3D
             // fade onto the screen. _everAlive flips true on the first spawn (line ~1212), so a genuine in-match
             // death (health<=0 after spawning) still shows the death fade. Matches the IsDead gate used below.
             _viewEffects.UpdateEffects(dt, health, SampleEyeContents(), observing);
+
+            // Freeze-Tag icy full-screen overlay (QC cl_freezetag.qc HUD_Draw_overlay): tint the screen blue while
+            // the local player is frozen, fading out as the thaw ring fills. Driven off the host-side local Player's
+            // Frozen status effect + the mirrored revive progress (the same source as the crosshair thaw ring); a
+            // pure remote client (no LocalServerPlayer) shows no overlay (frozen reads false).
+            Player? localFrozen = LocalServerPlayer;
+            bool isFrozen = localFrozen is { } lf && StatusEffectsCatalog.Frozen is { } frozenDef
+                && StatusEffectsCatalog.Has(lf, frozenDef);
+            _viewEffects.UpdateFrozenOverlay(isFrozen, localFrozen?.ReviveProgress ?? 0f);
         }
 
         // Keep the radar oriented to the player's facing.
@@ -2609,6 +2672,11 @@ public sealed partial class NetGame : Node3D
         if (_shownamesLayer is not null)
         {
             _shownamesLayer.LocalNetId = _client.LocalNetId;
+            // QC current_player + 1: the entnum of the player we are VIEWING — the followed spectatee when
+            // spectating (a remote in RemoteIds, so its self/spectatee tag branch runs live), else the local player.
+            _shownamesLayer.CurrentViewedNetId = _client.SpectatingNetId != 0 ? _client.SpectatingNetId : _client.LocalNetId;
+            _shownamesLayer.SpectateeStatus = _client.SpectateeStatus;
+            _shownamesLayer.SpectateeStatusChangedTime = _client.SpectateeStatusChangedTime;
             _shownamesLayer.ChaseActive = _view.ChaseActive;
             _shownamesLayer.LocalTeam = LocalShownamesTeam();
         }
@@ -2622,6 +2690,9 @@ public sealed partial class NetGame : Node3D
         UpdatePickupFeed();
         UpdateModIcons();
         UpdateAccuracy();
+        UpdateVotePanel();
+        UpdateMapVotePanel();
+        UpdateRacePanels();
 
         // Minigame cursor (QC hud_cursormode): while a minigame board/menu owns input, show the cursor so the
         // player can click TTT/C4 tiles + the menu; recapture for play on the edge back out. Skip while the
@@ -2708,29 +2779,132 @@ public sealed partial class NetGame : Node3D
         if (_pickupInit)
         {
             XonoticGodot.Game.Hud.PickupPanel? feed = _fullHud.GetPanel<XonoticGodot.Game.Hud.PickupPanel>();
-            if (feed is not null)
+            // (QC STAT(LAST_PICKUP) advance → pickup_crosshair_size = 1, crosshair.qc:362-379): a pickup this
+            // frame also bumps the crosshair. We derive the same trigger from the client-side pickup detection
+            // below (any new weapon or resource jump) and pulse the crosshair once.
+            bool pickedUp = false;
             {
                 // New weapons — always a genuine pickup (never regen/spawn here, since spawn re-baselines).
                 foreach (XonoticGodot.Common.Gameplay.Weapon w in XonoticGodot.Common.Gameplay.Weapons.All)
                     if (owned.Has(w) && !_pickupLastOwned.Has(w))
-                        feed.Push(string.IsNullOrEmpty(w.DisplayName) ? w.NetName : w.DisplayName,
-                                  XonoticGodot.Game.Hud.WeaponHud.IconName(w.NetName));
+                    {
+                        feed?.Push(string.IsNullOrEmpty(w.DisplayName) ? w.NetName : w.DisplayName,
+                                   XonoticGodot.Game.Hud.WeaponHud.IconName(w.NetName));
+                        pickedUp = true;
+                    }
 
                 // Resource pickups — a per-frame jump above a threshold regen never reaches in one frame
                 // (health/armor regen is gradual; the 4 main ammo pools never regen).
-                if (health - _pickupHealth >= 3f) feed.Push("Health", "health");
-                if (armor - _pickupArmor >= 3f) feed.Push("Armor", "armor");
-                if (shells - _pickupShells >= 1f) feed.Push("Shells", "ammo_shells");
-                if (bullets - _pickupBullets >= 1f) feed.Push("Bullets", "ammo_bullets");
-                if (rockets - _pickupRockets >= 1f) feed.Push("Rockets", "ammo_rockets");
-                if (cells - _pickupCells >= 1f) feed.Push("Cells", "ammo_cells");
+                if (health - _pickupHealth >= 3f) { feed?.Push("Health", "health"); pickedUp = true; }
+                if (armor - _pickupArmor >= 3f) { feed?.Push("Armor", "armor"); pickedUp = true; }
+                if (shells - _pickupShells >= 1f) { feed?.Push("Shells", "ammo_shells"); pickedUp = true; }
+                if (bullets - _pickupBullets >= 1f) { feed?.Push("Bullets", "ammo_bullets"); pickedUp = true; }
+                if (rockets - _pickupRockets >= 1f) { feed?.Push("Rockets", "ammo_rockets"); pickedUp = true; }
+                if (cells - _pickupCells >= 1f) { feed?.Push("Cells", "ammo_cells"); pickedUp = true; }
             }
+            if (pickedUp)
+                _fullHud.Crosshair.PulsePickup(); // QC crosshair_pickup bump
         }
 
         _pickupInit = true;
         _pickupLastOwned = owned;
         _pickupHealth = health; _pickupArmor = armor;
         _pickupShells = shells; _pickupBullets = bullets; _pickupRockets = rockets; _pickupCells = cells;
+    }
+
+    /// <summary>
+    /// Feed the crosshair panel the active weapon slot's live ring stats (QC client/hud/crosshair.qc 471-557).
+    /// Reads the host-side <see cref="LocalServerPlayer"/>'s active weapon-slot scratch state — the C# home of
+    /// QC's networked <c>wepent.*</c> fields — and maps it onto the panel's ring setters: Vortex charge
+    /// (<c>vortex_charge</c> → <see cref="CrosshairPanel.ChargeFraction"/>) + chargepool (<c>vortex_chargepool_ammo</c>
+    /// → <see cref="CrosshairPanel.ChargePool"/>); the reload/ammo ring (<c>clip_load</c>/<c>clip_size</c>); the
+    /// Hagar load (<c>hagar_load</c>) and Mine Layer count (<c>minelayer_mines</c>) rings; and the Arc overheat
+    /// ring (<c>arc_heat_percent</c>). Each stat is reset to its "no data" sentinel when the active weapon isn't
+    /// the one that owns it, so the panel only draws the ring for the weapon currently held — exactly like the QC
+    /// per-weapon if/else chain. Host path only (a pure remote client has no local slot state here).
+    /// </summary>
+    private void UpdateCrosshairWeaponRings()
+    {
+        CrosshairPanel x = _fullHud.Crosshair;
+        Player? p = LocalServerPlayer;
+        Weapon? active = p is not null ? Inventory.CurrentWeapon(p) : null;
+        if (p is null || active is null || p.IsDead || p.IsObserver)
+        {
+            // No live weapon → hide every ring (sentinels match the panel's "no data" defaults).
+            x.ChargeFraction = -1f; x.ChargePool = -1f;
+            x.ClipLoad = -1f; x.ClipSize = 0f;
+            x.HagarLoad = -1f; x.MineCount = -1f; x.ArcHeat = -1f;
+            return;
+        }
+
+        WeaponSlotState st = p.WeaponState(new WeaponSlot(0));
+        string net = active.NetName ?? string.Empty;
+
+        // Vortex / Overkill-Nex charge ring (QC 482-496). vortex_charge is already a [0,1] fraction; the inner
+        // chargepool ring uses vortex_chargepool_ammo (also [0,1]). Fed only while the charge weapon is active.
+        if (net is "vortex" or "vaporizer" || net.Contains("nex"))
+        {
+            x.ChargeFraction = st.VortexCharge;
+            x.ChargePool = st.VortexChargePoolAmmo;
+        }
+        else
+        {
+            x.ChargeFraction = -1f;
+            x.ChargePool = -1f;
+        }
+
+        // Reload / ammo ring (QC 536-548): clip_load / clip_size, drawn for any weapon with a clip.
+        if (st.ClipSize > 0)
+        {
+            x.ClipLoad = st.ClipLoad;
+            x.ClipSize = st.ClipSize;
+        }
+        else
+        {
+            x.ClipLoad = -1f;
+            x.ClipSize = 0f;
+        }
+
+        // Hagar burst-load ring (QC 529-535): hagar_load / load_max.
+        if (net == "hagar" && active is Hagar hg)
+        {
+            x.HagarLoad = st.HagarLoad;
+            x.HagarLoadMax = hg.Secondary.LoadMax > 0f ? hg.Secondary.LoadMax : x.HagarLoadMax;
+        }
+        else
+        {
+            x.HagarLoad = -1f;
+        }
+
+        // Mine Layer count ring (QC 522-528): minelayer_mines / limit. Count this player's live mines (the same
+        // g_mines scan QC's W_MineLayer_Count does), since the count isn't cached on the slot.
+        if (net == "minelayer" && active is Minelayer ml)
+        {
+            int mines = 0;
+            foreach (Entity e in Api.Entities.FindByClass("mine"))
+                if (ReferenceEquals(e.Owner, p) && !e.IsFreed) ++mines;
+            x.MineCount = mines;
+            x.MineLimit = ml.Cvars.Limit > 0 ? ml.Cvars.Limit : x.MineLimit;
+        }
+        else
+        {
+            x.MineCount = -1f;
+        }
+
+        // Arc overheat ring (QC 474, 550-556 + Arc_GetHeat_Percent arc.qc:55-68). While firing the heat fraction
+        // is beam_heat / overheat_max; after release the overheat-jam latch holds the ring until it cools.
+        if (net == "arc" && active is Arc arc && arc.Beam.OverheatMax > 0f)
+        {
+            float now = Api.Clock.Time;
+            float pct = st.BeamHeat > 0f
+                ? st.BeamHeat / arc.Beam.OverheatMax
+                : (st.ArcOverheat > now ? (st.ArcOverheat - now) / arc.Beam.OverheatMax : 0f);
+            x.ArcHeat = Godot.Mathf.Clamp(pct, 0f, 1f);
+        }
+        else
+        {
+            x.ArcHeat = -1f;
+        }
     }
 
     /// <summary>Drain the networked match clock (NetControl.MatchState → ClientNet) into the TIMER panel each
@@ -2756,6 +2930,262 @@ public sealed partial class NetGame : Node3D
         _fullHud.Observing = _client.IsObserving;
         if (_client.MatchIntermission)
             t.IntermissionTime = _client.LatestServerTime;
+    }
+
+    /// <summary>
+    /// Feed the VOTE panel (QC HUD_Vote) the live call-vote state each frame. On a listen server the in-process
+    /// <see cref="VoteController"/> (GameWorld.Voting) carries it directly — Active / Display / yes-no tallies /
+    /// the threshold / the local player's own ballot (the already-voted dim + side highlight) / the timeout. The
+    /// panel self-blanks when no vote is active, so this is safe to call every frame. On a pure remote client
+    /// there is no in-process world (no vote net channel yet) → the panel stays blank (an honest gap).
+    /// </summary>
+    private void UpdateVotePanel()
+    {
+        if (_fullHud is null)
+            return;
+        XonoticGodot.Game.Hud.VotePanel v = _fullHud.Vote;
+        VoteController? vote = _serverWorld?.Voting;
+        if (vote is null || !vote.Active)
+        {
+            if (v.Active) v.Active = false;        // arm the fade-out when the vote just ended
+            // Hold the panel Visible for one fade window (0.5s) after the vote clears so the 0.5s fade-out plays,
+            // then hide it (the panel self-blanks at alpha 0 in the meantime).
+            if (v.Visible)
+            {
+                _voteHideAt = _voteHideAt < 0.0 ? _client?.LatestServerTime + 0.6 ?? -1.0 : _voteHideAt;
+                if (_voteHideAt >= 0.0 && (_client?.LatestServerTime ?? 0.0) >= _voteHideAt)
+                { v.Visible = false; _voteHideAt = -1.0; }
+            }
+            return;
+        }
+        _voteHideAt = -1.0; // a live vote cancels any pending hide
+
+        v.CalledVote = vote.Display;
+        v.YesCount = vote.YesCount;
+        v.NoCount = vote.NoCount;
+        v.Needed = vote.NeededOverall;
+        v.EndTime = vote.EndTime;
+        // QC vote_highlighted: the local player's ballot (+1 yes / -1 no / 0 not-voted; abstain reads as not-voted
+        // for the yes/no highlight). Drives the already-voted dim + the chosen-side highlight.
+        Player? me = LocalServerPlayer;
+        int sel = me is not null ? vote.SelectionOf(me) : VoteController.SelectNull;
+        v.Highlighted = sel == VoteController.SelectAccept ? 1 : sel == VoteController.SelectReject ? -1 : 0;
+        v.Active = true; // set last so the fade-in only arms on the true→false→true transition
+        if (!v.Visible) v.Visible = true;
+    }
+
+    /// <summary>
+    /// Feed the MAP-VOTE panel (QC mapvoting.qc MapVote_Draw) the end-of-match map ballot each frame. On a listen
+    /// server the in-process <see cref="MapVoting"/> (GameWorld.MapVote) drives it: the candidate maps + live
+    /// vote counts + the local player's own vote + the running countdown, and the winner reveal once decided. The
+    /// panel is in <c>StartHiddenIds</c>, so its Visible is owned here (shown while the vote runs/reveals).
+    /// </summary>
+    private void UpdateMapVotePanel()
+    {
+        if (_fullHud is null)
+            return;
+        XonoticGodot.Game.Hud.MapVotePanel mv = _fullHud.MapVote;
+        MapVoting? vote = _serverWorld?.MapVote;
+        bool showing = vote is not null && (vote.Running || (vote.Finished && !string.IsNullOrEmpty(vote.WinningMap)));
+        if (!showing)
+        {
+            if (mv.Visible) { mv.Visible = false; mv.Active = false; }
+            return;
+        }
+
+        // (Re)build the candidate list only when the ballot identity changes (count / first map / running flag),
+        // then update the live counts in place each frame so SetVote's per-cell fade state isn't reset every frame.
+        var cands = vote!.Candidates;
+        string sig = $"{cands.Count}|{(cands.Count > 0 ? cands[0].MapName : "")}|{vote.Timeout:0.0}";
+        if (sig != _mapVoteSig)
+        {
+            _mapVoteSig = sig;
+            var list = new System.Collections.Generic.List<XonoticGodot.Game.Hud.MapVotePanel.Candidate>(cands.Count);
+            int abstainIdx = -1;
+            for (int i = 0; i < cands.Count; i++)
+            {
+                MapVoteCandidate c = cands[i];
+                if (c.IsAbstain) { abstainIdx = i; continue; } // abstain is rendered as its own row, not a cell
+                string pic = string.IsNullOrEmpty(c.MapName) ? "" : $"maps/{c.MapName}";
+                list.Add(new XonoticGodot.Game.Hud.MapVotePanel.Candidate(
+                    c.MapName, c.Votes, pic, c.MapName, "", c.Available, c.Suggester));
+            }
+            mv.SetVote(list, vote.Timeout, gametypeVote: false, abstain: abstainIdx >= 0);
+        }
+
+        // Live counts + availability each frame (QC MapVote_UpdateVotes), excluding the abstain slot.
+        var counts = new System.Collections.Generic.List<int>(cands.Count);
+        foreach (MapVoteCandidate c in cands)
+            if (!c.IsAbstain)
+                counts.Add(c.Available ? c.Votes : -1);
+        mv.SetVotes(counts);
+
+        // The local player's own vote (QC mv_ownvote). Abstain is appended LAST on the server ballot, so the
+        // non-abstain candidate indices line up 1:1 with the panel's (abstain-stripped) cell list. An abstain /
+        // no-vote reads as -1 (no cell highlighted).
+        int own = vote.SelectionOf(LocalServerPlayer);
+        mv.OwnVote = (own >= 0 && own < cands.Count && !cands[own].IsAbstain) ? own : -1;
+
+        if (vote.Finished && !string.IsNullOrEmpty(vote.WinningMap))
+        {
+            int win = 0;
+            int slot = 0;
+            foreach (MapVoteCandidate c in cands)
+            {
+                if (c.IsAbstain) continue;
+                slot++;
+                if (string.Equals(c.MapName, vote.WinningMap, System.StringComparison.OrdinalIgnoreCase)) { win = slot; break; }
+            }
+            if (mv.Winner != win) mv.SetWinner(win);
+        }
+
+        mv.Active = true;
+        if (!mv.Visible) mv.Visible = true;
+    }
+    private string _mapVoteSig = "";
+    private double _voteHideAt = -1.0;
+
+    /// <summary>
+    /// Feed the RACE-TIMER panel (QC racetimer.qc HUD_RaceTimer) + the Checkpoints panel (checkpoints.qc) the
+    /// live race state each frame in Race/CTS. On a listen server the active <see cref="Race"/> gametype carries
+    /// the local racer's <c>RaceState</c> and the per-checkpoint record store (QC race_checkpoint_records[]): the
+    /// lap count-up clock, the next checkpoint + its record (the anticipation delta), the most-recent checkpoint
+    /// split + speed (the frozen "Checkpoint N (+/-delta)" line + the split list), and the penalty accumulator.
+    /// This is the host analogue of the TE_CSQC_RACE net feed (QC race_SendTime) — the records are now kept
+    /// server-side (Race.RecordCheckpointSplit), so the panels render live instead of staying blank. The panel
+    /// self-blanks outside a lap.
+    /// </summary>
+    private void UpdateRacePanels()
+    {
+        if (_fullHud is null)
+            return;
+        XonoticGodot.Game.Hud.RaceTimerPanel rt = _fullHud.RaceTimer;
+        XonoticGodot.Game.Hud.CheckpointsPanel cps = _fullHud.Checkpoints;
+        Player? me = LocalServerPlayer;
+        XonoticGodot.Common.Gameplay.GameType? gt = _serverWorld?.GameType;
+        var race = gt as XonoticGodot.Common.Gameplay.Race;
+        var cts = gt as XonoticGodot.Common.Gameplay.Cts;
+        bool active = (race is not null || cts is not null) && me is not null && !_client!.IsObserving;
+        if (!active)
+        {
+            if (rt.Visible) rt.Visible = false;
+            if (cps.Visible) cps.Visible = false;
+            _lastFedCheckpoint = -2;
+            return;
+        }
+
+        rt.Now = _client!.LatestServerTime;
+        rt.Observing = false;
+        if (race is not null)
+        {
+            XonoticGodot.Common.Gameplay.Race.RaceState st = race.GetState(me!);
+            rt.RaceLapTime = st.LapStartTime;              // QC race_laptime: the lap-start baseline (count-up clock)
+            rt.RaceNextCheckpoint = st.NextCheckpoint < 0 ? 0 : st.NextCheckpoint;
+            rt.RacePenaltyAccumulator = st.PenaltyAccumulator * 10f; // panel reads tenths; RaceState keeps seconds
+            // RaceCheckpoint (the frozen-split index) is set below from the last CROSSED checkpoint.
+
+            // QC race_SendTime → the racetimer split feed: the most-recent checkpoint crossing (race_checkpoint /
+            // race_time / race_checkpointtime) drives the frozen "Checkpoint N (+/-delta)" line. The delta is vs
+            // the per-checkpoint record (race_previousbesttime) + personal best (race_mypreviousbesttime). Times
+            // are kept in plain seconds (the port's RaceTimerPanel works in seconds, not TIME_ENCODE'd ints).
+            int lastCp = st.LastCrossedCheckpoint;
+            // The panel selects FROZEN-split vs ANTICIPATION/clock on RaceCheckpointTime > 0; feed the crossing
+            // stamp only within the 2s freeze window (QC racetimer.qc: a = bound(0, 2-(time-race_checkpointtime)))
+            // so after the split fades the panel reverts to the running clock + next-checkpoint anticipation.
+            double nowT = rt.Now;
+            bool frozen = st.LastCheckpointTime > 0f && (nowT - st.LastCheckpointTime) < 2.0;
+            rt.RaceCheckpointTime = frozen ? st.LastCheckpointTime : 0.0;
+            rt.RaceCheckpoint = lastCp < 0 ? 254 : lastCp;
+            rt.RaceTime = st.LastSplit;
+            rt.RaceCheckpointSpeed = st.LastCheckpointSpeed;
+            rt.RacePreviousBestTime = lastCp >= 0 ? race.CheckpointRecord(lastCp) : 0f;
+            rt.RacePreviousBestName = lastCp >= 0 ? race.CheckpointRecordHolder(lastCp) : "";
+            rt.RaceCheckpointBestSpeed = lastCp >= 0 ? race.CheckpointRecordSpeed(lastCp) : 0f;
+            rt.RaceMyPreviousBestTime = lastCp >= 0 && st.PersonalCheckpointRecords.TryGetValue(lastCp, out float mb) ? mb : 0f;
+
+            // QC the anticipation feed: the record split at the NEXT checkpoint (race_nextbesttime) + your own PB
+            // (race_mybesttime), so the panel can show the live delta while heading toward it.
+            int nextCp = st.NextCheckpoint < 0 ? 0 : st.NextCheckpoint;
+            rt.RaceNextBestTime = race.CheckpointRecord(nextCp);
+            rt.RaceNextBestName = race.CheckpointRecordHolder(nextCp);
+            rt.RaceMyBestTime = st.PersonalCheckpointRecords.TryGetValue(nextCp, out float nmb) ? nmb : 0f;
+
+            // QC StoreCheckpointSplits (racetimer.qc:276): on a NEW crossing, stash the split line for the
+            // Checkpoints panel (the persistent list). Fire once per crossing (track the last fed checkpoint +
+            // its stamp so a still-frozen split isn't re-stored every frame). A lap restart (cp back to start)
+            // clears the list (QC ClearCheckpointSplits on race_time == 0).
+            if (lastCp >= 0 && st.LastCheckpointTime > 0f
+                && (lastCp != _lastFedCheckpoint || st.LastCheckpointTime != _lastFedCheckpointTime))
+            {
+                _lastFedCheckpoint = lastCp;
+                _lastFedCheckpointTime = st.LastCheckpointTime;
+                float rec = race.CheckpointRecord(lastCp);
+                string label = lastCp == 0 ? "Finish line" : $"Checkpoint {lastCp}";
+                // delta vs the match record at this checkpoint (negative = ahead). With no record yet, show the
+                // bare label (StoreSplit with a 0 delta renders "+0.0").
+                float delta = rec > 0f ? st.LastSplit - rec : 0f;
+                cps.StoreSplit(lastCp, label, delta);
+            }
+            else if (st.LapStartTime > 0f && lastCp < 0)
+            {
+                cps.ClearSplits();   // QC ClearCheckpointSplits on a fresh lap (no crossing yet)
+                _lastFedCheckpoint = -2;
+            }
+            if (!cps.Visible) cps.Visible = true;
+
+            // QC race_SendStatus → cl_race.qc HUD_Mod_Race medal flash: when the LOCAL racer files a new record
+            // (Race.RecordFinishTime stamps LastRecordTime), raise the medal once. The status maps QC's
+            // race_SendStatus argument: 0 fail, 1 new time (PB, improved own rank), 2 new rank, 3 server record.
+            if (ReferenceEquals(race.LastRecordPlayer, me) && race.LastRecordTime > 0f
+                && race.LastRecordTime != _lastFedRecordTime)
+            {
+                _lastFedRecordTime = race.LastRecordTime;
+                XonoticGodot.Common.Gameplay.RaceRecordResult r = race.LastRecord;
+                int status = r.Kind switch
+                {
+                    XonoticGodot.Common.Gameplay.RaceRecordKind.Fail => 0,
+                    _ when r.IsServerRecord => 3,                                            // newpos == 1
+                    XonoticGodot.Common.Gameplay.RaceRecordKind.NewImproved => 1,            // improved own rank → new time
+                    _ => 2,                                                                  // NewSet / NewBroken → new rank
+                };
+                rt.RaceStatus = status;
+                rt.RaceStatusName = me!.NetName;
+                rt.RaceStatusRank = status > 0 && r.NewPos > 0 ? CountOrdinal(r.NewPos) : "";
+                rt.RaceStatusRankIsMine = true;                                              // the local racer set it
+                rt.RaceStatusTime = race.LastRecordTime + 5.0;                              // QC race_status_time = time + 5
+            }
+            else if (rt.RaceStatus >= 0 && rt.RaceStatusTime <= rt.Now)
+            {
+                rt.RaceStatus = -1; // QC: the flash expires after its 5s window
+            }
+        }
+        else
+        {
+            // CTS: a single timed run (RunStartTime is the count-up baseline); no per-checkpoint laps.
+            XonoticGodot.Common.Gameplay.Cts.CtsState st = cts!.GetState(me!);
+            rt.RaceLapTime = st.RunStartTime;
+            rt.RaceCheckpoint = 254;
+            rt.RaceNextCheckpoint = 254;                   // 254 = none (CTS has no next-checkpoint anticipation)
+            rt.RacePenaltyAccumulator = 0f;
+            rt.RaceCheckpointTime = 0.0;
+            if (cps.Visible) cps.Visible = false;          // CTS has no per-checkpoint split list
+        }
+        if (!rt.Visible) rt.Visible = true;
+    }
+
+    // Per-frame StoreSplit de-dup: the last checkpoint index + its crossing stamp we already fed to the
+    // Checkpoints panel, so a still-frozen split (held for ~2s) isn't re-stored every render frame.
+    private int _lastFedCheckpoint = -2;
+    private float _lastFedCheckpointTime = -1f;
+    // The last record-attempt stamp we raised the medal flash for (so a frozen flash isn't re-triggered).
+    private float _lastFedRecordTime = -1f;
+
+    /// <summary>QC <c>count_ordinal</c> (common/util.qc): 1 → "1st", 2 → "2nd", 3 → "3rd", 11..13 → "Nth".</summary>
+    private static string CountOrdinal(int n)
+    {
+        int tens = n % 100;
+        if (tens >= 11 && tens <= 13) return n + "th";
+        return (n % 10) switch { 1 => n + "st", 2 => n + "nd", 3 => n + "rd", _ => n + "th" };
     }
 
     /// <summary>
@@ -2821,6 +3251,27 @@ public sealed partial class NetGame : Node3D
                 ? (_server.PlayerByNetId(sid)?.NetName ?? "")
                 : "";
         }
+
+        // QC cl_lms DrawInfoMessages: in LMS, the local player is "out" once they hold an LMS rank (LMS_RANK > 0,
+        // set on elimination). Read it from the local scoreboard row's networked LMS_RANK column.
+        im.LmsNoLives = false;
+        if (XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype == "lms")
+        {
+            XonoticGodot.Net.ScoreboardWire? sb = _client.LatestScoreboard;
+            var rankField = XonoticGodot.Common.Gameplay.Scoring.GameScores.Field("LMS_RANK");
+            if (sb is not null && rankField is not null)
+            {
+                int localId = _client.LocalNetId;
+                foreach (XonoticGodot.Net.ScoreRowWire row in sb.Rows)
+                {
+                    if (row.NetId != localId) continue;
+                    int rid = rankField.RegistryId;
+                    if (rid >= 0 && rid < row.Columns.Length && row.Columns[rid] > 0)
+                        im.LmsNoLives = true;
+                    break;
+                }
+            }
+        }
     }
 
     /// <summary>Size the scoreboard panel to a centered slab of the viewport (QC HUD_Panel_UpdatePosSize for the
@@ -2847,8 +3298,18 @@ public sealed partial class NetGame : Node3D
             return;
 
         bool show = XonoticGodot.Engine.Console.BindTable.ShowScores;
-        if (_scoreboard.Visible != show)
-            _scoreboard.Visible = show;
+        // QC scoreboard.qc:2411: drive the cross-fade via scoreboard_active (the Active setter ramps _fadeAlpha
+        // in/out in _Process and hides the panel once fully faded out) rather than popping Visible — this is what
+        // makes hud_panel_scoreboard_fadeinspeed/fadeoutspeed actually animate on the live path.
+        if (_scoreboard.Active != show)
+            _scoreboard.Active = show;
+        // Feed the networked respawn line every frame while shown (QC STAT(RESPAWN_TIME), scoreboard.qc:2764) so
+        // the countdown ticks even between score-version changes; this is the live caller for the respawn block.
+        if (show)
+        {
+            _scoreboard.RespawnStat = _client.RespawnTimeStat;
+            _scoreboard.RespawnServerTime = _client.LatestServerTime;
+        }
         if (!show)
             return;
 
@@ -3126,8 +3587,21 @@ public sealed partial class NetGame : Node3D
         _scoreboard.TimeLimitMinutes = (int)cvars.GetFloat("timelimit");
         // [T43] Feed the scoreboard map-stats row (QC monsters_setstatus → STAT(MONSTERS_TOTAL/KILLED)).
         // -1 hides the row when there are no monsters (DrawMapStats gates on MonstersTotal > 0).
-        _scoreboard.MonstersTotal  = XonoticGodot.Common.Gameplay.MonsterAI.MonstersTotal > 0 ? XonoticGodot.Common.Gameplay.MonsterAI.MonstersTotal : -1;
-        _scoreboard.MonstersKilled = XonoticGodot.Common.Gameplay.MonsterAI.MonstersKilled;
+        // QC sv_invasion.qc MUTATOR_HOOKFUNCTION(inv, SV_StartFrame): for INV_TYPE_ROUND the wave progress is
+        // monsters_total=inv_maxspawned / monsters_killed=inv_numkilled — the per-round SPAWNED wave counters, NOT
+        // the NATURAL map-placed totals (which MonsterAI tracks and which exclude the spawned wave monsters). So in
+        // ROUND Invasion publish the live wave counts; every other mode keeps the natural map-monster totals.
+        if (_serverWorld?.GameType is XonoticGodot.Common.Gameplay.Invasion inv
+            && inv.Type == XonoticGodot.Common.Gameplay.Invasion.InvasionType.Round)
+        {
+            _scoreboard.MonstersTotal  = inv.Wave.MaxSpawned > 0 ? inv.Wave.MaxSpawned : -1;
+            _scoreboard.MonstersKilled = inv.Wave.Killed;
+        }
+        else
+        {
+            _scoreboard.MonstersTotal  = XonoticGodot.Common.Gameplay.MonsterAI.MonstersTotal > 0 ? XonoticGodot.Common.Gameplay.MonsterAI.MonstersTotal : -1;
+            _scoreboard.MonstersKilled = XonoticGodot.Common.Gameplay.MonsterAI.MonstersKilled;
+        }
     }
 
     /// <summary>
@@ -3506,6 +3980,8 @@ public sealed partial class NetGame : Node3D
             if (BindTable.CrouchHeld) buttons |= InputButtons.Crouch;
             if (BindTable.ZoomHeld) buttons |= InputButtons.Zoom;
             if (BindTable.UseHeld) buttons |= InputButtons.Use;
+            // PHYS_INPUT_BUTTON_HOOK (+hook): the offhand-fire button — grapple hook / offhand blaster / nade.
+            if (BindTable.HookHeld) buttons |= InputButtons.Hook;
 
             // Sub-tick fire latch (set per render frame in UpdateLocalFireFeedback): OR a press that landed since
             // the last sampled command into THIS command — so a tap shorter than one input tick still fires —
@@ -3695,6 +4171,10 @@ public sealed partial class NetGame : Node3D
             // only — _viewAngles (the aim sent to the server) stays unpunched so shots still land on the crosshair.
             ViewAnglesQuake = _viewAngles + _client.PunchAngle,
             IsDead = localDead,
+            // QC STAT(FROZEN) → cl_ft WantEventchase: engage the third-person cam while Freeze-Tag frozen (host
+            // path; the local Player carries the Frozen status effect). A pure remote client reads false here.
+            IsFrozen = LocalServerPlayer is { } frozenSelf && StatusEffectsCatalog.Frozen is { } frozenDef2
+                && StatusEffectsCatalog.Has(frozenSelf, frozenDef2),
             // Eye drops while crouched: the predicted carrier carries the live view offset (PlayerPhysics.UpdateCrouch
             // sets ViewOfs to the crouch/standing value each predicted tick, QC STAT(PL_CROUCH_VIEW_OFS)/PL_VIEW_OFS).
             // In faithful mode this is the viewheightavg-blended height (smooth crouch); else the raw live offset.

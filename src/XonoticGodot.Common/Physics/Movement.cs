@@ -26,6 +26,14 @@ public interface IMovementInput
     bool ButtonAttack2 { get; }  // secondary fire
 
     /// <summary>
+    /// PHYS_INPUT_BUTTON_HOOK (player.qh:157, == BUTTON6) — the +hook / offhand-fire button. The weapon
+    /// system reads it each frame to drive the player's offhand weapon think (grapple hook, offhand blaster,
+    /// nade prime/throw). Defaulted to <c>false</c> so existing input sources keep compiling; the net layer
+    /// (ServerNet.ToMovementInput) and bots set it from the move command / brain.
+    /// </summary>
+    bool ButtonHook => false;
+
+    /// <summary>
     /// PHYS_INPUT_BUTTON_JETPACK — the dedicated jetpack key (separate from <see cref="ButtonJump"/>).
     /// Defaulted to <c>false</c> as a default-interface-method so existing input sources keep compiling;
     /// a source that supports the jetpack overrides it. (CheckPlayerJump also activates the jetpack from
@@ -72,6 +80,7 @@ public struct MovementInput : IMovementInput
     public bool ButtonUse { get; set; }
     public bool ButtonAttack1 { get; set; }
     public bool ButtonAttack2 { get; set; }
+    public bool ButtonHook { get; set; }
     public bool ButtonJetpack { get; set; }
     public bool Typing { get; set; }
     public int Impulse { get; set; }

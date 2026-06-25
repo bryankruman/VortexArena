@@ -63,4 +63,17 @@ public static class Combat
             HitLocation = hitLocation,
             Force = force,
         });
+
+    /// <summary>
+    /// QC <c>Heal(targ, inflictor, amount, limit)</c> (server/damage.qc:948): the generic heal entry — dispatches
+    /// to <see cref="Entity.GtEventHeal"/> when the target carries one (an Onslaught generator / control-point
+    /// icon sets it to ons_GeneratorHeal / ons_ControlPoint_Icon_Heal), else does nothing (QC returns false).
+    /// Bails on a dead/frozen target like QC. Returns true if any health was added.
+    /// </summary>
+    public static bool Heal(Entity target, Entity? inflictor, float amount, float limit)
+    {
+        if (target.IsFreed || target.DeadState != DeadFlag.No || target.TakeDamage == DamageMode.No)
+            return false; // QC: game_stopped / IS_DEAD(targ) / FROZEN guard
+        return target.GtEventHeal?.Invoke(target, inflictor, amount, limit) ?? false;
+    }
 }

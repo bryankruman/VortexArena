@@ -155,8 +155,11 @@ public sealed class LastManStanding : GameType
     /// QC the g_lms_dynamic_respawn_delay scaling: a player with fewer lives than the leader respawns slower
     /// (base + increase * (maxLives - playerLives), capped). Returns the delay in seconds for a player with
     /// <paramref name="playerLives"/> lives. With the dynamic delay off, returns the base delay.
+    /// <paramref name="respawning"/> is the player who is respawning (excluded from the max-lives scan, QC's
+    /// <c>FOREACH_CLIENT(it != player ...)</c>); when only one OTHER player is alive (a heads-up) Base flattens
+    /// the delay to the base value (<c>if (pl_cnt == 1) max_lives = 0</c>).
     /// </summary>
-    public float RespawnDelayFor(int playerLives)
+    public float RespawnDelayFor(int playerLives, Player? respawning = null)
     {
         if (!(TryCvar("g_lms_dynamic_respawn_delay", out float dyn) && dyn != 0f))
             return TryCvar("g_lms_dynamic_respawn_delay_base", out float b0) ? b0 : 2f;
@@ -165,12 +168,54 @@ public sealed class LastManStanding : GameType
         float increase = TryCvar("g_lms_dynamic_respawn_delay_increase", out float i) ? i : 3f;
         float max = TryCvar("g_lms_dynamic_respawn_delay_max", out float m) ? m : 20f;
 
-        int maxLives = 0;
-        foreach (LmsState st in _states.Values)
-            if (st.Lives > maxLives) maxLives = st.Lives;
+        // QC CalculateRespawnTime: max-lives over the OTHER in-game players (it != player).
+        int maxLives = 0, plCnt = 0;
+        foreach (KeyValuePair<Player, LmsState> kv in _states)
+        {
+            if (kv.Value.OutOfGame || ReferenceEquals(kv.Key, respawning)) continue;
+            if (kv.Value.Lives > maxLives) maxLives = kv.Value.Lives;
+            plCnt++;
+        }
+
+        // QC: "min delay with only 2 players" — if just one other player is alive, flatten to the base delay.
+        if (plCnt == 1)
+            maxLives = 0;
 
         float delay = baseDelay + increase * System.Math.Max(0, maxLives - playerLives);
         return System.Math.Min(delay, max);
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(lms, CalculateRespawnTime): set a dead LMS player's respawn timing. An eliminated
+    /// (0-lives) player is denied a respawn (RESPAWN_SILENT, held 2s to stop a sudden spectator-camera jump); a
+    /// still-living player gets the dynamic delay (<see cref="RespawnDelayFor"/>) when enabled. Returns true when
+    /// LMS owns the timing (Base returns true to take over), false to let the generic timing stand. Called from
+    /// the host's per-tick dead-player think (the CalculateRespawnTime seam) for the active LMS match.
+    /// </summary>
+    public bool ApplyRespawnTiming(Player p)
+    {
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+
+        // QC: player.respawn_flags |= RESPAWN_FORCE (LMS auto-respawns living players, no fire press needed).
+        p.RespawnFlags |= RespawnFlag.Force;
+
+        int plLives = GetState(p).Lives;
+        if (plLives <= 0)
+        {
+            // QC: eliminated → RESPAWN_SILENT, respawn_time = time + 2 (prevents an unwanted spectator rejoin).
+            p.RespawnFlags = RespawnFlag.Silent;
+            p.RespawnTime = now + 2f;
+            p.RespawnTimeMax = p.RespawnTime;
+            return true;
+        }
+
+        if (!(TryCvar("g_lms_dynamic_respawn_delay", out float dyn) && dyn != 0f))
+            return false; // QC: dynamic delay off → let the generic timing stand
+
+        float delay = RespawnDelayFor(plLives, p);
+        p.RespawnTime = now + delay;
+        p.RespawnTimeMax = p.RespawnTime;
+        return true;
     }
 
     /// <summary>
@@ -273,10 +318,116 @@ public sealed class LastManStanding : GameType
         return st;
     }
 
-    /// <summary>QC lms_AddPlayer: register a player with a fresh pool of lives (no-op if already tracked).</summary>
-    public void AddPlayer(Player p) => SyncColumns(p, GetState(p)); // seed LMS_LIVES on the scoreboard
+    /// <summary>
+    /// QC lms_AddPlayer: register a player and seed their lives on the scoreboard. Before the match starts (or in
+    /// warmup) the player gets the full starting pool (lazy <see cref="GetState"/>); a LATE joiner mid-match instead
+    /// gets <see cref="NewPlayerLives"/> — the current lowest life count, clamped to the fraglimit — so they don't
+    /// join ahead. Returns false (Base lms_AddPlayer: can't join) when the lockout is active (NewPlayerLives==0).
+    /// </summary>
+    public bool AddPlayer(Player p, bool matchRunning = false)
+    {
+        if (matchRunning && !_states.ContainsKey(p))
+        {
+            int lives = NewPlayerLives();
+            if (lives <= 0)
+                return false; // QC: lives <= 0 → not added (the match is locked to late joiners)
+            _states[p] = new LmsState { Lives = lives };
+        }
+        SyncColumns(p, GetState(p)); // seed LMS_LIVES on the scoreboard
+        return true;
+    }
 
-    public void RemovePlayer(Player p) => _states.Remove(p);
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(lms, ForbidSpawn) / lms_AddPlayer gate: may this client become a live player right
+    /// now? Always yes during <paramref name="warmupOrPreStart"/>; once the match is running a late joiner is
+    /// refused when the join lockout is active (<see cref="NewPlayerLives"/> == 0 — the leader has lost too many
+    /// lives / the first player is fully out). An already-tracked in-game player may always (re)spawn.
+    /// </summary>
+    public bool CanJoin(Player p, bool warmupOrPreStart)
+    {
+        if (warmupOrPreStart) return true;
+        if (_states.TryGetValue(p, out LmsState? st)) return !st.OutOfGame;
+        return NewPlayerLives() > 0;
+    }
+
+    // QC last_forfeiter_*: the lives/health/armor of the least-healthy player who has forfeited, used to clone a
+    // late joiner's loadout (the PlayerSpawn least-healthy half — host-side, still deferred).
+    private int _lastForfeiterLives;
+    private float _lastForfeiterHealth;
+    private float _lastForfeiterArmor;
+
+    /// <summary>QC last_forfeiter_lives (the lives of the least-healthy forfeiter, for the late-join health clone).</summary>
+    public int LastForfeiterLives => _lastForfeiterLives;
+    /// <summary>QC last_forfeiter_health.</summary>
+    public float LastForfeiterHealth => _lastForfeiterHealth;
+    /// <summary>QC last_forfeiter_armorvalue.</summary>
+    public float LastForfeiterArmor => _lastForfeiterArmor;
+
+    /// <summary>
+    /// QC <c>lms_RemovePlayer</c> (fired on disconnect / forced-observer / voluntary spectate): assign a finishing
+    /// rank to a leaver who was still in the game and reshuffle the other ranks. <paramref name="voluntary"/> is
+    /// Base's <c>lms_spectate</c> (a disconnect is treated as voluntary): a still-in-game leaver who is NOT
+    /// voluntarily leaving is ranked at <c>pl_cnt+1</c> (they keep their place); a voluntary leaver instead
+    /// decrements every out-of-game player's rank (closing the gap), records their health/armor as the
+    /// last-forfeiter values, clears their lives, and broadcasts INFO_LMS_NOLIVES. No-op during warmup / before
+    /// game start (Base early-returns there). Only acts on a player who has not already been ranked out.
+    /// </summary>
+    public void RemovePlayer(Player p, bool voluntary = true, bool warmupOrPreStart = false)
+    {
+        if (warmupOrPreStart)
+        {
+            _states.Remove(p);
+            return;
+        }
+
+        if (_states.TryGetValue(p, out LmsState? st) && st.Rank == 0)
+        {
+            if (!voluntary)
+            {
+                // QC: a still-in-game player forced out keeps their place — rank = (#still playing) + 1.
+                st.Rank = CountAlive() + 1;
+                SyncColumns(p, st);
+            }
+            else
+            {
+                // QC: a voluntary leaver decrements every OTHER out-of-game player's rank (closes the gap)...
+                foreach (KeyValuePair<Player, LmsState> kv in _states)
+                {
+                    if (ReferenceEquals(kv.Key, p)) continue;
+                    if (kv.Value.OutOfGame && kv.Value.Rank > 0)
+                    {
+                        kv.Value.Rank -= 1;
+                        SyncColumns(kv.Key, kv.Value);
+                    }
+                }
+                // ...records last-forfeiter health/armor (least-healthy among same/fewer lives)...
+                int plLives = st.Lives;
+                float plHealth = p.IsDead ? Cvar("g_lms_start_health", 200f) : p.GetResource(ResourceType.Health);
+                float plArmor = p.IsDead ? Cvar("g_lms_start_armor", 200f) : p.GetResource(ResourceType.Armor);
+                if (_lastForfeiterLives == 0 || plLives < _lastForfeiterLives)
+                {
+                    _lastForfeiterLives = plLives;
+                    _lastForfeiterHealth = plHealth;
+                    _lastForfeiterArmor = plArmor;
+                }
+                else if (plLives == _lastForfeiterLives)
+                {
+                    _lastForfeiterHealth = System.Math.Min(_lastForfeiterHealth, plHealth);
+                    _lastForfeiterArmor = System.Math.Min(_lastForfeiterArmor, plArmor);
+                }
+            }
+
+            // QC: re-run the leader scan after the roster changes (g_lms_leader_lives_diff > 0).
+            if (TryCvar(CvarLeaderLivesDiff, out float ld2) && ld2 > 0f)
+                UpdateLeaders();
+        }
+
+        // QC: announce the leaver if they were ranked out (INFO_LMS_NOLIVES "<name> has no more lives left").
+        if (_states.TryGetValue(p, out LmsState? after) && after.Rank > 0)
+            NotificationSystem.Info("LMS_NOLIVES", p.NetName);
+
+        _states.Remove(p);
+    }
 
     /// <summary>The lives a player has left (0 if eliminated / unknown).</summary>
     public int LivesOf(Player p) => _states.TryGetValue(p, out LmsState? st) ? st.Lives : 0;
@@ -411,6 +562,16 @@ public sealed class LastManStanding : GameType
     /// <summary>The lives lead the current leader(s) hold over the next-best player (QC lms_leaders_lives_diff).</summary>
     public int LeadersLivesDiff { get; private set; }
 
+    /// <summary>QC <c>lms_leaders</c>: number of in-game players currently flagged as leaders (HUD mod-icon stat).</summary>
+    public int LeaderCount { get; private set; }
+
+    /// <summary>QC <c>lms_visible_leaders</c>: are leaders currently inside their show-window (radar-visible)?</summary>
+    public bool LeadersVisible { get; private set; }
+
+    // QC SV_StartFrame visibility-window state machine (lms_visible_leaders / _time / _prev).
+    private float _visibleLeadersTime;
+    private bool _visibleLeadersInit; // QC seeds lms_visible_leaders=true so the first frame schedules the timer
+
     /// <summary>The players currently marked as leaders (QC .lms_leader). Recomputed by <see cref="UpdateLeaders"/>.</summary>
     public IEnumerable<Player> Leaders
     {
@@ -447,6 +608,50 @@ public sealed class LastManStanding : GameType
         {
             if (kv.Value.OutOfGame) { kv.Value.IsLeader = false; continue; }
             kv.Value.IsLeader = haveLeaders && kv.Value.Lives == maxLives;
+        }
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(lms, SV_StartFrame): the leader radar-visibility window state machine. Leaders
+    /// are shown on radar for <c>g_lms_leader_wp_time</c> (5s), then hidden for the wp_interval (25s) + a random
+    /// jitter (up to 10s) before the next show window. On the rising edge of a show window each in-game player is
+    /// centerprinted CENTER_LMS_VISIBLE_LEADER (if they ARE a leader: "enemies can see you") / CENTER_LMS_VISIBLE_OTHER
+    /// (otherwise: "leaders can now be seen"). Drives <see cref="LeaderCount"/> / <see cref="LeadersVisible"/>
+    /// (the recycled REDALIVE/OBJECTIVE_STATUS stats). Call once per frame after <see cref="UpdateLeaders"/>.
+    /// </summary>
+    public void DriveLeaderVisibility()
+    {
+        // QC: count the in-game leaders this frame.
+        int leaders = 0;
+        foreach (var kv in _states)
+            if (!kv.Value.OutOfGame && kv.Value.IsLeader) leaders++;
+        LeaderCount = leaders;
+
+        float leaderTime = TryCvar("g_lms_leader_wp_time", out float lt) ? lt : 5f;
+        float wpInterval = TryCvar("g_lms_leader_wp_interval", out float wi) ? wi : 25f;
+        float jitter = TryCvar("g_lms_leader_wp_interval_jitter", out float jt) ? jt : 10f;
+        float leaderInterval = leaderTime + wpInterval;
+
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+
+        // QC seeds lms_visible_leaders=true so the very first frame (visible_prev=true, visible=false) schedules
+        // the first window; mirror that with a one-shot init.
+        bool prev = _visibleLeadersInit ? LeadersVisible : true;
+        _visibleLeadersInit = true;
+
+        LeadersVisible = leaders != 0 && now > _visibleLeadersTime && now < _visibleLeadersTime + leaderTime;
+        if (leaders == 0 || (prev && !LeadersVisible))
+            _visibleLeadersTime = now + leaderInterval + XonoticGodot.Common.Math.Prandom.Float() * jitter;
+
+        // QC: on the !prev && visible rising edge, centerprint every in-game player (leader vs other variant).
+        if (!prev && LeadersVisible)
+        {
+            foreach (var kv in _states)
+            {
+                if (kv.Value.OutOfGame) continue;
+                NotificationSystem.Center(kv.Key,
+                    kv.Value.IsLeader ? "LMS_VISIBLE_LEADER" : "LMS_VISIBLE_OTHER");
+            }
         }
     }
 

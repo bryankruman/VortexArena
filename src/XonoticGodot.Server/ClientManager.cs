@@ -176,6 +176,13 @@ public sealed class ClientManager
         // player's team. Idempotent — runs the first time the gametype is known.
         EnsureTeamSpawnsRequested();
 
+        // QC ClientConnect: Player_DetermineForcedTeam(this) (server/client.qc:1162) — runs for EVERY connecting
+        // client, before the team balance. In campaign it pins a real client to g_campaign_forceteam (1..4);
+        // otherwise it matches the player's id/IP against the g_forced_team_* lists. AssignBestTeam honors the
+        // stored forced team (Player_HasRealForcedTeam). Without this call the _forcedTeam table is never
+        // populated, so g_campaign_forceteam / the forced-team lists had no effect.
+        _teamplay.DetermineForcedTeam(p, isCampaign: Api.Cvars.GetFloat("g_campaign") != 0f);
+
         // team assignment for a team game (QC TeamBalance_JoinBestTeam); FFA leaves Team = None.
         if (_teamplay.IsTeamGame)
             _teamplay.AssignBestTeam(p, _players);
@@ -237,6 +244,10 @@ public sealed class ClientManager
         p.WantsJoin = 0;          // QC this.wants_join = 0
         p.JoinJumpReleased = true;
 
+        // QC the gametype PutClientInServer / lms_AddPlayer seed: register the joiner with the gametype (LMS seeds
+        // its lives column + clamps a late joiner to the lowest life count) BEFORE the spawn loadout is applied.
+        GametypeOnJoin?.Invoke(p);
+
         bool spawned = Spawn(p); // QC PutClientInServer
         if (!spawned)
         {
@@ -285,6 +296,10 @@ public sealed class ClientManager
         // host to Bans.IsPlayBanned; null until wired (e.g. headless test harness) so the gate is a no-op there.
         if (ForcedSpectate is not null && ForcedSpectate(p))
             return false;
+        // QC the gametype ForbidSpawn gate (LMS lms_AddPlayer lockout): refuse the late join when the gametype
+        // denies it (e.g. LMS once the match is locked to new joiners). No-op when unwired.
+        if (GametypeJoinGate is not null && !GametypeJoinGate(p))
+            return false;
         return true;
     }
 
@@ -295,6 +310,20 @@ public sealed class ClientManager
     /// the host (Bans.IsPlayBanned, which lives in the Server ban layer); when set, <see cref="JoinAllowed"/>
     /// refuses the join so a play-banned offender can't press fire / autojoin back into the match.</summary>
     public Func<Player, bool>? ForcedSpectate { get; set; }
+
+    /// <summary>
+    /// QC the gametype's <c>ForbidSpawn</c> / late-join gate (e.g. LMS lms_AddPlayer): may this observer become a
+    /// live player right now? Injected by the host; when set and it returns false the <see cref="Join"/> is refused
+    /// (the client stays an observer). LMS uses this for its mid-match lives lockout. Null ⇒ no gametype gate.
+    /// </summary>
+    public Func<Player, bool>? GametypeJoinGate { get; set; }
+
+    /// <summary>
+    /// QC the gametype's <c>PutClientInServer</c> / lms_AddPlayer seed: called when an observer successfully joins
+    /// as a live player, BEFORE the spawn, so the gametype can register the joiner (e.g. seed LMS lives on the
+    /// scoreboard / clamp a late joiner to the lowest life count). Injected by the host. Null ⇒ no seed.
+    /// </summary>
+    public Action<Player>? GametypeOnJoin { get; set; }
 
     /// <summary>
     /// QC <c>ObserverOrSpectatorThink</c> + the delayed-autojoin slice of <c>PlayerPreThink</c>

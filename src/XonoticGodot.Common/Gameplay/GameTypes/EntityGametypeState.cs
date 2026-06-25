@@ -81,6 +81,13 @@ namespace XonoticGodot.Common.Framework
         // event_damage(this, inflictor, attacker, damage, deathtype, hitloc, force) minus the .weaponentity arg.
         public System.Action<Entity, Entity?, Entity?, string, float, Vector3, Vector3>? GtEventDamage;
 
+        // --- generic objective event_heal (QC .event_heal on a non-player edict) ---
+        // QC's Heal(targ, inflictor, amount, limit) dispatches to targ.event_heal when set (server/damage.qc:956);
+        // an Onslaught generator/control-point icon sets it to ons_GeneratorHeal / ons_ControlPoint_Icon_Heal so a
+        // friendly Arc heal-beam / mage / bumblebee healgun tops up the OBJECTIVE health (GtObjHealth) rather than
+        // the player Health resource. Returns true if any health was added. Signature mirrors QC event_heal.
+        public System.Func<Entity, Entity?, float, float, bool>? GtEventHeal;
+
         // --- Onslaught control-point icon build state (QC the icon edict ons_ControlPoint_Icon_*) ---
         // The buildable icon spawned when a player touches an attackable control point: it ramps RES_HEALTH up
         // at GtBuildRate per think tick until GtObjMaxHealth, at which point the point flips. It can be damaged

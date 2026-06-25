@@ -65,7 +65,7 @@ public partial class Entity
     public DamageMode TakeDamage;
     public DeadFlag DeadState;
     public Entity? Owner, Enemy, GoalEntity, Aiment, Chain, DmgInflictor;
-    public string Model = "", NetName = "", Target = "", TargetName = "", Message = "";
+    public string Model = "", NetName = "", Target = "", Target2 = "", TargetName = "", Message = "";
     public int SpawnFlags, Items;
     public float Team, Frags;
 

@@ -365,7 +365,11 @@ public static class ItemPickupRules
             return;
         }
 
-        // (3) MUTATOR_CALLHOOK(ItemTouch) — the port has no ItemTouch hook chain yet; the common path proceeds.
+        // (3) MUTATOR_CALLHOOK(ItemTouch, this, toucher) (items.qc:706) — fired here, after the gate and BEFORE
+        //     the expiring-timer adjust + give, so a subscriber sees the item's raw powerup timers. The stock
+        //     superspec hook always returns CONTINUE (never blocks the pickup), so the return is informational
+        //     only and the common path proceeds regardless.
+        MutatorHooks.FireItemTouch(item, toucher);
 
         // (4) an expiring loot item's powerup timers are stored absolute-from-now; subtract `time` so the give's
         //     max(t, time + finished) treats them as remaining (QC items.qc:714-721). Restored if nothing taken.

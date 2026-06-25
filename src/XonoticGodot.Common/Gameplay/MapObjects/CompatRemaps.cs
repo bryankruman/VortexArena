@@ -418,8 +418,10 @@ namespace XonoticGodot.Common.Gameplay
             }
             else if ((this_.SpawnFlags & FragsFilterSilent) == 0)
             {
-                // QC: centerprint(actor, "<N> more frag[s] needed"); play2(actor, SND(TALK)).
-                // The centerprint TEXT is client-side; headless we play the audible half.
+                // QC: centerprint(actor, "<N> more frag[s] needed"); play2(actor, SND(TALK)). Route the text
+                // through the raw-centerprint channel (→ CenterPrintPanel.Add) and play the audible half.
+                int more = req - actor.FragsFilterCnt;
+                MapMover.Centerprint(actor, more == 1 ? "1 more frag needed" : $"{more} more frags needed");
                 MapMover.Sound(actor, SoundChannel.Voice, "misc/talk.wav");
             }
         }
@@ -458,14 +460,18 @@ namespace XonoticGodot.Common.Gameplay
             // priv vs broadcast both resolve to the same audible-half emit here, but the branch is kept
             // explicit so the spawnflag interpretation stays observable.
             if (priv)
-                TargetPrintMessage(actor);
+                TargetPrintMessage(actor, this_.Message);
             else
-                TargetPrintMessage(actor);
+                TargetPrintMessage(actor, this_.Message);
         }
 
-        // QC target_print_message (quake3.qc:243-247): centerprint + play2 SND(TALK).
-        private static void TargetPrintMessage(Entity actor)
-            => MapMover.Sound(actor, SoundChannel.Voice, "misc/talk.wav");
+        // QC target_print_message (quake3.qc:243-247): centerprint(actor, this.message) + play2 SND(TALK). The
+        // text routes through the raw-centerprint channel (→ CenterPrintPanel.Add); the audible half plays SND(TALK).
+        private static void TargetPrintMessage(Entity actor, string? message)
+        {
+            MapMover.Centerprint(actor, message);
+            MapMover.Sound(actor, SoundChannel.Voice, "misc/talk.wav");
+        }
 
         // q3compat & Q3COMPAT_DEFI — the .defi-file flag the port never sets (default Q3 reading).
         private static bool IsDefi() => false;

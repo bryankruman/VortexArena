@@ -135,6 +135,13 @@ namespace XonoticGodot.Common.Gameplay
             if (TryF(fields, "fade_time", out float ft)) e.MusicFadeIn = ft;
             if (TryF(fields, "fade_rate", out float fr)) e.MusicFadeOut = fr;
 
+            // --- target_changelevel keys (QC .chmap / .gametype, changelevel.qc:3) ---
+            //     `chmap` = the map to switch to ("" = end the match); `gametype` = the next map's gametype.
+            //     Without these the named-chmap + gametype-switch branches of target_changelevel_use are
+            //     unreachable (the field stays "" so only the end-match NextLevel branch ever fired).
+            if (fields.TryGetValue("chmap", out string? chmap)) e.ChMap = chmap;
+            if (fields.TryGetValue("gametype", out string? chgt)) e.ChLevelGameType = chgt;
+
             // --- keys GameWorld promotes but GameDemo's slimmer twin never did (demo-path completion) ---
             if (TryF(fields, "dmg", out float dmg)) e.Dmg = dmg;
             if (TryF(fields, "volume", out float vol)) e.Volume = vol;

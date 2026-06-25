@@ -5,6 +5,7 @@ using System.Numerics;
 using System.Text;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
+using Waypoints = XonoticGodot.Common.Gameplay.Waypoints;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Server;
@@ -187,6 +188,10 @@ public sealed class Commands
         "cl_physics",
         "cl_movement_track_canjump",
         "cl_jetpack_jump",
+        // Dodging per-client opt-in (common/mutators/mutator/dodging/cl_dodging.qc:3-4 REPLICATE). cl_dodging is
+        // the sv_dodging_clientselect opt-in flag; cl_dodging_timeout is the double-tap window. Wired below via
+        // DodgingMutator.ClientDodgingProvider / TimeoutProvider.
+        "cl_dodging", "cl_dodging_timeout",
         // Remaining Base REPLICATE fields (common/replicate.qh): stored per-client so the server can honor them
         // exactly like QC (every REPLICATE field lands in the per-client store). cl_handicap(+damage_given/taken)
         // feed Handicap_GetVoluntaryHandicap (wired below via VoluntaryHandicapProvider); cl_clippedspectating,
@@ -326,6 +331,9 @@ public sealed class Commands
         _autoswitch.Remove(p);
         _clientVersion.Remove(p);
         _choiceState.Remove(p);
+        // Drop any waypoints this player deployed (personal pings never time out on their own) so a disconnecting
+        // player doesn't leak a forever-marker — QC WaypointSprite_ClearOwned runs on the player's removal.
+        Waypoints.WaypointSprites.ClearOwned(p);
     }
 
     public Commands(GameWorld world)
@@ -391,6 +399,15 @@ public sealed class Commands
         // (never reached for a real player) read -1 = "server decides".
         MultijumpMutator.ClientMultijumpProvider = e =>
             e is Player p ? (int)GetClientCvarFloat(p, "cl_multijump", -1f) : -1;
+
+        // Per-client dodging opt-in (QC dodging/sv_dodging.qc:49/54 PHYS_DODGING_ENABLED(s) =
+        // CS_CVAR(s).cvar_cl_dodging, a REPLICATE'd bool). Consulted by PM_dodging only when
+        // sv_dodging_clientselect is set. Point the mutator's per-client source at this world's replicated-cvar
+        // table — same seam as ClientMultijumpProvider above. Without it the gate always reads the server-side
+        // cl_dodging, so every client shares one value instead of opting in individually. Unset defaults to false
+        // (mutators.cfg:12 seta cl_dodging 0). Non-Player entities (never reached for a real player) read false.
+        DodgingMutator.ClientDodgingProvider = e =>
+            e is Player p && GetClientCvarFloat(p, "cl_dodging", 0f) != 0f;
     }
 
     /// <summary>
@@ -572,6 +589,34 @@ public sealed class Commands
         Register("weapon_best", "weapon_best — switch to the best weapon", ctx => CmdWeaponImpulse(ctx, 13));
         Register("weapon_drop", "weapon_drop — drop the current weapon", ctx => CmdWeaponImpulse(ctx, 17));
         Register("reload", "reload — reload the current weapon", ctx => CmdWeaponImpulse(ctx, 20));
+
+        // ---- player-deployed waypoints (QC server/impulse.qc IMPULSE(waypoint_*)). In DP these ride engine
+        //      impulses; the port's QuickMenu/userbinds emit the named verbs through the client console, so they
+        //      arrive here as client commands. Each routes to the WaypointSprites Deploy/Attach/Clear API. ----
+        Register("waypoint_personal_here", "waypoint_personal_here — drop a personal waypoint at your feet",
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Personal));
+        Register("waypoint_personal_crosshair", "waypoint_personal_crosshair — drop a personal waypoint",
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Personal));
+        Register("waypoint_personal_death", "waypoint_personal_death — drop a personal waypoint at your death spot",
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Personal));
+        Register("waypoint_here_follow", "waypoint_here_follow — attach a HELP ME marker that follows you",
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Helpme));
+        Register("waypoint_here_here", "waypoint_here_here — drop a HERE marker at your feet",
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Here));
+        Register("waypoint_here_crosshair", "waypoint_here_crosshair — drop a HERE marker",
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Here));
+        Register("waypoint_here_death", "waypoint_here_death — drop a HERE marker at your death spot",
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Here));
+        Register("waypoint_danger_here", "waypoint_danger_here — drop a DANGER marker at your feet",
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Danger));
+        Register("waypoint_danger_crosshair", "waypoint_danger_crosshair — drop a DANGER marker",
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Danger));
+        Register("waypoint_danger_death", "waypoint_danger_death — drop a DANGER marker at your death spot",
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Danger));
+        Register("waypoint_clear_personal", "waypoint_clear_personal — clear your personal waypoint",
+            ctx => CmdWaypointClear(ctx, personalOnly: true));
+        Register("waypoint_clear", "waypoint_clear — clear all of your waypoints",
+            ctx => CmdWaypointClear(ctx, personalOnly: false));
 
         // ---- per-player commands (QC ClientCommand ready/join/spectate/selectteam/kill) ----
         Register("ready", "ready — toggle your ready state during warmup", CmdReady);
@@ -1238,10 +1283,25 @@ public sealed class Commands
         if (!_world.Teamplay.IsTeamGame) { ctx.Print("Not a team game."); return true; }
         if (_world.TeamsLocked) { ctx.Print("Teams are locked."); return true; }
         if (ctx.ArgCount < 2) { ctx.Print("usage: selectteam <red|blue|yellow|pink|auto>"); return true; }
+        // QC cmd.qc:701: a forced-team player can't selectteam at all.
+        if (_world.Teamplay.HasRealForcedTeam(ctx.Caller))
+        {
+            ctx.Print("selectteam can not be used as your team is forced");
+            return true;
+        }
         string sel = ctx.Arg(1).ToLowerInvariant();
         int team = sel == "auto" ? _world.Teamplay.AssignBestTeam(ctx.Caller, _world.Clients.Players) : TeamFromName(sel);
         if (team == Teams.None) { ctx.Print($"invalid team \"{sel}\""); return true; }
         if ((int)ctx.Caller.Team == team) { ctx.Print("already on that team"); return true; }
+        // QC cmd.qc:746 (g_balance_teams_prevent_imbalance): an explicit (non-auto) switch to a stronger/larger
+        // team mid-match is rejected — a human may only switch to a current best (smallest/lowest-score) team. Auto
+        // already lands on a best team; warmup, bots, and a disabled cvar are allowed through inside the gate.
+        if (sel != "auto"
+            && !_world.Teamplay.IsTeamAllowedForSwitch(ctx.Caller, team, _world.Clients.Players, _world.Warmup.WarmupStage))
+        {
+            ctx.Print("You cannot change to a larger team.");
+            return true;
+        }
         ctx.Caller.Team = team;
         _world.Teamplay.KillPlayerForTeamChange(ctx.Caller);
         ctx.Print($"joined {Teams.Name(team)}");
@@ -1256,6 +1316,89 @@ public sealed class Commands
         if (p.IsDead) { ctx.Print("already dead"); return true; }
         XonoticGodot.Common.Gameplay.Damage.Combat.Damage(p, null, null, 100000f,
             XonoticGodot.Common.Gameplay.Damage.DeathTypes.Kill, p.Origin, System.Numerics.Vector3.Zero);
+        return true;
+    }
+
+    // =============================================================================================
+    // player-deployed waypoints (QC server/impulse.qc IMPULSE(waypoint_*) → waypointsprites.qc Deploy/Attach)
+    // =============================================================================================
+
+    /// <summary>Which player-deployed waypoint a <c>waypoint_*</c> command drops (the QC sprite + radar icon).</summary>
+    private enum WpDeploy { Personal, Here, Danger, Helpme }
+
+    /// <summary>
+    /// QC the <c>IMPULSE(waypoint_personal_*/here_*/danger_*/here_follow)</c> handlers (server/impulse.qc:414-494):
+    /// drop the corresponding marker through the <see cref="Waypoints.WaypointSprites"/> Deploy/Attach API so it
+    /// rides the live per-tick waypoint net to every eligible client. A client command — needs a live player.
+    /// The <c>_crosshair</c>/<c>_death</c> variants reuse the player's current origin (the port has no reachable
+    /// server-side crosshair trace / death_origin here, the same simplification as Chat.cs's <c>%d</c> macro).
+    /// </summary>
+    private bool CmdWaypointDeploy(CommandContext ctx, WpDeploy which)
+    {
+        if (ctx.Caller is null) { ctx.Print("waypoint is a client command"); return true; }
+        Player p = ctx.Caller;
+        if (p.FragsStatus == Player.FragsSpectator || p.IsObserver) return true; // not a live player
+        int team = _world.Teamplay.IsTeamGame ? (int)p.Team : 0;
+
+        switch (which)
+        {
+            case WpDeploy.Personal:
+                // QC WaypointSprite_DeployPersonal(WP_Waypoint, this, origin, RADARICON_WAYPOINT) — owner-only.
+                WaypointDeployPersonal(p);
+                ctx.Print("personal waypoint spawned at location");
+                break;
+            case WpDeploy.Here:
+                // QC WaypointSprite_DeployFixed(WP_Here, false, this, origin, RADARICON_HERE).
+                WaypointDeployFixed(p, "Here", team);
+                ctx.Print("HERE spawned at location");
+                break;
+            case WpDeploy.Danger:
+                // QC WaypointSprite_DeployFixed(WP_Danger, false, this, origin, RADARICON_DANGER).
+                WaypointDeployFixed(p, "Danger", team);
+                ctx.Print("DANGER spawned at location");
+                break;
+            case WpDeploy.Helpme:
+                // QC IMPULSE(waypoint_here_follow): teamplay-only, live player only, attach WP_Helpme to the player.
+                if (!_world.Teamplay.IsTeamGame || p.IsDead) return true;
+                WaypointDeployHelpme(p, team);
+                ctx.Print("HELP ME attached");
+                break;
+        }
+        return true;
+    }
+
+    private static void WaypointDeployPersonal(Player p)
+        => Waypoints.WaypointSprites.DeployPersonal("Waypoint", p, p.Origin,
+            Waypoints.WaypointRegistry.Get("Waypoint").RadarIcon);
+
+    private static void WaypointDeployFixed(Player p, string sprite, int team)
+    {
+        Waypoints.WaypointDef def = Waypoints.WaypointRegistry.Get(sprite);
+        Waypoints.WaypointSprites.DeployFixed(sprite, false, p, p.Origin, team, def.Color, def.RadarIcon);
+    }
+
+    private static void WaypointDeployHelpme(Player p, int team)
+    {
+        Waypoints.WaypointDef def = Waypoints.WaypointRegistry.Get("Helpme");
+        Waypoints.WaypointSprites.Attach("Helpme", p, false, team, def.Color, def.RadarIcon);
+    }
+
+    /// <summary>QC <c>IMPULSE(waypoint_clear[_personal])</c> (server/impulse.qc:496-521): remove the caller's
+    /// personal waypoint, or all of their deployed waypoints. The CTS/race checkpoint-personal teleport reset is
+    /// not modeled (the port has no <c>.personal</c> checkpoint entity here).</summary>
+    private bool CmdWaypointClear(CommandContext ctx, bool personalOnly)
+    {
+        if (ctx.Caller is null) { ctx.Print("waypoint is a client command"); return true; }
+        if (personalOnly)
+        {
+            Waypoints.WaypointSprites.ClearPersonal(ctx.Caller);
+            ctx.Print("personal waypoint cleared");
+        }
+        else
+        {
+            Waypoints.WaypointSprites.ClearOwned(ctx.Caller);
+            ctx.Print("all waypoints cleared");
+        }
         return true;
     }
 

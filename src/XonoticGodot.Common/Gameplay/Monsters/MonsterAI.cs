@@ -1401,7 +1401,9 @@ public static class MonsterAI
         if (take > 0f)
         {
             self.Health -= take;
-            st.PainFinished = Now + 0.34f;
+            // QC mr_pain: actor.pain_finished = time + N. The generic monster keeps the zombie's 0.34s; a
+            // monster that overrides mr_pain with a wider window (wyvern/golem = 0.5s) exposes it via PainWindow.
+            st.PainFinished = Now + st.Def.PainWindow;
             st.Anim = MonsterAnim.Pain;
             // QC Monster_Damage:1101 — Monster_Sound(monstersound_pain, 1.2, true, CH_PAIN): the 1.2s throttle
             // (delaytoo) stops a stream of hits from machine-gunning the pain voice.

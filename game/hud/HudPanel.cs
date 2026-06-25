@@ -304,6 +304,10 @@ public abstract partial class HudPanel : Control
     }
 
     /// <summary>Parse a space-separated "r g b" (0..1) cvar string.</summary>
+    /// <summary>Public wrapper over the shared "r g b" parser (QC <c>stov</c>) so non-panel HUD draws
+    /// (e.g. <see cref="HudDock"/>) can resolve a color cvar with the same rules.</summary>
+    public static bool TryParseRgbColor(string s, out Color c) => TryParseRgb(s, out c);
+
     protected static bool TryParseRgb(string s, out Color c)
     {
         c = default;

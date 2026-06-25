@@ -46,29 +46,29 @@ features:
       - "common/gametypes/gametype/onslaught/sv_onslaught.qc:spawnfunc(onslaught_link)"
       - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_DelayedLinkSetup"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:StageLink (DEAD — no caller)"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:ResolveLinks (DEAD — no caller)"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:NodeByName / AddGenerator(team,name) / AddControlPoint(id,name) (DEAD — never called with a name)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:StageLink (LIVE — GameWorld onslaught_link case)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:ResolveLinks (LIVE — GameWorld post-spawn pass)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:NodeByName / AddGenerator(team,name) / AddControlPoint(id,name) (LIVE — SpawnGenerator/SpawnControlPoint pass e.TargetName)"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (onslaught_generator/controlpoint pass TargetName; onslaught_link → StageLink) + post-spawn ons.ResolveLinks()"
     constants: []
     status:
-      logic: stub
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Wave-2 ADDED a faithful-looking deferred link-resolution API on Onslaught.cs (StageLink stages target/target2 name pairs, ResolveLinks resolves them via NodeByName + Link() + UpdateLinks, mirroring QC ons_DelayedLinkSetup/INITPRIO_FINDTARGET; AddGenerator/AddControlPoint gained name-indexing overloads). The LOGIC reads correct. But the whole thing is DEAD: grep over src/ and tests/ shows ZERO callers of StageLink or ResolveLinks (only doc-comment cross-references)."
-      - "The live BSP path is unchanged: GameWorld.cs WireObjectiveSpawns still has an EMPTY 'onslaught_link' case (GameWorld.cs:1532-1537, comment 'recorded for the host to resolve (deferred)') that just RetirePlaceholder()s, and CpCombat.SpawnGenerator/SpawnControlPoint (OnslaughtControlPoint.cs:106,195) still call the NAMELESS AddGenerator(team)/AddControlPoint(id) overloads — so _nodesByName is never populated, StageLink is never fed the placeholder's TargetName, and ResolveLinks is never called in the post-spawn pass (unlike Assault.ResolveObjectiveGraph which IS called at GameWorld.cs:577)."
-      - "Consequence (unchanged from baseline): the power graph is edgeless, so UpdateLinks never unshields anything — no control point is capturable and no generator is damageable. The entire mode cannot be played to completion on a real map."
+      - "WAVE-5 FIX: the deferred link-resolution API is now WIRED on the live BSP path. GameWorld.WireObjectiveSpawns passes each onslaught_generator/onslaught_controlpoint placeholder's .targetname into SpawnGenerator/SpawnControlPoint (which call the name-indexing AddGenerator(team,name)/AddControlPoint(id,name) overloads → _nodesByName populated); the onslaught_link case now calls ons.StageLink(e.Target, e.Target2); and the post-spawn pass (Boot, next to Assault.ResolveObjectiveGraph) calls ons.ResolveLinks(). Entity gained a .Target2 field + the BSP key promoter reads `target2`."
+      - "Consequence: the power graph now has edges on a real map, so UpdateLinks unshields enemy-adjacent nodes — control points become capturable and the enemy generator becomes damageable once a linked CP is taken. The combat logic below is now reachable on the live path."
     verification:
-      - { kind: code_read, ref: "grep -rn ResolveLinks|StageLink src/ tests/ — only the Onslaught.cs definitions + doc comments, ZERO callers", result: fail }
-      - { kind: code_read, ref: "GameWorld.cs:1522-1540 (onslaught_generator/controlpoint spawn nameless; onslaught_link case empty)", result: fail }
-      - { kind: code_read, ref: "OnslaughtControlPoint.cs:106,195 call AddGenerator(team)/AddControlPoint(id) — nameless overloads", result: fail }
+      - { kind: code_read, ref: "GameWorld.cs WireObjectiveSpawns: onslaught_generator/controlpoint pass e.TargetName; onslaught_link → ons.StageLink(e.Target, e.Target2); post-spawn `if (GameType is Onslaught onsMode) onsMode.ResolveLinks()`", result: pass }
+      - { kind: code_read, ref: "OnslaughtControlPoint.SpawnGenerator/SpawnControlPoint named overloads → AddGenerator(team,name)/AddControlPoint(id,name)", result: pass }
+      - { kind: code_read, ref: "Entity.cs gained Target2; GameWorld key promoter reads `target2`", result: pass }
     confidence: high
-    notes: "Wave-2 wrote the resolution code but did NOT wire it. status upgraded missing→stub (a non-functional placeholder API now exists) but liveness stays dead. Single most severe gap, still open. Combat logic below is correct & live-callable but unreachable without edges. Tests still pass only because they hand-wire Link()."
+    notes: "Wave-5: wired the dead ResolveLinks/StageLink API into the live spawn + post-spawn path (mirrors Assault). liveness dead→live, logic stub→faithful. Single most severe gap CLOSED. Combat logic below is now reachable without hand-wired Link()."
 
   - id: onslaught.cp.touch_build
     name: "Control-point capture-by-build (touch → icon → build → flip)"
@@ -164,6 +164,9 @@ features:
       - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_ControlPoint_Icon_Heal"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:IconHeal"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:GeneratorHeal (new, QC ons_GeneratorHeal)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageContracts.cs:Combat.Heal (new, QC server/damage.qc Heal())"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs (non-player heal beam dispatches via Combat.Heal)"
     constants: []
     status:
       logic: faithful
@@ -171,16 +174,16 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Logic faithful, but STILL VERIFIED dead: grep over src/ shows IconHeal has NO caller (only its definition at OnslaughtControlPoint.cs:387). The Healer mutator / heal-trigger path that would call it is not ported, so the method never runs on the live path. Unchanged by Wave-2."
+      - "WAVE-5 FIX: IconHeal is now LIVE. Added a generic event_heal seam: Entity.GtEventHeal (QC .event_heal) + Combat.Heal (QC server/damage.qc:948 Heal() — dispatches to targ.event_heal). SpawnIcon wires icon.GtEventHeal = IconHeal and SpawnGenerator wires gen.GtEventHeal = GeneratorHeal (new, ports ons_GeneratorHeal). The Arc heal-beam's NON-player branch (Arc.cs) now routes through Combat.Heal so a friendly Arc beam on an Onslaught icon/generator tops up its GtObjHealth (previously it wrote the wrong Health resource and never reached IconHeal). (trigger_heal stays creature-gated like QC, so it correctly does NOT heal objectives.)"
     verification:
-      - { kind: code_read, ref: "OnslaughtControlPoint.cs:387 vs sv_onslaught.qc:460-475 (logic match)", result: pass }
-      - { kind: code_read, ref: "grep IconHeal across src/ — only the definition, zero callers", result: fail }
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs IconHeal/GeneratorHeal vs sv_onslaught.qc:460-475/1005-1019 (logic match)", result: pass }
+      - { kind: code_read, ref: "icon.GtEventHeal = IconHeal (SpawnIcon); gen.GtEventHeal = GeneratorHeal (SpawnGenerator); Combat.Heal dispatch; Arc.cs non-player branch → Combat.Heal", result: pass }
     confidence: high
-    notes: "Heal-toward-limit logic matches QC; still no live caller."
+    notes: "Wave-5: heal-toward-limit logic matches QC AND is now reachable via the Arc heal-beam (and any future mage/bumblebee healgun) through the new event_heal seam. liveness dead→live."
 
   - id: onslaught.gen.damage_destroy
     name: "Generator shield-gated damage + destruction"
@@ -453,24 +456,27 @@ features:
     base_refs:
       - "common/gametypes/gametype/onslaught/sv_onslaught.qc (Send_Notification/sound/play2team calls throughout)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs (registered, not called)"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs (registered, not called)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs (emit calls in SpawnIcon/IconBuildThink/IconDamage/GeneratorDamage/OvertimeDecayTick)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:BankRoundWin + Notify/TeamSuffix helpers"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs (registered)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs (registered)"
     constants: []
     status:
       logic: na
       values: na
       timing: na
-      presentation: missing
-      audio: missing
-      liveness: dead
+      presentation: partial
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "All Onslaught sound + notification cues are registered as data but NEVER emitted by the ported gameplay: no build/built/under-attack/blocked-by-shield/hit/spark/generator-alarm/decay/explode sounds, no capture/CP-destroyed/generator-destroyed/round-win/round-tied/shielded/overtime/teleport notifications, no play2all CTF_CAPTURE win jingle."
+      - "WAVE-5 FIX: the core Onslaught sound + notification cues are now EMITTED on the live path. SpawnIcon→ONS_CONTROLPOINT_BUILD; IconBuildThink completion→ONS_CONTROLPOINT_BUILT + ONSLAUGHT_CAPTURE_NONAME info + ONS_CAPTURE(_TEAM)_NONAME centers; IconDamage→ONS_DAMAGEBLOCKEDBYSHIELD (shielded) / ONS_HIT1/2 per hit / ONS_GENERATOR_EXPLODE + ONSLAUGHT_CPDESTROYED_NONAME on destroy; GeneratorDamage→blocked-by-shield / GENERATOR_UNDERATTACK center + ONS_GENERATOR_UNDERATTACK / ONS_HIT1-2 (or explode at damage/220) per hit / ONSLAUGHT_GENDESTROYED(_OVERTIME) + explode on destroy; OvertimeDecayTick first tick→OVERTIME_CONTROLPOINT center + ONS_GENERATOR_DECAY; BankRoundWin→ROUND_TEAM_WIN / ROUND_TIED center+info + the play2all CTF_CAPTURE win jingle."
+      - "Remaining (presentation/cross-boundary, tracked under onslaught.presentation.csqc): particle effects (EFFECT_SPARKS/CAP/RAGE/ROCKET_EXPLODE), waypoint-sprite build/health bars, the CP map .message name (port emits the NONAME notification variants since the CP carries no message), and play2team→the port uses play2all-style global emission as the headless approximation (no per-team sound routing yet)."
     verification:
-      - { kind: code_read, ref: "Onslaught.cs + OnslaughtControlPoint.cs contain no Notify/Sound/Effect emit calls (all deferred per comments)", result: fail }
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs + Onslaught.cs now contain the SoundSystem.PlayOn/PlayGlobal + NotificationSystem.Send emit calls at the QC call sites", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. Data tables exist (SoundsList, NotificationsList:711+,963-964); only the call sites are missing."
+    notes: "Wave-5: the audio/notification cues are emitted live (server records SoundEvents + NotificationDispatches via the existing sinks). liveness dead→live, audio missing→faithful. Particle/sprite/CSQC presentation still deferred."
 
   - id: onslaught.bot.roles
     name: "Bot Onslaught objective role (offense/defense/assistant goal rating)"

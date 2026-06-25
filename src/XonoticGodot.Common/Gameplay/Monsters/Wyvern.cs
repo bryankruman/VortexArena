@@ -31,6 +31,10 @@ public sealed class Wyvern : Monster
     public float SpeedRun = 250f;           // g_monster_wyvern_speed_run
     public float SpeedStop = 300f;          // g_monster_wyvern_speed_stop
 
+    // METHOD(Wyvern, mr_pain): actor.pain_finished = time + 0.5 (the wyvern holds its pain reaction longer
+    // than the generic 0.34s; matches the anim_pain1 '3 1 2' ~0.5s frame group). Drives MarkPain's PainFinished.
+    public override float PainWindow => 0.5f;
+
     public Wyvern()
     {
         NetName = "wyvern";

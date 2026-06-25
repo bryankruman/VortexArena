@@ -123,6 +123,32 @@ public sealed class HudNotifications
                 // notification's queuetime governs the queue spacing (QC notif.nent_queuetime).
                 PlayAnnouncer(!string.IsNullOrEmpty(text) ? text : notif?.Sound ?? "", notif?.Queuetime ?? 0f);
                 break;
+            case MsgType.CenterKill:
+                // QC MSG_CENTER_KILL (all.qc:1372): retract a centerprint group, or all groups when the cpid is
+                // empty (CPID_Null → centerprint_KillAll). The cpid travels in `text`.
+                if (string.IsNullOrEmpty(text))
+                    _hud.CenterPrint.ClearAll();
+                else
+                    _hud.CenterPrint.Kill(text);
+                break;
+            case MsgType.CenterTitle:
+                // QC centerprint_SetTitle/_ClearTitle (announcer.qc Announcer_Gamestart): the gametype-name title
+                // above the countdown. Empty text clears it.
+                if (string.IsNullOrEmpty(text))
+                    _hud.CenterPrint.ClearTitle();
+                else
+                    _hud.CenterPrint.SetTitle(text);
+                break;
+            case MsgType.CenterDuelTitle:
+                // QC centerprint_SetDuelTitle (announcer.qc Announcer_Duel): "left vs right". Names in s1/s2.
+                _hud.CenterPrint.SetDuelTitle(strs.Length > 0 ? strs[0] : "", strs.Length > 1 ? strs[1] : "");
+                break;
+            case MsgType.CenterRaw:
+                // QC raw centerprint() builtin (chat /tell, map/trigger .message, target_print, MOTD): push the
+                // literal text via centerprint_AddStandard (no cpid group).
+                if (!string.IsNullOrEmpty(text))
+                    _hud.CenterPrint.Add(text);
+                break;
             default:
                 // MSG_MULTI/MSG_CHOICE are fanned out server-side into INFO/CENTER/ANNCE before the wire, so
                 // they never arrive here; ignore defensively.
@@ -354,7 +380,7 @@ public sealed class HudNotifications
 
             // Capture by value (struct copy of the immutable arrays' references — they're not mutated).
             Notification n = d.Notification;
-            MsgType type = n.Type;
+            MsgType type = d.WireType; // normally n.Type; a CenterKill retraction overrides it
             string text = d.Text;
             string[] strs = d.StringArgs;
             float[] flts = d.FloatArgs;

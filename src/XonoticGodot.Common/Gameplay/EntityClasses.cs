@@ -24,6 +24,15 @@ public abstract partial class Monster : IRegistered
     /// </summary>
     public System.Collections.Generic.HashSet<string>? SoundCues;
 
+    /// <summary>
+    /// Pain-window length (QC <c>mr_pain</c>: <c>actor.pain_finished = time + N</c>): how long the pain
+    /// reaction/anim holds before the monster may re-pain or resume walk anims. The generic
+    /// <c>METHOD(Monster, mr_pain)</c> never bumps <c>pain_finished</c>, but most ported monsters reuse the
+    /// zombie's 0.34s as the baseline; a monster that sets a different window in its <c>mr_pain</c> override
+    /// (e.g. the wyvern / golem at 0.5s) returns it here.
+    /// </summary>
+    public virtual float PainWindow => 0.34f;
+
     /// <summary>Initialize a spawned monster entity.</summary>
     public virtual void Spawn(Entity e) { }
     /// <summary>Per-think AI step.</summary>

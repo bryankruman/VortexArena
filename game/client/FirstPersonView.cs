@@ -56,6 +56,10 @@ public sealed class FirstPersonView
         /// from ~35 to ~20 while crouched, set by PlayerPhysics.UpdateCrouch). 0 = unset → fall back to the static
         /// <see cref="EyeHeight"/> (e.g. a placement call before the carrier/player view offset is known).</summary>
         public float EyeHeightZ;
+
+        /// <summary>True while the local player is Freeze-Tag frozen (QC STAT(FROZEN)). With cl_eventchase_frozen set
+        /// this engages the event-chase third-person camera (QC MUTATOR_HOOKFUNCTION(cl_ft, WantEventchase)).</summary>
+        public bool IsFrozen;
     }
 
     /// <summary>
@@ -277,7 +281,10 @@ public sealed class FirstPersonView
         bool deathChase = st.IsDead && (
             chaseDeath == 1f
             || (chaseDeath == 2f && (st.VelocityQuake == NVec3.Zero || _eventChaseRunning)));
-        bool wantChase = CameraMode != ChaseMode.None || deathChase;
+        // QC MUTATOR_HOOKFUNCTION(cl_ft, WantEventchase): while frozen in Freeze Tag, cl_eventchase_frozen pulls the
+        // camera to third person so the encased player can see around themselves.
+        bool frozenChase = st.IsFrozen && Cvar("cl_eventchase_frozen", 0f) != 0f;
+        bool wantChase = CameraMode != ChaseMode.None || deathChase || frozenChase;
         ChaseActive = wantChase;
 
         if (!wantChase)

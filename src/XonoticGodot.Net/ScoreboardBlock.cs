@@ -20,8 +20,12 @@ public readonly struct ScoreRowWire
     public readonly string Name;
     public readonly int Team;
     public readonly int[] Columns;
-    public ScoreRowWire(int netId, int[] columns, string name = "", int team = 0)
-    { NetId = netId; Columns = columns; Name = name ?? ""; Team = team; }
+    /// <summary>QC <c>pl.team == NUM_SPECTATOR</c> (scoreboard.qc:2369): this row is a spectator/observer, so the
+    /// client lists it in the <c>Scoreboard_Spectators_Draw</c> block instead of the score table. The port has no
+    /// NUM_SPECTATOR team sentinel (observers keep their last team color), so we carry the flag explicitly.</summary>
+    public readonly bool IsSpectator;
+    public ScoreRowWire(int netId, int[] columns, string name = "", int team = 0, bool isSpectator = false)
+    { NetId = netId; Columns = columns; Name = name ?? ""; Team = team; IsSpectator = isSpectator; }
 }
 
 /// <summary>The parsed scoreboard (client side after <see cref="ScoreboardBlock.Deserialize"/>).</summary>
@@ -60,7 +64,8 @@ public static class ScoreboardBlock
     {
         var rows = new List<ScoreRowWire>();
         foreach (var (netId, p) in players)
-            rows.Add(new ScoreRowWire(netId, GameScores.CaptureColumns(p), p.NetName, (int)p.Team));
+            rows.Add(new ScoreRowWire(netId, GameScores.CaptureColumns(p), p.NetName, (int)p.Team,
+                isSpectator: p is Player { IsObserver: true }));
         return rows;
     }
 
@@ -79,6 +84,7 @@ public static class ScoreboardBlock
             w.WriteUShort(row.NetId);
             w.WriteString(row.Name);    // entcs name slice (QC entcs_GetName)
             w.WriteByte(row.Team & 0xFF); // entcs team slice (QC entcs_GetScoreTeam)
+            w.WriteBool(row.IsSpectator); // QC pl.team == NUM_SPECTATOR (drives Scoreboard_Spectators_Draw)
             int m = System.Math.Min(row.Columns.Length, n);
             for (int j = 0; j < n; j++)
                 w.WriteInt24(j < m ? row.Columns[j] : 0);
@@ -108,9 +114,10 @@ public static class ScoreboardBlock
             int netId = r.ReadUShort();
             string name = r.ReadString();    // entcs name slice
             int team = r.ReadByte();          // entcs team slice
+            bool isSpec = r.ReadBool();        // QC pl.team == NUM_SPECTATOR
             var cols = new int[n];
             for (int j = 0; j < n; j++) cols[j] = r.ReadInt24();
-            if (!r.BadRead) sb.Rows.Add(new ScoreRowWire(netId, cols, name, team));
+            if (!r.BadRead) sb.Rows.Add(new ScoreRowWire(netId, cols, name, team, isSpec));
         }
         int teams = r.ReadByte();
         for (int i = 0; i < teams; i++)
