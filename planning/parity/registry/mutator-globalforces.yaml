@@ -1,11 +1,11 @@
 unit: mutator-globalforces
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 6
   worst_gaps:
-    - "Mutator-list advertisement (BuildMutatorsString ':GlobalForces' + BuildMutatorsPrettyString ', Global forces') not implemented — the port has NO BuildMutatorsString hook chain at all, so the mutator never announces itself in server-info / scoreboard. Port-wide omission, cosmetic / server-browser parity only."
+    - "BuildMutatorsPrettyString token (', Global forces') is wired in MutatorActivation.BuildMutatorsPrettyString but has NO live caller in the Server (only the machine-string ':GlobalForces' token is invoked, via GameWorld GameLogInit). Cosmetic / scoreboard-votescreen parity only — the pretty mutator line is never emitted. Otherwise the unit is fully faithful + live."
 features:
   - id: mutator-globalforces.register.enable
     name: "Mutator registration + enable/scale cvar (g_globalforces doubles as force multiplier)"
@@ -47,7 +47,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:72 (OnPlayerDamage)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:68 (IsPlayer = Client flag ONLY, no DeadState test — Wave-2 change)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:89-91 (FindByClass(\"player\") minus target, gated on IsPlayer)"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:401 (PlayerDamageSplitHealthArmor.Call with force)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:438 (PlayerDamageSplitHealthArmor.Call with force)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/GameHooks.cs:41 (PlayerDamageArgs.Force = M_ARGV(3))"
     constants:
       - { name: "damage_force = M_ARGV(3) * g_globalforces", base: "force * autocvar_g_globalforces", port: "args.Force * Scale (GlobalForcesMutator.cs:83)", match: true }
@@ -130,11 +130,11 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:97-99 (f selfscale, it.Velocity += DamageExplosionCalcPush)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:109 (DamageExplosionCalcPush)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:119 (ExplosionCalcPushGetMultiplier)"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:532 (player DamageForceScale = g_player_damageforcescale default 2)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:599 (player DamageForceScale = g_player_damageforcescale default 2)"
     constants:
       - { name: "g_globalforces_self", base: "1 (attacker-only scale, mutators.cfg:497)", port: "1 (SelfScale default)", match: true }
       - { name: "g_balance_damagepush_speedfactor", base: "2.5 (balance-xonotic.cfg:215; 0 on balance-nexuiz25.cfg:119)", port: "read live from cvar each hit (GlobalForcesMutator.cs:86)", match: true }
-      - { name: "g_player_damageforcescale (it.damageforcescale for live players)", base: "2 (default)", port: "2 (SpawnSystem.cs:532)", match: true }
+      - { name: "g_player_damageforcescale (it.damageforcescale for live players)", base: "2 (default)", port: "2 (SpawnSystem.cs:599)", match: true }
       - { name: "calcpush: speedfactor<1 -> raw force", base: "if (speedfactor < 1) return explosion_f (calculations.qc:42)", port: "if (speedFactor < 1f) return explosionForce (GlobalForcesMutator.cs:111)", match: true }
       - { name: "multiplier: a = v.(v-tv); a<=0 -> 0 else a/(v.v)", base: "explosion_calcpush_getmultiplier (calculations.qc:7-18)", port: "ExplosionCalcPushGetMultiplier (GlobalForcesMutator.cs:119-124)", match: true }
     status:
@@ -159,21 +159,28 @@ features:
     base_refs:
       - "common/mutators/mutator/globalforces/sv_globalforces.qc:9-11 (MUTATOR_HOOKFUNCTION(mutator_globalforces, BuildMutatorsString) -> strcat ':GlobalForces')"
       - "common/mutators/mutator/globalforces/sv_globalforces.qc:13-15 (MUTATOR_HOOKFUNCTION(mutator_globalforces, BuildMutatorsPrettyString) -> strcat ', Global forces')"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:66 (BuildMutatorsString override => s + \":GlobalForces\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:69 (BuildMutatorsPrettyString override => s + \", Global forces\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108 (BuildMutatorsString chain over active mutators)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:121 (BuildMutatorsPrettyString chain over active mutators)"
+      - "src/XonoticGodot.Server/GameWorld.cs:876 (GameLogInit calls MutatorActivation.BuildMutatorsString — LIVE caller for the machine token, gated on sv_eventlog)"
     constants:
-      - { name: "mutator_tag", base: "':GlobalForces' (string) / ', Global forces' (pretty)", port: "none", match: false }
+      - { name: "mutator_tag (machine)", base: "':GlobalForces' (string)", port: "':GlobalForces' (GlobalForcesMutator.cs:66)", match: true }
+      - { name: "mutator_tag (pretty)", base: "', Global forces' (pretty)", port: "', Global forces' (GlobalForcesMutator.cs:69)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: na
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The mutator never appends ':GlobalForces' / ', Global forces' to the server's mutator list, so it is not advertised in server-info / scoreboard. Confirmed STILL OPEN after Wave-2: NO BuildMutatorsString / BuildMutatorsPrettyString hook chain exists anywhere in src/ (grep finds only doc-comments in CloakedMutator.cs:16, PowerupsMutator.cs:24, RocketFlyingMutator.cs:23, SuperSpecMutator.cs:38 explicitly deferring it); no chain, no handler, no ':GlobalForces' literal."
+      - "BuildMutatorsPrettyString chain (MutatorActivation.cs:121) has NO live caller in src/XonoticGodot.Server (grep 'BuildMutatorsPrettyString(' returns no Server callsite), so the ', Global forces' pretty token is never emitted — the QC consumer is server/client.qc:1107 (scoreboard/votescreen mutator line). The machine token ':GlobalForces' IS live (GameWorld.cs:876 GameLogInit). Cosmetic only; no gameplay effect."
     verification:
-      - { kind: grep, ref: "grep -rni 'BuildMutators|MutatorsString|MutatorsPretty' src/**/*.cs -> only doc-comments (CloakedMutator/PowerupsMutator/RocketFlyingMutator/SuperSpecMutator); no chain, no handler, no literal", result: fail }
+      - { kind: grep, ref: "grep -n 'BuildMutatorsString|BuildMutatorsPrettyString' src/ -> GlobalForcesMutator.cs:66/69 overrides; MutatorActivation.cs:108/121 chains; GameWorld.cs:876 live caller for the machine token. The full advertisement mechanism now exists port-wide (~22 mutators override it).", result: pass }
+      - { kind: grep, ref: "grep -n 'BuildMutatorsPrettyString(' src/XonoticGodot.Server -> no matches: the pretty chain handler is wired but uncalled (dead pretty token).", result: fail }
     confidence: high
-    notes: "Port-wide omission, not globalforces-specific: the entire BuildMutatorsString/PrettyString advertisement mechanism is still unimplemented after Wave-2. Belongs to a shared server-info/mutator-list parity unit; tracked here for completeness. Cosmetic / server-browser parity only — no gameplay effect."
+    notes: "FIXED since 2026-06-22 baseline: the BuildMutatorsString/PrettyString advertisement mechanism is now implemented port-wide (MutatorActivation.cs chains + ~22 per-mutator overrides). GlobalForcesMutator.cs:66/69 override both with the bit-exact Base tokens (sv_globalforces.qc:10 ':GlobalForces', :14 ', Global forces'). The machine token is LIVE via GameWorld.cs:876 GameLogInit (sv_eventlog gate). The pretty token's chain (MutatorActivation.cs:121) is built but has no live Server caller, so liveness=partial — tracked as the unit's only remaining gap."

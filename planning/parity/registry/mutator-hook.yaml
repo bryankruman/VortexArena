@@ -1,15 +1,16 @@
 unit: mutator-hook
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 10
   worst_gaps:
     - "WAVE-5 FIX (major): the +hook offhand-fire button now reaches the server end-to-end, so the grapple is castable on the live path. Chain: binds-xonotic.cfg (`bind e +hook` / `bind MOUSE5 +hook`) -> BindInput map (\"hook\"->\"+hook\") -> BindTable._hook/HookHeld -> NetGame.SampleInput (`if (BindTable.HookHeld) buttons |= InputButtons.Hook`, NetGame.cs:3984) -> wire (InputButtons.Hook = BIT(6), InputCommand.cs:20) -> ServerNet.ToMovementInput (`ButtonHook = (b & InputButtons.Hook)!=0`, ServerNet.cs:1415) -> WeaponFireDriver.Frame (`player.OffhandFirePressed = input.ButtonHook`, WeaponFireDriver.cs:66) -> HookMutator.OnPlayerPreThink reads OffhandFirePressed -> Hook.WrThink fires FireGrapplingHook. The whole offhand path (think_driver, free-reel top-up, blaster precedence) is now LIVE."
+    - "WAVE-6b FIX: the ':grappling_hook' server-info token IS now emitted — HookMutator.BuildMutatorsString (HookMutator.cs:115) appends ':grappling_hook' and the aggregator MutatorActivation.BuildMutatorsString is called LIVE from the gamelog server-info init (GameWorld.cs:876, gated on sv_eventlog). The ', Hook' pretty token is also ported (HookMutator.cs:118) but its aggregator (MutatorActivation.BuildMutatorsPrettyString) has NO live caller — the QC votescreen path (server/client.qc:1107) is unwired, so the pretty/votescreen surfacing is dead."
+    - "WAVE-6b FIX: SetStartItems now sets warmup_start_ammo_fuel = max(.., rotstable) — StartLoadout gained a WarmupAmmoFuel field (MutatorHooks.cs:1006); HookMutator.OnSetStartItems (HookMutator.cs:130) maxes it, and the warmup spawn reads it from the deterministic ComputeStartItems seam (SpawnSystem.cs:979). The earlier warmup-fuel value gap is resolved."
     - "Residual timing wrinkle on the offhand think: the port publishes OffhandFirePressed in PlayerPostThink (WeaponFireDriver.Frame, GameWorld.cs:1333/1368) but reads it in PlayerPreThink (GameWorld.cs:1174), which runs EARLIER in the same tick. So the offhand-think sees the button one tick stale (press/release lands one server tick late). QC dispatches offhand_think from W_WeaponFrame itself, so the read and publish are same-frame there. Functional but a 1-tick latency vs Base."
-    - "STILL MISSING: no ':grappling_hook' server-info token and no ', Hook' pretty token are emitted (BuildMutatorsString / BuildMutatorsPrettyString still unported), so server browsers / the votescreen won't show that the grappling-hook mutator is active. (g_grappling_hook in CommandReplies.cs:252 is still only the cvar_changes BADCVAR suppression list, NOT a mutator-string emitter.)"
     - "STILL MISSING: no client gameplay tip when the hook mutator is active (no BuildGameplayTipsString/GameplayTips system in the port at all); Base cl_hook appends 'grappling hook is enabled, press <+hook key> to use it'."
-    - "STILL OPEN: SetStartItems omits warmup_start_ammo_fuel = max(.., rotstable) (StartLoadout has only AmmoFuel, no warmup-fuel field); minor, only matters in warmup with useammo on. Also no in-mutator vehicle/weaponUseForbidden gate on the offhand key (WeaponUseForbidden is a stub=false; the seated case is excluded only by WeaponThink's early return, which leaves OffhandFirePressed un-zeroed/stale while seated)."
+    - "STILL OPEN: no in-mutator vehicle/weaponUseForbidden gate on the offhand key (WeaponUseForbidden is a stub=false; the seated case is excluded only by WeaponThink's early return, which leaves OffhandFirePressed un-zeroed/stale while seated)."
 features:
   - id: mutator-hook.enable.predicate
     name: "Enable predicate (string g_grappling_hook via expr_evaluate)"
@@ -141,25 +142,24 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/HookMutator.cs:OnSetStartItems"
     constants:
       - { name: "g_balance_fuel_rotstable", base: "100 (balance-xonotic.cfg:187)", port: "GetFloat(g_balance_fuel_rotstable)", match: true }
-      - { name: "warmup_start_ammo_fuel", base: "max(.., rotstable)", port: "not set (only AmmoFuel)", match: false }
+      - { name: "warmup_start_ammo_fuel", base: "max(.., rotstable)", port: "l.WarmupAmmoFuel = max(l.WarmupAmmoFuel, rotstable) (HookMutator.cs:130)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN: only the non-warmup start fuel is bumped (StartLoadout has a single AmmoFuel field, no warmup-fuel field). Base also sets warmup_start_ammo_fuel = max(.., rotstable); SpawnSystem.cs:883 reads a flat g_warmup_start_ammo_fuel cvar but the hook mutator never maxes it against rotstable. Minor: only matters during warmup with useammo on (a rare combination)."
+    gaps: []
     verification:
-      - { kind: code, ref: "OnSetStartItems (line 115-124) adds FUEL_REGEN + AmmoFuel=max(.,rotstable) vs QC start_items|=FuelRegen + start_ammo_fuel + warmup_start_ammo_fuel", result: pass }
+      - { kind: code, ref: "OnSetStartItems (HookMutator.cs:121-132) adds FUEL_REGEN + AmmoFuel=max(.,rotstable) + WarmupAmmoFuel=max(.,rotstable) vs QC start_items|=FuelRegen + start_ammo_fuel + warmup_start_ammo_fuel — all three now ported", result: pass }
       - { kind: code, ref: "MutatorHooks.SetStartItems.Call is a live loadout dispatch", result: pass }
-      - { kind: code, ref: "StartLoadout (MutatorHooks.cs:627-649) has only AmmoFuel — no warmup fuel field for the mutator to set", result: fail }
+      - { kind: code, ref: "StartLoadout.WarmupAmmoFuel (MutatorHooks.cs:1006) exists and is consumed at warmup spawn: SpawnSystem.cs:979 p.SetResource(Fuel, startSeam.WarmupAmmoFuel) from ComputeStartItems()", result: pass }
       - { kind: test, ref: "MutatorBatchT51Tests.cs:466/478 — useammo on grants fuel=max(.,rotstable); useammo off grants none", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-5. Gated on UseAmmo (default off), so usually a no-op — but live and correct when useammo is enabled. Warmup-fuel omission is the only value gap (values: partial)."
+    notes: "WAVE-6b FIX (values partial->faithful). StartLoadout gained a WarmupAmmoFuel field; OnSetStartItems now maxes it against rotstable, and the warmup spawn reads it from the deterministic ComputeStartItems seam (SpawnSystem.cs:979). Gated on UseAmmo (default off), so usually a no-op — but live and correct when useammo is enabled."
 
   - id: mutator-hook.filteritem.hide_pickup
     name: "FilterItem: suppress the WEP_HOOK world pickup"
@@ -192,26 +192,33 @@ features:
     base_refs:
       - "common/mutators/mutator/hook/sv_hook.qc:MUTATOR_HOOKFUNCTION(hook, BuildMutatorsString)"
       - "common/mutators/mutator/hook/sv_hook.qc:MUTATOR_HOOKFUNCTION(hook, BuildMutatorsPrettyString)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/HookMutator.cs:BuildMutatorsString"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/HookMutator.cs:BuildMutatorsPrettyString"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:BuildMutatorsString"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:BuildMutatorsPrettyString"
+      - "src/XonoticGodot.Server/GameWorld.cs:876"
     constants:
-      - { name: "info token", base: "\":grappling_hook\"", port: "none", match: false }
-      - { name: "pretty token", base: "\", Hook\"", port: "none", match: false }
+      - { name: "info token", base: "\":grappling_hook\"", port: "s + \":grappling_hook\" (HookMutator.cs:115)", match: true }
+      - { name: "pretty token", base: "\", Hook\"", port: "s + \", Hook\" (HookMutator.cs:118)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL MISSING after Wave-5: no ':grappling_hook' server-info token and no ', Hook' pretty token are appended, so server browsers / the votescreen won't show that the grappling-hook mutator is active. The g_grappling_hook entry in CommandReplies.cs:252 remains the cvar_changes PureBadCvars suppression list, NOT the BuildMutatorsString token emission — those tokens still have no port emitter anywhere (grep ':grappling' / ', Hook' / BuildMutatorsString -> no emission)."
+      - "WAVE-6b: the ':grappling_hook' server-info token is now emitted and LIVE — HookMutator.BuildMutatorsString (HookMutator.cs:115) + the aggregator MutatorActivation.BuildMutatorsString called from gamelog init (GameWorld.cs:876, gated on sv_eventlog). So server-browser / event-log metadata shows the mutator."
+      - "The ', Hook' pretty/votescreen token is ALSO ported (HookMutator.cs:118 + MutatorActivation.BuildMutatorsPrettyString aggregator MutatorActivation.cs:121), but the aggregator has NO live caller — the QC votescreen surfacing (server/client.qc:1107 MUTATOR_CALLHOOK(BuildMutatorsPrettyString)) is unwired in the port (grep: no caller of BuildMutatorsPrettyString outside the per-mutator overrides). So the votescreen ', Hook' label is still effectively dead. presentation:partial / liveness:partial reflect: info-token path live, pretty-token path dead."
     verification:
-      - { kind: code, ref: "grep ':grappling_hook' / '\", Hook\"' / BuildMutatorsString emission in src/** + game/** -> none (only doc-comment mentions in CloakedMutator and others)", result: fail }
-      - { kind: code, ref: "CommandReplies.cs:252 g_grappling_hook is the cvar_changes BADCVAR list, not a mutator-string token", result: fail }
+      - { kind: code, ref: "HookMutator.cs:115 BuildMutatorsString => s + \":grappling_hook\"; HookMutator.cs:118 BuildMutatorsPrettyString => s + \", Hook\" (both override MutatorBase virtuals GameplayBases.cs:213/221)", result: pass }
+      - { kind: code, ref: "MutatorActivation.BuildMutatorsString (cs:108-114) walks Added mutators; called LIVE at GameWorld.cs:876 for the sv_eventlog gamelog server-info", result: pass }
+      - { kind: code, ref: "MutatorActivation.BuildMutatorsPrettyString (cs:121-127) exists but grep shows NO live caller (votescreen path unwired) -> pretty token never surfaces", result: fail }
     confidence: high
-    notes: "Unchanged by Wave-5. Cosmetic/UI metadata; no gameplay effect. Several other mutators have the same omission."
+    notes: "WAVE-6b FIX (logic/values missing->faithful, presentation missing->partial, liveness na->partial). The machine info token is ported AND live via the gamelog server-info path; the pretty/votescreen token is ported but its aggregator is dead (no votescreen caller). Cosmetic/UI metadata; no gameplay effect."
 
   - id: mutator-hook.client.gameplay_tip
     name: "Client gameplay tip: 'grappling hook is enabled, press <key>'"

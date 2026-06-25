@@ -1,11 +1,10 @@
 unit: mutator-kick_teamkiller
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 7
-  worst_gaps:
-    - "Port still has no per-client startplaytime; playtime denominator is the absolute sim clock (Api.Clock.Time) since level start, so mid-match joiners cross the rate condition later than Base (or escape it). Coincides with Base only for players present since level start. Unchanged from baseline. (This is now the ONLY remaining gap — the action.punish enforcement gaps were closed in Wave-4.)"
+  worst_gaps: []
 features:
   - id: mutator-kick_teamkiller.register.enable_gate
     name: "Mutator registered/active only when g_kick_teamkiller_rate > 0"
@@ -94,24 +93,26 @@ features:
       - "common/mutators/mutator/kick_teamkiller/sv_kick_teamkiller.qc:32 playtime = time - CS(attacker).startplaytime"
       - "server/client.qc:780 startplaytime set on spectator->player switch"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:88 float playtime = Api.Clock.Time"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:100-101 startPlayTime = (attacker as Player).StartPlayTime; playtime = Api.Clock.Time - startPlayTime"
+      - "src/XonoticGodot.Common/Gameplay/Player/Player.cs:164 float StartPlayTime"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:608-609 StartPlayTime stamped on FragsStatus==FragsSpectator spectator->player edge"
     constants:
-      - { name: "playtime source", base: "time - CS(attacker).startplaytime (seconds since spectator->player switch)", port: "Api.Clock.Time (sim clock since level start)", match: false }
+      - { name: "playtime source", base: "time - CS(attacker).startplaytime (seconds since spectator->player switch)", port: "Api.Clock.Time - Player.StartPlayTime (seconds since spectator->player switch)", match: true }
     status:
-      logic: partial
-      values: partial
-      timing: partial
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN (unchanged by Wave 1/2): port has no per-client startplaytime; uses absolute sim clock since level start (Api.Clock.Time). For a mid-match joiner the denominator is larger, so the same teamkill count yields a lower computed rate -> punished later than Base (or escapes). Coincides with Base only for players present since level start. grep for startplaytime/StartPlayTime across src/ still finds no per-client transition timestamp (only the mutator's own comment)."
+    gaps: []
     verification:
-      - { kind: code, ref: "`float playtime = Api.Clock.Time;` vs QC `time - CS(attacker).startplaytime`; grep for startplaytime across src/ finds no per-client timestamp", result: fail }
+      - { kind: code, ref: "`float startPlayTime = (attacker as Player)?.StartPlayTime ?? 0f; float playtime = Api.Clock.Time - startPlayTime;` (KickTeamkillerMutator.cs:100-101) now mirrors QC `time - CS(attacker).startplaytime` exactly", result: pass }
+      - { kind: code, ref: "Player.StartPlayTime (Player.cs:164) is stamped in SpawnSystem.cs:608-609 only on the spectator->player edge (`if (p.FragsStatus == Player.FragsSpectator)`), mirroring QC client.qc:776-780 `if (CS(this).killcount == FRAGS_SPECTATOR) CS(this).startplaytime = time;` — a mid-life respawn leaves it untouched", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-22 post-Wave: `float playtime = Api.Clock.Time;` (KickTeamkillerMutator.cs:98) is unchanged and a grep for startplaytime/StartPlayTime across src/ still finds ONLY the mutator's own comment — no per-client spectator->player transition timestamp exists anywhere. Sim clock remains a documented stand-in. Divergence real (not intended), skews the threshold for mid-match joiners. The ONLY remaining open gap in this unit."
+    notes: "FIX vs baseline (2026-06-25): the per-client startplaytime gap is CLOSED. The port now has `Player.StartPlayTime` (Player.cs:164), stamped on the genuine spectator->player transition in SpawnSystem.PutPlayerInServer (line 608-609, gated on FragsStatus==FragsSpectator, the port's FRAGS_SPECTATOR sentinel), and the mutator computes `Api.Clock.Time - StartPlayTime` (line 101) — bit-equivalent to QC `time - CS(attacker).startplaytime`. Mid-match joiners now cross the rate gate at the same teamkill cadence as Base. logic/values/timing upgraded partial->faithful; gap removed. This was the unit's only remaining open gap."
 
   - id: mutator-kick_teamkiller.detect.threshold
     name: "Rate threshold: teamkills >= lower_limit AND teamkills >= rate*playtime/60"
@@ -119,7 +120,7 @@ features:
     base_refs:
       - "common/mutators/mutator/kick_teamkiller/sv_kick_teamkiller.qc:34-35 teamkills >= autocvar_g_kick_teamkiller_lower_limit && teamkills >= autocvar_g_kick_teamkiller_rate*playtime/60.0"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:91 teamkills < LowerLimit || teamkills < Rate * playtime / 60f (early-return negation of the QC AND)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:104 teamkills < LowerLimit || teamkills < Rate * playtime / 60f (early-return negation of the QC AND)"
     constants:
       - { name: "g_kick_teamkiller_lower_limit", base: "5", port: "5 (mutators.cfg:537)", match: true }
       - { name: "g_kick_teamkiller_rate", base: "0", port: "0 (mutators.cfg:536)", match: true }
@@ -127,18 +128,17 @@ features:
     status:
       logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The threshold expression itself is faithful, but its result is skewed by the wrong playtime denominator (see mutator-kick_teamkiller.detect.playtime): mid-match joiners cross the rate condition later than Base. STILL OPEN."
+    gaps: []
     verification:
       - { kind: code, ref: "`if (teamkills < LowerLimit || teamkills < Rate * playtime / 60f) return false;` is the De-Morgan negation of QC `teamkills >= lower && teamkills >= rate*playtime/60` — equivalent; constants confirmed in mutators.cfg", result: pass }
     confidence: high
-    notes: "timing:partial because the only timing-dependent input (playtime) diverges; the comparison and constants are exact. Wave-2 reworded the gate to an early-return but the math is identical."
+    notes: "FIX vs baseline (2026-06-25): timing upgraded partial->faithful. The only timing-dependent input (playtime) is now the per-client startplaytime (see mutator-kick_teamkiller.detect.playtime), so the threshold trips at the same teamkill cadence as Base for all players including mid-match joiners. The comparison and constants were already exact."
 
   - id: mutator-kick_teamkiller.action.punish
     name: "Punishment switch: kick (1) / IP-ban (2) / play-ban+observe (default)"
@@ -169,10 +169,10 @@ features:
     gaps: []
     verification:
       - { kind: code, ref: "switch(Severity) present with all 3 branches; SetRespawnSilent sets RespawnFlag.Silent (EntityEnums.cs:49 Silent=2). Default branch writes g_playban_list + force-spectate via ForceObserver; sev1 KickClient, sev2 BanClient", result: pass }
-      - { kind: code, ref: "Wave-4 fix: the LastAction observer placeholder was replaced with three injected Server-action delegates (ForceObserver/KickClient/BanClient), wired in GameWorld.WireServerInfrastructure (GameWorld.cs:723-736) like Minigames.ObserverForcer. Default branch now calls ClientManager.PutObserverInServer (real MoveType.None/Solid.Not/TakeDamage.No/FragsSpectator); sev1 -> Bans.DropClient; sev2 -> Bans.KickBanClient(bantime, g_ban_default_masksize)", result: pass }
-      - { kind: code, ref: "Play-ban join gate now enforced: ClientManager.JoinAllowed consults the new ForcedSpectate predicate (wired to Bans.IsPlayBanned, GameWorld.cs:717), refusing +jump/autojoin for a g_playban_list client (QC Join_Try). g_ban_default_masksize consumed by sev2", result: pass }
+      - { kind: code, ref: "Three injected Server-action delegates (ForceObserver/KickClient/BanClient) wired in GameWorld.WireServerInfrastructure (GameWorld.cs:846-859) like Minigames.ObserverForcer. Default branch calls ClientManager.PutObserverInServer; sev1 -> Bans.DropClient; sev2 -> Bans.KickBanClient(bantime, g_ban_default_masksize)", result: pass }
+      - { kind: code, ref: "Play-ban join gate enforced: ClientManager.JoinAllowed consults the ForcedSpectate predicate (wired to Bans.IsPlayBanned, GameWorld.cs:840), refusing +jump/autojoin for a g_playban_list client (QC Join_Try). g_ban_default_masksize consumed by sev2", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-22 post-Wave (adversarial): the three delegates are genuinely wired on the LIVE boot path. GameWorld.cs:749-762 (inside WireServerInfrastructure, called at GameWorld.cs:723 from WireCommandsWarmupVoting) sets ForceObserver=Clients.PutObserverInServer (ClientManager.cs:409), KickClient=>Bans.DropClient (itself wired at GameWorld.cs:736 to Commands.KickHandler+ClientDisconnect, returns true), BanClient=>Bans.KickBanClient(bantime,masksize) (Bans.cs:282). The mutator's OnPlayerDies is invoked via MutatorHooks.PlayerDies.Call at DamageSystem.cs:589 on the real kill path. Play-ban join gate live: Clients.ForcedSpectate=Bans.IsPlayBanned (GameWorld.cs:743) consulted in ClientManager.JoinAllowed (ClientManager.cs:286). No regression vs Wave-4: all three severity branches still run real punitive actions; g_kick_teamkiller_bantime + g_ban_default_masksize consumed by sev2. logic/values faithful, liveness live."
+    notes: "Re-verified 2026-06-25 (adversarial): the three delegates are genuinely wired on the LIVE boot path. GameWorld.cs:846-859 (inside WireServerInfrastructure, called at GameWorld.cs:820) sets ForceObserver=>Clients.PutObserverInServer, KickClient=>Bans.DropClient (returns true once scheduled), BanClient=>Bans.KickBanClient(bantime,masksize, \"Team Killing\"). The mutator's OnPlayerDies is invoked via MutatorHooks.PlayerDies.Call at DamageSystem.cs:594 on the real kill path. Play-ban join gate live: Clients.ForcedSpectate=Bans.IsPlayBanned (GameWorld.cs:840). All three severity branches run real punitive actions; g_kick_teamkiller_bantime + g_ban_default_masksize consumed by sev2. logic/values faithful, liveness live. Line refs refreshed (delegate block shifted 749-762 -> 846-859 since last audit); no behavioral change."
 
   - id: mutator-kick_teamkiller.notify.broadcast
     name: "Broadcast + center-print notifications on punishment (severity-dependent)"

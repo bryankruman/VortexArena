@@ -1,11 +1,11 @@
 unit: mutator-bloodloss
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 8
   worst_gaps:
-    - "Active-mutators string/scoreboard signalling is entirely unported: SVQC BuildMutatorsString/PrettyString (:bloodloss / , Blood loss), util.qc GameType_GetMutatorByName row (MUT_BLOODLOSS, g_bloodloss>0), and the CSQC mut_set_active(MUT_BLOODLOSS) HUD active-mutator icon all have no port equivalent (the port has NO active-mutators string mechanism at all)."
+    - "Active-mutators signalling is now PARTIALLY ported (Wave-6b): BloodlossMutator overrides BuildMutatorsString (':bloodloss', LIVE via MutatorActivation.BuildMutatorsString → GameWorld.cs:876 gamelog init, gated on sv_eventlog) and BuildMutatorsPrettyString (', Blood loss'). BUT BuildMutatorsPrettyString's aggregator (MutatorActivation.cs:121) has NO live caller (no scoreboard/serverinfo consumer) → DEAD. The util.qc:309 MUT_BLOODLOSS GameType row and the CSQC mut_set_active(MUT_BLOODLOSS) HUD active-mutator icon are STILL entirely unported (no MUT_BLOODLOSS / mut_set_active / active_mutators surface in the port)."
     - "CSQC client-prediction hooks (PlayerCanCrouch/PlayerJump with the extra STAT(HEALTH)>0 guard, REGISTER_STAT(BLOODLOSS), REGISTER_MUTATOR(bloodloss,true)) are unported — acceptable because the port runs a headless server sim with no CSQC prediction, but it means crouch/jump are NOT locally predicted (server-round-trip latency vs Base)."
     - "MENUQC describe paragraph (stun + impaired movement + rapid health drain) is condensed to a one-line tooltip on the menu checkbox/slider."
 features:
@@ -18,7 +18,7 @@ features:
       - "xonotic-server.cfg:304 (set g_bloodloss 0)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:30-31 (IsEnabled => Cvars.GetFloat(\"g_bloodloss\") != 0f)"
-      - "src/XonoticGodot.Server/GameWorld.cs:535 (MutatorActivation.Apply)"
+      - "src/XonoticGodot.Server/GameWorld.cs:563 (MutatorActivation.Apply)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs (Apply → Add → Hook)"
     constants:
       - { name: "g_bloodloss default", base: "0 (disabled)", port: "0 via cvar; no static 25f field fallback any more (Threshold is now a live cvar read)", match: true }
@@ -35,7 +35,7 @@ features:
     gaps:
       - "Base REGISTER_STAT(BLOODLOSS) networks the threshold to CSQC for crouch/jump prediction; the port has no STAT(BLOODLOSS) and no CSQC mutator registration. Faithful in effect (server-authoritative) but the prediction path is absent."
     verification:
-      - { kind: code, ref: "[Mutator] BloodlossMutator in Mutators.All; MutatorActivation.Apply at GameWorld.cs:535 on the live server boot; IsEnabled reads g_bloodloss", result: pass }
+      - { kind: code, ref: "[Mutator] BloodlossMutator in Mutators.All; MutatorActivation.Apply at GameWorld.cs:563 on the live server boot; IsEnabled reads g_bloodloss", result: pass }
     confidence: high
     notes: "The cvar value is simultaneously the enable switch AND the health threshold. Base has NO IsEnabled-side exclusion (unlike instagib/arena/nix) — REGISTER_MUTATOR keys directly on the cvar — so the port's bare != 0f is faithful (no missing-exclusion gap). Menu greys it out under g_instagib but that is UI-only. Wave-2 removed the dead 25f field; enable predicate unchanged."
 
@@ -48,7 +48,7 @@ features:
       - "server/damage.qc:483 Damage() + :614-615 (targ==attacker → damage *= g_balance_selfdamagepercent)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:58-85 (OnPlayerPreThink)"
-      - "src/XonoticGodot.Server/GameWorld.cs:1037 (PlayerPreThink.Call on the live per-client move OnClientMove)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1329 (PlayerPreThink.Call on the live per-client move OnClientMove)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs (BloodlossTimer)"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:262-263 (self-damage *= g_balance_selfdamagepercent 0.65 when attacker==targ)"
     constants:
@@ -69,7 +69,7 @@ features:
     gaps:
       - "No runtime/automated test confirms the rot tick cadence or that the rot damage actually removes health in a live match (static + cross-file trace only; no bloodloss test in tests/)."
     confidence: medium
-    notes: "Guards verified: game_stopped → VehicleCommon.GameStopped (BloodlossMutator.cs:64); IS_DEAD → DeadState==DeadFlag.No; IS_PLAYER → EntFlags.Client. Live caller re-verified: GameWorld.OnClientMove fires MutatorHooks.PlayerPreThink.Call per client every tick (GameWorld.cs:1037). VERIFIED both Base and port multiply the 1-hp rot by g_balance_selfdamagepercent (0.65) because target==attacker (DamageSystem.cs:262 ReferenceEquals(attacker,targ)) — effective drain ~0.65 hp/tick in BOTH. 'rot' is non-special-armor (armor applies in both). Wave-2 left this row unchanged."
+    notes: "Guards verified: game_stopped → VehicleCommon.GameStopped (BloodlossMutator.cs:64); IS_DEAD → DeadState==DeadFlag.No; IS_PLAYER → EntFlags.Client. Live caller re-verified 2026-06-25: GameWorld.OnClientMove fires MutatorHooks.PlayerPreThink.Call per client every tick (GameWorld.cs:1329; line drifted from 1037). VERIFIED both Base and port multiply the 1-hp rot by g_balance_selfdamagepercent (0.65) because target==attacker (DamageSystem.cs:262 ReferenceEquals(attacker,targ)) — effective drain ~0.65 hp/tick in BOTH. 'rot' is non-special-armor (armor applies in both). Wave-2 left this row unchanged."
 
   - id: mutator-bloodloss.rot.vehicle_eject
     name: "Eject the player from any vehicle on each rot tick (VHEF_RELEASE)"
@@ -178,24 +178,33 @@ features:
       - "common/mutators/mutator/bloodloss/bloodloss.qc:51-54 MUTATOR_HOOKFUNCTION(BuildMutatorsPrettyString) → strcat(, Blood loss)"
       - "common/util.qc:309 X(\"Blood loss\", _(\"Blood loss\"), MUT_BLOODLOSS, cvar(\"g_bloodloss\") > 0)"
       - "client.qc mut_set_active(MUT_BLOODLOSS) when g_bloodloss > 0 (CSQC active-mutator HUD icon)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:104 (BuildMutatorsString override → s + \":bloodloss\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:107 (BuildMutatorsPrettyString override → s + \", Blood loss\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108 (BuildMutatorsString aggregator over Added mutators)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:121 (BuildMutatorsPrettyString aggregator — NO live caller)"
+      - "src/XonoticGodot.Server/GameWorld.cs:876 (MutatorActivation.BuildMutatorsString live call in GameLogInit, gated on sv_eventlog)"
     constants:
-      - { name: "serverinfo code tag", base: "\":bloodloss\"", port: "none", match: false }
-      - { name: "pretty tag", base: "\", Blood loss\"", port: "none", match: false }
-      - { name: "active-mutator id", base: "MUT_BLOODLOSS (g_bloodloss > 0)", port: "none", match: false }
+      - { name: "serverinfo code tag", base: "\":bloodloss\"", port: "\":bloodloss\" (BloodlossMutator.cs:104)", match: true }
+      - { name: "pretty tag", base: "\", Blood loss\"", port: "\", Blood loss\" (BloodlossMutator.cs:107, but aggregator has no consumer)", match: true }
+      - { name: "active-mutator id", base: "MUT_BLOODLOSS (g_bloodloss > 0)", port: "none (no MUT_BLOODLOSS / mut_set_active / active_mutators surface)", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: faithful
       timing: na
       presentation: missing
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The serverinfo/scoreboard active-mutators list will not include 'Blood loss', and the CSQC active-mutator HUD icon (mut_set_active(MUT_BLOODLOSS)) never lights up — the port has NO active-mutator signalling mechanism at all (no mut_set_active / MUT_BLOODLOSS / BuildMutatorsString equivalent found across src/ or game/). Re-confirmed unported after Wave-2."
+      - "BuildMutatorsPrettyString (', Blood loss') is overridden and aggregated (MutatorActivation.cs:121) but has NO live caller anywhere in src/ or game/ (no scoreboard / serverinfo / votescreen consumer) → DEAD on the live path; the human-readable mutator list never shows 'Blood loss'."
+      - "The util.qc:309 X(\"Blood loss\", MUT_BLOODLOSS, g_bloodloss>0) GameType active-mutator row and the CSQC mut_set_active(MUT_BLOODLOSS) HUD active-mutator icon are STILL entirely unported — the port has no MUT_BLOODLOSS / mut_set_active / active_mutators flag surface at all, so the menu/server-browser/HUD active-mutator icon can never light up."
+      - "BuildMutatorsString (':bloodloss') is LIVE but only via the gamelog/eventlog feed (sv_eventlog-gated); it is not consumed by a scoreboard either."
+    verification:
+      - { kind: code, ref: "BloodlossMutator.cs:104,107 override both string hooks; MutatorActivation.BuildMutatorsString iterates Added mutators and is called live at GameWorld.cs:876 (gamelog init). BuildMutatorsPrettyString aggregator at MutatorActivation.cs:121 has zero callers (grep over src/ + game/ = none). MUT_BLOODLOSS/mut_set_active/active_mutators = 0 hits.", result: partial }
     confidence: high
-    notes: "STILL OPEN after Wave-2. Base signals an active bloodloss mutator through THREE paths (SVQC mutators-string hooks, util.qc GameType active-mutator row, CSQC mut_set_active HUD icon), all keyed on g_bloodloss>0 (note: '> 0', slightly stricter than the mutator's own non-zero enable). None are ported (CloakedMutator.cs:17 explicitly notes 'the port has no active-mutators pretty-string mechanism yet'). Cosmetic only — no gameplay effect. The active-mutator-list gap is generic across the port's mutators, not bloodloss-specific."
+    notes: "FIXED (PARTIAL) in Wave-6b: the two SVQC mutators-string hooks are now ported (BuildMutatorsString machine ':bloodloss' is LIVE via the gamelog feed; BuildMutatorsPrettyString ', Blood loss' is ported but DEAD — no consumer). STILL MISSING: the util.qc:309 GameType MUT_BLOODLOSS row and the CSQC mut_set_active(MUT_BLOODLOSS) HUD icon (both keyed on '> 0', slightly stricter than the mutator's own non-zero enable). The active-mutator HUD-icon / MUT_ bitmask surface gap is generic across the port's mutators, not bloodloss-specific. Cosmetic only — no gameplay effect. Baseline recorded this whole row as missing/na; this audit upgrades logic missing→partial, presentation stays missing (HUD icon), liveness na→partial."
 
   - id: mutator-bloodloss.menu.dialog
     name: "Multiplayer-create mutators dialog (slider 10-50 + enable checkbox, g_instagib dependency, describe text)"

@@ -1,22 +1,21 @@
 unit: mutator-doublejump
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 4
-  worst_gaps:
-    - "Doublejump mutator still gates on sv_doublejump directly (IsEnabled / hook subscription) rather than consuming the now-implemented per-player DOUBLEJUMP stat (MovementParameters.DoubleJump via Physics_ClientOption). Only diverges when g_physics_clientselect is on AND a client picks a preset that flips doublejump; identical in stock play."
+  worst_gaps: []
 features:
   - id: doublejump.enable.cvar_gate
     name: "Enable gate — sv_doublejump cvar gating mutator registration"
     layer: [authority, shared]
     base_refs:
       - "common/mutators/mutator/doublejump/doublejump.qc:10 REGISTER_MUTATOR(doublejump, autocvar_sv_doublejump) (SVQC) / :12 true (CSQC)"
-      - "common/mutators/mutator/doublejump/doublejump.qh:autocvar_sv_doublejump"
+      - "common/mutators/mutator/doublejump/doublejump.qh:4 autocvar_sv_doublejump"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/DoublejumpMutator.cs:34 IsEnabled"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:60 Apply"
-      - "src/XonoticGodot.Server/GameWorld.cs:535 MutatorActivation.Apply()"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:49 Add (Hook subscribes _onJump)"
+      - "src/XonoticGodot.Server/GameWorld.cs:563 MutatorActivation.Apply()"
     constants:
       - { name: "sv_doublejump", base: "0 (xonotic-server.cfg; presets set 1: physicsQ2/Q2a, physicsFruit (TINY 1.35x), physicsWarsow, physicsXDF)", port: "0 (default; read via Cvars.GetFloat at IsEnabled time)", match: true }
     status:
@@ -31,9 +30,9 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:139 Doublejump_Disabled_Inert", result: pass }
-      - { kind: code-read, ref: "GameWorld.cs:535 MutatorActivation.Apply -> Add -> Hook subscribes _onJump to MutatorHooks.PlayerJump (.Call'd PlayerPhysics.cs:827)", result: pass }
+      - { kind: code-read, ref: "GameWorld.cs:563 MutatorActivation.Apply -> Add (MutatorActivation.cs:49) -> Hook subscribes _onJump to MutatorHooks.PlayerJump, .Call'd PlayerPhysics.cs:875", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-22 post Wave 1-2 (branch claude/parity-port-waves). DoublejumpMutator.cs was NOT touched by the waves (not in main...HEAD diff). Live boot chain reconfirmed: GameWorld.cs MutatorActivation.Apply moved :511->:535 (line shift only, still live) -> Add -> Hook subscribes _onJump to MutatorHooks.PlayerJump, .Call'd at PlayerPhysics.cs:827. Port gates the whole mutator on sv_doublejump (server) and runs the shared PlayerPhysics in client prediction too, matching Base's SVQC-gated + CSQC-always-true registration for the stock case. No change; no regression."
+    notes: "Re-audited 2026-06-25 (drift check). DoublejumpMutator.IsEnabled gates the whole mutator on sv_doublejump (server) mirroring Base's SVQC-gated REGISTER_MUTATOR(doublejump, autocvar_sv_doublejump); shared PlayerPhysics runs the hook in client prediction too, matching Base's CSQC-always-true registration. Live boot chain reconfirmed: GameWorld.cs MutatorActivation.Apply moved :535->:563 (line shift only, still live) -> Add -> Hook -> MutatorHooks.PlayerJump, .Call'd at PlayerPhysics.cs:875. No change; no regression. The cvar-level gate is intentionally Base-faithful (per-player divergence is handled inside the hook body via the DOUBLEJUMP stat, see doublejump.stat.per_player_doublejump)."
 
   - id: doublejump.stat.per_player_doublejump
     name: "Per-player DOUBLEJUMP stat via Physics_ClientOption"
@@ -42,30 +41,32 @@ features:
       - "common/stats.qh:REGISTER_STAT(DOUBLEJUMP, INT)"
       - "common/physics/player.qc:141 STAT(DOUBLEJUMP)=Physics_ClientOption(this,\"doublejump\",autocvar_sv_doublejump)"
       - "common/physics/player.qc:23 Physics_ClientOption"
+      - "common/mutators/mutator/doublejump/doublejump.qc:22 PHYS_DOUBLEJUMP(player) gate inside the PlayerJump hook"
     port_refs:
       - "src/XonoticGodot.Common/Physics/PhysicsPreset.cs:66 OptionNames (\"doublejump\" -> \"sv_doublejump\")"
-      - "src/XonoticGodot.Common/Physics/PhysicsPreset.cs:115 Resolve (g_physics_clientselect chain)"
-      - "src/XonoticGodot.Common/Physics/MovementParameters.cs:187 p.DoubleJump (per-player resolved value)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/DoublejumpMutator.cs:34 IsEnabled (still reads sv_doublejump directly; does NOT consult mp.DoubleJump)"
+      - "src/XonoticGodot.Common/Physics/PhysicsPreset.cs:187 Resolve (g_physics_clientselect chain -> p.DoubleJump)"
+      - "src/XonoticGodot.Common/Physics/MovementParameters.cs:62 DoubleJump (per-player resolved value)"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:874 new PlayerJumpArgs(..., mp.DoubleJump) carries the stat into the hook"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:286 PlayerJumpArgs.DoubleJump (in arg)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DoublejumpMutator.cs:62 OnPlayerJump gates on args.DoubleJump (PHYS_DOUBLEJUMP)"
     constants:
-      - { name: "g_physics_clientselect", base: "0 (off; enables per-client g_physics_<preset>_doublejump override)", port: "0 (NOW IMPLEMENTED: PhysicsPreset.Resolve + Server/Cvars.cs:367 + ClientCommand_physics Commands.cs:1846)", match: true }
-      - { name: "doublejump in clientselect option set", base: "Physics_ClientOption(this,\"doublejump\",...)", port: "registered PhysicsPreset.cs:66; resolved into MovementParameters.DoubleJump", match: true }
+      - { name: "g_physics_clientselect", base: "0 (off; enables per-client g_physics_<preset>_doublejump override)", port: "0 (implemented: PhysicsPreset.Resolve g_physics_clientselect chain)", match: true }
+      - { name: "doublejump in clientselect option set", base: "Physics_ClientOption(this,\"doublejump\",...)", port: "registered PhysicsPreset.cs:66; resolved into MovementParameters.DoubleJump; consumed by the mutator via args.DoubleJump", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The per-player stat infrastructure (Physics_ClientOption / g_physics_clientselect) is now implemented and resolves the per-player doublejump value into MovementParameters.DoubleJump (PhysicsPreset.cs:66, MovementParameters.cs:187). BUT the DoublejumpMutator does NOT consume it: IsEnabled (hook subscription) and the OnPlayerJump body both key off sv_doublejump directly. When g_physics_clientselect is on and a client picks a preset that flips doublejump per-client, the mutator's subscription gate won't track that override. Stock play (g_physics_clientselect 0) is unaffected: mp.DoubleJump == sv_doublejump for every player."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "PhysicsPreset.cs:66 registers doublejump; :118 Resolve returns sv_doublejump default when g_physics_clientselect==0", result: pass }
-      - { kind: code-read, ref: "DoublejumpMutator.OnPlayerJump has no PHYS_DOUBLEJUMP(player)/mp.DoubleJump check; gating is via IsEnabled on sv_doublejump", result: pass }
+      - { kind: code-read, ref: "PhysicsPreset.cs:66 registers doublejump; :187 Resolve returns sv_doublejump default when g_physics_clientselect==0", result: pass }
+      - { kind: code-read, ref: "PlayerPhysics.cs:874 new PlayerJumpArgs(player, mjumpheight, doublejump, mp.DoubleJump) -> DoublejumpMutator.OnPlayerJump:62 bool perPlayerDoublejump = args.DoubleJump ?? sv_doublejump; gate at :63 — consumes PHYS_DOUBLEJUMP(player)", result: pass }
     confidence: high
-    notes: "PARTIAL CLOSE (not a full fix, not a regression). Baseline recorded g_physics_clientselect as 'not implemented'; Wave 2 implemented the clientselect/Physics_ClientOption chain and registered doublejump as a resolvable option, so the stat plumbing now matches Base and MovementParameters.DoubleJump carries the per-player value. The residual gap is that the doublejump MUTATOR ignores that per-player value and still gates on the raw sv_doublejump cvar. Confined to the g_physics_clientselect=on edge case; no observable stock-play difference (mutator parity test still green)."
+    notes: "FIX since the 2026-06-22 baseline. Baseline recorded logic:partial / liveness:partial — the mutator ignored the per-player resolved value and gated OnPlayerJump on the raw sv_doublejump cvar. Current code closes that gap: PlayerPhysics.cs:874 constructs PlayerJumpArgs with the 4th arg = mp.DoubleJump (the Physics_ClientOption-resolved per-player DOUBLEJUMP stat), MutatorHooks.PlayerJumpArgs.DoubleJump carries it, and DoublejumpMutator.OnPlayerJump:62-63 gates the grant on `args.DoubleJump ?? sv_doublejump` — i.e. PHYS_DOUBLEJUMP(player) per Base doublejump.qc:22, falling back to the cvar only when unsupplied (unit tests). When g_physics_clientselect is on and a client picks a preset that flips doublejump, the per-player override is now honored inside the hook. The IsEnabled subscription gate keying on sv_doublejump is correct (Base's SVQC REGISTER_MUTATOR gate is also the cvar, not the stat). Full parity."
 
   - id: doublejump.jump.surface_trace_grant
     name: "PlayerJump hook — near-surface tracebox grants the extra jump"
@@ -76,9 +77,9 @@ features:
       - "common/physics/player.qc:403 MUTATOR_CALLHOOK(PlayerJump,...)"
       - "common/physics/player.qc:424 if(!doublejump) if(!IS_ONGROUND) return IS_JUMP_HELD"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/DoublejumpMutator.cs:51 OnPlayerJump (tracebox + Fraction<1 && PlaneNormal.Z>0.7)"
-      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:827 MutatorHooks.PlayerJump.Call"
-      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:848 (!doublejump && OnGround==0) gate"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DoublejumpMutator.cs:65 OnPlayerJump (tracebox + Fraction<1 && PlaneNormal.Z>0.7)"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:875 MutatorHooks.PlayerJump.Call"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:896 (!doublejump && OnGround==0) gate"
     constants:
       - { name: "trace_down_offset_z", base: "+0.01 / -0.01 qu", port: "+0.01 / -0.01", match: true }
       - { name: "trace_plane_normal_z_gate", base: "> 0.7", port: "> 0.7f", match: true }
@@ -96,9 +97,9 @@ features:
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:153 Doublejump_GrantsAndClips_OnWalkableSurface", result: pass }
       - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:172 Doublejump_NoGrant_InMidair", result: pass }
-      - { kind: code-read, ref: "PlayerPhysics.PlayerJump gate at :848 consumes pj.Multijump to allow the mid-air jump", result: pass }
+      - { kind: code-read, ref: "PlayerPhysics.PlayerJump gate at :896 consumes pj.Multijump to allow the mid-air jump", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-22: unchanged by the waves. 1:1 translation of the tracebox + Fraction<1 && PlaneNormal.Z>0.7 gate + Multijump grant verified against Base doublejump.qc:24-25. PlayerPhysics PlayerJump.Call moved :819->:827 and the (!doublejump && OnGround==0) gate :841->:848 (line shifts from footstep edits above; logic intact). No regression."
+    notes: "Re-audited 2026-06-25: logic unchanged. 1:1 translation of the tracebox + Fraction<1 && PlaneNormal.Z>0.7 gate + Multijump grant verified against Base doublejump.qc:24-25. Line shifts since the 2026-06-22 baseline: PlayerPhysics PlayerJump.Call :827->:875, the (!doublejump && OnGround==0) gate :848->:896, and DoublejumpMutator OnPlayerJump tracebox :51->:65 (lines moved by the per-player DOUBLEJUMP gate added above; logic intact). No regression."
 
   - id: doublejump.jump.velocity_clip
     name: "Into-plane velocity clip on grant"
@@ -106,7 +107,7 @@ features:
     base_refs:
       - "common/mutators/mutator/doublejump/doublejump.qc:30-32 (f=velocity*normal; if(f<0) velocity-=f*normal)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/DoublejumpMutator.cs:71-73 OnPlayerJump (f=Dot(v,n); if(f<0) v-=f*n)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DoublejumpMutator.cs:76-78 OnPlayerJump (f=Dot(v,n); if(f<0) v-=f*n)"
     constants:
       - { name: "clip_condition", base: "f = v.n; clip only when f < 0 (into-surface component)", port: "f = QMath.Dot(v,n); if(f<0) v -= f*n", match: true }
     status:
@@ -121,6 +122,6 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:153 Doublejump_GrantsAndClips_OnWalkableSurface (Velocity.Z >= ~0 after clip)", result: pass }
-      - { kind: code-read, ref: "DoublejumpMutator.cs:71-73 matches doublejump.qc:30-32 exactly", result: pass }
+      - { kind: code-read, ref: "DoublejumpMutator.cs:76-78 matches doublejump.qc:30-32 exactly", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-22: unchanged by the waves and still 1:1 with Base. Removes only the negative-dot (into-surface) velocity component; a player already rising away from the surface is left untouched. No regression."
+    notes: "Re-audited 2026-06-25: unchanged and still 1:1 with Base (line shift :71-73->:76-78 from the per-player gate added above). Removes only the negative-dot (into-surface) velocity component; a player already rising away from the surface is left untouched. No regression."

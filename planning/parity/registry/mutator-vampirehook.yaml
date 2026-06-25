@@ -1,15 +1,12 @@
 unit: mutator-vampirehook
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 5
   worst_gaps:
-    - "Entry gate `time < game_starttime` (block during pre-match warmup/countdown) is STILL replaced with `VehicleCommon.GameStopped` (block at match end/intermission). Different conditions; no warmup-start concept exists in the port, so warmup behavior diverges (drain runs during warmup; is blocked at match end). Not flagged intentional — a mistranslation."
-    - "Damage attribution drops the DMG_NOWEP flag: Base passes `WEP_HOOK.m_id, DMG_NOWEP` (hook id but flagged no-weapon); port passes `DeathTypes.FromWeapon(\"hook\")` only — a drain kill is attributed as a normal hook-weapon kill, not weaponless. Minor death-message/stats nuance."
-    - "Heal() substituted by raw GiveResourceWithLimit, skipping Heal's game_stopped/spectator/FROZEN/IS_DEAD guards and PlayerHeal's `health <= 0` dead-target floor (Base no-ops on a dead target; port would heal it)."
-    - "hitsound_damage_dealt accumulator still not carried, so a vampire-hook tick gives the owner no hit-confirm ding (presentation; intended-divergence)."
-    - "DamageRate field fallback is 0.1 but Base default g_vampirehook_damagerate is 0.2 (only surfaces if the cvar is 0/unset; Hook() overwrites it from the stock cfg)."
+    - "Damage attribution drops the DMG_NOWEP flag: Base passes `WEP_HOOK.m_id, DMG_NOWEP` (hook id but flagged no-weapon); port passes `DeathTypes.FromWeapon(\"hook\")` only (no NOWEP concept in the deathtype-string model) — a drain kill is attributed as a normal hook-weapon kill, not weaponless. Minor death-message/stats nuance."
+    - "hitsound_damage_dealt accumulator still not carried for the drain tick, so a vampire-hook tick gives the owner no hit-confirm ding (presentation; intended-divergence). The port DOES now have a HitsoundDamageDealtTotal field (DamageSystem.cs:1004, used by InstagibMutator), so the seam exists — VampireHookMutator simply doesn't write it."
 features:
   - id: mutator-vampirehook.enable.gate
     name: "Enable predicate (expr_evaluate g_vampirehook)"
@@ -17,7 +14,7 @@ features:
     base_refs:
       - "common/mutators/mutator/vampirehook/sv_vampirehook.qc:4 (REGISTER_MUTATOR vh, expr_evaluate)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/VampireHookMutator.cs:46 (IsEnabled)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/VampireHookMutator.cs:47 (IsEnabled)"
       - "src/XonoticGodot.Server/GameWorld.cs:511 (MutatorActivation.Apply)"
     constants:
       - { name: "g_vampirehook", base: "0 (string)", port: "0 (mutators.cfg:425)", match: true }
@@ -32,9 +29,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ExprEvaluate (VampireHookMutator.cs:128) reproduces string-cvar truthiness ('' / '0' / 'false' = off, else on), matching expr_evaluate; [Mutator] discovery -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:511) when truthy", result: pass }
+      - { kind: code, ref: "ExprEvaluate (VampireHookMutator.cs:159) reproduces string-cvar truthiness ('' / '0' / 'false' = off, else on), matching expr_evaluate; [Mutator] discovery -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:511) when truthy", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. No mutual-exclusion clause in Base (sv_vampirehook.qc:4); port matches. Activation path live and idempotent (MutatorBase.Added guard)."
+    notes: "Unchanged. No mutual-exclusion clause in Base (sv_vampirehook.qc:4); port matches. Activation path live and idempotent (MutatorBase.Added guard)."
 
   - id: mutator-vampirehook.latch.aiment_follow
     name: "Latched hook follows its toucher (sets .aiment) — the precondition for the drain"
@@ -59,11 +56,11 @@ features:
     gaps:
       - "Minor structural omission vs SetMovetypeFollow (util.qc:2129-2147): the port does NOT set solid=SOLID_NOT, MOVETYPE_FOLLOW, v_angle, aiment_classname, or aiment_deadflag. Instead it keeps MoveType.None (set on latch) and manually re-positions the chain to follow each think (Hook.cs:330-331). These fields are unused by the vampirehook drain and the reel pull, so behavior is equivalent for this unit; flagged only for completeness."
     verification:
-      - { kind: code, ref: "GrapplingHookTouch (Hook.cs:284) now sets self.Aiment = other UNCONDITIONALLY on every latch (matching Base's commented-out `if move_movetype != MOVETYPE_NONE`), and clamps the follow offset into the player bbox with +4/-4 inset (Hook.cs:287-294) exactly as util.qc:2140-2142 when other is a Client", result: pass }
-      - { kind: code, ref: "Hook is MoveType.Fly + Solid.Corpse (MakeTrigger, Projectiles.cs:40) with DpHitContentsMask incl SuperContentsBody; engine FlyMove (FlyMove.cs:107-111) dispatches Touch against solid bodies, so the chain genuinely touches and latches onto a player on the live match path", result: pass }
+      - { kind: code, ref: "GrapplingHookTouch (Hook.cs:284) sets self.Aiment = other UNCONDITIONALLY on every latch (matching Base's commented-out `if move_movetype != MOVETYPE_NONE`), and clamps the follow offset into the player bbox with +4/-4 inset (Hook.cs:287-294) exactly as util.qc:2140-2142 when other is a Client", result: pass }
+      - { kind: code, ref: "Hook is MoveType.Fly + Solid.Corpse (MakeTrigger, Projectiles.cs:40) with DpHitContentsMask incl SuperContentsBody; engine FlyMove dispatches Touch against solid bodies, so the chain genuinely touches and latches onto a player on the live match path", result: pass }
       - { kind: code, ref: "GrapplingHookThink top-guard (Hook.cs:310-315) removes the hook only when aiment IsFreed or is an Item-flagged non-nade; a player has no Item flag, so a player-aiment survives and keeps thinking (NextThink=time, Hook.cs:317)", result: pass }
     confidence: high
-    notes: "FIXED in Wave-2. This was the baseline root cause (aiment always null -> whole mutator inert). The port now reproduces SetMovetypeFollow's aiment write + player-bbox clamp inline in GrapplingHookTouch and tracks the followed origin each think. Drain is now reachable on a direct hook hit onto an enemy."
+    notes: "FIXED in Wave-2 and still correct. This was the original baseline root cause (aiment always null -> whole mutator inert). The port reproduces SetMovetypeFollow's aiment write + player-bbox clamp inline in GrapplingHookTouch and tracks the followed origin each think. Drain is reachable on a direct hook hit onto an enemy."
 
   - id: mutator-vampirehook.drain.engine
     name: "GrappleHookThink drain/heal/self-drain on the hooked player"
@@ -73,18 +70,18 @@ features:
       - "server/hook.qc:137 (MUTATOR_CALLHOOK GrappleHookThink dispatch)"
       - "server/mutators/events.qh:899 (EV_GrappleHookThink)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/VampireHookMutator.cs:75 (OnGrappleHookThink)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:322 (GrappleHookThink.Call dispatch)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/VampireHookMutator.cs:76 (OnGrappleHookThink)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:323 (GrappleHookThink.Call dispatch)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:410 (GrappleHookThink chain)"
     constants:
-      - { name: "g_vampirehook_damage", base: "2", port: "cvar (Hook(), VampireHookMutator.cs:62); field default 0", match: true }
-      - { name: "g_vampirehook_damagerate", base: "0.2", port: "cvar (line 63); field fallback 0.1 (wrong)", match: false }
-      - { name: "g_vampirehook_health_steal", base: "2", port: "cvar (line 65)", match: true }
-      - { name: "g_vampirehook_teamheal", base: "1", port: "cvar (line 61)", match: true }
-      - { name: "g_pickup_healthsmall_max (heal cap)", base: "5", port: "cvar, fallback 5 (line 111)", match: true }
+      - { name: "g_vampirehook_damage", base: "2", port: "cvar (Hook(), VampireHookMutator.cs:63); field default 0", match: true }
+      - { name: "g_vampirehook_damagerate", base: "0.2", port: "cvar (line 64); field default 0.2 (line 39)", match: true }
+      - { name: "g_vampirehook_health_steal", base: "2", port: "cvar (line 66)", match: true }
+      - { name: "g_vampirehook_teamheal", base: "1", port: "cvar (line 62)", match: true }
+      - { name: "g_pickup_healthsmall_max (heal cap)", base: "5", port: "cvar, fallback 5 (line 116)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
@@ -92,18 +89,16 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Entry gate `time < game_starttime` (block during pre-match warmup/countdown) is still replaced with `VehicleCommon.GameStopped` (sv_vampirehook.qc:17 vs VampireHookMutator.cs:84). GameStopped is end-of-match/intermission; there is no game_starttime/warmup-start concept in the port. Conditions differ: the port lets the drain run during warmup and blocks it at match end. Not flagged intentional; reads as a mistranslation."
-      - "Damage attribution: Base passes `WEP_HOOK.m_id, DMG_NOWEP` (hook id flagged no-weapon) (sv_vampirehook.qc:30); port passes DeathTypes.FromWeapon(\"hook\") only (VampireHookMutator.cs:107) — the DMG_NOWEP flag is not modeled (no NOWEP concept in the port's deathtype string), so a drain kill is attributed as a normal hook-weapon kill rather than weaponless. Minor death-message/stats nuance."
-      - "DamageRate field fallback is 0.1 but Base default is 0.2; only surfaces if g_vampirehook_damagerate is 0/unset (Hook() at line 64 only overwrites when the cvar is non-zero), so faithful with the stock cfg loaded."
+      - "Damage attribution: Base passes `WEP_HOOK.m_id, DMG_NOWEP` (hook id flagged no-weapon) (sv_vampirehook.qc:30); port passes DeathTypes.FromWeapon(\"hook\") only (VampireHookMutator.cs:112) — the DMG_NOWEP flag is not modeled (no NOWEP concept in the port's deathtype string; DeathTypes.cs:157 has only FromWeapon), so a drain kill is attributed as a normal hook-weapon kill rather than weaponless. Minor death-message/stats nuance."
     verification:
-      - { kind: code, ref: "handler body vs sv_vampirehook.qc:13-37 — three gates (damage!=0 / last_dmg debounce / start-gate), owner!=aiment & IS_PLAYER & !FROZEN & (DIFF_TEAM||teamheal) & RES_HEALTH>0 predicate, dmgent/targ selection, Damage+Heal+TakeResource self-drain, per-hook last_dmg debounce: all reproduced (VampireHookMutator.cs:75-118)", result: pass }
-      - { kind: code, ref: "thehook.RealOwner => Owner (DamageEntityState.cs:135) and Hook.cs:242 sets hook.Owner=actor, so RealOwner resolves to the firer; aiment now set by GrapplingHookTouch (Hook.cs:284)", result: pass }
-      - { kind: code, ref: "GrappleHookThink.Call live at Hook.cs:322 (per-think, NextThink=time at Hook.cs:317); MutatorActivation.Apply activates the mutator (GameWorld.cs:511); aiment now non-null on a player latch -> the owner/aiment guard (VampireHookMutator.cs:88) no longer short-circuits", result: pass }
-      - { kind: code, ref: "start-gate uses VehicleCommon.GameStopped (VampireHookMutator.cs:84), not time<game_starttime (sv_vampirehook.qc:17)", result: fail }
-      - { kind: code, ref: "damage deathtype DeathTypes.FromWeapon(\"hook\") (VampireHookMutator.cs:107); DMG_NOWEP not modeled (grep: no NOWEP in deathtype)", result: fail }
-      - { kind: value, ref: "cvar defaults vs mutators.cfg:425-429 (damage 2, damagerate 0.2, health_steal 2, teamheal 1); DamageRate field fallback 0.1 != Base 0.2", result: fail }
+      - { kind: code, ref: "handler body vs sv_vampirehook.qc:13-37 — three gates (damage!=0 / last_dmg debounce / time<game_starttime), owner!=aiment & IS_PLAYER & !FROZEN & (DIFF_TEAM||teamheal) & RES_HEALTH>0 predicate, dmgent/targ selection, Damage+Heal+TakeResource self-drain, per-hook last_dmg debounce: all reproduced (VampireHookMutator.cs:76-123)", result: pass }
+      - { kind: code, ref: "thehook.RealOwner => Owner and Hook.cs:242 sets hook.Owner=actor, so RealOwner resolves to the firer; aiment set by GrapplingHookTouch (Hook.cs:284)", result: pass }
+      - { kind: code, ref: "GrappleHookThink.Call live at Hook.cs:323 (per-think, NextThink=time at Hook.cs:317); MutatorActivation.Apply activates the mutator (GameWorld.cs:511); aiment non-null on a player latch -> the owner/aiment guard (VampireHookMutator.cs:93) no longer short-circuits", result: pass }
+      - { kind: code, ref: "start-gate FIXED: now `time < (StartItem.GameStartTimeProvider?.Invoke() ?? 0f)` (VampireHookMutator.cs:88-89), faithfully reproducing QC `time < game_starttime` (sv_vampirehook.qc:17), NOT the old VehicleCommon.GameStopped mistranslation. The provider is host-wired live at GameWorld.cs:578 (() => GameStartTime), the same seam DamageSystem/Domination/RandomGravity/Campcheck use", result: pass }
+      - { kind: value, ref: "cvar defaults vs mutators.cfg:425-429 (damage 2, damagerate 0.2, health_steal 2, teamheal 1); DamageRate field default now 0.2f (line 39) matching Base — the old 0.1 fallback is gone", result: pass }
+      - { kind: code, ref: "damage deathtype DeathTypes.FromWeapon(\"hook\") (VampireHookMutator.cs:112); DMG_NOWEP not modeled (DeathTypes.cs has no NOWEP)", result: fail }
     confidence: high
-    notes: "NOW LIVE (Wave-2 fixed the upstream aiment via latch.aiment_follow). Faithful translation of the drain/heal/self-drain body; per-hook last_dmg debounce keyed via ConditionalWeakTable. Residual divergences: the warmup-vs-match-end start gate, the dropped DMG_NOWEP flag, and the 0.1 DamageRate fallback (moot with stock cfg)."
+    notes: "LIVE and now near-faithful. Wave-2 fixed the upstream aiment (latch.aiment_follow); a later wave fixed the start gate (game_starttime via StartItem.GameStartTimeProvider) and the DamageRate field default (0.1 -> 0.2). Sole residual logic divergence is the dropped DMG_NOWEP flag (minor death-message/stats nuance). Per-hook last_dmg debounce keyed via ConditionalWeakTable."
 
   - id: mutator-vampirehook.drain.heal_indirection
     name: "Heal via event_heal/PlayerHeal vs direct GiveResourceWithLimit"
@@ -113,28 +108,26 @@ features:
       - "server/damage.qc:948 (Heal -> game_stopped/spectator/FROZEN/IS_DEAD guards -> event_heal)"
       - "server/player.qc:615 (PlayerHeal: heals only when 0 < health < limit)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/VampireHookMutator.cs:112 (GiveResourceWithLimit)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/VampireHookMutator.cs:117 (HealPlayer call)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/VampireHookMutator.cs:134 (HealPlayer: reproduces Heal + PlayerHeal guards)"
       - "src/XonoticGodot.Common/Gameplay/Items/Resources.cs:145 (GiveResourceWithLimit)"
     constants:
       - { name: "heal limit (g_pickup_healthsmall_max)", base: "5", port: "5", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Port substitutes raw GiveResourceWithLimit(Health, steal, 5) for Base Heal(), bypassing the event_heal/PlayerHeal indirection AND Heal's own game_stopped/spectator/FROZEN/IS_DEAD guards (damage.qc:951-953)."
-      - "Dead-target floor diverges: PlayerHeal (player.qc:618) no-ops when health <= 0 (also when health >= limit); the port's GiveResourceWithLimit has no health<=0 floor, so it would heal a dead target up to the cap. (When health >= limit, GiveResourceWithLimit computes amount = limit-current < 0 and GiveResource's `amount<=0` guard makes it a harmless no-op, matching Base there.)"
+    gaps: []
     verification:
-      - { kind: code, ref: "PlayerHeal (player.qc:615-623): bails on `hlth <= 0 || hlth >= limit`, else GiveResourceWithLimit caps post-give at limit; port GiveResourceWithLimit (Resources.cs:145-152) caps post-give but has NO `current <= 0` floor", result: fail }
-      - { kind: code, ref: "Heal() (damage.qc:948-954) bails on game_stopped/spectator/FROZEN/IS_DEAD before event_heal; port skips these guards", result: fail }
-      - { kind: code, ref: "GiveResource (Resources.cs:117) guards amount<=0, so the health>=limit case (negative computed amount) is a harmless no-op matching Base", result: pass }
+      - { kind: code, ref: "HealPlayer (VampireHookMutator.cs:134-149) now reproduces Heal()'s game_stopped/spectator/FROZEN/IS_DEAD guards (lines 137-140) AND PlayerHeal()'s `hlth <= 0 || hlth >= limit` floor (lines 144-145) before the capped GiveResourceWithLimit — exactly damage.qc:951-953 + player.qc:617-621. The old raw GiveResourceWithLimit that skipped these guards is gone", result: pass }
+      - { kind: code, ref: "dead-target floor present (hlth <= 0 bails); at-cap case (hlth >= limit) bails, matching PlayerHeal player.qc:618; below-cap give caps post-give at limit via GiveResourceWithLimit (Resources.cs:145)", result: pass }
     confidence: high
-    notes: "Now LIVE (drain body reachable post Wave-2). Cap outcome matches for the live-and-below-cap case; the skipped guards and missing dead-target floor are still structural divergences and are now actually observable."
+    notes: "FIXED. HealPlayer is a faithful inline port of Heal -> PlayerHeal for a player target (the only reachable heal target here). The previously-flagged skipped guards and missing dead-target floor are now all reproduced. The non-player/objective event_heal branch is unreachable (heal target is always a player) and intentionally not modelled (documented in the HealPlayer doc-comment)."
 
   - id: mutator-vampirehook.hitsound.accumulator
     name: "hitsound_damage_dealt accumulator (hit-confirm ding)"
@@ -151,10 +144,10 @@ features:
       audio: na
       liveness: na
     intended_divergence: true
-    divergence_rationale: "Port carries no hitsound_damage_dealt accumulator at all (VampireHookMutator.cs:25 documents the omission as cosmetic-for-now). The victim still takes/flinches from the normal Damage path; only the attacker's per-tick hit-confirm ding for the drain is absent."
+    divergence_rationale: "VampireHookMutator does not write the hit-confirm accumulator on a drain tick (VampireHookMutator.cs:24-25 documents the omission as cosmetic-for-now). The victim still takes/flinches from the normal Damage path; only the attacker's per-tick hit-confirm ding for the drain is absent. NOTE: the accumulator field itself now EXISTS in the port (DamageSystem.cs:1004 Entity.HitsoundDamageDealtTotal, networked via NetEntity Feedback flag, and written by InstagibMutator.cs:206-236) — so wiring it here is now a one-line add; it is simply not yet done for vampirehook."
     gaps:
-      - "No hit-confirm ding for the owner on a vampire-hook drain tick (hitsound_damage_dealt not accumulated). Cosmetic. Now observable (drain body is live) but still omitted by design pending a general hit-confirm accumulator."
+      - "No hit-confirm ding for the owner on a vampire-hook drain tick (HitsoundDamageDealtTotal not accumulated). Cosmetic. Observable (drain body is live). The accumulator seam now exists (DamageSystem.cs:1004, used by InstagibMutator) but VampireHookMutator does not write to it."
     verification:
-      - { kind: code, ref: "VampireHookMutator.cs has no hitsound_damage_dealt write (line 25 comment marks it omitted)", result: fail }
+      - { kind: code, ref: "VampireHookMutator.cs has no HitsoundDamageDealtTotal write (line 25 comment marks it omitted); the field exists at DamageSystem.cs:1004 and is used elsewhere (InstagibMutator.cs:206)", result: fail }
     confidence: high
-    notes: "Unchanged by Wave-2. Presentation-only; revisit alongside a general hit-confirm accumulator."
+    notes: "Unchanged behaviorally (still omitted). Presentation-only. Now trivially wireable since the HitsoundDamageDealtTotal seam landed for instagib — revisit to wire `hook_owner.HitsoundDamageDealtTotal += Damage` on the drain tick."

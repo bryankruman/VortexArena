@@ -1,13 +1,13 @@
 unit: mutator-bugrigs
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 7
   worst_gaps:
-    - "No forced 3rd-person chase camera on join: a bugrigs player spawns in 1st person (Base stuffcmds chase_active 1 on ClientConnect), which is the wrong/unplayable view for a ground-hugging rig — and the rendered body fidelity of the rig (the whole point of the drive model's angle math) is therefore unverifiable."
-    - "Mutator not advertised in the active-mutator strings (Base appends ':bugrigs' / ', Bug rigs'): the mode is invisible in the server browser mutator field and scoreboard/endmatch mutator list."
     - "player.disableclientprediction = 2 is not set (Base force-disables prediction per-tick); port treats bugrigs as server-authoritative so likely inert, but this is UNVERIFIED under the port's net smoothing/error-compensation layer."
+    - "RaceCarPhysics rendered rig fidelity (surface-snap + body lean + smoothing) is logic/value-faithful line-for-line but has NO in-game visual verification (presentation: unknown)."
+    - "BuildMutatorsPrettyString contribution (', Bug rigs') is implemented but the MutatorActivation.BuildMutatorsPrettyString *chain* has no live consumer in the port (no scoreboard/votescreen reader) — the pretty token is dead; only the machine ':bugrigs' token is live (consumed at gamelog init)."
 features:
   - id: mutator-bugrigs.registration.cvars
     name: "Mutator registration + 15 g_bugrigs_* cvar load (bugrigs_SetVars)"
@@ -164,46 +164,51 @@ features:
     layer: [presentation, authority]
     base_refs:
       - "common/mutators/mutator/bugrigs/bugrigs.qc:339-344 MUTATOR_HOOKFUNCTION(bugrigs, ClientConnect)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:120 OnClientConnect"
+      - "src/XonoticGodot.Server/GameWorld.cs:1011 bugrigsConnect.OnClientConnect(p)"
     constants:
-      - { name: "chase_active", base: "1 (settemp via stuffcmd on ClientConnect)", port: "not driven by mutator", match: false }
+      - { name: "chase_active", base: "1 (settemp via stuffcmd on ClientConnect)", port: "1 (Api.Cvars.Set, human-only)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
-    intended_divergence: false
-    divergence_rationale: null
-    gaps:
-      - "No forced 3rd-person chase camera on join: a bugrigs player spawns in 1st person (Base stuffcmds 'cl_cmd settemp chase_active 1' on ClientConnect), which is the wrong/unplayable view for a ground-hugging rig."
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base stuffcmds 'cl_cmd settemp chase_active 1' to the connecting client; the in-process listen server has no networked stuffcmd channel, so the faithful analogue is a direct Api.Cvars.Set('chase_active','1') (the client view reads chase_active each frame via NetGame CameraMode). The caller is gated to !p.IsBot because bots have no view (matches the human-only observable effect of the QC stuffcmd) and to bugrigsConnect.Added (mirrors QC ClientConnect only firing while the mutator is active)."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep src/**/*.cs: no ClientConnect mutator-hook chain exists (no MutatorHooks.ClientConnect), and no port code stuffs chase_active. The chase_active machinery exists client-side but the mutator never drives it", result: fail }
+      - { kind: code, ref: "OnClientConnect (:120-124) sets chase_active=1; dispatched at GameWorld.cs:1011-1012 in InfraClientConnect (live connect tail, alongside superspec's connect), gated on !p.IsBot && Mutators.ByName('bugrigs').Added", result: pass }
     confidence: high
-    notes: "There is no MutatorHooks.ClientConnect chain at all; the connect tail (GameWorld.InfraClientConnect / ClientManager.OnClientConnect) is server infra and has no per-mutator dispatch. Only the mutator-driven stuffcmd is missing."
+    notes: "FIXED since 2026-06-22 baseline: the mutator now drives the forced chase camera on connect. The port has no generic MutatorHooks.ClientConnect chain, so this is hand-dispatched from GameWorld.InfraClientConnect (same pattern as superspec). settemp/temporariness is not modelled but the observable effect (3rd-person view for the bugrigs client) is faithful."
   - id: mutator-bugrigs.serverinfo.mutator_strings
     name: "Advertise mutator in active-mutator strings (:bugrigs / , Bug rigs)"
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/bugrigs/bugrigs.qc:346-349 MUTATOR_HOOKFUNCTION(bugrigs, BuildMutatorsString)"
       - "common/mutators/mutator/bugrigs/bugrigs.qc:351-354 MUTATOR_HOOKFUNCTION(bugrigs, BuildMutatorsPrettyString)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:105 BuildMutatorsString"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:108 BuildMutatorsPrettyString"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108 BuildMutatorsString chain"
+      - "src/XonoticGodot.Server/GameWorld.cs:876 MutatorActivation.BuildMutatorsString (gamelog init)"
     constants:
-      - { name: "machine token", base: "\":bugrigs\"", port: "none", match: false }
-      - { name: "pretty token", base: "\", Bug rigs\"", port: "none", match: false }
+      - { name: "machine token", base: "\":bugrigs\"", port: "\":bugrigs\"", match: true }
+      - { name: "pretty token", base: "\", Bug rigs\"", port: "\", Bug rigs\"", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Mutator not advertised in the active-mutator strings (Base appends ':bugrigs' / ', Bug rigs'): the mode is invisible in the server browser mutator field and scoreboard/endmatch mutator list."
+      - "BuildMutatorsPrettyString chain (MutatorActivation.BuildMutatorsPrettyString) has NO live consumer in the port — no scoreboard/votescreen/endmatch reader calls it — so the ', Bug rigs' pretty token, though implemented and correct, is never displayed. The machine ':bugrigs' token IS live (consumed at gamelog init, GameWorld.cs:876)."
     verification:
-      - { kind: code, ref: "grep src/**/*.cs: no BuildMutatorsString / BuildMutatorsPrettyString hook chains exist; RocketFlyingMutator.cs:23 confirms the whole BuildMutators* sub-hook family is unported across mutators", result: fail }
+      - { kind: code, ref: "BugrigsMutator.cs:105/108 override BuildMutatorsString/PrettyString with the exact Base tokens. BuildMutatorsString chain consumed live at GameWorld.cs:876 (sv_eventlog gamelog init). grep MutatorActivation.BuildMutatorsPrettyString: zero callers — pretty chain dead", result: partial }
     confidence: high
-    notes: "Cosmetic/informational; the entire BuildMutators* hook family appears unported across all port mutators (corroborated by the RocketFlyingMutator comment)."
+    notes: "FIXED since 2026-06-22 baseline: both tokens are now overridden with the exact Base strings (the earlier RocketFlyingMutator 'whole family unported' note is stale — the family is now broadly ported). Machine token is live; pretty token is value-correct but its chain has no consumer yet (liveness: partial)."

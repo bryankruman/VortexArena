@@ -1,7 +1,7 @@
 unit: mutator-physical_items
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 4
   worst_gaps:
@@ -18,7 +18,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/PhysicalItemsMutator.cs:IsEnabled"
       - "src/XonoticGodot.Common/Gameplay/Mutators/PhysicalItemsMutator.cs:HasPhysicsEngine"
-      - "src/XonoticGodot.Server/GameWorld.cs:535"
+      - "src/XonoticGodot.Server/GameWorld.cs:563"
     constants:
       - { name: "physics_ode (engine cvar, required for activation)", base: "0 (off; needs DP_PHYSICS_ODE)", port: "no autocvar_physics_ode / no ODE engine", match: false }
     status:
@@ -33,9 +33,9 @@ features:
     gaps: []
     verification:
       - { kind: code, ref: "PhysicalItemsMutator.cs:54-99 IsEnabled/HasPhysicsEngine vs sv_physical_items.qc:10-17; revert Log.Trace string matches QC LOG_TRACE verbatim", result: pass }
-      - { kind: code, ref: "Activation entry on live path: MutatorActivation.Apply() at GameWorld.cs:535 (moved from :511 by Wave-2 line shift)", result: pass }
+      - { kind: code, ref: "Activation entry on live path: MutatorActivation.Apply() at GameWorld.cs:563 (MutatorActivation.Apply iterates Mutators.All + evaluates IsEnabled at MutatorActivation.cs:82-84; line shifted from :535 by post-Wave-6 churn)", result: pass }
     confidence: high
-    notes: "RE-VERIFIED 2026-06-22 post-Wave-1/2 (adversarial): the Wave change to this file (git ec788f7) is COSMETIC ONLY — doc-comment rewrite + a new static `_revertLogged` latch (PhysicalItemsMutator.cs:87-99) so the revert Log.Trace fires once-per-process instead of once-per-IsEnabled-query, matching QC's single MUTATOR_ONADD evaluation. Gate logic unchanged: IsEnabled = Api.Services!=null && cvar!=0 && HasPhysicsEngine() (hard-false). MutatorActivation.Apply() still iterates Mutators.All and evaluates IsEnabled (MutatorActivation.cs:60-64), so the gate predicate IS reached on the live boot path → liveness=live is correct (call moved to GameWorld.cs:535). With g_physical_items default 0, IsEnabled short-circuits on the cvar==0 check and HasPhysicsEngine()/the revert Log.Trace never run; the trace only fires if an operator sets the cvar. Either way the mutator never hooks anything, exactly as Base reverts on a non-ODE build. Revert string is byte-identical to QC LOG_TRACE (sv_physical_items.qc:14). The latch is a faithful refinement (preserves QC once-per-add log semantics), NOT a regression."
+    notes: "RE-VERIFIED 2026-06-25 (drift check): PhysicalItemsMutator.cs UNCHANGED since the 2026-06-22 Wave-1/2 audit — file is byte-identical. Gate logic unchanged: IsEnabled = Api.Services!=null && cvar!=0 && HasPhysicsEngine() (hard-false; PhysicalItemsMutator.cs:54-55,89-99). The static `_revertLogged` latch (PhysicalItemsMutator.cs:87-99) still fires the revert Log.Trace once-per-process, matching QC's single MUTATOR_ONADD evaluation. MutatorActivation.Apply() still iterates Mutators.All and evaluates IsEnabled (MutatorActivation.cs:82-84), so the gate predicate IS reached on the live boot path → liveness=live is correct (call line shifted to GameWorld.cs:563). With g_physical_items default 0, IsEnabled short-circuits on the cvar==0 check and HasPhysicsEngine()/the revert Log.Trace never run; the trace only fires if an operator sets the cvar. Either way the mutator never hooks anything, exactly as Base reverts on a non-ODE build. Revert string is byte-identical to QC LOG_TRACE (sv_physical_items.qc:14). The latch is a faithful refinement, NOT a regression."
   - id: mutator-physical_items.registration.cvars
     name: "g_physical_items* cvar load + defaults"
     layer: [authority]
@@ -60,7 +60,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Hook() reads g_physical_items / _damageforcescale / _reset (PhysicalItemsMutator.cs:61-63); defaults RE-VERIFIED line-by-line 2026-06-22 post-Wave: port assets mutators.cfg:154-156 == Base mutators.cfg:154-156 byte-identical incl. description strings (0 / 3 / 1); mutators.cfg untouched by Wave-1/2 (git ec788f7 diff empty for physical)", result: pass }
+      - { kind: code, ref: "Hook() reads g_physical_items / _damageforcescale / _reset (PhysicalItemsMutator.cs:61-63); defaults RE-VERIFIED line-by-line 2026-06-25: port assets mutators.cfg:154-156 == Base mutators.cfg:154-156 byte-identical incl. description strings (0 / 3 / 1)", result: pass }
     confidence: high
     notes: "All three cvars present with identical Base defaults and identical .cfg description strings. Liveness partial: Hook() only runs when IsEnabled, which HasPhysicsEngine() blocks, so the loaded values are never consumed by any behavior (cvars are read but inert). UNCHANGED by Wave-1/2 (cvar reads in Hook() were not touched)."
   - id: mutator-physical_items.item_spawn.ghost_entity
@@ -90,7 +90,7 @@ features:
     gaps:
       - "Item_Spawn ghost-entity creation is entirely unimplemented: no second MOVETYPE_PHYSICS/SOLID_CORPSE entity is spawned, the real item is never hidden (EF_NODRAW/MOVETYPE_FOLLOW/aiment), so items can never become physical under any g_physical_items setting (port always shows classic spinning pickups)."
     verification:
-      - { kind: code, ref: "RE-VERIFIED 2026-06-22 post-Wave-1/2: STILL no Item_Spawn mutator hook chain in the port (StartItem.cs:152 'MUTATOR_CALLHOOK(Item_Spawn, this) — no hook chain; skip.' — line shifted from :139, body unchanged); grep Item_Spawn across src/** returns only the StartItem skip comment + PhysicalItemsMutator doc comments, no .Call site / HookChain; no MOVETYPE_PHYSICS movetype for items (DamageSystem.cs:839 'No dedicated MOVETYPE_PHYSICS enum in this port'); no spawn_origin/spawn_angles/ghost-entity code anywhere", result: fail }
+      - { kind: code, ref: "RE-VERIFIED 2026-06-25 (drift check): STILL no Item_Spawn mutator hook chain in the port (StartItem.cs:163 'MUTATOR_CALLHOOK(Item_Spawn, this) — no hook chain; skip.' — line shifted from :152, body unchanged); grep Item_Spawn/physical_item/spawn_origin/spawn_angles across src/** returns only the StartItem skip comment + PhysicalItemsMutator doc comments, no .Call site / HookChain; no MOVETYPE_PHYSICS movetype for items; no ghost-entity code anywhere", result: fail }
     confidence: high
     notes: "STILL OPEN after Wave-1/2: zero implementation added. Double-blocked: needs both an ODE-equivalent rigid-body integrator wired to gameplay entities AND an Item_Spawn mutator hook (neither exists). Wave-1/2 only touched PhysicalItemsMutator.cs doc-comments + the log latch; StartItem.cs still skips Item_Spawn. Functionally moot today because IsEnabled is hard-false, but the behavior itself is entirely absent."
   - id: mutator-physical_items.item_callbacks.think_touch_damage
@@ -122,6 +122,6 @@ features:
       - "physical_item_think reset logic is missing: a map item awaiting respawn is never snapped home/frozen and a knocked-around item is never returned to its origin (g_physical_items_reset has no effect); ghost is never deleted when the real item is gone."
       - "physical_item_touch / physical_item_damage hazard-reset is missing: an item that slides into NODROP/SKY or is hit by HURTTRIGGER/SLIME/LAVA/SWAMP is never snapped back to spawn_origin."
     verification:
-      - { kind: code, ref: "RE-VERIFIED 2026-06-22 post-Wave-1/2: STILL no setthink/settouch/event_damage callbacks for physical items in the port; behavior bodies (sv_physical_items.qc:35-90) have no counterpart; grep physical_item_think|physical_item_touch|physical_item_damage|spawn_origin|spawn_angles across src/** returns nothing. NEEDKILL gates confirmed in Base (items.qh:122 ITEM_TOUCH_NEEDKILL = NODROP content | SKY surface; items.qh:123 ITEM_DAMAGE_NEEDKILL = DEATH_HURTTRIGGER|SLIME|LAVA|SWAMP) — neither macro nor its snap-home effect exists in the port", result: fail }
+      - { kind: code, ref: "RE-VERIFIED 2026-06-25 (drift check): STILL no setthink/settouch/event_damage callbacks for physical items in the port; behavior bodies (sv_physical_items.qc:35-90) have no counterpart; grep physical_item_think|physical_item_touch|physical_item_damage|spawn_origin|spawn_angles across src/** returns nothing. NEEDKILL gates confirmed unchanged in Base (server/items/items.qh:122 ITEM_TOUCH_NEEDKILL = NODROP content | SKY surface; items.qh:123 ITEM_DAMAGE_NEEDKILL = DEATH_HURTTRIGGER|SLIME|LAVA|SWAMP) — neither macro nor its snap-home effect exists in the port", result: fail }
     confidence: high
     notes: "STILL OPEN after Wave-1/2: zero implementation added. Depends on the ghost entity (item_spawn feature) existing first; with no ghost there is nothing to think/touch/damage. Listed separately because it is the per-frame maintenance + edge-case handling that keeps physical items playable, and is distinct work from the spawn hook."

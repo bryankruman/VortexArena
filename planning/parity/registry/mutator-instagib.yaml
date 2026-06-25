@@ -1,21 +1,26 @@
 unit: mutator-instagib
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 22
   worst_gaps:
-    - "Item economy still absent: there are NO VaporizerCells/ExtraLife item definitions or spawnfuncs (mutator-instagib.items.defs). The ItemTouch handler is now LIVE-WIRED (subscribed to the real MutatorHooks.ItemTouch chain dispatched at ItemPickupRules.cs:372), but in a normal instagib match nothing spawns that carries cells (FilterItem now deletes all ammo packs) and no instagib extralife item exists, so the cells-full-heal / extra-life-grant branches have no input to act on. The seam is live; the economy that feeds it is missing."
+    - "Item economy still absent: there are NO VaporizerCells/ExtraLife item definitions or spawnfuncs (mutator-instagib.items.defs). The ItemTouch handler is LIVE-WIRED (subscribed to the real MutatorHooks.ItemTouch chain dispatched at ItemPickupRules.cs), but in a normal instagib match nothing spawns that carries cells (FilterItem deletes all ammo packs) and no instagib extralife item exists, so the cells-full-heal / extra-life-grant branches have no input to act on. The seam is live; the economy that feeds it is missing. (g_instagib_ammo_drop is unused anywhere in src/.)"
     - "FilterItem random-powerup deck still not ported: instagib_replace_item_with_random_powerup (even distribution of Invisibility/ExtraLife/Speed for big powerups when g_powerups is on) and the Vaporizer loot cells-seed (RES_CELLS = g_instagib_ammo_drop, return false; sv_instagib.qc:349-355) + the generic cells>ammo_drop clamp (361-363) are absent. The port DELETES big powerups instead of replacing them (faithful only when g_powerups is off) and the ammo-convert-to-VaporizerCells replacement is a delete (no replace seam)."
-    - "Lifecycle stop-countdown on MatchEnd / MakePlayerObserver still missing (no hook chains); a stale FINDAMMO centerprint can linger, and StopCountdown still never Kill_Notification(CPID_INSTAGIB_FINDAMMO). The game_stopped per-tick branch (now functional) partly covers MatchEnd."
-    - "Yoda easter-egg (alpha 0<a<1 -> yoda=1) still not ported; modname/serverinfo strings + MonsterDrop/MonsterSpawn + RandomItems instagib pick still missing."
-    - "Enable predicate is still a subset of Base: omits the !MapInfo_LoadedGametype.m_weaponarena guard (console double-activation hole; mitigated on the live path by the menu radio-group)."
+    - "Yoda easter-egg (alpha 0<a<1 -> yoda=1) in Damage_Calculate still not ported (Vaporizer.cs:191 deferred-only); SetModname ('InstaGib') + MonsterDropItem(vaporizer_cells) + MonsterSpawn(Mage skin) + RandomItems_GetRandomInstagibItemClassName still missing. BuildMutatorsPrettyString IS ported but its chain (MutatorActivation.BuildMutatorsPrettyString) has NO live caller — only BuildMutatorsString is invoked (GameWorld.cs:876)."
+    - "Item-economy-dependent FilterItem replace seams + items.defs are the remaining gating gap for a fully-faithful instagib loot loop."
   audit_note: >-
-    The PRE-Wave-5 baseline repeatedly recorded "InstagibMutator.cs UNCHANGED by Wave-5". That was WRONG —
-    Wave 5 (commit 023ba70 "wire remaining 81 dead/stub seams live") substantively edited this file. This
-    re-audit corrects the drift: six baseline gaps are genuinely closed (hitsound increments x3, real
-    game_stopped read, Base-faithful FilterItem ammo/fallthrough delete, ItemTouch chain subscription,
-    ForbidRandomStartWeapons now dispatched live at SpawnSystem.cs:901). No regressions found.
+    2026-06-25 drift re-audit vs the 2026-06-22 baseline. The port file (InstagibMutator.cs) advanced further
+    since the baseline; four features are now BETTER than recorded: (1) enable.predicate gained the
+    g_weaponarena==0 guard (line 69) — the !m_weaponarena hole is now closed via cvar, not just the menu radio
+    group (logic partial->faithful, constant match false->true); (2) countdown.announce StopCountdown now issues
+    NotificationSystem.SendCenterKill(CPID_INSTAGIB_FINDAMMO) (line 340) — the lingering-centerprint gap is
+    closed (presentation partial->faithful); (3) lifecycle.stop_countdown now ports MakePlayerObserver LIVE
+    (subscribed line 118, dispatched ClientManager.cs:480) — the observer-demotion case is covered
+    (logic missing->faithful, liveness na->live); (4) misc.strings_monsters now ports BuildMutatorsString LIVE
+    (override line 516, dispatched GameWorld.cs:876) so the ':instagib' serverinfo token is emitted, plus
+    BuildMutatorsPrettyString (override line 520) which is DEAD (no live caller). MatchEnd is still not a
+    dedicated hook (per-tick game_stopped covers it). No regressions found.
 features:
   - id: mutator-instagib.enable.predicate
     name: "Enable predicate + instagib item-list/flag setup (ONADD)"
@@ -25,9 +30,9 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/InstagibMutator.cs:63 IsEnabled"
     constants:
-      - { name: "enable_cvar", base: "g_instagib(0) && !m_weaponarena", port: "g_instagib != 0", match: false }
+      - { name: "enable_cvar", base: "g_instagib(0) && !m_weaponarena", port: "g_instagib != 0 && g_weaponarena == 0", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -36,12 +41,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port enable predicate omits the !MapInfo_LoadedGametype.m_weaponarena guard; console `g_instagib 1` could co-enable with a weapon-arena gametype. Mitigated on the live path only by the menu radio-group (DialogMutators.cs:268 _arenaGroup zeroes g_weaponarena/g_nix when InstaGib is picked) — same mitigation pattern as NIX; the console double-activation hole remains."
       - "ONADD item-flag unblocking of VaporizerCells/Invisibility/Speed and the g_instagib_items IntrusiveList are not ported (tied to the still-missing item economy)."
     verification:
-      - { kind: code, ref: "InstagibMutator.cs:63 IsEnabled; MutatorActivation.Apply at GameWorld.cs:511; menu radio-group DialogMutators.cs:268", result: pass }
+      - { kind: code, ref: "InstagibMutator.cs:66-69 IsEnabled now reads `g_instagib != 0 && g_weaponarena == 0` — the `!m_weaponarena` guard is approximated by the g_weaponarena cvar (same stand-in melee_only uses), so a console `g_instagib 1` no longer double-activates alongside an arena gametype. MutatorActivation.Apply at GameWorld.cs:511", result: pass }
     confidence: high
-    notes: "Activation is live; predicate is still a subset of Base. Unchanged by Wave-5."
+    notes: "FIXED since baseline: the !m_weaponarena guard is now closed via g_weaponarena==0 (line 69), not just the menu radio-group. logic partial->faithful, enable_cvar constant match false->true. ONADD item-flag setup still tied to the missing item economy."
   - id: mutator-instagib.loadout.start_items
     name: "Start loadout (100hp/0armor/cells/Vaporizer-only/unlimited-superweapons)"
     layer: [authority]
@@ -369,17 +373,16 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "StopCountdown still never issues Kill_Notification(NOTIF_ONE_ONLY, e, MSG_CENTER, CPID_INSTAGIB_FINDAMMO) to clear the centerprint (StopCountdown:315-320 only flips the InstagibNeedAmmo bool). Minor cosmetic: a lingering FINDAMMO centerprint isn't actively cleared. (No Kill_Notification primitive in the port's NotificationSystem.)"
+    gaps: []
     verification:
-      - { kind: code, ref: "hp>5 -> Announce(NUM_{ceil(hp/10)}); hp>90 -> MULTI_INSTAGIB_FINDAMMO else INSTAGIB_FINDAMMO; rocketminsta -> INSTAGIB_DOWNGRADE. All ids registered. Per-number ladder/MULTI/DOWNGRADE wired", result: pass }
+      - { kind: code, ref: "hp>5 -> Announce(NUM_{ceil(hp/10)}); hp>90 -> MULTI_INSTAGIB_FINDAMMO else INSTAGIB_FINDAMMO; rocketminsta -> INSTAGIB_DOWNGRADE. All ids registered. Per-number ladder/MULTI/DOWNGRADE wired. StopCountdown now issues NotificationSystem.SendCenterKill(NotifBroadcast.OneOnly, e, CPID_INSTAGIB_FINDAMMO) (InstagibMutator.cs:340) — the lingering centerprint is actively retracted, matching QC Kill_Notification(NOTIF_ONE_ONLY, e, MSG_CENTER, CPID_INSTAGIB_FINDAMMO)", result: pass }
     confidence: high
-    notes: "Largely closed by Wave-2; only the StopCountdown Kill_Notification clear remains."
+    notes: "FIXED since baseline: the StopCountdown Kill_Notification clear is now ported via SendCenterKill (line 340; primitive exists at NotificationSystem.cs:210). presentation partial->faithful — fully faithful now."
   - id: mutator-instagib.spawn.fullbright
     name: "Players glow fullbright on spawn (EF_FULLBRIGHT)"
     layer: [presentation]
@@ -518,44 +521,49 @@ features:
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/instagib/sv_instagib.qc:97-100 MatchEnd / sv_instagib.qc:123-128 MakePlayerObserver"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/InstagibMutator.cs:288 OnMakePlayerObserver / 334 StopCountdown"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port still has no MatchEnd / MakePlayerObserver hook chains and no instagib subscription; the countdown's needammo flag / FINDAMMO centerprint is only reset on the next spawn (OnPlayerSpawn) and by the per-tick stop conditions — not when the match ends or a player becomes a spectator. NOTE: the per-tick game_stopped branch is now functional (reads real VehicleCommon.GameStopped), so MatchEnd is now PARTLY covered (the countdown stops within ~1 tick of the match freezing); the MakePlayerObserver case is still uncovered until the next spawn."
+      - "No dedicated MatchEnd hook chain in the port; the QC MatchEnd FOREACH_CLIENT(instagib_stop_countdown) is approximated by the per-tick game_stopped stop condition in AmmoCheck (reads real VehicleCommon.GameStopped), which stops the countdown within ~1 tick of the match freezing. Behaviorally equivalent for the visible centerprint, but not a literal match-end FOREACH_CLIENT sweep."
     verification:
-      - { kind: code, ref: "no MatchEnd/MakePlayerObserver chain in MutatorHooks.cs; OnPlayerSpawn + the now-live game_stopped per-tick branch are the only countdown resets", result: fail }
+      - { kind: code, ref: "MakePlayerObserver NOW PORTED + LIVE: OnMakePlayerObserver subscribed at InstagibMutator.cs:118, dispatched at ClientManager.cs:480 (MutatorHooks.MakePlayerObserver.Call after a player is demoted to observer); it calls StopCountdown(player) which retracts the FINDAMMO centerprint. MatchEnd covered by the per-tick game_stopped branch (AmmoCheck)", result: pass }
     confidence: high
-    notes: "Still open as a dedicated lifecycle hook; minor cosmetic centerprint persistence. The MatchEnd intent is now partly covered by the fixed game_stopped per-tick stop condition."
+    notes: "FIXED since baseline: MakePlayerObserver is now ported and live (logic missing->faithful, liveness na->live). MatchEnd is not a dedicated hook but is functionally covered by the per-tick game_stopped stop condition, so the only residual is the literal FOREACH_CLIENT sweep shape."
   - id: mutator-instagib.misc.strings_monsters
     name: "Mutator name/string tags; monster drop = vaporizer cells; Mage skin; random-items pick"
     layer: [authority, presentation]
     base_refs:
       - "common/mutators/mutator/instagib/sv_instagib.qc:415-429 BuildMutatorsString/BuildMutatorsPrettyString/SetModname; sv_instagib.qc:102-121 RandomItems_GetRandomItemClassName/MonsterDropItem/MonsterSpawn"
-    port_refs: []
-    constants: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/InstagibMutator.cs:516 BuildMutatorsString / 520 BuildMutatorsPrettyString"
+    constants:
+      - { name: "mutators_string_token", base: "':instagib'", port: "':instagib' (line 516)", match: true }
+      - { name: "mutators_pretty_token", base: "', InstaGib'", port: "', InstaGib' (line 520, but chain has no live caller)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: partial
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No ':instagib' serverinfo tag, no 'InstaGib' modname, no ', InstaGib' pretty-string."
-      - "MonsterDropItem (vaporizer_cells) and MonsterSpawn (Mage skin 1) not ported."
+      - "SetModname ('InstaGib' modname, sv_instagib.qc:425-429) not ported — no SetModname hook chain or override anywhere in the port."
+      - "BuildMutatorsPrettyString IS overridden (', InstaGib', line 520) but its chain MutatorActivation.BuildMutatorsPrettyString has NO live caller — only BuildMutatorsString is invoked (GameWorld.cs:876, gated by sv_eventlog like Base GameLogInit). So the ', InstaGib' pretty-token is DEAD; only ':instagib' actually reaches output."
+      - "MonsterDropItem (vaporizer_cells) and MonsterSpawn (Mage skin 1) not ported (no instagib hooks)."
       - "RandomItems_GetRandomInstagibItemClassName (weighted instagib item pick over g_instagib_items) not ported."
     verification:
-      - { kind: code, ref: "no BuildMutators/SetModname/MonsterDrop/MonsterSpawn/RandomItems hook chains in MutatorHooks.cs and no instagib handlers. Unchanged by Wave-5", result: fail }
-    confidence: medium
-    notes: "Still open. Cosmetic/integration hooks; modname/string tags affect scoreboard/serverinfo display."
+      - { kind: code, ref: "BuildMutatorsString override (line 516) is LIVE via MutatorActivation.BuildMutatorsString -> GameWorld.cs:876 (':instagib' emitted to the gamelog/serverinfo). BuildMutatorsPrettyString override (line 520) exists but MutatorActivation.BuildMutatorsPrettyString has no caller (dead). SetModname/MonsterDropItem/MonsterSpawn/RandomItems still absent", result: partial }
+    confidence: high
+    notes: "PARTIAL FIX since baseline: BuildMutatorsString is now ported and LIVE (':instagib' serverinfo tag works). BuildMutatorsPrettyString is ported but its chain is dead. SetModname, MonsterDrop, MonsterSpawn, and the RandomItems instagib pick remain missing."

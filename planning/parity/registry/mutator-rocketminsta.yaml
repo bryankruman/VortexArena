@@ -1,13 +1,13 @@
 unit: mutator-rocketminsta
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 9
   worst_gaps:
-    - "Laser barrage still has no rapid-fire ramp: Base's hold-to-stream (hagar_load/jump_interval2 + g_rm_laser_rapid 1 / _rapid_delay 0.6 / _rapid_refire 0.35 + the mode-1 single-bolt stream) is absent. The port Vaporizer still has no hagar_load/JumpInterval2 state — it fires only the mode-0 fan on the 0.7s g_rm_laser_refire gate."
-    - "Electrobitch achievement (RM laser timeout-explode landing on a flying enemy of another team) is still not implemented; the port collapses the Base touch path (no achievement) and the timeout .use path (achievement) into one RadiusDamage with no ANNCE_ACHIEVEMENT_ELECTROBITCH."
-    - "Owner velocity not added to laser bolts: Base applies W_CalculateProjectileVelocity(actor, actor.velocity, vel, true); the port still omits it (aim divergence while moving). g_rm_laser==2 standalone-laser mode and the forced-reload-for-laser branch are still unmodeled (dormant at defaults). No Devastator explosion SFX at the RM blast point."
+    - "Primary RM explosion still emits no Devastator explosion SFX at the blast point (the port plays only the rail fire sound minstanexfire.wav + the Vortex impact neximpact.wav)."
+    - "Electro laser self/pre-round damage round-gate is approximated by game_stopped (intended divergence) rather than the exact round_handler_IsActive()&&!IsRoundStarted() edge — may diverge mid-round in round-based modes."
+    - "Laser barrage's forced-reload-for-laser branch (wr_think:290-303, reload_ammo/clip_load forced reload that also resets hagar_load) is still unmodeled — dormant at defaults (Vaporizer reload not on the instagib path)."
 features:
   - id: mutator-rocketminsta.enable.registration
     name: "Registration + enable (rides on g_instagib, hooks re-gate on g_rm live toggle)"
@@ -35,7 +35,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "RocketMinstaMutator unchanged since 2eea096; MutatorActivation.Apply at GameWorld.cs:511 subscribes Hook() on live boot; IsEnabled gates on g_instagib, each hook re-gates on g_rm. Re-verified 2026-06-22 post-Wave-5: faithful + live.", result: pass }
+      - { kind: code, ref: "RocketMinstaMutator unchanged; MutatorActivation.Apply at GameWorld.cs:511 subscribes Hook() on live boot; IsEnabled gates on g_instagib, each hook re-gates on g_rm. Re-verified 2026-06-25: faithful + live.", result: pass }
     confidence: high
     notes: "RM is a sub-mode of instagib: enabled when g_instagib set, then each hook body re-checks g_rm so it can be flipped mid-match (mirrors QC). Both g_instagib and g_rm default 0. Unchanged + verified faithful."
 
@@ -47,7 +47,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/RocketMinstaMutator.cs:63-67 (OnDamageCalculate devastator branch)"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:254-256 (DamageCalculate.Call with string deathType)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:175-180 (explosion passes deathTag=FromWeapon(\"devastator\"))"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:202-207 (explosion passes deathTag=FromWeapon(\"devastator\"))"
     constants:
       - { name: "match weapon", base: "DEATH_ISWEAPON(WEP_DEVASTATOR)", port: "WeaponNetNameOf == \"devastator\"", match: true }
       - { name: "condition", base: "attacker==target || target.classname==\"nade\"", port: "ReferenceEquals(attacker,target) || target.ClassName==\"nade\"", match: true }
@@ -63,9 +63,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "RM explosion (Vaporizer.cs:177-180) passes deathTag = FromWeapon(\"devastator\") to RadiusDamage. Explosion victims (firer included) carry tag 'weapon-devastator|splash'; WeaponNetNameOf strips the splash suffix -> 'devastator'. DamageCalculate.Call (DamageSystem.cs:254) passes that string deathType to the hook -> branch matches -> self/nade damage zeroed. Unchanged since 2eea096; re-verified 2026-06-22.", result: pass }
+      - { kind: code, ref: "RM explosion (Vaporizer.cs:204-207) passes deathTag = FromWeapon(\"devastator\") to RadiusDamage. Explosion victims (firer included) carry tag 'weapon-devastator|splash'; WeaponNetNameOf strips the splash suffix -> 'devastator'. DamageCalculate.Call (DamageSystem.cs:254) passes that string deathType to the hook -> branch matches -> self/nade damage zeroed. Re-verified 2026-06-25.", result: pass }
     confidence: high
-    notes: "FAITHFUL+LIVE. The explosion is correctly labelled 'devastator' so rocket-jumping with the RM explosion no longer hurts the firer (and nade damage is nullified). Unchanged by Wave 5."
+    notes: "FAITHFUL+LIVE. The explosion is correctly labelled 'devastator' so rocket-jumping with the RM explosion no longer hurts the firer (and nade damage is nullified)."
 
   - id: mutator-rocketminsta.damage.zero_laser_self_round
     name: "Damage_Calculate: zero Electro laser self / pre-round damage (g_rm_laser)"
@@ -75,7 +75,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/RocketMinstaMutator.cs:71-75 (OnDamageCalculate electro branch)"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:254-256"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:212-213 (laser deathType = electro.RegistryId)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:248-249 (laser deathType = electro.RegistryId)"
     constants:
       - { name: "gate", base: "autocvar_g_rm_laser", port: "GetFloat(\"g_rm_laser\") != 0f", match: true }
       - { name: "match weapon", base: "DEATH_ISWEAPON(WEP_ELECTRO)", port: "WeaponNetNameOf == \"electro\"", match: true }
@@ -93,7 +93,7 @@ features:
     gaps:
       - "Round gate approximated by game_stopped (intended divergence); may diverge from the exact round-handler edge in round-based modes mid-round."
     verification:
-      - { kind: code, ref: "RM laser bolts tag damage with electro.RegistryId (Vaporizer.cs:212-213). Direct touch victim -> ApplyDamage(int electro id) -> FromWeapon('electro')='weapon-electro'; indirect victims -> 'weapon-electro|splash'. WeaponNetNameOf -> 'electro' -> branch matches; self-damage (attacker==target) zeroed when g_rm_laser set. Unchanged since 2eea096; re-verified 2026-06-22.", result: pass }
+      - { kind: code, ref: "RM laser bolts tag damage with electro.RegistryId (Vaporizer.cs:248-249). Direct touch victim -> ApplyDamage(int electro id) -> FromWeapon('electro')='weapon-electro'; indirect victims -> 'weapon-electro|splash'. WeaponNetNameOf -> 'electro' -> branch matches; self-damage (attacker==target) zeroed when g_rm_laser set. Re-verified 2026-06-25.", result: pass }
     confidence: high
     notes: "FAITHFUL on the dominant axis (the weapon-id label): laser self-damage and pre-round laser damage are nullified. logic:partial remains ONLY because of the intended round-gate approximation (game_stopped vs the exact round handler). Live."
 
@@ -119,9 +119,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "PlayerDies.Call live at DamageSystem.cs:588; RM explosion kills tagged 'weapon-devastator|splash' and RM laser kills 'weapon-electro'(+|splash). WeaponNetNameOf strips the splash suffix -> 'devastator'/'electro' -> both branches match -> forced gib (Damage=1000). Unchanged since 2eea096; re-verified 2026-06-22.", result: pass }
+      - { kind: code, ref: "PlayerDies.Call live at DamageSystem.cs:588; RM explosion kills tagged 'weapon-devastator|splash' and RM laser kills 'weapon-electro'(+|splash). WeaponNetNameOf strips the splash suffix -> 'devastator'/'electro' -> both branches match -> forced gib (Damage=1000). Re-verified 2026-06-25.", result: pass }
     confidence: high
-    notes: "FAITHFUL+LIVE. Both RM damage sources carry the correct devastator/electro deathtype, so RM kills over-gib as in Base. Unchanged by Wave 5."
+    notes: "FAITHFUL+LIVE. Both RM damage sources carry the correct devastator/electro deathtype, so RM kills over-gib as in Base."
 
   - id: mutator-rocketminsta.primary.explosion
     name: "Primary rail beam detonates a Devastator-style explosion at the endpoint"
@@ -131,15 +131,15 @@ features:
       - "common/weapons/weapon/vaporizer.qc:169-171 (W_Vaporizer_Attack g_rm + surface-flag gate)"
       - "mutators.cfg:442-445"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:168-181 (RocketMinstaExplosion)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:156-158 (Attack g_rm + surface-flag gate)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:195-208 (RocketMinstaExplosion)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:183-185 (Attack g_rm + surface-flag gate)"
     constants:
       - { name: "g_rm_damage", base: "70", port: "cvar (cfg 70); C# fallback 70", match: true }
       - { name: "g_rm_edgedamage", base: "38", port: "cvar (cfg 38); C# fallback 38", match: true }
       - { name: "g_rm_radius", base: "140", port: "cvar (cfg 140); C# fallback 140", match: true }
       - { name: "g_rm_force", base: "400", port: "cvar (cfg 400); C# fallback 400", match: true }
       - { name: "deathtype", base: "WEP_DEVASTATOR.m_id | HITTYPE_SPLASH", port: "deathTag=FromWeapon(\"devastator\"); HITTYPE_SPLASH OR'd on indirect victims via SplashDeathType", match: true }
-      - { name: "sky/noimpact skip", base: "skip on Q3SURFACEFLAG_SKY(0x4)|NOIMPACT(0x1)", port: "Vaporizer.cs:156-158 gates on (DpHitQ3SurfaceFlags & (Sky|NoImpact))==0", match: true }
+      - { name: "sky/noimpact skip", base: "skip on Q3SURFACEFLAG_SKY(0x4)|NOIMPACT(0x1)", port: "Vaporizer.cs:183-185 gates on (DpHitQ3SurfaceFlags & (Sky|NoImpact))==0", match: true }
       - { name: "accuracy_add", base: "accuracy_add(WEP_DEVASTATOR, g_rm_damage)", port: "accuracyWeapon: devastator passed to RadiusDamage -> WeaponAccuracyEvents.Hit", match: true }
     status:
       logic: faithful
@@ -153,12 +153,12 @@ features:
     gaps:
       - "No Devastator explosion sound emitted on the explosion path (Base routes the explode SFX via the deathtype/effect; the port plays only the rail fire sound minstanexfire.wav + the Vortex impact neximpact.wav, no rocket explosion sound at the blast)."
     verification:
-      - { kind: code, ref: "RocketMinstaExplosion called from Attack under g_rm AND the sky/noimpact surface-flag gate (Vaporizer.cs:156-158, Sky=0x4 NoImpact=0x1). RadiusDamage passes deathTag=FromWeapon('devastator') (-> HITTYPE_SPLASH on indirect via SplashDeathType) and accuracyWeapon=devastator. cfg + C# fallbacks both ship Base values 70/38/140/400. Unchanged since 2eea096; re-verified 2026-06-22.", result: pass }
+      - { kind: code, ref: "RocketMinstaExplosion called from Attack under g_rm AND the sky/noimpact surface-flag gate (Vaporizer.cs:183-185, Sky=0x4 NoImpact=0x1). RadiusDamage passes deathTag=FromWeapon('devastator') (-> HITTYPE_SPLASH on indirect via SplashDeathType) and accuracyWeapon=devastator. cfg + C# fallbacks both ship Base values 70/38/140/400. No explosion SFX present (grep for explosion/devastator .wav in Vaporizer.cs = none). Re-verified 2026-06-25.", result: pass }
     confidence: high
-    notes: "Logic/values/timing FAITHFUL+LIVE; only audio remains missing — no Devastator explosion SFX is emitted at the blast point. Unchanged by Wave 5."
+    notes: "Logic/values/timing FAITHFUL+LIVE; only audio remains missing — no Devastator explosion SFX is emitted at the blast point."
 
   - id: mutator-rocketminsta.secondary.laser_barrage
-    name: "Secondary / out-of-cells primary: bouncing RM laser fan"
+    name: "Secondary / out-of-cells primary: bouncing RM laser fan + hold-to-stream rapid ramp"
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/vaporizer.qc:222 (W_RocketMinsta_Attack)"
@@ -166,8 +166,8 @@ features:
       - "common/weapons/weapon/vaporizer.qc:286-355 (wr_think laser branch + rapid ramp)"
       - "mutators.cfg:446-460"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:195-267 (RocketMinstaLaserBarrage)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:69-109 (WrThink primaryFallback + secondary branch)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:223-331 (RocketMinstaLaserBarrage)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:69-136 (WrThink primaryFallback + secondary + rapid-ramp branch)"
     constants:
       - { name: "g_rm_laser_count", base: "3", port: "cvar (cfg 3); C# fallback 3", match: true }
       - { name: "g_rm_laser_damage (÷count)", base: "80", port: "cvar (cfg 80); fallback 80", match: true }
@@ -177,30 +177,32 @@ features:
       - { name: "g_rm_laser_lifetime", base: "30 s", port: "cvar (cfg 30); fallback 30", match: true }
       - { name: "g_rm_laser_spread", base: "0.05", port: "cvar (cfg 0.05); fallback 0.05", match: true }
       - { name: "g_rm_laser_refire", base: "0.7 s", port: "cvar (cfg 0.7); fallback 0.7", match: true }
+      - { name: "g_rm_laser_rapid", base: "1 (hold-to-stream enabled)", port: "Cvar(\"g_rm_laser_rapid\",1f)!=0 (Vaporizer.cs:114)", match: true }
+      - { name: "g_rm_laser_rapid_delay", base: "0.6 s (delay before rapid)", port: "Cvar(\"g_rm_laser_rapid_delay\",0.6f) -> JumpInterval2 (Vaporizer.cs:119)", match: true }
+      - { name: "g_rm_laser_rapid_refire", base: "0.35 s", port: "Cvar(\"g_rm_laser_rapid_refire\",0.35f) (Vaporizer.cs:124)", match: true }
       - { name: "g_rm_laser_zspread", base: "zspread * (random()-0.5) -> [-0.5,0.5]", port: "zspread * (Prandom.Float()-0.5f) -> [-0.5,0.5]", match: true }
-      - { name: "g_rm_laser_spread_random", base: "0 (random multiplier on spread)", port: "not modeled (spread used as-is; dormant at default 0)", match: false }
+      - { name: "g_rm_laser_spread_random", base: "0; spread *= random() when set", port: "Cvar(\"g_rm_laser_spread_random\",0)!=0 -> spread *= Prandom.Float() (Vaporizer.cs:236)", match: true }
+      - { name: "g_rm_laser==2 standalone mode", base: "rmLaserMode also fires when g_rm_laser==2 even without g_rm", port: "(rm && gRmLaser!=0) || gRmLaser==2 (Vaporizer.cs:105)", match: true }
       - { name: "deathtype", base: "WEP_ELECTRO.m_id", port: "electro.RegistryId", match: true }
       - { name: "muzzle flash", base: "W_MuzzleFlash(WEP_ELECTRO)", port: "EffectEmitter.Emit(\"ELECTRO_MUZZLEFLASH\")", match: true }
-      - { name: "owner velocity add", base: "W_CalculateProjectileVelocity(...,true)", port: "not applied", match: false }
+      - { name: "fire sound by mode", base: "mode0=SND_CRYLINK_FIRE, mode1=SND_ELECTRO_FIRE2", port: "crylink_fire.wav / electro_fire2.wav (Vaporizer.cs:329-330)", match: true }
+      - { name: "owner velocity add", base: "W_CalculateProjectileVelocity(actor, actor.velocity, vel, /*forceAbsolute*/true) -> newton_style forced 0 -> get_shotvelocity returns spd*dir (owner velocity NOT added; only g_weaponspeedfactor scale)", port: "v * WeaponSpeedFactor() (g_weaponspeedfactor scale only) (Vaporizer.cs:242,291)", match: true }
       - { name: "fan velocity formula", base: "(shotdir + ((i+0.5)/n*2-1)*right*spread)*speed; z+=zspread*(random-0.5)", port: "same formula", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No rapid-fire ramp: Base's hold-to-stream (hagar_load/jump_interval2, g_rm_laser_rapid 1 / _rapid_delay 0.6 / _rapid_refire 0.35, mode-1 single-bolt stream) is absent. The port Vaporizer has no hagar_load/JumpInterval2 state — it fires only the mode-0 fan on the 0.7s refire."
-      - "No W_CalculateProjectileVelocity: shooter motion not added to bolt velocity (aim divergence while moving)."
-      - "g_rm_laser==2 standalone-laser mode (RM laser without g_rm) and the forced-reload-for-laser branch (wr_think:290-303, which resets hagar_load) are not modeled."
-      - "g_rm_laser_spread_random multiplier not modeled (dormant at default 0)."
+      - "Forced-reload-for-laser branch (wr_think:290-303: when reload_ammo && WEP_CVAR_PRI(WEP_BLASTER,ammo) && clip_load < min(...), force wr_reload + reset hagar_load) is not modeled — dormant at defaults (Vaporizer reload is not on the instagib path; no clip_load/reload_ammo handling in the port)."
     verification:
-      - { kind: code, ref: "RocketMinstaLaserBarrage spawns count bolts (BounceMissile, MakeTrigger, NetName='rocketminsta', Team=actor.Team), per-bolt RadiusDamage(deathType=electro.RegistryId, damage/force ÷count) on Touch (directHit:other) and Think (timeout), ELECTRO_MUZZLEFLASH, crylink_fire.wav, per-bolt EditProjectile hook. WrThink still has no rapid/hagar_load path. cfg + fallbacks ship Base values. Re-verified 2026-06-22.", result: pass }
+      - { kind: code, ref: "WrThink now implements the full hold-to-stream ramp (Vaporizer.cs:107-135): first press (JumpInterval ready, HagarLoad==0) fires mode-0 FAN + arms HagarLoad + JumpInterval2(rapid_delay); while held, after JumpInterval2 elapses fires a single mode-1 bolt on rapid_refire. g_rm_laser==2 standalone mode resolved at line 105. ATK2-up/no-fallback clears HagarLoad (lines 79-81), matching QC's trailing else. RocketMinstaLaserBarrage spawns count bolts (BounceMissile, MakeTrigger, NetName='rocketminsta', Team=actor.Team), per-bolt RadiusDamage(deathType=electro.RegistryId, damage/force÷count) on Touch (directHit:other) and Think (timeout via RocketMinstaLaserExplode), ELECTRO_MUZZLEFLASH, crylink_fire/electro_fire2 by mode, spread_random multiplier modeled (line 236), EditProjectile hook per bolt. W_CalculateProjectileVelocity(forceAbsolute=true) verified to suppress owner velocity in Base (tracing.qc:181 newton_style->0; util.qc:1298 returns spd*dir) -> port's speedFactor-only is faithful. WeaponState has HagarLoad/JumpInterval/JumpInterval2 fields. WrThink is the live weapon-driver think path. Re-verified 2026-06-25.", result: pass }
     confidence: high
-    notes: "Values/audio/presentation FAITHFUL; presentation upgraded missing->faithful (the bolt now renders as the RM laser — see laser.projectile_render). Still OPEN: the rapid-fire ramp (logic/timing:partial), the missing owner-velocity add, and the unmodeled g_rm_laser==2/forced-reload/spread_random paths."
+    notes: "UPGRADED. Baseline recorded this as logic:partial/timing:partial with the rapid ramp, g_rm_laser==2, spread_random and owner-velocity all flagged as gaps. Re-audit finds: (1) the hagar_load/jump_interval2 hold-to-stream ramp IS now ported (mode-0 fan + mode-1 rapid stream, rapid/rapid_delay/rapid_refire defaults all match Base) -> logic & timing partial->faithful; (2) g_rm_laser==2 standalone mode IS modeled; (3) g_rm_laser_spread_random IS modeled; (4) the 'owner velocity not added' gap was a MISCLASSIFICATION — Base passes forceAbsolute=true to W_CalculateProjectileVelocity, which forces newton_style=0 so get_shotvelocity returns spd*dir WITHOUT adding owner velocity; the port's speedFactor-only application matches Base exactly. Only remaining gap: the dormant forced-reload-for-laser branch."
 
   - id: mutator-rocketminsta.laser.projectile_render
     name: "RM laser projectile networking, model, trail, and team color"
@@ -212,8 +214,8 @@ features:
       - "client/weapons/projectile.qc:504-506 (colormod = team palette when colormap>0)"
       - "common/effects/all.inc (EFFECT_ROCKETMINSTA_LASER rocketminsta_laser_neutral)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:230 (proj.NetName=\"rocketminsta\")"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:235 (proj.Team=actor.Team)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:266 (proj.NetName=\"rocketminsta\")"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:271 (proj.Team=actor.Team)"
       - "game/net/ServerNet.cs:1736 (Projectile networked via ProjectileCatalogKey, Colormap=(int)Team)"
       - "game/client/ProjectileCatalog.cs:212-214 (RocketMinstaLaser Desc: elaser model + ROCKETMINSTA_LASER trail + red glow + light)"
       - "game/client/ProjectileCatalog.cs:270 (Classify netname 'rocketminsta' -> RocketMinstaLaser)"
@@ -237,33 +239,38 @@ features:
     gaps:
       - "Per-team effectinfo variants (red/blue/yellow/pink) are not registered — only the neutral trail (rocketminsta_laser_neutral) exists; Base also only registers neutral live, so the team tint is carried by the colormod (faithful)."
     verification:
-      - { kind: code, ref: "Re-audited 2026-06-25: the BASELINE WAS WRONG — it only searched src/ and missed the game/client/ render layer (the same error documented in DRIFT-2026-06-22-waves.md and weapon-electro.md). The RM laser bolt now spawns with NetName='rocketminsta' + Team=actor.Team (Vaporizer.cs:230,235). ServerNet.Classify (BounceMissile+Owner+FL_PROJECTILE) -> NetEntityKind.Projectile; networks ProjectileCatalogKey('plasma_prim rocketminsta') + Colormap=(int)Team (ServerNet.cs:1736,1762). Client ProjectileCatalog.Classify hits 'rocketminsta' -> RocketMinstaLaser (elaser model, ROCKETMINSTA_LASER trail, red glow, light) and ProjectileRenderer.ApplyTeamColormod tints by team when colormap>0. ProjectileRenderer is instantiated live at ClientWorld.cs:319.", result: pass }
+      - { kind: code, ref: "The RM laser bolt spawns with NetName='rocketminsta' + Team=actor.Team (Vaporizer.cs:266,271). ServerNet.Classify (BounceMissile+Owner+FL_PROJECTILE) -> NetEntityKind.Projectile; networks ProjectileCatalogKey('plasma_prim rocketminsta') + Colormap=(int)Team (ServerNet.cs:1736). Client ProjectileCatalog.Classify hits 'rocketminsta' -> RocketMinstaLaser (elaser model, ROCKETMINSTA_LASER trail, red glow, light) and ProjectileRenderer.ApplyTeamColormod tints by team when colormap>0. ProjectileRenderer is instantiated live at ClientWorld.cs:319. Re-verified 2026-06-25.", result: pass }
     confidence: high
-    notes: "FIXED (gap closed). Before this branch the bolt set NetName=NetName ('vaporizer') -> classified Plasma (blue generic, no team color, no elaser). The new NetName='rocketminsta' + Team lines route it to the dedicated RocketMinstaLaser visual + the EFFECT_ROCKETMINSTA_LASER trail + the team colormod, matching Base PROJECTILE_ROCKETMINSTA_LASER. liveness dead->live, presentation missing->faithful. NOTE: prior baseline (dead/missing) was an artifact of searching only src/ — the game/client ProjectileCatalog/Renderer system was already present; this branch's change is what makes the netname resolve to the RM-laser descriptor + networks the team."
+    notes: "FAITHFUL+LIVE. The NetName='rocketminsta' + Team lines route the bolt to the dedicated RocketMinstaLaser visual + the EFFECT_ROCKETMINSTA_LASER trail + the team colormod, matching Base PROJECTILE_ROCKETMINSTA_LASER. (Line numbers nudged after Vaporizer.cs edits; symbols unchanged.)"
 
   - id: mutator-rocketminsta.laser.electrobitch
     name: "Electrobitch achievement on flying-enemy laser timeout-explode"
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/vaporizer.qc:194-199 (W_RocketMinsta_Laser_Explode -> ANNCE_ACHIEVEMENT_ELECTROBITCH)"
-    port_refs: []
+      - "common/weapons/weapon/vaporizer.qc:207-218 (Laser_Explode_use / Laser_Touch — touch vs timeout split)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:333-349 (RocketMinstaLaserExplode + Electrobitch guard)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:300-318 (Touch=direct damage / Think=timeout explode split)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:147 (ACHIEVEMENT_ELECTROBITCH registered)"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs:289 (electrobitch announcer sound)"
     constants:
-      - { name: "trigger", base: "timeout-explode hits DAMAGE_AIM player on diff team, not dead, IsFlying -> ANNCE_ACHIEVEMENT_ELECTROBITCH to realowner", port: "none", match: false }
+      - { name: "trigger guard", base: "directhitentity.takedamage==DAMAGE_AIM && IS_PLAYER && DIFF_TEAM(realowner,dhe) && !IS_DEAD && IsFlying -> ANNCE_ACHIEVEMENT_ELECTROBITCH to realowner", port: "directHit.TakeDamage==Aim && (Flags&Client) && !SameTeam && !ReferenceEquals && DeadState==No && IsFlying -> NotificationSystem.Announce(owner,\"ACHIEVEMENT_ELECTROBITCH\")", match: true }
+      - { name: "touch vs timeout split", base: "W_RocketMinsta_Laser_Touch -> Damage only (no achievement); timeout .use -> W_RocketMinsta_Laser_Explode (guard runs, but adaptor passes NULL directhitentity so guard never fires in practice)", port: "Touch=RadiusDamage only; Think=RocketMinstaLaserExplode(directHit:null) — guard present but NULL directHit means it never fires (faithful to Base)", match: true }
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
-      audio: missing
-      liveness: na
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The Electrobitch announcer achievement (RM laser timeout-explode landing on a flying enemy of another team) is not implemented. The port's laser Touch/Think paths just deal RadiusDamage and delete — no achievement check, and the touch/timeout paths are not distinguished (Base only awards on the timeout .use->W_RocketMinsta_Laser_Explode path, not the direct W_RocketMinsta_Laser_Touch)."
+    gaps: []
     verification:
-      - { kind: code, ref: "Vaporizer.cs:250-258 RocketMinstaLaserBarrage Touch/Think both call RadiusDamage + Remove with no ANNCE_ACHIEVEMENT_ELECTROBITCH / Send_Notification equivalent. Base W_RocketMinsta_Laser_Explode (vaporizer.qc:193-204) still does the DAMAGE_AIM/DIFF_TEAM/!IS_DEAD/IsFlying check. Re-verified 2026-06-22: unchanged by Wave 5.", result: fail }
+      - { kind: code, ref: "RocketMinstaLaserExplode (Vaporizer.cs:337-348) reproduces the Base guard (DAMAGE_AIM + IS_PLAYER via Flags&Client + DIFF_TEAM via !SameTeam && !ReferenceEquals + !IS_DEAD + IsFlying) and calls NotificationSystem.Announce(owner,'ACHIEVEMENT_ELECTROBITCH'); notification registered (NotificationsList.cs:147) + announcer sound (SoundsList.cs:289). The bolt's Touch path damages without the guard (matching W_RocketMinsta_Laser_Touch); the Think/timeout path calls RocketMinstaLaserExplode with directHit:null, so the guard — as in Base, where adaptor_think2use passes a NULL trigger -> NULL directhitentity — never actually fires. Wired live via WrThink->RocketMinstaLaserBarrage->proj.Think. Re-verified 2026-06-25.", result: pass }
     confidence: high
-    notes: "STILL OPEN. Minor achievement parity gap, unchanged by Waves 1-5. Base distinguishes touch (no achievement) from timeout (achievement); the port collapses both into the same RadiusDamage."
+    notes: "FIXED (was logic:missing/audio:missing/liveness:na). The Electrobitch achievement guard is now ported faithfully, including the subtle touch-vs-timeout split and the fact that the QC timeout path passes a NULL directhitentity (so the achievement is structurally present but, exactly as in Base, dormant in practice on the timeout path). port_refs added; notification + announcer sound both exist."
 
   - id: mutator-rocketminsta.instagib.downgrade
     name: "Out-of-ammo downgrade (no instagib death countdown) when g_rm + g_rm_laser"
@@ -289,6 +296,6 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "InstagibMutator.AmmoCheck has the `else if (rocketMinsta)` branch (line 297-305) between the cells>0 check and Countdown, matching Base sv_instagib.qc:79 exactly (same order, same g_rm&&g_rm_laser predicate, same CENTER_INSTAGIB_DOWNGRADE centerprint gated on !needammo). AmmoCheck runs from OnPlayerPreThink, dispatched live at GameWorld.cs:1037; InstagibMutator subscribes PlayerPreThink and gates on g_instagib. Re-verified 2026-06-22 post-Wave-5: branch intact, no regression.", result: pass }
+      - { kind: code, ref: "InstagibMutator.AmmoCheck has the `else if (rocketMinsta)` branch (line 297-305) between the cells>0 check and Countdown, matching Base sv_instagib.qc:79 exactly (same order, same g_rm&&g_rm_laser predicate, same CENTER_INSTAGIB_DOWNGRADE centerprint gated on !needammo). AmmoCheck runs from OnPlayerPreThink, dispatched live at GameWorld.cs:1037; InstagibMutator subscribes PlayerPreThink and gates on g_instagib. Re-verified 2026-06-25: branch intact, no regression.", result: pass }
     confidence: high
-    notes: "FAITHFUL+LIVE. A cell-less player in RM-laser mode is downgraded (no instagib death countdown, INSTAGIB_DOWNGRADE centerprint shown once) instead of bleeding out. InstagibMutator.cs was heavily edited in Wave 5 but the rocketMinsta downgrade branch survived intact."
+    notes: "FAITHFUL+LIVE. A cell-less player in RM-laser mode is downgraded (no instagib death countdown, INSTAGIB_DOWNGRADE centerprint shown once) instead of bleeding out."

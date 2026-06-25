@@ -1,14 +1,14 @@
 unit: mutator-cloaked
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 6
   worst_gaps:
-    - "WAVE-5 CLOSED THE HEADLINE EFFECT: with g_cloaked 1 players now genuinely render semi-transparent end-to-end. Wave-5 (commit 023ba70) moved the alpha seed into Common (MutatorHooks.DefaultPlayerAlpha/DefaultWeaponAlpha, set by FireSetDefaultAlpha at GameWorld.cs:565 worldspawn), wired the server consumers (SpawnSystem.cs:575 and DamageSystem.cs:624 now read MutatorHooks.DefaultPlayerAlpha instead of hardcoding 1f), and — critically — wired the client net->render bridge that the prior audit flagged as the gating defect (ClientEntityView.cs:134 now decodes NetEntityState.Alpha onto Entity.Alpha; PlayerModel.Pose:160 calls ApplyAlpha(e.Alpha)). The 0.25 value round-trips faithfully through QuantizeAlpha (0.25->64/255=0.251)."
+    - "HEADLINE EFFECT WORKING (unchanged since Wave-5): with g_cloaked 1 players render semi-transparent end-to-end. The alpha seed lives in Common (MutatorHooks.DefaultPlayerAlpha/DefaultWeaponAlpha, set by FireSetDefaultAlpha at GameWorld.cs:569 worldspawn), server consumers read it (SpawnSystem.cs:591, DamageSystem.cs:629), and the client net->render bridge decodes NetEntityState.Alpha onto Entity.Alpha (ClientEntityView.cs:134) -> PlayerModel.ApplyAlpha. 0.25 round-trips faithfully via QuantizeAlpha (0.25->64/255=0.251)."
     - "STILL OPEN — secondary alpha consumers: no exterior/held weapon-entity alpha-follow (Base weaponsystem.qc:116-117,170-171) and no vehicle-exit alpha restore (Base sv_vehicles.qc:814). These are minor relative to the now-working player body alpha."
-    - "STILL OPEN — Cloaked contributes nothing to the active-mutators pretty string. Wave-5 ADDED the general mechanism (MutatorBase.BuildMutatorsPrettyString virtual at GameplayBases.cs:206 + MutatorActivation.BuildMutatorsPrettyString chain runner at MutatorActivation.cs:101, used by MidairMutator), but CloakedMutator does NOT override it, no MUT_CLOAKED bit exists, AND the chain runner itself has no live caller (scoreboard/HUD never invokes it). So 'Cloaked' is still not displayed."
-    - "STILL OPEN — no MENUQC metadata: still no describe text or create-game checkbox port for the cloaked mutator (general menu-mutator gap)."
+    - "2026-06-25 DRIFT (FIX, partial) — Cloaked NOW overrides BuildMutatorsPrettyString (CloakedMutator.cs:73-78, ', Cloaked' with the !g_cts gate), landed in Wave-6b alongside ~25 other mutator overrides. So logic/values/presentation of the pretty-string append are now ported & faithful. STILL OPEN: (1) the MutatorActivation.BuildMutatorsPrettyString chain runner (MutatorActivation.cs:121) has NO external caller — only BuildMutatorsString (machine token) is run live at GameWorld.cs:876 — so liveness stays DEAD and nothing is displayed yet; (2) no MUT_CLOAKED=7 bit (util.qh:62) ported."
+    - "2026-06-25 DRIFT (FIX, partial) — the create-game checkbox IS now ported: DialogMutators.cs:131 Widgets.CheckBox(\"g_cloaked\", \"Cloaked\", \"All players are almost invisible\"). STILL OPEN: the in-game per-mutator describe-page text (cloaked.qc:6-13 METHOD describe) is not ported (general menu describe-system gap)."
 features:
   - id: mutator-cloaked.enable.predicate
     name: "Enable predicate (g_cloaked cvar gate + registration/subscription)"
@@ -19,7 +19,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CloakedMutator.cs:30 IsEnabled"
       - "src/XonoticGodot.Common/Gameplay/Mutators/CloakedMutator.cs:35 Hook"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
-      - "src/XonoticGodot.Server/GameWorld.cs:559 MutatorActivation.Apply()"
+      - "src/XonoticGodot.Server/GameWorld.cs MutatorActivation.Apply() (boot step 5b, before map entities spawn)"
     constants:
       - { name: "g_cloaked", base: "0 (mutators.cfg:563)", port: "0 (assets/.../mutators.cfg:563)", match: true }
     status:
@@ -48,7 +48,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CloakedMutator.cs:53 OnSetDefaultAlpha"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:485 SetDefaultAlpha chain + 493/496 DefaultPlayerAlpha/DefaultWeaponAlpha + 507-517 FireSetDefaultAlpha"
-      - "src/XonoticGodot.Server/GameWorld.cs:565 (DefaultPlayerAlpha, DefaultWeaponAlpha) = MutatorHooks.FireSetDefaultAlpha(1f, 1f)"
+      - "src/XonoticGodot.Server/GameWorld.cs:569 (DefaultPlayerAlpha, DefaultWeaponAlpha) = MutatorHooks.FireSetDefaultAlpha(1f, 1f)"
     constants:
       - { name: "g_balance_cloaked_alpha", base: "0.25 (mutators.cfg:564)", port: "0.25 (CloakedMutator.Alpha default + re-read in Hook()/OnSetDefaultAlpha)", match: true }
       - { name: "default_player_alpha = alpha", base: "yes (world.qh global)", port: "MutatorHooks.DefaultPlayerAlpha set from args.PlayerAlpha", match: true }
@@ -83,8 +83,8 @@ features:
       - "common/vehicles/sv_vehicles.qc:814 (restore player.alpha on vehicle exit)"
       - "common/mutators/mutator/powerups/powerup/invisibility.qc:16-18 (Invisibility expiry restores default_player/weapon_alpha)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:575 p.Alpha = MutatorHooks.DefaultPlayerAlpha (now reads the seed)"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:624 victim.Alpha = MutatorHooks.DefaultPlayerAlpha (corpse reads the seed)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:591 p.Alpha = MutatorHooks.DefaultPlayerAlpha (now reads the seed)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:629 victim.Alpha = MutatorHooks.DefaultPlayerAlpha (corpse reads the seed)"
       - "game/net/ServerNet.cs:1670,1760 QuantizeAlpha(p.Alpha)/QuantizeAlpha(e.Alpha) — networking present"
       - "src/XonoticGodot.Net/NetEntity.cs:96,131,176,230,271 EntityField.Alpha + NetEntityState.Alpha encode/decode — networking present"
       - "game/net/ClientEntityView.cs:134 e.Alpha = s.Alpha == 0 ? 1f : s.Alpha/255f — client net->render bridge NOW WIRED"
@@ -128,26 +128,31 @@ features:
       - "common/util.qc:302 X(\"Cloaked\", _(\"Cloaked\"), MUT_CLOAKED, cvar(\"g_cloaked\"))"
       - "common/util.qh:62 const int MUT_CLOAKED = 7"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:206 MutatorBase.BuildMutatorsPrettyString (base no-op; Cloaked does NOT override)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:101 BuildMutatorsPrettyString chain runner (no live caller)"
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:221 MutatorBase.BuildMutatorsPrettyString (base no-op virtual)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/CloakedMutator.cs:73-78 BuildMutatorsPrettyString override — returns s + ', Cloaked' unless g_cts (NOW PORTED, Wave-6b)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:121 BuildMutatorsPrettyString chain runner (STILL no external caller — dead)"
     constants:
-      - { name: "pretty string append", base: "', Cloaked' (suppressed in CTS)", port: "none (CloakedMutator does not override BuildMutatorsPrettyString)", match: false }
+      - { name: "pretty string append", base: "', Cloaked' (suppressed in CTS)", port: "', Cloaked' unless g_cts (CloakedMutator.cs:73-78)", match: true }
+      - { name: "g_cts suppression gate", base: "if (!g_cts) (sv_cloaked.qc:17)", port: "cts ? s : s + ', Cloaked' (CloakedMutator.cs:76-77)", match: true }
       - { name: "MUT_CLOAKED bit", base: "7 (util.qh:62)", port: "none", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
       liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN — Cloaked contributes nothing to the active-mutators pretty string. Wave-5 added the GENERAL mechanism (MutatorBase.BuildMutatorsPrettyString virtual + MutatorActivation chain runner, used by MidairMutator -> ', Midair'), but: (1) CloakedMutator does NOT override BuildMutatorsPrettyString (still the base no-op), (2) no MUT_CLOAKED=7 bit exists, and (3) MutatorActivation.BuildMutatorsPrettyString has NO live caller — the scoreboard/HUD never invokes it (grep finds only the self-reference at MutatorActivation.cs:105). So 'Cloaked' is still not displayed anywhere."
+      - "STILL OPEN (liveness) — the pretty-string append now EXISTS and is faithful, but it is never displayed: MutatorActivation.BuildMutatorsPrettyString (MutatorActivation.cs:121) has NO external caller. Only the machine-token chain BuildMutatorsString is run live (GameWorld.cs:876 gamelog init). The scoreboard/HUD/vote screen never invokes the pretty-string runner, so ', Cloaked' is computed by no live path."
+      - "STILL OPEN (minor) — no MUT_CLOAKED=7 bit (util.qh:62) / util.qc:302 bitfield mapping ported. Cosmetic mutator-bitfield only; not consumed by the live path that exists."
     verification:
-      - { kind: code, ref: "VERIFIED: MutatorBase.BuildMutatorsPrettyString exists (GameplayBases.cs:206, returns s unchanged) and MutatorActivation.BuildMutatorsPrettyString chain runner exists (MutatorActivation.cs:101). MidairMutator overrides it; CloakedMutator does NOT. grep MUT_CLOAKED = no hits in src/+game/. grep for an external caller of MutatorActivation.BuildMutatorsPrettyString = none (dead runner).", result: fail }
+      - { kind: code, ref: "VERIFIED (FIX): CloakedMutator.BuildMutatorsPrettyString (CloakedMutator.cs:73-78) overrides the base virtual, returning s + ', Cloaked' unless g_cts (faithful to sv_cloaked.qc:15-18 incl. the !g_cts gate). Landed Wave-6b (~25 mutators got the same override). The base virtual is at GameplayBases.cs:221.", result: pass }
+      - { kind: code, ref: "VERIFIED (liveness still dead): grep for an external caller of BuildMutatorsPrettyString( finds only the self-reference at MutatorActivation.cs:125 (the chain runner's own loop). BuildMutatorsString IS called live (GameWorld.cs:876) but the PRETTY runner is not. So the override is dead code on the live path.", result: fail }
+      - { kind: code, ref: "VERIFIED: no MUT_CLOAKED hits in src/+game/ (only Base util.qh:62 / util.qc:302). The bit mapping is unported.", result: fail }
     confidence: high
-    notes: "PARTIAL INFRA PROGRESS, Cloaked STILL OPEN: the pretty-string mechanism now partly exists (Wave-5 added the base virtual + chain runner + a Midair example), upgrading the prior 'no mechanism at all' note. But for Cloaked specifically nothing is contributed, the MUT_CLOAKED bit is absent, and the runner has no live caller — so the user-visible behavior is unchanged. Kept all status dimensions missing for Cloaked's contribution; liveness=dead (the runner exists but is never called)."
+    notes: "2026-06-25 DRIFT — FIX (logic/values/presentation missing->faithful): CloakedMutator now overrides BuildMutatorsPrettyString with the faithful ', Cloaked' + !g_cts gate (Wave-6b). The baseline (2026-06-22, post-Wave-5) recorded only the base no-op. Liveness stays DEAD: the pretty-string chain runner has no caller, so nothing is displayed yet (the gating defect is now purely the missing live caller, not the missing override). MUT_CLOAKED bit still absent (minor)."
 
   - id: mutator-cloaked.menu.metadata
     name: "MENUQC metadata (describe text + create-game checkbox)"
@@ -156,26 +161,29 @@ features:
       - "common/mutators/mutator/cloaked/cloaked.qc:6-13 METHOD(MutatorCloaked, describe)"
       - "common/mutators/mutator/cloaked/cloaked.qh:4-8 CLASS(MutatorCloaked) + REGISTER_MUTATOR(cloaked, true, MutatorCloaked)"
       - "menu/xonotic/dialog_multiplayer_create_mutators.qc (g_cloaked checkbox)"
-    port_refs: []
+    port_refs:
+      - "game/menu/dialogs/DialogMutators.cs:131-132 Widgets.CheckBox(\"g_cloaked\", \"Cloaked\", \"All players are almost invisible\") — create-game checkbox NOW PORTED"
     constants:
-      - { name: "menu label/message", base: "_(\"Cloaked\")", port: "none", match: false }
-      - { name: "describe text", base: "'makes all players nearly invisible, similar to the Invisibility powerup'", port: "none", match: false }
-      - { name: "create-game checkbox cvar", base: "g_cloaked", port: "none", match: false }
+      - { name: "menu label", base: "_(\"Cloaked\")", port: "\"Cloaked\" (DialogMutators.cs:131)", match: true }
+      - { name: "create-game checkbox cvar", base: "g_cloaked", port: "g_cloaked (DialogMutators.cs:131)", match: true }
+      - { name: "checkbox tooltip", base: "create-mutators checkbox label _(\"Cloaked\")", port: "\"All players are almost invisible\" (close paraphrase of the describe text)", match: true }
+      - { name: "in-game describe-page text", base: "'makes all players nearly invisible, similar to the Invisibility powerup' (cloaked.qc:6-13 METHOD describe)", port: "none", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN — no port menu-mutator metadata: no Cloaked describe text or create-game checkbox (general menu-mutator gap across the port, not unique to cloaked). UNCHANGED by Wave-5."
+      - "STILL OPEN (minor) — the in-game per-mutator describe-page text (cloaked.qc:6-13 METHOD describe — 'makes all players nearly invisible, similar to the Invisibility powerup') is not ported. This is the general menu describe-page system gap (no port equivalent for any mutator), not unique to cloaked. The create-game checkbox + label + tooltip ARE present."
     verification:
-      - { kind: code, ref: "VERIFIED (unchanged): no MutatorCloaked menu class / describe / create-mutators checkbox found in port (grep MutatorCloaked/cloaked-describe in src/+game/ = none beyond CloakedMutator.cs).", result: fail }
+      - { kind: code, ref: "VERIFIED (FIX): DialogMutators.cs:131-132 has Widgets.CheckBox(\"g_cloaked\", \"Cloaked\", \"All players are almost invisible\") — the create-game checkbox with the g_cloaked cvar, matching Base's dialog_multiplayer_create_mutators g_cloaked checkbox + _(\"Cloaked\") label. The tooltip is a close paraphrase of the cloaked describe text.", result: pass }
+      - { kind: code, ref: "VERIFIED: no MutatorCloaked describe-page METHOD ported (grep MutatorCloaked/cloaked describe in src/+game/ = none beyond CloakedMutator.cs + this checkbox). The in-game describe page is still absent.", result: fail }
     confidence: high
-    notes: "UNCHANGED. Pure menu presentation; no gameplay effect. Tracked for completeness."
+    notes: "2026-06-25 DRIFT — FIX (presentation missing->partial, liveness na->live): the create-game checkbox is now wired (DialogMutators.cs:131, live in the multiplayer create-game mutators dialog). The baseline recorded port_refs: [] / all-missing. Remaining gap is only the in-game describe-page text (general menu-describe-system gap). Pure menu presentation; no gameplay effect."
 
   - id: mutator-cloaked.compose.invisibility_powerup
     name: "Composition with Invisibility powerup (expiry returns to default_player_alpha, i.e. cloaked alpha under cloaked)"
@@ -183,11 +191,11 @@ features:
     base_refs:
       - "common/mutators/mutator/powerups/powerup/invisibility.qc:16-18 (m_remove: actor.alpha = default_player_alpha; exteriorweaponentity.alpha = default_weapon_alpha)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:216 (invisibility held: player.Alpha = _invisibilityAlpha 0.15)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:218 (lapse: player.Alpha = MutatorHooks.DefaultPlayerAlpha — composes with cloaked)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:343 (invisibility held: player.Alpha = _invisibilityAlpha 0.15)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:345 (lapse: player.Alpha = MutatorHooks.DefaultPlayerAlpha — composes with cloaked)"
     constants:
-      - { name: "Invisibility while held sets player.alpha", base: "invisibility_alpha (0.15)", port: "player.Alpha = _invisibilityAlpha 0.15 (PowerupsMutator.cs:216) — LIVE", match: true }
-      - { name: "Invisibility expiry restores to default_player_alpha", base: "yes (so under cloaked → 0.25, not 1)", port: "restores MutatorHooks.DefaultPlayerAlpha (PowerupsMutator.cs:218) — composes with cloaked", match: true }
+      - { name: "Invisibility while held sets player.alpha", base: "invisibility_alpha (0.15)", port: "player.Alpha = _invisibilityAlpha 0.15 (PowerupsMutator.cs:343) — LIVE", match: true }
+      - { name: "Invisibility expiry restores to default_player_alpha", base: "yes (so under cloaked → 0.25, not 1)", port: "restores MutatorHooks.DefaultPlayerAlpha (PowerupsMutator.cs:345) — composes with cloaked", match: true }
     status:
       logic: faithful
       values: faithful

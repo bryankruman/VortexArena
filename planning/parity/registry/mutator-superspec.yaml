@@ -1,7 +1,7 @@
 unit: mutator-superspec
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 11
   worst_gaps:
@@ -9,7 +9,7 @@ summary:
     - "[FIXED Wave-5] Per-client options persistence is now live: OnClientConnect/OnClientDisconnect are called from GameWorld.InfraClientConnect/Disconnect (gated on the mutator being Added), seed the SSF_VERBOSE/\"\" connect defaults, and load/save the crypto_idfp-keyed options file via the host-wired Store (magic SUPERSPEC_OPTIONSFILE_V1, ~/XonData/superspec/). Caveat: IsLocalProvider is left unwired, so the listen-host local-file fast path is not taken (everyone is crypto_idfp-keyed; an unauthenticated remote client is not persisted) — a documented intended divergence."
     - "[FIXED Wave-5] The SUPERSPEC_MISSING_UID notification now fires: a delayed superspec_hello is scheduled at time+5 on connect and drained by the live MutatorHooks.SvStartFrame pump, sending INFO_SUPERSPEC_MISSING_UID to a UID-less client only."
     - "[FIXED Wave-5] The centered (centerprint) form of superspec_msg is now wired: Msg routes the gated centerprint through NotificationSystem.SendCenterRaw (MsgType.CenterRaw), consumed live on the client HUD (HudNotifications.cs:146). The console sprint form remains wired via PrintTo. So spectators now see both the console line and the centered overlay."
-    - "STILL OPEN: Scoreboard/serverinfo mutator list never shows :SS / ', Super Spectators' — no BuildMutatorsString/BuildMutatorsPrettyString hook chains exist in the port (shared gap across many ported mutators)."
+    - "[FIXED Wave-6b] The BuildMutatorsString/BuildMutatorsPrettyString overrides now exist (SuperSpecMutator.cs:677/680, exact Base tokens ':SS' / ', Super Spectators'). The machine token ':SS' is LIVE via MutatorActivation.BuildMutatorsString -> GameWorld.cs:876 (sv_eventlog-gated gamelog init, faithful to Base GameLogInit). RESIDUAL: the pretty label ', Super Spectators' is still DEAD — MutatorActivation.BuildMutatorsPrettyString (cs:121) has no live caller (no scoreboard/votescreen consumer ported; Base consumer is server/client.qc:1107). This is the port-wide shared gap, not specific to superspec."
 features:
   - id: superspec.enable.predicate
     name: "Enable predicate + registration (expr_evaluate(g_superspectate))"
@@ -303,22 +303,26 @@ features:
     layer: [authority, presentation]
     base_refs:
       - "common/mutators/mutator/superspec/sv_superspec.qc:360-368 (BuildMutatorsString / BuildMutatorsPrettyString)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:677 (BuildMutatorsString override -> s + \":SS\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:680 (BuildMutatorsPrettyString override -> s + \", Super Spectators\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108-114 (BuildMutatorsString chain — live) / 121-127 (BuildMutatorsPrettyString chain — no live caller)"
+      - "src/XonoticGodot.Server/GameWorld.cs:876 (MutatorActivation.BuildMutatorsString — live, sv_eventlog gamelog init)"
     constants:
-      - { name: "machine tag", base: "\":SS\"", port: "none", match: false }
-      - { name: "pretty label", base: "\", Super Spectators\"", port: "none", match: false }
+      - { name: "machine tag", base: "\":SS\"", port: "\":SS\" (SuperSpecMutator.cs:677)", match: true }
+      - { name: "pretty label", base: "\", Super Spectators\"", port: "\", Super Spectators\" (SuperSpecMutator.cs:680)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     confidence: high
     gaps:
-      - "No BuildMutatorsString / BuildMutatorsPrettyString hook chains exist in MutatorHooks.cs: superspec never appears in the machine mutator tag or the pretty active-mutator label (server browser / scoreboard / serverinfo). The SuperSpecMutator class summary itself lists this as a remaining todo."
+      - "FIX (Wave-6b): both overrides now exist with the exact Base tokens. The MACHINE token ':SS' is LIVE — MutatorActivation.BuildMutatorsString iterates added mutators (gated on mut.Added) and is called from GameWorld.cs:876 at gamelog init (sv_eventlog-gated, faithful to Base server/gamelog.qc:50 GameLogInit). RESIDUAL: the PRETTY label ', Super Spectators' is DEAD — MutatorActivation.BuildMutatorsPrettyString (cs:121) has no external caller anywhere in src/+game/ (Base consumer is server/client.qc:1107, scoreboard/votescreen/serverinfo). So the human-readable label is computed by no live path. This is a port-wide shared gap across every mutator's pretty-string, not specific to superspec."
     verification:
-      - { kind: code, ref: "no BuildMutatorsString/BuildMutatorsPrettyString chain in MutatorHooks.cs; SuperSpecMutator subscribes only PlayerDies/ItemTouch/SvStartFrame; grep finds no :SS / ', Super Spectators' producer", result: fail }
-    notes: "STILL OPEN — shared gap across many ported mutators (Cloaked/Powerups/RocketFlying note the same missing builder chains). The mutator-string builder hooks still do not exist in the port."
+      - { kind: code, ref: "SuperSpecMutator.cs:677/680 override BuildMutatorsString/PrettyString with exact Base tokens; MutatorActivation.BuildMutatorsString consumed live at GameWorld.cs:876 (sv_eventlog gamelog init, gated on mut.Added) -> machine token ':SS' live; grep for an external caller of MutatorActivation.BuildMutatorsPrettyString finds only the chain's own loop body (cs:125) -> pretty label dead", result: pass }
+    notes: "FIX (Wave-6b): machine-tag dimension missing->faithful + na->live; pretty-label dimension missing->partial logic-faithful but presentation/liveness partial (label never displayed — the BuildMutatorsPrettyString consumer chain has no live caller, a cross-cutting gap shared by Cloaked/Vampire/Instagib/etc.). Stale class-summary comment at SuperSpecMutator.cs:48-52 still lists these hooks as 'DO NOT EXIST YET' — out of date (doc-only)."

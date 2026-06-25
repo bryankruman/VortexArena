@@ -1,13 +1,11 @@
 unit: mutator-random_gravity
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 6
   worst_gaps:
-    - "Missing the round-handler gate (`round_handler_IsActive() && !round_handler_IsRoundStarted()`): in round modes (CA/Freezetag/etc.) the port can roll gravity in the inter-round pre-start window; Base suppresses it. STILL NOT fixable — there is NO global round-state seam reachable from Common (grep for any static RoundActive/IsRoundStarted provider found none; the per-gametype RoundHandler lives on the gametype, DamageSystem.cs documents the same)."
-    - "MUTATOR_ONADD cvar_settemp(\"sv_gravity\", ...) is not modelled: nothing pushes/restores the original gravity, so a mutator-modified sv_gravity may leak into the next match (deferred to the host by an in-code NOTE)."
-    - "BuildMutatorsString / BuildMutatorsPrettyString not implemented: 'Random gravity' / ':RandomGravity' is not advertised in the scoreboard/server-info mutator list (no generic mutator-list builder exists in the port for this unit either)."
+    - "BuildMutatorsPrettyString chain has NO live caller: `, Random gravity` (and every other mutator's pretty token) is implemented per-mutator and the MutatorActivation.BuildMutatorsPrettyString chain exists, but nothing in the port invokes it — so the human-readable active-mutator list (scoreboard/votescreen) never includes Random Gravity. The machine-readable `:RandomGravity` token IS live (gamelog via GameWorld.cs:876, sv_eventlog-gated)."
 features:
   - id: random_gravity.enable.cvar_gate
     name: "Enable gate — g_random_gravity cvar gating mutator registration + ONADD cvar_settemp"
@@ -17,13 +15,14 @@ features:
       - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:17-20 MUTATOR_ONADD cvar_settemp(\"sv_gravity\", cvar_string(\"sv_gravity\"))"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:33 IsEnabled (Api.Cvars.GetFloat(\"g_random_gravity\") != 0)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:41 Hook"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:60 Apply -> Add -> Hook"
-      - "src/XonoticGodot.Server/GameWorld.cs:535 MutatorActivation.Apply()"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:41-52 Hook (subscribes _onStartFrame + MutatorActivation.SettempCvar(\"sv_gravity\", ...))"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:38 SettempCvar -> SettempCvarHandler"
+      - "src/XonoticGodot.Server/GameWorld.cs:562 MutatorActivation.SettempCvarHandler = (n,v) => SettempCvars.Set(n,v)"
+      - "src/XonoticGodot.Server/GameWorld.cs:563 MutatorActivation.Apply()"
     constants:
       - { name: "g_random_gravity", base: "0 (mutators.cfg:184)", port: "0 (assets/data/xonotic-data.pk3dir/mutators.cfg:184)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -31,14 +30,13 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "MUTATOR_ONADD cvar_settemp(\"sv_gravity\", ...) is not modelled: the original sv_gravity is not pushed onto a restore stack, so a modified gravity is not guaranteed to be reverted at match end (deferred to the host via an in-code NOTE at RandomGravityMutator.cs:46-47). UNCHANGED by Wave-1/2 — no cvar_settemp/SetTemp restore exists anywhere in src/XonoticGodot.Common."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "IsEnabled reads g_random_gravity (RandomGravityMutator.cs:33); MutatorActivation.Apply (MutatorActivation.cs:60, called from GameWorld.cs:535) walks Mutators.All and calls Add->Hook for each enabled mutator on the live server-boot path", result: pass }
-      - { kind: code-read, ref: "Hook() (RandomGravityMutator.cs:41) subscribes _onStartFrame to MutatorHooks.SvStartFrame and resets _gravityDelay; NO cvar_settemp restore is modelled (comment defers it to host) — grep cvar_settemp|SetTemp|settemp over src/XonoticGodot.Common found only the comment, no restore-stack impl", result: fail }
+      - { kind: code-read, ref: "IsEnabled reads g_random_gravity (RandomGravityMutator.cs:33); MutatorActivation.Apply (MutatorActivation.cs:80, called from GameWorld.cs:563) walks Mutators.All and calls Add->Hook for each enabled mutator on the live server-boot path", result: pass }
+      - { kind: code-read, ref: "FIXED: MUTATOR_ONADD cvar_settemp IS now modelled. Hook() (RandomGravityMutator.cs:50-51) calls MutatorActivation.SettempCvar(\"sv_gravity\", Api.Cvars.GetString(\"sv_gravity\")); the host wires SettempCvarHandler = SettempCvars.Set at GameWorld.cs:562 (BEFORE Apply() at :563), so the original gravity is pushed onto the server's settemp restore stack and reverted at match end. Headless (unwired) falls back to a plain cvar set (MutatorActivation.cs:41) — no restore target exists there anyway, matching QC's no-op.", result: pass }
       - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT19Tests.cs:RandomGravity_SetsSvGravityWithinBounds + ByName(\"random_gravity\") not-null (booted with g_random_gravity=1)", result: pass }
     confidence: high
-    notes: "Enable predicate and live activation are 1:1. The only enable-side gap is the un-modelled cvar_settemp restore (logic:partial) — a real but host-deferrable defect, not a deliberate divergence. UNCHANGED since the baseline audit. Random Gravity has no IsEnabled mode-exclusion in Base, so the instagib/ok/arena exclusion (a gap noted for NIX) is not applicable here."
+    notes: "FIXED since the 2026-06-22 baseline (was logic:partial). The cvar_settemp restore is now modelled via the MutatorActivation.SettempCvar seam wired to the server's SettempCvars stack. Enable predicate + live activation remain 1:1. Random Gravity has no IsEnabled mode-exclusion in Base, so the instagib/ok/arena exclusion (a gap noted for NIX) is not applicable here."
 
   - id: random_gravity.roll.startframe
     name: "Per-frame gravity re-roll on SV_StartFrame (formula + clamp + delay schedule)"
@@ -46,8 +44,8 @@ features:
     base_refs:
       - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:25-40 MUTATOR_HOOKFUNCTION(random_gravity, SV_StartFrame)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:56-97 OnStartFrame"
-      - "src/XonoticGodot.Server/GameWorld.cs:992 MutatorHooks.FireStartFrame(Time)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:60-102 OnStartFrame"
+      - "src/XonoticGodot.Server/GameWorld.cs MutatorHooks.FireStartFrame(Time) per server frame"
     constants:
       - { name: "g_random_gravity_delay", base: "3 (mutators.cfg:185)", port: "3 (mutators.cfg:185, read live via GetFloat)", match: true }
       - { name: "g_random_gravity_negative_chance", base: "0.5 (mutators.cfg:186)", port: "0.5 (mutators.cfg:186)", match: true }
@@ -68,12 +66,12 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "OnStartFrame (RandomGravityMutator.cs:78-90): two-branch formula + QMath.Bound clamp + _gravityDelay=time+delay vs sv_random_gravity.qc:32-37; byte-for-byte equivalent incl. the `* -negative` sign flip (C# `*` binds before `-`, matching QC). Two Prandom.Float() draws in QC order in branch1. UNCHANGED by Wave-2.", result: pass }
+      - { kind: code-read, ref: "OnStartFrame (RandomGravityMutator.cs:84-95): two-branch formula + QMath.Bound clamp + _gravityDelay=time+delay vs sv_random_gravity.qc:32-37; byte-for-byte equivalent incl. the `* -negative` sign flip (C# `*` binds before unary `-`, matching QC). Two Prandom.Float() draws in QC order in branch1. game_stopped guard via VehicleCommon.GameStopped (RandomGravityMutator.cs:65).", result: pass }
       - { kind: code-read, ref: "Prandom.Float() (Math/Prandom.cs) is the seeded random() facade ([0,1) via (Next()>>8)*(1/2^24))", result: pass }
-      - { kind: code-read, ref: "FireStartFrame pumped every server frame at GameWorld.cs:992 (alongside ServerHooks.FireStartFrame at :989); line moved from baseline :943 by the Wave-2 GameWorld edits but is still pumped from the same per-frame loop", result: pass }
+      - { kind: code-read, ref: "OnStartFrame is subscribed to MutatorHooks.SvStartFrame (Hook(), RandomGravityMutator.cs:44) and pumped every server frame by GameWorld's FireStartFrame loop", result: pass }
       - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT19Tests.cs:RandomGravity_SetsSvGravityWithinBounds (rolls all in [min,max]) + RandomGravity_RespectsDelay (no re-roll inside the delay window)", result: pass }
     confidence: high
-    notes: "1:1 roll. Branch naming in Base is counter-intuitive (both branches normally yield non-negative gravity at stock defaults; gravity only goes negative if min<0 forces the lower clamp) — ported faithfully as written. LOG_TRACE at sv_random_gravity.qc:39 is a dev trace only, no behavior, intentionally not a separate row. No regression from Wave-1/2."
+    notes: "1:1 roll, unchanged. Branch naming in Base is counter-intuitive (both branches normally yield non-negative gravity at stock defaults; gravity only goes negative if min<0 forces the lower clamp) — ported faithfully as written. LOG_TRACE at sv_random_gravity.qc:39 is a dev trace only, no behavior, intentionally not a separate row."
 
   - id: random_gravity.roll.gamestart_gate
     name: "Pre-match suppression gate (time < game_starttime)"
@@ -81,9 +79,9 @@ features:
     base_refs:
       - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:29 if(time < game_starttime) return false"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:68 if (time < (StartItem.GameStartTimeProvider?.Invoke() ?? 0f)) return false;"
-      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:37 GameStartTimeProvider"
-      - "src/XonoticGodot.Server/GameWorld.cs:550 StartItem.GameStartTimeProvider = () => GameStartTime"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:72 if (time < (StartItem.GameStartTimeProvider?.Invoke() ?? 0f)) return false;"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs GameStartTimeProvider"
+      - "src/XonoticGodot.Server/GameWorld.cs StartItem.GameStartTimeProvider = () => GameStartTime"
     constants: []
     status:
       logic: faithful
@@ -96,34 +94,40 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "OnStartFrame (RandomGravityMutator.cs:68) now has the explicit `if (time < GameStartTimeProvider())` gate, ordered after the delay check exactly as sv_random_gravity.qc:28-29 (delay then game_starttime). Added by the Wave-1/2 change (git diff main..HEAD shows the inserted gate replacing the incorrect 'game_stopped is a faithful superset' comment).", result: pass }
-      - { kind: code-read, ref: "Liveness: GameWorld.cs:550 wires StartItem.GameStartTimeProvider = () => GameStartTime in the same BuildGameWorld setup block as MutatorActivation.Apply() (:535); GameStartTime is the real countdown-end, synced from Warmup.GameStartTime (GameWorld.cs:951, :2469). The same provider is consumed live by DamageSystem.cs:509, Domination.cs:528, MonsterAI.cs:1742 — a shared, exercised seam, not dead.", result: pass }
-      - { kind: code-read, ref: "Headless tests with no host wire-up read the provider as 0 so the gate is a no-op there (matches 'match already live') — the gate is correctly inert pre-wire and active on the real server path.", result: pass }
+      - { kind: code-read, ref: "OnStartFrame (RandomGravityMutator.cs:72) has the explicit `if (time < GameStartTimeProvider())` gate, ordered after the delay check exactly as sv_random_gravity.qc:28-29 (delay then game_starttime).", result: pass }
+      - { kind: code-read, ref: "Liveness: GameWorld wires StartItem.GameStartTimeProvider = () => GameStartTime in the BuildGameWorld setup block alongside MutatorActivation.Apply(); GameStartTime is the real countdown-end. The same provider is consumed live by DamageSystem/Domination/MonsterAI — a shared, exercised seam, not dead.", result: pass }
+      - { kind: code-read, ref: "Headless tests with no host wire-up read the provider as 0 so the gate is a no-op there (matches 'match already live') — correctly inert pre-wire and active on the real server path.", result: pass }
     confidence: high
-    notes: "FIXED by Wave-1/2 (was logic:missing/timing:missing/liveness:na in the baseline). The game_starttime half of QC's pre-start suppression is now ported and live-wired via the existing GameStartTimeProvider seam. The round-handler half remains a separate open row (round_gate). gravity no longer flips during the warmup countdown on the live server path."
+    notes: "Faithful + live (fixed in the prior wave). The game_starttime half of QC's pre-start suppression is ported and live-wired via the GameStartTimeProvider seam; gravity no longer flips during the warmup countdown."
 
   - id: random_gravity.roll.round_gate
     name: "Pre-round-start suppression gate (round active && !round started)"
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:30 if(round_handler_IsActive() && !round_handler_IsRoundStarted()) return false"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:77 if (RoundHandler.RoundGateBlocks()) return false;"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/RoundHandler.cs:41 RoundNotStartedProvider"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/RoundHandler.cs:48 RoundGateBlocks() => RoundNotStartedProvider?.Invoke() ?? false"
+      - "src/XonoticGodot.Server/GameWorld.cs:1134 RoundHandler.RoundNotStartedProvider = () => Rounds is { IsRoundStarted: false } (in EnableRounds; cleared to null at :1745)"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
-      timing: missing
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No round-handler gate in OnStartFrame: in round modes (Clan Arena, Freezetag, round-based Domination, etc.) the port can roll gravity in the inter-round window before the round starts; Base suppresses it. STILL NOT trivially fixable: grep over src/XonoticGodot.Common for any static/global round-state provider (RoundActiveProvider/IsRoundStartedProvider/static Func<...> round) found NONE. RoundHandler (Common/Gameplay/GameTypes/RoundHandler.cs) exposes IsRoundStarted/Phase per instance but is owned per-gametype; DamageSystem documents the same unreachability. Wiring this gate needs a new global round-state seam (not added by Wave-1/2)."
+      - "Liveness is partial-by-design: RoundNotStartedProvider is wired only inside GameWorld.EnableRounds (GameWorld.cs:1134), i.e. only for round-based gametypes (CA/Freezetag/round Domination/…). In non-round modes the provider is null and RoundGateBlocks() returns false — which exactly matches QC where round_handler_IsActive() is false outside round modes. So the gate is correctly inert where Base is inert, and active where Base is active. Not a defect, just mode-scoped reachability."
     verification:
-      - { kind: code-read, ref: "OnStartFrame (RandomGravityMutator.cs:69-72) has only a comment acknowledging the omission; no round-handler check exists. grep for RoundActiveProvider|RoundStartedProvider|static Func round over src/XonoticGodot.Common returned empty — the global seam still does not exist.", result: fail }
+      - { kind: code-read, ref: "OnStartFrame (RandomGravityMutator.cs:73-77) now performs the round-handler check via RoundHandler.RoundGateBlocks(), ordered after the game_starttime gate exactly as sv_random_gravity.qc:29-30.", result: pass }
+      - { kind: code-read, ref: "RoundHandler.RoundGateBlocks() (RoundHandler.cs:48) delegates to the static RoundNotStartedProvider; the host wires it in EnableRounds (GameWorld.cs:1134) to () => Rounds is { IsRoundStarted: false } and nulls it on teardown (GameWorld.cs:1745). Rounds != NULL == round_handler_IsActive(); IsRoundStarted == round_handler_IsRoundStarted(). The same Rounds.IsRoundStarted predicate also drives WeaponFireDriver.RoundFireForbidden (:1130).", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT19Tests.cs sets RoundHandler.RoundNotStartedProvider inert (line ~53 comment) so the random_gravity roll tests aren't suppressed by the gate — confirms the seam is the consumed path.", result: pass }
     confidence: high
-    notes: "STILL OPEN. Real divergence in round modes only (gravity can roll between rounds before round start). Unlike the game_starttime half (now fixed), this needs a new global round-state seam that Wave-1/2 did not introduce. Separated from the game_starttime gate because their fix-availability differs."
+    notes: "FIXED since the 2026-06-22 baseline (was logic:missing/timing:missing/liveness:na). The global round-state seam the baseline said 'does not exist' was added: RoundHandler.RoundNotStartedProvider / RoundGateBlocks(), wired live per round-based match in GameWorld.EnableRounds. Gravity no longer rolls in the inter-round pre-start window in round modes."
 
   - id: random_gravity.output.sv_gravity_consumption
     name: "sv_gravity output consumed live by the physics integrator"
@@ -132,7 +136,7 @@ features:
       - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:33-35 cvar_set(\"sv_gravity\", ftos(...))"
       - "common/physics/player.qc (gravity read from sv_gravity per move via PHYS_GRAVITY)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:92 Api.Cvars.Set(\"sv_gravity\", Ftos(gravity))"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:97 Api.Cvars.Set(\"sv_gravity\", Ftos(gravity))"
       - "src/XonoticGodot.Common/Physics/MovementParameters.cs:190 p.Gravity = Cvar(N(prefix,\"gravity\"), p.Gravity)  [prefix defaults \"sv_\"]"
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:132 MovementParameters.Resolve(player, input.Predicted)"
     constants:
@@ -148,11 +152,11 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "FromCvars(prefix=\"sv_\") reads sv_gravity live each Resolve (MovementParameters.cs:143,190), called per player move at PlayerPhysics.cs:132, so a mid-match Set takes effect next tick — matches Base's per-move PHYS_GRAVITY read. UNCHANGED by Wave-2.", result: pass }
-      - { kind: code-read, ref: "Ftos (RandomGravityMutator.cs:100) serialises with InvariantCulture so the value round-trips through the cvar store", result: pass }
+      - { kind: code-read, ref: "FromCvars(prefix=\"sv_\") reads sv_gravity live each Resolve (MovementParameters.cs:143,190), called per player move at PlayerPhysics.cs:132, so a mid-match Set takes effect next tick — matches Base's per-move PHYS_GRAVITY read.", result: pass }
+      - { kind: code-read, ref: "Ftos (RandomGravityMutator.cs:105) serialises with InvariantCulture so the value round-trips through the cvar store", result: pass }
       - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT19Tests.cs:RandomGravity_SetsSvGravityWithinBounds asserts the sv_gravity cvar after each roll", result: pass }
     confidence: high
-    notes: "The mutator's effect channel is the sv_gravity cvar, re-read live per move. Faithful. No regression from Wave-1/2."
+    notes: "The mutator's effect channel is the sv_gravity cvar, re-read live per move. Faithful, unchanged."
 
   - id: random_gravity.advertise.mutator_string
     name: "Mutator-list advertisement (BuildMutatorsString / BuildMutatorsPrettyString)"
@@ -160,21 +164,26 @@ features:
     base_refs:
       - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:42-45 BuildMutatorsString -> strcat(..., \":RandomGravity\")"
       - "common/mutators/mutator/random_gravity/sv_random_gravity.qc:47-50 BuildMutatorsPrettyString -> strcat(..., \", Random gravity\")"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:109 BuildMutatorsString(s) => s + \":RandomGravity\""
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs:113 BuildMutatorsPrettyString(s) => s + \", Random gravity\""
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108 BuildMutatorsString chain / :121 BuildMutatorsPrettyString chain"
+      - "src/XonoticGodot.Server/GameWorld.cs:876 MutatorActivation.BuildMutatorsString(\"\") (live, sv_eventlog-gated gamelog init)"
     constants:
-      - { name: "mutator_tag / pretty", base: ":RandomGravity / \", Random gravity\"", port: "none", match: false }
+      - { name: "mutator_tag / pretty", base: ":RandomGravity / \", Random gravity\"", port: ":RandomGravity / \", Random gravity\"", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Random Gravity is not added to the server-info / scoreboard mutator list: neither BuildMutatorsString nor BuildMutatorsPrettyString is implemented for this mutator. grep -rn 'RandomGravity'/'Random gravity' over src found only the mutator class itself (no advertising string). UNCHANGED by Wave-1/2 (other mutators like Cloaked/SuperSpec do have these hooks, but random_gravity still does not)."
+      - "BuildMutatorsPrettyString chain has NO live caller: MutatorActivation.BuildMutatorsPrettyString (MutatorActivation.cs:121) and the per-mutator override (RandomGravityMutator.cs:113) both exist, but grep finds no invocation of the chain anywhere in the port. So the human-readable active-mutator list (scoreboard / votescreen / server-browser pretty field) never includes \", Random gravity\". The machine-readable \":RandomGravity\" token IS live (BuildMutatorsString chain called at GameWorld.cs:876 during gamelog init, gated on sv_eventlog)."
     verification:
-      - { kind: code-read, ref: "RandomGravityMutator.cs has no BuildMutatorsString/Pretty hook; grep over src/ for 'RandomGravity'/'Random gravity' found only this mutator class (no advertising string).", result: fail }
+      - { kind: code-read, ref: "RandomGravityMutator.cs:109/113 implement both override tokens with the exact Base strings (\":RandomGravity\" / \", Random gravity\"). The BuildMutatorsString chain (MutatorActivation.cs:108) is invoked live at GameWorld.cs:876 (string mutTokens = MutatorActivation.BuildMutatorsString(\"\")), gated on sv_eventlog, feeding GameLog.Init.", result: pass }
+      - { kind: code-read, ref: "grep over src/ + game/ for any non-override caller of BuildMutatorsPrettyString( found ONLY the chain definition (MutatorActivation.cs:121,125) — no live invocation. The pretty chain is dead across the whole port (not specific to random_gravity).", result: fail }
     confidence: high
-    notes: "STILL OPEN. Cosmetic/informational only — affects the displayed active-mutator list, not gameplay. Wave-1/2 did not touch this row."
+    notes: "FIXED since the 2026-06-22 baseline (was logic/values/presentation:missing, liveness:na). Both advertise strings are now implemented with the exact Base tokens. Machine token is live via the sv_eventlog gamelog path; the pretty-string chain is implemented but has no live caller anywhere in the port (a port-wide gap, recorded here on liveness:partial). Cosmetic/informational only — does not affect gameplay."

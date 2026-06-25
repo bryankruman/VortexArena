@@ -1,16 +1,15 @@
 unit: mutator-overkill
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 16
   worst_gaps:
     - "Monsters drop no loot and their normal drop is not suppressed (MonsterDropItem hook chain does not exist in the port)."
     - "Secondary Blaster does not work during the round countdown (Overkill does not subscribe the live PlayerPreThink chain)."
-    - "No item-respawn waypoints for surviving health/armor; no OK items injected into the random-items pool (neither hook chain exists)."
-    - "Enable predicate is narrower than Base: missing the !instagib / !weaponarena-gametype / g_mod_balance==\"Overkill\" guards (can double-activate)."
-    - "MUTATOR_ONADD precache_all_playermodels(ok_player) and the g_overkill_items list are never built (player model + random-pool source missing)."
-    - "Mod-name strings (':OK', ', Overkill', SetModname 'Overkill') and the cl_overkill cvar_settemp sync are absent."
+    - "No item-respawn waypoints for surviving health/armor (Item_RespawnCountdown / Item_ScheduleRespawn hook chains do not exist)."
+    - "MUTATOR_ONADD precache_all_playermodels(ok_player) and the g_overkill_items IntrusiveList are never built (player model missing; the random pool uses a hard-coded name list instead)."
+    - "Mod-name: SetModname 'Overkill' and the cl_overkill cvar_settemp sync are absent; BuildMutatorsPrettyString (', Overkill') is overridden but its chain has no live consumer."
 features:
   - id: overkill.enable.predicate
     name: "Mutator enable predicate (g_overkill + guards)"
@@ -23,7 +22,7 @@ features:
     constants:
       - { name: "g_overkill", base: "\"\" (empty string, falsey)", port: "0 (GetFloat != 0)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -31,12 +30,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Port enables on g_overkill != 0 only; Base also requires !MUTATOR_IS_ENABLED(mutator_instagib), MapInfo_LoadedGametype.m_weaponarena == false, and cvar_string(\"g_mod_balance\") == \"Overkill\". Port can activate Overkill rules without the Overkill balance/guards, and can double-activate alongside instagib or a weapon-arena gametype. UNCHANGED by Wave-2."
+    gaps: []
     verification:
-      - { kind: code, ref: "OverkillMutator.IsEnabled reads only g_overkill (OverkillMutator.cs:70-71); MutatorActivation.Apply adds when IsEnabled (MutatorActivation.cs:64) — verified live boot path", result: pass }
+      - { kind: code, ref: "OverkillMutator.IsEnabled (OverkillMutator.cs:77-82) now requires g_overkill!=0 && !OtherEnabled(\"instagib\") && g_weaponarena==0 && g_mod_balance==\"Overkill\" — all three Base guards present. MutatorActivation.Apply adds when IsEnabled — verified live boot path.", result: pass }
     confidence: high
-    notes: "Mutator is registered and activated on the live boot path; only the enable predicate is narrower than Base. Base default for g_overkill is an empty string, not literal \"0\"; both are falsey."
+    notes: "FIX (logic partial→faithful): the enable predicate now matches Base — !MUTATOR_IS_ENABLED(mutator_instagib) via OtherEnabled(\"instagib\"), !MapInfo_LoadedGametype.m_weaponarena via g_weaponarena==0, and the g_mod_balance==\"Overkill\" balance guard. No longer double-activates alongside instagib / a weapon-arena gametype. Base default for g_overkill is an empty string, not literal \"0\"; both are falsey."
   - id: overkill.onadd.precache_and_itemblock
     name: "MUTATOR_ONADD: precache ok_player models, set item mutator-block flags, build g_overkill_items list"
     layer: [authority]
@@ -142,7 +140,7 @@ features:
     gaps:
       - "Minor: the Base \"random\" keyword (drop any allowed normal item) is stubbed to fall back to armor_small (the port's item registry has no filtered normal-item group). The \"\" (disabled) sentinel IS handled (RandomFromList returns null on empty). Default loot is armor_small, so this only affects servers that set g_overkill_loot_player \"random\"."
     verification:
-      - { kind: code, ref: "OnPlayerDies → DropItem (OverkillMutator.cs:184); PlayerDies.Call live at DamageSystem.cs:589; DropItem now routes through StartItem.SpawnLoot (OverkillMutator.cs:255) — the same MOVETYPE_TOSS loot pipeline thrown weapons use (StartItem.cs:71, SetupLoot 175): real model, Touch=ItemPickupRules.ItemTouch (StartItem.cs:144), despawn timer, anti-instant-pick. Launch math + lifetime defaults match Base.", result: pass }
+      - { kind: code, ref: "OnPlayerDies → DropItem (OverkillMutator.cs:241,247); PlayerDies.Call live at DamageSystem.cs:594; DropItem routes through StartItem.SpawnLoot (OverkillMutator.cs:318) — the same MOVETYPE_TOSS loot pipeline thrown weapons use: real model, Touch handler, despawn timer, anti-instant-pick. Launch math + lifetime defaults match Base.", result: pass }
     confidence: high
     notes: "MAJOR Wave-2 FIX: the drop is now collectible. Baseline DropItem hand-rolled a Toss edict with no Touch handler / no model that just despawned; it now runs the full StartItem loot pipeline so the loot has a model and a working pickup. Only the rarely-used \"random\" keyword remains a fallback stub."
   - id: overkill.loot.drop_monster
@@ -218,7 +216,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnSetStartItems added at HookOrder.Last (OverkillMutator.cs:99); SetStartItems.Call live at SpawnSystem.cs:767; GiveLoadout also re-applied in OnPlayerSpawn", result: pass }
+      - { kind: code, ref: "OnSetStartItems added at HookOrder.Last (OverkillMutator.cs:117); SetStartItems.Call live at SpawnSystem.cs:798; GiveLoadout also re-applied in OnPlayerSpawn", result: pass }
     confidence: high
     notes: "Base sets start_weapons = warmup_start_weapons = ok_start_items; the port loadout is a single set so warmup equality is implied but not separately modeled. UNCHANGED by Wave-2 (was already faithful/live)."
   - id: overkill.countdown.blaster
@@ -275,23 +273,26 @@ features:
     base_refs:
       - "common/mutators/mutator/overkill/sv_overkill.qc:RandomItems_GetRandomOverkillItemClassName"
       - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, RandomItems_GetRandomItemClassName)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnRandomItemsGetClassName"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:GetRandomItemClassName"
     constants: []
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "When random items are enabled under Overkill, the OK item set (g_overkill_items + weapon_okhmg/okrpc with their g_<prefix>_*_probability weights) is not injected into the random roll. The port's RandomItemsMutator.GetRandomItemClassName does NOT fire a mod-injection hook chain, so there is no chain for Overkill to override. UNCHANGED by Wave-2 (also gated on the missing g_overkill_items list, overkill.onadd row)."
+      - "Minor: the OK item pool is a hard-coded NetName list (OverkillItemNetNames = health_mega/armor_small/armor_medium/armor_big/armor_mega + weapon_okhmg/okrpc), NOT the Base g_overkill_items IntrusiveList built in MUTATOR_ONADD (which the port never builds — see overkill.onadd row). The set/weights match Base, but it is not driven by the real ITEM_FLAG_MUTATORBLOCKED-filtered list; Item_IsDefinitionAllowed is approximated by def.ItemDef.IsAllowed."
+      - "liveness=partial: only fires when the random_items mutator is also active (the chain is reached via RandomItemsMutator.GetRandomItemClassName)."
     verification:
-      - { kind: code, ref: "no RandomItems_GetRandomItemClassName mutator hook chain; RandomItemsMutator.GetRandomItemClassName always falls to the vanilla pick", result: fail }
+      - { kind: code, ref: "OnRandomItemsGetClassName (OverkillMutator.cs:174) subscribed to MutatorHooks.RandomItemsGetClassName (cs:119); the chain is fired by RandomItemsMutator.GetRandomItemClassName via FireRandomItemsGetClassName (RandomItemsMutator.cs:305), which is called on the live spawn/replace paths (cs:172,247). Weighted reservoir over the OK pool keyed by g_{prefix}_{canonical}_probability matches Base.", result: pass }
     confidence: high
-    notes: "Depends on the random-items mutator being active; the override path/chain is absent regardless."
+    notes: "FIX (missing→partial/faithful, liveness na→partial). The RandomItems_GetRandomItemClassName mod-injection hook chain now EXISTS and is live, and Overkill subscribes it. Only caveat: the pool is a hard-coded name list rather than the Base g_overkill_items IntrusiveList, and it is reachable only when random_items is active."
   - id: overkill.itemwaypoints.respawn
     name: "Item_RespawnCountdown/ScheduleRespawn: timed waypoints for surviving health/armor"
     layer: [authority]
@@ -391,24 +392,27 @@ features:
       - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, BuildMutatorsPrettyString)"
       - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, SetModname)"
       - "common/mutators/mutator/overkill/cl_overkill.qc:REGISTER_MUTATOR(ok)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:BuildMutatorsString"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:BuildMutatorsPrettyString"
     constants:
-      - { name: "mutator_tag", base: ":OK / , Overkill", port: "none", match: false }
+      - { name: "mutator_tag_machine", base: ":OK", port: "\":OK\" (BuildMutatorsString override)", match: true }
+      - { name: "mutator_tag_pretty", base: ", Overkill", port: "\", Overkill\" (BuildMutatorsPrettyString override, chain has no live consumer)", match: true }
       - { name: "modname", base: "Overkill", port: "none", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: partial
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Server browser / scoreboard mutator string does not show ':OK' / ', Overkill': the BuildMutatorsString / BuildMutatorsPrettyString chains now EXIST and are LIVE (MutatorBase virtuals dispatched by MutatorActivation.BuildMutatorsString/PrettyString, called from GameWorld.cs:865; other mutators e.g. Midair/Vampire override them) — but OverkillMutator does NOT override them, so it contributes no ':OK'/', Overkill' token. A one-line override would close this; user-visible behavior is still absent."
       - "SetModname is not set to 'Overkill': no SetModname hook chain exists anywhere in the port (grep SetModname → 0 non-overkill hits), so there is nothing to subscribe."
+      - "BuildMutatorsPrettyString (', Overkill') is overridden (OverkillMutator.cs:401) but its chain (MutatorActivation.BuildMutatorsPrettyString) has NO live caller in the port — the scoreboard/votescreen consumer never invokes it (grep for a MutatorActivation.BuildMutatorsPrettyString call → 0), so ', Overkill' is still not shown. The same is true for every mutator's pretty-string override."
       - "Client cl_overkill cvar_settemp(g_overkill,1) sync is absent. UNCHANGED."
     verification:
-      - { kind: code, ref: "BuildMutatorsString/PrettyString chain live (MutatorActivation.cs:88-105, called GameWorld.cs:865) but OverkillMutator overrides neither (grep BuildMutators in OverkillMutator.cs → 0). No SetModname chain in src/. No cl_overkill sync.", result: fail }
+      - { kind: code, ref: "OverkillMutator now overrides BuildMutatorsString → \":OK\" (cs:397) and BuildMutatorsPrettyString → \", Overkill\" (cs:401). BuildMutatorsString chain is LIVE: MutatorActivation.BuildMutatorsString called from GameWorld.cs:876 (gated on sv_eventlog) for the gamelog mutators field. BuildMutatorsPrettyString chain (MutatorActivation.cs:121) has NO live caller. No SetModname chain in src/. No cl_overkill sync.", result: partial }
     confidence: high
-    notes: "Cosmetic / reporting only; no gameplay impact. Refinement vs baseline: the BuildMutatorsString/PrettyString seam now exists and is live (baseline said no chain existed) — Overkill just doesn't subscribe — but the user-visible token/modname are still absent, so the row stays missing."
+    notes: "FIX (missing→partial). Overkill now contributes the ':OK' machine token on the LIVE BuildMutatorsString chain (gamelog / server-info), and overrides the pretty ', Overkill' token — but the pretty-string chain itself is never consumed in the port, and SetModname + the client cl_overkill sync remain absent. Cosmetic / reporting only; no gameplay impact."

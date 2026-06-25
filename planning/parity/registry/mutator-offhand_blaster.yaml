@@ -1,12 +1,13 @@
 unit: mutator-offhand_blaster
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 8
   worst_gaps:
-    - "FIXED by Wave-5 (commit 66e378f): the offhand-fire input wire is now LIVE end-to-end. InputButtons gained `Hook = 1 << 6` (src/XonoticGodot.Net/InputCommand.cs:20), the C2S Serialize/Deserialize byte (InputCommand.cs:86/103) carries bit 6 (0x40 < 0xFF), NetGame sets it from BindTable.HookHeld (game/net/NetGame.cs:3984), BindTable.SetButton handles `+hook`→`case \"hook\"` (BindTable.cs:131), ServerNet.ToMovementInput maps it to MovementInput.ButtonHook (game/net/ServerNet.cs:1415), and WeaponFireDriver.Frame (src/.../Weapons/WeaponFireDriver.cs:66) finally ASSIGNS `player.OffhandFirePressed = input.ButtonHook`. Default binds `bind MOUSE5 +hook`/`bind e +hook` match Base (binds-xonotic.cfg:29/37). So OnPlayerPreThink's `if (player.OffhandFirePressed)` can now fire, and the offhand blaster genuinely shoots in a match. This was the #1 baseline gap (input wire never added) and the PORTING-PLAN headline — it is CLOSED."
-    - "STILL MISSING: BuildMutatorsString/BuildMutatorsPrettyString not ported — no hook chain or per-mutator implementation; the mutator never appears in any machine/pretty mutator-list string. GameLog.Init (GameWorld.cs:829, line shifted) still called with no mutators arg → empty ':gameinfo:mutators:' line. (grep finds only doc-comment refs in Cloaked/Powerups/RocketFlying/SuperSpec mutators.)"
+    - "FIXED (Wave-5, commit 66e378f) and still intact 2026-06-25: the offhand-fire input wire is LIVE end-to-end. InputButtons.Hook = 1<<6 (src/XonoticGodot.Net/InputCommand.cs:20), C2S byte carries bit 6 (0x40), NetGame sets it from BindTable.HookHeld (game/net/NetGame.cs:4105), BindTable handles `+hook`→`case \"hook\"` (src/XonoticGodot.Engine/Console/BindTable.cs:131), ServerNet maps it to MovementInput.ButtonHook (game/net/ServerNet.cs:1458), and WeaponFireDriver.Frame (WeaponFireDriver.cs:66) assigns `player.OffhandFirePressed = input.ButtonHook`. Default binds `bind MOUSE5/e +hook` match Base. The offhand blaster genuinely shoots in a match."
+    - "FIXED since 2026-06-22 audit: BuildMutatorsString / BuildMutatorsPrettyString are now ported. OffhandBlasterMutator.cs:45/49 override both (`:offhand_blaster` / `, Offhand blaster`); MutatorActivation.BuildMutatorsString (MutatorActivation.cs:108) is called LIVE from GameWorld.cs:876 (gated by sv_eventlog) feeding the ':gameinfo:mutators:' GameLog line. The pretty-string chain (MutatorActivation.BuildMutatorsPrettyString) has the per-mutator override but NO live caller yet (scoreboard/votescreen consumer not wired) → DEAD."
+    - "FIXED since 2026-06-22 audit: the round-grace weaponUseForbidden suppression is now wired. WeaponFireDriver.WeaponUseForbidden delegates to RoundFireForbidden (WeaponFireDriver.cs:328), which GameWorld.cs:1130 sets to `_ => Rounds is { IsRoundStarted: false }`. The offhand button is zeroed during the inter-round grace, matching Base round_handler_IsActive() && !round_handler_IsRoundStarted(). Only the ForbidWeaponUse mutator-hook half is unmodeled (no port mutator forbids weapon use — non-issue)."
     - "STILL MISSING: client gameplay-tips line ('offhand blaster is enabled, press <key>') and the menu describe text — no BuildGameplayTipsString builder and no 'offhand' menu entry exist in the port (grep src/, game/menu/ found none)."
 features:
   - id: offhand_blaster.enable.register
@@ -78,20 +79,20 @@ features:
     status:
       logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: na
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "weaponUseForbidden suppression incomplete: Base (weaponsystem.qc:610-612) clears key_pressed when weaponUseForbidden(actor) (round active-but-not-started OR the ForbidWeaponUse mutator hook). The port DOES zero OffhandFirePressed alongside the fire buttons when WeaponUseForbidden(player) is true (WeaponFireDriver.cs:72-73), BUT WeaponUseForbidden is still a stub returning false (WeaponFireDriver.cs:324) — so the round-grace / ForbidWeaponUse gate is not actually enforced. The vehicle and frozen/dead/game-stopped halves ARE handled (WeaponThink returns while p.Vehicle != null; WeaponLocked covers freeze; caller gates dead/game-stopped). Minor residual: the offhand could fire during the inter-round grace countdown in round-based modes."
+      - "Residual (minor): the ForbidWeaponUse mutator-hook half of Base weaponUseForbidden (weaponsystem.qc:430) is not modeled — WeaponUseForbidden only covers the round-grace half. No port mutator currently forbids weapon use, so this is a non-issue in practice. The round-grace half (Base weaponsystem.qc:428: round_handler_IsActive() && !round_handler_IsRoundStarted()) IS now enforced live (see verification)."
     verification:
       - { kind: code, ref: "Wave-5 (66e378f) added the input wire: InputButtons.Hook (InputCommand.cs:20), Serialize writes Buttons&0xFF / Deserialize reads a byte (bit 6=0x40 fits), NetGame.cs:3984 sets it from BindTable.HookHeld, BindTable.cs:131 `case \"hook\"` from `+hook`, ServerNet.cs:1415 -> MovementInput.ButtonHook, WeaponFireDriver.cs:66 `player.OffhandFirePressed = input.ButtonHook`. Default binds `bind MOUSE5/e +hook` match Base. OnPlayerPreThink (PlayerPreThink.Call live at GameWorld.cs:1174) now reads a real signal -> FireOffhand reachable.", result: pass }
       - { kind: code, ref: "FireOffhand does `OffhandNextThink = now + refire * WeaponRateFactor(player)`; WeaponRateFactor() does 1/g_weaponratefactor then MutatorHooks.WeaponRateFactor.Call (live producers: BuffsMutator/PowerupsMutator register it). Matches Base jump_interval = time + refire*W_WeaponRateFactor(actor).", result: pass }
-      - { kind: code, ref: "WeaponUseForbidden (WeaponFireDriver.cs:324) still `=> false;` unconditionally — round-grace/ForbidWeaponUse zeroing of the offhand button not enforced.", result: fail }
+      - { kind: code, ref: "WeaponUseForbidden now wired live: WeaponFireDriver.cs:328 `=> RoundFireForbidden?.Invoke(player) ?? false`; GameWorld.cs:1130 sets RoundFireForbidden = `_ => Rounds is { IsRoundStarted: false }` (cleared to null at GameWorld.cs:1742). The offhand button (WeaponFireDriver.cs:72-73) is zeroed during the inter-round grace, matching Base weaponsystem.qc:428.", result: pass }
     confidence: high
-    notes: "MAJOR Wave-5 fix: liveness dead -> live. The trigger signal (Entity.OffhandFirePressed / the +hook input bit) that the baseline flagged as having ZERO producers now has a complete, verified producer chain on the real match path; the offhand blaster fires in a match. logic upgraded partial -> faithful (trigger + vehicle gate present); the W_WeaponRateFactor values gap was already closed in Wave-2. timing kept `partial` ONLY because WeaponUseForbidden remains a stub (the round-grace suppression is the lone residual). The SAME wire revives HookMutator's and the nade offhand-throw's +hook paths (see mutator-hook, mutator-nades, weapon-hook)."
+    notes: "timing partial -> faithful (2026-06-25): the lone residual (WeaponUseForbidden stub) is fixed — the round-grace suppression is now wired live via RoundFireForbidden. Prior Wave-5 fixes intact: liveness dead -> live (the +hook input bit producer chain is complete on the real match path; offhand blaster fires in a match); logic faithful (trigger + vehicle gate); W_WeaponRateFactor values closed in Wave-2. Only the ForbidWeaponUse mutator-hook half remains unmodeled (non-issue — no port mutator forbids weapon use). The SAME wire revives HookMutator's and the nade offhand-throw's +hook paths (see mutator-hook, mutator-nades, weapon-hook)."
   - id: offhand_blaster.fire.blaster_attack
     name: "Blaster primary projectile fired by the offhand (damage/force/speed)"
     layer: [authority]
@@ -162,25 +163,30 @@ features:
     base_refs:
       - "common/mutators/mutator/offhand_blaster/sv_offhand_blaster.qc:MUTATOR_HOOKFUNCTION(offhand_blaster, BuildMutatorsString)"
       - "common/mutators/mutator/offhand_blaster/sv_offhand_blaster.qc:MUTATOR_HOOKFUNCTION(offhand_blaster, BuildMutatorsPrettyString)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:BuildMutatorsString (=> s + \":offhand_blaster\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:BuildMutatorsPrettyString (=> s + \", Offhand blaster\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:BuildMutatorsString / BuildMutatorsPrettyString (per-active-mutator chain)"
+      - "src/XonoticGodot.Server/GameWorld.cs:876 (MutatorActivation.BuildMutatorsString -> GameLog.Init ':gameinfo:mutators:' line, sv_eventlog-gated)"
     constants:
-      - { name: "machine_token", base: "\":offhand_blaster\"", port: "none", match: false }
-      - { name: "pretty_token", base: "\", Offhand blaster\"", port: "none", match: false }
+      - { name: "machine_token", base: "\":offhand_blaster\"", port: "\":offhand_blaster\"", match: true }
+      - { name: "pretty_token", base: "\", Offhand blaster\"", port: "\", Offhand blaster\"", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL MISSING after Wave-1/2/5: BuildMutatorsString/BuildMutatorsPrettyString not ported. No such hook chain or per-mutator implementation exists in src/ or game/ (grep finds only doc-comment references in Cloaked/Powerups/RocketFlying/SuperSpec mutators). The only mutator-list builder (GameLog.Init's ':gameinfo:mutators:' line) is still fed null at its sole call site (GameWorld.cs:829, line shifted) — so even that list is empty, and it is not the BuildMutatorsString hook."
+      - "Pretty-string chain is implemented but DEAD: MutatorActivation.BuildMutatorsPrettyString has the per-mutator override (`, Offhand blaster`) but NO live caller — no scoreboard/votescreen consumer is wired (Base calls it in server/client.qc:1107). So the human-readable mutator-list token is built nowhere on the live path. The machine-string token IS live (GameWorld.cs:876, sv_eventlog-gated GameLog line)."
     verification:
-      - { kind: code, ref: "No BuildMutatorsString/PrettyString hook chain or per-mutator implementation in src/ or game/. GameLog.Init(gametype, map) at GameWorld.cs:829 called with no mutators arg -> empty :gameinfo:mutators: line.", result: fail }
+      - { kind: code, ref: "OffhandBlasterMutator.cs:45 BuildMutatorsString => s + \":offhand_blaster\"; :49 BuildMutatorsPrettyString => s + \", Offhand blaster\". MutatorActivation.BuildMutatorsString (MutatorActivation.cs:108) iterates added mutators; called LIVE from GameWorld.cs:876 (sv_eventlog) feeding GameLog.Init.", result: pass }
+      - { kind: code, ref: "MutatorActivation.BuildMutatorsPrettyString (MutatorActivation.cs:121) has no live caller — grep finds only the per-mutator overrides and the static method's self-reference; no scoreboard/votescreen consumer wired.", result: fail }
     confidence: high
-    notes: "Cross-cutting gap shared by most mutators; unchanged by Wave-1/2/5. Tracked here per the per-mutator Base hook."
+    notes: "FIXED since 2026-06-22 audit: both hooks are now ported across the mutator family (offhand_blaster included). Machine string is live via the sv_eventlog GameLog path; pretty string is built but unconsumed (liveness partial). Cross-cutting with the rest of the mutator family (same MutatorActivation chain)."
   - id: offhand_blaster.tips.gameplay_hint
     name: "Client gameplay-tips line announcing the offhand blaster bind"
     layer: [presentation]

@@ -1,7 +1,7 @@
 unit: mutator-itemstime
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 10
   worst_gaps:
@@ -115,8 +115,8 @@ features:
     gaps:
       - "No itemstime net message exists in XonoticGodot.Net (REGISTER_NET_TEMP(itemstime) / IT_Write / NET_HANDLE not ported). Item times are fed directly from the local server mutator to the local HUD in NetGame.cs:2286-2300, guarded by `if (_server is not null)` (NetGame.cs:2260). A pure remote client (dedicated/separate server) never receives times and the items-time panel stays empty. STILL OPEN after Waves 1/2/5 (grep of src/XonoticGodot.Net for itemstime/IT_Write -> zero matches; the NetGame feed block was rewired in Wave 5 to add the enable gate but is still host-only)."
     verification:
-      - { kind: code, ref: "grep itemstime/ItemsTime/IT_Write across src/XonoticGodot.Net -> no matches (2026-06-22, re-verified post Wave-5)", result: fail }
-      - { kind: code, ref: "NetGame.cs:2260 host-only guard `if (_server is not null)` (unchanged)", result: fail }
+      - { kind: code, ref: "grep itemstime/ItemsTime/IT_Write across src/XonoticGodot.Net -> no matches (2026-06-25, re-verified Wave-6 drift check; no change)", result: fail }
+      - { kind: code, ref: "NetGame.cs:2260 host-only guard `if (_server is not null)` (unchanged 2026-06-25)", result: fail }
     confidence: high
     notes: "Single-listen-server architecture currently makes this host-only. Whether that is an intended simplification or a true gap is an open question for the owner (see spec Open questions). Wave 5 added the host-side enable gate (ShouldDraw + Tier) but did NOT add a net message; the feed remains a direct local push."
 
@@ -145,7 +145,7 @@ features:
     gaps:
       - "The per-client SERVER send gate (only spectators/warmup get times in a live round unless sv_itemstime==2 via SetTimesForAllPlayers), and the MakePlayerObserver / PlayerSpawn / ClientConnect / reset_map_global sync+reset hooks (SetTimesForPlayer / ResetTimesForPlayer / ResetTimes) are not implemented. There is no per-player networked itemstime state in the port. STILL OPEN after Waves 1/2/5: ItemstimeMutator.Hook() still adds ONLY MutatorHooks.SvStartFrame — no observer/spawn/connect/reset hooks. Wave 5 reproduced the OBSERVABLE consequence of the gate client-side (the host's ShouldDraw spectatee/warmup/tier test) instead of porting the server send-gate."
     verification:
-      - { kind: code, ref: "ItemstimeMutator.Hook() adds only MutatorHooks.SvStartFrame; no observer/spawn/connect/reset_map_global hooks (2026-06-22, re-verified post Wave-5)", result: fail }
+      - { kind: code, ref: "ItemstimeMutator.Hook() adds only MutatorHooks.SvStartFrame; no observer/spawn/connect/reset_map_global hooks (2026-06-25, re-verified Wave-6 drift check; no change)", result: fail }
     confidence: high
     notes: "Folded away by the single-view + host-only feed. The observable consequence (who sees the panel) is now realized via the client-side enable gate (hud.enable_gate, fixed in Wave 5). The server-side per-player send tier + the per-client reset/full-sync primitives (Item_ItemsTime_ResetTimes / SetTimesForPlayer) remain unported."
 
@@ -203,7 +203,7 @@ features:
       - "STAT(ITEMSTIME) is not REGISTERED as a networked client stat. Wave 5 instead exposes ItemstimeMutator.Tier = (int)sv_itemstime and the host enable gate reads it directly. On a listen server this is equivalent to the stat for the local client (value faithful, consumed live), but a pure remote client still has no networked tier. The waypoint-sprite consumer (waypoints.spectator_sprites) is also still unported, so that second consumer of the stat remains unsatisfied."
     verification:
       - { kind: code, ref: "ItemstimeMutator.Tier => Api.Cvars.GetFloat('sv_itemstime') (= QC autocvar_sv_itemstime, stats.qh:138 source); consumed live by NetGame.cs:2297 ShouldDraw", result: pass }
-      - { kind: code, ref: "grep ITEMSTIME / REGISTER_STAT across src + game -> no networked stat registered; value only host-modeled via Tier (2026-06-22, re-verified post Wave-5)", result: fail }
+      - { kind: code, ref: "grep ITEMSTIME / REGISTER_STAT across src + game -> no networked stat registered; value only host-modeled via Tier (2026-06-25, re-verified Wave-6 drift check; no change)", result: fail }
     confidence: high
     notes: "PARTIALLY CLOSED in Wave 5. Was fully missing/na. The tier VALUE is now produced (Tier, faithful to autocvar_sv_itemstime) and CONSUMED live on the host by the enable gate, so the 'also alive players when sv_itemstime==2' behavior is reproducible on the listen host. Still missing as a true networked stat (no REGISTER_STAT analogue), so it does not reach a remote client and cannot feed the (also-unported) spectator waypoint gate."
 
@@ -293,6 +293,6 @@ features:
     gaps:
       - "No waypointsprite_itemstime / SPRITERULE_SPECTATOR support in the port: timed (SpectatorOnly) items (mega health/armor) get no spectator/warmup respawn-countdown waypoint sprite (Item_RespawnCountdown sets SPRITERULE_SPECTATOR + WaypointSprite_UpdateBuildFinished at time+ITEM_RESPAWN_TICKS), and the g_waypointsprite_itemstime cvar (default 2) is unregistered. Also depends on the unmodeled networked STAT(ITEMSTIME). STILL OPEN after Waves 1/2/5 (grep across src + game -> no matches)."
     verification:
-      - { kind: code, ref: "grep waypointsprite_itemstime / SPRITERULE_SPECTATOR / g_waypointsprite_itemstime across src + game -> no matches (2026-06-22, re-verified post Wave-5)", result: fail }
+      - { kind: code, ref: "grep waypointsprite_itemstime / SPRITERULE_SPECTATOR / g_waypointsprite_itemstime across src + game -> no matches (2026-06-25, re-verified Wave-6 drift check; no change)", result: fail }
     confidence: medium
     notes: "Tied to itemstime but lives in the waypoints subsystem; cross-listed here as part of the unit's spectator behavior. The gate (mode 1 spectating / mode 2 also warmup+STAT(ITEMSTIME)==2) mirrors the HUD enable gate (now ported in ShouldDraw) but no waypoint-sprite producer exists. Wave 5 made no change here."

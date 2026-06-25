@@ -1,13 +1,13 @@
 unit: mutator-nades
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
-  feature_count: 21
+  feature_count: 22
   worst_gaps:
     - "THROW INPUT IS NOW LIVE (Wave-5, commit 66e378f): InputCommand.InputButtons gained the Hook bit (BIT(6) / PHYS_INPUT_BUTTON_HOOK, InputCommand.cs:20), and the full chain is wired end-to-end: the `+hook` bind (BindInput.cs:46 / KeyBindings.cs:43) -> BindTable._hook/HookHeld -> NetGame.cs:3984 sets the bit -> ServerNet.cs:1415 decodes ButtonHook -> WeaponFireDriver.Frame (GameWorld.cs:1368, live per-tick PostThink) sets player.OffhandFirePressed -> NadesMutator.OnPlayerPreThink reads it and drives NadeThrow.OffhandThink. The weapon_drop second-press path is ALSO live now: NadesMutator subscribes ForbidThrowCurrentWeapon (CBC_ORDER_LAST), which WeaponThrowing.ThrowWeapon/IsWeaponThrowable (the live impulse-17 `weapon_drop` path, WeaponImpulses.cs:117/181) dispatches -> NadeThrow.CheckThrow. So a player can now prime, charge, and throw a nade in a real match. The entire subsystem (charge, toss, all 11 booms, pickup, shoot-down, orbs, bonus economy) is reachable — liveness flips dead->live across nearly every row. One caveat: OffhandFirePressed is set in tick N's PostThink and read in tick N+1's PreThink (a 1-tick latency), but the held-button state persists across ticks so prime/charge/release work correctly; this is the faithful headless analogue of the engine offhand_think dispatch."
     - "Most PRESENTATION is still missing (headless port): no projectile model/trail (nade_customize/spawn_held_nade trail), no orb 3D model + 2D color flash (orb_draw/orb_draw2d), no darkness blind overlay (HUD_DarkBlinking) + SND_BLIND, no spawn-loc EF_STARDUST, no DrawAmmoNades bonus-nade ammo-panel icon. The wired charge ring (CrosshairPanel.NadeTimer) NOW actually shows because a nade can finally be primed."
-    - "Lifecycle cleanup is still only PARTIAL: NadesMutator subscribes PlayerSpawn/PreThink/PlayerDies/DamageCalc + VehicleEnter (held-nade toss on boarding, live via VehicleBoarding.cs) + the new ForbidThrowCurrentWeapon. STILL ABSENT: MakePlayerObserver / ClientDisconnect / reset_map_global (nades_RemovePlayer) and PutClientInServer (RemoveBonus) and SpectateCopy and DropSpecialItems — their HookChains do not exist in MutatorHooks. nades_Clear/RemoveBonus exist but have no live caller on those paths, so a held nade / banked bonus / spawn marker still leaks across observer/disconnect/round-reset/spectate. The death-drop toss IS handled (PlayerDies hook), but the dedicated DropSpecialItems hook is unported."
+    - "Lifecycle cleanup IMPROVED in Wave-6b (commit f86d947): NadesMutator now ALSO subscribes MakePlayerObserver + ClientDisconnect, both wired to RemovePlayer = port of nades_RemovePlayer (nades_Clear + RemoveBonus + delete nade_spawnloc), and BOTH hook chains have live callers (ClientManager.cs:480 MakePlayerObserver.Call, :707 ClientDisconnect.Call). So a held nade / banked bonus / spawn marker no longer leaks across observer or disconnect. STILL ABSENT: reset_map_global (round-reset FOREACH_CLIENT nades_RemovePlayer) + PutClientInServer (RemoveBonus) + SpectateCopy + DropSpecialItems — their HookChains do not exist in MutatorHooks, so a held nade / banked bonus / spawn marker still leaks across round-reset/respawn-into-server, and a spectator's nade HUD state is not mirrored. The death-drop toss IS handled (PlayerDies hook), but the dedicated DropSpecialItems hook is unported."
     - "nade_damage NOW INCLUDES the melee-slap branch (force*10, damage=max_health*0.1 for WEP_TYPE_MELEE_PRI/SEC, faithful) but the Nade_Damage mutator hook (overkill okhmg_nadesupport) is still not invoked; napalm ball damageforcescale 4 is still not applied (modeled as Burning status, no knockback); ice revival_time<1.5s re-freeze skip omitted; freezetag revive-nade still suppresses damage but never unfreezes/revives (FreezeTag seam). pokenade monster_lifetime (150s despawn) is NOW ported + live."
 features:
   - id: mutator-nades.enable.predicate
@@ -33,7 +33,8 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "NadesMutator.IsEnabled = g_nades!=0; Hook adds PlayerSpawn/PreThink/Dies/DamageCalc + (Wave-5) VehicleEnter + ForbidThrowCurrentWeapon", result: pass }
+      - { kind: code, ref: "NadesMutator.IsEnabled = g_nades!=0; Hook adds PlayerSpawn/PreThink/Dies/DamageCalc + (Wave-5) VehicleEnter + ForbidThrowCurrentWeapon + (Wave-6b) MakePlayerObserver + ClientDisconnect", result: pass }
+      - { kind: code, ref: "REGISTER_MUTATOR(nades, autocvar_g_nades) predicate is plain g_nades (sv_nades.qc:706) — no instagib/ok/arena exclusion (unlike NIX), so IsEnabled = g_nades!=0 is faithful", result: pass }
       - { kind: code, ref: "MutatorActivation.Apply() (GameWorld.cs:511) subscribes enabled mutators at match start", result: pass }
     confidence: high
     notes: "The mutator is auto-discovered ([Mutator]) and its hooks ARE added when g_nades!=0. RegisterAll + boom-registry scan run on enable. Default off (on by default in Overkill in Base). PlayerSpawn assigns OFFHAND_NADE if no offhand, sets nade_refire (+refire unless g_nades_onspawn), NadesSmall flag."
@@ -592,6 +593,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Nades/NadeThrow.cs:Clear"
       - "src/XonoticGodot.Common/Gameplay/Nades/NadeBonus.cs:RemoveBonus"
       - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnVehicleEnter"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnMakePlayerObserver / OnClientDisconnect / RemovePlayer"
     constants: []
     status:
       logic: partial
@@ -603,14 +605,16 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL MISSING: MakePlayerObserver / ClientDisconnect / reset_map_global (nades_RemovePlayer = nades_Clear + RemoveBonus + delete nade_spawnloc) and PutClientInServer (RemoveBonus) are not ported — their HookChains do not exist in MutatorHooks. nades_Clear/RemoveBonus exist as methods but have no live caller on these paths -> a held nade, banked bonus, or spawn marker leaks across observer/disconnect/round-reset. NOW OBSERVABLE because nades can actually be held/banked (input wired)."
-      - "STILL MISSING: DropSpecialItems (the dedicated death-drop toss hook) has no port HookChain. NOTE: the death-toss itself IS handled by the PlayerDies hook (OnPlayerDies tosses the held nade) — but the QC DropSpecialItems hook (which also tosses on non-death special-item drops) is unported."
-      - "STILL MISSING: SpectateCopy (copy NADE_TIMER/NADE_BONUS_TYPE/NADE_BONUS/NADE_BONUS_SCORE/pokenade_type to the spectator) has no port hook — a spectator's nade HUD ring / bonus state is not mirrored from the spectatee."
+      - "FIXED Wave-6b (commit f86d947): MakePlayerObserver + ClientDisconnect are now subscribed and wired to RemovePlayer (port of nades_RemovePlayer = nades_Clear + RemoveBonus + delete nade_spawnloc, sv_nades.qc:914), and BOTH hook chains have live callers (ClientManager.cs:480/707). A held nade / banked bonus / spawn marker no longer leaks across observer or disconnect."
+      - "STILL MISSING: reset_map_global (round-reset FOREACH_CLIENT nades_RemovePlayer, sv_nades.qc:932) + PutClientInServer (RemoveBonus, sv_nades.qc:470) have no port HookChain — a banked bonus / held nade still leaks across a round reset and across the respawn-into-server path."
+      - "STILL MISSING: DropSpecialItems (the dedicated death-drop toss hook, sv_nades.qc:906) has no port HookChain. NOTE: the death-toss itself IS handled by the PlayerDies hook (OnPlayerDies tosses the held nade) — but the QC DropSpecialItems hook (which also tosses on non-death special-item drops) is unported."
+      - "STILL MISSING: SpectateCopy (copy NADE_TIMER/NADE_BONUS_TYPE/NADE_BONUS/NADE_BONUS_SCORE/pokenade_type to the spectator, sv_nades.qc:937) has no port hook — a spectator's nade HUD ring / bonus state is not mirrored from the spectatee."
     verification:
       - { kind: code, ref: "Wave-2 (commit ec788f7): NadesMutator.Hook adds MutatorHooks.VehicleEnter; OnVehicleEnter tosses player.Nade with Toss(player,true,(0,0,100),max(NadeWait,Time+0.05)) == sv_nades.qc:667 — faithful + live (VehicleEnter.Call live in VehicleBoarding.cs)", result: pass }
-      - { kind: code, ref: "grep MakePlayerObserver|ClientDisconnect|reset_map_global|PutClientInServer|SpectateCopy|DropSpecialItems in Nades/.Add -> none; MutatorHooks has VehicleEnter + ForbidThrowCurrentWeapon chains, none of the other five", result: fail }
+      - { kind: code, ref: "Wave-6b: NadesMutator.cs:69-70 adds MakePlayerObserver + ClientDisconnect; RemovePlayer (NadesMutator.cs:276) = nades_Clear + RemoveBonus + delete NadeSpawnLoc == nades_RemovePlayer (sv_nades.qc:914-920); both Call sites live (ClientManager.cs:480, :707)", result: pass }
+      - { kind: code, ref: "grep reset_map_global|PutClientInServer|SpectateCopy|DropSpecialItems in MutatorHooks.cs HookChain<> -> none of these four chains exist; NadesMutator.Hook subscribes only PlayerSpawn/PreThink/Dies/DamageCalc/VehicleEnter/ForbidThrow/MakePlayerObserver/ClientDisconnect", result: fail }
     confidence: high
-    notes: "VehicleEnter toss (Wave-2) is live. The death-toss is covered by the PlayerDies hook. The four remaining cleanup hooks (observer/disconnect/reset/spectate) + the dedicated DropSpecialItems hook are still absent. With the throw input now live (Wave-5), the leaks are real in a normal match: a player holding a nade or banked bonus who goes observer/disconnects/round-resets/is spectated leaks state. logic partial, liveness partial (VehicleEnter + death-toss-via-PlayerDies live; 4-5 hooks dead)."
+    notes: "Wave-6b closed the observer + disconnect leaks (MakePlayerObserver + ClientDisconnect now live, faithful nades_RemovePlayer). VehicleEnter toss (Wave-2) is live; the death-toss is covered by PlayerDies. Still absent: reset_map_global, PutClientInServer, SpectateCopy, and the dedicated DropSpecialItems hook (their HookChains do not exist). With throw input live (Wave-5), the residual leaks are real: a player holding a nade / banked bonus across a round reset or respawn-into-server, and a spectator's nade HUD state. logic partial (4 hooks still missing), liveness partial (VehicleEnter + observer/disconnect + death-toss-via-PlayerDies live; 4 hooks dead)."
 
   - id: mutator-nades.damage.freezetag_revive
     name: "Damage_Calculate: freezetag revive-nade"
@@ -668,3 +672,29 @@ features:
       - { kind: code, ref: "ServerNet.cs:1663 -> NetGame.cs:2100 networks NadeTimer to the crosshair ring; the ring now shows because priming is reachable", result: pass }
     confidence: high
     notes: "The port is headless server-authoritative; nade projectile/orb/overlay/ammo-panel presentation is broadly unimplemented (still missing). The one wired piece — the charge ring — is now live and visible (liveness dead->partial: the ring works, everything else is still missing)."
+
+  - id: mutator-nades.display.mutators_string
+    name: "Mutator-list display token (BuildMutatorsString / BuildMutatorsPrettyString)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:954 BuildMutatorsString (\":Nades\")"
+      - "common/mutators/mutator/nades/sv_nades.qc:949 BuildMutatorsPrettyString (\", Nades\")"
+    port_refs: []
+    constants:
+      - { name: "mutators_string_token", base: "\":Nades\"", port: "MISSING", match: false }
+      - { name: "mutators_pretty_token", base: "\", Nades\"", port: "MISSING", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "NadesMutator does not override MutatorBase.BuildMutatorsString / BuildMutatorsPrettyString (GameplayBases.cs:213/221), so the nades mutator contributes nothing to the machine mutators string (`:Nades`) or the human-readable mutators list (`, Nades`). Other mutators (e.g. BloodlossMutator.cs:104/107) DO override these, so nades is the omission — the active-mutators readout (scoreboard / server browser / `g_mutatorblacklist` token) will not list Nades."
+    verification:
+      - { kind: code, ref: "grep BuildMutators in NadesMutator.cs -> no override; Base sv_nades.qc:949/954 append \", Nades\" / \":Nades\"; the BuildMutatorsString virtual + hook chain exist in the port (GameplayBases.cs, BloodlossMutator uses them) — nades simply doesn't hook them", result: fail }
+    confidence: high
+    notes: "Newly-mapped 2026-06-25 (registry coverage gap, not a code regression). Pure display/identification string — no gameplay effect, but the mutators-pretty-string and the colon-delimited machine token used by the server browser / mutator blacklist will both omit Nades. Trivial one-line override fix (two strcats in Base)."
