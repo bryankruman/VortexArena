@@ -85,6 +85,13 @@ public sealed class Keepaway : GameType
     private HookHandler<DeathEvent>? _deathHandler;
     private HookHandler<MutatorHooks.GiveFragsForKillArgs>? _giveFragsHandler;
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
+    private HookHandler<MutatorHooks.PlayerUseKeyArgs>? _useKeyHandler;
+    private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _physicsHandler;
+
+    // QC g_keepaway_ballcarrier_highspeed: the carrier's MOVEVARS_HIGHSPEED multiplier (default 1 = no effect).
+    private const string CvarBallCarrierHighspeed = "g_keepaway_ballcarrier_highspeed";
+    /// <summary>QC autocvar_g_keepaway_ballcarrier_highspeed (default 1): speed multiplier applied to the ball carrier.</summary>
+    public float BallCarrierHighspeed => TryCvar(CvarBallCarrierHighspeed, out float v) && v > 0f ? v : 1f;
 
     public Keepaway()
     {
@@ -122,7 +129,12 @@ public sealed class Keepaway : GameType
     {
         get
         {
-            if (TryCvar(CvarPointLimitKa, out float pl)) return pl;
+            // QC GameRules_limit_score(autocvar_g_keepaway_point_limit): the ka cvar default is -1, which means
+            // "use the mapinfo limit" (gametypes-server.cfg:436; keepaway.qh gametype_init pointlimit=30). A
+            // value > 0 is an explicit override; 0 means "no limit". So map -1 to the mapinfo/gametype_init
+            // default (30) — without this the cfg's -1 leaks through and the limit>0 guard plays the match with
+            // NO point limit, letting a carrier run past Base's 30-point end (registry keepaway.win.pointlimit).
+            if (TryCvar(CvarPointLimitKa, out float pl) && pl != -1f) return pl;
             if (TryCvar(CvarPointLimit, out float fl)) return fl;
             return DefaultPointLimit;
         }
@@ -165,6 +177,64 @@ public sealed class Keepaway : GameType
         // actually affect combat (registry keepaway.damage.matrix — previously zero callers).
         _damageCalcHandler ??= OnDamageCalculate;
         MutatorHooks.DamageCalculate.Add(_damageCalcHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ka, PlayerUseKey): the +use key in a carrier's hands drops the ball
+        // (ka_DropEvent) and consumes the press. Wires the use-key drop trigger live (registry keepaway.ball.drop).
+        _useKeyHandler ??= OnUseKey;
+        MutatorHooks.PlayerUseKey.Add(_useKeyHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ka, PlayerPhysics_UpdateStats): the carrier's top speed is scaled by
+        // g_keepaway_ballcarrier_highspeed (STAT(MOVEVARS_HIGHSPEED) *= ...). The PlayerPhysics path resets
+        // SpeedMultiplier to 1 each frame and folds it after this hook, so a pure multiply composes with
+        // powerup/buff factors (registry keepaway.carrier.highspeed — previously missing).
+        _physicsHandler ??= OnPlayerPhysics;
+        MutatorHooks.PlayerPhysics.Add(_physicsHandler);
+    }
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(ka, PlayerUseKey): a carrier pressing +use drops the ball (ka_DropEvent)
+    /// and consumes the press (returns true). Otherwise the press falls through to other handlers.</summary>
+    private bool OnUseKey(ref MutatorHooks.PlayerUseKeyArgs args)
+    {
+        if (MatchEnded || args.Player is not Player player)
+            return false;
+        if (!ReferenceEquals(Ball.Carrier, player))
+            return false; // QC: only fires `if(player.ballcarried)`
+        Drop();
+        return true; // QC ka PlayerUseKey returns true when it dropped (consumes the +use)
+    }
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(ka, PlayerPhysics_UpdateStats): scale the carrier's top speed by
+    /// g_keepaway_ballcarrier_highspeed (STAT(MOVEVARS_HIGHSPEED, player) *= ...).</summary>
+    private bool OnPlayerPhysics(ref MutatorHooks.PlayerPhysicsArgs args)
+    {
+        if (args.Player is Player player && ReferenceEquals(Ball.Carrier, player))
+            player.SpeedMultiplier *= BallCarrierHighspeed;
+        return false;
+    }
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(ka, MakePlayerObserver) and MUTATOR_HOOKFUNCTION(ka, ClientDisconnect):
+    /// both call ka_DropEvent — a carrier demoted to spectator or who disconnects relinquishes the ball. Wired
+    /// through the shared <see cref="GameType.OnPlayerRemoved"/> seam (registry keepaway.ball.drop).</summary>
+    public override void OnPlayerRemoved(Player player)
+    {
+        if (MatchEnded)
+            return;
+        if (ReferenceEquals(Ball.Carrier, player))
+            Drop(); // QC: while(player.ballcarried) ka_DropEvent(player)
+    }
+
+    /// <summary>
+    /// QC sv_keepaway.qc MUTATOR_HOOKFUNCTION(ka, Bot_ForbidAttack): "if neither player has the ball then don't
+    /// attack unless the ball is on the ground". A bot is forbidden from attacking <paramref name="targ"/> when
+    /// neither it nor the target carries the ball AND the ball is currently held (by anyone) — so bots cluster the
+    /// carrier instead of fragging bystanders. With one ball, "ball is held" = a carrier exists.
+    /// </summary>
+    public bool ForbidBotAttack(Player bot, Player targ)
+    {
+        bool haveHeldBall = Ball.Carrier is not null;
+        bool targCarries = ReferenceEquals(Ball.Carrier, targ);
+        bool botCarries = ReferenceEquals(Ball.Carrier, bot);
+        return !targCarries && !botCarries && haveHeldBall;
     }
 
     /// <summary>QC MUTATOR_HOOKFUNCTION(ka, Damage_Calculate): apply the ballcarrier/noncarrier damage+force
@@ -210,6 +280,16 @@ public sealed class Keepaway : GameType
         {
             MutatorHooks.DamageCalculate.Remove(_damageCalcHandler);
             _damageCalcHandler = null;
+        }
+        if (_useKeyHandler is not null)
+        {
+            MutatorHooks.PlayerUseKey.Remove(_useKeyHandler);
+            _useKeyHandler = null;
+        }
+        if (_physicsHandler is not null)
+        {
+            MutatorHooks.PlayerPhysics.Remove(_physicsHandler);
+            _physicsHandler = null;
         }
     }
 
@@ -295,7 +375,23 @@ public sealed class Keepaway : GameType
     {
         BallEntity = e;
         Ball.Carrier = null;
+        // QC ka_SpawnBalls: e.event_damage = ka_DamageEvent. Route the ball's damage through the live
+        // DamageSystem (GtEventDamage) so a NEEDKILL hit (fell into a hurt/lava/slime/swamp volume) force-
+        // respawns it (registry keepaway.ball.respawn — the NEEDKILL respawn branch was previously missing).
+        if (e is not null)
+            e.GtEventDamage = OnBallDamage;
         return e;
+    }
+
+    /// <summary>QC ka_DamageEvent: when the loose ball takes a NEEDKILL hit (it fell into a hurt-trigger / lava /
+    /// slime / swamp volume) force it to relocate so players can reach it again.</summary>
+    private void OnBallDamage(Entity self, Entity? inflictor, Entity? attacker, string deathType,
+        float damage, Vector3 hitLoc, Vector3 force)
+    {
+        if (Ball.Carrier is not null)
+            return; // a carried ball doesn't take damage (QC takedamage = DAMAGE_NO while carried)
+        if (DeathTypes.ItemDamageNeedKill(deathType))
+            RespawnBall(self); // QC ka_DamageEvent → ka_RespawnBall(this)
     }
 
     /// <summary>QC ka_RespawnBall (think): relocate a loose ball to a random map location, re-arm the timer, and
@@ -489,6 +585,55 @@ public sealed class Keepaway : GameType
         float limit = PointLimit;
         if (limit > 0f && best is not null && best.ScoreFrags >= limit)
             MatchEnded = true;
+    }
+
+    // ----- waypoint tracking cvar (g_keepawayball_tracking: 0=none/1=always/2=dropped-only) -----
+    private const string CvarBallTracking = "g_keepawayball_tracking";
+    /// <summary>QC autocvar_g_keepawayball_tracking (default 1): 0 = no waypoint, 1 = always, 2 = only when dropped.</summary>
+    private int BallTracking => TryCvar(CvarBallTracking, out float v) ? (int)v : 1;
+
+    /// <summary>
+    /// QC ka_RespawnBall (WaypointSprite_Spawn WP_KaBall on the loose ball, '0 0 64') + ka_TouchEvent
+    /// (WaypointSprite_AttachCarrier WP_KaBallCarrier on the carrier). One sprite for the (single) ball,
+    /// rebuilt each tick from its live state — KaBall when loose, KaBallCarrier riding the carrier when held.
+    /// Honors g_keepawayball_tracking (0 = none, 1 = always, 2 = only when the ball is dropped/loose); QC also
+    /// always shows it during warmup, but the host pull path has no warmup flag here, so the cvar governs.
+    /// </summary>
+    public override void CollectWaypoints(System.Collections.Generic.List<Waypoints.WaypointSprite> into)
+    {
+        if (BallEntity is null)
+            return;
+        int tracking = BallTracking;
+        if (tracking == 0)
+            return; // QC: g_keepawayball_tracking 0 → no waypoint at all
+
+        Player? carrier = Ball.Carrier;
+        if (carrier is not null)
+        {
+            if (tracking != 1)
+                return; // QC g_keepawayball_tracking 2 = only show a waypoint when the ball is DROPPED (loose)
+            // QC ka_TouchEvent: WaypointSprite_AttachCarrier(WP_KaBallCarrier, toucher, RADARICON_FLAGCARRIER).
+            into.Add(new Waypoints.WaypointSprite
+            {
+                SpriteName = "KaBallCarrier",
+                Owner = carrier,
+                Offset = new System.Numerics.Vector3(0f, 0f, 64f),
+                Team = Teams.None,
+                RadarIcon = 1,
+                Health = -1f,
+            });
+            return;
+        }
+
+        // QC ka_RespawnBall / ka_DropEvent: WaypointSprite_Spawn(WP_KaBall, ..., this/ball, '0 0 64', ...).
+        into.Add(new Waypoints.WaypointSprite
+        {
+            SpriteName = "KaBall",
+            FixedOrigin = BallEntity.Origin + new System.Numerics.Vector3(0f, 0f, 64f),
+            Team = Teams.None,
+            RadarIcon = 1,
+            Health = -1f,
+        });
     }
 
     private static bool TryCvar(string name, out float value)

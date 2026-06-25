@@ -98,6 +98,14 @@ public sealed class Race : GameType
         /// </summary>
         public float PenaltyUntil;
 
+        /// <summary>
+        /// The racer's movement integrator captured the moment the penalty freeze began, so releasing the freeze
+        /// restores it (QC just clears <c>race_penalty</c> and the next PlayerPhysics frame re-applies the racer's
+        /// real movetype — Walk on land, but Swim/Fly/Noclip if they were swimming/flying/noclipping). Restoring
+        /// the captured value avoids forcing a swimming/flying racer back to Walk on release.
+        /// </summary>
+        public MoveType PenaltyPrevMoveType = MoveType.Walk;
+
         /// <summary>QC <c>race_penalty_accumulator</c>: penalty seconds added to a qualifying lap time (no freeze).</summary>
         public float PenaltyAccumulator;
 
@@ -235,6 +243,16 @@ public sealed class Race : GameType
     /// <summary>The highest checkpoint index seen (QC race_highest_checkpoint); index 0 is the finish/start line.</summary>
     public int HighestCheckpoint { get; private set; }
 
+    /// <summary>
+    /// QC <c>race_timed_checkpoint</c> (server/race.qc:169): the checkpoint index whose crossing CLOSES a lap
+    /// (files the time + advances the lap counter). Default <c>0</c> ⇒ the start line is also the finish (a closed
+    /// loop). On a track where start != finish, the highest checkpoint carries <c>spawnflags &amp; 8</c>
+    /// (<see cref="SpawnCheckpoint"/> <c>timed:true</c>) and becomes the timed checkpoint, so the lap clock still
+    /// resets at CP 0 but the lap is only scored when the racer crosses that final timed CP
+    /// (QC spawnfunc(trigger_race_checkpoint): <c>if(spawnflags &amp; 8) race_timed_checkpoint = race_checkpoint;</c>).
+    /// </summary>
+    public int TimedCheckpoint { get; private set; }
+
     public override void OnInit()
     {
         // QC: checkpoints are spawned from the map's trigger_race_checkpoint entities (see SpawnCheckpoint).
@@ -243,6 +261,7 @@ public sealed class Race : GameType
         PenaltyZones.Clear();
         _punishWrongWay.Clear();
         HighestCheckpoint = 0;
+        TimedCheckpoint = 0; // QC race_timed_checkpoint default 0 (closed-loop track: start line == finish)
         // QC race_ClearRecords: a fresh map has no checkpoint split records yet.
         _checkpointRecords.Clear();
         _checkpointRecordSpeeds.Clear();
@@ -255,7 +274,7 @@ public sealed class Race : GameType
     /// crossing to <see cref="CrossCheckpoint"/>.
     /// </summary>
     public Entity? SpawnCheckpoint(Vector3 origin, int checkpointIndex, Vector3 mins = default, Vector3 maxs = default,
-        bool punishWrongWay = false)
+        bool punishWrongWay = false, bool timed = false)
     {
         if (maxs == default) { mins = new Vector3(-48f, -48f, -48f); maxs = new Vector3(48f, 48f, 48f); }
         Entity? e = GametypeEntities.SpawnObjective("trigger_race_checkpoint", origin, Teams.None, mins, maxs,
@@ -264,13 +283,21 @@ public sealed class Race : GameType
         {
             e.Flags = EntFlags.None; // a checkpoint is a pure trigger volume, not an item
             e.GtCheckpointIndex = checkpointIndex;
-            e.GtIsFinishLine = checkpointIndex == 0;
             // QC trigger_race_checkpoint spawnflag 4: a racer who crosses this checkpoint out of order is killed
             // (DEATH_HURTTRIGGER 10000), to forbid backwards/shortcut traversal.
             if (punishWrongWay) _punishWrongWay.Add(e);
             Checkpoints.Add(e);
+            // QC spawnfunc(trigger_race_checkpoint) (server/race.qc:1111): the HIGHEST checkpoint determines the
+            // timed (finish) line — if it carries spawnflag 8 the finish is that CP, otherwise the finish is CP 0
+            // (a closed-loop track). race_timed_checkpoint follows the highest CP, so a later, lower-index CP does
+            // not steal the finish from an earlier higher one.
             if (checkpointIndex > HighestCheckpoint)
+            {
                 HighestCheckpoint = checkpointIndex;
+                TimedCheckpoint = timed ? checkpointIndex : 0;
+            }
+            // The finish line is the timed checkpoint (QC race_timed_checkpoint); on a closed loop that is CP 0.
+            e.GtIsFinishLine = checkpointIndex == TimedCheckpoint;
         }
         return e;
     }
@@ -338,16 +365,32 @@ public sealed class Race : GameType
         st.RespawnCheckpoint = cpIndex; // QC player.race_respawn_checkpoint = this.race_checkpoint
         st.Started = true;              // QC player.race_started = 1
 
-        bool isFinish = self.GtIsFinishLine || cpIndex == 0;
+        // QC race_SendTime (server/race.qc:493): a lap is CLOSED (scored) at race_timed_checkpoint, which is the
+        // start line (0) on a closed loop or the highest spawnflag-8 CP on a start!=finish track. Compute from the
+        // live TimedCheckpoint (spawn-order independent) rather than the cached per-entity flag.
+        bool isFinish = cpIndex == TimedCheckpoint;
         CrossCheckpoint(p, cpIndex, isFinish);
     }
 
-    /// <summary>The lap limit in force (g_race_laps_limit, else fraglimit, else 7). 0 means no lap limit.</summary>
+    /// <summary>
+    /// The lap limit in force. QC <c>g_race_laps_limit</c> (sv_race.qc:408, rc_SetLimits): the default is
+    /// <c>-1</c> = "use the mapinfo laplimit" (here the gametype default <see cref="DefaultLapLimit"/>=7, as the
+    /// port has no per-map laplimit table); <c>0</c> = unlimited; <c>&gt;0</c> = that many laps. The value is fed
+    /// to GameRules_limit_score (the fraglimit), so an explicit fraglimit is honored only when the race cvar is
+    /// unset. 0 means no lap limit (the finish check is guarded by <c>limit &gt; 0</c>).
+    /// </summary>
     public int LapLimit
     {
         get
         {
-            if (TryCvar(CvarLapLimit, out float ll)) return (int)ll;
+            if (TryCvar(CvarLapLimit, out float ll))
+            {
+                int l = (int)ll;
+                // QC: a negative override (the default -1) means "consult the mapinfo laplimit"; the port has no
+                // per-map laplimit, so fall back to the gametype default (7). 0 stays unlimited; >0 is literal.
+                if (l < 0) return DefaultLapLimit;
+                return l;
+            }
             if (TryCvar(CvarFragLimit, out float fl)) return (int)fl;
             return DefaultLapLimit;
         }
@@ -441,10 +484,11 @@ public sealed class Race : GameType
 
     /// <summary>
     /// Record a racer crossing a checkpoint (QC race_CheckpointTouch). This is the core timing rule: crossing
-    /// the start/finish line (<paramref name="isFinishLine"/>) closes the current lap — updating the fastest
-    /// lap and the lap counter — and either starts the next lap or, at the lap limit, finishes the race.
-    /// This is invoked by <see cref="CheckpointTouch"/> when a checkpoint entity is crossed in order; the host
-    /// may also call it directly. Advances <see cref="RaceState.NextCheckpoint"/> (wrapping at the finish).
+    /// the timed finish checkpoint (<paramref name="isFinishLine"/> ⇒ <see cref="TimedCheckpoint"/>) closes the
+    /// current lap — updating the fastest lap and the lap counter — and either starts the next lap or, at the lap
+    /// limit, finishes the race. This is invoked by <see cref="CheckpointTouch"/> when a checkpoint entity is
+    /// crossed in order; the host may also call it directly. Advances <see cref="RaceState.NextCheckpoint"/>
+    /// (QC race_NextCheckpoint, wrapping back to 0 after the highest checkpoint).
     /// </summary>
     public void CrossCheckpoint(Player p, int checkpointIndex, bool isFinishLine)
     {
@@ -460,6 +504,12 @@ public sealed class Race : GameType
         // can render the "Checkpoint N (+/-delta vs record)" line and the anticipation delta. A valid split needs
         // a started lap (LapStartTime > 0); the very first start-line crossing only opens the clock (no split).
         RecordCheckpointSplit(p, st, checkpointIndex, now);
+
+        // QC race_NextCheckpoint (server/race.qc:174): every valid crossing advances the next-required checkpoint,
+        // wrapping back to 0 after the highest CP. On a closed loop (TimedCheckpoint==0) the finish is CP 0 and
+        // this collapses to "0 → 1 → … → highest → 0"; on a start!=finish track the wrap happens at the highest
+        // (timed) CP. Done here uniformly so the start-line reset (below) and the finish-line scoring agree.
+        st.NextCheckpoint = checkpointIndex >= HighestCheckpoint ? 0 : checkpointIndex + 1;
 
         if (isFinishLine)
         {
@@ -501,9 +551,6 @@ public sealed class Race : GameType
                     RecordFinishTime(p, lapTime);
                 }
             }
-            st.LapStartTime = now;           // start the next lap
-            // After the finish/start line (index 0), the next required checkpoint is 1 (QC race_NextCheckpoint(0)).
-            st.NextCheckpoint = HighestCheckpoint >= 1 ? 1 : 0;
 
             int limit = LapLimit;
             if (limit > 0 && st.LapsCompleted >= limit)
@@ -512,12 +559,13 @@ public sealed class Race : GameType
                 // QC qualifying: solo time-trial — after each lap the racer is sent back to start to run again.
                 ScheduleRetract(p, now);
         }
-        else
-        {
-            // QC race_NextCheckpoint: advance to the next index, wrapping back to the finish line (0) after
-            // the highest checkpoint so the racer must cross the finish to close the lap.
-            st.NextCheckpoint = checkpointIndex >= HighestCheckpoint ? 0 : checkpointIndex + 1;
-        }
+
+        // QC checkpoint_passed (server/race.qc:815): the lap clock is (re)started at the START LINE (CP 0), NOT at
+        // the timed finish CP. On a closed loop these coincide; on a start!=finish track the racer crosses the
+        // finish (timed CP, scored above) and only re-arms the lap clock when they next cross CP 0. The very first
+        // start-line crossing opens the clock with no prior lap to score.
+        if (checkpointIndex == 0)
+            st.LapStartTime = now;
     }
 
     /// <summary>
@@ -731,8 +779,11 @@ public sealed class Race : GameType
             if (now > st.PenaltyUntil)
             {
                 st.PenaltyUntil = 0f;
+                // Release the freeze: restore the movetype the racer had before the freeze (QC just clears
+                // race_penalty and lets the next PlayerPhysics frame re-apply the real movetype). Only override the
+                // frozen MOVETYPE_NONE — if something else re-set the movetype meanwhile, leave it.
                 if (kv.Key.MoveType == MoveType.None)
-                    kv.Key.MoveType = MoveType.Walk; // release the freeze (QC restores normal movement)
+                    kv.Key.MoveType = st.PenaltyPrevMoveType;
             }
             else
             {
@@ -770,6 +821,10 @@ public sealed class Race : GameType
         else
         {
             float now = Api.Services is not null ? Api.Clock.Time : 0f;
+            // Capture the racer's current movetype ONCE (a re-trigger while already frozen keeps the original, not
+            // the frozen MOVETYPE_NONE) so the release restores Swim/Fly/Noclip rather than forcing Walk.
+            if (st.PenaltyUntil <= 0f)
+                st.PenaltyPrevMoveType = p.MoveType;
             st.PenaltyUntil = now + seconds;  // QC race: freeze until time > penalty
             p.Velocity = Vector3.Zero;
             p.MoveType = MoveType.None;

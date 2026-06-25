@@ -173,7 +173,10 @@ public sealed class Deathmatch : GameType
         else if (SameTeam(attacker, victim))
         {
             // TEAMKILL: attacker loses a frag (QC GiveFrags(attacker, targ, -1)). DM is FFA so this is
-            // effectively unreachable (Team 0 == Team 0 would match) — guarded below so FFA never teamkills.
+            // effectively unreachable (SameTeam is guarded false when TeamGame=false → FFA never teamkills).
+            // The escalating g_teamkill_punishing penalty (f -= (tk*(tk-1))*0.5 → -1,-2,-4,-7,…) lives on the
+            // shared SCORE-owning path (Scores.Obituary), which is what the team gametypes route through; it is
+            // not duplicated into this dead FFA branch.
             attacker.ScoreFrags -= 1;
             attacker.GtKillCount = 0; // a teamkill breaks the attacker's spree
         }

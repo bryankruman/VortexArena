@@ -62,15 +62,17 @@ public sealed class Ctf : GameType
     private const string CvarScoreCaptureAssist = "g_ctf_score_capture_assist";       // SCORE to the previous dropper on a capture
     private const string CvarScorePickupDroppedEarly = "g_ctf_score_pickup_dropped_early"; // dropped-pickup score, fresh drop
     private const string CvarScorePickupDroppedLate  = "g_ctf_score_pickup_dropped_late";  // dropped-pickup score, near auto-return
-    private const float  DefaultScoreCapture = 1f; // team SCORE per capture (CTF_CAPS always +1)
-    private const float  DefaultScoreKill    = 20f;
-    private const float  DefaultScorePickupBase = 0f;
-    private const float  DefaultScoreReturn  = 5f;
-    private const float  DefaultScorePenaltyDrop = 0f;
-    private const float  DefaultScorePenaltyReturned = 0f;
-    private const float  DefaultScoreCaptureAssist = 0f;
-    private const float  DefaultScorePickupDroppedEarly = 0f;
-    private const float  DefaultScorePickupDroppedLate  = 0f;
+    // Fallback defaults match the stock ctfscoring-samual.cfg (exec'd via gametypes-server.cfg) so the live
+    // values are Base-correct even if, for some reason, the cfg chain is not exec'd on a given host.
+    private const float  DefaultScoreCapture = 20f; // team SCORE per capture (CTF_CAPS always +1)
+    private const float  DefaultScoreKill    = 5f;
+    private const float  DefaultScorePickupBase = 1f;
+    private const float  DefaultScoreReturn  = 10f;
+    private const float  DefaultScorePenaltyDrop = 1f;
+    private const float  DefaultScorePenaltyReturned = 1f;
+    private const float  DefaultScoreCaptureAssist = 10f;
+    private const float  DefaultScorePickupDroppedEarly = 1f;
+    private const float  DefaultScorePickupDroppedLate  = 1f;
 
     // ----- carrier-death drop toss velocity (g_ctf_drop_velocity_*; gametypes-server.cfg defaults) -----
     private const string CvarDropVelocityUp   = "g_ctf_drop_velocity_up";   // 200 — upward kick when a flag is dropped
@@ -91,6 +93,19 @@ public sealed class Ctf : GameType
     private const string CvarFlagCollectDelay = "g_ctf_flag_collect_delay"; // delay before a dropper may re-pickup
     private const float  DefaultFlagReturnTime   = 30f;
     private const float  DefaultFlagCollectDelay = 1f;
+
+    // ----- dropped-flag think extras (g_ctf_*; gametypes-server.cfg defaults) -----
+    private const string CvarDroppedCaptureRadius = "g_ctf_dropped_capture_radius"; // 100 — auto-cap a dropped flag near a base
+    private const string CvarDroppedCaptureDelay  = "g_ctf_dropped_capture_delay";  // 1 — settle time before the auto-cap
+    private const string CvarFlagFloatInWater     = "g_ctf_flag_dropped_floatinwater"; // 200 — upward float velocity in water
+    private const string CvarFlagReturnDropped    = "g_ctf_flag_return_dropped";    // 100 — auto-return when dropped this near base
+    private const float  DefaultDroppedCaptureRadius = 100f;
+    private const float  DefaultDroppedCaptureDelay  = 1f;
+    private const float  DefaultFlagReturnDropped    = 100f;
+    /// <summary>QC FLAG_FLOAT_OFFSET_Z — the height above midpoint sampled to decide submerged vs. surfacing.</summary>
+    private const float  FlagFloatOffsetZ = 32f;
+    /// <summary>QC DPCONTENTS_WATER (SUPERCONTENTS water bit) for the float-in-water pointcontents test.</summary>
+    private const int    SuperContentsWater = 0x00000010;
 
     // ----- passing / throwing cvars (g_ctf_pass / g_ctf_throw; gametypes-server.cfg defaults) -----
     private const string CvarPass            = "g_ctf_pass";                    // 1 — allow passing to teammates
@@ -137,8 +152,8 @@ public sealed class Ctf : GameType
     private const string CvarShieldMaxRatio    = "g_ctf_shield_max_ratio";    // shield at most this fraction of a team (default 0.3)
     private const string CvarShieldForce       = "g_ctf_shield_force";        // push force of the shield
     private const float  DefaultShieldMinNegScore = 20f;
-    private const float  DefaultShieldMaxRatio    = 0.3f;
-    private const float  DefaultShieldForce       = 7000f;
+    private const float  DefaultShieldMaxRatio    = 0f;    // gametypes-server.cfg: 0 = shield disabled by default
+    private const float  DefaultShieldForce       = 100f;  // gametypes-server.cfg: push force of the shield
 
     private int   _captureShieldMinNegScore = (int)DefaultShieldMinNegScore;
     private float _captureShieldMaxRatio    = DefaultShieldMaxRatio;
@@ -183,6 +198,17 @@ public sealed class Ctf : GameType
     private float _stalemateNextThink;
 
     private HookHandler<DeathEvent>? _deathHandler;
+    private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageHandler;
+
+    // ----- flagcarrier damage/force factors + auto-helpme (g_ctf_flagcarrier_*; gametypes-server.cfg, all 1) -----
+    private const string CvarFcSelfDamage = "g_ctf_flagcarrier_selfdamagefactor"; // 1
+    private const string CvarFcSelfForce  = "g_ctf_flagcarrier_selfforcefactor";  // 1
+    private const string CvarFcDamage     = "g_ctf_flagcarrier_damagefactor";     // 1
+    private const string CvarFcForce      = "g_ctf_flagcarrier_forcefactor";      // 1
+    private const string CvarFcHelpMeDamage = "g_ctf_flagcarrier_auto_helpme_damage"; // 100 — helpme when HP dips below
+    private const string CvarFcHelpMeTime   = "g_ctf_flagcarrier_auto_helpme_time";   // 2 — antispam between helpme pings
+    private const float  DefaultFcHelpMeDamage = 100f;
+    private const float  DefaultFcHelpMeTime   = 2f;
 
     public Ctf()
     {
@@ -290,6 +316,9 @@ public sealed class Ctf : GameType
             if (!Flags.ContainsKey(team)) Flags[team] = new FlagState(team);
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
+        // QC MUTATOR_HOOKFUNCTION(ctf, Damage_Calculate): apply the flagcarrier damage/force factors + auto-helpme.
+        _damageHandler = OnDamageCalculate;
+        MutatorHooks.DamageCalculate.Add(_damageHandler);
     }
 
     /// <summary>
@@ -330,6 +359,11 @@ public sealed class Ctf : GameType
             return;
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
+        if (_damageHandler is not null)
+        {
+            MutatorHooks.DamageCalculate.Remove(_damageHandler);
+            _damageHandler = null;
+        }
     }
 
     public int AssignTeam(Player joiner, IReadOnlyList<Player> roster)
@@ -354,12 +388,15 @@ public sealed class Ctf : GameType
                 FlagStatus.Carried => "FlagCarrierEnemy" + suffix,
                 _ => "FlagBase" + suffix, // AtBase
             };
+            // QC ctf_FlagcarrierWaypoints + Damage_Calculate auto-helpme: a low-health carrier flashes "help me"
+            // on their carrier sprite (g_ctf_flagcarrier_auto_helpme_*). The flash deadline lives on the carrier.
+            float helpmeUntil = f.Status == FlagStatus.Carried && f.Carrier is { } c ? c.GtHelpMeUntil : 0f;
             into.Add(new Waypoints.WaypointSprite
             {
                 // Color is the RADAR tint = the flag's team color (QC WaypointSprite_UpdateTeamRadar with the
                 // team palette color); the 3D in-world sprite uses the def's own color (tan/white) from the registry.
                 SpriteName = sprite, FixedOrigin = pos, Team = f.HomeTeam, Color = TeamRadarColor(f.HomeTeam),
-                RadarIcon = 1, Health = -1f,
+                RadarIcon = 1, Health = -1f, HelpmeUntil = helpmeUntil,
             });
         }
     }
@@ -509,6 +546,11 @@ public sealed class Ctf : GameType
         NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"CTF_CAPTURE_{TeamSuffix(carried.HomeTeam)}", player.NetName);
         NotificationSystem.Center(player, $"CTF_CAPTURE_{TeamSuffix(carried.HomeTeam)}");
 
+        // QC ctf_Handle_Capture: Send_Effect_(flag.capeffect, …) — the team-colored capture burst at the flag base
+        // (EFFECT_CAP(teamnum) = "<team>_cap"). The captured flag's home team picks the color (QC enemy_flag.team).
+        if (carried.Entity is Entity capFe)
+            EffectEmitter.Emit($"{TeamName(carried.HomeTeam)}_cap", capFe.Origin);
+
         // return the captured flag to its base, freeing the carrier (QC ctf_RespawnFlag(enemy_flag))
         carried.ResetToBase();
         RespawnFlagEntity(carried);
@@ -531,11 +573,21 @@ public sealed class Ctf : GameType
         if (flag.Status == FlagStatus.AtBase)
             return;
 
-        // QC g_ctf_score_return: reward the returner; punish the team/player who lost it (penalty_returned).
+        // QC g_ctf_score_return: reward the returner; punish the team who was last carrying it (penalty_returned).
         player.ScoreFrags += (int)ScoreReturn;
         AddTeamScore(player.Team, (int)ScoreReturn); // QC GameRules_scoring_add_team(player, SCORE, score_return)
         AddCol(player, "CTF_RETURNS", 1); // QC GameRules_scoring_add(player, CTF_RETURNS, 1)
         AddTeamScorePenalty(flag.HomeTeam, (int)ScorePenaltyReturned);
+
+        // QC ctf_Handle_Return (sv_ctf.qc:709): the player who DROPPED this flag is also docked penalty_returned,
+        // shielded from re-taking it, and given a collect-delay before they may pick it up again.
+        if (flag.Dropper is { } dropper)
+        {
+            dropper.ScoreFrags -= (int)ScorePenaltyReturned; // QC GameRules_scoring_add(ctf_dropper, SCORE, -penalty)
+            // QC ctf_CaptureShield_Update(ctf_dropper, 0): recompute (and possibly raise) the dropper's shield. The
+            // composite-score recompute is driven by the per-tick UpdateCaptureShields; here we just arm the delay.
+            dropper.GtNextTakeTime = Now + FlagCollectDelay; // QC flag.ctf_dropper.next_take_time = time + collect_delay
+        }
 
         // QC ctf_Handle_Return: the global "flag returned" voice + the team-colored kill-feed line
         // (APP_TEAM_NUM(flag.team, INFO_CTF_RETURN)) + the returner's centerprint (CENTER_CTF_RETURN).
@@ -968,6 +1020,49 @@ public sealed class Ctf : GameType
         return false;
     }
 
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(ctf, Damage_Calculate) (sv_ctf.qc:2312): if the ATTACKER carries a flag, scale the
+    /// outgoing damage/force by the flagcarrier self/other factors (all 1 by default, so no change at stock); if the
+    /// TARGET is an enemy flag carrier whose effective health has dropped below g_ctf_flagcarrier_auto_helpme_damage,
+    /// auto-ping a "help me" on their carrier waypoint (antispam g_ctf_flagcarrier_auto_helpme_time).
+    /// </summary>
+    private bool OnDamageCalculate(ref MutatorHooks.DamageCalculateArgs a)
+    {
+        Player? attacker = a.Attacker as Player;
+        if (a.Target is not Player target)
+            return false;
+
+        if (attacker is not null && CarriedBy(attacker) is not null) // attacker is a flag carrier
+        {
+            if (ReferenceEquals(target, attacker)) // damage done to yourself
+            {
+                a.Damage *= Cvar(CvarFcSelfDamage, 1f);
+                a.Force  *= Cvar(CvarFcSelfForce, 1f);
+            }
+            else // damage done to everyone else
+            {
+                a.Damage *= Cvar(CvarFcDamage, 1f);
+                a.Force  *= Cvar(CvarFcForce, 1f);
+            }
+        }
+        else if (CarriedBy(target) is not null && !target.IsDead
+                 && attacker is not null && (int)target.Team != (int)attacker.Team) // the target is an enemy flag carrier
+        {
+            // QC: effective HP = healtharmor_maxdamage(health, armor, ...); we approximate with health + armor.
+            float effHp = target.Health + target.ArmorValue;
+            float now = Now;
+            if (Cvar(CvarFcHelpMeDamage, DefaultFcHelpMeDamage) > effHp
+                && now > target.GtHelpMeTime + Cvar(CvarFcHelpMeTime, DefaultFcHelpMeTime))
+            {
+                target.GtHelpMeTime = now;
+                // QC WaypointSprite_HelpMePing on the carrier sprite — lit for the helpme antispam window so the
+                // CollectWaypoints snapshot can flag the carrier-enemy sprite as "needs help".
+                target.GtHelpMeUntil = now + Cvar(CvarFcHelpMeTime, DefaultFcHelpMeTime);
+            }
+        }
+        return false;
+    }
+
     /// <summary>QC <c>GameRules_scoring_add_team(player, CTF_CAPS, delta)</c>'s team side: add to a team's
     /// ST_CTF_CAPS total (GameScores team slot 1 — the team primary).</summary>
     public void AddTeamCaps(float team, int delta)
@@ -1197,24 +1292,116 @@ public sealed class Ctf : GameType
     }
 
     /// <summary>
-    /// QC ctf_FlagThink (per-flag, FLAG_THINKRATE): for a dropped flag, record its land time and bleed its
-    /// auto-return timer; when the timer elapses, return it to base. Re-arms itself.
+    /// QC ctf_FlagThink (per-flag, FLAG_THINKRATE): a base flag auto-captures a dropped enemy flag that settled
+    /// within g_ctf_dropped_capture_radius; a dropped flag records its land time, floats in water, auto-returns
+    /// when it settled near its own base, and bleeds its auto-return timer. Re-arms itself.
     /// </summary>
     private void FlagThinkEntity(Entity self)
     {
         self.NextThink = GametypeEntities.Now + 0.2f; // QC FLAG_THINKRATE
-        if ((FlagStatus)self.GtStatus != FlagStatus.Dropped)
+        float now = GametypeEntities.Now;
+        var status = (FlagStatus)self.GtStatus;
+
+        // QC FLAG_BASE: a home flag auto-captures any DROPPED flag that settled within the capture radius (a flag
+        // thrown onto your base scores for the dropper). Settle = the dropped flag has a land time + the delay passed.
+        if (status == FlagStatus.AtBase)
+        {
+            float capRadius = Cvar(CvarDroppedCaptureRadius, DefaultDroppedCaptureRadius);
+            float capDelay  = Cvar(CvarDroppedCaptureDelay, DefaultDroppedCaptureDelay);
+            if (capRadius > 0f)
+            {
+                foreach (FlagState other in Flags.Values)
+                {
+                    if (other.Status != FlagStatus.Dropped || other.Entity is not Entity oe)
+                        continue;
+                    if ((oe.Origin - self.Origin).Length() >= capRadius)
+                        continue;
+                    if (oe.GtLandTime <= 0f || now <= oe.GtLandTime + capDelay)
+                        continue;
+                    CaptureDropped(self, other);
+                    break;
+                }
+            }
             return;
+        }
+
+        if (status != FlagStatus.Dropped)
+            return;
+
+        self.Angles = Vector3.Zero; // QC: reset flag angles in case warpzones adjust it
         if (self.OnGround && self.GtLandTime == 0f)
-            self.GtLandTime = GametypeEntities.Now; // QC: landtime set once it comes to rest
+            self.GtLandTime = now; // QC: landtime set once it comes to rest
+
+        // QC g_ctf_flag_dropped_floatinwater: a flag in water sinks slowly, then floats up when fully submerged.
+        float floatVel = Cvar(CvarFlagFloatInWater, 0f);
+        if (floatVel != 0f && Api.Services is not null)
+        {
+            Vector3 mid = self.Origin + (FlagMins + FlagMaxs) * 0.5f;
+            if ((Api.Trace.PointContents(mid) & SuperContentsWater) != 0)
+            {
+                self.Velocity *= 0.5f;
+                if ((Api.Trace.PointContents(mid + new Vector3(0f, 0f, FlagFloatOffsetZ)) & SuperContentsWater) != 0)
+                    self.Velocity = new Vector3(self.Velocity.X, self.Velocity.Y, floatVel);
+                else
+                    self.MoveType = MoveType.Fly;
+            }
+            else if (self.MoveType == MoveType.Fly)
+                self.MoveType = MoveType.Toss;
+        }
+
+        // QC g_ctf_flag_return_dropped: if the flag came to rest within this distance of its own base, return it now.
+        float returnDropped = Cvar(CvarFlagReturnDropped, 0f);
+        FlagState? flag = FlagForEntity(self);
+        if (flag is not null && returnDropped != 0f)
+        {
+            bool nearBase = returnDropped == -1f || (self.Origin - self.GtSpawnOrigin).Length() <= returnDropped;
+            if (nearBase)
+            {
+                AutoReturnFlag(flag);
+                return;
+            }
+        }
 
         float returnTime = FlagReturnTime;
-        if (returnTime > 0f && GametypeEntities.Now >= self.GtDropTime + returnTime)
+        if (returnTime > 0f && now >= self.GtDropTime + returnTime && flag is not null)
+            AutoReturnFlag(flag);
+    }
+
+    /// <summary>
+    /// QC ctf_Handle_Capture(baseFlag, droppedFlag, CAPTURE_DROPPED) (sv_ctf.qc:605): a dropped enemy flag that
+    /// settled on a base is captured for the player who dropped it (enemy_flag.ctf_dropper). Mirrors the
+    /// player-carry <see cref="Capture"/> scoring without requiring an active carry.
+    /// </summary>
+    private void CaptureDropped(Entity baseFlagEnt, FlagState droppedFlag)
+    {
+        Player? player = droppedFlag.Dropper;
+        FlagState? baseFlag = FlagForEntity(baseFlagEnt);
+        if (player is null || baseFlag is null)
+            return;
+        // QC CTF_DIFFTEAM(player, flag) guard: the dropper must be the SAME team as the BASE flag they land on
+        // (you score a dropped-capture only at your OWN base), and the dropped flag must be an enemy flag.
+        if (baseFlag.HomeTeam != (int)player.Team || droppedFlag.HomeTeam == (int)player.Team)
+            return;
+
+        AddTeamCaps(player.Team, 1);
+        player.ScoreFrags += (int)ScoreCapture;
+        AddTeamScore(player.Team, (int)ScoreCapture);
+        AddCol(player, "CTF_CAPS", 1);
+        if (droppedFlag.PickupTime > 0f)
         {
-            FlagState? flag = FlagForEntity(self);
-            if (flag is not null)
-                AutoReturnFlag(flag);
+            float captime = Now - droppedFlag.PickupTime;
+            Scoring.ScoreField? cf = Scoring.GameScores.Field("CTF_CAPTIME");
+            if (captime > 0f && cf is not null)
+                Scoring.GameScores.SetBestTime(player, cf, Scoring.GameScores.TimeEncode(captime));
         }
+
+        FlagAnnounceSound(droppedFlag.HomeTeam, "CAPTURE");
+        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"CTF_CAPTURE_{TeamSuffix(droppedFlag.HomeTeam)}", player.NetName);
+
+        droppedFlag.ResetToBase();
+        RespawnFlagEntity(droppedFlag);
+        player.GtNextTakeTime = Now + FlagCollectDelay; // QC player.next_take_time = time + collect_delay
+        UpdateLeaderAndCheckLimit();
     }
 
     /// <summary>
@@ -1360,7 +1547,9 @@ public sealed class Ctf : GameType
         if (_captureShieldMaxRatio <= 0f)
             return false;
 
-        int myScore = p.ScoreFrags; // QC uses (CAPS - PICKUPS + RETURNS + FCKILLS); ScoreFrags is our net SCORE
+        // QC ctf_CaptureShield_CheckStatus: the shield score is the CTF composite (CAPS - PICKUPS) + (RETURNS +
+        // FCKILLS), NOT the net SCORE — a player who steals a lot but never caps/returns is the one shielded.
+        int myScore = CtfShieldScore(p);
         if (myScore >= -_captureShieldMinNegScore)
             return false;
 
@@ -1370,13 +1559,26 @@ public sealed class Ctf : GameType
             Player it = roster[i];
             if ((int)it.Team != (int)p.Team)
                 continue;
-            if (it.ScoreFrags <= myScore)
+            if (CtfShieldScore(it) <= myScore)
                 playersWorseEq++;
             playersTotal++;
         }
 
         // Shielded only if the player is in the worse part of the team (QC ratio test).
         return playersWorseEq < playersTotal * _captureShieldMaxRatio;
+    }
+
+    /// <summary>QC ctf_CaptureShield_CheckStatus score: <c>(CTF_CAPS - CTF_PICKUPS) + (CTF_RETURNS + CTF_FCKILLS)</c>.</summary>
+    private static int CtfShieldScore(Player p)
+    {
+        return GetCol(p, "CTF_CAPS") - GetCol(p, "CTF_PICKUPS") + GetCol(p, "CTF_RETURNS") + GetCol(p, "CTF_FCKILLS");
+    }
+
+    /// <summary>Read one CTF score column off a player (0 when the field is unregistered).</summary>
+    private static int GetCol(Player p, string field)
+    {
+        Scoring.ScoreField? f = Scoring.GameScores.Field(field);
+        return f is null ? 0 : Scoring.GameScores.Get(p, f);
     }
 
     /// <summary>QC ctf_CaptureShield_Update for one player: refresh their shielded flag (no roster context).</summary>

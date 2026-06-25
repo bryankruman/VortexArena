@@ -21,7 +21,8 @@ public class LmsExtrasTests
     {
         _f = new EngineServices(new CollisionWorld());
         Api.Services = _f;
-        _f.Cvars.Set("g_lms_lives", "5");
+        // QC: LMS lives are derived from fraglimit (mapinfo lives= / g_lms_lives_override), default 5 when unset.
+        _f.Cvars.Set("fraglimit", "5");
         _f.Cvars.Set("g_lms_extra_lives", "3");
     }
 

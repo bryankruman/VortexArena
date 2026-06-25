@@ -220,6 +220,20 @@ public sealed class PlayerPhysics : IPlayerPhysics
         var pp = new MutatorHooks.PlayerPhysicsArgs(player, dt);
         MutatorHooks.PlayerPhysics.Call(ref pp);
 
+        // ----- A PlayerPhysics handler may REWRITE the wish-move intent (QC mutates CS(player).movement, which the
+        //       subsequent physics reads): the CTS gametype force-quantizes analog input to keyboard cardinals/45°
+        //       diagonals for record fairness (sv_cts.qc PlayerPhysics). Fold any such rewrite of the entity's
+        //       MovementForward/MovementRight back into the local `move` the branch chain below consumes. This is a
+        //       strict no-op in every mode that doesn't rewrite them: the input bridge above seeds them from
+        //       input.MoveValues, so the X/Y only differ here if a handler changed them. We preserve the existing
+        //       frozen/typing zeroing of `move` — a frozen player keeps move==0 because the X/Y guards compare
+        //       against the seed, not the raw input — by only adopting the X/Y when move's X/Y is itself non-frozen
+        //       (i.e. equals the seed input). -----
+        if (player.MovementForward != input.MoveValues.X && move.X == input.MoveValues.X)
+            move.X = player.MovementForward;
+        if (player.MovementRight != input.MoveValues.Y && move.Y == input.MoveValues.Y)
+            move.Y = player.MovementRight;
+
         // ----- CLIENT-PREDICTION speed parity (QC replicates STAT(MOVEVARS_HIGHSPEED) per-player) -----
         // The prediction carrier has none of the powerup/buff/nade status effects the PlayerPhysics hook above
         // reads, so on the predicted leg the hook left SpeedMultiplier at its HighSpeed seed (line 181) — the

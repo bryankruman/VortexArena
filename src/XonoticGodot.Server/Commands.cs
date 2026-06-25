@@ -1262,6 +1262,16 @@ public sealed class Commands
         if (ctx.Caller is null) { ctx.Print("spectate is a client command"); return true; }
         if (!Cvars.Bool("sv_spectate")) { ctx.Print("Spectating is not allowed."); return true; }
         Player p = ctx.Caller;
+        // QC MUTATOR_HOOKFUNCTION(lms, ClientCommand_Spectate) ⇒ MUT_SPECCMD_RETURN (sv_lms.qc:704): a ranked
+        // (out-of-game) LMS player can no longer become a real spectator — they stay a ranked observer of the
+        // match. Keyed on frags == FRAGS_PLAYER_OUT_OF_GAME (the eliminated state), which here is the LmsState's
+        // OutOfGame + an assigned finishing rank.
+        if (_world.GameType is XonoticGodot.Common.Gameplay.LastManStanding lms)
+        {
+            var lst = lms.GetState(p);
+            if (lst.OutOfGame && lst.Rank > 0)
+                return true; // forbidden — already eliminated/ranked, can't drop to a free spectator
+        }
         // QC ClientCommand_spectate: run the REAL observer transition (free-fly, non-solid, model hidden,
         // weapons stripped) — not just flip the scoreboard sentinel as before, which left the player a solid,
         // shootable, still-scoring actor (SPEC4/LOOP2).

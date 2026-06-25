@@ -1091,6 +1091,10 @@ public partial class ScoreboardPanel : HudPanel
     private float DrawAccuracy(float x, float w, float y, float fade)
     {
         if (!AccuracyEnabled()) return y;             // QC ..._accuracy gate
+        // QC cl_invasion.qc MUTATOR_HOOKFUNCTION(cl_inv, DrawScoreboardItemStats) returns ISGAMETYPE(INVASION):
+        // the item-stats (weapon accuracy) panel is hidden in Invasion because monsters are not valid accuracy
+        // targets (sv_invasion.qc AccuracyTargetValid → MUT_ACCADD_INVALID), so the stats would be meaningless.
+        if (GameScores.Gametype == "inv") return y;
         if (_accuracy.Count == 0) return y;           // not networked yet — block hidden (QC gates on data)
         if (y > Size2.Y - 40f) return y;
 

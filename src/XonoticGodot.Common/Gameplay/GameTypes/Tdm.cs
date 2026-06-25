@@ -85,6 +85,7 @@ public sealed class Tdm : GameType
     private const string CvarPointLimit    = "fraglimit";              // GameRules_limit_score writes this
     private const string CvarLeadLimitTdm  = "g_tdm_point_leadlimit";
     private const string CvarLeadLimit     = "leadlimit";
+    private const string CvarLeadAndFrag   = "leadlimit_and_fraglimit"; // both limits required to win (world.qc:1630)
     private const float  DefaultPointLimit = 50f;
     private const float  DefaultLeadLimit  = 0f;
 
@@ -216,6 +217,11 @@ public sealed class Tdm : GameType
             return DefaultLeadLimit;
         }
     }
+
+    /// <summary>QC <c>autocvar_leadlimit_and_fraglimit</c> (gametypes-server.cfg default 0): when set, a finish
+    /// needs BOTH the frag and lead limits reached (else either suffices). Only honored when both limits are
+    /// actually set, matching world.qc:1630.</summary>
+    private static bool LeadAndFrag => Api.Services is not null && Api.Cvars.GetFloat(CvarLeadAndFrag) != 0f;
 
     public void Activate()
     {
@@ -351,13 +357,24 @@ public sealed class Tdm : GameType
 
         int bestScore = GetTeamScore(bestTeam);
         float pointLimit = PointLimit;
-        if (pointLimit > 0f && bestScore >= pointLimit)
-            MatchEnded = true;
 
         int secondTeam = Scoring.GameScores.SecondTeam();
         float leadLimit = LeadLimit;
         int secondScore = secondTeam != Teams.None ? GetTeamScore(secondTeam) : 0;
-        if (leadLimit > 0f && secondTeam != Teams.None && (bestScore - secondScore) >= leadLimit)
+
+        // QC limit_reached (server/world.qc:1625-1633): the team frag limit OR the team lead limit ends the match —
+        // unless BOTH limits are set and leadlimit_and_fraglimit requires both. (top - second >= leadlimit.)
+        bool fraglimitReached = pointLimit > 0f && bestScore >= pointLimit;
+        bool leadlimitReached = leadLimit > 0f && secondTeam != Teams.None
+            && (bestScore - secondScore) >= leadLimit;
+
+        bool limitReached;
+        if (pointLimit > 0f && leadLimit > 0f && LeadAndFrag)
+            limitReached = fraglimitReached && leadlimitReached;
+        else
+            limitReached = fraglimitReached || leadlimitReached;
+
+        if (limitReached)
             MatchEnded = true;
 
         // QC WinningCondition_Scores remaining-frags announcer, gated by the TDM Scores_CountFragsRemaining hook

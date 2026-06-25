@@ -43,6 +43,7 @@ public static class GametypeStatusBlock
         Ctf = 5,         // QC STAT(OBJECTIVE_STATUS) flag-status pack (ctf_FlagcarrierStatus): per-team taken/lost/carrying
         Domination = 6,  // QC STAT(DOM_TOTAL_PPS / DOM_PPS_*): the points-per-second mod-icon (set_dom_state)
         Keepaway = 7,    // QC the KA_CARRYING mod-icon: who (net id) is currently carrying the ball (0 = nobody)
+        TeamKeepaway = 8, // QC STAT(TKA_BALLSTATUS): per-recipient carrying / per-team taken / dropped bit pack
     }
 
     // [W1-mod-icons] QC ctf.qh CTF_* OBJECTIVE_STATUS bit layout (2 bits per team slot: 1=taken, 2=lost,
@@ -112,6 +113,13 @@ public static class GametypeStatusBlock
                 // The net id of the current ball carrier (0 = nobody holds it) — drives the KA_CARRYING mod-icon
                 // and the carrier waypoint. netIdOf is the stable wire id (ServerNet.NetIdFor); 0 when ball-less.
                 w.WriteUShort(ka.Ball.Carrier is { } carrier ? netIdOf(carrier) : 0);
+                return true;
+
+            case TeamKeepaway tka:
+                WriteHeader(w, Kind.TeamKeepaway, viewer, tka.TeamCount);
+                // QC sv_tka.qc PlayerPreThink → STAT(TKA_BALLSTATUS): the per-recipient carrying bit + the per-team
+                // taken / dropped bits. Carrying is recipient-relative, so this is computed per viewer (one byte).
+                w.WriteByte(tka.BallStatusFor(viewer) & 0xFF);
                 return true;
 
             case Survival surv:
@@ -199,19 +207,21 @@ public static class GametypeStatusBlock
     {
         System.Span<float> pps = stackalloc float[4]; // red, blue, yellow, pink
         float total = 0f;
-        // Domination.PointAmount/PointRate already resolve g_domination_point_amt/_rate (with the QC fallbacks),
-        // so each owned point contributes amount/rate points/second to its team. Per-point .frags/.wait overrides
-        // (cp.PerPointAmt/PerPointRate) are a Wave-2 Domination refinement once those cvars route per point.
-        float amt = dom.PointAmount;
-        float rate = dom.PointRate;
-        float perPoint = rate > 0f ? amt / rate : 0f;
+        // QC set_dom_state sums EACH point's own amt/rate: `points = g_domination_point_amt ? amt : it.frags;
+        // wait_time = g_domination_point_rate ? rate : it.wait; total_pps += points/wait_time` (per dom point).
+        // Use the per-point resolvers (cvar override else this point's .frags/.wait, default 1/5) — NOT the global
+        // PointAmount/PointRate properties (whose 1/2 fallback read ~2.5x high vs Base's per-point 1/5). QC adds
+        // every point's pps to total_pps (incl. neutral, so they dilute the bars) but only credits a team slot
+        // when the point is owned — DrawDomItem then fills each bar by stat/total_pps.
         foreach (ControlPoint cp in dom.Points)
         {
+            float rate = dom.PointRateFor(cp);
+            float perPoint = rate > 0f ? dom.PointAmountFor(cp) / rate : 0f;
+            total += perPoint; // QC total_pps += points/wait_time for ALL points
             int slot = TeamIndexOf(cp.OwnerTeam) - 1;
             if (slot < 0 || slot > 3)
-                continue; // unowned / neutral point contributes no pps
+                continue; // unowned / neutral point credits no team slot (but still counts toward total)
             pps[slot] += perPoint;
-            total += perPoint;
         }
         w.WriteFloat(total);
         for (int i = 0; i < 4; i++)
@@ -274,6 +284,9 @@ public static class GametypeStatusBlock
         /// <summary>[W1-mod-icons] Keepaway: the net id of the current ball carrier (0 = nobody) — feeds the
         /// KA_CARRYING mod-icon and carrier waypoint.</summary>
         public int CarrierNetId;
+        /// <summary>Team Keepaway: the per-recipient QC STAT(TKA_BALLSTATUS) bit pack (carrying / per-team taken /
+        /// dropped) — feeds the TKA mod-icon (HUD_Mod_TeamKeepaway).</summary>
+        public int TkaBallStatus;
     }
 
     /// <summary>Read a status block (the inverse of <see cref="Capture"/>'s writes). Returns null on a bad
@@ -281,7 +294,7 @@ public static class GametypeStatusBlock
     public static Decoded? Deserialize(ref BitReader r)
     {
         int mode = r.ReadByte();
-        if (mode < (int)Kind.ClanArena || mode > (int)Kind.Keepaway)
+        if (mode < (int)Kind.ClanArena || mode > (int)Kind.TeamKeepaway)
             return null; // unknown mode: build-parity should make this unreachable
         var d = new Decoded
         {
@@ -314,6 +327,9 @@ public static class GametypeStatusBlock
                 break;
             case Kind.Keepaway:
                 d.CarrierNetId = r.ReadUShort();
+                break;
+            case Kind.TeamKeepaway:
+                d.TkaBallStatus = r.ReadByte();
                 break;
         }
         return r.BadRead ? null : d;

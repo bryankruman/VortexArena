@@ -509,12 +509,19 @@ public sealed class Scores
         }
         else if (teamKill)
         {
-            // TEAMKILL (QC "FRAG"/team): +1 teamkill; −1 frag (only if we own score).
-            Row(attacker).AddAux(ScoreField.TeamKills, 1);
+            // TEAMKILL (QC "FRAG"/team, server/damage.qc:GiveFrags): +1 teamkill; base −1 frag. When
+            // autocvar_g_teamkill_punishing (default 0/off) is set, the penalty escalates with the attacker's
+            // running teamkill count: f -= (teamkills * (teamkills - 1)) * 0.5 → −1, −2, −4, −7, −11, … as the
+            // total reaches 1, 2, 3, 4, 5, … (AddAux returns the new running total, mirroring the value QC reads
+            // back from GameRules_scoring_add(attacker, TEAMKILLS, 1)). The curve term is always integral.
+            int teamkills = Row(attacker).AddAux(ScoreField.TeamKills, 1);
+            int penalty = -1;
+            if (Api.Services is not null && Api.Cvars.GetFloat("g_teamkill_punishing") != 0f)
+                penalty -= (int)((teamkills * (teamkills - 1)) * 0.5f);
             if (OwnsScore)
             {
-                Add(attacker, ScoreField.Score, -1);
-                AddTeamScore((int)attacker.Team, -1);
+                Add(attacker, ScoreField.Score, penalty);
+                AddTeamScore((int)attacker.Team, penalty);
             }
         }
         else

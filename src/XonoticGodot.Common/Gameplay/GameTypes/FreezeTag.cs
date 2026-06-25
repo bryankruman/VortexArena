@@ -45,10 +45,17 @@ namespace XonoticGodot.Common.Gameplay;
 [GameType]
 public sealed class FreezeTag : GameType
 {
-    // ----- round-limit cvars + default (FreezeTag uses fraglimit for rounds-to-win) -----
+    // ----- round-limit cvars + defaults -----
+    // QC sv_freezetag.qh: GameRules_limit_score(g_freezetag_point_limit) / GameRules_limit_lead(
+    // g_freezetag_point_leadlimit). Both ship at -1 = "use the mapinfo limit". The port has no mapinfo
+    // limit plumbing, so -1 (or an unset cvar) falls back to the gametype legacy defaults (pointlimit 10,
+    // leadlimit 6 — freezetag.qh INIT). A 0 means "play without limit" (matched by limit > 0 guards).
+    private const string CvarPointLimit     = "g_freezetag_point_limit";     // FT-specific (mapinfo passthrough)
+    private const string CvarPointLeadLimit = "g_freezetag_point_leadlimit"; // FT-specific (mapinfo passthrough)
     private const string CvarRoundLimit = "fraglimit";
     private const string CvarLeadLimit  = "leadlimit";
-    private const float  DefaultRoundLimit = 10f;
+    private const float  DefaultRoundLimit = 10f; // QC freezetag.qh INIT pointlimit
+    private const float  DefaultLeadLimit  = 6f;  // QC freezetag.qh INIT leadlimit
 
     // ----- team count cvars (g_freezetag_teams_override >= 2 ? override : g_freezetag_teams), 2..4 -----
     private const string CvarTeamsOverride = "g_freezetag_teams_override";
@@ -129,6 +136,7 @@ public sealed class FreezeTag : GameType
 
     private HookHandler<DeathEvent>? _deathHandler;
     private HookHandler<MutatorHooks.SetStartItemsArgs>? _startItemsHandler;
+    private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
 
     public FreezeTag()
     {
@@ -161,10 +169,35 @@ public sealed class FreezeTag : GameType
         }
     }
 
-    /// <summary>Round limit in force (fraglimit, else 10). 0 == unlimited.</summary>
-    public float RoundLimit => TryCvar(CvarRoundLimit, out float fl) ? fl : DefaultRoundLimit;
+    /// <summary>
+    /// Round limit in force (QC GameRules_limit_score(g_freezetag_point_limit)). FT's own point-limit cvar
+    /// wins (ships -1 = use the mapinfo/legacy default 10); -1 (or unset) falls back to the gametype default
+    /// 10, then to the generic fraglimit. 0 == play without limit.
+    /// </summary>
+    public float RoundLimit
+    {
+        get
+        {
+            if (TryCvar(CvarPointLimit, out float pl) && pl >= 0f) return pl; // -1 = use default below
+            if (TryCvar(CvarRoundLimit, out float fl) && fl > 0f) return fl;
+            return DefaultRoundLimit;
+        }
+    }
 
-    public float LeadLimit => TryCvar(CvarLeadLimit, out float l) ? l : 0f;
+    /// <summary>
+    /// Lead limit in force (QC GameRules_limit_lead(g_freezetag_point_leadlimit)). FT's own lead-limit cvar
+    /// wins (ships -1 = use the mapinfo/legacy default 6); -1 (or unset) falls back to the gametype default
+    /// 6, then to the generic leadlimit. 0 == no lead limit.
+    /// </summary>
+    public float LeadLimit
+    {
+        get
+        {
+            if (TryCvar(CvarPointLeadLimit, out float ll) && ll >= 0f) return ll; // -1 = use default below
+            if (TryCvar(CvarLeadLimit, out float l) && l > 0f) return l;
+            return DefaultLeadLimit;
+        }
+    }
 
     /// <summary>Revive progress accrued per second while a teammate is in reviving range (g_freezetag_revive_speed).</summary>
     public float ReviveSpeed => TryCvar(CvarReviveSpeed, out float s) ? s : DefaultReviveSpeed;
@@ -210,6 +243,12 @@ public sealed class FreezeTag : GameType
         // full ammo (60/320/160/180/0). SpawnSystem.ComputeStartItems fires this live (the readplayerstartcvars seam).
         _startItemsHandler = OnSetStartItems;
         MutatorHooks.SetStartItems.Add(_startItemsHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ft, Damage_Calculate): frozen players take 0 health damage (g_frozen_force
+        // knockback scaling), enemy hits speed their auto-thaw (g_freezetag_revive_auto_reducible), and fall
+        // damage can revive (g_frozen_revive_falldamage). Subscribed onto the live damage pipeline.
+        _damageCalcHandler = OnDamageCalculate;
+        MutatorHooks.DamageCalculate.Add(_damageCalcHandler);
     }
 
     /// <summary>
@@ -225,6 +264,7 @@ public sealed class FreezeTag : GameType
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
         if (_startItemsHandler is not null) { MutatorHooks.SetStartItems.Remove(_startItemsHandler); _startItemsHandler = null; }
+        if (_damageCalcHandler is not null) { MutatorHooks.DamageCalculate.Remove(_damageCalcHandler); _damageCalcHandler = null; }
     }
 
     public int AssignTeam(Player joiner, IReadOnlyList<Player> roster)
@@ -320,6 +360,12 @@ public sealed class FreezeTag : GameType
             st.FrozenTime = 0f;
         }
         targ.DeadState = DeadFlag.No;
+        // QC freezetag_Unfreeze: pauseregen_finished = time + g_balance_pause_health_regen — a freshly thawed
+        // player's health/armor regen is paused for the same window a damaged player's is, so revive doesn't
+        // instantly start topping them up.
+        float nowU = Api.Services is not null ? Api.Clock.Time : 0f;
+        float pauseRegen = TryCvar("g_balance_pause_health_regen", out float pr) ? pr : 5f;
+        targ.PauseRegenFinished = System.Math.Max(targ.PauseRegenFinished, nowU + pauseRegen);
         // QC freezetag_Unfreeze: clear the Frozen status effect and restore full start health.
         if (StatusEffectsCatalog.Frozen is { } frozenDef)
             StatusEffectsCatalog.Remove(targ, frozenDef);
@@ -328,6 +374,102 @@ public sealed class FreezeTag : GameType
         // thawed player isn't instantly re-frozen). The damage pipeline reads Entity.SpawnShieldExpire.
         if (spawnShieldSeconds > 0f)
             targ.SpawnShieldExpire = (Api.Services is not null ? Api.Clock.Time : 0f) + spawnShieldSeconds;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ft, Damage_Calculate)</c> (sv_freezetag.qc:618): the frozen-player damage
+    /// rules. On every hit, save the target's armor (for a soft-kill restore). For a frozen target:
+    ///  - <b>auto-thaw reduction</b> (g_freezetag_revive_auto_reducible, default 1): an enemy hit (or any hit
+    ///    when set to -1) accumulates hit force up to <c>_reducible_maxforce</c> (400), converts it via
+    ///    <c>_reducible_forcefactor</c> (0.01), and subtracts that many seconds from the auto-thaw timeout —
+    ///    so shooting a frozen enemy speeds their thaw (the core "don't shoot frozen enemies" tactic);
+    ///  - <b>damage immunity</b>: a non-NEEDKILL/non-teamchange hit deals 0 health damage and its knockback is
+    ///    scaled by g_frozen_force (0.6) — the HP=1 frozen body can't be chip-killed;
+    ///  - <b>fall-damage revive</b> (g_frozen_revive_falldamage, default 0/off): a hard enough DEATH_FALL hit
+    ///    thaws the player to g_frozen_revive_falldamage_health (40) instead.
+    /// The void/lava soft-kill relocate (g_frozen_damage_trigger 0, default 1 = die) needs a spawn-point
+    /// selector that lives in the server layer and is intentionally NOT done here.
+    /// </summary>
+    private bool OnDamageCalculate(ref MutatorHooks.DamageCalculateArgs args)
+    {
+        if (args.Target is not Player targ)
+            return false;
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+
+        // QC: frag_target.freezetag_frozen_armor = GetResource(frag_target, RES_ARMOR) — snapshot every hit.
+        targ.FrozenArmor = targ.GetResource(ResourceType.Armor);
+
+        if (!IsFrozen(targ))
+            return false;
+
+        float maxtime = FrozenMaxtime;
+        bool autoRevive = ReviveAuto && maxtime > 0f;
+        var st = GetState(targ);
+
+        // ----- auto-thaw reduction (QC sv_freezetag.qc:628-654) -----
+        int reducible = TryCvar("g_freezetag_revive_auto_reducible", out float rr) ? (int)rr : 1;
+        if (autoRevive && reducible != 0)
+        {
+            bool enemyOrAlways = reducible < 0
+                || (args.Attacker is Player atk && !Teams.SameTeam(atk, targ));
+            if (enemyOrAlways && st.FrozenTimeout > now)
+            {
+                float t = 0f;
+                if (System.Math.Abs(reducible) == 1)
+                {
+                    float maxforce = TryCvar("g_freezetag_revive_auto_reducible_maxforce", out float mf) ? mf : 400f;
+                    float forcefactor = TryCvar("g_freezetag_revive_auto_reducible_forcefactor", out float ff) ? ff : 0.01f;
+                    t = args.Force.Length();
+                    // QC: limit hit force considered at once (Strength powerup / multi-projectile weapons).
+                    if (targ.FrozenForce + t > maxforce)
+                    {
+                        t = System.Math.Max(0f, maxforce - targ.FrozenForce);
+                        targ.FrozenForce = maxforce;
+                    }
+                    else
+                        targ.FrozenForce += t;
+                    t *= forcefactor;
+                }
+                st.FrozenTimeout -= t;
+                if (st.FrozenTimeout < now)
+                    st.FrozenTimeout = now;
+            }
+        }
+
+        // ----- frozen damage immunity + fall-damage revive (QC sv_freezetag.qc:656-670) -----
+        string dt = args.DeathType;
+        if (!IsNeedKill(dt) && !DeathTypes.IsTeamChange(dt))
+        {
+            // QC fall-damage revive (default off): a hard enough fall thaws the player to falldamage_health.
+            float fallRevive = TryCvar("g_frozen_revive_falldamage", out float fr) ? fr : 0f;
+            if (fallRevive > 0f && DeathTypes.BaseOf(dt) == DeathTypes.Fall && args.Damage >= fallRevive)
+            {
+                float fallHealth = TryCvar("g_frozen_revive_falldamage_health", out float fh) ? fh : 40f;
+                Unfreeze(targ);
+                targ.SetResource(ResourceType.Health, fallHealth);
+                // QC Send_Effect(EFFECT_ICEORGLASS) is host-side VFX.
+                NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "FREEZETAG_REVIVED_FALL", targ.NetName);
+                NotificationSystem.Send(NotifBroadcast.One, targ, MsgType.Center, "FREEZETAG_REVIVE_SELF");
+            }
+
+            // QC: a frozen player takes NO health damage; knockback is scaled by g_frozen_force (0.6).
+            float frozenForce = TryCvar("g_frozen_force", out float gff) ? gff : 0.6f;
+            args.Damage = 0f;
+            args.Force *= frozenForce;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// QC <c>ITEM_DAMAGE_NEEDKILL(dt)</c> (server/items/items.qh:123): the void(HURTTRIGGER)/slime/lava/swamp
+    /// "must-kill" deathtypes — the only damage that still kills a frozen player (so they don't float forever in
+    /// a kill volume). All map to the port's environment deathtype tags.
+    /// </summary>
+    private static bool IsNeedKill(string? deathType)
+    {
+        string b = DeathTypes.BaseOf(deathType);
+        return b == DeathTypes.Void || b == DeathTypes.Slime || b == DeathTypes.Lava || b == DeathTypes.Swamp;
     }
 
     /// <summary>
@@ -405,6 +547,11 @@ public sealed class FreezeTag : GameType
         bool autoProgress = autoRevive && ReviveAutoProgress;
         float spawnShield = ReviveSpawnShield;
         int thawed = 0;
+
+        // QC PlayerPreThink: player.freezetag_frozen_force = 0 every frame — the auto-thaw reduction force
+        // accumulator (Damage_Calculate) is per-frame, so clear it for the whole roster before the revive scan.
+        for (int i = 0; i < _roster.Count; i++)
+            _roster[i].FrozenForce = 0f;
 
         for (int i = 0; i < _roster.Count; i++)
         {
@@ -646,6 +793,22 @@ public sealed class FreezeTag : GameType
     {
         if (MatchEnded)
             return -1;
+
+        // QC freezetag_CheckWinner (sv_freezetag.qc:75-88): if the round timelimit elapses while the round is
+        // still live (both teams have survivors), the round is OVER as a TIE — thaw everyone, clear their
+        // freeze timers, and announce ROUND_OVER. The live server RoundHandler mirrors RoundEndTime into
+        // ft.Handler, so read it here (0 = no timelimit). This is the round-timelimit-expiry tie path.
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        if (Handler is { RoundEndTime: > 0f } h && h.RoundEndTime - now <= 0f)
+        {
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "ROUND_OVER");
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "ROUND_OVER");
+            for (int i = 0; i < _roster.Count; i++)
+                if (IsFrozen(_roster[i]))
+                    Unfreeze(_roster[i]); // QC: thaw all frozen + clear freezetag_frozen_timeout/revive_time
+            Round.Number++;
+            return -1; // tie (no team score)
+        }
 
         Round.AliveByTeam.Clear();
         int totalPlayers = 0;

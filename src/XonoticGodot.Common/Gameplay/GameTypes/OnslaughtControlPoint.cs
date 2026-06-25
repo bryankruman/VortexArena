@@ -43,16 +43,22 @@ public sealed class OnslaughtControlPoint
     private const string CvarCpHealth      = "g_onslaught_cp_health";        // 200 — icon full health
     private const string CvarCpBuildHealth = "g_onslaught_cp_buildhealth";   // 100 — health an icon starts at
     private const string CvarCpBuildTime   = "g_onslaught_cp_buildtime";     // 5   — seconds to build from build→full
-    private const string CvarCpRegen       = "g_onslaught_cp_regen";         // 10  — slow repair rate once built (hp/s)
+    private const string CvarCpRegen       = "g_onslaught_cp_regen";         // 20  — slow repair rate once built (hp/s)
     private const string CvarGenHealth     = "g_onslaught_gen_health";       // 2000
     private const string CvarSuddenDeath   = "timelimit_suddendeath";        // 5   — overtime decay window (minutes)
+    // QC ons_ControlPoint_Icon_Think proximity-decap autocvars (sv_onslaught.qc:18-21).
+    private const string CvarProxDecap     = "g_onslaught_cp_proximitydecap";          // 0   — master toggle (default OFF)
+    private const string CvarProxDecapDist = "g_onslaught_cp_proximitydecap_distance"; // 512 — qu radius
+    private const string CvarProxDecapDps  = "g_onslaught_cp_proximitydecap_dps";      // 100 — hp/s per (friendly-enemy) head
 
     private const float DefCpHealth      = 200f;
     private const float DefCpBuildHealth = 100f;
     private const float DefCpBuildTime   = 5f;
-    private const float DefCpRegen       = 10f;
+    private const float DefCpRegen       = 20f; // QC g_onslaught_cp_regen default (gametypes-server.cfg:581)
     private const float DefGenHealth     = 2000f;
     private const float DefSuddenDeath   = 5f;
+    private const float DefProxDecapDist = 512f;
+    private const float DefProxDecapDps  = 100f;
 
     private readonly Onslaught _ons;
 
@@ -392,12 +398,58 @@ public sealed class OnslaughtControlPoint
 
     /// <summary>
     /// QC ons_ControlPoint_Icon_Think (sv_onslaught.qc:477) — the steady-state icon think after the point is
-    /// built: slowly regenerate RES_HEALTH back toward max (QC: 5s after the last hit). Proximity-decap is
-    /// deferred (presentation/AI). Re-arms itself.
+    /// built: optional proximity-decap (g_onslaught_cp_proximitydecap, default OFF) then slowly regenerate
+    /// RES_HEALTH back toward max (QC: 5s after the last hit). Re-arms itself.
     /// </summary>
     public void IconThink(Entity self)
     {
         self.NextThink = Now + CpThinkRate;
+
+        // QC ons_ControlPoint_Icon_Think proximity-decap (sv_onslaught.qc:481-517): only when the owner point is
+        // NOT shielded and the cvar is on. The (friendly - enemy) live-player count within
+        // g_onslaught_cp_proximitydecap_distance changes RES_HEALTH by ±dps*THINKRATE each tick; at <=0 the icon
+        // is destroyed via ons_ControlPoint_Icon_Damage (attacker = the lone enemy, or `this` to spread the
+        // multi-attacker reward). A pure-friendly crowd repairs it instead.
+        int cpId = self.GtIconCpId;
+        Onslaught.OnsNode? node = _ons.ControlPointNode(cpId);
+        if (node is not null && !node.Shielded && GametypeEntities.Cvar(CvarProxDecap, 0f) != 0f && Api.Services is not null)
+        {
+            int myTeam = self.GtHomeTeam;
+            float dist = GametypeEntities.Cvar(CvarProxDecapDist, DefProxDecapDist);
+            float dist2 = dist * dist;
+            int friendly = 0, enemy = 0;
+            Player? firstEnemy = null;
+            foreach (Entity e in Api.Entities.FindByClass("player"))
+            {
+                if (e is not Player p || (p.Flags & EntFlags.Client) == 0 || p.IsDead)
+                    continue;
+                if ((p.Origin - self.Origin).LengthSquared() >= dist2)
+                    continue;
+                if ((int)p.Team == myTeam)
+                    friendly++;
+                else
+                {
+                    enemy++;
+                    firstEnemy ??= p;
+                }
+            }
+
+            float hlt = (friendly - enemy) * (GametypeEntities.Cvar(CvarProxDecapDps, DefProxDecapDps) * CpThinkRate);
+            if (hlt < 0f)
+                self.GtObjHealth += hlt; // QC TakeResource(RES_HEALTH, -hlt)
+            else if (hlt > 0f)
+                self.GtObjHealth = MathF.Min(self.GtObjHealth + hlt, self.GtObjMaxHealth); // QC GiveResourceWithLimit
+
+            if (self.GtObjHealth <= 0f)
+            {
+                // QC: _enemy_count >= 1 here. With >1 enemy, pass `self` as the attacker so IconDamage spreads
+                // the ONS_TAKES reward to every nearby enemy (the proximity self-destruct branch); else the lone enemy.
+                Entity attacker = enemy > 1 ? self : (Entity?)firstEnemy ?? self;
+                IconDamage(self, self, attacker, DeathTypes.Void, 1f, self.Origin, Vector3.Zero);
+                return;
+            }
+        }
+
         // QC: if (time > pain_finished + 5) regenerate up to max at the slow rate.
         if (Now > self.GtPainFinished + 5f && self.GtObjHealth < self.GtObjMaxHealth)
         {
@@ -449,17 +501,47 @@ public sealed class OnslaughtControlPoint
             if (Api.Services is not null)
                 SoundSystem.PlayOn(self, Sounds.ByName("ONS_GENERATOR_EXPLODE"));
 
-            // QC: award the destroyer (unless self-inflicted), then reset the owner point to neutral.
-            if (attacker is Player by && !ReferenceEquals(attacker, self))
+            // QC: award the destroyer, then reset the owner point to neutral. The attacker shown in the notify
+            // is the weapon attacker normally, or — on the proximity self-destruct (attacker == self) — the first
+            // nearby enemy, with the ONS_TAKES/SCORE reward spread to EVERY nearby enemy.
+            Player? notifyAttacker = null;
+            if (ReferenceEquals(attacker, self))
+            {
+                // QC ons_ControlPoint_Icon_Damage proximity self-destruct (sv_onslaught.qc:416-429): reward all
+                // live enemy players within g_onslaught_cp_proximitydecap_distance with ONS_TAKES +1 / SCORE +5.
+                int ownerTeam = node?.Team ?? Teams.None;
+                if (Api.Services is not null)
+                {
+                    float dist = GametypeEntities.Cvar(CvarProxDecapDist, DefProxDecapDist);
+                    float dist2 = dist * dist;
+                    foreach (Entity e in Api.Entities.FindByClass("player"))
+                    {
+                        if (e is not Player p || (p.Flags & EntFlags.Client) == 0 || p.IsDead)
+                            continue;
+                        if ((int)p.Team == ownerTeam || (int)p.Team == Teams.None)
+                            continue; // QC DIFF_TEAM(it, this)
+                        if ((p.Origin - self.Origin).LengthSquared() >= dist2)
+                            continue;
+                        notifyAttacker ??= p; // QC: show the message only for the first such player
+                        AddCol(p, "ONS_TAKES", 1); // QC GameRules_scoring_add(it, ONS_TAKES, 1)
+                        p.ScoreFrags += 5;         // QC GameRules_scoring_add(it, SCORE, 5)
+                    }
+                }
+            }
+            else if (attacker is Player by)
             {
                 AddCol(by, "ONS_TAKES", 1); // QC GameRules_scoring_add(attacker, ONS_TAKES, 1)
                 by.ScoreFrags += 10;        // QC GameRules_scoring_add(attacker, SCORE, 10)
+                notifyAttacker = by;
+            }
 
+            if (notifyAttacker is not null)
+            {
                 // QC ons_ControlPoint_Icon_Damage (sv_onslaught.qc:431-434): the CP-destroyed info notify. The
                 // port's CP has no map .message, so use the NONAME (by-attacker) variant.
                 int destroyedTeam = node?.Team ?? Teams.None;
                 Onslaught.Notify(NotifBroadcast.All, MsgType.Info,
-                    $"ONSLAUGHT_CPDESTROYED_NONAME_{Onslaught.TeamSuffix(destroyedTeam)}", by.NetName);
+                    $"ONSLAUGHT_CPDESTROYED_NONAME_{Onslaught.TeamSuffix(destroyedTeam)}", notifyAttacker.NetName);
             }
 
             // QC: owner.goalentity = NULL; islinked = iscaptured = false; team = 0; onslaught_updatelinks().

@@ -38,11 +38,19 @@ namespace XonoticGodot.Common.Gameplay;
 ///    QC Damage_Calculate), subscribed to the live MutatorHooks.DamageCalculate channel;
 ///  - per-team timed-possession points (<c>g_tka_score_timepoints</c>, off by default) + the TKA_BCTIME column.
 ///
-/// Deferred (NOTE — cross-boundary): the TKA_BALLSTATUS HUD mod-icon + team-colored carrier waypoints/radar (CSQC
-/// presentation, Wave 3), the carrier-highspeed PlayerPhysics modifier (<c>g_tka_ballcarrier_highspeed</c>, default
-/// 1 = no effect), multi-ball chaining (<c>g_tka_ballcarrier_maxballs</c>), and the use-key / disconnect / observe
-/// drop triggers (need MutatorHooks.PlayerUseKey / MakePlayerObserver / ClientDisconnect / DropSpecialItems, not yet
-/// on MutatorHooks — see todos). Death-drop IS wired (<see cref="OnDeath"/>).
+/// Faithfully ported (Wave 6a — presentation + physics):
+///  - the carrier-highspeed PlayerPhysics modifier (<see cref="OnPlayerPhysics"/>, QC PlayerPhysics_UpdateStats →
+///    STAT(MOVEVARS_HIGHSPEED) *= <c>g_tka_ballcarrier_highspeed</c>, default 1 = no effect), live on the same
+///    MutatorHooks.PlayerPhysics channel as Keepaway/buffs/powerups;
+///  - the team-colored carrier / loose-ball waypoint sprites (<see cref="CollectWaypoints"/>, QC tka_TouchEvent
+///    WP_TkaBallCarrier{Red,Blue,Yellow,Pink} + tka_RespawnBall/tka_DropEvent WP_KaBall), honoring
+///    <c>g_tkaball_tracking</c>, shipped through the live ServerNet.SendWaypoints pull;
+///  - the TKA_BALLSTATUS HUD mod-icon (<see cref="BallStatusFor"/>, QC PlayerPreThink bit pack → GametypeStatusBlock
+///    Kind.TeamKeepaway → ModIconsPanel.DrawTeamKeepaway: carrying / per-team taken / dropped icons).
+///
+/// Deferred (NOTE — cross-boundary): multi-ball chaining (<c>g_tka_ballcarrier_maxballs</c>), and the use-key /
+/// disconnect / observe drop triggers (need MutatorHooks.PlayerUseKey / MakePlayerObserver / ClientDisconnect /
+/// DropSpecialItems, not yet on MutatorHooks — see todos). Death-drop IS wired (<see cref="OnDeath"/>).
 /// </summary>
 [GameType]
 public sealed class TeamKeepaway : GameType
@@ -80,6 +88,12 @@ public sealed class TeamKeepaway : GameType
     private HookHandler<DeathEvent>? _deathHandler;
     private HookHandler<MutatorHooks.GiveFragsForKillArgs>? _giveFragsHandler;
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
+    private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _physicsHandler;
+
+    // QC g_tka_ballcarrier_highspeed: the carrier's MOVEVARS_HIGHSPEED multiplier (default 1 = no effect).
+    private const string CvarBallCarrierHighspeed = "g_tka_ballcarrier_highspeed";
+    /// <summary>QC autocvar_g_tka_ballcarrier_highspeed (default 1): speed multiplier applied to the ball carrier.</summary>
+    public float BallCarrierHighspeed => TryCvar(CvarBallCarrierHighspeed, out float v) && v > 0f ? v : 1f;
 
     /// <summary>Optional sink for the host/controller to react to a kill.</summary>
     public IMatchEvents? Events;
@@ -260,6 +274,40 @@ public sealed class TeamKeepaway : GameType
     /// <summary>The team color code (see <see cref="Teams"/>) of the current ball-carrier, or 0 if loose.</summary>
     public int BallTeam => Carrier is null ? Teams.None : (int)Carrier.Team;
 
+    // QC tka.qh STAT(TKA_BALLSTATUS) bit layout: per-team taken (BIT 0..3), self-carrying (BIT 4), dropped (BIT 5).
+    public const int BallTakenRed = 1 << 0;    // TKA_BALL_TAKEN_RED
+    public const int BallTakenBlue = 1 << 1;   // TKA_BALL_TAKEN_BLUE
+    public const int BallTakenYellow = 1 << 2; // TKA_BALL_TAKEN_YELLOW
+    public const int BallTakenPink = 1 << 3;   // TKA_BALL_TAKEN_PINK
+    public const int BallCarrying = 1 << 4;    // TKA_BALL_CARRYING (the RECIPIENT carries it)
+    public const int BallDropped = 1 << 5;     // TKA_BALL_DROPPED (a ball is loose)
+
+    /// <summary>
+    /// QC sv_tka.qc PlayerPreThink: pack STAT(TKA_BALLSTATUS) for <paramref name="viewer"/>. TKA_BALL_CARRYING
+    /// if the viewer holds the (single) ball; otherwise per the ball's state — TKA_BALL_DROPPED when loose, or the
+    /// TKA_BALL_TAKEN_{RED,BLUE,YELLOW,PINK} bit for the carrier's team. With one ball, exactly one of carrying /
+    /// taken / dropped is set (the QC IL_EACH over g_tkaballs collapses to the single ball here).
+    /// </summary>
+    public int BallStatusFor(Player viewer)
+    {
+        int status = 0;
+        if (ReferenceEquals(Carrier, viewer))
+            status |= BallCarrying; // QC: if(player.ballcarried) |= TKA_BALL_CARRYING
+        // QC IL_EACH(g_tkaballs, ...): the single ball is either loose (dropped) or owned by a team.
+        if (Carrier is null)
+            status |= BallDropped; // QC: if(!it.owner) |= TKA_BALL_DROPPED
+        else
+            status |= (int)Carrier.Team switch
+            {
+                Teams.Red => BallTakenRed,
+                Teams.Blue => BallTakenBlue,
+                Teams.Yellow => BallTakenYellow,
+                Teams.Pink => BallTakenPink,
+                _ => 0,
+            };
+        return status;
+    }
+
     /// <summary>The point limit in force (g_tka_point_limit, else fraglimit, else 50). 0 means no limit.</summary>
     public int PointLimit
     {
@@ -323,6 +371,22 @@ public sealed class TeamKeepaway : GameType
         // actually affect combat (registry tka.damage.matrix — previously zero callers).
         _damageCalcHandler ??= OnDamageCalculate;
         MutatorHooks.DamageCalculate.Add(_damageCalcHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(tka, PlayerPhysics_UpdateStats): the carrier's top speed is scaled by
+        // g_tka_ballcarrier_highspeed (STAT(MOVEVARS_HIGHSPEED) *= ...). The PlayerPhysics path resets
+        // SpeedMultiplier to 1 each frame and folds it after this hook, so a pure multiply composes with
+        // powerup/buff factors (registry tka.carrier.highspeed — previously missing).
+        _physicsHandler ??= OnPlayerPhysics;
+        MutatorHooks.PlayerPhysics.Add(_physicsHandler);
+    }
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(tka, PlayerPhysics_UpdateStats): scale the carrier's top speed by
+    /// g_tka_ballcarrier_highspeed (STAT(MOVEVARS_HIGHSPEED, player) *= ...).</summary>
+    private bool OnPlayerPhysics(ref MutatorHooks.PlayerPhysicsArgs args)
+    {
+        if (args.Player is Player player && ReferenceEquals(Carrier, player))
+            player.SpeedMultiplier *= BallCarrierHighspeed;
+        return false;
     }
 
     /// <summary>QC <c>GameRules_scoring_add(player, SP_X, n)</c> for a TKA player column (no-op if unregistered).</summary>
@@ -347,6 +411,11 @@ public sealed class TeamKeepaway : GameType
         {
             MutatorHooks.DamageCalculate.Remove(_damageCalcHandler);
             _damageCalcHandler = null;
+        }
+        if (_physicsHandler is not null)
+        {
+            MutatorHooks.PlayerPhysics.Remove(_physicsHandler);
+            _physicsHandler = null;
         }
     }
 
@@ -589,6 +658,78 @@ public sealed class TeamKeepaway : GameType
 
     private int ScoreKillAc => TryCvar(CvarScoreKillAc, out float v) ? (int)v : DefaultScoreKillAc;
     private int ScoreBcKill => TryCvar(CvarScoreBcKill, out float v) ? (int)v : DefaultScoreBcKill;
+
+    // ----- waypoint tracking cvar (g_tkaball_tracking: 0=none/1=tracking; QC default 1) -----
+    private const string CvarBallTracking = "g_tkaball_tracking";
+    /// <summary>QC autocvar_g_tkaball_tracking (default 1): 0 = no waypoint, 1 = track the ball/carrier.</summary>
+    private int BallTracking => TryCvar(CvarBallTracking, out float v) ? (int)v : 1;
+
+    /// <summary>
+    /// QC tka_RespawnBall (WaypointSprite_Spawn WP_KaBall on the loose ball, '0 0 64') + tka_TouchEvent
+    /// (WaypointSprite_AttachCarrier WP_TkaBallCarrier{Red,Blue,Yellow,Pink} on the carrier, colormod by team,
+    /// SPRITERULE_TEAMPLAY). One sprite for the (single) ball, rebuilt each tick from its live state — a
+    /// TEAM-COLORED carrier sprite riding the carrier when held, the neutral KaBall when loose. Honors
+    /// g_tkaball_tracking (0 = none, 1 = track); QC also always shows it during warmup, but the host pull path
+    /// has no warmup flag here, so the cvar governs.
+    /// </summary>
+    public override void CollectWaypoints(System.Collections.Generic.List<Waypoints.WaypointSprite> into)
+    {
+        if (BallEntity is null)
+            return;
+        if (BallTracking == 0)
+            return; // QC: g_tkaball_tracking 0 → no waypoint at all
+
+        Player? carrier = Carrier;
+        if (carrier is not null)
+        {
+            // QC tka_TouchEvent: WaypointSprite_AttachCarrier with WP_TkaBallCarrier<team> + colormapPaletteColor,
+            // SPRITERULE_TEAMPLAY, RADARICON_FLAGCARRIER. The sprite name + radar tint come from the carrier's team.
+            int team = (int)carrier.Team;
+            into.Add(new Waypoints.WaypointSprite
+            {
+                SpriteName = CarrierSpriteName(team),
+                Owner = carrier,
+                Offset = new System.Numerics.Vector3(0f, 0f, 64f),
+                Team = team, // SPRITERULE_TEAMPLAY: visibility/tint keyed on the carrier's team
+                Color = TeamRadarColor(team),
+                RadarIcon = 1, // RADARICON_FLAGCARRIER
+                Health = -1f,
+            });
+            return;
+        }
+
+        // QC tka_RespawnBall / tka_DropEvent: WaypointSprite_Spawn(WP_KaBall, ..., ball, '0 0 64', team 0,
+        // SPRITERULE_DEFAULT) — a neutral marker on the loose ball.
+        into.Add(new Waypoints.WaypointSprite
+        {
+            SpriteName = "KaBall",
+            FixedOrigin = BallEntity.Origin + new System.Numerics.Vector3(0f, 0f, 64f),
+            Team = Teams.None,
+            RadarIcon = 1,
+            Health = -1f,
+        });
+    }
+
+    /// <summary>QC tka_TouchEvent WaypointSprite_UpdateSprites switch (NUM_TEAM_1..4 → WP_TkaBallCarrier
+    /// Red/Blue/Yellow/Pink; WP_KaBallCarrier as the default-team fallback).</summary>
+    private static string CarrierSpriteName(int team) => team switch
+    {
+        Teams.Red => "TkaBallCarrierRed",
+        Teams.Blue => "TkaBallCarrierBlue",
+        Teams.Yellow => "TkaBallCarrierYellow",
+        Teams.Pink => "TkaBallCarrierPink",
+        _ => "KaBallCarrier",
+    };
+
+    /// <summary>Team → radar tint (QC colormapPaletteColor(team-1, 0); neutral handled by the loose-ball path).</summary>
+    private static System.Numerics.Vector3 TeamRadarColor(int team) => team switch
+    {
+        Teams.Red => new System.Numerics.Vector3(1f, 0.0625f, 0.0625f),
+        Teams.Blue => new System.Numerics.Vector3(0.0625f, 0.0625f, 1f),
+        Teams.Yellow => new System.Numerics.Vector3(1f, 1f, 0.0625f),
+        Teams.Pink => new System.Numerics.Vector3(1f, 0.0625f, 1f),
+        _ => new System.Numerics.Vector3(1f, 1f, 1f),
+    };
 
     private static bool TryCvar(string name, out float value)
     {

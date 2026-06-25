@@ -105,6 +105,15 @@ public sealed class Survival : GameType
     /// <summary>The side that won the round once <see cref="RoundOver"/> is set (None until then).</summary>
     public SurvStatus WinningSide { get; private set; }
 
+    /// <summary>
+    /// QC <c>round_handler_GetEndDelayTime()</c> (server/round_handler.qc): the absolute sim time the round's
+    /// resolution has been deferred to when <c>g_survival_round_enddelay &gt; 0</c> is set — a side has been wiped
+    /// but Surv_CheckWinner waits out this delay before awarding scores (and re-checks each frame, resetting it if
+    /// both sides become alive again). <c>-1</c> = no deferral scheduled (QC's sentinel). Stock cfg sets enddelay=0
+    /// so this is never armed; only an operator setting a positive enddelay engages it.
+    /// </summary>
+    private float _endDelayTime = -1f;
+
     public Survival()
     {
         NetName = "surv";
@@ -192,6 +201,21 @@ public sealed class Survival : GameType
         return n == 0 ? _roster.Count : n;
     }
 
+    /// <summary>
+    /// QC <c>Surv_CheckPlayers</c> (sv_survival.qc:195-226), the round handler's canRoundStart: the countdown may
+    /// proceed once ≥2 LIVE players (IS_PLAYER &amp;&amp; !IS_DEAD) are present (both sides need a member). Used as
+    /// the LIVE round handler's start predicate so the round-start moment (and the AssignRoles it fires) tracks the
+    /// real player count, not the generic team-based default.
+    /// </summary>
+    public bool HandlerCanRoundStart()
+    {
+        int live = 0;
+        for (int i = 0; i < _roster.Count; i++)
+            if (IsLive(_roster[i]))
+                live++;
+        return live >= 2;
+    }
+
     public override void Deactivate()
     {
         if (_deathHandler is null)
@@ -218,6 +242,7 @@ public sealed class Survival : GameType
     {
         RoundOver = false;
         WinningSide = SurvStatus.None;
+        _endDelayTime = -1f; // QC round_handler_Init resets the end-delay sentinel for the new round
 
         // QC FOREACH_CLIENT: everyone resets to prey (a non-live client gets survival_status = 0, but the port's
         // roster is the in-round set; untracked/observer/dead players keep Prey and don't count for the split).
@@ -329,6 +354,21 @@ public sealed class Survival : GameType
         }
 
         GetState(victim).Alive = false; // eliminated for the round
+
+        // QC PlayerDies (sv_survival.qc:377-383): force the eliminated player to spectate. While a round is live
+        // (!allowed_to_spawn) the respawn is made SILENT and pushed out (respawn_time = time+2) so the kill-cam
+        // doesn't snap the spectator camera around mid-round; the FORCE flag is always set. The actual no-respawn
+        // is enforced by the round gate (RespawnDuePlayers / DeadPlayerThink skip while a round is started), so
+        // setting these flags here is the same camera-stability nuance QC adds, not the elimination itself.
+        if (roundStarted) // QC !allowed_to_spawn (a round is in progress)
+        {
+            victim.RespawnFlags |= RespawnFlag.Silent;
+            victim.RespawnTime = (Api.Services is not null ? Api.Clock.Time : 0f) + 2f;
+        }
+        victim.RespawnFlags |= RespawnFlag.Force;
+        // QC bot_clearqueue(frag_target): the port has no bot command-queue subsystem to clear (bot navigation
+        // goals aren't modeled as a queue here), so there is nothing to clear — the bot simply stays eliminated.
+
         Events?.OnFrag(attacker, victim, ev.DeathType);
 
         // QC PlayerDies teamkill punishment (sv_survival.qc:392-394): killing a same-status ally costs the
@@ -384,6 +424,23 @@ public sealed class Survival : GameType
     }
 
     /// <summary>
+    /// QC the <c>MUTATOR_HOOKFUNCTION(surv, ClientDisconnect)</c> / <c>MakePlayerObserver</c> hooks
+    /// (sv_survival.qc:398-429): a player who leaves play mid-round — disconnects or is forced to spectate — also
+    /// triggers the last-of-side "you are alone" notify for any same-status ally it leaves solo, EXACTLY like a
+    /// death does (both QC hooks call <c>surv_LastPlayerForTeam_Notify</c>, gated on the leaver having been a live
+    /// player). The port dispatches this override from both ClientManager paths (ClientDisconnect + the
+    /// MakePlayerObserver demotion), closing the gap where 'alone' fired on an ally's death but not on a leave.
+    /// </summary>
+    public override void OnPlayerRemoved(Player player)
+    {
+        // QC: if (IS_PLAYER(player) && !IS_DEAD(player)) surv_LastPlayerForTeam_Notify(player). Only a leaver who
+        // was still IN the round (alive, not already eliminated) newly orphans a same-status ally; an already-dead
+        // player's allies were already counted alone at the death.
+        if (_states.TryGetValue(player, out SurvState? st) && st.Alive)
+            NotifyLastForTeam(player);
+    }
+
+    /// <summary>
     /// QC Survival WinningCondition (core): while both sides still have a living member the round continues.
     /// Once one side is wiped, the round is over — hunters win if any hunter is still alive, otherwise the
     /// surviving prey win. The round handler's warmup/end-delay timing is deferred.
@@ -405,9 +462,32 @@ public sealed class Survival : GameType
         // auto-resolve. We gate the timeout the same way so the port doesn't end a round stock Base leaves running.
         if (prey > 0 && hunters > 0)
         {
+            // QC sv_survival.qc:108-111: reset the end-delay timer here only for consistency (Survival players
+            // can't be resurrected, so a both-sides-alive frame after a wipe shouldn't normally happen, but match
+            // QC and clear any scheduled deferral if it does).
+            _endDelayTime = -1f;
             if (RoundTimedOut())
                 EndRoundTimedOut();
             return; // both sides alive — round continues until the timer (above) or a wipe
+        }
+
+        // QC Surv_CheckWinner (sv_survival.qc:114-128): "delay round ending a bit" — when
+        // g_survival_round_enddelay > 0 and we're still before the round timelimit, defer the resolution by
+        // enddelay seconds (re-checked each frame). Stock cfg sets enddelay=0 so this is skipped and the round
+        // resolves immediately on the first wipe frame (matching Base at the shipped default).
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        float roundEnd = Handler?.RoundEndTime ?? 0f;
+        if (TryCvar("g_survival_round_enddelay", out float enddelay) && enddelay > 0f
+            && roundEnd > 0f && roundEnd - now > 0f) // don't delay past the round timelimit
+        {
+            if (_endDelayTime == -1f)
+            {
+                // QC: round_handler_SetEndDelayTime(min(time + enddelay, round_handler_GetEndTime())).
+                _endDelayTime = System.MathF.Min(now + enddelay, roundEnd);
+                return; // schedule the deferral, re-check next frame
+            }
+            if (_endDelayTime >= now)
+                return; // still waiting out the end-delay
         }
 
         RoundOver = true;

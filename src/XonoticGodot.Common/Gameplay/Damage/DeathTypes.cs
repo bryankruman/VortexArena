@@ -218,6 +218,18 @@ public static class DeathTypes
         return b == Fire || b == BuffInferno || b == BuffVengeance;
     }
 
+    /// <summary>
+    /// QC <c>ITEM_DAMAGE_NEEDKILL(dt)</c> (server/items/items.qh:123): the environmental-kill deathtypes a
+    /// dropped objective (CTF flag / Keepaway ball / KeyHunt key) must respawn on — DEATH_HURTTRIGGER
+    /// (= the port's <see cref="Void"/>), DEATH_SLIME, DEATH_LAVA, DEATH_SWAMP. Used by ka_DamageEvent to
+    /// teleport a ball out of a hurt/lava/slime/swamp volume it fell into.
+    /// </summary>
+    public static bool ItemDamageNeedKill(string? deathType)
+    {
+        string b = BaseOf(deathType);
+        return b == Void || b == Slime || b == Lava || b == Swamp;
+    }
+
     /// <summary>QC: DEATH_KILL / DEATH_TEAMCHANGE / DEATH_AUTOTEAMCHANGE — the unconditionally-lethal deaths.</summary>
     public static bool IsAlwaysLethal(string? deathType)
     {

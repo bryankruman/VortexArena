@@ -49,6 +49,12 @@ namespace XonoticGodot.Common.Framework
         public bool GtCaptureShielded; // QC .ctf_captureshielded — player too far behind to be allowed to capture
         public Entity? GtShieldFlag;   // QC ctf_captureshield .enemy — the flag a shield entity guards
 
+        // --- CTF flagcarrier auto-helpme (QC .wps_helpme_time, sv_ctf.qc Damage_Calculate) ---
+        /// <summary>QC .wps_helpme_time — last time a low-health flag carrier auto-pinged help (antispam baseline).</summary>
+        public float GtHelpMeTime;
+        /// <summary>Sim time until which a flag carrier's "help me" waypoint flash stays lit (QC WaypointSprite_HelpMePing).</summary>
+        public float GtHelpMeUntil;
+
         // --- CTF flag passing / throwing antispam + punish (QC player .throw_antispam/.throw_count/.throw_prevtime) ---
         public float GtThrowAntispam;  // QC .throw_antispam — earliest time the player may pass/throw again
         public int GtThrowCount;       // QC .throw_count — recent throw count for the punish ramp (-1 = on cooldown)

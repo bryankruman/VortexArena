@@ -74,6 +74,7 @@ public sealed class KeyHunt : GameType
     private const string CvarDelayReturn  = "g_balance_keyhunt_delay_return";  // seconds a dropped key auto-returns
     private const string CvarDelayCollect = "g_balance_keyhunt_delay_collect"; // dropper re-collect delay
     private const string CvarDelayRound   = "g_balance_keyhunt_delay_round";   // countdown between rounds
+    private const string CvarDelayTracking = "g_balance_keyhunt_delay_tracking"; // delay before radar/waypoint reveal
     private const string CvarMaxDist      = "g_balance_keyhunt_maxdist";       // carriers must be within this to capture
     private const string CvarDropVelocity  = "g_balance_keyhunt_dropvelocity";  // death-drop throw speed
     private const string CvarThrowVelocity = "g_balance_keyhunt_throwvelocity"; // voluntary +use drop speed
@@ -81,6 +82,7 @@ public sealed class KeyHunt : GameType
     private const float  DefaultDelayReturn  = 60f;            // QC default g_balance_keyhunt_delay_return 60
     private const float  DefaultDelayCollect = 1.5f;
     private const float  DefaultDelayRound   = 5f;
+    private const float  DefaultDelayTracking = 10f;          // QC default g_balance_keyhunt_delay_tracking 10
     private const float  DefaultMaxDist      = 150f;           // QC default g_balance_keyhunt_maxdist 150
     private const float  DefaultDropVelocity  = 300f;          // QC default g_balance_keyhunt_dropvelocity 300
     private const float  DefaultThrowVelocity = 400f;          // QC default g_balance_keyhunt_throwvelocity 400
@@ -88,6 +90,31 @@ public sealed class KeyHunt : GameType
 
     /// <summary>QC kh_Key_Think siren cadence: re-play SND_KH_ALARM every 2.5s while one team holds all keys.</summary>
     private const float SirenPeriod = 2.5f;
+
+    // ----- carried-key orbit (QC kh_Key_Think #ifndef KH_PLAYER_USE_ATTACHMENT — the LIVE path; the attachment
+    // block is commented out in Base sv_keyhunt.qc:37). The carried key circles the carrier at radius KH_KEY_XYDIST
+    // and height KH_KEY_ZSHIFT, the yaw advancing at KH_KEY_XYSPEED deg/sec from the key's per-team spawn angle. -----
+    private const float KeyZShift  = 22f; // QC KH_KEY_ZSHIFT
+    private const float KeyXyDist  = 24f; // QC KH_KEY_XYDIST
+    private const float KeyXySpeed = 45f; // QC KH_KEY_XYSPEED
+
+    // ----- carrier/noncarrier combat damage+force matrix cvars (QC Damage_Calculate; stock all "1 1 1") -----
+    private const string CvarCarrierDamage    = "g_balance_keyhunt_carrier_damage";
+    private const string CvarCarrierForce     = "g_balance_keyhunt_carrier_force";
+    private const string CvarNoncarrierDamage = "g_balance_keyhunt_noncarrier_damage";
+    private const string CvarNoncarrierForce  = "g_balance_keyhunt_noncarrier_force";
+
+    // ----- lava/slime/trigger destroy + damageforcescale (QC return_when_unreachable / kh_Key_Damage) -----
+    private const string CvarDelayDamageReturn = "g_balance_keyhunt_delay_damage_return";
+    private const string CvarReturnWhenUnreachable = "g_balance_keyhunt_return_when_unreachable";
+    private const float  DefaultDelayDamageReturn  = 5f;   // QC default g_balance_keyhunt_delay_damage_return 5
+
+    // ----- destroy own-team-holder bonus factor (QC score_destroyed_ownfactor, default 1) -----
+    private const string CvarScoreDestroyedOwnFactor = "g_balance_keyhunt_score_destroyed_ownfactor";
+    private const float  DefaultScoreDestroyedOwnFactor = 1f;
+
+    public float DelayDamageReturn => TryCvar(CvarDelayDamageReturn, out float v) ? v : DefaultDelayDamageReturn;
+    public float ScoreDestroyedOwnFactor => TryCvar(CvarScoreDestroyedOwnFactor, out float v) ? v : DefaultScoreDestroyedOwnFactor;
 
     /// <summary>Key bbox (QC KH_KEY_MIN/MAX, current Base const; 0.8.6 used the legacy box with sv_legacy_bbox_expand).</summary>
     private static readonly Vector3 KeyMins = new(-25f, -25f, -46f);
@@ -99,6 +126,7 @@ public sealed class KeyHunt : GameType
     public float DelayReturn  => TryCvar(CvarDelayReturn, out float v) ? v : DefaultDelayReturn;
     public float DelayCollect => TryCvar(CvarDelayCollect, out float v) ? v : DefaultDelayCollect;
     public float DelayRound   => TryCvar(CvarDelayRound, out float v) ? v : DefaultDelayRound;
+    public float DelayTracking => TryCvar(CvarDelayTracking, out float v) ? v : DefaultDelayTracking;
     public float MaxDist      => TryCvar(CvarMaxDist, out float v) ? v : DefaultMaxDist;
     public float DropVelocity  => TryCvar(CvarDropVelocity, out float v) ? v : DefaultDropVelocity;
     public float ThrowVelocity => TryCvar(CvarThrowVelocity, out float v) ? v : DefaultThrowVelocity;
@@ -143,6 +171,13 @@ public sealed class KeyHunt : GameType
     /// <summary>QC kh_Key_Think .siren_time: next sim time the all-keys-owned alarm may sound (rate-limited).</summary>
     private float _sirenTime;
 
+    /// <summary>QC kh_tracking_enabled: whether the radar/waypoint tracking device has powered up this round (after
+    /// delay_tracking). Gates the dropped-key + carrier waypoint sprite visibility (sprites themselves deferred).</summary>
+    public bool TrackingEnabled { get; private set; }
+
+    /// <summary>Absolute sim time the tracking device powers up (QC kh_EnableTrackingDevice schedule); 0 = none.</summary>
+    private float _trackingEnableTime;
+
     /// <summary>QC kh_interferemsg_time/team: a deferred (time+0.2) INTERFERE/MEET/HELP center-print volley.</summary>
     private float _interfereMsgTime;
     private int _interfereMsgTeam = Teams.None;
@@ -151,6 +186,7 @@ public sealed class KeyHunt : GameType
 
     private HookHandler<DeathEvent>? _deathHandler;
     private HookHandler<MutatorHooks.PlayerUseKeyArgs>? _useKeyHandler;
+    private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
 
     public KeyHunt()
     {
@@ -225,6 +261,9 @@ public sealed class KeyHunt : GameType
         // QC MUTATOR_HOOKFUNCTION(kh, PlayerUseKey): the +use key in a carrier's hands drops one key (kh_Key_DropOne).
         _useKeyHandler = OnUseKey;
         MutatorHooks.PlayerUseKey.Add(_useKeyHandler);
+        // QC MUTATOR_HOOKFUNCTION(kh, Damage_Calculate): scale player-vs-player damage/force by the carrier matrix.
+        _damageCalcHandler ??= OnDamageCalculate;
+        MutatorHooks.DamageCalculate.Add(_damageCalcHandler);
     }
 
     /// <summary>
@@ -278,6 +317,58 @@ public sealed class KeyHunt : GameType
             MutatorHooks.PlayerUseKey.Remove(_useKeyHandler);
             _useKeyHandler = null;
         }
+        if (_damageCalcHandler is not null)
+        {
+            MutatorHooks.DamageCalculate.Remove(_damageCalcHandler);
+            _damageCalcHandler = null;
+        }
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(kh, Damage_Calculate): scale player-vs-player damage AND force by the 9-way
+    /// carrier/target matrix. The attacker's carry state selects the cvar (g_balance_keyhunt_carrier_* if the
+    /// attacker holds a key, else _noncarrier_*); the cvar's x/y/z component selects the target case — x = self,
+    /// y = the target is a (other) key carrier, z = the target is a noncarrier. Stock defaults are all "1 1 1"
+    /// (a no-op at defaults), but a server tuning these now takes effect. No-op for non-player attacker/target.
+    /// </summary>
+    private bool OnDamageCalculate(ref MutatorHooks.DamageCalculateArgs args)
+    {
+        if (args.Attacker is not Player attacker || args.Target is not Player target)
+            return false; // QC: only apply scaling to player versus player combat
+
+        bool attackerCarries = IsCarrier(attacker);
+        string damageCvar = attackerCarries ? CvarCarrierDamage : CvarNoncarrierDamage;
+        string forceCvar  = attackerCarries ? CvarCarrierForce  : CvarNoncarrierForce;
+        // QC component select: .x = self (target==attacker), .y = target carries a key, .z = target is a noncarrier.
+        int component = ReferenceEquals(target, attacker) ? 0 : (IsCarrier(target) ? 1 : 2);
+
+        args.Damage *= CvarVectorComponent(damageCvar, component, 1f);
+        args.Force  *= CvarVectorComponent(forceCvar, component, 1f);
+        return false;
+    }
+
+    /// <summary>QC <c>player.kh_next != NULL</c>: the player is carrying at least one key.</summary>
+    private bool IsCarrier(Player p)
+    {
+        foreach (var k in Keys.Values)
+            if (ReferenceEquals(k.Carrier, p)) return true;
+        return false;
+    }
+
+    /// <summary>Read component <paramref name="index"/> (0=x,1=y,2=z) of a vector cvar string ("a b c"),
+    /// falling back to <paramref name="fallback"/> when unset/short (QC autocvar &lt;vector&gt; semantics).</summary>
+    private static float CvarVectorComponent(string name, int index, float fallback)
+    {
+        if (Api.Services is null)
+            return fallback;
+        string s = Api.Cvars.GetString(name);
+        if (string.IsNullOrEmpty(s))
+            return fallback;
+        string[] parts = s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+        if (index < 0 || index >= parts.Length)
+            return fallback;
+        return float.TryParse(parts[index], System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : fallback;
     }
 
     /// <summary>
@@ -290,6 +381,19 @@ public sealed class KeyHunt : GameType
         if (args.Player is not Player player)
             return false;
         return DropOneKey(player); // true only if the player carried (and dropped) a key
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(kh, MakePlayerObserver) and MUTATOR_HOOKFUNCTION(kh, ClientDisconnect) — both call
+    /// kh_Key_DropAll(player, true): a player who is demoted to spectator or who disconnects relinquishes every key
+    /// they were carrying (as a suicide drop, so their own team can't instantly free-collect). Wired through the
+    /// shared <see cref="GameType.OnPlayerRemoved"/> seam (ClientManager.PutObserverInServer + ClientDisconnect).
+    /// </summary>
+    public override void OnPlayerRemoved(Player player)
+    {
+        if (MatchEnded)
+            return;
+        DropAllKeys(player, suicide: true); // QC kh_Key_DropAll(player, true)
     }
 
     public int AssignTeam(Player joiner, IReadOnlyList<Player> roster)
@@ -319,7 +423,7 @@ public sealed class KeyHunt : GameType
         AddCol(player, "KH_PICKUPS", 1); // QC kh_Key_Collect: GameRules_scoring_add(player, KH_PICKUPS, 1)
         // Attach the world entity to the new carrier (QC kh_Key_Attach) when the entity layer is live.
         if (key.Entity is not null)
-            GametypeEntities.AttachToCarrier(key.Entity, player, new Vector3(0f, 0f, 20f));
+            GametypeEntities.AttachToCarrier(key.Entity, player, new Vector3(0f, 0f, KeyZShift));
 
         // QC: the capture is decided by the maxdist geometry in kh_Key_Think, not at pickup time.
         return CheckCaptureGeometry();
@@ -459,10 +563,14 @@ public sealed class KeyHunt : GameType
             k.Carrier = null;
         }
 
-        foreach (int team in Teams.Active(TeamCount))
+        int teamCount = TeamCount;
+        int keyIndex = 0;
+        foreach (int team in Teams.Active(teamCount))
         {
             Player? owner = PickRandomLivePlayer(team);
             KeyState key = SpawnKey(team, owner);
+            key.SpawnAngle = 360f * keyIndex / teamCount; // QC kh_Key_Spawn: key.cnt = 360*i/AVAILABLE_TEAMS
+            keyIndex++;
             if (owner is not null)
             {
                 AssignKeyNoScore(owner, key); // QC kh_Key_Spawn → kh_Key_AssignTo(key, initial_owner)
@@ -471,8 +579,18 @@ public sealed class KeyHunt : GameType
                     $"KEYHUNT_START_{TeamSuffix(team)}");
             }
         }
-        // QC kh_StartRound: the radar/waypoint tracking device powers up after delay_tracking ("Scanning…").
-        CenterAll("KEYHUNT_SCAN", 0);
+        // QC kh_StartRound: the radar/waypoint tracking device starts OFF and powers up after delay_tracking. Only
+        // if delay_tracking >= 0 is the "Scanning frequency range…" countdown shown and the reveal scheduled (a
+        // negative delay_tracking means the trackers never show — QC gametypes-server.cfg note on the cvar).
+        TrackingEnabled = false;
+        _trackingEnableTime = 0f;
+        float now0 = Api.Services is not null ? Api.Clock.Time : 0f;
+        float delayTracking = DelayTracking;
+        if (delayTracking >= 0f)
+        {
+            CenterAll("KEYHUNT_SCAN", delayTracking); // QC CENTER_KEYHUNT_SCAN delay_tracking
+            _trackingEnableTime = now0 + delayTracking; // QC kh_Controller_SetThink(delay_tracking, kh_EnableTrackingDevice)
+        }
         // Fresh round: clear the alarm + interfere-message state.
         _sirenTime = 0f;
         _interfereMsgTime = 0f;
@@ -522,8 +640,13 @@ public sealed class KeyHunt : GameType
             touch: KeyTouchEntity, think: KeyThinkEntity);
         if (e is not null)
         {
-            e.TakeDamage = DamageMode.Yes; // a loose key can be returned by damage (QC)
+            e.TakeDamage = DamageMode.Yes; // a loose key can be returned by damage (QC takedamage = DAMAGE_YES)
             e.NextThink = GametypeEntities.Now + 0.05f; // QC kh_Key_Think rate
+            // QC kh_Key_Spawn: event_damage = kh_Key_Damage; damagedbytriggers/contents = return_when_unreachable.
+            // The port routes a non-player edict's damage through GtEventDamage, and a dropped key carries FL_ITEM
+            // (IsPushable) so a trigger_hurt touch reaches it. Install the damage handler when return_when_unreachable.
+            if (GametypeEntities.Cvar(CvarReturnWhenUnreachable, 1f) != 0f)
+                e.GtEventDamage = (self, infl, atk, dt, dmg, loc, frc) => KeyDamage(self, atk, dt, frc);
             SetKeyVisual(e, team, carried: false);       // QC kh_Key_Spawn: model + team color + glow + spin
         }
         key.Entity = e;
@@ -603,7 +726,7 @@ public sealed class KeyHunt : GameType
         key.Carrier = player;
         key.DropTime = 0f;
         if (key.Entity is not null)
-            GametypeEntities.AttachToCarrier(key.Entity, player, new Vector3(0f, 0f, 20f));
+            GametypeEntities.AttachToCarrier(key.Entity, player, new Vector3(0f, 0f, KeyZShift));
     }
 
     /// <summary>
@@ -628,7 +751,7 @@ public sealed class KeyHunt : GameType
         key.DropTime = 0f;
         key.Carrier = player;
         if (key.Entity is not null)
-            GametypeEntities.AttachToCarrier(key.Entity, player, new Vector3(0f, 0f, 20f));
+            GametypeEntities.AttachToCarrier(key.Entity, player, new Vector3(0f, 0f, KeyZShift));
 
         // Only an enemy collecting earns the collect score + the PICKUPS stat (QC kh_dropperteam != player.team).
         if (!wasOwnDrop)
@@ -641,6 +764,44 @@ public sealed class KeyHunt : GameType
 
         // QC: the actual capture is decided by kh_Key_Think with the maxdist geometry, not at pickup time.
         return CheckCaptureGeometry();
+    }
+
+    /// <summary>
+    /// QC kh_Key_Damage (the key's event_damage): only a LOOSE key reacts. A NEEDKILL deathtype (lava/slime/
+    /// trigger_hurt/void) fast-forwards the auto-return to delay_damage_return (bounded so it can only SHORTEN the
+    /// timer, never extend it). Otherwise, a forceful hit from a player outside the protect window re-teams the key
+    /// to the attacker's team (so the puncher's team can re-collect it without the dropper-team gate).
+    /// </summary>
+    private void KeyDamage(Entity self, Entity? attacker, string deathType, Vector3 force)
+    {
+        KeyState? key = KeyForEntity(self);
+        if (key is null || key.Carrier is not null) // QC: if(this.owner) return;
+            return;
+
+        // QC ITEM_DAMAGE_NEEDKILL(deathtype): lava/slime/swamp/hurttrigger → return in delay_damage_return.
+        string b = Damage.DeathTypes.BaseOf(deathType);
+        bool needKill = b == Damage.DeathTypes.Void || b == Damage.DeathTypes.Slime
+            || b == Damage.DeathTypes.Lava || b == Damage.DeathTypes.Swamp;
+        if (needKill)
+        {
+            // QC: pain_finished = bound(time, time + delay_damage_return, pain_finished). In port terms the return
+            // fires at DropTime + DelayReturn; shorten DropTime so the new return time = min(old, Now+damage_return).
+            float now = GametypeEntities.Now;
+            if (key.DropTime <= 0f) key.DropTime = now; // a never-dropped key (defensive) starts its clock now
+            float oldReturn = key.DropTime + DelayReturn;
+            float newReturn = System.Math.Min(oldReturn, now + DelayDamageReturn);
+            newReturn = System.Math.Max(newReturn, now); // bound below by time
+            key.DropTime = newReturn - DelayReturn;
+            return;
+        }
+
+        if (force == Vector3.Zero) // QC: if(force == '0 0 0') return;
+            return;
+        // QC: if(time > this.pushltime) if(IS_PLAYER(attacker)) this.team = attacker.team. In Base this re-teams
+        // the loose key to the puncher's team (the dropper-collect gate keys off kh_dropperteam, not home team).
+        // Port analogue: re-stamp the dropper team so the puncher's team is no longer the gated dropper.
+        if (GametypeEntities.Now > key.ProtectTime && attacker is Player ap)
+            key.DropperTeam = (int)ap.Team;
     }
 
     /// <summary>Entity touch trampoline for a loose key: a live player collects it (QC kh_Key_Touch).</summary>
@@ -673,13 +834,42 @@ public sealed class KeyHunt : GameType
                 return;
             }
         }
+        else
+        {
+            // QC kh_Key_Think (#ifndef KH_PLAYER_USE_ATTACHMENT — the LIVE Base path): a carried key circles its
+            // carrier. makevectors('0 1 0' * (cnt + (time%360)*XYSPEED)); setorigin(v_forward*XYDIST + z*'0 0 1').
+            OrbitCarriedKey(key);
+        }
         // QC kh_Key_Think: deferred interfere/meet/help volley + the all-owned capture geometry.
         UpdateInterfereMessages(GametypeEntities.Now);
         CheckCaptureGeometry();
     }
 
+    /// <summary>
+    /// QC kh_Key_Think carried-key orbit (the LIVE #ifndef KH_PLAYER_USE_ATTACHMENT path): place the carried key
+    /// circling the carrier — yaw = key.cnt + (time%360)*KH_KEY_XYSPEED, origin = carrier + v_forward*KH_KEY_XYDIST
+    /// at height KH_KEY_ZSHIFT. (Base keeps the z from the attach and only rewrites x,y each think; the net effect
+    /// is the carrier origin + a radius-24 ring at z = KH_KEY_ZSHIFT.)
+    /// </summary>
+    private void OrbitCarriedKey(KeyState key)
+    {
+        if (key.Carrier is not { } carrier || key.Entity is not Entity e)
+            return;
+        float yaw = key.SpawnAngle + (GametypeEntities.Now % 360f) * KeyXySpeed;
+        XonoticGodot.Common.Math.QMath.AngleVectors(new Vector3(0f, yaw, 0f), out Vector3 fwd, out _, out _);
+        Vector3 pos = carrier.Origin + fwd * KeyXyDist + new Vector3(0f, 0f, KeyZShift);
+        GametypeEntities.SetOrigin(e, pos);
+    }
+
     private void TickKeys(float now)
     {
+        // QC kh_EnableTrackingDevice (scheduled at kh_StartRound for delay_tracking seconds): once the device
+        // powers up, the dropped-key + carrier waypoint sprites become visible (the sprites themselves are deferred).
+        if (!TrackingEnabled && _trackingEnableTime > 0f && now >= _trackingEnableTime)
+        {
+            TrackingEnabled = true;
+            _trackingEnableTime = 0f;
+        }
         // Headless think: auto-return loose keys, then evaluate the in-range capture.
         foreach (var key in Keys.Values)
             if (key.Carrier is null && key.DropTime > 0f && now > key.DropTime + DelayReturn)
@@ -785,9 +975,10 @@ public sealed class KeyHunt : GameType
     /// <summary>
     /// QC kh_LoserTeam: a key was lost (timed out / pushed off-map). If a pusher (recorded on the key at drop
     /// time, when its carrier was pushed within their pushltime window) on another team owns the loss, they get
-    /// score_push + KH_PUSHES (a "push"); otherwise the key is destroyed and score_destroyed is split among the
-    /// OTHER teams, the previous owner takes a KH_DESTRUCTIONS mark, and a tar boom + loss notify fire. Then the
-    /// round ends (QC kh_FinishRound). Simplified: no per-player even-distribution.
+    /// score_push + KH_PUSHES (a "push"); otherwise the key is destroyed and score_destroyed is split (QC
+    /// DistributeEvenly) across the other teams' players AND each non-loser key holder (the
+    /// score_destroyed_ownfactor "destroyed_holdingkey" chunk), the previous owner takes a KH_DESTRUCTIONS mark,
+    /// and a tar boom + loss notify fire. Then the round ends (QC kh_FinishRound).
     /// </summary>
     public void LoserTeam(int loserTeam, KeyState lostKey)
     {
@@ -813,19 +1004,70 @@ public sealed class KeyHunt : GameType
         }
         else
         {
-            // QC: destruction — split score_destroyed evenly among the OTHER (non-loser) active teams.
+            // QC kh_LoserTeam destruction branch: score_destroyed is shared via DistributeEvenly across BOTH the
+            // other teams' players AND each non-loser key holder (the "destroyed_holdingkey" own-factor chunk).
             if (prevOwner is not null)
-                AddCol(prevOwner, "KH_DESTRUCTIONS", 1);
+                AddCol(prevOwner, "KH_DESTRUCTIONS", 1); // QC GameRules_scoring_add(previous_owner, KH_DESTRUCTIONS, 1)
 
-            int otherTeams = 0;
-            foreach (int t in Teams.Active(TeamCount))
-                if (t != loserTeam) otherTeams++;
-            if (otherTeams > 0)
+            int of = (int)ScoreDestroyedOwnFactor; // QC g_balance_keyhunt_score_destroyed_ownfactor (default 1)
+
+            // QC: players = FOREACH_CLIENT(IS_PLAYER && team != loser_team) → count of all non-loser players.
+            int players = 0;
+            for (int i = 0; i < _roster.Count; i++)
             {
-                int per = (int)ScoreDestroyed / otherTeams;
-                if (per > 0)
-                    foreach (int t in Teams.Active(TeamCount))
-                        if (t != loserTeam) AddTeamScore(t, per); // QC kh_Scores_Event "destroyed"
+                Player p = _roster[i];
+                if (!p.IsDead && (int)p.Team != loserTeam && (int)p.Team != Teams.None)
+                    players++;
+            }
+
+            // QC: keys = FOR_EACH_KH_KEY(key.owner && key.team != loser_team) → non-loser key holders right now.
+            int keys = 0;
+            foreach (var k in Keys.Values)
+                if (k.Carrier is { } kc && (int)kc.Team != loserTeam)
+                    keys++;
+
+            // QC: DistributeEvenly_Init(score_destroyed, keys*of + players).
+            var dist = new EvenDistributor((int)ScoreDestroyed, keys * of + players);
+
+            // QC: each non-loser key holder gets DistributeEvenly_Get(of) as a "destroyed_holdingkey" chunk
+            // (credited to their INDIVIDUAL SP_SCORE via the float2int team:1 side — and so the team too).
+            foreach (var k in Keys.Values)
+                if (k.Carrier is { } kc && (int)kc.Team != loserTeam)
+                {
+                    int f = dist.Get(of);
+                    kc.ScoreFrags += f;          // QC kh_Scores_Event "destroyed_holdingkey" (individual SP_SCORE)
+                    AddTeamScore(kc.Team, f);    // ... AND the team ST_SCORE
+                }
+
+            // QC: fragsleft = DistributeEvenly_Get(players); then re-distribute that across the other teams' players.
+            int fragsleft = dist.Get(players);
+            int j = TeamCount - 1;
+            foreach (int t in Teams.Active(TeamCount))
+            {
+                if (t == loserTeam)
+                    continue; // QC: skip the loser team
+                int teamPlayers = 0;
+                for (int i = 0; i < _roster.Count; i++)
+                {
+                    Player p = _roster[i];
+                    if (!p.IsDead && (int)p.Team == t) teamPlayers++;
+                }
+                // QC: DistributeEvenly_Init(fragsleft, j); fragsleft = DistributeEvenly_Get(j-1) (the OTHER teams'
+                // carry-forward, taken FIRST); then DistributeEvenly_Get(1) is THIS team's share, re-split among
+                // its players. Order matters: the j-1 carry is drawn before this team's last share.
+                var teamDist = new EvenDistributor(fragsleft, System.Math.Max(1, j));
+                fragsleft = teamDist.Get(System.Math.Max(0, j - 1));
+                int thisTeamShare = teamDist.Get(1);
+                var playerDist = new EvenDistributor(thisTeamShare, System.Math.Max(1, teamPlayers));
+                for (int i = 0; i < _roster.Count; i++)
+                {
+                    Player p = _roster[i];
+                    if (p.IsDead || (int)p.Team != t) continue;
+                    int f = playerDist.Get(1);
+                    p.ScoreFrags += f;        // QC kh_Scores_Event "destroyed" (individual SP_SCORE)
+                    AddTeamScore(t, f);       // ... AND the team ST_SCORE
+                }
+                --j;
             }
             CenterAll($"ROUND_TEAM_LOSS_{TeamSuffix(loserTeam)}");
             InfoTeam(realteam, "DESTROYED", prevOwner?.NetName ?? "");
@@ -934,10 +1176,26 @@ public sealed class KeyHunt : GameType
     /// </summary>
     private void WinnerTeam(int owner)
     {
-        // DistributeEvenly: total = (teams-1)*score_capture spread over the keys; here we credit the team.
+        // QC kh_WinnerTeam: DistributeEvenly_Init((AVAILABLE_TEAMS-1)*score_capture, AVAILABLE_TEAMS), then for
+        // EACH key kh_Scores_Event(key.owner, "capture", DistributeEvenly_Get(1)). kh_Scores_Event routes that
+        // chunk through GameRules_scoring_add_team_float2int(player, SCORE, f, ..., team:1), which credits BOTH
+        // the carrier's INDIVIDUAL SP_SCORE (scoreboard rank) AND the team ST_SCORE. So: the team total = sum of
+        // the chunks, and each carrier individually banks their chunk + a nade bonus + a KH_CAPS.
         int teams = TeamCount;
         int total = (teams - 1) * (int)ScoreCapture;
-        AddTeamScore(owner, total > 0 ? total : (int)ScoreCapture);
+        if (total <= 0) total = (int)ScoreCapture; // 2-team fallback (kept from the prior port behavior)
+        var dist = new EvenDistributor(total, System.Math.Max(1, teams));
+        float nadeBonusHigh = GametypeEntities.Cvar("g_nades_bonus_score_high", 15f);
+        foreach (var key in Keys.Values)
+        {
+            if (key.Carrier is not { } c || (int)c.Team != owner)
+                continue;
+            int chunk = dist.Get(1);
+            c.ScoreFrags += chunk;             // QC: the carrier's INDIVIDUAL SP_SCORE (the float2int team:1 side)
+            AddTeamScore(owner, chunk);        // QC: ... AND the team ST_SCORE (the team:1 second side)
+            if (Api.Services is not null)
+                Nades.NadeBonus.GiveBonus(c, nadeBonusHigh); // QC nades_GiveBonus(key.owner, g_nades_bonus_score_high)
+        }
         CreditCapture(owner); // QC GameRules_scoring_add_team(key.owner, KH_CAPS, 1)
 
         // QC kh_WinnerTeam: the winning team's name in the center, and "X captured the keys" in the kill-feed.
@@ -1120,6 +1378,27 @@ public sealed class KeyHunt : GameType
         value = Api.Cvars.GetFloat(name);
         return true;
     }
+
+    /// <summary>
+    /// Port of QC <c>DistributeEvenly_Init</c>/<c>DistributeEvenly_Get</c> (common/util.qc): hand out a fixed
+    /// integer <c>total</c> in <c>n</c> roughly-equal chunks whose sum is EXACTLY the total (no rounding loss).
+    /// <c>Get(k)</c> takes the next <c>k</c> shares' worth; the remainder rides forward to the next call.
+    /// </summary>
+    private struct EvenDistributor
+    {
+        private int _amount;
+        private int _n;
+        public EvenDistributor(int total, int n) { _amount = total; _n = n; }
+        public int Get(int k)
+        {
+            if (_n <= 0) return 0;
+            // QC: f = floor(amount * k / n + 0.5); amount -= f; n -= k.
+            int f = (int)System.Math.Floor((double)_amount * k / _n + 0.5);
+            _amount -= f;
+            _n -= k;
+            return f;
+        }
+    }
 }
 
 /// <summary>
@@ -1153,6 +1432,9 @@ public sealed class KeyState
 
     /// <summary>The player who last pushed the carrier (QC key.pusher), credited if a push lands in the window.</summary>
     public Player? Pusher;
+
+    /// <summary>QC key.cnt — the per-team spawn angle (360*i/teams) the carried-key orbit advances from.</summary>
+    public float SpawnAngle;
 
     public KeyState(int homeTeam) => HomeTeam = homeTeam;
 }

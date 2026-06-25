@@ -529,8 +529,16 @@ public static class GameScores
     public static void SeedTeams(int teamCount)
     {
         foreach (int t in Teams.Active(teamCount))
-            for (int s = 0; s < MaxTeamScore; s++)
-                if (!_teamScores[s].ContainsKey(t)) _teamScores[s][t] = 0;
+            SeedTeam(t);
+    }
+
+    /// <summary>Ensure a single team colour has a zeroed slot in BOTH score slots (used when the team set is derived
+    /// from map entities, e.g. Nexball's per-goal team seeding, rather than a fixed count).</summary>
+    public static void SeedTeam(int team)
+    {
+        if (team == Teams.None) return;
+        for (int s = 0; s < MaxTeamScore; s++)
+            if (!_teamScores[s].ContainsKey(team)) _teamScores[s][team] = 0;
     }
 
     /// <summary>The teams that currently have a score slot (keys of the ST_SCORE dict; both slots share the team set).</summary>

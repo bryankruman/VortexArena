@@ -65,7 +65,7 @@ public sealed class Cts : GameType
     private HookHandler<MutatorHooks.ForbidThrowCurrentWeaponArgs>? _forbidThrowHandler;
     private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _filterItemHandler;
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _playerSpawnHandler;
-    private HookHandler<MutatorHooks.PlayerPreThinkArgs>? _preThinkHandler;
+    private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _physicsHandler;
 
     /// <summary>Optional sink for the host/controller to react to a death/finish.</summary>
     public IMatchEvents? Events;
@@ -170,6 +170,15 @@ public sealed class Cts : GameType
         if (_deathHandler is not null)
             return;
         MatchEnded = false;
+
+        // QC sv_cts.qh REGISTER_MUTATOR(cts) MUTATOR_ONADD: CTS forces the Race subsystem into qualifying mode
+        // and independent-players (solo time-trial), then clears the score/lead limits before declaring the
+        // score rules. The forced latch (`g_race_qualifying = 1`) is authoritative — a server that set
+        // `g_race_qualifying 0` is overridden, exactly as the QC ONADD assignment overrides the cvar. We set the
+        // cvar here (before DeclareScoreRules) so the Qualifying property and the score schema both see the latch.
+        if (Api.Services is not null)
+            Api.Cvars.Set("g_race_qualifying", "1"); // QC MUTATOR_ONADD: g_race_qualifying = 1
+
         DeclareScoreRules();
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
@@ -179,13 +188,13 @@ public sealed class Cts : GameType
         _damageHandler      = OnDamageCalculate;            // Damage_Calculate: self/fall-damage suppression
         _forbidThrowHandler = OnForbidThrowCurrentWeapon;   // ForbidThrowCurrentWeapon + ForbidDropCurrentWeapon
         _filterItemHandler  = OnFilterItemDefinition;       // FilterItem / MonsterDropItem (loot filtering)
-        _playerSpawnHandler = OnPlayerSpawn;                // WantWeapon → WEP_SHOTGUN (force the loadout)
-        _preThinkHandler    = OnPlayerPreThink;             // keep every live runner on the Shotgun each frame
+        _playerSpawnHandler = OnPlayerSpawn;                // WantWeapon → WEP_SHOTGUN (START loadout only)
+        _physicsHandler     = OnPlayerPhysics;              // PlayerPhysics: force keyboard-movement quantization
         MutatorHooks.DamageCalculate.Add(_damageHandler);
         MutatorHooks.ForbidThrowCurrentWeapon.Add(_forbidThrowHandler);
         MutatorHooks.FilterItemDefinition.Add(_filterItemHandler);
         MutatorHooks.PlayerSpawn.Add(_playerSpawnHandler);
-        MutatorHooks.PlayerPreThink.Add(_preThinkHandler);
+        MutatorHooks.PlayerPhysics.Add(_physicsHandler);
     }
 
     /// <summary>
@@ -223,7 +232,7 @@ public sealed class Cts : GameType
         if (_forbidThrowHandler is not null) { MutatorHooks.ForbidThrowCurrentWeapon.Remove(_forbidThrowHandler); _forbidThrowHandler = null; }
         if (_filterItemHandler is not null)  { MutatorHooks.FilterItemDefinition.Remove(_filterItemHandler);    _filterItemHandler = null; }
         if (_playerSpawnHandler is not null) { MutatorHooks.PlayerSpawn.Remove(_playerSpawnHandler);            _playerSpawnHandler = null; }
-        if (_preThinkHandler is not null)    { MutatorHooks.PlayerPreThink.Remove(_preThinkHandler);            _preThinkHandler = null; }
+        if (_physicsHandler is not null)     { MutatorHooks.PlayerPhysics.Remove(_physicsHandler);             _physicsHandler = null; }
     }
 
     public CtsState GetState(Player p)
@@ -361,6 +370,21 @@ public sealed class Cts : GameType
         OnFinishRetract?.Invoke(p);
     }
 
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(cts, reset_map_global)</c> (sv_cts.qc) → <c>race_ClearRecords()</c> +
+    /// per-client <c>race_PreparePlayer</c>: on a map/match reset, drop every runner's in-progress run (and any
+    /// pending finish-retract) so they restart cleanly from the start timer. The persistent top-99 CTS records
+    /// (the C# successor to ServerProgsDB) are intentionally NOT cleared — QC keeps them; only the in-memory run
+    /// state is reset. The <c>g_race_qualifying == 2</c> "qualifying then race" collapse is moot because CTS pins
+    /// <c>g_race_qualifying = 1</c> (the MUTATOR_ONADD latch in <see cref="Activate"/>).
+    /// </summary>
+    public void ResetMapGlobal(System.Collections.Generic.IReadOnlyList<Player> players)
+    {
+        _retractAt.Clear(); // cancel all pending kill-delay re-teleports
+        for (int i = 0; i < players.Count; i++)
+            GetState(players[i]).RunStartTime = 0f; // QC race_PreparePlayer: no run in progress
+    }
+
     /// <summary>Per-frame: fire any due finish-retracts (the deferred kill-delay re-teleport). Call once per server frame.</summary>
     public void Tick(float now)
     {
@@ -455,14 +479,16 @@ public sealed class Cts : GameType
     private bool OnFilterItemDefinition(ref MutatorHooks.FilterItemDefinitionArgs a)
     {
         // QC: if (ITEM_IS_LOOT(item)) { if (item.monster_item && g_cts_drop_monster_items) return false; return true; }
-        // The item-class registry doesn't expose the loot/monster_item flags yet, so we key off the classname tag:
-        // dropped weapons/ammo (the loot in weapon-light CTS maps) carry the "droppedweapon" / "dropped_*" class.
-        string id = a.Definition.ClassName;
-        bool isLoot = id.StartsWith("dropped", System.StringComparison.Ordinal)
-                   || id == "droppedweapon";
-        if (!isLoot)
-            return false; // a fixed map item — keep it
+        // ITEM_IS_LOOT(item) reads the live edict's .m_isloot flag (set when the item is spawned as dropped/tossed
+        // loot); the port models it as Entity.ItemIsLoot, set by StartItem.SpawnInternal BEFORE this hook fires.
+        // Use that real flag for the loot test (faithful) instead of the old classname-tag approximation.
+        if (!a.Definition.ItemIsLoot)
+            return false; // QC: not loot — a fixed map item — keep it
 
+        // QC: item.monster_item — true for an item dropped by a slain monster. The port has no monster_item flag
+        // yet, so the monster-drop sub-case still keys off the classname tag (defaults off: g_cts_drop_monster_items
+        // is 0, so this branch is inert on stock servers — only an explicit g_cts_drop_monster_items 1 reaches it).
+        string id = a.Definition.ClassName;
         bool isMonsterDrop = id.Contains("monster", System.StringComparison.Ordinal);
         bool keepMonsterItems = TryCvar(CvarDropMonsterItems, out float v) && v != 0f;
         if (isMonsterDrop && keepMonsterItems)
@@ -471,21 +497,27 @@ public sealed class Cts : GameType
     }
 
     /// <summary>
-    /// QC <c>MUTATOR_HOOKFUNCTION(cts, WantWeapon)</c> (<c>want = (weapon == WEP_SHOTGUN)</c>, mutator-blocked):
-    /// CTS gives only the Shotgun. On spawn, force the runner's owned set to exactly the Shotgun and select it.
+    /// QC <c>MUTATOR_HOOKFUNCTION(cts, WantWeapon)</c> (<c>want = (weapon == WEP_SHOTGUN)</c>, mutator-blocked) +
+    /// the <c>PlayerSpawn</c> race bookkeeping (sv_cts.qc): on (re)spawn CTS gives only the Shotgun as the START
+    /// loadout, and the in-progress run is re-prepared (QC race_PreparePlayer / race_place = 0). The shotgun is
+    /// forced only here, NOT every frame — Base's WantWeapon governs only the start_items, so a runner may still
+    /// pick up map weapons mid-stage on a weapon-bearing CTS map (the old per-frame strip over-restricted this).
     /// </summary>
     private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs a)
     {
-        ForceShotgunOnly(a.Player);
-        return false;
-    }
-
-    /// <summary>QC keeps the Shotgun-only loadout enforced each frame (the WantWeapon set is re-evaluated on respawn).</summary>
-    private bool OnPlayerPreThink(ref MutatorHooks.PlayerPreThinkArgs a)
-    {
         Entity player = a.Player;
-        if ((player.Flags & EntFlags.Client) != 0 && player.DeadState == DeadFlag.No)
-            ForceShotgunOnly(player);
+
+        // QC WantWeapon → WEP_SHOTGUN: the START loadout is exactly the Shotgun, selected. (Start loadout only;
+        // mid-run map-weapon pickups are kept, matching Base — see ForbidThrow/Drop + FilterItem for the rest.)
+        ForceShotgunOnly(player);
+
+        // QC race_PreparePlayer + `player.race_place = 0` (sv_cts.qc PlayerSpawn): a fresh stage attempt — the
+        // runner must re-cross the start timer to (re)stamp the run clock, so any stale in-progress run is dropped.
+        // (The full checkpoint bookkeeping — race_checkpoint=-1, respawn-spotref — is part of the intermediate-
+        // checkpoint subsystem CTS doesn't model; the run-timer reset is the meaningful part for a start→stop course.)
+        if (player is Player rp)
+            GetState(rp).RunStartTime = 0f;
+
         return false;
     }
 
@@ -495,21 +527,61 @@ public sealed class Cts : GameType
         Weapon? shotgun = Weapons.ByName("shotgun");
         if (shotgun is null)
             return;
-        if (player.OwnedWeaponSet.Has(shotgun)
-            && ReferenceEquals(Inventory.CurrentWeapon(player), shotgun)
-            && CountOwned(player) == 1)
-            return; // already shotgun-only with it active — nothing to do this frame
         player.OwnedWeaponSet.Clear();
         Inventory.GiveWeapon(player, shotgun);
         Inventory.SwitchWeapon(player, shotgun);
     }
 
-    /// <summary>Number of weapons in the player's owned set (cheap guard so the per-frame force is idempotent).</summary>
-    private static int CountOwned(Entity player)
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(cts, PlayerPhysics)</c> (sv_cts.qc): force keyboard-movement quantization for
+    /// record fairness. The analog wish-move (<c>CS(player).movement.x/y</c>) is snapped to pure-X, pure-Y, or a
+    /// 45° diagonal (<c>M_SQRT1_2 * wishspeed</c>) so an analog-stick runner can't gain a sub-cardinal speed edge
+    /// over a keyboard runner. The snap fires only when both axes are non-zero AND unequal (a true off-axis analog
+    /// vector); pure cardinals and exact diagonals are already keyboard-legal and pass through untouched, exactly
+    /// as QC's <c>if(wishvel.x != 0 &amp;&amp; wishvel.y != 0 &amp;&amp; wishvel.x != wishvel.y)</c> guard.
+    ///
+    /// PlayerPhysics.cs folds the rewritten <see cref="Entity.MovementForward"/>/<see cref="Entity.MovementRight"/>
+    /// back into the wish-move the movement branch consumes (the C# stand-in for QC reading CS(player).movement).
+    /// NOTE: the QC <c>.race_movetime</c> per-frame run-clock accumulator and the <c>race_penalty</c> freeze are
+    /// part of the checkpoint/penalty subsystem CTS doesn't model here; only the fairness quantization is ported.
+    /// </summary>
+    private bool OnPlayerPhysics(ref MutatorHooks.PlayerPhysicsArgs a)
     {
-        int n = 0;
-        foreach (Weapon w in Weapons.All)
-            if (player.OwnedWeaponSet.Has(w)) n++;
-        return n;
+        Entity player = a.Player;
+        if (player is not Player p || p.IsDead || p.IsObserver)
+            return false;
+
+        // QC: wishvel.x = fabs(movement.x); wishvel.y = fabs(movement.y);
+        float mx = player.MovementForward;
+        float my = player.MovementRight;
+        float ax = System.MathF.Abs(mx);
+        float ay = System.MathF.Abs(my);
+
+        // QC: if(wishvel.x != 0 && wishvel.y != 0 && wishvel.x != wishvel.y) — only true off-axis analog motion.
+        if (ax == 0f || ay == 0f || ax == ay)
+            return false;
+
+        float wishspeed = System.MathF.Sqrt(ax * ax + ay * ay); // QC vlen('ax ay 0')
+
+        if (ax >= 2f * ay)
+        {
+            // QC: pure X motion
+            player.MovementForward = mx > 0f ? wishspeed : -wishspeed;
+            player.MovementRight = 0f;
+        }
+        else if (ay >= 2f * ax)
+        {
+            // QC: pure Y motion
+            player.MovementForward = 0f;
+            player.MovementRight = my > 0f ? wishspeed : -wishspeed;
+        }
+        else
+        {
+            // QC: diagonal — both axes get M_SQRT1_2 * wishspeed, sign-preserved.
+            const float MSqrt1_2 = 0.70710678118654752440f;
+            player.MovementForward = (mx > 0f ? 1f : -1f) * MSqrt1_2 * wishspeed;
+            player.MovementRight   = (my > 0f ? 1f : -1f) * MSqrt1_2 * wishspeed;
+        }
+        return false;
     }
 }

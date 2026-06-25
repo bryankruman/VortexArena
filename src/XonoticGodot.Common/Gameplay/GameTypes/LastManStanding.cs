@@ -55,10 +55,9 @@ namespace XonoticGodot.Common.Gameplay;
 public sealed class LastManStanding : GameType
 {
     // ----- lives cvars + default (gametype default lives=5; m_legacydefaults "9 20 0") -----
-    private const string CvarLives        = "g_lms_lives";          // primary lives cvar
     private const string CvarLivesDefault = "g_lms_lives_override"; // menu override (m_configuremenu)
-    private const string CvarFragLimit    = "fraglimit";            // QC LMS_NewPlayerLives caps lives at fraglimit
-    private const int    DefaultLives     = 5;                      // gametype_init "lives=5"
+    private const string CvarFragLimit    = "fraglimit";            // QC LMS_NewPlayerLives derives lives from fraglimit
+    private const int    DefaultLives     = 5;                      // gametype_init "lives=5" (legacy maps "9 20 0" ⇒ 9)
 
     // ----- extra-life + leader cvars (QC g_lms_extra_lives / g_lms_leader_*) -----
     private const string CvarExtraLives        = "g_lms_extra_lives";        // lives granted by an extralife pickup
@@ -95,6 +94,7 @@ public sealed class LastManStanding : GameType
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
     private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _filterItemHandler;
     private HookHandler<MutatorHooks.ItemTouchArgs>? _itemTouchHandler;
+    private HookHandler<MutatorHooks.PlayerPowerupsArgs>? _powerupsHandler;
 
     /// <summary>Optional sink for the host/controller to react to a frag/elimination.</summary>
     public IMatchEvents? Events;
@@ -104,6 +104,21 @@ public sealed class LastManStanding : GameType
 
     /// <summary>The last player standing once the match has ended (QC first_player.winning), else null.</summary>
     public Player? Winner { get; private set; }
+
+    /// <summary>
+    /// QC <c>game_starttime</c> mirror (set from the host each frame, like Assault.GameStartTime). The win
+    /// condition + life-loss are suppressed while <c>time &lt;= game_starttime</c> (the pre-match countdown).
+    /// </summary>
+    public float GameStartTime { get; set; }
+
+    /// <summary>
+    /// QC <c>warmup_stage</c> mirror (set from the host each frame). Lives aren't lost and the win condition
+    /// returns "no winner" during warmup (QC GiveFragsForKill / WinningCondition_LMS both early-return).
+    /// </summary>
+    public bool InWarmup { get; set; }
+
+    /// <summary>QC <c>warmup_stage || time &lt;= game_starttime</c>: the pre-match window where lives/win are frozen.</summary>
+    private bool PreMatch => InWarmup || (Api.Services is not null && Api.Clock.Time <= GameStartTime);
 
     public LastManStanding()
     {
@@ -118,15 +133,15 @@ public sealed class LastManStanding : GameType
         // and legacy defaults are engine concerns; lives are seeded per join via StartingLives / NewPlayerLives.
     }
 
-    /// <summary>The lowest live-life count across the active roster (QC lms_lowest_lives), 999 when empty.</summary>
-    public int LowestLives()
-    {
-        int lowest = 999;
-        foreach (LmsState st in _states.Values)
-            if (!st.OutOfGame && st.Lives < lowest)
-                lowest = st.Lives;
-        return lowest;
-    }
+    // QC lms_lowest_lives (sv_lms.qc:32): a RUNNING global of the all-time lowest life count any player has hit
+    // this match, seeded to 999 (lms_Initialize / reset_map_global) and lowered in GiveFragsForKill as players lose
+    // lives. Crucially it drops to 0 once the first player is eliminated, which is what LMS_NewPlayerLives keys off
+    // to lock the match to late joiners (so a single survivor wins). NOT the current living minimum — an eliminated
+    // 0-lives player must keep it pinned at 0 (the current-living-min would bounce back up and never lock the match).
+    private int _lowestLives = 999;
+
+    /// <summary>QC <c>lms_lowest_lives</c>: the all-time lowest life count reached this match (999 before any loss).</summary>
+    public int LowestLives() => _lowestLives;
 
     /// <summary>
     /// QC LMS_NewPlayerLives: the lives a player joining now should get. A late joiner receives the current
@@ -220,22 +235,29 @@ public sealed class LastManStanding : GameType
     }
 
     /// <summary>
-    /// The number of lives a freshly joining player starts with (g_lms_lives_override, else g_lms_lives,
-    /// else 5), capped at the engine fraglimit when one is set (QC LMS_NewPlayerLives bounds to fraglimit).
+    /// The number of lives a freshly joining player starts with. QC REGISTER_MUTATOR(lms) ⇒
+    /// <c>GameRules_limit_score(g_lms_lives_override > 0 ? override : -1)</c>: the lives pool is the engine
+    /// <c>fraglimit</c>, which the menu override raises (>0) and which otherwise carries the per-map mapinfo
+    /// <c>lives=N</c> value (gametype_init default 5; legacy maps "9 20 0" ⇒ 9). LMS_NewPlayerLives then returns
+    /// <c>bound(1, lms_lowest_lives(=999 for the first joiner), floor(fraglimit))</c> ⇒ the first player gets the
+    /// full fraglimit. Mirror that: override (>0) wins, else the live fraglimit (the mapinfo/legacy lives value),
+    /// else the gametype default 5. The port has no mapinfo→fraglimit `lives=` plumbing, so the live fraglimit is
+    /// the faithful stand-in for the mapinfo value (an explicit override still wins, as in Base).
     /// </summary>
     public int StartingLives
     {
         get
         {
-            int lives = DefaultLives;
-            if (TryCvar(CvarLivesDefault, out float ov) && ov > 0f) lives = (int)ov;
-            else if (TryCvar(CvarLives, out float l) && l > 0f) lives = (int)l;
+            // QC: g_lms_lives_override > 0 sets fraglimit to the override; otherwise fraglimit holds the mapinfo
+            // lives= value (default 5, legacy 9).
+            if (TryCvar(CvarLivesDefault, out float ov) && ov > 0f)
+                return (int)System.Math.Max(1f, ov);
 
-            // QC LMS_NewPlayerLives: bound(1, lives, fraglimit) when a fraglimit (>0, <=999) is set.
+            int lives = DefaultLives;
             if (TryCvar(CvarFragLimit, out float fl))
             {
-                int cap = (int)fl;
-                if (cap > 0 && cap <= 999 && lives > cap) lives = cap;
+                int v = (int)System.MathF.Floor(fl);
+                if (v > 0 && v <= 999) lives = v;          // QC: fl==0 || fl>999 ⇒ keep the gametype default
             }
             return lives < 1 ? 1 : lives;
         }
@@ -247,6 +269,7 @@ public sealed class LastManStanding : GameType
             return;
         MatchEnded = false;
         Winner = null;
+        _lowestLives = 999; // QC lms_Initialize: lms_lowest_lives = 999
 
         // QC sv_lms.qh GameRules_scoring(0, 0, 0, { field(SP_LMS_LIVES, "lives", SFL_SORT_PRIO_SECONDARY);
         // field(SP_LMS_RANK, "rank", SFL_LOWER_IS_BETTER | SFL_RANK | SFL_SORT_PRIO_PRIMARY | SFL_ALLOW_HIDE); }):
@@ -286,6 +309,11 @@ public sealed class LastManStanding : GameType
         // (the HealthMega that OnFilterItemDefinition replaced in place when g_lms_extra_lives is on).
         _itemTouchHandler = OnItemTouch;
         MutatorHooks.ItemTouch.Add(_itemTouchHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(lms, PlayerPowerups): a leader's model glows (EF_ADDITIVE | EF_FULLBRIGHT) so
+        // the field can find a hider; everyone else has those bits cleared each frame.
+        _powerupsHandler = OnPlayerPowerups;
+        MutatorHooks.PlayerPowerups.Add(_powerupsHandler);
     }
 
     /// <summary>QC <c>GameRules_scoring_add</c>: mirror the authoritative <see cref="LmsState"/> into the networked
@@ -312,6 +340,7 @@ public sealed class LastManStanding : GameType
         if (_damageCalcHandler is not null) { MutatorHooks.DamageCalculate.Remove(_damageCalcHandler); _damageCalcHandler = null; }
         if (_filterItemHandler is not null) { MutatorHooks.FilterItemDefinition.Remove(_filterItemHandler); _filterItemHandler = null; }
         if (_itemTouchHandler is not null) { MutatorHooks.ItemTouch.Remove(_itemTouchHandler); _itemTouchHandler = null; }
+        if (_powerupsHandler is not null) { MutatorHooks.PlayerPowerups.Remove(_powerupsHandler); _powerupsHandler = null; }
     }
 
     /// <summary>Look up (or lazily create, seeded with <see cref="StartingLives"/>) a player's LMS state.</summary>
@@ -440,6 +469,42 @@ public sealed class LastManStanding : GameType
     public int LivesOf(Player p) => _states.TryGetValue(p, out LmsState? st) ? st.Lives : 0;
 
     /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(lms, reset_map_players) (sv_lms.qc:222) + reset_map_global (sv_lms.qc:217): on a
+    /// map/match restart, restore every player to a fresh in-game state — an out-of-game (eliminated) player
+    /// becomes a live player again, LMS_RANK + LMS_LIVES are zeroed then re-seeded to the fresh starting pool, the
+    /// leader flag + waypoint are cleared, and the lowest-lives sentinel (<c>lms_lowest_lives</c>) is reset to 999.
+    /// Re-PutClientInServer is done by the host's reset loop; here we re-seed the per-player LMS state.
+    /// <paramref name="players"/> is the live roster.
+    /// </summary>
+    public void ResetMapPlayers(System.Collections.Generic.IReadOnlyList<Player> players)
+    {
+        // Drop the latched win/leader/forfeiter state + the running lowest-lives so a fresh match starts clean.
+        MatchEnded = false;
+        Winner = null;
+        TimeLimitCancelled = false;
+        LeaderCount = 0;
+        LeadersVisible = false;
+        LeadersLivesDiff = 0;
+        _visibleLeadersTime = 0f;
+        _visibleLeadersInit = false;
+        _lastForfeiterLives = 0;
+        _lastForfeiterHealth = 0f;
+        _lastForfeiterArmor = 0f;
+        _lowestLives = 999;                                 // QC reset_map_global: lms_lowest_lives = 999
+
+        // QC reset_map_players: per client, frags OUT_OF_GAME → PLAYER (re-livened), LMS_RANK/LMS_LIVES zeroed then
+        // re-seeded (PutClientInServer ⇒ lms_AddPlayer re-grants the fresh pool), lms_leader + waypoint cleared.
+        _states.Clear();
+        for (int i = 0; i < players.Count; i++)
+        {
+            Player p = players[i];
+            LmsState st = new() { Lives = StartingLives, Rank = 0, IsLeader = false };
+            _states[p] = st;
+            SyncColumns(p, st);
+        }
+    }
+
+    /// <summary>
     /// The obituary handler — QC MUTATOR_HOOKFUNCTION(lms, GiveFragsForKill): the victim loses one life and
     /// the kill scores no frag points. On reaching 0 lives the victim is eliminated (out of game) and given
     /// a finishing rank below the players still alive. Then re-check the last-player-standing win condition.
@@ -451,10 +516,14 @@ public sealed class LastManStanding : GameType
         if (MatchEnded)
             return false;
 
+        // QC GiveFragsForKill (sv_lms.qc:605): the life is only removed `if (!warmup_stage && time > game_starttime)`
+        // — a death during warmup or the pre-match countdown does NOT cost a life (the frag score is still zeroed).
         LmsState st = GetState(victim);
-        if (!st.OutOfGame)
+        if (!PreMatch && !st.OutOfGame)
         {
-            st.Lives -= 1;                                  // QC: GameRules_scoring_add(target, LMS_LIVES, -1)
+            st.Lives -= 1;                                  // QC: int tl = GameRules_scoring_add(target, LMS_LIVES, -1)
+            if (st.Lives < _lowestLives)
+                _lowestLives = st.Lives;                    // QC: if (tl < lms_lowest_lives) lms_lowest_lives = tl
             if (st.OutOfGame)
                 st.Rank = CountAlive() + 1;                 // QC: rank = (#players still in) + 1
             SyncColumns(victim, st);                        // mirror LMS_LIVES / LMS_RANK to the scoreboard
@@ -479,16 +548,35 @@ public sealed class LastManStanding : GameType
     }
 
     /// <summary>
-    /// QC WinningCondition_LMS (reduced core): the match ends once at most one player still has lives. With
-    /// exactly one survivor that player wins and is ranked first; with zero (mutual elimination) it's a draw.
-    /// The richer QC rules (join-anytime, tie/time-limit overtime, campaign) are deferred.
+    /// QC <c>WinningConditionHelper_topscore == WinningConditionHelper_secondscore</c> ⇒ <c>WINNING_NEVER</c>: with
+    /// ≥2 living players whose top two LIVES counts are equal, LMS cancels the time limit (the match must be decided
+    /// by an elimination, not the clock). Recomputed each <see cref="CheckWinningCondition"/>; the host may consult it
+    /// to suppress a timelimit expiry (the timelimit-cancel host seam is not yet wired — additive, non-weakening).
+    /// </summary>
+    public bool TimeLimitCancelled { get; private set; }
+
+    /// <summary>
+    /// QC <c>WinningCondition_LMS</c> (sv_lms.qc:60): drive the LMS end-of-match check. Returns no-winner while the
+    /// match hasn't begun (warmup / pre-start countdown). With ≥2 living players the match continues — except the
+    /// time limit is cancelled (<see cref="TimeLimitCancelled"/>) when the top two lives counts are equal (QC
+    /// WinningConditionHelper ⇒ WINNING_NEVER). With exactly one living player: that survivor WINS once no further
+    /// joiner is possible (QC LMS_NewPlayerLives()==0), OR forfeit-wins early if joins are still allowed but enough
+    /// match time has elapsed AND someone has already been eliminated (QC <c>totalplayed &amp;&amp; time &gt;
+    /// game_starttime + g_lms_forfeit_min_match_time</c>); otherwise the match waits for more joiners. With zero
+    /// living players it's a draw/forfeit end.
     /// </summary>
     public void CheckWinningCondition()
     {
         if (_states.Count == 0)
             return; // nobody playing yet
 
-        int alive = 0;
+        TimeLimitCancelled = false;
+
+        // QC: WINNING_NO while warmup_stage || time <= game_starttime — the match hasn't started, no win/forfeit.
+        if (PreMatch)
+            return;
+
+        int alive = 0, totalPlayed = 0;
         Player? lastAlive = null;
         foreach (KeyValuePair<Player, LmsState> kv in _states)
         {
@@ -497,19 +585,69 @@ public sealed class LastManStanding : GameType
                 alive++;
                 lastAlive = kv.Key;
             }
+            else if (kv.Value.Rank > 0)
+                totalPlayed++;                              // QC: a player who has a finishing rank ("played")
         }
 
-        if (alive <= 1)
+        if (alive > 1)
         {
-            MatchEnded = true;
-            if (alive == 1 && lastAlive is not null)
-            {
-                Winner = lastAlive;
-                LmsState ws = GetState(lastAlive);
-                ws.Rank = 1; // QC: first_player.winning = 1; LMS_RANK = 1
-                SyncColumns(lastAlive, ws);
-            }
+            // QC: two or more living players — game continues. Run WinningConditionHelper: if the top two LIVES
+            // counts are equal, cancel the time limit (WINNING_NEVER); otherwise let the timelimit decide.
+            TimeLimitCancelled = TopTwoLivesEqual();
+            return;
         }
+
+        if (alive == 1 && lastAlive is not null)
+        {
+            // QC: exactly one living player. Are further joiners still possible?
+            if (NewPlayerLives() > 0)
+            {
+                // Joins still allowed: forfeit-win only after enough match time AND someone already eliminated,
+                // else keep waiting (no winner yet — a late joiner could still turn up).
+                float now = Api.Services is not null ? Api.Clock.Time : 0f;
+                float forfeitMin = Cvar("g_lms_forfeit_min_match_time", 0f);
+                if (totalPlayed > 0 && GameStartTime > 0f && now > GameStartTime + forfeitMin)
+                {
+                    WinSurvivor(lastAlive); // QC: forfeit-win for the lone survivor
+                }
+                // else: game still running (nobody removed by a frag yet) → wait for players.
+                return;
+            }
+
+            // QC: no more joiners possible → the lone survivor wins.
+            WinSurvivor(lastAlive);
+            return;
+        }
+
+        // QC: zero living players (mutual elimination) — forfeit/draw end.
+        MatchEnded = true;
+    }
+
+    /// <summary>QC: latch the win for the single survivor (LMS_RANK=1, winning=1, end the match).</summary>
+    private void WinSurvivor(Player survivor)
+    {
+        MatchEnded = true;
+        Winner = survivor;
+        LmsState ws = GetState(survivor);
+        ws.Rank = 1; // QC: first_player.winning = 1; LMS_RANK = 1
+        SyncColumns(survivor, ws);
+    }
+
+    /// <summary>
+    /// QC WinningConditionHelper (the LMS sort is by LIVES): true when the two highest living lives counts are
+    /// equal — the tie that cancels the time limit (WINNING_NEVER).
+    /// </summary>
+    private bool TopTwoLivesEqual()
+    {
+        int top = int.MinValue, second = int.MinValue;
+        foreach (KeyValuePair<Player, LmsState> kv in _states)
+        {
+            if (kv.Value.OutOfGame) continue;
+            int l = kv.Value.Lives;
+            if (l > top) { second = top; top = l; }
+            else if (l > second) second = l;
+        }
+        return second != int.MinValue && top == second;
     }
 
     // ============================================================================================
@@ -704,6 +842,25 @@ public sealed class LastManStanding : GameType
 
     /// <summary>QC MUTATOR_HOOKFUNCTION(lms, ForbidThrowCurrentWeapon): always forbid dropping the current weapon.</summary>
     private bool OnForbidThrowCurrentWeapon(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args) => true;
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(lms, PlayerPowerups) (sv_lms.qc:515): a leader's model glows
+    /// (<c>EF_ADDITIVE | EF_FULLBRIGHT</c>) so the field can spot a hiding leader; a non-leader has those bits
+    /// cleared. Base keys this off the leader's attached waypoint sprite (<c>waypointsprite_attachedforcarrier</c>),
+    /// which is attached to exactly the <see cref="LmsState.IsLeader"/> players by <see cref="UpdateLeaders"/>, so
+    /// the port keys the glow directly off IsLeader. Runs each frame (the leader set is recomputed per frame).
+    /// </summary>
+    private bool OnPlayerPowerups(ref MutatorHooks.PlayerPowerupsArgs args)
+    {
+        if (args.Player is not Player player)
+            return false;
+        bool isLeader = _states.TryGetValue(player, out LmsState? st) && !st.OutOfGame && st.IsLeader;
+        if (isLeader)
+            player.Effects |= EffectFlags.Additive | EffectFlags.FullBright;   // QC: player.effects |= (EF_ADDITIVE | EF_FULLBRIGHT)
+        else
+            player.Effects &= ~(EffectFlags.Additive | EffectFlags.FullBright); // QC: player.effects &= ~(EF_ADDITIVE | EF_FULLBRIGHT)
+        return false;
+    }
 
     /// <summary>
     /// QC MUTATOR_HOOKFUNCTION(lms, PlayerRegen): disable regen and rot unless g_lms_regenerate / g_lms_rot

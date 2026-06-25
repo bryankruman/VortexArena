@@ -101,8 +101,23 @@ public sealed class Invasion : GameType
     /// </summary>
     private readonly List<(int round, string[] monsters)> _waves = new();
 
-    /// <summary>QC g_invasion_roundends: STAGE objective triggers. Set <see cref="RoundEndReached"/> when one fires.</summary>
+    /// <summary>
+    /// QC g_invasion_roundends winning latch: true once the STAGE objective has been reached by enough real
+    /// players (>= ceil(realplayers * count), default count=0.7 = 70%). The STAGE win in <see cref="Tick"/>
+    /// reads this (QC WinningCondition_Invasion: a roundend entity's <c>.winning</c> is set).
+    /// </summary>
     public bool RoundEndReached { get; private set; }
+
+    /// <summary>QC roundend <c>.count</c>: the fraction of real players who must reach the end (default 0.7).</summary>
+    private const float DefaultRoundEndFraction = 0.7f;
+
+    /// <summary>
+    /// QC <c>.inv_endreached</c>: the distinct REAL players who have touched a STAGE level-end trigger. The win
+    /// fires once <c>Count &gt;= ceil(realplayers * min(1, fraction))</c> (QC target_invasion_roundend_use), so a
+    /// single player can't end a multi-player STAGE map.
+    /// </summary>
+    private readonly HashSet<Player> _endReached = new();
+
     private int _roundEnds;            // count of registered invasion_roundend triggers
     private int _monsterSkill = 1;     // QC inv_monsterskill, scaled per round + player count
 
@@ -129,10 +144,53 @@ public sealed class Invasion : GameType
     /// <summary>QC spawnfunc invasion_roundend: register a STAGE objective trigger (reaching it ends the level).</summary>
     public void AddRoundEnd() => _roundEnds++;
 
-    /// <summary>QC target_invasion_roundend_use: a STAGE objective trigger fired — the players reached the end.</summary>
-    public void TriggerRoundEnd()
+    /// <summary>
+    /// QC <c>target_invasion_roundend_use</c> (sv_invasion.qc): a STAGE objective trigger was touched by
+    /// <paramref name="actor"/>. Mark that REAL player as having reached the end (bots don't count), then win
+    /// only once <c>ceil(realplayers * min(1, fraction))</c> distinct real players have reached it (fraction
+    /// default 0.7 = 70%). A single touch ends a solo/co-op map (realplayers=1 → threshold 1) but not a
+    /// multi-player STAGE map. <paramref name="fraction"/> mirrors the trigger's <c>.count</c> field (0 → 0.7).
+    /// </summary>
+    public void TriggerRoundEnd(Player? actor = null, float fraction = 0f)
     {
-        if (Type == InvasionType.Stage) RoundEndReached = true;
+        if (Type != InvasionType.Stage) return;
+
+        float frac = fraction > 0f ? System.MathF.Min(1f, fraction) : DefaultRoundEndFraction;
+
+        // QC: only count real (non-bot) players. actor.inv_endreached = true.
+        if (actor is not null && (actor.Flags & EntFlags.Client) != 0 && !actor.IsBot)
+            _endReached.Add(actor);
+
+        // QC: count real clients and how many have inv_endreached; win at >= ceil(realplnum * min(1, count)).
+        int realCount = CountRealPlayers();
+        if (realCount <= 0)
+        {
+            // No live roster to measure against (e.g. a headless/scripted touch): fall back to the legacy
+            // single-touch behavior so solo/test STAGE maps still complete.
+            RoundEndReached = true;
+            return;
+        }
+
+        int reached = 0;
+        foreach (Player p in _endReached)
+            if (!p.IsFreed && (p.Flags & EntFlags.Client) != 0 && !p.IsBot)
+                ++reached;
+
+        int needed = (int)System.MathF.Ceiling(realCount * frac);
+        if (needed < 1) needed = 1;
+        if (reached >= needed)
+            RoundEndReached = true;
+    }
+
+    /// <summary>QC FOREACH_CLIENT(IS_PLAYER(it) &amp;&amp; IS_REAL_CLIENT(it)): count the live non-bot players.</summary>
+    private int CountRealPlayers()
+    {
+        if (Api.Services is null) return 0;
+        int n = 0;
+        foreach (Entity e in Api.Entities.FindByClass("player"))
+            if (e is Player p && !p.IsFreed && (p.Flags & EntFlags.Client) != 0 && !p.IsBot)
+                ++n;
+        return n;
     }
 
     private HookHandler<DeathEvent>? _deathHandler;
@@ -209,6 +267,11 @@ public sealed class Invasion : GameType
     /// <summary>QC the inv_roundcnt 0→1 edge: whether the round handler has started its first round yet.</summary>
     private bool _firstRoundStarted;
 
+    /// <summary>HUNT: whether at least one non-respawned monster has been seen alive — so an empty map doesn't
+    /// insta-win before its placed monsters spawn (QC's HUNT ends if none are placed, but the port spawns them
+    /// asynchronously, so we wait for the first to appear before treating "none left" as a win).</summary>
+    private bool _huntSawMonster;
+
     public override void OnInit()
     {
         // QC: monsters spawn at the map's invasion_spawnpoint entities (see SpawnPoints / AddSpawnPoint).
@@ -223,6 +286,7 @@ public sealed class Invasion : GameType
         _waves.Clear();
         _roundEnds = 0;
         RoundEndReached = false;
+        _endReached.Clear();
     }
 
     /// <summary>QC spawnfunc invasion_spawnpoint: register a monster spawn origin.</summary>
@@ -285,6 +349,7 @@ public sealed class Invasion : GameType
             return;
         MatchEnded = false;
         RoundEndReached = false;
+        _endReached.Clear();
         MonstersKilled = 0;
         Wave.Round = 1;
         Wave.Spawned = 0;
@@ -292,6 +357,7 @@ public sealed class Invasion : GameType
         Wave.MaxSpawned = ComputeWaveSize(Wave.Round);
         _monsterSkill = ComputeMonsterSkill(Wave.Round);
         _firstRoundStarted = false;
+        _huntSawMonster = false;
         _nextSpawnTime = 0f;
 
         // QC invasion_ScoreRules (sv_invasion.qc): GameRules_score_enabled(false); GameRules_scoring(0, 0, 0, {
@@ -450,19 +516,34 @@ public sealed class Invasion : GameType
             return;
         }
 
-        // HUNT (and STAGE while waiting for the objective): drive the wave fill + the clear win directly.
+        // HUNT: the win is derived from the live monster list, NOT the wave-fill counters (QC
+        // WinningCondition_Invasion INV_TYPE_HUNT: IL_EACH(g_monsters, !(it.spawnflags & MONSTERFLAG_RESPAWNED))
+        // — when no non-respawned monster remains, every alive player wins). HUNT maps place their monsters via
+        // the map's monster spawnfuncs (NATURAL, first-life), so the win source is the world's monster entities,
+        // not the ROUND wave fill loop. Mirror Base: count the alive, non-respawned monsters in the world and win
+        // when none remain. (Base ends immediately if no monsters were ever placed; we require >=1 to have lived,
+        // so an empty map doesn't insta-win before the map's monsters spawn.)
+        if (Type == InvasionType.Hunt)
+        {
+            int remaining = LiveNonRespawnedMonsterCount();
+            if (remaining > 0)
+                _huntSawMonster = true;
+            // The port also tracks the wave-fill counters (used when monsters spawn through the wave loop and on
+            // headless tests with no live world entities); count that path as "a monster was present" too so the
+            // win fires when the whole set is cleared.
+            bool counterCleared = Wave.Spawned >= 1 && Wave.Killed >= Wave.MaxSpawned;
+            if (counterCleared)
+                _huntSawMonster = true;
+            if (remaining <= 0 && _huntSawMonster)
+                MatchEnded = true;
+            return;
+        }
+
+        // STAGE while waiting for the objective: drive the wave fill + the clear advance directly.
         FillWave();
 
         if (Wave.Spawned < Wave.MaxSpawned)
             return;
-
-        // HUNT: clear the map — once the whole spawned set is dead, the players win (QC g_monsters empty check).
-        if (Type == InvasionType.Hunt)
-        {
-            if (LiveMonsters.Count == 0 && Wave.Killed >= Wave.MaxSpawned)
-                MatchEnded = true;
-            return;
-        }
 
         // STAGE while waiting for the objective: once the wave is dead, advance to the next round.
         if (Wave.Spawned >= 1 && Wave.Killed >= Wave.MaxSpawned)
@@ -583,6 +664,29 @@ public sealed class Invasion : GameType
                 Api.Entities.Remove(m);     // ...then delete the edict.
             }
         LiveMonsters.Clear();
+    }
+
+    /// <summary>
+    /// QC WinningCondition_Invasion (INV_TYPE_HUNT): <c>IL_EACH(g_monsters, !(it.spawnflags &amp;
+    /// MONSTERFLAG_RESPAWNED))</c> — count the monsters alive in the WORLD that have not gone through a
+    /// death→respawn cycle. HUNT maps place their monsters with the map's monster spawnfuncs (NATURAL, first
+    /// life), so the win source is the live world entities (Base's <c>g_monsters</c> intrusive list), not the
+    /// ROUND wave-fill counters. A respawned monster (MONSTERFLAG_RESPAWNED) does NOT count toward "remaining".
+    /// </summary>
+    public int LiveNonRespawnedMonsterCount()
+    {
+        if (Api.Services is null)
+            return LiveMonsters.Count; // headless fallback: use the tracked wave list
+        int found = 0;
+        foreach (Entity e in Api.Entities.FindByClass("monster"))
+        {
+            if (e.IsFreed || e.DeadState != DeadFlag.No || e.Health <= 0f)
+                continue; // QC GetResource(it, RES_HEALTH) > 0 (only living monsters)
+            if (MonsterAI.StateOf(e) is { Respawned: true })
+                continue; // QC !(it.spawnflags & MONSTERFLAG_RESPAWNED)
+            ++found;
+        }
+        return found;
     }
 
     /// <summary>
@@ -822,12 +926,45 @@ public sealed class Invasion : GameType
     /// <summary>QC IS_MONSTER(ent): a monster victim — carries the FL_MONSTER flag (set by <see cref="MonsterAI.Setup"/>).</summary>
     private static bool IsMonster(Entity e) => (e.Flags & EntFlags.Monster) != 0 || e.ClassName == "monster";
 
-    /// <summary>QC GameRules_limit_score: latch the match once the banked kills reach the point limit.</summary>
+    /// <summary>
+    /// QC GameRules_limit_score (sv_rules.qc) + WinningCondition_Scores (server/world.qc:1625): the match ends
+    /// when the LEADING player's primary score reaches the limit — <c>WinningConditionHelper_topscore &gt;= limit</c>
+    /// — and the primary score in Invasion is SP_KILLS (the sole, SFL_SORT_PRIO_PRIMARY column). So the limit is
+    /// the single best player's KILLS, NOT the cumulative kills across all players. We read the top-KILLS player
+    /// from the live score table; when there is no live roster (headless tests that bank kills without spawning
+    /// player edicts) we fall back to the cumulative <see cref="MonstersKilled"/> so the latch still fires.
+    /// </summary>
     public void CheckPointLimit()
     {
         int limit = PointLimit;
-        if (limit > 0 && MonstersKilled >= limit)
+        if (limit <= 0)
+            return;
+
+        int topScore = TopKillsScore();
+        // QC WinningConditionHelper_topscore >= fraglimit: the leading player's KILLS. Fall back to the
+        // cumulative banked total only when no live player roster is present to measure against.
+        int leading = topScore >= 0 ? topScore : MonstersKilled;
+        if (leading >= limit)
             MatchEnded = true;
+    }
+
+    /// <summary>
+    /// QC <c>WinningConditionHelper_topscore</c> for Invasion's primary score (SP_KILLS): the highest banked
+    /// KILLS across the live players, or -1 when there is no live player roster to measure (headless tests).
+    /// </summary>
+    private int TopKillsScore()
+    {
+        if (Api.Services is null)
+            return -1;
+        int best = -1;
+        foreach (Entity e in Api.Entities.FindByClass("player"))
+        {
+            if (e is not Player p || (p.Flags & EntFlags.Client) == 0)
+                continue;
+            int kills = Scoring.GameScores.Get(p, Scoring.GameScores.Kills);
+            if (kills > best) best = kills;
+        }
+        return best;
     }
 
     private static bool TryCvar(string name, out float value)

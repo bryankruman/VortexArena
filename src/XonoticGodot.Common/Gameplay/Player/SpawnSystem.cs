@@ -148,6 +148,16 @@ public static class SpawnSystem
     private static bool _teamSpawnsRequestExplicit;
 
     /// <summary>
+    /// QC <c>.spawn_evalfunc</c> on a spawn spot's target (server/spawnpoints.qc Spawn_Score: <c>findchain(targetname,
+    /// spot.target)</c> → <c>targ.spawn_evalfunc(targ, player, spot, current)</c>; a returned '-1 0 0' marks the spot
+    /// unusable). Assault's <c>target_objective_spawn_evalfunc</c> (sv_assault.qc:28) rejects a spot that targets an
+    /// objective whose health is inactive (&gt;= ASSAULT_VALUE_INACTIVE) or destroyed (&lt; 0). The active gametype
+    /// installs this (Assault sets it in Activate, clears it in Deactivate); given a spot, return true to REJECT it.
+    /// Only consulted on the target-checking spawn path (<c>targetCheck</c>). Null = no objective spawn bias.
+    /// </summary>
+    public static System.Func<Entity, bool>? SpotEvalReject;
+
+    /// <summary>
     /// Port of <c>GameRules_spawning_teams(value)</c> (common/gametypes/sv_rules.qh): the active gametype declares
     /// whether it wants team-only spawnpoints. Sets <see cref="HaveTeamSpawns"/> to -1 (requested) or 0 (not), and
     /// records that the request was made explicitly (so <see cref="SelectSpawnPoint"/> trusts it over the auto
@@ -171,6 +181,7 @@ public static class SpawnSystem
         HaveTeamSpawnsForTeams = 0;
         SomeSpawnHasBeenUsed = false;
         _teamSpawnsRequestExplicit = false;
+        SpotEvalReject = null; // QC: the spawn_evalfunc chain is owned by the active gametype; clear on map/mode change.
     }
 
     /// <summary>
@@ -390,6 +401,11 @@ public static class SpawnSystem
         if (teamCheck >= 0f && spot.Team != teamCheck)
             return (-1f, 0f);
         if (spot.SpawnActive != MapMover.ActiveActive && targetCheck)
+            return (-1f, 0f);
+        // QC Spawn_Score spawn_evalfunc chain (server/spawnpoints.qc): findchain(targetname, spot.target) →
+        // targ.spawn_evalfunc(...); a '-1 0 0' return rejects the spot. Assault installs target_objective_spawn_-
+        // evalfunc (rejects a spot targeting an inactive/destroyed objective). Only on the target-checking path.
+        if (targetCheck && SpotEvalReject is not null && SpotEvalReject(spot))
             return (-1f, 0f);
         if (!forPlayer.IsBot)
         {

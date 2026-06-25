@@ -3627,6 +3627,12 @@ public sealed partial class NetGame : Node3D
                 panel.Mode = ModIconsPanel.ModIconsMode.Keepaway;
                 panel.KeepawayCarrying = ms.CarrierNetId != 0 && ms.CarrierNetId == _client.LocalNetId;
                 break;
+            // Team Keepaway: STAT(TKA_BALLSTATUS) — the carrying / per-team-taken / dropped bit pack is already
+            // computed per-recipient on the server, so feed it straight to HUD_Mod_TeamKeepaway.
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.TeamKeepaway:
+                panel.Mode = ModIconsPanel.ModIconsMode.TeamKeepaway;
+                panel.TkaBallStatus = ms.TkaBallStatus;
+                break;
             default:
                 panel.Mode = ModIconsPanel.ModIconsMode.None;
                 break;
@@ -4670,6 +4676,16 @@ public sealed partial class NetGame : Node3D
             return null;
 
         var ctx = new ClientWorld.AppearanceContext { LocalNetId = _client.LocalNetId };
+
+        // QC cl_survival.qc colormap override (ForcePlayercolors_Skip): in Survival, once a status block has been
+        // received (the local player has a role → MyStatus != 0, OR the round resolved and disclosed hunters), feed
+        // the disclosed hunter set so ResolveForcedColormap repaints every known player green-prey / red-hunter.
+        if (_client.LatestModeStatus is { Mode: XonoticGodot.Net.GametypeStatusBlock.Kind.Survival } surv
+            && (surv.MyStatus != 0 || surv.HunterNetIds.Count > 0))
+        {
+            ctx.SurvivalActive = true;
+            ctx.SurvivalHunterIds = surv.HunterNetIds;
+        }
 
         // Listen server: authoritative gametype/teamplay/team-count + the local player's team.
         if (_serverWorld is not null)

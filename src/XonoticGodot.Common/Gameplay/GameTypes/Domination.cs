@@ -228,7 +228,12 @@ public sealed class Domination : GameType
         {
             float now = Api.Services is not null ? Api.Clock.Time : 0f;
             if (endTime - now <= 0f)
+            {
+                // QC: Send_Notification(NOTIF_ALL, MSG_CENTER, CENTER_ROUND_OVER) + (MSG_INFO, INFO_ROUND_OVER).
+                NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "ROUND_OVER");
+                NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "ROUND_OVER");
                 return true;
+            }
         }
 
         int winner = CountAndFindRoundWinner();
@@ -238,6 +243,11 @@ public sealed class Domination : GameType
         if (LastRoundWinner == Teams.None)
         {
             LastRoundWinner = winner;
+            // QC: Send_Notification(NOTIF_ALL, MSG_CENTER, APP_TEAM_NUM(winner, CENTER_ROUND_TEAM_WIN)) +
+            //     (MSG_INFO, APP_TEAM_NUM(winner, INFO_ROUND_TEAM_WIN)) — the per-team round-win banner.
+            string suffix = TeamSuffix(winner);
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, $"ROUND_TEAM_WIN_{suffix}");
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"ROUND_TEAM_WIN_{suffix}");
             // QC: TeamScore_AddToTeam(winner_team, ST_DOM_CAPS, +1). The round-based schema makes slot 1 the
             // "caps" team primary (DeclareScoreRules roundbased arm).
             Scoring.GameScores.AddToTeam(winner, Scoring.GameScores.TeamSlotSecondary, 1);
@@ -257,6 +267,12 @@ public sealed class Domination : GameType
 
     /// <summary>QC teamscores(team, ST_DOM_CAPS) — the round wins banked by a team in the round-based variant.</summary>
     public int GetTeamCaps(int team) => Scoring.GameScores.TeamScore(team, Scoring.GameScores.TeamSlotSecondary);
+
+    /// <summary>QC <c>APP_TEAM_NUM</c> team-code → notification suffix (RED/BLUE/YELLOW/PINK).</summary>
+    private static string TeamSuffix(int team) => team switch
+    {
+        Teams.Red => "RED", Teams.Blue => "BLUE", Teams.Yellow => "YELLOW", Teams.Pink => "PINK", _ => "NEUTRAL",
+    };
 
     /// <summary>
     /// QC <c>ScoreRules_dom</c> (sv_domination.qc): declare Domination's columns + the two TEAM-score slots and
@@ -341,11 +357,59 @@ public sealed class Domination : GameType
             e.GtPointAmt = cp.PerPointAmt;
             e.GtPointRate = cp.PerPointRate;
             e.NextThink = GametypeEntities.Now + 0.1f; // QC dompointthink rate
+
+            // QC dom_controlpoint_setup: setorigin(this, this.origin + '0 0 20'); DropToFloor_QC_DelayedInit(this).
+            // Nudge up 20qu then settle the bbox onto the floor (a downward box trace, the port's DropToFloor — cf.
+            // MapModels.DropBySpawnflags ALIGN_BOTTOM) so the point rests on the ground rather than at the raw origin.
+            Vector3 placed = DropPointToFloor(e, origin + new Vector3(0f, 0f, 20f));
+            GametypeEntities.SetOrigin(e, placed);
+            cp.Origin = placed;
+            e.GtSpawnOrigin = placed;
+
+            // QC spawnfunc(dom_controlpoint): scale 0.6 default + this.effects |= EF_LOWPRECISION, and EF_FULLBRIGHT
+            // when g_domination_point_fullbright. The model comes from the owning dom_team (dom_spawnteams default
+            // palette: models/domination/dom_<color>.md3, dom_unclaimed.md3 for the neutral start) — set it so the
+            // point body is visible (the same fix the CTF flag needed; Entity.Model networks + renders).
+            e.Model = DomPointModel(initialTeam);
+            e.Effects |= EfLowPrecision; // QC EF_LOWPRECISION bandwidth hint
+            if (Cvar("g_domination_point_fullbright", 0f) != 0f)
+                e.Effects |= EfFullBright; // QC EF_FULLBRIGHT when g_domination_point_fullbright
+
             cp.Entity = e;
-            e.GtSpawnOrigin = origin;
         }
         return cp;
     }
+
+    /// <summary>EF_LOWPRECISION (dpextensions.qc:274) — bandwidth hint; QC dom_controlpoint sets it. (== Nexball's.)</summary>
+    private const int EfLowPrecision = 4194304;
+
+    /// <summary>EF_FULLBRIGHT — set on the point when g_domination_point_fullbright (QC spawnfunc dom_controlpoint).</summary>
+    private const int EfFullBright = 512;
+
+    /// <summary>
+    /// QC <c>DropToFloor</c> for the control point: trace the point's bbox straight down from
+    /// <paramref name="start"/> and return the rested origin (the box-trace impact), or <paramref name="start"/>
+    /// when headless / nothing below. Mirrors MapModels' ALIGN_BOTTOM box trace.
+    /// </summary>
+    private static Vector3 DropPointToFloor(Entity e, Vector3 start)
+    {
+        if (Api.Services is null)
+            return start;
+        Vector3 down = start - new Vector3(0f, 0f, 4096f); // QC droptofloor traces far down for the floor
+        TraceResult tr = Api.Trace.Trace(start, e.Mins, e.Maxs, down, MoveFilter.NoMonsters, e);
+        return tr.StartSolid ? start : tr.EndPos; // keep the placed origin if it starts embedded
+    }
+
+    /// <summary>QC dom_team default palette model (dom_spawnteams): per-team dom_&lt;color&gt;.md3, dom_unclaimed.md3
+    /// for the neutral (empty-netname) team. Used for the point body model on spawn and capture.</summary>
+    private static string DomPointModel(int team) => team switch
+    {
+        Teams.Red => "models/domination/dom_red.md3",
+        Teams.Blue => "models/domination/dom_blue.md3",
+        Teams.Yellow => "models/domination/dom_yellow.md3",
+        Teams.Pink => "models/domination/dom_pink.md3",
+        _ => "models/domination/dom_unclaimed.md3",
+    };
 
     /// <summary>The <see cref="ControlPoint"/> bound to a world dom_controlpoint <see cref="Entity"/>, or null.</summary>
     public ControlPoint? PointForEntity(Entity e)
@@ -398,6 +462,9 @@ public sealed class Domination : GameType
             point.Entity.Team = team;
             point.Entity.GtCapturer = player;
             point.Entity.GtNextTick = point.NextTickTime;
+            // QC dompoint_captured: this.model = head.mdl — swap the point body to the capturing team's dom model
+            // (dom_spawnteams palette: dom_<color>.md3). The waypoint sprite/radar tint track this via CollectWaypoints.
+            point.Entity.Model = DomPointModel(team);
         }
         // QC dompoint_captured: the capturing player gets DOM_TAKES +1 (a captures-made scoreboard stat).
         player.GtPointTakes += 1; // DOM_TAKES (entity-side counter, kept for compatibility)
@@ -521,8 +588,11 @@ public sealed class Domination : GameType
         if (MatchEnded || RoundBased || cp.OwnerTeam == Teams.None)
             return;
         // QC dompointthink: `if (game_stopped || this.delay > time || time < game_starttime) return;` — no points
-        // during warmup/match-over (game_stopped) or before the match clock starts (game_starttime).
-        if (Scoring.GameScores.GameStopped)
+        // during warmup/match-over (game_stopped) or before the match clock starts (game_starttime). Read the live
+        // game_stopped mirror the rest of gameplay uses (VehicleCommon.GameStopped, pushed every frame from
+        // GameWorld.OnEndFrame = Intermission.Running || MatchEnded || Timeout.IsPaused) — Scoring.GameScores.GameStopped
+        // is never assigned on the server path, so a Timeout-paused live match would otherwise keep ticking points.
+        if (VehicleCommon.GameStopped)
             return;
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
         float gameStart = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
@@ -634,8 +704,8 @@ public sealed class Domination : GameType
 /// </summary>
 public sealed class ControlPoint
 {
-    /// <summary>World position of the point (QC entity origin).</summary>
-    public readonly Vector3 Origin;
+    /// <summary>World position of the point (QC entity origin) — updated once after the spawn DropToFloor.</summary>
+    public Vector3 Origin;
 
     /// <summary>The team currently owning the point (QC goalentity.team), or <see cref="Teams.None"/>.</summary>
     public int OwnerTeam = Teams.None;

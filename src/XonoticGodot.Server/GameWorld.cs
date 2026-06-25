@@ -640,7 +640,14 @@ public sealed class GameWorld
         //     links by name (QC assault_setenemytoobjective) and arm the first objective (QC roundstart).
         MapObjectsRegistry.RunPostSpawn();
         if (GameType is Assault assaultMode)
+        {
             assaultMode.ResolveObjectiveGraph();
+            // QC target_assault_roundstart → assault_roundstart_use_this at INITPRIO_FINDTARGET (sv_assault.qc:393):
+            // once every turret has spawned, run the roundstart turret pass (seed unteamed turrets to the attacker
+            // team, then swap NUM_TEAM_1↔2 + respawn). For round 1 the attacker is Red, so defending turrets end up
+            // Blue (the defender side), matching Base.
+            AssaultTurretRoundstart(assaultMode.AttackerTeam);
+        }
         // QC ons_DelayedLinkSetup (INITPRIO_FINDTARGET): now that every onslaught_generator/controlpoint has
         // spawned + name-indexed its graph node, resolve the staged onslaught_link name pairs into power-graph
         // edges and propagate power (UpdateLinks). Without this the graph is edgeless and nothing ever unshields.
@@ -1834,6 +1841,24 @@ public sealed class GameWorld
                 break;
             case Assault aslt:
                 aslt.Activate();
+                // QC MUTATOR_HOOKFUNCTION(as, ReadLevelCvars) (sv_assault.qc:606): Assault is incompatible with
+                // warmup — it forces warmup_stage = 0 and sv_ready_restart_after_countdown = 0 (the match is run as
+                // two engine-restarted rounds, so the warmup/ready-restart-after-countdown flow must not run). Force
+                // those cvars here, before WireCommandsWarmupVoting → Warmup.Begin reads g_warmup (Boot order:
+                // ActivateGameType @545 precedes WireCommandsWarmupVoting @686). Skip in campaign — QC's
+                // ReadyRestart_Deny permits the single-round campaign flow (which never enters the round-restart path
+                // anyway), matching the engine warmup-off-in-campaign default.
+                if (!(TargetUtilities.IsCampaign?.Invoke() ?? false))
+                {
+                    Cvars.Set("g_warmup", 0f);                          // QC warmup_stage = 0
+                    Cvars.Set("sv_ready_restart_after_countdown", 0f);  // QC sv_ready_restart_after_countdown = 0
+                }
+                // QC mapinfo default args "timelimit=20" (assault.qh CLASS(Assault) gametype default): Assault maps
+                // default to a 20-minute defender timelimit. The port reads the live `timelimit` cvar in DriveFrame,
+                // so if nothing configured one the defender-timelimit win could never fire (the round would be
+                // decidable only by core destruction). Assert the Base default when no timelimit is set.
+                if (Cvars.FloatOr("timelimit", 0f) <= 0f)
+                    Cvars.Set("timelimit", 20f);
                 // QC Assault has NO generic round_handler: it runs entirely off WinningCondition_Assault() called
                 // per-frame from CheckRules_World (driven below in DriveGametypeFrame → aslt.DriveFrame). It manages
                 // its own two rounds via the as_round entity + the timelimit cvar (assault_new_round). So we DON'T
@@ -1851,16 +1876,75 @@ public sealed class GameWorld
                     GameStartTime = Time;
                     aslt.GameStartTime = GameStartTime;
                     ResetMap(fakeRoundStart: true);
+                    // QC assault_new_round (sv_assault.qc:207): swap the saved spawn-point teams with the roles so the
+                    // new attackers spawn at the geographic attacker location (not the defender one).
+                    AssaultSwapSpawnTeams();
+                    // QC assault_new_round → ReadyRestart_force → roundstart .reset2 = assault_roundstart_use_this
+                    // (sv_assault.qc:392): re-run the turret roundstart with the NOW-swapped attacker team, so a
+                    // turret that defended for the round-1 defenders flips to defend for the round-2 defenders. The
+                    // attacker team was already swapped by StartSecondRound before this callback fires.
+                    AssaultTurretRoundstart(aslt.AttackerTeam);
                 };
                 break;
 
             // ---- FFA / non-team modes that still own a scoring handler ----
-            case Keepaway ka: ka.Activate(); break;
-            case Duel duel: duel.Activate(); break;
-            case LastManStanding lms: lms.Activate(); EnableRounds(); break;
+            case Keepaway ka:
+                ka.Activate();
+                // QC MUTATOR_HOOKFUNCTION(ka, Bot_ForbidAttack) (sv_keepaway.qc:542-556): a bot won't attack
+                // unless it or the target carries the ball, or the ball is loose — so bots contest the carrier
+                // instead of fragging bystanders. Non-player targets are never vetoed here.
+                Bot.BotBrain.ForbidAttackHook = (self, targ) =>
+                    self is Player kbot && targ is Player kvictim && ka.ForbidBotAttack(kbot, kvictim);
+                break;
+            case Duel duel:
+                duel.Activate();
+                // QC INIT(Duel) gametype_init default args "timelimit=10 pointlimit=0 leadlimit=0" (duel.qh:9):
+                // duel's match-limit defaults differ from the generic 20-minute timelimit — a duel runs to a
+                // 10-minute clock and is decided by time (pointlimit=0 / leadlimit=0, both already the generic
+                // defaults Duel.FragLimit/leadlimit read). Assert the Base mapinfo default for the one divergent
+                // limit when nothing configured it (same pattern as the Assault/Survival timelimit defaults above).
+                if (Cvars.FloatOr("timelimit", 0f) <= 0f)
+                    Cvars.Set("timelimit", 10f);   // QC timelimit=10 (minutes); pointlimit=0/leadlimit=0 are the generic defaults
+                break;
+            // QC LMS is NOT round-based (sv_lms.qc has no round_handler): it is a SINGLE continuous match where
+            // living players respawn throughout and only running out of lives takes you out. So do NOT call
+            // EnableRounds() — the round gate (DeadPlayerThink line 2341) would hold a mid-match dead player out
+            // until a "round" reset and the degenerate FFA DefaultCanRoundEnd team scan would mis-resolve the win.
+            // With no rounds, respawn timing is owned by LMS per-player lives (ApplyRespawnTiming via the
+            // CalculateRespawnTime seam: 0-lives ⇒ denied, else the dynamic delay) and the win is latched by the
+            // per-frame CheckWinningCondition — exactly the Base continuous lives model.
+            case LastManStanding lms: lms.Activate(); break;
             case Survival surv:
                 surv.Activate();
-                EnableRounds();
+                // QC survival.qh CLASS(Survival) gametype_init default args "timelimit=20 pointlimit=12": the
+                // mapinfo registration defaults a Survival match to a 20-minute timelimit and a 12-point limit.
+                // Like Assault's timelimit default above, assert the Base mapinfo defaults when nothing configured
+                // one (the shipped cfg/menu may set them, but an unconfigured boot would otherwise run unlimited).
+                if (Cvars.FloatOr("timelimit", 0f) <= 0f)
+                    Cvars.Set("timelimit", 20f);
+                if (Cvars.FloatOr("fraglimit", 0f) <= 0f)
+                    Cvars.Set("fraglimit", 12f); // QC mapinfo pointlimit=12 → GameRules_limit_score (fraglimit)
+                // QC surv_Initialize round_handler_Spawn(Surv_CheckPlayers, Surv_CheckWinner, Surv_RoundStart):
+                // drive the LIVE (map-reset/respawn-gate/countdown) handler off Survival's OWN predicates — the
+                // round starts when ≥2 players are present (Surv_CheckPlayers), assigns hidden roles at cnt==0
+                // (Surv_RoundStart → AssignRoles), and ends on the side-wipe/timeout (Surv_CheckWinner →
+                // CheckWinningCondition latches RoundOver). Without this the generic DefaultCanRoundEnd ran (team
+                // based, degenerate for FFA Survival) and AssignRoles never rode the live handler. The end-delay
+                // arg is a hardcoded 5 in QC (NOT g_survival_round_enddelay); warmup/round-timelimit from cvars.
+                {
+                    RoundHandler survRounds = EnableRounds(
+                        surv.HandlerCanRoundStart,
+                        () => { surv.CheckWinningCondition(); return surv.RoundOver; },
+                        onRoundStart: () => surv.AssignRoles(Clients.Players),
+                        endDelay: 5f,
+                        countdown: Cvars.FloatOr("g_survival_warmup", 10f),
+                        roundTimeLimit: Cvars.FloatOr("g_survival_round_timelimit", 120f));
+                    // Survival's CheckWinningCondition / RoundTimedOut read surv.Handler.RoundEndTime + the live
+                    // round phase; mirror the live handler's timing + phase into surv.Handler each frame and feed
+                    // it the live roster (matching CA/FreezeTag, fixing the prior unmirrored dual-handler desync).
+                    _roundPrep = () => surv.SetRoster(Clients.Players);
+                    _roundSync = () => MirrorRoundTiming(survRounds, surv.Handler);
+                }
                 // QC MUTATOR_HOOKFUNCTION(surv, Bot_ForbidAttack) (sv_survival.qc:484-490): a bot never attacks a
                 // same-status player — `targ.survival_status == bot.survival_status`. Preserves the hidden-role
                 // dynamic and, with teamkill punishment live, stops an ally-fragging bot from mirror-killing itself.
@@ -1893,13 +1977,32 @@ public sealed class GameWorld
                 // respawning racer is returned to the checkpoint they last passed, not a random grid start. Race
                 // sets the one-shot forced spawn (Player.SpawnPointTarg) here, before SelectSpawnPoint reads it.
                 Clients.OnPreSpawn = p => race.ApplyRespawnSpot(p);
-                // QC rc_SetLimits (sv_race.qc:425-427): in the "qualifying THEN race" mode (g_race_qualifying==2)
-                // the live fraglimit/leadlimit/timelimit are STASHED (race_fraglimit/leadlimit/timelimit) so the
-                // transition can restore them when qualifying ends. Capture them now so TransitionQualifyingToRace
-                // (driven from RunCheckRulesWorld when the qualifying timelimit elapses) has the real race limits.
-                if (Cvars.FloatOr("g_race_qualifying", 0f) == 2f)
-                    race.SaveRaceLimits(Cvars.FloatOr("fraglimit", -1f), Cvars.FloatOr("leadlimit", -1f),
-                        Cvars.FloatOr("timelimit", -1f));
+                // QC rc_SetLimits (sv_race.qc:407-438): the qualifying-then-race mode is DERIVED from the
+                // qualifying-timelimit cvar — if g_race_qualifying_timelimit(_override) > 0 the session becomes
+                // g_race_qualifying = 2, the real fraglimit/leadlimit/timelimit are STASHED, and the ACTIVE
+                // timelimit is replaced by the qualifying timelimit (so the warmup-qualifying phase runs on the
+                // qualifying clock; when it elapses TransitionQualifyingToRace restores the stashed limits).
+                {
+                    float qOverride = Cvars.FloatOr("g_race_qualifying_timelimit_override", -1f);
+                    float qBase = Cvars.FloatOr("g_race_qualifying_timelimit", 0f);
+                    float qTimelimit = qOverride >= 0f ? qOverride : qBase; // minutes
+                    if (qTimelimit > 0f)
+                    {
+                        // QC: g_race_qualifying = 2; stash the real limits; active timelimit := qualifying timelimit.
+                        Cvars.Set("g_race_qualifying", "2");
+                        race.SaveRaceLimits(Cvars.FloatOr("fraglimit", -1f), Cvars.FloatOr("leadlimit", -1f),
+                            Cvars.FloatOr("timelimit", -1f));
+                        Cvars.Set("timelimit",
+                            qTimelimit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                    else if (Cvars.FloatOr("g_race_qualifying", 0f) == 2f)
+                    {
+                        // g_race_qualifying was set to 2 directly (no qualifying-timelimit source): still stash the
+                        // live limits so the transition can restore them when the plain timelimit elapses.
+                        race.SaveRaceLimits(Cvars.FloatOr("fraglimit", -1f), Cvars.FloatOr("leadlimit", -1f),
+                            Cvars.FloatOr("timelimit", -1f));
+                    }
+                }
                 break;
             case Cts cts:
                 cts.Activate();
@@ -1944,7 +2047,12 @@ public sealed class GameWorld
                 if (e.ClassName == "trigger_race_penalty")
                     race.SpawnPenaltyZone(e.Origin, e.Count > 0 ? e.Count : 5f);
                 else
-                    race.SpawnCheckpoint(e.Origin, e.Count); // QC .cnt → race_checkpoint index (0 = finish line)
+                    // QC spawnfunc(trigger_race_checkpoint): .cnt → race_checkpoint index (0 = start line);
+                    // spawnflag 4 kills a wrong-order crossing (DEATH_HURTTRIGGER 10000); spawnflag 8 on the
+                    // highest CP marks the timed finish line (race_timed_checkpoint) for start!=finish tracks.
+                    race.SpawnCheckpoint(e.Origin, e.Count,
+                        punishWrongWay: (e.SpawnFlags & 4) != 0,
+                        timed: (e.SpawnFlags & 8) != 0);
                 RetirePlaceholder(e);
             },
             Onslaught ons => e =>
@@ -2016,6 +2124,18 @@ public sealed class GameWorld
                             self.Health = pojo.Health;
                             if (pojo.Destroyed) { self.Solid = Solid.Not; self.TakeDamage = DamageMode.No; }
                         };
+                        // QC func_assault_destructible.event_heal = destructible_heal (sv_assault.qc:353): a friendly
+                        // heal source (Arc heal-beam / heal nade / mage healgun) tops a partially-shot wall back up to
+                        // its max_health. Damage.Heal(targ, ...) routes a non-player target with GtEventHeal straight
+                        // here (same path as the Onslaught generator/icon). Mirror the healed POJO health onto the
+                        // edict so the world wall reads back up.
+                        e.GtEventHeal = (self, inflictor, amount, limit) =>
+                        {
+                            Assault.Destructible? pojo = aslt.DestructibleFor(self);
+                            if (pojo is null || !aslt.HealDestructible(pojo, amount, limit)) return false;
+                            self.Health = pojo.Health; // QC GiveResourceWithLimit + WaypointSprite_UpdateHealth
+                            return true;
+                        };
                         return; // keep the world wall; skip RetirePlaceholder.
                     case "func_assault_wall":
                         // QC func_assault_wall (sv_assault.qc:364): a SOLID_BSP wall keyed to an objective (.target).
@@ -2073,7 +2193,10 @@ public sealed class GameWorld
                         // fires target_invasion_roundend_use → TriggerRoundEnd. Give the placeholder a touch volume
                         // so a STAGE map's end-trigger works, then keep it (do NOT retire — it must stay touchable).
                         inv.AddRoundEnd();
-                        e.Touch = (self, other) => { if (other is Player p && !p.IsDead) inv.TriggerRoundEnd(); };
+                        // QC target_invasion_roundend_use(actor): pass the touching player so Invasion can require
+                        // >= ceil(realplayers * count) distinct REAL players (default count=0.7) to have reached
+                        // the end before winning — a single touch no longer ends a multi-player STAGE map.
+                        e.Touch = (self, other) => { if (other is Player p && !p.IsDead) inv.TriggerRoundEnd(p); };
                         e.Solid = Solid.Trigger;
                         return; // keep the edict alive (STAGE round-end trigger); skip RetirePlaceholder.
                 }
@@ -2153,6 +2276,7 @@ public sealed class GameWorld
         BalanceTeamsTick();
         switch (GameType)
         {
+            case Duel duel: duel.RecomputeLeader(Clients.Players); break; // 1v1 FFA: per-frame leader + frag-limit checkrules (QC WinningConditionHelper)
             case Mayhem m: m.RecomputeLeader(Clients.Players); break;   // FFA: leader + point/lead limit
             case TeamMayhem tm: tm.UpdateLeaderAndCheckLimit(); break;  // team: ST_SCORE leader + limit
             case Tdm tdm: tdm.UpdateLeaderAndCheckLimit(); break;
@@ -2175,7 +2299,14 @@ public sealed class GameWorld
                 ft.ReviveTick(Simulation.FrameTime);
                 break;
             case TeamKeepaway tka: tka.Tick(Simulation.FrameTime); break;
-            case Nexball nb: nb.CheckGoalLimit(); break;
+            case Nexball nb:
+                // QC MUTATOR_HOOKFUNCTION(nb, PlayerPreThink) + nexball_setstatus: position the carried view-ball
+                // in front of the carrier and enforce the forteam auto-return, then re-check the goal/lead limit.
+                nb.GameStartTime = GameStartTime; // QC game_starttime — first ball release fires at match start
+                nb.SeedTeamsFromGoals();          // QC nb_spawnteams: derive ranked teams from the goal entities
+                nb.CarryFrame();
+                nb.CheckGoalLimit();
+                break;
             case Assault aslt:
                 // QC WinningCondition_Assault(), run per-frame from CheckRules_World: if the attackers already
                 // destroyed the core this frame (DestroyFinalObjective latched WinningTeam off the live damage
@@ -2186,6 +2317,10 @@ public sealed class GameWorld
                 break;
             case Keepaway ka: ka.Tick(Simulation.FrameTime); break;
             case LastManStanding lms:
+                // QC game_starttime / warmup_stage mirrors: the win condition + life-loss are frozen pre-match
+                // (WinningCondition_LMS / GiveFragsForKill both early-return while warmup || time <= game_starttime).
+                lms.GameStartTime = GameStartTime;
+                lms.InWarmup = Warmup.WarmupStage;
                 lms.UpdateLeaders();
                 // QC SV_StartFrame: the leader radar-visibility window + VISIBLE_LEADER/OTHER centerprint edges
                 // (suppressed during intermission, matching the QC early-return).
@@ -2194,8 +2329,13 @@ public sealed class GameWorld
                 lms.CheckWinningCondition();
                 break;
             case Survival surv:
-                surv.SetRoster(Clients.Players);   // the round handler assigns hidden roles from the roster
-                surv.Tick();                       // drive the survival round handler (role assign + side-wipe resolve)
+                // QC: the round is now resolved on the LIVE round handler path (OnEndFrame → Rounds.Think →
+                // canEnd → CheckWinningCondition, role-assign at cnt==0 → AssignRoles), with surv.Handler timing
+                // mirrored via _roundSync. So DON'T tick surv.Handler here (that would double-drive its own
+                // countdown). The roster is fed via _roundPrep. The side-wipe latch is also checked on every
+                // death (OnDeath → CheckWinningCondition); re-run it here as an idempotent per-frame safety net
+                // (the RoundOver guard makes a second call within a round a no-op).
+                surv.SetRoster(Clients.Players);
                 surv.CheckWinningCondition();
                 break;
             case Invasion inv:
@@ -2991,6 +3131,16 @@ public sealed class GameWorld
         {
             case Mayhem m: m.ResetMapPlayers(Clients.Players); break;
             case TeamMayhem tm: tm.ResetMapPlayers(Clients.Players); break;
+            // QC MUTATOR_HOOKFUNCTION(cts, reset_map_global) → race_ClearRecords + race_PreparePlayer per client:
+            // re-prepare every CTS runner (drop any in-progress run so they restart from the start timer). The
+            // persistent top-99 records survive (QC keeps the ServerProgsDB table); only the in-memory run state
+            // is cleared. The qualifying==2→race collapse is moot (CTS pins g_race_qualifying=1).
+            case Cts c: c.ResetMapGlobal(Clients.Players); break;
+            // QC MUTATOR_HOOKFUNCTION(lms, reset_map_players) + reset_map_global (sv_lms.qc:217-243): on a map/match
+            // restart, re-liven every eliminated player (FRAGS_PLAYER_OUT_OF_GAME → FRAGS_PLAYER), zero + re-seed
+            // LMS_RANK/LMS_LIVES, clear the leader flag/waypoint, and reset lms_lowest_lives=999. Without this the
+            // per-player LmsState carried stale lives/rank/leader across matches (the round resets never touched it).
+            case LastManStanding lms: lms.ResetMapPlayers(Clients.Players); break;
         }
 
         if (Rounds is not null)
@@ -3049,6 +3199,66 @@ public sealed class GameWorld
                 continue;
             }
             e.Reset?.Invoke(e);
+        }
+    }
+
+    /// <summary>
+    /// QC <c>assault_roundstart_use</c> (sv_assault.qc:153) + <c>MUTATOR_HOOKFUNCTION(as, TurretSpawn)</c>:
+    /// the Assault per-round turret team swap. First seed any unteamed turret to the current attacker team (QC
+    /// TurretSpawn: <c>if(!turret.team || turret.team == FLOAT_MAX) turret.team = assault_attacker_team</c> —
+    /// done lazily here since the port spawns turrets with FLOAT_MAX), then swap every turret's team NUM_TEAM_1 ↔
+    /// NUM_TEAM_2 and <c>turret_respawn</c> it (which doubles as the team change). Called once at round start
+    /// (the FINDTARGET <c>assault_roundstart_use_this</c>) and again on the round-2 restart. Skipped in campaign
+    /// (QC <c>assault_turrets_teamswap_forbidden</c> = true via ReadyRestart_Deny — campaign is a single round so
+    /// the defenders must not be flipped). <paramref name="attackerTeam"/> is the live attacker team for the seed.
+    /// </summary>
+    private void AssaultTurretRoundstart(int attackerTeam)
+    {
+        if (Api.Services is null)
+            return;
+        // QC: campaign forbids the swap (single-round game — turrets keep their authored side).
+        if (TargetUtilities.IsCampaign?.Invoke() ?? false)
+            return;
+        foreach (Entity e in new List<Entity>(ServerServices.ServerEntities.Inner.All))
+        {
+            if (e.IsFreed || e is Player)
+                continue;
+            if (!e.ClassName.StartsWith("turret_", System.StringComparison.Ordinal))
+                continue;
+            if (e.ClassName == "turret_projectile")
+                continue; // projectiles aren't emplacements (QC g_turrets holds only the turret bases)
+
+            // QC TurretSpawn hook: an unteamed turret (0 / FLOAT_MAX sentinel) joins the attacker team first.
+            if (e.Team == 0f || e.Team == float.MaxValue)
+                e.Team = attackerTeam;
+
+            // QC assault_roundstart_use: swap NUM_TEAM_1 <-> NUM_TEAM_2, then turret_respawn (the team change).
+            e.Team = ((int)e.Team == Teams.Red) ? Teams.Blue : Teams.Red;
+            TurretAI.Respawn(e);
+        }
+    }
+
+    /// <summary>
+    /// QC <c>assault_new_round</c> (sv_assault.qc:207): swap every saved non-client team — the spawn-point edicts'
+    /// <c>team_saved</c> — NUM_TEAM_1 ↔ NUM_TEAM_2 when the roles swap. In the port the info_player_attacker/
+    /// defender spawns are retagged to <c>info_player_deathmatch</c> carrying an explicit Red/Blue
+    /// <see cref="Entity.Team"/> (read live by SpawnSystem), so on round 2 we flip that team on each red/blue
+    /// spawn edict — the new (blue) attackers then spawn at the geographic attacker spots instead of the
+    /// defender ones. Only exact red/blue spots are touched (an FFA / no-team spawn is left alone).
+    /// </summary>
+    private void AssaultSwapSpawnTeams()
+    {
+        if (Api.Services is null)
+            return;
+        foreach (Entity e in new List<Entity>(ServerServices.ServerEntities.Inner.All))
+        {
+            if (e.IsFreed || e is Player)
+                continue;
+            if (e.ClassName != "info_player_deathmatch")
+                continue;
+            int team = (int)e.Team;
+            if (team == Teams.Red) e.Team = Teams.Blue;        // QC team_saved NUM_TEAM_1 -> NUM_TEAM_2
+            else if (team == Teams.Blue) e.Team = Teams.Red;   // QC team_saved NUM_TEAM_2 -> NUM_TEAM_1
         }
     }
 

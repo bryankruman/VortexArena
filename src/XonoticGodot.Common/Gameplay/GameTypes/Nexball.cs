@@ -51,6 +51,21 @@ public sealed class Nexball : GameType
     private const float FootballPhysics      = 2f;   // g_nexball_football_physics (2 = view-independent, the default)
     private const int   EffectsDefault       = 8;    // g_nexball_basketball_effects_default (EF_DIMLIGHT)
 
+    // ----- ball-spawn presentation / collision constants (QC SpawnBall) -----
+    private const int   EfLowPrecision       = 4194304; // QC EF_LOWPRECISION (dpextensions.qc:274) bandwidth hint
+    private const int   DpContentsSolid      = 0x00000001; // QC DPCONTENTS_SOLID
+    private const int   DpContentsBody       = 0x02000000; // QC DPCONTENTS_BODY
+    private const int   DpContentsPlayerClip = 256;        // QC DPCONTENTS_PLAYERCLIP (ball bounces off clips)
+
+    // ----- per-frame carry constants (QC PlayerPreThink / PlayerPhysics_UpdateStats) -----
+    private const string CvarCarrierHighspeed = "g_nexball_basketball_carrier_highspeed"; // default 0.8 (slows carrier)
+    private const float  DefaultCarrierHighspeed = 0.8f;
+    /// <summary>QC g_nexball_viewmodel_offset "8 8 0" — where the view-ball sits on the carrier (forward right up).</summary>
+    private static readonly Vector3 ViewModelOffset = new(8f, 8f, 0f);
+
+    /// <summary>QC PlayerPhysics_UpdateStats hook handler (carrier highspeed multiplier).</summary>
+    private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _physicsHandler;
+
     /// <summary>How a goal was scored, mirroring QC's GoalTouch pscore branches.</summary>
     public enum GoalKind
     {
@@ -131,6 +146,7 @@ public sealed class Nexball : GameType
         _ballDropTime = 0f;
         _isBasketball = true;
         _releasePending = false;
+        _teamsSeededFromGoals = false;
     }
 
     // ============================================================================================
@@ -165,15 +181,62 @@ public sealed class Nexball : GameType
         _ballCnt = 0;            // QC ball.cnt default 0 (a ball can be caught during the pre-release hold)
         _releasePending = true;  // the FIRST BallThink runs InitBall (QC setthink(this, InitBall) in SpawnBall)
         _ballLifetime = 0f;
-        BallHome = origin; // QC SpawnBall: this.spawnorigin = this.origin — ResetBall returns the ball here
         if (e is not null)
         {
+            // QC SpawnBall: relocate_nexball(this) — tracebox the ball's bbox at its origin and, if it starts in
+            // solid, nudge it out so the ball doesn't spawn embedded in a brush. spawnorigin is recorded AFTER the
+            // relocate so ResetBall returns the ball to its corrected (in-bounds) home, not the raw map origin.
+            origin = RelocateNexball(e, origin);
+            e.GtSpawnOrigin = origin; // keep the entity's QC spawnorigin in sync with the corrected (relocated) home
+
+            e.Effects |= EfLowPrecision; // QC SpawnBall: this.effects |= EF_LOWPRECISION (bandwidth hint)
+
+            // QC SpawnBall: if(cvar("g_" + classname + "_trail")) { glow_color = trail_color; glow_trail = true; } —
+            // the glow_trail/glow_color rendering is a CLIENT concern (deferred; BallConfig.TrailColor already carries
+            // the faithful 254 default for the renderer). No server-side state to set here.
+
+            // QC SpawnBall: if(g_nexball_playerclip_collisions) dphitcontentsmask = BODY|SOLID|PLAYERCLIP — the ball
+            // bounces off func_clip/PLAYERCLIP brushes (default 1).
+            if (GametypeEntities.Cvar("g_nexball_playerclip_collisions", 1f) != 0f)
+                e.DpHitContentsMask = DpContentsBody | DpContentsSolid | DpContentsPlayerClip;
+
             e.MoveType = MoveType.Fly; // QC SpawnBall: set_movetype(this, MOVETYPE_FLY) until release
             // QC SpawnBall: setthink(this, InitBall); nextthink = game_starttime + delay_start.
             e.Think = BallThink;
             e.NextThink = global::System.Math.Max(GametypeEntities.Now, GameStartTime) + DelayStart;
         }
+        BallHome = origin; // QC SpawnBall: this.spawnorigin = this.origin (after relocate) — ResetBall returns here
         return e;
+    }
+
+    /// <summary>
+    /// QC relocate_nexball: tracebox the ball's ±16 bbox at <paramref name="origin"/>; if it starts in solid, walk
+    /// it out by sampling small offsets (the headless analogue of QC's engine move_out_of_solid) so the ball isn't
+    /// spawned embedded in a brush. Returns the corrected origin (and moves the entity there); the entity stays put
+    /// when it's already clear or no trace facade is wired.
+    /// </summary>
+    private static Vector3 RelocateNexball(Entity e, Vector3 origin)
+    {
+        if (Api.Services is null)
+            return origin;
+        Vector3 mins = e.Mins == default ? new Vector3(-16f, -16f, -16f) : e.Mins;
+        Vector3 maxs = e.Maxs == default ? new Vector3(16f, 16f, 16f) : e.Maxs;
+        var tr = Api.Trace.Trace(origin, mins, maxs, origin, MoveFilter.Normal, e);
+        if (!tr.StartSolid)
+            return origin; // already clear — QC leaves this.origin untouched
+
+        // QC move_out_of_solid: nudge the ball up (and out) until the bbox no longer starts in solid. Sample a few
+        // increasing vertical offsets (the common "embedded in the floor" case) then give up and keep the origin.
+        for (float dz = 8f; dz <= 128f; dz += 8f)
+        {
+            Vector3 candidate = origin + new Vector3(0f, 0f, dz);
+            if (!Api.Trace.Trace(candidate, mins, maxs, candidate, MoveFilter.Normal, e).StartSolid)
+            {
+                GametypeEntities.SetOrigin(e, candidate);
+                return candidate;
+            }
+        }
+        return origin; // QC objerror fallback: couldn't get out — leave it (the map needs fixing)
     }
 
     /// <summary>The ball's home/reset position (QC spawnorigin), defaults to the spawn origin.</summary>
@@ -276,6 +339,46 @@ public sealed class Nexball : GameType
     }
 
     private void DropOwnerThink(Entity self) => DropOwner();
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(nb, PlayerPreThink) + nexball_setstatus, driven once per server frame for the live
+    /// roster. For the basketball carrier: networks the ball velocity (so the held ball interpolates with the
+    /// carrier) and positions the "view ball" in front of the carrier at view_ofs + g_nexball_viewmodel_offset
+    /// (forward/right/up). It also enforces the forteam auto-return — a team-held ball whose lifetime has elapsed
+    /// is dropped and reset (QC nexball_setstatus RETURN_HELD). The safe-pass crosshair lock + the NB_CARRYING
+    /// objective-status bit + the per-frame viewmodel scale/flame are weapon/HUD concerns (deferred).
+    /// </summary>
+    public void CarryFrame()
+    {
+        if (BallEntity is not Entity ball || !_isBasketball)
+            return;
+
+        // QC nexball_setstatus: a team-held ball that has outlived its forteam lifetime is force-returned.
+        if (_ballLifetime > 0f && _ballLifetime < GametypeEntities.Now && ball.GtCarrier is Player held)
+        {
+            // QC: Send_Notification(... INFO_NEXBALL_RETURN_HELD) — the held-ball-returned notice is a client
+            // message (deferred); the drop + glide-home reset is the authoritative effect and IS applied.
+            DropBall(held.Origin, Vector3.Zero); // QC DropBall(ball, owner.origin, '0 0 0')
+            _ballCnt = 0;
+            ResetBall();                          // QC ResetBall(ball) — start the glide-home state machine
+            return;
+        }
+
+        if (ball.GtCarrier is not Player carrier)
+            return;
+
+        // QC PlayerPreThink: ball.velocity = player.velocity (so the held ball networks smoothly).
+        ball.Velocity = carrier.Velocity;
+
+        // QC: makevectors(player.v_angle); org = player.origin + view_ofs + v_forward*off.x + v_right*off.y +
+        // v_up*off.z; setorigin(ball, org). The ball rides in front of the carrier at the viewmodel offset.
+        QMath.AngleVectors(carrier.VAngle, out Vector3 fwd, out Vector3 right, out Vector3 up);
+        Vector3 org = carrier.Origin + carrier.ViewOfs
+                      + fwd * ViewModelOffset.X
+                      + right * ViewModelOffset.Y
+                      + up * ViewModelOffset.Z;
+        GametypeEntities.SetOrigin(ball, org);
+    }
 
     /// <summary>
     /// QC ResetBall (the 4-step think state machine): return the ball home and clear team ownership. cnt&lt;2 stops
@@ -539,10 +642,58 @@ public sealed class Nexball : GameType
             GoalTouch(self);
     }
 
-    /// <summary>QC OtherTeam (two-team only): the opposing team color.</summary>
-    private static int OtherTeam(int team) => team == Teams.Red ? Teams.Blue : Teams.Red;
+    /// <summary>
+    /// QC nb_spawnteams: the distinct team colours present on the map, derived from the goal entities (a
+    /// <c>nexball_*goal</c> per team contributes that team; fault/out volumes don't). Mirrors QC scanning the
+    /// nexball_goal ents to set teamplay_bitmask, so a 3/4-team Nexball map ranks all its teams instead of a
+    /// hardcoded red/blue pair. Falls back to {Red, Blue} when no team goals are wired yet (the headless/test
+    /// default, and before WireObjectiveSpawns runs).
+    /// </summary>
+    private List<int> PresentTeams()
+    {
+        // Nexball is at least two-team (QC gametype_init teams default; AVAILABLE_TEAMS >= 2), so red+blue are
+        // always present. Yellow/Pink are added only when a goal of that colour exists on the map (QC nb_spawnteams
+        // sets teamplay_bitmask bits 2/3 for yellow/pink goals). This keeps the standard red/blue map two-team while
+        // ranking the extra teams on a 3/4-team Nexball map.
+        var teams = new List<int> { Teams.Red, Teams.Blue };
+        foreach (Entity g in Goals)
+        {
+            int t = g.GtHomeTeam;
+            if ((t == Teams.Yellow || t == Teams.Pink) && !teams.Contains(t))
+                teams.Add(t);
+        }
+        return teams;
+    }
 
-    private static bool TeamCountIsTwo() => true; // Nexball is two-team by default (AVAILABLE_TEAMS == 2)
+    private bool _teamsSeededFromGoals;
+
+    /// <summary>QC nb_delayedinit → nb_ScoreRules(teamplay_bitmask): once the goal entities exist, seed a score
+    /// slot for every team that has a goal on the map (instead of the unconditional red/blue pair). One-shot per
+    /// activation (re-armed by OnInit); safe to call each tick — it only does work the first time goals exist.</summary>
+    public void SeedTeamsFromGoals()
+    {
+        if (_teamsSeededFromGoals || Goals.Count == 0)
+            return;
+        foreach (int t in PresentTeams())
+            GS.SeedTeam(t);
+        _teamsSeededFromGoals = true;
+    }
+
+    /// <summary>QC OtherTeam (two-team only): the "other" team colour among the present teams. For the standard
+    /// two-team map this is the opposing colour; with &gt;2 teams QC's OtherTeam is undefined (it only runs when
+    /// AVAILABLE_TEAMS==2), so we keep the two-team semantics and pick the first present team that isn't
+    /// <paramref name="team"/>.</summary>
+    private int OtherTeam(int team)
+    {
+        foreach (int t in PresentTeams())
+            if (t != team)
+                return t;
+        return team == Teams.Red ? Teams.Blue : Teams.Red;
+    }
+
+    /// <summary>QC AVAILABLE_TEAMS == 2: exactly two teams have goals on the map (the common case; the own-goal
+    /// "credit the other team" branch only applies in two-team play).</summary>
+    private bool TeamCountIsTwo() => PresentTeams().Count == 2;
 
     /// <summary>The goal limit in force (g_nexball_goallimit, else fraglimit, else 5). 0 means no limit.</summary>
     public int GoalLimit
@@ -583,8 +734,33 @@ public sealed class Nexball : GameType
         if (meter <= 0f) meter = 2f;
         MeterPeriod = global::System.MathF.Round(meter * 32f) / 32f;
 
+        // QC nb_Initialize: radar_showenemies = g_nexball_radar_showallplayers (default 1) — the radar shows every
+        // player (not just teammates). radar_showenemies is a CLIENT-read replicated cvar; mirror the value so the
+        // (client) radar reads the faithful default. No server consumer, so this is a thin cvar bridge.
+        if (Api.Services is not null)
+            Api.Cvars.Set("radar_showenemies", GametypeEntities.Cvar("g_nexball_radar_showallplayers", 1f) != 0f ? "1" : "0");
+
+        // QC MUTATOR_HOOKFUNCTION(nb, PlayerPhysics_UpdateStats): the basketball carrier is slowed —
+        // STAT(MOVEVARS_HIGHSPEED) *= g_nexball_basketball_carrier_highspeed (default 0.8). Wire the live
+        // PlayerPhysics hook so the carrier actually moves slower.
+        _physicsHandler ??= OnPlayerPhysics;
+        MutatorHooks.PlayerPhysics.Add(_physicsHandler);
+
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
+    }
+
+    /// <summary>QC autocvar_g_nexball_basketball_carrier_highspeed (default 0.8): the carrier top-speed multiplier.</summary>
+    public float CarrierHighspeed => TryCvar(CvarCarrierHighspeed, out float v) && v > 0f ? v : DefaultCarrierHighspeed;
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(nb, PlayerPhysics_UpdateStats): slow the basketball carrier by
+    /// <see cref="CarrierHighspeed"/>. "these automatically reset, no need to worry" (QC) — the multiplier is
+    /// re-applied every physics frame the player is carrying the ball.</summary>
+    private bool OnPlayerPhysics(ref MutatorHooks.PlayerPhysicsArgs args)
+    {
+        if (args.Player is Player p && ReferenceEquals(p.GtCarried, BallEntity) && BallEntity is not null)
+            p.SpeedMultiplier *= CarrierHighspeed; // QC STAT(MOVEVARS_HIGHSPEED, player) *= carrier_highspeed
+        return false;
     }
 
     /// <summary>QC g_nexball_meter_period (nb_Initialize): the rounded basketball power-meter cycle in seconds
@@ -593,6 +769,11 @@ public sealed class Nexball : GameType
 
     public override void Deactivate()
     {
+        if (_physicsHandler is not null)
+        {
+            MutatorHooks.PlayerPhysics.Remove(_physicsHandler);
+            _physicsHandler = null;
+        }
         if (_deathHandler is null)
             return;
         Combat.Death.Remove(_deathHandler);
@@ -652,8 +833,22 @@ public sealed class Nexball : GameType
     }
 
     /// <summary>QC GameRules_limit_lead(g_nexball_goalleadlimit): the goal lead at which the match ends early.
-    /// The cvar default is -1 = "use the mapinfo leadlimit" (0 = disabled); &lt;= 0 disables it.</summary>
-    public int GoalLeadLimit => TryCvar("g_nexball_goalleadlimit", out float ll) && ll > 0f ? (int)ll : 0;
+    /// The cvar default is -1 = "use the mapinfo leadlimit"; QC's GameRules_limit_lead leaves the engine
+    /// <c>leadlimit</c> cvar (set by mapinfo) untouched when the arg is &lt; 0, so -1 means "fall back to the
+    /// mapinfo/engine leadlimit"; a value &gt;= 0 overrides it (0 = disabled).</summary>
+    public int GoalLeadLimit
+    {
+        get
+        {
+            if (TryCvar("g_nexball_goalleadlimit", out float ll))
+            {
+                if (ll < 0f) // -1: use the mapinfo/engine leadlimit (GameRules_limit_lead returns early, no override)
+                    return TryCvar("leadlimit", out float ml) && ml > 0f ? (int)ml : 0;
+                return ll > 0f ? (int)ll : 0; // >= 0 overrides; 0 disables
+            }
+            return 0;
+        }
+    }
 
     /// <summary>QC GameRules_limit_score + GameRules_limit_lead: latch the match once a team reaches the goal limit,
     /// or once the leader is ahead of the runner-up by at least the lead limit.</summary>

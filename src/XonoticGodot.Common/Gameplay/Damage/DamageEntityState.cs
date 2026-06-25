@@ -93,6 +93,12 @@ public partial class Entity
     public int FrozenStat;
     /// <summary>QC <c>.freeze_time</c>: sim time a freeze is held until (used by the weaponstats validity check).</summary>
     public float FreezeTime;
+    /// <summary>QC <c>.freezetag_frozen_armor</c>: the player's armor snapshot saved on every hit while frozen, so a
+    /// void/lava soft-kill (g_frozen_damage_trigger 0) can restore it after the relocate. 0 outside Freeze Tag.</summary>
+    public float FrozenArmor;
+    /// <summary>QC <c>.freezetag_frozen_force</c>: accumulated hit force applied to a frozen player this frame, capped
+    /// at g_freezetag_revive_auto_reducible_maxforce so multi-projectile weapons can't over-reduce the auto-thaw.</summary>
+    public float FrozenForce;
 
     // --- misc damage flags ---
     /// <summary>

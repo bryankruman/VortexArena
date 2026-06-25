@@ -292,6 +292,14 @@ public sealed class ClanArena : GameType
     /// </summary>
     private bool OnDeath(ref DeathEvent ev)
     {
+        // QC ca PlayerDies (sv_clanarena.qc:374): ca_LastPlayerForTeam_Notify(frag_target) — before the round
+        // check, if this death leaves exactly one living teammate, center-print "You are now alone!" to that
+        // last survivor. The Death bus fires here BEFORE the victim is flagged dead (DamageSystem.Killed sets
+        // DeadState only after Combat.Death.Call), so we pass the victim as `leaving` and NotifyLastPlayerForTeam
+        // excludes it explicitly (matching QC ca_LastPlayerForTeam's `it != this`).
+        if (ev.Victim is Player victim)
+            NotifyLastPlayerForTeam(victim, _roster);
+
         // No per-kill scoring in CA: round wins are the only score that affects the limit (GiveFragsForKill → 0).
         // Damage-to-score accrual happens continuously in the damage pipeline (see AddDamageScore), not here.
         // The victim is already marked dead by the damage system; CheckWinner / CheckRound resolves the round.

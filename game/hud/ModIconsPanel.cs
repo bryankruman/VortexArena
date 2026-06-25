@@ -31,7 +31,7 @@ namespace XonoticGodot.Game.Hud;
 public partial class ModIconsPanel : HudPanel
 {
     /// <summary>Which gametype's objective renderer to draw (QC <c>gametype.m_modicons</c> selection).</summary>
-    public enum ModIconsMode { None, Ctf, Keyhunt, Domination, ClanArena, FreezeTag, Survival, Assault, Keepaway }
+    public enum ModIconsMode { None, Ctf, Keyhunt, Domination, ClanArena, FreezeTag, Survival, Assault, Keepaway, TeamKeepaway }
 
     /// <summary>The active renderer; <see cref="ModIconsMode.None"/> draws nothing (QC: no m_modicons set).</summary>
     public ModIconsMode Mode { get; set; } = ModIconsMode.None;
@@ -80,6 +80,20 @@ public partial class ModIconsPanel : HudPanel
     // expanding-icon transition (drawpic_aspect_skin_expanding) plays for the first ~0.5s after pickup/loss.
     private bool _kaPrevCarrying;
     private double _kaStatusChangeTime;
+
+    /// <summary>Team Keepaway (QC <c>HUD_Mod_TeamKeepaway</c>): the LOCAL player's <c>STAT(TKA_BALLSTATUS)</c> bit
+    /// pack (carrying / per-team taken / dropped) — fed by <see cref="NetGame"/> from the per-recipient status
+    /// block. The carrying icon (or the team-taken icon) flashes (<c>blink</c>) + does the QC status-change expand
+    /// transition; 0 draws nothing.</summary>
+    public int TkaBallStatus { get; set; }
+
+    // QC tka.qh TKA_BALLSTATUS bits: per-team taken (BIT 0..3), self-carrying (BIT 4), dropped (BIT 5).
+    private const int TkaTakenRed = 1 << 0, TkaTakenBlue = 1 << 1, TkaTakenYellow = 1 << 2, TkaTakenPink = 1 << 3;
+    private const int TkaCarrying = 1 << 4;
+
+    // QC tkaball_prevstatus / tkaball_statuschange_time: the carrying edge + flip time for the expand transition.
+    private int _tkaPrevCarrying;
+    private double _tkaStatusChangeTime;
 
     // ---- CTF flag-status bit layout (QC common/gametypes/gametype/ctf/ctf.qh CTF_*_FLAG_TAKEN) ----
     // Each flag's 2-bit status is packed at a multiplier base; status = (stat / base) & 3:
@@ -142,6 +156,7 @@ public partial class ModIconsPanel : HudPanel
             case ModIconsMode.Survival:   DrawSurvival(); break;
             case ModIconsMode.Assault:    DrawAssault(); break;
             case ModIconsMode.Keepaway:   DrawKeepaway(); break;
+            case ModIconsMode.TeamKeepaway: DrawTeamKeepaway(); break;
             default: return; // None: draw nothing
         }
     }
@@ -692,6 +707,54 @@ public partial class ModIconsPanel : HudPanel
             int sz = (int)Mathf.Clamp(fit.Size.Y * 0.28f, 8f, 16f);
             DrawTextCentered(new Vector2(fit.Position.X, fit.Position.Y + fit.Size.Y * 0.62f),
                 fit.Size.X, "BALL", new Color(1f, 1f, 1f, a), sz);
+        }
+    }
+
+    // -------------------------------------------------------------------------------------- TeamKeepaway
+    // Port of HUD_Mod_TeamKeepaway (cl_tka.qc): always-active mod icon. Draws keepawayball_carrying while the
+    // LOCAL player carries (TKA_BALL_CARRYING), else the tka_taken_<color> icon for the team that holds the ball
+    // (TKA_BALL_TAKEN_*). The carrying flag pulses (blink 0.85/0.15/5) and a status-change expand transition
+    // plays for the first ~0.5s after the carry state flips.
+    private void DrawTeamKeepaway()
+    {
+        double now = CurrentTime();
+        int stat = TkaBallStatus;
+        int carrying = stat & TkaCarrying; // QC: tkaball = stat_items & TKA_BALL_CARRYING
+
+        // QC: tkaball != tkaball_prevstatus → record the change time (drives the expand transition's clock).
+        if (carrying != _tkaPrevCarrying)
+        {
+            _tkaStatusChangeTime = now;
+            _tkaPrevCarrying = carrying;
+        }
+
+        // QC mod_active is forced 1, but with no carrying/taken bit there's nothing to draw → blank panel.
+        string? icon = null;
+        if (carrying != 0) icon = "keepawayball_carrying"; // QC TODO: unique team-based icon while carrying
+        else if ((stat & TkaTakenRed) != 0) icon = "tka_taken_red";
+        else if ((stat & TkaTakenBlue) != 0) icon = "tka_taken_blue";
+        else if ((stat & TkaTakenYellow) != 0) icon = "tka_taken_yellow";
+        else if ((stat & TkaTakenPink) != 0) icon = "tka_taken_pink";
+        if (icon is null)
+            return;
+
+        DrawBackground();
+
+        float tkaAlpha = Blink(0.85f, 0.15f, 5f, now);
+        float f = Mathf.Clamp((float)(now - _tkaStatusChangeTime) * 2f, 0f, 1f); // QC bound(0, elapsed*2, 1)
+
+        var box = new Rect2(Vector2.Zero, Size2);
+        float a = LiveFgAlpha * tkaAlpha * f;
+        if (!DrawIconAspect(box, icon, a))
+        {
+            // Stand-in so the indicator is never invisible: a small ball glyph + tag.
+            Rect2 fit = AspectFit(box, 1f);
+            var col = carrying != 0 ? new Color(1f, 0.85f, 0.2f, a) : new Color(0.85f, 0.85f, 0.85f, a);
+            DrawRect(new Rect2(fit.Position.X + fit.Size.X * 0.3f, fit.Position.Y + fit.Size.Y * 0.18f,
+                fit.Size.X * 0.4f, fit.Size.Y * 0.4f), col);
+            int sz = (int)Mathf.Clamp(fit.Size.Y * 0.28f, 8f, 16f);
+            DrawTextCentered(new Vector2(fit.Position.X, fit.Position.Y + fit.Size.Y * 0.62f),
+                fit.Size.X, carrying != 0 ? "BALL" : "TKA", new Color(1f, 1f, 1f, a), sz);
         }
     }
 

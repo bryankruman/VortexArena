@@ -152,6 +152,11 @@ public sealed class Assault : GameType
         /// null in a pure-logic/headless test. The live damage path (when wired) maps a damaged edict back to its
         /// Destructible via <see cref="DestructibleFor"/> and drives <see cref="DamageDestructible"/>.</summary>
         public Framework.Entity? WorldEntity;
+
+        /// <summary>QC <c>func_assault_destructible.sprite</c>: the live objective waypoint sprite spawned when this
+        /// destructible's objective is activated (WP_AssaultDestroy with a health bar), updated on each decrease and
+        /// disowned when destroyed. Null while inactive / in a headless POJO with no waypoint registry.</summary>
+        public Waypoints.WaypointSprite? Sprite;
     }
 
     /// <summary>
@@ -327,6 +332,9 @@ public sealed class Assault : GameType
     /// </summary>
     public void DriveWalls()
     {
+        // QC assault_wall_think runs on a 0.2s nextthink; the port re-evaluates every call (DriveFrame drives it each
+        // frame). The state-transition guard below makes re-evaluation idempotent, so per-frame eval is functionally
+        // equivalent to the 0.2s cadence (only the visible↔solid toggle matters, and it flips at most once per change).
         for (int i = 0; i < Walls.Count; i++)
         {
             Wall w = Walls[i];
@@ -365,9 +373,48 @@ public sealed class Assault : GameType
                 d.Spent = false;
                 foreach (var w in Destructibles)
                     if (ReferenceEquals(w.DecreaserRef, d))
+                    {
                         w.Active = true;
+                        SpawnObjectiveSprite(w); // QC: the objective marker the attackers see + shoot toward
+                    }
             }
     }
+
+    /// <summary>QC RADARICON_OBJECTIVE (every non-NONE radar icon is 1; the color distinguishes them).</summary>
+    private const int RadarIconObjective = 1;
+
+    /// <summary>
+    /// QC <c>target_objective_decrease_activate</c> (sv_assault.qc:106, the WaypointSprite_SpawnFixed slice): spawn
+    /// the active objective's waypoint sprite at the destructible's center, owned by the wall edict (so it tracks
+    /// the wall), team = the live attacker team with SPRITERULE_TEAMPLAY, RADARICON_OBJECTIVE. A func_assault_-
+    /// destructible shows WP_AssaultDestroy (attacker view) with a max-health/health bar (QC UpdateMaxHealth /
+    /// UpdateHealth). Replaces any prior sprite on this wall. No-op in a headless POJO (no waypoint registry / no
+    /// world edict).
+    /// </summary>
+    private void SpawnObjectiveSprite(Destructible w)
+    {
+        if (Api.Services is null || w.WorldEntity is not { } edict || edict.IsFreed)
+            return;
+        // QC: WaypointSprite_Disown any previous marker before re-spawning (re-activation across rounds).
+        if (w.Sprite is not null)
+        {
+            Waypoints.WaypointSprites.Kill(w.Sprite);
+            w.Sprite = null;
+        }
+        // QC defend-side default is WP_AssaultDefend; the destructible's ATTACKER view is WP_AssaultDestroy. The
+        // port's per-peer filter (team/rule) picks defend vs destroy at render; we seed the attacker (destroy) def
+        // with the health bar, matching `it.sprite` in QC (the attacker-facing sprite carries the bar).
+        Waypoints.WaypointSprite spr = Waypoints.WaypointSprites.SpawnFixed(
+            "AssaultDestroy", edict.Origin, State.AttackerTeam,
+            WaypointObjectiveColor, RadarIconObjective, Waypoints.SpriteRule.Teamplay);
+        spr.Owner = edict; // QC the sprite is spawned at 0.5*(absmin+absmax) and follows the wall edict
+        Waypoints.WaypointSprites.UpdateMaxHealth(spr, w.MaxHealth);
+        Waypoints.WaypointSprites.UpdateHealth(spr, w.MaxHealth > 0f ? w.Health / w.MaxHealth : -1f);
+        w.Sprite = spr;
+    }
+
+    /// <summary>QC WP_Assault* color (orange — the Assault objective tint, all.inc + the port WaypointRegistry).</summary>
+    private static readonly Vector3 WaypointObjectiveColor = new(1f, 0.5f, 0f);
 
     /// <summary>
     /// QC func_assault_destructible event_damage: an attacker damages the active destructible wall. When the
@@ -392,12 +439,58 @@ public sealed class Assault : GameType
 
         wall.Health -= amount;
         if (wall.Health > 0f)
+        {
+            // QC func_breakable damage → the func_assault_destructible's sprite health bar tracks the wall health
+            // (WaypointSprite_UpdateHealth on every hit). Normalized 0..1 for the port's pre-normalized bar.
+            if (wall.Sprite is not null && wall.MaxHealth > 0f)
+                Waypoints.WaypointSprites.UpdateHealth(wall.Sprite, wall.Health / wall.MaxHealth);
             return false;
+        }
 
         wall.Health = 0f;
         wall.Active = false;
+        // QC assault_objective_decrease_use: WaypointSprite_Disown(trigger.assault_sprite, deadlifetime) once the
+        // wall is destroyed (the marker fades, then the next objective's marker takes over).
+        DisownSprite(wall);
         if (wall.DecreaserRef is { } dec)
             DecreaseObjective(dec, byTeam, actor);
+        return true;
+    }
+
+    /// <summary>QC <c>WaypointSprite_Disown(..., waypointsprite_deadlifetime)</c>: fade out this wall's objective
+    /// sprite over sv_waypointsprite_deadlifetime (default 1s), then drop it.</summary>
+    private void DisownSprite(Destructible w)
+    {
+        if (w.Sprite is null)
+            return;
+        float dead = Api.Services is not null ? Api.Cvars.GetFloat("sv_waypointsprite_deadlifetime") : 1f;
+        Waypoints.WaypointSprites.Disown(w.Sprite, dead > 0f ? dead : 1f);
+        w.Sprite = null;
+    }
+
+    /// <summary>
+    /// QC <c>destructible_heal</c> (sv_assault.qc:332, installed as the func_assault_destructible's
+    /// <c>event_heal</c>): a friendly heal source (Arc heal-beam, heal nade, mage/bumblebee healgun) tops a
+    /// partially-shot wall back up to its max health. Faithful to QC:
+    /// <c>true_limit = (limit != RES_LIMIT_NONE) ? limit : targ.max_health;</c> — bail if the wall is already
+    /// destroyed (hlth &lt;= 0) or already full (hlth &gt;= true_limit), else add <paramref name="amount"/>
+    /// clamped to <c>true_limit</c>. Returns true if any health was added (so the caller can update the world
+    /// edict + waypoint sprite, like QC's <c>WaypointSprite_UpdateHealth</c> + <c>func_breakable_colormod</c>).
+    /// A wall can only be healed while it is still standing (QC's <c>hlth &lt;= 0</c> guard) — a fully destroyed
+    /// wall that already fired its decreaser stays down for the round.
+    /// </summary>
+    public bool HealDestructible(Destructible wall, float amount, float limit)
+    {
+        if (MatchEnded || wall is null || amount <= 0f)
+            return false;
+        float trueLimit = limit != Resources.LimitNone ? limit : wall.MaxHealth;
+        float hlth = wall.Health;
+        if (hlth <= 0f || hlth >= trueLimit) // QC: already destroyed or already full
+            return false;
+        wall.Health = System.Math.Min(hlth + amount, trueLimit); // QC GiveResourceWithLimit
+        // QC destructible_heal: if(targ.sprite) WaypointSprite_UpdateHealth(targ.sprite, ...).
+        if (wall.Sprite is not null && wall.MaxHealth > 0f)
+            Waypoints.WaypointSprites.UpdateHealth(wall.Sprite, wall.Health / wall.MaxHealth);
         return true;
     }
 
@@ -496,6 +589,34 @@ public sealed class Assault : GameType
         // QC MUTATOR_HOOKFUNCTION(as, PlayerSpawn): tell each spawning player whether they attack or defend.
         _spawnHandler = OnPlayerSpawn;
         MutatorHooks.PlayerSpawn.Add(_spawnHandler);
+
+        // QC target_objective sets .spawn_evalfunc = target_objective_spawn_evalfunc (sv_assault.qc:311): a spawn
+        // spot whose .target names an objective that is inactive (health >= ASSAULT_VALUE_INACTIVE) or destroyed
+        // (health < 0) scores '-1 0 0' (unusable), so attacker spawns near a not-yet/already-fallen objective are
+        // deprioritized in favor of spots near the live objective. Install the spot-reject predicate here.
+        SpawnSystem.SpotEvalReject = ShouldRejectSpawnSpot;
+    }
+
+    /// <summary>
+    /// QC <c>target_objective_spawn_evalfunc</c> (sv_assault.qc:28): given a spawn spot, follow its <c>.target</c>
+    /// to the objective it points at; reject the spot (return true) when that objective's health is destroyed
+    /// (&lt; 0) or not-yet-active (&gt;= <see cref="ObjectiveInactive"/>). A spot that doesn't target an objective,
+    /// or targets one that is currently active, is kept.
+    /// </summary>
+    private bool ShouldRejectSpawnSpot(Framework.Entity spot)
+    {
+        string targ = spot.Target;
+        if (string.IsNullOrEmpty(targ))
+            return false;
+        for (int i = 0; i < Objectives.Count; i++)
+        {
+            Objective o = Objectives[i];
+            if (o.Name != targ)
+                continue;
+            // QC: hlth < 0 (destroyed) || hlth >= ASSAULT_VALUE_INACTIVE (inactive) => '-1 0 0' (reject).
+            return o.Health < 0f || o.Health >= ObjectiveInactive;
+        }
+        return false;
     }
 
     public override void Deactivate()
@@ -505,6 +626,9 @@ public sealed class Assault : GameType
             MutatorHooks.PlayerSpawn.Remove(_spawnHandler);
             _spawnHandler = null;
         }
+        // QC: the spawn_evalfunc chain is owned by the active gametype — drop the objective spawn bias on deactivate.
+        if (SpawnSystem.SpotEvalReject == ShouldRejectSpawnSpot)
+            SpawnSystem.SpotEvalReject = null;
         if (_deathHandler is null)
             return;
         Combat.Death.Remove(_deathHandler);
@@ -638,6 +762,12 @@ public sealed class Assault : GameType
         {
             w.Health = w.MaxHealth;
             w.Active = false;
+            // QC the round reset clears stale objective markers; ActivateObjective re-spawns the head's sprite.
+            if (w.Sprite is not null)
+            {
+                Waypoints.WaypointSprites.Kill(w.Sprite);
+                w.Sprite = null;
+            }
             // QC ReadyRestart_force → the func_assault_destructible's func_breakable reset: a wall shot down in the
             // previous round comes back solid + shootable for the new round. Re-arm its world edict to match the POJO.
             if (w.WorldEntity is { } we && !we.IsFreed)

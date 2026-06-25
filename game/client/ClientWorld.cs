@@ -280,7 +280,18 @@ public partial class ClientWorld : Node3D
         public bool Is1v1;           // QC gametype.m_1v1 (Duel)
         public int TeamCount;        // QC team_count (2 for the 2-team force-color gate)
         public int PlayerLocalNum;   // QC player_localnum (the FFA forced colormap = player_localnum+1)
+
+        // QC cl_survival.qc NET_HANDLE(ENT_CLIENT_SURVIVALSTATUSES) + MUTATOR_HOOKFUNCTION(cl_surv,
+        // ForcePlayercolors_Skip, CBC_ORDER_LAST): in Survival, once the client has received a status block (round
+        // live/over), EVERY known player is recolored to the hardcoded survival palette — green prey / red hunter
+        // — overriding scoreboard + player-model colors AND any cl_forceplayercolors (the hook runs LAST).
+        public bool SurvivalActive;  // a Survival status block has been received (a round is live or just resolved)
+        public System.Collections.Generic.HashSet<int>? SurvivalHunterIds; // net ids the client knows are hunters
     }
+
+    // QC survival.qh: hardcoded survival colormap palette indices (the colormap is 1024 + index).
+    private const int SurvColorPrey = 51;   // green
+    private const int SurvColorHunter = 68; // red
 
     /// <summary>Host-set provider for the live <see cref="AppearanceContext"/> (read each frame). Null = no force
     /// model/colors (overrides inert). NetGame wires it; a pure demo leaves it null.</summary>
@@ -1324,6 +1335,16 @@ public partial class ClientWorld : Node3D
         AppearanceContext? ctx = AppearanceProvider?.Invoke();
         if (ctx is null)
             return own;
+
+        // QC cl_survival.qc NET_HANDLE colormap override + ForcePlayercolors_Skip (CBC_ORDER_LAST): once a Survival
+        // round is live/resolved, every known player wears the hardcoded survival palette — red if the client knows
+        // them to be a hunter (own side mid-round; everyone at round end), green otherwise. This runs LAST in QC so
+        // it overrides cl_forceplayercolors; we honor that here by returning BEFORE the force-color resolution.
+        if (ctx.SurvivalActive)
+        {
+            bool hunter = ctx.SurvivalHunterIds is { } ids && ids.Contains(e.Index);
+            return 1024 + (hunter ? SurvColorHunter : SurvColorPrey);
+        }
 
         int fpc = (int)CvarF("cl_forceplayercolors", 0f);
         bool enabled = CsqcModelAppearance.ForcePlayerColorsEnabled(fpc, ctx.Is1v1, ctx.Teamplay, ctx.TeamCount, ctx.MyTeam);
