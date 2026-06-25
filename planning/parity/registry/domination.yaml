@@ -1,14 +1,13 @@
 unit: domination
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 12
   worst_gaps:
-    - "Round-not-started capture gate is dead: Domination.RoundStartedSource is never assigned by the host (GameWorld wires RoundEndTimeSource but NOT RoundStartedSource), so the QC `round_handler_IsActive && !IsRoundStarted` block never fires."
-    - "pps HUD numerator uses GLOBAL g_domination_point_amt/_rate (default 1/2) for every point instead of each point's own .frags/.wait (default 1/5), so default-config pps bars read ~2.5x high vs Base."
-    - "Tick scoring's game_stopped half is dead: PointThink reads GameScores.GameStopped, which the host never sets — only the game_starttime (warmup) half is wired, so a Timeout-paused match still ticks points."
-    - "Control point has no entity model/frame-animation and no +20/DropToFloor placement (waypoint sprite IS now spawned, but the point body itself is still invisible/static)."
+    - "Round-not-started capture gate is dead: Domination.RoundStartedSource is never assigned by the host (GameWorld wires RoundEndTimeSource @1789 but NOT RoundStartedSource — zero references in Server/game), so the QC `round_handler_IsActive && !IsRoundStarted` block never fires (round-based variant only, non-default)."
+    - "Control point has no frame animation: the QC AnimateDomPoint loop (t_width 0.02 / t_length 239, ++frame per 0.1s think) is not ported — the point body model is now set + placed (+20/DropToFloor) and visible, but its frames never advance."
+    - "WaypointSprite_Ping one-shot radar flash on capture is not emitted; the port rebuilds the sprite set each tick (pull model) so ownership/color flow, but the explicit ping is absent."
 features:
   - id: domination.init.mutator_limits
     name: "Mutator register + score/lead limit + team setup"
@@ -37,11 +36,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "g_domination_teams_override>=2 (force-N and disable dom_team) handled for team count, but dom_team palette entities (per-team point models/sounds) are not implemented."
+      - "g_domination_teams_override>=2 (force-N and disable dom_team) handled for team count, but dom_team palette entities (per-team point models/sounds) are not implemented; the port hardcodes the default dom_<color>.md3 palette in DomPointModel."
     verification:
-      - { kind: code, ref: "PointLimit roundbased branch reads g_domination_roundbased_point_limit (default 5); LeadLimit reads g_domination_point_leadlimit; GameWorld.cs:1403 ActivateGameType", result: pass }
+      - { kind: code, ref: "PointLimit roundbased branch reads g_domination_roundbased_point_limit (default 5); LeadLimit reads g_domination_point_leadlimit; GameWorld ActivateGameType case Domination @1781", result: pass }
     confidence: high
-    notes: "Wave-2 FIX: roundbased cap limit (5) is now applied in PointLimit, and LeadLimit now reads the dom-specific g_domination_point_leadlimit (was the mislabeled g_domination_teams_override). Both match Base ONADD."
+    notes: "Roundbased cap limit (5) applied in PointLimit; LeadLimit reads dom-specific g_domination_point_leadlimit. Both match Base ONADD. Unchanged 2026-06-25."
 
   - id: domination.controlpoint.spawn
     name: "Control point entity spawn (dom_controlpoint / team_dom_point)"
@@ -49,33 +48,37 @@ features:
     base_refs:
       - "common/gametypes/gametype/domination/sv_domination.qc:dom_controlpoint_setup"
       - "common/gametypes/gametype/domination/sv_domination.qc:spawnfunc(dom_controlpoint)"
+      - "common/gametypes/gametype/domination/sv_domination.qc:AnimateDomPoint"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:SpawnControlPoint"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:DomControlPoint"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (objective sink)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:DropPointToFloor"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:DomPointModel"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (objective sink @2038)"
     constants:
       - { name: "bbox", base: "(-48,-48,-32)..(48,48,32)", port: "(-48,-48,-32)..(48,48,32)", match: true }
       - { name: "per_point_frags(amt)", base: "1", port: "1", match: true }
       - { name: "per_point_wait(rate_s)", base: "5", port: "5", match: true }
       - { name: "think_rate_s", base: "0.1", port: "0.1", match: true }
       - { name: "default_message", base: "\" has captured a control point\"", port: "\" has captured a control point\"", match: true }
-      - { name: "origin_z_offset", base: "+20 then DropToFloor", port: "as-placed (no +20/DropToFloor)", match: false }
+      - { name: "origin_z_offset", base: "+20 then DropToFloor", port: "+20 then DropPointToFloor (box trace down)", match: true }
+      - { name: "scale", base: "0.6 default", port: "EF_LOWPRECISION set; scale 0.6 not applied to entity", match: false }
+      - { name: "frame_anim(t_width/t_length)", base: "0.02 / 239 (AnimateDomPoint ++frame)", port: "none (no frame loop)", match: false }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Points start neutral via map e.Team (matches QC), but the QC '+0 0 20 then DropToFloor' placement is not reproduced — point may sit at the raw spawn origin."
-      - "No control-point entity model (head.mdl dom_unclaimed/dom_<team>.md3), no scale(0.6)/EF_LOWPRECISION/EF_FULLBRIGHT, no frame animation (t_width 0.02 / t_length 239) — the point body is invisible. (The waypoint SPRITE is now spawned — see domination.waypoint.sprite.)"
+      - "QC AnimateDomPoint frame animation (t_width 0.02 / t_length 239, ++frame per 0.1s think) is not ported — the point body shows a static model frame, no animation."
+      - "scale(0.6) is not applied to the spawned entity (EF_LOWPRECISION + EF_FULLBRIGHT-when-cvar ARE)."
     verification:
-      - { kind: code, ref: "GameWorld objective sink -> SpawnControlPoint -> SpawnObjective (Touch/Think wired); e.Team set initialTeam", result: pass }
+      - { kind: code, ref: "objective sink @2038 -> SpawnControlPoint -> SpawnObjective (Touch/Think wired); e.Team=initialTeam; e.Model=DomPointModel; +20 then DropPointToFloor box trace; EF_LOWPRECISION/EF_FULLBRIGHT set", result: pass }
     confidence: high
-    notes: "Wave-2 set e.Team on spawn (for the bot read) and DefaultCaptureMessage. Spawn placement (+20/DropToFloor) and the point body model/anim are the remaining presentation gaps."
+    notes: "FIX 2026-06-25 (Wave 6a, e596bf0): presentation missing->partial + values partial->faithful. The point body model (dom_<color>.md3 / dom_unclaimed.md3) is now set on spawn AND on capture, and the QC '+0 0 20 then DropToFloor' placement is reproduced (DropPointToFloor box-trace). Residual presentation gaps: frame animation loop + the 0.6 scale."
 
   - id: domination.capture.touch
     name: "Instant point capture on player touch"
@@ -98,13 +101,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Round-not-started capture gate is DEAD: CapturePoint checks RoundStartedSource, but GameWorld.ActivateGameType never assigns it (only RoundEndTimeSource is wired), so in the round-based variant a captured point is NOT blocked while a round is active-but-unstarted (QC round_handler_IsActive && !IsRoundStarted)."
+      - "Round-not-started capture gate is DEAD: CapturePoint checks RoundStartedSource, but GameWorld.ActivateGameType never assigns it (only RoundEndTimeSource is wired @1789; RoundStartedSource has zero references in Server/game), so in the round-based variant a captured point is NOT blocked while a round is active-but-unstarted (QC round_handler_IsActive && !IsRoundStarted)."
       - "IS_INDEPENDENT_PLAYER skip not mirrored (port has no independent-player concept here)."
       - "Capture is instant (no neutral interim state); Base's neutral-during-delay is purely cosmetic (capturetime path is commented out in QC), so functionally equivalent."
     verification:
-      - { kind: code, ref: "CapturePoint: Captime>0 && now<Captime+0.3 guard (Captime set at capture); RoundStartedSource grep -> only definition+read, NO assignment in GameWorld", result: pass }
+      - { kind: code, ref: "CapturePoint: Captime>0 && now<Captime+0.3 guard (Captime set at capture); RoundStartedSource grep -> only definition+read, NO assignment in GameWorld/Server/game", result: pass }
     confidence: high
-    notes: "Wave-2 FIX: the 0.3s self-recapture guard is now live (point.Captime armed at capture, matching QC this.captime=time). The round-not-started gate code exists but its source is unwired -> dead (relevant only to the non-default round-based variant)."
+    notes: "The 0.3s self-recapture guard is live (point.Captime armed at capture). The round-not-started gate code exists but its source is unwired -> dead (relevant only to the non-default round-based variant). Unchanged 2026-06-25."
 
   - id: domination.scoring.tick
     name: "Periodic per-point score tick to owning team + capturer"
@@ -121,18 +124,17 @@ features:
     status:
       logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "QC dompointthink early-returns on `game_stopped || time<game_starttime`. The port wires the game_starttime half live (StartItem.GameStartTimeProvider -> GameWorld.GameStartTime, set at GameWorld.cs:550), but the game_stopped half reads Scoring.GameScores.GameStopped, which the host NEVER assigns (GameWorld.GameStopped is a separate getter never pushed into GameScores). MatchEnded covers match-over, but a Timeout-paused live match would still tick points."
+    gaps: []
     verification:
-      - { kind: code, ref: "PointThink: GameScores.GameStopped (grep -> no live assignment, tests only) + now<GameStartTimeProvider (wired GameWorld.cs:550); team+capturer credit to ST_SCORE+ST_DOM_TICKS", result: pass }
+      - { kind: code, ref: "PointThink: VehicleCommon.GameStopped gate (pushed live every frame at GameWorld.cs:1517 = Intermission||MatchEnded||Timeout.IsPaused) + now<GameStartTimeProvider (wired GameWorld.cs:574); team+capturer credit to ST_SCORE+ST_DOM_TICKS", result: pass }
     confidence: high
-    notes: "Wave-2 partial FIX: the warmup/pre-start gate (time<game_starttime) is now live and faithful; the game_stopped (timeout-pause) gate is present in code but effectively dead because GameScores.GameStopped is never set on the live path."
+    notes: "FIX 2026-06-25 (Wave 6a): timing partial->faithful + the game_stopped gap is closed. PointThink now reads VehicleCommon.GameStopped (NOT the never-assigned Scoring.GameScores.GameStopped). GameWorld pushes VehicleCommon.GameStopped = GameStopped every frame (line 1517), so a Timeout-paused live match now correctly stops ticking points. The warmup gate (time<game_starttime) was already live."
 
   - id: domination.scoring.rules
     name: "Scoreboard rules (ticks/caps/takes columns + sort keys)"
@@ -156,7 +158,7 @@ features:
     verification:
       - { kind: code, ref: "DeclareScoreRules roundbased vs non-roundbased arms vs ScoreRules_dom (sv_domination.qc:533)", result: pass }
     confidence: high
-    notes: "Both arms (caps PRIMARY in roundbased; ticks/score with disable_frags swap in non-roundbased) match QC. Player DOM_TICKS/DOM_TAKES columns declared. Unchanged by Wave-2."
+    notes: "Both arms (caps PRIMARY in roundbased; ticks/score with disable_frags swap in non-roundbased) match QC. Player DOM_TICKS/DOM_TAKES columns declared. Unchanged 2026-06-25."
 
   - id: domination.win.pointlimit
     name: "Point-limit / lead-limit team win (tick variant)"
@@ -181,9 +183,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "UpdateLeaderAndCheckLimit (best primary >= pointlimit; lead via LeadLimit) + GameWorld.cs:2187 MatchHasEnded reads dom.MatchEnded/LeaderTeam", result: pass }
+      - { kind: code, ref: "UpdateLeaderAndCheckLimit (best primary >= pointlimit; lead via LeadLimit) + GameWorld MatchHasEnded reads dom.MatchEnded/LeaderTeam", result: pass }
     confidence: high
-    notes: "Wave-2 FIX: LeadLimit now reads g_domination_point_leadlimit (matching GameRules_limit_lead) instead of the generic 'leadlimit' / mislabeled teams_override constant. Leader scan + point/lead-limit latch via the unified primary slot; tied-at-limit -> overtime via ReportsTie."
+    notes: "LeadLimit reads g_domination_point_leadlimit (matching GameRules_limit_lead). Leader scan + point/lead-limit latch via the unified primary slot; tied-at-limit -> overtime via ReportsTie. Unchanged 2026-06-25."
 
   - id: domination.roundbased.win
     name: "Round-based variant: own-all-points round win + caps"
@@ -196,7 +198,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:CheckRoundWinner"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:CountAndFindRoundWinner"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:RoundStart"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (EnableRounds + RoundEndTimeSource)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (EnableRounds + RoundEndTimeSource @1788)"
     constants:
       - { name: "round_timelimit_s", base: "120", port: "via RoundEndTimeSource (host round handler)", match: unknown }
       - { name: "warmup_s", base: "5", port: "via EnableRounds (host round handler)", match: unknown }
@@ -205,18 +207,17 @@ features:
       logic: faithful
       values: partial
       timing: unknown
-      presentation: na
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Per-round CENTER/INFO_ROUND_* win/over notifications are not sent from Domination.cs (the host round handler may emit generic round notifs — unverified)."
       - "round_timelimit (120) and warmup (5) pass through the host round handler; the numeric parity of those host-supplied values is unverified."
     verification:
-      - { kind: code, ref: "CheckRoundWinner: capLimit=PointLimit(=5 roundbased); GetTeamCaps(winner)>=capLimit -> LeaderTeam+MatchEnded; GameWorld.cs:1405 EnableRounds + RoundEndTimeSource; MatchHasEnded reads dom.MatchEnded", result: pass }
+      - { kind: code, ref: "CheckRoundWinner: capLimit=PointLimit(=5 roundbased); GetTeamCaps(winner)>=capLimit -> LeaderTeam+MatchEnded; sends ROUND_OVER (Center+Info) and APP_TEAM ROUND_TEAM_WIN_<team> (Center+Info) — all registered in NotificationsList.cs; GameWorld EnableRounds @1788 + RoundEndTimeSource; MatchHasEnded reads dom.MatchEnded", result: pass }
     confidence: high
-    notes: "Wave-2 FIX: the cumulative 5-cap match win is now enforced — CheckRoundWinner latches MatchEnded/LeaderTeam off ST_DOM_CAPS once a team banks roundbased_point_limit caps, and GameWorld reads them. Single-round resolution + time-out no-winner already wired. Roundbased is non-default (g_domination_roundbased 0)."
+    notes: "FIX 2026-06-25 (Wave 6a): presentation missing->faithful — the per-round CENTER/INFO notifications (CENTER_ROUND_OVER/INFO_ROUND_OVER + APP_TEAM_NUM ROUND_TEAM_WIN) are now sent directly from CheckRoundWinner (ROUND_OVER + ROUND_TEAM_WIN_<RED/BLUE/YELLOW/PINK> exist in NotificationsList.cs). The cumulative 5-cap match win + single-round resolution + time-out no-winner already wired. Roundbased is non-default (g_domination_roundbased 0)."
 
   - id: domination.capture.audio
     name: "Capture sound (DOM_CLAIM) + narration (play2all)"
@@ -241,9 +242,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "AnnounceCapture -> SoundSystem.PlayOn(player,\"DOM_CLAIM\") (registered SoundsList.cs:96 -> domination/claim); Base default dom_team capsound = SND_DOM_CLAIM, noise1 default \"\" (no narration sound)", result: pass }
+      - { kind: code, ref: "AnnounceCapture -> SoundSystem.PlayOn(player,\"DOM_CLAIM\") (registered SoundsList.cs -> domination/claim); Base default dom_team capsound = SND_DOM_CLAIM, noise1 default \"\" (no narration sound)", result: pass }
     confidence: high
-    notes: "Wave-2 FIX (dead->live): the local capture sound DOM_CLAIM now plays positionally on the capturer. Base's default dom_team supplies noise1=\"\" so play2all is NOT called by default — the port correctly omits a narration sound (the textual line rides the INFO notification)."
+    notes: "The local capture sound DOM_CLAIM plays positionally on the capturer. Base's default dom_team supplies noise1=\"\" so play2all is NOT called by default — the port correctly omits a narration sound. Unchanged 2026-06-25."
 
   - id: domination.capture.notification
     name: "Capture info notification (INFO_DOMINATION_CAPTURE_TIME)"
@@ -255,7 +256,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:DOMINATION_CAPTURE_TIME"
     constants:
       - { name: "notif_args", base: "s1=netname s2=message f1=points f2=wait", port: "(NetName, message, points, seconds)", match: true }
-      - { name: "notif_arg_counts", base: "2 strings 2 floats", port: "2 strings 2 floats (NotificationsList.cs:649)", match: true }
+      - { name: "notif_arg_counts", base: "2 strings 2 floats", port: "2 strings 2 floats (NotificationsList.cs:711)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -268,9 +269,9 @@ features:
     gaps:
       - "Round-based variant: Base uses bprint(\"^3%s^3%s\") instead of the INFO notification; the port always sends the INFO line (see divergence_rationale)."
     verification:
-      - { kind: code, ref: "AnnounceCapture -> NotificationSystem.Info(\"DOMINATION_CAPTURE_TIME\", netname, message, points, seconds); registered NotificationsList.cs:649 with matching 2/2 arg counts", result: pass }
+      - { kind: code, ref: "AnnounceCapture -> NotificationSystem.Info(\"DOMINATION_CAPTURE_TIME\", netname, message, points, seconds); registered NotificationsList.cs:711 with matching 2/2 arg counts", result: pass }
     confidence: high
-    notes: "Wave-2 FIX (dead->live): the '<player> has captured a control point (N points every M seconds)' notification is now broadcast on capture with the correct args (netname, point .message, per-point amt, per-point rate)."
+    notes: "The '<player> has captured a control point (N points every M seconds)' notification is broadcast on capture with the correct args. Unchanged 2026-06-25."
 
   - id: domination.hud.modicons_pps
     name: "Mod-icons HUD: per-team points-per-second bars"
@@ -286,22 +287,21 @@ features:
     constants:
       - { name: "hud_panel_modicons_dom_layout", base: "0/1/2", port: "supported (LayoutCvar dom_layout)", match: true }
       - { name: "wire_order", base: "total, red, blue, yellow, pink", port: "[0]=total,[1..4]=red,blue,yellow,pink", match: true }
-      - { name: "per_point_pps_numerator", base: "each point's amt/rate (cvar else .frags/.wait, default 1/5)", port: "global PointAmount/PointRate (cvar else 1/2)", match: false }
+      - { name: "per_point_pps_numerator", base: "each point's amt/rate (cvar else .frags/.wait, default 1/5)", port: "per-point PointAmountFor/PointRateFor (cvar else .frags/.wait, default 1/5)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "WriteDominationPps computes pps from the GLOBAL dom.PointAmount/PointRate (cvar fallbacks 1 and 2) for EVERY point, whereas Base set_dom_state sums each point's own amt/rate (cvar fallback to per-point .frags=1 / .wait=5). With default config the port uses rate=2 vs Base wait=5, so the pps bars read ~2.5x high (the in-code comment flags this as an unfinished refinement)."
+    gaps: []
     verification:
-      - { kind: code, ref: "Kind.Domination=6 + WriteDominationPps (GametypeStatusBlock.cs:105/198); NetGame.cs:2904 case Domination -> SetDominationPps; GametypeStatusBlock.Capture sent per-peer on change (ServerNet.cs:1536)", result: pass }
+      - { kind: code, ref: "WriteDominationPps (GametypeStatusBlock.cs:206) sums each point's PointAmountFor(cp)/PointRateFor(cp) into total + the owning team slot (neutral counts toward total only); Kind.Domination + 5 floats wired; NetGame case Domination -> SetDominationPps; per-peer on change", result: pass }
     confidence: high
-    notes: "Wave-2 FIX (dead->live): the full chain (server pps encode -> wire Kind.Domination + 5 floats -> NetGame case -> SetDominationPps -> DrawDomItem) is now live; the panel shows. Residual gap is the pps NUMERATOR using global rather than per-point amt/rate -> wrong magnitudes at default config."
+    notes: "FIX 2026-06-25 (Wave 6a): values partial->faithful. WriteDominationPps now sums EACH point's own amt/rate (per-point resolvers PointAmountFor/PointRateFor, cvar override else .frags/.wait, default 1/5) — matching QC set_dom_state — instead of the global PointAmount/PointRate (1/2 fallback) that read ~2.5x high. The numerator magnitude now matches Base at default config."
 
   - id: domination.waypoint.sprite
     name: "Control point waypoint sprite + radar team color/ping"
@@ -331,7 +331,7 @@ features:
     verification:
       - { kind: code, ref: "CollectWaypoints emits one fixed sprite per point (DomSpriteName by owner, TeamRadarColor, RADARICON, +32z); called live by ServerNet.SendWaypoints -> per-peer net push", result: pass }
     confidence: high
-    notes: "Wave-2 FIX (dead->live): control points now get an on-screen/radar waypoint sprite whose def + tint track the owning team (DomNeut/cyan -> DomRed/Blue/Yellow/Pink + team color), fed live through the same CollectWaypoints->SendWaypoints path as CTF flags. Only the capture ping flash is unported."
+    notes: "Control points get an on-screen/radar waypoint sprite whose def + tint track the owning team (DomNeut/cyan -> DomRed/Blue/Yellow/Pink + team color), fed live through CollectWaypoints->SendWaypoints. Only the capture ping flash is unported. Unchanged 2026-06-25."
 
   - id: domination.bot.role
     name: "Bot role: rate unclaimed/contested/enemy control points"
@@ -358,6 +358,6 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "GoalrateControlPoints skips cp where cp.Team==bot.Team; CapturePoint now sets point.Entity.Team=team AND SpawnControlPoint sets e.Team=initialTeam -> the entity Team read is correct", result: pass }
+      - { kind: code, ref: "GoalrateControlPoints skips cp where cp.Team==bot.Team; CapturePoint sets point.Entity.Team=team AND SpawnControlPoint sets e.Team=initialTeam -> the entity Team read is correct", result: pass }
     confidence: high
-    notes: "Wave-2 FIX (logic partial->faithful): the stale team-read is closed — both spawn and capture now mirror the owning team onto Entity.Team (QC goalentity.team), so bots correctly skip points their own team already owns and target unclaimed/enemy/contested ones. Role dispatched live for 'dom'; rating shape + radii/scores match QC."
+    notes: "Both spawn and capture mirror the owning team onto Entity.Team (QC goalentity.team), so bots correctly skip points their own team owns and target unclaimed/enemy/contested ones. Role dispatched live for 'dom'; rating shape + radii/scores match QC. Unchanged 2026-06-25."

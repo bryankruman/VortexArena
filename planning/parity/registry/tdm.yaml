@@ -1,13 +1,12 @@
 unit: tdm
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 13
   worst_gaps:
     - "Map-support gating (m_isAlwaysSupported >=8 spawns & diameter>3250; g_tdm_on_dm_maps) not ported — map-pool/menu concern, no in-match impact"
     - "Custom per-map team config (spawnfunc tdm_team names/colors; mapinfo teams= -> g_tdm_teams) not ported — maps render with the stock team set"
-    - "leadlimit_and_fraglimit (require BOTH limits) not modeled in the WIN check (only in the frags-remaining announcer); EITHER-limit only. Cosmetic at the default leadlimit=0"
 features:
   - id: tdm.identity.registration
     name: "TDM gametype identity + default match limits (timelimit=15 pointlimit=50 teams=2 leadlimit=0)"
@@ -236,7 +235,7 @@ features:
       - { name: "g_tdm_point_leadlimit (cfg default)", base: "-1 (=> mapinfo leadlimit 0)", port: "-1 resolved to 0 (off) via SeedLimit + LeadLimit", match: true }
       - { name: "effective_leadlimit", base: "0 (off)", port: "0 (off, via >0 guard)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -244,12 +243,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "autocvar_leadlimit_and_fraglimit (require BOTH limits to finish) is NOT modeled in the actual WIN check: UpdateLeaderAndCheckLimit sets MatchEnded on EITHER the frag limit OR the lead limit independently (world.qc:1628-1633 picks fraglimit_reached && leadlimit_reached when both limits set and the cvar is on). Note: the conjunction IS modeled for the frags-remaining ANNOUNCER (GameScores.CountFragsRemaining reads leadlimit_and_fraglimit), but not for ending the match. Cosmetic at the shipped default (leadlimit=0, off)."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "Tdm.LeadLimit resolves the shipped -1 to 0 (off); SeedLimit seeds leadlimit=0. UpdateLeaderAndCheckLimit guards leadLimit>0 and ends on (bestScore-secondScore)>=leadLimit, independent of the frag limit. world.qc:1630 leadlimit_and_fraglimit conjunction in the win check is unmodeled.", result: pass }
-    confidence: medium
-    notes: "Behaves correctly at defaults and for a standalone positive g_tdm_point_leadlimit. Only the leadlimit_and_fraglimit conjunction in the win condition is missing; the -1 sentinel is now handled explicitly (was coincidentally-correct before)."
+      - { kind: code_read, ref: "Tdm.LeadLimit resolves the shipped -1 to 0 (off); SeedLimit seeds leadlimit=0. UpdateLeaderAndCheckLimit (Tdm.cs:367-375) now mirrors world.qc:1625-1633 exactly: fraglimitReached || leadlimitReached normally, BUT fraglimitReached && leadlimitReached when both limits set AND LeadAndFrag (autocvar_leadlimit_and_fraglimit) is on. The CvarLeadAndFrag/LeadAndFrag wiring was added in Wave 6a (commit e596bf0, 2026-06-25), after the 2026-06-22 baseline.", result: pass }
+    confidence: high
+    notes: "FIXED in Wave 6a. The leadlimit_and_fraglimit conjunction in the win condition is now modeled (Tdm.cs:371-375 == world.qc:1628-1633), matching the same gating already used by the frags-remaining announcer. The -1 sentinel is handled explicitly via SeedLimit/LeadLimit. Was logic:partial (conjunction unmodeled) -> now logic:faithful."
 
   - id: tdm.rules.tie_overtime
     name: "Tied-team -> overtime/sudden-death (no draw at the limit)"

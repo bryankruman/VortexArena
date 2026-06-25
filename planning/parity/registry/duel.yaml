@@ -1,13 +1,12 @@
 unit: duel
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 9
   worst_gaps:
     - "map-support gating (diameter<3250 / force on DM maps) still unimplemented (mapsupport.gating, MISSING)"
     - "timelimit=10 / leadlimit=0 gametype-init defaults still not seeded per-gametype (identity.registration, generic timelimit); only pointlimit=0 matched"
-    - "per-frame Duel.RecomputeLeader still absent from DriveGametypeFrame; Duel falls through the switch (match_end_latch timing partial). On-death incremental update keeps it correct between kills."
 features:
   - id: duel.identity.registration
     name: "Duel gametype identity + default match limits"
@@ -36,9 +35,9 @@ features:
     gaps:
       - "timelimit=10 / leadlimit=0 gametype-init defaults are not seeded per-gametype (timelimit handling is generic); pointlimit=0 is matched. UNCHANGED."
     verification:
-      - { kind: code_read, ref: "Duel.cs ctor (NetName=\"duel\", TeamGame=false) vs duel.qh gametype_init; Duel.Activate dispatched live at GameWorld.cs:1859 (case Duel duel: duel.Activate(), inside ActivateGameType called from match start GameWorld.cs:545)", result: pass }
+      - { kind: code_read, ref: "Duel.cs ctor (NetName=\"duel\", TeamGame=false) vs duel.qh gametype_init; Duel.Activate dispatched live at GameWorld.cs:1899-1900 (case Duel duel: duel.Activate(), inside ActivateGameType called from match start GameWorld.cs:545)", result: pass }
     confidence: high
-    notes: "Duel is selectable and resolves via GameTypes.ByName(\"duel\"); identity faithful. Match-limit metadata only partially seeded but pointlimit=0 (the duel-distinctive one) matches. (Activation switch case line is now GameWorld.cs:1859.)"
+    notes: "Duel is selectable and resolves via GameTypes.ByName(\"duel\"); identity faithful. Match-limit metadata only partially seeded but pointlimit=0 (the duel-distinctive one) matches. (Activation switch case line is now GameWorld.cs:1899.)"
 
   - id: duel.rules.player_limit_2
     name: "Hard 1v1 player limit (GetPlayerLimit -> 2)"
@@ -95,7 +94,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "Duel.Activate (Duel.cs:136-137) does MutatorHooks.FilterItemDefinition.Add(OnFilterItemDefinition); Duel.Activate dispatched live at GameWorld.cs:1859 (case Duel duel, in ActivateGameType from match start GameWorld.cs:545); the chain is consumed on the live item-spawn path at StartItem.SpawnInternal. OnFilterItemDefinition returns !WithPowerups for powerup classnames (item_strength/item_shield/item_invincible), matching Base instanceOfPowerup. Same registration pattern as Mayhem/TeamMayhem.", result: pass }
+      - { kind: code_read, ref: "Duel.Activate (Duel.cs:136-137) does MutatorHooks.FilterItemDefinition.Add(OnFilterItemDefinition); Duel.Activate dispatched live at GameWorld.cs:1899-1900 (case Duel duel, in ActivateGameType from match start GameWorld.cs:545); the chain is consumed on the live item-spawn path at StartItem.SpawnInternal. OnFilterItemDefinition returns !WithPowerups for powerup classnames (item_strength/item_shield/item_invincible), matching Base instanceOfPowerup. Same registration pattern as Mayhem/TeamMayhem.", result: pass }
     confidence: high
     notes: "Faithful + live (unchanged). args.Definition.ClassName is the classname stand-in for instanceOfPowerup. Default g_duel_with_powerups 0 => powerups filtered out, matching Base. NOTE: FilterItemHookTests.DuelFilterItem_* documents the dead-without-activation case (boots a plain server without activating Duel) — harmless, documents a non-live config."
 
@@ -124,7 +123,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "Duel.OnDeath (Duel.cs:157-175) mirrors Deathmatch.OnDeath; Duel.Activate subscribes Combat.Death (Duel.cs:132) which DamageSystem calls live; activation dispatched at GameWorld.cs:1859", result: pass }
+      - { kind: code_read, ref: "Duel.OnDeath (Duel.cs:157-175) mirrors Deathmatch.OnDeath; Duel.Activate subscribes Combat.Death (Duel.cs:132) which DamageSystem calls live; activation dispatched at GameWorld.cs:1899-1900", result: pass }
     confidence: high
     notes: "Duel reuses the DM matrix verbatim (enemy +1, suicide/world -1). Death handler subscribed live on activation. UNCHANGED (already faithful)."
 
@@ -138,24 +137,24 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:63:MatchEnded"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:111:FragLimit"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:206:RecomputeLeader"
-      - "src/XonoticGodot.Server/GameWorld.cs:2638:MatchHasEnded (Duel case)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2279:DriveGametypeFrame (Duel RecomputeLeader case)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2778:MatchHasEnded (Duel case)"
     constants:
       - { name: "default_fraglimit", base: "0 (pointlimit=0, unlimited)", port: "0", match: true }
     status:
       logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "DriveGametypeFrame (GameWorld.cs:2137) still does not call Duel.RecomputeLeader each frame — only Deathmatch (:2145), Mayhem (:2156), TeamMayhem (:2157) and Tdm (:2158) get a per-frame FFA/team recompute; Duel falls through the switch with no case. Duel relies on the incremental on-death leader/limit update (Duel.cs:172/194-203), so a limit re-check only fires on a kill. Correct for a 2-player FFA in practice but diverges from a per-frame checkrules. UNCHANGED. (RespawnDuePlayers DOES run for duel via the fall-through at GameWorld.cs:2152.)"
+    gaps: []
     verification:
-      - { kind: code_read, ref: "Duel.MatchEnded consumed at GameWorld.cs:2638-2640 (MatchHasEnded, winner = duel.Leader); RecomputeLeader still absent from the DriveGametypeFrame switch (GameWorld.cs:2154-2156...)", result: pass }
+      - { kind: code_read, ref: "Duel.MatchEnded consumed at GameWorld.cs:2778-2780 (MatchHasEnded, winner = duel.Leader). Per-frame recompute NOW WIRED: DriveGametypeFrame has `case Duel duel: duel.RecomputeLeader(Clients.Players); break;` (GameWorld.cs:2279), alongside Mayhem/TeamMayhem/Tdm. RespawnDuePlayers also runs for duel via the shared call before the switch (GameWorld.cs:2275). Per-frame leader + frag-limit checkrules now fire every frame, not only on death.", result: pass }
     confidence: high
-    notes: "Frag-limit latch + leader are correct and consumed live; default 0 = decided by timelimit, matching pointlimit=0. Per-frame recompute omitted but on-death path keeps it correct between kills (2 players)."
+    notes: "CLOSED (timing now faithful). The baseline timing=partial gap (Duel absent from the DriveGametypeFrame switch) is fixed: a per-frame `case Duel duel: duel.RecomputeLeader(...)` was added at GameWorld.cs:2279, so the leader + frag-limit re-check runs each frame (QC WinningConditionHelper) rather than only incrementally on death. Frag-limit latch + leader consumed live; default 0 = decided by timelimit, matching pointlimit=0."
 
   - id: duel.timing.respawn_delay
     name: "Respawn delay (effective 2s via global fallback)"

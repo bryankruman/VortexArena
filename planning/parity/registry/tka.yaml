@@ -1,15 +1,35 @@
 unit: tka
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
-# re-audited 2026-06-22 post Wave-5-finish (commit 023ba70): tka.bot.role dead->live (classname fix + sameteam split + Bot_ForbidAttack)
+last_audited: "2026-06-25"
+# re-audited 2026-06-25 (drift check). MAJOR CHANGE since the 2026-06-22 baseline: a "Wave 6a — presentation +
+# physics" pass landed three previously-missing features LIVE, and the bot-role enemy-priority numbers were
+# corrected to Base-exact. 4 fixes, 0 regressions, 0 newly-unmapped Base features.
+#   - tka.carrier.highspeed: missing -> faithful + LIVE (OnPlayerPhysics on the live MutatorHooks.PlayerPhysics
+#     channel, PlayerPhysics.cs:221; reads g_tka_ballcarrier_highspeed; default 1 = no stock effect).
+#   - tka.hud.modicon: missing -> faithful + LIVE (BallStatusFor -> GametypeStatusBlock.cs:118-123 -> ServerNet
+#     Capture -> ClientNet decode -> NetGame.cs:3632 -> ModIconsPanel.DrawTeamKeepaway; blink(0.85,0.15,5) +
+#     status-change expand transition faithful to cl_tka.qc HUD_Mod_TeamKeepaway).
+#   - tka.waypoints.tracking: missing -> faithful logic/values + LIVE (CollectWaypoints, TeamKeepaway.cs:675;
+#     pulled by ServerNet.SendWaypoints at ServerNet.cs:474/927 -> per-peer net -> ClientNet.Waypoints ->
+#     WaypointSpriteLayer + RadarPanel). Residual: g_tkaball_tracking==2 (dropped-only) collapsed to "always
+#     show", and the carrier sprite uses SPRITERULE_DEFAULT not TEAMPLAY (the tka_ballcarrier_waypointsprite_
+#     visible_for_player same-team/spectator predicate not modeled) -> presentation:partial.
+#   - tka.bot.role: values partial -> faithful. RoleKeepaway (BotObjectiveRoles.cs:340) now uses carrier
+#     enemyplayers 10000 / collector enemyplayers 500 (BotObjectiveRoles.cs:353,360), exactly matching Base
+#     havocbot_role_tka_carrier(10000) / havocbot_role_tka_collector(500); items 10000/10000 + ball 8000/4000
+#     dist 2000 also faithful. The collapsed-role concern in the baseline is resolved (the carrier/collector
+#     branches now carry Base's exact enemy-priority numbers).
+# All Wave-2/5 wirings remain live (line numbers shifted): SpawnBall (GameWorld.cs:666), Activate (1832),
+# Tick (2301, ends with CheckPointLimit), winner report (2819-2821), ForbidAttack install (1831-1837),
+# GiveFragsForKill fired (Scores.cs), DamageCalculate fired (DamageSystem.cs). DropBall still only OnDeath-driven.
 summary:
   feature_count: 17
   worst_gaps:
-    - "Drop triggers other than death are still unwired: only OnDeath calls DropBall (TeamKeepaway.cs:480). Base also drops on PlayerUseKey, ClientDisconnect, MakePlayerObserver, DropSpecialItems — none on MutatorHooks yet."
-    - "Presentation entirely deferred (Wave 3): no TKA_BALLSTATUS HUD mod-icon (ModIconsPanel has no TKA mode), no STAT(TKA_BALLSTATUS) bit-packing on the server, no team-colored carrier/ball waypoints or radar, no respawn/spark particle effects, no carrier-highspeed (g_tka_ballcarrier_highspeed). Multi-ball chaining (g_tka_ballcarrier_maxballs) also unported."
-    - "tka.bot.role residual (NOW LIVE, was the top gap): carrier/collector are collapsed into one RoleKeepaway, so the carrier-branch enemy/item ratings (6000/8000) approximate Base's split (carrier enemyplayers 10000; collector enemyplayers 500). The ball goalrating values (8000 enemy / 4000 sameteam) and Bot_ForbidAttack ARE now faithful + live."
-    - "Re-audited post Wave-5-finish (commit 023ba70). MAJOR CHANGE since baseline: BotObjectiveRoles.cs + TeamKeepaway.cs WERE edited — the bot-role classname mismatch is FIXED (FindBall now queries 'keepawayball', BotObjectiveRoles.cs:292, matching BallEntity.cs:105), the enemy(8000)/sameteam(4000) goalrating split is added (BotObjectiveRoles.cs:269-274), and Bot_ForbidAttack is ported (TeamKeepaway.ForbidBotAttack) + wired live (GameWorld.cs:1829-1830 sets BotBrain.ForbidAttackHook, consumed at BotBrain.cs:797). The bot ball-carry link now uses Entity.GtCarrier (set by AttachToCarrier/GiveBall) not Entity.Owner. All Wave-2 TKA wirings remain live (line numbers shifted): SpawnBall (GameWorld.cs:660), Activate (1825), Tick (2177, ends with CheckPointLimit), winner report (2679-2681), GiveFragsForKill fired (Scores.cs:531-532), DamageCalculate fired (DamageSystem.cs:256). 1 FIX (tka.bot.role dead->live), 0 regressions."
+    - "Drop triggers other than death are still unwired: only OnDeath calls DropBall (TeamKeepaway.cs:549). Base also drops on PlayerUseKey, ClientDisconnect, MakePlayerObserver, DropSpecialItems. MutatorHooks.PlayerUseKey now EXISTS but TKA does not subscribe it; the other three hooks are still absent."
+    - "Multi-ball chaining (g_tkaball_count / g_tka_ballcarrier_maxballs, the ballcarried.cnt chain + cnt orbit offset) is still unported — the port models exactly one ball (the stock default count=1, so no stock divergence)."
+    - "tka.waypoints.tracking residual: g_tkaball_tracking==2 (show only when dropped) is collapsed to the ==1 always-show behavior, and the carrier sprite is networked with SPRITERULE_DEFAULT instead of TEAMPLAY (the tka_ballcarrier_waypointsprite_visible_for_player same-team/spectator/invisibility visibility predicate is not modeled). Sprite names/colors/tracking on-off ARE faithful and live."
+    - "tka.ball.pickup minor: no scale 0.75 while carried, no alpha/invisibility sync, no EFFECT_BALL_SPARKS / EFFECT_KA_BALL_RESPAWN particles (the respawn/pickup/world-touch SOUNDS are all played; only the particle effects + the carried-scale shrink remain)."
 features:
   - id: tka.ball.spawn
     name: "Ball spawn at match start (g_tkaball_count balls)"
@@ -20,7 +40,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:SpawnBall"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/BallEntity.cs:SpawnForGametype"
-      - "src/XonoticGodot.Server/GameWorld.cs:660"
+      - "src/XonoticGodot.Server/GameWorld.cs:666"
     constants:
       - { name: "g_tkaball_count", base: "1", port: "1 (single ball; multi-ball loop not modeled)", match: true }
       - { name: "ball_bbox", base: "-24 -24 -24 .. 24 24 24", port: "-24 -24 -24 .. 24 24 24 (BallKind.KeepawayBall)", match: true }
@@ -39,13 +59,13 @@ features:
     divergence_rationale: null
     gaps:
       - "Single ball only: SpawnBall makes one ball; g_tkaball_count multi-ball chaining (toucher.ballcarried.cnt vs g_tka_ballcarrier_maxballs) not modeled. Default count is 1, so values match the stock server."
-      - "Model/EF_DIMLIGHT/trail_color/damageforcescale are set on the sim edict, but the actual glow_trail particle trail + EF_DIMLIGHT light are client/render concerns (Wave 3) — not yet visible."
-      - "Spawn is procedural at map-load (GameWorld.cs:653-664 switch on GameType; TKA case at 659-660), replacing QC tka_Handler_CheckBall's per-frame INITPRIO_GAMETYPE think. There is no game_starttime gate / remove-and-respawn-during-warmup loop, but the net effect (one ball once the match is live) matches."
+      - "Model/EF_DIMLIGHT/trail_color/damageforcescale are set on the sim edict, but the actual glow_trail particle trail + EF_DIMLIGHT light are client/render concerns — not yet visible."
+      - "Spawn is procedural at map-load (GameWorld.cs:666 switch on GameType; TKA case), replacing QC tka_Handler_CheckBall's per-frame INITPRIO_GAMETYPE think. There is no game_starttime gate / remove-and-respawn-during-warmup loop, but the net effect (one ball once the match is live) matches."
     verification:
-      - { kind: codetrace, ref: "GameWorld.cs:653-664 post-spawn switch calls tka.SpawnBall(RandomMapLocation) for TeamKeepaway; BallEntity.SpawnForGametype(KeepawayBall) sets classname/model/bbox/effects/damageforcescale then Relocate()", result: pass }
+      - { kind: codetrace, ref: "GameWorld.cs:666 case TeamKeepaway calls tka.SpawnBall(RandomMapLocation); BallEntity.SpawnForGametype(KeepawayBall) sets classname/model/bbox/effects/damageforcescale then Relocate()", result: pass }
       - { kind: value, ref: "BallConfig.WithKindDefaults(KeepawayBall): bbox +-24, model orbblue.md3, effects 8, trail 254, damageforcescale 2 — all match Base g_tkaball_* defaults", result: pass }
     confidence: high
-    notes: "Wave-2 FIX: SpawnBall is now LIVE via the shared BallEntity framework + a GameWorld round-drive seam. A ball exists in a live match; presentation (trail/light) deferred; multi-ball not modeled."
+    notes: "SpawnBall is LIVE via the shared BallEntity framework + the GameWorld round-drive seam. A ball exists in a live match; the glow-trail/light particle realization deferred; multi-ball not modeled."
 
   - id: tka.ball.respawn
     name: "Loose-ball relocate timer + fall-off respawn"
@@ -71,12 +91,12 @@ features:
     divergence_rationale: null
     gaps:
       - "BallEntity.RandomMapLocation uses the QC SelectSpawnPoint FALLBACK path (a random spawnpoint), not the engine MoveToRandomMapLocation world-bounds sampler (rejecting solid/lava/sky). Faithful to the fallback QC itself drops to, but the primary random-world-point sampler is approximated."
-      - "Respawn sound (SND_KA_RESPAWN, ATTEN_NONE) IS played in RespawnBall, but the EFFECT_KA_BALL_RESPAWN particles at the old+new origin and the WP_KaBall waypoint (g_tkaball_tracking) are deferred to presentation (Wave 3)."
+      - "Respawn sound (SND_KA_RESPAWN, ATTEN_NONE) IS played in RespawnBall, but the EFFECT_KA_BALL_RESPAWN particles at the old+new origin remain deferred (the WP_KaBall waypoint IS now produced — see tka.waypoints.tracking)."
       - "No NOIMPACT/fall-off respawn branch (tka_TouchEvent off-map Q3SURFACEFLAG_NOIMPACT handling not ported — the world-touch goes to the spark/sfx branch instead)."
     verification:
       - { kind: codetrace, ref: "RespawnBall -> BallEntity.Relocate (MoveToRandomMapLocation via RandomMapLocation) + RespawnVelocity + arm + SND_KA_RESPAWN; reads CvarRespawnTime=g_tkaball_respawntime; reachable from the now-live loose ball", result: pass }
     confidence: high
-    notes: "Wave-2 FIX: now relocates to a random map location with the correct g_tkaball_respawntime cvar and is reachable on the live ball. Respawn particles/waypoint + the NOIMPACT off-map branch remain unported."
+    notes: "Relocates to a random map location with the correct g_tkaball_respawntime cvar and is reachable on the live ball. Respawn particles + the NOIMPACT off-map branch remain unported (the loose-ball waypoint is now live)."
 
   - id: tka.ball.pickup
     name: "Ball pickup (attach to carrier, VIP, pickups++, orbit anim)"
@@ -104,14 +124,14 @@ features:
     divergence_rationale: null
     gaps:
       - "GiveBall is LIVE: BallTouchEntity is the ball's touch handler (registered in the live SpawnBall), so a player touching the loose ball becomes the carrier, with SND_KA_PICKEDUP, INFO/CENTER_KEEPAWAY_PICKUP[_SELF] notifications, the 0.5s self-recapture lockout, AttachToCarrier, and TKA_PICKUPS+1."
-      - "FIXED this pass: the carried-ball orbit anim (Tick -> BallEntity.CarryOrbit, BALL_XYSPEED 100 / XYDIST 24) now runs — GameWorld.cs:2177 calls tka.Tick(Simulation.FrameTime) every frame (was CheckPointLimit-only). The ball orbits the carrier."
+      - "The carried-ball orbit anim (Tick -> BallEntity.CarryOrbit, BALL_XYSPEED 100 / XYDIST 24) runs — GameWorld.cs:2301 calls tka.Tick(Simulation.FrameTime) every frame. The ball orbits the carrier."
       - "No scale 0.75 while carried, no GameRules_scoring_vip equivalent, no alpha-sync invisibility, no multi-ball chaining (this.ballcarried insert + cnt offset)."
-      - "World-touch non-player branch plays SND_KA_TOUCH but omits the EFFECT_BALL_SPARKS particle (presentation, Wave 3)."
+      - "World-touch non-player branch plays SND_KA_TOUCH but omits the EFFECT_BALL_SPARKS particle (presentation)."
     verification:
       - { kind: codetrace, ref: "BallTouchEntity (live touch) -> GiveBall: Carrier set, AddCol TKA_PICKUPS, AttachToCarrier, SND_KA_PICKEDUP, 3 notifications, IsRecaptureLocked honored", result: pass }
-      - { kind: codetrace, ref: "Orbit: GameWorld.cs:2177 case TeamKeepaway tka: tka.Tick(Simulation.FrameTime) -> Tick calls BallEntity.CarryOrbit + GametypeEntities.SetOrigin each frame; Tick now has a live caller", result: pass }
+      - { kind: codetrace, ref: "Orbit: GameWorld.cs:2301 case TeamKeepaway tka: tka.Tick(Simulation.FrameTime) -> Tick calls BallEntity.CarryOrbit + GametypeEntities.SetOrigin each frame", result: pass }
     confidence: high
-    notes: "FIX this pass: orbit anim is now live (the tka.Tick wiring at GameWorld.cs:2177). values:partial kept only because scale 0.75 while carried is still unmodeled. Residual: scale/VIP/sparks/multi-ball unported."
+    notes: "values:partial kept only because scale 0.75 while carried is still unmodeled. Residual: scale/VIP/sparks/multi-ball unported."
 
   - id: tka.ball.drop
     name: "Ball drop on death / use-key / disconnect / observe"
@@ -138,14 +158,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DropBall is invoked from OnDeath (LIVE death hook) when the victim carried — now reachable because a carrier can exist. It detaches, drops at the feet with the crandom xy scatter, arms the 0.5s self-recapture lockout, re-arms the relocate think, plays SND_KA_DROPPED, and sends INFO/CENTER_KEEPAWAY_DROPPED."
-      - "The use-key (PlayerUseKey), ClientDisconnect, MakePlayerObserver, and DropSpecialItems drop paths are STILL NOT wired (those MutatorHooks don't exist yet) — only the death path drops the ball."
-      - "No WP_KaBall waypoint respawn (SPRITERULE_DEFAULT), no nudgeoutofsolid_OrFallback, no multi-ball chain advance / tka_PlayerReset VIP clear."
+      - "DropBall is invoked from OnDeath (LIVE death hook) when the victim carried. It detaches, drops at the feet with the crandom xy scatter, arms the 0.5s self-recapture lockout, re-arms the relocate think, plays SND_KA_DROPPED, sends INFO/CENTER_KEEPAWAY_DROPPED, and (via CollectWaypoints next tick) shows the loose-ball waypoint."
+      - "The use-key (PlayerUseKey), ClientDisconnect, MakePlayerObserver, and DropSpecialItems drop paths are STILL NOT wired. NOTE: MutatorHooks.PlayerUseKey now EXISTS (MutatorHooks.cs) but TKA does not subscribe it; ClientDisconnect/MakePlayerObserver/DropSpecialItems hooks are still absent. Only the death path drops the ball."
+      - "No nudgeoutofsolid_OrFallback, no multi-ball chain advance / tka_PlayerReset VIP clear."
     verification:
       - { kind: codetrace, ref: "OnDeath victimWasCarrier -> DropBall -> BallEntity.DropFromCarrier (scatter + lockout + re-arm) + SND_KA_DROPPED + 2 notifications; reachable now that GiveBall sets Carrier", result: pass }
-      - { kind: codetrace, ref: "Grep DropBall callers in TeamKeepaway -> only OnDeath; no PlayerUseKey/ClientDisconnect/MakePlayerObserver/DropSpecialItems hooks", result: fail }
+      - { kind: codetrace, ref: "Grep DropBall callers in TeamKeepaway -> only OnDeath (TeamKeepaway.cs:549); TKA does not subscribe MutatorHooks.PlayerUseKey; no ClientDisconnect/MakePlayerObserver/DropSpecialItems hooks exist", result: fail }
     confidence: high
-    notes: "Wave-2 FIX: death-drop is now LIVE + faithful (scatter, lockout, sound, notifs). The other four drop triggers remain absent pending the missing MutatorHooks."
+    notes: "Death-drop is LIVE + faithful (scatter, lockout, sound, notifs). The other four drop triggers remain unwired; the PlayerUseKey hook now exists but TKA hasn't subscribed it."
 
   - id: tka.score.teamkill
     name: "Team kill scoring (killac to team while team holds ball)"
@@ -167,14 +187,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "OnDeath is on the LIVE Combat.Death bus and credits the attacker's TEAM (AddTeamScore -> GS.AddToTeam slot 0). It now adds killac when the attacker personally carries OR (g_tka_score_team && the team holds the ball) — matching Base PlayerDies. With a live ball + carrier path, this actually fires."
-      - "The Base DIFF_TEAM(attacker,target) team-kill exclusion is now enforced (scoringKill = attacker!=victim && !SameTeam), so team-kills no longer score."
-      - "Correct cvar family now: reads g_tka_score_killac (fallback 1 = Base default), not the old g_keepaway_score_killac/0."
+      - "OnDeath is on the LIVE Combat.Death bus and credits the attacker's TEAM (AddTeamScore -> GS.AddToTeam slot 0). It adds killac when the attacker personally carries OR (g_tka_score_team && the team holds the ball) — matching Base PlayerDies."
+      - "The Base DIFF_TEAM(attacker,target) team-kill exclusion is enforced (scoringKill = attacker!=victim && !SameTeam), so team-kills don't score."
+      - "Correct cvar family: reads g_tka_score_killac (fallback 1 = Base default)."
     verification:
       - { kind: codetrace, ref: "OnDeath: scoringKill gated on !SameTeam; AddTeamScore(team, ScoreKillAc) when attackerCarries || (ScoreTeam && TeamHasBall); ScoreKillAc reads g_tka_score_killac fallback 1", result: pass }
       - { kind: value, ref: "CvarScoreKillAc=g_tka_score_killac + DefaultScoreKillAc=1 matches Base gametypes-server.cfg g_tka_score_killac 1", result: pass }
     confidence: high
-    notes: "Wave-2 FIX: correct cvar family + DIFF_TEAM exclusion + team-has-ball gating, and live via the now-real carry path."
+    notes: "Correct cvar family + DIFF_TEAM exclusion + team-has-ball gating, live via the real carry path."
 
   - id: tka.score.scoreteam
     name: "g_tka_score_team: any teammate's kill scores while team holds ball"
@@ -197,13 +217,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The DISTINGUISHING TKA rule is now modeled: TeamHasBall(team) checks whether the single ball's carrier is on the attacker's team, and when ScoreTeam (g_tka_score_team, default 1) is set ANY teammate's cross-team kill scores killac for the team (OnDeath: attackerCarries || teamHasBall)."
-      - "The no-ball-kill warning suppression is also modeled: the noncarrier warn (CENTER_KEEPAWAY_WARN) fires only when !attackerCarries && !teamHasBall && g_tka_noncarrier_warn."
+      - "The DISTINGUISHING TKA rule is modeled: TeamHasBall(team) checks whether the single ball's carrier is on the attacker's team, and when ScoreTeam (g_tka_score_team, default 1) is set ANY teammate's cross-team kill scores killac for the team (OnDeath: attackerCarries || teamHasBall)."
+      - "The no-ball-kill warning suppression is modeled: the noncarrier warn (CENTER_KEEPAWAY_WARN) fires only when !attackerCarries && !teamHasBall && g_tka_noncarrier_warn."
       - "Single-ball simplification: TeamHasBall is BallTeam==team rather than IL_EACH(g_tkaballs, ...); correct for the one-ball case (the only case the port spawns)."
     verification:
       - { kind: codetrace, ref: "OnDeath: teamHasBall = ScoreTeam && TeamHasBall(team); killac added on attackerCarries||teamHasBall; warn suppressed when teamHasBall; ScoreTeam reads g_tka_score_team fallback true", result: pass }
     confidence: high
-    notes: "Wave-2 FIX (missing->faithful): the team-scoring rule that makes TKA a TEAM mode is now implemented and live."
+    notes: "The team-scoring rule that makes TKA a TEAM mode is implemented and live."
 
   - id: tka.score.bckill
     name: "Ball-carrier-kill bonus (bckill to team) + carrierkills column"
@@ -224,14 +244,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "OnDeath now awards the bckill team bonus whenever the victim was the carrier (victimWasCarrier branch), INDEPENDENT of whether the attacker carries — matching Base (any cross-team kill of the carrier). It also credits TKA_CARRIERKILLS to the killer."
-      - "Reachable now that a carrier can exist (live ball/pickup path)."
-      - "Correct cvar: g_tka_score_bckill, fallback 1 (= Base default), replacing the old g_keepaway_score_bckill/0."
+      - "OnDeath awards the bckill team bonus whenever the victim was the carrier (victimWasCarrier branch), INDEPENDENT of whether the attacker carries — matching Base. It also credits TKA_CARRIERKILLS to the killer."
+      - "Reachable via the live ball/pickup path."
+      - "Correct cvar: g_tka_score_bckill, fallback 1 (= Base default)."
     verification:
       - { kind: codetrace, ref: "OnDeath: if (victimWasCarrier) { AddCol TKA_CARRIERKILLS +1; AddTeamScore(team, ScoreBcKill); } — outside the attackerCarries gate; ScoreBcKill reads g_tka_score_bckill fallback 1", result: pass }
       - { kind: value, ref: "CvarScoreBcKill=g_tka_score_bckill + DefaultScoreBcKill=1 matches Base g_tka_score_bckill 1", result: pass }
     confidence: high
-    notes: "Wave-2 FIX: bckill is now correctly un-gated from attacker-carry, reads the right cvar, and is live."
+    notes: "bckill is correctly un-gated from attacker-carry, reads the right cvar, and is live."
 
   - id: tka.score.bctime
     name: "Ball-carry-time secondary column (TKA_BCTIME += frametime)"
@@ -254,11 +274,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED this pass (dead->live): the TKA_BCTIME column is DECLARED in Activate (sorts as secondary) and Tick() accrues frametime to TKA_BCTIME (banks whole seconds, carries the fractional remainder, resets the remainder on each new pickup in GiveBall). Tick now has a LIVE caller: GameWorld.cs:2177 `case TeamKeepaway tka: tka.Tick(Simulation.FrameTime); break;` (was CheckPointLimit-only). So with a carrier, TKA_BCTIME accrues each frame."
+      - "The TKA_BCTIME column is DECLARED in Activate (sorts as secondary) and Tick() accrues frametime to TKA_BCTIME (banks whole seconds, carries the fractional remainder, resets the remainder on each new pickup in GiveBall). Tick has a LIVE caller: GameWorld.cs:2301 case TeamKeepaway tka: tka.Tick(Simulation.FrameTime). So with a carrier, TKA_BCTIME accrues each frame."
     verification:
-      - { kind: codetrace, ref: "TeamKeepaway.Tick (TeamKeepaway.cs:516-522) accrues _bcTimeRemainder + AddCol TKA_BCTIME wholeSecs; live caller GameWorld.cs:2177 case TeamKeepaway tka: tka.Tick(Simulation.FrameTime)", result: pass }
+      - { kind: codetrace, ref: "TeamKeepaway.Tick accrues _bcTimeRemainder + AddCol TKA_BCTIME wholeSecs; live caller GameWorld.cs:2301", result: pass }
     confidence: high
-    notes: "FIX this pass: the single-line round-drive wiring (CheckPointLimit -> Tick) at GameWorld.cs:2177 makes the bctime accrual live. Tick() ends with CheckPointLimit() so the limit check is preserved."
+    notes: "The single-line round-drive wiring (Tick) makes the bctime accrual live. Tick() ends with CheckPointLimit() so the limit check is preserved."
 
   - id: tka.score.timepoints
     name: "Timed possession points to TEAM score (g_tka_score_timepoints)"
@@ -280,12 +300,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED this pass (dead->live): Tick() accrues g_tka_score_timepoints*dt to the carrier's TEAM score with a fractional remainder (QC float2int_decimal_fld analogue), and Tick is now CALLED every frame on the live path (GameWorld.cs:2177 case TeamKeepaway tka: tka.Tick(Simulation.FrameTime); was CheckPointLimit-only). Default is 0 (off), so still no impact on stock servers, but the feature is now connected rather than dead-wired."
+      - "Tick() accrues g_tka_score_timepoints*dt to the carrier's TEAM score with a fractional remainder (QC float2int_decimal_fld analogue), and Tick is CALLED every frame on the live path (GameWorld.cs:2301). Default is 0 (off), so still no impact on stock servers, but the feature is connected."
       - "Residual: Scores_CountFragsRemaining suppression tied to timepoints (announce remaining frags only when timepoints off) is still unported."
     verification:
-      - { kind: codetrace, ref: "TeamKeepaway.Tick (TeamKeepaway.cs:502-512) has the timepoints accrual via ScoreTimePoints (g_tka_score_timepoints) -> AddTeamScore; live caller GameWorld.cs:2177 tka.Tick(Simulation.FrameTime)", result: pass }
+      - { kind: codetrace, ref: "TeamKeepaway.Tick has the timepoints accrual via ScoreTimePoints (g_tka_score_timepoints) -> AddTeamScore; live caller GameWorld.cs:2301 tka.Tick(Simulation.FrameTime)", result: pass }
     confidence: high
-    notes: "FIX this pass: same single-line root cause as bctime now resolved (CheckPointLimit -> Tick at GameWorld.cs:2177). Cvar/remainder logic correct and live. Only the Scores_CountFragsRemaining suppression remains."
+    notes: "Cvar/remainder logic correct and live. Only the Scores_CountFragsRemaining suppression remains."
 
   - id: tka.score.nofrags
     name: "No DM frags (GiveFragsForKill zeroed) + reset_map_global"
@@ -295,7 +315,7 @@ features:
       - "common/gametypes/gametype/tka/sv_tka.qc:reset_map_global"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:OnGiveFragsForKill"
-      - "src/XonoticGodot.Server/Scores.cs:520"
+      - "src/XonoticGodot.Server/Scores.cs"
     constants:
       - { name: "frag_delta", base: "0 (GiveFragsForKill sets M_ARGV(2)=0)", port: "0 (OnGiveFragsForKill sets FragScore=0, returns true)", match: true }
     status:
@@ -308,12 +328,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "TKA now subscribes MutatorHooks.GiveFragsForKill (Activate) and zeroes the per-kill frag delta (returns true), and the hook is now actually FIRED on the live scoring path at Scores.cs:520 (the ENEMY-FRAG branch reads the adjusted FragScore back). So DM frags are suppressed in TKA, matching Base."
-      - "reset_map_global (clear float2int_decimal_fld per client) has no port analogue; moot while timepoints is dead (and the remainder is a class field reset in Activate)."
+      - "TKA subscribes MutatorHooks.GiveFragsForKill (Activate) and zeroes the per-kill frag delta (returns true), and the hook is FIRED on the live scoring path in Scores.cs (the ENEMY-FRAG branch reads the adjusted FragScore back). So DM frags are suppressed in TKA, matching Base."
+      - "reset_map_global (clear float2int_decimal_fld per client) has no port analogue; moot while timepoints is off by default (and the remainder is a class field reset in Activate)."
     verification:
-      - { kind: codetrace, ref: "Activate -> MutatorHooks.GiveFragsForKill.Add(OnGiveFragsForKill); Scores.cs:520 GiveFragsForKill.Call -> frag=(int)gfk.FragScore before GiveFrags", result: pass }
+      - { kind: codetrace, ref: "Activate -> MutatorHooks.GiveFragsForKill.Add(OnGiveFragsForKill); Scores.cs GiveFragsForKill.Call -> frag=(int)gfk.FragScore before GiveFrags", result: pass }
     confidence: high
-    notes: "Wave-1/2 FIX: the GiveFragsForKill chain is now wired at the Scores.Obituary call site (previously the dormant cross-boundary gap), and TKA zeroes the frag."
+    notes: "The GiveFragsForKill chain is wired at the Scores call site, and TKA zeroes the frag."
 
   - id: tka.damage.matrix
     name: "Possession damage/force scaling matrix (Damage_Calculate)"
@@ -340,38 +360,42 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "TeamKeepaway now subscribes MutatorHooks.DamageCalculate (Activate), and that hook is fired by DamageSystem.cs:256 on every player-vs-player hit, so the possession damage+force matrix actually affects combat (previously zero callers)."
-      - "Both damage AND force are scaled: OnDamageCalculate applies DamageScale to args.Damage and DamageForceScale to args.Force (the force getter was previously missing entirely)."
-      - "Correct cvar family + form: reads the VECTOR cvars g_tka_ballcarrier/noncarrier_damage/force and indexes the x/y/z component (self / other-carrier / noncarrier) chosen by whether the ATTACKER carries — matching Base. Default 1 1 1, so no scaling on stock servers, but it is now connected."
+      - "TeamKeepaway subscribes MutatorHooks.DamageCalculate (Activate), and that hook is fired by DamageSystem.cs:256 on every player-vs-player hit, so the possession damage+force matrix affects combat."
+      - "Both damage AND force are scaled: OnDamageCalculate applies DamageScale to args.Damage and DamageForceScale to args.Force."
+      - "Correct cvar family + form: reads the VECTOR cvars g_tka_ballcarrier/noncarrier_damage/force and indexes the x/y/z component (self / other-carrier / noncarrier) chosen by whether the ATTACKER carries — matching Base. Default 1 1 1, so no scaling on stock servers, but it is connected."
     verification:
-      - { kind: codetrace, ref: "Activate -> MutatorHooks.DamageCalculate.Add(OnDamageCalculate); DamageSystem.cs:254-256 builds DamageCalculateArgs + Call; ScaleFactor parses vector cvar component by attacker-carries", result: pass }
+      - { kind: codetrace, ref: "Activate -> MutatorHooks.DamageCalculate.Add(OnDamageCalculate); DamageSystem.cs builds DamageCalculateArgs + Call; ScaleFactor parses vector cvar component by attacker-carries", result: pass }
     confidence: high
-    notes: "Wave-2 FIX (dead->live): the matrix is now subscribed to the live DamageCalculate channel, reads the correct g_tka vector cvars, and scales both damage and force."
+    notes: "The matrix is subscribed to the live DamageCalculate channel, reads the correct g_tka vector cvars, and scales both damage and force."
 
   - id: tka.carrier.highspeed
     name: "Carrier speed multiplier (MOVEVARS_HIGHSPEED *= g_tka_ballcarrier_highspeed)"
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/tka/sv_tka.qc:PlayerPhysics_UpdateStats"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:OnPlayerPhysics"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:BallCarrierHighspeed"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:221"
     constants:
-      - { name: "g_tka_ballcarrier_highspeed", base: "1", port: "none", match: false }
+      - { name: "g_tka_ballcarrier_highspeed", base: "1", port: "g_tka_ballcarrier_highspeed (correct cvar), fallback 1", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No PlayerPhysics hook applies a carrier highspeed multiplier (explicitly deferred in the class comment as needing a PlayerPhysics_UpdateStats seam)."
-      - "Default 1 (no effect by default); absent feature with low stock impact."
+      - "FIXED (missing -> faithful + live): OnPlayerPhysics multiplies the carrier's SpeedMultiplier by g_tka_ballcarrier_highspeed (QC STAT(MOVEVARS_HIGHSPEED, player) *= ...). Subscribed in Activate to MutatorHooks.PlayerPhysics and fired by the live physics step PlayerPhysics.cs:221, the same channel Keepaway/Nexball/Buffs/Dodging use. The pure multiply composes with powerup/buff factors (SpeedMultiplier reset to 1 each frame)."
+      - "Default 1 (no effect by default); the feature is now wired even though it is a no-op on stock servers."
     verification:
-      - { kind: codetrace, ref: "No tka reference in PlayerPhysics.cs / MovementParameters; class comment lists carrier-highspeed as deferred", result: fail }
+      - { kind: codetrace, ref: "Activate -> MutatorHooks.PlayerPhysics.Add(OnPlayerPhysics); PlayerPhysics.cs:221 MutatorHooks.PlayerPhysics.Call(ref pp); OnPlayerPhysics: if (Carrier==player) player.SpeedMultiplier *= BallCarrierHighspeed", result: pass }
+      - { kind: value, ref: "BallCarrierHighspeed reads g_tka_ballcarrier_highspeed fallback 1 == Base autocvar default 1", result: pass }
     confidence: high
-    notes: "Unchanged: no carrier movement modifier. Default 1 so no stock impact."
+    notes: "FIX this pass (Wave 6a, missing -> faithful + live): the carrier highspeed modifier is now ported and wired on the live PlayerPhysics channel. Default 1 so no stock behavior change."
 
   - id: tka.win.pointlimit
     name: "Team point-limit + lead-limit win condition"
@@ -381,11 +405,11 @@ features:
       - "common/gametypes/gametype/tka/tka.qh:gametype_init pointlimit=50 leadlimit=0"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:CheckPointLimit"
-      - "src/XonoticGodot.Server/GameWorld.cs:2177"
-      - "src/XonoticGodot.Server/GameWorld.cs:2681"
+      - "src/XonoticGodot.Server/GameWorld.cs:2301"
+      - "src/XonoticGodot.Server/GameWorld.cs:2819"
     constants:
       - { name: "pointlimit_default", base: "50 (mapinfo; g_tka_point_limit=-1->mapinfo)", port: "50 (DefaultPointLimit)", match: true }
-      - { name: "leadlimit_default", base: "0 (g_tka_point_leadlimit -> mapinfo 0)", port: "0 (LeadLimit; now modeled in CheckPointLimit)", match: true }
+      - { name: "leadlimit_default", base: "0 (g_tka_point_leadlimit -> mapinfo 0)", port: "0 (LeadLimit; modeled in CheckPointLimit)", match: true }
       - { name: "timelimit_default", base: "15", port: "via gametype_init/cvars", match: true }
     status:
       logic: faithful
@@ -397,13 +421,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CheckPointLimit is LIVE (now reached via tka.Tick at GameWorld.cs:2177, which ends with CheckPointLimit()) and latches WinningTeam at the point limit via the ST_SCORE team leader; reported at GameWorld.cs:2679-2681 on MatchEnded. With the now-working scoring path it can actually trigger in play."
+      - "CheckPointLimit is LIVE (reached via tka.Tick at GameWorld.cs:2301, which ends with CheckPointLimit()) and latches WinningTeam at the point limit via the ST_SCORE team leader; reported at GameWorld.cs:2819-2821 on MatchEnded. With the working scoring path it can trigger in play."
       - "Lead limit (g_tka_point_leadlimit / GameRules_limit_lead) is modeled: LeadLimit getter + the leader-vs-second check in CheckPointLimit."
       - "Port PointLimit fallback is literal 50; Base g_tka_point_limit default is -1 (use mapinfo 50). Resolution order (g_tka_point_limit -> fraglimit -> 50) is reasonable."
     verification:
-      - { kind: codetrace, ref: "GameWorld.cs:2679-2681 reports tka.WinningTeam when MatchEnded; CheckPointLimit polled each frame via tka.Tick at :2026 (Tick ends with CheckPointLimit); lead-limit branch present", result: pass }
+      - { kind: codetrace, ref: "GameWorld.cs:2819-2821 reports tka.WinningTeam when MatchEnded; CheckPointLimit polled each frame via tka.Tick at :2301 (Tick ends with CheckPointLimit); lead-limit branch present", result: pass }
     confidence: high
-    notes: "Was already live; the limit check is preserved through the Tick wiring change (Tick calls CheckPointLimit). Lead-limit modeling + the live scoring path make the limit actually reachable."
+    notes: "Live; the limit check is preserved through the Tick wiring (Tick calls CheckPointLimit). Lead-limit modeling + the live scoring path make the limit reachable."
 
   - id: tka.team.framing
     name: "Team framing (teams 2..4, team spawns) + tie -> overtime"
@@ -430,11 +454,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Team-count clamp (2..4), the override logic (g_tka_teams_override>=2 else g_tka_teams), team-spawn gating (g_tka_team_spawns), and tie->overtime (TeamTie.TopTwoTied on ST_SCORE) are faithfully modeled. Reachable via GameWorld.cs:1825 tka.Activate()."
+      - "Team-count clamp (2..4), the override logic (g_tka_teams_override>=2 else g_tka_teams), team-spawn gating (g_tka_team_spawns), and tie->overtime (TeamTie.TopTwoTied on ST_SCORE) are faithfully modeled. Reachable via GameWorld.cs:1832 tka.Activate()."
     verification:
-      - { kind: codetrace, ref: "tka.Activate() at GameWorld.cs:1825; TeamGame=true; TeamCount clamp 2..4 + override; RequestsTeamSpawns gates g_tka_team_spawns; ReportsTie=TeamTie.TopTwoTied", result: pass }
+      - { kind: codetrace, ref: "tka.Activate() at GameWorld.cs:1832; TeamGame=true; TeamCount clamp 2..4 + override; RequestsTeamSpawns gates g_tka_team_spawns; ReportsTie=TeamTie.TopTwoTied", result: pass }
     confidence: high
-    notes: "Unchanged: correctly modeled as a team mode, with the correct g_tka_* cvars."
+    notes: "Correctly modeled as a team mode, with the correct g_tka_* cvars."
 
   - id: tka.hud.modicon
     name: "TKA HUD mod-icon + TKA_BALLSTATUS stat (team ball-taken icons)"
@@ -443,29 +467,35 @@ features:
       - "common/gametypes/gametype/tka/cl_tka.qc:HUD_Mod_TeamKeepaway"
       - "common/gametypes/gametype/tka/sv_tka.qc:PlayerPreThink (STAT(TKA_BALLSTATUS) bits)"
       - "common/gametypes/gametype/tka/sv_tka.qc:SpectateCopy"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:BallStatusFor"
+      - "src/XonoticGodot.Net/GametypeStatusBlock.cs:118"
+      - "game/net/NetGame.cs:3632"
+      - "game/hud/ModIconsPanel.cs:DrawTeamKeepaway"
     constants:
-      - { name: "blink", base: "blink(0.85,0.15,5)", port: "none", match: false }
-      - { name: "TKA_BALL_CARRYING", base: "BIT(4)", port: "never set", match: false }
-      - { name: "TKA_BALL_TAKEN_RED/BLUE/YELLOW/PINK", base: "BIT(0..3)", port: "never set", match: false }
-      - { name: "TKA_BALL_DROPPED", base: "BIT(5)", port: "never set", match: false }
+      - { name: "blink", base: "blink(0.85,0.15,5)", port: "Blink(0.85,0.15,5) (ModIconsPanel.DrawTeamKeepaway)", match: true }
+      - { name: "TKA_BALL_CARRYING", base: "BIT(4)", port: "BallCarrying 1<<4 (set per recipient)", match: true }
+      - { name: "TKA_BALL_TAKEN_RED/BLUE/YELLOW/PINK", base: "BIT(0..3)", port: "BallTakenRed/Blue/Yellow/Pink 1<<0..3", match: true }
+      - { name: "TKA_BALL_DROPPED", base: "BIT(5)", port: "BallDropped 1<<5", match: true }
+      - { name: "status_change_expand", base: "bound(0, elapsed*2, 1) expand transition", port: "Clamp(elapsed*2,0,1) folded into icon alpha", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ModIconsPanel still has no Keepaway/TeamKeepaway mode or DrawTeamKeepaway (grep for tka/ballstatus in ModIconsPanel.cs -> no hits); NetGame mode-select never sets it."
-      - "Server never produces STAT(TKA_BALLSTATUS) (PlayerPreThink bit-packing of carrying/dropped/per-team taken absent), so the team ball-taken icons (tka_taken_red/blue/yellow/pink) + carrying icon with expand/blink transition are absent on both server (stat) and client (renderer)."
-      - "SpectateCopy mirroring of the ball status is also unported."
+      - "FIXED (missing -> faithful + live): the full server->net->client mod-icon chain is now wired. Server: BallStatusFor(viewer) bit-packs carrying/dropped/per-team-taken (QC PlayerPreThink), recipient-relative for the carrying bit; written per peer at GametypeStatusBlock.cs:118-123 (Kind.TeamKeepaway, one byte). Client: ClientNet decodes -> NetGame.cs:3632 feeds panel.TkaBallStatus + sets ModIconsMode.TeamKeepaway -> ModIconsPanel.DrawTeamKeepaway draws keepawayball_carrying / tka_taken_<color> with blink(0.85,0.15,5) + the status-change expand transition (QC HUD_Mod_TeamKeepaway)."
+      - "SpectateCopy mirroring is implicitly handled: BallStatusFor is computed per recipient on the server, so a spectator's panel reflects their view-entity's status through the same per-peer write (no separate copy needed)."
+      - "Minor presentation: QC uses a separate drawpic_aspect_skin_expanding for the prevstatus expand layer; the port folds the expand factor f into the single icon's alpha. Visual is equivalent; the distinct expanding overlay sprite is not drawn separately."
     verification:
-      - { kind: codetrace, ref: "Grep TKA_BALLSTATUS/HUD_Mod_TeamKeepaway -> no port hits; ModIconsPanel has no tka mode (grep result empty)", result: fail }
+      - { kind: codetrace, ref: "BallStatusFor (TeamKeepaway.cs:291) -> GametypeStatusBlock.cs:122 WriteByte(tka.BallStatusFor(viewer)); ServerNet.cs Capture writes the block; ClientNet decodes TkaBallStatus; NetGame.cs:3632 case TeamKeepaway sets panel.Mode + TkaBallStatus; ModIconsPanel.DrawTeamKeepaway renders", result: pass }
+      - { kind: value, ref: "Blink(0.85,0.15,5) + Clamp(elapsed*2,0,1) + the BIT(0..5) layout all match cl_tka.qc / tka.qh constants", result: pass }
     confidence: high
-    notes: "Unchanged: presentation deferred to Wave 3. TKA's per-team-taken mod-icon remains entirely absent."
+    notes: "FIX this pass (Wave 6a, missing -> faithful + live): the per-team-taken / carrying / dropped mod-icon is fully wired through the live GametypeStatusBlock + ModIconsPanel path."
 
   - id: tka.waypoints.tracking
     name: "Team-colored carrier / ball waypoints + radar tracking"
@@ -474,25 +504,35 @@ features:
       - "common/gametypes/gametype/tka/sv_tka.qc:tka_ballcarrier_waypointsprite_visible_for_player"
       - "common/gametypes/gametype/tka/sv_tka.qc:tka_TouchEvent (WP_TkaBallCarrier{Red,Blue,Yellow,Pink})"
       - "common/gametypes/gametype/tka/sv_tka.qc:tka_RespawnBall / tka_DropEvent (WP_KaBall)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:CollectWaypoints"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointRegistry"
+      - "game/net/ServerNet.cs:923"
+      - "game/client/WaypointSpriteLayer.cs"
     constants:
-      - { name: "g_tkaball_tracking", base: "1 (0=none/1=tracking/warmup)", port: "none", match: false }
+      - { name: "g_tkaball_tracking", base: "1 (0=none/1=always/2=dropped-only)", port: "g_tkaball_tracking read; 0=none, nonzero=always (==2 dropped-only collapsed to always)", match: false }
+      - { name: "carrier_sprite_names", base: "WP_TkaBallCarrier{Red,Blue,Yellow,Pink} / WP_KaBall", port: "TkaBallCarrier{Red,Blue,Yellow,Pink} (tka_taken_<color> icons) / KaBall", match: true }
+      - { name: "carrier_colormod", base: "colormapPaletteColor(team-1, 0)", port: "TeamRadarColor(team) per-team tint", match: true }
+      - { name: "radar_icon", base: "RADARICON_FLAGCARRIER", port: "RadarIcon=1 (objective)", match: true }
+      - { name: "sprite_offset", base: "'0 0 64'", port: "(0,0,64)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: partial
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No WP_KaBall / per-team WP_TkaBallCarrier{Red,Blue,Yellow,Pink} sprites; no SPRITERULE_TEAMPLAY carrier colormod (colormapPaletteColor by team); no RADARICON_FLAGCARRIER."
-      - "No tracking-mode handling (g_tkaball_tracking), no spectator/invisibility visibility rules, no same-team always-visible rule (tka_ballcarrier_waypointsprite_visible_for_player)."
+      - "FIXED (missing -> faithful logic + live): CollectWaypoints (TeamKeepaway.cs:675) now produces a TEAM-COLORED carrier sprite (TkaBallCarrier<team> + per-team radar tint, offset '0 0 64', RADARICON_FLAGCARRIER) while held, and the neutral KaBall sprite on the loose ball. It honors g_tkaball_tracking (0 = no waypoint). This is pulled LIVE by ServerNet.SendWaypoints (ServerNet.cs:474 -> :927 _world.GameType.CollectWaypoints), filtered per peer, networked, and rendered by the client WaypointSpriteLayer + RadarPanel."
+      - "RESIDUAL (values:partial): g_tkaball_tracking has THREE Base modes (0 none / 1 always / 2 only-when-dropped); the port treats any nonzero value as always-show, so the ==2 dropped-only mode is not distinguished."
+      - "RESIDUAL (presentation:partial): the carrier sprite is networked with SPRITERULE_DEFAULT (visible to everyone) and Team set for tint, but NOT SPRITERULE_TEAMPLAY with the tka_ballcarrier_waypointsprite_visible_for_player predicate (same-team-always / hide-from-spectators-of-the-carrier / hide-on-invisibility / warmup-always rules). So the per-viewer visibility nuance is approximated as always-visible."
     verification:
-      - { kind: codetrace, ref: "No tka waypoint code in src/** or game/**", result: fail }
+      - { kind: codetrace, ref: "CollectWaypoints (TeamKeepaway.cs:675) adds the carrier/loose sprite; ServerNet.cs:927 _world.GameType?.CollectWaypoints(_wpScratch) inside SendWaypoints (called at ServerNet.cs:474); client decodes ClientNet.Waypoints -> WaypointSpriteLayer (NetGame.cs:1464-1467) + RadarPanel.cs:277", result: pass }
+      - { kind: value, ref: "g_tkaball_tracking 2 (dropped-only) not modeled; carrier rule DEFAULT not TEAMPLAY -> the visibility predicate is approximated", result: fail }
     confidence: high
-    notes: "Unchanged: presentation deferred to Wave 3. TKA's team-colored carrier sprites all absent."
+    notes: "FIX this pass (Wave 6a, missing -> faithful logic + live): the team-colored carrier + loose-ball waypoints are produced and shipped through the live ServerNet.SendWaypoints / WaypointSpriteLayer path. Residual: the tracking==2 mode + the SPRITERULE_TEAMPLAY visibility predicate are approximated."
 
   - id: tka.bot.role
     name: "Bot TKA roles (carrier/collector, team-aware goalrating, ForbidAttack)"
@@ -506,14 +546,15 @@ features:
       - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:FindBall"
       - "src/XonoticGodot.Server/Bot/BotRoles.cs:99"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:ForbidBotAttack"
-      - "src/XonoticGodot.Server/GameWorld.cs:1829-1830"
+      - "src/XonoticGodot.Server/GameWorld.cs:1831"
     constants:
       - { name: "ball_goalrating_scale", base: "8000 (enemy) / 4000 (sameteam) ratingscale, distance 2000", port: "RatingBall 8000 / RatingBallSameTeam 4000, distance 2000 (TeamGame-gated sameteam split)", match: true }
-      - { name: "ball_class", base: "new(keepawayball) -> classname keepawayball", port: "FindBall queries 'keepawayball' (now matches BallEntity.cs:105)", match: true }
-      - { name: "carrier_enemyplayers_ratingscale", base: "10000 (carrier) / 500 (collector)", port: "6000 (carrier branch) / collector uses ball-rating only — approximated, not split per Base", match: false }
+      - { name: "ball_class", base: "new(keepawayball) -> classname keepawayball", port: "FindBall queries 'keepawayball' (matches BallEntity.cs:105)", match: true }
+      - { name: "carrier_enemyplayers_ratingscale", base: "10000 (carrier) / 500 (collector)", port: "10000 (carrier branch) / 500 (collector branch) — now Base-exact", match: true }
+      - { name: "items_ratingscale", base: "10000 (carrier) / 10000 (collector)", port: "10000 / 10000", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
@@ -521,14 +562,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED this pass (dead->live): the classname mismatch is resolved — FindBall (BotObjectiveRoles.cs:292) now queries 'keepawayball', matching the live ball (BallEntity.cs:105). RoleKeepaway is dispatched for 'tka' (BotRoles.cs:99, fed from GameType.NetName='tka' via BotPopulation/BotController), and the carry link reads Entity.GtCarrier (set by AttachToCarrier in the live GiveBall path) — so bots actually find/chase the ball and detect carriers now."
-      - "FIXED this pass: the TKA team-aware goalrating split is implemented (BotObjectiveRoles.cs:269-274) — a loose ball or an ENEMY carrier rates 8000, a SAME-TEAM carrier rates 4000, gated on brain.GameType.TeamGame; matches havocbot_goalrating_tkaball(8000,4000) with DIFF_TEAM/SAME_TEAM. FFA Keepaway always 8000."
-      - "FIXED this pass: Bot_ForbidAttack is ported (TeamKeepaway.ForbidBotAttack) with Base-exact logic (!targCarries && !botCarries && haveHeldBall && !(g_tka_score_team && teamHasBall)) and wired LIVE — GameWorld.cs:1829-1830 installs BotBrain.ForbidAttackHook in the TKA Activate case, consumed at BotBrain.cs:797 during target eligibility."
-      - "RESIDUAL: carrier/collector are collapsed into one RoleKeepaway (driven by the carryingBall branch each evaluation) rather than Base's two roles with explicit transitions; the carrier-branch enemy/item ratings (6000/8000) approximate Base's carrier(10000)/collector(500) enemyplayers ratingscale. Ball-rating values are faithful; only the per-role enemy-priority numbers differ."
+      - "Logic + values now faithful + live. FindBall (BotObjectiveRoles.cs:387) queries 'keepawayball', matching the live ball (BallEntity.cs:105). RoleKeepaway is dispatched for 'tka' (BotRoles.cs:99) and the carry link reads ball.GtCarrier (set by AttachToCarrier in the live GiveBall path)."
+      - "The TKA team-aware ball goalrating split is implemented (BotObjectiveRoles.cs:367-370): a loose ball or an ENEMY carrier rates 8000, a SAME-TEAM carrier rates 4000, gated on brain.GameType.TeamGame; matches havocbot_goalrating_tkaball(8000,4000) distance 2000."
+      - "FIXED this pass (values partial -> faithful): the carrier/collector enemy-priority numbers are now Base-exact — the carrier branch rates enemyplayers 10000 (BotObjectiveRoles.cs:353) and the collector branch rates enemyplayers 500 (BotObjectiveRoles.cs:360), matching havocbot_role_tka_carrier(10000) / havocbot_role_tka_collector(500). Items 10000/10000 also match. The roles are still selected by the carryingBall branch each evaluation rather than as two explicit havocbot_role transitions, but the rating numbers each branch emits are now identical to Base."
+      - "Bot_ForbidAttack is ported (TeamKeepaway.ForbidBotAttack) with Base-exact logic and wired LIVE — GameWorld.cs:1831-1837 installs BotBrain.ForbidAttackHook in the TKA Activate case, consumed at BotBrain.cs:797 during target eligibility."
     verification:
-      - { kind: codetrace, ref: "BotRoles.cs:99 'tka' -> RoleKeepaway; FindBall (BotObjectiveRoles.cs:292) FindByClass('keepawayball') == BallEntity.cs:105 ClassName 'keepawayball'; GtCarrier set by AttachToCarrier (EntityGametypeState.cs:224) on the live GiveBall (TeamKeepaway.cs:364)", result: pass }
-      - { kind: codetrace, ref: "BotObjectiveRoles.cs:269-274 sameteam split 8000/4000 gated on GameType.TeamGame; brain.GameType set BotController.cs:104,140; matches Base havocbot_goalrating_tkaball(8000,4000)", result: pass }
-      - { kind: codetrace, ref: "GameWorld.cs:1829-1830 BotBrain.ForbidAttackHook = tka.ForbidBotAttack; BotBrain.cs:797 invokes ForbidAttackHook in IsAttackEligible; TeamKeepaway.cs:421 logic == Base MUTATOR_HOOKFUNCTION(tka, Bot_ForbidAttack)", result: pass }
-      - { kind: value, ref: "carrier/collector enemyplayers ratingscale: port 6000 (carrier) vs Base 10000/500 — approximate", result: fail }
+      - { kind: codetrace, ref: "BotRoles.cs:99 'tka' -> RoleKeepaway; FindBall (BotObjectiveRoles.cs:387) FindByClass('keepawayball') == BallEntity.cs:105 ClassName 'keepawayball'; GtCarrier set by AttachToCarrier on the live GiveBall", result: pass }
+      - { kind: value, ref: "BotObjectiveRoles.cs:353 carrier enemyplayers 10000, :360 collector enemyplayers 500, items 10000/10000, ball 8000/4000 dist 2000 == Base havocbot_role_tka_carrier/collector + havocbot_goalrating_tkaball", result: pass }
+      - { kind: codetrace, ref: "GameWorld.cs:1831-1837 BotBrain.ForbidAttackHook = tka.ForbidBotAttack; BotBrain.cs:797 invokes ForbidAttackHook in IsAttackEligible; TeamKeepaway.ForbidBotAttack logic == Base Bot_ForbidAttack", result: pass }
     confidence: high
-    notes: "FIX this pass (the baseline's top worst-gap, dead->live): Wave-5-finish (commit 023ba70) fixed the ball-find classname, added the 8000/4000 sameteam goalrating split, and ported+wired Bot_ForbidAttack live. Logic now faithful and live; values:partial only because the collapsed carrier/collector enemy-priority ratings (6000 vs Base 10000/500) are approximate."
+    notes: "FIX this pass (values partial -> faithful): the carrier/collector enemyplayers ratingscales were corrected from the baseline's approximate 6000 to Base-exact 10000/500. Logic + values + liveness now all faithful."

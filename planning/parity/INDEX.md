@@ -1,6 +1,6 @@
 # Parity Index
 
-_Generated 2026-06-25 from 154 units, 1985 features._
+_Generated 2026-06-25 from 154 units, 1990 features._
 
 Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liveness `live`/`DEAD`/`~`/`?`.
 
@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1385 | 246 | 16 | 334 | 3 | 1 |
-| values | 0 | 1358 | 208 | 192 | 210 | 0 | 17 |
-| timing | 0 | 893 | 128 | 853 | 86 | 0 | 25 |
-| presentation | 0 | 337 | 284 | 1127 | 230 | 0 | 7 |
-| audio | 0 | 223 | 57 | 1645 | 54 | 0 | 6 |
-| liveness | 12 | 0 | 0 | 247 | 174 | 0 | 13 |
+| logic | 0 | 1409 | 230 | 16 | 331 | 3 | 1 |
+| values | 0 | 1386 | 193 | 192 | 202 | 0 | 17 |
+| timing | 0 | 907 | 119 | 855 | 84 | 0 | 25 |
+| presentation | 0 | 340 | 281 | 1128 | 234 | 0 | 7 |
+| audio | 0 | 222 | 57 | 1649 | 56 | 0 | 6 |
+| liveness | 12 | 0 | 0 | 232 | 172 | 0 | 13 |
 
 ## Features by unit
 
@@ -322,16 +322,16 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `assault.objective.advance_chain` | Destroyed objective fires its target -> activate next objective or roundend | OK | OK | - | - | - | live | high |
 | `assault.win.attacker_round` | Attackers destroy the core -> win the round (666 team-score sentinel) | OK | OK | OK | - | - | live | high |
 | `assault.round.second_round` | Two-round match: swap roles, re-clock round 2 to round 1 destruction time, 5s round delay | OK | OK | OK | - | - | live | high |
-| `assault.win.defender_timelimit` | Timelimit elapses without core destruction -> defenders win | OK | ~ | OK | - | - | live | high |
-| `assault.spawns.attacker_defender` | info_player_attacker / info_player_defender team spawn points | ~ | OK | - | - | - | ~ | high |
+| `assault.win.defender_timelimit` | Timelimit elapses without core destruction -> defenders win | OK | OK | OK | - | - | live | high |
+| `assault.spawns.attacker_defender` | info_player_attacker / info_player_defender team spawn points | OK | OK | - | - | - | live | high |
 | `assault.notify.role_and_destroyed` | Per-spawn attacking/defending centerprint + objective-destroyed broadcast | OK | OK | - | OK | - | live | high |
-| `assault.objective.waypoint_sprite` | Objective waypoint sprites (defend/push/destroy + health bars + radar icon) | MISS | MISS | MISS | MISS | - | - | high |
+| `assault.objective.waypoint_sprite` | Objective waypoint sprites (defend/push/destroy + health bars + radar icon) | OK | OK | OK | MISS | - | live | high |
 | `assault.mapobject.assault_wall` | func_assault_wall cosmetic wall toggles with its objective's health | OK | OK | ~ | OK | - | live | high |
-| `assault.turret.roundstart_teamswap` | Roundstart turret team-swap + respawn (and as TurretSpawn team seeding) | MISS | - | - | - | - | - | high |
-| `assault.bot.objective_role` | Bot offense/defense role rating the assault destructible objectives | ~ | ~ | ~ | - | - | live | medium |
-| `assault.spawns.objective_evalfunc` | Objective-aware spawn-point eval (deprioritize spots near inactive/destroyed objectives) | MISS | MISS | - | - | - | - | high |
-| `assault.objective.destructible_heal` | func_assault_destructible regen / event_heal (walls can be healed back up + sprite update) | MISS | MISS | - | MISS | - | - | high |
-| `assault.config.warmup_incompatible` | Assault disables warmup + ready-restart-after-countdown (ReadLevelCvars) | MISS | MISS | - | - | - | - | medium |
+| `assault.turret.roundstart_teamswap` | Roundstart turret team-swap + respawn (and as TurretSpawn team seeding) | OK | OK | - | - | - | live | high |
+| `assault.bot.objective_role` | Bot offense/defense role rating the assault destructible objectives | OK | OK | ~ | - | - | live | high |
+| `assault.spawns.objective_evalfunc` | Objective-aware spawn-point eval (deprioritize spots near inactive/destroyed objectives) | OK | OK | - | - | - | live | high |
+| `assault.objective.destructible_heal` | func_assault_destructible regen / event_heal (walls can be healed back up + sprite update) | OK | OK | - | ~ | - | live | high |
+| `assault.config.warmup_incompatible` | Assault disables warmup + ready-restart-after-countdown (ReadLevelCvars) | OK | OK | - | - | - | live | high |
 
 ### `clanarena` (gametype) — 20 features
 
@@ -394,19 +394,19 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cts.records.persistence` | Per-map top-99 CTS record ranking + UID gating | OK | OK | - | - | - | live | high |
 | `cts.records.notifications` | Finish + record-set/improved/broken notifications (INFO_RACE_*) + medal status | OK | OK | OK | OK | - | live | high |
 | `cts.finish.kill_delay_retract` | Finish kill-delay re-teleport to start (anti-speed-carry) | OK | OK | OK | - | - | live | high |
-| `cts.physics.force_keyboard` | Forced keyboard movement quantization + race_movetime accumulator (PlayerPhysics) | MISS | MISS | MISS | - | - | - | high |
+| `cts.physics.force_keyboard` | Forced keyboard movement quantization + race_movetime accumulator (PlayerPhysics) | OK | OK | OK | - | - | live | high |
 | `cts.combat.selfdamage` | Self-damage + fall-damage suppression (g_cts_selfdamage) | OK | OK | - | - | - | live | high |
-| `cts.weapon.shotgun_only` | Shotgun-only loadout (WantWeapon -> WEP_SHOTGUN) | ~ | OK | - | - | - | live | high |
+| `cts.weapon.shotgun_only` | Shotgun-only loadout (WantWeapon -> WEP_SHOTGUN) | OK | OK | - | - | - | live | high |
 | `cts.weapon.no_drop_throw` | Forbid weapon throw + drop | OK | - | - | - | - | live | high |
 | `cts.death.respawn_rules` | Death rules: force respawn, instant CTS respawn, abandon run, remove projectiles | OK | OK | OK | - | - | live | high |
-| `cts.items.loot_filter` | Loot/monster-item filtering (g_cts_drop_monster_items) | ~ | OK | - | - | - | live | medium |
+| `cts.items.loot_filter` | Loot/monster-item filtering (g_cts_drop_monster_items) | OK | OK | - | - | - | live | high |
 | `cts.speedaward` | Speed award (per-round + all-time best speed) + name DB update | MISS | MISS | MISS | MISS | - | - | high |
 | `cts.hud.race_timer` | Race timer HUD: running clock, checkpoint splits, anticipation, medal, PB/server-best | OK | OK | OK | ~ | - | live | high |
 | `cts.hud.cl_panel_gating` | CTS client panel gating (physics/strafe/race-timer shown, score/accuracy/item-stats hidden) | OK | - | - | ~ | - | live | high |
-| `cts.map_reset` | Map reset: clear in-memory records, place event-log, qualifying==2 collapse | MISS | - | - | - | - | - | medium |
+| `cts.map_reset` | Map reset: clear in-memory records, place event-log, qualifying==2 collapse | ~ | - | - | - | - | live | high |
 | `cts.lifecycle.prepare_player` | Per-player race bookkeeping on connect/spawn/observe (race_PreparePlayer / race_RetractPlayer / race_checkpoint=-1 / out-of-game flag) | MISS | MISS | - | - | - | - | high |
 | `cts.bot.role` | CTS bot role: route to the next race-checkpoint waypoint (havocbot_role_cts) | MISS | MISS | - | - | - | - | medium |
-| `cts.records.getrecords` | Map-record listing reply (GetRecords): per-map rank-1 CTS time + holder | MISS | - | - | - | - | - | high |
+| `cts.records.getrecords` | Map-record listing reply (GetRecords): per-map rank-1 CTS time + holder | ~ | OK | - | - | - | live | high |
 
 ### `deathmatch` (gametype) — 8 features
 
@@ -426,15 +426,15 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `domination.init.mutator_limits` | Mutator register + score/lead limit + team setup | OK | OK | OK | - | - | live | high |
-| `domination.controlpoint.spawn` | Control point entity spawn (dom_controlpoint / team_dom_point) | OK | ~ | OK | MISS | - | live | high |
+| `domination.controlpoint.spawn` | Control point entity spawn (dom_controlpoint / team_dom_point) | OK | OK | OK | ~ | - | live | high |
 | `domination.capture.touch` | Instant point capture on player touch | OK | OK | OK | - | - | live | high |
-| `domination.scoring.tick` | Periodic per-point score tick to owning team + capturer | OK | OK | ~ | - | - | live | high |
+| `domination.scoring.tick` | Periodic per-point score tick to owning team + capturer | OK | OK | OK | - | - | live | high |
 | `domination.scoring.rules` | Scoreboard rules (ticks/caps/takes columns + sort keys) | OK | OK | - | OK | - | live | high |
 | `domination.win.pointlimit` | Point-limit / lead-limit team win (tick variant) | OK | OK | OK | - | - | live | high |
-| `domination.roundbased.win` | Round-based variant: own-all-points round win + caps | OK | ~ | ? | - | - | live | high |
+| `domination.roundbased.win` | Round-based variant: own-all-points round win + caps | OK | ~ | ? | OK | - | live | high |
 | `domination.capture.audio` | Capture sound (DOM_CLAIM) + narration (play2all) | OK | OK | - | - | OK | live | high |
 | `domination.capture.notification` | Capture info notification (INFO_DOMINATION_CAPTURE_TIME) *(intended)* | OK | OK | - | OK | - | live | high |
-| `domination.hud.modicons_pps` | Mod-icons HUD: per-team points-per-second bars | OK | ~ | - | OK | - | live | high |
+| `domination.hud.modicons_pps` | Mod-icons HUD: per-team points-per-second bars | OK | OK | - | OK | - | live | high |
 | `domination.waypoint.sprite` | Control point waypoint sprite + radar team color/ping | OK | OK | OK | OK | - | live | high |
 | `domination.bot.role` | Bot role: rate unclaimed/contested/enemy control points | OK | OK | - | - | - | live | high |
 
@@ -446,7 +446,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `duel.rules.player_limit_2` | Hard 1v1 player limit (GetPlayerLimit -> 2) | OK | OK | - | - | - | live | high |
 | `duel.items.powerup_filter` | Powerup item filter (block powerups unless g_duel_with_powerups) | OK | OK | - | - | - | live | high |
 | `duel.scoring.frag_matrix` | Deathmatch frag/obituary scoring matrix (inherited) | OK | OK | OK | - | - | live | high |
-| `duel.rules.match_end_latch` | End-of-match frag-limit latch + winner resolution | OK | OK | ~ | - | - | live | high |
+| `duel.rules.match_end_latch` | End-of-match frag-limit latch + winner resolution | OK | OK | OK | - | - | live | high |
 | `duel.timing.respawn_delay` | Respawn delay (effective 2s via global fallback) | OK | OK | OK | - | - | live | high |
 | `duel.presentation.duel_title` | Duel 'playerA vs playerB' centerprint title | OK | OK | OK | OK | - | live | high |
 | `duel.presentation.forced_colors` | Forced enemy player colors in 1v1 (cl_forceplayercolors / suppress unique) | OK | OK | - | OK | - | live | high |
@@ -460,14 +460,14 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `freezetag.freeze.apply` | Freeze a fragged player (ice, HP=1, status effect, score matrix) | OK | OK | OK | OK | - | live | high |
 | `freezetag.freeze.weaponlock` | Frozen player cannot fire weapons | OK | - | OK | - | - | live | high |
 | `freezetag.freeze.movementlock` | Frozen player cannot move or jump | OK | OK | OK | - | - | live | high |
-| `freezetag.unfreeze` | Unfreeze: clear ice state, restore health, re-enable | OK | ~ | OK | ~ | - | live | high |
+| `freezetag.unfreeze` | Unfreeze: clear ice state, restore health, re-enable | OK | OK | OK | ~ | - | live | high |
 | `freezetag.revive.manual` | Manual revive by nearby teammate (range geometry + progress) | OK | OK | OK | - | - | live | high |
 | `freezetag.revive.score` | Revive scoring (reviver +1, FREEZETAG_REVIVALS +1; revived player return) | OK | ~ | OK | - | - | live | high |
 | `freezetag.revive.time_to_score` | Time-to-score revive model (revive_time_to_score / speed_t2s) | OK | OK | OK | - | - | live | high |
 | `freezetag.revive.auto_timeout` | Auto-thaw after g_freezetag_frozen_maxtime | OK | OK | OK | - | - | live | high |
-| `freezetag.revive.auto_reducible` | Hitting a frozen enemy speeds their auto-thaw (revive_auto_reducible) | MISS | MISS | MISS | - | - | - | high |
-| `freezetag.damage.frozen_invuln` | Frozen players take 0 health damage + g_frozen_force knockback scaling | MISS | MISS | - | - | - | - | high |
-| `freezetag.damage.softkill_void` | Frozen void/lava soft-kill teleport + g_frozen_damage_trigger; fall/nade revive | MISS | MISS | - | MISS | MISS | ~ | high |
+| `freezetag.revive.auto_reducible` | Hitting a frozen enemy speeds their auto-thaw (revive_auto_reducible) | OK | OK | OK | - | - | live | high |
+| `freezetag.damage.frozen_invuln` | Frozen players take 0 health damage + g_frozen_force knockback scaling | OK | OK | - | - | - | live | high |
+| `freezetag.damage.softkill_void` | Frozen void/lava soft-kill teleport + g_frozen_damage_trigger; fall/nade revive | ~ | ~ | - | ~ | ~ | ~ | high |
 | `freezetag.revive.spawnshield` | Post-revive spawn shield (g_freezetag_revive_spawnshield) | OK | OK | OK | - | - | live | high |
 | `freezetag.round.flow` | Round handler flow (warmup/countdown/round/end-delay, ROUND_OVER tie) | OK | ~ | OK | - | - | live | high |
 | `freezetag.win.roundlimit` | Match win on round/lead limit (ST_FT_ROUNDS) | OK | ~ | OK | - | - | live | high |
@@ -477,7 +477,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `freezetag.presentation.waypoints` | Frozen / Reviving waypoint sprites over frozen players | OK | OK | OK | OK | - | live | high |
 | `freezetag.presentation.notifications` | Freeze/revive/self/auto-revive/spawn-late notifications (+ sounds) | OK | OK | OK | OK | ~ | live | high |
 | `freezetag.presentation.overlay_eventchase` | Full-screen frozen overlay tint + cl_eventchase_frozen cam + damage HUD | OK | OK | OK | ~ | - | live | high |
-| `freezetag.bots` | Bot freeing / offense roles + frozen-target gating | MISS | MISS | MISS | - | - | - | medium |
+| `freezetag.bots` | Bot freeing / offense roles + frozen-target gating | ~ | MISS | MISS | - | - | ~ | medium |
 
 ### `invasion` (gametype) — 25 features
 
@@ -509,45 +509,47 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `invasion.hud.monster_count` | HUD monsters_total / monsters_killed publish (SV_StartFrame) | OK | OK | OK | OK | - | live | high |
 | `invasion.client.hide_item_stats` | Scoreboard hides the item-stats panel in Invasion (cl_invasion) | MISS | - | - | MISS | - | - | medium |
 
-### `keepaway` (gametype) — 14 features
+### `keepaway` (gametype) — 16 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `keepaway.ball.spawn` | Ball spawn at map start (single keepawayball) | OK | OK | OK | ~ | - | live | high |
 | `keepaway.ball.respawn` | Loose-ball relocate timer + fall-off/NEEDKILL respawn | ~ | OK | OK | MISS | OK | live | high |
 | `keepaway.ball.pickup` | Ball pickup (attach to carrier, mark VIP, pickups++) | OK | ~ | OK | ~ | OK | live | high |
-| `keepaway.ball.drop` | Ball drop on death/use-key/disconnect/observe | ~ | OK | OK | MISS | OK | ~ | high |
+| `keepaway.ball.drop` | Ball drop on death/use-key/disconnect/observe | ~ | OK | OK | MISS | OK | live | high |
 | `keepaway.score.timepoints` | Per-second carry scoring (score_timepoints * frametime) | OK | OK | OK | - | - | live | high |
 | `keepaway.score.bctime` | Ball-carry-time secondary column (KEEPAWAY_BCTIME += frametime) | OK | OK | OK | - | - | live | high |
 | `keepaway.score.killbonuses` | Kill bonuses (bckill killer bonus + killac carrier bonus + carrierkills) | OK | OK | OK | - | - | live | high |
-| `keepaway.win.pointlimit` | Point-limit win condition + leader | OK | ~ | - | - | - | live | medium |
+| `keepaway.win.pointlimit` | Point-limit win condition + leader | OK | OK | - | - | - | live | high |
 | `keepaway.ffa.framing` | FFA framing (no teams) + tie -> overtime | OK | OK | - | - | - | live | high |
 | `keepaway.damage.matrix` | Possession damage/force scaling matrix (Damage_Calculate) | OK | OK | - | - | - | live | high |
-| `keepaway.carrier.highspeed` | Carrier speed multiplier (MOVEVARS_HIGHSPEED *= ballcarrier_highspeed) | MISS | MISS | MISS | - | - | - | high |
+| `keepaway.carrier.highspeed` | Carrier speed multiplier (MOVEVARS_HIGHSPEED *= ballcarrier_highspeed) | OK | OK | OK | - | - | live | high |
 | `keepaway.hud.modicon` | Keepaway HUD mod-icon (blinking ball-carrying icon) | OK | OK | OK | OK | - | live | high |
-| `keepaway.waypoints.tracking` | Ball / carrier waypoint sprites + radar tracking (g_keepawayball_tracking) | MISS | MISS | - | MISS | - | - | high |
+| `keepaway.waypoints.tracking` | Ball / carrier waypoint sprites + radar tracking (g_keepawayball_tracking) | ~ | OK | OK | ~ | - | live | high |
 | `keepaway.bot.role` | Bot ka roles (carrier/collector + ball goal rating + ForbidAttack) | ~ | OK | - | - | - | live | high |
+| `keepaway.warn.noncarrier` | Non-carrier frag warning (CENTER_KEEPAWAY_WARN) | MISS | MISS | - | MISS | - | - | high |
+| `keepaway.score.countfragsremaining` | Suppress 'frags remaining' announce when timed scoring is on (Scores_CountFragsRemaining) | MISS | - | - | MISS | - | - | medium |
 
 ### `keyhunt` (gametype) — 21 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `keyhunt.controller.round_loop` | Controller round loop: wait-for-players -> countdown -> start round | OK | ~ | OK | ~ | - | live | high |
+| `keyhunt.controller.round_loop` | Controller round loop: wait-for-players -> countdown -> start round | OK | OK | OK | ~ | - | live | high |
 | `keyhunt.round.spawn_keys` | Spawn one key per team onto a random live teammate at round start | OK | OK | OK | OK | - | live | high |
 | `keyhunt.key.presentation_model` | Key model + team colormap + fullbright glow + per-team netname | OK | OK | - | OK | - | live | high |
-| `keyhunt.key.carried_orbit` | Carried key orbits the carrier (XYSPEED circle); stops on drop | ~ | ~ | MISS | ~ | - | live | high |
+| `keyhunt.key.carried_orbit` | Carried key orbits the carrier (XYSPEED circle); stops on drop | OK | OK | OK | OK | - | live | high |
 | `keyhunt.key.touch_collect` | Touch by enemy collects a dropped key (+collect score, delay_collect re-pickup gate) | OK | OK | OK | OK | OK | live | high |
 | `keyhunt.capture.all_owned_and_in_range` | Capture: all keys on one team AND carriers within maxdist | OK | OK | OK | - | - | live | high |
 | `keyhunt.capture.instant_path_dead` | Instant capture-on-pickup path (no maxdist) — dead | OK | - | - | - | - | DEAD | high |
-| `keyhunt.capture.scoring` | Capture scoring: team SCORE + KH_CAPS + per-carrier SP_SCORE/nade bonus | ~ | OK | - | - | - | live | medium |
+| `keyhunt.capture.scoring` | Capture scoring: team SCORE + KH_CAPS + per-carrier SP_SCORE/nade bonus | OK | OK | - | - | - | live | high |
 | `keyhunt.round.finish_reset` | Finish round: remove keys, count down, restart | OK | OK | OK | OK | - | live | high |
 | `keyhunt.loss.timeout_return` | Dropped key auto-returns/destroys after delay_return | OK | OK | OK | OK | OK | live | high |
-| `keyhunt.loss.loser_team_push_destroy` | Loser team: push (score_push) vs destroyed (score_destroyed split) | ~ | ~ | OK | OK | OK | live | high |
-| `keyhunt.drop.on_death` | Drop all keys on death/suicide/observe/disconnect | OK | OK | ~ | OK | OK | ~ | high |
+| `keyhunt.loss.loser_team_push_destroy` | Loser team: push (score_push) vs destroyed (score_destroyed split) | OK | OK | OK | OK | OK | live | high |
+| `keyhunt.drop.on_death` | Drop all keys on death/suicide/observe/disconnect | OK | OK | OK | OK | OK | live | high |
 | `keyhunt.drop.voluntary_use` | Voluntary +use drop of one key (kh_Key_DropOne) | OK | OK | OK | OK | OK | live | high |
-| `keyhunt.combat.carrier_damage_force` | Carrier/noncarrier damage + force multipliers | MISS | MISS | - | - | - | - | high |
+| `keyhunt.combat.carrier_damage_force` | Carrier/noncarrier damage + force multipliers | OK | OK | - | - | - | live | high |
 | `keyhunt.combat.carrier_frag` | Carrier-frag bonus + team-kill penalty | OK | OK | - | - | - | live | high |
-| `keyhunt.unreachable.damage_destroy` | Lava/slime/trigger destroy + damage-return (return_when_unreachable) | MISS | MISS | MISS | - | - | - | high |
+| `keyhunt.unreachable.damage_destroy` | Lava/slime/trigger destroy + damage-return (return_when_unreachable) | OK | ~ | OK | - | - | live | high |
 | `keyhunt.alarm.siren` | Periodic alarm while one team holds all keys | OK | OK | OK | - | OK | live | high |
 | `keyhunt.notify.center_info` | Center-print + info notification storm (START/SCAN/ROUNDSTART/INTERFERE/MEET/HELP + PICKUP/DROP/LOST/PUSHED/DESTROYED/CAPTURE) + capture VFX | OK | - | OK | OK | - | live | high |
 | `keyhunt.hud.objective_status` | OBJECTIVE_STATUS key-state pack + HUD modicons *(intended)* | OK | OK | OK | OK | - | live | high |
@@ -600,49 +602,52 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `mayhem.match.reset` | reset_map_players — zero total_damage_dealt on round/map reset | OK | - | - | - | - | live | high |
 | `mayhem.menu.describe_support` | Menu describe + map-support gating (m_isAlwaysSupported / m_isForcedSupported / m_configuremenu) *(intended)* | MISS | MISS | - | MISS | - | - | high |
 
-### `nexball` (gametype) — 17 features
+### `nexball` (gametype) — 19 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `nexball.init.initialize` | Mode init: teams, score/lead limit, meter-period rounding, radar | OK | ~ | - | - | - | live | high |
+| `nexball.init.initialize` | Mode init: teams, score/lead limit, meter-period rounding, radar | OK | OK | - | - | - | live | high |
 | `nexball.score.scorerules` | Score rules: team ST_NEXBALL_GOALS, player goals + faults columns | OK | OK | - | - | - | live | high |
 | `nexball.goal.touch_scoring` | GoalTouch: enemy goal +1, own-goal/fault -1 (credited to other team in 2-team), out returns | OK | OK | OK | MISS | ~ | live | high |
-| `nexball.goal.limit_win` | Goal limit + winning-team latch (GameRules_limit_score) + lead limit | OK | ~ | - | - | - | live | high |
+| `nexball.goal.limit_win` | Goal limit + winning-team latch (GameRules_limit_score) + lead limit | OK | OK | - | - | - | live | high |
 | `nexball.goal.tie_overtime` | Tied-goals reports a tie (timed-match overtime instead of draw) | OK | - | - | - | - | live | medium |
-| `nexball.ball.spawn` | Ball spawn: world ball entity, home origin, model/scale/trail/effects | OK | ~ | OK | ~ | - | live | high |
+| `nexball.ball.spawn` | Ball spawn: world ball entity, home origin, model/scale/trail/effects | OK | OK | OK | ~ | - | live | high |
 | `nexball.ball.lifecycle` | Ball lifecycle thinks: delay_start release, 4-step ResetBall glide, idle reset | OK | OK | OK | - | OK | live | high |
 | `nexball.ball.football_kick` | Football kick physics (soccer-style velocity boost on touch) | OK | OK | OK | - | OK | live | high |
 | `nexball.ball.basketball_pickup` | Basketball pickup gating (cnt, health, dropper delay_collect, carrier bump) | OK | OK | OK | - | OK | live | high |
 | `nexball.ball.giveball` | GiveBall: ownership, carry effects, forteam lifetime, weapon-arena swap | ~ | OK | OK | MISS | - | live | high |
 | `nexball.ball.dropball` | DropBall / DropOwner / drop on death/disconnect/observe | OK | OK | OK | MISS | - | ~ | high |
-| `nexball.carry.perframe` | Carry per-frame: view-ball follow, safe-pass lock, carrier-slowdown, carrying status | MISS | MISS | MISS | MISS | - | - | high |
+| `nexball.carry.perframe` | Carry per-frame: view-ball follow, safe-pass lock, carrier-slowdown, carrying status | ~ | ~ | OK | MISS | - | live | high |
 | `nexball.weapon.ballstealer` | Ball-launcher weapon (BallStealer): primary launch, power meter, secondary tackle/safe-pass | MISS | MISS | MISS | MISS | MISS | - | high |
 | `nexball.weapon.power_meter` | Basketball power meter (charge-and-release launch strength) | MISS | ~ | MISS | MISS | - | - | high |
 | `nexball.sound.cues` | Sound cues: bounce / drop / steal / shoot / goal | - | - | - | - | ~ | ~ | high |
 | `nexball.hud.modicon` | HUD mod icon (carrying indicator + power-meter bar) + eventchase | MISS | MISS | MISS | MISS | - | - | high |
 | `nexball.goal.sentinel_encoding` | Goal fault/out sentinel encoding + ball_redgoal/bluegoal swap *(intended)* | OK | OK | - | - | - | live | high |
+| `nexball.weapon_arena.player_setup` | Weapon-arena player setup: PlayerSpawn grants WEP_NEXBALL, PlayerPreThink strips normal weapons | MISS | MISS | MISS | - | - | - | high |
+| `nexball.item.filter_block` | Item mutator hooks: FilterItem (no loot WEP_NEXBALL), ItemTouch (carriers get no weapons), ForbidThrow/Drop | MISS | - | - | - | - | - | high |
 
-### `onslaught` (gametype) — 17 features
+### `onslaught` (gametype) — 18 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `onslaught.graph.power_propagation` | Power graph + shielding propagation (onslaught_updatelinks) | OK | - | - | - | - | live | high |
 | `onslaught.links.resolution` | onslaught_link map entity → graph edges | OK | - | - | - | - | live | high |
-| `onslaught.cp.touch_build` | Control-point capture-by-build (touch → icon → build → flip) | OK | OK | OK | MISS | OK | live | high |
+| `onslaught.cp.touch_build` | Control-point capture-by-build (touch → icon → build → flip) | OK | ~ | OK | MISS | OK | live | high |
 | `onslaught.cp.icon_damage` | Capture-icon damage / destroy mid-build (revert to neutral) | OK | OK | OK | MISS | OK | live | high |
-| `onslaught.cp.icon_think_regen` | Built-icon steady-state slow regen | OK | ~ | OK | - | MISS | live | high |
+| `onslaught.cp.icon_think_regen` | Built-icon steady-state slow regen | OK | OK | OK | - | MISS | live | high |
 | `onslaught.cp.icon_heal` | Capture-icon heal (Healer mutator / heal beam) | OK | OK | - | - | - | live | high |
-| `onslaught.gen.damage_destroy` | Generator shield-gated damage + destruction | OK | OK | OK | MISS | OK | live | high |
+| `onslaught.gen.damage_destroy` | Generator shield-gated damage + destruction | OK | ~ | OK | MISS | OK | live | high |
 | `onslaught.round.handler` | Round handler (warmup → countdown → round → end-delay) | OK | OK | OK | - | - | live | high |
 | `onslaught.win.check_winner` | Win check (last standing generator) + ST_ONS_GENS credit | OK | OK | OK | ~ | OK | live | high |
 | `onslaught.overtime.decay` | Overtime generator self-decay (sudden death) | OK | OK | OK | - | OK | live | high |
 | `onslaught.scoring.rules` | Scoreboard rules (generators / caps / takes) *(intended)* | OK | OK | - | ~ | - | live | high |
 | `onslaught.captureshield` | CaptureShield (spinning shield model + push + blocked sound) | MISS | MISS | MISS | MISS | MISS | - | high |
 | `onslaught.spawn.teleport_choose` | Spawn placement + teleport (spawn_choose / spawn_at_* / ons_Teleport / click-radar) | MISS | MISS | MISS | MISS | MISS | - | high |
-| `onslaught.cp.proximity_decap` | Proximity de-capture (stand near a point to flip it) | MISS | MISS | MISS | MISS | - | - | high |
+| `onslaught.cp.proximity_decap` | Proximity de-capture (stand near a point to flip it) | OK | OK | OK | MISS | - | live | high |
 | `onslaught.presentation.csqc` | CSQC presentation (generator/icon models, animation, radar, death-cam, FX) | MISS | MISS | MISS | MISS | MISS | - | medium |
-| `onslaught.audio.cues` | Onslaught notifications + sounds emission | - | - | - | ~ | OK | live | high |
-| `onslaught.bot.roles` | Bot Onslaught objective role (offense/defense/assistant goal rating) | ~ | MISS | MISS | - | - | live | high |
+| `onslaught.audio.cues` | Onslaught notifications + sounds emission | - | - | - | ~ | ~ | live | high |
+| `onslaught.gen.unshielded_alarm` | Generator un-shielded periodic alarm (ons_GeneratorThink) | MISS | MISS | MISS | MISS | MISS | - | high |
+| `onslaught.bot.roles` | Bot Onslaught objective role (offense/defense/assistant goal rating) | OK | OK | ~ | - | - | live | high |
 
 ### `race` (gametype) — 19 features
 
@@ -699,7 +704,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `tdm.scoring.team_frag` | Team frag scoring (enemy +1 attacker team; suicide/world -1 victim team; teamkill -1 attacker team) -> ST_SCORE | OK | OK | OK | - | - | live | high |
 | `tdm.scoring.player_frag` | Per-player SP_SCORE frag credit (each frag also lands on the killer's individual score) | OK | OK | OK | - | - | live | high |
 | `tdm.rules.point_limit` | Team point-limit end-of-match (g_tdm_point_limit; -1 = use mapinfo 50) | OK | OK | OK | - | - | live | high |
-| `tdm.rules.lead_limit` | Team lead-limit end-of-match (g_tdm_point_leadlimit; -1 = use mapinfo 0) | ~ | OK | OK | - | - | live | medium |
+| `tdm.rules.lead_limit` | Team lead-limit end-of-match (g_tdm_point_leadlimit; -1 = use mapinfo 0) | OK | OK | OK | - | - | live | high |
 | `tdm.rules.tie_overtime` | Tied-team -> overtime/sudden-death (no draw at the limit) | OK | OK | OK | - | - | live | high |
 | `tdm.team_balance.join` | Smallest-team assignment on join (TeamBalance_JoinBestTeam) | OK | OK | - | - | - | live | high |
 | `tdm.presentation.remaining_frags` | Remaining-frags team announcer (ANNCE_REMAINING_FRAG_1/2/3) | OK | OK | OK | OK | OK | live | high |
@@ -721,12 +726,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `tka.score.timepoints` | Timed possession points to TEAM score (g_tka_score_timepoints) | OK | OK | OK | - | - | live | high |
 | `tka.score.nofrags` | No DM frags (GiveFragsForKill zeroed) + reset_map_global | OK | OK | - | - | - | live | high |
 | `tka.damage.matrix` | Possession damage/force scaling matrix (Damage_Calculate) | OK | OK | - | - | - | live | high |
-| `tka.carrier.highspeed` | Carrier speed multiplier (MOVEVARS_HIGHSPEED *= g_tka_ballcarrier_highspeed) | MISS | MISS | MISS | - | - | - | high |
+| `tka.carrier.highspeed` | Carrier speed multiplier (MOVEVARS_HIGHSPEED *= g_tka_ballcarrier_highspeed) | OK | OK | OK | - | - | live | high |
 | `tka.win.pointlimit` | Team point-limit + lead-limit win condition | OK | OK | - | - | - | live | high |
 | `tka.team.framing` | Team framing (teams 2..4, team spawns) + tie -> overtime | OK | OK | - | - | - | live | high |
-| `tka.hud.modicon` | TKA HUD mod-icon + TKA_BALLSTATUS stat (team ball-taken icons) | MISS | MISS | MISS | MISS | - | - | high |
-| `tka.waypoints.tracking` | Team-colored carrier / ball waypoints + radar tracking | MISS | MISS | - | MISS | - | - | high |
-| `tka.bot.role` | Bot TKA roles (carrier/collector, team-aware goalrating, ForbidAttack) | OK | ~ | - | - | - | live | high |
+| `tka.hud.modicon` | TKA HUD mod-icon + TKA_BALLSTATUS stat (team ball-taken icons) | OK | OK | OK | OK | - | live | high |
+| `tka.waypoints.tracking` | Team-colored carrier / ball waypoints + radar tracking | OK | ~ | - | ~ | - | live | high |
+| `tka.bot.role` | Bot TKA roles (carrier/collector, team-aware goalrating, ForbidAttack) | OK | OK | - | - | - | live | high |
 
 ### `tmayhem` (gametype) — 15 features
 
