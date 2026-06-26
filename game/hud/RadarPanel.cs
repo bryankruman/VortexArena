@@ -208,24 +208,78 @@ public partial class RadarPanel : HudPanel
         float cos = Mathf.Cos(-yawRad);
         float sin = Mathf.Sin(-yawRad);
 
-        // ---- zoom / scale (QC HUD_Radar_GetZoomFactor + teamradar_size blend) ----
-        // QC blends teamradar_size between a "big" size (fit whole arena) and a "normal" size (fixed scale) by a
-        // zoom factor. We have no loaded map bounds, so we model: normalRange = world units that fill the radius
-        // at the cvar scale; bigRange = RangeUnits (the arena-scale fit fallback). zoomFactor 1 → big, 0 → normal.
+        // ---- zoom / scale (QC HUD_Radar_GetZoomFactor + teamradar_size blend, radar.qc:260-294) ----
+        // Base blends teamradar_size (PIXELS per world unit) between a "big" size (fit the whole arena in the
+        // radar) and a "normal" size (a fixed scale) by the zoom factor. Our world→screen transform multiplies
+        // the rotated world delta by `worldToPixels`, which IS Base's `teamradar_size`, so we reproduce the
+        // bigsize/normalsize math directly in px-per-unit rather than the old RangeUnits heuristic.
         float scale = CvarF("scale", 4096f); // QC teamradar_loadcvars code default
         if (!float.IsFinite(scale) || scale <= 0f) scale = 4096f; // teamradar_loadcvars: 0 → 4096
-        float normalRange = scale / ScaleReferenceDivisor; // world units edge-to-center at this scale
-        float bigRange = Mathf.Max(RangeUnits, normalRange);
         float zoomCvar = CvarF("zoommode", 0f);
         int zoommode = float.IsFinite(zoomCvar) ? (int)zoomCvar : 0;
         float zoomFactor = Mathf.Clamp(GetZoomFactor(zoommode), 0f, 1f);
-        float rangeUnits = Mathf.Lerp(normalRange, bigRange, zoomFactor);
-        // Guard against a non-finite or non-positive range (bad cvars / RangeUnits) before it becomes a divisor.
-        if (!float.IsFinite(rangeUnits))
-            rangeUnits = bigRange;
-        rangeUnits = Mathf.Max(rangeUnits, 1f);
 
-        float worldToPixels = radius / rangeUnits;
+        float worldToPixels;
+        if (HasMapBounds)
+        {
+            // Base derives the endpoints from mi_scale (world XY span) and scale2d. The port feeds the radar the
+            // raw BSP worldspawn bounds, i.e. the "non-clever" gfx/<map>_mini texcoord path where mi_picmin=(0,0)
+            // and mi_picmax=(1,1) — so scale2d = vlen_maxnorm2d(mi_picmax-mi_picmin) = 1. teamradar_size2d is the
+            // panel pixel size (mySize). mi_scale = mi_max - mi_min.
+            const float scale2d = 1f;
+            float miScaleX = MapMaxXY.X - MapMinXY.X;
+            float miScaleY = MapMaxXY.Y - MapMinXY.Y;
+            float sizeMin = Mathf.Min(size.X, size.Y); // vlen_minnorm2d of a positive (w,h)
+            float sizeMax = Mathf.Max(size.X, size.Y); // vlen_maxnorm2d of a positive (w,h)
+
+            float bigsize;
+            if (rotation == 0)
+            {
+                // max-min distance must fit the radar in ANY rotation: divide by the world-space diagonal.
+                // bigsize = vlen_minnorm2d(size) * scale2d / (1.05 * vlen(vec2(mi_scale)))
+                float diag = Mathf.Sqrt(miScaleX * miScaleX + miScaleY * miScaleY);
+                bigsize = sizeMin * scale2d / (1.05f * Mathf.Max(diag, 0.0001f));
+            }
+            else
+            {
+                // Fixed rotation: fit the rotated arena bbox in x=x, y=y. Rotate the 4 world corners of
+                // [mi_min, mi_max] by teamradar_angle and take the axis-aligned span (radar.qc:274-287).
+                // teamradar_angle in the port is yawRad (the same -DEG2RAD radar angle fed into cos/sin above).
+                float rc = Mathf.Cos(yawRad), rs = Mathf.Sin(yawRad);
+                Vector2 R(float x, float y) => new(x * rc - y * rs, x * rs + y * rc);
+                Vector2 p0 = R(MapMinXY.X, MapMinXY.Y);
+                Vector2 p1 = R(MapMaxXY.X, MapMaxXY.Y);
+                Vector2 p2 = R(MapMinXY.X, MapMaxXY.Y);
+                Vector2 p3 = R(MapMaxXY.X, MapMinXY.Y);
+                float spanX = Mathf.Max(Mathf.Max(p0.X, p1.X), Mathf.Max(p2.X, p3.X)) -
+                              Mathf.Min(Mathf.Min(p0.X, p1.X), Mathf.Min(p2.X, p3.X));
+                float spanY = Mathf.Max(Mathf.Max(p0.Y, p1.Y), Mathf.Max(p2.Y, p3.Y)) -
+                              Mathf.Min(Mathf.Min(p0.Y, p1.Y), Mathf.Min(p2.Y, p3.Y));
+                bigsize = Mathf.Min(
+                    size.X * scale2d / (1.05f * Mathf.Max(spanX, 0.0001f)),
+                    size.Y * scale2d / (1.05f * Mathf.Max(spanY, 0.0001f)));
+            }
+
+            // normalsize = vlen_maxnorm2d(size) * scale2d / scale, floored to bigsize.
+            float normalsize = sizeMax * scale2d / scale;
+            if (bigsize > normalsize)
+                normalsize = bigsize;
+
+            worldToPixels = zoomFactor * bigsize + (1f - zoomFactor) * normalsize;
+            if (!float.IsFinite(worldToPixels) || worldToPixels <= 0f)
+                worldToPixels = radius / Mathf.Max(RangeUnits, 1f);
+        }
+        else
+        {
+            // No map bounds (degenerate / non-standalone): fall back to the RangeUnits world-coverage heuristic.
+            float normalRange = scale / ScaleReferenceDivisor;
+            float bigRange = Mathf.Max(RangeUnits, normalRange);
+            float rangeUnits = Mathf.Lerp(normalRange, bigRange, zoomFactor);
+            if (!float.IsFinite(rangeUnits))
+                rangeUnits = bigRange;
+            rangeUnits = Mathf.Max(rangeUnits, 1f);
+            worldToPixels = radius / rangeUnits;
+        }
         NVec3 viewOrigin = CenterOrigin ?? net.PredictedOrigin;
         // QC HUD_Radar: the radar center blends between the player origin (normal) and the MAP center (big zoom)
         // by the zoom factor — `teamradar_origin3d_in_texcoord = zoom*mi_center + (1-zoom)*view_origin`. So at

@@ -124,6 +124,7 @@ public sealed partial class NetGame : Node3D
     private AssetLoader? _assets;
     private ViewModel _viewModel = null!;       // first-person weapon view-model (CSQC viewmodel / wepent)
     private int _equippedWeaponId = int.MinValue; // weapon id currently in the viewmodel; rebuild only on a change
+    private string _equippedVmOverride = "";       // per-weapon wr_viewmodel override (Tuba note model); rebuild on change
     private bool _weaponsPrecached;             // PrecacheWeaponModels ran once (warm the per-weapon asset caches)
     private bool _readyComplete;                // _Ready finished — _Process can run its full body (before this, fields are half-built)
     private bool _captureMarked;                // one-shot guard: CaptureGate.MarkReady() fired at first spawn (--screenshot)
@@ -1597,12 +1598,25 @@ public sealed partial class NetGame : Node3D
         bool hidden = id < 0 || id >= XonoticGodot.Common.Gameplay.Weapons.Count
             || _client.Health <= 0 || _view.ChaseActive || _client.MatchIntermission;
 
-        if (id == _equippedWeaponId)
+        // Team colormap + per-weapon glowmod (Base viewmodel_draw 302-321): tint the held gun to the local
+        // player's team color and glow with it. Applied every frame (cheap — SetTeamGlow early-returns when the
+        // color is unchanged) so a mid-match team swap / charge change repaints. Resolved from the SAME local-team
+        // source the shownames/scoreboard use (listen-server Player.Team, else the networked scoreboard row).
+        UpdateViewModelTeamGlow();
+
+        // Per-weapon wr_viewmodel override (Base viewmodel_draw 324-327: newname = wep.wr_viewmodel(wep, this)).
+        // Only Tuba overrides it, swapping its v_ model by the currently played instrument (tuba/akordeon/
+        // kleinbottle). Resolved live so a reload that cycles the instrument rebuilds the gun model. Empty = no
+        // override (every other weapon uses its static WorldModel).
+        string vmOverride = WeaponViewModelOverride(id);
+
+        if (id == _equippedWeaponId && vmOverride == _equippedVmOverride)
         {
-            _viewModel.Visible = !hidden; // no weapon change; just track the dead/holstered visibility edge
+            _viewModel.Visible = !hidden; // no weapon/model change; just track the dead/holstered visibility edge
             return;
         }
         _equippedWeaponId = id;
+        _equippedVmOverride = vmOverride;
 
         if (hidden)
         {
@@ -1616,13 +1630,75 @@ public sealed partial class NetGame : Node3D
         // ok_*) render the h_ HAND RIG itself; invisible-hand IQM rigs render the v_ model attached to the rig's
         // "weapon" bone. ViewModelEquip.Build is the single source of truth for first-person weapon construction.
         XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(id);
-        string vModel = WeaponVModelPath(w);
+        // wr_viewmodel override replaces the model file (vmOverride = "v_<instrument>.md3"); else the static WorldModel.
+        string vModel = string.IsNullOrEmpty(vmOverride) ? WeaponVModelPath(w) : "models/weapons/" + vmOverride;
         ViewModelEquip eq = ViewModelEquip.Build(_assets, vModel);
         _viewModel.SetWeaponModel(eq.Model, MuzzleEffectFor(w), "tag_shot", eq.Attach, MuzzleModelFor(w));
         _viewModel.Visible = true;
         // Raise the new gun into view instead of popping the model in (Xonotic viewmodel_draw raise; pairs with
         // the keypress holster in RunBoundCommand). Confirmed switch → cancels any pending holster auto-recovery.
         _viewModel.PlayRaise();
+    }
+
+    /// <summary>
+    /// Resolve + push the held view-model's team colormap tint + glowmod (Base <c>viewmodel_draw</c> 302-321 →
+    /// <c>weaponentity_glowmod</c>, all.qh:402). The glow is the per-weapon <c>wr_glow</c> override (Vortex /
+    /// Overkill-Nex charge glow) when the weapon supplies one, else the team's palette color
+    /// (<c>colormapPaletteColor(c &amp; 0x0F, true)</c> — what <see cref="ModelTint.TeamColor"/> resolves). FFA / no
+    /// team leaves the gun untinted with its native glow. Local team comes from the same source the shownames /
+    /// scoreboard use (<see cref="LocalShownamesTeam"/>). Cheap to call every frame — <see cref="ViewModel.SetTeamGlow"/>
+    /// early-returns when nothing changed.
+    /// </summary>
+    private void UpdateViewModelTeamGlow()
+    {
+        if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel))
+            return;
+
+        int team = LocalShownamesTeam();             // 1=red 2=blue 3=yellow 4=pink, 0/None = FFA
+        Color teamColor = XonoticGodot.Game.Client.ModelTint.TeamColor(team, out bool hasTeam);
+        if (!hasTeam)
+        {
+            _viewModel.SetTeamGlow(XonoticGodot.Game.Client.ModelTint.White,
+                XonoticGodot.Game.Client.ModelTint.White, false);
+            return;
+        }
+
+        // Per-weapon wr_glow override: Vortex (and Overkill-Nex) glow with the charge level, fading from the team
+        // color (vortex_glowcolor: f*colors*0.3 below animlimit, +f*colors*0.7 above). Default weapons return
+        // '0 0 0' → fall back to the team palette color (weaponentity_glowmod's `if (!g) g = palette`).
+        Color glow = teamColor;
+        int wid = _client?.ActiveWeaponId ?? -1;
+        if (wid >= 0 && wid < XonoticGodot.Common.Gameplay.Weapons.Count)
+        {
+            XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(wid);
+            string net = w?.NetName ?? "";
+            if ((net is "vortex" or "vaporizer" || net.Contains("nex")) && LocalServerPlayer is { } p
+                && !p.IsDead && !p.IsObserver)
+            {
+                float charge = Mathf.Max(0.25f, p.WeaponState(new WeaponSlot(0)).VortexCharge);
+                glow = VortexGlowColor(teamColor, charge);
+                if (glow.R + glow.G + glow.B <= 0.001f)
+                    glow = teamColor; // charge disabled → fall back to team color
+            }
+        }
+
+        _viewModel.SetTeamGlow(glow, teamColor, true);
+    }
+
+    /// <summary>Port of <c>vortex_glowcolor</c> (weapon/vortex.qc:7): a charge-scaled blend of the player's team
+    /// color, ramping 0→0.3× up to the anim limit then 0.3→1.0× above it. Uses the stock balance defaults
+    /// (charge_animlimit 0.5); <paramref name="charge"/> is the [0,1] charge fraction.</summary>
+    private static Color VortexGlowColor(Color teamColor, float charge)
+    {
+        const float animlimit = 0.5f; // g_balance_vortex_charge_animlimit default
+        float f = Mathf.Min(1f, charge / animlimit);
+        Color g = teamColor * (f * 0.3f);
+        if (charge > animlimit)
+        {
+            f = (charge - animlimit) / (1f - animlimit);
+            g += teamColor * (f * 0.7f);
+        }
+        return g;
     }
 
     /// <summary>
@@ -1633,6 +1709,30 @@ public sealed partial class NetGame : Node3D
     /// </summary>
     private static string WeaponVModelPath(XonoticGodot.Common.Gameplay.Weapon w)
         => string.IsNullOrEmpty(w.WorldModel) ? "" : "models/weapons/" + w.WorldModel;
+
+    /// <summary>
+    /// Port of the per-weapon <c>wr_viewmodel</c> override (Base weapon.qh:160 default = string_null; only Tuba
+    /// overrides — tuba.qc:423). Returns the <c>v_*.md3</c> filename to substitute for the active weapon's static
+    /// view-model, or <c>""</c> for no override. Tuba swaps its model by the currently played instrument
+    /// (<c>tuba_instrument</c>): 0 → <c>v_tuba.md3</c>, 1 → <c>v_akordeon.md3</c>, 2 → <c>v_kleinbottle.md3</c>.
+    /// The instrument is read from the local server player's slot-0 weapon state (host path); a pure remote client
+    /// has no slot state here so it keeps the default Tuba model — the networked exterior model still updates.
+    /// </summary>
+    private string WeaponViewModelOverride(int weaponId)
+    {
+        if (weaponId < 0 || weaponId >= XonoticGodot.Common.Gameplay.Weapons.Count)
+            return "";
+        XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(weaponId);
+        if (w?.NetName != "tuba" || LocalServerPlayer is not { } p)
+            return "";
+        int instrument = p.WeaponState(new WeaponSlot(0)).TubaInstrument;
+        return instrument switch
+        {
+            1 => "v_akordeon.md3",
+            2 => "v_kleinbottle.md3",
+            _ => "v_tuba.md3",
+        };
+    }
 
     /// <summary>
     /// Warm every registered weapon's view model (and its sibling <c>h_*</c> hand rig) into the asset caches
@@ -3575,6 +3675,9 @@ public sealed partial class NetGame : Node3D
         {
             _scoreboard.RespawnStat = _client.RespawnTimeStat;
             _scoreboard.RespawnServerTime = _client.LatestServerTime;
+            // QC scoreboard.qc:2792 getcommandkey(_("jump"), "+jump"): show the actual key bound to +jump in the
+            // "press X to respawn" line, falling back to the literal "jump" when nothing is bound.
+            _scoreboard.RespawnJumpKey = XonoticGodot.Engine.Console.BindTable.CommandKey("jump", "+jump");
             // QC Scoreboard_MapStats_Draw reads STAT(MONSTERS_*)/STAT(SECRETS_*) every draw — they tick
             // independently of the score version, so feed the live map-stats counts every frame while shown
             // (not only inside the change-gated row feed below, which made monsters lag and never fed secrets).
@@ -3935,6 +4038,11 @@ public sealed partial class NetGame : Node3D
         if (cvars is null) return;
         _scoreboard.FragLimit = (int)cvars.GetFloat("fraglimit");
         _scoreboard.TimeLimitMinutes = (int)cvars.GetFloat("timelimit");
+        // QC scoreboard.qc:2546-2547 STAT(LEADLIMIT)/STAT(LEADLIMIT_AND_FRAGLIMIT): the "^2+N" lead-limit header
+        // term and the "& "-vs-"/ " delimiter (both-limits-required). Only DM-family modes set a leadlimit; for
+        // the rest the cvar is 0 and BuildLimitsHeader's (ll < fl || fl <= 0) guard drops the term.
+        _scoreboard.LeadLimit = (int)cvars.GetFloat("leadlimit");
+        _scoreboard.LeadAndFragLimit = cvars.GetFloat("leadlimit_and_fraglimit") != 0f;
         FeedMapStats();
     }
 
@@ -4303,11 +4411,44 @@ public sealed partial class NetGame : Node3D
         }
         _attackHeld = a1;
 
-        // Secondary fire: latch the press so its tap reaches the server (secondary FX stay networked for now).
+        // Secondary fire: latch the press so its tap reaches the server, and pop a local muzzle flash on the press
+        // edge for weapons whose secondary actually fires a shot (Base W_MuzzleFlash is called per shot for either
+        // fire mode). Zoom-style secondaries (Vortex/Vaporizer/Rifle secondary = zoom, not a shot) must NOT flash,
+        // so we gate on the weapon having a real secondary attack — mirrors the primary press-edge flash above.
         bool a2 = BindTable.Attack2Held;
         if (a2 && !_attack2Held)
+        {
             _attack2Latch = true;
+            if (SecondaryFiresShot() && !LocalDeadNow())
+            {
+                _hud?.PulseFire();
+                _viewModel?.Fire(); // local muzzle flash for the secondary shot (remote copy stays networked)
+            }
+        }
         _attack2Held = a2;
+    }
+
+    /// <summary>
+    /// Whether the active weapon's SECONDARY fire emits a projectile/hitscan shot (so it should pop a local
+    /// muzzle flash, Base <c>W_MuzzleFlash</c> per shot) rather than a non-shot action (zoom / melee / mode
+    /// toggle) that has no flash. Conservative: excludes the stock weapons whose secondary is a zoom (Vortex /
+    /// Vaporizer / Rifle) or a melee (Shotgun), and the Blaster/Hook whose secondary isn't a barrel shot; every
+    /// other weapon's secondary is a real shot. Listen-server resolves nothing special — pure name gate.
+    /// </summary>
+    private bool SecondaryFiresShot()
+    {
+        int wid = _client?.ActiveWeaponId ?? -1;
+        if (wid < 0 || wid >= XonoticGodot.Common.Gameplay.Weapons.Count)
+            return false;
+        string net = XonoticGodot.Common.Gameplay.Weapons.ById(wid)?.NetName ?? "";
+        return net switch
+        {
+            "vortex" or "vaporizer" or "rifle" => false, // secondary = zoom
+            "shotgun" => false,                           // secondary = melee (no muzzle)
+            "blaster" or "hook" => false,                 // secondary isn't a barrel shot
+            "" => false,
+            _ => true,
+        };
     }
 
     /// <summary>Play one predicted local shot: the view-model muzzle flash + recoil, the HUD crosshair pulse, and
@@ -4493,6 +4634,16 @@ public sealed partial class NetGame : Node3D
         if (_client.SpectatingNetId != 0
             && _client.SampleRemote(_client.SpectatingNetId, _client.LatestServerTime, out NVec3 specOrg, out NVec3 specAng))
         {
+            // QC View_SpectatorCamera (view.qc:655): while following a player (spectatee_status > 0), the user
+            // chase_active cvar drives a THIRD-PERSON spectator camera that pulls back from the spectated player
+            // (chase_back/up + the chase_front frontal selfie). Tell the shared view it is spectating so the
+            // chase_front branch is reachable (Base guards it on spectatee_status), and engage the classic chase
+            // mode from chase_active just like the own-player path below — but anchored to the spectatee's pose.
+            // chase_active == 0 keeps the faithful first-person follow (see what the spectated player sees).
+            _view.Spectating = true;
+            _view.CameraMode = CvarOr(Api.Cvars, "chase_active", 0f) != 0f
+                ? Client.FirstPersonView.ChaseMode.Chase
+                : Client.FirstPersonView.ChaseMode.None;
             var sst = new Client.FirstPersonView.ViewState
             {
                 OriginQuake = specOrg,
@@ -4504,6 +4655,7 @@ public sealed partial class NetGame : Node3D
             _view.UpdateView(_camera, sst, dt);
             return;
         }
+        _view.Spectating = false;
 
         float now = _renderClock; // the clock the reconciler armed the prediction-error decay with (see _Process)
         NVec3 predicted = _client.PredictedOrigin + _client.PredictionErrorOffset(now);

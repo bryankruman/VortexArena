@@ -138,6 +138,12 @@ public partial class ScoreboardPanel : HudPanel
     public int FragLimit { get; set; }
     /// <summary>QC TIMELIMIT (minutes); 0 = none. Settable by the match layer.</summary>
     public int TimeLimitMinutes { get; set; }
+    /// <summary>QC <c>STAT(LEADLIMIT)</c> (scoreboard.qc:2546): the lead limit shown as the "^2+N" header term
+    /// (Scoreboard_Fraglimit_Draw is_leadlimit=true). 0 = none. Drawn only when ll &gt; 0 &amp;&amp; (ll &lt; fl || fl &lt;= 0).</summary>
+    public int LeadLimit { get; set; }
+    /// <summary>QC <c>STAT(LEADLIMIT_AND_FRAGLIMIT)</c> (autocvar_leadlimit_and_fraglimit, scoreboard.qc:2547,2564):
+    /// when set (and fraglimit &gt; 0) the lead/frag delimiter is "^7 &amp; " (both required) instead of "^7 / ".</summary>
+    public bool LeadAndFragLimit { get; set; }
     /// <summary>QC the map name shown in the footer (Scoreboard footer "<map>"). Settable by the match layer.</summary>
     public string MapName { get; set; } = "";
 
@@ -595,6 +601,10 @@ public partial class ScoreboardPanel : HudPanel
     private FieldText GetField(in ScoreRow r, in Column col)
     {
         Color white = new(1f, 1f, 1f, 1f);
+        var inv0 = System.Globalization.CultureInfo.InvariantCulture;
+        // QC scoreboard.qc:1047-1049: when scores_per_round is on, the count-style columns (frags/kdr/sum/dmg/score)
+        // are divided by the player's SP_ROUNDS_PL; rounds_played==0 disables averaging for that row/cell.
+        int roundsPlayed = ScoresPerRound() ? ColOf(r, "ROUNDS_PL") : 0;
         switch (col.Kind)
         {
             case ColumnKind.Ping:
@@ -625,23 +635,41 @@ public partial class ScoreboardPanel : HudPanel
 
             case ColumnKind.Frags:
             {
+                // QC SP_FRAGS (scoreboard.qc:1090): kills - suicides; per-round → "%.1f" of f/rounds_played.
                 int frags = ColOf(r, "KILLS") - ColOf(r, "SUICIDES");
+                if (roundsPlayed != 0)
+                    return new FieldText((frags / (float)roundsPlayed).ToString("0.0", inv0), white);
                 return new FieldText(frags.ToString(), white);
             }
 
             case ColumnKind.Kdratio:
             {
+                // QC SP_KDRATIO (scoreboard.qc:1096): three branches.
+                //  denom==0 → green, raw kills (per-round: "%.1f" of num/rounds_played)
+                //  num<=0   → red,   "%.1f" num/denom (per-round: "%.2f" num/(denom*rounds_played))
+                //  else     → white, "%.1f" num/denom (per-round: "%.2f" num/(denom*rounds_played))
                 int num = ColOf(r, "KILLS"), denom = ColOf(r, "DEATHS");
-                var inv = System.Globalization.CultureInfo.InvariantCulture;
-                if (denom == 0) return new FieldText(num.ToString(), new Color(0f, 1f, 0f, 1f));
-                if (num <= 0) return new FieldText((num / (float)denom).ToString("0.0", inv), new Color(1f, 0f, 0f, 1f));
-                return new FieldText((num / (float)denom).ToString("0.0", inv), white);
+                if (denom == 0)
+                {
+                    string s = roundsPlayed != 0
+                        ? (num / (float)roundsPlayed).ToString("0.0", inv0)
+                        : num.ToString(inv0);
+                    return new FieldText(s, new Color(0f, 1f, 0f, 1f));
+                }
+                bool red = num <= 0;
+                string str = roundsPlayed != 0
+                    ? (num / (float)(denom * roundsPlayed)).ToString("0.00", inv0)
+                    : (num / (float)denom).ToString("0.0", inv0);
+                return new FieldText(str, red ? new Color(1f, 0f, 0f, 1f) : white);
             }
 
             case ColumnKind.Sum:
             {
+                // QC SP_SUM (scoreboard.qc:1125): kills - deaths; green>0 / white==0 / red<0; per-round → "%.1f".
                 int sum = ColOf(r, "KILLS") - ColOf(r, "DEATHS");
                 Color c = sum > 0 ? new Color(0f, 1f, 0f, 1f) : sum == 0 ? white : new Color(1f, 0f, 0f, 1f);
+                if (roundsPlayed != 0)
+                    return new FieldText((sum / (float)roundsPlayed).ToString("0.0", inv0), c);
                 return new FieldText(sum.ToString(), c);
             }
 
@@ -650,11 +678,38 @@ public partial class ScoreboardPanel : HudPanel
                 ScoreField? f = col.Field;
                 if (f is null) return new FieldText("", white);
                 int v = r.Col(f);
+
+                // QC SP_SKILL (scoreboard.qc:1138): -1 → "...", -2 → "N/A", else the int. (Networked only when
+                // sv_showskill enables the column; the value rides the row columns once present.)
+                if (f.Name == "SKILL")
+                    return new FieldText(v == -1 ? "..." : v == -2 ? "N/A" : v.ToString(inv0), white);
+
+                // QC SP_FPS (scoreboard.qc:1147): 0 → "N/A" (0 ping = connecting/bot) or "..." white; else the int
+                // colored red≤32 / yellow 64-96 / white≥128 via sbt_field_rgb.{y,z} = bound(0,(fps-32)*0.03125,1)
+                // and bound(0,(fps-96)*0.03125,1) — x stays 1.
+                if (f.Name == "FPS")
+                {
+                    if (v == 0)
+                        return new FieldText(r.Ping == 0 ? "N/A" : "...", white);
+                    float g = Mathf.Clamp((v - 32) * 0.03125f, 0f, 1f);
+                    float b = Mathf.Clamp((v - 96) * 0.03125f, 0f, 1f);
+                    return new FieldText(v.ToString(inv0), new Color(1f, g, b, 1f));
+                }
+
+                // QC SP_DMG/SP_DMGTAKEN (scoreboard.qc:1165): "%.1f k" of v/1000 (per-round: "%.2f k" of
+                // v/(1000*rounds_played)).
                 if (f.Name == "DMG" || f.Name == "DMGTAKEN")
-                    return new FieldText((v / 1000f).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " k", white);
+                {
+                    string s = roundsPlayed != 0
+                        ? (v / (1000f * roundsPlayed)).ToString("0.00", inv0) + " k"
+                        : (v / 1000f).ToString("0.0", inv0) + " k";
+                    return new FieldText(s, white);
+                }
+
                 Color c = ReferenceEquals(f, GameScores.Primary) ? new Color(1f, 1f, 0f, 1f)
                         : ReferenceEquals(f, GameScores.Secondary) ? new Color(0f, 1f, 1f, 1f) : white;
-                return new FieldText(GameScores.ScoreString(f.Flags, v), c);
+                // QC default/SP_SCORE: ScoreString honors per-round averaging directly.
+                return new FieldText(GameScores.ScoreString(f.Flags, v, roundsPlayed), c);
             }
         }
     }
@@ -814,20 +869,40 @@ public partial class ScoreboardPanel : HudPanel
     /// Color-coded for the right-aligned game-info line. Empty when no limits.</summary>
     private string BuildLimitsHeader()
     {
+        // QC scoreboard.qc:2544-2571: tl / fl / ll / ll_and_fl. m_hidelimits suppresses fl + ll entirely.
         string str = "";
         if (TimeLimitMinutes > 0) str = $"^3{TimeLimitMinutes}";
-        if (FragLimit > 0)
+
+        int fl = FragLimit;
+        int ll = LeadLimit;
+        if (fl > 0)
         {
-            if (str.Length != 0) str += "^7 / ";
-            // QC Scoreboard_Fraglimit_Draw: the primary key's label; "score" → "points", "fastest" → "".
-            ScoreField? primary = GameScores.Primary;
-            string label = TeamPlay ? GameScores.TeamLabel(GameScores.TeamPrimarySlot) : (primary?.Label ?? "score");
-            ScoreFlags flags = TeamPlay ? GameScores.TeamFlagsPrimary : (primary?.Flags ?? ScoreFlags.None);
-            string limitStr = GameScores.ScoreString(flags, FragLimit);
-            string unit = label == "score" ? "points" : label == "fastest" ? "" : label;
-            str += $"^5{limitStr} {unit}".TrimEnd();
+            if (str.Length != 0) str += "^7 / ";   // QC delimiter
+            str += FraglimitDraw(fl, isLeadLimit: false);
+        }
+        // QC: ll > 0 && (ll < fl || fl <= 0) — don't show a lead limit that can never be reached before fraglimit.
+        if (ll > 0 && (ll < fl || fl <= 0))
+        {
+            if (TimeLimitMinutes > 0 || fl > 0)
+                // QC: "^7 & " when leadlimit_and_fraglimit (both needed) and fl > 0, else "^7 / ".
+                str += (LeadAndFragLimit && fl > 0) ? "^7 & " : "^7 / ";
+            str += FraglimitDraw(ll, isLeadLimit: true);
         }
         return str;
+    }
+
+    /// <summary>QC <c>Scoreboard_Fraglimit_Draw</c> (scoreboard.qc:2392): format one limit using the primary key's
+    /// label/flags. The lead-limit term reads "^2+&lt;N&gt; &lt;label&gt;"; the frag/point limit reads
+    /// "^5&lt;N&gt; &lt;label&gt;". The label is "points" for "score", "" for "fastest", else the label itself.</summary>
+    private string FraglimitDraw(int limit, bool isLeadLimit)
+    {
+        ScoreField? primary = GameScores.Primary;
+        string label = TeamPlay ? GameScores.TeamLabel(GameScores.TeamPrimarySlot) : (primary?.Label ?? "score");
+        ScoreFlags flags = TeamPlay ? GameScores.TeamFlagsPrimary : (primary?.Flags ?? ScoreFlags.None);
+        string limitStr = GameScores.ScoreString(flags, limit);
+        string unit = label == "score" ? "points" : label == "fastest" ? "" : label;
+        string prefix = isLeadLimit ? "^2+" : "^5";
+        return $"{prefix}{limitStr} {unit}".TrimEnd();
     }
 
     /// <summary>
@@ -947,6 +1022,10 @@ public partial class ScoreboardPanel : HudPanel
     private bool AccuracyEnabled() => CvarF("accuracy", 1f) != 0f;
     /// <summary>QC <c>..._spectators_showping</c> (true): show ping next to spectator names.</summary>
     private bool SpectatorsShowPing() => CvarF("spectators_showping", 1f) != 0f;
+    /// <summary>QC <c>autocvar_hud_panel_scoreboard_scores_per_round</c> (scoreboard.qc:105, default 0): when set,
+    /// frags/kdr/sum/dmg/score are shown as per-round averages (divided by SP_ROUNDS_PL). Toggled by Ctrl+R in the
+    /// interactive UI (not yet ported) — read live so a console "toggle" still takes effect.</summary>
+    private bool ScoresPerRound() => CvarF("scores_per_round", 0f) != 0f;
 
     /// <summary>Draw one player row across all columns; returns false once the panel is full.</summary>
     private bool DrawRow(Layout layout, in ScoreRow r, int rank, ref float y, float rowH,
@@ -1404,5 +1483,7 @@ public partial class ScoreboardPanel : HudPanel
         // spectator list (scoreboard.qc:80,99)
         c.Register("hud_panel_scoreboard_spectators_position", "1", CvarFlags.Save);
         c.Register("hud_panel_scoreboard_spectators_showping", "1", CvarFlags.Save);
+        // per-round score averaging (scoreboard.qc:105)
+        c.Register("hud_panel_scoreboard_scores_per_round", "0", CvarFlags.Save);
     }
 }

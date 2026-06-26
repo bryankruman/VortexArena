@@ -189,6 +189,11 @@ public static class StatusEffectsCatalog
         R(new StatusEffectDef("webbed") { Hidden = true });
 
         // --- powerups (mutators/mutator/powerups/powerup/*.qh — Buff:StatusEffect, but not BuffsMutator buffs) ---
+        // NOTE: the strength/shield role-glow (strength.qc:31 EF_BLUE|EF_ADDITIVE|EF_FULLBRIGHT, shield.qc:31
+        // EF_RED|EF_ADDITIVE|EF_FULLBRIGHT m_tick + the m_remove:14 clear) is already driven faithfully + live by
+        // PowerupsMutator.PlayerPreThink (always enabled, self-gated on StatusEffectsCatalog.Has), ORing the bits
+        // into the networked Entity.Effects each frame; the CSQC model hooks (CsqcModelEffects.Apply) light them.
+        // So these defs intentionally carry no OnTick glow — the bits would otherwise be set in two places.
         R(new StatusEffectDef("strength"));
         R(new StatusEffectDef("shield"));      // QC ShieldStatusEffect netname "invincible"; consumers use "shield"
         R(new StatusEffectDef("speed"));

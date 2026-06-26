@@ -1,6 +1,7 @@
 using Godot;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;
+using XonoticGodot.Game.Hud;           // TextureCache (VFS art resolver) for gfx/blood
 using SC = XonoticGodot.Engine.Collision.SuperContents;
 
 namespace XonoticGodot.Game.Client;
@@ -35,9 +36,14 @@ namespace XonoticGodot.Game.Client;
 public partial class ViewEffects : CanvasLayer
 {
     // ColorRects stretched across the whole viewport; their alpha is what we animate (the RGB is the tint).
-    private ColorRect _damage = null!;
+    private ColorRect _damage = null!;        // gentle-mode solid flash (cl_gentle / cl_gentle_damage) + texture fallback
+    private TextureRect _bloodSplat = null!;  // QC drawpic("gfx/blood", ...) — the centred blood splatter
     private ColorRect _contents = null!;
     private ColorRect _frozen = null!;
+
+    // QC view.qc:1304 cl_gentle_damage==2: a randomized colour latched while the flash is gone (myhealth_gentlergb).
+    private Color _myHealthGentleRgb = new(1f, 0.7f, 1f);
+    private readonly System.Random _gentleRng = new();
 
     // ---- HUD_Damage state (view.qc: myhealth / myhealth_flash / myhealth_prev) ----
     private float _myHealthFlash;   // the decaying damage accumulator
@@ -68,6 +74,9 @@ public partial class ViewEffects : CanvasLayer
     private const float DefDamagePainThresholdLowerHealth = 50f;   // hud_damage_pain_threshold_lower_health
     private const float DefDamagePainPulsatingMin         = 0.6f;  // hud_damage_pain_threshold_pulsating_min
     private const float DefDamagePainPulsatingPeriod      = 0.8f;  // hud_damage_pain_threshold_pulsating_period
+    // Gentle-mode (cl_gentle / cl_gentle_damage) — _hud.cfg:300-301, _all.cfg:878/881.
+    private const float DefDamageGentleAlphaMultiplier    = 0.10f; // hud_damage_gentle_alpha_multiplier
+    private static readonly Color DefDamageGentleColor    = new(1f, 0.7f, 1f); // hud_damage_gentle_color "1 0.7 1"
 
     private const float DefContentsWaterAlpha  = 0.5f;   // hud_contents_water_alpha
     private const float DefContentsLavaAlpha   = 0.7f;   // hud_contents_lava_alpha
@@ -88,14 +97,30 @@ public partial class ViewEffects : CanvasLayer
         Layer = -1;
 
         _contents = MakeFullScreenRect("ContentsTint");
+        _bloodSplat = MakeBloodSplat();
         _damage = MakeFullScreenRect("DamageFlash");
         _frozen = MakeFullScreenRect("FrozenOverlay");
         AddChild(_contents);
-        AddChild(_damage); // damage on top of the liquid tint
-        AddChild(_frozen); // the Freeze-Tag icy overlay composites on top of both
+        AddChild(_bloodSplat); // the gfx/blood splatter — the default (non-gentle) damage flash
+        AddChild(_damage);     // gentle-mode solid flash, on top of the liquid tint
+        AddChild(_frozen);     // the Freeze-Tag icy overlay composites on top of both
 
         _myHealthPrev = 0f;
     }
+
+    /// <summary>The centred <c>gfx/blood</c> splatter (QC HUD_Damage <c>drawpic(splash_pos, "gfx/blood", splash_size,
+    /// …)</c>): a SQUARE sized to the larger screen axis (<c>splash_size = max(conwidth, conheight)</c>) and centred,
+    /// so it always covers the viewport and overflows the shorter axis (it is NOT aspect-stretched in Base).</summary>
+    private static TextureRect MakeBloodSplat() => new()
+    {
+        Name = "DamageBlood",
+        Texture = TextureCache.Get("gfx/blood"),
+        // Centre anchor; the square size + centred position are set each frame in UpdateDamage from the viewport.
+        ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+        StretchMode = TextureRect.StretchModeEnum.Scale, // fill the square (the square itself stays 1:1)
+        Modulate = new Color(1f, 1f, 1f, 0f),
+        MouseFilter = Control.MouseFilterEnum.Ignore,
+    };
 
     private static ColorRect MakeFullScreenRect(string name) => new()
     {
@@ -162,6 +187,7 @@ public partial class ViewEffects : CanvasLayer
             _pendingDamage = 0f;
             _myHealthFlash = 0f;
             SetAlpha(_damage, damageColor, 0f);
+            SetSplatAlpha(0f, damageColor);
             _myHealthPrev = health;
             return;
         }
@@ -223,7 +249,64 @@ public partial class ViewEffects : CanvasLayer
 
         _myHealthPrev = myhealth;
 
-        SetAlpha(_damage, damageColor, flashTemp * global);
+        // QC HUD_Damage draw split (view.qc:1293-1305):
+        //   cl_gentle / cl_gentle_damage -> a SOLID coloured flash (no blood), alpha multiplied by
+        //     hud_damage_gentle_alpha_multiplier; cl_gentle_damage==2 randomizes the colour while the flash is gone.
+        //   else                          -> the gfx/blood splatter, tinted hud_damage_color.
+        bool gentle = Cvar("cl_gentle", 0f) != 0f || Cvar("cl_gentle_damage", 0f) != 0f;
+        if (gentle)
+        {
+            if (Cvar("cl_gentle_damage", 0f) == 2f)
+            {
+                // only re-randomize once the previous flash has fully faded (QC: myhealth_flash < pain_threshold)
+                if (_myHealthFlash < painThreshold)
+                    _myHealthGentleRgb = new Color(
+                        (float)_gentleRng.NextDouble(), (float)_gentleRng.NextDouble(), (float)_gentleRng.NextDouble());
+            }
+            else
+            {
+                _myHealthGentleRgb = CvarColor("hud_damage_gentle_color", DefDamageGentleColor);
+            }
+
+            float gentleMul = Cvar("hud_damage_gentle_alpha_multiplier", DefDamageGentleAlphaMultiplier);
+            SetAlpha(_damage, _myHealthGentleRgb, gentleMul * flashTemp * global);
+            SetSplatAlpha(0f, damageColor); // hide the blood splatter in gentle mode
+        }
+        else
+        {
+            // gentle solid rect off first; SetSplatAlpha re-tints _damage only if gfx/blood is missing (fallback).
+            SetAlpha(_damage, damageColor, 0f);
+            SetSplatAlpha(flashTemp * global, damageColor);
+        }
+    }
+
+    /// <summary>Size + centre the <c>gfx/blood</c> splatter to the viewport (QC <c>splash_size = max(conwidth,
+    /// conheight)</c>, centred) and set its alpha/tint. Falls back to a solid red rect when the texture is missing
+    /// (so the damage reaction is never silently lost on a stripped data tree).</summary>
+    private void SetSplatAlpha(float alpha, Color tint)
+    {
+        alpha = Mathf.Clamp(alpha, 0f, 1f);
+        bool visible = alpha > 0.0001f;
+        // Lazy texture load: the VFS art resolver may not be wired yet at _Ready (mirrors ReticleOverlay's
+        // per-frame TextureCache.Get). Retry the resolve until it succeeds, then it is cached.
+        if (_bloodSplat.Texture is null && visible)
+            _bloodSplat.Texture = TextureCache.Get("gfx/blood");
+        if (_bloodSplat.Texture is null)
+        {
+            // No gfx/blood available — degrade to the solid coloured rect (uses _damage's slot via the gentle path
+            // is taken in UpdateDamage; here just tint _damage so the flash still reads). Keep the splat hidden.
+            _bloodSplat.Visible = false;
+            SetAlpha(_damage, tint, alpha);
+            return;
+        }
+        _bloodSplat.Visible = visible;
+        if (!visible)
+            return;
+        Vector2 vp = GetViewport().GetVisibleRect().Size;
+        float side = Mathf.Max(vp.X, vp.Y);
+        _bloodSplat.Size = new Vector2(side, side);
+        _bloodSplat.Position = new Vector2((vp.X - side) * 0.5f, (vp.Y - side) * 0.5f);
+        _bloodSplat.Modulate = new Color(tint.R, tint.G, tint.B, alpha);
     }
 
     // -------------------------------------------------------------------------------------------------

@@ -164,6 +164,16 @@ public partial class ViewModel : Node3D
     private float _recoil;                 // current recoil displacement (Quake units, decays to 0)
     private Node3D? _muzzleFlashNode;      // live flash-model node (single slot; replaced each Fire call)
 
+    // Team colormap + per-weapon glowmod (Base viewmodel_draw lines 302-321: e.colormap = 256 + c;
+    // e.glowmod = weaponentity_glowmod(wep, c)). _teamGlow is the resolved glow color (per-weapon wr_glow override
+    // or the team palette color); _teamColormod tints the gun's albedo toward the team color so the held weapon
+    // reads as "yours". _hasTeam is false in FFA (no tint, native glow). _glowApplied tracks whether the current
+    // model's materials already carry the tint so we only re-walk on a change (mirrors _noDepthTestApplied).
+    private Color _teamColormod = new(1f, 1f, 1f);
+    private Color _teamGlow = new(1f, 1f, 1f);
+    private bool _hasTeam;
+    private bool _glowDirty = true;        // force a material re-walk after a model swap or a color change
+
     // Weapon-switch raise/lower state. _switchOffset in [0,1]: 0 = fully raised (rest), 1 = fully lowered (off
     // the bottom of the view). _switchDir: -1 raising (→0), +1 lowering (→1), 0 idle. _holsterGrace recovers a
     // keypress-predicted holster that the server never confirms (a denied switch) so the gun can't stay stuck down.
@@ -395,6 +405,38 @@ public partial class ViewModel : Node3D
                 return found;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Set the held weapon's team colormap tint + glowmod, port of the per-child loop in Base
+    /// <c>viewmodel_draw</c> (view.qc:302-321): <c>e.colormap = 256 + c</c> (the local player's team colors) and
+    /// <c>e.glowmod = weaponentity_glowmod(wep, c)</c> (the per-weapon <c>wr_glow</c> override, falling back to the
+    /// team's palette color). So the first-person gun reads as <i>yours</i> — it tints to your team color and
+    /// glows with it (e.g. the Vortex charge glow). <paramref name="hasTeam"/> false (FFA / no team) leaves the gun
+    /// untinted with its native glow, matching Base where a teamless local has colormap 0 (white = no swap).
+    ///
+    /// <para>Applied two ways to cover both view-model rig kinds: full-rig <c>h_*</c> hand models render through
+    /// <see cref="PlayerSkinShader"/> (instance-uniform colormod/glow via <see cref="ModelTint"/>); invisible-hand
+    /// <c>v_*</c> models render with a plain <see cref="StandardMaterial3D"/>, so the tint is layered onto the
+    /// surface materials in <see cref="ApplyMaterialFx"/>. Idempotent — only re-walks when the color changes.</para>
+    /// </summary>
+    public void SetTeamGlow(Color glow, Color colormod, bool hasTeam)
+    {
+        if (_hasTeam == hasTeam && _teamGlow == glow && _teamColormod == colormod)
+            return;
+        _teamGlow = glow;
+        _teamColormod = colormod;
+        _hasTeam = hasTeam;
+        _glowDirty = true;
+        // Full-rig (h_*) viewmodels render via PlayerSkinShader; push the team colormap through its instance
+        // uniforms (the same path as the third-person player model). Harmless on plain-material v_ models (no
+        // such uniforms — the StandardMaterial tint in ApplyMaterialFx handles those instead).
+        if (_modelRoot is not null && GodotObject.IsInstanceValid(_modelRoot))
+        {
+            Color shirtPants = hasTeam ? colormod : ModelTint.Black;
+            Color glowU = hasTeam ? glow : ModelTint.White;
+            ModelTint.Apply(_modelRoot, ModelTint.White, glowU, shirtPants, shirtPants);
+        }
     }
 
     // =================================================================================================
@@ -725,11 +767,14 @@ public partial class ViewModel : Node3D
     {
         bool alphaChanged = !Mathf.IsEqualApprox(a, _modelAlpha);
         bool needDepth = !_noDepthTestApplied;
-        if (!alphaChanged && !needDepth)
+        if (!alphaChanged && !needDepth && !_glowDirty)
             return;
         _modelAlpha = a;
         _noDepthTestApplied = true;
-        ApplyMaterialFx(_modelRoot, a);
+        _glowDirty = false;
+        // Team colormod (albedo tint toward the team color) + glowmod (emission) on plain-material v_ models, the
+        // StandardMaterial analog of Base e.colormap/e.glowmod. FFA (no team) → no tint, native (white) glow.
+        ApplyMaterialFx(_modelRoot, a, _hasTeam ? _teamColormod : (Color?)null, _hasTeam ? _teamGlow : (Color?)null);
     }
 
     /// <summary>Forget the applied material fx so the NEXT frame re-walks the freshly-built model (depth-test +
@@ -740,12 +785,16 @@ public partial class ViewModel : Node3D
     {
         _noDepthTestApplied = false;
         _modelAlpha = 1f;
+        _glowDirty = true; // the freshly-built model's materials need the team colormod/glow re-applied
+        // Re-seed the PlayerSkinShader instance uniforms on the new full-rig model (cleared by the rebuild).
+        if (_hasTeam && _modelRoot is not null && GodotObject.IsInstanceValid(_modelRoot))
+            ModelTint.Apply(_modelRoot, ModelTint.White, _teamGlow, _teamColormod, _teamColormod);
         if (_muzzleFlashNode is not null && GodotObject.IsInstanceValid(_muzzleFlashNode))
             _muzzleFlashNode.QueueFree();
         _muzzleFlashNode = null;
     }
 
-    private static void ApplyMaterialFx(Node node, float a)
+    private static void ApplyMaterialFx(Node node, float a, Color? colormod = null, Color? glow = null)
     {
         if (node is MeshInstance3D mi && mi.Mesh is { } mesh)
         {
@@ -764,6 +813,36 @@ public partial class ViewModel : Node3D
                     mi.SetSurfaceOverrideMaterial(i, ov);
                 }
                 ov.NoDepthTest = true; // EF_NODEPTHTEST — always draw the gun on top of the world.
+
+                // Team colormod (Base e.colormap = 256 + c): tint the gun's albedo toward the player's team color
+                // so the held weapon reads as yours. Captured base RGB once (in AlbedoColor.A's sibling channels)
+                // is not tracked, so we MULTIPLY the duplicated base material's albedo — the duplicate starts at
+                // the model's authored color, and a re-walk reuses the same override, so we must reset to white-
+                // multiplied each pass. Use a NeutralBase via metadata to stay idempotent: blend authored*team.
+                // FFA (colormod null) leaves albedo untouched.
+                if (colormod is { } cm)
+                {
+                    Color baseAlbedo = GetOrCaptureBaseAlbedo(ov);
+                    // Mild tint so the texture detail survives (DP colormap is a shirt/pants palette swap on a
+                    // small region; on a single-material gun we approximate with a subtle whole-model team tint).
+                    Color tinted = new(
+                        baseAlbedo.R * (0.6f + 0.4f * cm.R),
+                        baseAlbedo.G * (0.6f + 0.4f * cm.G),
+                        baseAlbedo.B * (0.6f + 0.4f * cm.B),
+                        baseAlbedo.A);
+                    ov.AlbedoColor = new Color(tinted.R, tinted.G, tinted.B, ov.AlbedoColor.A);
+                }
+
+                // Glowmod (Base e.glowmod): a team-colored emission so the gun glows with the team color (and, for
+                // weapons with a wr_glow override like the Vortex, that glow). Drives the StandardMaterial3D
+                // emission. White/native glow (FFA) → no added emission.
+                if (glow is { } gm && (gm.R + gm.G + gm.B) > 0.01f && (gm.R < 0.99f || gm.G < 0.99f || gm.B < 0.99f))
+                {
+                    ov.EmissionEnabled = true;
+                    ov.Emission = gm;
+                    ov.EmissionEnergyMultiplier = 0.35f;
+                }
+
                 if (a < 1f)
                 {
                     ov.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
@@ -778,7 +857,22 @@ public partial class ViewModel : Node3D
             }
         }
         foreach (Node child in node.GetChildren())
-            ApplyMaterialFx(child, a);
+            ApplyMaterialFx(child, a, colormod, glow);
+    }
+
+    /// <summary>
+    /// The material's authored (pre-tint) albedo, captured on first touch into a meta field so repeated team-tint
+    /// re-walks stay idempotent (a tint is always applied to the authored color, never compounded). Without this
+    /// the second pass would tint the already-tinted color and the gun would darken every frame.
+    /// </summary>
+    private static Color GetOrCaptureBaseAlbedo(BaseMaterial3D ov)
+    {
+        const string key = "vm_base_albedo";
+        if (ov.HasMeta(key))
+            return (Color)ov.GetMeta(key);
+        Color a = ov.AlbedoColor;
+        ov.SetMeta(key, a);
+        return a;
     }
 
     /// <summary>

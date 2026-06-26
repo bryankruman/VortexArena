@@ -421,6 +421,12 @@ public abstract partial class HudPanel : Control
         string skinArt = vertical ? art + "_vertical" : art;
         var tint = new Color(color.R, color.G, color.B, Mathf.Clamp(alpha, 0f, 1f));
 
+        // Resolve the skin art once (skin → default → bare default), so the 3-slice cap split can blit
+        // sub-regions of the *same* texture (QC's drawsubpic). Null → flat-rect fallback.
+        Texture2D? tex = TextureCache.GetFirst(
+            $"gfx/hud/{HudSkin.SkinName}/{skinArt}", $"gfx/hud/default/{skinArt}",
+            vertical ? "gfx/hud/default/progressbar_vertical" : "gfx/hud/default/progressbar");
+
         if (vertical)
         {
             float oy = origin.Y;
@@ -437,9 +443,24 @@ public abstract partial class HudPanel : Control
             }
             h *= lengthRatio;
             if (h <= 0f) return;
-            var fill = new Rect2(origin.X, oy, size.X, h);
-            if (!DrawSkinPic(skinArt, fill, tint) && !DrawSkinPic("progressbar_vertical", fill, tint))
-                DrawRect(fill, tint);
+
+            if (tex is null) { DrawRect(new Rect2(origin.X, oy, size.X, h), tint); return; }
+            // QC vertical 3-slice (hud.qc:315-329): cap UVs are y[0,.25]/[.25,.75]/[.75,1].
+            if (h <= size.X * 2f)
+            {
+                // not tall enough → just top + bottom halves, src y cropped to bH around the ends.
+                float half = h * 0.5f;
+                float bH = 0.25f * h / (size.X * 2f);
+                Blit3(tex, tint, new Rect2(origin.X, oy, size.X, half), new Rect2(0f, 0f, 1f, bH));
+                Blit3(tex, tint, new Rect2(origin.X, oy + half, size.X, half), new Rect2(0f, 1f - bH, 1f, bH));
+            }
+            else
+            {
+                float sq = size.X; // square chunk = bar width
+                Blit3(tex, tint, new Rect2(origin.X, oy, size.X, sq), new Rect2(0f, 0f, 1f, 0.25f));
+                Blit3(tex, tint, new Rect2(origin.X, oy + sq, size.X, h - 2f * sq), new Rect2(0f, 0.25f, 1f, 0.5f));
+                Blit3(tex, tint, new Rect2(origin.X, oy + h - sq, size.X, sq), new Rect2(0f, 0.75f, 1f, 0.25f));
+            }
         }
         else
         {
@@ -457,10 +478,37 @@ public abstract partial class HudPanel : Control
             }
             w *= lengthRatio;
             if (w <= 0f) return;
-            var fill = new Rect2(ox, origin.Y, w, size.Y);
-            if (!DrawSkinPic(skinArt, fill, tint) && !DrawSkinPic("progressbar", fill, tint))
-                DrawRect(fill, tint);
+
+            if (tex is null) { DrawRect(new Rect2(ox, origin.Y, w, size.Y), tint); return; }
+            // QC horizontal 3-slice (hud.qc:351-365): cap UVs are x[0,.25]/[.25,.75]/[.75,1].
+            if (w <= size.Y * 2f)
+            {
+                // not wide enough → just left + right halves, src x cropped to bW around the ends.
+                float half = w * 0.5f;
+                float bW = 0.25f * w / (size.Y * 2f);
+                Blit3(tex, tint, new Rect2(ox, origin.Y, half, size.Y), new Rect2(0f, 0f, bW, 1f));
+                Blit3(tex, tint, new Rect2(ox + half, origin.Y, half, size.Y), new Rect2(1f - bW, 0f, bW, 1f));
+            }
+            else
+            {
+                float sq = size.Y; // square chunk = bar height
+                Blit3(tex, tint, new Rect2(ox, origin.Y, sq, size.Y), new Rect2(0f, 0f, 0.25f, 1f));
+                Blit3(tex, tint, new Rect2(ox + sq, origin.Y, w - 2f * sq, size.Y), new Rect2(0.25f, 0f, 0.5f, 1f));
+                Blit3(tex, tint, new Rect2(ox + w - sq, origin.Y, sq, size.Y), new Rect2(0.75f, 0f, 0.25f, 1f));
+            }
         }
+    }
+
+    /// <summary>Blit a UV sub-region (QC <c>drawsubpic</c>) of <paramref name="tex"/> into the panel-local
+    /// dest <paramref name="dst"/>. <paramref name="srcUv"/> is in 0..1 UV space (origin + size); converted to
+    /// the texture's pixel rect. Used by the 3-slice progress-bar cap render.</summary>
+    private void Blit3(Texture2D tex, Color tint, Rect2 dst, Rect2 srcUv)
+    {
+        if (dst.Size.X <= 0f || dst.Size.Y <= 0f) return;
+        Vector2 ts = tex.GetSize();
+        var srcPx = new Rect2(srcUv.Position.X * ts.X, srcUv.Position.Y * ts.Y,
+                              srcUv.Size.X * ts.X, srcUv.Size.Y * ts.Y);
+        DrawTextureRectRegion(tex, dst, srcPx, tint);
     }
 
     /// <summary>Draw a horizontal, left-aligned progress bar (QC <c>HUD_Panel_DrawProgressBar</c>, baralign 0).

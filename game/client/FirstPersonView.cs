@@ -86,6 +86,12 @@ public sealed class FirstPersonView
     /// <summary>The host-requested chase mode (QC user <c>chase_active</c> / spectator cam). Default first-person eye.</summary>
     public ChaseMode CameraMode { get; set; } = ChaseMode.None;
 
+    /// <summary>True while the local client is spectating/following another player (QC <c>spectatee_status &gt; 0</c>).
+    /// Gates the <c>chase_front</c> frontal selfie cam, which Base allows ONLY while spectating
+    /// (<c>CSQCPlayer_ApplyChase</c>: <c>if (autocvar_chase_front &amp;&amp; spectatee_status)</c>). The host sets it each
+    /// frame from the follow state so the spectator third-person camera can flip to the frontal view.</summary>
+    public bool Spectating { get; set; }
+
     /// <summary>Set each frame by the host from the <c>+zoom</c> bind's held state (QC <c>button_zoom</c>). The
     /// host is responsible for suppressing it when dead / paused / the console is open, so the view zooms out on
     /// death (QC <c>cl_unpress_zoom_on_death</c>).</summary>
@@ -723,9 +729,10 @@ public sealed class FirstPersonView
         float chaseUp = Cvar("chase_up", 24f);
         bool chaseFront = Cvar("chase_front", 0f) != 0f;
         bool chaseOverhead = Cvar("chase_overhead", 0f) != 0f;
-        // Spectating-only test (QC spectatee_status != -1): the local player chase (not spectating) treats this as
-        // false, so chase_front does nothing for one's own chase cam — matching the QC guard.
-        bool spectating = false;
+        // Spectating-only test (QC CSQCPlayer_ApplyChase: `if (autocvar_chase_front && spectatee_status)`): chase_front
+        // is honored ONLY while following a player. For one's own chase cam Spectating is false, so chase_front does
+        // nothing — matching the QC guard. While spectating with chase_active set it engages the frontal selfie view.
+        bool spectating = Spectating;
 
         if (chaseOverhead)
         {

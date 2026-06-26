@@ -55,6 +55,28 @@ public static class BindTable
     /// <summary>DP <c>bind &lt;key&gt;</c> with no command: the current binding, or "" if unbound.</summary>
     public static string Get(string key) => _table.TryGetValue(key, out string? c) ? c : "";
 
+    /// <summary>
+    /// DP <c>getcommandkey(descriptivename, command)</c>: the display name of the first key bound to
+    /// <paramref name="command"/> (e.g. "+jump" → "SPACE"); when no key is bound to it, returns the
+    /// human-readable <paramref name="descriptiveName"/> fallback (QC's first arg). Matching is exact on the
+    /// bound command string, like DP's bind table lookup.
+    /// </summary>
+    public static string CommandKey(string descriptiveName, string command)
+    {
+        if (!string.IsNullOrEmpty(command))
+            foreach (string k in EnumerateKeysOrdered())
+                if (string.Equals(_table[k], command, StringComparison.Ordinal))
+                    return k;
+        return descriptiveName ?? "";
+    }
+
+    private static IEnumerable<string> EnumerateKeysOrdered()
+    {
+        var keys = new List<string>(_table.Keys);
+        keys.Sort(StringComparer.OrdinalIgnoreCase);
+        return keys;
+    }
+
     /// <summary>DP <c>bindlist</c>: every (key, command) pair, ordered by key.</summary>
     public static IEnumerable<KeyValuePair<string, string>> List()
     {

@@ -280,9 +280,11 @@ public partial class CrosshairPanel : HudPanel
     private float _pickupSize;           // QC pickup_crosshair_size (counts down from 1; sin() drives the bump)
     private float _hitIndSize;           // QC hitindication_crosshair_size (counts down from 1)
 
-    // ---- goal-based smooth scale/alpha (QC wcross_changedonetime block) ----
+    // ---- goal-based smooth scale/alpha/color (QC wcross_changedonetime block) ----
     private float _scalePrev = 1f, _alphaPrev = 1f;        // value last frame (QC *_prev)
     private float _scaleGoalPrev = 1f, _alphaGoalPrev = 1f; // goal last frame (QC *_goal_prev)
+    private Vector3 _colorPrev = Vector3.One;               // RGB last frame (QC wcross_color_prev)
+    private Vector3 _colorGoalPrev = Vector3.One;           // RGB goal last frame (QC wcross_color_goal_prev)
     private float _changeDoneTimeGoal;                      // QC wcross_changedonetime
     private bool _smoothSeeded;
 
@@ -627,8 +629,8 @@ public partial class CrosshairPanel : HudPanel
         }
         float goalAlpha = baseAlpha * (blur ? 0.75f : 1f); // QC wcross_alpha *= 0.75 on a blurred target
 
-        // ---- goal-based smooth scale/alpha lerp (QC wcross_changedonetime block) ----
-        SmoothGoal(ref scale, ref goalAlpha);
+        // ---- goal-based smooth scale/alpha/color lerp (QC wcross_changedonetime block) ----
+        SmoothGoal(ref scale, ref goalAlpha, ref c);
 
         c = new Color(c.R, c.G, c.B, goalAlpha);
 
@@ -784,27 +786,32 @@ public partial class CrosshairPanel : HudPanel
     // -------------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Port of the QC <c>wcross_changedonetime</c> easing: when the goal scale/alpha changes, ease the displayed
-    /// value toward it over <see cref="EffectTime"/> (frame-rate-independent exponential approach, QC
-    /// <c>f = frametime / (changedonetime - time + frametime)</c>).
+    /// Port of the QC <c>wcross_changedonetime</c> easing: when the goal scale/alpha/color changes, ease the
+    /// displayed value toward it over <see cref="EffectTime"/> (frame-rate-independent exponential approach, QC
+    /// <c>f = frametime / (changedonetime - time + frametime)</c>). The colour (RGB) is eased exactly like the
+    /// scale and alpha (QC crosshair.qc:444 <c>wcross_color = f*wcross_color + (1-f)*wcross_color_prev</c>); the
+    /// raw RGB may exceed [0,1] (rainbow brightness / hit-indication channel adds) — it is eased un-clamped and
+    /// clamped only at draw, matching QC. Alpha is carried through <paramref name="alpha"/> (QC wcross_alpha).
     /// </summary>
-    private void SmoothGoal(ref float scale, ref float alpha)
+    private void SmoothGoal(ref float scale, ref float alpha, ref Color color)
     {
         float effectTime = EffectTimeCvar();
         float now = CurrentTime();
+        var rgb = new Vector3(color.R, color.G, color.B);
 
         if (!_smoothSeeded)
         {
-            _scalePrev = scale; _alphaPrev = alpha;
-            _scaleGoalPrev = scale; _alphaGoalPrev = alpha;
+            _scalePrev = scale; _alphaPrev = alpha; _colorPrev = rgb;
+            _scaleGoalPrev = scale; _alphaGoalPrev = alpha; _colorGoalPrev = rgb;
             _smoothSeeded = true;
         }
 
-        // A changed goal (re)arms the ease window (QC: if goal changed, changedonetime = time + f).
-        if (scale != _scaleGoalPrev || alpha != _alphaGoalPrev)
+        // A changed goal (re)arms the ease window (QC: if scale/alpha/color goal changed, changedonetime = time + f).
+        if (scale != _scaleGoalPrev || alpha != _alphaGoalPrev || rgb != _colorGoalPrev)
             _changeDoneTimeGoal = now + effectTime;
         _scaleGoalPrev = scale;
         _alphaGoalPrev = alpha;
+        _colorGoalPrev = rgb;
 
         if (effectTime > 0f && now < _changeDoneTimeGoal)
         {
@@ -812,10 +819,14 @@ public partial class CrosshairPanel : HudPanel
             float f = dt / Mathf.Max(0.0001f, _changeDoneTimeGoal - now + dt);
             scale = f * scale + (1f - f) * _scalePrev;
             alpha = f * alpha + (1f - f) * _alphaPrev;
+            rgb = f * rgb + (1f - f) * _colorPrev;
         }
 
         _scalePrev = scale;
         _alphaPrev = alpha;
+        _colorPrev = rgb;
+
+        color = new Color(rgb.X, rgb.Y, rgb.Z, color.A);
     }
 
     // -------------------------------------------------------------------------------------------------

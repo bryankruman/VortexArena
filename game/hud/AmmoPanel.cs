@@ -328,9 +328,9 @@ public partial class AmmoPanel : HudPanel
         string barName = CvarStr("progressbar_name");
         if (string.IsNullOrWhiteSpace(barName)) barName = DefaultProgressbarName;
 
-        var filled = new Rect2(area.Position, new Vector2(area.Size.X * fraction, area.Size.Y));
-        if (!DrawSkinPic(barName, filled, fill))
-            DrawBar(area, fraction, fill); // primitive fallback
+        // Delegate to the shared faithful primitive (QC 3-slice cap render + skin resolve); horizontal,
+        // baralign 0 (left). Falls back to a flat fill inside the primitive when the art is missing.
+        DrawProgressBar(area, barName, fraction, vertical: false, baralign: 0, fill, fill.A);
     }
 
     // ---- helpers ----
