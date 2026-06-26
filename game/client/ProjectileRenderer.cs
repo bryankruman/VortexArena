@@ -188,8 +188,29 @@ public partial class ProjectileRenderer : Node3D
     /// <summary>Pull one projectile's current origin/velocity onto its visual (called per network update).</summary>
     public void OnUpdate(Entity entity)
     {
-        if (entity is not null && _visuals.TryGetValue(entity.Index, out Visual? v))
-            v.Entity = entity; // _Process does the actual transform follow (smooth interpolation)
+        if (entity is null || !_visuals.TryGetValue(entity.Index, out Visual? v))
+            return;
+        v.Entity = entity; // _Process does the actual transform follow (smooth interpolation)
+
+        // CSQCProjectile(..., true) "change type" — the porto flips its networked type from PORTO_RED to
+        // PORTO_BLUE mid-flight when a combined shot lays its in-portal and continues as the out-portal
+        // (porto.qc:251). The classifier keys on the entity's EF_RED/EF_BLUE bits, so re-classify on each update
+        // and recolour the bolt's glow + light when it changes, so the blue variant renders mid-flight.
+        PType reclass = ProjectileCatalog.Classify(entity);
+        if (reclass != v.Type)
+        {
+            v.Type = reclass;
+            ApplyTypeGlow(v, ProjectileCatalog.DescOf(reclass));
+        }
+    }
+
+    /// <summary>Recolour a live visual's body glow + dynamic light to a new type descriptor (porto red->blue swap).</summary>
+    private static void ApplyTypeGlow(Visual v, ProjectileCatalog.Desc desc)
+    {
+        if (v.Body is Sprite3D sprite && GodotObject.IsInstanceValid(sprite))
+            sprite.Modulate = desc.GlowColor;
+        if (v.Light is { } light && GodotObject.IsInstanceValid(light))
+            light.LightColor = desc.GlowColor;
     }
 
     /// <summary>Stop rendering a projectile (it hit something / expired). Optionally play an impact effect.</summary>

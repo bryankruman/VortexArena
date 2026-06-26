@@ -110,10 +110,22 @@ public sealed class OkShotgun : Weapon
         int pellets = (int)Cvars.Bullets;
         for (int i = 0; i < pellets; ++i)
         {
+            // W_Shotgun_Attack passes EFFECT_RIFLE_WEAK as the per-pellet tracer (okshotgun.qc:57).
             WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, Cvars.Damage,
-                RegistryId, Cvars.Spread, Cvars.SolidPenetration, force: Cvars.Force);
+                RegistryId, Cvars.Spread, Cvars.SolidPenetration, force: Cvars.Force, tracerEffect: "RIFLE_WEAK");
+            // QC wr_impacteffect (okshotgun.qc:103-113): EFFECT_SHOTGUN_IMPACT puff + the 5%/0.25s-throttled
+            // SND_RIC_RANDOM ricochet (the seam owns the throttle so a 10-pellet blast yields at most one ric).
+            Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
+            TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
+            Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
+            WeaponFiring.BulletImpactFx(actor, impTr.EndPos, backoff, "SHOTGUN_IMPACT");
         }
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/shotgun_fire.wav");
+
+        // W_MuzzleFlash inside W_Shotgun_Attack — EFFECT_SHOTGUN_MUZZLEFLASH (matching the base Shotgun port).
+        EffectEmitter.Emit("SHOTGUN_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+        // Casing eject — W_Shotgun_Attack SpawnCasing (shotgun shell, type 1) when g_casings >= 1 (gate inside).
+        WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Shell);
     }
 
     // METHOD(OverkillShotgun, wr_checkammo1)

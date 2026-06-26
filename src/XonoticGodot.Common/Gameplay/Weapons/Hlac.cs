@@ -212,7 +212,7 @@ public sealed class Hlac : Weapon
             Primary.Damage, Primary.EdgeDamage, Primary.Radius, Primary.Force, spread, isSecondary: false);
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/lasergun_fire.wav");
-        EffectEmitter.Emit("GREEN_HLAC_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+        EmitMuzzleFlash(shot.Origin, shot.Dir * 1000f, actor);
     }
 
     // W_HLAC_Attack2 — fire a burst of `shots` randomly-scattered bolts at once. hlac.qc
@@ -239,7 +239,7 @@ public sealed class Hlac : Weapon
         }
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/lasergun_fire.wav");
-        EffectEmitter.Emit("GREEN_HLAC_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+        EmitMuzzleFlash(shot.Origin, shot.Dir * 1000f, actor);
     }
 
     /// <summary>Spawn an HLAC laser bolt that bursts (radius damage) on touch or lifetime. hlac.qc.</summary>
@@ -300,8 +300,40 @@ public sealed class Hlac : Weapon
             deathTag: deathTag);
 
         WeaponSplash.ImpactSound(self, "weapons/laserimpact.wav"); // QC SND_LASERIMPACT (wr_impacteffect)
-        EffectEmitter.Emit("GREEN_HLAC_IMPACT", self.Origin);
+        // QC: pointparticles(eff, org2, w_backoff * 1000, 1) — the impact sprays back out of the surface
+        // along w_backoff (the impact plane normal). The bolt flew INTO the wall, so the reversed flight
+        // direction is the faithful w_backoff fallback (same reconstruction as Blaster.Explode).
+        Vector3 backoff = self.Velocity.LengthSquared() > 1e-6f ? -QMath.Normalize(self.Velocity) : Vector3.Zero;
+        EmitImpactEffect(self.Origin, backoff * 1000f);
         Api.Entities.Remove(self);
+    }
+
+    /// <summary>
+    /// Emit muzzle flash with runtime green->blaster fallback (hlac.qc:m_muzzleeffect,
+    /// hlac.qc:225-228). If GREEN_HLAC_MUZZLEFLASH is not registered (v0.8.6 compat), falls back
+    /// to BLASTER_MUZZLEFLASH. Both effects are pre-registered in the port, but this maintains
+    /// Base parity for a hypothetical missing-asset build.
+    /// </summary>
+    private static void EmitMuzzleFlash(Vector3 origin, Vector3 velocity, Entity except)
+    {
+        var effect = Effects.ByName("GREEN_HLAC_MUZZLEFLASH");
+        if (effect == null)
+            effect = Effects.ByName("BLASTER_MUZZLEFLASH"); // v0.8.6 compat fallback
+        EffectEmitter.Emit(effect, origin, velocity, 1, except);
+    }
+
+    /// <summary>
+    /// Emit impact effect with runtime green->blaster fallback (hlac.qc:wr_impacteffect,
+    /// hlac.qc:224-228). If GREEN_HLAC_IMPACT is not registered (v0.8.6 compat), falls back to
+    /// BLASTER_IMPACT. Both effects are pre-registered in the port, but this maintains Base
+    /// parity for a hypothetical missing-asset build.
+    /// </summary>
+    private static void EmitImpactEffect(Vector3 origin, Vector3 velocity)
+    {
+        var effect = Effects.ByName("GREEN_HLAC_IMPACT");
+        if (effect == null)
+            effect = Effects.ByName("BLASTER_IMPACT"); // v0.8.6 compat fallback
+        EffectEmitter.Emit(effect, origin, velocity);
     }
 
     // METHOD(HLAC, wr_checkammo1) — hlac.qc:188-192: have ammo if the shared pool OR the persistent magazine

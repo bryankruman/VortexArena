@@ -58,6 +58,19 @@ public sealed class Tuba : Weapon
         ItemModel = "g_tuba.md3";  // MDL_TUBA_ITEM
     }
 
+    // METHOD(Tuba, describe) — the MENUQC weapon-guide prose (tuba.qc:600-612). Plain newline-separated
+    // paragraphs with the %s name substitutions pre-filled (the literal "@!#%'n Tuba"), matching the Electro
+    // precedent. The dynamic W_Guide_Keybinds / W_Guide_DPS lines (last two PARs) are owned by the guide page,
+    // not this static text, so they're omitted here exactly as the Electro guide omits them.
+    public override string? GuideDescription =>
+        "The @!#%'n Tuba is a unique weapon that makes the ears of nearby enemies bleed by playing awful "
+      + "sounds, also slightly knocking them back.\n\n"
+      + "The secondary fire works the same way, playing a higher pitch.\n\n"
+      + "The only ammo it needs to operate is the breath from your lungs.\n\n"
+      + "Since your enemies need to be close by to hear your rubbish music, the @!#%'n Tuba is only effective "
+      + "at very close ranges.\n\n"
+      + "The pitch the @!#%'n Tuba plays depends on the movement keys pressed.";
+
     public override void Configure()
     {
         Cvars.Animtime = Bal("g_balance_tuba_animtime", 0.05f);
@@ -103,6 +116,15 @@ public sealed class Tuba : Weapon
             NoteOff(actor, slot); // neither fire button down -> stop the sustained note
         }
     }
+
+    // METHOD(Tuba, wr_aim) — tuba.qc:321-332. "Bots cannot play the Tuba well yet": when the enemy is within
+    // the note radius, the bot presses primary or secondary at a 50/50 coin flip (random() > 0.5 -> primary,
+    // else secondary). The brain has already decided to take a shot this frame and gates by range via the
+    // generic aim; this hook owns only the primary-vs-secondary pick, so we route ~half the close-range shots
+    // onto ATCK2 with the same fresh random() draw QC uses. The radius gate is the QC vdist(<, radius); the
+    // shared brain aim already suppresses long-range shots for this very-short-radius (200u) weapon.
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
+        => enemyDistance < Cvars.Radius && ctx.Random01 > 0.5f;
 
     // Refire/animtime from the (cvar-seeded) balance block (a single tuba_refire/animtime for both pitches).
     public override float RefireFor(FireMode fire) => Cvars.Refire;

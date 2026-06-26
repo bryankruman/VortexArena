@@ -324,10 +324,11 @@ public sealed class Fireball : Weapon
         var burning = StatusEffectsCatalog.Burning;
         if (burning is null) return;
 
-        Entity? chosen = null;
+        // QC RandomSelection: weighted reservoir pick (weight 1/(1+d)) with a priority tier preferring
+        // targets NOT already burning — same stochastic selection QC's RandomSelection_AddEnt performs.
+        var sel = new MapMover.RandomSelection();
+        sel.Reset();
         Vector3 chosenPoint = default;
-        float bestWeight = -1f;
-        bool chosenBurning = true;
         foreach (Entity e in Api.Entities.FindInRadius(self.Origin, dist).ToList())
         {
             // QC skip: frozen (stat or status), the owner, independent players, non-AIM targets, and a same-team
@@ -350,18 +351,16 @@ public sealed class Fireball : Weapon
             float d = (self.Origin - p).Length();
             if (d >= dist) continue;
 
-            // RandomSelection: weight 1/(1+d), and strongly prefer targets that aren't already burning.
-            bool isBurning = StatusEffectsCatalog.Has(e, burning);
-            float weight = 1f / (1f + d);
-            // not-yet-burning targets win over burning ones regardless of weight.
-            bool better = (!isBurning && chosenBurning) || (isBurning == chosenBurning && weight > bestWeight);
-            if (chosen is null || better)
-            {
-                chosen = e; chosenPoint = p; bestWeight = weight; chosenBurning = isBurning;
-            }
+            // QC: e.fireball_impactvec = p; RandomSelection_AddEnt(e, 1/(1+d), !Burning). Priority arg is the
+            // not-burning flag (1 wins over 0 = prefer not-yet-burning), weight 1/(1+d) breaks the tier ties.
+            float priority = StatusEffectsCatalog.Has(e, burning) ? 0f : 1f;
+            sel.Add(e, 1f / (1f + d), priority);
+            // The reservoir only keeps a reference; stash the body point so we can recover the chosen one's vec.
+            if (ReferenceEquals(sel.Chosen, e))
+                chosenPoint = p;
         }
 
-        if (chosen is not null)
+        if (sel.Chosen is { } chosen)
         {
             float d = (self.Origin - chosenPoint).Length();
             // QC: d = damage + (edgedamage-damage)*(d/dist) — the per-second burn rate scaled by distance.
@@ -453,8 +452,32 @@ public sealed class Fireball : Weapon
     // W_Fireball_Attack2 — lob a gravity-affected bouncing firemine that ignites players. fireball.qc
     private void Attack2(Entity actor, WeaponSlot slot)
     {
-        QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out Vector3 up);
+        QMath.AngleVectors(actor.Angles, out Vector3 forward, out Vector3 vright, out Vector3 up);
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-4, -4, -4), new Vector3(4, 4, 4), recoil: 2f);
+
+        // QC W_Fireball_Attack2: c = bulletcounter % 4 picks one of the four muzzle corners (f_diff = ±1.25 up
+        // ±3.75 right), then traceline(w_shotorg, w_shotorg + f_diff.x*v_up + f_diff.y*v_right) nudges the spawn
+        // point to that corner (capped at the first obstruction). This spreads consecutive mines' spawn points.
+        // bulletcounter was already incremented for this shot by the fire gate (WeaponFireGate.PrepareAttack).
+        int c = actor.WeaponState(slot).BulletCounter & 3; // % 4 (BulletCounter is non-negative here)
+        (float fUp, float fRight) = c switch
+        {
+            0 => (-1.25f, -3.75f),
+            1 => (1.25f, -3.75f),
+            2 => (-1.25f, 3.75f),
+            _ => (1.25f, 3.75f),
+        };
+        Vector3 corner = shot.Origin + fUp * up + fRight * vright;
+        Vector3 spawnOrg = shot.Origin;
+        if (Api.Services is not null)
+        {
+            TraceResult nudge = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, corner, MoveFilter.Normal, actor);
+            spawnOrg = nudge.EndPos; // w_shotorg = trace_endpos
+        }
+        else
+        {
+            spawnOrg = corner; // headless: no world to trace, just take the offset corner
+        }
 
         Entity proj = Api.Entities.Spawn();
         proj.ClassName = "grenade";
@@ -465,7 +488,7 @@ public sealed class Fireball : Weapon
         proj.Flags = EntFlags.Item; // QC FL_PROJECTILE
         proj.Gravity = 1f;
         Api.Entities.SetSize(proj, new Vector3(-4, -4, -4), new Vector3(4, 4, 4));
-        Api.Entities.SetOrigin(proj, shot.Origin);
+        Api.Entities.SetOrigin(proj, spawnOrg);
 
         // W_SetupProjVelocity_UP_SEC: velocity = normalize(w_shotdir + up*(speed_up/speed)) * speed.
         proj.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, up, Secondary.Speed, Secondary.SpeedUp, Secondary.SpeedZ, Secondary.Spread);
@@ -485,7 +508,8 @@ public sealed class Fireball : Weapon
         MutatorHooks.EditProjectile.Call(ref ep);
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/fireball_fire.wav");
-        EffectEmitter.Emit("FIREBALL_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+        // QC W_MuzzleFlash fires from the nudged w_shotorg (the f_diff muzzle corner).
+        EffectEmitter.Emit("FIREBALL_MUZZLEFLASH", spawnOrg, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_Fireball_Firemine_Think — scorch a nearby enemy each tick; self-destruct at end of lifetime. fireball.qc

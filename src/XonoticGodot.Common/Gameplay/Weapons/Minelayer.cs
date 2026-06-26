@@ -19,8 +19,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// detonate, and the splash damage. The mine is modelled (models/mine.md3), shoot-down is live via
 /// Projectiles.MakeShootable, the proximity team-filter keys off the owner's team, the over-limit press
 /// gives the WEAPON_MINELAYER_LIMIT feedback, and the bot wr_aim (BotWantsDetonate) implements the full
-/// skill-gated detonation-desirability math. Only the airshot achievement, the exact surface-normal facing,
-/// the out-of-ammo forced weapon switch, and CSQC in-flight mine networking are left out (render/online/HUD).
+/// skill-gated detonation-desirability math. A stuck mine now re-faces against the real surface normal
+/// (vectoangles(-trace_plane_normal), re-probed like Porto) and rides a moving bmodel via SetMovetypeFollow.
+/// Only the airshot achievement, the out-of-ammo forced weapon switch, and the separate CSQC in-flight mine
+/// networking channel are left out (render/online/HUD).
 /// </summary>
 [Weapon]
 public sealed class Minelayer : Weapon
@@ -229,6 +231,16 @@ public sealed class Minelayer : Weapon
     {
         self.NextThink = Api.Clock.Time;
 
+        // QC W_MineLayer_Think:189-193 — a mine glued to a moving bmodel (SetMovetypeFollow) that lost its
+        // platform (LostMovetypeFollow: aiment gone) reverts to MOVETYPE_NONE in place. The port tracks only the
+        // null/freed-aiment case (no aiment_classname/deadflag fields); PhysicsFollow already freezes a
+        // null-aiment follower, this just restores the locked state so the rest of the think runs normally.
+        if (self.MoveType == MoveType.Follow && (self.Aiment is null || self.Aiment.IsFreed))
+        {
+            self.MoveType = MoveType.None;
+            self.Aiment = null;
+        }
+
         // Lifetime reached its countdown point: arm the final countdown (a warning beep + super-aggressive).
         if (Api.Clock.Time > deathTime && self.MaxHealth == 0f && self.Frame == 0f)
         {
@@ -302,23 +314,67 @@ public sealed class Minelayer : Weapon
     // surface normal, and lock in place. minelayer.qc
     private void OnTouch(Entity self, Entity other)
     {
-        if (self.MoveType == MoveType.None) return; // already stuck (QC: MOVETYPE_NONE/FOLLOW early-out)
+        if (self.MoveType is MoveType.None or MoveType.Follow) return; // already stuck (QC W_MineLayer_Touch:257-259)
         if (Api.Clock.Time <= self.LTime) return;   // .wait: a knock-loose mine won't reattach for one tick window
 
         // Stick ONLY to BSP (QC W_MineLayer_Touch:265 — toucher.solid == SOLID_BSP). The earlier non-client
         // broadening could stick a mine to other solids; dropped for faithfulness.
         if (other.Solid != Solid.Bsp) return;
 
-        // W_MineLayer_Stick: freeze the mine in place on the surface (QC orients angles to -trace_plane_normal
-        // and uses MOVETYPE_NONE). We approximate the surface normal by the reverse of the incoming velocity and
-        // store it in movedir (PunchVector) so the remote-explode can set a non-zero .velocity for its fx/decal.
-        Vector3 vel = self.Velocity;
-        if (vel.LengthSquared() > 0f)
-            self.PunchVector = -Vector3.Normalize(vel); // movedir = -trace_plane_normal (approx)
+        // W_MineLayer_Stick: freeze the mine in place on the surface (QC: angles = vectoangles(-trace_plane_normal),
+        // movedir = -trace_plane_normal, MOVETYPE_NONE). The engine's bouncemissile touch doesn't carry the
+        // collision globals to this callback, so — exactly like Porto's OnTouch does — re-probe the impact face
+        // with a short worldonly traceline to recover the TRUE plane normal (instead of approximating it from the
+        // negated velocity). The mine faces against the surface (vectoangles(-normal)) and stores -normal in movedir
+        // (PunchVector) so the remote-explode can set a non-zero .velocity for its fx/decal.
+        Vector3 intoWall = ProbeStickNormal(self); // = -trace_plane_normal (faces into the surface)
+        self.PunchVector = intoWall;                // movedir = -trace_plane_normal
+        if (intoWall.LengthSquared() > 0f)
+            self.Angles = QMath.VecToAngles(intoWall); // angles = vectoangles(-trace_plane_normal)
         Api.Sound.Play(self, SoundChannel.Body, "weapons/mine_stick.wav");
         self.Velocity = Vector3.Zero;
         self.MoveType = MoveType.None; // lock in place (disables gravity)
         self.Gravity = 0f;
+
+        // QC W_MineLayer_Stick tail: if (to) SetMovetypeFollow(newmine, to) — glue the mine to a MOVING bmodel
+        // (func_plat/func_door) so it rides the platform. In QC the static world is entity 0 (`if(to)` is false),
+        // so this only fires for a real brush entity. The port substitutes a "worldspawn" sentinel for static-world
+        // hits, so skip those; attach only to a real, non-pushing-aside bmodel that can move.
+        if (other.MoveType != MoveType.None && other.ClassName != "worldspawn" && !ReferenceEquals(other, self))
+            SetMovetypeFollow(self, other);
+    }
+
+    // SetMovetypeFollow(ent, e) (common/util.qc:2129) — make a stuck mine ride a moving bmodel via MOVETYPE_FOLLOW.
+    // Mirrors follow_sameorigin (relative origin/angle bookkeeping the PhysicsFollow integrator replays each tick),
+    // plus solid=NOT (a FOLLOW entity is always non-solid).
+    private static void SetMovetypeFollow(Entity ent, Entity e)
+    {
+        ent.MoveType = MoveType.Follow;
+        ent.Solid = Solid.Not;
+        ent.Aiment = e;
+        ent.PunchAngle = e.Angles;            // the original angles of the bmodel
+        ent.ViewOfs = ent.Origin - e.Origin;  // relative origin
+        ent.VAngle = ent.Angles - e.Angles;   // relative angles
+    }
+
+    // Recover -trace_plane_normal at the stick point by re-probing the impact face with a short worldonly
+    // traceline (Base reads trace_plane_normal from the collision that produced the touch; the engine callback
+    // doesn't carry it). Mirrors Porto.ProbeImpact. Returns the into-the-wall direction (= -plane_normal); falls
+    // back to the negated incoming velocity when no solid is within reach (the previous approximation).
+    private Vector3 ProbeStickNormal(Entity self)
+    {
+        Vector3 vel = self.Velocity;
+        Vector3 fallback = vel.LengthSquared() > 0.0001f ? -Vector3.Normalize(vel) : new Vector3(0f, 0f, -1f);
+        if (Api.Services is null || vel.LengthSquared() <= 0.0001f)
+            return fallback;
+
+        Vector3 into = -Vector3.Normalize(vel); // points into the wall the mine struck
+        Vector3 start = self.Origin - into * 4f;
+        Vector3 end = self.Origin + into * 16f;
+        TraceResult tr = Api.Trace.Trace(start, Vector3.Zero, Vector3.Zero, end, MoveFilter.WorldOnly, self);
+        if (tr.Fraction >= 1f || tr.PlaneNormal.LengthSquared() <= 0.0001f)
+            return fallback;
+        return -Vector3.Normalize(tr.PlaneNormal); // -trace_plane_normal
     }
 
     // W_MineLayer_Explode — radius damage + knockback, then remove. minelayer.qc

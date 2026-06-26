@@ -32,6 +32,14 @@ public sealed class Vaporizer : Weapon
 
     public PrimaryBalance Primary;
 
+    // QC vaporizer.qh w_reticle "gfx/reticle_nex" + vaporizer.qc wr_init/wr_zoom: the Vaporizer has no
+    // weapon-specific zoom (ZoomOnSecondary stays false — wr_zoom returns true only on button_zoom ||
+    // zoomscript_caught, NOT ATTACK2), but it DOES carry the NEX scope reticle, precached client-side
+    // (wr_init: precache_pic w_reticle) and drawn while the dedicated +zoom button is held with the
+    // Vaporizer out (ReticleOverlay.UpdateReticle picks the weapon scope on buttonZoom). Same image as the
+    // sister Vortex. The crosshair (gfx/crosshairminstanex size 0.6) is wired centrally in CrosshairPanel.
+    public override string? Reticle => "gfx/reticle_nex";
+
     /// <summary>
     /// Whether the instagib mutator is active. In QC this is autocvar_g_instagib: when set, each shot costs
     /// exactly 1 cell and the beam deals its instant-kill 10000 damage. The vaporizer is the instagib
@@ -298,6 +306,14 @@ public sealed class Vaporizer : Weapon
             Cvar("g_rm_damage", 70f), Cvar("g_rm_edgedamage", 38f), Cvar("g_rm_radius", 140f),
             actor, RegistryId, Cvar("g_rm_force", 400f),
             accuracyWeapon: devastator, deathTag: devTag);
+
+        // QC W_RocketMinsta_Explosion deals only the radius damage; the blast is tagged WEP_DEVASTATOR.m_id, so
+        // CSQC routes the impact through the DEVASTATOR's wr_impacteffect (devastator.qc:569-575): EFFECT_ROCKET_
+        // EXPLODE pointparticles + SND_ROCKET_IMPACT. RadiusDamage doesn't emit centrally (WeaponSplash.cs:275 —
+        // the caller owns it), so emit the Devastator explosion presentation here at the rail endpoint, exactly
+        // as Devastator.Explode does for a normal rocket detonation.
+        EffectEmitter.Emit("ROCKET_EXPLODE", loc);
+        WeaponSplash.ImpactSoundAt(loc, "weapons/rocket_impact.wav"); // SND_ROCKET_IMPACT
     }
 
     // W_Blaster_Attack via the Blaster weapon — the secondary knockback laser.

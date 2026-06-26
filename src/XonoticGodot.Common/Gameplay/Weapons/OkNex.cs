@@ -144,6 +144,19 @@ public sealed class OkNex : Weapon
         WeaponFiring.FireRailgunBullet(actor, shot.Origin, end, mydmg, RegistryId, myforce,
             headshotNotify: false);
 
+        // "beam and muzzle flash done on client" (oknex.qc:105-106): mirror the Vortex port — the rail muzzle
+        // flash (EFFECT_VORTEX_MUZZLEFLASH) + the beam-impact puff (wr_impacteffect EFFECT_VORTEX_IMPACT) and the
+        // SND_OK_NEX_IMPACT (neximpact) ping at the surface the beam hit.
+        Vector3 beamEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
+        TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, beamEnd, MoveFilter.WorldOnly, actor);
+        bool silent = (impTr.DpHitQ3SurfaceFlags & WeaponFiring.Q3SurfaceFlagSky) != 0 || impTr.Fraction >= 1f;
+        if (!silent)
+        {
+            EffectEmitter.Emit("VORTEX_IMPACT", impTr.EndPos);
+            WeaponSplash.ImpactSoundAt(impTr.EndPos, "weapons/neximpact.wav"); // QC SND_OK_NEX_IMPACT
+        }
+        EffectEmitter.Emit("VORTEX_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+
         // W_DecreaseAmmo(thiswep, actor, ammo) — clip-aware (WEP_FLAG_RELOADABLE): drains the magazine so the
         // wr_think forced-reload branch (clip_load < ammo) engages. oknex.qc:108 (ammo) + :157-162 (reload).
         DecreaseAmmo(actor, slot, Cvars.Ammo);

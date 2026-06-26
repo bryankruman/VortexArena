@@ -93,6 +93,24 @@ public sealed class Electro : Weapon
         ItemModel = "g_electro.md3";  // MDL_ELECTRO_ITEM
     }
 
+    /// <summary>
+    /// METHOD(Electro, describe) — common/weapons/weapon/electro.qc:753-767. The in-menu weapon-guide prose:
+    /// what primary/secondary/combo do, the ammo note, and the tactical tip. The QC builds this with PAR()
+    /// paragraphs and COLORED_NAME(%s) substitutions (the weapon name, the CTF gametype, the Cells item); the
+    /// names are pre-filled here with their literals. The trailing W_Guide_Keybinds line and the computed
+    /// W_Guide_DPS_secondaryMultishotWithCombo metric line are not reproduced (those helpers aren't ported).
+    /// </summary>
+    public override string? GuideDescription =>
+        "The Electro shoots electric balls forwards, dealing some splash damage when they burst on impact.\n\n"
+      + "The secondary fire launches orbs that are influenced by gravity, so they can be laid around the map "
+      + "at high traffic locations (like at Capture the Flag flag bases) to damage enemies that walk by. The "
+      + "orbs burst after some time, and can be forced to burst in a \"combo\" if a primary fire ball bursts "
+      + "near them.\n\n"
+      + "It consumes some Cells ammo for each ball / orb.\n\n"
+      + "The Electro is one of the best spam weapons to use in crowded areas, since combos can deal tons of "
+      + "damage, if the enemy is close enough. Since the primary fire doesn't travel particularly fast, the "
+      + "Electro is not useful in many other situations.";
+
     public override void Configure()
     {
         Primary.Ammo = Bal("g_balance_electro_primary_ammo", 4f);

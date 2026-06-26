@@ -55,6 +55,10 @@ public sealed class Porto : Weapon
         ItemModel = "g_porto.md3";  // MDL_PORTO_ITEM
     }
 
+    // porto.qh: ATTRIB(PortoLaunch, w_crosshair, "gfx/crosshairporto"); ATTRIB(PortoLaunch, w_crosshair_size, 0.6).
+    public override string? Crosshair => "gfx/crosshairporto";
+    public override float CrosshairSize => 0.6f;
+
     public override void Configure()
     {
         Primary.Animtime = Bal("g_balance_porto_primary_animtime", 0.3f);
@@ -164,7 +168,12 @@ public sealed class Porto : Weapon
         gren.Owner = actor;
         gren.NetName = NetName;
         gren.Count = type; // QC gren.cnt = type (-1 combined, 0 in-portal, 1 out-portal)
-        gren.Effects = EffectRed; // EF_RED; flips to EF_BLUE after placing the in-portal of a combined shot
+        // QC W_Porto_Attack sets gren.effects = EF_RED, then CSQCProjectile(... type>0 ? PORTO_BLUE : PORTO_RED).
+        // The port has no separate networked CSQC-type field — the client classifier (ProjectileCatalog.Classify)
+        // derives red vs blue from the networked EF_RED/EF_BLUE bits — so seed the effect bit to the RENDER colour:
+        // the out-portal (type 1) ships PORTO_BLUE (EF_BLUE); the in-portal/combined (type<=0) ships PORTO_RED
+        // (EF_RED). The combined red->blue flip (OnTouch) only runs on the cnt<0 path, which keeps EF_RED here.
+        gren.Effects = type > 0 ? EffectBlue : EffectRed;
         gren.MoveType = MoveType.BounceMissile;
         Projectiles.MakeTrigger(gren); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         gren.Flags = EntFlags.Item; // QC FL_PROJECTILE
@@ -422,8 +431,11 @@ public sealed class Porto : Weapon
     /// <summary>autocvar_g_balance_powerup_strength_force — Strength powerup speed multiplier (default 3, seeded
     /// from the cvar in <see cref="Configure"/>).</summary>
     public float StrengthForce = 3f;
-    private const int EffectRed = 1 << 14;   // EF_RED
-    private const int EffectBlue = 1 << 15;  // EF_BLUE
+    // DP canonical EF_RED / EF_BLUE (dpextensions.qc:179 / :101) — the same bits networked in Entity.Effects
+    // and read by the client to render the red (in-portal) vs blue (out-portal) porto projectile mid-flight.
+    // (Previously 1<<14 / 1<<15, which collide with EF_SELECTABLE / EF_DOUBLESIDED and the client never saw.)
+    private const int EffectRed = 128;   // EF_RED
+    private const int EffectBlue = 64;   // EF_BLUE
 
     // METHOD(PortoLaunch, wr_resetplayer) — porto.qc:409. On respawn/reset, drop the single-portal latch so the
     // player can fire a fresh porto (QC: actor.porto_current = NULL).

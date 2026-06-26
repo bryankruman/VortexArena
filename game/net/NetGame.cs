@@ -1304,8 +1304,27 @@ public sealed partial class NetGame : Node3D
         // EquipNetworkedWeapon(); the ViewStateProvider feeds the follow/lean/bob sway from the predicted view.
         _viewModel = new ViewModel { Name = "ViewModel", Effects = _render.Effects };
         _viewModel.ViewStateProvider = BuildViewState;
+        // QC W_MuzzleFlash attaches the weapon's m_muzzlemodel (flash.md3 for the Devastator/MineLayer,
+        // uziflash.md3 for the Machinegun/Shotgun; MDL_Null = no model flash for every other weapon) to the
+        // exterior weapon entity at the shot tag. The port equivalent: a path-keyed loader the ViewModel calls on
+        // each Fire() to spawn a fresh flash mesh node at the muzzle socket, gated by the per-weapon MuzzleModelPath
+        // set at equip (MuzzleModelFor). LoadModel returns null when the file is missing, degrading to no flash.
+        if (_assets is not null)
+            _viewModel.FlashModelFactory = path => _assets.LoadModel(path);
         _camera.AddChild(_viewModel);
         _render.ViewModel = _viewModel;
+
+        // Porto_Draw aim-trajectory preview: feed it the local player's view angles, active weapon id, and the
+        // alive/spectating/intermission gate (QC Porto_Draw early-return). The preview node itself reads the
+        // camera position for the eye + draws only when a porto is held in the non-default combined-shot mode.
+        if (_render.PortoPreview is not null)
+        {
+            _render.PortoPreview.ViewAnglesProvider = () => _viewAngles;
+            _render.PortoPreview.ActiveWeaponProvider = () => _client?.ActiveWeaponId ?? -1;
+            _render.PortoPreview.SuppressedProvider = () =>
+                _client is not { Accepted: true } || _client.Health <= 0
+                || _view.ChaseActive || _client.MatchIntermission;
+        }
 
         // Bridge the HUD's texture cache to the mounted game data so weapon icons / crosshairs / kill-notify
         // icons draw the REAL Xonotic art instead of colored-box fallbacks (mirrors GameDemo.SetupHud).
@@ -1599,7 +1618,7 @@ public sealed partial class NetGame : Node3D
         XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(id);
         string vModel = WeaponVModelPath(w);
         ViewModelEquip eq = ViewModelEquip.Build(_assets, vModel);
-        _viewModel.SetWeaponModel(eq.Model, MuzzleEffectFor(w), "tag_shot", eq.Attach);
+        _viewModel.SetWeaponModel(eq.Model, MuzzleEffectFor(w), "tag_shot", eq.Attach, MuzzleModelFor(w));
         _viewModel.Visible = true;
         // Raise the new gun into view instead of popping the model in (Xonotic viewmodel_draw raise; pairs with
         // the keypress holster in RunBoundCommand). Confirmed switch → cancels any pending holster auto-recovery.
@@ -2000,6 +2019,19 @@ public sealed partial class NetGame : Node3D
         "hlac" => "GREEN_HLAC_MUZZLEFLASH",
         "fireball" => "FIREBALL_MUZZLEFLASH",
         _ => "BLASTER_MUZZLEFLASH",
+    };
+
+    /// <summary>
+    /// The muzzle-flash MODEL vpath for a weapon — the QC <c>m_muzzlemodel</c> attrib. Only four stock weapons set
+    /// a non-null model: Devastator + MineLayer (<c>MDL_*_MUZZLEFLASH</c> → <c>models/flash.md3</c>) and Machinegun
+    /// + Shotgun (→ <c>models/uziflash.md3</c>). Every other weapon is <c>MDL_Null</c> and attaches NO model flash
+    /// (only the particle effect), so this returns <c>""</c> for them (the ViewModel skips the model spawn).
+    /// </summary>
+    private static string MuzzleModelFor(XonoticGodot.Common.Gameplay.Weapon w) => w.NetName switch
+    {
+        "devastator" or "minelayer" => "models/flash.md3",
+        "machinegun" or "shotgun" => "models/uziflash.md3",
+        _ => "",
     };
 
     /// <summary>

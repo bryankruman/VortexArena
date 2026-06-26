@@ -71,6 +71,10 @@ public sealed class Hook : Weapon
         ItemModel = "g_hookgun.md3";  // MDL_HOOK_ITEM
     }
 
+    // hook.qh: ATTRIB(Hook, w_crosshair, "gfx/crosshairhook"); ATTRIB(Hook, w_crosshair_size, 0.5).
+    public override string? Crosshair => "gfx/crosshairhook";
+    public override float CrosshairSize => 0.5f;
+
     public override void Configure()
     {
         Primary.Ammo = Bal("g_balance_hook_primary_ammo", 5f);
@@ -509,19 +513,27 @@ public sealed class Hook : Weapon
     {
         self.Touch = null;
         self.TakeDamage = DamageMode.No;
+        // QC W_Hook_Explode2: this.effects |= EF_NODRAW — hide the bomb model while the pull ticks (the visible
+        // explosion is the EFFECT_HOOK_EXPLODE particle below, not the bomb itself).
+        self.Effects |= EffectFlags.NoDraw;
         self.MoveType = MoveType.None;
         EffectEmitter.Emit("HOOK_EXPLODE", self.Origin);
+
+        // QC W_Hook_Attack2: missile.projectiledeathtype = WEP_HOOK.m_id | HITTYPE_SECONDARY. W_Hook_ExplodeThink
+        // then ORs HITTYPE_SPAM after the first tick, so subsequent ticks no longer count toward team-damage
+        // complaints / frozen-victim spam. Carry the secondary deathtype as a string so the hittype bits ride.
+        string death = Damage.DeathTypes.WithHitType(Damage.DeathTypes.FromWeapon(NetName), Damage.DeathTypes.Secondary);
 
         // QC ticks W_Hook_ExplodeThink every 0.05s for `duration`, applying the *delta* of a power-curve
         // falloff each tick so the total blast == one full RadiusDamage. teleport_time marks the blast start.
         float startTime = Api.Clock.Time;
         self.NextThink = Api.Clock.Time;
-        self.Think = s => ExplodeThink(s, startTime, lastFrac: 1f);
+        self.Think = s => ExplodeThink(s, startTime, lastFrac: 1f, death);
         self.Think(self);
     }
 
     // W_Hook_ExplodeThink — apply this tick's share of the pull blast; repeat until duration elapses. hook.qc
-    private void ExplodeThink(Entity self, float startTime, float lastFrac)
+    private void ExplodeThink(Entity self, float startTime, float lastFrac, string death)
     {
         float dt = Api.Clock.Time - startTime;
         // dmg_remaining = clamp(1 - dt/duration, 0, 1) ^ power; f = previous_remaining - this_remaining.
@@ -531,13 +543,16 @@ public sealed class Hook : Weapon
         if (f > 0f)
         {
             WeaponSplash.RadiusDamage(self, self.Origin, f * Secondary.Damage, f * Secondary.EdgeDamage,
-                Secondary.Radius, self.Owner, RegistryId, f * Secondary.Force);
+                Secondary.Radius, self.Owner, RegistryId, f * Secondary.Force, deathTag: death);
         }
+
+        // QC: this.projectiledeathtype |= HITTYPE_SPAM (after the RadiusDamage of the FIRST tick onward).
+        death = Damage.DeathTypes.WithHitType(death, Damage.DeathTypes.Spam);
 
         if (dt < Secondary.Duration)
         {
             self.NextThink = Api.Clock.Time + 0.05f;
-            self.Think = s => ExplodeThink(s, startTime, remaining);
+            self.Think = s => ExplodeThink(s, startTime, remaining, death);
         }
         else
         {

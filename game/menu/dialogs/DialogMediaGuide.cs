@@ -1,4 +1,7 @@
+using System.Collections.Generic;
 using Godot;
+using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay;
 
 namespace XonoticGodot.Game.Menu;
 
@@ -25,6 +28,10 @@ public partial class DialogMediaGuide : Control
     };
 
     private Label _description = null!;
+    private ItemList _entryList = null!;
+    private Label _entryNote = null!;
+    // The Weapons topic's entries, parallel to _entryList rows (so a row index maps back to its weapon).
+    private readonly List<Weapon> _weaponEntries = new();
 
     public override void _Ready()
     {
@@ -74,14 +81,16 @@ public partial class DialogMediaGuide : Control
         pane.AddThemeConstantOverride("separation", 6);
         pane.AddChild(Ui.Header("Entries"));
 
-        var entryList = new ItemList
+        _entryList = new ItemList
         {
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
             CustomMinimumSize = new Vector2(160, 200),
         };
-        pane.AddChild(entryList);
-        pane.AddChild(Ui.Label("(entry list — guide registry enumeration pending)"));
+        _entryList.ItemSelected += OnEntrySelected;
+        pane.AddChild(_entryList);
+        _entryNote = Ui.Label("(select the Weapons topic to browse weapon descriptions)");
+        pane.AddChild(_entryNote);
 
         // QC: stringFilterBox (keyword filter), inert without the registry.
         var filter = new LineEdit { PlaceholderText = "Filter…", SizeFlagsHorizontal = SizeFlags.ExpandFill };
@@ -110,11 +119,46 @@ public partial class DialogMediaGuide : Control
         return pane;
     }
 
-    // QC topicChangeNotify reloads the entry list from the topic's source; we can't enumerate the registry,
-    // so reflect the chosen topic in the description placeholder to keep the panes visibly linked.
+    // QC topicChangeNotify reloads the entry list from the topic's source. The Weapons topic enumerates the
+    // weapon registry (Registry<Weapon>.All, like WeaponPriorityList) and shows each weapon's ported describe()
+    // text; the other topics' registry sources (items/monsters/…) aren't enumerated here yet.
     private void OnTopicSelected(long index)
     {
-        if (index >= 0 && index < Topics.Length)
-            _description.Text = $"{Topics[index]}\n\n(entry list / descriptions for this topic — guide registry enumeration pending)";
+        _entryList.Clear();
+        _weaponEntries.Clear();
+
+        if (index < 0 || index >= Topics.Length)
+            return;
+
+        if (Topics[index] == "Weapons")
+        {
+            // The QC Weapons topic lists the in-game weapon registry, sorted; each entry's describe() feeds the
+            // description pane. Mirror that with Registry<Weapon>.All.
+            foreach (Weapon w in Registry<Weapon>.All)
+            {
+                if (w is null || w.NetName.Length == 0)
+                    continue;
+                _weaponEntries.Add(w);
+                _entryList.AddItem(w.DisplayName.Length > 0 ? w.DisplayName : w.NetName);
+            }
+            _entryNote.Text = "(select a weapon to read its description)";
+            _description.Text = "Weapons\n\nSelect a weapon from the entry list to read its description.";
+            return;
+        }
+
+        _entryNote.Text = "(entry list / descriptions for this topic — guide registry enumeration pending)";
+        _description.Text = $"{Topics[index]}\n\n(entry list / descriptions for this topic — guide registry enumeration pending)";
+    }
+
+    // An entry was picked: show the selected weapon's ported describe() prose (or a note if none is ported yet).
+    private void OnEntrySelected(long index)
+    {
+        if (index < 0 || index >= _weaponEntries.Count)
+            return;
+        Weapon w = _weaponEntries[(int)index];
+        string name = w.DisplayName.Length > 0 ? w.DisplayName : w.NetName;
+        _description.Text = w.GuideDescription is { Length: > 0 } desc
+            ? $"{name}\n\n{desc}"
+            : $"{name}\n\n(no guide description ported for this weapon yet)";
     }
 }

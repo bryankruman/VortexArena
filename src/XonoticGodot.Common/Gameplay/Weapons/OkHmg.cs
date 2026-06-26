@@ -148,16 +148,33 @@ public sealed class OkHmg : Weapon
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.CurrentMaxShotDistance, penetrateWalls: true);
+        Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/uzi_fire.wav");
+
+        // QC okhmg.qc:34-38 — punchangle recoil PRNG unless g_norecoil: random()-0.5 on pitch+yaw.
+        if ((actor.Flags & EntFlags.Client) != 0 && Api.Cvars.GetFloat("g_norecoil") == 0f)
+            actor.PunchAngle = new Vector3(Prandom.Float() - 0.5f, Prandom.Float() - 0.5f, 0f);
 
         // okhmg_spread = bound(spread_min, spread_min + spread_add * misc_bulletcounter, spread_max)
         float spread = QMath.Clamp(Cvars.SpreadMin + Cvars.SpreadAdd * st.MiscBulletCounter,
             Cvars.SpreadMin, Cvars.SpreadMax);
 
+        // QC okhmg.qc:41-49 — plain fireBullet (no falloff) WITH the EFFECT_RIFLE tracer trail.
         WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, Cvars.Damage,
-            RegistryId, spread, Cvars.SolidPenetration, force: Cvars.Force);
-        Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/uzi_fire.wav");
+            RegistryId, spread, Cvars.SolidPenetration, force: Cvars.Force, tracerEffect: "RIFLE");
+
+        // QC wr_impacteffect (okhmg.qc:150-156): EFFECT_MACHINEGUN_IMPACT puff + throttled SND_RIC_RANDOM ricochet.
+        Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
+        TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
+        Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
+        bool silent = (impTr.DpHitQ3SurfaceFlags & WeaponFiring.Q3SurfaceFlagSky) != 0 || impTr.Fraction >= 1f;
+        WeaponFiring.BulletImpactFx(actor, impTr.EndPos, backoff, "MACHINEGUN_IMPACT", silent);
 
         ++st.MiscBulletCounter;
+
+        // W_MuzzleFlash(thiswep, ...) — okhmg.qh m_muzzleeffect = EFFECT_MACHINEGUN_MUZZLEFLASH (okhmg.qc:53).
+        EffectEmitter.Emit("MACHINEGUN_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+        // casing (okhmg.qc:55-59): SpawnCasing type 3 (bullet) at g_casings >= 2 (gate inside the seam).
+        WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Bullet);
 
         float rate = WeaponRateFactor(actor);
         st.AttackFinished = Api.Clock.Time + Cvars.Refire * rate;

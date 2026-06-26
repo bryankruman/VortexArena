@@ -150,6 +150,11 @@ public sealed class WeaponSlotState
     /// <summary>QC <c>PHYS_INPUT_BUTTON_ATCK2(actor)</c> for THIS slot's frame (see <see cref="ButtonAttack"/>).</summary>
     public bool ButtonAttack2;
 
+    /// <summary>QC <c>PHYS_INPUT_BUTTON_ZOOM(actor) | PHYS_INPUT_BUTTON_ZOOMSCRIPT(actor)</c> for THIS slot's
+    /// frame (see <see cref="ButtonAttack"/>). The rifle reads it inside its fire path to re-aim a scoped shot
+    /// straight from the eye (rifle.qc:16-20).</summary>
+    public bool ButtonZoom;
+
     /// <summary>QC <c>.prevdryfire</c> — last server time the dry-fire CLICK played (throttles it to ~1/s).</summary>
     public float PrevDryFire;
 
@@ -340,6 +345,8 @@ public sealed class WeaponSlotState
     public Vector3 BeamDir;
     /// <summary>Whether <see cref="BeamDir"/> has been seeded yet (QC beam_initialized).</summary>
     public bool BeamInitialized;
+    /// <summary>QC <c>actor.arc_smoke_sound</c> — whether the overheat-fire loop (SND_ARC_LOOP_OVERHEAT) is playing.</summary>
+    public bool ArcSmokeSound;
 
     // --- Rifle (rifle.qc) ---
     /// <summary>QC <c>.rifle_accumulator</c> — burst-cost accumulator gating the bullethail.</summary>

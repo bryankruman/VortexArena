@@ -1274,8 +1274,15 @@ public partial class CrosshairPanel : HudPanel
     /// <c>crosshair_per_weapon</c> is on, else 1.</summary>
     private float PerWeaponSizeMult(Weapon? weapon)
     {
-        if (weapon is not null && PerWeaponEnabled() && PerWeaponPics.TryGetValue(weapon.NetName, out var e))
-            return e.size;
+        if (weapon is not null && PerWeaponEnabled())
+        {
+            // QC e.w_crosshair_size — prefer the size carried on the weapon itself (its ATTRIB); fall back to the
+            // mirrored table for weapons that don't override it.
+            if (weapon.Crosshair is not null)
+                return weapon.CrosshairSize;
+            if (PerWeaponPics.TryGetValue(weapon.NetName, out var e))
+                return e.size;
+        }
         return 1f;
     }
 
@@ -1297,12 +1304,18 @@ public partial class CrosshairPanel : HudPanel
             return TextureCache.GetFirst($"gfx/crosshair{n}", $"res://art/hud/crosshairs/crosshair{n}.png");
         }
 
-        // QC: crosshair_per_weapon — use the active weapon's own named crosshair pic (e.w_crosshair).
-        if (weapon is not null && PerWeaponEnabled() && PerWeaponPics.TryGetValue(weapon.NetName, out var e))
+        // QC: crosshair_per_weapon — use the active weapon's own named crosshair pic (e.w_crosshair). Prefer the
+        // pic carried on the weapon itself (its ATTRIB); fall back to the mirrored table by NetName.
+        if (weapon is not null && PerWeaponEnabled())
         {
-            Texture2D? wp = TextureCache.GetFirst(e.pic, $"res://art/hud/crosshairs/{System.IO.Path.GetFileName(e.pic)}.png");
-            if (wp is not null) return wp;
-            // Fall through to the numbered art if the per-weapon pic isn't in the mounted data.
+            string? picName = weapon.Crosshair
+                ?? (PerWeaponPics.TryGetValue(weapon.NetName, out var e) ? e.pic : null);
+            if (picName is not null)
+            {
+                Texture2D? wp = TextureCache.GetFirst(picName, $"res://art/hud/crosshairs/{System.IO.Path.GetFileName(picName)}.png");
+                if (wp is not null) return wp;
+                // Fall through to the numbered art if the per-weapon pic isn't in the mounted data.
+            }
         }
 
         if (number <= 0) return null;

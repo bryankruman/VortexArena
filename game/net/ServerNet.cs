@@ -1472,6 +1472,10 @@ public sealed class ServerNet : IDisposable
             // PHYS_INPUT_BUTTON_HOOK — the +hook / offhand-fire button, driving the offhand-weapon think
             // (grapple hook, offhand blaster, nade prime/throw) in WeaponFireDriver.Frame.
             ButtonHook = (b & InputButtons.Hook) != 0,
+            // PHYS_INPUT_BUTTON_ZOOM — the +zoom bind. The rifle reads it (via the slot's ButtonZoom mirror)
+            // to re-aim a scoped shot straight from the eye (rifle.qc:16-20). The wire bit is already sent by
+            // the client (NetGame.cs InputButtons.Zoom); this is the missing server-side decode.
+            ButtonZoom = (b & InputButtons.Zoom) != 0,
             // Carry the one-shot impulse (QC CS(this).impulse) so the spectator free-flight speed ladder
             // (PlayerPhysics.SpectatorControl) sees it. For a live PLAYER the impulse was already dispatched as
             // a weapon command in ProvideInput; PlayerPhysics' spectator branch is gated on IsObserver, so this

@@ -299,8 +299,26 @@ public sealed class Rifle : Weapon
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.CurrentMaxShotDistance, penetrateWalls: true,
             wep: this, maxDamage: bal.Damage * shots, recoil: 2f);
-        // When zoomed QC re-aims straight from the eye (w_shotdir = v_forward) so the long-range shot is
-        // pixel-accurate; the zoom button isn't part of the headless input, so we keep the trueaim origin.
+
+        // QC fires W_MuzzleFlash (rifle.qc:14) BEFORE the zoom re-aim block, so the muzzle flash always plays at
+        // the gun barrel (pre-zoom w_shotorg / w_shotdir*2), not the re-aimed eye origin. Capture them now.
+        Vector3 flashOrigin = shot.Origin;
+        Vector3 flashDir = shot.Dir;
+
+        // Zoom-from-eye re-aim (rifle.qc:16-20): while the +zoom bind is held, shoot straight from the eye so a
+        // long-range scoped shot is pixel-accurate. QC:
+        //   w_shotdir = v_forward;
+        //   w_shotorg = origin + view_ofs + ((w_shotorg - origin - view_ofs) * v_forward) * v_forward;
+        // i.e. the muzzle origin is projected back onto the eye->forward axis (the shot leaves the eye, not the
+        // offset gun barrel) and aims dead ahead. The +zoom button now arrives over the net (InputButtons.Zoom ->
+        // ServerNet -> ButtonZoom on the slot). Matches Base: the secondary-zoom path stays off at stock secondary 1.
+        if (actor.WeaponState(slot).ButtonZoom)
+        {
+            Vector3 eye = actor.Origin + actor.ViewOfs;
+            Vector3 fwd = QMath.Normalize(forward);
+            Vector3 reorg = eye + Vector3.Dot(shot.Origin - eye, fwd) * fwd;
+            shot = new ShotInfo(reorg, fwd, reorg + fwd * WeaponFiring.CurrentMaxShotDistance);
+        }
 
         int deathType = RegistryId;
         // QC W_Rifle_Attack2 (rifle.qc:49): m_id | HITTYPE_SECONDARY — the secondary flag is what drives
@@ -332,7 +350,8 @@ public sealed class Rifle : Weapon
         // SND_RIFLE_FIRE (primary) / SND_RIFLE_FIRE2 (secondary) — rifle.qc:47/52, on CH_WEAPON_A.
         Api.Sound.Play(actor, SoundChannel.Weapon,
             secondary ? "weapons/campingrifle_fire2.wav" : "weapons/campingrifle_fire.wav");
-        EffectEmitter.Emit("RIFLE_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+        // QC W_MuzzleFlash(thiswep, actor, w_shotorg, w_shotdir * 2) at rifle.qc:14 — the PRE-zoom origin/dir.
+        EffectEmitter.Emit("RIFLE_MUZZLEFLASH", flashOrigin, flashDir * 1000f, 1, except: actor);
     }
 
     // METHOD(Rifle, wr_checkammo1) — rifle.qc:154-159: have ammo if the shared pool OR the persistent magazine

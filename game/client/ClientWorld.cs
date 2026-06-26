@@ -53,6 +53,10 @@ public partial class ClientWorld : Node3D
     /// <summary>func_rain / func_snow weather volumes (T48; ambient-facade scan).</summary>
     public WeatherSystem Weather { get; private set; } = null!;
 
+    /// <summary>The Port-O-Launch aim-trajectory preview (Porto_Draw red/blue reflecting polyline). Idle unless
+    /// the local player holds the porto in the non-default combined-shot mode; the host wires its providers.</summary>
+    public PortoTrajectoryPreview PortoPreview { get; private set; } = null!;
+
     /// <summary>The local player's first-person weapon view-model (optional; set by the host).</summary>
     public ViewModel? ViewModel { get; set; }
 
@@ -363,6 +367,11 @@ public partial class ClientWorld : Node3D
         AddChild(new SpawnPointParticles { Name = "SpawnPointFx", Effects = Effects });
         Weather = new WeatherSystem { Name = "Weather", ViewOriginProvider = () => ViewOrigin() };
         AddChild(Weather);
+
+        // Porto aim-trajectory preview (Porto_Draw). Self-driving; idle until the host wires its providers and
+        // the local player holds the porto in the non-default combined-shot mode (g_balance_porto_secondary 0).
+        PortoPreview = new PortoTrajectoryPreview { Name = "PortoPreview" };
+        AddChild(PortoPreview);
 
         // Mirror in-process effect emissions (server/local gameplay calling EffectEmitter.Emit) onto the
         // renderer. This is what makes a single-process demo show effects with no network layer present.

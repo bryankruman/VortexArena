@@ -191,8 +191,17 @@ public static class SoundSystem
     public static void PlayRandom(Entity emitter, string groupPrefix)
         => PlayOn(emitter, SoundVariantGroups.PickRegistered(groupPrefix));
 
-    /// <summary>Play a random ricochet (QC SND_RIC_RANDOM).</summary>
-    public static void PlayRic(Entity emitter) => PlayOn(emitter, SoundVariantGroups.Ric());
+    /// <summary>Play a random ricochet (QC <c>SND_RIC_RANDOM</c>). QC <c>wr_impacteffect</c> plays it on
+    /// <c>CH_SHOTS</c> (== <see cref="SoundChannel.ShotsAuto"/>) — an AUTO channel so overlapping rics from a
+    /// multi-bullet burst stack rather than cut each other off — at VOL_BASE / ATTN_NORM (the RIC sound's
+    /// registered volume/attenuation). Forcing CH_SHOTS here matches Base byte-for-byte (rifle.qc:218,
+    /// machinegun.qc impacteffect); the prior PlayOn used the RIC sound's default channel hint (Weapon).</summary>
+    public static void PlayRic(Entity emitter)
+    {
+        GameSound? ric = SoundVariantGroups.Ric();
+        if (ric is null) return;
+        PlayOn(emitter, ric, SoundChannel.ShotsAuto, ric.Volume, ric.Attenuation);
+    }
 
     /// <summary>Play a random gib splat (QC SND_GIB_SPLAT_RANDOM).</summary>
     public static void PlayGibSplat(Entity emitter) => PlayOn(emitter, SoundVariantGroups.GibSplat());

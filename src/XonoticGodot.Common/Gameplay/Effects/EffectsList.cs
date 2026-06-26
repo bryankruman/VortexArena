@@ -245,6 +245,9 @@ public static class EffectsList
         Effects.Register("TR_KNIGHTSPIKE", "TR_KNIGHTSPIKE", isTrail: true);
         Effects.Register("TR_VORESPIKE", "TR_VORESPIKE", isTrail: true);
         Effects.Register("TE_SPARK", "TE_SPARK");
+        // te_knightspike() builtin point-effect (effectinfo.txt: decal + static + 128 reddish-orange sparks).
+        // Distinct from the TR_KNIGHTSPIKE *trail* above — this is the burst the Seeker tag-strike emits.
+        Effects.Register("TE_KNIGHTSPIKE", "TE_KNIGHTSPIKE");
 
         // ---- RocketMinsta laser (neutral; per-team variants are commented out in QC) ----
         Effects.Register("ROCKETMINSTA_LASER", "rocketminsta_laser_neutral", isTrail: true);

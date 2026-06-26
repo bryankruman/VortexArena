@@ -169,6 +169,11 @@ public sealed class Arc : Weapon
         // Primary call based on which fire button is down:
         if (fire == FireMode.Primary)
         {
+            // QC wr_think (arc.qc:566) runs Arc_Smoke every tick BEFORE the fire decision: heat-fraction smoke
+            // while heating, overheat-fire + the overheat loop while jammed and firing. Run it once per tick on
+            // the (upkeep) Primary call, mirroring the per-tick wr_think head.
+            ArcSmoke(actor, st);
+
             bool beamPrimary = st.ButtonAttack;                       // primary held -> normal beam
             // QC arc.qc:205-209 latches beam_bursting on the beam entity once a burst beam starts; the beam KEEPS
             // bursting after ATCK2 is released until the beam itself ends. So burst is `(ATCK2 && !bolt) || latch`,
@@ -241,6 +246,66 @@ public sealed class Arc : Weapon
         return 0f;
     }
 
+    // Arc_GetHeat_Percent (arc.qc:55-68): the barrel heat as a [0,1] fraction — beam_heat/overheat_max while the
+    // beam is live, else (arc_overheat-time)/overheat_max*arc_cooldown while cooling from a jam. Used both for the
+    // HUD ring (NetGame) and the smoke probability below.
+    private float HeatPercent(WeaponSlotState st)
+    {
+        if (Beam.OverheatMax <= 0f || Beam.OverheatMin <= 0f)
+            return 0f;
+        if (st.ArcBeam is not null)
+            return st.BeamHeat / Beam.OverheatMax;
+        if (st.ArcOverheat > Api.Clock.Time)
+            return (st.ArcOverheat - Api.Clock.Time) / Beam.OverheatMax * st.ArcCooldown;
+        return 0f;
+    }
+
+    // Arc_Smoke (arc.qc:513-554) — per-tick muzzle smoke/fire + the overheat loop sound. While the barrel is
+    // jammed (arc_overheat in the future) it emits EFFECT_ARC_SMOKE at random (prob = heat %); if also firing it
+    // emits EFFECT_ARC_OVERHEAT_FIRE and starts the SND_ARC_LOOP_OVERHEAT loop. While the beam is live and heat
+    // is past overheat_min it emits warning smoke (prob = heat fraction past overheat_min). The loop is stopped
+    // once the jam clears, the player stops firing, or they switch away. Called every tick at the head of WrThink.
+    private void ArcSmoke(Entity actor, WeaponSlotState st)
+    {
+        // QC computes a rough muzzle origin from v_angle + the weapon movedir tag; headless we approximate from
+        // the eye + view forward (as Tuba's smoke does), plus the one-frame velocity lead QC adds.
+        QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
+        Vector3 shotOrg = actor.Origin + actor.ViewOfs + forward;
+        Vector3 smokeOrigin = shotOrg + actor.Velocity * Api.Clock.FrameTime;
+
+        bool firing = st.ButtonAttack || st.ButtonAttack2;
+
+        if (st.ArcOverheat > Api.Clock.Time)
+        {
+            if (Prandom.Float() < HeatPercent(st))
+                EffectEmitter.Emit("ARC_SMOKE", smokeOrigin, Vector3.Zero, 1);
+            if (firing)
+            {
+                EffectEmitter.Emit("ARC_OVERHEAT_FIRE", smokeOrigin, forward, 1);
+                if (!st.ArcSmokeSound)
+                {
+                    st.ArcSmokeSound = true;
+                    Api.Sound.Play(actor, SoundChannel.Item, "weapons/arc_loop_overheat.wav", loop: true);
+                }
+            }
+        }
+        else if (st.ArcBeam is not null && Beam.OverheatMax > 0f && st.BeamHeat > Beam.OverheatMin)
+        {
+            float fracToMax = (st.BeamHeat - Beam.OverheatMin) / (Beam.OverheatMax - Beam.OverheatMin);
+            if (Prandom.Float() < fracToMax)
+                EffectEmitter.Emit("ARC_SMOKE", smokeOrigin, Vector3.Zero, 1);
+        }
+
+        // Stop the overheat loop once the jam clears / firing stops / we switch away (arc.qc:547-553). The
+        // switch-away half is covered by WrSetup clearing ArcSmokeSound, but stop here too for the live cases.
+        bool stopSmokeSound = st.ArcOverheat <= Api.Clock.Time || !firing;
+        if (st.ArcSmokeSound && stopSmokeSound)
+        {
+            st.ArcSmokeSound = false;
+            Api.Sound.Stop(actor, SoundChannel.Item);
+        }
+    }
+
     // W_Arc_Beam_Think (full DPS core) — one frame of the beam: accumulate heat (jamming on overheat), curve
     // the beam direction toward the aim (limited by beam_maxangle/returnspeed), trace, and apply
     // distance-falloff damage to enemies / healing to teammates. arc.qc
@@ -259,6 +324,10 @@ public sealed class Arc : Weapon
                 float cooldownSpeed = CooldownSpeed(st, burst);
                 st.ArcOverheat = Api.Clock.Time + (cooldownSpeed > 0f ? st.BeamHeat / cooldownSpeed : Beam.OverheatMax);
                 if (cooldownSpeed != 0f) st.ArcCooldown = cooldownSpeed;
+                // QC arc.qc:236 — burst of overheat particles at the muzzle (beam_start / beam_wantdir) when the
+                // barrel jams. Headless, approximate the muzzle origin from the eye + view forward (as Arc_Smoke does).
+                QMath.AngleVectors(actor.Angles, out Vector3 jamFwd, out _, out _);
+                EffectEmitter.Emit("ARC_OVERHEAT", actor.Origin + actor.ViewOfs, jamFwd, 1);
                 Api.Sound.Stop(actor, SoundChannel.Weapon);          // end the beam loop before the stop cue
                 Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/arc_stop.wav"); // QC arc.qc:237 SND_ARC_STOP
             }
@@ -324,9 +393,12 @@ public sealed class Arc : Weapon
             tr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, actor);
         }
         finally { LagComp.End(); }
-        EffectEmitter.Emit("ARC_BEAM", shot.Origin, tr.EndPos, 0);
 
         Entity? hit = tr.Ent;
+        // QC arc.qc:420 sets beam_type = ARC_BT_HEAL when the beam connects to a teammate with healing
+        // configured; the CSQC trail then uses the heal-beam variant (ARC_BEAM_HEAL). Track it so the emitted
+        // trail matches the gameplay outcome instead of always emitting the damage trail.
+        bool healed = false;
         if (hit is not null && hit.TakeDamage != DamageMode.No)
         {
             bool isPlayer = (hit.Flags & EntFlags.Client) != 0
@@ -337,6 +409,8 @@ public sealed class Arc : Weapon
             {
                 float hps = burst ? Beam.BurstHealingHps : Beam.HealingHps;
                 float aps = burst ? Beam.BurstHealingAps : Beam.HealingAps;
+                if (hps > 0f || aps > 0f)
+                    healed = true; // QC: new_beam_type = ARC_BT_HEAL when (roothealth || rootarmor)
                 if (hps > 0f)
                 {
                     // QC Heal(trace_ent, own, hps*coef, hplimit) — GiveResourceWithLimit(Health) which CLAMPS the
@@ -377,6 +451,10 @@ public sealed class Arc : Weapon
             }
         }
 
+        // Sweep the beam trail origin->endpos. QC nets beam_type (MISS/WALL/HIT use the normal beam; HEAL uses
+        // the heal-beam variant) — emit ARC_BEAM_HEAL on the heal branch, ARC_BEAM otherwise.
+        EffectEmitter.Emit(healed ? "ARC_BEAM_HEAL" : "ARC_BEAM", shot.Origin, tr.EndPos, 0);
+
         st.ArcBeam = actor; // mark the beam as live this frame
         // Looping beam sound on (actor, CH_WEAPON) — DP loopsound(beam, CH_SHOTS_SINGLE, SND_ARC_LOOP). Emitted
         // every think while firing, but loop:true makes the client KEEP the one existing loop (no stacking) and
@@ -404,6 +482,11 @@ public sealed class Arc : Weapon
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward, recoil: 2f); // QC arc.qc bolt recoil 2
+
+        // QC arc.qc:146 W_MuzzleFlash(thiswep, ...) — the Arc reuses the electro muzzle flash (EFFECT_ARC_MUZZLEFLASH
+        // -> electro_muzzleflash). Base emits one per bolt; the port fires the burst in one call, so (like the fire
+        // sound) emit it once at the shot origin.
+        EffectEmitter.Emit("ARC_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
         int count = toShoot;
         if (count < 1) count = 1;
@@ -504,6 +587,13 @@ public sealed class Arc : Weapon
         st.BeamBursting = false;
         st.ArcBeam = null;
         st.BeamInitialized = false;
+        // Arc_Smoke (arc.qc:549) stops the overheat loop when the weapon is switched away; WrSetup runs on the
+        // switch-in/raise, so clear the latch here so a fresh raise never inherits a stale loop flag.
+        if (st.ArcSmokeSound)
+        {
+            st.ArcSmokeSound = false;
+            Api.Sound.Stop(actor, SoundChannel.Item);
+        }
     }
 
     // QC the Arc has no _primary_/_secondary_ refire cvars: the primary is the continuous beam (beam_refire,

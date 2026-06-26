@@ -55,6 +55,14 @@ public partial class ViewModel : Node3D
     /// <summary>EFFECT_* (or effectinfo) name for this weapon's muzzle flash, e.g. "VORTEX_MUZZLEFLASH".</summary>
     [Export] public string MuzzleEffect { get; set; } = "BLASTER_MUZZLEFLASH";
 
+    /// <summary>
+    /// The weapon's muzzle-flash MODEL vpath (QC <c>m_muzzlemodel</c>), e.g. <c>"models/flash.md3"</c> for the
+    /// Devastator/MineLayer or <c>"models/uziflash.md3"</c> for the Machinegun/Shotgun. Empty = <c>MDL_Null</c>
+    /// (most weapons attach NO model flash — only the four that set a non-null <c>m_muzzlemodel</c> do). Set per
+    /// equip alongside <see cref="MuzzleEffect"/>; <see cref="Fire"/> only spawns a flash model when this is set.
+    /// </summary>
+    [Export] public string MuzzleModelPath { get; set; } = "";
+
     /// <summary>Tag name on the weapon model where shots originate (Quake/Xonotic convention).</summary>
     [Export] public string MuzzleTagName { get; set; } = "tag_shot";
 
@@ -134,6 +142,17 @@ public partial class ViewModel : Node3D
         new Vector3(0f, 1f, 0f),    // col 1: image of model +Y (up)      = camera +Y
         new Vector3(1f, 0f, 0f));   // col 2: image of model +Z           = camera +X
 
+    /// <summary>
+    /// Host loader for a muzzle-flash model node, keyed by vpath (Base <c>m_muzzlemodel</c>, e.g.
+    /// <c>models/flash.md3</c> for the Devastator, <c>models/uziflash.md3</c> for the Machinegun/Shotgun). When
+    /// set AND the active weapon's <see cref="MuzzleModelPath"/> is non-empty, <see cref="Fire"/> spawns a fresh
+    /// instance attached to the muzzle socket and fades/shrinks it out over three 0.05-second ticks — faithful to
+    /// Base <c>W_MuzzleFlash_Model_Think</c> (scale ×0.5, alpha −0.25 each tick; EF_ADDITIVE|EF_FULLBRIGHT).
+    /// Injected by the host (e.g. NetGame sets it to <c>path => assets.LoadModel(path)</c>). May return null when
+    /// the file is missing (gracefully degrades to no model flash). Null factory = no flash model.
+    /// </summary>
+    public Func<string, Node3D?>? FlashModelFactory { get; set; }
+
     private ModelAnimator? _animator;     // optional animated weapon model
     private Node3D _modelRoot = null!;     // holds the weapon mesh (+ its tags), under the Quake->camera basis
     private Marker3D? _muzzleMarker;       // muzzle socket on the model (from tags)
@@ -143,6 +162,7 @@ public partial class ViewModel : Node3D
     private OmniLight3D _fillLight = null!; // soft constant light so the view-model is never a black silhouette
     private float _flashTime;              // remaining flash-light time
     private float _recoil;                 // current recoil displacement (Quake units, decays to 0)
+    private Node3D? _muzzleFlashNode;      // live flash-model node (single slot; replaced each Fire call)
 
     // Weapon-switch raise/lower state. _switchOffset in [0,1]: 0 = fully raised (rest), 1 = fully lowered (off
     // the bottom of the view). _switchDir: -1 raising (→0), +1 lowering (→1), 0 idle. _holsterGrace recovers a
@@ -214,9 +234,10 @@ public partial class ViewModel : Node3D
     /// otherwise a static <see cref="ModelLoader.BuildModel"/> snapshot is used. The muzzle marker is taken
     /// from the model's tags (falling back to <see cref="MuzzleTagName"/> alternatives).
     /// </summary>
-    public void SetWeapon(Md3Data md3, string muzzleEffect, string? muzzleTag = null)
+    public void SetWeapon(Md3Data md3, string muzzleEffect, string? muzzleTag = null, string muzzleModel = "")
     {
         MuzzleEffect = muzzleEffect;
+        MuzzleModelPath = muzzleModel;
         if (!string.IsNullOrEmpty(muzzleTag))
             MuzzleTagName = muzzleTag!;
 
@@ -251,9 +272,10 @@ public partial class ViewModel : Node3D
     }
 
     /// <summary>Set a weapon that has no model yet (uses a placeholder bar) but still flashes correctly.</summary>
-    public void SetWeaponPlaceholder(string muzzleEffect, string? muzzleTag = null)
+    public void SetWeaponPlaceholder(string muzzleEffect, string? muzzleTag = null, string muzzleModel = "")
     {
         MuzzleEffect = muzzleEffect;
+        MuzzleModelPath = muzzleModel;
         if (!string.IsNullOrEmpty(muzzleTag)) MuzzleTagName = muzzleTag!;
 
         foreach (Node c in _modelRoot.GetChildren())
@@ -293,15 +315,16 @@ public partial class ViewModel : Node3D
     /// the held position — Xonotic attaches the <c>v_*</c> model to the <c>h_*</c> hand model's <c>weapon</c>
     /// bone (≈7u right, ≈15-18u down). Pass <see cref="Transform3D.Identity"/> to place the model at the eye.
     /// </param>
-    public void SetWeaponModel(Node3D? model, string muzzleEffect, string? muzzleTag = null, Transform3D? attach = null)
+    public void SetWeaponModel(Node3D? model, string muzzleEffect, string? muzzleTag = null, Transform3D? attach = null, string muzzleModel = "")
     {
         if (model is null)
         {
-            SetWeaponPlaceholder(muzzleEffect, muzzleTag);
+            SetWeaponPlaceholder(muzzleEffect, muzzleTag, muzzleModel);
             return;
         }
 
         MuzzleEffect = muzzleEffect;
+        MuzzleModelPath = muzzleModel;
         if (!string.IsNullOrEmpty(muzzleTag))
             MuzzleTagName = muzzleTag!;
 
@@ -408,8 +431,130 @@ public partial class ViewModel : Node3D
         _flashLight.LightEnergy = 3.0f;
         _recoil = Mathf.Min(_recoil + RecoilKick, RecoilKick * 2f);
 
+        // Muzzle-flash MODEL (Base W_MuzzleFlash_Model — models/flash.md3 MDL_DEVASTATOR_MUZZLEFLASH and
+        // every weapon that passes a non-null m_muzzlemodel to W_MuzzleFlash). Spawns a tiny additive mesh
+        // at the muzzle socket and fades/shrinks it out over three 0.05-second ticks, faithfully matching
+        // W_MuzzleFlash_Model_Think (scale*=0.5, alpha-=0.25, nextthink+=0.05 — 3 ticks → alpha 0 → free).
+        // The previous flash node (if still alive) is freed first (QC: wepent.muzzle_flash reused).
+        SpawnMuzzleFlashModel();
+
         // If the weapon has a "fire"/"attack" clip, play it once.
         _animator?.Play(FindFireClip());
+    }
+
+    /// <summary>
+    /// Spawn the muzzle-flash model node at the muzzle socket, port of QC <c>W_MuzzleFlash_Model</c> /
+    /// <c>W_MuzzleFlash_Model_Think</c>. The node inherits the socket's global transform (for world-correct
+    /// placement) but is attached to the muzzle marker so it rides the viewmodel sway. A random roll is applied
+    /// to give each shot a distinct orientation, matching the QC <c>flash.angles.z = random() * 180</c>.
+    /// Fades out over 3 × 0.05 s via a Tween: scale halved and alpha decremented by 0.25 per step.
+    /// </summary>
+    private void SpawnMuzzleFlashModel()
+    {
+        // Per-weapon m_muzzlemodel gate: only the weapons that set a non-null m_muzzlemodel (Devastator/MineLayer
+        // → flash.md3, Machinegun/Shotgun → uziflash.md3) attach a model flash; every other weapon is MDL_Null and
+        // attaches NONE. QC: `if (thiswep.m_muzzlemodel != MDL_Null)` in W_MuzzleFlash.
+        if (FlashModelFactory is null || string.IsNullOrEmpty(MuzzleModelPath)) return;
+        if (_muzzleMarker is null || !GodotObject.IsInstanceValid(_muzzleMarker)) return;
+
+        // Free the previous flash (QC: reuses the wepent.muzzle_flash slot).
+        if (_muzzleFlashNode is not null && GodotObject.IsInstanceValid(_muzzleFlashNode))
+            _muzzleFlashNode.QueueFree();
+        _muzzleFlashNode = null;
+
+        Node3D? flashNode = FlashModelFactory(MuzzleModelPath);
+        if (flashNode is null) return;
+
+        // QC W_MuzzleFlash_Model: scale=0.75, alpha=0.75, EF_ADDITIVE|EF_FULLBRIGHT. The CSQC viewmodel path then
+        // overwrites the roll in W_MuzzleFlash_Model_AttachToShotorg with `angles.z = random()*360` (the muzzle
+        // marker is the viewmodel-side analog), so the effective roll is a full 0-360°.
+        flashNode.Scale = Vector3.One * 0.75f;
+        flashNode.RotationDegrees = new Vector3(0f, 0f, (float)GD.RandRange(0, 360));
+
+        // EF_ADDITIVE | EF_FULLBRIGHT: make every surface on the model unshaded + additive blend.
+        ApplyFlashMaterialFx(flashNode);
+
+        _muzzleMarker.AddChild(flashNode);
+        _muzzleFlashNode = flashNode;
+
+        // QC W_MuzzleFlash_Model_Think: three ticks at 0.05 s intervals — scale*=0.5, alpha-=0.25 each.
+        // After the third tick alpha reaches 0 and the entity is freed (QC uses nextthink + SUB_Remove).
+        // Use a Tween for exact per-step control (not a smooth Lerp — the QC does discrete steps).
+        // In Godot 4, TweenCallback.SetDelay adds a RELATIVE delay before THAT step (sequential tween),
+        // so each step fires 0.05s after the previous one — cumulative total 0.05, 0.10, 0.15 s.
+        Tween tween = CreateTween();
+        tween.SetProcessMode(Tween.TweenProcessMode.Idle);
+        // Step 1 (t=+0.05 s): scale 0.75 → 0.375, alpha 0.75 → 0.50
+        // Step 2 (t=+0.05 s): scale 0.375 → 0.1875, alpha 0.50 → 0.25
+        // Step 3 (t=+0.05 s): scale 0.1875 → 0.09375, alpha 0.25 → 0 → free
+        for (int step = 1; step <= 3; step++)
+        {
+            float targetScale = 0.75f * MathF.Pow(0.5f, step);
+            float targetAlpha = 0.75f - step * 0.25f; // 0.50, 0.25, 0
+            int capturedStep = step;
+            tween.TweenCallback(Callable.From(() =>
+            {
+                if (_muzzleFlashNode is null || !GodotObject.IsInstanceValid(_muzzleFlashNode)) return;
+                _muzzleFlashNode.Scale = Vector3.One * targetScale;
+                SetFlashAlpha(_muzzleFlashNode, targetAlpha);
+                if (capturedStep >= 3)
+                {
+                    _muzzleFlashNode.QueueFree();
+                    _muzzleFlashNode = null;
+                }
+            })).SetDelay(0.05f);
+        }
+    }
+
+    /// <summary>
+    /// Apply EF_ADDITIVE (blend mode additive) + EF_FULLBRIGHT (unshaded) to every surface of the flash node —
+    /// faithful to Base <c>EF_ADDITIVE | EF_FULLBRIGHT</c> on the muzzle flash model entity. Walks all
+    /// <see cref="MeshInstance3D"/> descendants, duplicating surface materials so the shared mesh is not mutated.
+    /// </summary>
+    private static void ApplyFlashMaterialFx(Node node)
+    {
+        if (node is MeshInstance3D mi && mi.Mesh is { } mesh)
+        {
+            int surfaces = mesh.GetSurfaceCount();
+            for (int i = 0; i < surfaces; i++)
+            {
+                var ov = mi.GetSurfaceOverrideMaterial(i) as BaseMaterial3D;
+                if (ov is null)
+                {
+                    if (mesh.SurfaceGetMaterial(i) is not BaseMaterial3D bm)
+                        continue;
+                    ov = (BaseMaterial3D)bm.Duplicate();
+                    mi.SetSurfaceOverrideMaterial(i, ov);
+                }
+                ov.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;  // EF_FULLBRIGHT
+                ov.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                ov.BlendMode = BaseMaterial3D.BlendModeEnum.Add;            // EF_ADDITIVE
+            }
+        }
+        foreach (Node child in node.GetChildren())
+            ApplyFlashMaterialFx(child);
+    }
+
+    /// <summary>
+    /// Set the alpha on every surface material of the flash node (already additive/unshaded from
+    /// <see cref="ApplyFlashMaterialFx"/>). Walks <see cref="MeshInstance3D"/> descendants in place.
+    /// </summary>
+    private static void SetFlashAlpha(Node node, float alpha)
+    {
+        if (node is MeshInstance3D mi && mi.Mesh is { } mesh)
+        {
+            int surfaces = mesh.GetSurfaceCount();
+            for (int i = 0; i < surfaces; i++)
+            {
+                if (mi.GetSurfaceOverrideMaterial(i) is BaseMaterial3D ov)
+                {
+                    Color c = ov.AlbedoColor;
+                    ov.AlbedoColor = new Color(c.R, c.G, c.B, alpha);
+                }
+            }
+        }
+        foreach (Node child in node.GetChildren())
+            SetFlashAlpha(child, alpha);
     }
 
     private string FindFireClip()
@@ -588,11 +733,16 @@ public partial class ViewModel : Node3D
     }
 
     /// <summary>Forget the applied material fx so the NEXT frame re-walks the freshly-built model (depth-test +
-    /// alpha must be re-applied to the new model's materials). Called by every model swap.</summary>
+    /// alpha must be re-applied to the new model's materials). Called by every model swap. Also clears any
+    /// still-live muzzle-flash model node (the QC wepent.muzzle_flash slot is implicitly cleared on model change
+    /// since the exterior weapon entity is rebuilt; we QueueFree so there is no orphan node).</summary>
     private void ResetModelFx()
     {
         _noDepthTestApplied = false;
         _modelAlpha = 1f;
+        if (_muzzleFlashNode is not null && GodotObject.IsInstanceValid(_muzzleFlashNode))
+            _muzzleFlashNode.QueueFree();
+        _muzzleFlashNode = null;
     }
 
     private static void ApplyMaterialFx(Node node, float a)

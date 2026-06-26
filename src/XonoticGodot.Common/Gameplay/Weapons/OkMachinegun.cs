@@ -139,9 +139,19 @@ public sealed class OkMachinegun : Weapon
             force: Cvars.Force, falloffForceHalflife: Cvars.DamageFalloffForceHalflife,
             tracerEffect: "RIFLE");
 
+        // QC wr_impacteffect (okmachinegun.qc:146-152): EFFECT_MACHINEGUN_IMPACT puff at the surface + the
+        // throttled SND_RIC_RANDOM ricochet (unless the shot hit sky / nothing). Trace the surface for w_backoff.
+        Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
+        TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
+        Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
+        bool silent = (impTr.DpHitQ3SurfaceFlags & WeaponFiring.Q3SurfaceFlagSky) != 0 || impTr.Fraction >= 1f;
+        WeaponFiring.BulletImpactFx(actor, impTr.EndPos, backoff, "MACHINEGUN_IMPACT", silent);
+
         ++st.MiscBulletCounter;
 
-        // W_MuzzleFlash + casing (okmachinegun.qc:52-58): eject a brass casing at g_casings >= 2 (gate inside).
+        // W_MuzzleFlash(thiswep, ...) — okmachinegun.qh m_muzzleeffect = EFFECT_MACHINEGUN_MUZZLEFLASH (okmachinegun.qc:52).
+        EffectEmitter.Emit("MACHINEGUN_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+        // casing (okmachinegun.qc:54-58): eject a brass casing at g_casings >= 2 (gate inside).
         WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Bullet);
 
         // ATTACK_FINISHED + weapon_thinkf(WFRAME_FIRE1, refire, Attack_Auto): self-reschedule while held.

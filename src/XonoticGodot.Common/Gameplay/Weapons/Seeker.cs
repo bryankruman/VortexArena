@@ -393,6 +393,12 @@ public sealed class Seeker : Weapon
     // Active tag trackers (the C# successor to the QC g_seeker_trackers intrusive list).
     private readonly List<Entity> _trackers = new();
 
+    // Per-tagged-player waypoint sprites (type-1 only) — the C# successor to the QC toucher.wps_tag_tracker field.
+    // Key = the tagged player; value = the live WP_Seeker sprite following them. Entries are removed when the tracker
+    // suicides (target died / owner switched away / lifetime expired) or when the tag refreshes (old sprite killed,
+    // new one spawned). Only populated in g_balance_seeker_type=1 layouts.
+    private readonly Dictionary<Entity, Waypoints.WaypointSprite> _tagWaypoints = new();
+
     // W_Seeker_Tagged_Info — the tracker (volley controller in type 0 / lifetime tracker in type 1) by which
     // <paramref name="owner"/> already tags <paramref name="target"/>, or null. Both tracker kinds store the
     // tagged target in .Enemy (QC keys on it.tag_target == istarget && it.realowner == isowner).
@@ -457,9 +463,15 @@ public sealed class Seeker : Weapon
     private void TagTouch(Entity self, Entity other, WeaponSlot slot)
     {
         // W_Seeker_Tag_Touch: emit the tag-strike cue (the CSQC wr_impacteffect HITTYPE_BOUNCE|SECONDARY tag_impact
-        // sound). (Base also spawns te_knightspike at findbetterlocation(this.origin, 8); that spark TE has no port
-        // yet — see todos.)
+        // sound) and the te_knightspike point-effect spark (Base: te_knightspike(findbetterlocation(this.origin,8));
+        // the port emits at self.Origin — findbetterlocation's nudge is cosmetic, not ported separately).
         WeaponSplash.ImpactSound(self, "weapons/tag_impact.wav");
+        // QC te_knightspike(org2): a DP builtin that fires the TE_KNIGHTSPIKE point-effect (a decal + a shower of
+        // 128 reddish-orange sparks; effectinfo.txt). This is a DISTINCT effect from the TR_KNIGHTSPIKE *trail*
+        // (a moving-entity particle trail) — emit the point burst, not the trail. Base nudges the origin via
+        // findbetterlocation(this.origin, 8) (push 8u off the nearest surface); that nudge is cosmetic and not
+        // ported separately, so the burst is emitted at the touch origin.
+        EffectEmitter.Emit("TE_KNIGHTSPIKE", self.Origin);
 
         bool hitPlayer = other.TakeDamage == DamageMode.Aim || (other.Flags & EntFlags.Client) != 0;
         if (hitPlayer && self.Owner is not null && other.DeadState == DeadFlag.No)
@@ -471,7 +483,24 @@ public sealed class Seeker : Weapon
             Entity? existing = FindTaggedInfo(owner, other);
             if (existing is not null)
             {
-                if (Type == 1) existing.MaxHealth = Api.Clock.Time + Tag.TrackerLifetime; // refresh tag_time
+                if (Type == 1)
+                {
+                    existing.MaxHealth = Api.Clock.Time + Tag.TrackerLifetime; // refresh tag_time
+                    // type 1: kill the old WP_Seeker sprite and re-spawn a fresh one with a new lifetime
+                    // (QC seeker.qc:449: "don't attach another waypointsprite without killing the old one first").
+                    if (_tagWaypoints.TryGetValue(other, out Waypoints.WaypointSprite? oldSprite))
+                    {
+                        Waypoints.WaypointSprites.Kill(oldSprite);
+                        _tagWaypoints.Remove(other);
+                    }
+                    Waypoints.WaypointSprite refreshed = Waypoints.WaypointSprites.Spawn(
+                        "Seeker", Tag.TrackerLifetime, 0f,
+                        other, new Vector3(0f, 0f, 64f), Vector3.Zero,
+                        0, Waypoints.WaypointRegistry.Get("Seeker").Color,
+                        1 /* RADARICON_TAGGED */, Waypoints.SpriteRule.Default, hideable: true);
+                    Waypoints.WaypointSprites.UpdateRule(refreshed, 0, Waypoints.SpriteRule.Default);
+                    _tagWaypoints[other] = refreshed;
+                }
                 Api.Entities.Remove(self);
                 return;
             }
@@ -479,6 +508,17 @@ public sealed class Seeker : Weapon
             if (Type == 1)
             {
                 // type 1: the tag just registers a tracker the primary fires missiles at (no auto-volley).
+                // Spawn a WP_Seeker waypoint sprite that follows the tagged player (RADARICON_TAGGED, tag_tracker_lifetime).
+                // QC: WaypointSprite_Spawn(WP_Seeker, tag_tracker_lifetime, 0, toucher, '0 0 64', realowner, 0,
+                //       toucher, wps_tag_tracker, true, RADARICON_TAGGED) + WaypointSprite_UpdateRule(…, SPRITERULE_DEFAULT).
+                Waypoints.WaypointSprite wp = Waypoints.WaypointSprites.Spawn(
+                    "Seeker", Tag.TrackerLifetime, 0f,
+                    other, new Vector3(0f, 0f, 64f), Vector3.Zero,
+                    0, Waypoints.WaypointRegistry.Get("Seeker").Color,
+                    1 /* RADARICON_TAGGED */, Waypoints.SpriteRule.Default, hideable: true);
+                Waypoints.WaypointSprites.UpdateRule(wp, 0, Waypoints.SpriteRule.Default);
+                _tagWaypoints[other] = wp;
+
                 Entity tracker = Api.Entities.Spawn();
                 tracker.ClassName = "tag_tracker";
                 tracker.Owner = owner;
@@ -487,8 +527,19 @@ public sealed class Seeker : Weapon
                 _trackers.Add(tracker);
                 tracker.Think = t =>
                 {
-                    if (t.Enemy is null || t.Enemy.DeadState != DeadFlag.No || Api.Clock.Time > t.MaxHealth)
+                    // W_Seeker_Tracker_Think (seeker.qc:388-405): suicide if the owner dies, the tagged target
+                    // dies, the owner switches away from the seeker, OR the tracker lifetime is up. QC also kills
+                    // toucher.wps_tag_tracker (the sprite); the port kills via _tagWaypoints.
+                    Entity? own = t.Owner;
+                    if (t.Enemy is null || t.Enemy.DeadState != DeadFlag.No
+                        || own is null || own.DeadState != DeadFlag.No || own.ActiveWeaponId != RegistryId
+                        || Api.Clock.Time > t.MaxHealth)
                     {
+                        if (t.Enemy is not null && _tagWaypoints.TryGetValue(t.Enemy, out Waypoints.WaypointSprite? spr))
+                        {
+                            Waypoints.WaypointSprites.Kill(spr);
+                            _tagWaypoints.Remove(t.Enemy);
+                        }
                         _trackers.Remove(t);
                         Api.Entities.Remove(t);
                         return;

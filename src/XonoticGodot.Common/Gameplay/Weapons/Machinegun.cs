@@ -365,7 +365,7 @@ public sealed class Machinegun : Weapon
             ? Damage.DeathTypes.WithHitType(Damage.DeathTypes.FromWeapon(NetName), Damage.DeathTypes.Secondary)
             : null;
         WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, damage,
-            RegistryId, spread, Cvars.SolidPenetration, force: force, deathTag: deathTag);
+            RegistryId, spread, Cvars.SolidPenetration, force: force, tracerEffect: "BULLET", deathTag: deathTag);
         Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
         TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
         // QC: w_backoff * 1000 = the impact surface normal (trace_plane_normal), falling back to -force_dir when

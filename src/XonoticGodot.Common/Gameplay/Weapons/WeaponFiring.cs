@@ -415,6 +415,16 @@ public static class WeaponFiring
     public static Entity? FireRailgunBullet(Entity actor, Vector3 start, Vector3 end, float damage, int deathType)
         => FireRailgunBullet(actor, start, end, damage, deathType, force: 0f);
 
+    /// <summary>Pick a random nexwhoosh sample path (QC <c>SND_NEXWHOOSH_RANDOM()</c>, all.inc:25-27) via the
+    /// deterministic <see cref="Prandom"/> so server/predicting clients agree; falls back to the first variant.
+    /// Returns a ".wav" path to match the explicit-path <see cref="ISoundService.PlayAt"/> convention.</summary>
+    private static string NexWhooshSample()
+    {
+        GameSound? snd = SoundVariantGroups.NexWhoosh();
+        string sample = snd?.Sample ?? "weapons/nexwhoosh1";
+        return sample.EndsWith(".wav", StringComparison.OrdinalIgnoreCase) ? sample : sample + ".wav";
+    }
+
     /// <summary>
     /// Port of FireRailgunBullet (server/weapons/tracing.qc): an instant beam from <paramref name="start"/>
     /// to <paramref name="end"/> that PIERCES every entity along the way (each is made non-solid for the
@@ -478,6 +488,34 @@ public static class WeaponFiring
 
         // Restore solidity, then apply damage + falloff to everyone we passed through.
         foreach (var p in pierced) p.ent.Solid = p.solid;
+
+        // QC tracing.qc:291-313 — the "nexwhoosh" beam fly-by: every REAL client (not the shooter, not a
+        // spectator following the shooter) hears a very loud, fast-falling-off whoosh played at the nearest
+        // point on the beam to THEM (VOL_BASEVOICE / ATTEN_IDLE on CH_SHOTS). QC sends it per-recipient via
+        // soundtoat(MSG_ONE, …); the Common layer has only the broadcast positional PlayAt (heard by all with
+        // 3D falloff), so we emit one positional whoosh per real client AT that client's nearest-beam-point —
+        // each client's own 3D attenuation then makes it loud only for the player the rail nearly grazed,
+        // reproducing the per-recipient effect. Bots/the shooter are skipped (QC IS_REAL_CLIENT && it != this).
+        if (Api.Services is not null)
+        {
+            // QC `endpoint` / `length` — the beam's effective end is the first world surface (a world-only sweep
+            // mirrors QC's loop terminating at SOLID_BSP); the nearest-point clamp uses the start→end segment.
+            Vector3 beamEndPos = Api.Trace.Trace(start, Vector3.Zero, Vector3.Zero, end,
+                MoveFilter.WorldOnly, actor).EndPos;
+            float length = (beamEndPos - start).Length();
+            foreach (Entity it in Api.Entities.FindByClass("player"))
+            {
+                if (it is null || it.IsFreed || ReferenceEquals(it, actor)) continue;
+                if ((it.Flags & EntFlags.Client) == 0) continue;     // IS_REAL_CLIENT (no spectator-enemy data here)
+                if (it is Player pl && pl.IsBot) continue;            // bots aren't real clients
+                // QC: beampos = start + dir * bound(0, (it.origin - start)·dir, length) — nearest point on beam.
+                float along = QMath.Clamp(Vector3.Dot(it.Origin - start, dir), 0f, length);
+                Vector3 beampos = start + dir * along;
+                Api.Sound.PlayAt(beampos, SoundChannel.ShotsAuto, NexWhooshSample(),
+                    SoundLevels.VolBaseVoice, SoundLevels.AttenIdle);
+            }
+        }
+
         float totalDmg = 0f; // QC totaldmg — the per-target falloff-scaled good damage (tracing.qc:323-324)
         foreach (var p in pierced)
         {

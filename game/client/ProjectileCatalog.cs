@@ -123,9 +123,11 @@ public static class ProjectileCatalog
         void Add(Desc d) => t[d.Type] = d;
 
         // SECONDARY orb: MDL_PROJECTILE_ELECTRO = models/ebomb.mdl (all.inc:50 — MD3 content despite the
-        // extension), EFFECT_TR_NEXUIZPLASMA, electro_fly loop, bounce (projectile.qc:346,405).
+        // extension), EFFECT_TR_NEXUIZPLASMA, electro_fly loop, bounce (projectile.qc:346,405). The orb spins
+        // with avelocity '7 0 11' (electro.qc:32 electro_orb_setup — pitch 7, roll 11 deg/s). Following the
+        // rocket convention (QC roll → the body's nose/X axis), map roll 11 → X and pitch 7 → Y.
         Add(new Desc { Type = ProjectileType.Electro, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
-            Body = BodyFamily.GlowSprite, ModelPath = "models/ebomb.mdl",
+            Body = BodyFamily.GlowSprite, ModelPath = "models/ebomb.mdl", SpinDegPerSec = new Vector3(11f, 7f, 0f),
             GlowColor = ElectroBlue, HasLight = true, LoopSound = "weapons/electro_fly" });
         // PRIMARY bolt: MDL_PROJECTILE_ELECTRO_BEAM = models/elaser.mdl (all.inc:51), EFFECT_TR_NEXUIZPLASMA,
         // no fly loop (projectile.qc:350).
@@ -154,9 +156,12 @@ public static class ProjectileCatalog
             Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", SpinDegPerSec = new Vector3(0, -1000f, 0), GlowColor = GrenadeGreen });
         Add(new Desc { Type = ProjectileType.Mine, TrailEffect = "TR_GRENADE", Trail = GrenadeSmoke,
             Body = BodyFamily.GrenadeMesh, GlowColor = GrenadeGreen });
-        // EFFECT_Null — no trail (projectile.qc:354,356)
+        // EFFECT_Null — no trail (projectile.qc:354). MDL_PROJECTILE_BLASTER = models/laser.mdl (all.inc:63 —
+        // MD3 content despite the .mdl extension), scale 1, no fly loop and no dlight (PROJECTILE_BLASTER is
+        // absent from projectile.qc's second per-type switch). Falls back to the additive glow sprite when the
+        // laser model isn't mounted (headless / missing content / factory miss).
         Add(new Desc { Type = ProjectileType.Blaster, TrailEffect = "", Trail = null,
-            Body = BodyFamily.GlowSprite, GlowColor = BlasterYellow });
+            Body = BodyFamily.GlowSprite, ModelPath = "models/laser.mdl", GlowColor = BlasterYellow });
         Add(new Desc { Type = ProjectileType.Hlac, TrailEffect = "", Trail = null,
             Body = BodyFamily.GlowSprite, GlowColor = new Color(0.9f, 0.7f, 0.3f) });
         // EFFECT_TR_WIZSPIKE (projectile.qc:355,357-358)
@@ -185,9 +190,10 @@ public static class ProjectileCatalog
         // EFFECT_FLAC_TRAIL, scale 0.4 (projectile.qc:365)
         Add(new Desc { Type = ProjectileType.Flac, TrailEffect = "FLAC_TRAIL", Trail = SmallSmoke,
             Body = BodyFamily.GrenadeMesh, ModelScale = 0.4f, GlowColor = new Color(0.8f, 0.8f, 0.5f) });
-        // EFFECT_SEEKER_TRAIL, seeker_fly loop (projectile.qc:366,483)
+        // EFFECT_SEEKER_TRAIL, scale 2, seeker_fly loop (projectile.qc:366,483; seeker.qc W_Seeker_Fire_Missile:
+        // "missile.scale = 2" — the missile body is drawn at 2× the default size, matching rocket/devastator).
         Add(new Desc { Type = ProjectileType.Seeker, TrailEffect = "SEEKER_TRAIL", Trail = SmallSmoke,
-            Body = BodyFamily.RocketMesh, GlowColor = RocketOrange, LoopSound = "weapons/seeker_fly" });
+            Body = BodyFamily.RocketMesh, ModelScale = 2f, GlowColor = RocketOrange, LoopSound = "weapons/seeker_fly" });
         // EFFECT_TR_VORESPIKE (projectile.qc:368)
         Add(new Desc { Type = ProjectileType.MageSpike, TrailEffect = "TR_VORESPIKE", Trail = VoreSpike,
             Body = BodyFamily.GlowSprite, GlowColor = new Color(0.7f, 0.4f, 1.0f), HasLight = true });
@@ -229,6 +235,10 @@ public static class ProjectileCatalog
     //  Classify an entity → ProjectileType (the server-spawned classname/model is the QC key)
     // ============================================================================================
 
+    /// <summary>DP EF_BLUE (dpextensions.qc:101) — set on a porto projectile rendering as the out-portal (blue)
+    /// variant; cleared (EF_RED) for the in-portal (red) variant. The combined shot flips it mid-flight.</summary>
+    private const int EfBlue = 64;
+
     /// <summary>
     /// Resolve a projectile entity to its <see cref="ProjectileType"/> from the server-assigned classname /
     /// model / netname (the same strings the QC keys on). The classnames are the ones the ported weapons set
@@ -248,6 +258,11 @@ public static class ProjectileCatalog
         // electro_orb the SECONDARY ball (PROJECTILE_ELECTRO: ebomb model, electro_fly loop, ballexplode).
         if (Has(s, "electro_bolt", "elaser")) return ProjectileType.ElectroBeam;
         if (Has(s, "electro_orb", "electro")) return ProjectileType.Electro;
+        // The RocketMinsta laser bolt networks netname "rocketminsta" (Vaporizer.RocketMinstaLaserBarrage); its
+        // distinct PROJECTILE_ROCKETMINSTA_LASER visual (elaser model + red ROCKETMINSTA_LASER trail + team
+        // colormod) MUST be matched BEFORE the generic "rocket" check below — otherwise the "rocket" substring
+        // inside "rocketminsta" misclassifies the bolt as a Devastator rocket (smoke trail + rocket-fly loop).
+        if (Has(s, "rocketminsta")) return ProjectileType.RocketMinstaLaser;
         if (Has(s, "devastator", "rocket")) return ProjectileType.Rocket;
         if (Has(s, "rpc")) return ProjectileType.Rpc;
         if (Has(s, "spike", "crylink")) return ProjectileType.Crylink;
@@ -268,10 +283,15 @@ public static class ProjectileCatalog
         // FireOrange glow + light, FIREMINE trail). Keyed before "fireball" so the netname resolves here.
         if (Has(s, "wyvern")) return ProjectileType.Firemine;
         if (Has(s, "fireball")) return ProjectileType.Fireball;
-        if (Has(s, "porto")) return ProjectileType.PortoRed;
+        // The porto projectile networks its red (in-portal) / blue (out-portal) state in Entity.Effects via
+        // the DP EF_RED (128) / EF_BLUE (64) bits, flipped mid-flight when a combined shot lays its in-portal
+        // and continues as the out-portal (porto.qc:242-243, CSQCProjectile(...PROJECTILE_PORTO_BLUE)). The
+        // server seeds type<=0 as RED and type 1 as BLUE; we key on the effect bit so the blue variant renders.
+        if (Has(s, "porto"))
+            return (e.Effects & EfBlue) != 0 ? ProjectileType.PortoBlue : ProjectileType.PortoRed;
         if (Has(s, "arc")) return ProjectileType.ArcBolt;
         if (Has(s, "hlacbolt", "hlac")) return ProjectileType.Hlac;
-        if (Has(s, "rocketminsta")) return ProjectileType.RocketMinstaLaser;
+        // (rocketminsta handled above, before the generic "rocket" check)
         if (Has(s, "mage")) return ProjectileType.MageSpike;
         if (Has(s, "golem")) return ProjectileType.GolemLightning;
         if (Has(s, "plasma", "vaporizer", "minsta")) return ProjectileType.Plasma;

@@ -56,6 +56,9 @@ public static class WeaponFireDriver
 
         bool buttonAtck = input?.ButtonAttack1 ?? false;
         bool buttonAtck2 = input?.ButtonAttack2 ?? false;
+        // PHYS_INPUT_BUTTON_ZOOM | PHYS_INPUT_BUTTON_ZOOMSCRIPT (rifle.qc:16): the rifle re-aims from the eye
+        // while scoped. Mirrored onto the slot below alongside the fire buttons so the fire path can read it.
+        bool buttonZoom = input?.ButtonZoom ?? false;
 
         // QC W_WeaponFrame (weaponsystem.qc:608-618): publish the +hook / offhand-fire button onto the player so
         // the offhand-weapon think runs this tick — the grapple hook, the offhand blaster, and the nade
@@ -131,7 +134,7 @@ public static class WeaponFireDriver
             // thinks re-arm an attack from inside it (Electro W_Electro_CheckAttack streams orbs while ATCK2 is
             // held; MachineGun W_MachineGun_Attack_Burst spaces rounds; the auto re-think keeps firing). Those
             // re-fire paths read st.ButtonAttack(2) via PrepareAttack, so the buttons must be live here.
-            SetButtons(st, buttonAtck, buttonAtck2);
+            SetButtons(st, buttonAtck, buttonAtck2, buttonZoom);
 
             // ---- the scheduled weapon think (QC: fire the .weapon_think when weapon_nextthink elapses) ----
             // This drives the animtime timer: a fired weapon scheduled "become READY" after its animtime; a
@@ -170,16 +173,18 @@ public static class WeaponFireDriver
     // --- per-(actor,slot) held-button context, so Weapon.PrepareAttack can check the fire button is down ---
     // (QC reads PHYS_INPUT_BUTTON_ATCK directly; the headless weapons get it via the active slot state set by
     // the driver around each WrThink call.)
-    private static void SetButtons(WeaponSlotState st, bool atck, bool atck2)
+    private static void SetButtons(WeaponSlotState st, bool atck, bool atck2, bool zoom = false)
     {
         st.ButtonAttack = atck;
         st.ButtonAttack2 = atck2;
+        st.ButtonZoom = zoom;
     }
 
     private static void ClearButtons(WeaponSlotState st)
     {
         st.ButtonAttack = false;
         st.ButtonAttack2 = false;
+        st.ButtonZoom = false;
     }
 
     /// <summary>

@@ -67,6 +67,14 @@ public abstract partial class Weapon : IRegistered
 
     public string RegistryName => NetName;
 
+    /// <summary>
+    /// QC MENUQC <c>describe()</c> (the per-weapon METHOD, e.g. electro.qc:753 — the multi-paragraph weapon-guide
+    /// prose shown in the in-menu Guide's Weapons topic: what primary/secondary/combo do, ammo, and a tactical
+    /// tip). <c>null</c> = no guide text ported yet for this weapon (the Guide falls back to a generic note).
+    /// Plain newline-separated paragraphs (the QC %s name substitutions are pre-filled with the literal names).
+    /// </summary>
+    public virtual string? GuideDescription => null;
+
     // --- zoom / scope (CSQC view + reticle, view.qc IsZooming + crosshair.qc DrawReticle) -----------
 
     /// <summary>
@@ -75,6 +83,21 @@ public abstract partial class Weapon : IRegistered
     /// weapons). Read client-side by the reticle overlay; the server ignores it.
     /// </summary>
     public virtual string? Reticle => null;
+
+    /// <summary>
+    /// QC <c>w_crosshair</c> (the per-weapon ATTRIB, e.g. hook.qh <c>"gfx/crosshairhook"</c>): the weapon's own
+    /// crosshair image, drawn instead of the numbered <c>gfx/crosshair&lt;N&gt;</c> art when
+    /// <c>crosshair_per_weapon</c> is on (QC <c>wcross_name = e.w_crosshair</c>). <c>null</c> = use the numbered
+    /// crosshair. Carried on the weapon to mirror Base's ATTRIB; read client-side by the crosshair panel.
+    /// </summary>
+    public virtual string? Crosshair => null;
+
+    /// <summary>
+    /// QC <c>w_crosshair_size</c> (the per-weapon ATTRIB, e.g. hook.qh <c>0.5</c>): the per-weapon crosshair size
+    /// multiplier applied on top of <c>crosshair_size</c> when <c>crosshair_per_weapon</c> is on (QC
+    /// <c>wcross_resolution *= e.w_crosshair_size</c>). Default <c>1</c>.
+    /// </summary>
+    public virtual float CrosshairSize => 1f;
 
     /// <summary>
     /// QC <c>wr_zoomdir</c> / <c>wr_zoom</c> (vortex.qc:353/346 — the <c>button_attack2 &amp;&amp; !secondary</c>

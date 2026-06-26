@@ -167,6 +167,9 @@ public sealed class OkRpc : Weapon
 
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/rocket_fire.wav");
 
+        // W_MuzzleFlash(thiswep, ...) — okrpc.qh m_muzzleeffect = EFFECT_ROCKET_MUZZLEFLASH (okrpc.qc:106).
+        EffectEmitter.Emit("ROCKET_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+
         if (Api.Clock.Time >= missile.NextThink)
             missile.Think(missile);
     }
@@ -222,6 +225,10 @@ public sealed class OkRpc : Weapon
 
         WeaponSplash.RadiusDamage(self, self.Origin, Cvars.Damage, Cvars.EdgeDamage, Cvars.Radius,
             self.Owner, RegistryId, Cvars.Force, directHit: directHit);
+
+        // QC wr_impacteffect (okrpc.qc:232-238): EFFECT_ROCKET_EXPLODE puff + SND_ROCKET_IMPACT at the blast point.
+        WeaponSplash.ImpactSound(self, "weapons/rocket_impact.wav"); // QC SND_ROCKET_IMPACT
+        EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
 
         Api.Entities.Remove(self);
     }
