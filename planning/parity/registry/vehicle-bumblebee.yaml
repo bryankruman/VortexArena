@@ -6,7 +6,7 @@ summary:
   feature_count: 15
   worst_gaps:
     - "Signature networked BRG_* healray/damage beam (the visible green/red ray + bumble_raygun_draw multi-segment cylinder, the ENT_CLIENT_BUMBLE_RAYGUN net entity) NOT IMPLEMENTED — only a placeholder EffectEmitter.TeHealBeam/TeBeam stub (colour-faithful: pure green heal / pure red damage). Raygun LOGIC fully faithful + live; only the networked beam visual remains."
-    - "vr_death gib toss (gun1/gun2/gun3 + body via vehicle_tossgib) and the tumble EFFECT_EXPLOSION_SMALL/MEDIUM/BIG + SND_ROCKET_IMPACT death FX + bumblebee_dead_touch (50% early body blowup) NOT IMPLEMENTED. The death LOGIC/blast/respawn is LIVE (GtEventDamage seam); only the gib/FX/audio presentation remains."
+    - "Wave-8e FIX of death presentation/audio: the tumble + blowup explosion FX (EFFECT_EXPLOSION_SMALL during diethink, EFFECT_EXPLOSION_MEDIUM at death, EFFECT_EXPLOSION_BIG at blowup) AND the SND_ROCKET_IMPACT (weapons/rocket_impact.wav) on diethink+blowup are now emitted live, plus the bumblebee_dead_touch 50% early-blowup is modeled on the body .Touch, AND the side-cannon EFFECT_BIGPLASMA_MUZZLEFLASH now fires per shot. STILL missing on death: the gun1/gun2/gun3 + body gib toss via vehicle_tossgib (the gib physics-entity subsystem is unported); cannon residual = the PROJECTILE_BUMBLE_GUN bolt-trail visual."
     - "Wave-7 FIX of presentation: the GUNNER cockpit HUD (BumblebeeGun art kind selected by NetGame.UpdateVehicleHud) + BOTH gunner aux crosshairs (magenta '1 0 1' lead + reload-color READY, both gunner-side AND pilot-mirrored via FeedPilotGunnerAux) are now LIVE. The PILOT in-vehicle HUD + heal-lock aux crosshair were already live (Wave-5). STILL missing: the networked BRG beam, the 'No right/left gunner!' blinking prompts, cosmetic gun models + cockpit offsets + scale 1.5, MENUQC describe text."
     - "Wave-7 FIX of FROZEN lock guards: the freezetag STAT(FROZEN, ...) skip+drop is now ported on BOTH the pilot heal-lock (Bumblebee.cs:367/371) and the gunner cannon-lock (585/589) via the shared IsFrozen() helper — closing the prior freezetag-only logic gap on pilot.raygun and gunner.frame."
     - "FIXED Wave-4 (impact.bouncepain): proper `override Impact(Entity)` -> VehicleCommon.Impact(1,100,200); Think snapshots OldVelocity; Bumblebee's own .Touch chains VehicleCommon.Touch (QC lines 391/404) so the vr_impact dispatch is reached. Live, faithful to Base's touch-board bounce-pain."
@@ -244,18 +244,19 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: missing
+      presentation: partial
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "EFFECT_BIGPLASMA_MUZZLEFLASH + the CSQCProjectile (PROJECTILE_BUMBLE_GUN) visual NOT IMPLEMENTED."
+      - "Wave-8e FIX: EFFECT_BIGPLASMA_MUZZLEFLASH is now emitted at the muzzle (FireCannon: EffectEmitter.Emit('BIGPLASMA_MUZZLEFLASH', org, vel, 1); BIGPLASMA_MUZZLEFLASH registered EffectsList.cs:163). RESIDUAL: the networked CSQCProjectile (PROJECTILE_BUMBLE_GUN) bolt trail/model visual is still NOT IMPLEMENTED."
     verification:
       - { kind: code, ref: "FireCannon -> SpawnProjectile with DEATH_VH_BUMB_GUN, force -35, speed 20000; obituary string tested in MonsterTurretVehicleObituaryTests", result: pass }
       - { kind: code, ref: "Wave-4 FIX: FireCannon now passes fireSound 'weapons/flacexp3.wav' — Base SND_VEH_BUMBLEBEE_FIRE = W_Sound('flacexp3'). The prior 'vehicles/bumblebee_fire.wav' literal is a NON-EXISTENT asset (silent cannon in Base and the port); weapons/flacexp3 ships (flacexp3.ogg). The VEH_BUMBLEBEE_FIRE -> flacexp3 SoundsList map (SoundsList.cs:151) is itself correct/faithful to all.inc:160.", result: pass }
+      - { kind: code, ref: "Wave-8e FIX (presentation): FireCannon (Bumblebee.cs:700) now emits EFFECT_BIGPLASMA_MUZZLEFLASH at the muzzle each shot (QC vehicles_projectile's muzzleflash arg); live from the live GunnerFrame fire branch. Only the PROJECTILE_BUMBLE_GUN bolt-trail visual remains.", result: pass }
     confidence: high
-    notes: "Wave-2 LIVE (was dead) — reached from the now-live GunnerFrame. Wave-4 FIX: cannon fire-sound corrected from the missing vehicles/bumblebee_fire.wav literal to the real Base sample weapons/flacexp3 (was a silent-cannon defect, mis-classified as a latent unused-mapping note). Only muzzle/projectile visuals remain as gaps."
+    notes: "Wave-2 LIVE (was dead) — reached from the now-live GunnerFrame. Wave-4 FIX: cannon fire-sound corrected to weapons/flacexp3. Wave-8e FIX (re-audited 2026-06-25): the BIGPLASMA muzzleflash is now emitted (presentation missing->partial); only the networked projectile bolt-trail visual remains."
 
   - id: vehicle-bumblebee.regen
     name: "Regen: per-gun cannon ammo + body shield/energy/health"
@@ -410,21 +411,20 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
-      audio: missing
+      presentation: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Gib toss (gun1/gun2/gun3 from their tags + body via vehicle_tossgib, scale 1.5) NOT IMPLEMENTED."
-      - "Tumble + blowup FX (EFFECT_EXPLOSION_SMALL during diethink, EFFECT_EXPLOSION_MEDIUM at death, EFFECT_EXPLOSION_BIG at blowup) and the diethink/blowup SND_ROCKET_IMPACT NOT IMPLEMENTED."
-      - "QC bumblebee_dead_touch (50% chance the tossed body blows up early on contact) NOT modeled (port body has Touch=null after death)."
+      - "Gib toss (gun1/gun2/gun3 from their tags + body via vehicle_tossgib, scale 1.5) NOT IMPLEMENTED — the vehicle_gib physics-entity subsystem is unported."
     verification:
       - { kind: code, ref: "Death now LIVE: SpawnVehicle wires vehic.GtEventDamage = VehicleCommon.EventDamage (Wave-2 add); DamageSystem.EventDamage routes any shot non-player edict to its GtEventDamage -> DamageVehicle -> (on lethal) Bumblebee.Death. vehic.TakeDamage=DAMAGE_AIM + Solid=SLIDEBOX make it shootable", result: pass }
       - { kind: code, ref: "Death body: zeroes health, ejects both gunners, blowup RadiusDamage 500/100/500 force 600 DEATH_VH_BUMB_DEATH after 2+random*8s, respawn at RespawnTime; constants diffed equal", result: pass }
+      - { kind: code, ref: "Wave-8e FIX (presentation+audio): Death (Bumblebee.cs:436-504) now emits EFFECT_EXPLOSION_MEDIUM at death (:454), per-tick 10% EFFECT_EXPLOSION_SMALL during the diethink tumble (:496), and EFFECT_EXPLOSION_BIG at Blowup (:470) — all three registered (EffectsList.cs:29-31). SND_ROCKET_IMPACT is played as weapons/rocket_impact.wav on both the diethink tick (:495) and Blowup (:469); the asset ships (sound/weapons/rocket_impact.ogg). bumblebee_dead_touch's 50% early-blowup is modeled on the body .Touch (:459/480: Prandom.Float()>0.5 -> Touch=Blowup).", result: pass }
       - { kind: test, ref: "VehicleRuntimeTests.Death_EjectsPilot_ThenRespawnsAtSpawnPoint exercises the descriptor death+respawn", result: pass }
     confidence: high
-    notes: "Wave-2 FIX (headline): the GtEventDamage seam makes DamageVehicle/Death LIVE on the real combat path (was test-only/dead). Blast values + respawn timer faithful. Remaining: gibs (vehicle_tossgib), tumble/blowup EFFECT_EXPLOSION FX, SND_ROCKET_IMPACT, and the 50% dead_touch early blowup (all presentation/audio)."
+    notes: "Wave-2 FIX (headline): the GtEventDamage seam makes DamageVehicle/Death LIVE on the real combat path. Wave-8e FIX (re-audited 2026-06-25, committed 412ca19 AFTER the Wave-7 registry write): the tumble/death/blowup EFFECT_EXPLOSION_SMALL/MEDIUM/BIG FX + the SND_ROCKET_IMPACT diethink/blowup audio + the 50% dead_touch early blowup are now all live (presentation missing->partial, audio missing->faithful). Remaining: only the gib toss (vehicle_tossgib) — the gib physics subsystem is unported."
 
   - id: vehicle-bumblebee.impact.bouncepain
     name: "vr_impact bounce pain (vehicles_impact)"

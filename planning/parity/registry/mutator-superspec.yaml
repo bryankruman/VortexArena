@@ -9,7 +9,7 @@ summary:
     - "[FIXED Wave-5] Per-client options persistence is now live: OnClientConnect/OnClientDisconnect are called from GameWorld.InfraClientConnect/Disconnect (gated on the mutator being Added), seed the SSF_VERBOSE/\"\" connect defaults, and load/save the crypto_idfp-keyed options file via the host-wired Store (magic SUPERSPEC_OPTIONSFILE_V1, ~/XonData/superspec/). Caveat: IsLocalProvider is left unwired, so the listen-host local-file fast path is not taken (everyone is crypto_idfp-keyed; an unauthenticated remote client is not persisted) — a documented intended divergence."
     - "[FIXED Wave-5] The SUPERSPEC_MISSING_UID notification now fires: a delayed superspec_hello is scheduled at time+5 on connect and drained by the live MutatorHooks.SvStartFrame pump, sending INFO_SUPERSPEC_MISSING_UID to a UID-less client only."
     - "[FIXED Wave-5] The centered (centerprint) form of superspec_msg is now wired: Msg routes the gated centerprint through NotificationSystem.SendCenterRaw (MsgType.CenterRaw), consumed live on the client HUD (HudNotifications.cs:146). The console sprint form remains wired via PrintTo. So spectators now see both the console line and the centered overlay."
-    - "[FIXED Wave-6b] The BuildMutatorsString/BuildMutatorsPrettyString overrides now exist (SuperSpecMutator.cs:677/680, exact Base tokens ':SS' / ', Super Spectators'). The machine token ':SS' is LIVE via MutatorActivation.BuildMutatorsString -> GameWorld.cs:876 (sv_eventlog-gated gamelog init, faithful to Base GameLogInit). RESIDUAL: the pretty label ', Super Spectators' is still DEAD — MutatorActivation.BuildMutatorsPrettyString (cs:121) has no live caller (no scoreboard/votescreen consumer ported; Base consumer is server/client.qc:1107). This is the port-wide shared gap, not specific to superspec."
+    - "[FIXED] The BuildMutatorsString/BuildMutatorsPrettyString overrides exist (SuperSpecMutator.cs:676/679, exact Base tokens ':SS' / ', Super Spectators') and BOTH are now LIVE. The machine token ':SS' via MutatorActivation.BuildMutatorsString -> GameWorld.cs:1068 (sv_eventlog-gated gamelog init, faithful to Base GameLogInit). The pretty label ', Super Spectators' is now ALSO live: MutatorActivation.BuildMutatorsPrettyString has two live callers writing the 'modifications' serverinfo — GameWorld.cs:1079 (match-start, faithful to Base PutClientInServer server/client.qc:1107) and ServerNet.cs:607 (BuildServerInfo, the server-browser infostring response). DRIFT-FIX vs prior audit which recorded the pretty label as DEAD."
 features:
   - id: superspec.enable.predicate
     name: "Enable predicate + registration (expr_evaluate(g_superspectate))"
@@ -304,25 +304,27 @@ features:
     base_refs:
       - "common/mutators/mutator/superspec/sv_superspec.qc:360-368 (BuildMutatorsString / BuildMutatorsPrettyString)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:677 (BuildMutatorsString override -> s + \":SS\")"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:680 (BuildMutatorsPrettyString override -> s + \", Super Spectators\")"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108-114 (BuildMutatorsString chain — live) / 121-127 (BuildMutatorsPrettyString chain — no live caller)"
-      - "src/XonoticGodot.Server/GameWorld.cs:876 (MutatorActivation.BuildMutatorsString — live, sv_eventlog gamelog init)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:676 (BuildMutatorsString override -> s + \":SS\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:679 (BuildMutatorsPrettyString override -> s + \", Super Spectators\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108-114 (BuildMutatorsString chain — live) / 117-128 (BuildMutatorsPrettyString chain — now live)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1068 (MutatorActivation.BuildMutatorsString — live, sv_eventlog gamelog init)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1079 (MutatorActivation.BuildMutatorsPrettyString -> 'modifications' serverinfo, match-start; faithful to Base PutClientInServer server/client.qc:1107)"
+      - "game/net/ServerNet.cs:607 (MutatorActivation.BuildMutatorsPrettyString -> BuildServerInfo 'modifications' key, server-browser infostring; live via _master.GetInfoRequested ServerNet.cs:561/576)"
     constants:
-      - { name: "machine tag", base: "\":SS\"", port: "\":SS\" (SuperSpecMutator.cs:677)", match: true }
-      - { name: "pretty label", base: "\", Super Spectators\"", port: "\", Super Spectators\" (SuperSpecMutator.cs:680)", match: true }
+      - { name: "machine tag", base: "\":SS\"", port: "\":SS\" (SuperSpecMutator.cs:676)", match: true }
+      - { name: "pretty label", base: "\", Super Spectators\"", port: "\", Super Spectators\" (SuperSpecMutator.cs:679)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     confidence: high
     gaps:
-      - "FIX (Wave-6b): both overrides now exist with the exact Base tokens. The MACHINE token ':SS' is LIVE — MutatorActivation.BuildMutatorsString iterates added mutators (gated on mut.Added) and is called from GameWorld.cs:876 at gamelog init (sv_eventlog-gated, faithful to Base server/gamelog.qc:50 GameLogInit). RESIDUAL: the PRETTY label ', Super Spectators' is DEAD — MutatorActivation.BuildMutatorsPrettyString (cs:121) has no external caller anywhere in src/+game/ (Base consumer is server/client.qc:1107, scoreboard/votescreen/serverinfo). So the human-readable label is computed by no live path. This is a port-wide shared gap across every mutator's pretty-string, not specific to superspec."
+      - "Both overrides exist with the exact Base tokens and BOTH are LIVE. MACHINE token ':SS' — MutatorActivation.BuildMutatorsString (gated on mut.Added) called from GameWorld.cs:1068 at gamelog init (sv_eventlog-gated, faithful to Base server/gamelog.qc:50 GameLogInit). PRETTY label ', Super Spectators' — MutatorActivation.BuildMutatorsPrettyString now has two live callers that write the result into the 'modifications' serverinfo: GameWorld.cs:1079 (match-start, faithful to Base PutClientInServer server/client.qc:1107) and ServerNet.cs:607 (BuildServerInfo, the DP server-browser infoResponse). Residual nuance: the port computes the pretty string at match-start / on info request and stuffs it into the 'modifications' cvar/infostring rather than recomputing it per client-join, but the content is identical (mutators don't change mid-match) and the leading ', ' is stripped exactly as Base substring(s,2,...)."
     verification:
-      - { kind: code, ref: "SuperSpecMutator.cs:677/680 override BuildMutatorsString/PrettyString with exact Base tokens; MutatorActivation.BuildMutatorsString consumed live at GameWorld.cs:876 (sv_eventlog gamelog init, gated on mut.Added) -> machine token ':SS' live; grep for an external caller of MutatorActivation.BuildMutatorsPrettyString finds only the chain's own loop body (cs:125) -> pretty label dead", result: pass }
-    notes: "FIX (Wave-6b): machine-tag dimension missing->faithful + na->live; pretty-label dimension missing->partial logic-faithful but presentation/liveness partial (label never displayed — the BuildMutatorsPrettyString consumer chain has no live caller, a cross-cutting gap shared by Cloaked/Vampire/Instagib/etc.). Stale class-summary comment at SuperSpecMutator.cs:48-52 still lists these hooks as 'DO NOT EXIST YET' — out of date (doc-only)."
+      - { kind: code, ref: "SuperSpecMutator.cs:676/679 override BuildMutatorsString/PrettyString with exact Base tokens; MutatorActivation.BuildMutatorsString consumed live at GameWorld.cs:1068 (sv_eventlog gamelog init, gated on mut.Added) -> machine token ':SS' live; MutatorActivation.BuildMutatorsPrettyString consumed live at GameWorld.cs:1079 ('modifications' set at match-start) AND ServerNet.cs:607 (BuildServerInfo, wired to _master.GetInfoRequested) -> pretty label ', Super Spectators' now produced on the live path; both chains gate on mut.Added", result: pass }
+    notes: "DRIFT-FIX (2026-06-25): the pretty-label dimension went presentation partial->faithful + liveness partial->live. Prior audit (Wave-6b) recorded the BuildMutatorsPrettyString chain as having 'no live caller'; that is now false — GameWorld.cs:1079 and ServerNet.cs:607 both consume it into the 'modifications' serverinfo. The machine token ':SS' was already live. Stale class-summary comment at SuperSpecMutator.cs:48-52 still lists some hooks as 'DO NOT EXIST YET' — out of date (doc-only)."

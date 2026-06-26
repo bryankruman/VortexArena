@@ -2,30 +2,33 @@ unit: weapon-rifle
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
-# Re-audited 2026-06-25 (drift check, branch claude/parity-port-waves, HEAD f86d947): adversarial
-# re-verification of all 16 rows + Base re-scan. ONE FIX since the 2026-06-22 baseline:
-#   * rifle.deathtype.secondary (was the baseline's #1 worst gap): NOW CLOSED. Rifle.FireBullets
-#     builds deathTag = WithHitType(FromWeapon(NetName), Secondary) for the secondary (Rifle.cs:310-312)
-#     and passes it into WeaponFiring.FireBullet (Rifle.cs:320, deathTag: param). FireBullet routes it
-#     to ApplyDamage (WeaponFiring.cs:362) so the kill carries HITTYPE_SECONDARY; DeathMessages.cs:82-85
-#     emits WEAPON_RIFLE_MURDER_HAIL for the secondary. The *_PIERCING (BOUNCE) variants stay unused —
-#     VERIFIED FAITHFUL: Base fireBullet_falloff (tracing.qc:363-537) never sets HITTYPE_BOUNCE on a
-#     bullet either, so HITTYPE_BOUNCE is dead-on-rifle in Base too. logic/presentation partial->faithful.
-# Still open (1): zoom_eye (no server zoom button — UNCHANGED, Rifle.cs:302-304 keeps trueaim origin).
-# NO regressions. bot_aim + resetplayer (closed in Wave-5) re-confirmed live: BotBrain.cs:355 calls
-# BotWantsSecondary; WeaponFireDriver.cs:284 calls WrSetup. audio.ric stays audio:partial (PlayRic->PlayOn
-# still uses default channel not CH_SHOTS) BUT the QC ricochet throttle (prevric 0.25s window + 5% w_random
-# roll, shotgun.qc:404-409) is now faithfully ported in BulletImpactFx (WeaponFiring.cs:547-558) — refined
-# the row's gap/notes accordingly. NEW UNMAPPED: rifle.suicidemessage (wr_suicidemessage ->
-# WEAPON_THINKING_WITH_PORTALS), faithfully covered by DeathMessages.SelectSuicideMessage default — row added.
+# Re-audited 2026-06-25 (drift check, branch claude/parity-port-waves): adversarial re-verification of
+# all 17 rows + Base re-scan against current Base (bal-wep-xonotic.cfg + rifle.{qh,qc}) and port (Rifle.cs).
+# ONE FIX since the 2026-06-25 baseline:
+#   * rifle.zoom_eye (was the baseline's #1 worst gap): NOW CLOSED. The +zoom button is decoded over the
+#     net (ServerNet.cs:1575 ButtonZoom = (b & InputButtons.Zoom)) <- client NetGame.cs:4687 BindTable.ZoomHeld,
+#     mirrored onto the slot by WeaponFireDriver (st.ButtonZoom, cs:137/180), and Rifle.FireBullets now reads
+#     it (cs:315) to re-aim the shot from the eye: w_shotdir = v_forward; w_shotorg projected onto the
+#     eye->forward axis (Rifle.cs:315-321), exactly QC rifle.qc:16-20. The muzzle flash captures the PRE-zoom
+#     origin/dir (cs:305-306) before the re-aim, matching QC's W_MuzzleFlash-before-zoom order. The CSQC
+#     wr_zoom/wr_zoomdir reticle path stays handled by ReticleOverlay. zoom_eye logic/presentation
+#     partial->faithful, liveness partial->live.
+# Still open (1): rifle.audio.ric CH_SHOTS channel (PlayRic->PlayOn uses the RIC sound's default channel
+# hint, not CH_SHOTS — inaudible in practice; UNCHANGED).
+# NO regressions. All 17 Base balance constants re-diffed against bal-wep-xonotic.cfg:587-630 — all match.
+# Verified all FX registrations (EffectsList.cs:100-107), bot dispatch (BotBrain.cs:365 BotWantsSecondary),
+# WrSetup dispatch (WeaponFireDriver), deathtype-secondary deathTag, ric throttle (WeaponFiring.cs:591-596),
+# suicide message (now an EXPLICIT case "rifle" at DeathMessages.cs:159, was the generic default — same value
+# WEAPON_THINKING_WITH_PORTALS, refined the row's port_ref). NO new unmapped Base symbols (wr_init reticle
+# precache + describe menu-help are presentation-trivial, intentionally unmapped). Line numbers refreshed.
 summary:
   feature_count: 17
   worst_gaps:
-    - "Zoom-from-eye shot re-aim still not ported (headless server has no zoom button); low impact, only matters while scoped (Rifle.cs:302-304 keeps the trueaim origin)"
-    - "MINOR: ricochet ping plays on the RIC sound's default channel, not Base's CH_SHOTS (rifle.audio.ric) — inaudible in practice"
-    - "(now CLOSED) Secondary HAIL kill message: Rifle.FireBullets builds deathTag=WithHitType(FromWeapon,Secondary) (Rifle.cs:310-312) and passes it to FireBullet (Rifle.cs:320) -> ApplyDamage; secondary kills print WEAPON_RIFLE_MURDER_HAIL. *_PIERCING variants correctly unused (Base never sets HITTYPE_BOUNCE on bullets either)"
-    - "(closed Wave-5) Rifle bot wr_aim: BotWantsSecondary (Rifle.cs:133) ports the riflemooth pri/sec toggle, LIVE via BotBrain.cs:355 -> ButtonAttack2"
-    - "(closed Wave-5) wr_resetplayer: WrSetup (Rifle.cs:118) seeds rifle_accumulator = time-bursttime, dispatched live by WeaponFireDriver.cs:284 (switch-in, the established Vortex/OkNex convention)"
+    - "MINOR: ricochet ping plays on the RIC sound's default channel, not Base's CH_SHOTS (rifle.audio.ric) — inaudible in practice (affects only same-channel sound cutoff)"
+    - "(now CLOSED) Zoom-from-eye shot re-aim: the +zoom button is decoded over the net (ServerNet.cs:1575) and Rifle.FireBullets re-aims from the eye when held (Rifle.cs:315-321), matching QC rifle.qc:16-20. Off at stock secondary 1 for the secondary-zoom path"
+    - "(closed prior pass) Secondary HAIL kill message: Rifle.FireBullets builds deathTag=WithHitType(FromWeapon,Secondary) (Rifle.cs:328-330) -> FireBullet -> ApplyDamage; secondary kills print WEAPON_RIFLE_MURDER_HAIL. *_PIERCING variants correctly unused (Base never sets HITTYPE_BOUNCE on bullets either)"
+    - "(closed Wave-5) Rifle bot wr_aim: BotWantsSecondary (Rifle.cs:133) ports the riflemooth pri/sec toggle, LIVE via BotBrain.cs:365 -> ButtonAttack2"
+    - "(closed Wave-5) wr_resetplayer: WrSetup (Rifle.cs:118) seeds rifle_accumulator = time-bursttime, dispatched live by WeaponFireDriver (switch-in, the established Vortex/OkNex convention)"
     - "(closed prior pass) Brass casing ejection networks + renders the real bouncing brass via registered CASING_BULLET/CASING_SHELL Effects -> WriteEffect -> EffectSystem.Spawn -> SpawnCasing"
 features:
   - id: rifle.identity
@@ -249,9 +252,9 @@ features:
       - "common/weapons/weapon/rifle.qc:W_Rifle_Attack2 (m_id | HITTYPE_SECONDARY)"
       - "common/weapons/weapon/rifle.qc:wr_killmessage"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (deathTag = WithHitType(FromWeapon(NetName), Secondary) for secondary, cs:310-312; passed to FireBullet cs:320)"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:81-85 (rifle case)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireBullet/ApplyDamage (deathTag channel, cs:270/362/719)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (deathTag = WithHitType(FromWeapon(NetName), Secondary) for secondary, cs:328-330; passed to FireBullet cs:336-338, deathTag: param)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:82-85 (rifle case)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireBullet/ApplyDamage (deathTag channel)"
     constants:
       - { name: "secondary deathtype flag", base: "m_id | HITTYPE_SECONDARY", port: "deathTag = WithHitType(FromWeapon, Secondary) for secondary fire", match: true }
       - { name: "*_PIERCING (HITTYPE_BOUNCE) variant", base: "wr_killmessage BOUNCE branch", port: "no bounce tag (faithful — Base fireBullet_falloff never sets HITTYPE_BOUNCE on a bullet)", match: true }
@@ -455,26 +458,30 @@ features:
       - "common/weapons/weapon/rifle.qc:wr_zoom (SVQC & CSQC)"
       - "common/weapons/weapon/rifle.qc:wr_zoomdir"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (comment: zoom kept as trueaim, cs:303-304)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (zoom-from-eye re-aim, cs:308-321)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:Frame (buttonZoom -> st.ButtonZoom, cs:61/137/180)"
+      - "game/net/ServerNet.cs:1575 (ButtonZoom = b & InputButtons.Zoom)"
+      - "game/net/NetGame.cs:4687 (BindTable.ZoomHeld -> InputButtons.Zoom)"
       - "game/client/ReticleOverlay.cs"
     constants:
-      - { name: "zoom re-aim", base: "w_shotdir = v_forward when zoomed", port: "none (keeps trueaim origin)", match: false }
+      - { name: "zoom re-aim", base: "w_shotdir = v_forward; w_shotorg projected onto eye->forward axis when zoomed", port: "Rifle.cs:315-321 (fwd = normalize(forward); reorg = eye + dot(shot.Origin-eye, fwd)*fwd)", match: true }
+      - { name: "muzzleflash uses PRE-zoom origin/dir", base: "W_MuzzleFlash called before zoom block (rifle.qc:14 before 16-20)", port: "flashOrigin/flashDir captured at cs:305-306 before the re-aim", match: true }
       - { name: "wr_zoom (SVQC)", base: "ATCK2 && secondary==0", port: "ZoomOnSecondary false (secondary 1 stock)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "UNCHANGED by Wave-2. When zoomed, Base re-aims the rifle shot straight from the eye (w_shotdir = v_forward) for pixel-accurate long shots; the port keeps the trueaim origin (the headless server input has no zoom button). Low impact: only matters while scoped, and the secondary-zoom path is OFF at stock secondary 1."
+    gaps: []
     verification:
-      - { kind: code, ref: "Rifle.cs:303-304 comment (zoom not wired); rifle.qc:16-20 zoom re-aim block", result: fail }
-    confidence: medium
-    notes: "STILL OPEN. Generic +zoom reticle (gfx/reticle_nex) handled by ReticleOverlay. Rifle does not override ZoomOnSecondary, matching stock secondary 1 (ATCK2 fires, doesn't zoom)."
+      - { kind: code, ref: "Rifle.cs:315-321 reads st.ButtonZoom and re-aims (w_shotdir=v_forward, w_shotorg projected onto eye->forward axis) vs rifle.qc:16-20 — formula matches; muzzleflash captures the pre-zoom origin/dir (cs:305-306) before the re-aim, matching QC's W_MuzzleFlash-before-zoom order", result: pass }
+      - { kind: code, ref: "net wiring live end-to-end: NetGame.cs:4687 BindTable.ZoomHeld -> InputButtons.Zoom -> ServerNet.cs:1575 decodes ButtonZoom -> WeaponFireDriver.cs:61/137/180 mirrors st.ButtonZoom -> Rifle.FireBullets reads it", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (logic/presentation partial->faithful, liveness partial->live). The baseline's #1 worst gap is closed: the +zoom button now arrives over the net (the prior 'headless server has no zoom button' assumption is obsolete — ServerNet decodes InputButtons.Zoom into IMovementInput.ButtonZoom, the driver mirrors it onto the slot, and FireBullets re-aims from the eye exactly as QC rifle.qc:16-20). Generic +zoom reticle (gfx/reticle_nex) still handled by ReticleOverlay. Rifle does not override ZoomOnSecondary, matching stock secondary 1 (ATCK2 fires, doesn't zoom)."
 
   - id: rifle.bot_aim
     name: "Bot aim — riflemooth primary/secondary toggle (wr_aim)"
@@ -539,9 +546,9 @@ features:
     base_refs:
       - "common/weapons/weapon/rifle.qc:wr_suicidemessage"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:SelectSuicideMessage (cs:115; rifle falls to the default)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:SelectSuicideMessage (explicit case \"rifle\" cs:158-159)"
     constants:
-      - { name: "suicide notification", base: "WEAPON_THINKING_WITH_PORTALS", port: "WEAPON_THINKING_WITH_PORTALS (default case)", match: true }
+      - { name: "suicide notification", base: "WEAPON_THINKING_WITH_PORTALS", port: "WEAPON_THINKING_WITH_PORTALS (explicit rifle case)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -553,6 +560,6 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "rifle.qc:182-185 wr_suicidemessage returns WEAPON_THINKING_WITH_PORTALS; DeathMessages.SelectSuicideMessage (cs:115) has no rifle case so it returns the shared WEAPON_THINKING_WITH_PORTALS default — identical result", result: pass }
+      - { kind: code, ref: "rifle.qc:182-185 wr_suicidemessage returns WEAPON_THINKING_WITH_PORTALS; DeathMessages.SelectSuicideMessage has an explicit case \"rifle\" (cs:158-159) returning WEAPON_THINKING_WITH_PORTALS — identical result", result: pass }
     confidence: high
-    notes: "NEW ROW (2026-06-25 drift re-scan): the rifle's wr_suicidemessage was a previously-unmapped Base symbol. Like most hitscan weapons the rifle has no custom suicide line and returns the generic WEAPON_THINKING_WITH_PORTALS easter egg (you can't really suicide with a hitscan); the port's SelectSuicideMessage default supplies exactly that, so this is faithful & live with no dedicated rifle code needed. Cross-ref fx-deathtypes."
+    notes: "Re-confirmed 2026-06-25. The rifle's wr_suicidemessage returns the generic WEAPON_THINKING_WITH_PORTALS easter egg (you can't really suicide with a hitscan). The port now has an EXPLICIT case \"rifle\" in SelectSuicideMessage (cs:159) returning exactly that — same value as before (was the generic default), faithful & live. Cross-ref fx-deathtypes."

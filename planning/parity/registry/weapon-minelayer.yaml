@@ -7,8 +7,7 @@ summary:
   worst_gaps:
     - "Whole weapon is WEP_FLAG_MUTATORBLOCKED: never in a normal-match loadout (GiveItems.cs:340 skips MutatorBlocked|Hidden), only reachable via weaponarena/NewToys/impulse-give → fire-path liveness stays partial, not live (verified unchanged)."
     - "Mine shoot-down is fully LIVE and faithful: MakeShootable installs GtEventDamage (DamageSystem.EventDamage:331-334 dispatches non-player targets), a depleted mine detonates, AND the W_MineLayer_Damage knock-loose branch (damageforcescale bounce/re-stick/avelocity while hp>0) runs via the MakeShootable onHit per-hit seam (Projectiles.ShootDown fires onHit before the gate/hp-subtract per QC ordering). exception=1 is exactly the ML-mine case that passes stock g_projectiles_damage -2."
-    - "Remote-detonate sound semantics still diverge: Base plays SND_MINE_DET as soon as PlacedMines flags ANY mine; port plays mine_det only if at least one mine actually passes the spawnshield+team-safety gate and detonates."
-    - "Surface-normal facing (angles = vectoangles(-trace_plane_normal)) is approximated from -velocity, not the real trace plane; SetMovetypeFollow (stick to a moving platform) still not modeled."
+    - "Remote-detonate sound semantics: port now plays mine_det if the actor has ANY placed mine (matches Base W_MineLayer_PlacedMines), so the audio-cue divergence recorded earlier is gone; remaining remote-detonate divergence is the inline-vs-next-tick detonation ordering (behaviorally equivalent)."
     - "Airshot achievement + out-of-ammo forced weapon switch (W_MineLayer_Explode tail) still not implemented."
     - "Bot wr_aim is now FULLY PORTED + LIVE: BotWantsDetonate (Minelayer.cs:413) implements the skill>=2 detonation-desirability math (self/team/enemy damage weighting, 0.75*coredamage group threshold, 0.1*coredamage tracking detonate, skill>6.5 self-preservation veto), dispatched by BotBrain.cs:366 (suppresses primary when it detonates). Over-limit primary suppression handled by WrThink's gate. Only the random distance/skill gate uses an approximate frametime."
 features:
@@ -89,19 +88,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Surface-normal facing not reproduced: Base sets angles = vectoangles(-trace_plane_normal); the port approximates the surface normal as -normalize(velocity) and stores it in movedir (PunchVector) for the remote-explode fx direction, but does not re-orient the placed mine's angles to it (it keeps its incoming-flight angles)."
-      - "SetMovetypeFollow (sticking to a moving platform) is still not modeled."
       - "Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine)."
     verification:
-      - { kind: code, ref: "OnTouch (Minelayer.cs:301-320): early-out if MoveType.None; .wait gate (Time<=LTime) skips reattach; sticks ONLY on other.Solid==Bsp; stores movedir in PunchVector; velocity=0, MoveType.None, Gravity=0, mine_stick sound", result: pass }
+      - { kind: code, ref: "OnTouch (Minelayer.cs:315-345): early-out if MoveType.None/Follow; .wait gate (Time<=LTime) skips reattach; sticks ONLY on other.Solid==Bsp; ProbeStickNormal re-probes the real trace plane (worldonly traceline) -> angles=vectoangles(-trace_plane_normal), movedir(PunchVector)=-normal; velocity=0, MoveType.None, Gravity=0, mine_stick sound; SetMovetypeFollow for a moving bmodel", result: pass }
+      - { kind: code, ref: "MoveTypePhysics.cs:37-39 dispatches MoveType.Follow -> ctx.PhysicsFollow(ent) every tick, so the SetMovetypeFollow attachment is LIVE (a mine on a moving platform rides it)", result: pass }
     confidence: high
-    notes: "Re-verified: the touch condition is BSP-only (diff confirms the earlier non-client broadening was removed); the .wait reattach-delay gate (Time <= LTime, set to +0.0625s in OnMineHit) is present; movedir is stored (PunchVector) for the remote-explode fx. Residual presentation gap: surface-normal facing approximated, SetMovetypeFollow absent. Model set in Attack so the stuck mine is visible (see minelayer.mine.render)."
+    notes: "FIXED since last audit: surface-normal facing is now reproduced (ProbeStickNormal re-probes the real impact face via a short worldonly traceline like Porto.ProbeImpact, then angles=vectoangles(-trace_plane_normal)) AND SetMovetypeFollow is implemented + live (MoveTypePhysics.PhysicsFollow). The baseline recorded both as missing presentation gaps; both resolved -> presentation partial->faithful. Touch is BSP-only; .wait reattach-delay gate (+0.0625s) present; movedir stored (PunchVector) for the remote-explode fx. Model set in Attack so the stuck mine is visible (see minelayer.mine.render)."
 
   - id: minelayer.mine.proximity
     name: "Proximity detonation (closer enemy = sooner)"
@@ -238,23 +236,22 @@ features:
       - { name: "remote_force", base: "300", port: "300", match: true }
       - { name: "remote_radius", base: "200", port: "200", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
-      audio: partial
+      audio: faithful
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Sound semantics differ: Base plays SND_MINE_DET if W_MineLayer_PlacedMines newly set minelayer_detonate on ANY mine (i.e. as soon as you have a placed mine), whereas the port plays mine_det only if at least one mine actually passed the spawnshield+team-safety gate and detonated. With detonatedelay=-1 + proximity safety, pressing secondary while standing on your own mines plays the sound in Base but is silent in the port."
       - "Port detonates inline in RemoteDetonate rather than flagging minelayer_detonate=true and letting each mine's own W_MineLayer_Think call W_MineLayer_RemoteExplode the next tick (one-tick timing difference; behaviorally equivalent in practice)."
       - "deathtype HITTYPE_BOUNCE tag on remote blasts not set (obituary picks the splash murder string regardless; inert)."
       - "Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine)."
     verification:
-      - { kind: code, ref: "RemoteDetonate (Minelayer.cs:343-390): spawnshield-timer gate (ProjectileDetonateTime>=0) else proximity self-safety (RemoteRadius); team-safety reads actor.Team (correctly set); sets velocity=PunchVector(movedir) on a stuck mine; plays mine_det only on actual detonation", result: pass }
+      - { kind: code, ref: "RemoteDetonate (Minelayer.cs:410-459): plays mine_det as soon as the actor has ANY placed mine (mines.Count>0) — matches Base W_MineLayer_PlacedMines flagging minelayer_detonate before the gates; THEN per-mine spawnshield-timer gate (ProjectileDetonateTime>=0) else proximity self-safety (RemoteRadius); team-safety reads actor.Team (correctly set); sets velocity=PunchVector(movedir) on a stuck mine before the blast", result: pass }
     confidence: high
-    notes: "Re-verified unchanged this pass. Spawnshield/team-safety gate reads Entity.ProjectileDetonateTime so the RocketFlying EditProjectile clear opens detonation immediately. Team-safety uses actor.Team (correctly set). Logic stays partial due to the sound-cue divergence (audio partial to mark it)."
+    notes: "FIXED since last audit: the sound-cue divergence the baseline recorded is gone — RemoteDetonate now plays mine_det whenever the actor has at least one placed mine (mines.Count>0, = W_MineLayer_PlacedMines found a mine to flag), regardless of whether any mine passes the spawnshield/team-safety gate, exactly like Base wr_think:483-487. logic+audio partial->faithful. Spawnshield/team-safety gate reads Entity.ProjectileDetonateTime so the RocketFlying EditProjectile clear opens detonation immediately. Residual: inline-vs-next-tick ordering + inert HITTYPE_BOUNCE tag (both behaviorally equivalent)."
 
   - id: minelayer.mine.explode
     name: "Explosion: radius damage + knockback + fx"

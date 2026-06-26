@@ -5,7 +5,7 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 10
   worst_gaps:
-    - "Presentation only: no head MODEL (hellion.md3) instantiated as a separate spinning-launcher bone entity, so the now-cycling tur_head.frame state drives no visible spin; no two-cannon tag_fire/tag_fire2 muzzle alternation (single computed ShotOrg); no te_explosion launch puff; no PROJECTILE_ROCKET CSQC trail / MIF_SPLASH|MIF_PROXY|MIF_GUIDED_HEAT smoke."
+    - "Presentation only: no head MODEL (hellion.md3) instantiated as a separate spinning-launcher bone entity, so the now-cycling tur_head.frame state drives no visible spin; no two-cannon tag_fire/tag_fire2 muzzle alternation (single computed ShotOrg); no PROJECTILE_ROCKET CSQC trail / MIF_SPLASH|MIF_PROXY|MIF_GUIDED_HEAT smoke. (FIXED 2026-06-25: te_explosion launch puff now emitted at the muzzle, HellionTurret.cs:128.)"
     - "spawnflags still only partially mapped (FASTPROJ n/a; splash via radius damage; PLAYER/MISSILE implicit)."
     - "FIXED since 2026-06-22 (Wave 7, commit 8cb57e3): death blast REMOVED from TurretAI.Die to match Base's commented-out RadiusDamage (sv_turrets.qc:182); TFL_FIRECHECK_AFF now modeled (RunCombat L689 + hellion FireCheck flags L67); firecheck flags now DEAD|DISTANCES|TEAMCHECK|REFIRE|AFF|AMMO_OWN with NO AIMDIST/LOS (matches Base); launcher head-spin frame cycle (tr_think 1..6->0 + ++frame per shot) now ported live in HellionTurret.Think/Attack."
     - "Already-faithful from prior wave: blast radius 80, missile proximity 16u / stray-out 400u, shot_spread 0.08, target_range_optimal 4500, all four target-select biases (0.7/0.01/0.01/0), targetscan_maxdelay default 1, respawntime 90, track_accel 0.25/0.6/0.25, select ANGLELIMITS removed."
@@ -170,19 +170,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No te_explosion launch puff at the muzzle."
       - "No two-cannon tag_fire/tag_fire2 muzzle alternation (single computed ShotOrg origin). The head-spin frame state that Base uses to SELECT the tag is now cycled (turret-hellion.anim.headspin) but there is no head-model bone, so the muzzle-tag alternation stays a client-render gap."
       - "No PROJECTILE_ROCKET CSQC trail / MIF_SPLASH|MIF_PROXY|MIF_GUIDED_HEAT flags (no visible smoke trail)."
     verification:
-      - { kind: code_read, ref: "hellion_weapon.qc wr_think turret_projectile (normalize(v_forward + randomvec()*shot_spread)) vs HellionTurret.Attack dir = Normalize(dir + Prandom.Vec()*ShotSpread 0.08) -> GuidedProjectile.Launch; Prandom.Vec() = signed [-1,1] per axis", result: pass }
+      - { kind: code_read, ref: "hellion_weapon.qc wr_think turret_projectile (normalize(v_forward + randomvec()*shot_spread)) + te_explosion(missile.origin) vs HellionTurret.Attack dir = Normalize(dir + Prandom.Vec()*ShotSpread 0.08) -> GuidedProjectile.Launch, then EffectEmitter.TeExplosion(missile.Origin) (L128) -> Emit('TE_EXPLOSION') networked temp-entity; Prandom.Vec() = signed [-1,1] per axis", result: pass }
     confidence: high
-    notes: "FIXED: launch spread 0.08 now applied (dir + Prandom.Vec()*0.08). Launch ballistics/lifetime/shootable-hull/fire-sound faithful. Launch presentation (puff/trail/two-cannon) still missing."
+    notes: "FIXED 2026-06-25: te_explosion launch puff at the muzzle now emitted (HellionTurret.cs:128 EffectEmitter.TeExplosion(missile.Origin) -> EffectEmitter.cs:247 Emit('TE_EXPLOSION'), a networked point temp-entity, same convention as Hk/Mlrs/Walker turrets), matching hellion_weapon.qc:35 te_explosion(missile.origin). Presentation upgraded missing->partial. PRIOR FIX: launch spread 0.08 applied (dir + Prandom.Vec()*0.08). Launch ballistics/lifetime/shootable-hull/fire-sound faithful. Remaining presentation gaps: two-cannon muzzle-tag alternation + PROJECTILE_ROCKET smoke trail (both need the attached head bone/model + CSQC projectile trail)."
   - id: turret-hellion.missile.guidance
     name: "turret_hellion_missile_think: heat-seeking lead-predict + accelerate"
     layer: [authority]

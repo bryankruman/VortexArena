@@ -1,12 +1,11 @@
 unit: mapobject-movers-platforms
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 12
   worst_gaps:
-    - "CPMA sound_start/sound_end + pt1_strt/pt1_end map-pack FILE probe still unported (the only residual q3compat plat gap): the q3compat path is now LIVE (CompatRemaps.IsQ3Compat wired from the .arena/.defi VFS probe at GameWorld boot), so a Q3/Q3DF func_plat now correctly gets speed 200 / lip 8 / dmg 2 / spawnflags 0 / medplat sounds — but the CPMA per-mapper sound-override keys (sound_start/sound_end and the pt1_strt/pt1_end default-file probe) are still skipped because they need GetField_fullspawndata / FindFileInMapPack, unavailable headless. Medplat default still applies, so Q3 plats are audible & correct, just not CPMA-custom-sound-overridable."
-    - "plat go/hit sounds still play on SoundChannel.Voice (=2); Base plat _sound uses CH_TRIGGER_SINGLE (=3) (port's Item slot = 3). The cue sample is right; the channel number diverges (low audible impact, single-shot either way). UNCHANGED."
+    - "CPMA sound_start/sound_end + pt1_strt/pt1_end map-pack FILE probe still unported (the only residual q3compat plat gap): the q3compat path is LIVE (CompatRemaps.IsQ3Compat wired from the .arena/.defi VFS probe at GameWorld boot, GameWorld.cs:544-552), so a Q3/Q3DF func_plat correctly gets speed 200 / lip 8 / dmg 2 / spawnflags 0 / medplat sounds — but the CPMA per-mapper sound-override keys (sound_start/sound_end and the pt1_strt/pt1_end default-file probe) are still skipped because they need GetField_fullspawndata / FindFileInMapPack, unavailable headless. Medplat default still applies, so Q3 plats are audible & correct, just not CPMA-custom-sound-overridable. (Sole remaining audio gap in the unit.)"
     - "plat_outside_touch (PlatOutsideTouch) is implemented & faithful but has no live caller — neither stock Base nor the port ever spawns an outside trigger (Base platforms.qc only DEFINES plat_outside_touch, line 111, and never installs it). So this handler being dead is itself faithful to Base; it is reachable only via custom-mapper wiring the port's spawnfunc does not generate."
 features:
   - id: mapobject-movers-platforms.plat.spawn_setup
@@ -44,9 +43,9 @@ features:
     verification:
       - { kind: code, ref: "Platforms.cs:PlatSetup (28-90) vs plat.qc spawnfunc 59-158; registered MapObjectsRegistry.cs:42 (SpawnFuncs.Register func_plat); spawnfunc consumed on the live --host map-spawn path — GameWorld.cs:632 SpawnMapEntities -> SpawnFuncs.TrySpawn, called from Boot", result: pass }
       - { kind: code, ref: "Message2 \"was squished by\" default set in PlatSetup:48-49 when .dmg && Message2 empty — matches plat.qc:75-78", result: pass }
-      - { kind: code, ref: "ApplyPlatSounds (MapObjectsCommon.cs:869-886) reproduces plat.qc:80-97 sounds==1->plat1/2, sounds==2/q3->medplat, then sound1/sound2 overrides; .sounds/.sound1/.sound2 promoted live in MapObjectFieldsExtra before spawnfunc dispatch", result: pass }
+      - { kind: code, ref: "ApplyPlatSounds (MapObjectsCommon.cs:902-919) reproduces plat.qc:80-97 sounds==1->plat1/2, sounds==2/q3->medplat, then sound1/sound2 overrides; .sounds/.sound1/.sound2 promoted live in MapObjectFieldsExtra before spawnfunc dispatch", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-22 (post-Wave-5 wiring): unchanged-faithful. PlatSetup line numbers shifted slightly (q3compat branch now uses the live flag) but the non-q3 defaults/pos1/pos2/message2/sound-pack logic is identical to Base. The 'sounds' selector + legacy sound1/sound2 overrides are read via MapMover.ApplyPlatSounds(this, q3compat). The medplat default now actually fires on Q3 maps because q3compat is live. The q3compat default block is its own (now-live) row."
+    notes: "Re-audited 2026-06-25 (line refs refreshed): unchanged-faithful. PlatSetup line numbers shifted slightly (q3compat branch now uses the live flag) but the non-q3 defaults/pos1/pos2/message2/sound-pack logic is identical to Base. The 'sounds' selector + legacy sound1/sound2 overrides are read via MapMover.ApplyPlatSounds(this, q3compat). The medplat default now actually fires on Q3 maps because q3compat is live. The q3compat default block is its own (now-live) row."
 
   - id: mapobject-movers-platforms.plat.q3compat_defaults
     name: "Q3/Q3DF compat: speed 200, lip 8, dmg 2, medplat sounds, CPMA sound keys"
@@ -56,7 +55,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatSetup (q3compat = CompatRemaps.IsQ3Compat)"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/CompatRemaps.cs:Q3CompatProvider/IsQ3Compat"
-      - "src/XonoticGodot.Server/GameWorld.cs:516-518 (q3compat probe + Q3CompatProvider wire)"
+      - "src/XonoticGodot.Server/GameWorld.cs:544-552 (q3compat probe + Q3CompatProvider wire)"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:ApplyPlatSounds (q3compat medplat branch)"
     constants:
       - { name: "q3 speed default", base: "200", port: "200 (q3compat true branch — Platforms.cs:71)", match: true }
@@ -78,7 +77,7 @@ features:
       - "CPMA sound_start/sound_end + the pt1_strt/pt1_end default-file probe are not ported (require GetField_fullspawndata / FindFileInMapPack, unavailable headless). The medplat default still applies, so a Q3 plat is audible and correct — only the CPMA per-mapper sound OVERRIDE keys are skipped. Sole residual gap on this row; audio marked partial for it."
     verification:
       - { kind: code, ref: "Platforms.cs:34 `bool q3compat = CompatRemaps.IsQ3Compat;` (no longer hardcoded false). Q3 branch Platforms.cs:36-44 (spawnflags=0, dmg default 2), :71-72 (speed 200 / lip 8) all reachable when q3compat true", result: pass }
-      - { kind: code, ref: "CompatRemaps.IsQ3Compat => Q3CompatProvider?.Invoke() ?? false (CompatRemaps.cs:79-82); Q3CompatProvider WIRED in GameWorld.Boot at GameWorld.cs:518 from a real .arena/.defi VFS probe (GameWorld.cs:516-517), computed BEFORE SpawnMapEntities (Boot:516 vs spawn at :632)", result: pass }
+      - { kind: code, ref: "CompatRemaps.IsQ3Compat => Q3CompatProvider?.Invoke() ?? false (CompatRemaps.cs:79-82); Q3CompatProvider WIRED in GameWorld.Boot at GameWorld.cs:552 from a real .arena/.defi VFS probe (GameWorld.cs:544-552), computed BEFORE SpawnMapEntities (wire at :552 vs SpawnMapEntities at :695)", result: pass }
       - { kind: code, ref: "Live ConfigReader: NetGame.cs:591 sets _serverWorld.ConfigReader = path => _vfs.Exists(path) ? _vfs.ReadText(path) : null — so on a real host a map with a sibling .arena/.defi flips q3compat on and the Q3 plat defaults engage", result: pass }
       - { kind: code, ref: "ApplyPlatSounds medplat branch (MapObjectsCommon.cs:876) fires on `e.Sounds == 2 || q3compat`; with q3compat true a Q3 plat (sounds unset) now correctly gets medplat1/medplat2", result: pass }
     confidence: high
@@ -133,23 +132,22 @@ features:
       - { name: "top dwell", base: "ltime + 3 s", port: "LTime + 3 s", match: true }
       - { name: "STATE_* ids (TOP/BOTTOM/UP/DOWN)", base: "0/1/2/3", port: "0/1/2/3", match: true }
       - { name: "move speedtype", base: "TSPEED_LINEAR", port: "SpeedType.Linear", match: true }
-      - { name: "sound channel", base: "CH_TRIGGER_SINGLE = 3", port: "SoundChannel.Voice = 2 (port's Item slot = 3 is the CH_TRIGGER_SINGLE equivalent)", match: false }
+      - { name: "sound channel", base: "CH_TRIGGER_SINGLE = 3", port: "SoundChannel.Item = 3 (Platforms.cs:207,216,225,235)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: na
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Plat go/hit sounds play on SoundChannel.Voice (=2) but Base _sound uses CH_TRIGGER_SINGLE (=3). Voice (=2) corresponds to the COMMENTED-OUT CH_VOICE_SINGLE in Base sound.qh; the port's Item=3 slot is the CH_TRIGGER_SINGLE equivalent. The cue sample is right (noise/noise1) but the channel number diverges so plat move/stop sounds won't stop/replace each other the way a true CH_TRIGGER_SINGLE plat would (low audible impact; single-shot either way). UNCHANGED."
+    gaps: []
     verification:
-      - { kind: code, ref: "PlatGoUp/Down/HitTop/HitBottom (Platforms.cs:204-233) vs platforms.qc:61-88 — state, CalcMove targets, 3s dwell all match", result: pass }
-      - { kind: code, ref: "Base platforms.qc:63,72,78,85 all use CH_TRIGGER_SINGLE=3; port Services SoundChannel Voice=2, Item=3 (Services.cs:118-119); plat Sound calls pass SoundChannel.Voice (Platforms.cs:206,214,222,231)", result: fail }
+      - { kind: code, ref: "PlatGoUp/Down/HitTop/HitBottom (Platforms.cs:204-237) vs platforms.qc:61-88 — state, CalcMove targets, 3s dwell all match", result: pass }
+      - { kind: code, ref: "Base platforms.qc:63,72,78,85 all use CH_TRIGGER_SINGLE=3; port plat Sound calls now pass SoundChannel.Item (Services.cs:119 Item=3, the CH_TRIGGER_SINGLE equivalent) at Platforms.cs:207,216,225,235 — channel constant now MATCHES Base", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-22: go_up/go_down play noise, hit_top/hit_bottom play noise1; top dwell sets Think=PlatGoDown at LTime+3 — bit-faithful. The ONLY divergence is the sound-channel constant: port passes SoundChannel.Voice=2 while Base plat uses CH_TRIGGER_SINGLE=3 (= port Item slot). Re-confirmed against Base platforms.qc this audit. Unchanged since baseline."
+    notes: "Re-audited 2026-06-25: go_up/go_down play noise, hit_top/hit_bottom play noise1; top dwell sets Think=PlatGoDown at LTime+3 — bit-faithful. FIXED since baseline: the plat go/hit sounds now pass SoundChannel.Item (=3) which equals Base CH_TRIGGER_SINGLE (=3), not the old Voice (=2). audio now faithful, gap cleared, channel constant matches. Verified Item=3 in Services.cs:119 and all four state functions (Platforms.cs:207/216/225/235) pass SoundChannel.Item."
 
   - id: mapobject-movers-platforms.plat.center_touch
     name: "plat_center_touch: live creature raises / refreshes plat"
@@ -224,7 +222,7 @@ features:
     gaps: []
     verification:
       - { kind: code, ref: "PlatCrush (Platforms.cs:259-279) vs plat_crush (platforms.qc:138-166): CRUSH 10000 / .dmg bite / dead-gib 10000 / STATE_UP->down, STATE_DOWN->up reverse, other states no-op", result: pass }
-      - { kind: code, ref: "wired as Entity.Blocked (PlatSetup:69 this.Blocked=PlatCrush) and invoked from the PushMove revert path FlyMove.cs:452 pusher.Blocked?.Invoke(pusher, check)", result: pass }
+      - { kind: code, ref: "wired as Entity.Blocked (PlatSetup:69 this.Blocked=PlatCrush) and invoked from the PushMove revert path FlyMove.cs:461 pusher.Blocked?.Invoke(pusher, check)", result: pass }
     confidence: high
     notes: "Re-audited 2026-06-22, unchanged. The plat's blocked handler is plat_crush, NOT generic_plat_blocked. plat_crush has NO dmgtime cooldown and the port omits it too. DeathTypes.Void is documented = DEATH_HURTTRIGGER."
 
@@ -316,7 +314,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "CalcMove/CalcMoveBezier/CalcMoveControllerThink/CubicSpeedFunc (MapObjectsCommon.cs:529-688) vs subs.qc + cubic_speedfunc — linear-shortcut keys on PlatMoveStart/End==1 with default 0/0", result: pass }
+      - { kind: code, ref: "CalcMove/CalcMoveBezier/CalcMoveControllerThink/CubicSpeedFunc (MapObjectsCommon.cs:534-694) vs subs.qc + cubic_speedfunc — linear-shortcut keys on PlatMoveStart/End==1 with default 0/0", result: pass }
     confidence: high
     notes: "Re-audited 2026-06-22: unchanged-faithful. Entity.PlatMoveStart/PlatMoveEnd default to 0, matching Base's uninitialized .float platmovetype_start/_end. With 0/0 the (start==1 && end==1) linear shortcut FAILS, so a long (>=0.15s) mover runs the bezier smoothstep branch as in Base. CalcMoveDone snaps to FinalDest, zeroes velocity, nextthink=-1 — bit-faithful. Scheduling on the mover's local clock LTime as in QC."
 
@@ -381,6 +379,6 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "SimulationLoop RunEntity over every non-client entity each tick -> MoveTypePhysics case Push -> PhysicsPusher (LTime/think) + PushMove; FlyMove revert-on-block (FlyMove.cs:452) -> pusher.Blocked?.Invoke (= PlatCrush)", result: pass }
+      - { kind: code, ref: "SimulationLoop RunEntity over every non-client entity each tick -> MoveTypePhysics case Push -> PhysicsPusher (LTime/think) + PushMove; FlyMove revert-on-block (FlyMove.cs:461) -> pusher.Blocked?.Invoke (= PlatCrush)", result: pass }
     confidence: high
     notes: "Re-audited 2026-06-22, unchanged. Confirms the plat MOVES on the live server tick, carries/sweeps riders, and on a true block reverts the pusher + every moved rider then fires .Blocked = PlatCrush. This is the liveness link that makes the whole unit live. Server-authoritative — Base's CSQC plat link (plat_link) is commented out, so the port's lack of CSQC plat prediction is faithful, not a gap."

@@ -5,11 +5,10 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 13
   worst_gaps:
-    - "View-model ignores player team colormap and per-weapon glowmod: the gun never tints to your team color or glows (e.g. Vortex charge glow), unlike Base viewmodel_draw (EF_NODEPTHTEST and continuous alpha ARE now applied; colormap/glowmod/skin are not)."
+    - "Per-child m_skin (wepskin) is not applied; the gun renders with its base material. Team colormap is an approximate whole-model albedo tint, not a true palette colormap swap (colormap/glowmod ARE now applied — colormod + Vortex/team glow)."
     - "Weapon-switch animation is a slide-down, not Base's barrel-tip (this.angles_x = -90*f*f), and is not keyed to per-weapon switchdelay_raise/drop or weapon_nextthink (port does not network wframe)."
     - "No networked weapon fire/idle/reload animation (the QC wframe temp entity is not networked); the gun never visibly cycles or reloads."
-    - "No muzzle-flash MODEL (the spinning flash md3 for Devastator + Machinegun, m_muzzlemodel) — only the particle burst is emitted."
-    - "Per-weapon wr_viewmodel override (Tuba swaps its view-model by played note) is not ported."
+    - "Muzzle-flash MODEL is ported for 4 weapons (Devastator/MineLayer→flash.md3, Machinegun/Shotgun→uziflash.md3) but the Vortex/Vaporizer (nexflash.md3) and Overkill (HMG/MachineGun/RPC) flash models are not mapped."
 features:
   - id: cl-viewmodel.model.select_and_rig
     name: "View-model entity + model select (invisible-hand vs full-rig), rebuild on weapon change"
@@ -36,7 +35,7 @@ features:
     gaps:
       - "anim framegroup presets (animfixfps fire1/fire2/idle/reload) not preset; port plays a best-effort local clip."
     verification:
-      - { kind: code, ref: "ViewModel.SetWeaponModel + ViewModelEquip.Build invisible-hand/full-rig branch; EquipNetworkedWeapon rebuilds only on weapon-id change (NetGame:1581), hides on dead/holster/chase/intermission", result: pass }
+      - { kind: code, ref: "ViewModel.SetWeaponModel + ViewModelEquip.Build invisible-hand/full-rig branch; EquipNetworkedWeapon rebuilds on weapon-id or wr_viewmodel change (NetGame:1624), hides on dead/holster/chase/intermission", result: pass }
     confidence: high
     notes: "Invisible-hand (v_ attached to h_ rig 'weapon'/'tag_weapon' tag) vs full-rig classification is faithful to CL_WeaponEntity_SetModel. movedir from 'shot' tag drives shot origin. Live on NetGame match path."
 
@@ -72,15 +71,19 @@ features:
     layer: [presentation]
     base_refs:
       - "client/view.qc:viewmodel_draw (lines 302-321)"
+      - "common/weapons/all.qh:weaponentity_glowmod (line 402)"
     port_refs:
-      - "game/client/ViewModel.cs:ApplyMaterialFx (EF_NODEPTHTEST only)"
+      - "game/client/ViewModel.cs:ApplyMaterialFx"
+      - "game/client/ViewModel.cs:SetTeamGlow"
+      - "game/net/NetGame.cs:UpdateViewModelTeamGlow"
+      - "game/net/NetGame.cs:VortexGlowColor"
     constants:
-      - { name: "colormap", base: "256 + entcs colors (team/player tint)", port: "none", match: false }
-      - { name: "glowmod", base: "weaponentity_glowmod(wep,c) (per-weapon wr_glow or palette)", port: "none", match: false }
+      - { name: "colormap", base: "256 + entcs colors (team/player palette swap)", port: "SetTeamGlow team-color albedo tint (approx whole-model, not a region palette swap)", match: false }
+      - { name: "glowmod", base: "weaponentity_glowmod(wep,c) = wr_glow override else colormapPaletteColor(c&0x0F)", port: "team palette color, Vortex/Vaporizer wr_glow charge override (VortexGlowColor) -> material emission", match: true }
       - { name: "csqcmodel_effects EF_NODEPTHTEST", base: "(EFMASK_CHEAP | EF_NODEPTHTEST) & ~EF_FULLBRIGHT", port: "NoDepthTest=true applied to every viewmodel material (ApplyMaterialFx)", match: true }
-      - { name: "skin", base: "m_skin per child", port: "none (base material)", match: false }
+      - { name: "skin", base: "m_skin per child (wepskin)", port: "none (base material)", match: false }
     status:
-      logic: partial
+      logic: faithful
       values: partial
       timing: na
       presentation: partial
@@ -89,12 +92,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "View-model ignores player team colormap and per-weapon glowmod: the gun never tints to your team color or glows (e.g. Vortex charge glow), unlike Base viewmodel_draw."
-      - "Per-child m_skin not applied; the gun renders with its base material."
+      - "Team colormap is an approximate whole-model albedo tint (0.6 + 0.4*teamColor), not Base's true colormap palette region swap (256 + c); reads as your team color but is not pixel-faithful."
+      - "Per-child m_skin (wepskin) not applied; the gun renders with its base material."
     verification:
-      - { kind: code, ref: "ViewModel.ApplyMaterialFx sets ov.NoDepthTest = true on every MeshInstance3D surface override (EF_NODEPTHTEST), called from RefreshCvars->ApplyModelAlpha each frame on the live _Process path; grep ViewModel.cs/ViewModelEquip.cs for colormap/glowmod/skin — still no matches", result: pass }
+      - { kind: code, ref: "ViewModel.ApplyMaterialFx sets NoDepthTest=true (EF_NODEPTHTEST) + a team colormod albedo tint + glowmod emission on every viewmodel surface override, called from RefreshCvars->ApplyModelAlpha each _Process frame; SetTeamGlow stores team color/glow, pushed live every frame from NetGame.UpdateViewModelTeamGlow (called in EquipNetworkedWeapon, NetGame:1616); glowmod resolves wr_glow (Vortex/Vaporizer charge via VortexGlowColor) else team palette, matching weaponentity_glowmod; grep ViewModel.cs/ViewModelEquip.cs for m_skin/wepskin -> no matches", result: pass }
     confidence: high
-    notes: "CHANGED since baseline: EF_NODEPTHTEST is now implemented and LIVE (ApplyMaterialFx pushes NoDepthTest=true onto each viewmodel surface override, run every frame from _Process->RefreshCvars), so the gun draws on top of the world instead of clipping. Still missing: team colormap, per-weapon glowmod, and per-child m_skin (Base loops every weaponchild applying drawmask/alpha/skin/colormap/glowmod/csqcmodel_effects; port applies only NoDepthTest + alpha)."
+    notes: "FIXED since baseline (was logic:partial values:partial presentation:partial): team colormap tint AND per-weapon glowmod are now implemented and LIVE. SetTeamGlow + ApplyMaterialFx tint the gun toward the local player's team color and drive a team/wr_glow emission (Vortex/Vaporizer charge glow via VortexGlowColor, matching weaponentity_glowmod's wr_glow->palette fallback). Wired live every frame from NetGame.UpdateViewModelTeamGlow. EF_NODEPTHTEST + continuous alpha remain applied. Residual gaps: the colormap is an approximate whole-model albedo tint rather than Base's true palette region swap (256 + c), and per-child m_skin (wepskin) is still not applied."
 
   - id: cl-viewmodel.alpha.viewmodel_alpha
     name: "View-model alpha (cl_viewmodel_alpha / _alpha_min, vehicle/dead/intermission/chase hide)"
@@ -120,9 +123,9 @@ features:
     gaps:
       - "Vehicle force-hide (a=-1 when in a vehicle) is handled via the Visible toggle on dead/holster/chase/intermission, not via the continuous alpha=-1 path; functionally equivalent (gun hidden), so no visible defect."
     verification:
-      - { kind: code, ref: "ViewModel.RefreshCvars reads cl_viewmodel_alpha/_alpha_min via CvarFloat and computes amax/amin/a exactly per Base (amax=(alpha!=0)?alpha:1; amin=(alpha_min!=0)?alpha_min:-1; a=(amin>=amax)?amax:bound), then ApplyModelAlpha walks the model materials; EquipNetworkedWeapon sets Visible on dead/holster/chase/intermission (NetGame:1578)", result: pass }
+      - { kind: code, ref: "ViewModel.RefreshCvars reads cl_viewmodel_alpha/_alpha_min via CvarFloat and computes amax/amin/a exactly per Base (amax=(alpha!=0)?alpha:1; amin=(alpha_min!=0)?alpha_min:-1; a=(amin>=amax)?amax:bound), then ApplyModelAlpha walks the model materials; EquipNetworkedWeapon sets Visible on dead/holster/chase/intermission (NetGame:1610)", result: pass }
     confidence: high
-    notes: "FIXED since baseline (was logic:partial values:missing presentation:partial liveness:partial): RefreshCvars now reads the menu/console cl_viewmodel_alpha + cl_viewmodel_alpha_min live each frame from the shared cvar store and applies the exact Base amax/amin/bound formula as continuous opacity on the viewmodel materials. The opacity slider is no longer inert. Dead/holster/chase hide is via Visible (matches Base drawmask 0), now also includes intermission (MatchIntermission)."
+    notes: "RefreshCvars reads cl_viewmodel_alpha + cl_viewmodel_alpha_min live each frame from the shared cvar store and applies the exact Base amax/amin/bound formula as continuous opacity on the viewmodel materials. Dead/holster/chase/intermission hide is via Visible (matches Base drawmask 0)."
 
   - id: cl-viewmodel.align.gunalign_gunoffset
     name: "Shot-origin alignment (cl_gunalign 1/2/3/4) + cl_gunoffset"
@@ -153,7 +156,7 @@ features:
     verification:
       - { kind: code, ref: "ViewModel.RefreshCvars reads cl_gunalign (CvarFloat) + cl_gunoffset (ParseVec 'x y z') live and rebuilds rest placement on change; GunAlignOffset: case 3 -> 0 (authored right), case 4 -> (0,-2*side,0) mirror, case 1/2 -> (0,-side,-2) center with side=AuthoredShotSideY()=-3.5", result: pass }
     confidence: high
-    notes: "FIXED since baseline (was logic:partial values:partial presentation:partial liveness:partial; left/right were visually identical, cl_gunoffset baked). cl_gunalign + cl_gunoffset are now read live from the cvar store; left/right/center all read distinctly (AuthoredShotSideY makes the mirror real). Residual values gap: the side magnitude is a fixed representative -3.5u, not each model's authored shot-tag Y (Base mirrors/zeroes the model's own vecs.y)."
+    notes: "cl_gunalign + cl_gunoffset are read live from the cvar store; left/right/center all read distinctly (AuthoredShotSideY makes the mirror real). Residual values gap: the side magnitude is a fixed representative -3.5u, not each model's authored shot-tag Y (Base mirrors/zeroes the model's own vecs.y)."
 
   - id: cl-viewmodel.switch.raise_lower_anim
     name: "Weapon-switch raise/lower (barrel-tip -90*f*f keyed to switchdelay/weapon_nextthink)"
@@ -182,7 +185,7 @@ features:
     gaps:
       - "Weapon-switch animation is a slide-down, not Base's barrel-tip (this.angles_x = -90*f*f), and is not keyed to per-weapon switchdelay_raise/drop or weapon_nextthink (port does not network wframe)."
     verification:
-      - { kind: code, ref: "ViewModel.PlayHolster/PlayRaise/UpdateSwitch; live from RunBoundCommand (NetGame:3978 PlayHolster) + EquipNetworkedWeapon (NetGame:1606 PlayRaise)", result: pass }
+      - { kind: code, ref: "ViewModel.PlayHolster/PlayRaise/UpdateSwitch; live from RunBoundCommand (holster) + EquipNetworkedWeapon (PlayRaise, NetGame:1651)", result: pass }
     confidence: high
     notes: "Functionally LIVE (gun lowers on switch, raises on confirm). Deliberate re-implementation; flagged intended_divergence so it isn't re-reported as a bug, but the visual is not the Base barrel-tip."
 
@@ -219,7 +222,7 @@ features:
     verification:
       - { kind: code, ref: "FollowModelOffset diffed vs calc_followmodel_ofs (lowpass3/highpass3/avg_factor, scale -0.042); fed by BuildViewState predicted velocity; cl_followmodel toggle read live in RefreshCvars", result: pass }
     confidence: high
-    notes: "Near line-by-line port of the QC lowpass/highpass macros, same constants. Live on the match path via ViewStateProvider = BuildViewState (NetGame:1306). The cl_followmodel toggle is now read live (RefreshCvars); the numeric constants remain Export defaults (matching Base defaults)."
+    notes: "Near line-by-line port of the QC lowpass/highpass macros, same constants. Live on the match path via ViewStateProvider = BuildViewState. The cl_followmodel toggle is read live (RefreshCvars); the numeric constants remain Export defaults (matching Base defaults)."
 
   - id: cl-viewmodel.sway.leanmodel
     name: "Lean sway (view-angle highpass -> gun roll/pitch, cl_leanmodel)"
@@ -253,7 +256,7 @@ features:
     verification:
       - { kind: code, ref: "LeanModelOffset diffed vs leanmodel_ofs (highpass2_limited, pitch re-inversion, same avg_factor); fed by BuildViewState live view angles; cl_leanmodel toggle read live in RefreshCvars", result: pass }
     confidence: high
-    notes: "Faithful port of the angle highpass chain incl. final pitch re-inversion. The cl_leanmodel toggle is now read live (RefreshCvars). Missing the teleported reset (a minor warpzone-snap edge)."
+    notes: "Faithful port of the angle highpass chain incl. final pitch re-inversion. The cl_leanmodel toggle is read live (RefreshCvars). Missing the teleported reset (a minor warpzone-snap edge)."
 
   - id: cl-viewmodel.sway.bobmodel
     name: "Bob sway (ground-walk sinusoidal side/up sway, cl_bobmodel)"
@@ -286,7 +289,7 @@ features:
     verification:
       - { kind: code, ref: "BobModelOffset diffed vs bobmodel_ofs (bobmodel_scale ramp, avg_xyspeed avg_time 0.1, map_bound_ranges 150..400 crouch slowdown, sin(s)/cos(2s)); onground fed by BuildViewState; cl_bobmodel toggle read live in RefreshCvars", result: pass }
     confidence: high
-    notes: "Faithful incl. crouch-walk frequency reduction (map_bound_ranges) and the hit-ground 0.05s settle. The cl_bobmodel toggle is now read live (RefreshCvars). Vertical view-bob (cl_bob/cl_bob2/cl_bobfall) is TODO in Base too — not a gap."
+    notes: "Faithful incl. crouch-walk frequency reduction (map_bound_ranges) and the hit-ground 0.05s settle. The cl_bobmodel toggle is read live (RefreshCvars). Vertical view-bob (cl_bob/cl_bob2/cl_bobfall) is TODO in Base too — not a gap."
 
   - id: cl-viewmodel.muzzle.flash_particle
     name: "Muzzle flash particle (local firer + remote world-space, m_muzzleeffect)"
@@ -315,38 +318,43 @@ features:
     gaps:
       - "Local muzzle position is a heuristic at the tag_shot socket rather than Base's view-projected movedir_aligned (not verified to read identically on-screen)."
       - "Secondary fire does not flash (only the primary _attackHeld path calls Fire; UpdateLocalFireFeedback comments 'secondary FX stay networked for now')."
-      - "ClientWorld.OnMuzzleFlash wrapper (ClientWorld:914) has no caller (NetGame calls _viewModel.Fire() directly) — dead wrapper, but the feature is live by another path."
+      - "ClientWorld.OnMuzzleFlash wrapper has no caller (NetGame calls _viewModel.Fire() directly) — dead wrapper, but the feature is live by another path."
     verification:
-      - { kind: code, ref: "ViewModel.Fire -> MuzzleFlashAttached + OmniLight; live from PredictFireShot (NetGame:4159) / UpdateLocalFireFeedback (NetGame:4141); remote VERIFIED via EffectEmitter.Emit('*_MUZZLEFLASH', shot.Origin, shot.Dir*1000, except: actor); grep OnMuzzleFlash (ClientWorld:914) has no caller", result: pass }
+      - { kind: code, ref: "ViewModel.Fire -> MuzzleFlashAttached + OmniLight; live from PredictFireShot / UpdateLocalFireFeedback; remote VERIFIED via EffectEmitter.Emit('*_MUZZLEFLASH', shot.Origin, shot.Dir*1000, except: actor)", result: pass }
     confidence: medium
-    notes: "Unchanged since baseline. Both local and remote particle flashes are LIVE. Remote emit confirmed faithful to Send_Effect_Except (every weapon passes except: actor). Position is heuristic (tag socket) not the QC view-projection; not runtime-verified for on-screen match. Secondary fire genuinely does not flash."
+    notes: "Both local and remote particle flashes are LIVE. Remote emit confirmed faithful to Send_Effect_Except (every weapon passes except: actor). Position is heuristic (tag socket) not the QC view-projection; not runtime-verified for on-screen match. Secondary fire genuinely does not flash."
 
   - id: cl-viewmodel.muzzle.flash_model
-    name: "Muzzle flash MODEL (spinning flash md3 for Devastator + Machinegun)"
+    name: "Muzzle flash MODEL (spinning flash md3 for Devastator + Machinegun + Shotgun + MineLayer)"
     layer: [presentation]
     base_refs:
       - "common/weapons/all.qc:W_MuzzleFlash_Model"
       - "common/weapons/all.qc:W_MuzzleFlash_Model_Think"
-      - "common/weapons/all.qc:W_MuzzleFlash_Model_AttachToShotorg"
-    port_refs: []
+      - "common/weapons/all.qc:W_MuzzleFlash (m_muzzlemodel != MDL_Null gate, line 776)"
+    port_refs:
+      - "game/client/ViewModel.cs:SpawnMuzzleFlashModel"
+      - "game/client/ViewModel.cs:FlashModelFactory"
+      - "game/net/NetGame.cs:MuzzleModelFor"
+      - "game/net/NetGame.cs:1325 (FlashModelFactory wiring)"
     constants:
-      - { name: "m_muzzlemodel", base: "MDL_DEVASTATOR_MUZZLEFLASH / MDL_MACHINEGUN_MUZZLEFLASH (else MDL_Null)", port: "none", match: false }
-      - { name: "flash think", base: "frame+=2, scale*=0.5, alpha-=0.25 every 0.05s; start scale 0.75 alpha 0.75 frame 2", port: "none", match: false }
+      - { name: "m_muzzlemodel", base: "Devastator/MineLayer/Arc=flash.md3, Machinegun/Shotgun=uziflash.md3, Vortex/Vaporizer=nexflash.md3, Overkill HMG/MG/RPC (else MDL_Null)", port: "MuzzleModelFor: devastator/minelayer=flash.md3, machinegun/shotgun=uziflash.md3 (Vortex/Vaporizer/Overkill not mapped)", match: false }
+      - { name: "flash think", base: "frame+=2, scale*=0.5, alpha-=0.25 every 0.05s; start scale 0.75 alpha 0.75 frame 2; EF_ADDITIVE|EF_FULLBRIGHT", port: "scale*=0.5, alpha-=0.25 over 3x 0.05s ticks via Tween; start scale 0.75 alpha 0.75; Unshaded+Add blend (EF_FULLBRIGHT|EF_ADDITIVE)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No muzzle-flash MODEL (the spinning flash md3 for Devastator + Machinegun, m_muzzlemodel) — only the particle burst is emitted."
+      - "MuzzleModelFor only maps Devastator/MineLayer (flash.md3) and Machinegun/Shotgun (uziflash.md3); Base also sets m_muzzlemodel for Vortex/Vaporizer (nexflash.md3) and the Overkill HMG/MachineGun/RPC — those weapons get no model flash in the port."
+      - "Frame is animated in Base via frame+=2 (the md3 flash frame cycle); the port spawns a fresh static node and fades/shrinks it without advancing the md3 frame."
     verification:
-      - { kind: code, ref: "grep muzzlemodel/MuzzleFlash_Model in game/+src/ finds only the tag-loader (MuzzleTag.Model in AssetLoader) and effect-name registration, not the spinning flash md3", result: pass }
+      - { kind: code, ref: "ViewModel.SpawnMuzzleFlashModel (gated on FlashModelFactory + non-empty MuzzleModelPath) spawns the flash node at the muzzle marker, scale 0.75 alpha 0.75, EF_ADDITIVE|EF_FULLBRIGHT (ApplyFlashMaterialFx), then a 3-step Tween (scale*=0.5, alpha-=0.25 each 0.05s) matching W_MuzzleFlash_Model_Think; FlashModelFactory wired live at NetGame:1325 to _assets.LoadModel; MuzzleModelFor (NetGame:2141) maps devastator/minelayer->flash.md3, machinegun/shotgun->uziflash.md3", result: pass }
     confidence: high
-    notes: "Base attaches a spinning, scaling, fading flash md3 to the view-model 'shot' tag (and exterior model for others) for Devastator + Machinegun only. Port has neither the model nor the think."
+    notes: "FIXED since baseline (was logic/values/timing/presentation missing, liveness na): the spinning/fading flash model IS now ported and LIVE. SpawnMuzzleFlashModel attaches a flash md3 (via FlashModelFactory->LoadModel) at the muzzle socket and runs the exact W_MuzzleFlash_Model_Think tick sequence (scale*=0.5, alpha-=0.25 per 0.05s, 3 ticks, EF_ADDITIVE|EF_FULLBRIGHT). Residual values gap: MuzzleModelFor only covers 4 of the ~7+ Base weapons that set m_muzzlemodel (missing Vortex/Vaporizer nexflash and the Overkill weapons), and the md3 frame is not cycled."
 
   - id: cl-viewmodel.casings.brass_eject
     name: "Brass / shell casings (eject, tumble, bounce, fade, bounce sounds)"
@@ -392,7 +400,7 @@ features:
     verification:
       - { kind: code, ref: "Shotgun/Machinegun/Rifle/OkMachinegun call WeaponFiring.EjectCasing on the live fire path (per-casingtype gate + QC view-frame eject velocity) -> registered CASING_* effect networked (origin+velocity) -> ClientWorld.OnEffect -> EffectSystem.Spawn routes CASING_BULLET/CASING_SHELL to SpawnCasing -> ShellCasings.Spawn; ShellCasings BulletTime=10/ShellTime=30/MaxCasings=100 (match Base), avelocity '0 10 0'+100*prandomvec, CasingBody plays brass1-3/casings1-3 via SoundHook (wired live ClientWorld:334 -> OnSound CH_SHOTS) when vel>50, throttled 0.2s", result: pass }
     confidence: high
-    notes: "Substantially FIXED since baseline. values now faithful (lifetimes 10/30 and maxcount 100 match Base, were 1.5/2.0/64) and avelocity tumble is now the QC '0 10 0'+100*prandomvec magnitude. audio now faithful: the Casing_Touch bounce sound (brass*/casings* on CH_SHOTS when vdist>50, 0.2s throttle) is implemented AND wired live (ShellCasings.SoundHook set to ClientWorld.OnSound at ClientWorld:334). Sole residual gap is timing/physics: a self-integrated gravity + single ground-plane bounce instead of full MOVETYPE_BOUNCE world collision at the 0.03125 ticrate (and floorZ often unsupplied)."
+    notes: "values faithful (lifetimes 10/30 and maxcount 100 match Base), avelocity tumble is the QC '0 10 0'+100*prandomvec magnitude. audio faithful: the Casing_Touch bounce sound (brass*/casings* on CH_SHOTS when vdist>50, 0.2s throttle) is implemented AND wired live (ShellCasings.SoundHook set to ClientWorld.OnSound at ClientWorld:334). Sole residual gap is timing/physics: a self-integrated gravity + single ground-plane bounce instead of full MOVETYPE_BOUNCE world collision at the 0.03125 ticrate (and floorZ often unsupplied)."
 
   - id: cl-viewmodel.model.wr_viewmodel_override
     name: "Per-weapon view-model override (wr_viewmodel, e.g. Tuba note-driven model swap)"
@@ -401,21 +409,23 @@ features:
       - "common/weapons/weapon.qh:160 (METHOD wr_viewmodel)"
       - "common/weapons/weapon/tuba.qc:423 (Tuba::wr_viewmodel)"
       - "client/view.qc:viewmodel_draw (newname = wep.wr_viewmodel(wep, this))"
-    port_refs: []
+    port_refs:
+      - "game/net/NetGame.cs:WeaponViewModelOverride"
+      - "game/net/NetGame.cs:EquipNetworkedWeapon (vmOverride rebuild gate)"
     constants:
-      - { name: "wr_viewmodel", base: "per-weapon model-name override (Tuba swaps v_ model by played note/instrument)", port: "none (always uses the weapon's static WorldModel)", match: false }
+      - { name: "wr_viewmodel (Tuba)", base: "tuba_instrument 0->v_tuba, 1->v_akordeon, 2->v_kleinbottle", port: "TubaInstrument 0->v_tuba.md3, 1->v_akordeon.md3, 2->v_kleinbottle.md3", match: true }
     status:
-      logic: missing
-      values: na
-      timing: na
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Per-weapon wr_viewmodel override is not ported; the view-model always uses the weapon's static v_ model. Only Tuba uses this in Base (swaps its view-model by the currently played note/instrument)."
+      - "Override only resolves on the local player's listen-server Player state (LocalServerPlayer); a pure remote-client (dedicated-server) Tuba instrument is read from server-side player state, so it is correct on the listen-server play path the port runs but unverified on a pure thin client."
     verification:
-      - { kind: code, ref: "Base viewmodel_draw calls wep.wr_viewmodel(wep,this) to override the model name; only Tuba::wr_viewmodel (tuba.qc:423) overrides it. EquipNetworkedWeapon always uses WeaponVModelPath(w) (static WorldModel); no wr_viewmodel equivalent in the port", result: pass }
-    confidence: medium
-    notes: "Newly mapped (was unmapped in the baseline). Minor, Tuba-only Base feature: the default wr_viewmodel returns string_null (no override) for every weapon except Tuba, which returns a per-note v_ model. The port has no Tuba weapon wired and no override hook, so this is cosmetic and low-impact."
+      - { kind: code, ref: "NetGame.WeaponViewModelOverride (NetGame:1732) returns '' for every weapon except Tuba, for which it maps TubaInstrument (0/1/2) to v_tuba/v_akordeon/v_kleinbottle.md3 — matching Tuba::wr_viewmodel; EquipNetworkedWeapon (NetGame:1622) recomputes vmOverride each frame, rebuilds the gun model when it changes (vmOverride != _equippedVmOverride), and feeds it into ViewModelEquip.Build", result: pass }
+    confidence: high
+    notes: "FIXED since baseline (was missing, port_refs []): the per-weapon wr_viewmodel override IS now ported and LIVE. WeaponViewModelOverride implements the default (no override) for all weapons and the Tuba per-instrument v_ model swap; EquipNetworkedWeapon rebuilds the viewmodel when the override string changes, faithful to Base viewmodel_draw's newname = wep.wr_viewmodel(wep,this)."

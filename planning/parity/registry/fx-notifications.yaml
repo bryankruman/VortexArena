@@ -1,13 +1,13 @@
 unit: fx-notifications
 category: notification
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 16
   worst_gaps:
-    - "Spectator-follow recipients are STILL not routed: ServerNet.NotificationReaches omits the QC `IS_SPEC(to) && to.enemy == other` clause (and the matching AllExcept/Team nuances), so spectators following a player miss that player's personal NOTIF_ONE/TEAM notifications. Unchanged this wave."
-    - "Token expansion runs SERVER-side and reads the SERVER's notification_show_location / _show_sprees* cvars, so all clients get the server's preference (no per-client control); plus three CvarBool fallback-polarity defects (location defaults ON, both *_specialonly default OFF) that diverge from Base when the cvar is unset. NotificationTokens.cs untouched this wave; item_wepammo still returns literal \"ammo\"; race tokens (f*race_time/race_diff/race_col) still unimplemented."
-    - "Gentle-mode is now LIVE but server-global: GameWorld mirrors sv_gentle onto NotificationSystem.GentleMode each tick, so per-CLIENT cl_gentle preference is lost (a deliberate consequence of server-side text formatting). Functionally correct for sv_gentle servers."
+    - "Spectator-follow recipients are STILL not routed: ServerNet.NotificationReaches omits the QC `IS_SPEC(to) && to.enemy == other` clause (and the matching AllExcept/Team nuances), so spectators following a player miss that player's personal NOTIF_ONE/TEAM notifications. Unchanged."
+    - "Token expansion runs SERVER-side and reads the SERVER's notification_show_location / _show_sprees* cvars, so all clients get the server's preference (no per-client control) — the only residual is per-client preference, not a default-correctness defect. FIXED this audit: the three CvarBool fallback-polarity defects (location now defaults false, both *_specialonly now default true) and item_wepammo (now returns the real ammo type cells/rockets/shells/bullets/fuel). Race tokens (f*race_time/race_diff/race_col) and key-bind tokens (pass_key/nade_key/join_key) and the s3#s2/#s2 hash-replace tokens are still unimplemented in ResolveOne (drop to '')."
+    - "Gentle-mode is LIVE but server-global: GameWorld mirrors sv_gentle onto NotificationSystem.GentleMode each tick, so per-CLIENT cl_gentle preference is lost (a deliberate consequence of server-side text formatting). Functionally correct for sv_gentle servers."
 features:
   - id: fx-notifications.registry.types
     name: "Notification registry + message types (MSG_ANNCE/INFO/CENTER/MULTI/CHOICE + MSG_CENTER_KILL + server-driven center variants)"
@@ -143,13 +143,13 @@ features:
       - { name: "KILL_SPREE_LIST milestones", base: "3/5/10/15/20/25/30", port: "3/5/10/15/20/25/30 (SpreeList)", match: true }
       - { name: "notification_show_sprees", base: "1 (default true)", port: "CvarBool fallback true", match: true }
       - { name: "notification_show_sprees_info", base: "3", port: "3 (CvarInt fallback)", match: true }
-      - { name: "notification_show_location default", base: "0 (false)", port: "CvarBool(..., true) -> ON when unset (NotificationTokens.cs:104)", match: false }
-      - { name: "notification_show_sprees_info_specialonly default", base: "1 (true)", port: "CvarBool(..., false) -> OFF when unset (NotificationTokens.cs:180)", match: false }
-      - { name: "notification_show_sprees_center_specialonly default", base: "1 (true)", port: "CvarBool(..., false) -> OFF when unset (NotificationTokens.cs:156)", match: false }
-      - { name: "item_wepammo ammo name", base: "ammo_type.m_name (cells/rockets/...)", port: "literal \"ammo\" (NotificationTokens.WeaponAmmoName:226)", match: false }
+      - { name: "notification_show_location default", base: "0 (false)", port: "CvarBool(..., false) (NotificationTokens.cs:104)", match: true }
+      - { name: "notification_show_sprees_info_specialonly default", base: "1 (true)", port: "CvarBool(..., true) (NotificationTokens.cs:180)", match: true }
+      - { name: "notification_show_sprees_center_specialonly default", base: "1 (true)", port: "CvarBool(..., true) (NotificationTokens.cs:156)", match: true }
+      - { name: "item_wepammo ammo name", base: "ammo_type.m_name (cells/rockets/shells/bullets/fuel)", port: "AmmoType -> shells/bullets/rockets/cells/fuel (NotificationTokens.WeaponAmmoName:228)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: partial
       audio: na
@@ -157,17 +157,16 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN (NotificationTokens.cs untouched this wave): CvarBool fallback-polarity defects: ShowLocation uses CvarBool(\"notification_show_location\", true) — Base default is 0/false, so an UNSET cvar makes the port force the location suffix ON. Likewise both *_specialonly are read with fallback=false but Base defaults them to 1/true, so an unset cvar makes the port print generic 'N frag spree!' / 'N frags in a row!' lines that Base suppresses. Masked at runtime when notifications.cfg is exec'd, but wrong for headless/test paths."
-      - "Tokens are resolved SERVER-side reading the SERVER's notification_show_location / _show_sprees* cvars; in Base these are CSQC-side per-client, so the port loses per-client control of location/spree display (direct consequence of server-side formatting — see fx-notifications.net.protocol intended divergence)."
-      - "item_wepammo returns the literal \"ammo\" (WeaponAmmoName is a stub) rather than the weapon's actual ammo type name (notif_arg_item_wepammo: ammo_type.m_name). Minor wording defect on weapon-drop info lines."
-      - "race tokens (f*race_time/race_diff/race_col) referenced in the spec are NOT implemented in ResolveOne (return '') — exercised only by race split notifs."
+      - "Tokens are resolved SERVER-side reading the SERVER's notification_show_location / _show_sprees* cvars; in Base these are CSQC-side per-client, so the port loses per-client control of location/spree display (direct consequence of server-side formatting — see fx-notifications.net.protocol intended divergence). This is now the ONLY residual on the cvar-driven tokens (the default polarities are fixed)."
+      - "race tokens (f1race_time/f2race_time/f3race_time, race_col, race_diff) referenced by the RACE_* notifs in NotificationsList.cs are NOT implemented in ResolveOne (drop to '' at :99) — race split/record lines lose their time/diff/color text."
+      - "key-bind tokens (pass_key/nade_key/join_key — getcommandkey lookups) and the s3#s2/#s2 HASH_REPLACE tokens are not implemented in ResolveOne (drop to ''); used by CTF flag-pass / nade / spectator-join hints and a few hash-replace info lines."
     verification:
-      - { kind: code, ref: "NotificationTokens.ResolveOne case table vs NOTIF_ARGUMENT_LIST: s1-4/s*loc/f*/spree/frag/location/ordinal/time formatting present and matches; race_col/f*race_time/race_diff NOT in the switch (drop to '' at :99)", result: partial }
-      - { kind: code, ref: "CvarBool(name, fallback): show_location fallback true (Base 0, :104), both specialonly fallback false (Base 1, :156/:180) — polarity inverted vs Base defaults", result: fail }
-      - { kind: code, ref: "git diff main...HEAD on NotificationTokens.cs = empty (file unchanged this wave)", result: pass }
+      - { kind: code, ref: "NotificationTokens.ResolveOne case table vs NOTIF_ARGUMENT_LIST: s1-4/s*loc/f*/spree/frag/location/ordinal/time/item_wepname/item_buffname/item_wepammo/death_team formatting present and matches; race_col/f*race_time/race_diff/pass_key/nade_key/join_key/s3#s2/#s2 NOT in the switch (drop to '' at :99)", result: partial }
+      - { kind: code, ref: "FIX: CvarBool defaults now match Base — show_location fallback false (Base 0, :104), both specialonly fallback true (Base 1, :156/:180); item_wepammo now returns the real ammo type via AmmoType switch (:228), no longer the literal stub", result: pass }
+      - { kind: code, ref: "Base autocvar defaults (all.qh:294/299/317): show_location=false, both _specialonly=true — port now equal", result: pass }
       - { kind: test, ref: "NotificationPolishTests (token formatting), HeadshotTests", result: pass }
     confidence: high
-    notes: "NotificationTokens.cs unchanged this wave. The CvarBool fallbacks invert three default polarities; runtime-masked by notifications.cfg but a genuine default-correctness defect. CSQC-only tokens like frag_ping/frag_stats work because the server passes ping/health/armor as floats."
+    notes: "FIX (this audit): NotificationTokens.cs corrected the three CvarBool default polarities (location->false, both specialonly->true) and gave WeaponAmmoName a real AmmoType->name switch. values now faithful. presentation stays partial only for the unimplemented race/key-bind/hash-replace tokens. CSQC-only tokens like frag_ping/frag_stats work because the server passes ping/health/armor as floats."
 
   - id: fx-notifications.multi.fanout
     name: "MSG_MULTI fan-out to annce/info/center sub-notifications"
@@ -393,9 +392,9 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:116 (GentleMode), :358 (SelectTemplate)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs (gentle arg captured per Info/Center)"
-      - "src/XonoticGodot.Server/GameWorld.cs:1197 (GentleMode = sv_gentle != 0, per-tick StartFrame)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1612 (GentleMode = sv_gentle != 0, per-tick StartFrame)"
     constants:
-      - { name: "cl_gentle / sv_gentle source", base: "GENTLE (cl_gentle/sv_gentle)", port: "GentleMode <- sv_gentle (GameWorld.cs:1197), per-tick", match: true }
+      - { name: "cl_gentle / sv_gentle source", base: "GENTLE (cl_gentle/sv_gentle)", port: "GentleMode <- sv_gentle (GameWorld.cs:1612), per-tick", match: true }
     status:
       logic: faithful
       values: faithful
@@ -408,10 +407,10 @@ features:
     gaps:
       - "Per-client cl_gentle preference is lost: gentle mode is a single server-global value (sv_gentle). A client wanting gentle text on a non-gentle server cannot get it."
     verification:
-      - { kind: code, ref: "GameWorld.cs:1197 assigns NotificationSystem.GentleMode = Api.Cvars.GetFloat(\"sv_gentle\") != 0f in the per-tick StartFrame (alongside :1191 WarmupStage mirror); SelectTemplate (:358) returns n.Gentle when GentleMode && Gentle present; gentle strings registered per Info/Center", result: pass }
-      - { kind: code, ref: "grep `GentleMode =` across src/game -> 1 assignment (GameWorld.cs:1197), no longer 0", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1612 assigns NotificationSystem.GentleMode = Api.Cvars.GetFloat(\"sv_gentle\") != 0f in the per-tick StartFrame; SelectTemplate (:358) returns n.Gentle when GentleMode && Gentle present; gentle strings registered per Info/Center", result: pass }
+      - { kind: code, ref: "grep `GentleMode =` across src/game -> 1 assignment (GameWorld.cs:1612), still live", result: pass }
     confidence: high
-    notes: "FIX (this wave): the gentle toggle is now LIVE — GameWorld drives GentleMode from sv_gentle every tick, so the gentle string variants (already stored per notification) are actually selected. The prior dead/never-assigned row is closed. Reclassified as an intended divergence because the server-side formatting makes it global rather than per-client."
+    notes: "The gentle toggle is LIVE — GameWorld drives GentleMode from sv_gentle every tick, so the gentle string variants (stored per notification) are actually selected. Intended divergence because the server-side formatting makes it global rather than per-client."
 
   - id: fx-notifications.net.kill
     name: "Kill_Notification / MSG_CENTER_KILL (server clears a centerprint group)"

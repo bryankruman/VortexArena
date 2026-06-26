@@ -5,10 +5,10 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 19
   worst_gaps:
-    - "No CopyBody / corpse-clone mechanic (CLONE_MOVING 140 / CLONE_STANDING 142); sv_clones is an unread stub (Cvars.cs:369) and the clone-allowance gating branch IS now present (Cheats.cs:78) but moot without the impulses."
-    - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range g_grab_range), no te_lightning1 drag beam, no dragbox/dragpoint race map editor; g_grab_range cvar exists (Cvars.cs:367) but is never read."
-    - "No SPEEDRUN_INIT/SPEEDRUN personal-waypoint, no TELEPORT (MoveToRandomMapLocation for the player / info_autoscreenshot map entity), no pointparticles/trailparticles/make/penalty cheat commands."
-    - "info_autoscreenshot map spawnfunc still missing (logic); its cap cvar g_max_info_autoscreenshot is now FIXED to Base default 3 (Cvars.cs:368)."
+    - "No CopyBody / corpse-clone mechanic (CLONE_MOVING 140 / CLONE_STANDING 142); sv_clones is an unread stub (Cvars.cs:374) and the clone-allowance gating branch IS now present (Cheats.cs:79) but moot without the impulses."
+    - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range g_grab_range), no te_lightning1 drag beam, no dragbox/dragpoint race map editor; g_grab_range cvar exists (Cvars.cs:372) but is never read."
+    - "No SPEEDRUN_INIT/SPEEDRUN personal-waypoint, no TELEPORT (MoveToRandomMapLocation for the player / info_autoscreenshot map entity), no CLONE_MOVING/CLONE_STANDING CopyBody clones, no CheatFrame/Drag object-carry + dragbox/dragpoint race map-editor."
+    - "info_autoscreenshot map spawnfunc still missing (logic); its cap cvar g_max_info_autoscreenshot is at Base default 3 (Cvars.cs:373)."
 features:
   - id: sv-cheats.gating.cheats_allowed
     name: "CheatsAllowed — sv_cheats snapshot + dead/observer/maycheat gating + refusal logging"
@@ -36,7 +36,7 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Cheats_GatedBySvCheats", result: pass }
-      - { kind: code, ref: "Cheats.cs:68-98 (Allowed+Refuse) vs server/cheats.qc:59-90 — gate order matches; dead/observer guards refuse SILENTLY (return false) and only the final sv_cheats==0 fall-through logs, matching Base. The sv_clones clone-allowance branch is NOW present (Cheats.cs:78: cloneImpulse && p.Lip < sv_clones -> return true). Re-verified 2026-06-25.", result: pass }
+      - { kind: code, ref: "Cheats.cs:68-98 (Allowed+Refuse) vs server/cheats.qc:59-90 — gate order matches; dead/observer guards refuse SILENTLY (return false) and only the final sv_cheats==0 fall-through logs, matching Base. The sv_clones clone-allowance branch is NOW present (Cheats.cs:79: cloneImpulse && p.Lip < sv_clones -> return true). Re-verified 2026-06-25.", result: pass }
     confidence: high
     notes: "Core gate (snapshot AND live cvar, dead block, observer<2 block, maycheat override) is faithful and live. Init/Log wired live in GameWorld.cs:818-820 (Cheats instance GameWorld.cs:173, Log->ChatBroadcast). Refusal-attempt logging fires ONLY on the final sv_cheats==0 fall-through (dead/observer guards refuse silently as in Base). Base passes playername(netname, team, false) with team_colorize=false (bare netname), so the port's p.NetName is faithful. The clone-allowance branch (cloneImpulse param threaded through Allowed) is NOW present — moot until the CLONE impulses exist but the gate logic is complete, so logic upgraded partial->faithful and the gap cleared."
 
@@ -293,7 +293,7 @@ features:
     constants:
       - { name: "impulse numbers", base: "140 / 142", port: "none", match: false }
       - { name: "moving clone push", base: "v_forward*300", port: "none", match: false }
-      - { name: "sv_clones (clone cap)", base: "0", port: "0 (stub, Cvars.cs:369; now READ by the gate's clone branch but no CLONE impulse consumes it)", match: true }
+      - { name: "sv_clones (clone cap)", base: "0", port: "0 (stub, Cvars.cs:374; now READ by the gate's clone branch but no CLONE impulse consumes it)", match: true }
     status:
       logic: missing
       values: missing
@@ -306,7 +306,7 @@ features:
     gaps:
       - "No CopyBody / corpse-clone mechanic; the clone impulses do nothing and sv_clones is unread. Unchanged by Wave-5."
     verification:
-      - { kind: code, ref: "grep CopyBody/CHIMPULSE/sv_clones in src/** -> SpawnSystem.cs mentions CopyBody only in a comment; no clone impulse handler (DispatchImpulse has no 140/142 case); cvar stub at Cvars.cs:369. The gate's clone-allowance branch now EXISTS (Cheats.cs:78) but is never reached (no caller passes cloneImpulse:true). Re-verified 2026-06-25.", result: fail }
+      - { kind: code, ref: "grep CopyBody/CHIMPULSE/sv_clones in src/** -> SpawnSystem.cs mentions CopyBody only in a comment; no clone impulse handler (DispatchImpulse has no 140/142 case); cvar stub at Cvars.cs:374. The gate's clone-allowance branch now EXISTS (Cheats.cs:79) but is never reached (no caller passes cloneImpulse:true). Re-verified 2026-06-25.", result: fail }
     confidence: high
     notes: "Requires a CopyBody corpse-spawn primitive that the port lacks. SpawnSystem.cs:518 references CopyBody only in a comment about respawn reusing the live edict."
 
@@ -426,25 +426,37 @@ features:
     layer: [authority]
     base_refs:
       - "server/cheats.qc:CheatCommand (cases pointparticles, trailparticles, make, penalty)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (cases pointparticles/trailparticles/make/penalty)"
+      - "src/XonoticGodot.Server/Cheats.cs:Make"
+      - "src/XonoticGodot.Server/Cheats.cs:AimTrace"
+      - "src/XonoticGodot.Server/Commands.cs:715-718 (Register pointparticles/trailparticles/make/penalty -> CmdCheat)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:101 (allowlist)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:EmitByEffectInfoName / EmitTrail"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Breakable.cs:BreakableSetup"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:SetPenalty"
     constants:
-      - { name: "make func_breakable health", base: "1000", port: "none", match: false }
-      - { name: "make traceline distance", base: "2048", port: "none", match: false }
+      - { name: "make func_breakable health", base: "1000", port: "1000 (Cheats.cs Make: e.Health = 1000f)", match: true }
+      - { name: "make traceline distance", base: "2048", port: "2048 (Cheats.cs Make: AimTrace(p, 2048f, ...))", match: true }
+      - { name: "pointparticles argc", base: "5 (effectname pos vel countmul)", port: "5 (argv.Length == 5)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No pointparticles/trailparticles (effect emission along the crosshair/aim line), no make (spawn a func_breakable model at the aim point), no penalty (race penalty time). None have a Cheats.Command case. Unchanged by Wave-5."
+      - "make: the bad-surface guard is weaker than Base. Base rejects when (trace_dphitq3surfaceflags & Q3SURFACEFLAG_NOIMPACT) OR trace_fraction==1; the port (Cheats.cs:348-353) only rejects on hit-nothing (fraction==1), so a NOIMPACT/sky surface would still place the breakable."
+      - "make: mode-1 surface-align is an APPROXIMATION — Base does fixedvectoangles2(normal, v_forward) then AnglesTransform_ApplyToAngles(angles,'-90 0 0'); the port (Cheats.cs:365-369) does FixedVecToAngles2 + a flat pitch -=90 (comment-acknowledged). The e.mdl='rocket_explode' wreck/explosion model is presentation-only and intentionally skipped."
+      - "penalty: only acts when the live gametype is Race (Cheats.cs:211); in non-race modes Base's race_ImposePenaltyTime is also effectively inert, so faithful, but the <reason> string's CSQC HUD notification is dropped (presentation-only)."
     verification:
-      - { kind: code, ref: "Cheats.cs:Command switch has no pointparticles/trailparticles/make/penalty cases", result: fail }
+      - { kind: code, ref: "NOW WIRED + IMPLEMENTED: all four cases live in Cheats.cs:Command (pointparticles 161, trailparticles 182, make 197, penalty 204); Register()ed at Commands.cs:715-718 -> CmdCheat; allowlisted at ClientCommandRegistry.cs:101. pointparticles->EmitByEffectInfoName, trailparticles->EmitTrail, make->Breakable.BreakableSetup, penalty->Race.SetPenalty. Re-verified 2026-06-25.", result: pass }
+      - { kind: code, ref: "Cheats.cs:Make (345-385) vs server/cheats.qc:331-377 — traceline 2048 / spawn func_breakable / health 1000 / EF_NOMODELFLAGS / mode-1 align / mode-0 tracebox-startsolid validate / DID_CHEAT flow matches except the NOIMPACT guard and the angle-transform approximation", result: pass }
     confidence: high
-    notes: "Mapping/effect debug tooling; pointparticles/trailparticles/make have presentation, all absent. (The map-entity func_pointparticles in PointParticles.cs is unrelated to this cheat command.)"
+    notes: "FIXED since the 2026-06-25 baseline (which recorded all four FULLY MISSING with empty port_refs). All four cheat commands are now implemented, Register()ed, allowlisted, and live on the match path via CmdCheat -> Cheats.Command, backed by real machinery (EffectEmitter, Breakable, Race.SetPenalty). values/presentation faithful; logic is PARTIAL only for `make` (weaker bad-surface guard + approximated mode-1 angle transform). (The map-entity func_pointparticles in PointParticles.cs is a separate, unrelated feature.)"
 
   - id: sv-cheats.frame.drag
     name: "CheatFrame + Drag — per-frame object dragging + dragbox/dragpoint map editor"
@@ -456,7 +468,7 @@ features:
       - "server/cheats.qc:DragBox_Think"
     port_refs: []
     constants:
-      - { name: "g_grab_range (non-cheat drag range)", base: "200", port: "200 (dead cvar stub, Cvars.cs:367)", match: true }
+      - { name: "g_grab_range (non-cheat drag range)", base: "200", port: "200 (dead cvar stub, Cvars.cs:372)", match: true }
       - { name: "initial dragspeed", base: "64", port: "none", match: false }
       - { name: "draggee gravity while held", base: "0.00001", port: "none", match: false }
     status:
@@ -471,9 +483,9 @@ features:
     gaps:
       - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range), no te_lightning1 drag beam. Unchanged by Wave-5."
       - "No dragbox_spawn/dragpoint_spawn/drag_remove/drag_setcnt/drag_save/drag_saveraceent/drag_clear race-checkpoint map-editor commands."
-      - "g_grab_range cvar exists (Cvars.cs:367) but is never read (no consumer)."
+      - "g_grab_range cvar exists (Cvars.cs:372) but is never read (no consumer)."
     verification:
-      - { kind: code, ref: "grep Drag(/CheatFrame/dragbox in src/** -> none (g_grab_range cvar stub only at Cvars.cs:367). Re-verified 2026-06-25.", result: fail }
+      - { kind: code, ref: "grep Drag(/CheatFrame/dragbox in src/** -> none (g_grab_range cvar stub only at Cvars.cs:372). Re-verified 2026-06-25.", result: fail }
     confidence: high
     notes: "Large subsystem (object carry + race map editor). CheatFrame is the only cheat entry point invoked every frame in Base; the port has no equivalent per-frame cheat hook."
 
@@ -485,7 +497,7 @@ features:
       - "server/cheats.qc:info_autoscreenshot_findtarget"
     port_refs: []
     constants:
-      - { name: "g_max_info_autoscreenshot", base: "3 (xonotic-server.cfg:643)", port: "3 (cvar stub, Cvars.cs:368; no spawnfunc reads it)", match: true }
+      - { name: "g_max_info_autoscreenshot", base: "3 (xonotic-server.cfg:643)", port: "3 (cvar stub, Cvars.cs:373; no spawnfunc reads it)", match: true }
     status:
       logic: missing
       values: faithful
@@ -498,7 +510,7 @@ features:
     gaps:
       - "No info_autoscreenshot spawnfunc: the entity is dropped on map load and the TELEPORT cheat's preferred destination never exists."
     verification:
-      - { kind: code, ref: "grep info_autoscreenshot in src/** -> none (no spawnfunc); Cvars.cs:368 g_max_info_autoscreenshot default is now 3, matching Base xonotic-server.cfg:643. Re-verified 2026-06-25.", result: fail }
+      - { kind: code, ref: "grep info_autoscreenshot in src/** -> none (no spawnfunc); Cvars.cs:373 g_max_info_autoscreenshot default is now 3, matching Base xonotic-server.cfg:643. Re-verified 2026-06-25.", result: fail }
     confidence: high
     notes: "Map-author entity; the cap cvar exists as a stub (no consumer) but its default is now CORRECT (3, was 60 in the baseline — FIXED). The spawnfunc logic is still absent."
 

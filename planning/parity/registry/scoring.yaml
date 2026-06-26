@@ -3,11 +3,11 @@ category: scoring
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 14
+  feature_count: 15
   worst_gaps:
     - "g_score_resetonjoin arm STILL DEAD: GameScores.ClearPlayerOnJoin is faithful (0/-1/1 + PreferPlayerScore_Clear) but has ZERO call sites — no join/spawn/Teamplay path invokes it, so a rejoining player keeps their score regardless of the cvar"
-    - "REMAINING_FRAG_{1,2,3} announcer LIVE for Deathmatch + TDM only; the other 10 QC modes that enable Scores_CountFragsRemaining (ca/duel/ft/ka/mayhem/race/surv/tka/tmayhem/rc) do not call CountFragsRemaining"
-    - "Score_NicePrint (the server-side `scores`/`teamscores` console-command standings dump, server/scores.qc:914) is unmapped and not ported"
+    - "REMAINING_FRAG_{1,2,3} announcer LIVE for Deathmatch + TDM + Keepaway; the other 8 QC modes that enable Scores_CountFragsRemaining (ca/duel/ft/mayhem/race/surv/tka/tmayhem) do not call CountFragsRemaining"
+    - "Score_NicePrint's race/cts INTERMISSION broadcast (Score_NicePrint(NULL) at sv_race.qc:203 / sv_cts.qc:150) is not auto-emitted at intermission; the on-demand `teamstatus` standings dump IS now ported"
 features:
   - id: scoring.registry.fields_and_flags
     name: "SP_* score-field registry + SFL_* sort/display flags"
@@ -93,7 +93,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "AddToPlayer mirrors PlayerScore_Add (hook, dirty-bit, game_stopped clamp); the static GameScores.GameStopped clamp is NOW LIVE — published from GameWorld.GameStopped every tick at GameWorld.cs:1762 (see scoring.lifecycle.game_stopped)", result: pass }
+      - { kind: code_read, ref: "AddToPlayer mirrors PlayerScore_Add (hook, dirty-bit, game_stopped clamp); the static GameScores.GameStopped clamp is NOW LIVE — published from GameWorld.GameStopped every tick at GameWorld.cs:1984 (see scoring.lifecycle.game_stopped)", result: pass }
     confidence: high
     notes: "AddPlayerScoreHook models both the veto and the claimed/rewrite distinction faithfully. Live across CTF/DOM/KH/CA-damage2score etc. The game_stopped clamp inside AddToPlayer is now actually armed (was inert in the prior audit)."
 
@@ -205,6 +205,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ResetFragsRemaining"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:300"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:384"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:644"
     constants:
       - { name: "announce thresholds", base: "fragsleft == 1 / 2 / 3 (once via fragsleft_last)", port: "fragsleft 1/2/3 once via _fragsLeftLast", match: true }
       - { name: "fragsleft = limit - topscore; leadingfragsleft = second + leadlimit - top", base: "world.qc:1592-1604", port: "same formula", match: true }
@@ -220,13 +221,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "PARTIAL MODE COVERAGE: only Deathmatch (RecomputeLeader -> CountFragsRemaining) and TDM (UpdateLeaderAndCheckLimit -> CountFragsRemaining) call it live. QC enables the Scores_CountFragsRemaining hook for 12 modes (ca/dm/duel/ft/ka/mayhem/rc/surv/tdm/tka/tmayhem); the other 10 (ca/duel/ft/ka/mayhem/rc/surv/tka/tmayhem) do NOT call CountFragsRemaining (Mayhem.cs:295 + TeamMayhem.cs:37 explicitly defer the suppression/announcer). So those modes play no 'N frags left' cue."
-      - "suddenDeathEnding is always passed false (both callers note checkrules_suddendeathend is framework-owned and not surfaced), so the QC 'force fragsleft=1 during sudden-death overtime end' branch never fires."
+      - "PARTIAL MODE COVERAGE: Deathmatch (RecomputeLeader -> CountFragsRemaining), TDM (UpdateLeaderAndCheckLimit -> CountFragsRemaining) AND Keepaway (RecomputeLeader -> AnnounceFragsRemaining -> CountFragsRemaining, gated on g_keepaway_score_timepoints==0) now call it live. Base enables the Scores_CountFragsRemaining hook for 11 modes (ca/dm/duel/ft/ka/mayhem/rc/surv/tdm/tka/tmayhem — verified by grep of MUTATOR_HOOKFUNCTION over the gametype tree); the other 8 (ca/duel/ft/mayhem/rc/surv/tka/tmayhem) do NOT call CountFragsRemaining (Mayhem.cs:295 + TeamMayhem.cs:37 explicitly defer the suppression/announcer). So those modes play no 'N frags left' cue."
+      - "suddenDeathEnding is always passed false (all three callers note checkrules_suddendeathend is framework-owned and not surfaced), so the QC 'force fragsleft=1 during sudden-death overtime end' branch never fires."
     verification:
-      - { kind: code_read, ref: "GameScores.CountFragsRemaining mirrors world.qc:1592-1622 (formula, leadlimit_and_fraglimit MAX/MIN, _fragsLeftLast once-gate); LIVE via DM RecomputeLeader (Deathmatch.cs:300) + Tdm UpdateLeaderAndCheckLimit (Tdm.cs:384), both reached every tick from OnEndFrame->DriveGametypeFrame; latch reset in DM/Tdm Activate (ResetFragsRemaining)", result: pass }
-      - { kind: code_read, ref: "grep CountFragsRemaining over src/Gameplay/GameTypes -> live callers only in Deathmatch.cs + Tdm.cs; Mayhem/TeamMayhem only mention it in deferral comments; Base enables the hook for 12 modes (server/world.qc:1590 gate)", result: fail }
+      - { kind: code_read, ref: "GameScores.CountFragsRemaining mirrors world.qc:1592-1622 (formula, leadlimit_and_fraglimit MAX/MIN, _fragsLeftLast once-gate); LIVE via DM RecomputeLeader (Deathmatch.cs:300) + Tdm UpdateLeaderAndCheckLimit (Tdm.cs:384) + Keepaway AnnounceFragsRemaining (Keepaway.cs:644), all reached every tick from OnEndFrame->DriveGametypeFrame; latch reset in DM/Tdm/ka Activate (ResetFragsRemaining)", result: pass }
+      - { kind: code_read, ref: "grep CountFragsRemaining over src/Gameplay/GameTypes -> live callers in Deathmatch.cs + Tdm.cs + Keepaway.cs; Mayhem/TeamMayhem only mention it in deferral comments; Base enables the hook for 11 modes (grep MUTATOR_HOOKFUNCTION(*, Scores_CountFragsRemaining))", result: fail }
     confidence: high
-    notes: "Logic/values/timing/audio faithful and LIVE for DM+TDM via the per-tick leader recompute. Remaining work is wiring the other 10 QC modes' hook + surfacing suddenDeathEnding. The sibling REMAINING_MIN_{1,5} minutes announcer remains live in AnnouncerController."
+    notes: "Logic/values/timing/audio faithful and LIVE for DM+TDM+Keepaway via the per-tick leader recompute (Keepaway added since the prior audit; honors the QC ka timepoints-off gate). Remaining work is wiring the other 8 Base modes' hook + surfacing suddenDeathEnding. The sibling REMAINING_MIN_{1,5} minutes announcer remains live in AnnouncerController."
 
   - id: scoring.lifecycle.clear
     name: "Score clearing (PlayerScore_Clear via g_score_resetonjoin / Score_ClearAll)"
@@ -400,7 +401,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:GameStopped"
       - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:AddToPlayer"
       - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:AddToTeam"
-      - "src/XonoticGodot.Server/GameWorld.cs:1762"
+      - "src/XonoticGodot.Server/GameWorld.cs:1984"
     constants:
       - { name: "game_stopped => delta 0 (unless mutator claimed)", base: "yes, central in PlayerScore_Add/TeamScore_AddToTeam", port: "static GameScores.GameStopped now published live each tick (OnEndFrame); the central clamp fires", match: true }
     status:
@@ -414,21 +415,57 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "GameWorld.cs:1762 `GameScores.GameStopped = GameStopped;` runs in OnEndFrame, which is wired as Simulation.EndFrame (GameWorld.cs:755) → executes every server tick. GameWorld.GameStopped => Intermission.Running || MatchEnded (GameWorld.cs:1487). So the static flag the central clamps in AddToPlayer (GameScores.cs:430) and AddToTeam (GameScores.cs:506) read is now raised on the live path. PlayerScore_Add's AddPlayerScore-claimed bypass is honored (forced); TeamScore_AddToTeam has no bypass (matches QC).", result: pass }
+      - { kind: code_read, ref: "GameWorld.cs:1984 `GameScores.GameStopped = GameStopped;` runs in OnEndFrame (alongside the VehicleCommon.GameStopped publish), which is wired as Simulation.EndFrame → executes every server tick. GameWorld.GameStopped => Intermission.Running || MatchEnded || Timeout.IsPaused. So the static flag the central clamps in AddToPlayer (GameScores.cs:430) and AddToTeam (GameScores.cs:506) read is raised on the live path. PlayerScore_Add's AddPlayerScore-claimed bypass is honored (forced); TeamScore_AddToTeam has no bypass (matches QC).", result: pass }
     confidence: high
-    notes: "FIXED from baseline. The prior audit found ZERO live assignments of GameScores.GameStopped (only test setup) — the central QC clamp was inert and every call site guarded independently. The faithful fix (publish GameWorld.GameStopped into GameScores.GameStopped each tick) is now in place at GameWorld.cs:1762, so the single QC clamp point in PlayerScore_Add/TeamScore_AddToTeam actually fires during intermission/match-end."
+    notes: "FIXED (carried from prior audit). Publish line is now GameWorld.cs:1984 (drifted from 1762; OnEndFrame body unchanged in effect). The single QC clamp point in PlayerScore_Add/TeamScore_AddToTeam fires during intermission/match-end/timeout."
 
   - id: scoring.display.niceprint
-    name: "Server `scores`/`teamscores` console standings dump (Score_NicePrint)"
+    name: "Server `teamstatus` console standings dump (Score_NicePrint)"
     layer: [authority]
     base_refs:
       - "server/scores.qc:Score_NicePrint"
       - "server/scores.qc:Score_NicePrint_Team"
       - "server/scores.qc:Score_NicePrint_Player"
       - "server/scores.qc:Score_NicePrint_Spectators"
+      - "server/command/common.qc:CommonCommand_teamstatus"
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:CmdTeamStatus"
+      - "src/XonoticGodot.Server/Commands.cs:NicePrintTeamHeader"
+      - "src/XonoticGodot.Server/Commands.cs:NicePrintPlayer"
+      - "src/XonoticGodot.Server/Commands.cs:NicePrintItemColor"
+    constants:
+      - { name: "NAMEWIDTH / SCORESWIDTH", base: "22 / 58", port: "NicePrintNameWidth=22 / NicePrintScoresWidth=58", match: true }
+      - { name: "per-column width", base: "bound(6, floor(SCORESWIDTH/t - 1), 9)", port: "Math.Clamp(floor(58/labeled - 1), 6, 9)", match: true }
+      - { name: "column color by sort prio (primary ^3 / secondary ^5 / other ^7)", base: "Score_NicePrint_ItemColor", port: "NicePrintItemColor (same)", match: true }
+      - { name: "name pad/trim to NAMEWIDTH (strlennocol-aware)", base: "yes", port: "VisibleLen-driven trim+pad loop", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Score_NicePrint's race/cts INTERMISSION broadcast (Base calls Score_NicePrint(NULL) at sv_race.qc:203 / sv_cts.qc:150 when the round ends, broadcasting the standings to all) is not auto-emitted at intermission in the port — only the on-demand `teamstatus` per-caller dump is wired. Low impact: race/cts players still see the networked scoreboard HUD."
+    verification:
+      - { kind: code_read, ref: "Commands.cs:2098-2244 CmdTeamStatus + NicePrintTeamHeader/NicePrintPlayer/NicePrintItemColor reproduce Score_NicePrint (header row + per-player row + spectators block, NAMEWIDTH/SCORESWIDTH, sort-prio colors, strlennocol pad/trim); registered as the `teamstatus` command (Commands.cs:746, ClientCommandRegistry.cs:90)", result: pass }
+      - { kind: code_read, ref: "Base CommonCommand_teamstatus (common.qc:593) -> Score_NicePrint(caller); the port wires the identical command; the race/cts intermission Score_NicePrint(NULL) broadcast is the only unported caller", result: pass }
+    confidence: high
+    notes: "FIX from baseline: was missing (port_refs empty). Now fully ported as the `teamstatus` console command in Commands.cs with faithful column layout/colors/pad-trim, live and registered. Only the race/cts intermission auto-broadcast variant remains unported."
+
+  - id: scoring.display.scorelog
+    name: "Server score-log / event-log standings dump (DumpStats / GetPlayerScoreString / GetTeamScoreString)"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:DumpStats"
+      - "server/scores.qc:GetPlayerScoreString"
+      - "server/scores.qc:GetTeamScoreString"
+      - "server/scores.qc:GetScoreLogLabel"
     port_refs: []
     constants:
-      - { name: "per-team / per-player / spectators text columns", base: "Score_NicePrint_* formatted print() to a player", port: "none", match: false }
+      - { name: ":labels:player: / :player:see-labels: / :teamscores: log lines (console/eventlog/sv_logscores file)", base: "DumpStats writes the formatted score-log via GetPlayerScoreString/GetTeamScoreString", port: "none", match: false }
     status:
       logic: missing
       values: missing
@@ -439,8 +476,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The server-side `scores` (and `teamscores`) console command that prints a formatted text standings table to the requesting player (Score_NicePrint and its _Team/_Player/_Spectators helpers, score column-color via Score_NicePrint_ItemColor) is not ported. No equivalent console command exists in the port (grep NicePrint over src finds nothing). Low impact: this is the text-mode standings dump, distinct from the networked scoreboard HUD panel (scoring.net.replication), which is faithful."
+      - "The server score-log / event-log standings dump (DumpStats(final), server/world.qc:1264) — which emits the `:labels:player:`, `:player:see-labels:<scores>:<time>:<team>`, and (teamplay) `:teamscores:` lines built by GetPlayerScoreString/GetTeamScoreString/GetScoreLogLabel to the console / sv_eventlog / sv_logscores_filename — is NOT ported (grep DumpStats/logscores/GetPlayerScoreString over src -> no match). Base calls it at intermission (world.qc:1429, final=true) and via a server command (sv_cmd.qc:1249). Distinct from the on-demand `teamstatus` console dump (scoring.display.niceprint, now ported), the XonStat report (scoring.report.playerstats), and the networked scoreboard (scoring.net.replication). Low impact: a server-admin logging/eventlog feature, no client-visible effect."
     verification:
-      - { kind: code_read, ref: "Base server/scores.qc:829-947 defines Score_NicePrint_ItemColor/_Team/_Player/_Spectators/_Spectator/Score_NicePrint; grep 'NicePrint' over src/*.cs -> no match", result: fail }
-    confidence: medium
-    notes: "NEWLY MAPPED (was a registry coverage gap). The console `scores` command standings text dump has no port equivalent. The HUD scoreboard is networked separately and is faithful/live."
+      - { kind: code_read, ref: "Base server/world.qc:1264 DumpStats + scores.qc:599-726 GetScoreLogLabel/GetPlayerScoreString/GetTeamScoreString; callers world.qc:1429 (intermission) + sv_cmd.qc:1249; grep 'DumpStats|logscores|GetPlayerScoreString' over src/*.cs -> no match", result: fail }
+    confidence: high
+    notes: "NEWLY MAPPED (registry coverage gap surfaced by this drift check). The score-log/eventlog text dump has no port equivalent; the cvars sv_logscores_console / sv_logscores_file / sv_logscores_filename / sv_eventlog gate it in Base."

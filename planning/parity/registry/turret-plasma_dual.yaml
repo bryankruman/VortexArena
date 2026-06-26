@@ -5,8 +5,7 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 11
   worst_gaps:
-    - "Head-bone CLIENT render still absent: plasmad.md3 head model + two-barrel tag_fire alternation are NOT modeled (single computed ShotOrg muzzle). The server-authoritative head-frame wheel (Entity.Frame 0..6) and the head-angle headshake jolt ARE now ported and live; only the visible head model/effects remain CSQC-only."
-    - "Muzzle/projectile/beam CSQC effects (EFFECT_BLASTER_MUZZLEFLASH, PROJECTILE_ELECTRO_BEAM, EFFECT_VORTEX_MUZZLEFLASH, team-coloured EFFECT_VAPORIZER_BEAM) are NOTE-only (not emitted)."
+    - "Head-bone CLIENT render still absent: plasmad.md3 head model + two-barrel tag_fire alternation are NOT modeled (single computed ShotOrg muzzle). The server-authoritative head-frame wheel (Entity.Frame 0..6) and the head-angle headshake jolt ARE now ported and live; only the visible head model/spin remain unrendered (no turret CSQC head-bone layer; base.md3 has no spin frames)."
     - "Respawn -0.2 hide/respawn split + EF_NODRAW hide-frame still not modeled (turret schedules Respawn directly at now+RespawnTime). NET respawn timing is faithful (Base 0.2 + (respawntime-0.2) = 60 == port now+60); only the intermediate EF_NODRAW hide-frame is a presentation gap."
     - "Instagib FireBullet is a single trace; QC FireRailgunBullet penetration/distance falloff deferred (shared TurretCombat documented gap)."
     - "Death FX/sound branch (SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE) only fires in Base on TFL_DMG_DEATH_NORESPAWN; plasma_dual always respawns so the branch never applies (the port has the norespawn FX coded but unreachable for this unit)."
@@ -102,17 +101,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "EFFECT_BLASTER_MUZZLEFLASH and PROJECTILE_ELECTRO_BEAM CSQC trail are NOTE-only (not emitted)."
+      - "Two-barrel tag_fire alternation (plasmad.md3) not modeled — single computed ShotOrg muzzle (a head-bone render detail; the muzzleflash + projectile trail themselves are now emitted)."
     verification:
       - { kind: value-diff, ref: "turrets.cfg:366 g_turrets_unit_plasma_dual_shot_spread=0.015 == DualShotSpread 0.015f; PlasmaDualTurret.Attack re-emits its own TurretSpawn.Projectile with spread:DualShotSpread", result: pass }
+      - { kind: code-trace, ref: "PlasmaDualTurret.Attack now emits EffectEmitter.Emit('BLASTER_MUZZLEFLASH', ShotOrg, dir*1000, 1) (== plasma_weapon.qc:23) and stamps ball.NetName='electro_bolt' so ProjectileCatalog.Classify -> ElectroBeam blue trail (PROJECTILE_ELECTRO_BEAM). EffectEmitter.Sink wired LIVE: ServerNet.cs:299 EffectNetSink + ClientWorld.cs:384 RenderSink. EffectsList.cs:40 registers BLASTER_MUZZLEFLASH=laser_muzzleflash.", result: pass }
     confidence: high
-    notes: "Unchanged. Dual re-emits the ball locally with DualShotSpread instead of delegating to base.Attack; same shot_dmg/radius/speed/force/edge0/9s lifetime. fire sound hagar_fire matches. CSQC muzzle/trail still NOTE-only."
+    notes: "FIX (since last audit): presentation missing->faithful. The EFFECT_BLASTER_MUZZLEFLASH and PROJECTILE_ELECTRO_BEAM trail are now actually emitted (not NOTE-only) and rendered on the live path (EffectEmitter sink wired server+client). Dual re-emits the ball locally with DualShotSpread; same shot_dmg/radius/speed/force/edge0/9s lifetime; fire sound hagar_fire matches. Only the two-barrel tag muzzle-origin alternation (a head-bone detail) remains unmodeled."
 
   - id: turret-plasma_dual.attack.instagib_rail
     name: "tr_attack instagib branch: instant instakill railgun beam"
@@ -133,19 +133,19 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "EFFECT_VORTEX_MUZZLEFLASH + team-coloured EFFECT_VAPORIZER_BEAM hit beam are NOTE-only (not emitted)."
       - "FireBullet is a single trace; QC FireRailgunBullet penetration/distance falloff deferred (matches WeaponFiring/TurretCombat documented gaps)."
     verification:
       - { kind: value-diff, ref: "plasma_dual.qc FireRailgunBullet(it,...,10000000000 /*dmg*/, false, 800 /*force*/,...) vs InstagibRailDamage=1e10 + InstagibRailForce=800", result: pass }
       - { kind: code-read, ref: "Dual inlines the instagib branch (does NOT call SUPER): FireInstagibBeam(spread 0, damage 1e10, force 800); no fire sound (Base passes none)", result: pass }
+      - { kind: code-trace, ref: "FireInstagibBeam (PlasmaTurret.cs:158) now emits EFFECT_VORTEX_MUZZLEFLASH (shotOrg, dir*1000, 1) + team-coloured EFFECT_VAPORIZER_BEAM (shotOrg->endPos, rgb=Teams.ColorRgb(turret.Team)) == plasma_dual.qc:27-32. Both registered in EffectsList.cs:88/91 (nex_muzzleflash / TE_TEI_G3 trail) and emitted via the live EffectEmitter sink (ServerNet EffectNetSink + ClientWorld RenderSink).", result: pass }
     confidence: high
-    notes: "Unchanged. Dual inlines the instagib branch (calls FireInstagibBeam directly, not base.Attack, to skip the single-plasma frame=1 start-kick). damage 1e10 / force 800 match Base; no fire sound."
+    notes: "FIX (since last audit): presentation missing->faithful. EFFECT_VORTEX_MUZZLEFLASH and the team-coloured EFFECT_VAPORIZER_BEAM hit beam are now actually emitted (not NOTE-only) and rendered on the live path. Dual inlines the instagib branch (calls FireInstagibBeam directly, not base.Attack, to skip the single-plasma frame=1 start-kick). damage 1e10 / force 800 match Base; no fire sound."
 
   - id: turret-plasma_dual.values.engagement_envelope
     name: "Engagement envelope: refire, ranges, ammo, aim/track tunables"

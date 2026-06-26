@@ -304,7 +304,7 @@ features:
       - "src/XonoticGodot.Server/Commands.cs:1827 (imp==21 -> VehicleBoarding.UseKey + Ctf.HandleUseKey)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:74 (UseKey)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:106 (MutatorHooks.FirePlayerUseKey — the trailing hook)"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:1543 (HandleUseKey — throw/pass-request)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:1713 (HandleUseKey — throw/pass-request)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/{Keepaway,TeamKeepaway,KeyHunt}.cs (PlayerUseKey hook subscribers)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/{BuffsMutator,PowerupsMutator}.cs (PlayerUseKey hook subscribers)"
     constants:

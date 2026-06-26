@@ -3,13 +3,13 @@ category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 15
+  feature_count: 16
   worst_gaps:
-    - "Radar invisibility stealth (CustomizeWaypoint) still unported: there is no per-recipient waypoint-sprite visibility filter in the port, so a cloaked flag/objective carrier still shows on the enemy radar. Bot stealth (Bot_ForbidAttack) and monster stealth (MonsterValidTarget) are now LIVE, so this is the only remaining piece of the invisibility-stealth triple."
-    - "Death-log item codes (S/I for Strength/Shield) still unported (LogDeath_AppendItemCodes — the port's kill log carries no :items= field). The server-browser mutator strings (:powerups / Powerups) are now LIVE."
-    - "Dropped-powerup WP_Item countdown waypoint sprite still unported (powerups_DropItem waypoint + powerups_DropItem_Think + the ItemTouched waypoint-kill hook). Drop-on-death AND the +use drop are now both LIVE+faithful otherwise."
-    - "Invisibility presentation: exterior weapon-entity alpha still not set (a cloaked body still carries a fully-opaque weapon) and the QC if(!actor.vehicle) apply/restore guard is still absent."
+    - "Death-log item codes (S/I for Strength/Shield) still unported (LogDeath_AppendItemCodes — the port's kill log carries no :items= field; GameLog.Kill is uncalled). This is now the single largest residual gap in the unit."
     - "Strength/Shield glow renders primarily as a colored OmniLight3D rather than the exact EF_ADDITIVE|EF_FULLBRIGHT whole-body additive recolor (a documented CsqcModelEffects render gap)."
+    - "m_botvalue not set on the port powerup/jetpack/fuelregen pickups (Base 11000 / 3000) — bot item desirability may be miscalibrated (values:partial on defs_spawn_gate)."
+    - "Pickup/powerdown notifications fire the powerdown center-print on ANY falling edge (Base gates it on STATUSEFFECT_REMOVE_TIMEOUT only); stopsound(CH_TRIGGER_SINGLE) on removal still unported."
+    - "DRIFT 2026-06-25: Wave-8d closed three gaps wholesale — invisibility exterior-weapon alpha + vehicle guard (invisibility.alpha presentation faithful), radar CustomizeWaypoint stealth (invisibility.stealth logic+presentation faithful, via ServerNet.WaypointVisible), and the dropped-powerup WP_Item countdown waypoint + ItemTouched hook (drop.ondeath_onuse logic+presentation faithful). jetpack-fuel fallback also fixed to 8."
 features:
   - id: powerups.strength.damage_force
     name: "Strength: outgoing damage + force multiplier (self vs others)"
@@ -121,25 +121,25 @@ features:
       - "common/mutators/mutator/powerups/powerup/invisibility.qc:m_tick (33-43)"
       - "common/mutators/mutator/powerups/powerup/invisibility.qc:m_remove (4-21)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerPreThink (342-345)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerPreThink (380-386)"
+      - "game/net/ViewEntityRenderer.cs:ResolveExteriorWeaponAlpha (123-136), Update (101-110)"
     constants:
       - { name: "g_balance_powerup_invisibility_alpha", base: "0.15", port: "0.15", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Exterior weapon entity alpha is still not set (QC sets actor.exteriorweaponentity.alpha too), so a viewer sees a near-invisible body still carrying a fully-opaque weapon."
-      - "QC guards both apply AND restore with if(!actor.vehicle); the port still has no vehicle guard."
+    gaps: []
     verification:
-      - { kind: code, ref: "PlayerPreThink fires on the live client-move path; OnPlayerPreThink sets player.Alpha while active and restores to MutatorHooks.DefaultPlayerAlpha (line 345) when Alpha==invisibilityAlpha", result: pass }
+      - { kind: code, ref: "PlayerPreThink fires on the live client-move path; OnPlayerPreThink sets player.Alpha while active and restores to MutatorHooks.DefaultPlayerAlpha when Alpha==invisibilityAlpha", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-25 (Wave-8d): the if(!actor.vehicle) guard is now present on BOTH the apply and the restore (PowerupsMutator.cs:380 'if (player.Vehicle is null)'). The exterior weapon-entity alpha is now ported and LIVE — ViewEntityRenderer.ResolveExteriorWeaponAlpha (123-136) ports CL_ExteriorWeaponentity_Think's three-way rule (owner==default_player_alpha -> default_weapon_alpha; custom non-zero -> match owner; 0 -> opaque) and Update (101-110) applies it per-instance, so an invisibility-powerup fade routes through branch 2 and the held weapon fades with the body. Both prior gaps closed.", result: pass }
     confidence: high
-    notes: "FIX since baseline (one of three gaps closed): the restore now uses MutatorHooks.DefaultPlayerAlpha (the QC default_player_alpha, which composes with Cloaked/Running-Guns) instead of the previously-hardcoded 1f — the SetDefaultAlpha seam is now consumed. Restore-on-lapse still guarded by Alpha==invisibilityAlpha (a player at 0.15 by other means would spuriously restore — edge case). Exterior-weapon-alpha and the vehicle guard remain unported."
+    notes: "FIX since baseline (presentation partial->faithful): the two remaining presentation gaps (exterior weapon alpha + the vehicle guard) are both closed by Wave-8d. Restore-on-lapse is still guarded by Alpha==invisibilityAlpha (a player at 0.15 by other means would spuriously restore — benign edge case, not a Base divergence)."
 
   - id: powerups.invisibility.stealth
     name: "Invisibility: radar/monster/bot stealth"
@@ -149,23 +149,24 @@ features:
       - "common/mutators/mutator/powerups/sv_powerups.qc:MonsterValidTarget (74-78)"
       - "common/mutators/mutator/powerups/sv_powerups.qc:Bot_ForbidAttack (204-210)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnBotForbidAttack (306), OnMonsterValidTarget (313)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnBotForbidAttack (327), OnMonsterValidTarget (334)"
+      - "game/net/ServerNet.cs:WaypointVisible (1077-1096) — CustomizeWaypoint radar stealth"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Enemy waypoint sprites of an invisible player are NOT team-restricted: a cloaked flag/objective carrier still shows on enemy radar (CustomizeWaypoint unported — no per-recipient waypoint-sprite send-time visibility filter exists in the port). This is the only remaining piece of the stealth triple."
+    gaps: []
     verification:
-      - { kind: code, ref: "FIXED since baseline: OnBotForbidAttack is now subscribed (MutatorHooks.BotForbidAttack) and consulted live at BotBrain.cs:800 (MutatorHooks.FireBotForbidAttack in ShouldAttack, in addition to the host gametype ForbidAttackHook). OnMonsterValidTarget is subscribed and consulted live at MonsterAI.cs:586 (MutatorHooks.FireMonsterValidTarget in ValidTarget). Both return StatusEffects_active(Invisibility,targ) — bit-faithful to QC. CustomizeWaypoint remains unported (grep finds only a doc-comment).", result: pass }
+      - { kind: code, ref: "OnBotForbidAttack is subscribed (MutatorHooks.BotForbidAttack) and consulted live in BotBrain.ShouldAttack; OnMonsterValidTarget is subscribed (MutatorHooks.MonsterValidTarget) and consulted live in MonsterAI.ValidTarget. Both return StatusEffects_active(Invisibility,targ) — bit-faithful to QC.", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-25 (Wave-8d): CustomizeWaypoint radar stealth is now LIVE — ServerNet.WaypointVisible (ServerNet.cs:1077, called per-peer per-waypoint at the snapshot send at 1038-1039) hides an invisible carrier's waypoint from enemies: wp.Owner is a Player && isPlayer && carrier.Team != peer.Team && StatusEffectsCatalog.Has(carrier, invisibility) -> return false. Faithful to sv_powerups.qc:61-72 (IS_CLIENT(wp.owner) && e==player && DIFF_TEAM && Invisibility-active); the e==player guard maps to the isPlayer (non-spectator) gate. The stealth triple is now complete.", result: pass }
     confidence: high
-    notes: "FIX since baseline (logic missing->partial, presentation still missing for radar, liveness na->live). Bots no longer shoot, and monsters no longer acquire, an invisible player. Radar stealth (CustomizeWaypoint) is the residual — the port's waypoint system still has no per-viewer customize chain."
+    notes: "FIX since baseline (logic partial->faithful, presentation missing->faithful). All three stealth hooks are now LIVE+faithful: bots don't shoot, monsters don't acquire, and enemy radar no longer shows an invisible carrier (CustomizeWaypoint folded into ServerNet.WaypointVisible)."
 
   - id: powerups.glow.effects
     name: "Strength/Shield player glow (EF_BLUE / EF_RED + EF_ADDITIVE + EF_FULLBRIGHT)"
@@ -204,8 +205,9 @@ features:
     base_refs:
       - "common/mutators/mutator/powerups/sv_powerups.qc:W_PlayStrengthSound (3-15)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnWPlayStrengthSound (249)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:244 (FireWPlayStrengthSound per bullet)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnWPlayStrengthSound (270)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:275 (FireWPlayStrengthSound per bullet)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:277 (FireWPlayStrengthSound)"
     constants:
       - { name: "sv_strengthsound_antispam_time", base: "0.1", port: "0.1", match: true }
       - { name: "sv_strengthsound_antispam_refire_threshold", base: "0.04", port: "0.04", match: true }
@@ -324,7 +326,7 @@ features:
     constants:
       - { name: "g_pickup_respawntime_powerup", base: "120", port: "120", match: true }
       - { name: "g_pickup_fuel_jetpack", base: "100", port: "100", match: true }
-      - { name: "g_jetpack_fuel", base: "8", port: "CvarOr fallback 100", match: false }
+      - { name: "g_jetpack_fuel", base: "8", port: "CvarOr fallback 8", match: true }
       - { name: "m_botvalue Powerup (strength/shield/speed/invis)", base: "11000", port: "not set", match: false }
       - { name: "m_botvalue jetpack/fuelregen", base: "3000", port: "not set", match: false }
       - { name: "m_glow strength/shield/speed/invis", base: "true", port: "true", match: true }
@@ -339,12 +341,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "g_jetpack_fuel CvarOr fallback is 100 in the port but the Base default is 8 (fuel/sec); only matters on the .count override path with the cvar unset."
       - "m_botvalue not set on the port pickups (Base 11000 for strength/shield/speed/invisibility, 3000 for jetpack/fuelregen) — bot item desirability may be miscalibrated."
     verification:
       - { kind: code, ref: "ApplyMutatorBlock gates on g_powerups + g_powerups_<x>; RespawnTime 120; ItemDef.Glow per item.", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-25 (FIX): the g_jetpack_fuel CvarOr fallback is now 8 (PowerupItem.cs:205 'CvarOr(\"g_jetpack_fuel\", 8f)'), matching the Base default of 8 fuel/sec. Was 100 at baseline. Only the m_botvalue value gap remains.", result: pass }
     confidence: medium
-    notes: "Item defs unchanged. Speed/Invisibility use buff.md3 placeholder skins (matches Base MDL_BUFF). ShieldItem netname 'invincible' matches QC. Residual value gaps (jetpack fuel fallback, m_botvalue) unchanged."
+    notes: "FIX since baseline (one value gap closes): g_jetpack_fuel fallback corrected 100->8. Speed/Invisibility use buff.md3 placeholder skins (matches Base MDL_BUFF). ShieldItem netname 'invincible' matches QC. Residual: m_botvalue still not set on the port pickups (keeps values:partial)."
 
   - id: powerups.drop.ondeath_onuse
     name: "Drop powerup on death / on +use (with countdown waypoint)"
@@ -355,30 +357,30 @@ features:
       - "common/mutators/mutator/powerups/sv_powerups.qc:powerups_DropItem (93-140)"
       - "common/mutators/mutator/powerups/sv_powerups.qc:ItemTouched (142-147)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerDies (418), OnPlayerUseKey (279), DropPowerup (439)"
-      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ItemTouch (349) expiring conversion (372-393)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerDies (459), OnPlayerUseKey (300), DropPowerup (481), OnItemTouched (341)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ItemTouch (349) expiring conversion + FireItemTouched (417)"
     constants:
       - { name: "g_powerups_drop_ondeath", base: "1", port: "1 (read at Hook())", match: true }
-      - { name: "g_powerups_drop", base: "0", port: "0 (read at Hook(); +use drop now wired)", match: true }
+      - { name: "g_powerups_drop", base: "0", port: "0 (read at Hook(); +use drop wired)", match: true }
       - { name: "g_items_dropped_lifetime", base: "20", port: "20", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No WP_Item countdown waypoint sprite on the dropped powerup (powerups_DropItem waypoint + powerups_DropItem_Think unported — no reachable WaypointSprite API from this file)."
-      - "ItemTouched hook (kills the dropped powerup's waypoint sprite on pickup) unported (moot while there is no waypoint)."
-      - "Frozen drop uses ItemIsExpiring=false as the freeze marker rather than Base's RES_ARMOR=1 marker (logically equivalent for the give-time conversion)."
+      - "Frozen drop uses the freezeTimer closure flag as the timer-frozen marker rather than Base's RES_ARMOR=1 marker on the loose item (logically equivalent: the think skips the bar update for a frozen drop, matching QC's !GetResource(RES_ARMOR) gate)."
+      - "The dropped-powerup waypoint renders the generic 'Item' def (magenta) — it has no wp_extra-driven per-powerup icon (QC sets wp.wp_extra = itemdef.m_id). Minor cosmetic-only divergence."
     verification:
-      - { kind: code, ref: "OnPlayerDies fires on the live death path (PlayerDies.Call); drops each of strength/shield/speed/invisibility via DropPowerup. FIXED since baseline: OnPlayerUseKey is now subscribed (MutatorHooks.PlayerUseKey) and the +use drop is live — PlayerUseKey is fired at VehicleBoarding.cs:106 (FirePlayerUseKey when the +use press falls through the vehicle path); g_powerups_drop is read at Hook() and gates the drop, removing the first active powerup and consuming the press (return true), matching sv_powerups.qc:163-177.", result: pass }
-      - { kind: code, ref: "DropPowerup matches sv_powerups.qc:93-140 except the waypoint: timeleft<=1 skip, finished=freeze?timeLeft:absolute, lifetime=freeze?20:timeLeft, velocity=owner.vel+forward*750. Continue-timer drop: ItemIsExpiring=true + absolute finish; ItemTouch subtracts Now so ApplyTimer gets remaining duration — round-trip faithful.", result: pass }
+      - { kind: code, ref: "OnPlayerDies fires on the live death path (PlayerDies.Call); drops each of strength/shield/speed/invisibility via DropPowerup. OnPlayerUseKey is subscribed (MutatorHooks.PlayerUseKey) and the +use drop is live — fired at VehicleBoarding.cs:106; g_powerups_drop gates it, removing the first active powerup and consuming the press, matching sv_powerups.qc:163-177.", result: pass }
+      - { kind: code, ref: "DropPowerup matches sv_powerups.qc:93-140: timeleft<=1 skip, finished=freeze?timeLeft:absolute, lifetime=freeze?20:timeLeft, velocity=owner.vel+forward*750. Continue-timer drop: ItemIsExpiring=true + absolute finish; ItemTouch subtracts Now so ApplyTimer gets remaining duration — round-trip faithful.", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-25 (Wave-8d): the WP_Item countdown waypoint sprite is now ported and LIVE — DropPowerup (PowerupsMutator.cs:540-546) spawns a WaypointSprite on the dropped item with maxhealth=maxtime and a normalized timeleft bar, and the e.Think closure (554-584) ports powerups_DropItem_Think (updates the floored seconds-left bar each ~0.5s while the timer runs, kills it at 0, despawns at lifetime). The ItemTouched waypoint-kill-on-pickup hook is now ported (OnItemTouched :341) and LIVE — fired at ItemPickupRules.ItemTouch:417 (MutatorHooks.FireItemTouched), killing the sprite on pickup. Matches sv_powerups.qc:142-147.", result: pass }
     confidence: high
-    notes: "FIX since baseline (the +use drop gap closes — g_powerups_drop now wired+live; previously only drop-on-death was live). Residual: the WP_Item countdown waypoint sprite + the ItemTouched waypoint-kill hook remain unported (presentation:missing), keeping logic at partial."
+    notes: "FIX since baseline (logic partial->faithful, presentation missing->faithful). Both the dropped-powerup countdown waypoint sprite and the ItemTouched waypoint-kill hook are now ported+live; drop-on-death and the +use drop were already live. Residuals are cosmetic-only (generic waypoint icon, freeze-marker representation)."
 
   - id: powerups.obituary_mutator_strings
     name: "Death-log item codes (S/I) + server-browser mutator strings"
@@ -433,3 +435,27 @@ features:
       - { kind: code, ref: "PowerupsPanel.cs walks Player.StatusEffects each frame; HudManager registers it (line 126); hud_panel_powerups_* cvars registered.", result: pass }
     confidence: medium
     notes: "Unchanged. Reads live status effects + surfaces persistent item-flag powerups (jetpack/fuelregen/unlimited-superweapons) as infinity entries. Not runtime-verified visually."
+
+  - id: powerups.jetpack.start_item_hookreplace
+    name: "Jetpack/FuelRegen map-spawn replaced with plain Fuel when already a start item"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/powerups/powerup/jetpack.qc:m_spawnfunc_hookreplace (6-11)"
+      - "common/mutators/mutator/powerups/powerup/fuelregen.qc:m_spawnfunc_hookreplace (6-11)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC Jetpack/FuelRegen m_spawnfunc_hookreplace returns ITEM_Fuel when (start_items & m_itemid) — i.e. when the player already gets the jetpack/fuel-regen as a START item (e.g. the Hook mutator forces ITEM_FuelRegen), a map's item_jetpack / item_fuel_regen spawn is replaced with a plain item_fuel pickup so the map still drops useful ammo instead of a redundant held-bit pickup. The port's PowerupItem (JetpackItem/FuelRegen) has no spawnfunc-hookreplace path: the map item spawns as-is even when the bit is already a start item."
+    verification:
+      - { kind: code, ref: "DRIFT 2026-06-25 (new_unmapped): grep for hookreplace/HookReplace/start_items-Jetpack in src finds no port equivalent; HookMutator.cs:125 only sets start_items |= ITEM_FuelRegen but no spawn-replace consumer reads it back at item spawn. Edge case: only triggers when jetpack/fuelregen is a forced start item (Hook mutator, or g_start_* loadouts).", result: fail }
+    confidence: high
+    notes: "Newly-mapped 2026-06-25 (was a registry coverage gap). Minor: only relevant under mutators/loadouts that grant the jetpack or fuel-regen bit at spawn; in a vanilla match the map pickups are not start items so the hookreplace never fires."

@@ -5,10 +5,10 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 8
   worst_gaps:
-    - "FIXED (Wave-5, commit 66e378f) and still intact 2026-06-25: the offhand-fire input wire is LIVE end-to-end. InputButtons.Hook = 1<<6 (src/XonoticGodot.Net/InputCommand.cs:20), C2S byte carries bit 6 (0x40), NetGame sets it from BindTable.HookHeld (game/net/NetGame.cs:4105), BindTable handles `+hook`→`case \"hook\"` (src/XonoticGodot.Engine/Console/BindTable.cs:131), ServerNet maps it to MovementInput.ButtonHook (game/net/ServerNet.cs:1458), and WeaponFireDriver.Frame (WeaponFireDriver.cs:66) assigns `player.OffhandFirePressed = input.ButtonHook`. Default binds `bind MOUSE5/e +hook` match Base. The offhand blaster genuinely shoots in a match."
-    - "FIXED since 2026-06-22 audit: BuildMutatorsString / BuildMutatorsPrettyString are now ported. OffhandBlasterMutator.cs:45/49 override both (`:offhand_blaster` / `, Offhand blaster`); MutatorActivation.BuildMutatorsString (MutatorActivation.cs:108) is called LIVE from GameWorld.cs:876 (gated by sv_eventlog) feeding the ':gameinfo:mutators:' GameLog line. The pretty-string chain (MutatorActivation.BuildMutatorsPrettyString) has the per-mutator override but NO live caller yet (scoreboard/votescreen consumer not wired) → DEAD."
-    - "FIXED since 2026-06-22 audit: the round-grace weaponUseForbidden suppression is now wired. WeaponFireDriver.WeaponUseForbidden delegates to RoundFireForbidden (WeaponFireDriver.cs:328), which GameWorld.cs:1130 sets to `_ => Rounds is { IsRoundStarted: false }`. The offhand button is zeroed during the inter-round grace, matching Base round_handler_IsActive() && !round_handler_IsRoundStarted(). Only the ForbidWeaponUse mutator-hook half is unmodeled (no port mutator forbids weapon use — non-issue)."
-    - "STILL MISSING: client gameplay-tips line ('offhand blaster is enabled, press <key>') and the menu describe text — no BuildGameplayTipsString builder and no 'offhand' menu entry exist in the port (grep src/, game/menu/ found none)."
+    - "LIVE end-to-end (Wave-5, commit 66e378f; re-verified 2026-06-25, line numbers drifted but chain intact): the offhand-fire input wire. InputButtons.Hook = 1<<6 (src/XonoticGodot.Net/InputCommand.cs:20), C2S byte carries bit 6 (0x40), NetGame sets it from BindTable.HookHeld (game/net/NetGame.cs:4690), BindTable handles `+hook`→`case \"hook\"` (src/XonoticGodot.Engine/Console/BindTable.cs:153), ServerNet maps it to MovementInput.ButtonHook (game/net/ServerNet.cs:1571), and WeaponFireDriver.Frame (WeaponFireDriver.cs:69) assigns `player.OffhandFirePressed = input.ButtonHook`. Default binds `bind MOUSE5/e +hook` match Base. The offhand blaster genuinely shoots in a match."
+    - "FIXED since 2026-06-22 audit: BuildMutatorsString / BuildMutatorsPrettyString are ported AND both now LIVE. OffhandBlasterMutator.cs:45/49 override both (`:offhand_blaster` / `, Offhand blaster`); MutatorActivation.BuildMutatorsString (MutatorActivation.cs:108) called LIVE from GameWorld.cs:1068 (sv_eventlog GameLog ':gameinfo:mutators:' line). The pretty-string chain NOW has live callers too (FIX vs 2026-06-25 baseline): GameWorld.cs:1079 writes it to the 'modifications' serverinfo key at match-start, and ServerNet.cs:607 (BuildServerInfo) surfaces it on the server-browser 'modifications' field. No longer dead."
+    - "FIXED: the client gameplay-tips line is NOW PORTED and LIVE (FIX vs 2026-06-25 baseline). GameWorld.cs:1254-1261 emits '^3offhand blaster^8 is enabled, press ^3<key>^8 to use it' (the exact Base cl_offhand_blaster.qc text) to the connecting non-bot player via Commands.ChatToPlayer, gated on `offhandMut.Added`, with the +hook bind resolved via BindTable.CommandKey(\"offhand hook\", \"+hook\") — matching Base getcommandkey(_(\"offhand hook\"), \"+hook\"). Surfaced per-player (not broadcast) to match Base CSQC welcome-dialog scope. (The mut_is_active bitfield isn't networked, but the server knows the mutator state directly, so the gate is equivalent.)"
+    - "STILL MISSING: the menu mutator-info describe text. Base has NO create-game checkbox for offhand_blaster (cvar/console-toggled); the only Base surface is the MENUQC describe() info page (multi-paragraph). The port has no dedicated offhand_blaster describe entry — it appears only as a *reference* inside the Grappling Hook checkbox tooltip (DialogMutators.cs:197 'overridden by the Offhand Blaster mutator')."
 features:
   - id: offhand_blaster.enable.register
     name: "Mutator enable via g_offhand_blaster cvar"
@@ -69,9 +69,9 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:FireOffhand"
       - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:WeaponRateFactor"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:Frame (OffhandFirePressed = input.ButtonHook)"
-      - "src/XonoticGodot.Net/InputCommand.cs:InputButtons.Hook"
-      - "game/net/NetGame.cs:3984 (BindTable.HookHeld -> InputButtons.Hook)"
-      - "game/net/ServerNet.cs:1415 (InputButtons.Hook -> MovementInput.ButtonHook)"
+      - "src/XonoticGodot.Net/InputCommand.cs:20 (InputButtons.Hook = 1<<6)"
+      - "game/net/NetGame.cs:4690 (BindTable.HookHeld -> InputButtons.Hook)"
+      - "game/net/ServerNet.cs:1571 (InputButtons.Hook -> MovementInput.ButtonHook)"
     constants:
       - { name: "blaster_primary_refire", base: "0.7", port: "0.7 (Primary.Refire / fallback)", match: true }
       - { name: "refire * W_WeaponRateFactor(actor)", base: "scaled by 1/g_weaponratefactor + WeaponRateFactor mutator hook", port: "scaled via WeaponRateFactor(player) helper (g_weaponratefactor + WeaponRateFactor.Call hook)", match: true }
@@ -167,7 +167,9 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:BuildMutatorsString (=> s + \":offhand_blaster\")"
       - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:BuildMutatorsPrettyString (=> s + \", Offhand blaster\")"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:BuildMutatorsString / BuildMutatorsPrettyString (per-active-mutator chain)"
-      - "src/XonoticGodot.Server/GameWorld.cs:876 (MutatorActivation.BuildMutatorsString -> GameLog.Init ':gameinfo:mutators:' line, sv_eventlog-gated)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1068 (MutatorActivation.BuildMutatorsString -> GameLog ':gameinfo:mutators:' line, sv_eventlog-gated)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1079 (MutatorActivation.BuildMutatorsPrettyString -> 'modifications' serverinfo key at match-start; QC server/client.qc:1107)"
+      - "game/net/ServerNet.cs:607 (BuildServerInfo -> 'modifications' server-browser field via BuildMutatorsPrettyString)"
     constants:
       - { name: "machine_token", base: "\":offhand_blaster\"", port: "\":offhand_blaster\"", match: true }
       - { name: "pretty_token", base: "\", Offhand blaster\"", port: "\", Offhand blaster\"", match: true }
@@ -177,40 +179,43 @@ features:
       timing: na
       presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Pretty-string chain is implemented but DEAD: MutatorActivation.BuildMutatorsPrettyString has the per-mutator override (`, Offhand blaster`) but NO live caller — no scoreboard/votescreen consumer is wired (Base calls it in server/client.qc:1107). So the human-readable mutator-list token is built nowhere on the live path. The machine-string token IS live (GameWorld.cs:876, sv_eventlog-gated GameLog line)."
+    gaps: []
     verification:
-      - { kind: code, ref: "OffhandBlasterMutator.cs:45 BuildMutatorsString => s + \":offhand_blaster\"; :49 BuildMutatorsPrettyString => s + \", Offhand blaster\". MutatorActivation.BuildMutatorsString (MutatorActivation.cs:108) iterates added mutators; called LIVE from GameWorld.cs:876 (sv_eventlog) feeding GameLog.Init.", result: pass }
-      - { kind: code, ref: "MutatorActivation.BuildMutatorsPrettyString (MutatorActivation.cs:121) has no live caller — grep finds only the per-mutator overrides and the static method's self-reference; no scoreboard/votescreen consumer wired.", result: fail }
+      - { kind: code, ref: "OffhandBlasterMutator.cs:45 BuildMutatorsString => s + \":offhand_blaster\"; :49 BuildMutatorsPrettyString => s + \", Offhand blaster\". MutatorActivation.BuildMutatorsString (MutatorActivation.cs:108) iterates added mutators; called LIVE from GameWorld.cs:1068 (sv_eventlog) feeding the GameLog ':gameinfo:mutators:' line.", result: pass }
+      - { kind: code, ref: "MutatorActivation.BuildMutatorsPrettyString (MutatorActivation.cs:121) now has TWO live callers (FIX vs prior baseline): GameWorld.cs:1079 strips the leading ', ' and writes it to the 'modifications' serverinfo cvar at match-start; ServerNet.cs:607 (BuildServerInfo) does the same for the server-browser 'modifications' field. Both are on the live join/browser path (QC server/client.qc:1107).", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-22 audit: both hooks are now ported across the mutator family (offhand_blaster included). Machine string is live via the sv_eventlog GameLog path; pretty string is built but unconsumed (liveness partial). Cross-cutting with the rest of the mutator family (same MutatorActivation chain)."
+    notes: "FIX vs 2026-06-25 baseline: liveness partial -> live. The pretty-string chain gained live consumers (GameWorld 'modifications' serverinfo write + ServerNet BuildServerInfo), so the human-readable mutator-list token is now produced on the real path, not just the machine token. Cross-cutting with the rest of the mutator family (same MutatorActivation chain)."
   - id: offhand_blaster.tips.gameplay_hint
     name: "Client gameplay-tips line announcing the offhand blaster bind"
     layer: [presentation]
     base_refs:
       - "common/mutators/mutator/offhand_blaster/cl_offhand_blaster.qc:MUTATOR_HOOKFUNCTION(cl_offhand_blaster, BuildGameplayTipsString)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:1254-1261 (offhand-blaster gameplay tip emit on client connect)"
+      - "src/XonoticGodot.Engine/Console/BindTable.cs:64 (CommandKey -> getcommandkey)"
     constants:
-      - { name: "tip_text", base: "\"^3offhand blaster^8 is enabled, press ^3<key>^8 to use it\"", port: "none", match: false }
-      - { name: "MUT_OFFHAND_BLASTER", base: "24 (common/util.qh)", port: "none", match: false }
+      - { name: "tip_text", base: "\"^3offhand blaster^8 is enabled, press ^3%s^8 to use it\"", port: "\"^3offhand blaster^8 is enabled, press ^3{key}^8 to use it\"", match: true }
+      - { name: "key_lookup", base: "getcommandkey(_(\"offhand hook\"), \"+hook\")", port: "BindTable.CommandKey(\"offhand hook\", \"+hook\")", match: true }
+      - { name: "MUT_OFFHAND_BLASTER", base: "24 (common/util.qh; mut_is_active gate)", port: "n/a — server gates on offhandMut.Added directly (equivalent; no client active-bitfield networking needed)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL MISSING after Wave-1/2/5: gameplay-tips line ('offhand blaster is enabled, press <key>') not shown to the client. No BuildGameplayTipsString / gameplay-tips builder exists in src/ or game/ (grep found none), and the mutator-active bitfield (mut_is_active / MUT_OFFHAND_BLASTER=24) is not networked to the client. (The +hook bind it would reference is now LIVE as of Wave-5, but the tip text itself is still absent.)"
+      - "Surface differs intentionally: Base builds this client-side (CSQC BuildGameplayTipsString -> welcome dialog); the port has no CSQC layer, so it emits the tip as a per-player chat line (Commands.ChatToPlayer) to the connecting non-bot only — same audience/scope as Base (not a broadcast). The mut_is_active(MUT_OFFHAND_BLASTER) bitfield isn't networked, but the server gates on the mutator's own Added state, which is equivalent."
     verification:
-      - { kind: code, ref: "grep src/ game/ for GameplayTip / 'offhand blaster is enabled' / BuildGameplayTips -> zero matches (verified 2026-06-22)", result: fail }
+      - { kind: code, ref: "GameWorld.cs:1254 `if (!p.IsBot && Mutators.ByName(\"offhand_blaster\") is OffhandBlasterMutator offhandMut && offhandMut.Added)` then ChatToPlayer with '^3offhand blaster^8 is enabled, press ^3{offhandKey}^8 to use it' where offhandKey = BindTable.CommandKey(\"offhand hook\", \"+hook\"). Matches Base cl_offhand_blaster.qc tip text + getcommandkey lookup verbatim.", result: pass }
+      - { kind: code, ref: "Commands.ChatToPlayer wired live (NetGame.cs:748/781 -> _server.SendChatToPlayer); BindTable.CommandKey present (BindTable.cs:64). Tip fires on the live ClientConnect path.", result: pass }
     confidence: high
-    notes: "Client-side CSQC tip; unchanged by Wave-1/2/5. Depends on the mutator active-bitfield (mut_is_active(MUT_OFFHAND_BLASTER)) plus a +hook key lookup (getcommandkey). The +hook bind/input is now wired (Wave-5), so only the tip-string builder + active-bitfield networking remain."
+    notes: "FIX vs 2026-06-25 baseline: missing -> faithful & live. The gameplay-tips line is now ported at GameWorld.cs:1254-1261 (alongside the parallel grappling-hook tip at :1239). Tip text and +hook key lookup match Base exactly; surfaced per-player via chat instead of CSQC welcome dialog (no CSQC layer in the port), gated on the mutator's Added state in lieu of the un-networked mut_is_active bitfield."
   - id: offhand_blaster.menu.describe
     name: "Menu mutator-info describe text"
     layer: [presentation]
@@ -219,7 +224,7 @@ features:
       - "common/mutators/mutator/offhand_blaster/offhand_blaster.qh:CLASS(MutatorOffhandBlaster) message=\"Offhand blaster\""
     port_refs: []
     constants:
-      - { name: "menu_name", base: "\"Offhand blaster\"", port: "none", match: false }
+      - { name: "menu_name", base: "\"Offhand blaster\"", port: "none (only referenced in the Grappling Hook tooltip)", match: false }
     status:
       logic: missing
       values: missing
@@ -230,8 +235,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL MISSING after Wave-1/2/5: menu mutator-info describe text not ported. The multi-paragraph description (gives all players a Blaster offhand used with hook, can fire any time but ordinary secondary can't be used, laser-jumping, overrides the hook mutator) has no port equivalent. No 'offhand' entry exists in any menu dialog (grep game/menu/ for 'offhand' — zero matches)."
+      - "STILL MISSING: dedicated menu mutator-info describe text not ported. The multi-paragraph MutatorOffhandBlaster.describe() (gives all players a Blaster offhand used with hook, can fire any time but ordinary secondary can't be used, laser-jumping, overrides the hook mutator) has no port equivalent. The name 'Offhand Blaster' appears in the port only as a *reference* inside the Grappling Hook checkbox tooltip (DialogMutators.cs:197 'overridden by the Offhand Blaster mutator'), not as its own describe entry/checkbox."
     verification:
-      - { kind: code, ref: "grep game/menu/ for 'offhand' describe — no offhand_blaster mutator-info entry (verified 2026-06-22). Base has no create-game checkbox either; only the MENUQC describe info page.", result: fail }
+      - { kind: code, ref: "grep game/menu/ for 'offhand' — only the Grappling Hook tooltip's reference (DialogMutators.cs:188/197); no dedicated offhand_blaster describe entry or checkbox (verified 2026-06-25). Base has no create-game checkbox either; only the MENUQC describe info page.", result: fail }
     confidence: medium
-    notes: "MENUQC-only descriptive text shown on the mutator-info / media-guide page; unchanged by Wave-1/2/5. Base has NO create-game mutators-dialog checkbox for offhand_blaster (cvar/console-toggled), so the only menu surface is this describe text."
+    notes: "MENUQC-only descriptive text shown on the mutator-info / media-guide page. Base has NO create-game mutators-dialog checkbox for offhand_blaster (cvar/console-toggled), so the only Base menu surface is this describe text — which the port does not reproduce as its own page. Unchanged vs 2026-06-25 baseline aside from noting the incidental tooltip reference."

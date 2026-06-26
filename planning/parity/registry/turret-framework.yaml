@@ -3,10 +3,10 @@ category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 14
+  feature_count: 15
   worst_gaps:
-    - "No client presentation at all: cl_turrets.qc unported (no head model/rotation, team recolor, low-HP sparks, death rocket+gib FX, waypoint sprite/healthbar)."
-    - "No turret networking: none of the TNSF_* send/parse / CSQC turret edict exists (port runs turrets directly in the shared sim)."
+    - "Client presentation is now PARTIAL not absent: Wave-8e emits muzzle flashes/tracers/beams/projectile trails/head-frame anims + death FX server-side (no CSQC edict, so server-emitted+networked); still missing the tur_head MODEL rotation render, framework-wide low-HP sparks/smoke tiers (only EWheel), team recolor, waypoint sprite/healthbar, and client gib toss."
+    - "No turret networking: none of the TNSF_* send/parse / CSQC turret edict exists (port runs turrets directly in the shared sim) — so all presentation above is server-side temp-entity emit, not a turret edict sync."
     - "turret_targettrigger (RECIEVETARGETS externally-fed targets, 0.5s debounce) + turrets_manager_think (g_turrets_reloadcvars 1s re-load) unported (the turret_checkpoint/walker_checkpoint waypoint chains ARE now ported + live as of Wave-7)."
     - "Per-unit cvar table unported (load_unit_settings / TR_PROPS_COMMON / turret_scale_* / turret_initparams clamping / dumpturrets) — per-unit balance is hardcoded C# const, mappers can't retune. (Framework-level g_turrets_* cvars ARE read live; per-unit g_turrets_unit_<name>_<field> are not.)"
     - "Death two-step (turret_hide 0.2s + respawntime-0.2) + turret_heal/event_heal not ported; port respawns directly after RespawnTime."
@@ -294,22 +294,22 @@ features:
       - { name: "lifetime", base: "9s", port: "9f", match: true }
       - { name: "touch -> RadiusDamage", base: "shot_dmg/0/shot_radius/force/deathtype", port: "same", match: true }
       - { name: "shootable hull (health>0)", base: "DAMAGE_YES + explode on death", port: "via shared Death hook", match: true }
-      - { name: "CSQCProjectile trail", base: "yes (client)", port: "not modeled (no client)", match: false }
+      - { name: "CSQCProjectile trail", base: "yes (client, proj_type per turret)", port: "generic TurretSpawn.Projectile stamps no proj_type, BUT each turret caller now stamps NetName (electro_bolt/blaster/hagar/rocket/devastator) so ProjectileCatalog.Classify gives the bolt its real client trail (Wave-8e)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: partial
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No CSQCProjectile client trail / proj_type animation (client presentation)."
+      - "The generic TurretSpawn.Projectile helper itself leaves NetName empty (Generic trail); the proper proj_type trail only appears because every turret CALLER overwrites NetName after the spawn — a turret that forgot to stamp it would render trailless."
     verification:
-      - { kind: code_read, ref: "turret_projectile vs TurretSpawn.Projectile", result: pass }
+      - { kind: code_read, ref: "turret_projectile vs TurretSpawn.Projectile (no trail stamped in the helper); plasma/mlrs/flac/hellion/hk/ewheel callers stamp NetName -> ProjectileCatalog client trail + EFFECT_*_MUZZLEFLASH at the muzzle (Wave-8e)", result: pass }
     confidence: high
-    notes: "Ballistics/spread/radius-damage/shootable-hull faithful; the fire sound plays; the client projectile trail is absent. Unchanged 06-25."
+    notes: "FIX vs baseline (was presentation:missing): Wave-8e wired the per-turret projectile trail by stamping the bolt's NetName so the shared ProjectileCatalog classifies it (electro_bolt->ELECTRO_BEAM, blaster->BLASTER, hagar->HAGAR_ROCKET, rocket/devastator->ROCKET) and the muzzle flash is emitted server-side. Presentation is partial not faithful because the generic helper does not stamp the type — the callers do, individually."
   - id: turret-framework.lifecycle.use_damage
     name: "Activation + damage gate (turret_use / turret_damage / turret_heal)"
     layer: [authority]
@@ -381,6 +381,31 @@ features:
       - { kind: code_read, ref: "turret_die/respawn vs TurretAI.Die/Respawn + Combat.Death OnAnyDeath; QC death RadiusDamage verified commented out (sv_turrets.qc:182) and port Die has NO blast; NORESPAWN branch now plays rocket_impact + ROCKET_EXPLODE before Remove", result: pass }
     confidence: high
     notes: "FIX vs baseline: the port-added over-lethal death RadiusDamage blast was REMOVED (now matches Base's commented-out blast — no area damage on death), and the NORESPAWN branch now fires the rocket-impact sound + ROCKET_EXPLODE effect before removal exactly like turret_die's NORESPAWN path. Only the death two-step timing (0.2s turret_hide split) still diverges (port respawns directly after RespawnTime)."
+  - id: turret-framework.lifecycle.round_reset
+    name: "Round-restart reset hook (turret_reset -> turret_respawn via .reset)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_reset"
+      - "common/turrets/sv_turrets.qc:turret_link"
+    port_refs: []
+    constants:
+      - { name: ".reset hook install", base: "turret_link sets this.reset = turret_reset (sv_turrets.qc:1342)", port: "none — no per-entity reset hook wired for turrets", match: false }
+      - { name: "reset action", base: "turret_reset -> turret_respawn (full health/ammo/volley/head, re-active)", port: "TurretAI.Respawn exists but is only scheduled by Die, never invoked on a round restart", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No round-reset for turrets: Base wires .reset = turret_reset (turret_link:1342) so every turret re-runs turret_respawn (full health/ammo/volley/head, re-active) at round restart in round-based gametypes (Arena/CA/LMS/Freezetag/etc.). The port has TurretAI.Respawn but never calls it on a round reset — a damaged/dead turret carries its state across rounds."
+    verification:
+      - { kind: code_read, ref: "turret_link:1342 this.reset = turret_reset (-> turret_respawn) vs no .reset/GtReset/RoundReset wiring in the port turret folder", result: fail }
+    confidence: high
+    notes: "NEW row (registry coverage gap found 06-25): the round-restart reset hook was previously unmapped. Base resets every turret to full setup at round start via the .reset edict hook; the port has the equivalent Respawn body but only schedules it from death, with no round-reset caller — so turret state is not restored between rounds."
   - id: turret-framework.net.sync
     name: "Turret networking (turret_send / TNSF_* / ENT_CLIENT_TURRET)"
     layer: [authority, presentation]
@@ -415,28 +440,40 @@ features:
       - "common/turrets/cl_turrets.qc:turret_draw2d"
       - "common/turrets/cl_turrets.qc:turret_die"
       - "common/turrets/cl_turrets.qc:turret_changeteam"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretCombat.cs:FireBullet"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:TrThinkHeadAnim"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Think"
     constants:
-      - { name: "head rotation render", base: "tur_head.angles += avelocity*dt", port: "none", match: false }
-      - { name: "low-HP sparks/smoke", base: "te_spark <127 / SMOKE <85 / <32", port: "none", match: false }
-      - { name: "death FX + gib toss", base: "EFFECT_ROCKET_EXPLODE + turret_gibtoss", port: "none", match: false }
-      - { name: "waypoint sprite + healthbar", base: "g_waypointsprite_turrets", port: "none", match: false }
-      - { name: "team recolor", base: "colormap/glowmod", port: "none", match: false }
+      - { name: "head rotation render", base: "tur_head.angles += avelocity*dt (turret_draw, every turret)", port: "none (no tur_head sub-entity; head angles are a TurretState vector, never rendered as a separate bone)", match: false }
+      - { name: "low-HP sparks/smoke (framework turret_draw)", base: "te_spark <127 / SMOKE_LARGE <85 / SMOKE_SMALL <32 — applies to ALL turrets", port: "only EWheelTurret emits the <127 te_spark server-side; the framework-wide all-turret sparks + the <85/<32 smoke tiers are NOT ported", match: false }
+      - { name: "death FX (rocket explode + sound)", base: "EFFECT_ROCKET_EXPLODE + SND_ROCKET_IMPACT (cl_turrets.qc:turret_die, every death)", port: "Die emits ROCKET_EXPLODE + weapons/rocket_impact.wav server-side on every death (Wave-7)", match: true }
+      - { name: "muzzle flash / tracer / beam FX", base: "Send_Effect EFFECT_*_MUZZLEFLASH, EFFECT_BULLET tracer, EFFECT_VAPORIZER_BEAM (per weapon, outside isPlayer gate)", port: "server-side EffectEmitter: BLASTER/MACHINEGUN/VORTEX muzzleflash, BULLET tracer, VAPORIZER_BEAM team beam, te_explosion launch flashes (NEW Wave-8e)", match: true }
+      - { name: "head-frame fire anim", base: "tur_head.frame cycle (plasma 1-5, flac 0-3, phaser fireflag 1-10/15 charge/discharge)", port: "runs on the turret edict's own networked Entity.Frame: plasma kick frame=1, flac 0-3 cycle, phaser fireflag charge/discharge (PhaserTurret.TrThinkHeadAnim) — no separate head bone (NEW Wave-8e)", match: false }
+      - { name: "gib toss / gib boom", base: "turret_gibtoss / turret_gibboom (per-type client gib entities)", port: "none (needs a CSQC turret edict to spawn client gibs)", match: false }
+      - { name: "waypoint sprite + healthbar", base: "turret_draw2d g_waypointsprite_turrets + drawhealthbar", port: "none", match: false }
+      - { name: "team recolor", base: "turret_changeteam colormap/glowmod (Team_ColorRGB)", port: "none", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: missing
-      liveness: na
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: partial
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No client presentation at all: cl_turrets.qc unported (no head model/rotation, team recolor, low-HP sparks, death rocket+gib FX, waypoint sprite/healthbar)."
+      - "No tur_head sub-entity: the steady-state head MODEL rotation (turret_draw tur_head.angles += avelocity*dt) is never rendered, and the per-shot head-frame anim rides the turret body's own Entity.Frame instead of a separate head bone."
+      - "Framework-wide low-HP feedback only partial: just EWheelTurret emits the <127 te_spark; the all-turret turret_draw sparks and the <85 SMOKE_LARGE / <32 SMOKE_SMALL smoke tiers are unported."
+      - "No turret_draw2d radar layer: no waypoint sprite and no over-turret healthbar."
+      - "No turret_changeteam team recolor (colormap/glowmod)."
+      - "No client gib toss (turret_gibtoss/turret_gibboom) — needs a CSQC turret edict."
     verification:
-      - { kind: code_read, ref: "no turret_draw/turret_construct/turret_gib/turret_draw2d in port", result: fail }
+      - { kind: code_read, ref: "Wave-8e: muzzle flashes/tracers/beams/projectile trails/te_explosion launch flashes + head-frame anims + phaser discharge anim emitted server-side from the per-turret Attack paths and TurretCombat.FireBullet; Die emits ROCKET_EXPLODE+rocket_impact; EWheel emits <127 te_spark. Still absent: tur_head model rotation, framework-wide sparks/smoke tiers, draw2d waypoint/healthbar, changeteam recolor, gib toss", result: pass }
     confidence: high
-    notes: "Entire client render path absent; a turret in the port shows no head, no damage feedback, no death FX, no radar marker. Unchanged 06-25 (note: the SERVER-side NORESPAWN explosion FX/sound IS now emitted by Die, but the steady-state client render path is still absent)."
+    notes: "FIX vs baseline (was all-missing, liveness na): Wave-8e ported the substantive visible/audible turret combat feedback as SERVER-side networked effects (the port has no CSQC turret edict, so all of it is emitted server-side and reaches every viewer) — muzzle flashes, bullet tracers, the instagib team beam, projectile smoke/bolt trails (via NetName->ProjectileCatalog), launch-flash te_explosions, and the plasma/flac/phaser head-frame fire animations; plus the death rocket-explode FX/sound (Wave-7) and the EWheel low-HP spark. Hence presentation/audio partial and liveness partial. Still genuinely absent: the tur_head MODEL render (no head bone), the framework-wide turret_draw sparks + smoke tiers (only EWheel), the draw2d waypoint sprite/healthbar, the changeteam team recolor, and the client gib toss."
   - id: turret-framework.mapents.path_trigger
     name: "Waypoint path + receive-target entities (turret_checkpoint / targettrigger / manager)"
     layer: [authority]

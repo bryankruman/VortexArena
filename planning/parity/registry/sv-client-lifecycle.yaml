@@ -7,12 +7,11 @@ summary:
   worst_gaps:
     - "Join queue + team-selection ordering (queuePlayer / TeamBalance_JoinBestTeam priority pass, queued-team dibs conflict) not modeled: in team modes the queued-team conflict resolution and best-team-by-skill ordering are absent; PutPlayerInServer's own wants_join>0 / bot_forced_team / TeamBalance_JoinBestTeam team-assign is also not run (the port pre-assigns at connect only). (Wave-2 added the JOIN_PLAY / JOIN_PLAY_TEAM notification tail; the queue-conflict / ANNCE_BEGIN branches stay deferred.)"
     - "joinAllowed is reduced to MIN_SPEC_TIME + lockteams + forced-spectator + playban + a gametype gate: version-mismatch, g_maxping, and the queue/nJoinAllowed (g_maxplayers/GetPlayerLimit/bots_would_leave) capacity gate are still missing — a mismatched/high-ping/over-cap client can still join, and no CENTER_JOIN_PREVENT*/PING/VERSIONMISMATCH centerprints fire."
-    - "The networked PRESSED_KEYS stat is never set server-side: the local-player HUD pressedkeys/strafe panel works from client-side bind state, but a SPECTATED player's held keys (PressedKeysPanel.PressedKeysOverride) are never fed, and the observer-clears-PRESSED_KEYS path is absent."
+    - "PRESSED_KEYS server-side is now FIXED (GetPressedKeys ported + live in OnPlayerPostThink, observer-clear, SpectateCopy inherit); the only residual is the net layer — Player.PressedKeys is not in the owner-state protocol and PressedKeysPanel.PressedKeysOverride is never fed, so a SPECTATED player's keys don't reach the client HUD."
     - "sv_maxidle idle-kick / move-to-spectator is entirely missing: idle players are never kicked or demoted; the idle countdown bangs (SND TALK2) and CENTER_DISCONNECT_IDLING / CENTER_MOVETOSPEC_IDLING / INFO_QUIT_KICK_IDLING never appear, and parm_idlesince alivetime afk-gating is not modeled."
     - "No server->client welcome channel: clientstuff/FixClientCvars/cl_jumpspeedcap_min-max/cl_shootfromfixedorigin stuffcmds, clientversion request, _teams_available, sv_notice_join/SendWelcomeMessage MOTD, Send_NextMap_To_Player, ClientInit_misc per-client init entity, playban/chatban, model_randomizer — none modeled. (Handicap_Initialize IS now wired in the spawn path.)"
     - "PutObserverInServer still omits SelectObservePoint/observe-spawn placement, vote/ready recount, the SPECTATE_WARNING block, RemoveGrapplingHooks/Portal_ClearAll, and the is_forced/use_spawnpoint signature; sv_spectate-disabled spectator kick (SPECTATE_WARNING / INFO_QUIT_KICK_SPECTATING) absent."
     - "UpdateChatBubble (chat/minigame-busy bubble over a typing player) is not modeled; version nag, nameless/too-long/invisible-name enforcement (sv_name_maxlength), GOD MODE info, and the PlayerPreThink misc dispatch (PlayerUseKey edge as a unit, SetZoomState, target_voicescript_next) are missing or scattered (the deferred teamkill-complaint voice timer IS now driven from the regen frame)."
-    - "DrownPlayer surfaced-after-out-of-air gasp does not play playersound_gasp (still a comment, not played)."
   wave6c_fixes:
     - "spawn.spawn_shield: the (!sv_ready_restart_after_countdown && time < game_starttime) countdown extension is NOW applied (SpawnSystem.cs:761-782) — shield + pauserotarmor/health + pauseregen rolled forward by game_starttime-time, fuel rot deliberately NOT extended, matching Base client.qc:665-671. logic partial->faithful, timing partial->faithful."
     - "dead.respawn_countdown_announce: ShowRespawnCountdown is NOW ported (GameWorld.cs:2751) and called from DeadPlayerThink (GameWorld.cs:2733): the 10-9-8 NUM_RESPAWN announcer decrements RespawnCountdown per whole second with the 0.5s overlap guard, gated on the (default-disabled, opt-in) announcer's Enabled flag. all dims missing->faithful, liveness na->live."
@@ -20,6 +19,10 @@ summary:
     - "frame.player_powerups: player_powerups is now a faithful port — EF_NODEPTHTEST clear+set, g_fullbrightplayers, player_powerups_remove_all-on-death, the full 4-case superweapon state machine with CENTER_SUPERWEAPON_LOST/BROKEN/PICKUP + INFO_SUPERWEAPON_PICKUP broadcast + play_countdown(SND_POWEROFF). Only MF_ROCKET jetpack modelflag is dropped (no modelflag channel; cosmetic). logic partial->faithful, presentation missing->faithful, audio missing->faithful."
     - "frame.player_regen: the PlayerRegen hook now passes ALL tuning slots (max_mod/regen_mod/rot_mod/limit_mod + the 6 per-health regen/rot/stable overrides) and reads them back — a mutator that RETUNES regen (not just disables) is now honored. The last residual gap is closed; row was already faithful."
     - "disconnect.client_disconnect: now also runs vehicle exit (VHEF_RELEASE), player_powerups_remove_all (poweroff sound), and the MUTATOR_CALLHOOK(ClientDisconnect) generic hook + the gametype MakePlayerObserver/RemovePlayer objective drop + status-effect clear. Row stays logic:partial (ignore-list / chatbubble / waypoint / ready-vote-recount cleanups still absent) but materially closer."
+  drift_2026_06_25_reverify:
+    - "frame.pressed_keys: the server-authoritative GetPressedKeys is NOW ported and LIVE — PlayerFrameLogic.GetPressedKeys (PlayerFrameLogic.cs:281) is called from OnPlayerPostThink (GameWorld.cs:1894) every server frame for a live player, with the IS_DUCKED held-crouch workaround; the observer branch clears PRESSED_KEYS via ClearPressedKeys (GameWorld.cs:1884); and SpectateCopy inherits the spectatee's bits (ClientManager.cs:631). logic partial->faithful, timing na->faithful, liveness partial->live. presentation STAYS partial: Player.PressedKeys is not in the owner-state net protocol and PressedKeysPanel.PressedKeysOverride is still never set, so a spectated player's keys don't reach the client HUD (the local-player panel already works from client bind state)."
+    - "frame.drown_player: the surfaced-after-out-of-air gasp NOW plays playersound_gasp — DrownPlayer's surface branch calls SoundSystem.PlayPlayerSound(p, \"gasp\", ...) when AirFinished was set and < time (PlayerFrameLogic.cs:236-240), the same per-model voice resolution as the pain/teamkill voices; gasp is a real player-sound id. audio missing->faithful; the row is now fully faithful with no gaps."
+    - "connect.fix_client_cvars_welcome: a PARTIAL welcome channel now exists on the live connect path (InfraClientConnect, GameWorld.cs:1192) — the campaign welcome level-num (SendCampaignWelcome, GameWorld.cs:1231/1288, QC SendWelcomeMessage campaign branch) and the grappling-hook BuildGameplayTipsString tip (GameWorld.cs:1239-1248) are surfaced to the connecting client. logic/presentation missing->partial, liveness na->partial. The bulk stays absent: FixClientCvars cvar push, clientstuff, cmd clientversion, set _teams_available, the MOTD/hostname/map/mutators message, ClientInit_misc, Send_NextMap_To_Player."
 features:
   - id: sv-client-lifecycle.connect.client_connect
     name: "ClientConnect: accept a client as an observer"
@@ -57,24 +60,27 @@ features:
       - "server/client.qc:FixClientCvars"
       - "server/client.qc:SendWelcomeMessage"
       - "server/client.qc:ClientInit_misc"
-    port_refs: []
+      - "common/mutators/mutator/buffs/cl_buffs.qc / cl_hook.qc:BuildGameplayTipsString"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:InfraClientConnect (~1192)"
+      - "src/XonoticGodot.Server/GameWorld.cs:SendCampaignWelcome (~1288, campaign branch of SendWelcomeMessage)"
     constants: []
     status:
-      logic: missing
+      logic: partial
       values: missing
       timing: missing
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No server->client stuffcmd/welcome channel: FixClientCvars (cl_jumpspeedcap_min/max, cl_shootfromfixedorigin, prediction/gentle), clientstuff, cmd clientversion, set _teams_available, sv_notice_join/SendWelcomeMessage (MOTD/hostname/map/mutators), Send_NextMap_To_Player, and the ClientInit_misc per-client init entity (armor-blockpercent, damagepush speedfactor, fog, serverflags, g_trueaim_minrange, hook/arc shot origins) are all unmodeled."
-      - "The port instead pushes a few physics-relevant cvars via per-client replicated-cvar tables; there is no MOTD, no version request, and no per-client init-entity carrying the server's damage/fog/trueaim constants."
+      - "Only fragments of the welcome channel exist: the campaign welcome level-num (SendCampaignWelcome) and the grappling-hook gameplay tip (BuildGameplayTipsString) are surfaced to the connecting client. Still unmodeled: FixClientCvars (cl_jumpspeedcap_min/max, cl_shootfromfixedorigin, prediction/gentle), clientstuff, cmd clientversion, set _teams_available, the sv_notice_join/SendWelcomeMessage MOTD/hostname/map/mutators body, Send_NextMap_To_Player, and the ClientInit_misc per-client init entity (armor-blockpercent, damagepush speedfactor, fog, serverflags, g_trueaim_minrange, hook/arc shot origins)."
+      - "The port pushes a few physics-relevant cvars via per-client replicated-cvar tables; there is no MOTD, no version request, and no per-client init-entity carrying the server's damage/fog/trueaim constants."
     verification:
-      - { kind: code, ref: "grep: no FixClientCvars/SendWelcomeMessage/sv_notice_join/_teams_available in src+game", result: fail }
+      - { kind: code, ref: "GameWorld.cs:1230-1248 (SendCampaignWelcome + hook tip on InfraClientConnect); grep: no FixClientCvars/_teams_available/Send_NextMap in src+game", result: pass }
     confidence: high
-    notes: "Split out of the connect row: a whole server->client config/welcome subsystem QC runs in ClientConnect. The replicated-cvar table is a partial functional stand-in for the physics cvars only."
+    notes: "DRIFT 2026-06-25: a PARTIAL welcome channel now exists on the live connect path — the campaign welcome line + the grappling-hook tip are delivered per-client (skipped for bots). logic/presentation missing->partial, liveness na->partial. The bulk server->client config/welcome subsystem (FixClientCvars cvar push, MOTD, version request, ClientInit_misc init-entity, Send_NextMap) is still absent; the replicated-cvar table remains the only functional stand-in for the physics cvars."
 
   - id: sv-client-lifecycle.join.join_player
     name: "Join: observer -> live player"
@@ -399,16 +405,15 @@ features:
       values: faithful
       timing: faithful
       presentation: na
-      audio: missing
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Surfaced-after-running-out-of-air gasp does not play playersound_gasp (the surface branch only resets AirFinished; QC plays PlayerSound(playersound_gasp) when AIR_FINISHED was set and < time)."
+    gaps: []
     verification:
-      - { kind: code, ref: "PlayerFrameLogic.cs:157-188", result: pass }
+      - { kind: code, ref: "PlayerFrameLogic.cs:220-260 DrownPlayer (surface gasp at :236-240)", result: pass }
     confidence: high
-    notes: "Air timer + 2 Hz DEATH_DROWN damage faithful; the game_stopped || time<game_starttime || vehicle || frozen gates match QC; only the gasp SFX is missing."
+    notes: "DRIFT 2026-06-25: the surfaced-after-out-of-air gasp NOW plays — DrownPlayer's surface branch calls SoundSystem.PlayPlayerSound(p, \"gasp\", soundDir, ...) when AirFinished was set and < time (PlayerFrameLogic.cs:236-240), with the same per-model voice resolution (Sounds.ModelSoundsFile) as the pain/teamkill voices; gasp is a real player-sound id. audio missing->faithful. Air timer + 2 Hz DEATH_DROWN damage faithful; the game_stopped || time<game_starttime || vehicle || frozen gates match QC. Row is now fully faithful with no gaps."
 
   - id: sv-client-lifecycle.frame.contents_fall_damage
     name: "CreatureFrame liquids + fall damage (per-frame)"
@@ -472,25 +477,29 @@ features:
     base_refs:
       - "server/client.qc:GetPressedKeys"
     port_refs:
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:GetPressedKeys"
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:ClearPressedKeys (observer-clear)"
+      - "src/XonoticGodot.Server/GameWorld.cs:OnPlayerPostThink (~1884/1894 live caller)"
+      - "src/XonoticGodot.Server/ClientManager.cs:SpectateCopy (~631 spectatee inherit)"
       - "game/hud/PressedKeysPanel.cs:LocalPressedKeys (client-side stand-in for the local player)"
     constants:
-      - { name: "KEY_* bit order", base: "FORWARD/BACK/RIGHT/LEFT/JUMP/CROUCH/ATCK/ATCK2", port: "matched in PressedKeysPanel KEY_* consts", match: true }
+      - { name: "KEY_* bit order", base: "FORWARD/BACK/RIGHT/LEFT/JUMP/CROUCH/ATCK/ATCK2", port: "matched in PlayerFrameLogic + PressedKeysPanel KEY_* consts", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
-      timing: na
+      timing: faithful
       presentation: partial
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The server never sets the networked PRESSED_KEYS stat (no GetPressedKeys-equivalent in the per-frame path). The local-player HUD pressedkeys/strafe panel works because PressedKeysPanel computes the bitmask CLIENT-SIDE from local bind state, but a SPECTATED player's held keys (PressedKeysPanel.PressedKeysOverride) are never fed by the net layer, and the QC observer-clears-PRESSED_KEYS rule (PlayerPostThink) is absent."
-      - "GetPressedKeys mutator hook + the IS_DUCKED crouch-key workaround are not modeled server-side."
+      - "Net delivery to the spectated HUD is still missing: Player.PressedKeys is computed server-side but is NOT in the owner-state net protocol, and PressedKeysPanel.PressedKeysOverride is never assigned — so a SPECTATED player's held keys don't reach the client HUD. The local-player panel works because PressedKeysPanel computes the bitmask client-side from bind state."
+      - "GetPressedKeys mutator hook is not fired as a discrete hook here (the race/cts speed-award + Vortex/OkNex velocity-charge consumers are driven from their own per-frame ticks instead)."
     verification:
-      - { kind: code, ref: "PressedKeysPanel.cs:42-60,103-220 (PressedKeysOverride never set); grep: no server PRESSED_KEYS set", result: fail }
+      - { kind: code, ref: "PlayerFrameLogic.cs:281-316 GetPressedKeys/ClearPressedKeys (IS_DUCKED workaround, observer-clear); GameWorld.cs:1884/1894 live callers; ClientManager.cs:631 spectate inherit; grep: PressedKeys not in game/net protocol", result: pass }
     confidence: high
-    notes: "Corrected from the draft's 'HUD cannot display held keys': the LOCAL player's panel is faithful (client-side bind sampling). The gap is the server-authoritative stat for the spectated case + observer-clear."
+    notes: "DRIFT 2026-06-25: the server-authoritative GetPressedKeys is NOW ported and LIVE — PlayerFrameLogic.GetPressedKeys runs every server frame from OnPlayerPostThink with the IS_DUCKED held-crouch workaround; the observer branch clears PRESSED_KEYS (ClearPressedKeys); SpectateCopy inherits the spectatee's bits. logic partial->faithful, timing na->faithful, liveness partial->live. presentation STAYS partial: the stat isn't networked to the spectating client's HUD (PressedKeysOverride never fed). The LOCAL player's panel is faithful (client-side bind sampling)."
 
   - id: sv-client-lifecycle.frame.idle_kick
     name: "sv_maxidle idle-kick / move-to-spectator + alivetime afk-gate"

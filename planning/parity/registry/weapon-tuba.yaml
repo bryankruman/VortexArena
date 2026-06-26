@@ -6,7 +6,6 @@ summary:
   feature_count: 11
   worst_gaps:
     - "Note SOUND has no sustain/fade/pitch-shift: the port now snaps the requested note to the nearest on-disk multiple-of-6 sample (PitchStepNote) so the lookup resolves to a REAL file (closing the baseline's raw-note miss), but it still fires one static one-shot per ~0.05s blast tick rather than Base's held loop that crossfades between two neighbour samples (sound7 speed shift) and fades on release (cl_tuba_fadetime). No ENT_CLIENT_TUBANOTE networking / cl_tuba_volume/attenuation."
-    - "wr_aim (bot fire) still missing — bots won't use the tuba."
     - "GetNote still derives movestate from velocity (intended divergence) and omits crouch/jump/team pitch shifts — inaudible while the sustained note sound is unported."
     - "Per-instrument view models (h_akordeon/h_kleinbottle via CSQC weaponname/wr_viewmodel) still unwired (render-only)."
     - "Melody recognition is now LIVE+faithful (HasPlayed wired into the magic-ear pipeline); only the cosmetic 'NAME played on the @!#%'n Tuba: ...' bprint chat line on a recognised melody is still unwired."
@@ -314,6 +313,8 @@ features:
       - "common/weapons/weapon/tuba.qc:wr_checkammo2"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:Tuba (ctor)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:BotWantsSecondary (Tuba.cs:126-127)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:359-369 (live wr_aim dispatch)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponOrder.cs:209"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:282"
     constants:
@@ -323,6 +324,7 @@ features:
       - { name: "view/world/item models", base: "h_tuba.iqm / v_tuba.md3 / g_tuba.md3", port: "same", match: true }
       - { name: "infinite ammo", base: "wr_checkammo* return true", port: "CheckAmmo* return true", match: true }
       - { name: "kill/suicide notifications (all 6)", base: "TUBA/ACCORDEON/KLEINBOTTLE *_MURDER/_SUICIDE", port: "all registered", match: true }
+      - { name: "wr_aim bot fire (vdist<radius -> 50/50 ATCK/ATCK2)", base: "tuba.qc:321-332 — if (vdist(actor-enemy,<,radius)) random()>0.5?ATCK:ATCK2", port: "BotWantsSecondary => enemyDistance<Radius && Random01>0.5 (Tuba.cs:127); live via BotBrain.cs:365", match: true }
     status:
       logic: faithful
       values: faithful
@@ -333,14 +335,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "wr_aim (bots fire primary/secondary when an enemy is within radius) still not implemented -> bots won't use the tuba."
       - "Per-instrument view models (h_akordeon/h_kleinbottle, driven by CSQC wr_viewmodel/weaponname) still unwired; render-only (see weapon-tuba.reload.instrument_cycle)."
       - "Crosshair gfx/crosshairtuba and weapon-image weapontuba assets exist in data but live-render wiring not verified (headless audit)."
     verification:
       - { kind: trace, ref: "WeaponOrder.cs:209 lists tuba; impulse 1; ctor flags/color/models vs tuba.qh", result: pass }
-      - { kind: read, ref: "All 6 tuba notifications in NotificationsList.cs; wr_aim absent — no BotWantsSecondary override in Tuba.cs (grep)", result: pass }
+      - { kind: read, ref: "All 6 tuba notifications in NotificationsList.cs", result: pass }
+      - { kind: trace, ref: "Tuba.BotWantsSecondary (Tuba.cs:126-127) overrides wr_aim — enemyDistance<Radius && Random01>0.5; dispatched live from BotBrain.cs:359-369 (fresh Random01 draw, routes ATCK->ATCK2) — matches tuba.qc:321-332", result: pass }
     confidence: high
-    notes: "Unchanged vs baseline. Core identity, flags, color, models and infinite-ammo are faithful and live. wr_aim (no BotWantsSecondary override) and the per-instrument render assets remain the open gaps."
+    notes: "FIXED vs baseline (wr_aim missing -> faithful+live). Tuba now overrides BotWantsSecondary (the wr_aim seam): a bot within the 200u note radius rolls a fresh random()>0.5 to pick primary vs secondary, exactly matching W_Tuba_NoteOn's vdist<radius / coin-flip — bots can now play the tuba in combat. The override is invoked on the live bot path (BotBrain dispatches it for the chosen weapon). Core identity, flags, color, models and infinite-ammo remain faithful and live. Only the per-instrument render assets (view models / crosshair) remain — presentation stays partial."
 
   - id: weapon-tuba.describe.guide
     name: "Weapon-guide describe text (MENUQC)"

@@ -3,7 +3,7 @@ category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 14
+  feature_count: 16
   worst_gaps:
     - "raptor.impact: CONFIRMED LIVE (fixup commit 4be8357) — Spawn() no longer nulls vehicle.Touch, Think() snapshots OldVelocity, Spawn seeds PlayTime; verified full dispatch chain MoveTypePhysics(BounceMissile)->PushEntity(doTouch)->FlyMove->VehicleCommon.Touch->VehicleDef.Impact->vehicles_impact. Wiring is symmetric with Racer."
     - "raptor.painframe: NEWLY WIRED LIVE (fixup commit 4be8357) — Raptor.Think now calls VehicleCommon.PainFrame; faithful port of vehicles_painframe (<=50%-health shake/roll jitter live; EFFECT_SMOKE_SMALL deferred)."
@@ -496,3 +496,59 @@ features:
       - { kind: code, ref: "VehicleCommon.cs:PainFrame body vs sv_vehicles.qc:vehicles_painframe (threshold/cadence/shake/roll exact); wired live via Raptor.Think:262 (fixup commit 4be8357) matching QC vehicles_think; raptor sets DmgShake|DmgRoll Spawn:149", result: pass }
     confidence: high
     notes: "NEW row 2026-06-22. The fixup commit 4be8357 added the VehicleCommon.PainFrame(vehicle) call to Raptor.Think, wiring the <=50%-health damage-shake/roll jitter live (matches QC where vehicles_think calls vehicles_painframe every tick). Logic/values/timing faithful; only the EFFECT_SMOKE_SMALL puff (presentation) is deferred. The gameplay-authoritative velocity/angle jitter runs."
+
+  - id: raptor.hud_crosshair
+    name: "CSQC vehicle HUD + dual reticle / bomb dropmark crosshair"
+    layer: [presentation]
+    base_refs:
+      - "common/vehicles/vehicle/raptor.qc:vr_hud (METHOD Raptor, CSQC)"
+      - "common/vehicles/vehicle/raptor.qc:vr_crosshair (METHOD Raptor, CSQC)"
+    port_refs: []
+    constants:
+      - { name: "bomb crosshair", base: "vCROSS_BURST", port: "none", match: false }
+      - { name: "flare crosshair", base: "vCROSS_RAIN", port: "none", match: false }
+      - { name: "dropmark image", base: "vCROSS_DROP (tracetoss predicted impact)", port: "none", match: false }
+      - { name: "lock crosshair", base: "vCROSS_LOCK (AuxiliaryXhair[1])", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Entire CSQC HUD path absent: no Vehicles_drawHUD ammo bars, no per-mode reticle (vCROSS_BURST bomb / vCROSS_RAIN flare), no raptor_dropmark tracetoss bomb-impact predictor (gravity-bounce traced to a 2D drawpic marker, green while live / red after release), no aux lock crosshair (vCROSS_LOCK) color feedback. Client-only; the server logic these decorate (mode switch, lock strength) is all live elsewhere."
+    verification:
+      - { kind: code, ref: "raptor.qc:761-838 vr_hud/vr_crosshair (CSQC) has no port counterpart; Raptor.cs Frame TODO at :432-433 explicitly defers dropmark + aux lock crosshair", result: fail }
+    confidence: high
+    notes: "NEW row 2026-06-25 (registry coverage gap; previously only mentioned in worst_gaps + scattered in cannon_aim_lock/mode_switch gap text). Pure client presentation — no behavioral impact. The dropmark is the raptor's signature bomb-aiming UX."
+
+  - id: raptor.cb_shellfrag_gib
+    name: "CSQC cluster-bomb shell-fragment gib effect"
+    layer: [presentation]
+    base_refs:
+      - "common/vehicles/vehicle/raptor_weapons.qc:RaptorCBShellfragToss (CSQC)"
+      - "common/vehicles/vehicle/raptor_weapons.qc:RaptorCBShellfragDraw (CSQC)"
+    port_refs: []
+    constants:
+      - { name: "frag model", base: "MDL_VEH_RAPTOR_CB_FRAGMENT", port: "none", match: false }
+      - { name: "frag gravity", base: "0.15", port: "none", match: false }
+      - { name: "frag lifetime / fade", base: "nextthink time+3, fade after cnt=time+2", port: "none", match: false }
+      - { name: "damageforcescale", base: "4", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The bomb-casing shell-fragment gibs tossed client-side when the cluster bomb bursts (RaptorCBShellfragToss spawns MOVETYPE_BOUNCE drawables with avelocity jitter that fade over ~2-3s) are not ported. Purely cosmetic debris; the bomb burst gameplay (raptor.bombs) is fully live."
+    verification:
+      - { kind: code, ref: "raptor_weapons.qc:244-284 (CSQC) RaptorCBShellfragToss/Draw — no port counterpart; the burst path (Raptor.cs:DropOneBomb Burst) spawns only the damaging bomblets, no cosmetic frags", result: fail }
+    confidence: high
+    notes: "NEW row 2026-06-25 (registry coverage gap). CSQC-only debris FX triggered from the bomb burst; no server/gameplay effect."

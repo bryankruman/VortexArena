@@ -1,9 +1,9 @@
 unit: invasion
 category: gametype
-base_ref_rev: "v0.8.6-1779-g863cd3e84"  # port code re-audited at Wave-6e drift check (2026-06-25)
+base_ref_rev: "v0.8.6-1779-g863cd3e84"  # port code re-audited at Wave-6e drift re-check (2026-06-25)
 last_audited: "2026-06-25"
 summary:
-  feature_count: 28
+  feature_count: 29
   worst_gaps:
     - "HUNT win is derived from the port's own Wave.MaxSpawned/Killed + LiveMonsters counters PLUS the live world monster list (Invasion.cs LiveNonRespawnedMonsterCount), not exclusively Base's g_monsters; fidelity unverified on a real HUNT map."
     - "MoveToRandomMapLocation spawn fallback still missing (monsters pile at world origin when a map registers no invasion_spawnpoint — PickSpawnOrigin returns Vector3.Zero)."
@@ -713,6 +713,30 @@ features:
       - { kind: code, ref: "Commands.cs:2616 comment 'MUTATOR_CALLHOOK(AllowMobSpawning) — no port analog (no AllowMobSpawning hook); skipped'; no AllowMobButcher equivalent anywhere", result: fail }
     confidence: high
     notes: "Newly mapped (registry coverage gap). Minor admin/console-guard parity; no effect on normal play unless someone runs spawnmob/butcher during an invasion."
+
+  - id: invasion.spawn.monster_hitcontents
+    name: "MonsterSpawn stamps monster dphitcontentsmask = SOLID|BODY|BOTCLIP|MONSTERCLIP"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, MonsterSpawn) (mon.dphitcontentsmask = ...)"
+    port_refs: []
+    constants:
+      - { name: "dphitcontentsmask", base: "DPCONTENTS_SOLID | DPCONTENTS_BODY | DPCONTENTS_BOTCLIP | DPCONTENTS_MONSTERCLIP", port: "none (default monster mask)", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base's MonsterSpawn hook stamps every invasion monster with dphitcontentsmask = SOLID|BODY|BOTCLIP|MONSTERCLIP so the monster collides with bot-clip + monster-clip brushes. The port never sets this in the invasion spawn path (MonsterAI.cs only sets a special mask for the golem/spider PROJECTILE_MAKETRIGGER case at :1470); invasion monsters use the default monster collision mask, so they may ignore botclip/monsterclip volumes a Base server would honor. Minor — only affects maps that fence monster movement with those brush types."
+    verification:
+      - { kind: code, ref: "grep dphitcontents/MONSTERCLIP/BOTCLIP in MonsterAI.cs → only the golem/spider trigger mask (MonsterAI.cs:1470); no invasion MonsterSpawn equivalent; Invasion.cs:826 SpawnMonsterDef sets no hit-contents mask", result: fail }
+    confidence: medium
+    notes: "Newly mapped (registry coverage gap, 2026-06-25 re-audit). Base's MonsterSpawn also serves as the live HUNT/STAGE win dispatch via CheckRules_World→WinningCondition_Invasion, but that decision flow is already covered by invasion.win.hunt / invasion.win.stage; this row tracks only the unported collision-mask stamp."
 
   - id: invasion.client.point_limit_menu
     name: "Map-config point-limit menu slider (m_configuremenu 50..500)"

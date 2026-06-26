@@ -7,9 +7,9 @@ summary:
   worst_gaps:
     - "Loose-ball placement still uses the QC FALLBACK path (random info_player_* spawnpoint), NOT the full MoveToRandomMapLocation world-bounds sampler with SOLID/SLIME/LAVA/SKY content rejection — functionally close, not bit-identical."
     - "Ball/carrier presentation residuals: no EFFECT_KA_BALL_RESPAWN particle at relocate, no EFFECT_BALL_SPARKS on world-touch, no client ball model/glow_trail render, carried-ball scale 0.75 + invisibility-alpha sync not applied."
-    - "noncarrier_warn (CENTER_KEEPAWAY_WARN nudge to a non-carrier who frags) is NOT emitted — the notification is registered but the PlayerDies branch that sends it is unported (new_unmapped)."
-    - "Scores_CountFragsRemaining suppression (don't announce remaining frags when g_keepaway_score_timepoints is on) is unported (new_unmapped)."
     - "Multi-ball chaining (g_keepaway_ballcarrier_maxballs, cnt chain / ka_PlayerReset chain advance) is collapsed to a single ball; the structural carrier/collector bot-role split is one adaptive RoleKeepaway."
+    - "NOIMPACT fall-off respawn branch (ka_TouchEvent trace_dphitq3surfaceflags & Q3SURFACEFLAG_NOIMPACT) is unported; the NEEDKILL damage respawn branch IS covered."
+    - "Minor unmapped Base features: the :ka: gamelog echoes (ka_EventLog), reset_map_global float2int-decimal reset, and PreferPlayerScore_Clear are not modeled (low impact)."
 features:
   - id: keepaway.ball.spawn
     name: "Ball spawn at map start (single keepawayball)"
@@ -448,7 +448,7 @@ features:
       - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:FindBall"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:ForbidBotAttack"
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:797"
-      - "src/XonoticGodot.Server/GameWorld.cs:1896"
+      - "src/XonoticGodot.Server/GameWorld.cs:2372"
     constants:
       - { name: "ball_goalrating_scale", base: "8000", port: "RatingBall = 8000f", match: true }
       - { name: "routerating_dist", base: "2000", port: "2000f", match: true }
@@ -469,7 +469,7 @@ features:
       - "STILL OPEN (logic, why status stays partial): the collector/carrier split is collapsed into one adaptive RoleKeepaway (Base has two distinct havocbot_role_ka_carrier / havocbot_role_ka_collector functions with a per-bot role-timeout state machine). The port branches on carry-state inline with the same ratingscales rather than swapping the dedicated role function — a structural simplification, behaviourally equivalent at the rating level."
     verification:
       - { kind: codetrace, ref: "FindBall queries 'keepawayball' (BotObjectiveRoles.cs:387) == live ball classname; RoleKeepaway reads ball.GtCarrier; role live via BotRoles.ChooseRole at spawn", result: pass }
-      - { kind: codetrace, ref: "GameWorld.cs:1896 sets BotBrain.ForbidAttackHook = ka.ForbidBotAttack on Activate; BotBrain.cs:797 consults ForbidAttackHook in bot_shouldattack (live)", result: pass }
+      - { kind: codetrace, ref: "GameWorld.cs:2372 sets BotBrain.ForbidAttackHook = ka.ForbidBotAttack on Activate; BotBrain.cs:797 consults ForbidAttackHook in bot_shouldattack (live)", result: pass }
       - { kind: value, ref: "RatingBall=8000f == Base goalrating_ball 8000; routerating 2000f == Base", result: pass }
     confidence: high
     notes: "FIXED post-baseline: Bot_ForbidAttack is now wired live (was the residual STILL-OPEN item). RoleKeepaway finds + contests the ball with faithful ratings. Logic stays partial only for the structural carrier/collector role-function split."
@@ -479,47 +479,53 @@ features:
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/keepaway/sv_keepaway.qc:PlayerDies (g_keepaway_noncarrier_warn → CENTER_KEEPAWAY_WARN)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:OnDeath"
     constants:
-      - { name: "g_keepaway_noncarrier_warn", base: "0 (autocvar default)", port: "none (cvar never read)", match: false }
+      - { name: "g_keepaway_noncarrier_warn", base: "1 (gametypes-server.cfg:446 — NOT 0; baseline mis-recorded the bare-autocvar 0)", port: "reads g_keepaway_noncarrier_warn live (CvarNonCarrierWarn); fires when != 0", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base ka PlayerDies: when a NON-carrier frags someone (frag_target not carrying AND attacker not carrying) and autocvar_g_keepaway_noncarrier_warn is set, it sends CENTER_KEEPAWAY_WARN ('Get the ball to score points for frags!') to the killer. The port's OnDeath has NO such branch and never reads g_keepaway_noncarrier_warn."
-      - "The notification IS registered (NotificationsList.cs:986 CENTER KEEPAWAY_WARN) but nothing emits it. Default cvar is 0 (off), so the visible impact is nil at defaults — but the feature is unported."
+      - "FIXED (was missing→faithful/live): the OnDeath branch is now ported. When the attacker != victim, IS_PLAYER, the victim was NOT carrying AND the attacker is NOT the carrier, it reads g_keepaway_noncarrier_warn (CvarNonCarrierWarn, Keepaway.cs:561) and, when nonzero, sends CENTER KEEPAWAY_WARN to the killer (NotifBroadcast.OneOnly, Keepaway.cs:562) == QC ka PlayerDies Send_Notification(NOTIF_ONE_ONLY, frag_attacker, MSG_CENTER, CENTER_KEEPAWAY_WARN)."
+      - "OnDeath is on the live Combat.Death bus (added in Activate), so the warn fires on real kills. The notification is registered (NotificationsList.cs:986 CENTER KEEPAWAY_WARN)."
+      - "BASELINE CORRECTION: the cfg default is 1 (gametypes-server.cfg:446 'warn players when they kill without holding the ball'), so this warn is ON by default in Base — the prior row's claim of default-0/nil-impact was wrong on BOTH counts (default value AND it being unported)."
     verification:
-      - { kind: codetrace, ref: "Grep g_keepaway_noncarrier_warn / KEEPAWAY_WARN emission in Keepaway.cs — none; OnDeath has no noncarrier-warn branch", result: fail }
+      - { kind: codetrace, ref: "Keepaway.cs:556-563 OnDeath non-carrier branch reads CvarNonCarrierWarn and sends KEEPAWAY_WARN (OneOnly, Center) when nonzero; on the live Combat.Death bus", result: pass }
+      - { kind: value, ref: "gametypes-server.cfg:446 set g_keepaway_noncarrier_warn 1 == port reads the cvar (default-on)", result: pass }
     confidence: high
-    notes: "NEW ROW (previously unmapped Base feature). Low impact (default-off) but a genuine missing PlayerDies branch + unread cvar."
+    notes: "FIXED + value-corrected post-baseline: the non-carrier frag warning is now implemented + live, and the Base default is 1 (default-ON), not 0 as the baseline recorded."
 
   - id: keepaway.score.countfragsremaining
     name: "Suppress 'frags remaining' announce when timed scoring is on (Scores_CountFragsRemaining)"
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/keepaway/sv_keepaway.qc:Scores_CountFragsRemaining"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:AnnounceFragsRemaining"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:RecomputeLeader"
+      - "src/XonoticGodot.Server/GameWorld.cs:2820"
     constants:
-      - { name: "guard", base: "return !autocvar_g_keepaway_score_timepoints", match: false, port: "none" }
+      - { name: "guard", base: "return !autocvar_g_keepaway_score_timepoints", port: "if (ScoreTimePoints != 0f) return; (AnnounceFragsRemaining)", match: true }
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
-      presentation: missing
-      audio: na
-      liveness: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base MUTATOR_HOOKFUNCTION(ka, Scores_CountFragsRemaining) returns `!autocvar_g_keepaway_score_timepoints` — i.e. announce the remaining-frags countdown ONLY when time-scoring is OFF (when scoring is by carry-time the frag countdown is meaningless). The port has no Scores_CountFragsRemaining hook for ka, so the announce gating by g_keepaway_score_timepoints is not modeled."
-      - "Default g_keepaway_score_timepoints=0, so by default Base WOULD announce remaining frags; the divergence only manifests when a server enables time scoring (then Base suppresses the announce, the port would not)."
+      - "FIXED (was missing→faithful/live): the announce gating is now modeled. RecomputeLeader (called live each tick at GameWorld.cs:2820) calls AnnounceFragsRemaining, which early-returns when ScoreTimePoints != 0 (Keepaway.cs:620-621) — exactly QC's `return !autocvar_g_keepaway_score_timepoints`. When timepoints==0 (the default) it computes top/second primary scores and fires GameScores.CountFragsRemaining (the REMAINING_FRAG_{1,2,3} announcer), Keepaway.cs:644."
+      - "ResetFragsRemaining is also re-armed in Activate (Keepaway.cs:173) so the cue can fire again each match."
     verification:
-      - { kind: codetrace, ref: "Grep Scores_CountFragsRemaining / CountFragsRemaining in Keepaway.cs — none", result: fail }
-    confidence: medium
-    notes: "NEW ROW (previously unmapped Base feature). Niche: only diverges when time scoring is enabled. Depends on whether the port's score system even emits a remaining-frags announce hook."
+      - { kind: codetrace, ref: "GameWorld.cs:2820 ka.RecomputeLeader → AnnounceFragsRemaining; ScoreTimePoints != 0 suppresses (Keepaway.cs:620-621); else CountFragsRemaining (Keepaway.cs:644)", result: pass }
+    confidence: high
+    notes: "FIXED post-baseline: the timepoints-gated frags-remaining announce is now ported + live via RecomputeLeader/AnnounceFragsRemaining."

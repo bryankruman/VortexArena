@@ -7,8 +7,6 @@ summary:
   worst_gaps:
     - "LOS trace is a Fraction>=0.99 heuristic, not the QC trace_networkentity/entnum self-exclusion check (intended divergence — port can't map a remote to a trace-set entnum)"
     - "Chase own-tag (truly-local player) still can't draw: predicted local player is never in ClientNet.RemoteIds — only the spectatee arm of the self branch is live"
-    - "Status bar drawn as flat DrawRect rects, not the QC nametag_statusbar skin-image progress bar"
-    - "Decolorized teammate names render in flat white rather than the playername() team tint (minor)"
     - "MUTATOR_CALLHOOK(ShowNames_Draw) not invoked (stock no-op — no shipped mutator implements it)"
 features:
   - id: cl-shownames.core.master_enable
@@ -32,10 +30,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ShowNamesLayer.cs:147 _Draw gated on CvarBool(hud_shownames); instantiated+AddChild NetGame.cs:1482; fed NetGame.cs:2725-2738", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:148 _Draw gated on CvarBool(hud_shownames); instantiated+AddChild NetGame.cs:1513-1516; fed NetGame.cs:2897-2911", result: pass }
       - { kind: test, ref: "ShowNamesTests.CvarDefaults_MatchShippedBaseValues / EveryCvar_IsPrefixedHudShownames", result: pass }
     confidence: high
-    notes: "VERIFIED live: ShowNamesLayer instantiated + AddChild in SetupCameraAndHud (NetGame.cs:1482), fed each frame from NetGame._Process (2725), _Process->QueueRedraw->_Draw. Iterates ClientNet.RemoteIds filtered to NetEntityKind.Player (QC iterates per-maxclient entcs slots) — equivalent set."
+    notes: "VERIFIED live: ShowNamesLayer instantiated + AddChild in SetupCameraAndHud (NetGame.cs:1513), fed each frame from NetGame._Process (2897), _Process->QueueRedraw->_Draw. Iterates ClientNet.RemoteIds filtered to NetEntityKind.Player (QC iterates per-maxclient entcs slots) — equivalent set."
   - id: cl-shownames.gate.team_enemy
     name: "Team / enemy visibility gate"
     layer: [presentation]
@@ -59,8 +57,8 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ShowNamesLayer.cs:204-208 entcsPrivate = !isSelf && (sameTeamColor || radar_showenemies || LocalIsSpectating) — reproduces QC _entcs_send's three-arm private-slice gate (ent_cs.qc); LocalIsSpectating fed from NetGame.cs:2736 (spectatee_status!=0)", result: pass }
-      - { kind: code, ref: "ShowNamesLayer.cs:214 enemy-gate exempts the viewed self/spectatee (!isViewed), matching QC where the viewed player carries the private slice and is never enemy-gated", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:205-209 entcsPrivate = !isSelf && (sameTeamColor || radar_showenemies || LocalIsSpectating) — reproduces QC _entcs_send's three-arm private-slice gate (ent_cs.qc); LocalIsSpectating fed from NetGame.cs:2908 (spectatee_status!=0)", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:215 enemy-gate exempts the viewed self/spectatee (!isViewed), matching QC where the viewed player carries the private slice and is never enemy-gated", result: pass }
       - { kind: test, ref: "ShowNamesTests.Enemy_IsOnlyShown_WhenEnemiesCvarSet / SameTeam_RequiresTeamplay_AndMatchingTeam", result: pass }
     confidence: high
     notes: "WAVE-6 FIX (logic partial->faithful): the sameteam derivation now reproduces QC's m_entcs_private authority — the server-side _entcs_send gate (radar_showenemies || SAME_TEAM || observer) rather than the old bare (Colormap&0xFF)==LocalTeam client compare. radar_showenemies and the observe/spectate (LocalIsSpectating) arms are now honoured, and the same entcsPrivate flag drives the team/enemy gate AND the status bar's health/armor read (see entcs.private_healtharmor)."
@@ -88,8 +86,8 @@ features:
     gaps:
       - "Chase own-tag for the truly-local player still can't draw: the predicted local player is never in ClientNet.RemoteIds (HandleSnapshot skips LocalNetId), so the self branch only fires for the spectatee. In stock play this matters only for hud_shownames_self + chase_active on your OWN model in third person — a residual deferral; the spectatee path (the common observed case) is live."
     verification:
-      - { kind: code, ref: "ShowNamesLayer.cs:184-194 (isViewed = netId==CurrentViewedNetId; ChaseActive gate + hud_shownames_self || grace window spectatee_status>0 && now<=changed_time+1) vs QC:42-51", result: pass }
-      - { kind: code, ref: "NetGame.cs:2730-2732 feeds CurrentViewedNetId = SpectatingNetId!=0 ? SpectatingNetId : LocalNetId; SpectateeStatus/ChangedTime from ClientNet (live per-frame in UpdateHud)", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:185-195 (isViewed = netId==CurrentViewedNetId; ChaseActive gate + hud_shownames_self || grace window spectatee_status>0 && now<=changed_time+1) vs QC:42-51", result: pass }
+      - { kind: code, ref: "NetGame.cs:2899-2904 feeds CurrentViewedNetId = SpectatingNetId!=0 ? SpectatingNetId : LocalNetId; SpectateeStatus/ChangedTime from ClientNet (live per-frame in UpdateHud)", result: pass }
     confidence: high
     notes: "Spectatee/self branch wired end-to-end via CurrentViewedNetId (ClientNet.SpectatingNetId) and the 1s grace window is exact (spectatee_status>0 && now<=changed+1). Residual: the truly-local predicted player still isn't a remote, so its OWN chase tag is still a deferral. Not covered by a dedicated unit test (verified by code-read)."
   - id: cl-shownames.los.traceline
@@ -263,18 +261,18 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Bar is drawn as flat colored rects (DrawRect), not the QC HUD_Panel_DrawProgressBar with the nametag_statusbar skin image, so it lacks the skinned texture look."
+    gaps: []
     verification:
-      - { kind: code, ref: "ShowNamesLayer.cs:376-385 box adj + 424-442 (health red rightAlign / armor green leftAlign / 0.7 grey highlight backing) vs QC:183-208", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:378-386 box adj + 436-453 (health red rightAlign / armor green leftAlign / 0.7 grey highlight backing) vs QC:183-208", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:560-580 DrawStatusBar now renders the QC nametag_statusbar skin image via TextureCache.GetFirst(gfx/hud/<skin>/nametag_statusbar, gfx/hud/default/nametag_statusbar, .../progressbar) with a flat-rect fallback — matching QC HUD_Panel_DrawProgressBar precache_pic fall-through; asset present at assets/data/.../gfx/hud/{default,luminos}/nametag_statusbar.tga", result: pass }
       - { kind: test, ref: "ShowNamesTests.StatusBar_OnlyForLivingTeammates_WhenStatusOn / HealthAndArmor_RoundTripTogether_ForATeammateTag", result: pass }
-    confidence: medium
-    notes: "Teammate-only + alive + status-cvar gating, half-width split, red/green, highlight backing all faithful; skin-image fidelity (nametag_statusbar gfx) not reproduced — flat rects + black backing instead."
+    confidence: high
+    notes: "WAVE-6e FIX (presentation partial->faithful): the status bar is now drawn with the nametag_statusbar HUD skin image (HUD_Panel_DrawProgressBar port) rather than flat rects — DrawStatusBar tries the skin texture, then the generic progressbar skin, then a flat colored rect, exactly QC's precache fall-through. Teammate-only + alive + status-cvar gating, half-width split, red/green, highlight backing all faithful."
   - id: cl-shownames.name.decolorize
     name: "Name draw + decolorize + width-truncation"
     layer: [presentation]
@@ -292,20 +290,20 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Decolorized teammate name renders in flat white (1,1,1,a) rather than the team-tint that QC's playername(s, team, true) applies; minor cosmetic divergence (both strip the name's own ^codes)."
-      - "Name comes from the scoreboard name slice (ResolveScoreboardName, NetGame.cs:1484 NameResolver), not a dedicated entcs name stream; if the scoreboard row is missing the name is empty and the tag shows no text (status bar still draws)."
+      - "Name comes from the scoreboard name slice (ResolveScoreboardName, NetGame.cs:1515 NameResolver), not a dedicated entcs name stream; faithful entcs_GetName stand-in but if the scoreboard row is missing the name is empty and the tag shows no text (status bar still draws). Not a presentation-fidelity defect."
     verification:
-      - { kind: code, ref: "ShowNamesLayer.cs:463-493 DrawName: Strip/Parse + center on anchor + ShortenToWidth/ShortenRunsToWidth (textShortenToWidth port, ellipsis); NO drop-shadow vs QC:212-219", result: pass }
-      - { kind: code, ref: "ShowNamesLayer.cs:499-556 ShortenToWidth / ShortenRunsToWidth reproduce QC textShortenToWidth(name, namewidth=mySize.x) with stringwidth_colors (color codes zero-width)", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:479-509 DrawName: Strip/Parse + center on anchor + ShortenRunsToWidth (textShortenToWidth port, ellipsis); NO drop-shadow vs QC:212-219", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:482-491 decolor path prepends TeamColorCode(teamId) (^1/^4/^3/^6, ^7 FFA) ahead of the stripped name and renders it through the color-coded path — reproduces QC playername(s, team, true) = strcat(Team_ColorCode(teamid), strdecolorize(name)); team tint now applied, not flat white", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:515-551 ShortenRunsToWidth reproduces QC textShortenToWidth(name, namewidth=mySize.x) with stringwidth_colors (color codes zero-width)", result: pass }
       - { kind: test, ref: "ShowNamesTests.Decolorize_FollowsTheModeAndTeamplay", result: pass }
     confidence: high
-    notes: "WAVE-6 FIX (logic partial->faithful, presentation partial->faithful for two prior defects): width truncation is now implemented (ShortenToWidth + ShortenRunsToWidth clamp the name to the resized tag box width, matching QC textShortenToWidth), and the old 1px black drop-shadow was REMOVED (DrawName explicitly notes QC drawcolorcodedstring has no shadow). decolorize 0/1/2 + teamplay rule + center-on-anchor reproduced. Remaining minor: decolorized names render flat white not the playername team tint; name source is the scoreboard slice."
+    notes: "WAVE-6e FIX (presentation partial->faithful — the flat-white divergence is CLOSED): decolorized teammate names now carry the playername() team tint via TeamColorCode(teamId) prepended to the stripped name and routed through the color-coded path (engine palette colour of the team code), matching QC strcat(Team_ColorCode(teamid), strdecolorize(name)). Width truncation (ShortenRunsToWidth) and the no-drop-shadow drawcolorcodedstring layout were already faithful from Wave 6. decolorize 0/1/2 + teamplay rule + center-on-anchor reproduced. Remaining note (not a presentation defect): name source is the scoreboard slice (faithful entcs_GetName stand-in)."
   - id: cl-shownames.alpha.entcs_getalpha
     name: "entcs_GetAlpha model-alpha factor + ShowNames_Draw mutator hook"
     layer: [presentation]

@@ -6,11 +6,11 @@ summary:
   feature_count: 17
   worst_gaps:
     - "Join queue (g_balance_teams_queue) still entirely missing: no deficit-filling tag-in, wants_join exists as a field but is never consulted for queueing."
-    - "Excess-player removal (g_balance_teams_remove) still entirely missing: a leave that unbalances 2-team play triggers no 10s countdown move-to-spec."
-    - "clientcolors / pants+shirt color model (SV_ChangeTeam / setcolor / SetPlayerColors) still absent: team is set directly as a color code."
     - "No TrueSkill ratings: humans still default to skill 5 (bots feed real BotSkill, the unranked_factor 0.666 + time-scaled score ramp are now consumed, so the balance ALGORITHM is faithful, but human-vs-human ties remain count-only because the human skill DATA is flat)."
-    - "Team-nagger network center-print still missing: warmup is now HELD while unbalanced, but players are never sent the unbalanced-teams nag notification."
+    - "Team-nagger network center-print still missing: warmup is now HELD while unbalanced, but players are never sent the unbalanced-teams nag notification (no SendFlags bits 5/6 Nagger entity)."
     - "Player_ChangeTeam / Player_ChangedTeam mutator hooks now exist and fire on every team-set, but no port mutator yet subscribes to them (the hook chain is live but has no consumers)."
+    - "Bot autobalance still polls on a 3s cadence (Base is per-event) and uses frag score not SP_SCORE for the lowest-scorer tiebreak."
+    - "No unified Team_* global-entity API (winner/alive/owned-item queries reimplemented per gametype); out of this unit's narrow scope."
 features:
   - id: sv-teamplay.identity.team_codes
     name: "Team color codes & active-team set"
@@ -118,7 +118,7 @@ features:
     constants:
       - { name: "imbalance gap threshold", base: "2 (largest-smallest >= 2)", port: "2", match: true }
       - { name: "tiebreak score", base: "SP_SCORE", port: "frag score (ScoreFrags)", match: false }
-      - { name: "trigger", base: "on every human SetPlayerTeam (unconditional)", port: "3s timer, gated by g_balance_teams||prevent_imbalance", match: false }
+      - { name: "trigger", base: "on every human SetPlayerTeam (unconditional)", port: "3s timer (now UNCONDITIONAL — no cvar gate) + synchronous on human team-change", match: false }
     status:
       logic: partial
       values: partial
@@ -129,12 +129,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The 3s polling timer (BalanceTeamsTick) still gates on g_balance_teams||g_balance_teams_prevent_imbalance; Base autobalances bots unconditionally (QC explicitly comments that gate OUT). The synchronous human-switch path (below) is NOT cvar-gated, so a manual switch always compensates, but the steady-state poll only runs when the cvar is set."
+      - "Steady-state poll runs on a 3s cadence (BalanceTeamsTick, GameWorld.cs:2747-2749) where Base autobalances per-event; the cvar gate is now GONE (the poll is unconditional, stopped only by GameStopped/intermission, matching QC's commented-out gate). A synchronous compensation also fires on every human team-change (KillCountdown.PerformTeamChange), so the only timing divergence left is the 3s polling granularity."
       - "Uses frag score (ScoreFrags), not SP_SCORE, to pick the bot to move; ordering can differ when frags != composite score."
     verification:
-      - { kind: code-read, ref: "AutoBalanceBots (Teamplay.cs:571) is now invoked from TWO paths: (1) GameWorld.BalanceTeamsTick on a 3s timer (cvar-gated), and (2) synchronously from KillCountdown.PerformTeamChange (GameWorld.cs:896) whenever a HUMAN finishes a team change, mirroring QC SetPlayerTeam's `if (!IS_BOT_CLIENT) TeamBalance_AutoBalanceBots()`. The move now routes through SetTeam (mutator-vetoable). frag-score tiebreak unchanged.", result: partial }
+      - { kind: code-read, ref: "BalanceTeamsTick (GameWorld.cs:2736-2756) now runs autobalance UNCONDITIONALLY — the prior `if (g_balance_teams||prevent_imbalance)` gate is removed (comment: 'bot autobalance is UNCONDITIONAL'); only GameStopped halts it. AutoBalanceBots (Teamplay.cs:646) is invoked from TWO paths: the 3s poll AND synchronously from KillCountdown.PerformTeamChange (GameWorld.cs:898+) on a human team change. The move routes through SetTeam (mutator-vetoable). frag-score tiebreak unchanged.", result: partial }
     confidence: high
-    notes: "FIX: the synchronous-on-human-team-change trigger is now wired (GameWorld.cs:892-899, QC teamplay.qc:300-301), so a manual human switch is compensated immediately rather than only on the next timer poll — the prior gap #2 is resolved. The moved bot now goes through SetTeam (firing the Player_ChangeTeam/ChangedTeam hooks, vetoable). timing stays partial: the steady-state poll remains cvar-gated and on a 3s cadence (Base is per-event), and the tiebreak still uses frag score not SP_SCORE."
+    notes: "FIX (since 2026-06-25 baseline): the steady-state poll is no longer cvar-gated — BalanceTeamsTick autobalances unconditionally (only intermission/GameStopped stops it), matching QC's explicitly-commented-out g_balance_teams gate, so the prior gap #1 (cvar-gated poll) is RESOLVED. Combined with the already-live synchronous-on-human-switch trigger, bots autobalance like Base in all configs. timing stays partial only because of the 3s polling granularity (Base is per-event) and the frag-score (not SP_SCORE) tiebreak."
 
   - id: sv-teamplay.balance.prevent_imbalance
     name: "Block switching to a stronger/larger team mid-match"
@@ -151,19 +151,19 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The rejection surfaces only as a sprint string (\"You cannot change to a larger team.\"); Base also sends INFO_TEAMCHANGE_STRONGERTEAM + CENTER_TEAMCHANGE_STRONGERTEAM notifications (center-print). No notification networked."
       - "Base's queue-aware clause (!g_balance_teams_queue || caller.team > 0) is absent since the join queue isn't ported; with no queue this is a no-op so behavior matches for stock servers."
       - "Admin moveplayer/shuffleteams intentionally bypass the gate (matches Base — Base's gate is only in ClientCommand_selectteam, not the admin move path)."
     verification:
-      - { kind: code-read, ref: "Commands.cs:1455 calls IsTeamAllowedForSwitch(caller, team, players, Warmup.WarmupStage) for a non-auto selectteam and rejects when false (before deferring via KillCountdown). Matches Base cmd.qc:746 placement (player selectteam path).", result: pass }
+      - { kind: code-read, ref: "Commands.cs:1475 calls IsTeamAllowedForSwitch(caller, team, players, Warmup.WarmupStage) for a non-auto selectteam and rejects when false (before deferring via KillCountdown). Matches Base cmd.qc:746 placement (player selectteam path).", result: pass }
+      - { kind: code-read, ref: "On rejection (Commands.cs:1479-1480) the port now sends BOTH INFO_TEAMCHANGE_STRONGERTEAM and CENTER_TEAMCHANGE_STRONGERTEAM (NOTIF_ONE_ONLY to the caller, CPID_PREVENT_JOIN group) — matching Base cmd.qc:754-755 exactly (both NOTIF_ONE_ONLY). Notifications registered in NotificationsList.cs:825/1061.", result: pass }
     confidence: high
-    notes: "FIX (Wave-5): IsTeamAllowedForSwitch is now WIRED into CmdSelectTeam (the player team/selectteam command), exactly where Base places the gate (cmd.qc:746). A human can no longer manually switch to the larger/stronger team mid-match. logic stub->faithful; liveness dead->live; presentation missing->partial (sprint only, no center-print notification)."
+    notes: "FIX (since 2026-06-25 baseline): the rejection now networks the full Base notification pair — INFO + CENTER_TEAMCHANGE_STRONGERTEAM (NOTIF_ONE_ONLY for both, matching cmd.qc:754-755) — not just the sprint string. presentation partial->faithful. (Earlier Wave-5 FIX wired the gate itself into CmdSelectTeam at the cmd.qc:746 placement; logic faithful + liveness live were already established.)"
 
   - id: sv-teamplay.forced.determine_team
     name: "Forced teams (g_forced_team_*, otherwise, campaign forceteam)"
@@ -237,26 +237,34 @@ features:
     base_refs:
       - "server/teamplay.qc:TeamBalance_RemoveExcessPlayers"
       - "server/teamplay.qc:Remove_Countdown"
-    port_refs: []
+      - "server/client.qc:3057 (ClientDisconnect calls TeamBalance_RemoveExcessPlayers)"
+    port_refs:
+      - "src/XonoticGodot.Server/Teamplay.cs:RemoveExcessPlayers"
+      - "src/XonoticGodot.Server/Teamplay.cs:TickRemoveCountdown"
+      - "src/XonoticGodot.Server/Teamplay.cs:MoveToSpectator (host hook)"
+      - "src/XonoticGodot.Server/GameWorld.cs:830-831 (MoveToSpectator -> PutObserverInServer; OnAfterClientDisconnect -> RemoveExcessPlayers)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2743 (per-frame TickRemoveCountdown)"
+      - "src/XonoticGodot.Server/Cvars.cs:151-152 (g_balance_teams_remove / _wait registration)"
     constants:
-      - { name: "g_balance_teams_remove", base: "0", port: "none (unregistered)", match: false }
-      - { name: "g_balance_teams_remove_wait", base: "10", port: "none", match: false }
+      - { name: "g_balance_teams_remove", base: "0", port: "0 (registered, Cvars.cs:151)", match: true }
+      - { name: "g_balance_teams_remove_wait", base: "10", port: "10 (registered, Cvars.cs:152)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "On a player leave that unbalances 2-team play, Base moves the NEWEST joiner on the overfull team to spectators after a 10s countdown nag; the port does nothing."
-      - "No Remove_Countdown timer, no CENTER_MOVETOSPEC_REMOVE / INFO_MOVETOSPEC_REMOVE notifications."
+      - "Like Base, only handles the 2-team case (AVAILABLE_TEAMS != 2 early-out) and skips campaign — matches the QC FIXME-noted limitation (Base also doesn't avoid kicking the flag/ball/key carrier; the port shares that gap, but it's a Base limitation not a port divergence)."
     verification:
-      - { kind: grep, ref: "no RemoveExcessPlayers/Remove_Countdown/balance_teams_remove in src", result: fail }
+      - { kind: code-read, ref: "RemoveExcessPlayers (Teamplay.cs:880) mirrors TeamBalance_RemoveExcessPlayers: 2-team+non-campaign+cvar gate, find min team size, for each overfull team move the newest joiner (max StartPlayTime) to spec — immediately if remove_wait==0 (INFO_MOVETOSPEC_REMOVE + PutObserverInServer) else a Remove_Countdown nag (CENTER_MOVETOSPEC_REMOVE with the wait COUNT).", result: pass }
+      - { kind: code-read, ref: "TickRemoveCountdown (Teamplay.cs:948) mirrors Remove_Countdown: 1 Hz think, fires when lifetime<=0 OR teams equalised; on expiry moves the player to spec + Kill_Notification(CPID_REMOVE) + re-runs RemoveExcessPlayers. Wired per-frame at GameWorld.cs:2743 and on disconnect at GameWorld.cs:831 (OnAfterClientDisconnect, the leaver already out of the roster — matches client.qc:3057).", result: pass }
+      - { kind: code-read, ref: "MOVETOSPEC_REMOVE registered as both INFO (NotificationsList.cs:799) and CENTER w/ CPID_REMOVE (NotificationsList.cs:936); SendCenterKill(CPID_REMOVE) exists (NotificationSystem.cs:210).", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-5. Default off in Base."
+    notes: "FIX (since 2026-06-25 baseline): the entire excess-player removal is now ported and LIVE. g_balance_teams_remove (0) + _wait (10) registered; RemoveExcessPlayers wired on disconnect (GameWorld.cs:831) and TickRemoveCountdown per-frame (2743); MoveToSpectator -> PutObserverInServer; the MOVETOSPEC_REMOVE INFO+CENTER notifications are registered and sent. logic/values/timing/presentation missing->faithful; liveness na->live. Default off in Base, so impact is config-gated, but parity is now complete."
 
   - id: sv-teamplay.nagger.team_nagger
     name: "Unbalanced-teams nag + warmup hold (sv_teamnagger)"
@@ -381,25 +389,31 @@ features:
       - "server/teamplay.qc:SV_ChangeTeam"
       - "server/teamplay.qc:setcolor"
       - "server/teamplay.qc:SetPlayerColors"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/Teamplay.cs:SetColor (QC setcolor)"
+      - "src/XonoticGodot.Server/Teamplay.cs:SetPlayerColors"
+      - "src/XonoticGodot.Server/Teamplay.cs:ChangeTeam (QC SV_ChangeTeam)"
+      - "src/XonoticGodot.Server/Commands.cs:CmdColor (engine `color` command -> ChangeTeam)"
     constants:
-      - { name: "team-from-color decode", base: "team = (clr & 15) + 1", port: "none", match: false }
-      - { name: "teamplay color set", base: "16*pants + pants", port: "none", match: false }
+      - { name: "team-from-color decode", base: "team = (clr & 15) + 1", port: "(clr & 15) + 1 (SetColor)", match: true }
+      - { name: "teamplay color set", base: "16*pants + pants", port: "16*pants + pants (SetPlayerColors)", match: true }
+      - { name: "FFA color set", base: "shirt + pants", port: "shirt + pants (SetPlayerColors)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No clientcolors / pants+shirt color model: the 'color' command's non-teamplay re-color and the teamplay team-from-color derivation are absent. Team is set directly as a color code."
+      - "The teamplay path sets Player.ClientColors but the visible player-model re-color from clientcolors is a separate presentation concern (handled in the model/render layer); this row covers only the server-side authority encoding, which is now faithful."
     verification:
-      - { kind: grep, ref: "no clientcolors/SetPlayerColors/SV_ChangeTeam in src", result: fail }
-    confidence: medium
-    notes: "Unchanged by Wave-5. Player model team color is handled elsewhere (presentation); the QC client-colors authority encoding is not ported here."
+      - { kind: code-read, ref: "SetColor (Teamplay.cs:413) == QC setcolor: clientcolors = clr; team = teamplay ? (clr & 15) + 1 : -1. SetPlayerColors (427) == QC SetPlayerColors: teamplay -> SetColor(16*pants+pants), FFA -> SetColor(shirt+pants). ChangeTeam (441) == QC SV_ChangeTeam: re-colors only in a NON-team game.", result: pass }
+      - { kind: code-read, ref: "Live via the engine `color` command: CmdColor (Commands.cs:1498) decodes one- or two-arg color, calls Teamplay.ChangeTeam; registered in ClientCommandRegistry.cs:56. SetPlayerColors is also the sink used by AssignBestTeam/SetTeam (every team set now writes clientcolors).", result: pass }
+    confidence: high
+    notes: "FIX (since 2026-06-25 baseline): the clientcolors / pants+shirt model is now ported. setcolor (SetColor), SetPlayerColors, and SV_ChangeTeam (ChangeTeam) all match Base, and the `color` command path is wired (CmdColor). Crucially every team set (AssignBestTeam, SetTeam) now routes through SetPlayerColors so Player.ClientColors stays consistent with .team, not just a bare team-code write. logic/values/presentation missing->faithful; liveness na->live."
 
   - id: sv-teamplay.global.team_entities
     name: "Global team entities (score, alive count, owned items, winner queries)"
@@ -450,8 +464,8 @@ features:
     gaps:
       - "No port mutator yet SUBSCRIBES to PlayerChangeTeam / PlayerChangedTeam — the hook chain fires on every team set but currently has zero consumers (only Teamplay.cs references the hooks). The mechanism is faithful and reachable; a future mode that needs to veto/react has a seam, but no live behavior depends on it yet."
     verification:
-      - { kind: code-read, ref: "Teamplay.cs:350 SetTeam: early-outs (returns true) if already on the team (QC Player_SetTeamIndex guard); fires MutatorHooks.PlayerChangeTeam.Call(ref pre) — a true return BLOCKS the change and returns false; applies player.Team = newTeam; then fires PlayerChangedTeam.Call(ref post) (return ignored). Matches Player_SetTeamIndex structure exactly.", result: pass }
-      - { kind: code-read, ref: "SetTeam is the single team-set seam on every live team-change path: KillCountdown.PerformTeamChange (selectteam, GameWorld.cs:889), CmdMovePlayer (Commands.cs:1295), CmdShuffleTeams (Commands.cs:1270), and AutoBalanceBots (Teamplay.cs:597). All check the bool return and skip the kill when vetoed. AssignBestTeam (the connect/auto-join path) still writes joiner.Team directly (matches QC TeamBalance_JoinBestTeam, which calls SetPlayerTeam->Player_SetTeamIndex; the port's auto-join is the one path that bypasses the hook).", result: pass }
+      - { kind: code-read, ref: "Teamplay.cs:376 SetTeam: early-outs (returns true) if already on the team (QC Player_SetTeamIndex guard); fires MutatorHooks.PlayerChangeTeam.Call(ref pre) — a true return BLOCKS the change and returns false; then applies the team THROUGH SetPlayerColors(player, newTeam-1) (spectator/None sentinel zeroes clientcolors + sets team=-1), so .team AND .clientcolors stay consistent — matching QC Player_SetTeamIndex's SetPlayerColors tail exactly (was a bare player.Team= write in the 2026-06-25 baseline); then fires PlayerChangedTeam.Call(ref post) (return ignored).", result: pass }
+      - { kind: code-read, ref: "SetTeam is the single team-set seam on every live team-change path: KillCountdown.PerformTeamChange (selectteam), CmdMovePlayer, CmdShuffleTeams, and AutoBalanceBots (Teamplay.cs:672). All check the bool return and skip the kill when vetoed. AssignBestTeam (the connect/auto-join path) now sets the team via SetPlayerColors (not the hook-firing SetTeam) — matching QC TeamBalance_JoinBestTeam, which calls SetPlayerTeam (no Player_SetTeamIndex hook on the auto-join); so the auto-join correctly bypasses the change hooks but still writes consistent clientcolors.", result: pass }
       - { kind: code-read, ref: "MutatorHooks.cs:68-91 defines PlayerChangeTeamArgs / PlayerChangedTeamArgs (player, oldTeamIndex, newTeamIndex) and the two HookChains, documented against EV_Player_ChangeTeam / EV_Player_ChangedTeam.", result: pass }
     confidence: high
     notes: "FIX (since 2026-06-22): the Player_ChangeTeam / Player_ChangedTeam hook chain now EXISTS (MutatorHooks.cs) and is wired through a new SetTeam seam that replaces the bare `player.Team = ...` on every command/autobalance team-change path — pre-hook can veto (return true blocks), post-hook reacts, and the QC 'already on this team' early-out lives in SetTeam. logic missing->faithful; liveness na->live. Residual: no port mutator subscribes yet (the chain has no consumers), and the connect-side AssignBestTeam auto-join still sets Team directly rather than via SetTeam."

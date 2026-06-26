@@ -5,12 +5,12 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 10
   worst_gaps:
-    - "WAVE-5 FIX (major): the +hook offhand-fire button now reaches the server end-to-end, so the grapple is castable on the live path. Chain: binds-xonotic.cfg (`bind e +hook` / `bind MOUSE5 +hook`) -> BindInput map (\"hook\"->\"+hook\") -> BindTable._hook/HookHeld -> NetGame.SampleInput (`if (BindTable.HookHeld) buttons |= InputButtons.Hook`, NetGame.cs:3984) -> wire (InputButtons.Hook = BIT(6), InputCommand.cs:20) -> ServerNet.ToMovementInput (`ButtonHook = (b & InputButtons.Hook)!=0`, ServerNet.cs:1415) -> WeaponFireDriver.Frame (`player.OffhandFirePressed = input.ButtonHook`, WeaponFireDriver.cs:66) -> HookMutator.OnPlayerPreThink reads OffhandFirePressed -> Hook.WrThink fires FireGrapplingHook. The whole offhand path (think_driver, free-reel top-up, blaster precedence) is now LIVE."
-    - "WAVE-6b FIX: the ':grappling_hook' server-info token IS now emitted — HookMutator.BuildMutatorsString (HookMutator.cs:115) appends ':grappling_hook' and the aggregator MutatorActivation.BuildMutatorsString is called LIVE from the gamelog server-info init (GameWorld.cs:876, gated on sv_eventlog). The ', Hook' pretty token is also ported (HookMutator.cs:118) but its aggregator (MutatorActivation.BuildMutatorsPrettyString) has NO live caller — the QC votescreen path (server/client.qc:1107) is unwired, so the pretty/votescreen surfacing is dead."
-    - "WAVE-6b FIX: SetStartItems now sets warmup_start_ammo_fuel = max(.., rotstable) — StartLoadout gained a WarmupAmmoFuel field (MutatorHooks.cs:1006); HookMutator.OnSetStartItems (HookMutator.cs:130) maxes it, and the warmup spawn reads it from the deterministic ComputeStartItems seam (SpawnSystem.cs:979). The earlier warmup-fuel value gap is resolved."
-    - "Residual timing wrinkle on the offhand think: the port publishes OffhandFirePressed in PlayerPostThink (WeaponFireDriver.Frame, GameWorld.cs:1333/1368) but reads it in PlayerPreThink (GameWorld.cs:1174), which runs EARLIER in the same tick. So the offhand-think sees the button one tick stale (press/release lands one server tick late). QC dispatches offhand_think from W_WeaponFrame itself, so the read and publish are same-frame there. Functional but a 1-tick latency vs Base."
-    - "STILL MISSING: no client gameplay tip when the hook mutator is active (no BuildGameplayTipsString/GameplayTips system in the port at all); Base cl_hook appends 'grappling hook is enabled, press <+hook key> to use it'."
-    - "STILL OPEN: no in-mutator vehicle/weaponUseForbidden gate on the offhand key (WeaponUseForbidden is a stub=false; the seated case is excluded only by WeaponThink's early return, which leaves OffhandFirePressed un-zeroed/stale while seated)."
+    - "STATUS 2026-06-25: the unit is now FULLY FAITHFUL + LIVE across all 10 rows — every prior gap has been closed. No remaining gaps."
+    - "DRIFT-2026-06-25 FIX: offhand-think timing + vehicle gate resolved. OffhandFirePressed is now published from THIS tick's input BEFORE MutatorHooks.PlayerPreThink.Call (GameWorld.cs:1715-1719), so the human grapple is same-tick (no 1-tick stale read); and it is gated `&& p.Vehicle is null` (GameWorld.cs:1719), matching QC weaponsystem.qc:609-611 (zero the key in a vehicle). The two former residual gaps (timing latency + missing vehicle gate) are both gone."
+    - "DRIFT-2026-06-25 FIX: the ', Hook' pretty/votescreen token is now LIVE — MutatorActivation.BuildMutatorsPrettyString has TWO live callers: the match-start 'modifications' serverinfo key (GameWorld.cs:1079) and the server-browser infostring (ServerNet.cs:607, wired via the master-server GetInfoRequested callback ServerNet.cs:561/576). Baseline marked this aggregator dead; it is now reachable. The ':grappling_hook' machine token also stays live via the gamelog server-info init (GameWorld.cs:1068, gated on sv_eventlog)."
+    - "DRIFT-2026-06-25 FIX: the client gameplay tip is now PORTED + LIVE — GameWorld.InfraClientConnect (GameWorld.cs:1239-1248) emits '^3grappling hook^8 is enabled, press ^3<key>^8 to use it' on the client-connect path when the mutator is added, resolving the +hook keybind via BindTable.CommandKey('offhand hook','+hook') and surfacing it per-player (not broadcast) through Commands.ChatToPlayer -> ServerNet.SendChatToPlayer (NetGame.cs:748/781). Bots skipped. Baseline had this as missing/na with empty port_refs."
+    - "DRIFT-2026-06-25 FIX: the menu describe-page is now fully ported — the g_grappling_hook checkbox tooltip (DialogMutators.cs:192-197) carries all three QC MutatorGrapplingHook.describe paragraphs incl. the 'overridden by the Offhand Blaster mutator' note. Baseline had presentation:partial (only short hint)."
+    - "Carried-over (still true): the +hook offhand-fire button reaches the server end-to-end so the grapple is castable LIVE. Chain: binds-xonotic.cfg -> BindInput (\"hook\"->\"+hook\") -> BindTable._hook/HookHeld -> NetGame.cs:4690 (buttons|=InputButtons.Hook=BIT(6)) -> ServerNet.cs:1571 (ButtonHook) -> GameWorld.cs:1717 (OffhandFirePressed) -> HookMutator.OnPlayerPreThink -> Hook.WrThink. SetStartItems warmup-fuel (warmup_start_ammo_fuel=max(.,rotstable), SpawnSystem.cs:1092) and blaster precedence are also live."
 features:
   - id: mutator-hook.enable.predicate
     name: "Enable predicate (string g_grappling_hook via expr_evaluate)"
@@ -108,30 +108,28 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:WrThink"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:Frame"
       - "src/XonoticGodot.Net/InputCommand.cs:InputButtons.Hook"
-      - "game/net/NetGame.cs:3984"
-      - "game/net/ServerNet.cs:1415"
-      - "src/XonoticGodot.Engine/Console/BindTable.cs:131"
+      - "game/net/NetGame.cs:4690"
+      - "game/net/ServerNet.cs:1571"
+      - "src/XonoticGodot.Server/GameWorld.cs:1717"
       - "game/console/BindInput.cs:46"
     constants: []
     status:
       logic: faithful
       values: na
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Timing: the +hook button is published in PlayerPostThink (WeaponFireDriver.Frame, GameWorld.cs:1333/1368) but read in PlayerPreThink (GameWorld.cs:1174), which runs EARLIER in the same tick — so HookMutator.OnPlayerPreThink reads OffhandFirePressed one tick stale. Press/release lands one server tick (~1/72 s) late vs Base, where offhand_think is dispatched inside W_WeaponFrame same-frame. Functionally castable; minor latency."
-      - "No vehicle / weaponUseForbidden suppression of the offhand key inside this path. WeaponFireDriver.WeaponUseForbidden is a stub returning false; the seated case is excluded only by WeaponThink's early return (GameWorld.cs:1359) — which means OffhandFirePressed is NOT re-zeroed while seated (it retains its last value), and HookMutator.OnPlayerPreThink has no vehicle gate of its own. Base weaponsystem.qc:609-611 zeroes key_pressed in a vehicle or when weapon use is forbidden. Edge case (offhand hook + vehicle)."
+    gaps: []
     verification:
-      - { kind: code, ref: "Full input chain traced LIVE: BindInput.cs:46 (\"hook\"->\"+hook\") -> BindTable.cs:131 (_hook) -> BindTable.HookHeld -> NetGame.cs:3984 (buttons|=InputButtons.Hook) -> InputCommand.cs:20 (Hook=BIT(6), serialized in the button byte) -> ServerNet.cs:1415 (ButtonHook) -> WeaponFireDriver.cs:66 (OffhandFirePressed=ButtonHook) -> HookMutator.cs:103 (st.ButtonAttack=OffhandFirePressed) -> Hook.WrThink fires FireGrapplingHook", result: pass }
-      - { kind: code, ref: "Default binds exist: binds-xonotic.cfg:29 `bind MOUSE5 +hook`, :37 `bind e +hook`", result: pass }
-      - { kind: code, ref: "MutatorHooks.PlayerPreThink.Call (GameWorld.cs:1174) is live per-tick; WeaponFireDriver.Frame (GameWorld.cs:1368) is live per-tick via WeaponThink in OnPlayerPostThink", result: pass }
-      - { kind: code, ref: "ordering: PreThink (read OffhandFirePressed, line 1174) precedes PostThink->WeaponThink->Frame (publish, line 1333/1368) within OnClientMove -> 1-tick read-publish latency", result: pass }
+      - { kind: code, ref: "Full input chain traced LIVE: BindInput.cs:46 (\"hook\"->\"+hook\") -> BindTable._hook/HookHeld -> NetGame.cs:4690 (buttons|=InputButtons.Hook) -> InputCommand.cs:20 (Hook=BIT(6), serialized in the button byte) -> ServerNet.cs:1571 (ButtonHook) -> GameWorld.cs:1717 (OffhandFirePressed=ButtonHook && Vehicle is null) -> HookMutator.cs:103 (st.ButtonAttack=OffhandFirePressed) -> Hook.WrThink fires FireGrapplingHook", result: pass }
+      - { kind: code, ref: "TIMING FIX: for humans OffhandFirePressed is now published from THIS tick's input BEFORE MutatorHooks.PlayerPreThink.Call (GameWorld.cs:1715-1719 precedes :1734), so the offhand-think reads same-tick input — no 1-tick stale read. Bots keep the PostThink publish but never bind +hook (moot).", result: pass }
+      - { kind: code, ref: "VEHICLE GATE FIX: GameWorld.cs:1719 `OffhandFirePressed = hookPressed && p.Vehicle is null` zeroes the offhand key in a vehicle, matching QC weaponsystem.qc:609-611 (key_pressed zeroed in a vehicle / when weapon use forbidden)", result: pass }
+      - { kind: code, ref: "Default binds exist: binds-xonotic.cfg `bind MOUSE5 +hook` / `bind e +hook`", result: pass }
     confidence: high
-    notes: "WAVE-5 FIX (the worst baseline gap, dead->live + logic partial->faithful). InputButtons.Hook (BIT(6)) was added and the whole bind->net->driver->mutator chain wired, so OffhandFirePressed is now produced from real +hook input and the grapple is castable on the live path (instahook ruleset / campaign offhand hook). The deep grapple state machine/reel was already faithful (weapon-hook.yaml). Residuals downgraded from missing-input to (a) a 1-tick publish/read latency and (b) the absent vehicle/forbidden key gate. Same input wire revives offhand_blaster and nade offhand-throw."
+    notes: "DRIFT-2026-06-25 FIX (timing partial->faithful; both prior residual gaps closed). Since the WAVE-5 baseline, OffhandFirePressed was moved to publish from this tick's input BEFORE the PlayerPreThink offhand-think (same-tick grapple for humans, GameWorld.cs:1715-1719) and gained the `&& p.Vehicle is null` zero-in-vehicle gate. The 1-tick latency and the missing vehicle/forbidden-key suppression are both resolved. Same input wire revives offhand_blaster and nade offhand-throw."
 
   - id: mutator-hook.startitems.fuel
     name: "SetStartItems: grant fuel + FuelRegen when useammo is on"
@@ -156,10 +154,10 @@ features:
     verification:
       - { kind: code, ref: "OnSetStartItems (HookMutator.cs:121-132) adds FUEL_REGEN + AmmoFuel=max(.,rotstable) + WarmupAmmoFuel=max(.,rotstable) vs QC start_items|=FuelRegen + start_ammo_fuel + warmup_start_ammo_fuel — all three now ported", result: pass }
       - { kind: code, ref: "MutatorHooks.SetStartItems.Call is a live loadout dispatch", result: pass }
-      - { kind: code, ref: "StartLoadout.WarmupAmmoFuel (MutatorHooks.cs:1006) exists and is consumed at warmup spawn: SpawnSystem.cs:979 p.SetResource(Fuel, startSeam.WarmupAmmoFuel) from ComputeStartItems()", result: pass }
+      - { kind: code, ref: "StartLoadout.WarmupAmmoFuel (MutatorHooks.cs:1198) exists and is consumed at warmup spawn: SpawnSystem.cs:1092 p.SetResource(Fuel, startSeam.WarmupAmmoFuel) from ComputeStartItems()", result: pass }
       - { kind: test, ref: "MutatorBatchT51Tests.cs:466/478 — useammo on grants fuel=max(.,rotstable); useammo off grants none", result: pass }
     confidence: high
-    notes: "WAVE-6b FIX (values partial->faithful). StartLoadout gained a WarmupAmmoFuel field; OnSetStartItems now maxes it against rotstable, and the warmup spawn reads it from the deterministic ComputeStartItems seam (SpawnSystem.cs:979). Gated on UseAmmo (default off), so usually a no-op — but live and correct when useammo is enabled."
+    notes: "WAVE-6b FIX (values partial->faithful). StartLoadout gained a WarmupAmmoFuel field; OnSetStartItems now maxes it against rotstable, and the warmup spawn reads it from the deterministic ComputeStartItems seam (SpawnSystem.cs:1092). Gated on UseAmmo (default off), so usually a no-op — but live and correct when useammo is enabled."
 
   - id: mutator-hook.filteritem.hide_pickup
     name: "FilterItem: suppress the WEP_HOOK world pickup"
@@ -197,7 +195,9 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/HookMutator.cs:BuildMutatorsPrettyString"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:BuildMutatorsString"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:BuildMutatorsPrettyString"
-      - "src/XonoticGodot.Server/GameWorld.cs:876"
+      - "src/XonoticGodot.Server/GameWorld.cs:1068"
+      - "src/XonoticGodot.Server/GameWorld.cs:1079"
+      - "game/net/ServerNet.cs:607"
     constants:
       - { name: "info token", base: "\":grappling_hook\"", port: "s + \":grappling_hook\" (HookMutator.cs:115)", match: true }
       - { name: "pretty token", base: "\", Hook\"", port: "s + \", Hook\" (HookMutator.cs:118)", match: true }
@@ -205,43 +205,45 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "WAVE-6b: the ':grappling_hook' server-info token is now emitted and LIVE — HookMutator.BuildMutatorsString (HookMutator.cs:115) + the aggregator MutatorActivation.BuildMutatorsString called from gamelog init (GameWorld.cs:876, gated on sv_eventlog). So server-browser / event-log metadata shows the mutator."
-      - "The ', Hook' pretty/votescreen token is ALSO ported (HookMutator.cs:118 + MutatorActivation.BuildMutatorsPrettyString aggregator MutatorActivation.cs:121), but the aggregator has NO live caller — the QC votescreen surfacing (server/client.qc:1107 MUTATOR_CALLHOOK(BuildMutatorsPrettyString)) is unwired in the port (grep: no caller of BuildMutatorsPrettyString outside the per-mutator overrides). So the votescreen ', Hook' label is still effectively dead. presentation:partial / liveness:partial reflect: info-token path live, pretty-token path dead."
+    gaps: []
     verification:
-      - { kind: code, ref: "HookMutator.cs:115 BuildMutatorsString => s + \":grappling_hook\"; HookMutator.cs:118 BuildMutatorsPrettyString => s + \", Hook\" (both override MutatorBase virtuals GameplayBases.cs:213/221)", result: pass }
-      - { kind: code, ref: "MutatorActivation.BuildMutatorsString (cs:108-114) walks Added mutators; called LIVE at GameWorld.cs:876 for the sv_eventlog gamelog server-info", result: pass }
-      - { kind: code, ref: "MutatorActivation.BuildMutatorsPrettyString (cs:121-127) exists but grep shows NO live caller (votescreen path unwired) -> pretty token never surfaces", result: fail }
+      - { kind: code, ref: "HookMutator.cs:115 BuildMutatorsString => s + \":grappling_hook\"; HookMutator.cs:118 BuildMutatorsPrettyString => s + \", Hook\" (both override MutatorBase virtuals)", result: pass }
+      - { kind: code, ref: "MutatorActivation.BuildMutatorsString (cs:108-114) walks Added mutators; called LIVE at GameWorld.cs:1068 for the sv_eventlog gamelog server-info", result: pass }
+      - { kind: code, ref: "MutatorActivation.BuildMutatorsPrettyString (cs:121-127) now has TWO live callers: GameWorld.cs:1079 (match-start 'modifications' serverinfo key, leading ', ' stripped) and ServerNet.cs:607 (server-browser infostring 'modifications' key), the latter wired via the master-server GetInfoRequested callback (ServerNet.cs:561/576)", result: pass }
     confidence: high
-    notes: "WAVE-6b FIX (logic/values missing->faithful, presentation missing->partial, liveness na->partial). The machine info token is ported AND live via the gamelog server-info path; the pretty/votescreen token is ported but its aggregator is dead (no votescreen caller). Cosmetic/UI metadata; no gameplay effect."
+    notes: "DRIFT-2026-06-25 FIX (presentation partial->faithful, liveness partial->live). Since the WAVE-6b baseline, the pretty/votescreen aggregator gained live callers: BuildServerInfo (server-browser 'modifications' field) and the match-start serverinfo store. Both the machine ':grappling_hook' info token and the human ', Hook' pretty token now surface on real paths. Cosmetic/UI metadata; no gameplay effect."
 
   - id: mutator-hook.client.gameplay_tip
     name: "Client gameplay tip: 'grappling hook is enabled, press <key>'"
     layer: [presentation]
     base_refs:
       - "common/mutators/mutator/hook/cl_hook.qc:MUTATOR_HOOKFUNCTION(cl_hook, BuildGameplayTipsString)"
-    port_refs: []
-    constants: []
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:1239"
+      - "src/XonoticGodot.Engine/Console/BindTable.cs:CommandKey"
+    constants:
+      - { name: "tip text", base: "\"^3grappling hook^8 is enabled, press ^3%s^8 to use it\" (cl_hook.qc:11)", port: "$\"^3grappling hook^8 is enabled, press ^3{hookKey}^8 to use it\" (GameWorld.cs:1247)", match: true }
+      - { name: "key resolve", base: "getcommandkey(_(\"offhand hook\"), \"+hook\")", port: "BindTable.CommandKey(\"offhand hook\", \"+hook\") (GameWorld.cs:1242)", match: true }
     status:
-      logic: missing
-      values: na
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
-    intended_divergence: false
-    divergence_rationale: null
-    gaps:
-      - "STILL MISSING after Wave-5: no client gameplay tip is shown when the hook mutator is active; Base cl_hook appends '^3grappling hook^8 is enabled, press ^3<+hook key>^8 to use it'. The port has no BuildGameplayTipsString/gameplay-tips system at all (grep src/ + game/ for BuildGameplayTip/GameplayTip/'grappling hook is enabled' -> none)."
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base cl_hook builds this tip CSQC-side into the connecting player's welcome dialog. The port has no CSQC layer, so it surfaces the identical text per-player via the chat sink (Commands.ChatToPlayer -> ServerNet.SendChatToPlayer reliable svc_print) on the client-connect path — same audience (the one joining client, NOT a broadcast) and same text/keybind, different transport. Bots are skipped (no HUD)."
+    gaps: []
     verification:
-      - { kind: code, ref: "no BuildGameplayTipsString / GameplayTip system for cl_hook in the port (grep src/ + game/)", result: fail }
+      - { kind: code, ref: "GameWorld.InfraClientConnect (GameWorld.cs:1239-1248): if !p.IsBot && grappling_hook mutator Added, emit '^3grappling hook^8 is enabled, press ^3<key>^8 to use it' with the +hook bind resolved via BindTable.CommandKey('offhand hook','+hook')", result: pass }
+      - { kind: code, ref: "Commands.ChatToPlayer wired live: NetGame.cs:748/781 -> ServerNet.SendChatToPlayer (reliable per-peer svc_print). InfraClientConnect runs on the normal connect path.", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-5. Presentation-only (loading/idle tip text). Now that the offhand path is live, this is the discoverability hint for the offhand key — its absence is more noticeable, but still no gameplay effect. The menu checkbox tooltip (DialogMutators.cs:176-177) carries the analogous 'Press the hook key to use it' hint, but only in the menu, not in-match."
+    notes: "DRIFT-2026-06-25 FIX (logic/presentation missing->faithful, liveness na->live). The tip text + keybind resolution are now ported and fire on client connect, surfaced to the joining player via the chat sink. Intended-divergence (per-player sprint vs CSQC welcome-dialog) flagged. The offhand_blaster tip shares the same block (GameWorld.cs:1254)."
 
   - id: mutator-hook.menu.toggle
     name: "Menu: Grappling Hook mutator checkbox + describe page"
@@ -250,25 +252,24 @@ features:
       - "common/mutators/mutator/hook/hook.qh:REGISTER_MUTATOR(hook, true, MutatorGrapplingHook)"
       - "common/mutators/mutator/hook/hook.qc:METHOD(MutatorGrapplingHook, describe)"
     port_refs:
-      - "game/menu/dialogs/DialogMutators.cs:176"
+      - "game/menu/dialogs/DialogMutators.cs:192"
     constants:
       - { name: "menu cvar", base: "g_grappling_hook checkbox", port: "Widgets.CheckBox(\"g_grappling_hook\", ...)", match: true }
     status:
       logic: faithful
       values: na
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The menu exposes the toggle (DialogMutators.cs:176-177) with a short inline tooltip ('Players spawn with the grappling hook. Press the 'hook' key to use it'), but the QC MutatorGrapplingHook.describe long-form description page (the 'offhand weapon / unlimited ammo / no secondary / overridden by offhand_blaster' explainer) is not ported — the port has no per-mutator describe-page text."
+    gaps: []
     verification:
-      - { kind: code, ref: "DialogMutators.cs:176-177 CheckBox(g_grappling_hook) present + tooltip vs QC checkbox", result: pass }
-      - { kind: code, ref: "no port equivalent of MutatorGrapplingHook.describe long-form text", result: fail }
+      - { kind: code, ref: "DialogMutators.cs:192-197 CheckBox(g_grappling_hook, 'Grappling Hook', <tooltip>) present + live", result: pass }
+      - { kind: code, ref: "the tooltip now carries the FULL MutatorGrapplingHook.describe text — all three QC paragraphs ported: 'gives all players a Grappling Hook as their offhand weapon, used with the hook key / unlimited ammo, ordinary secondary can't be used', 'move around and shoot at the same time, more gameplay possibilities', and 'overridden by the Offhand Blaster mutator' (DialogMutators.cs:193-197)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-5. The functional toggle is present and live in the mutator menu; only the verbose describe-page text is missing."
+    notes: "DRIFT-2026-06-25 FIX (presentation partial->faithful). The describe-page long-form text is now fully ported into the checkbox tooltip (the three QC describe paragraphs incl. the offhand_blaster-override note). The functional toggle was already present and live."
 
   - id: mutator-hook.precedence.blaster_override
     name: "Precedence: offhand_blaster overrides grappling_hook when both enabled"

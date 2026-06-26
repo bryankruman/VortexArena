@@ -1,15 +1,15 @@
 unit: sv-chat
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"  # drift re-audit on claude/parity-port-waves: ignore-cap, minigame-routing, crosshair-tokens, dedicated_print all FIXED since 2026-06-22
+last_audited: "2026-06-25"  # drift re-audit on claude/parity-port-waves: printtochat helpers now IMPLEMENTED (faithful) but DEAD (no callers; Base callers are all commented-out debug too)
 summary:
-  feature_count: 14
+  feature_count: 15
   worst_gaps:
     - "INGAME(it) round-mode semantics not modeled: no per-player .ingame round flag, so IsIngame(p)==!IsObserver(p); eliminated-but-INGAME players (Clan Arena / LMS / Survival) diverge from Base in spectator-downgrade + team-routing filter. No effect on FFA/CTF/DM."
     - "%y/%x crosshair tokens trace the player's VIEW ANGLES (server-side) rather than Base's CSQC-reported cursor (WarpZone_crosshair_trace_plusvisibletriggers); the port does not network the cursor, so an off-view-axis aim resolves differently. %y/%x/%d are now functional (live), only the trace SOURCE differs."
     - "Line-wrap width is an integer 82 visible chars vs Base's 82.4289758859709 px-equiv (perl averagewidth on gfx/vera-sans.width); proportional per-char widths unmodeled, so the flood==2 'too long' boundary can differ by one char on edge-length messages."
     - "NearestLocation has no item fallback: Base falls back to nearest pickup item .netname via findnearest(checkitems=true) when no target_location matches (chat.qc:453-457); the port returns 'somewhere' on item-only maps."
-    - "PrintToChat/PrintToChatAll/PrintToChatTeam/Debug* chat-line helpers (chat.qc:593-645, used by teamplay.qc + random_items) are unported (no port_refs); minor coverage gap (newly mapped row sv-chat.helpers.printtochat)."
+    - "PrintToChat/PrintToChatAll/PrintToChatTeam/Debug* chat-line helpers (chat.qc:593-645) are now ported faithfully (Chat.cs:770-823) but DEAD — no live caller in the port. (Base itself has zero live callers either: every teamplay.qc / random_items use is commented-out debug code, so the practical impact is nil.)"
 features:
   - id: sv-chat.gates.allowed_cvars
     name: "Four g_chat_*_allowed entry gates (chat/private/spectator/team)"
@@ -349,11 +349,11 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "globalsound.qh:144-155 (VoiceMessage: ownteam=teamradio; int flood = Say(this,ownteam,NULL,msg,true); fake = IS_SPEC||IS_OBSERVER||flood<0; flood==0 break) vs Commands.cs:2257-2303 CmdVoice", result: pass }
-      - { kind: code-read, ref: "Commands.cs:750 Register(\"voice\", CmdVoice) = live client-command path; CmdVoice:2288 calls Chat.Say then derives fake and returns on flood==0", result: pass }
+      - { kind: code-read, ref: "globalsound.qh:144-155 (VoiceMessage: ownteam=teamradio; int flood = Say(this,ownteam,NULL,msg,true); fake = IS_SPEC||IS_OBSERVER||flood<0; flood==0 break) vs Commands.cs:2447-2500 CmdVoice", result: pass }
+      - { kind: code-read, ref: "Commands.cs:767 Register(\"voice\", CmdVoice) = live client-command path; CmdVoice:2478 calls Chat.Say then derives fake and returns on flood==0", result: pass }
       - { kind: code-read, ref: "SoundSystem.GlobalSound honors `fake` per-voicetype (TeamRadio fake->emitter-only; LastAttacker fake->skip attacker)", result: pass }
     confidence: high
-    notes: "CmdVoice (Commands.cs:2257-2303) routes the optional [<message>] arg through Chat.Say(p, ownteam?1:0, null, msg, true) — voice/radio text appears in chat, is flood-throttled, a spectator say downgrades — then derives fake (flood<0) and returns (no GlobalSound) on flood==0, matching the Base macro's break. ownteam = VoiceType.TeamRadio. The port returns early for dead/observer/spec BEFORE the Say call (Commands.cs:2274-2275), so the macro's IS_SPEC||IS_OBSERVER fake terms are mooted and fake==flood<0 is exactly equivalent on the reachable path. All five dimensions faithful + live."
+    notes: "CmdVoice (Commands.cs:2447-2500) routes the optional [<message>] arg through Chat.Say(p, ownteam?1:0, null, msg, true) — voice/radio text appears in chat, is flood-throttled, a spectator say downgrades — then derives fake (flood<0) and returns (no GlobalSound) on flood==0, matching the Base macro's break. ownteam = VoiceType.TeamRadio. The port returns early for dead/observer/spec BEFORE the Say call (Commands.cs:2274-2275), so the macro's IS_SPEC||IS_OBSERVER fake terms are mooted and fake==flood<0 is exactly equivalent on the reachable path. All five dimensions faithful + live."
 
   - id: sv-chat.delivery.dedicated_print_gating
     name: "dedicated_print gated on sv_dedicated (server-console echo)"
@@ -387,23 +387,28 @@ features:
       - "server/chat.qc:PrintToChat"
       - "server/chat.qc:PrintToChatAll"
       - "server/chat.qc:PrintToChatTeam"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:PrintToChat"
+      - "src/XonoticGodot.Server/Chat.cs:PrintToChatAll"
+      - "src/XonoticGodot.Server/Chat.cs:PrintToChatTeam"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The \\{1}^7-prefixed chat-line helpers (chat.qc:593-645) — single-client (PrintToChat), broadcast (PrintToChatAll), per-team (PrintToChatTeam), and their autocvar_developer>0 Debug* gates — are not ported as named helpers. Base callers in teamplay.qc and the random_items mutator rely on PrintToChatAll/PrintToChatTeam for in-band chat notices; the port emits the equivalent notices through other channels (NotificationSystem / direct sprints), but there is no 1:1 helper, so any future port of those exact call sites must re-derive the formatting."
+      - "All six helpers (PrintToChat / DebugPrintToChat / PrintToChatAll / DebugPrintToChatAll / PrintToChatTeam / DebugPrintToChatTeam) are now ported faithfully (Chat.cs:770-823): the \\{1}^7 (\\x01^7) chat marker + trailing \\n, the autocvar_developer>0 gate on the Debug* variants (Cvars.Float(\"developer\") > 0), and the bprint server-console echo (modeled by the sv_dedicated-gated DedicatedPrint tail). BUT they are DEAD — nothing in the port calls them. NOTE this matches Base: every PrintToChatAll/PrintToChatTeam use in teamplay.qc and the random_items mutator is COMMENTED-OUT debug code, so there is no live stock caller to wire to in the first place."
     verification:
-      - { kind: code-read, ref: "grep PrintToChatAll/PrintToChatTeam/PrintToChat over port/src = 0 matches; Base callers: teamplay.qc, common/mutators/mutator/random_items/sv_random_items.qc", result: fail }
-    confidence: medium
-    notes: "Newly mapped coverage row (was absent from the registry). Low practical impact for stock chat — these are utility emitters used by a couple of mutator/teamplay notices, mostly developer-gated; the player-visible team/random-item notices are surfaced via the port's notification path. Marked missing (not intended_divergence) since nothing deliberately chose to drop them — they are simply unported as named helpers."
+      - { kind: code-read, ref: "Chat.cs:770-823 = all six helpers present + faithful formatting (\\x01^7 marker, \\n suffix, developer-gate, DedicatedPrint echo)", result: pass }
+      - { kind: code-read, ref: "grep '\\.PrintToChat|PrintToChatAll|PrintToChatTeam|DebugPrintToChat' over port/src = only the Chat.cs definitions + internal Debug*->Print* delegation; NO external caller (dead)", result: fail }
+      - { kind: code-read, ref: "grep uncommented 'PrintToChat|DebugPrintToChat' over Base qcsrc (excl chat.qc) = 0 live callers; all teamplay.qc + sv_random_items.qc uses are //-commented debug", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22 on the impl axis: the helpers went missing->faithful (logic + presentation) — the formatting, developer-gate, and broadcast/per-team/single fan-out all match Base chat.qc:593-645. liveness moved na->dead: the code now exists but has no live caller (the port's player-visible notices still flow through NotificationSystem / direct sprints, not these helpers). This is the expected end state given Base has zero live callers itself, so it is NOT a regression worth wiring — left dead deliberately-but-unmarked (kept intended_divergence=false since the row tracks the genuine 'no live caller' fact rather than a deliberate behavioral change)."
 
   - id: sv-chat.mutator.hooks
     name: "Chat mutator hooks (ChatMessage / ChatMessageTo / PreFormatMessage / FormatMessage)"

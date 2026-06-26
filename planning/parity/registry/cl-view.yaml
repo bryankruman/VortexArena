@@ -1,12 +1,11 @@
 unit: cl-view
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"  # drift re-audit; the cl_player.qc view-effect chain (bob/roll/tilt/idle/velocityzoom/zoomscroll/zoomscript) is now fully ported + live
+last_audited: "2026-06-25"  # drift re-audit: HUD_Damage now uses the gfx/blood splatter + gentle-mode path (presentation fix); spectator third-person + chase_front are now wired live (NetGame UpdateCamera spectate branch)
 summary:
   feature_count: 21
   worst_gaps:
-    - "Spectator third-person camera (View_SpectatorCamera / STAT(CAMERA_SPECTATOR) toggle / IMP_weapon_drop cycling) is still absent — spectating a player renders FIRST person (the follow-cam builds its own first-person ViewState before the chase logic). The user chase_active third-person cam IS live; chase_front (spectating-only) is hardcoded off (FirstPersonView:728 spectating=false)."
-    - "HUD_Damage draws a solid red ColorRect instead of the gfx/blood splatter texture, and the gentle-mode (cl_gentle) solid/randomized-colour path is not ported."
+    - "Spectator-camera SERVER mode toggle (STAT(CAMERA_SPECTATOR) 1/2 + IMP_weapon_drop cycling, View_SpectatorCamera's chase_active<=0 auto-switch path) is not ported — the user chase_active-driven third-person spectate IS now live (NetGame UpdateCamera sets _view.Spectating + Chase, anchored to the spectatee pose) and chase_front is now reachable, but pressing weapon-drop to cycle the server-side spectator camera mode is absent."
     - "GLSL blur/sharpen post-process (damage/content blur, powerup edge-sharpen, View_BlurTest) and night-vision are not implemented (engine shader cvars, no Godot analogue)."
     - "viewloc (2.5D side-scroller View Location camera, GetViewLocationFOV), demo free camera (CSQC_Demo_Camera), lockview, orthoview, and the server FPS report are not ported (niche dev/demo tools, off the normal-match camera path)."
 features:
@@ -224,31 +223,31 @@ features:
       - "lib/csqcmodel/cl_player.qc:CSQCPlayer_ApplyChase (453)"
       - "client/view.qc:View_SpectatorCamera (655)"
     port_refs:
-      - "game/client/FirstPersonView.cs:ApplyClassicChase (719)"
-      - "game/client/FirstPersonView.cs:UpdateCamera (classicChase branch, 351)"
-      - "game/net/NetGame.cs:2630 (CameraMode = chase_active != 0 ? Chase : None)"
+      - "game/client/FirstPersonView.cs:ApplyClassicChase (725)"
+      - "game/client/FirstPersonView.cs:UpdateCamera (classicChase branch, 357)"
+      - "game/net/NetGame.cs:2802 (own-player CameraMode = chase_active != 0 ? Chase : None)"
+      - "game/net/NetGame.cs:4770-4791 (spectate branch: _view.Spectating = true + CameraMode from chase_active, anchored to spectatee pose)"
     constants:
       - { name: "chase_back", base: "user (menu 10..100; DP default 48)", port: "live Cvar(\"chase_back\", 48)", match: true }
       - { name: "chase_up", base: "user (menu 10..50; DP default 24)", port: "live Cvar(\"chase_up\", 24)", match: true }
-      - { name: "chase_front", base: "0 (spectating only)", port: "live Cvar(\"chase_front\", 0); but spectating hardcoded false (FirstPersonView:728) -> selfie branch dead", match: false }
+      - { name: "chase_front", base: "0 (spectating only)", port: "live Cvar(\"chase_front\", 0); now reachable — NetGame spectate branch sets _view.Spectating = true so the QC spectating-only selfie guard is satisfied", match: true }
       - { name: "chase_overhead", base: "0", port: "live Cvar(\"chase_overhead\", 0); 5x5 grid trace ported", match: true }
       - { name: "chase_pitchangle", base: "user", port: "live Cvar(\"chase_pitchangle\", 0)", match: true }
     status:
       logic: partial
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Spectator third-person (View_SpectatorCamera + STAT(CAMERA_SPECTATOR) 1/2 toggle, IMP_weapon_drop cycling) is NOT ported — spectating a player renders FIRST person: the follow-cam builds its own first-person ViewState and returns before the chase_active CameraMode logic runs."
-      - "chase_front (the frontal selfie cam) is effectively dead: ApplyClassicChase hardcodes `spectating = false` (FirstPersonView:728), and chase_front is QC-guarded to spectating only — so it never engages. The view-flip + overhead-while-spectating paths are untested live."
+      - "The server-side spectator-camera mode toggle is not ported: View_SpectatorCamera's STAT(CAMERA_SPECTATOR) 1/2 state + IMP_weapon_drop cycling (the chase_active<=0 auto-switch that flips chase_active to -2 and Impulse_Sends weapon-drop to cycle the server spectator camera) has no port analogue. The port drives the spectator third-person purely from the user chase_active cvar."
     verification:
-      - { kind: code, ref: "NetGame:2630 sets CameraMode = chase_active!=0 (live render path); ApplyClassicChase (FirstPersonView:719) ports CSQCPlayer_ApplyChase: pull-back along forward by chase_back + lift chase_up + world trace + 8/4 back-off, chase_overhead 5x5 grid lowest-ceiling, chase_pitchangle; chase_* read live via Cvar(). Spectate follow-cam still first-person; spectating=false disables chase_front.", result: partial }
+      - { kind: code, ref: "NetGame:2802 sets own-player CameraMode = chase_active!=0; NetGame:4770-4791 spectate branch sets _view.Spectating = true AND CameraMode = chase_active!=0 ? Chase, anchored to the sampled spectatee pose -> spectating a player with chase_active set now renders THIRD person and the chase_front selfie branch (Spectating-gated) is reachable. ApplyClassicChase (FirstPersonView:725) ports CSQCPlayer_ApplyChase (pull-back + chase_overhead 5x5 grid + chase_pitchangle + chase_front flip).", result: pass }
     confidence: high
-    notes: "The user chase_active third-person cam is genuinely LIVE — NetGame:2630 sets CameraMode from the chase_active cvar each frame, and ApplyClassicChase faithfully ports CSQCPlayer_ApplyChase (default pull-back branch + chase_overhead 5x5 grid + chase_pitchangle, with world box/line traces). STILL OPEN: (1) the dedicated SPECTATOR camera (View_SpectatorCamera / CAMERA_SPECTATOR toggle / weapon-drop cycling) — spectating renders first-person; (2) chase_front, guarded to spectating in QC, is wired but unreachable (local-player chase sets spectating=false). liveness: partial (own-player chase live; spectator-chase path absent)."
+    notes: "FIXED since the prior baseline: spectating a player now renders THIRD person when the user enables chase_active (NetGame UpdateCamera spectate branch sets _view.Spectating + Chase anchored to the spectatee pose), and chase_front (the frontal selfie, QC-guarded to spectating) is now reachable because Spectating is true on that path. liveness: live (own-player chase + spectator chase both wired). STILL OPEN (logic: partial): the STAT(CAMERA_SPECTATOR) server mode toggle + IMP_weapon_drop cycling auto-switch path in View_SpectatorCamera is not ported — pressing weapon-drop to cycle the server-side spectator camera mode has no effect."
 
   - id: cl-view.kick.punch_angle
     name: "Punch-angle recoil kick (view angle, networked + decayed)"
@@ -432,8 +431,10 @@ features:
     base_refs:
       - "client/view.qc:HUD_Damage (1237)"
     port_refs:
-      - "game/client/ViewEffects.cs:UpdateDamage"
-      - "game/net/NetGame.cs:2639 (UpdateEffects)"
+      - "game/client/ViewEffects.cs:UpdateDamage (177)"
+      - "game/client/ViewEffects.cs:SetSplatAlpha (286, gfx/blood splatter)"
+      - "game/client/ViewEffects.cs:MakeBloodSplat (114)"
+      - "game/net/NetGame.cs:2873 (UpdateEffects)"
     constants:
       - { name: "hud_damage", base: "0.55", port: "0.55", match: true }
       - { name: "hud_damage_factor", base: "0.025", port: "0.025", match: true }
@@ -443,22 +444,26 @@ features:
       - { name: "hud_damage_color", base: "'1 0 0'", port: "'1 0 0'", match: true }
       - { name: "hud_damage_pain_threshold_lower", base: "1.25", port: "1.25", match: true }
       - { name: "hud_damage_pain_threshold_lower_health", base: "50", port: "50", match: true }
+      - { name: "hud_damage_pain_threshold_pulsating_min", base: "0.6", port: "0.6", match: true }
+      - { name: "hud_damage_pain_threshold_pulsating_period", base: "0.8", port: "0.8", match: true }
+      - { name: "hud_damage_gentle_alpha_multiplier", base: "0.10", port: "0.10", match: true }
+      - { name: "hud_damage_gentle_color", base: "'1 0.7 1'", port: "'1 0.7 1'", match: true }
+      - { name: "cl_gentle", base: "0", port: "0 (read live)", match: true }
+      - { name: "cl_gentle_damage", base: "0", port: "0 (read live)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Draws a flat red ColorRect, not the gfx/blood splatter texture Base uses."
-      - "The gentle-mode (cl_gentle / cl_gentle_damage) solid/randomized-colour path is not ported."
+    gaps: []
     verification:
-      - { kind: code, ref: "UpdateDamage: myhealth_flash accumulate/decay, pain threshold + near-death sin-pulse (ported), respawn/observe clears; reads hud_damage_color cvar; live via NetGame UpdateEffects", result: pass }
+      - { kind: code, ref: "UpdateDamage: myhealth_flash accumulate/decay, pain threshold + near-death sin-pulse, respawn/observe clears; the default path now draws the gfx/blood splatter (SetSplatAlpha: square max(conwidth,conheight) centred, tinted hud_damage_color) and the gentle path (cl_gentle/cl_gentle_damage) draws the solid coloured rect with gentle_alpha_multiplier + the cl_gentle_damage==2 randomized colour — matching HUD_Damage view.qc:1293-1305; live via NetGame:2873 UpdateEffects.", result: pass }
     confidence: high
-    notes: "Accumulator + pain-threshold + near-death sin-pulse + respawn/observe edge handling all match; only the visual is a solid rect vs the gfx/blood texture, plus the gentle-mode path."
+    notes: "FIXED since the 2026-06-22 baseline (was presentation: partial): the default damage flash now uses the gfx/blood splatter texture (centred square, max(conwidth,conheight), tinted hud_damage_color) instead of a flat red rect, with a solid-rect fallback only when gfx/blood is missing; AND the gentle-mode (cl_gentle / cl_gentle_damage) solid-flash path is ported (alpha * gentle_alpha_multiplier; cl_gentle_damage==2 randomizes the colour while the flash is gone). Accumulator + pain-threshold + near-death sin-pulse + respawn/observe edge handling all match. Both former presentation gaps closed."
 
   - id: cl-view.screen.liquid_tint
     name: "Liquid screen tint (HUD_Contents)"

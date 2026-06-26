@@ -5,11 +5,11 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 16
   worst_gaps:
-    - "Death blowup is still simplified on presentation: no 4 physics gib entities (head MF_ROCKET+EF_FLAME bounce+fade via spiderbot_headfade, 2 tossed guns body-vel v_forward*700, body frame 11) and no spiderbot_headfade head EXPLOSION_BIG+ROCKET_IMPACT on final fade; the per-burn EFFECT_EXPLOSION_SMALL visual is still a TODO. The ~10% burn-tick SND_ROCKET_IMPACT audio + the 250-dmg blast + 45s respawn ARE faithful."
-    - "FIXED-SINCE-BASELINE: vr_impact / bouncepain (g_vehicle_spiderbot_bouncepain) is now ported (Spiderbot.Impact) and live via VehicleCommon.Touch — a faithful no-op at the stock '0 0 0' default (the bouncepain cvar is not yet server-overridable). pushable IS now set (vehicle.PushableFlag=true in Spawn — jumppad launches modeled); only mass=5000 remains unmodeled (no mass field)."
-    - "Client-only presentation still TODO across the unit: EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH, gun barrel spin, aux crosshairs, vehicle_ammo2/reload2 HUD %, EFFECT_SPIDERBOT_ROCKETLAUNCH / PROJECTILE_SPIDERROCKET visuals, walk/strafe/idle engine sounds (re-architected client-side), and the per-pain EFFECT_SMOKE_SMALL puff (the gameplay-authoritative DmgShake jitter from vehicles_painframe IS now produced)."
+    - "Death blowup is still simplified on presentation: no 4 physics gib entities (head MF_ROCKET+EF_FLAME bounce+fade via spiderbot_headfade, 2 tossed guns body-vel v_forward*700, body frame 11). FIXED-SINCE-BASELINE: the per-burn EFFECT_EXPLOSION_SMALL AND the head-fade EFFECT_EXPLOSION_BIG are now emitted server-side (EffectEmitter.Emit, Send_Effect-equivalent). The ~10% burn-tick SND_ROCKET_IMPACT audio + the 250-dmg blast + 45s respawn remain faithful. Residual presentation gap = the physics gib bodies only."
+    - "FIXED-SINCE-BASELINE: vr_impact / bouncepain (g_vehicle_spiderbot_bouncepain) is ported (Spiderbot.Impact) and live via VehicleCommon.Touch — a faithful no-op at the stock '0 0 0' default (the bouncepain cvar is not yet server-overridable). pushable IS set (vehicle.PushableFlag=true in Spawn — jumppad launches modeled); only mass=5000 remains unmodeled (no mass field)."
+    - "FIXED-SINCE-BASELINE: the server-authoritative Send_Effect muzzle/launch effects are now emitted — EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH (FireMinigun) and EFFECT_SPIDERBOT_ROCKETLAUNCH (RocketDo). Still client-only TODO across the unit: gun barrel spin, aux crosshairs, vehicle_ammo2/reload2 HUD %, PROJECTILE_SPIDERROCKET in-flight CSQC visual, walk/strafe/idle engine sounds (re-architected client-side), and the per-pain EFFECT_SMOKE_SMALL puff (the gameplay-authoritative DmgShake jitter from vehicles_painframe IS produced)."
     - "view_ofs '0 0 70' / height 170 (seated camera offset + chase distance) still not modeled on the headless server descriptor (client-view concern)."
-    - "FIXED since 2026-06-22 baseline (commit 4be8357): the Wave-2 locomotion-gravity regression (GravityTicrateFactor read an unregistered cvar -> 1.0 -> 2x-too-strong gravity) is resolved — the factor is now hardcoded 0.5, matching QC's sv_gameplayfix_gravityunaffectedbyticrate default-true. Also fixed: vr_spawn no longer wrongly nulls Touch (run-over crush restored), and vehicles_painframe is now invoked each Think (low-health DmgShake jitter)."
+    - "STABLE since prior audit (commit 4be8357): the Wave-2 locomotion-gravity regression (GravityTicrateFactor read an unregistered cvar -> 1.0 -> 2x-too-strong gravity) is resolved — the factor is hardcoded 0.5, matching QC's sv_gameplayfix_gravityunaffectedbyticrate default-true. Also fixed: vr_spawn no longer wrongly nulls Touch (run-over crush restored), and vehicles_painframe is invoked each Think (low-health DmgShake jitter)."
 features:
   - id: vehicle-spiderbot.identity.registration
     name: "Spiderbot vehicle type registration + identity (model, name, hitbox, view)"
@@ -177,7 +177,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:Think"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:Frame"
-      - "src/XonoticGodot.Server/GameWorld.cs:1098"
+      - "src/XonoticGodot.Server/GameWorld.cs:1805"
       - "src/XonoticGodot.Engine/Simulation/SimulationLoop.cs:RunThink"
     constants:
       - { name: "controller invocation cadence", base: "PHYS_INPUT_FRAMETIME (every movement frame)", port: "0.1 (DefaultThinkRate)", match: false }
@@ -195,7 +195,7 @@ features:
       - "Residual: the controller is invoked once per 0.1s (DefaultThinkRate) and now correctly steps slew/turn/gravity by that elapsed dt (0.1), so the aggregate per-second rate MATCHES QC (which runs every movement frame stepping by PHYS_INPUT_FRAMETIME). The only remaining divergence is granularity: response is quantized to 0.1s steps instead of per-frame, so it is coarser but no longer wrong-magnitude."
     verification:
       - { kind: code, ref: "Think computes dt = ThinkRate (0.1), reschedules NextThink = Time + dt, and passes dt to Frame; Frame now multiplies slew/turn/gravity by dt (NOT FrameTime/TicRate). RunThink (SimulationLoop.cs:276) fires when due and the +0.1 reschedule keeps it ~once/0.1s.", result: pass }
-      - { kind: code, ref: "Seated input stashed on body.VehInput (GameWorld.cs:1098-1105); consumed same tick by the vehicle Think.", result: pass }
+      - { kind: code, ref: "Seated input stashed on body.VehInput (GameWorld.cs:1805-1812); consumed same tick by the vehicle Think.", result: pass }
       - { kind: code, ref: "Think now calls VehicleCommon.PainFrame(vehicle) at its tail each tick (commit 4be8357), porting vehicles_painframe (sv_vehicles.qc:594-618) which QC runs after vr_think — low-health (<=50%) DmgShake velocity jitter is produced (spiderbot has VHF_DMGSHAKE); the EFFECT_SMOKE_SMALL puff is deferred (client/net).", result: pass }
     confidence: high
     notes: "FIXED in Wave-2: the prior DOUBLE timing defect (invoke every 0.1s but step by FrameTime ~0.0167 => ~6x too slow) is resolved by stepping by dt=0.1. Pilot glue + game_stopped park + empty-spiderbot BrakeSimple all faithful. FIXED-SINCE-BASELINE (4be8357): vehicles_painframe is now wired into Think (low-health jitter live)."
@@ -278,7 +278,7 @@ features:
       - { name: "turnspeed", base: "90", port: "90", match: true }
       - { name: "turnspeed_strafe", base: "300", port: "300", match: true }
       - { name: "movement_inertia", base: "0.15", port: "0.15", match: true }
-      - { name: "gravity step factor g", base: "0.5 if sv_gameplayfix_gravityunaffectedbyticrate (default true) else 1 => 0.5 in stock", port: "GravityTicrateFactor() => 0.5f (hardcoded constant, Spiderbot.cs:744)", match: true }
+      - { name: "gravity step factor g", base: "0.5 if sv_gameplayfix_gravityunaffectedbyticrate (default true) else 1 => 0.5 in stock", port: "GravityTicrateFactor() => 0.5f (hardcoded constant, Spiderbot.cs:772)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -292,7 +292,7 @@ features:
       - "Body-turn step multiplies by dt=0.1 (the elapsed think dt), matching QC's aggregate per-frame rate; response is quantized to the 0.1s think cadence (coarser granularity, not wrong-magnitude)."
     verification:
       - { kind: code, ref: "Frame: idle->BrakeSimple(50); forward/back->MoveSimple(walk500); strafe->MoveSimple(strafe400); body yaw turned by turnspeed*dt; vert preserved + g*dt*sv_gravity step when velz<=20 with g=GravityTicrateFactor()", result: pass }
-      - { kind: code, ref: "GravityTicrateFactor (Spiderbot.cs:744) now returns a constant 0.5f (commit 4be8357), matching QC's sv_gameplayfix_gravityunaffectedbyticrate default-true and the engine's hardcoded GravityUnaffectedByTicrate (FlyMove/PlayerPhysics). No unregistered-cvar read remains.", result: pass }
+      - { kind: code, ref: "GravityTicrateFactor (Spiderbot.cs:772) returns a constant 0.5f (commit 4be8357), matching QC's sv_gameplayfix_gravityunaffectedbyticrate default-true and the engine's hardcoded GravityUnaffectedByTicrate (FlyMove/PlayerPhysics). No unregistered-cvar read remains.", result: pass }
     confidence: high
     notes: "FIXED-SINCE-BASELINE (4be8357): the Wave-2 gravity regression (unregistered-cvar read -> factor 1.0 -> 2x-too-strong gravity) is resolved — factor hardcoded back to 0.5. Body-turn timing was already FIXED in Wave-2 (dt=0.1 step). Frame indices (0/1 fwd/back, 2/3 strafe, 5 idle) set as the networked body frame. Walk/strafe/idle engine sounds re-architected client-side."
 
@@ -357,12 +357,12 @@ features:
     divergence_rationale: null
     gaps:
       - "Cosmetic barrel spin (QC gun1.angles.z += 45 / gun2.angles.z -= 45 with 360 wrap) is done client-side (Firing flag in VehicleVisuals); the server-state field is not advanced — functionally fine, non-1:1 split."
-      - "EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH is a client effect (Firing flag in VehicleVisuals), not the server Send_Effect QC uses."
+      - "FIXED-SINCE-BASELINE: EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH is now emitted server-side via EffectEmitter.Emit (Spiderbot.cs:494; effect registered EffectsList.cs:155), matching QC spiderbot.qc:276 Send_Effect(EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH, v, v_forward*2500, 1). (The client VehicleVisuals Firing flag also pops a flash; the server emit is the QC-faithful path.) Residual presentation gap = barrel-spin server-state only."
     verification:
       - { kind: code, ref: "FireMinigun: alternates gun1/gun2 by VehBulletCounter%2, fires from 'barrels' tag + fwd*50 with spread; FireBulletPenetrating bounded 4-pass solid penetration budget 32u; ammo gated, refire 0.06; fire sound played", result: pass }
       - { kind: test, ref: "MonsterTurretVehicleObituaryTests.SpiderbotMinigun_RealFire_TagsVhSpidMinigun_ObituaryPicksVehicleLine", result: pass }
     confidence: high
-    notes: "Unchanged by Waves 1-2. Solid-penetration is a bounded multi-pass trace. Minigun regen uses VehRegenPauseTime set to Time on fire, mirroring QC."
+    notes: "FIXED-SINCE-BASELINE: EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH is now emitted server-side (EffectEmitter.Emit, Spiderbot.cs:494) — presentation gap narrowed to the barrel-spin server-state only. Solid-penetration is a bounded multi-pass trace. Minigun regen uses VehRegenPauseTime set to Time on fire, mirroring QC."
 
   - id: vehicle-spiderbot.weapon.rockets
     name: "3-mode rocket launcher (VOLLY salvo / GUIDE homing / ARTILLERY lob) + belt reload"
@@ -400,12 +400,12 @@ features:
     divergence_rationale: null
     gaps:
       - "ARTILLERY clearance-height traces use a headless WorldOnly trace; the h1/h2 (0.75 of the up/diagonal world clearance) are reproduced but the resulting arc was not in-game verified."
-      - "Rocket-in-flight CSQCProjectile visual (PROJECTILE_SPIDERROCKET) + launch effect (EFFECT_SPIDERBOT_ROCKETLAUNCH) are client/net networking deferred to the shared projectile catalog."
+      - "FIXED-SINCE-BASELINE: the launch effect EFFECT_SPIDERBOT_ROCKETLAUNCH is now emitted server-side via EffectEmitter.Emit (Spiderbot.cs:630; effect registered EffectsList.cs:151), matching QC vehicles_projectile Send_Effect. Residual: the rocket-in-flight CSQCProjectile visual (PROJECTILE_SPIDERROCKET) stays client/net deferred to the shared projectile catalog."
     verification:
       - { kind: code, ref: "RocketDo: VOLLY dumb+timed detonate, GUIDE crosshair-homing (AttachGuidance), ARTILLERY CalcArtillery toss; belt advances, refire/reload at frame 9; wait/-10 volley-empty + guide-hold latch", result: pass }
       - { kind: test, ref: "MonsterTurretVehicleObituaryTests vehicle-projectile vh_spid_rocket obituary path", result: pass }
     confidence: high
-    notes: "Unchanged by Waves 1-2. CalcArtillery solve-quadratic root selection ported. Belt/refire bookkeeping matches QC."
+    notes: "FIXED-SINCE-BASELINE: EFFECT_SPIDERBOT_ROCKETLAUNCH is now emitted server-side (EffectEmitter.Emit, Spiderbot.cs:630) — presentation gap narrowed to the in-flight PROJECTILE_SPIDERROCKET CSQC visual only. CalcArtillery solve-quadratic root selection ported. Belt/refire bookkeeping matches QC."
 
   - id: vehicle-spiderbot.weapon.guide_release
     name: "Guided-rocket steering think + guide-release on button-up"
@@ -445,7 +445,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:SetMode"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:CycleMode"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:Impulse"
-      - "src/XonoticGodot.Server/Commands.cs:1786"
+      - "src/XonoticGodot.Server/Commands.cs:1833"
     constants:
       - { name: "SBRM_VOLLY/GUIDE/ARTILLERY", base: "1/2/3", port: "1/2/3", match: true }
       - { name: "impulse map", base: "1->VOLLY 2->GUIDE 3->ARTILLERY; next(10)/prev(11,12) cycle [1..3] wrap", port: "same", match: true }
@@ -462,7 +462,7 @@ features:
       - "CSQCVehicleSetup HUD/crosshair networking on the QC mode-set is deferred; the W2MODE state itself is set + networked via the vehicle stat."
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.Impulse_Spiderbot_SetsAndCyclesRocketMode — board, default GUIDE, set 1->VOLLY/3->ARTILLERY, cycle 10/12 wrap", result: pass }
-      - { kind: code, ref: "Commands.cs:1786 routes VehicleBoarding.Impulse before the weapon-impulse path for a seated pilot; VehicleBoarding Spiderbot case maps 1/2/3 + 10/11/12", result: pass }
+      - { kind: code, ref: "Commands.cs:1833 routes VehicleBoarding.Impulse before the weapon-impulse path for a seated pilot; VehicleBoarding Spiderbot case maps 1/2/3 + 10/11/12", result: pass }
     confidence: high
     notes: "Unchanged by Waves 1-2. VehicleBoarding resolves the gunner-slot body via VehSlotOwner before dispatch."
 
@@ -497,11 +497,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Presentation still simplified: no 4 physics gib entities (head MF_ROCKET+EF_FLAME bounce+fade via spiderbot_headfade, 2 tossed guns body-vel v_forward*700, body frame 11) and no spiderbot_headfade (which also plays SND_ROCKET_IMPACT + EFFECT_EXPLOSION_BIG when the head finally fades). The per-burn EFFECT_EXPLOSION_SMALL visual + the head EF_FLAME stay a TODO. Client VehicleVisuals does an approximate scripted gib arc (GibCount 6) instead."
+      - "Presentation still simplified: no 4 physics gib entities (head MF_ROCKET+EF_FLAME bounce+fade via spiderbot_headfade, 2 tossed guns body-vel v_forward*700, body frame 11). FIXED-SINCE-BASELINE: the per-burn EFFECT_EXPLOSION_SMALL (Spiderbot.cs:459) and the spiderbot_headfade EFFECT_EXPLOSION_BIG (Spiderbot.cs:440) are now emitted server-side via EffectEmitter.Emit (the Send_Effect equivalent; effect names registered EffectsList.cs:29/31). The head EF_FLAME flag + the physics gib bodies stay a TODO (client VehicleVisuals does an approximate scripted gib arc)."
     verification:
-      - { kind: code, ref: "Death: HP 0, DAMAGE_NO, MOVETYPE_TOSS, burn-timer think; ~10%/0.1s plays weapons/rocket_impact.wav (CH_SHOTS) during the burn; at expiry RadiusDamage(self,origin,250,15,250,enemy,0,250,VhSpidDeath), SOLID_NOT, then respawn (SetOrigin SpawnPos, NextThink=+45, Think=Spawn)", result: pass }
+      - { kind: code, ref: "Death: HP 0, DAMAGE_NO, MOVETYPE_TOSS, burn-timer think; ~10%/0.1s plays weapons/rocket_impact.wav (CH_SHOTS) + EffectEmitter.Emit('EXPLOSION_SMALL', randomvec*80 + origin+'0 0 100') during the burn; at expiry RadiusDamage(self,origin,250,15,250,enemy,0,250,VhSpidDeath) + SND_ROCKET_IMPACT + EffectEmitter.Emit('EXPLOSION_BIG', origin+'0 0 100'), SOLID_NOT, then respawn (SetOrigin SpawnPos, NextThink=+45, Think=Spawn)", result: pass }
     confidence: high
-    notes: "FIXED in Wave-2: the ~10%/0.1s burn SND_ROCKET_IMPACT is now played server-side (audio partial->faithful). The functional death (blast + respawn) was already faithful; only the gib/EF_FLAME/small-explosion-visual presentation remains partial."
+    notes: "FIXED-SINCE-BASELINE: the per-burn EFFECT_EXPLOSION_SMALL and the head-fade EFFECT_EXPLOSION_BIG are now emitted server-side (EffectEmitter.Emit, Send_Effect-equivalent), narrowing the presentation gap to the physics gib bodies only. The ~10%/0.1s burn SND_ROCKET_IMPACT was already server-side. The functional death (blast + respawn) is faithful. Presentation stays partial because the 4 physics gib entities are still not spawned server-side."
 
   - id: vehicle-spiderbot.impact.bouncepain
     name: "vr_impact — bounce/fall impact pain (g_vehicle_spiderbot_bouncepain)"

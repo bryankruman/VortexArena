@@ -4,11 +4,11 @@ base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
   feature_count: 15
-  reaudit_note: "2026-06-25 drift re-audit (branch claude/parity-port-waves, HEAD post-Wave-6c ba3ae47). Wave 6c (ba3ae47, after the 2026-06-22 baseline HEAD 023ba70) closed several previously-open gaps on the LIVE path: (1) SND_SPAWN audio — PutPlayerInServer now plays Sounds.ByName('SPAWN') ('misc/spawn') on CH_TRIGGER, gated by g_spawn_alloweffects bit1 (SpawnSystem.cs:735); the two fx/put audio rows go missing->faithful. (2) EF_TELEPORT_BIT | EF_RESTARTANIM_BIT — the server now SETS p.Effects |= EffectFlags.Teleport|RestartAnim on (re)spawn (SpawnSystem.cs:743, bits 1<<21/1<<20 in EntityMutatorState.cs:195-196, networked via EntityField.Effects); authority half is now faithful, but no CLIENT consumer reads the bits yet so the visible flash/anim-restart still relies on the particle burst (presentation stays partial). (3) countdown shield/pause extension + rot/regen pause primers — both were NOTE-only at baseline, now implemented (SpawnSystem.cs:752-782); put_player timing partial->faithful. (4) assault spawn_evalfunc REJECT — SpawnSystem.SpotEvalReject is consulted in ScoreSpot (SpawnSystem.cs:447) and WIRED LIVE by Assault.Activate/Deactivate (Assault.cs:597/631); the spawn_evalfunc row's assault half goes missing->partial/live (race_spawns gate + SPAWN_PRIO_RACE_PREVIOUS_SPAWN=50 biasing still missing). NEW-UNMAPPED found+ADDED: PutPlayerInServer fires the spawn spot's .target on spawn (QC client.qc:814-822 SUB_UseTargets with the assault/race suppression hack) — ported live at ClientManager.cs:709-716 (put.spawn_target_fire). 5 fixes, 0 regressions, 1 new row. STILL OPEN: race/assault in-scoring race_spawns gate + prio-50 biasing, the EF-bit CLIENT consumer, team-tint network on the spawn burst, the spawnpoint use/setactive/some_spawn_has_been_used state machine, and the emergency-refilter/anypoint/cnt-multiplier margins."
+  reaudit_note: "2026-06-25 drift re-audit (re-run on branch claude/parity-port-waves, HEAD post-Wave-6e). ONE NEW FIX since the prior 2026-06-25 baseline: the SpawnEvent particle burst is now TEAM-COLORED — PutPlayerInServer computes SpawnEventTint(p) (SpawnSystem.cs:1209: Teamplay ? Teams.ColorRgb(team) : Teams.ColormapPaletteColor(clientcolors&15)) and emits via the colorMin/colorMax EffectEmitter.Emit overload (SpawnSystem.cs:733-737), networking the tint through EffectNetProtocol exactly like Base client/spawnpoints.qc:58 (tcolor = teamplay ? Team_ColorRGB(teamnum) : entcs_GetColor(entnum-1)). The baseline recorded this burst as still-untinted; fx.spawn_event_particle presentation goes partial->faithful and the team-color worst_gap is CLOSED. NEW-UNMAPPED found: info_player_survivor (Base spawnpoints.qc:182, a Survival-mode spawn class aliasing info_player_deathmatch) is NOT in the port's SpawnClassNames (SpawnSystem.cs:63-71) and is handled nowhere — a map using it would have those spots ignored. Recorded as a gap on select.select_spawn_point (low severity: Survival mode is not ported). Prior Wave-6c fixes all re-verified intact: SND_SPAWN audio (SpawnSystem.cs:744-745), EF_TELEPORT|RESTARTANIM set server-side (SpawnSystem.cs:752, still NO client consumer — grep confirms), countdown shield/pause extension + rot/regen primers (SpawnSystem.cs:759-791), assault spawn_evalfunc REJECT live via Assault.SpotEvalReject (Assault.cs:597/631 -> SpawnSystem.cs:448), spawn_target_fire SUB_UseTargets live (ClientManager.cs:718-725, line shifted from 709-716). 1 fix, 0 regressions, 1 new_unmapped. STILL OPEN: race/assault in-scoring race_spawns gate + prio-50 biasing, the EF-bit CLIENT consumer, the spawnpoint use/setactive/some_spawn_has_been_used state machine, and the emergency-refilter/anypoint/cnt-multiplier margins."
   worst_gaps:
-    - "race/assault in-scoring path: the race_spawns gate (a race spot MUST have a target, else -1) and the SPAWN_PRIO_RACE_PREVIOUS_SPAWN=50 checkpoint biasing are still unported inside ScoreSpot (inline NOTE at SpawnSystem.cs:477). The assault spawn_evalfunc REJECT half is now live (Assault wires SpotEvalReject), and Race's respawn-at-last-checkpoint is covered via the spawnpoint_targ redirect, but the race score-biasing/race_spawns requirement remains missing. STILL OPEN."
-    - "EF_TELEPORT_BIT | EF_RESTARTANIM_BIT are now SET on the (re)spawned player server-side (SpawnSystem.cs:743) and networked through Entity.Effects, but NO client csqcmodel consumer reads them to play the teleport flash / restart the animation — the visible spawn flash still relies on the EFFECT_SPAWN particle burst. The authority half is fixed; the client presentation consumer is the residual gap. STILL OPEN (presentation)."
-    - "Team-coloring of the spawn burst (Team_ColorRGB(teamnum) / entcs_GetColor, client/spawnpoints.qc:58-60) is not networked through a SpawnEvent entity — the port emits an untinted EffectEmitter.Emit('SPAWN', origin). (Distinct from the idle-glow tint, which IS team-colored — see spawnpoint_idle_glow.) STILL OPEN."
+    - "race/assault in-scoring path: the race_spawns gate (a race spot MUST have a target, else -1) and the SPAWN_PRIO_RACE_PREVIOUS_SPAWN=50 checkpoint biasing are still unported inside ScoreSpot (inline NOTE at SpawnSystem.cs:478). The assault spawn_evalfunc REJECT half is now live (Assault wires SpotEvalReject), and Race's respawn-at-last-checkpoint is covered via the spawnpoint_targ redirect, but the race score-biasing/race_spawns requirement remains missing. STILL OPEN."
+    - "EF_TELEPORT_BIT | EF_RESTARTANIM_BIT are now SET on the (re)spawned player server-side (SpawnSystem.cs:752) and networked through Entity.Effects, but NO client csqcmodel consumer reads them to play the teleport flash / restart the animation (grep for EffectFlags.Teleport/RestartAnim in game/ + src/XonoticGodot.Client = none) — the visible spawn flash relies on the EFFECT_SPAWN particle burst. The authority half is fixed; the client presentation consumer is the residual gap. STILL OPEN (presentation)."
+    - "info_player_survivor (Base spawnpoints.qc:182, Survival-mode spawn class aliasing info_player_deathmatch) is missing from the port's SpawnClassNames (SpawnSystem.cs:63-71) — GatherSpawnPoints never finds those spots. Low severity (Survival mode not ported). NEW (2026-06-25 re-run)."
     - "spawnpoint use/setactive/reset + some_spawn_has_been_used state machine has no live writer on the port path (SomeSpawnHasBeenUsed only ever reset to false; no spawnpoint_setactive caller). Inert on stock DM/CTF; only relevant to Onslaught/Assault control-point capture. STILL OPEN."
 features:
   - id: sv-spawnpoints.select.select_spawn_point
@@ -37,6 +37,7 @@ features:
       - "Emergency fallback differs: Base, when Spawn_FilterOutBadSpots returns empty, RE-FILTERS the spot list once with targetcheck=false (server/spawnpoints.qc:421-435) before giving up. The port does run a targetcheck=false re-filter (SpawnSystem.cs:386-387), but then seeds every spot at (prio 0, weight 0) if even that comes back empty (SpawnSystem.cs:392-396), so the assault/active gate is relaxed once but a wrong-team / all-embedded list still falls through to a prio-0 fallback. UNCHANGED."
       - "anypoint / g_spawn_useallspawns path: Base skips Spawn_FilterOutBadSpots entirely and does Spawn_WeightedPoint(1,1,1) over ALL spots (spawnpoints.qc:413-416). The port mirrors this (SpawnSystem.cs:366-372: seeds all spots at prio0/weight0, NO startsolid/team/active/restriction filtering), so this matches Base — the earlier note that the port still ran ScoreSpot on the anyPoint path is now obsolete. UNCHANGED (faithful)."
       - "testplayerstart debug edict (spawnpoints.qc:363-370) — Base returns a 'testplayerstart' classname spot before any other logic; not ported (debug-only). UNCHANGED."
+      - "info_player_survivor spawn class (Base spawnpoints.qc:182, aliases info_player_deathmatch with no team) is MISSING from SpawnSystem.SpawnClassNames (SpawnSystem.cs:63-71) and handled nowhere in the port — a Survival-mode map using info_player_survivor spots would have them ignored by GatherSpawnPoints. Low severity (Survival mode is not ported). NEW (2026-06-25 re-run)."
     verification:
       - { kind: code, ref: "SpawnSystem.cs:335-405 vs server/spawnpoints.qc:358-461; spawnpoint_targ short-circuit (343) precedes gather, mirroring QC:372-373; random()>g_spawn_furthest near/far split confirmed; caller ClientManager.cs:664 Spawn (targetCheck:true), plus bot/match paths", result: pass }
     confidence: high
@@ -265,7 +266,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "EF_TELEPORT_BIT | EF_RESTARTANIM_BIT are now SET on the (re)spawned player server-side (SpawnSystem.cs:743, OR'd into p.Effects, networked via EntityField.Effects), but NO client csqcmodel consumer reads them to play the teleport flash / restart the model animation. The authority half matches Base; the visible spawn flash still relies on the EFFECT_SPAWN particle burst (fx.spawn_event_particle). Residual presentation gap. STILL OPEN (presentation only)."
+      - "EF_TELEPORT_BIT | EF_RESTARTANIM_BIT are now SET on the (re)spawned player server-side (SpawnSystem.cs:752, OR'd into p.Effects, networked via EntityField.Effects), but NO client csqcmodel consumer reads them to play the teleport flash / restart the model animation (grep for EffectFlags.Teleport/RestartAnim in game/ + src/XonoticGodot.Client = none). The authority half matches Base; the visible spawn flash relies on the (now team-colored) EFFECT_SPAWN particle burst (fx.spawn_event_particle). Residual presentation gap. STILL OPEN (presentation only)."
     verification:
       - { kind: code, ref: "SpawnSystem.cs:619-803 vs server/client.qc:PutPlayerInServer; rot/regen pause primers at :756-759 and the (game_starttime - time) countdown extension at :762-782 are now IMPLEMENTED (were NOTE-only at baseline); SND_SPAWN at :735; EF bits at :743", result: pass }
       - { kind: test, ref: "SpawnLoadoutTests (loadout/equip/damageforcescale/view_ofs reset)", result: pass }
@@ -278,7 +279,7 @@ features:
     base_refs:
       - "server/client.qc:814-822 (PutPlayerInServer: SUB_UseTargets(spot, this, NULL), assault/race target-null hack)"
     port_refs:
-      - "src/XonoticGodot.Server/ClientManager.cs:709-716 (UseTargets on spot, suppressed for Assault/Race/Cts)"
+      - "src/XonoticGodot.Server/ClientManager.cs:718-725 (UseTargets on spot, suppressed for Assault/Race/Cts)"
     constants:
       - { name: "assault/race target suppression", base: "if(g_assault || g_race) spot.target = string_null (around SUB_UseTargets, restored after)", port: "suppressTarget = GameType is Assault or Race or Cts; null+restore around UseTargets", match: true }
     status:
@@ -292,7 +293,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ClientManager.cs:709-716: `if (sp.Value.Source is { } spot) { bool suppress = _match.GameType is Assault or Race or Cts; var saved = spot.Target; if(suppress) spot.Target=\"\"; MapMover.UseTargets(spot, p, null); if(suppress) spot.Target=saved; }` — mirrors QC client.qc:815-821 exactly, including the assault/race target-null hack so checkpoint chains don't re-fire on respawn", result: pass }
+      - { kind: code, ref: "ClientManager.cs:718-725: `if (sp.Value.Source is { } spot) { bool suppressTarget = _match.GameType is Assault or Race or Cts; string savedTarget = spot.Target; if(suppressTarget) spot.Target=\"\"; MapMover.UseTargets(spot, p, null); if(suppressTarget) spot.Target=savedTarget; }` — mirrors QC client.qc:815-821 exactly, including the assault/race target-null hack so checkpoint chains don't re-fire on respawn", result: pass }
     confidence: high
     notes: "NEW row (coverage gap in the baseline registry — Base server/client.qc:814-822 had no row). A spawn spot's .target is fired via SUB_UseTargets when a player materializes on it (a map can wire a target_relay/trigger off the spot — lights, doors, scoring triggers). Ported live on the real Spawn path (ClientManager.Spawn, after the PlayerSpawn hook). The assault/race/cts suppression (null the target around the call so checkpoint-chaining spawnpoints don't re-trigger on every respawn) is faithful. Found 2026-06-25 drift audit."
 
@@ -307,23 +308,24 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:735-736 (SND_SPAWN via SoundSystem.PlayOn)"
       - "game/client/EffectSystem.cs (Teleport / SPAWN class)"
     constants:
-      - { name: "g_spawn_alloweffects", base: "3 (bit0 particles + bit1 sound)", port: "particle path + bit1-gated SND_SPAWN (SpawnSystem.cs:735)", match: true }
+      - { name: "g_spawn_alloweffects", base: "3 (bit0 particles + bit1 sound)", port: "particle path + bit1-gated SND_SPAWN (SpawnSystem.cs:744)", match: true }
       - { name: "SND_SPAWN cue", base: "misc/spawn on CH_TRIGGER, VOL_BASE, ATTEN_NORM", port: "Sounds.ByName('SPAWN')=misc/spawn on TriggerAuto, VolBase, AttenNorm", match: true }
+      - { name: "burst tint", base: "teamplay ? Team_ColorRGB(teamnum) : entcs_GetColor(entnum-1) (client/spawnpoints.qc:58)", port: "SpawnEventTint: Teamplay ? Teams.ColorRgb(team) : Teams.ColormapPaletteColor(clientcolors&15) (SpawnSystem.cs:1209)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Team-coloring of the burst (Team_ColorRGB(teamnum) / entcs_GetColor in teamplay, client/spawnpoints.qc:58-60) is not networked through a SpawnEvent entity — the port emits an untinted EffectEmitter.Emit('SPAWN', origin). STILL OPEN. (Distinct from the idle-glow tint, which IS team-colored — see spawnpoint_idle_glow.)"
+    gaps: []
     verification:
-      - { kind: code, ref: "SpawnSystem.cs:728 EffectEmitter.Emit('SPAWN'); SpawnSystem.cs:735-736 plays SND_SPAWN (Sounds.ByName('SPAWN')=misc/spawn via SoundsList.cs:237) on TriggerAuto when (g_spawn_alloweffects & 2); EffectSystem.cs:703 classifies 'spawn_event'/'SPAWN' to the Teleport/spawn class", result: pass }
+      - { kind: code, ref: "SpawnSystem.cs:733-737: SpawnEventTint(p) computes the team/FFA color; white(1,1,1)->untinted Emit('SPAWN'), else the colorMin/colorMax EffectEmitter.Emit overload networks the tint via EffectNetProtocol — mirrors Base client/spawnpoints.qc:58 tcolor exactly", result: pass }
+      - { kind: code, ref: "SpawnSystem.cs:744-745 plays SND_SPAWN (Sounds.ByName('SPAWN')=misc/spawn) on TriggerAuto when (g_spawn_alloweffects & 2); EffectSystem classifies 'spawn_event'/'SPAWN' to the Teleport/spawn class", result: pass }
     confidence: high
-    notes: "FIXED vs baseline on audio. The particle burst (EFFECT_SPAWN -> EffectSystem) AND the SND_SPAWN audio half (Wave-6c added the sound at SpawnSystem.cs:735, gated on g_spawn_alloweffects bit1 — the client cl_spawn_event_sound default-on) are now both emitted. Residual gap: the team-color network path is collapsed to a plain untinted effect emit. (A SECOND untinted EffectEmitter.Emit('SPAWN') in PutObserverInServer (ClientManager.cs:499) for the despawn puff has no SND_SPAWN — but that's a despawn, not a spawn, so no sound is expected.)"
+    notes: "FULLY FAITHFUL as of the 2026-06-25 re-run. The particle burst (EFFECT_SPAWN -> EffectSystem), the SND_SPAWN audio half (Wave-6c, SpawnSystem.cs:744, g_spawn_alloweffects bit1), AND the team/FFA tint are all emitted. The team-color path that the prior baseline recorded as still-open is now closed: SpawnEventTint (SpawnSystem.cs:1209) returns Teams.ColorRgb(team) in teamplay / ColormapPaletteColor(clientcolors&15) in FFA, networked through the colorMin/colorMax Emit overload (a '1 1 1' white tint falls through to the untinted emit = Base's no-op). presentation partial->faithful. (A SECOND untinted EffectEmitter.Emit('SPAWN') in PutObserverInServer (ClientManager.cs) for the despawn puff has no SND_SPAWN — but that's a despawn, not a spawn, so no sound is expected.)"
 
   - id: sv-spawnpoints.fx.spawnpoint_idle_glow
     name: "Idle spawn-point particle glow (Spawn_Draw)"

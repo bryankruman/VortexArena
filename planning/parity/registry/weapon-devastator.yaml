@@ -3,11 +3,11 @@ category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 12
+  feature_count: 14
   worst_gaps:
     - "Ammo-refund auto-switch (cnt=m_id; ATTACK_FINISHED=time; m_switchweapon=w_getbestweapon when out of rockets after a blast) is STILL not ported on either contact (devastator.qc:47-56) or remote (devastator.qc:128-136) explode."
     - "wr_resetplayer (clear lastrocket + rl_release on all slots on death) is STILL not overridden for the Devastator; Unregister(self) on explode clears lastrocket per-rocket, but a respawn/reset does not proactively clear a still-live rocket reference or reset rl_release."
-    - "missile.damagedbycontents / IL_PUSH(g_damagedbycontents) (a rocket explodes when it enters lava/slime) is STILL not ported — the port's contents-damage loop (GameWorld.cs:1494) iterates only the live player roster, not projectiles."
+    - "missile.damagedbycontents / IL_PUSH(g_damagedbycontents) (a rocket explodes when it enters lava/slime) is STILL not ported — the port's contents-damage loop (GameWorld.cs:~1691, was 1494) iterates only the live player roster, not projectiles."
     - "wr_think secondary gate omits the QC `m_switchweapon == thiswep` precondition (you can only remote-detonate while the Devastator is the active weapon); RemoteDetonate flags any owned rocket regardless of active weapon. Minor."
 features:
   - id: weapon-devastator.fire.launch
@@ -45,7 +45,7 @@ features:
       - { kind: test, ref: "RocketFlyingGateTests.Devastator_GateField_SeededFromDetonateDelay (drives real WrThink->Attack)", result: pass }
       - { kind: code, ref: "GameWorld.WeaponThink -> WeaponFireDriver.Frame -> WrThink live chain (bot+human share the per-tick input cache)", result: pass }
     confidence: high
-    notes: "rl_release latch (WeaponSlotState.RlRelease) + guidestop read live; PrepareAttack is the refire/ammo/READY gate. wr_setup overridden (WrSetup sets RlRelease=true) and called live by WeaponFireDriver on switch-in. Fire sound played from Attack rather than SetupShot's sound arg, same cue. Unchanged this pass."
+    notes: "rl_release latch (WeaponSlotState.RlRelease) + guidestop read live; PrepareAttack is the refire/ammo/READY gate. wr_setup overridden (WrSetup sets RlRelease=true) and called live by WeaponFireDriver on switch-in. Fire sound played from Attack rather than SetupShot's sound arg, same cue. Re-verified 2026-06-25 (drift pass): unchanged."
 
   - id: weapon-devastator.flight.acceleration
     name: "Rocket acceleration from speedstart toward speed"
@@ -377,4 +377,56 @@ features:
     verification:
       - { kind: code, ref: "Devastator.BotAimShotSpeed/BotAimAccurate/BotWantsDetonate override GameplayBases virtuals; BotBrain wires all three live: CurrentShotSpeed->BotAimShotSpeed (:648), AimAndDecideFire->BotAimAccurate (:447), and the post-aim block calls BotWantsDetonate (:366) suppressing primary fire on detonate", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (missing->faithful, na->live): wr_aim is now FULLY ported and LIVE. (1) BotAimShotSpeed implements the guide-rate-scaled projectile-speed lead (aim as if the rocket flew sqrt(guiderate)*(20/9.489) faster); (2) BotAimAccurate relaxes long-range accuracy when guiderate<50; (3) BotWantsDetonate implements the skill>=2 detonation decision from predicted self/team/enemy splash damage (with strength/shield multipliers, selfdamagepercent, pred_time look-ahead) and the skill>=7 self-kill veto. All three are invoked on the live bot firing path; BotBrain.cs no longer defers wr_aim."
+    notes: "FIXED vs baseline (missing->faithful, na->live): wr_aim is now FULLY ported and LIVE. (1) BotAimShotSpeed implements the guide-rate-scaled projectile-speed lead (aim as if the rocket flew sqrt(guiderate)*(20/9.489) faster); (2) BotAimAccurate relaxes long-range accuracy when guiderate<50; (3) BotWantsDetonate implements the skill>=2 detonation decision from predicted self/team/enemy splash damage (with strength/shield multipliers, selfdamagepercent, pred_time look-ahead) and the skill>=7 self-kill veto. All three are invoked on the live bot firing path; BotBrain.cs no longer defers wr_aim. Re-verified 2026-06-25: BotWantsDetonate at BotBrain.cs:376, BotAimAccurate at :457, BotAimShotSpeed via CurrentShotSpeed at :658 (minor line drift from baseline 366/447/648; all still live)."
+
+  - id: weapon-devastator.presentation.impact_fx
+    name: "Impact explosion effect + sound (wr_impacteffect: EFFECT_ROCKET_EXPLODE + SND_ROCKET_IMPACT)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/devastator.qc:wr_impacteffect (CSQC)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:Explode (ROCKET_EXPLODE + rocket_impact.wav)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:DoRemoteExplode (ROCKET_EXPLODE + rocket_impact.wav)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:ImpactSound"
+    constants:
+      - { name: "impact effect", base: "EFFECT_ROCKET_EXPLODE at w_org + w_backoff*2", port: "ROCKET_EXPLODE at self.Origin", match: true }
+      - { name: "impact sound", base: "weapons/rocket_impact (SND_ROCKET_IMPACT, W_Sound) on CH_SHOTS, gated by !w_issilent", port: "weapons/rocket_impact.wav via WeaponSplash.ImpactSound", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC fires wr_impacteffect from CSQC on the networked projectile-impact event (w_org/w_backoff backoff offset, w_issilent gating); the port emits the same ROCKET_EXPLODE particle + rocket_impact.wav cue directly from the server-side Explode/DoRemoteExplode at the detonation origin (the port's effect/sound sinks are host-swapped for networking). Cues match; the w_backoff surface-normal offset and w_issilent suppression are not separately modeled."
+    gaps:
+      - "w_backoff surface-normal offset (org2 = w_org + w_backoff*2) on the particle origin is not applied — effect spawns at the rocket origin, not nudged off the impacted surface."
+      - "w_issilent gating (suppress the impact sound for a silenced detonation) is not modeled."
+    verification:
+      - { kind: code, ref: "Explode:444-445 and DoRemoteExplode:403-404 emit EffectEmitter ROCKET_EXPLODE + WeaponSplash.ImpactSound('weapons/rocket_impact.wav') on every detonation path (contact/lifetime/shoot-down/remote)", result: pass }
+    confidence: high
+    notes: "Newly mapped 2026-06-25 (was an unmapped Base CSQC symbol). The explosion particle + impact sound are emitted on every Devastator detonation path. Intended divergence: server-emit vs CSQC-impact-event, faithful cues."
+
+  - id: weapon-devastator.menu.describe
+    name: "Weapon-guide description text (MENUQC describe)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/devastator.qc:describe (MENUQC)"
+    port_refs: []
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The MENUQC weapon-guide paragraphs (remote-controlled rocket, hold-to-guide, ammo drain, rocket-flying with the rocketflying mutator, keybinds, DPS) are not ported — the port has no in-game weapon-guide page for the Devastator."
+    verification:
+      - { kind: code, ref: "No port symbol renders the Devastator weapon-guide description; MENUQC weapon-guide pages are unported across the registry", result: fail }
+    confidence: medium
+    notes: "Newly mapped 2026-06-25 (was an unmapped Base MENUQC symbol). Documentation-only weapon-guide text; missing in the port like the rest of the MENUQC weapon-guide. Low gameplay impact."

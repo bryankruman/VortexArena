@@ -22,23 +22,23 @@ features:
       - { name: "m_color", base: "'0.471 0.817 0.392'", port: "(0.471,0.817,0.392)", match: true }
       - { name: "spawnflags", base: "CANCLIMB|TYPE_SPLASH|NOTRUEAIM", port: "CanClimb|TypeSplash|NoTrueAim", match: true }
       - { name: "view/world/item model", base: "h_hookgun.iqm / v_hookgun.md3 / g_hookgun.md3", port: "same", match: true }
-      - { name: "crosshair", base: "gfx/crosshairhook size 0.5", port: "n/a (not set on Hook.cs)", match: false }
+      - { name: "crosshair", base: "gfx/crosshairhook size 0.5", port: "gfx/crosshairhook size 0.5 (Hook.cs:75-76)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Crosshair string/size not carried on the port weapon (cosmetic)."
+    gaps: []
     verification:
       - { kind: code, ref: "Hook.cs ctor vs hook.qh CLASS(Hook)", result: pass }
       - { kind: code, ref: "Hook in WeaponOrder.cs registry list; ItemSpawnFuncs.cs registers weapon_hook map pickup", result: pass }
+      - { kind: code, ref: "Crosshair override (Hook.cs:75-76 'gfx/crosshairhook'/0.5) vs hook.qh:31-32 ATTRIB w_crosshair/w_crosshair_size; consumed LIVE by CrosshairPanel.cs:1292-1322 (weapon.Crosshair + weapon.CrosshairSize)", result: pass }
     confidence: high
-    notes: "Unchanged. Auto-registered via [Weapon]; obtainable + selectable on the normal match path. Crosshair (w_crosshair gfx/crosshairhook, size 0.5) still not carried on the port weapon."
+    notes: "FIX since 2026-06-25: the per-weapon crosshair (w_crosshair gfx/crosshairhook, size 0.5) is now carried on the port weapon (Hook.cs:75-76 override the GameplayBases.cs:93/100 virtuals) and is consumed live by CrosshairPanel.cs:1292-1322 — presentation partial->faithful, crosshair constant false->true, last open gap closed. Auto-registered via [Weapon]; obtainable + selectable on the normal match path."
 
   - id: weapon-hook.primary.state_machine
     name: "Primary grapple lifecycle (fire/reel/remove hook_state machine)"

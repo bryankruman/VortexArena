@@ -1,11 +1,11 @@
 unit: mutator-running_guns
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 2
   worst_gaps:
-    - "g_running_guns 1 STILL has no in-game effect: nothing consumes the seeded DefaultPlayerAlpha/DefaultWeaponAlpha; player spawn + corpse reset hardcode Alpha=1f, so players render fully visible and guns are not isolated."
+    - "Map-restart re-fire: Base calls SetDefaultAlpha() at both worldspawn (world.qc:954) and map restart (world.qc:1730); the port fires FireSetDefaultAlpha only once at worldspawn (GameWorld.cs:618). Functionally inert (the seed is recomputed deterministically from the same mutator set + cvars on every map (re)load), so no observable divergence."
 features:
   - id: running_guns.registration.enable
     name: "Mutator registration + g_running_guns enable cvar"
@@ -31,46 +31,51 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "RunningGunsMutator.cs:16-23 [Mutator]+IsEnabled (Cvars.GetFloat(\"g_running_guns\")!=0); mutators.cfg:522 default 0 present (Base + port byte-identical line)", result: pass }
-      - { kind: code, ref: "MutatorActivation.Apply() Add/Remove loop subscribes enabled mutators; live caller GameWorld.cs:535 on the map-load/server-boot path (verified, real match path)", result: pass }
+      - { kind: code, ref: "RunningGunsMutator.cs:16-23 [Mutator]+IsEnabled (Cvars.GetFloat(\"g_running_guns\")!=0); mutators.cfg:522 default 0 present (Base + port byte-identical line, both 'set g_running_guns 0 \"... or wonder, till it drives you mad...\"')", result: pass }
+      - { kind: code, ref: "MutatorActivation.Apply() Add/Remove loop subscribes enabled mutators; live caller GameWorld.cs:602 on the map-load/server-boot path (verified, real match path)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. Registration + cvar gate are faithful and the activation loop has a live caller, so when g_running_guns!=0 the mutator IS added (MutatorActivation.Add -> Hook -> SetDefaultAlpha.Add) and its handler subscribed. running_guns has no menu mutual-exclusion concern (purely cosmetic, orthogonal)."
+    notes: "Registration + cvar gate are faithful and the activation loop has a live caller, so when g_running_guns!=0 the mutator IS added (MutatorActivation.Apply -> Hook -> SetDefaultAlpha.Add) and its handler subscribed. running_guns has no menu mutual-exclusion concern (purely cosmetic, orthogonal). Unchanged this audit."
   - id: running_guns.alpha.set_default_alpha
     name: "SetDefaultAlpha override — player invisible (alpha -1), weapon visible (alpha +1)"
     layer: [authority, presentation]
     base_refs:
       - "common/mutators/mutator/running_guns/sv_running_guns.qc:MUTATOR_HOOKFUNCTION(running_guns, SetDefaultAlpha)"
-      - "server/world.qc:105 (void SetDefaultAlpha; MUTATOR_CALLHOOK(SetDefaultAlpha))"
+      - "server/world.qc:105-114 (void SetDefaultAlpha; MUTATOR_CALLHOOK(SetDefaultAlpha); default branch g_player_alpha, 0->1 fallback, weapon=player)"
       - "server/world.qc:954,1730 (SetDefaultAlpha() called at world spawn + map restart)"
       - "server/client.qc:788,790 (this.alpha=default_player_alpha; exteriorweaponentity.alpha=default_weapon_alpha)"
-      - "server/player.qc:540 (this.alpha = default_player_alpha on respawn)"
-      - "server/weapons/weaponsystem.qc:116 (weapon m_alpha = default_weapon_alpha when owner at default)"
+      - "server/player.qc:540 (this.alpha = default_player_alpha on respawn/corpse)"
+      - "server/weapons/weaponsystem.qc:170-175 (CL_ExteriorWeaponentity_Think: owner at default_player_alpha => default_weapon_alpha; custom fade => match; 0 => opaque)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/RunningGunsMutator.cs:OnSetDefaultAlpha"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:440 (FireSetDefaultAlpha — NEW Wave-2, fires the chain + returns resolved alpha)"
-      - "src/XonoticGodot.Server/GameWorld.cs:541 (FireSetDefaultAlpha live call at worldspawn; seeds DefaultPlayerAlpha/DefaultWeaponAlpha)"
-      - "src/XonoticGodot.Server/GameWorld.cs:126,129 (DefaultPlayerAlpha/DefaultWeaponAlpha — seeded but NOT consumed)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RunningGunsMutator.cs:OnSetDefaultAlpha (sets PlayerAlpha=-1, WeaponAlpha=+1, returns true)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:854 (FireSetDefaultAlpha — fires chain, seeds g_player_alpha default w/ 0->1 fallback, caches DefaultPlayerAlpha/DefaultWeaponAlpha)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:841,844 (DefaultPlayerAlpha/DefaultWeaponAlpha public statics — read by spawn/death/render)"
+      - "src/XonoticGodot.Server/GameWorld.cs:618 (FireSetDefaultAlpha live call at worldspawn)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:640 (p.Alpha = MutatorHooks.DefaultPlayerAlpha on (re)spawn)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:687 (victim.Alpha = MutatorHooks.DefaultPlayerAlpha on corpse setup)"
+      - "game/net/ServerNet.cs:1830,2264 (QuantizeAlpha: -1 -> 255 hidden sentinel; networks player alpha)"
+      - "game/net/ClientEntityView.cs:134-135 (decode: 255 -> -1f hidden, 0 -> opaque)"
+      - "game/client/PlayerModel.cs:160,217 (ApplyAlpha: clamps -1 -> transparency 1.0 = player invisible; called live from ClientWorld.cs:969 Pose)"
+      - "game/net/ViewEntityRenderer.cs:123-135 (ResolveExteriorWeaponAlpha: owner at default => DefaultWeaponAlpha +1 => gun stays visible)"
     constants:
-      - { name: "default_player_alpha", base: "-1", port: "-1 (handler sets args.PlayerAlpha; seeded into GameWorld.DefaultPlayerAlpha but NEVER read by spawn)", match: false }
-      - { name: "default_weapon_alpha", base: "+1", port: "+1 (handler sets args.WeaponAlpha; seeded into GameWorld.DefaultWeaponAlpha but NEVER read)", match: false }
-      - { name: "default-branch fallback (no hook)", base: "g_player_alpha; 0->1; weapon=player (world.qc:109-112)", port: "hardcoded 1f/1f passed into FireSetDefaultAlpha; no g_player_alpha seed, no 0->1 fallback", match: false }
+      - { name: "default_player_alpha", base: "-1", port: "-1 (OnSetDefaultAlpha sets args.PlayerAlpha=-1f; seeded into DefaultPlayerAlpha; consumed by SpawnSystem.cs:640 + DamageSystem.cs:687)", match: true }
+      - { name: "default_weapon_alpha", base: "+1", port: "+1 (OnSetDefaultAlpha sets args.WeaponAlpha=1f; seeded into DefaultWeaponAlpha; consumed by ViewEntityRenderer.ResolveExteriorWeaponAlpha)", match: true }
+      - { name: "default-branch fallback (no hook)", base: "g_player_alpha; 0->1; weapon=player (world.qc:109-112)", port: "MutatorHooks.cs:856-868 seeds playerAlpha=g_player_alpha, 0->1 fallback, weaponAlpha=playerAlpha", match: true }
+      - { name: "hidden render convention", base: "alpha -1 = do-not-render", port: "QuantizeAlpha -1 -> 255 sentinel; ClientEntityView 255 -> -1f; PlayerModel.ApplyAlpha clamps <0 -> transparency 1.0", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "g_running_guns 1 STILL has no in-game effect: players render fully visible, guns not isolated. The seeded GameWorld.DefaultPlayerAlpha=-1 is never consumed."
-      - "Consume side never wired: player spawn (SpawnSystem.cs:524) and corpse reset (DamageSystem.cs:618) STILL hardcode Alpha=1f instead of reading GameWorld.DefaultPlayerAlpha. grep for DefaultPlayerAlpha/DefaultWeaponAlpha reads outside GameWorld = ZERO hits."
-      - "No exterior-weapon-entity alpha tracks DefaultWeaponAlpha (Base weaponsystem.qc:116 sets the held-weapon m_alpha to default_weapon_alpha when the owner is at the default player alpha; no port consumer)."
-      - "FireSetDefaultAlpha hardcodes base 1f/1f instead of seeding from autocvar_g_player_alpha and applying the 0->1 fallback (world.qc:109-112); the no-hook default branch is incomplete."
+      - "Map-restart re-fire: Base SetDefaultAlpha() runs at worldspawn AND map restart (world.qc:954,1730); the port fires FireSetDefaultAlpha once at worldspawn (GameWorld.cs:618). Inert because the seed is recomputed deterministically per map (re)load from the same mutator set + cvars."
     verification:
       - { kind: code, ref: "RunningGunsMutator.cs:41-47 OnSetDefaultAlpha sets args.PlayerAlpha=-1f, args.WeaponAlpha=1f, returns true — values+logic faithful to QC (-1/+1, return true)", result: pass }
-      - { kind: code, ref: "MutatorHooks.cs:440 FireSetDefaultAlpha calls SetDefaultAlpha.Call(ref a); invoked LIVE at GameWorld.cs:541 on the map-load path (same path as MutatorActivation.Apply) — the dead-chain defect (baseline 'no .Call site') is CLOSED: the hook now fires and DefaultPlayerAlpha becomes -1 when enabled", result: pass }
-      - { kind: code, ref: "grep src/**+game/** for DefaultPlayerAlpha/DefaultWeaponAlpha reads outside GameWorld decl+seed → NONE. SpawnSystem.cs:524 p.Alpha=1f and DamageSystem.cs:618 victim.Alpha=1f are still hardcoded; the seeded value reaches no spawned entity. Feature produces no visible effect.", result: fail }
+      - { kind: code, ref: "MutatorHooks.cs:854-880 FireSetDefaultAlpha: seeds playerAlpha from g_player_alpha w/ 0->1 fallback (world.qc:109-112 port), weaponAlpha=playerAlpha, runs SetDefaultAlpha.Call, caches DefaultPlayerAlpha/DefaultWeaponAlpha. Invoked LIVE at GameWorld.cs:618 at worldspawn.", result: pass }
+      - { kind: code, ref: "CONSUME SIDE NOW WIRED (was the baseline-blocking defect): SpawnSystem.cs:640 p.Alpha=MutatorHooks.DefaultPlayerAlpha and DamageSystem.cs:687 victim.Alpha=MutatorHooks.DefaultPlayerAlpha read the seed (no longer hardcoded 1f). Net: ServerNet.QuantizeAlpha -1->255, ClientEntityView 255->-1f, PlayerModel.ApplyAlpha (live per-frame via ClientWorld.cs:969 Pose) clamps -1 -> transparency 1.0 -> player invisible.", result: pass }
+      - { kind: code, ref: "WEAPON VISIBLE: ViewEntityRenderer.ResolveExteriorWeaponAlpha (weaponsystem.qc:170-175 port) returns DefaultWeaponAlpha(+1) when owner is at default_player_alpha (or decoded -1 hidden) -> gun renders opaque while player is hidden. End-to-end Running Guns look achieved.", result: pass }
     confidence: high
-    notes: "Wave-2 PARTIAL progress. Handler logic+values remain a faithful port (-1 / +1, return true) and the previously-DEAD MutatorHooks.SetDefaultAlpha chain now has a LIVE invoker: GameWorld.cs:541 calls FireSetDefaultAlpha at worldspawn (the new world.qc:SetDefaultAlpha() equivalent), seeding GameWorld.DefaultPlayerAlpha/DefaultWeaponAlpha. That closes ONE of the two independent baseline defects (the un-fired chain). The SECOND defect is UNFIXED and still nullifies the whole feature: nothing consumes the seeded values. Player-spawn (SpawnSystem.cs:524) and corpse-reset (DamageSystem.cs:618) hardcode Alpha=1f; no exterior-weapon code reads DefaultWeaponAlpha. So presentation stays MISSING and g_running_guns 1 has no in-game effect. Liveness is 'partial' (hook fires/seed runs live, but the read path that would make it observable is absent). The same FireSetDefaultAlpha seam also serves CloakedMutator's SetDefaultAlpha; Cloaked is blocked on the identical missing consume-side. Remaining fix is mechanical: have player-spawn + exterior-weapon code read GameWorld.DefaultPlayerAlpha/DefaultWeaponAlpha (and net/render the alpha) instead of hardcoding 1f, plus seed the no-hook default branch from g_player_alpha (0->1)."
+    notes: "MAJOR FIX vs baseline (2026-06-22). The baseline recorded presentation=missing, liveness=partial, 3 of 4 constants match=false, and the headline gap 'g_running_guns 1 has no in-game effect' because the seeded DefaultPlayerAlpha was never consumed (SpawnSystem/DamageSystem hardcoded Alpha=1f, grep for reads = ZERO hits). That whole consume side is now wired: SpawnSystem.cs:640 and DamageSystem.cs:687 read MutatorHooks.DefaultPlayerAlpha; the alpha is networked through QuantizeAlpha's -1->255 hidden sentinel, decoded in ClientEntityView, and rendered by PlayerModel.ApplyAlpha (live per-frame). The exterior weapon stays visible via ViewEntityRenderer.ResolveExteriorWeaponAlpha (faithful port of weaponsystem.qc:170-175). The no-hook default branch now seeds g_player_alpha with the 0->1 fallback (MutatorHooks.cs:856-868), matching world.qc:109-112. All four constants now match. Only residual: the map-restart re-fire (world.qc:1730) has no port equivalent call site, but it is functionally inert (deterministic recompute on each map load). The same FireSetDefaultAlpha/DefaultPlayerAlpha seam also serves CloakedMutator (0.25) and PowerupsMutator (Invisibility), which read the same statics. Feature is now faithful + live end-to-end."

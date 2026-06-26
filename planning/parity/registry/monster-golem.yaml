@@ -5,11 +5,9 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Loot drop still spawns a generic item_loot marker, not the real health_mega/electro item entities (framework deferral; full Item_RandomFromList instantiation belongs to the items subsystem)."
-    - "Smash/lightning visual puffs absent: EFFECT_EXPLOSION_MEDIUM (smash, golem.qc:27) and EFFECT_ELECTRO_IMPACT (lightning detonation, golem.qc:59) not emitted; the te_csqc_lightningarc beam IS drawn."
-    - "CSQC lightning projectile model (models/ebomb.mdl scale 2.5, PROJECTILE_GOLEM_LIGHTNING) not rendered — headless projectile."
-    - "MENUQC monsterpedia describe() text (golem.qc:283) not ported (no monster info page)."
-    - "AnimFrame stamps only the group START index onto Entity.Frame; the animfixfps framecount/fps group resolution + per-frame advance is descriptor-level only (no true .dpm frame playback timeline)."
+    - "CSQC lightning projectile model (models/ebomb.mdl scale 2.5, PROJECTILE_GOLEM_LIGHTNING) not rendered — headless projectile (SpawnProjectile sets no model)."
+    - "MENUQC monsterpedia describe() text (golem.qc:308) not ported (no monster info page)."
+    - "AnimFrame stamps only the group START index onto Entity.Frame; the animfixfps framecount/fps per-frame advance within a group is not driven (no intra-group .dpm fps playback timeline) — the right group is now selected per phase/variant, but the client renders a single stamped frame per group."
 features:
   - id: monster-golem.spawn.setup
     name: "Spawn + mr_setup (health/ranges/speeds/loot/spawn-shield/hitbox)"
@@ -45,11 +43,11 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: value-diff, ref: "monsters.cfg vs Golem.cs:25-38 + Spawn:91-98 — all golem constants confirmed match", result: pass }
-      - { kind: code-read, ref: "Golem.cs:88-108 Spawn (size/ranges/speeds/force/loot/spawn-shield) + MonsterAI.Setup", result: pass }
-      - { kind: code-read, ref: "Golem.cs:104-105 spawn-anim gate = anim_spawn '12 1 5' framecount(1)/fps(5)=0.2s — IS the QC-derived animstate_endtime, not an approximation; spawn shield ApplyFor matches", result: pass }
+      - { kind: value-diff, ref: "monsters.cfg vs Golem.cs:25-38 + Spawn:95-117 — all golem constants confirmed match", result: pass }
+      - { kind: code-read, ref: "Golem.cs:95-117 Spawn (size/ranges/speeds/force/loot/spawn-shield/spawn-anim) + MonsterAI.Setup", result: pass }
+      - { kind: code-read, ref: "Golem.cs:111-116 spawn-anim gate = anim_spawn '12 1 5' framecount(1)/fps(5)=0.2s = the QC-derived animstate_endtime (not an approximation); spawn shield ApplyFor matches; st.Anim=Spawn now stamps group 12", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-25: golem core unchanged + improved. EF_RED miniboss glow live on spawn (Setup:254) + respawn (:1681). Timing UPGRADED partial->faithful: the prior 'hardcoded 0.2s vs animstate_endtime' note is now annotated in-code (Golem.cs:100-104) as the genuine QC-derived anim_spawn '12 1 5' = framecount/fps = 0.2s — so it matches Base, not an approximation. The spawn voice cue is gated out for golem (SoundCues lacks 'spawn') — see monster-golem.audio.voice_cues."
+    notes: "Re-audited 2026-06-25: golem core unchanged + improved. EF_RED miniboss glow live on spawn + respawn. Timing faithful (anim_spawn 0.2s = QC animstate_endtime). Spawn phase now drives anim group 12 (st.Anim=MonsterAnim.Spawn, Golem.cs:116). Spawn voice cue correctly gated out for golem (SoundCues lacks 'spawn')."
 
   - id: monster-golem.spawnfunc.alias
     name: "monster_golem spawnfunc + monster_shambler compat alias (live map placement)"
@@ -107,13 +105,13 @@ features:
     verification:
       - { kind: code-read, ref: "RunThink calls EnemyCheck -> Move -> AttackCheck — brain path live via Golem.Think->RunThink", result: pass }
       - { kind: code-read, ref: "EnemyCheck re-traces LOS (drop if frac<1 && ent!=enemy) + drops FROZEN enemy — matches Monster_Enemy_Check:1247", result: pass }
-      - { kind: code-read, ref: "MatchHalted gate (game_stopped || time<game_starttime) wired into ValidTarget + Move via live GameScores.GameStopped + StartItem.GameStartTimeProvider seams — matches Monster_ValidTarget / Monster_Move", result: pass }
+      - { kind: code-read, ref: "MatchHalted gate (game_stopped || time<game_starttime) wired into ValidTarget + Move via live GameScores.GameStopped + StartItem.GameStartTimeProvider seams", result: pass }
     confidence: high
     notes: "Re-audited 2026-06-25: unchanged. LOS-drop + frozen-enemy-drop + match-halt gates live on the real brain path. Golem mr_think is a no-op (golem.qc:231) — port matches. INFRONT facing gate remains the only (benign) gap."
 
   - id: monster-golem.attack.melee_combo
     name: "Melee combo: 1-3 claw swings 0.5s apart"
-    layer: [authority]
+    layer: [authority, presentation]
     base_refs:
       - "common/monsters/monster/golem.qc:M_Golem_Attack"
       - "common/monsters/monster/golem.qc:M_Golem_Attack_Swing"
@@ -127,27 +125,28 @@ features:
       - { name: "swing_count", base: "bound(1, floor(random*4), 3)", port: "Clamp(floor(rand*4),1,3)", match: true }
       - { name: "swing_interval_s", base: "0.5", port: "0.5", match: true }
       - { name: "per_swing_animtime_s", base: "0.8", port: "0.8", match: true }
+      - { name: "swing_anim", base: "anim_melee2 '4' or anim_melee3 '5' (random per dispatch)", port: "AnimVariant 0->4 / 1->5 (random per dispatch, QueueCombo:1433)", match: true }
       - { name: "deathtype", base: "DEATH_MONSTER_GOLEM_CLAW", port: "MonsterGolemClaw", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Random anim_melee2/anim_melee3 swing-animation selection not done per-swing; the descriptor's Attack phase maps to a single representative frame group (melee2 '4') rather than alternating melee2/melee3 (presentation only)."
+    gaps: []
     verification:
-      - { kind: value-diff, ref: "Golem.Attack:133 QueueCombo(...,perSwingAnimTime: 0.8f) — UPGRADED from 0.5 to 0.8, now matches M_Golem_Attack_Swing (golem.qc:51)", result: pass }
-      - { kind: code-read, ref: "QueueCombo:1399-1415 plays monstersound_melee ONCE at dispatch (line 1415), per-swing path suppresses it (MonsterAI.cs:1247) — matches QC Monster_Attack_Check:468 dispatch-level cue", result: pass }
+      - { kind: code-read, ref: "Golem.Attack:142 QueueCombo(...,perSwingAnimTime:0.8f) matches M_Golem_Attack_Swing (golem.qc:51)", result: pass }
+      - { kind: code-read, ref: "QueueCombo:1433 st.AnimVariant=rand>=0.5?1:0 -> AnimFrame Attack 4(melee2)/5(melee3); DriveAnimFrame stamps it — random swing-anim selection now ported", result: pass }
+      - { kind: code-read, ref: "QueueCombo:1436 plays monstersound_melee ONCE at dispatch, per-swing path suppresses it (MonsterAI.cs:1266) — matches QC Monster_Attack_Check:468 dispatch cue", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-25 — MAJOR FIXES. (1) per-swing animtime corrected 0.5->0.8 (QueueCombo perSwingAnimTime). (2) melee voice cue moved to DISPATCH granularity (QueueCombo:1415) and suppressed per-connecting-swing — matches QC; the sample path now resolves to a real file (monsters/golem/melee.wav). Damage = ClawDamage*SkillMod via forward traceline, faithful. Only the per-swing alternating melee2/melee3 frame selection remains (presentation)."
+    notes: "Re-audited 2026-06-25 — presentation UPGRADED missing->faithful: the random anim_melee2 '4'/anim_melee3 '5' per-dispatch swing-animation selection is now driven via MonsterState.AnimVariant (QueueCombo:1433) and stamped by DriveAnimFrame. Damage = ClawDamage*SkillMod via forward traceline, melee voice cue at dispatch granularity. Fully faithful on all dimensions."
 
   - id: monster-golem.attack.smash
     name: "Ranged ground-smash: leap + radius AoE in front"
-    layer: [authority]
+    layer: [authority, presentation]
     base_refs:
       - "common/monsters/monster/golem.qc:M_Golem_Attack (RANGED smash branch)"
       - "common/monsters/monster/golem.qc:M_Golem_Attack_Smash"
@@ -162,23 +161,24 @@ features:
       - { name: "smash_roll_threshold", base: "<=0.5", port: "<=0.5", match: true }
       - { name: "smash_windup_s", base: "1.1 (Monster_Delay)", port: "1.1", match: true }
       - { name: "ranged_cooldown_s", base: "3 + random*1.5", port: "3 + rand*1.5", match: true }
+      - { name: "smash_effect", base: "EFFECT_EXPLOSION_MEDIUM at (origin + v_forward*150) - '0 0 maxs.z' (golem.qc:27)", port: "EffectEmitter.Emit(\"EXPLOSION_MEDIUM\", (origin+forward*150)-'0 0 maxs.z') Golem.cs:177", match: true }
       - { name: "deathtype", base: "DEATH_MONSTER_GOLEM_SMASH", port: "MonsterGolemSmash", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "EFFECT_EXPLOSION_MEDIUM spawn (golem.qc:27) still not emitted by the port's Smash."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "Golem.Smash:154-171 (RadiusDamage SmashDamage*skill / *0.5 / range200 / force100 + rocket_impact.wav) vs M_Golem_Attack_Smash:24-47", result: pass }
-      - { kind: code-read, ref: "Golem.Smash:160 PlayMeleeCue at dispatch — QC plays monstersound_melee on ranged attack-success (Monster_Attack_Check:478); now ported", result: pass }
+      - { kind: code-read, ref: "Golem.Smash:163-184 (RadiusDamage SmashDamage*skill / *0.5 / range200 / force100 + rocket_impact.wav) vs M_Golem_Attack_Smash:24-47", result: pass }
+      - { kind: code-read, ref: "Golem.Smash:177 EffectEmitter.Emit(\"EXPLOSION_MEDIUM\", fxOrigin) at the bbox-foot offset — matches Send_Effect(EFFECT_EXPLOSION_MEDIUM ...) golem.qc:27; EXPLOSION_MEDIUM registered (EffectsList.cs:30), Sink path live", result: pass }
+      - { kind: code-read, ref: "Golem.Smash:169 PlayMeleeCue at dispatch (QC Monster_Attack_Check:478)", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-25. SND_ROCKET_IMPACT = weapons/rocket_impact.wav, matches. AUDIO UPGRADED missing->faithful: the dispatch-level melee voice cue the ranged success plays (QC :478) is now fired via PlayMeleeCue (Smash:160). Total lock 1.4s covers QC anim_finished+0.2. Only the EFFECT_EXPLOSION_MEDIUM puff (presentation) remains."
+    notes: "Re-audited 2026-06-25 — presentation UPGRADED missing->faithful: the EFFECT_EXPLOSION_MEDIUM ground-pound puff is now emitted via EffectEmitter.Emit at the QC-exact origin offset (Golem.cs:177); EXPLOSION_MEDIUM is registered and the emit Sink is the same live path Spider/Electro/vehicles use. SND_ROCKET_IMPACT + dispatch melee cue faithful. Fully faithful on all dimensions."
 
   - id: monster-golem.attack.lightning
     name: "Ranged lightning chunk: bouncing shootable projectile, 5s fuse"
@@ -200,7 +200,7 @@ features:
       - { name: "lightning_roll_threshold", base: "<=0.1 && dist>=smash_range*1.5", port: "<=0.1 && dist>=SmashRange*1.5", match: true }
       - { name: "lightning_windup_s", base: "0.6 (Monster_Delay)", port: "0.6", match: true }
       - { name: "launch_sound", base: "NONE (M_Golem_Attack_Lightning emits no sound)", port: "NONE", match: true }
-      - { name: "projectile_model", base: "models/ebomb.mdl scale 2.5 (CSQCProjectile)", port: "none (headless)", match: false }
+      - { name: "projectile_model", base: "models/ebomb.mdl scale 2.5 (CSQCProjectile PROJECTILE_GOLEM_LIGHTNING)", port: "none (headless)", match: false }
     status:
       logic: faithful
       values: faithful
@@ -211,12 +211,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CSQC projectile model (models/ebomb.mdl, scale 2.5, PROJECTILE_GOLEM_LIGHTNING) not rendered (headless projectile)."
+      - "CSQC projectile model (models/ebomb.mdl, scale 2.5, PROJECTILE_GOLEM_LIGHTNING) not rendered — SpawnProjectile sets no proj.Model (headless projectile)."
     verification:
-      - { kind: code-read, ref: "Golem.ThrowLightning:177-214 + SpawnProjectile (Bounce, 50hp, makeTrigger, size +/-8, +Z speedUp) vs M_Golem_Attack_Lightning", result: pass }
-      - { kind: code-read, ref: "Golem.cs:210-212 — no launch cue (QC M_Golem_Attack_Lightning emits none); ThrowLightning:182 fires the dispatch melee cue (QC :478)", result: pass }
+      - { kind: code-read, ref: "Golem.ThrowLightning:191-231 + SpawnProjectile (Bounce, 50hp, makeTrigger, size +/-8, +Z speedUp) vs M_Golem_Attack_Lightning", result: pass }
+      - { kind: code-read, ref: "SpawnProjectile (MonsterAI.cs:1451-1512) sets no .Model on the projectile entity — only the monster body gets a model (MonsterAI.cs:241); CSQC ebomb.mdl unported", result: fail }
+      - { kind: code-read, ref: "Golem.cs:227-229 — no launch cue (QC M_Golem_Attack_Lightning emits none); ThrowLightning:196 fires the dispatch melee cue (QC :478)", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-25. No fabricated launch sound (QC emits none). Early-detonate-when-shot, bounce, MAKETRIGGER, 5s fuse all ported. The dispatch-level melee voice cue on ranged success is now fired (ThrowLightning:182). Only the CSQC projectile model remains (presentation)."
+    notes: "Re-audited 2026-06-25. Unchanged from baseline: no fabricated launch sound, early-detonate-when-shot, bounce, MAKETRIGGER, 5s fuse all ported; dispatch-level melee voice cue fired. Only the CSQC projectile model remains (presentation)."
 
   - id: monster-golem.attack.lightning_explode
     name: "Lightning detonation: small blast + chained zaps to wide radius"
@@ -234,22 +235,23 @@ features:
       - { name: "g_monster_golem_attack_lightning_radius_zap", base: "250", port: "250", match: true }
       - { name: "g_monster_golem_attack_lightning_damage_zap", base: "15", port: "15", match: true }
       - { name: "zap_damage_scaling", base: "zap*MONSTER_SKILLMOD", port: "zap*SkillMod", match: true }
+      - { name: "lightning_impact_effect", base: "EFFECT_ELECTRO_IMPACT at this.origin (golem.qc:59)", port: "EffectEmitter.Emit(\"ELECTRO_IMPACT\", p.Origin) Golem.cs:218", match: true }
       - { name: "lightning_impact_sound", base: "SND_MON_GOLEM_LIGHTNING_IMPACT = weapons/electro_impact.wav", port: "weapons/electro_impact.wav", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "EFFECT_ELECTRO_IMPACT effect spawn (golem.qc:59) still not emitted by the port's onExplode (the te_csqc_lightningarc beam IS emitted via EffectEmitter.TeCsqcLightningArc — only the impact puff is missing)."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "Golem.cs:204 ChainedZaps + MonsterFramework.cs:183-190 FOREACH radius250, exclude owner/inflictor, takedamage gate, *skill, GolemZap + TeCsqcLightningArc beam vs M_Golem_Attack_Lightning_Explode:69-91", result: pass }
+      - { kind: code-read, ref: "Golem.cs:221 ChainedZaps + MonsterFramework.cs FOREACH radius250, exclude owner/inflictor, takedamage gate, *skill, GolemZap + TeCsqcLightningArc beam vs M_Golem_Attack_Lightning_Explode:69-91", result: pass }
+      - { kind: code-read, ref: "Golem.cs:218 EffectEmitter.Emit(\"ELECTRO_IMPACT\", p.Origin) matches Send_Effect(EFFECT_ELECTRO_IMPACT, this.origin) golem.qc:59; ELECTRO_IMPACT registered (EffectsList.cs:71)", result: pass }
     confidence: high
-    notes: "Unchanged. Center blast (RadiusDamage 25/25/50/force100/GolemZap) + zaps (15*skill) both faithful; the lightning-arc beam IS drawn. Only the EFFECT_ELECTRO_IMPACT puff is missing."
+    notes: "Re-audited 2026-06-25 — presentation UPGRADED partial->faithful: the EFFECT_ELECTRO_IMPACT detonation puff is now emitted (Golem.cs:218) alongside the te_csqc_lightningarc beam (already drawn). Center blast (RadiusDamage 25/25/50/force100/GolemZap) + zaps (15*skill) faithful. Fully faithful on all dimensions."
 
   - id: monster-golem.pain
     name: "Pain reaction (mr_pain): pain window + pain animation"
@@ -262,24 +264,23 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterEventDamage"
     constants:
       - { name: "pain_finished_window_s", base: "0.5", port: "0.5", match: true }
-      - { name: "pain_anim", base: "anim_pain1 or anim_pain2 (random, looping)", port: "anim_pain1 group '7' (no random pain2)", match: false }
+      - { name: "pain_anim", base: "anim_pain1 '7' or anim_pain2 '8' (random, golem.qc:241)", port: "AnimVariant 0->7 / 1->8 (random per pain event, MonsterAI.cs:1583)", match: true }
       - { name: "pain_channel", base: "CH_PAIN (-6)", port: "SoundChannel.PainAuto (-6)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Random anim_pain1/anim_pain2 selection not done: the descriptor maps the Pain phase to a single frame group (pain1 '7'); QC randomly picks pain1 '7'/pain2 '8' (presentation only)."
+    gaps: []
     verification:
-      - { kind: value-diff, ref: "Golem.cs:42 PainWindow=>0.5f — UPGRADED from 0.34 to 0.5, now matches golem.qc:240; pain cue on SoundChannel.PainAuto (MonsterAI.cs:1563) — UPGRADED from Body(4) to PainAuto(-6), matches QC CH_PAIN", result: pass }
-      - { kind: code-read, ref: "MonsterEventDamage:1558 st.PainFinished = Now + Def.PainWindow; MonsterSound pain 1.2s throttle on PainAuto; Pain phase stamps frame 7 via AnimFrame/DriveAnimFrame", result: pass }
+      - { kind: code-read, ref: "Golem.cs:42 PainWindow=>0.5f matches golem.qc:240; pain cue on SoundChannel.PainAuto (-6) matches QC CH_PAIN", result: pass }
+      - { kind: code-read, ref: "MonsterEventDamage:1583 st.AnimVariant=rand>=0.5?1:0 -> AnimFrame Pain 7(pain1)/8(pain2); DriveAnimFrame stamps it — random pain1/pain2 selection now ported", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-25 — MAJOR FIXES. (1) pain window corrected 0.34->0.5 (golem-specific PainWindow override, golem.qc:240). (2) pain cue channel corrected Body(4)->PainAuto(-6) matching QC CH_PAIN. (3) sample path now resolves to real files (monsters/golem/pain1-2.wav, group count 2). Only the random pain1/pain2 frame alternation remains (presentation; port stamps the single pain1 group)."
+    notes: "Re-audited 2026-06-25 — presentation UPGRADED partial->faithful: the random anim_pain1 '7'/anim_pain2 '8' selection (golem.qc:241) is now driven via MonsterState.AnimVariant (MonsterEventDamage:1583) and stamped by DriveAnimFrame. Pain window 0.5s, PainAuto(-6) channel, real pain1-2.wav samples. Fully faithful on all dimensions."
 
   - id: monster-golem.death
     name: "Death (mr_death + Monster_Dead): corpse, loot, scoring, death anim"
@@ -290,28 +291,31 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkDead"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:DropItem"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:ItemRandomFromList"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:SpawnLoot"
     constants:
       - { name: "corpse_lifetime_s", base: "5", port: "5", match: true }
       - { name: "gib_threshold_health", base: "-100 (or DEATH_KILL)", port: "-100 or Kill", match: true }
       - { name: "g_monsters_score_kill", base: "0 (cvar)", port: "0", match: true }
       - { name: "death_anim", base: "anim_die1 '13' (once); die2 '15' on land", port: "Death phase -> frame 13, die2 15 on DeathLanded", match: true }
-      - { name: "loot_items", base: "real health_mega + electro item entities (Item_RandomFromList)", port: "generic item_loot marker entity", match: false }
+      - { name: "loot_items", base: "real health_mega + electro item entities (Item_RandomFromList)", port: "real item entities via ItemRandomFromList + StartItem.SpawnLoot", match: true }
+      - { name: "loot_toss_velocity", base: "randomvec()*175 + '0 0 325'", port: "Prandom.Vec()*175 + '0 0 325'", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "DropItem (MonsterFramework.cs:204-231) spawns a generic item_loot MARKER carrying the list name, not the real health_mega/electro item entities — full Item_RandomFromList instantiation deferred to the items subsystem."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "MarkDead (corpse solid/movetype, DropItem, ++MonstersKilled natural-only, scorer +g_monsters_score_kill, Death hook, NadeBonus.OnMonsterDies, 5s lifetime, death cue) vs Monster_Dead", result: pass }
-      - { kind: code-read, ref: "DropItem:216-218 spawns item_loot marker carrying NetName=itemList, not real item", result: fail }
+      - { kind: code-read, ref: "MarkDead (corpse solid/movetype, DropItem:1631, ++MonstersKilled natural-only, scorer +g_monsters_score_kill, Death hook, NadeBonus.OnMonsterDies, 5s lifetime, death cue) vs Monster_Dead", result: pass }
+      - { kind: code-read, ref: "DropItem:205-235 -> ItemRandomFromList(itemList) picks a real Pickup def (health_mega/electro) -> StartItem.SpawnLoot spawns a REAL item entity (MOVETYPE_TOSS + lifetime) + randomvec*175+'0 0 325' toss; no longer a generic marker", result: pass }
+      - { kind: code-read, ref: "ItemRandomFromList:245-278 = faithful Item_RandomFromList (weapon/item catalog match + 'random' wildcard + equal-weight Prandom pick)", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-25. Corpse setup, natural-only kill count, player scoring, NadeBonus hook, 5s fade all faithful. PRESENTATION UPGRADED missing->partial: death anim now stamps frame group 13 (die1) and 15 (die2 on DeathLanded) via AnimFrame/DriveAnimFrame. AUDIO faithful: death cue plays monsters/golem/death1-3.wav (group count 3, real files). Only the real-item loot drop remains."
+    notes: "Re-audited 2026-06-25 — MAJOR FIX. The baseline worst-gap (generic item_loot MARKER) is RESOLVED: DropItem now routes through ItemRandomFromList + StartItem.SpawnLoot (the shared real-item pipeline thrown weapons / Overkill / RandomItems use), dropping actual health_mega/electro item entities with the QC-exact toss velocity. Death anim stamps die1 '13'/die2 '15'. Corpse setup, natural-only kill count, scoring, NadeBonus hook, 5s fade, death cue (golem/death1-3.wav) all faithful. Fully faithful on all dimensions."
 
   - id: monster-golem.audio.voice_cues
     name: "Monster_Sound voice cues (idle/sight/melee/spawn/pain/death) + antilag throttle"
@@ -330,9 +334,9 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Setup (323, spawn)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:EnemyCheck (823, sight)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Move (894, idle 7s)"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:QueueCombo (1415, melee dispatch)"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterEventDamage (1563, pain 1.2s)"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkDead (1610, death)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:QueueCombo (1436, melee dispatch)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterEventDamage (pain 1.2s)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkDead (death)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/Golem.cs:SoundCues/SoundCueCount"
     constants:
       - { name: "g_monsters_sounds (master gate)", base: "1 (default)", port: "1 (default)", match: true }
@@ -356,11 +360,10 @@ features:
       - "QC spamsound(SND_BODYIMPACT1) pain placeholder (when a monster has no pain sample) not played — n/a for golem (golem has pain samples)."
     verification:
       - { kind: code-read, ref: "MonsterSound:747-769 g_monsters_sounds gate + msound_delay throttle (pain 1.2 delaytoo, idle 7 delaytoo) + subdir/group-count path resolution; cueDefined gate from SoundCues set", result: pass }
-      - { kind: value-diff, ref: "port path monsters/golem/<cue><N>.wav vs shipped sound/monsters/golem/<cue><N>.wav — assets CONFIRMED present (death1-3, pain1-2, idle1-2, sight, melee); SoundCueCount matches golem.dpm_0.sounds counts; spawn gated out", result: pass }
-      - { kind: code-read, ref: "melee cue now at DISPATCH: QueueCombo:1415 (melee) + Golem.Smash:160/ThrowLightning:182 PlayMeleeCue (ranged); per-swing path suppressed (MonsterAI.cs:1247) — matches QC :468/478", result: pass }
-      - { kind: code-read, ref: "pain cue on SoundChannel.PainAuto(-6) (MonsterAI.cs:1563) matching QC CH_PAIN; idle/sight/death on Voice", result: pass }
+      - { kind: value-diff, ref: "port path monsters/golem/<cue><N>.wav vs shipped sound/monsters/golem/<cue><N>.wav — assets present (death1-3, pain1-2, idle1-2, sight, melee); SoundCueCount matches; spawn gated out", result: pass }
+      - { kind: code-read, ref: "melee cue at DISPATCH: QueueCombo:1436 (melee) + Golem.Smash:169/ThrowLightning:196 PlayMeleeCue (ranged); per-swing path suppressed — matches QC :468/478", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-25 — LARGELY FIXED (was the worst row in the baseline). The four major baseline defects are resolved: (1) sample PATHS now resolve to the real subdir+group-count assets (monsters/golem/<cue><N>.wav, verified present), so audio actually reaches the mixer; (2) melee cue moved to DISPATCH granularity for melee AND ranged (PlayMeleeCue); (3) spawn cue correctly plays NOTHING for golem (SoundCues omits 'spawn'); (4) pain cue on PainAuto(-6) not Body(4). Audio rated 'partial' only because the .sounds group/skin system is hand-mirrored per descriptor rather than parsed from the model file — behaviorally faithful for golem."
+    notes: "Re-audited 2026-06-25 — unchanged from baseline. Audio still rated 'partial' only because the .sounds group/skin system is hand-mirrored per descriptor rather than parsed from the model file — behaviorally faithful for golem (real assets reach the mixer, dispatch-granularity melee cue, spawn gated out, pain on PainAuto)."
 
   - id: monster-golem.anim_frames
     name: "Animation frame-group table (mr_anim) for .dpm playback"
@@ -370,18 +373,19 @@ features:
       - "common/monsters/monster/golem.qh:MODEL(MON_GOLEM, golem.dpm)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Golem.cs:AnimFrame"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:DriveAnimFrame (1186)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:DriveAnimFrame (1204)"
     constants:
       - { name: "anim_idle", base: "'0 1 1'", port: "0", match: true }
       - { name: "anim_walk", base: "'1 1 1'", port: "1", match: true }
       - { name: "anim_run", base: "'2 1 1'", port: "2", match: true }
-      - { name: "anim_melee1/2/3", base: "'6/4/5 1 5'", port: "Attack -> 4 (melee2 representative)", match: false }
-      - { name: "anim_pain1/pain2", base: "'7/8 1 2'", port: "Pain -> 7 (pain1 only)", match: false }
-      - { name: "anim_spawn", base: "'12 1 5'", port: "(spawn phase maps to Idle 0; 0.2s gate derived from this)", match: false }
+      - { name: "anim_melee2/melee3", base: "'4/5 1 5' (random per melee dispatch)", port: "Attack variant 0->4 / 1->5", match: true }
+      - { name: "anim_melee1 (smash)", base: "'6 1 5'", port: "smash uses Attack group (melee2 '4'); not melee1 '6'", match: false }
+      - { name: "anim_pain1/pain2", base: "'7/8 1 2' (random per pain)", port: "Pain variant 0->7 / 1->8", match: true }
+      - { name: "anim_spawn", base: "'12 1 5'", port: "Spawn -> 12", match: true }
       - { name: "anim_die1/die2", base: "'13/15 1 0.5'", port: "Death -> 13, die2 -> 15 on DeathLanded", match: true }
     status:
       logic: na
-      values: partial
+      values: faithful
       timing: partial
       presentation: partial
       audio: na
@@ -389,12 +393,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "AnimFrame stamps only the group START index onto Entity.Frame (server-side, per think via DriveAnimFrame). The animfixfps framecount/fps group resolution and the per-frame playback advance within a group are not driven — there is no true .dpm frame timeline; the client renders a single stamped frame per phase."
-      - "Attack phase maps to a single representative group (melee2 '4') rather than selecting melee1/melee2/melee3 per attack type; Pain maps to pain1 '7' only (no random pain2 '8'); spawn group '12' not stamped (spawn phase shows Idle '0')."
+      - "AnimFrame stamps only the group START index onto Entity.Frame (server-side, per think via DriveAnimFrame). The animfixfps framecount/fps per-frame playback advance WITHIN a group is not driven — there is no true .dpm frame timeline; the client renders a single stamped frame per phase/group (timing/presentation partial)."
+      - "Smash maps to the Attack group (melee2 '4'), not the dedicated anim_melee1 '6' the QC ranged-smash branch uses (setanim(anim_melee1)) — a representative-group simplification (presentation)."
     verification:
-      - { kind: code-read, ref: "Golem.cs:63-72 AnimFrame maps Idle/Walk/Run/Attack/Pain/Death to group indices 0/1/2/4/7/(13|15); DriveAnimFrame:1186-1191 stamps it onto self.Frame each think — LIVE", result: pass }
+      - { kind: code-read, ref: "Golem.cs:67-79 AnimFrame maps Idle/Walk/Run/Attack(4|5)/Pain(7|8)/Spawn(12)/Death(13|15) with variant; DriveAnimFrame:1204-1206 stamps it onto self.Frame each think — LIVE", result: pass }
+      - { kind: code-read, ref: "AnimVariant set by QueueCombo:1433 (melee) + MonsterEventDamage:1583 (pain); Spawn phase set in Golem.Spawn:116 -> group 12 now stamped", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-25 — MAJOR FIX (was fully 'missing'). The golem now has a real AnimFrame frame-group table mirroring mr_anim, and DriveAnimFrame stamps the group index onto the networked Entity.Frame every think on the live path. Upgraded values/timing/presentation missing->partial and liveness na->live. Remaining gap: only the group start frame is stamped (no intra-group fps playback timeline), and the representative-group simplifications (single Attack group, single Pain group, no spawn group)."
+    notes: "Re-audited 2026-06-25 — values UPGRADED partial->faithful: the table now selects the correct group per phase AND variant (Attack melee2/melee3, Pain pain1/pain2 both random-driven via AnimVariant; Spawn group 12 stamped). timing/presentation stay partial: no intra-group fps playback timeline (only the group start frame is stamped), and the smash still reuses the Attack/melee2 group rather than anim_melee1 '6'."
 
   - id: monster-golem.menu.describe
     name: "Monsterpedia describe() flavor text (MENUQC)"
@@ -403,7 +408,7 @@ features:
       - "common/monsters/monster/golem.qc:Golem.describe (MENUQC)"
     port_refs: []
     constants:
-      - { name: "describe_text", base: "3-paragraph monster info (golem.qc:283-292)", port: "none", match: false }
+      - { name: "describe_text", base: "3-paragraph monster info (golem.qc:308-316)", port: "none", match: false }
     status:
       logic: na
       values: na
@@ -416,6 +421,6 @@ features:
     gaps:
       - "MENUQC describe() returns the golem's 3-paragraph monsterpedia entry; the port has no monster info-page system, so this text is not surfaced. Pure menu/UI flavor, no gameplay effect."
     verification:
-      - { kind: code-read, ref: "No describe/monster-info-page port found (grep 'Golems are large' / 'describe' over src — none); golem.qc:283 METHOD(Golem, describe) unported", result: fail }
+      - { kind: code-read, ref: "No describe/monster-info-page port found (grep 'Golems are large' over src — none); golem.qc:308 METHOD(Golem, describe) unported", result: fail }
     confidence: high
-    notes: "Newly mapped 2026-06-25 (registry coverage gap, not a regression). MENUQC-only monsterpedia flavor text; out of the gameplay-parity critical path but tracked for completeness."
+    notes: "Unchanged 2026-06-25. MENUQC-only monsterpedia flavor text; out of the gameplay-parity critical path but tracked for completeness."

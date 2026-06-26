@@ -6,23 +6,22 @@ summary:
   feature_count: 21
   worst_gaps:
     - "Interactive scoreboard UI still entirely absent (arrow navigation, team-selection/join screen, spectate, vote-kick/tell, scoreboard_columns_set cycling, scores_per_round toggle)."
-    - "Race/CTS rankings block on the scoreboard is STILL DEAD: ScoreboardPanel.SetRankings has no live caller (NetGame.cs:3453 feeds the ScorePanel overlay, not the scoreboard; race records not networked)."
     - "Item-stats block (per-item pickup-count icon grid) still entirely missing (no SetItemStats/DrawItemStats; inventory not networked for it)."
     - "Ping column still never networked (SetWireRows always passes ping -1 → dim '-'); color bands still hardcoded 75/200/500 vs Base cvar-driven 20/80/200."
-    - "fps and skill columns still never render; packet-loss (pl) column always blank (not networked)."
-    - "Name cell handicap icon now LIVE (handicap_level networked end-to-end, exact '1 0 0'+'0 1 1'*((16-lvl)/15) tint); still missing player-color square, ready, ignored, and the (Q) wants-join marker."
+    - "fps and skill columns still never render; packet-loss (pl) movement-loss '~N' suffix not tracked."
+    - "Name cell handicap icon LIVE (handicap_level networked end-to-end, exact '1 0 0'+'0 1 1'*((16-lvl)/15) tint); still missing player-color square, ready, ignored, and the (Q) wants-join marker."
     - "Accuracy block still drawn as plain '%' text, not the per-weapon icon grid; no showdelay/warmup/doublerows/nocolors."
-    - "Map-stats secrets row still never fed (only monsters); death-scoreboard + intermission-forced visibility still not ported."
+    - "Content-measured column widths still approximated by a uniform numeric width + elastic name (no title-condense, no maxheight paging / '...and N more' overflow)."
+    - "Rankings still single-column (no multi-column wrap / horizontal scroll), and leadlimit header term still not built."
   notable_fixes_since_last_audit:
-    - "RE-AUDIT 2026-06-25: ONE new fix — the name-cell HANDICAP icon is now LIVE end-to-end (was fully missing). Entity.HandicapLevel (Handicap.UpdateHandicapLevel maps the both-ways average to 0..16) → ScoreboardBlock.CaptureRows handicapLevel slice → ScoreRowWire.HandicapLevel WriteByte/ReadByte → SetWireRows row.HandicapLevel → DrawRow renders a colored square with the EXACT QC tint '1 0 0' + '0 1 1' * ((16-lvl)/15) (white@1 → red@16), name offset to avoid overlap. Fed on the live UpdateScoreboard path (NetGame.cs:3502 SetWireRows). The other 4 name icons (player-color swatch, ready, ignored, (Q) wants-join) remain missing. No regressions; all prior Wave-5 fixes re-confirmed live."
-    - "RE-AUDIT 2026-06-22 (post-Wave-5 re-verify): the five Wave-5 fixes recorded last audit were independently re-traced END-TO-END and all CONFIRMED still live + faithful — 0 fixes, 0 regressions vs the prior audit. Line refs refreshed to current code."
-    - "Cross-fade in/out: LIVE (re-confirmed). NetGame.UpdateScoreboard:3407 sets ScoreboardPanel.Active=show; Active setter + _Process:661 ramp + _everActive:696 drive PanelFade on the real match path (UpdateScoreboard called from line 2716)."
-    - "Respawn-status line: LIVE + three-state (re-confirmed). Server sets Player.RespawnTimeStat (GameWorld.cs:2328, negated while DeadFlag.Respawning), networked via ClientNet.RespawnTimeStat, fed every frame by UpdateScoreboard:3413; DrawRespawn:1045 renders the full QC dead/wait/press-jump line."
-    - "Spectator list: LIVE (re-confirmed). The score wire carries IsSpectator (ServerNet.BuildScoreboard:1934 / ScoreboardBlock:99); SetWireRows:218 routes spectator rows into _spectators. Dead SetSpectators overloads remain but unused."
-    - "Packet-loss (pl) column: LIVE (re-confirmed). ServerNet.BuildScoreboard:1927 quantizes ENet loss → wire byte → GetField Pl. Rankings block: LIVE (re-confirmed). ServerNet.BuildScoreboard:1946 snapshots RaceRecords → wire → SetRankings:3433; gold/silver/bronze + self-highlight."
+    - "RE-AUDIT 2026-06-25 (drift check): THREE new fixes since the prior audit. (1) Death/intermission auto-show is now LIVE on cl-scoreboard.toggle.showscores: UpdateScoreboard (NetGame.cs:3768-3799) now implements the cl_deathscoreboard/_delay death scoreboard (3778-3792, client-side death_time stand-in via RESPAWN_TIME), intermission==1 force-up (3772), intermission==2/mapvote suppression (3771,3794), and the CTS-while-dead suppression hook (3785-3789); cl_deathscoreboard=1/_delay=1 cvars registered (NetGame.cs:1588-1589) and read live. (2) The map-stats SECRETS row is now FED on cl-scoreboard.block.mapstats: FeedMapStats (NetGame.cs:4205-4207) reads MapObjectsState.SecretsTotal/SecretsFound, populated server-side by Triggers.SecretSetup/SecretTouch (live spawnfuncs). (3) The race/CTS SPEED-AWARD line is now ported + LIVE on cl-scoreboard.block.rankings: ServerNet captures cts/race SpeedAward* (ServerNet.cs:2242-2248) → ScoreboardBlock int24+holder serialize/deserialize (193-196) → NetGame SetSpeedAward (3837) → DrawSpeedAward (ScoreboardPanel.cs:1257) with the QC unit conversion + alltimebest gate. 0 regressions; all prior Wave-5 + handicap-icon fixes re-confirmed live."
+    - "RE-AUDIT 2026-06-25 PRIOR: the name-cell HANDICAP icon is LIVE end-to-end (Entity.HandicapLevel → ScoreboardBlock.CaptureRows → ScoreRowWire.HandicapLevel → SetWireRows → DrawRow:1075-1083 colored square at the EXACT QC tint '1 0 0' + '0 1 1' * ((16-lvl)/15)). The other 4 name icons (player-color swatch, ready, ignored, (Q) wants-join) remain missing."
+    - "Cross-fade in/out: LIVE (re-confirmed). NetGame.UpdateScoreboard:3798 sets ScoreboardPanel.Active=show; Active setter + _Process:741 ramp + _everActive:776 drive PanelFade on the real match path."
+    - "Respawn-status line: LIVE + three-state (re-confirmed). RespawnStat fed every frame by UpdateScoreboard:3807; DrawRespawn:1166 renders the full QC dead/wait/press-jump line; RespawnJumpKey now resolved via BindTable.CommandKey (NetGame.cs:3811)."
+    - "Spectator list / packet-loss (pl) / rankings block: all LIVE (re-confirmed) from Wave 5 — the score wire carries IsSpectator + PacketLossByte; rankings ride the scoreboard wire and feed SetRankings:3834."
 features:
   - id: cl-scoreboard.toggle.showscores
-    name: "Show while +showscores held"
+    name: "Show while +showscores held (+ death/intermission auto-show)"
     layer: [presentation]
     base_refs:
       - "client/hud/panel/scoreboard.qc:Scoreboard_WouldDraw"
@@ -30,11 +29,11 @@ features:
       - "game/net/NetGame.cs:UpdateScoreboard"
       - "src/XonoticGodot.Engine/Console/BindTable.cs:ApplyBind"
     constants:
-      - { name: "cl_deathscoreboard", base: "1", port: "none", match: false }
-      - { name: "cl_deathscoreboard_delay", base: "1", port: "none", match: false }
+      - { name: "cl_deathscoreboard", base: "1", port: "1", match: true }
+      - { name: "cl_deathscoreboard_delay", base: "1", port: "1", match: true }
     status:
-      logic: partial
-      values: na
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: faithful
       audio: na
@@ -42,11 +41,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Only the +showscores held-button path is wired (UpdateScoreboard reads BindTable.ShowScores → sets _scoreboard.Active). The death scoreboard (cl_deathscoreboard / _delay), intermission==1 forced-up, and intermission==2/QuickMenu/clickable-radar/DrawScoreboard-mutator-hook suppression branches of Scoreboard_WouldDraw are not ported."
+      - "Death scoreboard uses a client-side death_time stand-in (first non-zero RESPAWN_TIME stamped against LatestServerTime) rather than the networked CSQCModel death_time; behaviorally equivalent but the gate timing rides the respawn stat rather than a dedicated death_time field."
+      - "Intermission==2 modeled as 'the MapVote panel is showing' rather than the literal STAT(GAME_STOPPED)==2; the QuickMenu / clickable-radar suppression branches of Scoreboard_WouldDraw are not separately modeled."
     verification:
-      - { kind: code, ref: "NetGame.cs UpdateScoreboard reads BindTable.ShowScores then sets _scoreboard.Active; no death/intermission feeder found", result: pass }
+      - { kind: code, ref: "NetGame.cs:3768-3799 UpdateScoreboard: show = ShowScores || intermissionShow(3772) || deathScoreboard(3790) && !mapVoteShowing(3794); death gate reads cl_deathscoreboard/_delay (3791-3792), CTS-while-dead suppressed (3785-3789); cvars registered NetGame.cs:1588-1589. Re-verified 2026-06-25.", result: pass }
     confidence: high
-    notes: "Default key TAB (+showscores). Live but missing the auto-show-on-death and intermission forcing/suppression."
+    notes: "FIXED this audit (drift check): was partial (only the +showscores held-button path). Now wires the cl_deathscoreboard death scoreboard, intermission==1 force-up, intermission==2/mapvote suppression, and the CTS DrawDeathScoreboard suppression hook. Default key TAB (+showscores)."
 
   - id: cl-scoreboard.fade.inout
     name: "Cross-fade in/out"
@@ -72,9 +72,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "NetGame.cs:3407 UpdateScoreboard sets `if (_scoreboard.Active != show) _scoreboard.Active = show` (UpdateScoreboard called from line 2716); the Active setter (panel:118) shows the panel, _Process (:661) ramps _fadeAlpha at fadein/fadeout speed (:668), DrawPanel (:696) sets _everActive=true so PanelFade (:687) returns the real fade. Panel cross-fades instead of popping. Re-verified live 2026-06-22.", result: pass }
+      - { kind: code, ref: "NetGame.cs:3798 UpdateScoreboard sets _scoreboard.Active = show; the Active setter (panel:123) shows the panel, _Process (:741) ramps _fadeAlpha at fadein/fadeout speed (:748), DrawPanel (:776) sets _everActive=true so PanelFade (:767) returns the real fade. Re-verified live 2026-06-25.", result: pass }
     confidence: high
-    notes: "FIXED since last audit (Wave 5). Was dead (Active never assigned → _everActive false → PanelFade==1, popped). Now live via the Active setter; _Process is a Godot engine callback so it runs even though IsDynamic=false."
+    notes: "Live via the Active setter; _Process is a Godot engine callback so it runs even though IsDynamic=false. Unchanged this audit."
 
   - id: cl-scoreboard.columns.default_layout
     name: "Default column layout + scoreboard_columns spec"
@@ -99,9 +99,9 @@ features:
     gaps:
       - "scoreboard_columns_set 'all'/'ALL' (full-column auto-build) and the 'expand_default' cvar write-back are not ported; only the verbatim default + an explicit spec parse + the name/separator/primary/secondary auto-fixups."
     verification:
-      - { kind: code, ref: "DefaultColumns carries SCOREBOARD_DEFAULT_COLUMNS verbatim incl. all per-gametype filters; ScoreboardColumnsTests EndToEnd renders CTF columns", result: pass }
+      - { kind: code, ref: "DefaultColumns (ScoreboardPanel.cs:441) carries SCOREBOARD_DEFAULT_COLUMNS verbatim incl. all per-gametype filters; ScoreboardColumnsTests EndToEnd renders CTF columns", result: pass }
     confidence: high
-    notes: "ColumnSpec settable from the user cvar; auto-fixup (name/separator/primary/secondary) ported faithfully."
+    notes: "ColumnSpec settable from the user cvar; auto-fixup (name/separator/primary/secondary) ported faithfully. Unchanged this audit."
 
   - id: cl-scoreboard.columns.gametype_filter
     name: "Per-gametype column filter (+/-pattern/field)"
@@ -122,9 +122,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "teams/noteams + race(rc/cts) pseudo-gametypes + comma substring matching ported; '?' nocomplain prefix stripped", result: pass }
+      - { kind: code, ref: "teams/noteams + race(rc/cts) pseudo-gametypes + comma substring matching ported (ScoreboardPanel.cs:560); '?' nocomplain prefix stripped", result: pass }
     confidence: high
-    notes: "Gametype/teamplay come from the networked ScoreInfo (GameScores.Gametype/Teamplay)."
+    notes: "Gametype/teamplay come from the networked ScoreInfo (GameScores.Gametype/Teamplay). Unchanged this audit."
 
   - id: cl-scoreboard.field.formatting
     name: "Per-field value formatting (ScoreString/frags/kdr/sum/dmg)"
@@ -146,13 +146,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "SP_FPS and SP_SKILL columns never render (FieldByLabel returns null for fps/skill — client-only display fields with no port plumbing); Base shows them colorized (fps red<=32 / yellow 64-96 / white>=128)."
-      - "scores_per_round averaging (frags/kdr/sum/dmg/score divided by SP_ROUNDS_PL) is absent (no scores_per_round toggle)."
-      - "SP_KDRATIO collapses the QC 3-branch (denom==0 raw-kills/green ported; the %.1f-vs-raw and red-on-num<=0 paths approximated — port uses '0.0' format and red on num<=0 only)."
+      - "SP_FPS and SP_SKILL columns never render (FieldByLabel returns null for fps/skill — client-only display fields with no port plumbing); the GetField FPS/SKILL branches exist (ScoreboardPanel.cs:684-697) but are unreachable because the columns are never fed."
+      - "scores_per_round averaging is now plumbed (ScoresPerRound + per-field roundsPlayed division), but no interactive scores_per_round toggle (Ctrl+R) — only a console cvar drives it."
     verification:
-      - { kind: code, ref: "GetField handles ping/pl/name/frags/kdr/sum/dmg/label; ScoreString HIDE_ZERO/RANK/TIME verified by ScoreboardColumnsTests", result: pass }
+      - { kind: code, ref: "GetField (ScoreboardPanel.cs:601) handles ping/pl/name/frags/kdr/sum/dmg/label + per-round averaging; ScoreString HIDE_ZERO/RANK/TIME verified by ScoreboardColumnsTests", result: pass }
     confidence: high
-    notes: "Frags=kills-suicides, sum=kills-deaths, primary yellow / secondary cyan faithful. Unchanged this audit."
+    notes: "Frags=kills-suicides, sum=kills-deaths, primary yellow / secondary cyan faithful. fps/skill branches present but dead (column never fed)."
 
   - id: cl-scoreboard.field.ping
     name: "Ping column value + color bands"
@@ -176,10 +175,10 @@ features:
     intended_divergence: true
     divergence_rationale: "Ping is still not networked on the score row (SetWireRows hardcodes ping -1) so the cell shows a neutral dim '-' instead of QC's '>>>' no-scores glyph — a documented placeholder until ping is networked. The hardcoded 75/200/500 bands (not Base cvar-driven 20/80/200) are an UNINTENDED value gap that will surface once ping is fed."
     gaps:
-      - "Ping column always shows a dim '-' (SetWireRows hardcodes ping:-1, line 238). Unchanged this audit — spectator-row ping is also still -1 (SetWireRows line 220)."
-      - "Color bands hardcoded const 75/200/500 (PingColor line 646) vs Base cvars hud_panel_scoreboard_ping_low=20/medium=80/high=200; not read from the cvar store. (Re-verified Base scoreboard.qc:1017-1019.)"
+      - "Ping column always shows a dim '-' (SetWireRows hardcodes ping:-1, ScoreboardPanel.cs:249/231). Unchanged this audit — spectator-row ping is also still -1."
+      - "Color bands hardcoded const 75/200/500 (PingColor ScoreboardPanel.cs:726) vs Base cvars hud_panel_scoreboard_ping_low=20/medium=80/high=200; not read from the cvar store. (Re-verified Base scoreboard.qc:1017-1019.)"
     verification:
-      - { kind: code, ref: "SetWireRows ping:-1 always (ScoreboardPanel.cs:238); PingColor const low=75/med=200/high=500 (line 646); Base scoreboard.qc:1017-1019 PING_LOW=20/MED=80/HIGH=200. Re-verified 2026-06-22.", result: fail }
+      - { kind: code, ref: "SetWireRows ping:-1 always (ScoreboardPanel.cs:249); PingColor const low=75/med=200/high=500 (line 726); Base scoreboard.qc:1017-1019 PING_LOW=20/MED=80/HIGH=200. Re-verified 2026-06-25.", result: fail }
     confidence: high
     notes: "PingPanel and serverlist use yet other ping ramps — three inconsistent ping ramps in the port. Unchanged this audit."
 
@@ -203,9 +202,9 @@ features:
     gaps:
       - "Movement loss (QC ping_movementloss, the '~N' suffix) is not tracked by the port — only packet loss contributes (QC's tmp==0 branch). The displayed value + red tint are otherwise bit-faithful."
     verification:
-      - { kind: code, ref: "Wave 5: ENet PacketLoss captured per human in ServerNet.BuildScoreboard:1927 as min(ceil(loss*255),255), serialized via ScoreRowWire.PacketLossByte (ScoreboardBlock.cs:100), de-quantized in SetWireRows:241, rendered by GetField Pl: blank when 0 else ceil(pl*100) tinted '1 0.5 0.5'-'0 0.5 0.5'*bound(0,pl/0.2,1). Re-verified 2026-06-22.", result: pass }
+      - { kind: code, ref: "ENet PacketLoss captured per human in ServerNet.BuildScoreboard as min(ceil(loss*255),255), serialized via ScoreRowWire.PacketLossByte, de-quantized in SetWireRows:252, rendered by GetField Pl (ScoreboardPanel.cs:617): blank when 0 else ceil(pl*100) tinted '1 0.5 0.5'-'0 0.5 0.5'*bound(0,pl/0.2,1). Re-verified 2026-06-25.", result: pass }
     confidence: high
-    notes: "FIXED Wave 5. Was a blank stub; now the live SP_PL value + severity tint, fed from real ENet packet-loss. Movement loss (a client prediction metric) is the only residual."
+    notes: "Live SP_PL value + severity tint from real ENet packet-loss. Movement loss (a client prediction metric) is the only residual. Unchanged this audit."
 
   - id: cl-scoreboard.field.name_icons
     name: "Name-cell icons (player color / ready / handicap / ignored / wants-join)"
@@ -232,13 +231,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Handicap icon is now PORTED + LIVE (DrawRow:977-985 draws a square at the EXACT QC tint '1 0 0' + '0 1 1' * ((16-lvl)/15), white@1 → red@16, fed by the networked handicap_level)."
+      - "Handicap icon is PORTED + LIVE (DrawRow:1075-1083 draws a square at the EXACT QC tint '1 0 0' + '0 1 1' * ((16-lvl)/15), white@1 → red@16, fed by the networked handicap_level)."
       - "Still missing: player-color shirt/pants swatch (gfx/scoreboard/playercolor_*), pulsing ready check, ignored icon, the pulsing (Q) wants-join team marker, and the playerid '#N' prefix (Scoreboard_AddPlayerId)."
       - "Handicap icon is drawn as a flat colored square (no gfx/scoreboard/player_handicap texture); presentation faithful in tint but not in the actual icon art."
     verification:
-      - { kind: code, ref: "Handicap fed live: Handicap.UpdateHandicapLevel → Entity.HandicapLevel → ScoreboardBlock.CaptureRows:84 → ScoreRowWire WriteByte:107/ReadByte:151 → SetWireRows:251 handicapLevel → DrawRow:977-985 colored square at the exact QC tint; fed on the live UpdateScoreboard path (NetGame.cs:3502). The other 4 icons absent (GetField Name returns raw name; no playercolor/ready/ignored/wants-join plumbing). Re-verified 2026-06-25.", result: partial }
+      - { kind: code, ref: "Handicap fed live: Handicap.UpdateHandicapLevel → Entity.HandicapLevel → ScoreboardBlock.CaptureRows → ScoreRowWire WriteByte/ReadByte → SetWireRows:257 handicapLevel → DrawRow:1075-1083 colored square at the exact QC tint; fed on the live UpdateScoreboard path. The other 4 icons absent (GetField Name returns raw name). Re-verified 2026-06-25.", result: partial }
     confidence: high
-    notes: "FIXED (handicap icon) since 2026-06-22: was fully missing → now the handicap level networks end-to-end and renders at the exact tint. The other name-cell icons (QC drawpic overlays sized by Scoreboard_FixColumnWidth) remain unported."
+    notes: "Handicap icon networks end-to-end and renders at the exact tint. The other name-cell icons (QC drawpic overlays) remain unported. Unchanged this audit."
 
   - id: cl-scoreboard.sort.players
     name: "Player row sort (primary/secondary/registry order)"
@@ -263,9 +262,9 @@ features:
     gaps:
       - "Final sv_entnum tiebreak not applied (rows fall to List.Sort, which is not stable in .NET); rarely observable, but ties can reorder frame-to-frame."
     verification:
-      - { kind: code, ref: "CompareRows = primary, secondary, registry-order columns; ZERO_IS_WORST + direction via CompareValues; NotSortable/ClientOnly skipped", result: pass }
+      - { kind: code, ref: "CompareRows (ScoreboardPanel.cs:398) = primary, secondary, registry-order columns; ZERO_IS_WORST + direction via CompareValues; NotSortable/ClientOnly skipped", result: pass }
     confidence: high
-    notes: "Team split handled by the grouping pass; spectator-last now handled by routing IsSpectator rows out of the table entirely."
+    notes: "Team split handled by the grouping pass; spectator-last now handled by routing IsSpectator rows out of the table entirely. Unchanged this audit."
 
   - id: cl-scoreboard.teams.grouping_totals
     name: "Team sections + per-team totals"
@@ -323,9 +322,9 @@ features:
     gaps:
       - "Self-row '<' self-indicator triangle beside the row is not drawn."
     verification:
-      - { kind: code, ref: "DrawRow applies alternating stripe (even rows), self highlight, eliminated black fill at the matching live cvar alphas (CvarF)", result: pass }
+      - { kind: code, ref: "DrawRow (ScoreboardPanel.cs:1031) applies alternating stripe (even rows), self highlight, eliminated black fill at the matching live cvar alphas (CvarF)", result: pass }
     confidence: high
-    notes: "Eliminated grey-out fed via SetWireRows eliminatedNetIds (QC eliminatedPlayers bitfield). All alphas live from the shared store."
+    notes: "Eliminated grey-out fed via SetWireRows eliminatedNetIds (QC eliminatedPlayers bitfield). All alphas live from the shared store. Unchanged this audit."
 
   - id: cl-scoreboard.layout.column_widths
     name: "Content-measured column widths + title condensing"
@@ -352,7 +351,7 @@ features:
       - "Columns are uniform-width (clamp 44..90px), not measured to content; long values can clip and titles never condense (sbt_field_title_condense_factor)."
       - "No maxheight paging (max_players) and no Scoreboard_DrawOthers '... and N more' overflow row — a full team list can overflow the panel."
     verification:
-      - { kind: code, ref: "ComputeLayout: rankW + uniform numW + elastic name; no measurement of cell strings", result: pass }
+      - { kind: code, ref: "ComputeLayout (ScoreboardPanel.cs:1410): rankW + uniform numW + elastic name; no measurement of cell strings", result: pass }
     confidence: medium
     notes: "Scoreboard_DrawOthers '... and N more' overflow row also absent. Unchanged this audit."
 
@@ -377,12 +376,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Leadlimit / leadlimit-and-fraglimit ('& ') header term not built (only timelimit + fraglimit; Scoreboard_Fraglimit_Draw is_leadlimit path absent)."
-      - "Lead limit, m_hidelimits, and campaign player-count suppression not handled."
+      - "Lead-limit header term IS now built (BuildLimitsHeader handles ll > 0 && (ll < fl || fl <= 0) with the '^2+N' term and the '& '/'/'  delimiter, LeadLimit/LeadAndFragLimit fed from cvars NetGame.cs:4175-4176)."
+      - "m_hidelimits and campaign player-count suppression not handled."
     verification:
-      - { kind: code, ref: "FeedScoreboardHeader sets FragLimit/TimeLimit/Map from cvars; BuildLimitsHeader formats time / limit + 'points'/'' label", result: pass }
+      - { kind: code, ref: "FeedScoreboardHeader (NetGame.cs:4165) sets FragLimit/TimeLimit/LeadLimit/LeadAndFragLimit/Map from cvars; BuildLimitsHeader (ScoreboardPanel.cs:870) formats time / fraglimit / leadlimit + 'points'/'' label", result: pass }
     confidence: high
-    notes: "Next map + bold gametype banner + 'Map: N/M players' line ported. Unchanged this audit."
+    notes: "Next map + bold gametype banner + 'Map: N/M players' line + lead-limit term ported. (The baseline's leadlimit gap was already closed in the port via LeadLimit/LeadAndFragLimit; refreshed this audit.)"
 
   - id: cl-scoreboard.block.spectators
     name: "Spectator list"
@@ -411,9 +410,9 @@ features:
       - "Spectator-row ping is still -1 (per-row ping not networked) so showping shows a dim '-' rather than a real value."
       - "spectators_position (0/1/2/3 placement around the blocks) and spectators_aligned column alignment not implemented (drawn after the table only)."
     verification:
-      - { kind: code, ref: "ServerNet.cs:1934 (BuildScoreboard) sets isSpectator: p.IsObserver || p.FragsStatus==FragsSpectator on the wire; ScoreboardBlock.cs:99 serializes it; ScoreboardPanel.SetWireRows (line 218) routes IsSpectator rows into _spectators; UpdateScoreboard (NetGame.cs:3398, called from line 2716) is the live caller; DrawSpectators renders the block", result: pass }
+      - { kind: code, ref: "ServerNet.BuildScoreboard sets isSpectator: p.IsObserver || p.FragsStatus==FragsSpectator on the wire; ScoreboardBlock serializes it; ScoreboardPanel.SetWireRows (line 229) routes IsSpectator rows into _spectators; UpdateScoreboard is the live caller; DrawSpectators (ScoreboardPanel.cs:1099) renders the block. Re-verified 2026-06-25.", result: pass }
     confidence: high
-    notes: "FIXED since last audit (Wave 5). Previously dead (only SetSpectators fed it, with no caller). Now fed live by the networked IsSpectator wire flag via SetWireRows. The old SetSpectators(...) overloads remain but are dead/unused."
+    notes: "Fed live by the networked IsSpectator wire flag via SetWireRows. The old SetSpectators(...) overloads remain but are dead/unused. Unchanged this audit."
 
   - id: cl-scoreboard.block.accuracy
     name: "Accuracy stats block"
@@ -443,7 +442,7 @@ features:
       - "Drawn as plain text '%' cells, not the per-weapon ICON grid (drawpic weapon model2) with column/row highlighting."
       - "No accuracy_showdelay gating, no warmup suppression, no doublerows, no Accuracy_GetColor weapon ramp or nocolors option; the port's average color ramp differs from QC's per-weapon ramp."
     verification:
-      - { kind: code, ref: "NetGame.UpdateAccuracy calls _scoreboard.SetAccuracy(_accuracyById) live; DrawAccuracy averages + draws %-cells", result: pass }
+      - { kind: code, ref: "NetGame.UpdateAccuracy (NetGame.cs:4150) calls _scoreboard.SetAccuracy(_accuracyById) live; DrawAccuracy (ScoreboardPanel.cs:1212) averages + draws %-cells, gated off in Invasion", result: pass }
     confidence: high
     notes: "Live feed (per-id hit% 0..100, -1 never fired, from networked LocalAccuracyBytes) but a simplified presentation. Unchanged this audit."
 
@@ -470,18 +469,22 @@ features:
     gaps:
       - "No item-stats block at all: Base shows a per-item icon grid of pickup counts (g_inventory.inv_items), filtered by itemstats_filter_mask=12. The port has no SetItemStats / DrawItemStats and inventory is not networked for it."
     verification:
-      - { kind: code, ref: "No DrawItemStats/SetItemStats in ScoreboardPanel; itemstats cvar registered in RegisterDefaults but never read for drawing", result: fail }
+      - { kind: code, ref: "No DrawItemStats/SetItemStats in ScoreboardPanel; itemstats cvar registered in RegisterDefaults (line 1481) but never read for drawing", result: fail }
     confidence: high
     notes: "itemstats default cvars are registered but there is no draw path. Unchanged this audit."
 
   - id: cl-scoreboard.block.rankings
-    name: "Race/CTS rankings block"
+    name: "Race/CTS rankings block (+ speed award)"
     layer: [presentation]
     base_refs:
       - "client/hud/panel/scoreboard.qc:Scoreboard_Rankings_Draw"
+      - "client/hud/panel/scoreboard.qc:Scoreboard_MainPanel (race speed award)"
     port_refs:
       - "game/hud/ScoreboardPanel.cs:DrawRankings"
       - "game/hud/ScoreboardPanel.cs:SetRankings"
+      - "game/hud/ScoreboardPanel.cs:DrawSpeedAward"
+      - "game/hud/ScoreboardPanel.cs:SetSpeedAward"
+      - "src/XonoticGodot.Net/ScoreboardBlock.cs:ScoreboardWire (SpeedAward*)"
     constants: []
     status:
       logic: faithful
@@ -493,11 +496,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No speed-award / all-time-fastest line, no multi-column wrap / horizontal scroll (single-column list)."
+      - "Speed-award / all-time-fastest line is now PORTED + LIVE (DrawSpeedAward, ScoreboardPanel.cs:1257, fed by SetSpeedAward NetGame.cs:3837 from networked SpeedAward/Best + holders; QC unit conversion + alltimebest gate)."
+      - "No multi-column wrap / horizontal scroll (single-column rankings list)."
     verification:
-      - { kind: code, ref: "Wave 5: ServerNet.BuildScoreboard:1946-1963 snapshots RaceRecords.ReadTime/ReadName (best-first, rc→RaceRecord/cts→CtsRecord, display cap 15, dense break on first empty) into _scoreRankings; ScoreboardBlock.Serialize:117 (called ServerNet.cs:1546) / Deserialize:155 carries ScoreboardWire.Rankings (int24 TIME_ENCODE + holder); NetGame.UpdateScoreboard:3433 feeds _scoreboard.SetRankings(sb.Rankings) + RankingsSelfName:3434; DrawRankings:1126 draws gold/silver/bronze ranks + self-row highlight, gated rc/cts. Re-verified live 2026-06-22.", result: pass }
+      - { kind: code, ref: "Rankings: ServerNet.BuildScoreboard snapshots RaceRecords into _scoreRankings → ScoreboardBlock Rankings (int24 TIME_ENCODE + holder) → NetGame.UpdateScoreboard:3834 SetRankings + RankingsSelfName:3835; DrawRankings (ScoreboardPanel.cs:1301) gold/silver/bronze + self-row highlight, gated rc/cts. Speed award: ServerNet.cs:2242-2248 captures cts/race SpeedAward* → ScoreboardBlock:193-196 serialize → NetGame.cs:3837 SetSpeedAward → DrawSpeedAward:1257. Re-verified live 2026-06-25.", result: pass }
     confidence: high
-    notes: "FIXED Wave 5. The scoreboard rankings block is now its OWN live caller (distinct from the ScorePanel overlay): race/CTS records ride the scoreboard wire and feed ScoreboardPanel.SetRankings. Gold/silver/bronze + self-highlight added; speed-award line + multi-column wrap remain."
+    notes: "FIXED this audit (drift check): the speed-award / all-time-fastest line is now networked end-to-end and rendered (was the prior worst-gap). Multi-column wrap remains the only residual."
 
   - id: cl-scoreboard.block.mapstats
     name: "Map stats (monsters / secrets)"
@@ -506,10 +510,12 @@ features:
       - "client/hud/panel/scoreboard.qc:Scoreboard_MapStats_Draw"
     port_refs:
       - "game/hud/ScoreboardPanel.cs:DrawMapStats"
-      - "game/net/NetGame.cs:FeedScoreboardHeader"
+      - "game/net/NetGame.cs:FeedMapStats"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:SecretSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/EntityMapObjectStateExtra.cs:SecretsTotal"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: faithful
@@ -518,12 +524,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Secrets (STAT(SECRETS_*)) are still never fed → the Secrets row never shows (SecretsTotal stays -1; no feeder in NetGame)."
-      - "Monsters only feed when +showscores data is refreshed (FeedScoreboardHeader runs inside the change-gated branch)."
+      - "Map-stats are read from server-side static state (MonsterAI / MapObjectsState) directly on the client feed path — live for a listen-server host, but neither monsters nor secrets are networked as a STAT, so a remote (non-host) client would not see the rows."
     verification:
-      - { kind: code, ref: "FeedScoreboardHeader (NetGame.cs:3689) sets MonstersTotal/Killed per-mode: Invasion ROUND uses inv.Wave.MaxSpawned/Killed (:3705), else MonsterAI.MonstersTotal/Killed (:3710); SecretsTotal stays -1 (grep: no SecretsTotal/SecretsFound assignment anywhere in NetGame). Re-verified 2026-06-22.", result: pass }
+      - { kind: code, ref: "FeedMapStats (NetGame.cs:4183) sets MonstersTotal/Killed per-mode and SecretsTotal/SecretsFound from MapObjectsState.SecretsTotal/SecretsFound (:4205-4207), populated server-side by Triggers.SecretSetup (++SecretsTotal) / SecretTouch (++SecretsFound), registered as live spawnfuncs (MapObjectsRegistry.cs:59). Fed every frame while shown (UpdateScoreboard:3815). DrawMapStats (ScoreboardPanel.cs:1137) draws both rows. Re-verified 2026-06-25.", result: pass }
     confidence: high
-    notes: "Wave-5 refined the monsters feed for ROUND Invasion (live wave counts vs natural map totals); secrets feed still missing. DrawMapStats draws both rows faithfully."
+    notes: "FIXED this audit (drift check): the Secrets row is now fed (was 'never fed → SecretsTotal stays -1'). Both monsters and secrets ride server-side static state (host path); networking them as STATs for remote clients is the residual."
 
   - id: cl-scoreboard.block.respawn
     name: "Respawn-status line"
@@ -541,17 +546,16 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "RespawnJumpKey is never fed (stays the default literal 'jump') — the 'press JUMP to respawn' line shows the action name, not the player's actual +jump keybind (QC getcommandkey)."
+    gaps: []
     verification:
-      - { kind: code, ref: "GameWorld.cs:2328 (DeadPlayerThink) sets Player.RespawnTimeStat = DeadState==Respawning ? -RespawnTime : RespawnTime (0 when alive/Silent/denied, :2264/:2285/:2326); networked via ClientNet.RespawnTimeStat; NetGame.cs:3413-3414 feeds _scoreboard.RespawnStat/RespawnServerTime every frame while shown; DrawRespawn:1045 renders the three-state QC line (wait-before / press-jump / respawning-in). Re-verified live 2026-06-22.", result: pass }
+      - { kind: code, ref: "GameWorld.DeadPlayerThink sets Player.RespawnTimeStat (negated while Respawning); networked via ClientNet.RespawnTimeStat; NetGame.cs:3807-3811 feeds RespawnStat/RespawnServerTime/RespawnJumpKey every frame while shown; DrawRespawn (ScoreboardPanel.cs:1166) renders the three-state QC line; RespawnJumpKey now resolved via BindTable.CommandKey('jump','+jump') (NetGame.cs:3811). Re-verified live 2026-06-25.", result: pass }
     confidence: high
-    notes: "FIXED since last audit (Wave 5). Previously dead (RespawnRemaining had no caller; only the 'Respawning in N'/'Respawning...' two-state existed). Now live with the full QC three-state line. Only residual: the +jump keybind string isn't resolved."
+    notes: "FIXED this audit (drift check): the +jump keybind is now resolved (RespawnJumpKey fed from BindTable.CommandKey) — was the only residual last audit. The three-state line is fully faithful."
 
   - id: cl-scoreboard.ui.interactive
     name: "Interactive scoreboard UI (navigation / team select / spectate / kick / tell / column cycling)"

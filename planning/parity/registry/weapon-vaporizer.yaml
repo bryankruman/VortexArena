@@ -5,10 +5,10 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 12
   worst_gaps:
-    - "RM-explosion has no presentation effect: RocketMinstaExplosion deals the radius damage but never emits a Devastator-style explosion sprite/sound at the rail endpoint (WeaponSplash.RadiusDamage does NOT emit centrally — the caller must, and this one doesn't)."
     - "RM-laser bolts have no confirmed distinct CSQC visual: Vaporizer.cs tags netname 'rocketminsta' intending a RocketMinstaLaser/elaser descriptor, but no such client projectile descriptor exists in the port — the bolt likely renders as a generic plasma/laser; also skips W_CalculateProjectileVelocity's owner-velocity Newtonian inheritance (only g_weaponspeedfactor is modeled, which IS correct since Base forces forceAbsolute=true)."
     - "Primary rail beam is a generic networked trail (TE_TEI_G3/_HIT), not the bespoke team-colored cylindric VaporizerBeam (cl_vaporizerbeam_teamcolor/colorboost/lifetime CSQC path unmodeled)."
-  verifier_notes: "Re-audit 2026-06-25 (drift check) on branch claude/parity-port-waves at/after Wave-6b (HEAD f86d947). The code has advanced WELL beyond the 2026-06-22 baseline: SEVEN dimensions across FOUR rows are now FIXED. (1) ACHIEVEMENTS — Announce() (Vaporizer.cs:257-285) now fully emits ACHIEVEMENT_YODA (shooter+victim flying, cross-team) and ACHIEVEMENT_IMPRESSIVE (every-2nd cross-team hit) via a vaporizer_lasthit ConditionalWeakTable side-table, with WrSetup/WrResetPlayer (Vaporizer.cs:165-166) resetting it; driver calls WrSetup at WeaponFireDriver.cs:284. Was missing/na -> faithful/live. (2) wr_aim BOT SUPPORT — BotWantsSecondary (Vaporizer.cs:174) ports the primary(has-ammo/unlimited)/secondary(out-of-ammo) pick; defined in GameplayBases.cs, invoked from BotBrain.cs. Was missing -> faithful/live. (3) RM-LASER RAPID LADDER — WrThink (Vaporizer.cs:128-146) now implements hagar_load + jump_interval2 (mode-0 fan first press, then mode-1 rapid bolts on g_rm_laser_rapid_refire). All rapid cvars match Base mutators.cfg (rapid 1 / delay 0.6 / refire 0.35). Was logic/timing partial -> faithful. (4) ELECTROBITCH — RocketMinstaLaserExplode (Vaporizer.cs:430-442) ports the airshot announce guard. (5) wr_reload — WrThink (Vaporizer.cs:80-91) ports the forced-reload branch via WrReload + hagar_load clear. (6) INSTAGIB hit-confirm + downgrade — InstagibMutator HitsoundDamageDealtTotal raised on attacker+target (lines 206-207/236) and INSTAGIB_DOWNGRADE centerprint emitted in AmmoCheck (line 321). Was presentation/audio partial -> faithful. All g_rm and g_rm_laser cvar fallbacks confirmed against mutators.cfg:442-460 (exact match). NO regressions. STILL OPEN: RM-explosion presentation effect, RM-laser distinct CSQC visual (descriptor absent) + Newtonian velocity (intentionally moot), primary cylindric VaporizerBeam team-color CSQC path, Instagib-hardcoded-true bare class default. wr_zoom/wr_init reticle (CSQC) unmapped."
+    - "Instagib flag hardcoded true on the class default — a bare non-instagib Vaporizer pickup treats ammo as instagib (1 cell) on the class default, though Attack/CheckAmmo re-read g_instagib so under-the-mutator behaviour is correct."
+  verifier_notes: "Re-audit 2026-06-25 (drift check) on branch claude/parity-port-waves at/after Wave-6e (HEAD dfcab20). The code has advanced beyond the 2026-06-25 baseline on TWO rows. (1) RM-EXPLOSION PRESENTATION — RocketMinstaExplosion (Vaporizer.cs:321-322) now emits the Devastator explosion presentation at the rail endpoint: EffectEmitter.Emit('ROCKET_EXPLODE') + WeaponSplash.ImpactSoundAt('weapons/rocket_impact.wav') (SND_ROCKET_IMPACT), exactly as Devastator.Explode does — the QC blast is tagged WEP_DEVASTATOR.m_id so CSQC routes it through devastator wr_impacteffect (EFFECT_ROCKET_EXPLODE + SND_ROCKET_IMPACT). ROCKET_EXPLODE effect registered (EffectsList.cs:116), rocket_impact.ogg asset present. Was presentation:missing -> faithful. The blast row is no longer a worst_gap. (2) CLIENT RETICLE — the Vaporizer now declares Reticle => 'gfx/reticle_nex' (Vaporizer.cs:41, overriding Weapon.Reticle GameplayBases.cs:85); ReticleOverlay.UpdateReticle (game/client/ReticleOverlay.cs:75-95) precaches/draws it under cl_reticle && cl_reticle_weapon when button_zoom || zoomscript_caught, and is called LIVE from NetGame.cs:2842 with the active weapon. ZoomOnSecondary=false matches Base (no secondary zoom). reticle_nex.tga asset present. Was logic/values/presentation:missing, liveness:na -> faithful/live. (3) New enhancement inside the (already faithful) achievements row: instagib cloaked-victim alpha-yoda now modeled (InstagibAlphaYoda, Vaporizer.cs:283-284; set InstagibMutator.cs:275) — no status change (row was already faithful/live). All g_rm/g_rm_laser cvar fallbacks re-confirmed against mutators.cfg:441-460 (exact match). NO regressions. STILL OPEN: RM-laser distinct CSQC bolt visual (descriptor absent despite netname tag) + rapid_animtime, primary cylindric VaporizerBeam team-color/colorboost CSQC path, Instagib-hardcoded-true bare class default, g_rm/g_rm_laser live-path reachability untraced (liveness:unknown on the two RM rows)."
 features:
   - id: weapon-vaporizer.primary.rail_beam
     name: "Primary rail beam (piercing hitscan + knockback + falloff)"
@@ -223,22 +223,22 @@ features:
       - { name: "g_rm_force", base: "400", port: "fallback 400", match: true }
       - { name: "deathtype", base: "WEP_DEVASTATOR.m_id | HITTYPE_SPLASH", port: "Devastator death tag (devTag) + RadiusDamage ORs HITTYPE_SPLASH; accuracyWeapon=devastator", match: true }
       - { name: "sky/noimpact guard", base: "!(trace_dphitq3surfaceflags & (SKY|NOIMPACT))", port: "(DpHitQ3SurfaceFlags & (Sky|NoImpact)) == 0 guard applied", match: true }
+      - { name: "explosion presentation", base: "blast tagged WEP_DEVASTATOR.m_id -> CSQC devastator wr_impacteffect: EFFECT_ROCKET_EXPLODE + SND_ROCKET_IMPACT", port: "EffectEmitter.Emit('ROCKET_EXPLODE') + ImpactSoundAt('weapons/rocket_impact.wav') at the endpoint", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
-      presentation: missing
-      audio: na
+      presentation: faithful
+      audio: faithful
       liveness: unknown
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No explosion presentation: RocketMinstaExplosion deals the radius damage but never emits a Devastator-style explosion sprite/sound at the RM endpoint. Confirmed WeaponSplash.RadiusDamage does NOT emit an effect centrally (the caller is responsible — see WeaponSplash.cs:275 comment); so the RM blast is visually/audibly silent."
       - "Liveness of g_rm in a shipped/normal match (a map or mutator that sets g_rm) not traced end-to-end."
     verification:
-      - { kind: code, ref: "Vaporizer.cs:226-228 sky/noimpact guard + RocketMinstaExplosion; :297-300 RadiusDamage(g_rm_* 70/38/140/400, accuracyWeapon=devastator, deathTag=devastator) vs vaporizer.qc:108-129 + mutators.cfg:442-445. WeaponSplash.cs:275 confirms RadiusDamage does not emit the explosion effect.", result: pass }
+      - { kind: code, ref: "Vaporizer.cs:234-236 sky/noimpact guard + RocketMinstaExplosion; :311-314 RadiusDamage(g_rm_* 70/38/140/400, accuracyWeapon=devastator, deathTag=devastator); :321-322 Emit('ROCKET_EXPLODE') + ImpactSoundAt('weapons/rocket_impact.wav') vs vaporizer.qc:108-129 + mutators.cfg:442-445. EffectsList.cs:116 registers ROCKET_EXPLODE; rocket_impact.ogg asset present.", result: pass }
     confidence: high
-    notes: "Unchanged from prior audit on logic/values (cvars 70/38/140/400, devastator death-tag + HITTYPE_SPLASH, sky/NOIMPACT guard all correct). Residual still open: the explosion PRESENTATION effect is absent (RadiusDamage does not emit it and RocketMinstaExplosion does not either), plus g_rm live-path reachability untraced."
+    notes: "FIX vs baseline (presentation/audio missing -> faithful): RocketMinstaExplosion now emits the Devastator explosion presentation at the rail endpoint (ROCKET_EXPLODE particles + rocket_impact sound), matching how the QC blast — tagged WEP_DEVASTATOR.m_id — routes through the Devastator's CSQC wr_impacteffect. logic/values unchanged (cvars 70/38/140/400, devastator death-tag + HITTYPE_SPLASH, sky/NOIMPACT guard all correct). STILL OPEN: g_rm live-path reachability untraced."
 
   - id: weapon-vaporizer.rm.laser_barrage
     name: "Rocket-Minsta: secondary bouncing-laser fan + rapid-fire ladder"
@@ -379,22 +379,24 @@ features:
     base_refs:
       - "common/weapons/weapon/vaporizer.qc:wr_init"
       - "common/weapons/weapon/vaporizer.qc:wr_zoom"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:Reticle (=> gfx/reticle_nex)"
+      - "game/client/ReticleOverlay.cs:UpdateReticle"
+      - "game/net/NetGame.cs:_reticle.UpdateReticle (live call)"
     constants:
-      - { name: "w_reticle", base: "precache_pic when cl_reticle && cl_reticle_weapon", port: "none", match: false }
-      - { name: "wr_zoom", base: "true if button_zoom || zoomscript_caught", port: "none", match: false }
+      - { name: "w_reticle", base: "precache_pic when cl_reticle && cl_reticle_weapon", port: "Reticle => gfx/reticle_nex; ReticleOverlay draws it under the same cl_reticle && cl_reticle_weapon gate (reticle_nex.tga asset present)", match: true }
+      - { name: "wr_zoom", base: "true if button_zoom || zoomscript_caught", port: "wepZoomed = buttonZoom || (attack2Held && ZoomOnSecondary); generic zoomscript path via buttonZoom || zoomScriptCaught; ZoomOnSecondary=false matches Base", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "CSQC wr_init reticle precache and wr_zoom (zoom-script reticle gate) are not ported. The Vaporizer has no weapon-specific zoom image (wr_zoom returns false unless a generic zoom button is held), so the observable gap is mainly the reticle precache; low gameplay impact."
+    gaps: []
     verification:
-      - { kind: code, ref: "vaporizer.qc:415-427 wr_init/wr_zoom; no port symbol found for a Vaporizer reticle/zoom path", result: fail }
-    confidence: medium
-    notes: "NEWLY MAPPED 2026-06-25 (was absent from the registry). Pure CSQC client reticle/zoom plumbing; the Vaporizer defines no weapon-specific reticle image and wr_zoom only forwards the generic zoom button, so the parity impact is minor. Tracked for completeness."
+      - { kind: code, ref: "Vaporizer.cs:41 Reticle => 'gfx/reticle_nex'; ReticleOverlay.cs:75-130 UpdateReticle (cl_reticle/cl_reticle_weapon gate, button_zoom/zoomscript, weapon-scope type 2 -> reticleImage); NetGame.cs:2842 calls it live with the active weapon vs vaporizer.qc:415-427 wr_init/wr_zoom. reticle_nex.tga asset present.", result: pass }
+    confidence: high
+    notes: "FIX vs 2026-06-25 baseline (was missing on all dims, liveness na, port_refs []): the Vaporizer now declares its scope reticle (gfx/reticle_nex, same image as the sister Vortex), drawn by the central ReticleOverlay when zooming with the weapon out (button_zoom || zoomscript_caught) under the cl_reticle && cl_reticle_weapon gate — wired live from NetGame. ZoomOnSecondary=false faithfully reproduces wr_zoom returning false on plain ATTACK2 (no weapon-specific secondary zoom)."

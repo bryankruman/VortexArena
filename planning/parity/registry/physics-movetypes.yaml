@@ -5,10 +5,10 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Movetype_Physics_MatchTicrate (sub-tick interpolation: tic_* snapshots, floor(dt/tr) whole frames clamped to 32, residual-dt trace continuation + gravity half-step, sloppy straight-line interp) is STILL entirely missing — no between-tick interpolation in this layer for client-side moveables (gibs/casings/projectiles/trains). Re-grep 2026-06-25: zero hits for MatchTicrate/tic_origin/tic_velocity in src/."
-    - "CheckWaterTransition STILL fires a hardcoded misc/water_in.wav (MoveTypePhysics.cs:241) on any water/slime crossing instead of routing through the entity's .contentstransition callback (no such mechanism in the port — re-grep 2026-06-25: zero ContentsTransition hits); no water_out cue, lava/slime contact-damage transition unwired."
+    - "Movetype_Physics_MatchTicrate (sub-tick interpolation: tic_* snapshots, floor(dt/tr) whole frames clamped to 32, residual-dt trace continuation + gravity half-step, sloppy straight-line interp) is STILL entirely missing — no between-tick interpolation in this layer for client-side moveables (gibs/casings/projectiles/trains). Re-grep 2026-06-25/26: zero hits for MatchTicrate/tic_origin/tic_velocity in src/."
     - "MOVETYPE_PHYSICS-rider fast-path STILL missing in PushMove (push.qc:124-129): a MOVETYPE_PHYSICS rider goes through the normal PushEntity sweep + stuck-check instead of a translate-and-relink. Low impact (port rarely uses MOVETYPE_PHYSICS riders)."
     - "Toss bmodelstartsolid retry: Base re-runs _Movetype_UnstickEntity on a bmodel-embedded bounce then retries the push and gives up (zero-vel + SET_ONGROUND) if still stuck (toss.qc:60-82); the port's PushEntity nudges inline but PhysicsToss does not replicate the explicit unstick-retry-give-up sequence."
+    - "(RESOLVED since 2026-06-25 baseline) CheckWaterTransition's hardcoded misc/water_in.wav cue is GONE — both CheckWater and CheckWaterTransition now route through the per-entity .ContentsTransition callback (Entity.ContentsTransition, MoveTypePhysics.cs:256/496), exactly matching Base which emits no sound in the movetype layer. checkwater row now fully faithful (audio na)."
 features:
   - id: physics-movetypes.dispatch.frame
     name: "Per-tick movetype dispatch + live server entity loop"
@@ -302,9 +302,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "PhysicsFollow (FlyMove.cs:465) vs follow.qc: both frames (fast + rotated) match transform-for-transform incl. the -x angle flips; v_angle folded into Entity.Angles. File unchanged in Wave-2.", result: pass }
-    confidence: medium
-    notes: "Unchanged. Port folds Base's separate .v_angle into Entity.Angles; equivalent IF callers store the follow offset angle in Angles. No port caller setting MoveType.Follow located in this audit — liveness retained as live per the draft but the caller set is unconfirmed; medium confidence retained."
+      - { kind: code, ref: "PhysicsFollow (FlyMove.cs:465) vs follow.qc: both frames (fast + rotated) match transform-for-transform incl. the -x angle flips; v_angle folded into Entity.Angles. Live callers confirmed 2026-06-26: DynamicLight.cs:166, Follow.cs:120/138, Minelayer.cs:352 (mine-stick), PhysicalItemsMutator.cs:144, SandboxMutator.cs:283/291.", result: pass }
+    confidence: high
+    notes: "Port folds Base's separate .v_angle into Entity.Angles; equivalent IF callers store the follow offset angle in Angles. Liveness now CONFIRMED (was unconfirmed at baseline): MoveType.Follow is set by DynamicLight, the map Follow mapobject, stuck minelayer mines, the physical-items mutator, and the sandbox mutator — confidence raised medium->high."
 
   - id: physics-movetypes.matchticrate.interp
     name: "MatchTicrate sub-tick interpolation (sloppy, tic_* snapshots)"
@@ -346,25 +346,26 @@ features:
       - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:CheckWaterTransition"
     constants:
       - { name: "waterlevel probe points", base: "feet (mins.z+1) / waist / eyes (view_ofs)", port: "same 3-point hull probe", match: true }
-      - { name: "CheckWater return value", base: "waterlevel > 1 (>= SWIMMING)", port: "WaterLevel > 1 (MoveTypePhysics.cs:490)", match: true }
-      - { name: "transition handler", base: "this.contentstransition(old,new) callback on watertype change", port: "hardcoded misc/water_in.wav on water/slime crossing; no contentstransition mechanism", match: false }
+      - { name: "CheckWater return value", base: "waterlevel > 1 (>= SWIMMING)", port: "WaterLevel > 1 (MoveTypePhysics.cs:514)", match: true }
+      - { name: "transition handler", base: "this.contentstransition(old,new) callback on watertype change; movetype layer emits NO sound", port: "ent.ContentsTransition?.Invoke(self, oldType, newType) on crossing in BOTH CheckWater (:496) and CheckWaterTransition (:256); no hardcoded cue", match: true }
       - { name: "watertransition exit waterlevel", base: "GAMEPLAYFIX_WATERTRANSITION ? 0 : contents on exit", port: "always 0 on exit", match: true }
+      - { name: "contentstransition setters", base: "essentially never set on movetype moveables (only strafehud/util.qc temporarily swaps it)", port: "no .ContentsTransition assignment anywhere — callback null on every moveable, matching Base in practice", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: na
-      audio: partial
+      audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED (Wave-2): CheckWater now returns `ent.WaterLevel > 1` (>= SWIMMING) (MoveTypePhysics.cs:490), matching Base `waterlevel > 1`. The previous off-by-one-level return (>=1 wetfeet) that made WalkMove skip gravity a level too early is corrected — a Walk/Step entity with only its feet wet now correctly gets gravity."
-      - "STILL OPEN (re-verified 2026-06-25): CheckWaterTransition fires a hardcoded misc/water_in.wav (MoveTypePhysics.cs:241) on any water/slime crossing instead of routing through the entity's .contentstransition callback. The port has no contentstransition mechanism (grep: zero hits in src/), so there is no water_out cue and lava/slime contact-damage-on-transition is unwired."
+      - "FIXED (Wave-2): CheckWater now returns `ent.WaterLevel > 1` (>= SWIMMING) (MoveTypePhysics.cs:514), matching Base `waterlevel > 1`. The previous off-by-one-level return (>=1 wetfeet) that made WalkMove skip gravity a level too early is corrected — a Walk/Step entity with only its feet wet now correctly gets gravity."
+      - "FIXED (since 2026-06-25 baseline): the hardcoded misc/water_in.wav cue is GONE. Both CheckWater (MoveTypePhysics.cs:496) and CheckWaterTransition (:256) now fire the per-entity ent.ContentsTransition callback (Entity.ContentsTransition, Entity.cs:81) on a native-contents change and emit NO sound themselves — byte-for-byte the Base structure (movetypes.qc:340 + :385, which also emit no sound; the splash/exit/lava cue lives in the per-entity callback). As in Base, no movetype moveable actually assigns the callback (Base only strafehud/util.qc swaps it), so it is null in practice — faithful."
     verification:
-      - { kind: code, ref: "CheckWater (MoveTypePhysics.cs:469) 3-point probe matches movetypes.qc:334, and `return ent.WaterLevel > 1` now matches Base `return this.waterlevel > 1`. CheckWaterTransition (:227) still uses a fixed PlaySound (:241), not contentstransition. No ContentsTransition symbol in port.", result: fail }
+      - { kind: code, ref: "CheckWater (MoveTypePhysics.cs:486) 3-point probe matches movetypes.qc:334; `return ent.WaterLevel > 1` (:514) matches Base. CheckWaterTransition (:241) now routes through ent.ContentsTransition?.Invoke (:256) with NO PlaySound, matching movetypes.qc:368 _Movetype_CheckWaterTransition. Entity.ContentsTransition delegate added (Entity.cs:16/81). Base-side grep confirms .contentstransition has no real setters on moveables.", result: pass }
     confidence: high
-    notes: "Wave-2 closed the return-value bug (logic+values now faithful, gravity gate correct). The transition callback is still replaced by a fixed misc/water_in.wav cue with no water_out / lava-slime transition — audio partial."
+    notes: "FIX since baseline: the movetype-layer hardcoded water_in.wav is removed and replaced by the proper per-entity .ContentsTransition hook, matching Base which emits no sound in this layer. audio reclassified partial->na (the layer correctly makes no sound). logic/values/timing remain faithful; gravity gate correct. Both CheckWater and CheckWaterTransition fire the callback on a contents crossing exactly like Base."
 
   - id: physics-movetypes.pushentity.impact
     name: "PushEntity sweep + Impact dual-dispatch + NudgeOutOfSolid"

@@ -7,7 +7,6 @@ summary:
   worst_gaps:
     - "Teamkill escalation curve (g_teamkill_punishing) unmodeled — unreachable in FFA DM"
     - "OnDeath writes victim.GtDeaths/GtSuicides which have no readers (harmless dead writes; scoreboard counts come from Scores.GiveFrags read-through)"
-    - "Overtime 'Overtime has begun' announcer not traced end-to-end from DM (framework-owned; audio status unknown)"
 features:
   - id: deathmatch.gametype.identity
     name: "Deathmatch gametype registration & identity (dm, FFA, USEPOINTS|PREFERRED)"
@@ -172,29 +171,33 @@ features:
       - "server/world.qc:CheckRules_World (overtime/sudden-death cascade)"
     port_refs:
       - "src/XonoticGodot.Server/GameWorld.cs:RunCheckRulesWorld"
+      - "src/XonoticGodot.Server/GameWorld.cs:OverTime (OnOvertimeStarted/OnSuddenDeathStarted sinks)"
       - "src/XonoticGodot.Server/OverTimeManager.cs"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:ReportsTie"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:FfaTie.TopTwoTied"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:OVERTIME_TIME/OVERTIME_FRAG"
     constants:
       - { name: "timelimit_default_min", base: "15", port: "15", match: true }
       - { name: "timelimit_seconds", base: "minutes*60 offset by game_starttime", port: "TimeLimitMinutes*60 + GameStartTime", match: true }
       - { name: "tie_at_limit", base: "StartSuddenDeathOvertime (keep playing)", port: "FfaTie top-two-tied → overtime", match: true }
+      - { name: "overtime_center_notif", base: "CENTER_OVERTIME_TIME (f1=added seconds) / CENTER_OVERTIME_FRAG, all.inc:778-780 — center-print only, no announcer sound", port: "OVERTIME_TIME/OVERTIME_FRAG via OnOvertimeStarted/OnSuddenDeathStarted → NotificationSystem.Send(Center)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: na
-      audio: unknown
+      presentation: faithful
+      audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The 'Overtime has begun' announcer/notification path was not verified end-to-end from DM in this audit (framework-owned; audio status unknown)."
+    gaps: []
     verification:
       - { kind: code, ref: "RunCheckRulesWorld cascade vs CheckRules_World world.qc:1741-1860", result: pass }
       - { kind: code, ref: "FfaTie.TopTwoTied (top two primary scores equal) vs WinningConditionHelper_equality FFA", result: pass }
-    confidence: medium
-    notes: "Unchanged by Waves 1/2 (OverTimeManager.cs not touched). Win-condition framework (timelimit→overtime→sudden death→intermission) is shared and well-developed; DM feeds it via ReportsTie/FfaTie and the fraglimit/leadlimit latch. Audio for the overtime announcer is framework-owned and not traced here."
+      - { kind: code, ref: "OverTimeManager.InitiateOvertime → OnOvertimeStarted(seconds) wired in GameWorld.OverTime to NotificationSystem.Send(All, Center, OVERTIME_TIME, seconds); TickSuddenDeathWarning → OnSuddenDeathStarted → Center OVERTIME_FRAG (GameWorld.cs:144-147) — overtime/sudden-death center notifications now LIVE", result: pass }
+      - { kind: code, ref: "NotificationsList registers OVERTIME_TIME/OVERTIME_FRAG (NotificationsList.cs:479-480); Base MSG_CENTER_NOTIF(OVERTIME_TIME/FRAG) all.inc:778-780 carry no ANNCE sound → audio na (center-print only)", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-25 baseline: the overtime/sudden-death CENTER notifications are now wired end-to-end and LIVE. GameWorld.OverTime supplies OnOvertimeStarted→Center OVERTIME_TIME(seconds) and OnSuddenDeathStarted→Center OVERTIME_FRAG, both registered in NotificationsList. Base's OVERTIME_TIME/FRAG are MSG_CENTER_NOTIF (center-print), NOT announcer sounds, so audio is na (the prior baseline 'announcer'/'audio: unknown' framing was imprecise — there is no overtime announcer cue in Base). Win-condition framework (timelimit→overtime→sudden death→intermission) is shared; DM feeds it via ReportsTie/FfaTie and the fraglimit/leadlimit latch. (Wave-8e also documented STAT(OVERTIMES) HUD subtext networking via the MatchState packet, but that is the framework's HUD-timer concern, not a DM-specific row.)"
 
   - id: deathmatch.announce.frags_remaining
     name: "Remaining-frags announcer (1/2/3 frags left)"

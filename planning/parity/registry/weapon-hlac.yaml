@@ -274,7 +274,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Hlac (ctor)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponOrder.cs:209"
       - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:66"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:306"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:368"
     constants:
       - { name: "impulse", base: "6", port: "6", match: true }
       - { name: "ammo_type", base: "cells", port: "Cells", match: true }

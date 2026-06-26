@@ -3,14 +3,13 @@ category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 14
+  feature_count: 16
   worst_gaps:
     - "Beam is STILL not charge-scaled (sqrt(charge) alpha/fade/trail-spacing): a barely-charged shot and a full shot look identical. The team-color tint (vortex_glowcolor) and the cl_particles_oldvortexbeam legacy-beam switch are now BOTH ported (EmitBeam in Vortex.cs), but EffectRequest carries no per-emission alpha so the sqrt(charge) brightness modulation has no port-side hook."
     - "Charge ring + beam tint still partly blocked: vortex_charge is networked to the local HUD only on the listen-server HOST path (NetGame.UpdateCrosshairWeaponRings reads LocalServerPlayer's slot state); a PURE remote client has no charge stat. The beam team-tint is now computed server-side from the firer's charge+team so it broadcasts to all clients, but the per-recipient cl_tracers_teamcolor nuance is collapsed to a single broadcast emit."
     - "Player-model charge glow (wr_glow / vortex_glowcolor) STILL not ported — VortexGlowColor exists in Vortex.cs but is only consumed by the beam tint; no player-model glow feeder. Carrier model does not brighten as charge builds."
-    - "No nexwhoosh beam fly-by sound to nearby players — FireRailgunBullet still defers the whoosh (WeaponFiring.cs:426 comment)."
   notable_fixes_this_audit:
-    - "FIXED weapon-vortex.fx.beam (partial -> mostly faithful): Vortex.cs now has a full EmitBeam method (replacing the old plain `EffectEmitter.Emit(\"VORTEX_BEAM\", ...)`): (1) selects VORTEX_BEAM_OLD when cl_particles_oldvortexbeam!=0 (legacy-beam gap FIXED); (2) computes vortex_glowcolor team tint via VortexGlowColor + ColormapPaletteColor and passes rgb as colorMin/colorMax through the EffectEmitter.Emit(effect,origin,vel,count,colorMin,colorMax,except) overload (team-tint gap FIXED, carried in EffectRequest). VORTEX_BEAM_OLD is now registered AND selected (EffectsList.cs:86). Only the sqrt(charge) alpha/fade scaling remains unported (no per-emission alpha field)."
+    - "FIXED weapon-vortex.attack.railgun_pierce (audio partial -> faithful): the nexwhoosh beam fly-by sound is now fully implemented in FireRailgunBullet (WeaponFiring.cs:492-517). It iterates every real client (skipping the shooter and bots), computes the nearest point on the beam to each (start + dir*bound(0,(it.origin-start)*dir,length)), and plays a random nexwhoosh sample (NexWhooshSample -> SoundVariantGroups.NexWhoosh, SND_NEXWHOOSH_RANDOM) via Api.Sound.PlayAt at that point with VOL_BASEVOICE / ATTEN_IDLE on CH_SHOTS — bit-faithful to QC tracing.qc:293-312. The previously-recorded 'whoosh still deferred' gap and its `fail` verification are now stale. ONLY nuance not reproduced: the QC `IS_SPEC(it) && it.enemy == this` (don't whoosh a spectator following the shooter) skip, because spectator-follow data isn't available in the Common layer."
 features:
   - id: weapon-vortex.charge.regen_passive
     name: "Passive charge regen toward charge_limit"
@@ -170,17 +169,16 @@ features:
       values: faithful
       timing: faithful
       presentation: na
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The nexwhoosh beam fly-by sound (FireRailgunBullet plays SND_NEXWHOOSH to nearby real clients along the beam) is STILL deferred — no whoosh when a rail passes near you (WeaponFiring.cs:358 comment still lists it as deferred)."
+    gaps: []
     verification:
-      - { kind: codetrace, ref: "WeaponFiring.cs:360-441 — pierce list, falloff on dmg+force, accuracy credit min(dmg,totaldmg), headshotNotify wired; NOW returns Entity? first (the first pierced victim) so the caller (Vortex) can drive yoda/impressive", result: pass }
-      - { kind: codetrace, ref: "WeaponFiring.cs:358 comment still lists the nearby-whoosh sound + beam particle as deferred", result: fail }
+      - { kind: codetrace, ref: "WeaponFiring.cs:438-544 — pierce list, falloff on dmg+force, accuracy credit min(dmg,totaldmg), headshotNotify wired; returns Entity? first (the first pierced victim) so the caller (Vortex) can drive yoda/impressive", result: pass }
+      - { kind: codetrace, ref: "WeaponFiring.cs:492-517 — the nexwhoosh beam fly-by sound is now IMPLEMENTED: FindByClass('player') over real clients (skip shooter+bots), nearest-beam-point = start+dir*bound(0,(it.origin-start)*dir,length), Api.Sound.PlayAt(beampos, ShotsAuto, NexWhooshSample(), VolBaseVoice, AttenIdle). Matches QC tracing.qc:293-312.", result: pass }
     confidence: high
-    notes: "This audit: FireRailgunBullet was changed to RETURN the first pierced victim (Entity?), consumed by Vortex.Announce for yoda/impressive — pure additive plumbing, no behavior regression. Vortex passes headshot_notify=false (no headshot announce), matching QC. Warpzone + antilag handled. Audio gap remains the fly-by whoosh only."
+    notes: "FIXED THIS AUDIT (audio partial -> faithful): the nexwhoosh fly-by whoosh — the only outstanding defect on this row — is now ported (per-real-client positional emit at the nearest beam point, VOL_BASEVOICE/ATTEN_IDLE, CH_SHOTS, random nexwhoosh sample). FireRailgunBullet returns the first pierced victim (Entity?), consumed by Vortex.Announce for yoda/impressive. Vortex passes headshot_notify=false (no headshot announce), matching QC. Warpzone + antilag handled. The one un-reproduced QC nuance is skipping a spectator following the shooter (IS_SPEC && enemy==this) — no spectator-follow data in the Common layer; negligible at stock."
 
   - id: weapon-vortex.attack.overcharge_sound
     name: "Overcharge zap sound when charge > charge_animlimit"
@@ -417,3 +415,57 @@ features:
       - { kind: codetrace, ref: "Live path: WeaponFireDriver.cs:155 calls WrThink(Primary) every tick -> PrepareAttack -> Attack -> Announce. NotificationSystem.Announce (NotificationSystem.cs:191) + cues registered (NotificationsList.cs:86-87). WrSetup resets vortex_lasthit (Vortex.cs:377).", result: pass }
     confidence: high
     notes: "FIXED THIS AUDIT (missing/dead -> faithful/live). The QC server globals yoda/impressive_hits are re-derived locally in Vortex.Announce because the port's FireRailgunBullet doesn't surface them; the trade-off is the multi-pierce edge case above. vortex_lasthit is stored in a ConditionalWeakTable<Entity,StrongBox<int>> (no Entity.cs field), reset on WrSetup. The IsFlying helper matches the established Devastator/Mortar port pattern."
+
+  - id: weapon-vortex.notify.death_messages
+    name: "Kill / suicide death messages (WEAPON_VORTEX_MURDER / WEAPON_THINKING_WITH_PORTALS)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:wr_killmessage"
+      - "common/weapons/weapon/vortex.qc:wr_suicidemessage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:100"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:174"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:395"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:842"
+    constants:
+      - { name: "wr_killmessage", base: "WEAPON_VORTEX_MURDER", port: "WEAPON_VORTEX_MURDER", match: true }
+      - { name: "wr_suicidemessage", base: "WEAPON_THINKING_WITH_PORTALS", port: "WEAPON_THINKING_WITH_PORTALS", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: codetrace, ref: "DeathMessages.cs:100 maps net 'vortex' -> WEAPON_VORTEX_MURDER (kill); DeathMessages.cs:174 maps 'vortex' -> WEAPON_THINKING_WITH_PORTALS (suicide). NotificationsList.cs:395 registers the VORTEX_MURDER Murder template ('^BG%s%s^K1 has been vaporized by ^BG%s^K1's Vortex...'); :842 registers WEAPON_THINKING_WITH_PORTALS.", result: pass }
+    confidence: high
+    notes: "Newly mapped (was missing a row). The vortex.qc wr_killmessage/wr_suicidemessage hooks resolve through the shared DeathMessages weapon->notification map, which is the live death-notification path. Murder string + the easter-egg self-kill line both registered and faithful."
+
+  - id: weapon-vortex.bot.wr_aim
+    name: "Bot aim hook (bot_aim straight-shot at 1000000 speed)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vortex.qc:wr_aim"
+    port_refs: []
+    constants:
+      - { name: "bot_aim(shotspeed)", base: "1000000 (hitscan: effectively instant)", port: "none", match: false }
+      - { name: "bot_aim(shotspeedupward)", base: "0", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC wr_aim calls bot_aim(actor, weaponentity, 1000000, 0, 1, false, true) and presses ATTACK when the bot has a lined-up target — the per-weapon bot aiming hook. The port's Weapon base has no WrAim/bot-aim override path at all (grep for WrAim/bot_aim over the weapon system returns nothing), so vortex bots have no weapon-specific aim solver. Likely belongs to a future bot unit; recorded here as a Base-side coverage gap for this weapon file."
+    verification:
+      - { kind: codetrace, ref: "grep 'WrAim|bot_aim|BotAim' over src/.../Weapons + Vortex.cs -> no override anywhere; Weapon base class has no bot-aim virtual.", result: fail }
+    confidence: medium
+    notes: "Newly mapped (was missing a row). Bot weapon-aim is unported across the whole weapon system, not vortex-specific; flagged here because wr_aim is a real vortex.qc symbol. Tracking under the vortex unit until a dedicated bot-weapon-aim unit exists."

@@ -5,10 +5,9 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 11
   worst_gaps:
-    - "Missile body scale=2 (Base draws the missile model at 2x) still not applied to the port projectile (presentation)."
-    - "Tag-strike spark missing: TagTouch plays the tag_impact cue but never emits te_knightspike(findbetterlocation(origin,8)); no TE_SPIKE/knightspike point-effect is ported (only the TR_KNIGHTSPIKE trail exists)."
-    - "Type-1 RADARICON_TAGGED waypoint sprite (WaypointSprite_Spawn WP_Seeker) still absent — no WP_Seeker is registered (type-1-only, non-default layout)."
     - "Volley-controller switch gate uses ActiveWeaponId (currently-active weapon) where Base keys on m_switchweapon (the queued switch weapon); equivalent in steady state, differs only during a one-tick weapon-switch transition."
+    - "Missile smart-trace end selection compares the DELTA length where Base compares the absolute world-position length to dist (Seeker.cs:286); practically equivalent steering, minor literal divergence."
+    - "Several seeker-specific weapon-registry callbacks unmapped in the registry: wr_aim (bot aiming, type-dependent), wr_suicidemessage/wr_killmessage (TAG vs SPRAY notification selection)."
 features:
   - id: weapon-seeker.identity
     name: "Weapon identity / attributes (ammo, impulse, flags, models, color)"
@@ -34,7 +33,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Seeker ctor vs seeker.qh ATTRIBs — unchanged by Wave-1/2", result: pass }
+      - { kind: code, ref: "VERIFIED 2026-06-25: Seeker ctor vs seeker.qh ATTRIBs — unchanged", result: pass }
     confidence: high
     notes: "MUTATORBLOCKED in both Base and port, so reachable only via weapon-arena/give/weaponstartoverride, not the default loadout."
 
@@ -66,9 +65,9 @@ features:
     gaps:
       - "Forced-reload top-of-wr_think branch (g_balance_seeker_reload_ammo) not ported; dormant since reload_ammo defaults 0."
     verification:
-      - { kind: code, ref: "VERIFIED 2026-06-22: WeaponFireDriver.Frame calls WrThink(Primary) every tick + WrThink(Secondary) when ATK2 held; type-split + RefireFor/AnimtimeFor selection intact", result: pass }
+      - { kind: code, ref: "VERIFIED 2026-06-25: WeaponFireDriver.Frame calls WrThink(Primary) every tick + WrThink(Secondary) when ATK2 held; type-split + RefireFor/AnimtimeFor selection intact", result: pass }
     confidence: high
-    notes: "RefireFor/AnimtimeFor correctly pick the per-sub-weapon timing per type (the default primary/secondary cvar convention would miss it). Unchanged by Wave-1/2."
+    notes: "RefireFor/AnimtimeFor correctly pick the per-sub-weapon timing per type (the default primary/secondary cvar convention would miss it)."
 
   - id: weapon-seeker.missile_fire
     name: "Homing missile launch (spawn, velocity, ammo, muzzle)"
@@ -79,28 +78,28 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Seeker.cs:FireMissile"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:ProjectileVelocity"
+      - "game/client/ProjectileCatalog.cs:Seeker(ModelScale=2)"
     constants:
       - { name: "missile_ammo", base: "2", port: "2", match: true }
       - { name: "missile_speed", base: "700", port: "700", match: true }
       - { name: "missile_speed_up", base: "300", port: "300", match: true }
       - { name: "missile_speed_z / spread", base: "0 / 0", port: "0 / 0", match: true }
       - { name: "bbox", base: "-4 -4 -4 / 4 4 4", port: "-4 -4 -4 / 4 4 4", match: true }
-      - { name: "scale", base: "2", port: "n/a (presentation)", match: false }
+      - { name: "scale", base: "2", port: "2 (ProjectileCatalog Seeker ModelScale=2f)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "missile.scale=2 (Base draws the missile body at 2x) is not applied to the port projectile body."
+    gaps: []
     verification:
-      - { kind: code, ref: "FireMissile vs W_Seeker_Fire_Missile; ProjectileVelocity == W_SetupProjVelocity_UP_PRE — unchanged by Wave-1/2", result: pass }
+      - { kind: code, ref: "VERIFIED 2026-06-25 (FIX): the missile body is now drawn at 2x — ProjectileCatalog Seeker entry has ModelScale=2f (ProjectileCatalog.cs:195-196) and classname 'seeker_missile' resolves to ProjectileType.Seeker (ProjectileCatalog.cs:282), matching Base missile.scale=2. FireMissile vs W_Seeker_Fire_Missile; ProjectileVelocity == W_SetupProjVelocity_UP_PRE.", result: pass }
     confidence: high
-    notes: "Fire sound seeker_fire + SEEKER_MUZZLEFLASH wired; projectile body/trail/loop sound in ProjectileCatalog (Seeker). Wave-1/2 added Projectiles.MakeShootable(missile) at the end of FireMissile (covered under missile_shootdown)."
+    notes: "FIXED 2026-06-25: missile.scale=2 (the sole residual presentation gap) is now applied via the ProjectileCatalog Seeker ModelScale=2f on the live client render path. Fire sound seeker_fire + SEEKER_MUZZLEFLASH wired; projectile body/trail/loop sound in ProjectileCatalog (Seeker). Projectiles.MakeShootable(missile) wired at the end of FireMissile (covered under missile_shootdown)."
 
   - id: weapon-seeker.missile_homing
     name: "Missile think: accel/decel speed clamp + turnrate homing + smart world-avoidance"
@@ -129,12 +128,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Trace-end selection has a minor literal divergence: Base's `vdist(this.origin + olddir*this.wait, <, dist)` compares the absolute world-position length to dist; the port (Seeker.cs:278) compares the DELTA length (==waitCell[0] < dist). The port's reading is the sensible one and the adaptive-trace + trace_plane_normal blend (1-fraction) are otherwise bit-faithful — practically equivalent steering."
+      - "Trace-end selection has a minor literal divergence: Base's `vdist(this.origin + olddir*this.wait, <, dist)` compares the absolute world-position length to dist; the port (Seeker.cs:286) compares the DELTA length (==waitCell[0] < dist). The port's reading is the sensible one and the adaptive-trace + trace_plane_normal blend (1-fraction) are otherwise bit-faithful — practically equivalent steering."
       - "Proxy detonation (missile_proxy/_delay/_maxrange) not ported — default OFF, so no observable divergence at stock balance (dormant)."
     verification:
-      - { kind: code, ref: "VERIFIED 2026-06-22 (FIX): MissileThink now ports the missile_smart traceline block (seeker.qc:66-79) — bound(trace_min, |origin-endpos|, trace_max) adaptive `wait` kept in waitCell + desireddir = normalize((plane_normal*(1-frac) + desireddir*frac)*0.5); cvars Smart/SmartMinDist/SmartTrace* wired in Configure; bound(spd-decel*ft, speed_max, spd+accel*ft) + normalize(olddir+desireddir*turnrate)*spd all match Base", result: pass }
+      - { kind: code, ref: "VERIFIED 2026-06-25: MissileThink ports the missile_smart traceline block (seeker.qc:66-79) — bound(trace_min, |origin-endpos|, trace_max) adaptive `wait` kept in waitCell + desireddir = normalize((plane_normal*(1-frac) + desireddir*frac)*0.5); cvars Smart/SmartMinDist/SmartTrace* wired in Configure; bound(spd-decel*ft, speed_max, spd+accel*ft) + normalize(olddir+desireddir*turnrate)*spd all match Base", result: pass }
     confidence: high
-    notes: "Wave-2 closed the dominant baseline gap (smart world-avoidance was previously absent; missiles now trace ahead and curve around walls/corners). frametime-based accel/decel uses Api.Clock.FrameTime. Base's IS_DEAD(enemy) re-arm branch (seeker.qc:111) is unreachable dead code in Base (enemy already nulled), so the port's coast-on-lifetime is not a divergence."
+    notes: "frametime-based accel/decel uses Api.Clock.FrameTime. Base's IS_DEAD(enemy) re-arm branch (seeker.qc:111) is unreachable dead code in Base (enemy already nulled), so the port's coast-on-lifetime is not a divergence."
 
   - id: weapon-seeker.missile_explode
     name: "Missile explosion (radius damage + knockback + impact cue)"
@@ -163,9 +162,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "VERIFIED 2026-06-22 (FIX): ExplodeMissile now plays SeekerExpSample() = weapons/seekerexp{1+RangeInt(0,3)}.wav (matching wr_impacteffect's no-bounce else branch SND_SEEKEREXP_RANDOM) instead of the old hardcoded tag_impact.wav; seekerexp1/2/3.ogg assets confirmed present; RadiusDamage(30,10,80,150)+EFFECT_HAGAR_EXPLODE match", result: pass }
+      - { kind: code, ref: "VERIFIED 2026-06-25: ExplodeMissile plays SeekerExpSample() = weapons/seekerexp{1+RangeInt(0,3)}.wav (matching wr_impacteffect's no-bounce else branch SND_SEEKEREXP_RANDOM); RadiusDamage(30,10,80,150)+EFFECT_HAGAR_EXPLODE match", result: pass }
     confidence: high
-    notes: "Wave-2 fixed the wrong-cue gap. The random pick uses Prandom.RangeInt(0,3)+1, matching the QC m_id+floor(prandom()*3) variant selection. (Base routes the cue client-side via wr_impacteffect deathtype; the port plays it server-side at explode time — same audible result.)"
+    notes: "The random pick uses Prandom.RangeInt(0,3)+1, matching the QC m_id+floor(prandom()*3) variant selection. (Base routes the cue client-side via wr_impacteffect deathtype; the port plays it server-side at explode time — same audible result.)"
 
   - id: weapon-seeker.missile_shootdown
     name: "Shootable missile (HP pool, self-damage x0.25, explode-on-death)"
@@ -193,9 +192,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "VERIFIED 2026-06-25 (FIX): FireMissile now passes a damageScale lambda to Projectiles.MakeShootable (Seeker.cs:239-245) returning damage*0.25 when self.Owner==attacker, else full damage; ShootDown applies it after the g_projectiles_damage gate, before hp subtraction (Projectiles.cs:114-116). RealOwner=>Owner (DamageEntityState.cs:161) so self.Owner==attacker is exactly Base realowner==attacker. missile_health 5 + damageforcescale 4 applied; W_CheckProjectileDamage exception -1 matches. Shoot-down is live via GtEventDamage (DamageSystem.EventDamage dispatches non-player victims), detonates only at hp<=0.", result: pass }
+      - { kind: code, ref: "VERIFIED 2026-06-25: FireMissile passes a damageScale lambda to Projectiles.MakeShootable (Seeker.cs:239-245) returning damage*0.25 when self.Owner==attacker, else full damage. missile_health 5 + damageforcescale 4 applied; W_CheckProjectileDamage exception -1 matches. Shoot-down live via GtEventDamage, detonates only at hp<=0.", result: pass }
     confidence: high
-    notes: "FIXED 2026-06-25: the firer-self-hit x0.25 self-scaling — the sole residual baseline gap — is now ported via the new damageScale parameter on MakeShootable/ShootDown. Together with the Wave-1 MakeShootable shim (which resolved the cross-weapon dead ProjectileDamage callback) the missile shoot-down is now fully faithful: full damage for other attackers, damage*0.25 for the firer's own splash/shot, detonation only when hp reaches 0."
+    notes: "The firer-self-hit x0.25 self-scaling is ported via the damageScale parameter on MakeShootable/ShootDown. Full damage for other attackers, damage*0.25 for the firer's own splash/shot, detonation only when hp reaches 0."
 
   - id: weapon-seeker.flac_fire
     name: "FLAC secondary spray (f_diff muzzle cycle, spread, short-lived explosive)"
@@ -226,12 +225,12 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "VERIFIED 2026-06-22 (FIX): FireFlac muzzleflash now HAGAR_MUZZLEFLASH (matching seeker.qc:276 'uses hagar effects', W_MuzzleFlash(WEP_HAGAR)) instead of SEEKER; ExplodeFlac now plays SeekerExpSample() (the no-bounce else branch) instead of tag_impact.wav; flac_ammo/speed/spread/lifetime+rand + f_diff(bulletcounter&3) + damage/edge/radius/force all match; fire sound flac_fire.wav matches SND_SEEKER_FLAC_FIRE", result: pass }
+      - { kind: code, ref: "VERIFIED 2026-06-25: FireFlac muzzleflash HAGAR_MUZZLEFLASH (matching seeker.qc:276 W_MuzzleFlash(WEP_HAGAR)); ExplodeFlac plays SeekerExpSample(); flac_ammo/speed/spread/lifetime+rand + f_diff(bulletcounter&3) + damage/edge/radius/force all match; fire sound flac_fire.wav matches SND_SEEKER_FLAC_FIRE", result: pass }
     confidence: high
-    notes: "Wave-2 closed both FLAC presentation/audio gaps (muzzleflash now HAGAR; explode cue now the seekerexp random). Rapid burst comes from the 0.1 s flac_refire (one bolt per shot), faithful to Base."
+    notes: "Rapid burst comes from the 0.1 s flac_refire (one bolt per shot), faithful to Base."
 
   - id: weapon-seeker.tag_fire
-    name: "Tag dart launch + on-touch tracker registration (with dedupe + impact cue)"
+    name: "Tag dart launch + on-touch tracker registration (with dedupe + impact cue + spark + waypoint)"
     layer: [authority, shared, presentation]
     base_refs:
       - "common/weapons/weapon/seeker.qc:W_Seeker_Fire_Tag"
@@ -241,6 +240,8 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Seeker.cs:FireTag"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Seeker.cs:TagTouch"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Seeker.cs:FindTaggedInfo"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:TE_KNIGHTSPIKE"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:Seeker"
     constants:
       - { name: "tag_ammo", base: "1", port: "1", match: true }
       - { name: "tag_speed", base: "5000", port: "5000", match: true }
@@ -252,18 +253,16 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Tag-strike spark missing: TagTouch plays the tag_impact cue but never emits te_knightspike(findbetterlocation(this.origin,8)). No TE_SPIKE/knightspike point-effect is ported (only the TR_KNIGHTSPIKE trail is registered, a different effect)."
-      - "Type-1 waypoint sprite (WaypointSprite_Spawn WP_Seeker / RADARICON_TAGGED over the tagged player) not implemented; no WP_Seeker registered (type-1-only path, non-default layout)."
+    gaps: []
     verification:
-      - { kind: code, ref: "VERIFIED 2026-06-22 (FIX): TagTouch now (1) calls FindTaggedInfo(owner,other) and refreshes the existing tracker instead of spawning a 2nd volley controller (ports W_Seeker_Tagged_Info dedupe), and (2) plays weapons/tag_impact.wav (the wr_impacteffect HITTYPE_BOUNCE|SECONDARY cue). FireTag/tracker split + tag_fire launch sound intact. te_knightspike spark + WP_Seeker waypoint still absent.", result: pass }
+      - { kind: code, ref: "VERIFIED 2026-06-25 (FIX): TagTouch now (1) calls FindTaggedInfo + refreshes the existing tracker (W_Seeker_Tagged_Info dedupe), (2) plays weapons/tag_impact.wav, (3) emits TE_KNIGHTSPIKE (registered EffectsList.cs:250) at the touch origin matching te_knightspike(findbetterlocation(origin,8)), and (4) for type 1 spawns the WP_Seeker waypoint (registered Waypoints.cs:163 'Seeker'/'Tagged'/RADARICON, scale 2) with kill-and-respawn on retag.", result: pass }
     confidence: high
-    notes: "Wave-2 closed the two worst baseline gaps here: the already-tagged dedupe (a repeat tag no longer doubles the barrage) and the on-touch tag_impact audio cue. Volley-controller (type 0) vs lifetime-tracker (type 1) split matches Base; tracker think uses MaxHealth as the expiry field. Residual presentation: the impact spark TE and the type-1 radar waypoint sprite."
+    notes: "FIXED 2026-06-25: the two residual presentation gaps (te_knightspike tag-strike spark + the type-1 RADARICON_TAGGED WP_Seeker waypoint sprite) are now both ported. TE_KNIGHTSPIKE is registered as a distinct point-effect from the TR_KNIGHTSPIKE trail; WP_Seeker is registered with scale 2 and the RADARICON. Volley-controller (type 0) vs lifetime-tracker (type 1) split matches Base; tracker think uses MaxHealth as the expiry field."
 
   - id: weapon-seeker.tag_shootdown
     name: "Shootable tag dart (HP pool, explode-on-death)"
@@ -276,8 +275,8 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Projectiles.cs:MakeShootable"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:EventDamage"
     constants:
-      - { name: "tag_health", base: "5", port: "5 (now applied)", match: true }
-      - { name: "tag_damageforcescale", base: "4", port: "4 (now applied)", match: true }
+      - { name: "tag_health", base: "5", port: "5", match: true }
+      - { name: "tag_damageforcescale", base: "4", port: "4", match: true }
       - { name: "self-damage scale", base: "none (full damage)", port: "full damage", match: true }
     status:
       logic: faithful
@@ -290,9 +289,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "VERIFIED 2026-06-22 (FIX): FireTag calls Projectiles.MakeShootable(missile, exception:-1) (installs GtEventDamage); DamageSystem.EventDamage dispatches it for the non-player dart on the live path. The dart's ProjectileDamage callback plays weapons/tag_impact.wav then removes — matching W_Seeker_Tag_Damage (full-damage TakeResource, no self-scaling) -> W_Seeker_Tag_Explode. Base W_Seeker_Tag_Damage uses full damage for all attackers, so the port's ShootDown (full damage) is faithful here.", result: pass }
+      - { kind: code, ref: "VERIFIED 2026-06-25: FireTag calls Projectiles.MakeShootable(missile, exception:-1); DamageSystem.EventDamage dispatches it for the non-player dart on the live path. The dart's ProjectileDamage callback plays weapons/tag_impact.wav then removes — matching W_Seeker_Tag_Damage (full-damage TakeResource, no self-scaling) -> W_Seeker_Tag_Explode.", result: pass }
     confidence: high
-    notes: "MAJOR Wave-1 fix: baseline was logic:stub/liveness:dead (ProjectileDamage never invoked); now LIVE via MakeShootable. Unlike the missile, the tag has NO x0.25 self-scaling in Base, so the shared ShootDown shim is fully faithful for the dart. The on-death cue (tag_impact, the HITTYPE_BOUNCE branch) is now played."
+    notes: "Unlike the missile, the tag has NO x0.25 self-scaling in Base, so the shared ShootDown shim is fully faithful for the dart. The on-death cue (tag_impact, the HITTYPE_BOUNCE branch) is played."
 
   - id: weapon-seeker.volley_controller
     name: "Tag volley controller (type 0): auto-fire missile_count missiles at the tagged target"
@@ -318,9 +317,9 @@ features:
     gaps:
       - "Switch-away gate keys on owner.ActiveWeaponId (the currently-equipped weapon) where Base keys on m_switchweapon (the QUEUED switch weapon); these differ only during the one-tick weapon-switch transition, so a port volley may fire one extra missile vs Base at the exact moment a switch is initiated. Negligible in practice."
     verification:
-      - { kind: code, ref: "VERIFIED 2026-06-22 (FIX): VolleyControllerThink self-destruct now checks outOfAmmo (GetResource<missile_ammo, gated by UnlimitedAmmo/IT_UNLIMITED_AMMO bit) AND switch-away (ActiveWeaponId!=RegistryId), matching Base's ammo+switch gates; the baseline's spurious enemy-dead/null gate is REMOVED (Base coasts if the target dies mid-barrage). NextThink = Time + missile_delay * WeaponRateFactor(owner) now applies the rate factor (was missing). f_diff(Count&3) fan matches.", result: pass }
+      - { kind: code, ref: "VERIFIED 2026-06-25: VolleyControllerThink self-destruct checks outOfAmmo (GetResource<missile_ammo, gated by UnlimitedAmmo/IT_UNLIMITED_AMMO bit 1<<0) AND switch-away (ActiveWeaponId!=RegistryId), matching Base's ammo+switch gates; NextThink = Time + missile_delay * WeaponRateFactor(owner) applies the rate factor. f_diff(Count&3) fan matches.", result: pass }
     confidence: high
-    notes: "Wave-2 corrected all three baseline self-destruct/timing divergences: the missing ammo gate (now with IT_UNLIMITED_AMMO exception), the missing switch-away gate, the spurious enemy-dead gate (removed), and the missing W_WeaponRateFactor multiplier. Uses ctrl.Count for both remaining-count and the f_diff index (Base uses own.cnt%4, a separate field) — same fan pattern. Residual: m_switchweapon vs ActiveWeaponId nuance."
+    notes: "Uses ctrl.Count for both remaining-count and the f_diff index (Base uses own.cnt%4, a separate field) — same fan pattern. Residual: m_switchweapon vs ActiveWeaponId nuance."
 
   - id: weapon-seeker.type1_attack
     name: "Type-1 primary: fire missile at closest tagged target with line of sight"
@@ -342,6 +341,6 @@ features:
     gaps:
       - "Reachable only when g_balance_seeker_type=1 (non-default layout); under the default type 0 this path is unused (matches Base)."
     verification:
-      - { kind: code, ref: "SeekerAttack closest-by-LengthSquared + NoMonsters LOS trace then FireMissile vs Base — unchanged by Wave-1/2", result: pass }
+      - { kind: code, ref: "VERIFIED 2026-06-25: SeekerAttack closest-by-LengthSquared + NoMonsters LOS trace then FireMissile vs Base — unchanged", result: pass }
     confidence: medium
     notes: "Type 1 is the non-default layout; logic mirrors Base but unverified at runtime."

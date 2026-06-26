@@ -4,12 +4,12 @@ base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
   feature_count: 11
-  reaudit_note: "Re-audited 2026-06-25 against branch claude/parity-port-waves HEAD. SECOND animation FIX wave since the prior baseline (2026-06-22). The MonsterAnimPhase enum (EntityClasses.cs:79) and the internal MonsterAnim enum (MonsterAI.cs:194) BOTH gained Spawn/Block/BlockEnd/Shoot slots, and the zombie now declares + DRIVES every one of them: Zombie.AnimFrame (Zombie.cs:194) maps spawn->30, block->8, blockend->7, shoot->0 (plus the previously-mapped idle 19/walk-run 27/melee 4/pain 20/die1 9). Zombie.Spawn sets st.Anim=Spawn (Zombie.cs:79) and RunThink stamps it during the spawn window (MonsterAI.cs:1144-1147); DefendBlock sets Block then BlockEnd via the delayed end (Zombie.cs:177,182); Leap is called with MonsterAnim.Shoot (Zombie.cs:132) and Leap sets st.Anim=leapAnim (MonsterAI.cs:1347). So the spawn (30), block (8/7) and leap-shoot (0) poses that the prior baseline recorded as 'folds into Idle/Attack' ARE NOW PLAYED. Live chain unchanged + re-verified: RunThink->DriveAnimFrame->AnimFrame->self.Frame; ServerNet networks Frame for the Generic kind (ServerNet.cs:1808, Classify:2125); ClientEntityView (now game/net/ClientEntityView.cs:196-203) feeds Generic->OnEntityUpdate(frameDriven:true); ClientWorld sets anim.FollowEntityFrame (ClientWorld.cs:1622). NET vs 2026-06-22 baseline: 4 fixes (setup spawn-anim partial->faithful; block partial->faithful; leap partial->faithful; presentation.animation values/timing/presentation partial->faithful). 0 regressions. Residual presentation gaps now reduced to just TWO: pain2 '22 1 2' is dropped (port always plays pain1=20) and die2 '12 1 0.5' is unreachable for the zombie (DriveAnimFrame's die2 is gated on st.DeathLanded, which only the wyvern sets — the zombie installs no dead-think). Audio gate (SoundCues={death,sight,idle}) + all constants/liveness unchanged."
+  reaudit_note: "Re-audited 2026-06-25 (drift check) against branch claude/parity-port-waves HEAD. THIRD animation fix since the prior baseline closed the two residual random-variant losses it had recorded. (1) pain2 is now reachable: MarkPain rolls a per-event AnimVariant (MonsterAI.cs:1583, Next()>=0.5?1:0) and Zombie.AnimFrame maps Pain variant==1->20(pain1)/else->22(pain2) (Zombie.cs:216) — so pain1/pain2 now alternate randomly like Base mr_pain (random()>0.5?pain1:pain2). (2) die2 is now reachable: MarkDead now calls st.DeathLanded=st.Def.RollDeathVariant() (MonsterAI.cs:1673) — no longer gated solely on the wyvern's landing flag — and Zombie.RollDeathVariant() rolls random()>0.5 (Zombie.cs:194), and AnimFrame(Death) maps die2?12:9 (Zombie.cs:217), so die1/die2 alternate randomly like Base mr_death. Both picks are direction-checked byte-faithful (high roll -> pain1/die1 in both Base and port). The Spawn/Block/BlockEnd/Shoot phase slots (EntityClasses.cs:98 MonsterAnimPhase, MonsterAI.cs:203 MonsterAnim) remain live and faithful. Live chain re-verified (line numbers drifted but wiring intact): RunThink->DriveAnimFrame(MonsterAI.cs:1204)->AnimFrame->self.Frame; ServerNet networks Frame (ServerNet.cs:1936); ClientEntityView Generic->OnEntityUpdate(frameDriven:true) (ClientEntityView.cs:197,204); ClientWorld anim.FollowEntityFrame (ClientWorld.cs:1636). NET vs 2026-06-25 baseline: 4 fixes (pain.mr_pain presentation partial-equiv -> faithful + pain_anim_frame match; death.mr_death presentation partial->faithful + die2 match; presentation.animation anim_pain1/2 + anim_die1/2 match false->true). 0 regressions. Residual presentation gaps reduced to ZERO frame-group losses — only per-frame fps/duration (timing) is still approximate and the sound-table delivery machinery is latent (moot for the zombie's audible cues). All constants/liveness/audio unchanged."
   worst_gaps:
-    - "Animation is now LIVE and broadly FAITHFUL: spawn (30), idle (19), walk/run (27), melee (4), block/blockend (8/7), leap-shoot (0), pain1 (20) and die1 (9) are all stamped onto the networked Entity.Frame by DriveAnimFrame and played by the client ModelAnimator (FollowEntityFrame). The MonsterAnimPhase enum now has dedicated Spawn/Block/BlockEnd/Shoot slots, so the zombie's spawn pose, block stance, and leap pose play their OWN frames (not the folded Idle/melee they used at the prior baseline)."
-    - "Two residual presentation gaps remain (random ANIM VARIANT loss only): (a) pain2 '22 1 2' and the random pain1/pain2 alternation are dropped — the port always plays pain1 (frame 20); (b) die2 '12 1 0.5' is unreachable for the zombie because DriveAnimFrame's die2 is gated on st.DeathLanded, which only a per-monster dead-think sets (the wyvern's land flag); the zombie installs no dead-think, so it always plays die1 (frame 9) where Base alternates die1/die2 at random."
+    - "Animation is now LIVE and FULLY FAITHFUL on frame selection: spawn (30), idle (19), walk/run (27), melee (4), block/blockend (8/7), leap-shoot (0), pain1/pain2 (20/22 alternating) and die1/die2 (9/12 alternating) are all stamped onto the networked Entity.Frame by DriveAnimFrame and played by the client ModelAnimator (FollowEntityFrame). The prior baseline's two residual random-variant losses (pain2 dropped, die2 unreachable) are CLOSED: MarkPain rolls AnimVariant and MarkDead rolls RollDeathVariant, both wired to the zombie's AnimFrame."
+    - "Only residual presentation/timing gap: per-frame fps/duration (the second/third animfixfps components, e.g. die1 '9 1 0.5' = 2s) is not modeled by the phase enum — frame VALUES are byte-exact, the per-group PLAYBACK RATE is approximate (timing)."
     - "Sound DELIVERY still diverges from Base's GlobalSound .sounds-file table: the port plays a literal monsters/zombie/<cue>.ogg (SoundExt='.ogg') while the table machinery (random sample, skin-keyed Monster_Sounds_Update) is unported. Moot for the zombie's three audible cues (the SoundCues gate fires exactly {death,sight,idle}, and death.ogg is a real shipped asset so death is audible in effect) but the sample-table machinery remains latent/cosmetic."
-    - "Spawn no-think/no-push window is still hardcoded to 1/3s rather than derived from anim_spawn '30 1 3' via animfixfps/animstate_endtime (close approximation, not model-exact). The spawn POSE itself (frame 30) is now played — only the per-frame fps/duration of the group is approximate."
+    - "Spawn no-think/no-push window is still hardcoded to 1/3s rather than derived from anim_spawn '30 1 3' via animfixfps/animstate_endtime (close approximation, not model-exact). The spawn POSE itself (frame 30) is played — only the per-frame fps/duration of the group is approximate."
 features:
   - id: monster-zombie.identity.def
     name: "Zombie identity / model / bbox / class flags"
@@ -247,7 +247,7 @@ features:
       - { name: "pain_finished_window", base: "time+0.34", port: "Now + st.Def.PainWindow; Zombie inherits Monster.PainWindow=>0.34f, no override -> 0.34", match: true }
       - { name: "pain_throttle (msound_delay)", base: "1.2 (delaytoo)", port: "1.2 (delayToo)", match: true }
       - { name: "g_monsters_sounds gate", base: "autocvar_g_monsters_sounds", port: "Cvar g_monsters_sounds (default 1)", match: true }
-      - { name: "pain_anim_frame", base: "random()>0.5 -> pain1 '20 1 2' / pain2 '22 1 2'", port: "Pain phase -> frame 20 (pain1 only; pain2 dropped)", match: false }
+      - { name: "pain_anim_frame", base: "random()>0.5 -> pain1 '20 1 2' / pain2 '22 1 2'", port: "Pain phase -> AnimVariant rolled in MarkPain (Next()>=0.5?1:0); AnimFrame variant==1?20(pain1):22(pain2) — both reachable, direction-faithful", match: true }
       - { name: "pain_sound_cue", base: "COMMENTED OUT in zombie.dpm_0.sounds -> empty sample -> SILENT", port: "'pain' NOT in SoundCues -> no Play call -> SILENT", match: true }
     status:
       logic: faithful
@@ -259,13 +259,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "pain2 '22 1 2' and the random pain1/pain2 alternation are dropped: the port always plays pain1 (frame 20). Minor visual variety loss only (presentation). The MonsterAnim Pain phase carries no alternate slot."
       - "Sound DELIVERY machinery (GlobalSound .sounds-file table, random sample, skin-keyed Monster_Sounds_Update) still unported — moot for the zombie since pain is correctly silent, but the path-form/sample-table seam is absent (latent)."
     verification:
-      - { kind: code-read, ref: "zombie.qc:mr_pain (pain_finished=time+0.34, setanim pain1/2) vs MarkPain (PainFinished=Now+PainWindow:1558, Anim=Pain:1559) + AnimFrame(Pain)=20 + MonsterSound (g_monsters_sounds + 1.2s throttle + SoundCues)", result: pass }
+      - { kind: code-read, ref: "zombie.qc:mr_pain (pain_finished=time+0.34, setanim random()>0.5?pain1:pain2) vs MarkPain (PainFinished=Now+PainWindow:1579, Anim=Pain:1580, AnimVariant=Next()>=0.5?1:0:1583) + AnimFrame(Pain) variant==1?20:22 (Zombie.cs:216) + MonsterSound (g_monsters_sounds + 1.2s throttle + SoundCues)", result: pass }
       - { kind: data-file, ref: "zombie.dpm_0.sounds //pain commented out; SoundCues={death,sight,idle} excludes pain -> cueDefined=false -> no Play", result: pass }
     confidence: high
-    notes: "pain1 (frame 20) is stamped onto Entity.Frame via DriveAnimFrame and played client-side. Marked faithful because the dropped variant is the secondary pain2 only (Base picks 20 or 22 at random; 20 is a correct member of the set). Pain-sound regression stays gone (SoundCues excludes pain -> silent). g_monsters_sounds master gate + 1.2s throttle faithful. Only the pain2 variety and the latent delivery-machinery seam remain. Unchanged by the 2026-06-25 wave."
+    notes: "FIX (2026-06-25 drift): pain1/pain2 (20/22) now alternate randomly. MarkPain rolls a per-event AnimVariant (MonsterAI.cs:1583), and Zombie.AnimFrame maps Pain variant==1->20(pain1) / else->22(pain2) (Zombie.cs:216). Direction-faithful: a high roll (>=0.5) picks pain1 in both Base (random()>0.5?pain1) and port. Prior baseline's pain2-dropped gap is CLOSED (pain_anim_frame match false->true; presentation stays faithful, now genuinely so). Pain-sound regression stays gone (SoundCues excludes pain -> silent). g_monsters_sounds master gate + 1.2s throttle faithful. Only the latent delivery-machinery seam remains."
 
   - id: monster-zombie.death.mr_death
     name: "Death: corpse + death anim + death sound + respawn machinery"
@@ -280,7 +279,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:AnimFrame (Death -> die1=9 / die2=12)"
     constants:
       - { name: "death_armor_restore", base: "g_monsters_armor_blockpercent=0.5", port: "handled generically", match: true }
-      - { name: "death_anim_frame", base: "random()>0.5 -> die1 '9 1 0.5' / die2 '12 1 0.5'", port: "Death phase -> frame 9 (die1); die2=12 unreachable (zombie sets no DeathLanded)", match: false }
+      - { name: "death_anim_frame", base: "random()>0.5 -> die1 '9 1 0.5' / die2 '12 1 0.5'", port: "Death phase -> MarkDead rolls st.DeathLanded=RollDeathVariant() (MonsterAI.cs:1673); Zombie.RollDeathVariant()=!(Next()>0.5); AnimFrame(Death) die2?12:9 — both reachable, direction-faithful", match: true }
       - { name: "death_sound", base: "death cue DEFINED in .sounds (audible)", port: "'death' IN SoundCues -> Play monsters/zombie/death.ogg (asset present)", match: true }
       - { name: "g_monsters_sounds gate", base: "autocvar_g_monsters_sounds", port: "gated via MonsterSound", match: true }
       - { name: "corpse_gib_threshold", base: "-50 (Monster_Dead_Damage)", port: "-50", match: true }
@@ -289,19 +288,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "die2 '12 1 0.5' is unreachable for the zombie: DriveAnimFrame selects die2 only when st.DeathLanded is true, set by a per-monster dead-think (only the wyvern's land flag, Wyvern.cs:130). The zombie installs no such dead-think, so it always plays die1 (frame 9). Base picks die1/die2 at random, so the zombie permanently drops the die2 death variant (presentation)."
       - "Sound DELIVERY uses literal monsters/zombie/death.ogg (SoundExt='.ogg') with no GlobalSound table lookup / random sample; the death cue IS a real shipped asset so this is audible/faithful in effect, but the table machinery is latent."
     verification:
-      - { kind: code-read, ref: "zombie.qc:mr_death (setanim die1/die2) + Monster_Dead(_Damage) vs MarkDead (Anim=Death:1643, MonsterSound death:1610) + AnimFrame(Death) + DriveAnimFrame (die2 gated on DeathLanded:1188) + dead-branch DriveAnimFrame (RunThink:1128)", result: pass }
+      - { kind: code-read, ref: "zombie.qc:mr_death (setanim random()>0.5?die1:die2) + Monster_Dead(_Damage) vs MarkDead (Anim=Death:1667, MonsterSound death:1634, DeathLanded=RollDeathVariant():1673) + Zombie.RollDeathVariant()=!(Next()>0.5) (Zombie.cs:194) + AnimFrame(Death) die2?12:9 (Zombie.cs:217) + dead-branch DriveAnimFrame (RunThink:1146)", result: pass }
       - { kind: data-file, ref: "zombie.dpm_0.sounds: 'death' defined; SoundCues includes 'death'; sound/monsters/zombie/death.ogg present", result: pass }
     confidence: high
-    notes: "die1 (frame 9) is stamped and played client-side via DriveAnimFrame on the dead branch (RunThink:1128). Death sound + corpse + loot + scoring + gib thresholds faithful. Presentation stays partial: the zombie never reaches die2 (frame 12) because DeathLanded is a per-monster landing flag only the wyvern sets, whereas Base alternates die1/die2 randomly. The death-sound path-form seam remains latent (but audible in effect). Unchanged by the 2026-06-25 wave."
+    notes: "FIX (2026-06-25 drift): die1/die2 (9/12) now alternate randomly. MarkDead now calls st.DeathLanded=st.Def.RollDeathVariant() (MonsterAI.cs:1673) — no longer gated solely on the wyvern's landing dead-think — and Zombie.RollDeathVariant() rolls random (Zombie.cs:194). AnimFrame(Death) maps die2?12:9 (Zombie.cs:217). Direction-faithful: a high roll (>0.5) picks die1 in both Base (random()>0.5?die1) and port (RollDeathVariant returns false => die2 flag false => die1). Prior baseline's die2-unreachable gap is CLOSED (presentation partial->faithful; death_anim_frame match false->true). Death sound + corpse + loot + scoring + gib thresholds faithful. The death-sound path-form seam remains latent (but audible in effect)."
 
   - id: monster-zombie.respawn.undead
     name: "Always-respawn at death point (undead): corpse rises unless gibbed"
@@ -349,10 +347,10 @@ features:
       - { name: "anim_spawn", base: "'30 1 3'", port: "30 (Spawn)", match: true }
       - { name: "anim_walk/run", base: "'27 1 1'", port: "27 (Walk/Run)", match: true }
       - { name: "anim_idle", base: "'19 1 1'", port: "19 (Idle)", match: true }
-      - { name: "anim_pain1/2", base: "'20 1 2' / '22 1 2'", port: "20 (pain1 only; pain2 dropped)", match: false }
+      - { name: "anim_pain1/2", base: "'20 1 2' / '22 1 2'", port: "20 (pain1) / 22 (pain2) — AnimVariant alternates both", match: true }
       - { name: "anim_melee1/2/3", base: "'4 1 5' (all three)", port: "4 (Attack)", match: true }
       - { name: "anim_shoot", base: "'0 1 5'", port: "0 (Shoot)", match: true }
-      - { name: "anim_die1/2", base: "'9 1 0.5' / '12 1 0.5'", port: "9 (die1); die2=12 unreachable (no zombie DeathLanded)", match: false }
+      - { name: "anim_die1/2", base: "'9 1 0.5' / '12 1 0.5'", port: "9 (die1) / 12 (die2) — RollDeathVariant alternates both", match: true }
       - { name: "anim_blockstart/end", base: "'8 1 1' / '7 1 1'", port: "8 (Block) / 7 (BlockEnd)", match: true }
     status:
       logic: na
@@ -364,10 +362,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Two random-variant losses remain: pain2 (22) is dropped (the port always plays pain1=20) and die2 (12) is unreachable for the zombie (DriveAnimFrame's die2 is gated on st.DeathLanded, which only the wyvern sets — the zombie has no dead-think). Base alternates pain1/pain2 and die1/die2 at random; the zombie collapses each to its first member. All OTHER 12 frame groups (spawn 30, idle 19, walk/run 27, melee 4, pain1 20, die1 9, blockstart 8, blockend 7, shoot 0) are now mapped and played byte-exact."
-      - "Per-frame fps/duration (the second/third animfixfps components, e.g. '… 1 0.5' = 2s) is not modeled by the phase enum (timing)."
+      - "Per-frame fps/duration (the second/third animfixfps components, e.g. die1 '9 1 0.5' = 2s) is not modeled by the phase enum: frame VALUES are byte-exact but the per-group playback RATE is approximate (timing). No frame-group/value losses remain — all 9 distinct groups (spawn 30, idle 19, walk/run 27, melee 4, pain1/2 20/22, die1/2 9/12, blockstart 8, blockend 7, shoot 0) are mapped, and both random variants (pain1/pain2, die1/die2) now alternate."
     verification:
-      - { kind: code-read, ref: "Zombie.AnimFrame (Zombie.cs:194-207) maps all of 30/19/27/4/20/9/8/7/0 (+die2 12 gated); DriveAnimFrame:1188 stamps Entity.Frame via ToPhase; MonsterAnimPhase enum has Spawn/Block/BlockEnd/Shoot (EntityClasses.cs:79)", result: pass }
-      - { kind: code-read, ref: "live-chain trace: Zombie.Think->RunThink (SV_RunThink)->DriveAnimFrame->AnimFrame->self.Frame; ServerNet networks Frame (Generic); ClientEntityView Generic->frameDriven:true; ClientWorld FollowEntityFrame:1622", result: pass }
+      - { kind: code-read, ref: "Zombie.AnimFrame (Zombie.cs:207-223) maps 30/19/27/4/20/22/9/12/8/7/0 (pain via variant, death via die2 flag); DriveAnimFrame:1206 stamps Entity.Frame via ToPhase + passes DeathLanded+AnimVariant; MonsterAnimPhase enum has Spawn/Block/BlockEnd/Shoot (EntityClasses.cs:98)", result: pass }
+      - { kind: code-read, ref: "variant wiring: MarkPain AnimVariant=Next()>=0.5?1:0 (MonsterAI.cs:1583); MarkDead DeathLanded=RollDeathVariant() (MonsterAI.cs:1673); Zombie.RollDeathVariant() (Zombie.cs:194)", result: pass }
+      - { kind: code-read, ref: "live-chain trace: Zombie.Think->RunThink (SV_RunThink)->DriveAnimFrame->AnimFrame->self.Frame; ServerNet networks Frame (ServerNet.cs:1936); ClientEntityView Generic->frameDriven:true (ClientEntityView.cs:197,204); ClientWorld FollowEntityFrame:1636", result: pass }
     confidence: high
-    notes: "FIX (2026-06-25): the second animation wave closed the spawn/block/shoot folds. BOTH the descriptor MonsterAnimPhase enum (EntityClasses.cs:79) and the internal MonsterAnim enum (MonsterAI.cs:194) gained Spawn/Block/BlockEnd/Shoot, the zombie declares all 9 distinct frame groups (collapsing the duplicate-frame ones — melee1/2/3 all=4, walk=run=27 — faithfully), and Spawn/DefendBlock/Leap each set their own phase. Frame VALUES are byte-exact vs Base mr_anim. values: partial->faithful, presentation: partial->faithful. timing stays partial (per-frame fps not modeled). The only residual divergence is the dropped pain2/die2 RANDOM alternates (each collapses to its first member); that is a variant-variety loss, not a wrong frame."
+    notes: "FIX (2026-06-25 drift): the prior baseline's two residual random-variant losses are CLOSED. (a) pain2 (22) — MarkPain rolls AnimVariant (MonsterAI.cs:1583), AnimFrame maps Pain variant==1?20:22 (Zombie.cs:216). (b) die2 (12) — MarkDead rolls DeathLanded=RollDeathVariant() (MonsterAI.cs:1673, no longer wyvern-only), AnimFrame maps Death die2?12:9 (Zombie.cs:217). Both direction-faithful (high roll -> pain1/die1 in Base and port). anim_pain1/2 + anim_die1/2 match false->true. Frame VALUES + variant selection are now byte-exact vs Base mr_anim/mr_pain/mr_death. timing stays partial (per-frame fps not modeled). All other groups (spawn 30, idle 19, walk/run 27, melee1/2/3 all=4, shoot 0, block 8/7) unchanged-faithful."

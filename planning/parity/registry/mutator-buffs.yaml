@@ -2,35 +2,37 @@ unit: mutator-buffs
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
-# Re-audited 2026-06-25 (drift check vs 2026-06-22 baseline; branch claude/parity-port-waves @ f86d947).
-# The baseline predated a substantial round of edits to BuffsMutator.cs (Wave-6 era) that closed several
-# previously-recorded gaps. Independent adversarial re-verification of every row found 0 regressions and a
-# cluster of FIXES, all live-traced:
-#   - buffs.drop: a PlayerUseKey handler now exists (OnPlayerUseKey) and is LIVE via
-#     MutatorHooks.FirePlayerUseKey (VehicleBoarding.cs:106, the real +use seam). Gated on g_buffs_drop,
-#     emits ITEM_BUFF_DROP + INFO_ITEM_BUFF_LOST, strips the buff, arms the pickup-shield, plays SND_BUFF_LOST.
-#   - buffs.notifications: ITEM_BUFF_GOT centerprint + INFO_ITEM_BUFF (others) on pickup, INFO_ITEM_BUFF_LOST
-#     on replace/drop, SND_BUFF_LOST on drop are now emitted (BuffTouch / OnPlayerUseKey). Tokens all exist.
-#   - buffs.mutator_string: BuildMutatorsString/PrettyString overrides added (':Buffs' / ', Buffs' when
-#     g_buffs>0), live via MutatorActivation.BuildMutatorsString (GameWorld.cs:876).
-#   - buffs.item.touch_pickup: cl_buffs_autoreplace now honored (CvarBool), team_forced + vehicle + lifetime-
-#     zero checks added; INFO_ITEM_BUFF/INFO_ITEM_BUFF_LOST now emitted.
-#   - buffs.ammo: clip_load handling added (FillSlotClip / RestoreAmmoClips on apply/tick/remove), closing the
-#     reload-weapon gap.
-#   - buffs.item.available: the start_items IT_UNLIMITED_AMMO exclusion is now modelled (StartItemsHasUnlimitedAmmo
-#     via g_use_ammunition).
-# The two PRIMARY liveness blockers persist UNCHANGED: still no item_buff map spawnfunc (buffs.item.spawnfunc)
-# and no FilterItem powerup-replace (buffs.replace_powerups), so buffs remain unobtainable on stock maps unless
-# g_buffs_spawn_count>0 is explicitly set. All perk rows (resistance/medic/vampire/jump/bash/disability/
-# vengeance/luck/inferno/swapper/...) re-verified live and faithful, unchanged. Presentation rows
-# (carrier_model/buff_effect/waypoint) + observer_cleanup remain missing.
+# Re-audited 2026-06-25 (drift check vs the 2026-06-25 baseline; branch claude/parity-port-waves @ dfcab20).
+# ONE MAJOR FIX since the prior write, plus its liveness cascade — 0 regressions:
+#   - buffs.item.spawnfunc (the #1 worst-gap): map buff pickups are now FULLY IMPLEMENTED and LIVE. The port
+#     adds BuffsMutator.SpawnMapBuff + a complete spawnfunc table (ItemSpawnFuncs.RegisterBuffSpawnFuncs):
+#     item_buff_random, item_buff_<type> for all 13 buffs, the _team1.._team4 per-team variants, AND the
+#     Q3TA/Q3A/WOP compat classnames (item_ammoregen/item_scout/item_doubler/item_jumper/item_regen/
+#     item_revival/item_guard/holdable_teleporter/holdable_invulnerability/holdable_kamikaze/item_flight),
+#     matching Base BUFF_SPAWNFUNCS + BUFF_SPAWNFUNC_Q3COMPAT. ConfigureBuffEntity (buff_Init) sets the relic
+#     model (MDL_BUFF = models/relics/relic.md3, asset present), ITEM_D_MINS..ITEM_L_MAXS box, MOVETYPE_TOSS,
+#     FullBright|Stardust|NoShadow, the activate-cooldown (g_buffs_cooldown_activate + game_starttime), touch,
+#     and the per-frame think. LIVE PATH: GameInit -> MapObjectsRegistry.RegisterAll -> ItemSpawnFuncs.Register
+#     -> RegisterBuffSpawnFuncs; the BSP entity lump dispatches each classname via SpawnFuncs.TrySpawn
+#     (GameWorld.cs:3582). So maps that place item_buff_* now spawn real buff pickups.
+#   - LIVENESS CASCADE: every item-gated row that the prior baseline marked liveness:partial *because no buff
+#     item could exist on a map* is now genuinely reachable on the live path. Upgraded partial->live:
+#     touch_pickup, needkill_respawn, respawn_cooldown, random_location, new_type_weighting, available,
+#     notifications (pickup branch). The auto_spawn row stays partial (its own g_buffs_spawn_count>0 default-0
+#     gate is unchanged), but the map path no longer depends on it.
+# Residual: per-buff skin/color/glowmod (buff.m_skin/m_color) is NOT set on the spawned item, so the pickup
+# renders as the uncolored relic (presentation partial on spawnfunc). The OTHER two obtain-path/presentation
+# blockers persist UNCHANGED: still no FilterItem powerup-replace (buffs.replace_powerups), and no carrier
+# buff_model glow / buff_Effect trail / WP_Buff waypoint / observer-disconnect cleanup. Disability projectile-
+# speed (WeaponSpeedFactor) + monster-move (MonsterMove) slows still absent. All perk rows re-verified
+# live+faithful, unchanged.
 summary:
   feature_count: 34
   worst_gaps:
-    - "Map buff items (item_buff_* + Q3/QL/WOP compat classnames) still never spawn: no spawnfunc exists, so buffs are unobtainable on stock maps even with g_buffs=-1 (on) — the only obtain path is the explicit g_buffs_spawn_count>0 auto-seed (default 0)."
-    - "FilterItem powerup-replacement (g_buffs>0 mode) is still not implemented, so the second obtain path is also dead."
+    - "FilterItem powerup-replacement (g_buffs>0 mode) is still not implemented (buffs.replace_powerups), so that obtain path is dead — but map buff items now spawn (item_buff_* spawnfuncs are live), so buffs ARE obtainable on maps that place them."
+    - "Spawned buff items render as the uncolored relic: per-buff skin/color/glowmod (buff.m_skin/m_color) is not applied (presentation partial on buffs.item.spawnfunc); no carrier buff_model glow, no buff_Effect trail, no WP_Buff waypoint."
     - "Disability buff fire-rate slow is LIVE (WeaponRateFactor x1.5), but projectile-speed (WeaponSpeedFactor x0.7) and monster run/walk (MonsterMove x0.7) slows are still absent."
-    - "No carrier buff_model glow, no buff_Effect particle trail, and no WP_Buff radar/HUD waypoint on buff items; no observer/disconnect cleanup."
+    - "No observer/disconnect cleanup; medic regen uses an ad-hoc per-frame heal (no rot-mod); seencount weighting differs (intended)."
 features:
   - id: buffs.core.enable
     name: "Buffs mutator enable (g_buffs)"
@@ -63,27 +65,31 @@ features:
       - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Init"
       - "common/mutators/mutator/buffs/buffs.qh:BUFF_SPAWNFUNCS / BUFF_SPAWNFUNC_Q3COMPAT"
       - "common/mutators/mutator/buffs/buffs.qc:Buff_CompatName"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:SpawnMapBuff"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:ConfigureBuffEntity"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:RegisterBuffSpawnFuncs"
     constants:
-      - { name: "model MDL_BUFF", base: "models/relics/relic.md3 (buff)", port: "none", match: false }
+      - { name: "model MDL_BUFF", base: "models/relics/relic.md3 (buff)", port: "models/relics/relic.md3 (MdlBuff fallback; asset present)", match: true }
+      - { name: "box ITEM_D_MINS..ITEM_L_MAXS", base: "'-30 -30 0'..'30 30 70'", port: "ItemBoxes.DefaultMins..LargeMaxs", match: true }
+      - { name: "per-buff skin/color (m_skin/m_color/glowmod)", base: "set per buff", port: "not set (uncolored relic)", match: false }
       - { name: "bot_pickupbasevalue", base: "1000", port: "none", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: missing
-      liveness: na
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Still no item_buff / item_buff_<type> / item_buff_random spawnfunc, no per-team variants, and no Q3/QL/WOP compat classnames mapped via Buff_CompatName as map-spawnable buff items. (GiveItems.cs:342 ports Buff_CompatName only for the `give` console command, not for map spawnfuncs; ItemSpawnFuncs.cs:69-70 only aliases item_buff_speed/_invisibility to POWERUPS, not buffs.)"
-      - "buff_Init lifecycle absent: no MDL_BUFF model/size, MOVETYPE_TOSS map placement, PFLAGS_FULLDYNAMIC light, buff_Customize, replace-unavailable-via-buff_NewType, bot_pickup value 1000, or buff_Reset/INITPRIO ordering."
-      - "Consequence: buffs remain unobtainable on stock maps even with g_buffs=-1 (default on)."
+      - "Per-buff visual (skin/color/glowmod) is NOT applied to the spawned item: ConfigureBuffEntity sets the relic model + size but never assigns buff.m_skin / buff.m_color / glowmod, so the pickup renders as the uncolored relic regardless of which buff it carries (QC buff_Think colors it). Presentation partial."
+      - "Minor lifecycle omissions vs buff_Init: PFLAGS_FULLDYNAMIC dynamic light + buff_Customize light pulse, bot_pickupbasevalue 1000 (bots don't weight buff items), and the buff_Waypoint_Spawn build-finished waypoint (see buffs.waypoint) are not ported."
     verification:
-      - { kind: code, ref: "grep item_buff/Buff_CompatName: GiveItems console-only; ItemSpawnFuncs only aliases to powerups; no buff spawnfunc", result: fail }
+      - { kind: code, ref: "ItemSpawnFuncs.RegisterBuffSpawnFuncs registers item_buff_random + item_buff_<13 types> + _team1.._team4 + 11 Q3/WOP compat classnames -> BuffsMutator.SpawnMapBuff -> ConfigureBuffEntity (model/box/movetype/effects/activate-cooldown/touch/think). LIVE: GameInit->MapObjectsRegistry.RegisterAll->ItemSpawnFuncs.Register; SpawnFuncs.TrySpawn at GameWorld.cs:3582 dispatches the BSP lump classnames", result: pass }
     confidence: high
-    notes: "Unchanged. Primary liveness blocker. The port's SpawnBuff() (BuffsMutator.cs:255) still builds a stripped item only via SpawnInitialBuffs (count default 0)."
+    notes: "FIXED since 2026-06-25: this was the registry's #1 worst-gap (port_refs empty, all-missing, the primary liveness blocker). Map buff pickups are now fully implemented AND live — item_buff_* + per-team + Q3/QL/WOP compat classnames all spawn real buff items via SpawnMapBuff/ConfigureBuffEntity (buff_Init), routed through the live SpawnFuncs map-spawn dispatch. Compat classname set matches Base BUFF_SPAWNFUNC_Q3COMPAT. Residual: per-buff skin/color (presentation) + dynamic light + bot pickup value. logic/values/timing missing->faithful, presentation missing->partial, liveness na->live."
 
   - id: buffs.item.auto_spawn
     name: "Auto-spawn buffs when none exist (g_buffs_spawn_count)"
@@ -99,18 +105,18 @@ features:
       logic: partial
       values: faithful
       timing: partial
-      presentation: missing
+      presentation: partial
       audio: na
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Default count is 0 so this never runs unless explicitly configured (matches Base default)."
-      - "QC defers via InitializeEntity(buffs_DelayedInit, INITPRIO_FINDTARGET) and sets spawnflags|=64 (always randomize/relocate) on each seed; port sets BuffAlwaysRelocate=true on each auto-seed (SpawnInitialBuffs:243), runs MaybeRandomize, arms BuffLifetime, and starts the BuffThink lifetime cycle. Still spawns immediately at Hook() (not via the INITPRIO_FINDTARGET defer) and the item remains stripped (no waypoint/glow/cooldown buff_activetime state machine). The MDL_BUFF buff model itself is unmapped (buff.Model is null)."
+      - "Default count is 0 so this never runs unless explicitly configured (matches Base default) — this stays liveness:partial. (The map item_buff_* spawnfuncs are now the primary obtain path; see buffs.item.spawnfunc.)"
+      - "QC defers via InitializeEntity(buffs_DelayedInit, INITPRIO_FINDTARGET) and sets spawnflags|=64 (always randomize/relocate) on each seed; port sets BuffAlwaysRelocate=true on each auto-seed (SpawnInitialBuffs), then routes through ConfigureBuffEntity (which now sets the relic model + box + cooldown + think + touch, same as the map spawn). Still spawns immediately at Hook() (not via the INITPRIO_FINDTARGET defer). Residual presentation gap: per-buff skin/color/glowmod still not applied, and no waypoint."
     verification:
-      - { kind: code, ref: "SpawnInitialBuffs gated on g_buffs>0 && g_buffs_spawn_count>0 (default 0); sets BuffAlwaysRelocate + MaybeRandomize + BuffLifetime + BuffThink per seed (BuffsMutator.cs:228-248)", result: pass }
+      - { kind: code, ref: "SpawnInitialBuffs gated on g_buffs>0 && g_buffs_spawn_count>0 (default 0); each seed sets BuffAlwaysRelocate + Velocity then ConfigureBuffEntity(model/box/cooldown/touch/think) (BuffsMutator.cs:252-270)", result: pass }
     confidence: high
-    notes: "Unchanged since 2026-06-22. Still the only way to obtain a buff in the port today; still requires explicit g_buffs_spawn_count>0."
+    notes: "UPDATED 2026-06-25: presentation missing->partial — auto-seeds now route through ConfigureBuffEntity so the relic model + STRENGTH_RESPAWN/ITEM_RESPAWN are present (per-buff color still missing). liveness stays partial (its own g_buffs_spawn_count>0 default-0 gate). No longer the only obtain path — the live map spawnfuncs are."
 
   - id: buffs.item.touch_pickup
     name: "Buff pickup + autoreplace on touch"
@@ -127,17 +133,16 @@ features:
       timing: faithful
       presentation: partial
       audio: faithful
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "EFFECT_ITEM_PICKUP particle is still not spawned (no effect-spawn service); only the pickup sound + notifications play."
       - "cl_buffs_autoreplace is read as the server-side value (no per-client REPLICATE store), so it can't differ per client; functionally equivalent on a server-wide setting."
-      - "Only reachable when a buff item exists (see buffs.item.spawnfunc / auto_spawn)."
     verification:
       - { kind: code, ref: "BuffTouch:284-336: team_forced/vehicle/buff_shield/dead guards; held buff replaced only when autoreplace && held!=thebuff (CvarBool cl_buffs_autoreplace, BuffsMutator.cs:309); INFO_ITEM_BUFF_LOST on replace; ITEM_BUFF_GOT center + INFO_ITEM_BUFF + shield_respawn on pickup", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-22: cl_buffs_autoreplace is now honored (a held buff is kept unless autoreplace set AND a *different* buff), team_forced + vehicle + lifetime-zero-on-pickup added, and the replace/pickup notifications emitted. Residual gap is the missing EFFECT_ITEM_PICKUP particle (presentation)."
+    notes: "Logic/values/timing/audio faithful (cl_buffs_autoreplace honored, team_forced + vehicle + lifetime-zero-on-pickup, replace/pickup notifications). UPDATED 2026-06-25: liveness partial->live — buff items now spawn on maps via the item_buff_* spawnfuncs (buffs.item.spawnfunc), so pickup-on-touch is reachable on the real map path, not just the auto-seed. Residual gap is the missing EFFECT_ITEM_PICKUP particle (presentation)."
 
   - id: buffs.item.needkill_respawn
     name: "Buff item lava/needkill respawn on touch (ITEM_TOUCH_NEEDKILL)"
@@ -156,16 +161,15 @@ features:
       timing: faithful
       presentation: na
       audio: faithful
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Reachable only once a buff item exists (gated on g_buffs_spawn_count>0; see buffs.item.spawnfunc/auto_spawn)."
       - "QC's ITEM_TOUCH_NEEDKILL is the engine's NODROP/sky contents test; port re-derives it with a zero-length trace at the item and checks DpHitContents&NODROP | DpHitQ3SurfaceFlags&SKY. Equivalent in practice; QC's mask also covers DPCONTENTS_SLIME/LAVA/SKY/BODY/DONOTENTER but NODROP is what lava/slime brushes carry."
     verification:
       - { kind: code, ref: "BuffTouch:289-293 calls BuffRespawn when BuffInNeedKill(item) true; BuffInNeedKill (276-281) zero-length trace, NoDropContents 0x80000000 + Q3SurfaceFlagSky 0x4", result: pass }
     confidence: high
-    notes: "Unchanged. The NEEDKILL branch relocates a buff item that settles in lava/slime/void/sky via buff_Respawn (KA_RESPAWN sound included). Liveness still gated on a buff item existing."
+    notes: "UPDATED 2026-06-25: liveness partial->live — buff items now spawn on maps via item_buff_* spawnfuncs, so the NEEDKILL relocation branch is reachable on the live path. The branch relocates a buff item that settles in lava/slime/void/sky via buff_Respawn (KA_RESPAWN sound included)."
 
   - id: buffs.item.respawn_cooldown
     name: "Buff item cooldown / respawn cycle (buff_Think + buff_SetCooldown)"
@@ -184,19 +188,19 @@ features:
       logic: partial
       values: faithful
       timing: partial
-      presentation: missing
-      audio: partial
-      liveness: partial
+      presentation: partial
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "Port respawn is still a single Think after cooldown_respawn (clears Owner and runs MaybeRandomize/MaybeRelocate); no buff_activetime countdown, no activate-cooldown arming on round start (Base buff_Reset uses g_buffs_cooldown_activate; port only models cooldown_respawn), no buff_active/buff_activetime state machine, no buff_Customize light pulse."
-      - "No SND_STRENGTH_RESPAWN + EFFECT_ITEM_RESPAWN on reactivation; no waypoint build-finished timer; no g_buffs_pickup_anyway instant-respawn. (KA_RESPAWN plays on a buff_Respawn RELOCATION via BuffRespawn, but not on a plain cooldown reactivation.)"
+      - "SND_STRENGTH_RESPAWN + EFFECT_ITEM_RESPAWN ARE now emitted on (re)activation (ActivateBuff:336-337, ScheduleRespawn:462-463). Still missing: the waypoint build-finished timer and g_buffs_pickup_anyway instant-respawn."
       - "Owner-gone / dead / frozen / wrong-buff respawn conditions (QC buff_Think) are still collapsed: the port unconditionally clears the owner and re-arms after the respawn cooldown."
     verification:
-      - { kind: code, ref: "ScheduleRespawn:347-366 sets Owner=null, Think after cooldown_respawn runs MaybeRandomize/MaybeRelocate + re-activates + arms BuffThink; vs buff_Think state machine", result: fail }
+      - { kind: code, ref: "ScheduleRespawn:444-466 sets Owner=null, Think after cooldown_respawn runs MaybeRandomize/MaybeRelocate + re-activates + STRENGTH_RESPAWN + ITEM_RESPAWN effect + arms BuffThink; ActivateBuff:332-343 same on the activate-cooldown elapse; vs buff_Think state machine", result: pass }
     confidence: medium
-    notes: "Unchanged since 2026-06-22 (owner-clear + randomize/relocate gating + lifetime cycle present) but still partial: no buff_activetime/buff_active countdown, no activate-cooldown-on-round-start, owner-condition checks collapsed. cooldown VALUES match Base."
+    notes: "UPDATED 2026-06-25: liveness partial->live (buff items now spawn on maps via spawnfuncs). audio partial->faithful + presentation missing->partial — SND_STRENGTH_RESPAWN + EFFECT_ITEM_RESPAWN are now emitted on (re)activation. Logic still partial: no buff_activetime/buff_active countdown, no activate-cooldown-on-round-start, owner-condition checks collapsed. cooldown VALUES match Base."
 
   - id: buffs.item.random_location
     name: "Random location / lifetime / randomize-on-reset (buff_Respawn / buff_Reset)"
@@ -221,7 +225,7 @@ features:
       timing: partial
       presentation: missing
       audio: faithful
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
@@ -230,7 +234,7 @@ features:
     verification:
       - { kind: code, ref: "BuffRespawn:407-431 (RandomMapLocation + '0 0 200' + tracebox unstick + lifetime + KA_RESPAWN); MaybeRandomize:383-390 (g_buffs_randomize & (teamplay?2:1)); MaybeRelocate:395-401 (g_buffs_random_location || alwaysRelocate); reached from BuffThink lifetime + ScheduleRespawn + needkill", result: pass }
     confidence: high
-    notes: "Unchanged since 2026-06-22. Random-location relocation + lifetime cycle + KA_RESPAWN implemented and reachable; gated by g_buffs_randomize. Residual: attempts-based content-rejection sampling, electro-combo VFX, waypoint ping; liveness still gated on a buff item existing."
+    notes: "UPDATED 2026-06-25: liveness partial->live — buff items now spawn on maps via spawnfuncs, so random-location relocation + lifetime cycle + KA_RESPAWN run on the live path; gated by g_buffs_randomize. Residual: attempts-based content-rejection sampling, electro-combo VFX, waypoint ping."
 
   - id: buffs.item.new_type_weighting
     name: "Weighted random buff selection (buff_NewType / seencount)"
@@ -242,20 +246,19 @@ features:
     constants:
       - { name: "weight", base: "max(0.2, 1/seencount)", port: "uniform", match: false }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: partial
-    intended_divergence: true
-    divergence_rationale: "Port uses a flat uniform pick (Prandom.RangeInt over AvailableBuffs) instead of QC's seencount-weighted RandomSelection. The seencount weighting is a server-local fairness tweak with no networked/observable per-buff state; only a statistical difference in repeat frequency."
-    gaps:
-      - "Recently-seen buffs are not deprioritized (no buff_seencount increment / weight), so the same buff type can recur more often than in Base."
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
     verification:
-      - { kind: code, ref: "RandomBuff uses Prandom.RangeInt over AvailableBuffs (BuffsMutator.cs:221-225); re-randomize-on-respawn is gated by g_buffs_randomize via MaybeRandomize", result: pass }
+      - { kind: code, ref: "RandomBuff (BuffsMutator.cs:225-249) now does QC's RandomSelection weighted pick: per-buff weight max(0.2, 1/seencount) over a _buffSeenCount map keyed by RegistryId, cumulative-weight uniform draw, then ++seencount on the chosen buff. Reached from ConfigureBuffEntity (map spawn) + MaybeRandomize (respawn re-roll, gated by g_buffs_randomize)", result: pass }
     confidence: high
-    notes: "Unchanged (the uniform-vs-seencount divergence). buff_Available exclusions (per-buff cvar / melee / vampire / start_items unlimited-ammo) are faithful — see buffs.item.available."
+    notes: "FIXED since 2026-06-25: RandomBuff now implements the seencount-weighted RandomSelection (weight max(0.2,1/seencount) + ++seencount), matching buff_NewType — no longer a flat uniform pick. logic/values partial->faithful, the intended-divergence uniform-pick rationale is removed, and liveness partial->live (now reachable via the live map spawnfunc path). buff_Available exclusions faithful — see buffs.item.available."
 
   - id: buffs.item.available
     name: "buff_Available (per-buff enable + exclusions)"
@@ -274,16 +277,15 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "Port derives the start_items IT_UNLIMITED_AMMO state from g_use_ammunition (the dominant source of that start flag) rather than the literal start_items bitmask, so an unusual start_items source for unlimited ammo would be missed — but the common case (g_use_ammunition 0) is covered."
-      - "Only reachable when a buff is spawned/randomized (gated on the missing item path)."
     verification:
-      - { kind: code, ref: "BuffAvailable:199-208: g_buffs_<n> cvar + melee(ammo) + g_vampire(vampire) + StartItemsHasUnlimitedAmmo()(ammo); StartItemsHasUnlimitedAmmo = !g_use_ammunition (BuffsMutator.cs:903)", result: pass }
+      - { kind: code, ref: "BuffAvailable:199-208: g_buffs_<n> cvar + melee(ammo) + g_vampire(vampire) + StartItemsHasUnlimitedAmmo()(ammo); StartItemsHasUnlimitedAmmo = !g_use_ammunition (BuffsMutator.cs:1016)", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-22: the start_items IT_UNLIMITED_AMMO exclusion branch is now modelled (excludes the ammo buff when ammo is already unlimited), via g_use_ammunition. logic now faithful."
+    notes: "logic/values faithful (start_items IT_UNLIMITED_AMMO exclusion modelled via g_use_ammunition). UPDATED 2026-06-25: liveness partial->live — BuffAvailable now runs on the live map spawn path (RandomBuff/ConfigureBuffEntity via the item_buff_* spawnfuncs), not just the dead auto-seed."
 
   - id: buffs.resistance
     name: "Resistance buff — damage reduction"
@@ -602,7 +604,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC selects buff-vs-item range by it.buffdef; port selects by classname == 'item_buff' (equivalent in practice, but tied to the missing item_buff spawnfunc)."
+      - "QC selects buff-vs-item range by it.buffdef; port selects by classname == 'item_buff' (equivalent in practice; item_buff items now spawn on maps, so the buff-range branch is reachable)."
     verification:
       - { kind: code, ref: "MagnetTick:827-837 FindInRadius(broad) then per-item BoxesOverlapExpanded (QC boxesoverlap(absmin-r,absmax+r,...)) box test, falls back to origin distance when bounds degenerate; touch invoked", result: pass }
     confidence: medium
@@ -870,18 +872,17 @@ features:
       values: na
       timing: faithful
       presentation: faithful
-      audio: partial
-      liveness: partial
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "Pickup: ITEM_BUFF_GOT center (picker) + INFO_ITEM_BUFF (others) + misc/shield_respawn sound all fire (BuffTouch). Replace: INFO_ITEM_BUFF_LOST (others) fires. Drop: ITEM_BUFF_DROP center + INFO_ITEM_BUFF_LOST + SND_BUFF_LOST all fire (OnPlayerUseKey). Tokens ITEM_BUFF/ITEM_BUFF_GOT/ITEM_BUFF_LOST/ITEM_BUFF_DROP all defined in NotificationsList.cs."
-      - "Residual audio gaps: SND_STRENGTH_RESPAWN on item reactivation is not emitted; the SND_BUFF_LOST on a *replace* (autoreplace path) is commented out in QC too, so omitting it is faithful — but the replace path emits no sound, matching Base. SND_KA_RESPAWN is wired for swapper + item relocation."
-      - "Pickup-to-others / loss notifications are only reachable once a buff item exists or is held (gated on the missing obtain path for pickup; drop is reachable whenever a buff is held)."
+      - "SND_STRENGTH_RESPAWN on item (re)activation IS now emitted (ActivateBuff:336 + ScheduleRespawn:462 SoundSystem.PlayOn(item,\"STRENGTH_RESPAWN\")). SND_BUFF_LOST on a *replace* (autoreplace path) is commented out in QC too, so omitting it is faithful. SND_KA_RESPAWN is wired for swapper + item relocation."
     verification:
-      - { kind: code, ref: "BuffTouch:313-332 Center(ITEM_BUFF_GOT) + INFO_ITEM_BUFF + INFO_ITEM_BUFF_LOST(replace) + shield_respawn; OnPlayerUseKey:764-770 Center(ITEM_BUFF_DROP) + INFO_ITEM_BUFF_LOST + SND_BUFF_LOST; tokens defined NotificationsList.cs:455/457/490/491/726/727", result: pass }
+      - { kind: code, ref: "BuffTouch:313-332 Center(ITEM_BUFF_GOT) + INFO_ITEM_BUFF + INFO_ITEM_BUFF_LOST(replace) + shield_respawn; OnPlayerUseKey:875-883 Center(ITEM_BUFF_DROP) + INFO_ITEM_BUFF_LOST + SND_BUFF_LOST; ActivateBuff/ScheduleRespawn emit STRENGTH_RESPAWN; tokens defined NotificationsList.cs:455/457/490/491/726/727", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-22: the pickup-to-others (INFO_ITEM_BUFF), replace-loss (INFO_ITEM_BUFF_LOST), and drop (ITEM_BUFF_DROP + INFO_ITEM_BUFF_LOST + SND_BUFF_LOST) notifications/sounds are now emitted. logic/presentation upgraded to faithful; audio remains partial only for the SND_STRENGTH_RESPAWN item-reactivation cue."
+    notes: "UPDATED 2026-06-25: liveness partial->live (the pickup notifications are now reachable on the live map spawnfunc path, not just the held/drop branch). audio partial->faithful — SND_STRENGTH_RESPAWN on item (re)activation is now emitted in ActivateBuff/ScheduleRespawn, closing the last audio gap. All buff pickup/loss/drop notifications + sounds present."
 
   - id: buffs.observer_cleanup
     name: "Strip buff visuals on observer / disconnect"

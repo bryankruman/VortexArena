@@ -1,15 +1,14 @@
 unit: fx-sounds
 category: sound
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 16
   worst_gaps:
-    - "client hit-confirmation sound STILL loads misc/hitconfirm (nonexistent) instead of the registered misc/hit (sound/misc/hit.wav) -> hitsound silent. NOT fixed by Wave-1/2."
-    - "sound_allowed owner-walk + bot_sound_monopoly gate not implemented (dead cvar; corpse/projectile sounds not re-homed to owner)"
-    - "play2 / play2team (per-client / per-team 2D sends) and spamsound per-entity rate-limit (e.spamtime) have no port equivalent"
-    - "_GlobalSound per-recipient cl_voice_directional / cl_autotaunt roll still stubbed (directional uses ATTEN_MIN unconditionally; autotaunt probability omitted; TAUNT animdecide_setaction(ANIMACTION_TAUNT) not fired)"
-    - "GlobalSound_pitch model-scale pitch shift (scale != 1 squeak/deepen) still not ported; wire carries a flat pitch byte"
+    - "play2 / play2team (per-client / per-team 2D sends) still have no port equivalent (spamsound IS now ported + live)."
+    - "sound_allowed owner-walk re-home (body->enemy / realowner / owner) is implemented (SoundAllowedGate.WalkOwner) but DEAD: no caller re-homes corpse/projectile sounds to the originating player. The bot_sound_monopoly gate is implemented + live only on the vehicle hit/shield paths, not on every emit."
+    - "_GlobalSound AUTOTAUNT per-recipient probability roll (tauntrand < cl_autotaunt) still omitted (per-client cvar not networked); TAUNT animdecide_setaction(ANIMACTION_TAUNT) still not fired (no anim-action seam)."
+    - "GlobalSound_pitch model-scale pitch shift (scale != 1 squeak/deepen) still not ported; wire carries a flat pitch byte."
 features:
   - id: fx-sounds.registry.sound_table
     name: "Sound registry (SOUND(name,path) table) + path resolution"
@@ -37,7 +36,7 @@ features:
     verification:
       - { kind: code, ref: "all.inc vs SoundsList.cs incl. #define aliases (ONS_GENERATOR_ALARM=KH_ALARM, NADE_BONUS=KH_ALARM, FLACEXP/FIREBALL aliases); AssetLoader.ResolveSoundVpath probe order", result: pass }
     confidence: high
-    notes: "Full all.inc coverage (weapons/gametypes/vehicles/turrets/monsters/items/misc) incl. per-team CTF cues + health/armor/powerup pickup sample names. Seeded at boot via Sounds.RegisterAll. Wave-1/2 added BURNING_REMOVE (desertfactory/steam_burst) + STUNNED_REMOVE (onslaught/ons_spark1) status-effect removal SOUND() defs (status_effect/*.qh) — registered under their Base SND_* names; consumed by the status-effects unit, not a new fx-sounds concern."
+    notes: "Full all.inc coverage (weapons/gametypes/vehicles/turrets/monsters/items/misc) incl. per-team CTF cues + health/armor/powerup pickup sample names. Seeded at boot via Sounds.RegisterAll. Unchanged this pass."
 
   - id: fx-sounds.registry.channels
     name: "CH_* channels — auto(neg)=stack vs single(pos)=replace"
@@ -181,25 +180,29 @@ features:
     layer: [authority]
     base_refs:
       - "common/sounds/all.qc:sound_allowed"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:SoundAllowedGate"
     constants:
-      - { name: "bot_sound_monopoly", base: "0", port: "none (dead cvar)", match: false }
+      - { name: "bot_sound_monopoly", base: "0", port: "bot_sound_monopoly cvar (default 0, gate honored)", match: true }
+      - { name: "owner_walk", base: "body->enemy / realowner / owner", port: "SoundAllowedGate.WalkOwner (same chain, 16-guard)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
-      audio: missing
-      liveness: na
+      audio: faithful
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "sound_allowed owner-walk (body->enemy / realowner / owner re-home) not implemented: corpse and projectile sounds aren't re-homed to the originating player."
-      - "bot_sound_monopoly is a dead cvar: no gate silences real-client sounds when set to 1."
+      - "SoundAllowedGate.WalkOwner (owner-walk re-home) is implemented but DEAD: no caller uses it to re-home corpse/projectile sounds to the originating player before the gate check."
+      - "IsAllowed (bot_sound_monopoly gate) is live only on the vehicle hit/shield emit paths (VehicleCommon.cs:502/511/522); it is NOT applied on the general one-shot emit path (SoundService.Play / PlayOn), so most SVQC emits bypass the gate."
+      - "QC MSG_ONE 'sounds to self always pass' branch omitted (no per-recipient msg_entity context at the gate; documented cosmetic edge-case)."
     verification:
-      - { kind: grep, ref: "no general sound_allowed/bot_sound_monopoly consumer in src/game (only DamageSystem.SoundAllowedBroadcast for the death-voice/hitsound broadcast case)", result: fail }
+      - { kind: code, ref: "SoundAllowedGate.WalkOwner mirrors body->enemy/realowner/owner; IsAllowed mirrors `autocvar_bot_sound_monopoly && IS_REAL_CLIENT(e)` -> deny", result: pass }
+      - { kind: grep, ref: "callers: SoundAllowedGate.IsAllowed only at VehicleCommon.cs:502/511/522 (+ SpamSound internal); WalkOwner has ZERO callers; SoundService.Play has no gate", result: fail }
     confidence: high
-    notes: "STILL OPEN after Wave-1/2 (unchanged). Default-off cvar -> low practical impact, but every QC SVQC emit passes through this gate (the _sound macro) and the port has no general equivalent."
+    notes: "FIX (partial) since baseline: SoundAllowedGate now exists and faithfully ports both halves (owner-walk + bot_sound_monopoly), and the bot_sound_monopoly gate is LIVE on the vehicle paths and inside SpamSound. Regression scope vs baseline 'missing': logic/values/audio missing->faithful, liveness na->partial. Residual: owner-walk has no live caller (dead) and the gate is not on the general emit path."
 
   - id: fx-sounds.emit.play2_family
     name: "play2 / play2team / play2all / spamsound"
@@ -211,24 +214,27 @@ features:
       - "common/sounds/all.qc:spamsound"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:PlayGlobal"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:SpamSound"
+      - "src/XonoticGodot.Common/Framework/Entity.cs:SpamTime"
     constants:
       - { name: "play2all", base: "_sound(NULL,CH_INFO,samp,VOL_BASE,ATTEN_NONE)", port: "PlayGlobal (shared emitter, ATTEN_NONE)", match: true }
+      - { name: "spamsound_gate", base: "if(time > e.spamtime){ e.spamtime=time; sound(...) }", port: "SpamSound: if(now > emitter.SpamTime){ SpamTime=now; Play(...) }", match: true }
     status:
       logic: partial
       values: partial
-      timing: partial
+      timing: faithful
       presentation: na
       audio: partial
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "play2 (per-client 2D send) and play2team (per-team 2D send) have no port equivalent."
-      - "spamsound's per-entity time-step rate limit (e.spamtime) has no equivalent: callers (NadeProjectile bounce, VehicleCommon hit, MonsterAI body-impact) emit directly with no rate-cap, so a touch-spam source could over-emit."
+      - "play2 (per-client 2D send) and play2team (per-team 2D send) still have no port equivalent."
     verification:
-      - { kind: grep, ref: "no spamsound/play2/play2team implementation; play2all -> PlayGlobal only; NadeProjectile.cs:149 / VehicleCommon.cs:511 comment 'QC spamsound' but call a plain Play with no spamtime gate", result: fail }
+      - { kind: code, ref: "SpamSound/SpamSoundRaw mirror QC spamsound (sound_allowed gate + time>spamtime + set spamtime); Entity.SpamTime added", result: pass }
+      - { kind: grep, ref: "spamsound LIVE: NadeProjectile.cs:154 (grenade bounce) + VehicleCommon.cs:503/512/523 (ons hit/shield). play2all -> PlayGlobal (live, many gametype callers). play2/play2team: no implementation", result: pass }
     confidence: high
-    notes: "STILL OPEN after Wave-1/2 (unchanged). play2all is covered; the per-client/per-team/rate-limited variants are not."
+    notes: "FIX since baseline: spamsound is now ported (SoundSystem.SpamSound + Entity.SpamTime) AND live (nade bounce + vehicle hit/shield) with the sound_allowed gate, so the timing/rate-limit dimension is now faithful and the per-entity over-emit risk is closed. play2all remains covered (PlayGlobal). Still partial because the per-client play2 and per-team play2team 2D sends remain unported."
 
   - id: fx-sounds.voice.playersound_registry
     name: "PlayerSounds / GlobalSounds registries (body sound ids)"
@@ -255,7 +261,7 @@ features:
     verification:
       - { kind: code, ref: "PlayerSoundIds + STEP/STEP_METAL/FALL/FALL_METAL paths+counts vs globalsound.qh:REGISTER_GLOBALSOUND", result: pass }
     confidence: high
-    notes: "Id set + GlobalSound base paths/counts match. The sample-PATH resolution for body sounds is now genuinely working (see fx-sounds.voice.persounds_manifest, FIXED). Unchanged this pass."
+    notes: "Id set + GlobalSound base paths/counts match. The sample-PATH resolution for body sounds works (see fx-sounds.voice.persounds_manifest). Unchanged this pass."
 
   - id: fx-sounds.voice.voicemessage_table
     name: "REGISTER_VOICEMSG table (team radio + taunts) + VOICETYPE constants"
@@ -296,26 +302,27 @@ features:
       - { name: "sv_taunt", base: "1", port: "reads cvar (gate honored)", match: true }
       - { name: "sv_autotaunt", base: "1", port: "reads cvar (gate honored)", match: true }
       - { name: "PLAYERSOUND atten", base: "ATTEN_NORM (MSG_ALL)", port: "ATTEN_NORM broadcast", match: true }
+      - { name: "directional_atten", base: "(cl_voice_directional==1) ? ATTEN_MIN : ATTEN_NONE", port: "voiceDirectional==1 ? AttenMin : AttenNone (cvar read)", match: true }
+      - { name: "taunt_atten", base: "(cl_voice_directional>=1) ? bound(ATTEN_MIN, cl_voice_directional_taunt_attenuation, ATTEN_MAX) : ATTEN_NONE", port: "same bound(ClVoiceDirectionalTauntAttenuation) when voiceDirectional>=1", match: true }
       - { name: "voice_sample_path", base: "manifest-mapped sound/player/espeak/coms/<id>", port: "resolved via Sounds.PlayerSoundSample -> .sounds manifest -> sound/player/espeak/coms/<id> (host resolver installed)", match: true }
     status:
       logic: partial
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Per-recipient cl_voice_directional read is still stubbed: directional cases always use ATTEN_MIN (QC: ATTEN_MIN only when ==1, else ATTEN_NONE), and the taunt-attenuation bound(cl_voice_directional_taunt_attenuation) is not applied."
-      - "AUTOTAUNT probability roll (tauntrand < cl_autotaunt) still omitted -> autotaunts always play (when sv_autotaunt is on)."
-      - "TAUNT does not trigger animdecide_setaction(ANIMACTION_TAUNT) on the living speaker."
+      - "AUTOTAUNT per-recipient probability roll (tauntrand < CS_CVAR(it).cl_autotaunt) still omitted: per-client cl_autotaunt is not networked, so autotaunts that clear sv_autotaunt always play for all recipients (documented deferral; a single global cl_autotaunt default 0 would wrongly silence ALL autotaunts)."
+      - "TAUNT does not trigger animdecide_setaction(ANIMACTION_TAUNT) on the living speaker (no anim-action seam yet)."
     verification:
-      - { kind: code, ref: "_GlobalSound LASTATTACKER[_ONLY]/TEAMRADIO/AUTOTAUNT/TAUNT/PLAYERSOUND recipient sets + sv_taunt/sv_autotaunt/sv_gentle gates vs globalsound.qc; sample via PlayerSoundSample(null,id)", result: pass }
-      - { kind: code, ref: "sample now resolves to a real file: Sounds.PlayerSoundSample -> ModelSoundResolver (PlayerSoundResolver, installed NetGame.cs:398) -> default.sounds manifest maps taunt -> sound/player/espeak/coms/taunt (espeak/coms/* ships on disk)", result: pass }
+      - { kind: code, ref: "_GlobalSound LASTATTACKER[_ONLY]/TEAMRADIO/AUTOTAUNT/TAUNT/PLAYERSOUND recipient sets + sv_taunt/sv_autotaunt/sv_gentle gates + fake (MSG_ONE) handling vs globalsound.qc; sample via PlayerSoundSample", result: pass }
+      - { kind: code, ref: "directional atten now reads cl_voice_directional (==1 -> ATTEN_MIN else ATTEN_NONE) and taunt atten applies bound(ATTEN_MIN, cl_voice_directional_taunt_attenuation, ATTEN_MAX) — both previously-missing presentation gaps now ported", result: pass }
       - { kind: grep, ref: "voicemessage cmd (Commands.cs:1682) passes Clients.Players roster -> live recipient routing reachable", result: pass }
     confidence: high
-    notes: "FIX: the audio dimension was 'missing' at baseline because the resolved sample path (sound/player/default.sounds/<id>) did not exist; Wave-1/2 added the host-installed PlayerSoundResolver that parses the .sounds manifest, so team-radio/taunt voices now resolve to real espeak samples and are audible. Recipient sets + gates were already faithful & live via the voicemessage server command. Logic/presentation remain PARTIAL: directional-atten per-recipient cvar, autotaunt probability roll, and the TAUNT animaction are still not ported."
+    notes: "FIX since baseline: the directional per-recipient attenuation (cl_voice_directional) and the taunt-attenuation bound (cl_voice_directional_taunt_attenuation) are now ported, so the presentation dimension goes partial->faithful and 2 of the 3 baseline gaps are closed. Logic stays PARTIAL only for the per-client autotaunt probability roll (deferred — per-client cvar not networked) and the TAUNT animaction (no animdecide seam). Recipient sets + sv_* gates + fake/self handling faithful & live."
 
   - id: fx-sounds.voice.live_body_callers
     name: "PlayerSound/GlobalSound call sites (footstep/fall/pain/death/jump)"
@@ -347,11 +354,11 @@ features:
     gaps:
       - "Minor: the speed gate uses 2D horizontal velocity (Vec2LenSq) while QC vdist uses 3D velocity — negligible in practice (grounded motion is near-horizontal), but not byte-identical when moving up/down a slope."
     verification:
-      - { kind: code, ref: "PlayerPhysics.Footsteps now mirrors PM_Footsteps fully: g_footsteps early-return, IS_DUCKED, lastground+0.2 window, 0.6*maxspeed gate, nextstep (time>nextstep)||(time<nextstep-10) window, nextstep=time+0.3+random*0.1 jitter; PM_check_hitground sets a jittered suppression window + ladder bail", result: pass }
-      - { kind: code, ref: "DamageSystem pain/death -> PlayPlayerSound(victim,id,ModelSoundDir(victim)) -> ModelSoundDir = Sounds.ModelSoundsFile(e.Model,(int)e.Skin) -> resolver -> sound/player/espeak/player/<id> (REAL, e.g. pain50.ogg ships)", result: pass }
+      - { kind: code, ref: "PlayerPhysics.Footsteps mirrors PM_Footsteps: g_footsteps early-return, IS_DUCKED, lastground+0.2 window, 0.6*maxspeed gate, nextstep window, nextstep=time+0.3+random*0.1 jitter; PM_check_hitground sets a jittered suppression window + ladder bail", result: pass }
+      - { kind: code, ref: "DamageSystem pain/death -> PlayPlayerSound(victim,id,ModelSoundDir(victim)) -> ModelSoundDir -> resolver -> sound/player/espeak/player/<id> (REAL, e.g. pain50.ogg ships)", result: pass }
       - { kind: code, ref: "real files: sound/player/espeak/player/pain50.ogg + jump.ogg + misc/footstep0N.wav all present on disk", result: pass }
     confidence: high
-    notes: "FIX (large): at baseline this row was split-audio (footsteps audible, pain/death/drown voice SILENT due to the broken default.sounds path) AND had no footstep jitter and no g_footsteps gate. Wave-1/2 (a) wired the host PlayerSoundResolver so pain/death/drown body voices now resolve to real espeak samples, (b) added the random*0.1 cadence jitter via a dedicated server-local RNG (no Prandom desync), and (c) added the g_footsteps master gate plus the lastground+0.2 and nextstep-window semantics. All five dimensions now faithful. Remaining nit: 2D vs 3D speed gate."
+    notes: "All five dimensions faithful & live (footsteps + pain/death/drown body voices resolve to real espeak samples; cadence jitter + g_footsteps gate present). Remaining nit: 2D vs 3D speed gate. Unchanged this pass."
 
   - id: fx-sounds.voice.persounds_manifest
     name: "LoadPlayerSounds .sounds manifest parse + per-model/skin reload"
@@ -384,12 +391,11 @@ features:
       - "GlobalSound_pitch model-scale pitch shift (a=1.5 max, b=0.75 min, c=100 std gradient applied when this.scale != 1) is still not ported: scaled-model voices don't squeak/deepen; the wire carries a flat pitch byte."
       - "Per-skin fallback chain partially simplified: QC tries skin N, then skin 0; the port resolves a single ModelSoundsFile(model,skin) and the default pack (a missing per-skin manifest falls through to default rather than to skin-0). Negligible for stock models, which ship one pack."
     verification:
-      - { kind: code, ref: "PlayerSoundResolver.Resolve: model pack (Lookup(modelSoundsFile,id)) overrides, else default.sounds; ModelSounds.ParseEntries(id/path/variant, //comments skipped, last-wins) matches LoadPlayerSounds tokenize_console; default.sounds on disk maps pain50->sound/player/espeak/player/pain50, taunt->sound/player/espeak/coms/taunt", result: pass }
-      - { kind: code, ref: "LIVE: PlayerSoundResolver.Install(_vfs) at NetGame.cs:398 in _Ready when a VFS is mounted (normal listen-server play path) installs Sounds.ModelSoundResolver=Resolve; Sounds.Reset clears it (test-clean). Without a VFS (headless/tests) it falls back to PlayerSoundSampleRaw (the old concat) gracefully.", result: pass }
-      - { kind: code, ref: "ModelSoundsFile(model,skin) = '{model}_{skin}.sounds' matches QC get_model_datafilename(m,sk,'sounds')=strcat(m,'_',ftos(sk),'.sounds')", result: pass }
+      - { kind: code, ref: "PlayerSoundResolver.Resolve: model pack overrides, else default.sounds; ModelSounds.ParseEntries (id/path/variant, //comments skipped, last-wins) matches LoadPlayerSounds tokenize_console; default.sounds maps pain50->sound/player/espeak/player/pain50, taunt->sound/player/espeak/coms/taunt", result: pass }
+      - { kind: code, ref: "LIVE: PlayerSoundResolver.Install(_vfs) at NetGame.cs:398 installs Sounds.ModelSoundResolver=Resolve when a VFS is mounted; Sounds.Reset clears it; headless falls back to PlayerSoundSampleRaw gracefully", result: pass }
       - { kind: code, ref: "no GlobalSound_pitch equivalent; pitch field flat", result: fail }
     confidence: high
-    notes: "FIX (root cause). This was the ROOT CAUSE of all silent body/voice sounds at baseline (PlayerSoundSample string-concatted the manifest FILE as a directory). Wave-1/2 added a real manifest parser (ModelSounds.ParseEntries) + a headless seam (Sounds.ModelSoundResolver) installed by the host (PlayerSoundResolver.Install, NetGame.cs:398) over the VFS, mirroring QC LoadPlayerSounds (default first, model pack overrides, variant counts honored). Now faithful & live on the real match path; the only residual is the model-scale pitch shift (GlobalSound_pitch) and the minor skin-0 fallback simplification. The id->path mapping (default.sounds) verified on disk."
+    notes: "Faithful & live on the real match path (manifest parser + headless resolver seam; default first, model pack overrides, variant counts honored). Residual: model-scale pitch shift (GlobalSound_pitch) + minor skin-0 fallback simplification. Unchanged this pass."
 
   - id: fx-sounds.presentation.dp_attenuation
     name: "Client spatialization — DP SND_Spatialize distance gain + emitter follow"
@@ -410,7 +416,7 @@ features:
       audio: faithful
       liveness: live
     intended_divergence: true
-    divergence_rationale: "DP's SND_Spatialize falloff (radius/exponent) is reproduced in C# with Godot's own attenuation DISABLED (AttenuationModel.Disabled, MaxDistance 0, low-pass cutoff raised), instead of Godot's inverse-distance curve. This is the FAITHFUL DP curve (method 1), not an arbitrary tweak — supersedes the older memory note calling radius=2400/exp=4 a deviation. ATTEN_NONE plays centered on the listener (2D)."
+    divergence_rationale: "DP's SND_Spatialize falloff (radius/exponent) is reproduced in C# with Godot's own attenuation DISABLED (AttenuationModel.Disabled, MaxDistance 0, low-pass cutoff raised), instead of Godot's inverse-distance curve. This is the FAITHFUL DP curve (method 1), not an arbitrary tweak. ATTEN_NONE plays centered on the listener (2D)."
     gaps: []
     verification:
       - { kind: code, ref: "DpDistanceGain vs DP snd_main.c SND_Spatialize; RentAudioPlayer disables Godot attenuation; per-frame re-spatialize + emitter-follow by net id", result: pass }
@@ -422,22 +428,26 @@ features:
     layer: [presentation]
     base_refs:
       - "common/sounds/all.inc:219"
+      - "client/view.qc:914:HitSound"
     port_refs:
-      - "game/client/HitSound.cs:117"
+      - "game/client/HitSound.cs:118"
     constants:
-      - { name: "hit_sample", base: "misc/hit (SND(HIT)) -> sound/misc/hit.wav", port: "misc/hitconfirm (nonexistent)", match: false }
+      - { name: "hit_sample", base: "misc/hit (SOUND(HIT)) -> sound/misc/hit.wav", port: "misc/hit (AudioLoader) -> res://sound/misc/hit.wav fallback", match: true }
+      - { name: "antispam_time", base: "cl_hitsound_antispam_time 0.05", port: "AntiSpamInterval 0.05", match: true }
+      - { name: "pitch_formula", base: "gradient: (b*d*(a-1)+a*c*(1-b))/(d*(a-1)+c*(1-b)), mode 3 mirrored", port: "linear ramp nom +/- (max-nom)*damage/maxdamage", match: false }
     status:
       logic: faithful
       values: partial
       timing: faithful
-      presentation: partial
-      audio: missing
+      presentation: faithful
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: HitSound.cs:117/121 loads misc/hitconfirm (and res://sound/misc/hitconfirm.ogg) which does not exist; the registered/shipped hit sound is misc/hit (sound/misc/hit.wav). Net effect: the local hit-confirmation beep is SILENT. NOT fixed by Wave-1/2."
+      - "Pitch curve simplified: the port uses a linear damage->pitch ramp (mode 2/3) instead of QC's asymptotic gradient function (a=cl_hitsound_max_pitch, b=cl_hitsound_min_pitch, c=cl_hitsound_nom_damage); audible only as a slightly different pitch shape, and only for cl_hitsound 2/3 (default 1 = fixed pitch, identical)."
     verification:
-      - { kind: code, ref: "HitSound.cs:117,121 still misc/hitconfirm vs SoundsList HIT=misc/hit + shipped assets/data/.../sound/misc/hit.wav (confirmed on disk; hitconfirm.* absent)", result: fail }
+      - { kind: code, ref: "HitSound.cs:118 loads 'misc/hit' (fallback res://sound/misc/hit.wav) — matches SOUND(HIT,'misc/hit'); shipped file assets/data/.../sound/misc/hit.wav confirmed on disk; no 'hitconfirm' refs remain", result: pass }
+      - { kind: code, ref: "ComputePitch mode 2 (decreasing) / mode 3 (increasing) is a linear ramp vs QC gradient formula (view.qc:937-949)", result: fail }
     confidence: high
-    notes: "Long-standing bug (sound-system memory note), NOT addressed in Wave-1/2 (HitSound.cs unchanged this branch). Pitch-mode logic (cl_hitsound 0/1/2/3, antispam 0.05) is otherwise faithful; the wrong sample path makes the whole feature silent."
+    notes: "FIX (root): the long-standing hitsound-silent bug is RESOLVED — HitSound.cs now loads misc/hit (with res://sound/misc/hit.wav fallback), the shipped file, instead of the nonexistent misc/hitconfirm. audio missing->faithful, presentation partial->faithful, values partial->faithful for the sample. Only residual: the mode 2/3 pitch curve is a linear approximation of QC's gradient function (values: partial) — inaudible at the default cl_hitsound 1."

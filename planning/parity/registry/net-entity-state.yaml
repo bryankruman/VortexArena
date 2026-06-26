@@ -3,14 +3,15 @@ category: net
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 13
+  feature_count: 14
   worst_gaps:
+    - "NEW since baseline: csqcmodel m_alpha (per-entity render transparency, BIT3) is now NETWORKED + LIVE (NetEntityState.Alpha; ServerNet QuantizeAlpha at 1830/1944; ClientEntityView.cs:135 maps 0->opaque/255->hidden/else byte/255) — drives Cloaked/Running Guns/Invisibility/death-fade. Wire coding x255 vs Base x254 (intended divergence), otherwise faithful. Tracked in new row net-entity-state.csqcmodel.alpha."
     - "ent_cs enemy-privacy mask now LIVE (Wave-6c ba3ae47): ServerNet.RelevantEntitiesFor strips enemy HEALTH/ARMOR per-recipient via the radar_showenemies/SAME_TEAM gate — the anti-cheat HP/armor leak is CLOSED. Residual: origin/angles privacy is handled by whole-entity PVS culling rather than a coarse stripped-GPS send (intended divergence)"
     - "Weapon charge/clip/heat HUD rings now FED on the HOST path (Wave-5 66e378f: NetGame.UpdateCrosshairWeaponRings drives CrosshairPanel charge/clip/load/heat from the live weapon-sim slot state each HUD frame) — but the wepent.* fields are still NOT networked, so a PURE remote client / spectator sees no rings (liveness partial, presentation faithful host-only)"
     - "Networked anim action state (anim_state/anim_upper_action/anim_lower_action + times) not ported: remote attack/pain/jump torso overlays are reconstructed client-side (LocomotionBlend) from one networked Frame, not the QC animdecide upper/lower split"
     - "Remote weapon switch animation coarse: only the resolved active weapon is networked, not wepent m_switchweapon/m_switchingweapon"
     - "No out-of-PVS teammate GPS: Base keeps sending a teammate's coarse ent_cs origin out of PVS (radar blip persists); the port's relevance cull drops the entity entirely"
-    - "Replicate cvars (NARROWED by fix-up 4be8357): cl_handicap(+given/taken) now allowlisted + consumed (VoluntaryHandicapProvider → DamageSystem.HandicapTotal, live) and cl_autoswitch_cts now allowlisted + wired (CtsAutoswitchProvider, no longer dead); residual = cl_autoscreenshot/cl_clippedspectating/g_xonoticversion are allowlisted+stored server-side but have NO server-side consumer yet"
+    - "Replicate cvars (NARROWED again 2026-06-25): cl_handicap(+given/taken) consumed (VoluntaryHandicapProvider → DamageSystem.HandicapTotal, live), cl_autoswitch_cts wired (CtsAutoswitchProvider), and cl_clippedspectating now ALSO has a live server-side consumer (ClientManager.ClippedSpectatingProvider → free-fly spectator MOVETYPE_FLY_WORLDONLY vs NOCLIP, ClientManager.cs:456). Residual = only cl_autoscreenshot (driven client-locally off the networked intermission flag, not the per-client replicated value) + g_xonoticversion (no server consumer) are allowlisted+stored but not honored per-player."
 features:
   - id: net-entity-state.csqcmodel.change_mask
     name: "csqcmodel SendFlags change-mask delta channel"
@@ -196,7 +197,7 @@ features:
     port_refs:
       - "game/net/ServerNet.cs:RelevantEntitiesFor (radarShowEnemies/teamplay/applyPrivacy gate + Health/Armor strip)"
       - "game/net/ServerNet.cs:BroadcastSnapshots (reads radar_showenemies + TeamGame once per broadcast, passes per-recipient)"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:419 (sets radar_showenemies=1)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:432 (sets radar_showenemies=1)"
     constants:
       - { name: "private_fields", base: "origin, angles_y, health, armor", port: "health, armor stripped; origin/angles PVS-governed (folded model channel)", match: partial }
       - { name: "public_fields", base: "name, model, skin, colors, frags, handicap, wantsjoin, solid", base_note: "always sent", port: "all sent", match: true }
@@ -215,7 +216,7 @@ features:
     verification:
       - { kind: code_read, ref: "ServerNet.RelevantEntitiesFor: applyPrivacy=!radarShowEnemies&&!owner.IsObserver; per-entity sameTeam=teamplay&&ownerTeam!=0&&state.Colormap==ownerTeam; Kind==Player gate; Health=0/Armor=0 strip — matches _entcs_send break-condition + ENTCS private resource set", result: pass }
       - { kind: code_read, ref: "Base common/ent_cs.qc:213-240 _entcs_send gate + lines 100-151 prop ispublic flags (ORIGIN/ANGLES/HEALTH/ARMOR=false; name/model/skin/colors/frags/handicap/wantsjoin/solid=true)", result: pass }
-      - { kind: code_read, ref: "Race.cs:419 Api.Cvars.Set(radar_showenemies,1); ServerNet reads radar_showenemies cvar per broadcast — gate driven live", result: pass }
+      - { kind: code_read, ref: "Race.cs:432 Api.Cvars.Set(radar_showenemies,1); ServerNet reads radar_showenemies cvar per broadcast (ServerNet.cs:1628) — gate driven live", result: pass }
     confidence: high
     notes: "FIX (Wave-6c ba3ae47): baseline had this fully missing (every enemy's exact HP/armor on the wire). Now LIVE: a modified client can no longer read enemy health/armor. logic missing->faithful, values missing->partial, liveness na->live, intended_divergence false->true. NetEntityState is a struct so Health/Armor are zeroed on a copy per-recipient before EncodeSnapshot (delta sends one zero on first sight then silent — equivalent to QC ANDing the bit out of SendFlags). Residual = origin/angles privacy handled via PVS rather than a coarse stripped-GPS send (deliberate, see rationale)."
 
@@ -364,7 +365,7 @@ features:
       - { name: "send_all_on_start", base: "ReplicateVars_Start (REPLICATEVARS_SEND_ALL)", port: "_replicateSendAll on accept", match: true }
       - { name: "change_gated", base: "value != last", port: "value != _replicatedLastSent", match: true }
       - { name: "client_send_set", base: "cl_autoswitch, cl_autoscreenshot, cl_clippedspectating, cl_autoswitch_cts, cl_handicap(+dmg given/taken), cl_noantilag, g_xonoticversion (+ weaponpriority, notification choices)", port: "full Base list + cl_weaponpriority + cl_physics + notification_CHOICE_*", match: true }
-      - { name: "server_honored_set", base: "all of the above consumed server-side", port: "cl_autoswitch, cl_autoswitch_cts, cl_handicap(+given/taken), cl_weaponpriority(+N), cl_noantilag, cl_physics, notification choices now have live consumers; cl_autoscreenshot/cl_clippedspectating/g_xonoticversion are allowlisted+stored but not yet consumed server-side", match: false }
+      - { name: "server_honored_set", base: "all of the above consumed server-side", port: "cl_autoswitch, cl_autoswitch_cts, cl_handicap(+given/taken), cl_weaponpriority(+N), cl_noantilag, cl_physics, cl_clippedspectating, notification choices now have live consumers; cl_autoscreenshot (driven client-locally off the networked intermission flag, not the replicated value) + g_xonoticversion are allowlisted+stored but not yet consumed server-side", match: false }
     status:
       logic: faithful
       values: partial
@@ -375,13 +376,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Three replicated cvars are stored server-side but have no server-side consumer yet: cl_autoscreenshot, cl_clippedspectating, g_xonoticversion are now in SentCvarAllowlist (Commands.cs:194-197) so they are accepted+stored per-client, but nothing reads them on the server (autoscreenshot is still driven by Intermission's broadcast stuffcmd dance, not the per-client replicated flag; clippedspectating + g_xonoticversion are client-only / unenforced). Narrower than the baseline (they are no longer dropped at the gate), but still not honored per-player."
+      - "Two replicated cvars are stored server-side but have no server-side consumer yet: cl_autoscreenshot + g_xonoticversion are in SentCvarAllowlist (Commands.cs:233/236) so they are accepted+stored per-client, but nothing on the server reads the REPLICATED value (autoscreenshot is driven CLIENT-locally off the networked intermission flag reading the client's own Api.Cvars cl_autoscreenshot — NetGame.cs:3289 — not the per-client replicated store; g_xonoticversion is unenforced). FIX 2026-06-25: cl_clippedspectating left this list — it now has a live server consumer (ClientManager.ClippedSpectatingProvider, Commands.cs:453 → ClientManager.cs:456 free-fly MOVETYPE)."
     verification:
       - { kind: code_read, ref: "ClientNet.cs ReplicatedCvars = full Base REPLICATE list + cl_weaponpriority/cl_physics; cadence 0.8+rand*0.4 + send-all-on-accept exact vs lib/replicate.qh:48 (unchanged by fix-up)", result: pass }
       - { kind: code_read, ref: "FIX (4be8357): Commands.cs:191-197 SentCvarAllowlist EXPANDED with cl_autoscreenshot/cl_clippedspectating/cl_handicap(+given/taken)/g_xonoticversion — they are no longer dropped at Commands.cs:2036 gate.", result: pass }
-      - { kind: code_read, ref: "FIX (4be8357): Commands(GameWorld) ctor (live per-world) now wires AutoswitchProvider=GetAutoswitch, CtsAutoswitchProvider=GetClientCvarFloat(cl_autoswitch_cts,-1), CtsActiveProvider=GameType is Cts, DynamicHandicapMutator.HandicapDisabledProvider, and DamageSystem.VoluntaryHandicapProvider (cl_handicap*/damage_{given,taken}, bound [1,10], CTS/RACE→1). cl_autoswitch_cts is now LIVE via ItemPickupRules.ApplyAutoswitch (lines 72-142); cl_handicap is LIVE via DamageSystem.HandicapTotal in ApplyDamage (DamageSystem.cs:381-384).", result: pass }
+      - { kind: code_read, ref: "FIX (4be8357): Commands(GameWorld) ctor wires AutoswitchProvider, CtsAutoswitchProvider, CtsActiveProvider, DynamicHandicapMutator.HandicapDisabledProvider, DamageSystem.VoluntaryHandicapProvider; cl_autoswitch_cts LIVE via ItemPickupRules.ApplyAutoswitch; cl_handicap LIVE via DamageSystem.HandicapTotal in ApplyDamage (DamageSystem.cs:381-384).", result: pass }
+      - { kind: code_read, ref: "FIX (2026-06-25): Commands(GameWorld) ctor now ALSO wires ClientManager.ClippedSpectatingProvider = p => GetClientCvarFloat(p, cl_clippedspectating, 0) != 0 (Commands.cs:453); ClientManager.cs:454-457 consumes it on the live PlayerPreThink free-fly path (not-following spectator movetype = wouldClip ? MOVETYPE_FLY_WORLDONLY : MOVETYPE_NOCLIP, QC server/client.qc:2588-2593). cl_clippedspectating now honored per-player.", result: pass }
+      - { kind: code_read, ref: "cl_autoscreenshot still has NO server consumer of the REPLICATED value: NetGame.cs:3289 reads the client's OWN Api.Cvars cl_autoscreenshot (client-local opt-in off the networked MatchIntermission flag), not the per-client server store. g_xonoticversion: grep src/ for a server reader = 0 hits.", result: pass }
     confidence: high
-    notes: "FIX-UP (4be8357) closed the two baseline gaps: (1) cl_handicap(+given/taken) is now allowlisted + consumed end-to-end on the live damage path (VoluntaryHandicapProvider→HandicapTotal), and (2) cl_autoswitch_cts is no longer dead — CtsAutoswitchProvider is wired in the Commands ctor and read by ItemPickupRules.ApplyAutoswitch on the pickup path. liveness upgraded partial->live. values stays partial: cl_autoscreenshot/cl_clippedspectating/g_xonoticversion are now stored but still lack a server-side consumer (down from 5 dropped + 1 dead in the baseline). Genuinely live+honored now: cl_autoswitch, cl_autoswitch_cts, cl_handicap(+given/taken), cl_weaponpriority(+N), cl_noantilag, cl_physics, notification_CHOICE_*. cl_physics is a port-added preset cvar (T54), not Base."
+    notes: "FIX-UP history: 4be8357 closed cl_handicap + cl_autoswitch_cts; 2026-06-25 closed cl_clippedspectating (live free-fly-spectator consumer in ClientManager). liveness live. values stays partial: only cl_autoscreenshot (driven client-locally, not off the replicated value) + g_xonoticversion remain stored-but-unconsumed server-side (down from 3 in the previous audit). Genuinely live+honored now: cl_autoswitch, cl_autoswitch_cts, cl_handicap(+given/taken), cl_weaponpriority(+N), cl_noantilag, cl_physics, cl_clippedspectating, notification_CHOICE_*. cl_physics is a port-added preset cvar (T54), not Base."
 
   - id: net-entity-state.csqcmodel.anim_state
     name: "csqcmodel networked anim action state (upper/lower-body action split)"
@@ -412,3 +415,34 @@ features:
       - { kind: grep, ref: "no anim_upper_action/anim_lower_action/anim_state field in NetEntityState (NetEntity.cs) or ServerNet player snapshot", result: pass }
     confidence: medium
     notes: "Distinct from the FRAME-group cross-fade gap (interpolation row): that is about lerping between two frames; THIS is about the networked discrete action overlay. Legs locomotion (run/walk/idle from velocity) is live and faithful-looking; the torso ACTION layer is the partial/inferred dimension."
+
+  - id: net-entity-state.csqcmodel.alpha
+    name: "csqcmodel per-entity render alpha (m_alpha / .alpha transparency channel)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/csqcmodel_settings.qh:CSQCMODEL_EXTRAPROPERTIES (ALPHA m_alpha, BIT3, CSQCMODEL_PROPERTY_SCALED 254/-1/254)"
+      - "lib/csqcmodel/cl_model.qc:ENT_CLIENT_MODEL (alpha apply)"
+    port_refs:
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityField.Alpha / NetEntityState.Alpha"
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityStateCodec WriteDelta/ReadDelta (Alpha byte)"
+      - "game/net/ServerNet.cs:QuantizeAlpha (2264) + producers at 1830 (player p.Alpha) / 1944 (entity e.Alpha)"
+      - "game/net/ClientEntityView.cs:135 (s.Alpha -> Entity.Alpha: 0=>opaque, 255=>hidden(-1), else byte/255)"
+    constants:
+      - { name: "alpha_quantization", base: "WriteByte rint(bound(-1,254*alpha,254)+1) — -1..1 -> 0..255 (x254 + offset)", port: "QuantizeAlpha: >=1 -> 0 (opaque, not networked); <0 -> 255 (hidden); else clamp(round(alpha*255),1,254)", match: false }
+      - { name: "opaque_sentinel", base: "alpha 1 (default, still in mask)", port: "0 = opaque, mask bit stays clear (costs nothing)", match: false }
+      - { name: "hidden_sentinel", base: "-1 -> wire 0 (rint(bound(-1,-254,254)+1)=0)... mapped (ReadByte-1)/254", port: "255 = hidden(-1), DISTINCT from opaque", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The csqcmodel per-entity render alpha is now networked in the unified NetEntityState.Alpha channel (not present at the last audit). Wire coding diverges deliberately: Base uses CSQCMODEL_PROPERTY_SCALED x254 over the -1..1 range and folds the default (1.0) into a normal value, whereas the port quantizes to a byte with two reserved sentinels (0 = fully opaque, NOT networked so an opaque entity costs nothing; 255 = the QC -1 'do not render' marker) and 1..254 = alpha/255. Observable result matches Base: transparent entities (Cloaked default_player_alpha 0.25, Running Guns invisible-player/visible-gun, the Invisibility powerup, death/spawn fades) render at the right alpha, and the -1 'hide model' sentinel is preserved as a distinct hidden state. Producers feed it live from p.Alpha (players) and e.Alpha (entities); the client maps it back to Entity.Alpha each decode."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "NetEntity.cs:96 EntityField.Alpha=1<<17; Diff compares Alpha (177); WriteDelta/ReadDelta carry it as a byte (231/272). ServerNet QuantizeAlpha (2264) produces it from p.Alpha(1830)/e.Alpha(1944); ClientEntityView.cs:135 maps 0/255/byte back to Entity.Alpha", result: pass }
+      - { kind: grep, ref: "Base csqcmodel_settings.qh ALPHA=m_alpha BIT3 CSQCMODEL_PROPERTY_SCALED(254,-1,254) — the per-entity .alpha channel, distinct from the wepent VIEWMODEL m_alpha (wepent.qc:21, viewmodels[slot].m_alpha) tracked in net-entity-state.wepent.switch_alpha_misc", result: pass }
+    confidence: high
+    notes: "NEW row 2026-06-25 (the previous audit had no alpha feature). This is the csqcmodel WHOLE-ENTITY render alpha (Cloaked/Running Guns/Invisibility/death-fade), NOT the wepent viewmodel m_alpha (that field stays missing in net-entity-state.wepent.switch_alpha_misc). Fully live: server-produced + codec-carried + client-applied. Wire coding intentionally differs (x255 + reserved 0/255 sentinels vs Base x254) but is observably faithful."

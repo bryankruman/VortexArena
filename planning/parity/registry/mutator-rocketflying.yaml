@@ -5,7 +5,7 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 5
   worst_gaps:
-    - "BuildMutatorsPrettyString runner (MutatorActivation.cs:121) still has NO live caller in the Server project, so the human-readable ', Rocket Flying' scoreboard/votescreen token is never emitted (cosmetic; same unit-wide dead pretty-string surface as cloaked/globalforces/multijump). The machine ':RocketFlying' token IS live."
+    - "No remaining gaps. The previously-dead BuildMutatorsPrettyString chain runner (MutatorActivation.cs:121) is now LIVE: GameWorld.cs:1079 runs it to populate the 'modifications' serverinfo key (QC PutClientInServer server/client.qc:1107). Both the machine ':RocketFlying' and pretty ', Rocket Flying' tokens are now emitted on the live path. The client-side scoreboard/votescreen CONSUMER of 'modifications' is not yet ported, but the server-side advertise surface is complete."
 features:
   - id: mutator-rocketflying.register.enable_gate
     name: "Registration + g_rocket_flying enable gate"
@@ -29,7 +29,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "RocketFlyingMutator.IsEnabled => ExprEvaluate(g_rocket_flying); registered via [Mutator] source-gen into Mutators.All; activated by MutatorActivation.Apply() — still live, call site moved GameWorld.cs:535→563 (line drift only, behavior unchanged).", result: pass }
+      - { kind: code, ref: "RocketFlyingMutator.IsEnabled => ExprEvaluate(g_rocket_flying) (RocketFlyingMutator.cs:38-39); registered via [Mutator] source-gen into Mutators.All; activated by MutatorActivation.Apply() — still live. Re-audited 2026-06-25, Base sv_rocketflying.qc:3,5 unchanged.", result: pass }
     confidence: high
     notes: "expr_evaluate ported faithfully (empty/'0'/'false' → false). Source-gen discovery + Apply() loop is the QC STATIC_INIT_LATE Mutator_Add equivalent."
   - id: mutator-rocketflying.editprojectile.disable_detonate_delay
@@ -42,9 +42,9 @@ features:
       - "common/weapons/weapon/minelayer.qc:316"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/RocketFlyingMutator.cs:74"
-      - "src/XonoticGodot.Common/Framework/EntityProjectileGate.cs:19"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:322"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:345"
+      - "src/XonoticGodot.Common/Framework/EntityProjectileGate.cs:36"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:332"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:426"
     constants:
       - { name: "g_rocket_flying_disabledelays (default)", base: "1 (true)", port: "true", match: true }
       - { name: "classname filter", base: "rocket || mine", port: "\"rocket\" || \"mine\"", match: true }
@@ -63,7 +63,7 @@ features:
     gaps: []
     verification:
       - { kind: unit, ref: "tests/XonoticGodot.Tests/RocketFlyingGateTests.cs (gate cleared to time for rocket/mine; untouched for other classes; inert when g_rocket_flying unset or disabledelays off; default -1)", result: pass }
-      - { kind: code, ref: "MutatorHooks.EditProjectile fired at launch by Devastator / Minelayer; gate read by Devastator.RemoteExplode (Devastator.cs:322) / Minelayer.RemoteExplode (Minelayer.cs:345). Both weapons seed and read the SAME Entity.ProjectileDetonateTime field the mutator writes.", result: pass }
+      - { kind: code, ref: "MutatorHooks.EditProjectile fired at launch by Devastator / Minelayer; gate read by Devastator.RemoteExplode (Devastator.cs:332,336) / Minelayer.RemoteExplode (Minelayer.cs:426). Both weapons seed (Devastator.cs:196 / Minelayer.cs:173) and read the SAME Entity.ProjectileDetonateTime field (EntityProjectileGate.cs:36) the mutator writes. Re-audited 2026-06-25 (line drift only).", result: pass }
     confidence: high
     notes: "Core gameplay effect; fully live and faithful. Gate is the Entity.ProjectileDetonateTime both weapons read, defaulting to the safe proximity branch (-1)."
   - id: mutator-rocketflying.allowrocketjumping.force_on
@@ -75,8 +75,8 @@ features:
       - "common/weapons/weapon/devastator.qc:78"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/RocketFlyingMutator.cs:61"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:718"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:363"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:794"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:346"
     constants:
       - { name: "remote_jump (forced)", base: "true (overrides g_balance_devastator_remote_jump=0)", port: "args.Allow = true (OnAllowRocketJumping)", match: true }
       - { name: "g_balance_devastator_remote_jump_damage", base: "70", port: "70 (Cvars.RemoteJumpDamage)", match: true }
@@ -94,7 +94,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "RocketFlyingMutator.OnAllowRocketJumping (RocketFlyingMutator.cs:61) sets args.Allow=true; the handler is subscribed in Hook() (RocketFlyingMutator.cs:48-49) via MutatorHooks.AllowRocketJumping.Add. The AllowRocketJumping hook chain now EXISTS (MutatorHooks.cs:701-722) with FireAllowRocketJumping seed/return. Devastator.DoRemoteExplode (Devastator.cs:363) calls FireAllowRocketJumping(Cvars.RemoteJump!=0) and, when allowed && RemoteJumpRadius && owner in range, runs the dedicated rocket-jump branch: optional velocity_z shaping (gated by z_add, default 0 = no-op) + a remote_jump_* RadiusDamage (damage 70 both core/edge, force 450, radius 100) on the owner before the plain remote blast. devastator.qc:65-114 ported.", result: pass }
+      - { kind: code, ref: "RocketFlyingMutator.OnAllowRocketJumping (RocketFlyingMutator.cs:61) sets args.Allow=true; the handler is subscribed in Hook() (RocketFlyingMutator.cs:48-49) via MutatorHooks.AllowRocketJumping.Add. The AllowRocketJumping hook chain EXISTS (MutatorHooks.cs:777-798) with FireAllowRocketJumping seed/return (cs:794). Devastator.DoRemoteExplode (Devastator.cs:346) calls FireAllowRocketJumping(Cvars.RemoteJump!=0) at cs:363 and, when allowed && RemoteJumpRadius && owner in range, runs the dedicated rocket-jump branch (Devastator.cs:370-394): optional velocity_z shaping (gated by z_add, default 0 = no-op) + a remote_jump_* RadiusDamage (damage 70 both core/edge, force 450, radius 100) on the owner before the plain remote blast. devastator.qc:65-114 ported. Re-audited 2026-06-25 (line drift only).", result: pass }
     confidence: high
     notes: "FIXED since 2026-06-22 baseline (was missing/missing/na). The Wave-port that rewrote Devastator added the full remote_jump_* system AND the AllowRocketJumping hook chain; the mutator now forces it on and the weapon consumes it. All remote_jump_* defaults match Base (70/450/100/0/400/1500). NOTE: the Devastator class header comment (Devastator.cs:18-19) still claims 'remote_jump*, stock-off ... left out' — that comment is now STALE; the code below it (Devastator.cs:344-394) fully implements the variant. Low gameplay impact at DEFAULT bal-wep-xonotic (remote_jump=0 so it never engages unless this mutator forces it), but now bit-faithful when engaged."
   - id: mutator-rocketflying.advertise.mutator_string
@@ -109,6 +109,8 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/RocketFlyingMutator.cs:71"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:121"
+      - "src/XonoticGodot.Server/GameWorld.cs:1068"
+      - "src/XonoticGodot.Server/GameWorld.cs:1079"
     constants:
       - { name: "machine token", base: "strcat(s, ':RocketFlying')", port: "s + ':RocketFlying'", match: true }
       - { name: "pretty token", base: "strcat(s, ', Rocket Flying')", port: "s + ', Rocket Flying'", match: true }
@@ -116,17 +118,16 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "BuildMutatorsPrettyString chain runner (MutatorActivation.cs:121) has NO live caller in src/XonoticGodot.Server, so the human-readable ', Rocket Flying' scoreboard/votescreen token is never emitted. The machine ':RocketFlying' token IS live (GameWorld.cs:876 GameLogInit, gated by sv_eventlog like Base GameLogInit). mut_set_active client scoreboard parse (util.qc:299) still has no port counterpart."
+    gaps: []
     verification:
-      - { kind: code, ref: "RocketFlyingMutator.BuildMutatorsString(s)=>s+':RocketFlying' (cs:68) and BuildMutatorsPrettyString(s)=>s+', Rocket Flying' (cs:71) now override MutatorBase and match the QC strcat tokens exactly. BuildMutatorsString chain is run live at GameWorld.cs:876 (MutatorActivation.BuildMutatorsString('')); the PrettyString chain runner (MutatorActivation.cs:121) has zero callers in the Server project (grep BuildMutatorsPrettyString( -> only the runner's own loop + registry refs) — same dead pretty surface as cloaked/globalforces/multijump.", result: pass }
+      - { kind: code, ref: "RocketFlyingMutator.BuildMutatorsString(s)=>s+':RocketFlying' (cs:68) and BuildMutatorsPrettyString(s)=>s+', Rocket Flying' (cs:71) override MutatorBase and match the QC strcat tokens exactly. BOTH chains are now run live: BuildMutatorsString at GameWorld.cs:1068 (GameLogInit, gated by sv_eventlog like Base) and BuildMutatorsPrettyString at GameWorld.cs:1079 (QC PutClientInServer server/client.qc:1107) which strips the leading ', ' and stores the result in the 'modifications' serverinfo cvar. Re-audited 2026-06-25.", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-22 baseline (was logic:missing / presentation:missing). Both hook overrides now exist and the machine-token chain is live. The pretty-token chain runner remains dead unit-wide (no scoreboard/votescreen consumer ported for ANY mutator); flagged here as presentation:partial / liveness:partial. The token strings themselves are bit-faithful."
+    notes: "FIXED since 2026-06-25 re-audit: the BuildMutatorsPrettyString chain runner is now LIVE (GameWorld.cs:1079 → 'modifications' serverinfo key), upgrading presentation partial→faithful and liveness partial→live. This resolves the unit's former worst gap (the dead pretty-string surface shared with cloaked/globalforces/multijump). Both token strings are bit-faithful. The only remaining downstream gap is the CLIENT-side consumer of the 'modifications' serverinfo (scoreboard/votescreen render of util.qc:299 mut_set_active), which is a client-presentation feature outside this server-side mutator unit's scope."
   - id: mutator-rocketflying.menu.describe
     name: "Menu checkbox + description (MutatorRocketFlying.describe)"
     layer: [presentation]
@@ -134,7 +135,7 @@ features:
       - "common/mutators/mutator/rocketflying/rocketflying.qc:6"
       - "qcsrc/menu/xonotic/dialog_multiplayer_create_mutators.qc:154"
     port_refs:
-      - "game/menu/dialogs/DialogMutators.cs:206"
+      - "game/menu/dialogs/DialogMutators.cs:232"
     constants:
       - { name: "cvar bound", base: "g_rocket_flying", port: "g_rocket_flying", match: true }
       - { name: "instagib incompatibility", base: "setDependent(e,'g_instagib',0,0)", port: "Dependent.Bind(rocketFly,'g_instagib',0,0)", match: true }
@@ -149,6 +150,6 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "DialogMutators.cs:206 CheckBox(g_rocket_flying, 'Rocket Flying', <description matching the QC _() string>) + Instagib dependency bind at DialogMutators.cs:211", result: pass }
+      - { kind: code, ref: "DialogMutators.cs:232 CheckBox(g_rocket_flying, 'Rocket Flying', <description matching the QC _() string>) + Instagib dependency bind at DialogMutators.cs:237", result: pass }
     confidence: high
     notes: "Re-audited 2026-06-25, no change. Description text closely matches the exact QC _() string. Menu wiring + cvar + instagib dependency all match."

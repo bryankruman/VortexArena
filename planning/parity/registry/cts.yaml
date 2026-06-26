@@ -7,8 +7,8 @@ summary:
   worst_gaps:
     - "Intermediate/defrag checkpoints unimplemented (target_checkpoint/trigger_race_checkpoint are no-ops for CTS): no ordered progress, no 'went backwards' penalty, no per-cp splits. The Race port has per-checkpoint split records; CTS remains a single start->stop course."
     - "Run clock is still wall-clock (Api.Clock.Time), not the QC per-frame .race_movetime accumulator (determinism). Forced keyboard-movement quantization IS now ported+live (PlayerPhysics hook), but cl_movecliptokeyboard 2 stuffcmd + .race_movetime as the run clock are still absent."
-    - "No CTS race bookkeeping (race_PreparePlayer/RetractPlayer, FRAGS_PLAYER_OUT_OF_GAME, checkpoint=-1), no speedaward, no CTS bot role."
-    - "FIXED since last audit (2026-06-25): forced keyboard-movement quantization (PlayerPhysics) is now live; reset_map_global handler (ResetMapGlobal) is wired live; the per-map records/rankings console reply (GetRankings) now reads the RaceRecords CTS table live. Shotgun-only is start-loadout only (no per-frame strip), and FilterItem uses the real ItemIsLoot flag."
+    - "No CTS per-player race bookkeeping (race_PreparePlayer/RetractPlayer, FRAGS_PLAYER_OUT_OF_GAME, checkpoint=-1 on connect/observe), no CTS bot role (havocbot_role_cts)."
+    - "FIXED since last audit (2026-06-25): the SPEED AWARD is now fully ported and live end-to-end (SpeedAwardFrame driven per server frame at GameWorld:2850, networked via ServerNet, drawn on the rc|cts scoreboard) — was all-missing. The finish kill-delay retract is now a real silent DEATH_KILL (Combat.Damage, QC ClientKill_Silent) instead of a bare respawn."
 features:
   - id: cts.mode.register_latch
     name: "CTS gametype registration + qualifying/independent-players latch"
@@ -227,9 +227,10 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:ScheduleRetract"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:RetractRunner"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:Tick"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (cts.OnFinishRetract = p => Clients.Spawn(p)); cts.Tick in the server frame"
+      - "src/XonoticGodot.Server/GameWorld.cs:2491 (cts.OnFinishRetract = silent DEATH_KILL via Combat.Damage); cts.Tick in the server frame (GameWorld:2850)"
     constants:
       - { name: "g_cts_finish_kill_delay", base: "2 s (-1 instant, 0 off)", port: "read; DefaultFinishKillDelay=2 when cvar unset", match: true }
+      - { name: "retract = ClientKill_Silent", base: "silent self-kill (DEATH_KILL through the damage pipeline)", port: "Combat.Damage(p,p,p,1e5,DeathTypes.Kill) (GameWorld:2495)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -239,12 +240,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "It is a re-spawn (Clients.Spawn), not the QC silent kill — no death sound/notify, acceptable but unverified for spawn-point selection at the start line."
+    gaps: []
     verification:
-      - { kind: code, ref: "Cts.cs:47 DefaultFinishKillDelay=2f; ScheduleRetract:353 falls back to 2f when cvar unset; OnFinishRetract wired in ActivateGameType; cts.Tick fired in the server frame; death cancels a pending retract (OnDeath:417 _retractAt.Remove)", result: pass }
+      - { kind: code, ref: "Cts.cs:47 DefaultFinishKillDelay=2f; ScheduleRetract:364 falls back to 2f when cvar unset (0 = never, -1 = instant); cts.Tick fired in the server frame (GameWorld:2850); death cancels a pending retract (OnDeath:529 _retractAt.Remove). OnFinishRetract is now a real silent DEATH_KILL (Combat.Damage 100000 DeathTypes.Kill, GameWorld:2491-2498), matching QC ClientKill_Silent, not the prior bare Clients.Spawn respawn.", result: pass }
     confidence: high
-    notes: "Closed in Wave-2, still closed: kill-delay default 2 s (DefaultFinishKillDelay) matches Base; retract is live (OnFinishRetract + per-frame Tick). Unchanged from baseline."
+    notes: "FIXED since baseline (gap closed): OnFinishRetract was changed from Clients.Spawn (bare respawn) to a silent DEATH_KILL through the damage pipeline (Combat.Damage, DeathTypes.Kill) — this is QC's ClientKill_Silent (the runner dies, CTS PlayerDies forces an instant respawn back to start). Kill-delay default 2 s + the 0/-1 cases still match Base; retract live via OnFinishRetract + per-frame Tick."
 
   - id: cts.physics.force_keyboard
     name: "Forced keyboard movement quantization + race_movetime accumulator (PlayerPhysics)"
@@ -423,25 +423,34 @@ features:
     base_refs:
       - "server/race.qc:race_SpeedAwardFrame"
       - "server/race.qc:race_checkAndWriteName"
+      - "server/race.qc:race_send_speedaward / race_send_speedaward_alltimebest"
       - "common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts, GetPressedKeys)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:SpeedAwardFrame"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/RaceRecords.cs:ReadSpeedAwardBest/WriteSpeedAwardBest/ReadSpeedAwardBestHolder/SetName"
+      - "src/XonoticGodot.Server/GameWorld.cs:2850 (case Cts cts: cts.SpeedAwardFrame(Clients.Players))"
+      - "game/net/ServerNet.cs:2240-2244 (_scoreSpeedAward from cts.SpeedAwardSpeed/Holder/Best/BestHolder)"
+      - "game/hud/ScoreboardPanel.cs:DrawSpeedAward / SetSpeedAward"
     constants:
-      - { name: "speedaward broadcast", base: "RACE_NET_SPEED_AWARD / _BEST", port: "not modeled", match: false }
+      - { name: "speedaward broadcast", base: "RACE_NET_SPEED_AWARD / _BEST (WriteInt24 floor(speed+0.5) + holder)", port: "_scoreSpeedAward networked, SpeedRound = floor(s+0.5) (ServerNet:2239)", match: true }
+      - { name: "planar speed (horizontal only)", base: "vlen(velocity - velocity_z*'0 0 1')", port: "sqrt(v.X^2 + v.Y^2) (Cts.cs:491)", match: true }
+      - { name: "all-time-best DB key seg", base: "strcat(map, record_type, 'speed/speed') + '.../speed/crypto_idfp'", port: "map+type+'speed/speed' / '.../speed/crypto_idfp' (RaceRecords.cs:208-209)", match: true }
+      - { name: "all-time best persists, round best resets", base: "speedaward_speed/holder reset each round; alltimebest kept (DB)", port: "ResetMapGlobal zeroes round best, EnsureSpeedAwardLoaded reloads alltimebest from DB", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No per-round best-speed tracking/broadcast and no persisted all-time best speed; the HUD speed-award display has no data."
+      - "Persistence rides the in-memory RaceRecords DB + Export/Import (the host must wire the file save), where QC auto-persists via ServerProgsDB db_save/db_load. uid2name consent gates (cl_allow_uidtracking/cl_allow_uid2name) are modeled only as a non-empty PersistentId."
     verification:
-      - { kind: code, ref: "grep SpeedAward / GetPressedKeys for CTS — no feeder in Cts.cs", result: fail }
+      - { kind: code, ref: "Cts.SpeedAwardFrame (Cts.cs:475-508) mirrors race_SpeedAwardFrame: per non-observer/non-dead player tracks round-best planar speed (speedaward_speed/holder/uid), persists a new all-time best (WriteSpeedAwardBest) when it also beats the all-time best AND has a UID, and calls RaceRecords.SetName (= race_checkAndWriteName). LIVE: driven per server frame at GameWorld.cs:2850. Networked: ServerNet.cs:2240-2244 feeds _scoreSpeedAward (rounded floor(s+0.5)) for gt=='cts'. Drawn: ScoreboardPanel.DrawSpeedAward (gated to rc|cts, hidden when alltimebest==0, QC unit factor).", result: pass }
     confidence: high
-    notes: "race_SpeedAwardFrame + GetPressedKeys hook unimplemented for CTS. Unchanged from baseline."
+    notes: "FIXED since baseline (was logic/values/timing/presentation:missing, liveness:na): the speed award is now fully ported and live end-to-end — round-best + persisted all-time best planar speed tracked per server frame (Cts.SpeedAwardFrame at GameWorld:2850), networked (ServerNet _scoreSpeedAward), and drawn on the rc|cts scoreboard (DrawSpeedAward). race_checkAndWriteName is mirrored by RaceRecords.SetName. Residual: persistence is in-memory + Export/Import (host wires the file save), not auto-ServerProgsDB."
 
   - id: cts.hud.race_timer
     name: "Race timer HUD: running clock, checkpoint splits, anticipation, medal, PB/server-best"

@@ -175,7 +175,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TeslaTurret.cs:Discharge"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TeslaTurret.cs:Toast"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DeathTypes.cs:280"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DeathTypes.cs:333"
     constants:
       - { name: "shot_dmg (first hop)", base: "200 (turrets.cfg:400)", port: "ShotDamage 200", match: true }
       - { name: "target_range (first hop)", base: "1000 (turrets.cfg:408)", port: "TargetRange 1000", match: true }
@@ -213,7 +213,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TeslaTurret.cs:Toast"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TeslaTurret.cs:Discharge"
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:261"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:263"
     constants:
       - { name: "per-hop arc", base: "te_csqc_lightningarc(from.origin, etarget.origin)", port: "EffectEmitter.TeCsqcLightningArc(from, target.Origin)", match: true }
       - { name: "discharge fire sound", base: "NONE for turret actor (electro_fire only in isPlayer branch of wr_think via W_SetupShot_Dir)", port: "no sound played in Discharge (no Api.Sound.Play)", match: true }
@@ -228,7 +228,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "tesla_weapon.qc wr_think isPlayer-gated W_SetupShot_Dir (only player path emits SND_TeslaCoilTurretAttack_FIRE) vs Discharge: no Api.Sound.Play present; EffectEmitter.TeCsqcLightningArc:261 wired and called from Toast each hop", result: pass }
+      - { kind: code_read, ref: "tesla_weapon.qc wr_think isPlayer-gated W_SetupShot_Dir (only player path emits SND_TeslaCoilTurretAttack_FIRE) vs Discharge: no Api.Sound.Play present; EffectEmitter.TeCsqcLightningArc:263 wired and called from Toast each hop", result: pass }
     confidence: high
     notes: "Wave-2 fix holds: the over-emitted weapons/electro_fire.wav is gone — a Base tesla TURRET is silent server-side (electro_fire is player-only via W_SetupShot_Dir in the isPlayer branch). Per-hop arc visual genuinely wired (TeCsqcLightningArc) and called live each hop. Fully faithful."
   - id: turret-tesla.anim.tr_think

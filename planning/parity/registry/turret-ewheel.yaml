@@ -7,7 +7,7 @@ summary:
   worst_gaps:
     - "CSQC ewheel_draw rolling integration (origin += velocity*dt, head angles += avelocity*dt, MOVETYPE_BOUNCE+gravity) not ported — the low-health spark temp-entity IS now emitted server-side"
     - "Head model (ewheel-gun1.md3) not instantiated as a separate head bone entity (no tag_head attachment); ROAM spawnflag not modeled"
-    - "Fire presentation absent: no EFFECT_BLASTER_MUZZLEFLASH, no PROJECTILE_BLASTER client trail, no two-cannon head-frame alternation"
+    - "Two-cannon head-frame alternation (tur_head.frame += 2, wrap > 3 -> 0) still absent — needs the unported head sub-entity (EFFECT_BLASTER_MUZZLEFLASH + PROJECTILE_BLASTER trail are now emitted, Wave-8e)"
     - "ammo_flags ENERGY|RECHARGE|RECIEVE modeled only as an ammo pool (no energy/recharge/receive bookkeeping); recharge rate itself honored"
 features:
   - id: turret-ewheel.identity.def
@@ -249,20 +249,19 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
-      audio: partial
+      presentation: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No EFFECT_BLASTER_MUZZLEFLASH emitted on fire."
-      - "No PROJECTILE_BLASTER client trail on the bolt."
-      - "No two-cannon head-frame alternation (Base: tur_head.frame += 2, wrap > 3 -> 0)."
+      - "No two-cannon head-frame alternation (Base ewheel_weapon.qc:32-35: tur_head.frame += 2, wrap > 3 -> 0) — needs the unported head sub-entity (the turret's own Entity.Frame is consumed by the locomotion drive animation); tracked under turret-ewheel.identity.def."
+      - "EFFECT_BLASTER_MUZZLEFLASH is emitted with except: turret, but Base Send_Effect -> Send_Effect_Except(..., NULL) does NOT exclude the firer — minor over-exclusion (cosmetic for a turret, which is not a first-person view source)."
     verification:
       - { kind: test, ref: "MonsterTurretVehicleObituaryTests.cs:203 (ewheel projectile deathtype)", result: pass }
-      - { kind: code_read, ref: "ewheel_weapon.qc wr_think + turret_projectile vs Attack/Projectile — shot_spread now 0.025", result: pass }
+      - { kind: code_read, ref: "ewheel_weapon.qc wr_think + turret_projectile vs Attack/Projectile — shot_spread 0.025; EFFECT_BLASTER_MUZZLEFLASH now emitted (EffectsList registers BLASTER_MUZZLEFLASH=laser_muzzleflash); missile.NetName='blaster' classifies to ProjectileType.Blaster (ProjectileCatalog.Classify:302) -> PROJECTILE_BLASTER trail; lasergun_fire plays on the weapon channel from the turret (matches turret_projectile sound on CH_WEAPON_A)", result: pass }
     confidence: high
-    notes: "FIX (Wave-2): shot_spread corrected 0.0125->0.025 (matches Base). Projectile ballistics/damage faithful; fire sound plays (lasergun_fire); muzzleflash/trail/cannon-frame alternation still missing (presentation)."
+    notes: "FIX (Wave-8e, 2026-06-25 re-audit): fire presentation is now LIVE — Attack emits EFFECT_BLASTER_MUZZLEFLASH at the muzzle along the shot dir and stamps missile.NetName='blaster' so the client renders the PROJECTILE_BLASTER bolt (glow sprite, laster.mdl), lifting presentation missing->partial. The fire sound (lasergun_fire) is played on the weapon channel from the turret, matching Base turret_projectile's CH_WEAPON_A emit, lifting audio partial->faithful. Only the two-cannon head-frame alternation remains (head sub-entity gap). Earlier Wave-2 fix: shot_spread 0.0125->0.025."
   - id: turret-ewheel.damage.lifecycle
     name: "Damage gating, head-shake, MOVE-shove, death + respawn"
     layer: [authority]

@@ -5,10 +5,9 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 9
   worst_gaps:
-    - "Damage() front gate still omits the QC game_stopped check (damage.qc:46) AND the spectator killcount==FRAGS_SPECTATOR early-out (damage.qc:485) inside DamageSystem.Apply — both still gated at the gametype/caller layer. Unchanged."
-    - "QC lava-contents ignition (main.qc:104-105 Fire_AddDamage on DEATH_LAVA when g_balance_contents_playerdamage_lava_burn) is still NOT wired — PlayerFrameLogic.HotLiquids applies the instant lava Damage but never feeds Fire_AddDamage to ignite, so wading through lava does not leave a burn-over-time. The Burning m_persistent lava-stick is ported but has no ignition feeder."
-    - "RadiusDamage MIN_DAMAGEEXTRARADIUS/damageextraradius per-target dist shrink (QC damage.qc:767 bound(0.1, damageextraradius, 16)) is still not applied — a target with a custom damageextraradius (rare) hits at a slightly different range."
-    - "IsTypeFrag producer is still hardwired false in DamageSystem.PlayerDamage (the typefrag bonus path never triggers) even though Entity.ButtonChat (PHYS_INPUT_BUTTON_CHAT) is now modeled and wired from input — the chat-button read was simply not adopted in the PlayerDamage credited-attacker block. Bot-aim damage shake also still not ported."
+    - "Damage() front gate still omits the QC game_stopped check (damage.qc:46) AND the spectator killcount==FRAGS_SPECTATOR early-out (damage.qc:485) inside DamageSystem.Apply — both still gated at the gametype/caller layer. Unchanged (low-risk seam gap)."
+    - "RadiusDamage MIN_DAMAGEEXTRARADIUS/damageextraradius per-target dist shrink (QC damage.qc:767 bound(0.1, damageextraradius, 16)) is still not applied — a target with a custom damageextraradius (rare) hits at a slightly different range. Unchanged."
+    - "Pain/death anim keyframe selection (ANIMACTION_PAIN1/2) is host-side, not driven by the damage seam (presentation, by design)."
 features:
   - id: damage-pipeline.dispatch.front_gate
     name: "Damage() front gate + hook/sound same-team rule + always-lethal kill/teamchange"
@@ -159,22 +158,21 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Bot-aim shake (QC player.qc, v_angle jitter scaled by damage/skill) is not ported — bots are not visually staggered by taking damage. Unchanged."
-      - "IsTypeFrag is still hardwired false in PlayerDamage (DamageSystem.cs:426/432/442/447) so the TYPEFRAG path never triggers, EVEN THOUGH Entity.ButtonChat (PHYS_INPUT_BUTTON_CHAT) is now modeled and wired from input (used by CampcheckMutator/SpawnNearTeammate). The credited-attacker block simply never adopts the available ButtonChat read. A consumer exists (Scores.cs reads victim.IsTypeFrag), so the seam is plumbed but the producer is dead — presentation stays partial."
-      - "Pain anim selection (ANIMACTION_PAIN1/2) is host-side and not driven here (presentation); pain/death VOICE volume matches QC (VOL_BASE)."
+      - "Pain anim selection (ANIMACTION_PAIN1/2) is host-side and not driven here (presentation); pain/death VOICE volume matches QC (VOL_BASE). The corpse upright/view-from-floor/MOVETYPE_TOSS state IS set here; only the keyframe anim picker is host-side."
     verification:
       - { kind: code, ref: "DamageSystem.PlayerDamage + Killed — handicap (forced x voluntary), shield, split, godmode tab, regen pause, pusher window, SplitHealthArmor hook, armor/body-impact + pain sounds, corpse setup, gib", result: pass }
       - { kind: code, ref: "HandicapTotal multiplies forced HandicapTake/Give by VoluntaryHandicapProvider (cl_handicap*); ModelSoundDir resolves the real per-model .sounds manifest (Sounds.ModelSoundsFile)", result: pass }
-      - { kind: code, ref: "Scores.cs consumes victim.IsTypeFrag, but DamageSystem.PlayerDamage hardwires it false (ButtonChat available but not read at this seam)", result: pass }
+      - { kind: code, ref: "IsTypeFrag now WIRED: PlayerDamage:436 sets targ.IsTypeFrag = targ.ButtonChat (matches QC player.qc:304 this.istypefrag = PHYS_INPUT_BUTTON_CHAT(this)); ButtonChat is written live per-frame in PlayerPhysics.cs:243 from input.Typing; Scores.cs consumes it. Producer is now live. Landed Wave 8e (412ca19).", result: pass }
+      - { kind: code, ref: "Bot-aim shake now PORTED: PlayerDamage:509-527 jitters botTarg.ViewAngles by damage*5/(bound(0,skill,100)+1) on bot targets with HP>=1, clamped [-90,90] — exact port of player.qc:388-395. Landed Wave 8e (412ca19).", result: pass }
       - { kind: test, ref: "MonsterDamageDeathTests / GameplaySystemsTests death-hook coverage", result: pass }
     confidence: high
-    notes: "Logic/values/timing/audio faithful. Presentation stays partial: IsTypeFrag still hardwired false (now an adoptable seam — ButtonChat exists — rather than fully unwired) + bot-aim shake missing."
+    notes: "FIXED since baseline (presentation partial->faithful). Both presentation gaps closed in Wave 8e (412ca19, 2026-06-26): (1) IsTypeFrag now reads the live victim ButtonChat (PHYS_INPUT_BUTTON_CHAT) instead of being hardwired false — producer live, consumer (Scores.cs) already plumbed; (2) bot-aim shake (v_angle jitter scaled by damage/skill) now ported. Only the host-side ANIMACTION_PAIN keyframe picker remains out of this seam (presentation, by design)."
 
   - id: damage-pipeline.knockback.calcpush
     name: "Knockback application + damage_explosion_calcpush momentum projection"
@@ -282,15 +280,15 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "QC lava-contents ignition (main.qc:104-105 Fire_AddDamage on DEATH_LAVA when g_balance_contents_playerdamage_lava_burn) is still NOT wired as an ignition source: PlayerFrameLogic.HotLiquids applies the instant lava Damage but never feeds Fire_AddDamage, so wading through lava leaves no burn-over-time. The Burning m_persistent lava-stick is ported but has no ignition feeder."
+    gaps: []
     verification:
       - { kind: code, ref: "StatusEffects.Tick runs per active effect: PERSISTENT recompute + OnTick (BurningTick -> FireApplyDamage) + TIMEOUT expiry; called live GameWorld.cs per non-dead player per frame", result: pass }
       - { kind: code, ref: "FireApplyDamage:365-432 deals dps*min(frametime,remaining), THEN fire TRANSFER (firetransfer_damage 0.8 over firetransfer_time 0.9): FindInRadius + boxesoverlap re-ignites every adjacent non-frozen, non-independent, damageable entity via FireAddDamage — the baseline's 'entirely missing' transfer is now implemented", result: pass }
       - { kind: code, ref: "MonsterFramework.AddFireDamage routes through FireAddDamage with raw totalDamage/burnTime; Wyvern.cs / BuffsMutator inferno pass a real deathType — full-strength burns with correct attribution", result: pass }
       - { kind: code, ref: "Fireball.cs calls FireAddDamage (FireDamagePerSec=raw dps). NadeNapalmBoom.cs:218 now calls FireAddDamage(chosen, owner, dd*burnTime, burnTime, NadeDeathTypes.Napalm) -> gets the LEMMA merge AND the nade_napalm FireDeathType (no longer the raw Apply path)", result: pass }
+      - { kind: code, ref: "Lava-contents ignition now WIRED: PlayerFrameLogic.HotLiquids (PlayerFrameLogic.cs:375-379) reads g_balance_contents_playerdamage_lava_burn and, when nonzero, calls StatusEffectsCatalog.FireAddDamage(p, null, lavaBurn*waterlevel, lava_burn_time*waterlevel, DeathTypes.Lava) after the instant lava Damage — exact port of main.qc:104-105; the per-tick re-ignition is absorbed by the LEMMA merge. Landed Wave 8e (412ca19).", result: pass }
     confidence: high
-    notes: "FIXED since baseline (2 gaps closed). (1) Fire TRANSFER now implemented in FireApplyDamage (FindInRadius + boxesoverlap, firetransfer_damage 0.8 / _time 0.9) — burning now chains between bunched-up players (logic partial->faithful). (2) Napalm now routes through FireAddDamage with NadeDeathTypes.Napalm, so it gets the overlap LEMMA merge AND carries the napalm obituary deathtype (was the raw Apply path). Remaining: the lava-contents burn-ignition feeder (main.qc:104-105) is still not wired."
+    notes: "FIXED since baseline (lava-ignition gap closed in Wave 8e, 412ca19, 2026-06-26). All three known burning gaps are now closed: fire TRANSFER (FindInRadius + boxesoverlap, firetransfer 0.8/0.9), napalm routed through FireAddDamage with NadeDeathTypes.Napalm, and now the lava-contents burn-over-time feeder (main.qc:104-105) wired in PlayerFrameLogic.HotLiquids. Default g_balance_contents_playerdamage_lava_burn is 0 (disabled stock), so the feeder only ignites on maps/configs that set it — matching QC."
 
   - id: damage-pipeline.heal.dispatcher
     name: "Central Heal() dispatcher (game_stopped/frozen/dead gate + event_heal route + limit cap)"

@@ -1,7 +1,7 @@
 unit: turret-fusionreactor
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-25"  # re-verified: no drift
 summary:
   feature_count: 8
   worst_gaps:

@@ -1,15 +1,14 @@
 unit: mapobject-target
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 15
   worst_gaps:
-    - "target_spawn is STILL a documented no-op: the $-templating reflection engine is cut AND SpawnEntityHandler is never assigned (grep 2026-06-22: only the declaration at TargetUtilities.cs:538; zero assignments incl. tests), so on-use and ON_MAPLOAD both invoke a null seam — nothing is created or edited."
-    - "target_spawnpoint's output is dead: SpawnPointUse sets actor.SpawnPointTarg but grep shows it is read by NOTHING outside its own declaration — no spawn selector consumes it, so the forced-spawn never takes effect (belongs to the spawnsystem unit to wire)."
-    - "target_music / trigger_music override is still LISTEN-SERVER ONLY (TE_CSQC_TARGET_MUSIC / ENT_CLIENT_TRIGGER_MUSIC net paths not ported); a remote/dedicated client receives no override. target_music_use is still a GLOBAL override (not QC per-activator). NOTE the per-round reset plumbing is NOW LIVE (Wave-5 rewired GameWorld.ResetMapObjects to fire e.Reset on every non-client entity)."
-    - "target_speaker ACTIVATOR (BIT3) has a dedicated IsRealClient-gated handler on the correct CH_TRIGGER channel, but with no MSG_ONE per-client sound facade it still plays to ALL clients; the *-prefixed per-player voice-sample randomization resolves to silence (faithful not-found fallback) rather than the real per-player sample. Speaker installs NO Reset hook (so even though the .Reset pump is now live, target_speaker_reset's loop re-arm is still absent)."
-    - "FIXED THIS PASS: target_items centerprint text now reaches the player (MapObjectsCommon.Centerprint rewired to call NotificationSystem.SendCenterRaw(OneOnly) directly — no longer dependent on the dead CenterprintHandler delegate), and target_music / trigger_music round-restart reset is now LIVE (ResetMapObjects fires e.Reset)."
+    - "target_spawn is STILL a documented no-op: the $-templating reflection engine is cut AND SpawnEntityHandler is never assigned (grep 2026-06-25: only the declaration at TargetUtilities.cs:538; zero assignments incl. tests), so on-use and ON_MAPLOAD both invoke a null seam — nothing is created or edited."
+    - "target_music / trigger_music override is still LISTEN-SERVER ONLY (TE_CSQC_TARGET_MUSIC / ENT_CLIENT_TRIGGER_MUSIC net paths not ported); a remote/dedicated client receives no override. target_music_use is still a GLOBAL override (not QC per-activator). The per-round reset plumbing is LIVE (ResetMapObjects fires e.Reset on every non-client entity)."
+    - "target_speaker ACTIVATOR (BIT3) has a dedicated IsRealClient-gated handler on the correct CH_TRIGGER channel, but with no MSG_ONE per-client sound facade it still plays to ALL clients; the LOOPED_OFF-untargeted objerror is not modelled (port silently leaves it inert)."
+    - "FIXED THIS PASS: target_spawnpoint's forced-spawn output is now LIVE (SpawnSystem.SelectSpawnPoint reads forPlayer.SpawnPointTarg); target_location's %l HUD/chat reader is now confirmed live (Chat.NearestLocation walks MapObjectsState.Locations); target_speaker now installs SpeakerReset on LOOPED_ON/OFF (round-restart re-arm) AND attempts the *-prefixed per-player voice-sample via the wired ModelSoundResolver (no longer always-silent)."
 
 features:
   - id: mapobject-target.kill.use
@@ -39,9 +38,9 @@ features:
       - "QC gates on actor.iscreature || actor.damagedbytriggers; the port has no damagedbytriggers field and substitutes IsPushable (projectiles/loot/bodies) — same intent, slightly different membership."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/TargetUtilitiesTests.cs:TargetKill_DamagesCreatureActorToDeath", result: pass }
-      - { kind: code, ref: "KillUse gate + Combat.Damage(...,1000,DeathTypes.Void); registered MapObjectsRegistry.cs; reached via MapObjectsCommon.UseTargets (t.Use(t,actor) at MapObjectsCommon.cs:429)", result: pass }
+      - { kind: code, ref: "KillUse gate + Combat.Damage(...,1000,DeathTypes.Void); registered MapObjectsRegistry.cs; reached via MapObjectsCommon.UseTargets (t.Use(t,actor))", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-22 unchanged. Reached on the live path via SUB_UseTargets from a trigger/button."
+    notes: "Re-verified 2026-06-25 unchanged. Reached on the live path via SUB_UseTargets from a trigger/button."
 
   - id: mapobject-target.speed.use
     name: "target_speed — reproject the activator's velocity from speed + axis mask"
@@ -72,7 +71,7 @@ features:
       - { kind: test, ref: "tests/XonoticGodot.Tests/TargetUtilitiesTests.cs:TargetSpeed_Percentage_ScalesCurrentSpeed", result: pass }
       - { kind: code, ref: "spawnflag bits verified against speed.qh (all 9 match exactly)", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-22 unchanged. All 9 spawnflag bits verified."
+    notes: "Re-verified 2026-06-25 unchanged. All 9 spawnflag bits verified."
 
   - id: mapobject-target.spawnpoint.use
     name: "target_spawnpoint — force the activator's next spawn point"
@@ -81,6 +80,7 @@ features:
       - "common/mapobjects/target/spawnpoint.qc:target_spawnpoint_use"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:SpawnPointUse"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:SelectSpawnPoint"
     constants: []
     status:
       logic: faithful
@@ -88,17 +88,17 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "actor.SpawnPointTarg is SET by the .use (and declared on EntityMapObjectStateExtra.cs:61), but grep 2026-06-22 shows it is read by NOTHING outside TargetUtilities — no spawn selector / SpawnSystem consumes it. So the forced-spawn never actually takes effect (the .use is reachable but its output is dead). Belongs to the spawnsystem unit to wire."
+      - "The .reset (target_spawnpoint_reset, re-asserts ACTIVE_ACTIVE) is a no-op trivially-satisfied invariant; no port .Reset hook installed but immaterial (Active is already ActiveActive)."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/TargetUtilitiesTests.cs:TargetSpawnpoint_SetsActorForcedSpawn", result: pass }
       - { kind: code, ref: "SpawnPointUse sets actor.SpawnPointTarg = self; registered MapObjectsRegistry.cs", result: pass }
-      - { kind: grep, ref: "SpawnPointTarg read only on its own declaration (EntityMapObjectStateExtra.cs:61); no spawn selector consumer (re-confirmed 2026-06-22)", result: fail }
-    confidence: medium
-    notes: "Re-verified 2026-06-22 unchanged. Sets actor.SpawnPointTarg = this, matching QC; whether SpawnSystem honors it is unwired and belongs to the spawnsystem unit. Liveness partial: the .use runs but its written field has no consumer."
+      - { kind: code, ref: "SpawnSystem.SelectSpawnPoint (SpawnSystem.cs:344) NOW reads `if (forPlayer.SpawnPointTarg is { IsFreed:false } forced) return ToSpawnPoint(forced);` — short-circuits gather/score/team-filter exactly like QC `if(this.spawnpoint_targ) return this.spawnpoint_targ;`. One-shot: cleared by PutPlayerInServer (SpawnSystem.cs:678). Race also writes SpawnPointTarg for checkpoint respawns (Race.cs:1021), so the field has multiple live producers and a live consumer", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22: liveness partial->live. The prior audit recorded SpawnPointTarg as written-but-never-read; the spawnsystem unit has since wired SelectSpawnPoint to honor it (and clear it on spawn), so the forced next-spawn now actually takes effect on the live spawn path. Sets actor.SpawnPointTarg = this, matching QC."
 
   - id: mapobject-target.location.spawn
     name: "target_location / info_location — HUD location-name volumes"
@@ -109,24 +109,26 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:LocationSetup"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:InfoLocationSetup"
+      - "src/XonoticGodot.Server/Chat.cs:NearestLocation"
     constants: []
     status:
       logic: faithful
       values: na
       timing: na
-      presentation: unknown
+      presentation: faithful
       audio: na
-      liveness: unknown
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Whether the HUD %l reader actually consumes MapObjectsState.Locations (the nearest-name pick) was not traced in this audit."
+      - "QC NearestLocation falls back to the nearest g_items entity (findnearest checkitems=true) when no target_location wins; the port's reader only walks the location volumes (item fallback out of scope — documented at Chat.cs:648)."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/TargetUtilitiesTests.cs:TargetLocation_RegistersIntoLocationsListAsPassivePoint", result: pass }
       - { kind: test, ref: "tests/XonoticGodot.Tests/TargetUtilitiesTests.cs:InfoLocation_CopiesNetnameToMessage", result: pass }
       - { kind: code, ref: "LocationSetup pushes to MapObjectsState.Locations; both classes registered MapObjectsRegistry.cs", result: pass }
-    confidence: medium
-    notes: "Re-verified 2026-06-22 unchanged. Passive SOLID_NOT point pushed to MapObjectsState.Locations; matches target_push_init + IL_PUSH(g_locations). info_location copies netname->message then re-sets classname."
+      - { kind: code, ref: "Chat.NearestLocation (Chat.cs:651) walks MapObjectsState.Locations and returns the nearest label; reached from the %l/%y/%d chat formatmessage token expansion (Chat.cs:584-586) — the live chat path. So the location volumes ARE consumed (the prior audit left this untraced)", result: pass }
+    confidence: high
+    notes: "RECLASSIFIED 2026-06-25: presentation unknown->faithful, liveness unknown->live. Passive SOLID_NOT point pushed to MapObjectsState.Locations (matches target_push_init + IL_PUSH(g_locations)); the %l/%y/%d reader (Chat.NearestLocation) now confirmed to consume that list and pick the nearest name, reached on the live chat token-expansion path. info_location copies netname->message then re-sets classname."
 
   - id: mapobject-target.changelevel.use
     name: "target_changelevel — end / switch the level (multiplayer fraction)"
@@ -138,7 +140,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:ChangeLevelUse"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:ChangeLevelSetup"
-      - "src/XonoticGodot.Server/GameWorld.cs:597"
+      - "src/XonoticGodot.Server/GameWorld.cs:650"
     constants:
       - { name: "count_default_fraction", base: "0.7", port: "0.7 (when count==0)", match: true }
       - { name: "CHANGELEVEL_MULTIPLAYER", base: "BIT(1)=2", port: "1<<1=2 (TargetUtilities.cs:272)", match: true }
@@ -152,15 +154,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The .gametype next-map gametype switch is wired (SwitchGameTypeHandler -> Cvars.Set(\"gametype\", gt), GameWorld.cs:622), but it only sets the cvar for the NEXT changelevel boot — it does NOT live-switch MapInfo like QC's MapInfo_SwitchGameType. Faithful enough on the named-chmap path (the new map boots in that gametype); a bare end-match (.chmap empty) carrying a .gametype changes the cvar but the immediate intermission/next-map still uses the current gametype context."
+      - "The .gametype next-map gametype switch is wired (SwitchGameTypeHandler -> Cvars.Set(\"gametype\", gt), GameWorld.cs:675), but it only sets the cvar for the NEXT changelevel boot — it does NOT live-switch MapInfo like QC's MapInfo_SwitchGameType. Faithful enough on the named-chmap path; a bare end-match (.chmap empty) carrying a .gametype changes the cvar but the immediate intermission/next-map still uses the current gametype context."
       - "Listen-server / authoritative: the CSQC side of the changelevel is not networked (no remote vote UI), but the rules-side fraction + map switch are server-authoritative and faithful."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/TargetUtilitiesTests.cs:TargetChangelevel_EmptyChmap_CallsNextLevel", result: pass }
-      - { kind: code, ref: "changelevel.qh CHANGELEVEL_MULTIPLAYER=BIT(1); port TargetUtilities.cs:272 `1<<1` (=2) — matches (Wave-5 corrected an earlier `1<<0` bug)", result: pass }
-      - { kind: code, ref: "ALL SIX host seams assigned in GameWorld.Boot (GameWorld.cs:587/597/606/609/622/624): IsCampaign/NextLevelHandler/ChangeLevelHandler/RealPlayerVoteCount/SwitchGameTypeHandler/CampaignLevelWarpHandler — re-wired every Boot so they never go stale (re-confirmed LIVE 2026-06-22)", result: pass }
-      - { kind: code, ref: ".chmap / .gametype BSP keys bound (MapObjectFieldsExtra.cs:142-143) on the live entity-field path (GameWorld.ApplyDictFields -> MapObjectFieldsExtra.Apply); .count bound as FLOAT onto ParticleCount so a fractional 0.5 survives (ChangeLevelSetup seeds MoverCnt from ParticleCount)", result: pass }
+      - { kind: code, ref: "changelevel.qh CHANGELEVEL_MULTIPLAYER=BIT(1); port TargetUtilities.cs:272 `1<<1` (=2) — matches", result: pass }
+      - { kind: code, ref: "ALL SIX host seams assigned in GameWorld.Boot (GameWorld.cs:628/640/650/659/662/675/677): GiveItemHandler/IsCampaign/NextLevelHandler/ChangeLevelHandler/RealPlayerVoteCount/SwitchGameTypeHandler/CampaignLevelWarpHandler — re-wired every Boot so they never go stale (re-confirmed LIVE 2026-06-25)", result: pass }
+      - { kind: code, ref: ".chmap / .gametype BSP keys bound (MapObjectFieldsExtra.cs:142-143) on the live entity-field path; .count bound as FLOAT onto ParticleCount so a fractional 0.5 survives (ChangeLevelSetup seeds MoverCnt from ParticleCount)", result: pass }
     confidence: high
-    notes: "FIXED in an earlier wave; re-confirmed LIVE 2026-06-22. Registered via SpawnFuncs, reached by UseTargets, all six host seams wired in Boot, chmap/gametype keys bound, fractional count survives. CHANGELEVEL_MULTIPLAYER bit faithful (1<<1=BIT(1)=2). Remaining minor divergence: gametype switch is cvar-for-next-boot, not live MapInfo_SwitchGameType."
+    notes: "Re-confirmed LIVE 2026-06-25. Registered via SpawnFuncs, reached by UseTargets, all host seams wired in Boot, chmap/gametype keys bound, fractional count survives. CHANGELEVEL_MULTIPLAYER bit faithful (1<<1=BIT(1)=2). Remaining minor divergence: gametype switch is cvar-for-next-boot, not live MapInfo_SwitchGameType."
 
   - id: mapobject-target.levelwarp.use
     name: "target_levelwarp — campaign level warp"
@@ -169,7 +171,7 @@ features:
       - "common/mapobjects/target/levelwarp.qc:target_levelwarp_use"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:LevelWarpUse"
-      - "src/XonoticGodot.Server/GameWorld.cs:624"
+      - "src/XonoticGodot.Server/GameWorld.cs:677"
     constants: []
     status:
       logic: faithful
@@ -181,13 +183,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Live only inside a campaign (g_campaign): outside a campaign the .use early-returns (matching QC). Campaign.LevelWarp itself is a real Unload/Load/Setup implementation (Campaign.cs:496) — only reachable on the single-player campaign path."
+      - "Live only inside a campaign (g_campaign): outside a campaign the .use early-returns (matching QC). Campaign.LevelWarp itself is a real Unload/Load/Setup implementation — only reachable on the single-player campaign path."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/TargetUtilitiesTests.cs:TargetLevelwarp_OnlyInCampaign", result: pass }
-      - { kind: code, ref: "CampaignLevelWarpHandler = n => Campaign.LevelWarp(n) and IsCampaign = () => Cvars.Bool(\"g_campaign\") both assigned in GameWorld.Boot (GameWorld.cs:624/587), re-wired every Boot — re-confirmed LIVE 2026-06-22. Campaign.LevelWarp (Campaign.cs:496) is a real Unload/Load(n,1)/Setup implementation", result: pass }
+      - { kind: code, ref: "CampaignLevelWarpHandler = n => Campaign.LevelWarp(n) and IsCampaign = () => Cvars.Bool(\"g_campaign\") both assigned in GameWorld.Boot (GameWorld.cs:677/640), re-wired every Boot — re-confirmed LIVE 2026-06-25. Campaign.LevelWarp is a real Unload/Load(n,1)/Setup implementation", result: pass }
       - { kind: code, ref: "LevelWarpUse cnt-1 specific-level / 0->next (-1) logic faithful; registered MapObjectsRegistry.cs; reached via UseTargets", result: pass }
     confidence: high
-    notes: "FIXED in an earlier wave; re-confirmed LIVE 2026-06-22. CampaignLevelWarpHandler + IsCampaign wired in Boot and Campaign.LevelWarp is a real implementation, so a campaign level-warp trigger now warps. cnt-1/0->next logic faithful."
+    notes: "Re-confirmed LIVE 2026-06-25. CampaignLevelWarpHandler + IsCampaign wired in Boot and Campaign.LevelWarp is a real implementation, so a campaign level-warp trigger now warps. cnt-1/0->next logic faithful."
 
   - id: mapobject-target.give.use
     name: "target_give — give the activator the items pointed to"
@@ -196,7 +198,7 @@ features:
       - "common/mapobjects/target/give.qc:target_give_use"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:GiveUse"
-      - "src/XonoticGodot.Server/GameWorld.cs:580"
+      - "src/XonoticGodot.Server/GameWorld.cs:628"
     constants: []
     status:
       logic: faithful
@@ -212,9 +214,9 @@ features:
       - "The buff-item branch (GiveBuff + SND_SHIELD_RESPAWN) is folded into the GiveItemHandler pickup path; not separately verified."
       - "QC chooses CH_TRIGGER_SINGLE for powerups vs CH_TRIGGER for others; the port delegates the sound entirely to GiveItemHandler's pickup path (channel choice not re-verified)."
     verification:
-      - { kind: code, ref: "GameWorld.cs:580 wires TargetUtilities.GiveItemHandler -> ItemGiveTo + PlayPickupSound (re-confirmed LIVE 2026-06-22)", result: pass }
+      - { kind: code, ref: "GameWorld.cs:628 wires TargetUtilities.GiveItemHandler -> ItemGiveTo + PlayPickupSound (re-confirmed LIVE 2026-06-25)", result: pass }
     confidence: medium
-    notes: "Re-verified 2026-06-22 unchanged: GiveItemHandler wired on server boot — genuinely live on the match path. GiveUse itself unchanged. The SUB_UseTargets tail runs."
+    notes: "Re-verified 2026-06-25 unchanged: GiveItemHandler wired on server boot — genuinely live on the match path. GiveUse itself unchanged. The SUB_UseTargets tail runs."
 
   - id: mapobject-target.items.use
     name: "target_items — set/add items + resources + powerups via a token string"
@@ -243,9 +245,9 @@ features:
       - { kind: test, ref: "tests/XonoticGodot.Tests/TargetUtilitiesTests.cs:TargetItems_GivesResourcesAndItemFlags", result: pass }
       - { kind: test, ref: "tests/XonoticGodot.Tests/TargetUtilitiesTests.cs:TargetItems_GrantsPowerupStatusEffect", result: pass }
       - { kind: code, ref: "ItemsUse calls MapMover.Centerprint(actor, self.Message) (TargetUtilities.cs:510); routes through GiveItems.Apply; powerup-duration seeding from 5 balance cvars", result: pass }
-      - { kind: code, ref: "MapObjectsCommon.Centerprint (==MapMover.Centerprint, MapObjectsCommon.cs:792) now calls NotificationSystem.SendCenterRaw(NotifBroadcast.OneOnly, actor, message) DIRECTLY (MapObjectsCommon.cs:801) — the CenterRaw->Sink.Dispatch->CenterPrintPanel channel the chat /tell path uses. No longer depends on the unassigned CenterprintHandler delegate, so the message text now reaches the activator on the live path", result: pass }
+      - { kind: code, ref: "MapObjectsCommon.Centerprint calls NotificationSystem.SendCenterRaw(NotifBroadcast.OneOnly, actor, message) DIRECTLY (CenterRaw->Sink.Dispatch->CenterPrintPanel) — no longer depends on the unassigned CenterprintHandler delegate, so the message text reaches the activator on the live path", result: pass }
     confidence: high
-    notes: "FIXED 2026-06-22: presentation stub->faithful. Wave-5 rewired MapObjectsCommon.Centerprint to push the text down the CenterRaw notification channel directly (NotificationSystem.SendCenterRaw), so target_items' centerprint message now actually displays for the activator (the earlier audit recorded it as a routed-but-dead seam; the seam is now live). Audio faithfully silent (matches items.qc — give has no sound). The give-token apply + powerup seeding remain faithful + live. Logic still partial only for the spawnflag re-serialization + loot-toucher delete branch."
+    notes: "Re-verified 2026-06-25 unchanged. Centerprint message displays for the activator via the CenterRaw notification channel. Audio faithfully silent (matches items.qc — give has no sound). The give-token apply + powerup seeding remain faithful + live. Logic still partial only for the spawnflag re-serialization + loot-toucher delete branch."
 
   - id: mapobject-target.spawn.use
     name: "target_spawn — data-driven entity creator/editor ($-templating)"
@@ -269,13 +271,13 @@ features:
     intended_divergence: true
     divergence_rationale: "The full $-field reflection templating (numentityfields / putentityfieldstring / the field DB, deferred replacement, self/activator/other/pusher/target/target2-4/killtarget/time substitutions, +offset/+random, helper spawnfuncs setmodel/setsize, and the .count create-cap) has no port analogue and is intentionally cut (documented in the file header). The minimal SpawnSetup keeps the ON_MAPLOAD hook + a SpawnEntityHandler seam."
     gaps:
-      - "STILL DEAD even on the minimal path: SpawnEntityHandler is never assigned (grep 2026-06-22: only the declaration at TargetUtilities.cs:538; zero assignments incl. tests), so both .use and ON_MAPLOAD invoke a null seam — nothing is created or edited."
+      - "STILL DEAD even on the minimal path: SpawnEntityHandler is never assigned (grep 2026-06-25: only the declaration at TargetUtilities.cs:538; zero assignments incl. tests), so both .use and ON_MAPLOAD invoke a null seam — nothing is created or edited."
       - "Maps relying on target_spawn to spawn/edit entities (mapper scripting, *activator edits, FOREACH_ENTITY_STRING(target) edits) get no effect."
     verification:
-      - { kind: grep, ref: "no TargetUtilities.SpawnEntityHandler assignment anywhere (src/game/tests all empty; only decl at TargetUtilities.cs:538; re-confirmed 2026-06-22)", result: fail }
+      - { kind: grep, ref: "no TargetUtilities.SpawnEntityHandler assignment anywhere (src/game/tests all empty; only decl at TargetUtilities.cs:538; re-confirmed 2026-06-25)", result: fail }
       - { kind: code, ref: "SpawnUse delegates to a null SpawnEntityHandler (TargetUtilities.cs:564); ON_MAPLOAD think wired but harmless; registered MapObjectsRegistry.cs", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-22 unchanged — STILL DEAD. count create-cap, the $-mini-language, target_spawn_cancreate, and the activator/other/pusher/target replacements are all absent. ON_MAPLOAD deferred-think hook correctly gated on BIT(1). Unlike the changelevel/levelwarp seams (which got Boot assignments), SpawnEntityHandler was NOT wired in any wave."
+    notes: "Re-verified 2026-06-25 unchanged — STILL DEAD. count create-cap, the $-mini-language, target_spawn_cancreate, and the activator/other/pusher/target replacements are all absent. ON_MAPLOAD deferred-think hook correctly gated on BIT(1). Unlike the changelevel/levelwarp/give seams (Boot-assigned), SpawnEntityHandler was NOT wired in any wave."
 
   - id: mapobject-target.speaker.ambient_triggered
     name: "target_speaker — ambient / looped / one-shot / activator sound emitter"
@@ -283,10 +285,12 @@ features:
     base_refs:
       - "common/mapobjects/target/speaker.qc:spawnfunc(target_speaker)"
       - "common/mapobjects/target/speaker.qc:target_speaker_use_on/_off/_activator"
+      - "common/mapobjects/target/speaker.qc:target_speaker_reset"
       - "common/mapobjects/target/speaker.qh:SPEAKER_LOOPED_ON/OFF/GLOBAL/ACTIVATOR"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetSpeaker.cs:SpeakerSetup"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetSpeaker.cs:SpeakerUseActivator"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetSpeaker.cs:SpeakerReset"
     constants:
       - { name: "default_volume", base: "1", port: "1", match: true }
       - { name: "atten default (targeted/untargeted)", base: "ATTEN_NORM / ATTEN_STATIC", port: "AttenNorm / AttenStatic", match: true }
@@ -303,16 +307,16 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ACTIVATOR (BIT3) still plays to ALL players, not just the triggering client — SpeakerUseActivator gates on IsRealClient (a bot/world activator produces nothing, matching QC's early-out) and emits on the stacking CH_TRIGGER channel, but there is no MSG_ONE / per-client sound facade, so every client hears it (documented TODO at TargetSpeaker.cs:197)."
-      - "The *-prefixed per-player voice-message sample with argv(1) random count (GetVoiceMessageSampleField + random) is still unimplemented — ResolveNoise resolves a *-name to SILENCE (matching QC's SND(Null) not-found fallback) rather than playing the real per-player sample."
+      - "ACTIVATOR (BIT3) still plays to ALL players, not just the triggering client — SpeakerUseActivator gates on IsRealClient (a bot/world activator produces nothing, matching QC's early-out) and emits on the stacking CH_TRIGGER channel, but there is no MSG_ONE / per-client sound facade, so every client hears it (documented TODO at TargetSpeaker.cs:211)."
+      - "The *-prefixed per-player voice-message sample now RESOLVES (ResolveNoise routes a *-name through Sounds.PlayerSoundSample + the wired ModelSoundResolver, which handles argv(1)-style variant-count randomization) — but it requires a real-client activator with a model; an ambient/null/no-model invocation still falls back to silence (matching QC's SND(Null) not-found). Plays to all clients (no MSG_ONE), not just the triggerer."
       - "QC objerrors a LOOPED_OFF untargeted speaker; the port silently leaves it inert."
-      - "QC's LOOPED_ON/OFF spawn paths install target_speaker_reset (re-arm the loop on round restart); the port installs NO Reset hook for the speaker (no `this_.Reset =` in TargetSpeaker.cs). The central .Reset pump IS now live (ResetMapObjects fires e.Reset), so the only thing missing here is the per-speaker reset assignment itself."
     verification:
-      - { kind: code, ref: "channel CH_TRIGGER_SINGLE->Item(3)/CH_TRIGGER->TriggerAuto(-3); ACTIVATOR(BIT3) checked FIRST per spawnfunc order with IsRealClient gate (TargetSpeaker.cs:186); *-noise -> silence", result: pass }
+      - { kind: code, ref: "channel CH_TRIGGER_SINGLE->Item(3)/CH_TRIGGER->TriggerAuto(-3); ACTIVATOR(BIT3) checked FIRST per spawnfunc order with IsRealClient gate (TargetSpeaker.cs:101); *-noise -> ResolveNoise(noise, activator) via ModelSoundResolver, silence fallback on no-model/null", result: pass }
       - { kind: code, ref: "atten/volume resolution + on/off toggle match speaker.qc; spawnflag bits verified against speaker.qh; reached via UseTargets; registered MapObjectsRegistry.cs", result: pass }
-      - { kind: grep, ref: "no `this_.Reset =` / SpeakerReset in TargetSpeaker.cs — speaker installs no reset hook (re-confirmed 2026-06-22)", result: fail }
+      - { kind: code, ref: "SpeakerReset NOW installed on LOOPED_ON (TargetSpeaker.cs:110) and LOOPED_OFF (TargetSpeaker.cs:118) -> this_.Reset; re-arms the loop state per spawnflag on round restart (LOOPED_ON restarts if toggled off, LOOPED_OFF silences if toggled on), matching QC target_speaker_reset. The central .Reset pump is live (GameWorld.ResetMapObjects fires e.Reset on every non-client entity), so this is now LIVE on a round restart", result: pass }
+      - { kind: code, ref: "ModelSoundResolver wired on the host path (game/loaders/PlayerSoundResolver.cs:47), so the *-voice-sample path is not dead", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-22. Channel byte-faithful; ACTIVATOR(BIT3) gated on IsRealClient, checked before looped flags per QC spawn order; *-noise -> silence. STILL OPEN: MSG_ONE per-client targeting (plays to all), the real per-player voice-sample randomization, the LOOPED_OFF objerror, the missing speaker reset hook. NOTE: the prior audit's reset rationale ('ResetMapObjects fires no .Reset hooks anyway') is now stale — the pump is live; the speaker simply never registers a Reset."
+    notes: "FIXED since 2026-06-22: the LOOPED_ON/OFF reset hook is now installed (prior audit recorded 'no this_.Reset = / SpeakerReset' — that is now stale) and re-driven by the live ResetMapObjects pump; and the *-prefixed per-player voice-sample now actually resolves (was always-silent) for a real-client activator with a model. STILL OPEN: MSG_ONE per-client targeting (plays to all), the LOOPED_OFF-untargeted objerror, and the silent fallback when no model/activator. Channel byte-faithful; ACTIVATOR(BIT3) checked before looped flags per QC spawn order."
 
   - id: mapobject-target.music.target_music
     name: "target_music — triggered background-music override / map default"
@@ -340,16 +344,16 @@ features:
     divergence_rationale: "The whole CSQC TargetMusic_Advance + TE_CSQC_TARGET_MUSIC net path is replaced by MusicPlayer.cs reading the live server entity state directly. On the listen-server (the primary play path) this is byte-for-byte the same audible result without a net round-trip; the priority stack (trigger > targeted target_music within lifetime > lifetime-0 default-slot claim > untargeted default > cdtrack) and lifetime/default-slot semantics are preserved. Fade default keeps the port's gentle 2s crossfade where QC's 0 means instant (no shipped map carries the fade keys)."
     gaps:
       - "Listen-server ONLY: a remote/dedicated client receives no target_music override (the TE_CSQC_TARGET_MUSIC net message is not ported)."
-      - "target_music_use is still a GLOBAL override, not QC's per-activator (IS_REAL_CLIENT actor) + spectator (IS_SPEC && enemy==actor) override — every client hears the override. TargetMusicUse DOES guard `activator is null` + non-client (matching QC's `if(!actor) return;` + client check), so a null/non-client relay no longer activates it, but the override is still applied globally rather than per-activator."
+      - "target_music_use is still a GLOBAL override, not QC's per-activator (IS_REAL_CLIENT actor) + spectator (IS_SPEC && enemy==actor) override — every client hears the override. TargetMusicUse DOES guard `activator is null` + non-client, so a null/non-client relay no longer activates it, but the override is still applied globally rather than per-activator."
       - "QC fade 0 = instant; the port substitutes a 2s default crossfade."
       - "target_music_kill and TargetMusic_RestoreGame still have no analogue."
     verification:
-      - { kind: code, ref: "TargetMusicUse guards `activator is null` + non-client (matches QC `if(!actor) return;`, TargetMusic.cs:97-100); TargetMusicReset hook assigned to e.Reset (TargetMusic.cs:44)", result: pass }
+      - { kind: code, ref: "TargetMusicUse guards `activator is null` + non-client (matches QC `if(!actor) return;`); TargetMusicReset hook assigned to e.Reset", result: pass }
       - { kind: code, ref: "MusicPlayer.cs priority eval (trigger/lifetime-target/default-slot); MusicLifetime/fade fields bound (MapObjectFieldsExtra.cs:134-136); MusicActivationTime stamped in TargetMusicUse", result: pass }
-      - { kind: code, ref: "GameWorld.ResetMapObjects (GameWorld.cs:3033-3053) NOW iterates every non-client entity and fires e.Reset?.Invoke(e); reached via ResetMap (GameWorld.cs:2982/3000), called on Rounds.OnRoundReset (GameWorld.cs:1115) + Assault round-2 (GameWorld.cs:1853). So TargetMusicReset is NOW LIVE on a round restart (re-asserts the untargeted default / clears a triggered track's activation stamp)", result: pass }
+      - { kind: code, ref: "GameWorld.ResetMapObjects iterates every non-client entity and fires e.Reset?.Invoke(e); reached via ResetMap, called on Rounds.OnRoundReset + Assault round-2. So TargetMusicReset is LIVE on a round restart", result: pass }
       - { kind: test, ref: "tests/XonoticGodot.Tests/MusicSystemTests.cs", result: pass }
     confidence: medium
-    notes: "Re-verified 2026-06-22: the QC null/client trigger gate is present + live; the target_music_reset hook is NOW LIVE (Wave-5 rewired ResetMapObjects to dispatch e.Reset — the earlier 'present-but-dead' note is stale). Core priority/lifetime/default-slot eval faithful. Liveness stays `partial` only because the override remains listen-server-only / global (no net path, no per-activator routing). Registered MapObjectsRegistry.cs."
+    notes: "Re-verified 2026-06-25: the QC null/client trigger gate is present + live; the target_music_reset hook is LIVE (ResetMapObjects dispatches e.Reset). Core priority/lifetime/default-slot eval faithful. Liveness stays `partial` only because the override remains listen-server-only / global (no net path, no per-activator routing). Registered MapObjectsRegistry.cs."
 
   - id: mapobject-target.music.trigger_music
     name: "trigger_music — brush-volume music override (highest priority)"
@@ -379,11 +383,11 @@ features:
       - "Listen-server ONLY (the ENT_CLIENT_TRIGGER_MUSIC net link to a remote client is not ported)."
       - "On multiple overlapping trigger_music volumes the port takes the FIRST fresh one; QC's Ent_TriggerMusic_Think uses the LAST-touched. Could pick a different track where volumes overlap (code comment acknowledges this)."
     verification:
-      - { kind: code, ref: "use handler installed unconditionally (matches QC generic_netlinked_legacy_use); TriggerMusicReset assigned to e.Reset AND called at spawn for the initial START_DISABLED state (TargetMusic.cs:131-132); START_DISABLED bit = BIT(0)=1 per defs.qh", result: pass }
+      - { kind: code, ref: "use handler installed unconditionally (matches QC generic_netlinked_legacy_use); TriggerMusicReset assigned to e.Reset AND called at spawn for the initial START_DISABLED state; START_DISABLED bit = BIT(0)=1 per defs.qh", result: pass }
       - { kind: code, ref: "MusicPlayer.cs trigger_music branch + TriggerMusicTouch PushLTime stamp; registered MapObjectsRegistry.cs", result: pass }
-      - { kind: code, ref: "GameWorld.ResetMapObjects (GameWorld.cs:3033-3053) NOW fires e.Reset on every non-client entity, reached via ResetMap on the live round-restart path -> the round-restart TriggerMusicReset (re-apply START_DISABLED) is NOW LIVE (re-confirmed 2026-06-22)", result: pass }
+      - { kind: code, ref: "GameWorld.ResetMapObjects fires e.Reset on every non-client entity, reached via ResetMap on the live round-restart path -> the round-restart TriggerMusicReset (re-apply START_DISABLED) is LIVE", result: pass }
     confidence: medium
-    notes: "Re-verified 2026-06-22: unconditional use+reset install (matches QC spawnfunc), reset called at spawn to seed the active state AND now re-driven on a round restart by the live ResetMapObjects e.Reset pump (the earlier 'present-but-dead' note is stale). Brush-overlap via touch; 'first vs last' overlap pick is a known minor divergence. Liveness stays `partial` only for the listen-server-only net limitation."
+    notes: "Re-verified 2026-06-25: unconditional use+reset install (matches QC spawnfunc), reset called at spawn to seed the active state AND re-driven on a round restart by the live ResetMapObjects e.Reset pump. Brush-overlap via touch; 'first vs last' overlap pick is a known minor divergence. Liveness stays `partial` only for the listen-server-only net limitation."
 
   - id: mapobject-target.voicescript.sequence
     name: "target_voicescript — scripted per-player voice-line sequence"
@@ -414,7 +418,7 @@ features:
       - { kind: test, ref: "tests/XonoticGodot.Tests/MapObjectLongTailTests.cs (voicescript latch/advance/clear)", result: pass }
       - { kind: code, ref: "GameWorld.cs:1156 pumps VoiceScript.Next every per-client PreThink", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-22 unchanged. Ordered-prefix-then-looping-random-pool token math, the cnt split on '*', and the schedule are all faithful. Live: pumped each tick."
+    notes: "Re-verified 2026-06-25 unchanged. Ordered-prefix-then-looping-random-pool token math, the cnt split on '*', and the schedule are all faithful. Live: pumped each tick."
 
   - id: mapobject-target.teleport_dest.spawn
     name: "info_teleport_destination / misc_teleporter_dest — teleport endpoint"
@@ -442,7 +446,7 @@ features:
       - { kind: test, ref: "tests/XonoticGodot.Tests/TeleportersTests.cs", result: pass }
       - { kind: code, ref: "both classnames registered MapObjectsRegistry.cs; mangle=angles, angles cleared", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-22 unchanged. .mangle = .angles; angles cleared. Consumed by Simple_TeleportPlayer (teleporters unit)."
+    notes: "Re-verified 2026-06-25 unchanged. .mangle = .angles; angles cleared. Consumed by Simple_TeleportPlayer (teleporters unit)."
 
   - id: mapobject-target.position.spawn
     name: "target_position / info_notnull — passive jumppad/impulse destination marker"
@@ -468,4 +472,4 @@ features:
     verification:
       - { kind: code, ref: "both classnames registered MapObjectsRegistry.cs -> Jumppads.TargetPushSetup; consumed by trigger_push/trigger_impulse (jumppad unit)", result: pass }
     confidence: medium
-    notes: "Re-verified 2026-06-22 unchanged. Full arc-destination behavior belongs to the jumppad/trigger unit; recorded here as a registered passive marker."
+    notes: "Re-verified 2026-06-25 unchanged. Full arc-destination behavior belongs to the jumppad/trigger unit; recorded here as a registered passive marker."

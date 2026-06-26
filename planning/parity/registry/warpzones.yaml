@@ -1,7 +1,7 @@
 unit: warpzones
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-23"
+last_audited: "2026-06-25"
 summary:
   feature_count: 18
   worst_gaps:
@@ -68,12 +68,13 @@ features:
     base_refs:
       - "lib/warpzone/server.qc:spawnfunc(trigger_warpzone)"
       - "lib/warpzone/server.qc:spawnfunc(trigger_warpzone_position)"
+      - "lib/warpzone/server.qc:spawnfunc(misc_warpzone_position)"
       - "lib/warpzone/util_server.qc:WarpZoneLib_ExactTrigger_Init"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneSpawns"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.AddMapZone"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:108"
-      - "src/XonoticGodot.Server/GameWorld.cs:421"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:110"
+      - "src/XonoticGodot.Server/GameWorld.cs:433"
     constants:
       - { name: "scale default", base: "modelscale then 1", port: "not modeled (scale=1 implicit)", match: false }
       - { name: "solid / movetype", base: "SOLID_TRIGGER / MOVETYPE_NONE", port: "Solid.Trigger / MoveType.None", match: true }
@@ -89,10 +90,11 @@ features:
     divergence_rationale: null
     gaps:
       - "scale/modelscale and the warpzone_isboxy box-vs-exacttrigger distinction from WarpZoneLib_ExactTrigger_Init are not modeled; the EF_NODEPTHTEST render flag and WarpZone_Send CSQC serialisation are unported (no client entity)."
+      - "RE-AUDIT 2026-06-25: the port registers ONLY the spawnfunc names `trigger_warpzone` and `trigger_warpzone_position` (MapObjectsRegistry.cs:110-111). Base's CANONICAL position spawnfunc is `misc_warpzone_position` (server.qc:642); `trigger_warpzone_position` merely delegates to it (server.qc:650). A map authored with the bare `misc_warpzone_position` name is NOT registered by the port → its explicit warpzone orientation is silently dropped. Behaviourally identical to the mapped alias, so a one-line spawnfunc registration."
     verification:
       - { kind: unit_test, ref: "WarpzoneSpawnTests.MapWarpzones_Spawn_Orient_And_Link_FromBrushGeometry", result: pass }
     confidence: high
-    notes: "Sink WarpzoneSpawns.Sink wired in GameWorld.cs:421 to Warpzones.OnMapEntity; deferred plane/link in InitMapZones."
+    notes: "Sink WarpzoneSpawns.Sink wired in GameWorld.cs:433 to Warpzones.OnMapEntity; deferred plane/link in InitMapZones (GameWorld.cs:737). RE-AUDIT 2026-06-25: line refs shifted (registry :108->:110, GameWorld :421->:433); status unchanged (logic faithful, values partial). New gap: the `misc_warpzone_position` spawnfunc alias is unregistered (see gaps)."
   - id: warpzones.spawn.brushplane
     name: "Auto-orient IN plane from brush geometry (getsurface* area-weighted normal)"
     layer: [authority]
@@ -127,7 +129,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.Link"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.InitMapZones"
-      - "src/XonoticGodot.Server/GameWorld.cs:605"
+      - "src/XonoticGodot.Server/GameWorld.cs:737"
       - "src/XonoticGodot.Server/Cvars.cs:105"
     constants:
       - { name: "sv_warpzone_allow_selftarget", base: "0", port: "0", match: true }
@@ -144,7 +146,7 @@ features:
     verification:
       - { kind: unit_test, ref: "WarpzoneSpawnTests.MapWarpzones_TwoWayLink_WhenOnlyOneCarriesTarget", result: pass }
     confidence: high
-    notes: "Two-pass forward+reverse pairing mirrors QC this.enemy=e2; e2.enemy=this. Cvar registered and read once per link pass."
+    notes: "Two-pass forward+reverse pairing mirrors QC this.enemy=e2; e2.enemy=this. Cvar registered and read once per link pass. RE-AUDIT 2026-06-25: GameWorld link/init caller moved :605->:737 (InitMapZones); status unchanged (faithful)."
   - id: warpzones.teleport.player
     name: "Player/projectile crossing: warp origin/velocity/angles, momentum-preserved"
     layer: [authority, shared]
@@ -212,7 +214,7 @@ features:
       - "lib/warpzone/common.qc:WarpZone_TraceLine"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Warpzone/WarpzoneRadiusQuery.cs:WarpzoneTrace.TraceLineWarpzone"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:141"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:183"
       - "src/XonoticGodot.Engine/Collision/TraceServiceWarpzoneExt.cs:TraceServiceWarpzoneBridge"
     constants:
       - { name: "chained-zone cap", base: "i = 16", port: "MaxZoneDepth = 16", match: true }
@@ -229,7 +231,7 @@ features:
     verification:
       - { kind: unit_test, ref: "WarpzoneTraceTests.TraceLine_Crosses_One_Portal_And_Accumulates_The_Transform / TraceLine_Pathological_Self_Recrossing_Chain_Stops_At_The_Guard", result: pass }
     confidence: high
-    notes: "Live callers: WeaponFiring.cs:141 (aim), :245 + :383 (hitscan). Manager published via TraceService.SetWarpzoneManager (GameWorld.cs:611)."
+    notes: "Live callers: WeaponFiring.cs:183 (aim), :313 + :461 (hitscan). Manager published via TraceService.SetWarpzoneManager (GameWorld.cs:759). RE-AUDIT 2026-06-25: line refs shifted; chained-zone cap=16 and all callers verified intact; status unchanged (faithful/live)."
   - id: warpzones.combat.findradius
     name: "Splash radius damage reaches victims through portals (blast-frame falloff)"
     layer: [shared]
@@ -239,7 +241,7 @@ features:
       - "lib/warpzone/common.qc:WarpZoneLib_BadEntity"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Warpzone/WarpzoneRadiusQuery.cs:FindRadiusWarpzone"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:76"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:86"
     constants:
       - { name: "radius recurse clamp", base: "bound(0, rad - vlen(org_new-org0_new), rad - 8)", port: "Clamp(rad - dist_to_zone_plane, 0, rad - 8)", match: false }
       - { name: "blacklist classnames", base: "is_pure + weaponentity/exteriorweaponentity/sprite_waypoint/waypoint/spawnfunc/weaponchild/chatbubbleentity/buff_model + target_*/info_*", port: "same; Wave-2 added a partial is_pure approx (Solid.Not && empty classname) but no Entity.PureData flag yet", match: false }
@@ -258,22 +260,31 @@ features:
     verification:
       - { kind: unit_test, ref: "WarpzoneTraceTests.FindRadius_Reaches_A_Victim_Only_Through_A_Portal / FindRadius_Skips_Blacklisted_Classnames", result: pass }
     confidence: high
-    notes: "WeaponSplash uses hit.LocalBlastOrigin (portal-shifted blast frame) for distance/force/LOS; LOS trace itself is warpzone-aware (WeaponSplash.cs:161). VERIFIER: rad-8 clamp + blacklist classnames confirmed against common.qc:562/652; values stay partial for the distance-metric + is_pure nuances above (still intended-equivalent, not a regression). RE-AUDIT 2026-06-22: Wave-2 added a partial is_pure branch in IsBadEntity (Solid.Not && empty classname; WarpzoneRadiusQuery.cs:438) — but Base already returns true for empty classname unconditionally (common.qc \"\" switch case), so the new branch is largely redundant and does NOT fully model is_pure (= pure_data && SOLID_NOT); still no Entity.PureData flag. No status change; not a regression."
+    notes: "WeaponSplash uses hit.LocalBlastOrigin (portal-shifted blast frame) for distance/force/LOS; LOS trace itself is warpzone-aware (WeaponSplash.cs:171). VERIFIER: rad-8 clamp + blacklist classnames confirmed against common.qc:562/652; values stay partial for the distance-metric + is_pure nuances above (still intended-equivalent, not a regression). RE-AUDIT 2026-06-22: Wave-2 added a partial is_pure branch in IsBadEntity (Solid.Not && empty classname; WarpzoneRadiusQuery.cs:438) — but Base already returns true for empty classname unconditionally (common.qc \"\" switch case), so the new branch is largely redundant and does NOT fully model is_pure (= pure_data && SOLID_NOT); still no Entity.PureData flag. No status change; not a regression."
   - id: warpzones.porto
-    name: "Porto-weapon portals realised as warpzones"
+    name: "Porto-weapon portals realised as warpzones (lifecycle + kill-credit + activate grace)"
     layer: [authority]
     base_refs:
       - "lib/warpzone/server.qc:spawnfunc(trigger_warpzone)"
+      - "server/portals.qc:Portal_Touch (portal_activatetime self-skip, :301-306)"
+      - "server/portals.qc:Portal_TeleportPlayer (kill-credit, :196-201)"
+      - "server/portals.qc:Portal_ClearWithID (:614)"
+      - "server/portals.qc:Portal_ClearAll_PortalsOnly (:579)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:PlacePortoPortal"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:LinkPair"
-      - "src/XonoticGodot.Server/GameWorld.cs:413"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.Teleport (ActivateTime self-skip + Pusher/PushLTime/IsTypeFrag kill-credit)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:ClearPortoPortal"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:ClearAllPortoPortals"
+      - "src/XonoticGodot.Server/GameWorld.cs:422"
     constants:
       - { name: "porto trigger bounds", base: "weapon-defined", port: "+/-48 box (PortoMins/Maxs)", match: false }
+      - { name: "portal_activatetime grace", base: "time + 0.1 (portals.qc:304,646)", port: "now + 0.1f (ActivateTime; Warpzone.cs:233,418)", match: true }
+      - { name: "g_maxpushtime kill-credit window", base: "8 (autocvar default)", port: "g_maxpushtime else 8f (Warpzone.cs:269)", match: true }
     status:
       logic: faithful
-      values: unknown
-      timing: na
+      values: faithful
+      timing: faithful
       presentation: missing
       audio: na
       liveness: live
@@ -281,10 +292,12 @@ features:
     divergence_rationale: null
     gaps:
       - "Porto portals share the missing client portal render — they teleport correctly server-side but show as dark placeholders, same as map warpzones."
+      - "The Amazing-on-portal-telefrag announcer (portals.qc:192-194, ANNCE_ACHIEVEMENT_AMAZING within 1s of portal creation) needs the tdeath path the warpzone crossing does not run — see the portals.teleport unresolved gap noted inline (Warpzone.cs:262)."
+      - "The +/-48 PortoMins/Maxs trigger box is a port choice; Base Porto portal bounds not re-verified."
     verification:
-      - { kind: code, ref: "GameWorld.cs:413 Warpzones.PlacePortoPortal", result: pass }
-    confidence: medium
-    notes: "Server transform is faithful; the +/-48 trigger box is a port choice (Base Porto portal bounds not re-verified here)."
+      - { kind: code, ref: "RE-AUDIT 2026-06-25: the Porto lifecycle GREW well past the baseline's `server transform only`. WarpzoneManager.Teleport now implements (a) the portal_activatetime owner self-skip (Warpzone.cs:231-235) matching portals.qc:301-306 (the 0.1s window slides forward, owner not pulled back); (b) the non-owner kill-credit Pusher/PushLTime/IsTypeFrag (Warpzone.cs:263-272) matching portals.qc:196-201 with g_maxpushtime (default 8); both players must be IS_PLAYER. ClearPortoPortal (Portal_ClearWithID) + ClearAllPortoPortals (Portal_ClearAll_PortalsOnly) added with trigger-volume teardown. Live via GameWorld.cs:422 PlacePortoPortal + the Porto weapon's PortalClearWithId/PortalClearAll wiring.", result: pass }
+    confidence: high
+    notes: "FIX (2026-06-25): values unknown->faithful, timing na->faithful, confidence medium->high. The server-side Porto portal is now a faithful lifecycle port (activate grace + kill-credit + clear-with-id/clear-all), not just the bare transform the baseline recorded. Only the client portal render (shared with map warpzones) and the Amazing-telefrag announcer remain. The +/-48 trigger box stays a documented port choice."
   - id: warpzones.client.render
     name: "Portal surface drawn as a live camera view of the linked OUT plane"
     layer: [presentation]
@@ -372,7 +385,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Engine/Simulation/TriggerTouch.cs:PredictWarpzonesAmbient"
       - "game/net/EntityMovementStep.cs:107"
-      - "game/net/NetGame.cs:983"
+      - "game/net/NetGame.cs:1026"
     constants: []
     status:
       logic: faithful
@@ -386,7 +399,7 @@ features:
     gaps:
       - "Render/view side of the crossing still missing: a predicted warp relocates the carrier in lockstep with authority (no rubber-band) and stamps .fixangle, but the seamless view-rotate/portal render (warpzones.client.render / .fixview / .teleported_view) is unported — the camera still snaps visually across the seam even though the origin no longer corrects."
     verification:
-      - { kind: code, ref: "FIX 2026-06-23: PredictWarpzonesAmbient is now CALLED on the live prediction path (EntityMovementStep.Step, after PredictTeleportsAmbient) AND its crossing gate was rewritten to the plane-side test Dot((origin+view_ofs)-InOrigin, InForward) >= 0 -> skip, matching WarpzoneManager.Teleport (Warpzone.cs:220) EXACTLY. AmbientManager published per-match via TraceService.SetWarpzoneManager (GameWorld.cs:611); the predictor's live caller chain is NetGame.cs:983 (new EntityMovementStep) -> Step -> PredictWarpzonesAmbient (EntityMovementStep.cs:107). RE-VERIFIED 2026-06-23 on branch claude/parity-port-waves.", result: pass }
+      - { kind: code, ref: "FIX 2026-06-23: PredictWarpzonesAmbient is now CALLED on the live prediction path (EntityMovementStep.Step, after PredictTeleportsAmbient) AND its crossing gate was rewritten to the plane-side test Dot((origin+view_ofs)-InOrigin, InForward) >= 0 -> skip, matching WarpzoneManager.Teleport (Warpzone.cs:220) EXACTLY. AmbientManager published per-match via TraceService.SetWarpzoneManager (GameWorld.cs:611); the predictor's live caller chain is NetGame.cs:1026 (new EntityMovementStep) -> Step -> PredictWarpzonesAmbient (EntityMovementStep.cs:107). RE-VERIFIED 2026-06-25 on branch claude/parity-port-waves: gate still matches WarpzoneManager.Teleport exactly (Dot(point-InOrigin, InForward) >= 0 -> skip; TriggerTouch.cs:222), caller chain intact.", result: pass }
     confidence: high
     notes: "FIX (2026-06-23): liveness dead->live, logic stub->faithful. Wave-2 wrote PredictWarpzonesAmbient but left it unwired and carrying the stale velocity-direction gate; both are now resolved — EntityMovementStep drives it each predicted tick and the gate matches authority, so a warpzone crossing is client-predicted (origin no longer rubber-bands). Remaining open: the client render/view-rotate (separate rows warpzones.client.render/.fixview/.teleported_view)."
   - id: warpzones.camera

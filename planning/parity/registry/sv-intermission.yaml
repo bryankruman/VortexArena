@@ -2,38 +2,38 @@ unit: sv-intermission
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
-# Re-audited 2026-06-25 on branch claude/parity-port-waves (Base local checkout xonotic-v0.8.6-151-gf6b1980;
-# the pinned base_ref_rev above is the registry's reference revision and the intermission/mapvoting/world
-# symbols are byte-compatible with it). Net change vs the 2026-06-22 baseline: SIX features improved — the
-# end-of-match presentation/notification stack got substantially wired since Wave-6:
-#   (1) matchend.nextlevel: NextLevel now calls Voting.Stop (VoteReset), FireMatchEndBeforeScores +
-#       FireMatchEnd mutator hooks, and SendCenterKill (Kill_Notification NOTIF_ALL) — logic partial→faithful.
-#       Still omits WeaponStats_Shutdown, DumpStats(true), and the localcmd(sv_hook_gameend) trailing alias.
-#   (2) matchend.nextmap_broadcast: FULLY wired — GameWorld.NextMapBroadcast → MatchState packet
-#       (ServerNet.SendMatchState) → ClientNet.NextMap → NetGame feeds _scoreboard.NextMap. missing→faithful, live.
-#   (3) client.scoreboard_autoshow: NetGame.UpdateScoreboard now force-shows at intermission and hides while the
-#       mapvote panel owns the screen (intermission==1 show / ==2 mapvote). missing→faithful, partial→live.
-#   (4) client.view_freeze: the viewmodel is now hidden at intermission (EF_NODRAW equivalent, NetGame.cs:1575).
-#       presentation missing→partial; liveness partial→live. Camera lock + -2342 health sentinel STILL missing.
-#   (5) audio.cdtrack: target_music_kill() is now reproduced — MusicPlayer.Intermission (fed from the networked
-#       MatchIntermission) blanks the map track at intermission. audio missing→partial. The sv_intermission_cdtrack
-#       'cd loop <track>' random switch is STILL not consumed.
-#   (6) client.autoscreenshot: sv_autoscreenshot is now a registered server cvar default "0" (matches Base) —
-#       values missing→partial via the constant match; the feature is still fully missing on every behavioral
-#       dimension (no IntermissionThink timer / stuffcmd / client screenshot trigger).
-# No regressions. UNCHANGED since baseline: matchend.freeze, timer.exittime, timer.input_early_exit,
-# overtime.cascade, maplist.rotation, nextmap.override (3 admin/redirect overrides still absent),
-# nextmap.changelevel, mapvote.server_core (still no NetControl.MapVote opcode → listen-server cast only),
-# mapvote.client_ui (listen-server only). Intermission.cs itself is byte-identical to the Wave-1/2 state.
+# Re-audited 2026-06-25 (drift check) on branch claude/parity-port-waves (Base local checkout
+# xonotic-v0.8.6-151-gf6b1980; the pinned base_ref_rev above is the registry's reference revision and the
+# intermission/mapvoting/world symbols are byte-compatible with it). Net change vs the prior 2026-06-25 baseline:
+# THREE further end-of-match CLIENT features were completed since that audit:
+#   (1) client.autoscreenshot: now FULLY ported — NetGame.UpdateIntermissionAutoscreenshot (NetGame.cs:3258)
+#       arms the +0.1s timer off the networked intermission flag, latches once per match, applies the QC opt-in
+#       gate (server_screenshot = sv_autoscreenshot && cl_autoscreenshot; client_screenshot = cl_autoscreenshot==2),
+#       and fires a real `screenshot screenshots/autoscreenshot/<map>-<stamp>.jpg` via RunCommand. logic
+#       missing→faithful, timing missing→faithful, presentation missing→faithful, liveness na→live.
+#   (2) audio.cdtrack: the `cd loop <track>` random switch is now CONSUMED — MusicPlayer.PickIntermissionTrack
+#       (MusicPlayer.cs:472) reproduces the QC RandomSelection-over-FOREACH_WORD pick and loops the chosen track,
+#       fed live from sv_intermission_cdtrack (NetGame.cs:2411). logic partial→faithful, audio partial→faithful,
+#       liveness partial→live.
+#   (3) client.view_freeze: the intermission camera/mouse-look lock is now present — look input is ignored while
+#       MatchIntermission (NetGame.cs:4298-4299) so the scoreboard view holds the latched angles, plus death-cam
+#       suppression (NetGame.cs:4808) and the viewmodel EF_NODRAW hide (NetGame.cs:1610). logic partial→faithful,
+#       presentation partial→faithful. The -2342 health sentinel is now a documented INTENDED divergence (would
+#       render a literal "-2342" on the listen-server HealthArmor panel that has no intermission HUD suppression;
+#       GameWorld.cs:3227-3231), so values missing→na (intended_divergence).
+# No regressions. UNCHANGED since the prior 2026-06-25 baseline: matchend.nextlevel (still omits
+# WeaponStats_Shutdown/DumpStats/sv_hook_gameend), matchend.freeze, matchend.nextmap_broadcast,
+# client.scoreboard_autoshow, timer.exittime, timer.input_early_exit, overtime.cascade, maplist.rotation,
+# nextmap.override (3 admin/redirect overrides still absent), nextmap.changelevel, mapvote.server_core
+# (still no NetControl.MapVote opcode → listen-server cast only), mapvote.client_ui (listen-server only).
+# Intermission.cs itself is byte-identical to the Wave-1/2 state.
 summary:
   feature_count: 15
   worst_gaps:
     - "Map vote remains networked-incomplete for REMOTE clients: there is still no NetControl.MapVote opcode, so the live ballot/cast path works ONLY on a listen server (the client reads the in-process GameWorld.MapVote directly). A pure --connect client has no in-process MapVoting, so it never sees the ballot and cannot vote; the panel feed honestly blanks for it."
     - "NextLevel still omits WeaponStats_Shutdown, DumpStats(true), and the localcmd(sv_hook_gameend) trailing hook — but now DOES port VoteReset, MatchEnd_BeforeScores/MatchEnd hooks, Kill_Notification(NOTIF_ALL), and (client-side) target_music_kill."
-    - "Intermission view freeze is only HALF done: the viewmodel is now hidden (EF_NODRAW) at intermission, but the local view is not locked to a FindIntermission camera and the -2342 health sentinel is not set server-side."
-    - "No autoscreenshot feature: sv_autoscreenshot is registered (default 0, matches Base) and cl_autoscreenshot reaches the server, but there is no IntermissionThink autoscreenshot timer, no cl_autoscreenshot_screenshot stuffcmd, and no client screenshot trigger — the server cannot force the end-of-match scoreboard capture."
-    - "sv_intermission_cdtrack 'cd loop <track>' random switch is not consumed (only target_music_kill, the map-music silence at match end, is ported)."
     - "DoNextMapOverride omits quit_when_empty, quit_and_redirect, and lastlevel overrides."
+    - "OverTime: STAT(OVERTIMES) is still not networked, so the persistent HUD 'OVERTIME' banner does not show (the one-shot begin-of-overtime center notifications do fire)."
 features:
   - id: sv-intermission.matchend.nextlevel
     name: "NextLevel match-end latch + once-per-match bookkeeping"
@@ -361,26 +361,27 @@ features:
       - "server/intermission.qc:FixIntermissionClient"
     port_refs:
       - "game/net/ClientNet.cs:MatchIntermission"
-      - "game/net/NetGame.cs:1575"
+      - "game/net/NetGame.cs:1610"
+      - "game/net/NetGame.cs:4298"
+      - "game/net/NetGame.cs:4808"
     constants:
-      - { name: "intermission-phase health sentinel", base: "-2342", port: "none", match: false }
+      - { name: "intermission-phase health sentinel", base: "-2342", port: "intentionally not stamped server-side", match: false }
     status:
-      logic: partial
-      values: missing
+      logic: faithful
+      values: na
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
-    intended_divergence: false
-    divergence_rationale: null
-    gaps:
-      - "Camera lock missing: the local view is NOT locked to a FindIntermission intermission camera; the player keeps their first-person view (frozen by the server-side movement freeze, but no fixed intermission camera angle)."
-      - "The -2342 health sentinel is not set server-side at intermission (the value: dimension). The Chat.cs:615 -2342 read is the mapvote 'observing' sentinel, not an intermission view-freeze setter."
+    intended_divergence: true
+    divergence_rationale: "The QC -2342 RES_HEALTH first-intermission-phase sentinel is intentionally NOT stamped server-side (GameWorld.cs:3227-3231): DarkPlaces' SVC_INTERMISSION suppresses the whole gameplay HUD so the value is never shown, but the port has no intermission HUD suppression, so the listen-server HealthArmor panel (bound directly to Player.Health) would render a literal '-2342'. The observable view-freeze effects the sentinel exists to enable (mouse-look lock + viewmodel hide + death-cam suppression) are instead driven client-side off the networked MatchIntermission flag, so the value dimension is na rather than a defect."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "FIXED HALF: the viewmodel IS now hidden at intermission (NetGame.cs:1575 — `hidden = ... || _client.MatchIntermission`, the QC FixIntermissionClient EF_NODRAW equivalent). MISSING HALF: no camera lock / -2342 sentinel anywhere (grep 2026-06-25).", result: pass }
-      - { kind: code-read, ref: "NetGame also uses _client.MatchIntermission for _fullHud.Intermission (shake gate, line 3019) + Timer.IntermissionTime + the music kill; no camera lock.", result: pass }
+      - { kind: code-read, ref: "Viewmodel hide: NetGame.cs:1609-1610 — `hidden = ... || _client.MatchIntermission` (QC FixIntermissionClient EF_NODRAW equivalent); PortoPreview suppressed likewise (NetGame.cs:1338). 2026-06-25.", result: pass }
+      - { kind: code-read, ref: "Camera/mouse-look lock: NetGame.cs:4298-4299 — mouse motion is accumulated into _viewAngles ONLY when `!_client.MatchIntermission`, so at intermission the look angles latch and the scoreboard view doesn't swing (QC SVC_INTERMISSION view freeze). 2026-06-25.", result: pass }
+      - { kind: code-read, ref: "Death-cam suppression: NetGame.cs:4805-4808 — `localDead = _everAlive && Health<=0 && !MatchIntermission`, so the intermission view freezes at the player spot rather than engaging the death-cam (matching SVC_INTERMISSION). 2026-06-25.", result: pass }
     confidence: high
-    notes: "PARTIAL FIX since baseline: the viewmodel hide (EF_NODRAW) is now live (NetGame.cs:1575 gates the viewmodel Visible on MatchIntermission), so presentation missing→partial and liveness partial→live. Still missing: the FindIntermission camera lock and the -2342 health sentinel. The intermission flag is networked (ClientNet.MatchIntermission), so adding the camera lock is incremental."
+    notes: "FIXED since the prior 2026-06-25 baseline: the intermission camera/mouse-look lock is now present (NetGame.cs:4298-4299, look input ignored at intermission), joining the already-ported viewmodel EF_NODRAW hide (NetGame.cs:1610) and death-cam suppression (NetGame.cs:4808). logic partial→faithful, presentation partial→faithful. The -2342 health sentinel is reclassified from a gap to a documented intended_divergence (would render literally on the unsuppressed listen-server HUD), so the value dimension is now na. All three view-freeze effects key off the networked ClientNet.MatchIntermission flag and so work on both listen and remote clients."
 
   - id: sv-intermission.client.scoreboard_autoshow
     name: "Scoreboard auto-shows at intermission (no key held)"
@@ -411,25 +412,30 @@ features:
     base_refs:
       - "server/intermission.qc:IntermissionThink"
       - "server/intermission.qc:FixIntermissionClient"
-    port_refs: []
+    port_refs:
+      - "game/net/NetGame.cs:UpdateIntermissionAutoscreenshot"
+      - "game/net/NetGame.cs:2418"
     constants:
       - { name: "sv_autoscreenshot", base: "0", port: "0 (registered default, Cvars.cs:139)", match: true }
+      - { name: "autoscreenshot arm delay (s)", base: "0.1 (time + 0.1)", port: "0.1 (_renderClock + 0.1)", match: true }
+      - { name: "cl_autoscreenshot==2 always-capture", base: "yes", port: "yes (clientShot = cl == 2)", match: true }
     status:
-      logic: missing
-      values: partial
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No autoscreenshot stuffcmd dance at intermission (the autoscreenshot timer + cl_autoscreenshot_screenshot stuffcmd in IntermissionThink): the server cannot force clients to capture the end-of-match scoreboard."
-      - "sv_autoscreenshot is now registered as a server cvar default 0 (matches Base) and cl_autoscreenshot reaches the per-client store (Commands.SentCvarAllowlist), BUT there is still no server-side consumer, no intermission-time autoscreenshot timer, no cl_autoscreenshot_screenshot stuffcmd, and no client screenshot trigger anywhere."
+      - "The capture filename uses a wall-clock timestamp instead of Base's networked `matchid` (not networked in the port), so the screenshots/autoscreenshot/<map>-<id>.jpg disambiguator differs cosmetically. The actual capture and opt-in gating are faithful."
     verification:
-      - { kind: grep, ref: "2026-06-25: sv_autoscreenshot IS registered (Cvars.cs:139, default 0) and cl_autoscreenshot is in Commands.SentCvarAllowlist (Commands.cs:224), but no code reads sv_autoscreenshot / cl_autoscreenshot for the screenshot dance; no IntermissionThink autoscreenshot timer / cl_autoscreenshot_screenshot stuffcmd / client screenshot trigger in src/ or game/.", result: fail }
+      - { kind: code-read, ref: "NetGame.UpdateIntermissionAutoscreenshot (NetGame.cs:3258-3301), called every frame (NetGame.cs:2418): arms `_autoscreenshotAt = _renderClock + 0.1` on the first intermission frame (QC `autoscreenshot = time + 0.1`), latches `_autoscreenshotTaken` once per match (QC sets `this.autoscreenshot = -1`), and re-arms when MatchIntermission clears. 2026-06-25.", result: pass }
+      - { kind: code-read, ref: "Opt-in gate (NetGame.cs:3291-3294): `serverShot = sv_autoscreenshot != 0 && cl_autoscreenshot != 0; clientShot = cl_autoscreenshot == 2` — matches QC server_screenshot / client_screenshot. Then `RunCommand('screenshot screenshots/autoscreenshot/<map>-<stamp>.jpg')` routes through the same shared screenshot command the F12 bind uses. 2026-06-25.", result: pass }
+      - { kind: grep, ref: "sv_autoscreenshot registered (Cvars.cs:139, default 0); cl_autoscreenshot in Commands.SentCvarAllowlist (Commands.cs:233) and ClientNet sent-cvar list (ClientNet.cs:764). 2026-06-25.", result: pass }
     confidence: high
-    notes: "Minor improvement since baseline: sv_autoscreenshot is now a registered default 0 (constant now matches Base → values missing→partial). But the feature is still fully missing on every behavioral dimension — the server has no consumer and the actual screenshot trigger is absent on the live path."
+    notes: "FIXED since the prior 2026-06-25 baseline: the end-of-match autoscreenshot is now fully ported on the live client path. NetGame.UpdateIntermissionAutoscreenshot reproduces the QC IntermissionThink dance — +0.1s arm timer, once-per-match latch, the server_screenshot/client_screenshot opt-in gate, and a real `screenshot` command — driven off the networked MatchIntermission flag (works on listen + remote clients; sv_autoscreenshot is read directly on the listen server, and the cl_autoscreenshot==2 unconditional branch covers pure remote clients, matching the stock 0 default). logic/timing/presentation missing→faithful, liveness na→live. Only the matchid-vs-timestamp filename disambiguator differs (matchid isn't networked)."
 
   - id: sv-intermission.audio.cdtrack
     name: "Intermission music switch (sv_intermission_cdtrack) + target_music_kill"
@@ -439,21 +445,24 @@ features:
       - "server/world.qc:NextLevel"
     port_refs:
       - "game/client/MusicPlayer.cs:Intermission"
-      - "game/net/NetGame.cs:2257"
+      - "game/client/MusicPlayer.cs:PickIntermissionTrack"
+      - "game/net/NetGame.cs:2407"
     constants:
       - { name: "sv_intermission_cdtrack", base: "\"\"", port: "\"\" (registered default, Cvars.cs:138)", match: true }
+      - { name: "track pick weighting", base: "RandomSelection equal weight per word", port: "uniform over Split words", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
-      audio: partial
-      liveness: partial
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No sv_intermission_cdtrack handling: the random intermission CD track (RandomSelection over the cdtrack words → 'cd loop <track>' stuffcmd) is never selected or looped. The cvar is registered (default empty, matches Base) but nothing reads it for the intermission loop."
+      - "Listen-server only for the cdtrack pick: sv_intermission_cdtrack is read directly from the in-process server cvar (NetGame.cs:2410-2411), which isn't networked, so a pure remote client always sees the empty/kill path. With the stock empty default no switch occurs anyway, so this is invisible on stock config; it would only matter on a server that sets the cvar."
     verification:
-      - { kind: code-read, ref: "FIXED HALF: target_music_kill() is ported — MusicPlayer.Intermission (game/client/MusicPlayer.cs:53) blanks bestTrack at intermission (line 129-130), fed live from ClientNet.MatchIntermission (NetGame.cs:2257-2258). MISSING HALF: no 'cd loop' of sv_intermission_cdtrack — the only cd-loop helper reads menu_cdtrack, not the intermission cvar (grep 2026-06-25).", result: pass }
+      - { kind: code-read, ref: "target_music_kill: MusicPlayer.Intermission (MusicPlayer.cs:53) drives bestTrack='' at intermission (MusicPlayer.cs:145-159), fed live from ClientNet.MatchIntermission (NetGame.cs:2407-2409). 2026-06-25.", result: pass }
+      - { kind: code-read, ref: "cd loop switch: MusicPlayer.PickIntermissionTrack (MusicPlayer.cs:472-483) reproduces the QC RandomSelection over FOREACH_WORD(sv_intermission_cdtrack) — Split on whitespace, uniform pick, ResolveMusicPath — latched once per intermission (_intermissionLatched, MusicPlayer.cs:147-151), then loops the chosen track; fed from sv_intermission_cdtrack (NetGame.cs:2410-2411). 2026-06-25.", result: pass }
     confidence: high
-    notes: "PARTIAL FIX since baseline: target_music_kill (stop the map track at match end) is now live on both listen and remote clients — audio missing→partial, liveness na→partial. The sv_intermission_cdtrack random-track 'cd loop' switch is still not consumed (default empty, so no stock-config switch occurs anyway), so logic stays partial."
+    notes: "FIXED since the prior 2026-06-25 baseline: the sv_intermission_cdtrack 'cd loop <track>' random switch is now CONSUMED. MusicPlayer.PickIntermissionTrack does the RandomSelection-over-words pick once per intermission and loops the chosen track; target_music_kill (silence the map track when no cdtrack is set) was already live. logic partial→faithful, audio partial→faithful, liveness partial→live. The cdtrack pick is listen-server only (the cvar isn't networked) but that's moot on the stock empty default."

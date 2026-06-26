@@ -9,7 +9,7 @@ summary:
     - "Secondary Blaster does not work during the round countdown (Overkill does not subscribe the live PlayerPreThink chain)."
     - "No item-respawn waypoints for surviving health/armor (Item_RespawnCountdown / Item_ScheduleRespawn hook chains do not exist)."
     - "MUTATOR_ONADD precache_all_playermodels(ok_player) and the g_overkill_items IntrusiveList are never built (player model missing; the random pool uses a hard-coded name list instead)."
-    - "Mod-name: SetModname 'Overkill' and the cl_overkill cvar_settemp sync are absent; BuildMutatorsPrettyString (', Overkill') is overridden but its chain has no live consumer."
+    - "Client cl_overkill cvar_settemp(g_overkill,1) sync is still absent (cosmetic/client only; the server-side mod-name strings, SetModname, and pretty-string are now live)."
 features:
   - id: overkill.enable.predicate
     name: "Mutator enable predicate (g_overkill + guards)"
@@ -397,22 +397,20 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:BuildMutatorsPrettyString"
     constants:
       - { name: "mutator_tag_machine", base: ":OK", port: "\":OK\" (BuildMutatorsString override)", match: true }
-      - { name: "mutator_tag_pretty", base: ", Overkill", port: "\", Overkill\" (BuildMutatorsPrettyString override, chain has no live consumer)", match: true }
-      - { name: "modname", base: "Overkill", port: "none", match: false }
+      - { name: "mutator_tag_pretty", base: ", Overkill", port: "\", Overkill\" (BuildMutatorsPrettyString override, chain NOW live)", match: true }
+      - { name: "modname", base: "Overkill", port: "\"Overkill\" (SetModname override, chain NOW live)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "SetModname is not set to 'Overkill': no SetModname hook chain exists anywhere in the port (grep SetModname → 0 non-overkill hits), so there is nothing to subscribe."
-      - "BuildMutatorsPrettyString (', Overkill') is overridden (OverkillMutator.cs:401) but its chain (MutatorActivation.BuildMutatorsPrettyString) has NO live caller in the port — the scoreboard/votescreen consumer never invokes it (grep for a MutatorActivation.BuildMutatorsPrettyString call → 0), so ', Overkill' is still not shown. The same is true for every mutator's pretty-string override."
-      - "Client cl_overkill cvar_settemp(g_overkill,1) sync is absent. UNCHANGED."
+      - "Minor: the client-side cl_overkill cvar_settemp(g_overkill,1) sync (cl_overkill.qc REGISTER_MUTATOR ONADD) is still absent — there is no client mutator-registration seam to settemp g_overkill on the joining client. Server-side reporting (machine token, pretty string, modname) is now fully live; this is the only remaining hole and is client-cosmetic."
     verification:
-      - { kind: code, ref: "OverkillMutator now overrides BuildMutatorsString → \":OK\" (cs:397) and BuildMutatorsPrettyString → \", Overkill\" (cs:401). BuildMutatorsString chain is LIVE: MutatorActivation.BuildMutatorsString called from GameWorld.cs:876 (gated on sv_eventlog) for the gamelog mutators field. BuildMutatorsPrettyString chain (MutatorActivation.cs:121) has NO live caller. No SetModname chain in src/. No cl_overkill sync.", result: partial }
+      - { kind: code, ref: "OverkillMutator overrides BuildMutatorsString → \":OK\" (cs:411), BuildMutatorsPrettyString → \", Overkill\" (cs:415), and SetModname → (\"Overkill\", true) (cs:420). ALL THREE chains are now LIVE: BuildMutatorsString called from GameWorld.cs:1068 (gated on sv_eventlog, gamelog mutators field); BuildMutatorsPrettyString called from GameWorld.cs:1079 (PutClientInServer 'modifications' serverinfo, leading ', ' stripped); SetModname called from GameWorld.cs:609 (worldspawn modname override, CBC_ORDER_ANY first-wins). No cl_overkill client sync.", result: pass }
     confidence: high
-    notes: "FIX (missing→partial). Overkill now contributes the ':OK' machine token on the LIVE BuildMutatorsString chain (gamelog / server-info), and overrides the pretty ', Overkill' token — but the pretty-string chain itself is never consumed in the port, and SetModname + the client cl_overkill sync remain absent. Cosmetic / reporting only; no gameplay impact."
+    notes: "FIX (partial→faithful/live across logic/values/presentation/liveness). Since the prior audit the SetModname hook chain was ADDED and wired (MutatorActivation.SetModname → GameWorld.cs:604-612), and the BuildMutatorsPrettyString chain GAINED a live consumer (GameWorld.cs:1073-1081 sets the 'modifications' serverinfo key per QC PutClientInServer). Overkill's modname now resolves to 'Overkill' and the pretty token ', Overkill' is now emitted. Only the client cl_overkill cvar_settemp sync remains absent (cosmetic). Cosmetic / reporting only; no gameplay impact."

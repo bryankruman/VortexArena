@@ -1,15 +1,15 @@
 unit: sv-commands-votes
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"  # drift re-audit; Wave 5/6 wired the previously-dead vote/timeout sinks live
+last_audited: "2026-06-25"  # drift re-audit 2026-06-25: Voting.IsClient is now wired live — the last dead vote predicate is closed.
 summary:
   feature_count: 16
   worst_gaps:
-    - "radarmap / gettaginfo / animbench / bbox / trace / stuffto / adminmsg / delrec / database / effectindexdump / make_mapinfo / printstats: still not registered as commands (missing). (anticheat IS now implemented — removed from this list.)"
-    - "vote-call !IS_CLIENT guard still dead: VoteController.IsClient is the one remaining unwired predicate (default _ => true) — low impact (the caller is generally already a connected client). All other guard predicates (TimeoutActive/GameStartTime/IsPlayer) are now wired live in GameWorld."
-    - "master vote: sv_vote_master_ids (auto-login by crypto fingerprint on connect) is still not honored."
-    - "who: ping/packetloss columns carry 0 in the Godot-free core (the net host owns live ping); a documented core limitation, not a logic gap. Full column table + sv_status_privacy hiding are now present."
-    - "FIXED since baseline (Wave 5/6): the vote-call timeout/game_starttime guards, vote-count spectator exclusion, master-vote timeout guard, ValidateMap+recent-map, VoteCommand_checkargs/command_restriction, timeout slowmo+countdown+announce (and the GameStopped hard-freeze → engine slowmo), full `who` table + sv_status_privacy, multi-readout `time`, randomized shuffleteams, and the `anticheat` report command are all now wired live."
+    - "radarmap / gettaginfo / animbench / bbox / trace / stuffto / adminmsg / delrec / database / effectindexdump / make_mapinfo / printstats: still not registered as commands (missing). (anticheat IS implemented.)"
+    - "master vote: sv_vote_master_ids (auto-login by crypto fingerprint on connect) is still not honored (the cvar exists but only as a private-cvar mask entry in CommandReplies; no ClientConnect auto-login)."
+    - "who: ping/packetloss columns carry 0 in the Godot-free core (the net host owns live ping); a documented core limitation, not a logic gap. Full column table + sv_status_privacy hiding are present."
+    - "Cross-server online ban sync (uri_get / g_ban_sync_*) is deliberately out of the headless core (intended divergence; local ban store complete)."
+    - "FIXED in this re-audit: the vote-call !IS_CLIENT guard is now LIVE (Voting.IsClient wired in GameWorld.cs:970 = p.Flags & FL_CLIENT). vote.call is now fully faithful on logic — no remaining dead predicate. (Earlier Wave 5/6 fixes — timeout/game_starttime guards, spectator exclusion, ValidateMap, checkargs, timeout slowmo+countdown, full who table, randomized shuffleteams, anticheat — all retained and re-verified.)"
 features:
   - id: sv-commands-votes.dispatch.client_parse
     name: "Client command dispatch (cmd <verb>) + privilege split + flood/UTF-8/ban pre-gates"
@@ -91,13 +91,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "MISSING the !IS_CLIENT(caller) guard in effect: VoteController.IsClient is still unwired in GameWorld (default _ => true), so the !IsClient branch (CmdCall:163) never fires. Low impact — the caller is generally already a connected client."
       - "ANNCE_VOTE_CALL announce + the networked Nagger vote HUD are not emitted by this core (broadcast text only)."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Vote_CallAndPass_SinglePlayerAutoMajority", result: pass }
-      - { kind: code, ref: "VoteController.cs:156-169 gamestart/IsClient/timeout_status guard chain; GameWorld.cs:923/928/931/934 now wires WarmupStage/IsPlayer/TimeoutActive/GameStartTime LIVE (Voting.TimeoutActive=()=>Timeout.Active, Voting.GameStartTime=()=>GameStartTime). Only Voting.IsClient is still unwired (grep 'Voting.IsClient=' -> no match; VoteController.cs:91 default _ => true).", result: pass }
+      - { kind: code, ref: "VoteController.cs:148-204 CmdCall full guard chain (voteban, sv_vote_call, game_starttime, already-called, spectator gate, IS_CLIENT, timeout_status, wait cooldown, nasty-char, whitelist parse, caller auto-yes); GameWorld.cs:955/960/963/966/970 wires WarmupStage/IsPlayer/TimeoutActive/GameStartTime/IsClient ALL LIVE. Voting.IsClient = p => (p.Flags & EntFlags.Client) != 0 (GameWorld.cs:970) — the FL_CLIENT flag, set in ClientConnect/cleared on disconnect.", result: pass }
     confidence: high
-    notes: "FIX (since baseline, Wave 5/6): the timeout-active guard (Voting.TimeoutActive=()=>Timeout.Active) and the pre-match game_starttime guard (Voting.GameStartTime=()=>GameStartTime) are now wired LIVE in GameWorld (the baseline-recorded dead defaults are gone). logic upgraded partial->faithful. Voteban check, sv_vote_call, already-called, spectator gate (now via wired IsPlayer), wait cooldown, nasty-char + whitelist parse, caller auto-yes all present and live. Sole residual: !IS_CLIENT still dead (IsClient unwired)."
+    notes: "FIX (drift re-audit 2026-06-25): the last dead predicate is now LIVE. Voting.IsClient is wired in GameWorld.cs:970 (p.Flags & FL_CLIENT) — the baseline-recorded `default _ => true` is gone — so the QC `caller && !IS_CLIENT(caller)` guard (CmdCall:164) now genuinely fires. logic is fully faithful with no residual dead branch. (Wave 5/6 fixes retained: timeout-active guard Voting.TimeoutActive=()=>Timeout.Active GameWorld.cs:963, pre-match game_starttime guard Voting.GameStartTime=()=>GameStartTime GameWorld.cs:966, spectator gate via wired IsPlayer.) Voteban check, sv_vote_call, already-called, wait cooldown, nasty-char + whitelist parse, caller auto-yes all present and live."
 
   - id: sv-commands-votes.vote.parse_whitelist
     name: "VoteCommand_parse — whitelist match, nasty-char sanitize, command rewriting"

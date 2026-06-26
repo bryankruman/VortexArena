@@ -3,12 +3,13 @@ category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 15
+  feature_count: 19
   worst_gaps:
     - "Midair-combo (primary_midaircombo_radius) is logic/values FAITHFUL (a dedicated MidairTriggerCombo with own/teammate/enemy gating + the separate midaircombo_speed first-orb delay), but it is still DEAD on the live path because the xonotic default cvar is 0 (it only runs in samual/xdf where radius=100)."
     - "IS_INDEPENDENT_PLAYER owner-gate is ported in the midair path but Entity.IsIndependentPlayer is hardwired false (DamageEntityState.cs:158, no independent-player mode ported), so it is dead-OFF-equivalent; the non-midair W_Electro_TriggerCombo still omits the gate entirely (same harmless effect)."
-    - "Combo explode-over-time (combo_duration, default 0) and sticky orbs (MOVETYPE_FOLLOW, stick default 0) are intentionally omitted; harmless at defaults."
-    - "Registry coverage gaps (newly added as rows this audit): bot wr_aim targeting, the Electro_Orb CSQC net-link/scale-pulse draw, and the MENUQC weapon-guide describe text."
+    - "Combo explode-over-time (combo_duration, default 0) and sticky orbs (stick default 0, stick_lifetime -1) are intentionally omitted; harmless at xonotic defaults (now tracked as dedicated rows)."
+    - "Orb damagedbycontents (default 1, ON) is NOT ported — a live orb is not destroyed by lava/slime/drowning in the port; the only on-by-default unported electro feature."
+    - "Registry coverage gaps tracked as rows: bot wr_aim targeting, the Electro_Orb CSQC net-link/scale-pulse draw, the MENUQC weapon-guide describe text, plus (this audit) the sticky-orb mechanic, combo explode-over-time, the secondary orb_limit rubble cap, and orb damagedbycontents."
 features:
   - id: electro.primary.fire_gate
     name: "Primary bolt fire gate (refire + refire2 interlock)"
@@ -453,6 +454,107 @@ features:
     gaps:
       - "The MENUQC weapon-guide describe paragraphs (electro.qc:753-767 — primary/secondary/combo description + DPS guide line) are not ported; the port has no in-menu weapon guide for electro."
     verification:
-      - { kind: code, ref: "Base electro.qc:749-769 describe() (MENUQC) has no corresponding port symbol; no weapon-guide page text for electro found in the port.", result: fail }
+      - { kind: code, ref: "Base electro.qc:753-767 describe() (MENUQC) — the GuideDescription override in Electro.cs:103-112 reproduces the three prose paragraphs (primary/secondary/combo + ammo + tactical tip) with the COLORED_NAME substitutions pre-filled. NOT reproduced: the trailing W_Guide_Keybinds line and the computed W_Guide_DPS_secondaryMultishotWithCombo metric line (those helpers aren't ported).", result: partial }
     confidence: medium
-    notes: "NEW ROW (registry coverage gap). MENUQC guide text — low priority, not gameplay; tracked for registry completeness."
+    notes: "CORRECTION since baseline (missing->partial): the describe prose IS ported via Electro.GuideDescription (Electro.cs:103-112) — the baseline's port_refs:[] / status missing was stale. Only the keybind + computed-DPS guide lines are absent (helpers unported). Low priority, MENUQC-only."
+
+  - id: electro.secondary.sticky_orb
+    name: "Sticky orb (stick to surface / follow corpse, MOVETYPE_FOLLOW)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:W_Electro_Orb_Stick"
+      - "common/weapons/weapon/electro.qc:W_Electro_Orb_Follow_Think"
+      - "common/weapons/weapon/electro.qc:W_Electro_Orb_Touch (stick branch)"
+    port_refs: []
+    constants:
+      - { name: "secondary_stick", base: "0 (OFF in xonotic)", port: "none", match: true }
+      - { name: "secondary_stick_lifetime", base: "-1 (inherit orb death_time)", port: "none", match: true }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: true
+    divergence_rationale: "Sticky orbs (g_balance_electro_secondary_stick) default 0 in bal-wep-xonotic.cfg, so the stick/MOVETYPE_FOLLOW path is never reached in stock play; intentionally omitted (the OrbTouch self-projectile guard is ported, only the stick branch inside it is absent)."
+    gaps:
+      - "W_Electro_Orb_Stick (re-spawn locked orb facing -trace_plane_normal, MOVETYPE_NONE, optional SetMovetypeFollow to the toucher with W_Electro_Orb_Follow_Think dropping it at the corpse on disconnect) and the stick_lifetime override are not ported. OrbTouch (Electro.cs:437-453) plays the bounce sound and sets the bounced flag but has no `if (stick)` branch."
+    verification:
+      - { kind: code, ref: "Grep 'Stick'/'Follow' in Electro.cs -> no match; OrbTouch has no stick branch. Base electro.qc:396-455,468-474. stick default 0 (bal-wep-xonotic.cfg:261).", result: fail }
+    confidence: high
+    notes: "NEW ROW (registry coverage gap). Off-by-default; harmless at stock balance. Was previously only noted inline under electro.secondary.orb_touch_explode."
+
+  - id: electro.combo.explode_over_time
+    name: "Combo explode-over-time (combo_duration sustained damage field)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:W_Electro_Orb_ExplodeOverTime"
+      - "common/weapons/weapon/electro.qc:W_Electro_ExplodeComboThink"
+      - "common/weapons/weapon/electro.qc:W_Electro_ExplodeCombo (combo_duration branch)"
+    port_refs: []
+    constants:
+      - { name: "combo_duration", base: "0 (OFF in xonotic; 1.5 in mario/testing)", port: "none", match: true }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: true
+    divergence_rationale: "g_balance_electro_combo_duration defaults 0 in bal-wep-xonotic.cfg (only 1.5 in bal-wep-mario / testing.cfg), so the explode-over-time path is dead in stock play; intentionally omitted."
+    gaps:
+      - "When combo_duration>0 the combo detonation spawns a persistent field (W_Electro_Orb_ExplodeOverTime) that re-RadiusDamages every think (combo_damage*PHYS_INPUT_TIMELENGTH) until ltime, ORing HITTYPE_SPAM to suppress repeat effects. ExplodeCombo (Electro.cs:532-544) always does the single instantaneous RadiusDamage; the combo_duration branch (electro.qc:172-178) is absent."
+    verification:
+      - { kind: code, ref: "ExplodeCombo (Electro.cs:532-544) has no combo_duration branch; no W_Electro_Orb_ExplodeOverTime/ExplodeComboThink analog. combo_duration default 0 (bal-wep-xonotic.cfg:214).", result: fail }
+    confidence: high
+    notes: "NEW ROW (registry coverage gap). Off-by-default; previously noted inline under electro.combo.trigger_chain (combo_duration constant). Tracked as its own line."
+
+  - id: electro.secondary.orb_limit
+    name: "Secondary orb count limit (oldest-orb rubble cap)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:W_Electro_Attack_Orb (LimitedElectroBallRubbleList / LimitedChildrenRubble)"
+    port_refs: []
+    constants:
+      - { name: "secondary_limit", base: "0 (OFF / unlimited in xonotic)", port: "none", match: true }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: true
+    divergence_rationale: "g_balance_electro_secondary_limit defaults 0 (unlimited) in bal-wep-xonotic.cfg, so the rubble-cap never engages in stock play; intentionally omitted."
+    gaps:
+      - "When secondary_limit>0 Base tracks live orbs in LimitedElectroBallRubbleList and detonates the oldest (adaptor_think2use_hittype_splash) once the per-player orb count exceeds the limit (ListNewChildRubble/LimitedChildrenRubble, electro.qc:569-575). AttackOrb (Electro.cs:372-434) has no orb-limit list/cap; a player can lay unbounded orbs."
+    verification:
+      - { kind: code, ref: "AttackOrb (Electro.cs:372-434) has no Limited*RubbleList logic. secondary_limit default 0 (bal-wep-xonotic.cfg:253).", result: fail }
+    confidence: high
+    notes: "NEW ROW (registry coverage gap). Off-by-default; harmless at stock balance. Same Limited*Rubble pattern is unported across the projectile weapons."
+
+  - id: electro.secondary.orb_damagedbycontents
+    name: "Orb destroyed by lava/slime/drowning (damagedbycontents)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:W_Electro_Attack_Orb (proj.damagedbycontents / g_damagedbycontents)"
+    port_refs: []
+    constants:
+      - { name: "secondary_damagedbycontents", base: "1 (ON by default)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_balance_electro_secondary_damagedbycontents defaults 1 (ON), so in Base a live orb resting in lava/slime or fully submerged takes content damage and detonates. The port never pushes the orb onto g_damagedbycontents (no DamagedByContents wiring for projectiles at all — only monsters/turrets/instagib reference the field), so an orb is immune to environmental hazards. The only on-by-default electro secondary feature that is unported."
+    verification:
+      - { kind: code, ref: "AttackOrb (Electro.cs:372-434) sets no DamagedByContents flag; grep DamagedByContents in src -> only Monsters/Turrets/Instagib/StatusEffects, no projectile-contents pipeline. damagedbycontents default 1 (bal-wep-xonotic.cfg:247).", result: fail }
+    confidence: high
+    notes: "NEW ROW (registry coverage gap, genuine on-by-default gap). Low impact (only matters for orbs that come to rest in hazard volumes) but it is the lone non-default-off secondary mechanic missing from the port."

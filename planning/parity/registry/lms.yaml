@@ -5,11 +5,11 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 23
   worst_gaps:
-    - "HEADLINE DIVERGENCE FIXED this pass: LMS is now a SINGLE continuous per-player-lives match. ActivateGameType (GameWorld.cs:1916) is `case LastManStanding lms: lms.Activate(); break;` with NO EnableRounds() — so Rounds is null, DeadPlayerThink's round gate (`!(Rounds is { IsRoundStarted: true })`, line 2401) is satisfied, and a mid-match dead player reaches ApplyRespawnTiming (line 2417): 0-lives ⇒ RESPAWN_SILENT denial, living ⇒ dynamic delay. The win is latched by the per-frame CheckWinningCondition (line 2329). The degenerate DefaultCanRoundEnd team-scan is gone. lms.respawn.continuous + lms.respawn.dynamic_delay liveness partial→live."
-    - "Leader GLOW now LIVE: OnPlayerPowerups (LastManStanding.cs:853) applies EF_ADDITIVE|EF_FULLBRIGHT to IsLeader players, subscribed in Activate() and fired live from PlayerFrameLogic.cs:325 (MutatorHooks.PlayerPowerups.Call). lms.leader.glow missing→faithful+live. STILL missing: no WP_LmsLeader radar waypoint SPRITE, no HUD mod-icon (ModIconsPanel has no LMS mode), and the recycled REDALIVE/BLUEALIVE/OBJECTIVE_STATUS leader stats are still not exported/networked (no source consumer of LeaderCount/LeadersVisible/LeadersLivesDiff outside LastManStanding.cs)."
-    - "Map/match reset now LIVE: ResetMapPlayers (LastManStanding.cs:479) re-livens eliminated players, zeroes+re-seeds LMS_RANK/LMS_LIVES, clears leader/forfeiter/win latches, and resets _lowestLives=999; wired from ResetMap (GameWorld.cs:3143) on a real match restart. lms.reset.map_players missing→faithful+live. Extra-life pickups LIVE (OnFilterItemDefinition retag + OnItemTouch grant), dormant under default g_lms_extra_lives=0."
-    - "Win condition improved: CheckWinningCondition (LastManStanding.cs:568) now models the tie-cancel (TopTwoLivesEqual ⇒ TimeLimitCancelled, QC WINNING_NEVER), the forfeit-win path (totalPlayed + GameStartTime + g_lms_forfeit_min_match_time read), the zero-living draw end, AND the warmup/pre-start guard (PreMatch). Residual gaps: TimeLimitCancelled has no host consumer (timelimit-cancel seam unwired), no campaign human-loss WINNING_YES case, ranks counted over LmsState not the QC frags set."
-    - "Still missing/partial: the spectate lockout (no Player OUT_OF_GAME frags sentinel + no ClientCommand_Spectate gate in ClientManager); the PlayerSpawn least-healthy late-join clone (last-forfeiter values recorded by RemovePlayer but no spawn-side consumer); the MakePlayerObserver (forced-observer non-disconnect) RemovePlayer caller (only the disconnect path is wired). LIVE+faithful: fixed loadout (200/200 + 60/320/160/180/0), weapon arena (most_available), regen/rot off, map-item suppression, dynamic vampire, weapon-drop forbid. All constants re-checked against Base sv_lms.qc + balance-xonotic.cfg this pass."
+    - "LEADER CLIENT-RENDER NOW FULLY LIVE this pass: the whole leader presentation layer that prior audits recorded as missing/partial is wired end-to-end. (1) Radar WAYPOINT SPRITE: LastManStanding.CollectWaypoints (LastManStanding.cs:836) emits a 'LmsLeader' sprite per in-game leader (registered Waypoints.cs:145 Add(\"LmsLeader\",...), RADARICON_FLAGCARRIER, +64z, LeadersVisible-gated), pulled live each tick by ServerNet.SendWaypoints (ServerNet.cs:1022) → client WaypointSpriteLayer. lms.leader.waypoint presentation missing→faithful, liveness partial→live. (2) HUD MOD-ICON: ModIconsPanel.DrawLms (ModIconsPanel.cs:813) renders the leader-count icon + flag_stalemate overlay + colored +N lives-diff, dispatched at ModIconsPanel.cs:205 (ModIconsMode.Lms) and Mode set at NetGame.cs:4045. lms.hud.mod_icon missing→faithful+live. (3) EXPORTED LEADER STATS: LeaderCount/LeadersLivesDiff/LeadersVisible are networked via GametypeStatusBlock Kind.Lms (Capture line 127-136, Deserialize 361-365) → NetGame.cs:4044-4048. The recycled REDALIVE/BLUEALIVE/OBJECTIVE_STATUS stats now have real client consumers."
+    - "WARMUP GUARD FIXED (baseline missed it): OnDeath (LastManStanding.cs:522) wraps the life-loss in `if (!PreMatch && !st.OutOfGame)` where PreMatch = InWarmup || time<=GameStartTime — exactly Base GiveFragsForKill's `if (!warmup_stage && time > game_starttime)` (sv_lms.qc:605). The prior baseline gap claiming OnDeath has no warmup/start-time guard is STALE; lms.lives.lose_on_death gap removed."
+    - "LMS remains a SINGLE continuous per-player-lives match (no EnableRounds). ActivateGameType (GameWorld.cs:2392) is `case LastManStanding lms: lms.Activate(); break;`; Rounds stays null so DeadPlayerThink reaches ApplyRespawnTiming (0-lives ⇒ RESPAWN_SILENT, living ⇒ dynamic delay) and the win is latched by per-frame CheckWinningCondition (GameWorld.cs:2832). Host line numbers shifted from prior baseline (Activate 1916→2392, DriveGametypeFrame LMS block →2822, ApplyRespawnTiming gate →2920, ResetMap →3847) but the wiring is intact."
+    - "Win condition: CheckWinningCondition (LastManStanding.cs:575) models the warmup/pre-start guard (PreMatch), the ≥2-living top-two tie-cancel (TopTwoLivesEqual ⇒ TimeLimitCancelled, QC WINNING_NEVER), the campaign human-loss WINNING_YES case (line 604, gated on g_campaign + CampaignBotsMayStart — NEWLY present, prior baseline said missing), the forfeit-win path reading g_lms_forfeit_min_match_time, the no-more-joiners survivor win, and the zero-living draw end. Residual: TimeLimitCancelled still has no host consumer (timelimit-cancel seam unwired)."
+    - "Still missing/partial: the spectate lockout (no Player OUT_OF_GAME frags sentinel + no ClientCommand_Spectate gate in ClientManager); the PlayerSpawn least-healthy late-join clone (RemovePlayer RECORDS last-forfeiter values but no spawn-side consumer); the MakePlayerObserver caller for RemovePlayer (the MutatorHooks.MakePlayerObserver dispatch now EXISTS at ClientManager.cs:523 but LMS does NOT subscribe to it, so only the disconnect path is wired). LIVE+faithful: fixed loadout (200/200 + 60/320/160/180/0), weapon arena (most_available), regen/rot off, map-item suppression, dynamic vampire, weapon-drop forbid, leader glow. All constants re-checked against Base sv_lms.qc + balance-xonotic.cfg this pass."
 
 features:
   - id: lms.lives.lose_on_death
@@ -29,12 +29,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base GiveFragsForKill (sv_lms.qc:62) gates the life loss on `if (warmup_stage || time <= game_starttime) return;`; the port's OnDeath has no warmup/start-time guard (deaths during warmup would still cost a life), though the round gate masks this in practice. UNCHANGED — re-confirmed against Base line 62."
+    gaps: []
     verification:
-      - { kind: code, ref: "OnDeath (LastManStanding.cs:512) decrements Lives, zeroes frag score; _deathHandler=OnDeath subscribed to Combat.Death in Activate(); Activate reached via GameWorld.cs:1916 `case LastManStanding lms: lms.Activate(); break;` (EnableRounds removed this pass)", result: pass }
+      - { kind: code, ref: "OnDeath (LastManStanding.cs:512) gates the life loss on `if (!PreMatch && !st.OutOfGame)` (line 522) where PreMatch = InWarmup || Time<=GameStartTime — exact match to Base GiveFragsForKill's `if (!warmup_stage && time > game_starttime)` (sv_lms.qc:605). Decrements Lives, zeroes frag score; _deathHandler subscribed to Combat.Death in Activate(); Activate reached via GameWorld.cs:2392.", result: pass }
     confidence: high
-    notes: "Unchanged. Lazy GetState seeds StartingLives on first death so the lives count is correct without an explicit join seed; the AddPlayer scoreboard seed is ALSO live (see lms.scoreboard.columns)."
+    notes: "FIXED-RECLASSIFIED this pass: the prior baseline gap (no warmup/start-time guard) was STALE — OnDeath's `!PreMatch` guard exactly mirrors Base GiveFragsForKill. Lazy GetState seeds StartingLives on first death; the AddPlayer scoreboard seed is also live."
 
   - id: lms.lives.eliminate_at_zero
     name: "At 0 lives the player is out of the game with a finishing rank"
@@ -45,7 +44,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:OnDeath"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:ApplyRespawnTiming"
-      - "src/XonoticGodot.Server/GameWorld.cs:DeadPlayerThink (line 2417 ApplyRespawnTiming)"
+      - "src/XonoticGodot.Server/GameWorld.cs:DeadPlayerThink (ApplyRespawnTiming at line 2920)"
     constants: []
     status:
       logic: faithful
@@ -60,9 +59,9 @@ features:
       - "Base sets frag_target.frags = FRAGS_PLAYER_OUT_OF_GAME (sv_lms.qc:617) so the engine/scoreboard treat the player as ranked-out; the port tracks OutOfGame in LmsState (and networks LMS_RANK, which the local InfoMessage + win count read) but never sets a Player.Frags OUT_OF_GAME sentinel, so the Base ClientCommand_Spectate gate (keyed on frags==FRAGS_PLAYER_OUT_OF_GAME) is still absent (see lms.rules.no_throw_and_spec_lockout)."
       - "Rank is counted over LmsState players, not the QC FRAGS_PLAYER set; equivalent on the live path now that RemovePlayer reshuffles ranks on disconnect (lms.forfeit.remove_player) but a different source of truth than Base."
     verification:
-      - { kind: code, ref: "OnDeath (LastManStanding.cs:512) sets Rank=CountAlive()+1 at 0 lives + SyncColumns (networks LMS_RANK). ApplyRespawnTiming (LastManStanding.cs:222) sets RespawnFlag.Silent + RespawnTime=now+2 for a 0-lives player and is called LIVE from DeadPlayerThink (GameWorld.cs:2417) — the QC CalculateRespawnTime RESPAWN_SILENT denial (Base sv_lms.qc:573-575) is wired. With EnableRounds() removed the denial now fires on every mid-match elimination (no round gate masking).", result: pass }
+      - { kind: code, ref: "OnDeath (LastManStanding.cs:512) sets Rank=CountAlive()+1 at 0 lives + SyncColumns (networks LMS_RANK). ApplyRespawnTiming (LastManStanding.cs:211) sets RespawnFlag.Silent + RespawnTime=now+2 for a 0-lives player and is called LIVE from DeadPlayerThink (GameWorld.cs:2920) — the QC CalculateRespawnTime RESPAWN_SILENT denial (Base sv_lms.qc:571-576) is wired. With no EnableRounds() the denial fires on every mid-match elimination.", result: pass }
     confidence: high
-    notes: "The 0-lives respawn-denial half (CalculateRespawnTime ⇒ RESPAWN_SILENT + time+2) is wired live and — now that LMS no longer calls EnableRounds() — fires unconditionally on the live path (the prior round-gate co-decision caveat is resolved; see lms.respawn.continuous)."
+    notes: "The 0-lives respawn-denial half is wired live and fires unconditionally (no round gate, since LMS doesn't call EnableRounds). Only the Player.Frags OUT_OF_GAME sentinel / spectate gate remains missing."
 
   - id: lms.win.last_standing
     name: "Match ends when at most one player still has lives; survivor wins"
@@ -70,9 +69,9 @@ features:
     base_refs:
       - "common/gametypes/gametype/lms/sv_lms.qc:WinningCondition_LMS"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:CheckWinningCondition (line 568)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:CheckWinningCondition (line 575)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:TopTwoLivesEqual / TimeLimitCancelled / WinSurvivor"
-      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (line 2329)"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (line 2832)"
     constants:
       - { name: "g_lms_forfeit_min_match_time", base: "0 (cvar, default 0)", port: "read (Cvar g_lms_forfeit_min_match_time, default 0)", match: true }
     status:
@@ -86,12 +85,12 @@ features:
     divergence_rationale: null
     gaps:
       - "TimeLimitCancelled (TopTwoLivesEqual ⇒ QC WINNING_NEVER) is computed but has NO host consumer — the timelimit-cancel seam isn't wired, so an equal-top-two tie does not actually suppress a timelimit expiry. The latch is correct; the effect is unhooked (additive, non-weakening)."
-      - "No campaign human-loss WINNING_YES case (Base sv_lms.qc:85-93: in g_campaign with bots started, a human at 0 lives ends the match). Port has no campaign branch in CheckWinningCondition."
+      - "The campaign human-loss WINNING_YES case (Base sv_lms.qc:85-93) IS now modeled (CheckWinningCondition line 604, gated on g_campaign + CampaignBotsMayStart), but the CampaignBotsMayStart hook (static Func<bool>) must be set by the server for it to fire — unverified whether the server actually wires it; in a non-campaign/headless match it is null ⇒ false (correct early-out)."
       - "Ranks/totalPlayed are counted over LmsState, not the QC FRAGS_PLAYER / LMS_RANK set; equivalent result on the live path but a different source of truth. Win latched from a per-frame poll (DriveGametypeFrame) vs Base's CheckRules_World tick — tick ordering vs Base unverified (timing partial)."
     verification:
-      - { kind: code, ref: "CheckWinningCondition (LastManStanding.cs:568) now models: PreMatch warmup/start guard (line 576), the ≥2-living tie-cancel via TopTwoLivesEqual ⇒ TimeLimitCancelled (line 596), the exactly-one-living forfeit-win path reading g_lms_forfeit_min_match_time (line 608) gated on totalPlayed>0 && GameStartTime>0 (line 609), the no-more-joiners survivor win (NewPlayerLives()==0 ⇒ WinSurvivor, line 618), and the zero-living draw end (line 623). Called each frame from DriveGametypeFrame (GameWorld.cs:2329); MatchEnded consumed at GameWorld.cs:313.", result: pass }
+      - { kind: code, ref: "CheckWinningCondition (LastManStanding.cs:575) models: PreMatch warmup/start guard (line 583), the campaign human-loss branch (line 604), the ≥2-living tie-cancel via TopTwoLivesEqual ⇒ TimeLimitCancelled (line 620), the exactly-one-living forfeit-win path reading g_lms_forfeit_min_match_time (line 632) gated on totalPlayed>0 && GameStartTime>0, the no-more-joiners survivor win (NewPlayerLives()==0 ⇒ WinSurvivor, line 642), and the zero-living draw end (line 647). Called each frame from DriveGametypeFrame (GameWorld.cs:2832).", result: pass }
     confidence: high
-    notes: "IMPROVED this pass (logic partial→faithful, values partial→faithful, timing unknown→partial). The warmup guard, top-two tie-cancel, forfeit-win path (now reading g_lms_forfeit_min_match_time), and zero-living draw are all modeled. Residuals: TimeLimitCancelled has no host consumer, no campaign human-loss case, and the per-frame poll's tick ordering vs Base's CheckRules_World is unverified. forfeit-min cvar default 0 re-confirmed sv_lms.qc:10."
+    notes: "IMPROVED vs an older baseline (the campaign human-loss case is now present, prior audit marked it missing). Residuals: TimeLimitCancelled has no host consumer, CampaignBotsMayStart wiring unverified, and the per-frame poll's tick ordering vs Base's CheckRules_World is unverified. forfeit-min cvar default 0 re-confirmed sv_lms.qc:10."
 
   - id: lms.respawn.continuous
     name: "Living players respawn continuously throughout the single match (NOT round-based)"
@@ -100,8 +99,8 @@ features:
       - "common/gametypes/gametype/lms/sv_lms.qc:MUTATOR_HOOKFUNCTION(lms, CalculateRespawnTime)"
       - "common/gametypes/gametype/lms/sv_lms.qc:MUTATOR_HOOKFUNCTION(lms, ReadLevelCvars)"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (case LastManStanding lms: lms.Activate(); break;) (line 1916)"
-      - "src/XonoticGodot.Server/GameWorld.cs:DeadPlayerThink (line 2397; round gate at 2401 satisfied since Rounds is null) → ApplyRespawnTiming (line 2417)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (case LastManStanding lms: lms.Activate(); break;) (line 2392)"
+      - "src/XonoticGodot.Server/GameWorld.cs:DeadPlayerThink → ApplyRespawnTiming (line 2920)"
     constants: []
     status:
       logic: faithful
@@ -115,9 +114,9 @@ features:
     gaps:
       - "Base disables sv_ready_restart_after_countdown (ReadLevelCvars hook) because it can't reset players mid-match without zeroing lives; the port has no ReadLevelCvars-equivalent so sv_ready_restart_after_countdown isn't forced off — minor, since the port's reset goes through ResetMapPlayers (lms.reset.map_players) which DOES re-seed lives cleanly."
     verification:
-      - { kind: code, ref: "GameWorld.cs:1916 `case LastManStanding lms: lms.Activate(); break;` — NO EnableRounds() (confirmed in current source). Rounds stays null for LMS, so DeadPlayerThink's gate `!(Rounds is { IsRoundStarted: true })` (line 2401) is satisfied and a mid-match dead living player reaches ApplyRespawnTiming (line 2417): 0-lives ⇒ RESPAWN_SILENT, living ⇒ dynamic delay. CheckWinningCondition latches the win per-frame (line 2329).", result: pass }
+      - { kind: code, ref: "GameWorld.cs:2392 `case LastManStanding lms: lms.Activate(); break;` — NO EnableRounds() (confirmed in current source). Rounds stays null for LMS, so DeadPlayerThink reaches ApplyRespawnTiming (line 2920): 0-lives ⇒ RESPAWN_SILENT, living ⇒ dynamic delay. CheckWinningCondition latches the win per-frame (line 2832).", result: pass }
     confidence: high
-    notes: "FIXED this pass (logic partial→faithful, liveness partial→live, timing unknown→faithful). The EnableRounds() call was removed; LMS now runs as the Base continuous per-lives match — respawn timing owned by ApplyRespawnTiming, win latched by per-frame CheckWinningCondition, and the degenerate FFA DefaultCanRoundEnd team-scan no longer applies."
+    notes: "LMS runs as the Base continuous per-lives match — respawn timing owned by ApplyRespawnTiming, win latched by per-frame CheckWinningCondition. Host line numbers shifted (Activate 1916→2392) but the wiring is unchanged."
 
   - id: lms.lives.starting_count
     name: "Starting lives = mapinfo lives= (default 5, legacy 9) / override, capped at fraglimit"
@@ -143,11 +142,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base derives lives from the per-map mapinfo string `lives=N` (default 5) with `m_legacydefaults \"9 20 0\"` selecting legacy=9; the port hard-codes DefaultLives=5 and reads a NON-EXISTENT cvar `g_lms_lives` as its 'primary' source. Net: the default still lands on 5, but the port ignores both the per-map `lives=` override and the legacy-defaults switch. UNCHANGED."
+      - "Base derives lives from the per-map mapinfo string `lives=N` (default 5) with `m_legacydefaults \"9 20 0\"` selecting legacy=9 (lms.qh:11/22 re-confirmed); the port hard-codes DefaultLives=5 and reads a NON-EXISTENT cvar `g_lms_lives` as its 'primary' source (Base has only g_lms_lives_override — grep confirmed no g_lms_lives). Net: the default still lands on 5, but the port ignores both the per-map `lives=` override and the legacy-defaults switch. UNCHANGED."
     verification:
-      - { kind: code, ref: "StartingLives (LastManStanding.cs:226) reads g_lms_lives_override (>0), else g_lms_lives (no such Base cvar ⇒ empty ⇒ falls through), else DefaultLives=5, capped at fraglimit", result: pass }
+      - { kind: code, ref: "StartingLives (LastManStanding.cs:247) reads g_lms_lives_override (>0), else the live fraglimit (mapinfo lives stand-in), else DefaultLives=5, capped at fraglimit. NOTE the doc reference to g_lms_lives is in the CvarLivesDefault const = g_lms_lives_override; the actual fallthrough uses fraglimit, not a g_lms_lives cvar.", result: pass }
     confidence: high
-    notes: "Unchanged. logic+values partial: the mapinfo-driven mechanism and legacy switch are not modeled even though the modern default value is correct. Seeded both lazily via GetState AND explicitly via the live AddPlayer join path."
+    notes: "Unchanged. logic+values partial: the mapinfo-driven mechanism and legacy switch are not modeled even though the modern default value is correct. Seeded lazily via GetState AND explicitly via the live AddPlayer join path."
 
   - id: lms.join.new_player_lives_gate
     name: "Late-join lives gate (lowest-lives clamp + can't-join lockout)"
@@ -161,8 +160,8 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:NewPlayerLives (line 151)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:CanJoin (line 382)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:AddPlayer (line 363)"
-      - "src/XonoticGodot.Server/GameWorld.cs:926-929 (Clients.GametypeJoinGate / GametypeOnJoin)"
-      - "src/XonoticGodot.Server/ClientManager.cs:JoinAllowed + GametypeOnJoin (line 264)"
+      - "src/XonoticGodot.Server/GameWorld.cs (Clients.GametypeJoinGate / GametypeOnJoin)"
+      - "src/XonoticGodot.Server/ClientManager.cs:JoinAllowed + GametypeOnJoin"
     constants:
       - { name: "g_lms_join_anytime", base: "1", port: "read", match: true }
       - { name: "g_lms_last_join", base: "3", port: "read", match: true }
@@ -176,12 +175,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base tracks lms_lowest_lives as a running global updated in GiveFragsForKill; the port recomputes LowestLives() from LmsState on demand (equivalent result, different mechanism)."
-      - "The late joiner gets the correct lowest-life count and the lockout is enforced, but the late-join least-healthy HEALTH/ARMOR clone (Base PlayerSpawn, tracking last_forfeiter_*) is still not applied to the joiner's loadout — RemovePlayer now RECORDS the last-forfeiter values but the spawn side that consumes them is still absent (see lms.loadout.start_items)."
+      - "Base tracks lms_lowest_lives as a running global updated in GiveFragsForKill; the port recomputes LowestLives() from a running _lowestLives field updated in OnDeath (equivalent result, different mechanism)."
+      - "The late joiner gets the correct lowest-life count and the lockout is enforced, but the late-join least-healthy HEALTH/ARMOR clone (Base PlayerSpawn, tracking last_forfeiter_*) is still not applied to the joiner's loadout — RemovePlayer RECORDS the last-forfeiter values but the spawn side that consumes them is still absent (see lms.loadout.start_items)."
     verification:
-      - { kind: code, ref: "GameWorld.cs:926-928 wires Clients.GametypeJoinGate = p => (GameType is not LastManStanding lms || lms.CanJoin(p, LmsPreStart)) && GametypeHasFreeSlot(p); :929 GametypeOnJoin = p => { if (GameType is LastManStanding lms) lms.AddPlayer(p, !LmsPreStart); }. JoinAllowed (ClientManager.cs) consults GametypeJoinGate; GametypeOnJoin fires at ClientManager.cs:264. LmsPreStart = Warmup.WarmupStage || Time<=GameStartTime (GameWorld.cs:934). CanJoin refuses a late joiner when NewPlayerLives()==0; AddPlayer clamps a mid-match joiner to NewPlayerLives() and seeds LMS_LIVES.", result: pass }
+      - { kind: code, ref: "GameWorld wires Clients.GametypeJoinGate = p => (GameType is not LastManStanding lms || lms.CanJoin(p, LmsPreStart)) && GametypeHasFreeSlot(p); GametypeOnJoin = p => { if (GameType is LastManStanding lms) lms.AddPlayer(p, !LmsPreStart); }. CanJoin refuses a late joiner when NewPlayerLives()==0; AddPlayer clamps a mid-match joiner to NewPlayerLives() and seeds LMS_LIVES. (Host line numbers shifted vs prior baseline ~926-934.)", result: pass }
     confidence: high
-    notes: "dead→live, logic faithful. The lowest-lives clamp + the 'match locked to late joiners' lockout run on the real observer-join path (LmsPreStart = warmup||time<=game_starttime gives the free-join semantics Base uses pre-start). LmsExtrasTests covers the formula directly."
+    notes: "Live, logic faithful. The lowest-lives clamp + the 'match locked to late joiners' lockout run on the real observer-join path. LmsExtrasTests covers the formula directly."
 
   - id: lms.respawn.dynamic_delay
     name: "Dynamic respawn delay scaling with lives behind the leader"
@@ -191,7 +190,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:RespawnDelayFor"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:ApplyRespawnTiming"
-      - "src/XonoticGodot.Server/GameWorld.cs:DeadPlayerThink (line 2277)"
+      - "src/XonoticGodot.Server/GameWorld.cs:DeadPlayerThink (line 2920)"
     constants:
       - { name: "g_lms_dynamic_respawn_delay", base: "1", port: "read", match: true }
       - { name: "g_lms_dynamic_respawn_delay_base", base: "2", port: "2", match: true }
@@ -208,9 +207,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ApplyRespawnTiming (LastManStanding.cs:211) calls RespawnDelayFor(plLives, p) when g_lms_dynamic_respawn_delay!=0 and sets RespawnTime=now+delay; called live from DeadPlayerThink (GameWorld.cs:2417). RespawnDelayFor models the pl_cnt==1 ⇒ flat-base branch (LastManStanding.cs:197-198). With EnableRounds() removed (lms.respawn.continuous fixed), Rounds is null so the DeadPlayerThink gate (line 2401) no longer short-circuits — the dynamic delay drives respawn timing on every mid-match death. Base defaults 2/3/20 re-confirmed sv_lms.qc:20-23.", result: pass }
+      - { kind: code, ref: "ApplyRespawnTiming (LastManStanding.cs:211) calls RespawnDelayFor(plLives, p) when g_lms_dynamic_respawn_delay!=0 and sets RespawnTime=now+delay; called live from DeadPlayerThink (GameWorld.cs:2920). RespawnDelayFor models the pl_cnt==1 ⇒ flat-base branch (LastManStanding.cs:197). Rounds is null so the dynamic delay drives respawn timing on every mid-match death. Base defaults 2/3/20 re-confirmed sv_lms.qc:20-23.", result: pass }
     confidence: high
-    notes: "FIXED this pass (liveness partial→live). The round-gate masking that previously made this partial is gone now that LMS no longer calls EnableRounds(). The 2-player flat-base branch is modeled (logic faithful); all constants verified against Base."
+    notes: "Live. The 2-player flat-base branch is modeled (logic faithful); all constants verified against Base."
 
   - id: lms.loadout.start_items
     name: "Fixed LMS start loadout (health/armor/ammo) + least-healthy late-join clone"
@@ -240,9 +239,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "PlayerSpawn least-healthy-clone (a late joiner spawns with the min health/armor among same-lives living players, tracking last_forfeiter_*) is STILL not applied: RemovePlayer RECORDS LastForfeiter Lives/Health/Armor (LastManStanding.cs:414-424), but no PlayerSpawn-equivalent reads them to clamp a late joiner's spawn health/armor. The base spawn loadout itself is faithful + live; only this late-join equalisation sub-feature remains."
+      - "PlayerSpawn least-healthy-clone (a late joiner spawns with the min health/armor among same-lives living players, tracking last_forfeiter_*) is STILL not applied: RemovePlayer RECORDS LastForfeiter Lives/Health/Armor (LastManStanding.cs:443-453), but no PlayerSpawn-equivalent reads them to clamp a late joiner's spawn health/armor. The base spawn loadout itself is faithful + live; only this late-join equalisation sub-feature remains."
     verification:
-      - { kind: code, ref: "OnSetStartItems (LastManStanding.cs:676) subscribed in Activate(); fired live from SpawnSystem.ComputeStartItems → ApplyStartLoadout (PutPlayer). Sets 200/200/60/320/160/180/0, strips UNLIMITED_AMMO/SUPERWEAPONS, adds UNLIMITED_AMMO when g_use_ammunition==0 — exact match to Base SetStartItems (sv_lms.qc:628-639) + balance-xonotic.cfg.", result: pass }
+      - { kind: code, ref: "OnSetStartItems (LastManStanding.cs:869) subscribed in Activate(); fired live from SpawnSystem.ComputeStartItems → ApplyStartLoadout (PutPlayer). Sets 200/200/60/320/160/180/0, strips UNLIMITED_AMMO/SUPERWEAPONS, adds UNLIMITED_AMMO when g_use_ammunition==0 — exact match to Base SetStartItems (sv_lms.qc:626-639) + balance-xonotic.cfg.", result: pass }
     confidence: high
     notes: "Faithful + live for the loadout. The last-forfeiter recording side is live (RemovePlayer), but the spawn-side consumer is still missing, so the late-join clone sub-feature remains the only gap."
 
@@ -268,7 +267,7 @@ features:
     gaps:
       - "Port's ExpandWeaponArena resolves `most_available` to weapons_most (the no-map-weapon fallback Base itself uses when no map weapons are present) rather than intersecting with the actual map weapon set — a documented port-wide divergence. For LMS this is benign in practice (LMS suppresses map items anyway), but it is not a true `_available` intersection."
     verification:
-      - { kind: code, ref: "OnSetWeaponArena (LastManStanding.cs:698) subscribed in Activate(); defaults arena to g_lms_weaponarena ('most_available') when unset/'0' — exact match to Base SetWeaponArena. Fired live from SpawnSystem.ComputeStartItems; arena expanded via ExpandWeaponArena and applied in ApplyStartLoadout.", result: pass }
+      - { kind: code, ref: "OnSetWeaponArena (LastManStanding.cs:891) subscribed in Activate(); defaults arena to g_lms_weaponarena ('most_available') when unset/'0' — exact match to Base SetWeaponArena (sv_lms.qc:719-723). Fired live from SpawnSystem.ComputeStartItems; arena expanded via ExpandWeaponArena and applied in ApplyStartLoadout.", result: pass }
     confidence: high
     notes: "Faithful + live. The only residual is the port-wide `_available` map-intersection stand-in, not an LMS-specific defect."
 
@@ -279,7 +278,7 @@ features:
       - "common/gametypes/gametype/lms/sv_lms.qc:MUTATOR_HOOKFUNCTION(lms, PlayerRegen)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:OnPlayerRegen"
-      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:46 (MutatorHooks.PlayerRegen.Call)"
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs (MutatorHooks.PlayerRegen.Call)"
     constants:
       - { name: "g_lms_regenerate", base: "0", port: "0", match: true }
       - { name: "g_lms_rot", base: "0", port: "0", match: true }
@@ -294,9 +293,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnPlayerRegen (LastManStanding.cs:713) subscribed in Activate(); returns (!regenerate && !rot) — both default 0 ⇒ true ⇒ regen+rot fully off, matching Base's `return (!autocvar_g_lms_regenerate && !autocvar_g_lms_rot)`. Fired live from PlayerFrameLogic.cs:46 (regenDisabled gate).", result: pass }
+      - { kind: code, ref: "OnPlayerRegen (LastManStanding.cs:925) subscribed in Activate(); returns (!regenerate && !rot) — both default 0 ⇒ true ⇒ regen+rot fully off, matching Base's `return (!autocvar_g_lms_regenerate && !autocvar_g_lms_rot)` (sv_lms.qc:512). Fired live from PlayerFrameLogic (regenDisabled gate).", result: pass }
     confidence: high
-    notes: "Faithful + live. NOTE one minor difference vs Base: Base zeroes the regen factor (M_ARGV2) / rot factor (M_ARGV3) individually so one can be on while the other off; the port returns a single bool — equivalent in the both-off default case (the shipped config), but the asymmetric case is collapsed."
+    notes: "Faithful + live. One minor difference vs Base: Base zeroes the regen factor (M_ARGV2) / rot factor (M_ARGV3) individually so one can be on while the other off; the port returns a single bool — equivalent in the both-off default case (the shipped config), but the asymmetric case is collapsed."
 
   - id: lms.items.no_pickups
     name: "Item pickups suppressed (HealthMega->ExtraLife when enabled)"
@@ -306,7 +305,7 @@ features:
       - "common/gametypes/gametype/lms/sv_lms.qc:MUTATOR_HOOKFUNCTION(lms, FilterItem)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:OnFilterItemDefinition"
-      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:103 (MutatorHooks.FilterItemDefinition.Call)"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs (MutatorHooks.FilterItemDefinition.Call)"
     constants:
       - { name: "g_lms_items", base: "0", port: "0", match: true }
       - { name: "g_pickup_items", base: "-1", port: "-1 (read)", match: true }
@@ -320,10 +319,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FilterItemDefinition is faithful + live. The HealthMega→extralife *replacement* (Base's separate FilterItem hook + lms_replace_with_extralife, sv_lms.qc:653-672) is ALSO folded into OnFilterItemDefinition: a HealthMega is retagged in place to item_extralife (RES_HEALTH zeroed) and grants lives via the live MutatorHooks.ItemTouch path. Since g_lms_extra_lives defaults 0, both Base and port suppress everything, so the live default behavior matches (see lms.item.extra_life)."
+      - "FilterItemDefinition is faithful + live. The HealthMega→extralife *replacement* (Base's separate FilterItem hook + lms_replace_with_extralife, sv_lms.qc:653-672) is folded into OnFilterItemDefinition: a HealthMega is retagged in place to item_extralife (RES_HEALTH zeroed) and grants lives via the live MutatorHooks.ItemTouch path. Since g_lms_extra_lives defaults 0, both Base and port suppress everything, so the live default behavior matches (see lms.item.extra_life)."
       - "DEVIATION (port mechanics): the port matches item definitions by ClassName/NetName string ('item_extralife'/'item_health_mega'/'item_healthmega') because the item registry isn't fully ported, vs Base comparing def == ITEM_ExtraLife/ITEM_HealthMega pointers. Same stand-in Mayhem/NIX use."
     verification:
-      - { kind: code, ref: "OnFilterItemDefinition (LastManStanding.cs:770) subscribed in Activate(); returns true (filter out) unless g_lms_items!=0 || g_pickup_items>0, with the powerups+extra_lives keep-exception — matches Base FilterItemDefinition (sv_lms.qc:641-651). Fired live from StartItem.Spawn (StartItem.cs:103); a true return deletes the item.", result: pass }
+      - { kind: code, ref: "OnFilterItemDefinition (LastManStanding.cs:982) subscribed in Activate(); returns true (filter out) unless g_lms_items!=0 || g_pickup_items>0, with the powerups+extra_lives keep-exception — matches Base FilterItemDefinition (sv_lms.qc:641-651). Fired live from StartItem.Spawn; a true return deletes the item.", result: pass }
     confidence: high
     notes: "Faithful + live for the suppression. The HealthMega→extralife replacement half is also wired (see lms.item.extra_life) but dormant under the default g_lms_extra_lives=0."
 
@@ -333,8 +332,8 @@ features:
     base_refs:
       - "common/gametypes/gametype/lms/sv_lms.qc:lms_UpdateLeaders"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:UpdateLeaders (line 732)"
-      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (line 2324)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:UpdateLeaders (line 756)"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (line 2827)"
     constants:
       - { name: "g_lms_leader_lives_diff", base: "2", port: "2", match: true }
       - { name: "g_lms_leader_minpercent", base: "0.5", port: "0.5", match: true }
@@ -348,12 +347,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "UpdateLeaders runs each frame (DriveGametypeFrame line 2324) and sets IsLeader/LeadersLivesDiff faithfully. The leaders now drive BOTH the live VISIBLE_LEADER/OTHER centerprints (lms.leader.notifications) AND the live EF_ADDITIVE|EF_FULLBRIGHT leader glow (lms.leader.glow, fixed this pass). Still dead/missing: the WP_LmsLeader radar waypoint sprite + HUD mod-icon + the exported REDALIVE/BLUEALIVE/OBJECTIVE_STATUS leader stats."
+      - "UpdateLeaders runs each frame (DriveGametypeFrame line 2827) and sets IsLeader/LeadersLivesDiff faithfully. The leaders now drive the live VISIBLE_LEADER/OTHER centerprints (lms.leader.notifications), the live EF_ADDITIVE|EF_FULLBRIGHT leader glow (lms.leader.glow), the live WP_LmsLeader radar waypoint (lms.leader.waypoint), AND the live HUD mod-icon via the networked LeaderCount/LeadersLivesDiff/LeadersVisible stats (lms.hud.mod_icon) — ALL leader effects are now wired. No remaining dead leader effect."
       - "Base also re-runs lms_UpdateLeaders from PlayerDied and lms_RemovePlayer; the port drives it once per frame AND from RemovePlayer (LastManStanding.cs:458), but the PlayerDied re-trigger is folded into the per-frame call only (acceptable equivalent)."
     verification:
-      - { kind: code, ref: "DriveGametypeFrame (GameWorld.cs:2324) calls lms.UpdateLeaders() then lms.DriveLeaderVisibility() (line 2328); RemovePlayer also calls UpdateLeaders (LastManStanding.cs:458). Leaders feed the centerprints AND the per-frame glow (OnPlayerPowerups); the leader STATS still have no exporter. Base constants (2/0.5) re-confirmed sv_lms.qc:15-16.", result: pass }
+      - { kind: code, ref: "DriveGametypeFrame (GameWorld.cs:2827) calls lms.UpdateLeaders() then lms.DriveLeaderVisibility() (line 2831); RemovePlayer also calls UpdateLeaders (LastManStanding.cs:457). Leaders feed centerprints + glow + the WP_LmsLeader waypoint (CollectWaypoints→SendWaypoints) + the HUD mod-icon (GametypeStatusBlock Kind.Lms → ModIconsPanel.DrawLms). Base constants (2/0.5) re-confirmed sv_lms.qc:15-16.", result: pass }
     confidence: high
-    notes: "Computed live; it now drives two real observable effects (centerprints + glow). The leader waypoint-sprite + HUD mod-icon + exported stats remain dead/missing."
+    notes: "Computed live; it now drives FOUR real observable effects (centerprints + glow + radar waypoint + HUD mod-icon). The exported leader stats are now networked. No leader effect remains dead this pass."
 
   - id: lms.leader.glow
     name: "Leader glow effect (EF_ADDITIVE | EF_FULLBRIGHT)"
@@ -361,8 +360,8 @@ features:
     base_refs:
       - "common/gametypes/gametype/lms/sv_lms.qc:MUTATOR_HOOKFUNCTION(lms, PlayerPowerups)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:OnPlayerPowerups (line 853)"
-      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:325 (MutatorHooks.PlayerPowerups.Call)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:OnPlayerPowerups (line 908)"
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs (MutatorHooks.PlayerPowerups.Call)"
     constants: []
     status:
       logic: faithful
@@ -374,11 +373,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base keys the glow off the leader's attached waypoint sprite (player.waypointsprite_attachedforcarrier); the port keys it directly off LmsState.IsLeader (the same set the waypoint would attach to via UpdateLeaders) since the WP_LmsLeader sprite itself isn't ported (see lms.leader.waypoint). Equivalent leader→glow mapping, different keying."
+      - "Base keys the glow off the leader's attached waypoint sprite (player.waypointsprite_attachedforcarrier); the port keys it directly off LmsState.IsLeader (the same set the waypoint attaches to via UpdateLeaders / CollectWaypoints). Equivalent leader→glow mapping, different keying — minor, since the waypoint set IS the IsLeader set."
     verification:
-      - { kind: code, ref: "OnPlayerPowerups (LastManStanding.cs:853) subscribed in Activate() (MutatorHooks.PlayerPowerups.Add, line 316); for an in-game IsLeader player sets Effects |= EffectFlags.Additive | EffectFlags.FullBright, else clears those bits — exact match to Base PlayerPowerups (sv_lms.qc:515-522). Fired LIVE each frame from PlayerFrameLogic.cs:325 (MutatorHooks.PlayerPowerups.Call). EffectFlags.FullBright=512 confirmed (EF_FULLBRIGHT).", result: pass }
+      - { kind: code, ref: "OnPlayerPowerups (LastManStanding.cs:908) subscribed in Activate() (MutatorHooks.PlayerPowerups.Add, line 316); for an in-game IsLeader player sets Effects |= EffectFlags.Additive | EffectFlags.FullBright, else clears those bits — exact match to Base PlayerPowerups (sv_lms.qc:515-522). Fired LIVE each frame from PlayerFrameLogic (MutatorHooks.PlayerPowerups.Call).", result: pass }
     confidence: high
-    notes: "FIXED this pass (logic+presentation missing→faithful, liveness na→live). The leader glow is now applied per-frame via the live PlayerPowerups mutator seam, keyed off IsLeader (the waypoint-attached set). The radar waypoint SPRITE + exported stats remain the only leader-render residuals (lms.leader.waypoint / lms.hud.mod_icon)."
+    notes: "Faithful + live. The leader glow is applied per-frame via the live PlayerPowerups mutator seam, keyed off IsLeader (the waypoint-attached set)."
 
   - id: lms.leader.waypoint
     name: "Leader radar waypoint with periodic visibility window"
@@ -387,26 +386,31 @@ features:
       - "common/gametypes/gametype/lms/sv_lms.qc:MUTATOR_HOOKFUNCTION(lms, SV_StartFrame)"
       - "common/gametypes/gametype/lms/sv_lms.qc:lms_waypointsprite_visible_for_player"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:DriveLeaderVisibility (line 767, timing state machine only)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:DriveLeaderVisibility (line 791, timing state machine)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:CollectWaypoints (line 836, emits the LmsLeader sprite)"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:145 (Add(\"LmsLeader\", ...) registration)"
+      - "game/net/ServerNet.cs:1022 (SendWaypoints → GameType.CollectWaypoints, per-tick live pull)"
+      - "game/client/WaypointSpriteLayer.cs (client render)"
     constants:
       - { name: "g_lms_leader_wp_time", base: "5", port: "5 (read in DriveLeaderVisibility)", match: true }
       - { name: "g_lms_leader_wp_interval", base: "25", port: "25 (read)", match: true }
       - { name: "g_lms_leader_wp_interval_jitter", base: "10", port: "10 (read)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The periodic show-for-5s / hide-for-25s + random*10s jitter VISIBILITY-WINDOW TIMER is ported + live (DriveLeaderVisibility, LastManStanding.cs:767, driven from GameWorld.cs:2328) and the wp_time/interval/jitter constants all match Base (5/25/10, sv_lms.qc:17-19). BUT there is still NO WP_LmsLeader waypoint SPRITE rendered over leaders, and the recycled STAT(REDALIVE)=lms_leaders / STAT(BLUEALIVE)=lives_diff / STAT(OBJECTIVE_STATUS)=visible-leaders stats are still not exported to the client, so nothing actually appears on the radar. The window timer gates the (live) centerprints (see lms.leader.notifications) but not any radar marker."
+      - "Faithful + live: the periodic show-for-5s / hide-for-25s + random*10s jitter VISIBILITY-WINDOW TIMER (DriveLeaderVisibility, LastManStanding.cs:791, wp_time/interval/jitter 5/25/10 matching sv_lms.qc:17-19) gates BOTH the centerprints AND the WP_LmsLeader sprite. CollectWaypoints (LastManStanding.cs:836) emits the 'LmsLeader' sprite per in-game leader (RADARICON_FLAGCARRIER=1, +64z, VisibleForPlayer=LeadersVisible && !observer), pulled live each tick via ServerNet.SendWaypoints (ServerNet.cs:1022). The sprite is registered in Waypoints.cs:145 (Add(\"LmsLeader\",\"Leader\",\"\",Cyan)) and rendered client-side by WaypointSpriteLayer."
+      - "Minor: Base uses the player's per-client colormap radar tint (colormapPaletteColor) for the sprite; the port uses the fixed Cyan registry color (Team.None). The visible-for-spectator-of-leader suppression is approximated as !observer rather than Base's exact 'spectator viewing THIS leader' check."
     verification:
-      - { kind: code, ref: "DriveLeaderVisibility implements the lms_visible_leaders/_time/_prev state machine with leaderTime+wpInterval+random*jitter (LastManStanding.cs:775-789), called live (GameWorld.cs:2328). No WP_LmsLeader / WaypointSprite_AttachCarrier for LMS in src/ or game/ (grep confirmed); LeaderCount/LeadersVisible/LeadersLivesDiff have no source consumer outside LastManStanding.cs (only compiled DLLs).", result: fail }
+      - { kind: code, ref: "DriveLeaderVisibility implements the lms_visible_leaders/_time/_prev state machine with leaderTime+wpInterval+random*jitter (LastManStanding.cs:799-813), called live (GameWorld.cs:2831). CollectWaypoints (LastManStanding.cs:836) emits SpriteName='LmsLeader' per leader; registered Waypoints.cs:145; pulled live by ServerNet.SendWaypoints (ServerNet.cs:1022) each tick → WaypointSpriteLayer. The exported leader stats are networked via GametypeStatusBlock Kind.Lms.", result: pass }
     confidence: high
-    notes: "The visibility-window TIMER (timing/values) is faithful + partial-live; it drives the centerprints. The radar WAYPOINT SPRITE itself + the exported leader stats remain missing (presentation), so the row is partial, not closed."
+    notes: "FIXED this pass (presentation missing→faithful, liveness partial→live, logic partial→faithful). The WP_LmsLeader radar SPRITE is now emitted via CollectWaypoints and fed live through SendWaypoints — prior baseline recorded NO sprite + unexported stats; both are now wired end-to-end. Only minor color/spectator-keying approximations remain."
 
   - id: lms.leader.notifications
     name: "Leader visibility centerprints (VISIBLE_LEADER / VISIBLE_OTHER)"
@@ -414,9 +418,9 @@ features:
     base_refs:
       - "common/gametypes/gametype/lms/sv_lms.qc:MUTATOR_HOOKFUNCTION(lms, SV_StartFrame)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:DriveLeaderVisibility (line 767)"
-      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (line 2328)"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1000-1001"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:DriveLeaderVisibility (line 791)"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (line 2831)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs (LMS_VISIBLE_LEADER / LMS_VISIBLE_OTHER)"
     constants: []
     status:
       logic: faithful
@@ -430,32 +434,36 @@ features:
     gaps:
       - "Faithfully fired on the rising edge, but the port centerprints EVERY in-game player (leader vs other variant) without Base's IS_REAL_CLIENT guard — harmless for bots (NotificationSystem.Center no-ops on a non-real client) but a different gate than Base's `if (... && IS_REAL_CLIENT(it))`."
     verification:
-      - { kind: code, ref: "DriveLeaderVisibility (LastManStanding.cs:792-800) on the !prev && LeadersVisible rising edge calls NotificationSystem.Center(player, IsLeader ? \"LMS_VISIBLE_LEADER\" : \"LMS_VISIBLE_OTHER\") for each in-game player; called live from GameWorld.cs:2328 (skipped during intermission via `if (!Intermission.Running)` at GameWorld.cs:2327, matching Base's early-return). CENTER notifications defined at NotificationsList.cs 1000-1001.", result: pass }
+      - { kind: code, ref: "DriveLeaderVisibility (LastManStanding.cs:816-824) on the !prev && LeadersVisible rising edge calls NotificationSystem.Center(player, IsLeader ? \"LMS_VISIBLE_LEADER\" : \"LMS_VISIBLE_OTHER\") for each in-game player; called live from GameWorld.cs:2831 (skipped during intermission via `if (!Intermission.Running)` at GameWorld.cs:2830, matching Base's early-return).", result: pass }
     confidence: high
-    notes: "stub/dead → faithful + live. The VISIBLE_LEADER/OTHER centerprints fire on the visibility-window rising edge via the live DriveLeaderVisibility state machine, exactly the Base SV_StartFrame edge behavior."
+    notes: "Faithful + live. The VISIBLE_LEADER/OTHER centerprints fire on the visibility-window rising edge via the live DriveLeaderVisibility state machine, exactly the Base SV_StartFrame edge behavior."
 
   - id: lms.hud.mod_icon
     name: "HUD mod-icon: leader count + colored +N lives lead"
     layer: [presentation]
     base_refs:
       - "common/gametypes/gametype/lms/cl_lms.qc:HUD_Mod_LMS_Draw"
-    port_refs: []
+    port_refs:
+      - "game/hud/ModIconsPanel.cs:DrawLms (line 813)"
+      - "game/hud/ModIconsPanel.cs:205 (ModIconsMode.Lms dispatch)"
+      - "src/XonoticGodot.Net/GametypeStatusBlock.cs:127-136 (Capture Kind.Lms) + 361-365 (Deserialize)"
+      - "game/net/NetGame.cs:4044-4048 (Mode + LmsLeaderCount/LmsLivesDiff/LmsLeadersVisible)"
     constants: []
     status:
-      logic: missing
-      values: na
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ModIconsPanel still has no Lms mode (ModIconsMode enum / switch — grep -i lms returns nothing). Absent: the leader-count icon (player_neutral + count), the flag_stalemate overlay when visible, and the yellow/orange(diff==3)/red(diff>=4) '+N' lives-diff readout from STAT(REDALIVE/BLUEALIVE/OBJECTIVE_STATUS). The server-side leader stats that would feed it (LeaderCount/LeadersLivesDiff) are computed but never networked. UNCHANGED."
+      - "DrawLms renders the full HUD_Mod_LMS_Draw: the leader-count icon (player_neutral, with a flag_stalemate overlay while LmsLeadersVisible), the leader count number, and the colored '+N' lives-diff (yellow / orange at diff==3 / red at diff>=4). The art (player_neutral/flag_stalemate icons) falls back to a stand-in glyph if the textures aren't present — a presentation-asset detail, not a logic gap."
     verification:
-      - { kind: code, ref: "game/hud/ModIconsPanel.cs: no Lms in ModIconsMode enum, no Lms switch case (grep -i lms returns nothing)", result: fail }
+      - { kind: code, ref: "ModIconsPanel.DrawLms (ModIconsPanel.cs:813) dispatched at line 205 for ModIconsMode.Lms; Mode set at NetGame.cs:4045. Reads LmsLeaderCount (STAT REDALIVE), LmsLivesDiff (STAT BLUEALIVE), LmsLeadersVisible (STAT OBJECTIVE_STATUS), networked from server lms.LeaderCount/LeadersLivesDiff/LeadersVisible via GametypeStatusBlock Kind.Lms (Capture line 127-136, Deserialize line 361-365).", result: pass }
     confidence: high
-    notes: "Unchanged."
+    notes: "FIXED this pass (logic+values+presentation missing→faithful, liveness na→live). The HUD mod-icon now renders end-to-end: the server-side leader stats are exported via GametypeStatusBlock and consumed by DrawLms. Prior baseline recorded the entire mod-icon as missing with no networked stats; both are now wired. GametypeStatusTests covers the stat round-trip."
 
   - id: lms.hud.no_lives_message
     name: "Info message: 'You have no more lives left' (eliminated local player)"
@@ -463,8 +471,8 @@ features:
     base_refs:
       - "common/gametypes/gametype/lms/cl_lms.qc:MUTATOR_HOOKFUNCTION(cl_lms, DrawInfoMessages)"
     port_refs:
-      - "game/hud/InfoMessagesPanel.cs:334 (LmsNoLives line)"
-      - "game/net/NetGame.cs:3360-3373 (drive LmsNoLives from networked LMS_RANK)"
+      - "game/hud/InfoMessagesPanel.cs (LmsNoLives line)"
+      - "game/net/NetGame.cs (drive LmsNoLives from networked LMS_RANK)"
     constants: []
     status:
       logic: faithful
@@ -476,11 +484,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port string is '^BGYou have no lives left, you must wait until the next match' (CENTER) / the InfoMessage variant vs Base's exact wording — semantically equivalent. The Base hook keys on scores(ps_primary) [SP_LMS_RANK] > 0; the port reads the local row's networked LMS_RANK column, the same signal."
+      - "Port string is the no-lives info/center wording vs Base's exact phrasing — semantically equivalent. The Base hook keys on scores(ps_primary) [SP_LMS_RANK] > 0; the port reads the local row's networked LMS_RANK column, the same signal."
     verification:
-      - { kind: code, ref: "NetGame.cs:3361 gates on GameScores.Gametype=='lms', finds the local scoreboard row's LMS_RANK column (line 3364), sets im.LmsNoLives=true when LMS_RANK > 0 (line 3373); InfoMessagesPanel.cs:334 draws the line when LmsNoLives (field declared :148). LMS_RANK is set server-side by OnDeath→SyncColumns on elimination and networked via the scoreboard wire.", result: pass }
+      - { kind: code, ref: "NetGame gates on GameScores.Gametype=='lms', finds the local scoreboard row's LMS_RANK column, sets im.LmsNoLives=true when LMS_RANK > 0; InfoMessagesPanel draws the line when LmsNoLives. LMS_RANK is set server-side by OnDeath→SyncColumns on elimination and networked via the scoreboard wire.", result: pass }
     confidence: high
-    notes: "stub/dead → faithful + live. The eliminated-local-player InfoMessage renders, driven end-to-end by the networked LMS_RANK column."
+    notes: "Faithful + live. The eliminated-local-player InfoMessage renders, driven end-to-end by the networked LMS_RANK column."
 
   - id: lms.damage.dynamic_vampire
     name: "Dynamic vampire: under-dogs steal health when hitting leaders"
@@ -489,7 +497,7 @@ features:
       - "common/gametypes/gametype/lms/sv_lms.qc:MUTATOR_HOOKFUNCTION(lms, Damage_Calculate)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:OnDamageCalculate"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:256 (MutatorHooks.DamageCalculate.Call)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs (MutatorHooks.DamageCalculate.Call)"
     constants:
       - { name: "g_lms_dynamic_vampire", base: "1", port: "1 (default)", match: true }
       - { name: "g_lms_dynamic_vampire_factor_base", base: "0.1", port: "0.1", match: true }
@@ -508,9 +516,9 @@ features:
     gaps:
       - "Port reads attacker/target lives from the live LmsState (GetState, lazily seeded to StartingLives) rather than the QC LMS_LIVES scoring field; result is equivalent on the live path (every player is seeded on first GetState), but it is a different source of truth than Base's GameRules_scoring_add(.., LMS_LIVES, 0)."
     verification:
-      - { kind: code, ref: "OnDamageCalculate (LastManStanding.cs:726) subscribed in Activate(); diff = target.Lives - attacker.Lives - 2; factor = 0.1 + diff*0.1 capped 0.5; heal clamped at start_health(200). Exact match to Base Damage_Calculate (sv_lms.qc:532-552). Fired live from DamageSystem.cs:256. All five constants re-confirmed sv_lms.qc:24-28.", result: pass }
+      - { kind: code, ref: "OnDamageCalculate (LastManStanding.cs:938) subscribed in Activate(); diff = target.Lives - attacker.Lives - 2; factor = 0.1 + diff*0.1 capped 0.5; heal clamped at start_health(200). Exact match to Base Damage_Calculate (sv_lms.qc:530-557). Fired live from DamageSystem. All five constants re-confirmed sv_lms.qc:24-28.", result: pass }
     confidence: high
-    notes: "Faithful + live. Enabled by default (g_lms_dynamic_vampire 1). All five constants verified against Base + gametypes-server.cfg this pass."
+    notes: "Faithful + live. Enabled by default (g_lms_dynamic_vampire 1). All five constants verified against Base this pass."
 
   - id: lms.item.extra_life
     name: "Extra-life pickups grant lives"
@@ -522,7 +530,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:OnFilterItemDefinition (in-place HealthMega->item_extralife replacement)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:OnItemTouch (MutatorHooks.ItemTouch subscriber)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:GiveExtraLife"
-      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:372 (MutatorHooks.FireItemTouch)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs (MutatorHooks.FireItemTouch)"
     constants:
       - { name: "g_lms_extra_lives", base: "0", port: "read", match: true }
     status:
@@ -535,12 +543,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Replacement is wired live: OnFilterItemDefinition folds in Base's FilterItem + lms_replace_with_extralife by retagging the HealthMega edict in place (ClassName='item_extralife', RES_HEALTH zeroed) and keeping it; OnItemTouch (subscribed to MutatorHooks.ItemTouch, fired from ItemPickupRules.cs:372) then grants g_lms_extra_lives lives + CENTER_EXTRALIVES and consumes the item. Dormant under the default g_lms_extra_lives=0."
-      - "DEVIATION (port mechanics, not Base behavior): the replacement retags the EXISTING HealthMega edict in place instead of spawning a fresh ITEM_ExtraLife (Item_CopyFields + StartItem, Base sv_lms.qc:653-658) — the port has no item_extralife Pickup def in the registry. End state (an extralife at the HealthMega's spot that grants lives on touch and re-touches as an extralife after respawn) is equivalent. SpawnExtraLife/ExtraLifeTouch remain an unused alternate free-standing spawn API."
+      - "Replacement is wired live: OnFilterItemDefinition folds in Base's FilterItem + lms_replace_with_extralife by retagging the HealthMega edict in place (ClassName='item_extralife', RES_HEALTH zeroed) and keeping it; OnItemTouch (subscribed to MutatorHooks.ItemTouch, fired from ItemPickupRules.FireItemTouch) then grants g_lms_extra_lives lives + CENTER_EXTRALIVES and consumes the item. Dormant under the default g_lms_extra_lives=0."
+      - "DEVIATION (port mechanics, not Base behavior): the replacement retags the EXISTING HealthMega edict in place instead of spawning a fresh ITEM_ExtraLife (Item_CopyFields + StartItem, Base sv_lms.qc:653-658) — the port has no item_extralife Pickup def in the registry. End state is equivalent. SpawnExtraLife/ExtraLifeTouch remain an unused alternate free-standing spawn API."
     verification:
-      - { kind: code, ref: "OnItemTouch (LastManStanding.cs:800) subscribed in Activate() (MutatorHooks.ItemTouch.Add); fired live from ItemPickupRules.cs:372 (FireItemTouch). OnFilterItemDefinition retags a HealthMega to item_extralife + zeroes RES_HEALTH when g_powerups && g_lms_extra_lives; OnItemTouch matches ClassName=='item_extralife' and calls GiveExtraLife → +lives + CENTER_EXTRALIVES + remove. Matches Base ItemTouch (sv_lms.qc:675-690). CENTER_EXTRALIVES defined NotificationsList.cs:940.", result: pass }
+      - { kind: code, ref: "OnItemTouch (LastManStanding.cs:1012) subscribed in Activate() (MutatorHooks.ItemTouch.Add); fired live from ItemPickupRules (FireItemTouch). OnFilterItemDefinition retags a HealthMega to item_extralife + zeroes RES_HEALTH when g_powerups && g_lms_extra_lives; OnItemTouch matches ClassName=='item_extralife' and calls GiveExtraLife → +lives + CENTER_EXTRALIVES + remove. Matches Base ItemTouch (sv_lms.qc:675-691).", result: pass }
     confidence: high
-    notes: "dead->live, logic faithful. The HealthMega->extralife replacement is folded into OnFilterItemDefinition and grants lives via the live MutatorHooks.ItemTouch path. Default g_lms_extra_lives=0 still suppresses everything (matches Base), so the live default behavior is unchanged; the divergence only surfaces with extra lives + powerups enabled, where it works."
+    notes: "Live, logic faithful. The HealthMega->extralife replacement is folded into OnFilterItemDefinition and grants lives via the live MutatorHooks.ItemTouch path. Default g_lms_extra_lives=0 still suppresses everything (matches Base)."
 
   - id: lms.scoreboard.columns
     name: "LMS scoreboard columns (lives + rank, sorted rank-then-lives)"
@@ -564,11 +572,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Column declaration + sort are faithful; the join-time LMS_LIVES seed (AddPlayer→SyncColumns) is live via GametypeOnJoin (GameWorld.cs:922 → ClientManager.cs:264), so a fresh joiner's lives column is populated on join rather than only after their first death."
+      - "Column declaration + sort are faithful; the join-time LMS_LIVES seed (AddPlayer→SyncColumns) is live via GametypeOnJoin, so a fresh joiner's lives column is populated on join rather than only after their first death."
     verification:
-      - { kind: code, ref: "Activate (LastManStanding.cs:279-282) declares LMS_LIVES/LMS_RANK + SetSortKeys(RANK,LIVES); ScoreboardPanel maps the columns; SyncColumns called from OnDeath/CheckWinningCondition/GiveExtraLife/RemovePlayer/ResetMapPlayers AND from AddPlayer (LastManStanding.cs:372), which fires live via Clients.GametypeOnJoin (GameWorld.cs:929).", result: pass }
+      - { kind: code, ref: "Activate (LastManStanding.cs:279-282) declares LMS_LIVES/LMS_RANK + SetSortKeys(RANK,LIVES); ScoreboardPanel maps the columns; SyncColumns called from OnDeath/CheckWinningCondition/GiveExtraLife/RemovePlayer/ResetMapPlayers AND from AddPlayer (LastManStanding.cs:372), which fires live via Clients.GametypeOnJoin.", result: pass }
     confidence: high
-    notes: "The join-time seed is dead→live, so liveness live. Columns + sort were already faithful; the previously-blank-until-first-death lives column is seeded on join."
+    notes: "The join-time seed is live, so liveness live. Columns + sort were already faithful; the previously-blank-until-first-death lives column is seeded on join."
 
   - id: lms.forfeit.remove_player
     name: "Disconnect/forfeit assigns a rank and reshuffles other ranks"
@@ -579,7 +587,7 @@ features:
       - "common/gametypes/gametype/lms/sv_lms.qc:MUTATOR_HOOKFUNCTION(lms, MakePlayerObserver)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:RemovePlayer (line 411)"
-      - "src/XonoticGodot.Server/GameWorld.cs:InfraClientDisconnect (line 1053)"
+      - "src/XonoticGodot.Server/GameWorld.cs:InfraClientDisconnect (voluntary:true)"
     constants: []
     status:
       logic: faithful
@@ -591,12 +599,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "RemovePlayer is wired only on the DISCONNECT path (InfraClientDisconnect, voluntary:true). Base also calls lms_RemovePlayer from MakePlayerObserver (a forced-observer / mid-match spectate with the is_forced/voluntary distinction, sv_lms.qc:413-436); the port has no MakePlayerObserver-equivalent LMS hook, so a forced-to-observer (non-disconnect) player isn't ranked/reshuffled. The voluntary-vs-forced branch exists in RemovePlayer but only the voluntary (disconnect) caller is wired — liveness partial. UNCHANGED."
+      - "RemovePlayer is wired only on the DISCONNECT path (InfraClientDisconnect, voluntary:true). Base also calls lms_RemovePlayer from MakePlayerObserver (a forced-observer / mid-match spectate with the is_forced/voluntary distinction, sv_lms.qc:413-436). The MutatorHooks.MakePlayerObserver DISPATCH now exists (ClientManager.cs:523-524 fires MakePlayerObserver.Call on demote-to-observer), but LMS does NOT subscribe to it (no MakePlayerObserver handler in LastManStanding.cs — grep confirmed), so a forced-to-observer (non-disconnect) player still isn't ranked/reshuffled. The voluntary-vs-forced branch exists in RemovePlayer but only the voluntary (disconnect) caller is wired — liveness partial."
       - "RemovePlayer records last_forfeiter_* but the spawn-side consumer (PlayerSpawn least-healthy clone) is still missing (see lms.loadout.start_items)."
     verification:
-      - { kind: code, ref: "RemovePlayer (LastManStanding.cs:411) ranks a forced leaver at CountAlive()+1, OR for a voluntary leaver decrements every out-of-game player's rank, records last_forfeiter health/armor, broadcasts INFO_LMS_NOLIVES, and re-runs UpdateLeaders; called live from InfraClientDisconnect (GameWorld.cs:1053) with voluntary:true, warmupOrPreStart:LmsPreStart. No MakePlayerObserver LMS hook (grep confirmed absent). INFO_LMS_NOLIVES defined NotificationsList.cs:767.", result: pass }
+      - { kind: code, ref: "RemovePlayer (LastManStanding.cs:411) ranks a forced leaver at CountAlive()+1, OR for a voluntary leaver decrements every out-of-game player's rank, records last_forfeiter health/armor, broadcasts INFO_LMS_NOLIVES, and re-runs UpdateLeaders; called live from InfraClientDisconnect with voluntary:true. The MakePlayerObserver hook is now DISPATCHED (ClientManager.cs:523) but LMS does not subscribe to it (grep confirmed no MakePlayerObserver in LastManStanding.cs).", result: pass }
     confidence: high
-    notes: "missing/dead → faithful, liveness partial. The rank reshuffle, last-forfeiter recording, and INFO_LMS_NOLIVES broadcast run on the real disconnect chain. Only the MakePlayerObserver (forced-observer, non-disconnect) caller remains unwired, so logic is faithful but liveness is full only for the disconnect case."
+    notes: "Logic faithful, liveness partial. The rank reshuffle / last-forfeiter recording / INFO_LMS_NOLIVES broadcast run on the real disconnect chain. The MakePlayerObserver dispatch EXISTS now but LMS doesn't subscribe — UNCHANGED net result (forced-observer caller still unwired)."
 
   - id: lms.rules.no_throw_and_spec_lockout
     name: "Can't drop weapon; ranked-out players can't become spectators"
@@ -605,8 +613,8 @@ features:
       - "common/gametypes/gametype/lms/sv_lms.qc:MUTATOR_HOOKFUNCTION(lms, ForbidThrowCurrentWeapon)"
       - "common/gametypes/gametype/lms/sv_lms.qc:MUTATOR_HOOKFUNCTION(lms, ClientCommand_Spectate)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:OnForbidThrowCurrentWeapon"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponThrowing.cs:149,185 (ForbidThrowCurrentWeapon.Call)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:OnForbidThrowCurrentWeapon (line 899)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponThrowing.cs (ForbidThrowCurrentWeapon.Call)"
     constants: []
     status:
       logic: partial
@@ -618,11 +626,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No ClientCommand_Spectate lockout: a ranked/out-of-game player can still `spectate` (Base returns MUT_SPECCMD_RETURN to forbid it, keyed on frags==FRAGS_SPECTATOR||FRAGS_PLAYER_OUT_OF_GAME). The port never sets a Player OUT_OF_GAME frags sentinel (verified: no OutOfGame/OUT_OF_GAME/ClientCommand_Spectate gate in ClientManager.cs), so even a spectate gate would have nothing to key on. UNCHANGED."
+      - "No ClientCommand_Spectate lockout: a ranked/out-of-game player can still `spectate` (Base returns MUT_SPECCMD_RETURN to forbid it, keyed on frags==FRAGS_SPECTATOR||FRAGS_PLAYER_OUT_OF_GAME, sv_lms.qc:704-711). The port never sets a Player OUT_OF_GAME frags sentinel (verified: no OutOfGame/OUT_OF_GAME/ClientCommand_Spectate gate in ClientManager.cs), so even a spectate gate would have nothing to key on. UNCHANGED."
     verification:
-      - { kind: code, ref: "OnForbidThrowCurrentWeapon (LastManStanding.cs:706) subscribed in Activate() (returns true unconditionally — matches Base); fired live from WeaponThrowing.cs:149/185. No out-of-game spectate gate in ClientManager / no ClientCommand_Spectate LMS hook (grep confirmed absent).", result: pass }
+      - { kind: code, ref: "OnForbidThrowCurrentWeapon (LastManStanding.cs:899) subscribed in Activate() (returns true unconditionally — matches Base); fired live from WeaponThrowing. No out-of-game spectate gate in ClientManager / no ClientCommand_Spectate LMS hook (grep confirmed absent).", result: pass }
     confidence: high
-    notes: "The ForbidThrowCurrentWeapon half is live + faithful; the spectate-lockout half is still missing, so the row stays partial."
+    notes: "The ForbidThrowCurrentWeapon half is live + faithful; the spectate-lockout half is still missing, so the row stays partial. UNCHANGED."
 
   - id: lms.reset.map_players
     name: "Map/round reset restores eliminated players and clears lives/rank"
@@ -632,7 +640,7 @@ features:
       - "common/gametypes/gametype/lms/sv_lms.qc:MUTATOR_HOOKFUNCTION(lms, reset_map_global)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:ResetMapPlayers (line 479)"
-      - "src/XonoticGodot.Server/GameWorld.cs:ResetMap (line 3143)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ResetMap (line 3847)"
     constants: []
     status:
       logic: faithful
@@ -644,8 +652,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base reset_map_players also re-PutClientInServer per client (re-spawns each re-livened player); the port's ResetMapPlayers re-seeds the per-player LmsState (lives/rank/leader) and the host's ResetMap loop handles the re-spawn separately. The leader-waypoint kill is a no-op in the port (no WP_LmsLeader sprite exists — lms.leader.waypoint). Equivalent end state for the per-player state; the client re-put is delegated to the host reset loop."
+      - "Base reset_map_players also re-PutClientInServer per client (re-spawns each re-livened player); the port's ResetMapPlayers re-seeds the per-player LmsState (lives/rank/leader) and the host's ResetMap loop handles the re-spawn separately. The leader-waypoint kill is implicit in the port (CollectWaypoints stops emitting for a cleared IsLeader set). Equivalent end state."
     verification:
-      - { kind: code, ref: "ResetMapPlayers (LastManStanding.cs:479) clears win/leader/forfeiter latches, resets _lowestLives=999 (QC reset_map_global), clears _states and re-seeds each live player to StartingLives/Rank=0/IsLeader=false + SyncColumns (QC reset_map_players: OUT_OF_GAME→PLAYER re-liven, LMS_RANK/LMS_LIVES zero+re-seed). Wired LIVE from ResetMap (GameWorld.cs:3143) on a real match restart; ResetMap is reached via ActivateGameType (GameWorld.cs:1878).", result: pass }
+      - { kind: code, ref: "ResetMapPlayers (LastManStanding.cs:479) clears win/leader/forfeiter latches, resets _lowestLives=999 (QC reset_map_global), clears _states and re-seeds each live player to StartingLives/Rank=0/IsLeader=false + SyncColumns (QC reset_map_players). Wired LIVE from ResetMap (GameWorld.cs:3847) on a real match restart.", result: pass }
     confidence: high
-    notes: "FIXED this pass (logic missing→faithful, liveness na→live). ResetMapPlayers now exists and is wired into the host ResetMap path, so a between-matches restart re-livens eliminated players and clears stale lives/rank/leader/lowest-lives. Compounding round-handler divergence is also gone (LMS no longer round-based — lms.respawn.continuous)."
+    notes: "Live + faithful. ResetMapPlayers is wired into the host ResetMap path (line shifted 3143→3847), so a between-matches restart re-livens eliminated players and clears stale lives/rank/leader/lowest-lives."

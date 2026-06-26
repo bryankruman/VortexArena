@@ -6,7 +6,8 @@ summary:
   feature_count: 8
   worst_gaps:
     - "No head entity / head model (mlrs.md3) instantiated as a separate tur_head bone: the ammo-gauge frame is driven onto the turret edict's OWN .Frame (logic/values faithful) but there is no tag_head attachment, so it is not netted as a distinct head and the head model never renders/animates separately"
-    - "No client presentation: no muzzle te_explosion on rocket spawn; no PROJECTILE_ROCKET CSQC trail/dynamic light; no client turret_draw (head spin via avelocity, low-hp <127 sparks / <85 large-smoke / <32 small-smoke); turret death gib toss (base-gibN.md3 + head_model) only fires on the NORESPAWN server path, not the normal client turret_die"
+    - "No client turret_draw (cl_turrets.qc): head does not visibly spin (angles += avelocity*dt), no low-hp sparks (<127 hp te_spark) / large-smoke (<85 EFFECT_SMOKE_LARGE) / small-smoke (<32 EFFECT_SMOKE_SMALL)"
+    - "No turret death gib toss (base-gibN.md3 + head_model gibs from cl_turrets.qc turret_die/turret_gibtoss); the death rocket-explode FX + impact sound ARE now emitted server-side on every death path"
 features:
   - id: turret-mlrs.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -233,19 +234,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "No muzzle te_explosion on rocket spawn (Base wr_think:26 calls te_explosion at missile.origin)."
-      - "Rocket is a bare projectile: no PROJECTILE_ROCKET CSQC trail / dynamic light."
+    gaps: []
     verification:
       - { kind: code_read, ref: "mlrs_weapon.qc wr_think + turret_projectile vs MlrsTurret.Attack (spread 0.05, fuse floor ShotRadius 125) + TurretSpawn.Projectile", result: pass }
       - { kind: code_read, ref: "DeathTypes.cs TurretMlrs registered (DeathCategory.Turret); Api.Sound.Play weapons/rocket_fire on fire", result: pass }
+      - { kind: code_read, ref: "MlrsTurret.Attack:157 EffectEmitter.TeExplosion(rocket.Origin) (TE_EXPLOSION registered EffectsList.cs:247, same launch-flash convention as HellionTurret/HkTurret/WalkerTurret) == mlrs_weapon.qc:26 te_explosion(missile.origin); rocket.NetName='devastator' (Attack:143) feeds PROJECTILE_ROCKET CSQC smoke trail + rocket-fly loop", result: pass }
     confidence: high
-    notes: "Damage/radius/speed/force/spread/health/lifetime/fuse/deathtype faithful, fire sound plays. Only presentation (muzzle explosion + rocket trail) remains absent."
+    notes: "FIXED vs baseline: presentation upgraded missing->faithful. The muzzle te_explosion is now emitted at the rocket origin (mlrs_weapon.qc:26 parity) and the PROJECTILE_ROCKET CSQC trail is wired via rocket.NetName='devastator'. Damage/radius/speed/force/spread/health/lifetime/fuse/deathtype faithful, fire sound plays. Both prior presentation gaps (muzzle explosion + rocket trail) are resolved."
   - id: turret-mlrs.damage.lifecycle
     name: "Damage gating, head-shake, death + respawn"
     layer: [authority]
@@ -269,17 +269,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
-      audio: partial
+      presentation: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No client death presentation on the NORMAL (respawning) path: Base cl_turrets.qc turret_die plays SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE and tosses base-gibN.md3 + head_model gibs. The port fires the explosion sound + ROCKET_EXPLODE FX only on the NORESPAWN branch (Die:927-931); a respawning MLRS death emits no gib/effect/sound."
+      - "Death gib toss still missing: Base cl_turrets.qc turret_die tosses base-gibN.md3 + head_model gibs (turret_gibtoss). The port has no CSQC turret edict to spawn client gib entities, so no gibs fly on death."
       - "No client turret_draw (cl_turrets.qc): the head does not visibly spin (angles += avelocity*dt) and a damaged MLRS emits no low-health sparks (<127 hp -> te_spark) or smoke (<85 EFFECT_SMOKE_LARGE / <32 EFFECT_SMOKE_SMALL)."
     verification:
       - { kind: code_read, ref: "turret_damage HEADSHAKE (sv_turrets.qc:228-234 jolts x+y) vs TurretAI.EventDamage:887-891 (st.HeadShake -> HeadAngles.X/.Y += (Prandom.Float()-0.5)*take) — MATCH; Die/Respawn respawnTime 60 == mlrs cfg", result: pass }
       - { kind: code_read, ref: "TurretSpawn.Init e.GtEventDamage=TurretAI.EventDamage; DamageSystem.EventDamage routes non-player edict -> live; Init:79 st.HeadShake=headShake(true)", result: pass }
-      - { kind: code_read, ref: "cl_turrets.qc turret_draw + normal-path turret_die gib/effect has no port counterpart (only NORESPAWN server FX in Die)", result: fail }
+      - { kind: code_read, ref: "TurretAI.Die:935-939 now plays weapons/rocket_impact (SND_ROCKET_IMPACT) + Emit ROCKET_EXPLODE on EVERY death path (respawning AND NORESPAWN), matching cl_turrets.qc:315-318 turret_die which fires on every TNSF_STATUS health==0 — audio FIXED, explosion FX present", result: pass }
+      - { kind: code_read, ref: "cl_turrets.qc turret_draw (head spin/sparks/smoke) + turret_gibtoss death gibs have no port counterpart", result: fail }
     confidence: high
-    notes: "FIXED vs baseline: the server HEADSHAKE aim jolt is now implemented (EventDamage jolts HeadAngles.X/.Y by (Prandom.Float()-0.5)*take, bit-faithful to turret_damage:228-234) on the live damage path, so the logic dimension upgrades partial->faithful. Damage gating + death/respawn lifecycle faithful (respawn 60 == cfg). Audio downgraded na->partial: a NORESPAWN death plays rocket_impact, but the normal respawning-death path plays no SND_ROCKET_IMPACT. Client death gib/effect/draw presentation still missing."
+    notes: "FIXED vs baseline (2 dims): (1) audio partial->faithful — Die now plays SND_ROCKET_IMPACT (weapons/rocket_impact) on the NORMAL respawning-death path too, not just NORESPAWN, matching cl_turrets.qc turret_die which fires on every death. (2) presentation missing->partial — the EFFECT_ROCKET_EXPLODE death FX is now emitted server-side at the death site on every death path (Die:938). Server HEADSHAKE aim jolt remains implemented (logic faithful). Still missing on presentation: the cl_turrets death gib toss (base-gibN.md3 + head_model) and turret_draw head spin / low-hp sparks+smoke — both need a CSQC turret edict."

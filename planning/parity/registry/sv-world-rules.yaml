@@ -5,12 +5,11 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 18
   worst_gaps:
-    - "serverflags (SERVERFLAG_ALLOW_FULLBRIGHT / SERVERFLAG_FORBID_PICKUPTIMER) from readlevelcvars still not ported: sv_allow_fullbright / sv_forbid_pickuptimer have no server feed and there is no serverflags global at all."
-    - "sv_ready_restart_after_countdown still unimplemented (default correct at 0): reset_map always runs immediately at countdown start, never deferred to a restart_timer think at game_starttime."
-    - "RandomSeed / PingPLReport / animated-lightstyle worldspawn entities and RedirectionThink are still absent."
+    - "RandomSeed / PingPLReport broadcast entities and RedirectionThink are still absent (no shared client RNG seed, no scoreboard ping/PL feed, no server-redirect command)."
     - "DumpStats (final/periodic :scores:/:status: eventlog+file scores dump on every match end via NextLevel) has no port analogue — the eventlog scores feed is missing."
     - "GameWorld.Shutdown now does slowmo-reset + ban-save + unfinished PlayerStats_GameReport(false), but ServerProgsDB persistence, bot_endgame, CheatShutdown and WeaponStats_Shutdown on teardown are still absent."
     - "World-layer leadlimit / leadlimit_and_fraglimit WIN semantics, WinningCondition_RanOutOfSpawns, and the CheckRules_World mutator hook are still not evaluated in the checkrules cascade (leadlimit math only feeds the frags-remaining announcer)."
+    - "serverflags + animated-lightstyle table are now installed server-side (authority faithful+live) but the CLIENT consumers are still unported: no fullbright/pickup-timer gate reads the serverflags bits, and no render consumer animates the lightstyle table (presentation still missing on both)."
 features:
   - id: sv-world-rules.boot.worldspawn
     name: "worldspawn map-init bookkeeping"
@@ -93,28 +92,33 @@ features:
     notes: "Unchanged; faithful. g_warmup_limit default 180 matches Base, the g_warmup<0 map-minplayers lower bound is live. The Begin() readlevelcvars mirror (campaign-off / infinite-vs-timed limit) is faithful."
   - id: sv-world-rules.warmup.serverflags
     name: "readlevelcvars serverflags (fullbright / pickuptimer)"
-    layer: [authority]
+    layer: [authority, presentation]
     base_refs:
       - "server/world.qc:readlevelcvars"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/ServerFlags.cs"
+      - "src/XonoticGodot.Server/GameWorld.cs:ReadLevelCvars"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot"
     constants:
-      - { name: "SERVERFLAG_ALLOW_FULLBRIGHT", base: "from sv_allow_fullbright", port: "none", match: false }
-      - { name: "SERVERFLAG_FORBID_PICKUPTIMER", base: "from sv_forbid_pickuptimer", port: "none", match: false }
+      - { name: "SERVERFLAG_ALLOW_FULLBRIGHT", base: "BIT(0) from sv_allow_fullbright", port: "1<<0 from sv_allow_fullbright (ServerFlags.cs:24)", match: true }
+      - { name: "SERVERFLAG_FORBID_PICKUPTIMER", base: "BIT(4) from sv_forbid_pickuptimer", port: "1<<4 from sv_forbid_pickuptimer (ServerFlags.cs:36)", match: true }
+      - { name: "sv_allow_fullbright", base: "1 (xonotic-server.cfg:611)", port: "1 (Cvars.cs:402)", match: true }
+      - { name: "sv_forbid_pickuptimer", base: "0 (xonotic-server.cfg:614)", port: "0 (Cvars.cs:403)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: missing
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "readlevelcvars sets the SERVERFLAG_ALLOW_FULLBRIGHT / SERVERFLAG_FORBID_PICKUPTIMER bits in `serverflags` (networked to clients) from sv_allow_fullbright / sv_forbid_pickuptimer; the port has no `serverflags` global at all. The client cannot gate fullbright player rendering or hide the item-pickup timer accordingly."
+      - "Client-side consumer not ported: nothing reads the published serverflags bits to actually gate fullbright player rendering (Base client/view.qc:1115) or hide the HUD item-pickup timer (Base client/hud/panel/pickup.qc:91). The server publishes ServerFlags.Value + the `serverflags` cvar mirror, but no port render/HUD code consumes it — so the two bits have no player-observable effect yet (presentation: missing)."
     verification:
-      - { kind: code, ref: "grep serverflags/SERVERFLAG/sv_allow_fullbright/sv_forbid_pickuptimer across src/ — no match; readlevelcvars:2189-2195", result: fail }
+      - { kind: code, ref: "ServerFlags.cs (full SERVERFLAG_* bit table, AllowFullbright=1<<0/ForbidPickupTimer=1<<4) + GameWorld.ReadLevelCvars (cs:1545-1558: clears+sets both bits from sv_allow_fullbright/sv_forbid_pickuptimer, writes ServerFlags.Value and mirrors to the `serverflags` cvar). LIVE: called at GameWorld.Boot (cs:934) and re-run on either source cvar change via OnServerCvarChanged (cs:1531-1532). vs readlevelcvars:2189-2195. No client consumer of the bits exists (grep: no fullbright/pickuptimer gate reads serverflags).", result: partial }
     confidence: high
-    notes: "STILL OPEN — unchanged. The only two readlevelcvars side-effects besides warmup that belong to world-rules; both unported. Player-observable on servers that set sv_allow_fullbright or sv_forbid_pickuptimer."
+    notes: "FIX since 2026-06-25: the server-side authority half is now PORTED and LIVE — ServerFlags.cs holds the SERVERFLAG_* bit table, and GameWorld.ReadLevelCvars derives the two world-rules bits from sv_allow_fullbright/sv_forbid_pickuptimer at Boot + re-derives on cvar change, publishing ServerFlags.Value and mirroring to the `serverflags` cvar for the shared-store client. logic+values missing->faithful, liveness na->live. STILL OPEN: the client consumer (the actual fullbright/pickup-timer gate) is unported, so presentation stays missing and the bits have no on-screen effect yet."
   - id: sv-world-rules.warmup.ready_count
     name: "ReadyCount ready-up majority + countdown abort"
     layer: [authority]
@@ -155,9 +159,9 @@ features:
       - { name: "RESTART_COUNTDOWN", base: "10 (vote.qh:66)", port: "10 (WarmupController.RestartCountdown)", match: true }
       - { name: "campaign_countdown", base: "3", port: "3 (WarmupController.CampaignCountdown), LIVE", match: true }
       - { name: "teamplay_lockonrestart", base: "0 (xonotic-server.cfg:29)", port: "0 (Cvars.cs:152)", match: true }
-      - { name: "sv_ready_restart_after_countdown", base: "0 (xonotic-server.cfg:24)", port: "0 (Cvars.cs:128) but still unimplemented", match: false }
+      - { name: "sv_ready_restart_after_countdown", base: "0 (xonotic-server.cfg:24)", port: "0 (Cvars.cs:128), now implemented (restart_timer deferral)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -166,12 +170,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "sv_ready_restart_after_countdown branch still unimplemented (default correct at 0, matching Base): reset_map always runs immediately at countdown start, never deferred to a restart_timer think at game_starttime."
       - "Per-player restart policy still not ported: no sv_spectate==2 demotion, no re-join of queued (wants_join) players, no per-player allowed_timeouts reset, no alivetime_start clear in ReadyRestart_force."
     verification:
-      - { kind: code, ref: "WarmupController.ReadyRestart vs ReadyRestart_force:441-524; RestartCountdown=10 == RESTART_COUNTDOWN (vote.qh:66); CampaignCountdown=3 LIVE (CampaignActive=Cvars.Bool(g_campaign)); OnLockTeams WIRED -> TeamsLocked; teamplay_lockonrestart registered. sv_ready_restart_after_countdown: no restart_timer/deferral code (grep).", result: partial }
+      - { kind: code, ref: "WarmupController.ReadyRestart vs ReadyRestart_force:441-524; RestartCountdown=10 == RESTART_COUNTDOWN (vote.qh:66); CampaignCountdown=3 LIVE; OnLockTeams WIRED -> TeamsLocked. sv_ready_restart_after_countdown NOW IMPLEMENTED: when !warmup && cvar!=0, ReadyRestart arms a deferred reset (WarmupController.cs:377-380 _pendingResetAt=GameStartTime) that Think() fires once at game_starttime (cs:298-302, restart_timer think); default 0 path still runs reset_map(false) immediately. Paired client/spawn half: SpawnSystem extends rot/regen-pause + spawn-shield by (game_starttime-time) only when !sv_ready_restart_after_countdown (cs:770-791, QC client.qc:665-669).", result: partial }
     confidence: high
-    notes: "Unchanged since 2026-06-22. Campaign 3s countdown + teamplay_lockonrestart team-lock are LIVE. STILL OPEN: sv_ready_restart_after_countdown is unimplemented (only the default is correct), and the per-player restart policy (spectate demotion, requeue, timeout/alivetime reset) is deferred."
+    notes: "FIX since 2026-06-25: sv_ready_restart_after_countdown is now IMPLEMENTED — ReadyRestart arms a restart_timer-style deferral (_pendingResetAt at game_starttime) when the cvar is on and outside warmup, dispatched once by Think(); the default (0) keeps the immediate reset_map(false) at countdown start. The SpawnSystem countdown-freeze extension also honors the cvar (only extends pause/shield timers when after-countdown is OFF). logic partial->faithful, constant match false->true. Campaign 3s countdown + teamplay_lockonrestart team-lock remain LIVE. STILL OPEN: the per-player restart policy (spectate demotion, requeue, timeout/alivetime reset) is deferred."
   - id: sv-world-rules.warmup.reset_map
     name: "reset_map: full map/player reset on restart"
     layer: [authority]
@@ -338,24 +341,28 @@ features:
     layer: [authority, presentation]
     base_refs:
       - "server/world.qc:spawnfunc(worldspawn)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/LightStyles.cs"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot"
     constants:
-      - { name: "lightstyle_count", base: "12 named (0-11) + style 63", port: "0", match: false }
+      - { name: "lightstyle_count", base: "12 named (0-11) + style 63", port: "12 named (0-11) + style 63 (LightStyles.cs:46-59)", match: true }
+      - { name: "frame_strings", base: "world.qc:882-920 verbatim", port: "verbatim identical (LightStyles.cs:46-59)", match: true }
+      - { name: "anim_rate_fps", base: "10 (Quake lightstyle convention)", port: "10 (LightStyles.FramesPerSecond)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: missing
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The 12 named animated lightstyles (flicker/pulse/candle/strobe, world.qc:882-920) plus style 63 are not installed at worldspawn: map lights driven by a style index will not animate."
+      - "Client render consumer not ported: nothing samples LightStyles.Sample to modulate map-light/dynlight brightness per frame, so a map light driven by a style index still does not visibly animate. The server-side table install is present, but the presentation (the actual light animation) is unconsumed (DynamicLightRenderer renders a steady radius)."
     verification:
-      - { kind: code, ref: "grep lightstyle install in GameWorld.Boot — none (the only lightstyle hits are entity fields in DynamicLight, not the worldspawn table); world.qc:882-920", result: fail }
-    confidence: medium
-    notes: "STILL OPEN — unchanged. Whether any shipped map relies on these animated styles is unverified; the table itself (lightstyle(0..11)+lightstyle(63)) is absent."
+      - { kind: code, ref: "LightStyles.cs: 12 named styles (0-11) + style 63, frame strings byte-for-byte identical to world.qc:882-920, 10fps Quake decode ('a'=0.0..'m'=1.0). InstallWorldspawnTable() called LIVE at GameWorld.Boot (cs:928). No render caller of LightStyles.Sample (grep). vs spawnfunc(worldspawn) lightstyle(0..11)+lightstyle(63).", result: partial }
+    confidence: high
+    notes: "FIX since 2026-06-25: the server-side worldspawn lightstyle table is now PORTED and installed LIVE at Boot — LightStyles.InstallWorldspawnTable() loads the 12 named styles + style 63 with frame strings verbatim from world.qc:882-920, plus a Sample() decoder at the Quake 10fps convention. logic+values+timing missing->faithful (authority half), liveness na->live. STILL OPEN: the client render consumer that actually animates a styled light is unported, so presentation stays missing."
   - id: sv-world-rules.misc.start_delay
     name: "g_start_delay pre-match join window"
     layer: [authority]

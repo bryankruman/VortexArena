@@ -3,13 +3,13 @@ category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 13
+  feature_count: 14
   worst_gaps:
-    - "No beam model visual (MDL_TUR_PHASER_BEAM) and no head charge/discharge frame animation (tr_think)"
-    - "Head model (phaser.md3) is not attached as a separate tracking head bone"
+    - "No beam model visual (MDL_TUR_PHASER_BEAM scaled to impact) and no phaser.md3 head bone attached — the head charge/discharge FRAME animation (tr_think) is now ported, but rides the turret edict's Entity.Frame with no visible head model"
     - "Beam never registers on g_bot_dodge (port beam omits bot_dodge/bot_dodgerating; no havocbot danger-list consumer) — bots do not avoid the phaser beam"
     - "Target-selection biases (rangebias 0.85, anglebias 0.25, samebias 0, missilebias 0) are not passed — phaser scores targets with the generic 1.0 defaults"
-    - "firecheck does not model the fireflag==2 discharge window (subsumed by the 4s refire hold)"
+    - "Per-unit head-track tuning not passed: track_accel_rot 0.65 and track_blendrate 0.2 fall back to TurretParams defaults (0.5 / 0.35) — head-tracking feel diverges"
+    - "firecheck does not model the fireflag==2 discharge window as a fire-block (subsumed by the 4s refire hold); the fireflag state is now tracked but not consulted by the firecheck gate"
 features:
   - id: turret-phaser.spawn.map_entity
     name: "Map placement + per-frame think wiring (spawnfunc turret_phaser)"
@@ -115,11 +115,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port holds AttackFinished = endTime to block re-fire during the beam (functional analogue), but does not model the fireflag==2 DISCHARGE window during which Base also forbids fire (~5 tr_think frames after the beam ends, until the head animation returns to idle)."
+      - "Port holds AttackFinished = endTime to block re-fire during the beam (functional analogue), but the firecheck gate does not CONSULT the fireflag==2 DISCHARGE window during which Base also forbids fire (~5 tr_think frames after the beam ends, until the head animation returns to idle). NOTE: the fireflag STATE is now tracked (FireFlag set to 1 in Attack, 2 in BeamThink end, reset to 0 by TrThinkHeadAnim) for the head animation, but RunCombat's firecheck never reads it — the fire-block is still purely the shot_refire (4s) AttackFinished hold."
     verification:
-      - { kind: code, ref: "phaser.qc turret_phaser_firecheck (fireflag != 0) vs PhaserTurret.BeamThink AttackFinished hold", result: fail }
+      - { kind: code, ref: "phaser.qc turret_phaser_firecheck (fireflag != 0) vs PhaserTurret firecheck path: TurretState.FireFlag now tracked but not consulted by RunCombat's TFL_FIRECHECK_REFIRE gate; fire-block via AttackFinished hold only", result: fail }
     confidence: medium
-    notes: "The discharge-window difference is tiny (~0.07s) and subsumed by shot_refire (4s), the only refire gate the port consults. STILL OPEN — unchanged."
+    notes: "The discharge-window difference is tiny (~0.07s) and subsumed by shot_refire (4s), the only refire gate the port consults. The fireflag state machine now EXISTS (used for the head animation) but the firecheck still does not branch on it — functionally equivalent. STILL OPEN."
 
   - id: turret-phaser.fire.beam_spawn
     name: "wr_think: spawn the sustained PhaserTurret_beam"
@@ -327,27 +327,68 @@ features:
     base_refs:
       - "common/turrets/turret/phaser_weapon.qc:wr_think"
       - "common/turrets/turret/phaser.qc:tr_think"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:TrThinkHeadAnim"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:FireFlag"
     constants:
       - { name: "beam scale", base: "vlen(shotorg-trace_endpos)/256", port: "none", match: false }
-      - { name: "head frames fireflag==1", base: "cycle 1..10", port: "none", match: false }
-      - { name: "head frames fireflag==2", base: "advance to 15 then reset to 0", port: "none", match: false }
+      - { name: "head frames fireflag==1", base: "cycle 1..10", port: "cycle 1..10 (Entity.Frame)", match: true }
+      - { name: "head frames fireflag==2", base: "advance to 15 then reset to 0", port: "advance to 15 then reset to 0 (Entity.Frame)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: partial
+      values: partial
+      timing: partial
       presentation: missing
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No PhaserTurret_beam model spawned/scaled to the impact distance (acknowledged TODO comment in Attack:115)."
-      - "No tr_think head-frame state machine: the head never plays the charge (1..10) or discharge (->15->0) animation. The fireflag concept is absent in the port."
+      - "No PhaserTurret_beam model spawned/scaled to the impact distance (MDL_TUR_PHASER_BEAM + .scale = vlen/256 + setattachment tag_fire); acknowledged TODO comment in Attack (PhaserTurret.cs:161-165). The server-side beam logic/damage IS done; only the visible beam model is absent."
+      - "phaser.md3 head model is not attached as a separate tracking head bone — the head-frame animation drives the turret edict's own networked Entity.Frame, so the frame VALUE animates faithfully but there is no visible phaser.md3 head to show it (presentation gap shared with identity.model_hitbox)."
     verification:
-      - { kind: code, ref: "phaser.qc tr_think + setmodel(MDL_TUR_PHASER_BEAM) — no port equivalent (PhaserTurret.cs:115 NOTE)", result: fail }
+      - { kind: code, ref: "PhaserTurret.TrThinkHeadAnim (fireflag==1 cycle 1..10; fireflag==2 advance to 15 then reset to 0, fireflag=0) == phaser.qc tr_think; FireFlag set in Attack (=1) and BeamThink end (=2) — head FRAME state machine ported and live", result: pass }
+      - { kind: code, ref: "MDL_TUR_PHASER_BEAM setmodel + .scale = vlen/256 — still no port equivalent (PhaserTurret.cs:161 NOTE)", result: fail }
     confidence: high
-    notes: "The beam is intentionally 'invisible' per the menu description, but Base still draws a faint scaled beam model + animates the head; both are client-render TODOs in the port. STILL OPEN — unchanged."
+    notes: >-
+      DRIFT (FIX) since baseline. The earlier audit recorded BOTH the beam model AND the head charge/discharge
+      animation as fully missing. The tr_think head-frame state machine is now ported live (TrThinkHeadAnim driven
+      by TurretState.FireFlag, landed Wave 8e / 412ca19): fireflag==1 cycles the head frame 1..10 while firing,
+      fireflag==2 advances 10->15 then resets to idle (frame=0, fireflag=0). The frame logic/values/timing now match
+      Base. STILL OPEN: the visible MDL_TUR_PHASER_BEAM beam model (scaled to the hit distance) and the phaser.md3
+      head-bone attachment — both pure client-render, so presentation remains missing even though the head frame
+      value is now driven faithfully on Entity.Frame."
+
+  - id: turret-phaser.aim.head_track_tuning
+    name: "Per-unit head-tracking motor tuning (track_type / accel_pitch / accel_rot / blendrate)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_track"
+      - "turrets.cfg:317-320"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
+    constants:
+      - { name: "track_type", base: "3 (fluid inertia)", port: "3 (TrackFluidInertia, passed)", match: true }
+      - { name: "track_accel_pitch", base: "0.5", port: "0.5 (TurretParams default, not passed)", match: true }
+      - { name: "track_accel_rot", base: "0.65", port: "0.5 (TurretParams default, not passed)", match: false }
+      - { name: "track_blendrate", base: "0.2", port: "0.35 (TurretParams default, not passed)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "PhaserTurret.Think passes only trackType:3 to TurretParams; track_accel_rot (0.65) and track_blendrate (0.2) are NOT passed, so they fall back to the TurretParams defaults (0.5 / 0.35). The TrackFluidInertia motor (TurretAI.cs:556-561) is faithful and live, but the phaser's head turns/settles at a slightly different rate than Base — track_accel_pitch (0.5) happens to match the default so it is correct."
+    verification:
+      - { kind: value, ref: "turrets.cfg:317-320 (track_type 3, accel_pitch 0.5, accel_rot 0.65, blendrate 0.2) vs PhaserTurret.Think TurretParams(trackType:3) — accel_rot/blendrate omitted -> defaults 0.5/0.35 (TurretAI.cs:1085-1086)", result: fail }
+    confidence: high
+    notes: "Newly mapped (no baseline row). Affects head-tracking FEEL only (how fast/smoothly the head slews to a target), not whether/what it hits. accel_pitch coincidentally matches the default. Likely shared with other turret units that pass only trackType."
 
   - id: turret-phaser.lifecycle.respawn_time
     name: "Death + respawn timer"

@@ -5,8 +5,9 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Presentation FX still deferred across the board: EFFECT_RACER_BOOSTER/MUZZLEFLASH/ROCKETLAUNCH, under-craft smoke trail, CSQC bolt/rocket trails (PROJECTILE_WAKICANNON/WAKIROCKET), EFFECT_EXPLOSION_MEDIUM death FX + colormod darken, painframe smoke, aux-crosshair lock colour, cockpit hud model + tag_viewport."
+    - "Remaining presentation is client-render only: the CSQCProjectile bolt/rocket trails (PROJECTILE_WAKICANNON / PROJECTILE_WAKIROCKET), the aux-crosshair lock colour (red/green/blue by lock_strength), the cockpit hud model + tag_viewport attachment, and the HUD gauges that READ the already-written ammo2/reload2/health/shield/energy % stats. The server-side Send_Effect emissions (booster puff, under-craft smoke, cannon muzzleflash, rocket-launch flash, death explosion) + the death colormod darken are now all emitted authority-side."
     - "Cosmetic-only spawn values unset: scale 0.5 model hack (physics uses the real hitbox), view_ofs '0 0 50' + height 200 (cockpit camera offset/dist)."
+    - "Shared-layer note: VehicleCommon.PainFrame still defers its low-health EFFECT_SMOKE_SMALL puff (the jitter/shake is live); that smoke is a VehicleCommon concern, not a racer-specific row."
     - "Minor fidelity notes: vr_impact NOIMPACT-surface skip not available headless; oldvelocity captured at Think-start not at the engine clip; LoadCvars zero-as-sentinel edge (a server explicitly setting a tunable to 0 keeps the Base default)."
 features:
   - id: vehicle-racer.identity.def
@@ -42,7 +43,7 @@ features:
       - { kind: test, ref: "VehicleRuntimeTests.RacerSpawn_RegistersDescriptor_ArmsThink_AndIdlesWithoutNaN (tests/XonoticGodot.Tests/VehicleRuntimeTests.cs)", result: pass }
       - { kind: code_read, ref: "racer.qh vs Racer ctor + Spawn", result: pass }
     confidence: high
-    notes: "Identity/hitbox/model faithful; cockpit hud model + view_ofs are presentation-only and still unported."
+    notes: "Identity/hitbox/model faithful; cockpit hud model + view_ofs are presentation-only and still unported (Racer.Spawn lines 227-228 TODO confirms)."
   - id: vehicle-racer.spawn.lifecycle
     name: "vr_spawn / vr_setup: movetype, solid, health/shield/energy, regen capability flags, bounce/mass"
     layer: [authority]
@@ -80,9 +81,9 @@ features:
       - "scale 0.5 (cosmetic model-shrink hack) still not applied; physics uses the real hitbox so this is presentation-only."
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.RacerSpawn_RegistersDescriptor_ArmsThink_AndIdlesWithoutNaN", result: pass }
-      - { kind: code_read, ref: "racer.qc vr_spawn/vr_setup vs Racer.Spawn lines 201-203: BounceFactor/BounceStop/Mass now set to 0.25/0/900; only scale 0.5 still absent", result: pass }
+      - { kind: code_read, ref: "racer.qc vr_spawn/vr_setup vs Racer.Spawn lines 205-216: BounceFactor/BounceStop/Mass set to 0.25/0/900; only scale 0.5 still absent", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22: bouncefactor 0.25 / bouncestop 0 / mass 900 are now applied in Spawn (were the standing values gap). .touch left as the shared vehicles_touch handler + play_time debounce cleared on respawn. Only cosmetic scale 0.5 remains."
+    notes: "bouncefactor 0.25 / bouncestop 0 / mass 900 applied in Spawn; .touch left as the shared vehicles_touch handler + play_time debounce cleared on respawn. Only cosmetic scale 0.5 remains."
   - id: vehicle-racer.spawnfunc.liveness
     name: "Map spawnfunc wiring + master cvar gate + per-cvar tunable retune"
     layer: [authority]
@@ -148,9 +149,9 @@ features:
       - "Port anchors the boarding flag-carrier's flag each tick via Ctf.Tick (rides the craft continuously at -190 0 96) rather than the single setorigin at vr_enter; behaviourally equivalent or stronger (flag follows the moving craft)."
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.UseKey_BoardsNearbyRacer_LinksAndFreezesPilot (+ guard tests + Exit/Death eject)", result: pass }
-      - { kind: code_read, ref: "Ctf.cs:1448-1454 FlagVehicleCarryOffset=(-190,0,96), applied when carrier.Vehicle != null; VehicleCommon.Touch boards toucher when Cvar('g_vehicles_enter')==0; Racer.Exit sets player.OldVelocity (QC racer_exit oldvelocity), Think sets player.OldOrigin (QC racer_frame)", result: pass }
+      - { kind: code_read, ref: "Ctf.cs FlagVehicleCarryOffset=(-190,0,96), applied when carrier.Vehicle != null; VehicleCommon.Touch boards toucher when Cvar('g_vehicles_enter')==0; Racer.Exit sets player.OldVelocity (QC racer_exit oldvelocity), Think sets player.OldOrigin (QC racer_frame)", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22: the CTF flag-carrier reposition (-190 0 96) is now LIVE via Ctf.Tick (FlagVehicleCarryOffset), so a flag carrier who boards the racer carries the flag on the craft (was a TODO comment only). Exit oldvelocity + Think oldorigin fall-damage negation both modeled (the old 'oldorigin' gap was a misattribution — QC racer_exit sets oldvelocity, which the port does)."
+    notes: "CTF flag-carrier reposition (-190 0 96) is LIVE via Ctf.Tick (FlagVehicleCarryOffset). Exit oldvelocity + Think oldorigin fall-damage negation both modeled."
   - id: vehicle-racer.drive.hover4point
     name: "racer_align4point: 4 engine springs + pitch/roll torque + stabilizer"
     layer: [authority]
@@ -181,9 +182,9 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.RacerSpawn idle hover no-NaN + Drive_ForwardInput_AcceleratesAlongFacing", result: pass }
-      - { kind: code_read, ref: "racer_align4point vs Align4Point; line 565 `diving = input.ButtonCrouch && Time < vehicle.VehAirFinished` then `v.Z += diving ? 30f : 200f` now matches the Base air-meter gate", result: pass }
+      - { kind: code_read, ref: "racer_align4point vs Align4Point; line 579 `diving = input.ButtonCrouch && Time < vehicle.VehAirFinished` then `v.Z += diving ? 30f : 200f` matches the Base air-meter gate", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22: the crouch-dive up-push 30->200 is now correctly gated on `ButtonCrouch && time < racer_air_finished` (VehAirFinished air-meter field armed in Frame), matching Base; previously keyed on crouch alone. Spring/torque/stabilizer faithful."
+    notes: "The crouch-dive up-push 30->200 gated on `ButtonCrouch && time < racer_air_finished` (VehAirFinished armed in Frame). Spring/torque/stabilizer faithful."
   - id: vehicle-racer.drive.controller
     name: "racer_frame: yaw/pitch/roll toward view, friction, wishmove, downforce"
     layer: [authority]
@@ -214,14 +215,14 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.Drive_ForwardInput_AcceleratesAlongFacing", result: pass }
-      - { kind: code_read, ref: "racer_frame yaw/pitch/roll/thrust/downforce vs Frame; lines 485-487 stamp VehWaterTime in liquid and pick water-downforce for 3s after (`Time - VehWaterTime <= 3f`); lines 371-374 arm VehAirFinished = Time + WaterTime on first submerged tick", result: pass }
+      - { kind: code_read, ref: "racer_frame yaw/pitch/roll/thrust/downforce vs Frame; lines 502-504 stamp VehWaterTime in liquid and pick water-downforce for 3s after; lines 375-378 arm VehAirFinished = Time + WaterTime on first submerged tick", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22: racer_watertime 3s post-water downforce ramp AND the 5s racer_air_finished air-meter are now both modeled (VehWaterTime / VehAirFinished fields). Steering + thrust constants all faithful."
+    notes: "racer_watertime 3s post-water downforce ramp AND the 5s racer_air_finished air-meter both modeled (VehWaterTime / VehAirFinished). Steering + thrust constants faithful."
   - id: vehicle-racer.drive.afterburn
-    name: "Afterburn (jump): energy drain + boost thrust (water vs air) + engine-sound state machine"
+    name: "Afterburn (jump): energy drain + boost thrust (water vs air) + booster/smoke FX + engine-sound state machine"
     layer: [authority, presentation, audio]
     base_refs:
-      - "common/vehicles/vehicle/racer.qc:racer_frame (afterburn + engine-sound block)"
+      - "common/vehicles/vehicle/racer.qc:racer_frame (afterburn + booster FX + engine-sound block)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:Frame"
     constants:
@@ -232,24 +233,24 @@ features:
       - { name: "boost sound gate", base: "SND_VEH_RACER_BOOST gated 10.922667s via .strength_finished; SND_Null stop on release", port: "vehicles/racer_boost.wav gated 10.922667s via VehBoostSoundTime; Sound.Stop on release", match: true }
       - { name: "engine loop", base: "racer_move 10.922667s (sounds=1) while moving / racer_idle 11.888604s (sounds=0) idle, gated on sound_nexttime", port: "racer_move/racer_idle loops gated on VehSoundNextTime/VehSoundState (10.922667/11.888604)", match: true }
       - { name: "boost sound entity", base: "vehic.tur_head", port: "vehicle (no tur_head sub-entity)", match: false }
-      - { name: "booster effect", base: "EFFECT_RACER_BOOSTER (every 0.2s) + under-craft smoke trail", port: "none (Boosting effect flag only)", match: false }
+      - { name: "booster effect", base: "EFFECT_RACER_BOOSTER (gated on .wait, every 0.2s) at origin-fwd*32, thrown forward at speed", port: "EffectEmitter.Emit('RACER_BOOSTER', origin-fwd*32, fwd*speed) gated `Time-VehWait > 0.2`", match: true }
+      - { name: "under-craft smoke", base: "EFFECT_SMOKE_SMALL: traceline down 256u, puff at ground, .invincible_finished cadence 0.1+rand*0.1", port: "EffectEmitter.Emit('SMOKE_SMALL', down.EndPos) gated VehSmokeTime, trace down 256u, cadence 0.1+rand*0.1", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Boost sound plays on the vehicle entity, not a tur_head sub-entity (the port has no tur_head); audibly equivalent (same origin). Booster/smoke particle FX still deferred (presentation)."
-      - "No EFFECT_RACER_BOOSTER puff (every 0.2s, gated on .wait) and no under-craft smoke trail (EFFECT_SMOKE_SMALL traceline)."
+      - "Boost sound plays on the vehicle entity, not a tur_head sub-entity (the port has no tur_head); audibly equivalent (same origin)."
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.Drive_AfterburnInput_DrainsEnergy", result: pass }
-      - { kind: code_read, ref: "racer_frame afterburn + engine-sound block vs Frame lines 417-477: move/idle loop swap gated on VehSoundNextTime/VehSoundState; boost gated by VehBoostSoundTime (10.922667s) with Sound.Stop on the not-boosting branch", result: pass }
+      - { kind: code_read, ref: "racer.qc racer_frame afterburn block vs Racer.Frame lines 447-494: EFFECT_RACER_BOOSTER (line 452, gated Time-VehWait>0.2) + EFFECT_SMOKE_SMALL down-trace (lines 469-476, gated VehSmokeTime) both emitted via EffectEmitter; move/idle loop gated on VehSoundNextTime/VehSoundState; boost gated by VehBoostSoundTime (10.922667s) with Sound.Stop on the not-boosting branch. RACER_BOOSTER/SMOKE_SMALL registered in EffectsList.cs", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22: the engine-sound state machine (racer_move/racer_idle loop selection gated on sound_nexttime) is now ported AND the boost sound is gated to its 10.92s loop length with the SND_Null stop on release (was replayed every tick). Energy drain + thrust faithful. Only booster particle FX + the tur_head-vs-vehicle sound entity diverge (presentation)."
+    notes: "FIX since 2026-06-22: the EFFECT_RACER_BOOSTER puff (0.2s-gated) and the under-craft EFFECT_SMOKE_SMALL down-trace are now emitted server-side via EffectEmitter (Send_Effect equivalent), with the correct .wait / .invincible_finished cadence — presentation upgraded missing->faithful. Engine-sound state machine + boost loop-gating + energy drain + thrust all faithful. Only the tur_head-vs-vehicle boost-sound entity diverges (audibly equivalent)."
   - id: vehicle-racer.weapon.cannon
     name: "Primary energy laser cannon (rapid, energy-gated)"
     layer: [authority, presentation, audio]
@@ -269,23 +270,24 @@ features:
       - { name: "cannon_refire", base: "0.05", port: "0.05", match: true }
       - { name: "deathtype", base: "DEATH_VH_WAKI_GUN", port: "DeathTypes.VhWakiGun", match: true }
       - { name: "fire sound", base: "lasergun_fire", port: "vehicles/lasergun_fire.wav", match: true }
+      - { name: "muzzle effect", base: "EFFECT_RACER_MUZZLEFLASH (vehicles_projectile Send_Effect at bolt origin)", port: "EffectEmitter.Emit('RACER_MUZZLEFLASH', org, vel, 1)", match: true }
       - { name: "muzzle tag (player path)", base: "W_SetupShot_Dir from player (NO tag alternation; alternation is bot-only)", port: "fixed tag_fire1, no alternation (matches the piloted path)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No EFFECT_RACER_MUZZLEFLASH muzzle effect and no CSQCProjectile (PROJECTILE_WAKICANNON) bolt trail (presentation)."
+      - "The EFFECT_RACER_MUZZLEFLASH muzzle effect is now emitted; the CSQCProjectile (PROJECTILE_WAKICANNON) bolt trail remains a client-render concern and is unported."
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.Drive_PrimaryFire_SpawnsAVehicleProjectile + MonsterTurretVehicleObituaryTests (VhWakiGun)", result: pass }
-      - { kind: code_read, ref: "racer_weapon.qc wr_think fire&1 vs FireCannon (line 694 uses fixed 'tag_fire1', no veh.cnt alternation — matches the piloted W_SetupShot_Dir path)", result: pass }
+      - { kind: code_read, ref: "racer_weapon.qc wr_think fire&1 vs FireCannon; line 723 EffectEmitter.Emit('RACER_MUZZLEFLASH', org, vel, 1); fixed 'tag_fire1' (no veh.cnt alternation — matches the piloted W_SetupShot_Dir path). RACER_MUZZLEFLASH registered in EffectsList.cs", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22: the unconditional tag_fire1/tag_fire2 alternation was removed — FireCannon now fires from a fixed tag_fire1, matching the Base piloted path (alternation is bot-only in Base). Ballistics/damage/spread/refire/deathtype/sound faithful; muzzle FX + bolt trail still deferred."
+    notes: "FIX since 2026-06-22: the EFFECT_RACER_MUZZLEFLASH muzzle flash is now emitted server-side via EffectEmitter (presentation missing->partial). Ballistics/damage/spread/refire/deathtype/sound faithful. Only the PROJECTILE_WAKICANNON CSQC bolt trail (client-render) still deferred."
   - id: vehicle-racer.weapon.rocket
     name: "Secondary rocket pair (lock-on / homing / ground-hugging)"
     layer: [authority, presentation, audio]
@@ -311,24 +313,25 @@ features:
       - { name: "rocket_climbspeed", base: "1600", port: "1600 (hardcoded)", match: true }
       - { name: "rocket_locked_maxangle", base: "1.8", port: "1.8 (hardcoded)", match: true }
       - { name: "locking_time / releasetime / locked_time", base: "0.35 / 0.5 / 4", port: "0.35 / 0.5 / 4", match: true }
+      - { name: "launch effect", base: "EFFECT_RACER_ROCKETLAUNCH (vehicles_projectile Send_Effect)", port: "EffectEmitter.Emit('RACER_ROCKETLAUNCH', org, vel, 1)", match: true }
       - { name: "timeout/owner-death deathtype", base: "DEATH_VH_WAKI_ROCKET", port: "RegistryId + deathTag: DeathTypes.VhWakiRocket (override)", match: true }
       - { name: "tracker obstacle-avoid lift", base: "traceline ahead; if blocked && trace_ent!=enemy then newdir.z += 16*sys_frametime", port: "implemented in GuideRocket RacerHoming (ahead trace + newDir.Z += 16*frametime)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No EFFECT_RACER_ROCKETLAUNCH launch effect and no CSQCProjectile (PROJECTILE_WAKIROCKET) rocket trail (presentation)."
+      - "The EFFECT_RACER_ROCKETLAUNCH launch effect is now emitted; the CSQCProjectile (PROJECTILE_WAKIROCKET) rocket trail remains a client-render concern and is unported."
     verification:
       - { kind: test, ref: "MonsterTurretVehicleObituaryTests (VhWakiRocket murder line)", result: pass }
-      - { kind: code_read, ref: "VehiclePhysicsHelpers.GuideRocket RacerHoming case (lines 403-418) now traces origin -> origin + fwd*64 - '0 0 32' and lifts newDir.Z += 16f*frametime when the ahead-trace hits a non-target; FireRocket timeout passes deathTag DeathTypes.VhWakiRocket", result: pass }
+      - { kind: code_read, ref: "FireRocket line 741 EffectEmitter.Emit('RACER_ROCKETLAUNCH', org, vel, 1); GuideRocket RacerHoming traces origin -> origin + fwd*64 - '0 0 32' and lifts newDir.Z += 16f*frametime when the ahead-trace hits a non-target; timeout passes deathTag DeathTypes.VhWakiRocket. RACER_ROCKETLAUNCH registered in EffectsList.cs", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22: the homing tracker's obstacle-avoid traceline + newdir.z += 16*sys_frametime climb-lift step is now implemented in GuideRocket RacerHoming (was omitted). Owner-death / 15s-timeout detonation tagged DEATH_VH_WAKI_ROCKET. Only launch FX/trail still deferred."
+    notes: "FIX since 2026-06-22: the EFFECT_RACER_ROCKETLAUNCH launch flash is now emitted server-side via EffectEmitter (presentation missing->partial). Homing tracker obstacle-avoid + 16*sys_frametime climb-lift implemented; owner-death/15s-timeout tagged DEATH_VH_WAKI_ROCKET. Only the PROJECTILE_WAKIROCKET CSQC trail (client-render) still deferred."
   - id: vehicle-racer.weapon.rockethud
     name: "Secondary HUD ammo/reload mirror (vehicle_ammo2 / vehicle_reload2)"
     layer: [authority, presentation]
@@ -350,11 +353,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Authority-side ammo2/reload2 % stats are now written each tick onto the pilot; the client HUD progressbar that READS them (Vehicles_drawHUD vehicle_icon_ammo2) is presentation/CSQC and not yet wired — a client-render concern, not an authority gap."
+      - "Authority-side ammo2/reload2 % stats are written each tick onto the pilot; the client HUD progressbar that READS them (Vehicles_drawHUD vehicle_icon_ammo2) is presentation/CSQC and not yet wired — a client-render concern, not an authority gap."
     verification:
-      - { kind: code_read, ref: "Racer.Frame lines 510-542: player.VehAmmo2 set 100/50/0 across the rocket pair; VehReload2 = Bound(0, 100*(Time-VehReloadStart)/(VehWeaponDelay-VehReloadStart), 100); VehReloadStart (.lip) stamped on pair-complete and read here; fields exist on EntityVehicleStateExtra", result: pass }
+      - { kind: code_read, ref: "Racer.Frame lines 527-559: player.VehAmmo2 set 100/50/0 across the rocket pair; VehReload2 = Bound(0, 100*(Time-VehReloadStart)/(VehWeaponDelay-VehReloadStart), 100); VehReloadStart (.lip) stamped on pair-complete and read here; fields exist on EntityVehicleStateExtra", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22 (was missing on all dimensions): the rocket reload/ammo HUD percentages (vehicle_ammo2 100/50/0 and the vehicle_reload2 progress bar from .lip/.delay) are now written authority-side via VehAmmo2/VehReload2. Only the client gauge that draws them remains (presentation)."
+    notes: "The rocket reload/ammo HUD percentages (vehicle_ammo2 100/50/0 and the vehicle_reload2 progress bar from .lip/.delay) are written authority-side via VehAmmo2/VehReload2. Only the client gauge that draws them remains (presentation)."
   - id: vehicle-racer.regen.resources
     name: "Per-frame shield/energy/health regen + player %-stat mirror"
     layer: [authority]
@@ -411,24 +414,26 @@ features:
       - { name: "blowup delay", base: "2 + time + rand*3", port: "Time + 2 + rand*3 (seeded PRNG)", match: true }
       - { name: "deadtouch bounce count cnt", base: "1 + rand*2", port: "1 + rand*2", match: true }
       - { name: "death pop velocity.z", base: "+700", port: "+700", match: true }
+      - { name: "death effect", base: "EFFECT_EXPLOSION_MEDIUM (Send_Effect at origin)", port: "EffectEmitter.Emit('EXPLOSION_MEDIUM', origin)", match: true }
+      - { name: "death colormod darken", base: "'-0.5 -0.5 -0.5'", port: "vehicle.ColorModKey = (-0.5,-0.5,-0.5)", match: true }
       - { name: "respawntime", base: "35", port: "35", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
-      audio: missing
+      presentation: faithful
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No EFFECT_EXPLOSION_MEDIUM (Send_Effect) on death and no colormod '-0.5 -0.5 -0.5' darken; setSendEntity(func_null) stop-networking is not modeled (presentation/net only)."
+      - "setSendEntity(func_null) stop-networking the wreck is a net-layer concern, unmodeled (Death NOTE line 669)."
       - "vehicles_setreturn's CSQC return waypoint / radar icon + EFFECT_TELEPORT return flash are presentation and unported (the authoritative return SCHEDULE is set by SetReturn)."
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.Death_EjectsPilot_ThenRespawnsAtSpawnPoint", result: pass }
-      - { kind: code_read, ref: "vr_death/racer_blowup_think/racer_deadtouch/racer_blowup vs Death/Blowup; DamageVehicle runs LIVE via GtEventDamage; death-eject + SetReturn respawn schedule wired", result: pass }
+      - { kind: code_read, ref: "vr_death/racer_blowup_think/racer_deadtouch/racer_blowup vs Death/Blowup; line 644 EffectEmitter.Emit('EXPLOSION_MEDIUM', origin) + line 645 ColorModKey = (-0.5,-0.5,-0.5); line 202 clears it on respawn. EXPLOSION_MEDIUM registered in EffectsList.cs. DamageVehicle runs LIVE via GtEventDamage; death-eject + SetReturn respawn schedule wired", result: pass }
     confidence: high
-    notes: "Core tumble + timed/bounce detonation + radius blast + 35s respawn faithful and tested; runs on the LIVE damage pipeline (GtEventDamage->DamageVehicle->Death + SetReturn). Death FX still deferred."
+    notes: "FIX since 2026-06-22: the EFFECT_EXPLOSION_MEDIUM death blast (Send_Effect equivalent via EffectEmitter) AND the '-0.5 -0.5 -0.5' colormod darken are now emitted authority-side (cleared on respawn) — presentation+audio upgraded missing->faithful (Base vr_death has no separate sound() call; the explosion sound rides the effect, same path). Core tumble + timed/bounce detonation + radius blast + 35s respawn faithful and tested on the LIVE damage pipeline. Only the setSendEntity net stop + the CSQC return-waypoint/teleport-flash remain."
   - id: vehicle-racer.impact.bouncepain
     name: "vr_impact: ram/collision fall-damage (vehicles_impact bouncepain)"
     layer: [authority]

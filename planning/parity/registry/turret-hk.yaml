@@ -3,14 +3,14 @@ category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 11
+  feature_count: 12
   worst_gaps:
     - "No external target reception (turret_hk_addtarget / TUR_FLAG_RECIEVETARGETS): HK cannot be fed a designated target"
     - "No WEP_HK player special-attack weapon (hidden/dev path, impulse 9) — not ported at all"
     - "Head model (hk.md3) not instantiated as a separate head entity; no tag_head attachment"
-    - "No muzzle te_explosion on launch, no PROJECTILE_ROCKET trail/smoke on the rocket (presentation)"
     - "Select/firecheck flag set still diverges (no SelectVehicles/SelectTriggerTarget consts; AFF not a discrete gate)"
     - "tr_think head-frame cycler now ported on the turret edict's own frame (no separate tur_head entity), but no real head model to display the animation"
+    - "MENUQC describe page text (turret info panel) not ported — only a DisplayName is set (new_unmapped: turret-hk.menu.describe)"
 features:
   - id: turret-hk.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -163,23 +163,22 @@ features:
       - { name: "missile_flags", base: "MIF_SPLASH|MIF_PROXY|MIF_GUIDED_AI", port: "splash via radius damage; proxy/guided implicit", match: true }
       - { name: "deathtype", base: "DEATH_TURRET_HK", port: "DeathTypes.TurretHk (turret_hk)", match: true }
       - { name: "fire sound", base: "SND rocket_fire (W_Sound)", port: "weapons/rocket_fire.wav", match: true }
-      - { name: "muzzle te_explosion", base: "yes (hk_weapon.qc:30)", port: "none", match: false }
+      - { name: "muzzle te_explosion", base: "yes (hk_weapon.qc:30)", port: "FIXED (Wave-8e): EffectEmitter.TeExplosion(missile.Origin) at HkTurret.cs:129", match: true }
+      - { name: "PROJECTILE_ROCKET trail", base: "yes (turret_projectile PROJECTILE_ROCKET)", port: "FIXED (Wave-8e): missile NetName='rocket' -> ProjectileCatalog Rocket (RocketSmoke trail + rocket.md3 + rocket_fly loop)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "No muzzle te_explosion flash on launch (hk_weapon.qc:30)."
-      - "No PROJECTILE_ROCKET client trail/smoke on the rocket."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "hk_weapon.qc wr_think (turret branch) vs HkTurret.Attack + GuidedProjectile.Launch (unchanged by Wave-2)", result: pass }
+      - { kind: code_read, ref: "hk_weapon.qc wr_think (turret branch) vs HkTurret.Attack + GuidedProjectile.Launch; Wave-8e (412ca19) added EffectEmitter.TeExplosion(missile.Origin) (HkTurret.cs:129) and the missile is stamped NetName='rocket' in GuidedProjectile.Launch (:75) which ProjectileCatalog.Classify (:270) resolves to ProjectileType.Rocket -> RocketSmoke trail + rocket.md3 + weapons/rocket_fly loop.", result: pass }
     confidence: high
-    notes: "Launch ballistics/damage/flags faithful; fire sound (rocket_fire) plays; muzzle flash + projectile trail still missing (presentation). Unchanged from baseline."
+    notes: "BASELINE GAPS CLOSED (presentation). Launch ballistics/damage/flags faithful; fire sound (rocket_fire) plays. Wave-8e added the muzzle te_explosion flash (HkTurret.cs:129) and the PROJECTILE_ROCKET smoke trail (NetName='rocket' -> client RocketSmoke trail + rocket.md3 body + rocket_fly loop). Both presentation gaps from the baseline are now done; presentation upgraded partial -> faithful."
   - id: turret-hk.weapon.guidance
     name: "turret_hk_missile_think: obstacle-avoiding guided-rocket flight model"
     layer: [authority]
@@ -357,3 +356,26 @@ features:
       - { kind: code_read, ref: "Wave-2: HkTurret.Think now passes aimMaxPitch=20 + trackAccelPitch 0.25/trackAccelRot 0.6/trackBlendRate 0.2; Track (TurretAI.cs:497-499) consumes them. turrets.cfg defaults confirmed.", result: pass }
     confidence: high
     notes: "BASELINE GAP CLOSED. aim_maxpitch corrected 30->20; the three head-track motor rates (track_accel_pitch/rot/blendrate) now threaded through TurretParams and genuinely consumed in Track. track_type + aim_speed + aim_maxrot remain matched."
+  - id: turret-hk.menu.describe
+    name: "MENUQC describe: turret info page text"
+    layer: [presentation]
+    base_refs:
+      - "common/turrets/turret/hk.qc:51"
+    port_refs: []
+    constants:
+      - { name: "describe text", base: "'The %s fires a single powerful homing rocket ... similar to that of the %s.' (refs WEP_DEVASTATOR)", port: "none (only DisplayName='Hunter-Killer Turret')", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The MENUQC HunterKiller.describe page text (turret info / description panel) is not ported; the port sets only HkTurret.DisplayName ('Hunter-Killer Turret'), not the full PAGE_TEXT body that references WEP_DEVASTATOR."
+    verification:
+      - { kind: code_read, ref: "hk.qc:51 METHOD(HunterKiller, describe) (MENUQC); grep describe/PAGE_TEXT in HkTurret.cs -> only DisplayName set", result: fail }
+    confidence: high
+    notes: "Newly-mapped coverage gap (was unmapped in the baseline registry). Menu-only description page; cosmetic. The port has no turret-describe page system, only a DisplayName string."

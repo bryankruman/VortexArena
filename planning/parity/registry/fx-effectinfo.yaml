@@ -1,14 +1,14 @@
 unit: fx-effectinfo
 category: effect
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 10
   worst_gaps:
-    - "stainsize baseline default diverges (DP {2,2} vs port {1,1}) — 22 of 30 staintex blocks in the shipped effectinfo.txt OMIT stainsize and rely on the baseline, so they get half-size splat decals"
-    - "staincolor baseline default + semantics diverge (DP 0xFFFFFFFF modding-factor on the particle's own colour vs port 0xFFFFFF absolute tint) — wrong splat-decal colour for blocks relying on the default"
     - "`stainless` keyword is a no-op in the port but in DP it DISABLES stains (sets staintex[0]=-2 + resets stain fields); harmless today (0 occurrences in the shipped file) but a latent logic divergence"
     - "No unit test covers the effectinfo.txt parser / keyword table / baseline defaults, nor a wire-protocol encode/decode round-trip; verified by code read only"
+    - "Heuristic fallback BuildFromInfo clamps derived life to [0.05,6]s + midpoint (intended; only when faithful/modern backend un-routed)"
+    - "te_* helper -> registry-name mapping is a port convention; caller coverage of these specific wrappers not exhaustively traced (beam/arc temp-effects route to BeamRenderer, not the particle catalog)"
 features:
   - id: fx-effectinfo.registry.named_effects
     name: "Named EFFECT_* registry (all.inc) + ordering/content hash"
@@ -208,24 +208,23 @@ features:
       - { name: "color default", base: "{0xFFFFFF,0xFFFFFF}", port: "Color0=Color1=0xFFFFFF", match: true }
       - { name: "staintex default", base: "{-1,-1}", port: "StainTex0=StainTex1=-1", match: true }
       - { name: "stainalpha default", base: "{1,1}", port: "StainAlphaMin=StainAlphaMax=1", match: true }
-      - { name: "staincolor default", base: "{0xFFFFFFFF,0xFFFFFFFF} (modding factor; 0x808080 neutral)", port: "0xFFFFFF (absolute tint)", match: false }
-      - { name: "stainsize default", base: "{2,2}", port: "StainSizeMin=StainSizeMax=1", match: false }
+      - { name: "staincolor default", base: "{0xFFFFFFFF,0xFFFFFFFF} (modding factor; 0x808080 neutral)", port: "StainColor0=StainColor1=0xFFFFFFFF; StainMidColor() implements the modding-factor semantic (ModFactor: byte/128, -1 => neutral 1.0)", match: true }
+      - { name: "stainsize default", base: "{2,2}", port: "StainSizeMin=StainSizeMax=2", match: true }
+      - { name: "stainalpha default", base: "{1,1}", port: "StainAlphaMin=StainAlphaMax=1", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "stainsize baseline default diverges (DP {2,2} vs port {1,1}). 22 of the 30 staintex-declaring blocks in the shipped file OMIT stainsize, so they inherit the baseline and render at half size — NOT a minor edge case."
-      - "staincolor baseline default + semantics diverge: DP defaults to {0xFFFFFFFF,0xFFFFFFFF} and treats staincolor as a MODDING FACTOR on the particle's own colour (0x808080 = neutral); the port defaults 0xFFFFFF and consumes StainMidColor as an ABSOLUTE tint. Wrong splat tint for blocks relying on the default."
+    gaps: []
     verification:
-      - { kind: value, ref: "diffed EffectInfoEmitter field defaults vs baselineparticleeffectinfo (cl_particles.c:201-277); confirmed staincolor={-1,-1}, stainsize={2,2}, rotate={0,360,0,0}", result: fail }
+      - { kind: value, ref: "diffed EffectInfoEmitter field defaults vs baselineparticleeffectinfo (cl_particles.c:201-277); confirmed staincolor={-1,-1}=0xFFFFFFFF, stainsize={2,2}, stainalpha={1,1}, rotate={0,360,0,0}; StainMidColor() now reproduces DP's staincolor*color/0x8000 modding factor (byte/128, -1 shorthand => neutral)", result: pass }
     confidence: high
-    notes: "All non-stain defaults match exactly. Impact sizing (this audit): 30 blocks set staintex, 30 set staincolor, only 8 set stainsize -> ~22 stain blocks hit the stainsize default mismatch."
+    notes: "FIXED since 2026-06-22 baseline: staincolor default corrected 0xFFFFFF->0xFFFFFFFF AND re-implemented as a modding factor (was absolute tint); stainsize default corrected 1->2. All baseline defaults now match DP exactly. The earlier 'half-size splat / wrong tint for the ~22 stainsize-omitting blocks' divergence is resolved."
 
   - id: fx-effectinfo.parser.keywords
     name: "Keyword parsing (type/color/size/alpha/jitter/light/stain/water/...)"
