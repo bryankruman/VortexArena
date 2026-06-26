@@ -528,6 +528,7 @@ public sealed class ClientNet : IDisposable
             case NetControl.MinigameState: HandleMinigameState(ref r); break;
             case NetControl.MatchState: HandleMatchState(ref r); break;
             case NetControl.Waypoints: HandleWaypoints(ref r); break;
+            case NetControl.ItemsTime: HandleItemsTime(ref r); break;
             default: break;
         }
     }
@@ -644,6 +645,46 @@ public sealed class ClientNet : IDisposable
             return;
         _waypoints.Clear();
         _waypoints.AddRange(tmp);
+    }
+
+    // ---- items-time (S2C NetControl.ItemsTime; QC the CSQC itemstime net-temp message) ----
+
+    private readonly Dictionary<string, float> _itemTimes = new(StringComparer.Ordinal);
+
+    /// <summary>The item respawn-time table for this client (QC <c>ItemsTime_time[]</c>), already send-gated by
+    /// the server — keyed by the HUD panel's item names with the negative "available now" encoding. Fed to
+    /// <see cref="Game.Hud.ItemsTimePanel.SetItemTimes"/> on the remote-client path. Replaced wholesale per
+    /// message.</summary>
+    public IReadOnlyDictionary<string, float> ItemTimes => _itemTimes;
+
+    /// <summary>True once an <see cref="NetControl.ItemsTime"/> message has arrived (the panel feed waits for it
+    /// on the remote path, like <see cref="HasMatchState"/>).</summary>
+    public bool HasItemsTime { get; private set; }
+
+    /// <summary>The live <c>STAT(ITEMSTIME)</c> tier (= server <c>sv_itemstime</c>, 0/1/2), networked alongside the
+    /// table — drives the panel enable gate (mode 2 "also alive players when ==2") and the spectator waypoint
+    /// gate on a remote client.</summary>
+    public int ItemsTimeTier { get; private set; }
+
+    private void HandleItemsTime(ref BitReader r)
+    {
+        int tier = r.ReadByte();
+        int count = r.ReadByte();
+        var tmp = new List<KeyValuePair<string, float>>(count);
+        for (int i = 0; i < count; i++)
+        {
+            string name = r.ReadString();
+            float time = r.ReadFloat();
+            tmp.Add(new KeyValuePair<string, float>(name, time));
+        }
+        if (r.BadRead)
+            return;
+        ItemsTimeTier = tier;
+        _itemTimes.Clear();
+        foreach (KeyValuePair<string, float> kv in tmp)
+            if (!string.IsNullOrEmpty(kv.Key) && float.IsFinite(kv.Value) && kv.Value != -1f)
+                _itemTimes[kv.Key] = kv.Value; // -1 = item type not present / reset → omit so the panel hides it
+        HasItemsTime = true;
     }
 
     /// <summary>Raised with a line of server console output (a reply to <see cref="SendStringCommand"/> or a

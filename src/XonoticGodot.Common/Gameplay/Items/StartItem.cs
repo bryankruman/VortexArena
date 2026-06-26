@@ -160,7 +160,9 @@ public static class StartItem
         // a non-teamed item resets normally. (Teamed map items are a gametype concern, wired separately.)
         Item_Reset(item);
 
-        // QC: MUTATOR_CALLHOOK(Item_Spawn, this) — no hook chain; skip. precache/setItemGroup are asset-side.
+        // QC: MUTATOR_CALLHOOK(Item_Spawn, this) (items.qc:1231) — physical_items subscribes here to attach a
+        // physics ghost and hide the real item. The hook is notify-style; the return value is informational only.
+        MutatorHooks.FireItemSpawn(item);
 
         LastSpawnFailed = false;
         return item;

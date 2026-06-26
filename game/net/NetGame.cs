@@ -998,6 +998,17 @@ public sealed partial class NetGame : Node3D
         GameInit.Boot(services);                 // Api.Services = services; + movement/registries
         // Seed weapon balance from whatever cvars are loaded (the menu preloaded the tree into _sharedCvars).
         XonoticGodot.Common.Gameplay.Weapons.ConfigureAll();
+        // QC: REGISTER_MUTATOR(walljump, true) on CSQC — Base registers movement mutators (walljump,
+        // doublejump, dodging, …) on the CLIENT unconditionally so their PlayerJump/PMPhysics hooks run
+        // inside client prediction. The port's MutatorHooks.PlayerJump chain is static and shared with the
+        // server, so prediction already works in a listen-server build (server Apply() populates the chain
+        // before the client sim runs). But on a DEDICATED-SERVER client the server runs in a separate
+        // process: the static chain is empty on the client, so every wall jump / dodge / doublejump is
+        // applied by the server only and the client mispredicts (rubberband). Calling Apply() here mirrors
+        // Base's CSQC unconditional registration: it subscribes every currently-enabled movement mutator's
+        // hooks onto the client process's static chain so prediction stays in lockstep.
+        // Apply() is idempotent (MutatorBase.Added guard) — safe to call even if called again later.
+        MutatorActivation.Apply();
     }
 
     /// <summary>
@@ -2472,6 +2483,22 @@ public sealed partial class NetGame : Node3D
             // and the 0..100 stat mirror the descriptor Think writes each tick, so feed the VehicleHud panel
             // straight from it (the cross-client VEHICLESTAT_* networking is the remote-client follow-up).
             UpdateVehicleHud();
+        }
+        else if (_client is not null && _client.HasItemsTime)
+        {
+            // REMOTE-CLIENT items-time feed (no local server): the server pushed the per-peer item respawn-time
+            // table + the STAT(ITEMSTIME) tier over NetControl.ItemsTime (QC the CSQC itemstime net message). The
+            // server already applied the SetTimesForAllPlayers send gate (a gated-out live player received the
+            // reset/cleared table), so here we only run the same client-side HUD_ItemsTime enable gate the host
+            // path uses (spectatee / warmup / STAT(ITEMSTIME)==2). The tier comes off the network, not a local
+            // mutator. This is what makes the panel work for a pure remote/dedicated-server client.
+            int panelMode = Mathf.RoundToInt(
+                XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat("hud_panel_itemstime"));
+            bool show = ItemsTimePanel.ShouldDraw(
+                panelMode, _client.SpectateeStatus, _client.MatchWarmup, _client.ItemsTimeTier);
+            _fullHud.ItemsTime.Visible = show;
+            if (show)
+                _fullHud.ItemsTime.SetItemTimes(_client.ItemTimes);
         }
 
         // Advance the announcer queue (play the next queued voice if the current one finished).

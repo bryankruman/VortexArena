@@ -276,8 +276,14 @@ public sealed class Vaporizer : Weapon
 
         // QC yoda (damage.qc:648-651): the victim is a non-special-death PLAYER and IsFlying(victim); plus the
         // vaporizer block also gates on the SHOOTER flying (vaporizer.qc:159 `if (yoda && flying)`).
+        // QC instagib yoda (sv_instagib.qc:245-247): ALSO fires when the victim had alpha in (0,1) (cloaked/
+        // invisible) — that branch sets the global `yoda=1` which the same `if (yoda && flying)` gate catches.
+        // The port stores the instagib alpha-yoda on the target as InstagibAlphaYoda (set in
+        // InstagibMutator.OnDamageCalculate), then clears it here after sampling so it doesn't bleed across shots.
+        bool alphaYoda = hit is not null && hit.InstagibAlphaYoda;
+        if (hit is not null) hit.InstagibAlphaYoda = false; // per-attack flag: consume it here
         if (impressiveHit && flying
-            && (hit!.Flags & EntFlags.Client) != 0 && IsFlying(hit))
+            && (hit!.Flags & EntFlags.Client) != 0 && (IsFlying(hit) || alphaYoda))
             NotificationSystem.Announce(actor, "ACHIEVEMENT_YODA");
 
         // QC vaporizer.qc:161-167: impressive fires only when THIS shot AND the previous one both landed a hit

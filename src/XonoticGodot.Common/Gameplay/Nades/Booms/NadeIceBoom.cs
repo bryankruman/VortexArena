@@ -55,6 +55,14 @@ public sealed class NadeIceBoom : INadeBoom
         if (Api.Services is null) return;
         float now = Api.Clock.Time;
 
+        // QC ice.qc:14 — round_handler_IsActive() && !round_handler_IsRoundStarted(): a freeze field spawned
+        // while a round hasn't started yet is silently deleted (NO final explode), distinct from the ltime expiry.
+        if (RoundHandler.RoundGateBlocks())
+        {
+            Api.Entities.Remove(self);
+            return;
+        }
+
         if (now >= self.NadeOrbExpire)
         {
             if (NadeProjectile.Cvar("g_nades_ice_explode", 0f) != 0f)

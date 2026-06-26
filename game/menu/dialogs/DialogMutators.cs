@@ -128,8 +128,12 @@ public partial class DialogMutators : MenuScreen
             "Enable dodging (quick acceleration in a given direction). Double-tap a directional key to dodge"));
         box.AddChild(Widgets.CheckBox("g_touchexplode", "Touch explode",
             "An explosion occurs when two players collide"));
+        // Port of MutatorCloaked.describe() (cloaked.qc:6-13): "makes all players nearly invisible, similar to
+        // the Invisibility powerup". The port has no dedicated describe-page widget, so the describe text rides
+        // on the checkbox tooltip (same pattern as Piñata and New Toys above).
         box.AddChild(Widgets.CheckBox("g_cloaked", "Cloaked",
-            "All players are almost invisible"));
+            "The Cloaked mutator makes all players nearly invisible, similar to the Invisibility powerup. " +
+            "This adds an extra layer of stealth and strategy to gameplay."));
         // QC: e.cvarOffValue = "-1" (Buffs off writes -1, not 0).
         box.AddChild(Widgets.CheckBox("g_buffs", "Buffs",
             "Enable buff pickups (random bonuses like Medic, Invisible, etc.) on the maps that support it",
@@ -137,22 +141,29 @@ public partial class DialogMutators : MenuScreen
         box.AddChild(Widgets.CheckBox("g_midair", "Midair",
             "Only possible to inflict damage on your enemy while they're airborne"));
 
+        // Port of MutatorVampire.describe() (vampire.qc:6-13): the 2-paragraph mutator info page. Both %s fills
+        // (the mutator's own name and BUFF_VAMPIRE's m_name) resolve to "Vampire". The port has no dedicated
+        // describe-page widget, so (following the Cloaked / New Toys / Piñata / Hook pattern) the describe text
+        // rides on the checkbox tooltip.
         var vampire = Widgets.CheckBox("g_vampire", "Vampire",
-            "Damage done to your enemy gets added to your own health");
+            "The Vampire mutator gives all players a permanent version of the Vampire buff. However, unlike " +
+            "the normal Vampire buff, when this mutator is enabled players' health can go way above the usual " +
+            "limit of 200. Additionally the amount of health players get is equal to the damage they deal, " +
+            "which isn't normally the case with the Vampire buff.");
         box.AddChild(vampire);
         Dependent.Bind(vampire, "g_instagib", 0, 0); // QC setDependent(e,"g_instagib",0,0)
 
         // Blood loss — QC makeXonoticSliderCheckBox(0, 1, g_bloodloss[10..50], "Blood loss"): the checkbox is
         // checked while g_bloodloss != 0; on writes the saved value (20), off writes 0. The slider refines it.
+        const string bloodlossTooltip =
+            "Amount of health below which players start bleeding out (health rots and they can't jump)";
         var bloodEnable = new DialogMutatorsSliderCheckBox("g_bloodloss", "Blood loss", offValue: 0f, savedValue: 20f)
         {
-            TooltipText = "Amount of health below which players start bleeding out " +
-                          "(health rots and they can't jump)",
+            TooltipText = bloodlossTooltip,
         };
         box.AddChild(bloodEnable);
         Dependent.Bind(bloodEnable, "g_instagib", 0, 0); // QC setDependent on the combo checkbox
-        var bloodSlider = Widgets.Slider("g_bloodloss", 10f, 50f, 1f,
-            "Amount of health below which players start bleeding out (health rots and they can't jump)");
+        var bloodSlider = Widgets.Slider("g_bloodloss", 10f, 50f, 1f, bloodlossTooltip);
         var bloodRow = Ui.Row("", bloodSlider, labelMinWidth: 24f);
         box.AddChild(bloodRow);
         Dependent.Bind(bloodRow, "g_instagib", 0, 0);
@@ -173,8 +184,17 @@ public partial class DialogMutators : MenuScreen
         box.AddChild(Ui.Spacer());
         box.AddChild(Ui.Header("Weapon & item mutators:"));
 
+        // Port of MutatorGrapplingHook.describe() (hook.qc:7-15): the long-form description page — the
+        // offhand / unlimited-ammo / no-secondary / overridden-by-offhand_blaster explainer. The port has no
+        // dedicated describe-page widget, so (following the New Toys / Cloaked pattern) the text rides on the
+        // checkbox tooltip. Names match the QC %s fills: Grappling Hook (mutator + WEP_HOOK) / "hook" key /
+        // Offhand Blaster.
         box.AddChild(Widgets.CheckBox("g_grappling_hook", "Grappling Hook",
-            "Players spawn with the grappling hook. Press the 'hook' key to use it"));
+            "The Grappling Hook mutator gives all players a Grappling Hook as their offhand weapon, used with " +
+            "the 'hook' key. It has unlimited ammo, but the ordinary secondary fire can't be used. " +
+            "Since it's given as an offhand, players can use it to move around and shoot at their enemies at " +
+            "the same time, opening up more gameplay possibilities than the regular Grappling Hook. " +
+            "Note that it is overridden by the Offhand Blaster mutator."));
         box.AddChild(Widgets.CheckBox("g_jetpack", "Jetpack",
             "Players spawn with the jetpack. Double-tap 'jump' or press the 'jetpack' key to use it"));
 

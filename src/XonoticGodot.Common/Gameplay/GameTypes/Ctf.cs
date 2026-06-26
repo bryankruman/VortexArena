@@ -402,40 +402,83 @@ public sealed class Ctf : GameType
     {
         foreach (FlagState f in Flags.Values)
         {
-            Vector3 pos = f.Entity is { } e ? e.Origin : f.HomeOrigin;
-            string suffix = FlagSuffix(f.HomeTeam);
-            string sprite = f.Status switch
+            // ----- AtBase / Dropped: a single fixed flag marker shown to everyone (QC wps_flagbase / wps_flagdropped,
+            // both spawned via showto=NULL/team=0 so they are SPRITERULE_DEFAULT-visible to all). -----
+            if (f.Status != FlagStatus.Carried || f.Carrier is not { } carrier)
             {
-                FlagStatus.Dropped => "FlagDropped" + suffix,
-                FlagStatus.Carried => "FlagCarrierEnemy" + suffix,
-                _ => "FlagBase" + suffix, // AtBase
-            };
-            // QC ctf_FlagcarrierWaypoints + Damage_Calculate auto-helpme: a low-health carrier flashes "help me"
-            // on their carrier sprite (g_ctf_flagcarrier_auto_helpme_*). The flash deadline lives on the carrier.
-            float helpmeUntil = 0f;
-            float health = -1f;
-            if (f.Status == FlagStatus.Carried && f.Carrier is { } c)
-            {
-                helpmeUntil = c.GtHelpMeUntil;
-                // QC WaypointSprite_AttachCarrier: max_health = 2 * healtharmor_maxdamage(start_health, start_armor),
-                // health = healtharmor_maxdamage(carrier HP, carrier armor) → the bar = health/max_health. We reuse
-                // the same (HP + armor) effective-health approximation as the auto-helpme path; CTF start HP is 100,
-                // start armor 0 → max_health 200, so the bar reads full at spawn and empties as the carrier is hurt.
-                float maxHp = 2f * CarrierStartEffHealth;
-                health = maxHp > 0f ? System.Math.Clamp((c.Health + c.ArmorValue) / maxHp, 0f, 1f) : -1f;
+                Vector3 fpos = f.Entity is { } fe ? fe.Origin : f.HomeOrigin;
+                string fsuffix = FlagSuffix(f.HomeTeam);
+                string fsprite = f.Status == FlagStatus.Dropped ? "FlagDropped" + fsuffix : "FlagBase" + fsuffix;
+                into.Add(new Waypoints.WaypointSprite
+                {
+                    // Color is the RADAR tint = the flag's team color (QC WaypointSprite_UpdateTeamRadar with the
+                    // team palette color); the 3D in-world sprite uses the def's own color (tan/white) from the registry.
+                    // Visibility Team = 0: QC ctf_FlagSetup spawns the flag waypoints via WaypointSprite_SpawnFixed
+                    // (showto=NULL, t=0) so flag markers are shown to EVERYONE (the SPRITERULE_DEFAULT team-restriction
+                    // applies only when wp.team is set — the flag's home team lives in Color, not the visibility team).
+                    SpriteName = fsprite, FixedOrigin = fpos, Team = 0, Color = TeamRadarColor(f.HomeTeam),
+                    RadarIcon = 1, Health = -1f, MaxHealth = 1f,
+                });
+                continue;
             }
+
+            // ----- Carried: QC ctf_FlagcarrierWaypoints spawns TWO sprites on the carrier (sv_ctf.qc:160). -----
+            int carrierTeam = (int)carrier.Team;
+
+            // (1) wps_flagcarrier (WP_FlagCarrier, team = carrier.team): the OWN-TEAM "your carrier is here" marker
+            // with a HEALTH BAR and the auto-helpme flash. SPRITERULE_DEFAULT + team set ⇒ visible only to the
+            // carrier's own team and only to live players (WaypointSprite.Team carries that restriction).
+            // QC WaypointSprite_AttachCarrier: max_health = 2 * healtharmor_maxdamage(start_health, start_armor),
+            // health = healtharmor_maxdamage(carrier HP, carrier armor) → bar = health/max_health. We reuse the same
+            // (HP + armor) effective-health approximation as the auto-helpme path; CTF start HP is 100, start armor 0
+            // → max_health 200, so the bar reads full at spawn and empties as the carrier is hurt.
+            float maxHp = 2f * CarrierStartEffHealth;
+            float health = maxHp > 0f ? System.Math.Clamp((carrier.Health + carrier.ArmorValue) / maxHp, 0f, 1f) : -1f;
             into.Add(new Waypoints.WaypointSprite
             {
-                // Color is the RADAR tint = the flag's team color (QC WaypointSprite_UpdateTeamRadar with the
-                // team palette color); the 3D in-world sprite uses the def's own color (tan/white) from the registry.
-                // Visibility Team = 0: QC ctf_FlagSetup spawns the flag waypoints via WaypointSprite_SpawnFixed
-                // (showto=NULL, t=0) so flag markers are shown to EVERYONE (the SPRITERULE_DEFAULT team-restriction
-                // applies only when wp.team is set — the flag's home team lives in Color, not the visibility team).
-                SpriteName = sprite, FixedOrigin = pos, Team = 0, Color = TeamRadarColor(f.HomeTeam),
-                RadarIcon = 1, Health = health, MaxHealth = 1f, HelpmeUntil = helpmeUntil,
+                SpriteName = "FlagCarrier", Owner = carrier, Offset = FlagWaypointOffset,
+                Team = carrierTeam, // WPCOLOR_FLAGCARRIER(team): own-team-only visibility
+                Color = CarrierRadarColor(carrierTeam), // colormapPaletteColor(team-1) * 0.75
+                RadarIcon = 1, Health = health, MaxHealth = 1f, HelpmeUntil = carrier.GtHelpMeUntil,
             });
+
+            // (2) wps_enemyflagcarrier (WP_FlagCarrierEnemy<carrier-team>): the ENEMY reveal. QC only creates this
+            // when the carrier holds their OWN flag (the one-flag self-carry case, sv_ctf.qc:167) OR during a
+            // stalemate (ctf_CheckStalemate, sv_ctf.qc:945). It is gated to enemies + live players by
+            // ctf_Stalemate_Customize (hidden from same-team and from observers). Without this gate the port leaked
+            // the carrier's exact position to enemies at all times, defeating the whole point of the stalemate timer.
+            // QC CTF_SAMETEAM(player, flag): same-team unless a reverse mode is on (then diff-team). The enemy-FC
+            // self-carry reveal fires when the carrier "owns" the flag they hold, which in reverse modes means an
+            // enemy-team flag instead.
+            bool reverse = (TryCvar("g_ctf_reverse", out float rv) && rv != 0f) || (OneFlag && OneFlagReverse);
+            bool sameAsFlag = reverse ? f.HomeTeam != carrierTeam : f.HomeTeam == carrierTeam;
+            bool selfCarry = sameAsFlag; // CTF_SAMETEAM(player, player.flagcarried) — usually false (carry the ENEMY flag)
+            if (Stalemate || selfCarry)
+            {
+                string esuffix = FlagSuffix(carrierTeam);
+                into.Add(new Waypoints.WaypointSprite
+                {
+                    SpriteName = "FlagCarrierEnemy" + esuffix, Owner = carrier, Offset = FlagWaypointOffset,
+                    Team = 0, Color = CarrierRadarColor(carrierTeam), // WPCOLOR_ENEMYFC(team) = same 0.75 scale
+                    RadarIcon = 1, Health = -1f, MaxHealth = 1f,
+                    // QC ctf_Stalemate_Customize (sv_ctf.qc:887): shown only to a live player on a DIFFERENT team,
+                    // and hidden entirely while the carrier holds the Invisibility powerup.
+                    VisibleForPlayer = viewer => viewer is not null && !viewer.IsObserver
+                        && (int)viewer.Team != carrierTeam
+                        && !(StatusEffectsCatalog.ByName("invisibility") is { } invis
+                             && StatusEffectsCatalog.Has(carrier, invis)),
+                });
+            }
         }
     }
+
+    /// <summary>QC FLAG_WAYPOINT_OFFSET ('0 0 64'): the carrier waypoint sits above the player's origin.</summary>
+    private static readonly Vector3 FlagWaypointOffset = new(0f, 0f, 64f);
+
+    /// <summary>QC WPCOLOR_FLAGCARRIER / WPCOLOR_ENEMYFC: the carrier radar tint is the team palette color scaled by
+    /// 0.75 (neutral → white). Built on the same <see cref="TeamRadarColor"/> the flag base/dropped markers use.</summary>
+    private static Vector3 CarrierRadarColor(int team) =>
+        team == Teams.None ? new Vector3(1f, 1f, 1f) : TeamRadarColor(team) * 0.75f;
 
     /// <summary>Flag team → the def-name suffix (QC the per-team WP_Flag*Red/Blue/Yellow/Pink/Neutral split).</summary>
     private static string FlagSuffix(int team) => team switch

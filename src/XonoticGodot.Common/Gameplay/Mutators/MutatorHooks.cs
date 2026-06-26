@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
 
@@ -352,13 +353,20 @@ public static class MutatorHooks
         // null = not supplied (e.g. unit tests using the 3-arg ctor) → the mutator falls back to the raw
         // sv_doublejump cvar, which equals the stat in stock play (g_physics_clientselect 0).
         public bool? DoubleJump;
+        // True on the CLIENT-PREDICTION leg (QC: hook runs in CSQC). Mutators that #ifdef SVQC their
+        // side-effects (e.g. walljump's smoke ring / jump voice / LASTWJ + oldvelocity stamps,
+        // walljump.qc:62-68) gate those on !Predicted so the predicting client runs ONLY the shared
+        // velocity impulse — exactly as Base's CSQC build does — and does not double the server's
+        // networked effect/sound. Defaults false (the server/authoritative leg) so existing 3/4-arg
+        // callers and headless tests retain the full server behavior.
+        public bool Predicted;
         public PlayerJumpArgs(Entity player, float jumpHeight, bool multijump)
         {
-            Player = player; JumpHeight = jumpHeight; Multijump = multijump; DoubleJump = null;
+            Player = player; JumpHeight = jumpHeight; Multijump = multijump; DoubleJump = null; Predicted = false;
         }
         public PlayerJumpArgs(Entity player, float jumpHeight, bool multijump, bool doubleJump)
         {
-            Player = player; JumpHeight = jumpHeight; Multijump = multijump; DoubleJump = doubleJump;
+            Player = player; JumpHeight = jumpHeight; Multijump = multijump; DoubleJump = doubleJump; Predicted = false;
         }
     }
     public static readonly HookChain<PlayerJumpArgs> PlayerJump = new();
@@ -837,18 +845,33 @@ public static class MutatorHooks
 
     /// <summary>
     /// Fire <see cref="SetDefaultAlpha"/> and return the resolved (player, weapon) default alpha (QC
-    /// <c>SetDefaultAlpha()</c> seeds <c>default_player_alpha = -1</c> / <c>default_weapon_alpha = +1</c>,
-    /// runs <c>MUTATOR_CALLHOOK(SetDefaultAlpha)</c>, then reads the globals back). Cloaked lowers the player
-    /// alpha to <c>g_balance_cloaked_alpha</c> (0.25); running_guns makes the player invisible but the gun
-    /// visible. The world-init owner (alpha-net seam) calls this at worldspawn and seeds the per-entity Alpha
-    /// channel from the returned values. <paramref name="basePlayerAlpha"/>/<paramref name="baseWeaponAlpha"/>
-    /// are the pre-hook defaults (QC -1 / +1; pass 1f / 1f for "fully opaque").
+    /// <c>SetDefaultAlpha()</c> at world.qc:105-114). Fires the hook chain for mutators (Cloaked, RunningGuns)
+    /// to override; if no mutator returns true, the args retain the no-hook default seeded from
+    /// <c>autocvar_g_player_alpha</c> with the 0→1 fallback (QC <c>if (default_player_alpha == 0)
+    /// default_player_alpha = 1</c>). Returns the resolved (player, weapon) alpha pair and caches it in
+    /// the public static defaults for spawn/death to consume.
     /// </summary>
-    public static (float playerAlpha, float weaponAlpha) FireSetDefaultAlpha(
-        float basePlayerAlpha = 1f, float baseWeaponAlpha = 1f)
+    public static (float playerAlpha, float weaponAlpha) FireSetDefaultAlpha()
     {
-        var a = new SetDefaultAlphaArgs(basePlayerAlpha, baseWeaponAlpha);
+        // QC SetDefaultAlpha() default branch (world.qc:109-112): seed from g_player_alpha with 0→1 fallback
+        float playerAlpha = 1f;  // default if no cvar is set
+        float weaponAlpha = 1f;
+
+        // Read the cvar if available; if 0, apply the fallback (0→1)
+        if (Api.Services is not null)
+        {
+            float g_player_alpha = Api.Cvars.GetFloat("g_player_alpha");
+            if (g_player_alpha != 0f)
+                playerAlpha = g_player_alpha;
+            // else playerAlpha stays 1 (the 0→1 fallback)
+        }
+        weaponAlpha = playerAlpha; // QC: default_weapon_alpha = default_player_alpha
+
+        // Run the hook chain: mutators (Cloaked, RunningGuns) can override by returning true
+        // and rewriting args.PlayerAlpha / args.WeaponAlpha
+        var a = new SetDefaultAlphaArgs(playerAlpha, weaponAlpha);
         SetDefaultAlpha.Call(ref a);
+
         // Cache the resolved seed in Common so the spawn/death/loadout consumers read the same value the
         // Server GameWorld seeds (QC reads the default_player_alpha/default_weapon_alpha globals directly).
         DefaultPlayerAlpha = a.PlayerAlpha;
@@ -1043,6 +1066,38 @@ public static class MutatorHooks
     {
         var a = new SandboxEditAllowedArgs(player);
         return SandboxEditAllowed.Call(ref a);
+    }
+
+    // ----------------------------------------------------------------------------------------------
+    // Item_Spawn (server/mutators/events.qh:631 EV_Item_Spawn) — fired at the TAIL of StartItem
+    // for every world item (permanent AND loot) that survived FilterItem. The physical_items mutator
+    // subscribes here to spawn the rigid-body ghost entity and hide the real item.
+    // ----------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// EV_Item_Spawn (server/mutators/events.qh:631) — fired from <c>StartItem</c> after the item has been
+    /// fully initialised (model set, bbox set, touch wired, Item_Reset called). A handler returning
+    /// <c>true</c> is treated as "processed" (QC: <c>if (MUTATOR_CALLHOOK(Item_Spawn, this)) return;</c> at
+    /// server/items/items.qc:1231 — the mutation is applied). Slot0 the spawning world item entity.
+    /// The physical_items mutator is the only stock subscriber; it spawns a physics ghost and hides the real item.
+    /// </summary>
+    public struct ItemSpawnArgs
+    {
+        public readonly Entity Item;   // MUTATOR_ARGV_0_entity
+        public ItemSpawnArgs(Entity item) { Item = item; }
+    }
+    public static readonly HookChain<ItemSpawnArgs> ItemSpawn = new();
+
+    /// <summary>
+    /// Fire <see cref="ItemSpawn"/> for a just-initialised world item (QC <c>MUTATOR_CALLHOOK(Item_Spawn,
+    /// this)</c> at the tail of <c>StartItem</c>). Returns true if a handler "consumed" the spawn (the real
+    /// item has been hidden and a ghost spawned). The world-item driver (<see cref="StartItem"/>) calls this
+    /// stable entry point after all item setup is complete (past FilterItem, model, bbox, touch, Item_Reset).
+    /// </summary>
+    public static bool FireItemSpawn(Entity item)
+    {
+        var a = new ItemSpawnArgs(item);
+        return ItemSpawn.Call(ref a);
     }
 
     // ---- match-end hooks (server/world.qc NextLevel) ----------------------------------------------------

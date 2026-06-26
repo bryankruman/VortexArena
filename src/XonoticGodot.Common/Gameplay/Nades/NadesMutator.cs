@@ -70,6 +70,15 @@ public sealed class NadesMutator : MutatorBase
         MutatorHooks.ClientDisconnect.Add(_onDisconnect);
     }
 
+    // =====================================================================================
+    //  BuildMutatorsString (sv_nades.qc:954) / BuildMutatorsPrettyString (sv_nades.qc:949)
+    // =====================================================================================
+    // QC appends ":Nades" to the machine token (server browser / g_mutatorblacklist) and ", Nades" to the
+    // human-readable mutators list (scoreboard / map-info modifications line). Other mutators (BloodlossMutator
+    // etc.) override these same virtuals.
+    public override string BuildMutatorsString(string s) => s + ":Nades";
+    public override string BuildMutatorsPrettyString(string s) => s + ", Nades";
+
     public override void Unhook()
     {
         if (_onSpawn is not null) MutatorHooks.PlayerSpawn.Remove(_onSpawn);

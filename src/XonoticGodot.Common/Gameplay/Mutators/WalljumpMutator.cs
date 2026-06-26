@@ -97,26 +97,36 @@ public sealed class WalljumpMutator : MutatorBase
         if (player.ButtonCrouch) v.Z *= -1f;
         player.Velocity = v;
 
-        // QC SVQC side-effects (walljump.qc:62-68): these all run server-side.
-        player.LastWallJumpTime = now;
-        // QC: player.oldvelocity = player.velocity — the POST-impulse velocity, an anti-stick reference.
-        // (Earlier the port wrote OldOrigin = Origin, which is the WRONG field: OldOrigin is the engine's
-        // render-interpolation anchor, so stamping it cancelled interpolation on every wall jump. The shared
-        // Entity.OldVelocity field — declared on the vehicles partial (Vehicles/VehicleCommon.cs) — carries the
-        // faithful QC .oldvelocity value.)
-        player.OldVelocity = player.Velocity;
+        // QC #ifdef SVQC (walljump.qc:62-68): the stamps, the smoke ring, the jump voice and the anim
+        // action all run SERVER-SIDE ONLY. Base registers walljump on CSQC too (so the velocity impulse
+        // above predicts), but the block below is #ifdef SVQC and never runs in client prediction.
+        // The port shares one static PlayerJump chain across both processes, so guard on !Predicted:
+        // on the predicting client we apply only the (shared) impulse and let the server network the
+        // effect/sound — emitting them here too would DOUBLE the server's networked smoke ring + voice
+        // (a client-process EffectEmitter.Emit / SoundSystem call renders/plays locally via the client's
+        // RenderSink and sound backend).
+        if (!args.Predicted)
+        {
+            player.LastWallJumpTime = now;
+            // QC: player.oldvelocity = player.velocity — the POST-impulse velocity, an anti-stick reference.
+            // (Earlier the port wrote OldOrigin = Origin, which is the WRONG field: OldOrigin is the engine's
+            // render-interpolation anchor, so stamping it cancelled interpolation on every wall jump. The shared
+            // Entity.OldVelocity field — declared on the vehicles partial (Vehicles/VehicleCommon.cs) — carries the
+            // faithful QC .oldvelocity value.)
+            player.OldVelocity = player.Velocity;
 
-        // QC: Send_Effect(EFFECT_SMOKE_RING, trace_endpos, plane_normal, 5) — smoke ring at the wall
-        // contact point, oriented along the plane normal.
-        EffectEmitter.Emit("SMOKE_RING", hitPos, planeNormal, 5);
+            // QC: Send_Effect(EFFECT_SMOKE_RING, trace_endpos, plane_normal, 5) — smoke ring at the wall
+            // contact point, oriented along the plane normal.
+            EffectEmitter.Emit("SMOKE_RING", hitPos, planeNormal, 5);
 
-        // QC: PlayerSound(player, playersound_jump, CH_PLAYER, VOL_BASE, VOICETYPE_PLAYERSOUND, 1) — the
-        // per-model jump voice. "jump" resolves through the player's model .sounds manifest
-        // (QC LoadPlayerSounds: jump -> sound/player/<pack>/player/jump), falling back to the default pack.
-        // Passing the model's .sounds datafile (NOT null) is what makes the cue resolve to a shipped asset.
-        SoundSystem.PlayPlayerSound(player, "jump", Sounds.ModelSoundsFile(player.Model, (int)player.Skin),
-            SoundLevels.VolBase, SoundLevels.AttenNorm);
-        // QC also: animdecide_setaction(player, ANIMACTION_JUMP, true) — no anim-action seam in the port yet (see todos).
+            // QC: PlayerSound(player, playersound_jump, CH_PLAYER, VOL_BASE, VOICETYPE_PLAYERSOUND, 1) — the
+            // per-model jump voice. "jump" resolves through the player's model .sounds manifest
+            // (QC LoadPlayerSounds: jump -> sound/player/<pack>/player/jump), falling back to the default pack.
+            // Passing the model's .sounds datafile (NOT null) is what makes the cue resolve to a shipped asset.
+            SoundSystem.PlayPlayerSound(player, "jump", Sounds.ModelSoundsFile(player.Model, (int)player.Skin),
+                SoundLevels.VolBase, SoundLevels.AttenNorm);
+            // QC also: animdecide_setaction(player, ANIMACTION_JUMP, true) — no anim-action seam in the port yet (see todos).
+        }
 
         args.Multijump = true; // QC: M_ARGV(2, bool) = true
         return false;

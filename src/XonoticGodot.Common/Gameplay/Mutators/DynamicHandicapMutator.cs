@@ -30,9 +30,14 @@ namespace XonoticGodot.Common.Gameplay;
 /// immediately. So the handicap now tracks the live score/roster the instant it changes, matching Base.
 ///
 /// Also ported: <c>Handicap_SetForcedHandicap</c>'s value&lt;=0 error guard, <c>Handicap_UpdateHandicapLevel</c>
-/// (computes <see cref="Entity.HandicapLevel"/> for the scoreboard icon — authoritative-only, the port has no
-/// ent_cs handicap stat / scoreboard consumer to network it to yet), and the BuildMutatorsString /
-/// BuildMutatorsPrettyString mutator-list tokens (<c>:handicap</c> / <c>, Dynamic handicap</c>).
+/// (computes <see cref="Entity.HandicapLevel"/> — now networked end-to-end: the server stamps it on each score
+/// row in <c>ScoreboardBlock.CaptureRows</c> [the C# stand-in for QC's ENTCS <c>.handicap_level</c> slice,
+/// common/ent_cs.qc:180], and the client scoreboard draws the <c>player_handicap</c> icon tinted by it,
+/// scoreboard.qc:1003-1009), and the BuildMutatorsString / BuildMutatorsPrettyString mutator-list tokens
+/// (<c>:handicap</c> / <c>, Dynamic handicap</c>). The <c>:handicap</c> machine token is live via the gamelog
+/// init (GameWorld); the <c>, Dynamic handicap</c> pretty token has no consumer yet — the port hasn't ported
+/// QC's CSQC server-info "modifications" line (server/client.qc:1107 SendServerInfo), the sole caller of the
+/// BuildMutatorsPrettyString chain in Base.
 /// </summary>
 [Mutator]
 public sealed class DynamicHandicapMutator : MutatorBase

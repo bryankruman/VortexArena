@@ -120,8 +120,9 @@ public sealed class GameWorld
 
     /// <summary>
     /// QC <c>default_player_alpha</c>: the spawn alpha every player loadout starts from, seeded at worldspawn by
-    /// <see cref="MutatorHooks.FireSetDefaultAlpha"/> (1 = opaque; Cloaked lowers it to g_balance_cloaked_alpha;
-    /// Running Guns sets it to 0). Read by the per-spawn player loadout (SpawnSystem). Default 1 until Boot seeds it.
+    /// <see cref="MutatorHooks.FireSetDefaultAlpha"/> (1 = opaque; Cloaked lowers it to g_balance_cloaked_alpha 0.25;
+    /// Running Guns sets it to -1 for invisibility). This property shadows the live value in
+    /// <see cref="MutatorHooks.DefaultPlayerAlpha"/> (which is what spawn/death code actually reads). Default 1 until Boot seeds it.
     /// </summary>
     public float DefaultPlayerAlpha { get; private set; } = 1f;
 
@@ -600,11 +601,21 @@ public sealed class GameWorld
         XonoticGodot.Common.Gameplay.MutatorActivation.SettempCvarHandler = (n, v) => SettempCvars.Set(n, v);
         MutatorActivation.Apply();
 
+        // QC spawnfunc_worldspawn (world.qc:1090): MUTATOR_CALLHOOK(SetModname, modname) — let a mutator that
+        // constitutes a full "mod experience" override the modname serverinfo key. Apply() has already wired
+        // all enabled mutators, so this runs against the live set. CBC_ORDER_ANY early-exit: first override wins.
+        {
+            string baseModname = Cvars.String("modname");
+            string resolved = MutatorActivation.SetModname(baseModname.Length > 0 ? baseModname : "Xonotic");
+            if (resolved.Length > 0 && resolved != baseModname)
+                Cvars.Set("modname", resolved);
+        }
+
         // 5b′) QC worldspawn SetDefaultAlpha(): seed default_player_alpha / default_weapon_alpha now that the
         // enabled mutators are subscribed (Cloaked lowers the player alpha to g_balance_cloaked_alpha 0.25;
         // Running Guns makes the player invisible but the gun visible). The per-spawn player loadout reads
         // DefaultPlayerAlpha (see SpawnSystem) so cloaked/running-guns invisibility composes from this seed.
-        (DefaultPlayerAlpha, DefaultWeaponAlpha) = MutatorHooks.FireSetDefaultAlpha(1f, 1f);
+        (DefaultPlayerAlpha, DefaultWeaponAlpha) = MutatorHooks.FireSetDefaultAlpha();
 
         // 5c) [T35] wire the world-item pipeline seams BEFORE the map entities spawn:
         //  - StartItem.GameStartTimeProvider feeds the powerup/superweapon initial-respawn offset (QC
@@ -1037,6 +1048,17 @@ public sealed class GameWorld
             GameLog.Init(GameType?.NetName ?? DefaultGameType, MapName, mutators);
         }
 
+        // QC PutClientInServer (server/client.qc:1107): MUTATOR_CALLHOOK(BuildMutatorsPrettyString, "")
+        // builds the human-readable "modifications" string sent to joining clients (e.g. "InstaGib, Vampire").
+        // In QC this runs per-join; the port stores it at match-start (same content since mutators don't change
+        // mid-match) in the "modifications" serverinfo key so the client-join path can read it when implemented.
+        // The leading ", " is stripped (QC: substring(s, 2, strlen(s)-2)).
+        {
+            string prettyRaw = MutatorActivation.BuildMutatorsPrettyString("");
+            string pretty = prettyRaw.Length > 2 ? prettyRaw.Substring(2) : prettyRaw;
+            Cvars.Set("modifications", pretty);
+        }
+
         // Player stats: warmup gate + the score/anticheat/winner feeds.
         PlayerStats.IsWarmup = () => Warmup.WarmupStage;
         PlayerStats.AnticheatReporter = (p, add) => AntiCheat.ReportToPlayerStats(p, Time, add);
@@ -1185,6 +1207,36 @@ public sealed class GameWorld
         // the connecting real client; a bot has no CSQC/dialog so it's skipped (matches the human-only effect).
         if (!p.IsBot && Cvars.Bool("g_campaign"))
             SendCampaignWelcome(p);
+
+        // QC cl_hook.qc:MUTATOR_HOOKFUNCTION(cl_hook, BuildGameplayTipsString) (cl_hook.qc:6-13): when the
+        // grappling-hook mutator is active, append a tip "grappling hook is enabled, press <key> to use it"
+        // with the +hook keybind resolved. In Base this runs client-side (CSQC) and is shown ONLY to the
+        // connecting player in their welcome dialog. The port has no CSQC layer — surface it via the per-player
+        // chat sink (QC sprint(client, ...)) to that one client so the audience/scope matches Base (NOT a
+        // broadcast, which would re-spam every existing player on each join). Skipped for bots (they have no HUD).
+        if (!p.IsBot && Mutators.ByName("grappling_hook") is HookMutator hookMut && hookMut.Added)
+        {
+            // QC: string key = getcommandkey(_("offhand hook"), "+hook") — resolve the bound key name.
+            string hookKey = XonoticGodot.Engine.Console.BindTable.CommandKey("offhand hook", "+hook");
+            // QC: "^3grappling hook^8 is enabled, press ^3<key>^8 to use it" (cl_hook.qc:11), appended raw (no
+            // "Special gameplay tips:" header — that header belongs to the separate cache_mutatormsg line in QC
+            // client/main.qc:1441, not to the BuildGameplayTipsString hook output, which is appended verbatim).
+            Commands.ChatToPlayer?.Invoke(p,
+                $"^3grappling hook^8 is enabled, press ^3{hookKey}^8 to use it");
+        }
+
+        // QC cl_offhand_blaster.qc:MUTATOR_HOOKFUNCTION(cl_offhand_blaster, BuildGameplayTipsString): when the
+        // offhand-blaster mutator is active, append a tip "offhand blaster is enabled, press <key> to use it"
+        // with the +hook keybind resolved (it shares the offhand-fire bind with the hook). Same per-player
+        // (sprint) surfacing as the hook tip above; skipped for bots (no HUD).
+        if (!p.IsBot && Mutators.ByName("offhand_blaster") is OffhandBlasterMutator offhandMut && offhandMut.Added)
+        {
+            // QC: string key = getcommandkey(_("offhand hook"), "+hook").
+            string offhandKey = XonoticGodot.Engine.Console.BindTable.CommandKey("offhand hook", "+hook");
+            // QC: "^3offhand blaster^8 is enabled, press ^3%s^8 to use it" (cl_offhand_blaster.qc:9).
+            Commands.ChatToPlayer?.Invoke(p,
+                $"^3offhand blaster^8 is enabled, press ^3{offhandKey}^8 to use it");
+        }
 
         PlayerStats.AddPlayer(p);
         if (PlayerStats.Enabled)
@@ -1707,6 +1759,25 @@ public sealed class GameWorld
         {
             // QC player_regen: regenerate/rot health, armor, fuel toward their stable values.
             PlayerFrameLogic.Regen(p, st, Simulation.FrameTime);
+
+            // QC client.qc:674: the player spawn shield IS the SpawnShield status effect (the one whose
+            // SpawnShieldTick produces the EF_ADDITIVE|EF_FULLBRIGHT shimmer once time >= game_starttime).
+            // SpawnSystem primes it at spawn alongside Entity.SpawnShieldExpire (the authoritative damage-block
+            // timer the port keeps, woven through DamageSystem/WeaponFireGate/Mayhem/Vampire). Here we keep the
+            // two in lockstep each tick so the status effect (and its shimmer) tracks the real shield state:
+            // a FreezeTag revive that sets SpawnShieldExpire directly also gets the shimmer (apply branch), and
+            // the effect is dropped the instant the shield lapses or is consumed — firing / first-damage zero
+            // SpawnShieldExpire (remove branch). CLEAR removal so no spurious sound (the OnRemove still clears
+            // the EF bits). This closes the player-shimmer gap without diverging from the single timer source.
+            if (StatusEffectsCatalog.SpawnShield is { } shieldDef)
+            {
+                bool shielded = p.SpawnShieldExpire > Time;
+                bool hasEffect = StatusEffectsCatalog.Has(p, shieldDef);
+                if (shielded && !hasEffect)
+                    StatusEffectsCatalog.Apply(p, shieldDef, p.SpawnShieldExpire - Time);
+                else if (!shielded && hasEffect)
+                    StatusEffectsCatalog.Remove(p, shieldDef, StatusEffectRemoval.Clear);
+            }
 
             // QC StatusEffects tick: expire timed effects and apply periodic burn damage.
             using (Prof.Sample("mp.fx"))

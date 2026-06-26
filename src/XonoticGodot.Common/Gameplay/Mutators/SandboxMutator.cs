@@ -388,12 +388,20 @@ public sealed class SandboxMutator : MutatorBase
             Api.Sound.Play(e.Edict, SoundChannel.TriggerAuto,
                 $"object/impact_{e.Material}_{variant}.wav", 1f * intensity, 1f);
         }
-        // TODO[cross-file]: Send_Effect_("impact_<mat>", origin, '0 0 0', ceil(intensity*10)) — sandbox impact
-        // particle effects aren't registered in the port EffectSystem yet.
-        OnMaterialEffect?.Invoke(e, (int)System.Math.Ceiling(intensity * 10.0));
+
+        // QC: Send_Effect_(strcat("impact_", this.material), this.origin, '0 0 0', ceil(intensity * 10));
+        // allow a count from 1 to 10. EmitByEffectInfoName is the port's Send_Effect_ (effectinfo-name keyed);
+        // when no registered effect carries that name it still queues the request by name (QC's engine-particle
+        // fallback path), so this is bit-faithful regardless of which impact_<mat> effects are registered.
+        int count = (int)System.Math.Ceiling(intensity * 10.0);
+        Vector3 fxOrigin = e.Edict is not null ? e.Edict.Origin : e.Origin;
+        EffectEmitter.EmitByEffectInfoName($"impact_{e.Material}", fxOrigin, Vector3.Zero, count);
+        OnMaterialEffect?.Invoke(e, count);
     }
 
-    /// <summary>Host hook for the impact particle (count 1..10) until the EffectSystem registers sandbox impacts.</summary>
+    /// <summary>Optional host observer for the impact particle burst (count 1..10), fired alongside the
+    /// <see cref="EffectEmitter"/> emission (QC <c>Send_Effect_("impact_&lt;mat&gt;", …)</c>). Kept for tests /
+    /// host instrumentation; the live particle now goes through <see cref="EffectEmitter.EmitByEffectInfoName"/>.</summary>
     public Action<SandboxObject, int>? OnMaterialEffect { get; set; }
 
     // ============================================================================================

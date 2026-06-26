@@ -1165,12 +1165,11 @@ public partial class ClientWorld : Node3D
                 }
             }
 
-            // (5) STATUS-EFFECT BURNING (QC ENT_CLIENT_STATUSEFFECTS): a burning entity emits a fire particle burst
-            //     at the model each frame — the remote analogue of the local Fire flames. Gated on frameTime>0 like
-            //     the EF_FLAME burst above so a paused frame emits nothing. (The frozen tint rides the appearance
-            //     pass above; this is the only status-effect visual that's a per-frame emission.)
-            if (frameTime > 0f && HasStatusEffect(e, StatusEffectsCatalog.Burning))
-                Effects.Spawn("EF_FLAME", e.Origin + new NVec3(0f, 0f, 20f), e.Velocity, 1);
+            // (5) STATUS-EFFECT BURNING: the flame visual is now driven by the networked EF_FLAME .effects bit
+            //     that BurningTick ORs in server-side (burning.qc:21) and CsqcModelEffects.Apply renders (the
+            //     orange light + the EF_FLAME particle burst, step 3 above) — exactly like spawnshield/stunned.
+            //     The former per-frame client-side EF_FLAME stand-in here was removed so the burst isn't emitted
+            //     twice; the frozen tint still rides the appearance pass above.
         }
     }
 

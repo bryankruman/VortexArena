@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Godot;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Game.Client;
 using XonoticGodot.Net;
 
@@ -32,6 +33,7 @@ public sealed class ViewEntityRenderer
     {
         public Node3D Holder = null!;  // posed to the player frame each Update
         public int WeaponId = int.MinValue;
+        public float LastAlpha = float.NaN; // last applied render alpha (QC exteriorweaponentity.alpha)
     }
 
     private readonly Dictionary<int, Held> _held = new();
@@ -83,7 +85,64 @@ public sealed class ViewEntityRenderer
                 model.Position = HandOffset;
                 h.Holder.AddChild(model);
             }
+            h.LastAlpha = float.NaN; // fresh meshes start opaque — force a re-apply of the current alpha below
         }
+
+        // QC CL_ExteriorWeaponentity_Think (server/weapons/weaponsystem.qc:170-175): the exterior weapon entity
+        // does NOT simply copy the owner's alpha — it resolves through the three-way default rule:
+        //   if (owner.alpha == default_player_alpha) alpha = default_weapon_alpha;  // owner at the spawn default
+        //   else if (owner.alpha != 0)               alpha = owner.alpha;           // custom fade → match owner
+        //   else                                     alpha = 1;                     // owner alpha 0 → opaque
+        // The FIRST branch is what makes Running Guns work: the player spawns at default_player_alpha = -1
+        // (hidden) but the gun takes default_weapon_alpha = +1 (visible) — a floating visible gun on an invisible
+        // player. Copying owner.alpha unconditionally would hide the gun too, defeating the mutator. Cloaked's
+        // 0.25 also routes through branch 1 (default_weapon_alpha == default_player_alpha), so the gun fades with
+        // the player; a per-player Invisibility powerup fade routes through branch 2 (owner != default → match).
+        float weaponAlpha = ResolveExteriorWeaponAlpha(e.Alpha);
+        if (GodotObject.IsInstanceValid(h.Holder) && weaponAlpha != h.LastAlpha)
+        {
+            h.LastAlpha = weaponAlpha;
+            // Per-INSTANCE transparency (not a material edit): the weapon world models are CACHED + SHARED by
+            // the asset pipeline, so mutating their materials would fade every player's weapon (the same lesson
+            // PlayerModel.ApplyAlpha / CsqcModelEffects document). Godot Transparency is the inverse of QC alpha.
+            float clamped = weaponAlpha < 0f ? 0f : (weaponAlpha > 1f ? 1f : weaponAlpha);
+            ApplyTransparency(h.Holder, 1f - clamped);
+        }
+    }
+
+    /// <summary>
+    /// Resolve the exterior weapon entity's render alpha from its owner's networked alpha, porting the QC
+    /// three-way rule in <c>CL_ExteriorWeaponentity_Think</c> (weaponsystem.qc:170-175):
+    /// owner at <c>default_player_alpha</c> ⇒ <c>default_weapon_alpha</c>; owner at a custom non-zero fade ⇒
+    /// match the owner; owner alpha 0 ⇒ opaque. <paramref name="ownerAlpha"/> is the decoded owner alpha
+    /// (-1 = the QC "hidden default" sentinel, i.e. owner == default_player_alpha under Running Guns).
+    /// <see cref="MutatorHooks.DefaultPlayerAlpha"/>/<see cref="MutatorHooks.DefaultWeaponAlpha"/> carry the
+    /// worldspawn seed on a listen server; on a pure remote client they default to 1 (opaque), which is the
+    /// correct Running-Guns weapon default — so the gun stays visible either way.
+    /// </summary>
+    private static float ResolveExteriorWeaponAlpha(float ownerAlpha)
+    {
+        float defaultPlayerAlpha = MutatorHooks.DefaultPlayerAlpha;
+        float defaultWeaponAlpha = MutatorHooks.DefaultWeaponAlpha;
+        // Branch 1 — owner is at the spawn default (e.g. Running Guns -1 hidden, or Cloaked 0.25): the gun
+        // takes the weapon default. The decoded -1 sentinel is treated as the hidden default_player_alpha.
+        if (ownerAlpha == defaultPlayerAlpha || (ownerAlpha < 0f && defaultPlayerAlpha < 0f))
+            return defaultWeaponAlpha;
+        // Branch 2 — owner has a custom non-zero alpha (an Invisibility-powerup fade): the gun matches it.
+        if (ownerAlpha != 0f)
+            return ownerAlpha;
+        // Branch 3 — owner alpha 0: opaque.
+        return 1f;
+    }
+
+    /// <summary>Render the owner's QC <c>.alpha</c> as a per-instance transparency on every mesh under the held
+    /// weapon (0 = opaque .. 1 = invisible), matching <c>exteriorweaponentity.alpha</c>.</summary>
+    private static void ApplyTransparency(Node node, float transparency)
+    {
+        if (node is GeometryInstance3D gi && GodotObject.IsInstanceValid(gi))
+            gi.Transparency = transparency;
+        foreach (Node child in node.GetChildren())
+            ApplyTransparency(child, transparency);
     }
 
     /// <summary>Drop the weapon view-entity for a departed/removed entity id.</summary>

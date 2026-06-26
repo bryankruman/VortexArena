@@ -107,6 +107,17 @@ public sealed class ItemstimeMutator : MutatorBase
         ["item_invincible"]  = "shield",       // alias
     };
 
+    /// <summary>
+    /// QC <c>Item_ItemsTime_SpectatorOnly</c> (itemstime.qc:58): the subset of timed items that get a
+    /// SPECTATOR-only respawn-countdown waypoint sprite — Mega/Big Health and Mega/Big Armor. (SVQC compiles
+    /// <c>hud_panel_itemstime_hidebig=false</c>, so Big items are always included.) Powerups + superweapons are
+    /// in the Allow set but are NOT SpectatorOnly. Classified by world-item classname, matching the
+    /// <see cref="TimedItemClasses"/> producer keys.
+    /// </summary>
+    public static bool IsSpectatorOnlyItem(string className) =>
+        TimedItemClasses.TryGetValue(className, out string? key)
+        && (key == "health_mega" || key == "health_big" || key == "armor_mega" || key == "armor_big");
+
     // Recompute scratch state, persistent across ticks: this runs EVERY server frame (OnStartFrame), so a
     // fresh accumulator dictionary + a capturing local function + per-superweapon "weapon_"+name concats +
     // one FindByClass iterator per class (~10/tick) were a steady ~3 KB/tick of GC churn under load. The

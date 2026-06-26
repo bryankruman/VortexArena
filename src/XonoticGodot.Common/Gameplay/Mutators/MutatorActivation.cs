@@ -125,4 +125,21 @@ public static class MutatorActivation
                 s = mut.BuildMutatorsPrettyString(s);
         return s;
     }
+
+    /// <summary>
+    /// QC <c>MUTATOR_CALLHOOK(SetModname, modname)</c> (server/world.qc:1090): run the SetModname hook chain —
+    /// the first active mutator that returns <c>overridden=true</c> sets the modname and the chain stops (QC
+    /// CBC_ORDER_ANY early-exit). Returns the final resolved modname string.
+    /// </summary>
+    public static string SetModname(string name)
+    {
+        foreach (MutatorBase mut in Mutators.All)
+        {
+            if (!mut.Added) continue;
+            var (newName, overridden) = mut.SetModname(name);
+            if (overridden)
+                return newName;
+        }
+        return name;
+    }
 }

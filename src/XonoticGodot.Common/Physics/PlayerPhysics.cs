@@ -1042,7 +1042,13 @@ public sealed class PlayerPhysics : IPlayerPhysics
         // EV_PlayerJump mutator hook (multijump/walljump grant an extra jump; bloodloss forbids it).
         // Carry the per-player resolved DOUBLEJUMP stat (mp.DoubleJump = Physics_ClientOption("doublejump",
         // sv_doublejump)) so the doublejump mutator gates on PHYS_DOUBLEJUMP(player) per Base, not just the cvar.
-        var pj = new MutatorHooks.PlayerJumpArgs(player, mjumpheight, doublejump, mp.DoubleJump);
+        var pj = new MutatorHooks.PlayerJumpArgs(player, mjumpheight, doublejump, mp.DoubleJump)
+        {
+            // Carry the prediction leg so PlayerJump hooks can gate their #ifdef SVQC side-effects
+            // (e.g. walljump's smoke ring / jump voice) off the predicting client — matching Base,
+            // where those run only on SVQC while the velocity impulse runs shared on CSQC+SVQC.
+            Predicted = input.Predicted,
+        };
         if (MutatorHooks.PlayerJump.Call(ref pj))
             return (true, pj.Multijump);
         mjumpheight = pj.JumpHeight;

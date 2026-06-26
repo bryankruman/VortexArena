@@ -115,7 +115,8 @@ public sealed class NadeNapalmBoom : INadeBoom
     {
         if (Api.Services is null) return;
         float now = Api.Clock.Time;
-        if (now > self.NadeOrbExpire)
+        // QC napalm_ball_think:40 — (round_handler_IsActive() && !round_handler_IsRoundStarted()) || time > pushltime.
+        if (RoundHandler.RoundGateBlocks() || now > self.NadeOrbExpire)
         {
             Api.Entities.Remove(self);
             return;
@@ -138,7 +139,8 @@ public sealed class NadeNapalmBoom : INadeBoom
     {
         if (Api.Services is null) return;
         float now = Api.Clock.Time;
-        if (now >= self.NadeOrbExpire)
+        // QC napalm_fountain_think:105 — (round_handler_IsActive() && !round_handler_IsRoundStarted()) || time >= ltime.
+        if (RoundHandler.RoundGateBlocks() || now >= self.NadeOrbExpire)
         {
             Api.Entities.Remove(self);
             return;

@@ -1,6 +1,7 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay.Damage;
+using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
@@ -57,6 +58,21 @@ public sealed class InstagibMutator : MutatorBase
     /// <summary>QC autocvar_g_instagib_ammo_convert_bullets.</summary>
     public bool AmmoConvertBullets;
 
+    /// <summary>QC autocvar_g_instagib_ammo_drop (default 5) — cells seeded on loot drops and VaporizerCells replacements.</summary>
+    public float AmmoDrop = 5f;
+
+    /// <summary>QC autocvar_g_instagib_invisibility_time (default 30) — duration of the Invisibility powerup under instagib.</summary>
+    public float InvisibilityTime = 30f;
+
+    /// <summary>QC autocvar_g_instagib_speed_time (default 30) — duration of the Speed powerup under instagib.</summary>
+    public float SpeedTime = 30f;
+
+    // --- random-powerup deck (sv_instagib.qc:291-312 instagib_replace_item_with_random_powerup) ---
+    // QC cycles a 3-slot array {Invisibility, ExtraLife, Speed}; once all 3 are consumed the deck refills.
+    // The port mirrors this with a parallel index list reset on depletion.
+    private readonly string[] _powerupDeck = { "invisibility", "extralife", "speed" };
+    private int _powerupDeckCount = 3; // remaining items (0 → refill to 3)
+
     public InstagibMutator() => NetName = "instagib";
 
     // QC: REGISTER_MUTATOR(mutator_instagib, autocvar_g_instagib && !MapInfo_LoadedGametype.m_weaponarena).
@@ -79,6 +95,7 @@ public sealed class InstagibMutator : MutatorBase
     private HookHandler<MutatorHooks.SetStartItemsArgs>? _onSetStartItems;
     private HookHandler<GameHooks.PlayerDamageArgs>? _onSplitHealthArmor;
     private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _onFilterItemDef;
+    private HookHandler<MutatorHooks.FilterItemArgs>? _onFilterItem;
     private HookHandler<MutatorHooks.ItemTouchArgs>? _onItemTouch;
     private HookHandler<MutatorHooks.MakePlayerObserverArgs>? _onMakeObserver;
 
@@ -95,6 +112,7 @@ public sealed class InstagibMutator : MutatorBase
         _onSetStartItems ??= OnSetStartItems;
         _onSplitHealthArmor ??= OnPlayerDamageSplitHealthArmor;
         _onFilterItemDef ??= OnFilterItemDefinition;
+        _onFilterItem ??= OnFilterItem;
         _onItemTouch ??= OnItemTouch;
         _onMakeObserver ??= OnMakePlayerObserver;
 
@@ -111,7 +129,10 @@ public sealed class InstagibMutator : MutatorBase
         // — without this the port's 70% armor block corrupts the armor-as-lives model + the no-ammo bleed.
         GameHooks.PlayerDamageSplitHealthArmor.Add(_onSplitHealthArmor);
         // QC FilterItem: convert/replace/remove map weapons, powerups, ammo and jetpacks.
+        // The definition-level hook handles pure deletes; the entity-level hook handles replacements +
+        // in-place modifications (VaporizerCells cells-seed, Devastator→VaporizerCells, powerup deck).
         MutatorHooks.FilterItemDefinition.Add(_onFilterItemDef);
+        MutatorHooks.FilterItem.Add(_onFilterItem);
         // QC ItemTouch: cells pickup full-heals; ExtraLife grants armor "lives".
         MutatorHooks.ItemTouch.Add(_onItemTouch);
         // QC MakePlayerObserver: stop a demoted player's no-ammo countdown (clear the FINDAMMO centerprint).
@@ -135,6 +156,12 @@ public sealed class InstagibMutator : MutatorBase
             AmmoConvertRockets = Api.Cvars.GetFloat("g_instagib_ammo_convert_rockets") != 0f;
             AmmoConvertShells = Api.Cvars.GetFloat("g_instagib_ammo_convert_shells") != 0f;
             AmmoConvertBullets = Api.Cvars.GetFloat("g_instagib_ammo_convert_bullets") != 0f;
+            float ammoDrop = Api.Cvars.GetFloat("g_instagib_ammo_drop");
+            if (ammoDrop != 0f) AmmoDrop = ammoDrop;
+            float invTime = Api.Cvars.GetFloat("g_instagib_invisibility_time");
+            if (invTime != 0f) InvisibilityTime = invTime;
+            float spdTime = Api.Cvars.GetFloat("g_instagib_speed_time");
+            if (spdTime != 0f) SpeedTime = spdTime;
         }
     }
 
@@ -151,6 +178,7 @@ public sealed class InstagibMutator : MutatorBase
         if (_onSetStartItems is not null) MutatorHooks.SetStartItems.Remove(_onSetStartItems);
         if (_onSplitHealthArmor is not null) GameHooks.PlayerDamageSplitHealthArmor.Remove(_onSplitHealthArmor);
         if (_onFilterItemDef is not null) MutatorHooks.FilterItemDefinition.Remove(_onFilterItemDef);
+        if (_onFilterItem is not null) MutatorHooks.FilterItem.Remove(_onFilterItem);
         if (_onItemTouch is not null) MutatorHooks.ItemTouch.Remove(_onItemTouch);
         if (_onMakeObserver is not null) MutatorHooks.MakePlayerObserver.Remove(_onMakeObserver);
     }
@@ -237,6 +265,14 @@ public sealed class InstagibMutator : MutatorBase
             }
             args.MirrorDamage = 0f;
         }
+
+        // QC sv_instagib.qc:245-247: if the target is partially transparent (alpha in (0,1)) and a player,
+        // set the yoda flag so a Vaporizer hit on a cloaked/invisible player can announce ACHIEVEMENT_YODA.
+        // The QC `yoda` global is per-shot; the port stores it on the target as InstagibAlphaYoda so
+        // Vaporizer.Announce can read it for the same attack frame. Alpha==0 means default (fully visible in QC),
+        // so only a non-zero fractional alpha triggers it.
+        if (IsPlayer(target) && target.Alpha != 0f && target.Alpha < 1f)
+            target.InstagibAlphaYoda = true;
 
         return false; // CBC_ORDER_ANY — not exclusive.
     }
@@ -435,53 +471,225 @@ public sealed class InstagibMutator : MutatorBase
         return false; // CBC_ORDER_ANY
     }
 
-    // MUTATOR_HOOKFUNCTION(mutator_instagib, FilterItem) — convert/replace/remove map items.
-    // The port's item registry is still classname/netname-based (no GameItem itemdef on the spawn def yet),
-    // so the switch on item.itemdef / item.weapon is approximated by matching the definition's classname /
-    // NetName tags (the same stand-in NIX/melee_only use). Returns true to delete/suppress the spawn.
+    // MUTATOR_HOOKFUNCTION(mutator_instagib, FilterItem) — (definition-level) handle the pure-delete cases.
+    // The port separates instagib's single QC FilterItem hook into two C# hooks:
+    //   (1) FilterItemDefinition (here) — definition-level, handles pure deletes BEFORE the entity is spawned.
+    //   (2) FilterItem (OnFilterItem, below) — entity-level, handles replacements + in-place modifications.
+    // Returns true to delete/suppress the spawn of this definition entirely.
     private bool OnFilterItemDefinition(ref MutatorHooks.FilterItemDefinitionArgs args)
     {
         Entity def = args.Definition;
         string cls = def.ClassName;
         string net = def.NetName;
 
-        // QC: big powerups (Strength/Shield/HealthMega/ArmorMega) → random instagib powerup deck under
-        // g_powerups, else deleted. The instagib powerup item economy (deck + spawnfuncs) isn't ported yet,
-        // so we faithfully DELETE them here (the replace-with-random-powerup deck is a cross-file TODO).
-        if (cls is "item_strength" or "item_shield" or "item_health_mega" or "item_armor_mega"
-            || net is "strength" or "shield" or "health_mega" or "armor_mega")
-            return true;
-
-        // QC: Invisibility / ExtraLife / Speed are kept (return false = allowed).
+        // QC: Invisibility / ExtraLife / Speed are KEPT (return false = allowed) — they appear via the
+        // random-powerup replacement deck (OnFilterItem below handles that) and must not be pre-deleted.
         if (cls is "item_invisible" or "item_invisibility" or "item_extralife" or "item_speed"
             || net is "invisibility" or "extralife" or "speed")
             return false;
 
-        // QC (sv_instagib.qc:326-341): cell/rocket/shell/bullet packs are ALWAYS removed (return true). When
-        // the matching g_instagib_ammo_convert_* cvar is set they're REPLACED with vaporizer cells first; the
-        // port has no item-spawn replace seam (the VaporizerCells economy isn't ported), so for now the
-        // original pack is unconditionally deleted either way. (Replace-with-VaporizerCells = cross-file TODO.)
-        if (cls is "item_cells" or "item_rockets" or "item_shells" or "item_bullets"
-            || net is "cells" or "rockets" or "shells" or "bullets")
-            return true;
+        // QC: the VaporizerCells economy item is always kept — it only appears as a replacement or map item.
+        if (cls is "item_vaporizer_cells" or "item_minst_cells" || net == "vaporizer_cells")
+            return false;
 
         // QC: Jetpack / FuelRegen removed unless g_instagib_allow_jetpacks.
         if (cls is "item_jetpack" or "item_fuel_regen" || net is "jetpack" or "fuel_regen")
             return !AllowJetpacks;
 
-        // QC: Devastator / Vortex weapon pickups → vaporizer cells (replaced, so delete the original).
+        // Big powerups, ammo packs, Devastator/Vortex, and the generic fallthrough are handled at the entity
+        // level (OnFilterItem) so replacements can be spawned at the item's in-world origin. Let them through
+        // the definition gate so their entity gets built; OnFilterItem will delete or replace them.
+        // The cases below that are "always delete AND never replaced" can still be short-circuited here.
+
+        // QC fallthrough (sv_instagib.qc:368): everything else (stock weapons/items that don't carry cells) is
+        // DELETED by default at definition level — saves spawning an entity only to delete it.
+        // EXCEPTION: big powerups (strength/shield/mega*), ammo, Devastator/Vortex, and weapon_* items
+        // pass through here so their live entity is available for replacement in OnFilterItem.
+        if (cls is "item_strength" or "item_shield" or "item_health_mega" or "item_armor_mega"
+            || net is "strength" or "shield" or "health_mega" or "armor_mega")
+            return false; // let entity-level hook handle (replacement or delete based on g_powerups)
+
+        if (cls is "item_cells" or "item_rockets" or "item_shells" or "item_bullets"
+            || net is "cells" or "rockets" or "shells" or "bullets")
+            return false; // entity-level hook handles (ammo_convert_* replace or delete)
+
         if (cls is "weapon_devastator" or "weapon_vortex" || net is "devastator" or "vortex")
+            return false; // entity-level hook handles (replace with VaporizerCells)
+
+        // QC FilterItem `case WEP_VAPORIZER.m_id: if (ITEM_IS_LOOT(item)) { cells = ammo_drop; return false; }`
+        // (sv_instagib.qc:347-352): a Vaporizer LOOT drop (the weapon dropped on death — ForbidThrow blocks the
+        // throw, "weapon dropping on death handled by FilterItem") is KEPT and cells-seeded at entity level.
+        // Let it through the definition gate (ItemIsLoot is already set on the edict before this hook fires).
+        if ((cls is "weapon_vaporizer" || net is "vaporizer") && def.ItemIsLoot)
+            return false; // entity-level hook seeds cells = g_instagib_ammo_drop and keeps it
+
+        // weapon_* that aren't Devastator/Vortex/Vaporizer-loot — always deleted; no replacement.
+        if (cls.StartsWith("weapon_", System.StringComparison.Ordinal)
+            || (def.Pickup?.IsWeaponPickup == true))
             return true;
 
-        // QC: the VaporizerCells economy item (cells-carrier, not a weapon) is kept; loot Vaporizer is kept with
-        // a cells seed (sv_instagib.qc:349-355, 361-366) — not yet ported. Keep it explicitly here for forward
-        // compatibility once the economy lands.
+        // QC generic fallthrough: anything not explicitly kept is deleted.
+        return true;
+    }
+
+    // MUTATOR_HOOKFUNCTION(mutator_instagib, FilterItem) — (entity-level) handle replacements and in-place
+    // modifications. Fires after the item entity is fully set up (ItemInit + seeding). Returns true to delete
+    // this entity (replacement was already spawned). Mirrors QC's single FilterItem switch statement body.
+    private bool OnFilterItem(ref MutatorHooks.FilterItemArgs args)
+    {
+        if (Api.Services is null) return false;
+        Entity item = args.Item;
+        string cls = item.ClassName;
+        string net = item.NetName;
+
+        // QC FilterItem (sv_instagib.qc:322): `case ITEM_Invisibility: case ITEM_ExtraLife: case ITEM_Speed:
+        // return false;` — these are explicitly KEPT (they appear via the random-powerup replacement deck or as
+        // map items). Without this guard they'd fall through to the generic tail below and be deleted (they carry
+        // no cells and aren't weapons), so the replacement powerups the deck just spawned would be removed.
+        if (cls is "item_invisible" or "item_invisibility" or "item_extralife" or "item_speed"
+            || net is "invisibility" or "extralife" or "speed")
+            return false;
+
+        // QC: the VaporizerCells economy item (sv_instagib.qc generic tail keeps it: cells > 0 && !weapon →
+        // return false). Kept explicitly so a freshly-spawned replacement isn't deleted by the tail's clamp path.
         if (cls is "item_vaporizer_cells" or "item_minst_cells" || net == "vaporizer_cells")
             return false;
 
-        // QC fallthrough (sv_instagib.qc:368): everything else (stock weapons/items that don't carry cells) is
-        // DELETED by default — a normal DM map under instagib must not spawn its stock weapons or ammo.
-        return true;
+        // QC: `case ITEM_Jetpack: case ITEM_FuelRegen: return !autocvar_g_instagib_allow_jetpacks;`
+        // (sv_instagib.qc:342-344). When jetpacks are allowed this returns false (keep); the definition gate
+        // already let it through, so the generic tail below would otherwise delete the (cells-less) jetpack.
+        if (cls is "item_jetpack" or "item_fuel_regen" || net is "jetpack" or "fuel_regen")
+            return !AllowJetpacks;
+
+        // QC: Strength/Shield/HealthMega/ArmorMega → instagib_replace_item_with_random_powerup when g_powerups,
+        // then return true (delete original). When g_powerups is off, just delete.
+        if (cls is "item_strength" or "item_shield" or "item_health_mega" or "item_armor_mega"
+            || net is "strength" or "shield" or "health_mega" or "armor_mega")
+        {
+            if (ItemPickupRules.CvarBoolOr("g_powerups", true))
+                ReplaceItemWithRandomPowerup(item);
+            return true; // always delete the original (QC: return true after both branches)
+        }
+
+        // QC: ammo packs — if matching g_instagib_ammo_convert_* is set, replace with VaporizerCells, then
+        // always delete the original pack (QC: return true after both branches; 326-341).
+        if (net is "cells" || cls is "item_cells")
+        {
+            if (AmmoConvertCells) ReplaceItemWithVaporizerCells(item);
+            return true;
+        }
+        if (net is "rockets" || cls is "item_rockets")
+        {
+            if (AmmoConvertRockets) ReplaceItemWithVaporizerCells(item);
+            return true;
+        }
+        if (net is "shells" || cls is "item_shells")
+        {
+            if (AmmoConvertShells) ReplaceItemWithVaporizerCells(item);
+            return true;
+        }
+        if (net is "bullets" || cls is "item_bullets")
+        {
+            if (AmmoConvertBullets) ReplaceItemWithVaporizerCells(item);
+            return true;
+        }
+
+        // QC: Devastator / Vortex weapon pickups → replace with VaporizerCells, delete original (sv_instagib.qc:356-359).
+        if (cls is "weapon_devastator" or "weapon_vortex" || net is "devastator" or "vortex")
+        {
+            ReplaceItemWithVaporizerCells(item);
+            return true;
+        }
+
+        // QC: Vaporizer loot drop (sv_instagib.qc:349-355): weapon == WEP_VAPORIZER && ITEM_IS_LOOT →
+        // set cells = g_instagib_ammo_drop, keep the item (return false). The weapon field on the item entity
+        // is set via item.OwnedWeaponSet (WeaponPickup.ItemInit); item.ItemIsLoot distinguishes loot from map.
+        if (item.ItemIsLoot && item.Pickup is WeaponPickup wp && wp.NetName == "vaporizer")
+        {
+            item.SetResource(ResourceType.Cells, AmmoDrop);
+            return false; // keep the loot with seeded cells
+        }
+
+        // QC generic tail (sv_instagib.qc:361-368): clamp cells > g_instagib_ammo_drop, then if has cells
+        // and no weapon → keep (return false), else delete (return true).
+        float cells = item.GetResource(ResourceType.Cells);
+        if (cells > AmmoDrop && cls != "item_vaporizer_cells")
+            item.SetResource(ResourceType.Cells, AmmoDrop);
+
+        if (cells > 0f && item.Pickup?.IsWeaponPickup != true)
+            return false; // keep a cells-carrying non-weapon item
+
+        return true; // delete anything else that reached here
+    }
+
+    // QC instagib_replace_item_with(this, def) — spawn a new item of def at this item's origin, copying the
+    // map-placement fields, seeding any powerup timers, and running StartItem. If the spawn fails, nothing is
+    // emitted (QC's StartItem free path). Called for the Devastator/Vortex→VaporizerCells path.
+    private void ReplaceItemWithVaporizerCells(Entity original)
+    {
+        if (Api.Services is null) return;
+        Pickup? def = Items.ByName("vaporizer_cells");
+        if (def is null) return;
+        Entity newItem = Api.Entities.Spawn();
+        CopyMapPlacement(original, newItem);
+        // QC: ammo_vaporizercells_init seeds cells = g_instagib_ammo_drop (handled by VaporizerCellsItem.ItemInit).
+        StartItem.Spawn(newItem, def);
+    }
+
+    // QC instagib_replace_item_with_random_powerup(item) — cycles the 3-slot deck {Invisibility, ExtraLife,
+    // Speed}, picks a random remaining entry, spawns that powerup in place of the big powerup, and advances
+    // the deck; when the deck is empty it refills (sv_instagib.qc:295-312).
+    private void ReplaceItemWithRandomPowerup(Entity original)
+    {
+        if (Api.Services is null) return;
+
+        // QC: if (remaining_powerups_count == 0) remaining_powerups_count = INSTAGIB_POWERUP_COUNT (refill).
+        if (_powerupDeckCount == 0)
+        {
+            _powerupDeck[0] = "invisibility";
+            _powerupDeck[1] = "extralife";
+            _powerupDeck[2] = "speed";
+            _powerupDeckCount = 3;
+        }
+
+        // QC: r = floor(random() * remaining_powerups_count); pick slot r.
+        int r = (int)System.MathF.Floor(Prandom.Float() * _powerupDeckCount);
+        if (r >= _powerupDeckCount) r = _powerupDeckCount - 1; // clamp (rounding safety)
+        string chosenNetName = _powerupDeck[r];
+
+        // QC: shift remaining slots left to fill the gap (remove slot r).
+        for (int i = r; i < _powerupDeckCount - 1; i++)
+            _powerupDeck[i] = _powerupDeck[i + 1];
+        _powerupDeckCount--;
+
+        Pickup? def = Items.ByName(chosenNetName);
+        if (def is null) return;
+
+        Entity newItem = Api.Entities.Spawn();
+        CopyMapPlacement(original, newItem);
+        // QC instagib_replace_item_with: for Invisibility set invisibility_finished; for Speed set speed_finished.
+        // These are the instagib-specific override durations (default 30s, Base autocvar_g_instagib_*_time).
+        if (chosenNetName == "invisibility")
+            newItem.InvisibilityFinished = InvisibilityTime;
+        else if (chosenNetName == "speed")
+            newItem.SpeedFinished = SpeedTime;
+        StartItem.Spawn(newItem, def);
+    }
+
+    // Copy the placement fields the new map item inherits from the one it replaces (mirrors QC Item_CopyFields
+    // and RandomItemsMutator.CopyMapPlacement).
+    private static void CopyMapPlacement(Entity from, Entity to)
+    {
+        to.Origin = from.Origin;
+        to.OldOrigin = from.Origin;
+        if (Api.Services is not null)
+            Api.Entities.SetOrigin(to, to.Origin);
+        to.Angles = from.Angles;
+        to.SpawnFlags = from.SpawnFlags;
+        to.Target = from.Target;
+        to.TargetName = from.TargetName;
+        to.Team = from.Team;
+        to.NoAlign = from.NoAlign;
     }
 
     private bool OnForbidThrow(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args) => true;
@@ -518,4 +726,9 @@ public sealed class InstagibMutator : MutatorBase
     // MUTATOR_HOOKFUNCTION(mutator_instagib, BuildMutatorsPrettyString) — sv_instagib.qc:420-423: append the
     // human-readable ", InstaGib" token to the active-mutators line shown to joining clients / the scoreboard.
     public override string BuildMutatorsPrettyString(string s) => s + ", InstaGib";
+
+    // MUTATOR_HOOKFUNCTION(mutator_instagib, SetModname) — sv_instagib.qc:425-429: override the server modname
+    // to "InstaGib" so the server browser and client connection banner reflect the active game mode.
+    // Returns true (overridden) so the chain stops here (QC: return true from the hook, CBC_ORDER_ANY).
+    public override (string name, bool overridden) SetModname(string name) => ("InstaGib", true);
 }

@@ -27,15 +27,22 @@
 //   - monster stealth (MonsterValidTarget) via the new MutatorHooks.MonsterValidTarget chain (consulted in
 //     MonsterAI.ValidTarget) — an invisible player is no longer acquired by monsters.
 //
-// Still deferred — these need cross-file seams that don't exist in the port yet:
-//   - the radar invisibility stealth (CustomizeWaypoint — a per-recipient waypoint-sprite send-time visibility
-//     filter; the port's waypoint system has no per-viewer customize chain);
-//   - the obituary item codes (LogDeath_AppendItemCodes — the port's kill log carries no :items= field);
-//   - the WP_Item waypoint sprite on a dropped powerup (no reachable WaypointSprite API here).
+// Wave-8d additions (now live for this file):
+//   - the exterior weapon-entity alpha + the if(!actor.vehicle) guard on the invisibility alpha apply/restore
+//     (the held weapon node fades with the body in ViewEntityRenderer);
+//   - the radar invisibility stealth (CustomizeWaypoint) — folded into ServerNet.WaypointVisible: an invisible
+//     carrier's waypoint is hidden from enemy radar;
+//   - the WP_Item countdown waypoint sprite on a dropped powerup + powerups_DropItem_Think (the time-left bar)
+//     + the ItemTouched waypoint-kill-on-pickup hook.
+//
+// Still deferred — needs a cross-file seam that doesn't exist in the port yet:
+//   - the obituary item codes (LogDeath_AppendItemCodes — the port has no LogDeath kill-log pipeline wired into
+//     the death path yet; GameLog.Kill is uncalled and carries no :items= field).
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using static XonoticGodot.Common.Gameplay.Items;
+using XonoticGodot.Common.Gameplay.Waypoints;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -71,6 +78,12 @@ public sealed class PowerupsMutator : MutatorBase
     private int _dropOnUse = 0;                // g_powerups_drop (0=off, 1=timer continues, 2=freeze) — +use drop
     private float _droppedLifetime = 20f;      // g_items_dropped_lifetime (frozen-timer drop lifetime)
 
+    // ---- per-powerup max duration (balance-xonotic.cfg) — the WP_Item waypoint health-bar scale (maxtime) ----
+    private float _strengthTime = 30f;     // g_balance_powerup_strength_time
+    private float _invincibleTime = 30f;   // g_balance_powerup_invincible_time
+    private float _speedTime = 30f;        // g_balance_powerup_speed_time
+    private float _invisibilityTime = 30f; // g_balance_powerup_invisibility_time
+
     // ---- strength-fire sound anti-spam (xonotic-server.cfg:604-605) ----
     private float _strengthAntispamTime = 0.1f;       // sv_strengthsound_antispam_time
     private float _strengthAntispamRefire = 0.04f;    // sv_strengthsound_antispam_refire_threshold
@@ -100,6 +113,7 @@ public sealed class PowerupsMutator : MutatorBase
     private HookHandler<MutatorHooks.PlayerUseKeyArgs>? _onUseKey;
     private HookHandler<MutatorHooks.BotForbidAttackArgs>? _onBotForbidAttack;
     private HookHandler<MutatorHooks.MonsterValidTargetArgs>? _onMonsterValidTarget;
+    private HookHandler<MutatorHooks.ItemTouchedArgs>? _onItemTouched;
 
     public override void Hook()
     {
@@ -112,6 +126,7 @@ public sealed class PowerupsMutator : MutatorBase
         _onUseKey ??= OnPlayerUseKey;
         _onBotForbidAttack ??= OnBotForbidAttack;
         _onMonsterValidTarget ??= OnMonsterValidTarget;
+        _onItemTouched ??= OnItemTouched;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
         MutatorHooks.PlayerPhysics.Add(_onPhysics);
@@ -122,6 +137,7 @@ public sealed class PowerupsMutator : MutatorBase
         MutatorHooks.PlayerUseKey.Add(_onUseKey);
         MutatorHooks.BotForbidAttack.Add(_onBotForbidAttack);
         MutatorHooks.MonsterValidTarget.Add(_onMonsterValidTarget);
+        MutatorHooks.ItemTouched.Add(_onItemTouched);
 
         if (Api.Services is not null)
         {
@@ -137,6 +153,10 @@ public sealed class PowerupsMutator : MutatorBase
             R(ref _droppedLifetime, "g_items_dropped_lifetime");
             R(ref _strengthAntispamTime, "sv_strengthsound_antispam_time");
             R(ref _strengthAntispamRefire, "sv_strengthsound_antispam_refire_threshold");
+            R(ref _strengthTime, "g_balance_powerup_strength_time");
+            R(ref _invincibleTime, "g_balance_powerup_invincible_time");
+            R(ref _speedTime, "g_balance_powerup_speed_time");
+            R(ref _invisibilityTime, "g_balance_powerup_invisibility_time");
             // g_powerups_drop_ondeath defaults to 1; a 0 is meaningful (off) so read it directly.
             _dropOnDeath = (int)Api.Cvars.GetFloat("g_powerups_drop_ondeath");
             _dropOnUse = (int)Api.Cvars.GetFloat("g_powerups_drop"); // default 0 (off)
@@ -154,6 +174,7 @@ public sealed class PowerupsMutator : MutatorBase
         if (_onUseKey is not null) MutatorHooks.PlayerUseKey.Remove(_onUseKey);
         if (_onBotForbidAttack is not null) MutatorHooks.BotForbidAttack.Remove(_onBotForbidAttack);
         if (_onMonsterValidTarget is not null) MutatorHooks.MonsterValidTarget.Remove(_onMonsterValidTarget);
+        if (_onItemTouched is not null) MutatorHooks.ItemTouched.Remove(_onItemTouched);
         _prevActive.Clear();
         _prevStrengthSound.Clear();
         _prevStrengthSoundAttempt.Clear();
@@ -314,6 +335,20 @@ public sealed class PowerupsMutator : MutatorBase
         // QC: return StatusEffects_active(STATUSEFFECT_Invisibility, targ); (true => target invalid).
         => Active(args.Target, "invisibility");
 
+    // =====================================================================================
+    //  ItemTouched (sv_powerups.qc:142) — kill the dropped powerup's countdown waypoint sprite on pickup
+    // =====================================================================================
+    private bool OnItemTouched(ref MutatorHooks.ItemTouchedArgs args)
+    {
+        // QC: if(e.waypointsprite_attached) WaypointSprite_Kill(e.waypointsprite_attached);
+        if (args.Item.WaypointAttached is WaypointSprite wp)
+        {
+            WaypointSprites.Kill(wp);
+            args.Item.WaypointAttached = null;
+        }
+        return false;
+    }
+
     // Bit per powerup in the prior-active bitmap (apply/timeout edge detection).
     private const byte AStrength = 1;
     private const byte AShield = 2;
@@ -338,11 +373,17 @@ public sealed class PowerupsMutator : MutatorBase
         // ---- invisibility alpha (InvisibilityStatusEffect.m_tick / m_remove, invisibility.qc:33-43) ----
         // QC sets actor.alpha = invisibility_alpha each frame while active and m_remove restores
         // default_player_alpha. Mirrors the BuffsMutator invisible-buff alpha handling: set while held,
-        // restore to 1 on lapse.
-        if (invis)
-            player.Alpha = _invisibilityAlpha;
-        else if (player.Alpha == _invisibilityAlpha)
-            player.Alpha = MutatorHooks.DefaultPlayerAlpha; // QC default_player_alpha (composes with Cloaked → 0.25, not 1)
+        // restore to 1 on lapse. QC guards BOTH the apply (m_tick:36) AND the restore (m_remove:14) with
+        // if(!actor.vehicle) — a player riding a vehicle keeps the vehicle's alpha untouched. The exterior
+        // weapon alpha rides the same networked Entity.Alpha (the held-weapon node fades with the body in
+        // ViewEntityRenderer), so setting player.Alpha here covers the weapon too.
+        if (player.Vehicle is null)
+        {
+            if (invis)
+                player.Alpha = _invisibilityAlpha;
+            else if (player.Alpha == _invisibilityAlpha)
+                player.Alpha = MutatorHooks.DefaultPlayerAlpha; // QC default_player_alpha (composes with Cloaked → 0.25, not 1)
+        }
 
         // ---- strength/shield glow (strength.qc:31 / shield.qc:31 m_tick + m_remove:14) ----
         // QC m_tick ORs (EF_BLUE/EF_RED | EF_ADDITIVE | EF_FULLBRIGHT) into actor.effects every frame while
@@ -435,7 +476,8 @@ public sealed class PowerupsMutator : MutatorBase
     // (freeze, mode 2) or ABSOLUTE (continue, mode 1) timer. ItemTouch re-applies it on pickup — for an
     // expiring (continue) drop it stores the absolute finish time and ItemTouch subtracts `time`; for a frozen
     // drop expiring is off and the stored value is the remaining seconds (max(existing,dur) on pickup).
-    // Deferred vs QC: the WP_Item countdown waypoint sprite (no reachable WaypointSprite API in this file).
+    // Includes the WP_Item countdown waypoint sprite (powerups_DropItem + powerups_DropItem_Think): a marker
+    // following the dropped item with a time-left health bar, updated each think and killed on pickup/despawn.
     private void DropPowerup(Entity owner, string name, bool freezeTimer)
     {
         var def = StatusEffectsCatalog.ByName(name);
@@ -480,9 +522,66 @@ public sealed class PowerupsMutator : MutatorBase
         // The dropped item is picked up through the canonical Item_Touch path.
         e.Touch = (self, other) => ItemPickupRules.ItemTouch(self, other);
 
-        // QC e.lifetime drives the dropped-item think; expire the loot when it runs out.
-        e.NextThink = now + lifetime;
-        e.Think = self => Api.Entities.Remove(self);
+        // QC: SetResourceExplicit(e, RES_ARMOR, 1) on a frozen drop is the "timer frozen" marker the waypoint
+        // think reads (!GetResource(RES_ARMOR) == timer running). The port has no RES_ARMOR on a loose item, so
+        // reuse the freezeTimer flag captured in the think closure below (logically equivalent).
+
+        // QC: spawn a WP_Item waypoint counting down the powerup's remaining time, following the dropped item at
+        // its top (offset '0 0 1' * maxs.z). maxtime scales the health bar; timeleft fills it. The port renders
+        // the generic "Item" def (magenta) — it has no wp_extra-driven per-powerup icon, a minor cosmetic gap.
+        float maxtime = name switch
+        {
+            "strength" => _strengthTime,
+            "shield" => _invincibleTime,
+            "speed" => _speedTime,
+            "invisibility" => _invisibilityTime,
+            _ => 30f,
+        };
+        WaypointDef wpDef = WaypointRegistry.Get("Item");
+        WaypointSprite wp = WaypointSprites.Spawn("Item", 0f, 0f, e, new Vector3(0f, 0f, e.Maxs.Z),
+            default, 0, wpDef.Color, wpDef.RadarIcon, SpriteRule.Default, hideable: true);
+        WaypointSprites.UpdateMaxHealth(wp, maxtime);
+        // The port's WaypointSprite.Health is pre-normalized (0..1); QC passes raw timeleft + a maxhealth scale.
+        WaypointSprites.UpdateHealth(wp, maxtime > 0f ? timeLeft / maxtime : -1f);
+        e.WaypointAttached = wp;
+
+        // QC e.wait = time + lifetime drives both the dropped-item despawn and powerups_DropItem_Think's countdown.
+        float deadline = now + lifetime;
+        e.ItemWait = deadline;
+        // QC Item_Think → powerups_DropItem_Think: while the waypoint is attached AND the timer is RUNNING (not a
+        // frozen drop), update the health bar to the floored seconds-left, killing it at 0; then expire the loot
+        // at its lifetime. A frozen drop keeps a static bar (QC skips the update when RES_ARMOR==1).
+        e.Think = self =>
+        {
+            float t = Api.Clock.Time;
+            if (self.WaypointAttached is WaypointSprite spr)
+            {
+                if (!freezeTimer)
+                {
+                    float left = System.MathF.Floor(self.ItemWait - t);
+                    if (left > 0f)
+                        WaypointSprites.UpdateHealth(spr, maxtime > 0f ? left / maxtime : -1f);
+                    else
+                    {
+                        WaypointSprites.Kill(spr);
+                        self.WaypointAttached = null;
+                    }
+                }
+            }
+            if (t >= self.ItemWait)
+            {
+                if (self.WaypointAttached is WaypointSprite dspr)
+                {
+                    WaypointSprites.Kill(dspr);
+                    self.WaypointAttached = null;
+                }
+                Api.Entities.Remove(self);
+                return;
+            }
+            // Re-arm the think for the next countdown tick (~once per second is enough for the bar).
+            self.NextThink = t + 0.5f;
+        };
+        e.NextThink = now + 0.5f;
     }
 
     // =====================================================================================

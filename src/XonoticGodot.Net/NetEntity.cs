@@ -124,9 +124,10 @@ public struct NetEntityState
     /// [W1-alpha-net] QC csqcmodel <c>m_alpha</c> / <c>.alpha</c> render transparency, quantized to a byte
     /// (1..254 = 1/255..254/255; <b>0 = the default "fully opaque"</b>, which is NOT networked — the
     /// <see cref="EntityField.Alpha"/> bit stays clear so an opaque entity costs nothing on the wire and a
-    /// never-seen entity (Empty baseline, all zero) reads as opaque). Set by the producer only when an entity's
-    /// alpha drops below 1 (Cloaked/Running Guns/Invisibility/death-fade). The client maps 0 → opaque, else
-    /// <c>Alpha/255</c>.
+    /// never-seen entity (Empty baseline, all zero) reads as opaque; <b>255 = the QC <c>-1</c> "do not render"
+    /// sentinel</b>, a DISTINCT hidden marker — Running Guns hides the player model while the gun stays visible).
+    /// Set by the producer only when an entity's alpha drops below 1 (Cloaked/Running Guns/Invisibility/death-fade).
+    /// The client maps 0 → opaque, 255 → hidden (-1), else <c>Alpha/255</c>.
     /// </summary>
     public int Alpha;
     public NetEntityFlags Flags;
@@ -227,7 +228,7 @@ public static class EntityStateCodec
         if ((mask & EntityField.Colormap) != 0) w.WriteByte(current.Colormap & 0xFF);
         if ((mask & EntityField.Health) != 0) w.WriteShort(current.Health);
         if ((mask & EntityField.Armor) != 0) w.WriteShort(current.Armor);
-        if ((mask & EntityField.Alpha) != 0) w.WriteByte(current.Alpha & 0xFF); // 0 = opaque (default); 1..254 = alpha/255
+        if ((mask & EntityField.Alpha) != 0) w.WriteByte(current.Alpha & 0xFF); // 0 = opaque; 1..254 = alpha/255; 255 = hidden (-1)
         if ((mask & EntityField.Flags) != 0) w.WriteUShort((ushort)current.Flags); // 16-bit since UsingJetpack=bit 8 widened it
         if ((mask & EntityField.Owner) != 0) w.WriteUShort(current.Owner);
         if ((mask & EntityField.Weapon) != 0) w.WriteShort(current.Weapon);

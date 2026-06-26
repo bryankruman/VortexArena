@@ -216,12 +216,36 @@ public sealed class BuffsMutator : MutatorBase
         return list;
     }
 
-    // void buff_NewType(entity) — pick a random available buff (QC weights rarer-seen ones higher; a flat
-    // random pick is the faithful core once seen-counts aren't networked).
+    // QC buff_seencount (a server-local fairness counter, keyed by buff RegistryId): each pick increments the
+    // chosen buff's seencount so recently-seen buffs are weighted lower next time. Not networked.
+    private static readonly Dictionary<int, int> _buffSeenCount = new();
+
+    // void buff_NewType(entity) — QC weighted random over available buffs via RandomSelection with weight
+    // max(0.2, 1/seencount), then ++seencount on the chosen buff (so the same type recurs less often).
     private static StatusEffectDef? RandomBuff()
     {
         var avail = AvailableBuffs();
-        return avail.Count == 0 ? null : avail[Prandom.RangeInt(0, avail.Count)];
+        if (avail.Count == 0) return null;
+
+        // QC RandomSelection weighted pick: total weight, then a uniform draw across the cumulative weights.
+        float total = 0f;
+        foreach (var d in avail)
+        {
+            int seen = _buffSeenCount.TryGetValue(d.RegistryId, out int c) && c > 0 ? c : 1;
+            total += MathF.Max(0.2f, 1f / seen);
+        }
+        float pick = Prandom.Float() * total;
+        StatusEffectDef chosen = avail[avail.Count - 1];
+        foreach (var d in avail)
+        {
+            int seen = _buffSeenCount.TryGetValue(d.RegistryId, out int c) && c > 0 ? c : 1;
+            pick -= MathF.Max(0.2f, 1f / seen);
+            if (pick <= 0f) { chosen = d; break; }
+        }
+
+        // QC: ++newbuff.buff_seencount — lower the chance of seeing this buff again soon.
+        _buffSeenCount[chosen.RegistryId] = (_buffSeenCount.TryGetValue(chosen.RegistryId, out int cur) ? cur : 0) + 1;
+        return chosen;
     }
 
     // void buffs_DelayedInit / buff_Init — spawn g_buffs_spawn_count buff items if none exist.
@@ -237,16 +261,17 @@ public sealed class BuffsMutator : MutatorBase
 
         for (int i = 0; i < count; i++)
         {
-            Entity e = SpawnBuff(RandomBuff());
-            // QC buffs_DelayedInit: each auto-seeded buff gets spawnflags|=64 (always randomize/relocate), so it
-            // relocates on every reset even with g_buffs_random_location=0. Then arm the per-frame lifetime think.
+            // QC buffs_DelayedInit: each auto-seeded buff gets spawnflags|=64 (always randomize/relocate) BEFORE
+            // buff_Init, a random launch velocity, then buff_Init (here ConfigureBuffEntity via SpawnBuff).
+            Entity e = Api.Entities.Spawn();
             e.BuffAlwaysRelocate = true;
-            MaybeRandomize(e);
-            float lifetime = Api.Cvars.GetFloat("g_buffs_random_lifetime");
-            e.BuffLifetime = lifetime > 0f ? Api.Clock.Time + lifetime : 0f;
-            BuffThink(e);
+            e.Velocity = Prandom.Vec() * 250f;
+            ConfigureBuffEntity(e, null); // null type -> randomize (QC buff_Init's buff_NewType)
         }
     }
+
+    // QC MDL_BUFF — the spinning relic the buff item (and the carrier glow) uses.
+    private const string MdlBuff = "models/relics/relic.md3";
 
     /// <summary>
     /// Spawn a buff pickup entity (QC buff_Init): a touchable item carrying a buff type, launched a little so
@@ -255,17 +280,84 @@ public sealed class BuffsMutator : MutatorBase
     public Entity SpawnBuff(StatusEffectDef? type)
     {
         Entity e = Api.Entities.Spawn();
+        e.Velocity = Prandom.Vec() * 250f; // QC buffs_DelayedInit (reset if random location works)
+        ConfigureBuffEntity(e, type ?? RandomBuff());
+        return e;
+    }
+
+    // QC buff_Init: turn a freshly-spawned (or replacement) edict into a live, touchable buff item — assign the
+    // model/box/movetype/effects, validate (randomize if no/unavailable type), arm the activate cooldown, and
+    // wire the per-frame think + touch. Shared by SpawnBuff (auto-seed) and SpawnMapBuff (map spawnfunc). Returns
+    // false (and frees the edict) when g_buffs is off or no buff type is available, matching buff_Init's deletes.
+    private bool ConfigureBuffEntity(Entity e, StatusEffectDef? type)
+    {
+        // QC buff_Init: if (!autocvar_g_buffs) { delete(this); return; }
+        if (Api.Cvars.GetFloat("g_buffs") == 0f) { Api.Entities.Remove(e); return false; }
+
+        StatusEffectDef? buff = type;
+        // QC: a null type (item_buff_random) or an unavailable type with g_buffs_replace_available re-rolls.
+        if (buff is null || (Api.Cvars.GetFloat("g_buffs_replace_available") != 0f && !BuffAvailable(buff)))
+            buff = RandomBuff();
+        // QC: still invalid/unavailable -> delete the item.
+        if (buff is null || !BuffAvailable(buff)) { Api.Entities.Remove(e); return false; }
+
         e.ClassName = "item_buff";
         e.Solid = Solid.Trigger;
         e.Flags |= EntFlags.Item;
         e.MoveType = MoveType.Toss;
+        e.Gravity = 1f;
         e.Effects |= EffectFlags.FullBright | EffectFlags.Stardust | EffectFlags.NoShadow;
-        e.BuffDef = type ?? RandomBuff();
-        if (e.BuffDef?.Model is { } m) Api.Entities.SetModel(e, m);
-        e.Velocity = Prandom.Vec() * 250f; // QC buffs_DelayedInit
-        e.BuffActive = true;
+        e.BuffDef = buff;
+        Api.Entities.SetModel(e, buff.Model ?? MdlBuff);
+        // QC: setsize(this, ITEM_D_MINS, ITEM_L_MAXS) = '-30 -30 0'..'30 30 70'.
+        Api.Entities.SetSize(e, ItemBoxes.DefaultMins, ItemBoxes.LargeMaxs);
+
+        // QC buff_Init: buff_SetCooldown(this, g_buffs_cooldown_activate + max(0, game_starttime - time));
+        //               this.buff_active = !this.buff_activetime;
+        float gameStart = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
+        float activate = Cvar("g_buffs_cooldown_activate", 5f) + MathF.Max(0f, gameStart - Api.Clock.Time);
+        e.BuffLifetime = 0f;
+        e.NextThink = Api.Clock.Time + activate;
+        e.BuffActive = false;
+        e.Owner = null;
         e.Touch = (self, toucher) => BuffTouch(self, toucher);
-        return e;
+        // After the activate cooldown the item turns active (QC buff_Think activate-cooldown branch), then the
+        // steady lifetime think takes over.
+        e.Think = self => ActivateBuff(self);
+        return true;
+    }
+
+    // QC buff_Think activate-cooldown elapse: the item becomes touchable, plays SND_STRENGTH_RESPAWN, then runs
+    // its steady lifetime think.
+    private void ActivateBuff(Entity item)
+    {
+        item.BuffActive = true;
+        // QC buff_Think reactivation: SND_STRENGTH_RESPAWN + Send_Effect(EFFECT_ITEM_RESPAWN, CENTER_OR_VIEWOFS).
+        SoundSystem.PlayOn(item, "STRENGTH_RESPAWN");
+        EffectEmitter.Emit("ITEM_RESPAWN", Center(item));
+        MaybeRelocate(item); // QC buff_Reset: relocate on (re)activation if random_location / spawnflag 64
+        float lifetime = Api.Cvars.GetFloat("g_buffs_random_lifetime");
+        if (item.BuffLifetime == 0f && lifetime > 0f && (item.BuffAlwaysRelocate || Api.Cvars.GetFloat("g_buffs_random_location") != 0f))
+            item.BuffLifetime = Api.Clock.Time + lifetime;
+        BuffThink(item);
+    }
+
+    /// <summary>
+    /// QC buff_Init via the item_buff_&lt;type&gt; map spawnfuncs (buffs.qh BUFF_SPAWNFUNCS) + the Q3/QL/WOP
+    /// compat classnames (BUFF_SPAWNFUNC_Q3COMPAT). Configures a map-placed edict into a live buff item carrying
+    /// the named buff (null = item_buff_random), honoring the teamplay-only team_forced. Static so the spawnfunc
+    /// table (ItemSpawnFuncs) can call it without a live mutator instance; the per-frame think/touch close over
+    /// the static helpers (no instance state). Frees the edict when g_buffs is off / no type is available.
+    /// </summary>
+    public static void SpawnMapBuff(Entity e, string? buffShortName, int teamForced)
+    {
+        if (Api.Services is null) return; // no live world to configure into (test harness without services)
+        // QC buff_Init_Compat / BUFF_SPAWNFUNC: team_forced only applies in teamplay.
+        e.TeamForced = GameScores.Teamplay ? teamForced : 0;
+        StatusEffectDef? type = buffShortName is null ? null : Buff(buffShortName);
+        // Use a transient instance only to reach the (instance) ConfigureBuffEntity/think closures — it carries no
+        // per-spawn state, so any instance configures identically.
+        new BuffsMutator().ConfigureBuffEntity(e, type);
     }
 
     // QC ITEM_TOUCH_NEEDKILL(): the buff settled in lava/slime (NODROP) or on a sky surface; a zero-length trace
@@ -309,9 +401,11 @@ public sealed class BuffsMutator : MutatorBase
             bool autoreplace = CvarBool("cl_buffs_autoreplace", true);
             if (!autoreplace || held == thebuff) return; // do nothing
 
-            // QC: notify the replaced buff is lost (to others, MSG_INFO INFO_ITEM_BUFF_LOST) + SND_BUFF_LOST.
-            NotificationSystem.Send(NotifBroadcast.AllExcept, toucher, MsgType.Info,
-                "ITEM_BUFF_LOST", toucher.NetName, held.RegistryId);
+            // QC: notify the replaced buff is lost (to others, MSG_INFO INFO_ITEM_BUFF_LOST), guarded by
+            // !IS_INDEPENDENT_PLAYER. (SND_BUFF_LOST on a replace is commented out in QC — intentionally omitted.)
+            if (!toucher.IsIndependentPlayer)
+                NotificationSystem.Send(NotifBroadcast.AllExcept, toucher, MsgType.Info,
+                    "ITEM_BUFF_LOST", toucher.NetName, held.RegistryId);
             RemoveAllBuffs(toucher);
         }
 
@@ -323,13 +417,16 @@ public sealed class BuffsMutator : MutatorBase
         float bufftime = BuffTime(thebuff);
         ApplyBuff(toucher, thebuff, bufftime);
 
+        // QC: Send_Effect(EFFECT_ITEM_PICKUP, CENTER_OR_VIEWOFS(this), '0 0 0', 1).
+        EffectEmitter.Emit("ITEM_PICKUP", Center(item));
         Api.Sound.Play(toucher, SoundChannel.Item, "misc/shield_respawn.wav");
         // QC Send_Notification(ITEM_BUFF_GOT, thebuff.m_id). The CENTER variant takes one float (the buff id)
         // and tells the picker "You got the <buff> buff!". (The buff id is the status-effect registry id.)
         NotificationSystem.Center(toucher, "ITEM_BUFF_GOT", thebuff.RegistryId);
-        // QC: INFO_ITEM_BUFF to everyone else — "<name> got the <buff> buff!".
-        NotificationSystem.Send(NotifBroadcast.AllExcept, toucher, MsgType.Info,
-            "ITEM_BUFF", toucher.NetName, thebuff.RegistryId);
+        // QC: INFO_ITEM_BUFF to everyone else — "<name> got the <buff> buff!" (guarded by !IS_INDEPENDENT_PLAYER).
+        if (!toucher.IsIndependentPlayer)
+            NotificationSystem.Send(NotifBroadcast.AllExcept, toucher, MsgType.Info,
+                "ITEM_BUFF", toucher.NetName, thebuff.RegistryId);
 
         // QC: the item goes on cooldown then respawns (re-randomizing its type). Keep the entity alive.
         ScheduleRespawn(item);
@@ -359,8 +456,11 @@ public sealed class BuffsMutator : MutatorBase
             // Cooldown elapsed: re-arm the buff (QC buff_Think + buff_Reset gating).
             MaybeRandomize(self);
             MaybeRelocate(self);
-            if (self.BuffDef?.Model is { } m) Api.Entities.SetModel(self, m);
+            Api.Entities.SetModel(self, self.BuffDef?.Model ?? MdlBuff);
             self.BuffActive = true;
+            // QC buff_Think activate-cooldown elapse: SND_STRENGTH_RESPAWN + EFFECT_ITEM_RESPAWN on reactivation.
+            SoundSystem.PlayOn(self, "STRENGTH_RESPAWN");
+            EffectEmitter.Emit("ITEM_RESPAWN", Center(self));
             BuffThink(self);
         };
     }
@@ -401,12 +501,13 @@ public sealed class BuffsMutator : MutatorBase
     }
 
     // QC buff_Respawn: relocate an untouched/expired buff to a fresh random map spot (with the SelectSpawnPoint
-    // fallback), launch it upward, unstick it, arm the lifetime timer, and play the relocation sound. The
-    // EFFECT_ELECTRO_COMBO x2 visual and WaypointSprite_Ping are omitted (no effect-spawn / buff-waypoint
-    // service yet — same omissions documented for the swapper swap and the buffs.waypoint feature).
+    // fallback), launch it upward, unstick it, arm the lifetime timer, fire the two electro-combo bursts (old +
+    // new origin), and play the relocation sound. The WaypointSprite_Ping is omitted (no buff-waypoint service).
     private void BuffRespawn(Entity item)
     {
         if (Api.Services is null || VehicleCommon.GameStopped) return;
+
+        Vector3 oldOrigin = item.Origin; // QC: vector oldbufforigin = this.origin
 
         // QC: velocity = '0 0 200'; MoveToRandomMapLocation, else SelectSpawnPoint fallback (randomvec*100 + up).
         // RandomMapLocation already folds in the SelectSpawnPoint fallback (it samples a player spawnpoint, or
@@ -426,9 +527,17 @@ public sealed class BuffsMutator : MutatorBase
         float lifetime = Api.Cvars.GetFloat("g_buffs_random_lifetime");
         item.BuffLifetime = lifetime > 0f ? Api.Clock.Time + lifetime : 0f;
 
+        // QC: Send_Effect(EFFECT_ELECTRO_COMBO, oldbufforigin + center, ...) + Send_Effect(... CENTER_OR_VIEWOFS(this)).
+        Vector3 half = (item.Mins + item.Maxs) * 0.5f;
+        EffectEmitter.Emit("ELECTRO_COMBO", oldOrigin + half);
+        EffectEmitter.Emit("ELECTRO_COMBO", Center(item));
+
         // QC: sound(this, CH_TRIGGER, SND_KA_RESPAWN, VOL_BASE, ATTEN_NONE).
         SoundSystem.PlayOn(item, "KA_RESPAWN");
     }
+
+    // QC CENTER_OR_VIEWOFS(e): the entity-centre point used for effect emission (origin + (mins+maxs)*0.5).
+    private static Vector3 Center(Entity e) => e.Origin + (e.Mins + e.Maxs) * 0.5f;
 
     // =====================================================================================
     //  Apply / remove (the buff-specific m_apply/m_remove side effects)
@@ -736,9 +845,11 @@ public sealed class BuffsMutator : MutatorBase
         closest.Angles = myAng;
         closest.OldOrigin = myOrg;
 
-        // QC: SND_KA_RESPAWN at both ends (+ EFFECT_ELECTRO_COMBO x2 — no effect-spawn service yet; see todos).
+        // QC: SND_KA_RESPAWN + EFFECT_ELECTRO_COMBO at both endpoints.
         SoundSystem.PlayOn(player, "KA_RESPAWN");
         SoundSystem.PlayOn(closest, "KA_RESPAWN");
+        EffectEmitter.Emit("ELECTRO_COMBO", Center(player));
+        EffectEmitter.Emit("ELECTRO_COMBO", Center(closest));
 
         // QC: buff_RemoveAll(player) — the swap consumes the buff.
         RemoveAllBuffs(player);
@@ -762,8 +873,10 @@ public sealed class BuffsMutator : MutatorBase
         if (held is null) return false;
 
         NotificationSystem.Center(player, "ITEM_BUFF_DROP", held.RegistryId);
-        NotificationSystem.Send(NotifBroadcast.AllExcept, player, MsgType.Info,
-            "ITEM_BUFF_LOST", player.NetName, held.RegistryId);
+        // QC: INFO_ITEM_BUFF_LOST to others, guarded by !IS_INDEPENDENT_PLAYER.
+        if (!player.IsIndependentPlayer)
+            NotificationSystem.Send(NotifBroadcast.AllExcept, player, MsgType.Info,
+                "ITEM_BUFF_LOST", player.NetName, held.RegistryId);
 
         RemoveAllBuffs(player); // sets buff_shield = time + g_buffs_pickup_delay
         player.BuffShield = Api.Clock.Time + MathF.Max(0f, _pickupDelay);

@@ -35,6 +35,13 @@ namespace XonoticGodot.Common.Framework
         public float InstagibNextThink;
         /// <summary>QC .instagib_needammo — countdown/"find ammo" warning is active.</summary>
         public bool InstagibNeedAmmo;
+        /// <summary>
+        /// QC global <c>yoda = 1</c> set by the instagib Damage_Calculate branch (sv_instagib.qc:245-247): the
+        /// target had alpha in (0,1) (partially transparent — cloaked/invisible) at the moment of the Vaporizer
+        /// hit. The Vaporizer's Announce() reads this instead of IsFlying when the flag is set, matching QC's
+        /// <c>if (yoda &amp;&amp; flying)</c> gate (vaporizer.qc:159). Cleared per-attack in Vaporizer.Announce.
+        /// </summary>
+        public bool InstagibAlphaYoda;
 
         // --- bloodloss (bloodloss.qc) ---
         /// <summary>QC .bloodloss_timer — next time a bloodloss health-rot tick is allowed.</summary>

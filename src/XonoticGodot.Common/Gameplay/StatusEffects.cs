@@ -150,6 +150,7 @@ public static class StatusEffectsCatalog
             RemovalSound = "BURNING_REMOVE",
             PersistentCheck = BurningPersistent,
             OnTick = BurningTick,
+            OnRemove = BurningRemove,
         });
         // STATUSEFFECT_SpawnShield (spawnshield.qh): hidden, 10s cap — post-spawn damage protection.
         // m_tick sets EF_ADDITIVE|EF_FULLBRIGHT shimmer once time >= game_starttime (spawnshield.qc:11-13);
@@ -220,16 +221,25 @@ public static class StatusEffectsCatalog
            && e.WaterLevel != 0 && e.WaterType == ContentLava;
 
     /// <summary>QC Burning <c>m_tick</c> (burning.qc:13-23): self-extinguish in non-lava water or while
-    /// frozen, otherwise apply the per-tick fire damage (<see cref="FireApplyDamage"/>). Returns true to
-    /// request the NORMAL self-removal. EF_FLAME is presentation (client emits the flame burst per frame).</summary>
+    /// frozen, otherwise apply the per-tick fire damage (<see cref="FireApplyDamage"/>) and OR the networked
+    /// EF_FLAME bit (burning.qc:21) so the client renders the flame via the .effects flag (like
+    /// spawnshield/stunned), not a per-frame client particle. Returns true to request the NORMAL self-removal
+    /// (the OnRemove handler clears EF_FLAME).</summary>
     private static bool BurningTick(Entity e, ActiveStatusEffect s)
     {
         if (IsStatusFrozen(e) || (e.WaterLevel != 0 && e.WaterType != ContentLava))
-            return true;   // m_remove(NORMAL)
+            return true;   // m_remove(NORMAL) — BurningRemove clears EF_FLAME
         FireApplyDamage(e, s);
+        e.Effects |= EfFlame;   // QC actor.effects |= EF_FLAME (burning.qc:21)
         return false;
     }
 
+    /// <summary>QC Burning <c>m_remove</c> (burning.qc:4-8): clear EF_FLAME before the SUPER removal.</summary>
+    private static void BurningRemove(Entity e, ActiveStatusEffect s) => e.Effects &= ~EfFlame;
+
+    /// <summary>QC EF_FLAME (dpextensions.qc:125) — the burning flame the client turns into the orange light +
+    /// EF_FLAME particle burst (CsqcModelEffects EF_FLAME). burning.qc:21 ORs it in m_tick, :6 clears in m_remove.</summary>
+    private const int EfFlame = 1024;
     /// <summary>QC EF_SHOCK (constants.qh:103 BIT(18)) — the stunned arc/shock aura the client turns into a
     /// blue-white light + particle burst (CsqcModelEffects EF_SHOCK).</summary>
     private const int EfShock = 262144;

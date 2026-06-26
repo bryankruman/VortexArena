@@ -123,6 +123,15 @@ public sealed class TouchExplodeMutator : MutatorBase
         Api.Entities.Remove(e);
     }
 
+    // NOTE: Base touchexplode registers NO BuildMutatorsString / BuildMutatorsPrettyString hook
+    // (verified: it is absent from the list of mutators that do — vampire, cloaked, hook, etc.). It is
+    // advertised ONLY via the global active_mutators() X-table (common/util.qc:315,
+    // X("Touch explode", _("Touch explode"), MUT_TOUCHEXPLODE, cvar("g_touchexplode") > 0)), a separate
+    // bitfield-string builder that the port has not ported yet. So we deliberately do NOT override the
+    // BuildMutatorsString chain here — doing so would inject touchexplode into the per-mutator server-info
+    // token chain where Base never places it. The active_mutators() X-table is a systemic, shared-subsystem
+    // gap (no active_mutators() builder exists in the port) tracked by the registry, not this mutator.
+
     /// <summary>QC boxesoverlap(p1.absmin, p1.absmax, p2.absmin, p2.absmax).</summary>
     private static bool BoxesOverlap(Entity a, Entity b)
         => a.AbsMin.X <= b.AbsMax.X && a.AbsMax.X >= b.AbsMin.X

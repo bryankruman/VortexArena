@@ -675,6 +675,13 @@ public static class ItemPickupRules
         // respawns (and a powerup's first scheduled appearance) reach Respawn; a normal item's initial spawn
         // shows via Show(item, 1) directly in StartItem, so this never double-fires on map load.
         EmitItemEffect("ITEM_RESPAWN", item);
+        // Drop any respawn-countdown waypoint sprite (QC kills it in Item_RespawnCountdown before Respawn; this
+        // also covers the rare paths that reach Respawn without finishing the countdown tick).
+        if (item.WaypointAttached is Waypoints.WaypointSprite wp)
+        {
+            Waypoints.WaypointSprites.Kill(wp);
+            item.WaypointAttached = null;
+        }
         item.ScheduledRespawnTime = 0f;
         // a short spawn-shield so it can't be insta-grabbed the same frame it appears.
         item.ItemSpawnShieldExpire = Now;
@@ -689,17 +696,38 @@ public static class ItemPickupRules
         if (Now >= item.ItemWait) Respawn(item);
     }
 
-    // QC Item_RespawnCountdown: tick the countdown, then respawn when the scheduled time arrives. (The
-    // per-second waypoint ping + ITEMRESPAWNCOUNTDOWN sound are client/networking-side.)
+    // QC Item_RespawnCountdown: tick the countdown, then respawn when the scheduled time arrives. On the first
+    // tick a respawn-countdown waypoint sprite is attached (killed on respawn); the per-second ITEMRESPAWNCOUNTDOWN
+    // sound is client/networking-side.
     private static void RespawnCountdown(Entity item)
     {
         if (item.ItemRespawnCounter >= (int)RespawnTicks)
         {
+            // QC: WaypointSprite_Kill(this.waypointsprite_attached) before Item_Respawn.
+            if (item.WaypointAttached is Waypoints.WaypointSprite kw)
+                Waypoints.WaypointSprites.Kill(kw);
+            item.WaypointAttached = null;
             Respawn(item);
             return;
         }
         item.NextThink = Now + 1f;
         item.ItemRespawnCounter++;
+        // QC Item_RespawnCountdown (items.qc:269-296): on the first countdown tick spawn the WP_Item respawn
+        // waypoint sprite attached to the item, and for the SpectatorOnly items (Mega/Big Health+Armor) set
+        // SPRITERULE_SPECTATOR so only spectators (and everyone in warmup / when sv_itemstime==2) see the
+        // respawn countdown marker — the server per-peer gate (ServerNet.WaypointVisible) reproduces QC's
+        // g_waypointsprite_itemstime mode 1/2 logic via sv_itemstime. WaypointSprite_UpdateBuildFinished drives
+        // the build-progress bar to full at the scheduled respawn time. Scoped to the itemstime spectator set
+        // (the generic non-timed item respawn waypoint is the items-pickups unit's concern, not ported here).
+        if (item.ItemRespawnCounter == 1 && ItemstimeMutator.IsSpectatorOnlyItem(item.ClassName))
+        {
+            Waypoints.WaypointSprite wp = Waypoints.WaypointSprites.Spawn(
+                "Item", 0f, 0f, item, System.Numerics.Vector3.Zero, item.Origin,
+                0, new System.Numerics.Vector3(1f, 0f, 1f), radarIcon: 1,
+                rule: Waypoints.SpriteRule.Spectator, hideable: true);
+            Waypoints.WaypointSprites.UpdateBuildFinished(wp, item.ScheduledRespawnTime);
+            item.WaypointAttached = wp;
+        }
     }
 
     // The give+respawn tail of Item_Touch for the legacy GiveTo entry: schedule the respawn for the taken item.

@@ -49,7 +49,6 @@ namespace XonoticGodot.Common.Gameplay;
 ///   - A robust IS_LOCAL (listen-host) discriminator: <see cref="IsLocalProvider"/> is left unset by the host, so
 ///     the options file is crypto_idfp-keyed for everyone (a dedicated-server behaviour). An authenticated client
 ///     persists; an unauthenticated remote client (and a listen host's local-file fast path) does not.
-///   - BuildMutatorsString / BuildMutatorsPrettyString hooks for the ":SS" / ", Super Spectators" tags.
 /// </summary>
 [Mutator]
 public sealed class SuperSpecMutator : MutatorBase

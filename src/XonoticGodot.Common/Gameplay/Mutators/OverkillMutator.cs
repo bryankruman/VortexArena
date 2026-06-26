@@ -21,8 +21,9 @@ namespace XonoticGodot.Common.Gameplay;
 /// superweapon pickups.
 ///
 /// NOT yet ported (need seams this file can't reach): the PlayerPreThink countdown-blaster (no per-player
-/// button/round-handler/secondary-fire reach from a mutator), MonsterDropItem loot, the RandomItems OK-item
-/// injection, the item-respawn waypoints, and the mod-name strings — see the TODOs / registry shard.
+/// button/round-handler/secondary-fire reach from a mutator), MonsterDropItem loot (MonsterDropItem hook chain
+/// absent in port), the item-respawn waypoints (Item_RespawnCountdown/Item_ScheduleRespawn hook chains absent),
+/// ok_player model precache (no precache seam), and the client cl_overkill cvar_settemp sync — see the registry.
 /// </summary>
 [Mutator]
 public sealed class OverkillMutator : MutatorBase
@@ -311,6 +312,7 @@ public sealed class OverkillMutator : MutatorBase
         // FULL item pipeline (Item_Initialise) so the loot has a model and a working Touch handler — i.e. it is
         // actually collectible. The port routes through StartItem.SpawnLoot, the same loot path thrown weapons use.
         Entity e = Api.Entities.Spawn();
+        e.OkItem = true; // QC e.ok_item = true — loot is an Overkill item, passes the recursive FilterItem.
         Vector3 org = victim.Origin + new Vector3(0f, 0f, 32f);
         Api.Entities.SetOrigin(e, org);
         e.Origin = org;
@@ -360,31 +362,39 @@ public sealed class OverkillMutator : MutatorBase
             case "item_armor_mega": return FilterArmorMega;
         }
 
-        // QC: replace item_strength -> WEP_OVERKILL_HMG, item_shield -> WEP_OVERKILL_RPC (when powerups + replace
-        // are both enabled); otherwise the powerup is simply removed. Anything else is left to other handlers.
-        bool isStrength = item.ClassName == "item_strength";
-        bool isShield = item.ClassName == "item_shield";
-        if (!isStrength && !isShield)
-            return false;
-
+        // QC (sv_overkill.qc:234): the powerups-off / replace-off gate returns true (forbid) for EVERY remaining
+        // item, not just powerups — under Overkill all non-ok map items are deleted. Placed before the strength/
+        // shield replacement so no replacement is spawned when powerups are off.
         bool powerups = Api.Services is null || Api.Cvars.GetFloat("g_powerups") != 0f;
         if (!powerups || !PowerupsReplace)
-            return true; // QC: powerups off / replace off — just drop the powerup.
+            return true; // QC: powerups off / replace off — drop the item.
+
+        // QC: replace item_strength -> WEP_OVERKILL_HMG, item_shield -> WEP_OVERKILL_RPC.
+        bool isStrength = item.ClassName == "item_strength";
+        bool isShield = item.ClassName == "item_shield";
 
         // QC: spawn(); Item_CopyFields(item, wep); wep.ok_item = true; wep.respawntime = superweapon respawn;
         // wep.pickup_anyway = true; wep.itemdef = WEP; wep.lifetime = -1; Item_Initialise(wep). The port spawns
         // the weapon pickup at the SAME origin via the normal StartItem path, then blocks the original below.
-        Weapon? wpn = Weapons.ByName(isStrength ? "okhmg" : "okrpc");
-        if (wpn is not null && Api.Services is not null)
+        if (isStrength || isShield)
         {
-            Entity wep = Api.Entities.Spawn();
-            Api.Entities.SetOrigin(wep, item.Origin);
-            wep.Origin = item.Origin;
-            wep.PickupAnyway = 1;                    // QC wep.pickup_anyway = true
-            wep.ItemRespawnTime = Api.Cvars.GetFloat("g_pickup_respawntime_superweapon");
-            StartItem.Spawn(wep, ItemSpawnFuncs.PickupFor(wpn));
+            Weapon? wpn = Weapons.ByName(isStrength ? "okhmg" : "okrpc");
+            if (wpn is not null && Api.Services is not null)
+            {
+                Entity wep = Api.Entities.Spawn();
+                Api.Entities.SetOrigin(wep, item.Origin);
+                wep.Origin = item.Origin;
+                wep.OkItem = true;                       // QC wep.ok_item = true — pass the recursive FilterItem
+                wep.PickupAnyway = 1;                    // QC wep.pickup_anyway = true
+                wep.ItemRespawnTime = Api.Cvars.GetFloat("g_pickup_respawntime_superweapon");
+                StartItem.Spawn(wep, ItemSpawnFuncs.PickupFor(wpn));
+            }
         }
-        return true; // forbid the original powerup item.
+
+        // QC sv_overkill.qc:262 — the FilterItem default: anything not an ok_item and not one of the matched
+        // health/armor cases is forbidden (deleted). Under Overkill, normal map items don't survive; the OK
+        // loadout/loot/random-items pipeline is the only item source. (Was incorrectly `return false`/allow.)
+        return true;
     }
 
     private bool OnForbidThrow(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args) => true;
@@ -403,6 +413,11 @@ public sealed class OverkillMutator : MutatorBase
     // MUTATOR_HOOKFUNCTION(ok, BuildMutatorsPrettyString) — sv_overkill.qc:288-291: append ", Overkill" to the
     // human-readable scoreboard/server-browser mutator list.
     public override string BuildMutatorsPrettyString(string s) => s + ", Overkill";
+
+    // MUTATOR_HOOKFUNCTION(ok, SetModname) — sv_overkill.qc:293-296: set the server modname to "Overkill" so
+    // the server browser, connect banner, and any mod-detection consumers reflect the Overkill mode.
+    // Returns overridden=true so the chain stops here (QC: return true from CBC_ORDER_ANY hook).
+    public override (string name, bool overridden) SetModname(string name) => ("Overkill", true);
 
     // MUTATOR_HOOKFUNCTION(ok, SetStartItems, CBC_ORDER_LAST)
     private bool OnSetStartItems(ref MutatorHooks.SetStartItemsArgs args)

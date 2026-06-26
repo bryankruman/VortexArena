@@ -71,8 +71,15 @@ public static class NetProtocol
     /// v9: added the waypoint-sprite channel (<see cref="NetControl.Waypoints"/>) — per-peer team/rule-filtered
     /// waypoint sprites (CTF flags + player pings + objective markers) driving the 3D in-world sprite layer + the
     /// radar icons (the C# port of QC's ENT_CLIENT_WAYPOINT entities).
+    ///
+    /// v10: added the items-time channel (<see cref="NetControl.ItemsTime"/>) — the C# port of QC's CSQC
+    /// <c>itemstime</c> net-temp message (itemstime.qc IT_Write/NET_HANDLE). A per-peer push of the item
+    /// respawn-time table (with the negative "available now" encoding) plus the live <c>STAT(ITEMSTIME)</c>
+    /// tier, gated by QC's <c>Item_ItemsTime_SetTimesForAllPlayers</c> send rule
+    /// (<c>warmup_stage || !IS_PLAYER || sv_itemstime==2</c>) so the ItemsTimePanel works for a pure remote
+    /// client (not just the listen host). Unknown to old clients (dispatch falls through harmlessly).
     /// </summary>
-    public const uint ProtocolVersion = 9;
+    public const uint ProtocolVersion = 10;
 
     /// <summary>Ordered, reliable ENet channel — handshake, spawns/removes, notifications, scores.</summary>
     public const int ReliableChannel = 0;
@@ -191,4 +198,14 @@ public enum NetControl : byte
     /// tick on the unreliable channel (positions move with carriers). Each entry = id + origin + team + sprite
     /// name + radar icon + color + health + fade + helpme + maxdist + hideable. Unknown to old clients.</summary>
     Waypoints = 19,
+
+    // ---- items-time (the C# port of QC's CSQC itemstime net-temp message) ----
+    /// <summary>Server → client (reliable): the item respawn-time table (QC <c>itemstime</c> IT_Write /
+    /// NET_HANDLE) — for each tracked timed item (Mega/Big Health+Armor, Strength/Shield, the Superweapons
+    /// aggregate) its absolute scheduled respawn time, with the negative "another copy available now" encoding;
+    /// plus the live <c>STAT(ITEMSTIME)</c> tier (0/1/2). Sent per-peer, gated by QC's
+    /// <c>Item_ItemsTime_SetTimesForAllPlayers</c> rule (only spectators in a live round, everyone in warmup /
+    /// when <c>sv_itemstime==2</c>), so the ItemsTimePanel respawn countdowns work for a pure remote client.
+    /// Decoded into <see cref="ClientNet"/>'s item-time fields; unknown to old clients.</summary>
+    ItemsTime = 20,
 }

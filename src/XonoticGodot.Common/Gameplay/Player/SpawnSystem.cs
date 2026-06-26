@@ -781,6 +781,17 @@ public static class SpawnSystem
             }
         }
 
+        // QC client.qc:674: StatusEffects_apply(STATUSEFFECT_SpawnShield, this, shieldtime, 0). Base's player
+        // spawn shield IS the SpawnShield status effect — which is what produces the EF_ADDITIVE|EF_FULLBRIGHT
+        // shimmer (SpawnShieldTick, once time >= game_starttime) and is read by SpawnEffects-aware mutators
+        // (nades nade_refire, spawn-near-teammate). The port keeps the authoritative damage-block on
+        // Entity.SpawnShieldExpire (woven through DamageSystem/WeaponFireGate/Mayhem/Vampire), but ALSO mirrors
+        // it into the status effect here so the player shimmer + the StatusEffects_active(SpawnShield) readers
+        // are faithful — not monster-only. OnPlayerPostThink removes the effect the instant the shield lapses
+        // or is consumed (fire / first damage zero SpawnShieldExpire). Only meaningful while the shield is live.
+        if (StatusEffectsCatalog.SpawnShield is { } shieldDef && p.SpawnShieldExpire > now)
+            StatusEffectsCatalog.Apply(p, shieldDef, p.SpawnShieldExpire - now);
+
         // --- player model (QC PutPlayerInServer: this.model = ""; FixPlayermodel(this) → setplayermodel;
         //     server/client.qc:720-721 / :241-248) ---
         // sv_defaultplayermodel is the universal default ("models/player/erebus.iqm"). With sv_defaultcharacter 0

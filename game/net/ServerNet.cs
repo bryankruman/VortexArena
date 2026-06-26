@@ -185,6 +185,12 @@ public sealed class ServerNet : IDisposable
         public InputCommand Last;       // last applied input (repeated if the queue starves — held keys)
         public bool HasLast;
 
+        /// <summary>The last <see cref="NetControl.ItemsTime"/> payload key sent to this peer (tier + send-gate +
+        /// the encoded table) — so the reliable message is resent only when THIS peer's view changes (the table,
+        /// the tier, or its own send-gate flipping when it joins/observes — QC's ClientConnect /
+        /// MakePlayerObserver / PlayerSpawn full-sync vs reset). "" = never sent. </summary>
+        public string ItemsTimeKey = "";
+
         // Legacy gentle-drain state (fix for the 3–7-deep "dead zone" the hard Trim leaves untouched). A client
         // HITCH can leave the queue sitting a few commands deep FOREVER — producer + consumer both pace at 72 Hz,
         // so 1-in-1-out preserves whatever depth a burst settled at, below the hard-trim trigger = permanent input
@@ -480,6 +486,7 @@ public sealed class ServerNet : IDisposable
             SendMinigameState(); // [T38] push per-peer minigame session snapshots (reliable channel)
             SendMatchState();    // global match clock (GAMESTARTTIME/TIMELIMIT/warmup) → TIMER panel
             SendWaypoints(); // per-peer waypoint sprites (CTF flags + player pings…) → 3D markers + radar icons
+            SendItemsTime(); // per-peer item respawn-time table (QC itemstime IT_Write) → ItemsTimePanel countdowns
             FlushEventBundles();
         }
 
@@ -592,21 +599,35 @@ public sealed class ServerNet : IDisposable
     }
 
     /// <summary>The DP infostring a browser sees: hostname, map, gametype, player counts, protocol parity.</summary>
-    private Dictionary<string, string> BuildServerInfo(int port) => new()
+    private Dictionary<string, string> BuildServerInfo(int port)
     {
-        ["hostname"] = _serverName,
-        ["mapname"] = _world.Services.Cvars.GetString("mapname"),
-        ["gametype"] = _world.GameType?.RegistryName ?? "dm",
-        ["clients"] = _byPlayer.Count.ToString(),
-        // g_maxplayers 0/unset means "no gameplay cap" — report the transport's connection cap so the
-        // browser's players column shows real slots instead of "/0".
-        ["sv_maxclients"] = _world.Services.Cvars.GetFloat("g_maxplayers") > 0
-            ? _world.Services.Cvars.GetString("g_maxplayers")
-            : _maxClients.ToString(),
-        ["protocol"] = NetProtocol.BuildParity().ToString(),
-        ["port"] = port.ToString(),
-        ["gamename"] = "Xonotic",
-    };
+        // QC server/client.qc:1107 MUTATOR_CALLHOOK(BuildMutatorsPrettyString, ""): accumulate each active
+        // mutator's ", Token" pretty label, then strip the leading ", " (QC substring(s, 2, strlen(s)-2)).
+        // Appended as the "modifications" key so the server browser / welcome screen can surface it.
+        string prettyMutators = MutatorActivation.BuildMutatorsPrettyString("");
+        if (prettyMutators.StartsWith(", ", StringComparison.Ordinal))
+            prettyMutators = prettyMutators.Substring(2);
+
+        var info = new Dictionary<string, string>
+        {
+            ["hostname"] = _serverName,
+            ["mapname"] = _world.Services.Cvars.GetString("mapname"),
+            ["gametype"] = _world.GameType?.RegistryName ?? "dm",
+            ["clients"] = _byPlayer.Count.ToString(),
+            // g_maxplayers 0/unset means "no gameplay cap" — report the transport's connection cap so the
+            // browser's players column shows real slots instead of "/0".
+            ["sv_maxclients"] = _world.Services.Cvars.GetFloat("g_maxplayers") > 0
+                ? _world.Services.Cvars.GetString("g_maxplayers")
+                : _maxClients.ToString(),
+            ["protocol"] = NetProtocol.BuildParity().ToString(),
+            ["port"] = port.ToString(),
+            ["gamename"] = "Xonotic",
+        };
+        // QC WriteString(msg_type, modifications) — only include the field when there are active mutators.
+        if (prettyMutators.Length > 0)
+            info["modifications"] = prettyMutators;
+        return info;
+    }
 
     private static bool TryResolve(string hostPort, out IPEndPoint? ep)
     {
@@ -886,6 +907,7 @@ public sealed class ServerNet : IDisposable
 
     private float _nextMatchStateSend;
     private string _lastMatchStateKey = "";
+    private readonly System.Text.StringBuilder _itemsTimeSb = new(); // reused fold buffer for SendItemsTime dedup
 
     /// <summary>Broadcast the GLOBAL match-clock state (QC STAT(GAMESTARTTIME)/TIMELIMIT/WARMUP) to every
     /// accepted peer so the TIMER panel can count up/down on the play path. Sent immediately when a value
@@ -919,6 +941,63 @@ public sealed class ServerNet : IDisposable
         foreach (PeerState st in _peers.Values)   // real network peers (matches BroadcastSnapshots; excludes bots)
             if (st.Accepted && st.Player is not null)
                 _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
+    }
+
+    /// <summary>Push the item respawn-time table to each peer — the C# port of QC's CSQC <c>itemstime</c> net
+    /// message + <c>Item_ItemsTime_SetTimesForPlayer</c> / <c>SetTimesForAllPlayers</c> (itemstime.qc). The table
+    /// is the <see cref="XonoticGodot.Common.Gameplay.ItemstimeMutator"/>'s <c>CurrentTimes</c> (absolute respawn
+    /// times with the negative "another copy available now" encoding) plus the live <c>STAT(ITEMSTIME)</c> tier
+    /// (= <c>sv_itemstime</c>). QC's <c>SetTimesForAllPlayers</c> only sends to a peer when
+    /// <c>warmup_stage || !IS_PLAYER(it) || sv_itemstime == 2</c> — i.e. only spectators get times in a live
+    /// non-warmup round unless <c>sv_itemstime==2</c>; a live player whose send-gate is closed gets the RESET
+    /// table (Item_ItemsTime_ResetTimesForPlayer: -1 for absent item types, else 0) so its panel hides the
+    /// countdowns. Reliable + small; resent to a peer only when ITS view changes (the table, the tier, or its
+    /// own send-gate flipping on join/observe/spawn — covers QC's ClientConnect / MakePlayerObserver / PlayerSpawn
+    /// hooks). The client decode mirrors this field order (<see cref="ClientNet.HandleItemsTime"/>).</summary>
+    private void SendItemsTime()
+    {
+        if (XonoticGodot.Common.Gameplay.Mutators.ByName("itemstime")
+            is not XonoticGodot.Common.Gameplay.ItemstimeMutator itm || !itm.IsEnabled)
+            return;
+
+        int tier = itm.Tier; // QC STAT(ITEMSTIME) = autocvar_sv_itemstime (0/1/2)
+        bool warmup = _world.Warmup.WarmupStage;
+        System.Collections.Generic.IReadOnlyDictionary<string, float> times = itm.CurrentTimes;
+
+        // Fold the (peer-independent) table once; the per-peer dedup key is just tier|sendFull prepended.
+        _itemsTimeSb.Clear();
+        foreach (System.Collections.Generic.KeyValuePair<string, float> kv in times)
+            _itemsTimeSb.Append(kv.Key).Append('=').Append(kv.Value.ToString("F2")).Append(';');
+        string tableFold = _itemsTimeSb.ToString();
+
+        foreach (PeerState st in _peers.Values)
+        {
+            if (!st.Accepted || st.Player is null)
+                continue;
+            // QC IS_PLAYER(it): a live in-game client gets the table only in warmup or sv_itemstime==2; a
+            // spectator/observer always gets it (Item_ItemsTime_SetTimesForAllPlayers send gate).
+            bool sendFull = warmup || st.Player.IsObserver || tier == 2;
+
+            // Per-peer dedup: resend the reliable message only when this peer's resolved view changed (the table,
+            // the tier, or its own send-gate flipping on join/observe/spawn).
+            string key = $"{tier}|{(sendFull ? 1 : 0)}|{tableFold}";
+            if (key == st.ItemsTimeKey)
+                continue;
+            st.ItemsTimeKey = key;
+
+            _scratchWriter.Reset();
+            _scratchWriter.WriteByte((byte)NetControl.ItemsTime);
+            _scratchWriter.WriteByte((byte)tier);
+            _scratchWriter.WriteByte((byte)System.Math.Min(times.Count, 255));
+            foreach (System.Collections.Generic.KeyValuePair<string, float> kv in times)
+            {
+                _scratchWriter.WriteString(kv.Key);
+                // QC SetTimesForPlayer sends the real time; a gated-out live player gets the reset value. The
+                // port's table only ever holds present items, so the reset value is the panel's "hide" sentinel -1.
+                _scratchWriter.WriteFloat(sendFull ? kv.Value : -1f);
+            }
+            _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
+        }
     }
 
     private readonly System.Collections.Generic.List<XonoticGodot.Common.Gameplay.Waypoints.WaypointSprite> _wpScratch = new();
@@ -997,6 +1076,19 @@ public sealed class ServerNet : IDisposable
 
         // QC IS_PLAYER(view): an in-game client (not an observer/spectator).
         bool isPlayer = !peer.IsObserver;
+
+        // MUTATOR_HOOKFUNCTION(powerups, CustomizeWaypoint) (sv_powerups.qc:61): a flag/objective carrier holding
+        // the Invisibility powerup is hidden from ENEMY radar — their waypoint sprite is restricted to their own
+        // team. QC: IS_CLIENT(wp.owner) && (viewentity == viewer) && DIFF_TEAM(wp.owner, viewer)
+        //          && StatusEffects_active(STATUSEFFECT_Invisibility, wp.owner). Only applies to real players
+        // (a spectator is not "the view-entity", so they still see it — matches the QC e==player guard).
+        if (wp.Owner is XonoticGodot.Common.Gameplay.Player carrier && isPlayer
+            && (int)carrier.Team != (int)peer.Team
+            && XonoticGodot.Common.Gameplay.StatusEffectsCatalog.ByName("invisibility") is { } invisDef
+            && XonoticGodot.Common.Gameplay.StatusEffectsCatalog.Has(carrier, invisDef))
+        {
+            return false;
+        }
 
         switch (wp.Rule)
         {
@@ -2122,15 +2214,18 @@ public sealed class ServerNet : IDisposable
 
     /// <summary>
     /// [W1-alpha-net] Quantize an entity's render alpha (QC csqcmodel m_alpha) to the wire byte: a fully-opaque
-    /// entity (alpha &gt;= 1, or the QC -1 "use default" sentinel) sends 0 so the <see cref="EntityField.Alpha"/>
-    /// bit stays clear and costs nothing; a transparent entity sends 1..254 (clamped so a real fade never
-    /// rounds to the 0 = opaque sentinel and a near-opaque value doesn't disappear). The client maps 0 → opaque,
-    /// else <c>byte/255</c>.
+    /// entity (alpha &gt;= 1) sends 0 so the <see cref="EntityField.Alpha"/> bit stays clear and costs nothing;
+    /// a transparent entity sends 1..254 (clamped so a real fade never rounds to the 0 = opaque sentinel and a
+    /// near-opaque value doesn't disappear); the QC <c>-1</c> "do not render" sentinel (Running Guns hides the
+    /// player model; gibbing) sends 255 as a DISTINCT hidden marker — it is NOT opaque. The client maps 0 →
+    /// opaque, 255 → hidden (-1), else <c>byte/255</c>.
     /// </summary>
     private static int QuantizeAlpha(float alpha)
     {
-        if (alpha < 0f || alpha >= 1f)
-            return 0; // opaque / "use default" — not networked
+        if (alpha < 0f)
+            return 255; // QC -1 "don't render" sentinel — hidden, distinct from opaque (Running Guns player)
+        if (alpha >= 1f)
+            return 0;   // opaque — not networked
         return System.Math.Clamp((int)MathF.Round(alpha * 255f), 1, 254);
     }
 

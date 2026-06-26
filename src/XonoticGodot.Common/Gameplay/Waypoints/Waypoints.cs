@@ -497,6 +497,15 @@ public static class WaypointSprites
         {
             WaypointSprite wp = _active[i];
 
+            // A waypoint following an entity that was freed (its owner item/carrier removed by a path that didn't
+            // explicitly kill the sprite — e.g. a dropped powerup landing in a NODROP brush) is dropped here so it
+            // can't linger with a stale position. Fixed-origin waypoints (Owner == null) are unaffected.
+            if (wp.Owner is { IsFreed: true })
+            {
+                _active.RemoveAt(i);
+                continue;
+            }
+
             // build-progress health (QC build_started..build_finished → 0..1, then -1 to hide the bar).
             if (wp.BuildFinished > 0f)
             {

@@ -286,6 +286,14 @@ public abstract partial class MutatorBase : IRegistered
     /// Used for the map-info "modifications" line shown to joining clients. Default: no contribution.
     /// </summary>
     public virtual string BuildMutatorsPrettyString(string s) => s;
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(&lt;mut&gt;, SetModname)</c> (server/world.qc:1090): override the server's
+    /// <c>modname</c> serverinfo key. A mutator that constitutes a full "mod experience" (instagib, overkill, NIX)
+    /// returns true and overwrites the modname string. Default: no override (pass through unchanged).
+    /// The first mutator to return true wins (matches QC CBC_ORDER_ANY early-exit on return true).
+    /// </summary>
+    public virtual (string name, bool overridden) SetModname(string name) => (name, false);
 }
 
 /// <summary>

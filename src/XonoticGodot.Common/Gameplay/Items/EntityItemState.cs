@@ -95,6 +95,15 @@ namespace XonoticGodot.Common.Framework
         /// <summary>QC .item_respawncounter — ticks remaining in the respawn countdown.</summary>
         public int ItemRespawnCounter;
 
+        /// <summary>
+        /// QC <c>.waypointsprite_attached</c> (server/items/items.qc Item_RespawnCountdown) — the respawn-countdown
+        /// waypoint sprite spawned on a timed item while it is on cooldown, killed when it respawns. For the
+        /// SpectatorOnly items (Mega/Big Health+Armor) it carries <c>SPRITERULE_SPECTATOR</c> so only spectators
+        /// (and, in warmup / <c>sv_itemstime==2</c>, everyone) see the respawn countdown marker. Typed as object to
+        /// keep this Framework partial free of a Gameplay using; the item-respawn code casts it.
+        /// </summary>
+        public object? WaypointAttached;
+
         // --- pickup gating ---
         /// <summary>QC .item_spawnshieldtime — touches before this engine time are ignored (anti double-pick).</summary>
         public float ItemSpawnShieldExpire;
@@ -165,5 +174,30 @@ namespace XonoticGodot.Common.Framework
         /// never collects items. Set by ClientManager on (re)spawn, cleared when the player leaves the game.
         /// </summary>
         public bool CanPickupItems;
+
+        // --- physical-items ghost-entity state (sv_physical_items.qc:.spawn_origin / .spawn_angles / .cnt) ---
+        // Set on the ghost (wep) entity spawned by the physical_items mutator, NOT on the real item.
+
+        /// <summary>
+        /// QC <c>.spawn_origin</c> (sv_physical_items.qc:33) — the ghost entity's home origin (where the real
+        /// item originally sat). Used by <c>physical_item_think</c> to snap the ghost back when the real item
+        /// is awaiting respawn, and by <c>physical_item_touch</c> / <c>physical_item_damage</c> to snap back
+        /// after a NODROP/SKY contact or an environmental-kill hit.
+        /// </summary>
+        public System.Numerics.Vector3 PhysSpawnOrigin;
+
+        /// <summary>
+        /// QC <c>.spawn_angles</c> (sv_physical_items.qc:33) — the ghost entity's home angles. Paired with
+        /// <see cref="PhysSpawnOrigin"/>: the ghost is rotated to these angles whenever it snaps home.
+        /// </summary>
+        public System.Numerics.Vector3 PhysSpawnAngles;
+
+        /// <summary>
+        /// QC <c>.cnt</c> on the ghost entity (sv_physical_items.qc:119: <c>wep.cnt = (item.owner != NULL)</c>)
+        /// — true when this ghost was created for a DROPPED weapon (loot item), false for a MAP item. Dropped-
+        /// weapon ghosts skip the respawn-reset, NODROP/SKY snap, and environmental-kill snap logic: QC's
+        /// exemption condition is <c>if (!this.cnt)</c> on all three callbacks.
+        /// </summary>
+        public bool PhysIsDropped;
     }
 }

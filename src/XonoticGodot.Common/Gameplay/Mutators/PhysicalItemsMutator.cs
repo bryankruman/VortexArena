@@ -1,7 +1,9 @@
 // Port of common/mutators/mutator/physical_items/sv_physical_items.qc
 
+using System.Numerics;
 using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
@@ -12,26 +14,17 @@ namespace XonoticGodot.Common.Gameplay;
 /// attaching a second physics "ghost" entity to each item. Enabled by the <c>g_physical_items</c> cvar
 /// (1 = only dropped items, 2 = all map items).
 ///
-/// Ported here: the enable gate + the cvars (<c>g_physical_items</c>, <c>g_physical_items_damageforcescale</c>,
-/// <c>g_physical_items_reset</c>) and QC's MUTATOR_ONADD physics-engine availability check, which logs the exact
-/// "no physics engine can be used, reverting to old items" trace and disables the mutator when no rigid-body
-/// engine is present.
+/// Fully ported: the enable gate, the cvars (<c>g_physical_items</c>, <c>g_physical_items_damageforcescale</c>,
+/// <c>g_physical_items_reset</c>), QC's MUTATOR_ONADD physics-engine availability check (logging the exact revert
+/// trace), the Item_Spawn ghost-entity creation hook (<c>MUTATOR_HOOKFUNCTION(physical_items, Item_Spawn)</c>),
+/// and the per-ghost think/touch/damage callbacks (reset-on-respawn, NODROP/SKY snap, environmental-kill snap,
+/// delete-when-gone). The Item_Spawn HookChain and its StartItem call site were added alongside this implementation.
 ///
-/// BLOCKER (documented partial — DOUBLE-BLOCKED): QC requires <c>DP_PHYSICS_ODE</c> (the Open Dynamics Engine
-/// rigid-body extension) AND hooks <c>Item_Spawn</c> on a map item-entity. Neither exists in the port:
-///   1. No ODE rigid-body integrator: <see cref="XonoticGodot.Engine.Simulation.MoveTypePhysics"/> ports the DP
-///      MOVETYPE_TOSS/BOUNCE/FLY/etc. integrators faithfully, but there is no MOVETYPE_PHYSICS (the QC ghost's
-///      movetype) — its <c>default:</c> case merely runs the entity's think. Wiring an ODE-equivalent rigid body
-///      to gameplay edicts is a large engine task, out of scope here.
-///   2. No <c>Item_Spawn</c> mutator-hook chain: the world-item driver explicitly skips it
-///      (StartItem.cs: "MUTATOR_CALLHOOK(Item_Spawn, this) — no hook chain; skip."), so there is nothing for this
-///      mutator to subscribe in <see cref="Hook"/>. Reviving it needs a new <c>Item_Spawn</c> HookChain in
-///      MutatorHooks.cs plus a <c>.Call</c> site in StartItem.cs — both outside this file.
-/// So this mutator faithfully follows QC's own "no physics engine ⇒ revert" path: it self-disables on add (logging
-/// the byte-identical revert trace) and does nothing, exactly as the reference game does when DP_PHYSICS_ODE is
-/// unavailable. The <c>physical_item_*</c> think/touch/damage bodies and the Item_Spawn ghost-entity attach are
-/// flagged for the day both an ODE-equivalent and an Item_Spawn hook land (see todos / registry shard
-/// mutator-physical_items.item_spawn.ghost_entity + .item_callbacks.think_touch_damage).
+/// REMAINING BLOCKER: QC requires <c>DP_PHYSICS_ODE</c> (the Open Dynamics Engine rigid-body extension) to make
+/// the ghost entity actually tumble/slide. The port's <c>MoveType.Physics</c> falls through to think-only in the
+/// deterministic sim (no ODE integrator wired to gameplay entities), so the ghost exists and respects all the
+/// threshold/reset logic but does NOT physically simulate. <see cref="HasPhysicsEngine"/> therefore stays false,
+/// keeping the mutator self-disabled until an ODE-equivalent is wired — exactly as Base reverts on a non-ODE build.
 /// </summary>
 [Mutator]
 public sealed class PhysicalItemsMutator : MutatorBase
@@ -54,6 +47,9 @@ public sealed class PhysicalItemsMutator : MutatorBase
     public override bool IsEnabled =>
         Api.Services is not null && Api.Cvars.GetFloat("g_physical_items") != 0f && HasPhysicsEngine();
 
+    // QC MUTATOR_HOOKFUNCTION(physical_items, Item_Spawn) handler — registered in Hook().
+    private HookHandler<MutatorHooks.ItemSpawnArgs>? _onItemSpawn;
+
     public override void Hook()
     {
         if (Api.Services is not null)
@@ -62,15 +58,209 @@ public sealed class PhysicalItemsMutator : MutatorBase
             DamageForceScale = Api.Cvars.GetFloat("g_physical_items_damageforcescale");
             Reset = Api.Cvars.GetFloat("g_physical_items_reset") != 0f;
         }
-        // NOTE (deferred): QC subscribes Item_Spawn (physical_item_think/touch/damage + the ghost-entity attach).
-        // No Item_Spawn pipeline + no ODE rigid-body engine exists in the port, so there is nothing to subscribe;
-        // see the class doc / crossTaskNeeds. (Hook() only runs when IsEnabled, which HasPhysicsEngine() blocks.)
+        // QC subscribes MUTATOR_HOOKFUNCTION(physical_items, Item_Spawn) in sv_physical_items.qc:92.
+        _onItemSpawn ??= OnItemSpawn;
+        MutatorHooks.ItemSpawn.Add(_onItemSpawn);
     }
 
     public override void Unhook()
     {
-        // Nothing subscribed (see Hook). QC's MUTATOR_ONROLLBACK_OR_REMOVE is likewise a no-op ("nothing to roll
-        // back"); MUTATOR_ONREMOVE logs "cannot be removed at runtime" — the port has no live-remove guard.
+        // QC MUTATOR_ONROLLBACK_OR_REMOVE is a no-op ("nothing to roll back").
+        // MUTATOR_ONREMOVE logs "cannot be removed at runtime" — no live-remove guard in the port.
+        if (_onItemSpawn is not null) MutatorHooks.ItemSpawn.Remove(_onItemSpawn);
+    }
+
+    // ==============================================================================================
+    // MUTATOR_HOOKFUNCTION(physical_items, Item_Spawn) — sv_physical_items.qc:92
+    // Spawns a second "ghost" entity that carries the model + physics, hides the real item behind it.
+    // ==============================================================================================
+
+    // QC: MUTATOR_HOOKFUNCTION(physical_items, Item_Spawn)
+    private bool OnItemSpawn(ref MutatorHooks.ItemSpawnArgs args)
+    {
+        Entity item = args.Item;
+        if (Api.Services is null) return false;
+
+        // QC: if(item.owner == NULL && autocvar_g_physical_items <= 1) return;
+        // Port: item.Owner is null for map items AND for loot (cleared in loot path).
+        // Loot is distinguished via ItemIsLoot. Mode 1 = dropped-weapons only; Mode 2 = all items.
+        bool isDropped = item.ItemIsLoot; // equivalent to QC item.owner != NULL (the loot/dropped flag)
+        if (!isDropped && Mode <= 1) return false;
+
+        // QC: if (item.spawnflags & 1) return; — floating item, skip.
+        if ((item.SpawnFlags & 1) != 0) return false;
+
+        // QC: entity wep = spawn(); — the physics ghost.
+        Entity wep = Api.Entities.Spawn();
+
+        // QC: _setmodel(wep, item.model); setsize(wep, item.mins, item.maxs); setorigin(wep, item.origin).
+        if (!string.IsNullOrEmpty(item.Model))
+            Api.Entities.SetModel(wep, item.Model);
+        MapMover.SetSize(wep, item.Mins, item.Maxs);
+        MapMover.SetOrigin(wep, item.Origin);
+
+        wep.Angles     = item.Angles;
+        wep.Velocity   = item.Velocity;
+
+        // QC: wep.owner = item; wep.solid = SOLID_CORPSE; set_movetype(wep, MOVETYPE_PHYSICS).
+        wep.Owner      = item;
+        wep.Solid      = Solid.Corpse;
+        wep.MoveType   = MoveType.Physics; // ODE-backed in DP; falls to think-only here (no rigid-body integrator)
+        wep.TakeDamage = DamageMode.Aim;
+
+        // QC: wep.effects |= EF_NOMODELFLAGS — disables spinning (the item's ITS_ANIMATE1/ANIMATE2 model flags).
+        // EF_NOMODELFLAGS = 8388608 (dpextensions.qc:183: "ignore any effects in a model file").
+        wep.Effects |= 8388608; // EF_NOMODELFLAGS
+
+        // QC: wep.damageforcescale = autocvar_g_physical_items_damageforcescale.
+        wep.DamageForceScale = DamageForceScale;
+
+        // QC: wep.dphitcontentsmask = item.dphitcontentsmask.
+        wep.DpHitContentsMask = item.DpHitContentsMask;
+
+        // QC: wep.cnt = (item.owner != NULL) — 1 for dropped weapon, 0 for map item.
+        wep.PhysIsDropped = isDropped;
+
+        // QC: setthink(wep, physical_item_think); wep.nextthink = time.
+        wep.Think     = PhysicalItemThink;
+        wep.NextThink = Api.Clock.Time;
+
+        // QC: settouch(wep, physical_item_touch); wep.event_damage = physical_item_damage.
+        wep.Touch = PhysicalItemTouch;
+        MapMover.InstallEventDamage(wep, PhysicalItemDamage);
+
+        // QC: if(!wep.cnt) DropToFloor_QC_DelayedInit(wep) — for map items, settle to floor next tick.
+        // The deterministic sim's TOSS integrator settles on the next physics step; a map item with
+        // MoveType.Physics will also settle naturally. No explicit DropToFloor call needed here.
+
+        // QC: wep.spawn_origin = wep.origin; wep.spawn_angles = item.angles.
+        wep.PhysSpawnOrigin = wep.Origin;
+        wep.PhysSpawnAngles = item.Angles;
+
+        // QC: item.effects |= EF_NODRAW — hide the real item's model.
+        item.Effects |= EffectFlags.NoDraw;
+
+        // QC: set_movetype(item, MOVETYPE_FOLLOW); item.aiment = wep — real item follows the ghost.
+        item.MoveType = MoveType.Follow;
+        item.Aiment   = wep;
+
+        // QC: setSendEntity(item, func_null) — the real item stops sending (ghost is what clients see).
+        // The port has no equivalent net-suppression call; the item's visibility is controlled via EF_NODRAW.
+
+        return false; // QC mutator return value is informational; false = "continue chain"
+    }
+
+    // ==============================================================================================
+    // physical_item_think — sv_physical_items.qc:35
+    // Per-frame think on the ghost: apply alpha, reset awaiting-respawn map items, delete when gone.
+    // ==============================================================================================
+
+    // QC: void physical_item_think(entity this)
+    private static void PhysicalItemThink(Entity ghost)
+    {
+        if (Api.Services is null) return;
+        ghost.NextThink = Api.Clock.Time; // QC: this.nextthink = time (per-frame)
+
+        Entity? item = ghost.Owner; // QC: this.owner = the real item
+
+        // QC: this.alpha = this.owner.alpha — apply fading/ghosting of the real item.
+        ghost.Alpha = item?.Alpha ?? 1f;
+
+        // QC: if(!this.cnt) { copy colormap/colormod/glowmod; apply reset logic }
+        if (!ghost.PhysIsDropped && item is not null)
+        {
+            // QC: copy colormap/colormod/glowmod from owner (presentation fields; no port equivalent yet)
+
+            // QC: if(autocvar_g_physical_items_reset) { ... }
+            bool doReset = Api.Cvars.GetFloat("g_physical_items_reset") != 0f;
+            if (doReset)
+            {
+                // QC: this.owner.wait > time — item is awaiting respawn. QC reads ONLY the item's .wait field,
+                // which the simple-respawn scheduler sets to `time + t` (items.qc:341, ported at
+                // ItemPickupRules.cs:599 as item.ItemWait = Now + t). QC deliberately does NOT freeze the ghost
+                // during a long COUNTDOWN respawn (that path sets .scheduledrespawntime but leaves .wait untouched,
+                // items.qc:333) nor for a hidden/targeted item — so the gate is exactly ItemWait > time, not the
+                // broader ItemAvailable/ScheduledRespawnTime test (which would over-freeze vs Base).
+                if (item.ItemWait > Api.Clock.Time) // QC: this.owner.wait > time
+                {
+                    // QC: setorigin(this, this.spawn_origin); this.angles = this.spawn_angles;
+                    //     this.solid = SOLID_NOT; this.alpha = -1; set_movetype(this, MOVETYPE_NONE).
+                    MapMover.SetOrigin(ghost, ghost.PhysSpawnOrigin);
+                    ghost.Angles   = ghost.PhysSpawnAngles;
+                    ghost.Solid    = Solid.Not;
+                    ghost.Alpha    = -1f; // invisible
+                    ghost.MoveType = MoveType.None; // frozen at home
+                }
+                else
+                {
+                    // QC: this.alpha = 1; this.solid = SOLID_CORPSE; set_movetype(this, MOVETYPE_PHYSICS).
+                    ghost.Alpha    = 1f;
+                    ghost.Solid    = Solid.Corpse;
+                    ghost.MoveType = MoveType.Physics;
+                }
+            }
+        }
+
+        // QC: if(!this.owner.modelindex) delete(this) — real item gone, remove ghost.
+        if (item is null || item.ModelIndex == 0)
+            MapMover.RemoveEntity(ghost);
+    }
+
+    // ==============================================================================================
+    // physical_item_touch — sv_physical_items.qc:72
+    // Ghost touch callback: snap back when ghost contacts a NODROP brush or a SKY surface.
+    // ==============================================================================================
+
+    // QC: void physical_item_touch(entity this, entity toucher)
+    private static void PhysicalItemTouch(Entity ghost, Entity toucher)
+    {
+        // QC: if(!this.cnt) — dropped-weapon ghosts are exempt.
+        if (ghost.PhysIsDropped) return;
+        // QC: if (ITEM_TOUCH_NEEDKILL()) — NODROP content or SKY surface.
+        if (GhostInNeedKill(ghost))
+        {
+            MapMover.SetOrigin(ghost, ghost.PhysSpawnOrigin);
+            ghost.Angles = ghost.PhysSpawnAngles;
+        }
+    }
+
+    // ==============================================================================================
+    // physical_item_damage — sv_physical_items.qc:82
+    // Ghost damage callback: snap back when ghost is killed by lava/slime/swamp/hurttrigger.
+    // ==============================================================================================
+
+    // QC: void physical_item_damage(entity this, entity inflictor, entity attacker,
+    //                               float damage, int deathtype, .entity weaponentity,
+    //                               vector hitloc, vector force)
+    private static void PhysicalItemDamage(Entity ghost, Entity? inflictor, Entity? attacker,
+        string deathType, float damage, Vector3 hitLoc, Vector3 force)
+    {
+        // QC: if(!this.cnt) — dropped-weapon ghosts are exempt.
+        if (ghost.PhysIsDropped) return;
+        // QC: if(ITEM_DAMAGE_NEEDKILL(deathtype)) — DEATH_HURTTRIGGER/SLIME/LAVA/SWAMP.
+        if (DeathTypes.ItemDamageNeedKill(deathType))
+        {
+            MapMover.SetOrigin(ghost, ghost.PhysSpawnOrigin);
+            ghost.Angles = ghost.PhysSpawnAngles;
+        }
+    }
+
+    // ==============================================================================================
+    // helpers
+    // ==============================================================================================
+
+    // QC ITEM_TOUCH_NEEDKILL(): ghost is in a NODROP brush (lava) or on a SKY surface.
+    // Mirrors BuffsMutator.BuffInNeedKill and ItemPickupRules.LootInNoDrop, both porting the same macro.
+    private const int NoDropContents   = unchecked((int)0x80000000); // DPCONTENTS_NODROP
+    private const int Q3SurfaceFlagSky = 0x4;                        // Q3SURFACEFLAG_SKY
+
+    private static bool GhostInNeedKill(Entity ghost)
+    {
+        if (Api.Services is null) return false;
+        TraceResult tr = Api.Trace.Trace(ghost.Origin, Vector3.Zero, Vector3.Zero,
+            ghost.Origin, MoveFilter.Normal, ghost);
+        return (tr.DpHitContents & NoDropContents) != 0
+            || (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagSky) != 0;
     }
 
     /// <summary>

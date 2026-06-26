@@ -53,6 +53,14 @@ public sealed class NadeDarknessBoom : INadeBoom
         if (Api.Services is null) return;
         float now = Api.Clock.Time;
 
+        // QC darkness.qc:7 — round_handler_IsActive() && !round_handler_IsRoundStarted(): a dark field spawned
+        // before the round starts is silently deleted (no final explode), distinct from the ltime expiry below.
+        if (RoundHandler.RoundGateBlocks())
+        {
+            Api.Entities.Remove(self);
+            return;
+        }
+
         if (now >= self.NadeOrbExpire)
         {
             if (NadeProjectile.Cvar("g_nades_darkness_explode", 0f) != 0f)

@@ -129,9 +129,10 @@ public sealed partial class ClientEntityView : Node
         e.Effects = s.Effects;
         // [W5-cloaked] Decode the networked render alpha (QC csqcmodel m_alpha) onto the proxy so PlayerModel/
         // EntityNode renders the Cloaked / Invisibility / fade transparency. ServerNet.QuantizeAlpha sends 0 for
-        // a fully-opaque entity ("use default" sentinel — costs nothing on the wire) and 1..254 for a real fade
-        // (= byte/255). Mirror that mapping back to the float Entity.Alpha (1 = opaque) that ApplyAlpha consumes.
-        e.Alpha = s.Alpha == 0 ? 1f : s.Alpha / 255f;
+        // a fully-opaque entity (costs nothing on the wire), 1..254 for a real fade (= byte/255), and 255 for the
+        // QC -1 "do not render" sentinel (Running Guns hides the player model). Mirror that mapping back to the
+        // float Entity.Alpha (1 = opaque; -1 = hidden, which ApplyAlpha clamps to fully transparent).
+        e.Alpha = s.Alpha switch { 0 => 1f, 255 => -1f, _ => s.Alpha / 255f };
         e.Health = s.Health;
         e.Team = s.Colormap;
         e.ActiveWeaponId = s.Weapon;

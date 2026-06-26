@@ -368,12 +368,15 @@ public sealed class DodgingMutator : MutatorBase
             if (Api.Services is not null && Api.Cvars.GetFloat("sv_dodging_sound") != 0f)
                 Api.Sound.Play(player, SoundChannel.Body, "player/jump.wav");
             // QC also calls animdecide_setaction(this, ANIMACTION_JUMP, true) UNCONDITIONALLY here (outside the
-            // sound guard). The port has NO animdecide/anim-action networking seam (the server nets one
-            // Entity.Frame; the client reconstructs all locomotion from movement state in
-            // LocomotionBlend.SelectLegs, which returns Locomotion.Jump whenever !onGround). The UNSET_ONGROUND
-            // above plus the up-impulse leave the dodger airborne, so the client already shows the jump pose; a
-            // faithful animdecide_setaction push would need a new server->client one-shot action channel — same
-            // gap as WalljumpMutator's hop (see the matching note there).
+            // sound guard). In Base, ANIMACTION_JUMP = -1 sets anim_lower_action on the server entity, but
+            // animdecide.qc line 283 explicitly notes "in CSQC this is the only jump detection, as the explicit
+            // jump action is never called" — Base CSQC relies entirely on the implicit INAIR state transition
+            // (ground→air) to play the jump clip, not the explicit server-pushed action. The port has NO
+            // animdecide/anim-action networking seam, but the UNSET_ONGROUND above + up-impulse leave the dodger
+            // airborne, and LocomotionBlend.SelectLegs returns Locomotion.Jump whenever !onGround — so the client
+            // already shows the jump pose by the same implicit path Base CSQC uses. A faithful animdecide_setaction
+            // push would require a new server→client one-shot action channel (same gap as WalljumpMutator's hop)
+            // but the observable outcome is already covered by the implicit path.
             player.DodgingSingleAction = 0f;
         }
 

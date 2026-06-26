@@ -64,10 +64,24 @@ public static class ItemSpawnFuncs
         RegisterItem("item_jetpack", "jetpack");
         RegisterItem("item_fuel_regen", "fuel_regen");
 
+        // ---- instagib economy items (items.qh SPAWNFUNC_ITEM + alias) ----
+        // VaporizerCells (item_vaporizer_cells, alias item_minst_cells) + ExtraLife (item_extralife).
+        // These are mutator-economy items that only appear during instagib matches (spawned by the random-powerup
+        // replacement deck or Devastator/Vortex replacement). They live here so the map parser resolves the
+        // classname even on non-instagib maps (FilterItemDefinition removes them when instagib is off).
+        RegisterItem("item_vaporizer_cells", "vaporizer_cells"); // QC SPAWNFUNC_ITEM(item_vaporizer_cells, ITEM_VaporizerCells)
+        AliasItem("item_minst_cells", "vaporizer_cells");        // QC SPAWNFUNC_ITEM(item_minst_cells, ITEM_VaporizerCells)
+        RegisterItem("item_extralife", "extralife");             // QC SPAWNFUNC_ITEM(item_extralife, ITEM_ExtraLife)
+
         // ---- alias spawnfuncs that share a def (QC SPAWNFUNC_ITEM aliases in the powerup .qh) ----
         AliasItem("item_invincible", "invincible");       // -> ITEM_Shield
-        AliasItem("item_buff_speed", "speed");            // -> ITEM_Speed
-        AliasItem("item_buff_invisibility", "invisibility"); // -> ITEM_Invisibility
+        AliasItem("item_buff_speed", "speed");            // -> ITEM_Speed (a powerup, not a buff)
+        AliasItem("item_buff_invisibility", "invisibility"); // -> ITEM_Invisibility (a powerup, not a buff)
+
+        // ---- map buff items (QC buffs.qh BUFF_SPAWNFUNCS / BUFF_SPAWNFUNC_Q3COMPAT) ----
+        // item_buff_<type> (+ _team1.._team4 per-team variants) and item_buff_random spawn a live buff pickup
+        // carrying that type (null = randomize). The Q3/QL/WOP holdable/item classnames map via Buff_CompatName.
+        RegisterBuffSpawnFuncs();
 
         // ---- compatibility spawn functions (server/items/spawning.qc:99-105) ----
         // item_armor1: Quake green armor = a Xonotic armor SHARD (medium) — or small on a Q3 map. The port has
@@ -151,6 +165,63 @@ public static class ItemSpawnFuncs
             SpawnFuncs.Register(cls, e => WeaponSpawn(e, wep));
             // weapon items have no item_*-style NetName; their canonical classname is weapon_<netname>.
             _netNameToClassName[w.NetName] = cls;
+        }
+    }
+
+    // The 13 QC buffs that carry an item_buff_<type> map spawnfunc (buffs.qh BUFF_SPAWNFUNCS calls, one per
+    // buff/<type>.qh). item_buff_random (null type) is added separately below.
+    private static readonly string[] BuffSpawnTypes =
+    {
+        "ammo", "bash", "disability", "flight", "inferno", "jump", "luck",
+        "magnet", "medic", "resistance", "swapper", "vampire", "vengeance",
+    };
+
+    // The teamplay-only team_forced suffixes (QC BUFF_SPAWNFUNCS: _team1.._team4 -> NUM_TEAM_1..NUM_TEAM_4).
+    private static readonly (string suffix, int team)[] BuffTeamVariants =
+    {
+        ("_team1", Teams.Red), ("_team2", Teams.Blue), ("_team3", Teams.Yellow), ("_team4", Teams.Pink),
+    };
+
+    // The Q3TA/Q3A/WOP holdable/item compat classnames -> canonical buff short name (QC buffs/<type>.qh
+    // BUFF_SPAWNFUNC_Q3COMPAT lines; the buffname is what Buff_CompatName maps).
+    private static readonly (string className, string buff)[] BuffCompatClassnames =
+    {
+        ("item_ammoregen", "ammo"),                  // Q3TA ammoregen
+        ("item_scout", "bash"),                      // Q3TA scout
+        ("item_flight", "flight"),                   // (WOP flight)
+        ("item_doubler", "inferno"),                 // Q3TA doubler
+        ("item_jumper", "jump"),                     // WOP jumper
+        ("item_regen", "medic"),                     // Q3A regen
+        ("item_revival", "medic"),                   // WOP revival
+        ("item_guard", "resistance"),                // Q3TA guard
+        ("holdable_teleporter", "swapper"),          // Q3A personal teleporter
+        ("holdable_invulnerability", "vampire"),     // Q3TA invulnerability
+        ("holdable_kamikaze", "vengeance"),          // Q3TA kamikaze
+    };
+
+    // QC buffs.qh BUFF_SPAWNFUNCS / BUFF_SPAWNFUNC_Q3COMPAT: install every item_buff_* + compat classname so a
+    // map can place buff pickups. Each routes to BuffsMutator.SpawnMapBuff (buff_Init), which gates on g_buffs
+    // and frees the edict when buffs are off / no type is available.
+    private static void RegisterBuffSpawnFuncs()
+    {
+        // item_buff_random — a null type forces randomization (QC BUFF_SPAWNFUNCS(random, NULL)).
+        SpawnFuncs.Register("item_buff_random", e => BuffsMutator.SpawnMapBuff(e, null, 0));
+
+        foreach (string t in BuffSpawnTypes)
+        {
+            string type = t; // capture
+            SpawnFuncs.Register("item_buff_" + type, e => BuffsMutator.SpawnMapBuff(e, type, 0));
+            foreach (var (suffix, team) in BuffTeamVariants)
+            {
+                int tm = team;
+                SpawnFuncs.Register("item_buff_" + type + suffix, e => BuffsMutator.SpawnMapBuff(e, type, tm));
+            }
+        }
+
+        foreach (var (className, buff) in BuffCompatClassnames)
+        {
+            string b = buff; // capture
+            SpawnFuncs.Register(className, e => BuffsMutator.SpawnMapBuff(e, b, 0));
         }
     }
 

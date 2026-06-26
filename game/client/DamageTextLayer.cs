@@ -303,8 +303,19 @@ public partial class DamageTextLayer : Control
             // ^xRGB codes in cl_damagetext_format override the RGB of the runs that follow. Render in the Xonotic
             // HUD font (Xolonium), not the Godot fallback, matching the QC hud font cell. Center horizontally by
             // the full (decolorized) string width, as QC does (screen_pos.x -= stringwidth*0.5).
+            //
+            // QC drawfontscale crisp-cell scaling (cl_damagetext.qc:56,91-97): QC renders into a fixed size_max font
+            // cell scaled by drawfontscale = size/size_max, anchored at the cell's TOP-LEFT, and offsets y by
+            //   screen_pos.y += size/2;                  (line 56, both 2D and 3D)
+            //   screen_pos.y -= drawfontscale.x*size/2;  (line 93, = (size/size_max)*size/2)
+            // -> net y += (size/2)*(1 - size/size_max). The port draws at a direct pixel size (no separate cell), so
+            // it reproduces that net top-anchor offset directly and then converts QC's cell-top anchor to Godot's
+            // DrawString baseline anchor by adding the font ascent (same as the ShowNamesLayer sibling).
             int isize = Mathf.Max(1, (int)size);
             Font font = HudPanel.HudFont ?? ThemeDB.FallbackFont;
+            float sizeMax = cfg.SizeMax > 0f ? cfg.SizeMax : 1f;
+            float topY = pos.Y + (size * 0.5f) * (1f - size / sizeMax); // QC screen_pos.y after lines 56+93
+            float baselineY = topY + font.GetAscent(isize);             // QC cell-top -> Godot baseline
             var runs = HudText.Parse(it.Text, rgb);
             float total = 0f;
             foreach (HudText.Run run in runs)
@@ -313,7 +324,7 @@ public partial class DamageTextLayer : Control
             foreach (HudText.Run run in runs)
             {
                 var rc = new Color(run.Color.R, run.Color.G, run.Color.B, alpha);
-                DrawString(font, new Vector2(rx, pos.Y), run.Text, HorizontalAlignment.Left, -1f, isize, rc);
+                DrawString(font, new Vector2(rx, baselineY), run.Text, HorizontalAlignment.Left, -1f, isize, rc);
                 rx += font.GetStringSize(run.Text, HorizontalAlignment.Left, -1f, isize).X;
             }
         }
