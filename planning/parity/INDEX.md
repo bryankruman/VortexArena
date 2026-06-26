@@ -1,6 +1,6 @@
 # Parity Index
 
-_Generated 2026-06-25 from 154 units, 1999 features._
+_Generated 2026-06-25 from 154 units, 2005 features._
 
 Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liveness `live`/`DEAD`/`~`/`?`.
 
@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1500 | 192 | 16 | 287 | 3 | 1 |
-| values | 0 | 1451 | 160 | 196 | 175 | 0 | 17 |
-| timing | 0 | 931 | 113 | 861 | 73 | 0 | 21 |
-| presentation | 0 | 364 | 255 | 1133 | 240 | 0 | 7 |
-| audio | 0 | 227 | 53 | 1658 | 55 | 0 | 6 |
-| liveness | 15 | 0 | 0 | 194 | 177 | 0 | 13 |
+| logic | 0 | 1556 | 176 | 16 | 253 | 3 | 1 |
+| values | 0 | 1478 | 151 | 198 | 161 | 0 | 17 |
+| timing | 0 | 951 | 111 | 858 | 65 | 0 | 20 |
+| presentation | 0 | 380 | 243 | 1137 | 238 | 0 | 7 |
+| audio | 0 | 234 | 44 | 1663 | 58 | 0 | 6 |
+| liveness | 15 | 0 | 0 | 178 | 159 | 0 | 13 |
 
 ## Features by unit
 
@@ -286,14 +286,14 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `damage-pipeline.dispatch.front_gate` | Damage() front gate + hook/sound same-team rule + always-lethal kill/teamchange | OK | OK | - | - | - | live | high |
-| `damage-pipeline.dispatch.teamplay_shaping` | Teamplay friendly-fire / mirror-damage shaping (teamplay_mode 1-4, virtual ff/mirror) | OK | ~ | - | - | - | live | high |
+| `damage-pipeline.dispatch.teamplay_shaping` | Teamplay friendly-fire / mirror-damage shaping (teamplay_mode 1-4, virtual ff/mirror) | OK | OK | OK | - | OK | live | high |
 | `damage-pipeline.dispatch.factors_selfdamage` | Global weapon damage/force factors + self-damage percent + Damage_Calculate hook | OK | OK | - | - | - | live | high |
 | `damage-pipeline.resource.healtharmor_split` | Armor<->health damage split (healtharmor_applydamage, drown/armorpierce bypass) | OK | OK | - | - | - | live | high |
 | `damage-pipeline.resource.player_damage` | PlayerDamage resource math: handicap, spawnshield, godmode tab, regen pause, pusher window, pain/death feedback | OK | OK | OK | ~ | OK | live | high |
 | `damage-pipeline.knockback.calcpush` | Knockback application + damage_explosion_calcpush momentum projection *(intended)* | OK | OK | - | - | - | live | high |
 | `damage-pipeline.radius.splash` | RadiusDamage: core->edge falloff, falloff-scaled knockback, per-axis force shaping, through-floor LOS, warpzone propagation, HITTYPE_SPLASH tagging | OK | OK | - | - | - | live | high |
-| `damage-pipeline.fire.burning` | Burning damage-over-time (Fire_AddDamage / Fire_ApplyDamage + fire transfer) | ~ | OK | OK | - | - | live | high |
-| `damage-pipeline.heal.dispatcher` | Central Heal() dispatcher (game_stopped/frozen/dead gate + event_heal route + limit cap) | MISS | MISS | - | - | - | - | high |
+| `damage-pipeline.fire.burning` | Burning damage-over-time (Fire_AddDamage / Fire_ApplyDamage + fire transfer) | OK | OK | OK | - | - | live | high |
+| `damage-pipeline.heal.dispatcher` | Central Heal() dispatcher (game_stopped/frozen/dead gate + event_heal route + limit cap) | OK | - | - | - | - | live | high |
 
 ### `fx-effectinfo` (effect) — 10 features
 
@@ -777,18 +777,19 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `items-pickups.presentation.bob_ghost_despawn` | Client bob/spin, ghost-on-pickup fade, loot despawn fade + puffs, pickup/respawn particles *(intended)* | OK | OK | OK | ~ | - | live | high |
 | `items-pickups.itemstime.hud_feed` | itemstime mutator — timed-item respawn-countdown table for the HUD *(intended)* | OK | OK | OK | ~ | - | live | medium |
 
-### `resources` (item) — 8 features
+### `resources` (item) — 9 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `resources.api.registry` | RES_* resource registry + field indirection (health/armor/5 ammo) | OK | OK | - | - | - | live | high |
 | `resources.api.getlimit` | GetResourceLimit (per-resource caps + hook + hard clamp) | OK | OK | - | - | - | live | high |
-| `resources.api.setresource` | SetResource / SetResourceExplicit (clamp-to-limit + waste/changed hooks) | OK | OK | - | - | - | live | high |
-| `resources.api.give` | GiveResource / GiveResourceWithLimit (+ per-resource rot-pause push) | ~ | OK | OK | - | - | live | high |
+| `resources.api.setresource` | SetResource / SetResourceExplicit (clamp-to-limit + waste/changed hooks) | ~ | OK | - | - | - | live | high |
+| `resources.api.give` | GiveResource / GiveResourceWithLimit (+ per-resource rot-pause push) | OK | OK | OK | - | - | live | high |
 | `resources.api.take` | TakeResource / TakeResourceWithLimit | ~ | OK | - | - | - | live | high |
-| `resources.regen.loop` | player_regen + RotRegen + CalcRegen/CalcRot (health/armor/fuel regen and rot) | ~ | OK | OK | - | - | live | high |
-| `resources.regen.pause_timers` | Regen/rot pause timers (damage, spawn, pickup, jetpack-fuel) shared storage | ~ | OK | OK | - | - | live | high |
+| `resources.regen.loop` | player_regen + RotRegen + CalcRegen/CalcRot (health/armor/fuel regen and rot) | OK | OK | OK | - | - | live | high |
+| `resources.regen.pause_timers` | Regen/rot pause timers (damage, spawn, pickup, jetpack-fuel) shared storage | OK | OK | OK | - | - | live | high |
 | `resources.cl.readout` | Client resource readout for HUD (CSQC GetResource path) | OK | OK | - | OK | - | live | medium |
+| `resources.api.ammoconsumption` | GetAmmoConsumption (ammo-per-shot, for Q3 ammo-box .count scaling) | OK | OK | - | - | - | live | high |
 
 ### `mapobject-func` (mapobject) — 17 features
 
@@ -1698,7 +1699,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `net-entity-state.csqcmodel.teleport_bit` | Teleport bit cancels interpolation (EF_TELEPORT_BIT) *(intended)* | OK | ~ | OK | OK | - | live | medium |
 | `net-entity-state.csqcmodel.force_updates` | Forced periodic origin keepalive (CSQCPLAYER_FORCE_UPDATES) *(intended)* | ~ | MISS | ~ | - | - | - | medium |
 | `net-entity-state.entcs.radar_shownames_slice` | ent_cs GPS slice for radar + shownames teammate health/armor *(intended)* | OK | ~ | ~ | OK | - | live | high |
-| `net-entity-state.entcs.privacy_mask` | ent_cs public/private mask (radar_showenemies / SAME_TEAM) | MISS | MISS | - | - | - | - | high |
+| `net-entity-state.entcs.privacy_mask` | ent_cs public/private mask (radar_showenemies / SAME_TEAM) *(intended)* | OK | ~ | - | - | - | live | high |
 | `net-entity-state.wepent.active_weapon` | wepent active/held weapon (local viewmodel + remote third-person) *(intended)* | OK | OK | OK | OK | - | live | high |
 | `net-entity-state.wepent.charges_clip_heat` | wepent charge/clip/heat HUD fields (vortex/oknex charge+pool, clip_load/size, hagar_load, minelayer_mines, arc_heat) *(intended)* | OK | OK | OK | OK | - | ~ | medium |
 | `net-entity-state.wepent.switch_alpha_misc` | wepent switch/alpha/gunalign/porto/tuba/skin viewmodel fields | MISS | MISS | MISS | MISS | - | - | medium |
@@ -1782,7 +1783,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `physics-player.spectator_control` | Spectator free-flight speed ladder (sys_phys_spectator_control) *(intended)* | OK | OK | OK | - | - | live | high |
 | `physics-player.specialcommand` | PM_check_specialcommand (xwxw... button cheat-code -> give-all) | MISS | MISS | - | - | - | - | high |
 
-### `scoring` (scoring) — 13 features
+### `scoring` (scoring) — 14 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -1798,7 +1799,8 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `scoring.net.replication` | Score networking (ScoreInfo layout + Scoreboard values, change-gated, int24) *(intended)* | OK | OK | OK | - | - | live | high |
 | `scoring.report.playerstats` | End-of-match XonStat game report (PlayerStats_GameReport pipeline, V9) *(intended)* | OK | OK | OK | - | - | live | high |
 | `scoring.helper.float2int_decimal_carry` | Fractional-score accumulator (_GameRules_scoring_add_float2int decimal carry) | OK | OK | OK | - | - | live | high |
-| `scoring.lifecycle.game_stopped` | game_stopped score clamp (drop score additions post-match/warmup-end) | ~ | OK | ~ | - | - | ~ | high |
+| `scoring.lifecycle.game_stopped` | game_stopped score clamp (drop score additions post-match/warmup-end) | OK | OK | OK | - | - | live | high |
+| `scoring.display.niceprint` | Server `scores`/`teamscores` console standings dump (Score_NicePrint) | MISS | MISS | - | MISS | - | - | medium |
 
 ### `sv-anticheat` (server) — 15 features
 
@@ -1806,17 +1808,17 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `sv-anticheat.core.power_mean` | Power-mean accumulator (MEAN_DECLARE/accumulate/evaluate) *(intended)* | OK | OK | - | - | - | live | high |
 | `sv-anticheat.detect.movement_oddity` | movement_oddity strafebot turn-reversal score | OK | OK | - | - | - | live | high |
-| `sv-anticheat.detect.div0_evade` | div0_evade server-driven dodge-prediction probe | ~ | OK | ~ | - | - | ~ | high |
+| `sv-anticheat.detect.div0_evade` | div0_evade server-driven dodge-prediction probe | OK | OK | OK | - | - | live | high |
 | `sv-anticheat.detect.strafebot_new_snapaim` | strafebot_new turn-angle + idle snap-aim signal/noise + snapback | OK | OK | OK | - | - | live | high |
 | `sv-anticheat.detect.speedhack_old` | Generic speedhack (old movetime/servertime correlation) | OK | OK | OK | - | - | live | high |
 | `sv-anticheat.detect.speedhack_new` | Generic speedhack (new decaying accumulator m1..m5) | OK | OK | OK | - | - | live | high |
 | `sv-anticheat.frame.evasion_phase_walk` | Global div0_evade evasion-delta phase walk (start+end frame) *(intended)* | OK | OK | OK | - | - | live | high |
-| `sv-anticheat.frame.fixangle_window` | Snap-aim suppression window after a forced view change | ~ | ~ | ~ | - | - | ~ | high |
+| `sv-anticheat.frame.fixangle_window` | Snap-aim suppression window after a forced view change *(intended)* | OK | ~ | OK | - | - | live | high |
 | `sv-anticheat.lifecycle.init` | anticheat_init (jointime stamp + speedhack baseline clear) on connect | OK | OK | OK | - | - | live | high |
 | `sv-anticheat.report.eventlog` | anticheat_report_to_eventlog (:anticheat: verdict lines on disconnect) | OK | OK | - | OK | - | live | high |
-| `sv-anticheat.report.sv_cmd` | sv_cmd anticheat admin on-demand verdict report | MISS | MISS | - | MISS | - | - | medium |
+| `sv-anticheat.report.sv_cmd` | sv_cmd anticheat admin on-demand verdict report | OK | OK | - | OK | - | live | high |
 | `sv-anticheat.report.playerstats` | anticheat_report_to_playerstats (XonStat end-of-match feed) | OK | OK | - | - | - | live | medium |
-| `sv-anticheat.report.register_playerstats` | anticheat_register_to_playerstats (pre-register the anticheat event slots) | MISS | - | - | - | - | - | high |
+| `sv-anticheat.report.register_playerstats` | anticheat_register_to_playerstats (pre-register the anticheat event slots) | OK | OK | - | - | - | live | high |
 | `sv-anticheat.report.display_verdict` | anticheat_display N/Y/- verdict formatting + ANTICHEATS table | OK | OK | - | OK | - | live | high |
 | `sv-anticheat.spectate.evade_angle_copy` | anticheat_spectatecopy (spectator body follows spectatee evade angle) | OK | OK | - | OK | - | live | high |
 
@@ -1834,9 +1836,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-antilag.gate.cvars` | Gating: g_antilag==0, cl_noantilag, lag<0.001, non-client shooter -> no rewind (antilag_getlag) | OK | OK | - | - | - | live | high |
 | `sv-antilag.mode.server_hitscan` | g_antilag==2 server-side hitscan in the past (the takeback mode) | OK | OK | OK | - | - | live | high |
 | `sv-antilag.mode.client_verified_and_cursor` | g_antilag==1 (verified client-side) and ==3 (prydon cursor) aim-correction | MISS | MISS | - | - | - | - | high |
-| `sv-antilag.clear.on_spawn` | antilag_clear on (re)spawn / teleport / vehicle enter-exit | ~ | OK | OK | - | - | live | medium |
+| `sv-antilag.clear.on_spawn` | antilag_clear on (re)spawn / teleport / vehicle enter-exit | OK | OK | OK | - | - | live | high |
 | `sv-antilag.arc_beam` | Arc beam lag-compensated trace + antilag_takebackavgvelocity | OK | OK | OK | - | - | live | high |
-| `sv-antilag.melee.secondary` | Shotgun melee secondary trace is antilagged | ~ | OK | OK | - | - | - | high |
+| `sv-antilag.melee.secondary` | Shotgun melee secondary trace is antilagged | OK | OK | OK | - | - | live | high |
 
 ### `sv-campaign` (server) — 14 features
 
@@ -1844,10 +1846,10 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `sv-campaign.file.parse` | Campaign .txt quoted-CSV parse (CampaignFile_Load) | OK | OK | - | - | - | live | high |
 | `sv-campaign.preinit.config` | Per-level config: gametype + bot count/skill + mutator/permanent settemps (CampaignPreInit) | OK | OK | - | - | - | live | high |
-| `sv-campaign.preinit.gametype_switch` | MapInfo_SwitchGameType + Campaign_Invalid revalidation | ~ | - | - | - | - | ~ | high |
+| `sv-campaign.preinit.gametype_switch` | MapInfo_SwitchGameType + Campaign_Invalid revalidation | OK | - | - | - | - | live | high |
 | `sv-campaign.preinit.abort` | Bailout paths: unknown map + cheats (CampaignBailout) | OK | OK | - | - | - | live | high |
 | `sv-campaign.postinit.limits` | Per-level frag/time limits: default vs empty vs value (CampaignPostInit) | OK | OK | - | - | - | live | high |
-| `sv-campaign.bots.may_start` | campaign_bots_may_start: hold bots/rounds/monsters until the human spawns | ~ | OK | OK | - | - | ~ | high |
+| `sv-campaign.bots.may_start` | campaign_bots_may_start: hold bots/rounds/monsters until the human spawns | OK | OK | OK | - | - | live | high |
 | `sv-campaign.winlose.decision` | Win/lose decision: sole-human-winner + beat-the-clock (CampaignPreIntermission) | OK | OK | OK | OK | - | live | high |
 | `sv-campaign.progress.save` | Frontier progress persistence to campaign.cfg (CampaignSaveCvar + the save gate) | OK | OK | - | - | - | live | high |
 | `sv-campaign.transition.next_level` | Advance / replay / last-level transition (CampaignPostIntermission + CampaignSetup) *(intended)* | OK | OK | - | OK | - | live | high |
@@ -1857,7 +1859,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-campaign.forceteam` | g_campaign_forceteam: force the player onto a given team in campaign | OK | OK | - | - | - | live | high |
 | `sv-campaign.welcome.levelnum` | Campaign level number in the welcome/info message (Campaign_GetLevelNum) | OK | OK | - | ~ | - | live | high |
 
-### `sv-chat` (server) — 14 features
+### `sv-chat` (server) — 15 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -1866,21 +1868,22 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-chat.say.display_strings` | Display + centerprint string construction (public/team/private, /me action form) | OK | OK | - | OK | - | live | high |
 | `sv-chat.flood.per_type_throttle` | Per-say-type flood control (broadcast/team/tell) with persistent timestamps + line wrapping | OK | ~ | OK | OK | - | live | high |
 | `sv-chat.flood.return_and_notify` | flood==2 trim+notify, flood==1 wait-sprint, 1/0/-1 return code, flood LOG_INFO note | OK | OK | OK | OK | - | live | high |
-| `sv-chat.routing.recipients` | Recipient routing (public / team / spectator / private) with ignore + spectator-downgrade | ~ | OK | - | OK | - | live | high |
+| `sv-chat.routing.recipients` | Recipient routing (public / team / spectator / private / minigame) with ignore + spectator-downgrade | ~ | OK | - | OK | - | live | high |
 | `sv-chat.routing.ignore_filter` | Mutual-ignore filtering on every recipient (and tell-to-ignorer returns -1) | OK | OK | - | - | - | live | high |
 | `sv-chat.muted.fake_accept` | Muted sender = fake-accept (sender sees own line, no one else does) | OK | OK | - | OK | - | live | high |
-| `sv-chat.ignore.crud` | Ignore-list CRUD: ignore / unignore / clear_ignores + list cap | ~ | ~ | - | OK | - | live | high |
-| `sv-chat.format.macros` | formatmessage %/\ macro expansion (%%/%h/%a/%o/%O/%w/%W/%s/%S/%t/%T + \n/\\, 7-budget) | OK | ~ | - | OK | - | live | high |
-| `sv-chat.format.crosshair_tokens` | Location/aim formatmessage tokens (%l/%y/%d/%x) + NearestLocation item fallback | ~ | ~ | - | ~ | - | ~ | high |
+| `sv-chat.ignore.crud` | Ignore-list CRUD: ignore / unignore / clear_ignores + list cap | ~ | OK | - | OK | - | live | high |
+| `sv-chat.format.macros` | formatmessage %/\ macro expansion (%%/%h/%a/%o/%O/%w/%W/%s/%S/%t/%T + \n/\\, 7-budget) | OK | OK | - | OK | - | live | high |
+| `sv-chat.format.crosshair_tokens` | Location/aim formatmessage tokens (%l/%y/%d/%x) + NearestLocation item fallback | OK | OK | - | OK | - | live | high |
 | `sv-chat.voice.say_coupling` | VoiceMessage text routed through Say (flood-throttle + chat display + fake/real sound gating) | OK | OK | OK | OK | OK | live | high |
-| `sv-chat.delivery.dedicated_print_gating` | dedicated_print gated on sv_dedicated (server-console echo) | ~ | - | - | ~ | - | live | high |
+| `sv-chat.delivery.dedicated_print_gating` | dedicated_print gated on sv_dedicated (server-console echo) | OK | - | - | OK | - | live | high |
+| `sv-chat.helpers.printtochat` | PrintToChat / PrintToChatAll / PrintToChatTeam (+ Debug* developer-gated variants) chat-line emitters | MISS | - | - | MISS | - | - | medium |
 | `sv-chat.mutator.hooks` | Chat mutator hooks (ChatMessage / ChatMessageTo / PreFormatMessage / FormatMessage) *(intended)* | MISS | - | - | - | - | - | high |
 
 ### `sv-cheats` (server) — 19 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `sv-cheats.gating.cheats_allowed` | CheatsAllowed — sv_cheats snapshot + dead/observer/maycheat gating + refusal logging | ~ | OK | OK | OK | - | live | high |
+| `sv-cheats.gating.cheats_allowed` | CheatsAllowed — sv_cheats snapshot + dead/observer/maycheat gating + refusal logging | OK | OK | OK | OK | - | live | high |
 | `sv-cheats.accounting.cheatcount` | Cheat counting (per-player + global) gating campaign progress | OK | OK | OK | - | - | live | high |
 | `sv-cheats.cmd.god` | cmd god — toggle FL_GODMODE | OK | OK | OK | - | - | live | high |
 | `sv-cheats.cmd.notarget` | cmd notarget — toggle FL_NOTARGET | OK | OK | OK | - | - | live | high |
@@ -1893,11 +1896,11 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-cheats.impulse.clone` | Cheat impulses CLONE_MOVING (140) / CLONE_STANDING (142) — CopyBody clones | MISS | MISS | MISS | MISS | - | - | high |
 | `sv-cheats.impulse.speedrun` | Cheat impulses SPEEDRUN_INIT (30) / SPEEDRUN (141) — personal waypoint snapshot + restore | MISS | MISS | MISS | - | - | - | high |
 | `sv-cheats.impulse.teleport` | Cheat impulse TELEPORT (143) — emergency teleport to autoscreenshot or random location | MISS | MISS | MISS | - | - | - | high |
-| `sv-cheats.impulse.r00t` | Cheat impulse R00T (148) — nuke a random enemy | MISS | MISS | - | MISS | MISS | - | high |
-| `sv-cheats.cmd.teleporttotarget` | cmd teleporttotarget — teleport player to a named teleport target | MISS | - | - | - | - | - | high |
+| `sv-cheats.impulse.r00t` | Cheat impulse R00T (148) — nuke a random enemy | OK | OK | - | OK | OK | live | high |
+| `sv-cheats.cmd.teleporttotarget` | cmd teleporttotarget — teleport player to a named teleport target | OK | - | - | - | - | live | high |
 | `sv-cheats.cmd.particles_make` | cmd pointparticles / trailparticles / make / penalty — debug/effect spawners | MISS | MISS | - | MISS | - | - | high |
 | `sv-cheats.frame.drag` | CheatFrame + Drag — per-frame object dragging + dragbox/dragpoint map editor | MISS | MISS | MISS | MISS | - | - | high |
-| `sv-cheats.mapent.info_autoscreenshot` | info_autoscreenshot map entity (observe/screenshot point, teleport target) | MISS | ~ | - | - | - | - | high |
+| `sv-cheats.mapent.info_autoscreenshot` | info_autoscreenshot map entity (observe/screenshot point, teleport target) | MISS | OK | - | - | - | - | high |
 | `sv-cheats.campaign.start_block` | Campaign behavior when sv_cheats is enabled (load-time bailout) | OK | OK | OK | - | - | live | high |
 
 ### `sv-client-lifecycle` (server) — 22 features
@@ -1909,22 +1912,22 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-client-lifecycle.join.join_player` | Join: observer -> live player | ~ | OK | OK | ~ | - | live | high |
 | `sv-client-lifecycle.join.join_allowed` | joinAllowed gates | ~ | ~ | OK | MISS | - | live | high |
 | `sv-client-lifecycle.spawn.put_player_in_server` | PutPlayerInServer: place + load out a spawning player | ~ | OK | OK | OK | - | live | high |
-| `sv-client-lifecycle.spawn.spawn_shield` | Spawn shield + spawn-time regen/rot pause timers | ~ | OK | ~ | - | - | live | high |
+| `sv-client-lifecycle.spawn.spawn_shield` | Spawn shield + spawn-time regen/rot pause timers | OK | OK | OK | - | - | live | high |
 | `sv-client-lifecycle.observer.put_observer_in_server` | PutObserverInServer: demote to free-fly observer | ~ | OK | OK | OK | - | live | high |
 | `sv-client-lifecycle.observer.observer_think` | ObserverOrSpectatorThink: join-on-fire + spectate cycling | ~ | OK | OK | - | - | live | high |
 | `sv-client-lifecycle.observer.autojoin_delayed` | Delayed autojoin for a real client (PlayerPreThink) | ~ | OK | OK | - | - | live | high |
-| `sv-client-lifecycle.dead.respawn_state_machine` | Dead-player respawn state machine (DEAD_DYING..RESPAWNING) | OK | OK | OK | ~ | - | live | high |
+| `sv-client-lifecycle.dead.respawn_state_machine` | Dead-player respawn state machine (DEAD_DYING..RESPAWNING) | OK | OK | OK | OK | - | live | high |
 | `sv-client-lifecycle.dead.respawn_timing` | calculate_player_respawn_time (pcount-scaled delay) | OK | OK | OK | - | - | live | high |
-| `sv-client-lifecycle.dead.respawn_countdown_announce` | ShowRespawnCountdown: 10-9-8 respawn announcer | MISS | MISS | MISS | MISS | MISS | - | high |
+| `sv-client-lifecycle.dead.respawn_countdown_announce` | ShowRespawnCountdown: 10-9-8 respawn announcer | OK | OK | OK | OK | OK | live | high |
 | `sv-client-lifecycle.frame.player_regen` | player_regen: health/armor/fuel regen + rot | OK | OK | OK | - | - | live | high |
 | `sv-client-lifecycle.frame.drown_player` | DrownPlayer: air timer + drown damage | OK | OK | OK | - | MISS | live | high |
 | `sv-client-lifecycle.frame.contents_fall_damage` | CreatureFrame liquids + fall damage (per-frame) | OK | OK | OK | - | - | live | medium |
-| `sv-client-lifecycle.frame.player_powerups` | player_powerups: superweapon countdown + PlayerPowerups hook | ~ | OK | OK | MISS | MISS | live | medium |
+| `sv-client-lifecycle.frame.player_powerups` | player_powerups: superweapon countdown + PlayerPowerups hook | OK | OK | OK | OK | OK | live | high |
 | `sv-client-lifecycle.frame.pressed_keys` | GetPressedKeys: PRESSED_KEYS stat for the HUD | ~ | OK | - | ~ | - | ~ | high |
 | `sv-client-lifecycle.frame.idle_kick` | sv_maxidle idle-kick / move-to-spectator + alivetime afk-gate | MISS | MISS | MISS | MISS | MISS | - | high |
 | `sv-client-lifecycle.frame.spectator_kick` | sv_spectate-disabled spectator kick + SPECTATE_WARNING | MISS | MISS | MISS | MISS | - | - | high |
 | `sv-client-lifecycle.frame.name_and_version` | Version nag + nameless/too-long/invisible name enforcement + GOD MODE info | MISS | MISS | MISS | MISS | - | - | medium |
-| `sv-client-lifecycle.frame.prethink_misc` | PlayerPreThink misc: PlayerUseKey edge, SetZoomState, voice sounds, chat bubble | ~ | - | - | MISS | MISS | ~ | medium |
+| `sv-client-lifecycle.frame.prethink_misc` | PlayerPreThink misc: PlayerUseKey edge, SetZoomState, voice sounds, chat bubble | ~ | - | - | MISS | ~ | ~ | medium |
 | `sv-client-lifecycle.disconnect.client_disconnect` | ClientDisconnect: teardown | ~ | OK | OK | OK | - | live | high |
 
 ### `sv-clientkill` (server) — 10 features
@@ -1933,14 +1936,14 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `sv-clientkill.command.kill` | `kill` console command → suicide | OK | - | OK | - | - | live | high |
 | `sv-clientkill.countdown.delay` | g_balance_kill_delay countdown timer before death | OK | OK | OK | - | - | live | high |
-| `sv-clientkill.antispam.penalty` | g_balance_kill_antispam repeat-use penalty (clientkill_nexttime) | MISS | MISS | MISS | - | - | - | high |
+| `sv-clientkill.antispam.penalty` | g_balance_kill_antispam repeat-use penalty (clientkill_nexttime) | OK | OK | OK | - | - | live | high |
 | `sv-clientkill.indicator.entity` | Kill-indicator floating digit entity above the head | MISS | MISS | MISS | MISS | - | - | high |
 | `sv-clientkill.announcer.number` | Spoken kill countdown announcer (ANNCE_NUM_KILL_n) | OK | - | OK | OK | OK | live | high |
 | `sv-clientkill.centerprint.teamchange` | Center-print 'Suicide/Changing to TEAM/Spectating in N' | OK | - | OK | OK | - | live | high |
-| `sv-clientkill.teamchange.deferred` | Deferred team change via killindicator_teamchange (selectteam/spectate) | ~ | - | MISS | MISS | MISS | live | high |
-| `sv-clientkill.mutator.hooks` | ClientKill / ClientKill_Now mutator gating (freezetag block, cts/race killtime) | MISS | - | - | - | - | - | high |
-| `sv-clientkill.silent.cts_finish` | Silent finish kill (ClientKill_Silent, g_cts_finish_kill_delay) | ~ | ~ | OK | - | - | live | high |
-| `sv-clientkill.impulse.waypoint_kill` | Impulse-driven kill on personal-waypoint clear (race/cts checkpoints) | MISS | - | - | - | - | - | medium |
+| `sv-clientkill.teamchange.deferred` | Deferred team change via killindicator_teamchange (selectteam/spectate) | OK | - | OK | OK | OK | live | high |
+| `sv-clientkill.mutator.hooks` | ClientKill / ClientKill_Now mutator gating (freezetag block, cts/race killtime) | OK | - | OK | - | - | live | high |
+| `sv-clientkill.silent.cts_finish` | Silent finish kill (ClientKill_Silent, g_cts_finish_kill_delay) | OK | OK | OK | - | - | live | high |
+| `sv-clientkill.impulse.waypoint_kill` | Impulse-driven kill on personal-waypoint clear (race/cts checkpoints) | OK | - | OK | - | - | live | high |
 
 ### `sv-commands-votes` (server) — 16 features
 
@@ -1948,20 +1951,20 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `sv-commands-votes.dispatch.client_parse` | Client command dispatch (cmd <verb>) + privilege split + flood/UTF-8/ban pre-gates | OK | OK | OK | - | - | live | high |
 | `sv-commands-votes.dispatch.server_console` | Server-console dispatch (sv_cmd) + builtin command table | OK | OK | - | - | - | live | high |
-| `sv-commands-votes.vote.call` | vote call — open a whitelisted call-vote (guard chain + caller auto-yes + cooldown) | ~ | OK | OK | ~ | MISS | live | high |
-| `sv-commands-votes.vote.parse_whitelist` | VoteCommand_parse — whitelist match, nasty-char sanitize, command rewriting | ~ | OK | - | - | - | live | high |
-| `sv-commands-votes.vote.count` | VoteCount — tally, thresholds, spectator exclusion, accept/reject/timeout resolution | ~ | OK | OK | - | - | ~ | high |
+| `sv-commands-votes.vote.call` | vote call — open a whitelisted call-vote (guard chain + caller auto-yes + cooldown) | OK | OK | OK | ~ | MISS | live | high |
+| `sv-commands-votes.vote.parse_whitelist` | VoteCommand_parse — whitelist match, nasty-char sanitize, command rewriting | OK | OK | - | - | - | live | high |
+| `sv-commands-votes.vote.count` | VoteCount — tally, thresholds, spectator exclusion, accept/reject/timeout resolution | OK | OK | OK | - | - | live | high |
 | `sv-commands-votes.vote.resolve` | VoteAccept / VoteReject / VoteTimeout / VoteStop + VoteThink | OK | OK | OK | ~ | MISS | live | high |
-| `sv-commands-votes.vote.master` | vote master — login / do <cmd> / call master-vote | ~ | OK | OK | - | - | live | high |
-| `sv-commands-votes.timeout.state_machine` | timeout / timein — LEADTIME->ACTIVE->resume pause with per-player allowance | OK | ~ | ~ | MISS | MISS | ~ | high |
+| `sv-commands-votes.vote.master` | vote master — login / do <cmd> / call master-vote | OK | OK | OK | - | - | live | high |
+| `sv-commands-votes.timeout.state_machine` | timeout / timein — LEADTIME->ACTIVE->resume pause with per-player allowance | OK | OK | OK | ~ | ~ | live | high |
 | `sv-commands-votes.ban.ip_id_masks` | Ban IP/idfp mask derivation + IsClientBanned + idmode | OK | OK | - | - | - | live | high |
 | `sv-commands-votes.ban.insert_persist` | Ban_Insert / Ban_Delete / Ban_View + g_banned_list persistence + KickBan + enforce | OK | OK | - | - | - | live | high |
 | `sv-commands-votes.ban.sync_online` | Online cross-server ban-list sync (uri_get / g_ban_sync_*) *(intended)* | MISS | MISS | MISS | - | - | - | high |
 | `sv-commands-votes.ban.prefix_lists` | mute / playban / voteban prefix-list bans (g_chatban/playban/voteban_list) | OK | OK | - | - | - | live | high |
-| `sv-commands-votes.common.info_commands` | who / time / records / rankings / ladder / lsmaps / printmaplist / teamstatus / info / cvar_changes | ~ | ~ | - | ~ | - | live | high |
+| `sv-commands-votes.common.info_commands` | who / time / records / rankings / ladder / lsmaps / printmaplist / teamstatus / info / cvar_changes | OK | OK | - | OK | - | live | high |
 | `sv-commands-votes.common.cointoss` | cointoss — random coin flip broadcast | OK | OK | - | OK | - | live | high |
-| `sv-commands-votes.admin.teamplay_match` | allready / resetmatch / lockteams / unlockteams / shuffleteams / moveplayer / allspec / nospectators / gametype / extendmatchtime / reducematchtime | OK | ~ | - | - | - | live | medium |
-| `sv-commands-votes.debug_tools.missing` | radarmap / gettaginfo / animbench / bbox / trace / stuffto / adminmsg / anticheat(cmd) / delrec / database / effectindexdump / make_mapinfo / printstats | MISS | MISS | - | - | - | - | high |
+| `sv-commands-votes.admin.teamplay_match` | allready / resetmatch / lockteams / unlockteams / shuffleteams / moveplayer / allspec / nospectators / gametype / extendmatchtime / reducematchtime | OK | OK | - | - | - | live | high |
+| `sv-commands-votes.debug_tools.missing` | radarmap / gettaginfo / animbench / bbox / trace / stuffto / adminmsg / delrec / database / effectindexdump / make_mapinfo / printstats | MISS | MISS | - | - | - | - | high |
 
 ### `sv-handicap` (server) — 8 features
 
@@ -1970,34 +1973,35 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-handicap.damage.give_take_scaling` | Damage scaling by give/take handicap in PlayerDamage | OK | OK | OK | - | - | live | high |
 | `sv-handicap.total.forced_times_voluntary` | Total handicap = forced x voluntary, per direction | OK | OK | - | - | - | live | high |
 | `sv-handicap.voluntary.cl_handicap_cvars` | Voluntary handicap from cl_handicap / cl_handicap_damage_given/taken | OK | OK | OK | - | - | live | high |
-| `sv-handicap.init.defaults_to_one` | Handicap_Initialize: forced handicaps reset to 1 on (re)spawn | ~ | OK | ? | - | - | ~ | medium |
-| `sv-handicap.level.compute_and_network` | handicap_level (0-16) computed + networked via ENTCS | MISS | MISS | - | MISS | - | - | high |
-| `sv-handicap.scoreboard.handicap_icon` | Scoreboard player_handicap icon (white->red by level) | MISS | MISS | - | MISS | - | - | high |
+| `sv-handicap.init.defaults_to_one` | Handicap_Initialize: forced handicaps reset to 1 on (re)spawn | OK | OK | OK | - | - | live | high |
+| `sv-handicap.level.compute_and_network` | handicap_level (0-16) computed + networked via ENTCS | OK | OK | OK | OK | - | live | high |
+| `sv-handicap.scoreboard.handicap_icon` | Scoreboard player_handicap icon (white->red by level) *(intended)* | OK | OK | - | OK | - | live | high |
 | `sv-handicap.xonstat.avg_sums` | Per-player damage-weighted handicap avg for the game report | OK | OK | OK | - | - | live | high |
-| `sv-handicap.dynamic.mutator` | Dynamic Handicap mutator (auto-balance by score) | ~ | OK | ~ | - | - | live | high |
+| `sv-handicap.dynamic.mutator` | Dynamic Handicap mutator (auto-balance by score) | OK | OK | OK | - | - | live | high |
 
-### `sv-impulse` (server) — 12 features
+### `sv-impulse` (server) — 13 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `sv-impulse.dispatch.commands_gate` | ImpulseCommands dispatch + match-state gating | ~ | OK | OK | - | - | live | high |
+| `sv-impulse.dispatch.commands_gate` | ImpulseCommands dispatch + match-state gating | OK | OK | OK | - | - | live | high |
 | `sv-impulse.weapon.group_cycle` | Weapon-group cycling impulses (1-9, 14) | OK | OK | OK | - | - | live | high |
-| `sv-impulse.weapon.priority_cycle` | Custom-priority cycling impulses (prev/best/next, 200-229) | ~ | ~ | OK | - | - | live | high |
+| `sv-impulse.weapon.priority_cycle` | Custom-priority cycling impulses (prev/best/next, 200-229) | OK | OK | OK | - | - | live | high |
 | `sv-impulse.weapon.byid` | Direct weapon-by-id impulses (230-253) | OK | OK | OK | - | - | live | high |
-| `sv-impulse.weapon.nextprev_singletons` | next/prev/last/best singleton impulses (10/12, 18/19, 15/16, 11, 13) | ~ | OK | OK | - | - | live | high |
+| `sv-impulse.weapon.nextprev_singletons` | next/prev/last/best singleton impulses (10/12, 18/19, 15/16, 11, 13) | OK | OK | OK | - | - | live | high |
 | `sv-impulse.weapon.getcycle` | W_GetCycleWeapon traversal (the selection core) | ~ | OK | OK | - | - | live | high |
 | `sv-impulse.weapon.switch` | W_SwitchWeapon / TryOthers / reload-on-reselect | OK | OK | OK | - | - | live | high |
 | `sv-impulse.action.drop` | weapon_drop (impulse 17) — throw current weapon | OK | OK | OK | ~ | OK | live | high |
 | `sv-impulse.action.reload` | weapon_reload (impulse 20) | OK | OK | OK | - | ? | live | high |
-| `sv-impulse.use.usekey` | use (impulse 21) / +use key -> PlayerUseKey | ~ | OK | OK | - | - | ~ | high |
-| `sv-impulse.waypoints.sprites` | Waypoint-sprite impulses (personal/here/danger/helpme/clear, 30-48) | MISS | MISS | - | MISS | - | - | high |
-| `sv-impulse.cheat.impulses` | Cheat impulses (give-all 99, clone/speedrun/teleport/eliminate 140-148) | ~ | ~ | - | - | - | ~ | high |
+| `sv-impulse.use.usekey` | use (impulse 21) / +use key -> PlayerUseKey | OK | OK | OK | - | - | live | high |
+| `sv-impulse.waypoints.sprites` | Waypoint-sprite impulses (personal/here/danger/helpme/clear, 30-39, 47-48) | ~ | OK | OK | OK | - | live | high |
+| `sv-impulse.cheat.impulses` | Cheat impulses (give-all 99, r00t 148, clone/speedrun/teleport 140-147) | ~ | ~ | - | - | - | ~ | high |
+| `sv-impulse.cheat.command_impulse` | CheatImpulse 140-147 (clone / speedrun / fixed-clone / teleport / drag) | MISS | MISS | - | - | - | - | high |
 
 ### `sv-intermission` (server) — 15 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `sv-intermission.matchend.nextlevel` | NextLevel match-end latch + once-per-match bookkeeping | ~ | OK | OK | - | - | live | high |
+| `sv-intermission.matchend.nextlevel` | NextLevel match-end latch + once-per-match bookkeeping | OK | OK | OK | - | - | live | high |
 | `sv-intermission.matchend.freeze` | World freeze during intermission (game_stopped/intermission_running) | OK | - | OK | - | - | live | high |
 | `sv-intermission.timer.exittime` | Intermission exit timer (intermission_exittime + sv_mapchange_delay, -1 with no players) | OK | OK | OK | - | - | live | high |
 | `sv-intermission.timer.input_early_exit` | Player input skips the scoreboard (press fire/jump after the hold) | OK | - | OK | OK | - | live | high |
@@ -2007,11 +2011,11 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-intermission.nextmap.changelevel` | Apply chosen next map (Map_Goto → changelevel) + mark recent | OK | - | OK | - | - | live | high |
 | `sv-intermission.mapvote.server_core` | Server map-vote core (MapVote_Start / tally / finish) | OK | OK | OK | - | - | ~ | high |
 | `sv-intermission.mapvote.client_ui` | Client map-vote ballot UI (MapVote_Draw) | OK | OK | OK | OK | - | ~ | high |
-| `sv-intermission.matchend.nextmap_broadcast` | Next-map broadcast to clients (Set_NextMap / Send_NextMap_To_Player → scoreboard 'Next map:') | MISS | - | - | MISS | - | - | high |
-| `sv-intermission.client.view_freeze` | Intermission view freeze (SVC_INTERMISSION: camera lock + viewmodel EF_NODRAW + health sentinel) | MISS | MISS | - | MISS | - | ~ | high |
-| `sv-intermission.client.scoreboard_autoshow` | Scoreboard auto-shows at intermission (no key held) | MISS | - | - | MISS | - | ~ | high |
-| `sv-intermission.client.autoscreenshot` | Server-forced end-of-match autoscreenshot | MISS | MISS | MISS | MISS | - | - | high |
-| `sv-intermission.audio.cdtrack` | Intermission music switch (sv_intermission_cdtrack) + target_music_kill | MISS | MISS | - | - | MISS | - | high |
+| `sv-intermission.matchend.nextmap_broadcast` | Next-map broadcast to clients (Set_NextMap / Send_NextMap_To_Player → scoreboard 'Next map:') | OK | - | OK | OK | - | live | high |
+| `sv-intermission.client.view_freeze` | Intermission view freeze (SVC_INTERMISSION: camera lock + viewmodel EF_NODRAW + health sentinel) | ~ | MISS | - | ~ | - | live | high |
+| `sv-intermission.client.scoreboard_autoshow` | Scoreboard auto-shows at intermission (no key held) | OK | - | OK | OK | - | live | high |
+| `sv-intermission.client.autoscreenshot` | Server-forced end-of-match autoscreenshot | MISS | ~ | MISS | MISS | - | - | high |
+| `sv-intermission.audio.cdtrack` | Intermission music switch (sv_intermission_cdtrack) + target_music_kill | ~ | OK | - | - | ~ | ~ | high |
 
 ### `sv-ipban` (server) — 13 features
 
@@ -2023,10 +2027,10 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-ipban.insert` | Ban_Insert: prolong-not-shorten, free/expired slot, evict-soonest, refuse-shorter | ~ | OK | - | - | - | live | high |
 | `sv-ipban.kickban` | Ban_KickBanClient: masksize pick + ban IP and crypto id, fallback plain kick | OK | OK | - | - | - | live | high |
 | `sv-ipban.enforce.roster` | Ban_Enforce: drop every connected client matching a slot (or all) | OK | - | - | ~ | - | live | high |
-| `sv-ipban.persist` | Save/Load via g_banned_list (version-1 token string, seconds remaining) | ~ | OK | ~ | - | - | live | high |
+| `sv-ipban.persist` | Save/Load via g_banned_list (version-1 token string, seconds remaining) | OK | OK | OK | - | - | live | high |
 | `sv-ipban.view_delete` | Ban_View (banlist) + Ban_Delete (unban #N), index stability | OK | OK | - | ~ | - | live | high |
-| `sv-ipban.softban.chatban` | Mute (g_chatban_list): admin mute/unmute + fake-accept muted chat + connect re-apply | ~ | OK | - | - | - | ~ | high |
-| `sv-ipban.softban.playban` | Playban (g_playban_list): force spectate + minigame removal + connect re-apply | OK | ~ | - | - | - | ~ | high |
+| `sv-ipban.softban.chatban` | Mute (g_chatban_list): admin mute/unmute + fake-accept muted chat + connect re-apply | OK | OK | - | - | - | live | high |
+| `sv-ipban.softban.playban` | Playban (g_playban_list): force spectate + minigame removal + connect re-apply | OK | OK | - | - | - | live | high |
 | `sv-ipban.softban.playban.join_gate` | Playban join-attempt enforcement: a play-banned client cannot (re)join the game | OK | - | - | MISS | - | live | high |
 | `sv-ipban.softban.voteban` | Voteban (g_voteban_list): block calling and casting votes | OK | OK | - | OK | - | live | medium |
 | `sv-ipban.sync.online` | Online cross-server ban-list sync (HTTP uri_get, bansyncer think, g_ban_sync_*) *(intended)* | MISS | MISS | MISS | - | - | - | high |
@@ -2036,35 +2040,36 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `sv-mapvoting.lifecycle.think_loop` | Vote lifecycle / think loop (start, throttle, winner delay) | OK | OK | OK | - | - | live | high |
-| `sv-mapvoting.ballot.build` | Build the ballot from rotation + suggestions + abstain | ~ | OK | - | - | - | live | high |
-| `sv-mapvoting.override_chain` | Pre-vote override chain (DoNextMapOverride: campaign / queued nextmap / samelevel) + silent GotoNextMap | OK | OK | - | - | - | live | medium |
-| `sv-mapvoting.vote_scoreboard_hide` | During-vote client state: 2342 sentinel health + SVC_FINALE (hide scoreboard, zero impulse each tick) | MISS | MISS | MISS | MISS | - | - | high |
-| `sv-mapvoting.cast.vote` | Cast a vote (impulse -> .mapvote) | OK | - | - | - | - | ~ | high |
-| `sv-mapvoting.cast.abstain` | Abstain (Don't care) option | OK | OK | - | - | - | ~ | high |
-| `sv-mapvoting.decide.tally_rank` | Tally votes + rank candidates | OK | - | - | - | - | ~ | high |
-| `sv-mapvoting.decide.early_finish` | Early finish: timeout / leader unbeatable / all voted | OK | OK | OK | - | - | ~ | high |
-| `sv-mapvoting.decide.reduce` | Ballot reduce / keep-two (mid-vote option pruning) | OK | OK | OK | ~ | - | ~ | high |
+| `sv-mapvoting.ballot.build` | Build the ballot from rotation + suggestions + abstain | OK | OK | - | - | - | live | high |
+| `sv-mapvoting.override_chain` | Pre-vote override chain (DoNextMapOverride: campaign / queued nextmap / samelevel) + silent GotoNextMap | OK | OK | - | - | - | live | high |
+| `sv-mapvoting.vote_scoreboard_hide` | During-vote client state: 2342 sentinel health + SVC_FINALE (hide scoreboard, zero impulse each tick) | MISS | MISS | MISS | OK | - | ~ | high |
+| `sv-mapvoting.cast.vote` | Cast a vote (impulse -> .mapvote) | OK | - | - | - | - | live | high |
+| `sv-mapvoting.cast.abstain` | Abstain (Don't care) option | OK | OK | - | - | - | live | high |
+| `sv-mapvoting.decide.tally_rank` | Tally votes + rank candidates | OK | - | - | - | - | live | high |
+| `sv-mapvoting.decide.early_finish` | Early finish: timeout / leader unbeatable / all voted | OK | OK | OK | - | - | live | high |
+| `sv-mapvoting.decide.reduce` | Ballot reduce / keep-two (mid-vote option pruning) | OK | OK | OK | ~ | - | live | high |
 | `sv-mapvoting.finish.winner` | Finish + pick winner + apply map change | OK | - | OK | OK | - | live | high |
-| `sv-mapvoting.gametype_vote` | Gametype vote (pre-map gametype ballot + switch) | MISS | ~ | MISS | MISS | - | - | high |
-| `sv-mapvoting.suggestions` | Player map suggestions (suggestmap) | ~ | OK | - | - | - | live | high |
+| `sv-mapvoting.gametype_vote` | Gametype vote (pre-map gametype ballot + switch) | MISS | OK | MISS | MISS | - | - | high |
+| `sv-mapvoting.suggestions` | Player map suggestions (suggestmap) | OK | OK | - | - | - | live | high |
 | `sv-mapvoting.net.sync` | Vote state networking (ENT_CLIENT_MAPVOTE + screenshot transfer) *(intended)* | ~ | - | OK | ~ | - | ~ | high |
 | `sv-mapvoting.client.draw` | Client vote-screen panel (grid, thumbnails, counts, winner reveal) | OK | OK | OK | OK | - | ~ | high |
-| `sv-mapvoting.client.input` | Client vote input (keyboard/mouse selection + cast) | MISS | - | - | MISS | - | - | high |
+| `sv-mapvoting.client.input` | Client vote input (keyboard/mouse selection + cast) | OK | - | - | OK | - | live | high |
 
-### `sv-spawnpoints` (server) — 14 features
+### `sv-spawnpoints` (server) — 15 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `sv-spawnpoints.select.select_spawn_point` | SelectSpawnPoint: gather, filter, weighted 50/50 pick | ~ | OK | OK | - | - | live | high |
 | `sv-spawnpoints.select.spawn_score` | Spawn_Score: nearest-player distance scoring + good-distance prio | OK | OK | - | - | - | live | high |
-| `sv-spawnpoints.select.weighted_point` | Spawn_WeightedPoint / RandomSelection reservoir pick | OK | ~ | - | - | - | live | high |
+| `sv-spawnpoints.select.weighted_point` | Spawn_WeightedPoint / RandomSelection reservoir pick | OK | OK | - | - | - | live | high |
 | `sv-spawnpoints.select.teamcheck_ladder` | teamcheck branch ladder + have_team_spawns globals *(intended)* | OK | OK | - | - | - | live | high |
 | `sv-spawnpoints.select.spot_filters` | Spot filters: wrong-team / inactive / restriction | OK | OK | - | - | - | live | high |
-| `sv-spawnpoints.select.spawn_evalfunc` | race/assault spawn_evalfunc target chain + race_spawns requirement | MISS | MISS | - | - | - | - | high |
+| `sv-spawnpoints.select.spawn_evalfunc` | race/assault spawn_evalfunc target chain + race_spawns requirement | ~ | ~ | - | - | - | ~ | high |
 | `sv-spawnpoints.select.spawnpoint_targ` | target_spawnpoint forced-spawn redirection | OK | - | OK | - | - | live | high |
 | `sv-spawnpoints.relocate.move_out_of_solid` | relocate_spawnpoint move-out-of-solid *(intended)* | OK | OK | OK | - | - | live | high |
-| `sv-spawnpoints.put.put_player_in_server` | PutPlayerInServer: physics/loadout/placement reset on (re)spawn | OK | OK | ~ | ~ | MISS | live | high |
-| `sv-spawnpoints.fx.spawn_event_particle` | SpawnEvent particle burst on (re)spawn | OK | ~ | OK | ~ | MISS | live | high |
+| `sv-spawnpoints.put.put_player_in_server` | PutPlayerInServer: physics/loadout/placement reset on (re)spawn | OK | OK | OK | ~ | OK | live | high |
+| `sv-spawnpoints.put.spawn_target_fire` | PutPlayerInServer fires the spawn spot's .target on spawn | OK | - | OK | - | - | live | high |
+| `sv-spawnpoints.fx.spawn_event_particle` | SpawnEvent particle burst + sound on (re)spawn | OK | OK | OK | ~ | OK | live | high |
 | `sv-spawnpoints.fx.spawnpoint_idle_glow` | Idle spawn-point particle glow (Spawn_Draw) *(intended)* | OK | OK | OK | OK | - | live | high |
 | `sv-spawnpoints.mutator.spawn_near_teammate` | spawn_near_teammate: bias/relocate spawn near a teammate | ~ | OK | OK | - | - | live | high |
 | `sv-spawnpoints.mutator.spawn_unique` | spawn_unique: demote the player's last spawnpoint | OK | OK | - | - | - | live | high |
@@ -2075,11 +2080,11 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `sv-teamplay.identity.team_codes` | Team color codes & active-team set | OK | OK | - | - | - | live | high |
-| `sv-teamplay.join.find_best_team` | Assign joiner to the best (smallest) team | ~ | OK | - | - | - | live | high |
-| `sv-teamplay.join.skill_weighting` | Inverse-variance skill-weighted balance (g_balance_teams_skill) | ~ | ~ | - | - | - | live | high |
+| `sv-teamplay.join.find_best_team` | Assign joiner to the best (smallest) team | OK | OK | - | - | - | live | high |
+| `sv-teamplay.join.skill_weighting` | Inverse-variance skill-weighted balance (g_balance_teams_skill) | OK | ~ | - | - | - | live | high |
 | `sv-teamplay.balance.autobalance_bots` | Bot autobalance (move lowest-scoring bot largest->smallest) | ~ | ~ | ~ | - | - | live | high |
 | `sv-teamplay.balance.prevent_imbalance` | Block switching to a stronger/larger team mid-match | OK | OK | - | ~ | - | live | high |
-| `sv-teamplay.forced.determine_team` | Forced teams (g_forced_team_*, otherwise, campaign forceteam) | ~ | ~ | - | - | - | ~ | high |
+| `sv-teamplay.forced.determine_team` | Forced teams (g_forced_team_*, otherwise, campaign forceteam) | OK | OK | - | - | - | live | high |
 | `sv-teamplay.queue.join_queue` | Warmup/match join queue (g_balance_teams_queue) | MISS | MISS | - | - | - | - | high |
 | `sv-teamplay.remove.excess_players` | Remove excess players on leave (g_balance_teams_remove) | MISS | MISS | MISS | MISS | - | - | high |
 | `sv-teamplay.nagger.team_nagger` | Unbalanced-teams nag + warmup hold (sv_teamnagger) | OK | OK | - | MISS | - | live | high |
@@ -2088,15 +2093,15 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-teamplay.admin.lock_shuffle_move` | Admin team commands: lockteams/shuffleteams/moveplayer/team | ~ | - | - | - | - | live | medium |
 | `sv-teamplay.color.set_player_colors` | color command / clientcolors encoding (SV_ChangeTeam, setcolor, SetPlayerColors) | MISS | MISS | - | MISS | - | - | medium |
 | `sv-teamplay.global.team_entities` | Global team entities (score, alive count, owned items, winner queries) | ~ | OK | - | - | - | ~ | low |
-| `sv-teamplay.change.team_change_hooks` | Player_ChangeTeam / Player_ChangedTeam mutator hooks | MISS | - | - | - | - | - | high |
+| `sv-teamplay.change.team_change_hooks` | Player_ChangeTeam / Player_ChangedTeam mutator hooks | OK | - | - | - | - | live | high |
 | `sv-teamplay.lock.lockonrestart` | Auto-lock teams on ready-restart (teamplay_lockonrestart) | OK | OK | - | - | - | live | high |
 | `sv-teamplay.bot.bot_forced_team` | Bot forced team (bot_forced_team from bot config/connect) | OK | OK | - | - | - | live | high |
 
-### `sv-world-rules` (server) — 17 features
+### `sv-world-rules` (server) — 18 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `sv-world-rules.boot.worldspawn` | worldspawn map-init bookkeeping | ~ | ~ | - | - | - | live | high |
+| `sv-world-rules.boot.worldspawn` | worldspawn map-init bookkeeping | OK | OK | - | - | - | live | high |
 | `sv-world-rules.cvars.changes_log` | cvar_changes / cvar_purechanges server-list log | OK | OK | - | - | - | live | high |
 | `sv-world-rules.warmup.stage` | Warmup stage entry + limit resolution | OK | OK | OK | - | - | live | high |
 | `sv-world-rules.warmup.serverflags` | readlevelcvars serverflags (fullbright / pickuptimer) | MISS | MISS | - | MISS | - | - | high |
@@ -2110,9 +2115,10 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-world-rules.entity.pingplreport` | PingPLReport ping/packet-loss client report | MISS | MISS | MISS | MISS | - | - | high |
 | `sv-world-rules.boot.lightstyles` | Animated lightstyle table install | MISS | MISS | MISS | MISS | - | - | medium |
 | `sv-world-rules.misc.start_delay` | g_start_delay pre-match join window | OK | OK | OK | - | - | live | high |
-| `sv-world-rules.misc.max_shot_distance` | max_shot_distance from world bounds | ~ | ~ | - | - | - | live | medium |
+| `sv-world-rules.misc.max_shot_distance` | max_shot_distance from world bounds | OK | OK | - | - | - | live | high |
 | `sv-world-rules.misc.redirection` | RedirectionThink server redirect | MISS | MISS | MISS | - | - | - | high |
-| `sv-world-rules.misc.shutdown` | Shutdown: persist DB/bans + slowmo/playerstats/bot teardown | ~ | - | - | - | - | ~ | medium |
+| `sv-world-rules.misc.shutdown` | Shutdown: persist DB/bans + slowmo/playerstats/bot teardown | ~ | - | - | - | - | live | high |
+| `sv-world-rules.eventlog.dumpstats` | DumpStats final/periodic scores dump (:scores: / :status:) | MISS | MISS | MISS | - | - | - | high |
 
 ### `fx-sounds` (sound) — 15 features
 

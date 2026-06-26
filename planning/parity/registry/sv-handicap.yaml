@@ -1,14 +1,14 @@
 unit: sv-handicap
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 8
   worst_gaps:
-    - "handicap_level (0-16) is still never computed or networked, and the scoreboard player_handicap icon is absent: handicapped players are visually indistinguishable."
-    - "No explicit Handicap_Initialize on (re)connect/spawn; forced fields rely on the 1f construction default and handicap_level is never (re)set."
-    - "Dynamic Handicap recompute cadence (PlayerSpawn/PlayerDies) and iteration scope (players only, not FOREACH_CLIENT(true) incl. spectators) still diverge from Base."
-    - "FIXED in Wave-5: the XonStat handicapgiven/handicaptaken events are now genuinely populated (damage-weighted avg-sum accumulation + report division, live on the score path)."
+    - "FIXED since Wave-6: handicap_level (0-16) is now computed (Handicap_UpdateHandicapLevel via map_bound_ranges) AND networked (ScoreboardBlock WriteByte/ReadByte = the ENTCS slice), and the scoreboard player_handicap icon is drawn with the exact white->red tint."
+    - "FIXED since Wave-6: an explicit Handicap_Initialize now runs live on every (re)spawn (ClientManager PutPlayerInServer), resetting forced give/take to 1 and refreshing handicap_level, ahead of the dynamic_handicap recompute."
+    - "FIXED since Wave-6: the dynamic_handicap recompute cadence (all four Base triggers: ClientDisconnect/PutClientInServer/MakePlayerObserver/AddedPlayerScore(SP_SCORE)) and the SetForcedHandicap path (-> UpdateHandicapLevel) are now ported live."
+    - "Residual: voluntary handicap keeps the float cvar (Base truncates handicap_value to int before bound) — negligible, cvars are practically integers."
 features:
   - id: sv-handicap.damage.give_take_scaling
     name: "Damage scaling by give/take handicap in PlayerDamage"
@@ -17,14 +17,14 @@ features:
       - "server/player.qc:PlayerDamage"
       - "server/handicap.qc:Handicap_GetTotalHandicap"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:Apply"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:HandicapTotal"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageEntityState.cs:HandicapGive"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:PlayerDamage (~402-413)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:HandicapTotal (~867-875)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageEntityState.cs:HandicapGive/HandicapTake"
     constants:
       - { name: "victim multiply (take)", base: "damage *= total(take)", port: "damage *= HandicapTotal(targ,true)", match: true }
       - { name: "attacker divide (give)", base: "damage /= total(give) if this!=attacker && IS_PLAYER", port: "damage /= HandicapTotal(attacker,false) if give!=0 (same this!=attacker && IsPlayer guards)", match: true }
       - { name: "special-deathtype gate", base: "!DEATH_ISSPECIAL", port: "!DeathTypes.IsSpecial", match: true }
-      - { name: "HANDICAP_DISABLED() CTS/Race gate on read", base: "Handicap_GetTotalHandicap returns 1 in CTS/Race", port: "HandicapTotal has no own gametype gate, but both layers it reads are now gated (voluntary provider returns 1 in CTS/Race; forced setter — dynamic mutator — is disabled in CTS/Race)", match: true }
+      - { name: "HANDICAP_DISABLED() CTS/Race gate on read", base: "Handicap_GetTotalHandicap returns 1 in CTS/Race", port: "HandicapTotal has no own gametype gate, but both layers it reads are gated (voluntary provider returns 1 in CTS/Race; forced setter — dynamic mutator — disabled in CTS/Race)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -35,11 +35,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "HandicapTotal still has no explicit HANDICAP_DISABLED() gate of its own, but the residual is now moot: the voluntary provider returns 1 in CTS/Race and the only forced setter (the dynamic_handicap mutator) is now itself disabled in CTS/Race, so the product stays 1 there. A future non-mutator forced setter that bypassed the gate could still diverge."
+      - "HandicapTotal still has no explicit HANDICAP_DISABLED() gate of its own, but the residual is moot: the voluntary provider returns 1 in CTS/Race and the only forced setter (the dynamic_handicap mutator) is itself disabled in CTS/Race, so the product stays 1 there. A future non-mutator forced setter that bypassed the gate could still diverge."
     verification:
-      - { kind: code, ref: "DamageSystem.cs:376-387 (apply) + 836-844 (HandicapTotal = forced*voluntary) vs server/player.qc + handicap.qc:Handicap_GetTotalHandicap", result: pass }
+      - { kind: code, ref: "DamageSystem.cs:402-413 (apply) + 867-875 (HandicapTotal = forced*voluntary) vs server/player.qc + handicap.qc:Handicap_GetTotalHandicap", result: pass }
     confidence: high
-    notes: "Live: weapons -> ApplyDamage/RadiusDamage -> DamageSystem.Apply. Apply formula (take-multiply, give-divide, this!=attacker && IsPlayer guard, !IsSpecial gate) is exact. HandicapTotal now multiplies forced (entity field) by voluntary (VoluntaryHandicapProvider) per direction; both layers honor CTS/Race, so the missing in-function gate is observationally covered."
+    notes: "Live: weapons -> ApplyDamage/RadiusDamage -> DamageSystem.PlayerDamage. Apply formula (take-multiply, give-divide, this!=attacker && IsPlayer guard, !IsSpecial gate) is exact. HandicapTotal multiplies forced (entity field) by voluntary (VoluntaryHandicapProvider) per direction; both layers honor CTS/Race, so the missing in-function gate is observationally covered. Unchanged since Wave-5."
 
   - id: sv-handicap.total.forced_times_voluntary
     name: "Total handicap = forced x voluntary, per direction"
@@ -47,8 +47,9 @@ features:
     base_refs:
       - "server/handicap.qc:Handicap_GetTotalHandicap"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:HandicapTotal"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:VoluntaryHandicapProvider"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:HandicapTotal (~867-875)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:VoluntaryHandicapProvider (~859)"
+      - "src/XonoticGodot.Common/Gameplay/Handicap.cs:GetForcedHandicap (~57-62)"
     constants:
       - { name: "total formula", base: "forced(dir) * voluntary(dir)", port: "forced (entity field, default 1) * voluntary (VoluntaryHandicapProvider, default 1)", match: true }
     status:
@@ -62,9 +63,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "DamageSystem.cs:836-844 (forced*voluntary) vs handicap.qc:Handicap_GetTotalHandicap (GetForcedHandicap * GetVoluntaryHandicap)", result: pass }
+      - { kind: code, ref: "DamageSystem.cs:867-875 (forced*voluntary) vs handicap.qc:Handicap_GetTotalHandicap (GetForcedHandicap * GetVoluntaryHandicap)", result: pass }
     confidence: high
-    notes: "FIXED in Wave-5: HandicapTotal no longer reads a single pre-combined field — it multiplies the forced entity field by the live VoluntaryHandicapProvider, exactly mirroring Base's product of the two layers. The provider is null-safe (returns 1 in headless/unit-test contexts)."
+    notes: "HandicapTotal multiplies the forced entity field by the live VoluntaryHandicapProvider, mirroring Base's product of the two layers. The provider is null-safe (returns 1 in headless/unit-test contexts). A standalone Handicap.GetForcedHandicap now also exists (server/handicap.qc forced layer) used by the level computation. Unchanged since Wave-5."
 
   - id: sv-handicap.voluntary.cl_handicap_cvars
     name: "Voluntary handicap from cl_handicap / cl_handicap_damage_given/taken"
@@ -74,8 +75,8 @@ features:
       - "common/replicate.qh:19-21"
       - "server/client.qh:210-211"
     port_refs:
-      - "src/XonoticGodot.Server/Commands.cs:VoluntaryHandicapProvider (ctor wiring ~374-392)"
-      - "src/XonoticGodot.Server/Commands.cs:RegisterClientCommandCvars (cl_handicap* allowlist ~201)"
+      - "src/XonoticGodot.Server/Commands.cs:VoluntaryHandicapProvider (ctor wiring ~400-418)"
+      - "src/XonoticGodot.Server/Commands.cs:RegisterClientCommandCvars (cl_handicap* allowlist)"
       - "src/XonoticGodot.Server/Commands.cs:ParseHandicapVectorXY"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:VoluntaryHandicapProvider"
     constants:
@@ -83,7 +84,7 @@ features:
       - { name: "bound ceil", base: "10.0", port: "10f", match: true }
       - { name: "receiving select", base: "taken>1 ? taken : (cl_handicap.y>0 ? .y : .x)", port: "taken>1f ? taken : (hy>0f ? hy : hx)", match: true }
       - { name: "giving select", base: "given>1 ? given : cl_handicap.x", port: "given>1f ? given : hx", match: true }
-      - { name: "CTS/Race gate", base: "HANDICAP_DISABLED() -> return 1", base_note: "", port: "GameType is Cts or Race -> return 1f", match: true }
+      - { name: "CTS/Race gate", base: "HANDICAP_DISABLED() -> return 1", port: "GameType is Cts or Race -> return 1f", match: true }
       - { name: "int truncation of handicap_value", base: "int handicap_value (cvar value truncated to int before bound)", port: "float (no truncation; e.g. cl_handicap_damage_taken 2.5 -> 2.5 not 2)", match: false }
     status:
       logic: faithful
@@ -97,91 +98,101 @@ features:
     gaps:
       - "Base stores handicap_value as int (truncates a fractional cvar like 2.5 to 2 before bound); the port keeps the float, so fractional voluntary handicaps differ slightly. Negligible (cvars are practically integers) but not bit-exact."
     verification:
-      - { kind: code, ref: "Commands.cs:374-392 (forwards-compat vector branch + bound[1,10] + CTS/Race gate) vs handicap.qc:Handicap_GetVoluntaryHandicap", result: pass }
-      - { kind: code, ref: "Commands.cs:201 cl_handicap/cl_handicap_damage_given/taken in REPLICATE allowlist; Commands ctor invoked from GameWorld.cs:691 (live server)", result: pass }
+      - { kind: code, ref: "Commands.cs:400-418 (forwards-compat vector branch + bound[1,10] + CTS/Race gate) vs handicap.qc:Handicap_GetVoluntaryHandicap", result: pass }
+      - { kind: code, ref: "cl_handicap/cl_handicap_damage_given/taken in REPLICATE allowlist; Commands ctor invoked from GameWorld (live server)", result: pass }
     confidence: high
-    notes: "FIXED in Wave-5: the three cl_handicap* cvars are now REPLICATE-allowlisted + stored per-client, and VoluntaryHandicapProvider (wired in the live Commands ctor) reproduces Base's exact forwards-compat selection (new scalar cvar preferred, legacy '.y/.x' vector fallback), bound to [1,10], with the CTS/Race gate. Multiplied into damage via HandicapTotal. Only residual is the int-truncation nuance."
+    notes: "The three cl_handicap* cvars are REPLICATE-allowlisted + stored per-client, and VoluntaryHandicapProvider (wired in the live Commands ctor) reproduces Base's exact forwards-compat selection (new scalar cvar preferred, legacy '.y/.x' vector fallback), bound to [1,10], with the CTS/Race gate. Multiplied into damage via HandicapTotal. Only residual is the int-truncation nuance. Unchanged since Wave-5."
 
   - id: sv-handicap.init.defaults_to_one
     name: "Handicap_Initialize: forced handicaps reset to 1 on (re)spawn"
     layer: [authority]
     base_refs:
       - "server/handicap.qc:Handicap_Initialize"
-      - "server/client.qc:1240"
+      - "server/client.qc:1240 (PutClientInServer)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageEntityState.cs:HandicapGive"
+      - "src/XonoticGodot.Common/Gameplay/Handicap.cs:Initialize (~44-50)"
+      - "src/XonoticGodot.Server/ClientManager.cs:699 (live call on every spawn path)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageEntityState.cs:HandicapGive/HandicapTake"
     constants:
-      - { name: "forced give default", base: "1", port: "1f (field initializer)", match: true }
-      - { name: "forced take default", base: "1", port: "1f (field initializer)", match: true }
+      - { name: "forced give default", base: "1", port: "1f (Handicap.Initialize sets HandicapGive=1)", match: true }
+      - { name: "forced take default", base: "1", port: "1f (Handicap.Initialize sets HandicapTake=1)", match: true }
+      - { name: "tails into UpdateHandicapLevel", base: "Handicap_UpdateHandicapLevel(player)", port: "UpdateHandicapLevel(player)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
-      timing: unknown
+      timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "No explicit per-connect/per-spawn Handicap_Initialize; forced fields rely on the 1f construction default. Equivalent at the default but there is no reset call + no handicap_level update on init. Unchanged by Wave-5."
+    gaps: []
     verification:
-      - { kind: code, ref: "DamageEntityState.cs field defaults; no Handicap_Initialize equivalent found in src/** or game/**", result: partial }
-    confidence: medium
-    notes: "Matters only if an entity is reused across matches without re-construction, or once handicap_level exists. Still open."
+      - { kind: code, ref: "Handicap.cs:44-50 (Initialize: give=take=1 then UpdateHandicapLevel) vs handicap.qc:16-23; called live ClientManager.cs:699 on every (re)spawn BEFORE the PlayerSpawn mutator hook (=> dynamic_handicap recompute overwrites it, matching Base PutClientInServer order)", result: pass }
+    confidence: high
+    notes: "FIXED since Wave-6: an explicit Handicap_Initialize now exists (Handicap.Initialize) and is called live from ClientManager PutPlayerInServer on every spawn path, resetting the forced give/take fields to 1 and refreshing handicap_level — no longer relying solely on the construction default. Ordered ahead of the dynamic_handicap PlayerSpawn recompute, matching Base."
 
   - id: sv-handicap.level.compute_and_network
     name: "handicap_level (0-16) computed + networked via ENTCS"
     layer: [authority, presentation]
     base_refs:
       - "server/handicap.qc:Handicap_UpdateHandicapLevel"
-      - "common/ent_cs.qc:180"
-      - "lib/math.qh:377"
-    port_refs: []
+      - "common/ent_cs.qc:180 (ENTCS_PROP HANDICAP_LEVEL WriteByte/ReadByte)"
+      - "lib/math.qh:377 (map_bound_ranges)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Handicap.cs:UpdateHandicapLevel (~84-96)"
+      - "src/XonoticGodot.Common/Gameplay/Handicap.cs:MapBoundRanges (~110-115)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageEntityState.cs:HandicapLevel (~66)"
+      - "src/XonoticGodot.Net/ScoreboardBlock.cs:84,107,151 (capture/WriteByte/ReadByte)"
     constants:
-      - { name: "HANDICAP_MAX_LEVEL_EQUIVALENT", base: "2.0", port: "none", match: false }
-      - { name: "level range", base: "floor(map_bound_ranges(total_avg, 1, 2, 0, 16))", port: "none", match: false }
-      - { name: "ENTCS net width", base: "WriteByte/ReadByte", port: "none", match: false }
+      - { name: "HANDICAP_MAX_LEVEL_EQUIVALENT", base: "2.0", port: "2.0f (Handicap.MaxLevelEquivalent)", match: true }
+      - { name: "level range", base: "floor(map_bound_ranges(total_avg, 1, 2, 0, 16))", port: "(int)floor(MapBoundRanges(total, 1, 2, 0, 16))", match: true }
+      - { name: "total input", base: "(total(take)+total(give))/2", port: "(GetTotalHandicap(p,true)+GetTotalHandicap(p,false))/2", match: true }
+      - { name: "disabled -> level 0", base: "HANDICAP_DISABLED() -> handicap_level = 0", port: "Disabled -> HandicapLevel = 0", match: true }
+      - { name: "ENTCS net width", base: "WriteByte/ReadByte", port: "WriteByte((lvl)&0xFF)/ReadByte (ScoreboardBlock)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: na
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "handicap_level (0-16) is never computed or networked, and the scoreboard player_handicap icon is absent: handicapped players are visually indistinguishable. Unchanged by Wave-5 (a generic map_bound_ranges exists for DamageText/Dodging but is not applied to handicap level)."
+    gaps: []
     verification:
-      - { kind: grep, ref: "no handicap_level / HandicapLevel in src/** or game/**", result: fail }
+      - { kind: code, ref: "Handicap.cs:84-96 (UpdateHandicapLevel = floor(map_bound_ranges((take+give)/2, 1, 2, 0, 16))) vs handicap.qc:104-115; HANDICAP_MAX_LEVEL_EQUIVALENT=2.0 matches handicap.qh:66", result: pass }
+      - { kind: code, ref: "ScoreboardBlock.cs:84 captures p.HandicapLevel, :107 WriteByte, :151 ReadByte — full server->client round-trip, mirroring ent_cs.qc:180 ENTCS_PROP HANDICAP_LEVEL", result: pass }
     confidence: high
-    notes: "Both the server compute (map_bound_ranges over total-avg) and the ENTCS sync are absent. The dynamic mutator also sets HandicapGive/Take directly without going through Handicap_SetForcedHandicap, so even if level existed it would not be refreshed."
+    notes: "FIXED since Wave-6: handicap_level is now computed (Handicap_UpdateHandicapLevel via map_bound_ranges over the both-ways total-avg, clamped 1..2 mapped to 0..16) AND networked (ScoreboardBlock WriteByte/ReadByte = the ENTCS handicap_level slice). Computed live on Initialize + every SetForcedHandicap (dynamic_handicap). Note: the DamageEntityState.HandicapLevel + DynamicHandicapMutator XML-doc comments still say it is authoritative-only / not networked — stale doc strings, not a parity defect."
 
   - id: sv-handicap.scoreboard.handicap_icon
     name: "Scoreboard player_handicap icon (white->red by level)"
     layer: [presentation]
     base_refs:
-      - "client/hud/panel/scoreboard.qc:Scoreboard_GetName"
-    port_refs: []
+      - "client/hud/panel/scoreboard.qc:Scoreboard_GetName (~1003-1009)"
+    port_refs:
+      - "game/hud/ScoreboardPanel.cs:977-985 (handicap icon draw)"
+      - "game/hud/ScoreboardPanel.cs:62,77,251 (HandicapLevel through the wire-row)"
     constants:
-      - { name: "icon", base: "gfx/scoreboard/player_handicap", port: "none", match: false }
-      - { name: "tint", base: "'1 0 0' + '0 1 1' * ((16 - lvl)/15)  (white@1 -> red@16)", port: "none", match: false }
-      - { name: "draw condition", base: "handicap_lvl != 0", port: "none", match: false }
+      - { name: "icon", base: "gfx/scoreboard/player_handicap", port: "colored 32x32-ish square marker (panel has no gfx texture path)", match: false }
+      - { name: "tint", base: "'1 0 0' + '0 1 1' * ((16 - lvl)/15)  (white@1 -> red@16)", port: "Color(1, (16-lvl)/15, (16-lvl)/15) — exact same tint", match: true }
+      - { name: "draw condition", base: "handicap_lvl != 0", port: "r.HandicapLevel != 0", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
-    intended_divergence: false
-    divergence_rationale: null
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port's scoreboard panel renders icons procedurally and has no gfx/scoreboard/player_handicap texture path, so the handicap marker is drawn as a colored square with the EXACT Base tint ('1 0 0' + '0 1 1' * ((16-lvl)/15)) rather than the bitmap. Same class of presentation divergence as the panel's other extra-icon markers."
     gaps:
-      - "Scoreboard player_handicap icon is absent: handicapped players are visually indistinguishable. Depends on the (still-missing) handicap_level. Unchanged by Wave-5."
+      - "Marker is a colored square, not the gfx/scoreboard/player_handicap bitmap (the panel has no gfx texture path). The tint, level dependence, and draw condition are exact."
     verification:
-      - { kind: grep, ref: "no handicap reference in game/hud/ScoreboardPanel.cs or src/XonoticGodot.Net/ScoreboardBlock.cs", result: fail }
+      - { kind: code, ref: "ScoreboardPanel.cs:977-985 draws the marker when HandicapLevel!=0 with tint Color(1,t,t) where t=(16-lvl)/15 vs scoreboard.qc:1003-1009 ('1 0 0' + '0 1 1' * ((16-lvl)/15))", result: pass }
     confidence: high
-    notes: "Port scoreboard has no extra-icon row at all for handicap. Still open."
+    notes: "FIXED since Wave-6: the scoreboard now draws a per-player handicap marker next to the name when handicap_level != 0, with Base's exact white(@lvl1)->red(@lvl16) tint and offsets the name so it doesn't overlap. Fed by the networked HandicapLevel (sv-handicap.level.compute_and_network). Only divergence is the square marker vs the bitmap icon (intended — no gfx texture path)."
 
   - id: sv-handicap.xonstat.avg_sums
     name: "Per-player damage-weighted handicap avg for the game report"
@@ -197,8 +208,7 @@ features:
       - "src/XonoticGodot.Server/Scores.cs:97-98,157-158 (HandicapAvgGivenSum/TakenSum row fields)"
       - "src/XonoticGodot.Server/Scores.cs:991-1009 (OnDamageDealtScored/OnDamageTakenScored accumulation)"
       - "src/XonoticGodot.Server/Scores.cs:821-829 (HandicapReportAverages division)"
-      - "src/XonoticGodot.Server/GameWorld.cs:876 (HandicapReportProvider wired live)"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:851 (GetTotalHandicap public alias)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:GetTotalHandicap (~882 public alias)"
     constants:
       - { name: "given accumulation", base: "avg_given_sum += score_frame_dmg * total(give)", port: "HandicapAvgGivenSum += realdmg * GetTotalHandicap(p,false), summed per damage event (handicap constant within a frame → identical to score_frame_dmg*h)", match: true }
       - { name: "taken accumulation", base: "avg_taken_sum += score_frame_dmgtaken * total(take)", port: "HandicapAvgTakenSum += realdmg * GetTotalHandicap(p,true)", match: true }
@@ -215,17 +225,16 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Scores.cs:991-1009 accumulates realdmg*GetTotalHandicap on WeaponAccuracyEvents.DamageDealtScored/TakenScored (subscribed at SubscribeToDeaths, GameWorld.cs:540); fired live from DamageSystem.cs:525/528 on the PlayerDamage path", result: pass }
-      - { kind: code, ref: "PlayerStats.cs:243-248 FinalizePlayer emits handicapgiven/handicaptaken via HandicapReportProvider -> Scores.HandicapReportAverages (GameWorld.cs:876); division by DMG/DMGTAKEN cols matches playerstats.qc:262-265", result: pass }
+      - { kind: code, ref: "Scores.cs:991-1009 accumulates realdmg*GetTotalHandicap on WeaponAccuracyEvents.DamageDealtScored/TakenScored, fired live from the PlayerDamage path", result: pass }
+      - { kind: code, ref: "PlayerStats.cs:243-248 FinalizePlayer emits handicapgiven/handicaptaken via HandicapReportProvider -> Scores.HandicapReportAverages; division by DMG/DMGTAKEN cols matches playerstats.qc:262-265", result: pass }
     confidence: high
     notes: >-
-      FIXED in Wave-5: the events are no longer a dead stub. Per-frame damage now accumulates the
-      damage-weighted handicap sums (HandicapAvgGivenSum/TakenSum) on the live score bus, and FinalizePlayer
-      divides them by the DMG/DMGTAKEN score columns exactly like playerstats.qc, emitting both events through
-      the host-wired HandicapReportProvider. The per-event accumulation is algebraically identical to Base's
-      per-frame score_frame_dmg*h (handicap is constant within a player-frame). Like Base, this only actually
-      ships when XonStat reporting is enabled (PlayerStats.Enabled / g_playerstats_gamereport_uri) — that
-      gating is faithful, not a gap.
+      Per-frame damage accumulates the damage-weighted handicap sums (HandicapAvgGivenSum/TakenSum) on the live
+      score bus, and FinalizePlayer divides them by the DMG/DMGTAKEN score columns exactly like playerstats.qc,
+      emitting both events through the host-wired HandicapReportProvider. Per-event accumulation is algebraically
+      identical to Base's per-frame score_frame_dmg*h (handicap is constant within a player-frame). Like Base, this
+      only ships when XonStat reporting is enabled (PlayerStats.Enabled / g_playerstats_gamereport_uri) — that
+      gating is faithful, not a gap. Unchanged since Wave-5.
 
   - id: sv-handicap.dynamic.mutator
     name: "Dynamic Handicap mutator (auto-balance by score)"
@@ -234,35 +243,37 @@ features:
       - "common/mutators/mutator/dynamic_handicap/sv_dynamic_handicap.qc:DynamicHandicap_UpdateHandicap"
       - "mutators.cfg:527-531"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/DynamicHandicapMutator.cs:UpdateHandicap"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/DynamicHandicapMutator.cs:HandicapDisabledProvider"
-      - "src/XonoticGodot.Server/Commands.cs:367 (HandicapDisabledProvider wiring)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DynamicHandicapMutator.cs:UpdateHandicap (~134-173)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DynamicHandicapMutator.cs:Hook (recompute triggers ~79-102)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DynamicHandicapMutator.cs:HandicapDisabledProvider (alias of Handicap.DisabledProvider)"
+      - "src/XonoticGodot.Server/Commands.cs:393 (DynamicHandicapMutator.HandicapDisabledProvider wiring)"
     constants:
       - { name: "g_dynamic_handicap", base: "0", port: "0 (mutators.cfg)", match: true }
-      - { name: "g_dynamic_handicap_scale", base: "0.2", port: "0.2 (mutators.cfg; C# field init 1f overwritten by cvar)", match: true }
+      - { name: "g_dynamic_handicap_scale", base: "0.2", port: "0.2 (mutators.cfg)", match: true }
       - { name: "g_dynamic_handicap_exponent", base: "1", port: "1", match: true }
       - { name: "g_dynamic_handicap_min", base: "0", port: "0", match: true }
       - { name: "g_dynamic_handicap_max", base: "0", port: "0", match: true }
       - { name: "handicap formula", base: "|(score-mean)*scale|^exp, signed, fold +1 / 1/(|h|+1), clamp", port: "identical", match: true }
-      - { name: "HANDICAP_DISABLED() CTS/Race gate", base: "in REGISTER_MUTATOR condition", port: "IsEnabled checks g_dynamic_handicap && !HandicapDisabled (GameType is Cts or Race) via server-wired HandicapDisabledProvider", match: true }
-      - { name: "recompute triggers", base: "ClientDisconnect/PutClientInServer/MakePlayerObserver/AddedPlayerScore(SP_SCORE)", port: "PlayerSpawn/PlayerDies", match: false }
-      - { name: "iteration scope", base: "FOREACH_CLIENT(true) (all clients incl. spectators)", port: "FindByClass(player) + Client flag", match: false }
+      - { name: "HANDICAP_DISABLED() CTS/Race gate", base: "in REGISTER_MUTATOR condition", port: "IsEnabled checks g_dynamic_handicap && !HandicapDisabled (GameType is Cts or Race) via server-wired provider", match: true }
+      - { name: "recompute triggers", base: "ClientDisconnect/PutClientInServer/MakePlayerObserver/AddedPlayerScore(SP_SCORE)", port: "ClientDisconnect + PlayerSpawn(~PutClientInServer) + MakePlayerObserver + AddedPlayerScoreHook filtered to SP_SCORE (+ PlayerDies extra)", match: true }
+      - { name: "mean iteration scope", base: "FOREACH_CLIENT(IS_PLAYER(it)) (live players, excl. observers)", port: "FindByClass(player) + Client flag, skip IsObserver", match: true }
+      - { name: "apply iteration scope", base: "FOREACH_CLIENT(true) (all clients incl. spectators)", port: "FindByClass(player) + Client flag (observers keep player class+FL_CLIENT, so covered)", match: true }
+      - { name: "apply via Handicap_SetForcedHandicap", base: "Handicap_SetForcedHandicap(it, h, false/true) -> tails UpdateHandicapLevel", port: "Handicap.SetForcedHandicap(it, h, false/true) -> UpdateHandicapLevel", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Recompute cadence differs (PlayerSpawn/PlayerDies vs Base's ClientDisconnect/PutClientInServer/MakePlayerObserver/AddedPlayerScore(SP_SCORE)); roster shrink (leave/observe) and non-death score deltas (caps/objective points) leave the mean stale until the next spawn/death."
-      - "Application iterates players-with-Client-flag, not Base's FOREACH_CLIENT(true) which also clamps spectators' forced handicap."
-      - "Sets HandicapGive/Take directly rather than via Handicap_SetForcedHandicap, so it never triggers Handicap_UpdateHandicapLevel (moot until handicap_level exists)."
+      - "PlayerDies fires an EXTRA recompute beyond Base's four hooks (Base covers a kill's frag delta via AddedPlayerScore(SP_SCORE) instead). Harmless — recomputes the same idempotent result a hair earlier; not observable."
     verification:
-      - { kind: code, ref: "DynamicHandicapMutator.cs:42-59 (IsEnabled + HandicapDisabled gate) + 90-128 (UpdateHandicap) vs sv_dynamic_handicap.qc", result: partial }
-      - { kind: code, ref: "Commands.cs:367 HandicapDisabledProvider = () => GameType is Cts or Race (live ctor); IsEnabled consulted by MutatorActivation.Apply (GameWorld.cs:539)", result: pass }
+      - { kind: code, ref: "DynamicHandicapMutator.cs:134-173 (mean over IS_PLAYER, apply over all client-edicts via Handicap.SetForcedHandicap) vs sv_dynamic_handicap.qc:32-67", result: pass }
+      - { kind: code, ref: "DynamicHandicapMutator.cs:79-124 hooks ClientDisconnect/PlayerSpawn/MakePlayerObserver/AddedPlayerScoreHook(SP_SCORE) — all dispatched live (ClientManager.cs:520/779, GameScores.cs:438)", result: pass }
+      - { kind: code, ref: "Commands.cs:393 HandicapDisabledProvider = () => GameType is Cts or Race (live ctor); IsEnabled consulted by MutatorActivation.Apply", result: pass }
       - { kind: config, ref: "assets/data/xonotic-data.pk3dir/mutators.cfg:527-531 matches Base defaults", result: pass }
     confidence: high
-    notes: "FIXED in Wave-5: the HANDICAP_DISABLED() CTS/Race gate is now wired live (HandicapDisabledProvider -> GameType is Cts or Race), so the mutator is hard-disabled in CTS/Race like Base. Core compute/clamp math remains bit-faithful. Live + default-off. Remaining gaps are the recompute cadence and iteration-scope (spectator inclusion)."
+    notes: "FIXED since Wave-6: all four Base recompute triggers are now ported live (ClientDisconnect, PlayerSpawn≈PutClientInServer, MakePlayerObserver, AddedPlayerScore filtered to SP_SCORE), the application path now routes through the shared Handicap.SetForcedHandicap (so it tails into Handicap_UpdateHandicapLevel like Base), and the iteration scope matches (mean over live players, apply over all client-edicts — observers keep player class). The CTS/Race gate is wired live. Core compute/clamp math is bit-faithful. Live + default-off."

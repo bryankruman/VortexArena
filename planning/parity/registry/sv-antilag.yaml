@@ -1,13 +1,13 @@
 unit: sv-antilag
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 13
   worst_gaps:
     - "Vehicle occupants are never rewound: Base recurses antilag into a manned vehicle's body, the port has no vehicle recursion, so high-ping shots at a moving vehicle hit its present position only."
     - "g_antilag modes 1 (verified client-side) and 3 (prydon cursor hitscan) are unimplemented: a server set to either gets NO lag compensation at all (port treats anything != 2 as no-rewind)."
-    - "Shotgun melee secondary is not lag-compensated: Base traces it through WarpZone_traceline_antilag (shotgun.qc:124); the port's Shotgun.Melee uses a plain trace."
+    - "Shooter dphitcontentsmask is never widened to CORPSE during the antilag trace: Base force-sets SOLID|BODY|CORPSE around every antilag/fireBullet trace so a shot can hit gibbed/corpse bodies; the port's BeginLagComp only rewinds origins (no mask change)."
 features:
   - id: sv-antilag.history.record
     name: "Per-frame position-history ring (antilag_record)"
@@ -295,10 +295,14 @@ features:
       - "game/net/ServerNet.cs:BuildEntitySet"
       - "game/net/ServerNet.cs:RecordAntilagEntities"
       - "src/XonoticGodot.Net/AntilagBuffer.cs:AntilagBuffer.Clear"
+      - "src/XonoticGodot.Common/Framework/Entity.cs:AntilagNeedsClear"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:PutPlayerInServer"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs (teleport)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs (enter/exit)"
     constants:
-      - { name: "clear trigger", base: "explicit antilag_clear call on spawn / teleport / vehicle enter-exit", port: "per-tick origin jump > TeleportTickDistance (150u) heuristic", match: false }
+      - { name: "clear trigger", base: "explicit antilag_clear call on spawn / teleport / vehicle enter-exit", port: "explicit AntilagNeedsClear one-shot flag set on spawn/teleport/vehicle-enter/vehicle-exit, PLUS a per-tick origin-jump >150u backstop", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -306,13 +310,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "History is wiped on a per-tick origin-jump heuristic (>150u) rather than an explicit spawn/teleport/vehicle-enter call; a (re)spawn or teleport that lands within TeleportTickDistance of the previous origin would not clear the ring, so a shot could briefly rewind the player toward a stale position."
+    gaps: []
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/AntilagTests.cs:Clear_* (ring reset)", result: pass }
-      - { kind: code, ref: "ServerNet.cs:1639/1649 BuildEntitySet + :1870-71 RecordAntilagEntities call hist.Clear() only when (Origin-prev).Length() > TeleportTickDistance (150f, defined :156)", result: fail }
-    confidence: medium
-    notes: "The clear MECHANISM (AntilagBuffer.Clear, port of antilag_clear's array reset) is faithful; the TRIGGER is a movement heuristic instead of the explicit lifecycle calls QC uses (PutClientInServer + 6 vehicle enter/exit sites). QC also fills the cleared ring with e.origin and sentinel -2342; the port's Clear just resets head/count, behaviorally equivalent."
+      - { kind: code, ref: "ServerNet.cs:1689-1700 BuildEntitySet honors p.AntilagNeedsClear (one-shot) AND the >TeleportTickDistance jump test, either of which calls hist.Clear(); flag set by SpawnSystem.cs:638 (PutPlayerInServer/PutClientInServer:858), Teleporters.cs:390 (teleport), VehicleBoarding.cs:230/263 (enter/exit). _antilagEntities still uses the jump heuristic only (ServerNet.cs:1981).", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22 baseline: the explicit antilag_clear LIFECYCLE is now wired via the one-shot Entity.AntilagNeedsClear flag — PutPlayerInServer (SpawnSystem.cs:638), teleport (Teleporters.cs:390), and vehicle enter+exit (VehicleBoarding.cs:230/263) all set it, and BuildEntitySet (ServerNet.cs:1689-1700) Clears the ring when it (or the >150u jump backstop) fires. This closes the baseline gap (a respawn/short-teleport landing within 150u of the prior origin now clears explicitly, not just via the heuristic). The clear MECHANISM (AntilagBuffer.Clear) was already faithful; the TRIGGER is now the explicit QC lifecycle plus the heuristic as a safety net. QC also fills the cleared ring with e.origin + sentinel -2342; the port's Clear just resets head/count, behaviorally equivalent. (Monster/nade rings — _antilagEntities — still rely on the movement heuristic alone, but Base has no explicit antilag_clear for those entities either.)"
 
   - id: sv-antilag.arc_beam
     name: "Arc beam lag-compensated trace + antilag_takebackavgvelocity"
@@ -345,21 +348,20 @@ features:
     base_refs:
       - "common/weapons/weapon/shotgun.qc:124 (WarpZone_traceline_antilag)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:238 (Melee swing trace)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:Melee (LagComp.Begin/End bracket :244-282)"
     constants:
-      - { name: "melee swing trace antilag", base: "WarpZone_traceline_antilag at ANTILAG_LATENCY", port: "plain Trace (no takeback)", match: false }
+      - { name: "melee swing trace antilag", base: "WarpZone_traceline_antilag at ANTILAG_LATENCY", port: "swing sweep bracketed by LagComp.Begin/End (same shared takeback as FireBullet)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Shotgun melee secondary is not lag-compensated: Base traces each swing-arc segment through WarpZone_traceline_antilag (shotgun.qc:124); the port's Shotgun.Melee (Shotgun.cs:238) uses a plain trace, so a high-ping melee can miss a moving target it would connect with in Base."
+    gaps: []
     verification:
-      - { kind: code, ref: "Shotgun.cs:217 Melee()'s swing trace at :245 uses Api.Trace.Trace (MoveFilter.Normal) with NO LagComp.Begin/End bracket; Base shotgun.qc:124 W_Shotgun_Melee_Think uses WarpZone_traceline_antilag", result: fail }
+      - { kind: code, ref: "Shotgun.cs:244 LagComp.Begin(actor) wraps the whole swing sweep (the per-trace Api.Trace.Trace at :254), LagComp.End() in the finally at :281; Base shotgun.qc:124 W_Shotgun_Melee_Think uses WarpZone_traceline_antilag. Melee reached live from the secondary/out-of-ammo path (Shotgun.cs:166).", result: pass }
     confidence: high
-    notes: "STILL OPEN (re-verified 2026-06-22, line refs refreshed post-Wave-5). The Wave-2 shotgun edit added the per-swing woosh FX (MeleeWoosh, Shotgun.cs:248) and the HITTYPE_SECONDARY slap obituary (slapDeathType :236) around this same trace, but did NOT add an antilag bracket — the trace at Shotgun.cs:245 (Api.Trace.Trace, MoveFilter.Normal) is unchanged plain present-position. WARNING: the Shotgun.cs class docstring (Shotgun.cs:19) STILL falsely claims 'antilag take-back on the melee/setup traces' — re-confirmed false this audit; no LagComp.Begin/End wraps the melee swing. Short-range melee, so the latency error is small in absolute units but real. liveness=na (no antilag code on this path)."
+    notes: "FIXED since 2026-06-22 baseline: the Shotgun melee secondary's swing sweep is now bracketed by the SHARED LagComp facade (Begin at Shotgun.cs:244, End in the finally at :281), the same machinery FireBullet/Arc/SetupShot use — players/monsters/nades are rewound to the shooter's view-time for the slap, gated on g_antilag==2 + cl_noantilag, no-op on bot-only/test. The Shotgun.cs class docstring (:18) was corrected too and now truthfully states the melee trace is antilag-bracketed (the baseline's false-docstring WARNING is resolved). NOTE: like the rest of the port's antilag path, BeginLagComp does NOT widen the shooter's contents mask to CORPSE, so the melee can't newly hit corpse bodies (that residual is tracked by sv-antilag.solidmask.corpse, still missing)."

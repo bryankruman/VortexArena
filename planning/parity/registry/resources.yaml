@@ -1,13 +1,13 @@
 unit: resources
 category: item
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
-  feature_count: 8
+  feature_count: 9
   worst_gaps:
-    - "regen.loop: PlayerRegen hook STILL carries only Player + the disable-bool — all 10 in/out tuning slots (max_mod/regen_mod/rot_mod/limit_mod + 6 health balance values) remain missing. max_mod scaling of the health regen/rot stable point is never applied; regen_mod/rot_mod speed scaling and limit_mod cap scaling are inert (limit_mod is not even a param of the port's RotRegen). Stock play unaffected (all mods=1); breaks any mutator that scales max HP or regen rate (handicap, BuffsMutator medic/buff regen). NOTE: the fuel/ITEM_FuelRegen/UNLIMITED_AMMO gating AND the vehicle-eject-before-DEATH_ROT gaps were CLOSED in Wave-2."
-    - "api.take: TakeResource STILL omits the QC TakeResource mutator hook (sv_resources.qc:191); GiveResourceWithLimit STILL omits the QC GiveResourceWithLimit hook (sv_resources.qc:165). Wave-2 added only explanatory comments, no ResourceHooks chain. TakeResourceWithLimit is ported and formula-faithful (sv_resources.qc:205) and IS live — ItemPickupRules.GiveAmmoTo:246 calls it for the negative-amount drain branch, mirroring Base Item_GiveAmmoTo (items.qc:507). The three mutator-hook seams remain latent (no shipped mutator subscribes)."
-    - "regen.pause_timers: warmup-countdown offset (game_starttime - time) STILL not added to the four primed spawn pause timers (SpawnSystem comment defers it: 'once the spawn path runs with a match-time handle'). Only observable if a player can regen/rot during the pre-match countdown."
+    - "api.take: TakeResourceWithLimit STILL does NOT fire its own QC mutator hook (sv_resources.qc:211) — Resources.cs:175-181 reads `current`/clamps but never calls a ResourceHooks chain (only an explanatory comment). The plain TakeResource hook IS now wired (ResourceHooks.TakeResource + CallTakeResource at Resources.cs:163). No shipped mutator subscribes to any ResourceHooks chain, so the residual WithLimit-hook seam is latent."
+    - "api.setresource: SetResource hook reads back res_type (M_ARGV(8) entity) in Base so a mutator may rewrite the RESOURCE TYPE, not just the amount; the port's CallSetResource still carries only `ref amount` (ResourceHooks.cs:57-64) — res_type is fixed. No shipped mutator rewrites res_type, so latent."
+    - "api.registry: cosmetic-only — Resource metadata (ammo m_name/m_icon/m_color, fuel m_hidden) isn't on a Resource object (handled in the panel/items layer); Base networks ammo_fuel as a STAT vs the port's Entity field. Behaviorally equivalent for the HUD. NOTE: the three baseline 'missing mutator-hook' gaps (TakeResource, GiveResourceWithLimit, PlayerRegen 10-slot, warmup-countdown offset) were ALL CLOSED since 2026-06-22."
 features:
   - id: resources.api.registry
     name: "RES_* resource registry + field indirection (health/armor/5 ammo)"
@@ -37,9 +37,9 @@ features:
       - "Resource metadata objects (ammo m_name/m_icon/m_color, fuel m_hidden) are not on a Resource object; ammo HUD coloring/labels are handled in the panel/items layer instead (cosmetic-equivalent)."
       - "Base networks ammo_fuel as a STAT (_STAT(FUEL)) and the others as legacy fields; the port networks all resources via Entity fields. Behaviorally equivalent for the HUD."
     verification:
-      - { kind: code, ref: "Resources.cs enum + GetResource switch vs all.inc field map (verified against all.inc + resources.qh); untouched by Wave-2", result: pass }
+      - { kind: code, ref: "Resources.cs:11-52 enum + GetResource switch vs all.inc field map (verified against resources.qh m_id + the .health/.armorvalue/.ammo_* QC fields)", result: pass }
     confidence: high
-    notes: "QC field-pointer indirection (GetResourceField) replaced by a switch over typed Entity members. Verified the full REGISTER_RESOURCE order and field names match. Not changed by Wave-1/2."
+    notes: "QC field-pointer indirection (GetResourceField) replaced by a switch over typed Entity members. Verified the full REGISTER_RESOURCE order and field names match. Unchanged this wave."
   - id: resources.api.getlimit
     name: "GetResourceLimit (per-resource caps + hook + hard clamp)"
     layer: [authority]
@@ -68,9 +68,9 @@ features:
     gaps:
       - "QC IS_PLAYER(e) is approximated by EntFlags.Client; a non-player entity that happens to carry the Client flag (or vice-versa) would diverge on the limit. No known live case where this matters (only players run the regen tick / get resource caps)."
     verification:
-      - { kind: code, ref: "Resources.GetResourceLimit cvar names+defaults vs sv_resources.qc:12-69; defaults seeded in Cvars.cs verified against balance-xonotic.cfg; untouched by Wave-2", result: pass }
+      - { kind: code, ref: "Resources.GetResourceLimit (Resources.cs:76-97): cvar names+defaults vs sv_resources.qc:12-69; order cap->GetResourceLimit hook->HardLimit(999) clamp matches QC", result: pass }
     confidence: high
-    notes: "Fires GetResourceLimit hook then clamps to HardLimit(999), like QC. Order (cap -> hook -> clamp) matches. Not changed by Wave-1/2."
+    notes: "Fires CallGetResourceLimit hook then clamps to HardLimit(999), like QC. Order (cap -> hook -> clamp) matches. Unchanged this wave."
   - id: resources.api.setresource
     name: "SetResource / SetResourceExplicit (clamp-to-limit + waste/changed hooks)"
     layer: [authority]
@@ -83,7 +83,7 @@ features:
     constants:
       - { name: "waste behavior", base: "amount_wasted = amount-max; fire ResourceWasted", port: "same", match: true }
     status:
-      logic: faithful
+      logic: partial
       values: faithful
       timing: na
       presentation: na
@@ -92,11 +92,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base's SetResource hook reads back BOTH res_type (M_ARGV(8) entity) and amount (M_ARGV(9)) after the forbid check, so a mutator may rewrite the RESOURCE TYPE as well as the amount. The port's CallSetResource only rewrites the amount (ref float); res_type is fixed. No shipped mutator rewrites res_type, so latent. Unchanged by Wave-2."
+      - "Base's SetResource hook reads back BOTH res_type (M_ARGV(8) entity) and amount (M_ARGV(9)) after the forbid check, so a mutator may rewrite the RESOURCE TYPE as well as the amount. The port's CallSetResource (ResourceHooks.cs:57-64) only rewrites the amount (ref float); res_type is fixed. No shipped mutator rewrites res_type, so latent."
     verification:
-      - { kind: code, ref: "Resources.SetResource forbid/clamp/changed/wasted vs sv_resources.qc:87-113; ResourceHooks.CallSetResource still carries only ref amount (verified ResourceHooks.cs unchanged)", result: pass }
+      - { kind: code, ref: "Resources.SetResource (Resources.cs:100-114) forbid/clamp/changed/wasted vs sv_resources.qc:87-113; ResourceHooks.CallSetResource still carries only `ref amount` (ResourceHooks.cs:57-64)", result: pass }
     confidence: high
-    notes: "SetResource hook may forbid or rewrite amount; ResourceAmountChanged fires only on a real change; ResourceWasted fires only when wasted>0 (matches QC's amount_wasted==0 early-return). Not changed by Wave-1/2."
+    notes: "SetResource hook may forbid or rewrite amount; ResourceAmountChanged fires only on a real change; ResourceWasted fires only when wasted>0 (matches QC's amount_wasted==0 early-return). logic stays partial only for the res_type rewrite-back. Unchanged this wave."
   - id: resources.api.give
     name: "GiveResource / GiveResourceWithLimit (+ per-resource rot-pause push)"
     layer: [authority]
@@ -112,7 +112,7 @@ features:
       - { name: "g_balance_pause_fuel_rot", base: "5", port: "5", match: true }
       - { name: "amount<=0 no-op", base: "yes", port: "yes", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -120,13 +120,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "GiveResource is faithful (GiveResource hook + per-resource rot-pause push). GiveResourceWithLimit STILL does NOT fire the QC GiveResourceWithLimit mutator hook (sv_resources.qc:165) — Wave-2 added only an explanatory comment; ResourceHooks has no GiveResourceWithLimit chain. The port trims the amount and delegates to GiveResource (which fires the GiveResource hook). No shipped mutator subscribes to the WithLimit chain, so latent; flagged for completeness."
+    gaps: []
     verification:
       - { kind: test, ref: "PlayerLoopParityTests.GiveResource_PausesRot_ForHealthAndArmor (REGEN2)", result: pass }
-      - { kind: code, ref: "Resources.GiveResource (Resources.cs:117-142) / GiveResourceWithLimit (Resources.cs:145-155) vs sv_resources.qc:115-183; WithLimit hook still absent in port (comment only, no ResourceHooks.GiveResourceWithLimit chain). Live callers incl. ItemPickupRules.cs:248, NadeAmmoBoom/HealBoom, Mage, Bumblebee/VehicleCommon, BuffsMutator, VampireHookMutator, Triggers", result: pass }
+      - { kind: code, ref: "Resources.GiveResource (Resources.cs:117-142) / GiveResourceWithLimit (Resources.cs:145-156) vs sv_resources.qc:115-183. GiveResourceWithLimit NOW fires the QC hook (ResourceHooks.CallGiveResourceWithLimit at Resources.cs:150 -> ResourceHooks.GiveResourceWithLimit chain, ref amount/limit) before the trim, matching sv_resources.qc:165. Live callers incl. ItemPickupRules.cs:248, NadeAmmoBoom/HealBoom, Mage, Bumblebee/VehicleCommon, BuffsMutator, VampireHookMutator, Triggers", result: pass }
     confidence: high
-    notes: "Many live callers cap the post-give total. The per-resource rot-pause push (health/armor/fuel) matches QC. Logic stays partial only for the missing WithLimit mutator-hook seam. Not materially changed by Wave-2."
+    notes: "FIX since 2026-06-22: the GiveResourceWithLimit mutator hook was added (chain + CallGiveResourceWithLimit call-site, ref amount/limit), closing the last baseline gap on this row -> logic partial->faithful. GiveResource (hook + per-resource rot-pause push for health/armor/fuel) remains faithful. No mutator subscribes to the chain yet, but the seam is wired (call-site present, early-returns when Count==0)."
   - id: resources.api.take
     name: "TakeResource / TakeResourceWithLimit"
     layer: [authority]
@@ -149,12 +148,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port TakeResource STILL omits the QC TakeResource mutator hook (sv_resources.qc:191 MUTATOR_CALLHOOK(TakeResource)) — Wave-2 added only a comment; ResourceHooks has no TakeResource chain. A mutator can therefore not forbid/rewrite a resource drain. No shipped mutator subscribes, so latent."
-      - "TakeResourceWithLimit IS ported (Wave-2) and the SVQC clamp formula is bit-faithful (current-amount < -limit -> amount = current-limit, i.e. the total can't go below -limit). It IS live: ItemPickupRules.GiveAmmoTo:246 calls it for the negative-amount (drain) item branch, mirroring Base items.qc:507 (Item_GiveAmmoTo). Its own QC mutator hook (sv_resources.qc:211) is not fired (comment only; no shipped mutator subscribes, so latent)."
+      - "TakeResourceWithLimit STILL does NOT fire its own QC mutator hook (sv_resources.qc:211 MUTATOR_CALLHOOK(TakeResourceWithLimit)) — Resources.cs:172-182 clamps the drain and delegates to TakeResource but never calls a ResourceHooks chain (comment only; ResourceHooks has no TakeResourceWithLimit chain). It does delegate to TakeResource (which now DOES fire the TakeResource hook), so the inner hook still runs; only the WithLimit-specific hook is absent. No shipped mutator subscribes, so latent."
     verification:
-      - { kind: code, ref: "Resources.TakeResource (Resources.cs:158-165) vs sv_resources.qc:184-203 (still no MUTATOR_CALLHOOK(TakeResource); comment only); Resources.TakeResourceWithLimit (Resources.cs:171-181) vs sv_resources.qc:205-228 — clamp `amount = current - limit` is algebraically identical to QC `amount = -limit + current_amount`; no hook (comment only); live caller ItemPickupRules.cs:246 (GiveAmmoTo drain branch) mirrors items.qc:507. Confirmed ResourceHooks.cs has NO TakeResource/TakeResourceWithLimit/GiveResourceWithLimit chains", result: pass }
+      - { kind: code, ref: "Resources.TakeResource (Resources.cs:159-166) vs sv_resources.qc:184-203 — NOW fires the QC TakeResource hook (ResourceHooks.CallTakeResource at Resources.cs:163 -> ResourceHooks.TakeResource chain, ref amount). Resources.TakeResourceWithLimit (Resources.cs:172-182) vs sv_resources.qc:205-228 — clamp `amount = current - limit` algebraically identical to QC `amount = -limit + current_amount`; its own WithLimit hook still NOT fired (comment only). Live caller ItemPickupRules.cs:246 (GiveAmmoTo drain branch) mirrors items.qc:507", result: pass }
     confidence: high
-    notes: "TakeResource(<=0 no-op) follows the SVQC semantics. Widely live via item/weapon ammo drains. TakeResourceWithLimit (formula-faithful) is live on the item-pickup drain path (ItemPickupRules.GiveAmmoTo, QC Item_GiveAmmoTo items.qc:507). The two mutator-hook seams (TakeResource + TakeResourceWithLimit) remain unimplemented (latent). logic stays partial for those hooks; liveness is live."
+    notes: "FIX since 2026-06-22: the plain TakeResource mutator hook was added (ResourceHooks.TakeResource chain + CallTakeResource call-site, ref amount), closing that baseline gap. TakeResourceWithLimit (formula-faithful, live on the item-pickup drain path) STILL lacks its own WithLimit-specific hook, so logic stays partial for that one residual seam. No mutator subscribes to any ResourceHooks chain (all latent)."
   - id: resources.regen.loop
     name: "player_regen + RotRegen + CalcRegen/CalcRot (health/armor/fuel regen and rot)"
     layer: [authority]
@@ -185,14 +183,14 @@ features:
       - { name: "g_balance_fuel_rot", base: "0.05", port: "0.05", match: true }
       - { name: "g_balance_fuel_rotstable", base: "100", port: "100", match: true }
       - { name: "snap window (CalcRegen/CalcRot)", base: "0.25", port: "0.25", match: true }
-      - { name: "fuel regen ITEM_FuelRegen gate", base: "regenframetime only if (items & ITEM_FuelRegen)", port: "now>PauseRegenFinished && (Items & ItemFlag.FuelRegen) — FIXED Wave-2", match: true }
-      - { name: "fuel skipped under IT_UNLIMITED_AMMO", base: "yes (entire fuel block)", port: "if ((Items & UnlimitedAmmo) == 0) — FIXED Wave-2", match: true }
-      - { name: "vehicle eject before DEATH_ROT", base: "vehicles_exit(this.vehicle, VHEF_RELEASE)", port: "if (p.Vehicle != null) VehicleBoarding.Exit(p) — FIXED Wave-2", match: true }
-      - { name: "max_mod on health stable", base: "regenstable/rotstable *= max_mod", port: "not applied (max_mod arg missing)", match: false }
-      - { name: "limit_mod on RotRegen clamp", base: "GetResourceLimit * limit_mod", port: "raw GetResourceLimit (limit_mod not a param)", match: false }
-      - { name: "regen_mod/rot_mod on frametime", base: "regenframetime = regen_mod * frametime", port: "raw frametime (regen_mod/rot_mod missing)", match: false }
+      - { name: "fuel regen ITEM_FuelRegen gate", base: "regenframetime only if (items & ITEM_FuelRegen)", port: "now>PauseRegenFinished && (Items & ItemFlag.FuelRegen)", match: true }
+      - { name: "fuel skipped under IT_UNLIMITED_AMMO", base: "yes (entire fuel block)", port: "if ((Items & UnlimitedAmmo) == 0)", match: true }
+      - { name: "vehicle eject before DEATH_ROT", base: "vehicles_exit(this.vehicle, VHEF_RELEASE)", port: "if (p.Vehicle != null) VehicleBoarding.Exit(p)", match: true }
+      - { name: "max_mod on health stable", base: "regenstable/rotstable *= max_mod", port: "RegenHealthStable*maxMod / RegenHealthRotStable*maxMod (PlayerFrameLogic.cs:82-83)", match: true }
+      - { name: "limit_mod on RotRegen clamp", base: "GetResourceLimit * limit_mod", port: "GetResourceLimit(p,res) * limitMod (PlayerFrameLogic.cs:185)", match: true }
+      - { name: "regen_mod/rot_mod on frametime", base: "regenframetime = regen_mod * frametime", port: "regenMod * frameTime / rotMod * frameTime (PlayerFrameLogic.cs:75-76,84-85)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -200,13 +198,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "PlayerRegen hook STILL carries only Player (MutatorHooks.cs:107-112 PlayerRegenArgs unchanged) — all 10 in/out tuning slots remain missing. Consequences: (a) max_mod scaling of the health regen/rot STABLE point (client.qc:1725-1726) is never applied; (b) regen_mod/rot_mod speed scaling (multiply the frametime) and limit_mod cap scaling are inert. limit_mod is not even a parameter of the port's RotRegen (Base RotRegen takes limit_mod and clamps to GetResourceLimit*limit_mod; the port clamps to raw GetResourceLimit). All four mods are 1 at stock, so default play is unaffected; the gap bites mutators that scale max-HP/regen (handicap; BuffsMutator's medic/regen buffs return false so they don't disable, but they cannot scale the rate via this hook). The only USED part of the hook today — the disable-regen bool (instagib/CA/LMS/Invasion/Mayhem) — is live and faithful."
+    gaps: []
     verification:
       - { kind: test, ref: "PlayerLoopParityTests (Regen_IsPaused_WhileDamagePauseTimerIsInFuture, regen-resume) + GameplaySystemsTests", result: pass }
-      - { kind: code, ref: "PlayerFrameLogic.Regen vs client.qc:1688-1754; live caller GameWorld.cs:1241 (gated !gameStopped && !IsDead); fuel block PlayerFrameLogic.cs:92-102 gates on UnlimitedAmmo + ItemFlag.FuelRegen (matches client.qc:1744-1753); vehicle eject PlayerFrameLogic.cs:82-83 via VehicleBoarding.Exit (matches client.qc:1738); Mutators/MutatorHooks.cs:133-138 PlayerRegenArgs(Entity) still Player-only; Base RotRegen takes limit_mod (client.qc:1657,1680) — port RotRegen has no limit_mod param", result: pass }
+      - { kind: code, ref: "PlayerFrameLogic.Regen (PlayerFrameLogic.cs:41-150) vs client.qc:1688-1754. PlayerRegenArgs (MutatorHooks.cs:199-232) NOW carries all 10 in/out tuning slots (MaxMod/RegenMod/RotMod/LimitMod + 6 health values, default 1). max_mod applied to health stable (PlayerFrameLogic.cs:82-83); regen_mod/rot_mod applied to frametime (75-76,84-85); RotRegen takes limit_mod (159) and clamps to GetResourceLimit*limitMod (185) — all matching client.qc:1657,1680,1716-1729. Fuel block passes limit_mod=1 + raw frametime (116) per client.qc:1750. Live caller GameWorld.cs OnPlayerPostThink (gated !gameStopped && !IsDead)", result: pass }
     confidence: high
-    notes: "Wave-2 CLOSED two of the three baseline gaps: (1) fuel regen now gated on ITEM_FuelRegen ownership AND the whole fuel block skipped under IT_UNLIMITED_AMMO (bit-faithful to client.qc:1744-1753, UnlimitedAmmo/FuelRegen flags verified in ItemFlags.cs); (2) vehicle eject (VehicleBoarding.Exit) now runs before the DEATH_ROT damage. Regen math, snap, linear+exponential terms, rot-to-death, and per-resource pause gating remain faithful and live. Remaining gap = the PlayerRegen hook tuning slots (extension surface, no stock-play impact). logic stays partial only for that."
+    notes: "FIX since 2026-06-22: the PlayerRegen hook was extended from Player-only to all 10 QC tuning slots (PlayerRegenArgs), and max_mod/regen_mod/rot_mod/limit_mod are now read back and applied exactly where QC applies them (health stable scaling, frametime scaling, RotRegen cap scaling). The baseline's sole remaining gap (the missing tuning slots) is CLOSED -> logic partial->faithful. Regen math, snap, linear+exponential terms, rot-to-death (with vehicle eject), fuel ITEM_FuelRegen/UNLIMITED_AMMO gating, and per-resource pause gating all remain faithful and live."
   - id: resources.regen.pause_timers
     name: "Regen/rot pause timers (damage, spawn, pickup, jetpack-fuel) shared storage"
     layer: [authority]
@@ -218,7 +215,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageEntityState.cs:PauseRegenFinished"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:317"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:611"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:756"
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:738"
     constants:
       - { name: "g_balance_pause_health_regen (on damage)", base: "5", port: "5", match: true }
@@ -227,8 +224,9 @@ features:
       - { name: "g_balance_pause_armor_rot_spawn", base: "5", port: "5", match: true }
       - { name: "g_balance_pause_fuel_rot_spawn", base: "10", port: "10", match: true }
       - { name: "g_balance_pause_fuel_regen (jetpack/hook)", base: "2", port: "2", match: true }
+      - { name: "warmup countdown offset", base: "+(game_starttime - time) on pauseregen/pauserothealth/pauserotarmor/shieldtime (NOT pauserotfuel)", port: "+= (gameStartTime - now) on PauseRegen/PauseRotHealth/PauseRotArmor/SpawnShield, fuel excluded (SpawnSystem.cs:761-781)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -236,13 +234,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "On spawn during the warmup countdown, Base extends each primed pause timer by (game_starttime - time) so timers don't elapse while frozen pre-match (client.qc:665-669). The port primes the four spawn pause timers (SpawnSystem.cs:611-614, defaults 0/5/5/10 verified) but STILL does NOT add the countdown offset — the SpawnSystem comment explicitly defers it ('re-apply the (game_starttime - time) shield/pause extension once the spawn path runs with a match-time handle'). Minor: only observable if a player can regen/rot during the pre-match countdown. Unchanged by Wave-2."
+    gaps: []
     verification:
       - { kind: test, ref: "PlayerLoopParityTests REGEN1 (damage pauses regen, shared storage)", result: pass }
-      - { kind: code, ref: "spawn defaults SpawnSystem.cs:611-614 match client.qc:661-664; damage DamageSystem.cs (max(.,now+5)); jetpack PlayerPhysics.cs:738 (max(.,now+2)); countdown offset client.qc:665-669 still not ported (SpawnSystem.cs:632-637 NOTE defers it)", result: pass }
+      - { kind: code, ref: "spawn defaults SpawnSystem.cs:756-759 match client.qc:661-664; damage DamageSystem.cs (max(.,now+5)); jetpack PlayerPhysics.cs:738 (max(.,now+2)); warmup-countdown offset NOW ported (SpawnSystem.cs:767-782): gated on !sv_ready_restart_after_countdown && gameStartTime>now, extends pauseregen/pauserothealth/pauserotarmor + spawnshield by (gameStartTime-now), fuel deliberately excluded — bit-faithful to client.qc:665-671", result: pass }
     confidence: high
-    notes: "All producers and the regen tick read ONE storage on DamageEntityState (the REGEN1 fix). The fuel-regen-pause gap is moot now that regen.loop gates fuel regen on ITEM_FuelRegen ownership. logic stays partial only for the missing warmup-countdown offset."
+    notes: "FIX since 2026-06-22: the warmup-countdown offset (game_starttime - time) is now added to the primed spawn pause timers + spawn shield (fuel-rot deliberately excluded, matching QC), closing the last baseline gap on this row -> logic partial->faithful. All producers and the regen tick still read ONE storage on DamageEntityState (the REGEN1 fix). game_starttime via StartItem.GameStartTimeProvider; sv_ready_restart_after_countdown via the cvar facade (default 0)."
   - id: resources.cl.readout
     name: "Client resource readout for HUD (CSQC GetResource path)"
     layer: [presentation]
@@ -263,8 +260,38 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port does not run a separate CSQC resource module; the HUD reads the networked Entity values directly via Resources.GetResource (behaviorally equivalent for presentation). The CSQC-only SetResource/TakeResource/TakeResourceWithLimit forms (cl_resources.qc, including the known-odd CSQC TakeResourceWithLimit formula) are not ported (no need). Unchanged by Wave-2."
+      - "Port does not run a separate CSQC resource module; the HUD reads the networked Entity values directly via Resources.GetResource (behaviorally equivalent for presentation). The CSQC-only SetResource/TakeResource/TakeResourceWithLimit forms (cl_resources.qc, including the known-odd CSQC TakeResourceWithLimit formula) are not ported (no need)."
     verification:
       - { kind: code, ref: "HealthArmorPanel.cs reads GetResource(Health/Armor/Fuel)", result: pass }
     confidence: medium
-    notes: "Functionally equivalent: the same Entity resource fields the server writes are networked and read by the HUD; no parallel client resource state. The port's new TakeResourceWithLimit is the SVQC clamp form (used nowhere); the CSQC odd-formula variant is deliberately not ported."
+    notes: "Functionally equivalent: the same Entity resource fields the server writes are networked and read by the HUD; no parallel client resource state. The port's TakeResourceWithLimit is the SVQC clamp form (used on the item drain path); the CSQC odd-formula variant is deliberately not ported."
+  - id: resources.api.ammoconsumption
+    name: "GetAmmoConsumption (ammo-per-shot, for Q3 ammo-box .count scaling)"
+    layer: [shared]
+    base_refs:
+      - "common/resources/sv_resources.qc:GetAmmoConsumption"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/CompatRemaps.cs:GetAmmoConsumption"
+    constants:
+      - { name: "RES_NONE -> 0", base: "if (wpn.ammo_type == RES_NONE) return 0", port: "if (AmmoType == None) return 0f", match: true }
+      - { name: "ARC special", base: "WEP_CVAR(ARC, beam_ammo)", port: "g_balance_arc_beam_ammo (6)", match: true }
+      - { name: "DEVASTATOR special", base: "WEP_CVAR(DEVASTATOR, ammo)", port: "g_balance_devastator_ammo (4)", match: true }
+      - { name: "MACHINEGUN special", base: "WEP_CVAR(MACHINEGUN, sustained_ammo)", port: "g_balance_machinegun_sustained_ammo (1)", match: true }
+      - { name: "MINE_LAYER special", base: "WEP_CVAR(MINE_LAYER, ammo)", port: "g_balance_minelayer_ammo (4)", match: true }
+      - { name: "SEEKER special", base: "WEP_CVAR(SEEKER, tag_ammo)", port: "g_balance_seeker_tag_ammo (5)", match: true }
+      - { name: "default", base: "WEP_CVAR_PRI(wpn, ammo)", port: "g_balance_<wep>_primary_ammo (fallback table)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port hardcodes per-weapon primary-ammo fallbacks (PrimaryAmmoFallback table) for the unset-cvar case rather than reading the weapon registry's own default; values match the stock g_balance_*_primary_ammo and each weapon's Configure() fallback, so equivalent at stock. A non-stock weapon balance reached via a live cvar is honored (Bal reads the live cvar when set)."
+    verification:
+      - { kind: code, ref: "CompatRemaps.GetAmmoConsumption (CompatRemaps.cs:98-112) vs sv_resources.qc:231-243 — same RES_NONE guard + the 5 special cases (ARC/DEVASTATOR/MACHINEGUN/MINE_LAYER/SEEKER) + WEP_CVAR_PRI default. Live: ItemSpawnFuncs.cs:137 seeds a Q3 ammo box's resource from rint(.count * GetAmmoConsumption(weapon))", result: pass }
+    confidence: high
+    notes: "NEWLY MAPPED 2026-06-25 (was a registry coverage gap). A resource-system helper (Base sv_resources.qc) that converts a Q3 ammo box's shot-count into a Xonotic resource amount; ported in CompatRemaps and live via the q3compat ammo spawnfunc. Switch matches Base incl. the SEEKER tag_ammo case."

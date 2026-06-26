@@ -1,15 +1,14 @@
 unit: sv-mapvoting
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 15
   worst_gaps:
-    - "Vote screen now appears + counts/winner update — but ONLY on a listen server: NetGame.UpdateMapVotePanel feeds the panel from the in-process GameWorld.MapVote. There is still NO ENT_CLIENT_MAPVOTE net entity, so a dedicated-server / remote client sees nothing."
-    - "Still no client vote INPUT: the MapVotePanel has no _Input/_GuiInput handler and nothing writes Selection or emits an `impulse N` from a cell. A player sees the ballot but cannot click/key to cast — only raw console `impulse N` (which on a listen server the local player IS, so it works from console)."
-    - "No server-side gametype vote at all (GameTypeVote_*): no ballot, no MapInfo_SwitchGameType, no maplist reset; sv_vote_gametype_options still ships 'dm tdm ctf' vs Base 'dm tdm ca ctf' (missing ca) and the 5 gametype reduce/detail/default_current/maplist_reset cvars are unregistered."
-    - "During-vote client state (2342 sentinel health + SVC_FINALE scoreboard-hide + per-tick impulse zeroing) is still entirely unmodeled."
-    - "Suggester NAME is dropped end-to-end (Commands.MapSuggestions is names-only; GameWorld passes Suggester \"\"), so g_maplist_votable_show_suggester (=1) and the panel 'Suggested by:' line can never populate."
+    - "Still no ENT_CLIENT_MAPVOTE net entity: the whole vote (ballot/mask/tallies/own-vote/winner) is fed to the panel from the in-process GameWorld.MapVote (NetGame.UpdateMapVotePanel). This is correct for a listen server but a dedicated-server / remote client (_serverWorld == null) still sees nothing — no ballot, counts, winner, and cannot cast."
+    - "No server-side gametype vote at all (GameTypeVote_Start/_Finished/_SetGametype/_AddVotable): no ballot, no MapInfo_SwitchGameType, no maplist reset, no hook execution. The 8 sv_vote_gametype_* cvars are now all REGISTERED with Base-faithful values (incl. options 'dm tdm ca ctf'), but nothing reads them."
+    - "During-vote logic state (2342 sentinel health on every client incl. bots + per-tick CS(it).impulse zeroing) is still unmodeled; the scoreboard-hide EFFECT is achieved a different way (the scoreboard hides while the MapVote panel is Visible) but Base's 2342/SVC_FINALE mechanism is absent."
+    - "The mid-vote top-2 reduce-FADE animation (SetReduce/SetAvailability → mv_top2_alpha _top2Time) still has no caller; availability is fed via SetVotes(-1) which dims options but does not run the fade. The :vote:reduce / :vote:finished event-log lines and FixClientCvars-on-finish are also unported."
 features:
   - id: sv-mapvoting.lifecycle.think_loop
     name: "Vote lifecycle / think loop (start, throttle, winner delay)"
@@ -35,9 +34,9 @@ features:
     gaps:
       - "Base's MapVote_Think also handles the rescan_pending / fs_rescan path before init; the port has no map-list rescan step (irrelevant to the rotation it builds)."
     verification:
-      - { kind: code, ref: "MapVoting.cs Tick self-throttles to 0.5s (lines 293-303, incl. the timeout-snap matching mapvoting.qc:789-791); GameWorld.cs:2448-2455 ticks the vote each intermission frame and only applies the change when MapVote.Finished && MapVote.ReadyToChangeLevel", result: pass }
+      - { kind: code, ref: "MapVoting.cs Tick self-throttles to 0.5s (lines 292-307, incl. the timeout-snap matching mapvoting.qc:789-791); GameWorld.cs:3102-3109 ticks the vote each end-of-match frame and only applies the change when MapVote.Finished && MapVote.ReadyToChangeLevel", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 5. The 1 s winner->changelevel delay is genuinely live (GameWorld.cs:2454 gates on ReadyToChangeLevel). 0.5 s think throttle faithful + live."
+    notes: "Unchanged. The 1 s winner->changelevel delay is genuinely live (GameWorld.cs:3108 gates on ReadyToChangeLevel). 0.5 s think throttle faithful + live."
 
   - id: sv-mapvoting.ballot.build
     name: "Build the ballot from rotation + suggestions + abstain"
@@ -55,7 +54,7 @@ features:
       - { name: "MAPVOTE_COUNT", base: "20", port: "30 (MaxCandidates, panel only); server nmax = g_maplist_votable", match: false }
       - { name: "g_maplist_votable_abstain", base: "0", port: "0", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -64,13 +63,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Suggestion seeding is LIVE: GameWorld.cs:2431-2434 maps Commands.MapSuggestions into (Map, Suggester) pairs and passes them to the 4-arg Start, which seeds min(g_maplist_votable_suggestions, nmax) suggested maps first, deduped, then fills from the rotation (matching MapVote_AddVotableMaps' smax seed)."
-      - "BUT the suggester NAME is always lost: Commands.MapSuggestions is IReadOnlyList<string> (map names only — CmdSuggestMap never records who suggested), and GameWorld passes Suggester: \"\" for every entry. So show_suggester has nothing to surface even though the plumbing exists (NetGame forwards c.Suggester to the panel)."
+      - "Suggestion seeding is LIVE and now carries the suggester name end-to-end: GameWorld.cs:3085-3088 maps Commands.MapSuggestions (now (Map, Suggester) pairs) into the 4-arg Start, which seeds min(g_maplist_votable_suggestions, nmax) suggested maps first, deduped, then fills from the rotation (matching MapVote_AddVotableMaps' smax seed)."
       - "The abstain slot append and per-candidate Rng tiebreak (AddVotable) are implemented; abstain is off by default (g_maplist_votable_abstain 0) so the slot isn't added in a stock match."
+      - "Residual: the panel constant MAPVOTE_COUNT diverges (30 vs Base 20) but the SERVER nmax uses g_maplist_votable (6) so it never bites; the 'don't care' abstain text/screenshot-dir cells aren't networked field-for-field since there is no net entity (folded into net.sync)."
     verification:
-      - { kind: code, ref: "GameWorld.cs:2431-2434 calls the 4-arg Start with suggestions (Suggester always \"\"); MapVoting.Start seeds suggestions+rotation+abstain+Rng (lines 137-192)", result: pass }
+      - { kind: code, ref: "GameWorld.cs:3085-3088 calls the 4-arg Start with real suggesters; MapVoting.Start seeds suggestions+rotation+abstain+Rng (lines 137-207)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 5. Suggestions reach the ballot on the live match path; suggester names dropped end-to-end so the 'Suggested by:' attribution can never populate."
+    notes: "FIX (logic): suggester name now flows end-to-end (was dropped in the baseline). Suggestions reach the ballot on the live match path; the 'Suggested by:' attribution can now populate."
 
   - id: sv-mapvoting.override_chain
     name: "Pre-vote override chain (DoNextMapOverride: campaign / queued nextmap / samelevel) + silent GotoNextMap"
@@ -93,36 +92,38 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Faithful priority order (campaign PostIntermission -> QueuedNextMap -> samelevel -> vote -> silent rotation), folded into one method; Base's DoNextMapOverride also handles g_campaign quit and the lastlevel/'endmatch' nextmap-cvar cases which the port routes through QueuedNextMap/Campaign instead."
+      - "Faithful priority order folded into one method (GameWorld.cs:3028-3097): campaign PostIntermission -> quit_when_empty -> quit_and_redirect -> QueuedNextMap -> samelevel -> lastlevel -> vote -> silent rotation. Covers more of DoNextMapOverride than the baseline noted (quit_when_empty/quit_and_redirect/lastlevel now handled)."
     verification:
-      - { kind: code, ref: "GameWorld.cs:2400-2444 implements the override priority before MapVote.Start; matches MapVote_Think's pre-MapVote_Init branches", result: pass }
-    confidence: medium
-    notes: "Unchanged by Wave 5; still live and largely faithful."
+      - { kind: code, ref: "GameWorld.cs:3028-3097 implements the override priority before MapVote.Start; matches MapVote_Think's pre-MapVote_Init branches plus the world.qc DoNextMapOverride quit/redirect/lastlevel cases", result: pass }
+    confidence: high
+    notes: "Still live + faithful; the override chain is now broader (quit_when_empty / quit_and_redirect / lastlevel added). Confidence raised medium->high."
 
   - id: sv-mapvoting.vote_scoreboard_hide
     name: "During-vote client state: 2342 sentinel health + SVC_FINALE (hide scoreboard, zero impulse each tick)"
     layer: [authority]
     base_refs:
       - "server/mapvoting.qc:MapVote_Tick"
-    port_refs: []
+    port_refs:
+      - "game/net/NetGame.cs:UpdateScoreboard"
     constants:
       - { name: "vote_sentinel_health", base: "2342", port: "none", match: false }
     status:
       logic: missing
       values: missing
       timing: missing
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base MapVote_Tick forces RES_HEALTH=2342 on every client (incl. bots) and sends SVC_FINALE \"\" once, to hide the scoreboard during the vote; the port models none of this (the only -2342 in src/ is an unrelated 'observing' marker in Chat.cs:579)."
-      - "Base zeroes CS(it).impulse each tick after reading it; the port reads the impulse synchronously in DispatchImpulse (no stored per-tick impulse field to zero), so this specific clear is moot — but the scoreboard-hide and sentinel health are genuinely absent."
+      - "The scoreboard-hide EFFECT is now achieved a DIFFERENT way: UpdateScoreboard (NetGame.cs:3418-3422) models Base's intermission==2 by hiding the scoreboard whenever the MapVote panel is Visible, so the player does not see the scoreboard during the vote (the visible outcome of Base's SVC_FINALE). Presentation goal met."
+      - "But Base's actual MECHANISM is absent: it forces RES_HEALTH=2342 on every client (incl. bots) and sends SVC_FINALE \"\" once. The port models neither (the only 2342 in src/ is the unrelated 'observing' %h reader in Chat.cs:615). Logic/values/timing therefore stay missing."
+      - "Base also zeroes CS(it).impulse each tick after reading it; the port reads the impulse synchronously in DispatchImpulse (no stored per-tick impulse field), so this specific clear is moot."
     verification:
-      - { kind: code, ref: "grep: no 2342 sentinel / SVC_FINALE on the vote path in src/ (Chat.cs:579 -2342 is the unrelated 'observing' marker; MapVoting.cs:60 only DOCUMENTS this as deferred)", result: pass }
+      - { kind: code, ref: "NetGame.cs:3418-3422 hides the scoreboard while MapVote.Visible (the Base intermission==2 behaviour); grep: still no 2342 sentinel / SVC_FINALE on the vote path in src/ (Chat.cs:615 is the unrelated 'observing' marker; MapVoting.cs:60 only DOCUMENTS the sentinel as deferred).", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 5. The listen-server panel now appears, but it does NOT hide the scoreboard via the Base sentinel/SVC_FINALE mechanism; a real missing piece of MapVote_Tick's per-client loop."
+    notes: "FIX (presentation): the scoreboard now hides during the vote via the panel-Visible gate (was missing). Base's 2342 sentinel-health + SVC_FINALE per-client loop remain unmodeled (logic/values/timing missing); they are largely an artifact of Base's networking that the listen-server panel sidesteps."
 
   - id: sv-mapvoting.cast.vote
     name: "Cast a vote (impulse -> .mapvote)"
@@ -132,6 +133,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/MapVoting.cs:CastVote"
       - "src/XonoticGodot.Server/Commands.cs:DispatchImpulse"
+      - "game/net/NetGame.cs:CastMapVote"
     constants: []
     status:
       logic: faithful
@@ -139,16 +141,16 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Server side is WIRED: DispatchImpulse (Commands.cs:1578-1589) routes `impulse N` to MapVote.CastVote(caller, N-1) whenever MapVote.Running, and this branch sits BEFORE the `if (Intermission.Running) return true` gate (1594), so impulses are honored during the vote exactly like MapVote_Tick reads CS(it).impulse. CastVote's range/availability guard + abstain re-route match Base."
-      - "There is STILL no client-side path that turns a vote-screen interaction into an `impulse N`: the panel has no input handler and nothing writes Selection (see sv-mapvoting.client.input). On a LISTEN server the local player is the server, so typing `impulse N` in the console casts; but there is no click/key UI, and no net entity for a remote/dedicated-server client to cast at all."
+      - "Now fully wired on the listen server: the client vote-screen input (NetGame.HandleMapVoteInput -> MapVotePanel.HandleVoteKey/Click) emits a choice through MapVotePanel.CastChoice -> NetGame.CastMapVote, which runs `impulse N` against the in-process server (Commands.Execute), routed by DispatchImpulse (Commands.cs:1757-1761) to MapVote.CastVote(caller, N-1) whenever MapVote.Running. This branch sits BEFORE the Intermission gate (1766), so impulses are honored during the vote exactly like MapVote_Tick reads CS(it).impulse. CastVote's range/availability guard + abstain re-route match Base."
+      - "STILL OPEN for remote/dedicated clients: CastMapVote no-ops when _serverWorld is null, and there is no ENT_CLIENT_MAPVOTE round-trip, so a non-listen client cannot cast (folded into net.sync)."
     verification:
-      - { kind: code, ref: "Commands.cs:1585-1589 DispatchImpulse routes to CastVote when MapVote.Running (before the Intermission gate at 1594); CastVote at MapVoting.cs:233-258 is faithful. No client input feeds an impulse from the panel.", result: pass }
+      - { kind: code, ref: "NetGame.cs:3855-3861 CastMapVote -> Commands.Execute(\"impulse N\"); Commands.cs:1757-1761 DispatchImpulse routes to CastVote when MapVote.Running (before the Intermission gate at 1766); CastVote at MapVoting.cs:233-252 is faithful. The panel's HandleVoteKey/Click (MapVotePanel.cs:868-912) feed it.", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 5 server-side. The cast is reachable on the server impulse path (console `impulse N` on a listen server). STILL OPEN: no client UI emits the impulse, and no net path for remote clients, so the practical vote on a stock listen match remains a 30 s timer unless the host types impulses."
+    notes: "FIX (liveness partial->live): a real point-and-click / keyboard cast now exists on a listen server (was console-only `impulse N` in the baseline). Remote-client casting still needs a net entity."
 
   - id: sv-mapvoting.cast.abstain
     name: "Abstain (Don't care) option"
@@ -167,15 +169,15 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Abstain() is faithful (clears any map choice, marks abstained, excluded from voters_real, still counts toward 'everyone voted'). It is reachable: an impulse selecting the abstain ballot slot routes through CastVote -> Abstain. But like the map vote it can only be triggered by raw `impulse N` (no client UI), and abstain is off by default (g_maplist_votable_abstain 0) so the slot isn't even on a stock ballot."
+      - "Abstain() is faithful (clears any map choice, marks abstained, excluded from voters_real, still counts toward 'everyone voted'). It is now reachable through the live client input: selecting the abstain ballot slot routes the impulse through CastVote -> Abstain. Abstain is off by default (g_maplist_votable_abstain 0) so the slot isn't even on a stock ballot, but the cast PATH is live."
     verification:
-      - { kind: code, ref: "CastVote re-routes the abstain slot to Abstain (MapVoting.cs:241-242); reachable via DispatchImpulse->CastVote. Start appends the abstain slot only when g_maplist_votable_abstain (default 0). NetGame renders the abstain slot as its own row (NetGame.cs:3004-3013)", result: pass }
+      - { kind: code, ref: "CastVote re-routes the abstain slot to Abstain (MapVoting.cs:241-242); reachable via the client input -> CastMapVote -> DispatchImpulse -> CastVote. Start appends the abstain slot only when g_maplist_votable_abstain (default 0). NetGame renders the abstain slot as its own row (NetGame.cs:3100, 3105).", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 5. Same server-side impulse path as cast.vote; no client UI; default abstain=0 so off in a stock match anyway."
+    notes: "FIX (liveness partial->live): same live client-input cast path as cast.vote. Default abstain=0 keeps the slot off a stock ballot, but the cast is wired."
 
   - id: sv-mapvoting.decide.tally_rank
     name: "Tally votes + rank candidates"
@@ -194,16 +196,16 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "Ranking uses a stable descending sort by votes then per-candidate Rng (RankCandidates), faithfully mirroring MapVote_ranked_cmp + the mapvote_rng tiebreak assigned at build. Heapsort vs stable Sort is an implementation detail with identical ordering semantics."
       - "The running-gametype 0-vote tiebreak (current gametype index wins among 0-vote options) is still absent, but it only applies to the gametype vote, which is wholly unported."
     verification:
-      - { kind: code, ref: "RankCandidates (MapVoting.cs:395-414) sorts available-first, votes-desc, Rng-desc; Finish/CheckRulesDecide use the ranked top; RecountFromBallots counts only available candidates. Live counts surface to the panel via NetGame.cs:3016-3021 (SetVotes).", result: pass }
+      - { kind: code, ref: "RankCandidates (MapVoting.cs:395-413) sorts available-first, votes-desc, Rng-desc; Finish/CheckRulesDecide use the ranked top; RecountFromBallots counts only available candidates. Live counts surface to the panel via NetGame.cs:3108-3113 (SetVotes), and real client casts now feed non-zero counts.", result: pass }
     confidence: high
-    notes: "Logic runs live during the vote; counts now surface to the listen-server panel. But since the cast path has no client UI it usually sees only the zero-vote case (liveness partial)."
+    notes: "FIX (liveness partial->live): with the client cast UI now wired, real votes flow into the tally during a live match instead of only the zero-vote case. Counts surface to the listen-server panel."
 
   - id: sv-mapvoting.decide.early_finish
     name: "Early finish: timeout / leader unbeatable / all voted"
@@ -221,16 +223,15 @@ features:
       timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "Bit-faithful to Base's `(voters_real - votes_running_total) < votes_recent` unbeatable-leader inequality plus the `voters_real == 0` all-abstained branch. The port ADDS an explicit `allVoted` (ballots >= ExpectedVoters) finish branch that Base does not have as a separate clause; it is functionally subsumed by the unbeatable-leader check in practice and never finishes earlier wrongly, so it is a benign logic addition, not a defect."
-      - "Without a client cast UI the only branch that fires in a normal listen match is the 30 s timeout."
     verification:
-      - { kind: code, ref: "CheckRulesDecide (MapVoting.cs:325-341) uses Base's exact inequality + the voters_real==0 branch; plus an extra allVoted clause", result: pass }
+      - { kind: code, ref: "CheckRulesDecide (MapVoting.cs:314-346) uses Base's exact inequality + the voters_real==0 branch; plus an extra allVoted clause. With live casts the unbeatable-leader / all-voted branches can now fire before the 30 s timeout.", result: pass }
     confidence: high
-    notes: "Logic/values/timing faithful. Still effectively a 30 s timer because the cast path has no client UI."
+    notes: "FIX (liveness partial->live): the early-finish branches beyond the 30 s timeout are now reachable because the client cast UI produces real votes."
 
   - id: sv-mapvoting.decide.reduce
     name: "Ballot reduce / keep-two (mid-vote option pruning)"
@@ -242,24 +243,24 @@ features:
       - "src/XonoticGodot.Server/MapVoting.cs:ReduceRemoveThis"
       - "game/net/NetGame.cs:UpdateMapVotePanel"
     constants:
-      - { name: "g_maplist_votable_reduce_time", base: "15", port: "15 (REGISTERED, Cvars.cs:414)", match: true }
-      - { name: "g_maplist_votable_reduce_count", base: "2", port: "2 (REGISTERED, Cvars.cs:415 -> keepExactly=true)", match: true }
+      - { name: "g_maplist_votable_reduce_time", base: "15", port: "15 (REGISTERED, Cvars.cs:432)", match: true }
+      - { name: "g_maplist_votable_reduce_count", base: "2", port: "2 (REGISTERED, Cvars.cs:433 -> keepExactly=true)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: partial
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Reduce dimming IS now presented on the listen server: NetGame feeds availability each frame as a -1 vote count (NetGame.cs:3016-3021), and the panel's SetVotes maps v==-1 -> WithAvailable(false) (MapVotePanel.cs:259-269), so pruned options are drawn unavailable. This is the SetVotes path Base uses for live counts."
-      - "But the dedicated mv_top2_alpha reduce-FADE clock (_top2Time) is stamped only by SetReduce/SetAvailability, which NetGame does NOT call — so the specific top-2 reveal fade animation does not play; options just snap to unavailable. And with no client cast UI the reduce only ever sees the zero-vote ballot live, where nothing is pruned."
+      - "Reduce dimming IS presented on the listen server: NetGame feeds availability each frame as a -1 vote count (NetGame.cs:3108-3113), and the panel's SetVotes maps v==-1 -> WithAvailable(false) (MapVotePanel.cs:267-277), so pruned options are drawn unavailable."
+      - "The dedicated mv_top2_alpha reduce-FADE clock (_top2Time) is stamped only by SetReduce/SetAvailability, which NetGame does NOT call — so the specific top-2 reveal fade animation does not play; options just snap to unavailable (presentation: partial)."
     verification:
-      - { kind: code, ref: "Cvars.cs:414-415 register reduce_time=15 / reduce_count=2; MapVoting.cs arms _reduceCount/reduceDelay; CheckRulesDecide prune matches mapvoting.qc:654-697; NetGame.cs:3016-3021 surfaces availability via SetVotes(-1). SetReduce/SetAvailability still have no caller (no _top2Time fade).", result: pass }
+      - { kind: code, ref: "Cvars.cs:432-433 register reduce_time=15 / reduce_count=2; MapVoting.cs arms _reduceCount/reduceDelay; CheckRulesDecide prune matches mapvoting.qc:654-697; NetGame.cs:3108-3113 surfaces availability via SetVotes(-1). SetReduce/SetAvailability (MapVotePanel.cs:256-292) still have no caller (no _top2Time fade).", result: pass }
     confidence: high
-    notes: "FIX (presentation): reduce/availability dimming now reaches the listen-server panel via the SetVotes(-1) feed (was entirely unfed in the baseline). The top-2 reduce-fade animation (SetReduce/SetAvailability path) is still not driven; server-side logic/values/timing were already faithful."
+    notes: "FIX (liveness partial->live): with real client casts the reduce can now actually fire mid-vote and prune options, dimming them on the panel. The top-2 reduce-fade animation (SetReduce/SetAvailability path) is still not driven (presentation partial); server-side logic/values/timing remain faithful."
 
   - id: sv-mapvoting.finish.winner
     name: "Finish + pick winner + apply map change"
@@ -286,9 +287,9 @@ features:
       - "FixClientCvars-on-finish is not modeled."
       - "The gametype-switch-on-finish branch (voted_gametype -> GameTypeVote_SetGametype before Map_Goto) is absent (no gametype vote ported)."
     verification:
-      - { kind: code, ref: "Finish (MapVoting.cs:441-455) sets WinningMap from the ranked top available candidate; GameWorld.cs:2454-2455 applies via ApplyMapChange -> ChangeLevelHandler on Finished && ReadyToChangeLevel (honoring the 1 s delay). NetGame.cs:3029-3040 reveals the winner cell (SetWinner) during that 1 s window on the listen-server panel.", result: pass }
+      - { kind: code, ref: "Finish (MapVoting.cs:440-457) sets WinningMap from the ranked top available candidate; GameWorld.cs:3108-3109 applies via ApplyMapChange -> ChangeLevelHandler on Finished && ReadyToChangeLevel (honoring the 1 s delay). NetGame.cs:3121-3132 reveals the winner cell (SetWinner) during that 1 s window on the listen-server panel.", result: pass }
     confidence: high
-    notes: "FIX (presentation/liveness): the winner REVEAL is now shown — NetGame.UpdateMapVotePanel calls SetWinner during the 1 s winner-reveal delay, so on a listen server the player sees the highlighted winning map before the level changes. Winner selection uses the Rng-tiebroken ranked top. Only the event-log + the (unported) gametype-switch branch remain."
+    notes: "Unchanged. The winner REVEAL is shown (SetWinner during the 1 s delay), the 1 s winner->changelevel delay is live, and the Rng-tiebroken ranked top is the winner. Only the event-log + the (unported) gametype-switch branch remain."
 
   - id: sv-mapvoting.gametype_vote
     name: "Gametype vote (pre-map gametype ballot + switch)"
@@ -302,15 +303,15 @@ features:
     constants:
       - { name: "sv_vote_gametype", base: "0", port: "0", match: true }
       - { name: "sv_vote_gametype_timeout", base: "20", port: "20", match: true }
-      - { name: "sv_vote_gametype_options", base: "dm tdm ca ctf", port: "dm tdm ctf", match: false }
-      - { name: "sv_vote_gametype_reduce_time", base: "10", port: "none", match: false }
-      - { name: "sv_vote_gametype_reduce_count", base: "2", port: "none", match: false }
-      - { name: "sv_vote_gametype_detail", base: "1", port: "none", match: false }
-      - { name: "sv_vote_gametype_default_current", base: "1", port: "none", match: false }
-      - { name: "sv_vote_gametype_maplist_reset", base: "1", port: "none", match: false }
+      - { name: "sv_vote_gametype_options", base: "dm tdm ca ctf", port: "dm tdm ca ctf (Cvars.cs:440)", match: true }
+      - { name: "sv_vote_gametype_reduce_time", base: "10", port: "10 (Cvars.cs:441)", match: true }
+      - { name: "sv_vote_gametype_reduce_count", base: "2", port: "2 (Cvars.cs:442)", match: true }
+      - { name: "sv_vote_gametype_detail", base: "1", port: "1 (Cvars.cs:443)", match: true }
+      - { name: "sv_vote_gametype_default_current", base: "1", port: "1 (Cvars.cs:444)", match: true }
+      - { name: "sv_vote_gametype_maplist_reset", base: "1", port: "1 (Cvars.cs:445)", match: true }
     status:
       logic: missing
-      values: partial
+      values: faithful
       timing: missing
       presentation: missing
       audio: na
@@ -318,13 +319,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No server-side gametype vote at all: no gametype ballot, no custom gametypes, no hook execution, no MapInfo_SwitchGameType, no maplist reset (grep: no GameTypeVote_* counterpart in src/)."
-      - "sv_vote_gametype_options still ships 'dm tdm ctf' (Cvars.cs:421) vs Base 'dm tdm ca ctf' (missing ca)."
-      - "sv_vote_gametype_reduce_time/_reduce_count/_detail/_default_current/_maplist_reset cvars are all still unregistered."
+      - "No server-side gametype vote at all: no gametype ballot, no custom gametypes, no hook execution, no MapInfo_SwitchGameType, no maplist reset (grep: no GameTypeVote_Start/_Finished/_SetGametype/_AddVotable counterpart in src/ — only doc-comment references)."
+      - "NetGame.UpdateMapVotePanel always passes gametypeVote: false (NetGame.cs:3105), so the panel's GametypeVote draw path is never driven."
     verification:
-      - { kind: code, ref: "no GameTypeVote_* in src/; sv_vote_gametype_options unchanged at Cvars.cs:421; NetGame.UpdateMapVotePanel passes gametypeVote: false (NetGame.cs:3013) so the panel's GametypeVote draw path is never driven", result: pass }
+      - { kind: code, ref: "no GameTypeVote_* implementation in src/ (only comments in Commands.cs/GameWorld.cs/Campaign.cs); the 8 sv_vote_gametype_* cvars are now ALL registered with Base-faithful values incl. options 'dm tdm ca ctf' (Cvars.cs:437-445); NetGame.cs:3105 passes gametypeVote: false", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 5. The panel's GametypeVote draw path is unreachable because nothing drives it (NetGame always passes gametypeVote:false)."
+    notes: "FIX (values partial->faithful): all 8 gametype-vote cvars are now registered with correct Base values (options gained the missing 'ca'; reduce_time/reduce_count/detail/default_current/maplist_reset added). But the gametype-vote LOGIC/timing/presentation are still entirely unported."
 
   - id: sv-mapvoting.suggestions
     name: "Player map suggestions (suggestmap)"
@@ -338,9 +338,9 @@ features:
     constants:
       - { name: "g_maplist_votable_suggestions", base: "2", port: "2", match: true }
       - { name: "g_maplist_votable_suggestions_override_mostrecent", base: "0", port: "0", match: true }
-      - { name: "g_maplist_votable_show_suggester", base: "1", port: "1 (REGISTERED, Cvars.cs:416)", match: true }
+      - { name: "g_maplist_votable_show_suggester", base: "1", port: "1 (REGISTERED, Cvars.cs:434)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -349,13 +349,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Suggested maps reach the ballot: GameWorld.cs:2431-2434 passes Commands.MapSuggestions into MapVote.Start, which seeds them ahead of the rotation (capped by g_maplist_votable_suggestions). So suggestmap genuinely affects the ballot on the live path."
-      - "BUT the suggester NAME is dropped: CmdSuggestMap (Commands.cs:2058-2092) stores only the map string into _mapSuggestions (Commands.MapSuggestions is IReadOnlyList<string>), and GameWorld passes Suggester: \"\". So g_maplist_votable_show_suggester (registered, default 1) and the panel's 'Suggested by:' line can never populate even though NetGame forwards c.Suggester to SetVote — the attribution is lost end-to-end."
-      - "Recency check (Map_IsRecent / override_mostrecent) and the gametype-support check are still not applied in CmdSuggestMap."
+      - "CmdSuggestMap (Commands.cs:2326-2374) is now faithful to MapVote_Suggest: empty-arg usage, the suggestions==0 disable, the map-existence check, the recency gate (Map_IsRecent via MapRotation.IsRecent unless override_mostrecent), the gametype-support gate (MapSupportsGametype unless sv_vote_gametype), the already-suggested dedup, AND it records the suggester's netname."
+      - "Suggested maps reach the ballot with their suggester: GameWorld.cs:3085-3088 passes the (Map, Suggester) pairs into MapVote.Start, which seeds them ahead of the rotation (capped by g_maplist_votable_suggestions). show_suggester (registered, default 1) and the panel's 'Suggested by:' line can now populate (NetGame forwards c.Suggester to the panel Candidate, NetGame.cs:3103)."
+      - "Minor: the eventlog `:vote:suggested:` line is not emitted; the random replacement of a suggestion when the list is full (mapvote_suggestion_ptr >= MAPVOTE_COUNT) is not modeled (the port keeps an unbounded list and caps at seed time)."
     verification:
-      - { kind: code, ref: "CmdSuggestMap (Commands.cs:2058) stores into _mapSuggestions (existence + dedup + suggestions==0 disable, names only); GameWorld.cs:2431-2434 feeds them into Start with empty suggester; show_suggester registered at Cvars.cs:416; NetGame.cs:3011 passes c.Suggester (always \"\") to the panel Candidate", result: pass }
+      - { kind: code, ref: "CmdSuggestMap (Commands.cs:2326) now stores (map, suggester) with the recency + gametype-support + existence + dedup gates; GameWorld.cs:3085-3088 feeds the pairs into Start; show_suggester registered at Cvars.cs:434; NetGame.cs:3103 passes c.Suggester to the panel Candidate", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 5. Suggestions seed the live ballot; suggester names dropped, recency/gametype-support checks unported."
+    notes: "FIX (logic partial->faithful): the suggester name is now recorded + flows end-to-end, and the recency + gametype-support gates are implemented (all three were baseline gaps). suggestmap genuinely affects the live ballot and can attribute the suggester."
 
   - id: sv-mapvoting.net.sync
     name: "Vote state networking (ENT_CLIENT_MAPVOTE + screenshot transfer)"
@@ -378,13 +378,13 @@ features:
     intended_divergence: true
     divergence_rationale: "The listen-server port reads the in-process GameWorld.MapVote directly (NetGame.UpdateMapVotePanel) instead of serializing an ENT_CLIENT_MAPVOTE entity, which is the right architecture for a single-process host. The genuine GAP is that this path only exists for the listen server; a true dedicated-server / remote-client codepath would still need a real net entity (none exists)."
     gaps:
-      - "LISTEN-SERVER FEED ADDED (Wave 5): NetGame.UpdateMapVotePanel (NetGame.cs:2983-3044, called every frame from _Process at NetGame.cs:2694) reads GameWorld.MapVote and pushes the ballot (SetVote), live counts + availability (SetVotes), the local own-vote (OwnVote via MapVote.SelectionOf(LocalServerPlayer)) and the winner reveal (SetWinner). It also owns the panel's Visible.flag."
-      - "STILL MISSING: there is NO ENT_CLIENT_MAPVOTE net entity. On a dedicated server, or for a remote client connected to a listen server, _serverWorld is null so UpdateMapVotePanel does nothing and the client sees no ballot, counts or winner. The ballot/mask/tallies/own-vote/winner are never serialized over the wire."
-      - "No screenshot transfer (TE_CSQC_PICTURE / mv_getpicture); the panel loads level-shots from its own VFS via the `maps/<name>` pic path (NetGame.cs:3009). mv_getpicture is registered only as a server-handled-but-unimplemented client command."
+      - "LISTEN-SERVER FEED: NetGame.UpdateMapVotePanel (NetGame.cs:3075-3136, called every frame from _Process at NetGame.cs:2738) reads GameWorld.MapVote and pushes the ballot (SetVote with the suggester), live counts + availability (SetVotes), the local own-vote (OwnVote via MapVote.SelectionOf(LocalServerPlayer)) and the winner reveal (SetWinner). It also owns the panel's Visible."
+      - "STILL MISSING: there is NO ENT_CLIENT_MAPVOTE net entity. On a dedicated server, or for a remote client connected to a listen server, _serverWorld is null so UpdateMapVotePanel does nothing AND CastMapVote no-ops — the client sees no ballot/counts/winner and cannot cast. The ballot/mask/tallies/own-vote/winner are never serialized over the wire."
+      - "No screenshot transfer (TE_CSQC_PICTURE / mv_getpicture); the panel loads level-shots from its own VFS via the `maps/<name>` pic path (NetGame.cs:3101). mv_getpicture is registered only as a server-handled-but-unimplemented client command."
     verification:
-      - { kind: code, ref: "NetGame.cs:2694 calls UpdateMapVotePanel each _Process; it returns early when _serverWorld?.MapVote is null (NetGame.cs:2988-2994). grep: still no ENT_CLIENT_MAPVOTE / mapvote net handler in game/net/ — the feed is the in-process listen-server object, not a serialized entity.", result: pass }
+      - { kind: code, ref: "NetGame.cs:2738 calls UpdateMapVotePanel each _Process; it returns early when _serverWorld?.MapVote is null (NetGame.cs:3080-3086). grep: still no ENT_CLIENT_MAPVOTE / mapvote net handler in game/net/ — the feed is the in-process listen-server object, not a serialized entity.", result: pass }
     confidence: high
-    notes: "FIX (liveness, listen-server only): the panel is now driven from the in-process MapVoting on a listen server (was wholly absent in the baseline). STILL OPEN: no real net entity, so a dedicated-server / remote client gets nothing — hence liveness partial and presentation partial."
+    notes: "Unchanged since the Wave 5 listen-server feed. The panel is driven from the in-process MapVoting on a listen server; no real net entity, so a dedicated-server / remote client still gets nothing and cannot cast — hence liveness/presentation partial."
 
   - id: sv-mapvoting.client.draw
     name: "Client vote-screen panel (grid, thumbnails, counts, winner reveal)"
@@ -411,14 +411,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Panel is now FED on a listen server: NetGame.UpdateMapVotePanel calls SetVote/SetVotes/OwnVote/SetWinner and owns Visible (NetGame.cs:2983-3044), so the player sees the ballot grid, level-shots, live counts, own-vote highlight and the winner reveal during a real listen-server match."
-      - "STILL DEAD for remote/dedicated-server clients: no net entity feeds the panel when _serverWorld is null (see sv-mapvoting.net.sync), so a non-listen client never sees the vote screen."
-      - "The mv_top2_alpha reduce-fade (SetReduce/SetAvailability path) is still never driven; availability is fed via SetVotes(-1) which dims but does not run the top-2 fade animation. The MV_FADETIME selection-pulse depends on Selection, which only client input would set (sv-mapvoting.client.input), so the selection pulse never runs."
+      - "Panel is FED on a listen server: NetGame.UpdateMapVotePanel calls SetVote/SetVotes/OwnVote/SetWinner and owns Visible (NetGame.cs:3075-3136), so the player sees the ballot grid, level-shots, live counts, own-vote highlight, the selection pulse (now driven by client input) and the winner reveal during a real listen-server match."
+      - "STILL DEAD for remote/dedicated-server clients: no net entity feeds the panel when _serverWorld is null (see sv-mapvoting.net.sync), so a non-listen client never sees the vote screen (liveness partial)."
+      - "The mv_top2_alpha reduce-fade (SetReduce/SetAvailability path) is still never driven; availability is fed via SetVotes(-1) which dims but does not run the top-2 fade animation."
     verification:
-      - { kind: code, ref: "NetGame.cs:2987-3043 feeds the panel from MapVoting and sets mv.Active/mv.Visible; the panel draws via DrawPanel/DrawCandidate. SetVote/SetVotes/SetWinner now have a LIVE caller (was ZERO in the baseline).", result: pass }
-      - { kind: code, ref: "MapVotePanel.cs:200 registers highlight_border=1 (matches Base hud_*.cfg skins); FadeTime=0.2 + winnerAlpha at 364-371 match MV_FADETIME / mv_winner_alpha", result: pass }
+      - { kind: code, ref: "NetGame.cs:3075-3136 feeds the panel from MapVoting and sets mv.Active/mv.Visible; the panel draws via DrawPanel/DrawCandidate. SetVote/SetVotes/SetWinner have a LIVE caller, and Selection is now written from client input (MapVotePanel.cs:868-920) so the MV_FADETIME selection pulse runs.", result: pass }
+      - { kind: code, ref: "MapVotePanel.cs:200 registers highlight_border=1 (matches Base hud_*.cfg skins); FadeTime=0.2 + winnerAlpha match MV_FADETIME / mv_winner_alpha", result: pass }
     confidence: high
-    notes: "FIX (liveness): the panel went dead -> partial — it now lights up on a listen-server match (ballot, counts, own-vote, winner reveal). Remaining: no feed for remote/dedicated clients, and the selection-pulse + top-2 reduce-fade animations stay unexercised (they depend on the missing client input + the unused SetReduce path)."
+    notes: "FIX (presentation): the selection-pulse now runs because client input writes Selection (was unexercised in the baseline). Still liveness partial: lit on a listen-server match but no feed for remote/dedicated clients, and the top-2 reduce-fade stays unexercised."
 
   - id: sv-mapvoting.client.input
     name: "Client vote input (keyboard/mouse selection + cast)"
@@ -427,21 +427,26 @@ features:
       - "client/mapvoting.qc:MapVote_InputEvent"
       - "client/mapvoting.qc:MapVote_SendChoice"
       - "client/mapvoting.qc:MapVote_Selection"
-    port_refs: []
+    port_refs:
+      - "game/net/NetGame.cs:HandleMapVoteInput"
+      - "game/net/NetGame.cs:CastMapVote"
+      - "game/hud/MapVotePanel.cs:HandleVoteKey"
+      - "game/hud/MapVotePanel.cs:HandleVoteClick"
+      - "game/hud/MapVotePanel.cs:SendChoice"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No input handler: arrows/enter/space/digits/mouse don't move a selection or cast a vote on the panel. The panel exposes a Selection property but NOTHING writes it from input (grep: no _Input/_GuiInput/InputEvent in MapVotePanel.cs; nothing in game/ assigns MapVote.Selection from input)."
-      - "No localcmd('impulse N') equivalent to send the chosen option to the server. The server-side CastVote IS reachable via the `impulse` command (Commands.cs:1585), so the only missing client piece is the input->impulse bridge. On a listen server the player can now SEE the ballot (Wave 5) but still must type `impulse N` in the console to cast — there is no point-and-click vote."
+      - "Input is now implemented + live (on a listen server): NetGame._UnhandledInput routes events to HandleMapVoteInput while the panel is Visible (NetGame.cs:3792-3797), which feeds MapVotePanel.HandleVoteKey/HandleVoteClick/HandleVoteHover. The panel moves the selection (arrows, MoveLeft/Right/Up/Down skipping unavailable cells), casts on enter/space, casts by digit (1..9, 0->10, Ctrl+digit two-digit entry), and casts/selects on mouse click/hover — faithful to MapVote_InputEvent + MapVote_Move* + MapVote_SendChoice."
+      - "SendChoice forwards through CastChoice -> NetGame.CastMapVote -> `impulse N+1` against the in-process server (the port's MapVote_SendChoice -> localcmd impulse). On a pure remote client CastMapVote no-ops (no ENT_CLIENT_MAPVOTE round-trip), so input there casts nothing (folded into net.sync)."
     verification:
-      - { kind: code, ref: "MapVotePanel.cs has no _Input/_GuiInput/InputEvent handler; no MapVote_SendChoice counterpart; Selection is never written from input (only reset to -1 in SetVote). grep across game/ for `.Selection =` / impulse-from-panel: none.", result: pass }
+      - { kind: code, ref: "NetGame.cs:3792-3797 gates input on MapVote.Visible; HandleMapVoteInput (NetGame.cs:3830-3846) feeds HandleVoteKey/Click/Hover; MapVotePanel.cs:868-936 implements arrows/enter/space/digits/Ctrl-digit/click/hover -> SendChoice -> CastChoice -> CastMapVote -> Commands.Execute(\"impulse N\"). Selection is written from MoveLeft/Right/Up/Down + hover/click.", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 5. The visible ballot now exists on a listen server and the server accepts the resulting impulse, but there is still no client UI to generate the impulse from a selection — the last missing link in an end-to-end clickable vote."
+    notes: "FIX (logic/presentation missing->faithful, liveness na->live): a full point-and-click + keyboard vote UI now exists and casts on a listen server (was entirely absent in the baseline — the last missing link). Remote-client casting still needs the net entity."

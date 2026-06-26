@@ -1,30 +1,39 @@
 unit: sv-intermission
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
-# Re-audited 2026-06-22 on branch claude/parity-port-waves AFTER the FULL Wave-5 pass (commits 66e378f
-# "partial" → 965a42f "re-verify" → 023ba70 "Wave 5 finish"; the prior baseline of this file was taken at
-# 66e378f only, so the two later commits are NEW for this unit). Net change vs that baseline: the player
-# INPUT EARLY-EXIT is now GENUINELY WIRED — GameWorld.cs:1337-1339 (landed in 023ba70) calls
-# Intermission.RequestExit() on the live per-player movement path whenever the match is in intermission and
-# the player presses Attack1/Jump/Attack2/Hook/Use (the EXACT 5 buttons Base IntermissionThink checks,
-# server/intermission.qc:501). So sv-intermission.timer.input_early_exit moves dead/stub → live/faithful,
-# and sv-intermission.timer.exittime's in-grace early-skip half (its only remaining gap) is now closed too.
-# The map-vote client UI + cast path stay as wired at the 66e378f baseline (UpdateMapVotePanel feeds the
-# panel; number-key 1..9 → impulse → Commands.DispatchImpulse → MapVoting.CastVote on the listen server).
-# No regressions. Everything else (NextLevel hooks, nextmap overrides, nextmap broadcast, view-freeze,
-# scoreboard auto-show, autoscreenshot, cdtrack) is UNCHANGED and still open. Intermission.cs itself is
-# byte-for-byte the Wave-1/2 state (the +10s auto-advance grace remains live & faithful).
+last_audited: "2026-06-25"
+# Re-audited 2026-06-25 on branch claude/parity-port-waves (Base local checkout xonotic-v0.8.6-151-gf6b1980;
+# the pinned base_ref_rev above is the registry's reference revision and the intermission/mapvoting/world
+# symbols are byte-compatible with it). Net change vs the 2026-06-22 baseline: SIX features improved — the
+# end-of-match presentation/notification stack got substantially wired since Wave-6:
+#   (1) matchend.nextlevel: NextLevel now calls Voting.Stop (VoteReset), FireMatchEndBeforeScores +
+#       FireMatchEnd mutator hooks, and SendCenterKill (Kill_Notification NOTIF_ALL) — logic partial→faithful.
+#       Still omits WeaponStats_Shutdown, DumpStats(true), and the localcmd(sv_hook_gameend) trailing alias.
+#   (2) matchend.nextmap_broadcast: FULLY wired — GameWorld.NextMapBroadcast → MatchState packet
+#       (ServerNet.SendMatchState) → ClientNet.NextMap → NetGame feeds _scoreboard.NextMap. missing→faithful, live.
+#   (3) client.scoreboard_autoshow: NetGame.UpdateScoreboard now force-shows at intermission and hides while the
+#       mapvote panel owns the screen (intermission==1 show / ==2 mapvote). missing→faithful, partial→live.
+#   (4) client.view_freeze: the viewmodel is now hidden at intermission (EF_NODRAW equivalent, NetGame.cs:1575).
+#       presentation missing→partial; liveness partial→live. Camera lock + -2342 health sentinel STILL missing.
+#   (5) audio.cdtrack: target_music_kill() is now reproduced — MusicPlayer.Intermission (fed from the networked
+#       MatchIntermission) blanks the map track at intermission. audio missing→partial. The sv_intermission_cdtrack
+#       'cd loop <track>' random switch is STILL not consumed.
+#   (6) client.autoscreenshot: sv_autoscreenshot is now a registered server cvar default "0" (matches Base) —
+#       values missing→partial via the constant match; the feature is still fully missing on every behavioral
+#       dimension (no IntermissionThink timer / stuffcmd / client screenshot trigger).
+# No regressions. UNCHANGED since baseline: matchend.freeze, timer.exittime, timer.input_early_exit,
+# overtime.cascade, maplist.rotation, nextmap.override (3 admin/redirect overrides still absent),
+# nextmap.changelevel, mapvote.server_core (still no NetControl.MapVote opcode → listen-server cast only),
+# mapvote.client_ui (listen-server only). Intermission.cs itself is byte-identical to the Wave-1/2 state.
 summary:
   feature_count: 15
   worst_gaps:
     - "Map vote remains networked-incomplete for REMOTE clients: there is still no NetControl.MapVote opcode, so the live ballot/cast path works ONLY on a listen server (the client reads the in-process GameWorld.MapVote directly). A pure --connect client has no in-process MapVoting, so it never sees the ballot and cannot vote; the panel feed honestly blanks for it."
-    - "NextLevel omits VoteReset, the centerprint kill (Kill_Notification NOTIF_ALL), WeaponStats_Shutdown, DumpStats, the MatchEnd_BeforeScores/MatchEnd mutator hooks, and the localcmd(sv_hook_gameend) — only winners/eventlog/playerstats/campaign/demo are ported."
-    - "Scoreboard does not auto-show at intermission (Base force-draws at intermission==1, hides at ==2 for the mapvote); the port only shows it while +showscores is held."
-    - "No SVC_INTERMISSION view freeze: local view is not locked to an intermission camera, viewmodel is not hidden (EF_NODRAW), health sentinel -2342 not set."
-    - "No autoscreenshot stuffcmd / sv_autoscreenshot consumer (cl_autoscreenshot is now accepted by the server allowlist but nothing reads it), and no sv_intermission_cdtrack switch / target_music_kill at match end."
+    - "NextLevel still omits WeaponStats_Shutdown, DumpStats(true), and the localcmd(sv_hook_gameend) trailing hook — but now DOES port VoteReset, MatchEnd_BeforeScores/MatchEnd hooks, Kill_Notification(NOTIF_ALL), and (client-side) target_music_kill."
+    - "Intermission view freeze is only HALF done: the viewmodel is now hidden (EF_NODRAW) at intermission, but the local view is not locked to a FindIntermission camera and the -2342 health sentinel is not set server-side."
+    - "No autoscreenshot feature: sv_autoscreenshot is registered (default 0, matches Base) and cl_autoscreenshot reaches the server, but there is no IntermissionThink autoscreenshot timer, no cl_autoscreenshot_screenshot stuffcmd, and no client screenshot trigger — the server cannot force the end-of-match scoreboard capture."
+    - "sv_intermission_cdtrack 'cd loop <track>' random switch is not consumed (only target_music_kill, the map-music silence at match end, is ported)."
     - "DoNextMapOverride omits quit_when_empty, quit_and_redirect, and lastlevel overrides."
-    - "Set_NextMap / Send_NextMap_To_Player broadcast is missing: clients never receive the queued _nextmap, so the scoreboard 'Next map: …' line (ScoreboardPanel.NextMap, drawn but never assigned) stays blank."
 features:
   - id: sv-intermission.matchend.nextlevel
     name: "NextLevel match-end latch + once-per-match bookkeeping"
@@ -39,7 +48,7 @@ features:
       - { name: "sv_mapchange_delay (s)", base: "5", port: "5", match: true }
       - { name: "sv_eventlog", base: "0", port: "0", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -48,12 +57,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "NextLevel reproduces the winner latch (MarkWinners), the :gameover event log (sv_eventlog gated), PlayerStats_GameReport, the campaign PreIntermission decision, and the demo stop — but OMITS VoteReset(true), Kill_Notification(NOTIF_ALL … kill all centerprints), WeaponStats_Shutdown, DumpStats(true), the MatchEnd_BeforeScores / MatchEnd mutator hooks, and the localcmd(sv_hook_gameend) trailing hook."
+      - "NextLevel now reproduces the winner latch (MarkWinners), VoteReset (Voting.Stop), the MatchEnd_BeforeScores + MatchEnd mutator hooks (MutatorHooks.FireMatchEndBeforeScores/FireMatchEnd), Kill_Notification(NOTIF_ALL) (NotificationSystem.SendCenterKill), the :gameover event log (sv_eventlog gated), PlayerStats_GameReport, the campaign PreIntermission decision, and the demo stop. STILL OMITS: WeaponStats_Shutdown, DumpStats(true), and the trailing localcmd(sv_hook_gameend) admin-script alias. (target_music_kill is ported but client-side — see sv-intermission.audio.cdtrack.)"
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:GameWorld_EndOfMatch_RotatesToNextMap", result: pass }
-      - { kind: code-read, ref: "GameWorld.NextLevel (lines 2339-2363): MarkWinners + GameLog.GameOver/Close + PlayerStats.GameReport + Campaign.PreIntermission + Demo.OnMatchEnd; no VoteReset/centerprint-kill/WeaponStats/DumpStats/MatchEnd-hook/sv_hook_gameend (re-confirmed 2026-06-22, unchanged by Wave-5)", result: fail }
+      - { kind: code-read, ref: "GameWorld.NextLevel (lines 2950-2991): Voting.Stop + FireMatchEndBeforeScores + MarkWinners + GameLog.GameOver/Close (sv_eventlog) + PlayerStats.GameReport + SendCenterKill(NotifBroadcast.All) + Campaign.PreIntermission + Demo.OnMatchEnd + FireMatchEnd. No WeaponStats_Shutdown / DumpStats / sv_hook_gameend (2026-06-25).", result: pass }
+      - { kind: grep, ref: "no DumpStats / WeaponStats_Shutdown / sv_hook_gameend anywhere in src/XonoticGodot.Server (2026-06-25)", result: fail }
     confidence: high
-    notes: "Idempotent (Begin returns early once Running). Active votes are suppressed via Voting.WarmupOrIntermission rather than an explicit VoteReset; the missing hooks are mostly mutator/eventlog/admin-script seams but the absent MatchEnd_BeforeScores/MatchEnd hooks could matter for a mutator that adjusts scores at match end."
+    notes: "FIXED since the 2026-06-22 baseline: VoteReset (was only suppressed via the warmup/intermission gate, now an explicit Voting.Stop), the MatchEnd_BeforeScores/MatchEnd hooks, and the Kill_Notification centerprint kill are now on the live NextLevel path. The hook chains have no current subscribers but firing them is the parity element (a mode can subscribe). The three remaining omissions (WeaponStats_Shutdown, DumpStats, sv_hook_gameend) are stats-export / admin-script seams with no stock-config gameplay effect."
 
   - id: sv-intermission.matchend.freeze
     name: "World freeze during intermission (game_stopped/intermission_running)"
@@ -76,9 +86,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "GameWorld.GameStopped = Intermission.Running||MatchEnded||Timeout.IsPaused; movement gated by !Intermission.Running; respawn gated — unchanged by Wave-5", result: pass }
+      - { kind: code-read, ref: "GameWorld.GameStopped = Intermission.Running||MatchEnded||Timeout.IsPaused; movement gated by !Intermission.Running; respawn gated — unchanged 2026-06-25", result: pass }
     confidence: high
-    notes: "Server-side scoring/respawn/movement freeze. The client-side view freeze (SVC_INTERMISSION) is a separate feature and is missing (see sv-intermission.client.view_freeze)."
+    notes: "Server-side scoring/respawn/movement freeze. The client-side view freeze (SVC_INTERMISSION) is a separate feature, now half-ported (see sv-intermission.client.view_freeze)."
 
   - id: sv-intermission.timer.exittime
     name: "Intermission exit timer (intermission_exittime + sv_mapchange_delay, -1 with no players)"
@@ -105,11 +115,11 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "Intermission.Think (Intermission.cs:100-123): ExitTime<0 → request-only; else returns until now>=ExitTime, then flips at now>=ExitTime+InputGracePeriod (10s) or on _exitRequested. Live via GameWorld.CheckRulesAndIntermission. Intermission.cs byte-identical to Wave-1/2.", result: pass }
-      - { kind: code-read, ref: "In-grace early-skip NOW wired: GameWorld.cs:1337-1339 (landed 023ba70) calls Intermission.RequestExit() on the live player movement path when Intermission.Running && !ReadyToChangeLevel && (Attack1|Jump|Attack2|Hook|Use) — short-circuits the +10s grace exactly as Base.", result: pass }
+      - { kind: code-read, ref: "Intermission.Think (Intermission.cs:100-123): ExitTime<0 → request-only; else returns until now>=ExitTime, then flips at now>=ExitTime+InputGracePeriod (10s) or on _exitRequested. Live via GameWorld.CheckRulesAndIntermission. Intermission.cs byte-identical to baseline.", result: pass }
+      - { kind: code-read, ref: "In-grace early-skip wired: GameWorld.cs:1586-1588 calls Intermission.RequestExit() on the live player movement path when Intermission.Running && !ReadyToChangeLevel && (Attack1|Jump|Attack2|Hook|Use) — short-circuits the +10s grace exactly as Base.", result: pass }
       - { kind: code-read, ref: "Base server/intermission.qc:497-505 IntermissionThink: `if (time < intermission_exittime) return;` then `if (time < intermission_exittime + 10 && !(BUTTON_ATCK|JUMP|ATCK2|HOOK|USE)) return;` — confirms the 10s constant and the 5-button early-skip.", result: pass }
     confidence: high
-    notes: "FIXED since the 66e378f baseline: the in-grace button early-skip is now wired (023ba70), so a player can skip the +10s hold by pressing fire/jump/atck2/hook/use, and the auto-advance still serves the full grace when no one presses. ExitTime computation (delay with players, -1 without) faithful, +10s grace constant faithful. logic now `faithful`; the no-player ExitTime=-1 path is intentionally request-only (nobody to press, nothing to advance for) and is no longer a defect now that RequestExit is a live caller."
+    notes: "The in-grace button early-skip is wired (GameWorld.cs:1586-1588; line shifted from baseline's 1337-1339 but identical logic), so a player can skip the +10s hold by pressing fire/jump/atck2/hook/use, and the auto-advance still serves the full grace when no one presses. ExitTime computation (delay with players, -1 without) faithful, +10s grace constant faithful. The no-player ExitTime=-1 path is intentionally request-only (nobody to press)."
 
   - id: sv-intermission.timer.input_early_exit
     name: "Player input skips the scoreboard (press fire/jump after the hold)"
@@ -118,7 +128,7 @@ features:
       - "server/intermission.qc:IntermissionThink"
     port_refs:
       - "src/XonoticGodot.Server/Intermission.cs:RequestExit"
-      - "src/XonoticGodot.Server/GameWorld.cs:1337"
+      - "src/XonoticGodot.Server/GameWorld.cs:1588"
     constants: []
     status:
       logic: faithful
@@ -131,10 +141,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: grep, ref: "RequestExit NOW has a live caller: GameWorld.cs:1339 (landed in 023ba70 'Wave 5 finish', after the 66e378f baseline). Definition Intermission.cs:92; binary .dll matches are stale build artifacts.", result: pass }
-      - { kind: code-read, ref: "GameWorld.cs:1337-1339 — `if (Intermission.Running && !Intermission.ReadyToChangeLevel && (input.ButtonAttack1 || input.ButtonJump || input.ButtonAttack2 || input.ButtonHook || input.ButtonUse)) Intermission.RequestExit();` — on the live per-player PlayerThink/movement path, before the dead-player branch; consumed world-side by Intermission.Think via CheckRulesAndIntermission. The 5 buttons exactly match Base PHYS_INPUT_BUTTON_ATCK/JUMP/ATCK2/HOOK/USE (server/intermission.qc:501).", result: pass }
+      - { kind: grep, ref: "RequestExit has a live caller: GameWorld.cs:1588. Definition Intermission.cs:92.", result: pass }
+      - { kind: code-read, ref: "GameWorld.cs:1586-1588 — `if (Intermission.Running && !Intermission.ReadyToChangeLevel && (input.ButtonAttack1 || input.ButtonJump || input.ButtonAttack2 || input.ButtonHook || input.ButtonUse)) Intermission.RequestExit();` — on the live per-player PlayerThink/movement path, before the dead-player branch; consumed world-side by Intermission.Think via CheckRulesAndIntermission. The 5 buttons exactly match Base PHYS_INPUT_BUTTON_ATCK/JUMP/ATCK2/HOOK/USE (server/intermission.qc:501).", result: pass }
     confidence: high
-    notes: "FIXED since the 66e378f baseline (the classic present-but-dead seam is now wired by 023ba70). A player pressing fire/jump/atck2/hook/use during the +10s grace skips the scoreboard immediately, matching Base. Both prior impacts are resolved: (a) the player can now skip the hold early, and (b) the no-player ExitTime=-1 path is request-only by design (no players → no input → nothing waiting for a map change), no longer a deadlock defect now that the seam is live."
+    notes: "A player pressing fire/jump/atck2/hook/use during the +10s grace skips the scoreboard immediately, matching Base. The no-player ExitTime=-1 path is request-only by design. UNCHANGED since baseline (line shifted 1337→1588)."
 
   - id: sv-intermission.overtime.cascade
     name: "Overtime / sudden-death cascade (CheckRules_World)"
@@ -165,9 +175,9 @@ features:
       - "STAT(OVERTIMES) is not networked, so the persistent HUD 'OVERTIME' / overtime-count banner does not show. The one-shot CENTER_OVERTIME_TIME and CENTER_OVERTIME_FRAG center notifications ARE wired live (→ NotificationSystem.Send), so the begin-of-overtime / 'Overtime has begun!' messages do fire."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/OverTimeManagerTests.cs", result: pass }
-      - { kind: code-read, ref: "RunCheckRulesWorld ports overtimes_prev + the just-begun-sudden-death revert line-for-line; OverTimeManager InitiateSuddenDeath/InitiateOvertime/GetWinningCode faithful; OnOvertimeStarted/OnSuddenDeathStarted wired to NotificationSystem", result: pass }
+      - { kind: code-read, ref: "RunCheckRulesWorld ports overtimes_prev + the just-begun-sudden-death revert line-for-line; OverTimeManager InitiateSuddenDeath/InitiateOvertime/GetWinningCode faithful; OnOvertimeStarted/OnSuddenDeathStarted wired to NotificationSystem. STAT(OVERTIMES) networking still deferred (OverTimeManager.cs:12).", result: pass }
     confidence: high
-    notes: "race/qualifying branch + RanOutOfSpawns + the CheckRules_World mutator hook are deliberately not ported (noted in code); campaign gating matches Base (no overtime, sudden death ends immediately). UNCHANGED by Wave-5."
+    notes: "race/qualifying branch + RanOutOfSpawns + the CheckRules_World mutator hook are deliberately not ported (noted in code); campaign gating matches Base (no overtime, sudden death ends immediately). UNCHANGED since baseline."
 
   - id: sv-intermission.maplist.rotation
     name: "Maplist init + next-map selection + recent-map exclusion"
@@ -198,7 +208,7 @@ features:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:MapRotation_GetNextMap_Iterates / _RecentMapsExcluded / _BuildBallot", result: pass }
       - { kind: code-read, ref: "MapRotation.Init/GetNextMap/MaplistMethod_Random/Iterate/Repeat/Map_Check + MarkAsRecent/IsRecent faithful; fexists/MapInfo_CheckMap are pluggable predicates wired by the host", result: pass }
     confidence: high
-    notes: "Random→Iterate→Repeat fallback, shuffle (Fisher-Yates seeded), cursor resume, and recent-map store all match Base. UNCHANGED by Wave-5."
+    notes: "Random→Iterate→Repeat fallback, shuffle (Fisher-Yates seeded), cursor resume, and recent-map store all match Base. MapHasRightSize (player-count map-size restriction filter) is the one Map_Check sub-detail not modelled but is gated behind cvars off by default. UNCHANGED since baseline."
 
   - id: sv-intermission.nextmap.override
     name: "DoNextMapOverride priority (campaign / queued nextmap / samelevel / redirect / quit / lastlevel)"
@@ -228,10 +238,10 @@ features:
       - "quit_and_redirect is not implemented: players are not redirected/reconnected to another server at match end."
       - "lastlevel (single-player 'show menu after match') is not implemented (the cvar is registered but never read in DriveEndOfMatchMapFlow)."
     verification:
-      - { kind: code-read, ref: "DriveEndOfMatchMapFlow (GameWorld.cs:2387+): campaign → QueuedNextMap → samelevel → vote/rotation; no quit_when_empty/quit_and_redirect/lastlevel branches (re-confirmed 2026-06-22)", result: fail }
+      - { kind: code-read, ref: "DriveEndOfMatchMapFlow: campaign → QueuedNextMap → samelevel → vote/rotation; no quit_when_empty/quit_and_redirect/lastlevel branches (re-confirmed 2026-06-25)", result: fail }
       - { kind: test, ref: "ServerInfraTests.cs:GameWorld_EndOfMatch_RotatesToNextMap (rotation branch)", result: pass }
     confidence: high
-    notes: "Campaign, explicit queued nextmap (chmap/nextmap commands set QueuedNextMap, campaign sets it via OnLevelTransition), and samelevel restart are live. The three missing overrides are server-admin/redirect features. UNCHANGED by Wave-5."
+    notes: "Campaign, explicit queued nextmap (chmap/nextmap commands set QueuedNextMap, campaign sets it via OnLevelTransition), and samelevel restart are live. The three missing overrides are server-admin/redirect features. UNCHANGED since baseline."
 
   - id: sv-intermission.nextmap.changelevel
     name: "Apply chosen next map (Map_Goto → changelevel) + mark recent"
@@ -256,7 +266,7 @@ features:
       - { kind: test, ref: "ServerInfraTests.cs:GameWorld_EndOfMatch_RotatesToNextMap (SelectedNextMap + IsRecent assert)", result: pass }
       - { kind: code-read, ref: "ApplyMapChange: MarkAsRecent + Commands.ChangeLevelHandler before switching", result: pass }
     confidence: high
-    notes: "Routes through Commands.ChangeLevelHandler (host pipeline) and MarkAsRecent before switching. UNCHANGED by Wave-5."
+    notes: "Routes through Commands.ChangeLevelHandler (host pipeline) and MarkAsRecent before switching. UNCHANGED since baseline."
 
   - id: sv-intermission.mapvote.server_core
     name: "Server map-vote core (MapVote_Start / tally / finish)"
@@ -282,13 +292,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "There is still no NetControl.MapVote opcode, so the ballot/tally is not serialized over the wire and remote (--connect) clients can neither see nor cast. On a LISTEN server the cast path is now live (Wave-5): a player's number-key 1..9 emits a C2S impulse, which Commands.DispatchImpulse intercepts while MapVoting.Running and routes to MapVoting.CastVote(caller, imp-1) before the weapon-impulse path — so the host's local player and any in-process bots actually move the tally. For a dedicated/remote-client server the vote still closes on timeout/PlayerCount with zero real votes (deterministic RNG tiebreak)."
+      - "There is still no NetControl.MapVote opcode, so the ballot/tally is not serialized over the wire and remote (--connect) clients can neither see nor cast. On a LISTEN server the cast path is live: a player's number-key 1..9 emits a C2S impulse, which Commands.DispatchImpulse intercepts while MapVoting.Running and routes to MapVoting.CastVote(caller, imp-1) before the weapon-impulse path. For a dedicated/remote-client server the vote still closes on timeout/PlayerCount with zero real votes (deterministic RNG tiebreak)."
     verification:
       - { kind: code-read, ref: "MapVoting.Start/CastVote/Tick/Finish faithful (incl. abstain + unbeatable-leader early finish + RandomSelection tiebreak); started from DriveEndOfMatchMapFlow when g_maplist_votable>0 and PlayerCount>0", result: pass }
-      - { kind: code-read, ref: "Commands.DispatchImpulse (Commands.cs:1585-1589): `if (_world.MapVote.Running) { _world.MapVote.CastVote(caller, imp-1); return true; }` — live cast path; impulse arrives via ServerNet C2S impulse → Commands.Execute(\"impulse N\", caller=p). MapVoting.SelectionOf added (Wave-5) for the own-vote HUD highlight.", result: pass }
-      - { kind: grep, ref: "no NetControl.MapVote / mapvote serialization opcode in game/net; the vote is read directly from the in-process GameWorld.MapVote (listen-server only)", result: fail }
+      - { kind: code-read, ref: "Commands.DispatchImpulse (Commands.cs:1757-1759): `if (_world.MapVote.Running) { _world.MapVote.CastVote(caller, imp - 1); return ...; }` — live cast path; impulse arrives via ServerNet C2S impulse. MapVoting.SelectionOf present for the own-vote HUD highlight.", result: pass }
+      - { kind: grep, ref: "no NetControl.MapVote / mapvote serialization opcode in game/net; the vote is read directly from the in-process GameWorld.MapVote (listen-server only) — 2026-06-25", result: fail }
     confidence: high
-    notes: "g_maplist_votable=6 by default, so the vote IS the default end-of-match path with players present. Wave-5 turned a server-only tally into a genuinely castable vote on the listen server (number-key → impulse → CastVote), and added SelectionOf for own-vote highlighting; liveness stays `partial` only because the remote-client wire opcode is still absent."
+    notes: "g_maplist_votable=6 by default, so the vote IS the default end-of-match path with players present. The number-key→impulse→CastVote cast path is live on the listen server; liveness stays `partial` only because the remote-client wire opcode is still absent. UNCHANGED since baseline."
 
   - id: sv-intermission.mapvote.client_ui
     name: "Client map-vote ballot UI (MapVote_Draw)"
@@ -309,13 +319,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The panel is fed only from the in-process GameWorld.MapVote, so it lights up ONLY on a listen server. A pure --connect client has no in-process MapVoting and no NetControl.MapVote decode, so its ballot stays blank and it cannot vote — full remote parity still needs the networked opcode (see sv-intermission.mapvote.server_core)."
+      - "The panel is fed only from the in-process GameWorld.MapVote (NetGame.UpdateMapVotePanel reads _serverWorld?.MapVote), so it lights up ONLY on a listen server. A pure --connect client has no in-process MapVoting and no NetControl.MapVote decode, so its ballot stays blank and it cannot vote — full remote parity still needs the networked opcode (see sv-intermission.mapvote.server_core)."
       - "The panel has no mouse/cursor click handler (Base MapVote_InputEvent lets you click a map tile); voting is by number-key 1..9 only. Faithful enough to vote, but the click-to-vote affordance is absent."
     verification:
-      - { kind: code-read, ref: "NetGame.UpdateMapVotePanel (NetGame.cs:2983-3044), called every frame from the HUD update (line 2694): feeds mv.SetVote(candidates) on ballot-identity change, mv.SetVotes(counts) + mv.OwnVote (vote.SelectionOf(LocalServerPlayer)) each frame, and mv.SetWinner on finish; owns mv.Visible (StartHiddenIds). Live on the listen-server path.", result: pass }
-      - { kind: code-read, ref: "MapVotePanel.cs MapVote_Draw port has MV_FADETIME selection/settle fade + mv_top2_alpha unavailable-option fade + 'Suggested by:' line; SetVote/SetVotes/SetWinner/OwnVote now have a live caller (UpdateMapVotePanel).", result: pass }
+      - { kind: code-read, ref: "NetGame.UpdateMapVotePanel (NetGame.cs:3075-3133), called every frame from the HUD update (line 2738): feeds mv.SetVote(candidates) on ballot-identity change, mv.SetVotes(counts) + mv.OwnVote (vote.SelectionOf(LocalServerPlayer)) each frame, and mv.SetWinner on finish; owns mv.Visible. Live on the listen-server path.", result: pass }
+      - { kind: code-read, ref: "MapVotePanel.cs MapVote_Draw port has MV_FADETIME selection/settle fade + mv_top2_alpha unavailable-option fade + 'Suggested by:' line; SetVote/SetVotes/SetWinner/OwnVote have a live caller (UpdateMapVotePanel).", result: pass }
     confidence: high
-    notes: "MAJOR change vs the prior audit: the panel was dead (registered but never fed). Wave-5 wired NetGame.UpdateMapVotePanel to feed it from the in-process MapVoting AND the number-key→impulse→CastVote cast path makes it interactive — so on a listen server the player now sees the ballot, sees live counts + their own vote highlighted, and the winner reveal. liveness dead→partial (listen-server only); presentation stub→faithful. Depends on mapvote.server_core's wire opcode for remote-client parity."
+    notes: "On a listen server the player sees the ballot, live counts + their own vote highlighted, and the winner reveal. liveness `partial` (listen-server only). Depends on mapvote.server_core's wire opcode for remote-client parity. UNCHANGED since baseline."
 
   - id: sv-intermission.matchend.nextmap_broadcast
     name: "Next-map broadcast to clients (Set_NextMap / Send_NextMap_To_Player → scoreboard 'Next map:')"
@@ -323,23 +333,26 @@ features:
     base_refs:
       - "server/intermission.qc:Set_NextMap"
       - "server/intermission.qc:Send_NextMap_To_Player"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:NextMapBroadcast"
+      - "game/net/ServerNet.cs:SendMatchState"
+      - "game/net/ClientNet.cs:NextMap"
+      - "game/net/NetGame.cs:UpdateScoreboard"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
-      timing: na
-      presentation: missing
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base stuffcmds 'settemp _nextmap <map>' to every real client whenever the queued next map changes, so the client knows the upcoming map; the port never broadcasts it. ScoreboardPanel.NextMap (drawn as the 'Next map: …' line at ScoreboardPanel.cs:740-742, QC GET_NEXTMAP) exists but is never assigned anywhere, so the scoreboard always shows a blank next-map line."
+    gaps: []
     verification:
-      - { kind: grep, ref: "no _nextmap / Send_NextMap / settemp _nextmap emission in src/ or game/; `.NextMap =` has zero assignments; ScoreboardPanel.NextMap drawn but unfed (re-confirmed 2026-06-22)", result: fail }
+      - { kind: code-read, ref: "GameWorld.NextMapBroadcast (GameWorld.cs:2799) = SelectedNextMap ?? QueuedNextMap; serialized into the MatchState packet (ServerNet.SendMatchState:899/914, WriteString(nextMap)); decoded to ClientNet.NextMap (ClientNet.cs:588); fed to _scoreboard.NextMap (NetGame.cs:3431). 2026-06-25.", result: pass }
     confidence: high
-    notes: "Cosmetic-ish (the next map is still chosen server-side at the right time) but the scoreboard 'Next map' presentation parity is broken — the field is dead. UNCHANGED by Wave-5."
+    notes: "FIXED since the 2026-06-22 baseline (was missing/missing/na). The chosen/queued next map is now broadcast to clients via the per-second MatchState reliable packet (the port's stand-in for Base's per-client `settemp _nextmap` stuffcmd), and the scoreboard 'Next map:' line is fed live on both listen and remote clients. Mechanism differs from Base (one shared MatchState field vs a per-client stuffcmd) but the observable result matches."
 
   - id: sv-intermission.client.view_freeze
     name: "Intermission view freeze (SVC_INTERMISSION: camera lock + viewmodel EF_NODRAW + health sentinel)"
@@ -348,24 +361,26 @@ features:
       - "server/intermission.qc:FixIntermissionClient"
     port_refs:
       - "game/net/ClientNet.cs:MatchIntermission"
+      - "game/net/NetGame.cs:1575"
     constants:
       - { name: "intermission-phase health sentinel", base: "-2342", port: "none", match: false }
     status:
-      logic: missing
+      logic: partial
       values: missing
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No SVC_INTERMISSION equivalent: the local view is not locked to an intermission camera, the viewmodel is not hidden (EF_NODRAW), and the -2342 health sentinel is not set."
-      - "MatchIntermission is networked but NetGame uses it only to gate the HUD low-health shake (_fullHud.Intermission) and the TIMER panel's intermission time — it does not freeze the view."
+      - "Camera lock missing: the local view is NOT locked to a FindIntermission intermission camera; the player keeps their first-person view (frozen by the server-side movement freeze, but no fixed intermission camera angle)."
+      - "The -2342 health sentinel is not set server-side at intermission (the value: dimension). The Chat.cs:615 -2342 read is the mapvote 'observing' sentinel, not an intermission view-freeze setter."
     verification:
-      - { kind: code-read, ref: "NetGame uses _client.MatchIntermission only for _fullHud.Intermission (shake gate) + Timer.IntermissionTime; no camera lock / viewmodel hide anywhere (re-confirmed 2026-06-22). The Chat.cs:579 -2342 read is the observing sentinel, not an intermission view-freeze setter.", result: fail }
+      - { kind: code-read, ref: "FIXED HALF: the viewmodel IS now hidden at intermission (NetGame.cs:1575 — `hidden = ... || _client.MatchIntermission`, the QC FixIntermissionClient EF_NODRAW equivalent). MISSING HALF: no camera lock / -2342 sentinel anywhere (grep 2026-06-25).", result: pass }
+      - { kind: code-read, ref: "NetGame also uses _client.MatchIntermission for _fullHud.Intermission (shake gate, line 3019) + Timer.IntermissionTime + the music kill; no camera lock.", result: pass }
     confidence: high
-    notes: "The intermission flag IS networked (ClientNet.MatchIntermission, set from the match-state decode), so adding the view freeze is incremental; the camera lock/viewmodel hide are simply not implemented. UNCHANGED by Wave-5."
+    notes: "PARTIAL FIX since baseline: the viewmodel hide (EF_NODRAW) is now live (NetGame.cs:1575 gates the viewmodel Visible on MatchIntermission), so presentation missing→partial and liveness partial→live. Still missing: the FindIntermission camera lock and the -2342 health sentinel. The intermission flag is networked (ClientNet.MatchIntermission), so adding the camera lock is incremental."
 
   - id: sv-intermission.client.scoreboard_autoshow
     name: "Scoreboard auto-shows at intermission (no key held)"
@@ -376,32 +391,32 @@ features:
       - "game/net/NetGame.cs:UpdateScoreboard"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
-      timing: na
-      presentation: missing
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The scoreboard is shown only while the +showscores key is held (NetGame.UpdateScoreboard reads BindTable.ShowScores); Base force-draws it at intermission==1 (and hides it at intermission==2 when the mapvote owns the screen). No intermission branch in UpdateScoreboard."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "NetGame.UpdateScoreboard (NetGame.cs:3295-3334) shows on BindTable.ShowScores only; no MatchIntermission branch (re-confirmed 2026-06-22)", result: fail }
+      - { kind: code-read, ref: "NetGame.UpdateScoreboard (NetGame.cs:3413-3428): `intermissionShow = _client.MatchIntermission && !mapVoteShowing; show = BindTable.ShowScores || intermissionShow;` — force-shows at intermission==1 (no key), hides at intermission==2 (mapvote panel owns the screen, modelled as mv.Visible). 2026-06-25.", result: pass }
     confidence: high
-    notes: "MatchIntermission is available client-side, so the auto-show is a small addition once decided. Note the mapvote panel IS now auto-shown at intermission (UpdateMapVotePanel owns its Visible), so the intermission==2 mapvote screen partly exists — but the scoreboard half (intermission==1) is still key-gated. UNCHANGED by Wave-5 for this row."
+    notes: "FIXED since the 2026-06-22 baseline (was missing/missing, partial). The scoreboard now auto-shows at intermission with no +showscores key held, and yields to the mapvote panel — the exact Base Scoreboard_WouldDraw intermission==1-show / ==2-mapvote behaviour. Works on both listen and remote clients (MatchIntermission is networked). liveness partial→live."
 
   - id: sv-intermission.client.autoscreenshot
     name: "Server-forced end-of-match autoscreenshot"
     layer: [authority, presentation]
     base_refs:
       - "server/intermission.qc:IntermissionThink"
+      - "server/intermission.qc:FixIntermissionClient"
     port_refs: []
     constants:
-      - { name: "sv_autoscreenshot", base: "0", port: "none (not registered as a server cvar default)", match: false }
+      - { name: "sv_autoscreenshot", base: "0", port: "0 (registered default, Cvars.cs:139)", match: true }
     status:
       logic: missing
-      values: missing
+      values: partial
       timing: missing
       presentation: missing
       audio: na
@@ -410,11 +425,11 @@ features:
     divergence_rationale: null
     gaps:
       - "No autoscreenshot stuffcmd dance at intermission (the autoscreenshot timer + cl_autoscreenshot_screenshot stuffcmd in IntermissionThink): the server cannot force clients to capture the end-of-match scoreboard."
-      - "cl_autoscreenshot is now ACCEPTED by the server (Commands.SentCvarAllowlist includes it, Commands.cs:199 — the prior audit's 'server drops it' is fixed), so the client's opt-in reaches the per-client store. BUT there is still no server-side consumer, no sv_autoscreenshot cvar default, no intermission-time autoscreenshot timer, and no client screenshot trigger. The replication is stored-but-unread (the allowlist comment: read 'as those land')."
+      - "sv_autoscreenshot is now registered as a server cvar default 0 (matches Base) and cl_autoscreenshot reaches the per-client store (Commands.SentCvarAllowlist), BUT there is still no server-side consumer, no intermission-time autoscreenshot timer, no cl_autoscreenshot_screenshot stuffcmd, and no client screenshot trigger anywhere."
     verification:
-      - { kind: grep, ref: "2026-06-22: cl_autoscreenshot IS in Commands.SentCvarAllowlist (Commands.cs:199, Wave-5) but no code reads it; sv_autoscreenshot not registered as a default; no IntermissionThink autoscreenshot timer / cl_autoscreenshot_screenshot stuffcmd / client screenshot trigger anywhere in src/ or game/.", result: fail }
+      - { kind: grep, ref: "2026-06-25: sv_autoscreenshot IS registered (Cvars.cs:139, default 0) and cl_autoscreenshot is in Commands.SentCvarAllowlist (Commands.cs:224), but no code reads sv_autoscreenshot / cl_autoscreenshot for the screenshot dance; no IntermissionThink autoscreenshot timer / cl_autoscreenshot_screenshot stuffcmd / client screenshot trigger in src/ or game/.", result: fail }
     confidence: high
-    notes: "cl_autoscreenshot menu checkbox exists and is now replicated AND accepted server-side, but the server has no consumer and the actual screenshot trigger is absent — the feature is still fully missing on the live path. Wave-5 only closed the allowlist drop, not the feature."
+    notes: "Minor improvement since baseline: sv_autoscreenshot is now a registered default 0 (constant now matches Base → values missing→partial). But the feature is still fully missing on every behavioral dimension — the server has no consumer and the actual screenshot trigger is absent on the live path."
 
   - id: sv-intermission.audio.cdtrack
     name: "Intermission music switch (sv_intermission_cdtrack) + target_music_kill"
@@ -422,22 +437,23 @@ features:
     base_refs:
       - "server/intermission.qc:FixIntermissionClient"
       - "server/world.qc:NextLevel"
-    port_refs: []
+    port_refs:
+      - "game/client/MusicPlayer.cs:Intermission"
+      - "game/net/NetGame.cs:2257"
     constants:
-      - { name: "sv_intermission_cdtrack", base: "\"\"", port: "none", match: false }
+      - { name: "sv_intermission_cdtrack", base: "\"\"", port: "\"\" (registered default, Cvars.cs:138)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: faithful
       timing: na
       presentation: na
-      audio: missing
-      liveness: na
+      audio: partial
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No sv_intermission_cdtrack handling: the random intermission CD track (RandomSelection over the cdtrack words → 'cd loop <track>' stuffcmd) is never selected or looped."
-      - "target_music_kill() at NextLevel (stop map music at match end) is NOT reproduced: MusicPlayer.cs has no intermission/match-state awareness, so map music keeps playing through the scoreboard."
+      - "No sv_intermission_cdtrack handling: the random intermission CD track (RandomSelection over the cdtrack words → 'cd loop <track>' stuffcmd) is never selected or looped. The cvar is registered (default empty, matches Base) but nothing reads it for the intermission loop."
     verification:
-      - { kind: grep, ref: "no sv_intermission_cdtrack anywhere; no music_kill/match-end stop in MusicPlayer.cs (only target_music/trigger_music entity overrides + a 'cd loop' decode helper exist) — re-confirmed 2026-06-22", result: fail }
+      - { kind: code-read, ref: "FIXED HALF: target_music_kill() is ported — MusicPlayer.Intermission (game/client/MusicPlayer.cs:53) blanks bestTrack at intermission (line 129-130), fed live from ClientNet.MatchIntermission (NetGame.cs:2257-2258). MISSING HALF: no 'cd loop' of sv_intermission_cdtrack — the only cd-loop helper reads menu_cdtrack, not the intermission cvar (grep 2026-06-25).", result: pass }
     confidence: high
-    notes: "Default sv_intermission_cdtrack is empty, so in stock config no switch occurs — but target_music_kill (stop the map track) DOES fire in Base at every match end and is confirmed missing in the port. UNCHANGED by Wave-5."
+    notes: "PARTIAL FIX since baseline: target_music_kill (stop the map track at match end) is now live on both listen and remote clients — audio missing→partial, liveness na→partial. The sv_intermission_cdtrack random-track 'cd loop' switch is still not consumed (default empty, so no stock-config switch occurs anyway), so logic stays partial."

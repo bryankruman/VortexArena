@@ -1,37 +1,38 @@
 unit: sv-impulse
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
-  feature_count: 12
+  feature_count: 13
   worst_gaps:
-    - "custom-priority impulses (200-229) cycle the MAIN cl_weaponpriority list, not the per-group cl_weaponpriority0..9 lists QC uses (PriorityHandle still takes only `dir`, never the group number; the N-suffixed lists are replicated but never read)"
-    - "minigame impulses are STILL not routed from the impulse dispatcher (no Minigames.Impulse caller from DispatchImpulse; a player in a minigame drives weapon selection instead of a minigame move) — and QC runs MinigameImpulse FIRST, before even the timeout gate"
-    - "the use-key MUTATOR hook half is still dead: impulse 21 is now routed, but VehicleBoarding.UseKey only does vehicle enter/exit — it never fires PlayerUseKey, so CTF flag throw/pass/request-pass, Keepaway/Nexball/KeyHunt voluntary drop, and door/objective use are unreachable (Ctf.HandleUseKey has zero callers)"
-    - "waypoint-sprite impulses (30-48) are entirely unimplemented"
-    - "cheat impulses 140-148 (clone/speedrun/teleport/r00t/drag) remain unported; only GIVE_ALL (99) is now routed"
+    - "minigame impulses are now ROUTED (DispatchImpulse calls Minigames.Impulse before the timeout gate, matching QC order), but the P0 games have NO impulse->token table — an impulse merely re-runs the player's pending Move; the per-game discrete-token mapping QC's minigame_event('cmd') performs is not modeled, so most weapon-key impulses are consumed but produce no real minigame move."
+    - "custom-priority impulses (200-229) NOW cycle the per-group cl_weaponpriority0..9 lists (CycleWeaponGroup -> WeaponPriorityForGroup), but only via the per-client sentcvar-replicated provider or the server cvar facade; an unset group list falls back to the MAIN cl_weaponpriority instead of QC's empty-category no-op (minor divergence)."
+    - "waypoint impulses 30-48 are now implemented+routed, but the _crosshair (31/35/38) and _death (32/36/39) variants reuse the player's ORIGIN (no server-side crosshair trace / death_origin on this path); the .personal checkpoint ENTITY is unmodeled so the CTS/race clear self-kill resets to the normal spawn, not a stored origin."
+    - "cheat impulses 140-147 (clone/speedrun/fixed-clone/teleport/drag) remain unported (need engine services); only GIVE_ALL (99) and R00T (148) are routed."
 features:
   - id: sv-impulse.dispatch.commands_gate
     name: "ImpulseCommands dispatch + match-state gating"
     layer: [authority]
     base_refs:
-      - "server/impulse.qc:373 (ImpulseCommands)"
+      - "server/impulse.qc:371 (ImpulseCommands)"
       - "server/impulse.qc:379 (MinigameImpulse first)"
       - "server/impulse.qc:381 (timeout gate)"
       - "server/impulse.qc:383-395 (round-not-started gate: weapon_drop/weapon_reload/use)"
+      - "server/impulse.qc:397 (vehicle_impulse)"
       - "server/impulse.qc:399 (CheatImpulse)"
       - "common/impulses/all.qh:REGISTRY(IMPULSES, 255)"
     port_refs:
-      - "src/XonoticGodot.Server/Commands.cs:1336 (CmdImpulse)"
-      - "src/XonoticGodot.Server/Commands.cs:1350 (DispatchImpulse)"
-      - "src/XonoticGodot.Server/Commands.cs:1365 (round-not-started gate: imp 17/20/21)"
-      - "src/XonoticGodot.Server/Commands.cs:1376 (cheat impulse 99 -> Cheats.GiveAll)"
+      - "src/XonoticGodot.Server/Commands.cs:1736 (CmdImpulse)"
+      - "src/XonoticGodot.Server/Commands.cs:1750 (DispatchImpulse)"
+      - "src/XonoticGodot.Server/Commands.cs:1772 (Minigames.Impulse, before timeout gate)"
+      - "src/XonoticGodot.Server/Commands.cs:1780 (round-not-started gate: imp 17/20/21)"
+      - "src/XonoticGodot.Server/Commands.cs:1786 (VehicleBoarding.Impulse)"
       - "game/net/ServerNet.cs (ProvideInput / ProvideInputPerFrame dispatch `impulse N`)"
     constants:
       - { name: "round_gate_impulses", base: "weapon_drop=17 / weapon_reload=20 / use=21", port: "17 / 20 / 21", match: true }
       - { name: "give_all_impulse", base: "99 (CHIMPULSE_GIVE_ALL)", port: "99", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -40,14 +41,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "minigame impulses STILL not routed: QC runs MinigameImpulse(this, imp) FIRST (impulse.qc:379, even before the timeout gate); the port has MinigameSessionManager.Impulse but DispatchImpulse never calls it (verified: no Minigames.Impulse caller in Commands.cs/ServerNet.cs). A player inside a minigame pressing a weapon key drives weapon selection instead of a minigame move."
-      - "minor ordering divergence: QC dispatches MinigameImpulse BEFORE the timeout gate; the port gates Intermission.Running + Timeout.IsPaused first. Inconsequential while minigame routing is absent, but means even once minigames are wired the order won't match (minigame moves would be blocked by an active timeout)."
+      - "Minigame impulses are now routed in the QC order (MinigameImpulse BEFORE the timeout gate; Commands.cs:1772 precedes the IsPaused gate at 1773), but MinigameSessionManager.Impulse has no impulse->discrete-token table — for the P0 games it just re-runs the player's pending Move (returns Invalid otherwise). So a player in a session has the impulse CONSUMED but no meaningful move is produced from a raw weapon-key impulse. The per-game token mapping QC's minigame_event('cmd',...) performs is not modeled. (Detail belongs to a minigames unit; recorded here because the dispatch order/gate now matches.)"
     verification:
-      - { kind: code_read, ref: "ServerNet -> Commands.Execute(\"impulse N\") -> CmdImpulse:1336 -> DispatchImpulse:1350 (gates Intermission.Running + Timeout.IsPaused, then round-not-started gate 1365, then VehicleBoarding.Impulse, then imp==99 -> Cheats.GiveAll, then WeaponImpulses.Handle)", result: pass }
-      - { kind: code_read, ref: "round gate: `_world.Rounds is { IsRoundStarted: false } && (imp==17||imp==20||imp==21)` (Commands.cs:1365). Rounds is set ONLY by EnableRounds, called on the live ActivateGameType path for CA/Dom/KH/FreezeTag/Onslaught/Assault/LMS/Survival/Invasion (GameWorld.cs:1384-1469). RoundHandler.IsRoundStarted == Phase==InProgress (RoundHandler.cs:158). LIVE.", result: pass }
-      - { kind: code_read, ref: "grep Minigames.Impulse / .Impulse( callers from Commands/ServerNet = none (only VehicleBoarding.Impulse). Minigame route still dead.", result: fail }
+      - { kind: code_read, ref: "ServerNet -> Commands.Execute(\"impulse N\") -> CmdImpulse:1736 -> DispatchImpulse:1750: MapVote.Running vote-route, then Intermission.Running gate, then Minigames.Impulse:1772 (BEFORE Timeout.IsPaused:1773 — matches QC MinigameImpulse-before-timeout), round-not-started gate:1780, VehicleBoarding.Impulse:1786, imp==99 GiveAll, imp==148 R00t, waypoint 30-48 switch, imp==21 use, then WeaponImpulses.Handle.", result: pass }
+      - { kind: code_read, ref: "round gate: `_world.Rounds is { IsRoundStarted: false } && (imp==17||imp==20||imp==21)` (Commands.cs:1780). Rounds set ONLY by EnableRounds on the live ActivateGameType path for CA/Dom/KH/FreezeTag/Onslaught/Assault/LMS/Survival/Invasion. LIVE.", result: pass }
+      - { kind: code_read, ref: "Minigames.Impulse (MinigameSessionManager.cs:389): no-op (returns false) when caller not in an active session; otherwise re-runs Session.Move(pointer, impulse.ToString()) with no token table. Route is now live but token-incomplete.", result: pass }
     confidence: high
-    notes: "Wave-2 closed two of the three baseline gaps on this row: the round-not-started gate (drop/reload/use blocked during CA/freezetag pre-round warmup, genuinely live via GameWorld.Rounds) and the CheatImpulse dispatch (give-all 99 routed; see sv-impulse.cheat.impulses). The minigame route remains the open logic gap, plus a newly-noted ordering divergence (minigame-before-timeout in QC). Client input byte still dispatched once-per-command then zeroed; vehicle-impulse gate present and ordered before weapon impulses."
+    notes: "Drift since 2026-06-22: the minigame route is now WIRED in the correct QC order (the baseline's two big dispatch gaps — minigame routing absent + minigame-vs-timeout ordering — are both resolved). logic partial->faithful. The residual is inside MinigameSessionManager (no impulse->token mapping), which is a minigames-unit concern; on the IMPULSE-DISPATCH dimension this row is now faithful. Client input byte still dispatched once-per-command; vehicle-impulse gate present and ordered before weapon impulses."
 
   - id: sv-impulse.weapon.group_cycle
     name: "Weapon-group cycling impulses (1-9, 14)"
@@ -57,8 +57,8 @@ features:
       - "server/weapons/selection.qc:302 (W_NextWeaponOnImpulse)"
       - "common/impulses/all.qh (weapon_group_1..9=1..9, group_0=14)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:62 (group branch)"
-      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:399 (NextWeaponOnImpulse)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:63 (group branch)"
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:495 (NextWeaponOnImpulse)"
     constants:
       - { name: "cl_weaponimpulsemode", base: "0", port: "0 (read; default-on path)", match: true }
       - { name: "group_0_impulse", base: "14", port: "14", match: true }
@@ -75,9 +75,9 @@ features:
     gaps:
       - "g_weaponswitch_debug==1 multi-slot loop not modeled (port drives slot 0 only); dead-player impulse latch (re-fire on respawn via this.impulse=imp) not modeled (impulse silently ignored while dead)."
     verification:
-      - { kind: code_read, ref: "WeaponImpulses.Handle group branch -> Inventory.NextWeaponOnImpulse(actor, imp) -> GetCycleWeapon(WeaponPriority, +1, imp, complain=true, skipmissing=(impulsemode==0)) vs selection.qc:302-305 — list source (cl_weaponpriority main) and dir/skipmissing match. Unchanged by Wave-2.", result: pass }
+      - { kind: code_read, ref: "WeaponImpulses.Handle group branch (imp 1-9 / Group0=14) -> Inventory.NextWeaponOnImpulse(actor, imp) -> GetCycleWeapon(WeaponPriority, +1, imp, complain=true, skipmissing=(impulsemode==0)) vs selection.qc:302-305 — list source (cl_weaponpriority main) and dir/skipmissing match.", result: pass }
     confidence: high
-    notes: "Faithful for the single-slot live path; not touched by Wave-2. QC W_NextWeaponOnImpulse uses the MAIN cl_weaponpriority for shared-impulse groups — the port matches."
+    notes: "Faithful for the single-slot live path. QC W_NextWeaponOnImpulse uses the MAIN cl_weaponpriority for shared-impulse groups — the port matches. Unchanged since baseline."
 
   - id: sv-impulse.weapon.priority_cycle
     name: "Custom-priority cycling impulses (prev/best/next, 200-229)"
@@ -88,15 +88,16 @@ features:
       - "server/weapons/selection.qc:295 (W_CycleWeapon)"
       - "common/impulses/all.qh (200-229 = priority_<0..9>_prev/best/next)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:74 (priority branches)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:136 (PriorityHandle, dir only)"
-      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:172 (WeaponPriority -> main list)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:78 (priority branches)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:145 (PriorityHandle -> CycleWeaponGroup, dir + number)"
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:489 (CycleWeaponGroup)"
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:200 (WeaponPriorityForGroup -> per-group list)"
     constants:
-      - { name: "priority_group_list", base: "cvar_cl_weaponpriorities[number] = cl_weaponpriority0..9 (per-group)", port: "cl_weaponpriority (single main list, group number ignored)", match: false }
+      - { name: "priority_group_list", base: "cvar_cl_weaponpriorities[number] = cl_weaponpriority0..9 (per-group)", port: "cl_weaponpriorityN per-group (PriorityProviderForGroup / cvar facade), main fallback if unset", match: true }
       - { name: "dir_mapping", base: "prev=-1 / best=0 / next=+1", port: "prev=-1 / best=0 / next=+1", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
@@ -104,11 +105,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: all ten priority impulses cycle the SINGLE main cl_weaponpriority list. QC weapon_priority_handle (impulse.qc:100) cycles cvar_cl_weaponpriorities[number] = cl_weaponpriority0..9. PriorityHandle (WeaponImpulses.cs:136) still takes only `dir`, never the group `number`, and WeaponPriority/PriorityProvider only ever return cl_weaponpriority (the N-suffixed lists are replicated/fixed-up but never read by the impulse path). Wave-2 added an Inventory.cs:183 comment referencing the per-group lists but did NOT wire them. Observable: a priority-group bind selects from the full weapon list, not the intended category."
+      - "Minor divergence: when the group's priority cvar is unset/out-of-range, WeaponPriorityForGroup falls back to the MAIN cl_weaponpriority (so the bind still moves to a usable weapon) rather than QC's empty-category no-op. Faithful in the common case (a configured group list); diverges only for an empty/unconfigured category list."
     verification:
-      - { kind: code_read, ref: "PriorityHandle(actor, dir) -> CycleWeapon(actor, Inventory.WeaponPriority(actor), dir) for every group; WeaponPriority -> PriorityProvider / GetString(\"cl_weaponpriority\"); cl_weaponpriorityN allowlisted+fixed-up but no reader maps them to the group impulse. Unchanged by Wave-2.", result: fail }
+      - { kind: code_read, ref: "PriorityHandle(actor, dir, number) -> Inventory.CycleWeaponGroup(e, number, dir) (Inventory.cs:489) -> CycleWeapon(e, WeaponPriorityForGroup(e, number), dir). WeaponPriorityForGroup (Inventory.cs:200) consults PriorityProviderForGroup (sentcvar-replicated cl_weaponpriority0..9 in id form) then the cvar facade GetString(\"cl_weaponpriority\"+number); matches QC cvar_cl_weaponpriorities[number]. number = imp - block_first (prev 200/best 210/next 220).", result: pass }
     confidence: high
-    notes: "prev=-1/best=0/next=+1 dir mapping correct; the list SOURCE is still wrong (main instead of per-group). No regression — identical to baseline."
+    notes: "BASELINE GAP CLOSED (drift since 2026-06-22): the ten priority impulses now cycle the PER-GROUP cl_weaponpriority0..9 lists, not the single main list. PriorityHandle now takes the group `number` and routes through CycleWeaponGroup/WeaponPriorityForGroup; the per-client per-group replication (PriorityProviderForGroup, wired off the sentcvar handler) is consulted. logic partial->faithful, values partial->faithful. Only the unset-group main-list fallback is a (benign) divergence from QC's empty-category behavior."
 
   - id: sv-impulse.weapon.byid
     name: "Direct weapon-by-id impulses (230-253)"
@@ -118,7 +119,7 @@ features:
       - "common/weapons/all.qh (Weapon_from_impulse, WEP_IMPULSE_BEGIN=230)"
       - "server/weapons/selection.qc (W_SwitchWeapon_TryOthers)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:149 (ByIdHandle)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:158 (ByIdHandle)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponOrder.cs:WeaponByIdIndex"
       - "src/XonoticGodot.Common/Gameplay/Inventory.cs:353 (SwitchWeaponWithComplain)"
     constants:
@@ -137,9 +138,9 @@ features:
     gaps: []
     verification:
       - { kind: unit_test, ref: "tests/XonoticGodot.Tests/WeaponByIdTests.cs (ByIdOrder_Is_QC_DefinitionOrder_Not_Alphabetical)", result: pass }
-      - { kind: code_read, ref: "ByIdHandle uses WeaponByIdIndex (QC unique-impulse order) + the TryOthers fallback gated on cl_weapon_switch_fallback_to_impulse (read with !=0f)", result: pass }
+      - { kind: code_read, ref: "ByIdHandle (WeaponImpulses.cs:158) uses WeaponByIdIndex (QC unique-impulse order) + the TryOthers fallback gated on cl_weapon_switch_fallback_to_impulse (read with !=0f)", result: pass }
     confidence: high
-    notes: "Unchanged behavior; Wave-2 corrected the misleading in-code comment (WeaponImpulses.cs:153-155) to state Base registers the fallback cvar as 1 (default-on), matching the live read. Code-doc defect from baseline now fixed; behavior was and is faithful. The unique-impulse allocation order (definition order, skipping Null/SpecialAttack/Ball-Stealer) is pinned by a test."
+    notes: "Unchanged behavior. The unique-impulse allocation order (definition order, skipping Null/SpecialAttack/Ball-Stealer) is pinned by a test."
 
   - id: sv-impulse.weapon.nextprev_singletons
     name: "next/prev/last/best singleton impulses (10/12, 18/19, 15/16, 11, 13)"
@@ -149,17 +150,17 @@ features:
       - "server/weapons/selection.qc:310 (W_NextWeapon)"
       - "server/weapons/selection.qc:321 (W_PreviousWeapon)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:98 (switch)"
-      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:410 (NextWeapon)"
-      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:418 (PreviousWeapon)"
-      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:429 (LastWeapon)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:101 (switch)"
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:506 (NextWeapon)"
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:514 (PreviousWeapon)"
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:228 (WeaponOrderByImpulse — list 1)"
     constants:
       - { name: "next_byid_impulse", base: "10", port: "10", match: true }
       - { name: "weapon_best_impulse", base: "13", port: "13", match: true }
       - { name: "next_dir", base: "W_NextWeapon dir=-1, W_PreviousWeapon dir=+1", port: "NextWeapon->CycleWeapon(-1), PreviousWeapon->CycleWeapon(+1)", match: true }
-      - { name: "bygroup_list", base: "weaponorder_byimpulse (list 1)", port: "cl_weaponpriority (fallback)", match: false }
+      - { name: "bygroup_list", base: "weaponorder_byimpulse (list 1)", port: "weaponorder_byimpulse (WeaponOrderByImpulse, list 1)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -167,12 +168,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "weapon_next/prev_bygroup (18/19) cycle the priority list, not weaponorder_byimpulse: Inventory.NextWeapon/PreviousWeapon list==1 falls back to WeaponPriority (commented 'by-impulse order not modeled'). Observable: 'next/prev by group' wheel cycling order differs from Base. Unchanged by Wave-2."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "WeaponImpulses.Handle switch (NextById->NextWeapon(0), PrevById->PreviousWeapon(0), NextByGroup->NextWeapon(1), NextByPriority->NextWeapon(2), Best->GetBestWeapon+SwitchWeaponWithComplain, Last->LastWeapon); list 0 dir & list 2 (priority) source match QC, list 1 is the priority fallback", result: pass }
+      - { kind: code_read, ref: "WeaponImpulses.Handle switch (NextById->NextWeapon(0), PrevById->PreviousWeapon(0), NextByGroup->NextWeapon(1), PrevByGroup->PreviousWeapon(1), NextByPriority->NextWeapon(2), PrevByPriority->PreviousWeapon(2), Best->GetBestWeapon+SwitchWeaponWithComplain, Last->LastWeapon). Inventory.NextWeapon/PreviousWeapon list==1 now CycleWeapon(WeaponOrderByImpulse(e), ...) (Inventory.cs:509/517) — the QC weaponorder_byimpulse list, not a priority fallback. list 0/1/2 sources + dirs all match QC.", result: pass }
     confidence: high
-    notes: "by-id cycling (list 0), by-priority (list 2), last/best faithful; only the by-group (list 1) order source is a priority fallback approximation. Unchanged from baseline."
+    notes: "BASELINE GAP CLOSED (drift since 2026-06-22): weapon_next/prev_bygroup (18/19) now cycle WeaponOrderByImpulse (QC list 1 = weaponorder_byimpulse, per-client replicated via WeaponOrderByImpulseProvider), no longer the priority fallback. logic partial->faithful. by-id (0), by-group (1) and by-priority (2) all faithful now."
 
   - id: sv-impulse.weapon.getcycle
     name: "W_GetCycleWeapon traversal (the selection core)"
@@ -194,11 +194,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The impulse-group complain path is simplified: QC computes have_other and a custom-group bitmask for imp<0 (selection.qc:148-171); the port omits both since it drives the imp=-1 cycle/best path. The weaponsInMap (map-spawned-but-unowned weapon) branch (selection.qc:166,187) is unmodeled, so unowned-but-on-map weapons are skipped (cannot be cycle-selected before pickup). Unchanged by Wave-2."
+      - "The impulse-group complain path is simplified: QC computes have_other and a custom-group bitmask for imp<0 (selection.qc:148-171); the port omits both since it drives the imp=-1 cycle/best path. The weaponsInMap (map-spawned-but-unowned weapon) branch (selection.qc:166,187) is unmodeled, so unowned-but-on-map weapons are skipped (cannot be cycle-selected before pickup)."
     verification:
       - { kind: code_read, ref: "Inventory.GetCycleWeapon vs selection.qc:122 — weaponcur/dir/switchtonext/switchtolast/first_valid/prev_valid logic matches; QC id-0 'none' sentinel mapped to -1; group/customgroup/weaponsInMap branches simplified", result: pass }
     confidence: high
-    notes: "Faithful for the live cycle/best path; not touched by Wave-2. Divergences are in branches only the impulse-group (200-229) and map-spawned-weapon features exercise."
+    notes: "Faithful for the live cycle/best path. Divergences are in branches only the map-spawned-weapon feature exercises (the impulse-group/custom-group complain bitmask is now exercised by the per-group priority path, but GetCycleWeapon is invoked with the resolved list, not the imp<0 group code — so this row's note about imp<0 still holds for the GetCycleWeapon core)."
 
   - id: sv-impulse.weapon.switch
     name: "W_SwitchWeapon / TryOthers / reload-on-reselect"
@@ -226,7 +226,7 @@ features:
     verification:
       - { kind: code_read, ref: "SwitchWeaponWithComplain vs W_SwitchWeapon (owned->SwitchWeapon w/ .cnt/LastWeaponId record, else selectweapon-only+complain->false, already-switching->reload if cl_weapon_switch_reload); W_SwitchWeapon_Force == SwitchWeapon records outgoing as LastWeaponId", result: pass }
     confidence: high
-    notes: "Faithful; not touched by Wave-2."
+    notes: "Faithful; unchanged since baseline."
 
   - id: sv-impulse.action.drop
     name: "weapon_drop (impulse 17) — throw current weapon"
@@ -236,7 +236,7 @@ features:
       - "server/weapons/throwing.qc (W_ThrowWeapon)"
       - "server/weapons/tracing.qc (W_CalculateProjectileVelocity)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:170 (DropHandle)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:179 (DropHandle)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponThrowing.cs:177 (ThrowWeapon)"
     constants:
       - { name: "drop_velocity", base: "v_forward * 750", port: "v_forward * 750", match: true }
@@ -256,9 +256,9 @@ features:
     gaps:
       - "Dual-wield sideways offset (dv = v_right * -movedir.y) collapses to zero — the port drives a single weapon slot (documented). The FL_TOSSED flag + colormap/glowmod render nits on the thrown loot are not modeled (presentation partial)."
     verification:
-      - { kind: code_read, ref: "DropHandle (WeaponImpulses.cs:170): AngleVectors->forward*750*g_weaponspeedfactor, slot 0, doreduce=true -> WeaponThrowing.ThrowWeapon (gates time>=GameStartTime + ForbidThrow + g_weapon_throwable + state==Ready + IsWeaponThrowable; superweapon time-split; Send_Notification ITEM_WEAPON_DROP) vs impulse.qc:334 + throwing.qc", result: pass }
+      - { kind: code_read, ref: "DropHandle (WeaponImpulses.cs:179): AngleVectors->forward*750*g_weaponspeedfactor, slot 0, doreduce=true -> WeaponThrowing.ThrowWeapon (gates time>=GameStartTime + ForbidThrow + g_weapon_throwable + state==Ready + IsWeaponThrowable; superweapon time-split; Send_Notification ITEM_WEAPON_DROP) vs impulse.qc:334 + throwing.qc", result: pass }
     confidence: high
-    notes: "Faithful; not touched by Wave-2 (now also gated by the new round-not-started dispatcher gate during pre-round warmup, matching QC). Only the dual-wield offset (N/A single-slot) and cosmetic loot fields differ."
+    notes: "Faithful; also gated by the round-not-started dispatcher gate during pre-round warmup, matching QC. Only the dual-wield offset (N/A single-slot) and cosmetic loot fields differ. Unchanged since baseline."
 
   - id: sv-impulse.action.reload
     name: "weapon_reload (impulse 20)"
@@ -269,8 +269,8 @@ features:
       - "server/weapons/weaponsystem.qc (weaponLocked)"
       - "common/weapons/weapon/tuba.qc:360 (Tuba wr_reload = instrument cycle)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:204 (ReloadHandle)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:234 (WeaponLocked)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:213 (ReloadHandle)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:243 (WeaponLocked)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:234 (Reload — instrument cycle)"
     constants:
       - { name: "tuba_instrument_count", base: "3 (Tuba/Accordion/Klein Bottle)", port: "% 3", match: true }
@@ -287,10 +287,10 @@ features:
     gaps:
       - "weaponLocked is modeled only for the FREEZE half (FrozenStat + STATUSEFFECT_Frozen). QC weaponLocked also covers player_blocked and the LockWeapon mutator hook — both still unmodeled (low impact; not reachable in stock modes the same way). The game-start/game-stopped/timeout halves are gated upstream by the dispatcher."
     verification:
-      - { kind: code_read, ref: "ReloadHandle (WeaponImpulses.cs:204): WeaponLocked(actor) early-return then CurrentWeapon; non-Reloadable Tuba routes to Tuba.Reload (instrument cycle), else WrReload. WeaponLocked(player) = FrozenStat!=0 || StatusEffects Has(frozen). Mirrors WeaponFireDriver.WeaponLocked.", result: pass }
+      - { kind: code_read, ref: "ReloadHandle (WeaponImpulses.cs:213): WeaponLocked(actor) early-return then CurrentWeapon; non-Reloadable Tuba routes to Tuba.Reload (instrument cycle), else WrReload. WeaponLocked(player) = FrozenStat!=0 || StatusEffects Has(frozen).", result: pass }
       - { kind: code_read, ref: "Tuba.Reload (Tuba.cs:234): READY-gate, (TubaInstrument+1)%3, EFFECT_TELEPORT emit, state=InUse + 0.5s think back to READY vs tuba.qc:360-389 — faithful.", result: pass }
     confidence: high
-    notes: "BASELINE GAP CLOSED: Wave-2 added the weaponLocked (frozen) gate so a frozen player can no longer reload (matches QC impulse.qc:357), and wired the previously-dead Tuba.Reload instrument-cycle for the non-Reloadable wr_reload repurpose. logic partial->faithful. Reload sound is the weapon's WrReload concern (audio not separately re-verified, hence unknown)."
+    notes: "Faithful (weaponLocked freeze gate + Tuba instrument-cycle wired). Reload sound is the weapon's WrReload concern (audio not separately re-verified, hence unknown). Unchanged since baseline."
 
   - id: sv-impulse.use.usekey
     name: "use (impulse 21) / +use key -> PlayerUseKey"
@@ -299,68 +299,83 @@ features:
       - "server/impulse.qc:409 (IMPULSE(use) -> PlayerUseKey)"
       - "server/client.qc:2620 (PlayerUseKey + trailing MUTATOR_CALLHOOK(PlayerUseKey))"
       - "server/client.qc:2691 (PlayerPreThink +use rising edge)"
+      - "server/mutators/mutator/gamemode_ctf.qc:2452 (ctf PlayerUseKey hook)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:119 (case Use=21 -> UseHandle)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:193 (UseHandle -> VehicleBoarding.UseKey)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:74 (UseKey — vehicle enter/exit only)"
-      - "game/net/ServerNet.cs:1257/1363 (+use rising-edge -> VehicleBoarding.UseKey)"
+      - "src/XonoticGodot.Server/Commands.cs:1827 (imp==21 -> VehicleBoarding.UseKey + Ctf.HandleUseKey)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:74 (UseKey)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:106 (MutatorHooks.FirePlayerUseKey — the trailing hook)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:1543 (HandleUseKey — throw/pass-request)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/{Keepaway,TeamKeepaway,KeyHunt}.cs (PlayerUseKey hook subscribers)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/{BuffsMutator,PowerupsMutator}.cs (PlayerUseKey hook subscribers)"
     constants:
       - { name: "g_vehicles_enter_radius", base: "250", port: "250 (DefaultEnterRadius)", match: true }
-      - { name: "use_impulse", base: "21", port: "21 (NOW routed by WeaponImpulses.Handle)", match: true }
+      - { name: "use_impulse", base: "21", port: "21 (routed by DispatchImpulse + WeaponImpulses.Handle)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: the PlayerUseKey MUTATOR-hook half is never fired. VehicleBoarding.UseKey (the port's PlayerUseKey entry) handles ONLY vehicle enter/exit — it has no trailing PlayerUseKey hook dispatch. So CTF flag throw/pass/request-pass, Keepaway/Team Keepaway/Nexball/KeyHunt voluntary ball/key drop, and door/objective/button 'use' are all unreachable. Confirmed: Ctf.HandleUseKey (Ctf.cs:1333) exists but has ZERO callers; grep finds no PlayerUseKey mutator-hook dispatch anywhere."
+      - "Nexball voluntary drop via the PlayerUseKey hook is not yet a subscriber (the hook is fired and CTF/Keepaway/TeamKeepaway/KeyHunt/Buffs/Powerups subscribe; Nexball's use-key drop, if any, is not wired here). CTF pass-request needs the live roster which DispatchImpulse passes explicitly (Ctf.HandleUseKey) — the generic PlayerUseKeyArgs chain carries only the player, so CTF is driven outside the hook for the impulse path."
     verification:
-      - { kind: code_read, ref: "impulse 21 NOW routed: WeaponImpulses.Handle case Use(21) -> UseHandle -> VehicleBoarding.UseKey (unconditional, lets UseKey's own guards decide). Both the impulse path and the +use button edge (ServerNet.cs:1257/1363) reach the same UseKey.", result: pass }
-      - { kind: code_read, ref: "VehicleBoarding.UseKey (VehicleBoarding.cs:74-101): IS_PLAYER + GameStopped + seated->Exit / radius-250 enter only. NO PlayerUseKey mutator hook fired. grep HandleUseKey -> only the definition (Ctf.cs:1333), zero callers. Use-key non-vehicle half still dead.", result: fail }
+      - { kind: code_read, ref: "DispatchImpulse imp==21 (Commands.cs:1827): VehicleBoarding.UseKey(caller) then, if GameType is Ctf, ctf.HandleUseKey(caller, roster). VehicleBoarding.UseKey (VehicleBoarding.cs:74) does vehicle enter/exit then FirePlayerUseKey(pl) at the tail (line 106) = QC's trailing MUTATOR_CALLHOOK(PlayerUseKey). Ctf.HandleUseKey (Ctf.cs:1543): carrier->ThrowFlag, empty teammate->RequestPass.", result: pass }
+      - { kind: code_read, ref: "MutatorHooks.FirePlayerUseKey (MutatorHooks.cs:169) fires PlayerUseKey.Call; live subscribers: Keepaway.OnUseKey (ka_DropEvent), TeamKeepaway, KeyHunt.OnUseKey (kh_Key_DropOne), BuffsMutator.OnPlayerUseKey (buff drop), PowerupsMutator.OnPlayerUseKey (powerup drop). All Add the handler on activation.", result: pass }
     confidence: high
-    notes: "BASELINE GAP PARTIALLY CLOSED: impulse 21 is now genuinely routed onto PlayerUseKey's port entry (was 'not routed' in baseline). But the harder half — the PlayerUseKey mutator hook (flag throw/pass, key/ball drop, door use) — remains entirely dead because VehicleBoarding.UseKey never fires it and Ctf.HandleUseKey is uncalled. liveness stays partial; logic stays partial. The newly-added round-not-started gate also correctly blocks impulse 21 during pre-round warmup."
+    notes: "BASELINE GAP CLOSED (drift since 2026-06-22): the PlayerUseKey mutator-hook half is now LIVE. VehicleBoarding.UseKey fires MutatorHooks.FirePlayerUseKey at its tail (the QC trailing hook), and Keepaway/TeamKeepaway/KeyHunt/Buffs/Powerups subscribe it live; CTF flag throw/pass-request is driven explicitly via Ctf.HandleUseKey from DispatchImpulse (which has zero callers no longer). liveness partial->live, logic partial->faithful. Both the impulse-21 path and the +use BUTTON edge (ServerNet) reach the same UseKey+hook."
 
   - id: sv-impulse.waypoints.sprites
-    name: "Waypoint-sprite impulses (personal/here/danger/helpme/clear, 30-48)"
+    name: "Waypoint-sprite impulses (personal/here/danger/helpme/clear, 30-39, 47-48)"
     layer: [authority]
     base_refs:
       - "server/impulse.qc:414-521 (IMPULSE(waypoint_personal_here) .. waypoint_clear)"
-      - "common/impulses/all.qh (waypoint impulses 30-48)"
-      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_DeployPersonal"
-    port_refs: []
-    constants: []
+      - "common/impulses/all.qh:133-144 (waypoint impulses 30-39, 47, 48)"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_DeployPersonal/DeployFixed/Attach/ClearPersonal/ClearOwned"
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:1810-1818 (impulse 30-39/47/48 -> CmdWaypointDeploy/CmdWaypointClear)"
+      - "src/XonoticGodot.Server/Commands.cs:1495 (CmdWaypointDeploy)"
+      - "src/XonoticGodot.Server/Commands.cs:1550 (CmdWaypointClear + CTS/race self-kill)"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/WaypointSprites.cs (DeployPersonal/DeployFixed/Attach/ClearPersonal/ClearOwned)"
+    constants:
+      - { name: "waypoint_impulse_range", base: "30-39 (here/crosshair/death x personal/here/danger) + 33 helpme + 47/48 clear", port: "30-39 routed (crosshair/death reuse origin) + 47/48", match: true }
+      - { name: "checkpoint_selfkill_cvar", base: "g_allow_checkpoints (g_cts||g_race)", port: "g_allow_checkpoints + (Cts||Race)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: na
-      presentation: missing
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL MISSING: none of the waypoint impulses are implemented or routed: personal/here/danger at location/crosshair-trace/death-origin, the HELP-ME follow ping (HelpMePing hook), and clear-personal / clear-all (which also ClientKill in race/cts checkpoint modes when g_allow_checkpoints). A player cannot deploy or clear personal/team waypoint sprites via impulse. Unchanged by Wave-2."
+      - "The _crosshair (31/35/38) and _death (32/36/39) variants reuse the player's ORIGIN — there is no server-side WarpZone crosshair trace or death_origin on this path, so all three personal/here/danger variants deploy at the player's feet rather than at the aimed/death location."
+      - "The .personal CHECKPOINT entity is not modeled, so the CTS/race clear self-kill (g_allow_checkpoints) resets the runner to the gametype's normal start/respawn spawn, not a stored personal-checkpoint origin. The HelpMePing mutator hook (waypoint_here_follow's `if (!MUTATOR_CALLHOOK(HelpMePing, this))` override) is not consulted — the port unconditionally attaches WP_Helpme."
     verification:
-      - { kind: code_read, ref: "grep WaypointSprite_DeployPersonal/DeployFixed/HelpMePing/ClearPersonal -> no port impulse handler; WeaponImpulses.Handle/DispatchImpulse have no 30-48 cases", result: fail }
+      - { kind: code_read, ref: "DispatchImpulse switch (Commands.cs:1810): 30/31/32->Personal, 33->Helpme, 34/35/36->Here, 37/38/39->Danger, 47->ClearPersonal, 48->ClearAll. CmdWaypointDeploy (1495): live-player gate, DeployPersonal/DeployFixed(team)/Attach(Helpme) at p.Origin. CmdWaypointClear (1550): ClearPersonal/ClearOwned + (Cts||Race)&&g_allow_checkpoints -> KillCountdown.Begin(p,0). All reach the live WaypointSprites net.", result: pass }
     confidence: high
-    notes: "Entirely unported on the impulse path. Belongs partly to a waypoints unit, recorded here because impulse.qc owns the impulse->waypoint entry. clear-personal/clear (47/48) also trigger ClientKill in CTS/race with checkpoints — that suicide side effect is part of the missing behavior."
+    notes: "BASELINE GAP LARGELY CLOSED (drift since 2026-06-22): the waypoint impulses are no longer missing — deploy personal/here/danger, the help-me follow attach, and clear-personal/clear-all (with the CTS/race checkpoint self-kill) are all implemented and routed onto the live WaypointSprites API. missing->partial (logic), presentation/values/timing faithful, liveness live. Residual divergences: crosshair/death variants reuse origin, the .personal checkpoint entity + HelpMePing hook are unmodeled."
 
   - id: sv-impulse.cheat.impulses
-    name: "Cheat impulses (give-all 99, clone/speedrun/teleport/eliminate 140-148)"
+    name: "Cheat impulses (give-all 99, r00t 148, clone/speedrun/teleport 140-147)"
     layer: [authority]
     base_refs:
       - "server/impulse.qc:399 (CheatImpulse branch in ImpulseCommands)"
       - "server/cheats.qc:184 (CheatImpulse)"
+      - "server/cheats.qc:264 (CHIMPULSE_R00T)"
       - "common/impulses/all.qh (CHIMPULSE GIVE_ALL=99 / CLONE_*/SPEEDRUN/TELEPORT/R00T 140-148)"
     port_refs:
-      - "src/XonoticGodot.Server/Commands.cs:1376 (imp==99 -> Cheats.GiveAll)"
-      - "src/XonoticGodot.Server/Cheats.cs:153 (GiveAll — sv_cheats gate + give all + cheat count)"
+      - "src/XonoticGodot.Server/Commands.cs:1791 (imp==99 -> Cheats.GiveAll)"
+      - "src/XonoticGodot.Server/Commands.cs:1799 (imp==148 -> Cheats.R00t)"
+      - "src/XonoticGodot.Server/Cheats.cs:169 (GiveAll — sv_cheats gate + give all + cheat count)"
+      - "src/XonoticGodot.Server/Cheats.cs:186 (R00t — sv_cheats gate + nuke random enemy + cheat count)"
     constants:
       - { name: "give_all_impulse", base: "99", port: "99 (routed)", match: true }
+      - { name: "r00t_impulse", base: "148", port: "148 (routed)", match: true }
+      - { name: "r00t_damage", base: "RadiusDamage 1000 / radius 128 / force 500 (DEATH_CHEAT)", port: "1000 / 128 / 500 / DeathTypes.Cheat", match: true }
       - { name: "teleport_impulse", base: "143", port: "not routed", match: false }
     status:
       logic: partial
@@ -372,9 +387,38 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: cheat impulses 140-148 (clone/speedrun/teleport/r00t/drag) are not dispatched — they need engine services and remain unported (Cheats.cs doc-comment defers them). Only GIVE_ALL (99) is routed."
+      - "STILL OPEN: cheat impulses 140-147 (clone/speedrun/fixed-clone/teleport/drag) are not dispatched — they need engine services and remain unported. Only GIVE_ALL (99) and R00T (148) are routed."
     verification:
-      - { kind: code_read, ref: "DispatchImpulse (Commands.cs:1376): `if (imp == 99) { _world.Cheats.GiveAll(caller); return true; }`. GiveAll (Cheats.cs:153) runs Allowed() (the sv_cheats gate, logs the attempt), GiveItems give-all, AddCheats(1). Matches QC CHIMPULSE_GIVE_ALL semantics. LIVE.", result: pass }
-      - { kind: code_read, ref: "imp 140-148 have no branch in DispatchImpulse; Cheats.cs has no clone/teleport/r00t/drag impulse handler.", result: fail }
+      - { kind: code_read, ref: "DispatchImpulse (Commands.cs:1791): `if (imp == 99) { _world.Cheats.GiveAll(caller); return true; }`. GiveAll (Cheats.cs:169) runs Allowed() (sv_cheats gate, logs), give-all, AddCheats(1). LIVE.", result: pass }
+      - { kind: code_read, ref: "DispatchImpulse (Commands.cs:1799): `if (imp == 148) { _world.Cheats.R00t(caller, _world.Clients.Players); return true; }`. R00t (Cheats.cs:186): Allowed() gate, reservoir-sample a living DIFF_TEAM enemy, EFFECT_ROCKET_EXPLODE + rocket_impact sound, RadiusDamage(1000/0/128/force 500/DEATH_CHEAT), AddCheats(1) — matches QC CHIMPULSE_R00T. LIVE.", result: pass }
+      - { kind: code_read, ref: "imp 140-147 have no branch in DispatchImpulse; Cheats.cs has no clone/speedrun/fixed-clone/teleport/drag impulse handler.", result: fail }
     confidence: high
-    notes: "BASELINE GAP PARTIALLY CLOSED: the give-all cheat impulse (99) is now routed from DispatchImpulse to Cheats.GiveAll with the sv_cheats gate honored, so a cheat-bound give-all key works on a cheats-enabled server (was wholly dead in baseline). liveness dead->partial. The clone/speedrun/teleport/r00t/drag impulses (140-148) remain unported."
+    notes: "DRIFT since 2026-06-22: R00T (148) is now ALSO routed (DispatchImpulse:1799 -> Cheats.R00t), with the sv_cheats gate, random-enemy nuke and RadiusDamage(1000/128/500/DEATH_CHEAT) faithful to QC CHIMPULSE_R00T. Two of the cheat impulses (99, 148) are now live (was just 99 in baseline). The clone/speedrun/fixed-clone/teleport/drag impulses (140-147) remain unported; logic/values/liveness stay partial because the set is incomplete."
+
+  - id: sv-impulse.cheat.command_impulse
+    name: "CheatImpulse 140-147 (clone / speedrun / fixed-clone / teleport / drag)"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:184 (CheatImpulse)"
+      - "server/cheats.qc (CHIMPULSE_CLONE_MOVING 140, SPEEDRUN 141, CLONE_STANDING 142, TELEPORT 143, DRAG)"
+      - "common/impulses/all.qh (CHIMPULSE_* 140-147)"
+    port_refs: []
+    constants:
+      - { name: "clone_moving_impulse", base: "140", port: "not routed", match: false }
+      - { name: "speedrun_impulse", base: "141 (ctf speedrun)", port: "not routed", match: false }
+      - { name: "teleport_impulse", base: "143 (emergency teleport)", port: "not routed", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The clone/speedrun/fixed-clone/teleport/drag cheat impulses (140-147) are unported. They need engine services (entity cloning, speedrun checkpoint state, drag-mouse-grab) the port does not yet expose. (Some of the underlying CHEAT commands — e.g. teleporttotarget — exist in Cheats.cs as console commands, but the IMPULSE routing 140-147 has no DispatchImpulse branch.)"
+    verification:
+      - { kind: code_read, ref: "DispatchImpulse (Commands.cs:1750-1838): only imp 99 and 148 reach a Cheats.* handler; no 140-147 branch. Cheats.cs exposes teleporttotarget as a console command but no clone/speedrun/drag impulse path.", result: fail }
+    confidence: high
+    notes: "NEWLY-MAPPED ROW (registry coverage gap): the baseline lumped these into sv-impulse.cheat.impulses, but the give-all/r00t now-live impulses and the still-missing clone/speedrun/teleport/drag set are different liveness stories, so the dead set gets its own row. Entirely unported on the impulse path."

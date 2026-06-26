@@ -1,13 +1,13 @@
 unit: scoring
 category: scoring
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
-  feature_count: 13
+  feature_count: 14
   worst_gaps:
-    - "game_stopped central clamp STILL inert: GameScores.GameStopped is never assigned true on the live path (GameWorld uses its own GameStopped + per-call-site guards); the single QC clamp point in PlayerScore_Add/TeamScore_AddToTeam is not wired"
-    - "g_score_resetonjoin arm now CODED (GameScores.ClearPlayerOnJoin, faithful 0/-1/1 + PreferPlayerScore_Clear) but STILL DEAD: no join/spawn path calls it, so a rejoining player keeps their score regardless of the cvar"
-    - "REMAINING_FRAG_{1,2,3} announcer now LIVE for Deathmatch + TDM only; the other 9 QC modes that enable Scores_CountFragsRemaining (duel/mayhem/tmayhem/ft/ka/race/surv/tka/ca) do not call it"
+    - "g_score_resetonjoin arm STILL DEAD: GameScores.ClearPlayerOnJoin is faithful (0/-1/1 + PreferPlayerScore_Clear) but has ZERO call sites — no join/spawn/Teamplay path invokes it, so a rejoining player keeps their score regardless of the cvar"
+    - "REMAINING_FRAG_{1,2,3} announcer LIVE for Deathmatch + TDM only; the other 10 QC modes that enable Scores_CountFragsRemaining (ca/duel/ft/ka/mayhem/race/surv/tka/tmayhem/rc) do not call CountFragsRemaining"
+    - "Score_NicePrint (the server-side `scores`/`teamscores` console-command standings dump, server/scores.qc:914) is unmapped and not ported"
 features:
   - id: scoring.registry.fields_and_flags
     name: "SP_* score-field registry + SFL_* sort/display flags"
@@ -35,9 +35,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "GameScores.RegisterAll vs common/scores.qh REGISTER_SP list + SFL_* bits; unchanged by Wave-1/2 (GameScores.cs diff is purely additive, zero removed lines)", result: pass }
+      - { kind: code_read, ref: "GameScores.RegisterAll vs common/scores.qh REGISTER_SP list + SFL_* bits; full SP_* set registered in QC declaration order", result: pass }
     confidence: high
-    notes: "Full SP_* set registered in QC declaration order with bit-faithful SFL_* flags. SP_SKILL/SP_FPS are present but the skill column is an unpopulated stub (see scoring.stats.skill_column)."
+    notes: "Full SP_* set registered in QC declaration order with bit-faithful SFL_* flags. SP_SKILL/SP_FPS are present but the skill column is an unpopulated stub (see scoring.rules.scorerules_basics)."
 
   - id: scoring.rules.scorerules_basics
     name: "Per-match column setup (ScoreRules_basics: blank then re-declare common columns)"
@@ -91,12 +91,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The game_stopped clamp inside AddToPlayer (GameScores.cs:421 `if (GameStopped && !forced) delta = 0`) is gated on the static GameScores.GameStopped, which the server never assigns true (it uses GameWorld.GameStopped at the call sites instead) — so the central clamp QC relies on is inert; see scoring.lifecycle.game_stopped. NEW: ClanArena.AddScoreFloat2Int now routes its damage2score through AddToPlayer live, so this add path has a real live consumer beyond the gametype frag handlers."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "AddToPlayer mirrors PlayerScore_Add (hook, dirty-bit, game_stopped); live via gametype DeclareColumn + AddToPlayer calls and now CA's AddScoreFloat2Int->AddToPlayer", result: pass }
+      - { kind: code_read, ref: "AddToPlayer mirrors PlayerScore_Add (hook, dirty-bit, game_stopped clamp); the static GameScores.GameStopped clamp is NOW LIVE — published from GameWorld.GameStopped every tick at GameWorld.cs:1762 (see scoring.lifecycle.game_stopped)", result: pass }
     confidence: high
-    notes: "AddPlayerScoreHook models both the veto and the claimed/rewrite distinction faithfully. Live across CTF/DOM/KH/CA-damage2score etc."
+    notes: "AddPlayerScoreHook models both the veto and the claimed/rewrite distinction faithfully. Live across CTF/DOM/KH/CA-damage2score etc. The game_stopped clamp inside AddToPlayer is now actually armed (was inert in the prior audit)."
 
   - id: scoring.team.two_slot_model
     name: "Two-slot per-team score model (TeamScore_AddToTeam / teamscorekeepers / ST_SCORE + per-mode slot)"
@@ -113,6 +112,7 @@ features:
       - { name: "MAX_TEAMSCORE", base: "2", port: "MaxTeamScore=2", match: true }
       - { name: "ST_SCORE slot", base: "0", port: "TeamSlotScore=0", match: true }
       - { name: "per-gametype slot", base: "slot 1 (ST_CTF_CAPS/ST_DOM_TICKS/…)", port: "TeamSlotSecondary=1", match: true }
+      - { name: "game_stopped => delta 0 in TeamScore_AddToTeam", base: "yes", port: "AddToTeam: if(GameStopped) delta=0 (now live)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -124,9 +124,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "AddToTeam(team,slot,delta) + two _teamScores dicts; CTF caps -> slot1, ST_SCORE -> slot0; live via TeamScoreSource wiring in GameWorld.cs", result: pass }
+      - { kind: code_read, ref: "AddToTeam(team,slot,delta) + two _teamScores dicts; CTF caps -> slot1, ST_SCORE -> slot0; live via TeamScoreSource wiring in GameWorld.cs; the game_stopped clamp in AddToTeam is now armed (GameScores.GameStopped published live)", result: pass }
     confidence: high
-    notes: "Team totals route through GameScores; GameWorld wires TeamScoreSource per mode (read-through) so the gametype owns the authoritative total and the table doesn't double-count. Unchanged by Wave-1/2."
+    notes: "Team totals route through GameScores; GameWorld wires TeamScoreSource per mode (read-through) so the gametype owns the authoritative total and the table doesn't double-count."
 
   - id: scoring.compare.field_player_team
     name: "Comparison + sort (ScoreField_Compare / PlayerScore_Compare / TeamScore_Compare / PlayerScore_Sort)"
@@ -157,7 +157,7 @@ features:
     gaps:
       - "Final tiebreak differs: QC PlayerScore_Compare ends with t1.owner.playerid - t2.owner.playerid; the port returns 0 (stable-sort order) when all columns tie. Only affects the display order of two players with byte-identical scoreboards — no gameplay effect."
     verification:
-      - { kind: code_read, ref: "ComparePlayers/CompareTeams/CompareValues vs the QC compares; spectator guard matches; playerid tiebreak omitted. Unchanged by Wave-1/2", result: pass }
+      - { kind: code_read, ref: "ComparePlayers/CompareTeams/CompareValues vs the QC compares; spectator guard matches; playerid tiebreak omitted", result: pass }
     confidence: high
     notes: "Flag-aware compare, declaration-order tiebreak chain, and the nospectators guard are faithful. The omitted playerid final tiebreak is cosmetic."
 
@@ -188,9 +188,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The QC 'topscore 0 with ZERO_IS_WORST => +/-999999999' and 'empty server forces equality=0' special cases were not located in the port; an all-zero / empty-server end-of-time tie may resolve differently. Low impact (degenerate cases). Unchanged by Wave-1/2."
+      - "The QC 'topscore 0 with ZERO_IS_WORST => +/-999999999' and 'empty server forces equality=0' special cases were not located in the port; an all-zero / empty-server end-of-time tie may resolve differently. Low impact (degenerate cases)."
     verification:
-      - { kind: code_read, ref: "GameWorld.CheckWinningCondition + OverTimeManager.ResolveWinningCode vs WinningCondition_Scores/GetWinningCode; Deathmatch.RecomputeLeader + Tdm.UpdateLeaderAndCheckLimit now compute the same fraglimit/leadlimit AND-OR live each tick (GameWorld.DriveGametypeFrame)", result: pass }
+      - { kind: code_read, ref: "GameWorld.CheckWinningCondition + OverTimeManager.ResolveWinningCode vs WinningCondition_Scores/GetWinningCode; Deathmatch.RecomputeLeader + Tdm.UpdateLeaderAndCheckLimit compute the same fraglimit/leadlimit AND-OR live each tick (GameWorld.DriveGametypeFrame)", result: pass }
     confidence: medium
     notes: "Core fraglimit/leadlimit + sudden-death/overtime decision is faithful and live (drives intermission). The degenerate zero/empty-server special-cases are unverified."
 
@@ -199,11 +199,12 @@ features:
     layer: [authority]
     base_refs:
       - "server/world.qc:WinningCondition_Scores"
+      - "server/mutators/events.qh:Scores_CountFragsRemaining"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:CountFragsRemaining"
       - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ResetFragsRemaining"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:297"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:367"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:300"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:384"
     constants:
       - { name: "announce thresholds", base: "fragsleft == 1 / 2 / 3 (once via fragsleft_last)", port: "fragsleft 1/2/3 once via _fragsLeftLast", match: true }
       - { name: "fragsleft = limit - topscore; leadingfragsleft = second + leadlimit - top", base: "world.qc:1592-1604", port: "same formula", match: true }
@@ -219,13 +220,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "PARTIAL MODE COVERAGE: only Deathmatch (RecomputeLeader -> CountFragsRemaining) and TDM (UpdateLeaderAndCheckLimit -> CountFragsRemaining) call it live. QC enables the Scores_CountFragsRemaining hook for 11 modes (ca/dm/duel/ft/ka/mayhem/race/surv/tdm/tka/tmayhem); duel/mayhem/tmayhem/ft/ka/race/surv/tka/ca do NOT call CountFragsRemaining (Mayhem.cs:293 + TeamMayhem.cs:37 explicitly defer the suppression/announcer). So those modes still play no 'N frags left' cue."
+      - "PARTIAL MODE COVERAGE: only Deathmatch (RecomputeLeader -> CountFragsRemaining) and TDM (UpdateLeaderAndCheckLimit -> CountFragsRemaining) call it live. QC enables the Scores_CountFragsRemaining hook for 12 modes (ca/dm/duel/ft/ka/mayhem/rc/surv/tdm/tka/tmayhem); the other 10 (ca/duel/ft/ka/mayhem/rc/surv/tka/tmayhem) do NOT call CountFragsRemaining (Mayhem.cs:295 + TeamMayhem.cs:37 explicitly defer the suppression/announcer). So those modes play no 'N frags left' cue."
       - "suddenDeathEnding is always passed false (both callers note checkrules_suddendeathend is framework-owned and not surfaced), so the QC 'force fragsleft=1 during sudden-death overtime end' branch never fires."
     verification:
-      - { kind: code_read, ref: "GameScores.CountFragsRemaining mirrors world.qc:1592-1622 (formula, leadlimit_and_fraglimit MAX/MIN, _fragsLeftLast once-gate); NotificationSystem.Send(All,Annce,REMAINING_FRAG_n) -> NotificationsList A() announcer sounds; LIVE via DM RecomputeLeader (GameWorld.cs:1706) + Tdm UpdateLeaderAndCheckLimit (GameWorld.cs:1719), both reached every tick from OnEndFrame->DriveGametypeFrame; latch reset in DM/Tdm Activate (ResetFragsRemaining)", result: pass }
-      - { kind: code_read, ref: "grep CountFragsRemaining over src -> callers only in Deathmatch.cs + Tdm.cs; Mayhem/Duel/Keepaway/FreezeTag/TeamMayhem do not call it", result: fail }
+      - { kind: code_read, ref: "GameScores.CountFragsRemaining mirrors world.qc:1592-1622 (formula, leadlimit_and_fraglimit MAX/MIN, _fragsLeftLast once-gate); LIVE via DM RecomputeLeader (Deathmatch.cs:300) + Tdm UpdateLeaderAndCheckLimit (Tdm.cs:384), both reached every tick from OnEndFrame->DriveGametypeFrame; latch reset in DM/Tdm Activate (ResetFragsRemaining)", result: pass }
+      - { kind: code_read, ref: "grep CountFragsRemaining over src/Gameplay/GameTypes -> live callers only in Deathmatch.cs + Tdm.cs; Mayhem/TeamMayhem only mention it in deferral comments; Base enables the hook for 12 modes (server/world.qc:1590 gate)", result: fail }
     confidence: high
-    notes: "FIXED from baseline (was fully missing, no caller). Now logic/values/timing/audio faithful and LIVE for DM+TDM — the two primary frag-race modes — via the per-tick leader recompute. Remaining work is wiring the other 9 QC modes' hook + surfacing suddenDeathEnding. The sibling REMAINING_MIN_{1,5} minutes announcer remains live in AnnouncerController."
+    notes: "Logic/values/timing/audio faithful and LIVE for DM+TDM via the per-tick leader recompute. Remaining work is wiring the other 10 QC modes' hook + surfacing suddenDeathEnding. The sibling REMAINING_MIN_{1,5} minutes announcer remains live in AnnouncerController."
 
   - id: scoring.lifecycle.clear
     name: "Score clearing (PlayerScore_Clear via g_score_resetonjoin / Score_ClearAll)"
@@ -254,12 +255,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL DEAD ARM: ClearPlayerOnJoin (new in Wave-2) faithfully models the QC mode logic (0 keep / 1 wipe / -1 wipe-unless-PreferPlayerScore_Clear) but has ZERO call sites — grep finds only the definition; no join/spawn/Teamplay path invokes it. So a player who specs out and rejoins still keeps their score regardless of g_score_resetonjoin (0/-1/1). No-op at the default 0; only diverges when an admin sets 1 or -1."
+      - "STILL DEAD ARM: ClearPlayerOnJoin faithfully models the QC mode logic (0 keep / 1 wipe / -1 wipe-unless-PreferPlayerScore_Clear) but has ZERO call sites — grep over src+tests finds only the definition; no join/spawn/Teamplay path invokes it. So a player who specs out and rejoins still keeps their score regardless of g_score_resetonjoin (0/-1/1). No-op at the default 0; only diverges when an admin sets 1 or -1."
     verification:
-      - { kind: code_read, ref: "ClearPlayerOnJoin added in GameScores.cs:606, faithful to server/scores.qc:286 mode gate; grep ClearPlayerOnJoin/resetonjoin over src+tests -> only the definition + cvar const, no invocation", result: fail }
+      - { kind: code_read, ref: "ClearPlayerOnJoin (GameScores.cs:626) is faithful to server/scores.qc:286 mode gate; grep ClearPlayerOnJoin over src+tests -> only the definition, no invocation", result: fail }
       - { kind: code_read, ref: "ClearPlayer preserves SKILL + Score_ClearAll clears team slots — both faithful and live (match restart / team change)", result: pass }
     confidence: high
-    notes: "PARTIAL FIX vs baseline: the missing resetonjoin LOGIC now exists and is faithful, but it is still not wired to a live (re)join caller, so behaviorally unchanged at the default. Liveness stays partial (ClearPlayer/ClearAll live; resetonjoin arm dead). The faithful completion is one line: call GameScores.ClearPlayerOnJoin(p, PreferPlayerScore_Clear-hook) from the player (re)join path."
+    notes: "The resetonjoin LOGIC exists and is faithful, but it is still not wired to a live (re)join caller, so behaviorally unchanged at the default. Liveness stays partial (ClearPlayer/ClearAll live; resetonjoin arm dead). The faithful completion is one line: call GameScores.ClearPlayerOnJoin(p, PreferPlayerScore_Clear-hook) from the player (re)join path."
 
   - id: scoring.display.scorestring
     name: "Scoreboard value formatting (ScoreString / count_ordinal / mmssth / TIME_ENCODE)"
@@ -289,7 +290,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "ScoreString/CountOrdinal/TimeEncodedToString mirror util.qc:421 + counting.qh:66; TIME_FACTOR 100 matches. Unchanged by Wave-1/2", result: pass }
+      - { kind: code_read, ref: "ScoreString/CountOrdinal/TimeEncodedToString mirror util.qc:421 + counting.qh:66; TIME_FACTOR 100 matches", result: pass }
     confidence: high
     notes: "Formatting (ordinal/time/per-round/hide-zero) is faithful; consumed by the scoreboard panel (presentation unit). count_ordinal negative guard added in the port (QC interval%100)."
 
@@ -321,7 +322,7 @@ features:
     divergence_rationale: "The port replaces QC's three per-entity linked-entity classes (ENT_CLIENT_SCORES_INFO/SCORES/TEAMSCORES with per-field SendFlags) with two snapshot-channel blocks gated by LayoutGeneration/Version (ADR-0007/0011: the port owns the score layout and networks the whole table positionally). Wire-equivalent: positional, int24, change-gated; a remote --connect client applies ScoreInfoBlock so its label-derived NetworkedFields hash matches the server."
     gaps: []
     verification:
-      - { kind: code_read, ref: "ScoreInfoBlock (labels/flags/gametype/teamplay, LayoutGeneration-gated) + ScoreboardBlock (int24 values, Version-gated); listen-server idempotent-apply nuance documented. Unchanged by Wave-1/2", result: pass }
+      - { kind: code_read, ref: "ScoreInfoBlock (labels/flags/gametype/teamplay, LayoutGeneration-gated) + ScoreboardBlock (int24 values, Version-gated); listen-server idempotent-apply nuance documented", result: pass }
     confidence: high
     notes: "Build-parity gate folds the registry content hash into NetProtocol.BuildParity so positional column indexing is safe. Faithful + live on the snapshot channel."
 
@@ -351,7 +352,7 @@ features:
     intended_divergence: true
     divergence_rationale: "The HTTP upload itself is left to an engine concern: PlayerStats.BuildReport produces the V9 body and GameReport clears DelayMapVote synchronously (QC clears it in the async url callback), so map voting is never blocked. The Godot-free core builds a wire-compatible report; the POST transport is out of the core."
     gaps:
-      - "Handicap given/taken averaging and avglatency depend on host-wired providers (PingProvider defaults to 0); skill (SP_SKILL) is not fetched from a playerbasic/XonStat endpoint. The report is wire-compatible but some advanced fields are 0 without host wiring. Unchanged by Wave-1/2."
+      - "Handicap given/taken averaging and avglatency depend on host-wired providers (PingProvider defaults to 0); skill (SP_SKILL) is not fetched from a playerbasic/XonStat endpoint. The report is wire-compatible but some advanced fields are 0 without host wiring."
     verification:
       - { kind: code_read, ref: "PlayerStats.Init/AddPlayer/FinalizePlayer/GameReport called from GameWorld; V9 keys match playerstats.qc handler spec", result: pass }
     confidence: high
@@ -385,9 +386,9 @@ features:
       - "Powerup/excess edge: effective = FragDamage - max(0, FragDamage - take - save) mirrors QC, but the per-player _scoreDecimal carry is keyed by Player and cleared only on Activate/Deactivate (not per-round); QC's float2int_decimal_fld is a persistent player field too, so this matches, but a player object reused across a full map reset relies on the Activate clear. Low risk."
     verification:
       - { kind: code_read, ref: "ClanArena.OnSplitHealthArmor subscribes to GameHooks.PlayerDamageSplitHealthArmor; that hook is Called unconditionally on the live damage path (DamageSystem.cs:438) for every damage application; CA.Activate (subscribed) is invoked live at GameWorld.cs:1378", result: pass }
-      - { kind: code_read, ref: "AddScoreFloat2Int does carry += value*factor/100; whole=floor(carry+0.5); AddToPlayer(scorer,Score,whole); carry-=whole — the QC _GameRules_scoring_add_float2int accumulate-and-carry, replacing the old truncating (int)(dmg*d2s/100)", result: pass }
+      - { kind: code_read, ref: "AddScoreFloat2Int does carry += value*factor/100; whole=floor(carry+0.5); AddToPlayer(scorer,Score,whole); carry-=whole — the QC _GameRules_scoring_add_float2int accumulate-and-carry", result: pass }
     confidence: high
-    notes: "FIXED from baseline (was DEAD + truncating). Wave-2 replaced the unwired AddDamageScore with OnSplitHealthArmor on the live PlayerDamage_SplitHealthArmor hook + a faithful per-player decimal-carry accumulator (AddScoreFloat2Int). Now LIVE for CA (hook subscribed at Activate, fired every damage app) and the rounding matches QC across many small hits. Still scoreboard-only (does not feed the round-win limit)."
+    notes: "LIVE for CA (hook subscribed at Activate, fired every damage app) and the rounding matches QC across many small hits. Still scoreboard-only (does not feed the round-win limit)."
 
   - id: scoring.lifecycle.game_stopped
     name: "game_stopped score clamp (drop score additions post-match/warmup-end)"
@@ -397,21 +398,49 @@ features:
       - "server/scores.qc:TeamScore_AddToTeam"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:GameStopped"
-      - "src/XonoticGodot.Server/GameWorld.cs:954"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:AddToPlayer"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:AddToTeam"
+      - "src/XonoticGodot.Server/GameWorld.cs:1762"
     constants:
-      - { name: "game_stopped => delta 0 (unless mutator claimed)", base: "yes, central in PlayerScore_Add/TeamScore_AddToTeam", port: "static GameScores.GameStopped still never assigned true on the live path", match: false }
+      - { name: "game_stopped => delta 0 (unless mutator claimed)", base: "yes, central in PlayerScore_Add/TeamScore_AddToTeam", port: "static GameScores.GameStopped now published live each tick (OnEndFrame); the central clamp fires", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "GameWorld.cs:1762 `GameScores.GameStopped = GameStopped;` runs in OnEndFrame, which is wired as Simulation.EndFrame (GameWorld.cs:755) → executes every server tick. GameWorld.GameStopped => Intermission.Running || MatchEnded (GameWorld.cs:1487). So the static flag the central clamps in AddToPlayer (GameScores.cs:430) and AddToTeam (GameScores.cs:506) read is now raised on the live path. PlayerScore_Add's AddPlayerScore-claimed bypass is honored (forced); TeamScore_AddToTeam has no bypass (matches QC).", result: pass }
+    confidence: high
+    notes: "FIXED from baseline. The prior audit found ZERO live assignments of GameScores.GameStopped (only test setup) — the central QC clamp was inert and every call site guarded independently. The faithful fix (publish GameWorld.GameStopped into GameScores.GameStopped each tick) is now in place at GameWorld.cs:1762, so the single QC clamp point in PlayerScore_Add/TeamScore_AddToTeam actually fires during intermission/match-end."
+
+  - id: scoring.display.niceprint
+    name: "Server `scores`/`teamscores` console standings dump (Score_NicePrint)"
+    layer: [authority]
+    base_refs:
+      - "server/scores.qc:Score_NicePrint"
+      - "server/scores.qc:Score_NicePrint_Team"
+      - "server/scores.qc:Score_NicePrint_Player"
+      - "server/scores.qc:Score_NicePrint_Spectators"
+    port_refs: []
+    constants:
+      - { name: "per-team / per-player / spectators text columns", base: "Score_NicePrint_* formatted print() to a player", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN (no change from baseline): the central game_stopped clamp is inert. GameScores.AddToPlayer (GameScores.cs:421) and AddToTeam (GameScores.cs:494) check the static GameScores.GameStopped, but no server/live code ever sets it true — grep `GameScores.GameStopped =` over src finds ZERO assignments (only test setup). GameWorld uses its own GameStopped property + per-call-site guards instead. Several readers exist (Domination, TargetUtilities, MonsterAI, WeaponAccuracyEvents) but they read a flag that is never raised. Most scoring goes through gametype handlers that gate on MatchEnded/intermission (e.g. Deathmatch.OnDeath returns early if MatchEnded; ClanArena.OnSplitHealthArmor gates on round-started), so the practical leak window is small, but the single QC clamp point is not wired."
+      - "The server-side `scores` (and `teamscores`) console command that prints a formatted text standings table to the requesting player (Score_NicePrint and its _Team/_Player/_Spectators helpers, score column-color via Score_NicePrint_ItemColor) is not ported. No equivalent console command exists in the port (grep NicePrint over src finds nothing). Low impact: this is the text-mode standings dump, distinct from the networked scoreboard HUD panel (scoring.net.replication), which is faithful."
     verification:
-      - { kind: code_read, ref: "grep 'GameScores.GameStopped =' over src+tests -> only test setup (MayhemScoringTests/TargetUtilitiesTests set it); no server assignment. GameWorld.GameStopped is a separate property used at call sites", result: fail }
-    confidence: high
-    notes: "UNCHANGED by Wave-1/2. The faithful fix is to assign GameScores.GameStopped from the same source as GameWorld.GameStopped (intermission/match-end/warmup) so the central PlayerScore_Add/TeamScore_AddToTeam clamp actually fires, instead of relying on every call site to guard independently."
+      - { kind: code_read, ref: "Base server/scores.qc:829-947 defines Score_NicePrint_ItemColor/_Team/_Player/_Spectators/_Spectator/Score_NicePrint; grep 'NicePrint' over src/*.cs -> no match", result: fail }
+    confidence: medium
+    notes: "NEWLY MAPPED (was a registry coverage gap). The console `scores` command standings text dump has no port equivalent. The HUD scoreboard is networked separately and is faithful/live."

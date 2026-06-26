@@ -1,15 +1,15 @@
 unit: sv-ipban
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Play-ban is NOW enforced on the live join path (CmdJoin consults g_playban_list, Commands.cs:1108) AND CmdPlayBan now runs the real observer transition (PutObserverInServer) + active minigame removal — the two load-bearing Wave-2 fixes. STILL OPEN: the CENTER_JOIN_PLAYBAN center-print is registered but never emitted (join refusal surfaces only as console text)."
-    - "g_playban_minigames default is STILL 1 in the port (Cvars.cs:347) but 0 in Base — out of the box the port wrongly removes/blocks play-banned players from minigames. Wave-2 did NOT change this default; it only wired the active-removal call behind the (mis-defaulted) gate."
-    - "Connect-time chatban/playban re-application is STILL missing (Base client.qc:1243/1246): InfraClientConnect (GameWorld.cs:762) never reads g_chatban_list/g_playban_list, so a muted/play-banned player who reconnects or survives a map change can talk/play again. Wave-2 added Bans.IsChatBanned/IsPlayBanned seam helpers but they have NO live caller (dead code)."
+    - "Play-ban is enforced on the live join path (CmdJoin consults g_playban_list, Commands.cs:1341) AND CmdPlayBan runs the real observer transition (PutObserverInServer) + active minigame removal. The CENTER_JOIN_PLAYBAN center-print is registered (NotificationsList.cs:962) but NEVER emitted — a refused join surfaces only as console text. This is the single remaining ipban gap of any note."
+    - "Connect-time chatban/playban re-application is NOW LIVE (InfraClientConnect, GameWorld.cs:1156-1159 reads Bans.IsPlayBanned/IsChatBanned): a muted/play-banned player who reconnects or survives a map change is re-spectated / re-muted. (Was missing/dead in the 2026-06-22 baseline — fixed.)"
+    - "g_playban_minigames default is NOW 0 in the port (Cvars.cs:382), matching Base (xonotic-server.cfg:436). Out of the box the port no longer removes/blocks play-banned players from minigames. (Was mis-defaulted to 1 in the 2026-06-22 baseline — fixed.)"
+    - "Shutdown Ban_SaveBans is NOW wired (GameWorld.Shutdown, GameWorld.cs:1383): the persisted seconds-remaining is refreshed against the final clock at session end. (Was missing in the baseline — fixed.)"
     - "Online cross-server ban-list sync (g_ban_sync_*, bansyncer entity, uri_get protocol) is entirely absent (intended divergence)."
-    - "No shutdown Ban_SaveBans: persisted seconds-remaining is not refreshed at session end (saved on each Insert/Delete only)."
 features:
   - id: sv-ipban.mask.derive
     name: "Client IP/identity mask derivation (IPv4 /8../32, IPv6 /32../64, crypto idfp)"
@@ -35,9 +35,9 @@ features:
     verification:
       - { kind: test, ref: "ServerInfraTests.Bans_GetClientIp_IPv4_DerivesMasks", result: pass }
       - { kind: test, ref: "ServerInfraTests.Bans_GetClientIp_RejectsLocalAndBot", result: pass }
-      - { kind: code, ref: "Bans.cs GetClientIp matches QC dot/colon scan, bare-prefix v4, /56 nibble-trunc; unchanged by Wave-2", result: pass }
+      - { kind: code, ref: "Bans.cs:108 GetClientIp matches QC dot/colon scan, bare-prefix v4, /56 nibble-trunc", result: pass }
     confidence: high
-    notes: "Port adds a :port strip on the /32 form; behaviorally harmless (QC tokenizer drops it too). No Wave-2 change."
+    notes: "Port adds a :port strip on the /32 form; behaviorally harmless (QC tokenizer drops it too). Unchanged since baseline."
 
   - id: sv-ipban.check.is_banned
     name: "Ban check: 4 IP masks + crypto-id, idmode + crypto-always-wins"
@@ -63,9 +63,9 @@ features:
       - { kind: test, ref: "ServerInfraTests.Bans_InsertAndCheck_ByIp", result: pass }
       - { kind: test, ref: "ServerInfraTests.Bans_IdMode_IpBanOnlyCatchesAnonymous", result: pass }
       - { kind: test, ref: "ServerInfraTests.Bans_CryptoIdBan_AlwaysWins", result: pass }
-      - { kind: code, ref: "Bans.cs crypto-id returns immediately; ipBanned gated by idmode+presence of idfp; unchanged by Wave-2", result: pass }
+      - { kind: code, ref: "Bans.cs:162 crypto-id returns immediately; ipBanned gated by idmode+presence of idfp", result: pass }
     confidence: high
-    notes: "Crypto-id match returns immediately; IP match gated by idmode + presence of a crypto id, faithful to QC. No Wave-2 change."
+    notes: "Crypto-id match returns immediately; IP match gated by idmode + presence of a crypto id, faithful to QC. Unchanged since baseline."
 
   - id: sv-ipban.enforce.on_connect
     name: "Enforce ban on connect: notify (g_ban_telluser) + drop"
@@ -77,7 +77,7 @@ features:
       - "server/command/cmd.qc:1181"
     port_refs:
       - "src/XonoticGodot.Server/Bans.cs:MaybeEnforceBan"
-      - "src/XonoticGodot.Server/GameWorld.cs:768"
+      - "src/XonoticGodot.Server/GameWorld.cs:1144"
     constants:
       - { name: "g_ban_telluser", base: "1", port: "1", match: true }
     status:
@@ -90,11 +90,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base uses Ban_MaybeEnforceBanOnce (a one-shot .ban_checked flag) AND re-checks on the client's first command (cmd.qc:1181); the port enforces only once on connect (GameWorld.cs:768) with no first-command re-check. Low impact (connect-time drop is dominant). UNCHANGED by Wave-2."
+      - "Base uses Ban_MaybeEnforceBanOnce (a one-shot .ban_checked flag) AND re-checks on the client's first command (cmd.qc:1181); the port enforces only once on connect (GameWorld.cs:1144 InfraClientConnect) with no first-command re-check. Low impact (connect-time drop is dominant)."
     verification:
-      - { kind: code, ref: "GameWorld.cs:768 Bans.MaybeEnforceBan(p) in InfraClientConnect; no cmd.qc:1181-equivalent", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1144 Bans.MaybeEnforceBan(p) in InfraClientConnect; no cmd.qc:1181-equivalent first-command re-check", result: pass }
     confidence: high
-    notes: "Wired live on the connect path; the once-flag and first-command leg are not modeled. No Wave-2 change."
+    notes: "Wired live on the connect path; the once-flag and first-command leg are not modeled. Unchanged since baseline."
 
   - id: sv-ipban.insert
     name: "Ban_Insert: prolong-not-shorten, free/expired slot, evict-soonest, refuse-shorter"
@@ -115,12 +115,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The dosync leg (OnlineBanList_SendBan, with the reason!=\"\" and not-~-prefixed guard) is dropped — no online ban propagation on insert (see sv-ipban.sync.online). UNCHANGED by Wave-2."
+      - "The dosync leg (OnlineBanList_SendBan, with the reason!=\"\" and not-~-prefixed guard) is dropped — no online ban propagation on insert (see sv-ipban.sync.online)."
     verification:
       - { kind: test, ref: "ServerInfraTests.Bans_InsertAndCheck_ByIp", result: pass }
-      - { kind: code, ref: "Bans.cs prolong/free-slot/evict-soonest/refuse-shorter match QC; CmdBan -> Insert; unchanged by Wave-2", result: pass }
+      - { kind: code, ref: "Bans.cs:212 prolong/free-slot/evict-soonest/refuse-shorter match QC; CmdBan -> Insert", result: pass }
     confidence: high
-    notes: "Slot logic faithful; only the sync side-effect is absent. Port adds an empty-ip guard (harmless). No Wave-2 change."
+    notes: "Slot logic faithful; only the sync side-effect is absent. Port adds an empty-ip guard (harmless). Unchanged since baseline."
 
   - id: sv-ipban.kickban
     name: "Ban_KickBanClient: masksize pick + ban IP and crypto id, fallback plain kick"
@@ -145,9 +145,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Bans.cs masksize->mask pick + crypto-id insert; CmdKickBan registered; unchanged by Wave-2 (Wave-2 only re-used the constants in the vote-kickban parse path)", result: pass }
+      - { kind: code, ref: "Bans.cs:282 masksize->mask pick + crypto-id insert; CmdKickBan registered; vote-kickban parse path (VoteController) reuses the same g_ban_default_* defaults", result: pass }
     confidence: high
-    notes: "masksize 1..4 -> /8,/16,/24,/32; crypto id banned in addition when present. Untested by unit tests (code-traced only). Wave-2 added a vote 'kickban' parse path (VoteController.cs:565) emitting `kickban # <i> <bantime> <masksize> ~` using the same g_ban_default_* defaults — consistent, not a regression."
+    notes: "masksize 1..4 -> /8,/16,/24,/32; crypto id banned in addition when present. Code-traced only (no unit test). Unchanged since baseline."
 
   - id: sv-ipban.enforce.roster
     name: "Ban_Enforce: drop every connected client matching a slot (or all)"
@@ -168,11 +168,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The bprint summary wording differs (port \"^1banned: <names> (<reason>)\" vs Base per-client \"^1NOTE:^7 banned client <name>^7 has to go\\n\" + the \": affects <name>, ...\" reason-append). Functionally equivalent; cosmetic. UNCHANGED by Wave-2."
+      - "The bprint summary wording differs (port \"^1banned: <names> (<reason>)\" vs Base per-client \"^1NOTE:^7 banned client <name>^7 has to go\\n\" + the \": affects <name>, ...\" reason-append). Functionally equivalent; cosmetic."
     verification:
       - { kind: code, ref: "GameWorld.cs:701-702 wires Bans.Roster (Clients.Players) + Bans.DropClient (KickHandler+ClientDisconnect)", result: pass }
     confidence: high
-    notes: "Roster + DropClient wired by the host; drop behavior faithful, message wording diverges. No Wave-2 change."
+    notes: "Roster + DropClient wired by the host; drop behavior faithful, message wording diverges. Unchanged since baseline."
 
   - id: sv-ipban.persist
     name: "Save/Load via g_banned_list (version-1 token string, seconds remaining)"
@@ -186,26 +186,26 @@ features:
       - "src/XonoticGodot.Server/Bans.cs:Save"
       - "src/XonoticGodot.Server/Bans.cs:Load"
       - "src/XonoticGodot.Server/GameWorld.cs:704"
+      - "src/XonoticGodot.Server/GameWorld.cs:1383"
     constants:
       - { name: "g_banned_list", base: "\"\"", port: "\"\"", match: true }
       - { name: "format_version", base: "\"1\" + (ip secs)*", port: "same", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No shutdown Ban_SaveBans (Base saves at world.qc:2631). The port saves on every Insert/Delete so the list stays current, but a long session's persisted seconds-remaining is not refreshed at session end. UNCHANGED by Wave-2."
-      - "Load does not spawn the bansyncer think entity (Base Ban_LoadBans creates one); moot here because online sync is absent. UNCHANGED by Wave-2."
+      - "Load does not spawn the bansyncer think entity (Base Ban_LoadBans creates one); moot here because online sync is absent (intended divergence — see sv-ipban.sync.online)."
     verification:
       - { kind: test, ref: "ServerInfraTests.Bans_SaveLoad_RoundTripsThroughCvar", result: pass }
-      - { kind: code, ref: "Bans.cs round-trips remaining-seconds; GameWorld.cs:704 Load() at world init; no Save at shutdown", result: pass }
+      - { kind: code, ref: "Bans.cs:357 round-trips remaining-seconds; GameWorld.cs:704 Load() at world init; GameWorld.cs:1383 Bans.Save() in Shutdown() (SV_Shutdown re-persist) NOW WIRED", result: pass }
     confidence: high
-    notes: "Round-trips through the cvar; stores time remaining, rebuilt as absolute expiry on load — faithful. No Wave-2 change."
+    notes: "FIXED since 2026-06-22 baseline: the shutdown Ban_SaveBans (Base world.qc:2631) is now wired in GameWorld.Shutdown (GameWorld.cs:1383), so a long session's persisted seconds-remaining is refreshed against the final clock — logic partial->faithful, timing partial->faithful. The per-Insert/Delete save still keeps the list current between sessions. Only the (moot, intended) bansyncer-think entity remains unspawned."
 
   - id: sv-ipban.view_delete
     name: "Ban_View (banlist) + Ban_Delete (unban #N), index stability"
@@ -231,13 +231,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Ban_View footer wording differs: Base \"^2Done listing all active (N) bans.\" (+ a \"^2Listing all existing active bans:\" header), port \"{n} ban(s) active\" (no header). Per-line \"#i: <ip> is still banned for <secs> seconds\" matches. UNCHANGED by Wave-2."
-      - "Ban_Delete's OnlineBanList_SendUnban side-effect is dropped (no online sync); slot deletion itself is faithful. UNCHANGED by Wave-2."
+      - "Ban_View footer wording differs: Base \"^2Done listing all active (N) bans.\" (+ a \"^2Listing all existing active bans:\" header), port \"{n} ban(s) active\" (no header). Per-line \"#i: <ip> is still banned for <secs> seconds\" matches."
+      - "Ban_Delete's OnlineBanList_SendUnban side-effect is dropped (no online sync); slot deletion itself is faithful."
     verification:
       - { kind: test, ref: "ServerInfraTests.Bans_Delete_RemovesBan", result: pass }
-      - { kind: code, ref: "Bans.cs View/Delete; CmdUnban/CmdBanList registered; unchanged by Wave-2", result: pass }
+      - { kind: code, ref: "Bans.cs:334 View / Bans.cs:267 Delete; CmdUnban/CmdBanList registered", result: pass }
     confidence: high
-    notes: "Expired/deleted slots are left in place (not compacted) to keep unban #N indices stable, matching QC. No Wave-2 change."
+    notes: "Expired/deleted slots are left in place (not compacted) to keep unban #N indices stable, matching QC. Unchanged since baseline."
 
   - id: sv-ipban.softban.chatban
     name: "Mute (g_chatban_list): admin mute/unmute + fake-accept muted chat + connect re-apply"
@@ -254,24 +254,24 @@ features:
       - "src/XonoticGodot.Server/Bans.cs:AddToList"
       - "src/XonoticGodot.Server/Bans.cs:PlayerInList"
       - "src/XonoticGodot.Server/Bans.cs:IsChatBanned"
+      - "src/XonoticGodot.Server/GameWorld.cs:1158"
     constants:
       - { name: "g_chatban_list", base: "\"\"", port: "\"\"", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Connect-time mute re-application is STILL missing: Base client.qc:1246 re-mutes any connecting client found in g_chatban_list. Wave-2 added a Bans.IsChatBanned(p) seam helper (Bans.cs:459) BUT IT HAS NO LIVE CALLER — InfraClientConnect (GameWorld.cs:762) never invokes it, so a muted player who reconnects (or persists across a map change) can talk again. The helper is dead code (only its def exists; grep finds no source caller)."
+    gaps: []
     verification:
       - { kind: test, ref: "ServerInfraTests.Bans_PrefixList_MuteMatchesByIpAndId", result: pass }
-      - { kind: code, ref: "Chat.cs:313 fake-accepts source.Muted; Bans.cs:459 IsChatBanned has zero source callers; no PlayerInList(g_chatban_list) call in InfraClientConnect", result: fail }
+      - { kind: code, ref: "Chat.cs:313 fake-accepts source.Muted; GameWorld.cs:1158 InfraClientConnect calls Bans.IsChatBanned(p) -> p.Muted = true (the connect-time re-mute, Base client.qc:1246)", result: pass }
     confidence: high
-    notes: "Mute enforcement (fake-accept) is live; the prefix list add/remove is faithful; only the on-connect re-mute is absent. Wave-2 staged a seam helper but did not wire it — still dead/missing on this dimension."
+    notes: "FIXED since 2026-06-22 baseline: the connect-time re-mute is now LIVE — InfraClientConnect (GameWorld.cs:1158) reads Bans.IsChatBanned and re-sets Player.Muted, so a muted player who reconnects (or persists across a map change) stays muted (logic partial->faithful, liveness partial->live). The seam helper that was dead in the baseline now has a real caller."
 
   - id: sv-ipban.softban.playban
     name: "Playban (g_playban_list): force spectate + minigame removal + connect re-apply"
@@ -286,27 +286,25 @@ features:
       - "src/XonoticGodot.Server/ClientManager.cs:PutObserverInServer"
       - "src/XonoticGodot.Common/Gameplay/Minigames/MinigameSessionManager.cs:Part"
       - "src/XonoticGodot.Common/Gameplay/Minigames/MinigameSessionManager.cs:PlayBanned"
-      - "src/XonoticGodot.Server/GameWorld.cs:653"
+      - "src/XonoticGodot.Server/GameWorld.cs:1156"
     constants:
       - { name: "g_playban_list", base: "\"\"", port: "\"\"", match: true }
-      - { name: "g_playban_minigames", base: "0", port: "1", match: false }
+      - { name: "g_playban_minigames", base: "0", port: "0", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN (values): g_playban_minigames default is 1 in the port (Cvars.cs:347) but 0 in Base (xonotic-server.cfg:436). Wave-2 did NOT change this default — it only wired the active-removal call behind the (mis-defaulted) gate, so out of the box the port still wrongly removes/blocks play-banned players from minigames."
-      - "STILL OPEN (liveness): connect-time playban re-application is missing — Base client.qc:1243 TRANSMUTEs connecting clients in g_playban_list to Observer. Wave-2 added Bans.IsPlayBanned(p) (Bans.cs:467) BUT IT HAS NO LIVE CALLER; InfraClientConnect never re-spectates, so a play-banned player who reconnects is not re-spectated."
+    gaps: []
     verification:
-      - { kind: code, ref: "Commands.cs:1455-1465 CmdPlayBan now calls _world.Clients.PutObserverInServer(target) (ClientManager.cs:400 sets Solid.Not/TakeDamage.No/clears weapons) + _world.Minigames.Part(target) when g_playban_minigames", result: pass }
-      - { kind: code, ref: "Cvars.cs:347 g_playban_minigames default still \"1\" vs Base 0; Bans.cs:467 IsPlayBanned has zero source callers; no g_playban_list re-apply in InfraClientConnect", result: fail }
+      - { kind: code, ref: "Commands.cs:1911-1918 CmdPlayBan calls _world.Clients.PutObserverInServer(target) + _world.Minigames.Part(target) when g_playban_minigames", result: pass }
+      - { kind: code, ref: "Cvars.cs:382 g_playban_minigames default NOW \"0\" matching Base; GameWorld.cs:1156 InfraClientConnect calls Bans.IsPlayBanned(p) && !p.IsObserver -> Clients.PutObserverInServer (connect-time re-spectate, Base client.qc:1243)", result: pass }
     confidence: high
-    notes: "WAVE-2 FIXES: CmdPlayBan now runs the REAL observer transition (PutObserverInServer — non-solid, no-damage, weapons/model stripped) instead of only flipping the FRAGS_SPECTATOR sentinel, AND actively kicks the target out of an in-progress minigame via Minigames.Part when g_playban_minigames. logic faithful + the force-spectate is now genuinely live. STILL OPEN: the wrong minigames default and the on-connect re-spectate. The join-attempt gate is its own row (sv-ipban.softban.playban.join_gate)."
+    notes: "FIXED since 2026-06-22 baseline on TWO dimensions: (values) g_playban_minigames default corrected 1->0 to match Base (xonotic-server.cfg:436); (liveness) the connect-time re-spectate is now LIVE — InfraClientConnect (GameWorld.cs:1156) reads Bans.IsPlayBanned and runs PutObserverInServer for a reconnecting play-banned player. CmdPlayBan already ran the real observer transition + minigame removal. The only remaining play-ban gap is the join-gate centerprint (its own row, sv-ipban.softban.playban.join_gate)."
 
   - id: sv-ipban.softban.playban.join_gate
     name: "Playban join-attempt enforcement: a play-banned client cannot (re)join the game"
@@ -327,13 +325,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN (presentation): the CENTER_JOIN_PLAYBAN center-print is registered (NotificationsList.cs:900) but is NOT emitted on a refused join. CmdJoin (Commands.cs:1111) surfaces only console text (\"You are banned from joining the game on this server.\") via ctx.Print — Base sends MSG_CENTER CENTER_JOIN_PLAYBAN to the joiner instead."
+      - "STILL OPEN (presentation): the CENTER_JOIN_PLAYBAN center-print is registered (NotificationsList.cs:962) but is NOT emitted on a refused join. CmdJoin (Commands.cs:1344) surfaces only console text (\"You are banned from joining the game on this server.\") via ctx.Print — Base sends MSG_CENTER CENTER_JOIN_PLAYBAN to the joiner instead."
       - "Minor scope (liveness): the gate is on the `join` command path only. Base enforces in joinAllowed() which also covers the team-menu/selectteam/queue auto-join legs; the port's CmdSelectTeam only sets team (does not transition an observer into play) so it does not bypass the gate, and the auto-join-on-connect leg is unmodeled. The load-bearing `join` command is gated."
     verification:
-      - { kind: code, ref: "Commands.cs:1104-1113 CmdJoin: if((IsObserver||FragsStatus==FragsSpectator) && Bans.PlayerInList(p,g_playban_list)) refuse — mirrors Base !INGAME(this)&&PlayerInList; `join` registered Commands.cs:509", result: pass }
-      - { kind: code, ref: "grep JOIN_PLAYBAN: registered NotificationsList.cs:900, never emitted; CmdJoin uses ctx.Print not a center notification", result: fail }
+      - { kind: code, ref: "Commands.cs:1341-1346 CmdJoin: if((IsObserver||FragsStatus==FragsSpectator) && Bans.PlayerInList(p,g_playban_list)) refuse — mirrors Base !INGAME(this)&&PlayerInList; `join` registered", result: pass }
+      - { kind: code, ref: "grep JOIN_PLAYBAN: registered NotificationsList.cs:962, never emitted; CmdJoin uses ctx.Print not a center notification", result: fail }
     confidence: high
-    notes: "WAVE-2 FIX: the previously-absent load-bearing play-ban join enforcement is now present and live — CmdJoin consults g_playban_list and refuses an observer/spectator's join (logic missing->faithful, liveness na->live). Only the centerprint presentation remains missing (console text substitutes)."
+    notes: "The load-bearing play-ban join enforcement is present and live — CmdJoin consults g_playban_list and refuses an observer/spectator's join. Only the centerprint presentation remains missing (console text substitutes). Unchanged since baseline."
 
   - id: sv-ipban.softban.voteban
     name: "Voteban (g_voteban_list): block calling and casting votes"
@@ -346,8 +344,8 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/Commands.cs:528"
       - "src/XonoticGodot.Server/Commands.cs:CmdListAdd"
-      - "src/XonoticGodot.Server/VoteController.cs:140"
-      - "src/XonoticGodot.Server/VoteController.cs:259"
+      - "src/XonoticGodot.Server/VoteController.cs:152"
+      - "src/XonoticGodot.Server/VoteController.cs:271"
       - "src/XonoticGodot.Server/Bans.cs:PlayerInList"
     constants:
       - { name: "g_voteban_list", base: "\"\"", port: "\"\"", match: true }
@@ -362,9 +360,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "VoteController.cs:140 blocks calling votes for g_voteban_list members; :259 blocks casting; Commands.cs voteban/unvoteban registered via CmdListAdd/Remove", result: pass }
+      - { kind: code, ref: "VoteController.cs:152 blocks calling votes for g_voteban_list members; :271 blocks casting; Commands.cs voteban/unvoteban registered via CmdListAdd/Remove", result: pass }
     confidence: medium
-    notes: "Wired live in the vote controller (call + cast); still uses Bans.PlayerInList directly (the new Bans.IsVoteBanned helper, Bans.cs:473, is unused). Wave-2's other VoteController changes (TimeoutActive/gamestart/IsClient gates, INGAME union) are orthogonal and do not affect voteban parity. No unit test — code-traced only, hence medium confidence."
+    notes: "Wired live in the vote controller (call + cast); still uses Bans.PlayerInList directly (the Bans.IsVoteBanned helper, Bans.cs:473, is unused convenience code). No unit test — code-traced only, hence medium confidence."
 
   - id: sv-ipban.sync.online
     name: "Online cross-server ban-list sync (HTTP uri_get, bansyncer think, g_ban_sync_*)"
@@ -393,8 +391,8 @@ features:
     intended_divergence: true
     divergence_rationale: "The Bans class is the Godot-free essence of ipban.qc and deliberately excludes the HTTP uri_get cross-server propagation (see the Bans class summary doc-comment). The local store + console command surface is complete; the online provider sync (g_ban_sync_*, the bansyncer think entity, the ban/unban/list URI protocol) is out of scope for the port core. Defaults to disabled in Base anyway (g_ban_sync_uri empty)."
     gaps:
-      - "No cross-server ban propagation: SendBan/SendUnban on insert/delete, the periodic list query, and the trusted-servers verify filter are all absent. The ~-prefixed unauthenticated-banner guard does not exist. UNCHANGED by Wave-2."
+      - "No cross-server ban propagation: SendBan/SendUnban on insert/delete, the periodic list query, and the trusted-servers verify filter are all absent. The ~-prefixed unauthenticated-banner guard does not exist."
     verification:
       - { kind: code, ref: "grep g_ban_sync|OnlineBanList|uri_get across src — only the Bans.cs doc-comment references them", result: pass }
     confidence: high
-    notes: "Base ships this disabled (empty g_ban_sync_uri); a stock Base server never syncs either. Flagged as intended divergence. No Wave-2 change."
+    notes: "Base ships this disabled (empty g_ban_sync_uri); a stock Base server never syncs either. Flagged as intended divergence. Unchanged since baseline."

@@ -1,16 +1,16 @@
 unit: sv-world-rules
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
-  feature_count: 17
+  feature_count: 18
   worst_gaps:
     - "serverflags (SERVERFLAG_ALLOW_FULLBRIGHT / SERVERFLAG_FORBID_PICKUPTIMER) from readlevelcvars still not ported: sv_allow_fullbright / sv_forbid_pickuptimer have no server feed and there is no serverflags global at all."
-    - "sv_ready_restart_after_countdown still unimplemented (default now corrected to 0): reset_map always runs immediately at countdown start, never deferred to a restart_timer think at game_starttime."
-    - "reset_map entity .reset/.reset2 callback pass is still projectile-only-delete: movers/items are not returned to spawn via the FOREACH_ENTITY_FLOAT_ORDERED reset list, and no per-client accuracy_reset / Inventory_clear."
-    - "RandomSeed / PingPLReport / animated-lightstyle worldspawn entities, max_shot_distance per-map recompute, RedirectionThink, and the QC <counter>.<unixtime>.<rand6> matchid are still absent."
-    - "GameWorld.Shutdown is still a near-no-op: no slowmo-reset-on-active-timeout, no unfinished-match PlayerStats_GameReport(false), no bot_endgame on world teardown."
-    - "World-layer leadlimit / leadlimit_and_fraglimit WIN semantics and WinningCondition_RanOutOfSpawns are still not evaluated in the checkrules cascade (the leadlimit math now exists but only feeds the frags-remaining announcer)."
+    - "sv_ready_restart_after_countdown still unimplemented (default correct at 0): reset_map always runs immediately at countdown start, never deferred to a restart_timer think at game_starttime."
+    - "RandomSeed / PingPLReport / animated-lightstyle worldspawn entities and RedirectionThink are still absent."
+    - "DumpStats (final/periodic :scores:/:status: eventlog+file scores dump on every match end via NextLevel) has no port analogue — the eventlog scores feed is missing."
+    - "GameWorld.Shutdown now does slowmo-reset + ban-save + unfinished PlayerStats_GameReport(false), but ServerProgsDB persistence, bot_endgame, CheatShutdown and WeaponStats_Shutdown on teardown are still absent."
+    - "World-layer leadlimit / leadlimit_and_fraglimit WIN semantics, WinningCondition_RanOutOfSpawns, and the CheckRules_World mutator hook are still not evaluated in the checkrules cascade (leadlimit math only feeds the frags-remaining announcer)."
 features:
   - id: sv-world-rules.boot.worldspawn
     name: "worldspawn map-init bookkeeping"
@@ -22,10 +22,10 @@ features:
       - "src/XonoticGodot.Server/GameWorld.cs:Boot"
       - "src/XonoticGodot.Server/GameWorld.cs:ApplyWorldspawn"
     constants:
-      - { name: "matchid_format", base: "<counter>.<unixtime>.<rand6>", port: "MapName", match: false }
+      - { name: "matchid_format", base: "<counter>.<unixtime>.<rand6> (sprintf %d.%s.%06d)", port: "string.Format \"{0}.{1}.{2:D6}\" (sv_eventlog_files_counter . unix . rand6) GameWorld.cs:1018", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
@@ -33,12 +33,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "matchid is just the map name (GameLog.MatchId = MapName, GameWorld.cs:773), not the QC <counter>.<unixtime>.<rand6> id (weakens eventlog match correlation)."
-      - "No ServerProgsDB load, no support-entity spawn pass at boot (RandomSeed/PingPLReport/Cheat covered separately)."
+      - "No ServerProgsDB load and no full support-entity spawn pass at boot (RandomSeed/PingPLReport/lightstyles covered as separate rows; DB persistence covered under misc.shutdown)."
     verification:
-      - { kind: code, ref: "GameWorld.Boot + ApplyWorldspawn + GameLog.MatchId=MapName (GameWorld.cs:773) vs world.qc:763/949", result: partial }
+      - { kind: code, ref: "GameWorld.Boot + ApplyWorldspawn + GameLog.MatchId now = string.Format(\"{0}.{1}.{2:D6}\", Cvars.Int(sv_eventlog_files_counter), unixTime, rand6) (GameWorld.cs:1016-1019) vs world.qc:949/763. Boot handles gravity/fog/music keys + reply precompute + max_shot_distance + warpzones.", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 1/2. Boot handles gravity/fog/music worldspawn keys, matchid, and reply precompute; the heavy QC init list (DB, mapinfo enumerate, q3 compat) is host/engine-side. Map_MarkAsRecent IS ported (MapRotation.MarkAsRecent)."
+    notes: "FIXED since 2026-06-22: the matchid is now the QC <counter>.<unixtime>.<rand6> correlation id (GameWorld.cs:1018), not the bare map name — values partial->faithful, logic partial->faithful. Boot handles gravity/fog/music worldspawn keys, matchid, and reply precompute; the heavy QC init list (DB, mapinfo enumerate, q3 compat) is host/engine-side. Map_MarkAsRecent IS ported (MapRotation.MarkAsRecent)."
   - id: sv-world-rules.cvars.changes_log
     name: "cvar_changes / cvar_purechanges server-list log"
     layer: [authority]
@@ -89,9 +88,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "WarmupController.Begin (campaign forces off; g_warmup<0||>1 ⇒ infinite limit -1; ==1 ⇒ ResolveWarmupLimit) + ResolveMinPlayers (g_warmup>1 ⇒ value else MapMinPlayers) vs readlevelcvars:2198-2213. g_warmup_limit default now 180 (Cvars.cs:124) == xonotic-server.cfg:37. MapMinPlayers wired to Cvars.Int(map_minplayers) at GameWorld.cs:675; map_minplayers registered (Cvars.cs:131).", result: pass }
+      - { kind: code, ref: "WarmupController.Begin (campaign forces off; g_warmup<0||>1 -> infinite limit -1; ==1 -> ResolveWarmupLimit) + ResolveMinPlayers vs readlevelcvars:2198-2213. g_warmup_limit default 180 == xonotic-server.cfg:37. MapMinPlayers wired to Cvars.Int(map_minplayers).", result: pass }
     confidence: high
-    notes: "FIXED by Wave-2 fix-up. The two baseline gaps are closed: g_warmup_limit default is now 180 (was -1) matching Base, and the g_warmup<0 map-minplayers lower bound is now live (MapMinPlayers wired to the registered map_minplayers cvar). The Begin() readlevelcvars mirror (campaign-off / infinite-vs-timed limit) was already faithful."
+    notes: "Unchanged; faithful. g_warmup_limit default 180 matches Base, the g_warmup<0 map-minplayers lower bound is live. The Begin() readlevelcvars mirror (campaign-off / infinite-vs-timed limit) is faithful."
   - id: sv-world-rules.warmup.serverflags
     name: "readlevelcvars serverflags (fullbright / pickuptimer)"
     layer: [authority]
@@ -115,7 +114,7 @@ features:
     verification:
       - { kind: code, ref: "grep serverflags/SERVERFLAG/sv_allow_fullbright/sv_forbid_pickuptimer across src/ — no match; readlevelcvars:2189-2195", result: fail }
     confidence: high
-    notes: "STILL OPEN — unchanged by Wave 1/2. The only two readlevelcvars side-effects besides warmup that belong to world-rules; both unported. Player-observable on servers that set sv_allow_fullbright or sv_forbid_pickuptimer."
+    notes: "STILL OPEN — unchanged. The only two readlevelcvars side-effects besides warmup that belong to world-rules; both unported. Player-observable on servers that set sv_allow_fullbright or sv_forbid_pickuptimer."
   - id: sv-world-rules.warmup.ready_count
     name: "ReadyCount ready-up majority + countdown abort"
     layer: [authority]
@@ -138,11 +137,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No GiveWarmupResources re-give on countdown abort (loadout re-give deferred to SpawnSystem); the abort itself now fires, but the per-player warmup loadout is not re-given when reset_map already ran at countdown start."
+      - "No GiveWarmupResources re-give on countdown abort (loadout re-give deferred to SpawnSystem); the abort itself fires, but the per-player warmup loadout is not re-given when reset_map already ran at countdown start."
     verification:
-      - { kind: code, ref: "ReadyCountCheck (WarmupController.cs:223-289: human-only humansReady/humanPlayers, rint via Round(...,ToEven), clamp(factor,0.5,1), minplayers/badteams abort, infinite->timed switch) vs ReadyCount:553-616. LIVE callers: ToggleReady (WarmupController.cs:205/213) via `ready` cmd (Commands.cs:1180) + BotPopulation.cs:193. Seams WIRED at GameWorld.cs:675-689: MapMinPlayers=Cvars.Int(map_minplayers), BadTeams=Teamplay.TeamsUnbalancedForNag, TimeoutActive=Timeout.Active, OnCountdownStop=NotificationSystem.Send(COUNTDOWN_STOP_MINPLAYERS/BADTEAMS). Notifications defined NotificationsList.cs:415/640/789/1018.", result: pass }
+      - { kind: code, ref: "ReadyCountCheck (human-only humansReady/humanPlayers, rint via Round(...,ToEven), clamp(factor,0.5,1), minplayers/badteams abort, infinite->timed switch) vs ReadyCount:553-616. LIVE callers: ToggleReady via `ready` cmd + BotPopulation. Seams WIRED at GameWorld.cs (MapMinPlayers, BadTeams->Teamplay.TeamsUnbalancedForNag, TimeoutActive->Timeout.Active, OnCountdownStop->NotificationSystem.Send). Notifications defined NotificationsList.cs.", result: pass }
     confidence: high
-    notes: "FIXED by Wave-2 fix-up (the big one). The human-ready majority was already faithful; now the minplayers / sv_teamnagger badteams countdown-abort and the timeout ready-count guard are LIVE — all four host seams (MapMinPlayers, BadTeams→Teamplay.TeamsUnbalancedForNag, TimeoutActive→Timeout.Active, OnCountdownStop) are wired in GameWorld.WireCommandsWarmupVoting, and the COUNTDOWN_STOP_MINPLAYERS/BADTEAMS notifications are defined + broadcast (presentation/audio now faithful). liveness partial→live."
+    notes: "Faithful. The minplayers / sv_teamnagger badteams countdown-abort and the timeout ready-count guard are LIVE; the COUNTDOWN_STOP_MINPLAYERS/BADTEAMS notifications are defined + broadcast."
   - id: sv-world-rules.warmup.ready_restart
     name: "ReadyRestart / ReadyRestart_force match-restart flow"
     layer: [authority]
@@ -154,7 +153,7 @@ features:
       - "src/XonoticGodot.Server/GameWorld.cs:RestartMatch"
     constants:
       - { name: "RESTART_COUNTDOWN", base: "10 (vote.qh:66)", port: "10 (WarmupController.RestartCountdown)", match: true }
-      - { name: "campaign_countdown", base: "3", port: "3 (WarmupController.CampaignCountdown), now LIVE", match: true }
+      - { name: "campaign_countdown", base: "3", port: "3 (WarmupController.CampaignCountdown), LIVE", match: true }
       - { name: "teamplay_lockonrestart", base: "0 (xonotic-server.cfg:29)", port: "0 (Cvars.cs:152)", match: true }
       - { name: "sv_ready_restart_after_countdown", base: "0 (xonotic-server.cfg:24)", port: "0 (Cvars.cs:128) but still unimplemented", match: false }
     status:
@@ -167,12 +166,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "sv_ready_restart_after_countdown branch still unimplemented (default now corrected to 0, matching Base): reset_map always runs immediately at countdown start, never deferred to a restart_timer think at game_starttime. Only referenced in a comment (WeaponFireDriver.cs:321)."
+      - "sv_ready_restart_after_countdown branch still unimplemented (default correct at 0, matching Base): reset_map always runs immediately at countdown start, never deferred to a restart_timer think at game_starttime."
       - "Per-player restart policy still not ported: no sv_spectate==2 demotion, no re-join of queued (wants_join) players, no per-player allowed_timeouts reset, no alivetime_start clear in ReadyRestart_force."
     verification:
-      - { kind: code, ref: "WarmupController.ReadyRestart (cs:330-360) vs ReadyRestart_force:441-524; RestartCountdown=10 == RESTART_COUNTDOWN (vote.qh:66); CampaignCountdown=3. CampaignActive WIRED = Cvars.Bool(g_campaign) (GameWorld.cs:673; Campaign sets g_campaign=1 at boot Campaign.cs:258/485). OnLockTeams WIRED → TeamsLocked (GameWorld.cs:681 → ClientManager.TeamsLocked, enforced ClientManager.cs:282). teamplay_lockonrestart registered (Cvars.cs:152). sv_ready_restart_after_countdown: no restart_timer/deferral code (grep).", result: partial }
+      - { kind: code, ref: "WarmupController.ReadyRestart vs ReadyRestart_force:441-524; RestartCountdown=10 == RESTART_COUNTDOWN (vote.qh:66); CampaignCountdown=3 LIVE (CampaignActive=Cvars.Bool(g_campaign)); OnLockTeams WIRED -> TeamsLocked; teamplay_lockonrestart registered. sv_ready_restart_after_countdown: no restart_timer/deferral code (grep).", result: partial }
     confidence: high
-    notes: "PARTIAL FIX by Wave-2 fix-up. The 10s RESTART_COUNTDOWN was already correct; now the campaign 3s countdown and the teamplay_lockonrestart team-lock are LIVE (CampaignActive read from g_campaign which Campaign sets at boot; OnLockTeams wired to GameWorld.TeamsLocked which ClientManager enforces; teamplay_lockonrestart registered default 0). STILL OPEN: sv_ready_restart_after_countdown is still unimplemented (only the default was corrected), and the per-player restart policy (spectate demotion, requeue, timeout/alivetime reset) is still deferred."
+    notes: "Unchanged since 2026-06-22. Campaign 3s countdown + teamplay_lockonrestart team-lock are LIVE. STILL OPEN: sv_ready_restart_after_countdown is unimplemented (only the default is correct), and the per-player restart policy (spectate demotion, requeue, timeout/alivetime reset) is deferred."
   - id: sv-world-rules.warmup.reset_map
     name: "reset_map: full map/player reset on restart"
     layer: [authority]
@@ -192,12 +191,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Entity .reset/.reset2 pass is still thin: only projectile-class entities are deleted (ResetMapObjects, GameWorld.cs:2638-2650); per-entity reset callbacks (movers/items back to spawn, team_saved restore) are not driven through the FOREACH_ENTITY_FLOAT_ORDERED reset list, and the waypoint/assault .reset2 second pass is absent."
-      - "No per-client accuracy_reset / Inventory_clear pass, and no shuffleteams_on_reset_map / reset_map_players mutator hooks beyond Mayhem/TeamMayhem total_damage_dealt."
+      - "No per-client accuracy_reset / Inventory_clear pass on reset_map."
+      - "The waypoint/assault .reset2 second pass (FOREACH_ENTITY_FLOAT_ORDERED two-stage ordering) is not separately driven — only the single .reset callback per entity fires."
     verification:
-      - { kind: code, ref: "ResetMap (GameWorld.cs:2593-2631: Score_ClearAll on real restart, Mayhem/TeamMayhem reset_map_players, round reset, per-player zero-vel + StatusEffectsCatalog.RemoveAll + PlayerStates.OnSpawn + Clients.Spawn) / ResetMapObjects (2638-2650, projectile-only delete) vs reset_map:351-430", result: partial }
+      - { kind: code, ref: "ResetMap (GameWorld.cs:3497-3551: Score_ClearAll on real restart, Mayhem/TeamMayhem/CTS/LMS reset_map_players, round reset, per-player zero-vel + StatusEffectsCatalog.RemoveAll + PlayerStates.OnSpawn + Clients.Spawn, minigames+centerprint kill) / ResetMapObjects (3558-3578: projectile delete THEN e.Reset?.Invoke(e) for every non-client entity) vs reset_map:351-430", result: partial }
     confidence: high
-    notes: "MINOR improvement by Wave-2 (added the status_effects reset_map_global RemoveAll(NORMAL) hook + per-player PlayerStates.OnSpawn). Score clear, round reset, per-player zero-velocity + Spawn (PutClientInServer), and projectile deletion remain present and correctly gated on time<=game_starttime; the entity reset-callback ordering and per-client accuracy/inventory reset are still simplified. STILL mostly OPEN."
+    notes: "FIXED since 2026-06-22: ResetMapObjects now FIRES every non-client map entity's .reset callback (e.Reset?.Invoke, GameWorld.cs:3576), returning movers/items to spawn — no longer projectile-only-delete. Also added LMS reset_map_players. Score clear, round reset, per-player zero-velocity + Spawn, status-effects RemoveAll, and projectile deletion remain present and gated on time<=game_starttime. STILL OPEN: per-client accuracy/inventory reset and the .reset2 second pass."
   - id: sv-world-rules.checkrules.cascade
     name: "CheckRules_World per-frame win cascade"
     layer: [authority]
@@ -220,13 +219,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "WinningCondition_RanOutOfSpawns (team spawn-exhaustion draw/win, g_spawn_useallspawns) is still not ported."
-      - "leadlimit / leadlimit_and_fraglimit WIN semantics are still not evaluated in the world layer (the win comes purely from the gametype MatchEnded latch + tie report). NOTE: the leadlimit math now EXISTS in GameScores.CountFragsRemaining but only feeds the frags-remaining announcer, not the actual end-of-match decision."
+      - "WinningCondition_RanOutOfSpawns (team spawn-exhaustion draw/win, g_spawn_useallspawns) is still not ported (confirmed absent, GameWorld.cs:2884 comment)."
+      - "leadlimit / leadlimit_and_fraglimit WIN semantics are still not evaluated in the world layer (the win comes from the gametype MatchEnded latch + tie report). The leadlimit math exists in GameScores.CountFragsRemaining but only feeds the frags-remaining announcer, not the end-of-match decision."
       - "The CheckRules_World mutator hook (M_ARGV status override) is still not invoked."
     verification:
-      - { kind: code, ref: "RunCheckRulesWorld (GameWorld.cs:1997-2071: timelimit zeroing + offset, overtime/suddendeath cascade, ResolveWinningCode) vs CheckRules_World:1725-1861. ANNCE_REMAINING_FRAG_{1,2,3}: GameScores.CountFragsRemaining (cs:791-806, leadlimit + leadlimit_and_fraglimit) now LIVE-called per-frame from the gametype scoring layer (Deathmatch.cs:297, Tdm.cs:367); REMAINING_FRAG_1/2/3 notifs defined NotificationsList.cs:122-124.", result: partial }
+      - { kind: code, ref: "RunCheckRulesWorld (GameWorld.cs:2833+: timelimit zeroing + offset, overtime/suddendeath cascade) vs CheckRules_World:1725-1861. ANNCE_REMAINING_FRAG_{1,2,3}: GameScores.CountFragsRemaining (leadlimit + leadlimit_and_fraglimit) LIVE-called per-frame from the gametype scoring layer; REMAINING_FRAG notifs defined NotificationsList.cs. RanOutOfSpawns/mutator hook not ported (GameWorld.cs:2884).", result: partial }
     confidence: high
-    notes: "PARTIAL FIX: the frags-remaining announcer (ANNCE_REMAINING_FRAG_{1,2,3}) is now implemented and LIVE — it lives in the gametype scoring layer (Scores_CountFragsRemaining is a gametype hook in QC too), with the leadlimit / leadlimit_and_fraglimit math present (audio missing→partial). STILL OPEN: the world-layer leadlimit WIN condition, WinningCondition_RanOutOfSpawns, and the CheckRules_World mutator hook. The overtime/suddendeath ordering and warmup/pre-start gating remain faithful."
+    notes: "Unchanged. The frags-remaining announcer (ANNCE_REMAINING_FRAG_{1,2,3}) is implemented + LIVE in the gametype scoring layer with leadlimit math (audio partial). STILL OPEN: the world-layer leadlimit WIN condition, WinningCondition_RanOutOfSpawns, and the CheckRules_World mutator hook. Overtime/suddendeath ordering + warmup/pre-start gating are faithful."
   - id: sv-world-rules.checkrules.overtime
     name: "Overtime / sudden-death (InitiateSuddenDeath/Overtime/GetWinningCode)"
     layer: [authority]
@@ -278,12 +277,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "target_music_kill and the MatchEnd_BeforeScores/MatchEnd mutator hooks at NextLevel are not invoked here."
+      - "DumpStats(true) final scores dump at NextLevel is not called (see sv-world-rules.eventlog.dumpstats); target_music_kill and the MatchEnd_BeforeScores/MatchEnd mutator hooks are also not invoked here."
+      - "MatchEnd_RestoreSpectatorStatus (move match-joiners back to spectator at match end) is not called here (see new_unmapped)."
       - "The bprint team/player 'wins the match' broadcast lines are handled by the notification layer, not this path (verify coverage in sv-notification)."
     verification:
-      - { kind: code, ref: "GameWorld.NextLevel + Intermission.Begin vs world.qc:1404-1464", result: pass }
+      - { kind: code, ref: "GameWorld.NextLevel (GameWorld.cs:2950+) + Intermission.Begin vs world.qc:1404-1464", result: pass }
     confidence: high
-    notes: "Unchanged; still faithful. Winner marking, :gameover eventlog, playerstats report, campaign pre-intermission, demo stop, and exittime = time + sv_mapchange_delay (or -1 empty) are all present."
+    notes: "Unchanged; still faithful on the core path. Winner marking, :gameover eventlog, playerstats report, campaign pre-intermission, demo stop, and exittime = time + sv_mapchange_delay (or -1 empty) are all present. DumpStats(true) and MatchEnd_RestoreSpectatorStatus from this same QC path are now tracked as separate gaps."
   - id: sv-world-rules.entity.randomseed
     name: "RandomSeed shared-RNG broadcast entity"
     layer: [authority, presentation]
@@ -305,7 +305,7 @@ features:
     gaps:
       - "No shared server->client RNG seed: client-side random effects cannot be kept deterministic with the server."
     verification:
-      - { kind: code, ref: "grep RandomSeed across src/ — no match", result: fail }
+      - { kind: code, ref: "grep RandomSeed across src/ — no match; world.qc:608/601", result: fail }
     confidence: high
     notes: "STILL OPEN — unchanged. Networked entity (ENT_CLIENT_RANDOMSEED, RandomSeed_Send) rerolled every 5s; absent in the port."
   - id: sv-world-rules.entity.pingplreport
@@ -330,7 +330,7 @@ features:
     gaps:
       - "No server->client ping / packet-loss / movement-loss report; scoreboard ping column and playerstats latency have no feed."
     verification:
-      - { kind: code, ref: "grep PingPLReport/ping_packetloss/PINGPLREPORT across src/ — no match", result: fail }
+      - { kind: code, ref: "grep PingPLReport/ping_packetloss/PINGPLREPORT across src/ — no match; world.qc:96/58", result: fail }
     confidence: high
     notes: "STILL OPEN — unchanged. TE_CSQC_PINGPLREPORT round-robins one client per think (3/maxclients s); records latency for playerstats every LATENCY_THINKRATE=10 s; absent in the port."
   - id: sv-world-rules.boot.lightstyles
@@ -353,7 +353,7 @@ features:
     gaps:
       - "The 12 named animated lightstyles (flicker/pulse/candle/strobe, world.qc:882-920) plus style 63 are not installed at worldspawn: map lights driven by a style index will not animate."
     verification:
-      - { kind: code, ref: "grep lightstyle install in GameWorld.Boot — none (the only lightstyle hits are entity fields in DynamicLight, not the worldspawn table)", result: fail }
+      - { kind: code, ref: "grep lightstyle install in GameWorld.Boot — none (the only lightstyle hits are entity fields in DynamicLight, not the worldspawn table); world.qc:882-920", result: fail }
     confidence: medium
     notes: "STILL OPEN — unchanged. Whether any shipped map relies on these animated styles is unverified; the table itself (lightstyle(0..11)+lightstyle(63)) is absent."
   - id: sv-world-rules.misc.start_delay
@@ -375,35 +375,36 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "g_start_delay is now registered (default 0) and read on the live no-warmup path; the listen default (0) matches Base. The dedicated-server 15s default comes from an `if_dedicated` clause in xonotic-common.cfg that the port's config layer does not replicate — a server that explicitly `set g_start_delay 15` now works, but the stock dedicated 15s join window is not auto-applied. Config-layer divergence only, not a code gap."
+      - "The dedicated-server 15s default comes from an `if_dedicated` clause in xonotic-common.cfg that the port's config layer does not replicate — an explicit `set g_start_delay 15` works, but the stock dedicated 15s join window is not auto-applied. Config-layer divergence only, not a code gap."
     verification:
-      - { kind: code, ref: "WarmupController.Begin (cs:177-181): startDelay = CampaignActive ? 0 : Cvars.FloatOr(g_start_delay,0); GameStartTime = Now + startDelay — vs readlevelcvars:2220-2221. g_start_delay NOW registered (Cvars.cs:134, default 0).", result: pass }
+      - { kind: code, ref: "WarmupController.Begin: startDelay = CampaignActive ? 0 : Cvars.FloatOr(g_start_delay,0); GameStartTime = Now + startDelay — vs readlevelcvars:2220-2221. g_start_delay registered (Cvars.cs:134, default 0).", result: pass }
     confidence: high
-    notes: "FIXED by Wave-2 fix-up: the g_start_delay cvar is now registered (Cvars.cs:134) with the Base listen default 0, and the read-and-apply logic on the live no-warmup path is faithful (campaign ⇒ 0). The only residual is the dedicated-server 15s `if_dedicated` config default, which is a cfg-layer concern not a code/engine defect — an explicit set now honors it correctly."
+    notes: "Unchanged; faithful. The g_start_delay cvar is registered with the Base listen default 0, read-and-apply on the live no-warmup path is faithful (campaign => 0). The only residual is the dedicated-server 15s if_dedicated config default (cfg-layer, not a code defect)."
   - id: sv-world-rules.misc.max_shot_distance
     name: "max_shot_distance from world bounds"
     layer: [authority, shared]
     base_refs:
       - "server/world.qc:InitGameplayMode"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:MaxShotDistance"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:SetMaxShotDistanceFromWorldBounds"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:CurrentMaxShotDistance"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot"
     constants:
-      - { name: "max_shot_distance", base: "min(230000, vlen(world.maxs-world.mins)) per-map (default 32768 in constants.qh)", port: "fixed 32768f", match: false }
+      - { name: "max_shot_distance", base: "min(230000, vlen(world.maxs-world.mins)) per-map (default 32768 in constants.qh)", port: "min(230000f, VLen(maxs-mins)) per-map at Boot; 32768f constant fallback (WeaponFiring.cs:60)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The global hitscan/aim clamp is a fixed constant 32768 in the port (WeaponFiring.MaxShotDistance, cs:39; TurretAI), NOT recomputed per-map from world bounds (min(230000, vlen(maxs-mins))). On maps whose diagonal exceeds 32768qu, hitscan/trueaim/turret traces stop short of where Base would reach; on tiny maps Base would clamp tighter than 32768."
+    gaps: []
     verification:
-      - { kind: code, ref: "WeaponFiring.cs:39 MaxShotDistance=32768f (SetupShot default range) vs world.qc:731 max_shot_distance = min(230000, vlen(world.maxs-world.mins))", result: fail }
-    confidence: medium
-    notes: "STILL OPEN — unchanged. The port uses ONE fixed 32768qu constant (the QC constants.qh default), not the per-map world-bounds recompute. Live (every hitscan SetupShot uses it). Behavioral impact bounded by maps with diagonal > 32768qu."
+      - { kind: code, ref: "WeaponFiring.SetMaxShotDistanceFromWorldBounds (cs:59-60: min(230000f, VLen(worldMaxs-worldMins))) called per map at GameWorld.cs:734-739 from the built collision bounds (degenerate fixture keeps the 32768f fallback). All hitscan/turret/vehicle sites read WeaponFiring.CurrentMaxShotDistance / TurretAI.CurrentMaxShotDistance. vs world.qc:731 max_shot_distance = min(230000, vlen(world.maxs-world.mins)).", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22: the global hitscan/trueaim/turret clamp is now recomputed per-map from the world bounds (min(230000, vlen(maxs-mins))) at Boot (GameWorld.cs:734) and exposed as WeaponFiring.CurrentMaxShotDistance, read by every SetupShot/FireBullet/turret/vehicle site. Was a fixed 32768qu constant. logic+values partial->faithful. The 32768f constant survives only as the pre-map/degenerate-fixture fallback (matches the QC constants.qh default)."
   - id: sv-world-rules.misc.redirection
     name: "RedirectionThink server redirect"
     layer: [authority]
@@ -423,7 +424,7 @@ features:
     gaps:
       - "No server-redirect / mass-reconnect command (sv_redirect_target / quit_and_redirect)."
     verification:
-      - { kind: code, ref: "grep RedirectionThink/sv_redirect across src/ — no match", result: fail }
+      - { kind: code, ref: "grep RedirectionThink/sv_redirect across src/ — no match; world.qc:2560", result: fail }
     confidence: high
     notes: "STILL OPEN — unchanged. Admin convenience feature; low gameplay impact."
   - id: sv-world-rules.misc.shutdown
@@ -433,6 +434,7 @@ features:
       - "server/world.qc:Shutdown"
     port_refs:
       - "src/XonoticGodot.Server/GameWorld.cs:Shutdown"
+      - "src/XonoticGodot.Server/TimeoutController.cs:ResetSlowmoOnShutdown"
     constants: []
     status:
       logic: partial
@@ -440,13 +442,38 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "GameWorld.Shutdown is still a near-no-op (GameWorld.cs:984-987, only unsubscribes the cvar-changed handler). The QC Shutdown's slowmo-reset-on-active-timeout (cvar_set slowmo orig_slowmo when timeout_status==TIMEOUT_ACTIVE), the unfinished-match PlayerStats_GameReport(false), and bot_endgame are not performed on world teardown."
-      - "Ban_SaveBans / ServerProgsDB persistence on shutdown: bans persist on add (Bans.Save at mutation) so the on-shutdown save is largely covered, but the persistent server DB (ServerProgsDB save/dump) has no port analogue here."
+      - "ServerProgsDB persistence on shutdown (db_save/db_dump of server.db<sessionid>) has no port analogue."
+      - "bot_endgame, CheatShutdown, WeaponStats_Shutdown and MapInfo_Shutdown are not performed on world teardown."
     verification:
-      - { kind: code, ref: "GameWorld.Shutdown (cs:984-987) vs world.qc:2618-2670", result: partial }
-    confidence: medium
-    notes: "STILL OPEN — unchanged by Wave 1/2. A live match abandoned mid-game (not via NextLevel) loses the unfinished playerstats report and leaves slowmo stuck if a timeout was active. Some pieces (ban save, finished-match report via NextLevel) are covered on the normal path."
+      - { kind: code, ref: "GameWorld.Shutdown (cs:1377-1398): Bans.Save() + Timeout.ResetSlowmoOnShutdown() + (if !Intermission.Running) PlayerStats.GameReport(finished:false) + cvar-changed unsubscribe — vs world.qc:2618-2670 (slowmo reset, Ban_SaveBans, PlayerStats_GameReport(false), db_save, bot_endgame).", result: partial }
+    confidence: high
+    notes: "FIXED since 2026-06-22: GameWorld.Shutdown is no longer a near-no-op — it now does the slowmo-reset-on-active-timeout (Timeout.ResetSlowmoOnShutdown, TimeoutController.cs:243), the Ban_SaveBans re-persist, AND the unfinished-match PlayerStats_GameReport(false) (only when intermission never ran, to avoid double-report). liveness partial->live. STILL OPEN: ServerProgsDB persistence, bot_endgame, CheatShutdown, WeaponStats_Shutdown — so logic stays partial."
+  - id: sv-world-rules.eventlog.dumpstats
+    name: "DumpStats final/periodic scores dump (:scores: / :status:)"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:DumpStats"
+    port_refs: []
+    constants:
+      - { name: "final_prefix", base: ":scores:", port: "none", match: false }
+      - { name: "status_prefix", base: ":status:", port: "none", match: false }
+      - { name: "sv_logscores_console / sv_logscores_file", base: "console/file score-line sinks", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DumpStats(final) emits a :scores:<gametype>_<map>:<time> (final, at NextLevel) or :status:... (periodic, via the printstats/status console cmd) block — a per-player score/ping/team/handicap line dump — to console (sv_logscores_console), the eventlog (sv_eventlog), and a log file (sv_logscores_file). The port has no analogue: no final scores block is written to the eventlog at match end, and there is no printstats/status server command."
+    verification:
+      - { kind: code, ref: "grep DumpStats/printstats/:scores:/:status:/logscores across src/ — no match. Base callers: world.qc:1429 (NextLevel, final=true) + sv_cmd.qc:1249 (printstats cmd, final=false). world.qc:1264.", result: fail }
+    confidence: high
+    notes: "NEW ROW (registry coverage gap, 2026-06-25). World-rules authority feature: the end-of-match eventlog/file scores feed that external stats parsers (e.g. server score trackers) consume. Missing entirely. Distinct from PlayerStats_GameReport (the xonstat upload, which IS ported); DumpStats is the local console/eventlog/file score-line dump."

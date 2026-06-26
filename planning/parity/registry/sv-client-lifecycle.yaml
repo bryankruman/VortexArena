@@ -1,25 +1,25 @@
 unit: sv-client-lifecycle
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 22
   worst_gaps:
     - "Join queue + team-selection ordering (queuePlayer / TeamBalance_JoinBestTeam priority pass, queued-team dibs conflict) not modeled: in team modes the queued-team conflict resolution and best-team-by-skill ordering are absent; PutPlayerInServer's own wants_join>0 / bot_forced_team / TeamBalance_JoinBestTeam team-assign is also not run (the port pre-assigns at connect only). (Wave-2 added the JOIN_PLAY / JOIN_PLAY_TEAM notification tail; the queue-conflict / ANNCE_BEGIN branches stay deferred.)"
-    - "joinAllowed is reduced to MIN_SPEC_TIME + lockteams: version-mismatch, forced-spectator (TEAM_FORCE_SPECTATOR), playban, g_maxping, and the queue/nJoinAllowed (g_maxplayers/GetPlayerLimit/bots_would_leave) gates are all missing — a mismatched/banned/high-ping/over-cap client can still join, and no CENTER_JOIN_PREVENT*/PLAYBAN/PING/VERSIONMISMATCH centerprints fire."
-    - "ShowRespawnCountdown announcer (10-9-8 CNT_RESPAWN) never fires: RespawnTiming computes RespawnCountdown but DeadPlayerThink never calls ShowRespawnCountdown to decrement it / play Announcer_PickNumber(CNT_RESPAWN, n). STILL OPEN after Wave-2."
+    - "joinAllowed is reduced to MIN_SPEC_TIME + lockteams + forced-spectator + playban + a gametype gate: version-mismatch, g_maxping, and the queue/nJoinAllowed (g_maxplayers/GetPlayerLimit/bots_would_leave) capacity gate are still missing — a mismatched/high-ping/over-cap client can still join, and no CENTER_JOIN_PREVENT*/PING/VERSIONMISMATCH centerprints fire."
     - "The networked PRESSED_KEYS stat is never set server-side: the local-player HUD pressedkeys/strafe panel works from client-side bind state, but a SPECTATED player's held keys (PressedKeysPanel.PressedKeysOverride) are never fed, and the observer-clears-PRESSED_KEYS path is absent."
     - "sv_maxidle idle-kick / move-to-spectator is entirely missing: idle players are never kicked or demoted; the idle countdown bangs (SND TALK2) and CENTER_DISCONNECT_IDLING / CENTER_MOVETOSPEC_IDLING / INFO_QUIT_KICK_IDLING never appear, and parm_idlesince alivetime afk-gating is not modeled."
-    - "The time < game_starttime spawn-shield/pause countdown extension is NOT applied: a player who spawns during the pre-match countdown loses spawn protection and starts rotting earlier than Base (explicit SpawnSystem TODO — still present after Wave-2)."
-    - "No server->client welcome channel: clientstuff/FixClientCvars/cl_jumpspeedcap_min-max/cl_shootfromfixedorigin stuffcmds, clientversion request, _teams_available, sv_notice_join/SendWelcomeMessage MOTD, Send_NextMap_To_Player, ClientInit_misc per-client init entity, Handicap_Initialize, playban/chatban, model_randomizer — none modeled."
-    - "PutObserverInServer still omits SelectObservePoint/observe-spawn placement, vote/ready recount, the SPECTATE_WARNING block, RemoveGrapplingHooks/Portal_ClearAll, and the is_forced/use_spawnpoint signature; sv_spectate-disabled spectator kick (SPECTATE_WARNING / INFO_QUIT_KICK_SPECTATING) absent. (Wave-2 DID add the despawn EFFECT_SPAWN puff + RES_ARMOR=g_balance_armor_start.)"
-    - "UpdateChatBubble (chat/minigame-busy bubble over a typing player) is not modeled; version nag, nameless/too-long/invisible-name enforcement (sv_name_maxlength), GOD MODE info, and the PlayerPreThink misc dispatch (PlayerUseKey edge as a unit, SetZoomState, teamkill/taunt voice sounds, target_voicescript_next) are missing or scattered."
+    - "No server->client welcome channel: clientstuff/FixClientCvars/cl_jumpspeedcap_min-max/cl_shootfromfixedorigin stuffcmds, clientversion request, _teams_available, sv_notice_join/SendWelcomeMessage MOTD, Send_NextMap_To_Player, ClientInit_misc per-client init entity, playban/chatban, model_randomizer — none modeled. (Handicap_Initialize IS now wired in the spawn path.)"
+    - "PutObserverInServer still omits SelectObservePoint/observe-spawn placement, vote/ready recount, the SPECTATE_WARNING block, RemoveGrapplingHooks/Portal_ClearAll, and the is_forced/use_spawnpoint signature; sv_spectate-disabled spectator kick (SPECTATE_WARNING / INFO_QUIT_KICK_SPECTATING) absent."
+    - "UpdateChatBubble (chat/minigame-busy bubble over a typing player) is not modeled; version nag, nameless/too-long/invisible-name enforcement (sv_name_maxlength), GOD MODE info, and the PlayerPreThink misc dispatch (PlayerUseKey edge as a unit, SetZoomState, target_voicescript_next) are missing or scattered (the deferred teamkill-complaint voice timer IS now driven from the regen frame)."
     - "DrownPlayer surfaced-after-out-of-air gasp does not play playersound_gasp (still a comment, not played)."
-  wave2_fixes:
-    - "frame.player_regen: fuel REGEN now gated on IT_FUEL_REGEN ownership AND the whole fuel block skipped under IT_UNLIMITED_AMMO — line-for-line with Base client.qc:1744-1753; vehicle-exit-before-DEATH_ROT also ported. logic partial->faithful."
-    - "observer.put_observer_in_server: despawn EFFECT_SPAWN puff on a live->observer demote (live) + RES_ARMOR=g_balance_armor_start (was 0). values/presentation partial->faithful (subsystem gaps remain)."
-    - "join.join_player: INFO_JOIN_PLAY (FFA) / CENTER_JOIN_PLAY_TEAM_<col> (team) join notifications now fired on the live join path. presentation missing->partial."
-    - "spawn.put_player_in_server: g_weaponarena expansion (ExpandWeaponArena) + ItemFlags folded into start_items — an arena's IT_UNLIMITED_AMMO/IT_UNLIMITED_SUPERWEAPONS now actually reach the spawned player (row stays logic:partial; in-spawn team assign / SUB_UseTargets unchanged)."
+  wave6c_fixes:
+    - "spawn.spawn_shield: the (!sv_ready_restart_after_countdown && time < game_starttime) countdown extension is NOW applied (SpawnSystem.cs:761-782) — shield + pauserotarmor/health + pauseregen rolled forward by game_starttime-time, fuel rot deliberately NOT extended, matching Base client.qc:665-671. logic partial->faithful, timing partial->faithful."
+    - "dead.respawn_countdown_announce: ShowRespawnCountdown is NOW ported (GameWorld.cs:2751) and called from DeadPlayerThink (GameWorld.cs:2733): the 10-9-8 NUM_RESPAWN announcer decrements RespawnCountdown per whole second with the 0.5s overlap guard, gated on the (default-disabled, opt-in) announcer's Enabled flag. all dims missing->faithful, liveness na->live."
+    - "dead.respawn_state_machine: DeadPlayerThink now calls ShowRespawnCountdown each tick. presentation partial->faithful."
+    - "frame.player_powerups: player_powerups is now a faithful port — EF_NODEPTHTEST clear+set, g_fullbrightplayers, player_powerups_remove_all-on-death, the full 4-case superweapon state machine with CENTER_SUPERWEAPON_LOST/BROKEN/PICKUP + INFO_SUPERWEAPON_PICKUP broadcast + play_countdown(SND_POWEROFF). Only MF_ROCKET jetpack modelflag is dropped (no modelflag channel; cosmetic). logic partial->faithful, presentation missing->faithful, audio missing->faithful."
+    - "frame.player_regen: the PlayerRegen hook now passes ALL tuning slots (max_mod/regen_mod/rot_mod/limit_mod + the 6 per-health regen/rot/stable overrides) and reads them back — a mutator that RETUNES regen (not just disables) is now honored. The last residual gap is closed; row was already faithful."
+    - "disconnect.client_disconnect: now also runs vehicle exit (VHEF_RELEASE), player_powerups_remove_all (poweroff sound), and the MUTATOR_CALLHOOK(ClientDisconnect) generic hook + the gametype MakePlayerObserver/RemovePlayer objective drop + status-effect clear. Row stays logic:partial (ignore-list / chatbubble / waypoint / ready-vote-recount cleanups still absent) but materially closer."
 features:
   - id: sv-client-lifecycle.connect.client_connect
     name: "ClientConnect: accept a client as an observer"
@@ -125,12 +125,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Only MIN_SPEC_TIME + (teamplay && lockteams) enforced. Missing: version_mismatch, Player_GetForcedTeamIndex==TEAM_FORCE_SPECTATOR, g_playban_list, g_maxping (ping<=0 too-soon + ping>maxping), and the whole QueueNeeded/queuePlayer/ShowTeamSelection + nJoinAllowed/GetPlayerLimit/g_maxplayers/bots_would_leave capacity gate."
+      - "MIN_SPEC_TIME + (teamplay && lockteams) + Player_GetForcedTeamIndex==TEAM_FORCE_SPECTATOR + g_playban (ForcedSpectate host hook→Bans.IsPlayBanned) + a gametype ForbidSpawn/late-join gate (LMS lockout, GametypeJoinGate) ARE enforced. Still missing: version_mismatch, g_maxping (ping<=0 too-soon + ping>maxping), and the whole QueueNeeded/queuePlayer/ShowTeamSelection + nJoinAllowed/GetPlayerLimit/g_maxplayers/bots_would_leave capacity gate."
       - "No CENTER_JOIN_PREVENT / CENTER_JOIN_PREVENT_VERSIONMISMATCH / CENTER_JOIN_PLAYBAN / CENTER_JOIN_PREVENT_PING / CENTER_TEAMCHANGE_LOCKED centerprints for blocked joins."
     verification:
-      - { kind: code, ref: "ClientManager.cs:256-265 JoinAllowed", result: pass }
+      - { kind: code, ref: "ClientManager.cs:314-337 JoinAllowed (forced-spectate + playban + gametype gate present)", result: pass }
     confidence: high
-    notes: "Reduced gate; the deferred subsystems (version/ban/ping/queue/maxplayers) aren't modeled. lockteams IS mirrored from GameWorld."
+    notes: "Gate now covers MIN_SPEC_TIME, lockteams, TEAM_FORCE_SPECTATOR, the play-ban host hook, and the gametype late-join gate. The version/ping/queue/maxplayers subsystems + the blocked-join centerprints stay deferred. lockteams IS mirrored from GameWorld."
 
   - id: sv-client-lifecycle.spawn.put_player_in_server
     name: "PutPlayerInServer: place + load out a spawning player"
@@ -156,13 +156,12 @@ features:
     divergence_rationale: null
     gaps:
       - "In-PutPlayerInServer team assignment (bot_forced_team / wants_join>0 SetPlayerTeam / TeamBalance_JoinBestTeam) is not run here — the port pre-assigns the team once at connect, so a mid-match team change or wants_join preference isn't honored on respawn."
-      - "SUB_UseTargets(spot) (spawnpoint .target firing on spawn, with the assault/race target-suppression hack) is NOT modeled in this path (TargetUtilities owns SUB_UseTargets but nothing calls it for the spawn spot)."
       - "wr_resetplayer + reload-all-reloadable-weapons-on-spawn (weapon_load = reloading_ammo) and CL_SpawnWeaponentity per slot are flagged as client/networking concerns and not done server-side."
       - "FixPlayermodel resolves every player+bot to sv_defaultplayermodel (client playermodel cvar not plumbed); faithful stand-in but not the real per-client model. GiveRandomWeapons IS wired (randomCount>0 branch); the ForbidRandomStartWeapons hook is not dispatched."
     verification:
-      - { kind: code, ref: "SpawnSystem.cs:660-790 ComputeStartItems+ExpandWeaponArena (Wave-2); :838-843 GiveRandomWeapons; ClientManager.cs Spawn", result: pass }
+      - { kind: code, ref: "SpawnSystem.cs:619-803 PutPlayerInServer (countdown extension + spawn sound + teleport bits); ComputeStartItems+ExpandWeaponArena; ClientManager.cs:709-716 Spawn fires SUB_UseTargets(spot) with the Assault/Race/Cts suppression; :699 Handicap_Initialize", result: pass }
     confidence: high
-    notes: "Loadout/hull/placement/PlayerSpawn hook faithful and LIVE; spawn shield + pause timers set here (see spawn_shield row for the countdown caveat). WAVE-2 reworked the loadout: ComputeStartItems now runs the SetWeaponArena hook → ExpandWeaponArena (all/most/devall/none/name-list keywords), grants IT_UNLIMITED_AMMO|IT_UNLIMITED_SUPERWEAPONS for an active arena, and folds the loadout ItemFlags into start_items via StartItemFlagBits — so an arena's unlimited ammo/superweapons now actually reaches Entity.Items (previously dropped). Row stays logic:partial because in-PutPlayerInServer team assignment + SUB_UseTargets(spot) are still not run here. The _available arena variants fall back to the no-map-weapons full set (no port map-weapon set) — a known minor divergence. The IsCorpse/Alpha/BallisticsDensity respawn-cleanup is a port-only correctness fix, not a divergence."
+    notes: "Loadout/hull/placement/PlayerSpawn hook faithful and LIVE; spawn shield + pause timers (incl. the game_starttime countdown extension) set here — see spawn_shield row. The loadout runs the SetWeaponArena hook → ExpandWeaponArena (all/most/devall/none/name-list), grants IT_UNLIMITED_AMMO|IT_UNLIMITED_SUPERWEAPONS for an active arena, and folds the loadout ItemFlags into start_items. WAVE-6c additions on this path: SUB_UseTargets(spot) (the spawnpoint .target now fires on spawn, with the Assault/Race/Cts target-suppression hack — ClientManager.cs:709-716) and Handicap_Initialize(this) (ClientManager.cs:699). Row stays logic:partial only because in-PutPlayerInServer team assignment (bot_forced_team / wants_join / TeamBalance_JoinBestTeam) is still not run here. The _available arena variants fall back to the no-map-weapons full set — a known minor divergence. The IsCorpse/Alpha/BallisticsDensity respawn-cleanup is a port-only correctness fix, not a divergence."
 
   - id: sv-client-lifecycle.spawn.spawn_shield
     name: "Spawn shield + spawn-time regen/rot pause timers"
@@ -178,20 +177,19 @@ features:
       - { name: "g_balance_pause_fuel_rot_spawn", base: "10 s", port: "10 s", match: true }
       - { name: "g_balance_pause_health_regen_spawn", base: "0 s", port: "0 s", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The (!sv_ready_restart_after_countdown && time < game_starttime) countdown extension (roll shield + pauserotarmor/health + pauseregen forward by game_starttime - time) is NOT applied: a player who spawns during the pre-match countdown loses spawn protection and starts rotting earlier than Base. Note Base does NOT extend pauserotfuel_finished in this block; only shield + armor-rot + health-rot + regen."
+    gaps: []
     verification:
-      - { kind: code, ref: "SpawnSystem.cs:600-637 (explicit TODO comment)", result: fail }
+      - { kind: code, ref: "SpawnSystem.cs:745-782 (spawn shield + pause primes + the game_starttime countdown extension)", result: pass }
     confidence: high
-    notes: "Base shield + pause primes are faithful; only the countdown-window extension is missing (SpawnSystem TODO: needs a match-time handle)."
+    notes: "Base shield + pause primes are faithful AND the (!sv_ready_restart_after_countdown && time < game_starttime) countdown extension is now applied (SpawnSystem.cs:761-782): shield + pauserotarmor/health + pauseregen rolled forward by game_starttime-time; pauserotfuel deliberately NOT extended, matching Base client.qc:665-671. The game_starttime handle is the host-wired StartItem.GameStartTimeProvider. logic partial->faithful, timing partial->faithful."
 
   - id: sv-client-lifecycle.observer.put_observer_in_server
     name: "PutObserverInServer: demote to free-fly observer"
@@ -283,17 +281,17 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ShowRespawnCountdown is NOT called from DeadPlayerThink (see dead.respawn_countdown_announce); the speedrun/g_race_qualifying personal-respawn early branch and player_anim are not in this path."
+      - "The speedrun/g_race_qualifying personal-respawn early branch and player_anim are not in this path (the ShowRespawnCountdown announcer IS now called each tick)."
     verification:
-      - { kind: code, ref: "GameWorld.cs:1698-1763 DeadPlayerThink; DamageSystem sets DeadFlag.Dying", result: pass }
+      - { kind: code, ref: "GameWorld.cs:2702-2741 DeadPlayerThink (ShowRespawnCountdown called at :2733); DamageSystem sets DeadFlag.Dying", result: pass }
     confidence: high
-    notes: "Button-gated DYING->DEAD->RESPAWNABLE->RESPAWNING with RESPAWN_FORCE/DENY/SILENT handling and STAT(RESPAWN_TIME) (negate while respawning) is faithful and matches QC line-for-line; bots advance via their own jump input. Presentation downgraded only because the countdown announcer is unwired."
+    notes: "Button-gated DYING->DEAD->RESPAWNABLE->RESPAWNING with RESPAWN_FORCE/DENY/SILENT handling and STAT(RESPAWN_TIME) (negate while respawning) is faithful and matches QC line-for-line; bots advance via their own jump input. ShowRespawnCountdown is now wired (DeadPlayerThink calls it every tick), so presentation upgraded partial->faithful."
 
   - id: sv-client-lifecycle.dead.respawn_timing
     name: "calculate_player_respawn_time (pcount-scaled delay)"
@@ -330,24 +328,26 @@ features:
     layer: [authority, presentation]
     base_refs:
       - "server/client.qc:ShowRespawnCountdown"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:ShowRespawnCountdown"
+      - "src/XonoticGodot.Server/GameWorld.cs:DeadPlayerThink (calls it ~2733)"
+      - "src/XonoticGodot.Common/Gameplay/Player/RespawnTiming.cs:Calculate (seeds RespawnCountdown)"
     constants:
-      - { name: "respawn_countdown start", base: "10 (sdelay+waves>=5 && wait>1.75s)", port: "computed in RespawnTiming.RespawnCountdown but unused", match: false }
+      - { name: "respawn_countdown start", base: "10 (sdelay+waves>=5 && wait>1.75s)", port: "10 (RespawnTiming.cs:70, same condition)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: missing
-      liveness: na
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "ShowRespawnCountdown announcer (10-9-8 CNT_RESPAWN) never fires: RespawnTiming sets Player.RespawnCountdown but DeadPlayerThink never calls a ShowRespawnCountdown equivalent to decrement it or play Announcer_PickNumber(CNT_RESPAWN, n). The 0.5s overlap-prevention guard is also unported."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep: no ShowRespawnCountdown / CNT_RESPAWN consumer in src+game; DeadPlayerThink has no countdown call", result: fail }
+      - { kind: code, ref: "GameWorld.cs:2751-2771 ShowRespawnCountdown; called from DeadPlayerThink:2733; RespawnTiming.cs:70 seeds the start; AnnceIfEnabledTo gates on the NUM_RESPAWN announcer's Enabled flag", result: pass }
     confidence: high
-    notes: "Dead players waiting for a >=5s respawn should hear the voiced countdown; they don't. RespawnCountdown is computed (RespawnTiming.cs:64) but dead code."
+    notes: "WAVE-6c: ShowRespawnCountdown is now ported and called every tick from DeadPlayerThink. It decrements Player.RespawnCountdown per whole second crossed and sends the NUM_RESPAWN_n announcer to the one dead player, with the QC 0.5s overlap-prevention guard. The NUM_RESPAWN announcer ships disabled by default (matches Base — opt-in), so it stays silent until the player enables the respawn-countdown sounds, then is live with no further wiring. all dims missing->faithful, liveness na->live."
 
   - id: sv-client-lifecycle.frame.player_regen
     name: "player_regen: health/armor/fuel regen + rot"
@@ -376,12 +376,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The PlayerRegen mutator hook's in/out tuning slots (max_mod/regen_mod/rot_mod/limit_mod + per-health overrides) are still reduced to a single disable-return — a mode that retunes regen via the hook (rather than disabling it) is not honored. Stock modes only use the disable path, so this is a latent partial on the hook surface, not the regen logic itself."
+    gaps: []
     verification:
-      - { kind: code, ref: "PlayerFrameLogic.cs:87-102 (Wave-2: `if ((p.Items & UnlimitedAmmo)==0)` wraps the fuel block; fuelRegenFt gated on `now>PauseRegenFinished && ownsFuelRegen`); Base client.qc:1744-1753 — line-for-line; FuelRegen flag fed by GiveItems.cs/PowerupItem.cs/HookMutator SetStartItems; live caller GameWorld.cs:1183", result: pass }
+      - { kind: code, ref: "PlayerFrameLogic.cs:47-89 (PlayerRegen hook passes ALL slots max_mod/regen_mod/rot_mod/limit_mod + the 6 regen/rot/stable health overrides and reads them back; limit applied at RotRegen:185); :107-119 fuel block; Base client.qc:1688-1760 — line-for-line; live caller GameWorld.cs:1699", result: pass }
     confidence: high
-    notes: "WAVE-2 closed the fuel divergence exactly: fuel REGEN is now gated on BOTH (time>pauseregen_finished) AND ITEM_FuelRegen ownership, and the ENTIRE fuel block (regen + rot) is skipped under IT_UNLIMITED_AMMO — matching Base client.qc:1744-1753 line-for-line. The IT_FUEL_REGEN bit is genuinely fed (item pickup GiveItems/FuelRegenItem, and the hook mutator's SetStartItems via the new FUEL_REGEN tag), so the gate isn't an over-correction. Wave-2 also ported the vehicle-exit (VHEF_RELEASE) before the DEATH_ROT damage. Health/armor RotRegen + CalcRegen/CalcRot snap behavior, rot-to-death, and the unified-pause-timer storage remain faithful and LIVE. logic partial->faithful; the only residual is the unmodeled PlayerRegen retune slots (kept as a gap)."
+    notes: "WAVE-6c closed the last residual: the PlayerRegen hook now passes the full tuning surface — max_mod scales the health stable set-points (client.qc:1725-1726), regen_mod/rot_mod scale the frametimes, limit_mod scales the resource ceiling in RotRegen — and reads them back, so a mutator that RETUNES regen (not just disables it) is honored, matching QC M_ARGV(1..4). The Wave-2 fuel gate (REGEN on time>pauseregen AND ITEM_FuelRegen ownership; whole fuel block skipped under IT_UNLIMITED_AMMO) + the vehicle-exit-before-DEATH_ROT remain faithful. Health/armor RotRegen + CalcRegen/CalcRot snap, rot-to-death, and the unified pause-timer storage are faithful and LIVE. The frame also now drives the deferred teamkill-complaint voice timer + dmg_team bleed-off (client.qc:2491/2745)."
 
   - id: sv-client-lifecycle.frame.drown_player
     name: "DrownPlayer: air timer + drown damage"
@@ -452,21 +451,20 @@ features:
     constants:
       - { name: "g_balance_superweapons_time", base: "applied at spawn/pickup", port: "status-effect time", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
-      audio: missing
+      presentation: faithful
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "MF_ROCKET jetpack modelflag (IT_USING_JETPACK), EF_NODEPTHTEST/EF_FULLBRIGHT (g_nodepthtestplayers/g_fullbrightplayers), the EF_NODEPTHTEST clear-each-frame, and player_powerups_remove_all-on-death are not modeled."
-      - "The SUPERWEAPON pickup/lost/broken centerprints (CENTER_SUPERWEAPON_PICKUP/LOST/BROKEN) + INFO_SUPERWEAPON_PICKUP notification + play_countdown(SND_POWEROFF) are absent."
+      - "MF_ROCKET jetpack modelflag (IT_USING_JETPACK) is dropped — the port has no Entity.modelflags render channel (the jetpack fires its own trail effect, so this is cosmetic only)."
     verification:
-      - { kind: code, ref: "PlayerFrameLogic.cs:304-354", result: pass }
-    confidence: medium
-    notes: "Superweapon expiry/strip + the PlayerPowerups tail hook (instagib/overkill) fire and the IT_UNLIMITED_SUPERWEAPONS keep-pinned branch matches QC; the visual/notification/sound side of powerups is absent."
+      - { kind: code, ref: "PlayerFrameLogic.cs:366-551 PlayerPowerups/SuperweaponPass/PlayerPowerupsRemoveAll/PlayCountdown; Base client.qc:1557-1635 — faithful; live caller GameWorld OnPlayerPostThink", result: pass }
+    confidence: high
+    notes: "WAVE-6c: player_powerups is now a faithful port of the Base function — EF_NODEPTHTEST cleared each frame and re-set under g_nodepthtestplayers, EF_FULLBRIGHT under g_fullbrightplayers, player_powerups_remove_all-on-death (with the poweroff sound gated on time>game_starttime+1 && !start-loadout-unlimited), the gibbed/dead bare-return before the hook, and the full 4-case superweapon state machine: LOST (CENTER_SUPERWEAPON_LOST), unlimited keep-pinned, finite-timer play_countdown(SND_POWEROFF)+BROKEN, and pickup (INFO_SUPERWEAPON_PICKUP broadcast unless CTS + CENTER_SUPERWEAPON_PICKUP). The PlayerPowerups tail hook (instagib/overkill) still fires. logic partial->faithful, presentation missing->faithful, audio missing->faithful; only the cosmetic MF_ROCKET modelflag is dropped."
 
   - id: sv-client-lifecycle.frame.pressed_keys
     name: "GetPressedKeys: PRESSED_KEYS stat for the HUD"
@@ -589,18 +587,18 @@ features:
       values: na
       timing: na
       presentation: missing
-      audio: missing
+      audio: partial
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "UpdateChatBubble (the chatbubble.spr / minigame_busy bubble over a typing or minigame-busy player, ChatBubbleThink + ShowChatBubble hook) is not modeled — no visible 'is typing' bubble."
       - "The PlayerPreThink +use edge dispatch (PlayerUseKey) is not a single ported function: individual +use consumers (buttons/vehicles/ctf) read the button directly, but the usekeypressed edge tracker + PlayerUseKey routing (and its spectate/minigame branches) are scattered/absent."
-      - "SetZoomState (server-side weapon-zoom state for the zoom HUD/FOV net stat) and the PreThink teamkill_soundtime/taunt_soundtime voice sounds + target_voicescript_next are not driven from a lifecycle PreThink."
+      - "SetZoomState (server-side weapon-zoom state for the zoom HUD/FOV net stat) + the taunt_soundtime taunt voice + target_voicescript_next are not driven from a lifecycle PreThink. (The deferred teamkill_soundtime friendly-fire complaint voice IS now fired — PlayerFrameLogic.Regen:130-149.)"
     verification:
-      - { kind: code, ref: "grep: no UpdateChatBubble/ChatBubble/SetZoomState/usekeypressed/teamkill_soundtime in src; +use only in mapobject/vehicle consumers", result: fail }
+      - { kind: code, ref: "PlayerFrameLogic.cs:127-149 (teamkill_soundtime complaint voice fired); grep: no UpdateChatBubble/ChatBubble/SetZoomState/usekeypressed/taunt_soundtime in src; +use only in mapobject/vehicle consumers", result: pass }
     confidence: medium
-    notes: "Grab-bag of PlayerPreThink/PostThink cosmetic+dispatch bits. Zoom may be partly client-render; the chat bubble + server voice-sound timers are genuinely absent."
+    notes: "Grab-bag of PlayerPreThink/PostThink cosmetic+dispatch bits. The deferred teamkill_soundtime complaint voice (teamplay_mode 4) is now driven from the regen frame (the same per-frame slice QC uses), so audio missing->partial. Zoom may be partly client-render; the chat bubble + taunt voice + SetZoomState are still genuinely absent."
 
   - id: sv-client-lifecycle.disconnect.client_disconnect
     name: "ClientDisconnect: teardown"
@@ -622,8 +620,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ignore-list cleanup, Portal_ClearAll/RemoveGrapplingHooks, chatbubble/killindicator/personal/g_counters delete, vehicle exit, minigame part, WaypointSprite_PlayerGone, ReadyCount/VoteCount-on-leave, player_powerups_remove_all (poweroff sound), sv_hook_lastleave, and TeamBalance_RemoveExcessPlayers / QueuedPlayersTagIn are not all modeled."
+      - "Still not modeled: ignore-list cleanup, Portal_ClearAll/RemoveGrapplingHooks, chatbubble/killindicator/personal/g_counters delete, minigame part, WaypointSprite_PlayerGone, ReadyCount/VoteCount-on-leave, sv_hook_lastleave, and TeamBalance_RemoveExcessPlayers / QueuedPlayersTagIn. (Vehicle exit, player_powerups_remove_all + poweroff sound, the status-effect clear, the gametype objective-drop, and the generic MUTATOR_CALLHOOK(ClientDisconnect) ARE now modeled.)"
     verification:
-      - { kind: code, ref: "ServerNet.cs:638; ClientManager.cs:554-578; GameWorld.cs InfraClientDisconnect", result: pass }
+      - { kind: code, ref: "ClientManager.cs:728-781 ClientDisconnect (vehicle exit :747, player_powerups_remove_all :753, ClientDisconnect mutator hook :778); ServerNet.cs DriveDisconnect; GameWorld InfraClientDisconnect", result: pass }
     confidence: high
-    notes: "Removes from roster/scores/sim/entity table, clears FL_CLIENT + FL_PICKUPITEMS, fires CHAT_DISCONNECT + EFFECT_SPAWN puff + stats finalize + :part: event log. The deeper per-subsystem cleanups are partial."
+    notes: "WAVE-6c added the VHEF_RELEASE vehicle exit, player_powerups_remove_all (poweroff sound on the live-player path), the status-effect NORMAL-removal clear, and the generic MUTATOR_CALLHOOK(ClientDisconnect) (e.g. dynamic_handicap mean recompute). Still removes from roster/scores/sim/entity table, clears FL_CLIENT + FL_PICKUPITEMS, fires CHAT_DISCONNECT + EFFECT_SPAWN puff + stats finalize + :part: event log + the gametype objective drop. logic stays partial — the ignore-list/chatbubble/waypoint/ready-vote-recount cleanups are still absent — but materially closer to QC ClientDisconnect."

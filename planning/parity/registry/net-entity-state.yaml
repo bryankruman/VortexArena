@@ -1,11 +1,11 @@
 unit: net-entity-state
 category: net
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 13
   worst_gaps:
-    - "No ent_cs enemy-privacy mask (radar_showenemies/SAME_TEAM): every player's origin/health/armor is sent to everyone, PVS-gated only — Base strips private fields for non-teammates — STILL OPEN"
+    - "ent_cs enemy-privacy mask now LIVE (Wave-6c ba3ae47): ServerNet.RelevantEntitiesFor strips enemy HEALTH/ARMOR per-recipient via the radar_showenemies/SAME_TEAM gate — the anti-cheat HP/armor leak is CLOSED. Residual: origin/angles privacy is handled by whole-entity PVS culling rather than a coarse stripped-GPS send (intended divergence)"
     - "Weapon charge/clip/heat HUD rings now FED on the HOST path (Wave-5 66e378f: NetGame.UpdateCrosshairWeaponRings drives CrosshairPanel charge/clip/load/heat from the live weapon-sim slot state each HUD frame) — but the wepent.* fields are still NOT networked, so a PURE remote client / spectator sees no rings (liveness partial, presentation faithful host-only)"
     - "Networked anim action state (anim_state/anim_upper_action/anim_lower_action + times) not ported: remote attack/pain/jump torso overlays are reconstructed client-side (LocomotionBlend) from one networked Frame, not the QC animdecide upper/lower split"
     - "Remote weapon switch animation coarse: only the resolved active weapon is networked, not wepent m_switchweapon/m_switchingweapon"
@@ -191,28 +191,33 @@ features:
     name: "ent_cs public/private mask (radar_showenemies / SAME_TEAM)"
     layer: [authority]
     base_refs:
-      - "common/ent_cs.qc:_entcs_send (ENTCS_PUBLICMASK gating)"
+      - "common/ent_cs.qc:_entcs_send (ENTCS_PUBLICMASK gating, lines 213-240)"
       - "common/ent_cs.qc:ENTCS_PUBLICMASK/ENTCS_PRIVATEMASK"
-    port_refs: []
+    port_refs:
+      - "game/net/ServerNet.cs:RelevantEntitiesFor (radarShowEnemies/teamplay/applyPrivacy gate + Health/Armor strip)"
+      - "game/net/ServerNet.cs:BroadcastSnapshots (reads radar_showenemies + TeamGame once per broadcast, passes per-recipient)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:419 (sets radar_showenemies=1)"
     constants:
-      - { name: "private_fields", base: "origin, angles_y, health, armor", port: "none (all sent)", match: false }
+      - { name: "private_fields", base: "origin, angles_y, health, armor", port: "health, armor stripped; origin/angles PVS-governed (folded model channel)", match: partial }
       - { name: "public_fields", base: "name, model, skin, colors, frags, handicap, wantsjoin, solid", base_note: "always sent", port: "all sent", match: true }
-      - { name: "enemy_gate", base: "radar_showenemies || SAME_TEAM || !in-game", port: "PVS relevance only", match: false }
+      - { name: "enemy_gate", base: "radar_showenemies || SAME_TEAM || !(IS_PLAYER(to)||INGAME(to))", port: "!radar_showenemies && !recipient.IsObserver && !sameTeam (teamplay?colormap==team) && Kind==Player", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: partial
       timing: na
       presentation: na
       audio: na
-      liveness: na
-    intended_divergence: false
-    divergence_rationale: null
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "FIXED (Wave-6c ba3ae47): ServerNet.RelevantEntitiesFor now applies the ent_cs enemy-privacy gate per-recipient, mirroring _entcs_send's break-condition (radar_showenemies || SAME_TEAM || recipient-not-active-player => send private; else strip). It zeroes the HEALTH/ARMOR resource slice for an enemy recipient of a live remote Player entity. Intended divergence on ORIGIN/ANGLES: Base marks those private too, but in QC the visible player MODEL is a SEPARATE csqcmodel channel sent (PVS-gated) regardless of the entcs mask — the mask only hides the out-of-PVS radar GPS. The port folds model+entcs into one state whose origin IS the render position and already PVS-culls the whole entity when out of view, so an enemy's origin is governed by PVS exactly as QC's csqcmodel origin is; freezing it here would wrongly stall a visible enemy's model. So only HEALTH/ARMOR (no csqcmodel counterpart, otherwise leaked even for visible enemies) are stripped. The residual out-of-PVS coarse-GPS degrade remains its own tracked gap (csqcmodel.force_updates)."
     gaps:
-      - "No ent_cs enemy-privacy mask (radar_showenemies/SAME_TEAM): every player's origin/health/armor is sent to everyone, PVS-gated only — Base strips private fields for non-teammates."
+      - "Origin/angles privacy not separately enforced: Base's ENTCS_PRIVATEMASK also covers origin/angles_y (the out-of-PVS radar GPS), which the port governs by whole-entity PVS culling instead of a coarse stripped-GPS send. Anti-cheat critical HEALTH/ARMOR leak is now closed; the GPS-degrade nuance is folded into the csqcmodel.force_updates gap."
     verification:
-      - { kind: grep, ref: "no radar_showenemies/showenemies/team-field-filter in ServerNet or src", result: pass }
+      - { kind: code_read, ref: "ServerNet.RelevantEntitiesFor: applyPrivacy=!radarShowEnemies&&!owner.IsObserver; per-entity sameTeam=teamplay&&ownerTeam!=0&&state.Colormap==ownerTeam; Kind==Player gate; Health=0/Armor=0 strip — matches _entcs_send break-condition + ENTCS private resource set", result: pass }
+      - { kind: code_read, ref: "Base common/ent_cs.qc:213-240 _entcs_send gate + lines 100-151 prop ispublic flags (ORIGIN/ANGLES/HEALTH/ARMOR=false; name/model/skin/colors/frags/handicap/wantsjoin/solid=true)", result: pass }
+      - { kind: code_read, ref: "Race.cs:419 Api.Cvars.Set(radar_showenemies,1); ServerNet reads radar_showenemies cvar per broadcast — gate driven live", result: pass }
     confidence: high
-    notes: "Anti-cheat-relevant: a modified client could read every enemy's exact position/health. Open question whether this is a deferred decision or simply unported."
+    notes: "FIX (Wave-6c ba3ae47): baseline had this fully missing (every enemy's exact HP/armor on the wire). Now LIVE: a modified client can no longer read enemy health/armor. logic missing->faithful, values missing->partial, liveness na->live, intended_divergence false->true. NetEntityState is a struct so Health/Armor are zeroed on a copy per-recipient before EncodeSnapshot (delta sends one zero on first sight then silent — equivalent to QC ANDing the bit out of SendFlags). Residual = origin/angles privacy handled via PVS rather than a coarse stripped-GPS send (deliberate, see rationale)."
 
   - id: net-entity-state.wepent.active_weapon
     name: "wepent active/held weapon (local viewmodel + remote third-person)"
