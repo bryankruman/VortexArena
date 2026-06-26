@@ -681,6 +681,11 @@ public sealed class Commands
         Register("kill", "kill — suicide (respawn)", CmdKill);
         Register("ready_up", "ready_up — alias of ready", CmdReady);
 
+        // ---- Onslaught click-radar spawn/teleport (QC the ons_spawn SV_ParseClientCommand hook,
+        //      common/gametypes/gametype/onslaught/sv_onslaught.qc:1937). `cmd ons_spawn [x y z]` picks a control
+        //      point from the radar — teleport (alive) or respawn-at (dead). A no-op outside Onslaught. ----
+        Register("ons_spawn", "ons_spawn [x y z] — teleport to / respawn at the clicked control point (Onslaught)", CmdOnsSpawn);
+
         // ---- minigames (QC server/command/cmd.qc ClientCommands "minigame" → ClientCommand_minigame) ----
         Register("minigame", "minigame <create|join|list|list-sessions|part|end|invite> [args] — play a minigame", CmdMinigame);
 
@@ -1525,6 +1530,29 @@ public sealed class Commands
         return true;
     }
 
+    /// <summary>
+    /// QC the <c>ons_spawn</c> client command (MUTATOR_HOOKFUNCTION(ons, SV_ParseClientCommand),
+    /// sv_onslaught.qc:1937): the click-radar pick — <c>cmd ons_spawn [x y z]</c> with the clicked 2D map position
+    /// (defaults to the player's own origin when omitted). Routes to <see cref="Onslaught.HandleOnsSpawnCommand"/>
+    /// which teleports a live player between own control points, or — for a dead player — sets the chosen node so
+    /// the next respawn places them there (forcing the respawn). A no-op unless Onslaught is the active gametype.
+    /// </summary>
+    private bool CmdOnsSpawn(CommandContext ctx)
+    {
+        if (ctx.Caller is null) { ctx.Print("ons_spawn is a client command"); return true; }
+        if (_world.GameType is not Onslaught ons) return true; // QC: hook only present under the ons mutator
+        Player p = ctx.Caller;
+        if (p.FragsStatus == Player.FragsSpectator || p.IsObserver) return true; // QC IS_PLAYER(player)
+        // QC: pos defaults to player.origin, then argv(1..3) override x/y/z.
+        Vector3 pos = p.Origin;
+        if (ctx.ArgCount > 1) pos.X = ctx.ArgFloat(1);
+        if (ctx.ArgCount > 2) pos.Y = ctx.ArgFloat(2);
+        if (ctx.ArgCount > 3) pos.Z = ctx.ArgFloat(3);
+        string? msg = ons.HandleOnsSpawnCommand(p, pos);
+        if (msg is not null) ctx.Print(msg); // QC sprint(player, …) — the failure/info reply
+        return true;
+    }
+
     // =============================================================================================
     // player-deployed waypoints (QC server/impulse.qc IMPULSE(waypoint_*) → waypointsprites.qc Deploy/Attach)
     // =============================================================================================
@@ -1876,6 +1904,10 @@ public sealed class Commands
             VehicleBoarding.UseKey(caller);
             if (_world.GameType is XonoticGodot.Common.Gameplay.Ctf ctf)
                 ctf.HandleUseKey(caller, _world.Clients.Players);
+            // QC MUTATOR_HOOKFUNCTION(ons, PlayerUseKey) (sv_onslaught.qc:1990): next to an own control point,
+            // +use opens the click-radar (the HUD is client-side; HandleUseKey is the faithful server-side gate).
+            else if (_world.GameType is XonoticGodot.Common.Gameplay.Onslaught ons)
+                ons.HandleUseKey(caller);
             return true;
         }
 
@@ -2803,7 +2835,9 @@ public sealed class Commands
                 if (Cvars.FloatOr("g_monsters_max", 0f) <= 0f || Cvars.FloatOr("g_monsters_max_perplayer", 0f) <= 0f)
                 { outCtx.Print("Monster spawning is disabled"); return true; }
                 if (caller.FragsStatus == Player.FragsSpectator || caller.IsObserver) { outCtx.Print("You must be playing to spawn a monster"); return true; }
-                // QC common.qc:369 MUTATOR_CALLHOOK(AllowMobSpawning) — no port analog (no AllowMobSpawning hook); skipped.
+                // QC common.qc:369 MUTATOR_CALLHOOK(AllowMobSpawning) → invasion's AllowMobSpawning hook blocks
+                // spawnmob during an invasion (sv_invasion.qc: "You cannot spawn monsters during an invasion!").
+                if (_world.GameType is XonoticGodot.Common.Gameplay.Invasion) { outCtx.Print("You cannot spawn monsters during an invasion!"); return true; }
                 // QC common.qc:370: can't spawn while seated in a vehicle (gate goes after IS_PLAYER, before the dead check).
                 if (caller.Vehicle is not null) { outCtx.Print("You can't spawn monsters while driving a vehicle"); return true; }
                 if (caller.IsDead) { outCtx.Print("You can't spawn monsters while dead"); return true; }
@@ -2861,6 +2895,9 @@ public sealed class Commands
             {
                 // QC: SERVER-ONLY (caller must be null / the console).
                 if (caller is not null) { outCtx.Print("This command is not available to players"); return true; }
+                // QC common.qc:428 MUTATOR_CALLHOOK(AllowMobButcher) → invasion's AllowMobButcher hook blocks
+                // butcher during an invasion (sv_invasion.qc: "This command does not work during an invasion!").
+                if (_world.GameType is XonoticGodot.Common.Gameplay.Invasion) { outCtx.Print("This command does not work during an invasion!"); return true; }
                 int removed = RemoveAllMonsters();
                 outCtx.Print(removed > 0
                     ? $"Killed {removed} monster{(removed == 1 ? "" : "s")}"

@@ -90,6 +90,7 @@ public sealed class TeamKeepaway : GameType
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
     private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _physicsHandler;
     private HookHandler<MutatorHooks.PlayerUseKeyArgs>? _useKeyHandler;
+    private HookHandler<MutatorHooks.PreferPlayerScore_ClearArgs>? _preferScoreClearHandler;
 
     // QC g_tka_ballcarrier_highspeed: the carrier's MOVEVARS_HIGHSPEED multiplier (default 1 = no effect).
     private const string CvarBallCarrierHighspeed = "g_tka_ballcarrier_highspeed";
@@ -393,6 +394,12 @@ public sealed class TeamKeepaway : GameType
         // path is OnDeath, the observer/disconnect paths are OnPlayerRemoved below).
         _useKeyHandler ??= OnUseKey;
         MutatorHooks.PlayerUseKey.Add(_useKeyHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(tka, PreferPlayerScore_Clear): TKA always prefers to KEEP player scores when
+        // g_score_resetonjoin == -1 (the distinguishing TKA rule — persistent team score across specs).
+        // Subscribed here so GameScores.ClearPlayerOnJoin can call the hook on rejoin (registry tka.score.preferplayerscore).
+        _preferScoreClearHandler ??= OnPreferPlayerScoreClear;
+        MutatorHooks.PreferPlayerScore_Clear.Add(_preferScoreClearHandler);
     }
 
     /// <summary>QC MUTATOR_HOOKFUNCTION(tka, PlayerUseKey): a carrier pressing +use drops the ball (tka_DropEvent)
@@ -405,6 +412,14 @@ public sealed class TeamKeepaway : GameType
             return false; // QC: only fires `if(player.ballcarried)`
         DropBall();
         return true; // QC tka PlayerUseKey returns true when it dropped (consumes the +use)
+    }
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(tka, PreferPlayerScore_Clear): TKA always returns true, meaning the
+    /// player's accumulated score is KEPT when rejoining (the distinguishing TKA rule is persistent team score
+    /// across specs). Under g_score_resetonjoin -1, this veto prevents the score wipe.</summary>
+    private bool OnPreferPlayerScoreClear(ref MutatorHooks.PreferPlayerScore_ClearArgs args)
+    {
+        return true; // QC: TKA always prefers to keep score (return true to veto the clear)
     }
 
     /// <summary>QC MUTATOR_HOOKFUNCTION(tka, MakePlayerObserver) and MUTATOR_HOOKFUNCTION(tka, ClientDisconnect):
@@ -460,6 +475,11 @@ public sealed class TeamKeepaway : GameType
         {
             MutatorHooks.PlayerUseKey.Remove(_useKeyHandler);
             _useKeyHandler = null;
+        }
+        if (_preferScoreClearHandler is not null)
+        {
+            MutatorHooks.PreferPlayerScore_Clear.Remove(_preferScoreClearHandler);
+            _preferScoreClearHandler = null;
         }
     }
 

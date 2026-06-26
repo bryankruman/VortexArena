@@ -648,13 +648,26 @@ public static class MonsterAI
     public static bool ValidTarget(Entity self, Entity? targ, bool skipFacing = false)
     {
         if (self is null || targ is null || targ == self || targ.IsFreed) return false;
+
+        // QC IS_VEHICLE(targ): a target driving a vehicle (the headless port marks a vehicle edict with a
+        // VehicleDef descriptor). QC exempts a vehicle from the dead/health, notarget and alpha gates below
+        // (it's a solid object, not a living/spectating client), so several checks carry a !IS_VEHICLE guard.
+        var selfState = StateOf(self);
+        bool targIsVehicle = targ.VehicleDef is not null;
+
+        // QC Monster_ValidTarget:108 — (IS_VEHICLE(targ) && !MON_FLAG_RANGED): melee vs a vehicle is useless, so
+        // a melee-only monster (e.g. the zombie) never acquires a vehicle. A ranged monster may.
+        if (targIsVehicle && selfState is not null && !selfState.Def.IsRanged) return false;
+
         // QC Monster_ValidTarget:108 — game_stopped || time < game_starttime: no target acquisition before the
         // match clock starts or once the match is stopped (warmup/intermission).
         if (MatchHalted()) return false;
         if (targ.TakeDamage == DamageMode.No) return false;
-        if (targ.DeadState != DeadFlag.No || targ.Health <= 0f) return false;
+        // QC Monster_ValidTarget:112 — the dead/zero-health gate carries !IS_VEHICLE (a vehicle is never "dead").
+        if (!targIsVehicle && (targ.DeadState != DeadFlag.No || targ.Health <= 0f)) return false;
         if (self.DeadState != DeadFlag.No || self.Health <= 0f) return false;
-        if ((targ.Flags & EntFlags.NoTarget) != 0) return false;
+        // QC Monster_ValidTarget:114 — FL_NOTARGET also carries !IS_VEHICLE.
+        if (!targIsVehicle && (targ.Flags & EntFlags.NoTarget) != 0) return false;
 
         // QC Monster_ValidTarget:115 — (!autocvar_g_monsters_typefrag && PHYS_INPUT_BUTTON_CHAT(targ)): when
         // typefrag is off (default 1, so normally inactive), a target with the chat console open (typing) is
@@ -662,7 +675,7 @@ public static class MonsterAI
         if (Cvar("g_monsters_typefrag", 1f) == 0f && targ.ButtonChat) return false;
 
         // Don't attack our follow partner, nor a monster following us (QC monster_follow guard).
-        var st = StateOf(self);
+        var st = selfState;
         if (st?.Follow == targ) return false;
         var ts = StateOf(targ);
         if (ts?.Follow == self) return false;
@@ -670,19 +683,27 @@ public static class MonsterAI
         // Team gate: monsters never attack same-team entities in teamplay (QC SAME_TEAM).
         if (IsTeamplay && self.Team != 0f && targ.Team == self.Team) return false;
 
-        // Faded-out entities are not visible enough to target (QC alpha < 0.5 && alpha != 0). Alpha lives on
-        // the gameplay state of clients; entities without it read as fully opaque (alpha 0 == default).
-        // (No alpha field on the headless Entity yet; opacity is assumed — the alpha-fade gate is a no-op.)
+        // QC Monster_ValidTarget:117 — (targ.alpha != 0 && targ.alpha < 0.5): a faded/cloaked target is too dim
+        // to see. The port's Entity.Alpha is a live render-alpha (default 1 = opaque; PowerupsMutator drops it to
+        // the invisibility alpha, CloakedMutator to 0.25), so a target turned mostly-transparent is now spared.
+        // (QC's `alpha != 0` excludes the QC "0 == default opaque" sentinel; the port uses 1 as the opaque
+        // default and 0 only for the gibbed/cleared marker, so we mirror QC by keeping the != 0 guard.)
+        if (targ.Alpha != 0f && targ.Alpha < 0.5f) return false;
 
         // QC Monster_ValidTarget:119 — MUTATOR_CALLHOOK(MonsterValidTarget, this, targ) invalidates the target
         // (the powerups mutator forbids targeting a player holding Invisibility — monster stealth).
         if (MutatorHooks.FireMonsterValidTarget(self, targ)) return false;
 
-        // Line of sight: trace from our eye to the target's bbox center; blocked => invalid.
+        // Line of sight: QC Monster_ValidTarget:118 first does a coarse checkpvs(eye, targ) cull (gated by
+        // g_monsters_lineofsight), THEN the fine traceline. The PVS pre-cull rejects a target in a non-visible
+        // leaf even when an oblique traceline would clip through. Engine-only (compiled BSP PVS), so it's gated on
+        // Api.Services like the turret port — deterministic tests with no PVS fall through to the traceline.
         if (Cvar("g_monsters_lineofsight", 1f) != 0f)
         {
             Vector3 eye = self.Origin + self.ViewOfs;
             Vector3 targCenter = (targ.AbsMin + targ.AbsMax) * 0.5f;
+            if (Api.Services is not null && !Api.Trace.CheckPvs(eye, targCenter))
+                return false; // not potentially visible — QC checkpvs coarse cull
             TraceResult tr = Api.Trace.Trace(eye, Vector3.Zero, Vector3.Zero, targCenter, MoveFilter.NoMonsters, self);
             if (tr.Fraction < 1f && tr.Ent != targ)
                 return false; // solid in the way
@@ -816,14 +837,20 @@ public static class MonsterAI
             if (tr.Fraction < 1f && tr.Ent != en)
                 losBlocked = true;
 
-            // QC also drops a frozen enemy (STAT(FROZEN, enemy)). (The alpha<0.5 drop QC also has is a no-op here:
-            // the headless Entity carries no render-alpha field — same documented deferral as ValidTarget.)
+            // QC also drops a frozen enemy (STAT(FROZEN, enemy)).
             bool frozenEnemy = StatusEffectsCatalog.Frozen != null
                                && StatusEffectsCatalog.Has(en, StatusEffectsCatalog.Frozen);
+
+            // QC Monster_Enemy_Check:1256 — (enemy.alpha < 0.5 && enemy.alpha != 0): drop an enemy that has
+            // faded out (turned invisible/cloaked). Entity.Alpha is now a live render-alpha (opaque default 1;
+            // PowerupsMutator/CloakedMutator drop it), so a chased enemy that activates invisibility is released
+            // — matching the now-live alpha gate in ValidTarget. (The != 0 guard mirrors QC's opaque sentinel.)
+            bool fadedEnemy = en.Alpha < 0.5f && en.Alpha != 0f;
 
             if (en.IsFreed || en.DeadState != DeadFlag.No || en.Health < 1f
                 || (en.Flags & EntFlags.NoTarget) != 0
                 || frozenEnemy
+                || fadedEnemy
                 || en.TakeDamage == DamageMode.No
                 || tooFar
                 || losBlocked)
@@ -1061,28 +1088,40 @@ public static class MonsterAI
         return tr.EndPos;
     }
 
-    /// <summary>movelib_move_simple (common/physics/movelib.qc): accelerate toward forward*speed.</summary>
+    /// <summary>
+    /// movelib_move_simple (common/physics/movelib.qh:36): <c>velocity = velocity*(1-blendrate) +
+    /// (newdir*blendrate)*velo</c> with the monster blendrate 0.4 (QC Monster_Move:910). This is the EXACT QC
+    /// blend (algebraically <c>velocity + (newdir*velo - velocity)*0.4</c>, which is what we compute), NOT a
+    /// frametime approximation — Base's movelib blend is itself frametime-independent (a per-call lerp).
+    /// </summary>
     private static void MoveSimple(Entity self, Vector3 forward, float speed, bool flyOrSwim, float vzKeep)
     {
         if (!flyOrSwim) forward.Z = 0f;
         forward = QMath.Normalize(forward);
-        // QC movelib_move_simple blends current velocity toward the target at "0.4" (a per-frame lerp);
-        // approximate with a fixed blend so behavior is stable regardless of frametime.
+        // QC: velocity*(1-0.4) + (forward*0.4)*speed  ==  velocity + (forward*speed - velocity)*0.4 (this form).
         Vector3 want = forward * speed;
         Vector3 v = self.Velocity + (want - self.Velocity) * 0.4f;
         self.Velocity = v;
         if (!flyOrSwim) self.Velocity.Z = vzKeep;
     }
 
-    /// <summary>movelib_brake_simple (common/physics/movelib.qc): decay horizontal velocity toward zero.</summary>
+    /// <summary>
+    /// movelib_brake_simple (common/physics/movelib.qc:163): subtract <paramref name="stopSpeed"/> from the
+    /// velocity MAGNITUDE (not a multiplicative decay) and preserve the Z component:
+    /// <c>mspeed = max(0, vlen(v) - force); v = normalize(v) * mspeed; v.z = oldz;</c>. This is the exact QC
+    /// brake — a flat per-call speed reduction, so a slow monster snaps to rest in one brake call rather than
+    /// decaying geometrically. <paramref name="flyOrSwim"/> monsters keep Z in the brake too (their Z is part of
+    /// the movement plane), matching QC which restores velocity_z unconditionally.
+    /// </summary>
     private static void BrakeSimple(Entity self, float stopSpeed, bool flyOrSwim)
     {
-        float vz = self.Velocity.Z;
         Vector3 v = self.Velocity;
-        float keep = System.Math.Clamp(1f - stopSpeed * 0.01f, 0f, 1f);
-        v *= keep;
+        float vz = v.Z;                                     // QC: vz = this.velocity.z
+        float mspeed = System.Math.Max(0f, v.Length() - stopSpeed); // QC: max(0, vlen(velocity) - force)
+        v = QMath.Normalize(v) * mspeed;                    // QC: this.velocity = normalize(velocity) * mspeed
+        v.Z = vz;                                           // QC: this.velocity_z = vz
         self.Velocity = v;
-        if (!flyOrSwim) self.Velocity.Z = vz;
+        _ = flyOrSwim; // QC restores velocity_z regardless of fly/swim — the param is kept for call-site symmetry
     }
 
     /// <summary>QC shortangle_f: shortest signed angular difference, in (-180, 180].</summary>
@@ -1099,6 +1138,80 @@ public static class MonsterAI
         a %= 360f;
         if (a < 0f) a += 360f;
         return a;
+    }
+
+    /// <summary>
+    /// Port of <c>Monster_Move_2D</c> (sv_monsters.qc:1161): a self-contained "walk straight ahead in my facing
+    /// direction, reverse 180° when I hit a wall, another monster, or a ledge (unless allow_jumpoff)" mover. It
+    /// is a public Base API (sv_monsters.qh:111) with NO stock caller — mapper/custom monsters drive it directly
+    /// (e.g. a side-scroller-style patrol). Ported faithfully for parity/registry completeness so a custom port
+    /// monster has the same building block. <paramref name="mspeed"/> is the forward ground speed;
+    /// <paramref name="allowJumpoff"/> lets the monster walk off ledges instead of turning around.
+    ///
+    /// The movement gate (QC :1163-1172) brakes + idles when the match isn't live: game_stopped / round not
+    /// started / before game_starttime / before spawn_time / draggedby / campaign-bots-not-ready. The port folds
+    /// game_stopped+round-not-started+prematch into <see cref="MatchHalted"/> and the campaign hold into
+    /// <see cref="CampaignMovementHeld"/> (same seams the main <see cref="Move"/> uses); draggedby is a deferred
+    /// host concern (no .draggedby field on the headless Entity, consistent with the rest of the framework).
+    /// </summary>
+    public static void Move2D(Entity self, float mspeed, bool allowJumpoff)
+    {
+        MonsterState? st = StateOf(self);
+        if (st is null) return;
+
+        // QC :1163 — the not-live brake-and-idle gate.
+        if (MatchHalted() || CampaignMovementHeld() || Now < st.SpawnTime)
+        {
+            // QC :1168 — only show the idle anim once the spawn animation has finished.
+            if (Now >= st.SpawnTime) st.Anim = MonsterAnim.Idle;
+            BrakeSimple(self, 0.6f, false); // QC :1170 movelib_brake_simple(this, 0.6)
+            DriveAnimFrame(self, st);
+            return;
+        }
+
+        // QC :1174-1186 — trace 32u forward; reverse on a wall or another monster, but NOT on a player (we walk
+        // INTO a player to attack it).
+        Vector3 a = self.Origin + self.ViewOfs;       // CENTER_OR_VIEWOFS(this)
+        Vector3 forward = QMath.Forward(self.Angles);
+        Vector3 b = a + forward * 32f;
+        TraceResult tr = Api.Trace.Trace(a, Vector3.Zero, Vector3.Zero, b, MoveFilter.Normal, self);
+
+        bool reverse = tr.Fraction != 1f;
+        if (tr.Ent is not null && (tr.Ent.Flags & EntFlags.Client) != 0) reverse = false;
+        if (tr.Ent is not null && (tr.Ent.Flags & EntFlags.Monster) != 0) reverse = true;
+
+        // QC :1188-1193 — ledge check: if not allowed to jump off and we're grounded, trace down 32u from the
+        // forward point; nothing there (fraction == 1) means a ledge ahead, so reverse.
+        if (!allowJumpoff && self.OnGround)
+        {
+            TraceResult down = Api.Trace.Trace(b, Vector3.Zero, Vector3.Zero, b - new Vector3(0f, 0f, 32f),
+                MoveFilter.Normal, self);
+            if (down.Fraction == 1f) reverse = true;
+        }
+
+        // QC :1195-1199 — flip 180° and re-derive the facing vector.
+        if (reverse)
+        {
+            Vector3 ang = self.Angles;
+            ang.Y = AngleMod(ang.Y - 180f);
+            self.Angles = ang;
+            forward = QMath.Forward(self.Angles);
+        }
+
+        // QC :1201 — movelib_move_simple_gravity(this, v_forward, mspeed, 1): blend toward forward*mspeed at
+        // blendrate 1 (i.e. set velocity = forward*mspeed) but ONLY while on the ground; gravity owns Z.
+        if (self.OnGround)
+        {
+            float vz = self.Velocity.Z;
+            Vector3 fwd = forward; fwd.Z = 0f;
+            self.Velocity = QMath.Normalize(fwd) * mspeed; // blendrate 1 => velocity = newdir*velo
+            self.Velocity.Z = vz;
+        }
+
+        // QC :1203-1209 — walk anim when actually moving, else idle (gated by the pain/attack windows).
+        if (Now > st.PainFinished && Now > st.AttackFinished)
+            st.Anim = self.Velocity.Length() > 10f ? MonsterAnim.Walk : MonsterAnim.Idle;
+        DriveAnimFrame(self, st);
     }
 
     // ====================================================================================

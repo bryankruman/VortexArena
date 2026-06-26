@@ -407,6 +407,48 @@ public sealed class Nexball : GameType
                       + right * ViewModelOffset.Y
                       + up * ViewModelOffset.Z;
         GametypeEntities.SetOrigin(ball, org);
+
+        // QC PlayerPreThink 'safe passing': when g_nexball_safepass_maxdist != 0, crosshair_trace the carrier
+        // and lock the ball.enemy onto a live teammate within range. The lock (ball.enemy + ball.wait) is what the
+        // BallStealer secondary reads to fire the homing safe-pass arc instead of the tackle projectile.
+        UpdateSafePassLock(ball, carrier, fwd);
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(nb, PlayerPreThink)</c> safe-pass lock: with <c>g_nexball_safepass_maxdist</c>
+    /// nonzero, expire any stale lock (<c>ball.wait &lt; time</c>) then crosshair-trace the carrier; if the trace
+    /// hits a live teammate within <c>safepass_maxdist</c> (5000), set <c>ball.enemy</c> = that teammate and
+    /// refresh <c>ball.wait = time + g_nexball_safepass_holdtime</c> (0.75). No facade (headless tests) → skip the
+    /// trace but still honour the expiry, so a directly-set <see cref="Entity.GtSafePassTarget"/> can be tested.
+    /// </summary>
+    private void UpdateSafePassLock(Entity ball, Player carrier, Vector3 forward)
+    {
+        float maxDist = GametypeEntities.Cvar("g_nexball_safepass_maxdist", 5000f);
+        if (maxDist == 0f)
+            return; // QC: if(autocvar_g_nexball_safepass_maxdist) — feature disabled when 0
+
+        // QC: if(ball.wait < time && ball.enemy) ball.enemy = NULL; — the lock expires after safepass_holdtime.
+        if (ball.GtSafePassExpire < GametypeEntities.Now && ball.GtSafePassTarget is not null)
+            ball.GtSafePassTarget = null;
+
+        if (Api.Services is null)
+            return; // headless: no trace facade — keep the expiry-only semantics
+
+        // QC: crosshair_trace(player) — trace from the carrier's eyes along their view angles.
+        Vector3 eyes = carrier.Origin + carrier.ViewOfs;
+        Vector3 end = eyes + forward * WeaponFiring.CurrentMaxShotDistance;
+        TraceResult tr = Api.Trace.Trace(eyes, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, carrier);
+
+        // QC: if(trace_ent && IS_CLIENT(trace_ent) && !IS_DEAD(trace_ent) && trace_ent.team == player.team &&
+        //        vdist(trace_ent.origin - player.origin, <=, safepass_maxdist)) → lock.
+        if (tr.Ent is Player mate && !ReferenceEquals(mate, carrier) && !mate.IsDead
+            && mate.Team == carrier.Team
+            && (mate.Origin - carrier.Origin).LengthSquared() <= maxDist * maxDist)
+        {
+            ball.GtSafePassTarget = mate; // QC ball.enemy = trace_ent
+            ball.GtSafePassExpire = GametypeEntities.Now
+                                    + GametypeEntities.Cvar("g_nexball_safepass_holdtime", 0.75f); // QC ball.wait = time + holdtime
+        }
     }
 
     /// <summary>

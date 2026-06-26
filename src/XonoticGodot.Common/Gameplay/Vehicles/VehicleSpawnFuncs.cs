@@ -75,6 +75,17 @@ public static class VehicleSpawnFuncs
             }
         }
 
+        // QC vehicle_initialize:1178-1201 (targetname controller / vehicle_use) and the active-state-aware
+        // nextthink scheduling (1276-1281, ACTIVE_NOT / delayspawn jitter / game_starttime) remain DEFERRED:
+        // they need the map-scripted-activation subsystem the port does not yet have. Specifically the QC
+        // controller is resolved with find(NULL, target, this.targetname) — the entity whose .target equals this
+        // vehicle's .targetname — and there is no general find-by-.target facade enumerator (only the teleporter-
+        // restricted one); the .use trigger plumbing that lets that controller fire vehicle_use does not exist;
+        // and the delayspawn EF_NODRAW deferral has no home in the port's FOLDED spawn (def.Spawn already builds
+        // the vehicle fully + visibly and arms its per-frame Think, rather than scheduling the QC vehicles_spawn
+        // think for later). Without a controller every map vehicle is ACTIVE_ACTIVE and runs immediately, which
+        // is the common stock-map case. See registry vehicle-framework.init.initialize gaps.
+
         // QC vehicle_initialize tail (sv_vehicles.qc:1283): if (MUTATOR_CALLHOOK(VehicleInit, this)) return false;
         // — a mutator may veto this vehicle's one-time init, and the spawnfunc deletes the edict on a false return.
         if (VehicleCommon.InitVehicle(e) && Api.Services is not null)

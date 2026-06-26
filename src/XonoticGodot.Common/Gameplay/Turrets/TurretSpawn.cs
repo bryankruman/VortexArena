@@ -91,6 +91,16 @@ public static class TurretSpawn
         // death blast + respawn schedule.
         e.Use = (self, activator) => TurretAI.Use(self, activator);
         e.GtEventDamage = TurretAI.EventDamage;
+
+        // QC turret_initialize: this.reset = turret_reset (sv_turrets.qc:1342), which runs turret_respawn — the
+        // round-restart hook the round handler fires on every map entity (GameWorld.ResetMapObjects ->
+        // Entity.Reset). It restores a damaged/dead turret to full setup (health/ammo/volley/head, re-active) at
+        // the start of each round in round-based gametypes (CA/LMS/Freezetag/etc.) so turret state never carries
+        // across rounds. (Respawn re-installs the per-frame think it recorded above, so a reset turret keeps
+        // thinking.) Skip restoring turrets the descriptor marks permanent-death (TSL_NO_RESPAWN) — Base's
+        // turret_reset always resets, but those are deleted on death so the question never arises.
+        e.Reset = TurretAI.Respawn;
+
         TurretAI.EnsureDeathHook();
 
         return st;

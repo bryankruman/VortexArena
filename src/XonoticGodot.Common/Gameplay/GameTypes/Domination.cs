@@ -90,6 +90,15 @@ public sealed class Domination : GameType
     /// </summary>
     public Func<bool>? RoundStartedSource { get; set; }
 
+    /// <summary>
+    /// QC <c>dom_EventLog</c> (sv_domination.qc:24-28) — the server gamelog echo seam. When wired (the host
+    /// calls <c>GameWorld.ActivateGameType</c>), <see cref="CapturePoint"/> emits
+    /// <c>:dom:taken:&lt;team_before&gt;:&lt;playerid&gt;</c> to the server event log (gated by
+    /// <c>sv_eventlog</c> at the host call site). When null (headless / tests) the echo is a no-op.
+    /// QC: <c>if(autocvar_sv_eventlog) GameLogEcho(strcat(":dom:", mode, ":", ftos(team_before), …))</c>.
+    /// </summary>
+    public Action<string>? EventLogEcho { get; set; }
+
     public Domination()
     {
         NetName = "dom";
@@ -450,6 +459,7 @@ public sealed class Domination : GameType
         if (point.Captime > 0f && now < point.Captime + RecaptureGuard)
             return;
 
+        int teamBefore = point.OwnerTeam; // QC dom_EventLog "taken": this.team at capture time (the PREVIOUS team)
         point.OwnerTeam = team;
         point.Capturer = player;
         point.Captime = now; // QC this.captime = time (arms the recapture guard)
@@ -470,6 +480,12 @@ public sealed class Domination : GameType
         // QC dompoint_captured: the capturing player gets DOM_TAKES +1 (a captures-made scoreboard stat).
         player.GtPointTakes += 1; // DOM_TAKES (entity-side counter, kept for compatibility)
         AddCol(player, "DOM_TAKES", 1); // QC GameRules_scoring_add(this.enemy, DOM_TAKES, 1)
+
+        // QC dom_EventLog("taken", this.team, this.dmg_inflictor): emit `:dom:taken:<team_before>[:<playerid>]`
+        // to the server event log when sv_eventlog is set. The host gates the sv_eventlog check at the wire site
+        // (see GameWorld.ActivateGameType → dom.EventLogEcho); the seam is null in headless / test contexts.
+        EventLogEcho?.Invoke(":dom:taken:" + teamBefore +
+            (player.PlayerId > 0 ? ":" + player.PlayerId : ""));
 
         AnnounceCapture(player, point); // QC dompoint_captured: cap sound + narration + INFO notification
     }

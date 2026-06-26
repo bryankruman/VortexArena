@@ -18,9 +18,12 @@ namespace XonoticGodot.Common.Gameplay;
 /// up in the open and slows near obstacles/sharp turns, with a panic turn and a clear-path sprint).
 /// TFL_SHOOT_CLEARTARGET drops the target after firing (one rocket per acquisition). The muzzle te_explosion
 /// flash and the PROJECTILE_ROCKET smoke trail (via the networked NetName="rocket" classification) are present;
-/// only the external target-reception hook (TUR_FLAG_RECIEVETARGETS) and the separate hk.md3 head-bone model
-/// are left out. The hidden player weapon WEP_HK is ported as <see cref="HunterKillerWeapon"/> (same file
-/// directory); [Weapon] registration is deferred pending a WeaponByIdTests contract update (see that file).
+/// only the separate hk.md3 head-bone model is not instantiated. The hidden player weapon WEP_HK is ported as
+/// <see cref="HunterKillerWeapon"/> (same directory); [Weapon] registration is deferred pending a
+/// WeaponByIdTests contract update. The external target-reception hook (TUR_FLAG_RECIEVETARGETS,
+/// <c>turret_hk_addtarget</c>) is ported as <see cref="AddTarget"/>; it is wired via
+/// <see cref="TurretState.AddTarget"/> in <see cref="Spawn"/> so a <c>turret_targettrigger</c> map entity (once
+/// ported) can designate targets for this turret without going through the normal self-scan pipeline.
 /// </summary>
 [Turret]
 public sealed class HkTurret : Turret
@@ -59,15 +62,30 @@ public sealed class HkTurret : Turret
     private const float TrackAccelRot = 0.6f;
     private const float TrackBlendRate = 0.2f;
 
-    // QC hk.qc tr_setup: LOS, vehicles, range-limited, team-checked (+ trigger targets, players via flags).
-    private const int Select = TurretAI.SelectLos | TurretAI.SelectPlayers | TurretAI.SelectRangeLimits
-                             | TurretAI.SelectTeamCheck | TurretAI.SelectAngleLimits;
+    // QC hk.qc tr_setup: LOS | VEHICLES | TRIGGERTARGET | RANGELIMITS | TEAMCHECK (hk.qc:28).
+    // Base does NOT set PLAYERS (the HK targets manned vehicles, not on-foot players) and does NOT set
+    // ANGLELIMITS — neither flag appears in the QC select set. The port previously had SelectPlayers and
+    // SelectAngleLimits instead; those are removed here to match Base exactly.
+    private const int Select = TurretAI.SelectLos | TurretAI.SelectVehicles | TurretAI.SelectTriggerTarget
+                             | TurretAI.SelectRangeLimits | TurretAI.SelectTeamCheck;
+
+    // QC hk.qc tr_setup target_validate_flags = VEHICLES | TEAMCHECK (hk.qc:31). Used by turret_hk_addtarget
+    // to gate externally-designated targets: manned vehicles on the opposite team only.
+    private const int ValidateFlags = TurretAI.SelectVehicles | TurretAI.SelectTeamCheck;
 
     // QC hk.qc tr_setup firecheck_flags = TFL_FIRECHECK_DEAD | TEAMCHECK | REFIRE | AFF. Notably NO AIMDIST /
     // AMMO_OWN / DISTANCES / LOS — the HK only withholds a shot for a dead enemy, a teammate (incl. via the
     // avoid-friendly-fire impact trace), or its refire timer; the rocket's guidance does the rest.
     private const int FireCheck = TurretAI.FireCheckDead | TurretAI.FireCheckTeamCheck
                                 | TurretAI.FireCheckRefire | TurretAI.FireCheckAff;
+
+    // QC hk.qc METHOD(HunterKiller, describe) MENUQC: the turret-info description panel text. The %s refs are
+    // the turret's own colored name ("Hunter-Killer Turret") and the Devastator weapon's colored name. The port
+    // has no MENUQC turret-describe page system; the text is stored as a plain description string for any HUD or
+    // tooltip layer that wants to display turret info.
+    public const string Description =
+        "The Hunter-Killer Turret fires a single powerful homing rocket with the ability to evade obstacles "
+        + "to find its target. The rocket it fires is similar to that of the Devastator.";
 
     public HkTurret()
     {
@@ -79,8 +97,14 @@ public sealed class HkTurret : Turret
     }
 
     public override void Spawn(Entity e)
-        => TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
+    {
+        TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
             AmmoMax, AmmoRecharge, shotVolly: 0, respawnTime: RespawnTime, energyAmmo: false);
+        // QC hk.qc tr_setup: `it.turret_addtarget = turret_hk_addtarget` — install the external target-reception
+        // hook so a turret_targettrigger (or another designating turret) can hand this HK a pre-identified target
+        // that bypasses the normal self-scan pipeline (TUR_FLAG_RECIEVETARGETS / SelectTriggerTarget).
+        TurretAI.State(e).AddTarget = AddTarget;
+    }
 
     public override void Think(Entity e)
     {
@@ -107,6 +131,28 @@ public sealed class HkTurret : Turret
 
     public override bool ValidTarget(Entity self, Entity target)
         => TurretAI.ValidTarget(self, target, Select, TargetRangeMin, TargetRange);
+
+    /// <summary>
+    /// Port of <c>turret_hk_addtarget</c> (hk.qc:36) — the QC <c>.turret_addtarget</c> function pointer wired
+    /// during <see cref="Spawn"/>. Called by a <c>turret_targettrigger</c> (or a designating turret) to hand
+    /// this HK a pre-selected target without going through the normal self-scan pipeline.
+    /// <br/><br/>
+    /// Base: <c>if (e_target &amp;&amp; turret_validate_target(this, e_target, this.target_validate_flags) &gt; 0)
+    /// this.enemy = e_target; return true;</c> — validates against <c>target_validate_flags = VEHICLES|TEAMCHECK</c>
+    /// (hk.qc:31) then assigns the enemy directly. Returns false (and leaves the enemy unchanged) when the
+    /// proposed target is null or fails validation.
+    /// </summary>
+    private bool AddTarget(Entity turret, Entity? eTarget, Entity? eSender)
+    {
+        _ = eSender; // QC sender is only used for bookkeeping by the trigger; HK ignores it.
+        if (eTarget is null) return false;
+        if (TurretAI.ValidTarget(turret, eTarget, ValidateFlags, TargetRangeMin, TargetRange))
+        {
+            turret.Enemy = eTarget;
+            return true;
+        }
+        return false;
+    }
 
     // turret_hk_missile_think (hk_weapon.qc): one heavy obstacle-avoiding guided rocket — it funnel-traces to
     // steer around walls, accels in the open and decels near obstacles, and homes onto the target.
@@ -136,9 +182,9 @@ public sealed class HkTurret : Turret
         if (turret.Frame == 0f)
             turret.Frame += 1f;
 
-        // NOTE — cross-boundary: turret_hk_addtarget external target reception (TUR_FLAG_RECIEVETARGETS) needs the
-        // cross-turret target-broadcast system, which isn't modeled yet. The muzzle te_explosion (above) and the
-        // PROJECTILE_ROCKET trail (the missile is stamped NetName="rocket" in GuidedProjectile.Launch so the client
-        // gives it the rocket smoke trail) are now faithful; the server-side guided-rocket fire is done above.
+        // PROJECTILE_ROCKET trail: the missile is stamped NetName="rocket" in GuidedProjectile.Launch so the
+        // client gives it the rocket smoke trail + rocket.md3 body + weapons/rocket_fly loop. The external target-
+        // reception hook (turret_hk_addtarget / TUR_FLAG_RECIEVETARGETS) is ported as AddTarget above and wired
+        // via TurretState.AddTarget in Spawn; it becomes reachable once turret_targettrigger is a live map object.
     }
 }

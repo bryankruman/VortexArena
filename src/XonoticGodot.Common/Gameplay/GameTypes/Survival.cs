@@ -347,9 +347,12 @@ public sealed class Survival : GameType
         // A valid kill is by a live, distinct attacker.
         if (roundStarted && attacker is not null && !ReferenceEquals(attacker, victim) && GetState(attacker).Alive)
         {
-            // QC ClientObituary teamkill frag adjustment: an ally frag awards +1 by default, so we must take it
-            // away plus one extra (-1 net banked) — or remove only one (-2) if the killer won't be auto-punished.
-            int delta = sameStatus ? (PunishTeamkill ? -1 : -2) : +1;
+            // QC banks the NET of two GiveFrags calls. Survival has no teams (USEPOINTS only), so even a
+            // same-status ("ally") kill takes the NON-same-team MURDER branch in Obituary (damage.qc:330) and
+            // banks the normal +1 via GiveFragsForKill. THEN survival's ClientObituary hook (sv_survival.qc) adds
+            // a second GiveFrags(-1 if punish else -2), which ALSO banks through GiveFragsForKill. Net banked for
+            // an ally kill is therefore +1 + (-1) = 0 (punish) or +1 + (-2) = -1 (no-punish); a legit kill is +1.
+            int delta = sameStatus ? (1 + (PunishTeamkill ? -1 : -2)) : +1;
             GetState(attacker).ValidKills += delta;
         }
 
@@ -585,6 +588,40 @@ public sealed class Survival : GameType
     /// anti-cheat invariant: hunter identities must NEVER reach a prey/observer recipient mid-round.
     /// </summary>
     public bool DisclosesHuntersTo(Player viewer) => RoundOver || StatusOf(viewer) == SurvStatus.Hunter;
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(surv, ForbidSpawn) + PutClientInServer (sv_survival.qc:307-333): the mid-round
+    /// late-join lockout. While a round is live (QC <c>!allowed_to_spawn</c>) NO client may become a live player —
+    /// an already-in-game player is forbidden to (re)spawn by ForbidSpawn, and a fresh observer is allowed past
+    /// ForbidSpawn only to be immediately TRANSMUTE'd back to Observer by PutClientInServer. Either way the spawn
+    /// outcome is identical: nobody enters the world mid-round; they sit out until the next round reset
+    /// (reset_map_players transmutes the joining/in-game set back to Player). The port models that single net
+    /// outcome by refusing the join entirely while the round is live — the refused client stays an observer, which
+    /// is exactly the state Base leaves it in. <paramref name="roundStarted"/> stands in for QC's !allowed_to_spawn
+    /// (a non-warmup round is in progress). Returns true to allow the join, false to forbid it (force-observe).
+    /// </summary>
+    public bool CanJoin(Player p, bool roundStarted)
+    {
+        // QC ForbidSpawn forbids INGAME players and PutClientInServer force-observes the rest, so the combined
+        // mid-round outcome is "no client spawns": refuse every join while the round is live.
+        if (roundStarted)
+            return false; // FORBID: a round is in progress → force-observe until the next round
+        return true; // ALLOW: pre-round / warmup → the joiner becomes a live player and gets a role at round start
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(surv, PutClientInServer) (sv_survival.qc:319-333): register a joiner with the
+    /// gametype before its spawn loadout is applied (the host invokes this only on an ALLOWED join, i.e. pre-round
+    /// or warmup — see <see cref="CanJoin"/>). The mid-round force-observe half of QC's PutClientInServer is handled
+    /// by <see cref="CanJoin"/> refusing the join (the refused client never reaches this seed), so this only needs
+    /// to track the joiner for the upcoming round. (The earlier attempt to set <c>IsObserver = true</c> here was a
+    /// dead no-op: the server's ClientManager.Spawn runs right after and unconditionally clears it.)
+    /// </summary>
+    public void OnJoin(Player p)
+    {
+        if (p is not null)
+            GetState(p); // track the joiner so the next AssignRoles includes them (QC reset_map_players)
+    }
 
     /// <summary>QC the timed-out round end (Surv_CheckWinner timeout branch): survivors win, award scores.</summary>
     public void EndRoundTimedOut()

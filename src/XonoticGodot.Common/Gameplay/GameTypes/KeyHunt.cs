@@ -107,13 +107,16 @@ public sealed class KeyHunt : GameType
     // ----- lava/slime/trigger destroy + damageforcescale (QC return_when_unreachable / kh_Key_Damage) -----
     private const string CvarDelayDamageReturn = "g_balance_keyhunt_delay_damage_return";
     private const string CvarReturnWhenUnreachable = "g_balance_keyhunt_return_when_unreachable";
+    private const string CvarDamageForcescale = "g_balance_keyhunt_damageforcescale";
     private const float  DefaultDelayDamageReturn  = 5f;   // QC default g_balance_keyhunt_delay_damage_return 5
+    private const float  DefaultDamageForcescale   = 1f;   // QC default g_balance_keyhunt_damageforcescale 1
 
     // ----- destroy own-team-holder bonus factor (QC score_destroyed_ownfactor, default 1) -----
     private const string CvarScoreDestroyedOwnFactor = "g_balance_keyhunt_score_destroyed_ownfactor";
     private const float  DefaultScoreDestroyedOwnFactor = 1f;
 
     public float DelayDamageReturn => TryCvar(CvarDelayDamageReturn, out float v) ? v : DefaultDelayDamageReturn;
+    public float DamageForcescale => TryCvar(CvarDamageForcescale, out float v) ? v : DefaultDamageForcescale;
     public float ScoreDestroyedOwnFactor => TryCvar(CvarScoreDestroyedOwnFactor, out float v) ? v : DefaultScoreDestroyedOwnFactor;
 
     /// <summary>Key bbox (QC KH_KEY_MIN/MAX, current Base const; 0.8.6 used the legacy box with sv_legacy_bbox_expand).</summary>
@@ -644,6 +647,7 @@ public sealed class KeyHunt : GameType
         if (e is not null)
         {
             e.TakeDamage = DamageMode.Yes; // a loose key can be returned by damage (QC takedamage = DAMAGE_YES)
+            e.DamageForceScale = DamageForcescale; // QC kh_Key_Detach: key.damageforcescale = g_balance_keyhunt_damageforcescale (loose key knockback)
             e.NextThink = GametypeEntities.Now + 0.05f; // QC kh_Key_Think rate
             // QC kh_Key_Spawn: event_damage = kh_Key_Damage; damagedbytriggers/contents = return_when_unreachable.
             // The port routes a non-player edict's damage through GtEventDamage, and a dropped key carries FL_ITEM
@@ -798,6 +802,13 @@ public sealed class KeyHunt : GameType
             return;
         }
 
+        // QC kh_Key_Damage: if(force == '0 0 0') return; — the handler checks the RAW force vector. The
+        // damageforcescale (g_balance_keyhunt_damageforcescale) is an ENTITY property (key.damageforcescale,
+        // set on the key in kh_Key_Detach) that the damage engine applies to the key's physical knockback in
+        // DamageSystem.ApplyKnockback — NOT a scale applied to the force seen here. We set
+        // e.DamageForceScale = DamageForcescale on drop (SpawnKey/DropAllKeys/DropOneKey); a carried key takes
+        // no damage at all (AttachToCarrier sets TakeDamage=No, matching kh_Key_Attach's damageforcescale=0),
+        // so the key's bbox-shoving knockback honors a tuned damageforcescale while this gate stays raw.
         if (force == Vector3.Zero) // QC: if(force == '0 0 0') return;
             return;
         // QC: if(time > this.pushltime) if(IS_PLAYER(attacker)) this.team = attacker.team. In Base this re-teams
@@ -912,6 +923,7 @@ public sealed class KeyHunt : GameType
                 e.Solid = Solid.Trigger;
                 e.MoveType = MoveType.Toss;
                 e.TakeDamage = DamageMode.Yes;
+                e.DamageForceScale = DamageForcescale; // QC kh_Key_Detach: key.damageforcescale = autocvar_g_balance_keyhunt_damageforcescale
                 GametypeEntities.SetOrigin(e, player.Origin);
                 // QC: fling the key out — makevectors('-1 0 0'*(45+45*random()) + '0 360 0'*random()), dropvelocity*v_forward.
                 float pitch = -(45f + 45f * XonoticGodot.Common.Math.Prandom.Float());
@@ -958,6 +970,7 @@ public sealed class KeyHunt : GameType
             e.Solid = Solid.Trigger;
             e.MoveType = MoveType.Toss;
             e.TakeDamage = DamageMode.Yes;
+            e.DamageForceScale = DamageForcescale; // QC kh_Key_Detach: key.damageforcescale = autocvar_g_balance_keyhunt_damageforcescale
             GametypeEntities.SetOrigin(e, player.Origin);
             // QC: makevectors(player.v_angle); throwvelocity * v_forward (+ thrower velocity).
             XonoticGodot.Common.Math.QMath.AngleVectors(player.Angles, out Vector3 fwd, out _, out _);

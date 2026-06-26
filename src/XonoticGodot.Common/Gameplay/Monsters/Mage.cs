@@ -61,18 +61,36 @@ public sealed class Mage : Monster
 
     // METHOD(Mage, mr_anim) — mage.qc: the nanomage.dpm frame-group start indices (the first '<start> 1 <fps>'
     // component is what setanim stamps onto .frame / the networked Entity.Frame; DriveAnimFrame plays it client
-    // side via CSQCMODEL_AUTOUPDATE). The logical Attack phase covers anim_shoot (spike) — the most common cast;
-    // anim_melee '5' (push) and anim_duckjump '4' fold into it like the siblings' single Attack frame.
-    public override float? AnimFrame(MonsterAnimPhase phase, bool die2) => phase switch
+    // side via CSQCMODEL_AUTOUPDATE). The Attack phase uses AnimVariant to distinguish:
+    // - variant 0: anim_shoot '2 1 5' (spike fire — most common)
+    // - variant 1: anim_duckjump '4 1 5' (push)
+    // - variant 2: anim_melee '5 1 5' (heal)
+    // QC mr_anim: M_Mage_Attack_Push sets anim_duckjump; M_Mage_Defend_Heal sets anim_melee.
+    public override float? AnimFrame(MonsterAnimPhase phase, bool die2, int variant) => phase switch
     {
         MonsterAnimPhase.Idle => 0f,    // anim_idle '0 1 1'
         MonsterAnimPhase.Walk => 1f,    // anim_walk '1 1 1'
         MonsterAnimPhase.Run => 1f,     // anim_run '1 1 1' (same group as walk in QC)
-        MonsterAnimPhase.Attack => 2f,  // anim_shoot '2 1 5' (melee push '5'/duckjump '4' collapse here)
+        MonsterAnimPhase.Attack => variant switch
+        {
+            1 => 4f,                     // anim_duckjump '4 1 5' (Push attack)
+            2 => 5f,                     // anim_melee '5 1 5' (Heal pulse)
+            _ => 2f,                     // anim_shoot '2 1 5' (Spike fire, default variant 0)
+        },
         MonsterAnimPhase.Pain => 6f,    // anim_pain1 '6 1 2'
         MonsterAnimPhase.Death => die2 ? 10f : 9f, // anim_die1 '9 1 0.5' / anim_die2 '10 1 0.5' (QC random pick)
         _ => 0f,
     };
+
+    // METHOD(Mage, describe) — mage.qc:515-527. The MENUQC bestiary prose describing the mage's abilities.
+    public override string? Describe() =>
+        "Wielding nanotechnology as if it were sorcery, the Mage employs a range of unique abilities of its own creation in combat. " +
+        "As a primary attack, the Mage throws a homing electric sphere towards the player. " +
+        "This sphere will track its target at high speed, exploding on impact or if it does not reach its target in time. " +
+        "When threatened, the Mage may deploy an energy shield to protect itself from damage briefly. " +
+        "Enemies approaching too closely during this time may be pushed away with explosive force! " +
+        "Defensively the Mage is capable of healing itself and nearby allies, with some variants also providing armor and ammunition. " +
+        "The Mage may sometimes appear to blink out of existence as it teleports behind its target for a sneak attack.";
 
     // Monster_Spawn + METHOD(Mage, mr_setup) — mage.qc
     public override void Spawn(Entity e)
@@ -166,6 +184,7 @@ public sealed class Mage : Monster
         st.AttackFinished = MonsterAI.Now + SpikeDelay;
         st.State = MonsterAI.MonsterState_AttackMelee; // QC freezes movement while firing the spike
         st.Anim = MonsterAI.MonsterAnim.Attack;
+        st.AnimVariant = 0; // AnimFrame variant for anim_shoot '2 1 5'
 
         MonsterAI.FaceTarget(e, target);
         Vector3 dir = QMath.Normalize((target.Origin + new Vector3(0, 0, 10)) - e.Origin);
@@ -218,6 +237,7 @@ public sealed class Mage : Monster
         st.AttackFinished = MonsterAI.Now + PushDelay;
         st.State = MonsterAI.MonsterState_AttackMelee;
         st.Anim = MonsterAI.MonsterAnim.Attack;
+        st.AnimVariant = 1; // AnimFrame variant for anim_duckjump '4 1 5' (QC: setanim(this.anim_duckjump))
 
         // mage.qc M_Mage_Attack_Push: the explosive shove is DEATH_MONSTER_MAGE.
         WeaponSplash.RadiusDamage(e, e.Origin, PushDamage, PushDamage, PushRadius,
@@ -371,6 +391,7 @@ public sealed class Mage : Monster
             st.AnimFinished = MonsterAI.Now + 1.5f;
             st.State = MonsterAI.MonsterState_AttackMelee;
             st.Anim = MonsterAI.MonsterAnim.Attack;
+            st.AnimVariant = 2; // AnimFrame variant for anim_melee '5 1 5' (QC: setanim(this.anim_melee))
             // QC M_Mage_Defend_Heal plays no dedicated sound (only Send_Effect HEALING/AMMO_REGEN/ARMOR_REPAIR, CSQC).
         }
     }
@@ -429,8 +450,11 @@ public sealed class Mage : Monster
         e.ArmorValue = MonsterAI.Cvar("g_monster_mage_shield_blockpercent", ShieldBlock);
         st.ShieldExpire = MonsterAI.Now + time;
 
-        st.AttackFinished = MonsterAI.Now + 1f; // short cooldown after shielding
+        // QC M_Mage_Defend_Shield: attack_finished_single[0] = anim_finished = time + 1 (short cooldown).
+        st.AttackFinished = MonsterAI.Now + 1f;
+        st.AnimFinished = MonsterAI.Now + 1f;
         st.Anim = MonsterAI.MonsterAnim.Attack;
+        st.AnimVariant = 0; // QC: setanim(this, this.anim_shoot ...) -> anim_shoot '2 1 5' (variant 0)
         // QC M_Mage_Defend_Shield plays no sound.
     }
 }

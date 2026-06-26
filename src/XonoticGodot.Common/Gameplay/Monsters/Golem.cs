@@ -59,9 +59,10 @@ public sealed class Golem : Monster
     //   anim_melee1 '6 1 5'  anim_pain1 '7 1 2'  anim_pain2 '8 1 2'  anim_spawn '12 1 5'
     //   anim_die1 '13 1 0.5'  anim_die2 '15 1 0.5'
     // The Attack phase covers both the melee combo (melee2/melee3) and the ranged smash (melee1). QC
-    // M_Golem_Attack picks anim_melee2 '4' / anim_melee3 '5' at random per melee dispatch; the driver records
-    // that pick in MonsterState.AnimVariant and passes it here as `variant` (0 -> melee2, 1 -> melee3). The
-    // 2-arg overload (used where no variant was chosen) keeps the melee2 representative group.
+    // M_Golem_Attack MELEE: setanim(random ? anim_melee2 : anim_melee3) — variant 0 -> melee2 '4', 1 -> melee3 '5'.
+    // QC M_Golem_Attack RANGED smash: setanim(anim_melee1) — variant 2 -> melee1 '6'.
+    // MonsterState.AnimVariant is set by QueueCombo (0/1 random) and by Smash() (2) so the correct group is stamped.
+    // The 2-arg overload (variant=0, melee2 representative) is the fallback when no explicit variant was chosen.
     public override float? AnimFrame(MonsterAnimPhase phase, bool die2) => AnimFrame(phase, die2, 0);
 
     public override float? AnimFrame(MonsterAnimPhase phase, bool die2, int variant) => phase switch
@@ -69,8 +70,9 @@ public sealed class Golem : Monster
         MonsterAnimPhase.Idle => 0f,    // anim_idle '0 1 1'
         MonsterAnimPhase.Walk => 1f,    // anim_walk '1 1 1'
         MonsterAnimPhase.Run => 2f,     // anim_run '2 1 1'
-        // anim_melee2 '4 1 5' (variant 0) / anim_melee3 '5 1 5' (variant 1) — random per dispatch; smash uses melee1 '6'.
-        MonsterAnimPhase.Attack => variant != 0 ? 5f : 4f,
+        // anim_melee1 '6 1 5' (variant 2, smash — QC M_Golem_Attack RANGED: setanim(actor.anim_melee1))
+        // anim_melee2 '4 1 5' (variant 0) / anim_melee3 '5 1 5' (variant 1) — random per melee combo dispatch.
+        MonsterAnimPhase.Attack => variant == 2 ? 6f : (variant != 0 ? 5f : 4f),
         // anim_pain1 '7 1 2' (variant 0) / anim_pain2 '8 1 2' (variant 1) — random per pain event (golem.qc:241).
         MonsterAnimPhase.Pain => variant != 0 ? 8f : 7f,
         MonsterAnimPhase.Spawn => 12f,  // anim_spawn '12 1 5' (golem.qc:270)
@@ -182,6 +184,10 @@ public sealed class Golem : Monster
                 self, 0, SmashForce, deathTag: DeathTypes.MonsterGolemSmash);
             Api.Sound.Play(self, SoundChannel.Weapon, "weapons/rocket_impact.wav");
         });
+        // QC M_Golem_Attack RANGED smash branch: setanim(actor, actor.anim_melee1, ...) = group '6 1 5'.
+        // QueueDelayedAttack stamps the generic MonsterAnim.Attack (which AnimFrame maps to melee2/melee3);
+        // override the variant to 2 so AnimFrame routes Attack+variant2 -> frame 6 (anim_melee1), matching QC.
+        st.AnimVariant = 2;
     }
 
     // M_Golem_Attack_Lightning (golem.qc): lob a bouncing electrified chunk. It is shootable (50 hp): if a
@@ -233,5 +239,11 @@ public sealed class Golem : Monster
             // cues are SND_MON_GOLEM_LIGHTNING_IMPACT (electro_impact, in onExplode) on detonation and the
             // monstersound_melee voice cue the ranged dispatch plays. No fabricated throw cue here.
         });
+        // QC M_Golem_Attack RANGED lightning branch (golem.qc:206): setanim(actor, actor.anim_melee2, …)
+        // = anim_melee2 '4' (variant 0), distinct from the smash branch's anim_melee1 '6' (variant 2).
+        // QueueDelayedAttack stamps MonsterAnim.Attack but leaves AnimVariant untouched, so a stale variant
+        // from a prior smash (2) or melee combo (1) would otherwise mis-render this throw — pin it to 0,
+        // mirroring how Smash pins variant 2 for anim_melee1.
+        st.AnimVariant = 0;
     }
 }

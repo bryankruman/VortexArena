@@ -161,6 +161,7 @@ public sealed class ClanArena : GameType
     private HookHandler<GameHooks.PlayerDamageArgs>? _splitHandler;
     private HookHandler<MutatorHooks.MakePlayerObserverArgs>? _makeObserverHandler;
     private HookHandler<MutatorHooks.ClientDisconnectArgs>? _disconnectHandler;
+    private HookHandler<MutatorHooks.PlayerSpawnArgs>? _spawnHandler;
 
     public void Activate()
     {
@@ -233,6 +234,11 @@ public sealed class ClanArena : GameType
         // mid-round, notify the last remaining teammate "You are now alone!" exactly as on death.
         _disconnectHandler = OnClientDisconnect;
         MutatorHooks.ClientDisconnect.Add(_disconnectHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ca, PlayerSpawn) (sv_clanarena.qc:272): on spawn at/before game_starttime
+        // (i.e. a game restart, NOT a per-round respawn) zero this player's damage2score decimal carry.
+        _spawnHandler = OnPlayerSpawn;
+        MutatorHooks.PlayerSpawn.Add(_spawnHandler);
     }
 
     /// <summary>
@@ -294,6 +300,7 @@ public sealed class ClanArena : GameType
         if (_splitHandler is not null)          { GameHooks.PlayerDamageSplitHealthArmor.Remove(_splitHandler);    _splitHandler = null; }
         if (_makeObserverHandler is not null)   { MutatorHooks.MakePlayerObserver.Remove(_makeObserverHandler);    _makeObserverHandler = null; }
         if (_disconnectHandler is not null)     { MutatorHooks.ClientDisconnect.Remove(_disconnectHandler);        _disconnectHandler = null; }
+        if (_spawnHandler is not null)          { MutatorHooks.PlayerSpawn.Remove(_spawnHandler);                  _spawnHandler = null; }
         _scoreDecimal.Clear();
     }
 
@@ -480,6 +487,27 @@ public sealed class ClanArena : GameType
     {
         if (args.Player is Player leaving && !leaving.IsObserver && !leaving.IsDead)
             NotifyLastPlayerForTeam(leaving, _roster);
+        return false;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, PlayerSpawn)</c> (sv_clanarena.qc:272):
+    /// <c>if (time &lt;= game_starttime) player.float2int_decimal_fld = 0</c> — reset the per-player damage2score
+    /// decimal carry ON GAME RESTART (a spawn at/before game_starttime), NOT on a per-round respawn. The match
+    /// boundary (Activate/Deactivate) already clears the whole map; this catches a mid-session game restart that
+    /// re-runs game_starttime without tearing the gametype down, so a player's carried sub-point remainder is
+    /// zeroed the QC way rather than persisting across the restart.
+    /// (The QC INGAME_STATUS_SET(JOINED) half is not modeled — the port has no INGAME state; see
+    /// clanarena.join.late_join_observer. The eliminatedPlayers.SendFlags resend is N/A: the port captures the
+    /// elimination list every frame.)
+    /// </summary>
+    private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)
+    {
+        if (args.Player is not Player player || Handler is null)
+            return false;
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        if (now <= Handler.GameStartTime)
+            _scoreDecimal.Remove(player); // QC float2int_decimal_fld = 0 (a fresh game)
         return false;
     }
 

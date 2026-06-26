@@ -70,19 +70,24 @@ public sealed class PhaserTurret : Turret
         TrThinkHeadAnim(e);
 
         // phaser.qc turret_phaser_firecheck: Base blocks fire entirely while fireflag != 0 (beam active or
-        // discharging). The port doesn't need a separate guard here: BeamThink already parks AttackFinished past
-        // the beam end + shot_refire (4s), and RunCombat's TFL_FIRECHECK_REFIRE gate (st.AttackFinished > now)
-        // refuses to fire for that whole window — which fully contains the ~0.07s discharge phase. The fireflag
-        // state therefore drives only the head animation; the fire-block is faithful via the refire hold.
+        // discharging). RunCombat now consults st.FireFlag in its fire gate (the port's analogue of the per-unit
+        // .turret_firecheckfunc), so the discharge window (FireFlag==2, the ~5-frame head return-to-idle) blocks
+        // fire faithfully in addition to the shot_refire (4s) AttackFinished hold.
 
         // phaser.qc tr_setup: aim_flags = TFL_AIM_LEAD ONLY — no SHOTTIMECOMPENSATE, no ZPREDICT, no SPLASH.
         // The phaser is hitscan so shot-time compensation is moot, and Base deliberately omits z-prediction;
         // both are left at their false defaults so the lead matches Base (esp. vs airborne targets).
+        // turrets.cfg g_turrets_unit_phaser_* target-selection biases (302-306) and head-track tuning (317-320).
+        // The phaser weights distance and angle more heavily (rangebias 0.85, anglebias 0.25) and zeroes out the
+        // sticky same-target and missile biases (samebias 0, missilebias 0). track_accel_rot 0.65 / track_blendrate
+        // 0.2 tune the fluid-inertia head motor; track_accel_pitch 0.5 happens to match the TurretParams default.
         var p = new TurretParams(Select, TargetRangeMin, TargetRange, ShotDamage, ShotRefire,
             AimSpeed, FireTolerance, lead: true,
             rangeOptimal: TargetRangeOptimal, shotSpeed: 35000f /*beam is hitscan for lead*/,
             aimMaxPitch: AimMaxPitch, aimMaxRot: AimMaxRot,
-            trackType: TurretAI.TrackFluidInertia);
+            rangeBias: 0.85f, sameBias: 0f, angleBias: 0.25f, missileBias: 0f, playerBias: 1f,
+            trackType: TurretAI.TrackFluidInertia, trackAccelPitch: 0.5f, trackAccelRot: 0.65f,
+            trackBlendRate: 0.2f);
         TurretAI.RunCombat(e, in p, Attack);
     }
 
@@ -134,6 +139,13 @@ public sealed class PhaserTurret : Turret
         float endTime = now + ShotSpeed;
         float perTickDamage = ShotDamage / (ShotSpeed / System.Math.Max(Api.Clock.FrameTime, 0.0001f));
         float nextHum = now + HumPeriod;   // QC beam.shot_spread = time + 2
+
+        // phaser_weapon.qc wr_think: register the beam as a dodgeable threat so havocbots strafe out of it
+        // (beam.bot_dodge = true; IL_PUSH(g_bot_dodge, beam); beam.bot_dodgerating = beam.shot_dmg — the per-tick
+        // damage). The g_bot_dodge danger-list CONSUMER is not yet ported (same as Blaster.cs), so this is
+        // producer-side parity scaffolding today; it becomes live when havocbot_dodge is ported.
+        beam.BotDodge = true;
+        beam.BotDodgeRating = perTickDamage;
 
         beam.Think = self => BeamThink(self, endTime, perTickDamage, nextHum);
         beam.NextThink = now;

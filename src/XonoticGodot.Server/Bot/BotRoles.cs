@@ -99,6 +99,8 @@ public static class BotRoles
             "ka" or "keepaway" or "tka" => BotObjectiveRoles.RoleKeepaway, // havocbot_role_ka_*
             "nexball" or "nb" => BotObjectiveRoles.RoleNexball,         // havocbot_role_nexball
             "assault" or "as" => BotObjectiveRoles.RoleAssault,        // havocbot_role_ass_*
+            "cts" => BotObjectiveRoles.RoleCts,                        // havocbot_role_cts (run the course)
+            "rc" or "race" => BotObjectiveRoles.RoleRace,              // havocbot_role_race (run the track)
             _ => RoleGeneric,
         };
     }
@@ -178,7 +180,7 @@ public static class BotRoles
     /// Rate visible enemy players (QC havocbot_goalrating_enemyplayers). Distance-gated, LOS not required
     /// here (the QC version also rates non-visible to encourage pursuit). Skill nudges aggression.
     /// </summary>
-    public static void GoalrateEnemyPlayers(BotBrain brain, GoalRater rater, Vector3 org, float radius)
+    public static void GoalrateEnemyPlayers(BotBrain brain, GoalRater rater, Vector3 org, float radius, float scale = 10000f)
     {
         var bot = brain.Bot;
         // QC havocbot_goalrating_enemyplayers: bot_nofire suppresses chasing players entirely, and a
@@ -186,7 +188,8 @@ public static class BotRoles
         if (Cvars.Bool("bot_nofire")) return;
         if (bot.WaterLevel > WaterLevelWetFeet) return;
 
-        float ratingScale = 10000f * 0.0001f;
+        // QC the role passes a ratingscale (CTF/KA = 10000, Onslaught offense = 20000); QC multiplies by 0.0001.
+        float ratingScale = scale * 0.0001f;
         float radius2 = radius * radius;
         float maxSpeed2 = Cvars.MaxSpeed * 2f;
         maxSpeed2 *= maxSpeed2;

@@ -95,6 +95,7 @@ public sealed class LastManStanding : GameType
     private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _filterItemHandler;
     private HookHandler<MutatorHooks.ItemTouchArgs>? _itemTouchHandler;
     private HookHandler<MutatorHooks.PlayerPowerupsArgs>? _powerupsHandler;
+    private HookHandler<MutatorHooks.MakePlayerObserverArgs>? _makeObserverHandler;
 
     /// <summary>Optional sink for the host/controller to react to a frag/elimination.</summary>
     public IMatchEvents? Events;
@@ -314,6 +315,13 @@ public sealed class LastManStanding : GameType
         // the field can find a hider; everyone else has those bits cleared each frame.
         _powerupsHandler = OnPlayerPowerups;
         MutatorHooks.PlayerPowerups.Add(_powerupsHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(lms, MakePlayerObserver) (sv_lms.qc:413): when a player is force-demoted to
+        // observer (e.g. by the server / admin kick to spec) AFTER game start, treat them as a forced leaver:
+        // assign a finishing rank and reshuffle. During warmup/pre-start, just drop their LMS state (lives cleared).
+        // This is the path Base calls lms_RemovePlayer from non-disconnect forced-spectator demotion.
+        _makeObserverHandler = OnMakePlayerObserver;
+        MutatorHooks.MakePlayerObserver.Add(_makeObserverHandler);
     }
 
     /// <summary>QC <c>GameRules_scoring_add</c>: mirror the authoritative <see cref="LmsState"/> into the networked
@@ -341,6 +349,7 @@ public sealed class LastManStanding : GameType
         if (_filterItemHandler is not null) { MutatorHooks.FilterItemDefinition.Remove(_filterItemHandler); _filterItemHandler = null; }
         if (_itemTouchHandler is not null) { MutatorHooks.ItemTouch.Remove(_itemTouchHandler); _itemTouchHandler = null; }
         if (_powerupsHandler is not null) { MutatorHooks.PlayerPowerups.Remove(_powerupsHandler); _powerupsHandler = null; }
+        if (_makeObserverHandler is not null) { MutatorHooks.MakePlayerObserver.Remove(_makeObserverHandler); _makeObserverHandler = null; }
     }
 
     /// <summary>Look up (or lazily create, seeded with <see cref="StartingLives"/>) a player's LMS state.</summary>
@@ -550,10 +559,21 @@ public sealed class LastManStanding : GameType
     /// <summary>
     /// QC <c>WinningConditionHelper_topscore == WinningConditionHelper_secondscore</c> ⇒ <c>WINNING_NEVER</c>: with
     /// ≥2 living players whose top two LIVES counts are equal, LMS cancels the time limit (the match must be decided
-    /// by an elimination, not the clock). Recomputed each <see cref="CheckWinningCondition"/>; the host may consult it
-    /// to suppress a timelimit expiry (the timelimit-cancel host seam is not yet wired — additive, non-weakening).
+    /// by an elimination, not the clock). Recomputed each <see cref="CheckWinningCondition"/>; consumed by the host
+    /// via <see cref="ReportsTie"/> so <c>OverTimeManager.GetWinningCode</c> resolves the tie to
+    /// <c>WINNING_NEVER</c> / overtime rather than a timelimit draw.
     /// </summary>
     public bool TimeLimitCancelled { get; private set; }
+
+    /// <summary>
+    /// QC <c>WinningCondition_LMS</c> ⇒ <c>WINNING_NEVER</c> when the top two living players have equal lives:
+    /// surfaces <see cref="TimeLimitCancelled"/> (recomputed each frame by <see cref="CheckWinningCondition"/>) to the
+    /// host's <c>CheckRules_World</c> overtime cascade via the <c>GameType.ReportsTie</c> seam, so a timelimit expiry
+    /// while the top two are tied enters overtime rather than ending the match. Returns <c>false</c> (no tie) while
+    /// the match is over or during the pre-match window (QC early-returns WINNING_NO there, never WINNING_NEVER).
+    /// </summary>
+    public override bool ReportsTie(System.Collections.Generic.IReadOnlyList<Player> roster)
+        => !MatchEnded && !PreMatch && TimeLimitCancelled;
 
     /// <summary>
     /// QC <c>campaign_bots_may_start</c> (sv_lms.qc:85): true once the human has spawned in a campaign. The server
@@ -914,6 +934,31 @@ public sealed class LastManStanding : GameType
             player.Effects |= EffectFlags.Additive | EffectFlags.FullBright;   // QC: player.effects |= (EF_ADDITIVE | EF_FULLBRIGHT)
         else
             player.Effects &= ~(EffectFlags.Additive | EffectFlags.FullBright); // QC: player.effects &= ~(EF_ADDITIVE | EF_FULLBRIGHT)
+        return false;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(lms, MakePlayerObserver)</c> (sv_lms.qc:413): a player demoted to observer
+    /// mid-match undergoes the voluntary-spectate cleanup: other out-of-game players' ranks are decremented, the
+    /// leaver's lives are zeroed, <c>last_forfeiter</c> health/armor is recorded, and <c>INFO_LMS_NOLIVES</c> is
+    /// broadcast. In Base, the hook always sets <c>player.lms_spectate=true</c> (for both <c>is_forced=true</c>
+    /// and <c>killindicator_teamchange==-2</c>), routing <c>lms_RemovePlayer</c> into the voluntary branch — so the
+    /// port calls <see cref="RemovePlayer"/> with <c>voluntary:true</c>. A player already ranked out (Rank&gt;0)
+    /// is a no-op. During warmup / pre-start the state is simply removed with no rank assignment.
+    /// Returns <c>false</c>.
+    /// </summary>
+    private bool OnMakePlayerObserver(ref MutatorHooks.MakePlayerObserverArgs args)
+    {
+        // QC: `if (!IS_PLAYER(player)) return true;` — only handle player entities.
+        if (args.Player is not Player p)
+            return false;
+
+        // QC lms_RemovePlayer (sv_lms.qc:341): Base sets player.lms_spectate=true for ALL MakePlayerObserver
+        // paths (both is_forced=true and killindicator_teamchange==-2), which routes lms_RemovePlayer into the
+        // voluntary-spectate cleanup branch: decrement other out-of-game ranks, record last_forfeiter health/armor,
+        // clear the leaver's lives, and broadcast INFO_LMS_NOLIVES. Map to voluntary:true here (same branch).
+        // During warmup / pre-start, RemovePlayer early-returns after dropping the state (no rank assigned).
+        RemovePlayer(p, voluntary: true, warmupOrPreStart: PreMatch);
         return false;
     }
 

@@ -130,12 +130,21 @@ namespace XonoticGodot.Common.Framework
         /// <summary>QC player <c>.teleport_antispam</c> — earliest sim time the player may use the CP-to-CP teleport
         /// (use key) again (g_onslaught_teleport_wait after the last teleport).</summary>
         public float GtTeleportAntispam;
+        /// <summary>QC bot <c>.havocbot_ons_target</c> (sv_onslaught.qc:1340) — the control-point node this bot is
+        /// currently most interested in attacking. The Onslaught offense role uses it for teammate-interest cost
+        /// balancing (bots spread across attackable points). Null = no current control-point target.</summary>
+        public Onslaught.OnsNode? GtOnsTarget;
 
         // --- Nexball basketball safe-pass lock (QC ball.enemy) ---
         /// <summary>QC <c>ball.enemy</c> — the teammate locked as a safe-pass target (set by the PreThink crosshair
         /// trace in nexball). The BallStealer secondary fires the ball toward this entity via the homing arc path.
         /// Null when no safe-pass lock is active.</summary>
         public Entity? GtSafePassTarget;
+        /// <summary>QC <c>ball.wait</c> in the nexball PlayerPreThink safe-pass lock: the absolute sim time the
+        /// current safe-pass lock (<see cref="GtSafePassTarget"/>) expires. When <c>wait &lt; time</c> the lock is
+        /// cleared. Refreshed to <c>time + g_nexball_safepass_holdtime</c> each frame the crosshair stays on the
+        /// teammate.</summary>
+        public float GtSafePassExpire;
 
         // --- Nexball weapon-arena saved loadout (QC STAT(WEAPONS, player.(weaponentity))) ---
         /// <summary>QC <c>STAT(WEAPONS, player.(weaponentity))</c> in GiveBall/PlayerPreThink: the player's normal

@@ -116,6 +116,7 @@ public sealed class Spiderbot : Vehicle
         vehicle.Gravity = 2f;               // QC: instance.gravity = 2
         vehicle.DeadState = DeadFlag.No;
         vehicle.DamageForceScale = 0.03f;   // QC vr_spawn: instance.damageforcescale = 0.03
+        vehicle.Mass = 5000f;               // QC vr_spawn: instance.mass = 5000 (scales push/knockback forces)
         // NOTE: do NOT reset Touch here. Base spiderbot vr_spawn does not settouch func_null
         // (that appears only in vr_death). SpawnVehicle installs the shared crush/touch handler;
         // nulling it would disable run-over crush on the ground walker most likely to do it.
@@ -140,8 +141,6 @@ public sealed class Spiderbot : Vehicle
 
         // TODO(port,client): qcsrc/common/vehicles/vehicle/spiderbot.qc vr_spawn — gun barrel hardpoint
         //                    cosmetic attachment, tur_head model frames.
-        // NOTE(port): QC vr_spawn sets instance.mass = 5000 (push/knockback scaling); the port has no mass
-        //             field on the entity, so mass-scaled push interactions remain unmodeled (low impact).
     }
 
     // METHOD(Spiderbot, vr_impact) — spiderbot.qc

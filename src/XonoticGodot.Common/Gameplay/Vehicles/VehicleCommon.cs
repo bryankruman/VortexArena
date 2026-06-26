@@ -50,6 +50,11 @@ namespace XonoticGodot.Common.Framework
         /// <summary>QC <c>.vehicle_ammo2</c> — secondary weapon ammo pool.</summary>
         public float VehicleAmmo2;
 
+        /// <summary>QC <c>.vehicle_reload2</c> — secondary-weapon reload PROGRESS (0..100) mirrored onto the owning
+        /// player. The raptor drives this from the bomb/flare reload alpha; the in-vehicle HUD reads it for the
+        /// reload bar, and the bomb dropmark crosshair only predicts while it reads 100 (bombs ready).</summary>
+        public float VehicleReload2;
+
         // ---- QC vehicle bookkeeping fields ----
 
         /// <summary>QC <c>.vehicle_flags</c> — the VHF_* capability bitfield (<see cref="Gameplay.VehicleFlags"/>).</summary>

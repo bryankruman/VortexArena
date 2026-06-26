@@ -3191,6 +3191,7 @@ public sealed partial class NetGame : Node3D
         hud.Energy = Godot.Mathf.Clamp(p.VehicleEnergy * 0.01f, 0f, 1f);
         hud.Ammo1  = Godot.Mathf.Clamp(p.VehicleAmmo1 * 0.01f, 0f, 1f);
         hud.Ammo2  = Godot.Mathf.Clamp(p.VehicleAmmo2 * 0.01f, 0f, 1f);
+        hud.Reload2 = Godot.Mathf.Clamp(p.VehicleReload2 * 0.01f, 0f, 1f);
 
         if (isGunner)
         {
@@ -3226,7 +3227,68 @@ public sealed partial class NetGame : Node3D
         // crewed the pilot sees that gunner's straight-fire marker too.
         FeedPilotGunnerAux(hud, veh.VehGun1, 1);
         FeedPilotGunnerAux(hud, veh.VehGun2, 2);
+
+        // Centered main reticle + bomb dropmark (QC raptor vr_crosshair, raptor.qc:767-833). The raptor draws a
+        // per-secondary-mode reticle (RSM_BOMB → vCROSS_BURST, RSM_FLARE → vCROSS_RAIN) and, in bomb mode, a
+        // tracetoss-predicted bomb-impact dropmark (green while bombs are reloaded, red on the last impact after
+        // a drop until it expires). Pure presentation; the mode + reload state are server-authoritative.
+        FeedRaptorReticle(hud, veh, p);
     }
+
+    /// <summary>
+    /// Port of the raptor <c>vr_crosshair</c> client crosshair (raptor.qc): pick the centered reticle by the
+    /// secondary fire mode and, in bomb mode, project the tracetoss bomb-impact dropmark. No-op for the other
+    /// vehicles (they have their own reticle stories not yet ported); leaves the centered reticle cleared.
+    /// </summary>
+    private void FeedRaptorReticle(XonoticGodot.Game.Hud.VehicleHud hud, Entity veh, Player p)
+    {
+        if (veh.VehicleDef is not Raptor)
+        {
+            hud.MainReticle = "";
+            hud.DropmarkActive = false;
+            return;
+        }
+
+        // QC vr_crosshair: RSM_FLARE (2) → vCROSS_RAIN; RSM_BOMB (1)/default → vCROSS_BURST.
+        bool flareMode = veh.VehW2Mode == (int)RaptorMode.Flare;
+        hud.MainReticle = flareMode ? "gfx/vehicles/crosshair_rain" : "gfx/vehicles/crosshair_burst";
+
+        // QC: the dropmark predictor runs only in bomb mode (weapon2mode != RSM_FLARE) and not while spectating.
+        bool spectating = (_client?.SpectateeStatus ?? 0) != 0;
+        if (flareMode || spectating)
+        {
+            hud.DropmarkActive = false;
+            return;
+        }
+
+        // QC dropmark: when reload2 == 1 (bombs ready) run the live tracetoss prediction (green); otherwise hold
+        // the last predicted impact (red, larger) while dropmark.cnt > time (the 5s linger window after a drop).
+        float reload2 = Godot.Mathf.Clamp(p.VehicleReload2 * 0.01f, 0f, 1f);
+        if (reload2 >= 1f)
+        {
+            _raptorDropmarkLast = VehiclePhysics.BombDropPredict(veh); // Quake space
+            hud.DropmarkWorld = Coords.ToGodot(_raptorDropmarkLast);
+            hud.DropmarkLive = true;
+            hud.DropmarkActive = true;
+            _raptorDropmarkLinger = _renderClock + 5f; // QC dropmark.cnt = time + 5
+        }
+        else if (_renderClock < _raptorDropmarkLinger)
+        {
+            // The last live prediction lingers as the red "where the dropped bombs are headed" marker.
+            hud.DropmarkWorld = Coords.ToGodot(_raptorDropmarkLast);
+            hud.DropmarkLive = false;
+            hud.DropmarkActive = true;
+        }
+        else
+        {
+            hud.DropmarkActive = false;
+        }
+    }
+
+    // Raptor bomb dropmark linger (QC dropmark.cnt = time + 5): the render-clock time the red post-drop marker
+    // expires, and the last live impact point it freezes on.
+    private float _raptorDropmarkLinger;
+    private System.Numerics.Vector3 _raptorDropmarkLast;
 
     /// <summary>Project a crewed side-gun's READY aux crosshair onto the PILOT's HUD (QC bumblebee.qc:186); clears
     /// the slot when the gun is empty/idle.</summary>
@@ -3527,6 +3589,19 @@ public sealed partial class NetGame : Node3D
             rt.RaceLapTime = st.LapStartTime;              // QC race_laptime: the lap-start baseline (count-up clock)
             rt.RaceNextCheckpoint = st.NextCheckpoint < 0 ? 0 : st.NextCheckpoint;
             rt.RacePenaltyAccumulator = st.PenaltyAccumulator * 10f; // panel reads tenths; RaceState keeps seconds
+
+            // QC RACE_NET_PENALTY_RACE / _QUALIFYING → racetimer.qc penalty line: show "PENALTY: Ns (reason)" for the
+            // ~2 s fade window after a penalty was imposed (panel reads tenths). Fades out on its own past the window.
+            if (st.LastPenaltyEventTime > 0f && (rt.Now - st.LastPenaltyEventTime) < 2.0)
+            {
+                rt.RacePenaltyTime = st.LastPenaltySeconds * 10f; // panel reads tenths; RaceState keeps seconds
+                rt.RacePenaltyEventTime = st.LastPenaltyEventTime;
+                rt.RacePenaltyReason = st.LastPenaltyReason;
+            }
+            else
+            {
+                rt.RacePenaltyTime = 0f;
+            }
             // RaceCheckpoint (the frozen-split index) is set below from the last CROSSED checkpoint.
 
             // QC race_SendTime → the racetimer split feed: the most-recent checkpoint crossing (race_checkpoint /

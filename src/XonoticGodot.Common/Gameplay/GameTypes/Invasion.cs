@@ -74,6 +74,17 @@ public sealed class Invasion : GameType
     private const string CvarSpawnpointDelay = "g_invasion_spawnpoint_spawn_delay"; // recent-use de-weight window
     private const float  DefaultSpawnpointDelay = 0.5f;                      // gametypes-server.cfg 0.5
 
+    // ----- QC MUTATOR_HOOKFUNCTION(inv, MonsterSpawn): mon.dphitcontentsmask = SOLID|BODY|BOTCLIP|MONSTERCLIP -----
+    // SUPERCONTENTS_* bits (must match XonoticGodot.Engine.Collision.SuperContents — Common can't reference Engine,
+    // so they are mirrored here exactly as LagComp.cs / Projectiles.cs / Nexball.cs do). Stamping this makes an
+    // invasion monster's own movement trace honor bot-clip + monster-clip AI hint brushes (a SlideBox monster
+    // already gets SOLID|BODY|MONSTERCLIP by default; the BOTCLIP bit is the part Base adds on top).
+    private const int SuperContentsSolid       = 0x00000001; // QC DPCONTENTS_SOLID
+    private const int SuperContentsBody        = 0x02000000; // QC DPCONTENTS_BODY
+    private const int SuperContentsMonsterClip = 0x00000200; // QC DPCONTENTS_MONSTERCLIP
+    private const int SuperContentsBotClip     = 0x00000800; // QC DPCONTENTS_BOTCLIP
+    private const int MonsterHitContentsMask   = SuperContentsSolid | SuperContentsBody | SuperContentsBotClip | SuperContentsMonsterClip;
+
     /// <summary>Wave/round progress (QC inv_roundcnt / inv_numspawned / inv_numkilled / inv_maxspawned).</summary>
     public sealed class WaveState
     {
@@ -382,6 +393,11 @@ public sealed class Invasion : GameType
         MutatorHooks.DamageCalculate.Add(_damageCalcHandler);
         MutatorHooks.SetStartItems.Add(_setStartItemsHandler);
 
+        // QC MUTATOR_HOOKFUNCTION(inv, AccuracyTargetValid): a monster target returns MUT_ACCADD_INVALID
+        // (always count) — so hits on the invasion monsters DO feed weapon-accuracy stats. Without this the
+        // shared accuracy gate's IS_CLIENT check would reject non-client monster targets entirely.
+        WeaponAccuracyEvents.TargetValidProvider = AccuracyTargetValid;
+
         // QC invasion_DelayedInit: the ROUND variant runs the round handler (round_handler_Spawn with the
         // Invasion-specific callbacks, then round_handler_Init(5, warmup, round_timelimit)). HUNT/STAGE use the
         // CheckRules winning-condition path instead, so they need no handler. We self-drive ours from Tick(),
@@ -413,6 +429,8 @@ public sealed class Invasion : GameType
         if (_playerRegenHandler is not null)   MutatorHooks.PlayerRegen.Remove(_playerRegenHandler);
         if (_damageCalcHandler is not null)    MutatorHooks.DamageCalculate.Remove(_damageCalcHandler);
         if (_setStartItemsHandler is not null) MutatorHooks.SetStartItems.Remove(_setStartItemsHandler);
+        if (WeaponAccuracyEvents.TargetValidProvider == AccuracyTargetValid)
+            WeaponAccuracyEvents.TargetValidProvider = null;
         Handler = null;
     }
 
@@ -434,6 +452,17 @@ public sealed class Invasion : GameType
 
     /// <summary>QC MUTATOR_HOOKFUNCTION(inv, PlayerRegen): no health/armor regen in Invasion (any variant).</summary>
     private bool OnPlayerRegen(ref MutatorHooks.PlayerRegenArgs args) => true; // QC return true = disable regen
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(inv, AccuracyTargetValid): <c>if (IS_MONSTER(frag_target)) return
+    /// MUT_ACCADD_INVALID; return MUT_ACCADD_INDIFFERENT;</c>. A monster target is "always count" (Invalid)
+    /// so hits on invasion monsters feed accuracy stats; any other target falls through to Indifferent (never
+    /// count) — in co-op invasion the only valid accuracy target is a monster, never another player.
+    /// </summary>
+    private WeaponAccuracyEvents.AccuracyTarget AccuracyTargetValid(Entity attacker, Entity target)
+        => IsMonster(target)
+            ? WeaponAccuracyEvents.AccuracyTarget.Invalid
+            : WeaponAccuracyEvents.AccuracyTarget.Indifferent;
 
     /// <summary>
     /// QC MUTATOR_HOOKFUNCTION(inv, Damage_Calculate): cancel all player-vs-player damage and knockback (co-op).
@@ -844,6 +873,12 @@ public sealed class Invasion : GameType
             origin: origin, respawn: false, removeIfInvalid: false, moveFlags: MonsterAI.MonsterMove_Wander);
         if (m is null)
             return null;
+
+        // QC MUTATOR_HOOKFUNCTION(inv, MonsterSpawn): mon.dphitcontentsmask = SOLID|BODY|BOTCLIP|MONSTERCLIP, so
+        // the monster's own movement trace honors bot-clip + monster-clip AI hint brushes that fence monster
+        // movement on a Base server (a SlideBox monster already gets SOLID|BODY|MONSTERCLIP by default; this adds
+        // the BOTCLIP bit and pins the full mask explicitly).
+        m.DpHitContentsMask = MonsterHitContentsMask;
 
         // QC MUTATOR_HOOKFUNCTION(inv, MonsterSpawn): mon.monster_skill = inv_monsterskill. That hook fires at the
         // END of Monster_Spawn_Setup — after the skill-scaled health roll — so, like QC, this only scales the

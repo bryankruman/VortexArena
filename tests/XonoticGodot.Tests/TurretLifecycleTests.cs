@@ -198,10 +198,21 @@ public class TurretLifecycleTests
         Assert.Equal(0f, e.Health);                        // QC SetResourceExplicit(RES_HEALTH, 0)
         Assert.Null(e.Enemy);
         Assert.False(TurretAI.State(e).Active);
-        // not TSL_NO_RESPAWN: a respawn is scheduled after respawntime
+        // not TSL_NO_RESPAWN: the QC two-step (turret_die -> turret_hide -> turret_respawn). Die first schedules
+        // turret_hide at +0.2 (sv_turrets.qc:200), and turret_hide schedules turret_respawn at respawntime - 0.2
+        // (sv_turrets.qc:162) so the total dead interval is exactly respawntime.
         Assert.Equal(DeadFlag.Respawning, e.DeadState);
         Assert.NotNull(e.Think);
-        Assert.Equal(now + TurretAI.State(e).RespawnTime, e.NextThink, 2);
+        float dieDelay = e.NextThink - now;
+        Assert.Equal(0.2f, dieDelay, 2);
+
+        // Run the hide step (the second think). The clock has not advanced in this unit test, so Hide schedules
+        // the respawn at respawntime - 0.2 from "now"; combined with the 0.2 Die already spent, the total dead
+        // interval is exactly respawntime (sv_turrets.qc turret_die:200 + turret_hide:162).
+        TurretAI.Hide(e);
+        float hideDelay = e.NextThink - now;
+        Assert.Equal(TurretAI.State(e).RespawnTime - 0.2f, hideDelay, 2);
+        Assert.Equal(TurretAI.State(e).RespawnTime, dieDelay + hideDelay, 2);
     }
 
     [Fact]

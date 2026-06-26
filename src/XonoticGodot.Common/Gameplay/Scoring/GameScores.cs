@@ -315,7 +315,7 @@ public static class GameScores
     /// name="sprees"/> activates the kills column; <paramref name="scoreEnabled"/> = QC GameRules_score_enabled
     /// (false for Race/CTS/Invasion, which rank by their own columns and have no SP_SCORE).
     /// </summary>
-    public static void ScoreRulesBasics(bool teams, bool sprees = true, bool scoreEnabled = true)
+    public static void ScoreRulesBasics(bool teams, bool sprees = true, bool scoreEnabled = true, bool independent = false)
     {
         Ensure();
         // QC ScoreRules_basics opening: blank every player column so only the columns this mode declares survive.
@@ -328,10 +328,13 @@ public static class GameScores
         Primary = Secondary = null;
 
         if (scoreEnabled) SetLabel(Score, "score", ScoreFlags.SortPrioPrimary);
-        if (sprees) SetLabel(Kills, "kills", ScoreFlags.None);
+        // QC server/scores_rules.qc: SP_KILLS / SP_SUICIDES / SP_TEAMKILLS are only labelled when NOT
+        // INDEPENDENT_PLAYERS — in independent-players modes (Race/CTS qualifying, Invasion) these "useless" PvP
+        // columns are dropped, leaving only SP_DEATHS. SP_DEATHS is always present.
+        if (sprees && !independent) SetLabel(Kills, "kills", ScoreFlags.None);
         SetLabel(Deaths, "deaths", ScoreFlags.LowerIsBetter);
-        SetLabel(Suicides, "suicides", ScoreFlags.HideZero | ScoreFlags.LowerIsBetter);
-        if (teams) SetLabel(TeamKills, "teamkills", ScoreFlags.HideZero | ScoreFlags.LowerIsBetter);
+        if (!independent) SetLabel(Suicides, "suicides", ScoreFlags.HideZero | ScoreFlags.LowerIsBetter);
+        if (teams && !independent) SetLabel(TeamKills, "teamkills", ScoreFlags.HideZero | ScoreFlags.LowerIsBetter);
         InvalidateLayout();
     }
 
@@ -626,8 +629,13 @@ public static class GameScores
     public static bool ClearPlayerOnJoin(Entity p, System.Func<Entity, bool>? preferClear = null)
     {
         int mode = Api.Services is null ? 0 : (int)Api.Cvars.GetFloat(CvarScoreResetOnJoin);
-        // QC: g_score_resetonjoin == 0 || (g_score_resetonjoin == -1 && !MUTATOR_CALLHOOK(PreferPlayerScore_Clear))
-        if (mode == 0 || (mode == -1 && !(preferClear is not null && preferClear(p))))
+        // QC server/scores.qc:289 PlayerScore_Clear: the -1 branch is vetoed by
+        // MUTATOR_CALLHOOK(PreferPlayerScore_Clear) — a GLOBAL dispatch, not a per-caller delegate. Consult the
+        // global hook chain (the gametype that wants to keep score, e.g. TKA, returns true), keeping the optional
+        // preferClear delegate as an extra override so either path can veto the wipe.
+        bool veto = (preferClear is not null && preferClear(p))
+            || XonoticGodot.Common.Gameplay.MutatorHooks.FirePreferPlayerScore_Clear(p);
+        if (mode == 0 || (mode == -1 && !veto))
             return false;
         ClearPlayer(p);
         return true;

@@ -31,8 +31,37 @@ public sealed class Zombie : Monster
     public float SpeedRun = 600f;       // g_monster_zombie_speed_run
     public float SpeedStop = 100f;      // g_monster_zombie_speed_stop
 
+    // Model-derived animation group durations (mr_anim: animfixfps uses frameduration(modelindex, groupidx) to
+    // override the fallback fps with the actual per-group duration from models/monsters/zombie.dpm.framegroups).
+    // QC: spawn_time = animstate_endtime = starttime + frameduration(model,30); the port reads the framegroups
+    // file at compile time instead of calling frameduration at runtime (no server-side model load in the port).
+    //
+    // zombie.dpm.framegroups values (0-based index → numframes fps → duration):
+    //   group  0 (anim_shoot '0 1 5'):      attackleap   1  56 30 →  56/30 ≈ 1.8667s
+    //   group  4 (anim_melee1/2/3 '4 1 5'): attackstanding1 180 41 30 → 41/30 ≈ 1.3667s
+    //   group  7 (anim_blockend '7 1 1'):   blockend    297 21 60 → 21/60 = 0.35s
+    //   group  8 (anim_blockstart '8 1 1'): blockstart  318 21 60 → 21/60 = 0.35s
+    //   group  9 (anim_die1 '9 1 0.5'):     deathback1  339 96 30 → 96/30 = 3.2s
+    //   group 12 (anim_die2 '12 1 0.5'):    deathfront1 573 61 30 → 61/30 ≈ 2.0333s
+    //   group 19 (anim_idle '19 1 1'):      idle       1115 121 10 → 121/10 = 12.1s
+    //   group 20 (anim_pain1 '20 1 2'):     painback1  1236 11 30 → 11/30 ≈ 0.3667s
+    //   group 22 (anim_pain2 '22 1 2'):     painfront1 1258 11 30 → 11/30 ≈ 0.3667s
+    //   group 27 (anim_walk/run '27 1 1'):  runforward 1403 41 60 → 41/60 ≈ 0.6833s
+    //   group 30 (anim_spawn '30 1 3'):     spawn      1526 61 30 → 61/30 ≈ 2.0333s
+    //
+    // QC Monster_Attack_Melee/Leap: attack_finished_single[0] = animstate_endtime if animstate_endtime > time,
+    // else time + animtime. Since animstate_endtime is always in the future after setanim, the model duration
+    // is always used (the QC `animtime` cvar fallback is never reached in practice when the model is loaded).
+    private const float AnimDurSpawn  = 61f / 30f; // anim_spawn group 30: 61 frames @ 30 fps = 2.0333s
+    private const float AnimDurMelee  = 41f / 30f; // anim_melee1/2/3 group 4: 41 frames @ 30 fps = 1.3667s
+    private const float AnimDurLeap   = 56f / 30f; // anim_shoot group 0: 56 frames @ 30 fps = 1.8667s
+
     // The zombie voice pack ships .ogg (sound/monsters/zombie/{death,sight,idle}.ogg, all count 0 = bare name).
     public override string SoundExt => ".ogg";
+
+    // QC Zombie spawnflags (zombie.qh:11) = MONSTER_TYPE_UNDEAD | MON_FLAG_MELEE | MON_FLAG_RIDE — NO
+    // MON_FLAG_RANGED. The zombie is melee-only, so it never acquires a vehicle target (ValidTarget gate).
+    public override bool IsRanged => false;
 
     public Zombie()
     {
@@ -69,11 +98,12 @@ public sealed class Zombie : Monster
         e.SpawnFlags &= ~MonsterAI.MonsterFlag_Appear;
 
         // Spawn animation gating: no thinking + no push while the spawn anim plays (QC spawn_time / shield).
-        // anim_spawn '30 1 3' ≈ 1/3s; gate the brain and apply a matching spawn shield.
-        float spawnAnim = 1f / 3f;
-        st.SpawnTime = MonsterAI.Now + spawnAnim;
+        // QC: setanim(anim_spawn '30 1 3') then spawn_time = animstate_endtime, where animstate_endtime is set
+        // by animfixfps via frameduration(modelindex, 30). The zombie.dpm.framegroups group 30 (spawn) contains
+        // 61 frames at 30 fps → duration = AnimDurSpawn = 61/30 ≈ 2.033s (not the '3 fps' fallback of 1/3s).
+        st.SpawnTime = MonsterAI.Now + AnimDurSpawn;
         st.DamageForceScale = 0.0001f; // no push while spawning (restored in Think once spawned)
-        MonsterFramework.ApplyFor(MonsterFramework.SpawnShield, e, spawnAnim);
+        MonsterFramework.ApplyFor(MonsterFramework.SpawnShield, e, AnimDurSpawn);
         // QC mr_setup: setanim(actor.anim_spawn '30 1 3') — play the spawn pose (frame 30) while the brain idles
         // until SpawnTime. DriveAnimFrame stamps it onto the networked Frame each think.
         st.Anim = MonsterAI.MonsterAnim.Spawn;
@@ -115,9 +145,14 @@ public sealed class Zombie : Monster
             MonsterRandom.Next();
             st.Anim = MonsterAI.MonsterAnim.Attack;
             float meleeDamage = MonsterAI.Cvar("g_monster_zombie_attack_melee_damage", MeleeDamage);
-            float meleeDelay = MonsterAI.Cvar("g_monster_zombie_attack_melee_delay", MeleeDelay);
+            // QC Monster_Attack_Melee: attack_finished_single[0] = animstate_endtime (when model is loaded the
+            // actual group duration always supersedes the animtime fallback). The anim_melee1/2/3 group (index 4,
+            // zombie.dpm.framegroups: 41 frames @ 30 fps = AnimDurMelee ≈ 1.367s) drives the cooldown; the cvar
+            // g_monster_zombie_attack_melee_delay (1s) is the QC fallback that fires only when frameduration
+            // returns 0 (model not loaded). Use AnimDurMelee as the faithful animtime here.
+            _ = MonsterAI.Cvar("g_monster_zombie_attack_melee_delay", MeleeDelay); // consume for parity
             // zombie.qc M_Zombie_Attack melee: DEATH_MONSTER_ZOMBIE_MELEE.
-            MonsterAI.MeleeAttack(e, st, meleeDamage, st.AttackRange, meleeDelay,
+            MonsterAI.MeleeAttack(e, st, meleeDamage, st.AttackRange, AnimDurMelee,
                 DeathTypes.MonsterZombieMelee);
         }
         else
@@ -125,11 +160,14 @@ public sealed class Zombie : Monster
             // MONSTER_ATTACK_RANGED: leap toward the enemy (Monster_Attack_Leap + M_Zombie_Attack_Leap_Touch).
             // QC reads autocvar_g_monster_zombie_attack_leap_{speed,delay} LIVE at attack time (zombie.qc:90).
             float leapSpeed = MonsterAI.Cvar("g_monster_zombie_attack_leap_speed", LeapSpeed);
-            float leapDelay = MonsterAI.Cvar("g_monster_zombie_attack_leap_delay", LeapDelay);
+            // QC Monster_Attack_Leap: attack_finished_single[0] = animstate_endtime when model is loaded.
+            // anim_shoot '0 1 5' maps to group 0 (zombie.dpm.framegroups: attackleap, 56 frames @ 30 fps =
+            // AnimDurLeap ≈ 1.867s). The cvar g_monster_zombie_attack_leap_delay (1.5s) is the QC fallback.
+            _ = MonsterAI.Cvar("g_monster_zombie_attack_leap_delay", LeapDelay); // consume for parity
             Vector3 forward = QMath.Forward(e.Angles);
             Vector3 vel = forward * leapSpeed + new Vector3(0, 0, 200);
             // QC: Monster_Attack_Leap(actor, actor.anim_shoot '0 1 5', ...) — the leap plays the shoot group.
-            MonsterAI.Leap(e, st, vel, LeapTouch, leapDelay, MonsterAI.MonsterAnim.Shoot);
+            MonsterAI.Leap(e, st, vel, LeapTouch, AnimDurLeap, MonsterAI.MonsterAnim.Shoot);
         }
     }
 

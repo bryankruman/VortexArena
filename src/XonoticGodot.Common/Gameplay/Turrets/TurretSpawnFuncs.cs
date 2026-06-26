@@ -41,11 +41,23 @@ public static class TurretSpawnFuncs
         // TurretSpawn.Init).
         def.Spawn(e);
 
+        // QC turret_initialize: if (!tur_defend && target != "") InitializeEntity(turret_findtarget) — resolve a
+        // stationary turret's .target key to the point it defends (sv_turrets.qc:1359). Mobile turrets target a
+        // turret_checkpoint (their roam path), which FindTarget deliberately skips, so this is a no-op for them
+        // (ewheel/walker do their own checkpoint wiring in Spawn). Runs after def.Spawn so the head pose is seeded.
+        TurretAI.FindTarget(e);
+
         // QC turret_link: setthink(this, turret_think); this.nextthink = time. This is what makes a hand-placed
         // turret actually run each frame — the simulation loop's SV_RunThink fires it. Re-arm nextthink inside
         // the think so it keeps ticking (turret_think sets nextthink = time every frame).
-        e.Think = self => { self.NextThink = Now; def.Think(self); };
+        EntityThink driver = self => { self.NextThink = Now; def.Think(self); };
+        e.Think = driver;
         e.NextThink = Now;
+
+        // Record the per-frame brain so turret_respawn can re-install it (QC turret_respawn: setthink turret_think).
+        // Without this, once Die swaps Think over to the hide/respawn chain the resurrected turret never thinks
+        // again (Respawn would null Think). This also restores thinking after a round-reset (Entity.Reset).
+        TurretAI.State(e).PerFrameThink = driver;
     }
 
     // Per-type spawnfuncs (each per-turret .qc: spawnfunc(turret_X){ if(!turret_initialize(this,TUR_X)) delete(this); }).

@@ -56,6 +56,32 @@ public sealed class Cts : GameType
 
         /// <summary>Number of times this player has completed the stage (QC SP_RACE_LAPS, informational).</summary>
         public int Completions;
+
+        // ---- QC .race_movetime per-frame run-clock accumulator (server/race.qc, advanced in CTS PlayerPhysics) ----
+        // QC tracks the run time as a frame-accumulated value (sum of the per-physics-frame dt) rather than wall-clock
+        // `time`, so the recorded time is frame-rate-independent / deterministic. It is split into an integer count and
+        // a [0,1) fraction (QC race_movetime_count / race_movetime_frac) to keep float precision over a long session;
+        // race_movetime = count + frac. The accumulator is zeroed when the runner crosses the start timer (QC
+        // checkpoint_passed start branch, race.qc:818) and read as the run time at the finish (race.qc:813).
+
+        /// <summary>QC <c>race_movetime_frac</c>: the [0,1) fractional part of the accumulated run time.</summary>
+        public float MoveTimeFrac;
+
+        /// <summary>QC <c>race_movetime_count</c>: the integer-seconds part of the accumulated run time.</summary>
+        public float MoveTimeCount;
+
+        /// <summary>QC <c>race_movetime</c>: the frame-accumulated run clock (count + frac), in seconds. This is the
+        /// authoritative deterministic run time (the value <c>race_SendTime</c> folds into the record at the finish).</summary>
+        public float RaceMoveTime;
+
+        /// <summary>True once the runner has crossed the start timer this attempt: the run clock is accumulating.
+        /// (QC uses <c>race_laptime != 0</c> as the "run in progress" predicate; this mirrors it.)</summary>
+        public bool Running;
+
+        /// <summary>QC <c>.race_checkpoint</c>: index of the next checkpoint this runner must cross (-1 = none yet,
+        /// must re-cross the start). CTS in the port is a single start→stop course with no intermediate checkpoints,
+        /// so this only takes -1 (fresh attempt) / 0 (started); it mirrors race_PreparePlayer's checkpoint reset.</summary>
+        public int NextCheckpoint = -1;
     }
 
     private readonly Dictionary<Player, CtsState> _states = new();
@@ -66,6 +92,7 @@ public sealed class Cts : GameType
     private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _filterItemHandler;
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _playerSpawnHandler;
     private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _physicsHandler;
+    private HookHandler<MutatorHooks.MakePlayerObserverArgs>? _makeObserverHandler;
 
     /// <summary>Optional sink for the host/controller to react to a death/finish.</summary>
     public IMatchEvents? Events;
@@ -177,7 +204,13 @@ public sealed class Cts : GameType
         // `g_race_qualifying 0` is overridden, exactly as the QC ONADD assignment overrides the cvar. We set the
         // cvar here (before DeclareScoreRules) so the Qualifying property and the score schema both see the latch.
         if (Api.Services is not null)
-            Api.Cvars.Set("g_race_qualifying", "1"); // QC MUTATOR_ONADD: g_race_qualifying = 1
+        {
+            Api.Cvars.Set("g_race_qualifying", "1");      // QC MUTATOR_ONADD: g_race_qualifying = 1
+            Api.Cvars.Set("_independent_players", "1");   // QC MUTATOR_ONADD: independent_players = 1 (solo time-trial).
+            // INDEPENDENT_PLAYERS (server/client.qh): players don't fight each other — bots hold fire and the PvP
+            // score columns drop (DeclareScoreRules independent:true). The port's _independent_players cvar is the
+            // forced authoritative latch the bot brain reads (BotBrain havocbot_ai fire gate).
+        }
 
         DeclareScoreRules();
         _deathHandler = OnDeath;
@@ -190,11 +223,13 @@ public sealed class Cts : GameType
         _filterItemHandler  = OnFilterItemDefinition;       // FilterItem / MonsterDropItem (loot filtering)
         _playerSpawnHandler = OnPlayerSpawn;                // WantWeapon → WEP_SHOTGUN (START loadout only)
         _physicsHandler     = OnPlayerPhysics;              // PlayerPhysics: force keyboard-movement quantization
+        _makeObserverHandler = OnMakePlayerObserver;        // MakePlayerObserver: FRAGS_PLAYER_OUT_OF_GAME if ranked
         MutatorHooks.DamageCalculate.Add(_damageHandler);
         MutatorHooks.ForbidThrowCurrentWeapon.Add(_forbidThrowHandler);
         MutatorHooks.FilterItemDefinition.Add(_filterItemHandler);
         MutatorHooks.PlayerSpawn.Add(_playerSpawnHandler);
         MutatorHooks.PlayerPhysics.Add(_physicsHandler);
+        MutatorHooks.MakePlayerObserver.Add(_makeObserverHandler);
     }
 
     /// <summary>
@@ -204,7 +239,10 @@ public sealed class Cts : GameType
     /// </summary>
     private void DeclareScoreRules()
     {
-        GS.ScoreRulesBasics(teams: false, scoreEnabled: false); // QC GameRules_score_enabled(false): no SP_SCORE
+        // QC GameRules_score_enabled(false): no SP_SCORE. CTS forces independent_players=1 (sv_cts.qh MUTATOR_ONADD),
+        // so scores_rules.qc drops the PvP kills/suicides/teamkills columns — only SP_DEATHS survives alongside the
+        // race columns declared below.
+        GS.ScoreRulesBasics(teams: false, scoreEnabled: false, independent: true);
         if (Qualifying)
         {
             GS.DeclareColumn("RACE_FASTEST", Scoring.ScoreFlags.LowerIsBetter | Scoring.ScoreFlags.Time, "fastest");
@@ -226,6 +264,9 @@ public sealed class Cts : GameType
     {
         if (_deathHandler is null)
             return;
+        // QC: the independent_players latch is per-gametype; clear it so the next mode isn't left in solo-mode.
+        if (Api.Services is not null)
+            Api.Cvars.Set("_independent_players", "0");
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
         if (_damageHandler is not null)      { MutatorHooks.DamageCalculate.Remove(_damageHandler);            _damageHandler = null; }
@@ -233,6 +274,7 @@ public sealed class Cts : GameType
         if (_filterItemHandler is not null)  { MutatorHooks.FilterItemDefinition.Remove(_filterItemHandler);    _filterItemHandler = null; }
         if (_playerSpawnHandler is not null) { MutatorHooks.PlayerSpawn.Remove(_playerSpawnHandler);            _playerSpawnHandler = null; }
         if (_physicsHandler is not null)     { MutatorHooks.PlayerPhysics.Remove(_physicsHandler);             _physicsHandler = null; }
+        if (_makeObserverHandler is not null){ MutatorHooks.MakePlayerObserver.Remove(_makeObserverHandler);   _makeObserverHandler = null; }
     }
 
     public CtsState GetState(Player p)
@@ -248,10 +290,21 @@ public sealed class Cts : GameType
     public void AddPlayer(Player p) => GetState(p);
     public void RemovePlayer(Player p) => _states.Remove(p);
 
-    /// <summary>QC target_startTimer: begin (or restart) a player's stage run, stamping the start time.</summary>
+    /// <summary>QC target_startTimer → checkpoint_passed start branch (server/race.qc:817-818): begin (or restart) a
+    /// player's stage run. The deterministic run clock (<see cref="CtsState.RaceMoveTime"/>) is zeroed here and then
+    /// counts up per physics frame (QC <c>race_laptime = time; race_movetime = race_movetime_frac =
+    /// race_movetime_count = 0</c>). The wall-clock <see cref="CtsState.RunStartTime"/> is also stamped as a fallback
+    /// for hosts that drive no physics frames (e.g. the unit harness touching start→stop with no PlayerPhysics).</summary>
     public void StartTimer(Player p)
     {
-        GetState(p).RunStartTime = Api.Services is not null ? Api.Clock.Time : 0f;
+        CtsState st = GetState(p);
+        st.RunStartTime = Api.Services is not null ? Api.Clock.Time : 0f;
+        // QC race.qc:818: race_movetime = race_movetime_frac = race_movetime_count = 0 — restart the run clock.
+        st.MoveTimeFrac = 0f;
+        st.MoveTimeCount = 0f;
+        st.RaceMoveTime = 0f;
+        st.Running = true;
+        st.NextCheckpoint = 0; // QC: crossing the start (cp 0) advances race_checkpoint past -1.
     }
 
     /// <summary>
@@ -262,12 +315,17 @@ public sealed class Cts : GameType
     public float FinishStage(Player p)
     {
         CtsState st = GetState(p);
-        if (st.RunStartTime <= 0f)
+        if (st.RunStartTime <= 0f && !st.Running)
             return 0f; // run never started
 
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
-        float runTime = now - st.RunStartTime;
+        // QC race.qc:813: race_SendTime(player, cp, player.race_movetime, ...) — the run time IS the frame-accumulated
+        // .race_movetime, NOT a wall-clock delta. Use it when the physics accumulator has run (the live path); fall
+        // back to the wall-clock delta only when no physics frames advanced the accumulator (e.g. a unit harness that
+        // touches start→stop directly without driving OnPlayerPhysics), so the existing end-to-end tests still hold.
+        float runTime = st.RaceMoveTime > 0f ? st.RaceMoveTime : now - st.RunStartTime;
         st.RunStartTime = 0f;
+        st.Running = false;
         if (runTime <= 0f)
             return 0f;
 
@@ -371,8 +429,19 @@ public sealed class Cts : GameType
     /// <summary>QC race_PreparePlayer: reset the runner's run timer so they restart the stage from the beginning.</summary>
     public void RetractRunner(Player p)
     {
-        GetState(p).RunStartTime = 0f;
+        AbandonRun(GetState(p));
         OnFinishRetract?.Invoke(p);
+    }
+
+    /// <summary>QC race_PreparePlayer / race_AbandonRaceCheck: drop an in-progress run — clear the run clock + the
+    /// frame-accumulated <c>.race_movetime</c> so the next start timer re-stamps a fresh run from zero.</summary>
+    private static void AbandonRun(CtsState st)
+    {
+        st.RunStartTime = 0f;
+        st.Running = false;
+        st.MoveTimeFrac = 0f;
+        st.MoveTimeCount = 0f;
+        st.RaceMoveTime = 0f;
     }
 
     /// <summary>
@@ -387,7 +456,7 @@ public sealed class Cts : GameType
     {
         _retractAt.Clear(); // cancel all pending kill-delay re-teleports
         for (int i = 0; i < players.Count; i++)
-            GetState(players[i]).RunStartTime = 0f; // QC race_PreparePlayer: no run in progress
+            AbandonRun(GetState(players[i])); // QC race_PreparePlayer: no run in progress (run clock zeroed)
 
         // QC: the round-best speed award (speedaward_speed/holder) resets each round; the persisted all-time best
         // (speedaward_alltimebest) is kept (re-loaded from the DB) so it survives the reset.
@@ -523,11 +592,34 @@ public sealed class Cts : GameType
         // g_cts_respawn_delay_small/large = -1 collapse to an instant respawn.
         victim.RespawnFlags |= RespawnFlag.Force;
 
-        // Abandon the in-progress run (QC race_AbandonRaceCheck) so the next start re-stamps the timer.
-        GetState(victim).RunStartTime = 0f;
+        // Abandon the in-progress run (QC race_AbandonRaceCheck) so the next start re-stamps the timer + run clock.
+        AbandonRun(GetState(victim));
         // Also cancel a pending finish-retract for the runner — a death already sends them to respawn.
         _retractAt.Remove(victim);
         Events?.OnFrag(ev.Attacker as Player, victim, ev.DeathType);
+        return false;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(cts, MakePlayerObserver)</c> (sv_cts.qc:194): when a player is demoted to an
+    /// observer, a player who already holds a ranked CTS time keeps a "player out of game" status sentinel
+    /// (FRAGS_PLAYER_OUT_OF_GAME) instead of the plain spectator one, so the scoreboard still ranks their recorded
+    /// time. QC's predicate is <c>GameRules_scoring_add(player, RACE_FASTEST, 0)</c> (their current SP_RACE_FASTEST);
+    /// the port mirrors it with the recorded fastest time. The QC race_PreparePlayer / race_checkpoint = -1 reset is
+    /// the run-clock + checkpoint reset (here on the CTS state).
+    /// </summary>
+    private bool OnMakePlayerObserver(ref MutatorHooks.MakePlayerObserverArgs a)
+    {
+        if (a.Player is not Player p)
+            return false;
+
+        // QC: if(GameRules_scoring_add(player, RACE_FASTEST, 0)) frags = FRAGS_PLAYER_OUT_OF_GAME; else FRAGS_SPECTATOR;
+        p.FragsStatus = FastestTimeOf(p) > 0f ? Player.FragsOutOfGame : Player.FragsSpectator;
+
+        // QC race_PreparePlayer(player); player.race_checkpoint = -1; — drop any in-progress run + reset the checkpoint.
+        CtsState st = GetState(p);
+        AbandonRun(st);
+        st.NextCheckpoint = -1;
         return false;
     }
 
@@ -604,7 +696,14 @@ public sealed class Cts : GameType
         // (The full checkpoint bookkeeping — race_checkpoint=-1, respawn-spotref — is part of the intermediate-
         // checkpoint subsystem CTS doesn't model; the run-timer reset is the meaningful part for a start→stop course.)
         if (player is Player rp)
-            GetState(rp).RunStartTime = 0f;
+        {
+            CtsState rst = GetState(rp);
+            AbandonRun(rst);
+            // QC race_PreparePlayer (race.qc:679-681): race_checkpoint = -1 — the runner must re-cross the start
+            // (cp 0) before any progress counts. CTS has no intermediate checkpoints in the port, so this is the only
+            // checkpoint state that matters; tracking it on the CTS state keeps a future checkpoint port consistent.
+            rst.NextCheckpoint = -1;
+        }
 
         return false;
     }
@@ -638,6 +737,20 @@ public sealed class Cts : GameType
         Entity player = a.Player;
         if (player is not Player p || p.IsDead || p.IsObserver)
             return false;
+
+        // QC sv_cts.qc PlayerPhysics (race.qc accumulator): advance the deterministic .race_movetime run clock by the
+        // physics tic dt EVERY frame (split into an integer count + [0,1) fraction to preserve precision). This is the
+        // frame-rate-independent run time read at the finish (FinishStage). It only counts while a run is in progress
+        // (the start timer set Running); a fresh attempt re-zeroes it in StartTimer.
+        if (GetState(p) is { Running: true } rs)
+        {
+            float dt = a.TicRate;
+            rs.MoveTimeFrac += dt;                       // QC: race_movetime_frac += dt
+            float f = System.MathF.Floor(rs.MoveTimeFrac);
+            rs.MoveTimeFrac -= f;                        // QC: race_movetime_frac -= floor(race_movetime_frac)
+            rs.MoveTimeCount += f;                       // QC: race_movetime_count += f
+            rs.RaceMoveTime = rs.MoveTimeFrac + rs.MoveTimeCount; // QC: race_movetime = frac + count
+        }
 
         // QC: wishvel.x = fabs(movement.x); wishvel.y = fabs(movement.y);
         float mx = player.MovementForward;

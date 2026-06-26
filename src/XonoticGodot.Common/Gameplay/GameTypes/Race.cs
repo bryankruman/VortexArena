@@ -54,7 +54,8 @@ public sealed class Race : GameType
     // ----- lap limit cvars + default (gametype default laplimit=7) -----
     private const string CvarLapLimit     = "g_race_laps_limit";
     private const string CvarFragLimit    = "fraglimit"; // GameRules_limit_score writes the lap limit here
-    private const int    DefaultLapLimit  = 7;           // gametype_init "laplimit=7"
+    private const int    DefaultLapLimit  = 7;           // gametype_init "laplimit=7" (race.qh m_legacydefaults)
+    private const int    DefaultTeamLapLimit = 15;       // gametype_init "teamlaplimit=15" (race.qh m_legacydefaults)
     private const string CvarQualifying   = "g_race_qualifying";        // 0 = race, !=0 = qualifying time-trial
     private const string CvarTeams        = "g_race_teams";             // 0 = FFA, 2..4 = team race (laps add up)
     private const string CvarSuddenDeath  = "timelimit_suddendeath";    // overtime window (minutes); unused for the latch
@@ -109,6 +110,21 @@ public sealed class Race : GameType
         /// <summary>QC <c>race_penalty_accumulator</c>: penalty seconds added to a qualifying lap time (no freeze).</summary>
         public float PenaltyAccumulator;
 
+        // ---- penalty HUD line (QC RACE_NET_PENALTY_RACE / _QUALIFYING → race_penaltytime/eventtime/reason) ----
+
+        /// <summary>QC <c>race_penaltytime</c> feed: the magnitude (seconds) of the most recently imposed penalty,
+        /// for the on-screen "PENALTY: Ns (reason)" line. 0 = none imposed yet.</summary>
+        public float LastPenaltySeconds;
+
+        /// <summary>QC <c>race_penaltyeventtime</c> feed: the absolute sim time the most recent penalty was imposed
+        /// (the HUD penalty line fades over a ~2 s window from this stamp). 0 = none.</summary>
+        public float LastPenaltyEventTime;
+
+        /// <summary>QC <c>race_penaltyreason</c> feed: the human-readable reason of the most recent penalty (QC's
+        /// trigger_race_penalty <c>.race_penalty_reason</c>; the port has no per-zone reason string yet, so it
+        /// defaults to "missing a checkpoint", the stock zone reason).</summary>
+        public string LastPenaltyReason = "";
+
         /// <summary>QC <c>race_lastpenalty</c>: the penalty entity last triggered (so a zone only fires once per pass).</summary>
         public Entity? LastPenalty;
 
@@ -149,6 +165,26 @@ public sealed class Race : GameType
         /// <summary>QC <c>race_started</c>: this racer has crossed the start line at least once (so the lap clock is
         /// running and the respawn falls back to the last checkpoint rather than the grid start).</summary>
         public bool Started;
+
+        // ---- QC .race_movetime per-frame lap-clock accumulator (server/race.qc, advanced in rc PlayerPhysics) ----
+        // QC times a lap by a frame-accumulated value (sum of the per-physics-frame dt) rather than wall-clock `time`,
+        // so the recorded lap time is frame-rate-independent / deterministic and unaffected by a pause or frame jitter
+        // (the divergence race.lap.timing_scoring flagged). It is split into an integer count and a [0,1) fraction
+        // (QC race_movetime_count / race_movetime_frac) to keep float precision over a long session; race_movetime =
+        // count + frac. The accumulator is zeroed when the racer crosses the start line (QC checkpoint_passed start
+        // branch, race.qc:818) and read as the elapsed lap time at every crossing (race.qc:813, race_SendTime).
+
+        /// <summary>QC <c>race_movetime_frac</c>: the [0,1) fractional part of the accumulated lap clock.</summary>
+        public float MoveTimeFrac;
+
+        /// <summary>QC <c>race_movetime_count</c>: the integer-seconds part of the accumulated lap clock.</summary>
+        public float MoveTimeCount;
+
+        /// <summary>QC <c>race_movetime</c>: the frame-accumulated lap clock (count + frac), in seconds. This is the
+        /// authoritative deterministic lap time the <c>race_SendTime</c> path reads at each checkpoint crossing. It
+        /// counts up every physics frame from the start-line crossing; the wall clock is only the fallback for a host
+        /// that drives no PlayerPhysics frames (e.g. the unit harness touching checkpoints directly).</summary>
+        public float RaceMoveTime;
     }
 
     // ---- per-map / per-run checkpoint records (QC race_checkpoint_records[cp] et al, server/race.qc) ----
@@ -175,6 +211,7 @@ public sealed class Race : GameType
     private readonly Dictionary<Player, RaceState> _states = new();
 
     private HookHandler<DeathEvent>? _deathHandler;
+    private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _physicsHandler;
 
     /// <summary>Optional sink for the host/controller to react to a death/finish.</summary>
     public IMatchEvents? Events;
@@ -390,16 +427,20 @@ public sealed class Race : GameType
     {
         get
         {
+            // QC race.qh m_legacydefaults "20 5 7 15 0": the mapinfo laplimit default is 7 (FFA) / 15 (team). The
+            // port has no per-map mapinfo laplimit table, so a map that overrides laplimit in its .mapinfo isn't
+            // honored; the gametype legacy default IS reproduced (the value any non-overriding map gets in Base).
+            int mapinfoDefault = RaceTeams >= 2 ? DefaultTeamLapLimit : DefaultLapLimit;
             if (TryCvar(CvarLapLimit, out float ll))
             {
                 int l = (int)ll;
-                // QC: a negative override (the default -1) means "consult the mapinfo laplimit"; the port has no
-                // per-map laplimit, so fall back to the gametype default (7). 0 stays unlimited; >0 is literal.
-                if (l < 0) return DefaultLapLimit;
+                // QC rc_SetLimits: g_race_laps_limit default -1 means "consult the mapinfo laplimit" (here the legacy
+                // gametype default, team-aware). 0 stays unlimited; >0 is the literal lap limit.
+                if (l < 0) return mapinfoDefault;
                 return l;
             }
             if (TryCvar(CvarFragLimit, out float fl)) return (int)fl;
-            return DefaultLapLimit;
+            return mapinfoDefault;
         }
     }
 
@@ -440,6 +481,11 @@ public sealed class Race : GameType
             Scoring.GameScores.SeedTeams(RaceTeams);
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
+        // QC MUTATOR_HOOKFUNCTION(rc, PlayerPhysics) (sv_race.qc:128): advance the deterministic .race_movetime lap
+        // clock + force keyboard-movement quantization for record fairness + apply the penalty freeze. Registered on
+        // the global PlayerPhysics chain (the same seam CTS uses) so it runs live every physics frame.
+        _physicsHandler = OnPlayerPhysics;
+        MutatorHooks.PlayerPhysics.Add(_physicsHandler);
     }
 
     /// <summary>
@@ -487,6 +533,7 @@ public sealed class Race : GameType
             return;
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
+        if (_physicsHandler is not null) { MutatorHooks.PlayerPhysics.Remove(_physicsHandler); _physicsHandler = null; }
     }
 
     public RaceState GetState(Player p)
@@ -536,7 +583,12 @@ public sealed class Race : GameType
             // Close the lap: a lap time exists only once we've crossed the line at least once before.
             if (st.LapStartTime > 0f)
             {
-                float lapTime = now - st.LapStartTime;
+                // QC race_SendTime (server/race.qc:813): the lap time IS the frame-accumulated .race_movetime (zeroed
+                // at the start line, advanced each PlayerPhysics frame), NOT a wall-clock delta — so it is frame-rate-
+                // independent and unaffected by a pause/jitter. Use it when the physics accumulator has run (the live
+                // path); fall back to the wall-clock delta only when no physics frames advanced it (e.g. a unit harness
+                // touching checkpoints directly without driving OnPlayerPhysics), so the end-to-end tests still hold.
+                float lapTime = st.RaceMoveTime > 0f ? st.RaceMoveTime : now - st.LapStartTime;
                 if (lapTime > 0f)
                 {
                     if (st.FastestLap <= 0f || lapTime < st.FastestLap)
@@ -580,12 +632,19 @@ public sealed class Race : GameType
                 ScheduleRetract(p, now);
         }
 
-        // QC checkpoint_passed (server/race.qc:815): the lap clock is (re)started at the START LINE (CP 0), NOT at
+        // QC checkpoint_passed (server/race.qc:815-818): the lap clock is (re)started at the START LINE (CP 0), NOT at
         // the timed finish CP. On a closed loop these coincide; on a start!=finish track the racer crosses the
         // finish (timed CP, scored above) and only re-arms the lap clock when they next cross CP 0. The very first
-        // start-line crossing opens the clock with no prior lap to score.
+        // start-line crossing opens the clock with no prior lap to score. QC race.qc:818 also zeroes the deterministic
+        // .race_movetime accumulator here (race_movetime = race_movetime_frac = race_movetime_count = 0) so the next
+        // lap times from zero.
         if (checkpointIndex == 0)
+        {
             st.LapStartTime = now;
+            st.MoveTimeFrac = 0f;
+            st.MoveTimeCount = 0f;
+            st.RaceMoveTime = 0f;
+        }
     }
 
     /// <summary>
@@ -602,7 +661,9 @@ public sealed class Race : GameType
         if (st.LapStartTime <= 0f)
             return;
 
-        float split = now - st.LapStartTime;        // QC race_time: lap-elapsed at this checkpoint
+        // QC race_time: lap-elapsed at this checkpoint = the deterministic .race_movetime (frame accumulator), with a
+        // wall-clock fallback for hosts driving no physics frames (the unit harness), matching CrossCheckpoint above.
+        float split = st.RaceMoveTime > 0f ? st.RaceMoveTime : now - st.LapStartTime;
         if (Qualifying)
             split += st.PenaltyAccumulator;         // QC race_SendTime: qualifying adds the penalty accumulator
         if (split <= 0f)
@@ -774,6 +835,9 @@ public sealed class Race : GameType
     {
         RaceState st = GetState(p);
         st.LapStartTime = 0f;
+        st.MoveTimeFrac = 0f;       // QC race_PreparePlayer: zero the deterministic lap clock for a fresh start
+        st.MoveTimeCount = 0f;
+        st.RaceMoveTime = 0f;
         st.NextCheckpoint = -1; // re-expect the start line
         // QC race_PreparePlayer (server/race.qc:1220): a retract to start clears the respawn anchor so the racer
         // restarts from the grid/start line rather than their last mid-track checkpoint.
@@ -820,6 +884,90 @@ public sealed class Race : GameType
         foreach (Player p in due) { _retractAt.Remove(p); RetractPlayer(p); }
     }
 
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(rc, PlayerPhysics)</c> (sv_race.qc:128). Three faithful slices, run every physics
+    /// frame for a live racer:
+    /// <list type="number">
+    ///   <item>Advance the deterministic <c>.race_movetime</c> lap clock by the physics tic dt (split into an integer
+    ///     count + [0,1) fraction to preserve precision over a long session) — the frame-rate-independent lap time
+    ///     <see cref="CrossCheckpoint"/> reads at the finish, instead of wall-clock <c>time</c>.</item>
+    ///   <item>Apply the <c>race_penalty</c> freeze: while the penalty is active zero velocity + force MOVETYPE_NONE
+    ///     (QC also sets <c>disableclientprediction = 2</c> — see the note below); expire it once the clock passes.</item>
+    ///   <item>Force keyboard-movement quantization for record fairness: snap an off-axis analog wish-move to pure-X,
+    ///     pure-Y, or a 45° diagonal (<c>M_SQRT1_2 * wishspeed</c>) so an analog-stick racer can't gain a sub-cardinal
+    ///     edge. Only fires when both axes are non-zero AND unequal (QC's <c>x != 0 &amp;&amp; y != 0 &amp;&amp; x != y</c> guard);
+    ///     pure cardinals and exact diagonals are already keyboard-legal and pass through untouched.</item>
+    /// </list>
+    /// NOTE (cross-boundary): QC's <c>disableclientprediction = 2</c> during the freeze has no port mechanism — the
+    /// port has no per-player client-prediction-disable field (the same gap bugrigs.qc / vehicle boarding defer). The
+    /// authoritative side (velocity 0 + MOVETYPE_NONE) is applied; a pure remote client may briefly mispredict through
+    /// the freeze, but the server snaps it back. The penalty HUD line is fed separately (<see cref="PenaltyEventTime"/>).
+    /// </summary>
+    private bool OnPlayerPhysics(ref MutatorHooks.PlayerPhysicsArgs a)
+    {
+        Entity player = a.Player;
+        if (player is not Player p || p.IsDead || p.IsObserver)
+            return false;
+        RaceState st = GetState(p);
+
+        // (1) QC: race_movetime_frac += dt; f = floor(frac); frac -= f; count += f; race_movetime = frac + count.
+        float dt = a.TicRate;
+        st.MoveTimeFrac += dt;
+        float fl = System.MathF.Floor(st.MoveTimeFrac);
+        st.MoveTimeFrac -= fl;
+        st.MoveTimeCount += fl;
+        st.RaceMoveTime = st.MoveTimeFrac + st.MoveTimeCount;
+
+        // (2) QC: if(race_penalty) { if(time > race_penalty) race_penalty = 0; else { velocity=0; MOVETYPE_NONE; } }
+        if (st.PenaltyUntil > 0f)
+        {
+            float now = Api.Services is not null ? Api.Clock.Time : 0f;
+            if (now > st.PenaltyUntil)
+            {
+                st.PenaltyUntil = 0f;
+                if (p.MoveType == MoveType.None)
+                    p.MoveType = st.PenaltyPrevMoveType; // restore Swim/Fly/Noclip rather than forcing Walk
+            }
+            else
+            {
+                p.Velocity = Vector3.Zero;
+                p.MoveType = MoveType.None;
+                // QC: player.disableclientprediction = 2 — no port mechanism (see the doc-comment note above).
+            }
+        }
+
+        // (3) QC "force kbd movement for fairness": snap an off-axis analog wish-move to a keyboard octant.
+        float mx = player.MovementForward;
+        float my = player.MovementRight;
+        float ax = System.MathF.Abs(mx);
+        float ay = System.MathF.Abs(my);
+        // QC: if(wishvel.x != 0 && wishvel.y != 0 && wishvel.x != wishvel.y) — only true off-axis analog motion.
+        if (ax == 0f || ay == 0f || ax == ay)
+            return false;
+
+        float wishspeed = System.MathF.Sqrt(ax * ax + ay * ay); // QC vlen('ax ay 0')
+        if (ax >= 2f * ay)
+        {
+            // QC: pure X motion
+            player.MovementForward = mx > 0f ? wishspeed : -wishspeed;
+            player.MovementRight = 0f;
+        }
+        else if (ay >= 2f * ax)
+        {
+            // QC: pure Y motion
+            player.MovementForward = 0f;
+            player.MovementRight = my > 0f ? wishspeed : -wishspeed;
+        }
+        else
+        {
+            // QC: diagonal — both axes get M_SQRT1_2 * wishspeed, sign-preserved.
+            const float MSqrt1_2 = 0.70710678118654752440f;
+            player.MovementForward = (mx > 0f ? 1f : -1f) * MSqrt1_2 * wishspeed;
+            player.MovementRight   = (my > 0f ? 1f : -1f) * MSqrt1_2 * wishspeed;
+        }
+        return false;
+    }
+
     // ============================================================================================
     //  Penalty zones (QC trigger_race_penalty / race_ImposePenaltyTime, sv_race.qc + server/race.qc)
     // ============================================================================================
@@ -829,18 +977,23 @@ public sealed class Race : GameType
     /// In QUALIFYING the penalty is added to the lap time (race_penalty_accumulator, no freeze); in a plain RACE
     /// the racer is FROZEN (velocity 0 + MOVETYPE_NONE) until <c>time + seconds</c> (driven by <see cref="Tick"/>).
     /// </summary>
-    public void SetPenalty(Player p, float seconds)
+    public void SetPenalty(Player p, float seconds, string reason = "missing a checkpoint")
     {
         if (seconds <= 0f)
             return;
         RaceState st = GetState(p);
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        // QC race_ImposePenaltyTime → RACE_NET_PENALTY_*: stamp the penalty line for the HUD (magnitude + event time +
+        // reason), in BOTH modes — qualifying shows the accumulated-into-the-clock penalty, race shows the freeze.
+        st.LastPenaltySeconds = seconds;
+        st.LastPenaltyEventTime = now;
+        st.LastPenaltyReason = reason;
         if (Qualifying)
         {
             st.PenaltyAccumulator += seconds; // QC qualifying: accumulate into the lap time, no freeze
         }
         else
         {
-            float now = Api.Services is not null ? Api.Clock.Time : 0f;
             // Capture the racer's current movetype ONCE (a re-trigger while already frozen keeps the original, not
             // the frozen MOVETYPE_NONE) so the release restores Swim/Fly/Noclip rather than forcing Walk.
             if (st.PenaltyUntil <= 0f)
@@ -947,6 +1100,9 @@ public sealed class Race : GameType
         {
             RaceState st = _states[p];
             st.LapStartTime = 0f;
+            st.MoveTimeFrac = 0f;
+            st.MoveTimeCount = 0f;
+            st.RaceMoveTime = 0f;
             st.NextCheckpoint = -1;
             st.Completed = false;
             st.PenaltyAccumulator = 0f;
@@ -984,6 +1140,9 @@ public sealed class Race : GameType
         if (respawnCp == 0)
         {
             st.LapStartTime = 0f;        // QC race_ClearTime: start the next lap fresh at the start line
+            st.MoveTimeFrac = 0f;        // QC: zero the deterministic lap clock for the fresh lap
+            st.MoveTimeCount = 0f;
+            st.RaceMoveTime = 0f;
             st.NextCheckpoint = -1;      // re-expect the start line
         }
         else

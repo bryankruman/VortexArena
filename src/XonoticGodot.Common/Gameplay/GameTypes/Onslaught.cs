@@ -829,16 +829,154 @@ public sealed class Onslaught : GameType
     }
 
     /// <summary>
-    /// QC ons_Count_SelfControlPoints (sv_onslaught.qc:1567): how many control points the player's team currently
-    /// owns (captured). Base uses this to decide whether to offer the click-radar respawn picker on death.
+    /// QC ons_Count_SelfControlPoints (sv_onslaught.qc:1581): how many control points + generators the player's
+    /// team currently owns (a captured CP, or any same-team generator). Base uses this to decide whether to offer
+    /// the click-radar respawn picker on death (it offers it only when the team owns more than one node).
     /// </summary>
     public int CountSelfControlPoints(int team)
     {
         int n = 0;
         foreach (OnsNode node in Nodes)
-            if (!node.IsGenerator && node.Captured && node.Team == team)
-                ++n;
+        {
+            if (node.IsGenerator)
+            {
+                if (node.Team == team) ++n; // QC: every same-team generator counts
+            }
+            else if (node.Captured && node.Team == team)
+                ++n; // QC: a same-team CAPTURED control point counts
+        }
         return n;
+    }
+
+    private const string CvarClickRadius = "g_onslaught_click_radius"; // 500
+
+    /// <summary>
+    /// QC ons_Nearest_ControlPoint (sv_onslaught.qc:1513): the nearest same-team node — a CAPTURED control point or
+    /// a generator — to <paramref name="pos"/>, within <paramref name="maxDist"/> (≤0 = unbounded). Returns the map
+    /// entity (onslaught_controlpoint / onslaught_generator) so the caller can teleport to its origin.
+    /// </summary>
+    public Entity? NearestControlPoint(Player player, Vector3 pos, float maxDist)
+    {
+        if (Api.Services is null) return null;
+        int myTeam = (int)player.Team;
+        Entity? closest = null;
+        float maxDist2 = maxDist > 0f ? maxDist * maxDist : 0f;
+        foreach (Entity cp in Api.Entities.FindByClass("onslaught_controlpoint"))
+        {
+            if (cp.IsFreed || (int)cp.Team != myTeam) continue;      // QC SAME_TEAM(cp, this)
+            OnsNode? node = ControlPointNode(cp.GtPointId);
+            if (node is null || !node.Captured) continue;            // QC cp.iscaptured
+            float d2 = (cp.Origin - pos).LengthSquared();
+            if (maxDist > 0f && d2 > maxDist2) continue;
+            if (closest is null || d2 <= (closest.Origin - pos).LengthSquared())
+                closest = cp;
+        }
+        foreach (Entity gen in Api.Entities.FindByClass("onslaught_generator"))
+        {
+            if (gen.IsFreed) continue;
+            int genTeam = gen.GtHomeTeam != 0 ? gen.GtHomeTeam : (int)gen.Team;
+            if (genTeam != myTeam) continue;                         // QC SAME_TEAM(gen, this)
+            float d2 = (gen.Origin - pos).LengthSquared();
+            if (maxDist > 0f && d2 > maxDist2) continue;
+            if (closest is null || d2 <= (closest.Origin - pos).LengthSquared())
+                closest = gen;
+        }
+        return closest;
+    }
+
+    /// <summary>
+    /// QC ons_Nearest_ControlPoint_2D (sv_onslaught.qc:1540): like <see cref="NearestControlPoint"/> but measures
+    /// distance on the XY plane only (Z disregarded) — used for the click-radar pick, where the click is a 2D map
+    /// position. Returns the nearest same-team captured CP / generator entity within <paramref name="maxDist"/>.
+    /// </summary>
+    public Entity? NearestControlPoint2D(Player player, Vector3 pos, float maxDist)
+    {
+        if (Api.Services is null) return null;
+        int myTeam = (int)player.Team;
+        Entity? closest = null;
+        float smallest = 0f;
+        foreach (Entity cp in Api.Entities.FindByClass("onslaught_controlpoint"))
+        {
+            if (cp.IsFreed || (int)cp.Team != myTeam) continue;      // QC SAME_TEAM(cp, this)
+            OnsNode? node = ControlPointNode(cp.GtPointId);
+            if (node is null || !node.Captured) continue;            // QC cp.iscaptured
+            Vector3 delta = cp.Origin - pos; delta.Z = 0f;
+            float dist = delta.Length();
+            if (maxDist > 0f && dist > maxDist) continue;
+            if (closest is null || dist <= smallest) { closest = cp; smallest = dist; }
+        }
+        foreach (Entity gen in Api.Entities.FindByClass("onslaught_generator"))
+        {
+            if (gen.IsFreed) continue;
+            int genTeam = gen.GtHomeTeam != 0 ? gen.GtHomeTeam : (int)gen.Team;
+            if (genTeam != myTeam) continue;                         // QC SAME_TEAM(gen, this)
+            Vector3 delta = gen.Origin - pos; delta.Z = 0f;
+            float dist = delta.Length();
+            if (maxDist > 0f && dist > maxDist) continue;
+            if (closest is null || dist <= smallest) { closest = gen; smallest = dist; }
+        }
+        return closest;
+    }
+
+    /// <summary>
+    /// QC the <c>ons_spawn</c> client command (MUTATOR_HOOKFUNCTION(ons, SV_ParseClientCommand),
+    /// sv_onslaught.qc:1937): a player picks a control point from the click-radar (a 2D map position
+    /// <paramref name="pos"/>) and either teleports to it (if alive, between own CPs within teleport_radius) or
+    /// queues a respawn AT it (if dead — sets <see cref="Entity.GtOnsSpawnBy"/> + forces respawn so the
+    /// <see cref="OnPlayerSpawn"/> hook teleports them there). Returns a player-facing message (or null on a
+    /// successful silent action). This is the server side of the click-radar feature — the HUD that generates
+    /// the clicked <paramref name="pos"/> is a CSQC/client concern (see the spec's deferred note).
+    /// </summary>
+    public string? HandleOnsSpawnCommand(Player player, Vector3 pos)
+    {
+        if (Api.Services is null)
+            return null;
+
+        // QC: source_point = ons_Nearest_ControlPoint(player, player.origin, teleport_radius).
+        Entity? sourcePoint = NearestControlPoint(player, player.Origin, Cvar(CvarTeleportRadius, 200f));
+
+        // QC: if(!source_point && GetResource(player, RES_HEALTH) > 0) "You need to be next to a control point".
+        if (sourcePoint is null && !player.IsDead)
+            return "\nYou need to be next to a control point\n";
+
+        // QC: closest_target = ons_Nearest_ControlPoint_2D(player, pos, click_radius).
+        Entity? closestTarget = NearestControlPoint2D(player, pos, Cvar(CvarClickRadius, 500f));
+        if (closestTarget is null)
+            return "\nNo control point found\n";
+
+        if (player.IsDead)
+        {
+            // QC: player.ons_spawn_by = closest_target; player.respawn_flags |= RESPAWN_FORCE.
+            player.GtOnsSpawnBy = closestTarget;
+            player.RespawnFlags |= RespawnFlag.Force;
+            return null;
+        }
+
+        // Alive: teleport between own control points.
+        if (ReferenceEquals(sourcePoint, closestTarget))
+            return "\nTeleporting to the same point\n"; // QC: same source/target
+
+        // QC: if(!ons_Teleport(player, closest_target, teleport_radius, true)) "Unable to teleport there".
+        if (!OnsTeleport(player, closestTarget, Cvar(CvarTeleportRadius, 200f), teleEffects: true))
+            return "\nUnable to teleport there\n";
+        return null;
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(ons, PlayerUseKey) (sv_onslaught.qc:1990): the +use key, while alive, not in a
+    /// vehicle, and past the teleport antispam, opens the click-radar IF the player is standing next to one of
+    /// their own control points. Returns true if the press is consumed (a source point was found). The HUD that
+    /// the QC then stuffcmds (<c>qc_cmd_cl hud clickradar</c>) is client-side; the server-side gate is faithful.
+    /// </summary>
+    public bool HandleUseKey(Player player)
+    {
+        if (Api.Services is null || MatchEnded)
+            return false;
+        // QC: (time > player.teleport_antispam) && (!IS_DEAD(player)) && !player.vehicle.
+        if (Api.Clock.Time <= player.GtTeleportAntispam || player.IsDead || player.Vehicle is not null)
+            return false;
+        Entity? source = NearestControlPoint(player, player.Origin, Cvar(CvarTeleportRadius, 200f));
+        return source is not null; // QC: only consumes the press (and opens the radar) when next to an own CP
     }
 
     private static bool TryCvar(string name, out float value)

@@ -18,10 +18,11 @@ namespace XonoticGodot.Common.Gameplay;
 /// guided ROCKET VOLLY at rocket range (4 homing rockets 0.2s apart then a 10s reload, each steered by
 /// <see cref="GuidedProjectile.WalkerRocketThink"/>), and the MELEE swipe (a 100-dmg radius hit in front when
 /// the enemy is within melee range). Also ported: the no-enemy IDLE ROAM/WANDER (LOS-probe a new heading + the
-/// stop/roam idle cycle), LAST-SEEN PURSUIT (chase the enemy's last position for up to 10s), and the waterlevel
-/// SWIM gait (pitch-toward + sinusoidal bob). The animation frames + TNSF_MOVE networking + CSQC walker_draw
-/// (ground-align/head-spin/spark) are client/render; map-waypoint path-following (turret_checkpoint) is a
-/// map-graph concern; the rocket up-and-over loop maneuver lives in GuidedProjectile — all left out of this file.
+/// stop/roam idle cycle, gated by the TSL_ROAM spawnflag), LAST-SEEN PURSUIT (chase the enemy's last position for
+/// up to 10s), the turret_checkpoint WAYPOINT PATH-FOLLOWING (walker_findtarget + walker_move_path, incl. the
+/// TSF_NO_PATHBREAK "stick to path even with an enemy" flag), the per-gait model FRAME (turrets_setframe onto the
+/// networked Entity.Frame), and the waterlevel SWIM gait (pitch-toward + sinusoidal bob). The CSQC walker_draw
+/// 4-point ground-align + head avelocity spin stay client render; the rocket up-and-over loop lives in GuidedProjectile.
 /// </summary>
 [Turret]
 public sealed class WalkerTurret : Turret
@@ -47,7 +48,15 @@ public sealed class WalkerTurret : Turret
     // --- locomotion (turrets.cfg) ---
     private const float SpeedRun = 300f, SpeedWalk = 200f, SpeedStop = 90f;
     private const float SpeedRoam = 100f, SpeedSwim = 200f, SpeedJump = 800f;
-    private const float TurnWalk = 15f, TurnRun = 7f, TurnSwim = 10f;
+    private const float TurnWalk = 15f, TurnRun = 7f, TurnSwim = 10f, TurnStrafe = 5f, Turn = 20f;
+
+    // QC turret spawnflags (turret.qh): TSF_NO_PATHBREAK = don't break the checkpoint path to chase an enemy
+    // (still fires at it); TSL_ROAM = roam (random-walk) while idle instead of stopping in place.
+    private const int TsfNoPathbreak = 1 << 3;  // BIT(3) = 8
+    private const int TslRoam = 1 << 5;         // BIT(5) = 32
+
+    // walker_move_path: proximity at which the path advances to the next checkpoint (turret_closetotarget, 64u).
+    private const float PathNodeProximity = 64f;
 
     // --- rocket volley (turrets.cfg g_turrets_unit_walker_rocket_*) ---
     private const float RocketDamage = 45f;
@@ -68,8 +77,10 @@ public sealed class WalkerTurret : Turret
     private const float SparkHealthThreshold = 127f;
     private const float SparkChance = 0.15f;
 
-    /// <summary>QC walker animflag (walker.qc:28). Drives the per-gait turn rate + movement in tr_think.</summary>
-    private enum Gait { No = 0, Turn = 1, Walk = 2, Run = 3, Jump = 6, Land = 7, Melee = 9, Swim = 10, Roam = 11 }
+    /// <summary>QC walker animflag (walker.qc:28). Drives the per-gait turn rate + movement in tr_think, and is
+    /// also the model frame index networked via turrets_setframe.</summary>
+    private enum Gait { No = 0, Turn = 1, Walk = 2, Run = 3, StrafeL = 4, StrafeR = 5, Jump = 6, Land = 7,
+        Pain = 8, Melee = 9, Swim = 10, Roam = 11 }
 
     /// <summary>Walker-specific scratch (QC tur_head.shot_volly rocket counter + the separate rocket refire clock + melee lock + idle-roam state).</summary>
     private sealed class WalkerState
@@ -128,6 +139,7 @@ public sealed class WalkerTurret : Turret
 
         // Home pose + re-arm on respawn (QC tr_setup pos1/pos2 home; runs on first spawn + respawn).
         TurretState st = TurretAI.State(e);
+        st.PathCurrent = null;
         Vector3 home = e.Origin;
         Vector3 homeAng = e.Angles;
         st.OnRespawn = self =>
@@ -145,7 +157,28 @@ public sealed class WalkerTurret : Turret
             s.HeadIdleTime = 0f;
             s.EnemyLastTime = 0f;
             s.MeleeUntil = 0f;
+            // QC tr_setup (STEP branch re-spawn): re-resolve the initial checkpoint path head.
+            TurretAI.State(self).PathCurrent = null;
+            WalkerFindTarget(self);
         };
+
+        // QC tr_setup first-spawn branch: if (target != "") InitializeEntity(walker_findtarget) wires the entry
+        // turret_checkpoint. Resolved by targetname, so it works regardless of checkpoint spawn order.
+        WalkerFindTarget(e);
+    }
+
+    /// <summary>
+    /// QC <c>walker_findtarget</c> (walker.qc:326): resolve the walker's <c>target</c> key to the entry
+    /// <c>turret_checkpoint</c> and store it as the current path node (the non-FANCYPATHING branch:
+    /// <c>pathcurrent = e</c>). A missing target / non-checkpoint is tolerated (QC LOG_TRACEs and leaves
+    /// pathcurrent null, so the walker idles/roams in place).
+    /// </summary>
+    private static void WalkerFindTarget(Entity e)
+    {
+        if (string.IsNullOrEmpty(e.Target)) return;
+        Entity? cp = MapMover.FindFirstByTargetName(e.Target);
+        if (cp is null || cp.ClassName != "turret_checkpoint") return;   // QC: warn, but pathcurrent stays null
+        TurretAI.State(e).PathCurrent = cp;
     }
 
     public override void Think(Entity e)
@@ -182,15 +215,27 @@ public sealed class WalkerTurret : Turret
         WalkerState ws = W(e);
         QMath.AngleVectors(new Vector3(0f, e.Angles.Y, 0f), out Vector3 fwd, out _, out _);
 
+        TurretState ts = TurretAI.State(e);
+
         // --- gait selection (the QC if/else-if/else over it.enemy) ---
         if (melee)
         {
             // Mid-swing: the swing/damage were already scheduled; just stay in the MELEE gait.
             ws.AnimFlag = Gait.Melee;
         }
+        // QC walker.qc:360 — TSF_NO_PATHBREAK + a path: stick to the checkpoint chain even with an enemy in view
+        // (it still fires at the enemy through the combat brain; it just doesn't break path to chase).
+        else if ((e.SpawnFlags & TsfNoPathbreak) != 0 && ts.PathCurrent is not null)
+        {
+            WalkerMovePath(e, ws, ts);
+        }
         else if (e.Enemy is null)
         {
-            IdleSelect(e, ws, now, fwd);
+            // QC walker.qc:364 — no enemy + a path: patrol the checkpoint chain; else roam/last-seen.
+            if (ts.PathCurrent is not null)
+                WalkerMovePath(e, ws, ts);
+            else
+                IdleSelect(e, ws, now, fwd);
         }
         else
         {
@@ -246,9 +291,26 @@ public sealed class WalkerTurret : Turret
                 Prandom.Vec() * 256f + new Vector3(0f, 0f, 256f), 16);
         }
 
-        // NOTE (client-render): QC sets SendFlags |= TNSF_MOVE here + turrets_setframe(animflag) to net the
-        // gait frame to CSQC. The animation/networking layer is presentation and lives outside this server port.
+        // QC walker.qc:558 — turrets_setframe(it, it.animflag, false): stamp the active gait onto the networked
+        // Entity.Frame (the same client model-animator seam monsters + the ewheel use), so the walker plays its
+        // walk/run/melee/swim/idle animation. In QC the gait enum IS the model frame index (ANIM_NO=0 … ANIM_ROAM=11)
+        // and this also sets SendFlags |= TNSF_ANIM + anim_start_time; here Entity.Frame is the net sync, so writing
+        // it is the whole job. (The CSQC walker_draw 4-point ground-align + head avelocity spin stay client render.)
+        SetFrame(e, (float)ws.AnimFlag);
+
+        // NOTE (client-render): QC also sets SendFlags |= TNSF_MOVE here to net origin/velocity to CSQC; the port
+        // networks the moved origin through the shared entity feed, and the CSQC ground-align/head-spin is the only
+        // remaining pure-client piece of walker_draw.
         e.OldOrigin = e.Origin;
+    }
+
+    /// <summary>
+    /// QC <c>turrets_setframe(this, frame, false)</c> (sv_turrets.qc:299): stamp the locomotion/gait frame onto
+    /// the networked <see cref="Entity.Frame"/> (which the client model animator plays). Same seam EWheel uses.
+    /// </summary>
+    private static void SetFrame(Entity e, float frame)
+    {
+        if (e.Frame != frame) e.Frame = frame;
     }
 
     // walker_move_to (walker.qc:249): set the gait from the distance + waterlevel and the steer goal.
@@ -270,6 +332,51 @@ public sealed class WalkerTurret : Turret
         ws.Moveto = target;
         ws.Steerto = TurretMath.SteerAttract2(e, ws.Moveto, 0.5f, 500f, 0.95f);
         if (e.Enemy is not null) { ws.EnemyLastLoc = target; ws.EnemyLastTime = Api.Services is not null ? Api.Clock.Time : 0f; }
+    }
+
+    // walker_move_path (walker.qc:279, non-FANCYPATHING branch): advance the turret_checkpoint chain when close
+    // to the current node (turret_closetotarget, 64u), then steer toward it via walker_move_to. A null next node
+    // ends the chain (the walker stops following and falls back to idle/roam next think).
+    private void WalkerMovePath(Entity e, WalkerState ws, TurretState ts)
+    {
+        if (ts.PathCurrent is null) return;
+        if (CloseToTarget(e, ts.PathCurrent.Origin, PathNodeProximity))
+            ts.PathCurrent = NextCheckpoint(ts.PathCurrent);
+
+        if (ts.PathCurrent is null)
+            return;
+
+        ws.Moveto = ts.PathCurrent.Origin;
+        ws.Steerto = TurretMath.SteerAttract2(e, ws.Moveto, 0.5f, 500f, 0.95f);
+        WalkerMoveTo(e, ws, ws.Moveto, 0f);
+    }
+
+    /// <summary>
+    /// The next node in the checkpoint chain (QC <c>pathcurrent.enemy</c>, set by <c>turret_checkpoint_init</c>'s
+    /// <c>this.enemy = find(targetname, this.target)</c>). Resolved lazily by the current checkpoint's
+    /// <c>target</c> key so the chain works regardless of checkpoint spawn order; null terminates the chain.
+    /// </summary>
+    private static Entity? NextCheckpoint(Entity checkpoint)
+    {
+        if (string.IsNullOrEmpty(checkpoint.Target)) return null;
+        Entity? next = MapMover.FindFirstByTargetName(checkpoint.Target);
+        return (next is not null && next.ClassName == "turret_checkpoint") ? next : null;
+    }
+
+    /// <summary>
+    /// QC <c>turret_closetotarget</c> (sv_turrets.qc:1212): true when <paramref name="targ"/> (expanded by
+    /// <paramref name="range"/>) overlaps the turret's bbox (also expanded by <paramref name="range"/>).
+    /// </summary>
+    private static bool CloseToTarget(Entity e, Vector3 targ, float range)
+    {
+        Vector3 r = new Vector3(range, range, range);
+        Vector3 absMin = e.AbsMin != e.AbsMax ? e.AbsMin : e.Origin + e.Mins;
+        Vector3 absMax = e.AbsMin != e.AbsMax ? e.AbsMax : e.Origin + e.Maxs;
+        Vector3 aMin = targ - r, aMax = targ + r;
+        Vector3 bMin = absMin - r, bMax = absMax + r;
+        return aMin.X <= bMax.X && aMax.X >= bMin.X
+            && aMin.Y <= bMax.Y && aMax.Y >= bMin.Y
+            && aMin.Z <= bMax.Z && aMax.Z >= bMin.Z;
     }
 
     // The no-enemy branch of tr_think (walker.qc:362): chase the last-seen spot for up to 10s, else LOS-probe
@@ -312,11 +419,21 @@ public sealed class WalkerTurret : Turret
 
         if (ws.IdleTime < now)
         {
-            // 50% (or no TSL_ROAM) -> stop and idle 1..6s; else roam-walk for 4..6s. (TSL_ROAM == TSF_NO_PATHBREAK
-            // spawnflag; the port has no roam spawnflag plumbed, so default to the stop branch like a plain walker.)
-            ws.IdleTime = now + 1f + Prandom.Float() * 5f;
-            ws.Moveto = e.Origin;
-            ws.AnimFlag = Gait.No;
+            // QC walker.qc:403 — 50% chance, OR no TSL_ROAM spawnflag at all -> stop and idle 1..6s; else (TSL_ROAM
+            // set AND the 50% roll won) roam-walk a random nearby point for 4..6s.
+            if (Prandom.Float() < 0.5f || (e.SpawnFlags & TslRoam) == 0)
+            {
+                ws.IdleTime = now + 1f + Prandom.Float() * 5f;
+                ws.Moveto = e.Origin;
+                ws.AnimFlag = Gait.No;
+            }
+            else
+            {
+                ws.AnimFlag = Gait.Walk;
+                ws.IdleTime = now + 4f + Prandom.Float() * 2f;
+                ws.Moveto = e.Origin + Prandom.Vec() * 256f;
+                ws.HeadIdleTime = 0f;   // QC: it.tur_head.moveto = it.moveto; it.tur_head.idletime = 0
+            }
         }
     }
 
@@ -326,6 +443,8 @@ public sealed class WalkerTurret : Turret
         // real_angle = vectoangles(steerto) - angles; turny/turnx are raw degrees applied ONCE per think
         // (turret_think runs every frame with nextthink=time, so this is NOT frametime-scaled — matching Base).
         Vector3 realAngle = (ws.Steerto != Vector3.Zero ? QMath.VecToAngles(ws.Steerto) : e.Angles) - e.Angles;
+        // v_right for the (unreachable, Base-parity) strafe gaits.
+        QMath.AngleVectors(new Vector3(0f, e.Angles.Y, 0f), out _, out Vector3 right, out _);
         float vz = e.Velocity.Z;
         float turny = 0f, turnx = 0f;
 
@@ -335,7 +454,7 @@ public sealed class WalkerTurret : Turret
                 TurretMath.BrakeSimple(e, SpeedStop);
                 break;
             case Gait.Turn:
-                turny = 20f;  // g_turrets_unit_walker_turn
+                turny = Turn;  // g_turrets_unit_walker_turn
                 TurretMath.BrakeSimple(e, SpeedStop);
                 break;
             case Gait.Walk:
@@ -346,10 +465,24 @@ public sealed class WalkerTurret : Turret
                 turny = TurnRun;
                 TurretMath.MoveSimple(e, fwd, SpeedRun, 0.6f);
                 break;
+            // STRAFE_L/R + PAIN are never assigned by the brain (Base never drives them from SVQC either — they are
+            // leftover model anim states), but the switch cases are reproduced for full structural parity with the
+            // Base switch (walker.qc:492) so the constants/move semantics are carried faithfully.
+            case Gait.StrafeL:
+                turny = TurnStrafe;
+                TurretMath.MoveSimple(e, -right, SpeedWalk, 0.8f);
+                break;
+            case Gait.StrafeR:
+                turny = TurnStrafe;
+                TurretMath.MoveSimple(e, right, SpeedWalk, 0.8f);
+                break;
             case Gait.Jump:
                 vz += SpeedJump;
                 break;
             case Gait.Land:
+                break;
+            case Gait.Pain:
+                // QC walker.qc:509 — defer walker_setnoanim 0.25 (then nothing this think). Never reached.
                 break;
             case Gait.Melee:
                 TurretMath.BrakeSimple(e, SpeedStop);

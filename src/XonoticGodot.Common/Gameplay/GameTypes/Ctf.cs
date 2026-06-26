@@ -164,8 +164,9 @@ public sealed class Ctf : GameType
     /// <summary>Carry offset of a flag riding its carrier (QC FLAG_CARRY_OFFSET).</summary>
     private static readonly Vector3 FlagCarryOffset = new(-16f, 0f, 8f);
 
-    // QC vehicle vr_enter (racer): a boarding flag-carrier's flag is parked at '-190 0 96' relative to the craft.
-    private static readonly Vector3 FlagVehicleCarryOffset = new(-190f, 0f, 96f);
+    // QC VEHICLE_FLAG_OFFSET (sv_ctf.qh:64) = '0 0 96': a boarding flag-carrier's flag is parked directly above
+    // the craft's origin (the VehicleEnter / ctf_Handle_Pickup vehicle branches setorigin(flag, VEHICLE_FLAG_OFFSET)).
+    private static readonly Vector3 FlagVehicleCarryOffset = new(0f, 0f, 96f);
     /// <summary>Flag bbox (QC CTF_FLAG.m_mins/m_maxs scaled; here the vrint'd 60x60x70-ish hull).</summary>
     private static readonly Vector3 FlagMins = new(-30f, -30f, -32f);
     private static readonly Vector3 FlagMaxs = new(30f, 30f, 38f);
@@ -214,6 +215,8 @@ public sealed class Ctf : GameType
 
     private HookHandler<DeathEvent>? _deathHandler;
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageHandler;
+    private HookHandler<MutatorHooks.VehicleEnterArgs>? _vehicleEnterHandler;
+    private HookHandler<MutatorHooks.VehicleExitArgs>? _vehicleExitHandler;
 
     // ----- flagcarrier damage/force factors + auto-helpme (g_ctf_flagcarrier_*; gametypes-server.cfg, all 1) -----
     private const string CvarFcSelfDamage = "g_ctf_flagcarrier_selfdamagefactor"; // 1
@@ -341,6 +344,13 @@ public sealed class Ctf : GameType
         // QC MUTATOR_HOOKFUNCTION(ctf, Damage_Calculate): apply the flagcarrier damage/force factors + auto-helpme.
         _damageHandler = OnDamageCalculate;
         MutatorHooks.DamageCalculate.Add(_damageHandler);
+        // QC MUTATOR_HOOKFUNCTION(ctf, VehicleEnter/VehicleExit): if vehicle carry is not allowed, a carrier who
+        // boards a vehicle drops the flag (DROP_NORMAL). On exit the flag re-follows the player via the per-tick
+        // Tick() carrier-follow (carrier.Vehicle becomes null, so the next Tick anchor reverts to the player).
+        _vehicleEnterHandler = OnVehicleEnter;
+        MutatorHooks.VehicleEnter.Add(_vehicleEnterHandler);
+        _vehicleExitHandler = OnVehicleExit;
+        MutatorHooks.VehicleExit.Add(_vehicleExitHandler);
     }
 
     /// <summary>
@@ -385,6 +395,16 @@ public sealed class Ctf : GameType
         {
             MutatorHooks.DamageCalculate.Remove(_damageHandler);
             _damageHandler = null;
+        }
+        if (_vehicleEnterHandler is not null)
+        {
+            MutatorHooks.VehicleEnter.Remove(_vehicleEnterHandler);
+            _vehicleEnterHandler = null;
+        }
+        if (_vehicleExitHandler is not null)
+        {
+            MutatorHooks.VehicleExit.Remove(_vehicleExitHandler);
+            _vehicleExitHandler = null;
         }
     }
 
@@ -467,6 +487,27 @@ public sealed class Ctf : GameType
                         && (int)viewer.Team != carrierTeam
                         && !(StatusEffectsCatalog.ByName("invisibility") is { } invis
                              && StatusEffectsCatalog.Has(carrier, invis)),
+                });
+            }
+
+            // (3) wps_flagreturn (WP_FlagReturn, sv_ctf.qc:192): spawned ONLY when the carrier holds their OWN
+            // flag (selfCarry, a reverse-mode scenario). It is a fixed-position sprite at the CARRIED flag's home
+            // origin (ctf_spawnorigin + FLAG_WAYPOINT_OFFSET), colored cyan ('0 0.8 0.8'), and shown exclusively
+            // to the carrier via ctf_Return_Customize (owner == this.owner). This gives the self-carrier a "go back
+            // here to score" marker at their flag's spawn point (the capture base in one-flag-reverse mode).
+            if (selfCarry)
+            {
+                // The "return" destination is the carried flag's own home base (QC: player.flagcarried.ctf_spawnorigin).
+                Vector3 returnPos = f.HomeOrigin + FlagWaypointOffset;
+                Player capturedCarrier = carrier; // closure capture for the visibility lambda
+                into.Add(new Waypoints.WaypointSprite
+                {
+                    SpriteName = "FlagReturn", FixedOrigin = returnPos,
+                    Team = 0, // not team-restricted by WP team; visibility is per-viewer via the lambda
+                    Color = new Vector3(0f, 0.8f, 0.8f), // QC owp.colormod = '0 0.8 0.8'
+                    RadarIcon = 1, Health = -1f, MaxHealth = 1f,
+                    // QC ctf_Return_Customize (sv_ctf.qc:154): visible only to the carrier (client == this.owner).
+                    VisibleForPlayer = viewer => ReferenceEquals(viewer, capturedCarrier),
                 });
             }
         }
@@ -1790,6 +1831,55 @@ public sealed class Ctf : GameType
     /// gametype's live leave-play hook (see <see cref="GameType.OnPlayerRemoved"/>) — it forwards to
     /// <see cref="RemovePlayer"/> so a leaving carrier drops the flag and stale back-links are cleared.</summary>
     public override void OnPlayerRemoved(Player player) => RemovePlayer(player);
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(ctf, VehicleEnter) (sv_ctf.qc:2537): when a flag-carrier boards a vehicle, either
+    /// drop the flag (if neither <c>g_ctf_allow_vehicle_carry</c> nor <c>g_ctf_allow_vehicle_touch</c> is set) or
+    /// let it ride the vehicle (the per-tick <see cref="Tick"/> repositions it at <see cref="FlagVehicleCarryOffset"/>
+    /// relative to the vehicle when <c>carrier.Vehicle</c> is non-null). Returns false (does not consume the hook).
+    /// </summary>
+    private bool OnVehicleEnter(ref MutatorHooks.VehicleEnterArgs args)
+    {
+        if (args.Player is not Player player)
+            return false;
+        if (CarriedBy(player) is null)
+            return false;
+
+        // QC: if(!autocvar_g_ctf_allow_vehicle_carry && !autocvar_g_ctf_allow_vehicle_touch)
+        //         { ctf_Handle_Throw(player, NULL, DROP_NORMAL); return true; }
+        // When vehicle-carry is allowed the flag stays on the carrier and Tick() parks it at VEHICLE_FLAG_OFFSET
+        // (FlagVehicleCarryOffset) relative to the vehicle each tick — no explicit reattachment needed here.
+        bool vehicleCarry  = Cvar("g_ctf_allow_vehicle_carry",  0f) != 0f;
+        bool vehicleTouch  = Cvar("g_ctf_allow_vehicle_touch",  0f) != 0f;
+        if (!vehicleCarry && !vehicleTouch)
+            DropFlag(player);
+
+        return false; // QC return-value is consumed only for carry-allowed (attach), not for the drop path
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(ctf, VehicleExit) (sv_ctf.qc:2560): when a flag-carrier leaves a vehicle, reattach
+    /// the flag to the player at <see cref="FlagCarryOffset"/>. The port's per-tick <see cref="Tick"/> already
+    /// repositions the flag to the player (using <c>carrier.Vehicle ?? carrier</c> as the anchor), so this
+    /// handler only needs to fire when a world-entity attachment is present — it resets the entity to follow
+    /// the player on the very next tick without a one-tick displacement. Returns false (does not consume).
+    /// </summary>
+    private bool OnVehicleExit(ref MutatorHooks.VehicleExitArgs args)
+    {
+        if (args.Player is not Player player)
+            return false;
+        FlagState? carried = CarriedBy(player);
+        if (carried is null)
+            return false;
+
+        // QC VehicleExit: setattachment(flag, player, ""); setorigin(flag, FLAG_CARRY_OFFSET).
+        // The Tick() will reposition the entity on the next frame; here we snap it immediately so there is no
+        // single-frame visual lag at the vehicle exit point.
+        if (carried.Entity is Entity fe)
+            GametypeEntities.AttachToCarrier(fe, player, FlagCarryOffset);
+
+        return false;
+    }
 
     /// <summary>
     /// QC MUTATOR_HOOKFUNCTION(ctf, PlayerUseKey) (sv_ctf.qc:2452): the +use key in a carrier's hands throws the

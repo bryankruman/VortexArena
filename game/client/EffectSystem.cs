@@ -456,6 +456,13 @@ public partial class EffectSystem : Node3D
         if (effectName == "CASING_SHELL" || effectName == "casing_shell")
             return SpawnCasing(origin, velocity, shell: true);
 
+        // Raptor cluster-bomb burst: the DEATH_VH_RAPT_FRAGMENT FX tosses cosmetic shell-fragment gibs
+        // (RaptorCBShellfragToss) carrying the bursting bomb's velocity. The gameplay layer emits this as the
+        // RAPTOR_BOMB_SPREAD effect with the bomb velocity in Velocity; toss the frags, then fall through so the
+        // raptor_bomb_spread particle puff (the effectinfo block) still renders alongside them.
+        if (effectName == "RAPTOR_BOMB_SPREAD" || effectName == "raptor_bomb_spread")
+            SpawnRaptorShellfrags(origin, velocity);
+
         Effect? effect = ResolveEffect(effectName);
         // EFFECT_Null and the empty effectinfo string are intentional no-renders.
         if (effect is not null && string.IsNullOrEmpty(effect.NetName))
@@ -649,6 +656,13 @@ public partial class EffectSystem : Node3D
     /// </summary>
     public void SpawnGibs(NVec3 origin, NVec3 velocity, float amount = 4f, float floorZ = float.NegativeInfinity)
         => Gibs?.Splash(origin, velocity, amount, floorZ);
+
+    /// <summary>
+    /// Toss the raptor cluster-bomb shell-fragment gibs (QC <c>RaptorCBShellfragToss</c>, dispatched from the
+    /// DEATH_VH_RAPT_FRAGMENT burst FX). Cosmetic bouncing debris thrown from the bursting bomb (Quake space).
+    /// </summary>
+    public void SpawnRaptorShellfrags(NVec3 origin, NVec3 bombVel)
+        => Gibs?.TossShellfrags(origin, bombVel);
 
     /// <summary>
     /// Drop a single impact decal at a Quake-space point, projected along <paramref name="impactDir"/> (the

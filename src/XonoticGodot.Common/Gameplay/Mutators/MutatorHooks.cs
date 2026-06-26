@@ -508,6 +508,30 @@ public static class MutatorHooks
     public static readonly HookChain<GiveFragsForKillArgs> GiveFragsForKill = new();
 
     /// <summary>
+    /// EV_PreferPlayerScore_Clear (server/mutators/events.qh) — fired from <c>Score_ClearOnJoin</c> when a
+    /// player rejoins after going observer and <c>g_score_resetonjoin == -1</c> (admin config: rejoin clears
+    /// score unless a mutator vetoes). A handler returning <c>true</c> VETOES the score wipe — the gametype
+    /// prefers to KEEP the player's accumulated score. TKA returns true (the distinguishing rule for Team
+    /// Keepaway is persistent team score across specs). Slot0 the rejoining player (Entity).
+    /// </summary>
+    public struct PreferPlayerScore_ClearArgs
+    {
+        public readonly Entity Player;   // MUTATOR_ARGV_0_entity
+        public PreferPlayerScore_ClearArgs(Entity player) { Player = player; }
+    }
+    public static readonly HookChain<PreferPlayerScore_ClearArgs> PreferPlayerScore_Clear = new();
+
+    /// <summary>
+    /// Fire <see cref="PreferPlayerScore_Clear"/> for a rejoining player and return true if any handler
+    /// vetoes the score wipe (QC <c>MUTATOR_CALLHOOK(PreferPlayerScore_Clear, player)</c>).
+    /// </summary>
+    public static bool FirePreferPlayerScore_Clear(Entity player)
+    {
+        var a = new PreferPlayerScore_ClearArgs(player);
+        return PreferPlayerScore_Clear.Call(ref a);
+    }
+
+    /// <summary>
     /// EV_PlayHitsound (server/mutators/events.qh:124) — a player inflicted damage on a victim; a handler
     /// returning <c>true</c> FORCES a hitsound to play for the attacker (QC <c>MUTATOR_CALLHOOK(PlayHitsound,
     /// victim, attacker)</c>, server/damage.qc:632, ORed with the player/turret/monster victim test). Assault
@@ -1129,6 +1153,57 @@ public static class MutatorHooks
     {
         var a = new ItemSpawnArgs(item);
         return ItemSpawn.Call(ref a);
+    }
+
+    // ---- turret hooks (server/mutators/events.qh) -------------------------------------------------------
+
+    /// <summary>
+    /// EV_FusionReactor_ValidTarget (server/mutators/events.qh:1194-1203) — fired from the Fusion Reactor
+    /// firecheck (<c>turret_fusionreactor_firecheck</c>, fusionreactor.qc:9-13) for each candidate recharge
+    /// target. A handler may force-accept or force-reject the target; if no handler fires (or all fall through)
+    /// the normal firecheck gates decide.
+    ///
+    /// The QC return is a three-valued enum:
+    ///   <c>MUT_FUSREAC_TARG_CONTINUE</c> (0) — fall through; the normal firecheck continues.
+    ///   <c>MUT_FUSREAC_TARG_VALID</c>    (1) — force accept (return true from firecheck).
+    ///   <c>MUT_FUSREAC_TARG_INVALID</c>  (2) — force reject (return false from firecheck).
+    ///
+    /// The port models this with a nullable <see cref="Override"/>: <c>null</c> = continue (no handler set
+    /// it), <c>true</c> = VALID, <c>false</c> = INVALID. Handlers that want CONTINUE simply leave
+    /// <see cref="Override"/> at its null default and return <c>false</c>. Handlers that want VALID set
+    /// <see cref="Override"/> = true and return <c>true</c>; INVALID handlers set it false and return true.
+    /// <see cref="FireFusionReactorValidTarget"/> reads the field after the chain runs.
+    ///
+    /// No stock Xonotic mutator registers this hook; it is present so the call site in
+    /// <see cref="FusionReactorTurret"/> matches Base exactly and a future mod can intercept recharging.
+    /// </summary>
+    public struct FusionReactorValidTargetArgs
+    {
+        public readonly Entity Turret;   // MUTATOR_ARGV_0_entity — the reactor
+        public readonly Entity Target;   // MUTATOR_ARGV_1_entity — the candidate recipient
+        /// <summary>
+        /// <c>null</c> = fall through (MUT_FUSREAC_TARG_CONTINUE); <c>true</c> = force accept
+        /// (MUT_FUSREAC_TARG_VALID); <c>false</c> = force reject (MUT_FUSREAC_TARG_INVALID).
+        /// </summary>
+        public bool? Override;           // in/out — set by handlers, read by the Fire helper
+        public FusionReactorValidTargetArgs(Entity turret, Entity target)
+        { Turret = turret; Target = target; Override = null; }
+    }
+    public static readonly HookChain<FusionReactorValidTargetArgs> FusionReactorValidTarget = new();
+
+    /// <summary>
+    /// Fire <see cref="FusionReactorValidTarget"/> for a candidate recharge target (QC
+    /// <c>MUTATOR_CALLHOOK(FusionReactor_ValidTarget, this, targ)</c>) and return the resolved tri-state:
+    /// <c>true</c> if a handler forced VALID, <c>false</c> if one forced INVALID, <c>null</c> if all fell
+    /// through (normal firecheck gates apply). The Fusion Reactor's firecheck calls this and branches on the
+    /// result before applying its own gates.
+    /// </summary>
+    public static bool? FireFusionReactorValidTarget(Entity turret, Entity target)
+    {
+        if (FusionReactorValidTarget.Count == 0) return null;   // fast path — no handlers registered
+        var a = new FusionReactorValidTargetArgs(turret, target);
+        FusionReactorValidTarget.Call(ref a);
+        return a.Override;   // null = continue; true = force valid; false = force invalid
     }
 
     // ---- match-end hooks (server/world.qc NextLevel) ----------------------------------------------------

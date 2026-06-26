@@ -205,5 +205,11 @@ namespace XonoticGodot.Common.Framework
 
         /// <summary>QC player <c>.vehicle_reload2</c> — secondary reload progress 0..100 (bound(0,100*(time-lip)/(delay-lip),100)).</summary>
         public float VehReload2;
+
+        // NOTE: QC vehicle <c>.mass</c> (spiderbot 5000 / racer 900 / raptor 1) is already promoted on the
+        // Entity partial by Gameplay/Damage/DamageEntityState.cs (`public float Mass;`), where the damage
+        // push pipeline reads it (DamageSystem.cs:785). It is intentionally NOT redeclared here — a second
+        // declaration on the same partial would be a CS0102 duplicate-member compile error. Spiderbot.Spawn's
+        // `vehicle.Mass = 5000f` binds to that existing field.
     }
 }

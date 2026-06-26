@@ -42,6 +42,32 @@ public partial class VehicleHud : HudPanel
     public Color Ammo1Color { get; set; } = new(0.8f, 0.8f, 0.3f);
     public Color Ammo2Color { get; set; } = new(0.3f, 0.6f, 0.9f);
 
+    // =====================================================================================
+    //  Centered main reticle (Vehicles_drawCrosshair) — the per-vehicle / per-mode crosshair
+    // =====================================================================================
+
+    /// <summary>
+    /// The centered crosshair art for the active vehicle/fire-mode (QC <c>Vehicles_drawCrosshair</c>: the
+    /// per-mode reticle each <c>vr_crosshair</c> selects — e.g. the raptor's <c>vCROSS_BURST</c> bomb /
+    /// <c>vCROSS_RAIN</c> flare reticle). Empty = no centered reticle (on-foot / not fed). Drawn at
+    /// screen-center, tinted by health when <c>cl_vehicles_crosshair_colorize</c> is set.
+    /// </summary>
+    public string MainReticle { get; set; } = "";
+
+    // =====================================================================================
+    //  Raptor bomb dropmark (raptor vr_crosshair tracetoss predictor)
+    // =====================================================================================
+
+    /// <summary>Whether the bomb dropmark is shown this frame (raptor bomb mode, not spectating).</summary>
+    public bool DropmarkActive { get; set; }
+    /// <summary>The dropmark's predicted bomb-impact point (Godot space); projected to a 2D marker.</summary>
+    public Vector3 DropmarkWorld { get; set; }
+    /// <summary>True while the bombs are reloaded (reload2 == 1): the live green predictor. False = the last
+    /// predicted impact, drawn red + larger while it lingers (QC <c>dropmark.cnt &gt; time</c>).</summary>
+    public bool DropmarkLive { get; set; }
+    /// <summary>The dropmark image (QC <c>vCROSS_DROP</c>).</summary>
+    public string DropmarkImage { get; set; } = "gfx/vehicles/crosshair_drop";
+
     // Art base names selected by ConfigureForVehicle (the vehicle silhouette + weapon overlays).
     private string _vehiclePic = "vehicle_racer";
     private string? _weapon1Pic = "vehicle_racer_weapon1";
@@ -49,7 +75,7 @@ public partial class VehicleHud : HudPanel
 
     private double _time;
 
-    public override bool IsDynamic => InVehicle || _aux.Count > 0;
+    public override bool IsDynamic => InVehicle || _aux.Count > 0 || MainReticle.Length > 0 || DropmarkActive;
 
     // =====================================================================================
     //  Low-health / low-shield alarm (QC vehicle_alarm + Vehicles_drawHUD, cl_vehicles.qc:3-9 / 228-267)
@@ -98,6 +124,8 @@ public partial class VehicleHud : HudPanel
         InVehicle = false;
         Visible = false;
         _aux.Clear();
+        MainReticle = "";
+        DropmarkActive = false;
         StopAlarms(); // QC: the alarm channels stop when the vehicle HUD is dismissed
         QueueRedraw();
     }
@@ -265,6 +293,8 @@ public partial class VehicleHud : HudPanel
     protected override void DrawPanel()
     {
         DrawAuxiliaryXhairs();
+        DrawBombDropmark();   // raptor vr_crosshair: the predicted bomb-impact marker (under the centered reticle)
+        DrawMainReticle();    // Vehicles_drawCrosshair: the centered per-mode reticle
 
         if (!InVehicle)
             return;
@@ -342,6 +372,82 @@ public partial class VehicleHud : HudPanel
             : new Rect2(area.Position, new Vector2(area.Size.X * fraction, area.Size.Y));
         if (revealW > 0.5f)
             DrawTextureRectRegion(tex, dst, src, fallback);
+    }
+
+    /// <summary>
+    /// Port of <c>Vehicles_drawCrosshair</c> (cl_vehicles.qc:293): draw the centered per-mode reticle at
+    /// screen-center, scaled by <c>cl_vehicles_crosshair_size</c> and faded by <c>crosshair_alpha</c>, tinted
+    /// by vehicle health when <c>cl_vehicles_crosshair_colorize</c> is set (else white). The reticle image is
+    /// chosen by the per-vehicle <c>vr_crosshair</c> (e.g. raptor bomb = vCROSS_BURST, flare = vCROSS_RAIN).
+    /// </summary>
+    private void DrawMainReticle()
+    {
+        if (MainReticle.Length == 0) return;
+        Texture2D? tex = TextureCache.Get(MainReticle);
+        if (tex is null) return;
+
+        float size = GlobalF("cl_vehicles_crosshair_size", 1f);
+        if (size <= 0f) size = 1f;
+        float alpha = GlobalF("crosshair_alpha", 0.8f);
+
+        Vector2 ts = tex.GetSize() * size;
+        // QC centers on vid_conwidth/conheight: screen center → panel-local.
+        Vector2 center = ScreenCenter() - PanelRect.Position;
+        // QC cl_vehicles_crosshair_colorize → crosshair_getcolor by VEHICLESTAT_HEALTH; else '1 1 1'.
+        Color tint = GlobalF("cl_vehicles_crosshair_colorize", 1f) != 0f
+            ? CrosshairHealthColor(Health)
+            : Colors.White;
+        tint.A *= alpha;
+        DrawTextureRect(tex, new Rect2(center - ts * 0.5f, ts), tile: false, tint);
+    }
+
+    /// <summary>
+    /// Port of the raptor <c>vr_crosshair</c> bomb dropmark (raptor.qc:792-832): project the predicted bomb-
+    /// impact point to a 2D marker. While the bombs are reloaded (reload2 == 1, <see cref="DropmarkLive"/>) the
+    /// marker is the live tracetoss prediction drawn GREEN at normal size; after a drop the marker lingers on
+    /// the last impact, drawn RED at 1.25× size until it expires. Each is drawn twice (additive + normal) so it
+    /// stays visible against a bright sky, exactly like QC.
+    /// </summary>
+    private void DrawBombDropmark()
+    {
+        if (!DropmarkActive) return;
+        Camera3D? cam = GetViewport()?.GetCamera3D();
+        if (cam is null) return;
+        Vector3 world = DropmarkWorld; // already Godot space (converted at the NetGame feed boundary)
+        if (cam.IsPositionBehind(world)) return;
+
+        Texture2D? tex = TextureCache.Get(DropmarkImage);
+        if (tex is null) return;
+
+        float size = GlobalF("cl_vehicles_crosshair_size", 1f);
+        if (size <= 0f) size = 1f;
+        float alpha = GlobalF("crosshair_alpha", 0.8f);
+        // QC: green '0 1 0' while live at base size; red '1 0 0' at 1.25× after release.
+        Color c = DropmarkLive ? new Color(0f, 1f, 0f) : new Color(1f, 0f, 0f);
+        float scale = DropmarkLive ? size : size * 1.25f;
+        Vector2 ts = tex.GetSize() * scale;
+
+        Vector2 screen = cam.UnprojectPosition(world);
+        Vector2 local = screen - PanelRect.Position - ts * 0.5f;
+        var dst = new Rect2(local, ts);
+        // QC draws the dropmark twice: additive at 0.9*alpha then normal at 0.6*alpha for visibility.
+        DrawTextureRect(tex, dst, tile: false, new Color(c.R, c.G, c.B, alpha * 0.9f));
+        DrawTextureRect(tex, dst, tile: false, new Color(c.R, c.G, c.B, alpha * 0.6f));
+    }
+
+    /// <summary>QC <c>crosshair_getcolor</c> by health: green when healthy, fading to red when critical. Mirrors
+    /// the simple health→color used for the colorized vehicle reticle (cl_vehicles_crosshair_colorize).</summary>
+    private static Color CrosshairHealthColor(float health01)
+    {
+        float h = Mathf.Clamp(health01, 0f, 1f);
+        return new Color(Mathf.Lerp(1f, 0.3f, h), Mathf.Lerp(0.2f, 1f, h), 0.2f);
+    }
+
+    /// <summary>The screen-space center (QC <c>vid_conwidth/conheight * 0.5</c>).</summary>
+    private Vector2 ScreenCenter()
+    {
+        Rect2 vp = GetViewportRect();
+        return vp.Size * 0.5f;
     }
 
     private void DrawAuxiliaryXhairs()

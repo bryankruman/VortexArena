@@ -93,6 +93,15 @@ public sealed class TurretState
     public Action<Entity>? OnDeathFx;
     public Action<Entity>? OnRespawn;
 
+    /// <summary>
+    /// QC <c>turret_think</c> — the per-frame brain think the spawnfunc wires (re-arms NextThink each tick and
+    /// runs the descriptor's combat/locomotion). Recorded here so <see cref="TurretAI.Respawn"/> can re-install
+    /// it (QC <c>turret_respawn</c> does <c>setthink(this, turret_think)</c>): once <see cref="TurretAI.Die"/>
+    /// swaps <c>Think</c> over to the hide/respawn chain, the only way the resurrected turret resumes thinking is
+    /// for respawn to put this driver back. Null on a turret spawned without the spawnfunc (headless tests).
+    /// </summary>
+    public EntityThink? PerFrameThink;
+
     /// <summary>QC <c>.tur_dist_enemy</c> — muzzle→enemy distance, refreshed each think (turret_do_updates).</summary>
     public float DistEnemy;
 
@@ -121,11 +130,31 @@ public sealed class TurretState
     /// firecheck/impact trace is skipped headless).</summary>
     public float ImpactTime;
 
+    /// <summary>
+    /// QC <c>.tur_defend</c> (sv_turrets.qc:1238) — the world point this turret guards, resolved from its map
+    /// <c>.target</c> key by <c>turret_findtarget</c>. When set, <c>turret_targetscore_generic</c> scores targets
+    /// by how close they are to this point (defendmode) instead of by the optimal killzone, so the turret
+    /// prioritises threats near what it protects. Null = no defend point (the common case). A per-turret-class
+    /// <see cref="TurretParams.DefendPoint"/> takes precedence; this is the map-entity-fed one.
+    /// </summary>
+    public Vector3? DefendPoint;
+
     /// <summary>QC <c>.fireflag</c> (phaser.qc) — the phaser head charge/discharge animation state machine flag:
     /// 0 = idle, 1 = charging/firing (head frame cycles 1→10), 2 = discharging (frame advances to 15 then resets to
     /// idle). Drives the <c>tr_think</c> head-frame anim and the <c>turret_phaser_firecheck</c> fire block. Only the
     /// phaser uses it; other turrets advance their head frame directly without a fireflag.</summary>
     public int FireFlag;
+
+    /// <summary>
+    /// QC <c>.turret_addtarget</c> (sv_turrets.qh:84) — per-turret external target-reception hook. When non-null
+    /// a <c>turret_targettrigger</c> touch (or another turret's designator) calls this to hand the turret a
+    /// pre-identified target, bypassing the normal self-scan pipeline. The delegate mirrors the QC signature
+    /// <c>bool(entity this, entity e_target, entity e_sender)</c>: it validates the
+    /// candidate and, if valid, sets <c>turret.Enemy</c>. Only turrets that set
+    /// <see cref="TurretAI.SelectTriggerTarget"/> in their select flags are eligible to receive targets
+    /// (checked by the trigger system before dispatching). Null = no external-target hook (most turrets).
+    /// </summary>
+    public Func<Entity, Entity?, Entity?, bool>? AddTarget;
 }
 
 /// <summary>
@@ -157,6 +186,22 @@ public static class TurretAI
     public const int SelectRangeLimits = 1 << 6; ///< honour min/max range
     public const int SelectNoTurrets  = 1 << 7;  ///< don't attack other turrets
     public const int SelectAngleLimits = 1 << 8; ///< honour per-axis aim_maxpitch/aim_maxrot at acquisition
+
+    /// <summary>QC <c>TFL_TARGETSELECT_VEHICLES</c> (turret.qh BIT(14)) — may target manned vehicles.
+    /// When this flag is set an UNMANNED vehicle (no owner/pilot) is rejected, mirroring
+    /// <c>turret_validate_target</c> sv_turrets.qc:706-708:
+    /// <c>IS_VEHICLE &amp;&amp; VEHICLES &amp;&amp; !owner → -7</c>.
+    /// Vehicles with a pilot (owner != null) pass through the gate.
+    /// Without this flag vehicles are neither explicitly accepted nor rejected by <see cref="ValidTarget"/>
+    /// (they fall through the player/missile checks and are treated as generic solid entities).</summary>
+    public const int SelectVehicles = 1 << 9;
+
+    /// <summary>QC <c>TFL_TARGETSELECT_TRIGGERTARGET</c> (turret.qh BIT(5)) — declarative marker: this turret
+    /// accepts externally-designated targets from <c>turret_targettrigger</c> touch events and similar relays.
+    /// The flag is checked by the trigger system to decide whether to call the turret's
+    /// <see cref="TurretState.AddTarget"/> hook; it is NOT consulted inside <see cref="ValidTarget"/> or
+    /// <see cref="SelectTarget"/> (external assignment bypasses the normal scan pipeline, as in Base).</summary>
+    public const int SelectTriggerTarget = 1 << 10;
 
     // ---- firecheck flags (QC TFL_FIRECHECK_*, turret.qh) used by the RunCombat fire gate ----
     public const int FireCheckRefire    = 1 << 0;  ///< honour attack_finished refire delay
@@ -284,6 +329,13 @@ public static class TurretAI
         bool isClient = IsPlayer(target);
         bool isMissile = IsMissile(target);
 
+        // Vehicle gate (QC turret_validate_target, sv_turrets.qc:706-708): if the target IS a vehicle and the
+        // SelectVehicles flag is set, reject UNMANNED vehicles (no owner/pilot). A manned vehicle (owner != null)
+        // passes through and is treated as a valid non-player, non-missile target. Without SelectVehicles the
+        // flag is absent and vehicles fall through all checks the same way any unrecognised solid entity would.
+        bool isVehicle = (target.VehicleFlags & VehicleFlags.IsVehicle) != 0;
+        if (isVehicle && (selectFlags & SelectVehicles) != 0 && target.Owner is null) return false;
+
         // Players require the players flag; projectiles require the missiles flag.
         if (isClient && (selectFlags & SelectPlayers) == 0) return false;
         if ((selectFlags & SelectMissilesOnly) != 0 && !isMissile) return false;
@@ -359,9 +411,11 @@ public static class TurretAI
         TurretState st = State(turret);
         float tvtDist = (turret.Origin - TargetCenter(target)).Length();
 
-        // Distance score.
+        // Distance score. The per-class param defend point wins; otherwise use the map-entity-fed one resolved by
+        // FindTarget from the turret's .target key (QC tur_defend, set by turret_findtarget).
         float dScore;
-        if (p.DefendPoint is { } defend)
+        Vector3? defendPoint = p.DefendPoint ?? st.DefendPoint;
+        if (defendPoint is { } defend)
         {
             float dDist = (TargetCenter(target) - defend).Length();
             dScore = 1f - dDist / p.RangeMax;
@@ -595,6 +649,10 @@ public static class TurretAI
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
         float frameTime = Api.Services is not null ? Api.Clock.FrameTime : 0f;
 
+        // Framework low-HP damage feedback (cl_turrets.qc turret_draw: spark/smoke tiers). Runs every think
+        // regardless of active state (QC turret_draw is a per-frame client draw); ewheel/walker self-skip inside.
+        DrawFx(turret);
+
         // Ammo regen (QC turret_think: ammo += ammo_recharge * frametime, capped).
         if (st.Ammo < st.AmmoMax)
             st.Ammo = System.Math.Min(st.Ammo + st.AmmoRecharge * frameTime, st.AmmoMax);
@@ -653,6 +711,12 @@ public static class TurretAI
         // Fire gate (QC turret_firecheck): refire/ammo, then the impact-entity branches, then the aim-tolerance
         // and too-close gates. Default firecheck_flags = DEAD|DISTANCES|LOS|AIMDIST|TEAMCHECK|AMMO_OWN|REFIRE.
         if (st.AttackFinished > now) return enemy;                    // TFL_FIRECHECK_REFIRE
+        // Per-unit firecheck override (QC .turret_firecheckfunc, e.g. phaser.qc turret_phaser_firecheck): block fire
+        // entirely while a custom fireflag state machine is mid-cycle. The phaser sets FireFlag=1 (beam active) /
+        // FireFlag=2 (discharge head animation, ~5 tr_think frames after the beam ends until the head returns to
+        // idle) and Base's firecheck returns false for the whole window — including the discharge phase the bare
+        // refire hold doesn't cover. No other turret sets FireFlag, so this is inert for them.
+        if (st.FireFlag != 0) return enemy;                          // .turret_firecheckfunc (fireflag guard)
         if (st.Ammo < p.ShotDamage) return enemy;                     // TFL_FIRECHECK_AMMO_OWN
 
         // TFL_SHOOT_VOLLYALWAYS mid-burst with a LIVE enemy (turret_firecheck:889-892): when the burst is already
@@ -815,6 +879,31 @@ public static class TurretAI
     }
 
     /// <summary>
+    /// Port of the defend-point half of <c>turret_findtarget</c> (sv_turrets.qc:1218): resolve the turret's
+    /// map <c>.target</c> key to the entity it should guard (<see cref="TurretState.DefendPoint"/>) and derive the
+    /// resting head pose (<see cref="TurretState.IdleAim"/>) so an idle turret faces what it defends. A target that
+    /// resolves to a <c>turret_checkpoint</c> is ignored (QC: "turrets don't defend checkpoints" — that is the
+    /// ewheel/walker roam path, wired separately). A missing/empty target is a no-op (no defend point).
+    /// The turret_manager auto-spawn + reloadcvars think (the other half of turret_findtarget) is not ported —
+    /// the port's balance is C# const, not live-reloadable cvars.
+    /// </summary>
+    public static void FindTarget(Entity turret)
+    {
+        if (string.IsNullOrEmpty(turret.Target)) return;
+
+        Entity? targ = MapMover.FindFirstByTargetName(turret.Target);
+        if (targ is null) return;                                  // QC: warn + clear target; nothing to defend
+        if (targ.ClassName == "turret_checkpoint") return;        // QC: turrets don't defend checkpoints
+
+        TurretState st = State(turret);
+        st.DefendPoint = targ.Origin;
+
+        // QC idle_aim = tur_head.angles + angleofs(tur_head, targ). At spawn the head angles are zero (idle), so
+        // the resting pose is the angular offset from the head toward the defend point.
+        st.IdleAim = st.HeadAngles + TurretMath.AngleOfs(turret.Origin, turret.Angles, targ.Origin);
+    }
+
+    /// <summary>
     /// Port of <c>turret_use</c> (sv_turrets.qc): on trigger, the turret adopts the activator's team and goes
     /// active (or inactive + teamless if the activator is teamless). Wire to <see cref="Entity.Use"/>.
     /// </summary>
@@ -948,10 +1037,27 @@ public static class TurretAI
             return;
         }
 
-        // Schedule respawn (QC turret_hide -> turret_respawn after respawntime).
+        // Schedule respawn via the QC two-step (turret_die:200-201 -> turret_hide:159-163): first a 0.2s think
+        // that runs turret_hide (which sets EF_NODRAW and schedules turret_respawn at respawntime - 0.2), so the
+        // total dead time is exactly respawntime. The 0.2s split exists so the death FX/status update networks
+        // before the body is hidden; we mirror the timing rather than respawning directly after RespawnTime.
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
         turret.DeadState = DeadFlag.Respawning;
-        turret.NextThink = now + st.RespawnTime;
+        turret.NextThink = now + 0.2f;
+        turret.Think = Hide;
+    }
+
+    /// <summary>
+    /// Port of <c>turret_hide</c> (sv_turrets.qc:159): the second step of the death sequence. Hides the body
+    /// (QC <c>effects |= EF_NODRAW</c>) and schedules <see cref="Respawn"/> at <c>respawntime - 0.2</c> so the
+    /// dead interval matches <see cref="TurretState.RespawnTime"/> exactly (the 0.2s was already spent by
+    /// <see cref="Die"/>). Shaped as an <see cref="EntityThink"/>.
+    /// </summary>
+    public static void Hide(Entity turret)
+    {
+        TurretState st = State(turret);
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        turret.NextThink = now + System.Math.Max(st.RespawnTime - 0.2f, 0f);
         turret.Think = Respawn;
     }
 
@@ -976,10 +1082,46 @@ public static class TurretAI
         st.Ammo = st.AmmoMax;
         st.AttackFinished = 0f;
         st.Active = turret.Team != 0f;
-        turret.Think = null;
-        turret.NextThink = 0f;
+
+        // QC turret_respawn: setthink(this, turret_think); nextthink = time. Re-install the per-frame brain (the
+        // spawnfunc recorded it) so the resurrected turret resumes thinking — Die had swapped Think over to the
+        // hide/respawn chain, so without this it would never think again. Headless tests with no spawnfunc leave
+        // PerFrameThink null (they drive Think by hand), so fall back to clearing the think there.
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        turret.Think = st.PerFrameThink;
+        turret.NextThink = st.PerFrameThink is not null ? now : 0f;
 
         st.OnRespawn?.Invoke(turret);
+    }
+
+    /// <summary>
+    /// Port of the low-HP feedback in the framework <c>turret_draw</c> (cl_turrets.qc:39-53) — the all-turret
+    /// damage smoke/spark tiers: a turret under 127 hp throws a <c>te_spark</c> (3%/frame), under 85 hp a large
+    /// smoke puff (1%/frame), under 32 hp a small smoke puff (1.5%/frame), all from one shared random roll like
+    /// Base. <c>turret_draw</c> is the default client draw EVERY turret uses EXCEPT the mobile ewheel/walker,
+    /// which install their own <c>ewheel_draw</c>/<c>walker_draw</c> (with their own spark) — so this skips those
+    /// two by classname to avoid double-emitting. The port has no CSQC turret edict, so the FX is emitted
+    /// server-side (the temp-entities/point-particles network to every viewer identically). Called once per think
+    /// from <see cref="RunCombat"/>; no-op headless (needs the effect service).
+    /// </summary>
+    private static void DrawFx(Entity turret)
+    {
+        if (Api.Services is null) return;
+        // ewheel/walker replace turret_draw with their own draw (which emits its own spark) — don't double up.
+        if (turret.ClassName == "turret_ewheel" || turret.ClassName == "turret_walker") return;
+
+        float hp = turret.GetResource(ResourceType.Health);
+        if (hp >= 127f) return;                                   // QC: the whole block is gated on health < 127
+
+        float dt = Prandom.Float();                               // QC: dt = random() (one roll shared by all tiers)
+        if (dt < 0.03f)
+            EffectEmitter.TeSpark(turret.Origin + new Vector3(0f, 0f, 40f),
+                Prandom.Vec() * 256f + new Vector3(0f, 0f, 256f), 16);   // QC te_spark(origin+'0 0 40', .., 16)
+
+        if (hp < 85f && dt < 0.01f)
+            EffectEmitter.Emit("SMOKE_LARGE", turret.Origin + Prandom.Vec() * 80f);   // QC EFFECT_SMOKE_LARGE
+        if (hp < 32f && dt < 0.015f)
+            EffectEmitter.Emit("SMOKE_SMALL", turret.Origin + Prandom.Vec() * 80f);   // QC EFFECT_SMOKE_SMALL
     }
 
     /// <summary>Is the muzzle, pointing along <paramref name="angles"/>, aimed within <paramref name="tol"/> of <paramref name="aimPos"/>?</summary>

@@ -339,6 +339,37 @@ public static class VehiclePhysics
     }
 
     // =====================================================================================
+    // Bomb dropmark prediction (QC raptor vr_crosshair tracetoss) — the bomb-impact predictor.
+    // =====================================================================================
+
+    /// <summary>
+    /// Port of the raptor <c>vr_crosshair</c> dropmark <c>tracetoss</c> (raptor.qc:792-799): predict where a
+    /// cluster bomb dropped right now would land. QC seeds a point-sized MOVETYPE_BOUNCE body (gravity 1,
+    /// dphitcontentsmask DPCONTENTS_SOLID) at the raptor origin with the raptor velocity, then runs the engine
+    /// <c>tracetoss</c> ballistic sweep to its first solid contact and marks <c>trace_endpos</c>. Reproduced
+    /// here as a stepped gravity integration (the same model <see cref="Monsters.MonsterAI"/> uses), returning
+    /// the predicted impact point in Quake space. Pure presentation: drives only the HUD dropmark crosshair.
+    /// </summary>
+    public static Vector3 BombDropPredict(Entity vehic)
+    {
+        if (Api.Services is null) return vehic.Origin;
+        float g = Api.Cvars.GetFloat("sv_gravity"); // bomb gravity = 1 (full), so sv_gravity unscaled
+        if (g == 0f) g = 800f;
+        Vector3 pos = vehic.Origin;
+        Vector3 v = vehic.Velocity;
+        const float step = 0.05f;
+        for (int i = 0; i < 200; ++i) // up to ~10s of fall, plenty for any drop height
+        {
+            Vector3 next = pos + v * step;
+            TraceResult tr = Api.Trace.Trace(pos, Vector3.Zero, Vector3.Zero, next, MoveFilter.Normal, vehic);
+            if (tr.Fraction < 1f) return tr.EndPos;
+            pos = next;
+            v.Z -= g * step;
+        }
+        return pos;
+    }
+
+    // =====================================================================================
     // Team helpers (QC SAME_TEAM / DIFF_TEAM).
     // =====================================================================================
 

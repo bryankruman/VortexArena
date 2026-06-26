@@ -105,6 +105,36 @@ public sealed class BotBrain
     public bool AutoReadied;
 
     /// <summary>
+    /// QC <c>havocbot_role_timeout</c> (sv_assault.qc:473/509): absolute time at which the Assault role
+    /// resets. 0 = unset (will be stamped to <c>time + 120</c> on the next role invocation). Stored here
+    /// (not in the static role function) because roles are stateless delegates; each bot owns its own timer.
+    /// </summary>
+    public float AssaultRoleTimeout;
+
+    /// <summary>
+    /// QC <c>havocbot_attack_time</c> (sv_assault.qc:457): absolute time until which the Assault role skips
+    /// goal re-rating (commit window). Set to <c>time + 2</c> when the bot has PVS to both the approach
+    /// waypoint and the objective wall; cleared to 0 on death. When <c>AssaultAttackTime &gt; now</c> the role
+    /// returns early (QC <c>if(this.havocbot_attack_time &gt; time) return;</c>) so the bot keeps its current
+    /// route rather than immediately re-rating.
+    /// </summary>
+    public float AssaultAttackTime;
+
+    /// <summary>
+    /// QC <c>havocbot_role_timeout</c> (sv_onslaught.qc:1461): absolute time at which the Onslaught offense role
+    /// resets (re-evaluates strategy). 0 = unset (stamped to <c>time + 120</c> on the next role invocation). The
+    /// defense/assistant roles are no-ops that reset straight back to offense in Base, so offense is the only role.
+    /// </summary>
+    public float OnslaughtRoleTimeout;
+
+    /// <summary>
+    /// QC <c>havocbot_attack_time</c> (sv_onslaught.qc:1470): absolute time until which the Onslaught offense role
+    /// skips goal re-rating (commit window). Set to <c>time + 5</c> when the bot has PVS to both an approach
+    /// waypoint and the enemy generator, or <c>time + 2</c> for a control-point approach; cleared to 0 on death.
+    /// </summary>
+    public float OnslaughtAttackTime;
+
+    /// <summary>
     /// QC the pre-game movement holds (bot_think:80-83 campaign hold + :122-127 countdown): when this returns
     /// true the bot keeps its buttons but emits zero movement. Wired by <see cref="BotPopulation"/> to
     /// <c>time &lt; game_starttime || (g_campaign &amp;&amp; !campaign_bots_may_start)</c>; null = no hold.
@@ -239,6 +269,9 @@ public sealed class BotBrain
             Nav.ClearRoute();
             bot.Enemy = null;
             _strategyForced = true; // QC navigation_goalrating_timeout_force while dead
+            // QC havocbot_role_ast_offense/defense: clears havocbot_attack_time on death so the bot doesn't
+            // remain committed to an assault push after respawning.
+            AssaultAttackTime = 0f;
             // QC: jump must be RELEASED for a frame (DEAD_DYING) so PlayerThink sees the keydown edge, then
             // PRESSED while DEAD_DEAD — that's how a bot asks to respawn through the same DEAD_* machine.
             bool jump = bot.DeadState == DeadFlag.Dead;
@@ -380,9 +413,11 @@ public sealed class BotBrain
                 wantAttack = false;
                 wantAttack2 = true;
             }
-            // QC havocbot_ai:142-146: bot_nofire (and independent_players) suppress the fire button while
-            // leaving aim + combat movement intact.
-            if (Cvars.Bool("bot_nofire"))
+            // QC havocbot_ai:142 `if (autocvar_bot_nofire || IS_INDEPENDENT_PLAYER(this))`: bot_nofire AND
+            // independent-players modes (Race/CTS solo time-trial) suppress the fire button while leaving aim +
+            // combat movement intact. The CTS gametype forces _independent_players=1 (Cts.Activate), so a CTS bot
+            // runs the course without shooting at other runners.
+            if (Cvars.Bool("bot_nofire") || Cvars.Bool("_independent_players"))
             {
                 wantAttack = false;
                 wantAttack2 = false;

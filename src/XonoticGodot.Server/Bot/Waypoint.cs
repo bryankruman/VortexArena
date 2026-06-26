@@ -62,6 +62,14 @@ public sealed class Waypoint
     /// <summary>Dense index into <see cref="WaypointNetwork.Nodes"/> (assigned on add). -1 until added.</summary>
     public int Index = -1;
 
+    /// <summary>
+    /// Bot-visit counter (QC <c>.cnt</c> on waypoints). Incremented each time a bot rates this waypoint as
+    /// its assault target approach-point so bots spread across waypoints near the same objective rather than
+    /// all converging on the single nearest one (QC <c>havocbot_goalrating_ast_targets</c>:
+    /// <c>++best.cnt</c>). Reset to 0 when the network is rebuilt for a new map.
+    /// </summary>
+    public int VisitCount;
+
     /// <summary>Outgoing links (QC <c>wp00..wp31</c>). Each carries a precomputed travel cost.</summary>
     public readonly List<WaypointLink> Links = new();
 

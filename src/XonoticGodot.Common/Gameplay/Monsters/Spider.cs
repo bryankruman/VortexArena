@@ -72,6 +72,19 @@ public sealed class Spider : Monster
         _ => 5f,                                     // fall back to idle
     };
 
+    // METHOD(Spider, mr_death) — spider.qc:200: setanim(random() > 0.5 ? anim_die2 : anim_die1). A HIGH roll
+    // picks anim_die2 (frame 2), a low roll picks anim_die1 (frame 1). MonsterAI.MarkDead calls this once,
+    // stores the result in MonsterState.DeathLanded, and DriveAnimFrame passes it as the die2 flag to AnimFrame
+    // above. Without this override the base defaults to false (die1 always), dropping the QC random die1/die2
+    // pick (matching the sibling Zombie, which also overrides RollDeathVariant).
+    public override bool RollDeathVariant() => MonsterRandom.Next() > 0.5f;
+
+    // METHOD(Spider, describe) — spider.qc:252-260. The MENUQC bestiary prose describing the spider.
+    public override string? Describe() =>
+        "The Spider is a large mechanically-enhanced arachnoid adept at hunting speedy enemies. " +
+        "To slow down its target, the Spider launches a synthetic web-like substance from its cannons. " +
+        "Approaching its enwebbed prey, the Spider will inflict a series of high damage bites.";
+
     // Monster_Spawn + METHOD(Spider, mr_setup) — spider.qc
     public override void Spawn(Entity e)
     {

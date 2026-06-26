@@ -83,12 +83,27 @@ public abstract partial class Monster : IRegistered
     /// </summary>
     public virtual bool RollDeathVariant() => false;
 
+    /// <summary>
+    /// QC <c>this.monsterdef.spawnflags &amp; MON_FLAG_RANGED</c> (monster.qh:10, BIT(9) "monster shoots
+    /// projectiles"): whether this monster has a ranged attack. Used by <see cref="MonsterAI.ValidTarget"/> to
+    /// reject a vehicle target for a melee-only monster (QC sv_monsters.qc:108 — "melee vs vehicle is useless").
+    /// Base flags: Golem/Mage/Spider/Wyvern carry MON_FLAG_RANGED; the Zombie is melee-only (no flag), so it
+    /// alone returns false. Defaults true (most monsters have some ranged option); the zombie overrides to false.
+    /// </summary>
+    public virtual bool IsRanged => true;
+
     /// <summary>Initialize a spawned monster entity.</summary>
     public virtual void Spawn(Entity e) { }
     /// <summary>Per-think AI step.</summary>
     public virtual void Think(Entity e) { }
     /// <summary>Attack a target.</summary>
     public virtual void Attack(Entity e, Entity target) { }
+    /// <summary>
+    /// MENUQC monster description text (QC <c>METHOD(Monster, describe)</c>): the multi-paragraph flavor prose
+    /// for the monster. Used in UI tooltips and monster-guide displays. Returns <c>null</c> for descriptors
+    /// without a describe method.
+    /// </summary>
+    public virtual string? Describe() => null;
 }
 
 /// <summary>

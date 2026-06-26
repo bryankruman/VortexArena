@@ -100,6 +100,11 @@ public static class ClientCommandRegistry
         "god", "notarget", "noclip", "fly", "give", "usetarget", "killtarget", "teleporttotarget",
         "pointparticles", "trailparticles", "make", "penalty",
 
+        // ---- Onslaught (QC the SV_ParseClientCommand mutator hook in onslaught/sv_onslaught.qc). The click-radar
+        //      pick `cmd ons_spawn [x y z]` is a client command (a player drives it from the radar HUD), gated
+        //      server-side to the active Onslaught gametype + IS_PLAYER inside the handler. ----
+        "ons_spawn",
+
         // ---- sandbox (QC the SV_ParseClientCommand mutator hook in sandbox/sv_sandbox.qc). The client `sandbox`
         //      alias (commands.cfg:193) emits `cmd g_sandbox <sub> …`, so the wire verb is `g_sandbox`. It is a
         //      client command (a player drives the build mode), gated server-side by g_sandbox/g_sandbox_readonly

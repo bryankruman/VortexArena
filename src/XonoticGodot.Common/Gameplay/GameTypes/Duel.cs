@@ -45,6 +45,10 @@ public sealed class Duel : GameType
     private const string CvarFragLimit     = "fraglimit";   // generic engine frag limit
     private const float  DefaultFragLimit  = 0f;            // QC m_legacydefaults / gametype_init: pointlimit=0
 
+    // ----- timelimit cvar (gametype default timelimit=10 / generic default 20) -----
+    private const string CvarTimeLimit      = "timelimit";
+    private const float  DefaultTimeLimitMinutes = 10f;  // QC duel.qh gametype_init timelimit=10
+
     // ----- respawn delay cvars (shared with DM; xonotic-server.cfg g_respawn_delay_small/large = 2) -----
     private const string CvarRespawnDelaySmall = "g_respawn_delay_small";
     private const string CvarRespawnDelayLarge = "g_respawn_delay_large";
@@ -77,6 +81,32 @@ public sealed class Duel : GameType
         // QC INIT(Duel): identity is set in the ctor; the player limit is the const PlayerLimit (2) and the
         // powerup filter is FilterItem. gametype_init flags (USEPOINTS|1V1) and map-size gating are
         // engine/map-pool concerns.
+        //
+        // QC duel.qh gametype_init applies "timelimit=10 pointlimit=0 leadlimit=0" at gametype registration.
+        // The timelimit is a generic engine cvar (not a g_duel_* one), so we seed the gametype default here.
+        // QC's _MapInfo_Map_ApplyGametypeEx (common/mapinfo.qc:551,572) FIRST resets timelimit to its compiled
+        // defstring, THEN UNCONDITIONALLY applies the gametype default string's `timelimit=10` (cvar_set, no
+        // guard), so a prior mode/vote/round's non-10 leftover is always reset to duel's 10. We mirror that
+        // unconditional set (the per-map override path is the mapinfo `timelimit=` line, which QC appends after
+        // the gametype default and which the port does not model here). (pointlimit=0 is enforced by FragLimit;
+        // leadlimit=0 is not modeled but is N/A for 1v1 FFA.)
+        SeedTimeLimit(DefaultTimeLimitMinutes);
+    }
+
+    /// <summary>
+    /// Apply duel's gametype-default timelimit (gametype_init "timelimit=10"), UNCONDITIONALLY, mirroring QC's
+    /// <c>_MapInfo_Map_ApplyGametypeEx</c> (common/mapinfo.qc:551 reset-to-defstring, then :572
+    /// <c>cvar_set("timelimit", v)</c>): every gametype-select forces the gametype's default time limit, wiping
+    /// any non-10 timelimit a prior mode, vote, or round left in place. (Matches the TeamMayhem precedent; the
+    /// earlier guarded "only if still the generic default" variant would wrongly preserve a leftover non-default
+    /// timelimit.) A host wanting a different limit re-applies it after select via the menu/vote, exactly as a
+    /// mapinfo <c>timelimit=</c> override does in QC.
+    /// </summary>
+    private static void SeedTimeLimit(float minutes)
+    {
+        if (Api.Services is null)
+            return;
+        Api.Cvars.Set(CvarTimeLimit, minutes.ToString(System.Globalization.CultureInfo.InvariantCulture));
     }
 
     /// <summary>QC FFA equality (server/scores.qc:537): the two duelists are tied on the primary score. Duel

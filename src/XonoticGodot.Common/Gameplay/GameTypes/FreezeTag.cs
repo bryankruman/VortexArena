@@ -232,9 +232,12 @@ public sealed class FreezeTag : GameType
             CanRoundEnd = () => CheckWinner() != 0,
             OnRoundStart = () => { Frozen.Clear(); _reviveTime.Clear(); }, // QC reset_map_players: thaw everyone + clear revive-time accumulators at the start of a new round
         };
-        float warmup = TryCvar(CvarWarmup, out float w) ? w : 5f;
-        float rtl = TryCvar(CvarRoundTimelimit, out float t) ? t : 180f;
-        float edly = TryCvar(CvarRoundEndDelay, out float e) ? e : 5f;
+        // QC gametypes-server.cfg / round_handler_Init(5, g_freezetag_warmup, g_freezetag_round_timelimit):
+        // warmup 10, round_timelimit 360, round_enddelay 0 (the shipped Base defaults). The fallbacks only
+        // bite when there is no cvar store (unit tests) — keep them Base-faithful.
+        float warmup = TryCvar(CvarWarmup, out float w) ? w : 10f;
+        float rtl = TryCvar(CvarRoundTimelimit, out float t) ? t : 360f;
+        float edly = TryCvar(CvarRoundEndDelay, out float e) ? e : 0f;
         Handler.Init(edly, warmup, rtl);
 
         _deathHandler = OnDeath;
@@ -572,7 +575,19 @@ public sealed class FreezeTag : GameType
         AddRevival(reviver);
         if (!t2s)
             reviver.ScoreFrags += 1;
+        GiveReviveNadeBonus(reviver); // QC sv_freezetag.qc:846 nades_GiveBonus(it, g_nades_bonus_score_low)
         return true;
+    }
+
+    /// <summary>
+    /// QC PlayerPreThink full-revive (sv_freezetag.qc:846): <c>nades_GiveBonus(it, autocvar_g_nades_bonus_score_low)</c>
+    /// — a completed revive accrues a "low" amount of bonus-nade score toward the reviver's next bonus grenade.
+    /// No-op unless the nades mutator is enabled (NadeBonus.GiveBonus self-gates on g_nades + g_nades_bonus).
+    /// </summary>
+    private static void GiveReviveNadeBonus(Player reviver)
+    {
+        float low = TryCvar("g_nades_bonus_score_low", out float s) ? s : 20f; // mutators.cfg g_nades_bonus_score_low 20
+        Nades.NadeBonus.GiveBonus(reviver, low);
     }
 
     /// <summary>QC <c>GameRules_scoring_add(it, FREEZETAG_REVIVALS, +1)</c>: credit a reviver one revival (the
@@ -718,6 +733,7 @@ public sealed class FreezeTag : GameType
                             AddRevival(it);
                             if (!t2s)
                                 it.ScoreFrags += 1;
+                            GiveReviveNadeBonus(it); // QC sv_freezetag.qc:846 nades_GiveBonus(it, g_nades_bonus_score_low)
                         }
                     }
                     // QC sv_freezetag.qc:849-851: center to the revived player (named by the first reviver), center to

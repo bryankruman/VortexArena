@@ -263,6 +263,15 @@ public sealed class Raptor : Vehicle
             // pilot mirror) so the gauges track even between regen pulses.
             player.VehicleShield = vehicle.VehicleShield / MaxShield * 100f;
             player.VehicleEnergy = vehicle.VehicleEnergy / MaxEnergy * 100f;
+
+            // QC raptor_frame/raptor_takeoff (raptor.qc:401-403, 477-478): the secondary reload bar is the bomb
+            // alpha (time - lip) / (delay - lip), where lip = VehReloadStart (reset on fire) and delay =
+            // VehWeaponDelay (= lip + refire). It ramps 0->1 as the weapon reloads, reaching 100 when ready;
+            // vehicle_ammo2 is 100 only at full reload. The bomb dropmark crosshair only predicts when reload2 == 100.
+            float span = vehicle.VehWeaponDelay - vehicle.VehReloadStart;
+            float reloadAlpha = span > 0f ? (Time - vehicle.VehReloadStart) / span : 1f;
+            player.VehicleReload2 = MathF.Min(MathF.Max(reloadAlpha * 100f, 0f), 100f);
+            player.VehicleAmmo2 = player.VehicleReload2 >= 100f ? 100f : 0f;
         }
 
         // QC vehicles_think: vehicles_painframe(this) runs after vr_think every tick — low-health smoke + jitter.
@@ -600,6 +609,13 @@ public sealed class Raptor : Vehicle
 
             self.Touch = null;
             self.Think = null;
+
+            // QC raptor_bomb_burst: Damage_DamageInfo(origin, ..., DEATH_VH_RAPT_FRAGMENT) fires the client
+            // burst FX — the bomb-casing shell-fragment gibs (RaptorCBShellfragToss, 3 bouncing fragment
+            // drawables) + the RAPTOR_BOMB_SPREAD particle puff + a rocket-impact crack. Carry the bomb's
+            // velocity so the client can throw the frags along the fall direction; purely cosmetic debris.
+            EffectEmitter.Emit("RAPTOR_BOMB_SPREAD", self.Origin, self.Velocity, 1);
+
             // raptor_bomb_burst: scatter `Bomblets` independent bomblets with spread, each exploding on
             // touch or after a short fuse.
             float speed = QMath.VLen(self.Velocity);

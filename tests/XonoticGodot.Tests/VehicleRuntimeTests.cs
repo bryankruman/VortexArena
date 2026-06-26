@@ -403,6 +403,59 @@ public class VehicleRuntimeTests
     }
 
     [Fact]
+    public void Raptor_BombBurst_EmitsShellfragSpreadEffect()
+    {
+        // raptor.cb_shellfrag_gib: the cluster-bomb burst fires the cosmetic shell-fragment FX. QC
+        // raptor_bomb_burst calls Damage_DamageInfo(DEATH_VH_RAPT_FRAGMENT) which dispatches the client
+        // RaptorCBShellfragToss + the RAPTOR_BOMB_SPREAD particle puff. The port emits RAPTOR_BOMB_SPREAD at
+        // burst (the client toss + puff hook). Assert the burst path emits it.
+        var h = Build();
+        WarmUpClock(h.Sim);
+        Entity raptor = SpawnVehicle("vehicle_raptor", new Vector3(0f, 0f, 400f));
+        Player pl = SpawnPlayer(new Vector3(80f, 0f, 400f));
+        VehicleBoarding.UseKey(pl);
+        var def = (Raptor)raptor.VehicleDef!;
+
+        EffectEmitter.Recorder.Clear();
+        EffectEmitter.Sink = EffectEmitter.Recorder;
+
+        // Drop the bombs, then drive their think to burst (each bomb thinks every tick; the clear-fall trace
+        // bursts them once there's no clear air for bomblet_alt below — true high over a floor far away).
+        def.DropBombs(raptor, pl);
+        for (int i = 0; i < 260; i++) h.Sim.Tick(); // > clearFall window (10s @ 0.05s) so the burst is guaranteed
+
+        bool emitted = false;
+        foreach (var r in EffectEmitter.Recorder.Log)
+            if (r.EffectName == "raptor_bomb_spread" || r.Effect?.Name == "RAPTOR_BOMB_SPREAD") { emitted = true; break; }
+        Assert.True(emitted, "cluster-bomb burst must emit the RAPTOR_BOMB_SPREAD shell-fragment FX");
+    }
+
+    [Fact]
+    public void Raptor_Reload2_MirrorsBombReloadProgress()
+    {
+        // raptor.hud_crosshair (reload2 feed): the bomb dropmark only predicts while reload2 == 100. QC
+        // raptor_frame mirrors vehicle_reload2 = bound(0, bombAlpha*100, 100) onto the pilot, ramping 0->100 as
+        // the secondary reloads. Assert the mirror climbs over the bombs_refire window after boarding.
+        var h = Build();
+        WarmUpClock(h.Sim);
+        Entity raptor = SpawnVehicle("vehicle_raptor", new Vector3(0f, 0f, 400f));
+        Player pl = SpawnPlayer(new Vector3(80f, 0f, 400f));
+        VehicleBoarding.UseKey(pl);
+
+        // vr_enter seeds delay = time + bombs_refire (5s), lip = time → reload2 starts at 0 and climbs.
+        h.Sim.Tick();
+        float early = pl.VehicleReload2;
+
+        // Run well past bombs_refire (5s). The sim fixed-step is ~1/72s, so 5s ≈ 360 ticks — use 500 for margin
+        // so the bomb reload definitely completes and reload2 saturates at 100.
+        for (int i = 0; i < 500; i++) h.Sim.Tick();
+        float late = pl.VehicleReload2;
+
+        Assert.True(late > early, $"reload2 must climb as the bombs reload: {early:F1} -> {late:F1}");
+        Assert.True(late >= 100f - 0.01f, $"reload2 must reach 100 once bombs are ready, got {late:F1}");
+    }
+
+    [Fact]
     public void Impulse_NotSeated_ReturnsFalse()
     {
         var h = Build();

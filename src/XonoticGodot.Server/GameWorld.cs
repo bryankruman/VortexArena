@@ -1158,6 +1158,9 @@ public sealed class GameWorld
         // match; for every other gametype this branch returns true (no-op).
         // QC nJoinAllowed (server/client.qc:2192): the free-slot cap — refuse the join when the gametype player
         // limit is full. Duel (GetPlayerLimit → 2) is the live case: a 3rd+ client can't +jump-join a 1v1.
+        // NOTE: Survival's join gate is installed in ActivateGameType (it has its own CanJoin/OnJoin) and overrides
+        // the default here; same with other round-based gametypes that implement join gating. The default here is
+        // the LMS gate for backward compatibility.
         Clients.GametypeJoinGate = p =>
             (GameType is not LastManStanding lms || lms.CanJoin(p, LmsPreStart))
             && GametypeHasFreeSlot(p);
@@ -2421,6 +2424,12 @@ public sealed class GameWorld
         XonoticGodot.Common.Gameplay.RoundHandler.RoundNotStartedProvider = null;
         // Clear any prior gametype's bot attack-veto (only the incoming gametype's arm below re-installs it).
         Bot.BotBrain.ForbidAttackHook = null;
+        // Reset the join gate + onJoin hooks: gametypes that override these (Survival, LMS) re-install them in their
+        // arm below (in Boot's WireCommandsGameType → ActivateGameType). For non-round gametypes, these stay as the
+        // Boot defaults (LMS-based gate + noop, which gracefully no-op for DM/TDM/etc). Survival installs its own
+        // CanJoin/OnJoin here, overriding the default.
+        // (The Clients.GametypeJoinGate default is set in Boot, not here, to avoid redundant re-assignment per frame.)
+        // (Only gametypes that need join gating override this; the default LMS check in Boot handles non-gametypes.)
         // Tear down EVERY gametype's global hook subscriptions before activating the new one, so a live
         // gametype switch (campaign level change, a gametype vote) doesn't leave the old mode's handlers
         // (e.g. CTS's Shotgun-only PlayerSpawn/PlayerPreThink) running on the new mode. Deactivate is
@@ -2487,12 +2496,24 @@ public sealed class GameWorld
                 break;
             case Domination dom:
                 dom.Activate();
+                // QC dom_EventLog seam: wire GameLog.Echo (gated by sv_eventlog at the call site in Domination.cs)
+                // so dompoint_captured can emit the `:dom:taken:<team>:<playerid>` event log line faithfully.
+                dom.EventLogEcho = line => { if (Cvars.Bool("sv_eventlog")) GameLog.Echo(line); };
                 if (dom.RoundBased)
                 {
                     // QC dom_DelayedInit round_handler_Spawn: the round-based variant runs the world round handler
                     // over Domination's own canStart/canEnd/roundStart (a team owning ALL points wins the round →
                     // ST_DOM_CAPS). The team score is the round-win count (caps) in this variant.
-                    RoundHandler domRounds = EnableRounds(dom.CanRoundStart, dom.CheckRoundWinner, dom.RoundStart);
+                    // QC round_handler_Init(5, autocvar_g_domination_warmup, autocvar_g_domination_round_timelimit):
+                    // endDelay=5, countdown=g_domination_warmup (default 5), roundTimeLimit=g_domination_round_timelimit
+                    // (default 120). Without these args Init is never called → generic 180s default stands.
+                    RoundHandler domRounds = EnableRounds(
+                        dom.CanRoundStart,
+                        dom.CheckRoundWinner,
+                        dom.RoundStart,
+                        endDelay: 5f,
+                        countdown: Cvars.FloatOr("g_domination_warmup", 5f),
+                        roundTimeLimit: Cvars.FloatOr("g_domination_round_timelimit", 120f));
                     dom.RoundEndTimeSource = () => domRounds.RoundEndTime; // QC round_handler_GetEndTime()
                     Scores.TeamScoreSource = dom.GetTeamCaps;
                 }
@@ -2524,9 +2545,12 @@ public sealed class GameWorld
                             var roster = Clients.Players;
                             for (int i = 0; i < roster.Count; i++) ft.Unfreeze(roster[i]);
                         },
-                        endDelay: Cvars.FloatOr("g_freezetag_round_enddelay", 5f),
-                        countdown: Cvars.FloatOr("g_freezetag_warmup", 5f),
-                        roundTimeLimit: Cvars.FloatOr("g_freezetag_round_timelimit", 180f));
+                        // QC round_handler_Init(5, g_freezetag_warmup, g_freezetag_round_timelimit): the shipped
+                        // Base defaults are warmup 10, round_timelimit 360, round_enddelay 0 — match them in the
+                        // fallbacks so they agree with the FT handler's own constants when no cvar store is present.
+                        endDelay: Cvars.FloatOr("g_freezetag_round_enddelay", 0f),
+                        countdown: Cvars.FloatOr("g_freezetag_warmup", 10f),
+                        roundTimeLimit: Cvars.FloatOr("g_freezetag_round_timelimit", 360f));
                     _roundPrep = () => ft.SetRoster(Clients.Players);
                     _roundSync = () => MirrorRoundTiming(ftRounds, ft.Handler);
                 }
@@ -2652,6 +2676,15 @@ public sealed class GameWorld
                     _roundPrep = () => surv.SetRoster(Clients.Players);
                     _roundSync = () => MirrorRoundTiming(survRounds, surv.Handler);
                 }
+                // QC MUTATOR_HOOKFUNCTION(surv, ForbidSpawn) (sv_survival.qc:307-317) + PutClientInServer
+                // (sv_survival.qc:319-333): no client may become a live player while a round is live — CanJoin
+                // refuses every join mid-round so the would-be joiner stays an observer until the next round reset
+                // (matching Base's combined ForbidSpawn-forbid + PutClientInServer force-observe net outcome).
+                // OnJoin only registers an ALLOWED (pre-round/warmup) joiner so the next AssignRoles includes them.
+                // Keep the free-slot cap (GametypeHasFreeSlot) like the default/LMS gate — inert for Survival (no
+                // GetPlayerLimit) but preserves the shared join-gate shape (QC nJoinAllowed runs for every mode).
+                Clients.GametypeJoinGate = p => surv.CanJoin(p, surv.RoleAssigned) && GametypeHasFreeSlot(p);
+                Clients.GametypeOnJoin = p => surv.OnJoin(p);
                 // QC MUTATOR_HOOKFUNCTION(surv, Bot_ForbidAttack) (sv_survival.qc:484-490): a bot never attacks a
                 // same-status player — `targ.survival_status == bot.survival_status`. Preserves the hidden-role
                 // dynamic and, with teamkill punishment live, stops an ally-fragging bot from mirror-killing itself.
