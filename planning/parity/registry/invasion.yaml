@@ -1,6 +1,6 @@
 unit: invasion
 category: gametype
-base_ref_rev: "v0.8.6-1779-g863cd3e84"  # port code re-audited at commit e596bf0 (Wave 6a)
+base_ref_rev: "v0.8.6-1779-g863cd3e84"  # port code re-audited at Wave-6e drift check (2026-06-25)
 last_audited: "2026-06-25"
 summary:
   feature_count: 28
@@ -36,7 +36,7 @@ features:
     gaps:
       - "Port does not cvar_settemp g_monsters 1; it spawns monsters directly, so the equivalence relies on the spawn path, not the global toggle."
     verification:
-      - { kind: code, ref: "GameWorld.cs:1731 case Invasion inv: inv.Activate(); EnableRounds();", result: pass }
+      - { kind: code, ref: "GameWorld.cs:2226 case Invasion inv: inv.Activate(); EnableRounds(); Notifications inject at :2233", result: pass }
     confidence: high
     notes: "Class registered via [GameType]; Boot(\"inv\") reaches Activate (verified). g_invasion_point_limit/pointlimit resolves to 50 default when unset."
 
@@ -194,7 +194,7 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "InvasionSpawnTests.SpawnpointSpawnfunc_* / WaveSpawnfunc_* / Cnt_IsDistinctFromCount / RoundEndSpawnfunc_*", result: pass }
-      - { kind: code, ref: "GameWorld.cs:1914-1925 Invasion arm dispatches all three classnames; roundend kept as a Touch volume in STAGE", result: pass }
+      - { kind: code, ref: "GameWorld.cs Invasion arm dispatches all three classnames; roundend kept as a Touch volume in STAGE (touch wires inv.TriggerRoundEnd at :2480)", result: pass }
     confidence: high
     notes: "Round-end placeholder kept as a Touch volume in STAGE; others retire after registering."
 
@@ -385,7 +385,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Invasion.cs:530-537 if Handler.RoundEndTime>0 && now>=RoundEndTime → WipeMonsters() + Notifications?.RoundOver(); RoundEndTime set by RoundHandler from RoundTimeLimit=120. InvasionNotifyHost.RoundOver (GameWorld.cs:3021) sends CENTER_+INFO_ROUND_OVER via NotificationSystem→live NotificationNetSink (ServerNet.cs:288); both notif keys registered in NotificationsList.cs", result: pass }
+      - { kind: code, ref: "Invasion.cs:612-617 if Handler.RoundEndTime>0 && now>=RoundEndTime → WipeMonsters() + Notifications?.RoundOver(); RoundEndTime set by RoundHandler from RoundTimeLimit=120. InvasionNotifyHost.RoundOver (GameWorld.cs:3780+) sends CENTER_+INFO_ROUND_OVER via NotificationSystem→live NotificationNetSink (ServerNet.cs); both notif keys registered in NotificationsList.cs", result: pass }
     confidence: high
     notes: "FIXED: the round genuinely times out and resets, AND the CENTER_/INFO_ROUND_OVER center-print is now broadcast live (Wave-5 host wiring)."
 
@@ -436,7 +436,7 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "InvasionVariantsTests.StageType_WinsWhenRoundEndTriggered / InvasionSpawnTests.RoundEndSpawnfunc_StageTouch_FiresTriggerRoundEnd", result: pass }
-      - { kind: code, ref: "GameWorld.cs:2199 touch → inv.TriggerRoundEnd(p) passing the toucher; Invasion.cs:154-183 TriggerRoundEnd adds the actor to _endReached (real, non-bot only), counts distinct reached real players via CountRealPlayers, sets RoundEndReached only when reached >= ceil(realCount * frac); headless/no-roster falls back to single-touch so solo test maps still complete", result: pass }
+      - { kind: code, ref: "GameWorld.cs:2480 touch → inv.TriggerRoundEnd(p) passing the toucher; Invasion.cs:154-183 TriggerRoundEnd adds the actor to _endReached (real, non-bot only), counts distinct reached real players via CountRealPlayers, sets RoundEndReached only when reached >= ceil(realCount * frac); headless/no-roster falls back to single-touch so solo test maps still complete", result: pass }
     confidence: high
     notes: "FIXED partial→faithful (Wave-6a, commit e596bf0): STAGE now requires ceil(realplayers * 0.7) distinct REAL players (bots excluded) before winning, matching target_invasion_roundend_use. The touch volume passes the player; _endReached dedupes; the headless fallback (no live roster) keeps solo/test maps completing on a single touch."
 
@@ -462,7 +462,7 @@ features:
     gaps:
       - "Base's g_invasion_point_limit cvar treats 0 as 'play without limit'; the port's PointLimit getter resolves <=0 (incl. an explicit 0) to the mapinfo 50 default, so an operator setting 0 to disable the limit would still get a 50-kill cap. Minor (-1 default path matches Base exactly)."
     verification:
-      - { kind: code, ref: "Invasion.cs:309-319 PointLimit: only pl>0 overrides, else fraglimit>0, else 50 (-1 sentinel resolves to 50, never 'no limit'); CheckPointLimit:937-949 reads TopKillsScore() = the LEADING player's banked KILLS (FindByClass(player) max GameScores.Get(p,Kills)), latches MatchEnded when leading>=limit, falling back to cumulative MonstersKilled only when no live player roster exists (headless tests); called live from DriveGametypeFrame (GameWorld.cs:2344)", result: pass }
+      - { kind: code, ref: "Invasion.cs:309-319 PointLimit: only pl>0 overrides, else fraglimit>0, else 50 (-1 sentinel resolves to 50, never 'no limit'); CheckPointLimit:937-949 reads TopKillsScore() = the LEADING player's banked KILLS (FindByClass(player) max GameScores.Get(p,Kills)), latches MatchEnded when leading>=limit, falling back to cumulative MonstersKilled only when no live player roster exists (headless tests); called live from DriveGametypeFrame (GameWorld.cs:2631)", result: pass }
     confidence: high
     notes: "FIXED logic partial→faithful (Wave-6a, commit e596bf0): the match-end now reads the LEADING player's KILLS via TopKillsScore (matching GameRules_limit_score / WinningConditionHelper_topscore), not the cumulative across-all-players total; cumulative is only the headless fallback. Residual: the explicit-0 = no-limit semantic isn't honored (resolves to 50)."
 
@@ -588,7 +588,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Invasion.cs:752-753 IsSupermonster(def)→Notifications?.Supermonster(name); host injects inv.Notifications=new InvasionNotifyHost() at GameWorld.cs:1738; InvasionNotifyHost.Supermonster (GameWorld.cs:3036) sends CENTER_INVASION_SUPERMONSTER via NotificationSystem; key registered in NotificationsList.cs:895; Sink is the live NotificationNetSink (ServerNet.cs:288)", result: pass }
+      - { kind: code, ref: "Invasion.cs:856-857 IsSupermonster(def)→Notifications?.Supermonster(name); host injects inv.Notifications=new InvasionNotifyHost() at GameWorld.cs:2233; InvasionNotifyHost.Supermonster (GameWorld.cs:3780+) sends CENTER_INVASION_SUPERMONSTER via NotificationSystem; key registered in NotificationsList.cs; Sink is the live NotificationNetSink (ServerNet.cs)", result: pass }
     confidence: high
     notes: "FIXED dead→live (Wave-5): the supermonster-arrival decision (golem is in the catalog and classified SUPER) now reaches a live host sink and the CENTER_INVASION_SUPERMONSTER center-print is broadcast."
 
@@ -612,7 +612,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Invasion.cs:535 Notifications?.RoundOver() (timeout) + :551 Notifications?.RoundPlayerWin(winner) (clear, top-KILLS via TopKillsPlayer); host injects inv.Notifications=new InvasionNotifyHost() (GameWorld.cs:1738); InvasionNotifyHost (GameWorld.cs:3021/3029) sends CENTER_+INFO_ROUND_OVER and CENTER_+INFO_ROUND_PLAYER_WIN via NotificationSystem→live NotificationNetSink; all four keys registered in NotificationsList.cs", result: pass }
+      - { kind: code, ref: "Invasion.cs:616 Notifications?.RoundOver() (timeout) + :632 Notifications?.RoundPlayerWin(winner) (clear, top-KILLS via TopKillsPlayer); host injects inv.Notifications=new InvasionNotifyHost() (GameWorld.cs:2233); InvasionNotifyHost (GameWorld.cs:3780+) sends CENTER_+INFO_ROUND_OVER and CENTER_+INFO_ROUND_PLAYER_WIN via NotificationSystem→live NotificationNetSink; all four keys registered in NotificationsList.cs", result: pass }
     confidence: high
     notes: "FIXED dead→live (Wave-5): the 'Round over' (timeout) and 'Player X wins the round' (top-KILLS) prints now reach players. Tied to invasion.round.handler_wiring (live)."
 
@@ -639,7 +639,7 @@ features:
     gaps:
       - "Live for a listen/host server (the scoreboard publish reads _serverWorld.GameType). A pure remote client with no local _serverWorld falls back to the natural MonsterAI totals — but Base publishes these as server STATs, so the host-side publish is the parity-correct surface."
     verification:
-      - { kind: code, ref: "NetGame.cs:3594-3599 if _serverWorld.GameType is Invasion inv && inv.Type==Round → _scoreboard.MonstersTotal=inv.Wave.MaxSpawned (>0 else -1); MonstersKilled=inv.Wave.Killed; else fall back to MonsterAI totals. FeedScoreboardHeader called live from the scoreboard-update path (NetGame.cs:3327)", result: pass }
+      - { kind: code, ref: "NetGame.cs:3915-3929 if _serverWorld.GameType is Invasion inv && inv.Type==Round → _scoreboard.MonstersTotal=inv.Wave.MaxSpawned (>0 else -1); MonstersKilled=inv.Wave.Killed; else fall back to MonsterAI totals. FeedScoreboardHeader called live from the scoreboard-update path", result: pass }
     confidence: high
     notes: "FIXED missing/dead→faithful+live for ROUND (Wave-5): the SPAWNED wave counters now publish to the HUD map-stats row (monsters_total=inv_maxspawned / monsters_killed=inv_numkilled). HUNT/STAGE keep the natural map-placed totals (also correct — those use NATURAL monsters)."
 
@@ -662,7 +662,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ScoreboardPanel.cs:1097 DrawAccuracy short-circuits (return y) when GameScores.Gametype == \"inv\", hiding the weapon-accuracy item-stats panel exactly as cl_invasion.qc DrawScoreboardItemStats returns ISGAMETYPE(INVASION); DrawAccuracy is on the live scoreboard render path", result: pass }
+      - { kind: code, ref: "ScoreboardPanel.cs:1139 DrawAccuracy short-circuits (return y) when GameScores.Gametype == \"inv\", hiding the weapon-accuracy item-stats panel exactly as cl_invasion.qc DrawScoreboardItemStats returns ISGAMETYPE(INVASION); DrawAccuracy is on the live scoreboard render path", result: pass }
     confidence: high
     notes: "FIXED missing→faithful+live (Wave-6a, commit e596bf0): the accuracy item-stats panel is now suppressed in Invasion (gametype gate in the live DrawAccuracy). The underlying AccuracyTargetValid server hook (monsters as invalid accuracy targets) is still unported — see new row invasion.rules.accuracy_target_valid — but the visible scoreboard suppression this row tracks is now done."
 
@@ -686,7 +686,7 @@ features:
     gaps:
       - "Base's AccuracyTargetValid hook returns MUT_ACCADD_INVALID for monster targets so hits on monsters don't count toward weapon accuracy stats. The port has no AccuracyTargetValid hook chain (WeaponAccuracyEvents), so monster hits still feed the accuracy tally on the server side. The CLIENT-side scoreboard hides the accuracy panel entirely in Invasion (invasion.client.hide_item_stats), so the server-side mis-tally is not visible, but the underlying accuracy data is still wrong."
     verification:
-      - { kind: code, ref: "no AccuracyTargetValid mutator hook in the port; grep AllowMobSpawning/AccuracyTargetValid → only Commands.cs note 'no AllowMobSpawning hook'; weapon accuracy accumulation has no monster-target gate", result: fail }
+      - { kind: code, ref: "no AccuracyTargetValid mutator hook in the port; grep AccuracyTargetValid → WeaponAccuracyEvents.cs:95 doc-comment 'No AccuracyTargetValid mutator chain exists in the port yet' + ScoreboardPanel.cs:1138 note; weapon accuracy accumulation has no monster-target gate", result: fail }
     confidence: medium
     notes: "Newly mapped (registry coverage gap). Largely masked by the scoreboard panel hide, but the server-side accuracy accumulation is non-faithful for monster hits."
 
@@ -710,7 +710,7 @@ features:
     gaps:
       - "Base blocks the spawnmob console command (AllowMobSpawning: 'You cannot spawn monsters during an invasion!') and the butcher command (AllowMobButcher: 'This command does not work during an invasion!') while Invasion is active. The port has neither hook — Commands.cs:2363 explicitly notes 'no port analog (no AllowMobSpawning hook); skipped', so a player/admin could spawnmob or butcher mid-invasion."
     verification:
-      - { kind: code, ref: "Commands.cs:2363 comment 'MUTATOR_CALLHOOK(AllowMobSpawning) — no port analog (no AllowMobSpawning hook); skipped'; no AllowMobButcher equivalent anywhere", result: fail }
+      - { kind: code, ref: "Commands.cs:2616 comment 'MUTATOR_CALLHOOK(AllowMobSpawning) — no port analog (no AllowMobSpawning hook); skipped'; no AllowMobButcher equivalent anywhere", result: fail }
     confidence: high
     notes: "Newly mapped (registry coverage gap). Minor admin/console-guard parity; no effect on normal play unless someone runs spawnmob/butcher during an invasion."
 

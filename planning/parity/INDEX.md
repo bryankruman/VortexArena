@@ -1,6 +1,6 @@
 # Parity Index
 
-_Generated 2026-06-26 from 154 units, 2023 features._
+_Generated 2026-06-26 from 154 units, 2025 features._
 
 Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liveness `live`/`DEAD`/`~`/`?`.
 
@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1650 | 146 | 18 | 204 | 4 | 1 |
-| values | 0 | 1555 | 121 | 200 | 131 | 0 | 16 |
-| timing | 0 | 995 | 86 | 869 | 54 | 0 | 19 |
-| presentation | 0 | 409 | 220 | 1145 | 242 | 0 | 7 |
-| audio | 0 | 245 | 40 | 1681 | 53 | 0 | 4 |
-| liveness | 18 | 0 | 0 | 149 | 153 | 0 | 13 |
+| logic | 0 | 1650 | 147 | 18 | 205 | 4 | 1 |
+| values | 0 | 1556 | 122 | 201 | 130 | 0 | 16 |
+| timing | 0 | 995 | 86 | 871 | 54 | 0 | 19 |
+| presentation | 0 | 410 | 220 | 1147 | 241 | 0 | 7 |
+| audio | 0 | 245 | 40 | 1683 | 53 | 0 | 4 |
+| liveness | 18 | 0 | 0 | 150 | 153 | 0 | 13 |
 
 ## Features by unit
 
@@ -427,12 +427,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `deathmatch.announce.frags_remaining` | Remaining-frags announcer (1/2/3 frags left) | OK | OK | OK | OK | OK | live | high |
 | `deathmatch.respawn.timing` | Respawn delay scheduling (calculate_player_respawn_time) | OK | OK | OK | MISS | MISS | live | high |
 
-### `domination` (gametype) — 12 features
+### `domination` (gametype) — 14 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `domination.init.mutator_limits` | Mutator register + score/lead limit + team setup | OK | OK | OK | - | - | live | high |
-| `domination.controlpoint.spawn` | Control point entity spawn (dom_controlpoint / team_dom_point) | OK | OK | OK | ~ | - | live | high |
+| `domination.controlpoint.spawn` | Control point entity spawn (dom_controlpoint / team_dom_point) | OK | OK | OK | OK | - | live | high |
 | `domination.capture.touch` | Instant point capture on player touch | OK | OK | OK | - | - | live | high |
 | `domination.scoring.tick` | Periodic per-point score tick to owning team + capturer | OK | OK | OK | - | - | live | high |
 | `domination.scoring.rules` | Scoreboard rules (ticks/caps/takes columns + sort keys) | OK | OK | - | OK | - | live | high |
@@ -443,6 +443,8 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `domination.hud.modicons_pps` | Mod-icons HUD: per-team points-per-second bars | OK | OK | - | OK | - | live | high |
 | `domination.waypoint.sprite` | Control point waypoint sprite + radar team color/ping | OK | OK | OK | OK | - | live | high |
 | `domination.bot.role` | Bot role: rate unclaimed/contested/enemy control points | OK | OK | - | - | - | live | high |
+| `domination.capture.eventlog` | Server gamelog echo on capture (dom_EventLog :dom:taken:) | MISS | MISS | - | - | - | - | high |
+| `domination.roundbased.player_blocked` | Round-based player-blocking on round start / spawn | ~ | - | - | - | - | ~ | medium |
 
 ### `duel` (gametype) — 9 features
 
@@ -727,7 +729,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `tka.ball.spawn` | Ball spawn at match start (g_tkaball_count balls) | OK | OK | OK | ~ | - | live | high |
 | `tka.ball.respawn` | Loose-ball relocate timer + fall-off respawn | OK | OK | OK | MISS | ~ | live | high |
 | `tka.ball.pickup` | Ball pickup (attach to carrier, VIP, pickups++, orbit anim) | OK | ~ | OK | MISS | OK | live | high |
-| `tka.ball.drop` | Ball drop on death / use-key / disconnect / observe | OK | OK | OK | MISS | OK | ~ | high |
+| `tka.ball.drop` | Ball drop on death / use-key / disconnect / observe | OK | OK | OK | MISS | OK | live | high |
 | `tka.score.teamkill` | Team kill scoring (killac to team while team holds ball) | OK | OK | OK | - | - | live | high |
 | `tka.score.scoreteam` | g_tka_score_team: any teammate's kill scores while team holds ball | OK | OK | OK | - | - | live | high |
 | `tka.score.bckill` | Ball-carrier-kill bonus (bckill to team) + carrierkills column | OK | OK | OK | - | - | live | high |
@@ -739,7 +741,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `tka.win.pointlimit` | Team point-limit + lead-limit win condition | OK | OK | - | - | - | live | high |
 | `tka.team.framing` | Team framing (teams 2..4, team spawns) + tie -> overtime | OK | OK | - | - | - | live | high |
 | `tka.hud.modicon` | TKA HUD mod-icon + TKA_BALLSTATUS stat (team ball-taken icons) | OK | OK | OK | OK | - | live | high |
-| `tka.waypoints.tracking` | Team-colored carrier / ball waypoints + radar tracking | OK | ~ | - | ~ | - | live | high |
+| `tka.waypoints.tracking` | Team-colored carrier / ball waypoints + radar tracking | OK | OK | - | ~ | - | live | high |
 | `tka.bot.role` | Bot TKA roles (carrier/collector, team-aware goalrating, ForbidAttack) | OK | OK | - | - | - | live | high |
 
 ### `tmayhem` (gametype) — 15 features
