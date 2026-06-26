@@ -2,21 +2,24 @@ unit: mapobject-func
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
-# re-audited 2026-06-25 on branch claude/parity-port-waves (drift check). KEY DELTA vs the 2026-06-24
-# pass: the key-door cpid notifications are now LIVE — DoorCheckKeys (Doors.cs:489,501-502) sends
-# DOOR_UNLOCKED / DOOR_LOCKED_NEED / DOOR_LOCKED_ALSONEED via NotificationSystem.Send(..,MsgType.Center,..)
-# (defined in NotificationsList.cs:937-939), reaching the client through the live NotificationNetSink
-# (game/net/ServerNet.cs:300). So mapobject-func.door.keys presentation missing->faithful, audio partial->faithful.
-# Also: every per-mover row that still claimed the round-restart reset was "STILL dead"/"STILL NOT wired"
-# was STALE — ResetMapObjects (GameWorld.cs:3887) dispatches all six movers' Entity.Reset; the Buttons.cs:15
-# comment is correct. Those gap notes corrected. Notification sink path is now game/net/ServerNet.cs:300.
+# re-audited 2026-06-25 on branch claude/parity-port-waves (drift check). KEY DELTA vs the prior pass:
+# DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open is now PORTED (commit ff8a699 Waves 9-11).
+# DoorUse reads the firing trigger's .trigger_reverse via MapMover.CurrentUseTrigger (set by UseTargets,
+# MapObjectsCommon.cs:463-466/475-478): on a BIDIR rotating door, trigger_reverse!=0 sets lip=666 + flips
+# pos2 (Doors.cs:431-436), and BIDIR_IN_DOWN gates the wrong-side re-open during close (Doors.cs:440-444);
+# RotatingBidirInDown is now defined (Doors.cs:45). So mapobject-func.door.rotating logic partial->faithful
+# and the BIDIR_IN_DOWN constant match false->true. This was the unit's one remaining real LOGIC omission —
+# the whole unit is now logic-faithful. Prior-pass facts still hold: key-door cpid notifications LIVE
+# (DoorCheckKeys -> NotificationSystem.Send MsgType.Center, NotificationsList.cs:937-939 -> NotificationNetSink
+# game/net/ServerNet.cs:300); round-restart reset LIVE for all six movers (GameWorld.ResetMapObjects, now
+# GameWorld.cs:4216; e.Reset?.Invoke at :4234). Line numbers shifted post-Wave-9-11 but seams intact.
 summary:
   feature_count: 17
   worst_gaps:
-    - "DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open logic (door_use's trigger.trigger_reverse path) is STILL not ported; DoorUse still takes (self, actor) with no trigger arg (Doors.cs:383). The lip==666 HitBottom undo is present (Doors.cs:630) but lip is never set to 666 without the BIDIR path, so bidirectional rotating doors always open the default direction. Explicitly documented out-of-scope (Doors.cs:15). This is the one remaining real LOGIC omission in the whole unit."
-    - "func_breakable damage-indication colormod / waypoint sprites / bot_attack registration; train moving-sound stop; func_rotating ambient start/stop on setactive + init_for_player late-join resend — all minor presentation/audio reductions, several intended_divergence."
+    - "DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open is NOW PORTED (DRIFT-FIX 2026-06-25, commit ff8a699): DoorUse threads the firing trigger via MapMover.CurrentUseTrigger (set by UseTargets), sets lip=666 + flips pos2 on trigger_reverse, and guards wrong-side re-open during close (Doors.cs:391-449). The HitBottom 666 undo (Doors.cs:664) is now actually reachable. This closes the unit's last real LOGIC omission — the whole unit is logic-faithful."
+    - "func_breakable damage-indication colormod / waypoint sprites / bot_attack registration; train moving-sound stop; func_rotating ambient start/stop on setactive + init_for_player late-join resend — all minor presentation/audio reductions, several intended_divergence. These are now the worst remaining gaps."
     - "no CSQC ENT_CLIENT_* networking/draw for any func_* (door/plat/train/conveyor/ladder); brushes sync via engine entity state. (Net_LinkEntity is commented out in Base too — the CSQC handlers are latent there.)"
-    - "RESOLVED & RE-VERIFIED 2026-06-25: (1) ROUND-RESTART RESET IS LIVE — GameWorld.ResetMapObjects (GameWorld.cs:3887-3907) iterates every non-client server entity and invokes e.Reset?.Invoke(e); door/plat/button/breakable/rotating(MovingBrushes)/secret all assign Entity.Reset at spawn (grep `.Reset =` in MapObjects/ finds all six + dynlight/targetmusic/targetspeaker/voicescript). Live caller chain confirmed: Warmup.ResetMap = ResetMap (GameWorld.cs:814) and Rounds.OnRoundReset = ResetMap(fakeRoundStart:true) (GameWorld.cs:1482) → ResetMap (GameWorld.cs:3826) → ResetMapObjects. The Buttons.cs:15 comment is CORRECT. (2) CENTERPRINT SEAM IS LIVE — both the free-text .message path (MapMover.Centerprint → NotificationSystem.SendCenterRaw, MsgType.CenterRaw) AND the cpid notification path (NotificationSystem.Send, MsgType.Center) route through NotificationSystem.Sink = new NotificationNetSink(this) (game/net/ServerNet.cs:300) → WriteNotification → client HudNotifications.cs. Door/secret/trigger free-text AND key-door notifications both show. (3) KEY-DOOR NOTIFICATIONS NOW LIVE this pass (was the prior worst_gaps[1] 'missing')."
+    - "RESOLVED & RE-VERIFIED 2026-06-25 (drift): (1) ROUND-RESTART RESET IS LIVE — GameWorld.ResetMapObjects (GameWorld.cs:4216-4236) iterates every non-client server entity and invokes e.Reset?.Invoke(e) at :4234; door/plat/button/breakable/rotating(MovingBrushes)/secret all assign Entity.Reset at spawn (grep `.Reset =` in MapObjects/ finds all six + dynlight/targetmusic/targetspeaker/voicescript). Live caller chain confirmed: Warmup.ResetMap and Rounds.OnRoundReset(fakeRoundStart:true) → ResetMap → ResetMapObjects (GameWorld.cs:4183). The Buttons.cs:15 comment is CORRECT. (2) CENTERPRINT SEAM IS LIVE — both the free-text .message path (MapMover.Centerprint → NotificationSystem.SendCenterRaw, MsgType.CenterRaw) AND the cpid notification path (NotificationSystem.Send, MsgType.Center) route through NotificationSystem.Sink = new NotificationNetSink(this) (game/net/ServerNet.cs:300) → WriteNotification → client HudNotifications.cs. Door/secret/trigger free-text AND key-door notifications both show. (3) KEY-DOOR NOTIFICATIONS LIVE. (4) DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN now ported (this drift pass) — see mapobject-func.door.rotating."
 features:
   - id: mapobject-func.driver.calcmove
     name: "Shared mover driver: SUB_CalcMove / SUB_CalcAngleMove + cubic_speedfunc bezier easing"
@@ -107,8 +110,8 @@ features:
     gaps:
       - "func_breakable_reset's team_saved restore is not reproduced (no team_saved field at this layer) and func_breakable_look_restore is presentation-only (colormod); the core behave-restore/destroyed state IS reset. door_reset's CSQC SendFlags |= SF_TRIGGER_RESET is skipped (door networking latent/commented in Base)."
     verification:
-      - { kind: code_read, ref: "RE-VERIFIED 2026-06-25: GameWorld.ResetMapObjects (GameWorld.cs:3887-3907) iterates every non-client server entity (snapshot of ServerEntities.Inner.All) and invokes e.Reset?.Invoke(e) (after the projectile/weapon_proj* cull). Each mover installs Entity.Reset at spawn (grep `.Reset =` in MapObjects/): Doors.cs DoorReset (Doors.cs:206; assigned at Doors.cs:70 DoorSetup + :130 DoorRotatingSetup; snaps Origin/Angles to Pos1, STATE_BOTTOM, ACTIVE, clears Think/Velocity, re-inits keys), Buttons.cs ButtonReset (assigned :42), Platforms.cs PlatReset (assigned :82), MovingBrushes.cs RotatingReset (assigned :75), Breakable.cs BreakableReset (assigned :82), TargetUtilities.cs SecretReset (assigned :637). Buttons.cs:15 comment is CORRECT.", result: pass }
-      - { kind: liveness, ref: "Live caller chain confirmed 2026-06-25: Warmup.ResetMap = ResetMap (GameWorld.cs:814) + Rounds.OnRoundReset = ResetMap(fakeRoundStart:true) (GameWorld.cs:1482) fire on the real `restart`/vote-restart/round-restart path -> ResetMap (GameWorld.cs:3826) -> ResetMapObjects (GameWorld.cs:3854). Snapshot iteration so MonsterAI.Reset (which removes SPAWNED monsters) is safe.", result: pass }
+      - { kind: code_read, ref: "RE-VERIFIED 2026-06-25 (drift, post-Wave-9-11): GameWorld.ResetMapObjects (GameWorld.cs:4216-4236) iterates every non-client server entity (snapshot of ServerEntities.Inner.All) and invokes e.Reset?.Invoke(e) at :4234 (after the projectile/weapon_proj* cull). Each mover installs Entity.Reset at spawn (grep `.Reset =` in MapObjects/): Doors.cs DoorReset (Doors.cs:209; assigned at Doors.cs:73 DoorSetup + :133 DoorRotatingSetup; snaps Origin/Angles to Pos1, STATE_BOTTOM, ACTIVE, clears Think/Velocity, re-inits keys), Buttons.cs ButtonReset (assigned :42), Platforms.cs PlatReset (assigned :80), MovingBrushes.cs RotatingReset (assigned :75), Breakable.cs BreakableReset (assigned :82), TargetUtilities.cs SecretReset (assigned :757). Buttons.cs:15 comment is CORRECT.", result: pass }
+      - { kind: liveness, ref: "Live caller chain confirmed 2026-06-25: Warmup.ResetMap + Rounds.OnRoundReset(fakeRoundStart:true) fire on the real `restart`/vote-restart/round-restart path -> ResetMap -> ResetMapObjects (GameWorld.cs:4183 caller, :4216 body). Snapshot iteration so MonsterAI.Reset (which removes SPAWNED monsters) is safe.", result: pass }
     confidence: high
     notes: "WAVE-5 FIX-UP: the round-restart .reset pass is now genuinely live. ResetMapObjects fires every map entity's Entity.Reset (the QC reset_map_global model) — door/plat/button/breakable/rotating/secret all snap home + re-arm, and monster/logic-gate/target-music .Reset hooks (previously assigned but never dispatched from GameWorld) now fire too. Spawn-time initial placement was already live; this closes the round-restart hole. Residual: breakable team_saved + colormod look_restore (minor, noted in gaps)."
 
@@ -151,11 +154,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "door_reset (snap to pos1, STATE_BOTTOM, active, re-init keys) IS ported (DoorReset, Doors.cs:206; assigned Doors.cs:70) and LIVE (dispatched by GameWorld.ResetMapObjects). (CORRECTED 2026-06-25; prior 'STILL NOT ported' note was stale — see mapobject-func.reset.) Residual: the CSQC SendFlags|=SF_TRIGGER_RESET is skipped (door networking latent/commented in Base)."
+      - "door_reset (snap to pos1, STATE_BOTTOM, active, re-init keys) IS ported (DoorReset, Doors.cs:209; assigned Doors.cs:73) and LIVE (dispatched by GameWorld.ResetMapObjects). (see mapobject-func.reset.) Residual: the CSQC SendFlags|=SF_TRIGGER_RESET is skipped (door networking latent/commented in Base)."
       - "no CSQC ENT_CLIENT_DOOR networking/draw (latent in Base too — door_link Net_LinkEntity is commented out); brush syncs via engine entity state."
     verification:
       - { kind: code_read, ref: "RE-VERIFIED 2026-06-24: door.qc vs Doors.cs: DoorTouch (Doors.cs:432) calls MapMover.Centerprint(other, door.Message) + play2(noise); Centerprint (MapObjectsCommon.cs:792-803) routes to NotificationSystem.SendCenterRaw (CenterRaw channel) — LIVE on the match path, so the .message text now shows. NOSPLASH early-out present in OnDeath; ApplyDoorSounds gated on Sounds (sounds key promoted); EF_LOWPRECISION set; LinkDoors/door_use/TOGGLE/auto-close/blocked-reverse reproduced", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(func_door) (MapObjectsRegistry.cs); MapObjectFieldsExtra.Apply runs before SpawnFuncs.TrySpawn so .sounds is set before ApplyDoorSounds reads it; centerprint reaches the client via NotificationSystem.Sink = new NotificationNetSink(this) (game/net/ServerNet.cs:291) -> CaptureNotification -> WriteNotification -> HudNotifications.cs:146", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_door) (MapObjectsRegistry.cs); MapObjectFieldsExtra.Apply runs before SpawnFuncs.TrySpawn so .sounds is set before ApplyDoorSounds reads it; centerprint reaches the client via NotificationSystem.Sink = new NotificationNetSink(this) (game/net/ServerNet.cs:300) -> CaptureNotification -> WriteNotification -> HudNotifications.cs:146", result: pass }
     confidence: high
     notes: "WAVE-5 FIX: door .message centerprint is now shown — MapObjectsCommon.Centerprint was rewired from the dead CenterprintHandler delegate to a direct NotificationSystem.SendCenterRaw(CenterRaw) call (live channel), closing the last real presentation gap (presentation partial->faithful). Only the CSQC draw remains, which is latent/commented-out in Base too. NOSPLASH + sounds-key + EF_LOWPRECISION from prior waves still hold. No dedicated unit test (code-read)."
 
@@ -168,17 +171,18 @@ features:
       - "common/mapobjects/func/door_rotating.qc:door_rotating_hit_bottom"
       - "common/mapobjects/func/door.qc:door_use (DOOR_ROTATING_BIDIR branch)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorRotatingSetup (Doors.cs:115)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorRotatingSetup (Doors.cs:109)"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorRotatingGoUp"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorRotatingHitBottom (lip==666 undo at Doors.cs:630)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorUse (BIDIR/trigger_reverse path, Doors.cs:431-444)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorRotatingHitBottom (lip==666 undo at Doors.cs:664)"
     constants:
       - { name: "swing magnitude default", base: "angles_y default 90", port: "Angles.Y default 90", match: true }
       - { name: "axis", base: "Z(yaw) default / X_AXIS BIT(6)=64 / Y_AXIS BIT(7)=128", port: "same (MoveDir 0/0/1 etc.; RotatingXAxis 1<<6, RotatingYAxis 1<<7)", match: true }
-      - { name: "BIDIR / BIDIR_IN_DOWN bits", base: "BIT(1)=2 / BIT(3)=8", port: "RotatingBidir 1<<1; BIDIR_IN_DOWN not defined", match: false }
+      - { name: "BIDIR / BIDIR_IN_DOWN bits", base: "BIT(1)=2 / BIT(3)=8", port: "RotatingBidir 1<<1; RotatingBidirInDown 1<<3 (now defined, Doors.cs:44-45)", match: true }
       - { name: "speed default", base: "50", port: "50", match: true }
-      - { name: "lip", base: "0 (reverse-open marker 666)", port: "0 (666 marker handled in HitBottom)", match: true }
+      - { name: "lip", base: "0 (reverse-open marker 666)", port: "0 (666 marker set in DoorUse, undone in HitBottom)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: faithful
@@ -187,12 +191,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open logic (door_use's trigger.trigger_reverse path: set lip=666 + pos2=-pos2, and the BIDIR_IN_DOWN re-open guard) is STILL NOT ported; DoorUse still takes (self, actor) with no trigger arg (Doors.cs:383), so lip is never set to 666. Bidirectional rotating doors always open the default direction. Explicitly documented out-of-scope at Doors.cs:15."
-      - "shares the (now-LIVE) reset + CSQC gaps of mapobject-func.door.slide; inherits its NOSPLASH fix + sounds-key fix + the live .message centerprint (door_rotating runs the shared DoorTouch -> MapMover.Centerprint) AND the now-live key-door cpid notifications. Only the CSQC ENT_CLIENT draw remains (latent in Base). (CORRECTED 2026-06-25: the 'dead-reset' wording was stale — DoorReset is wired for door_rotating too, Doors.cs:130.)"
+      - "shares the (LIVE) reset + CSQC gaps of mapobject-func.door.slide; inherits its NOSPLASH fix + sounds-key fix + the live .message centerprint (door_rotating runs the shared DoorTouch -> MapMover.Centerprint) AND the live key-door cpid notifications. Only the CSQC ENT_CLIENT draw remains (latent in Base; door_link Net_LinkEntity commented out)."
     verification:
-      - { kind: code_read, ref: "door_rotating.qc vs Doors.cs: axis selection, angle pos1/pos2, START_OPEN reverse, CalcAngleMove, 666 reverse-undo all present; door_use BIDIR/trigger_reverse path confirmed ABSENT in DoorUse (no trigger param); shares DoorTouch -> now-live Centerprint", result: pass }
+      - { kind: code_read, ref: "DRIFT RE-AUDIT 2026-06-25: door.qc:242-262 (door_use BIDIR branch) vs Doors.cs DoorUse:391-449 — trigger_reverse read from MapMover.CurrentUseTrigger (Doors.cs:403-404); BIDIR + trigger_reverse!=0 + lip!=666 + STATE_BOTTOM -> lip=666 + pos2=-pos2 (Doors.cs:431-436) matches door.qc:249-252; BIDIR_IN_DOWN wrong-side re-open guard (Doors.cs:440-444) matches door.qc:254-258; HitBottom 666 undo (Doors.cs:664-672) now reachable. CurrentUseTrigger set/restored by UseTargets (MapObjectsCommon.cs:463-466,475-478) on the SUB_UseTargets dispatch (the QC `this` firing-trigger arg), NULL on touch/damage/blocked — faithful. Axis selection, angle pos1/pos2, START_OPEN reverse, CalcAngleMove all present.", result: pass }
+      - { kind: liveness, ref: "DoorUse reached via SUB_UseTargets (trigger->.use) with CurrentUseTrigger set, and via DoorTriggerTouch/DoorBlocked with it NULL; trigger_reverse plumbed onto the firing trigger by MapObjectFieldsExtra.cs:200 (trigger_reverse map key) into Entity.TriggerReverse (EntityMapObjectStateExtra.cs:76)", result: pass }
     confidence: high
-    notes: "BIDIR is the one remaining logic omission (the trigger_reverse path in door_use). audio faithful (shares InitShared/ApplyDoorSounds with door.slide). WAVE-5: the shared .message centerprint now shows (presentation partial->faithful); only CSQC remains, latent in Base. Confirmed BIDIR still absent (DoorUse unchanged)."
+    notes: "DRIFT-FIX 2026-06-25 (commit ff8a699 Waves 9-11): the DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open path is now ported — logic partial->faithful, BIDIR_IN_DOWN constant match false->true. DoorUse still has a (self, actor) C# signature but threads the QC third `trigger` arg via the MapMover.CurrentUseTrigger static seam (the same seam MapModels uses for .antiwall). Doors.cs:14-17 header updated to reflect this is now in-scope/ported. audio faithful (shares InitShared/ApplyDoorSounds with door.slide). This was the unit's last real logic omission."
 
   - id: mapobject-func.door.keys
     name: "func_door key locks (gold/silver itemkeys, consume + locked/unlocked sounds)"
@@ -594,7 +598,7 @@ features:
       - "no CSQC ENT_CLIENT draw/networking (latent in Base); brush syncs via engine entity state."
     verification:
       - { kind: code_read, ref: "door_secret.qc vs TargetUtilities.cs: SecretUse/touch (TargetUtilities.cs:509/805) call MapMover.Centerprint(...) which now routes to the live CenterRaw channel — the .message text shows. ApplySecretSounds selects the medieval/metal pack per the promoted sounds key; fd_secret_use back/down-then-side dest, move1-6 chain, OPEN_ONCE/wait<0 no-return, fd_secret_damage open-on-any-hit (via GtEventDamage), shootable-if-untargeted all reproduced", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(func_door_secret); GtEventDamage dispatched by DamageSystem.EventDamage (DamageSystem.cs:331-333); OnSecretDeath subscribed to Combat.Death; centerprint reaches the client via NotificationNetSink (game/net/ServerNet.cs:291)", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_door_secret); GtEventDamage dispatched by DamageSystem.EventDamage (DamageSystem.cs:331-333); OnSecretDeath subscribed to Combat.Death; centerprint reaches the client via NotificationNetSink (game/net/ServerNet.cs:300)", result: pass }
     confidence: high
     notes: "WAVE-5 FIX: secret .message centerprint now shows — MapObjectsCommon.Centerprint rewired to NotificationSystem.SendCenterRaw (live CenterRaw channel), closing the last real presentation gap (presentation partial->faithful). sounds-key soundpack (prior wave) still holds. Fully ported, live func/ map object (in TargetUtilities.cs due to the classname-dispatch issue)."
 

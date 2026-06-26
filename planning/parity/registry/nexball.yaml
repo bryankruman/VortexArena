@@ -5,11 +5,11 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 22
   worst_gaps:
-    - "No ball-launcher weapon: a basketball carrier still cannot SHOOT the ball (no WEP_NEXBALL / BallStealer, no weapon-arena swap, no power meter, no tackle/safe-pass projectile / ball-steal)."
-    - "Carry layer is now live but incomplete: view-ball follow + carrier slowdown (highspeed 0.8) + forteam auto-return are ported and live, but the safe-pass crosshair lock and the networked NB_CARRYING objective-status bit are still absent."
-    - "No HUD mod-icon: no carrying indicator, no charge-meter bar, no nexball event-chase camera; STAT(OBJECTIVE_STATUS)/NB_METERSTART not networked."
-    - "Weapon-arena enforcement absent: the nb PlayerSpawn/PlayerPreThink/WantWeapon/FilterItem/ItemTouch/ForbidThrow/ForbidDrop mutator hooks that strip normal weapons and grant WEP_NEXBALL are not ported."
-    - "Minor: ball scale 1.3 + glow_trail render still client-deferred; g_nexball_sound_bounce gate is honored but no bounce throttle on the basketball world bounce."
+    - "Ball-launcher weapon (BallStealer / WEP_NEXBALL) is now FULLY PORTED and LIVE — a basketball carrier can charge-and-shoot the ball (power meter, primary launch) and tackle/steal (secondary projectile). The remaining weapon gap is the safe-pass CROSSHAIR LOCK (PlayerPreThink crosshair_trace that sets ball.enemy): the secondary safe-pass arc + homing think exist but nothing ever locks a teammate, so the arc is unreachable on the live path."
+    - "STAT(OBJECTIVE_STATUS) NB_CARRYING bit is still not networked (no nexball case in GametypeStatusBlock; appears only in comments); held-ball forteam-return notification (INFO_NEXBALL_RETURN_HELD) not sent."
+    - "No HUD mod-icon: no carrying indicator, no charge-meter progress bar, no nexball event-chase camera; accuracy/item-stats scoreboard panels not hidden for nexball."
+    - "Minor presentation: ball scale 1.3 + glow_trail render still client-deferred (SpawnForGametype never sets e.Scale); carrier glow + waypoint sprites client-deferred."
+    - "SpectateCopy hook (copy NB_METERSTART to spectator) absent; ForbidDropCurrentWeapon's WEP_MORTAR special-case folded/approximated into ForbidThrow."
 features:
   - id: nexball.init.initialize
     name: "Mode init: teams, score/lead limit, meter-period rounding, radar"
@@ -21,7 +21,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:Activate"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:MeterPeriod"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:SeedTeamsFromGoals + PresentTeams"
-      - "src/XonoticGodot.Server/GameWorld.cs:1840 (ActivateGameType Nexball arm), 2306 (SeedTeamsFromGoals)"
+      - "src/XonoticGodot.Server/GameWorld.cs:3034 (GameStartTime sync), 3035 (SeedTeamsFromGoals)"
     constants:
       - { name: "g_nexball_meter_period", base: "1 (rint(period*32)/32, min 2 if <=0)", port: "MathF.Round(meter*32)/32, min 2 if <=0", match: true }
       - { name: "g_nexball_radar_showallplayers", base: "1 (radar_showenemies)", port: "Api.Cvars.Set(radar_showenemies, cvar!=0) in Activate", match: true }
@@ -38,9 +38,9 @@ features:
     gaps:
       - "PresentTeams unconditionally includes Red+Blue and only ADDS Yellow/Pink from goal entities; QC nb_spawnteams derives every present team purely from the nexball_goal ents (teamplay_bitmask). Behaviorally equivalent on the standard two-team map and on 3/4-team maps that include red+blue goals."
     verification:
-      - { kind: code-read, ref: "Nexball.Activate computes MeterPeriod (rounded 1/32, min 2) + ScoreRules + GoalLimit/lead, sets radar_showenemies; SeedTeamsFromGoals ranks present teams; both called live from GameWorld", result: pass }
+      - { kind: code-read, ref: "Nexball.Activate computes MeterPeriod (rounded 1/32, min 2) + ScoreRules + GoalLimit/lead, sets radar_showenemies; SeedTeamsFromGoals ranks present teams; both called live from GameWorld:3034-3035", result: pass }
     confidence: high
-    notes: "DRIFT (values partial->faithful): radar_showenemies is now wired (Activate sets the replicated cvar) and the -1 mapinfo-leadlimit fallback is implemented in GoalLeadLimit. Team derivation moved from a hardcoded SeedTeams(2) to SeedTeamsFromGoals/PresentTeams (red+blue base + yellow/pink from goals); residual nuance is the always-present red/blue base."
+    notes: "Unchanged since last audit. radar_showenemies wired, -1 mapinfo-leadlimit fallback implemented, team derivation via SeedTeamsFromGoals/PresentTeams."
 
   - id: nexball.score.scorerules
     name: "Score rules: team ST_NEXBALL_GOALS, player goals + faults columns"
@@ -92,9 +92,9 @@ features:
       - "GOAL_TOUCHPLAYER spawnflag is approximated: GoalTouchEntity always treats a touching ball-carrier as a hit (the port has no per-goal spawnflag bit), and the early BallTeam/BallPusher clear differs from QC (which keeps them through the glide) but is behaviorally equivalent under the ball.cnt!=0 guard."
     verification:
       - { kind: unit, ref: "NexballSpawnTests EndToEnd_BallIntoEnemyGoal / OwnGoal / OutVolume", result: pass }
-      - { kind: code-read, ref: "GoalTouch plays NB_GOAL (ctf/respawn) for score, TYPEHIT for fault/out; sets cnt=1 + delay_goal reset + football-control conversion; SoundsList.cs:113 maps NB_GOAL -> ctf/respawn", result: pass }
+      - { kind: code-read, ref: "GoalTouch plays NB_GOAL (ctf/respawn) for score, TYPEHIT for fault/out; sets cnt=1 + delay_goal reset + football-control conversion", result: pass }
     confidence: high
-    notes: "DRIFT (audio partial->faithful): the goal SCORE sound is now the QC-faithful ctf/respawn.wav (SoundsList NB_GOAL = \"ctf/respawn\"), no longer kh/capture; fault/out remains TYPEHIT. Residual: presentation announcement (bprint) still missing; logic/values/timing remain faithful and live."
+    notes: "Unchanged since last audit. Score sound ctf/respawn (NB_GOAL), fault/out TYPEHIT; logic/values/timing faithful and live; presentation announcement (bprint) still missing."
 
   - id: nexball.goal.limit_win
     name: "Goal limit + winning-team latch (GameRules_limit_score) + lead limit"
@@ -106,7 +106,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:GoalLimit"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:GoalLeadLimit"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:CheckGoalLimit"
-      - "src/XonoticGodot.Server/GameWorld.cs:309 (MatchEnded), 2822 (WinningTeam)"
+      - "src/XonoticGodot.Server/GameWorld.cs:3037 (CheckGoalLimit per-frame)"
     constants:
       - { name: "g_nexball_goallimit / pointlimit", base: "5 (mapinfo default)", port: "5 (DefaultGoalLimit)", match: true }
       - { name: "timelimit", base: "20", port: "engine timelimit (not nexball-specific)", match: true }
@@ -122,9 +122,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "CheckGoalLimit checks goal limit AND lead limit (with -1 mapinfo fallback in GoalLeadLimit); GameWorld MatchEnded/WinningTeam dispatch", result: pass }
+      - { kind: code-read, ref: "CheckGoalLimit checks goal limit AND lead limit (with -1 mapinfo fallback in GoalLeadLimit); driven per-frame from GameWorld:3037", result: pass }
     confidence: high
-    notes: "DRIFT (values partial->faithful): GoalLeadLimit now honors the QC cvar=-1 -> mapinfo/engine leadlimit semantics (reads the leadlimit cvar when -1). Goal-limit win remains faithful and live."
+    notes: "Unchanged since last audit. GoalLeadLimit honors cvar=-1 -> mapinfo/engine leadlimit; goal-limit win faithful and live."
 
   - id: nexball.goal.tie_overtime
     name: "Tied-goals reports a tie (timed-match overtime instead of draw)"
@@ -160,7 +160,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:RelocateNexball"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/BallEntity.cs:SpawnForGametype + BallConfig.WithKindDefaults"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:NexballBasketball/Football + Ball* aliases"
-      - "src/XonoticGodot.Server/GameWorld.cs:2166 (WireObjectiveSpawns Nexball arm)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2885-2896 (WireObjectiveSpawns Nexball arm)"
     constants:
       - { name: "BALL_MINS/MAXS", base: "+/-16", port: "+/-16", match: true }
       - { name: "ball model", base: "models/nexball/ball.md3 scale 1.3", port: "models/nexball/ball.md3 set (scale 1.3 not applied)", match: false }
@@ -179,10 +179,10 @@ features:
     gaps:
       - "Scale 1.3 + glow_trail rendering are still client-deferred (model path + trail color are configured; SpawnForGametype never sets e.Scale; bbox/effects/playerclip/relocate are exact)."
     verification:
-      - { kind: unit, ref: "NexballSpawnTests BallSpawnfunc_SpawnsBall_AndSetsBallHome / FootballAlias / BallAliases", result: pass }
-      - { kind: code-read, ref: "SpawnBall sets EF_LOWPRECISION + the playerclip content mask + performs RelocateNexball (tracebox/move-out-of-solid); BallConfig supplies model/bbox/effects; GameWorld.cs:2659-2666 now switches on e.ClassName -> SpawnBall(basketball:true) for nexball_basketball and SpawnBall(basketball:false) for nexball_football", result: pass }
+      - { kind: unit, ref: "NexballSpawnTests BallSpawnfunc_SpawnsBall_AndSetsBallHome / FootballAlias / BallAliases / BallSpawn_AppliesLowPrecisionAndPlayerclipMask", result: pass }
+      - { kind: code-read, ref: "SpawnBall sets EF_LOWPRECISION + playerclip content mask + RelocateNexball; GameWorld.cs:2885-2896 switches on classname -> SpawnBall(basketball:true/false)", result: pass }
     confidence: high
-    notes: "DRIFT (logic gap closed): the WireObjectiveSpawns arm (GameWorld.cs:2657-2670) now switches on the classname so nexball_football spawns a kick-only football (basketball:false) and nexball_basketball a carryable basketball — the prior baseline NEW GAP (football map spawned a basketball) is FIXED. EF_LOWPRECISION, the playerclip dphitcontentsmask, and relocate_nexball remain applied. Residual: scale 1.3 + glow_trail are still client-deferred."
+    notes: "Unchanged since last audit. WireObjectiveSpawns arm switches on classname (football kick-only vs basketball carryable). Residual: scale 1.3 + glow_trail client-deferred."
 
   - id: nexball.ball.lifecycle
     name: "Ball lifecycle thinks: delay_start release, 4-step ResetBall glide, idle reset"
@@ -194,7 +194,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:BallThink"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:InitBall"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:ResetBall"
-      - "src/XonoticGodot.Server/GameWorld.cs:2305 (nb.GameStartTime = GameStartTime)"
+      - "src/XonoticGodot.Server/GameWorld.cs:3034 (nb.GameStartTime = GameStartTime)"
       - "src/XonoticGodot.Engine/Simulation/SimulationLoop.cs:RunThink + MoveTypePhysics.RunEntity (drives the think each tick)"
     constants:
       - { name: "g_nexball_delay_start", base: "3 s", port: "3 s (DelayStart)", match: true }
@@ -214,9 +214,9 @@ features:
     gaps:
       - "InitBall does not WaypointSprite_Ping (waypoint sprites are client-deferred)."
     verification:
-      - { kind: code-read, ref: "BallThink dispatches InitBall (release) vs ResetBall (4-step glide cnt 2->4) via _releasePending; GameWorld syncs nb.GameStartTime each Nexball frame so the first release fires at game_starttime + delay_start; SimulationLoop.RunThink fires it each due tick", result: pass }
+      - { kind: code-read, ref: "BallThink dispatches InitBall (release) vs ResetBall (4-step glide cnt 2->4) via _releasePending; GameWorld syncs nb.GameStartTime each Nexball frame; SimulationLoop.RunThink fires it each due tick", result: pass }
     confidence: high
-    notes: "DRIFT (timing gap closed): GameStartTime is now synced from the world into the gametype each frame (GameWorld:2305), so the FIRST release fires at game_starttime + delay_start exactly as QC, not at sim-time delay_start. Only the waypoint-ping (client) remains."
+    notes: "Unchanged since last audit. GameStartTime synced from world (GameWorld:3034); first release fires at game_starttime + delay_start. Only the waypoint-ping (client) remains."
 
   - id: nexball.ball.football_kick
     name: "Football kick physics (soccer-style velocity boost on touch)"
@@ -245,7 +245,7 @@ features:
     verification:
       - { kind: code-read, ref: "FootballTouch: world bounce sfx+throttle+idle-rearm; player/vehicle kick sets pusher/team, mode-2 yaw-only boost (boost_forward/up) + -250 backspin; fired via ball TouchAreaGrid", result: pass }
     confidence: high
-    notes: "Unchanged since last audit. All four physics modes are branched; only the cvar read is hard-coded to the default 2."
+    notes: "Unchanged since last audit. All four physics modes branched; only the cvar read is hard-coded to the default 2."
 
   - id: nexball.ball.basketball_pickup
     name: "Basketball pickup gating (cnt, health, dropper delay_collect, carrier bump)"
@@ -269,7 +269,7 @@ features:
     verification:
       - { kind: code-read, ref: "BasketballTouch: carrier-bump falls through to FootballTouch; live non-dead player off the delay_collect cooldown with cnt==0 catches via GiveBall; world bounce plays NB_BOUNCE + re-arms idle", result: pass }
     confidence: high
-    notes: "Unchanged since last audit. delay_collect dropper cooldown, ball.cnt!=0 guard, carrier-already-holding -> football_touch bump, health gate via !IsDead all present and live."
+    notes: "Unchanged since last audit. delay_collect dropper cooldown, ball.cnt!=0 guard, carrier-already-holding -> football_touch bump, health gate all present and live."
 
   - id: nexball.ball.giveball
     name: "GiveBall: ownership, carry effects, forteam lifetime, weapon-arena swap"
@@ -278,12 +278,13 @@ features:
       - "common/gametypes/gametype/nexball/sv_nexball.qc:GiveBall"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:GiveBall"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:SaveAndApplyNexballWeapons"
     constants:
       - { name: "g_nexball_basketball_delay_hold_forteam", base: "60 s", port: "60 s (DelayHoldForTeam)", match: true }
       - { name: "g_nexball_basketball_delay_hold", base: "20 s", port: "20 s (DelayHold; arms DropOwnerThink)", match: true }
       - { name: "g_nexball_basketball_effects_default", base: "8 (EF_DIMLIGHT)", port: "8 (EffectsDefault; cleared on ball, carrier glow client-deferred)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
@@ -292,13 +293,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No weapon-arena swap to WEPSET(NEXBALL) / W_SwitchWeapon(WEP_NEXBALL) on pickup (the BallStealer weapon does not exist — see nexball.weapon.ballstealer)."
       - "No carrier waypoint sprite; the carrier glow effect bit is cleared on the ball but not rendered on the carrier (client-deferred)."
     verification:
       - { kind: unit, ref: "NexballSpawnTests EndToEnd_* (ownership)", result: pass }
-      - { kind: code-read, ref: "GiveBall sets team/pusher/dropper, the different-team forteam lifetime (60 s), AttachToCarrier, and the 20 s DropOwner think; weapon swap is a TODO comment", result: pass }
+      - { kind: code-read, ref: "GiveBall sets team/pusher/dropper, the different-team forteam lifetime (60 s), AttachToCarrier, the 20 s DropOwner think, AND the weapon-arena swap via SaveAndApplyNexballWeapons (save normal set -> grant+switch BallStealer). A steal-time previous-carrier detach + weapon restore are handled at the top of GiveBall.", result: pass }
     confidence: high
-    notes: "Unchanged since last audit. forteam lifetime (60 s) + anti-ballcamp DropOwner timer (20 s) + effect handling are live. Remaining gap is the weapon-arena swap (blocked on the missing BallStealer weapon) and the client carrier glow/waypoint."
+    notes: "DRIFT (logic partial->faithful): the weapon-arena swap to WEP_NEXBALL is now implemented (SaveAndApplyNexballWeapons saves the carrier's normal set and grants/switches BallStealer); the prior blocking gap (no BallStealer weapon) is FIXED. forteam lifetime (60 s) + anti-ballcamp DropOwner (20 s) remain faithful. Residual: client carrier glow/waypoint."
 
   - id: nexball.ball.dropball
     name: "DropBall / DropOwner / drop on death/disconnect/observe"
@@ -330,9 +330,9 @@ features:
     gaps:
       - "No ground waypoint sprite on drop (client-deferred)."
     verification:
-      - { kind: code-read, ref: "DropBall restores bounce+touch, inherits carrier velocity, arms MinIdle reset; DropOwner shoves the camper up-and-back and re-drops; OnDeath drops on kill; OnPlayerRemoved -> DropBall(player) is called from ClientManager.cs:517 (observer demote) AND :770 (disconnect)", result: pass }
+      - { kind: code-read, ref: "DropBall restores bounce+touch, inherits carrier velocity, arms MinIdle reset, clears NbMeterStart + restores the carrier's saved weapons; DropOwner shoves the camper up-and-back; OnDeath drops on kill; OnPlayerRemoved -> DropBall(player) from ClientManager.cs:517 + :770", result: pass }
     confidence: high
-    notes: "DRIFT (liveness partial->live): drop-on-disconnect and drop-on-observe are now wired — OnPlayerRemoved overrides DropBall(player) and the server dispatches it from both ClientManager paths (PutObserverInServer + ClientDisconnect), matching QC's nb_DropBall via the ClientDisconnect/MakePlayerObserver hooks. DropBall velocity inheritance + idle-reset scheduling + the anti-ballcamp DropOwner shove remain faithful and live on death."
+    notes: "Unchanged since last audit on liveness (drop-on-disconnect/observe wired). DropBall(carrier) now also clears the power-meter + restores saved weapons (weapon-arena teardown), consistent with QC PlayerPreThink non-carrier restore."
 
   - id: nexball.carry.perframe
     name: "Carry per-frame: view-ball follow, safe-pass lock, carrier-slowdown, carrying status"
@@ -344,15 +344,15 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:CarryFrame"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:OnPlayerPhysics + CarrierHighspeed"
-      - "src/XonoticGodot.Server/GameWorld.cs:2307 (CarryFrame), 1318 (PlayerPhysics)"
+      - "src/XonoticGodot.Server/GameWorld.cs:3036 (CarryFrame)"
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:221 (MutatorHooks.PlayerPhysics.Call)"
     constants:
       - { name: "g_nexball_basketball_carrier_highspeed", base: "0.8", port: "0.8 (DefaultCarrierHighspeed; cvar-read via CarrierHighspeed)", match: true }
       - { name: "g_nexball_viewmodel_offset", base: "8 8 0", port: "8 8 0 (ViewModelOffset)", match: true }
       - { name: "g_nexball_viewmodel_scale", base: "0.25", port: "none (client viewmodel scale)", match: false }
-      - { name: "g_nexball_safepass_maxdist", base: "5000", port: "none", match: false }
-      - { name: "g_nexball_safepass_holdtime", base: "0.75 s", port: "none", match: false }
-      - { name: "g_nexball_safepass_turnrate", base: "0.1", port: "none", match: false }
+      - { name: "g_nexball_safepass_maxdist", base: "5000", port: "none (no crosshair lock)", match: false }
+      - { name: "g_nexball_safepass_holdtime", base: "0.75 s", port: "none (no crosshair lock)", match: false }
+      - { name: "g_nexball_safepass_turnrate", base: "0.1", port: "0.1 (read in Nexball.HomingThink for the safe-pass arc)", match: true }
     status:
       logic: partial
       values: partial
@@ -363,13 +363,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No safe-pass crosshair-lock onto teammates (the secondary-fire homing pass has no target — blocked on the missing BallStealer weapon)."
-      - "STAT(OBJECTIVE_STATUS) NB_CARRYING bit is not networked (NB_CARRYING appears only in comments); the held-ball forteam-return notification (INFO_NEXBALL_RETURN_HELD) is not sent (the drop+reset effect IS applied)."
+      - "The safe-pass CROSSHAIR LOCK is not ported: QC PlayerPreThink runs crosshair_trace(player) each frame and, when the crosshair is on a live teammate within safepass_maxdist, sets ball.enemy + ball.wait (holdtime). CarryFrame does NOT do this trace, so BallSafePassTarget (ball.enemy) is never set on the live path and the BallStealer secondary safe-pass arc + HomingThink are unreachable (the secondary always falls through to the tackle projectile). safepass_maxdist / holdtime are unconsumed."
+      - "STAT(OBJECTIVE_STATUS) NB_CARRYING bit is not networked (NB_CARRYING appears only in comments; no nexball case in GametypeStatusBlock); the held-ball forteam-return notification (INFO_NEXBALL_RETURN_HELD) is not sent (the drop+reset effect IS applied)."
       - "No per-frame viewmodel scale (0.25) / EF_FLAME safe-pass lock indicator (client)."
     verification:
-      - { kind: code-read, ref: "CarryFrame (GameWorld:2307) positions the view-ball at origin+view_ofs+viewmodel_offset and force-returns the team-held ball past its forteam lifetime; OnPlayerPhysics (registered in Activate, fired live via MutatorHooks.PlayerPhysics.Call) applies the 0.8 carrier highspeed multiplier", result: pass }
+      - { kind: code-read, ref: "CarryFrame (GameWorld:3036) positions the view-ball at origin+view_ofs+viewmodel_offset and force-returns the team-held ball past its forteam lifetime; OnPlayerPhysics applies the 0.8 carrier highspeed via the live PlayerPhysics hook. No crosshair_trace -> ball.enemy is never set.", result: pass }
     confidence: high
-    notes: "DRIFT (missing -> live/partial): the per-frame carry layer is now implemented and LIVE — CarryFrame does the view-ball follow + forteam auto-return, and OnPlayerPhysics applies the carrier slowdown (highspeed 0.8) through the live PlayerPhysics mutator hook. Residual gaps: safe-pass crosshair lock (needs the weapon), the networked NB_CARRYING bit, and client viewmodel scale/flame."
+    notes: "DRIFT (notes/refs only; status unchanged logic/values partial): the safe-pass IMPLEMENTATION now exists (HomingThink steers the ball, turnrate 0.1 read live) but its TRIGGER — the per-frame crosshair lock that sets ball.enemy — is still missing, so the arc never fires on the live path. The blocking framing changed from 'needs the weapon' to 'needs the crosshair lock'. View-ball follow + forteam auto-return + carrier slowdown remain live and faithful."
 
   - id: nexball.weapon.ballstealer
     name: "Ball-launcher weapon (BallStealer): primary launch, power meter, secondary tackle/safe-pass"
@@ -378,33 +378,36 @@ features:
       - "common/gametypes/gametype/nexball/sv_weapon.qc:wr_think"
       - "common/gametypes/gametype/nexball/sv_weapon.qc:W_Nexball_Attack/Attack2/Touch/Think"
       - "common/gametypes/gametype/nexball/weapon.qh:BallStealer (REGISTER_WEAPON NEXBALL)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/BallStealer.cs:WrThink/DoLaunch/DoSecondary/TackleTouch"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:LaunchBall/StealBall/HomingThink"
     constants:
-      - { name: "g_balance_nexball_primary_speed", base: "1000", port: "none", match: false }
-      - { name: "g_balance_nexball_primary_refire", base: "0.7 s", port: "none", match: false }
-      - { name: "g_balance_nexball_primary_animtime", base: "0.3 s", port: "none", match: false }
-      - { name: "g_balance_nexball_secondary_speed", base: "3000", port: "none", match: false }
-      - { name: "g_balance_nexball_secondary_lifetime", base: "0.15 s", port: "none", match: false }
-      - { name: "g_balance_nexball_secondary_force", base: "500", port: "none", match: false }
-      - { name: "g_balance_nexball_secondary_refire", base: "0.6 s", port: "none", match: false }
-      - { name: "g_nexball_tackling", base: "1", port: "none", match: false }
+      - { name: "g_balance_nexball_primary_speed", base: "1000", port: "1000 (DefaultPrimarySpeed; cvar-read)", match: true }
+      - { name: "g_balance_nexball_primary_refire", base: "0.7 s", port: "0.7 (DefaultPrimaryRefire)", match: true }
+      - { name: "g_balance_nexball_primary_animtime", base: "0.3 s", port: "0.3 (DefaultPrimaryAnimtime)", match: true }
+      - { name: "g_balance_nexball_secondary_speed", base: "3000", port: "3000 (DefaultSecondarySpeed)", match: true }
+      - { name: "g_balance_nexball_secondary_lifetime", base: "0.15 s", port: "0.15 (DefaultSecondaryLifetime)", match: true }
+      - { name: "g_balance_nexball_secondary_force", base: "500", port: "500 (DefaultSecondaryForce; damageforcescale assumed 1)", match: true }
+      - { name: "g_balance_nexball_secondary_refire", base: "0.6 s", port: "0.6 (DefaultSecondaryRefire)", match: true }
+      - { name: "g_nexball_tackling", base: "1", port: "cvar-read (TacklingEnabled; default true)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: partial
+      values: faithful
+      timing: faithful
       presentation: missing
-      audio: missing
-      liveness: na
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "WEP_NEXBALL / BallStealer weapon does not exist; there is no way to SHOOT or pass the carried ball."
-      - "No primary launch, no secondary tackle projectile (W_Nexball_Touch ball-steal), no homing safe-pass (W_Nexball_Think)."
-      - "No weapon-arena handler, so Nexball is not enforced as a weapon-arena mode (carriers keep their normal weapons)."
+      - "Safe-pass secondary branch is unreachable on the live path: it fires only when BallSafePassTarget (ball.enemy) is set, but the crosshair lock that sets it (PlayerPreThink crosshair_trace) is not ported (see nexball.carry.perframe). The DoSecondary safe-pass arc + Nexball.HomingThink exist and are bit-faithful, but always fall through to the tackle projectile."
+      - "Primary launch routes velocity through WeaponFiring.ProjectileVelocity (newton-style OFF, no owner-velocity inheritance) where QC uses W_CalculateProjectileVelocity(actor, actor.velocity, ...); intended port-wide convention, but means the carrier's velocity is not added to the launched ball."
+      - "TackleTouch shove uses the secondary_force cvar directly (QC multiplies by toucher.damageforcescale, untracked in the headless player model — equals Base when damageforcescale==1)."
+      - "No viewmodel / muzzle-flash / projectile model presentation (CSQC); WEP_NEXBALL is not added to the scoreboard-suppressed weapon list separately (uses BallStealer identity, not WEP_PORTO spoofing)."
     verification:
-      - { kind: code-read, ref: "no BallStealer/WEP_NEXBALL/weapon-arena swap anywhere in the port (only deferred TODO comments in GiveBall)", result: fail }
+      - { kind: code-read, ref: "BallStealer is [Weapon]-registered (auto-registered like Porto/Rifle), granted on spawn (Nexball.OnPlayerSpawn) and swapped on pickup (GiveBall->SaveAndApplyNexballWeapons). WrThink: meter start-on-press / fire-on-release (primary), safe-pass-or-tackle (secondary). DoLaunch drops the ball at shotdir*speed*mul; DoSecondary spawns the ballstealer tackle projectile -> TackleTouch shoves+steals. Sounds NB_SHOOT1/SHOOT2/STEAL played.", result: pass }
     confidence: high
-    notes: "STILL OPEN. The basketball SHOOT interaction is entirely missing — a carrier can pick up and run/drop the ball, but cannot launch it. This is the largest remaining nexball gap."
+    notes: "MAJOR FIX (missing -> live). The BallStealer weapon is now fully ported and LIVE: a carrier can charge-and-shoot the ball (power meter), and tackle/steal with the secondary. The remaining defect is the safe-pass crosshair lock (logic: partial because the secondary's pass branch can never trigger). Was the largest nexball gap; now mostly closed."
 
   - id: nexball.weapon.power_meter
     name: "Basketball power meter (charge-and-release launch strength)"
@@ -413,28 +416,28 @@ features:
       - "common/gametypes/gametype/nexball/sv_weapon.qc:wr_think (NB_METERSTART)"
       - "common/gametypes/gametype/nexball/sv_weapon.qc:W_Nexball_Attack (mul triangle wave)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:MeterPeriod (period value only)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/BallStealer.cs:WrThink (NbMeterStart) + DoLaunch (triangle wave)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:MeterPeriod / MeterEnabled"
     constants:
-      - { name: "g_nexball_basketball_meter", base: "1", port: "none", match: false }
+      - { name: "g_nexball_basketball_meter", base: "1", port: "cvar-read (Nexball.MeterEnabled; default 1)", match: true }
       - { name: "g_nexball_meter_period", base: "1 s (rounded 1/32)", port: "MeterPeriod computed (rounded 1/32)", match: true }
-      - { name: "g_nexball_basketball_meter_minpower", base: "0.5", port: "none", match: false }
-      - { name: "g_nexball_basketball_meter_maxpower", base: "1.2", port: "none", match: false }
+      - { name: "g_nexball_basketball_meter_minpower", base: "0.5", port: "0.5 (DefaultMeterMinpower; cvar-read)", match: true }
+      - { name: "g_nexball_basketball_meter_maxpower", base: "1.2", port: "1.2 (DefaultMeterMaxpower; cvar-read)", match: true }
     status:
-      logic: missing
-      values: partial
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: missing
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No NB_METERSTART charge state; launch power can't be modulated (no minpower..maxpower triangle wave) because there is no launch weapon."
-      - "No HUD power-meter progress bar."
+      - "No HUD power-meter progress bar (the HUD_Mod_NexBall charge bar is client-deferred — see nexball.hud.modicon)."
     verification:
-      - { kind: code-read, ref: "MeterPeriod is computed bit-faithfully in Activate but has no consumer; no NB_METERSTART / triangle-wave logic", result: fail }
+      - { kind: code-read, ref: "WrThink starts NbMeterStart=time on first press (meter on + carrying); fires on release with elapsed t. DoLaunch computes mul = mi + (ma-mi)*triangle(t%period/period) exactly as QC. MeterPeriod bit-faithful (rounded 1/32, min 2).", result: pass }
     confidence: high
-    notes: "STILL OPEN (the meter PERIOD constant is computed faithfully for a future consumer, but the meter itself needs nexball.weapon.ballstealer, which is missing)."
+    notes: "FIX (missing -> live/faithful). The charge-and-release power meter is now implemented in BallStealer with the QC triangle-wave between minpower 0.5 and maxpower 1.2 over the rounded meter period. Only the HUD bar (presentation) remains; the meter logic/values/timing are live and faithful."
 
   - id: nexball.sound.cues
     name: "Sound cues: bounce / drop / steal / shoot / goal"
@@ -444,27 +447,28 @@ features:
       - "common/gametypes/gametype/nexball/sv_weapon.qc:W_Nexball_Attack/Touch (SND_NB_SHOOT1/SHOOT2/STEAL)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:BasketballTouch/FootballTouch (NB_BOUNCE), InitBall (NB_DROP), GoalTouch (NB_GOAL/TYPEHIT)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/BallStealer.cs:DoLaunch/DoSecondary (NB_SHOOT1/SHOOT2), TackleTouch (NB_STEAL)"
       - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs:109-116 (NB_BOUNCE/DROP/GOAL/SHOOT1/SHOOT2/STEAL)"
     constants:
       - { name: "g_nexball_sound_bounce", base: "1 (gate on the bounce noise)", port: "honored: _bounceSoundEnabled gates NB_BOUNCE per SpawnBall (default 1)", match: true }
       - { name: "bounce sound (noise)", base: "SND(NB_BOUNCE)", port: "NB_BOUNCE", match: true }
       - { name: "drop sound (noise1, InitBall)", base: "SND(NB_DROP)", port: "NB_DROP", match: true }
       - { name: "goal sound (score)", base: "ctf/respawn.wav", port: "NB_GOAL (ctf/respawn)", match: true }
+      - { name: "shoot/steal (noise2)", base: "SND(NB_SHOOT1/SHOOT2/STEAL)", port: "NB_SHOOT1/SHOOT2/STEAL (played by BallStealer)", match: true }
     status:
       logic: na
       values: na
       timing: na
       presentation: na
       audio: faithful
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "SHOOT1/SHOOT2/STEAL are registered (SoundsList) but still dead — they belong to the missing BallStealer weapon (see nexball.weapon.ballstealer)."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "SoundSystem.PlayOn(NB_BOUNCE) in both touch handlers (gated by _bounceSoundEnabled = g_nexball_sound_bounce), NB_DROP in InitBall, NB_GOAL (ctf/respawn) for score + TYPEHIT for fault/out in GoalTouch; SHOOT/STEAL have no caller", result: partial }
+      - { kind: code-read, ref: "SoundSystem.PlayOn(NB_BOUNCE) in both touch handlers (gated by g_nexball_sound_bounce), NB_DROP in InitBall, NB_GOAL/TYPEHIT in GoalTouch, and NB_SHOOT1 (primary + safe-pass), NB_SHOOT2 (tackle), NB_STEAL (steal) in BallStealer — all now have live callers", result: pass }
     confidence: high
-    notes: "DRIFT (audio partial->faithful): the SCORE goal sound is now the faithful ctf/respawn.wav (NB_GOAL), and the g_nexball_sound_bounce gate is now honored (SpawnBall sets _bounceSoundEnabled and the touch handlers respect it). Bounce/drop/goal/fault sounds all play correctly on the live path. Residual liveness: SHOOT/STEAL stay dead pending the BallStealer weapon."
+    notes: "DRIFT (liveness partial->live). The SHOOT1/SHOOT2/STEAL cues are no longer dead — the BallStealer weapon now plays them on its primary/secondary/steal paths. All nexball sound cues are wired live and faithful."
 
   - id: nexball.hud.modicon
     name: "HUD mod icon (carrying indicator + power-meter bar) + eventchase"
@@ -486,12 +490,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ModIconsPanel has no nexball drawer: no 'carrying' icon and no charge-meter progress bar."
+      - "ModIconsPanel has no nexball drawer: no 'carrying' icon and no charge-meter progress bar (grep finds no nexball case in ModIcons/GametypeStatusBlock)."
       - "No event-chase (third-person) cam when not carrying; accuracy/item-stats scoreboard panels not hidden for nexball."
+      - "STAT(OBJECTIVE_STATUS) NB_CARRYING + STAT(NB_METERSTART) are not networked, so even a drawer would have no data."
     verification:
-      - { kind: code-read, ref: "no NexBall case in the HUD ModIconsPanel; grep finds no nexball HUD/modicon code", result: fail }
+      - { kind: code-read, ref: "no NexBall case in the HUD ModIconsPanel; no nexball case in GametypeStatusBlock; grep finds no nexball HUD/modicon code", result: fail }
     confidence: high
-    notes: "STILL OPEN. STAT(OBJECTIVE_STATUS)/NB_METERSTART aren't networked either, so even a drawer would have no data."
+    notes: "STILL OPEN. The weapon/power-meter logic now exists server-side, but neither NB_CARRYING nor NB_METERSTART is networked and there is no HUD drawer, so the carrying indicator + charge bar + eventchase remain entirely missing."
 
   - id: nexball.goal.sentinel_encoding
     name: "Goal fault/out sentinel encoding + ball_redgoal/bluegoal swap"
@@ -528,25 +533,28 @@ features:
       - "common/gametypes/gametype/nexball/sv_nexball.qc:MUTATOR_HOOKFUNCTION(nb,PlayerPreThink) (else-branch weapon strip)"
       - "common/gametypes/gametype/nexball/sv_nexball.qc:MUTATOR_HOOKFUNCTION(nb,WantWeapon)"
       - "common/gametypes/gametype/nexball/sv_nexball.qc:MUTATOR_HOOKFUNCTION(nb,SpectateCopy) (NB_METERSTART)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:OnPlayerSpawn"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:OnPlayerPreThink + RestoreWeapons"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:SaveAndApplyNexballWeapons"
     constants: []
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: partial
+      values: faithful
+      timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "PlayerSpawn does not zero per-slot weapons + grant WEPSET(NEXBALL) for basketball mode (STAT(NB_METERSTART)=0; STAT(WEAPONS) handling)."
-      - "PlayerPreThink's non-carrier branch (re-grant the held nexball weapon / restore normal weapons) is not ported."
-      - "WantWeapon (force weapon 0) and SpectateCopy (copy NB_METERSTART to the spectator) hooks absent."
+      - "SpectateCopy hook (copy STAT(NB_METERSTART) from the spectatee to the spectator) is not ported — a spectator watching a charging carrier won't see the meter (also blocked on the unnetworked NB_METERSTART)."
+      - "WantWeapon (force the start weapon to 0) is not explicitly ported as a hook; the port instead grants BallStealer on spawn (basketball mode) and clears all weapons (football mode). Behaviorally close but the QC WantWeapon force-0 path is folded into OnPlayerSpawn."
+      - "PlayerSpawn basketball-mode grant uses |= (keeps the player's normal start weapons + adds BallStealer), matching QC's STAT(WEAPONS, player) |= WEPSET(NEXBALL). The active weapon swap to BallStealer happens on pickup (GiveBall), not on spawn — matches QC."
     verification:
-      - { kind: code-read, ref: "grep finds no PlayerSpawn/WantWeapon/SpectateCopy nexball handler in Nexball.cs; blocked on the missing WEP_NEXBALL/BallStealer", result: fail }
+      - { kind: code-read, ref: "OnPlayerSpawn (MutatorHooks.PlayerSpawn, added live in Activate) zeroes NbMeterStart + saved loadout, grants BallStealer in basketball mode (|=), strips all weapons in football mode. OnPlayerPreThink (live) restores the saved set for non-carriers. SaveAndApplyNexballWeapons does the GiveBall arena swap.", result: pass }
     confidence: high
-    notes: "NEWLY MAPPED (registry coverage gap). The weapon-arena player setup is entirely absent, dependent on nexball.weapon.ballstealer. Carriers keep their normal weapons; no NEXBALL weapon is granted on spawn."
+    notes: "FIX (missing -> live/partial). The weapon-arena player setup is now wired live via the PlayerSpawn + PlayerPreThink mutator hooks (added/removed in Activate/Deactivate): spawn grants BallStealer (basketball) or strips weapons (football); non-carriers restore their saved loadout. Residual: SpectateCopy + the explicit WantWeapon hook are absent."
 
   - id: nexball.item.filter_block
     name: "Item mutator hooks: FilterItem (no loot WEP_NEXBALL), ItemTouch (carriers get no weapons), ForbidThrow/Drop"
@@ -556,22 +564,23 @@ features:
       - "common/gametypes/gametype/nexball/sv_nexball.qc:MUTATOR_HOOKFUNCTION(nb,ItemTouch)"
       - "common/gametypes/gametype/nexball/sv_nexball.qc:MUTATOR_HOOKFUNCTION(nb,ForbidThrowCurrentWeapon)"
       - "common/gametypes/gametype/nexball/sv_nexball.qc:MUTATOR_HOOKFUNCTION(nb,ForbidDropCurrentWeapon)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:OnFilterItem"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:OnItemTouch"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:OnForbidThrowCurrentWeapon"
     constants: []
     status:
-      logic: missing
+      logic: partial
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FilterItem (remove dropped WEP_NEXBALL loot) is not ported."
-      - "ItemTouch (a ball-carrier can't pick up weapon items) is not ported."
-      - "ForbidThrowCurrentWeapon (can't throw WEP_NEXBALL) + ForbidDropCurrentWeapon (WEP_MORTAR) hooks absent."
+      - "ForbidDropCurrentWeapon (QC returns true for WEP_MORTAR.m_id — a long-standing odd special-case) is NOT ported as a distinct hook; the port only wires ForbidThrowCurrentWeapon (returns true for the BallStealer). The QC WEP_MORTAR drop-block is dropped (its purpose is unclear in Base, marked 'TODO: what is this for?')."
     verification:
-      - { kind: code-read, ref: "grep finds no FilterItem/ItemTouch/ForbidThrow/ForbidDrop nexball handler in Nexball.cs", result: fail }
+      - { kind: code-read, ref: "OnFilterItem (removes loot BallStealer pickups), OnItemTouch (carriers can't pick up weapon items), OnForbidThrowCurrentWeapon (can't throw the BallStealer) all registered live in Activate via MutatorHooks.FilterItem/ItemTouch/ForbidThrowCurrentWeapon and removed in Deactivate", result: pass }
     confidence: high
-    notes: "NEWLY MAPPED (registry coverage gap). These item/weapon-restriction hooks are tied to the weapon-arena WEP_NEXBALL flow and are all missing; mostly inert without the weapon, but ItemTouch (no weapon pickups while carrying) would matter even with normal weapons."
+    notes: "FIX (missing -> live/partial). FilterItem + ItemTouch + ForbidThrowCurrentWeapon are now ported and wired live as mutator hooks. Residual: QC's ForbidDropCurrentWeapon WEP_MORTAR special-case (purpose unknown in Base) is not reproduced."

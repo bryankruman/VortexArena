@@ -7,7 +7,7 @@ summary:
   worst_gaps:
     - "Per-waypoint static danger bias (.dmg) is scaffolded but DEAD and out-of-scope to wire: Waypoint.Danger + the A* term (gScore + link.Cost + nb.Danger) exist, but NOTHING writes Danger. The faithful producer (botframe_updatedangerousobjects, BotPopulation.cs:203 'unported') needs the g_bot_dodge hazard summation. Producer-side tagging is now partial (Blaster.cs:152 sets .bot_dodge/.bot_dodgerating, Entity.cs has the fields) but the consumer (havocbot_dodge danger-list AND the per-waypoint .dmg producer) is still absent — a cross-cutting subsystem. Routes still ignore lava/rocket zones at plan time and only react via the live per-frame BotDanger brake."
     - "Runtime auto-waypointing/pruning toward players (botframe_autowaypoints / botframe_deleteuselesswaypoints) and runtime item/teleporter waypoint injection on shipped (.waypoints-bearing) maps are absent: the graph is static after load."
-    - "No steerlib library and no waypoint editor / .waypoints/.cache/.hardwired writers: flocking/swarm/traceavoid/beamsteer primitives are missing and the port is a read-only graph consumer (cannot author or re-save graphs)."
+    - "No steerlib library and no waypoint editor: flocking/swarm/traceavoid/beamsteer primitives are missing and there is no in-game graph authoring (spawn/remove/hardwire/mirror/autowaypoint). NOTE 2026-06-25: .waypoints/.cache/.hardwired WRITERS now exist (Waypoint.cs:SaveToText/SaveLinksToText/SaveHardwiredLinksToText) but are DEAD — zero callers (no editor or save command invokes them), so the port still cannot in practice re-save graphs on the live path."
     - "AutoLink still skips PVS cull, the crouch<->normal 100qu short-link cap, and per-direction box/JUMP/SUPPORT link forbidding (wholesale skip of teleport/jump/ladder/custom/support sources instead)."
 features:
   - id: bot-waypoints.graph.node_model
@@ -201,23 +201,30 @@ features:
       - "server/bot/default/waypoints.qc:waypoint_saveall"
       - "server/bot/default/waypoints.qc:waypoint_save_links"
       - "server/bot/default/waypoints.qc:waypoint_save_hardwiredlinks"
-    port_refs: []
-    constants: []
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:SaveToText"
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:SaveLinksToText"
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:SaveHardwiredLinksToText"
+    constants:
+      - { name: "WAYPOINT_VERSION", base: "1.04", port: "1.04 (WaypointVersion const, written into headers)", match: true }
+      - { name: "vtos_precision", base: "vtos default (1 decimal place)", port: "Vtos {0:0.0} (1 decimal place)", match: true }
+      - { name: "generated_nodes_skipped", base: "WAYPOINTFLAG_GENERATED nodes not persisted", port: "skips Generated nodes (SaveToText)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port is a read-only consumer: no .waypoints/.cache/.hardwired file writers, so authored graphs cannot be saved or round-tripped."
+      - "DEAD scaffolding: the three writers (SaveToText/SaveLinksToText/SaveHardwiredLinksToText) are a faithful inverse of the loaders — version/symmetry/time header, generated-node skip, vtos 1-decimal formatting, the JUMP/SUPPORT/CUSTOM_JP source filter for cache vs hardwired/special sections — BUT have ZERO live callers (grep 2026-06-25: only referenced inside Waypoint.cs). No editor, save command, or test invokes them, so authored graphs still cannot be re-saved on the live path."
+      - "Hardwired-vs-special partitioning uses the CustomJp source flag as the hardwired marker (no dedicated wphwXX mirror), so a CUSTOM_JP source's links appear in both the HARDWIRED and SPECIAL sections, matching the QC overlap but losing the precise per-link hardwired identity on round-trip."
     verification:
-      - { kind: code, ref: "no save symbol in Waypoint.cs / Server.Bot (grep 2026-06-22; Wave-2 added no writer)", result: pass }
+      - { kind: code, ref: "SaveToText/SaveLinksToText/SaveHardwiredLinksToText (Waypoint.cs:860-925) are the faithful inverse of LoadFromText/LoadLinks/LoadHardwiredLinks; grep for callers (2026-06-25) finds none outside Waypoint.cs -> dead", result: partial }
     confidence: high
-    notes: "Unchanged by Wave-2. Acceptable for a player-facing port (maps ship pre-authored files); flagged as missing dev tooling."
+    notes: "DRIFT FIX since 2026-06-22/25 baseline: writers were ADDED (logic/values/timing missing -> faithful/faithful/na). They are a correct inverse of the loaders (header, generated-skip, vtos precision, source-type section filters all match QC). HOWEVER liveness went na -> dead: no caller exists (no editor/save-command/test), so in practice the port is still a read-only consumer. Treat as implemented-but-unwired dev tooling."
 
   - id: bot-waypoints.auto.spawnforitem
     name: "Auto item/spawn waypoints (waypoint_spawnforitem)"
@@ -504,4 +511,4 @@ features:
     verification:
       - { kind: code, ref: "no editor/symmetry/autowaypoint symbols in Server.Bot; BotPopulation.cs:201 still notes botframe_updatedangerousobjects unported (Wave-2 added no editor)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. Dev authoring tooling; not required for players. Symmetry header is parsed (LoadFromText) but there is no editor to consume it."
+    notes: "Unchanged: still no in-game editor / autowaypoint / symmetry-mirror / pruning. Dev authoring tooling; not required for players. Symmetry header is parsed (LoadFromText) and (2026-06-25) file WRITERS now exist (see bot-waypoints.file.save) but both are dead — there is no editor to drive a place->mirror->save round-trip."

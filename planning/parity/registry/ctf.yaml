@@ -8,7 +8,7 @@ summary:
     - "Flag model is static at base: no md3 wave/bob/rotate animation, no glow trail (g_ctf_flag_glowtrails), no dynamic team light (g_ctf_dynamiclights). Dropped/thrown/passed flags DO move under MoveType.Toss/Fly physics and the carried flag trails its carrier each tick."
     - "Capture-time PERSISTENT record (ctf_CaptureRecord ServerProgsDB write + cross-session g_ctf_leaderboard) is unported (needs a persistent DB); the in-match fastest-cap broadcast CTF_CAPTURE_TIME/_BROKEN/_UNBROKEN IS now fired. The takedamage flag-return path (g_ctf_flag_health/_return_damage/_return_when_unreachable) and two-flag g_ctf_reverse remain unported."
     - "Pass completes as an instant transfer when viable (no physical arc / pass_directional cone) — a deliberate simplification; the flight velocity is still computed for an integrating host. Portal/vehicle carrier-leave drop is still not wired into ctf_RemovePlayer (only disconnect + observe); the carried-flag vehicle COCKPIT offset is honored in Tick but boarding/leaving doesn't drop."
-    - "Capture shield uses QC's (CAPS-PICKUPS)+(RETURNS+FCKILLS) composite but still has no physical push entity / shielded centerprints; with the stock samual cfg the shield ratio is 0 (inert) by default exactly like Base."
+    - "Capture shield now spawns the physical ctf_captureshield push entity (model models/ctf/shield.md3, EF_ADDITIVE, force push, CENTER_CTF_CAPTURESHIELD_SHIELDED on touch) co-located with each flag; with the stock samual cfg the shield ratio is 0 (inert) by default exactly like Base, so nobody is shielded and the entity never pushes. Only missing nuance: the per-viewer same-team-hide customize (ctf_CaptureShield_Customize) is not networked."
     - "Flag-damage / return-when-unreachable (g_ctf_flag_health, _return_damage, _return_when_unreachable lava/slime/needkill health bleed) not implemented; the dropped flag is TakeDamage.Yes but carries no health."
 features:
   - id: ctf.flag.spawn_setup
@@ -358,26 +358,29 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:CaptureShieldStatus"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:CtfShieldScore"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:UpdateCaptureShields"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:SpawnShieldEntity"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:ShieldTouchEntity"
     constants:
       - { name: "g_ctf_shield_min_negscore", base: "20", port: "20", match: true }
       - { name: "g_ctf_shield_max_ratio", base: "0 (disabled)", port: "cvar; fallback 0 (matches Base default)", match: true }
       - { name: "g_ctf_shield_force", base: "100", port: "cvar; fallback 100", match: true }
       - { name: "shield score basis", base: "(CAPS - PICKUPS) + (RETURNS + FCKILLS)", port: "(CAPS - PICKUPS) + (RETURNS + FCKILLS)", match: true }
+      - { name: "shield model / scale / avelocity", base: "models/ctf/shield.md3 / 0.5 / '7 0 11' / EF_ADDITIVE", port: "models/ctf/shield.md3 / 0.5 / '7 0 11' / EF_ADDITIVE", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
-      audio: missing
+      presentation: faithful
+      audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No physical ctf_captureshield push entity (no shield model, no force push, no shielded centerprints) — the status is computed and gates pickups + reaches the HUD, but the visible/pushing shield is absent."
+      - "The per-viewer ctf_CaptureShield_Customize hide (shield model visible only to enemies, hidden from same-team) is not networked — the shield entity is shown to everyone. Minor; the model/force-push/centerprint are present."
     verification:
-      - { kind: code, ref: "Ctf.cs:CaptureShieldStatus scores by CtfShieldScore = (CAPS-PICKUPS)+(RETURNS+FCKILLS) (the QC composite), not net SCORE; ratio/force fallbacks match Base (0/100). Called each tick from GameWorld:2784.", result: pass }
+      - { kind: code, ref: "Ctf.cs:CaptureShieldStatus scores by CtfShieldScore = (CAPS-PICKUPS)+(RETURNS+FCKILLS) (the QC composite), not net SCORE; ratio/force fallbacks match Base (0/100). SpawnShieldEntity called from SpawnFlag (live via GameWorld:2754); ShieldTouchEntity set as the entity Touch; UpdateCaptureShields called each tick from GameWorld:3015.", result: pass }
     confidence: high
-    notes: "The shield uses the QC composite (CAPS-PICKUPS)+(RETURNS+FCKILLS) score, and the ratio/force fallbacks match Base (0=disabled, 100). With Base default ratio 0 the feature is inert by default exactly like Base. Status gates pickups (GtCaptureShielded) and the bit reaches the HUD via PackCtfStatus CTF_SHIELDED; the push entity + notifications are still absent."
+    notes: "FIX since last audit (presentation missing -> faithful, audio missing -> na): the physical ctf_captureshield push entity is now spawned co-located with each flag (SpawnShieldEntity, QC ctf_CaptureShield_Spawn: model models/ctf/shield.md3, scale 0.5, avelocity '7 0 11', EF_ADDITIVE, MOVETYPE_NOCLIP, SOLID_TRIGGER). ShieldTouchEntity (QC ctf_CaptureShield_Touch) pushes a shielded enemy with g_ctf_shield_force along the outward normal (0-damage Damage call) and center-prints CTF_CAPTURESHIELD_SHIELDED. Base shield touch emits NO sound, so audio is na (was wrongly 'missing'). With Base default ratio 0 the feature is inert by default exactly like Base. Status still gates pickups (GtCaptureShielded) + reaches the HUD via PackCtfStatus CTF_SHIELDED. Only the same-team customize-hide remains unported."
 
   - id: ctf.stalemate
     name: "Stalemate carrier reveal"

@@ -4,12 +4,12 @@ base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
   feature_count: 17
-  reaudit_note: "DRIFT RE-AUDIT 2026-06-25 against current branch claude/parity-port-waves. Net movement since the 2026-06-22 baseline is positive (5 fixes, 0 regressions). FIXES: (1) the teleport SOUND channel is now SoundChannel.TriggerAuto (CH_TRIGGER -3) — was the mislabeled Item(3); audio now faithful. (2) EF_TELEPORT_BIT is now XOR-toggled on teleport (Teleporters.cs:359) and istypefrag is now set (Teleporters.cs:383) — the two map-teleporter core gaps closed, presentation now faithful. (3) The Porto portal cleanup seams are now FULLY WIRED: GameWorld.cs:421-429 assigns PortalSpawner / PortalClearWithId / PortalClearAll to Warpzones.{PlacePortoPortal,ClearPortoPortal,ClearAllPortoPortals}; the static delegate is no longer dead. (4) Player death/reset now tears down ALL of an owner's portals (Porto.WrPlayerDeath -> PortalClearAll, and Race.cs:372 on checkpoint), so portals no longer outlive their owner. (5) portal_activatetime self-skip + portal-owner kill-credit are now modeled on the warpzone Teleport path (Warpzone.cs:231-235,263-272). RESIDUAL OPEN (architectural / unchanged): the whole portal-ENTITY model (health 200, 15s lifetime/fade, MDL_PORTAL skins, EF glow, explode/expire sounds, Portal_Customize), the ANNCE_ACHIEVEMENT_AMAZING announcer, Portal_WillHitPlane predict-ahead + hook teleport + flag exclusion, the TeleportRoundGateSuppressed stub (race/cts/round-prestart), g_telefrags_avoid still hardcoded for clients, and re-shoot-replaces-prior-pair."
+  reaudit_note: "DRIFT RE-AUDIT 2026-06-26 against current branch claude/parity-port-waves (HEAD ff8a699). Net movement since the 2026-06-25 baseline is positive (2 partial fixes, 0 regressions, 1 newly-recorded gap). NEW FIXES: (1) RemoveGrapplingHooks(player) is now CALLED on teleport (Teleporters.cs:251 TeleportTouch, :273 TargetTeleportUse -> Hook.RemoveGrapplingHooks, a real impl Hook.cs:479) — a hooked player drops the hook through a teleporter as in teleport.qc:59-61/82-83; touch_and_targets logic partial->faithful (only EXACTTRIGGER_TOUCH precision remains). (2) TeleportRoundGateSuppressed is no longer a flat `=> false` stub: the round-prestart half is now LIVE (RoundHandler.RoundGateBlocks(), wired by GameWorld.EnableRounds:1490 RoundNotStartedProvider -> Rounds.IsRoundStarted, installed by every round-based mode), so a spawn-overlap no longer telefrags during a round countdown. NEW GAP (recorded, not a regression — replaces the old flat-stub gap): the race/cts arm reads GameScores.Gametype (Teleporters.cs:563) which is NEVER SET server-side (only ScoreInfoBlock.Apply:134 on the CLIENT receive path sets it; the server keeps the default \"dm\" and uses a typed GameType object instead), so the !g_race/!g_cts suppression is still inert on the authoritative server path. CARRIED FORWARD from 2026-06-25 (unchanged): teleport SOUND on CH_TRIGGER(-3), EF_TELEPORT_BIT XOR + istypefrag, Porto cleanup seams fully wired (GameWorld.cs:422-430), death/reset PortalClearAll teardown (Race.cs:372), warpzone portal_activatetime self-skip + portal-owner kill-credit (Warpzone.cs:246-250,282-291). RESIDUAL OPEN (architectural / unchanged): the whole portal-ENTITY model (health 200, 15s lifetime/fade, MDL_PORTAL skins, EF glow, explode/expire sounds, Portal_Customize), the ANNCE_ACHIEVEMENT_AMAZING announcer, Portal_WillHitPlane predict-ahead + hook teleport + flag exclusion, the race/cts half of the telefrag gate, g_telefrags_avoid still hardcoded for clients, and re-shoot-replaces-prior-pair."
   worst_gaps:
     - "Porto portal ENTITY entirely replaced by a seamless warpzone pair: no portal health (200), no 15s lifetime/fade/recharge, no portal model/skins(0/1/2)/EF_RED/BLUE/STARDUST/ADDITIVE, no explode/expire sounds, no Portal_Customize independent-player hiding. (UNCHANGED.)"
     - "Portal-specific teleport extras still absent on the warpzone path: ANNCE_ACHIEVEMENT_AMAZING (portal telefrag within 1s of creation), IS_INDEPENDENT_PLAYER gating, Portal_WillHitPlane predict-ahead crossing, grappling-hook teleport, and item_flag_team exclusion. (STILL OPEN.)"
     - "Warpzone portals never EXPIRE: there is no 15s g_balance_portal_lifetime / fade-out, so a portal pair persists for the whole match (death/reset teardown is now wired, but a living player's pair never times out). Re-shooting after a completed pair does not tear down the prior pair either (Base Portal_SetInPortal disconnects the old)."
-    - "teleporters.qc !g_race && !g_cts && !(round pre-start) telefrag suppression is STILL a stub (TeleportRoundGateSuppressed()=>false, Teleporters.cs:485) — the gate STRUCTURE matches Base incl. FORCE_TDEATH, but the race/cts/round-prestart accessor is not yet wired, so a spawn-overlap can still telefrag during a round countdown / in Race/CTS."
+    - "teleporters.qc !g_race && !g_cts && !(round pre-start) telefrag suppression is now HALF wired: the round-prestart gate is LIVE (TeleportRoundGateSuppressed -> RoundHandler.RoundGateBlocks, wired by GameWorld.EnableRounds), but the !g_race/!g_cts half reads GameScores.Gametype (Teleporters.cs:563) which is NEVER set server-side (server keeps the \"dm\" default; only the client ScoreInfoBlock.Apply sets it). So a spawn/checkpoint overlap can still telefrag in Race/CTS on the authoritative server, while the round-countdown case is now correctly suppressed."
     - "FORCE_TDEATH is wired for map teleporters but the Porto warpzone crossing does NOT route through TeleportPlayer (it warps via Warpzone.Teleport), so a portal crossing applies no tdeath at all (no force-telefrag of the exit)."
 features:
   - id: teleporters.core.teleport_player
@@ -63,11 +63,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The !g_race && !g_cts && !(round_handler_IsActive() && !round_handler_IsRoundStarted()) suppression is STILL a STUB: TeleportRoundGateSuppressed() always returns false (Teleporters.cs:485), so telefrags still fire in Race/CTS and during the round countdown. The gate is structurally faithful and the seam exists, but the cross-file gametype/round-state accessor is not yet wired."
+      - "The round-prestart half of the suppression is now LIVE: TeleportRoundGateSuppressed() -> RoundHandler.RoundGateBlocks() (Teleporters.cs:566), wired by GameWorld.EnableRounds (RoundNotStartedProvider, GameWorld.cs:1490) for every round-based mode, so a telefrag is now correctly suppressed during a round countdown."
+      - "The !g_race && !g_cts half is STILL effectively inert on the server: TeleportRoundGateSuppressed checks `gt == \"rc\" || gt == \"cts\"` (Teleporters.cs:563-565) against GameScores.Gametype, but that static string is NEVER set server-side (only the CLIENT path ScoreInfoBlock.Apply:134 assigns it; the server keeps the default \"dm\" and drives modes via a typed GameType object). So a spawn/checkpoint overlap can still telefrag in Race/CTS on the authoritative path. Fix would be to populate GameScores.Gametype from the active GameType.NetName at map start (or read GameType is Race/Cts directly)."
     verification:
-      - { kind: code, ref: "Teleporters.cs:369-374 — gate mirrors teleporters.qc:148-150 incl. FORCE_TDEATH; only TeleportRoundGateSuppressed()=>false (Teleporters.cs:485) is unwired", result: partial }
+      - { kind: code, ref: "Teleporters.cs:442-447 gate mirrors teleporters.qc:148-150 incl. FORCE_TDEATH; TeleportRoundGateSuppressed (561-567) now wires the round-prestart half (RoundHandler.RoundGateBlocks, live) but the race/cts half reads GameScores.Gametype which is unset server-side (grep: only ScoreInfoBlock.cs:134 assigns it)", result: partial }
     confidence: high
-    notes: "UNCHANGED since baseline. tdeath gate matches Base structure (TDEATH/FORCE_TDEATH flag, g_telefrags OR force). Box loop / deathradius / self-gib / 10000-dmg DEATH_TELEFRAG faithful. Remaining divergence is purely the race/cts/round-prestart stub."
+    notes: "PARTIAL FIX (2026-06-26): the round-prestart suppression is now genuinely wired (was a flat `=> false` stub at baseline). tdeath gate still matches Base structure; box loop / deathradius / self-gib / 10000-dmg DEATH_TELEFRAG faithful. Residual: the !g_race/!g_cts half does not fire on the server because GameScores.Gametype is never populated server-side — logic stays partial."
 
   - id: teleporters.core.telefrag_teamplay
     name: "Teammates spared from telefrag in team modes (g_telefrags_teamplay)"
@@ -212,7 +213,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportTouch"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: faithful
       presentation: na
@@ -221,12 +222,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "RemoveGrapplingHooks(player) on teleport is still not called (teleport.qc:59-61) — a hooked player keeps the grappling hook through a teleporter."
-      - "No EXACTTRIGGER_TOUCH brush-face precision test (box overlap only)."
+      - "No EXACTTRIGGER_TOUCH brush-face precision test (box overlap only) — teleport.qc:56."
     verification:
-      - { kind: code, ref: "Teleporters.cs:180-195 relocates then fires UseTargets (target blanked) and the dest's targets", result: pass }
+      - { kind: code, ref: "Teleporters.cs:243-263 — TeleportActive gate, RemoveGrapplingHooks(toucher) for clients (Teleporters.cs:251), relocate via SimpleTeleportPlayer, then UseTargets (own target blanked) + dest targets", result: pass }
     confidence: high
-    notes: "Unchanged. Target firing order (teleporter targets with .target blanked, then dest targets) matches Base."
+    notes: "FIX (2026-06-26): RemoveGrapplingHooks(player) is now called on teleport (Teleporters.cs:251 -> Hook.RemoveGrapplingHooks, Hook.cs:479 real impl that drops every weapon-slot hook + restores FLY->WALK), matching teleport.qc:59-61. The same call was also added to the use-activated TargetTeleportUse (Teleporters.cs:273, teleport.qc:82-83). logic partial->faithful. Target firing order (teleporter targets with .target blanked, then dest targets) matches Base. Only the EXACTTRIGGER_TOUCH brush-face precision test remains unported."
 
   - id: teleporters.trigger.team_claim
     name: "trigger_teleport_use team claim"

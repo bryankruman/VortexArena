@@ -213,13 +213,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "item_key pickup centerprint ('You've picked up the X key!') is silently dropped: MapMover.Centerprint(toucher, this.Message) IS called (MapObjectsRegistry.cs:509) but MapObjectsCommon.CenterprintHandler (declared MapObjectsCommon.cs:816) is never ASSIGNED anywhere in game/ or src/ (grep 'CenterprintHandler =' = 0 hits), so Centerprint no-ops on the live path."
-      - "item_keys_names[lowestbit] save (for keylist display strings) and the Q3COMPAT_COMMON QL +8z origin nudge are omitted (no Q3-compat global; the latter documented)."
+      - "item_key pickup centerprint ('You've picked up the X key!') is silently dropped: MapMover.Centerprint(toucher, this.Message) IS called but MapObjectsCommon.CenterprintHandler (declared MapObjectsCommon.cs:851) is never ASSIGNED anywhere in game/ or src/ (grep 'CenterprintHandler =' = 0 hits), so Centerprint no-ops on the live path."
+      - "Only the Q3COMPAT_COMMON QL +8z origin nudge is omitted (no Q3-compat global; documented). NOTE: the item_keys_names[lowestbit] save IS now implemented (MapObjectsRegistry.cs:460 records this.netname per key bit; ItemKeysKeylist :386 builds the keylist string) and is LIVE — consumed by Doors.cs:537 and Triggers.cs:946 for the door/keylock 'You need <the SILVER key>' centerprints."
     verification:
       - { kind: code, ref: "MapObjectsRegistry.cs:154-159 registers item_key/item_key1/item_key2/item_key_gold/silver/master with correct BIT pre-stamps; KeySetup/SpawnItemKey/KeyTouch (349-516) vs keys.qc:77-264 — multi-bit reject (excl. master), per-id netname/colormod, bbox, TOSS/NONE, touch grant + fire-target-once-with-blanked-message all match", result: pass }
       - { kind: code, ref: "MF_ROTATE now wired: SpawnItemKey sets this_.ModelSpinRotate=true (MapObjectsRegistry.cs:481); EntityNode.cs:84-88 adds yawDeg += 100*fmod(time,3.6) — byte-faithful to csqcmodel_hooks.qc:617", result: pass }
       - { kind: code, ref: "consumer chain consistent: KeyTouch grants toucher.ItemKeys (line 507); Doors.cs/Triggers.cs read the same Entity.ItemKeys — a granted key actually opens a keylock/key-gated door", result: pass }
-      - { kind: grep, ref: "CenterprintHandler: only declaration at MapObjectsCommon.cs:816, NO 'CenterprintHandler =' assignment in source (binaries excluded) -> Centerprint no-ops", result: fail }
+      - { kind: grep, ref: "CenterprintHandler: only declaration at MapObjectsCommon.cs:851, NO 'CenterprintHandler =' assignment in source (binaries excluded) -> Centerprint no-ops", result: fail }
     confidence: high
     notes: "MOSTLY FIXED. MF_ROTATE key spin is now wired (Wave-8e: ModelSpinRotate bool + EntityNode yaw spin matching DP's 100deg/s wrap-at-3.6s). Grant logic + pickup sound + consumer chain (Doors/Triggers read same Entity.ItemKeys) remain live. The ONE residual presentation gap is the centerprint sink: MapMover.Centerprint is invoked on touch but no host code assigns CenterprintHandler, so the pickup message no-ops."
 

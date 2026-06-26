@@ -6,7 +6,7 @@ summary:
   feature_count: 13
   worst_gaps:
     - "Movetype_Physics_MatchTicrate (sub-tick interpolation: tic_* snapshots, floor(dt/tr) whole frames clamped to 32, residual-dt trace continuation + gravity half-step, sloppy straight-line interp) is STILL entirely missing — no between-tick interpolation in this layer for client-side moveables (gibs/casings/projectiles/trains). Re-grep 2026-06-25/26: zero hits for MatchTicrate/tic_origin/tic_velocity in src/."
-    - "MOVETYPE_PHYSICS-rider fast-path STILL missing in PushMove (push.qc:124-129): a MOVETYPE_PHYSICS rider goes through the normal PushEntity sweep + stuck-check instead of a translate-and-relink. Low impact (port rarely uses MOVETYPE_PHYSICS riders)."
+    - "(RESOLVED since 2026-06-25 baseline) MOVETYPE_PHYSICS-rider fast-path in PushMove (push.qc:123-129) IS NOW implemented (FlyMove.cs:407-414: translate+relink+continue, skips the PushEntity sweep). Corpse/zero-thickness rider squash (push.qc:166-173) also now zeroes mins/maxs (FlyMove.cs:444-452). Both landed in commit faa4e89; push.pushmove logic partial->faithful. Only residual is the non-behavioral findradius-vs-flat-scan broadphase style."
     - "Toss bmodelstartsolid retry: Base re-runs _Movetype_UnstickEntity on a bmodel-embedded bounce then retries the push and gives up (zero-vel + SET_ONGROUND) if still stuck (toss.qc:60-82); the port's PushEntity nudges inline but PhysicsToss does not replicate the explicit unstick-retry-give-up sequence."
     - "(RESOLVED since 2026-06-25 baseline) CheckWaterTransition's hardcoded misc/water_in.wav cue is GONE — both CheckWater and CheckWaterTransition now route through the per-entity .ContentsTransition callback (Entity.ContentsTransition, MoveTypePhysics.cs:256/496), exactly matching Base which emits no sound in the movetype layer. checkwater row now fully faithful (audio na)."
 features:
@@ -260,10 +260,11 @@ features:
       - { name: "SOLID_NOT/TRIGGER pusher", base: "translate+rotate, no riders, angle-wrap", port: "same (PushMove.cs:318-326)", match: true }
       - { name: "skip movetypes", base: "NONE/PUSH/FOLLOW/NOCLIP/FLY_WORLDONLY", port: "same set", match: true }
       - { name: "rotation pivot", base: "MAKE_VECTORS(-moveangle), left=-right, org+pivot", port: "AngleVectors(NegateAngles), left=-right", match: true }
-      - { name: "MOVETYPE_PHYSICS rider", base: "just translate (origin += move), no push", port: "NOT special-cased — falls through to PushEntity path", match: false }
+      - { name: "MOVETYPE_PHYSICS rider", base: "just translate (origin += move), no push", port: "special-cased: origin += move + relink + continue, skips PushEntity sweep (FlyMove.cs:407-414)", match: true }
+      - { name: "corpse/zero-thickness squash mins/maxs zero", base: "mins.x=mins.y=0; maxs=mins; continue (push.qc:166-173)", port: "same — zero-thickness skip + corpse box flattened to (0,0,mins.z) (FlyMove.cs:444-452)", match: true }
       - { name: "blocked revert + .blocked", base: "revert pusher + all moved riders, call blocked", port: "same", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -272,13 +273,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base special-cases MOVETYPE_PHYSICS riders (push.qc:124-129): they just translate + relink and skip the PushEntity/blocked logic. The port has no such branch — a MOVETYPE_PHYSICS rider goes through the normal PushEntity sweep + stuck-check. Low impact (the port rarely uses MOVETYPE_PHYSICS riders)."
-      - "Base gathers riders via findradius over the whole live entity list (FOREACH_ENTITY_RADIUS); the port iterates Entities() with a swept-box prefilter — functionally equivalent result set, but a flat scan rather than the area-grid broadphase."
-      - "Base zero-thickness/corpse rider squash mutates the rider's mins/maxs to zero (push.qc:171-172) then continues; the port just continues without zeroing the box. Cosmetic-state difference; both avoid blocking."
+      - "Minor broadphase-style difference (not behavioral): Base gathers riders via findradius over the whole live entity list (FOREACH_ENTITY_RADIUS, push.qc:75); the port iterates Entities() with a swept-box + final-box overlap prefilter (FlyMove.cs:350,378-382) — a flat scan rather than the area-grid broadphase, but the resulting rider set is equivalent."
     verification:
-      - { kind: code, ref: "PushMove (FlyMove.cs:309) vs _Movetype_PushMove (push.qc:3): rider rotation about pivot, savesolid toggle, nudge-on-stuck, full revert + .blocked all match; MOVETYPE_PHYSICS fast-path missing. File unchanged in Wave-2.", result: pass }
+      - { kind: code, ref: "PushMove (FlyMove.cs:309) vs _Movetype_PushMove (push.qc:3): rider rotation about pivot, savesolid toggle, nudge-on-stuck, full revert + .blocked all match. MOVETYPE_PHYSICS rider fast-path NOW present (FlyMove.cs:407-414 translate+relink+continue == push.qc:123-129); corpse/zero-thickness squash now zeroes mins/maxs (FlyMove.cs:444-452 == push.qc:166-173). Both landed in commit faa4e89 (2026-06-25 22:30).", result: pass }
     confidence: high
-    notes: "Unchanged. Rider rotation, blocked-revert, corpse non-block path reproduced. MOVETYPE_PHYSICS rider fast-path is the one missing branch."
+    notes: "FIXED since the 2026-06-25 baseline (commit faa4e89, same-day but landed after the baseline audit ran): the two behavioral PushMove gaps are closed. (1) MOVETYPE_PHYSICS riders are now special-cased to translate+relink and skip the PushEntity/blocked sweep (FlyMove.cs:407-414), matching push.qc:123-129. (2) Corpse (SOLID_NOT/TRIGGER) and zero-thickness riders now get their box flattened to zero and are skipped rather than blocking (FlyMove.cs:444-452), matching push.qc:166-173. logic partial->faithful. Only residual is the non-behavioral broadphase-scan style difference (flat Entities() scan vs findradius); rider set is equivalent, so no behavior gap."
 
   - id: physics-movetypes.follow
     name: "MOVETYPE_FOLLOW rigid attach (held flag/key model)"

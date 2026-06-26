@@ -1,7 +1,7 @@
 unit: sv-commands-votes
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"  # drift re-audit 2026-06-25: Voting.IsClient is now wired live — the last dead vote predicate is closed.
+last_audited: "2026-06-25"  # drift re-audit 2026-06-25: vote + timeout announcer/center-print cues are now wired through the LIVE NotificationSystem (MSG_ANNCE / MSG_CENTER), not chat-broadcast text — presentation/audio fixes on vote.call / vote.resolve / timeout.state_machine.
 summary:
   feature_count: 16
   worst_gaps:
@@ -9,7 +9,7 @@ summary:
     - "master vote: sv_vote_master_ids (auto-login by crypto fingerprint on connect) is still not honored (the cvar exists but only as a private-cvar mask entry in CommandReplies; no ClientConnect auto-login)."
     - "who: ping/packetloss columns carry 0 in the Godot-free core (the net host owns live ping); a documented core limitation, not a logic gap. Full column table + sv_status_privacy hiding are present."
     - "Cross-server online ban sync (uri_get / g_ban_sync_*) is deliberately out of the headless core (intended divergence; local ban store complete)."
-    - "FIXED in this re-audit: the vote-call !IS_CLIENT guard is now LIVE (Voting.IsClient wired in GameWorld.cs:970 = p.Flags & FL_CLIENT). vote.call is now fully faithful on logic — no remaining dead predicate. (Earlier Wave 5/6 fixes — timeout/game_starttime guards, spectator exclusion, ValidateMap, checkargs, timeout slowmo+countdown, full who table, randomized shuffleteams, anticheat — all retained and re-verified.)"
+    - "FIXED in this re-audit: the vote/timeout presentation+audio cues are now LIVE through the real NotificationSystem channel — Voting.AnnounceVoteCall/Accept/Fail → NotificationSystem.Send(MSG_ANNCE, VOTE_CALL/VOTE_ACCEPT/VOTE_FAIL) (GameWorld.cs:960-962), Timeout.CenterPrintBeginning/Ending → MSG_CENTER TIMEOUT_BEGINNING/ENDING with the COUNT arg (overwriting per-second center-print, GameWorld.cs:1126-1129), Timeout.AnnouncePrepare → MSG_ANNCE PREPARE (GameWorld.cs:1131). The baseline recorded these as chat-broadcast-only (audio missing/partial). vote.call audio missing→faithful, vote.resolve presentation partial→faithful + audio missing→faithful, timeout presentation/audio partial→faithful. (Prior fixes — IsClient/timeout/game_starttime guards, spectator exclusion, ValidateMap, checkargs, slowmo, full who table, randomized shuffleteams, anticheat — all retained and re-verified; constants unchanged vs Base.)"
 features:
   - id: sv-commands-votes.dispatch.client_parse
     name: "Client command dispatch (cmd <verb>) + privilege split + flood/UTF-8/ban pre-gates"
@@ -86,17 +86,17 @@ features:
       values: faithful
       timing: faithful
       presentation: partial
-      audio: missing
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ANNCE_VOTE_CALL announce + the networked Nagger vote HUD are not emitted by this core (broadcast text only)."
+      - "The networked Nagger vote HUD entity (the on-screen vote prompt) is not emitted by this core — a client-side networked-entity presentation gap. The ANNCE_VOTE_CALL announcer cue IS now played (audio fixed)."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Vote_CallAndPass_SinglePlayerAutoMajority", result: pass }
-      - { kind: code, ref: "VoteController.cs:148-204 CmdCall full guard chain (voteban, sv_vote_call, game_starttime, already-called, spectator gate, IS_CLIENT, timeout_status, wait cooldown, nasty-char, whitelist parse, caller auto-yes); GameWorld.cs:955/960/963/966/970 wires WarmupStage/IsPlayer/TimeoutActive/GameStartTime/IsClient ALL LIVE. Voting.IsClient = p => (p.Flags & EntFlags.Client) != 0 (GameWorld.cs:970) — the FL_CLIENT flag, set in ClientConnect/cleared on disconnect.", result: pass }
+      - { kind: code, ref: "VoteController.cs:162-228 CmdCall full guard chain (voteban, sv_vote_call, game_starttime, already-called, spectator gate, IS_CLIENT, timeout_status, wait cooldown, nasty-char, whitelist parse, caller auto-yes); AnnounceVoteCall fired at CmdCall:226-227 when tmpPlayerCount>1 && Active. GameWorld.cs:960 Voting.AnnounceVoteCall = () => NotificationSystem.Send(MSG_ANNCE, VOTE_CALL) (the live announcer channel); :966/971/974/977/981 wires WarmupStage/IsPlayer/TimeoutActive/GameStartTime/IsClient ALL LIVE. Voting.IsClient = p => (p.Flags & EntFlags.Client) != 0 (GameWorld.cs:981) — the FL_CLIENT flag.", result: pass }
     confidence: high
-    notes: "FIX (drift re-audit 2026-06-25): the last dead predicate is now LIVE. Voting.IsClient is wired in GameWorld.cs:970 (p.Flags & FL_CLIENT) — the baseline-recorded `default _ => true` is gone — so the QC `caller && !IS_CLIENT(caller)` guard (CmdCall:164) now genuinely fires. logic is fully faithful with no residual dead branch. (Wave 5/6 fixes retained: timeout-active guard Voting.TimeoutActive=()=>Timeout.Active GameWorld.cs:963, pre-match game_starttime guard Voting.GameStartTime=()=>GameStartTime GameWorld.cs:966, spectator gate via wired IsPlayer.) Voteban check, sv_vote_call, already-called, wait cooldown, nasty-char + whitelist parse, caller auto-yes all present and live."
+    notes: "FIX (drift re-audit 2026-06-25): audio missing→faithful. ANNCE_VOTE_CALL is now emitted via the real NotificationSystem MSG_ANNCE channel (GameWorld.cs:960, same path as every other server announcer cue), fired in CmdCall when >1 real player is present and the vote is still open — the baseline recorded this as broadcast-text-only. The earlier (2026-06-25 baseline) IsClient live-wiring fix is retained: Voting.IsClient is wired in GameWorld.cs:981 (p.Flags & FL_CLIENT), so the QC `caller && !IS_CLIENT(caller)` guard genuinely fires. logic fully faithful. Presentation stays partial: only the networked Nagger vote-HUD entity is still unsent. Voteban check, sv_vote_call, already-called, wait cooldown, nasty-char + whitelist parse, caller auto-yes, timeout-active guard, game_starttime guard, spectator gate all present and live; constants match Base (sv_vote_timeout 24 / wait 120 / limit 160)."
 
   - id: sv-commands-votes.vote.parse_whitelist
     name: "VoteCommand_parse — whitelist match, nasty-char sanitize, command rewriting"
@@ -188,18 +188,16 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
-      audio: missing
+      presentation: faithful
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "ANNCE_VOTE_ACCEPT / ANNCE_VOTE_FAIL announcer cues are not played (presentation/audio handled in host, not invoked here)."
-      - "VoteSpam drops the QC 'didn't have to vote' wording variant (always prints 'didn't vote'); cosmetic broadcast-text divergence."
+    gaps: []
     verification:
-      - { kind: code, ref: "GameWorld.cs:1433 Voting.Think() pumped per server frame; VotePassed -> Commands.Execute; VoteController.cs Accept/Reject/Timeout/Spam", result: pass }
+      - { kind: code, ref: "GameWorld.cs Voting.Think() pumped per server frame; VotePassed -> Commands.Execute; VoteController.cs Accept:495/Reject:503/Timeout:511 each fire AnnounceVoteAccept/Fail; GameWorld.cs:961/962 Voting.AnnounceVoteAccept/Fail = NotificationSystem.Send(MSG_ANNCE, VOTE_ACCEPT/VOTE_FAIL); VoteController.cs:519 Spam uses 'didn't have to vote' (mincount<0) vs 'didn't vote' per QC VoteSpam", result: pass }
     confidence: high
-    notes: "Unchanged. On pass, master vote grants master and never runs a command; normal vote runs parsed command through the bus; caller wait reward/penalty (0 / sv_vote_stop) match QC."
+    notes: "FIX (drift re-audit 2026-06-25): both baseline gaps closed. (1) audio missing→faithful + presentation partial→faithful: ANNCE_VOTE_ACCEPT (Accept) and ANNCE_VOTE_FAIL (Reject + Timeout) are now played through the live NotificationSystem MSG_ANNCE channel (GameWorld.cs:961-962), invoked from VoteController Accept/Reject/Timeout — the baseline recorded these as host-only/not-invoked. (2) VoteSpam now emits the QC 'didn't have to vote' wording variant for an early resolution (mincount<0) vs 'didn't vote' otherwise (VoteController.cs:517-520). On pass, master vote grants master and never runs a command; normal vote runs the parsed command through the bus; caller wait reward/penalty (0 / sv_vote_stop) match QC."
 
   - id: sv-commands-votes.vote.master
     name: "vote master — login / do <cmd> / call master-vote"
@@ -252,18 +250,17 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
-      audio: partial
+      presentation: faithful
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Presentation/audio carried as chat-broadcast lines, not the QC MSG_CENTER per-client overwriting center-print nor the real ANNCE_PREPARE sound cue: the Godot-free core has no networked center-print/announcer channel here. The BEGINNING countdown is surfaced in full but the ENDING countdown is throttled to only the final-stretch lines (<= sv_timeout_resumetime+1) to avoid flooding chat. The state/timing is faithful; only the delivery medium differs."
+    gaps: []
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Timeout_LeadThenPauseThenResume", result: pass }
-      - { kind: code, ref: "GameWorld.cs:1055 Timeout.ApplySlowmo = v => Cvars.Set('slowmo', v) (wired LIVE); :1062-1068 CenterPrintBeginning/CenterPrintEnding/AnnouncePrepare wired to chat-broadcast; GameWorld.cs:1487 GameStopped => Intermission.Running || MatchEnded (Timeout.IsPaused REMOVED from the freeze); ServerNet.cs:439 reads live slowmo cvar into Simulation.TimeScale every frame; TimeoutController.cs:196/211 ApplySlowmo(SlowmoValue)/(restore), :187/205 EmitCountdown, :232 AnnouncePrepare", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1120 Timeout.ApplySlowmo = v => Cvars.Set('slowmo', v) (wired LIVE); :1126-1129 CenterPrintBeginning/Ending = NotificationSystem.Send(MSG_CENTER, TIMEOUT_BEGINNING/ENDING, n) (real overwriting center-print with the COUNT arg); :1131-1132 AnnouncePrepare = NotificationSystem.Send(MSG_ANNCE, PREPARE); GameWorld.cs:1878 GameStopped => Intermission.Running || MatchEnded (Timeout.IsPaused REMOVED from the freeze); ServerNet reads live slowmo cvar into Simulation.TimeScale every frame; TimeoutController.cs:197/211 ApplySlowmo(SlowmoValue)/(restore), :187/205 EmitCountdown emits EVERY whole second (no throttle), :232 AnnouncePrepare at resumetime", result: pass }
     confidence: high
-    notes: "FIX (since baseline, Wave 5/6): the pause is no longer a hard freeze. GameStopped (GameWorld.cs:1487) NO LONGER includes Timeout.IsPaused; instead Timeout.ApplySlowmo drives the live `slowmo` cvar (0.0001), which ServerNet.cs:439 reads into Simulation.TimeScale every frame, so players can genuinely inch during the timeout (QC behavior). The per-second CENTER_TIMEOUT_BEGINNING/ENDING countdown and ANNCE_PREPARE are now wired (host chat-broadcast sinks at GameWorld.cs:1062-1068). values/timing upgraded to faithful (slowmo now matches; was the TIMEOUT_SLOWMO_VALUE mismatch), presentation missing->partial, audio missing->partial, liveness partial->live. The captured-original slowmo is restored on resume and on match shutdown (ResetSlowmoOnShutdown). Guard chain, early-resume shortening, per-player allowance all remain faithful."
+    notes: "FIX (drift re-audit 2026-06-25): presentation partial→faithful, audio partial→faithful. The countdown + prepare cues are now delivered through the LIVE NotificationSystem channel, not chat-broadcast lines: CENTER_TIMEOUT_BEGINNING/ENDING are real MSG_CENTER overwriting center-prints with the COUNT float arg (GameWorld.cs:1126-1129) and ANNCE_PREPARE is the real MSG_ANNCE announcer cue (GameWorld.cs:1131). EmitCountdown now fires once per WHOLE second for both BEGINNING and ENDING (TimeoutController.cs:224-234) — the baseline's ENDING-countdown throttle is gone. (Earlier Wave 5/6 fixes retained: the pause is a slowmo time-scale not a hard freeze — GameStopped no longer includes Timeout.IsPaused, ApplySlowmo drives the live slowmo cvar 0.0001 read into Simulation.TimeScale; captured-original slowmo restored on resume + match shutdown.) Guard chain, early-resume shortening, per-player allowance, all constants (length 120 / number 2 / leadtime 4 / resumetime 3) faithful."
 
   - id: sv-commands-votes.ban.ip_id_masks
     name: "Ban IP/idfp mask derivation + IsClientBanned + idmode"

@@ -184,7 +184,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:257 (ValidTarget)"
     constants:
       - { name: "alpha cloak", base: "alpha!=0 && alpha<=0.3 reject", port: "same (:271)", match: true }
-      - { name: "checkpvs", base: "reject if !checkpvs(target.origin, turret)", port: "Api.Trace.CheckPvs gate (:268, no-op on unvised maps like DP)", match: true }
+      - { name: "checkpvs", base: "reject if !checkpvs(target.origin, turret)", port: "Api.Trace.CheckPvs gate (:274, no-op on unvised maps like DP)", match: true }
       - { name: "angle gate", base: "only when TFL_TARGETSELECT_ANGLELIMITS set (machinegun does NOT set it)", port: "only when SelectAngleLimits set (machinegun no longer sets it)", match: true }
     status:
       logic: faithful
@@ -197,9 +197,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ValidTarget:257-343 re-read vs turret_validate_target:677-796 — owner/self, checkpvs(:268), alpha(:271), notarget/dead/takedamage, players/missiles flags, noturrets, team (self+owner+aiment), range, angle-gate (SelectAngleLimits, skipped for machinegun), grapplinghook, LOS-flag (skipped) all covered. checkpvs is now PRESENT", result: pass }
+      - { kind: code, ref: "ValidTarget:263-349 re-read vs turret_validate_target:677-796 — owner/self(:267-268), checkpvs(:274), alpha(:277), notarget/dead/takedamage(:280-282), players/missiles flags(:288-291), noturrets(:294), team self+owner+aiment(:299-313), range(:318-322), angle-gate (SelectAngleLimits, skipped for machinegun)(:325), grapplinghook(:334), LOS-flag (skipped)(:337) all covered. checkpvs is PRESENT", result: pass }
     confidence: high
-    notes: "FIXED since baseline (logic partial -> faithful): the checkpvs gate is now implemented (TurretAI.cs:268, Api.Trace.CheckPvs before the alpha/team/range checks, independent of the LOS flag, returns true on an unvised map exactly like DarkPlaces). The angle-gate over-application was already fixed (machinegun omits SelectAngleLimits). LOS is not applied at validate time by either side (machinegun select flags omit TFL_TARGETSELECT_LOS). No residual validate-cascade gap."
+    notes: "FIXED since baseline (logic partial -> faithful): the checkpvs gate is implemented (TurretAI.cs:274, Api.Trace.CheckPvs before the alpha/team/range checks, independent of the LOS flag, returns true on an unvised map exactly like DarkPlaces). The angle-gate over-application was already fixed (machinegun omits SelectAngleLimits). LOS is not applied at validate time by either side (machinegun select flags omit TFL_TARGETSELECT_LOS). No residual validate-cascade gap. Re-verified 2026-06-25 — unchanged from prior audit (line refs refreshed)."
 
   - id: turret-machinegun.target.score
     name: "turret_targetscore_generic bias-weighted scoring"
@@ -289,13 +289,13 @@ features:
       - "common/turrets/sv_turrets.qc:960 (turret_fire)"
       - "common/turrets/sv_turrets.qc:496 (turret_do_updates tracebox -> tur_dist_impact_to_aimpos)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:647 (fire gate in RunCombat) + :758 (Fire) + :725 (UpdateImpact) + :972 (OnTarget fallback)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:653 (fire gate in RunCombat) + :764 (Fire) + :731 (UpdateImpact) + OnTarget geometric fallback"
     constants:
       - { name: "refire", base: "time + shot_refire (0.1)", port: "now + 0.1", match: true }
       - { name: "ammo cost", base: "ammo -= shot_dmg (10)", port: "Ammo -= ShotDamage (10)", match: true }
       - { name: "volley refire", base: "time + shot_volly_refire (0.5) at burst end", port: "now + 0.5", match: true }
       - { name: "nofire gate", base: "turret_fire:961 bails if autocvar_g_turrets_nofire", port: "Fire:765 Cvar(g_turrets_nofire) short-circuit", match: true }
-      - { name: "fire-tolerance (AIMDIST)", base: "tur_dist_impact_to_aimpos <= 25 (trace-based)", port: "trace-based DistImpactToAimPos from UpdateImpact (:744); geometric OnTarget only headless", match: true }
+      - { name: "fire-tolerance (AIMDIST)", base: "tur_dist_impact_to_aimpos <= 25 (trace-based)", port: "trace-based DistImpactToAimPos from UpdateImpact (:750); geometric OnTarget only headless (:708)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -307,9 +307,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "RunCombat:647-715 fire gate + Fire:758 + UpdateImpact:725 vs turret_firecheck/turret_fire/turret_do_updates — refire/ammo/volley/nofire, the AIMDIST trace, target-of-opportunity (:665), AFF (:689 flag-gated), and volley-pre-ammo (:711) all present. OnTarget barrel-line is the headless-only fallback (:702)", result: pass }
+      - { kind: code, ref: "RunCombat:653-721 fire gate + Fire:764 + UpdateImpact:731 vs turret_firecheck/turret_fire/turret_do_updates — refire/ammo(:655-656)/volley/nofire(:771), the AIMDIST trace(:702-712), target-of-opportunity (:671), AFF (:695 flag-gated), and volley-pre-ammo (:717) all present. OnTarget barrel-line is the headless-only fallback (:708)", result: pass }
     confidence: high
-    notes: "FIXED since baseline (logic partial -> faithful): (1) the AIMDIST fire gate now rides a REAL tracebox — UpdateImpact (:725, port of turret_do_updates) traces the muzzle forward to the aimpos distance and RunCombat:700 tests st.DistImpactToAimPos against the fire tolerance when engine services exist; the geometric OnTarget barrel-line is only the headless fallback (:702). So a wall between muzzle and aimpos blocks the shot — the port no longer fires through obstructions. (2) The simplified-firecheck gap is closed: target-of-opportunity/tur_impactent (:665), the AFF friendly-fire branch (:689, default flags leave AFF off for the machinegun so behaviour is unchanged), and the volley-status pre-ammo gate (:711) are all ported. Burst-of-5 + 0.5s pause + ammo spend + nofire all faithful."
+    notes: "FIXED since baseline (logic partial -> faithful): (1) the AIMDIST fire gate rides a REAL tracebox — UpdateImpact (:731, port of turret_do_updates) traces the muzzle forward to the aimpos distance and RunCombat:706 tests st.DistImpactToAimPos against the fire tolerance when engine services exist; the geometric OnTarget barrel-line is only the headless fallback (:708). So a wall between muzzle and aimpos blocks the shot — the port no longer fires through obstructions. (2) The simplified-firecheck gap is closed: target-of-opportunity/tur_impactent (:671), the AFF friendly-fire branch (:695, default flags leave AFF off for the machinegun so behaviour is unchanged), and the volley-status pre-ammo gate (:717) are all ported. Burst-of-5 + 0.5s pause + ammo spend + nofire all faithful. Re-verified 2026-06-25 — unchanged (line refs refreshed)."
 
   - id: turret-machinegun.weapon.firebullet
     name: "wr_think fireBullet (hitscan bullet + spread + force)"
@@ -374,14 +374,14 @@ features:
     base_refs:
       - "common/turrets/sv_turrets.qc:207 (turret_damage; wired as .event_damage in turret_initialize/turret_respawn)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:828 (Damage) + :867 (EventDamage shim, headshake :886)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:828 (Damage) + :867 (EventDamage shim, headshake :893-897)"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:93 (e.GtEventDamage = TurretAI.EventDamage)"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs (EventDamage routes non-player edicts with GtEventDamage)"
     constants:
       - { name: "inactive immunity", base: "if (!active) return", port: "if (!Active) return 0 (Damage:832)", match: true }
       - { name: "friendlyfire scale", base: "g_friendlyfire (0 => no team dmg)", port: "g_friendlyfire (Damage:835-840)", match: true }
       - { name: "health subtract", base: "TakeResource(RES_HEALTH, damage)", port: "TakeResource(Health, take) (EventDamage:880, no armor split)", match: true }
-      - { name: "headshake", base: "tur_head.angles += rand*damage + TNSF_ANG", port: "HeadAngles += (rand-0.5)*take pitch+yaw (EventDamage:886-891)", match: true }
+      - { name: "headshake", base: "tur_head.angles += rand*damage + TNSF_ANG", port: "HeadAngles += (rand-0.5)*take pitch+yaw (EventDamage:893-897)", match: true }
       - { name: "retaliate (Enemy=attacker)", base: "Base NEVER does this (TFL_DMG_RETALIATE set but read by no code)", port: "Damage does not set Enemy=attacker (matches Base)", match: true }
     status:
       logic: faithful
@@ -393,12 +393,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Headshake jitter is applied to the angle-state head (TurretState.HeadAngles) but there is no separate tur_head edict and no CSQC TNSF_ANG send, so the recoil flinch is server-state only — it will not be visible until a head model is attached and networked. Behaviour is faithful; visual is presentation-deferred."
+      - "Headshake jitter is applied to the angle-state head (TurretState.HeadAngles, EventDamage:893-897) but there is no separate tur_head edict and no CSQC TNSF_ANG send, so the recoil flinch is server-state only — it will not be visible until a head model is attached and networked. Behaviour is faithful; visual is presentation-deferred."
     verification:
       - { kind: code, ref: "DamageSystem.EventDamage routes any non-player target with a GtEventDamage to it; TurretSpawn.Init:93 wires GtEventDamage=TurretAI.EventDamage; chain is LIVE: hit -> Apply -> EventDamage -> Damage gate -> health subtract -> headshake (:886) -> Combat.Death on lethal", result: pass }
-      - { kind: code, ref: "EventDamage:886-891 applies HeadAngles +-take on X and Y when st.HeadShake (set headShake:true via TurretSpawn.Init); Base turret_damage:228-234 matches. Retaliation correctly omitted (Base never reads TFL_DMG_RETALIATE)", result: pass }
+      - { kind: code, ref: "EventDamage:893-897 applies HeadAngles +-take on X and Y when st.HeadShake (set headShake:true via TurretSpawn.Init); Base turret_damage:228-234 matches. Retaliation correctly omitted (Base never reads TFL_DMG_RETALIATE)", result: pass }
     confidence: high
-    notes: "FIXED since baseline (logic partial -> faithful): the headshake behaviour is now applied — EventDamage:886-891 jitters the head-local angles +-take on pitch and yaw exactly like turret_damage:228-234. Inactive-immunity + friendly-fire scaling + own health subtract run on the live damage path via the GtEventDamage shim; retaliation correctly omitted. The only residual is presentation (no tur_head edict / no TNSF_ANG networking), so the flinch is invisible — recorded as presentation: partial, logic faithful."
+    notes: "FIXED since baseline (logic partial -> faithful): the headshake behaviour is applied — EventDamage:893-897 jitters the head-local angles +-take on pitch and yaw exactly like turret_damage:228-234. Inactive-immunity + friendly-fire scaling + own health subtract run on the live damage path via the GtEventDamage shim; retaliation correctly omitted. The only residual is presentation (no tur_head edict / no TNSF_ANG networking), so the flinch is invisible — recorded as presentation: partial, logic faithful. Re-verified 2026-06-25 — unchanged (line refs refreshed)."
 
   - id: turret-machinegun.lifecycle.die_respawn
     name: "turret_die / turret_respawn (+ death FX, gibs)"

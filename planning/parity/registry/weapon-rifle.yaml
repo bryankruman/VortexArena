@@ -2,30 +2,33 @@ unit: weapon-rifle
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
-# Re-audited 2026-06-25 (drift check, branch claude/parity-port-waves): adversarial re-verification of
+# Re-audited 2026-06-25 (drift check #2, branch claude/parity-port-waves): adversarial re-verification of
 # all 17 rows + Base re-scan against current Base (bal-wep-xonotic.cfg + rifle.{qh,qc}) and port (Rifle.cs).
-# ONE FIX since the 2026-06-25 baseline:
-#   * rifle.zoom_eye (was the baseline's #1 worst gap): NOW CLOSED. The +zoom button is decoded over the
-#     net (ServerNet.cs:1575 ButtonZoom = (b & InputButtons.Zoom)) <- client NetGame.cs:4687 BindTable.ZoomHeld,
-#     mirrored onto the slot by WeaponFireDriver (st.ButtonZoom, cs:137/180), and Rifle.FireBullets now reads
-#     it (cs:315) to re-aim the shot from the eye: w_shotdir = v_forward; w_shotorg projected onto the
-#     eye->forward axis (Rifle.cs:315-321), exactly QC rifle.qc:16-20. The muzzle flash captures the PRE-zoom
-#     origin/dir (cs:305-306) before the re-aim, matching QC's W_MuzzleFlash-before-zoom order. The CSQC
-#     wr_zoom/wr_zoomdir reticle path stays handled by ReticleOverlay. zoom_eye logic/presentation
-#     partial->faithful, liveness partial->live.
-# Still open (1): rifle.audio.ric CH_SHOTS channel (PlayRic->PlayOn uses the RIC sound's default channel
-# hint, not CH_SHOTS — inaudible in practice; UNCHANGED).
+# ONE FIX since the prior 2026-06-25 baseline:
+#   * rifle.audio.ric (was the prior baseline's last open gap): NOW CLOSED. SoundSystem.PlayRic
+#     (SoundSystem.cs:370-378) now EXPLICITLY plays the ricochet on SoundChannel.ShotsAuto (== CH_SHOTS,
+#     -4) instead of the RIC sound's default channel hint (Weapon) — PlayOn(emitter, ric,
+#     SoundChannel.ShotsAuto, ric.Volume, ric.Attenuation), matching QC rifle.qc:218 byte-for-byte. The
+#     channel constant now matches; audio partial->faithful. The 0.25s prevric throttle + 5% roll
+#     (WeaponFiring.cs:585-594) remain faithful. Cross-cutting: the same PlayRic fix lights up every
+#     hitscan weapon's ricochet (MachineGun/Shotgun share BulletImpactFx).
+# Still open: NONE. All 5 dimensions of all 17 rows faithful & live (one MINOR single-slot CheckAmmo edge
+# case and the rifle.fx.impact server-emit-vs-CSQC presentation note remain as documented non-defects).
 # NO regressions. All 17 Base balance constants re-diffed against bal-wep-xonotic.cfg:587-630 — all match.
-# Verified all FX registrations (EffectsList.cs:100-107), bot dispatch (BotBrain.cs:365 BotWantsSecondary),
-# WrSetup dispatch (WeaponFireDriver), deathtype-secondary deathTag, ric throttle (WeaponFiring.cs:591-596),
-# suicide message (now an EXPLICIT case "rifle" at DeathMessages.cs:159, was the generic default — same value
-# WEAPON_THINKING_WITH_PORTALS, refined the row's port_ref). NO new unmapped Base symbols (wr_init reticle
-# precache + describe menu-help are presentation-trivial, intentionally unmapped). Line numbers refreshed.
+# Verified all FX registrations (EffectsList.cs:100-107: CASING_BULLET/SHELL, RIFLE_IMPACT->machinegun_impact,
+# RIFLE_MUZZLEFLASH, RIFLE/RIFLE_WEAK tracers isTrail), zoom net wiring (ServerNet.cs:1575 ButtonZoom <-
+# InputButtons.Zoom; WeaponFireDriver.cs:61/180 mirror), bot dispatch (BotBrain.cs:367 BotWantsSecondary),
+# WrSetup dispatch (WeaponFireDriver.cs:289 on raise; SeedClipIfFresh cs:296), WrThink driver loop
+# (cs:166/168), deathtype-secondary deathTag + DeathMessages rifle case (cs:82-85) & suicide (cs:159).
+# NO new unmapped Base symbols (wr_init reticle precache + describe menu-help are presentation-trivial,
+# intentionally unmapped). Line numbers in Rifle.cs port_refs refreshed to current file (FireBullets cs:286,
+# zoom re-aim cs:315-321, deathTag cs:328-330).
 summary:
   feature_count: 17
   worst_gaps:
-    - "MINOR: ricochet ping plays on the RIC sound's default channel, not Base's CH_SHOTS (rifle.audio.ric) — inaudible in practice (affects only same-channel sound cutoff)"
-    - "(now CLOSED) Zoom-from-eye shot re-aim: the +zoom button is decoded over the net (ServerNet.cs:1575) and Rifle.FireBullets re-aims from the eye when held (Rifle.cs:315-321), matching QC rifle.qc:16-20. Off at stock secondary 1 for the secondary-zoom path"
+    - "(none open) All 17 rows faithful & live across all dimensions. Two documented NON-defects remain: (a) rifle.reload CheckAmmoPrimary/Secondary read the clip term from WeaponSlot(0) hardcoded — correct for the stock single-slot case; (b) rifle.fx.impact emits RIFLE_IMPACT server-side per bullet vs Base's CSQC damageinfo path (effect name + org2/backoff offsets match, fan-out differs)"
+    - "(now CLOSED) Ricochet CH_SHOTS channel: SoundSystem.PlayRic (cs:370-378) now explicitly plays SND_RIC_RANDOM on SoundChannel.ShotsAuto (== CH_SHOTS), matching QC rifle.qc:218 byte-for-byte (was the prior baseline's last open gap; audio partial->faithful)"
+    - "(closed prior pass) Zoom-from-eye shot re-aim: the +zoom button is decoded over the net (ServerNet.cs:1575) and Rifle.FireBullets re-aims from the eye when held (Rifle.cs:315-321), matching QC rifle.qc:16-20. Off at stock secondary 1 for the secondary-zoom path"
     - "(closed prior pass) Secondary HAIL kill message: Rifle.FireBullets builds deathTag=WithHitType(FromWeapon,Secondary) (Rifle.cs:328-330) -> FireBullet -> ApplyDamage; secondary kills print WEAPON_RIFLE_MURDER_HAIL. *_PIERCING variants correctly unused (Base never sets HITTYPE_BOUNCE on bullets either)"
     - "(closed Wave-5) Rifle bot wr_aim: BotWantsSecondary (Rifle.cs:133) ports the riflemooth pri/sec toggle, LIVE via BotBrain.cs:365 -> ButtonAttack2"
     - "(closed Wave-5) wr_resetplayer: WrSetup (Rifle.cs:118) seeds rifle_accumulator = time-bursttime, dispatched live by WeaponFireDriver (switch-in, the established Vortex/OkNex convention)"
@@ -403,23 +406,22 @@ features:
     constants:
       - { name: "ricochet sound", base: "SND_RIC_RANDOM (ric1/ric2/ric3, weapons/ric*)", port: "RIC1..3 via PlayRic->PickRegistered (weapons/ric*)", match: true }
       - { name: "silence gate", base: "!w_issilent", port: "BulletImpactFx silent param (default false)", match: true }
-      - { name: "channel", base: "CH_SHOTS", port: "PlayOn default channel (not CH_SHOTS)", match: false }
+      - { name: "channel", base: "CH_SHOTS", port: "SoundChannel.ShotsAuto (== CH_SHOTS, -4) explicitly passed by PlayRic (SoundSystem.cs:377)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
       presentation: na
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "MINOR channel mismatch: Base plays SND_RIC_RANDOM on CH_SHOTS; the port's PlayRic->PlayOn uses the RIC sound's default channel hint (Weapon), not CH_SHOTS. Inaudible difference in practice (affects only same-channel sound cutoff), but not byte-faithful."
+    gaps: []
     verification:
-      - { kind: code, ref: "Rifle.cs:326 BulletImpactFx -> WeaponFiring.cs:540 BulletImpactFx -> SoundSystem.PlayRic -> PickRegistered('RIC') -> PlayOn; RIC1..3 registered (weapons/ric*) + ric1-3.ogg present", result: pass }
-      - { kind: code, ref: "WeaponFiring.cs:547-558 ports the QC ricochet throttle (shotgun.qc:404-409): prevric 0.25s per-actor window + 5% w_random (Prandom.Float()<0.05) roll, prevric reset on every gate pass", result: pass }
+      - { kind: code, ref: "Rifle.cs:344 BulletImpactFx -> WeaponFiring.cs:594 SoundSystem.PlayRic -> PlayOn(emitter, ric, SoundChannel.ShotsAuto, ric.Volume, ric.Attenuation) (SoundSystem.cs:370-378); RIC1..3 registered (weapons/ric*) + ric1-3.ogg present", result: pass }
+      - { kind: code, ref: "WeaponFiring.cs:585-594 ports the QC ricochet throttle (shotgun.qc:404-409): prevric 0.25s per-actor window + 5% w_random (Prandom.Float()<0.05) roll, prevric reset on every gate pass", result: pass }
     confidence: high
-    notes: "Impact ricochet plays via PlayRic (deterministic ric1..3, Prandom) through the live PlayOn seam. Re-verified 2026-06-25: the QC ricochet THROTTLE (prevric 0.25s window + 5% roll, shotgun.qc:404-409) is faithfully ported in BulletImpactFx (cs:547-558) so a multi-pellet/bullet burst doesn't spray overlapping rics. Emitted server-side per bullet (broadcast) rather than CSQC-local like Base; matches the rifle.fx.impact server-emit divergence. Same path serves the MachineGun. Only residual: CH_SHOTS channel."
+    notes: "FIX vs prior baseline (audio partial->faithful, channel match false->true). The last open gap is closed: PlayRic (SoundSystem.cs:370-378) now EXPLICITLY plays SND_RIC_RANDOM on SoundChannel.ShotsAuto (== CH_SHOTS, -4) — PlayOn(emitter, ric, ShotsAuto, vol, atten) — instead of the RIC sound's default channel hint (Weapon), matching QC rifle.qc:218 byte-for-byte. Deterministic ric1..3 (Prandom) through the live PlayOn seam. The QC ricochet THROTTLE (prevric 0.25s window + 5% roll, shotgun.qc:404-409) stays faithfully ported in BulletImpactFx (cs:585-594). Emitted server-side per bullet (broadcast) rather than CSQC-local like Base; matches the rifle.fx.impact server-emit divergence (documented non-defect). Same path serves the MachineGun/Shotgun."
 
   - id: rifle.casings
     name: "Brass casing ejection (g_casings >= 2)"

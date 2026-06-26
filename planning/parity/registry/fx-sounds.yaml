@@ -5,7 +5,8 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 16
   worst_gaps:
-    - "play2 / play2team (per-client / per-team 2D sends) still have no port equivalent (spamsound IS now ported + live)."
+    - "play2 IS now ported (SoundSystem.Play2) AND live (idle-kick TALK2 GameWorld.cs:1867, ONS shield-block OnslaughtControlPoint.cs:817); play2team is ported (Play2Team) but DEAD (no caller — Base uses it for ONS_*_UNDERATTACK; the port emits those via PlayGlobal, a per-team->global divergence). Many Base play2 sites (weapon UNAVAILABLE, doors, keylock, vehicle lock) remain unwired."
+    - "play2all port (PlayGlobal) does NOT honor QC play2all's `if(autocvar_bot_sound_monopoly) return;` gate — when bot_sound_monopoly=1 global cues still play (NEW gap this pass)."
     - "sound_allowed owner-walk re-home (body->enemy / realowner / owner) is implemented (SoundAllowedGate.WalkOwner) but DEAD: no caller re-homes corpse/projectile sounds to the originating player. The bot_sound_monopoly gate is implemented + live only on the vehicle hit/shield paths, not on every emit."
     - "_GlobalSound AUTOTAUNT per-recipient probability roll (tauntrand < cl_autotaunt) still omitted (per-client cvar not networked); TAUNT animdecide_setaction(ANIMACTION_TAUNT) still not fired (no anim-action seam)."
     - "GlobalSound_pitch model-scale pitch shift (scale != 1 squeak/deepen) still not ported; wire carries a flat pitch byte."
@@ -217,24 +218,29 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:SpamSound"
       - "src/XonoticGodot.Common/Framework/Entity.cs:SpamTime"
     constants:
-      - { name: "play2all", base: "_sound(NULL,CH_INFO,samp,VOL_BASE,ATTEN_NONE)", port: "PlayGlobal (shared emitter, ATTEN_NONE)", match: true }
+      - { name: "play2", base: "soundtoat(MSG_ONE, NULL, '0 0 0', CH_INFO, file, VOL_BASE, ATTEN_NONE)", port: "Play2: Api.Sound.Play(recipient, Auto, sample, VolBase, AttenNone)", match: true }
+      - { name: "play2team", base: "if(monopoly)return; FOREACH_CLIENT(IS_PLAYER&&IS_REAL_CLIENT&&team==t) play2", port: "Play2Team: monopoly early-return + per-team roster filter -> Play2", match: true }
+      - { name: "play2all", base: "if(autocvar_bot_sound_monopoly) return; _sound(NULL,CH_INFO,samp,VOL_BASE,ATTEN_NONE)", port: "PlayGlobal (shared emitter, ATTEN_NONE) — NO monopoly gate", match: false }
       - { name: "spamsound_gate", base: "if(time > e.spamtime){ e.spamtime=time; sound(...) }", port: "SpamSound: if(now > emitter.SpamTime){ SpamTime=now; Play(...) }", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: na
-      audio: partial
+      audio: faithful
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "play2 (per-client 2D send) and play2team (per-team 2D send) still have no port equivalent."
+      - "play2team (Play2Team) is ported but DEAD — zero live callers. Base calls play2team for ONS_CONTROLPOINT_UNDERATTACK / ONS_GENERATOR_UNDERATTACK (sv_onslaught.qc:386/943); the port emits those via PlayGlobal instead (OnslaughtControlPoint.cs:249), a per-team -> global broadcast divergence."
+      - "play2all port (PlayGlobal) omits QC play2all's `if(autocvar_bot_sound_monopoly) return;` gate, so global cues still play when bot_sound_monopoly=1."
+      - "Many Base play2 call sites remain unwired in the port: weapon UNAVAILABLE (selection.qc/weaponsystem.qc/minelayer.qc), func_door / door_secret noises, keylock/keys, vehicle lock/locking (sv_vehicles.qc:114-139), trigger TALK, target_voicescript. Only TALK2 idle-kick + ONS shield-block are wired."
     verification:
-      - { kind: code, ref: "SpamSound/SpamSoundRaw mirror QC spamsound (sound_allowed gate + time>spamtime + set spamtime); Entity.SpamTime added", result: pass }
-      - { kind: grep, ref: "spamsound LIVE: NadeProjectile.cs:154 (grenade bounce) + VehicleCommon.cs:503/512/523 (ons hit/shield). play2all -> PlayGlobal (live, many gametype callers). play2/play2team: no implementation", result: pass }
+      - { kind: code, ref: "SpamSound/SpamSoundRaw mirror QC spamsound (sound_allowed gate + time>spamtime + set spamtime); Entity.SpamTime added; Play2/Play2Raw/Play2Team/Play2TeamRaw mirror play2/play2team (CH_INFO/VOL_BASE/ATTEN_NONE; play2team monopoly+team filter)", result: pass }
+      - { kind: grep, ref: "Play2 LIVE: GameWorld.cs:1867 (idle-kick TALK2), OnslaughtControlPoint.cs:817 (ONS shield-block ONS_DAMAGEBLOCKEDBYSHIELD). spamsound LIVE: NadeProjectile.cs:154 + VehicleCommon.cs:503/512/523. play2all -> PlayGlobal (live, gametype callers). Play2Team: ZERO callers (dead)", result: pass }
+      - { kind: code, ref: "PlayGlobal (SoundSystem.cs:288-306) has no bot_sound_monopoly check, unlike QC play2all (all.qc:143-145)", result: fail }
     confidence: high
-    notes: "FIX since baseline: spamsound is now ported (SoundSystem.SpamSound + Entity.SpamTime) AND live (nade bounce + vehicle hit/shield) with the sound_allowed gate, so the timing/rate-limit dimension is now faithful and the per-entity over-emit risk is closed. play2all remains covered (PlayGlobal). Still partial because the per-client play2 and per-team play2team 2D sends remain unported."
+    notes: "FIX since baseline (Play2 added in commit ff8a699, after the prior audit): play2 is now ported (SoundSystem.Play2 + raw/name overloads) AND live on 2 paths (idle-kick countdown TALK2, ONS shield-block), so logic/values/audio go partial->faithful. play2team is also ported (Play2Team with monopoly+team filter) but DEAD (no caller; ONS underattack cues use PlayGlobal). spamsound + play2all stay live. liveness stays partial: play2team dead + many Base play2 sites unwired. NEW gap: PlayGlobal misses play2all's monopoly gate."
 
   - id: fx-sounds.voice.playersound_registry
     name: "PlayerSounds / GlobalSounds registries (body sound ids)"

@@ -5,7 +5,7 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 12
   worst_gaps:
-    - "CPMA sound_start/sound_end + pt1_strt/pt1_end map-pack FILE probe still unported (the only residual q3compat plat gap): the q3compat path is LIVE (CompatRemaps.IsQ3Compat wired from the .arena/.defi VFS probe at GameWorld boot, GameWorld.cs:544-552), so a Q3/Q3DF func_plat correctly gets speed 200 / lip 8 / dmg 2 / spawnflags 0 / medplat sounds — but the CPMA per-mapper sound-override keys (sound_start/sound_end and the pt1_strt/pt1_end default-file probe) are still skipped because they need GetField_fullspawndata / FindFileInMapPack, unavailable headless. Medplat default still applies, so Q3 plats are audible & correct, just not CPMA-custom-sound-overridable. (Sole remaining audio gap in the unit.)"
+    - "CPMA sound_start/sound_end + pt1_strt/pt1_end map-pack FILE probe still unported (the only residual q3compat plat gap): the q3compat path is LIVE (CompatRemaps.IsQ3Compat wired from the .arena/.defi VFS probe at GameWorld boot, GameWorld.cs:548-558), so a Q3/Q3DF func_plat correctly gets speed 200 / lip 8 / dmg 2 / spawnflags 0 / medplat sounds — but the CPMA per-mapper sound-override keys (sound_start/sound_end and the pt1_strt/pt1_end default-file probe) are still skipped because they need GetField_fullspawndata / FindFileInMapPack, unavailable headless. Medplat default still applies, so Q3 plats are audible & correct, just not CPMA-custom-sound-overridable. (Sole remaining audio gap in the unit.)"
     - "plat_outside_touch (PlatOutsideTouch) is implemented & faithful but has no live caller — neither stock Base nor the port ever spawns an outside trigger (Base platforms.qc only DEFINES plat_outside_touch, line 111, and never installs it). So this handler being dead is itself faithful to Base; it is reachable only via custom-mapper wiring the port's spawnfunc does not generate."
 features:
   - id: mapobject-movers-platforms.plat.spawn_setup
@@ -55,7 +55,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatSetup (q3compat = CompatRemaps.IsQ3Compat)"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/CompatRemaps.cs:Q3CompatProvider/IsQ3Compat"
-      - "src/XonoticGodot.Server/GameWorld.cs:544-552 (q3compat probe + Q3CompatProvider wire)"
+      - "src/XonoticGodot.Server/GameWorld.cs:548-558 (q3compat probe + Q3CompatProvider wire)"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:ApplyPlatSounds (q3compat medplat branch)"
     constants:
       - { name: "q3 speed default", base: "200", port: "200 (q3compat true branch — Platforms.cs:71)", match: true }
@@ -77,11 +77,11 @@ features:
       - "CPMA sound_start/sound_end + the pt1_strt/pt1_end default-file probe are not ported (require GetField_fullspawndata / FindFileInMapPack, unavailable headless). The medplat default still applies, so a Q3 plat is audible and correct — only the CPMA per-mapper sound OVERRIDE keys are skipped. Sole residual gap on this row; audio marked partial for it."
     verification:
       - { kind: code, ref: "Platforms.cs:34 `bool q3compat = CompatRemaps.IsQ3Compat;` (no longer hardcoded false). Q3 branch Platforms.cs:36-44 (spawnflags=0, dmg default 2), :71-72 (speed 200 / lip 8) all reachable when q3compat true", result: pass }
-      - { kind: code, ref: "CompatRemaps.IsQ3Compat => Q3CompatProvider?.Invoke() ?? false (CompatRemaps.cs:79-82); Q3CompatProvider WIRED in GameWorld.Boot at GameWorld.cs:552 from a real .arena/.defi VFS probe (GameWorld.cs:544-552), computed BEFORE SpawnMapEntities (wire at :552 vs SpawnMapEntities at :695)", result: pass }
+      - { kind: code, ref: "CompatRemaps.IsQ3Compat => Q3CompatProvider?.Invoke() ?? false (CompatRemaps.cs:79-82); Q3CompatProvider WIRED in GameWorld.Boot at GameWorld.cs:556 from a real .arena/.defi VFS probe (GameWorld.cs:548-558), computed BEFORE SpawnMapEntities (wire at :556 vs SpawnMapEntities at :699)", result: pass }
       - { kind: code, ref: "Live ConfigReader: NetGame.cs:591 sets _serverWorld.ConfigReader = path => _vfs.Exists(path) ? _vfs.ReadText(path) : null — so on a real host a map with a sibling .arena/.defi flips q3compat on and the Q3 plat defaults engage", result: pass }
       - { kind: code, ref: "ApplyPlatSounds medplat branch (MapObjectsCommon.cs:876) fires on `e.Sounds == 2 || q3compat`; with q3compat true a Q3 plat (sounds unset) now correctly gets medplat1/medplat2", result: pass }
     confidence: high
-    notes: "FIXED since baseline. Baseline had this dead/missing (q3compat hardcoded false, no setter). Wave-5 introduced a REAL live q3compat flag: CompatRemaps.Q3CompatProvider is assigned in GameWorld.Boot (GameWorld.cs:518) from a companion-file (.arena/.defi) probe over the live VFS ConfigReader (NetGame.cs:591), set before the spawnfuncs run. Verified the constants match Base plat.qc:59-72 exactly (speed 200/lip 8/dmg 2/spawnflags 0/medplat). logic/values now faithful, liveness live. The ONLY residual is the CPMA sound_start/sound_end/pt1_strt/pt1_end map-pack file probe (audio: partial)."
+    notes: "FIXED since baseline. Baseline had this dead/missing (q3compat hardcoded false, no setter). Wave-5 introduced a REAL live q3compat flag: CompatRemaps.Q3CompatProvider is assigned in GameWorld.Boot (GameWorld.cs:556) from a companion-file (.arena/.defi) probe over the live VFS ConfigReader (NetGame.cs:591), set before the spawnfuncs run (wire GameWorld.cs:556). Verified the constants match Base plat.qc:59-72 exactly (speed 200/lip 8/dmg 2/spawnflags 0/medplat). logic/values now faithful, liveness live. The ONLY residual is the CPMA sound_start/sound_end/pt1_strt/pt1_end map-pack file probe (audio: partial)."
 
   - id: mapobject-movers-platforms.plat.center_trigger
     name: "plat_spawn_inside_trigger: ride-detect center trigger volume"
@@ -222,7 +222,7 @@ features:
     gaps: []
     verification:
       - { kind: code, ref: "PlatCrush (Platforms.cs:259-279) vs plat_crush (platforms.qc:138-166): CRUSH 10000 / .dmg bite / dead-gib 10000 / STATE_UP->down, STATE_DOWN->up reverse, other states no-op", result: pass }
-      - { kind: code, ref: "wired as Entity.Blocked (PlatSetup:69 this.Blocked=PlatCrush) and invoked from the PushMove revert path FlyMove.cs:461 pusher.Blocked?.Invoke(pusher, check)", result: pass }
+      - { kind: code, ref: "wired as Entity.Blocked (PlatSetup:69 this.Blocked=PlatCrush) and invoked from the PushMove revert path FlyMove.cs:470 pusher.Blocked?.Invoke(pusher, check)", result: pass }
     confidence: high
     notes: "Re-audited 2026-06-22, unchanged. The plat's blocked handler is plat_crush, NOT generic_plat_blocked. plat_crush has NO dmgtime cooldown and the port omits it too. DeathTypes.Void is documented = DEATH_HURTTRIGGER."
 
@@ -276,7 +276,7 @@ features:
     verification:
       - { kind: code, ref: "PlatOutsideTouch (Platforms.cs:145-155) vs plat_outside_touch (platforms.qc:111-128): creature+health guard, STATE_TOP->plat_go_down on this.enemy — faithful", result: pass }
       - { kind: code, ref: "PlatTargetUse (Platforms.cs:133-139) vs plat_target_use (platforms.qc:176-182): STATE_TOP->nextthink ltime+1, else state!=STATE_UP->plat_go_up — faithful", result: pass }
-      - { kind: code, ref: "PlatTargetUse is now LIVE-reachable: PlatReset (Platforms.cs:113-114) installs it on the (targetname && q3compat) fork, and q3compat is now a live flag (CompatRemaps.IsQ3Compat, wired GameWorld.cs:518) — a targeted Q3/Q3DF plat gets PlatTargetUse. PlatOutsideTouch still has no caller (grep — definition only), matching Base", result: pass }
+      - { kind: code, ref: "PlatTargetUse is now LIVE-reachable: PlatReset (Platforms.cs:113-114) installs it on the (targetname && q3compat) fork, and q3compat is now a live flag (CompatRemaps.IsQ3Compat, wired GameWorld.cs:556) — a targeted Q3/Q3DF plat gets PlatTargetUse. PlatOutsideTouch still has no caller (grep — definition only), matching Base", result: pass }
     confidence: high
     notes: "FIXED since baseline (liveness dead->partial). PlatTargetUse went dead->live: it is reachable on a Q3/Q3DF targeted plat now that q3compat is a real live flag. PlatOutsideTouch remains code-faithful but with no live caller — which is itself faithful to Base (Base never installs an outside trigger either; the handler is vestigial). Hence liveness=partial: one of the two handlers is live on Q3 imports, the other is dead-by-design matching Base."
 
@@ -379,6 +379,6 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "SimulationLoop RunEntity over every non-client entity each tick -> MoveTypePhysics case Push -> PhysicsPusher (LTime/think) + PushMove; FlyMove revert-on-block (FlyMove.cs:461) -> pusher.Blocked?.Invoke (= PlatCrush)", result: pass }
+      - { kind: code, ref: "SimulationLoop RunEntity over every non-client entity each tick -> MoveTypePhysics case Push -> PhysicsPusher (LTime/think) + PushMove; FlyMove revert-on-block (FlyMove.cs:470) -> pusher.Blocked?.Invoke (= PlatCrush)", result: pass }
     confidence: high
     notes: "Re-audited 2026-06-22, unchanged. Confirms the plat MOVES on the live server tick, carries/sweeps riders, and on a true block reverts the pusher + every moved rider then fires .Blocked = PlatCrush. This is the liveness link that makes the whole unit live. Server-authoritative — Base's CSQC plat link (plat_link) is commented out, so the port's lack of CSQC plat prediction is faithful, not a gap."

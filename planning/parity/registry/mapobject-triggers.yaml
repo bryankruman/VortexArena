@@ -3,13 +3,13 @@ category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 25
+  feature_count: 24
   worst_gaps:
-    - "slowdown is STILL DEAD: SwampThink clears+restamps SwampSlug faithfully (g_swamped list) and damages with DeathTypes.Swamp, but NO code in PlayerPhysics/MovementParameters reads SwampSlug.SwampSlowdown into maxspd_mod (Base player.qc:50) — players are damaged but still move at full speed. RE-CONFIRMED 2026-06-25: grep finds only writers (Triggers.cs:696/720/744) + the field def (EntityMapObjectStateExtra.cs:86) — no reader in Physics/*."
-    - "MultiTouch pressedkeys gate STILL missing — Entity.PressedKeys EXISTS (fed by the dodging mutator) but MultiTouch (Triggers.cs:156-158) never reads it AND the trigger's own this.pressedkeys parse-field is unported, so the gate (Base multi.qc:135-137) is skipped; a key-gated trigger_multiple still fires without the player holding the keys. RE-CONFIRMED 2026-06-25 (comment at the gate site still documents the omission)."
+    - "LogicGates .reset bodies (monoflop/flipflop/multivibrator/disablerelay/relay_if/relay_teamcheck/relay_activators/gamestart) STILL dormant — the central GameWorld.ResetMapObjects pump DOES dispatch e.Reset (GameWorld.cs:4234), but these LogicGates setups never assign this_.Reset (each still carries a 'dormant until reset infra exists' comment, LogicGates.cs:65/99/228/277/313/353/411), so their reset handlers are never installed and the pump skips them. (target_music IS wired and is driven.)"
+    - "gamestart wait>0 timing fidelity: LogicGates.GameStartTimeProvider is still UNWIRED (GameWorld.cs:631 wires only StartItem.GameStartTimeProvider), so the wait branch fires relative to 0, not the real countdown end."
     - "no client 2.5D side-scroller camera consumer (trigger_viewlocation): server still stamps player.ViewLoc each frame but the view is never locked to the start->end line — unchanged."
-    - "LogicGates .reset bodies (monoflop/flipflop/multivibrator/disablerelay/relay_if/relay_teamcheck/relay_activators/gamestart) STILL dormant — the central GameWorld.ResetMapObjects pump now DOES dispatch e.Reset (GameWorld.cs:3905), but these LogicGates setups never assign this_.Reset (each still carries a 'dormant until reset infra exists' comment), so their reset handlers are never installed and the pump skips them. (target_music DID get wired this pass and is now driven.)"
-    - "gamestart wait>0 timing fidelity: LogicGates.GameStartTimeProvider is still UNWIRED (GameWorld.cs:627 wires only StartItem.GameStartTimeProvider), so the wait branch fires relative to 0, not the real countdown end."
+    - "trigger_multiple CTS client-specific .wait buffers (per-client re-trigger timing) + q3compat wait/team-filter path still unported."
+    - "target_music fade curve is a two-AudioStreamPlayer A/B crossfade approximation rather than QC's per-source frametime/fade_time(in)/fade_rate(out) easing."
 features:
   - id: mapobject-triggers.common.sub_usetargets
     name: "SUB_UseTargets — delay / killtarget / message / target_random fire primitive"
@@ -54,6 +54,7 @@ features:
       - { name: "sounds 1/2/3", base: "misc/secret.wav / misc/talk.wav / misc/trigger1.wav", port: "same", match: true }
       - { name: "ONLY_PLAYERS", base: "BIT(14)", port: "1<<14", match: true }
       - { name: "ALL_ENTITIES", base: "BIT(1)", port: "1<<1", match: true }
+      - { name: "pressedkeys field", base: ".pressedkeys map-parsed mask (multi.qc:135-137)", port: "TriggerPressedKeys parsed (MapObjectFieldsExtra.cs:150)", match: true }
       - { name: "INVERT_TEAMS gate", base: "((spawnflags&INVERT_TEAMS)==0)==(team!=toucher.team)", port: "exact match (noInvert == (Team != toucher.Team))", match: true }
     status:
       logic: partial
@@ -65,13 +66,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "MultiTouch is MISSING the pressedkeys check (CS(toucher).pressedkeys & this.pressedkeys, Base multi.qc:135-137) — Entity.PressedKeys now EXISTS (written by the dodging mutator) but MultiTouch (Triggers.cs:156-158) never reads it AND the trigger's own this.pressedkeys parse-field is unported, so the gate is skipped and a key-gated trigger fires without the player holding the keys (the only remaining MultiTouch logic gap; the comment at the gate site documents the omission)"
       - "CTS client-specific .wait buffers (multi.qc triggertimes buf_create / bufstr_get keyed by client number) not ported: the port uses the single shared nextthink, so per-client re-trigger timing in CTS/Race diverges"
       - "q3compat wait defaults (0.5 / wait-forever) + q3compat red/blue spawnflag-1/2 team filter not applied (no q3 path)"
     verification:
-      - { kind: code_read, ref: "multi.qc:multi_touch/multi_eventdamage vs Triggers.cs MultiTouch (team gate byte-faithful, pressedkeys gate skipped at :156-158)/OnDeath (NOSPLASH + team-attacker present)", result: pass }
+      - { kind: code_read, ref: "multi.qc:multi_touch/multi_eventdamage vs Triggers.cs MultiTouch (team gate byte-faithful; pressedkeys gate NOW PRESENT at Triggers.cs:160-164 reading toucher.PressedKeys & self.TriggerPressedKeys, parsed at MapObjectFieldsExtra.cs:150)/OnDeath (NOSPLASH + team-attacker present)", result: pass }
     confidence: high
-    notes: "RE-VERIFIED 2026-06-25 (unchanged): the multi_touch TEAM gate (this.team / INVERT_TEAMS) is byte-identical to Base, and multi_eventdamage NOSPLASH + team-attacker gate reproduced in OnDeath. STILL OPEN: the pressedkeys gate (Entity.PressedKeys exists but MultiTouch doesn't consume it; this.pressedkeys unported) + CTS per-client buffers + q3compat."
+    notes: "FIX 2026-06-25: the multi_touch pressedkeys gate is now ported and byte-faithful — the trigger's .pressedkeys field is map-parsed into TriggerPressedKeys (MapObjectFieldsExtra.cs:150) and MultiTouch (Triggers.cs:160-164) gates IS_PLAYER touchers on (toucher.PressedKeys & this.pressedkeys), matching Base multi.qc:135-137. The TEAM gate (this.team / INVERT_TEAMS) and multi_eventdamage NOSPLASH + team-attacker gate remain byte-identical. STILL OPEN (logic/values stay partial): CTS per-client .wait buffers + q3compat wait/team-filter path."
 
   - id: mapobject-triggers.hurt.trigger_hurt
     name: "trigger_hurt — damage volume"
@@ -252,23 +252,22 @@ features:
     constants:
       - { name: "dmg default", base: "5", port: "5", match: true }
       - { name: "swamp_interval default", base: "1", port: "1", match: true }
-      - { name: "swamp_slowdown default", base: "0.5", port: "0.5 (stored, STILL never read)", match: false }
+      - { name: "swamp_slowdown default", base: "0.5", port: "0.5 (stored AND now read into maxspd_mod)", match: true }
       - { name: "deathtype", base: "DEATH_SWAMP", port: "DeathTypes.Swamp", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "slowdown is STILL DEAD: SwampThink stamps it.SwampSlug + the 0.5 swamp_slowdown, but NO code in PlayerPhysics/MovementParameters reads SwampSlug.SwampSlowdown as maxspd_mod (Base player.qc:50: maxspd_mod *= (swampslug.active==ACTIVE_ACTIVE) ? swampslug.swamp_slowdown : 1). RE-CONFIRMED 2026-06-25: grep of src finds writers in Triggers.cs:696/720/744 + the field def (EntityMapObjectStateExtra.cs:86) only — no reader. Players are damaged but move at full speed."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "swamp.qc + player.qc:50 vs Triggers.cs SwampThink (g_swamped clear/restamp + DeathTypes.Swamp); grep for SwampSlowdown reads in Physics = none (still)", result: fail }
+      - { kind: code_read, ref: "swamp.qc + player.qc:50 vs Triggers.cs SwampThink (g_swamped clear/restamp + DeathTypes.Swamp) AND PlayerPhysics.cs:239-240 (player.SwampSlug.Active==ActiveActive => SpeedMultiplier *= SwampSlowdown — the maxspd_mod fold)", result: pass }
     confidence: high
-    notes: "RE-VERIFIED 2026-06-25 (unchanged): the obituary uses DeathTypes.Swamp -> DEATH_SELF_SWAMP notif; the claim logic mirrors QC's g_swamped intrusive list (clear-then-restamp, skip ACTIVE). STILL OPEN (headline): the slowdown half is never consumed by movement. liveness stays partial (damage + obituary live; slowdown dead)."
+    notes: "FIX 2026-06-25 (headline): the slowdown half is now LIVE — PlayerPhysics.cs:239-240 reads player.SwampSlug.SwampSlowdown into SpeedMultiplier (the maxspd_mod chain, seeded from HighSpeed before the PlayerPhysics hook) whenever the slug's Active==ActiveActive, exactly matching Base player.qc:50 (maxspd_mod *= (swampslug.active==ACTIVE_ACTIVE) ? swampslug.swamp_slowdown : 1). Players inside an active swamp now actually move slower. The g_swamped clear-then-restamp claim list (Triggers.cs:711-751), per-toucher swamp_interval damage, and DeathTypes.Swamp -> DEATH_SELF_SWAMP obituary remain faithful. logic/values partial->faithful, liveness partial->live, the dead-slowdown gap is closed."
 
   - id: mapobject-triggers.secret.trigger_secret
     name: "trigger_secret — secrets-found counter trigger"
@@ -385,9 +384,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "monoflop_reset (MonoflopReset, LogicGates.cs:132) is NOT driven: the central GameWorld.ResetMapObjects pump now dispatches e.Reset (GameWorld.cs:3905), but MonoflopSetup never assigns this_.Reset (LogicGates.cs:99 still carries the 'dormant until reset infra exists' comment), so the ON-state re-arm never fires on a match reset"
+      - "monoflop_reset (MonoflopReset, LogicGates.cs:132) is NOT driven: the central GameWorld.ResetMapObjects pump now dispatches e.Reset (GameWorld.cs:4234), but MonoflopSetup never assigns this_.Reset (LogicGates.cs:99 still carries the 'dormant until reset infra exists' comment), so the ON-state re-arm never fires on a match reset"
     verification:
-      - { kind: code_read, ref: "monoflop.qc vs LogicGates.cs Monoflop*; MonoflopSetup (LogicGates.cs:90-100) assigns no this_.Reset; ResetMapObjects (GameWorld.cs:3905) does dispatch e.Reset", result: pass }
+      - { kind: code_read, ref: "monoflop.qc vs LogicGates.cs Monoflop*; MonoflopSetup (LogicGates.cs:90-100) assigns no this_.Reset; ResetMapObjects (GameWorld.cs:4234) does dispatch e.Reset", result: pass }
     confidence: high
     notes: "RECLASSIFIED 2026-06-25: the reset gap reason changed — the central reset pump now DOES fire e.Reset, but this unit still never installs its MonoflopReset as e.Reset, so the handler stays dead. Rising-edge ON fire, re-arm-each-press vs fixed timer, delayed OFF think all faithful and live."
 
@@ -579,10 +578,10 @@ features:
     intended_divergence: true
     divergence_rationale: "game_starttime defaults to 0 in the headless gametype (the host applies the real match countdown upstream); the no-wait branch uses a same-frame think instead of QC's InitializeEntity(INITPRIO_FINDTARGET) because the port has no priority-init pass for this family. Both are deliberate port-infra adaptations, faithful on a t=0 start. A GameStartTimeProvider seam exists for fidelity but is not wired on the live path (see gaps)."
     gaps:
-      - "GameStartTime fidelity: LogicGates.GameStartTimeProvider exists but the host wires only StartItem.GameStartTimeProvider (GameWorld.cs:627), NOT LogicGates.GameStartTimeProvider — so the wait>0 branch still fires relative to 0, not the real countdown end. RE-CONFIRMED 2026-06-25."
+      - "GameStartTime fidelity: LogicGates.GameStartTimeProvider exists but the host wires only StartItem.GameStartTimeProvider (GameWorld.cs:631), NOT LogicGates.GameStartTimeProvider — so the wait>0 branch still fires relative to 0, not the real countdown end. RE-CONFIRMED 2026-06-25."
       - ".reset2 NOT driven — GamestartSetup (LogicGates.cs:411) assigns no this_.Reset, so the now-live ResetMapObjects e.Reset pump never reaches this trigger (gamestart deletes itself on fire anyway, so this is largely moot)"
     verification:
-      - { kind: code_read, ref: "gamestart.qc vs LogicGates.cs Gamestart* + GameStartTimeProvider; GameWorld.cs:627 wires StartItem.GameStartTimeProvider not LogicGates.GameStartTimeProvider", result: pass }
+      - { kind: code_read, ref: "gamestart.qc vs LogicGates.cs Gamestart* + GameStartTimeProvider; GameWorld.cs:631 wires StartItem.GameStartTimeProvider not LogicGates.GameStartTimeProvider", result: pass }
     confidence: medium
     notes: "RE-VERIFIED 2026-06-25 (unchanged net effect): fires targets then deletes; wait schedules a think at game_starttime+wait. GameStartTimeProvider hook present but still NOT wired (only StartItem's is), so live timing defaults to t=0. Stays partial/partial."
 
@@ -717,7 +716,7 @@ features:
     gaps:
       - "fade curve approximated: the client uses a two-AudioStreamPlayer A/B crossfade rather than QC's per-source state easing by frametime/fade_time (in) and frametime/fade_rate (out)"
     verification:
-      - { kind: code_read, ref: "music.qc vs TargetMusic.cs (target_music_use gates on a real-client activator; this_.Reset = TargetMusicReset at TargetMusic.cs:44 + TriggerMusicReset at :131 — now DRIVEN by the live ResetMapObjects e.Reset pump, GameWorld.cs:3905) + MusicPlayer.cs (3-layer priority + lifetime + 0.2s touch)", result: pass }
+      - { kind: code_read, ref: "music.qc vs TargetMusic.cs (target_music_use gates on a real-client activator; this_.Reset = TargetMusicReset at TargetMusic.cs:44 + TriggerMusicReset at :131 — now DRIVEN by the live ResetMapObjects e.Reset pump, GameWorld.cs:4234) + MusicPlayer.cs (3-layer priority + lifetime + 0.2s touch)", result: pass }
     confidence: high
     notes: "FIX 2026-06-25 (reset liveness): the target_music_reset / trigger_music_reset handlers are now DRIVEN — TargetMusicSetup/TriggerMusicSetup DO assign this_.Reset (unlike the LogicGates units), and the central GameWorld.ResetMapObjects pump now dispatches e.Reset on every non-client entity, so the round-restart re-assert of the default track is now live. The earlier 'installed but NOT driven' reset gap is closed. 3-layer priority + lifetime window + trigger touch-freshness read live by MusicPlayer; track selection faithful; only the fade ramp still differs (values/timing/presentation stay partial for the fade curve)."
 

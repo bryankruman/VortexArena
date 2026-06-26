@@ -3,7 +3,7 @@ category: physics
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 17
+  feature_count: 18
   worst_gaps:
     - "View-punch decay (PM_check_punch) was UNMAPPED in the baseline registry; now added as physics-player.punch_decay (ported as CheckPunch, faithful + live, server-authority only)."
     - "Jump audio FIXED 2026-06-25 re-audit (Wave-8e commit 412ca19): the port now gates the jump grunt on autocvar_g_jump_grunt (stock 0 = SILENT, matching Base) AND plays the per-model jump VOICE (PlayPlayerSound(player, \"jump\", ...) via the model .sounds manifest) instead of a fixed player/jump.wav — both baseline audio gaps closed, audio upgraded partial->faithful. RESIDUAL: the companion animdecide_setaction(ANIMACTION_JUMP) (player.qc:491) still has no anim-action seam in the port (same as the walljump port)."
@@ -11,6 +11,7 @@ summary:
     - "func_water waterlevel-from-volume override (physics.qc:280-299) is NOT computed in LadderMove, and the viewloc 1D-rail sub-cases (ladder wishvel.z = movement_old.x; water wishvel.z = -160 + a separate viewloc accel path) are not ported — inert on stock Xonotic maps but real Base branches."
     - "sys_phys_fixspeed cl_*speed stuffcmd absent (replaced by client-side wishmove scaling -- intended)."
     - "g_physics_clientselect non-default presets (CPMA/Warsow/etc.) are wired (Resolve/FromValues/PresetProvider); the Warsow-bunny leg is now selectable+covered (Wave-5: added `warsow` to g_physics_clientselect_options + PhysicsPresetTests drive Move->AirBranch->AirAccelerate), but the OTHER presets (cpma/quake3/...) still lack full golden-trace coverage; only the stock Xonotic preset is golden-trace byte-exact."
+    - "2026-06-25 drift re-audit: 0 regressions, 0 fixes — the baseline was already current with the live code (every dimension re-derived against Base player.qc/physics.qc/sv_physics.qc + the port PlayerPhysics.cs and confirmed). ONE registry coverage gap closed: added physics-player.pregame_hold (sys_phys_pregame_hold) — the pre-match/game-stopped movement freeze, which the port enforces faithfully+live but at the GameWorld.OnClientMove input-gating layer (preMatchFreeze -> canMove), not inside PlayerPhysics."
 features:
   - id: physics-player.core.branch_selection
     name: "PM_Main branch selection (waterjump/PM_Physics-hook/fly/swim/ladder/jetpack/ground/air)"
@@ -535,3 +536,27 @@ features:
       - { kind: code, ref: "liveness: called from Move (PlayerPhysics.cs:409) every tick; server-authority only — `if (predicted) return;` mirrors the QC #ifdef SVQC body. Punch is SET on firing (WeaponFiring.SetupShot recoil -> punchangle.x) and networked to the owner view", result: pass }
     confidence: high
     notes: "2026-06-25 NEW ROW (registry coverage gap): PM_check_punch is a common/physics/player.qc function the baseline registry had no row for, even though it is ported (CheckPunch) and live. The view-punch (recoil kick) bleeds toward zero each authoritative tick — punchangle 10 deg/s, punchvector 30 u/s — preserving direction. Server-only and networked, so suppressed on client prediction replays to avoid double-decay (matches the QC #ifdef SVQC gate). Byte-faithful to Base."
+
+  - id: physics-player.pregame_hold
+    name: "Pre-match / game-stopped movement freeze (sys_phys_pregame_hold)"
+    layer: [authority]
+    base_refs:
+      - "ecs/systems/sv_physics.qc:sys_phys_pregame_hold"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:OnClientMove"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base sys_phys_pregame_hold (sv_physics.qc:48-64) freezes a player INSIDE the physics system by zeroing velocity + set_movetype(MOVETYPE_NONE) + disableclientprediction=2 while !(time >= game_starttime && !game_stopped). The port enforces the SAME freeze a layer up, in GameWorld.OnClientMove: `preMatchFreeze = Time < GameStartTime && !Warmup.WarmupStage` folds into `canMove`, and PM_Main (PlayerPhysics.Move) is simply not run when !canMove — so the held player neither accelerates nor falls. Equivalent observable behavior (no movement before the match clock starts, warmup freely playable, match-over/intermission held) via the host's per-tick movement gate rather than an in-physics MOVETYPE_NONE swap + client-prediction disable."
+    gaps:
+      - "The disableclientprediction=2 latch (sv_physics.qc:55/59) — which tells the CLIENT to stop predicting during the hold and re-enable (MOVETYPE_NONE->MOVETYPE_WALK) on release — has no direct port analogue; the port instead just doesn't apply the move server-side. Cosmetic: a predicting client could briefly predict motion during the freeze before the next authoritative reconcile pins it back, where Base suppresses prediction outright. No effect on the authoritative position."
+    verification:
+      - { kind: code, ref: "GameWorld.OnClientMove:1937-1944 (preMatchFreeze = Time < GameStartTime && !Warmup.WarmupStage; canMove gates PM_Main) vs sv_physics.qc:48-64 sys_phys_pregame_hold (allowed_to_move = time >= game_starttime && !game_stopped). Warmup-playable + match-over/intermission held both covered by the same canMove chain (!MatchEnded && !Intermission.Running)", result: pass }
+    confidence: high
+    notes: "2026-06-25 NEW ROW (registry coverage gap): sys_phys_pregame_hold is a real sv_physics.qc movement-bearing function the baseline registry had no row for. The port reproduces its observable effect (no player movement before game_starttime, warmup excepted; held while game_stopped via MatchEnded/Intermission) live on every server tick, but at the GameWorld input-gating layer instead of inside PlayerPhysics — an intended structural divergence (the headless sim has no MOVETYPE_NONE/disableclientprediction edict bridge). Logic+timing faithful; the only residual is the absence of the client-side disableclientprediction latch (cosmetic prediction-only)."

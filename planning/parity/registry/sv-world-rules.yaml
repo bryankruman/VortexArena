@@ -3,12 +3,12 @@ category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 18
+  feature_count: 19
   worst_gaps:
     - "RandomSeed / PingPLReport broadcast entities and RedirectionThink are still absent (no shared client RNG seed, no scoreboard ping/PL feed, no server-redirect command)."
     - "DumpStats (final/periodic :scores:/:status: eventlog+file scores dump on every match end via NextLevel) has no port analogue — the eventlog scores feed is missing."
     - "GameWorld.Shutdown now does slowmo-reset + ban-save + unfinished PlayerStats_GameReport(false), but ServerProgsDB persistence, bot_endgame, CheatShutdown and WeaponStats_Shutdown on teardown are still absent."
-    - "World-layer leadlimit / leadlimit_and_fraglimit WIN semantics, WinningCondition_RanOutOfSpawns, and the CheckRules_World mutator hook are still not evaluated in the checkrules cascade (leadlimit math only feeds the frags-remaining announcer)."
+    - "World-layer leadlimit / leadlimit_and_fraglimit WIN semantics and the CheckRules_World mutator hook are still not evaluated in the checkrules cascade (leadlimit math only feeds the frags-remaining announcer). WinningCondition_RanOutOfSpawns is now PORTED (FIX 2026-06-25)."
     - "serverflags + animated-lightstyle table are now installed server-side (authority faithful+live) but the CLIENT consumers are still unported: no fullbright/pickup-timer gate reads the serverflags bits, and no render consumer animates the lightstyle table (presentation still missing on both)."
 features:
   - id: sv-world-rules.boot.worldspawn
@@ -222,13 +222,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "WinningCondition_RanOutOfSpawns (team spawn-exhaustion draw/win, g_spawn_useallspawns) is still not ported (confirmed absent, GameWorld.cs:2884 comment)."
       - "leadlimit / leadlimit_and_fraglimit WIN semantics are still not evaluated in the world layer (the win comes from the gametype MatchEnded latch + tie report). The leadlimit math exists in GameScores.CountFragsRemaining but only feeds the frags-remaining announcer, not the end-of-match decision."
       - "The CheckRules_World mutator hook (M_ARGV status override) is still not invoked."
     verification:
-      - { kind: code, ref: "RunCheckRulesWorld (GameWorld.cs:2833+: timelimit zeroing + offset, overtime/suddendeath cascade) vs CheckRules_World:1725-1861. ANNCE_REMAINING_FRAG_{1,2,3}: GameScores.CountFragsRemaining (leadlimit + leadlimit_and_fraglimit) LIVE-called per-frame from the gametype scoring layer; REMAINING_FRAG notifs defined NotificationsList.cs. RanOutOfSpawns/mutator hook not ported (GameWorld.cs:2884).", result: partial }
+      - { kind: code, ref: "RunCheckRulesWorld (GameWorld.cs:3301-3403: timelimit zeroing + offset, overtime/suddendeath cascade, RanOutOfSpawns-first then WinningCondition_Scores) vs CheckRules_World:1725-1861. WinningConditionRanOutOfSpawns (GameWorld.cs:3414-3485) faithfully mirrors world.qc:1641-1718 (HaveTeamSpawns/g_spawn_useallspawns/SomeSpawnHasBeenUsed guards, living-player + spawnpoint presence tally via SpawnSystem.EnumerateSpawnPointTeams, present==0 draw / present==1 win with -1000 loser penalty), called LIVE from RunCheckRulesWorld:3357. ANNCE_REMAINING_FRAG_{1,2,3}: GameScores.CountFragsRemaining (leadlimit + leadlimit_and_fraglimit) LIVE-called per-frame from the gametype scoring layer; REMAINING_FRAG notifs defined NotificationsList.cs. CheckRules_World mutator hook + world-layer leadlimit WIN not ported.", result: partial }
     confidence: high
-    notes: "Unchanged. The frags-remaining announcer (ANNCE_REMAINING_FRAG_{1,2,3}) is implemented + LIVE in the gametype scoring layer with leadlimit math (audio partial). STILL OPEN: the world-layer leadlimit WIN condition, WinningCondition_RanOutOfSpawns, and the CheckRules_World mutator hook. Overtime/suddendeath ordering + warmup/pre-start gating are faithful."
+    notes: "FIX since 2026-06-25: WinningCondition_RanOutOfSpawns is now PORTED and LIVE — WinningConditionRanOutOfSpawns (GameWorld.cs:3414) faithfully reproduces world.qc:1641 (g_spawn_useallspawns team spawn-exhaustion: draw when no team has presence, win+(-1000 loser penalty) when one team survives) and runs first in the cascade (cs:3357), with full SpawnSystem support (HaveTeamSpawns/SomeSpawnHasBeenUsed/EnumerateSpawnPointTeams). Was confirmed-absent in the baseline. logic stays partial (two gaps remain). The frags-remaining announcer (ANNCE_REMAINING_FRAG_{1,2,3}) is implemented + LIVE with leadlimit math (audio partial). STILL OPEN: the world-layer leadlimit WIN condition and the CheckRules_World mutator hook. Overtime/suddendeath ordering + warmup/pre-start gating are faithful."
   - id: sv-world-rules.checkrules.overtime
     name: "Overtime / sudden-death (InitiateSuddenDeath/Overtime/GetWinningCode)"
     layer: [authority]
@@ -484,3 +483,26 @@ features:
       - { kind: code, ref: "grep DumpStats/printstats/:scores:/:status:/logscores across src/ — no match. Base callers: world.qc:1429 (NextLevel, final=true) + sv_cmd.qc:1249 (printstats cmd, final=false). world.qc:1264.", result: fail }
     confidence: high
     notes: "NEW ROW (registry coverage gap, 2026-06-25). World-rules authority feature: the end-of-match eventlog/file scores feed that external stats parsers (e.g. server score trackers) consume. Missing entirely. Distinct from PlayerStats_GameReport (the xonstat upload, which IS ported); DumpStats is the local console/eventlog/file score-line dump."
+  - id: sv-world-rules.boot.initialize_entity_queue
+    name: "InitializeEntity ordered deferred-spawn queue"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:InitializeEntity"
+      - "server/world.qc:InitializeEntitiesRun"
+    port_refs: []
+    constants: []
+    status:
+      logic: unknown
+      values: na
+      timing: unknown
+      presentation: na
+      audio: na
+      liveness: unknown
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base defers spawnfunc post-init work through an order-sorted queue (InitializeEntity(e, func, order) builds a linked list sorted by initialize_entity_order; InitializeEntitiesRun drains it on the first frame so e.g. lower-order items spawn before higher-order ones). This is the ordering mechanism behind the reset_map .reset/.reset2 two-stage pass already flagged under sv-world-rules.warmup.reset_map. No equivalent ordered-deferred-init queue is identified in the port; whether the port relies on BSP-lump spawn order or a different mechanism is not yet traced."
+    verification:
+      - { kind: code, ref: "grep InitializeEntity/initialize_entity_order across src/ — no match. Base: world.qc:2229 (InitializeEntity), world.qc:2262 (InitializeEntitiesRun, drained from spawnfunc(worldspawn)/the first frame).", result: fail }
+    confidence: medium
+    notes: "NEW ROW (registry coverage gap, 2026-06-25). The deferred-spawn ordering infrastructure was previously implicit under boot.worldspawn's 'heavy QC init list (host/engine-side)' note. Tracked explicitly because it is the ordering primitive the reset_map .reset2 second-pass gap depends on. Status left unknown pending a trace of how the port orders entity post-spawn init."

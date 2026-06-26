@@ -5,9 +5,9 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 13
   worst_gaps:
-    - "CSQC lightning projectile model (models/ebomb.mdl scale 2.5, PROJECTILE_GOLEM_LIGHTNING) not rendered — headless projectile (SpawnProjectile sets no model)."
-    - "MENUQC monsterpedia describe() text (golem.qc:308) not ported (no monster info page)."
     - "AnimFrame stamps only the group START index onto Entity.Frame; the animfixfps framecount/fps per-frame advance within a group is not driven (no intra-group .dpm fps playback timeline) — the right group is now selected per phase/variant, but the client renders a single stamped frame per group."
+    - "Lightning projectile model is now rendered (models/ebomb.mdl, Golem.cs:227) but its QC scale=2.5 (golem.qc:145) is not networked — the bolt draws at 1x (CSQCMODEL render-scale bit unported)."
+    - "MENUQC monsterpedia describe() text (golem.qc:308) not ported (no monster info page)."
 features:
   - id: monster-golem.spawn.setup
     name: "Spawn + mr_setup (health/ranges/speeds/loot/spawn-shield/hitbox)"
@@ -200,24 +200,26 @@ features:
       - { name: "lightning_roll_threshold", base: "<=0.1 && dist>=smash_range*1.5", port: "<=0.1 && dist>=SmashRange*1.5", match: true }
       - { name: "lightning_windup_s", base: "0.6 (Monster_Delay)", port: "0.6", match: true }
       - { name: "launch_sound", base: "NONE (M_Golem_Attack_Lightning emits no sound)", port: "NONE", match: true }
-      - { name: "projectile_model", base: "models/ebomb.mdl scale 2.5 (CSQCProjectile PROJECTILE_GOLEM_LIGHTNING)", port: "none (headless)", match: false }
+      - { name: "projectile_model", base: "models/ebomb.mdl (CSQCProjectile PROJECTILE_GOLEM_LIGHTNING)", port: "models/ebomb.mdl (gren.Model, Golem.cs:227)", match: true }
+      - { name: "projectile_scale", base: "2.5 (gren.scale, golem.qc:145)", port: "1x (Entity carries no networked render-scale field)", match: false }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CSQC projectile model (models/ebomb.mdl, scale 2.5, PROJECTILE_GOLEM_LIGHTNING) not rendered — SpawnProjectile sets no proj.Model (headless projectile)."
+      - "Projectile renders the correct model (models/ebomb.mdl) but at 1x — QC gren.scale = 2.5 (golem.qc:145) is not networked (Entity has no render-scale field; the CSQCMODEL scale-bit contract is unported). Visible bolt is smaller than Base but no longer headless."
     verification:
       - { kind: code-read, ref: "Golem.ThrowLightning:191-231 + SpawnProjectile (Bounce, 50hp, makeTrigger, size +/-8, +Z speedUp) vs M_Golem_Attack_Lightning", result: pass }
-      - { kind: code-read, ref: "SpawnProjectile (MonsterAI.cs:1451-1512) sets no .Model on the projectile entity — only the monster body gets a model (MonsterAI.cs:241); CSQC ebomb.mdl unported", result: fail }
-      - { kind: code-read, ref: "Golem.cs:227-229 — no launch cue (QC M_Golem_Attack_Lightning emits none); ThrowLightning:196 fires the dispatch melee cue (QC :478)", result: pass }
+      - { kind: code-read, ref: "Golem.cs:227 gren.Model = \"models/ebomb.mdl\" — projectile now sets the QC CSQCProjectile model; ebomb.mdl asset present (assets/data/.../models/ebomb.mdl); rendered via the same Entity.Model feed as the monster body (MonsterAI.cs:241)", result: pass }
+      - { kind: code-read, ref: "Golem.cs:228-229 — gren.scale = 2.5 deferred (no networked Entity render-scale); bolt draws at 1x", result: fail }
+      - { kind: code-read, ref: "Golem.cs:232-234 — no launch cue (QC M_Golem_Attack_Lightning emits none); ThrowLightning:196 fires the dispatch melee cue (QC :478)", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-25. Unchanged from baseline: no fabricated launch sound, early-detonate-when-shot, bounce, MAKETRIGGER, 5s fuse all ported; dispatch-level melee voice cue fired. Only the CSQC projectile model remains (presentation)."
+    notes: "Re-audited 2026-06-25 — presentation UPGRADED missing->partial: the lightning chunk is no longer headless. Golem.cs:227 now sets gren.Model = models/ebomb.mdl (the QC CSQCProjectile model), rendered via the live Entity.Model entity feed; ebomb.mdl ships in port assets. Residual: QC gren.scale=2.5 is not networked, so the bolt draws at 1x (smaller than Base). Logic (early-detonate-when-shot, bounce, MAKETRIGGER, 5s fuse), values, timing, audio (no fabricated launch sound; dispatch melee cue) all faithful."
 
   - id: monster-golem.attack.lightning_explode
     name: "Lightning detonation: small blast + chained zaps to wide radius"

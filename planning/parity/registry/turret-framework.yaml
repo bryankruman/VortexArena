@@ -294,22 +294,21 @@ features:
       - { name: "lifetime", base: "9s", port: "9f", match: true }
       - { name: "touch -> RadiusDamage", base: "shot_dmg/0/shot_radius/force/deathtype", port: "same", match: true }
       - { name: "shootable hull (health>0)", base: "DAMAGE_YES + explode on death", port: "via shared Death hook", match: true }
-      - { name: "CSQCProjectile trail", base: "yes (client, proj_type per turret)", port: "generic TurretSpawn.Projectile stamps no proj_type, BUT each turret caller now stamps NetName (electro_bolt/blaster/hagar/rocket/devastator) so ProjectileCatalog.Classify gives the bolt its real client trail (Wave-8e)", match: true }
+      - { name: "CSQCProjectile trail", base: "yes (client, proj_type stamped IN turret_projectile via CSQCProjectile(.., _proj_type, ..), sv_turrets.qc:487)", port: "TurretSpawn.Projectile now takes a projType arg and stamps NetName INSIDE the helper (TurretSpawn.cs:122); callers pass projType: electro_bolt/blaster/hagar/devastator so ProjectileCatalog.Classify gives the bolt its real client trail (Wave-9-11)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: partial
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The generic TurretSpawn.Projectile helper itself leaves NetName empty (Generic trail); the proper proj_type trail only appears because every turret CALLER overwrites NetName after the spawn — a turret that forgot to stamp it would render trailless."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "turret_projectile vs TurretSpawn.Projectile (no trail stamped in the helper); plasma/mlrs/flac/hellion/hk/ewheel callers stamp NetName -> ProjectileCatalog client trail + EFFECT_*_MUZZLEFLASH at the muzzle (Wave-8e)", result: pass }
+      - { kind: code_read, ref: "turret_projectile (sv_turrets.qc:455-494, stamps _proj_type inline) vs TurretSpawn.Projectile (TurretSpawn.cs:113-176): the helper now owns the trail — `if (projType.Length != 0) proj.NetName = projType` at line 122; plasma/mlrs/flac/ewheel callers pass projType: (electro_bolt/devastator/hagar/blaster) + EFFECT_*_MUZZLEFLASH at the muzzle", result: pass }
     confidence: high
-    notes: "FIX vs baseline (was presentation:missing): Wave-8e wired the per-turret projectile trail by stamping the bolt's NetName so the shared ProjectileCatalog classifies it (electro_bolt->ELECTRO_BEAM, blaster->BLASTER, hagar->HAGAR_ROCKET, rocket/devastator->ROCKET) and the muzzle flash is emitted server-side. Presentation is partial not faithful because the generic helper does not stamp the type — the callers do, individually."
+    notes: "FIX vs baseline (was presentation:partial): Wave-9-11 added the projType parameter to TurretSpawn.Projectile and moved the NetName stamp INSIDE the helper (TurretSpawn.cs:122), exactly mirroring how Base's turret_projectile stamps _proj_type inline (sv_turrets.qc:487) rather than relying on callers. The helper now owns the trail, so the prior gap (a turret that forgot to stamp NetName would render trailless) is closed — presentation is faithful. audio stays partial: the per-turret fire sound is emitted by the caller paths, not this generic helper."
   - id: turret-framework.lifecycle.use_damage
     name: "Activation + damage gate (turret_use / turret_damage / turret_heal)"
     layer: [authority]

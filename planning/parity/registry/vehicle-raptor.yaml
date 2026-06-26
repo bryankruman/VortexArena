@@ -3,7 +3,7 @@ category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 16
+  feature_count: 17
   worst_gaps:
     - "raptor.impact: CONFIRMED LIVE (fixup commit 4be8357) — Spawn() no longer nulls vehicle.Touch, Think() snapshots OldVelocity, Spawn seeds PlayTime; verified full dispatch chain MoveTypePhysics(BounceMissile)->PushEntity(doTouch)->FlyMove->VehicleCommon.Touch->VehicleDef.Impact->vehicles_impact. Wiring is symmetric with Racer."
     - "raptor.painframe: NEWLY WIRED LIVE (fixup commit 4be8357) — Raptor.Think now calls VehicleCommon.PainFrame; faithful port of vehicles_painframe (<=50%-health shake/roll jitter live; EFFECT_SMOKE_SMALL deferred)."
@@ -58,9 +58,9 @@ features:
     base_refs:
       - "common/vehicles/vehicle/raptor.qc:spawnfunc(vehicle_raptor)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:Raptor"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:238"
-      - "src/XonoticGodot.Engine/Simulation/SimulationLoop.cs:281"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:Raptor (line 86)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:244"
+      - "src/XonoticGodot.Engine/Simulation/SimulationLoop.cs (engine think-pump)"
     constants:
       - { name: "master cvar g_vehicle_raptor", base: "true", port: "g_vehicle_raptor (default-on)", match: true }
     status:
@@ -74,7 +74,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "vehicle_raptor registered MapObjectsRegistry.cs:220 -> VehicleSpawnFuncs.Raptor -> Spawn; SimulationLoop pumps ent.Think gated by NextThink", result: pass }
+      - { kind: code, ref: "vehicle_raptor registered MapObjectsRegistry.cs:244 -> VehicleSpawnFuncs.Raptor (line 86) -> Spawn; SimulationLoop pumps ent.Think gated by NextThink", result: pass }
       - { kind: test, ref: "VehicleRuntimeTests.Impulse_Raptor_SetsBombAndFlareModes spawns vehicle_raptor via SpawnVehicle + boards via UseKey", result: pass }
     confidence: high
     notes: "BSP entity-lump loader instantiates hand-placed raptors via the registered spawnfunc; the generic engine think-pump drives the vehicle every tick. Unchanged by Wave-2."
@@ -552,3 +552,32 @@ features:
       - { kind: code, ref: "raptor_weapons.qc:244-284 (CSQC) RaptorCBShellfragToss/Draw — no port counterpart; the burst path (Raptor.cs:DropOneBomb Burst) spawns only the damaging bomblets, no cosmetic frags", result: fail }
     confidence: high
     notes: "NEW row 2026-06-25 (registry coverage gap). CSQC-only debris FX triggered from the bomb burst; no server/gameplay effect."
+
+  - id: raptor.missile_alarm
+    name: "Incoming guided-missile alarm (per-pilot warning sound)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/raptor.qc:raptor_frame (bomb1.cnt incoming-missile scan block, lines 405-425)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:Frame (incoming-missile alarm block, lines 414-432)"
+    constants:
+      - { name: "scan filter", base: "IL_EACH(g_projectiles, it.enemy == vehic) + MIF_GUIDED_TRACKING", port: "FindByClass(vehicles_projectile) proj.Enemy==vehicle + VehGuideMode>=0", match: true }
+      - { name: "alarm range", base: "2 * flare_range (2*2000 = 4000)", port: "2f * FlareRange (4000)", match: true }
+      - { name: "scan/alarm gate cadence", base: "bomb1.cnt: time + 1 (once per second)", port: "VehAlarmNextTime = Time + 1f", match: true }
+      - { name: "alarm sound", base: "SND(VEH_MISSILE_ALARM) = vehicles/missile_alarm.wav", port: "vehicles/missile_alarm.wav", match: true }
+      - { name: "sound channel/atten", base: "soundto(MSG_ONE, CH_PAIN_SINGLE, VOL_BASE, ATTEN_NONE)", port: "SoundChannel.Pain, VolBase, AttenNone", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC uses soundto(MSG_ONE, vehic, ...) so the alarm is heard ONLY by the pilot (msg_entity = this); the port plays it on the vehicle entity via the general sound API (heard positionally by anyone in range). Behaviorally the warning still fires on the right trigger, but the per-pilot-only routing (MSG_ONE) is not reproduced — minor audio-scope divergence."
+    verification:
+      - { kind: code, ref: "Raptor.cs:Frame:414-432 (VehAlarmNextTime once/sec gate DISTINCT from the engine-sound VehSoundNextTime gate; scans vehicles_projectile for proj.Enemy==vehicle && VehGuideMode>=0 within 2*FlareRange) vs raptor.qc:405-425 (bomb1.cnt gate, IL_EACH g_projectiles, MIF_GUIDED_TRACKING, vdist < 2*flare_range)", result: pass }
+    confidence: high
+    notes: "NEW row 2026-06-25 (registry coverage gap; previously unmapped). The incoming-guided-missile warning is a server-authoritative audio feature distinct from the decoy flares (raptor.flares) — it scans for guided rockets locked onto the raptor and plays a warning. The port implements it live and faithfully in Frame, gated on a SEPARATE once/sec timer (VehAlarmNextTime) from the engine fly-sound gate (matching QC's distinct .bomb1.cnt vs .sound_nexttime). Only the MSG_ONE pilot-only routing is broadened to a positional sound."

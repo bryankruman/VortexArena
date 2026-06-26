@@ -6,7 +6,7 @@ summary:
   feature_count: 12
   worst_gaps:
     - "No external target reception (turret_hk_addtarget / TUR_FLAG_RECIEVETARGETS): HK cannot be fed a designated target"
-    - "No WEP_HK player special-attack weapon (hidden/dev path, impulse 9) — not ported at all"
+    - "WEP_HK player special-attack weapon now FULLY ported (HunterKillerWeapon.cs) but DEAD — [Weapon] registration deferred (WeaponByIdTests SpecialAttack contract), so the impulse-9/give path has no live caller"
     - "Head model (hk.md3) not instantiated as a separate head entity; no tag_head attachment"
     - "Select/firecheck flag set still diverges (no SelectVehicles/SelectTriggerTarget consts; AFF not a discrete gate)"
     - "tr_think head-frame cycler now ported on the turret edict's own frame (no separate tur_head entity), but no real head model to display the animation"
@@ -249,24 +249,37 @@ features:
     base_refs:
       - "common/turrets/turret/hk_weapon.qc:14"
       - "common/turrets/turret/hk_weapon.qh:HunterKillerAttack"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HunterKillerWeapon.cs:HunterKillerWeapon"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HunterKillerWeapon.cs:WrThink"
     constants:
-      - { name: "weapon flags", base: "WEP_FLAG_HIDDEN | WEP_FLAG_SPECIALATTACK", port: "none", match: false }
+      - { name: "weapon flags", base: "WEP_FLAG_HIDDEN | WEP_FLAG_SPECIALATTACK", port: "WeaponFlags.Hidden | WeaponFlags.SpecialAttack", match: true }
+      - { name: "impulse", base: "9", port: "9", match: true }
+      - { name: "netname", base: "turret_hk", port: "turret_hk", match: true }
+      - { name: "base class / ammo", base: "PortoLaunch (no ammo cost)", port: "Weapon, no AmmoType (WrCheckAmmo true)", match: true }
+      - { name: "attacktime / refire", base: "weapon_prepareattack(...,1) -> 1s", port: "RefireFor=1f", match: true }
+      - { name: "fire anim", base: "weapon_thinkf(WFRAME_FIRE1, 0.5, w_ready)", port: "AnimtimeFor=0.5f", match: true }
+      - { name: "player shot_dmg (turret_initparams default)", base: "50", port: "50", match: true }
+      - { name: "player shot_radius (default)", base: "25", port: "25", match: true }
+      - { name: "player shot_force (default)", base: "37.5", port: "37.5", match: true }
+      - { name: "player shot_speed (default)", base: "2500", port: "2500 (launch *0.75 = 1875)", match: true }
+      - { name: "guidance band (autocvar, shared with turret)", base: "max1000/turn0.25/accel1.025/accel2 1.05/decel0.9", port: "1000/0.25/1.025/1.05/0.9", match: true }
+      - { name: "head-frame kick skipped for IS_PLAYER", base: "if(!isPlayer) ++tur_head.frame", port: "no actor.Frame touch in WrThink", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: missing
-      liveness: na
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The hidden player weapon WEP_HK (HunterKillerAttack) — the player branch of wr_think (weapon_prepareattack / turret_initparams / W_SetupShot_Dir / weapon_thinkf WFRAME_FIRE1) that lets a given-the-weapon player fire the same guided rocket — is not ported at all (no WEP_HK / HunterKillerAttack symbol exists in the port)."
+      - "DEAD: HunterKillerWeapon carries NO [Weapon] attribute (registration intentionally deferred — WEP_FLAG_SPECIALATTACK would shift WeaponByIdTests.ByIdOrder_Covers... skipped count 0->1 and break the test). So the impulse-9 / `give weapon_turret_hk` fire path has no live caller through WeaponFireDriver; WrThink is unreachable in a normal match. Class compiles + is fully faithful, but never runs on the live path."
     verification:
-      - { kind: code_read, ref: "grep WEP_HK|HunterKillerAttack across src/** -> no matches", result: fail }
+      - { kind: code_read, ref: "HunterKillerWeapon.cs fully ports the IS_PLAYER wr_think branch (PrepareAttack 1s + AnimtimeFor 0.5s + W_SetupShot_Dir via WeaponFiring.SetupShot + GuidedProjectile.Launch with turret_initparams GENERIC defaults 50/25/37.5/2500 + te_explosion + rocket_fire); grep '[Weapon]' in the file -> no attribute; no live caller of HunterKillerWeapon outside its own file + a doc xref in HkTurret.cs.", result: pass }
     confidence: high
-    notes: "Hidden/dev-cheat path; only the turret (non-player) branch of wr_think is ported (HkTurret.Attack). Cosmetic/edge gameplay impact. Unchanged from baseline."
+    notes: "FIX from baseline (was 'not ported at all', all dims missing). The hidden player weapon WEP_HK / HunterKillerAttack is now fully ported in HunterKillerWeapon.cs: faithful identity (Hidden|SpecialAttack, impulse 9, netname turret_hk), the IS_PLAYER wr_think fire sequence, the correct turret_initparams GENERIC fallback balance (50/25/37.5/2500, NOT the HK turret 120/200/600 — because a bare player has no tur_* fields), the shared guidance band autocvars, the IS_PLAYER head-kick skip, muzzle te_explosion + rocket_fire sound. ONLY gap remaining is liveness: dead — [Weapon] registration deferred pending a WeaponByIdTests SpecialAttack contract update, so impulse-9/give has no live dispatch."
   - id: turret-hk.damage.lifecycle
     name: "Damage gating, retaliation, death + respawn"
     layer: [authority]

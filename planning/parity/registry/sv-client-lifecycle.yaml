@@ -8,9 +8,9 @@ summary:
     - "Join queue + team-selection ordering (queuePlayer / TeamBalance_JoinBestTeam priority pass, queued-team dibs conflict) not modeled: in team modes the queued-team conflict resolution and best-team-by-skill ordering are absent; PutPlayerInServer's own wants_join>0 / bot_forced_team / TeamBalance_JoinBestTeam team-assign is also not run (the port pre-assigns at connect only). (Wave-2 added the JOIN_PLAY / JOIN_PLAY_TEAM notification tail; the queue-conflict / ANNCE_BEGIN branches stay deferred.)"
     - "joinAllowed is reduced to MIN_SPEC_TIME + lockteams + forced-spectator + playban + a gametype gate: version-mismatch, g_maxping, and the queue/nJoinAllowed (g_maxplayers/GetPlayerLimit/bots_would_leave) capacity gate are still missing — a mismatched/high-ping/over-cap client can still join, and no CENTER_JOIN_PREVENT*/PING/VERSIONMISMATCH centerprints fire."
     - "PRESSED_KEYS server-side is now FIXED (GetPressedKeys ported + live in OnPlayerPostThink, observer-clear, SpectateCopy inherit); the only residual is the net layer — Player.PressedKeys is not in the owner-state protocol and PressedKeysPanel.PressedKeysOverride is never fed, so a SPECTATED player's keys don't reach the client HUD."
-    - "sv_maxidle idle-kick / move-to-spectator is entirely missing: idle players are never kicked or demoted; the idle countdown bangs (SND TALK2) and CENTER_DISCONNECT_IDLING / CENTER_MOVETOSPEC_IDLING / INFO_QUIT_KICK_IDLING never appear, and parm_idlesince alivetime afk-gating is not modeled."
+    - "(RESOLVED 2026-06-25 drift) sv_maxidle idle-kick / move-to-spec / sv_spectate=0 spectator-kick / alivetime AFK-gate are now FULLY ported and LIVE (GameWorld.PlayerFrameIdleAll, :1701, run every server frame from OnStartFrame; activity tracker at :1971). Idle countdown bangs (SND TALK2 via Play2), CENTER_DISCONNECT_IDLING / CENTER_MOVETOSPEC_IDLING, INFO_QUIT_KICK_IDLING / MOVETOSPEC_IDLING(_QUEUE), SPECTATE_WARNING + INFO_QUIT_KICK_SPECTATING all fire. Only the dedicated-server sv_maxidle_slots free-slot threshold is unimplemented (no engine maxclients in the headless core)."
     - "No server->client welcome channel: clientstuff/FixClientCvars/cl_jumpspeedcap_min-max/cl_shootfromfixedorigin stuffcmds, clientversion request, _teams_available, sv_notice_join/SendWelcomeMessage MOTD, Send_NextMap_To_Player, ClientInit_misc per-client init entity, playban/chatban, model_randomizer — none modeled. (Handicap_Initialize IS now wired in the spawn path.)"
-    - "PutObserverInServer still omits SelectObservePoint/observe-spawn placement, vote/ready recount, the SPECTATE_WARNING block, RemoveGrapplingHooks/Portal_ClearAll, and the is_forced/use_spawnpoint signature; sv_spectate-disabled spectator kick (SPECTATE_WARNING / INFO_QUIT_KICK_SPECTATING) absent."
+    - "PutObserverInServer still omits SelectObservePoint/observe-spawn placement, vote/ready recount, the one-shot SPECTATE_WARNING block, RemoveGrapplingHooks/Portal_ClearAll, and the is_forced/use_spawnpoint signature. (The PlayerFrame sv_spectate-disabled spectator kick — SPECTATE_WARNING / INFO_QUIT_KICK_SPECTATING — is NOW ported as a separate row, frame.spectator_kick.)"
     - "UpdateChatBubble (chat/minigame-busy bubble over a typing player) is not modeled; version nag, nameless/too-long/invisible-name enforcement (sv_name_maxlength), GOD MODE info, and the PlayerPreThink misc dispatch (PlayerUseKey edge as a unit, SetZoomState, target_voicescript_next) are missing or scattered (the deferred teamkill-complaint voice timer IS now driven from the regen frame)."
   wave6c_fixes:
     - "spawn.spawn_shield: the (!sv_ready_restart_after_countdown && time < game_starttime) countdown extension is NOW applied (SpawnSystem.cs:761-782) — shield + pauserotarmor/health + pauseregen rolled forward by game_starttime-time, fuel rot deliberately NOT extended, matching Base client.qc:665-671. logic partial->faithful, timing partial->faithful."
@@ -20,6 +20,7 @@ summary:
     - "frame.player_regen: the PlayerRegen hook now passes ALL tuning slots (max_mod/regen_mod/rot_mod/limit_mod + the 6 per-health regen/rot/stable overrides) and reads them back — a mutator that RETUNES regen (not just disables) is now honored. The last residual gap is closed; row was already faithful."
     - "disconnect.client_disconnect: now also runs vehicle exit (VHEF_RELEASE), player_powerups_remove_all (poweroff sound), and the MUTATOR_CALLHOOK(ClientDisconnect) generic hook + the gametype MakePlayerObserver/RemovePlayer objective drop + status-effect clear. Row stays logic:partial (ignore-list / chatbubble / waypoint / ready-vote-recount cleanups still absent) but materially closer."
   drift_2026_06_25_reverify:
+    - "frame.idle_kick + frame.spectator_kick: BOTH subsystems — previously all-missing — were ported since the last audit and are now LIVE in GameWorld.PlayerFrameIdleAll (:1701), run once per server frame from OnStartFrame, plus the parm_idlesince activity tracker in OnClientMove (:1971, the sys_phys_monitor port). idle_kick: sv_maxidle kick + sv_maxidle_playertospectator move-to-spec (with the WantsJoin join-queue distinction) + sv_maxidle_minplayers reset + the 30s alivetime AFK-gate (AdvanceAliveStart) + the per-second SND TALK2 countdown bang via SoundSystem.Play2 (2D, idle-client only) + CENTER_DISCONNECT_IDLING/MOVETOSPEC_IDLING + INFO_QUIT_KICK_IDLING/MOVETOSPEC_IDLING(_QUEUE). spectator_kick: sv_spectate==0 → SPECTATE_WARNING (MSG_MULTI) then INFO_QUIT_KICK_SPECTATING + ClientDisconnect after the g_maxplayers_spectator_blocktime (5s) grace. all dims missing->faithful, liveness na->live on both rows. The ONLY residual is the dedicated-server sv_maxidle_slots free-slot threshold (no engine maxclients in the headless core — cvars read, gate skipped)."
     - "frame.pressed_keys: the server-authoritative GetPressedKeys is NOW ported and LIVE — PlayerFrameLogic.GetPressedKeys (PlayerFrameLogic.cs:281) is called from OnPlayerPostThink (GameWorld.cs:1894) every server frame for a live player, with the IS_DUCKED held-crouch workaround; the observer branch clears PRESSED_KEYS via ClearPressedKeys (GameWorld.cs:1884); and SpectateCopy inherits the spectatee's bits (ClientManager.cs:631). logic partial->faithful, timing na->faithful, liveness partial->live. presentation STAYS partial: Player.PressedKeys is not in the owner-state net protocol and PressedKeysPanel.PressedKeysOverride is still never set, so a spectated player's keys don't reach the client HUD (the local-player panel already works from client bind state)."
     - "frame.drown_player: the surfaced-after-out-of-air gasp NOW plays playersound_gasp — DrownPlayer's surface branch calls SoundSystem.PlayPlayerSound(p, \"gasp\", ...) when AirFinished was set and < time (PlayerFrameLogic.cs:236-240), the same per-model voice resolution as the pain/teamkill voices; gasp is a real player-sound id. audio missing->faithful; the row is now fully faithful with no gaps."
     - "connect.fix_client_cvars_welcome: a PARTIAL welcome channel now exists on the live connect path (InfraClientConnect, GameWorld.cs:1192) — the campaign welcome level-num (SendCampaignWelcome, GameWorld.cs:1231/1288, QC SendWelcomeMessage campaign branch) and the grappling-hook BuildGameplayTipsString tip (GameWorld.cs:1239-1248) are surfaced to the connecting client. logic/presentation missing->partial, liveness na->partial. The bulk stays absent: FixClientCvars cvar push, clientstuff, cmd clientversion, set _teams_available, the MOTD/hostname/map/mutators message, ClientInit_misc, Send_NextMap_To_Player."
@@ -507,52 +508,61 @@ features:
     base_refs:
       - "server/client.qc:PlayerFrame (sv_maxidle block ~2982)"
       - "server/client.qc:PlayerFrame (alivetime parm_idlesince ~2858)"
-    port_refs: []
+      - "ecs/systems/sv_physics.qc:sys_phys_monitor (parm_idlesince activity update)"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:PlayerFrameIdleAll (~1701)"
+      - "src/XonoticGodot.Server/GameWorld.cs:OnClientMove (idlesince activity tracker ~1971)"
+      - "src/XonoticGodot.Server/PlayerStats.cs:AdvanceAliveStart (~221)"
+      - "src/XonoticGodot.Server/ServerPlayerState.cs:IdleSince/IdleKickLastTimeLeft (~36)"
     constants:
-      - { name: "sv_maxidle", base: "0 (off)", port: "none", match: false }
-      - { name: "sv_maxidle_playertospectator", base: "0", port: "none", match: false }
-      - { name: "sv_maxidle_minplayers", base: "0", port: "none", match: false }
+      - { name: "sv_maxidle", base: "0 (off)", port: "0 (Cvars.cs:348)", match: true }
+      - { name: "sv_maxidle_playertospectator", base: "0", port: "0 (Cvars.cs:349)", match: true }
+      - { name: "sv_maxidle_minplayers", base: "0", port: "0 (Cvars.cs:350)", match: true }
+      - { name: "sv_maxidle_alsokickspectators", base: "0", port: "0 (Cvars.cs:351)", match: true }
+      - { name: "alivetime afk threshold", base: "30 s", port: "30 s (GameWorld.cs:1745)", match: true }
+      - { name: "countdown_time", base: "max(min(10,maxidle-1), ceil(maxidle*0.33))", port: "same (GameWorld.cs:1822)", match: true }
+      - { name: "sv_maxidle_slots", base: "0 (dedicated free-slot threshold)", port: "read but gate skipped (no engine maxclients)", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: missing
-      liveness: na
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Idle players are never kicked or demoted to spectator; the idle countdown bangs (SND TALK2 at countdown_time), CENTER_DISCONNECT_IDLING / CENTER_MOVETOSPEC_IDLING centerprints, and INFO_QUIT_KICK_IDLING / INFO_MOVETOSPEC_IDLING notifications never appear."
-      - "The alivetime parm_idlesince afk-gate (pause alivetime accrual after 30s idle) is not modeled, so xonstat skill-per-second would be skewed by afk time."
+      - "The dedicated-server sv_maxidle_slots free-slot threshold (maxclients - totalClients > sv_maxidle_slots disables the kick) is NOT enforced — the headless core has no engine-level maxclients to read, so the slots gate is a no-op (the cvars are read but skipped). Off by default; only affects a dedicated operator who sets sv_maxidle_slots."
     verification:
-      - { kind: code, ref: "grep: no sv_maxidle / parm_idlesince / idlekick in src+game", result: fail }
+      - { kind: code, ref: "GameWorld.cs:1701-1871 PlayerFrameIdleAll (alivetime AFK-gate :1742-1747, spectator-kick :1749-1778, idle-kick/move-to-spec :1780-1869, TALK2 countdown bang via SoundSystem.Play2 :1867); activity tracker GameWorld.cs:1971-1999; notifications DISCONNECT_IDLING/MOVETOSPEC_IDLING(_QUEUE)/QUIT_KICK_IDLING all in NotificationsList.cs", result: pass }
     confidence: high
-    notes: "Off by default in Base too, but a server raising sv_maxidle gets no behavior in the port; afk alivetime gate also absent."
+    notes: "DRIFT 2026-06-25: this whole subsystem was ported since the last audit and is LIVE on the per-server-frame path. PlayerFrameIdleAll runs once per frame for all clients (bots skipped by the IS_REAL_CLIENT guard). The alivetime AFK-gate advances alivetime_start by frametime once parm_idlesince>=30s (no xonstat afk skew). The idle-kick honors sv_maxidle, the move-to-spec honors sv_maxidle_playertospectator (with the join-queue WantsJoin distinction), the minplayers reset matches QC, and the countdown bang (SND TALK2) is a 2D play2 heard only by the idle client. parm_idlesince is reset on any button/wishmove/viewangle change while not typing (sys_phys_monitor port, OnClientMove:1971). all dims missing->faithful, liveness na->live. Only sv_maxidle_slots is a known divergence (no maxclients)."
 
   - id: sv-client-lifecycle.frame.spectator_kick
     name: "sv_spectate-disabled spectator kick + SPECTATE_WARNING"
     layer: [authority]
     base_refs:
       - "server/client.qc:PlayerFrame (sv_spectate check ~2884)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:PlayerFrameIdleAll (sv_spectate=0 block ~1749-1778)"
     constants:
-      - { name: "g_maxplayers_spectator_blocktime", base: "spectator grace before kick", port: "none", match: false }
-      - { name: "sv_spectate", base: "1 (on)", port: "read for autojoin hold only", match: false }
+      - { name: "g_maxplayers_spectator_blocktime", base: "5 s grace before kick", port: "5 s (Cvars.cs:355)", match: true }
+      - { name: "sv_spectate", base: "1 (on)", port: "1; ==0 now drives the kick (GameWorld.cs:1753)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "When sv_spectate is disabled, QC warns then drops a client that stays a spectator/observer past g_maxplayers_spectator_blocktime (SPECTATE_WARNING MSG_MULTI then INFO_QUIT_KICK_SPECTATING + dropclient_schedule). The port reads sv_spectate only to gate the autojoin hold; it never warns or kicks a stuck spectator."
+      - "The port resets the grace clock via the spectator's JoinTime (QC spectatortime) rather than a dedicated spectatortime field; behaviorally equivalent (spectatortime is set to jointime on PutObserverInServer in QC). The dropclient_schedule deferred-drop is realised as a direct ClientDisconnect after the grace, which is functionally the same outcome."
     verification:
-      - { kind: code, ref: "grep: no SPECTATE_WARNING / INFO_QUIT_KICK_SPECTATING / spectator_blocktime in src+game", result: fail }
+      - { kind: code, ref: "GameWorld.cs:1749-1778 (sv_spectate==0 → SPECTATE_WARNING MSG_MULTI then ClientDisconnect + QUIT_KICK_SPECTATING after blocktime grace); SPECTATE_WARNING/QUIT_KICK_SPECTATING in NotificationsList.cs:822/1047/1177/803", result: pass }
     confidence: high
-    notes: "New row split from the observer rows: this is the PlayerFrame enforcement, distinct from PutObserverInServer's one-shot warning."
+    notes: "DRIFT 2026-06-25: now ported and LIVE inside PlayerFrameIdleAll (the PlayerFrame enforcement, distinct from PutObserverInServer's one-shot warning). When sv_spectate==0 and the match is live, a non-playing real client gets SPECTATE_WARNING (MSG_MULTI, gated on AutoJoinChecked + the MinSpecTime*0.5 too-soon window) and is kicked with INFO_QUIT_KICK_SPECTATING once the g_maxplayers_spectator_blocktime grace elapses. all dims missing->faithful, liveness na->live."
 
   - id: sv-client-lifecycle.frame.name_and_version
     name: "Version nag + nameless/too-long/invisible name enforcement + GOD MODE info"

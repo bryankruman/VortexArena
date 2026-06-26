@@ -25,11 +25,21 @@ last_audited: "2026-06-25"
 # (DamageSystem.cs:261-263), PlayerPhysics fired (PlayerPhysics.cs:251-252).
 # 2026-06-25 (3rd pass, drift re-verify): no per-dimension drift on the 17 existing rows — every baseline
 # status, constant, and liveness claim re-confirmed against current Base + port code (line numbers shifted but
-# all live-wiring sites still present: SpawnBall GameWorld.cs:730, Activate :2308, Tick :2799, ForbidAttackHook
-# :2312, winner :3511, DamageCalculate.Call DamageSystem.cs:264, PlayerPhysics.Call PlayerPhysics.cs:252,
-# FirePlayerUseKey VehicleBoarding.cs:106, OnPlayerRemoved ClientManager.cs:517/:770, CollectWaypoints pull
-# ServerNet.cs:1022 + per-peer predicate :1080, BallStatusFor GametypeStatusBlock.cs:124, ModIcons feed
-# NetGame.cs:4038, bot RoleKeepaway BotRoles.cs:99 + enemyplayers 10000/500 BotObjectiveRoles.cs:352/360).
+# all live-wiring sites still present).
+# 2026-06-25 (4th pass, drift re-verify): NO drift on any of the 18 rows. Every per-dimension status, constant,
+# and liveness claim re-confirmed against current Base + port. Line numbers shifted again; current live-wiring
+# sites: SpawnBall GameWorld.cs:734, Activate :2539, Tick :3030, ForbidAttackHook install :2543, winner report
+# :3840-3842, DamageCalculate.Call DamageSystem.cs:264, PlayerPhysics.Call PlayerPhysics.cs:261, FirePlayerUseKey
+# VehicleBoarding.cs:106, OnPlayerRemoved ClientManager.cs:517 (observer) + :770 (disconnect), CollectWaypoints
+# pull ServerNet.cs:1022 + per-peer predicate :1080, BallStatusFor GametypeStatusBlock.cs:124, ModIcons feed
+# NetGame.cs:4043-4045, bot RoleKeepaway BotRoles.cs:99 + enemyplayers 10000/500 BotObjectiveRoles.cs:351/359.
+# All 16 Base MUTATOR_HOOKFUNCTIONs re-enumerated and confirmed mapped (reset_map_global->nofrags;
+# PlayerDies->teamkill/scoreteam/bckill+drop; GiveFragsForKill->nofrags; Scores_CountFragsRemaining->timepoints
+# residual; PlayerPreThink/SpectateCopy->hud.modicon; PlayerUseKey/ClientDisconnect/MakePlayerObserver/
+# DropSpecialItems->ball.drop; Damage_Calculate->damage.matrix; PlayerPowerups=empty no-op stub (nothing to
+# port); PlayerPhysics_UpdateStats->carrier.highspeed; Bot_ForbidAttack/HavocBot_ChooseRole->bot.role;
+# PreferPlayerScore_Clear->score.preferplayerscore). ClearPlayerOnJoin still has ZERO callers (preferplayerscore
+# remains logic:missing/liveness:dead). NO newly-unmapped Base features.
 # ONE newly-unmapped Base hook found: PreferPlayerScore_Clear (sv_tka.qc:609, returns true) — has no port row;
 # added below as tka.score.preferplayerscore. (PlayerPowerups sv_tka.qc:546 is an empty no-op stub in Base —
 # nothing to port; SpectateCopy is already covered implicitly by tka.hud.modicon's per-recipient BallStatusFor.)

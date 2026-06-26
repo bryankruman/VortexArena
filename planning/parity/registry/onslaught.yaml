@@ -2,13 +2,14 @@ unit: onslaught
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
+# NOTE: drift re-audit 2026-06-26 — CaptureShield, ons_Teleport/spawn placement, and icon spark sounds now ported.
 summary:
   feature_count: 18
   worst_gaps:
-    - "No CSQC presentation: no generator/control-point/icon world models, no progressive damage-model swaps, no icon bob/spin/punch animation, no radar link lines, no objective death-cam (ons_camSetup), no generator explosion sequence, and no particle effects (EFFECT_SPARKS/CAP/RAGE/ROCKET_EXPLODE) or waypoint-sprite build/health bars."
-    - "CaptureShield (spinning shield model + push + blocked-sound entity), ons_Teleport / spawn_choose / spawn_at_* placement all NOT IMPLEMENTED (damage-immunity itself IS enforced via the Shielded flag, but the physical/visible shield + teleport are absent)."
+    - "No CSQC presentation: no generator/control-point/icon world models RENDERED on the client, no progressive damage-model swaps, no icon bob/spin/punch animation, no radar link lines, no objective death-cam (ons_camSetup), no generator explosion sequence, and no particle effects (EFFECT_SPARKS/CAP/RAGE/ROCKET_EXPLODE) or waypoint-sprite build/health bars. (Server-side the shield/icon/generator entities now carry a Model + EF_ADDITIVE + avelocity, but rendering them is still client-deferred.)"
+    - "spawn_choose teleport-on-respawn is wired but DEAD: the OnPlayerSpawn hook teleports to player.GtOnsSpawnBy, but nothing ever SETS GtOnsSpawnBy (no click-radar HUD, no ons_spawn client command, no PlayerUseKey CP-to-CP teleport offer). The cvar-gated spawn_at_controlpoints / spawn_at_generator placement IS live (default OFF)."
     - "Bot Onslaught role filters by shield + team-neighbor off the live graph and skips CPs when a generator is attackable; residual: no waypoint-near-objective routing (navigation_routerating), no havocbot_attack_time throttle, no enemyplayers rating, no havocbot_ons_target teammate-cost balancing (timing partial)."
-    - "FIXED this pass: the live icon/generator bare-default health fallbacks (DefCpHealth/DefGenHealth) were corrected to the Base 1000/2500 (were 200/2000), and the recurring un-shielded ALARM (ons_GeneratorThink) is now ported + wired live on the generator's Think — both prior worst-gaps closed."
+    - "FIXED this pass: (1) CaptureShield is now PORTED + LIVE (SpawnCaptureShield/ShieldTouchEntity) — the spinning push-shield entity, the enemy-push, ONS_DAMAGEBLOCKEDBYSHIELD play2, and the GENERATOR/CONTROLPOINT_SHIELDED center-print all fire on the live BSP path. (2) ons_Teleport + spawn_at_controlpoints/spawn_at_generator placement PORTED + wired via the live PlayerSpawn hook (teleport-on-respawn dead — see above). (3) icon-damaged spark sounds (ONS_SPARK1/2) now emit in IconThink (audio faithful)."
 
 features:
   - id: onslaught.graph.power_propagation
@@ -143,18 +144,19 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: na
-      audio: missing
+      presentation: missing
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Damaged-FX sparks + ONS_SPARK1/2 ambient sounds not emitted (presentation/audio FX, not the steady regen logic)."
+      - "Damaged-FX EFFECT_ELECTRIC_SPARKS particle still not spawned (presentation/client). The ONS_SPARK1/2 ambient spark crackle IS now emitted: IconThink rolls random()<0.6-hp/max, then SPARK1 at random()>0.8 else SPARK2 at random()>0.5 (faithful branch structure)."
     verification:
       - { kind: code_read, ref: "OnslaughtControlPoint.cs:57 DefCpRegen=20f vs gametypes-server.cfg:581 g_onslaught_cp_regen 20 — MATCHES", result: pass }
       - { kind: code_read, ref: "OnslaughtControlPoint.cs IconThink: regen at GtBuildRate (=CpRegen*0.2) only 5s after last hit, up to max — matches QC", result: pass }
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:535-546 damaged-fx spark block (random()<0.6-frac; SPARK1>0.8 else SPARK2>0.5) vs sv_onslaught.qc:541-551 — audio now emitted (was missing)", result: pass }
     confidence: high
-    notes: "Re-verified unchanged: cp_regen fallback 20f; steady regen 5s after last hit. values faithful."
+    notes: "FIX: audio missing→faithful — the ONS_SPARK1/2 damaged-icon crackle now emits in IconThink (was un-emitted in the prior pass). EFFECT_ELECTRIC_SPARKS particle stays presentation-deferred (presentation na→missing)."
 
   - id: onslaught.cp.icon_heal
     name: "Capture-icon heal (Healer mutator / heal beam)"
@@ -345,26 +347,32 @@ features:
     base_refs:
       - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_CaptureShield_Spawn"
       - "common/gametypes/gametype/onslaught/sv_onslaught.qc:ons_CaptureShield_Touch"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:SpawnCaptureShield"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:ShieldTouchEntity"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:SpawnGenerator (calls SpawnCaptureShield generator_shield.md3)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:SpawnControlPoint (calls SpawnCaptureShield controlpoint_shield.md3)"
     constants:
-      - { name: "g_onslaught_shield_force", base: "100", port: "none", match: false }
-      - { name: "shield_hitbox_scale", base: "1.20", port: "none", match: false }
-      - { name: "shield_avelocity", base: "'7 0 11'", port: "none", match: false }
+      - { name: "g_onslaught_shield_force", base: "100", port: "100 (cvar) / 100 (DefShieldForce fallback)", match: true }
+      - { name: "shield_hitbox_scale", base: "1.20", port: "1.20 (ShieldHitboxScale)", match: true }
+      - { name: "shield_avelocity", base: "'7 0 11'", port: "'7 0 11' (s.AVelocity)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: missing
-      liveness: na
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No physical capture-shield entity around shielded generators/control points: an enemy player walks into a shielded node with no push-back, no GENERATOR/CONTROLPOINT_SHIELDED center notification on contact, and no spinning additive shield model. (The damage-ignore IS enforced via node.Shielded, and the weapon-damage blocked-by-shield SOUND hint IS played in IconDamage/GeneratorDamage; only the touch-push shield ENTITY + its center-print are missing.)"
+      - "Server-side faithful + live: SpawnGenerator/SpawnControlPoint spawn a co-located SOLID_TRIGGER/MOVETYPE_NOCLIP ons_captureshield with the back-link (GtShieldFlag), EF_ADDITIVE, avelocity '7 0 11', hitbox 1.20x. ShieldTouchEntity reproduces ons_CaptureShield_Touch: pass-through for same-team or attackable/un-shielded node, else Combat.Damage(0, force=normalize(dir)*ShieldForce) push + play2 ONS_DAMAGEBLOCKEDBYSHIELD + GENERATOR/CONTROLPOINT_SHIELDED center."
+      - "presentation partial (client-deferred): the shield MODEL + EF_ADDITIVE additive blend + avelocity SPIN are assigned on the entity, but actually RENDERING the spinning additive shield is a CSQC/client concern not done here. ons_CaptureShield_Customize (per-viewer visibility) + ons_CaptureShield_Reset (colormap on map reset) not ported."
     verification:
-      - { kind: code_read, ref: "grep CaptureShield in src — only CTF; no Onslaught shield entity", result: fail }
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs:745-821 SpawnCaptureShield/ShieldTouchEntity vs sv_onslaught.qc:53-101 ons_CaptureShield_Touch/_Spawn — push/notify/pass-through logic + force/scale/avelocity constants match", result: pass }
+      - { kind: code_read, ref: "SpawnGenerator:149 + SpawnControlPoint:332 call SpawnCaptureShield; both are called from GameWorld.WireObjectiveSpawns on the live BSP path (GameWorld.cs:2785/2788)", result: pass }
     confidence: high
-    notes: "Re-verified UNCHANGED: damage immunity honored (Shielded gate) + weapon-shield blocked sound plays, but the touchable spinning shield entity (push + on-contact notify) is still missing."
+    notes: "FIX: missing→faithful across logic/values/timing/audio, liveness na→live, presentation missing→partial. The touchable spinning push-shield entity is now ported (SpawnCaptureShield) and wired live on every onslaught_generator/controlpoint spawn; enemy contact is pushed back + warned. Only the client-side rendering of the additive spinning model remains deferred."
 
   - id: onslaught.spawn.teleport_choose
     name: "Spawn placement + teleport (spawn_choose / spawn_at_* / ons_Teleport / click-radar)"
@@ -374,29 +382,38 @@ features:
       - "common/gametypes/gametype/onslaught/sv_onslaught.qc:MUTATOR_HOOKFUNCTION(ons, PlayerSpawn)"
       - "common/gametypes/gametype/onslaught/sv_onslaught.qc:MUTATOR_HOOKFUNCTION(ons, SV_ParseClientCommand) (ons_spawn)"
       - "common/gametypes/gametype/onslaught/sv_onslaught.qc:MUTATOR_HOOKFUNCTION(ons, PlayerUseKey)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:OnPlayerSpawn (MutatorHooks.PlayerSpawn handler)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:OnsTeleport"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:SpawnAtNode"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:CountSelfControlPoints"
     constants:
-      - { name: "g_onslaught_teleport_radius", base: "200", port: "none", match: false }
-      - { name: "g_onslaught_teleport_wait", base: "5", port: "none", match: false }
-      - { name: "g_onslaught_spawn_choose", base: "1", port: "none", match: false }
-      - { name: "g_onslaught_click_radius", base: "500", port: "none", match: false }
-      - { name: "g_onslaught_spawn_at_controlpoints", base: "0", port: "none", match: false }
-      - { name: "g_onslaught_spawn_at_controlpoints_chance", base: "0.5", port: "none", match: false }
+      - { name: "g_onslaught_teleport_radius", base: "200", port: "200 (CvarTeleportRadius fallback)", match: true }
+      - { name: "g_onslaught_teleport_wait", base: "5", port: "5 (CvarTeleportWait fallback)", match: true }
+      - { name: "g_onslaught_spawn_choose", base: "1", port: "1 (CvarSpawnChoose fallback)", match: true }
+      - { name: "g_onslaught_click_radius", base: "500", port: "none (click-radar not ported)", match: false }
+      - { name: "g_onslaught_spawn_at_controlpoints", base: "0", port: "0 (CvarSpawnAtCps fallback)", match: true }
+      - { name: "g_onslaught_spawn_at_controlpoints_chance", base: "0.5", port: "0.5 (CvarSpawnAtCpsChance fallback)", match: true }
+      - { name: "g_onslaught_spawn_at_generator", base: "0", port: "0 (CvarSpawnAtGen fallback)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: missing
-      liveness: na
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No control-point-to-control-point teleport (use key / click-radar), no respawn-at-chosen-CP, no spawn_at_controlpoints / spawn_at_generator placement near owned nodes. Players spawn only via the generic team spawn system. The ons_spawn client command + clickradar HUD are absent. (spawn_choose defaults ON in Base.) ONS_TELEPORT/ONS_TELEPORT_ANTISPAM notifications registered as data but never emitted."
+      - "DEAD subfeature: the spawn_choose teleport-on-respawn (OnPlayerSpawn → OnsTeleport(player.GtOnsSpawnBy)) is wired but GtOnsSpawnBy is NEVER SET by any path — no click-radar HUD, no ons_spawn client command, no PlayerUseKey CP-to-CP teleport offer (the g_onslaught_click_radius pick + the on-death respawn-picker). So on a real match a player never actually teleports to a chosen CP. spawn_choose defaults ON in Base."
+      - "LIVE subfeature: spawn_at_controlpoints / spawn_at_generator placement near the nearest (or random) same-team node to the death location is faithfully ported (OnPlayerSpawn → SpawnAtNode, 10 narrowing tracebox+traceline iterations, face-away angles). Both default OFF in Base."
+      - "ons_Teleport itself (OnsTeleport) is faithful: 16 narrowing iterations, random disc around target, tracebox+traceline clear-spot check, face-away + teleport_antispam = time + teleport_wait. Reachable directly but only invoked from the dead spawn_choose branch. ONS_TELEPORT/ONS_TELEPORT_ANTISPAM center notifications registered but only emitted by the absent use-key offer."
     verification:
-      - { kind: code_read, ref: "grep ons_Teleport/spawn_choose/teleport_antispam in src — none (only NotificationsList data rows)", result: fail }
+      - { kind: code_read, ref: "Onslaught.cs:681-829 OnPlayerSpawn/OnsTeleport/SpawnAtNode vs sv_onslaught.qc:1603-1816 — teleport disc + spawn placement logic + constants (radius 200, wait 5, scales, jitters 128/256, z-offsets 96/128) match", result: pass }
+      - { kind: code_read, ref: "OnPlayerSpawn wired live via MutatorHooks.PlayerSpawn.Add(_spawnHandler) in Activate; player.DeathOrigin latched in DamageSystem.cs:612 so SpawnAtNode is reachable", result: pass }
+      - { kind: code_read, ref: "grep GtOnsSpawnBy in src — only DECLARED + READ in OnPlayerSpawn; NEVER SET (no click-radar/ons_spawn/PlayerUseKey) → spawn_choose teleport branch dead", result: fail }
     confidence: high
-    notes: "Re-verified UNCHANGED. Default-on spawn_choose makes this a noticeable gameplay-feel gap on real ONS maps."
+    notes: "FIX: missing→faithful (logic/values/timing), liveness na→partial. ons_Teleport + spawn_at_controlpoints/generator placement are ported and the PlayerSpawn hook is live; the spawn_at_* placement actually runs (cvar-gated OFF). The spawn_choose teleport-on-respawn is wired but dead because the client click-radar that sets GtOnsSpawnBy + the use-key teleport offer are unported — that residual keeps liveness at partial."
 
   - id: onslaught.cp.proximity_decap
     name: "Proximity de-capture (stand near a point to flip it)"
@@ -476,6 +493,7 @@ features:
     divergence_rationale: null
     gaps:
       - "Core cues EMITTED live: SpawnIcon→ONS_CONTROLPOINT_BUILD; build completion→ONS_CONTROLPOINT_BUILT + ONSLAUGHT_CAPTURE_NONAME + ONS_CAPTURE(_TEAM)_NONAME; IconDamage→ONS_DAMAGEBLOCKEDBYSHIELD / ONS_HIT1/2 / ONS_GENERATOR_EXPLODE + ONSLAUGHT_CPDESTROYED_NONAME; GeneratorDamage→blocked-by-shield / GENERATOR_UNDERATTACK + ONS_GENERATOR_UNDERATTACK / ONS_HIT1-2 (or explode at chance damage/220) / ONSLAUGHT_GENDESTROYED(_OVERTIME) + explode; GeneratorThink→ONS_NOTSHIELDED_TEAM/_<team> + ONS_GENERATOR_ALARM (every 5s while un-shielded); OvertimeDecayTick first tick→OVERTIME_CONTROLPOINT + ONS_GENERATOR_DECAY; BankRoundWin→ROUND_TEAM_WIN / ROUND_TIED + play2all CTF_CAPTURE jingle. Sounds (7) + notifications (40) registered AND now all emitting."
+      - "Newly EMITTED this pass: ShieldTouchEntity→play2 ONS_DAMAGEBLOCKEDBYSHIELD + GENERATOR/CONTROLPOINT_SHIELDED center on a shield bump; IconThink damaged-icon spark crackle ONS_SPARK1/2."
       - "Remaining (presentation/cross-boundary): particle effects, waypoint-sprite build/health bars, the CP map .message name (port emits NONAME variants), and play2team→global emission (NotifBroadcast.All + SoundSystem.PlayGlobal) as the headless approximation (no per-team routing)."
     verification:
       - { kind: code_read, ref: "OnslaughtControlPoint.cs + Onslaught.cs contain SoundSystem.PlayOn/PlayGlobal + NotificationSystem.Send at the QC call sites", result: pass }

@@ -19,7 +19,7 @@ features:
       - "common/turrets/turret/plasma_dual.qh:DualPlasmaTurret"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:PlasmaDual"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:221"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:227"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
       - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Spawn"
     constants:
@@ -41,9 +41,9 @@ features:
     gaps:
       - "head_model plasmad.md3 not used server-side (head-bone/tag_head networking is client-render, skipped)."
     verification:
-      - { kind: code-trace, ref: "MapObjectsRegistry.cs:221 RegisterAll -> SpawnFuncs.Register('turret_plasma_dual', TurretSpawnFuncs.PlasmaDual) -> TurretSpawn.Init -> Turrets registry + per-frame Think", result: pass }
+      - { kind: code-trace, ref: "MapObjectsRegistry.cs:227 RegisterAll -> SpawnFuncs.Register('turret_plasma_dual', TurretSpawnFuncs.PlasmaDual) -> TurretSpawn.Init -> Turrets registry + per-frame Think", result: pass }
     confidence: high
-    notes: "Registration line moved 207->221 (still live). g_turrets master switch honored. Subclass of PlasmaTurret per QC; registered [Turret]."
+    notes: "Registration line moved 221->227 (still live). g_turrets master switch honored. Subclass of PlasmaTurret per QC; registered [Turret]."
 
   - id: turret-plasma_dual.ai.think_loop
     name: "Per-frame AI: ammo regen, target scan throttle, validate, aim, track, firecheck, fire"
@@ -321,7 +321,7 @@ features:
       - "common/turrets/sv_turrets.qc:turret_damage (TFL_DMG_HEADSHAKE branch, line 226)"
       - "common/turrets/turret/plasma.qc:tr_setup (damage_flags |= TFL_DMG_HEADSHAKE)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:EventDamage (HeadShake branch, lines 886-891)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:EventDamage (HeadShake branch, lines 893-896)"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init (headShake param -> TurretState.HeadShake)"
       - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Spawn (headShake: true)"
     constants:
@@ -338,7 +338,7 @@ features:
     gaps:
       - "Server-side head-angle jolt is now applied, but the CLIENT-rendered head model (plasmad.md3) is not attached, so the visible flinch is not drawn (the head-angle state nudges the next shot's aim, which IS the gameplay effect). Base also nets TNSF_ANG to CSQC; the port has no turret CSQC net layer."
     verification:
-      - { kind: code-read, ref: "TurretAI.EventDamage lines 886-891: `if (stHit.HeadShake) { stHit.HeadAngles.X += (Prandom.Float()-0.5f)*take; .Y += ... }` — matches sv_turrets.qc:226-234 (random()-0.5)*damage on pitch+yaw, using post-friendlyfire-scaled damage. PlasmaDualTurret.Spawn passes headShake:true (inherits plasma tr_setup TFL_DMG_HEADSHAKE).", result: pass }
+      - { kind: code-read, ref: "TurretAI.EventDamage lines 893-896: `if (stHit.HeadShake) { stHit.HeadAngles.X += (Prandom.Float()-0.5f)*take; .Y += ... }` — matches sv_turrets.qc:226-234 (random()-0.5)*damage on pitch+yaw, using post-friendlyfire-scaled damage. PlasmaDualTurret.Spawn passes headShake:true (inherits plasma tr_setup TFL_DMG_HEADSHAKE).", result: pass }
     confidence: high
     notes: "FIX (since last audit): headshake was previously NOT ported (port_refs empty, all dimensions missing). It is now implemented and LIVE — TurretSpawn.Init plumbs headShake:true into TurretState.HeadShake, and EventDamage (on the live GtEventDamage damage path) jolts HeadAngles by (random-0.5)*take on both pitch+yaw, bit-faithful to Base. The next Track tick slews it back so it reads as recoil + nudges aim. Only the CLIENT head-model render of the flinch remains unported (presentation)."
 

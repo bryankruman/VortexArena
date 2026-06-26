@@ -2,6 +2,18 @@ unit: vehicle-framework
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
+# DRIFT RE-AUDIT after Waves 9-11 (HEAD ff8a699; prior audit was Wave 8 @ 9f65cb5). ONE drift this pass, 0
+# regressions: the framework LOW-HEALTH/SHIELD HUD ALARM is now PORTED + LIVE (Wave 11, ff8a699). VehicleHud
+# gained UpdateAlarms (VehicleHud.cs:167-247): SND_VEH_ALARM (vehicles/alarm, health<25%, +2s re-arm) /
+# SND_VEH_ALARM_SHIELD (vehicles/alarm_shield, shield<25%, +1s re-arm), gated by cl_vehicles_alarm (default 0 ->
+# silent, MATCHING Base), with the SND_Null stop-on-recover/exit branch — bit-faithful to vehicle_alarm +
+# Vehicles_drawHUD (cl_vehicles.qc:3-9/228-267). Its AudioLoader is fed at NetGame.cs:1402 and it is driven by
+# UpdateVehicleHud's per-frame Health/Shield mirror (live host HUD path). So hud_camera_xhair.audio
+# missing->faithful. (Wave 11 also fixed Raptor's incoming-missile cue to the correct sample vehicles/missile_alarm.wav
+# and emitted the vr_death EXPLOSION_MEDIUM / diethink EXPLOSION_SMALL FX — descriptor-level, not framework rows.)
+# The ONLY remaining DEAD piece of hud_camera_xhair is now the cockpit/chase camera (SVC_SETVIEWPORT — no client
+# reads p.Vehicle to override the viewport; grep confirms only NOTE comments).
+# ---- prior pass (Wave 8 @ 412ca19) ----
 # DRIFT RE-AUDIT after Wave 8 (HEAD 9f65cb5; baseline was Wave 7 @ 8cb57e3). Wave 8 (commit 412ca19) made
 # SUBSTANTIAL presentation/audio changes to every vehicle file (git diff 8cb57e3..HEAD: VehicleCommon +81,
 # VehicleSpawnFuncs +19, Racer +44, Raptor +55, Spiderbot +40, Bumblebee +60). FOUR baseline gaps genuinely
@@ -41,10 +53,13 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 21
   worst_gaps:
-    - "In-vehicle cockpit/chase camera remains DEAD: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport), so the pilot keeps the normal player view (grep confirms only NOTE comments in VehicleBoarding/VehicleCommon). The framework low-health/shield HUD alarm (SND_VEH_ALARM / SND_VEH_ALARM_SHIELD, cl_vehicles.qc:230-264, gated cl_vehicles_alarm default 0) is still unfed. (The HUD panel + aux crosshair are LIVE; the Raptor's separate incoming-missile alarm is live.)"
+    - "In-vehicle cockpit/chase camera remains DEAD: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport), so the pilot keeps the normal player view (grep confirms only NOTE comments in VehicleBoarding/VehicleCommon). (The HUD panel + aux crosshair are LIVE; the framework low-health/shield HUD alarm is NOW WIRED + LIVE as of Wave 11; the Raptor's separate incoming-missile alarm is live.)"
     - "init.initialize STILL omits delayspawn jitter and the targetname/ACTIVE map-scripted controller (vehicle_use, sv_vehicles.qc:1178-1201/1276-1277). (The drop-to-floor tracebox AND the g_vehicles_teams clear-branch are now ported.)"
     - "Presentation deferrals persist (all CSQC): steal WP_VehicleIntruder waypoint + steal centerprints, the WP_Vehicle return-waypoint/radar icon, the painframe EFFECT_SMOKE_SMALL (EffectEmitter now exists in the Common layer but PainFrame still doesn't emit it), the vehicle_shieldent hit flash, and the death gibs (vehicle_tossgib / vehicles_gib_*)."
     - "Cross-client VEHICLESTAT_* networking for a pure-remote pilot is still unwired: UpdateVehicleHud reads LocalServerPlayer (host path)."
+  fixes_landed_wave11:
+    - "hud_camera_xhair audio missing->faithful: the framework low-health/shield HUD alarm is now ported + LIVE (VehicleHud.UpdateAlarms, VehicleHud.cs:167-247). SND_VEH_ALARM (vehicles/alarm, health<25%, +2s re-arm) / SND_VEH_ALARM_SHIELD (vehicles/alarm_shield, shield<25%, +1s re-arm), gated by cl_vehicles_alarm (default 0 -> silent, matching Base), SND_Null stop on recover/exit; AudioLoader fed at NetGame.cs:1402, driven by UpdateVehicleHud's per-frame Health/Shield mirror. Bit-faithful to vehicle_alarm + Vehicles_drawHUD (cl_vehicles.qc:3-9/228-267). The only remaining DEAD piece of the row is the cockpit/chase camera."
+    - "(descriptor-level, not framework rows) Raptor incoming-missile cue corrected to vehicles/missile_alarm.wav (SND_VEH_MISSILE_ALARM, was wrongly vehicles/alarm.wav) + VOL_BASE/ATTEN_NONE; Raptor vr_death now emits EFFECT_EXPLOSION_MEDIUM and diethink emits EFFECT_EXPLOSION_SMALL."
   fixes_landed_wave8:
     - "projectile.shared values partial->faithful: the shootable vehicle-projectile event_damage is now ported (VehicleCommon.cs:626-647) — proj.GtEventDamage takes RES_HEALTH, applies knockback, detonates at health<1, honors the owner==owner salvo pass-through; bit-faithful to sv_vehicles.qc:165-180. A vehicle bolt/rocket can now be shot down."
     - "think.tick W2MODE owner-mirror now ported: PainFrame (VehicleCommon.cs:722-723, the shared think hub) mirrors vehic.Owner.VehW2Mode = vehic.VehW2Mode each think (QC vehicles_think:1084). Still harmless (HUD doesn't read it) but the gap is closed."
@@ -663,26 +678,27 @@ features:
     constants:
       - { name: "cl_vehicles_hudscale", base: "0.5", port: "0.5 (in VehicleHud)", match: true }
       - { name: "cl_vehicles_crosshair_size", base: "0.5", port: "0.5", match: true }
-      - { name: "cl_vehicles_alarm", base: "0", port: "n/a (framework alarm path unfed)", match: false }
+      - { name: "cl_vehicles_alarm", base: "0 (default-off)", port: "0 (default-off; framework alarm NOW WIRED + gated, VehicleHud.cs:196-247)", match: true }
+      - { name: "low-health/shield alarm gate (<25%, +2s health / +1s shield re-arm, SND_Null stop on recover)", base: "yes (cl_vehicles.qc:228-267)", port: "yes (VehicleHud.UpdateAlarms — bit-faithful)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
       presentation: partial
-      audio: missing
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Cockpit/chase camera STILL dead: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport) — the pilot keeps the normal player view."
-      - "Framework low-health/low-shield HUD alarm (SND_VEH_ALARM / SND_VEH_ALARM_SHIELD, cl_vehicles.qc:230-264, gated cl_vehicles_alarm default 0) never plays (no audio cue). (The Raptor's SEPARATE incoming-missile alarm at Raptor.cs:408 IS live.)"
+      - "Cockpit/chase camera STILL dead: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport) — the pilot keeps the normal player view. (This is the only remaining DEAD piece of this row; it is its own viewport concern, not the HUD panel.)"
       - "Host-only feeder: UpdateVehicleHud reads LocalServerPlayer (host path). The cross-client VEHICLESTAT_* networking for a pure remote pilot is still unwired."
     verification:
-      - { kind: code, ref: "NetGame.UpdateVehicleHud (NetGame.cs:2981) called every frame from the host HUD block (:2323): ConfigureForVehicle by NetName, mirrors VehicleHealth/Shield/Energy/Ammo1/2 onto the panel, SetAuxiliaryXhairLock, hud.Exit() when not piloting", result: pass }
+      - { kind: code, ref: "NetGame.UpdateVehicleHud (NetGame.cs:3158) called every frame from the host HUD block (:2503): ConfigureForVehicle by NetName, mirrors VehicleHealth/Shield/Energy/Ammo1/2 onto the panel, SetAuxiliaryXhairLock, hud.Exit() when not piloting", result: pass }
       - { kind: code, ref: "ALL FOUR vehicles now mirror their full stat set onto the pilot (Wave 7 added Raptor shield/energy + Spiderbot shield/ammo1), so the HUD shows correct shield/energy/ammo for every vehicle", result: pass }
-      - { kind: code, ref: "no client reads p.Vehicle to set a viewport, and no framework SND_VEH_ALARM caller (grep) -> camera + framework alarm dead", result: fail }
+      - { kind: code, ref: "framework low-health/shield alarm NOW WIRED + LIVE (Wave 11, ff8a699): VehicleHud._Process->UpdateAlarms (VehicleHud.cs:167-247) plays SND_VEH_ALARM (vehicles/alarm, health<25%, +2s re-arm) / SND_VEH_ALARM_SHIELD (vehicles/alarm_shield, shield<25%, +1s re-arm) gated by cl_vehicles_alarm (default 0 -> silent, matching Base), SND_Null stop on recover/exit; AudioLoader fed at NetGame.cs:1402 (_fullHud.Vehicle.AudioLoader=_assets.LoadSound). Bit-faithful to vehicle_alarm + Vehicles_drawHUD (cl_vehicles.qc:3-9/228-267)", result: pass }
+      - { kind: code, ref: "no client reads p.Vehicle to set a viewport (grep -> only NOTE comments) -> cockpit/chase camera still dead", result: fail }
     confidence: high
-    notes: "IMPROVED vs baseline: all four vehicles' HUD now shows correct shield/energy/ammo (Raptor/Spiderbot full-stat mirror added in Wave 7 — the 'only health' gap closed). logic stub->faithful. The cockpit/chase camera and the framework low-health alarm remain dead; cross-client VEHICLESTAT_* networking still TODO."
+    notes: "FIXED vs baseline (audio missing->faithful): Wave 11 (ff8a699) ported the framework low-health/shield HUD alarm into VehicleHud (UpdateAlarms, gated by cl_vehicles_alarm default 0, SND_VEH_ALARM/SND_VEH_ALARM_SHIELD with the +2s/+1s re-arm + SND_Null stop) and fed its AudioLoader from NetGame, driven live by UpdateVehicleHud's per-frame Health/Shield mirror. The cockpit/chase camera remains the only DEAD piece; cross-client VEHICLESTAT_* networking still TODO. All four vehicles' HUD shows correct shield/energy/ammo (Wave 7)."
 
   - id: vehicle-framework.hooks.init_touch
     name: "MUTATOR_CALLHOOK(VehicleInit / VehicleTouch) dispatch"
