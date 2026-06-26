@@ -31,7 +31,7 @@ namespace XonoticGodot.Game.Hud;
 public partial class ModIconsPanel : HudPanel
 {
     /// <summary>Which gametype's objective renderer to draw (QC <c>gametype.m_modicons</c> selection).</summary>
-    public enum ModIconsMode { None, Ctf, Keyhunt, Domination, ClanArena, FreezeTag, Survival, Assault, Keepaway, TeamKeepaway }
+    public enum ModIconsMode { None, Ctf, Keyhunt, Domination, ClanArena, FreezeTag, Survival, Assault, Keepaway, TeamKeepaway, Lms, Race }
 
     /// <summary>The active renderer; <see cref="ModIconsMode.None"/> draws nothing (QC: no m_modicons set).</summary>
     public ModIconsMode Mode { get; set; } = ModIconsMode.None;
@@ -86,6 +86,51 @@ public partial class ModIconsPanel : HudPanel
     /// block. The carrying icon (or the team-taken icon) flashes (<c>blink</c>) + does the QC status-change expand
     /// transition; 0 draws nothing.</summary>
     public int TkaBallStatus { get; set; }
+
+    /// <summary>LMS (QC <c>HUD_Mod_LMS_Draw</c>): the leader count (QC <c>STAT(REDALIVE)</c>); 0 hides the panel.</summary>
+    public int LmsLeaderCount { get; set; }
+    /// <summary>LMS: the leader(s)' lives lead over the next-best player (QC <c>STAT(BLUEALIVE)</c>) — the colored
+    /// "+N" readout (yellow / orange at 3 / red at ≥4).</summary>
+    public int LmsLivesDiff { get; set; }
+    /// <summary>LMS: leaders are inside their radar show-window (QC <c>STAT(OBJECTIVE_STATUS)</c>) — overlays the
+    /// flag_stalemate icon while true.</summary>
+    public bool LmsLeadersVisible { get; set; }
+
+    // ---- Race/CTS mod-icon data (QC HUD_Mod_Race, cl_race.qc:59-164) ----
+    // The Race/CTS mod-icon shows the client's personal best (cached clientside in QC's ClientProgsDB) and the
+    // server record for this map, plus the race-award medal flash (race_status + race_status_name) with a 5-second
+    // fade.  The net layer feeds the three values + the medal-flash state on each record event and each frame.
+
+    /// <summary>QC <c>t = stof(db_get(ClientProgsDB, strcat(mi_shortname, rr, "time")))</c>: the local player's
+    /// personal-best lap time (seconds) for this map + record type. 0 = no personal best yet.</summary>
+    public float RaceModIconPb { get; set; }
+
+    /// <summary>QC <c>race_server_record</c> (RACE_NET_SERVER_RECORD): the server's all-time rank-1 time (seconds)
+    /// for this map. 0 = no server record yet.</summary>
+    public float RaceModIconServerRecord { get; set; }
+
+    // QC crecordtime_prev / srecordtime_prev: previous values to detect changes (for the expand animation).
+    private float _racePbPrev = -1f;
+    private double _racePbChangeTime;
+    private float _raceServerRecordPrev = -1f;
+    private double _raceServerRecordChangeTime;
+
+    // QC race_status / race_status_name / race_status_time: the medal flash state.
+    /// <summary>QC <c>race_status</c>: -1 none, 0 fail, 1 new personal best (newtime), 2 new rank (green/yellow),
+    /// 3 new server record. The mod-icon reflects the same event as the split-timer medal flash.</summary>
+    public int RaceModIconStatus { get; set; } = -1;
+
+    /// <summary>QC <c>race_status_name</c>: the player name shown under the medal (record holder / local player).</summary>
+    public string RaceModIconStatusName { get; set; } = "";
+
+    // QC race_status_prev / race_status_name_prev: edge-detect to re-arm the 5-second fade window.
+    private int _raceStatusPrev = -1;
+    private string _raceStatusNamePrev = "";
+    private double _raceStatusTime; // QC race_status_time = time + 5 (absolute expiry)
+
+    /// <summary>QC rank-color resolution for status==2: true = green medal (local player improved their own rank),
+    /// false = yellow (someone else moved into the rank). Set by the net layer alongside the status.</summary>
+    public bool RaceModIconStatusRankIsMine { get; set; } = true;
 
     // QC tka.qh TKA_BALLSTATUS bits: per-team taken (BIT 0..3), self-carrying (BIT 4), dropped (BIT 5).
     private const int TkaTakenRed = 1 << 0, TkaTakenBlue = 1 << 1, TkaTakenYellow = 1 << 2, TkaTakenPink = 1 << 3;
@@ -157,6 +202,8 @@ public partial class ModIconsPanel : HudPanel
             case ModIconsMode.Assault:    DrawAssault(); break;
             case ModIconsMode.Keepaway:   DrawKeepaway(); break;
             case ModIconsMode.TeamKeepaway: DrawTeamKeepaway(); break;
+            case ModIconsMode.Lms:        DrawLms(); break;
+            case ModIconsMode.Race:       DrawRace(); break;
             default: return; // None: draw nothing
         }
     }
@@ -756,6 +803,226 @@ public partial class ModIconsPanel : HudPanel
             DrawTextCentered(new Vector2(fit.Position.X, fit.Position.Y + fit.Size.Y * 0.62f),
                 fit.Size.X, carrying != 0 ? "BALL" : "TKA", new Color(1f, 1f, 1f, a), sz);
         }
+    }
+
+    // ------------------------------------------------------------------------------------------ LMS
+    // Port of HUD_Mod_LMS_Draw (common/gametypes/gametype/lms/cl_lms.qc:27-64): a 2-item HUD_GetRowCount grid
+    // (aspect 2) — item 1 = the leader-count icon (player_neutral, with a flag_stalemate overlay when the
+    // leaders are inside their radar show-window) + the leader count; item 2 = the colored "+N" lives lead
+    // (yellow / orange at diff==3 / red at diff>=4). Drawn only when there is at least one leader.
+    private void DrawLms()
+    {
+        int leadersCount = LmsLeaderCount; // QC STAT(REDALIVE)
+        if (leadersCount == 0)
+            return; // QC: mod_active = 0; return; — nothing to show
+
+        DrawBackground();
+
+        // QC: rows = HUD_GetRowCount(2, mySize, 2); columns = ceil(2 / rows).
+        const float aspectRatio = 2f;
+        int rows = Mathf.Max(1, HudGetRowCount(2, Size2, aspectRatio));
+        int columns = Mathf.Max(1, Mathf.CeilToInt(2f / rows));
+        var itemSize = new Vector2(Size2.X / columns, Size2.Y / rows);
+
+        // ---- item 1: the leader-count icon (left half = icon, right half = the count). ----
+        var pos = Vector2.Zero;
+        bool visibleLeaders = LmsLeadersVisible; // QC STAT(OBJECTIVE_STATUS)
+        var iconBox = new Rect2(pos, new Vector2(0.5f * itemSize.X, itemSize.Y));
+
+        // QC: a flag_stalemate overlay flashes under the player_neutral icon while the leaders are radar-visible.
+        if (visibleLeaders)
+            DrawIconAspect(iconBox, "flag_stalemate", LiveFgAlpha);
+        if (!DrawIconAspect(iconBox, "player_neutral", LiveFgAlpha))
+        {
+            Rect2 ifit = AspectFit(iconBox, 1f);
+            DrawRect(new Rect2(ifit.Position.X + ifit.Size.X * 0.12f, ifit.Position.Y + ifit.Size.Y * 0.12f,
+                ifit.Size.X * 0.76f, ifit.Size.Y * 0.76f), new Color(0.85f, 0.85f, 0.85f, 0.85f * LiveFgAlpha));
+        }
+        int countFont = (int)Mathf.Clamp(itemSize.Y * 0.8f, 9f, 40f);
+        DrawTextCentered(new Vector2(pos.X + 0.5f * itemSize.X, pos.Y + (itemSize.Y - countFont) * 0.5f),
+            0.5f * itemSize.X, leadersCount.ToString(), new Color(1f, 1f, 1f, LiveFgAlpha), countFont);
+
+        // QC: the second item is below (rows > 1) or to the right (single row).
+        if (rows > 1) pos.Y += itemSize.Y;
+        else pos.X += itemSize.X;
+
+        // ---- item 2: the colored "+N" lives lead (QC color ladder: yellow, orange at 3, red at >=4). ----
+        int livesDiff = LmsLivesDiff; // QC STAT(BLUEALIVE)
+        Color color = livesDiff >= 4 ? new Color(1f, 0f, 0f, LiveFgAlpha)
+                    : livesDiff == 3 ? new Color(1f, 0.5f, 0f, LiveFgAlpha)
+                    : new Color(1f, 1f, 0f, LiveFgAlpha);
+        const float scale = 0.75f; // QC drawstring_aspect(... itemSize * scale ...)
+        int diffFont = (int)Mathf.Clamp(itemSize.Y * scale, 9f, 40f);
+        DrawTextCentered(new Vector2(pos.X, pos.Y + (itemSize.Y - diffFont) * 0.5f),
+            itemSize.X, "+" + livesDiff, color, diffFont);
+    }
+
+    // --------------------------------------------------------------------------------------------- Race/CTS
+    // Port of HUD_Mod_Race (cl_race.qc:59-164): the Race/CTS mod-icon — personal best + server best times
+    // + the race-award medal flash (race_new* art: fail / newtime PB / new-rank green or yellow / server record),
+    // faded over 5s. Only shown when the score primary column is a TIME column and the game is NOT a team race
+    // (QC: "if(!(scores_flags(ps_primary) & SFL_TIME) || teamplay) { mod_active = 0; return; }").
+    //
+    // The layout: when the panel is wider than tall (the default), text+time rows sit on the left half and the
+    // medal icon on the right half (each in a centered squareSize×squareSize box). Tall panels use the upper
+    // half for text+time and the lower half for the medal.
+    //
+    // QC race_showTime draws "Personal best" + TIME_ENCODED_TOSTRING(pb), "Server best" + TIME_ENCODED_TOSTRING(sr).
+    // An expand transition (drawstring_aspect_expanding) fades in the row for ~1 s when the value changes. The port
+    // approximates this with an alpha ramp from 0 → 1 over 1 s after the value changes.
+    private void DrawRace()
+    {
+        double now = CurrentTime();
+
+        // QC: if(!(scores_flags(ps_primary) & SFL_TIME) || teamplay) { mod_active = 0; return; }
+        // The net layer sets Mode=Race only when the local gametype is Race/CTS with SFL_TIME primary; skip in
+        // a team race (no records shown).  An empty pb+server-record is fine to show (draws "0:00.00").
+
+        // ---- personal-best change detection → re-arm the expand animation ---
+        float pb = RaceModIconPb;
+        if (pb != _racePbPrev)
+        {
+            _racePbPrev = pb;
+            _racePbChangeTime = now;
+        }
+        // ---- server-record change detection → re-arm the expand animation ---
+        float sr = RaceModIconServerRecord;
+        if (sr != _raceServerRecordPrev)
+        {
+            _raceServerRecordPrev = sr;
+            _raceServerRecordChangeTime = now;
+        }
+
+        // ---- medal-status edge → set the 5-second fade window (QC race_status_time = time + 5) ----
+        int status = RaceModIconStatus;
+        string statusName = RaceModIconStatusName;
+        if (status != _raceStatusPrev || statusName != _raceStatusNamePrev)
+        {
+            if (status >= 0)
+                _raceStatusTime = now + 5.0; // QC: race_status_time = time + 5
+            _raceStatusPrev = status;
+            _raceStatusNamePrev = statusName;
+        }
+        // QC: if (race_status_time - time <= 0) reset
+        if (_raceStatusTime - now <= 0.0 && status >= 0)
+        {
+            RaceModIconStatus = -1;
+            RaceModIconStatusName = "";
+            status = -1;
+        }
+
+        // Any data to show?  Suppress entirely when there is nothing (QC mod_active = 0 => blank).
+        bool hasPb = pb > 0f;
+        bool hasServer = sr > 0f;
+        if (!hasPb && !hasServer && status < 0)
+            return;
+
+        DrawBackground();
+
+        Vector2 size = Size2;
+        float squareSize;
+        Vector2 textPos, medalPos;
+        if (size.X > size.Y)
+        {
+            // QC: text on left, medal on right.
+            squareSize = Mathf.Min(size.Y, size.X / 2f);
+            float ox = 0.5f * Mathf.Max(0f, size.X / 2f - squareSize);
+            float oy = 0.5f * (size.Y - squareSize);
+            textPos = new Vector2(ox, oy);
+            medalPos = new Vector2(ox + size.X * 0.5f, oy);
+        }
+        else
+        {
+            // QC: text on top, medal below.
+            squareSize = Mathf.Min(size.X, size.Y / 2f);
+            float ox = 0.5f * (size.X - squareSize);
+            float oy = 0.5f * Mathf.Max(0f, size.Y / 2f - squareSize);
+            textPos = new Vector2(ox, oy);
+            medalPos = new Vector2(ox, oy + size.Y * 0.5f);
+        }
+
+        // QC textSize = vec2(squareSize, 0.25 * squareSize); each row is 0.25*squareSize tall.
+        float rowH = 0.25f * squareSize;
+        int rowSz = (int)Mathf.Clamp(rowH * 0.75f, 8f, 20f);
+
+        // QC race_showTime draws the label on the left and the time on the right of the row.
+        // "Personal best" at textPos, "Server best" at textPos + eY * 0.5 * squareSize.
+        float pbFade = Mathf.Clamp((float)(now - _racePbChangeTime), 0f, 1f);
+        float srFade = Mathf.Clamp((float)(now - _raceServerRecordChangeTime), 0f, 1f);
+        float baseAlpha = LiveFgAlpha;
+
+        DrawRaceTimeRow(textPos, squareSize, rowH, rowSz, "Personal best", pb, baseAlpha * pbFade);
+        DrawRaceTimeRow(new Vector2(textPos.X, textPos.Y + 0.5f * squareSize), squareSize, rowH, rowSz,
+            "Server best", sr, baseAlpha * srFade);
+
+        // ---- medal flash (QC race_status 0/1/2/3, faded over last second of the 5-s window) ----
+        if (status < 0 || _raceStatusTime <= now) return;
+        float a = Mathf.Clamp((float)(_raceStatusTime - now), 0f, 1f); // QC bound(0, race_status_time - time, 1)
+        if (a <= 0f) return;
+
+        string art = status switch
+        {
+            0 => "race_newfail",
+            1 => "race_newtime",
+            2 => RaceModIconStatusRankIsMine ? "race_newrankgreen" : "race_newrankyellow",
+            3 => "race_newrecordserver",
+            _ => "",
+        };
+        if (art == "") return;
+
+        // QC: if(race_status == 0) drawpic at medalPos '1 1 0' * squareSize, else '1 1 0' * 0.8 * squareSize offset
+        float iconSz = status == 0 ? squareSize : squareSize * 0.8f;
+        float iconOff = status == 0 ? 0f : squareSize * 0.1f;
+        var iconBox = new Rect2(medalPos.X + iconOff, medalPos.Y, iconSz, iconSz);
+        if (!DrawIconAspect(iconBox, art, baseAlpha * a))
+        {
+            // Stand-in: a colored disc in the medal square.
+            Color disc = status switch
+            {
+                0 => new Color(0.8f, 0.2f, 0.1f, baseAlpha * a),
+                3 => new Color(1f, 0.55f, 0f, baseAlpha * a),
+                2 => RaceModIconStatusRankIsMine
+                    ? new Color(0.3f, 1f, 0.3f, baseAlpha * a)
+                    : new Color(1f, 0.9f, 0.2f, baseAlpha * a),
+                _ => new Color(0.6f, 0.8f, 1f, baseAlpha * a),
+            };
+            Rect2 fit = AspectFit(iconBox, 1f);
+            DrawCircle(fit.GetCenter(), fit.Size.X * 0.4f, disc);
+        }
+
+        // QC: player name at medalPos + '0 0.8 0' * squareSize; ordinal at + '0 0.15 0' * squareSize.
+        int nameSz = (int)Mathf.Clamp(squareSize * 0.1f, 7f, 14f);
+        if (!string.IsNullOrEmpty(statusName))
+            DrawTextCentered(new Vector2(medalPos.X, medalPos.Y + 0.8f * squareSize), squareSize,
+                statusName, new Color(1f, 1f, 1f, baseAlpha * a), nameSz);
+    }
+
+    /// <summary>QC <c>race_showTime</c>: draw a label on the left half and the formatted time on the right half of
+    /// a row, with the QC expand-transition (approximated as an alpha ramp from 0 → 1 over 1s after the value
+    /// changes; <paramref name="fade"/> = elapsed since last change clamped to 0..1).</summary>
+    private void DrawRaceTimeRow(Vector2 origin, float squareSize, float rowH, int sz,
+        string label, float seconds, float fade)
+    {
+        float alpha = LiveFgAlpha * fade;
+        if (alpha <= 0f) return;
+        string timeStr = FormatRaceTime(seconds);
+        float halfW = squareSize * 0.5f;
+        var col = new Color(1f, 1f, 1f, alpha);
+        DrawTextCentered(new Vector2(origin.X, origin.Y + (rowH - sz) * 0.5f), halfW, label, col, sz);
+        DrawTextCentered(new Vector2(origin.X + halfW, origin.Y + (rowH - sz) * 0.5f), halfW, timeStr, col, sz);
+    }
+
+    /// <summary>QC <c>TIME_ENCODED_TOSTRING</c> M:SS.HH format for the mod-icon time rows.</summary>
+    private static string FormatRaceTime(float seconds)
+    {
+        if (!float.IsFinite(seconds) || seconds <= 0f) return "";
+        if (seconds > 5999.99f) seconds = 5999.99f;
+        int h = Mathf.RoundToInt(seconds * 100f);
+        int minutes = h / 6000;
+        int rem = h - minutes * 6000;
+        int s = rem / 100;
+        int hh = rem % 100;
+        return $"{minutes}:{s:D2}.{hh:D2}";
     }
 
     // -------------------------------------------------------------------------------------------------

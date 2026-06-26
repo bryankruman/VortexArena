@@ -162,8 +162,52 @@ public static class RaceRecords
     public static float ServerRecord(string map, string type) => ReadTime(map, type, 1);
     public static string ServerRecordHolder(string map, string type) => ReadName(map, type, 1);
 
+    /// <summary>
+    /// QC <c>ClientProgsDB</c> personal-best analogue: find the best (lowest) ranked time for a given player
+    /// identified by their UID. Scans the top-<see cref="RankingsCnt"/> slots and returns the time at the
+    /// player's highest (lowest-numbered) rank, or 0 if they have no ranked time.
+    /// This mirrors the QC client-side personal-best cache for the mod-icon PB display: on the server the DB is
+    /// authoritative, so we read it directly rather than caching client-side.
+    /// </summary>
+    public static float ReadPersonalBest(string map, string type, string uid)
+    {
+        if (string.IsNullOrEmpty(uid)) return 0f;
+        for (int i = 1; i <= RankingsCnt; i++)
+        {
+            if (ReadUid(map, type, i) == uid)
+                return ReadTime(map, type, i); // dense table: first match is the best rank
+        }
+        return 0f;
+    }
+
     /// <summary>Map a UID to a display name (QC the /uid2name/ store), used by the ranking display.</summary>
     public static void SetName(string uid, string name) { if (uid.Length != 0 && name.Length != 0) _names[uid] = name; }
+
+    // ---- all-time best speed award (QC server/race.qc race_SpeedAwardFrame / race_SendAll) ----
+    // QC persists the all-time best planar speed per map+record_type to ServerProgsDB under the keys
+    // strcat(GetMapname(), record_type, "speed/speed") and ".../speed/crypto_idfp". Mirror those exact key
+    // shapes here so the value rides the existing Export/Import (the C# successor to db_save/db_load).
+
+    /// <summary>QC <c>db_get(ServerProgsDB, strcat(map, record_type, "speed/speed"))</c>: the persisted all-time
+    /// best planar speed (qu/s) for a map + record type, or 0 if none recorded yet.</summary>
+    public static float ReadSpeedAwardBest(string map, string type)
+        => _db.TryGetValue(map + type + "speed/speed", out string? s) ? ParseTime(s) : 0f;
+
+    /// <summary>QC <c>uid2name(db_get(..., "speed/crypto_idfp"))</c>: the display name of the all-time best-speed
+    /// holder for a map + record type ("" if none).</summary>
+    public static string ReadSpeedAwardBestHolder(string map, string type)
+    {
+        string uid = _db.TryGetValue(map + type + "speed/crypto_idfp", out string? s) ? s : "";
+        return uid.Length == 0 ? "" : (_names.TryGetValue(uid, out string? n) ? n : uid);
+    }
+
+    /// <summary>QC <c>db_put(ServerProgsDB, strcat(map, record_type, "speed/..."), ...)</c>: persist a new
+    /// all-time best planar speed for a map + record type, keyed by the holder's UID.</summary>
+    public static void WriteSpeedAwardBest(string map, string type, float speed, string uid)
+    {
+        _db[map + type + "speed/speed"] = speed.ToString(CultureInfo.InvariantCulture);
+        _db[map + type + "speed/crypto_idfp"] = uid;
+    }
 
     // ---- persistence (the host wires these to a server file; QC db_save/db_load) ----
 

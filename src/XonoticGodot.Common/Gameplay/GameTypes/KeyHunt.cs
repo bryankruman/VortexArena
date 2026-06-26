@@ -188,6 +188,9 @@ public sealed class KeyHunt : GameType
     private HookHandler<MutatorHooks.PlayerUseKeyArgs>? _useKeyHandler;
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
 
+    /// <summary>QC KH_KEY_WP_ZSHIFT: the height offset for key waypoint sprites above the origin.</summary>
+    private const float KeyWpZShift = 20f;
+
     public KeyHunt()
     {
         NetName = "kh";
@@ -1077,7 +1080,8 @@ public sealed class KeyHunt : GameType
         if (Api.Services is not null)
             EffectEmitter.Emit("TE_EXPLOSION", boomOrigin); // QC te_tarexplosion(lostkey.origin)
 
-        // remove the key + end the round (QC kh_FinishRound)
+        // remove the key + end the round (QC kh_FinishRound). The waypoint sprites are transient (rebuilt each
+        // tick by CollectWaypoints from live key state), so clearing the entity/carrier state drops them.
         key_RemoveAll();
         UpdateLeaderAndCheckLimit();
         Phase = RoundPhase.WaitingForPlayers;
@@ -1256,6 +1260,8 @@ public sealed class KeyHunt : GameType
     /// <summary>
     /// QC kh_Key_AssignTo: when the all-keys-owned state changes, schedule (time+0.2) the INTERFERE/MEET/HELP
     /// center-prints, and fire them once the delay elapses (QC kh_Key_Think interferemsg block). Call each think.
+    /// (The carrier waypoint-sprite "Run here"/"Key Carrier" flip is computed fresh each tick in CollectWaypoints
+    /// from the live all-owned state, so no explicit sprite swap is needed here.)
     /// </summary>
     private void UpdateInterfereMessages(float now)
     {
@@ -1301,6 +1307,110 @@ public sealed class KeyHunt : GameType
             }
         }
     }
+
+    // ============================================================================================
+    //  Waypoint sprites (QC kh_Key_Spawn / kh_Key_AssignTo state machine)
+    // ============================================================================================
+
+    /// <summary>
+    /// QC kh_Key_Spawn (WP_KeyDropped) + kh_Key_AssignTo (WP_KeyCarrier{Red,Blue,Yellow,Pink} / WP_KeyCarrierFinish):
+    /// rebuild every key's waypoint sprite from live state each tick (the same transient-pull pattern CTF/Keepaway/
+    /// Domination use — the sprites are NOT registered in the persistent WaypointSprites manager). A loose key gets
+    /// the WP_KeyDropped marker on the key entity; a carried key gets the team-colored carrier marker riding the
+    /// carrier — flipped to WP_KeyCarrierFinish ("Run here") when one team owns ALL keys (QC kh_Key_AssignTo).
+    /// The per-viewer visibility predicates mirror kh_Key_waypointsprite_visible_for_player and
+    /// kh_KeyCarrier_waypointsprite_visible_for_player (tracking-device gate + warmup/spec/team/invisibility rules).
+    /// </summary>
+    public override void CollectWaypoints(System.Collections.Generic.List<Waypoints.WaypointSprite> into)
+    {
+        if (Phase != RoundPhase.InProgress)
+            return;
+        int allOwnedTeam = AllOwnedByWhichTeam();
+        foreach (var key in Keys.Values)
+        {
+            if (key.Carrier is { } carrier)
+            {
+                // QC kh_Key_AssignTo: WaypointSprite_AttachCarrier on the carrier, def per the carrier's team
+                // (flipped to WP_KeyCarrierFinish when all keys are on the same team). SPRITERULE_TEAMPLAY with a
+                // per-frame visibility predicate (kh_KeyCarrier_waypointsprite_visible_for_player).
+                string spriteName = allOwnedTeam == (int)carrier.Team
+                    ? "KeyCarrierFinish"                        // QC WP_KeyCarrierFinish "Run here"
+                    : CarrierSpriteForTeam((int)carrier.Team);  // QC WP_KeyCarrier{Red,Blue,Yellow,Pink}
+                Waypoints.WaypointDef cdef = Waypoints.WaypointRegistry.Get(spriteName);
+                Player held = carrier;
+                into.Add(new Waypoints.WaypointSprite
+                {
+                    SpriteName = spriteName,
+                    Owner = carrier,
+                    // QC kh_Key_AssignTo: WaypointSprite_AttachCarrier rides the carrier at the standard head
+                    // offset ('0 0 64'), like every other carrier sprite (CTF/Keepaway); the KH_KEY_WP_ZSHIFT (20)
+                    // offset is the DROPPED-key marker's, not the carrier's.
+                    Offset = new Vector3(0f, 0f, 64f),
+                    Team = key.HomeTeam,                       // radar tint keyed on the key's home team
+                    Color = cdef.Color,
+                    RadarIcon = cdef.RadarIcon,
+                    Rule = Waypoints.SpriteRule.Teamplay,      // QC WaypointSprite_UpdateRule(..., SPRITERULE_TEAMPLAY)
+                    VisibleForPlayer = viewer => CarrierWaypointVisibleFor(held, viewer),
+                    Health = -1f,
+                });
+            }
+            else if (key.Entity is { } e)
+            {
+                // QC kh_Key_Spawn: WaypointSprite_Spawn(WP_KeyDropped, ..., key, '0 0 1'*KH_KEY_WP_ZSHIFT, ...,
+                // key.team, ...) with kh_Key_waypointsprite_visible_for_player.
+                Waypoints.WaypointDef ddef = Waypoints.WaypointRegistry.Get("KeyDropped");
+                into.Add(new Waypoints.WaypointSprite
+                {
+                    SpriteName = "KeyDropped",
+                    Owner = e,
+                    Offset = new Vector3(0f, 0f, KeyWpZShift),
+                    Team = key.HomeTeam,
+                    Color = ddef.Color,
+                    RadarIcon = ddef.RadarIcon,
+                    Rule = Waypoints.SpriteRule.Default,
+                    VisibleForPlayer = DroppedKeyWaypointVisibleFor,
+                    Health = -1f,
+                });
+            }
+        }
+    }
+
+    /// <summary>QC kh_Key_waypointsprite_visible_for_player (sv_keyhunt.qc:115): a dropped-key marker is always
+    /// shown to spectators/during warmup; otherwise it requires the tracking device to be enabled.</summary>
+    private bool DroppedKeyWaypointVisibleFor(Player? viewer)
+    {
+        // QC: if(this.owner && !this.owner.owner && (IS_SPEC(player) || warmup_stage)) return true;
+        if (viewer is null || viewer.IsObserver || NotificationSystem.WarmupStage)
+            return true;
+        // QC: if(!kh_tracking_enabled) return false; return !this.owner || !this.owner.owner; (key is loose here).
+        return TrackingEnabled;
+    }
+
+    /// <summary>QC kh_KeyCarrier_waypointsprite_visible_for_player (sv_keyhunt.qc:103): the carrier marker is shown
+    /// to spectators / during warmup / to the carrier's own team always; hidden if the carrier is invisible;
+    /// otherwise it requires the tracking device.</summary>
+    private bool CarrierWaypointVisibleFor(Player carrier, Player? viewer)
+    {
+        // QC: if(IS_SPEC(player) || warmup_stage || SAME_TEAM(player, this.owner)) return true;
+        if (viewer is null || viewer.IsObserver || NotificationSystem.WarmupStage || Teams.SameTeam(viewer, carrier))
+            return true;
+        // QC: if(IS_INVISIBLE(this.owner)) return false;
+        var invisEffect = StatusEffectsCatalog.ByName("invisibility");
+        if (invisEffect is not null && StatusEffectsCatalog.Has(carrier, invisEffect))
+            return false;
+        // QC: return kh_tracking_enabled;
+        return TrackingEnabled;
+    }
+
+    /// <summary>QC kh_Key_AssignTo sprite selection: the team-colored WP_KeyCarrier* def name.</summary>
+    private static string CarrierSpriteForTeam(int team) => team switch
+    {
+        Teams.Red => "KeyCarrierRed",
+        Teams.Blue => "KeyCarrierBlue",
+        Teams.Yellow => "KeyCarrierYellow",
+        Teams.Pink => "KeyCarrierPink",
+        _ => "KeyCarrierRed",
+    };
 
     // ============================================================================================
     //  HUD stat pack (QC kh_update_state → STAT(OBJECTIVE_STATUS))

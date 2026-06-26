@@ -137,6 +137,7 @@ public sealed class FreezeTag : GameType
     private HookHandler<DeathEvent>? _deathHandler;
     private HookHandler<MutatorHooks.SetStartItemsArgs>? _startItemsHandler;
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
+    private HookHandler<MutatorHooks.PlayerSpawnArgs>? _playerSpawnHandler;
 
     public FreezeTag()
     {
@@ -249,6 +250,13 @@ public sealed class FreezeTag : GameType
         // damage can revive (g_frozen_revive_falldamage). Subscribed onto the live damage pipeline.
         _damageCalcHandler = OnDamageCalculate;
         MutatorHooks.DamageCalculate.Add(_damageCalcHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ft, PlayerSpawn) (sv_freezetag.qc:530): a player who spawns while a round is
+        // already live joins AS FROZEN (CENTER_FREEZETAG_SPAWN_LATE), so a mid-round joiner can't run around the
+        // live round. Round-reset respawns happen during the countdown phase (IsRoundStarted false), so they're
+        // naturally excluded — only a genuine mid-round join is caught.
+        _playerSpawnHandler = OnPlayerSpawn;
+        MutatorHooks.PlayerSpawn.Add(_playerSpawnHandler);
     }
 
     /// <summary>
@@ -265,6 +273,7 @@ public sealed class FreezeTag : GameType
         _deathHandler = null;
         if (_startItemsHandler is not null) { MutatorHooks.SetStartItems.Remove(_startItemsHandler); _startItemsHandler = null; }
         if (_damageCalcHandler is not null) { MutatorHooks.DamageCalculate.Remove(_damageCalcHandler); _damageCalcHandler = null; }
+        if (_playerSpawnHandler is not null) { MutatorHooks.PlayerSpawn.Remove(_playerSpawnHandler); _playerSpawnHandler = null; }
     }
 
     public int AssignTeam(Player joiner, IReadOnlyList<Player> roster)
@@ -292,12 +301,35 @@ public sealed class FreezeTag : GameType
     }
 
     /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ft, PlayerSpawn)</c> (sv_freezetag.qc:530): a player who (re)spawns while a
+    /// round is already live joins AS FROZEN — they get CENTER_FREEZETAG_SPAWN_LATE and are frozen with a NULL
+    /// attacker (no score). Round-RESET respawns run during the countdown phase (Handler.IsRoundStarted is
+    /// false then), so a player materializing for the fresh round is naturally excluded; only a genuine
+    /// mid-round joiner is caught. No-op if the player is already frozen or the match has ended.
+    /// </summary>
+    private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)
+    {
+        if (MatchEnded || args.Player is not Player player)
+            return false;
+        if (Handler is not { IsRoundStarted: true })
+            return false;
+        if (IsFrozen(player))
+            return false;
+
+        // QC: Send_Notification(NOTIF_ONE, player, MSG_CENTER, CENTER_FREEZETAG_SPAWN_LATE); freezetag_Freeze(player, NULL);
+        // Freeze with announce=false: only the SPAWN_LATE center line fires (Base's freezetag_Freeze itself is silent).
+        NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, "FREEZETAG_SPAWN_LATE");
+        Freeze(player, null, announce: false);
+        return false;
+    }
+
+    /// <summary>
     /// Freeze <paramref name="targ"/> (QC freezetag_Freeze + freezetag_Add_Score): mark frozen with HP 1,
     /// reset revive progress, and apply the score matrix — self freeze → victim −1; teammate freeze →
     /// attacker −1 + victim −1; enemy freeze → attacker +1 + victim −1; and a NULL/non-player attacker
     /// (frozen by the gametype rules themselves) → NO score change. No-op if already frozen.
     /// </summary>
-    public void Freeze(Player targ, Player? attacker)
+    public void Freeze(Player targ, Player? attacker, bool announce = true)
     {
         if (IsFrozen(targ))
             return;
@@ -335,8 +367,13 @@ public sealed class FreezeTag : GameType
 
         // QC PlayerDies (sv_freezetag.qc:516-525): announce the freeze. Self/NULL freeze → CENTER_FREEZETAG_SELF to
         // the victim + INFO_FREEZETAG_SELF to all; an enemy/teammate freeze → INFO_FREEZETAG_FREEZE to all
-        // (kill-feed "X was frozen by Y").
-        if (ReferenceEquals(attacker, targ) || attacker is null)
+        // (kill-feed "X was frozen by Y"). The spawn-late path (QC PlayerSpawn) sends its OWN center notification
+        // (CENTER_FREEZETAG_SPAWN_LATE) and suppresses these — Base's freezetag_Freeze itself never notifies.
+        if (!announce)
+        {
+            // no freeze-line notification (spawn-as-frozen)
+        }
+        else if (ReferenceEquals(attacker, targ) || attacker is null)
         {
             NotificationSystem.Send(NotifBroadcast.One, targ, MsgType.Center, "FREEZETAG_SELF");
             NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "FREEZETAG_SELF", targ.NetName);
@@ -438,6 +475,27 @@ public sealed class FreezeTag : GameType
                 if (st.FrozenTimeout < now)
                     st.FrozenTimeout = now;
             }
+        }
+
+        // ----- nade self-revive (QC nades Damage_Calculate, sv_nades.qc:883-893) -----
+        // A frozen player hit by their OWN nade (DEATH_NADE) within 0.1s of the toss is thawed instead of
+        // damaged: restore g_freezetag_revive_nade_health, suppress the hit, and announce REVIVED_NADE +
+        // REVIVE_SELF. The nade mutator already zeroes damage/force on the same hook, but the actual unfreeze
+        // lives here (FreezeTag owns freezetag_Unfreeze), so do it self-contained for hook-order independence.
+        if (TryCvar("g_freezetag_revive_nade", out float rn) && rn != 0f
+            && args.Attacker is Player nadeSelf && ReferenceEquals(nadeSelf, targ)
+            && DeathTypes.BaseOf(args.DeathType) == Nades.NadeDeathTypes.Nade
+            && args.Inflictor is { } nadeInfl && now - nadeInfl.NadeTossTime <= 0.1f)
+        {
+            float nadeHealth = TryCvar("g_freezetag_revive_nade_health", out float nh) ? nh : 40f;
+            Unfreeze(targ);
+            targ.SetResource(ResourceType.Health, nadeHealth);
+            args.Damage = 0f;
+            args.Force = Vector3.Zero;
+            // QC Send_Effect(EFFECT_ICEORGLASS) is host-side VFX.
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "FREEZETAG_REVIVED_NADE", targ.NetName);
+            NotificationSystem.Send(NotifBroadcast.One, targ, MsgType.Center, "FREEZETAG_REVIVE_SELF");
+            return false;
         }
 
         // ----- frozen damage immunity + fall-damage revive (QC sv_freezetag.qc:656-670) -----

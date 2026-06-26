@@ -824,6 +824,37 @@ public sealed class LastManStanding : GameType
         }
     }
 
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(lms, SV_StartFrame) (sv_lms.qc:480-487): attach a WP_LmsLeader radar waypoint to
+    /// each in-game leader (RADARICON_FLAGCARRIER, the player's colormap radar tint, '0 0 64' head offset). The
+    /// sprite's visibility follows QC <c>lms_waypointsprite_visible_for_player</c>: a spectator watching a leader
+    /// doesn't see the attached marker (it would clutter the top of their screen), and EVERY viewer only sees it
+    /// while the leaders are inside their periodic show-window (<see cref="LeadersVisible"/>, driven by
+    /// <see cref="DriveLeaderVisibility"/>). Rebuilt each tick from the live leader set (the port's CollectWaypoints
+    /// pull, like CTF's flag sprites); the radar-visibility window is the timer, this is the sprite Base draws.
+    /// </summary>
+    public override void CollectWaypoints(System.Collections.Generic.List<Waypoints.WaypointSprite> into)
+    {
+        // QC g_lms_leader_lives_diff <= 0 disables the whole leader system (UpdateLeaders never flags a leader).
+        foreach (KeyValuePair<Player, LmsState> kv in _states)
+        {
+            if (kv.Value.OutOfGame || !kv.Value.IsLeader)
+                continue;
+            into.Add(new Waypoints.WaypointSprite
+            {
+                SpriteName = "LmsLeader",                                    // QC WP_LmsLeader
+                Owner = kv.Key,                                             // QC WaypointSprite_AttachCarrier(it)
+                Offset = new System.Numerics.Vector3(0f, 0f, 64f),          // QC the standard carrier head offset
+                Team = Teams.None,                                          // FFA: no team gate
+                RadarIcon = 1,                                              // QC RADARICON_FLAGCARRIER
+                Health = -1f,
+                // QC lms_waypointsprite_visible_for_player: a spectator of a leader doesn't see the attached
+                // sprite; nobody sees it outside the current show-window (lms_visible_leaders).
+                VisibleForPlayer = viewer => LeadersVisible && !(viewer is not null && viewer.IsObserver),
+            });
+        }
+    }
+
     // ============================================================================================
     //  Mutator-style hooks (QC SetStartItems / SetWeaponArena / ForbidThrowCurrentWeapon /
     //  PlayerRegen / Damage_Calculate / FilterItem) — LMS is a CA-like fixed-loadout survival mode

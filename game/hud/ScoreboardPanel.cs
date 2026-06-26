@@ -341,6 +341,24 @@ public partial class ScoreboardPanel : HudPanel
         QueueRedraw();
     }
 
+    // ---- race/CTS speed award (QC scoreboard.qc:2731 race_speedaward / _alltimebest) ----
+    private int _speedAward;
+    private string _speedAwardHolder = "";
+    private int _speedAwardBest;
+    private string _speedAwardBestHolder = "";
+
+    /// <summary>QC the race/CTS speed award (Scoreboard_MainPanel scoreboard.qc:2731): the round-best (qu/s, rounded)
+    /// + holder and the persisted all-time best + holder, shown as a line above the rankings in race/CTS modes.
+    /// All zero/empty hides the line (QC <c>if (race_speedaward_alltimebest)</c>).</summary>
+    public void SetSpeedAward(int speed, string holder, int best, string bestHolder)
+    {
+        _speedAward = speed;
+        _speedAwardHolder = holder ?? "";
+        _speedAwardBest = best;
+        _speedAwardBestHolder = bestHolder ?? "";
+        QueueRedraw();
+    }
+
     // =====================================================================================
     //  Sorting (QC Scoreboard_ComparePlayerScores)
     // =====================================================================================
@@ -751,6 +769,7 @@ public partial class ScoreboardPanel : HudPanel
         y = DrawMapStats(x, w, y, fade);
         y = DrawRespawn(x, w, y, fade);
         y = DrawAccuracy(x, w, y, fade);
+        y = DrawSpeedAward(x, w, y, fade);
         y = DrawRankings(x, w, y, fade);
         DrawFooter(x, w, fade);
     }
@@ -1149,6 +1168,56 @@ public partial class ScoreboardPanel : HudPanel
             ? new Color(1f, Mathf.Lerp(0f, 1f, f * 2f), 0f, 1f)
             : new Color(Mathf.Lerp(1f, 0f, (f - 0.5f) * 2f), 1f, 0f, 1f);
     }
+
+    /// <summary>
+    /// QC the race/CTS speed award (Scoreboard_MainPanel, scoreboard.qc:2731): in race/CTS, draw
+    /// "Speed award: N unit (holder) / All-time fastest: N unit (holder)" above the rankings. Only drawn when the
+    /// all-time best exists (QC <c>if (race_speedaward_alltimebest)</c>); the round-best half is dropped if 0.
+    /// The qu/s values from the wire are converted to the configured <c>hud_speed_unit</c> (QC GetSpeedUnitFactor).
+    /// </summary>
+    private float DrawSpeedAward(float x, float w, float y, float fade)
+    {
+        if (GameScores.Gametype != "rc" && GameScores.Gametype != "cts") return y;
+        if (_speedAwardBest == 0) return y; // QC: if (race_speedaward_alltimebest)
+        if (y > Size2.Y - 20f) return y;
+
+        int unit = (int)GlobalF("hud_speed_unit", 1f);
+        float factor = SpeedUnitFactor(unit);
+        string lbl = SpeedUnitLabel(unit);
+        var body = new Color(1f, 1f, 1f, RowFgAlpha() * fade);
+
+        string str = "";
+        if (_speedAward != 0) // QC: if (race_speedaward)
+        {
+            string name = HudText.Strip(_speedAwardHolder);
+            str = $"Speed award: {(int)(_speedAward * factor)}{lbl} ({name})";
+            str += " / ";
+        }
+        string bestName = HudText.Strip(_speedAwardBestHolder);
+        str += $"All-time fastest: {(int)(_speedAwardBest * factor)}{lbl} ({bestName})";
+        DrawText(new Vector2(x, y), str, body, 14);
+        return y + 20f;
+    }
+
+    /// <summary>QC <c>GetSpeedUnitFactor</c> (client/main.qc): qu/s -> the selected unit's factor.</summary>
+    private static float SpeedUnitFactor(int unit) => unit switch
+    {
+        2 => 0.0254f,
+        3 => 0.0254f * 3.6f,
+        4 => 0.0254f * 3.6f * 0.6213711922f,
+        5 => 0.0254f * 1.943844492f,
+        _ => 1.0f,
+    };
+
+    /// <summary>QC <c>GetSpeedUnit</c> (client/main.qc): the selected unit's label.</summary>
+    private static string SpeedUnitLabel(int unit) => unit switch
+    {
+        2 => "m/s",
+        3 => "km/h",
+        4 => "mph",
+        5 => "knots",
+        _ => "qu/s",
+    };
 
     private float DrawRankings(float x, float w, float y, float fade)
     {

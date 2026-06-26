@@ -2445,8 +2445,12 @@ public sealed class GameWorld
                 switch (e.ClassName)
                 {
                     case "nexball_basketball":
+                        // QC spawnfunc(nexball_basketball): a carryable basketball (NBM_BASKETBALL).
+                        nb.SpawnBall(e.Origin, basketball: true); // QC SpawnBall: relocates + sets bounce/think; sets BallHome
+                        break;
                     case "nexball_football":
-                        nb.SpawnBall(e.Origin); // QC SpawnBall: relocates + sets bounce/think; sets BallHome
+                        // QC spawnfunc(nexball_football): a kick-only football (NBM_FOOTBALL) — NOT carryable.
+                        nb.SpawnBall(e.Origin, basketball: false);
                         break;
                     default: // "nexball_goal" (every goal/fault/out funnels here)
                         nb.SpawnGoal((int)e.Team, e.Origin); // team or Nexball.GoalFault/GoalOut sentinel
@@ -2561,7 +2565,7 @@ public sealed class GameWorld
             // CA: the round is now resolved on the LIVE round handler path (OnEndFrame → Rounds.Think → CA.CheckWinner),
             // so DON'T also call CheckRound here (that would double-award the round). The roster is fed via _roundPrep.
             case ClanArena: break;
-            case Ctf ctf: ctf.Tick(); ctf.UpdateLeaderAndCheckLimit(); ctf.UpdateCaptureShields(Clients.Players); break;
+            case Ctf ctf: ctf.Tick(Clients.Players); ctf.UpdateLeaderAndCheckLimit(); ctf.UpdateCaptureShields(Clients.Players); break;
             case Domination dom: dom.Tick(); break;                     // tick variant scores; round variant no-ops here
             case Onslaught ons:
                 ons.GameStartTime = GameStartTime;                      // sync game_starttime for the overtime gate
@@ -2593,7 +2597,12 @@ public sealed class GameWorld
                 aslt.GameStartTime = GameStartTime;
                 aslt.DriveFrame(Time);
                 break;
-            case Keepaway ka: ka.Tick(Simulation.FrameTime); break;
+            case Keepaway ka:
+                ka.Tick(Simulation.FrameTime);
+                // QC WinningCondition_Scores: recompute the FFA leader/limit each frame and fire the
+                // remaining-frags announcer (gated by ka's Scores_CountFragsRemaining hook = timed-scoring off).
+                ka.RecomputeLeader(Clients.Players);
+                break;
             case LastManStanding lms:
                 // QC game_starttime / warmup_stage mirrors: the win condition + life-loss are frozen pre-match
                 // (WinningCondition_LMS / GiveFragsForKill both early-return while warmup || time <= game_starttime).
@@ -2621,8 +2630,8 @@ public sealed class GameWorld
                 inv.Tick();                                // QC SV_StartFrame: drive the wave fill / win check
                 inv.CheckPointLimit();
                 break;
-            case Race race: race.Tick(Time); race.CheckWinningCondition(); break;
-            case Cts cts: cts.Tick(Time); break;
+            case Race race: race.Tick(Time); race.CheckWinningCondition(); race.SpeedAwardFrame(Clients.Players); break;
+            case Cts cts: cts.Tick(Time); cts.SpeedAwardFrame(Clients.Players); break;
         }
     }
 

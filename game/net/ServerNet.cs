@@ -113,6 +113,9 @@ public sealed class ServerNet : IDisposable
     // QC the race/CTS rankings table (Scoreboard_Rankings_Draw): best-first (time, holder) for this map,
     // captured from the persistent RaceRecords DB; empty in non-race modes.
     private readonly List<(int timeEncoded, string holder)> _scoreRankings = new();
+    // QC the CTS/race speed award (race_send_speedaward / _best): the round-best + persisted all-time best planar
+    // speed (qu/s, rounded) + holder names, captured from the live Cts gametype; zeroed in non-CTS modes.
+    private (int speed, string holder, int best, string bestHolder) _scoreSpeedAward;
     private int _scoreVersion;
     // this tick's score-LAYOUT generation (the active label/flag set + gametype/teamplay): the ScoreInfo block
     // (QC ENT_CLIENT_SCORES_INFO) is sent per-client only when this changed since they last got it (a mode
@@ -1590,7 +1593,7 @@ public sealed class ServerNet : IDisposable
             _snapshotWriter.WriteBool(sendScores);
             if (sendScores)
             {
-                XonoticGodot.Net.ScoreboardBlock.Serialize(_snapshotWriter, _scoreRows, _scoreTeams, _scoreRankings);
+                XonoticGodot.Net.ScoreboardBlock.Serialize(_snapshotWriter, _scoreRows, _scoreTeams, _scoreRankings, _scoreSpeedAward);
                 st.LastScoreVersion = _scoreVersion;
             }
 
@@ -1724,6 +1727,11 @@ public sealed class ServerNet : IDisposable
                 Health = (int)p.Health,
                 Armor = (int)p.ArmorValue, // [T68] networked entcs armor → teammate shownames armor sub-bar
                 Alpha = QuantizeAlpha(p.Alpha), // [W1-alpha-net] Cloaked/RunningGuns/Invisibility player transparency
+                // Networked colormap is the player's TEAM only — never the Survival role. Survival's green-prey/
+                // red-hunter override is applied CLIENT-side (ClientWorld.ResolveForcedColormap, from the disclosed
+                // SurvivalHunterIds set) so it honors the per-recipient hunter-disclosure gate; stamping the role
+                // into this shared snapshot byte would leak hunter identity to prey mid-round (cl_survival.qc derives
+                // e.colormap from the disclosure-gated survival_status, not server-side).
                 Colormap = (int)p.Team,
                 Weapon = p.ActiveWeaponId, // renders the remote player's held weapon (QC wepent)
                 Model = p.Model,           // QC .model (playermodel) — the client loads the skeletal IQM by name
@@ -2060,6 +2068,7 @@ public sealed class ServerNet : IDisposable
         // RaceRecords DB's best-first ranked times for this map so the client scoreboard's rankings block has
         // data (the C# stand-in for RACE_NET_SERVER_RANKINGS). Non-race modes leave it empty (one byte on the wire).
         _scoreRankings.Clear();
+        _scoreSpeedAward = default;
         string gt = _world.GameType?.NetName ?? "";
         if (gt == "rc" || gt == "cts")
         {
@@ -2067,8 +2076,17 @@ public sealed class ServerNet : IDisposable
             string recordType = gt == "cts"
                 ? XonoticGodot.Common.Gameplay.RaceRecords.CtsRecord
                 : XonoticGodot.Common.Gameplay.RaceRecords.RaceRecord;
-            // QC RANKINGS_DISPLAY_CNT caps what's networked for display; mirror with a small display cap.
-            const int displayCnt = 15;
+            // QC race_send_rankings_cnt: m = min(RANKINGS_CNT, autocvar_g_cts_send_rankings_cnt) — the number of
+            // ranked records networked for display. Base default g_cts_send_rankings_cnt = 15 (gametypes-server.cfg),
+            // hard-capped at RANKINGS_CNT (99). Read the cvar live so a server config edit takes effect.
+            int displayCnt = 15;
+            string rcStr = _world.Services.Cvars.GetString("g_cts_send_rankings_cnt");
+            if (!string.IsNullOrEmpty(rcStr))
+            {
+                float rc = _world.Services.Cvars.GetFloat("g_cts_send_rankings_cnt");
+                if (float.IsFinite(rc) && rc >= 0f) displayCnt = (int)rc;
+            }
+            displayCnt = System.Math.Clamp(displayCnt, 0, XonoticGodot.Common.Gameplay.RaceRecords.RankingsCnt);
             for (int pos = 1; pos <= displayCnt; pos++)
             {
                 float t = XonoticGodot.Common.Gameplay.RaceRecords.ReadTime(map, recordType, pos);
@@ -2076,6 +2094,21 @@ public sealed class ServerNet : IDisposable
                 _scoreRankings.Add((
                     XonoticGodot.Common.Gameplay.Scoring.GameScores.TimeEncode(t),
                     XonoticGodot.Common.Gameplay.RaceRecords.ReadName(map, recordType, pos)));
+            }
+
+            // QC race_send_speedaward / _best (server/race.qc:267): Race and CTS both track the round-best +
+            // persisted all-time best planar speed; rounded to an int (QC floor(speed + 0.5)). Now that Race owns
+            // SpeedAwardFrame too, feed both gametypes.
+            int SpeedRound(float s) => (int)System.MathF.Floor(s + 0.5f);
+            if (_world.GameType is XonoticGodot.Common.Gameplay.Cts cts)
+            {
+                _scoreSpeedAward = (SpeedRound(cts.SpeedAwardSpeed), cts.SpeedAwardHolder,
+                                    SpeedRound(cts.SpeedAwardBest), cts.SpeedAwardBestHolder);
+            }
+            else if (_world.GameType is XonoticGodot.Common.Gameplay.Race raceGt)
+            {
+                _scoreSpeedAward = (SpeedRound(raceGt.SpeedAwardSpeed), raceGt.SpeedAwardHolder,
+                                    SpeedRound(raceGt.SpeedAwardBest), raceGt.SpeedAwardBestHolder);
             }
         }
     }

@@ -48,6 +48,18 @@ public sealed class ScoreboardWire
     /// order (best first). Empty in non-race modes. The C# stand-in for QC's RACE_NET_SERVER_RANKINGS stream
     /// (client/main.qc TE_CSQC_RACE) — here it rides the existing scoreboard block instead of a separate one.</summary>
     public readonly List<(int timeEncoded, string holder)> Rankings = new();
+
+    // ---- race/CTS speed award (QC race_send_speedaward / _best, scoreboard.qc:2731) ----
+
+    /// <summary>QC <c>race_speedaward</c>: the best planar speed this round (qu/s, rounded), for the scoreboard
+    /// "Speed award: N qu/s (holder)" line. 0 = none. The C# stand-in for RACE_NET_SPEED_AWARD.</summary>
+    public int SpeedAward;
+    /// <summary>QC <c>race_speedaward_holder</c>: the round-best-speed holder display name ("" if none).</summary>
+    public string SpeedAwardHolder = "";
+    /// <summary>QC <c>race_speedaward_alltimebest</c>: the persisted all-time best planar speed (qu/s, rounded).</summary>
+    public int SpeedAwardBest;
+    /// <summary>QC <c>race_speedaward_alltimebest_holder</c>: the all-time best-speed holder name ("" if none).</summary>
+    public string SpeedAwardBestHolder = "";
 }
 
 /// <summary>
@@ -88,7 +100,8 @@ public static class ScoreboardBlock
     /// <summary>Serialize the full scoreboard block: field-count + layout hash (sanity), the player rows, the team
     /// totals, then (race/CTS) the rankings table.</summary>
     public static void Serialize(BitWriter w, IReadOnlyList<ScoreRowWire> rows, IReadOnlyList<(int team, int score)> teamScores,
-        IReadOnlyList<(int timeEncoded, string holder)>? rankings = null)
+        IReadOnlyList<(int timeEncoded, string holder)>? rankings = null,
+        (int speed, string holder, int best, string bestHolder) speedAward = default)
     {
         int n = GameScores.NetworkedFields.Count;
         w.WriteByte(n);
@@ -129,6 +142,15 @@ public static class ScoreboardBlock
             w.WriteInt24(rankings![i].timeEncoded);
             w.WriteString(rankings[i].holder ?? "");
         }
+
+        // QC race_send_speedaward / race_send_speedaward_alltimebest (server/race.qc:267): the round-best + all-time
+        // best planar speed (qu/s, rounded) + holder names. 0 speed with "" holder = none (steady-state in a
+        // non-race mode is two int24 zeros + two empty strings). Rides the scoreboard block (the C# stand-in for the
+        // RACE_NET_SPEED_AWARD / _BEST TE_CSQC_RACE events).
+        w.WriteInt24(speedAward.speed);
+        w.WriteString(speedAward.holder ?? "");
+        w.WriteInt24(speedAward.best);
+        w.WriteString(speedAward.bestHolder ?? "");
     }
 
     /// <summary>Read a scoreboard block. Returns null if the layout hash disagrees (the client mod set differs).</summary>
@@ -167,6 +189,11 @@ public static class ScoreboardBlock
             string holder = r.ReadString();
             if (!r.BadRead) sb.Rankings.Add((t, holder));
         }
+        // QC the speed award trailer (race_send_speedaward / _best).
+        sb.SpeedAward = r.ReadInt24();
+        sb.SpeedAwardHolder = r.ReadString();
+        sb.SpeedAwardBest = r.ReadInt24();
+        sb.SpeedAwardBestHolder = r.ReadString();
         if (r.BadRead || !layoutOk) return null; // unreadable, or the client's column layout disagrees
         return sb;
     }

@@ -265,6 +265,40 @@ public class GametypeStatusTests
     }
 
     // ------------------------------------------------------------------------------------------------
+    //  Last Man Standing (QC sv_lms.qc recycled STAT(REDALIVE/BLUEALIVE/OBJECTIVE_STATUS) leader stats)
+    // ------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void Lms_LeaderStats_RoundTrip()
+    {
+        Api.Services.Cvars.Set("fraglimit", "9");
+        Api.Services.Cvars.Set("g_lms_leader_lives_diff", "2");
+        Api.Services.Cvars.Set("g_lms_leader_minpercent", "0.5");
+
+        var lms = new LastManStanding();
+        Player leader = P(Teams.None), mid = P(Teams.None), low = P(Teams.None);
+        lms.GetState(leader).Lives = 9;
+        lms.GetState(mid).Lives = 5;
+        lms.GetState(low).Lives = 4;
+        var roster = new[] { leader, mid, low };
+
+        // QC lms_UpdateLeaders + SV_StartFrame: the leader is +4 over the next-best, 1/3 of the field → a leader.
+        lms.UpdateLeaders();
+        lms.DriveLeaderVisibility();
+        Assert.Equal(1, lms.LeaderCount);
+        Assert.Equal(4, lms.LeadersLivesDiff);
+
+        Func<Player, int> ids = Ids(roster);
+        GametypeStatusBlock.Decoded d = DecodeWithSentinels(lms, leader, roster, ids);
+        Assert.Equal(GametypeStatusBlock.Kind.Lms, d.Mode);
+        Assert.Equal(0, d.TeamCount); // FFA: no visible teams
+        Assert.Equal(1, d.LmsLeaderCount);   // QC STAT(REDALIVE) = lms_leaders
+        Assert.Equal(4, d.LmsLivesDiff);     // QC STAT(BLUEALIVE) = lms_leaders_lives_diff
+        // The first frame schedules the show-window (lms_visible_leaders=true → false), so leaders aren't visible yet.
+        Assert.False(d.LmsLeadersVisible);   // QC STAT(OBJECTIVE_STATUS) = lms_visible_leaders
+    }
+
+    // ------------------------------------------------------------------------------------------------
     //  Hash gating (the per-peer resend gate in the ServerNet splice)
     // ------------------------------------------------------------------------------------------------
 

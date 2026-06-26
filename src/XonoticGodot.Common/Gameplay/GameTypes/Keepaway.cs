@@ -88,6 +88,10 @@ public sealed class Keepaway : GameType
     private HookHandler<MutatorHooks.PlayerUseKeyArgs>? _useKeyHandler;
     private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _physicsHandler;
 
+    // QC g_keepaway_noncarrier_warn (gametypes-server.cfg:446 = 1): centerprint-warn a non-carrier who frags
+    // another non-carrier, nudging them toward the ball. Read in OnDeath (registry keepaway.warn.noncarrier).
+    private const string CvarNonCarrierWarn = "g_keepaway_noncarrier_warn";
+
     // QC g_keepaway_ballcarrier_highspeed: the carrier's MOVEVARS_HIGHSPEED multiplier (default 1 = no effect).
     private const string CvarBallCarrierHighspeed = "g_keepaway_ballcarrier_highspeed";
     /// <summary>QC autocvar_g_keepaway_ballcarrier_highspeed (default 1): speed multiplier applied to the ball carrier.</summary>
@@ -162,6 +166,11 @@ public sealed class Keepaway : GameType
         GS.DeclareColumn("KEEPAWAY_CARRIERKILLS", Scoring.ScoreFlags.None, "bckills");
         GS.DeclareColumn("KEEPAWAY_BCTIME", Scoring.ScoreFlags.None, "bctime");
         GS.SetSortKeys(GS.Score, GS.Field("KEEPAWAY_BCTIME"));
+
+        // QC fragsleft_last reset: re-arm the remaining-frags announcer so "1/2/3 frags left"
+        // (ANNCE_REMAINING_FRAG_{1,2,3}) can fire again this match. ka's Scores_CountFragsRemaining hook
+        // returns !g_keepaway_score_timepoints, so by default (timepoints 0) the cue is enabled.
+        GS.ResetFragsRemaining();
 
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
@@ -544,6 +553,14 @@ public sealed class Keepaway : GameType
                 attacker.ScoreFrags += (int)ScoreBcKill;
                 AddCol(attacker, "KEEPAWAY_CARRIERKILLS", 1); // QC GameRules_scoring_add(attacker, KEEPAWAY_CARRIERKILLS, 1)
             }
+            else if (!ReferenceEquals(Ball.Carrier, attacker))
+            {
+                // QC ka PlayerDies: a non-carrier who frags a non-carrier is nudged toward the ball
+                // (Send_Notification(NOTIF_ONE_ONLY, attacker, MSG_CENTER, CENTER_KEEPAWAY_WARN)), gated by
+                // g_keepaway_noncarrier_warn (registry keepaway.warn.noncarrier).
+                if (TryCvar(CvarNonCarrierWarn, out float warn) && warn != 0f)
+                    NotificationSystem.Send(NotifBroadcast.OneOnly, attacker, MsgType.Center, "KEEPAWAY_WARN");
+            }
             if (ReferenceEquals(Ball.Carrier, attacker))
                 attacker.ScoreFrags += (int)ScoreKillAc;
 
@@ -585,6 +602,46 @@ public sealed class Keepaway : GameType
         float limit = PointLimit;
         if (limit > 0f && best is not null && best.ScoreFrags >= limit)
             MatchEnded = true;
+
+        AnnounceFragsRemaining(players, limit);
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(ka, Scores_CountFragsRemaining): announce the "N frags left" cue only when timed
+    /// scoring is OFF (the hook returns <c>!autocvar_g_keepaway_score_timepoints</c>) — when scoring is by
+    /// carry-time the frag countdown is meaningless. When the hook would return true (timepoints==0, the default)
+    /// fire the WinningCondition_Scores remaining-frags announcer (REMAINING_FRAG_{1,2,3}) over the FFA roster.
+    /// (registry keepaway.score.countfragsremaining).
+    /// </summary>
+    private void AnnounceFragsRemaining(IReadOnlyList<Player> players, float limit)
+    {
+        if (Api.Services is null)
+            return;
+        // QC Scores_CountFragsRemaining: suppress the announce while timed scoring is enabled.
+        if (ScoreTimePoints != 0f)
+            return;
+
+        // Top/second primary scores over non-spectators (QC WinningConditionHelper_topscore/_secondscore).
+        int topScore = 0, secondScore = 0;
+        bool haveTop = false, haveSecond = false;
+        for (int i = 0; i < players.Count; i++)
+        {
+            Player p = players[i];
+            if (Scoring.GameScores.IsSpectator(p))
+                continue;
+            int s = Scoring.GameScores.PrimaryScore(p);
+            if (!haveTop || s > topScore)
+            {
+                secondScore = topScore; haveSecond = haveTop;
+                topScore = s; haveTop = true;
+            }
+            else if (!haveSecond || s > secondScore)
+            {
+                secondScore = s; haveSecond = true;
+            }
+        }
+        // ka has no lead limit; suddenDeathEnding is framework-owned and surfaced elsewhere, so pass false.
+        Scoring.GameScores.CountFragsRemaining(limit, 0f, topScore, secondScore, suddenDeathEnding: false);
     }
 
     // ----- waypoint tracking cvar (g_keepawayball_tracking: 0=none/1=always/2=dropped-only) -----

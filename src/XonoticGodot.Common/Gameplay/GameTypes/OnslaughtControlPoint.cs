@@ -40,22 +40,22 @@ public sealed class OnslaughtControlPoint
     public const float GenThinkRate = 1f;
 
     // ----- QC autocvar names + defaults (balance/gametypes cfgs) -----
-    private const string CvarCpHealth      = "g_onslaught_cp_health";        // 200 — icon full health
+    private const string CvarCpHealth      = "g_onslaught_cp_health";        // 1000 — icon full health
     private const string CvarCpBuildHealth = "g_onslaught_cp_buildhealth";   // 100 — health an icon starts at
     private const string CvarCpBuildTime   = "g_onslaught_cp_buildtime";     // 5   — seconds to build from build→full
     private const string CvarCpRegen       = "g_onslaught_cp_regen";         // 20  — slow repair rate once built (hp/s)
-    private const string CvarGenHealth     = "g_onslaught_gen_health";       // 2000
+    private const string CvarGenHealth     = "g_onslaught_gen_health";       // 2500
     private const string CvarSuddenDeath   = "timelimit_suddendeath";        // 5   — overtime decay window (minutes)
     // QC ons_ControlPoint_Icon_Think proximity-decap autocvars (sv_onslaught.qc:18-21).
     private const string CvarProxDecap     = "g_onslaught_cp_proximitydecap";          // 0   — master toggle (default OFF)
     private const string CvarProxDecapDist = "g_onslaught_cp_proximitydecap_distance"; // 512 — qu radius
     private const string CvarProxDecapDps  = "g_onslaught_cp_proximitydecap_dps";      // 100 — hp/s per (friendly-enemy) head
 
-    private const float DefCpHealth      = 200f;
+    private const float DefCpHealth      = 1000f; // QC g_onslaught_cp_health default (gametypes-server.cfg:578)
     private const float DefCpBuildHealth = 100f;
     private const float DefCpBuildTime   = 5f;
     private const float DefCpRegen       = 20f; // QC g_onslaught_cp_regen default (gametypes-server.cfg:581)
-    private const float DefGenHealth     = 2000f;
+    private const float DefGenHealth     = 2500f; // QC g_onslaught_gen_health default (gametypes-server.cfg:576)
     private const float DefSuddenDeath   = 5f;
     private const float DefProxDecapDist = 512f;
     private const float DefProxDecapDps  = 100f;
@@ -133,9 +133,68 @@ public sealed class OnslaughtControlPoint
             // QC ons_GeneratorSetup (sv_onslaught.qc:1117): gen.event_heal = ons_GeneratorHeal — a friendly heal
             // (Arc beam / mage / bumblebee, via Combat.Heal) tops up the generator's GtObjHealth + graph health.
             e.GtEventHeal = (targ, _, amount, limit) => GeneratorHeal(team, targ, amount, limit);
+            // QC ons_GeneratorSetup/ons_GeneratorReset (sv_onslaught.qc:1056): setthink(this, ons_GeneratorThink),
+            // nextthink = time + GEN_THINKRATE — the recurring un-shielded alarm (see GeneratorThink).
+            e.Think = GeneratorThink;
+            e.GtAlarmWait = 0f;
+            e.NextThink = Now + GenThinkRate;
             _generators[team] = e;
         }
         return e;
+    }
+
+    /// <summary>
+    /// QC ons_GeneratorThink (sv_onslaught.qc:1021): the generator's recurring think. While the generator is
+    /// alive but UN-shielded (an enemy controls a linked control point that exposes it), re-warn every 5 s — the
+    /// owning team gets the CENTER_ONS_NOTSHIELDED_TEAM center print + the ONS_GENERATOR_ALARM siren (ATTEN_NONE),
+    /// and the enemy team gets APP_TEAM_NUM(team, CENTER_ONS_NOTSHIELDED). A shielded (or game-stopped) generator
+    /// stays silent. Re-arms itself every GEN_THINKRATE (1 s); the 5 s repeat is gated by GtAlarmWait (QC .wait).
+    /// </summary>
+    public void GeneratorThink(Entity self)
+    {
+        self.NextThink = Now + GenThinkRate; // QC: this.nextthink = time + GEN_THINKRATE
+
+        // QC: if (game_stopped || this.isshielded || time < this.wait) return.
+        // (game_stopped covers warmup + the round-over state — the port's RoundStarted() gate.)
+        if (!RoundStarted())
+            return;
+        int team = self.GtHomeTeam;
+        Onslaught.OnsNode? node = _ons.GeneratorNode(team);
+        bool shielded = node is null || node.Shielded;
+        if (shielded || Now < self.GtAlarmWait)
+            return;
+
+        self.GtAlarmWait = Now + 5f; // QC: this.wait = time + 5
+
+        if (Api.Services is null)
+            return;
+
+        // QC FOREACH_CLIENT(IS_PLAYER(it) && IS_REAL_CLIENT(it), …): the owning team is warned its generator is
+        // exposed (center + the siren to that player); enemies get the team-coloured "enemy generator unshielded"
+        // center. Bots/spectators are skipped (IS_REAL_CLIENT). The siren is ATTEN_NONE (map-wide) in QC; the
+        // headless port emits it once globally (matching the under-attack alarm's PlayGlobal approximation).
+        string enemySuffix = Onslaught.TeamSuffix(team);
+        bool sirenPlayed = false;
+        foreach (Entity e in Api.Entities.FindByClass("player"))
+        {
+            if (e is not Player p || (p.Flags & EntFlags.Client) == 0 || p.IsBot)
+                continue;
+            if ((int)p.Team == team)
+            {
+                // QC: Send_Notification(NOTIF_ONE, it, MSG_CENTER, CENTER_ONS_NOTSHIELDED_TEAM); soundto siren.
+                NotificationSystem.Send(NotifBroadcast.One, p, MsgType.Center, "ONS_NOTSHIELDED_TEAM");
+                if (!sirenPlayed)
+                {
+                    SoundSystem.PlayGlobal(Sounds.ByName("ONS_GENERATOR_ALARM"));
+                    sirenPlayed = true;
+                }
+            }
+            else
+            {
+                // QC: Send_Notification(NOTIF_ONE, it, MSG_CENTER, APP_TEAM_NUM(this.team, CENTER_ONS_NOTSHIELDED)).
+                NotificationSystem.Send(NotifBroadcast.One, p, MsgType.Center, $"ONS_NOTSHIELDED_{enemySuffix}");
+            }
+        }
     }
 
     /// <summary>

@@ -81,6 +81,10 @@ public partial class CreateGameScreen : MenuScreen
         ["nb"]      = new("Goals:", "g_nexball_goallimit", 1, 50, 1, null),
         ["race"]    = new("Laps:", "g_race_laps_limit", 1, 25, 1, null),
         ["cts"]     = new("", "", 0, 0, 0, null),
+        // Invasion: "Point limit:" label (50..500 step 10) but no cvar binding — Base m_configuremenu
+        // passes string_null for pCvar (same as Assault/CTS/Onslaught), so the slider is disabled/greyed.
+        // The live point-limit is set via g_invasion_point_limit / mapinfo pointlimit=50 at server start.
+        ["inv"]     = new("Point limit:", "", 50, 500, 10, null),
     };
 
     // QC: only "priority" gametypes show unless menu_create_show_all, in the QC menu order (the stock list).

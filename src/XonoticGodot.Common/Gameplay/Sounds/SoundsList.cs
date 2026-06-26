@@ -108,6 +108,9 @@ public static class SoundsList
 
         Add("NB_BOUNCE", "nexball/bounce");
         Add("NB_DROP", "nexball/drop");
+        // QC SpawnGoal default goal noise (sv_nexball.qc): this.noise = "ctf/respawn.wav" — the score cue. Faithful
+        // to the QC default sample (NOT kh/capture). fault/out goals override noise with SND(TYPEHIT).
+        Add("NB_GOAL", "ctf/respawn");
         Add("NB_SHOOT1", "nexball/shoot1");
         Add("NB_SHOOT2", "nexball/shoot2");
         Add("NB_STEAL", "nexball/steal");

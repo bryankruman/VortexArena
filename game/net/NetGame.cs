@@ -3382,6 +3382,8 @@ public sealed partial class NetGame : Node3D
     private float _lastFedCheckpointTime = -1f;
     // The last record-attempt stamp we raised the medal flash for (so a frozen flash isn't re-triggered).
     private float _lastFedRecordTime = -1f;
+    // Same de-dup for the mod-icon medal flash (separate from the split-timer flash so each panel fires once).
+    private float _lastFedModIconRecordTime = -1f;
 
     /// <summary>QC <c>count_ordinal</c> (common/util.qc): 1 → "1st", 2 → "2nd", 3 → "3rd", 11..13 → "Nth".</summary>
     private static string CountOrdinal(int n)
@@ -3517,7 +3519,12 @@ public sealed partial class NetGame : Node3D
         }
         else _localDeathStamp = -1f;
         var cv = Api.Services?.Cvars;
-        bool deathScoreboard = deadNow && _localDeathStamp >= 0f
+        // QC cl_cts.qc MUTATOR_HOOKFUNCTION(cl_cts, DrawDeathScoreboard) returns ISGAMETYPE(CTS): CTS never shows the
+        // scoreboard automatically while dead (a CTS death is an instant respawn at the start line — there's nothing
+        // to read). The manual +showscores hold and the intermission scoreboard are unaffected.
+        bool ctsGame = _serverWorld?.GameType is XonoticGodot.Common.Gameplay.Cts
+            || XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype == "cts";
+        bool deathScoreboard = deadNow && _localDeathStamp >= 0f && !ctsGame
             && (cv is null || cv.GetFloat("cl_deathscoreboard") != 0f)
             && _client.LatestServerTime - _localDeathStamp >= (cv is null ? 1f : cv.GetFloat("cl_deathscoreboard_delay"));
         bool show = (XonoticGodot.Engine.Console.BindTable.ShowScores || intermissionShow || deathScoreboard)
@@ -3560,6 +3567,8 @@ public sealed partial class NetGame : Node3D
             // name (QC entcs_GetName(player_localnum)) drives the self-row highlight.
             _scoreboard.SetRankings(sb.Rankings);
             _scoreboard.RankingsSelfName = ResolveScoreboardName(_client.LocalNetId);
+            // QC the race/CTS speed award (scoreboard.qc:2731): the round-best + all-time best planar speed + holders.
+            _scoreboard.SetSpeedAward(sb.SpeedAward, sb.SpeedAwardHolder, sb.SpeedAwardBest, sb.SpeedAwardBestHolder);
             FeedScoreboardHeader();
         }
         else if (sb is null)
@@ -3764,10 +3773,74 @@ public sealed partial class NetGame : Node3D
                 panel.Mode = ModIconsPanel.ModIconsMode.TeamKeepaway;
                 panel.TkaBallStatus = ms.TkaBallStatus;
                 break;
+            // LMS: the recycled REDALIVE/BLUEALIVE/OBJECTIVE_STATUS leader stats drive HUD_Mod_LMS_Draw (the
+            // leader-count icon + the colored +N lives lead). The panel hides itself when the leader count is 0.
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.Lms:
+                panel.Mode = ModIconsPanel.ModIconsMode.Lms;
+                panel.LmsLeaderCount = ms.LmsLeaderCount;
+                panel.LmsLivesDiff = ms.LmsLivesDiff;
+                panel.LmsLeadersVisible = ms.LmsLeadersVisible;
+                break;
             default:
                 panel.Mode = ModIconsPanel.ModIconsMode.None;
                 break;
         }
+
+        // Race/CTS mod-icon (QC HUD_Mod_Race, cl_race.qc:59-164): not sent via GametypeStatusBlock (Race/CTS have
+        // no team-objective pack), so fall back to reading the live server gametype directly when on a listen server.
+        // Feeds the personal-best (local racer's rank-1 record from RaceRecords), server record, and the latest
+        // medal-flash status derived from the same Race.LastRecord that UpdateRacePanels already uses.
+        // QC guard: only show when the primary score column is SFL_TIME and it is NOT a team race
+        // (QC "if(!(scores_flags(ps_primary) & SFL_TIME) || teamplay)").
+        if (panel.Mode == ModIconsPanel.ModIconsMode.None)
+        {
+            XonoticGodot.Common.Gameplay.GameType? sgt = _serverWorld?.GameType;
+            Player? me = LocalServerPlayer;
+            var raceGt = sgt as XonoticGodot.Common.Gameplay.Race;
+            var ctsGt  = sgt as XonoticGodot.Common.Gameplay.Cts;
+            if ((raceGt is not null || ctsGt is not null) && me is not null && !_client!.IsObserving)
+            {
+                // QC: only show for non-team qualifying/CTS (SFL_TIME primary and !teamplay).
+                bool teamRace = raceGt is not null && raceGt.RaceTeams >= 2;
+                bool qualifying = raceGt is not null && raceGt.Qualifying;
+                bool show2 = qualifying || ctsGt is not null || (raceGt is not null && !teamRace);
+                if (show2)
+                {
+                    panel.Mode = ModIconsPanel.ModIconsMode.Race;
+
+                    // QC crecordtime (ClientProgsDB): the local racer's personal best = their own rank in the
+                    // server's per-map top-99, identified by PersistentId (UID). 0 = no personal best yet.
+                    string mapName  = raceGt?.MapName ?? ctsGt!.MapName;
+                    string recType  = raceGt?.RecordType ?? ctsGt!.RecordType;
+                    panel.RaceModIconPb = XonoticGodot.Common.Gameplay.RaceRecords.ReadPersonalBest(mapName, recType, me.PersistentId);
+
+                    // QC race_server_record (RACE_NET_SERVER_RECORD): rank-1 time for this map.
+                    panel.RaceModIconServerRecord = raceGt?.ServerRecord ?? ctsGt!.ServerRecord;
+
+                    // QC race_SendStatus → race_status / race_status_name / race_status_time: the medal flash.
+                    // Reuse the same stamp+player reference that UpdateRacePanels uses for the split-timer panel so
+                    // both panels flash on the same event without double-counting.
+                    float lastRecT = raceGt?.LastRecordTime ?? ctsGt!.LastRecordTime;
+                    XonoticGodot.Common.Gameplay.Player? lastRecP = raceGt?.LastRecordPlayer ?? ctsGt!.LastRecordPlayer;
+                    if (ReferenceEquals(lastRecP, me) && lastRecT > 0f && lastRecT != _lastFedModIconRecordTime)
+                    {
+                        _lastFedModIconRecordTime = lastRecT;
+                        XonoticGodot.Common.Gameplay.RaceRecordResult r = raceGt?.LastRecord ?? ctsGt!.LastRecord;
+                        int statusMi = r.Kind switch
+                        {
+                            XonoticGodot.Common.Gameplay.RaceRecordKind.Fail => 0,
+                            _ when r.IsServerRecord => 3,
+                            XonoticGodot.Common.Gameplay.RaceRecordKind.NewImproved => 1,
+                            _ => 2,
+                        };
+                        panel.RaceModIconStatus = statusMi;
+                        panel.RaceModIconStatusName = me.NetName;
+                        panel.RaceModIconStatusRankIsMine = true;
+                    }
+                }
+            }
+        }
+
         panel.MyTeam = ms.MyTeamIndex;
         if (ms.TeamCount > 0) panel.TeamCount = ms.TeamCount;
         bool show = panel.Mode != ModIconsPanel.ModIconsMode.None;

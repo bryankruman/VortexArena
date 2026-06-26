@@ -190,6 +190,14 @@ public sealed class Ctf : GameType
     public bool MatchEnded { get; private set; }
     public int LeaderTeam { get; private set; }
 
+    /// <summary>QC ctf_captimerecord (sv_ctf.qc): the fastest capture this match in seconds (0 = none yet). Drives
+    /// the CHOICE_CTF_CAPTURE_TIME / _BROKEN / _UNBROKEN fastest-cap broadcast. The persistent ServerProgsDB
+    /// record + cross-session leaderboard (g_ctf_leaderboard) remain out of scope (need a persistent DB).</summary>
+    private float _ctfCapTimeRecord;
+
+    /// <summary>QC ctf_captimerecord refername: the name of the player who holds the current fastest cap.</summary>
+    private string _ctfCapTimeRecordHolder = "";
+
     /// <summary>
     /// QC ctf_stalemate: both teams have held flags long enough that carriers are revealed (the anti-stall
     /// "show the enemy flagcarrier location" state). Drives the reserved CTF_STALEMATE OBJECTIVE_STATUS bit
@@ -199,6 +207,10 @@ public sealed class Ctf : GameType
 
     /// <summary>QC wpforenemy_nextthink: the next time <see cref="CheckStalemate"/> re-evaluates (WPFE_THINKRATE).</summary>
     private float _stalemateNextThink;
+
+    /// <summary>QC wpforenemy_announced: the stalemate center-print is fired once per stalemate stretch, then
+    /// suppressed until the stalemate clears (when <see cref="CheckStalemate"/> resets this).</summary>
+    private bool _stalemateAnnounced;
 
     private HookHandler<DeathEvent>? _deathHandler;
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageHandler;
@@ -316,6 +328,9 @@ public sealed class Ctf : GameType
         LeaderTeam = Teams.None;
         Stalemate = false;
         _stalemateNextThink = 0f;
+        _stalemateAnnounced = false;
+        _ctfCapTimeRecord = 0f;
+        _ctfCapTimeRecordHolder = "";
         Scoring.GameScores.ResetTeams();  // QC Score_ClearAll at match start: zero both team slots before declaring
         DeclareScoreRules();
         Scoring.GameScores.SeedTeams(TeamCount); // zero both team slots for the active teams (stable leader scan)
@@ -562,10 +577,12 @@ public sealed class Ctf : GameType
             }
         }
 
-        // QC ctf_Handle_Capture: the global "flag captured" voice + the kill-feed line + the capturer's centerprint.
-        FlagAnnounceSound(carried.HomeTeam, "CAPTURE");
-        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"CTF_CAPTURE_{TeamSuffix(carried.HomeTeam)}", player.NetName);
+        // QC ctf_Handle_Capture (sv_ctf.qc:634): the capturer's centerprint, then ctf_CaptureRecord (the kill-feed
+        // broadcast incl. the fastest-cap time), then the global "flag captured" voice.
         NotificationSystem.Center(player, $"CTF_CAPTURE_{TeamSuffix(carried.HomeTeam)}");
+        float capRunTime = carried.PickupTime > 0f ? ((Api.Services is not null ? Api.Clock.Time : 0f) - carried.PickupTime) : 0f;
+        CaptureRecord(carried.HomeTeam, player, capRunTime);
+        FlagAnnounceSound(carried.HomeTeam, "CAPTURE");
 
         // QC ctf_Handle_Capture: Send_Effect_(flag.capeffect, …) — the team-colored capture burst at the flag base
         // (EFFECT_CAP(teamnum) = "<team>_cap"). The captured flag's home team picks the color (QC enemy_flag.team).
@@ -851,6 +868,10 @@ public sealed class Ctf : GameType
             GametypeEntities.AttachToCarrier(fe, receiver, FlagCarryOffset);
             fe.GtStatus = (int)FlagStatus.Carried;
         }
+        // QC ctf_Handle_Retrieve (sv_ctf.qc:456): _sound(player, …, snd_flag_pass, ATTEN_NORM) — the positional
+        // "pass received" cue on the receiver as the in-flight pass completes.
+        if (Api.Services is not null)
+            SoundSystem.PlayOn(receiver, Sounds.ByName("CTF_PASS"));
     }
 
     /// <summary>
@@ -955,7 +976,29 @@ public sealed class Ctf : GameType
             fe.GtCapturer = carrier;
             GametypeEntities.SetOrigin(fe, carrier.Origin + FlagDropOffset);
         }
-        _ = droptype; // (the velocity + FLAG_PASSING transition are applied by the caller)
+
+        // QC ctf_Handle_Throw routing: DROP_THROW falls through to ctf_Handle_Drop (the same body as a death/
+        // disconnect DROP_NORMAL — INFO_CTF_LOST kill-feed line, the global snd_flag_dropped voice, and the
+        // drop SCORE penalty + CTF_DROPS). DROP_PASS does NOT go through ctf_Handle_Drop; instead it plays the
+        // positional snd_flag_touch on the passer (sv_ctf.qc:545) — the throw/pass audio that was absent.
+        switch (droptype)
+        {
+            case FlagDropType.Throw:
+                if (ScorePenaltyDrop != 0f)
+                {
+                    carrier.ScoreFrags -= (int)ScorePenaltyDrop;
+                    AddTeamScore(carrier.Team, -(int)ScorePenaltyDrop); // QC GameRules_scoring_add_team(player, SCORE, -penalty)
+                }
+                AddCol(carrier, "CTF_DROPS", 1); // QC GameRules_scoring_add(player, CTF_DROPS, 1)
+                NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"CTF_LOST_{TeamSuffix(flag.HomeTeam)}", carrier.NetName);
+                FlagAnnounceSound(flag.HomeTeam, "DROPPED"); // QC _sound(flag, …, snd_flag_dropped, ATTEN_NONE)
+                break;
+            case FlagDropType.Pass:
+                // QC _sound(player, CH_TRIGGER, flag.snd_flag_touch, VOL_BASE, ATTEN_NORM): positional on the passer.
+                if (Api.Services is not null)
+                    SoundSystem.PlayOn(carrier, Sounds.ByName("CTF_TOUCH"));
+                break;
+        }
     }
 
     /// <summary>QC StatusEffects_active(STATUSEFFECT_Strength, player) — the thrower has the Strength powerup.</summary>
@@ -975,8 +1018,10 @@ public sealed class Ctf : GameType
     //  Flag presentation (QC ctf_FlagSetup model/skin/glow + the _sound / Send_Notification calls)
     // ============================================================================================
 
-    /// <summary>EF_FULLBRIGHT (dpextensions) — networked via Entity.Effects so the flag reads clearly map-wide.</summary>
+    /// <summary>EF_FULLBRIGHT (dpextensions) — set only when g_ctf_fullbrightflags (Base default 0 = off).</summary>
     private const int EfFullbright = 512;
+    /// <summary>EF_LOWPRECISION (dpextensions.qc:274) — bandwidth hint; QC ctf_FlagSetup always sets it on the flag.</summary>
+    private const int EfLowPrecision = 4194304;
 
     /// <summary>Lowercase team token for the <c>g_ctf_flag_&lt;team&gt;_*</c> cvars (red/blue/yellow/pink/neutral).</summary>
     private static string TeamName(int team) => team switch
@@ -1013,6 +1058,52 @@ public sealed class Ctf : GameType
     {
         if (Api.Services is null) return;
         SoundSystem.PlayGlobal(Sounds.ByName($"CTF_{evt}_{TeamSuffix(flagTeam)}"));
+    }
+
+    /// <summary>
+    /// QC ctf_CaptureRecord (sv_ctf.qc:113): broadcast the capture, including the fastest-cap time. One-flag mode
+    /// fires the plain INFO_CTF_CAPTURE_NEUTRAL; otherwise it fires the MSG_CHOICE CHOICE_CTF_CAPTURE_TIME /
+    /// _BROKEN / _UNBROKEN (the client picks the plain "captured the flag" or the timed variant). The in-process
+    /// fastest-cap record (<see cref="_ctfCapTimeRecord"/>) is updated when beaten; the persistent ServerProgsDB
+    /// record + cross-session leaderboard are out of scope. <paramref name="capTime"/> is the carry duration (s).
+    /// </summary>
+    private void CaptureRecord(int flagTeam, Player player, float capTime)
+    {
+        bool validRecord = capTime > 0.01f;
+        float capRecord = _ctfCapTimeRecord;
+        string refername = _ctfCapTimeRecordHolder;
+        string suffix = TeamSuffix(flagTeam);
+
+        if (OneFlag)
+        {
+            // QC: one-flag mode shows the plain neutral capture line (no per-team record).
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "CTF_CAPTURE_NEUTRAL", player.NetName);
+        }
+        else if (capRecord <= 0f || !validRecord)
+        {
+            // QC CHOICE_CTF_CAPTURE_TIME: first cap (no record yet) → the plain/timed capture line (netname, time).
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Choice, $"CTF_CAPTURE_TIME_{suffix}",
+                player.NetName, Scoring.GameScores.TimeEncode(capTime));
+        }
+        else if (capTime < capRecord)
+        {
+            // QC CHOICE_CTF_CAPTURE_BROKEN: a new record (netname, refername, new time, old record).
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Choice, $"CTF_CAPTURE_BROKEN_{suffix}",
+                player.NetName, refername, Scoring.GameScores.TimeEncode(capTime), Scoring.GameScores.TimeEncode(capRecord));
+        }
+        else
+        {
+            // QC CHOICE_CTF_CAPTURE_UNBROKEN: failed to beat the record (netname, refername, this time, record).
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Choice, $"CTF_CAPTURE_UNBROKEN_{suffix}",
+                player.NetName, refername, Scoring.GameScores.TimeEncode(capTime), Scoring.GameScores.TimeEncode(capRecord));
+        }
+
+        // QC: update the in-process fastest-cap record when this is the first valid cap or it beat the record.
+        if (!OneFlag && validRecord && (capRecord <= 0f || capTime < capRecord))
+        {
+            _ctfCapTimeRecord = capTime;
+            _ctfCapTimeRecordHolder = player.NetName;
+        }
     }
 
     private bool OnDeath(ref DeathEvent ev)
@@ -1160,7 +1251,13 @@ public sealed class Ctf : GameType
             string tn = TeamName(team);
             e.Model = CvarStr($"g_ctf_flag_{tn}_model", "models/ctf/flags.md3");
             e.Skin = GametypeEntities.TryCvar($"g_ctf_flag_{tn}_skin", out float sk) ? sk : DefaultFlagSkin(team);
-            e.Effects |= EfFullbright;
+            // QC ctf_FlagSetup (sv_ctf.qc:1442): the flag always gets EF_LOWPRECISION (bandwidth hint), and
+            // EF_FULLBRIGHT ONLY when g_ctf_fullbrightflags is set (Base default 0 = off — the flag lights from the
+            // world like any model). The glow trail (g_ctf_flag_glowtrails) + dynamic team light (g_ctf_dynamiclights)
+            // need entity glow/dlight fields the port doesn't network yet, so they stay deferred.
+            e.Effects |= EfLowPrecision;
+            if (Cvar("g_ctf_fullbrightflags", 0f) != 0f)
+                e.Effects |= EfFullbright;
 
             FlagEntities.Add(e);
         }
@@ -1416,8 +1513,10 @@ public sealed class Ctf : GameType
                 Scoring.GameScores.SetBestTime(player, cf, Scoring.GameScores.TimeEncode(captime));
         }
 
+        // QC ctf_Handle_Capture(…, CAPTURE_DROPPED): same ctf_CaptureRecord broadcast (incl. fastest-cap time) + voice.
+        float dropCapRunTime = droppedFlag.PickupTime > 0f ? (Now - droppedFlag.PickupTime) : 0f;
+        CaptureRecord(droppedFlag.HomeTeam, player, dropCapRunTime);
         FlagAnnounceSound(droppedFlag.HomeTeam, "CAPTURE");
-        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"CTF_CAPTURE_{TeamSuffix(droppedFlag.HomeTeam)}", player.NetName);
 
         droppedFlag.ResetToBase();
         RespawnFlagEntity(droppedFlag);
@@ -1430,7 +1529,7 @@ public sealed class Ctf : GameType
     /// whose return timer has elapsed. Call each tick. Complements the per-entity think; safe with or without
     /// the entity layer (operates on <see cref="FlagState.DropTime"/>).
     /// </summary>
-    public void Tick()
+    public void Tick(IReadOnlyList<Player>? roster = null)
     {
         if (MatchEnded)
             return;
@@ -1466,10 +1565,13 @@ public sealed class Ctf : GameType
         if (Cvar(CvarStalemate, 1f) != 0f && now >= _stalemateNextThink)
         {
             _stalemateNextThink = now + WpfeThinkRate;
-            CheckStalemate(now);
+            CheckStalemate(now, roster);
         }
         else if (Cvar(CvarStalemate, 1f) == 0f && Stalemate)
+        {
             Stalemate = false; // stalemate disabled mid-match → clear it
+            _stalemateAnnounced = false;
+        }
     }
 
     /// <summary>
@@ -1479,7 +1581,7 @@ public sealed class Ctf : GameType
     /// is). Sets <see cref="Stalemate"/>; the net status producer maps it to the CTF_STALEMATE OBJECTIVE_STATUS
     /// bit and the enemy-FC waypoint reveal is a presentation follow-on (see todos).
     /// </summary>
-    public void CheckStalemate(float now)
+    public void CheckStalemate(float now, IReadOnlyList<Player>? roster = null)
     {
         float staleTime = Cvar(CvarStalemateTime, DefaultStalemateTime);
         int endCond = (int)Cvar(CvarStalemateEndCond, DefaultStalemateEndCond);
@@ -1507,15 +1609,32 @@ public sealed class Ctf : GameType
             ? (staleNeutral >= 1 ? 1 : 0)
             : (staleRed >= 1 ? 1 : 0) + (staleBlue >= 1 ? 1 : 0) + (staleYellow >= 1 ? 1 : 0) + (stalePink >= 1 ? 1 : 0);
 
-        // QC ctf_CheckStalemate set/clear ladder.
+        // QC ctf_CheckStalemate set/clear ladder. QC also resets wpforenemy_announced on a clear so the next
+        // stalemate onset re-announces (the announce is a one-shot per stalemate stretch).
         if (OneFlag && staleFlags == 1)
             Stalemate = true;
         else if (staleFlags >= 2)
             Stalemate = true;
         else if (staleFlags == 0 && endCond == 2)
-            Stalemate = false;
+            { Stalemate = false; _stalemateAnnounced = false; }
         else if (staleFlags < 2 && endCond == 1)
-            Stalemate = false;
+            { Stalemate = false; _stalemateAnnounced = false; }
+
+        // QC ctf_CheckStalemate announce (sv_ctf.qc:970): on the FIRST tick of a stalemate, center-print to every
+        // player — flag carriers get CENTER_CTF_STALEMATE_CARRIER ("enemies can now see you"), everyone else gets
+        // CENTER_CTF_STALEMATE_OTHER ("flag carriers can now be seen"). The enemy-FC waypoint reveal is already
+        // emitted by CollectWaypoints (FlagCarrierEnemy sprites, shown to all). One-shot via _stalemateAnnounced.
+        if (Stalemate && !_stalemateAnnounced && roster is not null)
+        {
+            _stalemateAnnounced = true;
+            for (int i = 0; i < roster.Count; i++)
+            {
+                Player p = roster[i];
+                if (p.IsObserver)
+                    continue;
+                NotificationSystem.Center(p, CarriedBy(p) is not null ? "CTF_STALEMATE_CARRIER" : "CTF_STALEMATE_OTHER");
+            }
+        }
     }
 
     /// <summary>

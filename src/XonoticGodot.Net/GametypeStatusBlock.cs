@@ -44,6 +44,8 @@ public static class GametypeStatusBlock
         Domination = 6,  // QC STAT(DOM_TOTAL_PPS / DOM_PPS_*): the points-per-second mod-icon (set_dom_state)
         Keepaway = 7,    // QC the KA_CARRYING mod-icon: who (net id) is currently carrying the ball (0 = nobody)
         TeamKeepaway = 8, // QC STAT(TKA_BALLSTATUS): per-recipient carrying / per-team taken / dropped bit pack
+        Lms = 9,         // QC sv_lms.qc recycled STAT(REDALIVE)=lms_leaders, STAT(BLUEALIVE)=lms_leaders_lives_diff,
+                         // STAT(OBJECTIVE_STATUS)=lms_visible_leaders: the leader-count mod-icon + the +N lives lead.
     }
 
     // [W1-mod-icons] QC ctf.qh CTF_* OBJECTIVE_STATUS bit layout (2 bits per team slot: 1=taken, 2=lost,
@@ -122,6 +124,17 @@ public static class GametypeStatusBlock
                 w.WriteByte(tka.BallStatusFor(viewer) & 0xFF);
                 return true;
 
+            case LastManStanding lms:
+                WriteHeader(w, Kind.Lms, viewer, 0); // FFA elimination: no visible teams
+                // QC sv_lms.qc recycled stats (set in PlayerPreThink / SV_StartFrame, same for every recipient):
+                //   STAT(REDALIVE) = lms_leaders, STAT(BLUEALIVE) = lms_leaders_lives_diff,
+                //   STAT(OBJECTIVE_STATUS) = lms_visible_leaders. The HUD mod-icon (cl_lms.qc HUD_Mod_LMS_Draw)
+                //   draws nothing when lms_leaders == 0.
+                w.WriteByte(System.Math.Clamp(lms.LeaderCount, 0, 255));
+                w.WriteByte(System.Math.Clamp(lms.LeadersLivesDiff, 0, 255));
+                w.WriteByte(lms.LeadersVisible ? 1 : 0);
+                return true;
+
             case Survival surv:
                 WriteHeader(w, Kind.Survival, viewer, 0); // roleplay-FFA: no visible teams (QC USEPOINTS only)
                 // Own role: 0 until the roles are live (the client hides the panel on 0 — QC's
@@ -189,7 +202,11 @@ public static class GametypeStatusBlock
         }
         if (viewer.GtCaptureShielded)
             status |= CtfShielded;
-        // CTF_STALEMATE is a Wave-2 Ctf.cs producer (stalemate detection) — the bit is reserved here.
+        // QC ctf_SetStatus (sv_ctf.qc): once ctf_CheckStalemate has flagged the stalemate state, OR the
+        // CTF_STALEMATE bit so the client's flag-status mod-icon lights its stalemate overlay (cl_ctf.qc
+        // reads bit 8192). Detection lives in Ctf.CheckStalemate (set/clear ladder); this just replicates it.
+        if (ctf.Stalemate)
+            status |= CtfStalemate;
         return status;
     }
 
@@ -287,6 +304,16 @@ public static class GametypeStatusBlock
         /// <summary>Team Keepaway: the per-recipient QC STAT(TKA_BALLSTATUS) bit pack (carrying / per-team taken /
         /// dropped) — feeds the TKA mod-icon (HUD_Mod_TeamKeepaway).</summary>
         public int TkaBallStatus;
+
+        /// <summary>LMS: QC <c>STAT(REDALIVE) = lms_leaders</c> — the count of current leaders (the mod-icon's
+        /// leader-count number; 0 hides the panel).</summary>
+        public int LmsLeaderCount;
+        /// <summary>LMS: QC <c>STAT(BLUEALIVE) = lms_leaders_lives_diff</c> — the lives the leader(s) hold over the
+        /// next-best player (the colored "+N" readout).</summary>
+        public int LmsLivesDiff;
+        /// <summary>LMS: QC <c>STAT(OBJECTIVE_STATUS) = lms_visible_leaders</c> — leaders are inside their radar
+        /// show-window (the flag_stalemate overlay flashes on the mod-icon while true).</summary>
+        public bool LmsLeadersVisible;
     }
 
     /// <summary>Read a status block (the inverse of <see cref="Capture"/>'s writes). Returns null on a bad
@@ -294,7 +321,7 @@ public static class GametypeStatusBlock
     public static Decoded? Deserialize(ref BitReader r)
     {
         int mode = r.ReadByte();
-        if (mode < (int)Kind.ClanArena || mode > (int)Kind.TeamKeepaway)
+        if (mode < (int)Kind.ClanArena || mode > (int)Kind.Lms)
             return null; // unknown mode: build-parity should make this unreachable
         var d = new Decoded
         {
@@ -330,6 +357,11 @@ public static class GametypeStatusBlock
                 break;
             case Kind.TeamKeepaway:
                 d.TkaBallStatus = r.ReadByte();
+                break;
+            case Kind.Lms:
+                d.LmsLeaderCount = r.ReadByte();
+                d.LmsLivesDiff = r.ReadByte();
+                d.LmsLeadersVisible = r.ReadByte() != 0;
                 break;
         }
         return r.BadRead ? null : d;

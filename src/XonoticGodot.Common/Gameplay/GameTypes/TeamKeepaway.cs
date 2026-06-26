@@ -89,6 +89,7 @@ public sealed class TeamKeepaway : GameType
     private HookHandler<MutatorHooks.GiveFragsForKillArgs>? _giveFragsHandler;
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
     private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _physicsHandler;
+    private HookHandler<MutatorHooks.PlayerUseKeyArgs>? _useKeyHandler;
 
     // QC g_tka_ballcarrier_highspeed: the carrier's MOVEVARS_HIGHSPEED multiplier (default 1 = no effect).
     private const string CvarBallCarrierHighspeed = "g_tka_ballcarrier_highspeed";
@@ -378,6 +379,36 @@ public sealed class TeamKeepaway : GameType
         // powerup/buff factors (registry tka.carrier.highspeed — previously missing).
         _physicsHandler ??= OnPlayerPhysics;
         MutatorHooks.PlayerPhysics.Add(_physicsHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(tka, PlayerUseKey): a carrier pressing +use drops the ball (tka_DropEvent)
+        // and consumes the press. Wires the use-key drop trigger live (registry tka.ball.drop; the death-drop
+        // path is OnDeath, the observer/disconnect paths are OnPlayerRemoved below).
+        _useKeyHandler ??= OnUseKey;
+        MutatorHooks.PlayerUseKey.Add(_useKeyHandler);
+    }
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(tka, PlayerUseKey): a carrier pressing +use drops the ball (tka_DropEvent)
+    /// and consumes the press (returns true). Otherwise the press falls through to other handlers.</summary>
+    private bool OnUseKey(ref MutatorHooks.PlayerUseKeyArgs args)
+    {
+        if (MatchEnded || args.Player is not Player player)
+            return false;
+        if (!ReferenceEquals(Carrier, player))
+            return false; // QC: only fires `if(player.ballcarried)`
+        DropBall();
+        return true; // QC tka PlayerUseKey returns true when it dropped (consumes the +use)
+    }
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(tka, MakePlayerObserver) and MUTATOR_HOOKFUNCTION(tka, ClientDisconnect):
+    /// both loop `while(player.ballcarried) tka_DropEvent(player)` — a carrier demoted to spectator or who
+    /// disconnects relinquishes the ball. Wired through the shared <see cref="GameType.OnPlayerRemoved"/> seam,
+    /// fired live by ClientManager.PutObserverInServer + ClientDisconnect (registry tka.ball.drop).</summary>
+    public override void OnPlayerRemoved(Player player)
+    {
+        if (MatchEnded)
+            return;
+        if (ReferenceEquals(Carrier, player))
+            DropBall(); // QC: while(player.ballcarried) tka_DropEvent(player)
     }
 
     /// <summary>QC MUTATOR_HOOKFUNCTION(tka, PlayerPhysics_UpdateStats): scale the carrier's top speed by
@@ -416,6 +447,11 @@ public sealed class TeamKeepaway : GameType
         {
             MutatorHooks.PlayerPhysics.Remove(_physicsHandler);
             _physicsHandler = null;
+        }
+        if (_useKeyHandler is not null)
+        {
+            MutatorHooks.PlayerUseKey.Remove(_useKeyHandler);
+            _useKeyHandler = null;
         }
     }
 
@@ -659,9 +695,11 @@ public sealed class TeamKeepaway : GameType
     private int ScoreKillAc => TryCvar(CvarScoreKillAc, out float v) ? (int)v : DefaultScoreKillAc;
     private int ScoreBcKill => TryCvar(CvarScoreBcKill, out float v) ? (int)v : DefaultScoreBcKill;
 
-    // ----- waypoint tracking cvar (g_tkaball_tracking: 0=none/1=tracking; QC default 1) -----
+    // ----- waypoint tracking cvar (g_tkaball_tracking: 0=none / 1=always / 2=dropped-only; QC default 1) -----
     private const string CvarBallTracking = "g_tkaball_tracking";
-    /// <summary>QC autocvar_g_tkaball_tracking (default 1): 0 = no waypoint, 1 = track the ball/carrier.</summary>
+    /// <summary>QC autocvar_g_tkaball_tracking (default 1): 0 = no waypoint at all; 1 = always track the
+    /// ball/carrier; 2 = only the loose ball is shown to enemies (the carrier sprite is hidden from them — see
+    /// <see cref="CarrierWaypointVisibleFor"/>, which returns the QC <c>tracking == 1</c> for the enemy case).</summary>
     private int BallTracking => TryCvar(CvarBallTracking, out float v) ? (int)v : 1;
 
     /// <summary>
@@ -683,16 +721,22 @@ public sealed class TeamKeepaway : GameType
         if (carrier is not null)
         {
             // QC tka_TouchEvent: WaypointSprite_AttachCarrier with WP_TkaBallCarrier<team> + colormapPaletteColor,
-            // SPRITERULE_TEAMPLAY, RADARICON_FLAGCARRIER. The sprite name + radar tint come from the carrier's team.
+            // SPRITERULE_TEAMPLAY, RADARICON_FLAGCARRIER, plus the per-frame
+            // tka_ballcarrier_waypointsprite_visible_for_player predicate. The sprite name + radar tint come from
+            // the carrier's team; the predicate (CarrierWaypointVisibleFor) governs the per-viewer visibility,
+            // including the g_tkaball_tracking == 1 vs == 2 (dropped-only) distinction for enemies.
             int team = (int)carrier.Team;
+            Player held = carrier;
             into.Add(new Waypoints.WaypointSprite
             {
                 SpriteName = CarrierSpriteName(team),
                 Owner = carrier,
                 Offset = new System.Numerics.Vector3(0f, 0f, 64f),
-                Team = team, // SPRITERULE_TEAMPLAY: visibility/tint keyed on the carrier's team
+                Team = team, // colormod / radar tint keyed on the carrier's team
                 Color = TeamRadarColor(team),
                 RadarIcon = 1, // RADARICON_FLAGCARRIER
+                Rule = Waypoints.SpriteRule.Teamplay, // QC WaypointSprite_UpdateRule(..., SPRITERULE_TEAMPLAY)
+                VisibleForPlayer = viewer => CarrierWaypointVisibleFor(held, viewer),
                 Health = -1f,
             });
             return;
@@ -708,6 +752,25 @@ public sealed class TeamKeepaway : GameType
             RadarIcon = 1,
             Health = -1f,
         });
+    }
+
+    /// <summary>
+    /// QC sv_tka.qc tka_ballcarrier_waypointsprite_visible_for_player: the per-viewer visibility predicate on the
+    /// carrier waypoint. Spectators and the carrier's own team always see it; during warmup everyone does; otherwise
+    /// an enemy sees it only when <c>g_tkaball_tracking == 1</c> (so <c>== 2</c> = dropped-only hides the carrier
+    /// sprite from enemies). The QC also hides it from spectators-of-the-carrier and on the carrier's invisibility
+    /// powerup; those two nuances are approximated (the predicate has no spectatee / invisibility field here).
+    /// </summary>
+    private bool CarrierWaypointVisibleFor(Player carrier, Player? viewer)
+    {
+        if (viewer is null)
+            return false;
+        // QC: if(IS_SPEC(player) || warmup_stage || SAME_TEAM(player, this.owner)) return true;
+        if (viewer.IsObserver || NotificationSystem.WarmupStage || Teams.SameTeam(viewer, carrier))
+            return true;
+        // QC: return autocvar_g_tkaball_tracking == 1; (enemies see the carrier only in the always-track mode,
+        // not in the dropped-only mode 2). The IS_INVISIBLE(owner) hide is approximated as visible.
+        return BallTracking == 1;
     }
 
     /// <summary>QC tka_TouchEvent WaypointSprite_UpdateSprites switch (NUM_TEAM_1..4 → WP_TkaBallCarrier

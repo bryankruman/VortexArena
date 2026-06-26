@@ -127,6 +127,9 @@ public sealed class Nexball : GameType
     private float _ballDropTime;
     /// <summary>True iff the live ball is a basketball (NBM_BASKETBALL — carryable). False = football (kickable only).</summary>
     private bool _isBasketball = true;
+    /// <summary>QC SpawnBall: g_nexball_sound_bounce (default 1) — when 0, ball.noise is cleared so NO bounce sound plays.
+    /// The touch handlers play this.noise, so an empty noise means a silent world bounce.</summary>
+    private bool _bounceSoundEnabled = true;
     /// <summary>QC: the ball's think is InitBall (release) rather than ResetBall (glide) — set by SpawnBall and by
     /// ResetBall step 4, cleared once InitBall runs. Keeps ball.cnt faithful to QC (0 during the pre-release hold).</summary>
     private bool _releasePending;
@@ -165,6 +168,8 @@ public sealed class Nexball : GameType
     public Entity? SpawnBall(Vector3 origin, bool basketball = true)
     {
         _isBasketball = basketball;
+        // QC SpawnBall: if(!g_nexball_sound_bounce) this.noise = ""; — the bounce sound is gated by the cvar (default 1).
+        _bounceSoundEnabled = GametypeEntities.Cvar("g_nexball_sound_bounce", 1f) != 0f;
         var cfg = new BallConfig
         {
             Touch = basketball ? BasketballTouch : FootballTouch, // QC settouch(basketball_touch/football_touch)
@@ -492,7 +497,8 @@ public sealed class Nexball : GameType
         // QC: else if(toucher.solid == SOLID_BSP) — a world bounce: sfx + re-arm idle.
         if (other.Solid == Solid.Bsp)
         {
-            SoundSystem.PlayOn(self, Sounds.ByName("NB_BOUNCE"), SoundChannel.TriggerAuto, SoundLevels.VolBase, SoundLevels.AttenNorm);
+            if (_bounceSoundEnabled) // QC: _sound(this, CH_TRIGGER, this.noise, ...) — noise is "" when g_nexball_sound_bounce=0
+                SoundSystem.PlayOn(self, Sounds.ByName("NB_BOUNCE"), SoundChannel.TriggerAuto, SoundLevels.VolBase, SoundLevels.AttenNorm);
             if (self.Velocity != Vector3.Zero && _ballCnt == 0)
                 self.NextThink = MinIdle(GametypeEntities.Now + DelayIdle);
         }
@@ -510,7 +516,8 @@ public sealed class Nexball : GameType
             // QC: world bounce — throttle the bounce sound to once per 0.1 s, re-arm idle.
             if (GametypeEntities.Now > _ballLastGround + 0.1f)
             {
-                SoundSystem.PlayOn(self, Sounds.ByName("NB_BOUNCE"), SoundChannel.TriggerAuto, SoundLevels.VolBase, SoundLevels.AttenNorm);
+                if (_bounceSoundEnabled) // QC noise is "" when g_nexball_sound_bounce=0 → silent bounce
+                    SoundSystem.PlayOn(self, Sounds.ByName("NB_BOUNCE"), SoundChannel.TriggerAuto, SoundLevels.VolBase, SoundLevels.AttenNorm);
                 _ballLastGround = GametypeEntities.Now;
             }
             if (self.Velocity != Vector3.Zero && _ballCnt == 0)
@@ -608,10 +615,10 @@ public sealed class Nexball : GameType
 
         if (BallEntity is Entity ball)
         {
-            // QC: _sound(ball, CH_TRIGGER, this.noise, VOL_BASE, ATTEN_NONE) — the goal's noise (ctf/respawn for a
-            // score, TYPEHIT for fault/out). The goal entity carries no per-goal noise field in the port, so pick
-            // the faithful default by goal kind.
-            string goalSound = goalTeam is GoalFault or GoalOut ? "TYPEHIT" : "KH_CAPTURE"; // ctf/respawn ≈ capture cue
+            // QC: _sound(ball, CH_TRIGGER, this.noise, VOL_BASE, ATTEN_NONE) — the goal's noise. A team goal's noise
+            // defaults to "ctf/respawn.wav" (NB_GOAL); a fault/out goal overrides it with SND(TYPEHIT). The goal entity
+            // carries no per-goal noise field in the port, so pick the faithful default by goal kind.
+            string goalSound = goalTeam is GoalFault or GoalOut ? "TYPEHIT" : "NB_GOAL"; // QC ctf/respawn.wav score cue
             SoundSystem.PlayOn(ball, Sounds.ByName(goalSound), SoundChannel.TriggerAuto, SoundLevels.VolBase, SoundLevels.AttenNone);
 
             // QC GOAL_TOUCHPLAYER (ball.owner): a carrier scored directly — drop the ball where they stand.
@@ -882,6 +889,18 @@ public sealed class Nexball : GameType
                 WinningTeam = leader;
             }
         }
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(nb, ClientDisconnect) + (nb, MakePlayerObserver) → nb_DropBall(player): a player who
+    /// leaves play (disconnects, or is forced to observer) drops the ball where they stand, inheriting their
+    /// velocity, so the ball can never stay stuck on a gone/spectating carrier. Dispatched once per leave-play event
+    /// from the server (ClientManager.ClientDisconnect / PutObserverInServer → GameType.OnPlayerRemoved).
+    /// </summary>
+    public override void OnPlayerRemoved(Player player)
+    {
+        // QC nb_DropBall: if(player.ballcarried && g_nexball) DropBall(player.ballcarried, player.origin, player.velocity).
+        DropBall(player); // no-op unless this player is the live ball's carrier
     }
 
     /// <summary>Kills don't score in Nexball (the ball does); a carrier who dies drops the ball.</summary>

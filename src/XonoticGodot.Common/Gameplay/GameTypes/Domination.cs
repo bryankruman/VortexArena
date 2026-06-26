@@ -371,6 +371,7 @@ public sealed class Domination : GameType
             // palette: models/domination/dom_<color>.md3, dom_unclaimed.md3 for the neutral start) — set it so the
             // point body is visible (the same fix the CTF flag needed; Entity.Model networks + renders).
             e.Model = DomPointModel(initialTeam);
+            e.ScaleFactor = 0.6f; // QC spawnfunc(dom_controlpoint): scale 0.6
             e.Effects |= EfLowPrecision; // QC EF_LOWPRECISION bandwidth hint
             if (Cvar("g_domination_point_fullbright", 0f) != 0f)
                 e.Effects |= EfFullBright; // QC EF_FULLBRIGHT when g_domination_point_fullbright
@@ -571,13 +572,36 @@ public sealed class Domination : GameType
             CapturePoint(p, cp);
     }
 
-    /// <summary>Per-point think trampoline (QC dompointthink): tick this owned point if its timer elapsed.</summary>
+    /// <summary>
+    /// QC AnimateDomPoint (sv_domination.qc:140): advance the point's frame animation. The frame increments
+    /// every <paramref name="cp"/>.<see cref="ControlPoint.TWidth"/> seconds (default 0.02s), wrapping from
+    /// <see cref="ControlPoint.TLength"/> (default 239) back to 0.
+    /// </summary>
+    private static void AnimateDomPoint(ControlPoint cp, Entity self)
+    {
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        if (cp.PainFinished > now)
+            return;
+        cp.PainFinished = now + cp.TWidth;
+        // Adjust the entity's next think if this animation tick is sooner than the scheduled think.
+        if (self.NextThink > cp.PainFinished)
+            self.NextThink = cp.PainFinished;
+
+        self.Frame++;
+        if (self.Frame > cp.TLength)
+            self.Frame = 0;
+    }
+
+    /// <summary>Per-point think trampoline (QC dompointthink): animate the point frame and tick if owned and timer elapsed.</summary>
     private void PointThinkEntity(Entity self)
     {
         self.NextThink = GametypeEntities.Now + 0.1f; // QC dompointthink rate
         ControlPoint? cp = PointForEntity(self);
         if (cp is not null)
+        {
+            AnimateDomPoint(cp, self); // QC AnimateDomPoint frame animation
             PointThink(cp);
+        }
     }
 
     /// <summary>
@@ -700,10 +724,10 @@ public sealed class Domination : GameType
 
 /// <summary>
 /// A Domination control point — the Godot-free essence of the QC dom_controlpoint edict
-/// (.goalentity.team owner, .enemy capturer, .delay next-tick time, per-point .frags/.wait). Tracks its
-/// world position, owning team, capturer, next-tick time, per-point amt/rate, and — when a facade is wired —
-/// the world <see cref="Entity"/>. The point model/animation, neutral interim state, and waypoint sprites
-/// remain client concerns.
+/// (.goalentity.team owner, .enemy capturer, .delay next-tick time, per-point .frags/.wait, frame anim
+/// .t_width/.t_length/.pain_finished). Tracks its world position, owning team, capturer, next-tick time,
+/// per-point amt/rate, and — when a facade is wired — the world <see cref="Entity"/>. The point model,
+/// neutral interim state, and waypoint sprites remain client concerns.
 /// </summary>
 public sealed class ControlPoint
 {
@@ -730,6 +754,15 @@ public sealed class ControlPoint
 
     /// <summary>The world entity representing this point (QC the dom_controlpoint edict), or null (headless).</summary>
     public Entity? Entity;
+
+    /// <summary>QC .pain_finished — absolute sim time when the next frame increment is due (frame animation).</summary>
+    public float PainFinished;
+
+    /// <summary>QC .t_width — frame animation interval (default 0.02s between frame increments).</summary>
+    public float TWidth = 0.02f;
+
+    /// <summary>QC .t_length — frame animation max frame number (default 239, so frames 0..239).</summary>
+    public float TLength = 239f;
 
     public ControlPoint(Vector3 origin) => Origin = origin;
 }

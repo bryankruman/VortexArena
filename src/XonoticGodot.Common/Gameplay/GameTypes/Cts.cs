@@ -388,6 +388,12 @@ public sealed class Cts : GameType
         _retractAt.Clear(); // cancel all pending kill-delay re-teleports
         for (int i = 0; i < players.Count; i++)
             GetState(players[i]).RunStartTime = 0f; // QC race_PreparePlayer: no run in progress
+
+        // QC: the round-best speed award (speedaward_speed/holder) resets each round; the persisted all-time best
+        // (speedaward_alltimebest) is kept (re-loaded from the DB) so it survives the reset.
+        _speedawardSpeed = 0f;
+        _speedawardHolder = "";
+        _speedawardUid = "";
     }
 
     /// <summary>Per-frame: fire any due finish-retracts (the deferred kill-delay re-teleport). Call once per server frame.</summary>
@@ -422,6 +428,83 @@ public sealed class Cts : GameType
             if (st.FastestTime > 0f && (best <= 0f || st.FastestTime < best))
                 best = st.FastestTime;
         return best;
+    }
+
+    // ============================================================================================
+    //  Speed award (QC server/race.qc race_SpeedAwardFrame / race_SendAll, hooked from cts GetPressedKeys)
+    // ============================================================================================
+    // QC tracks the best HORIZONTAL (planar) speed seen this round (speedaward_speed/holder) and the persisted
+    // all-time best (speedaward_alltimebest, ServerProgsDB). Both are broadcast (RACE_NET_SPEED_AWARD / _BEST) and
+    // shown on the race/CTS scoreboard ("Speed award: N qu/s (holder)" / "All-time fastest: ..."). The port computes
+    // the same values server-side and exposes them so a listen-server / networked scoreboard can render them.
+
+    private float _speedawardSpeed;            // QC speedaward_speed: best planar speed this round (qu/s)
+    private string _speedawardHolder = "";     // QC speedaward_holder
+    private string _speedawardUid = "";        // QC speedaward_uid
+    private float _speedawardAllTimeBest;      // QC speedaward_alltimebest (persisted)
+    private string _speedawardAllTimeHolder = ""; // QC speedaward_alltimebest_holder
+    private bool _speedawardLoaded;            // lazily pull the persisted all-time best once the map is known
+
+    /// <summary>QC <c>speedaward_speed</c>: the best planar speed (qu/s) achieved this round, for the scoreboard
+    /// "Speed award" line. 0 = nobody has moved yet.</summary>
+    public float SpeedAwardSpeed => _speedawardSpeed;
+    /// <summary>QC <c>speedaward_holder</c>: the net name of the round-best-speed holder ("" if none).</summary>
+    public string SpeedAwardHolder => _speedawardHolder;
+    /// <summary>QC <c>speedaward_alltimebest</c>: the persisted all-time best planar speed (qu/s) for this map.</summary>
+    public float SpeedAwardBest { get { EnsureSpeedAwardLoaded(); return _speedawardAllTimeBest; } }
+    /// <summary>QC <c>speedaward_alltimebest_holder</c>: the all-time best-speed holder name ("" if none).</summary>
+    public string SpeedAwardBestHolder { get { EnsureSpeedAwardLoaded(); return _speedawardAllTimeHolder; } }
+
+    private void EnsureSpeedAwardLoaded()
+    {
+        if (_speedawardLoaded || Api.Services is null)
+            return;
+        _speedawardLoaded = true;
+        // QC race_SendAll: speedaward_alltimebest = stof(db_get(map, record_type, "speed/speed")); holder via uid2name.
+        _speedawardAllTimeBest = RaceRecords.ReadSpeedAwardBest(MapName, RecordType);
+        _speedawardAllTimeHolder = RaceRecords.ReadSpeedAwardBestHolder(MapName, RecordType);
+    }
+
+    /// <summary>
+    /// QC <c>race_SpeedAwardFrame</c> (server/race.qc:304), driven from the cts GetPressedKeys hook (per real
+    /// client per frame): track the round-best planar (horizontal) speed and, when it beats the persisted all-time
+    /// best, update + persist that too. QC also calls <c>race_checkAndWriteName</c> to keep the uid→name DB current;
+    /// the port mirrors that by recording the holder's UID→name in <see cref="RaceRecords"/>. Call once per server
+    /// frame with the live player list.
+    /// </summary>
+    public void SpeedAwardFrame(System.Collections.Generic.IReadOnlyList<Player> players)
+    {
+        EnsureSpeedAwardLoaded();
+        for (int i = 0; i < players.Count; i++)
+        {
+            Player p = players[i];
+            if (p.IsObserver || p.IsDead) // QC: if (IS_OBSERVER(player)) return;
+                continue;
+
+            // QC race_checkAndWriteName: keep the uid→display-name DB current (gated on the consent cvars in QC;
+            // the port models consent as a non-empty PersistentId).
+            if (!string.IsNullOrEmpty(p.PersistentId))
+                RaceRecords.SetName(p.PersistentId, p.NetName);
+
+            // QC vdist(player.velocity - player.velocity_z * '0 0 1', >, speedaward_speed): planar speed only.
+            System.Numerics.Vector3 v = p.Velocity;
+            float planar = System.MathF.Sqrt(v.X * v.X + v.Y * v.Y);
+            if (planar > _speedawardSpeed)
+            {
+                _speedawardSpeed = planar;          // QC speedaward_speed
+                _speedawardHolder = p.NetName;       // QC speedaward_holder
+                _speedawardUid = p.PersistentId;     // QC speedaward_uid
+
+                // QC: a new round best that also beats the all-time best (and has a UID) is persisted + becomes
+                // the all-time holder.
+                if (planar > _speedawardAllTimeBest && !string.IsNullOrEmpty(_speedawardUid))
+                {
+                    _speedawardAllTimeBest = planar;     // QC speedaward_alltimebest
+                    _speedawardAllTimeHolder = p.NetName; // QC speedaward_alltimebest_holder
+                    RaceRecords.WriteSpeedAwardBest(MapName, RecordType, planar, _speedawardUid);
+                }
+            }
+        }
     }
 
     /// <summary>

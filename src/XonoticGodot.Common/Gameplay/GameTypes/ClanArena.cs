@@ -159,6 +159,8 @@ public sealed class ClanArena : GameType
     private HookHandler<MutatorHooks.ForbidThrowCurrentWeaponArgs>? _forbidThrowHandler;
     private HookHandler<MutatorHooks.PlayerRegenArgs>? _regenHandler;
     private HookHandler<GameHooks.PlayerDamageArgs>? _splitHandler;
+    private HookHandler<MutatorHooks.MakePlayerObserverArgs>? _makeObserverHandler;
+    private HookHandler<MutatorHooks.ClientDisconnectArgs>? _disconnectHandler;
 
     public void Activate()
     {
@@ -221,6 +223,16 @@ public sealed class ClanArena : GameType
         // QC ca PlayerDamage_SplitHealthArmor: the live g_ca_damage2score scoreboard accrual.
         _splitHandler = OnSplitHealthArmor;
         GameHooks.PlayerDamageSplitHealthArmor.Add(_splitHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ca, MakePlayerObserver) (sv_clanarena.qc:397): when a live player is force-
+        // spectated mid-round, notify the last remaining teammate "You are now alone!" exactly as on death.
+        _makeObserverHandler = OnMakePlayerObserver;
+        MutatorHooks.MakePlayerObserver.Add(_makeObserverHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ca, ClientDisconnect) (sv_clanarena.qc:388): when a live player disconnects
+        // mid-round, notify the last remaining teammate "You are now alone!" exactly as on death.
+        _disconnectHandler = OnClientDisconnect;
+        MutatorHooks.ClientDisconnect.Add(_disconnectHandler);
     }
 
     /// <summary>
@@ -278,8 +290,10 @@ public sealed class ClanArena : GameType
         if (_weaponArenaHandler is not null){ MutatorHooks.SetWeaponArena.Remove(_weaponArenaHandler);         _weaponArenaHandler = null; }
         if (_filterItemHandler is not null) { MutatorHooks.FilterItemDefinition.Remove(_filterItemHandler);    _filterItemHandler = null; }
         if (_forbidThrowHandler is not null){ MutatorHooks.ForbidThrowCurrentWeapon.Remove(_forbidThrowHandler); _forbidThrowHandler = null; }
-        if (_regenHandler is not null)      { MutatorHooks.PlayerRegen.Remove(_regenHandler);                  _regenHandler = null; }
-        if (_splitHandler is not null)      { GameHooks.PlayerDamageSplitHealthArmor.Remove(_splitHandler);    _splitHandler = null; }
+        if (_regenHandler is not null)          { MutatorHooks.PlayerRegen.Remove(_regenHandler);                  _regenHandler = null; }
+        if (_splitHandler is not null)          { GameHooks.PlayerDamageSplitHealthArmor.Remove(_splitHandler);    _splitHandler = null; }
+        if (_makeObserverHandler is not null)   { MutatorHooks.MakePlayerObserver.Remove(_makeObserverHandler);    _makeObserverHandler = null; }
+        if (_disconnectHandler is not null)     { MutatorHooks.ClientDisconnect.Remove(_disconnectHandler);        _disconnectHandler = null; }
         _scoreDecimal.Clear();
     }
 
@@ -439,6 +453,35 @@ public sealed class ClanArena : GameType
 
     /// <summary>QC <c>MUTATOR_HOOKFUNCTION(ca, PlayerRegen)</c>: no health/armor regeneration in CA (return true).</summary>
     private bool OnPlayerRegen(ref MutatorHooks.PlayerRegenArgs args) => true;
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, MakePlayerObserver)</c> (sv_clanarena.qc:397): when a live (non-dead)
+    /// player is force-spectated mid-round, trigger the "You are now alone!" center-print to the last surviving
+    /// teammate — the same notification path as the death case (<see cref="OnDeath"/>). Fires from
+    /// <c>PutObserverInServer</c> after <c>p.IsObserver = true</c> is set but before <c>DeadState</c> is
+    /// cleared, so <c>!p.IsDead</c> correctly identifies a formerly-live player. QC guard:
+    /// <c>IS_PLAYER(player) &amp;&amp; !IS_DEAD(player)</c>.
+    /// </summary>
+    private bool OnMakePlayerObserver(ref MutatorHooks.MakePlayerObserverArgs args)
+    {
+        if (args.Player is Player leaving && !leaving.IsDead)
+            NotifyLastPlayerForTeam(leaving, _roster);
+        return false;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, ClientDisconnect)</c> (sv_clanarena.qc:388): when a live (non-dead,
+    /// non-observer) player disconnects mid-round, trigger the "You are now alone!" center-print to the last
+    /// surviving teammate. Fires from <c>ClientManager.ClientDisconnect</c> after the player is removed from
+    /// the active roster, so <c>NotifyLastPlayerForTeam</c> naturally excludes the leaver without an explicit
+    /// identity check. QC guard: <c>IS_PLAYER(player) &amp;&amp; !IS_DEAD(player)</c>.
+    /// </summary>
+    private bool OnClientDisconnect(ref MutatorHooks.ClientDisconnectArgs args)
+    {
+        if (args.Player is Player leaving && !leaving.IsObserver && !leaving.IsDead)
+            NotifyLastPlayerForTeam(leaving, _roster);
+        return false;
+    }
 
     /// <summary>
     /// QC CA_CheckTeams (canRoundStart): the countdown may proceed once every active team has at least one

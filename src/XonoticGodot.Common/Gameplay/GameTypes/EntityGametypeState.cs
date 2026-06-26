@@ -104,6 +104,12 @@ namespace XonoticGodot.Common.Framework
         public bool GtIconBuilt;       // QC icon: false while building, true once it finished (point captured)
         public int GtIconCpId;         // the control-point id this icon builds (ties to Onslaught._cpNodes)
 
+        // --- Onslaught generator un-shielded alarm (QC ons_GeneratorThink .wait) ---
+        // The next sim time the recurring "your/the enemy generator is NOT shielded!" warning may fire again
+        // (QC sets this.wait = time + 5 each time the alarm sounds). Kept on the generator entity; separate
+        // from GtPainFinished (which the generator reuses for the 10 s under-attack debounce).
+        public float GtAlarmWait;      // QC generator .wait — 5 s un-shielded alarm repeat timer
+
         // --- Invasion / monster-wave bookkeeping (QC spawned-by-wave marker) ---
         public bool GtWaveMonster;     // a monster that was spawned as part of an Invasion/Survival wave
 
