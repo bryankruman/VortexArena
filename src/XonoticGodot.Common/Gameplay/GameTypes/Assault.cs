@@ -81,6 +81,9 @@ public sealed class Assault : GameType
     // QC MUTATOR_HOOKFUNCTION(as, PlayerSpawn): on spawn, centerprint the player's role (attacking/defending).
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _spawnHandler;
 
+    // QC MUTATOR_HOOKFUNCTION(as, PlayHitsound): return true for func_assault_destructible victims (force hitsound).
+    private HookHandler<MutatorHooks.PlayHitsoundArgs>? _playHitsoundHandler;
+
     /// <summary>Optional sink for the host/controller to react to a kill.</summary>
     public IMatchEvents? Events;
 
@@ -590,6 +593,11 @@ public sealed class Assault : GameType
         _spawnHandler = OnPlayerSpawn;
         MutatorHooks.PlayerSpawn.Add(_spawnHandler);
 
+        // QC MUTATOR_HOOKFUNCTION(as, PlayHitsound): return true for func_assault_destructible victims
+        // (QC sv_assault.qc:593-598) to force a hitsound when shelling walls.
+        _playHitsoundHandler = OnPlayHitsound;
+        MutatorHooks.PlayHitsound.Add(_playHitsoundHandler);
+
         // QC target_objective sets .spawn_evalfunc = target_objective_spawn_evalfunc (sv_assault.qc:311): a spawn
         // spot whose .target names an objective that is inactive (health >= ASSAULT_VALUE_INACTIVE) or destroyed
         // (health < 0) scores '-1 0 0' (unusable), so attacker spawns near a not-yet/already-fallen objective are
@@ -626,6 +634,11 @@ public sealed class Assault : GameType
             MutatorHooks.PlayerSpawn.Remove(_spawnHandler);
             _spawnHandler = null;
         }
+        if (_playHitsoundHandler is not null)
+        {
+            MutatorHooks.PlayHitsound.Remove(_playHitsoundHandler);
+            _playHitsoundHandler = null;
+        }
         // QC: the spawn_evalfunc chain is owned by the active gametype — drop the objective spawn bias on deactivate.
         if (SpawnSystem.SpotEvalReject == ShouldRejectSpawnSpot)
             SpawnSystem.SpotEvalReject = null;
@@ -647,6 +660,24 @@ public sealed class Assault : GameType
             NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, "ASSAULT_ATTACKING");
         else
             NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, "ASSAULT_DEFENDING");
+        return false;
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(as, PlayHitsound) (sv_assault.qc:593-598): return true for a
+    /// func_assault_destructible victim to force a hitsound when the attacker shoots a wall. The victim edict's
+    /// classname is "func_assault_destructible" when it was spawned in the world; in a headless POJO test the
+    /// damage path maps the edict back to a Destructible via <see cref="DestructibleFor"/>.
+    /// </summary>
+    private bool OnPlayHitsound(ref MutatorHooks.PlayHitsoundArgs args)
+    {
+        // QC: return (frag_victim.classname == "func_assault_destructible")
+        Framework.Entity victim = args.Victim;
+        if (victim.ClassName == "func_assault_destructible")
+            return true;
+        // Also check if it's a tracked Destructible in the chain (for unit tests / headless scenarios).
+        if (DestructibleFor(victim) is not null)
+            return true;
         return false;
     }
 

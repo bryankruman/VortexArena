@@ -262,6 +262,20 @@ public sealed class Nexball : GameType
         if (MatchEnded || player.IsDead)
             return;
 
+        // QC GiveBall: if(ownr) { ownr.effects &= ~effects_default; ownr.ballcarried = NULL;
+        //   GameRules_scoring_vip(ownr, false); if(NB_METERSTART(ownr)) { NB_METERSTART=0; wepent.state=WS_READY; } }
+        // A steal (W_Nexball_Touch) calls GiveBall while the ball is still attached to the VICTIM — clear the old
+        // carrier's back-link/VIP/meter (and restore their weapons) before re-attaching, or the victim is left
+        // dangling as a phantom carrier. In the normal loose-ball catch this is a no-op (no prior carrier).
+        if (BallEntity?.GtCarrier is Player prevOwner && !ReferenceEquals(prevOwner, player))
+        {
+            GametypeEntities.ScoringVip(prevOwner, false);
+            prevOwner.GtCarried = null;
+            prevOwner.ForEachWeaponSlot(s => { s.NbMeterStart = 0f; });
+            if (_isBasketball)
+                RestoreWeapons(prevOwner);
+        }
+
         // QC GiveBall: if(ball.team != plyr.team) ball.lifetime = time + delay_hold_forteam.
         if (BallTeam != (int)player.Team)
             _ballLifetime = GametypeEntities.Now + DelayHoldForTeam;
@@ -288,8 +302,10 @@ public sealed class Nexball : GameType
                 e.NextThink = GametypeEntities.Now + DelayHold;
             }
         }
-        // QC GiveBall weapon-arena swap (STAT(WEAPONS)=WEPSET(NEXBALL), W_SwitchWeapon(WEP_NEXBALL)) — deferred:
-        // the BallStealer weapon does not exist in the port yet (see nexball.weapon.ballstealer todo).
+        // QC GiveBall: STAT(WEAPONS, actor.(weaponentity)) = STAT(WEAPONS, actor); STAT(WEAPONS, actor) =
+        // WEPSET(NEXBALL); W_SwitchWeapon(actor, WEP_NEXBALL) — save normal weapons, grant only BallStealer.
+        if (_isBasketball)
+            SaveAndApplyNexballWeapons(player);
     }
 
     /// <summary>
@@ -300,6 +316,7 @@ public sealed class Nexball : GameType
     public void DropBall(Vector3 org, Vector3 vel)
     {
         Player? carrier = BallEntity?.GtCarrier as Player ?? BallPusher;
+        GametypeEntities.ScoringVip(carrier, false); // QC GameRules_scoring_vip(ownr, false) on drop (sv_nexball.qc:147)
         if (BallEntity is Entity e)
         {
             GametypeEntities.DetachFromCarrier(e);
@@ -321,11 +338,18 @@ public sealed class Nexball : GameType
     }
 
     /// <summary>QC nb_DropBall(player) / the PlayerDies+ClientDisconnect+MakePlayerObserver hooks: the carrier's
-    /// ball drops where they stand with their velocity. No-op if the player isn't carrying this ball.</summary>
+    /// ball drops where they stand with their velocity. No-op if the player isn't carrying this ball.
+    /// Also restores the carrier's saved weapon loadout and clears the power-meter state.</summary>
     public void DropBall(Player carrier)
     {
         if (BallEntity is null || !ReferenceEquals(carrier.GtCarried, BallEntity))
             return;
+        // QC DropBall: NB_METERSTART is implicitly cleared because the ball leaves the carrier.
+        carrier.ForEachWeaponSlot(s => { s.NbMeterStart = 0f; });
+        // QC PlayerPreThink non-carrier: restore the saved weapon set on the next frame.
+        // We do it eagerly on DropBall so the player can fire immediately after losing the ball.
+        if (_isBasketball)
+            RestoreWeapons(carrier);
         DropBall(carrier.Origin, carrier.Velocity);
     }
 
@@ -713,6 +737,261 @@ public sealed class Nexball : GameType
         }
     }
 
+    // ============================================================================================
+    //  Weapon-arena seams  (QC sv_nexball.qc MUTATOR_HOOKFUNCTION(nb, PlayerSpawn / PlayerPreThink /
+    //  ForbidThrowCurrentWeapon / FilterItem / ItemTouch / WantWeapon + GiveBall weapon-swap))
+    // ============================================================================================
+
+    /// <summary>QC <c>autocvar_g_nexball_basketball_meter</c> (default 1): when true the primary power-meter is
+    /// active (the BallStealer WrThink reads this to decide start-on-press vs fire-on-press).</summary>
+    public bool MeterEnabled
+        => GametypeEntities.Cvar("g_nexball_basketball_meter", 1f) != 0f;
+
+    /// <summary>QC <c>ball.enemy</c>: the teammate locked as a safe-pass target by the PreThink crosshair trace.
+    /// Null when no lock is active. Read by the BallStealer secondary fire path.</summary>
+    public Entity? BallSafePassTarget
+        => BallEntity?.GtSafePassTarget;
+
+    /// <summary>
+    /// QC <c>W_Nexball_Attack</c> conclusion: drop the ball as a projectile at <paramref name="org"/> with
+    /// <paramref name="vel"/>. When <paramref name="homingTarget"/> is set the ball steers toward it each frame
+    /// (safe-pass arc). Clears the carrier's NbMeterStart on slot 0.
+    /// </summary>
+    public void LaunchBall(Entity actor, Vector3 org, Vector3 vel, Entity? homingTarget = null)
+    {
+        if (BallEntity is not Entity ball)
+            return;
+
+        // Clear the carrier's power-meter (QC: NB_METERSTART clears on DropBall or on the shot path).
+        actor.WeaponState(new WeaponSlot(0)).NbMeterStart = 0f;
+
+        // Restore normal weapons so GiveBall weapon-swap doesn't leave the player stuck on BallStealer.
+        RestoreWeapons(actor);
+
+        // QC DropBall(ball, w_shotorg, w_shotdir * speed * mul): drop the ball at the muzzle origin.
+        DropBall(org, vel);
+
+        if (homingTarget is not null)
+        {
+            // QC W_Nexball_Think: install a per-frame homing think that steers ball.velocity toward ball.enemy.
+            ball.GtSafePassTarget = homingTarget;
+            ball.Think = HomingThink;
+            ball.NextThink = GametypeEntities.Now; // run immediately on the next tick
+        }
+    }
+
+    /// <summary>
+    /// QC <c>W_Nexball_Think</c>: the homing think for a safe-pass arc — steers the ball toward
+    /// <c>ball.enemy</c> each frame at <c>g_nexball_safepass_turnrate</c> (default 0.1). Runs every tick
+    /// until the ball touches something (touch reinstalls the normal touch handler).
+    /// </summary>
+    private void HomingThink(Entity ball)
+    {
+        Entity? target = ball.GtSafePassTarget;
+        if (target is null || target.IsFreed)
+        {
+            ball.Think = BallThink;
+            return;
+        }
+
+        float turnrate = GametypeEntities.Cvar("g_nexball_safepass_turnrate", 0.1f);
+        // QC W_Nexball_Think (sv_weapon.qc):
+        //   new_dir = normalize(this.enemy.origin + '0 0 50' - this.origin);
+        //   old_dir = normalize(this.velocity);
+        //   new_vel = normalize(old_dir + (new_dir * turnrate)) * vlen(this.velocity);
+        // Note: old_dir keeps weight 1.0 (it is NOT scaled by 1-turnrate); the +'0 0 50' lofts the aim point.
+        float speed = ball.Velocity.Length();
+        if (speed < 1f)
+        {
+            ball.GtSafePassTarget = null;
+            return;
+        }
+        Vector3 newDir = Vector3.Normalize(target.Origin + new Vector3(0f, 0f, 50f) - ball.Origin);
+        Vector3 oldDir = ball.Velocity / speed;
+        Vector3 sum = oldDir + newDir * turnrate;
+        float sumLen = sum.Length();
+        if (sumLen > 0f)
+            ball.Velocity = sum / sumLen * speed;
+
+        ball.NextThink = GametypeEntities.Now; // QC: this.nextthink = time (run again next tick)
+    }
+
+    /// <summary>
+    /// QC <c>GiveBall</c> weapon-arena swap: the carrier gets only <c>WEP_NEXBALL</c>; their normal weapons
+    /// are saved in <c>STAT(WEAPONS, player.(weaponentity))</c> (the per-slot scratch) and restored when they
+    /// stop carrying. Called by <see cref="GiveBall"/> after the carry-attach.
+    /// </summary>
+    private static void SaveAndApplyNexballWeapons(Entity player)
+    {
+        Weapon? ballStealer = Weapons.ByName("ballstealer");
+        if (ballStealer is null)
+            return; // BallStealer not registered yet (headless tests that don't load weapons)
+
+        // QC GiveBall: STAT(WEAPONS, actor.(weaponentity)) = STAT(WEAPONS, actor) — save existing set.
+        player.GtSavedWeaponSet = player.OwnedWeaponSet;
+        player.GtSavedActiveWeaponId = player.ActiveWeaponId;
+
+        // QC: STAT(WEAPONS, actor) = WEPSET(WEP_NEXBALL); W_SwitchWeapon(actor, WEP_NEXBALL).
+        player.OwnedWeaponSet.Clear();
+        Inventory.GiveWeapon(player, ballStealer);
+        Inventory.SwitchWeapon(player, ballStealer);
+    }
+
+    /// <summary>
+    /// QC <c>PlayerPreThink</c> non-carrier branch: restore the player's normal weapons from the per-slot
+    /// save (<c>STAT(WEAPONS, player.(weaponentity))</c>) and switch back to the weapon they had before.
+    /// Called by <see cref="OnPlayerPreThink"/> for non-carrying players in basketball mode.
+    /// </summary>
+    private static void RestoreWeapons(Entity player)
+    {
+        if (player.GtSavedActiveWeaponId < 0)
+            return; // nothing saved — player never had the ball or was already restored
+
+        WepSet saved = player.GtSavedWeaponSet;
+        int savedActive = player.GtSavedActiveWeaponId;
+
+        // QC: STAT(WEAPONS, actor.(weaponentity)) is zeroed after restore.
+        player.GtSavedWeaponSet = default;
+        player.GtSavedActiveWeaponId = -1;
+
+        // Restore set and switch back to the previously held weapon.
+        player.OwnedWeaponSet = saved;
+
+        Weapon? prev = savedActive >= 0 && savedActive < Registry<Weapon>.Count
+            ? Registry<Weapon>.ById(savedActive) : null;
+        if (prev is not null && player.OwnedWeaponSet.Has(prev))
+            Inventory.SwitchWeapon(player, prev);
+        else
+            Inventory.SwitchToBest(player);
+    }
+
+    /// <summary>
+    /// QC <c>nb_StealBall(attacker)</c> / the <c>W_Nexball_Touch</c> steal path: give the ball to the
+    /// attacker (the tackle projectile already removed it from the victim via <see cref="DropBall"/>).
+    /// Called by <see cref="BallStealer.TackleTouch"/>.
+    /// </summary>
+    public void StealBall(Player attacker)
+    {
+        if (BallEntity is null)
+            return;
+        // QC W_Nexball_Touch: GiveBall(attacker, toucher.ballcarried) — the ball is handed straight from the
+        // victim to the attacker WITHOUT a loose-drop. GiveBall now detaches the previous carrier (the victim)
+        // at its top, re-attaches the ball to the attacker, and applies the weapon-arena swap.
+        GiveBall(attacker);
+    }
+
+    // ---- hook handler fields ----
+    private HookHandler<MutatorHooks.PlayerSpawnArgs>? _playerSpawnHandler;
+    private HookHandler<MutatorHooks.PlayerPreThinkArgs>? _playerPreThinkHandler;
+    private HookHandler<MutatorHooks.ForbidThrowCurrentWeaponArgs>? _forbidThrowHandler;
+    private HookHandler<MutatorHooks.FilterItemArgs>? _filterItemHandler;
+    private HookHandler<MutatorHooks.ItemTouchArgs>? _itemTouchHandler;
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(nb, PlayerSpawn)</c> (sv_nexball.qc): on (re)spawn in basketball mode, zero
+    /// the player's weapon slots and grant only <c>WEP_NEXBALL</c>. The non-carrier branch of PlayerPreThink
+    /// restores normal weapons; this zeroing matches the QC <c>for(int slot…) STAT(WEAPONS, wepent)=0</c> +
+    /// <c>if(NBM_BASKETBALL) STAT(WEAPONS, player)|=WEPSET(NEXBALL)</c> pass.
+    /// </summary>
+    private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)
+    {
+        Entity player = args.Player;
+
+        // QC PlayerSpawn:
+        //   STAT(NB_METERSTART, player) = 0;
+        //   for(slot) STAT(WEAPONS, player.(weaponentity)) = '0 0 0';  // clear the SAVED per-slot set
+        //   if (NBM_BASKETBALL) STAT(WEAPONS, player) |= WEPSET(NEXBALL);  // ADD nexball, keep start weapons
+        //   else STAT(WEAPONS, player) = '0 0 0';                          // football: NO weapons at all
+        // The meter + saved-loadout scratch is wiped on every (re)spawn (no stale carry state).
+        player.ForEachWeaponSlot(s => { s.NbMeterStart = 0f; });
+        player.GtSavedWeaponSet = default;
+        player.GtSavedActiveWeaponId = -1;
+
+        if (_isBasketball)
+        {
+            // QC `|=`: the player keeps their normal start weapons and ALSO gains the (ball-less-unusable)
+            // BallStealer; the active weapon is NOT changed here (GiveBall does the arena swap on pickup).
+            Weapon? ballStealer = Weapons.ByName("ballstealer");
+            if (ballStealer is not null)
+                Inventory.GiveWeapon(player, ballStealer);
+        }
+        else
+        {
+            // QC football mode: STAT(WEAPONS, player) = '0 0 0' — strip every weapon (kick-only).
+            player.OwnedWeaponSet.Clear();
+            Inventory.SwitchToBest(player); // settles ActiveWeaponId to -1 (no weapons)
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(nb, PlayerPreThink)</c> non-carrier branch: a player who is no longer
+    /// carrying the ball has their saved weapon set restored and switches back to their previous weapon.
+    /// (The carrier branch — view-ball follow + safe-pass crosshair lock — is <see cref="CarryFrame"/>.)
+    /// </summary>
+    private bool OnPlayerPreThink(ref MutatorHooks.PlayerPreThinkArgs args)
+    {
+        if (!_isBasketball)
+            return false;
+
+        Entity player = args.Player;
+        // QC: if(!player.ballcarried) → restore weapons.
+        bool isCarrier = BallEntity is not null && ReferenceEquals(player.GtCarried, BallEntity);
+        if (!isCarrier && player.GtSavedActiveWeaponId >= 0)
+        {
+            // Non-carrier with a saved loadout: restore it (QC restores STAT(WEAPONS) and switches back).
+            RestoreWeapons(player);
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(nb, ForbidThrowCurrentWeapon)</c> (sv_nexball.qc):
+    /// the BallStealer (<c>WEP_NEXBALL</c>) can never be thrown/dropped as a pickup.
+    /// (The port folds QC's ForbidDropCurrentWeapon into this same chain.)
+    /// </summary>
+    private bool OnForbidThrowCurrentWeapon(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args)
+    {
+        Weapon? ballStealer = Weapons.ByName("ballstealer");
+        if (ballStealer is null) return false;
+        // QC ForbidThrowCurrentWeapon: wepent.m_weapon == WEP_NEXBALL → return true.
+        Weapon? cur = Inventory.CurrentWeapon(args.Player);
+        return cur is not null && cur.RegistryId == ballStealer.RegistryId;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(nb, FilterItem)</c> (sv_nexball.qc):
+    /// remove any loot BallStealer pickup that might have been spawned (they should never appear in the world).
+    /// </summary>
+    private bool OnFilterItem(ref MutatorHooks.FilterItemArgs args)
+    {
+        Weapon? ballStealer = Weapons.ByName("ballstealer");
+        if (ballStealer is null) return false;
+        // QC: if (ITEM_IS_LOOT(item) && item.weapon == WEP_NEXBALL.m_id) return true (remove it).
+        Entity item = args.Item;
+        // QC: ITEM_IS_LOOT(item) && item.weapon == WEP_NEXBALL.m_id → remove.
+        // In the port a weapon pickup item carries the weapon in its OwnedWeaponSet (WeaponPickup.ItemInit).
+        return item.ItemIsLoot && item.OwnedWeaponSet.Has(ballStealer);
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(nb, ItemTouch)</c> (sv_nexball.qc): a carrier who touches a weapon item
+    /// doesn't get it — the nexball weapon-arena keeps carriers locked to BallStealer while holding the ball.
+    /// Returns true (= <c>MUT_ITEMTOUCH_RETURN</c>) when the toucher is carrying the nexball ball AND the item
+    /// has a weapon (QC: <c>if(item.weapon && toucher.ballcarried) return MUT_ITEMTOUCH_RETURN</c>).
+    /// </summary>
+    private bool OnItemTouch(ref MutatorHooks.ItemTouchArgs args)
+    {
+        Entity toucher = args.Toucher;
+        Entity item = args.Item;
+        // QC: item.weapon != 0 → it is a weapon item (instanceOfWeaponPickup in QC).
+        // The port stores the weapon pickup discriminator on item.Pickup.IsWeaponPickup.
+        bool isWeaponItem = item.Pickup?.IsWeaponPickup == true;
+        bool isCarrier = BallEntity is not null && ReferenceEquals(toucher.GtCarried, BallEntity);
+        return isWeaponItem && isCarrier;
+    }
+
     public void Activate()
     {
         if (_deathHandler is not null)
@@ -755,6 +1034,26 @@ public sealed class Nexball : GameType
 
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(nb, PlayerSpawn): weapon-arena loadout on spawn.
+        _playerSpawnHandler = OnPlayerSpawn;
+        MutatorHooks.PlayerSpawn.Add(_playerSpawnHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(nb, PlayerPreThink): restore normal weapons for non-carriers.
+        _playerPreThinkHandler = OnPlayerPreThink;
+        MutatorHooks.PlayerPreThink.Add(_playerPreThinkHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(nb, ForbidThrowCurrentWeapon): can't drop the ball-stealer.
+        _forbidThrowHandler = OnForbidThrowCurrentWeapon;
+        MutatorHooks.ForbidThrowCurrentWeapon.Add(_forbidThrowHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(nb, FilterItem): remove loot WEP_NEXBALL pickups.
+        _filterItemHandler = OnFilterItem;
+        MutatorHooks.FilterItem.Add(_filterItemHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(nb, ItemTouch): carriers can't pick up weapon items.
+        _itemTouchHandler = OnItemTouch;
+        MutatorHooks.ItemTouch.Add(_itemTouchHandler);
     }
 
     /// <summary>QC autocvar_g_nexball_basketball_carrier_highspeed (default 0.8): the carrier top-speed multiplier.</summary>
@@ -781,10 +1080,16 @@ public sealed class Nexball : GameType
             MutatorHooks.PlayerPhysics.Remove(_physicsHandler);
             _physicsHandler = null;
         }
-        if (_deathHandler is null)
-            return;
-        Combat.Death.Remove(_deathHandler);
-        _deathHandler = null;
+        if (_deathHandler is not null)
+        {
+            Combat.Death.Remove(_deathHandler);
+            _deathHandler = null;
+        }
+        if (_playerSpawnHandler is not null) { MutatorHooks.PlayerSpawn.Remove(_playerSpawnHandler); _playerSpawnHandler = null; }
+        if (_playerPreThinkHandler is not null) { MutatorHooks.PlayerPreThink.Remove(_playerPreThinkHandler); _playerPreThinkHandler = null; }
+        if (_forbidThrowHandler is not null) { MutatorHooks.ForbidThrowCurrentWeapon.Remove(_forbidThrowHandler); _forbidThrowHandler = null; }
+        if (_filterItemHandler is not null) { MutatorHooks.FilterItem.Remove(_filterItemHandler); _filterItemHandler = null; }
+        if (_itemTouchHandler is not null) { MutatorHooks.ItemTouch.Remove(_itemTouchHandler); _itemTouchHandler = null; }
     }
 
     /// <summary>The current goal count for a team color code (QC teamscores(team, ST_NEXBALL_GOALS); 0 if none).</summary>

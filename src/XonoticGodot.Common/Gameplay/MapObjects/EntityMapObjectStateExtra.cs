@@ -69,6 +69,12 @@ namespace XonoticGodot.Common.Framework
         // ---- soundpack selector (QC .sounds) ----
         public int Sounds;                // QC .sounds — trigger_multiple/secret/keylock noise selector
 
+        // ---- bidirectional rotating-door reverse marker (QC .trigger_reverse, subs.qh) ----
+        // Map-settable on a trigger_multiple that fires a func_door_rotating: a trigger with trigger_reverse=1
+        // opens a BIDIR rotating door in the reversed direction (door_use's DOOR_ROTATING_BIDIR path). Declared
+        // but never assigned in QC (it is purely a map key on the firing trigger).
+        public int TriggerReverse;        // QC .trigger_reverse
+
         // ---- door touch debounce + LinkDoors connected-component marker ----
         public float DoorFinished;        // QC .door_finished — door_touch message/throttle window
         public bool FccProcessing;        // QC .FindConnectedComponent_processing — BFS visited flag

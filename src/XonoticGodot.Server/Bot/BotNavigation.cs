@@ -49,6 +49,16 @@ public sealed class BotNavigation
         }
     }
 
+    /// <summary>
+    /// QC jumpstepheightvec.z (bot_calculate_stepheightvec, bot.qc:619): <c>stepheightvec + jumpheight_vec * 0.85</c>
+    /// — the "easy jump" reach (the apex reduced a bit so the bot commits jumps it can actually clear). ≈70 @ stock
+    /// (34 + 84.5*0.85). Read live so non-default sv_stepheight/sv_jumpvelocity/sv_gravity adjust it. This is the
+    /// height QC's havocbot_movetogoal:1146 compares a high goal against (goal above this ⇒ on an upper platform),
+    /// which the brain's danger check uses; the public <see cref="JumpStepHeight"/> const stays as the stock default
+    /// for any caller that wants a compile-time symbol.
+    /// </summary>
+    public static float JumpStepHeightLive => StepHeightLive + JumpHeightApex * 0.85f;
+
     /// <summary>One entry on the goal stack: a world point plus the waypoint flags that govern how to
     /// traverse it (jump/crouch/teleport/ladder) and the source waypoint (for box-volume reach tests).</summary>
     private readonly struct Goal
@@ -83,6 +93,14 @@ public sealed class BotNavigation
 
     /// <summary>Set true while steering when traversing a crouch waypoint (QC PHYS_INPUT_BUTTON_CROUCH).</summary>
     public bool WantCrouch { get; private set; }
+
+    /// <summary>
+    /// QC <c>havocbot_bunnyhop</c> wants a jump this frame to maintain run speed toward a far goal. Kept
+    /// SEPARATE from <see cref="WantJump"/> because Base only bunnyhops when <c>!evadedanger &amp;&amp; !do_break</c>
+    /// (havocbot.qc:1315): the per-frame danger brake runs in <see cref="BotBrain"/> AFTER <see cref="Steer"/>,
+    /// so the brain ANDs this with "no danger brake this frame" before folding it into the jump button.
+    /// </summary>
+    public bool WantBunnyhop { get; private set; }
 
     /// <summary>The current goal point, or null if the stack is empty (QC <c>.goalcurrent</c>).</summary>
     public Vector3? Current => _goals.Count > 0 ? _goals[0].Pos : null;
@@ -225,6 +243,7 @@ public sealed class BotNavigation
     {
         WantJump = false;
         WantCrouch = false;
+        WantBunnyhop = false;
 
         // Pop any goals we've effectively reached (QC navigation_poptouchedgoals). A teleport/jumppad goal is
         // "reached" once we've entered its trigger volume — the trigger then moves us, so we note the time and
@@ -314,9 +333,22 @@ public sealed class BotNavigation
         float side = QMath.Dot(worldMove, right);
         float vert = QMath.Dot(worldMove, up);
 
+        // ---- keyboard-movement emulation (QC havocbot_keyboard_movement, havocbot.qc:272-341) ----
+        // Below skill 10 the bot doesn't move with a fully analog wish-move: it quantizes the analog direction
+        // onto keyboard keys (forward/back/strafe, with skill tiers that gate diagonals) on a skill-scaled
+        // clock, then blends back toward the analog move as it nears the goal (so close-in maneuvering stays
+        // smooth). This makes low-skill bots strafe/turn coarser, matching stock. (fwd/side/vert are already the
+        // normalized -1..1 move = QC's CS(this).movement / sv_maxspeed.)
+        if (Skill < 10f)
+            KeyboardMovement(bot, goal.Pos, ref fwd, ref side, ref vert);
+
         // ---- bunnyhop tuning (QC havocbot_bunnyhop): keep jumping to maintain speed toward a far goal ----
-        if (Bunnyhop(bot, dir, onGround, goal, attacking: false))
-            WantJump = true;
+        // QC havocbot.qc:1315 forbids bunnyhop when do_break/evadedanger is set this frame. The Steer-internal
+        // ledge brake (do_break analogue, above) gates it here; the BotBrain per-frame danger brake (which runs
+        // AFTER Steer) gates it by ANDing WantBunnyhop with "no danger this frame" before pressing jump. Result
+        // is reported via WantBunnyhop (not WantJump) so the brain owns the final danger-suppression decision.
+        if (brake == Vector3.Zero && Bunnyhop(bot, dir, onGround, goal, attacking: false))
+            WantBunnyhop = true;
 
         return new Vector3(fwd, side, vert) * MaxSpeed;
     }
@@ -329,6 +361,84 @@ public sealed class BotNavigation
     /// the midair mutator forces it to 0 on spawn so high-skill bots stop bunnyhopping while keeping aim/reaction.
     /// </summary>
     public float MoveSkill;
+
+    // ---- keyboard-movement emulation state (QC havocbot.qh .havocbot_keyboardtime / .havocbot_keyboard) ----
+    private float _keyboardTime;      // QC .havocbot_keyboardtime — next time the keyboard direction may change
+    private Vector3 _keyboard;        // QC .havocbot_keyboard — the last latched quantized move (×sv_maxspeed)
+    private readonly Random _kbRng = new();
+
+    /// <summary>
+    /// QC <c>havocbot_keyboard_movement</c> (havocbot.qc:272-341): quantize the analog wish-move onto keyboard
+    /// directions on a skill-scaled clock, then blend back toward the analog move as the bot nears the goal.
+    /// Operates in place on the normalized local move (<paramref name="fwd"/>/<paramref name="side"/>/
+    /// <paramref name="vert"/> = QC's CS(this).movement / sv_maxspeed, range -1..1). Skill tiers gate which
+    /// directions/diagonals are allowed, so low-skill bots strafe/turn coarser exactly like stock.
+    /// </summary>
+    private void KeyboardMovement(Entity bot, Vector3 destorg, ref float fwd, ref float side, ref float vert)
+    {
+        float now = Now;
+        if (now <= _keyboardTime)
+        {
+            // not time to re-key yet: keep blending the latched keyboard move with the analog move (below).
+            BlendKeyboard(bot, destorg, ref fwd, ref side, ref vert);
+            return;
+        }
+
+        float sk = Skill + MoveSkill;               // QC: skill + bot_moveskill (havocbot_keyboardskill folded to 0)
+        // QC re-key clock: faster (more responsive) the higher the skill; +small random jitter.
+        _keyboardTime = MathF.Max(
+            _keyboardTime
+                + 0.05f / MathF.Max(1f, sk)
+                + (float)_kbRng.NextDouble() * 0.025f / MathF.Max(0.00025f, Skill),
+            now);
+
+        // start from the analog move (already normalized -1..1 = QC keyboard = movement/maxspeed).
+        var keyboard = new Vector3(fwd, side, vert);
+        float trigger = Cvars.FloatOr("bot_ai_keyboard_threshold", 0.57f);
+
+        // categorize forward movement (QC's skill-tiered direction gating):
+        //  sk < 1.5: only forward; sk < 2.5: only individual dirs; sk < 4.5: + forward diagonals; else all.
+        if (keyboard.X > trigger)
+        {
+            keyboard.X = 1f;
+            if (sk < 2.5f) keyboard.Y = 0f;
+        }
+        else if (keyboard.X < -trigger && sk > 1.5f)
+        {
+            keyboard.X = -1f;
+            if (sk < 4.5f) keyboard.Y = 0f;
+        }
+        else
+        {
+            keyboard.X = 0f;
+            if (sk < 1.5f) keyboard.Y = 0f;
+        }
+        if (sk < 4.5f) keyboard.Z = 0f;
+
+        keyboard.Y = keyboard.Y > trigger ? 1f : (keyboard.Y < -trigger ? -1f : 0f);
+        keyboard.Z = keyboard.Z > trigger ? 1f : (keyboard.Z < -trigger ? -1f : 0f);
+
+        // anti-stuck: if nothing is pressed, don't hold the (high) re-key clock for long (QC havocbot.qc:330).
+        if (keyboard == Vector3.Zero)
+            _keyboardTime = MathF.Min(_keyboardTime, now + 0.2f);
+
+        _keyboard = keyboard; // QC stores keyboard * sv_maxspeed; here normalized (×maxspeed applied by Steer's caller)
+        BlendKeyboard(bot, destorg, ref fwd, ref side, ref vert);
+    }
+
+    /// <summary>
+    /// QC havocbot_keyboard_movement tail (havocbot.qc:337-340): blend the analog move toward the latched
+    /// keyboard move, the blend strength scaling with distance to the goal (full keyboard far out, fully analog
+    /// once within <c>bot_ai_keyboard_distance</c> so close-in maneuvering stays smooth / 360-degree).
+    /// </summary>
+    private void BlendKeyboard(Entity bot, Vector3 destorg, ref float fwd, ref float side, ref float vert)
+    {
+        float kbDist = MathF.Max(1f, Cvars.FloatOr("bot_ai_keyboard_distance", 250f));
+        float blend = QMath.Bound(0f, (destorg - bot.Origin).Length() / kbDist, 1f);
+        fwd += (_keyboard.X - fwd) * blend;
+        side += (_keyboard.Y - side) * blend;
+        vert += (_keyboard.Z - vert) * blend;
+    }
 
     /// <summary>
     /// QC <c>havocbot_bunnyhop</c>: decide whether to jump this frame to bunnyhop toward the goal. The bot

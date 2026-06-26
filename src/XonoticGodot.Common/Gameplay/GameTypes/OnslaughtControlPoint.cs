@@ -50,6 +50,11 @@ public sealed class OnslaughtControlPoint
     private const string CvarProxDecap     = "g_onslaught_cp_proximitydecap";          // 0   — master toggle (default OFF)
     private const string CvarProxDecapDist = "g_onslaught_cp_proximitydecap_distance"; // 512 — qu radius
     private const string CvarProxDecapDps  = "g_onslaught_cp_proximitydecap_dps";      // 100 — hp/s per (friendly-enemy) head
+    private const string CvarShieldForce   = "g_onslaught_shield_force";               // 100 — capture-shield push force
+
+    private const float  DefShieldForce  = 100f;  // QC autocvar_g_onslaught_shield_force default (gametypes-server.cfg:585)
+    private const float  ShieldHitboxScale = 1.20f; // QC ons_CaptureShield_Spawn: hitbox 20% larger than the object
+    private const int    EfAdditive = 32; // QC EF_ADDITIVE (dpextensions: additive-blend render mode)
 
     private const float DefCpHealth      = 1000f; // QC g_onslaught_cp_health default (gametypes-server.cfg:578)
     private const float DefCpBuildHealth = 100f;
@@ -139,6 +144,9 @@ public sealed class OnslaughtControlPoint
             e.GtAlarmWait = 0f;
             e.NextThink = Now + GenThinkRate;
             _generators[team] = e;
+            // QC ons_GeneratorSetup (sv_onslaught.qc:1079): ons_CaptureShield_Spawn(this, MDL_ONS_GEN_SHIELD) —
+            // the spinning additive push-shield around the generator.
+            SpawnCaptureShield(e, "models/onslaught/generator_shield.md3");
         }
         return e;
     }
@@ -319,6 +327,9 @@ public sealed class OnslaughtControlPoint
         {
             e.GtPointId = controlPointId;
             e.Solid = Solid.BBox; // QC SOLID_BBOX (the pad), the touch trigger volume is the bbox here
+            // QC ons_ControlPoint_Setup (sv_onslaught.qc:787): ons_CaptureShield_Spawn(this, MDL_ONS_CP_SHIELD) —
+            // the spinning additive push-shield around the control point.
+            SpawnCaptureShield(e, "models/onslaught/controlpoint_shield.md3");
         }
         return e;
     }
@@ -516,6 +527,23 @@ public sealed class OnslaughtControlPoint
             if (self.GtObjHealth > self.GtObjMaxHealth)
                 self.GtObjHealth = self.GtObjMaxHealth;
         }
+
+        // QC ons_ControlPoint_Icon_Think damaged-fx (sv_onslaught.qc:542-551): the more damaged the icon, the
+        // more often it sputters — at chance random() < 0.6 - hp/max it spawns an EFFECT_ELECTRIC_SPARKS
+        // particle (client/presentation, deferred) AND plays an ambient spark crackle: ONS_SPARK1 at
+        // random()>0.8, else ONS_SPARK2 at random()>0.5 (so ~20% SPARK1, ~30% SPARK2, ~50% silent that roll).
+        if (Api.Services is not null && self.GtObjMaxHealth > 0f)
+        {
+            float frac = self.GtObjHealth / self.GtObjMaxHealth;
+            if (XonoticGodot.Common.Math.Prandom.Float() < 0.6f - frac)
+            {
+                // QC re-rolls random() twice here; reproduce the exact branch structure (NOT else-if on one roll).
+                if (XonoticGodot.Common.Math.Prandom.Float() > 0.8f)
+                    SoundSystem.PlayOn(self, Sounds.ByName("ONS_SPARK1"));
+                else if (XonoticGodot.Common.Math.Prandom.Float() > 0.5f)
+                    SoundSystem.PlayOn(self, Sounds.ByName("ONS_SPARK2"));
+            }
+        }
     }
 
     /// <summary>
@@ -706,6 +734,93 @@ public sealed class OnslaughtControlPoint
 
     /// <summary>Reset the overtime announcement latch when the match leaves overtime (QC else branch).</summary>
     public void ClearOvertime() => OvertimeAnnounced = false;
+
+    // ============================================================================================
+    //  CaptureShield (QC ons_CaptureShield_Spawn / ons_CaptureShield_Touch / _Customize / _Reset)
+    // ============================================================================================
+
+    /// <summary>QC autocvar_g_onslaught_shield_force (default 100) — the push impulse the shield applies.</summary>
+    public float ShieldForce => GametypeEntities.Cvar(CvarShieldForce, DefShieldForce);
+
+    /// <summary>
+    /// QC ons_CaptureShield_Spawn (sv_onslaught.qc:81): spawn a co-located SOLID_TRIGGER + MOVETYPE_NOCLIP
+    /// entity at the node's origin that pushes away any enemy player who touches it WHILE the node is shielded.
+    /// The shield is a spinning (avelocity '7 0 11') additive-blend model whose hitbox is 20 % larger than the
+    /// node (<see cref="ShieldHitboxScale"/>). It stores a back-link to the node world entity in GtShieldFlag
+    /// (QC shield.enemy = this) so the touch handler can read the live shielded state + team. Its visibility
+    /// (QC ons_CaptureShield_Customize) is a client concern; the server-side push + center-print are reproduced.
+    /// </summary>
+    private void SpawnCaptureShield(Entity nodeEnt, string shieldModel)
+    {
+        if (Api.Services is null)
+            return;
+        Entity s = Api.Entities.Spawn();
+        s.ClassName = "ons_captureshield";
+        s.Team = nodeEnt.Team;             // QC shield.team = this.team
+        s.GtHomeTeam = nodeEnt.GtHomeTeam;
+        s.GtShieldFlag = nodeEnt;          // QC shield.enemy = this (the guarded generator/control point)
+        s.Solid = Solid.Trigger;           // QC SOLID_TRIGGER
+        s.MoveType = MoveType.Noclip;      // QC MOVETYPE_NOCLIP
+        s.Effects |= EfAdditive;           // QC EF_ADDITIVE
+        s.AVelocity = new Vector3(7f, 0f, 11f); // QC avelocity '7 0 11'
+        s.Model = shieldModel;
+        s.Flags |= EntFlags.NoTarget;      // never a bot/weapon target
+        // QC: setsize(shield, shield_extra_size * this.mins, shield_extra_size * this.maxs).
+        GametypeEntities.SetSize(s, nodeEnt.Mins * ShieldHitboxScale, nodeEnt.Maxs * ShieldHitboxScale);
+        GametypeEntities.SetOrigin(s, nodeEnt.Origin);
+        s.Touch = ShieldTouchEntity;
+    }
+
+    /// <summary>
+    /// QC ons_CaptureShield_Touch (sv_onslaught.qc:53): when an enemy player touches the shield WHILE the guarded
+    /// node is shielded, push them away (0 damage, <see cref="ShieldForce"/> impulse along the outward normal),
+    /// play ONS_DAMAGEBLOCKEDBYSHIELD and center-print the GENERATOR/CONTROLPOINT_SHIELDED reminder. A player on
+    /// the node's team, or touching an attackable (un-shielded / capturable) node, passes through freely.
+    /// </summary>
+    private void ShieldTouchEntity(Entity self, Entity other)
+    {
+        if (other is not Player toucher || toucher.IsDead)
+            return;
+        Entity? nodeEnt = self.GtShieldFlag;
+        if (nodeEnt is null)
+            return;
+
+        bool isGenerator = nodeEnt.ClassName == "onslaught_generator";
+        Onslaught.OnsNode? node = isGenerator
+            ? _ons.GeneratorNode(nodeEnt.GtHomeTeam)
+            : _ons.ControlPointNode(nodeEnt.GtPointId);
+        if (node is null)
+            return;
+
+        // QC: if(!this.enemy.isshielded && (ons_ControlPoint_Attackable(this.enemy, toucher.team) > 0 ||
+        //         this.enemy.classname != "onslaught_controlpoint")) return; — an attackable (capturable) point
+        // or an un-shielded generator lets the player through (they can build/attack it).
+        int toucherTeam = (int)toucher.Team;
+        bool attackable = !isGenerator && _ons.IsAttackable(node, toucherTeam);
+        if (!node.Shielded && (attackable || isGenerator))
+            return;
+        // QC: if(SAME_TEAM(toucher, this)) return; — same-team players are never pushed.
+        if (toucherTeam == self.Team)
+            return;
+
+        // QC: mymid = (absmin+absmax)*0.5; theirmid = (toucher.absmin+toucher.absmax)*0.5;
+        //     Damage(toucher, this, this, 0, DEATH_HURTTRIGGER, DMG_NOWEP, mymid,
+        //            normalize(theirmid - mymid) * ons_captureshield_force);
+        Vector3 myMid    = (self.AbsMin + self.AbsMax) * 0.5f;
+        Vector3 theirMid = (toucher.AbsMin + toucher.AbsMax) * 0.5f;
+        Vector3 pushDir  = QNormalize(theirMid - myMid);
+        Combat.Damage(toucher, self, self, 0f, DeathTypes.Void, myMid, pushDir * ShieldForce);
+
+        // QC: if(IS_REAL_CLIENT(toucher)) { play2(...ONS_DAMAGEBLOCKEDBYSHIELD); Send_Notification(...SHIELDED); }
+        if ((toucher.Flags & EntFlags.Client) != 0 && !toucher.IsBot && Api.Services is not null)
+        {
+            SoundSystem.Play2(toucher, Sounds.ByName("ONS_DAMAGEBLOCKEDBYSHIELD"));
+            NotificationSystem.Send(NotifBroadcast.One, toucher, MsgType.Center,
+                isGenerator ? "ONS_GENERATOR_SHIELDED" : "ONS_CONTROLPOINT_SHIELDED");
+        }
+    }
+
+    private static Vector3 QNormalize(Vector3 v) { float l = v.Length(); return l > 0f ? v / l : Vector3.Zero; }
 
     // ============================================================================================
     //  helpers

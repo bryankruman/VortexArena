@@ -230,6 +230,15 @@ public sealed class PlayerPhysics : IPlayerPhysics
         //       speed, entrap-nade slow, buffs speed/disability) and the value stays frame-local. -----
         player.SpeedMultiplier = mp.HighSpeed;
 
+        // ----- trigger_swamp slowdown (QC player.qc:50: maxspd_mod = PHYS_HIGHSPEED *
+        //       ((swampslug.active == ACTIVE_ACTIVE) ? swampslug.swamp_slowdown : 1)). SwampThink stamps the
+        //       toucher's SwampSlug = the active swamp trigger, which carries the swamp_slowdown multiplier.
+        //       Fold it into the same maxspd_mod chain as HighSpeed (seed BEFORE the PlayerPhysics hook so a
+        //       powerup/buff handler still multiplies on top), so a player standing in an active swamp actually
+        //       moves slower. No-op when the player has no swamp slug or its swamp is inactive. -----
+        if (player.SwampSlug is { } swampSlug && swampSlug.Active == MapMover.ActiveActive)
+            player.SpeedMultiplier *= swampSlug.SwampSlowdown;
+
         // ----- INPUT BRIDGE: copy the usercmd intent onto the entity (QC PHYS_CS(this).movement / buttons / v_angle).
         //       The movement-driven mutators read these off the entity each frame: the dodging double-tap detector
         //       (DodgingMutator.CheckPressedKeys reads MovementForward/Right + PressedKeys + ButtonCrouch), the

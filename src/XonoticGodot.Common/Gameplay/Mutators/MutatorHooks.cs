@@ -507,6 +507,37 @@ public static class MutatorHooks
     }
     public static readonly HookChain<GiveFragsForKillArgs> GiveFragsForKill = new();
 
+    /// <summary>
+    /// EV_PlayHitsound (server/mutators/events.qh:124) — a player inflicted damage on a victim; a handler
+    /// returning <c>true</c> FORCES a hitsound to play for the attacker (QC <c>MUTATOR_CALLHOOK(PlayHitsound,
+    /// victim, attacker)</c>, server/damage.qc:632, ORed with the player/turret/monster victim test). Assault
+    /// returns true for a <c>func_assault_destructible</c> victim to ensure audible feedback when shelling walls.
+    /// Slot0 the damage victim, slot1 the attacker.
+    ///
+    /// NOTE: the port has no live firing site — its hitsound stat (<c>HitsoundDamageDealtTotal</c>,
+    /// DamageSystem.Apply) already accumulates for any non-self target a player attacker hits, so a
+    /// func_assault_destructible already plays the hitsound without this hook. The hook is modeled for
+    /// registry-coverage parity (it would only become load-bearing if the port ever gated the stat on the
+    /// victim type, as Base does).
+    /// </summary>
+    public struct PlayHitsoundArgs
+    {
+        public readonly Entity Victim;    // MUTATOR_ARGV_0_entity
+        public readonly Entity? Attacker; // MUTATOR_ARGV_1_entity
+        public PlayHitsoundArgs(Entity victim, Entity? attacker = null) { Victim = victim; Attacker = attacker; }
+    }
+    public static readonly HookChain<PlayHitsoundArgs> PlayHitsound = new();
+
+    /// <summary>
+    /// Fire <see cref="PlayHitsound"/> for a damage victim/attacker pair; returns true if any handler forces a
+    /// hitsound (QC <c>MUTATOR_CALLHOOK(PlayHitsound, victim, attacker)</c>).
+    /// </summary>
+    public static bool FirePlayHitsound(Entity victim, Entity? attacker = null)
+    {
+        var a = new PlayHitsoundArgs(victim, attacker);
+        return PlayHitsound.Call(ref a);
+    }
+
     // ----------------------------------------------------------------------------------------------
     // Items / loadout / arena
     // ----------------------------------------------------------------------------------------------

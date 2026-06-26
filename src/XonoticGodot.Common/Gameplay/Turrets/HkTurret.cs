@@ -18,8 +18,9 @@ namespace XonoticGodot.Common.Gameplay;
 /// up in the open and slows near obstacles/sharp turns, with a panic turn and a clear-path sprint).
 /// TFL_SHOOT_CLEARTARGET drops the target after firing (one rocket per acquisition). The muzzle te_explosion
 /// flash and the PROJECTILE_ROCKET smoke trail (via the networked NetName="rocket" classification) are present;
-/// only the external target-reception hook (TUR_FLAG_RECIEVETARGETS), the separate hk.md3 head-bone model, and
-/// the hidden player weapon WEP_HK are left out.
+/// only the external target-reception hook (TUR_FLAG_RECIEVETARGETS) and the separate hk.md3 head-bone model
+/// are left out. The hidden player weapon WEP_HK is ported as <see cref="HunterKillerWeapon"/> (same file
+/// directory); [Weapon] registration is deferred pending a WeaponByIdTests contract update (see that file).
 /// </summary>
 [Turret]
 public sealed class HkTurret : Turret

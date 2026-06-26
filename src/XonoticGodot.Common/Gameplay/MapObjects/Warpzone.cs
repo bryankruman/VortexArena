@@ -107,6 +107,21 @@ public sealed class Warpzone
     /// <summary>The transform from this zone's IN plane to its linked exit (set when the pair is linked).</summary>
     public WarpzoneTransform Transform;
 
+    /// <summary>QC <c>.aiment</c> — the explicit-orientation entity (a <c>trigger_warpzone_position</c> / killtarget
+    /// target_position) used to re-derive the IN plane on a moving-warpzone think or a runtime reconnect. Null when
+    /// the zone orients purely from its brush geometry.</summary>
+    public Entity? Aiment;
+
+    /// <summary>QC <c>spawnflags &amp; 1</c> (server.qc:628) — a MOVING warpzone runs a per-frame
+    /// <c>WarpZone_Think</c> that re-derives its transform whenever the zone or its partner has moved. Off for a
+    /// static map warpzone (the common case).</summary>
+    public bool Moving;
+
+    /// <summary>QC <c>warpzone_save_origin/_angles/_eorigin/_eangles</c> (server.qc:25-28): the cached brush
+    /// origin/angles of this zone and its partner from the last transform derivation, so <c>WarpZone_Think</c> only
+    /// re-derives when something actually moved.</summary>
+    public Vector3 SaveOrigin, SaveAngles, SaveEOrigin, SaveEAngles;
+
     /// <summary>QC warpzone_origin/_angles — the IN plane this zone presents.</summary>
     public Vector3 InOrigin, InAngles;
 
@@ -248,6 +263,10 @@ public sealed class WarpzoneManager
         if (Api.Services is not null) Api.Entities.SetOrigin(e, newOrigin);
         else e.Origin = newOrigin;
         e.OldOrigin = newOrigin; // QC: cancel interpolation across the seam (a teleport, not a slide)
+        // QC WarpZone_TeleportPlayer (server.qc:63) BITXOR_ASSIGN(player.effects, EF_TELEPORT_BIT) — toggle the
+        // networked teleport bit so the client cancels its model interpolation across the seam (no stretch on the
+        // remote model crossing a zone).
+        e.Effects ^= EffectFlags.Teleport;
 
         // QC server.qc:355 — stamp the same-frame re-teleport guard so the partner-zone touch (which the entity now
         // overlaps after emerging) doesn't immediately warp it straight back. Base uses
@@ -378,7 +397,11 @@ public sealed class WarpzoneManager
     {
         (Vector3 org, Vector3 ang, bool ok) = DerivePlaneFromBrush(brush, aiment);
         if (!ok) return null;
-        var wz = new Warpzone { InOrigin = org, InAngles = ang, TargetName = targetName, Target = target, Trigger = brush };
+        var wz = new Warpzone
+        {
+            InOrigin = org, InAngles = ang, TargetName = targetName, Target = target, Trigger = brush,
+            Aiment = aiment, Moving = (brush.SpawnFlags & 1) != 0,
+        };
         brush.ClassName = "trigger_warpzone";
         brush.Solid = Solid.Trigger;
         brush.Touch = (self, other) => { if (!other.IsFreed && other.Solid != Solid.Not) Teleport(other, wz); };
@@ -553,8 +576,185 @@ public sealed class WarpzoneManager
             SpawnFromBrush(zone, zone.TargetName, zone.Target, aiment);
         }
         Link();
+        SeedMovingSnapshots();
         _pendingZones.Clear();
         _pendingPositions.Clear();
+    }
+
+    /// <summary>
+    /// QC <c>WarpZone_Think</c> snapshot seed (server.qc:716-728 warpzone_save_*): record each MOVING zone's brush
+    /// origin/angles and its partner's, so <see cref="ThinkMovingZones"/> only re-derives when something actually
+    /// moved. Run once after the initial link + after any reconnect.
+    /// </summary>
+    private void SeedMovingSnapshots()
+    {
+        foreach (Warpzone wz in _zones)
+        {
+            if (!wz.Moving || wz.Trigger is null) continue;
+            wz.SaveOrigin = wz.Trigger.Origin;
+            wz.SaveAngles = wz.Trigger.Angles;
+            wz.SaveEOrigin = wz.Partner?.Trigger?.Origin ?? Vector3.Zero;
+            wz.SaveEAngles = wz.Partner?.Trigger?.Angles ?? Vector3.Zero;
+        }
+    }
+
+    /// <summary>
+    /// QC <c>WarpZone_Think</c> (server.qc:714-731): for every MOVING warpzone (spawnflag 1), re-derive the IN plane
+    /// + transform whenever the zone or its partner brush has moved/rotated since the last derivation. Call once per
+    /// server frame (it self-gates on the warpzone_save_* snapshot so a static map costs nothing). A no-op when the
+    /// map has no moving warpzones.
+    /// </summary>
+    public void ThinkMovingZones()
+    {
+        for (int i = 0; i < _zones.Count; i++)
+        {
+            Warpzone wz = _zones[i];
+            if (!wz.Moving || wz.Trigger is null) continue;
+            Entity? e = wz.Partner?.Trigger;
+            bool moved = wz.Trigger.Origin != wz.SaveOrigin
+                || wz.Trigger.Angles != wz.SaveAngles
+                || (e?.Origin ?? Vector3.Zero) != wz.SaveEOrigin
+                || (e?.Angles ?? Vector3.Zero) != wz.SaveEAngles;
+            if (!moved) continue;
+
+            // QC: WarpZone_InitStep_UpdateTransform(this) + (this.enemy), then FinalizeTransform both.
+            RederivePlane(wz);
+            if (wz.Partner is { } partner) RederivePlane(partner);
+            if (wz.Partner is { } p2)
+            {
+                LinkOneWay(wz, p2);
+                LinkOneWay(p2, wz);
+            }
+            wz.SaveOrigin = wz.Trigger.Origin;
+            wz.SaveAngles = wz.Trigger.Angles;
+            wz.SaveEOrigin = e?.Origin ?? Vector3.Zero;
+            wz.SaveEAngles = e?.Angles ?? Vector3.Zero;
+        }
+    }
+
+    /// <summary>QC <c>WarpZone_InitStep_UpdateTransform</c> re-run for an already-spawned zone: re-derive its IN
+    /// plane (origin/angles) from the current brush geometry + aiment. Keeps the zone if the brush is non-planar.</summary>
+    private void RederivePlane(Warpzone wz)
+    {
+        if (wz.Trigger is null) return;
+        (Vector3 org, Vector3 ang, bool ok) = DerivePlaneFromBrush(wz.Trigger, wz.Aiment);
+        if (!ok) return;
+        wz.InOrigin = org;
+        wz.InAngles = ang;
+        if (Api.Services is not null && wz.Trigger is { IsFreed: false } trig)
+            Api.Entities.SetOrigin(trig, org);
+    }
+
+    /// <summary>
+    /// QC <c>WarpZones_Reconnect</c> (server.qc:702-712): clear every zone's partner link and re-pair from current
+    /// targets — used by the runtime <c>trigger_warpzone_reconnect</c>. With no filter every zone is re-derived +
+    /// relinked. Run after any zone is added/removed/retargeted at runtime.
+    /// </summary>
+    public void Reconnect()
+    {
+        // Porto-weapon portals (Owner != null) are NOT map warpzones and must keep their existing two-way link — a
+        // runtime reconnect re-derives only the map's trigger_warpzone brushes.
+        foreach (Warpzone wz in _zones)
+            if (wz.Owner is null) { wz.Partner = null; wz.Transform = default; RederivePlane(wz); }
+        Link();
+        SeedMovingSnapshots();
+    }
+
+    /// <summary>
+    /// QC <c>trigger_warpzone_reconnect_use</c> (server.qc:785-805): re-derive + re-link only the zones matching the
+    /// reconnect entity's <see cref="Entity.Target"/> (empty = all). Spawnflag bit 1 ("don't reconnect a zone a
+    /// player can currently see") is honoured only insofar as we have no client-visibility test here — the
+    /// conservative port reconnects regardless (the QC visibility skip is a cosmetic seam-pop avoidance, not a
+    /// correctness gate). Wire to <see cref="WarpzoneSpawns.ReconnectSink"/>.
+    /// </summary>
+    public void OnReconnectUse(Entity reconnect) => ReconnectByTarget(reconnect.Target);
+
+    /// <summary>Re-derive + re-link the zones whose <see cref="Warpzone.Target"/> matches <paramref name="target"/>
+    /// (null/empty = every zone), then their partners (QC matches for .target, server.qc:790).</summary>
+    public void ReconnectByTarget(string? target)
+    {
+        bool all = string.IsNullOrEmpty(target);
+        // Collect the zones to reconnect (matching .target) + their existing partners (server.qc:803 e.enemy too).
+        var touched = new HashSet<Warpzone>();
+        foreach (Warpzone wz in _zones)
+            if (wz.Owner is null && (all || wz.Target == target)) // skip Porto portals (keep their link)
+            {
+                touched.Add(wz);
+                if (wz.Partner is { Owner: null } p) touched.Add(p);
+            }
+        if (touched.Count == 0) return;
+
+        foreach (Warpzone wz in touched) { wz.Partner = null; wz.Transform = default; RederivePlane(wz); }
+        Link();              // re-pair (a no-touched zone keeps its existing link; Link is idempotent on Linked ones)
+        SeedMovingSnapshots();
+    }
+
+    /// <summary>
+    /// QC <c>WarpZone_StartFrame</c> per-frame observer pass (server.qc:751-776): an OBSERVER / SOLID_NOT client is
+    /// not caught by the touch-trigger pass (a SOLID_NOT mover fires no touches), so the engine warps them through a
+    /// zone manually each frame — <c>WarpZone_Find</c> the overlapping zone, plane-side gate, then
+    /// <c>WarpZone_Teleport(e, -1, 0)</c> WITHOUT firing the zone's targets (a spectator passing through must not
+    /// trip relays). Call once per server frame with the connected clients; a no-op on a map with no warpzones.
+    /// </summary>
+    public void WarpObservers(IReadOnlyList<Entity> clients)
+    {
+        if (_zones.Count == 0) return;
+        for (int i = 0; i < clients.Count; i++)
+        {
+            Entity it = clients[i];
+            if (it.IsFreed) continue;
+            // QC: IS_OBSERVER(it) || it.solid == SOLID_NOT — observers and non-solid (e.g. dead/respawning) clients.
+            bool nonSolid = it.Solid == Solid.Not;
+            if (!(nonSolid || (it is Player { IsObserver: true }))) continue;
+
+            Warpzone? wz = FindOverlapping(it);
+            if (wz is null || !wz.Linked) continue;
+            // QC: WarpZone_PlaneDist(e, origin + view_ofs) <= 0 → on/past the plane.
+            Vector3 point = it.Origin + it.ViewOfs;
+            if (Vector3.Dot(point - wz.Transform.InOrigin, wz.Transform.InForward) > 0f) continue;
+            TeleportNoTargets(it, wz); // NOT firing targets (server.qc:765)
+        }
+    }
+
+    /// <summary>QC <c>WarpZone_Find</c> (common.qc): the warpzone whose trigger box overlaps the entity's box, or
+    /// null. Used by the per-frame observer warp (the touch pass can't catch a SOLID_NOT mover).</summary>
+    private Warpzone? FindOverlapping(Entity e)
+    {
+        Vector3 mn = e.Origin + e.Mins, mx = e.Origin + e.Maxs;
+        foreach (Warpzone wz in _zones)
+        {
+            if (wz.Trigger is not { IsFreed: false } t) continue;
+            if (mn.X <= t.AbsMax.X && mx.X >= t.AbsMin.X
+                && mn.Y <= t.AbsMax.Y && mx.Y >= t.AbsMin.Y
+                && mn.Z <= t.AbsMax.Z && mx.Z >= t.AbsMin.Z)
+                return wz;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The observer/SOLID_NOT crossing (QC <c>WarpZone_Teleport(e, -1, 0)</c>): warp origin/velocity/angles through
+    /// the seam exactly like <see cref="Teleport"/> but WITHOUT the target relay or the kill-credit (a spectator
+    /// passing through is invisible to the map's logic). The same-frame finishtime guard still applies so the
+    /// observer doesn't ping-pong between the paired zones in one frame.
+    /// </summary>
+    private void TeleportNoTargets(Entity e, Warpzone wz)
+    {
+        float now = MapMover.Now();
+        if (_teleportFinishTime.TryGetValue(e, out float finish))
+        {
+            if (e.IsFreed) { _teleportFinishTime.Remove(e); }
+            else if (now <= finish) return;
+        }
+        Vector3 newOrigin = wz.Transform.TransformOrigin(e.Origin);
+        e.Velocity = wz.Transform.TransformVelocity(e.Velocity);
+        e.Angles = wz.Transform.TransformAngles(e.Angles);
+        e.AVelocity = wz.Transform.TransformVelocity(e.AVelocity);
+        if (Api.Services is not null) Api.Entities.SetOrigin(e, newOrigin);
+        else e.Origin = newOrigin;
+        e.OldOrigin = newOrigin;
+        e.Effects ^= EffectFlags.Teleport; // QC EF_TELEPORT_BIT — cancel client interp across the seam
+        _teleportFinishTime[e] = now + MapMover.FrameTime();
     }
 
     /// <summary>The explicit-orientation entity for a zone (QC WarpZone_InitStep_FindOriginTarget + the
@@ -590,4 +790,28 @@ public static class WarpzoneSpawns
 
     public static void TriggerWarpzoneSetup(Entity e) { e.ClassName = "trigger_warpzone"; Sink?.Invoke(e); }
     public static void TriggerWarpzonePositionSetup(Entity e) { e.ClassName = "trigger_warpzone_position"; Sink?.Invoke(e); }
+
+    /// <summary>
+    /// QC <c>spawnfunc(misc_warpzone_position)</c> (server.qc:642) — the CANONICAL position spawnfunc.
+    /// <c>spawnfunc(trigger_warpzone_position)</c> (server.qc:648) merely delegates to it, so a map authored with the
+    /// bare <c>misc_warpzone_position</c> name carries an identical explicit-orientation helper. Routed to the
+    /// manager as a <c>trigger_warpzone_position</c> (same handling), so its orientation is no longer silently dropped.
+    /// </summary>
+    public static void MiscWarpzonePositionSetup(Entity e) { e.ClassName = "trigger_warpzone_position"; Sink?.Invoke(e); }
+
+    /// <summary>
+    /// QC <c>spawnfunc(trigger_warpzone_reconnect)</c> / <c>spawnfunc(target_warpzone_reconnect)</c>
+    /// (server.qc:807-815): a triggerable entity that, when fired, re-derives + re-links the world's warpzones at
+    /// runtime (<see cref="WarpzoneManager.ReconnectByTarget"/>). Used by maps with moving / runtime-rewired
+    /// warpzones. The <c>use</c> handler reads this entity's <see cref="Entity.Target"/> (which zones to reconnect,
+    /// empty = all) and <see cref="Entity.SpawnFlags"/> bit 1 (skip zones currently visible to a client).
+    /// </summary>
+    public static void TriggerWarpzoneReconnectSetup(Entity e)
+    {
+        e.Use = (self, _) => ReconnectSink?.Invoke(self);
+    }
+
+    /// <summary>Host bridge for the reconnect <c>use</c> (mirrors <see cref="Sink"/>): wired to
+    /// <see cref="WarpzoneManager.OnReconnectUse"/>. Null = no manager (unit tests without a host).</summary>
+    public static System.Action<Entity>? ReconnectSink;
 }

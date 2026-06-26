@@ -470,6 +470,27 @@ public sealed class Hook : Weapon
         }
     }
 
+    /// <summary>
+    /// QC <c>RemoveGrapplingHooks(entity pl)</c> (server/hook.qc:30): drop ALL of a player's grappling-hook
+    /// chains (every weapon slot) and restore the owner's movetype (FLY → WALK, since the non-tarzan reel puts
+    /// the owner in MOVETYPE_FLY). Called when the player is relocated/frozen/teleported so the hook doesn't
+    /// stay latched through the move (teleport.qc:60, freezetag, status_effects/frozen, vehicles, client reset).
+    /// </summary>
+    public static void RemoveGrapplingHooks(Entity pl)
+    {
+        if (pl.MoveType == MoveType.Fly)
+            pl.MoveType = MoveType.Walk;
+
+        pl.ForEachWeaponSlot(s =>
+        {
+            if (s.Hook is not null)
+            {
+                Api.Entities.Remove(s.Hook);
+                s.Hook = null;
+            }
+        });
+    }
+
     // W_Hook_Attack2 — lob a gravity bomb that falls under its own gravity and pulls victims in. hook.qc
     private void AttackGravityBomb(Entity actor, WeaponSlot slot)
     {

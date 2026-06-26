@@ -422,7 +422,9 @@ public sealed class Raptor : Vehicle
                 if (proj.Enemy == vehicle && proj.VehGuideMode >= 0
                     && QMath.VLen(vehicle.Origin - proj.Origin) < 2f * FlareRange)
                 {
-                    Api.Sound.Play(vehicle, SoundChannel.Pain, "vehicles/alarm.wav"); // QC soundto CH_PAIN_SINGLE
+                    // QC: soundto(MSG_ONE, vehic, CH_PAIN_SINGLE, SND(VEH_MISSILE_ALARM), VOL_BASE, ATTEN_NONE).
+                    // SND_VEH_MISSILE_ALARM = "vehicles/missile_alarm.wav" (NOT vehicles/alarm.wav = SND_VEH_ALARM).
+                    Api.Sound.Play(vehicle, SoundChannel.Pain, "vehicles/missile_alarm.wav", SoundLevels.VolBase, SoundLevels.AttenNone);
                     break;
                 }
             }
@@ -478,18 +480,25 @@ public sealed class Raptor : Vehicle
         vehicle.AVelocity = new Vector3(0f, 0.5f, 1f) * 400f * (Prandom.Float() - Prandom.Float());
         vehicle.ColorModKey = new Vector3(-0.5f, -0.5f, -0.5f); // QC vr_death: darken the dying wreck
 
+        // QC vr_death: Send_Effect(EFFECT_EXPLOSION_MEDIUM, findbetterlocation(origin, 16), '0 0 0', 1).
+        // findbetterlocation nudges the FX clear of a nearby surface (cosmetic only — no gameplay difference),
+        // so emit at origin directly matching every other vehicle's vr_death port (Racer, Bumblebee).
+        EffectEmitter.Emit("EXPLOSION_MEDIUM", vehicle.Origin, Vector3.Zero, 1);
+
         // raptor_diethink: small explosions for ~5-10s, then raptor_blowup. raptor_blowup also runs on touch.
         float when = Time + 5f + Prandom.Range(0f, 5f);
         vehicle.Touch = (self, _) => Blowup(self);
         vehicle.Think = self =>
         {
             if (Time >= when) { Blowup(self); return; }
-            // QC raptor_diethink: a 5%/think chance to pop SND_ROCKET_IMPACT (+ EFFECT_EXPLOSION_SMALL) as the
-            // wreck tumbles. The sound is server-authored, so we play it here; the particle FX stays deferred.
+            // QC raptor_diethink: 5%/think chance — sound(CH_SHOTS, SND_ROCKET_IMPACT) + Send_Effect(EFFECT_EXPLOSION_SMALL,
+            // randomvec()*80 + (origin + '0 0 100'), '0 0 0', 1).
             if (Api.Services is not null && Prandom.Float() < 0.05f)
+            {
                 Api.Sound.Play(self, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav"); // CH_SHOTS, SND_ROCKET_IMPACT
+                EffectEmitter.Emit("EXPLOSION_SMALL", Prandom.Vec() * 80f + (self.Origin + new Vector3(0f, 0f, 100f)), Vector3.Zero, 1);
+            }
             self.NextThink = Time;
-            // TODO(port,client): random EFFECT_EXPLOSION_SMALL during the tumble (particle FX).
         };
         vehicle.NextThink = Time;
     }

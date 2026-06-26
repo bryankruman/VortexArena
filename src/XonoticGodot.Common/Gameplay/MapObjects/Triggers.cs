@@ -153,9 +153,15 @@ public static class Triggers
                 return;
         }
 
-        // pressed-keys gate (QC multi_touch): a key-gated trigger only fires while the player holds one of
-        // the required keys. The port's server Entity has no pressedkeys field yet, so this gate is skipped
-        // (see todos: add Entity.PressedKeys fed from the client input state, then enforce it here).
+        // pressed-keys gate (QC multi_touch:135-137): a key-gated trigger only fires while the PLAYER holds one
+        // of the required keys. this.TriggerPressedKeys is the map-parsed mask (movement-key bits); the player's
+        // live key state rides toucher.PressedKeys (written each frame by the input/dodging layer). Non-player
+        // touchers ignore the gate (QC IS_PLAYER(toucher)).
+        if (self.TriggerPressedKeys != 0 && (toucher.Flags & EntFlags.Client) != 0)
+        {
+            if ((toucher.PressedKeys & self.TriggerPressedKeys) == 0)
+                return;
+        }
 
         self.Enemy = toucher;
         self.GoalEntity = toucher;

@@ -192,6 +192,7 @@ public sealed class TeamKeepaway : GameType
         }
 
         // QC tka_TouchEvent: the ball just touched a non-player (most likely the world) — spark + touch sfx.
+        EffectEmitter.Emit("BALL_SPARKS", self.Origin, Vector3.Zero, 1); // QC Send_Effect(EFFECT_BALL_SPARKS, this.origin, '0 0 0', 1)
         SoundSystem.PlayOn(self, Sounds.ByName("KA_TOUCH")); // QC SND_KA_TOUCH, ATTEN_NORM
     }
 
@@ -201,9 +202,16 @@ public sealed class TeamKeepaway : GameType
     {
         if (!ReferenceEquals(self, BallEntity) || Carrier is not null)
             return;
+        // QC tka_RespawnBall: capture the old origin BEFORE relocating (the respawn effect plays at both the
+        // old and the new spot).
+        Vector3 oldBallOrigin = self.Origin;
         // QC tka_RespawnBall: MoveToRandomMapLocation (with the SelectSpawnPoint fallback) + '0 0 200' kick + arm.
         global::XonoticGodot.Common.Gameplay.BallEntity.Relocate(self, RespawnTime);
         self.Think = RespawnBallThink;
+        // QC: Send_Effect(EFFECT_KA_BALL_RESPAWN, oldballorigin, '0 0 0', 1);
+        //     Send_Effect(EFFECT_KA_BALL_RESPAWN, this.origin, '0 0 0', 1);
+        EffectEmitter.Emit("KA_BALL_RESPAWN", oldBallOrigin, Vector3.Zero, 1);
+        EffectEmitter.Emit("KA_BALL_RESPAWN", self.Origin, Vector3.Zero, 1);
         SoundSystem.PlayOn(self, Sounds.ByName("KA_RESPAWN")); // QC SND_KA_RESPAWN, ATTEN_NONE
     }
 

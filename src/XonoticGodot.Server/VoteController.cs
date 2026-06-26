@@ -62,6 +62,20 @@ public sealed class VoteController
     /// <summary>Broadcast sink for the bprint lines (QC bprint). The host wires it to the chat/console broadcast.</summary>
     public Action<string>? Broadcast { get; set; }
 
+    /// <summary>QC <c>Send_Notification(NOTIF_ALL, NULL, MSG_ANNCE, ANNCE_VOTE_CALL)</c> (vote.qc:1073): the "vote
+    /// called" announcer cue, played when a vote opens AND more than one real player is on the server. Host-wires
+    /// to the announcer channel.</summary>
+    public Action? AnnounceVoteCall { get; set; }
+
+    /// <summary>QC <c>Send_Notification(NOTIF_ALL, NULL, MSG_ANNCE, ANNCE_VOTE_ACCEPT)</c> (VoteAccept, vote.qc:181):
+    /// the "vote passed" announcer cue. Host-wires to the announcer channel.</summary>
+    public Action? AnnounceVoteAccept { get; set; }
+
+    /// <summary>QC <c>Send_Notification(NOTIF_ALL, NULL, MSG_ANNCE, ANNCE_VOTE_FAIL)</c> (VoteReject/VoteTimeout,
+    /// vote.qc:188/195): the "vote failed" announcer cue (shared by reject + timeout). Host-wires to the
+    /// announcer channel.</summary>
+    public Action? AnnounceVoteFail { get; set; }
+
     /// <summary>The connected real clients (QC FOREACH_CLIENT(IS_REAL_CLIENT)). Wired by the host for counting.</summary>
     public Func<IEnumerable<Player>>? Roster { get; set; }
 
@@ -199,8 +213,18 @@ public sealed class VoteController
             _waitTime[caller] = Now + Cvars.Float("sv_vote_wait");
         }
 
+        // QC: count real clients (IS_REAL_CLIENT = connected, non-bot) before announcing (vote.qc:1062).
+        int tmpPlayerCount = 0;
+        foreach (Player it in Roster?.Invoke() ?? System.Array.Empty<Player>())
+            if (!it.IsBot) tmpPlayerCount++;
+
         Broadcast?.Invoke($"^2* {CallerName(caller)} calls a vote for {Display}");
         Count(firstCount: true);
+
+        // QC vote.qc:1072 — play ANNCE_VOTE_CALL only if the vote is still open (Count may have already resolved a
+        // single-player vote) and more than one real player is present (so a solo caller doesn't hear their own cue).
+        if (tmpPlayerCount > 1 && Active)
+            AnnounceVoteCall?.Invoke();
     }
 
     private void CmdMaster(CommandContext ctx)
@@ -467,18 +491,24 @@ public sealed class VoteController
         Reset();
         if (status != StatusMaster)
             VotePassed?.Invoke(cmd);
+        // QC VoteAccept (vote.qc:181): Send_Notification(NOTIF_ALL, NULL, MSG_ANNCE, ANNCE_VOTE_ACCEPT).
+        AnnounceVoteAccept?.Invoke();
     }
 
     private void Reject()
     {
         Broadcast?.Invoke($"^2* {CallerName(Caller)}'s vote for ^1{Display}^2 was rejected");
         Reset();
+        // QC VoteReject (vote.qc:188): Send_Notification(NOTIF_ALL, NULL, MSG_ANNCE, ANNCE_VOTE_FAIL).
+        AnnounceVoteFail?.Invoke();
     }
 
     private void Timeout()
     {
         Broadcast?.Invoke($"^2* {CallerName(Caller)}'s vote for ^1{Display}^2 timed out");
         Reset();
+        // QC VoteTimeout (vote.qc:195): Send_Notification(NOTIF_ALL, NULL, MSG_ANNCE, ANNCE_VOTE_FAIL).
+        AnnounceVoteFail?.Invoke();
     }
 
     private void Spam(int notvoters, int mincount, string result)

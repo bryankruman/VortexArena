@@ -11,8 +11,10 @@
 // Now ported in full: LinkDoors connected-component grouping (double/quad doors move as a unit via the
 // owner/enemy chain), the separate spawned door_spawnfield touch volume, Quake-1/QL key locks
 // (itemkeys / gold/silver), shootable doors via the damage pipeline's Death hook, the chain-open through
-// owner/enemy, and door_rotating axis selection. Genuinely client-only bits (CSQC networking, CPMA sound
-// overrides, DOOR_ROTATING_BIDIR trigger-side reverse) are out of scope for the headless sim.
+// owner/enemy, and door_rotating axis selection. The DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side
+// reverse-open path (door_use's trigger.trigger_reverse handling) is now ported too — the firing trigger is
+// threaded via MapMover.CurrentUseTrigger. Genuinely client-only bits (CSQC networking, CPMA sound
+// overrides) are out of scope for the headless sim.
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
@@ -39,9 +41,10 @@ public static class Doors
     public const int Crush = 1 << 11;      // DOOR_CRUSH — instakill blockers
 
     // ---- door_rotating.qh spawnflag bits ----
-    public const int RotatingBidir = 1 << 1;     // DOOR_ROTATING_BIDIR
-    public const int RotatingXAxis = 1 << 6;     // DOOR_ROTATING_XAXIS
-    public const int RotatingYAxis = 1 << 7;     // DOOR_ROTATING_YAXIS
+    public const int RotatingBidir = 1 << 1;        // DOOR_ROTATING_BIDIR
+    public const int RotatingBidirInDown = 1 << 3;  // DOOR_ROTATING_BIDIR_IN_DOWN
+    public const int RotatingXAxis = 1 << 6;        // DOOR_ROTATING_XAXIS
+    public const int RotatingYAxis = 1 << 7;        // DOOR_ROTATING_YAXIS
 
     // QC key bits (item_keys): BIT(0) gold, BIT(1) silver.
     private const int KeyGoldBit = 1 << 0;
@@ -379,7 +382,12 @@ public static class Doors
 
     // ================= activation =================
 
-    /// <summary>QC <c>door_use</c>: open (or, for TOGGLE doors that are open, close) the whole linked group.</summary>
+    /// <summary>
+    /// QC <c>door_use(this, actor, trigger)</c>: open (or, for TOGGLE doors that are open, close) the whole
+    /// linked group. The QC third <c>trigger</c> argument (the entity that fired the door) is threaded via
+    /// <see cref="MapMover.CurrentUseTrigger"/> — it is non-null only on the SUB_UseTargets path and carries
+    /// the <c>.trigger_reverse</c> flag that drives bidirectional rotating doors.
+    /// </summary>
     public static void DoorUse(Entity self, Entity actor)
     {
         EnsureLinked(self);            // safety net if the post-spawn link pass hasn't run yet
@@ -389,6 +397,11 @@ public static class Doors
         if (owner.Active != MapMover.ActiveActive)
             return;
         Entity door = owner;
+
+        // QC door_use's `trigger` parameter: the firing trigger (carries .trigger_reverse). NULL on
+        // touch/damage/blocked opens — only set during a SUB_UseTargets dispatch.
+        Entity? trigger = MapMover.CurrentUseTrigger;
+        int triggerReverse = trigger?.TriggerReverse ?? 0;
 
         if ((door.SpawnFlags & Toggle) != 0
             && (door.MoverState == MapMover.StateUp || door.MoverState == MapMover.StateTop))
@@ -407,7 +420,31 @@ public static class Doors
         Entity o = door;
         do
         {
-            DoorGoUpAny(o, actor);
+            if (o.ClassName == "door")
+            {
+                DoorGoUp(o, actor);
+            }
+            else
+            {
+                // door_rotating: DOOR_ROTATING_BIDIR reverses the swing direction when the firing trigger
+                // set .trigger_reverse (QC door.qc:248-258).
+                if ((o.SpawnFlags & RotatingBidir) != 0 && triggerReverse != 0
+                    && o.Lip != 666f && o.MoverState == MapMover.StateBottom)
+                {
+                    o.Lip = 666f;            // remember the reverse-open direction (undone in HitBottom)
+                    o.Pos2 = -o.Pos2;
+                }
+
+                // DOOR_ROTATING_BIDIR_IN_DOWN: while closing, don't let the door re-open if it is triggered
+                // from the wrong side (QC door.qc:253-258).
+                bool blockReopen = (o.SpawnFlags & RotatingBidir) != 0
+                    && (o.SpawnFlags & RotatingBidirInDown) != 0
+                    && o.MoverState == MapMover.StateDown
+                    && ((o.Lip == 666f && triggerReverse == 0) || (o.Lip != 666f && triggerReverse != 0));
+
+                if (!blockReopen)
+                    DoorRotatingGoUp(o, actor);
+            }
             o = o.Enemy!;
         } while (!ReferenceEquals(o, door) && o is not null);
     }

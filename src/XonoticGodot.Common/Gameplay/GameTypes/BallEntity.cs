@@ -305,6 +305,9 @@ public static class BallEntity
         GametypeEntities.AttachToCarrier(ball, carrier, carryOffset);
         ball.NextThink = 0f;                 // QC: the carried-ball think is the gametype's, not the loose timer
         ball.TakeDamage = DamageMode.No;     // QC takedamage = DAMAGE_NO while carried
+        // QC GameRules_scoring_vip(carrier, true): KA (sv_keepaway.qc:149), NB (sv_nexball.qc:170), TKA
+        // (sv_tka.qc:139) all flag the ball carrier as a VIP (drives the nades flagcarrier bonus rate).
+        GametypeEntities.ScoringVip(carrier, true);
     }
 
     /// <summary>
@@ -319,6 +322,8 @@ public static class BallEntity
     {
         Entity? carrier = ball.GtCarrier;
         GametypeEntities.DetachFromCarrier(ball);
+        // QC GameRules_scoring_vip(player, false) on drop/score (sv_keepaway.qc:187, sv_nexball.qc:147/230).
+        GametypeEntities.ScoringVip(carrier, false);
 
         ball.Solid = Solid.Trigger;          // QC SOLID_TRIGGER before setorigin (area-grid linking)
         ball.MoveType = MoveType.Bounce;     // QC MOVETYPE_BOUNCE

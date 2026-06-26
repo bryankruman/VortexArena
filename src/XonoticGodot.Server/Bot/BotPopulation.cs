@@ -337,9 +337,9 @@ public sealed class BotPopulation
     /// The brain is created by the ClientManager OnBotConnected hook → <see cref="RegisterBot"/>.</summary>
     private BotBrain? SpawnBot(string? name, float? skill)
     {
-        (string botName, string model, int forcedTeam) = string.IsNullOrWhiteSpace(name)
+        (string botName, string model, string skin, int forcedTeam) = string.IsNullOrWhiteSpace(name)
             ? PickNameAndModel()
-            : (name!, "", 0);
+            : (name!, "", "", 0);
 
         ClientManager.ClientInfo info = _world.Clients.ClientConnect(isBot: true, netName: botName);
         Player p = info.Player;
@@ -356,11 +356,16 @@ public sealed class BotPopulation
             _world.Teamplay.AssignBestTeam(p, _world.Clients.Players);
         }
 
+        // QC bot_skin (bot.qc:343 this.playerskin): a bots.txt skin index overrides the default player skin.
+        // Stored so it survives respawns (FixPlayermodel re-honors the client's playerskin) and applied now
+        // since ClientConnect already auto-joined+spawned the bot.
+        if (int.TryParse(skin, NumberStyles.Integer, CultureInfo.InvariantCulture, out int skinIdx) && skinIdx >= 0)
+            _preferredSkin[p] = skinIdx;
+
         if (!string.IsNullOrEmpty(model))
-        {
             _preferredModel[p] = model;
+        if (!string.IsNullOrEmpty(model) || _preferredSkin.ContainsKey(p))
             ApplyPreferredModel(p);                          // the connect auto-Join already spawned it
-        }
         // the OnBotConnected hook registered the brain; sync its skill now that BotSkill is final.
         if (_byPlayer.TryGetValue(p, out BotBrain? brain))
         {
@@ -444,6 +449,7 @@ public sealed class BotPopulation
         }
         _tickInputs.Remove(p);
         _preferredModel.Remove(p);
+        _preferredSkin.Remove(p);
         _fragsLastCheck.Remove(p);
         BotRemoved?.Invoke(p);
     }
@@ -459,15 +465,21 @@ public sealed class BotPopulation
            || (Cvars.Bool("g_campaign") && !_world.Campaign.BotsMayStart);
 
     private readonly Dictionary<Player, string> _preferredModel = new();
+    // QC .playerskin (bot.qc:343): the bots.txt skin index for a bot, re-applied after each spawn (which resets
+    // p.Skin to sv_defaultplayerskin), matching QC FixPlayermodel honoring the client's playerskin.
+    private readonly Dictionary<Player, int> _preferredSkin = new();
 
     private void ApplyPreferredModel(Player p)
     {
-        if (!_preferredModel.TryGetValue(p, out string? model) || string.IsNullOrEmpty(model))
-            return;
-        if (Common.Services.Api.Services is not null)
-            Common.Services.Api.Entities.SetModel(p, model);
-        else
-            p.Model = model;
+        if (_preferredModel.TryGetValue(p, out string? model) && !string.IsNullOrEmpty(model))
+        {
+            if (Common.Services.Api.Services is not null)
+                Common.Services.Api.Entities.SetModel(p, model);
+            else
+                p.Model = model;
+        }
+        if (_preferredSkin.TryGetValue(p, out int skin))
+            p.Skin = skin; // QC this.playerskin → the player's rendered skin index
     }
 
     // =============================================================================================
@@ -563,8 +575,11 @@ public sealed class BotPopulation
     // bots.txt (QC bot_setnameandstuff — the name/model slice)
     // =============================================================================================
 
-    // QC bots.txt rows: name (argv0), model (argv1) + the forced-team index (argv5, 1..4; 0 = none).
-    private List<(string Name, string Model, int ForcedTeam)>? _botRows; // parsed once per world
+    // QC bots.txt rows: name (argv0), model (argv1), skin (argv2) + the forced-team index (argv5, 1..4; 0 = none).
+    // The shirt/pants columns (argv3/argv4 → setcolor) need a server-side player-color/colormap field the port
+    // doesn't model yet, so they stay unparsed (see residuals); the 12 skill-modifier columns are the documented
+    // single-knob intended divergence (skill.modifiers).
+    private List<(string Name, string Model, string Skin, int ForcedTeam)>? _botRows; // parsed once per world
 
     /// <summary>
     /// Pick a name + model from the bot config file (QC bot_setnameandstuff over bot_config_file=bots.txt):
@@ -574,7 +589,7 @@ public sealed class BotPopulation
     /// small built-in name table when the file isn't mounted. The skin/shirt/pants columns and the 12 skill
     /// modifiers are unported (single-knob skill; see residuals).
     /// </summary>
-    private (string name, string model, int forcedTeam) PickNameAndModel()
+    private (string name, string model, string skin, int forcedTeam) PickNameAndModel()
     {
         _botRows ??= ParseBotFile();
 
@@ -587,20 +602,21 @@ public sealed class BotPopulation
         string suffix = Cvars.String("bot_suffix");
 
         // prefer rows whose decorated name is unused (QC prio weighting), random among the preferred set.
-        var candidates = new List<(string Name, string Model, int ForcedTeam)>();
-        foreach ((string Name, string Model, int ForcedTeam) row in _botRows)
+        var candidates = new List<(string Name, string Model, string Skin, int ForcedTeam)>();
+        foreach ((string Name, string Model, string Skin, int ForcedTeam) row in _botRows)
             if (!used.Contains(prefix + row.Name + suffix))
                 candidates.Add(row);
         if (candidates.Count == 0)
             candidates = _botRows;
 
-        string baseName = "Bot", model = "";
+        string baseName = "Bot", model = "", skin = "";
         int forcedTeam = 0;
         if (candidates.Count > 0)
         {
-            (string Name, string Model, int ForcedTeam) row = candidates[_nameRng.Next(candidates.Count)];
+            (string Name, string Model, string Skin, int ForcedTeam) row = candidates[_nameRng.Next(candidates.Count)];
             baseName = row.Name;
             model = row.Model;
+            skin = row.Skin;
             forcedTeam = row.ForcedTeam;
         }
 
@@ -614,7 +630,7 @@ public sealed class BotPopulation
         }
 
         string modelPath = string.IsNullOrEmpty(model) ? "" : $"models/player/{model}.iqm"; // QC appends .iqm
-        return (name, modelPath, forcedTeam);
+        return (name, modelPath, skin, forcedTeam);
     }
 
     private readonly Random _nameRng = new(12345);
@@ -632,7 +648,7 @@ public sealed class BotPopulation
         _botRows ??= ParseBotFile();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var models = new List<string>();
-        foreach ((string Name, string Model, int ForcedTeam) row in _botRows)
+        foreach ((string Name, string Model, string Skin, int ForcedTeam) row in _botRows)
         {
             if (string.IsNullOrEmpty(row.Model)) continue;
             string path = $"models/player/{row.Model}.iqm";   // QC appends .iqm (matches PickNameAndModel)
@@ -642,9 +658,9 @@ public sealed class BotPopulation
     }
 
     /// <summary>Parse bot_config_file (bots.txt) rows via the world's ConfigReader; comments (// #) skipped.</summary>
-    private List<(string Name, string Model, int ForcedTeam)> ParseBotFile()
+    private List<(string Name, string Model, string Skin, int ForcedTeam)> ParseBotFile()
     {
-        var rows = new List<(string, string, int)>();
+        var rows = new List<(string, string, string, int)>();
         string file = Cvars.String("bot_config_file");
         if (string.IsNullOrEmpty(file)) file = "bots.txt";
         string? text = _world.ConfigReader?.Invoke(file);
@@ -659,19 +675,21 @@ public sealed class BotPopulation
                 string[] f = line.Split('\t');
                 if (f.Length == 0 || string.IsNullOrWhiteSpace(f[0]))
                     continue;
+                // argv(2) = skin index (QC bot_skin = argv(2), default "0"); a blank cell keeps the default.
+                string skin = f.Length > 2 ? f[2].Trim() : "";
                 // argv(5) = forced-team index (QC bot_forced_team = stof(argv(5))); kept only if 1..4.
                 int forcedTeam = 0;
                 if (f.Length > 5 && int.TryParse(f[5].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int t)
                     && t >= 1 && t <= 4)
                     forcedTeam = t;
-                rows.Add((f[0].Trim(), f.Length > 1 ? f[1].Trim() : "", forcedTeam));
+                rows.Add((f[0].Trim(), f.Length > 1 ? f[1].Trim() : "", skin, forcedTeam));
             }
         }
         if (rows.Count == 0)
         {
             // no bots.txt mounted: the old built-in table (kept so a bare test floor still names its bots).
             foreach (string n in new[] { "Hellfire", "Toxic", "Scorcher", "Discbot", "Nexus", "Eureka", "Sensible", "Mystery" })
-                rows.Add((n, "", 0));
+                rows.Add((n, "", "", 0));
         }
         return rows;
     }

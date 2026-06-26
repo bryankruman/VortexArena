@@ -35,6 +35,15 @@ namespace XonoticGodot.Common.Framework
         public Entity? GtCarrier;
         /// <summary>Back-link on a player to the objective they carry (QC .flagcarried / .ballcarried / held key).</summary>
         public Entity? GtCarried;
+        /// <summary>
+        /// QC <c>.m_GameRules_scoring_vip</c> (sv_rules.qh:77): set true while this player carries a scoring
+        /// objective the gametype considers "VIP" — the CTF flag, the Keepaway / Nexball ball, or a TKA key
+        /// (GameRules_scoring_vip(player,true) on pickup, false on drop/score). Read by the nades bonus economy
+        /// (a flag carrier accrues bonus-nade score at the flagcarrier rate). KeyHunt deliberately does NOT set
+        /// this (it uses the per-player key count instead). Maintained centrally in
+        /// <see cref="Gameplay.GametypeEntities.AttachToCarrier"/>/<see cref="Gameplay.GametypeEntities.DetachFromCarrier"/>.
+        /// </summary>
+        public bool GtScoringVip;
 
         // --- timing bookkeeping (QC .ctf_pickuptime / .ctf_droptime / .ctf_landtime / next_take_time) ---
         public float GtPickupTime;     // QC .ctf_pickuptime — when the objective was last taken (capture-time records)
@@ -109,6 +118,33 @@ namespace XonoticGodot.Common.Framework
         // (QC sets this.wait = time + 5 each time the alarm sounds). Kept on the generator entity; separate
         // from GtPainFinished (which the generator reuses for the 10 s under-attack debounce).
         public float GtAlarmWait;      // QC generator .wait — 5 s un-shielded alarm repeat timer
+
+        // --- Onslaught spawn placement + teleport (QC player .ons_deathloc / .ons_spawn_by / .teleport_antispam) ---
+        /// <summary>QC player <c>.ons_deathloc</c> — where the player last died, used to pick the nearest owned
+        /// control point/generator to respawn near (spawn_at_controlpoints / spawn_at_generator). '0 0 0' = a fresh
+        /// joiner / round reset (skip the nearest-node placement).</summary>
+        public Vector3 GtOnsDeathLoc;
+        /// <summary>QC player <c>.ons_spawn_by</c> — the control-point world entity the player chose from the
+        /// click-radar to respawn at (ons_Teleport target on the next PlayerSpawn). Null = use the default spawn.</summary>
+        public Entity? GtOnsSpawnBy;
+        /// <summary>QC player <c>.teleport_antispam</c> — earliest sim time the player may use the CP-to-CP teleport
+        /// (use key) again (g_onslaught_teleport_wait after the last teleport).</summary>
+        public float GtTeleportAntispam;
+
+        // --- Nexball basketball safe-pass lock (QC ball.enemy) ---
+        /// <summary>QC <c>ball.enemy</c> — the teammate locked as a safe-pass target (set by the PreThink crosshair
+        /// trace in nexball). The BallStealer secondary fires the ball toward this entity via the homing arc path.
+        /// Null when no safe-pass lock is active.</summary>
+        public Entity? GtSafePassTarget;
+
+        // --- Nexball weapon-arena saved loadout (QC STAT(WEAPONS, player.(weaponentity))) ---
+        /// <summary>QC <c>STAT(WEAPONS, player.(weaponentity))</c> in GiveBall/PlayerPreThink: the player's normal
+        /// weapon set saved when the ball is picked up (the weapon-arena WEP_NEXBALL override replaces it); restored
+        /// when the player stops carrying.</summary>
+        public WepSet GtSavedWeaponSet;
+        /// <summary>QC the weapon the player had active before picking up the ball (restored on lose-carrier in
+        /// PlayerPreThink non-carrier branch).</summary>
+        public int GtSavedActiveWeaponId = -1;
 
         // --- Invasion / monster-wave bookkeeping (QC spawned-by-wave marker) ---
         public bool GtWaveMonster;     // a monster that was spawned as part of an Invasion/Survival wave
@@ -236,6 +272,39 @@ namespace XonoticGodot.Common.Gameplay
             obj.GtCarrier = carrier;
             carrier.GtCarried = obj;
             SetOrigin(obj, carrier.Origin + carryOffset);
+        }
+
+        /// <summary>
+        /// QC <c>GameRules_scoring_vip(player, value)</c> (sv_rules.qh:78): mark/unmark a player as carrying a
+        /// "VIP" scoring objective (CTF flag / Keepaway-Nexball ball / TKA key). Set true on pickup, false on
+        /// drop/score. Read by the nades bonus economy (the flagcarrier accrual rate + the VIP-kill bonus) and
+        /// any future VIP-aware scoring. KeyHunt does NOT call this (it uses the key count); see
+        /// <see cref="ScoringIsVip"/>.
+        /// </summary>
+        public static void ScoringVip(Entity? player, bool value)
+        {
+            if (player is not null)
+                player.GtScoringVip = value;
+        }
+
+        /// <summary>QC <c>GameRules_scoring_is_vip(player)</c> (sv_rules.qh:79): is this player a VIP carrier?</summary>
+        public static bool ScoringIsVip(Entity? player) => player is not null && player.GtScoringVip;
+
+        /// <summary>
+        /// QC <c>FOR_EACH_KH_KEY(key.owner == player)</c> (sv_nades.qc:769): how many Key Hunt keys this player
+        /// currently carries. Counts the live <c>item_kh_key</c> objective entities whose carrier is the player.
+        /// 0 in every non-KeyHunt gametype (no such entities exist). Used by the nades bonus economy to scale the
+        /// flagcarrier accrual rate by the held key count.
+        /// </summary>
+        public static int KeyHuntKeyCount(Entity? player)
+        {
+            if (player is null || Api.Services is null)
+                return 0;
+            int n = 0;
+            foreach (Entity key in Api.Entities.FindByClass("item_kh_key"))
+                if (ReferenceEquals(key.GtCarrier, player))
+                    ++n;
+            return n;
         }
 
         /// <summary>

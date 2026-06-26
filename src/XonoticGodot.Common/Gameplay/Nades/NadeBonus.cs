@@ -48,9 +48,12 @@ public static class NadeBonus
 
         if (player.NadeBonusScore >= 1f)
         {
+            // QC sv_nades.qc:456-457: Send_Notification(NOTIF_ONE, player, MSG_CENTER, CENTER_NADE_BONUS) +
+            // play2(player, SND(NADE_BONUS)) (= SND_KH_ALARM) — tell the player they banked a bonus grenade.
+            NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, "NADE_BONUS");
+            SoundSystem.PlayOn(player, "NADE_BONUS");
             ++player.NadeBonus;
             --player.NadeBonusScore;
-            // QC: play the bonus notification/sound (host-rendered; the bonus count is what matters here).
         }
     }
 
@@ -63,10 +66,9 @@ public static class NadeBonus
 
     /// <summary>
     /// Port of the <c>PlayerDies</c> bonus award (sv_nades.qc:845-873): on a frag, a same-team/self kill wipes
-    /// the attacker's bonus; otherwise the attacker gains a killcount-scaled bonus (or a flat spree bonus at a
-    /// spree milestone). Always wipes the victim's bonus. <paramref name="attacker"/> is the crediting player.
-    /// (GameRules_scoring_is_vip — a CTF/keepaway flag-carrier concept — is treated as false here; the
-    /// VIP-kill medium bonus is a documented deferral with no effect in FFA/TDM.)
+    /// the attacker's bonus; a VIP (flag/ball carrier) kill awards the medium bonus; otherwise the attacker
+    /// gains a killcount-scaled bonus (or a flat spree bonus at a spree milestone). Always wipes the victim's
+    /// bonus. <paramref name="attacker"/> is the crediting player.
     /// </summary>
     public static void OnPlayerDies(Entity? attacker, Entity victim)
     {
@@ -83,6 +85,11 @@ public static class NadeBonus
             if (SameTeamOrSelf(attacker, victim))
             {
                 RemoveBonus(attacker);
+            }
+            // QC sv_nades.qc:852: killing a VIP (CTF flag / KA-NB ball / TKA key carrier) awards the medium bonus.
+            else if (GametypeEntities.ScoringIsVip(victim))
+            {
+                GiveBonus(attacker, medium);
             }
             else if (Cvar("g_nades_bonus_score_spree", DefBonusScoreSpree) != 0f && killcount > 1)
             {

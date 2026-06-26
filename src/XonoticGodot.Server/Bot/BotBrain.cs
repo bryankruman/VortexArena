@@ -304,6 +304,7 @@ public sealed class BotBrain
         // 3c) danger ahead (QC havocbot_movetogoal:1136-1182 → havocbot_checkdanger): probe the ground under
         // the point we're about to occupy; lava/slime/void/cliff → brake; a trigger_hurt under a high goal →
         // the goal is unreachable (clear + ignore it for bot_ai_ignoregoal_timeout).
+        bool dangerBrakeEngaged = false; // QC do_break/evadedanger this frame (forbids bunnyhop, havocbot.qc:1315)
         if (Nav.Current is Vector3 cur)
         {
             Vector3 flat = new(cur.X - bot.Origin.X, cur.Y - bot.Origin.Y, 0f);
@@ -315,7 +316,7 @@ public sealed class BotBrain
             bool danger = r is > 0 and < 4;
             if (r == 4)
             {
-                if (cur.Z > bot.Origin.Z + BotNavigation.JumpStepHeight)
+                if (cur.Z > bot.Origin.Z + BotNavigation.JumpStepHeightLive)
                 {
                     // goal probably on an upper platform — unreachable (QC: clearroute + ignoregoal).
                     _ignoreGoal = Nav.GoalEntity;
@@ -328,6 +329,7 @@ public sealed class BotBrain
             }
             if (danger)
             {
+                dangerBrakeEngaged = true; // QC: do_break/evadedanger set → bunnyhop forbidden this frame
                 // QC do_break: back off along -velocity (the port folds the AI_STATUS_DANGER_AHEAD evade into
                 // the brake; the lateral evade vector is a documented simplification).
                 move = Nav.WorldToLocalMove(-bot.Velocity, Aim.ViewAngles.Y);
@@ -404,7 +406,10 @@ public sealed class BotBrain
             IdleReload(bot, now);
 
         // 5) assemble the command (the caller's same-tick physics/weapon drivers consume it).
-        bool wantJump = Nav.WantJump;
+        // QC havocbot.qc:1315: bunnyhop is suppressed when the danger brake (do_break/evadedanger) engaged this
+        // frame. Steer keeps its bunnyhop intent in WantBunnyhop (separate from WantJump) precisely so this
+        // late, post-danger-probe gate can be applied — a braking bot no longer keeps the jump button held.
+        bool wantJump = Nav.WantJump || (Nav.WantBunnyhop && !dangerBrakeEngaged);
         if (wantJump)
             _jumpTime = now;        // QC bot_jump_time: keep jump held ~0.2s so ramp jumps register
         return Emit(bot, move, wantJump || jumpHeld, Nav.WantCrouch, wantAttack, wantAttack2, dt);

@@ -186,6 +186,24 @@ public static class SpawnSystem
     }
 
     /// <summary>
+    /// QC <c>IL_EACH(g_spawnpoints, true, { ... it.team ... })</c> over the linked spawnpoint list — used by
+    /// <c>WinningCondition_RanOutOfSpawns</c> (server/world.qc:1641) to count which teams still have at least one
+    /// spawnpoint on the map. Yields each live spawnpoint's team value (<see cref="Teams.None"/> for a non-team
+    /// spot), applying the classname-derived team exactly like <see cref="DetectTeamSpawns"/> so an
+    /// <c>info_player_teamN</c> that the map left without an explicit <c>team</c> key still reports its team.
+    /// </summary>
+    public static IEnumerable<float> EnumerateSpawnPointTeams()
+    {
+        foreach (Entity spot in GatherSpawnPoints())
+        {
+            float team = spot.Team;
+            if (team == Teams.None)
+                team = TeamForSpawnClass(spot.ClassName);
+            yield return team;
+        }
+    }
+
+    /// <summary>
     /// Port of the team assignment in the <c>spawnfunc(info_player_teamN)</c> bodies (server/spawnpoints.qc:201-234):
     /// each <c>info_player_teamN</c> sets <c>this.team = NUM_TEAM_N</c> before chaining to info_player_deathmatch.
     /// In this port spawnpoints have no spawnfunc (they're kept as passive edicts), so the team is carried by the

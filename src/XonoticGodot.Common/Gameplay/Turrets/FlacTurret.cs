@@ -104,14 +104,14 @@ public sealed class FlacTurret : Turret
         Vector3 dir = QMath.Normalize(st.AimPos - st.ShotOrg);
         if (dir == Vector3.Zero) dir = QMath.Forward(TurretAI.HeadWorldAngles(turret));
 
-        Entity shell = TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 5f, health: 0f,
-            ShotDamage, edgeDamage: ShotDamage, ShotRadius, ShotForce, DeathTypes.TurretFlac, spread: ShotSpread);
         // QC flac_weapon.qc:26 networks the shell as PROJECTILE_HAGAR (NOT PROJECTILE_FLAC — that id is the
         // Seeker's, seeker.qc:304). The shared TurretSpawn.Projectile gives every turret missile the generic
-        // className "turret_projectile", which the client ProjectileCatalog.Classify can't key on; stamping the
-        // shell netname "hagar" makes the networked catalog key resolve to ProjectileType.Hagar so it draws the
-        // HAGAR_ROCKET trail at scale 0.75, exactly as Base does.
-        shell.NetName = "hagar";
+        // className "turret_projectile", which the client ProjectileCatalog.Classify can't key on; the projType
+        // arg "hagar" makes the networked catalog key resolve to ProjectileType.Hagar so it draws the
+        // HAGAR_ROCKET trail at scale 0.75, exactly as Base does (the helper stamps it, QC's _proj_type).
+        Entity shell = TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 5f, health: 0f,
+            ShotDamage, edgeDamage: ShotDamage, ShotRadius, ShotForce, DeathTypes.TurretFlac, spread: ShotSpread,
+            projType: "hagar");
 
         // Timed fuse: detonate at the predicted intercept (QC nextthink = time + tur_impacttime + jitter). At
         // detonation, if the enemy is within shot_radius*3, snap the burst point onto it + a random offset so
@@ -231,13 +231,12 @@ public sealed class FlacWeapon : Weapon
         // turret_projectile(actor, SND_FlacAttack_FIRE, size 5, health 0, DEATH_TURRET_FLAC, …)
         // actor.Enemy may be null (player has no acquired missile target); the snap-to-enemy branch in
         // the fuse think is guarded by `enemy != null` so null is safe.
+        // QC flac_weapon.qc:26 networks the shell as PROJECTILE_HAGAR — projType "hagar" makes the client
+        // ProjectileCatalog resolve the HAGAR_ROCKET trail (see the turret branch in FlacTurret.Attack).
         Entity shell = TurretSpawn.Projectile(actor, shot.Origin, shot.Dir, ShotSpeed,
             size: 5f, health: 0f,
             ShotDamage, edgeDamage: ShotDamage, ShotRadius, ShotForce,
-            DeathTypes.TurretFlac, spread: ShotSpread);
-        // QC flac_weapon.qc:26 networks the shell as PROJECTILE_HAGAR — netname "hagar" makes the client
-        // ProjectileCatalog resolve the HAGAR_ROCKET trail (see the turret branch in FlacTurret.Attack).
-        shell.NetName = "hagar";
+            DeathTypes.TurretFlac, spread: ShotSpread, projType: "hagar");
 
         // actor.tur_impacttime = 10 (fixed fuse, QC flac_weapon.qc:20).
         // QC: proj.nextthink = time + actor.tur_impacttime + (random()*0.01 - random()*0.01)

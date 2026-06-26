@@ -293,15 +293,13 @@ public sealed class EWheelTurret : Turret
         Vector3 dir = QMath.Normalize(st.AimPos - st.ShotOrg);
         if (dir == Vector3.Zero) dir = QMath.Forward(TurretAI.HeadWorldAngles(turret));
 
-        Entity missile = TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
-            ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, DeathTypes.TurretEwheel, spread: ShotSpread);
-
         // ewheel_weapon.qc: turret_projectile(..., PROJECTILE_BLASTER, ...). The client classifies a model-less
         // turret bolt by its networked classname+netname (ProjectileCatalog.Classify keys "blaster"/"laser" onto
-        // PROJECTILE_BLASTER); stamping the netname is what gives the bolt the blaster render trail/sprite, just as
-        // the in-hand Blaster bolt nets "blaster" (Blaster.Attack). (turret_projectile leaves netname empty by
-        // default → Generic; this overrides it to the QC PROJECTILE_BLASTER type.)
-        missile.NetName = "blaster";
+        // PROJECTILE_BLASTER); the projType arg gives the bolt the blaster render trail/sprite, just as the in-hand
+        // Blaster bolt nets "blaster" (Blaster.Attack). The helper stamps the type itself (QC's _proj_type arg).
+        TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
+            ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, DeathTypes.TurretEwheel, spread: ShotSpread,
+            projType: "blaster");
 
         if (Api.Services is not null)
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/lasergun_fire.wav");

@@ -1,5 +1,7 @@
+using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay.Damage;
+using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 using GS = XonoticGodot.Common.Gameplay.Scoring.GameScores; // T7: alias the static score table for the per-mode ScoreRules
 
@@ -112,6 +114,7 @@ public sealed class Onslaught : GameType
     public OnslaughtControlPoint CpCombat { get; }
 
     private HookHandler<DeathEvent>? _deathHandler;
+    private HookHandler<MutatorHooks.PlayerSpawnArgs>? _spawnHandler;
 
     /// <summary>Optional sink for the host/controller to react to a kill.</summary>
     public IMatchEvents? Events;
@@ -194,10 +197,21 @@ public sealed class Onslaught : GameType
 
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ons, PlayerSpawn): the overtime center-print + the spawn placement (CP-to-CP
+        // teleport via the click-radar choice, or the cvar-gated spawn_at_controlpoints / spawn_at_generator
+        // placement near the player's death location). See OnPlayerSpawn.
+        _spawnHandler = OnPlayerSpawn;
+        MutatorHooks.PlayerSpawn.Add(_spawnHandler);
     }
 
     public override void Deactivate()
     {
+        if (_spawnHandler is not null)
+        {
+            MutatorHooks.PlayerSpawn.Remove(_spawnHandler);
+            _spawnHandler = null;
+        }
         if (_deathHandler is null)
             return;
         Combat.Death.Remove(_deathHandler);
@@ -640,6 +654,191 @@ public sealed class Onslaught : GameType
             return false;
         Events?.OnFrag(ev.Attacker as Player, victim, ev.DeathType);
         return false;
+    }
+
+    // ============================================================================================
+    //  Spawn placement + teleport (QC ons_Teleport / MUTATOR_HOOKFUNCTION(ons, PlayerSpawn))
+    // ============================================================================================
+
+    private const string CvarSpawnChoose      = "g_onslaught_spawn_choose";                  // 1
+    private const string CvarTeleportRadius   = "g_onslaught_teleport_radius";               // 200
+    private const string CvarTeleportWait     = "g_onslaught_teleport_wait";                 // 5
+    private const string CvarSpawnAtCps        = "g_onslaught_spawn_at_controlpoints";        // 0
+    private const string CvarSpawnAtCpsChance  = "g_onslaught_spawn_at_controlpoints_chance"; // 0.5
+    private const string CvarSpawnAtCpsRandom  = "g_onslaught_spawn_at_controlpoints_random"; // 0
+    private const string CvarSpawnAtGen        = "g_onslaught_spawn_at_generator";            // 0
+    private const string CvarSpawnAtGenChance  = "g_onslaught_spawn_at_generator_chance";     // 0
+    private const string CvarSpawnAtGenRandom  = "g_onslaught_spawn_at_generator_random";     // 0
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(ons, PlayerSpawn) (sv_onslaught.qc:1686): when a player (re)spawns, (1) if the
+    /// match is in overtime, center-print OVERTIME_CONTROLPOINT; (2) if spawn_choose is on and the player picked
+    /// a control point from the click-radar (<see cref="Entity.GtOnsSpawnBy"/>), teleport them near it; (3)
+    /// otherwise, if spawn_at_controlpoints / spawn_at_generator are enabled (default OFF), place them near the
+    /// nearest same-team node to where they died. The click-radar selection itself (the ons_spawn client command
+    /// + the clickradar HUD that SETS GtOnsSpawnBy) is a client concern — see the unresolved note.
+    /// </summary>
+    private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)
+    {
+        if (Api.Services is null || args.Player is not Player player)
+            return false;
+
+        // QC: if(ons_stalemate) Send_Notification(NOTIF_ONE, player, MSG_CENTER, CENTER_OVERTIME_CONTROLPOINT).
+        if (IsInOvertime())
+            NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, "OVERTIME_CONTROLPOINT");
+
+        // QC: if(spawn_choose) if(player.ons_spawn_by) if(ons_Teleport(player, ons_spawn_by, teleport_radius, false))
+        //         { player.ons_spawn_by = NULL; return; }
+        if (Cvar(CvarSpawnChoose, 1f) != 0f && player.GtOnsSpawnBy is { } chosen)
+        {
+            if (OnsTeleport(player, chosen, Cvar(CvarTeleportRadius, 200f), teleEffects: false))
+            {
+                player.GtOnsSpawnBy = null;
+                return false;
+            }
+        }
+
+        // QC: if(spawn_at_controlpoints) if(random() <= chance) place near the nearest same-team control point.
+        if (Cvar(CvarSpawnAtCps, 0f) != 0f && Prandom.Float() <= Cvar(CvarSpawnAtCpsChance, 0.5f))
+            if (SpawnAtNode(player, "onslaught_controlpoint", Cvar(CvarSpawnAtCpsRandom, 0f) != 0f,
+                    zOffset: 96f, jitter: 128f, sameTeamOnly: true))
+                return false;
+
+        // QC: if(spawn_at_generator) if(random() <= chance) place near the nearest same-team generator.
+        if (Cvar(CvarSpawnAtGen, 0f) != 0f && Prandom.Float() <= Cvar(CvarSpawnAtGenChance, 0f))
+            if (SpawnAtNode(player, "onslaught_generator", Cvar(CvarSpawnAtGenRandom, 0f) != 0f,
+                    zOffset: 128f, jitter: 256f, sameTeamOnly: true))
+                return false;
+
+        return false;
+    }
+
+    /// <summary>
+    /// QC ons_Teleport (sv_onslaught.qc:1603): teleport <paramref name="player"/> to a random clear position within
+    /// <paramref name="range"/> of <paramref name="target"/>. Tries up to 16 narrowing iterations: pick a random
+    /// angle + distance on the ground disc around the target, tracebox the player's bbox there (must be clear and
+    /// not start-solid), then double-check a traceline from the target to the spot (no wall between). On success,
+    /// setorigin + face away from the target, arm the teleport antispam, optionally play the teleport FX. Returns
+    /// false if no clear spot was found.
+    /// </summary>
+    public bool OnsTeleport(Player player, Entity target, float range, bool teleEffects)
+    {
+        if (target is null || Api.Services is null)
+            return false;
+        Vector3 plMin = SpawnSystem.PlayerMins, plMax = SpawnSystem.PlayerMaxs;
+        float iterationScale = 1f;
+        for (int i = 0; i < 16; i++)
+        {
+            // QC: iteration_scale -= i / 16 — narrow the search disc each iteration so a spot is more likely found.
+            iterationScale -= i / 16f;
+            float theta = Prandom.Float() * (2f * MathF.PI);
+            Vector3 loc = new(MathF.Cos(theta), MathF.Sin(theta), 0f);
+            loc *= Prandom.Float() * range * iterationScale;
+            loc += target.Origin + new Vector3(0f, 0f, 128f) * iterationScale;
+
+            TraceResult box = Api.Trace.Trace(loc, plMin, plMax, loc, MoveFilter.Normal, player);
+            if (box.Fraction == 1f && !box.StartSolid)
+            {
+                TraceResult line = Api.Trace.Trace(target.Origin, Vector3.Zero, Vector3.Zero, loc,
+                    MoveFilter.NoMonsters, target);
+                if (line.Fraction == 1f && !line.StartSolid)
+                {
+                    if (teleEffects)
+                        SoundSystem.PlayOn(player, Sounds.ByName("TELEPORT"));
+                    Api.Entities.SetOrigin(player, loc);
+                    // QC: player.angles = '0 1 0' * (theta * RAD2DEG + 180) — face away from the target.
+                    Vector3 ang = new(0f, theta * (180f / MathF.PI) + 180f, 0f);
+                    player.Angles = ang;
+                    player.FixAngle = true;
+                    player.FixAngleAngles = ang;
+                    // QC: player.teleport_antispam = time + autocvar_g_onslaught_teleport_wait.
+                    player.GtTeleportAntispam = Api.Clock.Time + Cvar(CvarTeleportWait, 5f);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// QC the spawn_at_controlpoints / spawn_at_generator placement branches of the ons PlayerSpawn hook
+    /// (sv_onslaught.qc:1716-1815): find the nearest same-team node of <paramref name="className"/> to where the
+    /// player died (or a random one if <paramref name="random"/>), then trace up to 10 narrowing candidate spots
+    /// just above it and setorigin the player at the first clear one. Returns true if the player was placed.
+    /// </summary>
+    private bool SpawnAtNode(Player player, string className, bool random, float zOffset, float jitter, bool sameTeamOnly)
+    {
+        if (Api.Services is null)
+            return false;
+        Vector3 deathLoc = player.DeathOrigin; // QC player.ons_deathloc
+        // QC: new joining player or round reset, don't bother checking.
+        if (deathLoc == Vector3.Zero)
+            return false;
+
+        int myTeam = (int)player.Team;
+        Entity? chosen = null;
+        float bestDist2 = float.MaxValue;
+        var candidates = new List<Entity>();
+        foreach (Entity e in Api.Entities.FindByClass(className))
+        {
+            if (sameTeamOnly && (int)e.Team != myTeam)
+                continue;
+            if (random)
+                candidates.Add(e);
+            else
+            {
+                float d2 = (e.Origin - deathLoc).LengthSquared();
+                if (d2 < bestDist2 || chosen is null)
+                {
+                    bestDist2 = d2;
+                    chosen = e;
+                }
+            }
+        }
+        if (random && candidates.Count > 0)
+            chosen = candidates[Prandom.RangeInt(0, candidates.Count)];
+        if (chosen is null)
+            return false;
+
+        Vector3 plMin = SpawnSystem.PlayerMins, plMax = SpawnSystem.PlayerMaxs;
+        float iterationScale = 1f;
+        for (int i = 0; i < 10; i++)
+        {
+            iterationScale -= i / 10f;
+            // QC: loc = target.origin + '0 0 zOffset'*scale + ('0 1 0'*random())*jitter*scale.
+            Vector3 loc = chosen.Origin + new Vector3(0f, 0f, zOffset) * iterationScale
+                + new Vector3(0f, Prandom.Float(), 0f) * jitter * iterationScale;
+            TraceResult box = Api.Trace.Trace(loc, plMin, plMax, loc, MoveFilter.Normal, player);
+            if (box.Fraction == 1f && !box.StartSolid)
+            {
+                TraceResult line = Api.Trace.Trace(chosen.Origin, Vector3.Zero, Vector3.Zero, loc,
+                    MoveFilter.NoMonsters, chosen);
+                if (line.Fraction == 1f && !line.StartSolid)
+                {
+                    Api.Entities.SetOrigin(player, loc);
+                    // QC: player.angles = normalize(loc - target.origin) * RAD2DEG (face away from the node).
+                    Vector3 ang = QMath.VecToAngles(loc - chosen.Origin);
+                    player.Angles = ang;
+                    player.FixAngle = true;
+                    player.FixAngleAngles = ang;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// QC ons_Count_SelfControlPoints (sv_onslaught.qc:1567): how many control points the player's team currently
+    /// owns (captured). Base uses this to decide whether to offer the click-radar respawn picker on death.
+    /// </summary>
+    public int CountSelfControlPoints(int team)
+    {
+        int n = 0;
+        foreach (OnsNode node in Nodes)
+            if (!node.IsGenerator && node.Captured && node.Team == team)
+                ++n;
+        return n;
     }
 
     private static bool TryCvar(string name, out float value)

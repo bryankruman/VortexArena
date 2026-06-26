@@ -492,6 +492,9 @@ public static class NotificationsList
         Notifications.Center("ITEM_JETPACK_GOT", 0, 0, "", "CPID_ITEM", "^BGYou got the ^F1Jetpack");
         Notifications.Center("ITEM_FUELREGEN_GOT", 0, 0, "", "CPID_ITEM", "^BGYou got the ^F1Fuel regenerator");
 
+        // nades mutator: banking a bonus grenade (Base all.inc:654 MSG_CENTER_NOTIF(NADE_BONUS), CPID_NADES).
+        Notifications.Center("NADE_BONUS", 0, 0, "", "CPID_NADES", "^F2You got a ^K1BONUS GRENADE^F2!");
+
         // self-death centerprints (shown to the victim)
         CenterSelf("GENERIC", BOLD + "^K1You fragged yourself!");
         CenterSelf("SUICIDE", BOLD + "^K1You committed suicide!");

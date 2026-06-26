@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Math;
+using XonoticGodot.Common.Physics;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Server.Bot;
@@ -279,52 +280,117 @@ public sealed class WaypointNetwork
     /// </summary>
     public void AutoLink(float maxDist = 1050f, bool requireLineOfSight = true, int maxLinksPerNode = 32)
     {
-        float maxDist2 = maxDist * maxDist;
         bool canTrace = Api.Services is not null;
+        // QC WPFLAGMASK_NORELINK = TELEPORT|LADDER|JUMP|CUSTOM_JP|SUPPORT. waypoint_addlink (waypoints.qc:1135)
+        // refuses an OUTGOING auto-link from such a source UNLESS it's JUMP or SUPPORT (those reach the
+        // box/JUMP/SUPPORT forbid block in waypoint_think instead). So TELEPORT/LADDER/CUSTOM_JP sources never
+        // get an outgoing auto-link, but they can still RECEIVE incoming links.
+        const WaypointFlags addlinkRefuse = WaypointFlags.Teleport | WaypointFlags.Ladder | WaypointFlags.CustomJp;
 
-        foreach (var a in _nodes)
+        // QC waypoint_think (waypoints.qc:1160-1239): for each unordered pair, link both directions independently.
+        // bbox overlap → unconditional bidirectional link; else PVS cull, XY-distance cull (1050, or 100 for a
+        // crouch↔normal pair), then per-direction tracewalk gated by the box/JUMP/SUPPORT forbid rules.
+        for (int ai = 0; ai < _nodes.Count; ai++)
         {
-            // teleport/jump/ladder waypoints keep their hand-authored outgoing links (QC WPFLAGMASK_NORELINK)
-            if ((a.Flags & (WaypointFlags.Teleport | WaypointFlags.Jump | WaypointFlags.Ladder
-                            | WaypointFlags.CustomJp | WaypointFlags.Support)) != 0)
-                continue;
-
-            // candidates sorted by distance so we keep the closest ones if we hit the per-node cap
-            var near = new List<(float d2, Waypoint b)>();
-            foreach (var b in _nodes)
+            var a = _nodes[ai];
+            for (int bi = ai + 1; bi < _nodes.Count; bi++)
             {
-                if (ReferenceEquals(a, b)) continue;
-                float d2 = (b.Origin - a.Origin).LengthSquared();
-                if (d2 > maxDist2) continue;
-                near.Add((d2, b));
-            }
-            near.Sort((x, y) => x.d2.CompareTo(y.d2));
+                var b = _nodes[bi];
 
-            foreach (var (_, b) in near)
-            {
-                if (a.Links.Count >= maxLinksPerNode) break;
-                Vector3 from = a.ClosestPoint(b.Origin);
-                Vector3 to = b.ClosestPoint(a.Origin);
-                bool reachable;
-                if (canTrace)
-                    // QC tracewalk reachability: walk/step/swim from a to b with the player hull.
-                    reachable = BotTracewalk.CanWalk(from, to, _playerMins, _playerMaxs, b.IsBox ? (b.AbsMax.Z - to.Z) : 0f);
-                else if (requireLineOfSight)
-                    reachable = true; // no world: accept (offline graph build)
-                else
-                    reachable = true;
-                if (!reachable)
+                // boxes overlap → link both ways (subject only to the addlink NORELINK refusal). (QC :1162-1168)
+                if (BoxesOverlap(a, b))
+                {
+                    if ((a.Flags & addlinkRefuse) == 0) LinkAuto(a, b);
+                    if ((b.Flags & addlinkRefuse) == 0) LinkAuto(b, a);
                     continue;
-                Link(a, b, cost: TravelCost(from, to, a.HasFlag(WaypointFlags.Jump),
-                    fromInWater: false, toInWater: false,
-                    fromCrouch: a.HasFlag(WaypointFlags.Crouch), toCrouch: b.HasFlag(WaypointFlags.Crouch)));
+                }
+
+                // PVS cull: a candidate the source can't possibly see is never linked (QC checkpvs, :1172).
+                // Conservative — CheckPvs returns true on an unvised map, so this only prunes genuine occlusion.
+                if (canTrace && !Api.Trace.CheckPvs(a.Origin, b.Origin))
+                    continue;
+
+                // XY-distance cull. Base shortens crouch↔normal pairs to 100qu (rough cost makes long crouch
+                // links wasteful); a crouch↔crouch pair keeps the full 1050. (QC :1187-1206)
+                bool aCrouch = a.HasFlag(WaypointFlags.Crouch);
+                bool bCrouch = b.HasFlag(WaypointFlags.Crouch);
+                float maxd = ((aCrouch || bCrouch) && !(aCrouch && bCrouch)) ? 100f : maxDist;
+                Vector3 dv = b.ClosestPoint(a.Origin) - a.ClosestPoint(b.Origin);
+                dv.Z = 0f;
+                if (dv.LengthSquared() >= maxd * maxd)
+                    continue;
+
+                Vector3 ab = a.ClosestPoint(b.Origin);
+                Vector3 ba = b.ClosestPoint(a.Origin);
+
+                // outgoing a→b: forbidden if a is a box / JUMP / SUPPORT source, or a refused (NORELINK) source.
+                // (QC :1212-1223; the it.SUPPORT_WP incoming-forbid has no port back-pointer and is omitted.)
+                if ((a.Flags & addlinkRefuse) == 0 && !ForbidOutgoing(a))
+                {
+                    bool reach = !canTrace || BotTracewalk.CanWalk(ab, ba, _playerMins, _playerMaxs, b.IsBox ? (b.AbsMax.Z - ba.Z) : 0f);
+                    if (reach && a.Links.Count < maxLinksPerNode) LinkAuto(a, b);
+                }
+
+                // reverse b→a: same forbid rules with the roles swapped. (QC :1226-1237)
+                if ((b.Flags & addlinkRefuse) == 0 && !ForbidOutgoing(b))
+                {
+                    bool reach = !canTrace || BotTracewalk.CanWalk(ba, ab, _playerMins, _playerMaxs, a.IsBox ? (a.AbsMax.Z - ab.Z) : 0f);
+                    if (reach && b.Links.Count < maxLinksPerNode) LinkAuto(b, a);
+                }
             }
         }
+    }
+
+    // QC waypoint_think (:1212/:1226): a box / JUMP / SUPPORT source forbids its OUTGOING auto-links.
+    private static bool ForbidOutgoing(Waypoint w)
+        => w.IsBox || (w.Flags & (WaypointFlags.Jump | WaypointFlags.Support)) != 0;
+
+    // bbox overlap (QC boxesoverlap on absmin/absmax).
+    private static bool BoxesOverlap(Waypoint a, Waypoint b)
+    {
+        Vector3 amin = a.AbsMin, amax = a.AbsMax, bmin = b.AbsMin, bmax = b.AbsMax;
+        return amin.X <= bmax.X && amax.X >= bmin.X
+            && amin.Y <= bmax.Y && amax.Y >= bmin.Y
+            && amin.Z <= bmax.Z && amax.Z >= bmin.Z;
+    }
+
+    // Add a directed auto-link a→b with the faithful per-endpoint crouch/jump-source travel cost.
+    private void LinkAuto(Waypoint a, Waypoint b)
+    {
+        Vector3 from = a.ClosestPoint(b.Origin);
+        Vector3 to = b.ClosestPoint(a.Origin);
+        Link(a, b, cost: TravelCost(from, to, a.HasFlag(WaypointFlags.Jump),
+            fromInWater: false, toInWater: false,
+            fromCrouch: a.HasFlag(WaypointFlags.Crouch), toCrouch: b.HasFlag(WaypointFlags.Crouch)));
     }
 
     /// <summary>Player hull used for tracewalk reachability tests (QC PL_MIN_CONST/PL_MAX_CONST).</summary>
     private static readonly Vector3 _playerMins = new(-16f, -16f, -24f);
     private static readonly Vector3 _playerMaxs = new(16f, 16f, 45f);
+
+    /// <summary>
+    /// Floor-snap a candidate waypoint origin (QC waypoint_fixorigin / waypoint_fixorigin_down_dir,
+    /// waypoints.qc:1957-1971): tracebox the player hull straight down up to 3000qu from just above the position
+    /// and drop the origin to where it lands, so an item/teleporter waypoint sits on the ground the bot stands on
+    /// rather than floating at the item's pickup height. Re-tries lifted up if the initial probe starts solid.
+    /// Falls back to the QC-era fixed +24 lift when no collision world is available (offline graph build).
+    /// </summary>
+    private static Vector3 FixOrigin(Vector3 position)
+    {
+        if (Api.Services is null)
+            return position + new Vector3(0f, 0f, 24f);
+
+        Vector3 endpos = position + new Vector3(0f, 0f, -3000f);
+        Entity? ignore = null;
+        TraceResult tr = Api.Trace.Trace(position + new Vector3(0f, 0f, 1f), _playerMins, _playerMaxs, endpos, MoveFilter.NoMonsters, ignore);
+        if (tr.StartSolid)
+            tr = Api.Trace.Trace(position + new Vector3(0f, 0f, 1f - _playerMins.Z / 2f), _playerMins, _playerMaxs, endpos, MoveFilter.NoMonsters, ignore);
+        if (tr.StartSolid)
+            tr = Api.Trace.Trace(position + new Vector3(0f, 0f, 1f - _playerMins.Z), _playerMins, _playerMaxs, endpos, MoveFilter.NoMonsters, ignore);
+        if (tr.Fraction < 1f)
+            position = tr.EndPos;
+        return position;
+    }
 
     /// <summary>
     /// Auto-generate a navigable waypoint graph from the live map entities (QC the
@@ -342,6 +408,20 @@ public sealed class WaypointNetwork
             if (!string.IsNullOrEmpty(e.TargetName) && !byTargetName.ContainsKey(e.TargetName))
                 byTargetName[e.TargetName] = e;
 
+        // QC bot_waypoints_for_items = autocvar_g_waypoints_for_items (world.qc:937): "0" never, "1" unless the
+        // map disables it, "2" always; waypoint_spawnforitem (waypoints.qc:2004) early-returns when 0. This is
+        // the FILELESS auto-generate fallback (a port-only playability helper that does not exist in Base), so
+        // item waypoints are kept ON by default to give bots goals to navigate — but a host that EXPLICITLY
+        // enables the cvar (1/2) still gets them, and the gate is wired so the value is honoured rather than
+        // ignored. We only suppress when the host turned items off AND there are spawn points to keep the graph
+        // connected (so the fallback never collapses to an empty graph).
+        int forItemsCvar = (int)Cvars.FloatOr("g_waypoints_for_items", 2f);
+        bool haveSpawns = false;
+        foreach (var e in entities)
+            if (e is { IsFreed: false } && (e.ClassName ?? "").StartsWith("info_player", StringComparison.Ordinal))
+            { haveSpawns = true; break; }
+        bool spawnItemWaypoints = forItemsCvar != 0 || !haveSpawns;
+
         int before = _nodes.Count;
         var destWaypoints = new Dictionary<XonoticGodot.Common.Framework.Entity, Waypoint>(ReferenceEqualityComparer.Instance);
 
@@ -349,7 +429,7 @@ public sealed class WaypointNetwork
         {
             if (!destWaypoints.TryGetValue(dst, out var wp))
             {
-                wp = Add(dst.Origin + new Vector3(0, 0, 24f), WaypointFlags.Generated);
+                wp = Add(FixOrigin(dst.Origin), WaypointFlags.Generated);
                 destWaypoints[dst] = wp;
             }
             return wp;
@@ -360,12 +440,14 @@ public sealed class WaypointNetwork
             if (e is null || e.IsFreed) continue;
             string cn = e.ClassName ?? "";
 
-            // items + spawn points → a stand-on-it point waypoint.
-            if ((e.Flags & XonoticGodot.Common.Framework.EntFlags.Item) != 0
-                || cn.StartsWith("info_player", StringComparison.Ordinal))
+            // items + spawn points → a stand-on-it point waypoint, floor-snapped (QC waypoint_fixorigin).
+            bool isItem = (e.Flags & XonoticGodot.Common.Framework.EntFlags.Item) != 0;
+            bool isSpawn = cn.StartsWith("info_player", StringComparison.Ordinal);
+            if (isItem || isSpawn)
             {
-                Add(e.Origin + new Vector3(0, 0, 24f),
-                    WaypointFlags.Generated | ((e.Flags & XonoticGodot.Common.Framework.EntFlags.Item) != 0 ? WaypointFlags.Item : WaypointFlags.None));
+                if (isItem && !spawnItemWaypoints) continue; // QC bot_waypoints_for_items gate
+                Add(FixOrigin(e.Origin),
+                    WaypointFlags.Generated | (isItem ? WaypointFlags.Item : WaypointFlags.None));
                 continue;
             }
 
@@ -718,8 +800,12 @@ public sealed class WaypointNetwork
             if (line.StartsWith("//", StringComparison.Ordinal) || line.StartsWith("#", StringComparison.Ordinal))
                 continue;
             string s = line;
-            if (s.StartsWith("*", StringComparison.Ordinal))
-                s = s[1..]; // special link marker (QC: old versions skip these); we still load it
+            // QC waypoint_load_hardwiredlinks (waypoints.qc:1501-1507): a leading '*' marks a "special" link
+            // (jump/teleport extras that old Xonotic versions skip). The marker is stripped, then the link is
+            // only added if it passes the special-link source-type filter below.
+            bool isSpecial = s.StartsWith("*", StringComparison.Ordinal);
+            if (isSpecial)
+                s = s[1..];
 
             int star = s.IndexOf('*');
             if (star < 0) continue;
@@ -730,10 +816,112 @@ public sealed class WaypointNetwork
             var to = FindAt(toPos, 5f);
             if (from is null || to is null) continue;
 
-            // Mark the source as having hand-authored links so AutoLink leaves it alone (QC WPFLAGMASK_NORELINK).
-            from.Flags |= WaypointFlags.CustomJp;
-            Link(from, to);
+            if (!isSpecial)
+            {
+                // Normal hardwired link: always added + the source kept off the auto-relinker
+                // (QC waypoint_addlink + waypoint_mark_hardwiredlink). CustomJp stands in for the absent
+                // dedicated hardwired-link concept (it sets WPFLAGMASK_NORELINK so AutoLink skips this source).
+                from.Flags |= WaypointFlags.CustomJp;
+                Link(from, to);
+            }
+            else
+            {
+                // Special link: QC adds it ONLY when the source is a NORELINK source AND it is a JUMP/SUPPORT
+                // waypoint or a TELEPORT box (waypoints.qc:1569-1573). Otherwise the special link is dropped.
+                bool norelink = (from.Flags & (WaypointFlags.Teleport | WaypointFlags.Ladder
+                    | WaypointFlags.Jump | WaypointFlags.CustomJp | WaypointFlags.Support)) != 0;
+                bool jumpOrSupport = (from.Flags & (WaypointFlags.Jump | WaypointFlags.Support)) != 0;
+                bool teleportBox = from.IsBox && from.HasFlag(WaypointFlags.Teleport);
+                if (norelink && (jumpOrSupport || teleportBox))
+                    Link(from, to);
+            }
         }
+    }
+
+    // ---- .waypoints file writers (QC waypoint_saveall / waypoint_save_links / waypoint_save_hardwiredlinks) ----
+
+    /// <summary>QC WAYPOINT_VERSION (waypoints.qc) — written into the saved file headers.</summary>
+    public const string WaypointVersion = "1.04";
+
+    /// <summary>
+    /// QC <c>vtos</c>: a vector rendered "x y z" with each component rounded to 1 decimal place (the precision the
+    /// shipped <c>.waypoints</c> files use). Round-trips with <see cref="TryParseVec"/>. Unquoted — matches the
+    /// QC writers, which emit bare <c>vtos</c> output (the engine's vtos adds no quotes when fputs'd).
+    /// </summary>
+    private static string Vtos(Vector3 v) => string.Format(CultureInfo.InvariantCulture,
+        "{0:0.0} {1:0.0} {2:0.0}", v.X, v.Y, v.Z);
+
+    /// <summary>
+    /// Serialize the node file (QC waypoint_saveall, waypoints.qc:1755): a <c>//WAYPOINT_VERSION/SYMMETRY/TIME</c>
+    /// header followed by one triple (origin+mins, origin+maxs, flags) per NON-generated waypoint
+    /// (WAYPOINTFLAG_GENERATED nodes are runtime-only and skipped, exactly as QC does). The inverse of
+    /// <see cref="LoadFromText"/>; <paramref name="time"/> stamps the WAYPOINT_TIME line (UTC, QC's strftime).
+    /// </summary>
+    public string SaveToText(string? time = null)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append("//WAYPOINT_VERSION ").Append(WaypointVersion).Append('\n');
+        sb.Append("//WAYPOINT_SYMMETRY 0\n");
+        sb.Append("//WAYPOINT_TIME ").Append(time ?? DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)).Append('\n');
+        foreach (var wp in _nodes)
+        {
+            if (wp.HasFlag(WaypointFlags.Generated)) continue; // QC: generated nodes are not persisted
+            sb.Append(Vtos(wp.AbsMin)).Append('\n');
+            sb.Append(Vtos(wp.AbsMax)).Append('\n');
+            sb.Append(((int)wp.Flags).ToString(CultureInfo.InvariantCulture)).Append('\n');
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Serialize the precompiled link cache (QC waypoint_save_links, waypoints.qc:1716): a version/time header,
+    /// then a <c>fromOrigin*toOrigin</c> line for each NON-hardwired, non-special outgoing link. Links whose
+    /// source is a JUMP/SUPPORT/CUSTOM_JP waypoint are excluded (they live in the hardwired file instead), and
+    /// hardwired links (CustomJp sources, the port's hardwired marker) are excluded — matching the QC IL_EACH
+    /// filter <c>!(JUMP|SUPPORT|CUSTOM_JP)</c> + <c>!waypoint_is_hardwiredlink</c>. The inverse of <see cref="LoadLinks"/>.
+    /// </summary>
+    public string SaveLinksToText(string? time = null)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append("//WAYPOINT_VERSION ").Append(WaypointVersion).Append('\n');
+        if (!string.IsNullOrEmpty(time))
+            sb.Append("//WAYPOINT_TIME ").Append(time).Append('\n');
+        foreach (var wp in _nodes)
+        {
+            if ((wp.Flags & (WaypointFlags.Jump | WaypointFlags.Support | WaypointFlags.CustomJp)) != 0)
+                continue;
+            foreach (var link in wp.Links)
+                sb.Append(Vtos(wp.Origin)).Append('*').Append(Vtos(link.To.Origin)).Append('\n');
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Serialize the hardwired/special-link file (QC waypoint_save_hardwiredlinks, waypoints.qc:1662): a
+    /// <c>// HARDWIRED LINKS</c> section listing each hardwired link (<c>from*to</c>) followed by a
+    /// <c>// SPECIAL LINKS</c> section listing each link from a JUMP/SUPPORT/CUSTOM_JP source (<c>*from*to</c>).
+    /// The port's hardwired marker is the CustomJp source flag (no dedicated wphwXX mirror), so its hardwired
+    /// links and its special links over the same set overlap — matching the QC behaviour where a CUSTOM_JP
+    /// source's links appear in both sections. The inverse of <see cref="LoadHardwiredLinks"/>.
+    /// </summary>
+    public string SaveHardwiredLinksToText()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append("// HARDWIRED LINKS\n");
+        foreach (var wp in _nodes)
+        {
+            if (!wp.HasFlag(WaypointFlags.CustomJp)) continue; // hardwired marker
+            foreach (var link in wp.Links)
+                sb.Append(Vtos(wp.Origin)).Append('*').Append(Vtos(link.To.Origin)).Append('\n');
+        }
+        sb.Append("\n// SPECIAL LINKS\n");
+        foreach (var wp in _nodes)
+        {
+            if ((wp.Flags & (WaypointFlags.Jump | WaypointFlags.Support | WaypointFlags.CustomJp)) == 0) continue;
+            foreach (var link in wp.Links)
+                sb.Append('*').Append(Vtos(wp.Origin)).Append('*').Append(Vtos(link.To.Origin)).Append('\n');
+        }
+        return sb.ToString();
     }
 
     // Bucket a position into the spatial-hash grid (FindHashCell-sized cells).

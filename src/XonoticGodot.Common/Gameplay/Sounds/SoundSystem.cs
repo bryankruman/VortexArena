@@ -204,6 +204,80 @@ public static class SoundSystem
         float attenuation = SoundLevels.AttenNorm)
         => Api.Sound.Play(emitter, channel, sample, volume, attenuation);
 
+    // ---- play2 / play2team — per-client / per-team 2D sends (QC play2, all.qc:116-140) ----
+
+    /// <summary>
+    /// Play a 2D sound for <paramref name="recipient"/> (QC <c>play2(e, filename)</c>, all.qc:116-120).
+    /// Uses CH_INFO (Auto) channel, VOL_BASE (0.7) volume, ATTEN_NONE attenuation (matching QC); ATTEN_NONE
+    /// plays it centered on the listener (2D, no spatialization).
+    /// <para>DIVERGENCE: QC <c>play2</c> sends to <c>MSG_ONE</c> (<c>msg_entity = e</c>) so the cue is heard by
+    /// EXACTLY that one client. The port's sound layer (<see cref="ISoundService.Play"/> / SoundWire) has no
+    /// per-recipient targeting — it broadcasts to every connected client — so this is exact only on a single-human
+    /// listen server. A true per-client send needs a per-recipient sound channel the snapshot protocol does not
+    /// yet carry; until then this is the closest faithful approximation.</para>
+    /// QC <c>play2</c> does NOT apply the bot_sound_monopoly gate (sound_allowed(MSG_ONE, NULL) returns true for
+    /// the NULL emitter); the gate lives only at play2team level.
+    /// </summary>
+    public static void Play2(Entity recipient, GameSound? sound)
+    {
+        if (sound is null) return;
+        // QC: play2 -> soundtoat(MSG_ONE, NULL, '0 0 0', CH_INFO, filename, VOL_BASE, ATTEN_NONE, 0)
+        // soundtoat calls sound_allowed(MSG_ONE, NULL) which always returns true for NULL.
+        // CH_INFO = 0 (SoundChannel.Auto); VOL_BASE = 0.7 (not the sound's registered volume)
+        Api.Sound.Play(recipient, SoundChannel.Auto, sound.Sample, SoundLevels.VolBase, SoundLevels.AttenNone);
+    }
+
+    /// <summary>Play a 2D sound to one specific client by sound name (QC <c>play2(e, SND_name)</c>).</summary>
+    public static void Play2(Entity recipient, string soundName)
+        => Play2(recipient, Sounds.ByName(soundName));
+
+    /// <summary>Play a raw 2D sample to one specific client (QC <c>play2(e, sample_path)</c>).</summary>
+    public static void Play2Raw(Entity recipient, string sample, float volume = SoundLevels.VolBase)
+        => Api.Sound.Play(recipient, SoundChannel.Auto, sample, volume, SoundLevels.AttenNone);
+
+    /// <summary>
+    /// Play a 2D sound to all real clients on a specific team (QC <c>play2team(t, filename)</c>,
+    /// all.qc:136-140). The sound is heard only by clients on that team, at 2D with no spatialization.
+    /// Respects the <c>bot_sound_monopoly</c> gate: when set, this early-returns (all sounds suppressed).
+    /// <paramref name="recipients"/> should be the list of real clients on the server (e.g., from <c>Clients.Players</c>).
+    /// </summary>
+    public static void Play2Team(int teamId, GameSound? sound, IReadOnlyList<Entity>? recipients = null)
+    {
+        if (sound is null) return;
+        if (recipients is null) return;
+        // QC (all.qc:136-140): if (autocvar_bot_sound_monopoly) return;
+        // FOREACH_CLIENT(IS_PLAYER(it) && IS_REAL_CLIENT(it) && it.team == t, play2(it, filename));
+        if (Api.Services is not null && Api.Cvars.GetFloat("bot_sound_monopoly") != 0f)
+            return;  // monopoly gate: suppress all sounds if set
+        foreach (Entity it in recipients)
+        {
+            // IS_PLAYER (classname == "player", i.e. actively playing, not observer) && IS_REAL_CLIENT (not a bot).
+            if (it is not Player p || p.IsBot || p.IsObserver) continue;
+            if ((int)p.Team != teamId) continue;
+            Play2(p, sound);
+        }
+    }
+
+    /// <summary>Play a 2D sound to all real clients on a team by sound name.</summary>
+    public static void Play2Team(int teamId, string soundName, IReadOnlyList<Entity>? recipients = null)
+        => Play2Team(teamId, Sounds.ByName(soundName), recipients);
+
+    /// <summary>Play a raw 2D sample to all real clients on a team.</summary>
+    public static void Play2TeamRaw(int teamId, string sample, IReadOnlyList<Entity>? recipients = null,
+        float volume = SoundLevels.VolBase)
+    {
+        if (recipients is null) return;
+        if (Api.Services is not null && Api.Cvars.GetFloat("bot_sound_monopoly") != 0f)
+            return;  // monopoly gate
+        foreach (Entity it in recipients)
+        {
+            // QC FOREACH_CLIENT(IS_PLAYER(it) && IS_REAL_CLIENT(it) && it.team == t).
+            if (it is not Player p || p.IsBot || p.IsObserver) continue;
+            if ((int)p.Team != teamId) continue;
+            Play2Raw(p, sample, volume);
+        }
+    }
+
     // ---- global / non-positional (QC play2all / _GlobalSound on world) ----
 
     /// <summary>
@@ -297,6 +371,9 @@ public static class SoundSystem
     {
         GameSound? ric = SoundVariantGroups.Ric();
         if (ric is null) return;
+        // QC wr_impacteffect: sound(actor, CH_SHOTS, SND_RIC_RANDOM(), ...). The RIC sounds are registered
+        // with SoundChannelHint.Weapon (maps to CH_WEAPON_A = -1 by default), but Base plays the ricochet on
+        // CH_SHOTS (-4 = ShotsAuto). Explicitly pass the channel to match Base (QC rifle.qc / shotgun.qc line).
         PlayOn(emitter, ric, SoundChannel.ShotsAuto, ric.Volume, ric.Attenuation);
     }
 

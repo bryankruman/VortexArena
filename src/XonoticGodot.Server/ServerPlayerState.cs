@@ -30,6 +30,16 @@ public sealed class ServerPlayerState
     // ---- fall-damage bookkeeping (QC .oldvelocity captured each CreatureFrame) ----
     public System.Numerics.Vector3 OldVelocity;
 
+    // ---- idle detection (QC ecs/systems/sv_physics.qc parm_idlesince + server/client.qc PlayerFrame idle block) ----
+    // parm_idlesince: the sim time of the player's last detectable input (buttons change, movement change, or
+    // view-angle change while NOT typing).  0 = not yet set (treated as "just moved").
+    public float IdleSince;            // QC CS(this).parm_idlesince
+    public float IdleKickLastTimeLeft; // QC CS(this).idlekick_lasttimeleft — the countdown second last played/printed
+    // Previous-frame input state so we can detect changes (QC buttons_old / movement_old / v_angle_old).
+    public int ButtonsOld;
+    public System.Numerics.Vector3 MovementOld;
+    public System.Numerics.Vector3 VAngleOld;
+
     // ---- `kill` / team-change countdown (QC server/clientkill.qc killindicator.cnt / KillIndicator_Think) ----
     // KillCntdownActive mirrors the presence of QC .killindicator; KillCntdownCnt is the indicator's `cnt`
     // (whole seconds remaining); KillCntdownNextThink is the absolute sim time of the next per-second think
@@ -66,6 +76,9 @@ public sealed class ServerPlayerState
         // NOTE: KillCntdownNextTime (QC .clientkill_nexttime) is intentionally NOT reset here — the anti-spam
         // carry-forward is a client-edict field in Base that persists across deaths/respawns, so mashing `kill`
         // through a respawn still extends the next allowed kill.
+        // NOTE: IdleSince (QC parm_idlesince) is intentionally NOT reset here — it's on the client state in Base
+        // and persists across deaths/respawns (only connect/level-change resets it). IdleKickLastTimeLeft resets
+        // on the next active-input tick (idleDuration < 1s branch in PlayerFrameIdleAll) so no spawn reset needed.
     }
 }
 

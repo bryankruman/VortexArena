@@ -137,6 +137,75 @@ public class WarpzoneSpawnTests
         Assert.All(mgr.Zones, z => Assert.True(z.Linked, "both portals link even though only A set .target"));
     }
 
+    [Fact]
+    public void MiscWarpzonePosition_Spawnfunc_OrientsAZone()
+    {
+        (EngineServices svc, WarpzoneManager mgr) = Setup();
+        SpawnBrush(svc, "*1", targetName: "wzA", target: "wzB");
+        SpawnBrush(svc, "*2", targetName: "wzB", target: "wzA");
+
+        // QC's CANONICAL position spawnfunc name (server.qc:642). Must orient zone A identically to
+        // trigger_warpzone_position — not be silently dropped.
+        Entity pos = svc.Entities.Spawn();
+        pos.Origin = new Vector3(0, 0, 0);
+        pos.Angles = new Vector3(0, 33f, 0);
+        pos.Target = "wzA";
+        WarpzoneSpawns.MiscWarpzonePositionSetup(pos);
+
+        mgr.InitMapZones();
+
+        Warpzone a = mgr.Zones.First(z => z.TargetName == "wzA");
+        Assert.Same(pos, a.Aiment);   // the canonical position helper was attached as the zone's aiment
+        Assert.True(a.Linked);
+    }
+
+    [Fact]
+    public void Reconnect_RelinksAfterRetarget()
+    {
+        (EngineServices svc, WarpzoneManager mgr) = Setup();
+        Entity ba = SpawnBrush(svc, "*1", targetName: "wzA", target: "wzB");
+        Entity bb = SpawnBrush(svc, "*2", targetName: "wzB", target: "wzA");
+        mgr.InitMapZones();
+        Assert.All(mgr.Zones, z => Assert.True(z.Linked));
+
+        // Retarget A to a non-existent partner, then reconnect: A must drop its link (partner gone).
+        Warpzone a = mgr.Zones.First(z => z.TargetName == "wzA");
+        Warpzone b = mgr.Zones.First(z => z.TargetName == "wzB");
+        a.Target = "nope";
+        // Base two-way link: clear B's back-reference too so the reverse pass can't relink them.
+        b.Target = "";
+        mgr.Reconnect();
+        Assert.False(a.Linked, "A no longer names a valid partner after reconnect");
+
+        // Point A back at B and reconnect: the pair re-links.
+        a.Target = "wzB";
+        mgr.Reconnect();
+        Assert.True(a.Linked && b.Linked, "the pair re-links once A targets B again");
+    }
+
+    [Fact]
+    public void WarpObservers_WarpsASolidNotClient_ThroughAZone()
+    {
+        (EngineServices svc, WarpzoneManager mgr) = Setup();
+        SpawnBrush(svc, "*1", targetName: "wzA", target: "wzB");
+        SpawnBrush(svc, "*2", targetName: "wzB", target: "wzA");
+        mgr.InitMapZones();
+        Warpzone a = mgr.Zones.First(z => z.TargetName == "wzA");
+        Warpzone b = mgr.Zones.First(z => z.TargetName == "wzB");
+
+        // A SOLID_NOT observer-style entity sitting just past portal A's plane (inside the trigger box) is warped to
+        // portal B each frame — the touch pass can't fire for a non-solid mover. Use a real engine entity so its
+        // AbsMin/AbsMax are linked for the overlap test.
+        Entity obs = svc.Entities.Spawn();
+        obs.Solid = Solid.Not;
+        svc.Entities.SetSize(obs, new Vector3(-4, -4, -4), new Vector3(4, 4, 4));
+        svc.Entities.SetOrigin(obs, a.InOrigin - new Vector3(1, 0, 0)); // just across the IN plane, inside the box
+        obs.Velocity = new Vector3(-50, 0, 0);
+
+        mgr.WarpObservers(new[] { obs });
+        AssertVec(b.InOrigin, obs.Origin, 2f);   // emerged at portal B
+    }
+
     private static void AssertVec(Vector3 expected, Vector3 actual, float tol = 1e-4f)
         => Assert.True((expected - actual).Length() <= tol, $"expected {expected}, got {actual} (tol {tol})");
 }

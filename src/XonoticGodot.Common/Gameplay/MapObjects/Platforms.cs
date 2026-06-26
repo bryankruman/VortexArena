@@ -48,11 +48,9 @@ public static class Platforms
         if (this_.Dmg != 0f && string.IsNullOrEmpty(this_.Message2))
             this_.Message2 = "was squished by";
 
-        // default sounds; the 'sounds' selector + legacy sound1/sound2 overrides are applied by the shared seam.
-        if (string.IsNullOrEmpty(this_.Noise))
-            this_.Noise = "plats/plat1.wav";   // moving
-        if (string.IsNullOrEmpty(this_.Noise1))
-            this_.Noise1 = "plats/plat2.wav";  // stop
+        // Sounds: Base plat.qc sets .noise/.noise1 ONLY for sounds==1 (plat1/2), sounds==2 or q3compat (medplat),
+        // then legacy sound1/sound2 overrides — a func_plat with .sounds unset (0) stays SILENT in Base. Do NOT
+        // force a plat1/plat2 default here (old-Quake behavior Xonotic dropped); ApplyPlatSounds reproduces Base.
         MapMover.ApplyPlatSounds(this_, q3compat);  // sounds==1 -> plat1/2, ==2/q3 -> medplat, then sound1/2 overrides
 
         // QC stores angles into mangle then clears angles (plats don't rotate via .angles).
@@ -127,8 +125,8 @@ public static class Platforms
 
     /// <summary>
     /// QC <c>plat_target_use</c>: a Q3COMPAT targeted ground plat's re-raise/refresh handler — a topped plat
-    /// refreshes its dwell, otherwise (any non-up state) it raises. Reachable only on Q3COMPAT plats (which the
-    /// port can't currently produce — no live q3compat flag) and the CSQC path.
+    /// refreshes its dwell, otherwise (any non-up state) it raises. Installed by <see cref="PlatReset"/> on the
+    /// (targetname &amp;&amp; q3compat) fork; reachable on a Q3/Q3DF targeted plat (q3compat is the live flag).
     /// </summary>
     public static void PlatTargetUse(Entity self, Entity actor)
     {

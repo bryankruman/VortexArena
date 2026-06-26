@@ -549,6 +549,7 @@ public sealed class Ctf : GameType
             GametypeEntities.AttachToCarrier(flag.Entity, player, FlagCarryOffset);
             flag.Entity.GtStatus = (int)FlagStatus.Carried;
         }
+        GametypeEntities.ScoringVip(player, true); // QC GameRules_scoring_vip(player, true) (sv_ctf.qc:746)
 
         // QC ctf_Handle_Pickup: the global "flag taken" voice + the kill-feed line + the carrier's centerprint.
         FlagAnnounceSound(flag.HomeTeam, "TAKEN");
@@ -635,6 +636,7 @@ public sealed class Ctf : GameType
         // return the captured flag to its base, freeing the carrier (QC ctf_RespawnFlag(enemy_flag))
         carried.ResetToBase();
         RespawnFlagEntity(carried);
+        GametypeEntities.ScoringVip(player, false); // QC GameRules_scoring_vip(player, false) on capture (sv_ctf.qc:1249)
 
         // QC ctf_Handle_Capture: a successful capture clears the carrier's capture shield (they're scoring now).
         UpdateCaptureShield(player);
@@ -722,6 +724,8 @@ public sealed class Ctf : GameType
         AddCol(carrier, "CTF_DROPS", 1); // QC GameRules_scoring_add(player, CTF_DROPS, 1)
         // QC: the dropper can't immediately re-take the flag (next_take_time), and is shielded from camping it.
         carrier.GtNextTakeTime = now + FlagCollectDelay;
+
+        GametypeEntities.ScoringVip(carrier, false); // QC GameRules_scoring_vip(flag.owner, false) (sv_ctf.qc:515)
 
         // QC ctf_Handle_Drop: the global "flag dropped/lost" voice + the kill-feed line crediting the dropper.
         FlagAnnounceSound(carried.HomeTeam, "DROPPED");
@@ -911,6 +915,7 @@ public sealed class Ctf : GameType
             GametypeEntities.AttachToCarrier(fe, receiver, FlagCarryOffset);
             fe.GtStatus = (int)FlagStatus.Carried;
         }
+        GametypeEntities.ScoringVip(receiver, true); // QC GameRules_scoring_vip(player, true) (sv_ctf.qc:435)
         // QC ctf_Handle_Retrieve (sv_ctf.qc:456): _sound(player, …, snd_flag_pass, ATTEN_NORM) — the positional
         // "pass received" cue on the receiver as the in-flight pass completes.
         if (Api.Services is not null)
@@ -1005,6 +1010,7 @@ public sealed class Ctf : GameType
         flag.DropTime = now;
         flag.Dropper = carrier;
         carrier.GtNextTakeTime = now + FlagCollectDelay; // QC: dropper can't instantly re-take
+        GametypeEntities.ScoringVip(carrier, false); // QC GameRules_scoring_vip(flag.owner, false) on throw/pass
 
         if (flag.Entity is Entity fe)
         {
@@ -1051,6 +1057,17 @@ public sealed class Ctf : GameType
     /// <summary>QC bound(lo, v, hi).</summary>
     private static float QClamp(float v, float lo, float hi) => v < lo ? lo : (v > hi ? hi : v);
 
+    /// <summary>
+    /// QC <c>CTF_SAMETEAM(a,b)</c> (sv_ctf.qh:185): <c>(g_ctf_reverse || (ctf_oneflag &amp;&amp; g_ctf_oneflag_reverse))
+    /// ? DIFF_TEAM(a,b) : SAME_TEAM(a,b)</c>. In a reverse mode the bases swap ownership, so "same team" toward a
+    /// flag/shield flips to "different team". Used by the capture-shield touch (and any other CTF_SAMETEAM gate).
+    /// </summary>
+    private bool CtfSameTeam(int a, int b)
+    {
+        bool reverse = (TryCvar("g_ctf_reverse", out float rv) && rv != 0f) || (OneFlag && OneFlagReverse);
+        return reverse ? a != b : a == b;
+    }
+
     /// <summary>QC normalize(v) — zero for the zero vector.</summary>
     private static Vector3 QNormalize(Vector3 v) { float l = v.Length(); return l > 0f ? v / l : Vector3.Zero; }
 
@@ -1065,6 +1082,8 @@ public sealed class Ctf : GameType
     private const int EfFullbright = 512;
     /// <summary>EF_LOWPRECISION (dpextensions.qc:274) — bandwidth hint; QC ctf_FlagSetup always sets it on the flag.</summary>
     private const int EfLowPrecision = 4194304;
+    /// <summary>EF_ADDITIVE (dpextensions.qc:93) — additive-blend render mode; QC ctf_CaptureShield_Spawn uses it.</summary>
+    private const int EfAdditive = 32;
 
     /// <summary>Lowercase team token for the <c>g_ctf_flag_&lt;team&gt;_*</c> cvars (red/blue/yellow/pink/neutral).</summary>
     private static string TeamName(int team) => team switch
@@ -1303,6 +1322,10 @@ public sealed class Ctf : GameType
                 e.Effects |= EfFullbright;
 
             FlagEntities.Add(e);
+            // QC ctf_DelayedFlagSetup → ctf_CaptureShield_Spawn(this): spawn the push entity that physically
+            // blocks a shielded player from approaching the flag. This is separate from the shield status gate
+            // (GtCaptureShielded) which blocks the pickup; the push entity is the VISIBLE shield presence.
+            SpawnShieldEntity(e, team, origin);
         }
         flag.Entity = e;
         flag.HomeOrigin = origin;
@@ -1327,6 +1350,70 @@ public sealed class Ctf : GameType
         foreach (var f in Flags.Values)
             if (ReferenceEquals(f.Entity, e)) return f;
         return null;
+    }
+
+    /// <summary>
+    /// QC <c>ctf_CaptureShield_Spawn(flag)</c> (sv_ctf.qc:340): spawn a co-located SOLID_TRIGGER entity at the
+    /// flag's origin that pushes away any shielded enemy player who touches it. The entity is <c>MOVETYPE_NOCLIP</c>
+    /// so it stays put regardless of physics; its <c>EF_ADDITIVE</c> flag gives it an additive-blend shader glow.
+    /// Scale 0.5 matches the QC (the model's natural bbox is halved). The shield entity stores a back-link to the
+    /// flag entity in <c>GtShieldFlag</c> (QC <c>shield.enemy = flag</c>) so the touch handler can read the team.
+    /// </summary>
+    private void SpawnShieldEntity(Entity flagEnt, int team, Vector3 origin)
+    {
+        if (Api.Services is null)
+            return;
+        Entity s = Api.Entities.Spawn();
+        s.ClassName = "ctf_captureshield";
+        s.Team = team;
+        s.GtHomeTeam = team;
+        s.GtShieldFlag = flagEnt; // QC shield.enemy = flag
+        s.Solid = Solid.Trigger;
+        s.MoveType = MoveType.Noclip;
+        s.Effects |= EfAdditive;
+        s.AVelocity = new Vector3(7f, 0f, 11f); // QC avelocity '7 0 11'
+        s.Model = "models/ctf/shield.md3"; // QC MDL_CTF_SHIELD = "models/ctf/shield.md3"
+        // QC setsize(shield, shield.scale * shield.mins, shield.scale * shield.maxs) after setmodel.
+        // The shield model's natural hull is roughly the same as the flag bbox; scale 0.5 halves it.
+        const float scale = 0.5f;
+        Vector3 scaledMins = FlagMins * scale;
+        Vector3 scaledMaxs = FlagMaxs * scale;
+        GametypeEntities.SetSize(s, scaledMins, scaledMaxs);
+        GametypeEntities.SetOrigin(s, origin);
+        s.Touch = ShieldTouchEntity;
+    }
+
+    /// <summary>
+    /// QC <c>ctf_CaptureShield_Touch</c> (sv_ctf.qc:328): when a shielded player touches the shield entity,
+    /// push them away (0 damage, <c>g_ctf_shield_force</c> impulse along the outward normal) and remind them
+    /// they are shielded (CENTER_CTF_CAPTURESHIELD_SHIELDED). Same-team players are never pushed.
+    /// </summary>
+    private void ShieldTouchEntity(Entity self, Entity other)
+    {
+        if (other is not Player toucher || toucher.IsDead)
+            return;
+        // QC: if(!toucher.ctf_captureshielded) { return; }
+        if (!toucher.GtCaptureShielded)
+            return;
+        // QC: if(CTF_SAMETEAM(this, toucher)) { return; } — same-team players pass through freely. CTF_SAMETEAM is
+        // reverse-aware (sv_ctf.qh:185): under g_ctf_reverse / one-flag-reverse it flips to DIFF_TEAM, so the shield
+        // pushes your OWN team and lets enemies pass (the bases swap ownership). A plain == comparison would push the
+        // wrong team in those modes.
+        if (CtfSameTeam((int)self.Team, (int)toucher.Team))
+            return;
+
+        // QC: mymid = (this.absmin + this.absmax) * 0.5; theirmid = (toucher.absmin + toucher.absmax) * 0.5;
+        //     Damage(toucher, this, this, 0, DEATH_HURTTRIGGER.m_id, DMG_NOWEP, mymid,
+        //            normalize(theirmid - mymid) * ctf_captureshield_force);
+        Vector3 myMid     = (self.AbsMin + self.AbsMax) * 0.5f;
+        Vector3 theirMid  = (toucher.AbsMin + toucher.AbsMax) * 0.5f;
+        Vector3 pushDir   = QNormalize(theirMid - myMid);
+        float   force     = _captureShieldForce;
+        Combat.Damage(toucher, self, self, 0f, DeathTypes.Void, myMid, pushDir * force);
+
+        // QC: if(IS_REAL_CLIENT(toucher)) { Send_Notification(NOTIF_ONE, toucher, MSG_CENTER,
+        //         CENTER_CTF_CAPTURESHIELD_SHIELDED); }
+        NotificationSystem.Center(toucher, "CTF_CAPTURESHIELD_SHIELDED");
     }
 
     /// <summary>
@@ -1769,17 +1856,50 @@ public sealed class Ctf : GameType
         return f is null ? 0 : Scoring.GameScores.Get(p, f);
     }
 
-    /// <summary>QC ctf_CaptureShield_Update for one player: refresh their shielded flag (no roster context).</summary>
-    public void UpdateCaptureShield(Player p) => p.GtCaptureShielded = false;
+    /// <summary>
+    /// QC <c>ctf_CaptureShield_Update(player, 1)</c> (wanted_status = 1, "unshield only"): clears the player's
+    /// capture shield and sends <c>CENTER_CTF_CAPTURESHIELD_FREE</c> if they were previously shielded.
+    /// Called after a successful capture — a capturing player has just scored, so their net CTF score improved
+    /// and they should no longer be shielded. The per-tick <see cref="UpdateCaptureShields"/> recompute will
+    /// restore the flag if the player somehow remains eligible, so this is a safe eager clear.
+    /// <para>QC logic (wanted_status=1, unshield-only path): fires when
+    /// <c>(1 == player.ctf_captureshielded) &amp;&amp; (updated_status != 1)</c>. Since a capture always
+    /// improves the composite score, the update result is reliably 0 (not shielded), so we clear eagerly.</para>
+    /// </summary>
+    public void UpdateCaptureShield(Player p)
+    {
+        if (p.GtCaptureShielded)
+        {
+            p.GtCaptureShielded = false;
+            NotificationSystem.Center(p, "CTF_CAPTURESHIELD_FREE");
+        }
+    }
 
     /// <summary>
-    /// QC ctf_CaptureShield_Update over the roster: recompute each player's shielded flag. Call when scores
-    /// change (after a capture/return/frag) so the worst players are blocked from flag camping.
+    /// QC <c>ctf_CaptureShield_Update(player, 0)</c> (wanted_status = 0, "shield only") over the full roster:
+    /// recompute each player's shielded flag and send the appropriate status-change centerprint when the shield
+    /// transitions. Called each server tick from <c>GameWorld.Tick</c> so newly qualifying players get shielded
+    /// and recovering players are set free promptly.
+    /// <para>QC logic for each player: compute <c>updated_status = ctf_CaptureShield_CheckStatus(player)</c>;
+    /// if <c>wanted_status == player.ctf_captureshielded &amp;&amp; updated_status != wanted_status</c> fire the
+    /// notification and set the new flag. The per-tick call uses wanted_status=1 in Base PlayerPreThink, but
+    /// here we unify both directions in one pass so the free/shielded transitions are both covered.</para>
     /// </summary>
     public void UpdateCaptureShields(IReadOnlyList<Player> roster)
     {
         for (int i = 0; i < roster.Count; i++)
-            roster[i].GtCaptureShielded = CaptureShieldStatus(roster[i], roster);
+        {
+            Player p = roster[i];
+            bool wasShielded  = p.GtCaptureShielded;
+            bool nowShielded  = CaptureShieldStatus(p, roster);
+            if (wasShielded != nowShielded)
+            {
+                p.GtCaptureShielded = nowShielded;
+                // QC: Send_Notification(NOTIF_ONE, player, MSG_CENTER, updated_status ?
+                //         CENTER_CTF_CAPTURESHIELD_SHIELDED : CENTER_CTF_CAPTURESHIELD_FREE)
+                NotificationSystem.Center(p, nowShielded ? "CTF_CAPTURESHIELD_SHIELDED" : "CTF_CAPTURESHIELD_FREE");
+            }
+        }
     }
 
     public void UpdateLeaderAndCheckLimit()

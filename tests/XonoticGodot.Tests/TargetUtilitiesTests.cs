@@ -411,6 +411,138 @@ public sealed class TargetUtilitiesTests
         Assert.Equal(1f, rocket.GetResource(ResourceType.Health), 2); // unchanged (not a player)
     }
 
+    [Fact]
+    public void TargetItems_SpawnFlags0_NetnameParsedVerbatim()
+    {
+        // spawnflags==0 (default): no prefix injected; the raw "N name" token list is used as-is.
+        // NormalizeItemsNetname must return the original string unchanged.
+        string result = TargetUtilities.NormalizeItemsNetname("100 health 50 armor", 0);
+        Assert.Equal("100 health 50 armor", result);
+    }
+
+    [Fact]
+    public void TargetItems_SpawnFlags1_InjectsMaxPrefix()
+    {
+        // spawnflags==1 (max): QC emits "max N name" for each token; the port reproduces this by injecting
+        // "max" before each name token. GiveItems.Apply then uses GiveOp.Max (take max(current, given)).
+        string result = TargetUtilities.NormalizeItemsNetname("100 health 50 armor", 1);
+        // Expected: each name token ("health", "armor") gets "max" prepended.
+        Assert.Contains("max", result);
+        // The value tokens (100, 50) pass through unchanged; "max" appears before "health" and "armor".
+        Assert.Contains("100", result);
+        Assert.Contains("health", result);
+        Assert.Contains("50", result);
+        Assert.Contains("armor", result);
+        // Verify GiveItems.Apply actually uses max/cap semantics: "max 100 health" means "cap at 100".
+        // GiveOp.Max = MathF.Min(v0, val) (cap at val). Actor with health=150 gets capped to 100.
+        Boot();
+        Entity actor = new Entity { ClassName = "player", Flags = EntFlags.Client };
+        actor.SetResourceExplicit(ResourceType.Health, 150f); // actor has more health than the cap
+        Entity ti = Spawn("target_items", e =>
+        {
+            e.NetName = "100 health";
+            e.SpawnFlags = 1; // max = cap
+        });
+        ti.Use!(ti, actor);
+        // spawnflags=1 → normalized to "100 max health" → GiveOp.Max (cap) → min(150, 100) = 100.
+        Assert.Equal(100f, actor.GetResource(ResourceType.Health), 2);
+    }
+
+    [Fact]
+    public void TargetItems_SpawnFlags1_GiveString_StrippedAndUnprefixed()
+    {
+        // A "give " prefixed netname: QC strips the "give" token and uses the remainder verbatim,
+        // bypassing the prefix injection even if spawnflags!=0.
+        string result = TargetUtilities.NormalizeItemsNetname("give 100 health", 1);
+        Assert.Equal("100 health", result);
+    }
+
+    [Fact]
+    public void TargetItems_SpawnFlags2_InjectsMinPrefix()
+    {
+        // spawnflags==2 (min): "min N name" for each token; GiveOp.Min = take max(v0, val) in GiveItems.
+        string result = TargetUtilities.NormalizeItemsNetname("50 armor", 2);
+        Assert.Contains("min", result);
+        Assert.Contains("50", result);
+        Assert.Contains("armor", result);
+    }
+
+    // =====================================================================================
+    //  target_speaker — ACTIVATOR (BIT3) MSG_ONE seam (PlayToClientHandler)
+    // =====================================================================================
+
+    [Fact]
+    public void TargetSpeaker_Activator_WithSeam_PlaysOnlyToTriggeringClient()
+    {
+        Boot();
+        // Wire the PlayToClientHandler seam (QC soundto MSG_ONE equivalent).
+        Entity? seenClient = null;
+        Entity? seenEmitter = null;
+        string? seenSample = null;
+        TargetSpeaker.PlayToClientHandler = (client, emitter, ch, sample, vol, atten) =>
+        {
+            seenClient = client;
+            seenEmitter = emitter;
+            seenSample = sample;
+        };
+        try
+        {
+            // A targeted (has targetname) ACTIVATOR speaker.
+            Entity speaker = Spawn("target_speaker", e =>
+            {
+                e.TargetName = "myspeaker";
+                e.Noise = "sound/misc/trigger.wav";
+                e.SpawnFlags = 8; // SPEAKER_ACTIVATOR = BIT(3)
+            });
+
+            // Triggering real client: Flags.Client, not a bot.
+            Entity client = new Entity
+            {
+                ClassName = "player",
+                Flags = EntFlags.Client,
+            };
+
+            speaker.Use!(speaker, client);
+
+            // Seam should have been called exactly with the triggering client, not broadcast.
+            Assert.Same(client, seenClient);
+            Assert.Same(speaker, seenEmitter);
+            Assert.Equal("sound/misc/trigger.wav", seenSample);
+        }
+        finally
+        {
+            TargetSpeaker.PlayToClientHandler = null;
+        }
+    }
+
+    [Fact]
+    public void TargetSpeaker_Activator_BotActivator_ProducesNothing()
+    {
+        Boot();
+        // A bot activator: IsBot=true; IsRealClient gate should filter it out.
+        bool seamCalled = false;
+        TargetSpeaker.PlayToClientHandler = (_, _, _, _, _, _) => { seamCalled = true; };
+        try
+        {
+            Entity speaker = Spawn("target_speaker", e =>
+            {
+                e.TargetName = "myspeaker";
+                e.Noise = "sound/misc/trigger.wav";
+                e.SpawnFlags = 8; // SPEAKER_ACTIVATOR
+            });
+
+            var bot = new Player { ClassName = "player", Flags = EntFlags.Client };
+            bot.IsBot = true;
+
+            speaker.Use!(speaker, bot);
+            Assert.False(seamCalled, "bot activator must not produce any sound (QC IS_REAL_CLIENT gate)");
+        }
+        finally
+        {
+            TargetSpeaker.PlayToClientHandler = null;
+        }
+    }
+
     // =====================================================================================
     //  func_door_secret — open-on-use slide chain
     // =====================================================================================

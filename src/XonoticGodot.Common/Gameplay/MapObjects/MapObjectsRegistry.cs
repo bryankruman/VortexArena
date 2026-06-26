@@ -109,6 +109,12 @@ public static class MapObjectsRegistry
         //      WarpzoneSpawns.Sink bridge the host wires in Boot (mirrors Porto.PortalSpawner). ----
         SpawnFuncs.Register("trigger_warpzone", WarpzoneSpawns.TriggerWarpzoneSetup);
         SpawnFuncs.Register("trigger_warpzone_position", WarpzoneSpawns.TriggerWarpzonePositionSetup);
+        // QC's CANONICAL position spawnfunc (server.qc:642); trigger_warpzone_position just delegates to it. A map
+        // authored with the bare misc_warpzone_position name must orient its zone identically.
+        SpawnFuncs.Register("misc_warpzone_position", WarpzoneSpawns.MiscWarpzonePositionSetup);
+        // runtime / moving-warpzone re-link (server.qc:807-815). Both names spawn the same triggerable use-handler.
+        SpawnFuncs.Register("trigger_warpzone_reconnect", WarpzoneSpawns.TriggerWarpzoneReconnectSetup);
+        SpawnFuncs.Register("target_warpzone_reconnect", WarpzoneSpawns.TriggerWarpzoneReconnectSetup);
 
         // ---- teleporters (trigger/teleport.qc, misc/teleport_dest.qc) ----
         SpawnFuncs.Register("trigger_teleport", Teleporters.TeleportSetup);
@@ -326,6 +332,7 @@ public static class MapObjectsRegistry
         ViewLocation.RunDeferredInit();
         Follow.RunDeferredInit();
         AdvancedMovers.RunDeferredInit();
+        Teleporters.RunDeferredInit(); // target_teleporter_checktarget disambiguation (dest/self-target/teleporter)
     }
 
     // ====================================================================

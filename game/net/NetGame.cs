@@ -1396,6 +1396,11 @@ public sealed partial class NetGame : Node3D
             _hitSound.AudioLoader = _assets.LoadSound;
         _hitSound.Attach(_fullHud);
 
+        // In-vehicle low-health/shield alarm (QC vehicle_alarm, cl_vehicles.qc): feed the VehicleHud the VFS sound
+        // loader so it can play SND_VEH_ALARM / SND_VEH_ALARM_SHIELD (gated by cl_vehicles_alarm, default 0).
+        if (_assets is not null)
+            _fullHud.Vehicle.AudioLoader = _assets.LoadSound;
+
         // The lightweight crosshair + health/armor readout + radar + networked scoreboard, on a layer ABOVE the
         // full HUD so the crosshair sits on top.
         var hudLayer = new CanvasLayer { Name = "Hud", Layer = 5 };

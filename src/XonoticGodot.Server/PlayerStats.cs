@@ -210,6 +210,21 @@ public sealed class PlayerStats
     /// <summary>QC the alivetime start stamp (PutPlayerInServer): begin counting this player's alive time.</summary>
     public void BeginAlivetime(Player p, float now) { if (Enabled) _alivetimeStart[p] = now; }
 
+    /// <summary>
+    /// QC <c>PlayerFrame</c> alivetime AFK-gate (server/client.qc:2858):
+    /// <code>if (this.alivetime_start &amp;&amp; time - CS(this).parm_idlesince &gt;= 30) this.alivetime_start += frametime;</code>
+    /// In QC <c>alivetime_start</c> is a running ACCUMULATOR (frametime is added when idle); the port tracks a
+    /// start TIMESTAMP instead. The same effect — idle time is excluded from the reported alivetime — is achieved by
+    /// advancing the start stamp forward by <paramref name="frameTime"/> whenever the player has been idle for at
+    /// least 30 seconds. Call once per server frame per live, spawned player.
+    /// </summary>
+    public void AdvanceAliveStart(Player p, float frameTime)
+    {
+        if (!Enabled) return;
+        if (_alivetimeStart.TryGetValue(p, out float start) && start > 0f)
+            _alivetimeStart[p] = start + frameTime;
+    }
+
     /// <summary>QC the alivetime flush (on observe/death/finalize): add elapsed alive time + clear the stamp.</summary>
     public void FlushAlivetime(Player p, float now)
     {

@@ -71,9 +71,29 @@ namespace XonoticGodot.Common.Framework
         public float AlphaMin;           // QC .alpha_min — PERCENT
         public float FadeVerticalOffset; // QC .fade_vertical_offset
 
+        // ---- antiwall relay (models.qc g_clientmodel_use) ----
+        /// <summary>QC <c>.antiwall_flag</c> — the func_clientwall solid-toggle command relayed from the firing
+        /// trigger: 1 = deactivate (SOLID_NOT + hidden), 2 = activate (restore default_solid + shown), 0 = nothing.
+        /// A trigger that toggles a clientwall sets this on itself; g_clientmodel_use copies it onto the wall.</summary>
+        public int AntiwallFlag;
+        /// <summary>QC <c>.inactive</c> — a func_clientwall/func_clientillusionary deactivated by the antiwall
+        /// relay (renders alpha 0 in Ent_Wall_PreDraw and, if SOLID, is also made non-solid).</summary>
+        public bool Inactive;
+        /// <summary>QC <c>.default_solid</c> — the wall's original solidity (set at g_clientmodel_init), restored by
+        /// the antiwall relay's "activate" (flag 2) branch.</summary>
+        public Solid DefaultSolid;
+
         // ---- weather (rainsnow.qc) ----
         /// <summary>QC <c>.dest</c> — the rain/snow fall velocity (moved off <c>.velocity</c> at spawn).</summary>
         public Vector3 Dest;
+
+        // ---- trigger_multiple pressed-keys gate (multi.qc:135-137) ----
+        /// <summary>QC <c>.pressedkeys</c> as a MAP key on a trigger_multiple: a bitmask of the movement keys
+        /// (KEY_FORWARD/BACKWARD/LEFT/RIGHT/JUMP/CROUCH/ATCK/ATCK2 — the PressedKeyBits enum) the player must
+        /// be holding for the trigger to fire. Distinct from the per-frame <see cref="Entity.PressedKeys"/> the
+        /// input/dodging layer rewrites on a player edict each frame — this one is parsed once from the map and
+        /// never touched, so it can't collide with the player's live key state.</summary>
+        public int TriggerPressedKeys; // QC trigger-side .pressedkeys (multi.qc)
 
         // ---- push interaction (triggers.qc isPushable) ----
         /// <summary>QC <c>.pushable</c> — when set, the entity is moved by jumppads/conveyors/impulse-fields even
@@ -126,6 +146,8 @@ namespace XonoticGodot.Common.Gameplay
             // --- motion keys ---
             if (TryVec(fields, "velocity", out Vector3 vel)) e.Velocity = vel;
             if (TryVec(fields, "movedir", out Vector3 md)) e.MoveDir = md;
+            // trigger_multiple key-gate (multi.qc:135): the player must hold one of these movement keys.
+            if (TryF(fields, "pressedkeys", out float pk)) e.TriggerPressedKeys = (int)pk;
             if (TryVec(fields, "mins", out Vector3 mins)) { e.Mins = mins; e.Size = e.Maxs - e.Mins; }
             if (TryVec(fields, "maxs", out Vector3 maxs)) { e.Maxs = maxs; e.Size = e.Maxs - e.Mins; }
 
@@ -143,6 +165,9 @@ namespace XonoticGodot.Common.Gameplay
             if (TryF(fields, "alpha_max", out float amx)) e.AlphaMax = amx;
             if (TryF(fields, "alpha_min", out float amn)) e.AlphaMin = amn;
             if (TryF(fields, "fade_vertical_offset", out float fvo)) e.FadeVerticalOffset = fvo;
+            // .antiwall_flag rides the TRIGGER that toggles a func_clientwall (1=deactivate, 2=activate);
+            // g_clientmodel_use reads it off the activator. (models.qc:42)
+            if (TryF(fields, "antiwall_flag", out float awf)) e.AntiwallFlag = (int)awf;
 
             // --- music keys ---
             if (TryF(fields, "lifetime", out float lt)) e.MusicLifetime = lt;
@@ -170,6 +195,9 @@ namespace XonoticGodot.Common.Gameplay
             if (fields.TryGetValue("sound1", out string? s1)) e.Sound1 = s1;
             if (fields.TryGetValue("sound2", out string? s2)) e.Sound2 = s2;
             if (fields.TryGetValue("platmovetype", out string? pmt)) e.Platmovetype = pmt;
+
+            // --- bidirectional rotating-door reverse marker (QC .trigger_reverse on the firing trigger) ---
+            if (TryF(fields, "trigger_reverse", out float trev)) e.TriggerReverse = (int)trev;
 
             // --- T59 long-tail map-object keys (the 7 rare entities; not promoted by GameWorld's fixed key set) ---
             // dynlight (light_lev/color/dtagname/style), the generic .target2-4/.delay/.message2/.phase movers read,

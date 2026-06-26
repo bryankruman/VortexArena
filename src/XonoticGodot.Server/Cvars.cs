@@ -338,6 +338,22 @@ public static class Cvars
         new("bot_ai_custom_weapon_priority_close", "", Save),
         new("bot_navigation_ignoreplayers", "0", Save),
 
+        // ---- idle kick (QC server/client.qc PlayerFrame sv_maxidle block) ----
+        // sv_maxidle: seconds before an idle PLAYER or join-queue client is kicked (0 = disabled, the default).
+        // sv_maxidle_playertospectator: if > 0 and a player is idle, move-to-spec instead of kick (0 = disabled).
+        // sv_maxidle_minplayers: minimum human clients before the idle kick is active (0 = always active).
+        // sv_maxidle_alsokickspectators: also apply the idle kick to observers/spectators (default 0).
+        // sv_maxidle_slots: free-slot threshold — if > 0 AND sv_dedicated, only kick when free slots <= this.
+        // sv_maxidle_slots_countbots: count bots when computing the free-slot occupancy.
+        new("sv_maxidle", "0", Save, "seconds of player inactivity before kick (0 = off)"),
+        new("sv_maxidle_playertospectator", "0", Save, "move-to-spec instead of kick when >0 (seconds)"),
+        new("sv_maxidle_minplayers", "0", Save, "minimum players before the idle kick activates"),
+        new("sv_maxidle_alsokickspectators", "0", Save, "also idle-kick spectators/observers"),
+        new("sv_maxidle_slots", "0", Save, "free-slot threshold for dedicated-server idle kick (0 = always)"),
+        new("sv_maxidle_slots_countbots", "0", Save, "count bots toward sv_maxidle_slots occupancy"),
+        // g_maxplayers_spectator_blocktime: spectator grace before the sv_spectate=0 kick fires.
+        new("g_maxplayers_spectator_blocktime", "5", Save, "grace period (s) before kicking spectators when sv_spectate=0"),
+
         // ---- server identity / admin (xonotic-server.cfg) ----
         new("sv_dedicated", "0", CvarFlags.ReadOnly),
         new("sv_spectate", "1", Save),

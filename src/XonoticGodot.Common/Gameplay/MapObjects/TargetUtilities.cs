@@ -465,8 +465,18 @@ public static class TargetUtilities
 
     /// <summary>
     /// <c>spawnfunc(target_items)</c> — caches the give-token list (<c>.netname</c>) so a later use applies it.
-    /// The original re-serializes a normalized token string (with max/min/minus prefixes) from the spawn keys;
-    /// we keep the raw netname and parse it directly on use (behaviorally equivalent for the common path).
+    /// <para>
+    /// QC target/items.qc:spawnfunc re-serializes the human token list into a normalized give-string with
+    /// a per-spawnflag operator prefix (spawnflags 0 = set/give, 1 = max, 2 = min, 4 = minus/max dual).
+    /// The port reproduces this normalization for spawnflags 0/1/2 by injecting the operator token before
+    /// each non-numeric, non-operator name token in the raw <c>.netname</c>. Spawnflags==4 (dual minus/max
+    /// prefix: item bits use "minus", resource values use "max") is not fully reproduced — left partial.
+    /// </para>
+    /// <para>
+    /// If <c>.netname</c> begins with <c>"give "</c> (a pre-formatted give string from a QC-aware mapper
+    /// or the cheat console), the "give " prefix is stripped so the remainder parses as a raw give-grammar
+    /// string directly, matching QC's <c>if(argv(0) == "give") str = substring(netname, …)</c> branch.
+    /// </para>
     /// </summary>
     public static void ItemsSetup(Entity this_)
     {
@@ -486,7 +496,117 @@ public static class TargetUtilities
         if (this_.SuperweaponsFinished == 0f)
             this_.SuperweaponsFinished = CvarOr("g_balance_superweapons_time", 30f);
 
+        // QC items.qc:spawnfunc(target_items): normalize .netname based on spawnflags.
+        this_.NetName = NormalizeItemsNetname(this_.NetName, this_.SpawnFlags);
+
         MapMover.IndexRegister(this_);
+    }
+
+    // QC operator-prefix tokens — these are NOT name tokens; they set the op and continue without resetting.
+    // "no" is also an operator (sets op=Max, val=0) but is unusual in target_items .netname; included here
+    // so it is not double-prefixed if a mapper happens to write it.
+    private static readonly System.Collections.Generic.HashSet<string> s_giveOpTokens =
+        new(System.StringComparer.Ordinal) { "max", "min", "plus", "minus", "no" };
+
+    // QC items.qc reserialization splits the give-tokens into two prefix classes for spawnflags 4
+    // (itemprefix="minus " vs valueprefix="max "). The ITEM-class (itemprefix) tokens are the held-item BITS:
+    // the unlimited_* flags, jetpack, fuel_regen (items.qc:124-132) and every weapon netname (items.qc:142).
+    // Everything else — the powerup-duration names, resources, and buffs (items.qc:126-141) — is VALUE-class
+    // (valueprefix). For spawnflags 1/2 itemprefix==valueprefix so the split is moot; it only matters for 4.
+    private static readonly System.Collections.Generic.HashSet<string> s_itemBitNames =
+        new(System.StringComparer.Ordinal)
+        {
+            "unlimited_ammo", "unlimited_weapon_ammo", "unlimited_superweapons", "jetpack", "fuel_regen",
+        };
+
+    /// <summary>
+    /// QC <c>spawnfunc(target_items)</c> normalization (items.qc:47-155): re-serialize the raw
+    /// <paramref name="netname"/> with the operator prefix dictated by <paramref name="spawnFlags"/>.
+    /// <list type="bullet">
+    ///   <item>If <paramref name="netname"/> starts with <c>"give "</c>: strip the prefix — the remainder
+    ///     is already in give-grammar format (QC <c>if(argv(0)=="give") str = substring(netname,…)</c>).</item>
+    ///   <item><paramref name="spawnFlags"/>==0 (set/give): no prefix — token list is already valid input
+    ///     for <c>GiveItems.Apply</c> as written.</item>
+    ///   <item><paramref name="spawnFlags"/>==1 (max/cap): inject <c>"max"</c> before each name token so
+    ///     <c>GiveItems.Apply</c> uses <c>GiveOp.Max</c> — cap resources to at most the given value
+    ///     (<c>MathF.Min(current, val)</c>). Useful for a draining/limiting trigger.</item>
+    ///   <item><paramref name="spawnFlags"/>==2 (min/floor): inject <c>"min"</c> before each name token so
+    ///     <c>GiveItems.Apply</c> uses <c>GiveOp.Min</c> — ensure resources are at least the given value
+    ///     (<c>MathF.Max(current, val)</c>). Useful for a setup/ensure-minimum trigger.</item>
+    ///   <item><paramref name="spawnFlags"/>==4 (minus/max dual): QC uses <c>itemprefix="minus "</c> for the
+    ///     held-item bits (unlimited_*, jetpack, fuel_regen, weapons) and <c>valueprefix="max "</c> for the
+    ///     resource/powerup-duration/buff values (items.qc:112-116). The port honors that split: item-bit name
+    ///     tokens get <c>"minus"</c>, all other name tokens get <c>"max"</c>.</item>
+    /// </list>
+    /// <para>
+    /// NOTE: this is an APPROXIMATION of QC's spawnfunc — QC parses the netname into <c>this.items</c> bits +
+    /// resource fields and then re-serializes a canonical string from those (value tokens for resources come
+    /// from the entity's <c>GetResource</c> fields, not the netname). The port instead reuses the netname's own
+    /// value tokens and only injects the operator prefix, which is faithful for the common resource/powerup
+    /// give-string but does not reproduce the bit-parse-then-reserialize for non-give-string inputs (documented
+    /// partial gap; reproducing it needs the full items-bit/resource-field serialization subsystem).
+    /// </para>
+    /// </summary>
+    public static string NormalizeItemsNetname(string? netname, int spawnFlags)
+    {
+        if (string.IsNullOrWhiteSpace(netname))
+            return "";
+
+        // QC items.qc:47-51: if argv(0)=="give", strip it and keep the rest as a raw give-string.
+        // This handles a pre-formatted give-grammar string like "give 100 health 30 strength".
+        const string GivePrefix = "give ";
+        if (netname.StartsWith(GivePrefix, System.StringComparison.Ordinal))
+            return netname.Substring(GivePrefix.Length).Trim();
+
+        // spawnflags 0: no-op — the raw token list "N name N name …" is already valid GiveItems input
+        // with OP_SET (the default), matching QC's itemprefix=="" / valueprefix=="" branch.
+        if (spawnFlags == 0)
+            return netname;
+
+        // Determine the operator prefix(es) for spawnflags 1/2/4 (items.qc:97-121).
+        // spawnflags 1 → itemprefix=valueprefix="max " (GiveOp.Max = MathF.Min(v0, val): cap to at most N).
+        // spawnflags 2 → itemprefix=valueprefix="min " (GiveOp.Min = MathF.Max(v0, val): floor to at least N).
+        // spawnflags 4 → itemprefix="minus " (held-item bits), valueprefix="max " (resource/duration values).
+        // anything else → QC error("invalid spawnflags"); the port leaves the netname unchanged.
+        string itemPrefix, valuePrefix;
+        switch (spawnFlags)
+        {
+            case 1: itemPrefix = valuePrefix = "max"; break;
+            case 2: itemPrefix = valuePrefix = "min"; break;
+            case 4: itemPrefix = "minus"; valuePrefix = "max"; break;
+            default: return netname;
+        }
+
+        // Rebuild the token list by injecting the prefix token before each name token (non-numeric,
+        // non-operator). Numeric tokens (e.g. "30") and existing operator tokens are passed through as-is.
+        string[] tokens = netname.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+        var sb = new System.Text.StringBuilder(netname.Length * 2);
+        foreach (string tok in tokens)
+        {
+            if (sb.Length > 0)
+                sb.Append(' ');
+
+            // A token is "numeric" if it parses as a float (covers "100", "0", "30.5", "-1", etc.).
+            bool isNumeric = float.TryParse(tok, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out _);
+            // An operator prefix token (max/min/plus/minus/no) must not be double-prefixed.
+            bool isOp = s_giveOpTokens.Contains(tok);
+
+            if (!isNumeric && !isOp)
+            {
+                // Name token: pick the QC prefix class. Held-item bits (unlimited_*, jetpack, fuel_regen, and
+                // weapon netnames) use itemprefix; resources / powerup durations / buffs use valueprefix. For
+                // spawnflags 1/2 the two are identical so the classification is a no-op.
+                bool isItemBit = s_itemBitNames.Contains(tok)
+                    || Weapons.ByName(tok) is not null;
+                sb.Append(isItemBit ? itemPrefix : valuePrefix);
+                sb.Append(' ');
+            }
+
+            sb.Append(tok);
+        }
+
+        return sb.ToString();
     }
 
     /// <summary>

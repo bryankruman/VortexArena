@@ -166,6 +166,15 @@ namespace XonoticGodot.Common.Gameplay
         public enum SpeedType { Start, End, Linear, Time }
 
         /// <summary>
+        /// QC threads a third <c>trigger</c> argument to every <c>.use</c> (<c>t.use(t, actor, this)</c> in
+        /// SUB_UseTargets) — the entity that fired the target. The port's <see cref="Framework.EntityUse"/>
+        /// delegate is 2-arg, so to keep the 78 .use sites unchanged we stash the firing trigger here for the
+        /// duration of the dispatch. Only <c>door_use</c> reads it (the BIDIR rotating-door reverse path); every
+        /// other path leaves it null, matching QC's <c>NULL</c> trigger on touch/damage/blocked opens.
+        /// </summary>
+        public static Framework.Entity? CurrentUseTrigger;
+
+        /// <summary>
         /// QC <c>iscreature</c>: players and monsters (but never vehicles/turrets). In QC <c>.iscreature</c>
         /// is set true on the player and monster spawn paths and left false on everything else, including the
         /// vehicle/turret entities — which in this entity model carry neither <see cref="EntFlags.Client"/>
@@ -328,6 +337,23 @@ namespace XonoticGodot.Common.Gameplay
         private static readonly string[] NonMapTargetableClassNames = { "player", "info_notnull" };
 
         /// <summary>
+        /// QC <c>FOREACH_ENTITY_STRING(target, name, …)</c> restricted to teleporter classnames: every
+        /// <c>trigger_teleport</c> / <c>target_teleporter</c> whose <c>.target</c> equals <paramref name="name"/>.
+        /// Used by <c>target_teleporter_checktarget</c> to decide whether a target-less target_teleporter is in
+        /// fact a teleport destination (something teleports TO it). Scans only the two teleporter classes — the
+        /// only classnames the disambiguation inspects — since the facade has no global entity enumerator.
+        /// </summary>
+        public static IEnumerable<Entity> FindEntitiesTargeting(string? name)
+        {
+            if (string.IsNullOrEmpty(name) || Api.Services is null)
+                yield break;
+            foreach (string cls in new[] { "trigger_teleport", "target_teleporter" })
+                foreach (Entity e in Api.Entities.FindByClass(cls))
+                    if (!e.IsFreed && e.Target == name)
+                        yield return e;
+        }
+
+        /// <summary>
         /// Every spawned entity of <paramref name="className"/> (QC <c>find(world, classname, s)</c>). Used by
         /// LinkDoors to walk the door set. Goes through the facade; freed entities are skipped.
         /// </summary>
@@ -378,6 +404,7 @@ namespace XonoticGodot.Common.Gameplay
                 t.Target2 = (skipTargets & SkipTarget2) == 0 ? self.Target2 : "";
                 t.Target3 = (skipTargets & SkipTarget3) == 0 ? self.Target3 : "";
                 t.Target4 = (skipTargets & SkipTarget4) == 0 ? self.Target4 : "";
+                t.AntiwallFlag = self.AntiwallFlag; // relay the func_clientwall toggle through the delay (triggers.qc:266)
                 t.Think = DelayThink;
                 IndexRegister(t);
                 return;
@@ -431,7 +458,12 @@ namespace XonoticGodot.Common.Gameplay
                     }
                     else
                     {
-                        t.Use(t, actor ?? self);
+                        // QC: t.use(t, actor, this) — `this` (self) is the firing trigger. Stash it so a
+                        // BIDIR rotating door can read .trigger_reverse off it (door_use), then restore.
+                        Entity? savedTrigger = MapMover.CurrentUseTrigger;
+                        MapMover.CurrentUseTrigger = self;
+                        try { t.Use(t, actor ?? self); }
+                        finally { MapMover.CurrentUseTrigger = savedTrigger; }
                         if (preventReuse)
                             t.SubTargetUsed = now;
                     }
@@ -440,7 +472,10 @@ namespace XonoticGodot.Common.Gameplay
 
             if (self.TargetRandom && chosen is not null)
             {
-                chosen.Use!(chosen, actor ?? self);
+                Entity? savedTrigger = MapMover.CurrentUseTrigger;
+                MapMover.CurrentUseTrigger = self;
+                try { chosen.Use!(chosen, actor ?? self); }
+                finally { MapMover.CurrentUseTrigger = savedTrigger; }
                 if (preventReuse)
                     chosen.SubTargetUsed = now;
             }

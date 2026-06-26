@@ -8,6 +8,7 @@ using XonoticGodot.Common.Physics;
 using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Collision;
 using XonoticGodot.Engine.Simulation;
+using GameScores = XonoticGodot.Common.Gameplay.Scoring.GameScores;
 
 namespace XonoticGodot.Server;
 
@@ -431,6 +432,9 @@ public sealed class GameWorld
         // Bridge the (stateless) trigger_warpzone(/_position) spawnfuncs to THIS match's warpzone manager, so a
         // map's warpzone brushes register here; the planes are derived + the pairs linked in InitMapZones below.
         XonoticGodot.Common.Gameplay.WarpzoneSpawns.Sink = Warpzones.OnMapEntity;
+        // Bridge the runtime trigger_warpzone_reconnect / target_warpzone_reconnect `use` (server.qc:785) so a fired
+        // reconnect re-derives + re-links the matching zones at runtime (moving/rewired warpzones).
+        XonoticGodot.Common.Gameplay.WarpzoneSpawns.ReconnectSink = Warpzones.OnReconnectUse;
 
         // 1b) seed the server cvar defaults so the many GetFloat(...) reads return sane values (QC autocvars).
         Cvars.RegisterDefaults();
@@ -949,6 +953,13 @@ public sealed class GameWorld
         Voting.Roster = () => Clients.Players;
         Voting.FindPlayer = FindPlayerByNameOrIndex;
         Voting.Broadcast = line => Commands.ChatBroadcast?.Invoke(line);
+        // QC the call-vote announcer cues (vote.qc): ANNCE_VOTE_CALL when a vote opens with >1 real player,
+        // ANNCE_VOTE_ACCEPT on pass, ANNCE_VOTE_FAIL on reject/timeout. Route through the live announcer channel
+        // (the same NotificationSystem MSG_ANNCE path every other server-driven cue uses) — these were previously
+        // unemitted (broadcast text only), so the networked announcer never spoke the vote outcome.
+        Voting.AnnounceVoteCall = () => NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Annce, "VOTE_CALL");
+        Voting.AnnounceVoteAccept = () => NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Annce, "VOTE_ACCEPT");
+        Voting.AnnounceVoteFail = () => NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Annce, "VOTE_FAIL");
         Voting.WarmupOrIntermission = () => Warmup.WarmupStage || Intermission.Running;
         // QC vote.qc:911 — the `allready` vote is only votable during warmup (warmup_stage). Without this the
         // predicate defaults to () => false and an allready vote is always rejected with "Game already started".
@@ -1107,19 +1118,18 @@ public sealed class GameWorld
         // live `slowmo` cvar into Simulation.TimeScale every frame, so driving the cvar here genuinely time-scales
         // the whole sim. Restored to the captured original on resume.
         Timeout.ApplySlowmo = v => Cvars.Set("slowmo", v.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        // QC the per-second CENTER_TIMEOUT_BEGINNING/ENDING countdown center-prints + the ANNCE_PREPARE warning cue.
-        // QC sends these as MSG_CENTER (a per-client center-print that OVERWRITES the prior second's number). The
-        // Godot-free core has no networked center-print channel, so the host carries them as chat-broadcast lines.
-        // The BEGINNING countdown is short (sv_timeout_leadtime, 4s) so it is surfaced in full; the ENDING countdown
-        // runs for the whole pause in QC (overwriting), which would flood chat here — so only the final-stretch
-        // "game resumes in N" lines (≤ sv_timeout_resumetime+1, the actionable window) are broadcast.
-        Timeout.CenterPrintBeginning = n => Commands.ChatBroadcast?.Invoke($"^3Timeout begins in ^1{n}");
+        // QC common.qc timeout_handler_think: the per-second countdown is a MSG_CENTER center-print that OVERWRITES
+        // the prior second's number (CENTER_TIMEOUT_BEGINNING/ENDING, ^COUNT), and the resume warning is the
+        // MSG_ANNCE ANNCE_PREPARE announcer cue. Route through the live NotificationSystem (same channel used for
+        // every other server-driven center-print/announce) so clients get the real overwriting center-print + the
+        // spoken cue, not chat spam — the count is supplied as the CENTER notification's COUNT float arg.
+        Timeout.CenterPrintBeginning = n =>
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "TIMEOUT_BEGINNING", n);
         Timeout.CenterPrintEnding = n =>
-        {
-            if (n <= (int)Cvars.FloatOr("sv_timeout_resumetime", 3f) + 1)
-                Commands.ChatBroadcast?.Invoke($"^3Game resumes in ^1{n}");
-        };
-        Timeout.AnnouncePrepare = () => Commands.ChatBroadcast?.Invoke("^3Prepare!");
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "TIMEOUT_ENDING", n);
+        // QC Send_Notification(NOTIF_ALL, NULL, MSG_ANNCE, ANNCE_PREPARE).
+        Timeout.AnnouncePrepare = () =>
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Annce, "PREPARE");
 
         // Map rotation + vote: the change-level pipeline applies the winner; current map seeds the cursor.
         MapVote.Reseed(unchecked((int)(uint)MapName.GetHashCode()));
@@ -1631,6 +1641,13 @@ public sealed class GameWorld
         // QC anticheat_startframe: advance the global evade phase walk (server/anticheat.qc).
         AntiCheat.StartFrame(Simulation.FrameTime);
 
+        // QC WarpZone_StartFrame (lib/warpzone/server.qc:733): (1) moving warpzones (spawnflag 1) re-derive their
+        // transform when the brush moved (WarpZone_Think); (2) observers / SOLID_NOT clients are warped through a
+        // zone manually each frame — the touch-trigger pass can't catch a non-solid mover. Both self-gate to a
+        // no-op on a static map / a map with no warpzones.
+        Warpzones.ThinkMovingZones();
+        Warpzones.WarpObservers(Clients.Players);
+
         // QC CreatureFrame_All: contents (water/lava/slime) + fall damage for every player, gated by the
         // game_stopped / pre-game window (QC: returns if game_stopped || time < game_starttime).
         if (!GameStopped && Time >= GameStartTime)
@@ -1668,6 +1685,189 @@ public sealed class GameWorld
         var killCountdownPlayers = Clients.Players;
         for (int i = 0; i < killCountdownPlayers.Count; i++)
             KillCountdown.Tick(killCountdownPlayers[i]);
+
+        // QC PlayerFrame per-client once-per-server-frame block (server/client.qc:2852-3092):
+        // alivetime AFK-gate + sv_maxidle idle-kick / move-to-spec.
+        PlayerFrameIdleAll();
+    }
+
+    /// <summary>
+    /// QC <c>PlayerFrame</c> (server/client.qc:2852): the per-client once-per-frame block that this port
+    /// implements — the alivetime AFK-gate (<c>parm_idlesince &gt;= 30s</c> delays the alivetime accumulator)
+    /// and the <c>sv_maxidle</c> idle-kick / move-to-spec machinery. Both run for real (non-bot) clients only,
+    /// matching QC's <c>IS_REAL_CLIENT(this)</c> guard. The function is called once per server frame (from
+    /// <c>OnStartFrame</c>) for ALL connected players — bots are skipped by the IS_REAL_CLIENT guard.
+    /// </summary>
+    private void PlayerFrameIdleAll()
+    {
+        float frameTime = Simulation.FrameTime;
+        float maxIdle             = Api.Cvars.GetFloat("sv_maxidle");
+        float maxIdleToSpec       = Api.Cvars.GetFloat("sv_maxidle_playertospectator");
+        bool  alsoKickSpectators  = Api.Cvars.GetFloat("sv_maxidle_alsokickspectators") != 0f;
+        int   minPlayers          = (int)Api.Cvars.GetFloat("sv_maxidle_minplayers");
+        float blockTime           = Api.Cvars.GetFloat("g_maxplayers_spectator_blocktime");
+        // sv_maxidle_slots requires maxclients (engine-level) to implement the free-slot threshold — not available
+        // in this headless core. Read the cvars so they register (e.g. for status display) but the gate is skipped.
+        _ = Api.Cvars.GetFloat("sv_dedicated");
+        _ = Api.Cvars.GetFloat("sv_maxidle_slots");
+        _ = Api.Cvars.GetFloat("sv_maxidle_slots_countbots");
+
+        // Pre-count real clients for the spectator-kick blocktime check + minPlayers threshold.
+        var allPlayers = Clients.Players;
+        int humanCount = 0;
+        for (int i = 0; i < allPlayers.Count; i++)
+        {
+            if (!allPlayers[i].IsBot) humanCount++;
+        }
+
+        // QC PlayerFrame (client.qc:2982-2983): the idle block triggers when sv_maxidle > 0 OR (IS_PLAYER/wants_join
+        // && sv_maxidle_playertospectator > 0). We evaluate per-client below using the same condition.
+        bool idleBlockActive = maxIdle > 0f || maxIdleToSpec > 0f;
+
+        // For the sv_maxidle_slots dedicated-server threshold: count slots (QC: maxclients - real clients <=
+        // sv_maxidle_slots disables idle kick). We don't have a maxclients cvar so skip the slots gate (always 0
+        // open slots from the port's perspective → the threshold is never crossed → slots gate is a no-op here).
+        // Leave this as a known minor divergence (the feature is off by default; a dedicated-server operator
+        // will have maxclients set at the engine level which this headless core can't read).
+
+        for (int i = allPlayers.Count - 1; i >= 0; i--) // iterate backwards: we may kick/observe mid-loop
+        {
+            Player p = allPlayers[i];
+
+            // ---- alivetime AFK-gate (QC client.qc:2856-2859) ----
+            // QC: "Don't accumulate alivetime whilst afk as xonstat skill ratings are based on score per second."
+            // if (this.alivetime_start && time - CS(this).parm_idlesince >= 30) this.alivetime_start += frametime;
+            // In the port alivetime_start is a start TIMESTAMP; advancing it by frametime has the same net effect
+            // (the elapsed time reported at finalize shrinks by frametime for each idle frame past the 30s mark).
+            if (!p.IsBot && !p.IsObserver && !p.IsDead)
+            {
+                ServerPlayerState pst = PlayerStates.Of(p);
+                if (pst.IdleSince > 0f && Time - pst.IdleSince >= 30f)
+                    PlayerStats.AdvanceAliveStart(p, frameTime);
+            }
+
+            // ---- sv_spectate=0 spectator kick (QC client.qc:2882-2898) ----
+            // When spectating is disabled, warn a non-playing real client and eventually kick it.
+            if (!p.IsBot && (p.IsObserver || p.FragsStatus == Player.FragsSpectator) && !Intermission.Running)
+            {
+                bool svSpectateOff = Api.Cvars.GetFloat("sv_spectate") == 0f;
+                if (svSpectateOff)
+                {
+                    ClientManager.ClientInfo? info = Clients.InfoOf(p);
+                    if (info is not null)
+                    {
+                        float spectatorTime = info.JoinTime; // QC spectatortime = jointime on PutObserverInServer
+                        float cutoff = spectatorTime + blockTime;
+                        bool tooSoon = Time > cutoff + ClientManager.MinSpecTime * 0.5f
+                            || p.AutoJoinChecked == 0;
+                        if (tooSoon)
+                        {
+                            info.JoinTime = Time; // reset grace period
+                            if (p.AutoJoinChecked != 0)
+                                NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Multi, "SPECTATE_WARNING", blockTime);
+                        }
+                        else if (Time > cutoff)
+                        {
+                            // Grace elapsed: kick the spectator.
+                            NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Info, "QUIT_KICK_SPECTATING");
+                            Clients.ClientDisconnect(p);
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // ---- sv_maxidle idle-kick / move-to-spec (QC client.qc:2981-3073) ----
+            if (!idleBlockActive) continue;
+            if (p.IsBot) continue;  // QC IS_REAL_CLIENT guard
+            // QC gate: IS_PLAYER || this.wants_join || sv_maxidle_alsokickspectators
+            bool isPlayerOrWantingToJoin = !p.IsObserver || p.WantsJoin != 0;
+            if (!isPlayerOrWantingToJoin && !alsoKickSpectators) continue;
+            if (Intermission.Running) continue; // QC: NextLevel() kills centerprints; skip
+
+            // QC: determine effective maxidle threshold — sv_maxidle_playertospectator takes priority for players.
+            float effectiveMaxidle = maxIdle;
+            if (isPlayerOrWantingToJoin && maxIdleToSpec > 0f)
+                effectiveMaxidle = maxIdleToSpec;
+            if (effectiveMaxidle <= 0f) continue;
+
+            ServerPlayerState st = PlayerStates.Of(p);
+            if (st.IdleSince == 0f) continue; // IdleSince not yet set (first tick after connect)
+
+            float idleDuration = Time - st.IdleSince;
+
+            // QC sv_maxidle_minplayers: if fewer real clients than the threshold are connected, reset idlesince.
+            // (The slot-threshold path — maxclients - totalClients > sv_maxidle_slots — requires maxclients from
+            // the engine level; not available here, so only the minPlayers count check is applied.)
+            if (minPlayers > 0 && humanCount < minPlayers)
+            {
+                st.IdleSince = Time;
+                continue;
+            }
+
+            if (idleDuration < 1f)
+            {
+                // QC: "instead of (time == this.parm_idlesince) to support sv_maxidle <= 10"
+                // Player is active (moved within the last second) — reset the countdown display.
+                if (st.IdleKickLastTimeLeft != 0f)
+                {
+                    st.IdleKickLastTimeLeft = 0f;
+                    NotificationSystem.SendCenterKill(NotifBroadcast.OneOnly, p, "CPID_IDLING");
+                }
+                continue;
+            }
+
+            float timeLeft = MathF.Ceiling(effectiveMaxidle - idleDuration);
+            // QC countdown_time = max(min(10, maxidle - 1), ceil(maxidle * 0.33))
+            float countdownTime = MathF.Max(MathF.Min(10f, effectiveMaxidle - 1f),
+                                            MathF.Ceiling(effectiveMaxidle * 0.33f));
+
+            if (timeLeft == countdownTime && st.IdleKickLastTimeLeft == 0f)
+            {
+                // First countdown tick: send the centerprint warning (unless on the join queue).
+                if (isPlayerOrWantingToJoin && maxIdleToSpec > 0f)
+                {
+                    if (p.WantsJoin == 0) // QC: no countdown centreprint when kicked off the join queue
+                        NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Center, "MOVETOSPEC_IDLING", (int)timeLeft);
+                }
+                else
+                    NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Center, "DISCONNECT_IDLING", (int)timeLeft);
+            }
+
+            if (timeLeft <= 0f)
+            {
+                // Time up: kick or move to spec.
+                if (isPlayerOrWantingToJoin && maxIdleToSpec > 0f)
+                {
+                    if (p.WantsJoin != 0)
+                        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "MOVETOSPEC_IDLING_QUEUE", p.NetName, (int)effectiveMaxidle);
+                    else
+                        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "MOVETOSPEC_IDLING", p.NetName, (int)effectiveMaxidle);
+                    Clients.PutObserverInServer(p);
+                    // QC client.qc:3052-3057: clear wants_join + team_selected after the forced-spec.
+                    p.WantsJoin = 0;
+                    // (TeamBalance queue cleanup deferred — same as the rest of the queue subsystem.)
+                }
+                else
+                {
+                    // Kick.
+                    NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "QUIT_KICK_IDLING", p.NetName, (int)effectiveMaxidle);
+                    Clients.ClientDisconnect(p);
+                }
+                continue;
+            }
+
+            // QC: countdown bangs — play2(this, SND(TALK2)) once per whole second while in the countdown window.
+            // QC play2 is a MSG_ONE, non-positional (ATTEN_NONE) 2D cue heard ONLY by the idle client — route it
+            // through SoundSystem.Play2 (the port's play2 idiom), NOT Api.Sound.Play (that is SV_StartSound, which
+            // emits a 3D positional sound from the player's box to EVERYONE).
+            if (timeLeft <= countdownTime && p.WantsJoin == 0)
+            {
+                if (timeLeft != st.IdleKickLastTimeLeft)
+                    SoundSystem.Play2(p, "TALK2");
+                st.IdleKickLastTimeLeft = timeLeft;
+            }
+        }
     }
 
     /// <summary>True when the match is frozen (intermission or ended) — QC <c>game_stopped</c>.
@@ -1767,6 +1967,37 @@ public sealed class GameWorld
         IMovementInput input;
         using (Prof.Sample("move.in"))
             input = p.IsBot ? Bots.InputFor(p, Simulation.FrameTime) : InputProvider(p);
+
+        // QC ecs/systems/sv_physics.qc sys_phys_monitor (parm_idlesince update):
+        // When the player is NOT typing/chatting, any change to buttons, wish-move, or view-angle counts as
+        // "active" and resets parm_idlesince to now. The idle clock is only tracked for real (non-bot) clients.
+        if (!p.IsBot)
+        {
+            ServerPlayerState st = PlayerStates.Of(p);
+            // Compute a compact button mask from the boolean fields (same set QC's PHYS_INPUT_BUTTON_MASK tracks).
+            int buttons = (input.ButtonJump    ? 0x01 : 0)
+                        | (input.ButtonAttack1 ? 0x02 : 0)
+                        | (input.ButtonAttack2 ? 0x04 : 0)
+                        | (input.ButtonUse     ? 0x08 : 0)
+                        | (input.ButtonHook    ? 0x10 : 0)
+                        | (input.Typing        ? 0x20 : 0);
+            // QC: skip the update when typing (PHYS_INPUT_BUTTON_CHAT — typing locks out the movement buttons
+            // in PM_UpdateButtons, so keeping parm_idlesince from advancing while chatting is intentional).
+            if (!input.Typing &&
+                (buttons != st.ButtonsOld
+                 || input.MoveValues != st.MovementOld
+                 || input.ViewAngles != st.VAngleOld))
+            {
+                st.IdleSince = Time;
+            }
+            st.ButtonsOld  = buttons;
+            st.MovementOld = input.MoveValues;
+            st.VAngleOld   = input.ViewAngles;
+            // Initialise IdleSince on the very first tick (when it is still 0) so the idle clock starts from
+            // connect time rather than the epoch (matches QC DecodeLevelParms: initialise to time on first use).
+            if (st.IdleSince == 0f)
+                st.IdleSince = Time;
+        }
 
         // QC IntermissionThink (server/intermission.qc:498-505): once the match is over and the hold has elapsed,
         // a player pressing fire/jump/atck2/hook/use during the +10s grace skips the scoreboard immediately
@@ -3117,11 +3348,27 @@ public sealed class GameWorld
             return;
         }
 
-        // QC WinningCondition_Scores: limit_reached (the gametype's MatchEnded latch) × equality (its tie
-        // report) → a winning code. RanOutOfSpawns / the CheckRules_World mutator hook are not ported here.
-        bool limitReached = MatchHasEnded(out Player? winner, out int winnerTeam);
-        bool equality = GameType is not null && GameType.ReportsTie(Clients.Players);
-        WinningCode status = OverTimeManager.ResolveWinningCode(limitReached, equality);
+        // QC world.qc:1819-1825: WinningCondition_RanOutOfSpawns() takes precedence over the score win
+        // (g_spawn_useallspawns team-spawn-exhaustion draw/win), then the CheckRules_World mutator hook (whose
+        // M_ARGV(0) override is realized in this port as the per-gametype dispatch below — Assault/Invasion/LMS/
+        // Race resolve their own win via their Tick + MatchEnded latch), else WinningCondition_Scores.
+        Player? winner; int winnerTeam;
+        WinningCode status;
+        if (WinningConditionRanOutOfSpawns(out int spawnsWinnerTeam))
+        {
+            // A team ran out of spawns (or every team did → a draw). Credit the surviving team (None = draw).
+            winner = null;
+            winnerTeam = spawnsWinnerTeam;
+            status = WinningCode.Yes;
+        }
+        else
+        {
+            // QC WinningCondition_Scores: limit_reached (the gametype's MatchEnded latch) × equality (its tie
+            // report) → a winning code.
+            bool limitReached = MatchHasEnded(out winner, out winnerTeam);
+            bool equality = GameType is not null && GameType.ReportsTie(Clients.Players);
+            status = OverTimeManager.ResolveWinningCode(limitReached, equality);
+        }
 
         // QC world.qc:1827-1832: a tie AT the limit starts sudden-death overtime now.
         if (status == WinningCode.StartSuddenDeathOvertime)
@@ -3153,6 +3400,88 @@ public sealed class GameWorld
             OverTime.RevertSuddenDeathIfJustBegun(overtimesPrev);
             EnterIntermission(winner, winnerTeam);
         }
+    }
+
+    /// <summary>
+    /// QC <c>WinningCondition_RanOutOfSpawns()</c> (server/world.qc:1641): the team-spawn-exhaustion win. With
+    /// <c>g_spawn_useallspawns</c> a team that no longer has any living player AND no remaining spawnpoint is
+    /// eliminated; once only one team has presence (a living player OR a spawnpoint) it wins, and if NO team has
+    /// presence the match is a draw. Returns false (no decision) unless the feature is enabled, team spawns are in
+    /// play, and at least one spawn has been used (so the count is meaningful). On a decision it returns true and
+    /// outputs the surviving team (<see cref="Teams.None"/> = draw); a single surviving team is also penalised on
+    /// the losers' team scores (-1000) exactly like QC, so the team-score leader board agrees with the winner.
+    /// </summary>
+    private bool WinningConditionRanOutOfSpawns(out int winnerTeam)
+    {
+        winnerTeam = Teams.None;
+
+        // QC: have_team_spawns <= 0 (no team spawns requested/found) → not applicable.
+        if (SpawnSystem.HaveTeamSpawns <= 0)
+            return false;
+
+        // QC: !autocvar_g_spawn_useallspawns → not applicable (the default; this whole feature is off).
+        if (!Cvars.Bool("g_spawn_useallspawns"))
+            return false;
+
+        // QC: !some_spawn_has_been_used → wait until a control point has claimed a spawn (Onslaught), else the
+        // count would eliminate teams before the map is "in play".
+        if (!SpawnSystem.SomeSpawnHasBeenUsed)
+            return false;
+
+        // QC: zero every team score, then mark "1" for any team with a living player or a remaining spawnpoint.
+        int teamCount = TeamCountFor(GameType);
+        foreach (int t in Teams.Active(teamCount))
+            GameScores.SetTeamScore(t, GameScores.TeamSlotScore, 0);
+
+        // QC: FOREACH_CLIENT(IS_PLAYER(it) && !IS_DEAD(it)) → presence from living players.
+        foreach (Player p in Clients.Players)
+        {
+            if (p.IsDead) continue;
+            int team = (int)p.Team;
+            if (team != Teams.None)
+                GameScores.SetTeamScore(team, GameScores.TeamSlotScore, 1);
+        }
+
+        // QC: IL_EACH(g_spawnpoints, true) → presence from remaining spawnpoints.
+        foreach (float spotTeam in SpawnSystem.EnumerateSpawnPointTeams())
+        {
+            int team = (int)spotTeam;
+            if (team != Teams.None)
+                GameScores.SetTeamScore(team, GameScores.TeamSlotScore, 1);
+        }
+
+        // QC: sum the four indexed team scores; 0 → draw, 1 → that team wins, >1 → keep playing.
+        int present = 0, survivor = Teams.None;
+        foreach (int t in Teams.Active(teamCount))
+        {
+            if (GameScores.TeamScore(t, GameScores.TeamSlotScore) != 0)
+            {
+                present++;
+                survivor = t;
+            }
+        }
+
+        if (present == 0)
+        {
+            // QC: checkrules_equality = true; return WINNING_YES; — everyone gone at once → a draw.
+            winnerTeam = Teams.None;
+            return true;
+        }
+
+        if (present == 1)
+        {
+            // QC: penalise every OTHER allowed team's scores by -1000 across both score fields, then AddWinners.
+            for (int slot = 0; slot < GameScores.MaxTeamScore; slot++)
+                foreach (int t in Teams.Active(teamCount))
+                    if (t != survivor)
+                        GameScores.AddToTeam(t, slot, -1000);
+
+            winnerTeam = survivor;
+            return true;
+        }
+
+        // QC: more than one team still has presence → no winner yet.
+        return false;
     }
 
     /// <summary>Enter intermission with the gametype's decided winner/team (QC NextLevel's winner latch).</summary>

@@ -102,13 +102,24 @@ public static class TurretSpawn
     /// (<see cref="Prandom"/>), a touch-explode that does radius damage, and (if <paramref name="health"/> &gt; 0)
     /// a shootable hull that explodes when destroyed (turret_projectile_damage). Used by the plasma / MLRS /
     /// flac / hellion / hk / ewheel turrets (each tweaks the result). Returns the projectile entity.
+    ///
+    /// <paramref name="projType"/> is the client trail/render type (QC's <c>_proj_type</c> arg, applied inside
+    /// the helper by <c>CSQCProjectile(proj, _cli_anim, _proj_type, _cull)</c>, sv_turrets.qc:487). The port has
+    /// no CSQC turret edict, so the bolt is classified by its networked <see cref="Entity.NetName"/> via the
+    /// shared <c>ProjectileCatalog</c>; stamping that name IN the helper (just as Base stamps the proj_type in
+    /// <c>turret_projectile</c> itself) is what gives the bolt its real trail. A turret that doesn't pass a type
+    /// gets the empty Generic trail — matching Base, where a missing <c>_proj_type</c> is the generic fallback.
     /// </summary>
     public static Entity Projectile(Entity turret, Vector3 origin, Vector3 dir, float speed, float size,
         float health, float damage, float edgeDamage, float radius, float force, string deathType,
-        float spread = 0f)
+        float spread = 0f, string projType = "")
     {
         Entity proj = Api.Entities.Spawn();
         proj.ClassName = "turret_projectile";
+        // QC turret_projectile stamps the client render/trail type itself (CSQCProjectile(.., _proj_type, ..),
+        // sv_turrets.qc:487). In the port the networked NetName is the catalog key, so stamp it here — the helper
+        // owns the trail, not the callers. Empty -> the Generic trail (matches a missing QC _proj_type).
+        if (projType.Length != 0) proj.NetName = projType;
         proj.Owner = turret;
         proj.Enemy = turret.Enemy;
         proj.MoveType = MoveType.FlyMissile;     // QC MOVETYPE_FLYMISSILE

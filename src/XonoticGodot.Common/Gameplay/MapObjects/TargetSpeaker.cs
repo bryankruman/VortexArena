@@ -52,6 +52,11 @@ public static class TargetSpeaker
     private const SoundChannel SpeakerChannel = SoundChannel.Item;        // CH_TRIGGER_SINGLE
     private const SoundChannel SpeakerActivatorChannel = SoundChannel.TriggerAuto; // CH_TRIGGER
 
+    // QC plays every target_speaker sample at VOL_BASE * this.volume (speaker.qc:30,54,60,123,133). The
+    // facade's volume arg is the absolute mix level (its own default is VOL_BASE), so the speaker must scale
+    // its .volume by VOL_BASE itself — exactly like the func_* ambients (MapObjectsCommon.LoopAmbient).
+    private static float PlayVolume(Entity self) => SoundLevels.VolBase * self.Volume;
+
     /// <summary><c>spawnfunc(target_speaker)</c> — ambient and triggered sound emitter.</summary>
     public static void SpeakerSetup(Entity this_)
     {
@@ -181,15 +186,29 @@ public static class TargetSpeaker
         if (string.IsNullOrEmpty(snd))
             return;
 
-        Api.Sound.Play(self, SpeakerChannel, snd, self.Volume, self.Atten, loop: false);
+        Api.Sound.Play(self, SpeakerChannel, snd, PlayVolume(self), self.Atten, loop: false);
     }
 
     /// <summary>
-    /// ACTIVATOR (BIT3): play the sound on the stacking CH_TRIGGER channel for the triggering player.
+    /// Host seam (XonoticGodot.Server): QC <c>soundto(MSG_ONE, …)</c> — play a sound ONLY to one client.
+    /// When assigned, <see cref="SpeakerUseActivator"/> routes through this instead of the broadcast
+    /// <c>ISoundService.Play</c>, making the ACTIVATOR speaker byte-faithful: only the triggering human hears
+    /// the sound, exactly as Base's <c>target_speaker_use_activator</c> does via <c>soundto MSG_ONE</c>.
+    /// The host (XonoticGodot.Server) wires this to its per-client sound-packet path; null = fall back to
+    /// the broadcast play (audible to all clients — acceptable on a listen server with one human).
+    /// <para>Parameters: (client entity, emitter entity, channel, sample, volume, attenuation).</para>
+    /// </summary>
+    public static System.Action<Entity /*client*/, Entity /*emitter*/, SoundChannel, string /*sample*/, float /*vol*/, float /*atten*/>?
+        PlayToClientHandler;
+
+    /// <summary>
+    /// ACTIVATOR (BIT3): play the sound on the stacking CH_TRIGGER channel for the triggering player only.
     /// QC <c>target_speaker_use_activator</c> gates on <c>IS_REAL_CLIENT(actor)</c> and emits via
-    /// <c>soundto(MSG_ONE, ...)</c> so only that one human hears it. The port has no MSG_ONE per-client
-    /// sound facade, so we emit to all (documented divergence) but still honour the real-client gate so a
-    /// bot/world activator produces nothing — matching Base's early-out.
+    /// <c>soundto(MSG_ONE, this, CH_TRIGGER, snd, VOL_BASE * volume, atten, 0)</c> so only that one human
+    /// hears it. When <see cref="PlayToClientHandler"/> is wired by the host, that MSG_ONE semantic is
+    /// honored; otherwise falls back to a broadcast play (all clients hear it — documented divergence on a
+    /// listen server with multiple clients, but correct for the single-human-client common case).
+    /// A bot/world activator always produces nothing, matching Base's early-out.
     /// </summary>
     private static void SpeakerUseActivator(Entity self, Entity activator)
     {
@@ -200,17 +219,23 @@ public static class TargetSpeaker
         if (!IsRealClient(activator))
             return;
 
-        if (Api.Services is null)
-            return;
-
         // QC: *-noise resolves against the activating player's voice-sample manifest (GetVoiceMessageSampleField)
         string snd = ResolveNoise(self.Noise, activator);
         if (string.IsNullOrEmpty(snd))
             return;
 
-        // TODO(cross-file): no MSG_ONE / per-client sound facade — this plays to ALL clients, not just the
-        // triggering activator. Needs an ISoundService.PlayTo(client, ...) seam to be byte-faithful.
-        Api.Sound.Play(self, SpeakerActivatorChannel, snd, self.Volume, self.Atten, loop: false);
+        // QC: soundto(MSG_ONE, this, CH_TRIGGER, snd, VOL_BASE * this.volume, this.atten, 0)
+        // Route through the host-provided MSG_ONE seam when available; fall back to broadcast.
+        if (PlayToClientHandler is not null)
+        {
+            PlayToClientHandler(activator, self, SpeakerActivatorChannel, snd, PlayVolume(self), self.Atten);
+        }
+        else
+        {
+            if (Api.Services is null)
+                return;
+            Api.Sound.Play(self, SpeakerActivatorChannel, snd, PlayVolume(self), self.Atten, loop: false);
+        }
     }
 
     // ====================================================================
@@ -320,7 +345,7 @@ public static class TargetSpeaker
         if (string.IsNullOrEmpty(snd))
             return;
 
-        Api.Sound.Play(self, SpeakerChannel, snd, self.Volume, self.Atten, loop: true);
+        Api.Sound.Play(self, SpeakerChannel, snd, PlayVolume(self), self.Atten, loop: true);
     }
 
     /// <summary>Stop the looping sound on this speaker entity.</summary>

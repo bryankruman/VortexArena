@@ -906,6 +906,14 @@ public static class MonsterAI
                 st.Follow = null;
         }
 
+        // QC nades MonsterMove hook (entrap.qc:58-62): when a veiled monster's veil time lapses, restore its
+        // pre-veil alpha. (The entrap run/walk slow from the same hook is applied at the speed computation below.)
+        if (self.NadeVeilTime != 0f && self.NadeVeilTime <= Now)
+        {
+            self.Alpha = self.NadeVeilPrevAlpha;
+            self.NadeVeilTime = 0f;
+        }
+
         // QC Monster_Move:880 — Monster_Sound(monstersound_idle, 7, true, CH_VOICE) when the monster has no enemy:
         // the ~7s-throttled wandering idle voice. (delaytoo gates AND advances msound_delay so it can't spam.)
         if (self.Enemy is null)
@@ -961,6 +969,11 @@ public static class MonsterAI
             // Webbed: a monster caught in spider web moves at half speed (QC spiderweb MonsterMove hook).
             if (StatusEffectsCatalog.Has(self, MonsterFramework.Webbed))
                 speed *= 0.5f;
+            // Entrapped: a monster inside a nades entrap orb is slowed (QC nades MonsterMove hook, entrap.qc:48
+            // — scales BOTH run and walk speed by g_nades_entrap_speed while nade_entrap_time > time). The orb's
+            // nade_entrap_touch flags nade_entrap_time on monsters the same as on players.
+            if (self.NadeEntrapTime > Now)
+                speed *= EntrapSpeed();
             MoveSimple(self, forward, speed, flyOrSwim, vzKeep);
 
             if (Now > st.PainFinished && Now > st.AnimFinished && st.State == 0)
@@ -1897,6 +1910,9 @@ public static class MonsterAI
     public static float FrameTime => Api.Services is null ? 0f : Api.Clock.FrameTime;
 
     /// <summary>Read a balance/config float, falling back when unset or services are absent (QC autocvar default).</summary>
+    /// <summary>QC autocvar_g_nades_entrap_speed (mutators.cfg:299, default 0.5): the entrap move-speed factor.</summary>
+    private static float EntrapSpeed() => Cvar("g_nades_entrap_speed", 0.5f);
+
     public static float Cvar(string name, float fallback)
     {
         if (Api.Services is null) return fallback;

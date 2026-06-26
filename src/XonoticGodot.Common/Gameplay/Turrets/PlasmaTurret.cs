@@ -121,13 +121,13 @@ public class PlasmaTurret : Turret  // non-sealed: PlasmaDualTurret derives from
             FireInstagibBeam(turret, st.ShotOrg, dir);
         else
         {
-            Entity ball = TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
-                ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, DeathTypes.TurretPlasma, spread: ShotSpread);
             // QC plasma_weapon.qc: turret_projectile(..., PROJECTILE_ELECTRO_BEAM, ...). The client classifies a
             // model-less turret bolt by its networked classname+netname (ProjectileCatalog.Classify keys
-            // "electro_bolt"/"elaser" onto PROJECTILE_ELECTRO_BEAM); stamping the netname gives it the blue plasma
-            // trail. (turret_projectile leaves netname empty → Generic; this overrides it to the QC type.)
-            ball.NetName = "electro_bolt";
+            // "electro_bolt"/"elaser" onto PROJECTILE_ELECTRO_BEAM); the projType gives it the blue plasma trail
+            // (the helper stamps it, matching QC's _proj_type arg).
+            TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
+                ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, DeathTypes.TurretPlasma, spread: ShotSpread,
+                projType: "electro_bolt");
 
             if (Api.Services is not null)
             {
@@ -143,7 +143,7 @@ public class PlasmaTurret : Turret  // non-sealed: PlasmaDualTurret derives from
         if (turret.Frame == 0f)
             turret.Frame = 1f;
 
-        // The PROJECTILE_ELECTRO_BEAM CSQC trail (ball.NetName="electro_bolt") and EFFECT_BLASTER_MUZZLEFLASH
+        // The PROJECTILE_ELECTRO_BEAM CSQC trail (projType "electro_bolt") and EFFECT_BLASTER_MUZZLEFLASH
         // (emitted above) are now wired. Remaining client-render gap: the head frame is networked via
         // Entity.Frame, but the static base.md3 body has no spin frames — the real head model plasma.md3 needs a
         // tur_head sub-entity / CSQC turret net layer to render it (no turret net layer exists in the port yet).

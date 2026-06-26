@@ -384,6 +384,11 @@ public sealed class WeaponSlotState
     // --- Porto (porto.qc) ---
     public Vector3 PortoVAngle;
     public bool PortoVAngleHeld;
+
+    // --- BallStealer / Nexball (sv_weapon.qc) ---
+    /// <summary>QC <c>NB_METERSTART(actor)</c> — server time the basketball power-meter charge started; 0 = not
+    /// charging. Set when the primary button is first pressed while carrying; cleared on shot or steal.</summary>
+    public float NbMeterStart;
 }
 
 /// <summary>QC hook_state bitset (mutators/mutator/hook + server/hook.qh).</summary>

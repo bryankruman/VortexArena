@@ -52,6 +52,20 @@ public partial class VehicleHud : HudPanel
     public override bool IsDynamic => InVehicle || _aux.Count > 0;
 
     // =====================================================================================
+    //  Low-health / low-shield alarm (QC vehicle_alarm + Vehicles_drawHUD, cl_vehicles.qc:3-9 / 228-267)
+    // =====================================================================================
+
+    /// <summary>VFS-backed sample → <see cref="AudioStream"/> loader (host-set to <c>AssetLoader.LoadSound</c>),
+    /// used for the low-health/shield alarm cues (SND_VEH_ALARM / SND_VEH_ALARM_SHIELD).</summary>
+    public System.Func<string, AudioStream?>? AudioLoader { get; set; }
+
+    // QC alarm1time/alarm2time: the per-channel re-arm gates (health = +2s, shield = +1s). 0 = idle/stopped.
+    private double _alarm1Time;
+    private double _alarm2Time;
+    private AudioStreamPlayer? _alarmHealth;
+    private AudioStreamPlayer? _alarmShield;
+
+    // =====================================================================================
     //  TE_CSQC_VEHICLESETUP dispatch
     // =====================================================================================
 
@@ -84,6 +98,7 @@ public partial class VehicleHud : HudPanel
         InVehicle = false;
         Visible = false;
         _aux.Clear();
+        StopAlarms(); // QC: the alarm channels stop when the vehicle HUD is dismissed
         QueueRedraw();
     }
 
@@ -152,6 +167,15 @@ public partial class VehicleHud : HudPanel
     public override void _Process(double delta)
     {
         _time += delta;
+
+        // Low-health / low-shield alarm (QC Vehicles_drawHUD low-health blocks, cl_vehicles.qc:228-267). Runs
+        // every frame while piloting; the SND_VEH_ALARM (health, +2s re-arm) / SND_VEH_ALARM_SHIELD (shield,
+        // +1s re-arm) cues are gated by cl_vehicles_alarm (default 0) inside the vehicle_alarm helper.
+        if (InVehicle)
+            UpdateAlarms();
+        else
+            StopAlarms();
+
         // Drop aux crosshairs that stopped updating (faded out).
         if (_aux.Count > 0)
         {
@@ -161,6 +185,81 @@ public partial class VehicleHud : HudPanel
                     stale.Add(kv.Key);
             foreach (int k in stale) _aux.Remove(k);
         }
+    }
+
+    /// <summary>
+    /// QC <c>Vehicles_drawHUD</c> health/shield alarm blocks (cl_vehicles.qc:228-267): when health/shield drop
+    /// below 25% re-arm an alarm cue on a fixed interval (health +2s, shield +1s); once they recover, stop the
+    /// looping cue (the QC <c>SND_Null</c> branch). The whole thing is gated by <c>cl_vehicles_alarm</c>
+    /// (default 0) via <see cref="VehicleAlarm"/>.
+    /// </summary>
+    private void UpdateAlarms()
+    {
+        // Health alarm — QC: if (health < 0.25) { if (alarm1time < time) { alarm1time = time + 2; alarm(SND_VEH_ALARM); } }
+        if (Health < 0.25f)
+        {
+            if (_alarm1Time < _time)
+            {
+                _alarm1Time = _time + 2.0;
+                VehicleAlarm(ref _alarmHealth, "vehicles/alarm");
+            }
+        }
+        else if (_alarm1Time != 0.0)
+        {
+            VehicleAlarmStop(_alarmHealth);
+            _alarm1Time = 0.0;
+        }
+
+        // Shield alarm — QC: if (shield < 0.25) { if (alarm2time < time) { alarm2time = time + 1; alarm(SND_VEH_ALARM_SHIELD); } }
+        if (Shield < 0.25f)
+        {
+            if (_alarm2Time < _time)
+            {
+                _alarm2Time = _time + 1.0;
+                VehicleAlarm(ref _alarmShield, "vehicles/alarm_shield");
+            }
+        }
+        else if (_alarm2Time != 0.0)
+        {
+            VehicleAlarmStop(_alarmShield);
+            _alarm2Time = 0.0;
+        }
+    }
+
+    /// <summary>Stop + reset both alarm channels (exit / on-foot). Mirrors the QC SND_Null stop on both gates.</summary>
+    private void StopAlarms()
+    {
+        if (_alarm1Time != 0.0) { VehicleAlarmStop(_alarmHealth); _alarm1Time = 0.0; }
+        if (_alarm2Time != 0.0) { VehicleAlarmStop(_alarmShield); _alarm2Time = 0.0; }
+    }
+
+    /// <summary>Port of QC <c>vehicle_alarm(e, ch, snd)</c> (cl_vehicles.qc:3-9): play the cue, but only when
+    /// <c>cl_vehicles_alarm</c> is set (default 0 → silent, matching Base).</summary>
+    private void VehicleAlarm(ref AudioStreamPlayer? player, string sample)
+    {
+        if (GlobalF("cl_vehicles_alarm", 0f) == 0f) // QC: if (!autocvar_cl_vehicles_alarm) return;
+            return;
+
+        player ??= MakeAlarmPlayer(sample);
+        if (player is null)
+            return;
+        player.Play();
+    }
+
+    private static void VehicleAlarmStop(AudioStreamPlayer? player)
+    {
+        if (player is not null && GodotObject.IsInstanceValid(player) && player.Playing)
+            player.Stop();
+    }
+
+    private AudioStreamPlayer? MakeAlarmPlayer(string sample)
+    {
+        AudioStream? stream = AudioLoader?.Invoke(sample);
+        if (stream is null)
+            return null;
+        var p = new AudioStreamPlayer { Name = "VehAlarm_" + sample.Replace('/', '_'), Bus = "SFX", Stream = stream };
+        AddChild(p);
+        return p;
     }
 
     protected override void DrawPanel()

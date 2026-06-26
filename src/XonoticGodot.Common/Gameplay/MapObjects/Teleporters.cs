@@ -82,15 +82,78 @@ public static class Teleporters
     }
 
     /// <summary>
-    /// <c>spawnfunc(target_teleporter)</c> — a use-activated teleporter (no touch volume). Simplified: it
-    /// teleports its activator to its target destination when used.
+    /// <c>spawnfunc(target_teleporter)</c> — a use-activated teleporter (no touch volume). QC defers the actual
+    /// setup to <c>target_teleporter_checktarget</c> at INITPRIO_FINDTARGET (after every entity has spawned), so
+    /// it can disambiguate the three ways a target_teleporter is used (destination / self-target teleporter /
+    /// normal teleporter). Here we register the entity now (so other teleporters can find it by targetname) and
+    /// queue the checktarget pass for <see cref="RunDeferredInit"/>.
     /// </summary>
     public static void TargetTeleporterSetup(Entity this_)
     {
         this_.ClassName = "target_teleporter";
+        MapMover.IndexRegister(this_);
+        if (!_pendingTargetTeleporter.Contains(this_))
+            _pendingTargetTeleporter.Add(this_);
+    }
+
+    /// <summary>INITPRIO_FINDTARGET queue for <c>target_teleporter_checktarget</c> (drained by RunDeferredInit).</summary>
+    private static readonly List<Entity> _pendingTargetTeleporter = new();
+
+    /// <summary>
+    /// Drain the queued <c>target_teleporter</c> disambiguation (QC INITPRIO_FINDTARGET pass), run after the
+    /// whole BSP entity lump has spawned so the "is anything targeting me?" lookup sees every teleporter.
+    /// </summary>
+    public static void RunDeferredInit()
+    {
+        if (_pendingTargetTeleporter.Count == 0)
+            return;
+        Entity[] batch = _pendingTargetTeleporter.ToArray();
+        _pendingTargetTeleporter.Clear();
+        foreach (Entity e in batch)
+            if (!e.IsFreed)
+                TargetTeleporterCheckTarget(e);
+    }
+
+    /// <summary>
+    /// QC <c>target_teleporter_checktarget</c> (teleport.qc:142-185). A target_teleporter is used three ways and
+    /// we must figure out which: (1) a target_teleporter with NO target that IS targeted by some teleporter is a
+    /// teleport DESTINATION (re-route to info_teleport_destination); (2) a target_teleporter with no target that
+    /// is NOT targeted by any teleporter is a self-target teleporter (<c>.enemy = this</c>, mangle = angles);
+    /// (3) otherwise it is a normal use-activated teleporter that teleports its activator to its target.
+    /// </summary>
+    private static void TargetTeleporterCheckTarget(Entity this_)
+    {
+        if (string.IsNullOrEmpty(this_.Target))
+        {
+            // No target: either a destination (if a teleporter targets us) or a self-target teleporter.
+            bool isTeleporterTarget = false;
+            foreach (Entity it in MapMover.FindEntitiesTargeting(this_.TargetName))
+            {
+                if (it.ClassName == "trigger_teleport" || it.ClassName == "target_teleporter")
+                {
+                    isTeleporterTarget = true;
+                    break;
+                }
+            }
+
+            if (isTeleporterTarget)
+            {
+                // A teleporter targets this — it's a destination. QC: spawnfunc_info_teleport_destination(this).
+                TeleportDestSetup(this_);
+                return;
+            }
+
+            // Not targeted by any teleporter — set up as a self-target teleporter (you teleport onto yourself).
+            this_.Enemy = this_;
+            this_.MAngle = this_.Angles;
+            this_.Angles = Vector3.Zero;
+        }
+
+        // Set this entity up as a use-activated teleporter.
         this_.Active = MapMover.ActiveActive;
         this_.Use = TargetTeleportUse;
-        MapMover.IndexRegister(this_);
+
+        // QC: only call teleport_findtarget if it has a target (a self-target teleporter already has .enemy set).
         if (!string.IsNullOrEmpty(this_.Target))
             FindTarget(this_);
     }
@@ -182,6 +245,11 @@ public static class Teleporters
         if (!TeleportActive(self, toucher))
             return;
 
+        // QC teleport.qc:59-61 (#ifdef SVQC): a hooked player drops the grappling hook on teleport so the chain
+        // doesn't stay latched through the portal. Server-only; the touch path is always authoritative here.
+        if ((toucher.Flags & EntFlags.Client) != 0)
+            Hook.RemoveGrapplingHooks(toucher);
+
         Entity? dest = SimpleTeleportPlayer(self, toucher);
 
         // Fire the teleporter's own targets (QC blanks .target first so the dest isn't re-fired here).
@@ -199,6 +267,11 @@ public static class Teleporters
     {
         if (!TeleportActive(self, actor))
             return;
+
+        // QC teleport.qc:82-83 target_teleport_use: drop the player's grappling hooks before relocating.
+        if ((actor.Flags & EntFlags.Client) != 0)
+            Hook.RemoveGrapplingHooks(actor);
+
         Entity? dest = SimpleTeleportPlayer(self, actor);
 
         string s = self.Target;
@@ -477,12 +550,21 @@ public static class Teleporters
     }
 
     /// <summary>
-    /// QC <c>!(round_handler_IsActive() &amp;&amp; !round_handler_IsRoundStarted())</c> plus the <c>!g_race &amp;&amp; !g_cts</c>
-    /// telefrag suppression (teleporters.qc:148-150). The active per-gametype RoundHandler and a static
-    /// race/cts gametype flag are not reachable from this file yet, so this returns false (never suppress) —
-    /// faithful for the common non-round, non-race case. See todos for the cross-file accessor to wire here.
+    /// QC <c>!g_race &amp;&amp; !g_cts</c> plus <c>!(round_handler_IsActive() &amp;&amp; !round_handler_IsRoundStarted())</c>
+    /// telefrag suppression (teleporters.qc:148-150). Returns true (suppress the telefrag) when the active mode is
+    /// Race (<c>rc</c>) or CTS (<c>cts</c>) — where a spawn/checkpoint overlap must NOT gib the occupant — or when a
+    /// round-based gametype is in its pre-round grace window (round armed but not yet live), read through the
+    /// host-wired <see cref="RoundHandler.RoundGateBlocks"/> seam. The gametype NetName comes from the live
+    /// <see cref="GameScores.Gametype"/> global (set server-side by the active mode), matching the QC
+    /// <c>g_race</c>/<c>g_cts</c> globals.
     /// </summary>
-    private static bool TeleportRoundGateSuppressed() => false;
+    private static bool TeleportRoundGateSuppressed()
+    {
+        string gt = GameScores.Gametype;
+        if (gt == "rc" || gt == "cts")
+            return true;
+        return RoundHandler.RoundGateBlocks();
+    }
 
     private static float Cvar(string name, float fallback)
     {

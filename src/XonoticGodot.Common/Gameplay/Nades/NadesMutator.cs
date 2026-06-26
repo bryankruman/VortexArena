@@ -205,7 +205,15 @@ public sealed class NadesMutator : MutatorBase
                 player.PokenadeType = CvarStr("g_nades_pokenade_monster_type", "zombie");
 
                 float scoreMax = Cvar("g_nades_bonus_score_max", 120f);
-                float timeScore = CvarRaw("g_nades_bonus_score_time", -1f); // can be negative (decay)
+                // QC sv_nades.qc:773-778: a flag/ball carrier (GameRules_scoring_is_vip) accrues at the
+                // flagcarrier rate instead of the (decaying) base rate; a Key Hunt carrier accrues at the
+                // flagcarrier rate scaled by the number of keys held (which overrides the vip branch).
+                float timeScore = GametypeEntities.ScoringIsVip(player)
+                    ? CvarRaw("g_nades_bonus_score_time_flagcarrier", 2f)
+                    : CvarRaw("g_nades_bonus_score_time", -1f); // base rate can be negative (decay)
+                int keyCount = GametypeEntities.KeyHuntKeyCount(player);
+                if (keyCount != 0)
+                    timeScore = CvarRaw("g_nades_bonus_score_time_flagcarrier", 2f) * keyCount;
                 if (player.NadeBonusScore >= 0f && scoreMax != 0f)
                     NadeBonus.GiveBonus(player, timeScore / scoreMax);
             }

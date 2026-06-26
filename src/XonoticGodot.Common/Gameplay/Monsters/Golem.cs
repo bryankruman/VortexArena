@@ -222,6 +222,11 @@ public sealed class Golem : Monster
                         LightningDamageZap, skill, zapDeath);
                     Api.Sound.Play(p, SoundChannel.Weapon, "weapons/electro_impact.wav");
                 });
+            // QC golem.qc:145 — CSQCProjectile(gren, true, PROJECTILE_GOLEM_LIGHTNING, true) with
+            // model models/ebomb.mdl scale 2.5 (golem.qc:141 setsize + :145 gren.scale = 2.5).
+            gren.Model = "models/ebomb.mdl";
+            // QC sets gren.scale = 2.5 (golem.qc:145) — deferred: Entity carries no networked render-scale field
+            // (the CSQCMODEL scale-bit contract is the deferred Wave-8 presentation frontier); the bolt draws at 1x.
             gren.Velocity += new Vector3(0, 0, LightningSpeedUp); // QC speed_up launch component
 
             // QC M_Golem_Attack_Lightning (golem.qc:132-168) emits NO launch sound — the only golem-lightning

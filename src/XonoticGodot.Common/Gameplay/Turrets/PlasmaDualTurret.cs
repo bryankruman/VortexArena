@@ -113,10 +113,11 @@ public sealed class PlasmaDualTurret : PlasmaTurret
         else
         {
             // Plasma ball with the dual unit's shot_spread (0.015). Same damage/radius/speed/force as single.
-            Entity ball = TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
-                ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, DeathTypes.TurretPlasma, spread: DualShotSpread);
-            // QC plasma_weapon.qc (shared by plasma_dual): PROJECTILE_ELECTRO_BEAM → blue plasma client trail.
-            ball.NetName = "electro_bolt";
+            // QC plasma_weapon.qc (shared by plasma_dual): PROJECTILE_ELECTRO_BEAM → blue plasma client trail
+            // (the helper stamps the projType, matching QC's _proj_type arg).
+            TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
+                ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, DeathTypes.TurretPlasma, spread: DualShotSpread,
+                projType: "electro_bolt");
 
             if (Api.Services is not null)
             {

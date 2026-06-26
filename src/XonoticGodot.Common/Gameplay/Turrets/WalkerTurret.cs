@@ -158,6 +158,9 @@ public sealed class WalkerTurret : Turret
         // Hold fire while mid-melee (QC walker_firecheck: ANIM_MELEE blocks firing).
         WalkerState ws = W(e);
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        // NOTE: Walker REPLACES the default turret_draw with walker_draw (walker.qc:637) — its own <127-hp spark is
+        // emitted from DoMovement (below), and TurretAI.DrawFx deliberately skips walker, so the framework draw FX
+        // is NOT run here. (Base only ewheel/walker override .draw; everything else uses the default turret_draw.)
         if (ws.MeleeUntil > now)
             DoMovement(e, melee: true);
         else
