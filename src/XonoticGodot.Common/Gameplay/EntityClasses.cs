@@ -25,6 +25,25 @@ public abstract partial class Monster : IRegistered
     public System.Collections.Generic.HashSet<string>? SoundCues;
 
     /// <summary>
+    /// Sub-directory under <c>sound/monsters/</c> that holds this monster's voice cues, matching the base path
+    /// in the model <c>.sounds</c> file (QC <c>GlobalSound</c> resolves <c>sound/monsters/&lt;dir&gt;/&lt;cue&gt;</c>).
+    /// Defaults to the monster's <see cref="NetName"/> (golem -> <c>sound/monsters/golem/&lt;cue&gt;</c>).
+    /// </summary>
+    public virtual string SoundDir => NetName;
+
+    /// <summary>
+    /// File extension for this monster's voice cues. The golem ships <c>.wav</c>; the zombie ships <c>.ogg</c>.
+    /// </summary>
+    public virtual string SoundExt => ".wav";
+
+    /// <summary>
+    /// Group/variant count for a voice cue, mirroring the trailing number in the model <c>.sounds</c> line
+    /// (QC <c>GlobalSound</c> picks a random <c>1..count</c> suffix). <c>0</c> (the default) means the bare cue
+    /// name with no number — e.g. golem <c>death 3</c> -> <c>death1/2/3</c>, golem <c>sight 0</c> -> <c>sight</c>.
+    /// </summary>
+    public virtual int SoundCueCount(string cue) => 0;
+
+    /// <summary>
     /// Pain-window length (QC <c>mr_pain</c>: <c>actor.pain_finished = time + N</c>): how long the pain
     /// reaction/anim holds before the monster may re-pain or resume walk anims. The generic
     /// <c>METHOD(Monster, mr_pain)</c> never bumps <c>pain_finished</c>, but most ported monsters reuse the
@@ -57,7 +76,7 @@ public abstract partial class Monster : IRegistered
 /// Logical monster animation phase, shared across descriptors (mirrors <c>MonsterAI.MonsterAnim</c>). Lives on
 /// the descriptor layer so a monster's <see cref="Monster.AnimFrame"/> can map it to a concrete MD3 frame group.
 /// </summary>
-public enum MonsterAnimPhase { Idle, Walk, Run, Attack, Pain, Death }
+public enum MonsterAnimPhase { Idle, Walk, Run, Attack, Pain, Death, Spawn, Block, BlockEnd, Shoot }
 
 /// <summary>Base turret descriptor (QC CLASS(Turret), common/turrets/). Registered into <see cref="Turrets"/>.</summary>
 public abstract partial class Turret : IRegistered

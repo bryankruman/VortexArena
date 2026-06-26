@@ -39,13 +39,34 @@ public static class VehicleSpawnFuncs
 
         // QC vehicle_initialize: pos1 = this.origin; pos2 = this.angles — the return point a destroyed vehicle
         // respawns at. SpawnVehicle (called by the descriptor's Spawn) reads these, so set them first.
-        e.SpawnPos = e.Origin;
         e.SpawnAngles = e.Angles;
+        e.SpawnPos = e.Origin;
 
         // QC vehicle_initialize + the deferred vehicles_spawn → vr_spawn: stamp the vehicle (model/hitbox/health/
         // shield/energy + capability flags) and arm its think. The port folds all of that into the descriptor's
-        // Spawn (which calls VehicleCommon.SpawnVehicle and sets e.Think/e.NextThink itself).
+        // Spawn (which calls VehicleCommon.SpawnVehicle and sets e.Think/e.NextThink itself). After this the hull
+        // (e.Mins/e.Maxs) is known, which the drop-to-floor tracebox below needs.
         def.Spawn(e);
+
+        // QC vehicle_initialize:1265-1270 (nodrop == false for every map spawnfunc): settle the vehicle onto the
+        // ground with a downward world-only box trace from origin+'0 0 100' down 10000 using the vehicle hull, so
+        // a vehicle placed loosely above the floor by a mapper drops onto it instead of hovering at its mapper
+        // origin. QC does this BEFORE recording pos1, so the dropped position becomes the persistent return point —
+        // update both the live origin AND SpawnPos so respawns land on the floor too.
+        if (Api.Services is not null)
+        {
+            System.Numerics.Vector3 from = e.Origin + new System.Numerics.Vector3(0f, 0f, 100f);
+            System.Numerics.Vector3 to = e.Origin - new System.Numerics.Vector3(0f, 0f, 10000f);
+            TraceResult drop = Api.Trace.Trace(from, e.Mins, e.Maxs, to, MoveFilter.WorldOnly, e);
+            // QC droptofloor only relocates the entity when it actually finds ground below (a real map always has
+            // a floor under a vehicle spawn). If the trace hits nothing (Fraction == 1, e.g. a spawn over a void or
+            // a headless test world with no floor), leave the authored origin rather than teleporting it 10000 down.
+            if (drop.Fraction < 1f)
+            {
+                Api.Entities.SetOrigin(e, drop.EndPos);
+                e.SpawnPos = drop.EndPos;
+            }
+        }
 
         // QC vehicle_initialize tail (sv_vehicles.qc:1283): if (MUTATOR_CALLHOOK(VehicleInit, this)) return false;
         // — a mutator may veto this vehicle's one-time init, and the spawnfunc deletes the edict on a false return.

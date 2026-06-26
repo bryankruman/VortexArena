@@ -1,3 +1,4 @@
+using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;
 
@@ -60,6 +61,32 @@ public static class TurretSpawnFuncs
     public static void Walker(Entity e) => Spawn(e, "walker");             // turret/walker.qc:350
     public static void EWheel(Entity e) => Spawn(e, "ewheel");             // turret/ewheel.qc:134
     public static void FusionReactor(Entity e) => Spawn(e, "fusreac");     // turret/fusionreactor.qc:26
+
+    /// <summary>
+    /// QC <c>spawnfunc(turret_checkpoint)</c> + <c>turret_checkpoint_init</c> (common/turrets/checkpoint.qc): a
+    /// stationary waypoint node the mobile turrets (ewheel/walker) roam between. On spawn it drops the node to
+    /// the floor (a 1024u down-trace, then origin = floor + 32u up) and indexes itself by <c>targetname</c> so a
+    /// turret's <c>find(targetname)</c> resolves it. The chain link (<c>this.enemy = find(targetname, target)</c>)
+    /// is resolved lazily by <see cref="EWheelTurret"/> when it advances the path, so the spawn order of the
+    /// checkpoints on the map does not matter (QC defers the link to INITPRIO_FINDTARGET for the same reason).
+    /// </summary>
+    public static void Checkpoint(Entity e)
+    {
+        e.ClassName = "turret_checkpoint";
+
+        if (Api.Services is not null)
+        {
+            // QC turret_checkpoint_init: traceline(origin+'0 0 16', origin-'0 0 1024', MOVE_WORLDONLY); then
+            // setorigin(trace_endpos + '0 0 32') — snap the node to the floor it sits above.
+            Vector3 from = e.Origin + new Vector3(0f, 0f, 16f);
+            Vector3 to = e.Origin - new Vector3(0f, 0f, 1024f);
+            TraceResult tr = Api.Trace.Trace(from, Vector3.Zero, Vector3.Zero, to, MoveFilter.WorldOnly, e);
+            Api.Entities.SetOrigin(e, tr.EndPos + new Vector3(0f, 0f, 32f));
+        }
+
+        // Findable by the turret's find(targetname) chase (QC find(NULL, targetname, this.target)).
+        MapMover.IndexRegister(e);
+    }
 
     private static float Now => Api.Services is null ? 0f : Api.Clock.Time;
 

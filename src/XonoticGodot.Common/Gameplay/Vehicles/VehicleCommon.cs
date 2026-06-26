@@ -821,10 +821,12 @@ namespace XonoticGodot.Common.Gameplay
             if (vehic.RespawnTime <= 0f)
                 return;
 
-            // QC vehicles_setreturn: dead -> nextthink = time + respawntime; alive -> time + respawntime - 1.
-            // The descriptor's Spawn() is the return target (it re-places the vehicle at pos1/pos2 and re-arms
-            // the think), exactly as QC's vehicles_return reparents the think to vehicles_spawn.
-            float delay = IsDead(vehic) ? vehic.RespawnTime : MathF.Max(0f, vehic.RespawnTime - 1f);
+            // QC vehicles_setreturn (sv_vehicles.qc:511-517): dead -> nextthink = min(time+respawntime,
+            // time+respawntime-5) == time + respawntime - 5; alive -> time + respawntime - 1. (Base uses min()
+            // with itself-minus-N, which is just the smaller value.) The descriptor's Spawn() is the return
+            // target — it re-places the vehicle at pos1/pos2 and re-arms the normal think, exactly as QC's
+            // vehicles_return reparents the think back to vehicles_spawn.
+            float delay = MathF.Max(0f, vehic.RespawnTime - (IsDead(vehic) ? 5f : 1f));
             vehic.Think = self => self.VehicleDef?.Spawn(self);
             vehic.NextThink = Time + delay;
 

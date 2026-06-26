@@ -58,6 +58,21 @@ public sealed class Mage : Monster
         Speed = 400f;                   // run speed
     }
 
+    // METHOD(Mage, mr_anim) — mage.qc: the nanomage.dpm frame-group start indices (the first '<start> 1 <fps>'
+    // component is what setanim stamps onto .frame / the networked Entity.Frame; DriveAnimFrame plays it client
+    // side via CSQCMODEL_AUTOUPDATE). The logical Attack phase covers anim_shoot (spike) — the most common cast;
+    // anim_melee '5' (push) and anim_duckjump '4' fold into it like the siblings' single Attack frame.
+    public override float? AnimFrame(MonsterAnimPhase phase, bool die2) => phase switch
+    {
+        MonsterAnimPhase.Idle => 0f,    // anim_idle '0 1 1'
+        MonsterAnimPhase.Walk => 1f,    // anim_walk '1 1 1'
+        MonsterAnimPhase.Run => 1f,     // anim_run '1 1 1' (same group as walk in QC)
+        MonsterAnimPhase.Attack => 2f,  // anim_shoot '2 1 5' (melee push '5'/duckjump '4' collapse here)
+        MonsterAnimPhase.Pain => 6f,    // anim_pain1 '6 1 2'
+        MonsterAnimPhase.Death => die2 ? 10f : 9f, // anim_die1 '9 1 0.5' / anim_die2 '10 1 0.5' (QC random pick)
+        _ => 0f,
+    };
+
     // Monster_Spawn + METHOD(Mage, mr_setup) — mage.qc
     public override void Spawn(Entity e)
     {
@@ -340,8 +355,9 @@ public sealed class Mage : Monster
         return false;
     }
 
-    // M_Mage_Defend_Shield (mage.qc): brief damage-blocking shield on self. STATUSEFFECT_Shield does the
-    // actual damage reduction (read in MonsterAI.MarkPain); armor is bumped while up and restored on expiry.
+    // M_Mage_Defend_Shield (mage.qc): brief damage-blocking shield on self. The damage reduction is achieved by
+    // bumping ArmorValue to 0.8 while active (the armor-split in MonsterEventDamage applies a ~0.8% reduction);
+    // armor is restored on expiry.
     private void RaiseShield(Entity e, MonsterAI.MonsterState st)
     {
         float time = MonsterAI.Cvar("g_monster_mage_shield_time", ShieldTime);

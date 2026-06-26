@@ -20,11 +20,18 @@ namespace XonoticGodot.Common.Gameplay;
 public sealed class FlacTurret : Turret
 {
     // --- balance (turrets.cfg g_turrets_unit_flac_*) ---
-    private const float ShotDamage = 20f;
-    private const float ShotRadius = 100f;
-    private const float ShotSpeed = 9000f;
-    private const float ShotForce = 25f;
-    private const float ShotSpread = 0.02f;
+    // Internal so FlacWeapon (the hidden player form in the same file) can share the same balance constants
+    // without duplicating them (QC shares them via the same wr_think method branching on IS_PLAYER).
+    internal const float PubShotDamage = 20f;
+    internal const float PubShotRadius = 100f;
+    internal const float PubShotSpeed  = 9000f;
+    internal const float PubShotForce  = 25f;
+    internal const float PubShotSpread = 0.02f;
+    private const float ShotDamage = PubShotDamage;
+    private const float ShotRadius = PubShotRadius;
+    private const float ShotSpeed  = PubShotSpeed;
+    private const float ShotForce  = PubShotForce;
+    private const float ShotSpread = PubShotSpread;
     private const float ShotRefire = 0.1f;
     private const float TargetRange = 4000f;
     private const float TargetRangeMin = 500f;
@@ -67,7 +74,7 @@ public sealed class FlacTurret : Turret
 
     public override void Spawn(Entity e)
         => TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
-            AmmoMax, AmmoRecharge, shotVolly: 0, respawnTime: RespawnTime);
+            AmmoMax, AmmoRecharge, shotVolly: 0, respawnTime: RespawnTime, energyAmmo: false);
 
     public override void Think(Entity e)
     {
@@ -101,10 +108,14 @@ public sealed class FlacTurret : Turret
         // Timed fuse: detonate at the predicted intercept (QC nextthink = time + tur_impacttime + jitter). At
         // detonation, if the enemy is within shot_radius*3, snap the burst point onto it + a random offset so
         // the air-burst actually catches the dodging projectile (turret_flac_projectile_think_explode).
+        //
+        // tur_impacttime was computed this think by turret_do_updates (TurretAI.UpdateImpact): a forward tracebox
+        // from the muzzle along the actual head forward to the aimpos distance, then vlen(shotorg - trace_endpos)
+        // / shot_speed (sv_turrets.qc:519-523). Geometry between the muzzle and the aim point shortens the fuse to
+        // where the shell actually detonates; a clear path yields DistAimPos / ShotSpeed.
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
-        float impactTime = ShotSpeed > 0f ? st.DistAimPos / ShotSpeed : 0f;
         float jitter = Prandom.Float() * 0.01f - Prandom.Float() * 0.01f;
-        shell.NextThink = now + impactTime + jitter;
+        shell.NextThink = now + st.ImpactTime + jitter;
 
         var owner = turret;
         shell.Think = self =>
@@ -129,4 +140,122 @@ public sealed class FlacTurret : Turret
         // NOTE (client-render): PROJECTILE_HAGAR trail, EFFECT_BLASTER_MUZZLEFLASH, head frame cycle. The
         // server-side fire (flac_weapon.qc) is done above.
     }
+}
+
+/// <summary>
+/// Hidden / dev player-fired FLAC weapon — port of <c>common/turrets/turret/flac_weapon.qh</c>
+/// (<c>CLASS(FlacAttack, PortoLaunch)</c>) + the <c>IS_PLAYER</c> branch of
+/// <c>flac_weapon.qc:METHOD(FlacAttack, wr_think)</c>.
+///
+/// <para>QC class attributes: <c>WEP_FLAG_SPECIALATTACK | WEP_FLAG_HIDDEN</c>, <c>impulse 5</c>,
+/// netname <c>"turret_flac"</c>, base class <c>PortoLaunch</c> (no ammo cost). Low impact: not reachable
+/// through any default weapon arena; only obtainable via <c>impulse 5</c> console command.</para>
+///
+/// <para>IS_PLAYER fire sequence (flac_weapon.qc:8-22, 24-37):
+/// <list type="number">
+///   <item><c>turret_initparams(actor)</c> — seeds tur_* fields (no-op here; values captured as constants).</item>
+///   <item><c>W_SetupShot_Dir(v_forward)</c> → muzzle origin + direction from player view.</item>
+///   <item>Sets <c>tur_impacttime = 10</c> — fixed 10 s fuse (unlike the turret's forward-traced traveltime).</item>
+///   <item><c>weapon_thinkf(WFRAME_FIRE1, 0.5, w_ready)</c> → 0.5 s fire animation (animtime/refire).</item>
+///   <item>Shared: <c>turret_projectile(…, PROJECTILE_HAGAR, …)</c>, fuse think override, fire sound.</item>
+/// </list></para>
+/// </summary>
+// NOTE (deferred): the [Weapon] registration is intentionally OFF. WEP_TUR_FLAC is a hidden, impulse-5,
+// dev-only player weapon; registering it shifts the player weapon-by-id + menu-priority order AND its impulse 5
+// collides with the Raptor's bomb-mode impulse (breaking WeaponById/MenuWeaponOrder/Raptor-impulse tests). The
+// faithful impl is kept below for a future pass that updates those test contracts + makes impulse routing
+// vehicle-context-aware; re-add [Weapon] then. The FLAC TURRET itself is fully live (fires via TurretSpawn).
+public sealed class FlacWeapon : Weapon
+{
+    // Shared balance (turrets.cfg g_turrets_unit_flac_*) — same constants as FlacTurret, exposed via
+    // the Pub* aliases so this class doesn't duplicate magic numbers.
+    private const float ShotDamage = FlacTurret.PubShotDamage;
+    private const float ShotRadius = FlacTurret.PubShotRadius;
+    private const float ShotSpeed  = FlacTurret.PubShotSpeed;
+    private const float ShotForce  = FlacTurret.PubShotForce;
+    private const float ShotSpread = FlacTurret.PubShotSpread;
+
+    /// <summary>QC IS_PLAYER branch: <c>actor.tur_impacttime = 10</c> — fixed 10 s fuse.</summary>
+    private const float PlayerFuse = 10f;
+
+    public FlacWeapon()
+    {
+        NetName     = "turret_flac";    // QC flac_weapon.qh netname "turret_flac"
+        DisplayName = "FLAC";           // QC flac_weapon.qh m_name _("FLAC")
+        Impulse     = 5;                // QC: impulse 5
+        // WEP_FLAG_SPECIALATTACK | WEP_FLAG_HIDDEN (flac_weapon.qh)
+        SpawnFlags  = WeaponFlags.SpecialAttack | WeaponFlags.Hidden;
+        // No AmmoType — PortoLaunch carries no ammo (like Porto: WrCheckAmmo returns true by default).
+    }
+
+    /// <summary>
+    /// IS_PLAYER branch of <c>METHOD(FlacAttack, wr_think)</c>: fires a flak shell on a fixed 10 s fuse.
+    /// The QC flow is: <c>weapon_prepareattack → setup_shot → turret_projectile → override nextthink →
+    /// Send_Effect (muzzle flash, client-render only) → no head-frame (isPlayer branch skips it)</c>.
+    /// </summary>
+    public override void WrThink(Entity actor, WeaponSlot slot, FireMode fire)
+    {
+        if (fire != FireMode.Primary) return;
+
+        // weapon_prepareattack(thiswep, actor, weaponentity, false, 1) — args are (secondary=false, attacktime=1):
+        // the literal 1 is the ATTACKTIME (one full second), NOT a boolean. So ATTACK_FINISHED advances by 1 s and
+        // that is what gates the real refire rate. PrepareAttack handles the WS_READY gate + ATTACK_FINISHED clock;
+        // passing NaN uses RefireFor (=1 s here, matching the attacktime). The SEPARATE weapon_thinkf(WFRAME_FIRE1,
+        // 0.5, w_ready) — AnimtimeFor (=0.5 s) — schedules the return-to-ready animation, shorter than the refire.
+        if (!PrepareAttack(actor, slot, fire, attackTime: float.NaN)) return;
+
+        // W_SetupShot_Dir(actor, weaponentity, v_forward, false, 0, SND_FlacAttack_FIRE, CH_WEAPON_B, 0, …)
+        // derives muzzle origin (w_shotorg) and aim direction (w_shotdir) from the player's view.
+        // QC makevectors(actor.v_angle) → v_forward; port convention: actor.Angles is the view angle (QC v_angle).
+        QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
+
+        // turret_tag_fire_update → no-op for IS_PLAYER (QC runs it AFTER the isPlayer block, but for a
+        // player actor the tag_fire is the view muzzle — already captured by SetupShot above).
+
+        // turret_projectile(actor, SND_FlacAttack_FIRE, size 5, health 0, DEATH_TURRET_FLAC, …)
+        // actor.Enemy may be null (player has no acquired missile target); the snap-to-enemy branch in
+        // the fuse think is guarded by `enemy != null` so null is safe.
+        Entity shell = TurretSpawn.Projectile(actor, shot.Origin, shot.Dir, ShotSpeed,
+            size: 5f, health: 0f,
+            ShotDamage, edgeDamage: ShotDamage, ShotRadius, ShotForce,
+            DeathTypes.TurretFlac, spread: ShotSpread);
+
+        // actor.tur_impacttime = 10 (fixed fuse, QC flac_weapon.qc:20).
+        // QC: proj.nextthink = time + actor.tur_impacttime + (random()*0.01 - random()*0.01)
+        float now    = Api.Services is not null ? Api.Clock.Time : 0f;
+        float jitter = Prandom.Float() * 0.01f - Prandom.Float() * 0.01f;
+        shell.NextThink = now + PlayerFuse + jitter;
+
+        // Override Think to turret_flac_projectile_think_explode: snap to enemy if close, then RadiusDamage.
+        Entity owner = actor;
+        shell.Think = self =>
+        {
+            if (self.Enemy is not null && !self.Enemy.IsFreed
+                && (self.Origin - self.Enemy.Origin).Length() < ShotRadius * 3f
+                && Api.Services is not null)
+            {
+                Api.Entities.SetOrigin(self, self.Enemy.Origin + Prandom.Vec() * ShotRadius);
+            }
+            self.Touch      = null;
+            self.TakeDamage = DamageMode.No;
+            WeaponSplash.RadiusDamage(self, self.Origin, ShotDamage, ShotDamage, ShotRadius, owner,
+                0, ShotForce, deathTag: DeathTypes.TurretFlac);
+            if (Api.Services is not null) Api.Entities.Remove(self);
+            TurretAI.Forget(self);
+        };
+
+        // QC: Send_Effect(EFFECT_BLASTER_MUZZLEFLASH, …) — client-render only, deferred.
+        // Play fire sound (SND_FlacAttack_FIRE = W_Sound("hagar_fire"), CH_WEAPON_B/CH_WEAPON_A).
+        if (Api.Services is not null)
+            Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/hagar_fire.wav");
+    }
+
+    /// <summary>QC <c>weapon_thinkf(…, WFRAME_FIRE1, 0.5, w_ready)</c> — return to READY after the 0.5 s animation.</summary>
+    public override float AnimtimeFor(FireMode fire) => 0.5f;
+
+    /// <summary>QC <c>weapon_prepareattack(thiswep, actor, weaponentity, false, 1)</c> — the attacktime literal
+    /// <c>1</c> advances ATTACK_FINISHED by one second, so the real refire is 1 s/shot (longer than the 0.5 s
+    /// fire animation).</summary>
+    public override float RefireFor(FireMode fire)   => 1f;
 }

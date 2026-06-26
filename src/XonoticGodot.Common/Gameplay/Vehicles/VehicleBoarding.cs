@@ -204,15 +204,24 @@ public static class VehicleBoarding
         if (vehicle.Owner is not null)
             return false;
 
-        // QC: the teamplay enemy-board branch. With g_vehicles_steal off (the default) an enemy simply cannot
-        // board a team vehicle. The steal gameplay (shield=0, flags backup, intruder waypoint) is out of scope
-        // (a flagged partial — see file note); model only the DEFAULT "different team -> refuse".
+        // QC: the teamplay enemy-board branch (sv_vehicles.qc:960-979). A different-team player CAN board a
+        // team vehicle when g_vehicles_steal is on — the STOCK Base default is 1 (vehicles.cfg:5 +
+        // sv_vehicles.qh:11), so vehicle-stealing is part of stock teamplay. Stealing zeroes the shield, backs
+        // up the vehicle flags, and strips VHF_SHIELDREGEN (so the stolen craft cannot regen its shield back),
+        // which vehicles_exit later restores from old_vehicle_flags. With steal off the enemy simply refuses.
         if (vehicle.Team != 0f && VehiclePhysics.DiffTeam(pl, vehicle))
         {
-            if (Cvar("g_vehicles_steal", 0f) == 0f)
+            if (Cvar("g_vehicles_steal", 1f) == 0f)
                 return false;
-            // NOTE — cross-boundary (out of scope): g_vehicles_steal enemy-board (vehicle_shield = 0;
-            // old_vehicle_flags backup; ~VHF_SHIELDREGEN; the WP_VehicleIntruder waypoint + steal notifications).
+
+            vehicle.VehicleShield = 0f;
+            vehicle.OldVehicleFlags = vehicle.VehicleFlags; // backup so the exit restores SHIELDREGEN
+            vehicle.VehicleFlags &= ~VehicleFlags.ShieldRegen;
+
+            // NOTE — cross-boundary (CSQC/notify): the WP_VehicleIntruder radar waypoint
+            // (g_vehicles_steal_show_waypoint) and the CENTER_VEHICLE_STEAL / _SELF centerprint notifications
+            // are presentation and deferred; the authoritative steal state (shield zero + flag backup/strip) is
+            // applied above so a stolen vehicle behaves correctly server-side.
         }
 
         // QC: RemoveGrapplingHooks(pl).
@@ -291,9 +300,15 @@ public static class VehicleBoarding
         var a = new MutatorHooks.VehicleExitArgs(pl, vehicle);
         MutatorHooks.VehicleExit.Call(ref a);
 
+        // QC vehicles_exit tail (sv_vehicles.qc:862): vehicles_setreturn(vehic). An abandoned LIVING vehicle
+        // is scheduled to drift home to its spawn point after respawntime-1 (the alive-path delay inside
+        // SetReturn) — without this an idle pilot-less vehicle would sit wherever it was parked forever. The
+        // death path schedules its OWN return from the DamageVehicle tail; this covers the pilot-quit case.
+        VehicleCommon.SetReturn(vehicle);
+
         // NOTE — cross-boundary (other systems/agents): SVC_SETVIEWPORT/SETVIEWANGLES + CSQCVehicleSetup,
         // the temp_wepent switch-weapon restore, the Kill_Notification(CPID_VEHICLES) centerprint clear,
-        // vehicles_setreturn (the LIVING-vehicle return helper — out of scope), and last_vehiclecheck.
+        // and last_vehiclecheck. The WP_Vehicle return waypoint itself (vehicles_showwp) is still CSQC-deferred.
     }
 
     // =====================================================================================

@@ -281,8 +281,13 @@ public static class VehiclePhysics
         }
 
         Entity? t = tracedTarget;
-        // QC rejects same-team / dead / non-vehicle-or-turret / near-invisible targets.
-        if (t is not null && (SameTeam(t, vehic) || VehicleCommon.IsDead(t)))
+        // QC (sv_vehicles.qc:120-125) rejects same-team / dead / non-(vehicle||turret) / near-invisible
+        // targets — the homing lock only ever acquires another vehicle or a turret, never a player or any
+        // other live entity. `alpha <= 0.5 && alpha != 0` means a deliberately faded entity (0 == default
+        // opaque) cannot be locked.
+        if (t is not null && (SameTeam(t, vehic) || VehicleCommon.IsDead(t)
+            || !IsVehicleOrTurret(t)
+            || (t.Alpha <= 0.5f && t.Alpha != 0f)))
             t = null;
 
         if (vehic.VehLockTarget is null && t is not null)
@@ -340,6 +345,16 @@ public static class VehiclePhysics
     public static bool SameTeam(Entity a, Entity b) => a.Team != 0f && a.Team == b.Team;
     public static bool DiffTeam(Entity a, Entity b) => a.Team != b.Team;
 
+    /// <summary>
+    /// QC <c>IS_VEHICLE(e) || IS_TURRET(e)</c>: only these two classes are valid homing-lock targets. A
+    /// vehicle is flagged with <see cref="VehicleCommon.VehicleFlags.IsVehicle"/> (set in
+    /// <c>SpawnVehicle</c>); a turret carries the <c>"turret_"</c> classname prefix (set in
+    /// <c>TurretSpawn.Init</c>). Anything else (players, items, projectiles) is rejected.
+    /// </summary>
+    public static bool IsVehicleOrTurret(Entity e)
+        => (e.VehicleFlags & VehicleFlags.IsVehicle) != 0
+        || e.ClassName.StartsWith("turret_", System.StringComparison.Ordinal);
+
     // =====================================================================================
     // Vehicle projectile guidance — the per-tick think for the homing rockets (racer/spiderbot).
     // Shared so VehicleCommon's projectile guidance helper and the vehicle weapons reuse one model.
@@ -384,14 +399,25 @@ public static class VehiclePhysics
 
                 float tti = MathF.Min(QMath.VLen(targ.Origin - rocket.Origin) / MathF.Max(oldVel, 1f), 1f);
                 Vector3 predicted = targ.Origin + targ.Velocity * tti;
+
+                // QC racer_rocket_tracker: trace a line ahead of the rocket (origin -> origin + fwd*64 - '0 0 32')
+                // so an obstacle between it and the target can be detected and climbed over.
+                QMath.AngleVectors(QMath.VecToAngles(oldDir), out Vector3 fwd, out _, out _);
+                TraceResult ahead = Api.Trace.Trace(rocket.Origin, Vector3.Zero, Vector3.Zero,
+                    rocket.Origin + fwd * 64f - new Vector3(0, 0, 32f), MoveFilter.Normal, rocket);
+
                 Vector3 newDir = QMath.Normalize(predicted - rocket.Origin);
+                float heightDiff = predicted.Z - rocket.Origin.Z;
 
                 // QC: lose the lock if the target leaves the cone (locked_maxangle 1.8 rad of |newdir-fwd|).
-                QMath.AngleVectors(QMath.VecToAngles(oldDir), out Vector3 fwd, out _, out _);
                 if (QMath.VLen(newDir - fwd) > 1.8f) { rocket.VehGuideMode = (int)GuideMode.RacerGroundHug; return true; }
 
+                // QC: if the ahead-trace hit something that ISN'T the locked target, lift the steering vector to
+                // climb over the obstacle between the rocket and its prey (newdir.z += 16 * sys_frametime).
+                if (ahead.Fraction != 1f && ahead.Ent != targ)
+                    newDir.Z += 16f * frametime;
+
                 Vector3 v = QMath.Normalize(oldDir + newDir * turn) * speed;
-                float heightDiff = predicted.Z - rocket.Origin.Z;
                 v.Z -= 800f * frametime;
                 v.Z += MathF.Max(heightDiff, 1600f) * frametime; // climbspeed 1600
                 rocket.Velocity = v;

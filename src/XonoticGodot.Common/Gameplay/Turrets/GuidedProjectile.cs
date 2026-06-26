@@ -31,6 +31,14 @@ public static class GuidedProjectile
         public float TurnRate;       // QC shot_speed_turnrate / rocket_turnrate
         public float Radius;         // QC owner.shot_radius (proximity-detonate distance basis)
         public float FuelTime;       // QC .cnt for hk — time the boosted accel band lasts
+        public float Accel = 1.025f; // QC shot_speed_accel  (decel-trigger climb / near-wall accel)
+        public float Accel2 = 1.05f; // QC shot_speed_accel2 (clear-path + boosted-fuel accel)
+        public float Decel = 0.9f;   // QC shot_speed_decel  (near-wall / sharp-turn brake)
+        public bool Inert;           // QC hk fuel-out: rocket went MOVETYPE_BOUNCE + stopped thinking (a dud)
+        public bool InLoop;          // QC walker .shot_dmg == 1337 sentinel: rocket is mid up-and-over loop (skips re-entry roll)
+        public Vector3 LoopTarget;   // QC walker .tur_shotorg overload while looping: the loop waypoint to steer to
+        public float WalkerSpeed;    // launch speed captured for the walker loop steps (QC rocket_speed)
+        public float WalkerTurnRate; // turn rate captured for the walker loop steps (QC rocket_turnrate)
         public Action<Entity>? Explode;  // the detonation closure (radius damage + remove)
     }
 
@@ -54,7 +62,8 @@ public static class GuidedProjectile
     /// </summary>
     public static Entity Launch(Entity turret, Entity? enemy, Vector3 origin, Vector3 dir, Mode mode,
         float launchSpeed, float speedMax, float speedGain, float turnRate, float size, float health,
-        float damage, float radius, float force, string deathType, float ttl)
+        float damage, float radius, float force, string deathType, float ttl,
+        float accel = 1.025f, float accel2 = 1.05f, float decel = 0.9f, float fuelTime = 30f)
     {
         Entity m = Api.Entities.Spawn();
         m.ClassName = "turret_guided";
@@ -108,8 +117,12 @@ public static class GuidedProjectile
         g.SpeedGain = speedGain;
         g.TurnRate = turnRate;
         g.Radius = radius;
+        g.Accel = accel;
+        g.Accel2 = accel2;
+        g.Decel = decel;
+        g.Inert = false;
         g.ExpireTime = now + ttl;
-        g.FuelTime = now + 30f;            // QC hk: cnt = time + 30 (boosted accel window)
+        g.FuelTime = now + fuelTime;       // QC hk: cnt = time + 30 (boosted-accel window AND fuel-out clock)
         g.GuideJitterAt = now + 1f;        // QC walker: cnt = time + 1
         g.AimJitter = Prandom.Vec() * 512f;
         g.Explode = Explode;
@@ -121,6 +134,14 @@ public static class GuidedProjectile
             Mode.Hk => HkThink,
             _ => self => WalkerRocketThink(self, launchSpeed, turnRate),
         };
+        // QC walker_fire_rocket: 1% chance the rocket launches straight into the up-and-over loop maneuver.
+        if (mode == Mode.WalkerRocket)
+        {
+            g.WalkerSpeed = launchSpeed;
+            g.WalkerTurnRate = turnRate;
+            if (Prandom.Float() < 0.01f)
+                think = WalkerRocketLoop;
+        }
         m.Think = think;
         m.NextThink = now;
         return m;
@@ -179,11 +200,24 @@ public static class GuidedProjectile
         GuidanceState g = Guidance(missile);
         missile.NextThink = now;
 
-        // Drop a dead/invalid target so we can re-seek.
+        // Drop a dead/invalid target (QC: IS_DEAD || IS_SPEC || IS_OBSERVER) so we can re-seek.
         if (missile.Enemy is not null && (missile.Enemy.Health <= 0f || missile.Enemy.DeadState != DeadFlag.No))
             missile.Enemy = null;
 
-        if (g.ExpireTime < now) { Detonate(missile); return; }
+        // No target? re-seek the closest valid target within 5000u (QC: IL_EACH(g_damagedbycontents,
+        // hk_is_valid_target, ...) — port scans live entities in radius and applies the same validity gate).
+        if (missile.Enemy is null)
+        {
+            Entity? best = null;
+            float bestD2 = float.MaxValue;
+            foreach (Entity it in Api.Entities.FindInRadius(missile.Origin, 5000f))
+            {
+                if (!HkIsValidTarget(missile.Owner, it)) continue;
+                float d2 = (missile.Origin - it.Origin).LengthSquared();
+                if (best is null || d2 < bestD2) { best = it; bestD2 = d2; }
+            }
+            missile.Enemy = best;
+        }
 
         // Build the missile's facing basis (QC negates pitch around makevectors == fixedvectoangles).
         Vector3 ang = QMath.FixedVecToAngles(missile.Velocity);
@@ -221,9 +255,9 @@ public static class GuidedProjectile
 
             // Too close to a wall or a sharp turn? slow down. Fairly clear? speed up.
             if ((ff < 0.7f || ad > 4f) && myspeed > g.Speed)
-                myspeed = System.Math.Max(myspeed * 0.85f, g.Speed);   // decel
+                myspeed = System.Math.Max(myspeed * g.Decel, g.Speed);    // decel (shot_speed_decel)
             if (ff > 0.7f && myspeed < g.SpeedMax)
-                myspeed = System.Math.Min(myspeed * 1.05f, g.SpeedMax);// accel
+                myspeed = System.Math.Min(myspeed * g.Accel, g.SpeedMax); // accel (shot_speed_accel)
 
             float ptSeek = QMath.Bound(0.15f, 1f - ff, 0.8f);
             if (ff < 0.5f) ptSeek = 1f;
@@ -260,13 +294,25 @@ public static class GuidedProjectile
         else
         {
             // Clear path: boost toward full speed and go straight at the target.
-            if (myspeed < g.SpeedMax) myspeed = System.Math.Min(myspeed * 1.1f, g.SpeedMax);
+            if (myspeed < g.SpeedMax) myspeed = System.Math.Min(myspeed * g.Accel2, g.SpeedMax);
             wishdir = ve;
         }
 
-        // Boosted accel while fuel lasts (QC: accel2 while cnt > time), then sputter (drop think a beat).
+        // Boosted accel while fuel lasts (QC: accel2 while cnt > time).
         if (myspeed > g.Speed && g.FuelTime > now)
-            myspeed = System.Math.Min(myspeed * 1.1f, g.SpeedMax);
+            myspeed = System.Math.Min(myspeed * g.Accel2, g.SpeedMax);
+
+        // Ranoutagazfish? (QC: cnt < time) — go inert (MOVETYPE_BOUNCE) and stop thinking. The rocket drops
+        // as a dud and bounces; it does NOT detonate here. Touch/FLAC death can still blow it later.
+        if (g.FuelTime < now)
+        {
+            g.FuelTime = now + 0.25f;
+            g.Inert = true;
+            missile.MoveType = MoveType.Bounce;
+            missile.Think = null;
+            missile.NextThink = 0f;
+            return;
+        }
 
         Vector3 olddir = QMath.Normalize(missile.Velocity);
         Vector3 newdir = QMath.Normalize(olddir + wishdir * g.TurnRate);
@@ -295,6 +341,10 @@ public static class GuidedProjectile
 
         if (g.ExpireTime < now) { Detonate(rocket); return; }
 
+        // QC: if (shot_dmg != 1337 && random() < 0.01) walker_rocket_loop(this). The 1337 sentinel (g.InLoop)
+        // means we're already mid-loop and must not re-enter; otherwise a 1%/think chance to start the loop.
+        if (!g.InLoop && Prandom.Float() < 0.01f) { WalkerRocketLoop(rocket); return; }
+
         if (rocket.Enemy is not null && (rocket.Enemy.Health <= 0f || rocket.Enemy.DeadState != DeadFlag.No))
             rocket.Enemy = null;
 
@@ -304,6 +354,63 @@ public static class GuidedProjectile
 
         // movelib_move_simple((rocket), newdir, speed, turnrate).
         TurretMath.MoveSimple(rocket, newdir, speed, turnRate);
+        rocket.Angles = QMath.VecToAngles(rocket.Velocity);
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // walker_rocket_loop / loop2 / loop3 (walker_weapon.qc:153-202): the up-and-over "loop" maneuver. The
+    // rocket steers up 300u (loop), then back down to its start (loop2), then 200u below that (loop3), then
+    // hands control back to the straight steer-pull. The QC overloads .tur_shotorg as the loop waypoint and
+    // sets .shot_dmg = 1337 as the "in loop, don't re-roll" sentinel — here LoopTarget + InLoop.
+    // ------------------------------------------------------------------------------------------------
+    private static void WalkerRocketLoop(Entity rocket)
+    {
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        GuidanceState g = Guidance(rocket);
+        rocket.NextThink = now;
+        g.LoopTarget = rocket.Origin + new Vector3(0f, 0f, 300f);
+        g.InLoop = true;                          // QC: this.shot_dmg = 1337
+        rocket.Think = WalkerRocketLoop2;
+    }
+
+    private static void WalkerRocketLoop2(Entity rocket)
+    {
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        GuidanceState g = Guidance(rocket);
+        rocket.NextThink = now;
+
+        if (g.ExpireTime < now) { Detonate(rocket); return; }
+
+        if ((rocket.Origin - g.LoopTarget).Length() < 100f)
+        {
+            g.LoopTarget = rocket.Origin - new Vector3(0f, 0f, 200f);
+            rocket.Think = WalkerRocketLoop3;
+            return;
+        }
+
+        Vector3 newdir = TurretMath.SteerPull(rocket, g.LoopTarget);
+        TurretMath.MoveSimple(rocket, newdir, g.WalkerSpeed, g.WalkerTurnRate);
+        rocket.Angles = QMath.VecToAngles(rocket.Velocity);
+    }
+
+    private static void WalkerRocketLoop3(Entity rocket)
+    {
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        GuidanceState g = Guidance(rocket);
+        rocket.NextThink = now;
+
+        if (g.ExpireTime < now) { Detonate(rocket); return; }
+
+        if ((rocket.Origin - g.LoopTarget).Length() < 100f)
+        {
+            // Loop complete: hand back to the straight steer-pull. (QC clears nothing but resets the think;
+            // shot_dmg stays 1337 in Base so the rocket never loops again — InLoop stays true to match.)
+            rocket.Think = self => WalkerRocketThink(self, g.WalkerSpeed, g.WalkerTurnRate);
+            return;
+        }
+
+        Vector3 newdir = TurretMath.SteerPull(rocket, g.LoopTarget);
+        TurretMath.MoveSimple(rocket, newdir, g.WalkerSpeed, g.WalkerTurnRate);
         rocket.Angles = QMath.VecToAngles(rocket.Velocity);
     }
 
@@ -330,6 +437,33 @@ public static class GuidedProjectile
                 g.Explode(v);
             return false;
         });
+    }
+
+    /// <summary>
+    /// Port of <c>hk_is_valid_target</c> (hk_weapon.qc:241): the re-seek validity gate the HK rocket runs over
+    /// nearby entities when it has lost its target. Rejects null/freed, no-target-flagged, undamageable or
+    /// dead-health entities, dead players, and same-team (relative to self or the missile's owner). HK's
+    /// playerbias (1) and missilebias (0) are both non-negative, so players and projectiles pass those gates.
+    /// </summary>
+    private static bool HkIsValidTarget(Entity? owner, Entity targ)
+    {
+        if (targ is null || targ.IsFreed) return false;
+        if ((targ.Flags & EntFlags.NoTarget) != 0) return false;
+        if (targ.TakeDamage == DamageMode.No || targ.Health < 0f) return false;
+
+        if (TurretAI.IsPlayer(targ))
+        {
+            // HK target_select_playerbias = 1 (>= 0) -> players are allowed; only reject dead ones.
+            if (targ.Health <= 0f || targ.DeadState != DeadFlag.No) return false;
+        }
+        // HK target_select_missilebias = 0 (>= 0) -> projectiles are NOT rejected here.
+
+        // Team check: reject same team as the missile owner (the launching turret).
+        if (owner is not null && (TurretAI.SameTeam(owner, targ)
+            || (targ.Owner is not null && TurretAI.SameTeam(owner, targ.Owner))))
+            return false;
+
+        return true;
     }
 
     /// <summary>Trace fraction toward <paramref name="to"/> (QC traceline, no monsters), discarding the endpoint.</summary>

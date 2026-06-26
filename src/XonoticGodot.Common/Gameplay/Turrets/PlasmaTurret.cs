@@ -69,7 +69,11 @@ public class PlasmaTurret : Turret  // non-sealed: PlasmaDualTurret derives from
             rangeBias: rangeBias, sameBias: sameBias, angleBias: angleBias, missileBias: missileBias,
             playerBias: playerBias,
             trackType: TurretAI.TrackFluidInertia, trackAccelPitch: TrackAccelPitch, trackAccelRot: trackAccelRot,
-            trackBlendRate: trackBlendRate);
+            trackBlendRate: trackBlendRate,
+            // QC plasma.qc:51 `firecheck_flags |= TFL_FIRECHECK_AFF` — the plasma adds avoid-friendly-fire on top
+            // of the framework default (DEAD|DISTANCES|LOS|AIMDIST|TEAMCHECK|AMMO_OWN|REFIRE). The dual variant
+            // inherits this (no firecheck override of its own).
+            fireCheckFlags: TurretAI.FireCheckDefault | TurretAI.FireCheckAff);
 
     public PlasmaTurret()
     {
@@ -81,11 +85,22 @@ public class PlasmaTurret : Turret  // non-sealed: PlasmaDualTurret derives from
     }
 
     public override void Spawn(Entity e)
+        // QC plasma.qc tr_setup: `it.damage_flags |= TFL_DMG_HEADSHAKE` — a hit jitters the head off-aim by
+        // ±damage on pitch+yaw (TurretAI.EventDamage applies it; the dual inherits this, no tr_setup override).
         => TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
-            AmmoMax, AmmoRecharge, shotVolly: 0);
+            AmmoMax, AmmoRecharge, shotVolly: 0, headShake: true);
 
     public override void Think(Entity e)
     {
+        // QC plasma.qc tr_think: the head spin cosmetic kicked off by each shot. Once a shot sets frame=1
+        // (in Attack), advance it every think and wrap 1..5 back to 0 (a 5-frame spin per shot). Base drives a
+        // separate tur_head entity's frame; the port has no head bone entity, so — like Hk/Hellion turrets — the
+        // cycle runs on the turret edict's own networked Entity.Frame.
+        if (e.Frame != 0f)
+            e.Frame += 1f;
+        if (e.Frame > 5f)
+            e.Frame = 0f;
+
         var p = MakeParams(TargetRangeMin, TargetRange, ShotRefire, AimSpeed, FireTolerance);
         TurretAI.RunCombat(e, in p, Attack);
     }
@@ -103,13 +118,7 @@ public class PlasmaTurret : Turret  // non-sealed: PlasmaDualTurret derives from
         if (dir == Vector3.Zero) dir = QMath.Forward(TurretAI.HeadWorldAngles(turret));
 
         if (InstagibEnabled())
-        {
-            // QC: FireRailgunBullet(it, ..., 1e10 damage, false, 800 force, ...) — an instant hitscan beam.
-            // The instagib rail branch passes NO fire sound (Base FireRailgunBullet snd_fire is empty here).
-            TurretCombat.FireBullet(turret, st.ShotOrg, dir, spread: 0f,
-                damage: InstagibRailDamage, force: InstagibRailForce, DeathTypes.TurretPlasma);
-            // NOTE (client-render): EFFECT_VORTEX_MUZZLEFLASH + the team-coloured EFFECT_VAPORIZER_BEAM hit beam.
-        }
+            FireInstagibBeam(turret, st.ShotOrg, dir);
         else
         {
             TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
@@ -119,7 +128,27 @@ public class PlasmaTurret : Turret  // non-sealed: PlasmaDualTurret derives from
                 Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/hagar_fire.wav");
         }
 
-        // NOTE (client-render): PROJECTILE_ELECTRO_BEAM CSQC trail, EFFECT_BLASTER_MUZZLEFLASH, head spin frames.
+        // QC plasma.qc tr_attack: `if (it.tur_head.frame == 0) it.tur_head.frame = 1` — kick off the 5-frame head
+        // spin (advanced + wrapped each think in Think). Runs after both the instagib and plasma-ball branches.
+        if (turret.Frame == 0f)
+            turret.Frame = 1f;
+
+        // NOTE (client-render): PROJECTILE_ELECTRO_BEAM CSQC trail, EFFECT_BLASTER_MUZZLEFLASH (the head frame is
+        // networked via Entity.Frame, but the static base.md3 body has no spin frames — the real head model
+        // plasma.md3 needs a tur_head sub-entity / CSQC turret net layer to render it; that remains unported).
+    }
+
+    /// <summary>
+    /// QC instagib <c>tr_attack</c> beam: <c>FireRailgunBullet(it, ..., 1e10 damage, false, 800 force, ...)</c> —
+    /// an instant instakill hitscan with no fire sound (Base passes an empty snd_fire). Factored out so the dual
+    /// variant's inlined instagib branch (plasma_dual.qc, which does NOT call SUPER) can reuse it WITHOUT the
+    /// single-plasma head-frame start-kick that lives in <see cref="Attack"/>.
+    /// </summary>
+    protected static void FireInstagibBeam(Entity turret, Vector3 shotOrg, Vector3 dir)
+    {
+        TurretCombat.FireBullet(turret, shotOrg, dir, spread: 0f,
+            damage: InstagibRailDamage, force: InstagibRailForce, DeathTypes.TurretPlasma);
+        // NOTE (client-render): EFFECT_VORTEX_MUZZLEFLASH + the team-coloured EFFECT_VAPORIZER_BEAM hit beam.
     }
 
     /// <summary>QC FireRailgunBullet damage for the instagib plasma turret (plasma.qc tr_attack: 1e10, an

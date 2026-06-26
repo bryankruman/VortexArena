@@ -37,6 +37,13 @@ public sealed class TurretState
     /// <summary>QC <c>.ammo_recharge</c> — ammo regenerated per second.</summary>
     public float AmmoRecharge;
 
+    /// <summary>
+    /// QC <c>TFL_AMMO_ENERGY</c> bit of <c>.ammo_flags</c> — whether this turret's ammo pool is "energy".
+    /// The fusion reactor only recharges energy-ammo recipients (<c>turret_fusionreactor_firecheck</c>:
+    /// <c>targ.ammo_flags &amp; TFL_AMMO_ENERGY</c>), so rocket/bullet turrets are NOT topped up by it.
+    /// </summary>
+    public bool AmmoIsEnergy = true;
+
     /// <summary>QC <c>.volly_counter</c> — shots remaining in the current burst (volley) before the long refire.</summary>
     public int VollyCounter;
 
@@ -79,6 +86,9 @@ public sealed class TurretState
     /// <summary>QC TUR_FLAG_MOVE — a mobile turret that damage knockback can shove (.velocity += vforce).</summary>
     public bool Movable;
 
+    /// <summary>QC TFL_DMG_HEADSHAKE (.damage_flags) — a hit jitters the head off-aim by ±damage on pitch+yaw.</summary>
+    public bool HeadShake;
+
     /// <summary>Per-turret death FX + respawn hook (set by the turret so the shared death handler can re-run its setup).</summary>
     public Action<Entity>? OnDeathFx;
     public Action<Entity>? OnRespawn;
@@ -91,6 +101,25 @@ public sealed class TurretState
 
     /// <summary>QC <c>.tur_shotdir_updated</c> — the actual muzzle forward (head world-forward) this think.</summary>
     public Vector3 ShotDir;
+
+    /// <summary>QC <c>.tur_impactent</c> — the entity the muzzle's forward tracebox would actually hit this think
+    /// (used by the firecheck AFF / target-of-opportunity branches).</summary>
+    public Entity? ImpactEnt;
+
+    /// <summary>QC <c>.pathcurrent</c> (ewheel.qc / walker.qc) — the <c>turret_checkpoint</c> a mobile turret is
+    /// currently driving toward when it has no enemy (the waypoint chain it roams via the checkpoints'
+    /// <c>.enemy</c> links). Null when there is no path to follow (then the turret just brakes idle).</summary>
+    public Entity? PathCurrent;
+
+    /// <summary>QC <c>.tur_dist_impact_to_aimpos</c> — how far the predicted impact point sits from the aimpos
+    /// (the AIMDIST firecheck: a shot is only taken when this is within aim_firetolerance_dist).</summary>
+    public float DistImpactToAimPos;
+
+    /// <summary>QC <c>.tur_impacttime</c> — the shell's predicted travel time to the forward-traced impact point
+    /// (<c>vlen(tur_shotorg - trace_endpos) / shot_speed</c>, sv_turrets.qc:523). Refreshed by turret_do_updates;
+    /// read by the flak fuse (turret_flac_projectile_think_explode). 0 when there are no engine services (the
+    /// firecheck/impact trace is skipped headless).</summary>
+    public float ImpactTime;
 }
 
 /// <summary>
@@ -122,6 +151,22 @@ public static class TurretAI
     public const int SelectRangeLimits = 1 << 6; ///< honour min/max range
     public const int SelectNoTurrets  = 1 << 7;  ///< don't attack other turrets
     public const int SelectAngleLimits = 1 << 8; ///< honour per-axis aim_maxpitch/aim_maxrot at acquisition
+
+    // ---- firecheck flags (QC TFL_FIRECHECK_*, turret.qh) used by the RunCombat fire gate ----
+    public const int FireCheckRefire    = 1 << 0;  ///< honour attack_finished refire delay
+    public const int FireCheckDead      = 1 << 1;  ///< don't keep firing at a dead enemy
+    public const int FireCheckDistances = 1 << 2;  ///< too-close hold (tur_dist_aimpos < range_min)
+    public const int FireCheckLos       = 1 << 3;  ///< require a clear muzzle line of sight (rarely used in fire gate)
+    public const int FireCheckAimDist   = 1 << 4;  ///< only fire when predicted impact lands within aim_firetolerance_dist
+    public const int FireCheckTeamCheck = 1 << 5;  ///< team gate (selection already handles team)
+    public const int FireCheckAmmoOwn   = 1 << 6;  ///< require own ammo >= shot_dmg
+    public const int FireCheckAff       = 1 << 7;  ///< avoid friendly fire: withhold a shot that would hit a teammate
+
+    /// <summary>QC turret_initialize firecheck_flags default (sv_turrets.qc:1280): DEAD|DISTANCES|LOS|AIMDIST|
+    /// TEAMCHECK|AMMO_OWN|REFIRE — notably NO AFF. Turrets that don't pass their own flags inherit this default,
+    /// so the fire gate is unchanged for them; the hellion passes its own set (AFF on, AIMDIST off).</summary>
+    public const int FireCheckDefault = FireCheckDead | FireCheckDistances | FireCheckLos | FireCheckAimDist
+                                      | FireCheckTeamCheck | FireCheckAmmoOwn | FireCheckRefire;
 
     // ---- track motor types (QC TFL_TRACKTYPE_*, sv_turrets.qh) ----
     public const int TrackStepMotor     = 1; ///< hard angle increments, best accuracy
@@ -162,7 +207,7 @@ public static class TurretAI
     /// defaults (maxdelay 1, mindelay 0.1, aimidle 5); detect "unset" via the empty <c>GetString</c> and supply
     /// the Base default instead.
     /// </summary>
-    private static float Cvar(string name, float fallback)
+    internal static float Cvar(string name, float fallback)
     {
         if (Api.Services is null) return fallback;
         return Api.Cvars.GetString(name).Length == 0 ? fallback : Api.Cvars.GetFloat(name);
@@ -216,7 +261,13 @@ public static class TurretAI
         if (ReferenceEquals(target, turret)) return false;
         if (ReferenceEquals(target.Owner, turret)) return false;     // don't shoot own projectiles/parts
 
-        // checkpvs / alpha-cloak: a target faded to <=0.3 alpha is invisible to the turret (QC alpha cull).
+        // PVS gate (QC validate_target:688 `if (!checkpvs(e_target.origin, e_turret)) return -1;`) — a target in
+        // a BSP cluster not potentially visible from the turret is rejected outright, BEFORE alpha/team/range and
+        // independent of the LOS select flag. Engine-only (deterministic tests have no compiled PVS); CheckPvs
+        // returns true on an unvised map, so the gate is a no-op there exactly as in DarkPlaces.
+        if (Api.Services is not null && !Api.Trace.CheckPvs(turret.Origin, target.Origin)) return false;
+
+        // alpha-cloak: a target faded to <=0.3 alpha is invisible to the turret (QC alpha cull).
         if (target.Alpha != 0f && target.Alpha <= 0.3f) return false;
 
         // Untargetable / dead / not damageable.
@@ -585,19 +636,118 @@ public static class TurretAI
         st.AimPos = AimPoint(turret, enemy, in p);
         Track(turret, in p);
 
-        // Refresh the muzzle distances (QC turret_do_updates).
+        // Refresh the muzzle distances + the predicted impact entity (QC turret_do_updates). A tracebox runs from
+        // the muzzle along the ACTUAL head forward to the aimpos distance; trace_ent is the thing the shot would
+        // hit (tur_impactent), and tur_dist_impact_to_aimpos is how far that impact lands from the intended aim.
         st.ShotDir = QMath.Forward(HeadWorldAngles(turret));
         st.DistEnemy = (st.ShotOrg - TargetCenter(enemy)).Length();
         st.DistAimPos = (st.ShotOrg - st.AimPos).Length();
+        UpdateImpact(turret, enemy, in p);
 
-        // Fire gate (QC turret_firecheck + turret_fire): cooled down, has ammo, not too close, muzzle on target.
-        if (st.AttackFinished > now) return enemy;
-        if (st.Ammo < p.ShotDamage) return enemy;
-        if (st.DistAimPos < p.RangeMin) return enemy;
-        if (!OnTarget(st.ShotOrg, HeadWorldAngles(turret), st.AimPos, p.FireToleranceDist)) return enemy;
+        // Fire gate (QC turret_firecheck): refire/ammo, then the impact-entity branches, then the aim-tolerance
+        // and too-close gates. Default firecheck_flags = DEAD|DISTANCES|LOS|AIMDIST|TEAMCHECK|AMMO_OWN|REFIRE.
+        if (st.AttackFinished > now) return enemy;                    // TFL_FIRECHECK_REFIRE
+        if (st.Ammo < p.ShotDamage) return enemy;                     // TFL_FIRECHECK_AMMO_OWN
+
+        // TFL_SHOOT_VOLLYALWAYS mid-burst with a LIVE enemy (turret_firecheck:889-892): when the burst is already
+        // in progress (volly_counter != shot_volly) the Base firecheck early-returns true immediately, skipping the
+        // DISTANCES, AFF, and AIMDIST gates. This completes the burst even if the target has stepped inside
+        // range_min or the muzzle has swung off the fire-tolerance line mid-volley. The enemy-null mid-burst case
+        // is already handled in MlrsTurret.Think before RunCombat is called.
+        if (p.VollyAlways && p.ShotVolly > 1 && st.VollyCounter != p.ShotVolly)
+        {
+            Fire(turret, enemy, in p, fire);
+            return enemy;
+        }
+
+        // Target of opportunity (QC turret_firecheck, unconditional): if the muzzle is actually lined up on some
+        // OTHER valid target, switch to it and fire — a turret never wastes a shot that already hits a foe.
+        if (st.ImpactEnt is not null && !ReferenceEquals(st.ImpactEnt, enemy)
+            && st.ImpactEnt.TakeDamage != DamageMode.No
+            && ValidTarget(turret, st.ImpactEnt, p.SelectFlags, in p))
+        {
+            turret.Enemy = st.ImpactEnt;
+            Fire(turret, st.ImpactEnt, in p, fire);
+            return st.ImpactEnt;
+        }
+
+        // Too close (TFL_FIRECHECK_DISTANCES): hold unless the impact ent is itself a target of opportunity.
+        if (st.DistAimPos < p.RangeMin)
+        {
+            if (st.ImpactEnt is not null && st.ImpactEnt.TakeDamage != DamageMode.No
+                && ValidTarget(turret, st.ImpactEnt, p.SelectFlags, in p))
+            {
+                Fire(turret, enemy, in p, fire);
+                return enemy;
+            }
+            return enemy;
+        }
+
+        // Avoid friendly fire on the predicted impact (TFL_FIRECHECK_AFF, sv_turrets.qc:928): never fire a shot
+        // that would land on a same-team entity. Only gated turrets (hellion/hk/plasma in Base) carry AFF; the
+        // framework default does NOT, so unflagged turrets keep firing exactly as before.
+        if ((p.FireCheckFlags & FireCheckAff) != 0 && st.ImpactEnt is not null && SameTeam(turret, st.ImpactEnt))
+            return enemy;
+
+        // Aim<->predicted-impact tolerance (TFL_FIRECHECK_AIMDIST, sv_turrets.qc:933): only shoot when the shot
+        // will actually land near the aimpos. The hellion firecheck does NOT set AIMDIST (it fires once range/
+        // cool/ammo allow and lets the homing missile find its own way), so this gate is flag-driven. Modelled on
+        // the real impact-point distance, falling back to the geometric muzzle-line check with no engine services.
+        if ((p.FireCheckFlags & FireCheckAimDist) != 0)
+        {
+            if (Api.Services is not null)
+            {
+                if (st.DistImpactToAimPos > p.FireToleranceDist) return enemy;
+            }
+            else if (!OnTarget(st.ShotOrg, HeadWorldAngles(turret), st.AimPos, p.FireToleranceDist))
+            {
+                return enemy;
+            }
+        }
+
+        // Volley-status pre-ammo gate (QC turret_firecheck:937-941): at the START of a fresh burst
+        // (volly_counter == shot_volly) refuse to open fire unless there is enough ammo for the WHOLE volley
+        // (shot_dmg * shot_volly), so a burst is never started that the ammo pool can't finish.
+        if (p.ShotVolly > 1 && st.VollyCounter == p.ShotVolly && st.Ammo < p.ShotDamage * p.ShotVolly)
+            return enemy;
 
         Fire(turret, enemy, in p, fire);
         return enemy;
+    }
+
+    /// <summary>
+    /// Port of <c>turret_do_updates</c> (sv_turrets.qc): tracebox the muzzle's actual forward out to the aimpos
+    /// distance to learn what a shot would really hit (<see cref="TurretState.ImpactEnt"/>) and how far that
+    /// impact point lands from the intended aimpos (<see cref="TurretState.DistImpactToAimPos"/>, minus half the
+    /// target's bbox span like QC). No-op without engine services (the impact-entity firecheck branches are then
+    /// skipped, falling back to the geometric muzzle-line tolerance check).
+    /// </summary>
+    private static void UpdateImpact(Entity turret, Entity enemy, in TurretParams p)
+    {
+        TurretState st = State(turret);
+        if (Api.Services is null)
+        {
+            st.ImpactEnt = null;
+            st.DistImpactToAimPos = 0f;
+            // No trace headless: fall back to the straight muzzle->aimpos travel time (QC trace_endpos == aimpos
+            // when the path is clear). Keeps the flak fuse deterministic for tests that drive time by hand.
+            st.ImpactTime = p.ShotSpeed > 0f ? st.DistAimPos / p.ShotSpeed : 0f;
+            return;
+        }
+
+        Vector3 hull = new Vector3(1f, 1f, 1f);
+        Vector3 end = st.ShotOrg + st.ShotDir * st.DistAimPos;
+        TraceResult tr = Api.Trace.Trace(st.ShotOrg, -hull, hull, end, MoveFilter.Normal, turret);
+
+        // QC subtracts half the enemy's bbox span so a hit anywhere on the target body counts as on-aim.
+        Vector3 span = enemy.Maxs - enemy.Mins;
+        st.DistImpactToAimPos = (tr.EndPos - st.AimPos).Length() - 0.5f * span.Length();
+        if (st.DistImpactToAimPos < 0f) st.DistImpactToAimPos = 0f;
+        st.ImpactEnt = tr.Ent;
+
+        // QC sv_turrets.qc:523 tur_impacttime = vlen(tur_shotorg - trace_endpos) / shot_speed. The flak shell's
+        // fuse uses this so geometry between the muzzle and aimpos shortens the fuse to where it actually detonates.
+        st.ImpactTime = p.ShotSpeed > 0f ? (st.ShotOrg - tr.EndPos).Length() / p.ShotSpeed : 0f;
     }
 
     /// <summary>
@@ -730,6 +880,16 @@ public static class TurretAI
         turret.TakeResource(ResourceType.Health, take);
         turret.Health = turret.GetResource(ResourceType.Health);
 
+        // Headshake (QC turret_damage:228-234, TFL_DMG_HEADSHAKE): throw the head slightly off-aim on a hit,
+        // ±take on both pitch and yaw of the head-local angles (CSQC is told via TNSF_ANG). The next track tick
+        // slews it back, so it reads as a recoil flinch. Uses the post-friendlyfire-scaled `take` like Base.
+        TurretState stHit = State(turret);
+        if (stHit.HeadShake)
+        {
+            stHit.HeadAngles.X += (Prandom.Float() - 0.5f) * take;
+            stHit.HeadAngles.Y += (Prandom.Float() - 0.5f) * take;
+        }
+
         if (turret.Health <= 0f && turret.DeadState == DeadFlag.No)
         {
             // Fire the shared obituary/death bus (gametypes score, OnAnyDeath -> Die runs the blast + respawn).
@@ -762,7 +922,14 @@ public static class TurretAI
 
         if (st.NoRespawn)
         {
-            if (Api.Services is not null) Api.Entities.Remove(turret);
+            // QC turret_die NORESPAWN branch (sv_turrets.qc:185-189): since CSQC can't run an effect on a
+            // to-be-removed edict, the server fires the explosion FX + sound itself before deleting the turret.
+            if (Api.Services is not null)
+            {
+                Api.Sound.Play(turret, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav"); // SND_ROCKET_IMPACT
+                EffectEmitter.Emit("ROCKET_EXPLODE", turret.Origin);                          // EFFECT_ROCKET_EXPLODE
+                Api.Entities.Remove(turret);
+            }
             Forget(turret);
             return;
         }
@@ -859,10 +1026,19 @@ public readonly struct TurretParams
     public readonly bool AimSplash;         // TFL_AIM_SPLASH
     public readonly bool AimSimple;         // TFL_AIM_SIMPLE (aim at current pos, no lead)
 
-    // volley (QC shot_volly / shot_volly_refire / TFL_SHOOT_CLEARTARGET)
+    // volley (QC shot_volly / shot_volly_refire / TFL_SHOOT_CLEARTARGET / TFL_SHOOT_VOLLYALWAYS)
     public readonly int ShotVolly;
     public readonly float VollyRefire;
     public readonly bool ClearTarget;
+
+    /// <summary>
+    /// QC <c>TFL_SHOOT_VOLLYALWAYS</c> — once a burst has started it MUST complete even when the enemy is still
+    /// present but has slipped inside <see cref="RangeMin"/> or off the muzzle line. Base
+    /// <c>turret_firecheck:889</c> early-returns true when <c>volly_counter != shot_volly &amp;&amp; ammo &gt;= shot_dmg</c>,
+    /// skipping DISTANCES, AFF, and AIMDIST gates. <see cref="RunCombat"/> mirrors this when this flag is set.
+    /// The enemy-null mid-burst case is handled separately by the per-turret <see cref="Turret.Think"/> override.
+    /// </summary>
+    public readonly bool VollyAlways;
 
     // target scoring biases (QC target_select_*bias)
     public readonly float RangeBias;
@@ -880,15 +1056,21 @@ public readonly struct TurretParams
     // defendmode (QC tur_defend.origin) — scores targets by closeness to a point to defend
     public readonly Vector3? DefendPoint;
 
+    // QC firecheck_flags (turret.qh TFL_FIRECHECK_*) — which fire-gate checks the unit's turret_firecheck runs.
+    // Defaults to TurretAI.FireCheckDefault (the framework default: AIMDIST on, AFF off), so a turret that does
+    // not pass its own flags keeps the previous fire-gate behaviour unchanged.
+    public readonly int FireCheckFlags;
+
     public TurretParams(int selectFlags, float rangeMin, float rangeMax, float shotDamage, float refire,
         float aimSpeed, float fireToleranceDist, bool lead,
         int shotVolly = 0, float vollyRefire = 0f,
         float rangeOptimal = 0f, float shotSpeed = 0f, float aimMaxPitch = 20f, float aimMaxRot = 90f,
         bool shotTimeCompensate = false, bool zPredict = false, bool aimSplash = false, bool aimSimple = false,
-        bool clearTarget = false,
+        bool clearTarget = false, bool vollyAlways = false,
         float rangeBias = 1f, float sameBias = 1f, float angleBias = 1f, float missileBias = 1f, float playerBias = 1f,
         int trackType = TurretAI.TrackFluidInertia, float trackAccelPitch = 0.5f, float trackAccelRot = 0.5f,
-        float trackBlendRate = 0.35f, Vector3? defendPoint = null)
+        float trackBlendRate = 0.35f, Vector3? defendPoint = null,
+        int fireCheckFlags = TurretAI.FireCheckDefault)
     {
         SelectFlags = selectFlags;
         RangeMin = rangeMin;
@@ -909,6 +1091,7 @@ public readonly struct TurretParams
         ShotVolly = shotVolly;
         VollyRefire = vollyRefire;
         ClearTarget = clearTarget;
+        VollyAlways = vollyAlways;
         RangeBias = rangeBias;
         SameBias = sameBias;
         AngleBias = angleBias;
@@ -919,5 +1102,6 @@ public readonly struct TurretParams
         TrackAccelRot = trackAccelRot;
         TrackBlendRate = trackBlendRate;
         DefendPoint = defendPoint;
+        FireCheckFlags = fireCheckFlags;
     }
 }

@@ -37,11 +37,48 @@ public sealed class Golem : Monster
     public float SpeedRun = 320f;           // g_monster_golem_speed_run
     public float SpeedStop = 300f;          // g_monster_golem_speed_stop
 
+    // METHOD(Golem, mr_pain) — golem.qc:240: actor.pain_finished = time + 0.5 (the golem holds its pain
+    // reaction the full anim_pain1/pain2 '7/8 1 2' window of 0.5s, wider than the generic 0.34s).
+    public override float PainWindow => 0.5f;
+
+    // The golem voice pack ships under sound/monsters/golem/ (subdir, NOT a flat monsters/golem_<cue> path),
+    // with the group counts from models/monsters/golem.dpm_0.sounds: death 3, pain 2, idle 2, sight/melee 0
+    // (bare name). //spawn and //ranged are commented out there, so those cues resolve to nothing in Base —
+    // they are deliberately ABSENT from SoundCues below.
+    public override int SoundCueCount(string cue) => cue switch
+    {
+        "death" => 3,   // golem.dpm_0.sounds: death sound/monsters/golem/death 3
+        "pain" => 2,    // pain sound/monsters/golem/pain 2
+        "idle" => 2,    // idle sound/monsters/golem/idle 2
+        _ => 0,         // sight / melee: count 0 (bare name)
+    };
+
+    // METHOD(Golem, mr_anim) — golem.qc:253. The golem MD3 (models/monsters/golem.dpm) frame-group layout
+    // (first component of each animfixfps vector = the group start index QC stamps onto .frame):
+    //   anim_idle '0 1 1'  anim_walk '1 1 1'  anim_run '2 1 1'  anim_melee2 '4 1 5'  anim_melee3 '5 1 5'
+    //   anim_melee1 '6 1 5'  anim_pain1 '7 1 2'  anim_pain2 '8 1 2'  anim_spawn '12 1 5'
+    //   anim_die1 '13 1 0.5'  anim_die2 '15 1 0.5'
+    // The Attack phase covers both the melee combo (melee2/melee3) and the ranged smash (melee1); we play the
+    // melee2 group (4) as the representative attack, as the close-range claw combo is the golem's primary tell.
+    public override float? AnimFrame(MonsterAnimPhase phase, bool die2) => phase switch
+    {
+        MonsterAnimPhase.Idle => 0f,    // anim_idle '0 1 1'
+        MonsterAnimPhase.Walk => 1f,    // anim_walk '1 1 1'
+        MonsterAnimPhase.Run => 2f,     // anim_run '2 1 1'
+        MonsterAnimPhase.Attack => 4f,  // anim_melee2 '4 1 5' (claw combo; smash uses melee1 '6')
+        MonsterAnimPhase.Pain => 7f,    // anim_pain1 '7 1 2'
+        MonsterAnimPhase.Death => die2 ? 15f : 13f, // anim_die1 '13 …' -> anim_die2 '15 …'
+        _ => 0f,
+    };
+
     public Golem()
     {
         NetName = "golem";
         DisplayName = "Golem";
         Model = "models/monsters/golem.dpm";
+        // Voice cues DEFINED (uncommented) in models/monsters/golem.dpm_0.sounds: death/sight/melee/pain/idle.
+        // //ranged and //spawn are commented out there -> empty sample -> Base golem plays NOTHING for those.
+        SoundCues = new System.Collections.Generic.HashSet<string> { "death", "sight", "melee", "pain", "idle" };
         StartHealth = 650f;                 // g_monster_golem_health
         Damage = 60f;                       // claw damage
         Speed = 320f;                       // run speed
@@ -60,9 +97,11 @@ public sealed class Golem : Monster
         st.DamageForceScale = MonsterAI.Cvar("g_monster_golem_damageforcescale", 0.1f);
         st.MonsterLoot = MonsterAI.CvarString("g_monster_golem_loot", "health_mega electro");
 
-        // golem.qc mr_setup: spawn animation gating + MON_FLAG_SUPERMONSTER spawn-shield. anim_spawn '12 1 5'
-        // ≈ 0.2s; gate the brain and apply a matching spawn shield (Setup already applied the default one).
-        float spawnAnim = 0.2f;
+        // golem.qc mr_setup: setanim(anim_spawn); spawn_time = animstate_endtime, gating the brain + applying a
+        // matching spawn shield. anim_spawn '12 1 5' is '<group> <framecount> <fps>' => duration framecount/fps
+        // = 1/5 = 0.2s (same convention as anim_pain '7 1 2' => 0.5s, anim_die '13 1 0.5' => 2s). So the 0.2s
+        // gate IS the QC-derived animstate_endtime, not a guess. Setup already applied the default spawn shield.
+        float spawnAnim = 1f / 5f; // anim_spawn '12 1 5': framecount(1) / fps(5)
         st.SpawnTime = MonsterAI.Now + spawnAnim;
         MonsterFramework.ApplyFor(MonsterFramework.SpawnShield, e, spawnAnim);
         st.Anim = MonsterAI.MonsterAnim.Idle;
@@ -89,8 +128,9 @@ public sealed class Golem : Monster
             // MONSTER_ATTACK_MELEE -> a combo of 1..3 claw swings, 0.5s apart (QC Monster_Delay swing_cnt).
             if (MonsterAI.Now < st.AttackFinished) return;
             int swings = System.Math.Clamp((int)MathF.Floor(MonsterRandom.Next() * 4f), 1, 3);
-            // golem.qc M_Golem_Attack_Swing: each claw swing is DEATH_MONSTER_GOLEM_CLAW.
-            MonsterAI.QueueCombo(e, st, swings, ClawDamage, DeathTypes.MonsterGolemClaw);
+            // golem.qc M_Golem_Attack_Swing: each claw swing is DEATH_MONSTER_GOLEM_CLAW with a 0.8s per-swing
+            // animtime (the Monster_Attack_Melee attack_finished window); cadence stays 0.5s × swing count.
+            MonsterAI.QueueCombo(e, st, swings, ClawDamage, DeathTypes.MonsterGolemClaw, perSwingAnimTime: 0.8f);
         }
         else
         {
@@ -115,6 +155,9 @@ public sealed class Golem : Monster
     {
         st.AttackDelay = MonsterAI.Now + 3f + MonsterRandom.Next() * 1.5f; // golem_lastattack
         float skill = MonsterAI.SkillMod(st);
+        // QC Monster_Attack_Check:478 — the ranged dispatch returns attack_success==1, so the melee voice cue
+        // fires once here at dispatch (not on the deferred blast).
+        MonsterAI.PlayMeleeCue(e, st);
 
         MonsterAI.QueueDelayedAttack(e, st, windUp: 1.1f, totalLock: 1.4f, action: self =>
         {
@@ -135,6 +178,8 @@ public sealed class Golem : Monster
     {
         st.AttackDelay = MonsterAI.Now + 3f + MonsterRandom.Next() * 1.5f; // golem_lastattack
         float skill = MonsterAI.SkillMod(st);
+        // QC Monster_Attack_Check:478 — ranged dispatch returns attack_success==1, fire the melee voice cue here.
+        MonsterAI.PlayMeleeCue(e, st);
         // golem.qc: the thrown chunk's projectiledeathtype + its chained zaps are DEATH_MONSTER_GOLEM_ZAP.
         string zapDeath = DeathTypes.MonsterGolemZap;
 

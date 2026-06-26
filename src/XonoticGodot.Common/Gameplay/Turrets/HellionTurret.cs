@@ -60,6 +60,12 @@ public sealed class HellionTurret : Turret
     private const int Select = TurretAI.SelectLos | TurretAI.SelectPlayers | TurretAI.SelectRangeLimits
                              | TurretAI.SelectTeamCheck | TurretAI.SelectMissiles;
 
+    // QC hellion.qc:22 firecheck_flags = DEAD | DISTANCES | TEAMCHECK | REFIRE | AFF | AMMO_OWN. Notably there is
+    // NO AIMDIST (it fires once range/cool/ammo allow, even without a clear muzzle line — the homing missile finds
+    // its own way) and NO LOS in the fire gate; it DOES add AFF (withhold a shot that would land on a teammate).
+    private const int FireCheck = TurretAI.FireCheckDead | TurretAI.FireCheckDistances | TurretAI.FireCheckTeamCheck
+                                | TurretAI.FireCheckRefire | TurretAI.FireCheckAff | TurretAI.FireCheckAmmoOwn;
+
     public HellionTurret()
     {
         NetName = "hellion";
@@ -71,17 +77,26 @@ public sealed class HellionTurret : Turret
 
     public override void Spawn(Entity e)
         => TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
-            AmmoMax, AmmoRecharge, ShotVolly, respawnTime: RespawnTime);
+            AmmoMax, AmmoRecharge, ShotVolly, respawnTime: RespawnTime, energyAmmo: false);
 
     public override void Think(Entity e)
     {
+        // tr_think (hellion.qc:11-17): once the launcher is spinning (kicked by a shot), cycle the head frame 1..6
+        // continuously, wrapping back to 0 at >= 7. Server-authoritative (QC nets tur_head.frame); the visual head
+        // bone is client-render. Run every think before the combat brain, as QC's turret_think does. Base drives a
+        // separate tur_head entity's frame; the port has no head bone entity so the cycle runs on the turret edict's
+        // own frame (the same pattern HkTurret uses).
+        if (e.Frame != 0f) e.Frame += 1f;
+        if (e.Frame >= 7f) e.Frame = 0f;
+
         // TFL_AIM_SIMPLE -> aim at the target's current pos (the missile homes). Two-shot volley, long refire.
         var p = new TurretParams(Select, TargetRangeMin, TargetRange, ShotDamage, ShotRefire,
             AimSpeed, FireTolerance, lead: false, ShotVolly, ShotVollyRefire,
             rangeOptimal: TargetRangeOptimal, shotSpeed: ShotSpeed, aimMaxPitch: AimMaxPitch, aimMaxRot: AimMaxRot,
             rangeBias: RangeBias, sameBias: SameBias, angleBias: AngleBias, missileBias: MissileBias, playerBias: PlayerBias,
             aimSimple: true, trackType: TurretAI.TrackFluidInertia,
-            trackAccelPitch: TrackAccelPitch, trackAccelRot: TrackAccelRot, trackBlendRate: TrackBlendRate);
+            trackAccelPitch: TrackAccelPitch, trackAccelRot: TrackAccelRot, trackBlendRate: TrackBlendRate,
+            fireCheckFlags: FireCheck);
         TurretAI.RunCombat(e, in p, Attack);
     }
 
@@ -108,7 +123,14 @@ public sealed class HellionTurret : Turret
         if (Api.Services is not null)
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/rocket_fire.wav");
 
-        // NOTE (client-render): the two-launch-tag alternation (tag_fire / tag_fire2) + PROJECTILE_ROCKET
-        // trail + smoke. The server-side fire (hellion_weapon.qc) is done above.
+        // hellion_weapon.qc:41-42 (turret branch): ++actor.tur_head.frame — kick the launcher spin on each shot,
+        // which starts the tr_think frame cycle (idle frame 0 -> spinning 1..6). Unconditional (unlike HK's
+        // start-once kick); Base nets this to clients for the spinning-launcher animation. Server-authoritative.
+        turret.Frame += 1f;
+
+        // NOTE (client-render): the two-cannon muzzle-tag alternation (hellion_weapon.qc:28-31 selects tag_fire
+        // when tur_head.frame != 0 else tag_fire2) and the PROJECTILE_ROCKET trail + te_explosion launch puff +
+        // smoke. Those need the attached head bone / model tags (not modeled here); the muzzle origin uses the
+        // single computed st.ShotOrg. The server-side frame state (above) is now faithful.
     }
 }

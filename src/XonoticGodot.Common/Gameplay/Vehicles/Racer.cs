@@ -50,6 +50,7 @@ public sealed class Racer : Vehicle
     public float WaterDownForce = 0.03f;  // g_vehicle_racer_water_downforce
     public int HoverType = 0;             // g_vehicle_racer_hovertype (0=hover, !=0=maglev)
     public float ThinkRate = 0.05f;       // g_vehicle_racer_thinkrate
+    public float WaterTime = 5f;          // g_vehicle_racer_water_time (submerged air-meter length)
     public float BounceFactor = 0.25f;    // g_vehicle_racer_bouncefactor (engine MOVETYPE_BOUNCE restitution)
     public float BounceStop = 0f;         // g_vehicle_racer_bouncestop (0 -> engine default 60/800)
 
@@ -90,6 +91,11 @@ public sealed class Racer : Vehicle
     public float BlowupCoreDamage = 250f; // g_vehicle_racer_blowup_coredamage
     public float BlowupEdgeDamage = 15f;  // g_vehicle_racer_blowup_edgedamage
     public float BlowupForce = 250f;      // g_vehicle_racer_blowup_forceintensity
+
+    // QC plays the engine loop and the boost on CH_TRIGGER_SINGLE; the port keeps them on two distinct single
+    // channels (the boost loop on its own so the SND_Null stop on release doesn't kill the engine idle/move loop).
+    private const SoundChannel EngineSoundChannel = SoundChannel.Body;   // racer_move / racer_idle loop
+    private const SoundChannel BoostSoundChannel = SoundChannel.Weapon;  // racer_boost (QC on .tur_head)
 
     public Racer()
     {
@@ -132,6 +138,7 @@ public sealed class Racer : Vehicle
         WaterDownForce = Get("g_vehicle_racer_water_downforce", WaterDownForce);
         HoverType = (int)Get("g_vehicle_racer_hovertype", HoverType);
         ThinkRate = Get("g_vehicle_racer_thinkrate", ThinkRate);
+        WaterTime = Get("g_vehicle_racer_water_time", WaterTime);
         BounceFactor = Get("g_vehicle_racer_bouncefactor", BounceFactor);
         // BounceStop default is 0 (engine default); Get() can't override to 0 so the field default stands.
 
@@ -193,6 +200,7 @@ public sealed class Racer : Vehicle
         // MOVETYPE_BOUNCE integrator reads these off the edict once the racer is entered (vr_enter -> BOUNCE).
         vehicle.BounceFactor = BounceFactor;
         vehicle.BounceStop = BounceStop;
+        vehicle.Mass = 900f;                  // QC vr_spawn: instance.mass = 900 (scales blast knockback)
         vehicle.DamageForceScale = 0.5f;      // QC vr_spawn: instance.damageforcescale = 0.5
         // QC vr_spawn does NOT reset .touch — vehicles_spawn's this.touch = vehicles_touch stands, so the shared
         // crush / ram-impact (vr_impact) dispatch runs. (VehicleCommon.SpawnVehicle already wired vehicle.Touch.)
@@ -238,9 +246,9 @@ public sealed class Racer : Vehicle
         player.VehicleShield = vehicle.VehicleShield / MaxShield * 100f;
         player.VehicleEnergy = vehicle.VehicleEnergy / MaxEnergy * 100f;
 
-        // QC vr_enter: a boarding CTF flag-carrier's flag is parked at '-190 0 96'.
-        // TODO(port,cross-file): no player.FlagCarried link / CTF carried-flag entity exposed to vehicles yet;
-        //                        needs a shared seam (Entity.FlagCarried + setorigin) — recorded for Wave-3.
+        // QC vr_enter: a boarding CTF flag-carrier's flag is parked at '-190 0 96'. The carried-flag
+        // reposition is owned by Ctf.Tick, which now anchors a carrier-in-a-vehicle's flag to the vehicle at
+        // that cockpit offset each tick (player.Vehicle != null), so it rides the craft from this Enter on.
 
         // The Racer is driven by the player's per-frame physics plug (Frame), not its own think, while
         // occupied. Think still runs for regen/glue via the owner branch.
@@ -278,7 +286,8 @@ public sealed class Racer : Vehicle
             }
             spot = VehicleCommon.FindGoodExit(vehicle, player, spot);
         }
-        // QC also sets owner.oldvelocity = owner.velocity (fall-damage negation); OldVelocity isn't modeled.
+        // QC racer_exit: owner.oldvelocity = owner.velocity (fall-damage negation on dismount).
+        player.OldVelocity = player.Velocity;
 
         VehicleCommon.ExitVehicle(vehicle, player, dying ? VehicleExitFlag.Eject : VehicleExitFlag.Normal);
         if (Api.Services is not null)
@@ -354,9 +363,17 @@ public sealed class Racer : Vehicle
     /// </summary>
     public void Frame(Entity vehicle, Entity player, in MovementInput input, float dt)
     {
-        if (VehicleCommon.IsDead(vehicle)) return;
-
         bool inLiquid = vehicle.WaterLevel > 0 || VehiclePhysics.InLiquid(vehicle.Origin);
+
+        // QC racer_frame water-air timer: out of water clears racer_air_finished; the first tick submerged
+        // arms the 5s air meter (time + water_time). Runs even while dead/parked (matches the QC order, before
+        // the IS_DEAD early-out).
+        if (!inLiquid)
+            vehicle.VehAirFinished = 0f;
+        else if (vehicle.VehAirFinished == 0f)
+            vehicle.VehAirFinished = Time + WaterTime;
+
+        if (VehicleCommon.IsDead(vehicle)) return;
 
         // --- 4-point engine spring (racer_align4point) -------------------------------------------------
         Align4Point(vehicle, input, dt, inLiquid);
@@ -385,6 +402,7 @@ public sealed class Racer : Vehicle
         Vector3 df = vehicle.Velocity * -Friction;
 
         Vector3 move = input.MoveValues;
+        bool hasMove = move.X != 0f || move.Y != 0f;
         if (move.X != 0f)
         {
             float spd = inLiquid ? WaterSpeedForward : SpeedForward;
@@ -396,10 +414,39 @@ public sealed class Racer : Vehicle
             df += right * (move.Y > 0f ? spd : -spd);
         }
 
+        // Engine-sound state machine (QC racer_frame, gated on .sound_nexttime): the move loop while the pilot
+        // is feeding wishmove (sounds=1, 10.92s), else the idle loop (sounds=0, 11.89s). Re-emitting the same
+        // loop on its (entity, channel) is idempotent on the facade, so this just swaps loops at the gate.
+        if (Api.Services is not null)
+        {
+            if (hasMove)
+            {
+                if (vehicle.VehSoundNextTime < Time || vehicle.VehSoundState != 1)
+                {
+                    vehicle.VehSoundState = 1;
+                    vehicle.VehSoundNextTime = Time + 10.922667f; // soundlength("vehicles/racer_move.wav")
+                    Api.Sound.Play(vehicle, EngineSoundChannel, "vehicles/racer_move.wav", loop: true);
+                }
+            }
+            else
+            {
+                if (vehicle.VehSoundNextTime < Time || vehicle.VehSoundState != 0)
+                {
+                    vehicle.VehSoundState = 0;
+                    vehicle.VehSoundNextTime = Time + 11.888604f; // soundlength("vehicles/racer_idle.wav")
+                    Api.Sound.Play(vehicle, EngineSoundChannel, "vehicles/racer_idle.wav", loop: true);
+                }
+            }
+        }
+
         // Afterburn on jump (energy-gated). QC drains afterburn_cost/sec (or waterburn in liquid).
         if (input.ButtonJump && vehicle.VehicleEnergy >= AfterburnCost * dt)
         {
+            // QC also pops an EFFECT_RACER_BOOSTER puff (every 0.2s off .wait, BEFORE wait is reset below) and
+            // an under-craft smoke trail (gated off .invincible_finished). Both are particle presentation with
+            // no Common-layer facade — deferred to the client render, same as every other EFFECT_* here.
             vehicle.VehWait = Time; // reset the energy regen-pause
+
             if (inLiquid)
             {
                 vehicle.VehicleEnergy -= WaterburnCost * dt;
@@ -410,12 +457,22 @@ public sealed class Racer : Vehicle
                 vehicle.VehicleEnergy -= AfterburnCost * dt;
                 df += forward * SpeedAfterburn;
             }
-            if (Api.Services is not null)
-                Api.Sound.Play(vehicle, SoundChannel.Auto, "vehicles/racer_boost.wav");
+
+            // QC: the boost sound is reused with .strength_finished as a 10.92s loop-length delay so it isn't
+            // restarted every tick. Plays on the vehicle (no tur_head sub-entity in the port).
+            if (Api.Services is not null && vehicle.VehBoostSoundTime < Time)
+            {
+                vehicle.VehBoostSoundTime = Time + 10.922667f; // soundlength("vehicles/racer_boost.wav")
+                Api.Sound.Play(vehicle, BoostSoundChannel, "vehicles/racer_boost.wav");
+            }
             vehicle.Effects |= VehicleEffects.Boosting; // networked: the client overlays the boost engine sound
         }
         else
         {
+            // QC not-boosting branch: clear the boost-sound delay and issue SND_Null to stop the loop.
+            vehicle.VehBoostSoundTime = 0f;
+            if (Api.Services is not null)
+                Api.Sound.Stop(vehicle, BoostSoundChannel);
             vehicle.Effects &= ~VehicleEffects.Boosting;
         }
 
@@ -423,8 +480,11 @@ public sealed class Racer : Vehicle
         if (input.ButtonAttack1) vehicle.Effects |= VehicleEffects.Firing;
         else vehicle.Effects &= ~VehicleEffects.Firing;
 
-        // Downforce (QC: stronger right after leaving water).
-        float dforce = inLiquid ? WaterDownForce : DownForce;
+        // QC racer_frame: stamp racer_watertime while in a liquid; the heavy water downforce then persists for
+        // 3s AFTER leaving the water (a ramp-out), not just while submerged.
+        if (inLiquid)
+            vehicle.VehWaterTime = Time;
+        float dforce = (Time - vehicle.VehWaterTime <= 3f) ? WaterDownForce : DownForce;
         df -= up * (QMath.VLen(vehicle.Velocity) * dforce);
 
         vehicle.Velocity += df * dt;
@@ -434,7 +494,7 @@ public sealed class Racer : Vehicle
         if (input.ButtonAttack1 && vehicle.VehicleEnergy >= CannonCost && Time >= vehicle.VehAttackFinished)
         {
             vehicle.VehAttackFinished = Time + CannonRefire;
-            FireCannon(vehicle, player);
+            FireCannon(vehicle, player, input.ViewAngles);
         }
 
         // Rocket lock-on (racer_frame): trace the crosshair and build/decay the lock.
@@ -457,6 +517,7 @@ public sealed class Racer : Vehicle
             if (vehicle.VehBulletCounter == 1)
             {
                 FireRocket(vehicle, player, "tag_rocket_r", targ);
+                player.VehAmmo2 = 50f; // QC: half the rocket pair spent
             }
             else if (vehicle.VehBulletCounter >= 2)
             {
@@ -465,18 +526,23 @@ public sealed class Racer : Vehicle
                 vehicle.VehLockTarget = null;
                 vehicle.VehBulletCounter = 0;
                 vehicle.VehWeaponDelay = Time + RocketRefire;
-                vehicle.VehReloadStart = Time;
+                vehicle.VehReloadStart = Time; // QC .lip — start of the reload bar
+                player.VehAmmo2 = 0f; // QC: both rockets spent
             }
         }
+        else if (vehicle.VehBulletCounter == 0)
+        {
+            player.VehAmmo2 = 100f; // QC: idle, full secondary ammo
+        }
 
-        // TODO(port,client): qcsrc/common/vehicles/vehicle/racer.qc racer_frame — engine move/idle/boost sound
-        //                    selection, EFFECT_RACER_BOOSTER / smoke trails.
-        // TODO(port,cross-file): vehicle_ammo2 (100/50/0) + vehicle_reload2 progress-bar HUD mirror need new
-        //                    player fields (VehAmmo2 / VehReload2 on EntityVehicleStateExtra.cs). VehReloadStart
-        //                    (.lip) is already stamped on the pair-complete shot, ready to drive vehicle_reload2.
-        // TODO(port,cross-file): racer_watertime (3s post-water heavy-downforce ramp) + racer_air_finished (5s
-        //                    submerged air meter gating the crouch up-push 200->30) need dedicated per-entity
-        //                    timer fields; the current downforce/up-push key off the instantaneous liquid test.
+        // QC racer_frame: the reload progress bar runs from .lip (pair-complete) to .delay (next allowed shot).
+        float reloadSpan = vehicle.VehWeaponDelay - vehicle.VehReloadStart;
+        player.VehReload2 = reloadSpan > 0f
+            ? QMath.Bound(0f, 100f * (Time - vehicle.VehReloadStart) / reloadSpan, 100f)
+            : 100f;
+
+        // TODO(port,client): qcsrc/common/vehicles/vehicle/racer.qc racer_frame — EFFECT_RACER_BOOSTER booster
+        //                    puff + under-craft smoke trail (particle presentation; no Common-layer facade).
     }
 
     /// <summary>Port of <c>racer_align4point</c>: four engine springs + the resulting upward push and pitch/roll torque.</summary>
@@ -494,8 +560,11 @@ public sealed class Racer : Vehicle
         float uforce = inLiquid ? WaterUpForceDamper : UpForceDamper;
         if (inLiquid)
         {
+            // QC racer_align4point: while there's still air left (crouch + time < racer_air_finished) the
+            // crouch-dive up-push is the gentle 30; once the 5s air meter has run out it reverts to 200.
+            bool diving = input.ButtonCrouch && Time < vehicle.VehAirFinished;
             Vector3 v = vehicle.Velocity;
-            v.Z += input.ButtonCrouch ? 30f : 200f;
+            v.Z += diving ? 30f : 200f;
             vehicle.Velocity = v;
         }
 
@@ -609,18 +678,20 @@ public sealed class Racer : Vehicle
     // ============================ WEAPONS ============================
 
     // METHOD(RacerAttack, wr_think) fire&1 — racer_weapon.qc: the rapid energy laser cannon.
-    /// <summary>Fire the primary laser cannon (one energy bolt; QC W_SetupShot + vehicles_projectile, alternating muzzle tags).</summary>
-    public void FireCannon(Entity vehicle, Entity player)
+    /// <summary>
+    /// Fire the primary laser cannon (one energy bolt). On the PILOTED path (the only path the port drives)
+    /// QC takes the shot from <c>W_SetupShot_Dir(player, v_forward)</c> — the player's aim — and does NOT
+    /// alternate the muzzle tags (the <c>tag_fire1</c>/<c>tag_fire2</c> swap via <c>veh.cnt</c> is bot-only).
+    /// </summary>
+    public void FireCannon(Entity vehicle, Entity player, Vector3 viewAngles)
     {
         if (vehicle.VehicleEnergy < CannonCost) return; // wr_checkammo1
         vehicle.VehicleEnergy -= CannonCost;
         vehicle.VehWait = Time; // reset energy regen-pause
 
-        QMath.AngleVectors(vehicle.Angles, out Vector3 forward, out Vector3 right, out Vector3 up);
-        // Alternate the two fire tags (QC veh.cnt toggles tag_fire1/tag_fire2).
-        vehicle.VehSoundState = vehicle.VehSoundState == 1 ? 0 : 1;
-        string tag = vehicle.VehSoundState == 1 ? "tag_fire1" : "tag_fire2";
-        Vector3 org = VehiclePhysics.TagOrigin(vehicle, tag, new Vector3(80f, vehicle.VehSoundState == 1 ? 16f : -16f, 0f));
+        // QC piloted W_SetupShot_Dir: shot direction is the player's view forward, fired from the cannon muzzle.
+        QMath.AngleVectors(viewAngles, out Vector3 forward, out Vector3 right, out Vector3 up);
+        Vector3 org = VehiclePhysics.TagOrigin(vehicle, "tag_fire1", new Vector3(80f, 0f, 0f));
 
         // Spread cone around forward (deterministic PRNG, ADR-0010).
         Vector3 vel = Prandom.Spread(forward, right, up, CannonSpread) * CannonSpeed;

@@ -184,6 +184,11 @@ namespace XonoticGodot.Common.Gameplay
         /// </summary>
         public static bool IsPushable(Entity e)
         {
+            // QC isPushable (triggers.qc:5): `if (e.pushable) return true;` is checked FIRST, before the
+            // IS_VEHICLE exclusion — so an entity that opts in (the spiderbot's vr_setup sets pushable=true)
+            // rides jumppads/conveyors despite being a vehicle.
+            if (e.PushableFlag)
+                return true;
             // QC IS_VEHICLE(e) -> false. Vehicles carry neither Client nor Monster here.
             if (e.ClassName is "vehicle" || e.ClassName.StartsWith("vehicle_", System.StringComparison.Ordinal))
                 return false;

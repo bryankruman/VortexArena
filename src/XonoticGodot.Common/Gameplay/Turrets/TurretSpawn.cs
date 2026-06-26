@@ -42,7 +42,8 @@ public static class TurretSpawn
     /// </summary>
     public static TurretState Init(Turret def, Entity e, Vector3 mins, Vector3 maxs,
         float ammoMax, float ammoRecharge, int shotVolly,
-        float respawnTime = 60f, bool noRespawn = false, bool movable = false)
+        float respawnTime = 60f, bool noRespawn = false, bool movable = false, bool energyAmmo = true,
+        bool headShake = false)
     {
         e.ClassName = "turret_" + def.NetName;
         e.NetName = def.NetName;
@@ -68,12 +69,14 @@ public static class TurretSpawn
         st.AmmoMax = ammoMax;
         st.AmmoRecharge = ammoRecharge;
         st.Ammo = ammoMax;
+        st.AmmoIsEnergy = energyAmmo;   // QC ammo_flags & TFL_AMMO_ENERGY (fusion reactor only feeds energy recipients)
         st.VollyCounter = shotVolly > 1 ? shotVolly : 1;
         st.AttackFinished = 0f;
         st.Active = true;
         st.RespawnTime = respawnTime;
         st.NoRespawn = noRespawn;
         st.Movable = movable;
+        st.HeadShake = headShake;   // QC damage_flags & TFL_DMG_HEADSHAKE
         st.IdleAim = Vector3.Zero;
         st.HeadAngles = Vector3.Zero;
         st.HeadAVelocity = Vector3.Zero;

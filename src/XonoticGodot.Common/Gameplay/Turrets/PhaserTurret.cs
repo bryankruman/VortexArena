@@ -28,6 +28,7 @@ public sealed class PhaserTurret : Turret
     private const float ShotSpeed = 4f;           // beam DURATION in seconds (QC overloads shot_speed)
     private const float ShotForce = 5f;
     private const float ShotRefire = 4f;
+    private const float RespawnTime = 90f;        // turrets.cfg g_turrets_unit_phaser_respawntime (NOT the shared 60s default)
     private const float VelFactor = 0.75f;        // per-tick slow (QC FireImoBeam f_velfactor)
     private const float TargetRange = 3000f;
     private const float HumPeriod = 2f;           // phaser_weapon.qc: re-trigger SND_TUR_PHASER every 2s (shot_spread clock)
@@ -58,15 +59,18 @@ public sealed class PhaserTurret : Turret
 
     public override void Spawn(Entity e)
         => TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
-            AmmoMax, AmmoRecharge, shotVolly: 0);
+            AmmoMax, AmmoRecharge, shotVolly: 0, respawnTime: RespawnTime);
 
     public override void Think(Entity e)
     {
+        // phaser.qc tr_setup: aim_flags = TFL_AIM_LEAD ONLY — no SHOTTIMECOMPENSATE, no ZPREDICT, no SPLASH.
+        // The phaser is hitscan so shot-time compensation is moot, and Base deliberately omits z-prediction;
+        // both are left at their false defaults so the lead matches Base (esp. vs airborne targets).
         var p = new TurretParams(Select, TargetRangeMin, TargetRange, ShotDamage, ShotRefire,
             AimSpeed, FireTolerance, lead: true,
             rangeOptimal: TargetRangeOptimal, shotSpeed: 35000f /*beam is hitscan for lead*/,
             aimMaxPitch: AimMaxPitch, aimMaxRot: AimMaxRot,
-            shotTimeCompensate: true, zPredict: true, trackType: TurretAI.TrackFluidInertia);
+            trackType: TurretAI.TrackFluidInertia);
         TurretAI.RunCombat(e, in p, Attack);
     }
 
@@ -122,6 +126,11 @@ public sealed class PhaserTurret : Turret
         if (now > endTime || turret.IsFreed || turret.DeadState != DeadFlag.No)
         {
             // End of beam: silence the hum (QC sound(this, CH_SHOTS_SINGLE, SND_Null)), set the real refire, remove.
+            // QC beam_think also sets fireflag=2 here, which turret_phaser_firecheck keeps non-firing through the
+            // discharge head animation (frame 10->15, ~5 tr_think frames). That discharge window (~0.07s) is wholly
+            // subsumed by this shot_refire hold (4s), the only refire gate the port consults (TurretAI:627), so the
+            // firecheck guard is faithful without a separate fireflag state — the head-frame anim itself is the
+            // (client-render) presentation gap tracked elsewhere.
             if (Api.Services is not null) Api.Sound.Stop(beam, BeamHumChannel);
             if (!turret.IsFreed) TurretAI.State(turret).AttackFinished = now + ShotRefire;
             if (Api.Services is not null) Api.Entities.Remove(beam);
@@ -143,19 +152,36 @@ public sealed class PhaserTurret : Turret
         Vector3 start = st.ShotOrg;
         Vector3 end = start + dir * TargetRange;
 
-        // FireImoBeam (util.qc): a thick beam to the first hit; damage + slow it (velocity *= velfactor).
+        // FireImoBeam (util.qc): a railgun-style PENETRATING thick beam. Trace repeatedly, making each hit
+        // entity non-solid and continuing until a world brush (SOLID_BSP) or empty trace, then damage + slow
+        // EVERY entity collected along the line (no falloff) — so players lined up behind one another are all hit.
         if (Api.Services is not null)
         {
             Vector3 half = new Vector3(ShotRadius, ShotRadius, ShotRadius);
-            TraceResult tr = Api.Trace.Trace(start, -half, half, end, MoveFilter.Normal, turret);
-            Entity? hit = tr.Ent;
-            if (hit is not null && hit.TakeDamage != DamageMode.No)
+            Vector3 traceEnd = end + dir;   // QC: go a little into the wall so the final trace registers it
+            var pierced = new List<(Entity ent, Vector3 loc, Solid solid)>();
+            Vector3 cur = start;
+            for (int guard = 0; guard < 64; ++guard)
             {
+                TraceResult tr = Api.Trace.Trace(cur, -half, half, traceEnd, MoveFilter.Normal, turret);
+                Entity? hit = tr.Ent;
+                if (hit is null || tr.Fraction >= 1f) break;   // hit world / nothing -> stop
+                pierced.Add((hit, tr.EndPos, hit.Solid));
+                if (hit.Solid == Solid.Bsp) break;             // a world brush ends the beam
+                hit.Solid = Solid.Not;                          // make non-solid so the next trace passes through
+                cur = tr.EndPos;
+            }
+
+            // Restore solidity, then damage + slow everyone we passed through (QC: velocity *= f_velfactor).
+            foreach (var p in pierced) p.ent.Solid = p.solid;
+            foreach (var p in pierced)
+            {
+                if (p.ent.TakeDamage == DamageMode.No) continue;
                 // phaser_weapon.qc: the beam tick is DEATH_TURRET_PHASER.
-                Combat.Damage(hit, turret, turret, perTickDamage, DeathTypes.TurretPhaser,
-                    tr.EndPos, dir * ShotForce);
-                hit.Velocity *= VelFactor;     // QC FireImoBeam slow
-                ApplySlow(hit);                // optional status-effect layer
+                Combat.Damage(p.ent, turret, turret, perTickDamage, DeathTypes.TurretPhaser,
+                    p.loc, dir * ShotForce);
+                p.ent.Velocity *= VelFactor;   // QC FireImoBeam slow
+                ApplySlow(p.ent);              // optional status-effect layer
             }
         }
 

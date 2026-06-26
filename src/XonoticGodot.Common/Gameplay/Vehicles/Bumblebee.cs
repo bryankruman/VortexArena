@@ -362,9 +362,13 @@ public sealed class Bumblebee : Vehicle
         if (HealgunLockTime > 0f && vehicle.VehGun3 is not null)
         {
             Entity g3 = vehicle.VehGun3;
-            if (g3.VehLockTime < Time || (g3.Enemy is not null && VehicleCommon.IsDead(g3.Enemy))) g3.Enemy = null;
+            // QC bumblebee.qc:519: drop the lock when expired/dead OR the locked teammate is FROZEN (freezetag —
+            // a frozen player can't be healed; force a re-lock so the beam stops topping them up).
+            if (g3.VehLockTime < Time || (g3.Enemy is not null && (VehicleCommon.IsDead(g3.Enemy) || IsFrozen(g3.Enemy)))) g3.Enemy = null;
             Entity? te = tr.Ent;
-            if (te is not null && te.MoveType != MoveType.None && te.TakeDamage != DamageMode.No && !VehicleCommon.IsDead(te))
+            // QC bumblebee.qc:524: skip a FROZEN candidate when acquiring (don't lock onto a frozen teammate).
+            if (te is not null && te.MoveType != MoveType.None && te.TakeDamage != DamageMode.No
+                && !VehicleCommon.IsDead(te) && !IsFrozen(te))
             {
                 bool ok = VehiclePhysics.SameTeam(te, vehicle) || vehicle.Team == 0f;
                 if (ok) { g3.Enemy = te; g3.VehLockTime = Time + HealgunLockTime; }
@@ -510,6 +514,9 @@ public sealed class Bumblebee : Vehicle
         player.Velocity = Vector3.Zero;
         player.ViewOfs = Vector3.Zero;
         player.Flags &= ~EntFlags.OnGround;
+        // QC bumblebee_gunner_enter:334 — mirror the body's reload state onto the gunner (drives the aux-crosshair
+        // reload color). The bumblebee body never sets vehicle_reload1, so this is 0 (always "ready"/green).
+        player.VehicleReload1 = vehicle.VehicleReload1;
         gun.VehSlotPlayer = player;
         gun.Owner = vehicle;
         return true;
@@ -531,6 +538,8 @@ public sealed class Bumblebee : Vehicle
 
         gun.VehSlotPlayer = null;
         gun.VehPhase = Time + 5f; // re-entry delay
+        gun.VehGunnerLeadValid = false; // stop drawing this gun's aux crosshairs once the seat is empty
+        gun.VehGunnerHitValid = false;
 
         if (player is not null)
         {
@@ -572,9 +581,12 @@ public sealed class Bumblebee : Vehicle
         // Per-gun lock + lead.
         if (CannonLock != 0)
         {
-            if (gun.VehLockTime < Time || (gun.Enemy is not null && VehicleCommon.IsDead(gun.Enemy))) gun.Enemy = null;
+            // QC bumblebee.qc:113: drop the lock when expired/dead OR the locked enemy is FROZEN (freezetag).
+            if (gun.VehLockTime < Time || (gun.Enemy is not null && (VehicleCommon.IsDead(gun.Enemy) || IsFrozen(gun.Enemy)))) gun.Enemy = null;
             Entity? te = tr.Ent;
-            if (te is not null && te.MoveType != MoveType.None && te.TakeDamage != DamageMode.No && !VehicleCommon.IsDead(te))
+            // QC bumblebee.qc:119: skip a FROZEN candidate when acquiring (don't lock onto a frozen enemy).
+            if (te is not null && te.MoveType != MoveType.None && te.TakeDamage != DamageMode.No
+                && !VehicleCommon.IsDead(te) && !IsFrozen(te))
             {
                 bool diff = !VehiclePhysics.SameTeam(te, gunner) || vehic.Team == 0f;
                 if (diff) { gun.Enemy = te; gun.VehLockTime = Time + (vehic.Team != 0f ? 2.5f : 0.5f); }
@@ -588,7 +600,19 @@ public sealed class Bumblebee : Vehicle
                 Vector3 lead = gun.Enemy.Velocity;
                 if (gun.Enemy.MoveType == MoveType.Walk) lead.Z *= 0.1f;
                 aimAt = gun.Enemy.Origin + lead * impact; // lead
+
+                // QC bumblebee.qc:153 — the magenta '1 0 1' LEAD aux crosshair at the predicted impact point.
+                gun.VehGunnerLeadPoint = aimAt;
+                gun.VehGunnerLeadValid = true;
             }
+            else
+            {
+                gun.VehGunnerLeadValid = false;
+            }
+        }
+        else
+        {
+            gun.VehGunnerLeadValid = false;
         }
 
         VehiclePhysics.AimTurret(vehic, aimAt, gun, "fire",
@@ -602,9 +626,34 @@ public sealed class Bumblebee : Vehicle
             gun.VehWeaponDelay = Time; // QC: gun.delay = time (ammo regen pause)
             gun.VehAttackFinished = Time + CannonRefire;
         }
-        // TODO(port,client): qcsrc/common/vehicles/vehicle/bumblebee.qc bumblebee_gunner_frame — aux crosshairs,
-        //                    vehicle_ammo/HUD % mirroring to the gunner + pilot.
+
+        // QC bumblebee_gunner_frame tail (VEHICLE_UPDATE_PLAYER_RESOURCE/VEHICLE_UPDATE_PLAYER): mirror the
+        // body's 0..100 health/shield % + the gun's own cannon ammo % onto the GUNNER for their cockpit HUD.
+        gunner.VehicleHealth = vehic.GetResource(ResourceType.Health) / StartHealth * 100f;
+        if ((vehic.VehicleFlags & VehicleFlags.HasShield) != 0)
+            gunner.VehicleShield = vehic.VehicleShield / MaxShield * 100f;
+        gunner.VehicleAmmo1 = gun.VehicleEnergy / CannonAmmoMax * 100f; // QC this.vehicle_energy mirror
+        gunner.VehicleEnergy = gun.VehicleEnergy / CannonAmmoMax * 100f;
+
+        // QC bumblebee.qc:180-186 — the READY/reload aux crosshair (aux slot 0 on the gunner, slot 1/2 on the
+        // pilot) at the cannon's STRAIGHT-LINE hit point, tinted red*reload1 + green*(1-reload1). Trace from the
+        // "fire" tag straight ahead and publish the hit so both the gunner HUD and the pilot mirror can draw it.
+        var (fireOrg, fireFwd) = VehiclePhysics.TagOriginForward(gun, "fire");
+        Vector3 hit = fireOrg + fireFwd * 8192f;
+        if (Api.Trace is not null)
+        {
+            TraceResult ft = Api.Trace.Trace(fireOrg, Vector3.Zero, Vector3.Zero, hit, MoveFilter.Normal, gun);
+            hit = ft.EndPos;
+        }
+        gun.VehGunnerHitPoint = hit;
+        gun.VehGunnerHitValid = true;
     }
+
+    /// <summary>QC <c>STAT(FROZEN, e)</c> — true while a player is frozen (freezetag). Frozen targets cannot be
+    /// locked, healed, or led; the bumblebee lock guards drop/skip them (bumblebee.qc:113/119/519/524).</summary>
+    private static bool IsFrozen(Entity? e)
+        => e is not null && (e.FrozenStat != 0
+            || (StatusEffectsCatalog.Frozen is { } fz && StatusEffectsCatalog.Has(e, fz)));
 
     // ============================ WEAPONS ============================
 

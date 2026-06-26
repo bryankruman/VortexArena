@@ -2992,28 +2992,83 @@ public sealed partial class NetGame : Node3D
             return;
         }
 
-        // TE_CSQC_VEHICLESETUP: select the art set from the descriptor NetName (re-shows the panel each time).
-        hud.ConfigureForVehicle((veh.VehicleDef?.NetName) switch
-        {
-            "raptor"    => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Raptor,
-            "spiderbot" => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Spiderbot,
-            "bumblebee" => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Bumblebee,
-            _           => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Racer,
-        });
+        // A bumblebee GUNNER seats in a gun SLOT entity (ClassName "vehicle_playerslot", VehSlotIndex 1/2), whose
+        // owner is the body. QC CSQCVehicleSetup hands the gunner the HUD_BUMBLEBEE_GUN art (CSQC_BUMBLE_GUN_HUD),
+        // and bumblebee_gunner_frame mirrors the body health/shield + the gun's cannon ammo onto the gunner.
+        bool isGunner = veh.VehSlotIndex != 0 && veh.VehSlotOwner is not null;
 
-        // Mirror the pilot-side 0..100 percentages to the panel's [0,1] (QC 0.01 * STAT(VEHICLESTAT_*)).
+        // TE_CSQC_VEHICLESETUP: select the art set from the descriptor NetName (re-shows the panel each time).
+        hud.ConfigureForVehicle(isGunner
+            ? XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.BumblebeeGun
+            : (veh.VehicleDef?.NetName) switch
+            {
+                "raptor"    => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Raptor,
+                "spiderbot" => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Spiderbot,
+                "bumblebee" => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Bumblebee,
+                _           => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Racer,
+            });
+
+        // Mirror the pilot/gunner-side 0..100 percentages to the panel's [0,1] (QC 0.01 * STAT(VEHICLESTAT_*)).
         hud.Health = Godot.Mathf.Clamp(p.VehicleHealth * 0.01f, 0f, 1f);
         hud.Shield = Godot.Mathf.Clamp(p.VehicleShield * 0.01f, 0f, 1f);
         hud.Energy = Godot.Mathf.Clamp(p.VehicleEnergy * 0.01f, 0f, 1f);
         hud.Ammo1  = Godot.Mathf.Clamp(p.VehicleAmmo1 * 0.01f, 0f, 1f);
         hud.Ammo2  = Godot.Mathf.Clamp(p.VehicleAmmo2 * 0.01f, 0f, 1f);
 
+        if (isGunner)
+        {
+            // GUNNER aux crosshairs (QC bumblebee_gunner_frame UpdateAuxiliaryXhair): the magenta '1 0 1' LEAD
+            // marker (aux slot 1) at the predicted impact, and the reload-colored READY marker (aux slot 0) at
+            // the cannon's straight hit. The gun slot carries the live world points the per-frame controller wrote.
+            // QC bumblebee vr_setup: aux slot 1 = vCROSS_BURST (gunner), slot 0 = vCROSS_LOCK (raygun-locked, reused
+            // here for the gunner's own straight-fire READY marker). Magenta '1 0 1' lead + reload-colored ready.
+            if (veh.VehGunnerLeadValid)
+                hud.SetAuxiliaryXhair(1, Coords.ToGodot(veh.VehGunnerLeadPoint), new Godot.Color(1f, 0f, 1f),
+                    "gfx/vehicles/crosshair_burst");
+            else
+                hud.ClearAuxiliaryXhair(1);
+            if (veh.VehGunnerHitValid)
+                hud.SetAuxiliaryXhair(0, Coords.ToGodot(veh.VehGunnerHitPoint), ReloadColor(p.VehicleReload1),
+                    "gfx/vehicles/crosshair_lock");
+            else
+                hud.ClearAuxiliaryXhair(0);
+            return;
+        }
+
         // Auxiliary lock-on crosshair (AuxiliaryXhair): the homing-lock target the vehicle is building/holding,
         // projected from its Quake-space origin into Godot and tinted red→yellow→green by VehLockStrength.
         if (veh.VehLockTarget is { } target && !target.IsFreed)
-            hud.SetAuxiliaryXhairLock(0, Coords.ToGodot(target.Origin), veh.VehLockStrength);
+            // QC bumblebee vr_setup: aux slot 0 = vCROSS_LOCK for the raygun heal-lock marker.
+            hud.SetAuxiliaryXhairLock(0, Coords.ToGodot(target.Origin), veh.VehLockStrength,
+                veh.VehicleDef is Bumblebee ? "gfx/vehicles/crosshair_lock" : "gfx/vehicles/axh-target");
         else
             hud.ClearAuxiliaryXhair(0);
+
+        // PILOT mirror of the two gunners' READY aux crosshairs (QC bumblebee_gunner_frame line 186:
+        // UpdateAuxiliaryXhair(vehic.owner, ..., slot 1 for gunner1 / slot 2 for gunner2)). When a side-gun is
+        // crewed the pilot sees that gunner's straight-fire marker too.
+        FeedPilotGunnerAux(hud, veh.VehGun1, 1);
+        FeedPilotGunnerAux(hud, veh.VehGun2, 2);
+    }
+
+    /// <summary>Project a crewed side-gun's READY aux crosshair onto the PILOT's HUD (QC bumblebee.qc:186); clears
+    /// the slot when the gun is empty/idle.</summary>
+    private void FeedPilotGunnerAux(XonoticGodot.Game.Hud.VehicleHud hud, Entity? gun, int slot)
+    {
+        // QC bumblebee vr_setup: the pilot's aux slots 1/2 are vCROSS_BURST (gunner1/gunner2).
+        if (gun is { VehGunnerHitValid: true, VehSlotPlayer: not null })
+            hud.SetAuxiliaryXhair(slot, Coords.ToGodot(gun.VehGunnerHitPoint),
+                ReloadColor(gun.VehSlotPlayer.VehicleReload1), "gfx/vehicles/crosshair_burst");
+        else
+            hud.ClearAuxiliaryXhair(slot);
+    }
+
+    /// <summary>QC bumblebee_gunner_frame reload tint: <c>'1 0 0' * reload1 + '0 1 0' * (1 - reload1)</c> — red while
+    /// reloading, green when ready to fire.</summary>
+    private static Godot.Color ReloadColor(float reload1)
+    {
+        float r = Godot.Mathf.Clamp(reload1, 0f, 1f);
+        return new Godot.Color(r, 1f - r, 0f);
     }
 
     /// <summary>Drain the networked match clock (NetControl.MatchState → ClientNet) into the TIMER panel each

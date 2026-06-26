@@ -28,6 +28,9 @@ public sealed class HkTurret : Turret
     private const float ShotSpeed = 500f;
     private const float ShotSpeedMax = 1000f;
     private const float ShotTurnRate = 0.25f;    // hk_shot_speed_turnrate
+    private const float ShotSpeedAccel = 1.025f; // hk_shot_speed_accel
+    private const float ShotSpeedAccel2 = 1.05f; // hk_shot_speed_accel2
+    private const float ShotSpeedDecel = 0.9f;   // hk_shot_speed_decel
     private const float ShotForce = 600f;
     private const float ShotRefire = 5f;
     private const float TargetRange = 6000f;
@@ -57,6 +60,12 @@ public sealed class HkTurret : Turret
     private const int Select = TurretAI.SelectLos | TurretAI.SelectPlayers | TurretAI.SelectRangeLimits
                              | TurretAI.SelectTeamCheck | TurretAI.SelectAngleLimits;
 
+    // QC hk.qc tr_setup firecheck_flags = TFL_FIRECHECK_DEAD | TEAMCHECK | REFIRE | AFF. Notably NO AIMDIST /
+    // AMMO_OWN / DISTANCES / LOS — the HK only withholds a shot for a dead enemy, a teammate (incl. via the
+    // avoid-friendly-fire impact trace), or its refire timer; the rocket's guidance does the rest.
+    private const int FireCheck = TurretAI.FireCheckDead | TurretAI.FireCheckTeamCheck
+                                | TurretAI.FireCheckRefire | TurretAI.FireCheckAff;
+
     public HkTurret()
     {
         NetName = "hk";
@@ -68,10 +77,18 @@ public sealed class HkTurret : Turret
 
     public override void Spawn(Entity e)
         => TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
-            AmmoMax, AmmoRecharge, shotVolly: 0, respawnTime: RespawnTime);
+            AmmoMax, AmmoRecharge, shotVolly: 0, respawnTime: RespawnTime, energyAmmo: false);
 
     public override void Think(Entity e)
     {
+        // QC hk.qc tr_think: the launcher head's load/cycle animation. Once kicked off by a shot (frame != 0),
+        // advance the frame each think and wrap 0..5 back to 0. (Base drives a separate tur_head entity's
+        // frame; the port has no head bone entity so the cycle runs on the turret edict's own frame.)
+        if (e.Frame != 0f)
+            e.Frame += 1f;
+        if (e.Frame > 5f)
+            e.Frame = 0f;
+
         // TFL_AIM_SIMPLE -> aim at the current pos (the rocket guides itself). TFL_SHOOT_CLEARTARGET drops the
         // target after firing so it re-acquires for the next rocket (one heavy rocket per acquisition).
         var p = new TurretParams(Select, TargetRangeMin, TargetRange, ShotDamage, ShotRefire,
@@ -80,7 +97,8 @@ public sealed class HkTurret : Turret
             aimSimple: true, clearTarget: true,
             rangeBias: RangeBias, sameBias: SameBias, angleBias: AngleBias, missileBias: MissileBias, playerBias: PlayerBias,
             trackType: TurretAI.TrackFluidInertia,
-            trackAccelPitch: TrackAccelPitch, trackAccelRot: TrackAccelRot, trackBlendRate: TrackBlendRate);
+            trackAccelPitch: TrackAccelPitch, trackAccelRot: TrackAccelRot, trackBlendRate: TrackBlendRate,
+            fireCheckFlags: FireCheck);
         TurretAI.RunCombat(e, in p, Attack);
     }
 
@@ -98,10 +116,16 @@ public sealed class HkTurret : Turret
         // QC launches at shot_speed * 0.75; the guidance brings it up toward shot_speed_max.
         GuidedProjectile.Launch(turret, enemy, st.ShotOrg, dir, GuidedProjectile.Mode.Hk,
             launchSpeed: ShotSpeed * 0.75f, speedMax: ShotSpeedMax, speedGain: 1f, turnRate: ShotTurnRate,
-            size: 6f, health: 10f, ShotDamage, ShotRadius, ShotForce, DeathTypes.TurretHk, ttl: 30f);
+            size: 6f, health: 10f, ShotDamage, ShotRadius, ShotForce, DeathTypes.TurretHk, ttl: 30f,
+            accel: ShotSpeedAccel, accel2: ShotSpeedAccel2, decel: ShotSpeedDecel, fuelTime: 30f);
 
         if (Api.Services is not null)
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/rocket_fire.wav");
+
+        // QC hk.qc tr_think drives the head-frame cycler, kicked off here: the non-player (turret) fire branch
+        // does `if (tur_head.frame == 0) ++tur_head.frame` (hk_weapon.qc:40-42) to start the load animation.
+        if (turret.Frame == 0f)
+            turret.Frame += 1f;
 
         // NOTE — client-render (PROJECTILE_ROCKET trail) + cross-boundary: turret_hk_addtarget external target
         // reception (TUR_FLAG_RECIEVETARGETS) needs the cross-turret target-broadcast system, which isn't

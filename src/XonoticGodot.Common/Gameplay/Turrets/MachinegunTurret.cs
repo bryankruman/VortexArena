@@ -55,8 +55,9 @@ public sealed class MachinegunTurret : Turret
     }
 
     public override void Spawn(Entity e)
+        // machinegun.qc tr_setup: damage_flags |= TFL_DMG_HEADSHAKE (a hit jitters the head off-aim).
         => TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
-            AmmoMax, AmmoRecharge, ShotVolly);
+            AmmoMax, AmmoRecharge, ShotVolly, energyAmmo: false, headShake: true);
 
     public override void Think(Entity e)
     {

@@ -162,6 +162,10 @@ public static class MonsterAI
         /// <summary>Deathtype each queued combo swing carries (QC golem claw = DEATH_MONSTER_GOLEM_CLAW).</summary>
         public string ComboDeathType = DeathTypes.Generic;
 
+        /// <summary>Per-swing melee animtime for a combo swing (QC M_Golem_Attack_Swing passes 0.8 to
+        /// Monster_Attack_Melee — the per-swing attack_finished window). Cadence (NextComboSwing) is separate.</summary>
+        public float ComboSwingAnimTime = 0.5f;
+
         /// <summary>A deferred attack action that lands after a wind-up (QC Monster_Delay).</summary>
         public Action<Entity>? DelayedAction;
 
@@ -187,7 +191,7 @@ public static class MonsterAI
     /// death once dead). The actual frame playback is client-render (CSQC) — see the deferred note in
     /// <see cref="RunThink"/>. Kept as a logical state so timing/gating is faithful headless.
     /// </summary>
-    public enum MonsterAnim { Idle, Walk, Run, Attack, Pain, Death }
+    public enum MonsterAnim { Idle, Walk, Run, Attack, Pain, Death, Spawn, Block, BlockEnd, Shoot }
 
     // QC stored monster state on the edict; we keep a side table keyed by the entity instance.
     private static readonly Dictionary<Entity, MonsterState> _states = new();
@@ -322,6 +326,66 @@ public static class MonsterAI
     }
 
     // ====================================================================================
+    // Team / skill colors (monster_setupcolors / monster_changeteam, sv_monsters.qc:172/200)
+    // ====================================================================================
+
+    /// <summary>RENDER_COLORMAPPED (BIT(10)) — the render flag the csqcmodel reads to apply a colormap tint.</summary>
+    private const int RenderColormapped = 1 << 10;
+
+    /// <summary>
+    /// Port of <c>monster_setupcolors</c> (sv_monsters.qc:172): pick the monster's <c>.colormap</c> by team (in
+    /// teamplay), by owner (a player-spawned monster), else by skill tier so monsters are tinted by difficulty.
+    /// QC also sets <c>.glowmod = colormapPaletteColor(colormap &amp; 0x0F, false)</c>; the headless Entity has no
+    /// glowmod field, but the csqcmodel derives the glowmod from the colormap nibble client-side, so writing the
+    /// authoritative colormap (with RENDER_COLORMAPPED) is the load-bearing decision — the established colormap
+    /// render seam (<see cref="Entity.ColorMapOverride"/>, the same field g_model_setcolormaptoactivator uses).
+    /// </summary>
+    public static void SetupColors(Entity e, MonsterState st)
+    {
+        int colormap;
+        Entity? owner = e.Owner;
+        if (IsTeamplay && e.Team != 0f)
+            colormap = 1024 + ((int)e.Team - 1) * 17;
+        else if (owner is not null && (owner.Flags & EntFlags.Client) != 0)
+            colormap = owner.ColorMapOverride & ~RenderColormapped; // inherit the player's colormap value
+        else if (st.Skill <= MonsterSkill.Easy)
+            colormap = 1126;
+        else if (st.Skill <= MonsterSkill.Medium)
+            colormap = 1075;
+        else if (st.Skill <= MonsterSkill.Hard)
+            colormap = 1228;
+        else if (st.Skill <= MonsterSkill.Insane)
+            colormap = 1092;
+        else if (st.Skill <= MonsterSkill.Nightmare)
+            colormap = 1160;
+        else
+            colormap = 1024;
+
+        // QC stores the bare colormap; the port's render seam expects RENDER_COLORMAPPED set when a colormap is
+        // present (mirrors g_model_setcolormaptoactivator / MapModels.SetColormapToActivator).
+        e.ColorMapOverride = colormap > 0 ? (colormap | RenderColormapped) : 0;
+    }
+
+    /// <summary>
+    /// Port of <c>monster_changeteam</c> (sv_monsters.qc:200): only in teamplay — re-team the monster, (re)arm it
+    /// as an attackable target, and re-tint it for the new team. QC also updates the danger radar icon on the
+    /// monster's waypoint sprite; the port has no WP_Monster sprite yet (healthbar gap), so the radar-icon
+    /// update is a documented no-op until that sprite exists.
+    /// </summary>
+    public static void ChangeTeam(Entity e, float newTeam)
+    {
+        if (!IsTeamplay)
+            return;
+        e.Team = newTeam;
+        // QC: if (!this.monster_attack) IL_PUSH(g_monster_targets, this); this.monster_attack = true; — the port
+        // scans FindInRadius for live monsters in teamplay (FindTarget), so a re-teamed monster is already a
+        // valid target without an intrusive-list push; re-tint to the new team.
+        MonsterState? st = StateOf(e);
+        if (st is not null)
+            SetupColors(e, st);
+    }
+
+    // ====================================================================================
     // Map-placement / code spawn driver (Monster_Spawn + spawnmonster, sv_monsters.qc / sv_spawn.qc)
     // ====================================================================================
 
@@ -403,6 +467,12 @@ public static class MonsterAI
         // does it: after the team gate, before the use/think wiring.
         if (!st.Spawned && !st.Respawned)
             MonstersTotal++;
+
+        // QC Monster_Spawn:1525 — if (!(this.spawnflags & MONSTERFLAG_RESPAWNED)) monster_setupcolors(this).
+        // Tints the monster by team / owner / skill tier (the difficulty colormap). Respawned monsters keep the
+        // colormap they were spawned with, so this is gated to the first life.
+        if (!st.Respawned)
+            SetupColors(e, st);
 
         // QC: this.use = Monster_Use; (a trigger acquiring this monster points it at the activator).
         e.Use = (self, actor) =>
@@ -568,6 +638,11 @@ public static class MonsterAI
         if (self.DeadState != DeadFlag.No || self.Health <= 0f) return false;
         if ((targ.Flags & EntFlags.NoTarget) != 0) return false;
 
+        // QC Monster_ValidTarget:115 — (!autocvar_g_monsters_typefrag && PHYS_INPUT_BUTTON_CHAT(targ)): when
+        // typefrag is off (default 1, so normally inactive), a target with the chat console open (typing) is
+        // spared. Entity.ButtonChat is the live input mirror (written by PlayerPhysics from the typing intent).
+        if (Cvar("g_monsters_typefrag", 1f) == 0f && targ.ButtonChat) return false;
+
         // Don't attack our follow partner, nor a monster following us (QC monster_follow guard).
         var st = StateOf(self);
         if (st?.Follow == targ) return false;
@@ -655,8 +730,10 @@ public static class MonsterAI
         return closest;
     }
 
-    /// <summary>Whether a player target is crouched (QC PHYS_INPUT_BUTTON_CROUCH). No crouch flag headless yet.</summary>
-    private static bool IsCrouching(Entity e) => false;
+    /// <summary>Whether a player target is crouched (QC PHYS_INPUT_BUTTON_CROUCH). Entity.ButtonCrouch is the
+    /// live input mirror (written by the input layer before PlayerPhysics), so a crouching target is seen at
+    /// 75% range as in QC — the stealth/range benefit is now modeled.</summary>
+    private static bool IsCrouching(Entity e) => e.ButtonCrouch;
 
     /// <summary>
     /// Port of <c>Monster_Sound</c> (sv_monsters.qc:368): play one of the monster's voice cues, honouring the
@@ -680,9 +757,25 @@ public static class MonsterAI
         // (SoundCues==null = legacy "not audited, play all"; an empty set = fully silent monster.)
         bool cueDefined = st.Def.SoundCues is null || st.Def.SoundCues.Contains(cue);
         if (st.Def.Model is not null && cueDefined)
-            Api.Sound.Play(self, chan, "monsters/" + st.Def.NetName + "_" + cue + ".wav");
+        {
+            // QC GlobalSound resolves the model .sounds line "sound/monsters/<dir>/<cue> <count>": when count>0
+            // pick a random numbered variant (cue1..cueN), else the bare cue name. The samples live under the
+            // monster's sound subdir (sound/monsters/<dir>/), NOT a flat monsters/<name>_<cue> path.
+            int count = st.Def.SoundCueCount(cue);
+            string suffix = count > 0 ? (Prandom.RangeInt(0, count) + 1).ToString() : "";
+            Api.Sound.Play(self, chan, "monsters/" + st.Def.SoundDir + "/" + cue + suffix + st.Def.SoundExt);
+        }
         st.MSoundDelay = Now + soundDelay; // QC: this.msound_delay = time + sound_delay
     }
+
+    /// <summary>
+    /// Play the dispatch-level <c>monstersound_melee</c> voice cue (QC <c>Monster_Attack_Check:468/478</c>:
+    /// fired once per attack DISPATCH whenever the attackfunc returns <c>attack_success==1</c>, for melee AND
+    /// ranged). The melee combo plays it from <see cref="QueueCombo"/>; ranged attacks (the golem smash /
+    /// lightning) call this at dispatch since they succeed without a connecting traceline.
+    /// </summary>
+    public static void PlayMeleeCue(Entity self, MonsterState st)
+        => MonsterSound(self, st, "melee", 0f, false, SoundChannel.Voice);
 
     /// <summary>
     /// Port of <c>Monster_Enemy_Check</c> (sv_monsters.qc): drop the current enemy if it became invalid or
@@ -1046,9 +1139,13 @@ public static class MonsterAI
         // Expire a timed mage shield, restoring armor (mirrors STATUSEFFECT_Shield expiry).
         RunStatusTimers(self, st);
 
-        // Don't act until the spawn animation has finished (QC .spawn_time gate).
+        // Don't act until the spawn animation has finished (QC .spawn_time gate). The spawn pose set in Setup
+        // (QC mr_setup setanim(anim_spawn)) still plays during this window — stamp it onto the networked Frame.
         if (Now < st.SpawnTime)
+        {
+            DriveAnimFrame(self, st);
             return;
+        }
 
         // Frozen: drop the enemy and don't think (QC Monster_Think frozen branch); else re-acquire.
         bool frozen = StatusEffectsCatalog.Frozen != null && StatusEffectsCatalog.Has(self, StatusEffectsCatalog.Frozen);
@@ -1101,6 +1198,10 @@ public static class MonsterAI
         MonsterAnim.Attack => MonsterAnimPhase.Attack,
         MonsterAnim.Pain => MonsterAnimPhase.Pain,
         MonsterAnim.Death => MonsterAnimPhase.Death,
+        MonsterAnim.Spawn => MonsterAnimPhase.Spawn,
+        MonsterAnim.Block => MonsterAnimPhase.Block,
+        MonsterAnim.BlockEnd => MonsterAnimPhase.BlockEnd,
+        MonsterAnim.Shoot => MonsterAnimPhase.Shoot,
         _ => MonsterAnimPhase.Idle,
     };
 
@@ -1141,8 +1242,11 @@ public static class MonsterAI
             if (ValidTarget(self, self.Enemy, false) && self.Enemy is not null)
             {
                 FaceTarget(self, self.Enemy);
-                MeleeAttack(self, st, st.ComboSwingDamage, st.AttackRange, 0.5f,
-                    st.ComboDeathType, freeze: false);
+                // QC M_Golem_Attack_Swing animtime = 0.8 (the per-swing attack_finished window); the swing
+                // CADENCE stays 0.5s (NextComboSwing). The melee voice cue already fired once at dispatch
+                // (QueueCombo), so suppress the per-swing cue here (QC plays it per dispatch, not per swing).
+                MeleeAttack(self, st, st.ComboSwingDamage, st.AttackRange, st.ComboSwingAnimTime,
+                    st.ComboDeathType, freeze: false, playMeleeCue: false);
             }
         }
     }
@@ -1191,7 +1295,7 @@ public static class MonsterAI
     /// + cooldown. Returns true if the swing connected with a damageable entity.
     /// </summary>
     public static bool MeleeAttack(Entity self, MonsterState st, float damage, float range,
-        float animTime, string deathType, bool freeze = true)
+        float animTime, string deathType, bool freeze = true, bool playMeleeCue = true)
     {
         if (freeze) st.State = MonsterState_AttackMelee;
         st.AttackFinished = Now + animTime;
@@ -1206,8 +1310,11 @@ public static class MonsterAI
         {
             Vector3 force = QMath.Normalize(hit.Origin - self.Origin);
             Combat.Damage(hit, self, self, damage * SkillMod(st), deathType, hit.Origin, force);
-            // QC Monster_Attack_Check:468/478 plays monstersound_melee on a connecting (==1) melee swing.
-            MonsterSound(self, st, "melee", 0f, false, SoundChannel.Voice);
+            // QC Monster_Attack_Check:468/478 plays monstersound_melee once per attack DISPATCH on success — for
+            // a single-swing melee monster (zombie/spider) the MeleeAttack call IS the dispatch, so play it here;
+            // the golem combo fires its dispatch-level cue in QueueCombo and passes playMeleeCue=false per swing.
+            if (playMeleeCue)
+                MonsterSound(self, st, "melee", 0f, false, SoundChannel.Voice);
             return true;
         }
         return false;
@@ -1219,7 +1326,8 @@ public static class MonsterAI
     /// would land on the enemy, launch it and install <paramref name="touchFunc"/> as the contact handler.
     /// Sets the ranged state + cooldown. Returns true if the leap was performed.
     /// </summary>
-    public static bool Leap(Entity self, MonsterState st, Vector3 vel, EntityTouch touchFunc, float animTime)
+    public static bool Leap(Entity self, MonsterState st, Vector3 vel, EntityTouch touchFunc, float animTime,
+        MonsterAnim leapAnim = MonsterAnim.Attack)
     {
         if (st.State != 0) return false;
         if ((self.Flags & EntFlags.OnGround) == 0) return false;
@@ -1236,7 +1344,7 @@ public static class MonsterAI
         st.AttackFinished = Now + animTime;
         st.AnimFinished = Now + animTime;
         st.State = MonsterState_AttackRanged;
-        st.Anim = MonsterAnim.Attack;
+        st.Anim = leapAnim; // QC Monster_Attack_Leap(actor, actor.anim_shoot, ...): the leap plays the shoot group
         self.Touch = touchFunc;
         Vector3 o = self.Origin; o.Z += 1f; Api.Entities.SetOrigin(self, o);
         self.Velocity = vel;
@@ -1285,19 +1393,26 @@ public static class MonsterAI
     /// <summary>
     /// Queue a multi-swing melee combo (QC golem <c>Monster_Delay(this, swing_cnt, 0.5, …)</c>): lock the
     /// monster for the combo duration and land <paramref name="swings"/> melee hits 0.5s apart, handled in
-    /// <see cref="RunDelayedActions"/>.
+    /// <see cref="RunDelayedActions"/>. <paramref name="perSwingAnimTime"/> is each swing's animtime (QC
+    /// M_Golem_Attack_Swing passes 0.8 to Monster_Attack_Melee), distinct from the 0.5s swing cadence.
     /// </summary>
-    public static void QueueCombo(Entity self, MonsterState st, int swings, float perSwingDamage, string deathType)
+    public static void QueueCombo(Entity self, MonsterState st, int swings, float perSwingDamage, string deathType,
+        float perSwingAnimTime = 0.5f)
     {
         swings = System.Math.Clamp(swings, 1, 3);
         st.State = MonsterState_AttackMelee;
         st.ComboSwings = swings;
         st.ComboSwingDamage = perSwingDamage;
         st.ComboDeathType = deathType;
+        st.ComboSwingAnimTime = perSwingAnimTime;
         st.NextComboSwing = Now + 0.5f;
+        // QC: anim_finished = attack_finished_single[0] = time + 0.5 * swing_cnt (the dispatch-level combo lock).
         st.AttackFinished = Now + 0.5f * swings;
         st.AnimFinished = st.AttackFinished;
         st.Anim = MonsterAnim.Attack;
+        // QC Monster_Attack_Check:468 plays monstersound_melee ONCE per attack DISPATCH on attack_success==1
+        // (not per connecting swing). The golem's MELEE branch returns true, so the cue fires here, at dispatch.
+        MonsterSound(self, st, "melee", 0f, false, SoundChannel.Voice);
     }
 
     /// <summary>
@@ -1435,13 +1550,6 @@ public static class MonsterAI
         // non-kill hit (NEEDKILL included), unlike INVINCIBLE.
         if (!isKill && StatusEffectsCatalog.Has(self, MonsterFramework.SpawnShield)) return 0f;
 
-        // Mage Shield greatly reduces incoming damage while active (QC armor block via STATUSEFFECT_Shield).
-        if (!isKill && StatusEffectsCatalog.Has(self, MonsterFramework.Shield))
-        {
-            float block = Cvar("g_monster_mage_shield_blockpercent", 0.9f);
-            take *= System.Math.Clamp(1f - block, 0f, 1f);
-        }
-
         if (take > 0f)
         {
             self.Health -= take;
@@ -1450,8 +1558,9 @@ public static class MonsterAI
             st.PainFinished = Now + st.Def.PainWindow;
             st.Anim = MonsterAnim.Pain;
             // QC Monster_Damage:1101 — Monster_Sound(monstersound_pain, 1.2, true, CH_PAIN): the 1.2s throttle
-            // (delaytoo) stops a stream of hits from machine-gunning the pain voice.
-            MonsterSound(self, st, "pain", 1.2f, true, SoundChannel.Body);
+            // (delaytoo) stops a stream of hits from machine-gunning the pain voice. CH_PAIN(-6) = the auto pain
+            // channel so overlapping hurt cues stack rather than cut each other off.
+            MonsterSound(self, st, "pain", 1.2f, true, SoundChannel.PainAuto);
         }
 
         // Pause health regen after a hit (QC sets .dmg_time; the port's regen pause is .pauseregen_finished).

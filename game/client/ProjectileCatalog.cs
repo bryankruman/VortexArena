@@ -263,6 +263,10 @@ public static class ProjectileCatalog
         if (Has(s, "seeker_missile", "seeker")) return ProjectileType.Seeker;
         if (Has(s, "flac")) return ProjectileType.Flac;
         if (Has(s, "firemine", "firemine")) return ProjectileType.Firemine;
+        // The wyvern's monster_projectile networks netname "wyvern"; QC wr_think draws it as
+        // CSQCProjectile(..., PROJECTILE_FIREMINE, ...) — the spinning fire-mine visual (FireSprite body,
+        // FireOrange glow + light, FIREMINE trail). Keyed before "fireball" so the netname resolves here.
+        if (Has(s, "wyvern")) return ProjectileType.Firemine;
         if (Has(s, "fireball")) return ProjectileType.Fireball;
         if (Has(s, "porto")) return ProjectileType.PortoRed;
         if (Has(s, "arc")) return ProjectileType.ArcBolt;

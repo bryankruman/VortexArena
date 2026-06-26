@@ -16,9 +16,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// Mechanic implemented faithfully: the chain-lightning (tesla_weapon.qc <c>toast</c> loop) — nearest LOS
 /// target first, then jump to the closest not-yet-hit valid target within the shrinking range, applying the
 /// decaying damage, never hitting the same entity twice per discharge. Custom firecheck (TFL_SHOOT_CUSTOM):
-/// fires whenever a target is in range and it's cooled down. The per-hop lightning arc visuals, the coil-head
-/// charge spin (tr_think), and the idle crackle arc are all reproduced; the turret is silent server-side
-/// (the electro_fire sound is player-only in Base wr_think) and deals zero knockback (toast force '0 0 0').
+/// fires whenever a target is in range and it's cooled down, with scan throttle (mindelay 0.1s / maxdelay 1s)
+/// and a 0.5s held-enemy re-validate window. The per-hop lightning arc visuals, the coil-head charge spin
+/// (tr_think), and the idle crackle arc are all reproduced; the turret is silent server-side (the electro_fire
+/// sound is player-only in Base wr_think) and deals zero knockback (toast force '0 0 0').
 /// </summary>
 [Turret]
 public sealed class TeslaTurret : Turret
@@ -72,14 +73,42 @@ public sealed class TeslaTurret : Turret
 
         if (!st.Active) return;   // inactive (team-gated) or dead turrets don't discharge
 
-        // Custom firecheck (tesla.qc turret_tesla_firecheck): rescan, then require cooldown + ammo + a target.
+        // Custom firecheck (tesla.qc turret_tesla_firecheck): scan-throttle (mindelay/maxdelay),
+        // re-validate, then require cooldown + ammo + a target.
+
+        // QC tesla.qc:51-82 turret_tesla_firecheck: rate-limited rescan via target_select_time
+        // (mindelay 0.1 / maxdelay 1) and a separate 0.5-s enemy re-validate window. Cvar-backed
+        // (QC autocvar_g_turrets_targetscan_*) with the turrets.cfg defaults, matching the generic
+        // TurretAI.RunCombat throttle so a server override moves both paths together.
+        float targetScanMinDelay = TurretAI.Cvar("g_turrets_targetscan_mindelay", 0.1f);
+        float targetScanMaxDelay = TurretAI.Cvar("g_turrets_targetscan_maxdelay", 1f);
+
+        bool doTargetScan = false;
+
+        // Force a target re-scan every maxdelay seconds.
+        if (now > st.TargetSelectTime + targetScanMaxDelay)
+            doTargetScan = true;
+
+        // Old target (if any) invalid? Re-validate at most every 0.5s.
         if (st.TargetValidateTime < now
             && !TurretAI.ValidTarget(e, e.Enemy, Select, TargetRangeMin, TargetRange))
         {
             e.Enemy = null;
             st.TargetValidateTime = now + 0.5f; // tesla.qc: re-validate the held target at most every 0.5s
+            doTargetScan = true;
         }
-        e.Enemy = TurretAI.SelectTarget(e, Select, TargetRangeMin, TargetRange);
+
+        // But never more often than mindelay seconds!
+        if (now < st.TargetSelectTime + targetScanMinDelay)
+            doTargetScan = false;
+
+        // Scan if we should, update the scan timestamp.
+        if (doTargetScan)
+        {
+            e.Enemy = TurretAI.SelectTarget(e, Select, TargetRangeMin, TargetRange);
+            st.TargetSelectTime = now;
+        }
+
         if (e.Enemy is null) return;
         if (st.AttackFinished > now) return;
         if (st.Ammo < ShotDamage) return;

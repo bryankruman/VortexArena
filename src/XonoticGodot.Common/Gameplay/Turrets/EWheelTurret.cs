@@ -16,9 +16,12 @@ namespace XonoticGodot.Common.Gameplay;
 /// the wheeled locomotion — roll toward the enemy easing in at the optimal range (steerlib_arrive) with the
 /// chase speed gated by the body yaw error (fast/slow/slower = Base tur_head.spawnshieldtime &lt;1/&lt;2/else),
 /// back off when too close, brake when idle, with the body yawing toward the steer direction at the turnrate
-/// (<c>ewheel_move_enemy</c>/<c>ewheel_move_idle</c> + the EWheel tr_think yaw-steer). The map-waypoint path
-/// chase (turret_checkpoint graph), the drive-frame animation (frames 0..4) and the CSQC rolling draw + low-HP
-/// sparks are left out (no waypoint graph in this port; frames/draw are client render).
+/// (<c>ewheel_move_enemy</c>/<c>ewheel_move_idle</c> + the EWheel tr_think yaw-steer). When idle with a
+/// <c>target</c> set it roams the <c>turret_checkpoint</c> waypoint chain (<c>ewheel_move_path</c> /
+/// <c>ewheel_findtarget</c>), stamps the locomotion drive frame (0..4) onto the networked <see cref="Entity.Frame"/>
+/// (QC <c>turrets_setframe</c>/TNSF_ANIM), and emits the low-HP spark temp-entity (CSQC <c>ewheel_draw</c>
+/// te_spark at &lt;127 hp, 5%/frame). The pure-client origin/head roll integration in <c>ewheel_draw</c> stays
+/// client render (the server already networks origin + velocity).
 /// </summary>
 [Turret]
 public sealed class EWheelTurret : Turret
@@ -50,6 +53,19 @@ public sealed class EWheelTurret : Turret
     private const float SpeedStop = 25f;
     private const float TurnRate = 200f;   // deg/sec body yaw (tur_head.aim_speed in tr_think)
 
+    // --- locomotion animation frames (ewheel.qc:11-15 ewheel_anim_*) driven by turrets_setframe ---
+    private const float AnimStop = 0f;
+    private const float AnimFwdSlow = 1f;
+    private const float AnimFwdFast = 2f;
+    private const float AnimBckSlow = 3f;
+    private const float AnimBckFast = 4f;
+
+    // ewheel_move_path: proximity at which the path advances to the next checkpoint (turret_closetotarget, 64u).
+    private const float PathNodeProximity = 64f;
+    // Low-health spark threshold + per-frame chance (CSQC ewheel_draw: health < 127, random() < 0.05).
+    private const float SparkHealthThreshold = 127f;
+    private const float SparkChance = 0.05f;
+
     // QC ewheel.qc tr_setup: players, range-limited, team-checked, LOS (no ANGLELIMITS — it turns the body to face).
     private const int Select = TurretAI.SelectPlayers | TurretAI.SelectRangeLimits
                              | TurretAI.SelectTeamCheck | TurretAI.SelectLos;
@@ -73,6 +89,7 @@ public sealed class EWheelTurret : Turret
 
         // Home pose + re-arm on respawn (QC tr_setup runs on first spawn and respawn).
         TurretState st = TurretAI.State(e);
+        st.PathCurrent = null;
         Vector3 home = e.Origin;
         st.OnRespawn = self =>
         {
@@ -81,7 +98,27 @@ public sealed class EWheelTurret : Turret
             if (Api.Services is not null) Api.Entities.SetOrigin(self, home);
             self.Solid = Solid.SlideBox;
             self.MoveType = MoveType.Step;
+            // QC tr_setup (movetype==STEP branch): re-resolve the initial path waypoint on respawn.
+            TurretAI.State(self).PathCurrent = null;
+            EWheelFindTarget(self);
         };
+
+        // QC tr_setup first-spawn branch: if a target is set, InitializeEntity(ewheel_findtarget) wires the
+        // entry checkpoint. The checkpoint chain is resolved by targetname, so it works regardless of spawn order.
+        EWheelFindTarget(e);
+    }
+
+    /// <summary>
+    /// QC <c>ewheel_findtarget</c> (ewheel.qc:111): resolve the turret's <c>target</c> key to the entry
+    /// <c>turret_checkpoint</c> and store it as the current path node. A missing target / non-checkpoint is
+    /// tolerated (QC just LOG_TRACEs and leaves pathcurrent null, so the wheel idles in place).
+    /// </summary>
+    private static void EWheelFindTarget(Entity e)
+    {
+        if (string.IsNullOrEmpty(e.Target)) return;
+        Entity? cp = MapMover.FindFirstByTargetName(e.Target);
+        if (cp is null || cp.ClassName != "turret_checkpoint") return;   // QC: warn, but pathcurrent stays null
+        TurretAI.State(e).PathCurrent = cp;
     }
 
     public override void Think(Entity e)
@@ -98,11 +135,13 @@ public sealed class EWheelTurret : Turret
     public override bool ValidTarget(Entity self, Entity target)
         => TurretAI.ValidTarget(self, target, Select, TargetRangeMin, TargetRange);
 
-    // EWheel.tr_think: roll toward / circle the enemy (or brake when idle) and yaw the body toward the steer
-    // direction at the head turnrate. (ewheel.qc ewheel_move_enemy / ewheel_move_idle + the yaw-steer block.)
+    // EWheel.tr_think: roll toward / circle the enemy, roam the checkpoint path when idle (or brake if there is
+    // none) and yaw the body toward the steer direction at the head turnrate. (ewheel.qc ewheel_move_enemy /
+    // ewheel_move_path / ewheel_move_idle + the yaw-steer block + the turrets_setframe drive animation.)
     private void Drive(Entity e)
     {
-        if (TurretAI.State(e).Active == false) return;
+        TurretState st = TurretAI.State(e);
+        if (st.Active == false) return;
         float vz = e.Velocity.Z;
 
         // QC tr_think: anglemods the body angles, then steer the body yaw toward the steer direction clamped to
@@ -110,10 +149,14 @@ public sealed class EWheelTurret : Turret
         // is QC's tur_head.spawnshieldtime, computed here BEFORE the yaw step so a well-aligned wheel goes fast.
         e.Angles = new Vector3(TurretMath.AngleMods(e.Angles.X), TurretMath.AngleMods(e.Angles.Y), e.Angles.Z);
 
-        // steerto for this frame (mirrors ewheel_move_enemy: steerlib_arrive toward the enemy at optimal range).
-        Vector3 steerTo = e.Enemy is not null
-            ? TurretMath.SteerArrive(e, e.Enemy.Origin, TargetRangeOptimal)
-            : Vector3.Zero;
+        // steerto for this frame. ewheel_move_enemy uses steerlib_arrive(enemy, optimal); ewheel_move_path uses
+        // steerlib_attract2(moveto, 0.5, 500, 0.95) toward the current checkpoint. (QC's one-frame steerto lag is
+        // elided — the port computes the steer fresh, matching the already-verified enemy branch.)
+        Vector3 steerTo = Vector3.Zero;
+        if (e.Enemy is not null)
+            steerTo = TurretMath.SteerArrive(e, e.Enemy.Origin, TargetRangeOptimal);
+        else if (st.PathCurrent is not null)
+            steerTo = TurretMath.SteerAttract2(e, st.PathCurrent.Origin, 0.5f, 500f, 0.95f);
 
         float yawError = 0f;
         if (steerTo != Vector3.Zero)
@@ -129,6 +172,7 @@ public sealed class EWheelTurret : Turret
 
         QMath.AngleVectors(new Vector3(0f, e.Angles.Y, 0f), out Vector3 fwd, out _, out _);
 
+        float newFrame = e.Frame;
         if (e.Enemy is not null)
         {
             // ewheel_move_enemy: speed gated by the body yaw error (well-aligned -> fast, off-axis -> slow/slower).
@@ -136,29 +180,106 @@ public sealed class EWheelTurret : Turret
             if (dist > TargetRangeOptimal)
             {
                 if (yawError < 1f)
+                {
+                    newFrame = AnimFwdFast;
                     TurretMath.MoveSimple(e, fwd, SpeedFast, 0.4f);
+                }
                 else if (yawError < 2f)
+                {
+                    newFrame = AnimFwdSlow;
                     TurretMath.MoveSimple(e, fwd, SpeedSlow, 0.4f);
+                }
                 else
+                {
+                    newFrame = AnimFwdSlow;
                     TurretMath.MoveSimple(e, fwd, SpeedSlower, 0.4f);
+                }
             }
             else if (dist < TargetRangeOptimal * 0.5f)
             {
+                newFrame = AnimBckSlow;
                 TurretMath.MoveSimple(e, -fwd, SpeedSlow, 0.4f);         // back off (kiting)
             }
             else
             {
+                newFrame = AnimStop;
                 TurretMath.BrakeSimple(e, SpeedStop);                    // hold the optimal range
             }
+
+            SetFrame(e, newFrame);   // QC ewheel_move_enemy tail: turrets_setframe(newframe, false)
+        }
+        else if (st.PathCurrent is not null)
+        {
+            // ewheel_move_path: advance the chain when close (turret_closetotarget, 64u box overlap), then roll
+            // toward the current node at speed_fast. QC's chain link is the checkpoint's .enemy, which
+            // turret_checkpoint_init set to find(targetname, this.target); resolved lazily here by the checkpoint's
+            // own target key so spawn order doesn't matter (a looped chain patrols forever; an unterminated one
+            // ends with pathcurrent null → the wheel goes Roaming/idle).
+            if (CloseToTarget(e, st.PathCurrent.Origin, PathNodeProximity))
+                st.PathCurrent = NextCheckpoint(st.PathCurrent);
+
+            if (st.PathCurrent is not null)
+                TurretMath.MoveSimple(e, fwd, SpeedFast, 0.4f);
         }
         else
         {
-            // ewheel_move_idle: brake to a stop (no waypoint path graph in this port).
+            // ewheel_move_idle: reset to the idle frame, then brake to a stop.
+            SetFrame(e, AnimStop);
             if (e.Velocity != Vector3.Zero)
                 TurretMath.BrakeSimple(e, SpeedStop);
         }
 
         e.Velocity = new Vector3(e.Velocity.X, e.Velocity.Y, vz);
+
+        // CSQC ewheel_draw low-health sparks: a damaged wheel (< 127 hp) smokes/sparks at 5%/frame. The QC draw
+        // hook runs client-side; the spark is a networked temp-entity, so emit it server-side (it reaches every
+        // viewing client identically). The pure-client origin/head roll integration stays client render.
+        if (Api.Services is not null
+            && e.GetResource(ResourceType.Health) < SparkHealthThreshold
+            && Prandom.Float() < SparkChance)
+        {
+            EffectEmitter.TeSpark(e.Origin + new Vector3(0f, 0f, 40f), Prandom.Vec() * 256f + new Vector3(0f, 0f, 256f), 16);
+        }
+    }
+
+    /// <summary>
+    /// QC <c>turrets_setframe(this, frame, false)</c> (sv_turrets.qc:299): stamp the locomotion frame onto the
+    /// networked <see cref="Entity.Frame"/> (which the client model animator plays — the same seam monsters use)
+    /// so the wheel shows the correct drive animation (stop=0 / fwd_slow=1 / fwd_fast=2 / bck_slow=3 / bck_fast=4).
+    /// In QC this also sets SendFlags |= TNSF_ANIM + anim_start_time; here <see cref="Entity.Frame"/> IS the net
+    /// sync, so writing it is the whole job.
+    /// </summary>
+    private static void SetFrame(Entity e, float frame)
+    {
+        if (e.Frame != frame) e.Frame = frame;
+    }
+
+    /// <summary>
+    /// The next node in the checkpoint chain (QC <c>pathcurrent.enemy</c>, set by <c>turret_checkpoint_init</c>'s
+    /// <c>this.enemy = find(targetname, this.target)</c>). Resolved lazily by the current checkpoint's
+    /// <c>target</c> key so the chain works regardless of checkpoint spawn order; null terminates the chain.
+    /// </summary>
+    private static Entity? NextCheckpoint(Entity checkpoint)
+    {
+        if (string.IsNullOrEmpty(checkpoint.Target)) return null;
+        Entity? next = MapMover.FindFirstByTargetName(checkpoint.Target);
+        return (next is not null && next.ClassName == "turret_checkpoint") ? next : null;
+    }
+
+    /// <summary>
+    /// QC <c>turret_closetotarget</c> (sv_turrets.qc:1212): true when the point <paramref name="targ"/> (expanded
+    /// by <paramref name="range"/> on each axis) overlaps the turret's bbox (also expanded by <paramref name="range"/>).
+    /// </summary>
+    private static bool CloseToTarget(Entity e, Vector3 targ, float range)
+    {
+        Vector3 r = new Vector3(range, range, range);
+        Vector3 absMin = e.AbsMin != e.AbsMax ? e.AbsMin : e.Origin + e.Mins;
+        Vector3 absMax = e.AbsMin != e.AbsMax ? e.AbsMax : e.Origin + e.Maxs;
+        Vector3 aMin = targ - r, aMax = targ + r;
+        Vector3 bMin = absMin - r, bMax = absMax + r;
+        return aMin.X <= bMax.X && aMax.X >= bMin.X
+            && aMin.Y <= bMax.Y && aMax.Y >= bMin.Y
+            && aMin.Z <= bMax.Z && aMax.Z >= bMin.Z;
     }
 
     // METHOD(EWheelAttack, wr_think) — ewheel_weapon.qc: a fast blaster bolt (MIF_SPLASH, near-hitscan) with

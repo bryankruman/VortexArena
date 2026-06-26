@@ -65,10 +65,18 @@ public sealed class MlrsTurret : Turret
 
     public override void Spawn(Entity e)
         => TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
-            AmmoMax, AmmoRecharge, ShotVolly);
+            AmmoMax, AmmoRecharge, ShotVolly, energyAmmo: false,
+            headShake: true); // QC tr_setup: damage_flags |= TFL_DMG_HEADSHAKE
 
     public override void Think(Entity e)
     {
+        // tr_think (mlrs.qc:11-19): map remaining ammo to the head model's ammo-gauge frame (0 full .. 6 empty),
+        // every think. Base nets a separate tur_head entity's frame; the port has no head bone entity, so the
+        // frame rides the turret edict's own .frame — the same pattern HellionTurret/HkTurret use. Drives the
+        // gauge animation client-side once the head model is attached.
+        TurretState st = TurretAI.State(e);
+        e.Frame = QMath.Bound(0f, 6f - MathF.Floor(0.1f + st.Ammo / ShotDamage), 6f);
+
         // QC mlrs aim_flags = TFL_AIM_LEAD | TFL_AIM_SHOTTIMECOMPENSATE (TFL_AIM_SPLASH is auto-added by the
         // framework for the TUR_FLAG_SPLASH unit flag, so aimSplash stays on; there is no TFL_AIM_ZPREDICT).
         // Splash aim lands the unguided rockets around the target; the full mlrs scoring biases + inertia track
@@ -77,33 +85,39 @@ public sealed class MlrsTurret : Turret
             AimSpeed, FireTolerance, lead: true, ShotVolly, ShotVollyRefire,
             rangeOptimal: TargetRangeOptimal, shotSpeed: ShotSpeed, aimMaxPitch: AimMaxPitch, aimMaxRot: AimMaxRot,
             shotTimeCompensate: true, zPredict: false, aimSplash: true,
+            vollyAlways: true,  // QC tr_setup: shoot_flags |= TFL_SHOOT_VOLLYALWAYS
             rangeBias: RangeBias, sameBias: SameBias, angleBias: AngleBias,
             missileBias: MissileBias, playerBias: PlayerBias,
             trackType: TurretAI.TrackFluidInertia, trackAccelPitch: TrackAccelPitch,
             trackAccelRot: TrackAccelRot, trackBlendRate: TrackBlendRate);
 
-        // TFL_SHOOT_VOLLYALWAYS: once a 6-rocket burst has started it must complete even if the target is lost.
-        // RunCombat bails the instant Enemy is null (turret_think enemy-null branch), so guard that here first:
-        // QC turret_think:1059 checks (volly_counter != shot_volly) BEFORE the enemy bail and turret_firecheck:889
-        // early-returns true mid-burst. We finish the in-flight burst aiming at the last solution, then defer to
-        // RunCombat once the counter is back to a full volley.
-        TurretState st = TurretAI.State(e);
-        if (st.Active && e.Enemy is null && st.VollyCounter != ShotVolly)
+        // TFL_SHOOT_VOLLYALWAYS: once a 6-rocket burst has started it MUST complete. QC turret_think (the non-CUSTOM
+        // else branch, sv_turrets.qc:1057-1080) handles this BEFORE the target (re)validation/scan and the enemy-null
+        // bail, and unconditionally — it fires for BOTH the still-present and the lost-target case as long as
+        // volly_counter != shot_volly. RunCombat re-validates the enemy first (and bails on null), which would abort
+        // a burst the instant the live target slips out of range/LOS mid-volley, so we mirror Base by running the
+        // mid-burst branch here ahead of RunCombat.
+        if (st.Active && st.VollyCounter != ShotVolly)
         {
             float now = Api.Services is not null ? Api.Clock.Time : 0f;
+            float frameTime = Api.Services is not null ? Api.Clock.FrameTime : 0f;
             st.ShotOrg = TurretAI.ShotOrigin(e);
             if (st.Ammo < st.AmmoMax)
-                st.Ammo = System.Math.Min(st.Ammo + st.AmmoRecharge * (Api.Services is not null ? Api.Clock.FrameTime : 0f), st.AmmoMax);
+                st.Ammo = System.Math.Min(st.Ammo + st.AmmoRecharge * frameTime, st.AmmoMax);
 
-            // Keep aiming/tracking the last firing solution (st.AimPos persists from the last enemy think).
+            // Predict + track (QC turret_aim_generic + turret_track). With the target still present we lead the live
+            // enemy; once it is lost we keep the last firing solution (st.AimPos persists from the prior enemy think;
+            // Base's real_origin(NULL) would aim at '0 0 0', which the persisted solution improves on).
+            if (e.Enemy is not null)
+                st.AimPos = TurretAI.AimPoint(e, e.Enemy, in p);
             TurretAI.Track(e, in p);
             st.DistAimPos = (st.ShotOrg - st.AimPos).Length();
 
-            // Fire to keep the burst going (turret_firecheck mid-burst path skips range/LOS re-checks; only the
-            // cooldown + ammo gates remain). TurretAI.Fire advances the counter and applies the long volley refire
-            // when the burst ends, exactly as the normal path does.
+            // Fire to keep the burst going (turret_firecheck:889 mid-burst path skips range/LOS/AIMDIST re-checks;
+            // only the refire cooldown + own-ammo gates remain). TurretAI.Fire advances the counter and applies the
+            // long volley refire when the burst ends, exactly as the normal path does.
             if (st.AttackFinished <= now && st.Ammo >= p.ShotDamage)
-                TurretAI.Fire(e, e, in p, Attack);
+                TurretAI.Fire(e, e.Enemy ?? e, in p, Attack);
             return;
         }
 

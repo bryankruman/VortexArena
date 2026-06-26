@@ -130,11 +130,38 @@ public sealed class Spiderbot : Vehicle
         if (ShieldRegen > 0f) vehicle.VehicleFlags |= VehicleFlags.ShieldRegen;
         if (HealthRegen > 0f) vehicle.VehicleFlags |= VehicleFlags.HealthRegen;
 
+        // QC vr_setup: instance.pushable = true — the spiderbot can use jumppads. isPushable (triggers.qc)
+        // checks .pushable BEFORE the IS_VEHICLE exclusion, so this opts the walker into jumppad/conveyor pushes
+        // that vehicles are otherwise denied.
+        vehicle.PushableFlag = true;
+
         vehicle.Think = self => Think(self);
         vehicle.NextThink = Time;
 
         // TODO(port,client): qcsrc/common/vehicles/vehicle/spiderbot.qc vr_spawn — gun barrel hardpoint
-        //                    cosmetic attachment, tur_head model frames, pushable (jumppad) flag.
+        //                    cosmetic attachment, tur_head model frames.
+        // NOTE(port): QC vr_spawn sets instance.mass = 5000 (push/knockback scaling); the port has no mass
+        //             field on the entity, so mass-scaled push interactions remain unmodeled (low impact).
+    }
+
+    // METHOD(Spiderbot, vr_impact) — spiderbot.qc
+    /// <summary>
+    /// Port of <c>vr_impact</c>: on a hard collision (the velocity change exceeds the bouncepain minspeed)
+    /// deal DEATH_FALL self-damage to the airframe, scaled by the speed delta and capped at maxpain.
+    /// Bouncepain <c>'0 0 0'</c> (default) = minspeed 0, factor 0, max 0 => no-op; when set, applies
+    /// <c>min(speedfac * speedDelta, maxpain)</c> damage, debounced 0.25s. Dispatched from the shared
+    /// <c>vehicles_touch</c> path (<see cref="VehicleCommon.Touch"/> -> <see cref="VehicleCommon.Impact"/>).
+    /// </summary>
+    public override void Impact(Entity vehicle)
+    {
+        // QC vr_impact: `if (autocvar_g_vehicle_spiderbot_bouncepain) vehicles_impact(...)` — the vector cvar
+        // guards the call (a QC vector is truthy iff any component is non-zero). The stock default '0 0 0' is
+        // falsy, so QC SKIPS vehicles_impact entirely (no debounce stamp, no zero-damage call). Mirror that
+        // with the same hardcoded-default convention as the sibling ports (Racer/Bumblebee inline their
+        // non-zero defaults; the spiderbot's is '0 0 0', so the guard is always false and this is a no-op).
+        Vector3 bouncepain = Vector3.Zero; // g_vehicle_spiderbot_bouncepain default '0 0 0' (minspeed, speedfac, maxpain)
+        if (bouncepain != Vector3.Zero)
+            VehicleCommon.Impact(vehicle, bouncepain.X, bouncepain.Y, bouncepain.Z);
     }
 
     // METHOD(Spiderbot, vr_enter) — spiderbot.qc
@@ -241,6 +268,13 @@ public sealed class Spiderbot : Vehicle
                 Api.Entities.SetOrigin(player, vehicle.Origin + new Vector3(0, 0, vehicle.Maxs.Z));
             player.OldOrigin = player.Origin;
             player.Velocity = vehicle.Velocity;
+
+            // QC vehicles_regen mirrors owner.(regen_field) = (pool/max)*100 onto the pilot so the in-vehicle
+            // HUD shows the live shield + minigun-belt gauges (RegenResource already mirrors health). Without
+            // these the spiderbot's HUD shield + ammo bars read stale/zero. Mirror every tick (matching the
+            // Racer/Bumblebee pilot mirror).
+            player.VehicleShield = vehicle.VehicleShield / MaxShield * 100f;
+            player.VehicleAmmo1 = vehicle.VehicleAmmo1 / MinigunAmmoMax * 100f;
         }
 
         // QC vehicles_think: vehicles_painframe(this) runs after vr_think every tick — low-health smoke + jitter.

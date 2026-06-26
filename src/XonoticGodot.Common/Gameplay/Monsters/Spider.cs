@@ -138,3 +138,46 @@ public sealed class Spider : Monster
         Api.Sound.Play(e, SoundChannel.Weapon, "weapons/electro_fire2.wav");
     }
 }
+
+/// <summary>
+/// The spiderweb player-slow — port of the QC
+/// <c>MUTATOR_HOOKFUNCTION(spiderweb, PlayerPhysics_UpdateStats)</c> (spider.qc:26):
+/// <c>if (StatusEffects_active(STATUSEFFECT_Webbed, player)) STAT(MOVEVARS_HIGHSPEED, player) *= 0.5;</c>.
+/// A webbed player (caught in a spider's web blast) moves at HALF top speed for the Webbed duration — the
+/// spider's signature crowd-control. A self-contained <c>[Mutator]</c> riding <c>MutatorHooks.PlayerPhysics</c>
+/// (the same hook the entrap-nade / Speed-powerup / buff slows ride) that multiplies <see cref="Entity.SpeedMultiplier"/>
+/// by 0.5; the PlayerPhysics integrator folds it into <c>MovementParameters.ApplyHighSpeed</c>. QC registers the
+/// spiderweb mutator with <c>REGISTER_MUTATOR(spiderweb, true)</c> — always enabled — so the only gate here is a
+/// live service context.
+/// </summary>
+[Mutator]
+public sealed class SpiderWebMutator : MutatorBase
+{
+    public SpiderWebMutator() => NetName = "spiderweb";
+
+    // QC: REGISTER_MUTATOR(spiderweb, true) — unconditionally enabled.
+    public override bool IsEnabled => Api.Services is not null;
+
+    private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _onPhysics;
+
+    public override void Hook()
+    {
+        _onPhysics ??= OnPlayerPhysics;
+        MutatorHooks.PlayerPhysics.Add(_onPhysics);
+    }
+
+    public override void Unhook()
+    {
+        if (_onPhysics is not null) MutatorHooks.PlayerPhysics.Remove(_onPhysics);
+    }
+
+    // MUTATOR_HOOKFUNCTION(spiderweb, PlayerPhysics_UpdateStats):
+    //   if (StatusEffects_active(STATUSEFFECT_Webbed, player)) STAT(MOVEVARS_HIGHSPEED, player) *= 0.5;
+    private bool OnPlayerPhysics(ref MutatorHooks.PlayerPhysicsArgs args)
+    {
+        Entity player = args.Player;
+        if (StatusEffectsCatalog.Has(player, MonsterFramework.Webbed))
+            player.SpeedMultiplier *= 0.5f;
+        return false;
+    }
+}

@@ -68,6 +68,13 @@ namespace XonoticGodot.Common.Framework
         /// <summary>QC <c>.dest</c> — the rain/snow fall velocity (moved off <c>.velocity</c> at spawn).</summary>
         public Vector3 Dest;
 
+        // ---- push interaction (triggers.qc isPushable) ----
+        /// <summary>QC <c>.pushable</c> — when set, the entity is moved by jumppads/conveyors/impulse-fields even
+        /// if it would otherwise be excluded (notably the spiderbot vehicle: vr_setup sets <c>pushable = true</c>
+        /// so it can ride jumppads, despite IS_VEHICLE normally returning false). Checked FIRST by
+        /// <c>isPushable</c> (triggers.qc:5), before the IS_VEHICLE/creature/loot tests.</summary>
+        public bool PushableFlag;
+
         // ---- music keys (target/music.qc) ----
         public float MusicLifetime;      // QC .lifetime — seconds a triggered target_music outranks the default (0 = becomes the default)
         public float MusicFadeIn;        // QC .fade_time — seconds to ramp the track IN

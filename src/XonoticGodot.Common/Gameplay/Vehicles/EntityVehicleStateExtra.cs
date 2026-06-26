@@ -130,6 +130,30 @@ namespace XonoticGodot.Common.Framework
         /// <summary>QC slot/turret <c>.phase</c> — re-entry delay after a gunner leaves a slot.</summary>
         public float VehPhase;
 
+        /// <summary>
+        /// QC <c>.vehicle_reload1</c> mirrored onto a seated gunner (bumblebee_gunner_enter copies vehic.vehicle_reload1).
+        /// Drives the gunner aux-crosshair reload color (red when reloading, green when ready).
+        /// </summary>
+        public float VehicleReload1;
+
+        // ---- Bumblebee gunner auxiliary crosshair feed (bumblebee_gunner_frame UpdateAuxiliaryXhair) ----
+        // The gunner draws TWO aux crosshairs: a magenta '1 0 1' LEAD marker at the predicted impact point
+        // (aux slot 1) and a reload-colored READY marker at the cannon's straight-line hit (aux slot 0). Each
+        // is mirrored onto the PILOT (aux slot 1 for gun1, 2 for gun2) so the pilot sees both gunners' aim.
+        // The per-frame controller publishes the WORLD POINTS here; the client HUD feeder projects them.
+
+        /// <summary>Gunner lead-aim world point (QC <c>UpdateAuxiliaryXhair(this, ad, '1 0 1', 1)</c>); valid only this tick.</summary>
+        public Vector3 VehGunnerLeadPoint;
+
+        /// <summary>True the tick the gunner has a lead point to draw (an enemy is locked + led).</summary>
+        public bool VehGunnerLeadValid;
+
+        /// <summary>Gunner straight-fire hit world point (QC <c>UpdateAuxiliaryXhair(this, trace_endpos, reloadColor, 0)</c>).</summary>
+        public Vector3 VehGunnerHitPoint;
+
+        /// <summary>True the tick the gunner has a straight-fire hit point to draw.</summary>
+        public bool VehGunnerHitValid;
+
         // =====================================================================================
         // Projectile-guidance scratch (vehicle homing rockets) — the fields the per-rocket think reads.
         // =====================================================================================
@@ -148,5 +172,32 @@ namespace XonoticGodot.Common.Framework
 
         /// <summary>The guidance mode this projectile flies under (homing/groundhug/guided/artillery), -1 = dumb.</summary>
         public int VehGuideMode = -1;
+
+        // =====================================================================================
+        // Racer water/air timers — port of the racer-specific .racer_watertime / .racer_air_finished
+        // edict fields (racer.qc). racer_watertime is stamped to `time` while in a liquid and gates the 3s
+        // post-water heavy-downforce ramp; racer_air_finished is the 5s submerged air meter (time + water_time)
+        // that, with crouch, swaps the align4point up-push 200->30.
+        // =====================================================================================
+
+        /// <summary>QC racer <c>.racer_watertime</c> — last sim time the racer was in a liquid (drives the 3s post-water downforce).</summary>
+        public float VehWaterTime;
+
+        /// <summary>QC racer <c>.racer_air_finished</c> — submerged air-meter expiry (time + water_time); 0 when out of water.</summary>
+        public float VehAirFinished;
+
+        /// <summary>QC racer <c>.strength_finished</c> (reused) — boost-sound replay gate (~10.92s loop length), 0 when not boosting.</summary>
+        public float VehBoostSoundTime;
+
+        // =====================================================================================
+        // Secondary-weapon HUD mirror (racer vehicle_ammo2 / vehicle_reload2) — written onto the seated
+        // pilot each tick for the on-foot vehicle HUD's rocket ammo gauge + reload progress bar.
+        // =====================================================================================
+
+        /// <summary>QC player <c>.vehicle_ammo2</c> — secondary (rocket) ammo % for the HUD: 100 idle / 50 after shot 1 / 0 after the pair.</summary>
+        public float VehAmmo2;
+
+        /// <summary>QC player <c>.vehicle_reload2</c> — secondary reload progress 0..100 (bound(0,100*(time-lip)/(delay-lip),100)).</summary>
+        public float VehReload2;
     }
 }

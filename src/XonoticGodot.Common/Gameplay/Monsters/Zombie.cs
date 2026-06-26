@@ -31,6 +31,9 @@ public sealed class Zombie : Monster
     public float SpeedRun = 600f;       // g_monster_zombie_speed_run
     public float SpeedStop = 100f;      // g_monster_zombie_speed_stop
 
+    // The zombie voice pack ships .ogg (sound/monsters/zombie/{death,sight,idle}.ogg, all count 0 = bare name).
+    public override string SoundExt => ".ogg";
+
     public Zombie()
     {
         NetName = "zombie";
@@ -38,6 +41,7 @@ public sealed class Zombie : Monster
         Model = "models/monsters/zombie.dpm";
         // Voice cues DEFINED in models/monsters/zombie.dpm_0.sounds (Base). ranged/melee/pain/spawn are
         // commented out there -> empty sample -> Base zombie is SILENT for those cues. Only these three play.
+        // All three have count 0 (bare name) and the zombie pack ships .ogg under sound/monsters/zombie/.
         SoundCues = new System.Collections.Generic.HashSet<string> { "death", "sight", "idle" };
         StartHealth = 200f;             // g_monster_zombie_health
         Damage = 55f;                   // representative (melee) damage
@@ -70,7 +74,9 @@ public sealed class Zombie : Monster
         st.SpawnTime = MonsterAI.Now + spawnAnim;
         st.DamageForceScale = 0.0001f; // no push while spawning (restored in Think once spawned)
         MonsterFramework.ApplyFor(MonsterFramework.SpawnShield, e, spawnAnim);
-        st.Anim = MonsterAI.MonsterAnim.Idle; // spawn anim plays client-side; brain idles until SpawnTime
+        // QC mr_setup: setanim(actor.anim_spawn '30 1 3') — play the spawn pose (frame 30) while the brain idles
+        // until SpawnTime. DriveAnimFrame stamps it onto the networked Frame each think.
+        st.Anim = MonsterAI.MonsterAnim.Spawn;
     }
 
     // METHOD(Zombie, mr_think) — zombie.qc (drives the shared chase/attack loop).
@@ -122,7 +128,8 @@ public sealed class Zombie : Monster
             float leapDelay = MonsterAI.Cvar("g_monster_zombie_attack_leap_delay", LeapDelay);
             Vector3 forward = QMath.Forward(e.Angles);
             Vector3 vel = forward * leapSpeed + new Vector3(0, 0, 200);
-            MonsterAI.Leap(e, st, vel, LeapTouch, leapDelay);
+            // QC: Monster_Attack_Leap(actor, actor.anim_shoot '0 1 5', ...) — the leap plays the shoot group.
+            MonsterAI.Leap(e, st, vel, LeapTouch, leapDelay, MonsterAI.MonsterAnim.Shoot);
         }
     }
 
@@ -157,7 +164,6 @@ public sealed class Zombie : Monster
         st.State = MonsterAI.MonsterState_AttackMelee; // freeze monster
         st.AttackFinished = MonsterAI.Now + 2.1f;
         st.AnimFinished = st.AttackFinished;
-        st.Anim = MonsterAI.MonsterAnim.Attack;
 
         // Restore the normal block armor after the block ends (QC M_Zombie_Defend_Block_End via Monster_Delay).
         // monsters.cfg:127 `set g_monsters_armor_blockpercent 0.5` — Base default fallback is 0.5, not 0.6.
@@ -166,7 +172,14 @@ public sealed class Zombie : Monster
         {
             if (self.Health <= 0f) return;
             self.ArmorValue = restore;
+            // QC M_Zombie_Defend_Block_End: setanim(anim_blockend '7 1 1') once the block delay (2s) elapses.
+            var dst = MonsterAI.StateOf(self);
+            if (dst is not null) dst.Anim = MonsterAI.MonsterAnim.BlockEnd;
         });
+
+        // QC M_Zombie_Defend_Block: setanim(anim_blockstart '8 1 1'). Set AFTER QueueDelayedAttack, which would
+        // otherwise stamp the generic Attack phase — the block stance plays the blockstart pose, not melee.
+        st.Anim = MonsterAI.MonsterAnim.Block;
 
         // Base M_Zombie_Defend_Block plays NO sound (only setanim blockstart). The zombie 'melee' cue is
         // commented out in zombie.dpm_0.sounds, so the prior monsters/zombie_melee.wav play was a divergence.
@@ -175,16 +188,21 @@ public sealed class Zombie : Monster
     // mr_anim (zombie.qc): the MD3 frame-group table. The first component of each animfixfps('N …') is the
     // group's start frame, which QC's setanim stamps onto .frame; the networked Entity.Frame drives the client
     // ModelAnimator (CSQCMODEL_AUTOUPDATE). MonsterAI.DriveAnimFrame calls this each think to play the phase.
-    // The logical-phase enum collapses the 14 Base groups: spawn folds into Idle (the brain idles until
-    // spawn_time), melee1/2/3 all share frame 4, walk==run, and pain1 is the representative pain group.
+    // The logical-phase enum maps the zombie's Base groups: spawn (30), blockstart/end (8/7) and shoot/leap (0)
+    // each have their own phase; melee1/2/3 all share frame 4, walk==run, and pain1 is the representative pain
+    // group (Base alternates pain1/pain2 and die1/die2 at random — the port plays a fixed representative).
     public override float? AnimFrame(MonsterAnimPhase phase, bool die2) => phase switch
     {
-        MonsterAnimPhase.Idle => 19f,   // anim_idle '19 1 1'
-        MonsterAnimPhase.Walk => 27f,   // anim_walk '27 1 1'
-        MonsterAnimPhase.Run => 27f,    // anim_run '27 1 1'
-        MonsterAnimPhase.Attack => 4f,  // anim_melee1/2/3 '4 1 5'
-        MonsterAnimPhase.Pain => 20f,   // anim_pain1 '20 1 2'
+        MonsterAnimPhase.Idle => 19f,    // anim_idle '19 1 1'
+        MonsterAnimPhase.Walk => 27f,    // anim_walk '27 1 1'
+        MonsterAnimPhase.Run => 27f,     // anim_run '27 1 1'
+        MonsterAnimPhase.Attack => 4f,   // anim_melee1/2/3 '4 1 5'
+        MonsterAnimPhase.Pain => 20f,    // anim_pain1 '20 1 2'
         MonsterAnimPhase.Death => die2 ? 12f : 9f, // anim_die1 '9 1 0.5' -> anim_die2 '12 1 0.5'
+        MonsterAnimPhase.Spawn => 30f,   // anim_spawn '30 1 3'
+        MonsterAnimPhase.Block => 8f,    // anim_blockstart '8 1 1'
+        MonsterAnimPhase.BlockEnd => 7f, // anim_blockend '7 1 1'
+        MonsterAnimPhase.Shoot => 0f,    // anim_shoot '0 1 5' (the leap pose)
         _ => 19f,
     };
 }

@@ -256,6 +256,13 @@ public sealed class Raptor : Vehicle
                 Api.Entities.SetOrigin(player, vehicle.Origin + new Vector3(0, 0, 32f));
             player.OldOrigin = player.Origin;
             player.Velocity = vehicle.Velocity;
+
+            // QC vehicles_regen mirrors owner.(regen_field) = (pool/max)*100 onto the pilot so the in-vehicle
+            // HUD shows the live shield/energy gauges (RegenResource already mirrors health). Without these the
+            // raptor's HUD shield + energy bars read stale/zero. Mirror every tick (matching the Racer/Bumblebee
+            // pilot mirror) so the gauges track even between regen pulses.
+            player.VehicleShield = vehicle.VehicleShield / MaxShield * 100f;
+            player.VehicleEnergy = vehicle.VehicleEnergy / MaxEnergy * 100f;
         }
 
         // QC vehicles_think: vehicles_painframe(this) runs after vr_think every tick — low-health smoke + jitter.

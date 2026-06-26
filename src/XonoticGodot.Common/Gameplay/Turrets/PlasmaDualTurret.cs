@@ -51,11 +51,22 @@ public sealed class PlasmaDualTurret : PlasmaTurret
     }
 
     public override void Spawn(Entity e)
+        // headShake: true — DualPlasmaTurret inherits PlasmaTurret.tr_setup (plasma.qc:51), which sets
+        // `damage_flags |= TFL_DMG_HEADSHAKE`. turret_damage (sv_turrets.qc:226-234) then jolts the head
+        // ±damage on pitch+yaw each hit; TurretAI.EventDamage honours this when the flag is set.
         => TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
-            DualAmmoMax, DualAmmoRecharge, shotVolly: 0);
+            DualAmmoMax, DualAmmoRecharge, shotVolly: 0, headShake: true);
 
     public override void Think(Entity e)
     {
+        // tr_think head-frame wheel (plasma_dual.qc:39-44): the dual cannon's spin animation. The 0..6 wheel
+        // idles at BOTH 0 and 3 (distinct from single plasma's 0..5 / idle-at-0) and only advances once a shot
+        // has kicked it off frame 0/3. Server-authoritative (QC nets tur_head.frame via TNSF_*); the port has no
+        // separate head-bone entity, so — like HellionTurret/HkTurret — the cycle runs on the turret edict's own
+        // frame field. Runs before the combat brain each think, as QC turret_think calls tr_think every frame.
+        if (e.Frame != 0f && e.Frame != 3f) e.Frame += 1f;
+        if (e.Frame > 6f) e.Frame = 0f;
+
         // Build the dual params directly (rather than the shared single-plasma MakeParams) so the per-unit
         // overrides above are honored: target_range_optimal 1000, the scoring biases, and the FLUIDINERTIA
         // track accel/blend — all of which single plasma leaves at defaults that diverge from plasma_dual.cfg.
@@ -71,7 +82,10 @@ public sealed class PlasmaDualTurret : PlasmaTurret
             missileBias: DualMissileBias, playerBias: DualPlayerBias,
             trackType: TurretAI.TrackFluidInertia,
             trackAccelPitch: DualTrackAccelPitch, trackAccelRot: DualTrackAccelRot,
-            trackBlendRate: DualTrackBlendRate);
+            trackBlendRate: DualTrackBlendRate,
+            // Inherits the single-plasma firecheck set (plasma.qc:51 adds TFL_FIRECHECK_AFF to the framework
+            // default); plasma_dual.qc has no firecheck override of its own.
+            fireCheckFlags: TurretAI.FireCheckDefault | TurretAI.FireCheckAff);
         TurretAI.RunCombat(e, in p, Attack);
     }
 
@@ -90,8 +104,11 @@ public sealed class PlasmaDualTurret : PlasmaTurret
 
         if (InstagibEnabled())
         {
-            // SUPER(PlasmaTurret).tr_attack instagib path: an instant 800-damage railgun beam (force/spread 0).
-            base.Attack(turret, enemy);
+            // plasma_dual.qc tr_attack instagib path (inlined, NOT via SUPER): an instant railgun beam. Because
+            // QC does not call SUPER here, the single-plasma `if (frame == 0) frame = 1` start-kick does NOT run
+            // on the instagib branch — only the dual's own `++frame` below applies. Call the shared beam helper
+            // directly (rather than base.Attack, which would bundle that start-kick).
+            FireInstagibBeam(turret, st.ShotOrg, dir);
         }
         else
         {
@@ -101,10 +118,19 @@ public sealed class PlasmaDualTurret : PlasmaTurret
 
             if (Api.Services is not null)
                 Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/hagar_fire.wav");
+
+            // SUPER(PlasmaTurret).tr_attack contains `if (frame == 0) frame = 1` (plasma.qc:37-38); it runs ONLY
+            // on the non-instagib branch (the instagib branch inlines its own code and never calls SUPER).
+            if (turret.Frame == 0f) turret.Frame = 1f;
         }
 
-        // NOTE (client-render, presentation): plasma_dual.qc does `++it.tur_head.frame` here and cycles the head
-        // wheel (0..6, idling at 0 and 3) in tr_think; the muzzle/beam/two-barrel-tag effects are all CSQC. The
-        // server-side head bone (tur_head.frame) is not modeled in the port, so the wheel anim is cross-file work.
+        // DualPlasmaTurret.tr_attack `++it.tur_head.frame` (plasma_dual.qc:36) — runs unconditionally after the
+        // if/else. The port has no separate head-bone entity, so the wheel state lives on the turret edict's own
+        // networked Entity.Frame (the HellionTurret/HkTurret pattern); tr_think (in Think) advances + wraps it.
+        turret.Frame += 1f;
+
+        // NOTE (client-render, presentation): the muzzle/beam effects and the two-barrel tag_fire alternation on
+        // plasmad.md3 are CSQC; the port has no attached head-bone model, so shots leave the single computed
+        // ShotOrg muzzle. The server-authoritative frame state above is now faithful (HellionTurret pattern).
     }
 }

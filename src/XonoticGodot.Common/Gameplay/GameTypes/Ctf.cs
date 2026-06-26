@@ -163,6 +163,9 @@ public sealed class Ctf : GameType
     private static readonly Vector3 FlagDropOffset = new(0f, 0f, 32f);
     /// <summary>Carry offset of a flag riding its carrier (QC FLAG_CARRY_OFFSET).</summary>
     private static readonly Vector3 FlagCarryOffset = new(-16f, 0f, 8f);
+
+    // QC vehicle vr_enter (racer): a boarding flag-carrier's flag is parked at '-190 0 96' relative to the craft.
+    private static readonly Vector3 FlagVehicleCarryOffset = new(-190f, 0f, 96f);
     /// <summary>Flag bbox (QC CTF_FLAG.m_mins/m_maxs scaled; here the vrint'd 60x60x70-ish hull).</summary>
     private static readonly Vector3 FlagMins = new(-30f, -30f, -32f);
     private static readonly Vector3 FlagMaxs = new(30f, 30f, 38f);
@@ -1441,10 +1444,15 @@ public sealed class Ctf : GameType
             // it trails them) and face it the carrier's way each tick.
             if (flag.Status == FlagStatus.Carried && flag.Carrier is { } carrier && flag.Entity is Entity cfe)
             {
-                QMath.AngleVectors(new Vector3(0f, carrier.Angles.Y, 0f), out Vector3 cf, out Vector3 cr, out Vector3 cu);
-                Vector3 pos = carrier.Origin + cf * FlagCarryOffset.X + cr * FlagCarryOffset.Y + cu * FlagCarryOffset.Z;
+                // QC vehicle vr_enter (e.g. racer): a flag-carrier who boards parks the flag at a fixed cockpit
+                // offset so it rides the craft rather than the player's back. The vehicle owns the carrier's
+                // motion, so anchor to the vehicle (origin rotated by its yaw) at the cockpit offset.
+                Entity anchor = carrier.Vehicle ?? carrier;
+                Vector3 off = carrier.Vehicle is not null ? FlagVehicleCarryOffset : FlagCarryOffset;
+                QMath.AngleVectors(new Vector3(0f, anchor.Angles.Y, 0f), out Vector3 cf, out Vector3 cr, out Vector3 cu);
+                Vector3 pos = anchor.Origin + cf * off.X + cr * off.Y + cu * off.Z;
                 GametypeEntities.SetOrigin(cfe, pos);
-                cfe.Angles = new Vector3(0f, carrier.Angles.Y, 0f);
+                cfe.Angles = new Vector3(0f, anchor.Angles.Y, 0f);
             }
             // QC ctf_FlagThink FLAG_PASSING: re-aim / retrieve / give up an in-flight passed flag every tick.
             else if (flag.Status == FlagStatus.Passing)

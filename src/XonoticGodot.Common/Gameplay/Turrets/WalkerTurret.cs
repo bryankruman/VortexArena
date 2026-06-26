@@ -64,6 +64,10 @@ public sealed class WalkerTurret : Turret
     private const float MeleeForce = 600f;
     private const float MeleeRange = 100f;
 
+    // --- CSQC walker_draw low-hp sparks (walker.qc:627) ---
+    private const float SparkHealthThreshold = 127f;
+    private const float SparkChance = 0.15f;
+
     /// <summary>QC walker animflag (walker.qc:28). Drives the per-gait turn rate + movement in tr_think.</summary>
     private enum Gait { No = 0, Turn = 1, Walk = 2, Run = 3, Jump = 6, Land = 7, Melee = 9, Swim = 10, Roam = 11 }
 
@@ -101,9 +105,24 @@ public sealed class WalkerTurret : Turret
 
     public override void Spawn(Entity e)
     {
+        Vector3 mins = new Vector3(-70f, -70f, 0f);
+        Vector3 maxs = new Vector3(70f, 70f, 95f);
+
+        // QC tr_setup home pose: on the FIRST setup (still non-STEP) ground-snap the map origin to the floor —
+        // tracebox from origin+'0 0 128' down 10000, then origin = trace_endpos + '0 0 4' — and store pos1/pos2
+        // as the home. Subsequent setups (already MOVETYPE_STEP) just restore that home. We're pre-STEP here, so
+        // do the drop now, before Init/MoveType.Step, so the stored home is the floor pose (not the raw map org).
+        if (Api.Services is not null)
+        {
+            Vector3 from = e.Origin + new Vector3(0f, 0f, 128f);
+            Vector3 to = e.Origin - new Vector3(0f, 0f, 10000f);
+            TraceResult drop = Api.Trace.Trace(from, mins, maxs, to, MoveFilter.Normal, e);
+            Api.Entities.SetOrigin(e, drop.EndPos + new Vector3(0f, 0f, 4f));
+        }
+
         // Mobile, creature-like: SOLID_SLIDEBOX + MOVETYPE_STEP; damage shoves it.
-        TurretSpawn.Init(this, e, new Vector3(-70f, -70f, 0f), new Vector3(70f, 70f, 95f),
-            AmmoMax, AmmoRecharge, ShotVolly, respawnTime: 60f, movable: true);
+        TurretSpawn.Init(this, e, mins, maxs,
+            AmmoMax, AmmoRecharge, ShotVolly, respawnTime: 60f, movable: true, energyAmmo: false);
         e.Solid = Solid.SlideBox;
         e.MoveType = MoveType.Step;
 
@@ -209,6 +228,18 @@ public sealed class WalkerTurret : Turret
 
         // --- per-gait turn + movement (the QC switch(it.animflag) block) ---
         ApplyGait(e, ws, fwd, now);
+
+        // CSQC walker_draw low-health sparks (walker.qc:627): a damaged walker (< 127 hp) sparks at 15%/frame.
+        // The QC draw hook runs client-side, but the spark is a networked temp-entity (reaches every viewing
+        // client identically), so emit it server-side — same convention as EWheelTurret's ewheel_draw spark. The
+        // pure-client ground-align/head-spin/origin-advance stays client render.
+        if (Api.Services is not null
+            && e.GetResource(ResourceType.Health) < SparkHealthThreshold
+            && Prandom.Float() < SparkChance)
+        {
+            EffectEmitter.TeSpark(e.Origin + new Vector3(0f, 0f, 40f),
+                Prandom.Vec() * 256f + new Vector3(0f, 0f, 256f), 16);
+        }
 
         // NOTE (client-render): QC sets SendFlags |= TNSF_MOVE here + turrets_setframe(animflag) to net the
         // gait frame to CSQC. The animation/networking layer is presentation and lives outside this server port.
@@ -387,14 +418,18 @@ public sealed class WalkerTurret : Turret
             launchSpeed: RocketSpeed, speedMax: RocketSpeed, speedGain: 1f, turnRate: RocketTurnRate,
             size: 6f, health: 25f, RocketDamage, RocketRadius, RocketForce, DeathTypes.TurretWalkRocket, ttl: 9f);
 
-        // QC: SND_TUR_WALKER_FIRE = W_Sound("hagar_fire") (all.inc:154), NOT the rocket-launch sound.
+        // QC walker_fire_rocket: te_explosion(org) launch flash at the muzzle (a networked temp-entity, emitted
+        // server-side so it reaches all viewing clients identically — same convention as the spark above).
         if (Api.Services is not null)
+        {
+            EffectEmitter.TeExplosion(st.ShotOrg);
+            // QC: SND_TUR_WALKER_FIRE = W_Sound("hagar_fire") (all.inc:154), NOT the rocket-launch sound.
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/hagar_fire.wav");
+        }
 
-        // NOTE (cross-file): QC walker_fire_rocket emits te_explosion(org) as a launch flash (client-render),
-        // and rolls random()<0.01 to launch into the up-and-over walker_rocket_loop maneuver (also re-rolled
-        // 1%/think in walker_rocket_think). GuidedProjectile.WalkerRocketThink only models the straight steer-pull,
-        // so the loop->loop2->loop3 state machine + its 1% entry rolls belong in GuidedProjectile.cs (not this file).
+        // NOTE: the rocket's 1% up-and-over walker_rocket_loop maneuver (1% on launch + 1%/in-flight think) now
+        // lives in GuidedProjectile (Launch + WalkerRocketLoop/2/3). tag_rocket01/02 muzzle alternation is not
+        // reproduced — the port has no head tags, so all rockets fire from the single muzzle org.
     }
 
     // METHOD(WalkerTurretAttack, wr_think) — walker_weapon.qc: minigun bullet along the muzzle dir with spread

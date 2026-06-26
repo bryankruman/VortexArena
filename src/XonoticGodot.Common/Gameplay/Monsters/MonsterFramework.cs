@@ -253,7 +253,14 @@ public static class MonsterFramework
             if (tr.EndPos.Z < self.Origin.Z + self.Mins.Z && IsSky(tr))
                 return 1;
             int sc = Api.Trace.PointContents(tr.EndPos + new Vector3(0, 0, 1));
-            if (sc == (int)Contents.Lava || sc == (int)Contents.Slime) return 3;
+            if (sc != (int)Contents.Solid)
+            {
+                if (sc == (int)Contents.Lava || sc == (int)Contents.Slime) return 3;
+                // 4) a trigger_hurt volume in the path ahead (QC tracebox_hits_trigger_hurt(dst_ahead, mins,
+                //    maxs, trace_endpos)).
+                if (HitsTriggerHurt(dstAhead, self.Mins, self.Maxs, tr.EndPos))
+                    return 4;
+            }
             return 0;
         }
 
@@ -267,9 +274,68 @@ public static class MonsterFramework
             if (down.EndPos.Z < (self.Origin.Z + self.Mins.Z) - allowedDrop)
                 return 2;
             int sc = Api.Trace.PointContents(down.EndPos + new Vector3(0, 0, 1));
-            if (sc == (int)Contents.Lava || sc == (int)Contents.Slime) return 3;
+            if (sc != (int)Contents.Solid)
+            {
+                if (sc == (int)Contents.Lava || sc == (int)Contents.Slime) return 3;
+                // 4) a trigger_hurt volume in the fall column (QC tracebox_hits_trigger_hurt(dst_ahead, mins,
+                //    maxs, trace_endpos)).
+                if (HitsTriggerHurt(dstAhead, self.Mins, self.Maxs, down.EndPos))
+                    return 4;
+            }
         }
         return 0;
+    }
+
+    /// <summary>
+    /// QC <c>tracebox_hits_trigger_hurt(start, mins, maxs, end)</c> (common/mapobjects/trigger/hurt.qc:78): does
+    /// the box <paramref name="mins"/>/<paramref name="maxs"/> swept from <paramref name="start"/> to
+    /// <paramref name="end"/> overlap any <c>trigger_hurt</c> volume? QC walks the trigger_hurt linked list
+    /// calling <c>tracebox_hits_box</c> (a swept-AABB vs box slab test). Mirrors the bot's BotDanger.HitsTriggerHurt
+    /// (server) since Common cannot reference Server; same Minkowski-expand-then-slab-clip math.
+    /// </summary>
+    private static bool HitsTriggerHurt(Vector3 start, Vector3 mins, Vector3 maxs, Vector3 end)
+    {
+        if (Api.Services is null) return false;
+        foreach (Entity e in Api.Entities.FindByClass("trigger_hurt"))
+        {
+            if (e.IsFreed) continue;
+            if (e.AbsMin == e.AbsMax) continue; // unlinked/degenerate volume
+            // QC tracebox_hits_box(start, mins, maxs, end, absmin, absmax)
+            //   = trace_hits_box(start, end, absmin - maxs, absmax - mins)
+            if (TraceHitsBox(start, end, e.AbsMin - maxs, e.AbsMax - mins))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>QC <c>trace_hits_box(start, end, thmi, thma)</c> (common/util.qc:2219): ray-vs-box slab clip.</summary>
+    private static bool TraceHitsBox(Vector3 start, Vector3 end, Vector3 thmi, Vector3 thma)
+    {
+        end -= start;
+        thmi -= start;
+        thma -= start;
+        float a0 = 0f, a1 = 1f;
+        if (!HitsBox1D(end.X, thmi.X, thma.X, ref a0, ref a1)) return false;
+        if (!HitsBox1D(end.Y, thmi.Y, thma.Y, ref a0, ref a1)) return false;
+        if (!HitsBox1D(end.Z, thmi.Z, thma.Z, ref a0, ref a1)) return false;
+        return true;
+    }
+
+    /// <summary>QC <c>trace_hits_box_1d</c> (common/util.qc:2197): one-axis slab clamp of the [a0,a1] interval.</summary>
+    private static bool HitsBox1D(float end, float thmi, float thma, ref float a0, ref float a1)
+    {
+        if (end == 0f)
+        {
+            if (0f < thmi) return false;
+            if (0f > thma) return false;
+        }
+        else
+        {
+            a0 = MathF.Max(a0, MathF.Min(thmi / end, thma / end));
+            a1 = MathF.Min(a1, MathF.Max(thmi / end, thma / end));
+            if (a0 > a1) return false;
+        }
+        return true;
     }
 
     private static bool IsSky(TraceResult tr)

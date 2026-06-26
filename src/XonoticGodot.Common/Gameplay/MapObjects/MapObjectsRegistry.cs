@@ -228,6 +228,10 @@ public static class MapObjectsRegistry
         SpawnFuncs.Register("turret_walker", TurretSpawnFuncs.Walker);
         SpawnFuncs.Register("turret_ewheel", TurretSpawnFuncs.EWheel);
         SpawnFuncs.Register("turret_fusionreactor", TurretSpawnFuncs.FusionReactor);
+        // turret_checkpoint (common/turrets/checkpoint.qc): the waypoint nodes ewheel/walker roam between; the
+        // walker_checkpoint classname is a QC compat alias for the same spawnfunc.
+        SpawnFuncs.Register("turret_checkpoint", TurretSpawnFuncs.Checkpoint);
+        SpawnFuncs.Register("walker_checkpoint", TurretSpawnFuncs.Checkpoint);
 
         // vehicles (common/vehicles/vehicle/*.qc: spawnfunc(vehicle_X){ ... vehicle_initialize(this,VEH_X,false); }).
         SpawnFuncs.Register("vehicle_racer", VehicleSpawnFuncs.Racer);

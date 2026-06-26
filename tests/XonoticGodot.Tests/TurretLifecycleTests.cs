@@ -256,4 +256,72 @@ public class TurretLifecycleTests
         Assert.Equal(DamageMode.No, e.TakeDamage);
         Assert.Equal(0f, e.Health);
     }
+
+    // ---------------------------------------------------------------- ewheel locomotion (Wave-7)
+
+    private static Entity SpawnCheckpoint(string targetName, string target, Vector3 origin)
+    {
+        Entity cp = Api.Entities.Spawn();
+        cp.Origin = origin;
+        Api.Entities.SetOrigin(cp, origin);
+        cp.TargetName = targetName;
+        cp.Target = target;
+        TurretSpawnFuncs.Checkpoint(cp);   // QC spawnfunc(turret_checkpoint): floor-snap + index by targetname
+        return cp;
+    }
+
+    [Fact]
+    public void EwheelMoveEnemy_SelectsTheCorrectDriveFrame()
+    {
+        Boot();
+        Entity e = SpawnEwheel(new Vector3(0, 0, 8));
+        e.Team = 5f;
+
+        // Enemy well beyond the optimal range (900), dead ahead so the body yaw error is ~0 -> fast forward.
+        Entity foe = Attacker(new Vector3(2000, 0, 26), team: 14f);
+        e.Angles = QMath.VecToAngles(QMath.Normalize(foe.Origin - e.Origin));
+        e.Enemy = foe;
+
+        e.Think!(e);   // RunCombat + Drive
+
+        // ewheel_move_enemy: dist > optimal AND aligned -> ewheel_anim_fwd_fast (2), stamped onto Entity.Frame.
+        Assert.Equal(2f, e.Frame);
+
+        // Pull the enemy inside the kite threshold (optimal*0.5 = 450) -> ewheel_anim_bck_slow (3).
+        Api.Entities.SetOrigin(foe, new Vector3(300, 0, 26));
+        e.Enemy = foe;
+        e.Think!(e);
+        Assert.Equal(3f, e.Frame);
+    }
+
+    [Fact]
+    public void EwheelIdleWithPath_FollowsTheCheckpointChainAndDrives()
+    {
+        Boot();
+        // A two-node looped chain: cp1 -> cp2 -> cp1. Both well above the floor brush (z=0).
+        SpawnCheckpoint("cp1", "cp2", new Vector3(500, 0, 40));
+        SpawnCheckpoint("cp2", "cp1", new Vector3(-500, 0, 40));
+
+        // The ewheel targets the entry waypoint cp1 (set BEFORE spawn so ewheel_findtarget resolves it).
+        Entity e = Api.Entities.Spawn();
+        e.Origin = new Vector3(0, 0, 8);
+        Api.Entities.SetOrigin(e, new Vector3(0, 0, 8));
+        e.Target = "cp1";
+        TurretSpawnFuncs.EWheel(e);
+        e.Team = 5f;
+
+        TurretState st = TurretAI.State(e);
+        Assert.NotNull(st.PathCurrent);                         // ewheel_findtarget wired the entry checkpoint
+        Assert.Equal("cp1", st.PathCurrent!.TargetName);
+
+        // Idle (no enemy): ewheel_move_path should roll it toward cp1 (speed_fast), building velocity.
+        e.Enemy = null;
+        e.Think!(e);
+        Assert.NotEqual(Vector3.Zero, e.Velocity);
+
+        // Teleport onto cp1: the next think advances the chain to cp2 (turret_closetotarget within 64u).
+        Api.Entities.SetOrigin(e, st.PathCurrent!.Origin);
+        e.Think!(e);
+        Assert.Equal("cp2", TurretAI.State(e).PathCurrent!.TargetName);
+    }
 }
