@@ -1552,6 +1552,10 @@ public sealed partial class NetGame : Node3D
         Api.Cvars.Register("cl_eventchase_death", "2");
         Api.Cvars.Register("cl_eventchase_distance", "140");
         Api.Cvars.Register("cl_eventchase_speed", "1.3");
+        // QC Scoreboard_WouldDraw death-scoreboard gate (_cl_main.qc / scoreboard.qc:1793): force the scoreboard up
+        // a short delay after the local player dies, even without holding +showscores.
+        Api.Cvars.Register("cl_deathscoreboard", "1");
+        Api.Cvars.Register("cl_deathscoreboard_delay", "1");
     }
 
     /// <summary>
@@ -2664,7 +2668,8 @@ public sealed partial class NetGame : Node3D
         // Vortex's gfx/reticle_nex) while zooming with it. Fed after UpdateCamera so ZoomFraction is this frame's
         // value; reuses the active weapon resolved for the zoom above. Suppressed while dead / spectating / chase.
         _reticle?.UpdateReticle(activeWep, BindTable.ZoomHeld, BindTable.Attack2Held,
-            _view.ZoomFraction, LocalDeadNow(), _client.SpectatingNetId != 0, _view.ChaseActive);
+            _view.ZoomFraction, LocalDeadNow(), _client.SpectatingNetId != 0, _view.ChaseActive,
+            _view.ZoomScriptCaught);
 
         // Feed the full HUD's player-bound panels (health/ammo/weapons/crosshair) the local server Player on a
         // listen server, so they reflect live local state as the spawn lands (QC the view player). A pure client
@@ -2705,9 +2710,13 @@ public sealed partial class NetGame : Node3D
             _viewEffects.UpdateFrozenOverlay(isFrozen, localFrozen?.ReviveProgress ?? 0f);
         }
 
-        // Keep the radar oriented to the player's facing.
+        // Keep the radar oriented to the player's facing, and feed the live +zoom fraction so the radar's
+        // zoommode 0/1 follow the player's zoom the way QC's current_zoomfraction does.
         if (_radar is not null)
+        {
             _radar.LocalYawDegrees = _viewAngles.Y;
+            _radar.ZoomFraction = _view.ZoomFraction;
+        }
 
         // [T68] Shownames overlay (QC Draw_ShowNames_All): feed the per-frame view context — the local client's
         // team (the sameteam gate), whether we're in chase (the own-name gate), and our net id. The team is the
@@ -2721,6 +2730,10 @@ public sealed partial class NetGame : Node3D
             _shownamesLayer.CurrentViewedNetId = _client.SpectatingNetId != 0 ? _client.SpectatingNetId : _client.LocalNetId;
             _shownamesLayer.SpectateeStatus = _client.SpectateeStatus;
             _shownamesLayer.SpectateeStatusChangedTime = _client.SpectateeStatusChangedTime;
+            // QC `_entcs_send`'s `!(IS_PLAYER(to) || INGAME(to))` arm: an observing/spectating recipient gets every
+            // player's PRIVATE entcs slice, so the shownames m_entcs_private flag is forced true for all of them.
+            // spectatee_status != 0 ⇔ the local client is not a live in-game player (free-fly observe OR follow).
+            _shownamesLayer.LocalIsSpectating = _client.SpectateeStatus != 0;
             _shownamesLayer.ChaseActive = _view.ChaseActive;
             _shownamesLayer.LocalTeam = LocalShownamesTeam();
         }
@@ -2737,6 +2750,7 @@ public sealed partial class NetGame : Node3D
         UpdateVotePanel();
         UpdateMapVotePanel();
         UpdateRacePanels();
+        UpdateHudDynamicFollow();
 
         // Minigame cursor (QC hud_cursormode): while a minigame board/menu owns input, show the cursor so the
         // player can click TTT/C4 tiles + the menu; recapture for play on the edge back out. Skip while the
@@ -3025,6 +3039,19 @@ public sealed partial class NetGame : Node3D
         _fullHud.Observing = _client.IsObserving;
         if (_client.MatchIntermission)
             t.IntermissionTime = _client.LatestServerTime;
+    }
+
+    /// <summary>Feed the HUD's <c>hud_dynamic_follow</c> effect (QC <c>Hud_Dynamic_Frame</c> follow block) the
+    /// live viewmodel follow offset (QC <c>cl_followmodel_ofs</c>). The HUD self-gates on the cvar (off by
+    /// default), so this is safe to call every frame; when the viewmodel is gone we feed zero (no sway).</summary>
+    private void UpdateHudDynamicFollow()
+    {
+        if (_fullHud is null)
+            return;
+        Vector3 ofs = _viewModel is not null && GodotObject.IsInstanceValid(_viewModel)
+            ? _viewModel.LastFollowOffset
+            : Vector3.Zero;
+        _fullHud.FollowModelOffset = new System.Numerics.Vector3(ofs.X, ofs.Y, ofs.Z);
     }
 
     /// <summary>
@@ -3423,7 +3450,23 @@ public sealed partial class NetGame : Node3D
         // intermission==2 as "the MapVote panel is currently showing" (UpdateMapVotePanel owns mv.Visible).
         bool mapVoteShowing = _fullHud is not null && _fullHud.MapVote.Visible;
         bool intermissionShow = _client.MatchIntermission && !mapVoteShowing;
-        bool show = XonoticGodot.Engine.Console.BindTable.ShowScores || intermissionShow;
+        // QC Scoreboard_WouldDraw death scoreboard (scoreboard.qc:1793): once the local player is dead AND a short
+        // delay has elapsed since death, the scoreboard forces up even without +showscores. The port has no
+        // networked death_time, so reproduce it client-side: STAT(RESPAWN_TIME) != 0 means dead (set at death,
+        // negated while respawning, 0 while alive), and we stamp the server time at which death was first observed
+        // to gate the cl_deathscoreboard_delay window. Suppressed at intermission==2 (mapvote) below.
+        bool deadNow = _client.RespawnTimeStat != 0f;
+        if (deadNow)
+        {
+            if (_localDeathStamp < 0f) _localDeathStamp = _client.LatestServerTime;
+        }
+        else _localDeathStamp = -1f;
+        var cv = Api.Services?.Cvars;
+        bool deathScoreboard = deadNow && _localDeathStamp >= 0f
+            && (cv is null || cv.GetFloat("cl_deathscoreboard") != 0f)
+            && _client.LatestServerTime - _localDeathStamp >= (cv is null ? 1f : cv.GetFloat("cl_deathscoreboard_delay"));
+        bool show = (XonoticGodot.Engine.Console.BindTable.ShowScores || intermissionShow || deathScoreboard)
+            && !mapVoteShowing; // QC intermission==2 / clickable-radar suppression: mapvote owns the screen
         // QC scoreboard.qc:2411: drive the cross-fade via scoreboard_active (the Active setter ramps _fadeAlpha
         // in/out in _Process and hides the panel once fully faded out) rather than popping Visible — this is what
         // makes hud_panel_scoreboard_fadeinspeed/fadeoutspeed actually animate on the live path.
@@ -3438,6 +3481,10 @@ public sealed partial class NetGame : Node3D
         {
             _scoreboard.RespawnStat = _client.RespawnTimeStat;
             _scoreboard.RespawnServerTime = _client.LatestServerTime;
+            // QC Scoreboard_MapStats_Draw reads STAT(MONSTERS_*)/STAT(SECRETS_*) every draw — they tick
+            // independently of the score version, so feed the live map-stats counts every frame while shown
+            // (not only inside the change-gated row feed below, which made monsters lag and never fed secrets).
+            FeedMapStats();
         }
         if (!show)
             return;
@@ -3468,6 +3515,9 @@ public sealed partial class NetGame : Node3D
     }
     private XonoticGodot.Net.ScoreboardWire? _lastFedScoreboard;
     private XonoticGodot.Net.GametypeStatusBlock.Decoded? _lastFedModeStatus;
+    /// <summary>QC death_time stand-in: the server time at which the local player's death was first observed
+    /// (STAT(RESPAWN_TIME) first non-zero), or -1 while alive; gates the cl_deathscoreboard_delay window.</summary>
+    private float _localDeathStamp = -1f;
 
     /// <summary>[T68] Resolve a player net id to its display name — the port's faithful <c>entcs_GetName</c>
     /// stand-in for the shownames overlay. The port has no separate entcs name stream, so the name comes from the
@@ -3725,6 +3775,14 @@ public sealed partial class NetGame : Node3D
         if (cvars is null) return;
         _scoreboard.FragLimit = (int)cvars.GetFloat("fraglimit");
         _scoreboard.TimeLimitMinutes = (int)cvars.GetFloat("timelimit");
+        FeedMapStats();
+    }
+
+    /// <summary>QC <c>Scoreboard_MapStats_Draw</c> feed (STAT(MONSTERS_*) / STAT(SECRETS_*)): the live map-stats
+    /// counts. These tick independently of the score version, so the live caller (UpdateScoreboard) feeds them
+    /// every frame while the scoreboard is shown — not only when the row data changes.</summary>
+    private void FeedMapStats()
+    {
         // [T43] Feed the scoreboard map-stats row (QC monsters_setstatus → STAT(MONSTERS_TOTAL/KILLED)).
         // -1 hides the row when there are no monsters (DrawMapStats gates on MonstersTotal > 0).
         // QC sv_invasion.qc MUTATOR_HOOKFUNCTION(inv, SV_StartFrame): for INV_TYPE_ROUND the wave progress is
@@ -3742,6 +3800,12 @@ public sealed partial class NetGame : Node3D
             _scoreboard.MonstersTotal  = XonoticGodot.Common.Gameplay.MonsterAI.MonstersTotal > 0 ? XonoticGodot.Common.Gameplay.MonsterAI.MonstersTotal : -1;
             _scoreboard.MonstersKilled = XonoticGodot.Common.Gameplay.MonsterAI.MonstersKilled;
         }
+
+        // QC trigger_secret: STAT(SECRETS_TOTAL)/STAT(SECRETS_FOUND), accumulated by trigger_secret spawn/touch
+        // (Triggers.SecretSetup/SecretTouch → MapObjectsState). -1 hides the row when the map has no secrets.
+        int secretsTotal = XonoticGodot.Common.Gameplay.MapObjectsState.SecretsTotal;
+        _scoreboard.SecretsTotal = secretsTotal > 0 ? secretsTotal : -1;
+        _scoreboard.SecretsFound = XonoticGodot.Common.Gameplay.MapObjectsState.SecretsFound;
     }
 
     /// <summary>
@@ -3795,6 +3859,21 @@ public sealed partial class NetGame : Node3D
         if (!ConsoleState.IsOpen && _fullHud is { } voteHud && voteHud.MapVote.Visible
             && HandleMapVoteInput(voteHud.MapVote, @event))
         {
+            GetViewport().SetInputAsHandled();
+            return;
+        }
+
+        // Zoom-scroll (QC client/view.qc View_InputEvent / ZoomScroll): while +zoom is held and cl_zoomscroll is on,
+        // the mousewheel adjusts the zoom factor instead of switching weapons. View_InputEvent consumes the wheel
+        // event in that case (returns true), so feed it to the shared view BEFORE the gameplay binds and swallow the
+        // event when it applies. Inert otherwise (returns control to the weapon-next/prev binds below).
+        if (!ConsoleState.IsOpen && !GetTree().Paused && !MinigameMenuOpen
+            && @event is InputEventMouseButton { Pressed: true } wheel
+            && (wheel.ButtonIndex == MouseButton.WheelUp || wheel.ButtonIndex == MouseButton.WheelDown)
+            && _view.ZoomHeld
+            && CvarOr(Api.Cvars, "cl_zoomscroll", 1f) != 0f && CvarOr(Api.Cvars, "cl_zoomscroll_scale", 0.2f) != 0f)
+        {
+            _view.NotifyZoomScroll(wheel.ButtonIndex == MouseButton.WheelUp);
             GetViewport().SetInputAsHandled();
             return;
         }
@@ -4373,6 +4452,10 @@ public sealed partial class NetGame : Node3D
             // sets ViewOfs to the crouch/standing value each predicted tick, QC STAT(PL_CROUCH_VIEW_OFS)/PL_VIEW_OFS).
             // In faithful mode this is the viewheightavg-blended height (smooth crouch); else the raw live offset.
             EyeHeightZ = eyeOfsZ,
+            // QC IS_ONGROUND / (input_buttons & BIT(1)): drive the horizontal view-bob smooth ramp (cl_bob2) and
+            // the fall-bob swing trigger (cl_bobfall). Both off by default, so no observable effect in a stock match.
+            OnGround = _carrier?.OnGround ?? false,
+            JumpHeld = BindTable.JumpHeld,
         };
         _view.UpdateView(_camera, st, dt);
     }

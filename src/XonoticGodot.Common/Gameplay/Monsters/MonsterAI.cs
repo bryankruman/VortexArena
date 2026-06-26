@@ -1326,6 +1326,11 @@ public static class MonsterAI
         proj.Owner = owner;
         proj.NetName = st.Def.NetName;
         proj.MoveType = moveType;
+        // QC .bouncefactor / .bouncestop for MOVETYPE_BOUNCE projectiles (spider web 0.3/0.05, golem zap
+        // 0.5/0.075). The engine MoveType.Bounce integrator reads these off the entity (PhysicsToss); a
+        // zero leaves the engine on its built-in defaults (0.5 / 60/800), so passing 0f is a faithful no-op.
+        proj.BounceFactor = bounceFactor;
+        proj.BounceStop = bounceStop;
         // QC golem/spider PROJECTILE_MAKETRIGGER (SOLID_CORPSE + dphitcontentsmask SOLID|BODY|CORPSE): transparent
         // to the firer's movement so the monster's own projectile can't collide with / detonate on it. Opt-in
         // because not every caller of this shared spawner uses it — the mage spike is SOLID_BBOX (mage.qc:224)

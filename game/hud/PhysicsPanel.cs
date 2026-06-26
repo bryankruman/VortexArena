@@ -573,54 +573,13 @@ public partial class PhysicsPanel : HudPanel
     private void DrawSkinProgressBar(Vector2 origin, Vector2 size, string art, float lengthRatio,
         int baralign, Color color, float alpha)
     {
-        // QC: if (!length_ratio || !theAlpha) return;
-        if (alpha <= 0f || size.X <= 0f || size.Y <= 0f || lengthRatio == 0f) return;
-        // A non-finite ratio/origin/size bypasses every comparison below (NaN compares false) and would spray
-        // a NaN rect into the renderer; bail before any of the clamps run.
-        if (!float.IsFinite(lengthRatio) || !float.IsFinite(origin.X) || !float.IsFinite(origin.Y)
-            || !float.IsFinite(size.X) || !float.IsFinite(size.Y)) return;
+        // Delegate to the shared HudPanel.DrawProgressBar primitive (the faithful QC HUD_Panel_DrawProgressBar
+        // port — all four baralign modes + skin art + fallback). This panel always draws horizontal bars.
+        DrawProgressBar(new Rect2(origin, size), art, lengthRatio, vertical: false, baralign, color, alpha);
 
-        // QC: clamp the positive overflow; only baralign 3 may go negative (clamped to -1), the rest drop it.
-        if (lengthRatio > 1f) lengthRatio = 1f;
-        if (baralign == 3)
-        {
-            if (lengthRatio < -1f) lengthRatio = -1f;
-        }
-        else if (lengthRatio < 0f) return;
-
-        float ox = origin.X;
-        float w = size.X;
-        switch (baralign)
-        {
-            case 1: // right align
-                ox += (1f - lengthRatio) * size.X;
-                break;
-            case 2: // center align (symmetric, value already non-negative here)
-                ox += 0.5f * (1f - lengthRatio) * size.X;
-                break;
-            case 3: // signed center: positive on the right half, negative on the left half
-                w = size.X * 0.5f;
-                if (lengthRatio > 0f)
-                    ox += w;
-                else
-                {
-                    ox += (1f + lengthRatio) * w;
-                    lengthRatio = -lengthRatio;
-                }
-                break;
-            default: // 0: left align
-                break;
-        }
-        w *= lengthRatio;
-        if (w <= 0f) return;
-
-        var fill = new Rect2(ox, origin.Y, w, size.Y);
-        var tint = WithAlpha(color, alpha);
-        if (!DrawSkinPic(art, fill, tint) && !DrawSkinPic("progressbar", fill, tint))
-            DrawRect(fill, tint);
-
-        // a faint center tick for the signed (acceleration) bar so zero is readable even at flat accel.
-        if (baralign == 3)
+        // A faint center tick for the signed (acceleration) bar so zero is readable even at flat accel
+        // (a port-extra readability aid, drawn only for baralign 3 and only when the bar would render).
+        if (baralign == 3 && alpha > 0f && size.X > 0f && size.Y > 0f && float.IsFinite(lengthRatio))
         {
             float cx = origin.X + size.X * 0.5f;
             DrawRect(new Rect2(cx - 0.5f, origin.Y, 1f, size.Y), new Color(1f, 1f, 1f, alpha * 0.4f));

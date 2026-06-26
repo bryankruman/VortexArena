@@ -963,7 +963,12 @@ public sealed class ServerNet : IDisposable
                 _scratchWriter.WriteFloat(o.Z);
                 _scratchWriter.WriteByte((byte)(wp.Team & 0xFF));
                 _scratchWriter.WriteString(wp.SpriteName);
-                _scratchWriter.WriteByte((byte)(wp.RadarIcon & 0xFF));
+                // QC packs the radar-icon byte: low 7 bits = m_radaricon (0/1), bit 7 = "ping now" (cnt|BIT(7)),
+                // which the client turns into an expanding gfx/teamradar_ping ring. waypointsprites.qc:187-192.
+                int radarByte = (wp.RadarIcon & 0x7F);
+                if (XonoticGodot.Common.Gameplay.Waypoints.WaypointSprites.IsPinging(wp))
+                    radarByte |= 0x80;
+                _scratchWriter.WriteByte((byte)radarByte);
                 _scratchWriter.WriteByte(Clamp255(wp.Color.X));
                 _scratchWriter.WriteByte(Clamp255(wp.Color.Y));
                 _scratchWriter.WriteByte(Clamp255(wp.Color.Z));

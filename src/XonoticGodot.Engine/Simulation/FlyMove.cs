@@ -404,6 +404,15 @@ public sealed class PhysicsContext
             Vector3 movedFromAngles = check.Angles;
             moved.Add((check, movedFrom, movedFromAngles));
 
+            // MOVETYPE_PHYSICS riders run their own (better) collision solver; the pusher just translates them
+            // and relinks, skipping the PushEntity sweep + stuck-check entirely (push.qc:123-129).
+            if (check.MoveType == MoveType.Physics)
+            {
+                check.Origin += move;
+                LinkEdict(check);
+                continue;
+            }
+
             // push the rider with the pusher temporarily non-solid (so the rider's own trace ignores it).
             pusher.Solid = Solid.Not;
             bool teleported = !PushEntity(out TraceResult trace, check, move, doTouch: true);

@@ -355,6 +355,7 @@ public sealed class ClientNet : IDisposable
         MovementParameters.PredictionOverride = null;
         _replicatedLastSent.Clear();
         _replicateSendAll = false;
+        _radarPingTimes.Clear(); // drop stale per-waypoint radar ping stamps across reconnect/map change
         // Reset the echoed snapshot clock so the first post-reconnect input frame doesn't carry a stale large
         // server-time the server would read as a near-zero/negative RTT (it self-heals via the rtt<0 clamp, but
         // this avoids the brief under-report). 0 = "no snapshot yet", which the server treats as "measure nothing".
@@ -598,6 +599,15 @@ public sealed class ClientNet : IDisposable
     /// wholesale each <see cref="NetControl.Waypoints"/> message; empty in waypoint-less modes (plain DM).</summary>
     public IReadOnlyList<XonoticGodot.Common.Gameplay.Waypoints.WaypointNet> Waypoints => _waypoints;
 
+    /// <summary>Per-waypoint-id radar ping timestamps (server time of the last ping) — the C# analogue of QC's
+    /// per-icon <c>teamradar_times</c> array. The radar draws an expanding gfx/teamradar_ping ring for ~1s after
+    /// each stamp. Stamped on decode when bit 7 of the radar-icon byte is set; read by <see cref="Game.Hud.RadarPanel"/>.</summary>
+    private readonly Dictionary<int, float> _radarPingTimes = new();
+
+    /// <summary>The server time of the most recent radar ping for <paramref name="waypointId"/>, or 0 if none.</summary>
+    public float RadarPingTime(int waypointId)
+        => _radarPingTimes.TryGetValue(waypointId, out float t) ? t : 0f;
+
     private void HandleWaypoints(ref BitReader r)
     {
         int count = r.ReadByte();
@@ -609,7 +619,17 @@ public sealed class ClientNet : IDisposable
             float x = r.ReadFloat(), y = r.ReadFloat(), z = r.ReadFloat();
             int team = r.ReadByte();
             string sprite = r.ReadString();
-            int radarIcon = r.ReadByte();
+            // QC: the radar-icon byte packs m_radaricon in the low 7 bits and a ping pulse in bit 7
+            // (waypointsprites.qc:187-192). Stamp a per-id ping time on a fresh ping so the radar can draw an
+            // expanding gfx/teamradar_ping ring; de-dupe within the 0.3s ping window (one ring per ping event).
+            int radarByte = r.ReadByte();
+            int radarIcon = radarByte & 0x7F;
+            if ((radarByte & 0x80) != 0)
+            {
+                float servTime = LatestServerTime;
+                if (!_radarPingTimes.TryGetValue(id, out float prev) || servTime - prev >= 0.3f)
+                    _radarPingTimes[id] = servTime;
+            }
             float cr = r.ReadByte() / 255f, cg = r.ReadByte() / 255f, cb = r.ReadByte() / 255f;
             float health = r.ReadFloat();
             float fade = r.ReadFloat();

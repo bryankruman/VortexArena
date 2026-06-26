@@ -327,6 +327,12 @@ public partial class ClientWorld : Node3D
         // exists, push the particlefont/effectinfo loaders into it so the real sprites/decals are used.
         WireEffectAssets();
 
+        // Casing bounce sounds (Base Casing_Touch: brass*/casings* on touch at speed): route them through the
+        // positional sound path at VOL_BASE on CH_SHOTS with ATTEN_LARGE (the DP atten value 1 → quieter/closer
+        // falloff, since gain = (1 - min(1, dist*atten/radius))^exp). Matches sound(this, CH_SHOTS, s, VOL_BASE,
+        // ATTEN_LARGE) in Casing_Touch.
+        Effects.Casings.SoundHook = (sample, origin) => OnSound(sample, origin, 0.7f, 1f, /*CH_SHOTS auto*/ -4);
+
         Projectiles = new ProjectileRenderer { Name = "Projectiles", Effects = Effects };
         // Share the client's sound resolution so projectile fly-loops (rocket/electro/fireball) resolve the
         // same way positional sounds do (QC loopsound on the CSQC projectile).

@@ -192,6 +192,77 @@ public partial class CenterPrintPanel : HudPanel
     private bool HasTitle => _title.Length > 0 || _titleLeft.Length > 0;
 
     // =====================================================================================
+    //  HUD-config live preview (QC HUD_CenterPrint autocvar__hud_configure block, centerprint.qc:179-217)
+    // =====================================================================================
+
+    // QC hud_configure_prev (whether the editor was open last frame) + hud_configure_cp_generation_time (the
+    // next time a sample line is generated). Tracked here so we reproduce the enter/leave clears and the rotating
+    // sample-message cadence the editor relies on to preview the panel.
+    private bool _hudConfigurePrev;
+    private double _cpGenerationTime;
+    private readonly System.Random _previewRng = new();
+
+    /// <summary>Per-frame HUD-editor preview generator — the C# successor to the
+    /// <c>autocvar__hud_configure</c> branch of QC <c>HUD_CenterPrint</c> (centerprint.qc:179-217). When the
+    /// editor opens, clears the panel; while it is open, emits a rotating sample centerprint (countdown /
+    /// multiline / standard when this is the highlighted panel, else a plain "Generic message") plus a "Title"
+    /// line, on the same randomized cadence as Base; on close, clears the title + all messages.</summary>
+    private void UpdateHudConfigurePreview()
+    {
+        bool configuring = GlobalF("_hud_configure", 0f) != 0f;
+
+        if (!configuring)
+        {
+            // QC: leaving the editor (hud_configure_prev) clears the editor-generated title + messages.
+            if (_hudConfigurePrev)
+            {
+                ClearTitle();
+                ClearAll();
+            }
+            _hudConfigurePrev = false;
+            return;
+        }
+
+        // QC: on the first configure frame, KillAll + show a message immediately (generation_time = time).
+        if (!_hudConfigurePrev)
+        {
+            ClearAll();
+            _cpGenerationTime = _now; // show a message immediately
+        }
+        _hudConfigurePrev = true;
+
+        if (_now <= _cpGenerationTime)
+            return;
+
+        if (IsHighlighted)
+        {
+            // QC centerprint_SetTitle(_("Title")).
+            SetTitle("Title");
+
+            float r = (float)_previewRng.NextDouble();
+            if (r > 0.8f)
+                // QC: countdown sample — id floor(r*1000), duration 1, count 10, "^COUNT" ticking.
+                Push($"^3Countdown message at time {SecondsToString((float)_now)}, seconds left: {CountToken}",
+                    1f, ((int)(r * 1000f)).ToString(System.Globalization.CultureInfo.InvariantCulture), 10);
+            else if (r > 0.55f)
+                // QC: multiline sample (id 0, duration 20) with a ^BOLD second line.
+                Push($"^1Multiline message at time {SecondsToString((float)_now)} that\n{BoldOperator}lasts longer than normal",
+                    20f);
+            else
+                // QC centerprint_AddStandard (id 0, default time).
+                Add($"Message at time {SecondsToString((float)_now)}");
+
+            _cpGenerationTime = _now + 1.0 + _previewRng.NextDouble() * 4.0;
+        }
+        else
+        {
+            // QC: non-highlighted panel shows a generic line on a slower cadence (no title).
+            Push("Generic message", 10f);
+            _cpGenerationTime = _now + 10.0 - _previewRng.NextDouble() * 3.0;
+        }
+    }
+
+    // =====================================================================================
     //  Behaviour cvars (QC HUD_CenterPrint_Export saves these aesthetic cvars)
     // =====================================================================================
 
@@ -203,9 +274,13 @@ public partial class CenterPrintPanel : HudPanel
         c.Register("hud_panel_centerprint_align", "0.5", CvarFlags.Save);
         c.Register("hud_panel_centerprint_flip", "0", CvarFlags.Save);
         c.Register("hud_panel_centerprint_fontscale", "1", CvarFlags.Save);
-        c.Register("hud_panel_centerprint_fontscale_bold", "1.4", CvarFlags.Save);
-        c.Register("hud_panel_centerprint_fontscale_title", "1.8", CvarFlags.Save);
-        c.Register("hud_panel_centerprint_fade_in", "0", CvarFlags.Save);
+        // The shipped HUD skins (hud_luma.cfg / hud_luminos*.cfg:290-291) override the centerprint.qh header
+        // defaults (1.4 / 1.8) with 1.2 / 1.3; the port bakes the loaded-skin (luma) values in as the registered
+        // defaults so bold message lines + titles render at the stock-skin size.
+        c.Register("hud_panel_centerprint_fontscale_bold", "1.2", CvarFlags.Save);
+        c.Register("hud_panel_centerprint_fontscale_title", "1.3", CvarFlags.Save);
+        // centerprint.qh:6 defaults fade_in to 0.15 (messages ramp in, they don't pop).
+        c.Register("hud_panel_centerprint_fade_in", "0.15", CvarFlags.Save);
         c.Register("hud_panel_centerprint_fade_out", "0.15", CvarFlags.Save);
         c.Register("hud_panel_centerprint_fade_subsequent", "1", CvarFlags.Save);
         c.Register("hud_panel_centerprint_fade_subsequent_passone", "3", CvarFlags.Save);
@@ -223,9 +298,10 @@ public partial class CenterPrintPanel : HudPanel
     // Font-scale cvars multiply cp_fontsize; a non-finite value would inject NaN into titleFont/yRef and corrupt
     // the pen position for the whole panel. Sanitize to a finite, positive scale (Finite() floors at a tiny eps).
     private float FontScale => Finite(CvarF("fontscale", 1f), 1f);
-    private float FontScaleBold => Finite(CvarF("fontscale_bold", 1.4f), 1.4f);
-    private float FontScaleTitle => Finite(CvarF("fontscale_title", 1.8f), 1.8f);
-    private float FadeInTime => CvarF("fade_in", 0f);
+    // Defaults = the loaded (luma) skin's overrides, matching RegisterDefaults (hud_luma.cfg:290-291: 1.2 / 1.3).
+    private float FontScaleBold => Finite(CvarF("fontscale_bold", 1.2f), 1.2f);
+    private float FontScaleTitle => Finite(CvarF("fontscale_title", 1.3f), 1.3f);
+    private float FadeInTime => CvarF("fade_in", 0.15f);
     private float FadeOutTime => Mathf.Min(5f, CvarF("fade_out", 0.15f));
     private bool FadeSubsequent => CvarF("fade_subsequent", 1f) != 0f;
     private float FadePassOne => CvarF("fade_subsequent_passone", 3f);
@@ -246,6 +322,12 @@ public partial class CenterPrintPanel : HudPanel
     public override void _Process(double delta)
     {
         _now += delta;
+
+        // QC HUD_CenterPrint autocvar__hud_configure block (centerprint.qc:179-217): while the HUD editor is open
+        // the panel generates rotating sample lines (+ a "Title" when it is the highlighted panel) so it previews
+        // live while being positioned, and is cleared on enter/leave. Done here (not in DrawPanel) because _Process
+        // already owns the panel clock; it self-gates on _hud_configure exactly like the QC branch.
+        UpdateHudConfigurePreview();
 
         // Walk the live list, applying the QC countdown / expiry machinery. A countdown message re-extends its
         // expiry by its (per-step) duration and decrements the number each time the window passes, removing

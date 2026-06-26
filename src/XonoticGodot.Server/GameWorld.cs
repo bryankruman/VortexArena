@@ -995,6 +995,13 @@ public sealed class GameWorld
         Cheats.Init();
         Cheats.Log = line => Commands.ChatBroadcast?.Invoke(line);
 
+        // QC SpecialCommand (common/physics/player.qc): the "xwxwxsxsxaxdxaxdx1x " movement-input cheat-code
+        // decoded each server tick in PlayerPhysics runs give-all when cheats are allowed. The decode lives in
+        // the shared physics; install the server-side give-all here. Cheats.GiveAll runs the sv_cheats/maycheat
+        // gate itself (QC SpecialCommand's `if (autocvar_sv_cheats || this.maycheat)` + CheatImpulse), so the
+        // seam can hand it the raw player.
+        XonoticGodot.Common.Physics.PlayerPhysics.SpecialCommandGiveAll = p => Cheats.GiveAll(p);
+
         // Anticheat: ping provider for the snap-aim suppression window. The default is 0 (LAN/bot/headless host);
         // a net host (ServerNet) overrides this with the real per-client smoothed ping.
         AntiCheat.PingProvider = _ => 0f;

@@ -50,6 +50,8 @@ public sealed class Racer : Vehicle
     public float WaterDownForce = 0.03f;  // g_vehicle_racer_water_downforce
     public int HoverType = 0;             // g_vehicle_racer_hovertype (0=hover, !=0=maglev)
     public float ThinkRate = 0.05f;       // g_vehicle_racer_thinkrate
+    public float BounceFactor = 0.25f;    // g_vehicle_racer_bouncefactor (engine MOVETYPE_BOUNCE restitution)
+    public float BounceStop = 0f;         // g_vehicle_racer_bouncestop (0 -> engine default 60/800)
 
     // ---- resources ----
     public float MaxEnergy = 100f;            // g_vehicle_racer_energy
@@ -130,6 +132,8 @@ public sealed class Racer : Vehicle
         WaterDownForce = Get("g_vehicle_racer_water_downforce", WaterDownForce);
         HoverType = (int)Get("g_vehicle_racer_hovertype", HoverType);
         ThinkRate = Get("g_vehicle_racer_thinkrate", ThinkRate);
+        BounceFactor = Get("g_vehicle_racer_bouncefactor", BounceFactor);
+        // BounceStop default is 0 (engine default); Get() can't override to 0 so the field default stands.
 
         MaxEnergy = Get("g_vehicle_racer_energy", MaxEnergy);
         EnergyRegen = Get("g_vehicle_racer_energy_regen", EnergyRegen);
@@ -185,6 +189,10 @@ public sealed class Racer : Vehicle
         vehicle.MoveType = MoveType.Toss;     // QC: MOVETYPE_TOSS on spawn (becomes BOUNCE on enter)
         vehicle.Solid = Solid.SlideBox;
         vehicle.DeadState = DeadFlag.No;
+        // QC vr_spawn: instance.bouncefactor/bouncestop = g_vehicle_racer_bounce* (0.25 / 0). The engine
+        // MOVETYPE_BOUNCE integrator reads these off the edict once the racer is entered (vr_enter -> BOUNCE).
+        vehicle.BounceFactor = BounceFactor;
+        vehicle.BounceStop = BounceStop;
         vehicle.DamageForceScale = 0.5f;      // QC vr_spawn: instance.damageforcescale = 0.5
         // QC vr_spawn does NOT reset .touch — vehicles_spawn's this.touch = vehicles_touch stands, so the shared
         // crush / ram-impact (vr_impact) dispatch runs. (VehicleCommon.SpawnVehicle already wired vehicle.Touch.)

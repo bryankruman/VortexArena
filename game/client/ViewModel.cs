@@ -92,6 +92,15 @@ public partial class ViewModel : Node3D
     /// <summary>Seconds to raise the new gun into view (the raise half — Xonotic <c>switchdelay_raise</c>-ish).</summary>
     [Export] public float RaiseTime { get; set; } = 0.15f;
 
+    /// <summary>
+    /// The most recent <c>calc_followmodel_ofs</c> result (view-space fwd/right/up, QC <c>cl_followmodel_ofs</c>),
+    /// published each frame so the HUD's <c>hud_dynamic_follow</c> effect (QC <c>Hud_Dynamic_Frame</c>) can sway
+    /// the whole HUD with the viewmodel. Zero when <see cref="FollowModel"/> is off (the gun isn't swaying). QC
+    /// recomputes the offset independently in the HUD; here we share the viewmodel's already-computed value,
+    /// matching the cvar's "effect shared with cl_followmodel" semantics.
+    /// </summary>
+    public Vector3 LastFollowOffset { get; private set; } = Vector3.Zero;
+
     // --- gun sway cvars (Xonotic xonotic-client.cfg + DP defaults; see qcsrc/client/view.qc) ---------------
     [Export] public bool FollowModel { get; set; } = true;
     [Export] public float FollowSpeed { get; set; } = 0.3f;
@@ -128,6 +137,8 @@ public partial class ViewModel : Node3D
     private ModelAnimator? _animator;     // optional animated weapon model
     private Node3D _modelRoot = null!;     // holds the weapon mesh (+ its tags), under the Quake->camera basis
     private Marker3D? _muzzleMarker;       // muzzle socket on the model (from tags)
+    private bool _noDepthTestApplied;      // EF_NODEPTHTEST has been pushed onto the current model's materials
+    private float _modelAlpha = 1f;        // last alpha applied to the model materials (so we only re-touch on change)
     private OmniLight3D _flashLight = null!;
     private OmniLight3D _fillLight = null!; // soft constant light so the view-model is never a black silhouette
     private float _flashTime;              // remaining flash-light time
@@ -214,6 +225,7 @@ public partial class ViewModel : Node3D
             c.QueueFree();
         _animator = null;
         _muzzleMarker = null;
+        ResetModelFx();
 
         ApplyRestPlacement();
 
@@ -247,6 +259,7 @@ public partial class ViewModel : Node3D
         foreach (Node c in _modelRoot.GetChildren())
             c.QueueFree();
         _animator = null;
+        ResetModelFx();
 
         // The placeholder is authored in Quake view space too (a barrel a few units long forward of the eye),
         // so it shares the same Quake->camera basis as a real model.
@@ -295,6 +308,7 @@ public partial class ViewModel : Node3D
         foreach (Node c in _modelRoot.GetChildren())
             c.QueueFree();
         _animator = null;
+        ResetModelFx();
 
         ApplyRestPlacement();
         // The attachment transform lives in the model's built (Godot) space, so it is applied AS the model's
@@ -475,6 +489,8 @@ public partial class ViewModel : Node3D
         using var _vmScope = XonoticGodot.Game.Client.FrameProfiler.Scope("viewmodel"); // [profiling] viewmodel sway/anim
         float dt = (float)delta;
 
+        RefreshCvars();
+
         if (_flashTime > 0f)
         {
             _flashTime -= dt;
@@ -495,6 +511,127 @@ public partial class ViewModel : Node3D
     }
 
     /// <summary>
+    /// Pull the live menu/console viewmodel cvars into the export fields each frame so the menu sliders/radio
+    /// buttons actually drive the gun (Base reads <c>autocvar_*</c> directly in <c>viewmodel_draw</c>):
+    /// cl_gunalign (1/2/3/4), cl_gunoffset ("x y z" Quake view), cl_followmodel/cl_leanmodel/cl_bobmodel toggles,
+    /// and cl_viewmodel_alpha / cl_viewmodel_alpha_min (continuous opacity, applied to the model materials). All
+    /// are cheap dictionary reads from the shared client cvar store (the same store the in-game console writes).
+    /// </summary>
+    private void RefreshCvars()
+    {
+        XonoticGodot.Common.Services.ICvarService cv = XonoticGodot.Game.Menu.MenuState.Cvars;
+
+        // cl_gunalign: 3 = right (default), 4 = left, 1/2 = center. Rebuild the rest placement when it changes.
+        int align = (int)CvarFloat(cv, "cl_gunalign", GunAlign);
+        Vector3 offset = ParseVec(cv.GetString("cl_gunoffset"), GunOffset);
+        if (align != GunAlign || offset != GunOffset)
+        {
+            GunAlign = align;
+            GunOffset = offset;
+            ApplyRestPlacement();
+        }
+
+        // Sway toggles (cl_followmodel / cl_leanmodel / cl_bobmodel — default 1).
+        FollowModel = CvarFloat(cv, "cl_followmodel", FollowModel ? 1f : 0f) != 0f;
+        LeanModel = CvarFloat(cv, "cl_leanmodel", LeanModel ? 1f : 0f) != 0f;
+        BobModel = CvarFloat(cv, "cl_bobmodel", BobModel ? 1f : 0f) != 0f;
+
+        // cl_viewmodel_alpha (max opacity, default 1) / cl_viewmodel_alpha_min (default 0). Base:
+        //   amax = (alpha != 0) ? alpha : 1;   amin = (alpha_min != 0) ? alpha_min : -1;
+        //   a = (amin >= amax) ? amax : bound(amin, m_alpha, amax);
+        // m_alpha is the model's nominal opacity (1 when shown); the gun is otherwise drawn fully opaque, so the
+        // continuous result is amax (clamped to [amin,amax]). Apply that to the model materials.
+        float clA = CvarFloat(cv, "cl_viewmodel_alpha", 1f);
+        float clAMin = CvarFloat(cv, "cl_viewmodel_alpha_min", 0f);
+        float amax = clA != 0f ? clA : 1f;
+        float amin = clAMin != 0f ? clAMin : -1f;
+        float a = (amin >= amax) ? amax : Mathf.Clamp(1f, amin, amax);
+        ApplyModelAlpha(Mathf.Clamp(a, 0f, 1f));
+    }
+
+    private static float CvarFloat(XonoticGodot.Common.Services.ICvarService cv, string name, float fallback)
+    {
+        string s = cv.GetString(name);
+        return string.IsNullOrWhiteSpace(s) ? fallback : cv.GetFloat(name);
+    }
+
+    /// <summary>Parse a "x y z" cvar vector (Quake view space), falling back to the current value on a blank/parse miss.</summary>
+    private static Vector3 ParseVec(string s, Vector3 fallback)
+    {
+        if (string.IsNullOrWhiteSpace(s))
+            return fallback;
+        string[] p = s.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+        if (p.Length < 3
+            || !float.TryParse(p[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float x)
+            || !float.TryParse(p[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float y)
+            || !float.TryParse(p[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float z))
+            return fallback;
+        return new Vector3(x, y, z);
+    }
+
+    /// <summary>
+    /// Apply EF_NODEPTHTEST + a continuous opacity to every mesh in the current weapon model, faithful to Base
+    /// <c>viewmodel_draw</c> (the per-child loop sets <c>csqcmodel_effects |= EF_NODEPTHTEST</c> and
+    /// <c>e.alpha = a</c>). NoDepthTest makes the gun always draw on top of the scene instead of clipping into
+    /// nearby world geometry; the alpha is the cl_viewmodel_alpha opacity. Walks every <see cref="MeshInstance3D"/>
+    /// descendant and edits its surface materials in place; only re-touches when the alpha changes.
+    /// </summary>
+    private void ApplyModelAlpha(float a)
+    {
+        bool alphaChanged = !Mathf.IsEqualApprox(a, _modelAlpha);
+        bool needDepth = !_noDepthTestApplied;
+        if (!alphaChanged && !needDepth)
+            return;
+        _modelAlpha = a;
+        _noDepthTestApplied = true;
+        ApplyMaterialFx(_modelRoot, a);
+    }
+
+    /// <summary>Forget the applied material fx so the NEXT frame re-walks the freshly-built model (depth-test +
+    /// alpha must be re-applied to the new model's materials). Called by every model swap.</summary>
+    private void ResetModelFx()
+    {
+        _noDepthTestApplied = false;
+        _modelAlpha = 1f;
+    }
+
+    private static void ApplyMaterialFx(Node node, float a)
+    {
+        if (node is MeshInstance3D mi && mi.Mesh is { } mesh)
+        {
+            int surfaces = mesh.GetSurfaceCount();
+            for (int i = 0; i < surfaces; i++)
+            {
+                // Edit a per-instance override so we never mutate a shared mesh material (other instances / the
+                // world pickup share it). Reuse our own override if present (idempotent re-touch on alpha change);
+                // otherwise duplicate the surface's base material to one (the GpuWarmPass per-instance pattern).
+                BaseMaterial3D? ov = mi.GetSurfaceOverrideMaterial(i) as BaseMaterial3D;
+                if (ov is null)
+                {
+                    if (mesh.SurfaceGetMaterial(i) is not BaseMaterial3D bm)
+                        continue;
+                    ov = (BaseMaterial3D)bm.Duplicate();
+                    mi.SetSurfaceOverrideMaterial(i, ov);
+                }
+                ov.NoDepthTest = true; // EF_NODEPTHTEST — always draw the gun on top of the world.
+                if (a < 1f)
+                {
+                    ov.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                    Color c = ov.AlbedoColor;
+                    ov.AlbedoColor = new Color(c.R, c.G, c.B, a);
+                }
+                else if (ov.Transparency == BaseMaterial3D.TransparencyEnum.Alpha)
+                {
+                    Color c = ov.AlbedoColor;
+                    ov.AlbedoColor = new Color(c.R, c.G, c.B, 1f);
+                }
+            }
+        }
+        foreach (Node child in node.GetChildren())
+            ApplyMaterialFx(child, a);
+    }
+
+    /// <summary>
     /// Drive the per-frame weapon sway (Xonotic <c>viewmodel_animate</c>): follow (origin lag on accel), lean
     /// (angle tilt on turn), bob (run cycle), plus the firing recoil. Produces a Quake view-space
     /// <c>gunorg</c> / <c>gunangles</c> applied as this node's local transform on top of the rest placement.
@@ -512,7 +649,15 @@ public partial class ViewModel : Node3D
         if (frametime > 0f)
         {
             if (FollowModel)
-                gunorg += FollowModelOffset(vs, frametime);
+            {
+                Vector3 follow = FollowModelOffset(vs, frametime);
+                LastFollowOffset = follow; // expose for hud_dynamic_follow (HUD sway with the viewmodel)
+                gunorg += follow;
+            }
+            else
+            {
+                LastFollowOffset = Vector3.Zero;
+            }
             if (LeanModel)
                 gunangles += LeanModelOffset(vs, frametime);
             if (BobModel)
@@ -693,20 +838,38 @@ public partial class ViewModel : Node3D
     /// </summary>
     private Vector3 GunAlignOffset()
     {
-        // A small representative "held in the right hand" side offset (Quake +Y = left, so right is -Y).
-        const float side = 0f; // the v_ models already place the gun; alignment only matters for center/left.
+        // The v_ models are authored in the RIGHT hand: the gun sits at a positive side offset from the view
+        // centre. Base's shotorg_adjustfromclient transforms the model's authored shot-tag offset (`vecs`), but
+        // the port keeps the gun at its authored position, so to make left/centre actually move the gun we apply
+        // the alignment as a DELTA off the authored (align 3) position. The side magnitude is the model's own
+        // authored shot-tag Y (Quake +Y = left); falling back to a representative hand offset when no marker has
+        // resolved yet so right/left still differ on placeholder/early frames.
+        //   3 (right)  = authored position (no delta)
+        //   4 (left)   = mirror across the centre line  → delta = -2*side (vecs.y = -vecs.y in Base)
+        //   1/2(center)= pull to the centre + drop 2u   → delta = -side, z -= 2 (vecs.y = 0; vecs.z -= 2)
+        float side = AuthoredShotSideY();
         switch (GunAlign)
         {
             default:
             case 3: // right — authored position
-                return new Vector3(0f, side, 0f);
-            case 4: // left — mirror the side
-                return new Vector3(0f, -side, 0f);
+                return Vector3.Zero;
+            case 4: // left — mirror the side across the centre
+                return new Vector3(0f, -2f * side, 0f);
             case 1:
             case 2: // center — pull to the middle and drop 2 units
-                return new Vector3(0f, 0f, -2f);
+                return new Vector3(0f, -side, -2f);
         }
     }
+
+    /// <summary>
+    /// The representative authored shot-origin side offset (Quake view +Y = left) used as <c>vecs.y</c> for the
+    /// cl_gunalign mirror/centre. The v_ models are authored holding the gun to the RIGHT of view centre; Base
+    /// mirrors/zeroes the model's own shot-tag Y, but the port keeps the gun at its authored position, so we use
+    /// a fixed representative side (~3.5u, the v_ models' typical shot-tag Y magnitude) so left (mirror) and
+    /// centre (zero) move the gun by the right amount and read distinctly from right. Negative because the gun is
+    /// held to the right of centre (Quake +Y is left).
+    /// </summary>
+    private static float AuthoredShotSideY() => -3.5f;
 
     // =================================================================================================
     //  Sway state + math helpers (ports of the view.qc macros)

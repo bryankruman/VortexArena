@@ -76,6 +76,11 @@ public partial class RadarPanel : HudPanel
     /// layer can tint it (e.g. to the local team color) if desired.</summary>
     public Color LocalColorTint { get; set; } = new(0.95f, 0.95f, 0.95f, 1f);
 
+    /// <summary>The live first-person zoom fraction (QC <c>current_zoomfraction</c>): 0 = not zoomed, 1 = fully
+    /// zoomed. Fed by the host each frame. Drives the radar zoommode 0 (= current_zoomfraction) and 1
+    /// (= 1 - current_zoomfraction) so the radar follows the player's +zoom the way Base does.</summary>
+    [Export] public float ZoomFraction { get; set; }
+
     // ---- the real minimap image (QC minimapname + mi_min/mi_max) ----
 
     /// <summary>The short map name (e.g. "stormkeep"). Used to resolve the minimap image
@@ -102,7 +107,7 @@ public partial class RadarPanel : HudPanel
     // QC HUD_Radar_GetZoomFactor / scale constants. hud_panel_radar_scale is pixels-per (mi_scale) world unit in
     // the QC; without the loaded minimap bounds we treat _scale as "how many world units fill the radar width"
     // via a reference divisor so the cvar still meaningfully zooms. Larger _scale = wider world coverage.
-    private const float ScaleReferenceDivisor = 4f; // tuned so the luma default 8192 ≈ 2048u radius
+    private const float ScaleReferenceDivisor = 4f; // tuned so the code default 4096 ≈ 1024u radius
 
     /// <summary>The radar reads live net state, so it must repaint every frame.</summary>
     public override void _Process(double delta) => QueueRedraw();
@@ -126,14 +131,18 @@ public partial class RadarPanel : HudPanel
         const CvarFlags S = CvarFlags.Save;
         const string P = "hud_panel_radar_";
 
-        c.Register(P + "foreground_alpha", "1", S);   // teamradar default-fills to 0.8 when 0; we use 1
-        c.Register(P + "rotation", "0", S);            // 0 = player-aligned, 1..3 = fixed 90°·rotation
-        c.Register(P + "zoommode", "0", S);            // 0 default zoom fraction, 1 inverse-zoom, 2 normal, 3 big
-        c.Register(P + "scale", "8192", S);            // pixels-per-world-unit-ish; bigger = wider coverage
-        c.Register(P + "maximized_scale", "5120", S);
+        // QC ships these cvars as "" in _hud_descriptions.cfg and teamradar_loadcvars fills the CODE defaults
+        // when they read 0/unset: scale → 4096, foreground_alpha → 0.8 (* panel_fg_alpha). Register those code
+        // defaults so a user who never touches the cvar (and loads no skin) gets the faithful Base values, not
+        // the luma-skin overrides (8192 / 1). See teamradar.qc:182-185.
+        c.Register(P + "foreground_alpha", "0.8", S); // teamradar_loadcvars: 0 → 0.8
+        c.Register(P + "rotation", "0", S);            // 0 = player-aligned, 1=west 2=south 3=east 4=north
+        c.Register(P + "zoommode", "0", S);            // 0 = current_zoomfraction, 1 inverse-zoom, 2 normal, 3 big
+        c.Register(P + "scale", "4096", S);            // teamradar_loadcvars: 0 → 4096
+        c.Register(P + "maximized_scale", "8192", S);  // luminos code-default (luma skin overrides to 5120)
         c.Register(P + "maximized_size", "0.5 0.5", S);
-        c.Register(P + "maximized_rotation", "0", S);
-        c.Register(P + "maximized_zoommode", "0", S);
+        c.Register(P + "maximized_rotation", "1", S);  // skin default (luma/luminos all ship 1)
+        c.Register(P + "maximized_zoommode", "3", S);  // skin default (all ship 3 = always big)
         c.Register(P + "dynamichud", "1", S);
     }
 
@@ -142,6 +151,15 @@ public partial class RadarPanel : HudPanel
         ClientNet? net = Net;
         if (net is null)
             return; // self-blank: no data → draw nothing
+
+        // ---- panel enable + team gating (QC HUD_Radar, radar.qc:191-194) ----
+        // hud_panel_radar: 0 = disabled, 1 = enabled (team modes only), 2 = also enabled in non-team modes.
+        // The standalone radar isn't driven by the HUD show-mode machinery, so honour the cvar here directly.
+        int enable = Mathf.RoundToInt(GlobalF("hud_panel_radar", 1f));
+        if (enable == 0)
+            return;
+        if (enable != 2 && !XonoticGodot.Common.Gameplay.Scoring.GameScores.Teamplay)
+            return;
 
         // Draw in the live control size so this works both as a discovered panel (Size == Cfg.SizePx, set by
         // LoadConfig) and standalone (Size set manually by NetGame). panel-local space: origin = top-left.
@@ -180,6 +198,12 @@ public partial class RadarPanel : HudPanel
         float rotationCvar = CvarF("rotation", 0f);
         int rotation = float.IsFinite(rotationCvar) ? (int)rotationCvar : 0;
         float radarYawDeg = rotation != 0 ? 90f * rotation : localYaw - 90f;
+
+        // QC v_flipped (mirrored view): the radar X axis is mirrored too (teamradar_texcoord_to_2dcoord:
+        // `if(v_flipped) out.x = -out.x`, and draw_teamradar_player flips forward.x/right.x). We fold it into a
+        // ±1 X sign applied after the screen-Y flip so the map + every blip + every arrow stay consistent.
+        bool vFlipped = GlobalF("v_flipped", 0f) != 0f;
+        float flipX = vFlipped ? -1f : 1f;
         float yawRad = Mathf.DegToRad(radarYawDeg);
         float cos = Mathf.Cos(-yawRad);
         float sin = Mathf.Sin(-yawRad);
@@ -188,8 +212,8 @@ public partial class RadarPanel : HudPanel
         // QC blends teamradar_size between a "big" size (fit whole arena) and a "normal" size (fixed scale) by a
         // zoom factor. We have no loaded map bounds, so we model: normalRange = world units that fill the radius
         // at the cvar scale; bigRange = RangeUnits (the arena-scale fit fallback). zoomFactor 1 → big, 0 → normal.
-        float scale = CvarF("scale", 8192f);
-        if (!float.IsFinite(scale) || scale <= 0f) scale = 4096f; // QC teamradar_loadcvars default
+        float scale = CvarF("scale", 4096f); // QC teamradar_loadcvars code default
+        if (!float.IsFinite(scale) || scale <= 0f) scale = 4096f; // teamradar_loadcvars: 0 → 4096
         float normalRange = scale / ScaleReferenceDivisor; // world units edge-to-center at this scale
         float bigRange = Mathf.Max(RangeUnits, normalRange);
         float zoomCvar = CvarF("zoommode", 0f);
@@ -202,7 +226,19 @@ public partial class RadarPanel : HudPanel
         rangeUnits = Mathf.Max(rangeUnits, 1f);
 
         float worldToPixels = radius / rangeUnits;
-        NVec3 selfOrigin = CenterOrigin ?? net.PredictedOrigin;
+        NVec3 viewOrigin = CenterOrigin ?? net.PredictedOrigin;
+        // QC HUD_Radar: the radar center blends between the player origin (normal) and the MAP center (big zoom)
+        // by the zoom factor — `teamradar_origin3d_in_texcoord = zoom*mi_center + (1-zoom)*view_origin`. So at
+        // full zoom-out (fit-arena) the view recenters on the whole map, not on the player. mi_center = the BSP
+        // bounds midpoint. Z is irrelevant to the top-down transform; only XY recenter.
+        NVec3 selfOrigin = viewOrigin;
+        if (HasMapBounds && zoomFactor > 0f)
+        {
+            float cx = (MapMinXY.X + MapMaxXY.X) * 0.5f;
+            float cy = (MapMinXY.Y + MapMaxXY.Y) * 0.5f;
+            selfOrigin.X = zoomFactor * cx + (1f - zoomFactor) * viewOrigin.X;
+            selfOrigin.Y = zoomFactor * cy + (1f - zoomFactor) * viewOrigin.Y;
+        }
         // A non-finite radar center would turn every blip delta into NaN; if it is bad, skip the contacts entirely
         // and only draw the (origin-independent) center arrow below.
         bool selfFinite = float.IsFinite(selfOrigin.X) && float.IsFinite(selfOrigin.Y);
@@ -218,7 +254,7 @@ public partial class RadarPanel : HudPanel
         {
             float ddx = wx - selfOrigin.X, ddy = wy - selfOrigin.Y;
             float rrx = ddx * cos - ddy * sin, rry = ddx * sin + ddy * cos;
-            return center + new Vector2(rrx, -rry) * worldToPixels;
+            return center + new Vector2(rrx * flipX, -rry) * worldToPixels;
         }
 
         // ---- the real minimap image (QC draw_teamradar_background): a rotated, player-centered textured quad
@@ -266,14 +302,18 @@ public partial class RadarPanel : HudPanel
                 Vector2 pos = WorldToScreen(origin.X, origin.Y);
                 if (!float.IsFinite(pos.X) || !float.IsFinite(pos.Y))
                     continue; // never hand a NaN coordinate to the drawing primitives
-                DrawBlip(pos, state, angles, radarYawDeg, fgAlpha);
+                DrawBlip(pos, state, angles, radarYawDeg, fgAlpha, flipX);
             }
 
             // ---- waypoint objective icons (QC draw_teamradar_icon over g_radaricons): CTF flags / DOM points /
             // KH keys / player pings — networked as waypoint sprites + team/rule-filtered server-side. A small
             // teamradar sprite at each waypoint's world position, tinted by its networked radar color, drawn UNDER
             // the local arrow so the player's own marker stays on top. ----
-            float iconPx = Mathf.Clamp(radius * 0.07f, 7f, 12f);
+            // QC draw_teamradar_icon: a FIXED 8x8 px sprite centered on the icon (drawpic coord-'4 4 0', '8 8 0').
+            // Every core REGISTER_RADARICON resolves m_radaricon to 0/1, so the only sprite Base ever draws is
+            // gfx/teamradar_icon_1 — there is no id-2 sprite. Size is NOT radius-relative.
+            const float iconPx = 8f;
+            Texture2D? icon = TextureCache.Get("gfx/teamradar_icon_1");
             foreach (XonoticGodot.Common.Gameplay.Waypoints.WaypointNet wp in net.Waypoints)
             {
                 if (wp.RadarIcon <= 0)
@@ -284,21 +324,61 @@ public partial class RadarPanel : HudPanel
                 if (!float.IsFinite(op.X) || !float.IsFinite(op.Y))
                     continue;
                 Color oc = new(wp.Color.X, wp.Color.Y, wp.Color.Z, fgAlpha * Mathf.Clamp(wp.Fade, 0f, 1f));
-                Texture2D? icon = TextureCache.Get(wp.RadarIcon == 2 ? "gfx/teamradar_icon_2" : "gfx/teamradar_icon_1");
                 var orect = new Rect2(op - new Vector2(iconPx, iconPx) * 0.5f, new Vector2(iconPx, iconPx));
                 if (icon is not null)
                     DrawTextureRect(icon, orect, false, oc);
                 else
                     DrawRect(orect, oc); // fallback marker if the teamradar sprite is missing
+
+                // ---- ping pulse rings (QC draw_teamradar_icon ping loop over teamradar_times) ----
+                // A ping stamps a timestamp; for ~1s after, draw gfx/teamradar_ping as an expanding additive ring
+                // of size '2 2 0'*teamradar_size*dt, alpha (1-dt)*a. We model teamradar_size by the icon size
+                // (8px) so the ring grows from the icon to ~8px radius over its lifetime, matching the QC feel.
+                DrawPingPulse(wp.Id, op, iconPx, fgAlpha * Mathf.Clamp(wp.Fade, 0f, 1f), now);
             }
         }
 
-        // Local player last, on top, at the exact center: a facing arrow (QC draws own player white at view_angles).
-        DrawPlayerArrow(center, localYaw, radarYawDeg, LocalColorTint, fgAlpha, isLocal: true);
+        // Local player last, on top: a facing arrow (QC draws own player white at view_angles). QC draws it at the
+        // player's WORLD origin through the same transform, so once the big-zoom recentres on the map center the
+        // own arrow drifts off the panel center too. WorldToScreen(viewOrigin) reproduces that; with no
+        // recentering it lands exactly on center. Fall back to the panel center if the origin is non-finite.
+        Vector2 localPos = center;
+        if (selfFinite && float.IsFinite(viewOrigin.X) && float.IsFinite(viewOrigin.Y))
+        {
+            Vector2 lp = WorldToScreen(viewOrigin.X, viewOrigin.Y);
+            if (float.IsFinite(lp.X) && float.IsFinite(lp.Y))
+                localPos = lp;
+        }
+        DrawPlayerArrow(localPos, localYaw, radarYawDeg, LocalColorTint, fgAlpha, isLocal: true, flipX);
 
         // Rectangular frame edge (subtle), drawn last inside the clip so it reads over the map image.
         DrawRect(new Rect2(Vector2.One, size - new Vector2(2f, 2f)),
             WithAlpha(BorderColor, BorderColor.A * fgAlpha / 0.9f), filled: false, width: 1.5f);
+    }
+
+    /// <summary>QC draw_teamradar_icon ping loop: for ~1s after a ping, draw gfx/teamradar_ping as an expanding
+    /// additive ring of size '2 2 0'*teamradar_size*dt, alpha (1-dt)*a (teamradar.qc:126-138). dt = time - stamp.
+    /// teamradar_size is the QC 2D scale factor; here we use the icon size (<paramref name="iconPx"/>) so the ring
+    /// grows from a point to ~2·iconPx over its lifetime, the same visual the QC produces around an 8px icon.</summary>
+    private void DrawPingPulse(int waypointId, Vector2 op, float iconPx, float a, float now)
+    {
+        ClientNet? net = Net;
+        if (net is null || a <= 0.001f)
+            return;
+        float stamp = net.RadarPingTime(waypointId);
+        if (stamp <= 0f)
+            return;
+        float dt = now - stamp;
+        if (dt <= 0f || dt >= 1f)
+            return;
+        Texture2D? ping = TextureCache.Get("gfx/teamradar_ping");
+        float sz = 2f * iconPx * dt;            // '2 2 0' * teamradar_size * dt
+        float alpha = (1f - dt) * a;             // (1 - dt) * a
+        var rect = new Rect2(op - new Vector2(sz, sz) * 0.5f, new Vector2(sz, sz));
+        // QC DRAWFLAG_ADDITIVE: additive blend so the ring brightens the map underneath.
+        if (ping is not null)
+            DrawTextureRect(ping, rect, false,
+                new Color(1f, 1f, 1f, Mathf.Clamp(alpha, 0f, 1f)));
     }
 
     /// <summary>True when every point is finite (guards the textured-quad / polygon draw against a NaN vertex).</summary>
@@ -310,24 +390,28 @@ public partial class RadarPanel : HudPanel
         return true;
     }
 
-    // QC HUD_Radar_GetZoomFactor (radar.qc). current_zoomfraction (the live zoom-in lerp) isn't exposed to the
-    // HUD layer here, so the "follow the player's zoom" modes (0 / 1) settle to the static endpoints.
-    private static float GetZoomFactor(int zoommode) => zoommode switch
+    // QC HUD_Radar_GetZoomFactor (radar.qc:160-169). Mode 0 follows the live +zoom (current_zoomfraction),
+    // mode 1 inverts it, mode 2 is always normal (0), mode 3 always big (1). ZoomFraction is fed by the host.
+    private float GetZoomFactor(int zoommode)
     {
-        1 => 1f,  // QC 1 - current_zoomfraction → fully zoomed-out (big) when not zooming in
-        2 => 0f,  // always normal (fixed scale)
-        3 => 1f,  // always big (fit arena)
-        _ => 0f,  // default: current_zoomfraction → normal at rest
-    };
+        float zf = float.IsFinite(ZoomFraction) ? Mathf.Clamp(ZoomFraction, 0f, 1f) : 0f;
+        return zoommode switch
+        {
+            1 => 1f - zf,  // QC 1 - current_zoomfraction
+            2 => 0f,       // always normal (fixed scale)
+            3 => 1f,       // always big (fit arena)
+            _ => zf,       // QC current_zoomfraction (follow the player's zoom)
+        };
+    }
 
     /// <summary>Draw one remote player contact as a team-colored facing arrow (QC <c>draw_teamradar_player</c>),
     /// dimmed when dead. Only players reach here (the loop filters everything else, like QC).</summary>
-    private void DrawBlip(Vector2 pos, in NetEntityState state, NVec3 angles, float radarYawDeg, float fgAlpha)
+    private void DrawBlip(Vector2 pos, in NetEntityState state, NVec3 angles, float radarYawDeg, float fgAlpha, float flipX)
     {
         bool dead = (state.Flags & NetEntityFlags.Dead) != 0;
         Color color = TeamColor(state.Colormap);
         float a = fgAlpha * (dead ? 0.35f : 1f);
-        DrawPlayerArrow(pos, angles.Y, radarYawDeg, color, a, isLocal: false);
+        DrawPlayerArrow(pos, angles.Y, radarYawDeg, color, a, isLocal: false, flipX);
     }
 
     /// <summary>
@@ -337,7 +421,7 @@ public partial class RadarPanel : HudPanel
     /// angle. <paramref name="yawDeg"/> is the entity's Quake yaw; <paramref name="radarYawDeg"/> is the radar's
     /// rotation so the arrow points the right way on a rotated map.
     /// </summary>
-    private void DrawPlayerArrow(Vector2 pos, float yawDeg, float radarYawDeg, Color color, float alpha, bool isLocal)
+    private void DrawPlayerArrow(Vector2 pos, float yawDeg, float radarYawDeg, Color color, float alpha, bool isLocal, float flipX = 1f)
     {
         if (alpha <= 0.001f)
             return;
@@ -357,6 +441,8 @@ public partial class RadarPanel : HudPanel
         float c = Mathf.Cos(screenYaw), sn = Mathf.Sin(screenYaw);
         var forward = new Vector2(c, -sn);
         var right = new Vector2(sn, c);
+        // QC v_flipped: draw_teamradar_player negates forward.x and right.x (the X axis is mirrored).
+        if (flipX < 0f) { forward.X = -forward.X; right.X = -right.X; }
 
         // QC draws every player (incl. the local one) at the SAME fixed pixel size — no per-player scaling.
         // Contrast backing quad (QC rgb2: black behind a colored arrow, white behind the white own-player), then

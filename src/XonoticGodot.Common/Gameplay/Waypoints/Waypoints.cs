@@ -207,6 +207,15 @@ public sealed class WaypointSprite
     public bool Dead;                     // marked for removal (lifetime expired / killed)
     public float DeadAt;                  // sim time when fade-out completes → drop
 
+    /// <summary>QC <c>WaypointSprite_Ping</c> radar pulse: a ping is "active" (the net layer stamps bit 7 of the
+    /// radar-icon byte once) while sim-time &lt; this. The 0.3s anti-spam window matches QC's ping cooldown so a
+    /// rapid re-ping doesn't double-stamp the same frame; the client draws an expanding ring from each stamp.</summary>
+    public float PingedUntil;
+
+    /// <summary>Sim-time of the most recent <see cref="WaypointSprites.Ping"/> (0 = never). The serializer stamps
+    /// bit 7 of the radar-icon byte for the short window after it so every subscribed peer sees the radar pulse.</summary>
+    public float PingStartedAt;
+
     /// <summary>The player who deployed this waypoint (QC <c>.owner</c>), for clear-by-owner; null for objectives.</summary>
     public Player? DeployedBy;
     /// <summary>Which QC owner-field this occupies (personal/fixed/attached), so <c>waypoint_clear</c> can scope it.</summary>
@@ -429,9 +438,23 @@ public static class WaypointSprites
         wp.BuildStartHealth = startHealth;
     }
 
-    /// <summary>QC <c>WaypointSprite_Ping</c>: pulse the radar ping ring (anti-spam 0.3s) — handled client-side
-    /// from the helpme/update; kept as a no-op hook for call-site parity.</summary>
-    public static void Ping(WaypointSprite? wp) { /* radar ping pulse is client-driven on update */ }
+    /// <summary>QC <c>WaypointSprite_Ping</c> (waypointsprites.qc:891): pulse the radar ping ring. Anti-spam — a
+    /// re-ping within 0.3s is ignored; otherwise marks the sprite "pinged" for one net frame so the serializer
+    /// stamps bit 7 of the radar-icon byte (QC <c>cnt |= BIT(7)</c>), which the client turns into an expanding
+    /// gfx/teamradar_ping ring.</summary>
+    public static void Ping(WaypointSprite? wp)
+    {
+        if (wp is null) return;
+        float now = Now;
+        if (now < wp.PingedUntil) return; // anti-spam (QC waypointsprite_pingtime)
+        wp.PingedUntil = now + 0.3f;
+        wp.PingStartedAt = now; // opens a short wire window so all subscribed peers see bit 7 for this ping
+    }
+
+    /// <summary>True while a ping is actively being broadcast (the short window after <see cref="Ping"/>): the
+    /// serializer stamps bit 7 of the radar-icon byte so every subscribed peer sees the pulse. The client
+    /// de-dupes by ping start-time so the 0.3s window yields exactly one ring per ping event.</summary>
+    public static bool IsPinging(WaypointSprite wp) => wp.PingStartedAt > 0f && Now < wp.PingStartedAt + 0.3f;
 
     /// <summary>QC <c>WaypointSprite_HelpMePing</c>: flash the "needing help" state for the deployed lifetime.</summary>
     public static void HelpMePing(WaypointSprite? wp, float lifetime)

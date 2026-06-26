@@ -65,6 +65,14 @@ public sealed class FirstPersonView
         /// the rendered eye in FIRST PERSON ONLY (<c>vieworg += view_punchvector</c>, cl_player.qc:570 — inside the
         /// non-chase branch), so it kicks the camera without skewing the aim. Suppressed while chase is active.</summary>
         public NVec3 PunchOriginQuake;
+
+        /// <summary>True while the player is standing on the ground (QC <c>IS_ONGROUND</c>). Drives the horizontal
+        /// view-bob smooth ramp (<c>cl_bob2</c>) and the fall-bob swing trigger (<c>cl_bobfall</c>).</summary>
+        public bool OnGround;
+
+        /// <summary>True while the jump button is held this frame (QC <c>input_buttons &amp; BIT(1)</c>). Blocks the
+        /// horizontal-bob smooth ramp so bunny-hopping doesn't twitch the view (cl_player.qc:380).</summary>
+        public bool JumpHeld;
     }
 
     /// <summary>
@@ -121,6 +129,30 @@ public sealed class FirstPersonView
     private float _eventChaseDistance;   // current (smoothed) pull-back distance behind the eye
     private bool _eventChaseRunning;     // latches the chase on once death starts (QC eventchase_running)
 
+    // --- view-effect clock (QC `time`): accumulated from dt so the sin-cycle bob / idle-wave advance in real time
+    // even though FirstPersonView is a plain helper with no engine clock of its own. ---
+    private float _viewTime;
+
+    // --- bob / fall-bob / death-tilt state (cl_player.qc CSQCPlayer_ApplyBobbing / ApplyDeathTilt) ---
+    private float _bob2Smooth;    // QC bob2_smooth: 1 while grounded, decays to 0 when airborne (smooths cl_bob2 out)
+    private float _bobfallSwing;  // QC bobfall_swing
+    private float _bobfallSpeed;  // QC bobfall_speed
+    private float _deathTime = -1f; // QC death_time analogue: _viewTime when death began (-1 = alive)
+    private bool _wasDead;          // previous-frame dead state, to detect the death edge for _deathTime
+
+    // --- velocity-zoom averaged speed (QC GetCurrentFov:487 `avgspeed`) ---
+    private float _avgSpeed;
+
+    // --- zoom-scroll (QC view.qc ZoomScroll): the mousewheel-driven zoom factor while zoomed ---
+    private float _zoomScrollFactor;        // QC zoomscroll_factor (the eased current factor)
+    private float _zoomScrollFactorTarget;  // QC zoomscroll_factor_target (the wheel target)
+
+    // --- zoomscript auto-zoom (QC View_CheckButtonStatus: autocvar_fov <= 59.5 -> +button9) ---
+    private bool _zoomScriptCaught;
+    /// <summary>True while the low-fov auto-zoom (QC <c>zoomscript_caught</c>, set when <c>fov &lt;= 59.5</c>) is
+    /// engaged — the reticle uses the full-alpha (1.0) branch then, not the fade (crosshair.qc:704).</summary>
+    public bool ZoomScriptCaught => _zoomScriptCaught;
+
     /// <summary>
     /// Arm the spawn-zoom effect (QC spawnpoints.qc:82-86, the local-spawn branch). Snaps
     /// <c>current_viewzoom</c> to <c>1/cl_spawnzoom_factor</c> and latches the spawn-zoom effect; the next
@@ -150,8 +182,44 @@ public sealed class FirstPersonView
             return;
 
         _lastDt = dt;
+        _viewTime += dt;
         UpdateZoom(dt);
         UpdateCamera(camera, st);
+    }
+
+    /// <summary>
+    /// QC <c>View_InputEvent</c> / <c>ZoomScroll</c> (view.qc:450-485): the host calls this on a mousewheel
+    /// up/down event. Only takes effect while <c>cl_zoomscroll</c> is on and the player is actively zooming
+    /// (held +zoom / weapon zoom). Scrolls the zoom factor target by <c>1 + min(|cl_zoomscroll_scale|, 1)</c>,
+    /// clamped to <c>[1, MAX_ZOOMFACTOR]</c>; the zoom then eases toward it in <see cref="UpdateZoom"/>.
+    /// <paramref name="wheelUp"/> = K_MWHEELUP (zoom in, before the scale-sign flip).
+    /// </summary>
+    public void NotifyZoomScroll(bool wheelUp)
+    {
+        float scale = Cvar("cl_zoomscroll_scale", 0.2f);
+        if (Cvar("cl_zoomscroll", 1f) == 0f || scale == 0f)
+            return;            // zoom scroll disabled
+        if (!ZoomHeld)
+            return;            // QC IsZooming(true): only while actively zooming
+
+        bool zoomin = wheelUp;
+        if (scale < 0f) zoomin = !zoomin;
+        // biggest change allowed is +100%
+        float zoomscrollScale = 1f + Mathf.Min(Mathf.Abs(scale), 1f);
+        if (_zoomScrollFactorTarget <= 0f) // seed before the first frame initialises it
+            _zoomScrollFactorTarget = ResolveZoomFactor();
+        if (zoomin)
+            _zoomScrollFactorTarget = Mathf.Min(MaxZoomFactor, _zoomScrollFactorTarget * zoomscrollScale);
+        else
+            _zoomScrollFactorTarget = Mathf.Max(1f, _zoomScrollFactorTarget / zoomscrollScale);
+    }
+
+    // QC GetCurrentFov: cl_zoomfactor clamped 1..MAX_ZOOMFACTOR else 2.5.
+    private static float ResolveZoomFactor()
+    {
+        float zoomfactor = Cvar("cl_zoomfactor", 2.5f);
+        if (zoomfactor < 1f || zoomfactor > MaxZoomFactor) zoomfactor = 2.5f;
+        return zoomfactor;
     }
 
     /// <summary>
@@ -162,7 +230,13 @@ public sealed class FirstPersonView
     /// </summary>
     private void UpdateZoom(float dt)
     {
-        bool zoomdir = ZoomHeld;
+        // Zoomscript auto-zoom (QC View_CheckButtonStatus, view.qc:1492-1507): a very low fov (autocvar_fov <= 59.5)
+        // auto-engages +button9 (zoomscript_caught), which folds into the zoom exactly like holding +zoom. Latch the
+        // caught flag (for the reticle's full-alpha branch) and treat it as held-zoom for the integration below.
+        float fovForScript = Cvar("fov", BaseFov);
+        _zoomScriptCaught = fovForScript > 0f && fovForScript <= 59.5f;
+
+        bool zoomdir = ZoomHeld || _zoomScriptCaught;
 
         // QC view.qc:505-506: manually zooming (button_zoom) cancels an in-progress spawn-zoom.
         if (zoomdir)
@@ -185,21 +259,51 @@ public sealed class FirstPersonView
             if (_currentViewZoom == 1f)
                 _zoomInEffect = false;
         }
-        else if (zoomspeed < 0f) // instant zoom
-        {
-            _currentViewZoom = zoomdir ? 1f / zoomfactor : 1f;
-        }
-        else if (zoomdir)
-        {
-            // zoom in: drive 1/current_viewzoom up toward zoomfactor, bounded.
-            _currentViewZoom = 1f / Mathf.Clamp(
-                1f / _currentViewZoom + dt * zoomspeed * (zoomfactor - 1f), 1f, zoomfactor);
-        }
         else
         {
-            // zoom out: drive current_viewzoom up toward 1, bounded below by 1/zoomfactor.
-            _currentViewZoom = Mathf.Clamp(
-                _currentViewZoom + dt * zoomspeed * (1f - 1f / zoomfactor), 1f / zoomfactor, 1f);
+            // Zoom-scroll (QC GetCurrentFov:523-544): while cl_zoomscroll is on, the mousewheel-driven
+            // zoomscroll_factor_target eases zoomscroll_factor toward it (frametime-independent averaging), and
+            // that eased value REPLACES zoomfactor for this frame. Reset to the base factor when fully zoomed out.
+            float zoomscrollScale = Cvar("cl_zoomscroll_scale", 0.2f);
+            if (Cvar("cl_zoomscroll", 1f) != 0f && zoomscrollScale != 0f)
+            {
+                // initialise on the first frame / reset to the base factor when fully zoomed out.
+                if (_zoomScrollFactor == 0f || (_currentViewZoom == 1f && !zoomdir))
+                {
+                    _zoomScrollFactorTarget = zoomfactor;
+                    _zoomScrollFactor = zoomfactor;
+                }
+                if (_zoomScrollFactor != _zoomScrollFactorTarget)
+                {
+                    float zoomscrollSpeed = Cvar("cl_zoomscroll_speed", 16f);
+                    if (Mathf.Abs(_zoomScrollFactor - _zoomScrollFactorTarget) < 0.001f || zoomscrollSpeed < 0f)
+                        _zoomScrollFactor = _zoomScrollFactorTarget;
+                    else if (zoomscrollSpeed != 0f)
+                    {
+                        float avgTime = 1f / zoomscrollSpeed;
+                        float frac = 1f - Mathf.Exp(-dt / Mathf.Max(0.001f, avgTime));
+                        _zoomScrollFactor = frac * _zoomScrollFactorTarget + (1f - frac) * _zoomScrollFactor;
+                    }
+                }
+                zoomfactor = _zoomScrollFactor;
+            }
+
+            if (zoomspeed < 0f) // instant zoom
+            {
+                _currentViewZoom = zoomdir ? 1f / zoomfactor : 1f;
+            }
+            else if (zoomdir)
+            {
+                // zoom in: drive 1/current_viewzoom up toward zoomfactor, bounded.
+                _currentViewZoom = 1f / Mathf.Clamp(
+                    1f / _currentViewZoom + dt * zoomspeed * (zoomfactor - 1f), 1f, zoomfactor);
+            }
+            else
+            {
+                // zoom out: drive current_viewzoom up toward 1, bounded below by 1/zoomfactor.
+                _currentViewZoom = Mathf.Clamp(
+                    _currentViewZoom + dt * zoomspeed * (1f - 1f / zoomfactor), 1f / zoomfactor, 1f);
+            }
         }
 
         // current_zoomfraction: 0 at full fov, 1 fully zoomed (QC GetCurrentFov tail).
@@ -260,6 +364,18 @@ public sealed class FirstPersonView
         }
         else
         {
+            // QC cl_player.qc CalcRefdef non-chase branch (lines 564-571), in order:
+            //   CSQCPlayer_ApplyDeathTilt  -> view_angles.z += deathtilt roll while dead
+            //   view_angles += view_punchangle (already folded into st.ViewAnglesQuake by the host)
+            //   view_angles.z += CSQCPlayer_CalcRoll -> bank when strafing (cl_rollangle)
+            //   vieworg += view_punchvector (origin recoil kick, first-person only)
+            //   vieworg = CSQCPlayer_ApplyBobbing -> vertical/horizontal/fall view-bob
+            // All off by default in stock Xonotic (cl_bob 0 / cl_bob2 0 / cl_rollangle 0 / v_deathtilt 0), so a
+            // stock match shows none of them — opt-in only. ApplyDeathTilt/CalcRoll mutate the rendered angles
+            // BEFORE the event-chase forward is taken so the pull-back direction matches the rendered view.
+            ApplyDeathTilt(st, ref viewAngles);
+            viewAngles.Z += CalcRoll(st);
+
             // Eye position in Quake space; the event-chase camera pulls back from the RAW player origin (lifted by
             // cl_eventchase_viewoffset, not the eye) along -forward on death (or when the host forces third person).
             // Returns the eye in first-person. Uses the (unmodified) view forward for the pull-back direction.
@@ -268,9 +384,18 @@ public sealed class FirstPersonView
 
             // QC cl_player.qc:570 `vieworg += view_punchvector` — the origin recoil kick is applied in the
             // NON-chase (first-person) branch only, so a pulled-back third-person/death cam is never jolted.
+            // The view-bob likewise only applies in first person (it's inside the same non-chase branch, and
+            // CSQCPlayer_ApplyBobbing early-outs when dead/in-vehicle).
             if (!ChaseActive)
+            {
                 camQuake += st.PunchOriginQuake;
+                camQuake = ApplyBobbing(st, camQuake, viewAngles);
+            }
         }
+
+        // QC CSQCPlayer_ApplyIdleScaling runs AFTER the chase/non-chase split (cl_player.qc:573) — the idle
+        // sin-wave of pitch/yaw/roll applies in both first-person and chase. Off by default (v_idlescale 0).
+        ApplyIdleScaling(ref viewAngles);
 
         // Orientation: derive the camera basis from the SAME Quake view vectors the sim and aiming use
         // (QMath.AngleVectors), converted axis-by-axis into Godot space. This guarantees the camera looks
@@ -291,9 +416,202 @@ public sealed class FirstPersonView
         EyeContents = Api.Services is not null ? Api.Trace.PointContents(camQuake) : 0;
 
         // Apply the live zoom to the rendered fov (QC GetCurrentFov). See ComputeVerticalFov for the *0.75 note.
+        // The velocity-zoom frustum multiplier (off by default, cl_velocityzoom_enabled 0) folds into the zoom.
         float baseFov = Cvar("fov", BaseFov);
         if (baseFov < 1f) baseFov = BaseFov;
-        camera.Fov = ComputeVerticalFov(baseFov, _currentViewZoom);
+        float velocityZoom = ComputeVelocityZoom(st, dtFor: _lastDt);
+        camera.Fov = ComputeVerticalFov(baseFov, _currentViewZoom * velocityZoom);
+    }
+
+    /// <summary>
+    /// Velocity-based FOV zoom — port of <c>GetCurrentFov</c>'s velocityzoom block (view.qc:574-601). When
+    /// <c>cl_velocityzoom_enabled</c> and <c>cl_velocityzoom_type</c> are set, the frustum is multiplied by an
+    /// exponential of the low-passed player speed so the view widens (or narrows) as you accelerate. Returns 1
+    /// (no effect) when disabled — the shipped default (<c>cl_velocityzoom_enabled 0</c>), so a stock match is
+    /// unchanged. The averaged speed (<see cref="_avgSpeed"/>) keeps integrating even while disabled is avoided by
+    /// only touching it inside the enabled branch, matching QC (it sets velocityzoom = 1 in the else).
+    /// </summary>
+    private float ComputeVelocityZoom(in ViewState st, float dtFor)
+    {
+        // cl_velocityzoom_type 0 disables velocity zoom too (QC view.qc:574 comment).
+        if (Cvar("cl_velocityzoom_enabled", 0f) == 0f || Cvar("cl_velocityzoom_type", 3f) == 0f)
+            return 1f;
+
+        // QC: curspeed from the velocity projected on the view forward (type 3 = max(0, fwd·v); type 2 = fwd·v;
+        // type 1/default = |v|). The intermission / spectator-2 zero branch is not on the net first-person path.
+        QMath.AngleVectors(st.ViewAnglesQuake, out NVec3 forward, out _, out _);
+        NVec3 v = st.VelocityQuake;
+        int type = (int)Cvar("cl_velocityzoom_type", 3f);
+        float curspeed = type switch
+        {
+            3 => Mathf.Max(0f, QMath.Dot(forward, v)),
+            2 => QMath.Dot(forward, v),
+            _ => v.Length(),
+        };
+
+        float vzSpeed = Cvar("cl_velocityzoom_speed", 1000f);
+        float vzFactor = Cvar("cl_velocityzoom_factor", 0f);
+        float vzTime = Cvar("cl_velocityzoom_time", 0.2f);
+
+        float adapt = Mathf.Clamp(dtFor / Mathf.Max(0.000000001f, vzTime), 0f, 1f);
+        _avgSpeed = _avgSpeed * (1f - adapt) + (curspeed / vzSpeed) * adapt;
+        // QC float2range11(f) = f / (|f| + 1); velocityzoom = exp(float2range11(avgspeed * -factor)).
+        float f = _avgSpeed * -vzFactor;
+        float range11 = f / (Mathf.Abs(f) + 1f);
+        return Mathf.Exp(range11);
+    }
+
+    /// <summary>
+    /// Death tilt — port of <c>CSQCPlayer_ApplyDeathTilt</c> (cl_player.qc:278-287). Rolls the view over the first
+    /// second of death up to <c>v_deathtiltangle</c>. Off by default (<c>v_deathtilt 0</c>) and QC-skipped under
+    /// <c>cl_eventchase_death 2</c> (the shipped default) since the death-cam pulls back instead — so it only
+    /// shows when a player opts into v_deathtilt AND turns the death-cam off.
+    /// </summary>
+    private void ApplyDeathTilt(in ViewState st, ref NVec3 viewAngles)
+    {
+        // Track the death edge so (time - death_time) measures real seconds since death.
+        if (st.IsDead && !_wasDead)
+            _deathTime = _viewTime;
+        else if (!st.IsDead)
+            _deathTime = -1f;
+        _wasDead = st.IsDead;
+
+        if (!st.IsDead || Cvar("v_deathtilt", 0f) == 0f)
+            return;
+        // QC: incompatible with cl_eventchase_death 2 (tilt is applied while the corpse is airborne then snapped
+        // off on landing), so it bails when the default death-cam is active.
+        if (Cvar("cl_eventchase_death", 2f) == 2f)
+            return;
+        float since = _deathTime >= 0f ? _viewTime - _deathTime : 0f;
+        viewAngles.Z += Mathf.Min(since * 8f, 1f) * Cvar("v_deathtiltangle", 80f);
+    }
+
+    /// <summary>
+    /// Idle view-wave — port of <c>CSQCPlayer_ApplyIdleScaling</c> (cl_player.qc:296-303). Sin-waves pitch/yaw/roll
+    /// by <c>v_idlescale</c>. Off by default (<c>v_idlescale 0</c>).
+    /// </summary>
+    private void ApplyIdleScaling(ref NVec3 viewAngles)
+    {
+        float idlescale = Cvar("v_idlescale", 0f);
+        if (idlescale == 0f)
+            return;
+        float t = _viewTime;
+        viewAngles.X += idlescale * Mathf.Sin(t * Cvar("v_ipitch_cycle", 1f)) * Cvar("v_ipitch_level", 0.3f);
+        viewAngles.Y += idlescale * Mathf.Sin(t * Cvar("v_iyaw_cycle", 2f)) * Cvar("v_iyaw_level", 0.3f);
+        viewAngles.Z += idlescale * Mathf.Sin(t * Cvar("v_iroll_cycle", 0.5f)) * Cvar("v_iroll_level", 0.1f);
+    }
+
+    /// <summary>
+    /// View roll when strafing — port of <c>CSQCPlayer_CalcRoll</c> (cl_player.qc:432-447). Banks the view toward
+    /// the side velocity, ramping to <c>cl_rollangle</c> past <c>cl_rollspeed</c>. Off by default
+    /// (<c>cl_rollangle 0</c>). Returns the roll degrees to add to view_angles.z.
+    /// </summary>
+    private float CalcRoll(in ViewState st)
+    {
+        float rollangle = Cvar("cl_rollangle", 0f);
+        if (rollangle == 0f)
+            return 0f;
+        float rollspeed = Cvar("cl_rollspeed", 200f);
+        QMath.AngleVectors(st.ViewAnglesQuake, out _, out NVec3 right, out _);
+        float side = QMath.Dot(st.VelocityQuake, right);
+        float sign = side < 0f ? -1f : 1f;
+        side = Mathf.Abs(side);
+        if (side < rollspeed)
+            side *= rollangle / rollspeed;
+        else
+            side = rollangle;
+        return side * sign;
+    }
+
+    /// <summary>
+    /// View bobbing — port of <c>CSQCPlayer_ApplyBobbing</c> (cl_player.qc:321-428): vertical bob (<c>cl_bob</c>),
+    /// horizontal bob (<c>cl_bob2</c>) and fall-bob (<c>cl_bobfall</c>). All off by default (<c>cl_bob 0</c>,
+    /// <c>cl_bob2 0</c>) so a stock match shows no view-bob. Adds the bob offset to the eye/render origin
+    /// <paramref name="v"/> in Quake space. The <c>cl_bob_limit_heightcheck</c> trace path (default 0) is omitted.
+    /// </summary>
+    private NVec3 ApplyBobbing(in ViewState st, NVec3 v, in NVec3 viewAngles)
+    {
+        // QC bails when dead / in a vehicle / not a player model — the net first-person path here is always a
+        // live local player (the dead case is handled by the caller's !ChaseActive gate + event-chase pull-back).
+        if (st.IsDead)
+            return v;
+
+        const float M_PI = Mathf.Pi;
+        float velLimit = Cvar("cl_bob_velocity_limit", 400f);
+
+        // vertical view bobbing
+        float clBob = Cvar("cl_bob", 0f);
+        float bobcycle = Cvar("cl_bobcycle", 0.5f);
+        if (clBob != 0f && bobcycle != 0f)
+        {
+            float bobLimit = Cvar("cl_bob_limit", 7f);
+            float bobup = Cvar("cl_bobup", 0.5f);
+            // LordHavoc's bobup: the time at which the sin is at 180deg (lets the peak/valley be stretched).
+            float cycle = _viewTime / bobcycle;
+            cycle -= Mathf.Round(cycle);
+            if (cycle < bobup)
+                cycle = Mathf.Sin(M_PI * cycle / bobup);
+            else
+                cycle = Mathf.Sin(M_PI + M_PI * (cycle - bobup) / (1f - bobup));
+            // bob proportional to xy-plane speed (ignore Z so jumping doesn't pump it).
+            float xyspeed = Mathf.Clamp(
+                Mathf.Sqrt(st.VelocityQuake.X * st.VelocityQuake.X + st.VelocityQuake.Y * st.VelocityQuake.Y),
+                0f, velLimit);
+            float bob = xyspeed * clBob;
+            bob = Mathf.Clamp(bob, 0f, bobLimit);
+            bob = bob * 0.3f + bob * 0.7f * cycle;
+            v.Z += bob;
+        }
+
+        // horizontal view bobbing
+        float clBob2 = Cvar("cl_bob2", 0f);
+        float bob2cycle = Cvar("cl_bob2cycle", 1f);
+        if (clBob2 != 0f && bob2cycle != 0f)
+        {
+            float cycle = _viewTime / bob2cycle;
+            cycle -= Mathf.Round(cycle);
+            if (cycle < 0.5f)
+                cycle = Mathf.Cos(M_PI * cycle / 0.5f);
+            else
+                cycle = Mathf.Cos(M_PI + M_PI * (cycle - 0.5f) / 0.5f);
+            float bob = clBob2 * cycle;
+
+            // bob2_smooth eases 1->0 when we stop touching ground (also blocked while jumping, to avoid bhop twitches).
+            if (st.OnGround && !st.JumpHeld)
+                _bob2Smooth = 1f;
+            else if (_bob2Smooth > 0f)
+                _bob2Smooth -= Mathf.Clamp(Cvar("cl_bob2smooth", 0.05f), 0f, 1f);
+            else
+                _bob2Smooth = 0f;
+
+            QMath.AngleVectors(viewAngles, out NVec3 fwd, out NVec3 right, out _);
+            float side = Mathf.Clamp(QMath.Dot(st.VelocityQuake, right) * _bob2Smooth, -velLimit, velLimit);
+            float front = Mathf.Clamp(QMath.Dot(st.VelocityQuake, fwd) * _bob2Smooth, -velLimit, velLimit);
+            fwd *= bob;
+            right *= bob;
+            // side with forward and front with right, so the bob goes sideways when walking forward.
+            v.X += side * fwd.X + front * right.X;
+            v.Y += side * fwd.Y + front * right.Y;
+        }
+
+        // fall bobbing: swing the view down and back up on landing.
+        float clBobfall = Cvar("cl_bobfall", 0f);
+        float bobfallcycle = Cvar("cl_bobfallcycle", 3f);
+        if (clBobfall != 0f && bobfallcycle != 0f)
+        {
+            if (!st.OnGround)
+            {
+                _bobfallSpeed = Mathf.Clamp(st.VelocityQuake.Z, -400f, 0f) * Mathf.Clamp(clBobfall, 0f, 0.1f);
+                _bobfallSwing = st.VelocityQuake.Z < -Cvar("cl_bobfallminspeed", 200f) ? 1f : 0f;
+            }
+            else
+            {
+                _bobfallSwing = Mathf.Max(0f, _bobfallSwing - bobfallcycle * (_lastDt > 0f ? _lastDt : 0.0166667f));
+                v.Z += Mathf.Sin(M_PI * _bobfallSwing) * _bobfallSpeed;
+            }
+        }
+
+        return v;
     }
 
     /// <summary>

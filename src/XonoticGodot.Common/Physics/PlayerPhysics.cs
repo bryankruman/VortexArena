@@ -65,14 +65,17 @@ public sealed class PlayerPhysics : IPlayerPhysics
     private const int Q3SurfaceFlagMetalSteps = 0x1000;
     private const int Q3SurfaceFlagNoSteps = 0x2000;
 
-    // --- jetpack tunables (g_jetpack_*; defaults match the stock cfg) ---
-    private const float JetpackAccelSide = 1200f;
-    private const float JetpackAccelUp   = 600f;
-    private const float JetpackAntiGravity = 0.8f;
-    private const float JetpackMaxSpeedSide = 1500f;
-    private const float JetpackMaxSpeedUp   = 600f;
-    private const float JetpackFuel = 8f;
-    private const float JetpackReverseThrust = 0f;
+    // --- jetpack tunables (g_jetpack_*; defaults = stock balance-xonotic.cfg). Now read live as cvars in
+    //     PMJetpack (a retuning server takes effect); these are the fallbacks when the cvar is unset. ---
+    private const float JetpackAccelSide = 1200f;     // g_jetpack_acceleration_side 1200
+    private const float JetpackAccelUp   = 600f;      // g_jetpack_acceleration_up 600
+    private const float JetpackAntiGravity = 0.8f;    // g_jetpack_antigravity 0.8
+    // balance-xonotic.cfg:248 sets g_jetpack_maxspeed_side 1200 (the 1500 was the nexuiz25 balance — a stale
+    // baked value); the stock Xonotic fallback is 1200.
+    private const float JetpackMaxSpeedSide = 1200f;  // g_jetpack_maxspeed_side 1200
+    private const float JetpackMaxSpeedUp   = 600f;   // g_jetpack_maxspeed_up 600
+    private const float JetpackFuel = 8f;             // g_jetpack_fuel 8
+    private const float JetpackReverseThrust = 0f;    // g_jetpack_reverse_thrust 0
     private const float PauseFuelRegen = 2f;
 
     // --- movement sounds ---
@@ -108,6 +111,22 @@ public sealed class PlayerPhysics : IPlayerPhysics
     private const float SpectatorSpeedMultiplierMinDefault = 1f; // autocvar_sv_spectator_speed_multiplier_min
     private const float SpectatorSpeedMultiplierMaxDefault = 5f; // autocvar_sv_spectator_speed_multiplier_max
 
+    // --- specialcommand cheat-code (QC SpecialCommand / PM_check_specialcommand, common/physics/player.qc) ---
+    // The secret movement-input sequence: each server tick the button mask decodes to one character; matching the
+    // next character of this string advances the per-player pointer (Entity.SpecialCommandPos), a mismatch resets
+    // it, and completing it runs SpecialCommand -> give-all. (QC `string specialcommand = "xwxwxsxsxaxdxaxdx1x "`.)
+    private const string SpecialCommandSequence = "xwxwxsxsxaxdxaxdx1x ";
+
+    /// <summary>
+    /// QC <c>SpecialCommand</c> (common/physics/player.qc:582): runs <c>CheatImpulse(CHIMPULSE_GIVE_ALL)</c> when
+    /// cheats are allowed (the cvar/maycheat gate lives inside the server impl). The cheat system is server-side
+    /// (<c>XonoticGodot.Server.Cheats</c>), which the shared physics code can't reference, so the server installs
+    /// this seam at boot (GameWorld). Null on the client-prediction path (and in headless unit tests), where the
+    /// sequence still decodes/advances but the give-all is a no-op — exactly like Base, whose SpecialCommand body
+    /// is <c>#ifdef SVQC</c>.
+    /// </summary>
+    public static System.Action<Player>? SpecialCommandGiveAll;
+
     public void Move(Entity player, IMovementInput input)
     {
         float dt = input.FrameTime;
@@ -131,6 +150,17 @@ public sealed class PlayerPhysics : IPlayerPhysics
             player.Velocity = Vector3.Zero;
             return;
         }
+
+        // ----- specialcommand cheat-code (QC sys_phys_override -> PM_check_specialcommand) -----
+        // Decode the button mask into the "xwxwxsxsxaxdxaxdx1x " sequence; completing it gives-all (cheat-gated
+        // inside the server seam). QC advances the pointer under #ifdef SVQC and runs this in sys_phys_override,
+        // BEFORE the branch chain. Server-authority only: on the predicted client the seam is null and the
+        // decode would advance a pointer the server already owns, so skip it on the predicted leg entirely.
+        // (Base returns true from sys_phys_override on completion to skip that tick's physics; the port instead
+        // just fires the give-all and lets physics run normally — avoids a 1-tick server/client prediction skew
+        // for a cheat-only side effect.)
+        if (!input.Predicted && player is Player cheatChecker)
+            CheckSpecialCommand(cheatChecker, input);
 
         // Per-player parameter resolution (T54): QC reads per-player STATs filled by Physics_UpdateStats —
         // preset-resolved when g_physics_clientselect is on. Resolve() consults the server's PresetProvider
@@ -355,7 +385,7 @@ public sealed class PlayerPhysics : IPlayerPhysics
         }
         else if (jetpackActive)
         {
-            PMJetpack(player, input, mp, dt, viewAngles, move);
+            PMJetpack(player, input, mp, dt, viewAngles, move, maxspeedMod);
             Integrate(player, mp, dt, viewAngles, applyGravity: false, noCollide: false);
         }
         else if (onground && (!player.OnSlick || !SlickApplyGravity))
@@ -378,6 +408,11 @@ public sealed class PlayerPhysics : IPlayerPhysics
         UpdateMovementSounds(player, mp, input.Predicted);
         CheckPunch(player, dt, input.Predicted);
         player.LastFlags = player.Flags;
+
+        // QC physics.qc:24 saves PHYS_CS(this).movement_old = .movement at the TOP of the next sys_phys_update;
+        // the port has no separate pre-pass, so snapshot the forward wishmove here (read next tick by the
+        // viewloc ladder sub-case). Inert on stock maps (ViewLoc null).
+        player.MovementForwardOld = player.MovementForward;
 
         // QC sys_phys_postupdate: `this.lastclassname = this.classname;` (physics.qc:194). The port tracks the
         // spectator half of this — whether the entity was an observer this tick — so the next tick's
@@ -469,6 +504,77 @@ public sealed class PlayerPhysics : IPlayerPhysics
         float v = Api.Cvars.GetFloat(name);
         return v != 0f ? v : fallback;
     }
+
+    // g_jetpack_* tunables: non-zero stock balance-xonotic.cfg defaults, so a 0 read (cvar unset) → fallback
+    // (same idiom as MovementParameters.Cvar). reverse_thrust's stock value is a genuine 0 and is read raw.
+    private static float JetpackCvar(string name, float fallback)
+    {
+        float v = Api.Cvars.GetFloat(name);
+        return v != 0f ? v : fallback;
+    }
+
+    // ===============================================================================================
+    //  specialcommand cheat-code — PM_check_specialcommand / SpecialCommand (QC common/physics/player.qc)
+    // ===============================================================================================
+
+    /// <summary>
+    /// QC <c>PM_check_specialcommand</c> (player.qc:592): decode this tick's button mask to a single character
+    /// (<c>PHYS_INPUT_BUTTON_MASK</c>) and walk it through the secret <c>"xwxwxsxsxaxdxaxdx1x "</c> sequence —
+    /// advancing <see cref="Entity.SpecialCommandPos"/> on a match, resetting on a mismatch, and firing
+    /// <see cref="SpecialCommandGiveAll"/> (QC <c>SpecialCommand</c> → give-all) when the sequence completes.
+    /// Server-authority only (QC advances the pointer under <c>#ifdef SVQC</c>); called from <see cref="Move"/>
+    /// on the non-predicted tick. The button decode mirrors <c>player.qh:191</c> exactly:
+    ///   0 → "x", ATCK → "1", ATCK2 → " ", BACKWARD(move.x&lt;0) → "s", FORWARD(move.x&gt;0) → "w",
+    ///   LEFT(move.y&lt;0) → "a", RIGHT(move.y&gt;0) → "d", anything else → "?".
+    /// </summary>
+    private static void CheckSpecialCommand(Player player, IMovementInput input)
+    {
+        Vector3 move = input.MoveValues;
+
+        // QC PHYS_INPUT_BUTTON_MASK then the switch in PM_check_specialcommand. Only the buttons the decode
+        // distinguishes need to be tested; any combination not matching a single case maps to '?' (a reset).
+        char c;
+        bool atck = input.ButtonAttack1;
+        bool jump = input.ButtonJump;
+        bool atck2 = input.ButtonAttack2;
+        bool crouch = input.ButtonCrouch;
+        bool hook = input.ButtonHook;
+        bool use = input.ButtonUse;
+        bool back = move.X < 0f, fwd = move.X > 0f, left = move.Y < 0f, right = move.Y > 0f;
+
+        // Count how many of the mask's bits are set; the QC switch matches only single-bit (or zero) masks.
+        int bits = (atck ? 1 : 0) + (jump ? 1 : 0) + (atck2 ? 1 : 0) + (crouch ? 1 : 0) + (hook ? 1 : 0)
+                 + (use ? 1 : 0) + (back ? 1 : 0) + (fwd ? 1 : 0) + (left ? 1 : 0) + (right ? 1 : 0);
+        if (bits == 0) c = 'x';
+        else if (bits == 1 && atck) c = '1';
+        else if (bits == 1 && atck2) c = ' ';
+        else if (bits == 1 && back) c = 's';
+        else if (bits == 1 && fwd) c = 'w';
+        else if (bits == 1 && left) c = 'a';
+        else if (bits == 1 && right) c = 'd';
+        else c = '?'; // BIT(1) jump / BIT(3) zoom / BIT(4) crouch / BIT(5) hook / BIT(6) use / multi-bit → default
+
+        int pos = player.SpecialCommandPos;
+        if (pos < SpecialCommandSequence.Length && c == SpecialCommandSequence[pos])
+        {
+            ++pos;
+            if (pos >= SpecialCommandSequence.Length)
+            {
+                player.SpecialCommandPos = 0;
+                SpecialCommand(player);
+                return;
+            }
+            player.SpecialCommandPos = pos;
+        }
+        else if (pos > 0 && c != SpecialCommandSequence[pos - 1])
+        {
+            player.SpecialCommandPos = 0;
+        }
+    }
+
+    /// <summary>QC <c>SpecialCommand</c> (player.qc:582): give-all when cheats are allowed (the cvar/maycheat
+    /// gate lives inside the installed server seam). No-op when no seam is installed (client/headless).</summary>
+    private static void SpecialCommand(Player player) => SpecialCommandGiveAll?.Invoke(player);
 
     // ===============================================================================================
     //  Ground branch — friction + simple Quake accelerate (QC sys_phys_simulate, com_phys_ground)
@@ -631,8 +737,13 @@ public sealed class PlayerPhysics : IPlayerPhysics
         }
         else
         {
+            // QC physics.qc:267-272 — crouch is a SEPARATE `if` (dive at max speed); then viewloc forces a
+            // constant downward drift (-160), ELSE (no viewloc) a still player drifts to the bottom (-60). The
+            // `else if (wishvel == 0)` is attached to the viewloc test, NOT to crouch, so reproduce that order.
             if (input.ButtonCrouch)
                 wishvel.Z = -mp.MaxSpeed;
+            if (player.ViewLoc is not null)
+                wishvel.Z = -160f;                               // 1D-rail: drift anyway
             else if (wishvel == Vector3.Zero)
                 wishvel.Z = -60f;                                // drift towards the bottom
         }
@@ -661,8 +772,22 @@ public sealed class PlayerPhysics : IPlayerPhysics
             player.Velocity = new Vector3(player.Velocity.X, player.Velocity.Y, upspeed);
         }
 
-        // QW water acceleration (PM_Accelerate with accelqw 1, no clamp)
-        PMAccelerate.Accelerate(player, dt, wishdir, wishspeed, wishspeed, mp.Accelerate, 1f, 0f, 0f, 0f);
+        // QC physics.qc:408-421 — a viewloc (1D-rail) water volume uses a plain addspeed accel (no QW pass);
+        // otherwise the standard QW water acceleration (PM_Accelerate with accelqw 1, no clamp). Inert on
+        // stock 3D maps (ViewLoc null), but a real Base branch.
+        if (player.ViewLoc is not null)
+        {
+            float addspeed = wishspeed - QMath.Dot(player.Velocity, wishdir);
+            if (addspeed > 0f)
+            {
+                float accelspeed = MathF.Min(mp.Accelerate * dt * wishspeed, addspeed);
+                player.Velocity += accelspeed * wishdir;
+            }
+        }
+        else
+        {
+            PMAccelerate.Accelerate(player, dt, wishdir, wishspeed, wishspeed, mp.Accelerate, 1f, 0f, 0f, 0f);
+        }
     }
 
     // ===============================================================================================
@@ -681,6 +806,35 @@ public sealed class PlayerPhysics : IPlayerPhysics
 
         QMath.AngleVectors(viewAngles, out Vector3 forward, out Vector3 right, out _);
         Vector3 wishvel = forward * move.X + right * move.Y + new Vector3(0f, 0f, 1f) * move.Z;
+
+        // QC physics.qc:277-278 — a viewloc (1D-rail) ladder drives the vertical wish from the PREVIOUS tick's
+        // forward wishmove (movement_old.x). Inert on stock 3D maps (ViewLoc null).
+        if (player.ViewLoc is not null)
+            wishvel.Z = player.MovementForwardOld;
+
+        // QC physics.qc:280-299 — a func_water "ladder" clamps the wish to the volume's speed and fills the
+        // waterlevel/watertype FROM THE VOLUME BOUNDS (CheckWater early-returns for func_water and defers here).
+        // Without this a func_water ladder leaves WaterLevelNone. Rare map feature, but a real Base branch.
+        if (player.LadderEntity is { ClassName: "func_water" } water)
+        {
+            float fl = wishvel.Length();
+            if (fl > water.Speed)
+                wishvel *= water.Speed / fl;
+
+            player.WaterType = (int)water.Skin;                       // QC watertype = ladder_entity.skin
+            fl = water.Origin.Z + water.Maxs.Z;                      // surface plane (volume top)
+            if (player.Origin.Z + player.ViewOfs.Z < fl)
+                player.WaterLevel = WaterLevelSubmerged;
+            else if (player.Origin.Z + (player.Mins.Z + player.Maxs.Z) * 0.5f < fl)
+                player.WaterLevel = WaterLevelSwimming;
+            else if (player.Origin.Z + player.Mins.Z + 1f < fl)
+                player.WaterLevel = WaterLevelWetFeet;
+            else
+            {
+                player.WaterLevel = WaterLevelNone;
+                player.WaterType = (int)Contents.Empty;             // QC watertype = CONTENT_EMPTY
+            }
+        }
 
         float wishspeed = wishvel.Length();
         Vector3 wishdir = wishspeed != 0f ? wishvel * (1f / wishspeed) : Vector3.Zero;
@@ -710,11 +864,26 @@ public sealed class PlayerPhysics : IPlayerPhysics
     // ===============================================================================================
     //  Jetpack thrust — PM_jetpack (QC common/physics/player.qc)
     // ===============================================================================================
-    private static void PMJetpack(Entity player, IMovementInput input, in MovementParameters mp, float dt, Vector3 viewAngles, Vector3 move)
+    private static void PMJetpack(Entity player, IMovementInput input, in MovementParameters mp, float dt, Vector3 viewAngles, Vector3 move, float maxspeedMod)
     {
+        // QC PM_jetpack reads the g_jetpack_* STATs (Physics_UpdateStats fills them from the autocvars). Read
+        // them live here so a server retuning the jetpack takes effect (the baked constants are the fallback /
+        // stock balance-xonotic.cfg defaults). NOTE balance-xonotic.cfg sets g_jetpack_maxspeed_side 1200 (the
+        // 1500 is the nexuiz25 balance), so the stock default is 1200. Cvar(name,default) treats a 0 read (cvar
+        // unset) as "use default"; reverse_thrust's stock value is a genuine 0, so read it raw.
+        float jpAccelSide   = JetpackCvar("g_jetpack_acceleration_side", JetpackAccelSide);
+        float jpAccelUp     = JetpackCvar("g_jetpack_acceleration_up",   JetpackAccelUp);
+        float jpAntiGravity = JetpackCvar("g_jetpack_antigravity",       JetpackAntiGravity);
+        float jpMaxSpeedSide= JetpackCvar("g_jetpack_maxspeed_side",     JetpackMaxSpeedSide);
+        float jpMaxSpeedUp  = JetpackCvar("g_jetpack_maxspeed_up",       JetpackMaxSpeedUp);
+        float jpFuel        = JetpackCvar("g_jetpack_fuel",              JetpackFuel);
+        float jpReverse     = Api.Cvars.GetFloat("g_jetpack_reverse_thrust"); // stock 0 -> read raw
+
         QMath.AngleVectors(viewAngles, out Vector3 forward, out Vector3 right, out _);
         Vector3 wishvel = forward * move.X + right * move.Y;
-        float maxairspd = mp.MaxAirSpeed * MathF.Max(1f, 1f);
+        // QC player.qc:742: maxairspd = PHYS_MAXAIRSPEED * max(1, maxspd_mod). Normal player maxspd_mod == 1 so
+        // this is a strict no-op; a spectator/high-speed-mod jetpack scales the speedhack-clamp denominator.
+        float maxairspd = mp.MaxAirSpeed * MathF.Max(1f, maxspeedMod);
         // normalize horizontal wish, scaled to <= 1 (fix speedhacks)
         float wlen = wishvel.Length();
         wishvel = QMath.Normalize(wishvel) * MathF.Min(1f, wlen / maxairspd);
@@ -723,11 +892,11 @@ public sealed class PlayerPhysics : IPlayerPhysics
         // up component from the leftover of the unit sphere
         wishvel.Z = MathF.Sqrt(MathF.Max(0f, 1f - QMath.Dot(wishvel, wishvel)));
 
-        float aSide = JetpackAccelSide;
-        float aUp = JetpackAccelUp;
-        float aAdd = JetpackAntiGravity * mp.Gravity;
-        bool reverse = JetpackReverseThrust != 0f && input.ButtonCrouch;
-        if (reverse) aUp = JetpackReverseThrust;
+        float aSide = jpAccelSide;
+        float aUp = jpAccelUp;
+        float aAdd = jpAntiGravity * mp.Gravity;
+        bool reverse = jpReverse != 0f && input.ButtonCrouch;
+        if (reverse) aUp = jpReverse;
 
         wishvel.X *= aSide;
         wishvel.Y *= aSide;
@@ -752,12 +921,12 @@ public sealed class PlayerPhysics : IPlayerPhysics
         best = MathF.Sqrt(best);
 
         float fxy = QMath.Bound(0f,
-            1f - QMath.Dot(player.Velocity, QMath.Normalize(new Vector3(wishvel.X, wishvel.Y, 0f))) / JetpackMaxSpeedSide, 1f);
+            1f - QMath.Dot(player.Velocity, QMath.Normalize(new Vector3(wishvel.X, wishvel.Y, 0f))) / jpMaxSpeedSide, 1f);
         float fz;
         if (wishvel.Z - mp.Gravity > 0f)
-            fz = QMath.Bound(0f, 1f - player.Velocity.Z / JetpackMaxSpeedUp, 1f);
+            fz = QMath.Bound(0f, 1f - player.Velocity.Z / jpMaxSpeedUp, 1f);
         else
-            fz = QMath.Bound(0f, 1f + player.Velocity.Z / JetpackMaxSpeedUp, 1f);
+            fz = QMath.Bound(0f, 1f + player.Velocity.Z / jpMaxSpeedUp, 1f);
 
         float fvel = wishvel.Length();
         wishvel.X *= fxy;
@@ -766,10 +935,10 @@ public sealed class PlayerPhysics : IPlayerPhysics
 
         fvel = MathF.Min(1f, wishvel.Length() / best);
         float f;
-        if (JetpackFuel != 0f && !player.UnlimitedAmmo)
+        if (jpFuel != 0f && !player.UnlimitedAmmo)
         {
             float fuel = player.GetResource(ResourceType.Fuel);
-            f = MathF.Min(1f, fuel / (JetpackFuel * dt * fvel));
+            f = MathF.Min(1f, fuel / (jpFuel * dt * fvel));
         }
         else f = 1f;
 
@@ -779,7 +948,7 @@ public sealed class PlayerPhysics : IPlayerPhysics
             UnsetOnGround(player);
 
             if (!player.UnlimitedAmmo)
-                player.TakeResource(ResourceType.Fuel, JetpackFuel * dt * fvel * f);
+                player.TakeResource(ResourceType.Fuel, jpFuel * dt * fvel * f);
 
             player.UsingJetpack = true;
             player.PauseRegenFinished = MathF.Max(player.PauseRegenFinished, Now() + PauseFuelRegen);
@@ -809,7 +978,9 @@ public sealed class PlayerPhysics : IPlayerPhysics
 
             bool airJump = !playerjump || airJumpHint;
             bool activate = (jetpackJump && airJump && input.ButtonJump) || input.ButtonJetpack;
-            bool hasFuel = JetpackFuel == 0f || player.GetResource(ResourceType.Fuel) > 0f || player.UnlimitedAmmo;
+            // QC CheckPlayerJump fuel gate uses PHYS_JETPACK_FUEL (read live, same as PM_jetpack).
+            float jpFuel = JetpackCvar("g_jetpack_fuel", JetpackFuel);
+            bool hasFuel = jpFuel == 0f || player.GetResource(ResourceType.Fuel) > 0f || player.UnlimitedAmmo;
 
             if (!player.HasJetpack) { /* no jetpack item */ }
             else if (player.JetpackStopped) { /* stopped until released */ }
@@ -1059,7 +1230,26 @@ public sealed class PlayerPhysics : IPlayerPhysics
 
         bool doCrouch = input.ButtonCrouch;
 
-        if (IsFrozen(player) || (player.DeadState != DeadFlag.No))
+        // QC PM_ClientMovement_UpdateStatus:191-193 — a viewloc (1D side-scroller rail) without the FREEMOVE
+        // spawnflag FORCES crouch while pressing "down" (movement.x < 0). Inert on stock 3D maps (ViewLoc is
+        // always null), but a real Base branch. VIEWLOC_FREEMOVE = BIT(2) = 4 (viewloc.qh).
+        if (player.ViewLoc is { } vloc && (vloc.SpawnFlags & 4) == 0 && input.MoveValues.X < 0f)
+            doCrouch = true;
+
+        // QC PM_ClientMovement_UpdateStatus:194-201 — the force-UNCROUCH chain, in QC's exact precedence
+        // (each an `else if`, so the FIRST matching condition wins and the rest are skipped):
+        //   have_hook → in-vehicle → (frozen || dead).
+        // have_hook: a grappling hook held in ANY weapon slot forces standing (so a hooked player isn't stuck
+        // ducked). QC loops weaponentities[slot] and checks .hook; the port stores the hook on the per-slot
+        // WeaponSlotState, so walk the populated slots.
+        bool haveHook = false;
+        player.ForEachWeaponSlot(s => { if (s.Hook is not null) haveHook = true; });
+
+        if (haveHook)
+            doCrouch = false;
+        else if (player.Vehicle is not null) // QC PHYS_INVEHICLE(this) == (this.vehicle != NULL)
+            doCrouch = false;
+        else if (IsFrozen(player) || (player.DeadState != DeadFlag.No))
             doCrouch = false;
 
         // EV_PlayerCanCrouch mutator hook (bloodloss forces crouch below its threshold).

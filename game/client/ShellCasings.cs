@@ -24,13 +24,20 @@ public sealed partial class ShellCasings : Node3D
     public enum CasingKind { Bullet = 0, Shell = 1 }
 
     /// <summary>Bullet-casing lifetime seconds (DP cl_casings_bronze_time default).</summary>
-    [Export] public float BulletTime { get; set; } = 1.5f;
+    [Export] public float BulletTime { get; set; } = 10f;
 
     /// <summary>Shell-casing lifetime seconds (DP cl_casings_shell_time default).</summary>
-    [Export] public float ShellTime { get; set; } = 2.0f;
+    [Export] public float ShellTime { get; set; } = 30f;
 
     /// <summary>Hard cap on live casings (DP cl_casings_maxcount).</summary>
-    [Export] public int MaxCasings { get; set; } = 64;
+    [Export] public int MaxCasings { get; set; } = 100;
+
+    /// <summary>
+    /// Positional bounce-sound hook (host-set to <see cref="ClientWorld.OnSound"/>): plays the casing-impact
+    /// samples (<c>brass1-3</c> / <c>casings1-3</c>) on touch, faithful to Base <c>Casing_Touch</c> (casings.qc).
+    /// Signature: (sample, originQuake). When unset, casings bounce silently.
+    /// </summary>
+    public Action<string, NVec3>? SoundHook { get; set; }
 
     private int _liveCount;
 
@@ -47,8 +54,8 @@ public sealed partial class ShellCasings : Node3D
     /// </summary>
     public Node3D Spawn(NVec3 origin, NVec3 velocity, CasingKind kind = CasingKind.Bullet, float floorZ = float.NegativeInfinity)
     {
-        // QC adds a little jitter + a tumble (avelocity '0 10 0' + 100*prandomvec) on receipt.
-        NVec3 vel = velocity + RandomVec() * 6f;
+        // QC adds a little velocity jitter on receipt: casing.velocity += 2 * prandomvec().
+        NVec3 vel = velocity + RandomVec() * 2f;
         float life = kind == CasingKind.Shell ? ShellTime : BulletTime;
         float bounce = kind == CasingKind.Shell ? 0.25f : 0.5f;
 
@@ -62,10 +69,15 @@ public sealed partial class ShellCasings : Node3D
             BounceFactor = bounce,
             Lifetime = life,
             FloorZ = floorZ,
+            Kind = kind,
+            SoundHook = SoundHook,
+            // QC: avelocity = '0 10 0' + 100*prandomvec() — a base yaw tumble of 10 deg/s plus a ±100 deg/s
+            // per-axis random. (Quake avelocity is degrees/s, applied to angles; we store radians/s for the
+            // Godot rotate, hence the DegToRad on each component.)
             AngularVel = new Vector3(
-                (float)GD.RandRange(-12.0, 12.0),
-                (float)GD.RandRange(-12.0, 12.0),
-                (float)GD.RandRange(-12.0, 12.0)),
+                Mathf.DegToRad((float)GD.RandRange(-100.0, 100.0)),
+                Mathf.DegToRad(10f + (float)GD.RandRange(-100.0, 100.0)),
+                Mathf.DegToRad((float)GD.RandRange(-100.0, 100.0))),
         };
         body.AddChild(mesh);
 
@@ -189,12 +201,19 @@ public sealed partial class ShellCasings : Node3D
         public float BounceFactor = 0.5f;
         public float Lifetime = 1.5f;
         public float FloorZ = float.NegativeInfinity;
+        public CasingKind Kind = CasingKind.Bullet;
         public Action? OnFreed;
+
+        /// <summary>Bounce-sound hook (sample, originQuake), Base <c>Casing_Touch</c>. Null = silent.</summary>
+        public Action<string, NVec3>? SoundHook;
 
         // DP world gravity (sv_gravity default). gib/casing entities use gravity 1 (full).
         private const float Gravity = 800f;
         private float _age;
         private bool _onGround;
+        // QC Casing_Touch throttles the bounce sound: this.nextthink = time + 0.2 (no sound while inside that
+        // window). We accumulate elapsed life and gate on it so a casing rattling on the floor doesn't machine-gun.
+        private float _nextSoundAt;
 
         public override void _PhysicsProcess(double delta)
         {
@@ -216,6 +235,15 @@ public sealed partial class ShellCasings : Node3D
                 // Ground-plane bounce: when crossing FloorZ heading down, reflect Z and damp by bouncefactor.
                 if (!float.IsNegativeInfinity(FloorZ) && posQ.Z <= FloorZ && VelocityQuake.Z < 0f)
                 {
+                    // Base Casing_Touch: play a random brass*/casings* impact when the casing hits a surface at
+                    // speed (vdist(velocity,>,50)), throttled to once per 0.2s. The pre-bounce velocity is what
+                    // QC tests (the touch fires with the incoming velocity).
+                    if (VelocityQuake.Length() > 50f && _age >= _nextSoundAt)
+                    {
+                        SoundHook?.Invoke(RandomImpactSound(Kind), Coords.ToQuake(Position));
+                        _nextSoundAt = _age + 0.2f;
+                    }
+
                     posQ.Z = FloorZ;
                     VelocityQuake.Z = -VelocityQuake.Z * BounceFactor;
                     VelocityQuake.X *= 0.7f;
@@ -231,9 +259,14 @@ public sealed partial class ShellCasings : Node3D
                 Position = Coords.ToGodot(posQ);
             }
 
-            // Tumble while airborne.
+            // Tumble while airborne (QC avelocity = '0 10 0' + 100*prandomvec, a 3-axis angular velocity in
+            // rad/s here). Apply all three components so the casing spins on every axis, not just pitch.
             if (!_onGround)
+            {
                 RotateObjectLocal(Vector3.Right, AngularVel.X * dt);
+                RotateObjectLocal(Vector3.Up, AngularVel.Y * dt);
+                RotateObjectLocal(Vector3.Back, AngularVel.Z * dt);
+            }
 
             // Fade out over the final 0.4s of life.
             float remaining = Lifetime - _age;
@@ -242,6 +275,17 @@ public sealed partial class ShellCasings : Node3D
                 float a = Math.Clamp(remaining / 0.4f, 0f, 1f);
                 ApplyAlpha(this, a);
             }
+        }
+
+        /// <summary>
+        /// A random casing-impact sample (Base <c>SND_BRASS_RANDOM</c> / <c>SND_CASINGS_RANDOM</c>): the shotgun
+        /// shell uses <c>casings1-3</c>, every bullet casing uses <c>brass1-3</c>. Paths match the W_Sound()
+        /// weapon-sound directory (<c>weapons/brass1.wav</c> etc.).
+        /// </summary>
+        private static string RandomImpactSound(CasingKind kind)
+        {
+            int n = GD.RandRange(1, 3);
+            return kind == CasingKind.Shell ? $"weapons/casings{n}.wav" : $"weapons/brass{n}.wav";
         }
 
         private static void ApplyAlpha(Node node, float a)

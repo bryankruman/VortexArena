@@ -86,6 +86,13 @@ public partial class ShowNamesLayer : Control
     /// changed (drives the 1s grace window).</summary>
     public float SpectateeStatusChangedTime { get; set; }
 
+    /// <summary>Whether the local client is NOT a live in-game player — observing (free-fly) or following a
+    /// spectatee (QC <c>spectatee_status != 0</c> ⇔ <c>!(IS_PLAYER(to) || INGAME(to))</c>). The server gives such a
+    /// recipient EVERY player's private entcs slice (<c>_entcs_send</c>: the
+    /// <c>!(IS_PLAYER(to) || INGAME(to))</c> arm), so on the client this forces <c>m_entcs_private</c> true for all
+    /// players — free spectating sees everyone's team-membership + health/armor.</summary>
+    public bool LocalIsSpectating { get; set; }
+
     /// <summary>Resolve a player's display name from its net id — the port's faithful <c>entcs_GetName</c>
     /// stand-in (the scoreboard name slice; the port has no separate entcs name stream). Returns "" when unknown;
     /// the tag then shows nothing for the name but still draws the status bar. Host-wired by the net layer.</summary>
@@ -186,8 +193,19 @@ public partial class ShowNamesLayer : Control
                     continue;
             }
 
-            // sameteam: same non-zero team as the local client (QC entcs.m_entcs_private → it.sameteam).
-            bool sameteam = teamplay && (s.Colormap & 0xFF) == LocalTeam && !isSelf;
+            // QC entcs.m_entcs_private → it.sameteam (Draw_ShowNames_All:237-248). m_entcs_private is set on the
+            // client iff the server sent this player's PRIVATE entcs slice (ent_cs.qc ReadEntcs:359 — the ENTNUM
+            // sentinel bit), and the server (`_entcs_send`) sends it iff `radar_showenemies || SAME_TEAM(to,player)
+            // || !(IS_PLAYER(to) || INGAME(to))`. Reproduce that exact gate here so the authority matches QC (the
+            // old (Colormap&0xFF)==LocalTeam compare ignored radar_showenemies and the observer arm): a teammate by
+            // colormap, OR radar_showenemies is set, OR the local client is observing/spectating (not a live
+            // in-game player → gets everyone's private slice). Self never takes the sameteam arm in QC (the self
+            // branch is handled above; the private slice for self is the !sameteam||self entcs_GetAlpha case).
+            bool sameTeamColor = teamplay && LocalTeam != Teams.None && (s.Colormap & 0xFF) == LocalTeam;
+            bool radarShowEnemies = CvarBool("radar_showenemies");
+            bool entcsPrivate = !isSelf && (sameTeamColor || radarShowEnemies || LocalIsSpectating);
+            // QC `it.sameteam = entcs.m_entcs_private` — same flag drives the team/enemy gate AND the status bar.
+            bool sameteam = entcsPrivate;
             bool dead = (s.Flags & NetEntityFlags.Dead) != 0;
 
             // QC: `if (!this.sameteam && !autocvar_hud_shownames_enemies) return;`. The viewed player (self in chase
@@ -374,8 +392,12 @@ public partial class ShowNamesLayer : Control
             tag.Resize = resize;
             tag.DrawStatus = drawStatus;
             tag.DrawDecolor = (decolorize == 1 && teamplay) || decolorize == 2;
-            tag.Health = s.Health;
-            tag.Armor = s.Armor;
+            // QC Draw_ShowNames_All:237-248 — healthvalue / RES_ARMOR are copied from the entcs ONLY under
+            // m_entcs_private; an enemy slice zeroes them. The server already withholds enemy health/armor
+            // (ServerNet.RelevantEntitiesFor zeroes them for enemy recipients), so this is the matching client-side
+            // gate: read the slice only when private, mirroring QC's enemy zeroing even if a future stream leaks it.
+            tag.Health = entcsPrivate ? s.Health : 0;
+            tag.Armor = entcsPrivate ? s.Armor : 0;
 
             _drawIds.Add(netId);
         }
@@ -423,7 +445,8 @@ public partial class ShowNamesLayer : Control
             string name = NameResolver?.Invoke(netId) ?? "";
             if (string.IsNullOrEmpty(name))
                 continue;
-            DrawName(font, o, name, fontsizeCv * resize, a, tag.DrawDecolor);
+            // QC namewidth = mySize.x: the (resized) tag box width; textShortenToWidth clamps the name to it.
+            DrawName(font, o, name, fontsizeCv * resize, a, tag.DrawDecolor, mySize.X);
         }
 
         PruneStaleTags();
@@ -433,26 +456,29 @@ public partial class ShowNamesLayer : Control
     //  Drawing helpers
     // =====================================================================================================
 
-    /// <summary>Draw the centered, optionally-decolorized color-coded name (QC drawcolorcodedstring). The name is
-    /// centered on the projected anchor X like QC (myPos.x = o.x - width/2).</summary>
-    private void DrawName(Font font, Vector2 o, string name, float fontPx, float alpha, bool decolor)
+    /// <summary>Draw the centered, optionally-decolorized color-coded name (QC <c>drawcolorcodedstring</c>). The name
+    /// is centered on the projected anchor X like QC (<c>myPos.x = o.x - width/2</c>) and clamped to the tag box
+    /// width <paramref name="maxWidth"/> via the QC <c>textShortenToWidth</c> rule (truncate + append "…" when it
+    /// overflows). QC's <c>drawcolorcodedstring</c> has no drop-shadow, so neither does this.</summary>
+    private void DrawName(Font font, Vector2 o, string name, float fontPx, float alpha, bool decolor, float maxWidth)
     {
         int size = Mathf.Max(6, Mathf.RoundToInt(fontPx));
         if (decolor)
         {
             // QC playername(s, team, true) strips the name's own ^codes (the team tint is applied by color);
             // we render the stripped text in the local-readable white so a teammate's name is uniform.
-            string plain = HudText.Strip(name);
+            string plain = ShortenToWidth(font, HudText.Strip(name), size, maxWidth);
             float w = font.GetStringSize(plain, HorizontalAlignment.Left, -1f, size).X;
             var at = new Vector2(o.X - w * 0.5f, o.Y - size);
-            var col = new Color(1f, 1f, 1f, alpha);
-            DrawString(font, at + new Vector2(1f, 1f), plain, HorizontalAlignment.Left, -1f, size, new Color(0f, 0f, 0f, alpha * 0.7f));
-            DrawString(font, at, plain, HorizontalAlignment.Left, -1f, size, col);
+            DrawString(font, at, plain, HorizontalAlignment.Left, -1f, size, new Color(1f, 1f, 1f, alpha));
             return;
         }
 
-        // Color-coded: lay out the runs left-to-right, centered on o.X.
+        // Color-coded: lay out the runs left-to-right, centered on o.X. The color codes carry no width (QC
+        // stringwidth_colors), so the width clamp counts only the printable glyphs — done on the joined text and
+        // re-applied to the runs so the same characters are dropped from the end.
         var runs = HudText.Parse(name, new Color(1f, 1f, 1f, alpha));
+        runs = ShortenRunsToWidth(font, runs, size, maxWidth);
         float total = 0f;
         foreach (HudText.Run run in runs)
             total += font.GetStringSize(run.Text, HorizontalAlignment.Left, -1f, size).X;
@@ -461,10 +487,72 @@ public partial class ShowNamesLayer : Control
         foreach (HudText.Run run in runs)
         {
             var rc = new Color(run.Color.R, run.Color.G, run.Color.B, alpha);
-            DrawString(font, new Vector2(x + 1f, y + 1f), run.Text, HorizontalAlignment.Left, -1f, size, new Color(0f, 0f, 0f, alpha * 0.7f));
             DrawString(font, new Vector2(x, y), run.Text, HorizontalAlignment.Left, -1f, size, rc);
             x += font.GetStringSize(run.Text, HorizontalAlignment.Left, -1f, size).X;
         }
+    }
+
+    /// <summary>QC <c>textShortenToWidth</c> (common/util.qc:1171) over a single (already color-stripped) string: if
+    /// it fits within <paramref name="maxWidth"/> px, return it unchanged; else drop characters from the end until
+    /// the text plus an appended "…" fits, then append "…" — exactly QC's
+    /// <c>substring(s, 0, lenUpToWidth(s, maxWidth - w("...")))</c> + <c>strcat("...")</c>.</summary>
+    private static string ShortenToWidth(Font font, string text, int size, float maxWidth)
+    {
+        if (string.IsNullOrEmpty(text) || maxWidth <= 0f)
+            return text;
+        if (font.GetStringSize(text, HorizontalAlignment.Left, -1f, size).X <= maxWidth)
+            return text;
+        const string ellipsis = "...";
+        float budget = maxWidth - font.GetStringSize(ellipsis, HorizontalAlignment.Left, -1f, size).X;
+        if (budget <= 0f)
+            return ellipsis;
+        int take = text.Length;
+        while (take > 0 &&
+               font.GetStringSize(text.Substring(0, take), HorizontalAlignment.Left, -1f, size).X > budget)
+            take--;
+        return text.Substring(0, take) + ellipsis;
+    }
+
+    /// <summary>QC <c>textShortenToWidth</c> with <c>stringwidth_colors</c> (color codes are zero-width) applied to a
+    /// parsed run list: only the printable glyphs count toward the width, so the clamp is computed on the joined
+    /// visible text and the same number of trailing characters is dropped from the runs (the "…" lands in the last
+    /// surviving run's color). Returns the input unchanged when it already fits.</summary>
+    private static List<HudText.Run> ShortenRunsToWidth(Font font, List<HudText.Run> runs, int size, float maxWidth)
+    {
+        if (maxWidth <= 0f || runs.Count == 0)
+            return runs;
+        float total = 0f;
+        foreach (HudText.Run r in runs)
+            total += font.GetStringSize(r.Text, HorizontalAlignment.Left, -1f, size).X;
+        if (total <= maxWidth)
+            return runs;
+
+        const string ellipsis = "...";
+        float budget = maxWidth - font.GetStringSize(ellipsis, HorizontalAlignment.Left, -1f, size).X;
+        var result = new List<HudText.Run>(runs.Count);
+        float used = 0f;
+        Color lastColor = runs[runs.Count - 1].Color;
+        foreach (HudText.Run run in runs)
+        {
+            // Take as many leading characters of this run as the remaining budget allows.
+            int take = run.Text.Length;
+            while (take > 0)
+            {
+                float w = font.GetStringSize(run.Text.Substring(0, take), HorizontalAlignment.Left, -1f, size).X;
+                if (used + w <= budget) break;
+                take--;
+            }
+            if (take > 0)
+            {
+                result.Add(new HudText.Run(run.Text.Substring(0, take), run.Color));
+                used += font.GetStringSize(run.Text.Substring(0, take), HorizontalAlignment.Left, -1f, size).X;
+                lastColor = run.Color;
+            }
+            if (take < run.Text.Length)
+                break; // budget exhausted mid-run; stop and append the ellipsis
+        }
+        result.Add(new HudText.Run(ellipsis, lastColor));
+        return result;
     }
 
     /// <summary>Draw one status sub-bar (QC HUD_Panel_DrawProgressBar, horizontal). <paramref name="rightAlign"/>

@@ -75,6 +75,8 @@ public partial class CrosshairPanel : HudPanel
         Weapon = 1,
         /// <summary>QC 2: tint by health + armor (<c>HUD_Get_Num_Color</c>).</summary>
         Health = 2,
+        /// <summary>QC 3: rainbow — a random colour re-rolled every <c>crosshair_color_special_rainbow_delay</c>.</summary>
+        Rainbow = 3,
     }
 
     /// <summary>The local player (set by <see cref="Hud"/>); drives per-weapon crosshair color + charge ring + true-aim.</summary>
@@ -206,10 +208,12 @@ public partial class CrosshairPanel : HudPanel
     public bool HitTest { get; set; } = true;
 
     /// <summary>
-    /// QC <c>autocvar_crosshair_hittest</c> as the teammate-shrink divisor: a value &gt; 1 shrinks the crosshair
-    /// over a teammate (QC <c>wcross_scale /= autocvar_crosshair_hittest</c>). 1 leaves the size unchanged.
+    /// Legacy property fallback for the teammate-shrink divisor. The live path now divides by the
+    /// <c>crosshair_hittest</c> cvar itself (QC <c>wcross_scale /= autocvar_crosshair_hittest</c>), which defaults
+    /// to 1 (NO shrink) exactly like Base; this property is retained only as a public API surface and defaults to 1
+    /// to match. A value &gt; 1 shrinks the crosshair over a teammate.
     /// </summary>
-    public float HitTestTeammateShrink { get; set; } = 1.25f;
+    public float HitTestTeammateShrink { get; set; } = 1f;
 
     /// <summary>QC <c>autocvar_crosshair_hittest_blur_wall</c>: dim the crosshair over an obstruction.</summary>
     public bool BlurWall { get; set; } = true;
@@ -289,6 +293,11 @@ public partial class CrosshairPanel : HudPanel
     // ---- weapon-switch ring fade memory (QC wcross_ring_prev) ----
     private bool _ringPrev;
 
+    // ---- rainbow color (QC crosshair_getcolor case 3: rainbow_last_flicker / rainbow_prev_color statics) ----
+    private float _rainbowNextFlicker;        // QC rainbow_last_flicker (next re-roll time)
+    private Vector3 _rainbowColor;            // QC rainbow_prev_color (the latched random color, may exceed [0,1])
+    private bool _rainbowSeeded;
+
     /// <summary>
     /// Register the panel's behaviour-cvar defaults (the stock <c>crosshair*</c> values from crosshairs.cfg).
     /// Auto-invoked by reflection from <c>HudConfig.RegisterDefaults</c>. These are the engine <c>crosshair_*</c>
@@ -305,6 +314,13 @@ public partial class CrosshairPanel : HudPanel
         c.Register("crosshair_alpha", "0.8", save);
         c.Register("crosshair_size", "0.4", save);
         c.Register("crosshair_per_weapon", "1", save);
+        // crosshairs.cfg:48,51,52 — registered for parity/config faithfulness. crosshair_2d selects the
+        // side-scroller (FREEAIM viewloc) crosshair; crosshair_chase/_playeralpha drive the third-person chase
+        // crosshair re-projection + body-alpha fade. The side-scroller view-state and chase trace are not yet
+        // wired in this port, so these cvars are settable but their special behaviour is inert here.
+        c.Register("crosshair_2d", "54", save);
+        c.Register("crosshair_chase", "1", save);
+        c.Register("crosshair_chase_playeralpha", "0.25", save);
 
         // dot
         c.Register("crosshair_dot", "0", save);
@@ -493,8 +509,10 @@ public partial class CrosshairPanel : HudPanel
         if (NadeTimer > 0f || CaptureProgress > 0f || ReviveProgress > 0f)
             dirty = true;
 
-        // Health-based color animates (over-100 flash / low-health pulse) so keep painting in that mode.
-        if (ColorModeCvar() == ColorMode.Health)
+        // Health-based color animates (over-100 flash / low-health pulse), and rainbow re-rolls on a timer, so
+        // keep painting in those modes.
+        ColorMode cmode = ColorModeCvar();
+        if (cmode == ColorMode.Health || cmode == ColorMode.Rainbow)
             dirty = true;
 
         if (dirty) QueueRedraw();
@@ -538,7 +556,7 @@ public partial class CrosshairPanel : HudPanel
     {
         EnsureCvarCache();
         int v = (int)_cvColorSpecial;
-        return v switch { 1 => ColorMode.Weapon, 2 => ColorMode.Health, _ => ColorMode.Fixed };
+        return v switch { 1 => ColorMode.Weapon, 2 => ColorMode.Health, 3 => ColorMode.Rainbow, _ => ColorMode.Fixed };
     }
 
     protected override void DrawPanel()
@@ -596,8 +614,13 @@ public partial class CrosshairPanel : HudPanel
         bool blur = false;
         if (HitTestCvar())
         {
-            if (ShotResult == ShotType.HitTeam && HitTestTeammateShrink > 0f)
-                scale /= HitTestTeammateShrink; // QC wcross_scale /= autocvar_crosshair_hittest
+            // QC: wcross_scale /= autocvar_crosshair_hittest — the SAME cvar that gates the hit-test is the shrink
+            // divisor. At the stock default (crosshair_hittest 1) this is a no-op (no shrink); a user who sets
+            // crosshair_hittest > 1 gets the teammate shrink. (Falls back to 1 = no shrink, like Base, when the
+            // cvar store is unavailable.)
+            float hittestDiv = GlobalF("crosshair_hittest", 1f);
+            if (ShotResult == ShotType.HitTeam && hittestDiv > 0f)
+                scale /= hittestDiv;
             if ((ShotResult == ShotType.HitTeam && BlurTeammateCvar())
                 || (ShotResult == ShotType.HitObstruction && BlurWallCvar()))
                 blur = true;
@@ -609,13 +632,15 @@ public partial class CrosshairPanel : HudPanel
 
         c = new Color(c.R, c.G, c.B, goalAlpha);
 
-        // Numbered crosshair art (QC gfx/crosshair<N>), per-weapon number when configured; else the vector
-        // crosshair. The real Xonotic art resolves from the mounted game data via TextureCache's VFS resolver.
+        // Numbered crosshair art (QC gfx/crosshair<N>), or the active weapon's own pic when crosshair_per_weapon
+        // is on (QC wcross_name = e.w_crosshair); else the vector crosshair. The real Xonotic art resolves from
+        // the mounted game data via TextureCache's VFS resolver.
         Texture2D? pic = ResolveCrosshair(weapon);
 
-        // Resolution: QC scales the pic by crosshair_size (the per-weapon size multiplier folds in via the
-        // resolved number). With scalefade the size lives in wcross_scale; we always fold it into the draw scale.
-        float resolution = GlobalF("crosshair_size", 0.4f) * BasePicScale();
+        // Resolution: QC scales the pic by crosshair_size, then by the per-weapon size multiplier in per-weapon
+        // mode (QC wcross_resolution *= e.w_crosshair_size). With scalefade the size lives in wcross_scale; we
+        // always fold it into the draw scale.
+        float resolution = GlobalF("crosshair_size", 0.4f) * BasePicScale() * PerWeaponSizeMult(weapon);
         float drawScale = scale * resolution;
         // QC: skip when scale/alpha collapse. Also reject non-finite values (a NaN drawScale/alpha would slip past
         // a `< 0.001f` test — NaN compares false — and feed NaN-sized rects into the draw calls / off-panel garbage).
@@ -673,6 +698,8 @@ public partial class CrosshairPanel : HudPanel
                     return HealthArmorColor(h, a, alpha);
                 }
                 break;
+            case ColorMode.Rainbow:
+                return RainbowColor(alpha);
         }
         // QC default: stov(autocvar_crosshair_color), else the property fallback.
         if (TryParseRgb(GlobalStr("crosshair_color"), out Color cc))
@@ -717,6 +744,40 @@ public partial class CrosshairPanel : HudPanel
 
     private static Vector3 Between(Vector3 lo, Vector3 hi, float pct, float min, float max)
         => lo + (hi - lo) * ((pct - min) / (max - min));
+
+    /// <summary>
+    /// QC <c>crosshair_color_special == 3</c> (rainbow): a random colour re-rolled every
+    /// <c>crosshair_color_special_rainbow_delay</c> seconds (QC <c>randomvec() * ..._rainbow_brightness</c>),
+    /// latched between re-rolls. QC <c>randomvec()</c> returns a vector with each component in [-1,1]; scaled by
+    /// the brightness and clamped to [0,1] at draw, this gives the bright flickering rainbow crosshair.
+    /// </summary>
+    private Color RainbowColor(float alpha)
+    {
+        float now = CurrentTime();
+        float brightness = GlobalF("crosshair_color_special_rainbow_brightness", 20f);
+        float delay = GlobalF("crosshair_color_special_rainbow_delay", 0.1f);
+
+        // QC: if (time >= rainbow_last_flicker) re-roll and schedule the next flicker. Seed on first use so the
+        // first frame already has a colour (QC's statics start at 0, which also re-rolls on the first frame).
+        if (!_rainbowSeeded || now >= _rainbowNextFlicker)
+        {
+            _rainbowColor = RandomVec() * brightness;
+            _rainbowNextFlicker = now + delay;
+            _rainbowSeeded = true;
+        }
+
+        return new Color(
+            Mathf.Clamp(_rainbowColor.X, 0f, 1f),
+            Mathf.Clamp(_rainbowColor.Y, 0f, 1f),
+            Mathf.Clamp(_rainbowColor.Z, 0f, 1f),
+            alpha);
+    }
+
+    /// <summary>QC <c>randomvec()</c>: a random vector with each component uniform in [-1,1].</summary>
+    private static Vector3 RandomVec() => new(
+        (float)GD.RandRange(-1.0, 1.0),
+        (float)GD.RandRange(-1.0, 1.0),
+        (float)GD.RandRange(-1.0, 1.0));
 
     // -------------------------------------------------------------------------------------------------
     //  Goal-based smooth scale/alpha (QC wcross_changedonetime block)
@@ -1177,15 +1238,74 @@ public partial class CrosshairPanel : HudPanel
     //  Drawing
     // -------------------------------------------------------------------------------------------------
 
-    /// <summary>Resolve the numbered crosshair texture (per-weapon number when configured), or null → vector.</summary>
+    /// <summary>
+    /// QC per-weapon crosshair table (the weapon <c>w_crosshair</c> / <c>w_crosshair_size</c> ATTRIBs, mirrored
+    /// from common/weapons/weapon/*.qh): NetName → (pic name, size multiplier). When <c>crosshair_per_weapon</c>
+    /// is on, the active weapon draws its own named pic at <c>crosshair_size * mult</c> instead of the numbered
+    /// <c>gfx/crosshair&lt;N&gt;</c>. Weapons absent from the table (or with a commented-out size in Base) fall
+    /// back to a 1.0 multiplier. Keyed by the port's NetName.
+    /// </summary>
+    private static readonly System.Collections.Generic.Dictionary<string, (string pic, float size)> PerWeaponPics = new()
+    {
+        ["arc"] = ("gfx/crosshairhlac", 0.7f),
+        ["blaster"] = ("gfx/crosshairlaser", 0.5f),
+        ["crylink"] = ("gfx/crosshaircrylink", 0.5f),
+        ["devastator"] = ("gfx/crosshairrocketlauncher", 0.7f),
+        ["electro"] = ("gfx/crosshairelectro", 0.6f),
+        ["fireball"] = ("gfx/crosshairfireball", 1f),   // Base w_crosshair_size commented out → 1.0
+        ["hagar"] = ("gfx/crosshairhagar", 0.8f),
+        ["hlac"] = ("gfx/crosshairhlac", 0.6f),
+        ["hook"] = ("gfx/crosshairhook", 0.5f),
+        ["machinegun"] = ("gfx/crosshairuzi", 0.6f),
+        ["minelayer"] = ("gfx/crosshairminelayer", 0.9f),
+        ["mortar"] = ("gfx/crosshairgrenadelauncher", 0.7f),
+        ["porto"] = ("gfx/crosshairporto", 0.6f),
+        ["rifle"] = ("gfx/crosshairrifle", 0.6f),
+        ["seeker"] = ("gfx/crosshairseeker", 0.8f),
+        ["shotgun"] = ("gfx/crosshairshotgun", 0.65f),
+        ["tuba"] = ("gfx/crosshairtuba", 1f),           // Base w_crosshair_size commented out → 1.0
+        ["vaporizer"] = ("gfx/crosshairminstanex", 0.6f),
+        ["vortex"] = ("gfx/crosshairnex", 0.65f),
+    };
+
+    private bool PerWeaponEnabled() => GlobalF("crosshair_per_weapon", PerWeaponColor ? 1f : 0f) != 0f;
+
+    /// <summary>QC <c>wcross_resolution *= e.w_crosshair_size</c>: the per-weapon size multiplier when
+    /// <c>crosshair_per_weapon</c> is on, else 1.</summary>
+    private float PerWeaponSizeMult(Weapon? weapon)
+    {
+        if (weapon is not null && PerWeaponEnabled() && PerWeaponPics.TryGetValue(weapon.NetName, out var e))
+            return e.size;
+        return 1f;
+    }
+
+    /// <summary>
+    /// Resolve the crosshair texture. In per-weapon mode (QC <c>crosshair_per_weapon</c>) the active weapon's own
+    /// <c>w_crosshair</c> pic wins (QC <c>wcross_name = e.w_crosshair</c>); a per-weapon-number override still
+    /// applies if one was injected via <see cref="PerWeaponNumber"/>; otherwise the numbered <c>gfx/crosshair&lt;N&gt;</c>
+    /// art. Returns null (→ vector crosshair) when the number is 0.
+    /// </summary>
     private Texture2D? ResolveCrosshair(Weapon? weapon)
     {
         int number = (int)GlobalF("crosshair", CrosshairNumber);
+
+        // QC: an explicit per-weapon number override (config-injected) takes precedence over everything.
         if (weapon is not null && PerWeaponNumber is not null
             && PerWeaponNumber.TryGetValue(weapon.NetName, out int n))
-            number = n;
-        if (number <= 0) return null;
+        {
+            if (n <= 0) return null;
+            return TextureCache.GetFirst($"gfx/crosshair{n}", $"res://art/hud/crosshairs/crosshair{n}.png");
+        }
 
+        // QC: crosshair_per_weapon — use the active weapon's own named crosshair pic (e.w_crosshair).
+        if (weapon is not null && PerWeaponEnabled() && PerWeaponPics.TryGetValue(weapon.NetName, out var e))
+        {
+            Texture2D? wp = TextureCache.GetFirst(e.pic, $"res://art/hud/crosshairs/{System.IO.Path.GetFileName(e.pic)}.png");
+            if (wp is not null) return wp;
+            // Fall through to the numbered art if the per-weapon pic isn't in the mounted data.
+        }
+
+        if (number <= 0) return null;
         // VFS art first (gfx/crosshair<N>), then a project override under res://.
         return TextureCache.GetFirst($"gfx/crosshair{number}", $"res://art/hud/crosshairs/crosshair{number}.png");
     }

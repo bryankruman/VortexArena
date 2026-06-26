@@ -66,6 +66,13 @@ public sealed class BallConfig
     /// <summary>QC e.damageforcescale (g_keepawayball_damageforcescale=2). 0 = engine default.</summary>
     public float DamageForceScale;
 
+    /// <summary>QC this.bouncefactor for the MOVETYPE_BOUNCE ball (g_nexball_*_bouncefactor=0.6). 0 = engine
+    /// default (0.5). Keepaway leaves it unset in QC, so it stays 0 -> engine default.</summary>
+    public float BounceFactor;
+
+    /// <summary>QC this.bouncestop (g_nexball_*_bouncestop=0.075). 0 = engine default (60/800).</summary>
+    public float BounceStop;
+
     /// <summary>True iff the loose ball takes damage / is damaged-by-contents (KA: yes; NB: no).</summary>
     public bool TakesDamage;
 
@@ -118,6 +125,10 @@ public sealed class BallConfig
                 if (Mins == default && Maxs == default) { Mins = new Vector3(-16f, -16f, -16f); Maxs = new Vector3(16f, 16f, 16f); }
                 if (Model == "") Model = "models/nexball/ball.md3";
                 if (TrailColor == 0) TrailColor = 254;
+                // QC nexball_setstatus: this.bouncefactor/bouncestop = g_nexball_{basketball,football}_bounce*
+                // (both kinds default 0.6 / 0.075). The engine MOVETYPE_BOUNCE integrator reads these off the edict.
+                if (BounceFactor == 0f) BounceFactor = 0.6f;
+                if (BounceStop == 0f) BounceStop = 0.075f;
                 TakesDamage = false;
                 RelocateOnRespawn = false;
                 if (RespawnTime == 0f) RespawnTime = 10f; // QC g_nexball_delay_idle
@@ -186,6 +197,8 @@ public static class BallEntity
         e.Solid = Solid.Trigger;                     // QC SOLID_TRIGGER before setsize (area-grid linking)
         GametypeEntities.SetSize(e, cfg.Mins, cfg.Maxs);
         e.MoveType = MoveType.Bounce;                // QC MOVETYPE_BOUNCE
+        e.BounceFactor = cfg.BounceFactor;           // QC this.bouncefactor (0 -> engine default 0.5)
+        e.BounceStop = cfg.BounceStop;               // QC this.bouncestop  (0 -> engine default 60/800)
         e.TakeDamage = cfg.TakesDamage ? DamageMode.Yes : DamageMode.No;
         e.DamageForceScale = cfg.DamageForceScale;   // QC e.damageforcescale (g_keepawayball_damageforcescale)
         e.Effects = cfg.Effects;                     // QC e.effects (EF_DIMLIGHT); glow_trail/glow_color are client
