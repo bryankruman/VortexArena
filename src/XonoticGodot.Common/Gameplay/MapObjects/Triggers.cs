@@ -501,9 +501,10 @@ public static class Triggers
 
         if (store.CounterCnt == self.Count)
         {
-            // CENTER_SEQUENCE_COMPLETED — a text-only MSG_CENTER notification in QC (no sound is emitted).
-            // The port has no localized-notification channel for this string yet, so the "sequence complete"
-            // TEXT is dropped (see todos); we no longer play the invented misc/talk.wav (an audio divergence).
+            // CENTER_SEQUENCE_COMPLETED — a text-only MSG_CENTER NOTIF_ONE notification in QC (no sound).
+            if (announce)
+                NotificationSystem.Send(NotifBroadcast.One, actor, MsgType.Center, "SEQUENCE_COMPLETED");
+
             doActivate = true;
 
             if (self.RespawnTimeMover != 0f)
@@ -514,8 +515,13 @@ public static class Triggers
         }
         else if (announce)
         {
-            // CENTER_SEQUENCE_COUNTER / _FEWMORE — the "N more" countdown is also a text-only MSG_CENTER
-            // notification in QC (no sound). Text dropped pending the notification channel; no sound emitted.
+            // CENTER_SEQUENCE_COUNTER (>=4 to go) / _FEWMORE (<4, with the remaining count) — text-only
+            // MSG_CENTER NOTIF_ONE notifications in QC (no sound). (counter.qc:53-59)
+            int remaining = self.Count - store.CounterCnt;
+            if (remaining >= 4)
+                NotificationSystem.Send(NotifBroadcast.One, actor, MsgType.Center, "SEQUENCE_COUNTER");
+            else
+                NotificationSystem.Send(NotifBroadcast.One, actor, MsgType.Center, "SEQUENCE_COUNTER_FEWMORE", (float)remaining);
         }
 
         if (doActivate)
@@ -928,15 +934,20 @@ public static class Triggers
 
         if (self.ItemKeys != 0)
         {
-            // at least one key still missing.
+            // at least one key still missing. QC names the still-missing keys in the centerprint
+            // (item_keys_keylist of the post-consume requirement): "You also need X" when SOME were
+            // supplied (CENTER_DOOR_LOCKED_ALSONEED), "You need X" when NONE were (CENTER_DOOR_LOCKED_NEED).
+            string keylist = MapObjectsRegistry.ItemKeysKeylist(self.ItemKeys);
             if (keyUsed)
             {
                 MapMover.Sound(toucher, SoundChannel.Voice, self.Noise1);
+                NotificationSystem.Send(NotifBroadcast.One, toucher, MsgType.Center, "DOOR_LOCKED_ALSONEED", keylist);
                 toucher.KeyDoorMessageTime = MapMover.Now() + 2f;
             }
             else if (toucher.KeyDoorMessageTime <= MapMover.Now())
             {
                 MapMover.Sound(toucher, SoundChannel.Voice, self.Noise2);
+                NotificationSystem.Send(NotifBroadcast.One, toucher, MsgType.Center, "DOOR_LOCKED_NEED", keylist);
                 toucher.KeyDoorMessageTime = MapMover.Now() + 2f;
             }
 

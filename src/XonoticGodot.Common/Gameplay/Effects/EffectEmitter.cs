@@ -246,8 +246,10 @@ public static class EffectEmitter
     /// <summary>te_explosion — a generic explosion at <paramref name="origin"/> (maps to EFFECT_TE_EXPLOSION).</summary>
     public static void TeExplosion(Vector3 origin) => Emit("TE_EXPLOSION", origin, default, 1);
 
-    /// <summary>te_smallflash — a small muzzle/impact flash (maps to EFFECT_BLASTER_MUZZLEFLASH-style flash).</summary>
-    public static void TeSmallflash(Vector3 origin) => Emit("BLASTER_MUZZLEFLASH", origin, default, 1);
+    /// <summary>te_smallflash — the engine smallflash builtin. In DP this resolves the effectinfo block named
+    /// TE_SMALLFLASH (a generic bright flash), NOT any weapon's muzzleflash; mapped to the matching registry
+    /// entry so it networks and renders the correct block (fusionreactor heal flash, etc.).</summary>
+    public static void TeSmallflash(Vector3 origin) => Emit("TE_SMALLFLASH", origin, default, 1);
 
     /// <summary>te_spark — a burst of sparks (QC te_spark(org, vel, count)); maps to EFFECT_TE_SPARK.</summary>
     public static void TeSpark(Vector3 origin, Vector3 velocity, int count) => Emit("TE_SPARK", origin, velocity, count);
@@ -278,8 +280,10 @@ public static class EffectEmitter
     public static void TeHealBeam(Vector3 from, Vector3 to)
         => TeBeam("heal_beam", from, to, new Vector3(0f, 1f, 0f));
 
-    /// <summary>te_gunshot — a bullet impact puff (QC te_gunshot(org, count)); maps to EFFECT_MACHINEGUN_IMPACT.</summary>
-    public static void TeGunshot(Vector3 origin, int count) => Emit("MACHINEGUN_IMPACT", origin, default, count);
+    /// <summary>te_gunshot — the engine gunshot builtin (QC te_gunshot(org, count)). DP resolves the generic
+    /// effectinfo block named TE_GUNSHOT (a sparks+smoke+decal impact puff), NOT a specific weapon's impact;
+    /// mapped to the matching registry entry so it networks and renders the correct block.</summary>
+    public static void TeGunshot(Vector3 origin, int count) => Emit("TE_GUNSHOT", origin, default, count);
 
     /// <summary>te_blood — a blood spray (QC te_blood(org, vel, count)); maps to EFFECT_BLOOD.</summary>
     public static void TeBlood(Vector3 origin, Vector3 velocity, int count) => Emit("BLOOD", origin, velocity, count);

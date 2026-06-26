@@ -16,8 +16,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// rocket guides itself). The obstacle-avoiding guidance + accel/decel/turnrate flight model is fully ported
 /// via <see cref="GuidedProjectile"/> (hk_weapon.qc: a 5-ray forward funnel that steers around walls, speeds
 /// up in the open and slows near obstacles/sharp turns, with a panic turn and a clear-path sprint).
-/// TFL_SHOOT_CLEARTARGET drops the target after firing (one rocket per acquisition). Only the rocket trail and
-/// the external target-reception hook (TUR_FLAG_RECIEVETARGETS) are left out.
+/// TFL_SHOOT_CLEARTARGET drops the target after firing (one rocket per acquisition). The muzzle te_explosion
+/// flash and the PROJECTILE_ROCKET smoke trail (via the networked NetName="rocket" classification) are present;
+/// only the external target-reception hook (TUR_FLAG_RECIEVETARGETS), the separate hk.md3 head-bone model, and
+/// the hidden player weapon WEP_HK are left out.
 /// </summary>
 [Turret]
 public sealed class HkTurret : Turret
@@ -114,21 +116,28 @@ public sealed class HkTurret : Turret
         if (dir == Vector3.Zero) dir = QMath.Forward(TurretAI.HeadWorldAngles(turret));
 
         // QC launches at shot_speed * 0.75; the guidance brings it up toward shot_speed_max.
-        GuidedProjectile.Launch(turret, enemy, st.ShotOrg, dir, GuidedProjectile.Mode.Hk,
+        Entity missile = GuidedProjectile.Launch(turret, enemy, st.ShotOrg, dir, GuidedProjectile.Mode.Hk,
             launchSpeed: ShotSpeed * 0.75f, speedMax: ShotSpeedMax, speedGain: 1f, turnRate: ShotTurnRate,
             size: 6f, health: 10f, ShotDamage, ShotRadius, ShotForce, DeathTypes.TurretHk, ttl: 30f,
             accel: ShotSpeedAccel, accel2: ShotSpeedAccel2, decel: ShotSpeedDecel, fuelTime: 30f);
 
         if (Api.Services is not null)
+        {
+            // hk_weapon.qc:30: te_explosion(missile.origin) — the launch puff at the muzzle (the missile's spawn
+            // origin = st.ShotOrg). A networked temp-entity emitted server-side so all viewers see it identically
+            // (same convention HellionTurret.Attack / WalkerTurret.FireRocket use for their te_explosion flash).
+            EffectEmitter.TeExplosion(missile.Origin);
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/rocket_fire.wav");
+        }
 
         // QC hk.qc tr_think drives the head-frame cycler, kicked off here: the non-player (turret) fire branch
         // does `if (tur_head.frame == 0) ++tur_head.frame` (hk_weapon.qc:40-42) to start the load animation.
         if (turret.Frame == 0f)
             turret.Frame += 1f;
 
-        // NOTE — client-render (PROJECTILE_ROCKET trail) + cross-boundary: turret_hk_addtarget external target
-        // reception (TUR_FLAG_RECIEVETARGETS) needs the cross-turret target-broadcast system, which isn't
-        // modeled yet. The server-side guided-rocket fire is done above.
+        // NOTE — cross-boundary: turret_hk_addtarget external target reception (TUR_FLAG_RECIEVETARGETS) needs the
+        // cross-turret target-broadcast system, which isn't modeled yet. The muzzle te_explosion (above) and the
+        // PROJECTILE_ROCKET trail (the missile is stamped NetName="rocket" in GuidedProjectile.Launch so the client
+        // gives it the rocket smoke trail) are now faithful; the server-side guided-rocket fire is done above.
     }
 }

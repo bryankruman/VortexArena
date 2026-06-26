@@ -53,6 +53,7 @@ public static class ClientCommandRegistry
         "say",          // CLIENT_COMMAND(say)
         "say_team",     // CLIENT_COMMAND(say_team)
         "selectteam",   // CLIENT_COMMAND(selectteam)
+        "color",        // engine `color` command (host_cmd.c) → SV_ChangeTeam; FFA-only recolor (teamplay.qc:1340)
         "sentcvar",     // CLIENT_COMMAND(sentcvar) — internal, a client pushing a replicated cl_* cvar
         "spectate",     // CLIENT_COMMAND(spectate)
         "suggestmap",   // CLIENT_COMMAND(suggestmap)
@@ -97,6 +98,7 @@ public static class ClientCommandRegistry
 
         // ---- QC CheatCommand verbs (server/cheats.qc) — client-callable, gated internally by sv_cheats ----
         "god", "notarget", "noclip", "fly", "give", "usetarget", "killtarget", "teleporttotarget",
+        "pointparticles", "trailparticles", "make", "penalty",
 
         // ---- sandbox (QC the SV_ParseClientCommand mutator hook in sandbox/sv_sandbox.qc). The client `sandbox`
         //      alias (commands.cfg:193) emits `cmd g_sandbox <sub> …`, so the wire verb is `g_sandbox`. It is a

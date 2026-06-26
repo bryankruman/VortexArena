@@ -57,6 +57,13 @@ namespace XonoticGodot.Common.Framework
         /// consumption is a follow-up; the field keeps the QC math observable.</summary>
         public int ColorMapOverride;
 
+        /// <summary>The DP <c>MF_ROTATE</c> model flag (csqcmodel_hooks.qc:617-623). The ONLY edict that sets it
+        /// is the pickup key (keys.qc:117). DP's predraw spins the model in yaw by
+        /// <c>'0 100 0' * fmod(time, 3.6)</c> (a steady 100°/s, wrapping every 3.6 s = 360°). The port has no
+        /// networked modelflags channel; on the listen-server/demo path the shared edict carries this bool and
+        /// EntityNode applies the same yaw spin. (Render-only; the server entity's .angles is unchanged.)</summary>
+        public bool ModelSpinRotate;
+
         // ---- distance-fade keys (models.qc ENT_CLIENT_WALL / Ent_Wall_PreDraw) ----
         public float FadeStartDist;      // QC .fade_start
         public float FadeEndDist;        // QC .fade_end

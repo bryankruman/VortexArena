@@ -20,8 +20,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// <c>target</c> set it roams the <c>turret_checkpoint</c> waypoint chain (<c>ewheel_move_path</c> /
 /// <c>ewheel_findtarget</c>), stamps the locomotion drive frame (0..4) onto the networked <see cref="Entity.Frame"/>
 /// (QC <c>turrets_setframe</c>/TNSF_ANIM), and emits the low-HP spark temp-entity (CSQC <c>ewheel_draw</c>
-/// te_spark at &lt;127 hp, 5%/frame). The pure-client origin/head roll integration in <c>ewheel_draw</c> stays
-/// client render (the server already networks origin + velocity).
+/// te_spark at &lt;127 hp, 5%/frame). On fire it emits the EFFECT_BLASTER_MUZZLEFLASH and nets the bolt as
+/// PROJECTILE_BLASTER (the client trail). The pure-client origin/head roll integration in <c>ewheel_draw</c>
+/// stays client render (the server already networks origin + velocity), and the two-cannon head-frame
+/// alternation needs the unported head sub-entity (see ewheel-gun1.md3 / tag_head).
 /// </summary>
 [Turret]
 public sealed class EWheelTurret : Turret
@@ -283,20 +285,36 @@ public sealed class EWheelTurret : Turret
     }
 
     // METHOD(EWheelAttack, wr_think) — ewheel_weapon.qc: a fast blaster bolt (MIF_SPLASH, near-hitscan) with
-    // the shot_spread cone. Alternating cannon tags + drive-frame step are client render.
+    // the shot_spread cone, the EFFECT_BLASTER_MUZZLEFLASH, and the PROJECTILE_BLASTER trail. The two-cannon
+    // head-frame alternation needs the unported head sub-entity (see the NOTE at the end of this method).
     private void Attack(Entity turret, Entity enemy)
     {
         TurretState st = TurretAI.State(turret);
         Vector3 dir = QMath.Normalize(st.AimPos - st.ShotOrg);
         if (dir == Vector3.Zero) dir = QMath.Forward(TurretAI.HeadWorldAngles(turret));
 
-        TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
+        Entity missile = TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
             ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, DeathTypes.TurretEwheel, spread: ShotSpread);
+
+        // ewheel_weapon.qc: turret_projectile(..., PROJECTILE_BLASTER, ...). The client classifies a model-less
+        // turret bolt by its networked classname+netname (ProjectileCatalog.Classify keys "blaster"/"laser" onto
+        // PROJECTILE_BLASTER); stamping the netname is what gives the bolt the blaster render trail/sprite, just as
+        // the in-hand Blaster bolt nets "blaster" (Blaster.Attack). (turret_projectile leaves netname empty by
+        // default → Generic; this overrides it to the QC PROJECTILE_BLASTER type.)
+        missile.NetName = "blaster";
 
         if (Api.Services is not null)
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/lasergun_fire.wav");
 
-        // NOTE (client-render): PROJECTILE_BLASTER trail, EFFECT_BLASTER_MUZZLEFLASH, the two-cannon-tag
-        // alternation + head frame step. The server-side fire (ewheel_weapon.qc) is done above.
+        // ewheel_weapon.qc:28 — Send_Effect(EFFECT_BLASTER_MUZZLEFLASH, tur_shotorg, shotdir*1000, 1). A networked
+        // point effect at the muzzle along the shot direction; emitted to every viewer except the firing turret
+        // (QC Send_Effect's self-exclude), matching the in-hand Blaster's muzzleflash emit (Blaster.Attack).
+        EffectEmitter.Emit("BLASTER_MUZZLEFLASH", st.ShotOrg, dir * 1000f, 1, except: turret);
+
+        // NOTE (deferred — needs a head sub-entity): ewheel_weapon.qc:32-35 alternates the two firing cannons via
+        // `tur_head.frame += 2; if > 3 -> 0` on the SEPARATE head model entity (ewheel-gun1.md3). The port has no
+        // tur_head bone entity, and this turret's own Entity.Frame is already consumed by the locomotion drive
+        // animation (0..4, see SetFrame/Drive) — so the cannon-frame cycle cannot be stamped here without
+        // corrupting the wheel's roll animation. Belongs on the unported head sub-entity (identity.def gap).
     }
 }

@@ -197,9 +197,13 @@ public static class ProjectileCatalog
         // EFFECT_TR_VORESPIKE (projectile.qc:368)
         Add(new Desc { Type = ProjectileType.MageSpike, TrailEffect = "TR_VORESPIKE", Trail = VoreSpike,
             Body = BodyFamily.GlowSprite, GlowColor = new Color(0.7f, 0.4f, 1.0f), HasLight = true });
-        // EFFECT_TR_NEXUIZPLASMA, scale 2.5, random tumble (projectile.qc:369,431-435)
+        // PROJECTILE_GOLEM_LIGHTNING = models/ebomb.mdl (the electro-orb mesh), scale 2.5, EFFECT_TR_NEXUIZPLASMA,
+        // random tumble (projectile.qc:369,431-435; golem.qc:145 gren.scale = 2.5). Carries the real ebomb model
+        // path (like Electro/RocketMinstaLaser) so the chunk renders the actual mesh, with graceful GlowSprite
+        // fallback when the model isn't mounted.
         Add(new Desc { Type = ProjectileType.GolemLightning, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
-            Body = BodyFamily.GlowSprite, ModelScale = 2.5f, SpinDegPerSec = new Vector3(360f, 480f, 600f),
+            Body = BodyFamily.GlowSprite, ModelPath = "models/ebomb.mdl", ModelScale = 2.5f,
+            SpinDegPerSec = new Vector3(360f, 480f, 600f),
             GlowColor = new Color(0.5f, 0.7f, 1.0f), HasLight = true });
         // Vehicle projectiles (projectile.qc:373-380)
         Add(new Desc { Type = ProjectileType.SpiderRocket, TrailEffect = "SPIDERBOT_ROCKET_TRAIL", Trail = SmallSmoke,

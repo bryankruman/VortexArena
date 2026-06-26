@@ -337,9 +337,10 @@ public static class MapObjectsRegistry
     //  item_key_touch             -> KeyTouch  (grant itemkeys bits, pickup sound+centerprint, fire .target once)
     //
     //  Faithful to keys.qc:77-264. Divergences (mirrors the rest of this module's contracts):
-    //   * MF_ROTATE spin + EF_LOWPRECISION are render/networking hints the port's Entity carries no field for
-    //     (no Entity.ModelFlags); the bit is dropped — the key still sits and is pickable, it just doesn't spin.
-    //     (Recorded as a cross-file todo.)
+    //   * EF_LOWPRECISION is a networking hint the port's Entity carries no field for; dropped (harmless).
+    //   * MF_ROTATE is the DP model-spin flag (keys-only in all of Base). The port has no networked modelflags
+    //     channel, so it rides Entity.ModelSpinRotate on the shared edict and EntityNode applies DP's
+    //     '0 100 0'*fmod(time,3.6) yaw spin (csqcmodel_hooks.qc:617) on the listen-server/demo path.
     //   * QC's objerror on a multi-bit / nameless / modelless key is a headless no-op here: the edict is left
     //     inert (removed) rather than crashing the map, matching how the port treats other objerror sites.
     //   * play2(toucher, noise) (CH_TRIGGER, toucher-only) -> MapMover.Sound on the toucher.
@@ -347,6 +348,62 @@ public static class MapObjectsRegistry
 
     private const string KeyDefaultModel = "models/keys/key.md3";
     private const string KeyDefaultSound = "ITEMPICKUP"; // QC SND(ITEMPICKUP)
+
+    /// <summary>QC <c>item_keys_names[ITEM_KEY_MAX]</c> (keys.qh:9): display name per key bit-index, recorded when an
+    /// item_key spawns (keys.qc:240). Read by <see cref="ItemKeysKeylist"/> so door/keylock "you need …" centerprints
+    /// can name the missing keys. Seeded with the stock bit names so a door requiring a key still names it even when
+    /// the matching item_key pickup happens to be spawned later than the door's own setup.</summary>
+    private static readonly System.Collections.Generic.Dictionary<int, string> ItemKeyNames = new()
+    {
+        [0] = "GOLD key",      // BIT(0)
+        [1] = "SILVER key",    // BIT(1)
+        [2] = "BRONZE key",    // BIT(2)
+        [3] = "RED keycard",   // BIT(3)
+        [4] = "BLUE keycard",  // BIT(4)
+        [5] = "GREEN keycard", // BIT(5)
+    };
+
+    /// <summary>QC <c>lowestbit(v)</c> (lib/math.qc): bit-index of the least-significant set bit (0-based); -1 if 0.</summary>
+    private static int LowestBit(int v)
+    {
+        if (v == 0)
+            return -1;
+        int b = 0;
+        while ((v & 1) == 0) { v >>= 1; b++; }
+        return b;
+    }
+
+    /// <summary>Port of <c>item_keys_keylist(float keylist)</c> (keys.qc:40-66): build the human-readable list of the
+    /// keys named by the <paramref name="keylist"/> bitfield, e.g. "the SILVER key" or "the GOLD key, the SILVER key".
+    /// Empty when no bits are set. Used by the func_door / trigger_keylock "You need %s" center notifications.</summary>
+    public static string ItemKeysKeylist(int keylist)
+    {
+        // no keys
+        if (keylist == 0)
+            return "";
+
+        // one key
+        if ((keylist & (keylist - 1)) == 0)
+            return "the " + KeyName(LowestBit(keylist));
+
+        string n = "";
+        int baseBit = 0;
+        while (keylist != 0)
+        {
+            int l = LowestBit(keylist);
+            n = string.IsNullOrEmpty(n)
+                ? "the " + KeyName(baseBit + l)
+                : n + ", the " + KeyName(baseBit + l);
+
+            // QC bitshift(keylist, -(l+1)) is an unsigned right shift by (l+1).
+            keylist = (int)((uint)keylist >> (l + 1));
+            baseBit += l + 1;
+        }
+        return n;
+    }
+
+    private static string KeyName(int bitIndex)
+        => ItemKeyNames.TryGetValue(bitIndex, out string? name) ? name : "";
 
     /// <summary>Port of <c>spawnfunc(item_key)</c> + <c>spawn_item_key</c> (keys.qc:100-264): resolve the default
     /// netname/colormod/model from <c>.itemkeys</c>, then place the key as a SOLID_TRIGGER pickup.</summary>
@@ -390,6 +447,10 @@ public static class MapObjectsRegistry
             this_.NetName = netName;
         if (this_.ColorModKey == Vector3.Zero)   // QC: if(!this.colormod) — null vector means "unset"
             this_.ColorModKey = colorMod;
+
+        // QC keys.qc:240: item_keys_names[lowestbit(this.itemkeys)] = this.netname; — record the display name
+        // so func_door/trigger_keylock's "You need <the SILVER key>" centerprints can name the missing keys.
+        ItemKeyNames[LowestBit(this_.ItemKeys)] = this_.NetName;
         if (string.IsNullOrEmpty(this_.Model))
             this_.Model = model;
         if (string.IsNullOrEmpty(this_.Message))
@@ -414,7 +475,10 @@ public static class MapObjectsRegistry
             Api.Entities.SetModel(this_, this_.Model);
 
         this_.Effects = AdvancedMovers.EfLowPrecision; // QC: this.effects = EF_LOWPRECISION
-        // QC: this.modelflags |= MF_ROTATE — no Entity.ModelFlags field in the port; spin dropped (see header todo).
+        // QC: this.modelflags |= MF_ROTATE (keys.qc:117). The port has no networked modelflags channel, so the
+        // render-only spin rides this bool on the shared edict; EntityNode applies DP's '0 100 0'*fmod(time,3.6)
+        // yaw spin (csqcmodel_hooks.qc:617) on the listen-server/demo path. MF_ROTATE is keys-only in all of Base.
+        this_.ModelSpinRotate = true;
         this_.Solid = Solid.Trigger;
 
         // bbox placement (keys.qc:122-123): origin raised +32z within the bbox, size '-16 -16 -56'..'16 16 0'.

@@ -213,7 +213,9 @@ public sealed class WalkerTurret : Turret
                     ws.AnimFlag = Gait.No;
                     ws.RocketVolly--;
                     ws.RocketFinished = ws.RocketVolly == 0 ? now + RocketRefire : now + 0.2f;
-                    FireRocket(e, enemy);
+                    // QC walker.qc:447 — alternate the muzzle tag by the POST-decrement volly parity:
+                    // shot_volly > 1 -> tag_rocket01, else tag_rocket02. (For a 4-burst: 3,2 -> 01; 1,0 -> 02.)
+                    FireRocket(e, enemy, ws.RocketVolly > 1 ? "tag_rocket01" : "tag_rocket02");
                 }
                 else if (dist > RocketRangeMin && dist < RocketRange)
                 {
@@ -407,46 +409,64 @@ public sealed class WalkerTurret : Turret
         };
     }
 
-    // walker_fire_rocket (walker_weapon.qc): launch a homing rocket from a forward/up direction with jitter.
-    private void FireRocket(Entity turret, Entity enemy)
+    // walker_fire_rocket (walker.qc:204): launch a homing rocket from a forward/up direction with jitter. The
+    // muzzle org is the alternating tag_rocket01/02 head tag (walker.qc:447); when the model service is headless
+    // (no tags), fall back to the shared shot org — same graceful pattern as TurretAI.ShotOrigin/tag_fire.
+    private void FireRocket(Entity turret, Entity enemy, string muzzleTag)
     {
         TurretState st = TurretAI.State(turret);
+        Vector3 org = st.ShotOrg;
+        if (Api.Services is not null
+            && Api.Models.TryGetTag(turret, muzzleTag, out Vector3 tagOrg, out _, out _, out _))
+            org = tagOrg;
+
         QMath.AngleVectors(turret.Angles, out Vector3 fwd, out _, out Vector3 up);
         Vector3 dir = QMath.Normalize((fwd + up * 0.5f) + Prandom.Vec() * 0.2f);
 
-        GuidedProjectile.Launch(turret, enemy, st.ShotOrg, dir, GuidedProjectile.Mode.WalkerRocket,
+        GuidedProjectile.Launch(turret, enemy, org, dir, GuidedProjectile.Mode.WalkerRocket,
             launchSpeed: RocketSpeed, speedMax: RocketSpeed, speedGain: 1f, turnRate: RocketTurnRate,
             size: 6f, health: 25f, RocketDamage, RocketRadius, RocketForce, DeathTypes.TurretWalkRocket, ttl: 9f);
 
         // QC walker_fire_rocket: te_explosion(org) launch flash at the muzzle (a networked temp-entity, emitted
         // server-side so it reaches all viewing clients identically — same convention as the spark above).
+        // (Base emits NO EFFECT_BLASTER_MUZZLEFLASH for rockets — only te_explosion — so none here either.)
         if (Api.Services is not null)
         {
-            EffectEmitter.TeExplosion(st.ShotOrg);
+            EffectEmitter.TeExplosion(org);
             // QC: SND_TUR_WALKER_FIRE = W_Sound("hagar_fire") (all.inc:154), NOT the rocket-launch sound.
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/hagar_fire.wav");
         }
 
-        // NOTE: the rocket's 1% up-and-over walker_rocket_loop maneuver (1% on launch + 1%/in-flight think) now
-        // lives in GuidedProjectile (Launch + WalkerRocketLoop/2/3). tag_rocket01/02 muzzle alternation is not
-        // reproduced — the port has no head tags, so all rockets fire from the single muzzle org.
+        // NOTE: the rocket's 1% up-and-over walker_rocket_loop maneuver (1% on launch + 1%/in-flight think) lives
+        // in GuidedProjectile (Launch + WalkerRocketLoop/2/3).
     }
 
     // METHOD(WalkerTurretAttack, wr_think) — walker_weapon.qc: minigun bullet along the muzzle dir with spread
-    // + knockback force. EFFECT_BULLET / muzzleflash / anim frames are client render.
+    // + knockback force, plus the networked EFFECT_BULLET tracer and EFFECT_BLASTER_MUZZLEFLASH (server-emitted).
     private void Attack(Entity turret, Entity enemy)
     {
         TurretState st = TurretAI.State(turret);
         Vector3 dir = QMath.Normalize(st.AimPos - st.ShotOrg);
         if (dir == Vector3.Zero) dir = QMath.Forward(TurretAI.HeadWorldAngles(turret));
 
-        // walker_weapon.qc: fireBullet with DEATH_TURRET_WALK_GUN.
-        TurretCombat.FireBullet(turret, st.ShotOrg, dir, ShotSpread, ShotDamage, ShotForce, DeathTypes.TurretWalkGun);
+        // walker_weapon.qc:22 — fireBullet(... EFFECT_BULLET) with DEATH_TURRET_WALK_GUN. The EFFECT_BULLET
+        // tracer is OUTSIDE the `if (isPlayer)` gate, so it is emitted on the turret path (turret-visible bullet
+        // trail), via the same EffectEmitter seam the player/machinegun-turret path uses.
+        TurretCombat.FireBullet(turret, st.ShotOrg, dir, ShotSpread, ShotDamage, ShotForce,
+            DeathTypes.TurretWalkGun, tracerEffect: "BULLET");
 
         if (Api.Services is not null)
+        {
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/uzi_fire.wav");
 
-        // NOTE (client-render): EFFECT_BULLET tracer, EFFECT_BLASTER_MUZZLEFLASH at the head tag, walk/run/
-        // melee anim frames. The server-side fire (walker_weapon.qc) is done above.
+            // walker_weapon.qc:23 — Send_Effect(EFFECT_BLASTER_MUZZLEFLASH, tur_shotorg, tur_shotdir_updated*1000, 1).
+            // Also OUTSIDE the `if (isPlayer)` gate. Base attaches it at the head muzzle tag; we have no tur_head
+            // sub-entity, so emit the flash at the muzzle org along the shot dir — the same convention as the
+            // ewheel/flac/machinegun turrets (a networked temp-effect, viewer-independent).
+            EffectEmitter.Emit("BLASTER_MUZZLEFLASH", st.ShotOrg, dir * 1000f, 1);
+        }
+
+        // NOTE (client-render, still deferred): the head-bone walk/run/melee anim frames (turrets_setframe +
+        // TNSF_MOVE) — no tur_head sub-entity / tag in this server port.
     }
 }

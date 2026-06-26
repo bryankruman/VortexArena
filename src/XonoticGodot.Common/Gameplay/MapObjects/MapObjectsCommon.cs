@@ -773,6 +773,34 @@ namespace XonoticGodot.Common.Gameplay
                 Api.Sound.Play(e, ch, sample);
         }
 
+        // VOL_BASE / ATTEN_IDLE (common/sounds/sound.qh:32,36) — the looping-ambient volume + attenuation the
+        // func_bobbing/pendulum/fourier/vectormamamam soundto(MSG_INIT) ambients use.
+        public const float VolBase = 0.7f;
+        public const float AttenIdle = 2f;
+
+        /// <summary>
+        /// Port of the func_* looping ambient <c>soundto(MSG_INIT, this, CH_TRIGGER_SINGLE, .noise, VOL_BASE,
+        /// ATTEN_IDLE, 0)</c> (bobbing/pendulum/fourier; vectormamamam's per-player resend): start a PERSISTENT
+        /// loop keyed by <c>(entity, CH_TRIGGER_SINGLE)</c> on the mover. Because the facade keeps the loop as part
+        /// of the entity's sound state (idempotent re-emit, replayed to clients via entity state), a late-joining
+        /// player still hears an already-running mover's ambient — the headless analogue of QC's MSG_INIT /
+        /// <c>init_for_player</c> per-player resend (no separate client roster needed at this layer).
+        /// </summary>
+        public static void LoopAmbient(Entity e, string? sample)
+        {
+            if (Api.Services is not null && !string.IsNullOrEmpty(sample))
+                // CH_TRIGGER_SINGLE = 3 = SoundChannel.Item.
+                Api.Sound.Play(e, SoundChannel.Item, sample, VolBase, AttenIdle, loop: true);
+        }
+
+        /// <summary>Stop the looping ambient started by <see cref="LoopAmbient"/> (QC <c>stopsound(this,
+        /// CH_TRIGGER_SINGLE)</c>) — used by func_vectormamamam's setactive when it goes inactive.</summary>
+        public static void StopAmbient(Entity e)
+        {
+            if (Api.Services is not null)
+                Api.Sound.Stop(e, SoundChannel.Item);
+        }
+
         // ====================================================================
         //  Centerprint seam (QC centerprint(client, s) builtin #73)
         // ====================================================================

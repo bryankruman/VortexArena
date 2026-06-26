@@ -447,30 +447,60 @@ public sealed class Bumblebee : Vehicle
         vehicle.Solid = Solid.Not;
         vehicle.MoveType = MoveType.None;
         vehicle.Velocity = Vector3.Zero;
-        vehicle.Touch = null;
 
-        // QC bumblebee_blowup: a big radius blast after a short tumble, then respawn.
+        // QC vr_death: Send_Effect(EFFECT_EXPLOSION_MEDIUM, findbetterlocation(origin, 16), '0 0 0', 1) — the
+        // medium blast that marks the airframe dying (the port has no findbetterlocation wall-nudge, so emit at
+        // the origin directly — the helper only pushes the FX clear of a surface, not a gameplay difference).
+        EffectEmitter.Emit("EXPLOSION_MEDIUM", vehicle.Origin, Vector3.Zero, 1);
+
+        // QC vr_death tail: a 50% chance the tossed body blows up early on contact (bumblebee_dead_touch). The
+        // port keeps the body in place rather than spawning a separate gib, so model the contact-blowup on the
+        // body's own .Touch: a fired/bumped corpse detonates immediately into bumblebee_blowup.
+        bool deadTouch = Prandom.Float() > 0.5f;
+
+        // QC bumblebee_blowup: a big radius blast after a short tumble (wait = time + 2 + random*8), then respawn.
         float when = Time + 2f + Prandom.Range(0f, 8f);
+
+        // bumblebee_blowup — the final death detonation (DEATH_VH_BUMB_DEATH) + SND_ROCKET_IMPACT + EXPLOSION_BIG.
+        void Blowup(Entity self)
+        {
+            WeaponSplash.RadiusDamage(self, self.Origin, 500f, 100f, 500f, self.Enemy, 0, 600f, deathTag: DeathTypes.VhBumbDeath);
+            // QC: sound(this, CH_SHOTS, SND_ROCKET_IMPACT, ...); Send_Effect(EFFECT_EXPLOSION_BIG, origin + '0 0 100' + randomvec()*80, ...).
+            if (Api.Services is not null) Api.Sound.Play(self, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav");
+            EffectEmitter.Emit("EXPLOSION_BIG", self.Origin + new Vector3(0f, 0f, 100f) + Prandom.Vec() * 80f, Vector3.Zero, 1);
+
+            self.DeadState = DeadFlag.Dead;
+            self.Touch = null;
+            if (Api.Services is not null) Api.Entities.SetOrigin(self, self.SpawnPos);
+            self.NextThink = Time + RespawnTime;
+            self.Think = s => Spawn(s);
+        }
+
+        // QC bumblebee_dead_touch: settouch(_body, bumblebee_dead_touch) on the 50% branch — blow up on contact.
+        vehicle.Touch = deadTouch ? (self, _) => Blowup(self) : null;
+
+        // bumblebee_diethink — tumble: 10% per 0.1s tick a small explosion + impact sound; at `wait` -> blowup.
         vehicle.Think = self =>
         {
             if (Time >= when)
             {
-                // bumblebee.qc bumblebee_blowup: the death blast is DEATH_VH_BUMB_DEATH.
-                WeaponSplash.RadiusDamage(self, self.Origin, 500f, 100f, 500f, self.Enemy, 0, 600f, deathTag: DeathTypes.VhBumbDeath);
-                self.DeadState = DeadFlag.Dead;
-                if (Api.Services is not null) Api.Entities.SetOrigin(self, self.SpawnPos);
-                self.NextThink = Time + RespawnTime;
-                self.Think = s => Spawn(s);
+                Blowup(self);
+                return;
             }
-            else
+
+            // QC bumblebee_diethink: if (random() < 0.1) { sound SND_ROCKET_IMPACT; Send_Effect(EFFECT_EXPLOSION_SMALL,
+            // randomvec()*80 + (origin + '0 0 100'), '0 0 0', 1); }.
+            if (Prandom.Float() < 0.1f)
             {
-                self.NextThink = Time + 0.1f;
-                // TODO(port,client): random EFFECT_EXPLOSION_SMALL + SND_ROCKET_IMPACT during the tumble.
+                if (Api.Services is not null) Api.Sound.Play(self, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav");
+                EffectEmitter.Emit("EXPLOSION_SMALL", Prandom.Vec() * 80f + (self.Origin + new Vector3(0f, 0f, 100f)), Vector3.Zero, 1);
             }
+            self.NextThink = Time + 0.1f;
         };
         vehicle.NextThink = Time;
         // TODO(port,client): qcsrc/common/vehicles/vehicle/bumblebee.qc vr_death — gib the gun1/gun2/gun3 + body
-        //                    via vehicle_tossgib, hide heal-ray beam (visual only).
+        //                    via vehicle_tossgib (the vehicle_gib physics-entity subsystem is not ported),
+        //                    hide the heal-ray beam (visual only).
     }
 
     // ============================ MULTI-SEAT ============================
@@ -665,6 +695,10 @@ public sealed class Bumblebee : Vehicle
         QMath.AngleVectors(QMath.VecToAngles(fwd), out Vector3 f, out Vector3 r, out Vector3 u);
         Vector3 vel = Prandom.Spread(f, r, u, CannonSpread) * CannonSpeed;
 
+        // QC vehicles_projectile fires EFFECT_BIGPLASMA_MUZZLEFLASH at the muzzle (the projectile origin),
+        // velocity = the bolt's velocity, count 1 — the networked Send_Effect that paints the plasma flash.
+        EffectEmitter.Emit("BIGPLASMA_MUZZLEFLASH", org, vel, 1);
+
         VehicleCommon.SpawnProjectile(vehicle, gunner, org, vel,
             CannonDamage, CannonRadius, CannonForce, size: 0f,
             DeathTypes.VhBumbGun, health: 0f, lifetime: 0f, // bumblebee_weapons.qc: DEATH_VH_BUMB_GUN
@@ -672,7 +706,7 @@ public sealed class Bumblebee : Vehicle
             // The prior literal "vehicles/bumblebee_fire.wav" is a non-existent asset (silent cannon); the
             // real Base sample is weapons/flacexp3 (ships as weapons/flacexp3.ogg).
             fireSound: "weapons/flacexp3.wav");
-        // TODO(port,client): EFFECT_BIGPLASMA_MUZZLEFLASH + CSQCProjectile visual.
+        // TODO(port,client): the CSQCProjectile (PROJECTILE_BUMBLE_GUN) networked trail/model visual.
     }
 
     // bumblebee_pilot_frame() center-gun block — bumblebee.qc: the pilot's heal-ray / damage-ray.

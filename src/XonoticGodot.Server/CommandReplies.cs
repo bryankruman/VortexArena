@@ -272,6 +272,10 @@ public sealed class CommandReplies
         "timeformat", "timestamps", "g_require_stats", "g_chatban_list", "g_playban_list",
         "g_playban_minigames", "g_maplist", "g_maplist_mostrecent", "sv_motd", "sv_termsofservice_url",
         "sv_adminnick", "hostname",
+        // The port mirrors QC's `serverflags` GLOBAL into a cvar so the shared-store client reads it; QC's
+        // serverflags is a global (never in the cvarlist), so exclude it from the server-browser pure/impure
+        // scan — it's a computed value derived from already-listed sv_* cvars, not an admin setting.
+        "serverflags",
     };
 
     // QC the extra BADPREFIX(...) for the pure (gameplay) pass.

@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Scoring;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
@@ -724,8 +725,16 @@ public static class SpawnSystem
         // Spawn-event particle flash (QC PutClientInServer → the ENT_CLIENT_SPAWNEVENT entity each client
         // renders via boxparticles(EFFECT_SPAWN, ...), client/spawnpoints.qc:60). Networking a plain effect
         // burst is the port's simpler equivalent — the client-side cl_spawn_event_particles gating collapses
-        // to the effect either rendering or not.
-        EffectEmitter.Emit("SPAWN", p.Origin);
+        // to the effect either rendering or not. The burst is TEAM-COLORED exactly like Base
+        // (client/spawnpoints.qc:58: `tcolor = teamplay ? Team_ColorRGB(teamnum) : entcs_GetColor(entnum-1)`):
+        // in teamplay the spot's team flash color, in FFA the player's own pants-palette color. EffectEmitter's
+        // tint range networks through EffectNetProtocol (colorMin/colorMax), and a zero vector = "no override",
+        // so a neutral/uncolored spawn (white) is sent untinted — exactly Base's '1 1 1' fallthrough no-op.
+        Vector3 spawnTint = SpawnEventTint(p);
+        if (spawnTint == new Vector3(1f, 1f, 1f))
+            EffectEmitter.Emit("SPAWN", p.Origin);          // white → untinted (matches the '1 1 1' no-op)
+        else
+            EffectEmitter.Emit(Effects.ByName("SPAWN"), p.Origin, Vector3.Zero, 1, spawnTint, spawnTint);
 
         // Spawn SOUND (QC client/spawnpoints.qc:64 `sound(this, CH_TRIGGER, SND_SPAWN, VOL_BASE, ATTEN_NORM)`),
         // the audio half of the SpawnEvent. Base gates the whole event send on g_spawn_alloweffects (default 3 =
@@ -1188,6 +1197,25 @@ public static class SpawnSystem
 
     /// <summary>QC <c>bound(lo, v, hi)</c>.</summary>
     private static float QBound(float lo, float v, float hi) => v < lo ? lo : (v > hi ? hi : v);
+
+    /// <summary>
+    /// The spawn-event particle-burst tint, faithful to client/spawnpoints.qc:58
+    /// (<c>tcolor = teamplay ? Team_ColorRGB(teamnum) : entcs_GetColor(entnum - 1)</c>). In teamplay the burst
+    /// flashes the player's team color (<see cref="Teams.ColorRgb"/> = the bright Team_ColorRGB); in FFA it
+    /// flashes the player's individual pants-nibble palette color (<see cref="Teams.ColormapPaletteColor"/> over
+    /// <c>clientcolors &amp; 15</c>, the same low-nibble entcs_GetColor reads). A neutral/uncolored player resolves
+    /// to white, which the caller emits untinted (Base's '1 1 1' fallthrough is a no-op tint).
+    /// </summary>
+    private static Vector3 SpawnEventTint(Player p)
+    {
+        if (GameScores.Teamplay)
+            return Teams.ColorRgb((int)p.Team);
+
+        // FFA: entcs_GetColor(entnum-1) → colormapPaletteColor(clientcolors & 15, isPants:true). clientcolors is
+        // 16*shirt+pants, so the low nibble is the pants color. A 0 colormap (no color chosen) → palette[0] = white.
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        return Teams.ColormapPaletteColor(p.ClientColors & 15, now);
+    }
 
     /// <summary>Read a float cvar through the facade, falling back to the documented balance default.</summary>
     private static float Cvar(string name, float fallback)

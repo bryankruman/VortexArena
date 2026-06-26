@@ -579,6 +579,47 @@ public sealed class Scores
         // =======  SUICIDE / ACCIDENT-TRAP (QC: targ == attacker, or no player attacker)  =======
         if (attacker is null || ReferenceEquals(attacker, victim))
         {
+            string baseType = DeathTypes.BaseOf(deathType);
+
+            // QC Obituary_SpecialDeath (server/damage.qc:135): `if (g_cts && deathtype == DEATH_KILL.m_id) return;`
+            // — a /kill in CTS prints no obituary at all (the run is invalidated silently, no "died" line).
+            if (baseType == DeathTypes.Kill
+                && Api.Services is not null && Api.Cvars.GetFloat("g_cts") != 0f)
+                return;
+
+            // QC SUICIDE switch (server/damage.qc:271-273): TEAMCHANGE / AUTOTEAMCHANGE route to their own self
+            // line with f1 = targ.team (the death_team float arg the DEATH_SELF_*TEAMCHANGE rows render as the
+            // destination team name). The frag-negation skip for AUTOTEAMCHANGE is handled in the scoring path
+            // (ClearForTeamChange leaves SP_SCORE alone); here we only emit the correct obituary self-line.
+            if (baseType == DeathTypes.TeamChange || baseType == DeathTypes.AutoTeamChange)
+            {
+                string tcName = baseType == DeathTypes.AutoTeamChange
+                    ? "DEATH_SELF_AUTOTEAMCHANGE" : "DEATH_SELF_TEAMCHANGE";
+                // row args: "s1 death_team s2loc" (s1=victim, death_team=victim.team float, s2loc=location).
+                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Multi, tcName,
+                    victimName, victim.Team, deathloc);
+                NotificationSystem.Send(NotifBroadcast.AllExcept, victim, MsgType.Info, tcName,
+                    victimName, victim.Team, deathloc);
+                return;
+            }
+
+            // QC DEATH_CUSTOM (server/damage.qc:454-461, ACCIDENT branch): a mapper-supplied deathmessage routes
+            // to DEATH_SELF_CUSTOM ("You were %s"). The string is formatted with a leading "%s " when it has no
+            // own format specifier (QC strstrofs(deathmessage,"%",0) < 0 ? strcat("%s ", deathmessage) : ...).
+            // The mapper string rides on the inflictor's .Message (the same plumbing as the VOID_ENT path).
+            if (baseType == DeathTypes.Custom)
+            {
+                string deathmessage = inflictor?.Message ?? "";
+                string s2 = deathmessage.IndexOf('%') < 0 ? "%s " + deathmessage : deathmessage;
+                // DEATH_SELF_CUSTOM row: (s1=victim, s2=formatted message, s3loc=location, spree_lost=killcount).
+                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Multi, "DEATH_SELF_CUSTOM",
+                    victimName, s2, deathloc, victimStreakBefore);
+                NotificationSystem.Send(NotifBroadcast.AllExcept, victim, MsgType.Info, "DEATH_SELF_CUSTOM",
+                    victimName, s2, deathloc, victimStreakBefore);
+                EmitBotlikeAchievement(attacker, victim);
+                return;
+            }
+
             // QC HURTTRIGGER msg_from_ent (server/damage.qc:281-290,442-451): a trigger_hurt (DEATH_VOID) that
             // carries a custom inflictor.message routes to DEATH_SELF_VOID_ENT with the mapper string as s2 (the
             // generic "you ended up in the wrong place" line is replaced). msg_from_ent = inflictor.message != "".
@@ -590,6 +631,7 @@ public sealed class Scores
                     victimName, entMessage, deathloc, victimStreakBefore);
                 NotificationSystem.Send(NotifBroadcast.AllExcept, victim, MsgType.Info, "DEATH_SELF_VOID_ENT",
                     victimName, entMessage, deathloc, victimStreakBefore);
+                EmitBotlikeAchievement(attacker, victim);
                 return;
             }
 
@@ -598,6 +640,7 @@ public sealed class Scores
                 ? DeathMessages.SelectSuicideMessage(DeathTypes.WeaponNetNameOf(deathType), deathType)
                 : DeathMessages.SelectSpecial(deathType, murder: false);
             BroadcastObituary(self, victim, victimName, deathloc, "", victimStreakBefore, 0, suicide: true);
+            EmitBotlikeAchievement(attacker, victim);
             return;
         }
 
@@ -717,6 +760,22 @@ public sealed class Scores
             NotificationSystem.Send(NotifBroadcast.AllExcept, victim, MsgType.Info, bareName,
                 s1, s2OrAttacker, s3Location, victimStreak, killCountToAttacker);
         }
+    }
+
+    /// <summary>
+    /// QC the ACCIDENT/TRAP BOTLIKE achievement (server/damage.qc:466-471): when a world/accident death (NO
+    /// player attacker — <paramref name="attacker"/> is null) drives the victim's running SP_SCORE to exactly
+    /// −5, announce ANNCE_ACHIEVEMENT_BOTLIKE to them. A genuine self-suicide (<c>targ == attacker</c>, a
+    /// non-null attacker) is NOT eligible — QC only checks this in the no-attacker ACCIDENT branch. The −1 frag
+    /// for this death has already been applied in <see cref="Obituary"/> before <see cref="EmitObituary"/> runs,
+    /// so the read here matches QC's post-GiveFrags <c>GameRules_scoring_add(targ, SCORE, 0)</c>.
+    /// </summary>
+    private void EmitBotlikeAchievement(Player? attacker, Player victim)
+    {
+        if (attacker is not null)
+            return; // QC: only the ACCIDENT/TRAP branch (no player attacker) announces BOTLIKE.
+        if (Row(victim).Score == -5)
+            NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Annce, "ACHIEVEMENT_BOTLIKE");
     }
 
     /// <summary>

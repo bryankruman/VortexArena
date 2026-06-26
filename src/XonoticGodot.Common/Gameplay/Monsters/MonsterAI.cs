@@ -116,6 +116,15 @@ public static class MonsterAI
         /// </summary>
         public bool DeathLanded;
 
+        /// <summary>
+        /// Per-phase animation VARIANT index (QC <c>setanim(random &gt;= 0.5 ? anim_pain1 : anim_pain2)</c> and the
+        /// golem's <c>anim_melee2/anim_melee3</c> random swing pick). Chosen once when a phase is (re)entered and
+        /// read by <c>DriveAnimFrame</c> → the descriptor's <c>AnimFrame(phase, die2, variant)</c> so a monster with
+        /// two interchangeable pain/attack groups alternates between them instead of always stamping the first.
+        /// Defaults to 0 (the canonical group) for descriptors that don't use variants.
+        /// </summary>
+        public int AnimVariant;
+
         // --- lifecycle: death / respawn / loot / miniboss (QC .monster_lifetime / .candrop / spawnflags) ---
 
         /// <summary>Hard kill time once set (QC .monster_lifetime); 0 = none. Set to time+5 on death (corpse fade).</summary>
@@ -265,6 +274,15 @@ public static class MonsterAI
                 e.Effects |= EfRed; // QC Monster_Miniboss_Setup:523 — the red glow that marks a miniboss
             }
         }
+
+        // Debug/cheat presentation flags (QC Monster_Spawn:1484-1485): g_fullbrightplayers -> EF_FULLBRIGHT,
+        // g_nodepthtestplayers -> EF_NODEPTHTEST (draw-through-walls). Both default 0 (off). Applied on every
+        // spawn (not respawn-gated in QC). The g_monsters_edit -> grab=1 cheat (QC:1483) is NOT ported: the
+        // port's grab/drag system is the sandbox SandboxObject path, with no .grab field on a plain Entity.
+        if (Cvar("g_fullbrightplayers", 0f) != 0f)
+            e.Effects |= EfFullbright;
+        if (Cvar("g_nodepthtestplayers", 0f) != 0f)
+            e.Effects |= EfNodepthtest;
 
         // Skill scaling (QC Monster_Spawn_Setup: health *= MONSTER_SKILLMOD on first/non-respawn spawn).
         if (!st.Respawned)
@@ -1185,7 +1203,7 @@ public static class MonsterAI
     /// </summary>
     private static void DriveAnimFrame(Entity self, MonsterState st)
     {
-        float? frame = st.Def.AnimFrame(ToPhase(st.Anim), st.DeathLanded);
+        float? frame = st.Def.AnimFrame(ToPhase(st.Anim), st.DeathLanded, st.AnimVariant);
         if (frame.HasValue)
             self.Frame = frame.Value;
     }
@@ -1410,6 +1428,9 @@ public static class MonsterAI
         st.AttackFinished = Now + 0.5f * swings;
         st.AnimFinished = st.AttackFinished;
         st.Anim = MonsterAnim.Attack;
+        // QC M_Golem_Attack MELEE: setanim(random() >= 0.5 ? anim_melee2 : anim_melee3) — pick the swing variant
+        // once at dispatch (descriptors with a single attack group ignore this; the golem alternates 4/5).
+        st.AnimVariant = MonsterRandom.Next() >= 0.5f ? 1 : 0;
         // QC Monster_Attack_Check:468 plays monstersound_melee ONCE per attack DISPATCH on attack_success==1
         // (not per connecting swing). The golem's MELEE branch returns true, so the cue fires here, at dispatch.
         MonsterSound(self, st, "melee", 0f, false, SoundChannel.Voice);
@@ -1557,6 +1578,9 @@ public static class MonsterAI
             // monster that overrides mr_pain with a wider window (wyvern/golem = 0.5s) exposes it via PainWindow.
             st.PainFinished = Now + st.Def.PainWindow;
             st.Anim = MonsterAnim.Pain;
+            // QC mr_pain: setanim(random() >= 0.5 ? anim_pain2 : anim_pain1) — pick a pain variant once per pain
+            // event (descriptors with a single pain group ignore this; the golem alternates pain1 '7'/pain2 '8').
+            st.AnimVariant = MonsterRandom.Next() >= 0.5f ? 1 : 0;
             // QC Monster_Damage:1101 — Monster_Sound(monstersound_pain, 1.2, true, CH_PAIN): the 1.2s throttle
             // (delaytoo) stops a stream of hits from machine-gunning the pain voice. CH_PAIN(-6) = the auto pain
             // channel so overlapping hurt cues stack rather than cut each other off.
@@ -1641,6 +1665,12 @@ public static class MonsterAI
         st.State = 0;
         st.AttackFinished = 0f;
         st.Anim = MonsterAnim.Death;
+        // QC mr_death: setanim(random() > 0.5 ? anim_die1 : anim_die2) — the descriptor rolls its death
+        // variant once at the moment of death (e.g. zombie picks die1/die2 randomly). The result is stored
+        // in DeathLanded so DriveAnimFrame passes it as the die2 flag to AnimFrame. Monsters that use the
+        // falling→landed split (wyvern) return false here (die1 = falling) and set DeathLanded=true later
+        // via their dead-think; monsters that want an immediate random pick (zombie) return the roll directly.
+        st.DeathLanded = st.Def.RollDeathVariant();
 
         if ((self.Flags & (EntFlags.Fly | EntFlags.Swim)) == 0)
             self.Velocity = Vector3.Zero;
@@ -1959,6 +1989,12 @@ public static class MonsterAI
 
     /// <summary>DP <c>EF_RED = 128</c> (dpextensions.qc:179) — the red glow QC stamps on a miniboss (and re-applies on respawn).</summary>
     public const int EfRed = 128;
+
+    /// <summary>DP <c>EF_FULLBRIGHT = 512</c> (dpextensions.qc:133) — set when g_fullbrightplayers (QC Monster_Spawn:1484).</summary>
+    public const int EfFullbright = 512;
+
+    /// <summary>DP <c>EF_NODEPTHTEST = 8192</c> (dpextensions.qc:141) — draw-through-walls when g_nodepthtestplayers (QC Monster_Spawn:1485).</summary>
+    public const int EfNodepthtest = 8192;
 }
 
 /// <summary>QC monster skill levels (sv_monsters.qh: MONSTER_SKILL_*).</summary>

@@ -291,7 +291,9 @@ public sealed class Hook : Weapon
             {
                 actor.Pusher = attacker;
                 actor.PushLTime = Api.Clock.Time + Bal("g_maxpushtime", 8f);
-                actor.IsTypeFrag = false; // PHYS_INPUT_BUTTON_CHAT(realowner) — chat input not wired here
+                // QC server/hook.qc:305 — this.realowner.istypefrag = PHYS_INPUT_BUTTON_CHAT(this.realowner):
+                // the grapple owner's chat-button state at shoot-down decides if the frag is a typefrag.
+                actor.IsTypeFrag = actor.ButtonChat;
             }
             RemoveHook(actor.WeaponState(slot), actor);
         };

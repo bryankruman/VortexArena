@@ -1,3 +1,4 @@
+using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Server;
@@ -113,6 +114,19 @@ public sealed class MapVoting
     /// <summary>Number of voters expected (QC <c>mapvote_voters</c>), set at <see cref="Start"/> — drives the early finish.</summary>
     public int ExpectedVoters { get; private set; }
 
+    /// <summary>
+    /// QC <c>gametypevote</c>: true when this ballot is a gametype vote (QC <c>GameTypeVote_Start</c>) rather
+    /// than a map vote. The panel draws a wider aspect-ratio cell and the title reads "Decide the gametype".
+    /// </summary>
+    public bool IsGametypeVote { get; private set; }
+
+    /// <summary>
+    /// QC <c>voted_gametype_string</c>: the winning gametype name after a gametype vote finishes (e.g. "dm",
+    /// "tdm", "ca", "ctf"), or "" if the vote has not finished or this is a map vote. The host reads this to
+    /// apply the gametype switch before starting the map vote.
+    /// </summary>
+    public string VotedGametype { get; private set; } = "";
+
     public MapVoting(int seed = 0x5EED) => _rng = new Random(seed);
 
     /// <summary>Reseed the tiebreak RNG (determinism support for headless runs).</summary>
@@ -147,6 +161,8 @@ public sealed class MapVoting
         WinningMap = "";
         WinnerTime = 0f;
         _nextThink = 0f;
+        IsGametypeVote = false;
+        VotedGametype = "";
 
         bool abstain = Cvars.Bool("g_maplist_votable_abstain");
         int votable = Cvars.Int("g_maplist_votable");
@@ -221,6 +237,89 @@ public sealed class MapVoting
         var cand = new MapVoteCandidate(name) { Rng = (float)_rng.NextDouble() };
         _candidates.Add(cand);
         return cand;
+    }
+
+    /// <summary>
+    /// QC <c>GameTypeVote_Start</c>: build a pre-map gametype ballot from <c>sv_vote_gametype_options</c>
+    /// (space-separated gametype NetNames), arm the gametype-vote timers, and open the vote. An option is only
+    /// added to the ballot when it resolves to a known gametype — a real one (<see cref="GameTypes.ByName"/>) or
+    /// a custom alias via <c>sv_vote_gametype_&lt;name&gt;_type</c> — matching QC <c>GameTypeVote_AddVotable</c>,
+    /// which drops an unresolvable name entirely rather than showing it dimmed.
+    ///
+    /// <para>If <c>sv_vote_gametype_default_current</c> is set, the current gametype (identified by
+    /// <paramref name="currentGametypeName"/>) wins any 0-vote tiebreak: this is modelled by giving it a
+    /// <see cref="MapVoteCandidate.Rng"/> of <c>1f</c> (above the [0,1) range that random candidates get),
+    /// faithful to QC's <c>mapvote_ranked_cmp</c> special-case for <c>current_gametype_index</c>.</para>
+    ///
+    /// <para>0 or 1 available options → the vote finishes immediately (QC short-circuits in those cases).</para>
+    /// </summary>
+    public void StartGametype(int expectedVoters, string currentGametypeName)
+    {
+        _candidates.Clear();
+        _votes.Clear();
+        _abstained.Clear();
+        Finished = false;
+        WinningMap = "";
+        WinnerTime = 0f;
+        _nextThink = 0f;
+        IsGametypeVote = true;
+        VotedGametype = "";
+
+        // QC: mapvote_abstain = false (gametype vote never has the abstain slot).
+        // QC: parse sv_vote_gametype_options space-separated, cap at MAPVOTE_COUNT (20).
+        const int MapvoteCount = 20;
+        string options = Cvars.String("sv_vote_gametype_options");
+        bool defaultCurrent = Cvars.Bool("sv_vote_gametype_default_current");
+        int reallyAvailable = 0;
+
+        foreach (string name in options.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (_candidates.Count >= MapvoteCount)
+                break;
+            if (string.IsNullOrEmpty(name))
+                continue;
+            // Dedup.
+            bool dup = false;
+            foreach (MapVoteCandidate c in _candidates)
+                if (string.Equals(c.MapName, name, StringComparison.OrdinalIgnoreCase)) { dup = true; break; }
+            if (dup)
+                continue;
+
+            // QC GameTypeVote_AddVotable: an option is only ADDED when GameTypeVote_Type_FromString resolves it —
+            // either a real gametype name, or a custom alias via the sv_vote_gametype_<name>_type indirection. An
+            // unresolvable name is skipped entirely (QC returns false), NOT shown on the ballot dimmed.
+            bool isRealType = GameTypes.ByName(name) is not null;
+            // Custom gametype: sv_vote_gametype_<name>_type names the real gametype this alias maps to.
+            bool isCustomType = !isRealType
+                && GameTypes.ByName(Cvars.String($"sv_vote_gametype_{name}_type")) is not null;
+            if (!isRealType && !isCustomType)
+                continue; // QC GameTypeVote_AddVotable returns false for an unknown gametype — drop it.
+
+            // QC GameTypeVote_AvailabilityStatus: a resolvable type is GTV_AVAILABLE (the port has no MapInfo
+            // next-map support filter, so a resolved type is always considered available — the documented gap).
+            var cand = new MapVoteCandidate(name) { Rng = (float)_rng.NextDouble(), Available = true };
+            reallyAvailable++;
+            // QC sv_vote_gametype_default_current: current gametype gets the top tiebreak Rng (1f > any [0,1)).
+            if (defaultCurrent && string.Equals(name, currentGametypeName, StringComparison.OrdinalIgnoreCase))
+                cand.Rng = 1f;
+            _candidates.Add(cand);
+        }
+
+        ExpectedVoters = System.Math.Max(expectedVoters, 0);
+        float timeout = Cvars.FloatOr("sv_vote_gametype_timeout", 20f);
+        Running = true;
+        Timeout = timeout > 0f ? Now + timeout : 0f;
+
+        // QC arm the reduce timers (sv_vote_gametype_reduce_time / _reduce_count).
+        _reduceCount = Cvars.Int("sv_vote_gametype_reduce_count");
+        float reduceDelay = Cvars.FloatOr("sv_vote_gametype_reduce_time", 10f);
+        _reduceTime = reduceDelay > 0f ? Now + reduceDelay : 0f;
+        if (RealCandidateCount < 3 || _reduceTime <= Now)
+            _reduceTime = 0f;
+
+        // QC: 0 available → finish to current gametype; 1 available → finish to that one.
+        if (reallyAvailable <= 1)
+            Finish();
     }
 
     /// <summary>
@@ -454,6 +553,9 @@ public sealed class MapVoting
         }
 
         WinningMap = winner?.MapName ?? "";
+        // QC GameTypeVote_Finished: record the winning gametype name for the host to apply the switch.
+        if (IsGametypeVote)
+            VotedGametype = WinningMap;
     }
 
     /// <summary>Mark a candidate unavailable (QC clearing GTV_AVAILABLE), e.g. the map that just played.</summary>

@@ -151,6 +151,10 @@ public static class MovingBrushes
 
         MapMover.IndexRegister(this_);
 
+        // QC bobbing.qc:35-39: looping ambient soundto(MSG_INIT, this, CH_TRIGGER_SINGLE, .noise, VOL_BASE,
+        // ATTEN_IDLE, 0) — a persistent loop on the mover, replayed to every (incl. late-joining) client.
+        MapMover.LoopAmbient(this_, this_.Noise);
+
         // Spawn the controller that drives the sine every 0.1s (QC func_bobbing_controller).
         if (Api.Services is not null)
         {
@@ -205,6 +209,10 @@ public static class MovingBrushes
             return;
 
         MapMover.IndexRegister(this_);
+
+        // QC pendulum.qc:28-31: looping ambient soundto(MSG_INIT, this, CH_TRIGGER_SINGLE, .noise, VOL_BASE,
+        // ATTEN_IDLE, 0) — persistent loop on the mover (replayed to late joiners via entity sound state).
+        MapMover.LoopAmbient(this_, this_.Noise);
 
         if (this_.Freq == 0f)
         {
@@ -397,7 +405,9 @@ public static class MovingBrushes
         else
             MapMover.CalcMove(this_, dest, MapMover.SpeedType.Linear, speed, TrainWait);
 
-        MapMover.Sound(this_, SoundChannel.Voice, this_.Noise);
+        // QC train_next:136-137: _sound(this, CH_TRIGGER_SINGLE, .noise, VOL_BASE, ATTEN_IDLE) — the moving noise.
+        if (Api.Services is not null && !string.IsNullOrEmpty(this_.Noise))
+            Api.Sound.Play(this_, SoundChannel.Item, this_.Noise, MapMover.VolBase, MapMover.AttenIdle);
     }
 
     /// <summary>
@@ -424,6 +434,11 @@ public static class MovingBrushes
                 return;
             }
         }
+
+        // QC train_wait:40-41: stopsoundto(MSG_BROADCAST, this, CH_TRIGGER_SINGLE) — silence the moving noise on
+        // arrival at the corner (it resumes in train_next on the next leg). CH_TRIGGER_SINGLE = SoundChannel.Item.
+        if (Api.Services is not null)
+            Api.Sound.Stop(this_, SoundChannel.Item);
 
         // fire the corner we arrived at.
         Entity? corner = this_.GoalEntity;

@@ -1,3 +1,4 @@
+using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
@@ -102,7 +103,7 @@ public sealed class Cheats
     /// true if a cheat was attempted (allowed and handled), matching QC's "consumed" return. The caller routes a
     /// client's <c>cmd</c> here before the normal client-command table.
     /// </summary>
-    public bool Command(Player p, string[] argv)
+    public bool Command(Player p, string[] argv, object? gameType = null)
     {
         if (argv.Length == 0) return false;
         string verb = argv[0].ToLowerInvariant();
@@ -155,6 +156,64 @@ public sealed class Cheats
                 if (!Allowed(p, logAttempt: true, cheatName: verb)) return false;
                 // QC: DID_CHEAT only when teleport_findtarget found a destination and the teleport ran.
                 if (TeleportToTarget(p, argv.Length > 1 ? argv[1] : "")) AddCheats(p, 1);
+                return true;
+
+            case "pointparticles":
+                if (!Allowed(p, logAttempt: true, cheatName: verb)) return false;
+                // QC cheats.qc:299: `cmd pointparticles <effectname> <position> <velocity> <countmultiplier>`.
+                // argc must be 5 (verb + 4 args). position is a 0..1 lerp along the crosshair line; velocity is
+                // a "x y z" vector; countmultiplier scales the spawn count. Send_Effect_(name, start, vel, mul).
+                if (argv.Length == 5)
+                {
+                    float posF = StoF(argv[2]);
+                    AimTrace(p, WeaponFiring.CurrentMaxShotDistance, out _, out Vector3 hit);
+                    Vector3 start = (1f - posF) * p.Origin + posF * hit;
+                    Vector3 vel = StoV(argv[3]);
+                    int countMul = (int)System.MathF.Round(StoF(argv[4]));
+                    EffectEmitter.EmitByEffectInfoName(argv[1], start, vel, countMul);
+                    AddCheats(p, 1);
+                    return true;
+                }
+                Echo("Usage:^3 sv_cheats 1; restart; cmd pointparticles <effectname> <position> <velocity> <countmultiplier>");
+                Echo("  Where <position> is a number from 0 to 1 representing distance on the crosshair line,");
+                Echo("  and <velocity> is a vector \"x y z\"");
+                return true;
+
+            case "trailparticles":
+                if (!Allowed(p, logAttempt: true, cheatName: verb)) return false;
+                // QC cheats.qc:316: `cmd trailparticles <effectname>` — W_SetupShot + traceline along the aim line,
+                // then __trailparticles(this, effectnum, w_shotorg, trace_endpos) draws the trail to the hit point.
+                if (argv.Length == 2)
+                {
+                    Vector3 shotorg = p.Origin + p.ViewOfs;
+                    AimTrace(p, WeaponFiring.CurrentMaxShotDistance, out _, out Vector3 trailEnd);
+                    EffectEmitter.EmitTrail(Effects.ByEffectInfoName(argv[1]), shotorg, trailEnd);
+                    AddCheats(p, 1);
+                    return true;
+                }
+                Echo("Usage: sv_cheats 1; restart; cmd trailparticles <effectname>");
+                return true;
+
+            case "make":
+                if (!Allowed(p, logAttempt: true, cheatName: verb)) return false;
+                if (argv.Length == 3) { if (Make(p, argv[1], (int)StoF(argv[2]))) AddCheats(p, 1); return true; }
+                Echo("Usage:^3 sv_cheats 1; restart; cmd make <modelname> <mode>");
+                Echo("  where <mode> can be 0, 1 or 2");
+                return true;
+
+            case "penalty":
+                if (!Allowed(p, logAttempt: true, cheatName: verb)) return false;
+                // QC cheats.qc:378: `cmd penalty <duration> <reason>` — race_ImposePenaltyTime(this, dur, reason).
+                // The reason string only drives a CSQC HUD notification (client-side); the gameplay state (a freeze
+                // in a plain race, or an added accumulator in qualifying) is what SetPenalty reproduces.
+                if (argv.Length == 3)
+                {
+                    if (gameType is XonoticGodot.Common.Gameplay.Race race)
+                        race.SetPenalty(p, StoF(argv[1]));
+                    AddCheats(p, 1);
+                    return true;
+                }
+                Echo("Usage:^3 sv_cheats 1; restart; cmd penalty <duration> <reason>))");
                 return true;
 
             default:
@@ -251,5 +310,91 @@ public sealed class Cheats
         else trigger.Target = targetName;
         MapMover.UseTargets(trigger, p, null);
         Api.Entities.Remove(trigger);
+    }
+
+    // =============================================================================================
+    // particle/make cheats (QC cheats.qc cases pointparticles/trailparticles/make) — aim helpers
+    // =============================================================================================
+
+    /// <summary>
+    /// QC <c>crosshair_trace(this)</c> / <c>W_SetupShot</c>+<c>traceline</c>: trace from the caller's eyes along
+    /// its view angles out to <paramref name="dist"/>. Mirrors Commands.TraceLookedAtMonster/Chat.CrosshairTrace.
+    /// <paramref name="normal"/> = the hit surface normal (QC <c>trace_plane_normal</c>); <paramref name="endPos"/>
+    /// = the impact point (QC <c>trace_endpos</c>). Hit-nothing leaves a far endpos and a zero normal.
+    /// </summary>
+    private static bool AimTrace(Player p, float dist, out Vector3 normal, out Vector3 endPos)
+    {
+        Vector3 eyes = p.Origin + p.ViewOfs;
+        Vector3 aim = p.ViewAngles != Vector3.Zero ? p.ViewAngles : p.Angles;
+        XonoticGodot.Common.Math.QMath.AngleVectors(aim, out Vector3 forward, out _, out _);
+        Vector3 end = eyes + forward * dist;
+        if (Api.Services is null) { normal = Vector3.Zero; endPos = end; return false; }
+        TraceResult tr = Api.Trace.Trace(eyes, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, p);
+        normal = tr.PlaneNormal;
+        endPos = tr.EndPos;
+        return tr.Fraction < 1f; // hit something
+    }
+
+    /// <summary>
+    /// QC the <c>make</c> cheat command (cheats.qc:331): traceline 2048 along the aim line, then spawn a
+    /// <c>func_breakable</c> with 1000 health and the requested model at the hit point. <paramref name="mode"/> 1
+    /// surface-aligns the model to the hit normal; mode 0 validates the spot fits (tracebox start-solid → fail).
+    /// Returns true when something was actually placed (QC's DID_CHEAT condition). The QC <c>e.mdl="rocket_explode"</c>
+    /// wreck/explosion model is presentation-only (not carried by the port's breakable) and is skipped.
+    /// </summary>
+    private bool Make(Player p, string model, int mode)
+    {
+        if (Api.Services is null) return false;
+        bool hit = AimTrace(p, 2048f, out Vector3 normal, out Vector3 endPos);
+        if (!hit)
+        {
+            Echo("cannot make stuff there (bad surface)");
+            return false;
+        }
+
+        Entity e = Api.Entities.Spawn();
+        e.ClassName = "func_breakable";
+        e.Model = model;
+        e.Health = 1000f;
+        e.Effects |= 8388608; // EF_NOMODELFLAGS (dpextensions: ignore model file effects)
+        MapMover.SetOrigin(e, endPos);
+        if (mode == 1)
+        {
+            // QC: e.angles = fixedvectoangles2(trace_plane_normal, v_forward); then apply '-90 0 0' so unrotated
+            // models stand up. We approximate AnglesTransform_ApplyToAngles(angles,'-90 0 0') with a pitch offset.
+            XonoticGodot.Common.Math.QMath.AngleVectors(
+                p.ViewAngles != Vector3.Zero ? p.ViewAngles : p.Angles, out Vector3 fwd, out _, out _);
+            Vector3 a = XonoticGodot.Common.Math.QMath.FixedVecToAngles2(normal, fwd);
+            a.X -= 90f;
+            e.Angles = a;
+        }
+        Breakable.BreakableSetup(e);
+
+        if (mode == 0)
+        {
+            // QC: tracebox at the breakable's own box — if start-solid there's no space, so drop it and fail.
+            TraceResult vt = Api.Trace.Trace(e.Origin, e.Mins, e.Maxs, e.Origin, MoveFilter.Normal, e);
+            if (vt.StartSolid)
+            {
+                Api.Entities.Remove(e);
+                Echo("cannot make stuff there (no space)");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static float StoF(string s)
+        => float.TryParse(s, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out float f) ? f : 0f;
+
+    /// <summary>QC <c>stov</c>: parse a "x y z" string into a vector (missing/garbage components → 0).</summary>
+    private static Vector3 StoV(string s)
+    {
+        string[] parts = s.Split(new[] { ' ', '\t' }, System.StringSplitOptions.RemoveEmptyEntries);
+        float x = parts.Length > 0 ? StoF(parts[0]) : 0f;
+        float y = parts.Length > 1 ? StoF(parts[1]) : 0f;
+        float z = parts.Length > 2 ? StoF(parts[2]) : 0f;
+        return new Vector3(x, y, z);
     }
 }

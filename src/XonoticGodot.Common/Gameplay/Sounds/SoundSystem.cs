@@ -4,6 +4,63 @@ using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
 
+/// <summary>
+/// Faithful port of QC <c>sound_allowed(to, e)</c> (common/sounds/all.qc:9-25) and
+/// <c>autocvar_bot_sound_monopoly</c> (all.qc:6): the per-entity gate that every SVQC sound emit
+/// goes through. Two behaviours:
+/// <list type="bullet">
+///   <item><b>Owner-walk re-home</b>: if the emitting entity is a <c>body</c> (corpse), it resolves
+///         up through <c>enemy → realowner → owner</c> to find the originating player. Sounds attributed
+///         to a corpse or projectile are thus correctly gated/checked against their real owner.</item>
+///   <item><b>bot_sound_monopoly</b>: when the cvar is 1, sounds emitted by any real client are
+///         suppressed — only bot-sourced sounds pass. Default 0 (off).</item>
+/// </list>
+/// The port omits the QC MSG_ONE/"sounds to self always pass" branch because the port's sound API does
+/// not carry a per-recipient <c>msg_entity</c> context at the point of the gate check; that branch is
+/// a cosmetic edge-case (a player's own self-emit) that does not affect normal play.
+/// </summary>
+public static class SoundAllowedGate
+{
+    /// <summary>QC cvar name for the bot-monopoly flag (xonotic-server.cfg:489, default 0).</summary>
+    private const string BotSoundMonopolyCvar = "bot_sound_monopoly";
+
+    /// <summary>
+    /// Walk entity <paramref name="e"/> up through <c>body→enemy / realowner / owner</c> to find the
+    /// true sound-emitting entity (QC <c>sound_allowed</c> owner-walk, all.qc:13-18).
+    /// </summary>
+    public static Entity? WalkOwner(Entity? e)
+    {
+        for (int guard = 0; guard < 16 && e is not null; guard++)
+        {
+            if (e.IsCorpse && e.Enemy is not null)
+                e = e.Enemy;
+            else if (e.RealOwner is { } ro && !ReferenceEquals(ro, e))
+                e = ro;
+            else if (e.Owner is { } ow && !ReferenceEquals(ow, e))
+                e = ow;
+            else
+                break;
+        }
+        return e;
+    }
+
+    /// <summary>
+    /// Returns false if the sound should be suppressed (QC <c>sound_allowed</c>):
+    /// when <c>bot_sound_monopoly</c> is 1, any sound emitted by a real client is denied.
+    /// Null emitter always passes (QC: <c>if(!e) return true</c>).
+    /// </summary>
+    public static bool IsAllowed(Entity? emitter)
+    {
+        if (emitter is null) return true;
+        if (Api.Services is null) return true; // headless / no cvar service
+        if (Api.Cvars.GetFloat(BotSoundMonopolyCvar) == 0f) return true;
+        // bot_sound_monopoly = 1: real clients (FL_CLIENT + not a bot) are denied.
+        bool isRealClient = (emitter.Flags & EntFlags.Client) != 0 && !emitter.IsCorpse
+                            && emitter is Player p && !p.IsBot;
+        return !isRealClient;
+    }
+}
+
 // Playback helpers for the sound registry — the C# successor to QuakeC's sound() / GlobalSound() /
 // play2all() call sites (common/sounds/sound.qh, common/effects/qc/globalsound.qc). These route a
 // registered GameSound (or a bare sample path) through the engine facade Api.Sound.Play.
@@ -182,6 +239,46 @@ public static class SoundSystem
     public static void PlayAnnouncer(string shortName)
         => PlayGlobal(Sounds.ByName($"ANNCE_{shortName.ToUpperInvariant()}"));
 
+    // ---- spamsound — per-entity touch-spam rate limit (QC spamsound, all.qc:124-134) ----
+
+    /// <summary>
+    /// Play a registered sound on <paramref name="emitter"/>, rate-limited to at most once per sim step
+    /// via <see cref="Entity.SpamTime"/> (QC <c>spamsound(e,chan,samp,vol,atten)</c>, all.qc:124).
+    /// Used by touch handlers that fire multiple times per frame (nade bounce, vehicle hit, monster
+    /// body-impact) to prevent a touch-spam source from over-emitting. <paramref name="now"/> is the
+    /// current sim time (QC <c>time</c>). Returns true if the sound was actually emitted.
+    /// </summary>
+    public static bool SpamSound(Entity emitter, GameSound? sound, float now)
+    {
+        if (sound is null) return false;
+        if (!SoundAllowedGate.IsAllowed(emitter)) return false;
+        if (now > emitter.SpamTime)
+        {
+            emitter.SpamTime = now;
+            Api.Sound.Play(emitter, sound.EngineChannel, sound.Sample, sound.Volume, sound.Attenuation);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Play a raw sample on <paramref name="emitter"/> with spam-rate limiting (QC <c>spamsound</c> raw-path).
+    /// </summary>
+    public static bool SpamSoundRaw(Entity emitter, string sample, float now,
+        SoundChannel channel = SoundChannel.Auto,
+        float volume = SoundLevels.VolBase,
+        float attenuation = SoundLevels.AttenNorm)
+    {
+        if (!SoundAllowedGate.IsAllowed(emitter)) return false;
+        if (now > emitter.SpamTime)
+        {
+            emitter.SpamTime = now;
+            Api.Sound.Play(emitter, channel, sample, volume, attenuation);
+            return true;
+        }
+        return false;
+    }
+
     // ---- random-variant groups (QC SND_*_RANDOM) ----
 
     /// <summary>
@@ -293,10 +390,15 @@ public static class SoundSystem
         // QC: if(this.classname == "body") return; — corpses don't speak.
         if (emitter is null || emitter.IsCorpse) return;
 
-        // DEVIATION: QC picks the directional attenuation per-recipient from CS_CVAR(it).cvar_cl_voice_directional
-        // (ATTEN_MIN when 1, else ATTEN_NONE). The Godot-free layer has no per-client cvar table, so the
-        // directional cases use the directional default (ATTEN_MIN); the per-recipient cvar read is deferred.
         string sample = Sounds.PlayerSoundSample(modelSoundDir, voiceMessageId);
+
+        // QC reads cl_voice_directional per-recipient from CS_CVAR(it) for the directional cases.
+        // The port has a single global cvar table (no per-client cvar stores), so we read the global
+        // cvar value once and apply it uniformly — correct for a listen server where there is one client.
+        // A dedicated-server path with per-client cvars can replace this read with a per-recipient lookup.
+        float voiceDirectional = CvarFloat(VoiceCvars.ClVoiceDirectional);
+        // QC LASTATTACKER/TEAMRADIO: atten = (cvar_cl_voice_directional == 1) ? ATTEN_MIN : ATTEN_NONE
+        float directionalAtten = voiceDirectional == 1f ? SoundLevels.AttenMin : SoundLevels.AttenNone;
 
         switch (voiceType)
         {
@@ -305,7 +407,7 @@ public static class SoundSystem
             {
                 // QC: if(!fake) { if(!this.pusher) break; … } — a faked speaker skips the attacker emit.
                 if (!fake && emitter.Pusher is { } attacker)
-                    Emit(attacker, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenMin);
+                    Emit(attacker, sample, SoundLevels.VolBaseVoice, directionalAtten);
                 // QC: LASTATTACKER_ONLY stops here; LASTATTACKER also plays back to the speaker at ATTEN_NONE.
                 if (voiceType == VoiceType.LastAttackerOnly) break;
                 Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNone);
@@ -315,12 +417,12 @@ public static class SoundSystem
             case VoiceType.TeamRadio:
             {
                 // QC: if(fake) { msg_entity = this; X(); } — a faked speaker hears it alone.
-                if (fake) { Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenMin); break; }
+                if (fake) { Emit(emitter, sample, SoundLevels.VolBaseVoice, directionalAtten); break; }
                 // QC: FOREACH_CLIENT(IS_REAL_CLIENT(it) && SAME_TEAM(it, this), …) at the directional atten.
-                if (recipients is null) { Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenMin); break; }
+                if (recipients is null) { Emit(emitter, sample, SoundLevels.VolBaseVoice, directionalAtten); break; }
                 foreach (Entity it in recipients)
                     if (it is not null && Teams.SameTeam(it, emitter))
-                        Emit(it, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenMin);
+                        Emit(it, sample, SoundLevels.VolBaseVoice, directionalAtten);
                 break;
             }
 
@@ -332,15 +434,48 @@ public static class SoundSystem
                 {
                     if (!CvarBool(VoiceCvars.SvAutotaunt)) break;
                 }
+                else
+                {
+                    // QC (globalsound.qc:406-407): a living TAUNT speaker triggers the taunt animation.
+                    // QC: if(IS_PLAYER(this) && !IS_DEAD(this)) animdecide_setaction(this, ANIMACTION_TAUNT, true)
+                    // The port has no animdecide_setaction seam yet (see DodgingMutator.cs:370, WalljumpMutator.cs:128).
+                    // When the anim-action seam is added, wire: if(!emitter.IsCorpse) emitter.AnimAction = AnimAction.Taunt.
+                }
                 if (!CvarBool(VoiceCvars.SvTaunt)) break;
                 if (CvarBool(VoiceCvars.SvGentle)) break;
+
+                // QC taunt attenuation (globalsound.qc:419-421): when cl_voice_directional >= 1,
+                // bound(ATTEN_MIN, cvar_cl_voice_directional_taunt_attenuation, ATTEN_MAX); else ATTEN_NONE.
+                float tauntAtten;
+                if (voiceDirectional >= 1f)
+                {
+                    float tauntAttenCvar = CvarFloat(VoiceCvars.ClVoiceDirectionalTauntAttenuation);
+                    tauntAtten = System.Math.Clamp(tauntAttenCvar, SoundLevels.AttenMin, SoundLevels.AttenMax);
+                }
+                else
+                {
+                    tauntAtten = SoundLevels.AttenNone;
+                }
+
                 // QC: if(fake) { msg_entity = this; X(); } — a faked speaker hears it alone.
-                if (fake) { Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNorm); break; }
+                if (fake) { Emit(emitter, sample, SoundLevels.VolBaseVoice, tauntAtten); break; }
+
+                // QC AUTOTAUNT also rolls a PER-RECIPIENT random < that client's networked cvar_cl_autotaunt
+                // (globalsound.qc:411-426) so each recipient opts in to hearing autotaunts. That gate is a
+                // per-client cvar the port does not network (per-client cvar stores are deferred, like
+                // cl_voice_directional), so we cannot resolve a recipient's cl_autotaunt server-side. Modeling it
+                // with a single global cl_autotaunt (default 0) would silence ALL autotaunts, which is worse than
+                // the prior behavior — so the per-client opt-in is left deferred and the server gates (sv_autotaunt
+                // + sv_taunt + !sv_gentle, applied above) are the authoritative filter, matching the port's
+                // emit-to-all model for the manual TAUNT.
+
                 // QC broadcasts to all real clients (FOREACH_CLIENT(IS_REAL_CLIENT(it))) at the taunt atten.
-                if (recipients is null) { Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNorm); break; }
+                if (recipients is null) { Emit(emitter, sample, SoundLevels.VolBaseVoice, tauntAtten); break; }
                 foreach (Entity it in recipients)
-                    if (it is not null)
-                        Emit(it, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNorm);
+                {
+                    if (it is null) continue;
+                    Emit(it, sample, SoundLevels.VolBaseVoice, tauntAtten);
+                }
                 break;
             }
 
@@ -361,6 +496,10 @@ public static class SoundSystem
     /// <summary>Read a boolean cvar via the facade (a non-zero float is true; unset/no-services is false).</summary>
     private static bool CvarBool(string name)
         => Api.Services is not null && Api.Cvars.GetFloat(name) != 0f;
+
+    /// <summary>Read a float cvar via the facade (0 when no services are installed).</summary>
+    private static float CvarFloat(string name)
+        => Api.Services is not null ? Api.Cvars.GetFloat(name) : 0f;
 
     /// <summary>Reset the shared emitter (test support; also drops a freed emitter reference).</summary>
     public static void Reset() => _globalEmitter = null;

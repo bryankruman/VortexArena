@@ -272,6 +272,14 @@ public sealed class Raptor : Vehicle
     /// <summary>Port of <c>raptor_takeoff</c>: rise vertically while the animation frame ramps 0→25, then hand off to flight.</summary>
     private void Takeoff(Entity vehicle, Entity player, float dt)
     {
+        // QC raptor_takeoff plays SND_VEH_RAPTOR_SPEED on CH_TRIGGER_SINGLE every 7.955812s, sharing the same
+        // vehic.sound_nexttime gate as raptor_frame so the engine note runs continuously through the handoff.
+        if (Api.Services is not null && vehicle.VehSoundNextTime < Time)
+        {
+            vehicle.VehSoundNextTime = Time + 7.955812f; // soundlength("vehicles/raptor_speed.wav")
+            Api.Sound.Play(vehicle, SoundChannel.Item, "vehicles/raptor_speed.wav"); // CH_TRIGGER_SINGLE
+        }
+
         if (vehicle.VehAnimFrame < 25f)
         {
             vehicle.VehAnimFrame += 25f * dt / TakeoffTime;
@@ -394,27 +402,35 @@ public sealed class Raptor : Vehicle
             vehicle.VehReloadStart = Time;
         }
 
-        // --- incoming-missile alarm (raptor_frame): a guided rocket tracking us within range -----------
-        // QC gates this on .bomb1.cnt (once per second); reuse VehSoundNextTime (no engine sound here yet).
-        if (vehicle.VehSoundNextTime < Time)
+        // --- engine fly sound (raptor_frame): SND_VEH_RAPTOR_SPEED looped on CH_TRIGGER_SINGLE every 7.955812s.
+        // QC gates this on vehic.sound_nexttime (the soundlength of vehicles/raptor_speed.wav); same gate the
+        // takeoff phase uses, so the engine note continues seamlessly from takeoff into free flight.
+        if (Api.Services is not null && vehicle.VehSoundNextTime < Time)
         {
-            if (Api.Services is not null)
-            {
-                foreach (Entity proj in Api.Entities.FindByClass("vehicles_projectile"))
-                {
-                    if (proj.Enemy == vehicle && proj.VehGuideMode >= 0
-                        && QMath.VLen(vehicle.Origin - proj.Origin) < 2f * FlareRange)
-                    {
-                        Api.Sound.Play(vehicle, SoundChannel.Voice, "vehicles/alarm.wav");
-                        break;
-                    }
-                }
-            }
-            vehicle.VehSoundNextTime = Time + 1f;
+            vehicle.VehSoundNextTime = Time + 7.955812f; // soundlength("vehicles/raptor_speed.wav")
+            Api.Sound.Play(vehicle, SoundChannel.Item, "vehicles/raptor_speed.wav"); // CH_TRIGGER_SINGLE
         }
 
-        // TODO(port,client): qcsrc/common/vehicles/vehicle/raptor.qc raptor_frame — engine fly sound,
-        //                    EFFECT_RAPTOR_MUZZLEFLASH, vehicle_ammo2/reload2 HUD %, dropmark aux crosshair.
+        // --- incoming-missile alarm (raptor_frame): a guided rocket tracking us within range -----------
+        // QC gates this on .bomb1.cnt (once per second), DISTINCT from the engine-sound gate (.sound_nexttime).
+        if (Api.Services is not null && vehicle.VehAlarmNextTime < Time)
+        {
+            foreach (Entity proj in Api.Entities.FindByClass("vehicles_projectile"))
+            {
+                // QC scans g_projectiles for .enemy == vehic, then requires MIF_GUIDED_TRACKING (VehGuideMode>=0
+                // models the guided-tracking flag) within 2*flare_range.
+                if (proj.Enemy == vehicle && proj.VehGuideMode >= 0
+                    && QMath.VLen(vehicle.Origin - proj.Origin) < 2f * FlareRange)
+                {
+                    Api.Sound.Play(vehicle, SoundChannel.Pain, "vehicles/alarm.wav"); // QC soundto CH_PAIN_SINGLE
+                    break;
+                }
+            }
+            vehicle.VehAlarmNextTime = Time + 1f;
+        }
+
+        // TODO(port,client): qcsrc/common/vehicles/vehicle/raptor.qc raptor_frame — EFFECT_RAPTOR_MUZZLEFLASH,
+        //                    vehicle_ammo2/reload2 HUD %, dropmark aux crosshair, aux lock crosshair color.
     }
 
     /// <summary>QC cannon predict: iterate the impact-time lead solve toward the locked target.</summary>
@@ -468,8 +484,12 @@ public sealed class Raptor : Vehicle
         vehicle.Think = self =>
         {
             if (Time >= when) { Blowup(self); return; }
+            // QC raptor_diethink: a 5%/think chance to pop SND_ROCKET_IMPACT (+ EFFECT_EXPLOSION_SMALL) as the
+            // wreck tumbles. The sound is server-authored, so we play it here; the particle FX stays deferred.
+            if (Api.Services is not null && Prandom.Float() < 0.05f)
+                Api.Sound.Play(self, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav"); // CH_SHOTS, SND_ROCKET_IMPACT
             self.NextThink = Time;
-            // TODO(port,client): random EFFECT_EXPLOSION_SMALL + SND_ROCKET_IMPACT during the tumble.
+            // TODO(port,client): random EFFECT_EXPLOSION_SMALL during the tumble (particle FX).
         };
         vehicle.NextThink = Time;
     }
@@ -644,10 +664,13 @@ public sealed class Raptor : Vehicle
             flare.Think = self =>
             {
                 self.NextThink = Time + 0.1f;
-                // raptor_flare_think: nearby guided rockets aimed at us get re-pointed at the flare.
+                // raptor_flare_think: ALL projectiles aimed at us (it.enemy == this.owner) within flare_range get
+                // re-pointed at the flare on a random()>flare_chase roll. QC applies NO guide-mode filter here —
+                // the MIF_GUIDED_TRACKING gate is only on the incoming-alarm path, not the flare retarget — so we
+                // must not add one (a VehGuideMode>=0 filter would under-match seducible rockets).
                 foreach (Entity proj in Api.Entities.FindByClass("vehicles_projectile"))
                 {
-                    if (proj.Enemy == self.Owner && proj.VehGuideMode >= 0
+                    if (proj.Enemy == self.Owner
                         && QMath.VLen(self.Origin - proj.Origin) < FlareRange
                         && Prandom.Float() > FlareChase)
                         proj.Enemy = self;

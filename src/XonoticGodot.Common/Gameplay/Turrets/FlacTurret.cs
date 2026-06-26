@@ -73,8 +73,10 @@ public sealed class FlacTurret : Turret
     }
 
     public override void Spawn(Entity e)
+        // QC flac.qc tr_setup: `it.damage_flags |= TFL_DMG_HEADSHAKE` — a hit jolts the head off-aim by ±take on
+        // pitch+yaw (TurretAI.Damage applies it, gated on st.HeadShake; same as machinegun/plasma/mlrs turrets).
         => TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
-            AmmoMax, AmmoRecharge, shotVolly: 0, respawnTime: RespawnTime, energyAmmo: false);
+            AmmoMax, AmmoRecharge, shotVolly: 0, respawnTime: RespawnTime, energyAmmo: false, headShake: true);
 
     public override void Think(Entity e)
     {
@@ -104,6 +106,12 @@ public sealed class FlacTurret : Turret
 
         Entity shell = TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 5f, health: 0f,
             ShotDamage, edgeDamage: ShotDamage, ShotRadius, ShotForce, DeathTypes.TurretFlac, spread: ShotSpread);
+        // QC flac_weapon.qc:26 networks the shell as PROJECTILE_HAGAR (NOT PROJECTILE_FLAC — that id is the
+        // Seeker's, seeker.qc:304). The shared TurretSpawn.Projectile gives every turret missile the generic
+        // className "turret_projectile", which the client ProjectileCatalog.Classify can't key on; stamping the
+        // shell netname "hagar" makes the networked catalog key resolve to ProjectileType.Hagar so it draws the
+        // HAGAR_ROCKET trail at scale 0.75, exactly as Base does.
+        shell.NetName = "hagar";
 
         // Timed fuse: detonate at the predicted intercept (QC nextthink = time + tur_impacttime + jitter). At
         // detonation, if the enemy is within shot_radius*3, snap the burst point onto it + a random offset so
@@ -137,8 +145,15 @@ public sealed class FlacTurret : Turret
         if (Api.Services is not null)
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/hagar_fire.wav");
 
-        // NOTE (client-render): PROJECTILE_HAGAR trail, EFFECT_BLASTER_MUZZLEFLASH, head frame cycle. The
-        // server-side fire (flac_weapon.qc) is done above.
+        // QC flac_weapon.qc:30 — Send_Effect(EFFECT_BLASTER_MUZZLEFLASH, tur_shotorg, tur_shotdir_updated*1000, 1).
+        EffectEmitter.Emit("BLASTER_MUZZLEFLASH", st.ShotOrg, dir * 1000f, 1);
+
+        // QC flac_weapon.qc:32-37 (turret-AI branch only): cycle the head model frame each shot —
+        // ++tur_head.frame; if (frame >= 4) frame = 0. The port has no separate tur_head sub-entity, so — like
+        // PlasmaTurret — the cycle runs on the turret edict's own networked Entity.Frame (4-frame loop 0..3).
+        turret.Frame += 1f;
+        if (turret.Frame >= 4f)
+            turret.Frame = 0f;
     }
 }
 
@@ -191,7 +206,7 @@ public sealed class FlacWeapon : Weapon
     /// <summary>
     /// IS_PLAYER branch of <c>METHOD(FlacAttack, wr_think)</c>: fires a flak shell on a fixed 10 s fuse.
     /// The QC flow is: <c>weapon_prepareattack → setup_shot → turret_projectile → override nextthink →
-    /// Send_Effect (muzzle flash, client-render only) → no head-frame (isPlayer branch skips it)</c>.
+    /// Send_Effect (BLASTER muzzle flash) → no head-frame (isPlayer branch skips it)</c>.
     /// </summary>
     public override void WrThink(Entity actor, WeaponSlot slot, FireMode fire)
     {
@@ -220,6 +235,9 @@ public sealed class FlacWeapon : Weapon
             size: 5f, health: 0f,
             ShotDamage, edgeDamage: ShotDamage, ShotRadius, ShotForce,
             DeathTypes.TurretFlac, spread: ShotSpread);
+        // QC flac_weapon.qc:26 networks the shell as PROJECTILE_HAGAR — netname "hagar" makes the client
+        // ProjectileCatalog resolve the HAGAR_ROCKET trail (see the turret branch in FlacTurret.Attack).
+        shell.NetName = "hagar";
 
         // actor.tur_impacttime = 10 (fixed fuse, QC flac_weapon.qc:20).
         // QC: proj.nextthink = time + actor.tur_impacttime + (random()*0.01 - random()*0.01)
@@ -245,10 +263,14 @@ public sealed class FlacWeapon : Weapon
             TurretAI.Forget(self);
         };
 
-        // QC: Send_Effect(EFFECT_BLASTER_MUZZLEFLASH, …) — client-render only, deferred.
         // Play fire sound (SND_FlacAttack_FIRE = W_Sound("hagar_fire"), CH_WEAPON_B/CH_WEAPON_A).
         if (Api.Services is not null)
             Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/hagar_fire.wav");
+
+        // QC flac_weapon.qc:30 — Send_Effect(EFFECT_BLASTER_MUZZLEFLASH, tur_shotorg, tur_shotdir_updated*1000, 1).
+        // This Send_Effect runs unconditionally (after the isPlayer block), so the player form flashes too; only
+        // the head-frame cycle (qc:32-37) is gated `if (!isPlayer)` and is correctly omitted here.
+        EffectEmitter.Emit("BLASTER_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     /// <summary>QC <c>weapon_thinkf(…, WFRAME_FIRE1, 0.5, w_ready)</c> — return to READY after the 0.5 s animation.</summary>

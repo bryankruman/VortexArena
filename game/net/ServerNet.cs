@@ -922,8 +922,12 @@ public sealed class ServerNet : IDisposable
         bool intermission = _world.Intermission.Running;
         // QC Set_NextMap / Send_NextMap_To_Player: the upcoming map name → the scoreboard "Next map:" line.
         string nextMap = _world.NextMapBroadcast ?? "";
+        // QC STAT(OVERTIMES) (common/stats.qh): 0 = none, N = "Overtime #N", OVERTIME_SUDDENDEATH = "Sudden Death".
+        // Drives the TIMER panel's persistent overtime/sudden-death subtext (the one-shot center notifications are
+        // sent separately by the overtime cascade).
+        int overtimes = _world.OverTime.Overtimes;
 
-        string key = $"{gameStart:F2}|{timeLimitSec:F1}|{(warmup ? 1 : 0)}|{warmupLimit:F1}|{(intermission ? 1 : 0)}|{nextMap}";
+        string key = $"{gameStart:F2}|{timeLimitSec:F1}|{(warmup ? 1 : 0)}|{warmupLimit:F1}|{(intermission ? 1 : 0)}|{nextMap}|{overtimes}";
         if (key == _lastMatchStateKey && _world.Time < _nextMatchStateSend)
             return;
         _lastMatchStateKey = key;
@@ -937,6 +941,7 @@ public sealed class ServerNet : IDisposable
         _scratchWriter.WriteFloat(warmupLimit);
         _scratchWriter.WriteBool(intermission);
         _scratchWriter.WriteString(nextMap);
+        _scratchWriter.WriteLong(overtimes); // 32-bit: OVERTIME_SUDDENDEATH (1<<24) exceeds the 24-bit range
 
         foreach (PeerState st in _peers.Values)   // real network peers (matches BroadcastSnapshots; excludes bots)
             if (st.Accepted && st.Player is not null)
@@ -1829,7 +1834,17 @@ public sealed class ServerNet : IDisposable
                 // into this shared snapshot byte would leak hunter identity to prey mid-round (cl_survival.qc derives
                 // e.colormap from the disclosure-gated survival_status, not server-side).
                 Colormap = (int)p.Team,
-                Weapon = p.ActiveWeaponId, // renders the remote player's held weapon (QC wepent)
+                // QC wepent: the remote third-person held weapon model follows the EXTERIOR weapon entity's
+                // weaponname (CL_ExteriorWeaponentity_Think → w_ent.weaponname), which is the weapon slot's
+                // ACTIVE/RAISING weapon (m_weapon) — set only at the WS_CLEAR→WS_RAISE transition in the switch
+                // state machine, NOT the switch target. The port's p.ActiveWeaponId is the immediate switch
+                // mirror (Inventory.SwitchWeapon sets it at once), so during the drop window it would jump the
+                // remote's held model to the new weapon before the old one finished lowering. Network the slot-0
+                // CurrentWeaponId (the weapon actually held this tick, post-lower) so the remote model snaps to
+                // the new weapon at the same moment Base's exterior model does — the held weapon raise/lower
+                // transition is reproduced. Falls back to ActiveWeaponId before the slot is first driven (a fresh
+                // spawn / a non-weapon-sim entity whose CurrentWeaponId is still -1).
+                Weapon = HeldWeaponId(p),
                 Model = p.Model,           // QC .model (playermodel) — the client loads the skeletal IQM by name
                 Flags = (p.OnGround ? NetEntityFlags.OnGround : 0)
                       | (p.IsDead ? NetEntityFlags.Dead : 0)
@@ -1848,7 +1863,16 @@ public sealed class ServerNet : IDisposable
                 NadeTimer = p.NadeTimer,
                 ReviveProgress = p.ReviveProgress,
             };
-            if (teleported)
+            // QC PutPlayerInServer sets effects |= EF_TELEPORT_BIT on every (re)spawn (client.qc:630), which tells
+            // the engine to CANCEL position interpolation for that update so the model snaps to its spawn spot
+            // instead of sliding across the map. The port carries that as NetEntityFlags.Teleported. The distance
+            // heuristic (`teleported`) catches the common far jump, but a respawn that lands WITHIN
+            // TeleportTickDistance of the death spot would still lerp — so also raise the flag on the explicit
+            // spawn/teleport/board signal (Entity.AntilagNeedsClear → `explicitClear`), the same one-shot
+            // PutPlayerInServer raises. This is the no-interp half of EF_TELEPORT_BIT, faithful regardless of jump
+            // distance (EF_RESTARTANIM_BIT — anim restart — is a no-op for the port's stateless procedural
+            // LocomotionBlend, which re-derives the pose every frame from live velocity/flags).
+            if (teleported || explicitClear)
                 s.Flags |= NetEntityFlags.Teleported;
             _lastSnapOrigin[p] = p.Origin;
 
@@ -1955,6 +1979,23 @@ public sealed class ServerNet : IDisposable
         return (
             new NVec3(MathF.Min(lo.X, origin.X - minHalf), MathF.Min(lo.Y, origin.Y - minHalf), MathF.Min(lo.Z, origin.Z - minHalf)),
             new NVec3(MathF.Max(hi.X, origin.X + minHalf), MathF.Max(hi.Y, origin.Y + minHalf), MathF.Max(hi.Z, origin.Z + minHalf)));
+    }
+
+    /// <summary>
+    /// The weapon a player is ACTUALLY holding (raising/in-use) this tick — the QC <c>wepent</c> exterior weapon's
+    /// <c>m_weapon</c> (CL_ExteriorWeaponentity_Think reads <c>w_ent.weaponname</c>, which the switch state machine
+    /// sets to the new weapon only at the WS_CLEAR→WS_RAISE transition, server/weapons/weaponsystem.qc:547). The
+    /// port drives that in <see cref="XonoticGodot.Common.Gameplay.WeaponFireDriver"/> via slot-0
+    /// <c>CurrentWeaponId</c>, which (unlike the immediately-mirrored <see cref="Player.ActiveWeaponId"/>) still
+    /// holds the OLD weapon through the drop window — so the remote third-person held model lowers the old weapon
+    /// and only snaps to the new one when the raise begins, exactly like Base's exterior weapon entity. Falls back
+    /// to <see cref="Player.ActiveWeaponId"/> before the slot has been driven (CurrentWeaponId still -1 on a fresh
+    /// spawn) so a just-spawned player still shows its weapon immediately.
+    /// </summary>
+    private static int HeldWeaponId(Player p)
+    {
+        int held = p.WeaponState(new WeaponSlot(0)).CurrentWeaponId;
+        return held >= 0 ? held : p.ActiveWeaponId;
     }
 
     /// <summary>

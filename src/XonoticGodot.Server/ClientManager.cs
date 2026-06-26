@@ -146,6 +146,10 @@ public sealed class ClientManager
     /// <summary>Fired before a client is removed (QC ClientDisconnect head) — finalize stats, <c>:part:</c>, cleanup.</summary>
     public Action<Player>? OnClientDisconnect { get; set; }
 
+    /// <summary>Fired AFTER a client is fully removed from the roster (QC the tail of ClientDisconnect, e.g.
+    /// <c>TeamBalance_RemoveExcessPlayers(this)</c> at client.qc:3057) — the leaver is already out of the roster.</summary>
+    public Action? OnAfterClientDisconnect { get; set; }
+
     /// <summary>
     /// QC <c>anticheat_spectatecopy</c> (the last line of server/client.qc <c>SpectateCopy</c>, client.qc:1837):
     /// after the regular spectate mirror, a following observer's body angle inherits the spectatee's
@@ -621,6 +625,11 @@ public sealed class ClientManager
         spectator.SetResourceExplicit(ResourceType.Armor, target.GetResource(ResourceType.Armor));
         spectator.ActiveWeaponId = target.ActiveWeaponId;
 
+        // QC SpectateCopy (server/client.qc:1820): STAT(PRESSED_KEYS, this) = STAT(PRESSED_KEYS, spectatee) — a
+        // following observer inherits the watched player's held-key bitset so the pressed-keys / strafe HUD shows
+        // the spectatee's keys. GetPressedKeys keeps target.PressedKeys current each server frame.
+        spectator.PressedKeys = target.PressedKeys;
+
         // QC SpectateCopy tail (server/client.qc:1837): anticheat_spectatecopy(this, spectatee) overrides the
         // observer's body angle with the spectatee's evade-tracked view angle. Runs last so it wins over the
         // raw .Angles copy above; no-op until the host wires it.
@@ -777,6 +786,10 @@ public sealed class ClientManager
         // its score mean here (the departed client is already out of the roster, so the mean excludes them).
         var disconnectArgs = new MutatorHooks.ClientDisconnectArgs(p);
         MutatorHooks.ClientDisconnect.Call(ref disconnectArgs);
+
+        // QC ClientDisconnect tail (client.qc:3057): TeamBalance_RemoveExcessPlayers(this) — re-check 2-team
+        // balance now that this player has left (the leaver is already out of the roster above, so no ignore arg).
+        OnAfterClientDisconnect?.Invoke();
         return true;
     }
 

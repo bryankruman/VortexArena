@@ -113,11 +113,18 @@ public sealed class PlasmaDualTurret : PlasmaTurret
         else
         {
             // Plasma ball with the dual unit's shot_spread (0.015). Same damage/radius/speed/force as single.
-            TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
+            Entity ball = TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
                 ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, DeathTypes.TurretPlasma, spread: DualShotSpread);
+            // QC plasma_weapon.qc (shared by plasma_dual): PROJECTILE_ELECTRO_BEAM → blue plasma client trail.
+            ball.NetName = "electro_bolt";
 
             if (Api.Services is not null)
+            {
                 Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/hagar_fire.wav");
+                // QC plasma_weapon.qc:23 (shared PlasmaAttack.wr_think, used by dual via SUPER): the blaster
+                // muzzle flash, emitted unconditionally after the projectile.
+                EffectEmitter.Emit("BLASTER_MUZZLEFLASH", st.ShotOrg, dir * 1000f, 1);
+            }
 
             // SUPER(PlasmaTurret).tr_attack contains `if (frame == 0) frame = 1` (plasma.qc:37-38); it runs ONLY
             // on the non-instagib branch (the instagib branch inlines its own code and never calls SUPER).
@@ -129,8 +136,9 @@ public sealed class PlasmaDualTurret : PlasmaTurret
         // networked Entity.Frame (the HellionTurret/HkTurret pattern); tr_think (in Think) advances + wraps it.
         turret.Frame += 1f;
 
-        // NOTE (client-render, presentation): the muzzle/beam effects and the two-barrel tag_fire alternation on
-        // plasmad.md3 are CSQC; the port has no attached head-bone model, so shots leave the single computed
-        // ShotOrg muzzle. The server-authoritative frame state above is now faithful (HellionTurret pattern).
+        // The muzzle/beam effects are now emitted (BLASTER_MUZZLEFLASH on the ball branch; VORTEX_MUZZLEFLASH +
+        // team-coloured VAPORIZER_BEAM on the instagib branch via FireInstagibBeam). Remaining client-render gap:
+        // the two-barrel tag_fire alternation on plasmad.md3 needs an attached head-bone model, so shots leave the
+        // single computed ShotOrg muzzle. The server-authoritative frame state above is faithful (HellionTurret pattern).
     }
 }

@@ -101,7 +101,7 @@ public static class NotifTokens
 
     // ---- helpers (QC util.qc / all.qh) ----
 
-    private static bool ShowLocation() => CvarBool("notification_show_location", true);
+    private static bool ShowLocation() => CvarBool("notification_show_location", false);
     private static bool ShowSprees() => CvarBool("notification_show_sprees", true);
     private static bool ShowSpreesCenter() => CvarBool("notification_show_sprees_center", true);
     private static int ShowSpreesInfo() => CvarInt("notification_show_sprees_info", 3);
@@ -153,7 +153,7 @@ public static class NotifTokens
                 if (item.Count == spree)
                     return item.Center + " ";
             // non-milestone: show a generic spree count unless special-only
-            if (!CvarBool("notification_show_sprees_center_specialonly", false))
+            if (!CvarBool("notification_show_sprees_center_specialonly", true))
                 return $"{spree} frag spree! ";
             return "";
         }
@@ -177,7 +177,7 @@ public static class NotifTokens
                     foreach (var item in SpreeList)
                         if (item.Count == spree)
                             return $"{player}{nl} ";
-                    if (!CvarBool("notification_show_sprees_info_specialonly", false))
+                    if (!CvarBool("notification_show_sprees_info_specialonly", true))
                         return $"{player}^K1 has {spree} frags in a row! {nl}";
                     return "";
                 }
@@ -189,7 +189,7 @@ public static class NotifTokens
                     return $", ending their {spree} frag spree";
                 return "";
             case -2:
-                if (spree > 1)
+                if (spree > 1 && (ShowSpreesInfo() & 1) != 0)
                     return $", losing their {spree} frag spree";
                 return "";
         }
@@ -223,7 +223,27 @@ public static class NotifTokens
         return "";
     }
 
-    private static string WeaponAmmoName(int id) => "ammo"; // QC resolves ammo_type.m_name; generic here
+    // QC notif_arg_item_wepammo: weapon (f1) ammo type name (cells/rockets/shells/bullets/fuel).
+    // Returns the ammo type's m_name in lowercase, or empty if no ammo.
+    private static string WeaponAmmoName(int id)
+    {
+        if (id >= 0 && id < Registry<Weapon>.Count)
+        {
+            var w = Registry<Weapon>.ById(id);
+            if (w.AmmoType == ResourceType.None)
+                return ""; // ammo-less weapon
+            return w.AmmoType switch
+            {
+                ResourceType.Shells => "shells",
+                ResourceType.Bullets => "bullets",
+                ResourceType.Rockets => "rockets",
+                ResourceType.Cells => "cells",
+                ResourceType.Fuel => "fuel",
+                _ => "",
+            };
+        }
+        return "";
+    }
 
     // QC item_buffname: REGISTRY_GET(StatusEffects, f1).m_name. Buffs live in StatusEffectsCatalog.
     private static string BuffName(int id)
@@ -250,16 +270,18 @@ public static class NotifTokens
     private static bool CvarBool(string name, bool fallback)
     {
         if (Api.Services is null) return fallback;
-        // The facade returns 0 for an unset cvar, indistinguishable from an explicit 0; a non-zero value
-        // means "on", and an unset cvar falls back to the QC autocvar default (these flags default on).
-        float v = Api.Cvars.GetFloat(name);
-        return v != 0f || fallback;
+        // An UNSET cvar reads as an empty string (CvarService.GetString of a missing key); only then do we
+        // fall back to the QC autocvar default. An explicitly-set cvar (incl. an explicit "0") is honored,
+        // so we never force a flag on/off when the user set it. Same unset-detection convention as
+        // MovementParameters.Exists / PhysicsPreset.
+        if (Api.Cvars.GetString(name).Length == 0) return fallback;
+        return Api.Cvars.GetFloat(name) != 0f;
     }
 
     private static int CvarInt(string name, int fallback)
     {
         if (Api.Services is null) return fallback;
-        float v = Api.Cvars.GetFloat(name);
-        return v != 0f ? (int)v : fallback;
+        if (Api.Cvars.GetString(name).Length == 0) return fallback;
+        return (int)Api.Cvars.GetFloat(name);
     }
 }

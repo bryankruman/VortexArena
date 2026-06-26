@@ -161,6 +161,15 @@ public sealed class Commands
     public Action? LastLevelHandler { get; set; }
 
     /// <summary>
+    /// QC <c>localcmd("\nsv_vote_gametype_hook_all\n")</c> and
+    /// <c>localcmd("\nsv_vote_gametype_hook_", gametype_string, "\n")</c> from <c>GameTypeVote_SetGametype</c>:
+    /// called twice after the gametype vote finishes — once with <c>"all"</c> and once with the winning gametype
+    /// name (e.g. <c>"dm"</c>). The host may wire this to execute any per-gametype server-side alias. When
+    /// unwired the switch still happens (gametype cvar is set), but the aliases don't run.
+    /// </summary>
+    public Action<string>? GameTypeVoteHookHandler { get; set; }
+
+    /// <summary>
     /// The sim-clock deferred-command queue (DP <c>defer</c> / <c>Cbuf_Execute_Deferred</c>). Backs the
     /// <c>defer</c> + <c>nextframe</c> commands; pumped each server tick by <c>GameWorld.OnStartFrame</c>
     /// (<c>Commands.Deferred.Pump(Time, cmd =&gt; Commands.Execute(cmd, isServerConsole: true))</c>). The passed
@@ -665,6 +674,10 @@ public sealed class Commands
         Register("join", "join — join the game as a player", CmdJoin);
         Register("spectate", "spectate — become a spectator", CmdSpectate);
         Register("selectteam", "selectteam <red|blue|yellow|pink|auto> — choose a team", CmdSelectTeam);
+        // QC the engine `color` command → SV_ChangeTeam (server/teamplay.qc:1340): in DP `color`/`topcolor`/
+        // `bottomcolor` are engine-handled (host_cmd.c) and call SV_ChangeTeam, which only re-colors in a NON-team
+        // game. The port routes it through the command bus so the clientcolors recolor is reachable.
+        Register("color", "color <pants> [shirt] — set your player color (FFA only)", CmdColor);
         Register("kill", "kill — suicide (respawn)", CmdKill);
         Register("ready_up", "ready_up — alias of ready", CmdReady);
 
@@ -699,6 +712,10 @@ public sealed class Commands
         Register("usetarget", "usetarget <targetname> — fire a named target (needs sv_cheats)", CmdCheat);
         Register("killtarget", "killtarget <targetname> — remove a named target (needs sv_cheats)", CmdCheat);
         Register("teleporttotarget", "teleporttotarget <targetname> — teleport to a named teleport target (needs sv_cheats)", CmdCheat);
+        Register("pointparticles", "pointparticles <effect> <pos 0..1> <vel> <countmul> — emit a point effect on the aim line (needs sv_cheats)", CmdCheat);
+        Register("trailparticles", "trailparticles <effect> — emit a trail effect along the aim line (needs sv_cheats)", CmdCheat);
+        Register("make", "make <model> <mode 0|1|2> — spawn a func_breakable at the aim point (needs sv_cheats)", CmdCheat);
+        Register("penalty", "penalty <duration> <reason> — impose a race penalty time (needs sv_cheats)", CmdCheat);
 
         // ---- sandbox (QC the SV_ParseClientCommand hook in common/mutators/mutator/sandbox/sv_sandbox.qc). The
         //      client `sandbox` alias emits `cmd g_sandbox <sub> …`; route it to the SandboxMutator's HandleCommand
@@ -1336,12 +1353,14 @@ public sealed class Commands
         Player p = ctx.Caller;
         // QC Join_Try (client.qc:2274): a non-INGAME client in g_playban_list cannot (re)join — the play-ban's
         // load-bearing enforcement. A player who isn't currently in play is one sitting as observer/spectator;
-        // a live (dead) player is already INGAME and falls through to respawn. The CENTER_JOIN_PLAYBAN center-print
-        // is the HUD layer's job; the command-output channel surfaces the sprint text.
+        // a live (dead) player is already INGAME and falls through to respawn.
+        // Base: Send_Notification(NOTIF_ONE_ONLY, this, MSG_CENTER, CENTER_JOIN_PLAYBAN) then return false.
+        // The port sends the same center notification (no sprint — Base does not sprint here).
         if ((p.IsObserver || p.FragsStatus == Player.FragsSpectator)
             && Bans.PlayerInList(p, "g_playban_list"))
         {
-            ctx.Print("You are banned from joining the game on this server.");
+            if (!p.IsBot)
+                NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Center, "JOIN_PLAYBAN");
             return true;
         }
         if (p.FragsStatus == Player.FragsSpectator)
@@ -1454,7 +1473,11 @@ public sealed class Commands
         // Warmup, bots, and a disabled cvar are allowed through inside the gate.
         if (!_world.Teamplay.IsTeamAllowedForSwitch(caller, team, _world.Clients.Players, _world.Warmup.WarmupStage))
         {
+            // QC cmd.qc:754-755: a rejected switch to a stronger/larger team prints the INFO line to everyone
+            // and a CENTER nag to the would-be switcher (CPID_PREVENT_JOIN group).
             ctx.Print("You cannot change to a larger team.");
+            NotificationSystem.Send(NotifBroadcast.OneOnly, caller, MsgType.Info, "TEAMCHANGE_STRONGERTEAM");
+            NotificationSystem.Send(NotifBroadcast.OneOnly, caller, MsgType.Center, "TEAMCHANGE_STRONGERTEAM");
             return true;
         }
         // QC cmd.qc:764 ClientKill_TeamChange(caller, team_num): defer the team move through the g_balance_kill_delay
@@ -1462,6 +1485,30 @@ public sealed class Commands
         // run by KillCountdown.PerformTeamChange at expiry (or immediately when the delay is <= 0).
         _world.KillCountdown.Begin(caller, team);
         ctx.Print($"changing to {Teams.Name(team)}");
+        return true;
+    }
+
+    /// <summary>
+    /// QC the engine <c>color</c> command → <c>SV_ChangeTeam</c> (server/teamplay.qc:1340). DP's engine accepts
+    /// either one combined value (<c>color N</c>, the packed <c>16*shirt + pants</c>) or two values
+    /// (<c>color &lt;pants&gt; &lt;shirt&gt;</c>). We decode to the packed clientcolors and call
+    /// <see cref="Teamplay.ChangeTeam"/>, which only re-colors in a NON-team game (in teamplay the color is owned
+    /// by the team). A no-op (with no error) in a team game, matching SV_ChangeTeam's early-out.
+    /// </summary>
+    private bool CmdColor(CommandContext ctx)
+    {
+        if (ctx.Caller is null) { ctx.Print("color is a client command"); return true; }
+        if (ctx.ArgCount < 2) { ctx.Print("usage: color <pants> [shirt]"); return true; }
+
+        int packed;
+        if (ctx.ArgCount >= 3 && int.TryParse(ctx.Arg(2), out int shirt) && int.TryParse(ctx.Arg(1), out int pants))
+            // Two-arg form: pants (low nibble) + shirt (high nibble) — the engine `color <bottom> <top>` form.
+            packed = (16 * (shirt & 0x0F)) + (pants & 0x0F);
+        else if (int.TryParse(ctx.Arg(1), out int combined))
+            packed = combined & 0xFF;
+        else { ctx.Print("usage: color <pants> [shirt]"); return true; }
+
+        _world.Teamplay.ChangeTeam(ctx.Caller, packed);
         return true;
     }
 
@@ -1968,7 +2015,8 @@ public sealed class Commands
     private bool CmdCheat(CommandContext ctx)
     {
         if (ctx.Caller is null) { ctx.Print("cheat commands are client-only"); return true; }
-        if (!_world.Cheats.Command(ctx.Caller, ctx.Argv))
+        // Pass the live gametype so the `penalty` cheat can reach the active Race instance (race_ImposePenaltyTime).
+        if (!_world.Cheats.Command(ctx.Caller, ctx.Argv, _world.GameType))
             ctx.Print("Cheats are not enabled on this server (sv_cheats).");
         return true;
     }
@@ -2043,15 +2091,157 @@ public sealed class Commands
     // introspection (QC teamstatus/who/time/info/cvar_changes)
     // =============================================================================================
 
+    // QC Score_NicePrint column-layout constants (server/scores.qc:826-827).
+    private const int NicePrintNameWidth = 22;   // NAMEWIDTH
+    private const int NicePrintScoresWidth = 58; // SCORESWIDTH
+
+    /// <summary>
+    /// QC <c>CommonCommand_teamstatus</c> (server/command/common.qc:593) → <c>Score_NicePrint(caller)</c>
+    /// (server/scores.qc:914): print a formatted text standings table to the requesting player. Reproduces the
+    /// QC column layout faithfully — a per-team header row (team-colored name + each team-score slot), then each
+    /// player (name padded/truncated to NAMEWIDTH + every labeled SP_* column), then the spectators block. The
+    /// per-column width is <c>bound(6, floor(SCORESWIDTH / labeledColumns - 1), 9)</c> and column values are
+    /// color-coded by their sort priority (primary ^3 / secondary ^5 / other ^7) via Score_NicePrint_ItemColor.
+    /// </summary>
     private bool CmdTeamStatus(CommandContext ctx)
     {
-        if (_world.Teamplay.IsTeamGame)
-            foreach (int t in Teams.Active(_world.Teamplay.TeamCount))
-                ctx.Print($"{Teams.Name(t),-8} score {_world.Scores.TeamScore(t),4}  players {_world.Teamplay.CountTeam(t, _world.Clients.Players)}");
-        foreach (var row in _world.Scores.Sorted())
-            ctx.Print($"  {row.Player.NetName,-16} {Teams.Name((int)row.Player.Team),-8} score {row.Score,4}  k/d {row.Kills}/{row.Deaths}");
+        // QC: t = count of labeled Scores columns; w = bound(6, floor(SCORESWIDTH/t - 1), 9).
+        var fields = XonoticGodot.Common.Gameplay.Scoring.GameScores.Fields;
+        int labeled = 0;
+        foreach (var f in fields)
+            if (f.Label != "") ++labeled;
+        int w = labeled > 0
+            ? Math.Clamp((int)MathF.Floor((float)NicePrintScoresWidth / labeled - 1), 6, 9)
+            : 6;
+
+        bool teamGame = _world.Teamplay?.IsTeamGame ?? false;
+
+        // QC: p = PlayerScore_Sort(...); t = -1; if (!teamscores) Score_NicePrint_Team(to, -1, w);
+        var sorted = _world.Scores.Sorted();
+        int lastTeam = -1;
+        if (!teamGame)
+            NicePrintTeamHeader(ctx, -1, w, fields);
+        foreach (var row in sorted)
+        {
+            int team = (int)row.Player.Team;
+            // QC: in teamplay, emit a team header each time the running team changes.
+            if (teamGame && lastTeam != team)
+                NicePrintTeamHeader(ctx, team, w, fields);
+            NicePrintPlayer(ctx, row, w, fields);
+            lastTeam = team;
+        }
+
+        // QC: FOREACH_CLIENT(!IS_PLAYER(it), ...) — the spectators block (header once, then each spectator).
+        bool printedSpecHeader = false;
+        foreach (Player p in _world.Clients.Players)
+        {
+            if (p.FragsStatus != Player.FragsSpectator) continue; // == !IS_PLAYER (observer/spectator)
+            if (!printedSpecHeader) { ctx.Print("Spectators:"); printedSpecHeader = true; }
+            ctx.Print("  " + NicePrintPlayerName(p));
+        }
         return true;
     }
+
+    /// <summary>QC <c>Score_NicePrint_ItemColor(vflags)</c>: primary ^3 / secondary ^5 / other ^7.</summary>
+    private static string NicePrintItemColor(XonoticGodot.Common.Gameplay.Scoring.ScoreFlags fl)
+    {
+        if ((fl & XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioPrimary) != 0) return "^3";
+        if ((fl & XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioSecondary) != 0) return "^5";
+        return "^7";
+    }
+
+    /// <summary>QC <c>Team_ColoredFullName(teamid)</c>: "^cColor Team^7" for a NUM_TEAM_* code.</summary>
+    private static string NicePrintTeamColoredFullName(int team)
+    {
+        string code = team switch
+        {
+            Teams.Red => "^1",
+            Teams.Blue => "^4",
+            Teams.Yellow => "^3",
+            Teams.Pink => "^6",
+            _ => "^7",
+        };
+        return code + Teams.Name(team) + " Team^7";
+    }
+
+    /// <summary>QC <c>playername(p.netname, p.team, false)</c>: the uncolored display name (raw netname).</summary>
+    private static string NicePrintPlayerName(Player p) => p.NetName;
+
+    /// <summary>QC <c>Score_NicePrint_Team</c> (server/scores.qc:838): the per-team header row.</summary>
+    private void NicePrintTeamHeader(CommandContext ctx, int team, int w,
+        IReadOnlyList<XonoticGodot.Common.Gameplay.Scoring.ScoreField> fields)
+    {
+        var sb = new StringBuilder();
+        // QC: if the team has a scorekeeper, prefix the colored team name + each labeled team-score slot;
+        // else just "Scores:". team == -1 (the no-teamplay path) has no scorekeeper → "Scores:".
+        if (team >= 1)
+        {
+            sb.Append(NicePrintTeamColoredFullName(team));
+            for (int slot = 0; slot < XonoticGodot.Common.Gameplay.Scoring.GameScores.MaxTeamScore; ++slot)
+            {
+                if (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamLabel(slot) == "") continue;
+                var fl = XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamFlags(slot);
+                // slot 0 (ST_SCORE) honors the gametype's owned total via Scores.TeamScore; other slots read
+                // the GameScores team store directly (QC reads sk.(teamscores(i)) for every slot).
+                int sc = slot == XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamSlotScore
+                    ? _world.Scores.TeamScore(team)
+                    : XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamScore(team, slot);
+                sb.Append(' ').Append(NicePrintItemColor(fl))
+                  .Append(XonoticGodot.Common.Gameplay.Scoring.GameScores.ScoreString(fl, sc, 0));
+            }
+        }
+        else
+        {
+            sb.Append("Scores:");
+        }
+
+        // QC: strpad(max(0, NAMEWIDTH - strlennocol(s)), "") — pad the name region out to NAMEWIDTH.
+        int pad = Math.Max(0, NicePrintNameWidth - VisibleLen(sb.ToString()));
+        sb.Append(' ', pad);
+
+        // QC: each labeled column header, truncated to w chars, left-justified to width w (strpad(-w, ...)).
+        foreach (var f in fields)
+        {
+            if (f.Label == "") continue;
+            string head = f.Label.Length > w ? f.Label.Substring(0, w) : f.Label;
+            sb.Append(' ').Append(NicePrintItemColor(f.Flags)).Append(head.PadRight(w));
+        }
+        ctx.Print(sb.ToString());
+    }
+
+    /// <summary>QC <c>Score_NicePrint_Player</c> (server/scores.qc:873): one player's standings row.</summary>
+    private void NicePrintPlayer(CommandContext ctx, PlayerScoreRow row, int w,
+        IReadOnlyList<XonoticGodot.Common.Gameplay.Scoring.ScoreField> fields)
+    {
+        // QC: s = "  " + playername; then loop — i = strlennocol(s) - NAMEWIDTH; while i > 0 trim i raw chars
+        // off the end and recompute (color codes mean a raw trim may not drop the visible length by i); once
+        // i <= 0, pad |i| trailing spaces and break.
+        string s = "  " + NicePrintPlayerName(row.Player);
+        for (;;)
+        {
+            int i = VisibleLen(s) - NicePrintNameWidth;
+            if (i > 0)
+                s = s.Substring(0, Math.Max(0, s.Length - i));
+            else
+            {
+                s += new string(' ', -i);
+                break;
+            }
+        }
+        var sb = new StringBuilder(s);
+
+        foreach (var f in fields)
+        {
+            if (f.Label == "") continue;
+            int sc = XonoticGodot.Common.Gameplay.Scoring.GameScores.Get(row.Player, f);
+            string val = XonoticGodot.Common.Gameplay.Scoring.GameScores.ScoreString(f.Flags, sc, 0);
+            sb.Append(' ').Append(NicePrintItemColor(f.Flags)).Append(val.PadRight(w));
+        }
+        ctx.Print(sb.ToString());
+    }
+
+    /// <summary>QC <c>strlennocol</c>: visible length, ignoring ^-color codes.</summary>
+    private static int VisibleLen(string s) => XonoticGodot.Common.Diagnostics.Log.StripColors(s).Length;
 
     private bool CmdWho(CommandContext ctx)
     {

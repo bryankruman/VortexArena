@@ -145,6 +145,11 @@ public static class Cvars
         new("teamplay", "0", Notify),
         new("g_balance_teams", "1", Save, "automatic team balance"),
         new("g_balance_teams_prevent_imbalance", "1", Save),
+        // QC server/teamplay.qc TeamBalance_RemoveExcessPlayers (xonotic-server.cfg:295-296): on a leave that
+        // unbalances a 2-team match, move the NEWEST joiner on the overfull team to spectators — after a
+        // g_balance_teams_remove_wait-second warning (0 = immediately). Default off in Base.
+        new("g_balance_teams_remove", "0", Save, "move the newest excess player to spectators on a leave (2-team)"),
+        new("g_balance_teams_remove_wait", "10", Save, "seconds to warn before moving an excess player to spectators"),
         new("g_balance_teams_skill", "1", Save, "weigh balance by player skill, not just count"),
         // QC xonotic-server.cfg:297-298: skill-weighting tuning. The significance threshold is the z-score (in
         // standard deviations) a team-vs-player skill gap must exceed before it is treated as real; the unranked
@@ -391,6 +396,14 @@ public static class Cvars
         new("sv_eventlog_files_timestamps", "1", Save),
         new("sv_eventlog_ipv6_delimiter", "0", Save, "replace ':' with '_' in logged IPs"),
         new("g_playerstats_gamereport_uri", "", Save, "stats upload endpoint ('' = disabled)"),
+
+        // ---- serverflags sources (server/world.qc readlevelcvars → the networked `serverflags` global, the
+        //      client gates fullbright + the pickup timer off these). Defaults from xonotic-server.cfg:611/614. ----
+        new("sv_allow_fullbright", "1", Save, "allow clients to use r_fullbright without the night-vision overlay"),
+        new("sv_forbid_pickuptimer", "0", Save, "disallow clients from seeing item pickup timers"),
+        // The published serverflags bitfield (GameWorld.ReadLevelCvars mirrors ServerFlags.Value here); the
+        // shared-store client reads it where QC reads the engine `serverflags` global.
+        new("serverflags", "0", "computed server flags (SERVERFLAG_* bits); set by the server at map init"),
 
         // ---- diagnostics / logging (engine cvar; gates lib/log.qh → XonoticGodot.Common.Diagnostics.Log) ----
         // QC autocvar_developer: 0 = off, 1 = LOG_TRACE + LOG_INFO headers, 2 = + LOG_DEBUG and full source

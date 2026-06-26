@@ -84,14 +84,23 @@ public sealed class MachinegunTurret : Turret
         Vector3 dir = QMath.Normalize(st.AimPos - st.ShotOrg);
         if (dir == Vector3.Zero) dir = QMath.Forward(TurretAI.HeadWorldAngles(turret));
 
-        // machinegun_weapon.qc: fireBullet with DEATH_TURRET_MACHINEGUN.
-        TurretCombat.FireBullet(turret, st.ShotOrg, dir, ShotSpread, ShotDamage, ShotForce, DeathTypes.TurretMachinegun);
+        // machinegun_weapon.qc:22 — fireBullet(..., EFFECT_BULLET) with DEATH_TURRET_MACHINEGUN. The
+        // EFFECT_BULLET tracer is OUTSIDE the `if (isPlayer)` gate, so it is emitted on the turret path
+        // (turret-visible bullet trail). Server-side emit via the same EffectEmitter seam the player
+        // Machinegun uses (tracerEffect "BULLET" = EFFECT_BULLET), networked to clients.
+        TurretCombat.FireBullet(turret, st.ShotOrg, dir, ShotSpread, ShotDamage, ShotForce,
+            DeathTypes.TurretMachinegun, tracerEffect: "BULLET");
+
+        // machinegun_weapon.qc:23 — W_MuzzleFlash_Model(MDL_MACHINEGUN_MUZZLEFLASH). Also OUTSIDE the
+        // `if (isPlayer)` gate, so the turret shows a muzzle flash at the fire tag. Base attaches a muzzle
+        // model at tag_fire; we have no tag_head/tag_fire sub-entity, so emit the flash effect at the muzzle
+        // origin along the shot dir — the same MACHINEGUN_MUZZLEFLASH the player path emits.
+        EffectEmitter.Emit("MACHINEGUN_MUZZLEFLASH", st.ShotOrg, dir * 1000f, 1);
 
         // NO fire sound on the turret path: in machinegun_weapon.qc wr_think the only sound emitter
         // (W_SetupShot_Dir → SND_MachineGunTurretAttack_FIRE) is inside the `if (isPlayer)` block, and a
         // turret actor is not a player, so Base fires SILENTLY. fireBullet/W_MuzzleFlash_Model emit none.
 
-        // NOTE (client-render): EFFECT_BULLET tracer, MDL_MACHINEGUN_MUZZLEFLASH at tag_fire, head frame anim.
-        // The server-side fire (machinegun_weapon.qc) is done above.
+        // NOTE (client-render, still deferred): head-bone frame anim (no tur_head sub-entity / tag_fire).
     }
 }

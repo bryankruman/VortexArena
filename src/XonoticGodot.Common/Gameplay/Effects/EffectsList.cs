@@ -248,6 +248,11 @@ public static class EffectsList
         // te_knightspike() builtin point-effect (effectinfo.txt: decal + static + 128 reddish-orange sparks).
         // Distinct from the TR_KNIGHTSPIKE *trail* above — this is the burst the Seeker tag-strike emits.
         Effects.Register("TE_KNIGHTSPIKE", "TE_KNIGHTSPIKE");
+        // te_smallflash()/te_gunshot() engine builtins resolve their OWN effectinfo blocks (TE_SMALLFLASH /
+        // TE_GUNSHOT), NOT a weapon's named muzzleflash/impact. Registered so the EffectEmitter.TeSmallflash /
+        // TeGunshot wrappers network the correct block by id instead of a divergent substitute.
+        Effects.Register("TE_SMALLFLASH", "TE_SMALLFLASH");
+        Effects.Register("TE_GUNSHOT", "TE_GUNSHOT");
 
         // ---- RocketMinsta laser (neutral; per-team variants are commented out in QC) ----
         Effects.Register("ROCKETMINSTA_LASER", "rocketminsta_laser_neutral", isTrail: true);

@@ -484,14 +484,22 @@ public static class Doors
 
         if (door.ItemKeys == 0)
         {
-            MapMover.Sound(player, SoundChannel.Voice, door.Noise); // unlocked sound; CENTER_DOOR_UNLOCKED is client-side
+            // all required keys given -> unlock (door.qc:182-186).
+            MapMover.Sound(player, SoundChannel.Voice, door.Noise);
+            NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, "DOOR_UNLOCKED");
             return true;
         }
 
-        // still missing keys: throttle the "need a key" sound to once per 2s.
+        // Still missing keys: name them in the centerprint, throttled with the sound to once per 2s.
+        // QC distinguishes the player who had NONE of the needed keys (valid==0 -> CENTER_DOOR_LOCKED_NEED,
+        // "You need …") from the player who gave SOME but not all (-> CENTER_DOOR_LOCKED_ALSONEED, "You also
+        // need …") (door.qc:189-209).
         if (player.KeyDoorMessageTime <= MapMover.Now())
         {
             MapMover.Sound(player, SoundChannel.Voice, door.Noise3);
+            string keylist = MapObjectsRegistry.ItemKeysKeylist(door.ItemKeys);
+            NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center,
+                valid == 0 ? "DOOR_LOCKED_NEED" : "DOOR_LOCKED_ALSONEED", keylist);
             player.KeyDoorMessageTime = MapMover.Now() + 2f;
         }
         return false;

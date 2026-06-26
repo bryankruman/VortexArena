@@ -124,6 +124,12 @@ public sealed class Warpzone
     /// Used by <see cref="WarpzoneManager.ClearAllPortoPortals"/> to tear down every portal of one owner on death/reset.</summary>
     public Entity? Owner;
 
+    /// <summary>QC <c>portal.portal_activatetime</c> (server/portals.qc:301-306): the time before which the portal
+    /// OWNER (the player who just shot the in-portal, QC <c>this.aiment</c>) is NOT re-teleported by their own
+    /// portal — instead the activate window slides forward 0.1s. Lets the owner step away from the muzzle of their
+    /// fresh portal without immediately falling back through it. 0 for a map warpzone (no owner). Porto only.</summary>
+    public float ActivateTime;
+
     public bool Linked => Transform.Valid;
 }
 
@@ -217,6 +223,17 @@ public sealed class WarpzoneManager
             else if (now <= finish) return false;
         }
 
+        // QC Portal_Touch portal_activatetime self-skip (server/portals.qc:301-306): a Porto portal does NOT
+        // re-teleport its own OWNER (the player who just shot the in-portal, QC this.aiment) during the 0.1s
+        // activate window — instead the window slides forward 0.1s so the owner can clear the muzzle of their fresh
+        // portal without immediately falling back through it. Only the warpzone's owner is skipped; everyone else
+        // crosses normally. (No-op for map warpzones, which carry no owner.)
+        if (wz.Owner is not null && ReferenceEquals(e, wz.Owner) && now < wz.ActivateTime)
+        {
+            wz.ActivateTime = now + 0.1f;
+            return false;
+        }
+
         // QC server.qc:193 — WarpZone_PlaneDist(this, toucher.origin + toucher.view_ofs) >= 0 → wrong side, don't
         // teleport yet. PlaneDist = (point - warpzone_origin)·warpzone_forward; the entity must be PAST the plane
         // (negative side) before it warps. This is the plane-side test, NOT a velocity-direction gate.
@@ -236,6 +253,23 @@ public sealed class WarpzoneManager
         // overlaps after emerging) doesn't immediately warp it straight back. Base uses
         // time + PHYS_INPUT_FRAMETIME - dt as a back-teleport guard; with no per-move dt here we hold for one frame.
         _teleportFinishTime[e] = now + MapMover.FrameTime();
+
+        // QC Portal_TeleportPlayer kill-credit (server/portals.qc:196-201): when a Porto portal warps a player who
+        // is NOT its owner, the owner is credited as the "pusher" for a kill-credit window (g_maxpushtime, default
+        // 8s) — so a portal that drops a victim into a hazard scores for the portal's owner — and the victim's
+        // chat-button state is held for the typefrag flag. Both players must be live players; map warpzones (no
+        // owner) skip this. (The Amazing-on-portal-telefrag announcer needs the tdeath path the warpzone crossing
+        // does not run — see the portals.teleport unresolved gap.)
+        if (wz.Owner is { IsFreed: false } portalOwner
+            && !ReferenceEquals(e, portalOwner)
+            && (e.Flags & EntFlags.Client) != 0
+            && (portalOwner.Flags & EntFlags.Client) != 0)
+        {
+            e.Pusher = portalOwner;
+            e.PushLTime = now + (Api.Services is not null && Api.Cvars.GetFloat("g_maxpushtime") != 0f
+                ? Api.Cvars.GetFloat("g_maxpushtime") : 8f);
+            e.IsTypeFrag = e.ButtonChat;
+        }
 
         // QC WarpZone_Touch fires the targets of BOTH this zone and its partner (this.enemy) on a crossing, with the
         // QC skip masks: this → SkipTargets BIT(1)|BIT(3); this.enemy → BIT(1)|BIT(2) (server.qc:218-219). A map can
@@ -379,7 +413,9 @@ public sealed class WarpzoneManager
     public void PlacePortoPortal(Vector3 origin, Vector3 surfaceNormal, bool isInPortal, int portalId, Entity? owner)
     {
         Vector3 angles = QMath.FixedVecToAngles(surfaceNormal); // forward = the wall normal
-        var wz = new Warpzone { InOrigin = origin, InAngles = angles, Owner = owner, TargetName = $"porto_{portalId}_{(isInPortal ? "in" : "out")}" };
+        // QC Portal_Spawn (portals.qc:646): portal.portal_activatetime = time + 0.1 — a 0.1s grace where the owner
+        // who just shot this portal isn't pulled straight back through it (see Warpzone.ActivateTime / Teleport).
+        var wz = new Warpzone { InOrigin = origin, InAngles = angles, Owner = owner, ActivateTime = MapMover.Now() + 0.1f, TargetName = $"porto_{portalId}_{(isInPortal ? "in" : "out")}" };
         SpawnTriggerFor(wz, PortoMins, PortoMaxs);
         Add(wz);
 

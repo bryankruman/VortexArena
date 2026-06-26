@@ -67,6 +67,12 @@ public static class GuidedProjectile
     {
         Entity m = Api.Entities.Spawn();
         m.ClassName = "turret_guided";
+        // QC hellion/hk/walker fire turret_projectile(..., PROJECTILE_ROCKET, ...) (and walker.qc:244
+        // CSQCProjectile(..., PROJECTILE_ROCKET, ...)). The port has no CSQC turret edict, but the missile IS
+        // networked + classified by the shared ProjectileCatalog (keyed on the networked classname+netname).
+        // Stamp the netname so the client gives the homing missile the rocket smoke trail + rocket-fly loop
+        // instead of the Generic fallback. (All three guided turret rockets use PROJECTILE_ROCKET.)
+        m.NetName = "rocket";
         m.Owner = turret;
         m.Enemy = enemy;
         m.Team = turret.Team;

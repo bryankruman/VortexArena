@@ -185,24 +185,40 @@ public sealed class Zombie : Monster
         // commented out in zombie.dpm_0.sounds, so the prior monsters/zombie_melee.wav play was a divergence.
     }
 
+    // QC mr_death: setanim(random() > 0.5 ? anim_die1 : anim_die2) — the zombie picks its death animation
+    // immediately at the moment of death (NOT tied to corpse landing). MonsterAI.MarkDead calls this once and
+    // stores the result in MonsterState.DeathLanded; DriveAnimFrame passes it as the die2 flag to AnimFrame.
+    // A HIGH roll picks die1 (frame 9), a low roll picks die2 (frame 12), so return TRUE (=die2) only on the
+    // low roll to match Base's per-roll mapping (distribution is 50/50 either way; this keeps which frame
+    // plays on a given roll byte-faithful to zombie.qc:122 rather than inverted).
+    public override bool RollDeathVariant() => !(MonsterRandom.Next() > 0.5f);
+
     // mr_anim (zombie.qc): the MD3 frame-group table. The first component of each animfixfps('N …') is the
     // group's start frame, which QC's setanim stamps onto .frame; the networked Entity.Frame drives the client
     // ModelAnimator (CSQCMODEL_AUTOUPDATE). MonsterAI.DriveAnimFrame calls this each think to play the phase.
     // The logical-phase enum maps the zombie's Base groups: spawn (30), blockstart/end (8/7) and shoot/leap (0)
-    // each have their own phase; melee1/2/3 all share frame 4, walk==run, and pain1 is the representative pain
-    // group (Base alternates pain1/pain2 and die1/die2 at random — the port plays a fixed representative).
-    public override float? AnimFrame(MonsterAnimPhase phase, bool die2) => phase switch
+    // each have their own phase; melee1/2/3 all share frame 4, walk==run.
+    // Base alternates pain1/pain2 at random (mr_pain: random()>0.5 ? anim_pain1 : anim_pain2) and die1/die2 at
+    // random (mr_death: random()>0.5 ? anim_die1 : anim_die2). The variant index from MonsterState.AnimVariant
+    // (set by MarkPain) drives the pain pick; the die1/die2 pick is driven by MonsterState.DeathLanded (set by
+    // RollDeathVariant above). Both variants are now reachable.
+    public override float? AnimFrame(MonsterAnimPhase phase, bool die2) => AnimFrame(phase, die2, 0);
+
+    public override float? AnimFrame(MonsterAnimPhase phase, bool die2, int variant) => phase switch
     {
-        MonsterAnimPhase.Idle => 19f,    // anim_idle '19 1 1'
-        MonsterAnimPhase.Walk => 27f,    // anim_walk '27 1 1'
-        MonsterAnimPhase.Run => 27f,     // anim_run '27 1 1'
-        MonsterAnimPhase.Attack => 4f,   // anim_melee1/2/3 '4 1 5'
-        MonsterAnimPhase.Pain => 20f,    // anim_pain1 '20 1 2'
-        MonsterAnimPhase.Death => die2 ? 12f : 9f, // anim_die1 '9 1 0.5' -> anim_die2 '12 1 0.5'
-        MonsterAnimPhase.Spawn => 30f,   // anim_spawn '30 1 3'
-        MonsterAnimPhase.Block => 8f,    // anim_blockstart '8 1 1'
-        MonsterAnimPhase.BlockEnd => 7f, // anim_blockend '7 1 1'
-        MonsterAnimPhase.Shoot => 0f,    // anim_shoot '0 1 5' (the leap pose)
+        MonsterAnimPhase.Idle => 19f,      // anim_idle '19 1 1'
+        MonsterAnimPhase.Walk => 27f,      // anim_walk '27 1 1'
+        MonsterAnimPhase.Run => 27f,       // anim_run '27 1 1'
+        MonsterAnimPhase.Attack => 4f,     // anim_melee1/2/3 '4 1 5'
+        // QC mr_pain: random()>0.5 ? anim_pain1 '20 1 2' : anim_pain2 '22 1 2' — a HIGH roll picks pain1.
+        // MarkPain sets variant 1 on the high roll (Next()>=0.5), so variant 1 => pain1 (20), variant 0 =>
+        // pain2 (22). (Inverse of the golem's '>=0.5 ? pain2 : pain1' ordering — the zombie lists pain1 first.)
+        MonsterAnimPhase.Pain => variant == 1 ? 20f : 22f,
+        MonsterAnimPhase.Death => die2 ? 12f : 9f, // anim_die1 '9 1 0.5' / anim_die2 '12 1 0.5'
+        MonsterAnimPhase.Spawn => 30f,     // anim_spawn '30 1 3'
+        MonsterAnimPhase.Block => 8f,      // anim_blockstart '8 1 1'
+        MonsterAnimPhase.BlockEnd => 7f,   // anim_blockend '7 1 1'
+        MonsterAnimPhase.Shoot => 0f,      // anim_shoot '0 1 5' (the leap pose)
         _ => 19f,
     };
 }

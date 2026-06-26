@@ -4,9 +4,9 @@
 // Per visible laser it keeps ONE long-lived cross-ribbon mesh (two perpendicular textured quads — the
 // cheap stand-in for QC Draw_CylindricLine, same technique as BeamRenderer but UPDATED IN PLACE instead
 // of spawning/freeing a node per frame) plus ONE persistent OmniLight3D for the QC adddynamiclight at the
-// hit point. End-point particles (__pointparticles(cnt, endpos, normal, drawframetime*1000)) are
-// throttled to ~10 Hz per laser through EffectSystem.Spawn so the transient-node budget stays sane while
-// the per-second particle budget matches DP's.
+// hit point. End-point particles (__pointparticles(cnt, endpos, normal, drawframetime*1000)) are emitted
+// EVERY frame at count = frametime*1000 through EffectSystem.Spawn, exactly as Draw_Laser does, so the
+// per-second particle rate is frame-independent and matches DP's.
 //
 // Like TriggerTouch.Predict*Ambient / MusicPlayer, this scans the AMBIENT entity facade
 // (Api.Entities.FindByClass("misc_laser")) — so it lights up on the listen-server and demo paths, where
@@ -40,7 +40,6 @@ public partial class LaserRenderer : Node3D
     public Func<string, Texture2D?>? TextureLoader { get; set; }
 
     private const float RescanInterval = 2f;     // facade re-scan cadence (lasers can spawn via target_spawn)
-    private const float EndFxInterval = 0.1f;    // ~10 Hz end-effect bursts per laser
     private const int Q3SurfaceFlagSky = 0x4;    // Q3SURFACEFLAG_SKY
     private const int Q3SurfaceFlagNoImpact = 0x1; // Q3SURFACEFLAG_NOIMPACT (laser.qc:333 gate)
     private const float TexScrollRate = 3f;      // Draw_Laser texcoord = time*3 (the scrolling beam)
@@ -53,7 +52,6 @@ public partial class LaserRenderer : Node3D
         public MeshInstance3D RibbonB = null!;
         public StandardMaterial3D Material = null!;
         public OmniLight3D Light = null!;
-        public float NextFxTime;
     }
 
     private readonly Dictionary<Entity, BeamNode> _beams = new();
@@ -291,12 +289,15 @@ public partial class LaserRenderer : Node3D
                 b.Light.Visible = false;
             }
 
-            // particles: DP spawns cnt-effect bursts EVERY frame at count=drawframetime*1000; one burst per
-            // 0.1 s at count=100 lands the same ~1000 count-units/sec without per-frame node churn.
-            if (!string.IsNullOrEmpty(e.LaserEndEffect) && Effects is not null && now >= b.NextFxTime)
+            // particles: Draw_Laser spawns the cnt-effect burst EVERY frame at count = drawframetime*1000
+            // (laser.qc:336), so the per-second emission rate is frame-independent. Emit per-frame here too,
+            // scaling the count by the real frame delta (drawframetime) exactly as DP does; the int floor of
+            // small per-frame counts is fine (EffectSystem sums them across frames, matching DP's accumulation).
+            if (!string.IsNullOrEmpty(e.LaserEndEffect) && Effects is not null)
             {
-                b.NextFxTime = now + EndFxInterval;
-                Effects.Spawn(e.LaserEndEffect, end, hitNormal, (int)(EndFxInterval * 1000f));
+                int count = (int)(Api.Clock.FrameTime * 1000f);
+                if (count > 0)
+                    Effects.Spawn(e.LaserEndEffect, end, hitNormal, count);
             }
         }
         else

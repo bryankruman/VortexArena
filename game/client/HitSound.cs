@@ -111,14 +111,15 @@ public sealed class HitSound
         if (_parent is null || !GodotObject.IsInstanceValid(_parent))
             return;
 
-        // Load the hitsound sample (the stock Xonotic hitsound lives at sound/misc/hitconfirm.ogg).
+        // QC all.inc:219 registers SND(HIT, "misc/hit"); the shipped file is sound/misc/hit.wav.
+        // Load the hitsound sample from that path.
         if (_stream is null)
         {
-            _stream = AudioLoader?.Invoke("misc/hitconfirm");
+            _stream = AudioLoader?.Invoke("misc/hit");
             if (_stream is null)
             {
                 // Fallback: try the res:// path convention.
-                const string resPath = "res://sound/misc/hitconfirm.ogg";
+                const string resPath = "res://sound/misc/hit.wav";
                 if (ResourceLoader.Exists(resPath))
                 {
                     try { _stream = ResourceLoader.Load<AudioStream>(resPath); }

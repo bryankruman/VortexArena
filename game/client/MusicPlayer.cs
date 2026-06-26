@@ -52,6 +52,20 @@ public sealed partial class MusicPlayer : Node
     /// </summary>
     public bool Intermission { get; set; }
 
+    /// <summary>
+    /// QC FixIntermissionClient: the value of <c>sv_intermission_cdtrack</c> — a space-separated list of music
+    /// tracks; when intermission begins, Base picks a random word (RandomSelection over the words) and
+    /// <c>cd loop &lt;track&gt;</c>s it for the scoreboard. Empty (the stock default) = no switch, so the map
+    /// music is simply killed (see <see cref="Intermission"/>). Set by the host from the server cvar.
+    /// </summary>
+    public string IntermissionCdTrack { get; set; } = "";
+
+    // The track chosen once when intermission begins (RandomSelection is a one-shot pick, not re-rolled each
+    // frame). Reset when intermission ends so a fresh match re-rolls.
+    private string _chosenIntermissionTrack = "";
+    private bool _intermissionLatched;
+    private readonly System.Random _intermissionRng = new();
+
     // ---- live state ----
     private AudioStreamPlayer? _playerA;   // the two crossfade slots
     private AudioStreamPlayer? _playerB;
@@ -124,10 +138,31 @@ public sealed partial class MusicPlayer : Node
             EvaluateMusicSources(out bestTrack, out bestVolume, out fadeIn, out fadeOut);
         }
 
-        // QC target_music_kill() at NextLevel: at intermission silence the map music regardless of the
-        // priority stack so the scoreboard plays over silence. Falls through to the FadeOutCurrent path below.
+        // QC target_music_kill() at NextLevel + the FixIntermissionClient `cd loop sv_intermission_cdtrack`
+        // switch: at intermission, if sv_intermission_cdtrack names one or more tracks, pick a random word once
+        // (QC RandomSelection over FOREACH_WORD) and loop it for the scoreboard; otherwise silence the map music
+        // entirely. Falls through to the StartTrack / FadeOutCurrent paths below.
         if (Intermission)
-            bestTrack = "";
+        {
+            if (!_intermissionLatched)
+            {
+                _intermissionLatched = true;
+                _chosenIntermissionTrack = PickIntermissionTrack();
+            }
+            bestTrack = _chosenIntermissionTrack;   // chosen track, or "" to kill the music
+            if (!string.IsNullOrEmpty(bestTrack))
+            {
+                bestVolume = 1f;
+                fadeIn = DefaultFadeTime;
+                fadeOut = DefaultFadeTime;
+            }
+        }
+        else if (_intermissionLatched)
+        {
+            // Intermission ended (restart / next map) — re-roll on the next intermission.
+            _intermissionLatched = false;
+            _chosenIntermissionTrack = "";
+        }
 
         // --- if the best track changed, start a crossfade ---
         // The OUTGOING track fades on ITS OWN fade_rate (captured when it started — QC TargetMusic_Advance
@@ -425,6 +460,26 @@ public sealed partial class MusicPlayer : Node
             catch { return null; }
         }
         return null;
+    }
+
+    /// <summary>
+    /// QC FixIntermissionClient: pick a random word from <see cref="IntermissionCdTrack"/> (the
+    /// <c>sv_intermission_cdtrack</c> value), reproducing the QC <c>RandomSelection_Init();
+    /// FOREACH_WORD(... RandomSelection_AddString(it, 1, 1)); RandomSelection_chosen_string</c> dance. Empty
+    /// value (the stock default) → "" (no track, the map music is killed). Each word is added with equal
+    /// weight, so the choice is uniform over the words.
+    /// </summary>
+    private string PickIntermissionTrack()
+    {
+        if (string.IsNullOrWhiteSpace(IntermissionCdTrack))
+            return "";
+        string[] words = IntermissionCdTrack.Split(
+            (char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length == 0)
+            return "";
+        // Resolve to the VFS path the AudioLoader expects (bare "12" → "cdtracks/track012", etc.) — the same
+        // normalization the cdtrack/target_music paths get, so the chosen track loads identically.
+        return ResolveMusicPath(words[_intermissionRng.Next(words.Length)]);
     }
 
     // ========================================================================

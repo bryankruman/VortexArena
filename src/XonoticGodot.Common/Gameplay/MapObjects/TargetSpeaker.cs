@@ -18,6 +18,13 @@
 //   4. Neither flag (one-shot): each .Use trigger plays the sound once (not looping)
 //   5. GLOBAL: sets ATTEN_NONE so the sound is heard at full volume everywhere
 //   6. ACTIVATOR: per-client sound (plays to all in this port — MSG_ONE not yet supported)
+//
+// *-prefixed noise: a per-player voice-message sample. QC resolves via GetVoiceMessageSampleField +
+// argv(1) random count against the activator's player-sounds manifest. The port resolves via
+// Sounds.PlayerSoundSample(Sounds.ModelSoundsFile(activator.Model, skin), voiceId), which routes through
+// the host-installed ModelSoundResolver (PlayerSoundResolver) and its built-in variant randomization.
+// When there is no activator (ambient loop, null entity), the *-name resolves to silence (QC SND(Null)
+// fallback), exactly as before.
 
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;
@@ -96,13 +103,19 @@ public static class TargetSpeaker
             else if (loopedOn)
             {
                 // Starts playing immediately; can be toggled OFF when triggered.
+                // QC: target_speaker_use_on(this, NULL, NULL) + this.reset = target_speaker_reset
                 StartLoop(this_);
                 this_.Use = SpeakerUseOff;
+                // QC speaker.qc:111 — LOOPED_ON installs a reset hook to re-arm on round restart
+                this_.Reset = SpeakerReset;
             }
             else if (loopedOff)
             {
                 // Starts silent; first trigger starts the loop.
+                // QC: this.use = target_speaker_use_on + this.reset = target_speaker_reset
                 this_.Use = SpeakerUseOn;
+                // QC speaker.qc:116 — LOOPED_OFF installs a reset hook to re-arm on round restart
+                this_.Reset = SpeakerReset;
             }
             else
             {
@@ -190,7 +203,8 @@ public static class TargetSpeaker
         if (Api.Services is null)
             return;
 
-        string snd = ResolveNoise(self.Noise);
+        // QC: *-noise resolves against the activating player's voice-sample manifest (GetVoiceMessageSampleField)
+        string snd = ResolveNoise(self.Noise, activator);
         if (string.IsNullOrEmpty(snd))
             return;
 
@@ -213,22 +227,83 @@ public static class TargetSpeaker
            && !(actor is Player p && p.IsBot);
 
     /// <summary>
-    /// Resolve the <c>.noise</c> sample. A leading <c>*</c> selects a per-player voice-message sample
-    /// (QC <c>GetVoiceMessageSampleField</c> + <c>argv(1)</c> random count). The port has no player
-    /// voice-sample DB, so a <c>*</c>-name resolves to silence (matching QC's <c>SND(Null)</c> not-found
-    /// fallback) rather than trying to play a literal "*name".
+    /// Resolve the <c>.noise</c> sample, optionally against an <paramref name="activator"/> entity.
+    /// <para>
+    /// A leading <c>*</c> means this is a per-player voice-message sample: QC maps the id after the <c>*</c>
+    /// to the activating player's voice-sound manifest field (<c>GetVoiceMessageSampleField</c>) and picks a
+    /// random variant via <c>argv(1)</c>. The port equivalent is <see cref="Sounds.PlayerSoundSample"/> routed
+    /// through the host-installed <see cref="Sounds.ModelSoundResolver"/> (PlayerSoundResolver), which already
+    /// handles variant-count randomization. Requires a non-null activator with a model; if no activator is
+    /// available (ambient loop invocation, null entity), the <c>*</c>-name resolves to silence — matching QC's
+    /// <c>SND(Null)</c> fallback when the player's sample field is empty or GetPlayerSoundSampleField returns
+    /// not-found.
+    /// </para>
     /// </summary>
-    private static string ResolveNoise(string noise)
+    /// <param name="noise">The raw <c>.noise</c> value on the speaker entity.</param>
+    /// <param name="activator">Optional triggering entity (for <c>*</c>-prefix voice-sample resolution).</param>
+    private static string ResolveNoise(string noise, Entity? activator = null)
     {
         if (string.IsNullOrEmpty(noise))
             return string.Empty;
 
-        // TODO(cross-file): *-prefixed per-player voice samples (GetVoiceMessageSampleField + argv(1) random
-        // count) require a player sound-sample DB that the port doesn't expose; resolve to silence for now.
         if (noise[0] == '*')
-            return string.Empty;
+        {
+            // *-prefixed: a per-player voice-message sample.
+            // QC: GetVoiceMessageSampleField(noise[1..]) -> .string field on actor -> argv(0)/argv(1) count.
+            // Port: resolve via the host-installed ModelSoundResolver using the activator's model.
+            if (activator is null || string.IsNullOrEmpty(activator.Model))
+                return string.Empty; // no activator / no model: SND(Null) fallback (silent), matching QC not-found
+
+            string voiceId = noise.Substring(1); // strip the leading '*'
+            // Sounds.PlayerSoundSample routes through the host ModelSoundResolver which handles random variants
+            // (count > 0 => picks randomly among {path}1..{path}N, per QC argv(1) / ftos(floor(random()*n+1))).
+            string? modelSoundsFile = Sounds.ModelSoundsFile(activator.Model, (int)activator.Skin);
+            string resolved = Sounds.PlayerSoundSample(modelSoundsFile, voiceId);
+            // PlayerSoundSampleRaw falls back to a manifest-path concat that won't resolve on disk; treat as silence.
+            if (string.IsNullOrEmpty(resolved) || resolved.EndsWith(".sounds/" + voiceId, System.StringComparison.Ordinal))
+                return string.Empty;
+            return resolved;
+        }
 
         return noise;
+    }
+
+    // ====================================================================
+    //  Round-restart reset (QC target_speaker_reset, speaker.qc:63-75)
+    // ====================================================================
+
+    /// <summary>
+    /// Port of QC <c>target_speaker_reset</c> (speaker.qc:63): fired on every map entity when a round
+    /// restarts (<see cref="GameWorld.ResetMapObjects"/>). Re-arms the loop state to match the spawnflag:
+    /// <list type="bullet">
+    ///   <item><b>LOOPED_ON</b>: if the loop was toggled OFF (Use == SpeakerUseOn), restart it now.</item>
+    ///   <item><b>LOOPED_OFF</b>: if the loop was toggled ON (Use == SpeakerUseOff), silence it now.</item>
+    /// </list>
+    /// QC checks <c>this.use == target_speaker_use_on</c> / <c>target_speaker_use_off</c> — the port mirrors
+    /// that with the C# static-method delegate comparisons.
+    /// </summary>
+    private static void SpeakerReset(Entity self)
+    {
+        if ((self.SpawnFlags & SpeakerLoopedOn) != 0)
+        {
+            // LOOPED_ON reset: if currently OFF (Use was swapped to the ON handler) -> restart the loop.
+            // QC: if(this.use == target_speaker_use_on) target_speaker_use_on(this, NULL, NULL);
+            if (self.Use == SpeakerUseOn)
+            {
+                StartLoop(self);
+                self.Use = SpeakerUseOff;
+            }
+        }
+        else if ((self.SpawnFlags & SpeakerLoopedOff) != 0)
+        {
+            // LOOPED_OFF reset: if currently ON (Use was swapped to the OFF handler) -> silence it.
+            // QC: if(this.use == target_speaker_use_off) target_speaker_use_off(this, NULL, NULL);
+            if (self.Use == SpeakerUseOff)
+            {
+                StopLoop(self);
+                self.Use = SpeakerUseOn;
+            }
+        }
     }
 
     // ====================================================================

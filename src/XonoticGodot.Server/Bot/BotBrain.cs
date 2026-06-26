@@ -194,6 +194,16 @@ public sealed class BotBrain
         // [profiling] the heavy think (past the throttle) — bot AI cost attribution for the hitch bench.
         using var _thinkScope = XonoticGodot.Common.Diagnostics.Prof.Sample("bot.think");
 
+        // QC bot_aimdir works on this.v_angle, the SINGLE shared aim state. The port forks the bot's aim into
+        // BotAim.ViewAngles, which Emit() copies back onto bot.ViewAngles each think — so any EXTERNAL write to
+        // bot.ViewAngles between thinks (notably the damage-pipeline bot-aim shake, PlayerDamage's
+        // v_angle jitter) must be folded back into the aim state, or it is clobbered and dead. Re-seed
+        // Aim.ViewAngles from the entity at think start: a no-op in the steady state (Emit left them equal),
+        // it carries the damage shake into the next turn exactly as QC's bot_aimdir reads the jittered v_angle.
+        // Guard the pre-first-Emit case where bot.ViewAngles is still zero: keep the spawn-seeded aim then.
+        if (bot.ViewAngles != Vector3.Zero)
+            Aim.ViewAngles = bot.ViewAngles;
+
         // QC bot_god → FL_GODMODE re-stamped every think.
         bot.Flags &= ~EntFlags.GodMode;
         if (Cvars.Bool("bot_god"))

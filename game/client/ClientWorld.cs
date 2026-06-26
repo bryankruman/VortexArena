@@ -47,6 +47,9 @@ public partial class ClientWorld : Node3D
     /// <summary>misc_laser beam renderer (T48 — the Draw_Laser successor; ambient-facade scan).</summary>
     public LaserRenderer Lasers { get; private set; } = null!;
 
+    /// <summary>dynlight realtime-light renderer (the DP engine-driven light; ambient-facade scan).</summary>
+    public DynamicLightRenderer DynamicLights { get; private set; } = null!;
+
     /// <summary>func_pointparticles / func_sparks persistent emitters (T48; ambient-facade scan).</summary>
     public MapParticleEmitters MapEmitters { get; private set; } = null!;
 
@@ -360,6 +363,9 @@ public partial class ClientWorld : Node3D
         if (_assets is not null)
             Lasers.TextureLoader = _assets.LoadTexture;
         AddChild(Lasers);
+        // dynlight realtime light — the consumer DarkPlaces drives from the engine reading light_lev/color.
+        DynamicLights = new DynamicLightRenderer { Name = "DynamicLights" };
+        AddChild(DynamicLights);
         MapEmitters = new MapParticleEmitters { Name = "MapEmitters", Effects = Effects };
         AddChild(MapEmitters);
 

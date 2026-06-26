@@ -429,6 +429,16 @@ public sealed class Spiderbot : Vehicle
             {
                 // spiderbot.qc spiderbot_blowup: the final death blast is DEATH_VH_SPID_DEATH.
                 WeaponSplash.RadiusDamage(self, self.Origin, 250f, 15f, 250f, self.Enemy, 0, 250f, deathTag: DeathTypes.VhSpidDeath);
+
+                // QC spiderbot_blowup spawns 4 physics gib entities; the flung head runs spiderbot_headfade which
+                // — when it finally fades while still visible — plays SND_ROCKET_IMPACT + Send_Effect(EFFECT_EXPLOSION_BIG,
+                // origin + '0 0 100', ...). The port doesn't spawn the physics gibs server-side (the client
+                // VehicleVisuals does an approximate gib arc), but the head's final explosion is an
+                // authoritative server effect/sound, so reproduce it at the blast (mirrors the sibling Bumblebee
+                // blowup which emits EXPLOSION_BIG + SND_ROCKET_IMPACT at its final detonation).
+                if (Api.Services is not null) Api.Sound.Play(self, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav");
+                EffectEmitter.Emit("EXPLOSION_BIG", self.Origin + new Vector3(0f, 0f, 100f), Vector3.Zero, 1);
+
                 self.DeadState = DeadFlag.Dead;
                 self.MoveType = MoveType.None;
                 self.Solid = Solid.Not;
@@ -441,14 +451,21 @@ public sealed class Spiderbot : Vehicle
             {
                 self.NextThink = Time + 0.1f;
                 // QC spiderbot_blowup: ~10% per 0.1s tick, a small explosion + impact sound during the burn.
-                // The sound is server-faithful; the EFFECT_EXPLOSION_SMALL visual stays a client TODO.
-                if (Prandom.Float() < 0.1f && Api.Services is not null)
-                    Api.Sound.Play(self, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav");
+                // sound(this, CH_SHOTS, SND_ROCKET_IMPACT) + Send_Effect(EFFECT_EXPLOSION_SMALL,
+                // randomvec()*80 + (origin + '0 0 100'), '0 0 0', 1).
+                if (Prandom.Float() < 0.1f)
+                {
+                    if (Api.Services is not null) Api.Sound.Play(self, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav");
+                    EffectEmitter.Emit("EXPLOSION_SMALL", Prandom.Vec() * 80f + (self.Origin + new Vector3(0f, 0f, 100f)), Vector3.Zero, 1);
+                }
             }
         };
         vehicle.NextThink = Time;
-        // TODO(port,client): qcsrc/common/vehicles/vehicle/spiderbot.qc spiderbot_blowup — head/gun gib entities
-        //                    with physics + fade, EF_FLAME, body fade.
+        // TODO(port,client): qcsrc/common/vehicles/vehicle/spiderbot.qc spiderbot_blowup — the 4 head/gun/body
+        //                    physics gib entities (head MF_ROCKET+EF_FLAME bounce + spiderbot_headfade, 2 tossed
+        //                    guns v_forward*700, body frame 11) are presentation, done approximately by the
+        //                    client VehicleVisuals gib arc; the authoritative burn EXPLOSION_SMALL + the
+        //                    head-fade EXPLOSION_BIG + SND_ROCKET_IMPACT are now emitted server-side above.
     }
 
     // ============================ WEAPONS ============================
@@ -461,6 +478,7 @@ public sealed class Spiderbot : Vehicle
         Entity gun = (vehicle.VehBulletCounter % 2) != 0 ? (vehicle.VehGun1 ?? vehicle) : (vehicle.VehGun2 ?? vehicle);
 
         var (barrel, fwd) = VehiclePhysics.TagOriginForward(gun, "barrels");
+        fwd = QMath.Normalize(fwd);                  // QC: v_forward = normalize(v_forward)
         Vector3 origin = barrel + fwd * 50f;
         QMath.AngleVectors(QMath.VecToAngles(fwd), out Vector3 f, out Vector3 r, out Vector3 u);
         Vector3 dir = Prandom.Spread(f, r, u, MinigunSpread);
@@ -470,7 +488,10 @@ public sealed class Spiderbot : Vehicle
 
         if (Api.Services is not null)
             Api.Sound.Play(gun, SoundChannel.Weapon, "vehicles/spiderbot_minigun_fire.wav");
-        // TODO(port,client): EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH + gun barrel spin.
+        // QC spiderbot.qc:276: Send_Effect(EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH, v, v_forward * 2500, 1) — the
+        // authoritative server-networked muzzle flash at the firing barrel. (The client VehicleVisuals also pops a
+        // muzzle flash + spins the barrels off the networked Firing flag; this is the QC-faithful server emit.)
+        EffectEmitter.Emit("SPIDERBOT_MINIGUN_MUZZLEFLASH", origin, fwd * 2500f, 1);
     }
 
     /// <summary>Hitscan with QC solidpenetration: pass through thin walls up to <paramref name="penetration"/> units total.</summary>
@@ -600,6 +621,13 @@ public sealed class Spiderbot : Vehicle
         }
         rocket.ClassName = "spiderbot_rocket";
         rocket.VehProjExpire = Time + RocketLifetime;
+
+        // QC vehicles_projectile (sv_vehicles.qc): Send_Effect(_mzlfx, proj.origin, proj.velocity, 1) with the
+        // spiderbot's launch effect EFFECT_SPIDERBOT_ROCKETLAUNCH (spiderbot_weapons.qc:176/191/202). The shared
+        // SpawnProjectile helper plays the fire sound but defers the muzzle effect; emit it here (server
+        // authoritative) at the rocket's spawn origin + velocity. The in-flight trail/visual stays the client
+        // ProjectileCatalog (SpiderRocket) concern.
+        EffectEmitter.Emit("SPIDERBOT_ROCKETLAUNCH", rocket.Origin, rocket.Velocity, 1);
 
         ++vehicle.VehRocketBelt;
         float refire = vehicle.VehRocketBelt == 9 ? RocketReload

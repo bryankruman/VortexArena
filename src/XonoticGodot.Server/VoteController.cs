@@ -484,7 +484,10 @@ public sealed class VoteController
     private void Spam(int notvoters, int mincount, string result)
     {
         string needed = mincount >= 0 ? $" (^1{mincount}^2 needed)" : "";
-        Broadcast?.Invoke($"^2* vote results: ^1{YesCount}^2:^1{NoCount}{needed}, ^1{AbstainCount}^2 didn't care, ^1{notvoters}^2 didn't vote");
+        // QC VoteSpam (vote.qc:205): "didn't " + (mincount >= 0 ? "" : "have to ") + "vote" — an early accept/reject
+        // (mincount < 0, the vote resolved before everyone had to weigh in) reads "didn't have to vote".
+        string didnt = mincount >= 0 ? "didn't vote" : "didn't have to vote";
+        Broadcast?.Invoke($"^2* vote results: ^1{YesCount}^2:^1{NoCount}{needed}, ^1{AbstainCount}^2 didn't care, ^1{notvoters}^2 {didnt}");
         _ = result;
     }
 

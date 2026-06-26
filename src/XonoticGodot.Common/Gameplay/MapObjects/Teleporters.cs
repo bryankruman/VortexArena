@@ -325,7 +325,7 @@ public static class Teleporters
         if (!predicted && (player.Flags & EntFlags.Client) != 0 && teleporter.PushLTime < MapMover.Now())
         {
             if ((tflags & FlagSound) != 0)
-                MapMover.Sound(player, SoundChannel.Item /* CH_TRIGGER */, TeleportSound(teleporter.Noise));
+                MapMover.Sound(player, SoundChannel.TriggerAuto /* CH_TRIGGER (-3) */, TeleportSound(teleporter.Noise));
             if ((tflags & FlagParticles) != 0)
             {
                 // QC: Send_Effect(EFFECT_TELEPORT, player.origin, …) and (…, to + v_forward*32, …) — both ends.
@@ -354,6 +354,10 @@ public static class Teleporters
             // kill-credit pusher window, and the teleport-time bookkeeping are all authoritative.
             if (!predicted)
             {
+                // QC teleporters.qc:122 BITXOR_ASSIGN(player.effects, EF_TELEPORT_BIT) — toggle the teleport
+                // sparkle/restart-anim flash on the player model. A networked effect bit, so server-side only.
+                player.Effects ^= EffectFlags.Teleport;
+
                 // QC teleporters.qc:148-150 — the full telefrag gate:
                 //   (tflags & TELEPORT_FLAG_TDEATH) && player.takedamage && !IS_DEAD(player)
                 //   && !g_race && !g_cts
@@ -374,10 +378,14 @@ public static class Teleporters
                 {
                     player.Pusher = teleporter.Owner;
                     player.PushLTime = MapMover.Now() + Cvar("g_maxpushtime", 8f);
+                    // QC teleporters.qc:166 player.istypefrag = PHYS_INPUT_BUTTON_CHAT(player) — hold the
+                    // teleportee's chat-button state for the kill-credit window (a typefrag if they were typing).
+                    player.IsTypeFrag = player.ButtonChat;
                 }
                 else
                 {
                     player.PushLTime = 0f;
+                    player.IsTypeFrag = false; // QC teleporters.qc:171 player.istypefrag = 0
                 }
 
                 player.LastTeleportTime = MapMover.Now();

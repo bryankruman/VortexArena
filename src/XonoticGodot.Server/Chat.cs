@@ -763,6 +763,65 @@ public sealed class Chat
                 yield return p;
     }
 
+    // =============================================================================================
+    // PrintToChat helpers (qcsrc/server/chat.qc:593-645)
+    // =============================================================================================
+
+    /// <summary>QC <c>PrintToChat(client, text)</c> (chat.qc:593-598): emit a formatted chat message to a single client.
+    /// The text is prefixed with the chat marker <c>\{1}^7</c> (blue marker + default color) and a newline is appended.
+    /// </summary>
+    public void PrintToChat(Player client, string text)
+    {
+        string msg = $"\x01^7{text}\n";  // \{1}^7 = \x01^7 (chat marker + blue to reset)
+        Sprint(client, msg);
+    }
+
+    /// <summary>QC <c>DebugPrintToChat(client, text)</c> (chat.qc:600-607): emit a formatted debug message to a single
+    /// client, but only if <c>autocvar_developer > 0</c> (i.e., developer mode is on).</summary>
+    public void DebugPrintToChat(Player client, string text)
+    {
+        if (Cvars.Float("developer") > 0)
+            PrintToChat(client, text);
+    }
+
+    /// <summary>QC <c>PrintToChatAll(text)</c> (chat.qc:609-614): broadcast a formatted chat message to all real clients.
+    /// The text is prefixed with the chat marker <c>\{1}^7</c> and a newline is appended. Base uses <c>bprint</c>,
+    /// which also echoes to the server console — modeled here by the <see cref="DedicatedPrint"/> tail (the same
+    /// loop+console pairing the public <see cref="Say"/> broadcast uses), a no-op on a listen server.</summary>
+    public void PrintToChatAll(string text)
+    {
+        string msg = $"\x01^7{text}\n";  // \{1}^7 = \x01^7
+        foreach (Player client in RealClients())
+            Sprint(client, msg);
+        DedicatedPrint(msg); // bprint's server-console echo (gated on sv_dedicated)
+    }
+
+    /// <summary>QC <c>DebugPrintToChatAll(text)</c> (chat.qc:616-623): broadcast a formatted debug message to all real
+    /// clients, but only if <c>autocvar_developer > 0</c>.</summary>
+    public void DebugPrintToChatAll(string text)
+    {
+        if (Cvars.Float("developer") > 0)
+            PrintToChatAll(text);
+    }
+
+    /// <summary>QC <c>PrintToChatTeam(team_num, text)</c> (chat.qc:625-636): emit a formatted chat message to all real
+    /// clients on a specific team. The text is prefixed with the chat marker <c>\{1}^7</c> and a newline is appended.</summary>
+    public void PrintToChatTeam(int teamNum, string text)
+    {
+        string msg = $"\x01^7{text}\n";  // \{1}^7 = \x01^7
+        foreach (Player client in RealClients())
+            if ((int)client.Team == teamNum)
+                Sprint(client, msg);
+    }
+
+    /// <summary>QC <c>DebugPrintToChatTeam(team_num, text)</c> (chat.qc:638-645): emit a formatted debug message to all
+    /// real clients on a specific team, but only if <c>autocvar_developer > 0</c>.</summary>
+    public void DebugPrintToChatTeam(int teamNum, string text)
+    {
+        if (Cvars.Float("developer") > 0)
+            PrintToChatTeam(teamNum, text);
+    }
+
     /// <summary>
     /// Per-call delivery log (recipient, line) for the SPRINT channel — populated on every <see cref="Say"/> so
     /// headless tests can assert routing without a net layer. The host's real send happens through the sinks; this

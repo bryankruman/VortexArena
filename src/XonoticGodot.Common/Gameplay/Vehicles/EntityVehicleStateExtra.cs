@@ -75,6 +75,9 @@ namespace XonoticGodot.Common.Framework
         /// <summary>QC <c>.sounds</c> — which looping engine sound is currently playing (idle vs move).</summary>
         public int VehSoundState = -1;
 
+        /// <summary>QC raptor <c>.bomb1.cnt</c> — once/sec gate for the incoming-guided-missile alarm (separate from the engine-sound gate).</summary>
+        public float VehAlarmNextTime;
+
         /// <summary>QC <c>.frame</c> — the model animation frame the SV side drives (takeoff %, walk pose, rocket belt).</summary>
         public float VehAnimFrame;
 
@@ -188,6 +191,9 @@ namespace XonoticGodot.Common.Framework
 
         /// <summary>QC racer <c>.strength_finished</c> (reused) — boost-sound replay gate (~10.92s loop length), 0 when not boosting.</summary>
         public float VehBoostSoundTime;
+
+        /// <summary>QC racer <c>.invincible_finished</c> (reused) — afterburn under-craft smoke-trail gate (next emit at time + 0.1 + rand*0.1).</summary>
+        public float VehSmokeTime;
 
         // =====================================================================================
         // Secondary-weapon HUD mirror (racer vehicle_ammo2 / vehicle_reload2) — written onto the seated

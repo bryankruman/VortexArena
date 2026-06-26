@@ -447,9 +447,10 @@ public static class ItemPickupRules
     /// </summary>
     public static void Show(Entity e, int mode)
     {
-        // QC clears EF_ADDITIVE|STARDUST|FULLBRIGHT|NODEPTHTEST + ITS_STAYWEP each call. (EF_NODEPTHTEST is a
-        // pure render bit not mirrored in the port's EffectFlags; the gameplay-relevant clears are these three.)
-        e.Effects &= ~(EffectFlags.Additive | EffectFlags.Stardust | EffectFlags.FullBright);
+        // QC items.qc:131 clears EF_ADDITIVE|EF_STARDUST|EF_FULLBRIGHT|EF_NODEPTHTEST + ITS_STAYWEP each call,
+        // then re-derives the status bits below. All four EF_* bits are mirrored in the port's EffectFlags and
+        // honoured by the client (CsqcModelEffects.Apply: additive/fullbright/nodepthtest render the item model).
+        e.Effects &= ~(EffectFlags.Additive | EffectFlags.Stardust | EffectFlags.FullBright | EffectFlags.NoDepthTest);
         e.ItemStayWeapon = false;
 
         if (mode > 0)
@@ -496,6 +497,35 @@ public static class ItemPickupRules
                 e.ItemAvailable = false;
             }
         }
+
+        // QC Item_Show tail (items.qc:176-189): re-derive the status/effect bits each call.
+        //
+        // The port has no networked ItemStatus byte (ITS_GLOW/ITS_ALLOWFB/ITS_ALLOWSI) — those CSQC status bits
+        // exist in Base only to be translated into render EF_* flags client-side (client/items/items.qc:242-269:
+        // ITS_ALLOWFB->EF_FULLBRIGHT, ITS_GLOW&AVAILABLE->EF_ADDITIVE|EF_FULLBRIGHT). The port emits the equivalent
+        // EF_* directly on the world item, which the client already honours (CsqcModelEffects), so the rendered
+        // result matches without the intermediate status byte.
+        bool available = e.ItemAvailable;
+
+        // ITS_GLOW (def.m_glow — powerups): CSQC adds EF_ADDITIVE|EF_FULLBRIGHT only while the item is AVAILABLE
+        // (client/items/items.qc:255). Apply the same additive glow here when available.
+        if (e.Pickup?.ItemDef.Glow == true && available)
+            e.Effects |= EffectFlags.Additive | EffectFlags.FullBright;
+
+        // EF_NODEPTHTEST (autocvar_g_nodepthtestitems): draw the item through walls. Set directly on .effects in
+        // QC's Item_Show (items.qc:181) — a pure render bit honoured by CsqcModelEffects.SetNoDepthTest.
+        if (CvarOr("g_nodepthtestitems", 0f) != 0f)
+            e.Effects |= EffectFlags.NoDepthTest;
+
+        // ITS_ALLOWFB (autocvar_g_fullbrightitems): the server-permits-fullbright bit. CSQC turns it into
+        // EF_FULLBRIGHT unconditionally (client/items/items.qc:242). Apply EF_FULLBRIGHT here when enabled.
+        if (CvarOr("g_fullbrightitems", 0f) != 0f)
+            e.Effects |= EffectFlags.FullBright;
+
+        // ITS_ALLOWSI (autocvar_sv_simple_items, Base default 1): permits the client to swap to the flat _simple
+        // sprite (client/items/items.qc:78). The port has no _simple model-swap pipeline (no client model
+        // resolver for the *_simple variants, no bob suppression), so this bit has no render effect yet; left
+        // unset rather than faked. See the items-pickups simple-items gap.
 
         // QC: relink (solid may have changed) — setorigin(e, e.origin) updates the area grid link.
         if (Api.Services is not null)
@@ -696,9 +726,11 @@ public static class ItemPickupRules
         if (Now >= item.ItemWait) Respawn(item);
     }
 
-    // QC Item_RespawnCountdown: tick the countdown, then respawn when the scheduled time arrives. On the first
-    // tick a respawn-countdown waypoint sprite is attached (killed on respawn); the per-second ITEMRESPAWNCOUNTDOWN
-    // sound is client/networking-side.
+    // QC Item_RespawnCountdown (items.qc:264-308): tick the per-second respawn countdown, then respawn when the
+    // tick budget (ITEM_RESPAWN_TICKS) is spent. On the FIRST tick spawn a respawn-countdown waypoint sprite
+    // attached to the item — WP_Weapon for weapon pickups, WP_Item for everything else — and, for the itemstime
+    // SpectatorOnly items (Mega/Big Health+Armor), restrict it to SPRITERULE_SPECTATOR. Then EVERY tick: for each
+    // client the waypoint is visible to, play the ITEMRESPAWNCOUNTDOWN sound, and ping the waypoint (radar pulse).
     private static void RespawnCountdown(Entity item)
     {
         if (item.ItemRespawnCounter >= (int)RespawnTicks)
@@ -712,21 +744,43 @@ public static class ItemPickupRules
         }
         item.NextThink = Now + 1f;
         item.ItemRespawnCounter++;
-        // QC Item_RespawnCountdown (items.qc:269-296): on the first countdown tick spawn the WP_Item respawn
-        // waypoint sprite attached to the item, and for the SpectatorOnly items (Mega/Big Health+Armor) set
-        // SPRITERULE_SPECTATOR so only spectators (and everyone in warmup / when sv_itemstime==2) see the
-        // respawn countdown marker — the server per-peer gate (ServerNet.WaypointVisible) reproduces QC's
-        // g_waypointsprite_itemstime mode 1/2 logic via sv_itemstime. WaypointSprite_UpdateBuildFinished drives
-        // the build-progress bar to full at the scheduled respawn time. Scoped to the itemstime spectator set
-        // (the generic non-timed item respawn waypoint is the items-pickups unit's concern, not ported here).
-        if (item.ItemRespawnCounter == 1 && ItemstimeMutator.IsSpectatorOnlyItem(item.ClassName))
+        if (item.ItemRespawnCounter == 1)
         {
+            // QC items.qc:275-289: spawn the countdown waypoint. WP_Weapon (radar icon RADARICON_Weapon) for a
+            // weapon pickup, WP_Item (RADARICON_Item) otherwise — matching the engine's per-item radar glyph.
+            // Both attach to the item at the '0 0 64' head offset and never fade (lifetime 0; killed on respawn).
+            bool isWeapon = item.Pickup?.IsWeaponPickup == true;
+            string spriteName = isWeapon ? "Weapon" : "Item";
+            System.Numerics.Vector3 color = isWeapon
+                ? System.Numerics.Vector3.Zero               // WP_Weapon: black, weapon color resolved client-side
+                : new System.Numerics.Vector3(1f, 0f, 1f);   // WP_Item: magenta
             Waypoints.WaypointSprite wp = Waypoints.WaypointSprites.Spawn(
-                "Item", 0f, 0f, item, System.Numerics.Vector3.Zero, item.Origin,
-                0, new System.Numerics.Vector3(1f, 0f, 1f), radarIcon: 1,
-                rule: Waypoints.SpriteRule.Spectator, hideable: true);
+                spriteName, 0f, 0f, item, new System.Numerics.Vector3(0f, 0f, 64f), item.Origin,
+                0, color, radarIcon: 1,
+                // QC: only the SpectatorOnly set (Mega/Big Health+Armor) gets SPRITERULE_SPECTATOR (the server
+                // per-peer gate, ServerNet.WaypointVisible, reproduces the sv_itemstime 1/2 mode); every other
+                // item's countdown waypoint is SPRITERULE_DEFAULT (visible to everyone, like a flag base).
+                rule: ItemstimeMutator.IsSpectatorOnlyItem(item.ClassName)
+                    ? Waypoints.SpriteRule.Spectator
+                    : Waypoints.SpriteRule.Default,
+                hideable: true);
+            // WaypointSprite_UpdateBuildFinished drives the build-progress bar to full at the scheduled respawn.
             Waypoints.WaypointSprites.UpdateBuildFinished(wp, item.ScheduledRespawnTime);
             item.WaypointAttached = wp;
+        }
+
+        // QC items.qc:291-307: every countdown tick, for each client that can see the waypoint, play the
+        // per-second ITEMRESPAWNCOUNTDOWN cue, then ping the waypoint (radar ring pulse).
+        if (item.WaypointAttached is Waypoints.WaypointSprite tickWp)
+        {
+            // QC soundto(MSG_ONE, this, CH_TRIGGER, SND(ITEMRESPAWNCOUNTDOWN)) per visible client. The port's
+            // Common layer has no per-client soundto seam, so emit a single positional cue on the item entity
+            // on CH_TRIGGER — every client near the item hears the countdown tick (the per-visible-client
+            // gating is approximated by ATTEN_NORM falloff; SpectatorOnly items over-broadcast slightly to
+            // nearby live players, the only divergence from QC's waypoint-visibility gate).
+            if (Api.Services is not null)
+                Api.Sound.Play(item, SoundChannel.TriggerAuto, "ITEMRESPAWNCOUNTDOWN");
+            Waypoints.WaypointSprites.Ping(tickWp);
         }
     }
 

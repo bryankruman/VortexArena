@@ -195,11 +195,12 @@ public static class MonsterFramework
     // ====================================================================================
 
     /// <summary>
-    /// Port of <c>monster_dropitem</c> (sv_monsters.qc): on death, spawn a loot item entity that pops up and
-    /// out from the corpse and self-removes after the drop lifetime. The concrete item-from-list selection
-    /// (Item_RandomFromList over the monster's loot string / the miniboss loot) is represented by spawning a
-    /// generic loot marker carrying the chosen list name; the full item registry wiring is the items
-    /// subsystem's job. Honors the g_monsters_drop_time gate and the .candrop toggle.
+    /// Port of <c>monster_dropitem</c> (sv_monsters.qc): on death, pick a real item from the monster's loot list
+    /// (golem <c>"health_mega electro"</c>) via <see cref="ItemRandomFromList"/> and spawn it as a tossed loot
+    /// entity that pops up + out of the corpse and despawns after the drop lifetime. Honors the
+    /// g_monsters_drop_time gate, the .candrop toggle, and the miniboss-loot override. The chosen def is spawned
+    /// through the real item pipeline (<see cref="StartItem.SpawnLoot"/>), so a health_mega heals and an electro
+    /// loot grants the weapon — matching QC's <c>Item_Initialise</c> on the loot edict.
     /// </summary>
     public static void DropItem(Entity self, MonsterAI.MonsterState st, Entity? attacker)
     {
@@ -213,21 +214,67 @@ public static class MonsterFramework
         if (string.IsNullOrEmpty(itemList)) return;
 
         if (Api.Services is null) return;
+
+        // QC: entity loot_itemdef = Item_RandomFromList(itemlist); if (!loot_itemdef) return;
+        Pickup? def = ItemRandomFromList(itemList);
+        if (def is null) return;
+
+        // QC: e = spawn(); e.monster_item = true; ITEM_SET_LOOT; e.itemdef = loot_itemdef;
+        //     setorigin(e, CENTER_OR_VIEWOFS(this)); e.velocity = randomvec()*175 + '0 0 325';
+        //     e.lifetime = autocvar_g_monsters_drop_time; Item_Initialise(e);
         Entity e = Api.Entities.Spawn();
-        e.ClassName = "item_loot";
-        e.NetName = itemList; // carries the loot-list name for the item subsystem to resolve
         e.Owner = self;
-        e.MoveType = MoveType.Toss;
-        e.Solid = Solid.Trigger;
-        e.Flags |= EntFlags.Item;
+        // CENTER_OR_VIEWOFS(this) for a non-player monster = origin + (mins+maxs)*0.5 (server/utils.qh:31).
         Vector3 center = self.Origin + (self.Mins + self.Maxs) * 0.5f;
         Api.Entities.SetOrigin(e, center);
-        // randomvec()*175 + '0 0 325' (QC) — deterministic via Prandom.
+        e.OldOrigin = center;
+        StartItem.SpawnLoot(e, def, dropTime); // MOVETYPE_TOSS + lifetime despawn (QC Item_Initialise loot path)
+        if (e.IsFreed) return; // NODROP / FilterItem removed it (faithful: no loot drops)
+        // randomvec()*175 + '0 0 325' (QC) — deterministic via Prandom; set AFTER SpawnLoot so it isn't clobbered.
         e.Velocity = Prandom.Vec() * 175f + new Vector3(0, 0, 325);
+    }
 
-        float removeAt = MonsterAI.Now + dropTime;
-        e.Think = it => { it.NextThink = MonsterAI.Now; if (MonsterAI.Now >= removeAt) Api.Entities.Remove(it); };
-        e.NextThink = MonsterAI.Now;
+    /// <summary>
+    /// Port of <c>Item_RandomFromList</c> (server/items/spawning.qc:71): pick one item def (weapon OR pickup) at
+    /// random — equal weight — from a space-separated loot list. A token matches a weapon by netname (excluding
+    /// WEP_FLAG_MUTATORBLOCKED) or an allowed item by netname; the literal token <c>"random"</c> matches any
+    /// normal, non-hidden, non-superweapon weapon and any normal, non-powerup item (QC's RandomSelection over the
+    /// catalogs). Returns the chosen <see cref="Pickup"/> (a weapon resolves to its <see cref="WeaponPickup"/>),
+    /// or null if the list is empty / nothing matched.
+    /// </summary>
+    public static Pickup? ItemRandomFromList(string itemList)
+    {
+        if (string.IsNullOrEmpty(itemList)) return null;
+
+        var candidates = new List<Pickup>();
+        foreach (string item in itemList.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            // FOREACH(Weapons, it != WEP_Null && !MUTATORBLOCKED): netname match, or "random" -> normal weapons.
+            foreach (Weapon w in Weapons.All)
+            {
+                if ((w.SpawnFlags & WeaponFlags.MutatorBlocked) != 0) continue;
+                bool match = w.NetName == item
+                    || (item == "random"
+                        && (w.SpawnFlags & WeaponFlags.Normal) != 0
+                        && (w.SpawnFlags & WeaponFlags.Hidden) == 0
+                        && (w.SpawnFlags & WeaponFlags.SuperWeapon) == 0);
+                if (match) candidates.Add(ItemSpawnFuncs.PickupFor(w));
+            }
+            // FOREACH(Items, Item_IsDefinitionAllowed): netname match, or "random" -> normal non-powerup items.
+            foreach (Pickup p in Items.All)
+            {
+                if (!p.ItemDef.IsAllowed) continue;
+                bool match = p.NetName == item
+                    || (item == "random"
+                        && (p.ItemDef.SpawnFlags & GameItemSpawnFlag.Normal) != 0
+                        && !p.IsPowerup);
+                if (match) candidates.Add(p);
+            }
+        }
+
+        if (candidates.Count == 0) return null;
+        // RandomSelection equal-weight pick (deterministic via Prandom).
+        return candidates[Prandom.RangeInt(0, candidates.Count)];
     }
 
     // ====================================================================================

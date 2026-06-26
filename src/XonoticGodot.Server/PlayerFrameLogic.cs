@@ -2,6 +2,7 @@ using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Gameplay.Damage;
+using XonoticGodot.Common.Physics;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Server;
@@ -227,7 +228,16 @@ public static class PlayerFrameLogic
 
         if (p.WaterLevel != WaterLevelSubmerged)
         {
-            // surfaced: gasp if we were out of air, then reset the timer (QC plays playersound_gasp).
+            // QC client.qc:2777-2779: surfaced — if the air timer had run out (we were drowning), play the
+            // gasp PlayerSound, then reset the timer. PlayerSound(this, playersound_gasp, CH_PLAYER, VOL_BASE,
+            // VOICETYPE_PLAYERSOUND, 1). The model's sound dir is resolved the same way the teamkill/pain
+            // voices resolve it (Sounds.ModelSoundsFile(model, skin)).
+            float nowGasp = Now;
+            if (st.AirFinished != 0f && st.AirFinished < nowGasp)
+            {
+                string? soundDir = Sounds.ModelSoundsFile(p.Model, (int)p.Skin);
+                SoundSystem.PlayPlayerSound(p, "gasp", soundDir, SoundLevels.VolBase, SoundLevels.AttenNorm);
+            }
             st.AirFinished = 0f;
         }
         else
@@ -248,6 +258,64 @@ public static class PlayerFrameLogic
             }
         }
     }
+
+    // QC pressedkeys.qh KEY_* bits — the network PRESSED_KEYS stat layout (must match the HUD PressedKeysPanel).
+    private const int KeyForward  = 1 << 0;
+    private const int KeyBackward = 1 << 1;
+    private const int KeyLeft     = 1 << 2;
+    private const int KeyRight    = 1 << 3;
+    private const int KeyJump     = 1 << 4;
+    private const int KeyCrouch   = 1 << 5;
+    private const int KeyAtck     = 1 << 6;
+    private const int KeyAtck2    = 1 << 7;
+
+    /// <summary>
+    /// QC <c>GetPressedKeys</c> (server/client.qc:1767): compute the player's held-button bitset from this tick's
+    /// move command and store it in the networked <c>PRESSED_KEYS</c> stat (<see cref="Player.PressedKeys"/>) so
+    /// the pressed-keys / strafe HUD can show a SPECTATED player's keys. BITSETs FORWARD/BACK/RIGHT/LEFT from the wish-move,
+    /// JUMP/ATCK/ATCK2 from the buttons, and CROUCH from <see cref="Entity.IsDucked"/> (QC's workaround: the
+    /// player can't un-crouch until their path is clear, so the held-crouch bit tracks the ducked state, not the
+    /// raw button). When the game is stopped the stat is zeroed. Call once per server frame per live player from
+    /// PlayerPostThink. The QC observer-clears-PRESSED_KEYS rule is handled by <see cref="ClearPressedKeys"/>.
+    /// </summary>
+    public static void GetPressedKeys(Player p, IMovementInput input, bool gameStopped)
+    {
+        // QC: MUTATOR_CALLHOOK(GetPressedKeys, this) — in the port the race/cts speed-award + the Vortex/OkNex
+        // velocity-charge consumers of that hook are already driven from their own gametype/weapon per-frame
+        // ticks, so there is no separate GetPressedKeys hook chain to fire here (no port consumer is wired to it).
+
+        if (gameStopped)
+        {
+            p.PressedKeys = 0;
+            return;
+        }
+
+        int keys = p.PressedKeys;
+        // QC reads CS(this).movement.x/.y (the wish-move); the port's IMovementInput.MoveValues carries the same
+        // forward(X)/side(Y) wish in the move-speed scale.
+        float fwd = input.MoveValues.X;
+        float side = input.MoveValues.Y;
+        keys = BitSet(keys, KeyForward,  fwd > 0f);
+        keys = BitSet(keys, KeyBackward, fwd < 0f);
+        keys = BitSet(keys, KeyRight,    side > 0f);
+        keys = BitSet(keys, KeyLeft,     side < 0f);
+        keys = BitSet(keys, KeyJump,     input.ButtonJump);
+        // QC workaround: the player can't un-crouch until their path is clear, so the held-crouch bit tracks the
+        // IS_DUCKED state rather than the raw button.
+        keys = BitSet(keys, KeyCrouch,   p.IsDucked);
+        keys = BitSet(keys, KeyAtck,     input.ButtonAttack1);
+        keys = BitSet(keys, KeyAtck2,    input.ButtonAttack2);
+        p.PressedKeys = keys;
+    }
+
+    /// <summary>
+    /// QC <c>PlayerPostThink</c> observer branch (server/client.qc:2861): an observing/spectating client clears
+    /// its own PRESSED_KEYS stat (it has no movement of its own — when following a player the spectate-copy
+    /// inherits the spectatee's bits instead). Call for a connected observer each frame.
+    /// </summary>
+    public static void ClearPressedKeys(Player p) => p.PressedKeys = 0;
+
+    private static int BitSet(int bits, int mask, bool on) => on ? (bits | mask) : (bits & ~mask);
 
     /// <summary>
     /// QC <c>CreatureFrame_Liquids</c> + <c>CreatureFrame_hotliquids</c>: deal periodic lava/slime damage to a
@@ -300,6 +368,16 @@ public static class PlayerFrameLogic
         {
             float dmg = Cvars.Float("g_balance_contents_playerdamage_lava") * rate * p.WaterLevel;
             Combat.Damage(p, null, null, dmg, DeathTypes.Lava, p.Origin, Vector3.Zero);
+            // QC main.qc:104-105: if(g_balance_contents_playerdamage_lava_burn) Fire_AddDamage(...):
+            // each lava tick re-ignites the player with lava_burn total damage over lava_burn_time seconds
+            // (both scaled by waterlevel). Default 0 means disabled; non-zero enables burn-over-time after
+            // leaving lava. The LEMMA merge in FireAddDamage handles repeated ignition per tick correctly.
+            float lavaBurn = Cvars.FloatOr("g_balance_contents_playerdamage_lava_burn", 0f);
+            if (lavaBurn != 0f)
+            {
+                float burnTime = Cvars.FloatOr("g_balance_contents_playerdamage_lava_burn_time", 2.5f) * p.WaterLevel;
+                StatusEffectsCatalog.FireAddDamage(p, null, lavaBurn * p.WaterLevel, burnTime, DeathTypes.Lava);
+            }
         }
         else if (p.WaterType == ContentSlime)
         {

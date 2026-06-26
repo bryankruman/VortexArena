@@ -1119,14 +1119,22 @@ public sealed class PlayerPhysics : IPlayerPhysics
         vel.Z += mjumpheight;
         player.Velocity = vel;
 
-        // QC plays the jump sound under #ifdef SVQC (common/physics/player.qc:491-495 PlayerSound) — the
-        // authoritative server tick only. Suppress it on CLIENT-SIDE PREDICTION (and its reconcile replays): the
-        // sound is networked from the server, and a predicted jump would re-fire it on every render-frame replay of
-        // the in-flight jump input (and a mispredicted jump would play a phantom one). Mirrors the footstep/landing
-        // and punch-decay gates (UpdateMovementSounds / CheckPunch) — those #ifdef SVQC cues were already gated; the
-        // jump sound was the one that slipped through.
-        if (!input.Predicted && Api.Services is not null)
-            Api.Sound.Play(player, SoundChannel.Body, "player/jump.wav");
+        // QC plays the jump grunt under #ifdef SVQC (common/physics/player.qc:491-495) — the authoritative
+        // server tick only, GATED on autocvar_g_jump_grunt (stock 0 = SILENT). Suppress it on CLIENT-SIDE
+        // PREDICTION (and its reconcile replays): the sound is networked from the server, and a predicted jump
+        // would re-fire it on every render-frame replay of the in-flight jump input (and a mispredicted jump
+        // would play a phantom one). Mirrors the footstep/landing and punch-decay gates (UpdateMovementSounds /
+        // CheckPunch) — those #ifdef SVQC cues were already gated.
+        //
+        // QC: PlayerSound(this, playersound_jump, CH_PLAYER, VOL_BASE, VOICETYPE_PLAYERSOUND, 1) — the per-model
+        // jump VOICE, NOT a fixed player/jump.wav. "jump" resolves through the player's model .sounds manifest
+        // (LoadPlayerSounds: jump -> sound/player/<pack>/player/jump), falling back to the default pack — same
+        // resolution as the wall-jump grunt (WalljumpMutator). VOL_BASE matches Base's PlayerSound volume.
+        // (The companion animdecide_setaction(this, ANIMACTION_JUMP, true) at player.qc:492 has no anim-action
+        // seam in the port yet — same as the walljump port — so it stays unported.)
+        if (!input.Predicted && Api.Services is not null && Api.Cvars.GetFloat("g_jump_grunt") != 0f)
+            SoundSystem.PlayPlayerSound(player, "jump", Sounds.ModelSoundsFile(player.Model, (int)player.Skin),
+                SoundLevels.VolBase, SoundLevels.AttenNorm);
 
         player.Flags &= ~EntFlags.OnGround;     // UNSET_ONGROUND
         player.OnSlick = false;                 // UNSET_ONSLICK

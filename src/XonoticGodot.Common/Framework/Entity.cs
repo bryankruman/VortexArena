@@ -7,6 +7,15 @@ public delegate void EntityTouch(Entity self, Entity other);
 public delegate void EntityUse(Entity self, Entity activator);
 
 /// <summary>
+/// QC <c>.contentstransition(float nOriginalContents, float nNewContents)</c> (dpextensions.qc:1557): a
+/// per-entity callback the movetype layer fires when the entity crosses a content boundary (water/slime/
+/// lava/empty), passing the previous and new native CONTENTS_* values. Base's movetype code itself emits NO
+/// sound — the splash/exit cue and any lava/slime contact-damage hookup live entirely in this callback, set
+/// per-entity by gameplay code. Unset (null) = no transition effect.
+/// </summary>
+public delegate void EntityContentsTransition(Entity self, int prevContents, int newContents);
+
+/// <summary>
 /// Marker for the presentation-side binding (a Godot node wrapper, set on the client only).
 /// Defined as an interface so <c>XonoticGodot.Common</c> stays Godot-free (ADR-0008).
 /// </summary>
@@ -69,6 +78,7 @@ public partial class Entity
     public EntityTouch? Touch;
     public EntityUse? Use;
     public EntityTouch? Blocked;
+    public EntityContentsTransition? ContentsTransition;  // QC .contentstransition (movetype water/content-crossing hook)
 
     // --- commonly shared gameplay fields (kept on base where QC used them generically) ---
     public float Health, MaxHealth;
@@ -106,6 +116,14 @@ public partial class Entity
     /// here (the port emits impact FX server-side) rather than CSQC. Default 0.
     /// </summary>
     public float PrevRic;
+
+    /// <summary>
+    /// QC <c>.spamtime</c> (common/sounds/all.qc:122): the sim time up to which this entity is rate-limited
+    /// for <c>spamsound</c> emits. A new spamsound only plays when <c>time &gt; e.spamtime</c>; on play, it is
+    /// set to the current <c>time</c> so at most one spamsound fires per sim step. Used by touch handlers that
+    /// can be called multiple times per frame (nade bounce, vehicle hit, monster body-impact).
+    /// </summary>
+    public float SpamTime;
 
     public Entity() { }
 

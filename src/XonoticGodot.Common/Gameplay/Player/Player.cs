@@ -146,6 +146,15 @@ public sealed class Player : Entity
     public int WantsJoin;
 
     /// <summary>
+    /// QC <c>.clientcolors</c> (server/teamplay.qc <c>setcolor</c> / <c>SetPlayerColors</c>): the player's packed
+    /// pants(low nibble)+shirt(high nibble) color, i.e. <c>16*shirt + pants</c>. In a team game it is forced to
+    /// <c>16*team + team</c> (both nibbles the team color); in FFA it keeps the player's chosen shirt+pants from
+    /// the <c>color</c> command. The player-model colormap derives from this. Server-authority value; the network
+    /// of clientcolors to the client is deferred, but the encoding is kept faithful so team-from-color works.
+    /// </summary>
+    public int ClientColors;
+
+    /// <summary>
     /// QC <c>.autojoin_checked</c> (server/client.qc): the one-shot autojoin latch. A bot sets it to 1 and joins
     /// once in ObserverOrSpectatorThink; a real client's delayed autojoin (PlayerPreThink, after MIN_SPEC_TIME)
     /// sets it to 1 after trying, or -1 to keep retrying briefly. 0 = not yet attempted.

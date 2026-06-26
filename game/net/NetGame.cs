@@ -2400,9 +2400,22 @@ public sealed partial class NetGame : Node3D
                 _server?.PumpTransportThreaded(dt);
 
         // QC target_music_kill() at NextLevel: stop the map music at intermission (works on both the listen-server
-        // and pure-client paths — the flag is networked via ClientNet.MatchIntermission).
+        // and pure-client paths — the flag is networked via ClientNet.MatchIntermission). QC FixIntermissionClient
+        // additionally loops a random sv_intermission_cdtrack word over the scoreboard; feed that value from the
+        // server cvar (listen-server only — the cvar isn't networked, so it stays empty/kill for a pure client,
+        // matching the stock empty default where no switch occurs anyway).
         if (_musicPlayer is not null && _client is not null)
+        {
             _musicPlayer.Intermission = _client.MatchIntermission;
+            if (_serverWorld is not null)
+                _musicPlayer.IntermissionCdTrack = _serverWorld.Services.Cvars.GetString("sv_intermission_cdtrack") ?? "";
+        }
+
+        // QC IntermissionThink autoscreenshot dance: the server forces clients with cl_autoscreenshot to capture the
+        // end-of-match scoreboard (and cl_autoscreenshot 2 always captures). Driven here off the networked
+        // intermission flag — armed with a short delay (QC `autoscreenshot = time + 0.1`) so the frame grabbed is the
+        // settled scoreboard, fired exactly once per match.
+        UpdateIntermissionAutoscreenshot();
 
         // Feed the music player the current server time so trigger_music touch freshness works.
         if (_musicPlayer is not null && _serverWorld is not null)
@@ -3230,6 +3243,63 @@ public sealed partial class NetGame : Node3D
         return new Godot.Color(r, 1f - r, 0f);
     }
 
+    // QC IntermissionThink autoscreenshot state: the +0.1s arm timer and the once-per-match latch (QC's
+    // `this.autoscreenshot` field, set to -1 after firing). Reset when intermission ends so the next match re-arms.
+    private float _autoscreenshotAt = -1f;
+    private bool _autoscreenshotTaken;
+
+    /// <summary>
+    /// QC IntermissionThink autoscreenshot: when the match enters intermission and the player opted in
+    /// (<c>cl_autoscreenshot</c> with the server's <c>sv_autoscreenshot</c>, or <c>cl_autoscreenshot 2</c>
+    /// unconditionally), capture the end-of-match scoreboard once. Base arms a +0.1s timer in FixIntermissionClient
+    /// and fires the <c>screenshot</c> in IntermissionThink; reproduced here off the networked intermission flag,
+    /// routed through the same <c>screenshot</c> command the F12 bind uses (<see cref="RunCommand"/>).
+    /// </summary>
+    private void UpdateIntermissionAutoscreenshot()
+    {
+        if (_client is null)
+            return;
+
+        if (!_client.MatchIntermission)
+        {
+            // Match is live (or returned to play): disarm so the NEXT intermission re-rolls the one-shot.
+            _autoscreenshotAt = -1f;
+            _autoscreenshotTaken = false;
+            return;
+        }
+
+        if (_autoscreenshotTaken)
+            return;
+
+        // Arm on the first intermission frame (QC autoscreenshot = time + 0.1) using the render clock.
+        if (_autoscreenshotAt < 0f)
+        {
+            _autoscreenshotAt = _renderClock + 0.1f;
+            return;
+        }
+        if (_renderClock < _autoscreenshotAt)
+            return;
+
+        _autoscreenshotTaken = true; // QC sets this.autoscreenshot = -1 (fire once)
+
+        // Opt-in gate (QC server_screenshot || client_screenshot). cl_autoscreenshot is the local client cvar;
+        // sv_autoscreenshot is the server cvar (readable directly on a listen server — it isn't networked, so a
+        // pure remote client only honours the cl_autoscreenshot==2 unconditional branch, matching the stock 0 default).
+        XonoticGodot.Common.Services.ICvarService cv = Api.Cvars;
+        float cl = CvarOr(cv, "cl_autoscreenshot", 0f);
+        float sv = _serverWorld is not null ? _serverWorld.Services.Cvars.GetFloat("sv_autoscreenshot") : 0f;
+        bool serverShot = sv != 0f && cl != 0f;
+        bool clientShot = cl == 2f;
+        if (!serverShot && !clientShot)
+            return;
+
+        // QC stuffcmd("screenshot screenshots/autoscreenshot/<map>-<matchid>.jpg"). matchid isn't networked here,
+        // so disambiguate with a timestamp instead; routes through the shared `screenshot` command (RunCommand).
+        string stamp = System.DateTime.Now.ToString("yyyyMMddHHmmss", System.Globalization.CultureInfo.InvariantCulture);
+        string map = string.IsNullOrEmpty(_map) ? "map" : _map;
+        RunCommand?.Invoke($"screenshot screenshots/autoscreenshot/{map}-{stamp}.jpg");
+    }
+
     /// <summary>Drain the networked match clock (NetControl.MatchState → ClientNet) into the TIMER panel each
     /// frame: GAMESTARTTIME / TIMELIMIT*60 / warmup, with "now" on the same server clock (LatestServerTime).
     /// The panel self-blanks until the first MatchState arrives, so this is safe to call every frame.</summary>
@@ -3243,6 +3313,10 @@ public sealed partial class NetGame : Node3D
         t.TimeLimitSeconds = _client.MatchTimeLimit;
         t.WarmupStage = _client.MatchWarmup;
         t.WarmupTimeLimitSeconds = _client.MatchWarmupLimit;
+        // QC STAT(OVERTIMES): the persistent "Overtime #N" / "Sudden Death" subtext + count-up past the limit.
+        // Networked via the MatchState packet (ClientNet.MatchOvertimes); the one-shot center notifications are
+        // delivered separately by the overtime cascade.
+        t.Overtimes = _client.MatchOvertimes;
         // [T69] feed the dynamic HUD shake's intermission gate: Base suppresses the low-health screen shake on the
         // end-of-match (intermission) screen. Mirror the live flag each frame (clears back to false when the next
         // match leaves intermission). Without this the shake still works in normal play but keeps shaking on the
@@ -3332,7 +3406,8 @@ public sealed partial class NetGame : Node3D
         // (Re)build the candidate list only when the ballot identity changes (count / first map / running flag),
         // then update the live counts in place each frame so SetVote's per-cell fade state isn't reset every frame.
         var cands = vote!.Candidates;
-        string sig = $"{cands.Count}|{(cands.Count > 0 ? cands[0].MapName : "")}|{vote.Timeout:0.0}";
+        bool isGametypeVote = vote.IsGametypeVote;
+        string sig = $"{cands.Count}|{(cands.Count > 0 ? cands[0].MapName : "")}|{vote.Timeout:0.0}|{isGametypeVote}";
         if (sig != _mapVoteSig)
         {
             _mapVoteSig = sig;
@@ -3342,18 +3417,47 @@ public sealed partial class NetGame : Node3D
             {
                 MapVoteCandidate c = cands[i];
                 if (c.IsAbstain) { abstainIdx = i; continue; } // abstain is rendered as its own row, not a cell
-                string pic = string.IsNullOrEmpty(c.MapName) ? "" : $"maps/{c.MapName}";
+                string pic;
+                if (isGametypeVote)
+                    // QC GameTypeVote_DrawGameTypeItem: the icon is gfx/menu/<menu_skin>/gametype_<name>. There is
+                    // no "default" skin dir in the shipped assets (skins are luma/luminos/wickedx/xaw) — using it
+                    // would always miss and fall back to the nopreview placeholder. Track the live skin (luma by
+                    // default, which carries the icons), mirroring Base's per-skin path.
+                    pic = $"gfx/menu/{XonoticGodot.Game.Hud.HudSkin.SkinName}/gametype_{c.MapName}";
+                else
+                    pic = string.IsNullOrEmpty(c.MapName) ? "" : $"maps/{c.MapName}";
+                // QC gametype detail: data = pretty name (sv_vote_gametype_<name>_name), desc = description.
+                // The port reads these from cvars; fall back to the NetName if unset.
+                string gtName = isGametypeVote ? Cvars.String($"sv_vote_gametype_{c.MapName}_name") : "";
+                string data = isGametypeVote
+                    ? (string.IsNullOrEmpty(gtName) ? c.MapName : gtName)
+                    : c.MapName;
+                string desc = isGametypeVote
+                    ? Cvars.String($"sv_vote_gametype_{c.MapName}_description")
+                    : "";
                 list.Add(new XonoticGodot.Game.Hud.MapVotePanel.Candidate(
-                    c.MapName, c.Votes, pic, c.MapName, "", c.Available, c.Suggester));
+                    c.MapName, c.Votes, pic, data, desc, c.Available, c.Suggester));
             }
-            mv.SetVote(list, vote.Timeout, gametypeVote: false, abstain: abstainIdx >= 0);
+            mv.SetVote(list, vote.Timeout, gametypeVote: isGametypeVote, abstain: abstainIdx >= 0);
+            // QC sv_vote_gametype_detail: honour the gametype-vote detail flag.
+            if (isGametypeVote)
+                mv.Detail = Cvars.Bool("sv_vote_gametype_detail");
         }
 
         // Live counts + availability each frame (QC MapVote_UpdateVotes), excluding the abstain slot.
+        // Build the availability list FIRST then call SetAvailability before SetVotes, so the panel's
+        // _top2Time reduce-fade clock is stamped when an option first becomes unavailable (QC mv_top2_alpha).
+        var avail = new System.Collections.Generic.List<bool>(cands.Count);
         var counts = new System.Collections.Generic.List<int>(cands.Count);
         foreach (MapVoteCandidate c in cands)
+        {
             if (!c.IsAbstain)
+            {
+                avail.Add(c.Available);
                 counts.Add(c.Available ? c.Votes : -1);
+            }
+        }
+        mv.SetAvailability(avail); // stamps _top2Time on first reduce (before SetVotes overwrites availability)
         mv.SetVotes(counts);
 
         // The local player's own vote (QC mv_ownvote). Abstain is appended LAST on the server ballot, so the
@@ -4188,7 +4292,11 @@ public sealed partial class NetGame : Node3D
         // Sensitivity is the live `sensitivity` cvar (the value the input-settings dialog binds), not a hardcoded
         // constant; the `m_pitch` SIGN gives invert-Y (the dialog's "Invert aiming" flips m_pitch < 0). The shared
         // view's SensitivityScale folds in (QC setsensitivityscale) so zoomed aim is finer on the net path too.
-        if (@event is InputEventMouseMotion motion && Input.MouseMode == Input.MouseModeEnum.Captured)
+        // QC FixIntermissionClient / SVC_INTERMISSION: at intermission the engine freezes the player view at the
+        // intermission camera and mouse-look is locked. Mirror it by ignoring look input while the match is over
+        // (the angles latched at intermission entry are held), so the scoreboard view doesn't swing with the mouse.
+        if (@event is InputEventMouseMotion motion && Input.MouseMode == Input.MouseModeEnum.Captured
+            && !(_client?.MatchIntermission ?? false))
         {
             float sens = LookSensitivity() * _view.SensitivityScale;
             _viewAngles.Y -= motion.Relative.X * sens;
@@ -4694,7 +4802,10 @@ public sealed partial class NetGame : Node3D
         // for all render purposes: no sub-tic eye extrapolation and no velocity-driven view effects while dead.
         // (net path has no MaxHealth, so dead = Health<=0 — but ONLY after the first spawn, so the pre-spawn
         // observer 0 doesn't engage the death-cam at the world origin.)
-        bool localDead = _everAlive && _client.Health <= 0;
+        // At intermission the server stamps RES_HEALTH = -2342 (QC FixIntermissionClient's first-phase sentinel),
+        // which also reads as Health<=0; but SVC_INTERMISSION freezes the view at the player's spot rather than
+        // engaging the death-cam, so suppress the dead/death-cam path while MatchIntermission is set.
+        bool localDead = _everAlive && _client.Health <= 0 && !_client.MatchIntermission;
         // Live: the rendered velocity is the predicted velocity PLUS the decaying velocity-error offset (QC
         // `this.velocity += CSQCPlayer_GetPredictionErrorV()`). It is normally ~0; after a smoothed correction —
         // above all a damage-knockback shove (Reconciler force smoothing) — it ramps the rendered velocity from the

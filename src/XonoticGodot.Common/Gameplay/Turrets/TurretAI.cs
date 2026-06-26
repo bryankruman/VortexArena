@@ -120,6 +120,12 @@ public sealed class TurretState
     /// read by the flak fuse (turret_flac_projectile_think_explode). 0 when there are no engine services (the
     /// firecheck/impact trace is skipped headless).</summary>
     public float ImpactTime;
+
+    /// <summary>QC <c>.fireflag</c> (phaser.qc) — the phaser head charge/discharge animation state machine flag:
+    /// 0 = idle, 1 = charging/firing (head frame cycles 1→10), 2 = discharging (frame advances to 15 then resets to
+    /// idle). Drives the <c>tr_think</c> head-frame anim and the <c>turret_phaser_firecheck</c> fire block. Only the
+    /// phaser uses it; other turrets advance their head frame directly without a fireflag.</summary>
+    public int FireFlag;
 }
 
 /// <summary>
@@ -920,16 +926,24 @@ public static class TurretAI
 
         st.OnDeathFx?.Invoke(turret);
 
+        // Death presentation (cl_turrets.qc:turret_die, run client-side on EVERY death via TNSF_STATUS health==0,
+        // not just NORESPAWN): the rocket-explode FX + impact sound. The port has no CSQC turret edict, so the
+        // server emits it directly at the death site for both the respawning and the permanent-death paths — this
+        // is the steady-state death effect a player sees when a turret is destroyed. (The per-type gib toss in
+        // cl_turrets.qc — turret_gibtoss/turret_gibboom — still needs a CSQC edict to spawn client gib entities
+        // and is left for the networking layer; the explosion is the substantive feedback.)
+        if (Api.Services is not null)
+        {
+            Api.Sound.Play(turret, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav"); // SND_ROCKET_IMPACT
+            EffectEmitter.Emit("ROCKET_EXPLODE", turret.Origin);                          // EFFECT_ROCKET_EXPLODE
+        }
+
         if (st.NoRespawn)
         {
-            // QC turret_die NORESPAWN branch (sv_turrets.qc:185-189): since CSQC can't run an effect on a
-            // to-be-removed edict, the server fires the explosion FX + sound itself before deleting the turret.
+            // QC turret_die NORESPAWN branch (sv_turrets.qc:185-189): the edict is deleted, so the FX above is the
+            // only death feedback before removal.
             if (Api.Services is not null)
-            {
-                Api.Sound.Play(turret, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav"); // SND_ROCKET_IMPACT
-                EffectEmitter.Emit("ROCKET_EXPLODE", turret.Origin);                          // EFFECT_ROCKET_EXPLODE
                 Api.Entities.Remove(turret);
-            }
             Forget(turret);
             return;
         }

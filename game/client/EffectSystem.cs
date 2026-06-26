@@ -1827,7 +1827,7 @@ public partial class EffectSystem : Node3D
         if (useStain && info.HasStain)
         {
             (float sr, float sg, float sb) = info.StainMidColor();
-            r *= sr; g *= sg; b *= sb; // particle color * staincolor (DP stainmap product)
+            r *= sr; g *= sg; b *= sb; // particle color * staincolor MODDING FACTOR (DP /0x8000 product; 0x808080 neutral)
         }
         return new Color(r, g, b);
     }

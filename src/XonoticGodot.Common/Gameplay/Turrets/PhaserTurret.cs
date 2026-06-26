@@ -63,6 +63,18 @@ public sealed class PhaserTurret : Turret
 
     public override void Think(Entity e)
     {
+        // phaser.qc tr_think: the head charge/discharge frame animation, driven by the fireflag state machine.
+        // Base nets a SEPARATE tur_head entity's frame; the port has no head bone entity, so — like the Plasma/
+        // Hellion/Hk turrets — the cycle runs on the turret edict's own networked Entity.Frame. (The real
+        // phaser.md3 head model attachment is a client-render concern still deferred.)
+        TrThinkHeadAnim(e);
+
+        // phaser.qc turret_phaser_firecheck: Base blocks fire entirely while fireflag != 0 (beam active or
+        // discharging). The port doesn't need a separate guard here: BeamThink already parks AttackFinished past
+        // the beam end + shot_refire (4s), and RunCombat's TFL_FIRECHECK_REFIRE gate (st.AttackFinished > now)
+        // refuses to fire for that whole window — which fully contains the ~0.07s discharge phase. The fireflag
+        // state therefore drives only the head animation; the fire-block is faithful via the refire hold.
+
         // phaser.qc tr_setup: aim_flags = TFL_AIM_LEAD ONLY — no SHOTTIMECOMPENSATE, no ZPREDICT, no SPLASH.
         // The phaser is hitscan so shot-time compensation is moot, and Base deliberately omits z-prediction;
         // both are left at their false defaults so the lead matches Base (esp. vs airborne targets).
@@ -72,6 +84,31 @@ public sealed class PhaserTurret : Turret
             aimMaxPitch: AimMaxPitch, aimMaxRot: AimMaxRot,
             trackType: TurretAI.TrackFluidInertia);
         TurretAI.RunCombat(e, in p, Attack);
+    }
+
+    /// <summary>
+    /// phaser.qc tr_think: the head charge/discharge frame animation state machine. Only runs while a frame is
+    /// already in motion (frame != 0); fireflag==1 cycles the head 1↔10 (charge/fire loop), fireflag==2 advances
+    /// to 15 then resets to idle (frame=0, fireflag=0) — re-enabling fire via the firecheck guard above.
+    /// </summary>
+    private static void TrThinkHeadAnim(Entity e)
+    {
+        TurretState st = TurretAI.State(e);
+        if (e.Frame == 0f) return;
+        if (st.FireFlag == 1)
+        {
+            if (e.Frame == 10f) e.Frame = 1f;
+            else e.Frame += 1f;
+        }
+        else if (st.FireFlag == 2)
+        {
+            e.Frame += 1f;
+            if (e.Frame == 15f)
+            {
+                e.Frame = 0f;
+                st.FireFlag = 0;
+            }
+        }
     }
 
     public override bool ValidTarget(Entity self, Entity target)
@@ -112,8 +149,20 @@ public sealed class PhaserTurret : Turret
             shotOrg + fwd * TargetRange, MoveFilter.Normal, turret);
         Api.Sound.PlayAt(impact.EndPos, SoundChannel.ShotsAuto, SndImpact, SoundLevels.VolBase, SoundLevels.AttenNorm);
 
-        // NOTE (client-render): the MDL_TUR_PHASER_BEAM visual scaled to the hit distance + the fireflag
-        // charge/discharge head frames. The server-side beam (per-tick damage, phaser_weapon.qc) is done above.
+        // phaser_weapon.qc wr_think: actor.fireflag = 1 (start the charge anim), and (turret-edict branch only)
+        // `if (tur_head.frame == 0) tur_head.frame = 1` to kick the head off idle. The per-think tr_think state
+        // machine then cycles the head 1↔10 while firing (TrThinkHeadAnim). The head frame rides the turret
+        // edict's own networked Entity.Frame (the port has no separate tur_head sub-entity).
+        TurretState st = TurretAI.State(turret);
+        st.FireFlag = 1;
+        if (turret.Frame == 0f)
+            turret.Frame = 1f;
+
+        // NOTE (client-render): the MDL_TUR_PHASER_BEAM beam-model visual scaled to the hit distance (Base
+        // setmodel(MDL_TUR_PHASER_BEAM) + .scale = vlen/256 + setattachment to tag_fire) is still deferred — the
+        // port has no Entity.Scale / setattachment / server→client beam-model render path. The head charge/
+        // discharge FRAME animation is now ported above (Entity.Frame + fireflag). The server-side beam (per-tick
+        // damage, phaser_weapon.qc) is done above.
     }
 
     // beam_think (phaser_weapon.qc): re-trace along the head's aim each frame, damage + slow the first hit, and
@@ -125,14 +174,19 @@ public sealed class PhaserTurret : Turret
 
         if (now > endTime || turret.IsFreed || turret.DeadState != DeadFlag.No)
         {
-            // End of beam: silence the hum (QC sound(this, CH_SHOTS_SINGLE, SND_Null)), set the real refire, remove.
-            // QC beam_think also sets fireflag=2 here, which turret_phaser_firecheck keeps non-firing through the
-            // discharge head animation (frame 10->15, ~5 tr_think frames). That discharge window (~0.07s) is wholly
-            // subsumed by this shot_refire hold (4s), the only refire gate the port consults (TurretAI:627), so the
-            // firecheck guard is faithful without a separate fireflag state — the head-frame anim itself is the
-            // (client-render) presentation gap tracked elsewhere.
+            // End of beam (QC beam_think:59-66): silence the hum (sound(this, CH_SHOTS_SINGLE, SND_Null)), set the
+            // real refire, enter the discharge head animation (fireflag=2, tur_head.frame=10 — tr_think then
+            // advances 10→15 then resets to idle), and remove the beam. The fireflag=2 fire-block is subsumed by
+            // the shot_refire hold (4s) here, the only refire gate the port consults (TurretAI:655); the frame
+            // advance is now driven by TrThinkHeadAnim on the turret edict's Entity.Frame.
             if (Api.Services is not null) Api.Sound.Stop(beam, BeamHumChannel);
-            if (!turret.IsFreed) TurretAI.State(turret).AttackFinished = now + ShotRefire;
+            if (!turret.IsFreed)
+            {
+                TurretState endState = TurretAI.State(turret);
+                endState.AttackFinished = now + ShotRefire;
+                endState.FireFlag = 2;
+                turret.Frame = 10f;
+            }
             if (Api.Services is not null) Api.Entities.Remove(beam);
             return;
         }

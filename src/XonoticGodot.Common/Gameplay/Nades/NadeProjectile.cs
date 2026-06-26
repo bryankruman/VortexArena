@@ -16,6 +16,7 @@
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -146,9 +147,12 @@ public static class NadeProjectile
         if (nade.GetResource(ResourceType.Health) == nade.MaxHealth)
         {
             if (Api.Services is not null)
-                // QC spamsound(this, CH_SHOTS, SND_GRENADE_BOUNCE_RANDOM(), …): pick one of grenade_bounce1..6
-                // at random (SND_GRENADE_BOUNCE1.m_id + rint(random()*5)).
-                Api.Sound.Play(nade, SoundChannel.Body, $"weapons/grenade_bounce{Prandom.RangeInt(1, 7)}.wav");
+                // QC spamsound(this, CH_SHOTS, SND_GRENADE_BOUNCE_RANDOM(), VOL_BASE, ATTEN_NORM): pick one
+                // of grenade_bounce1..6 at random (SND_GRENADE_BOUNCE1.m_id + rint(random()*5)). spamsound
+                // rate-limits to once per sim step via e.spamtime so a multi-solid-touch on the same frame
+                // doesn't over-emit. CH_SHOTS (-4) is the stacking auto channel, NOT CH_SHOTS_SINGLE (4).
+                SoundSystem.SpamSoundRaw(nade, $"weapons/grenade_bounce{Prandom.RangeInt(1, 7)}.wav",
+                    Api.Clock.Time, SoundChannel.ShotsAuto, SoundLevels.VolBase, SoundLevels.AttenNorm);
             return;
         }
 

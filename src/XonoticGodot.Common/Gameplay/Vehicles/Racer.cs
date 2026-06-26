@@ -8,8 +8,11 @@
 // VehiclePhysics.ForceFromTag), the racer_frame avelocity-free angle controller (yaw/pitch/roll toward the
 // pilot's view, friction, downforce, water handling), the afterburner energy drain on the real jump button,
 // and the homing/ground-hugging rocket guidance (racer_rocket_tracker / racer_rocket_groundhugger via
-// VehiclePhysics.GuideRocket). NOTE (client-render): only genuinely client-side items — muzzle FX, aux
-// crosshair color, HUD % mirroring — remain.
+// VehiclePhysics.GuideRocket). Server-side Send_Effect emissions (booster puff, under-craft smoke, cannon
+// muzzleflash, rocket-launch flash, death explosion) and the death colormod darken are emitted via
+// EffectEmitter / ColorModKey. NOTE (client-render): only genuinely client-side items — the CSQCProjectile
+// bolt/rocket trails, the aux crosshair lock color, the cockpit hud model, and the HUD gauge that READS the
+// already-written % stats — remain.
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
@@ -196,6 +199,7 @@ public sealed class Racer : Vehicle
         vehicle.MoveType = MoveType.Toss;     // QC: MOVETYPE_TOSS on spawn (becomes BOUNCE on enter)
         vehicle.Solid = Solid.SlideBox;
         vehicle.DeadState = DeadFlag.No;
+        vehicle.ColorModKey = Vector3.Zero;   // QC vehicles_spawn: clear the vr_death '-0.5 -0.5 -0.5' darken on respawn
         // QC vr_spawn: instance.bouncefactor/bouncestop = g_vehicle_racer_bounce* (0.25 / 0). The engine
         // MOVETYPE_BOUNCE integrator reads these off the edict once the racer is entered (vr_enter -> BOUNCE).
         vehicle.BounceFactor = BounceFactor;
@@ -442,9 +446,11 @@ public sealed class Racer : Vehicle
         // Afterburn on jump (energy-gated). QC drains afterburn_cost/sec (or waterburn in liquid).
         if (input.ButtonJump && vehicle.VehicleEnergy >= AfterburnCost * dt)
         {
-            // QC also pops an EFFECT_RACER_BOOSTER puff (every 0.2s off .wait, BEFORE wait is reset below) and
-            // an under-craft smoke trail (gated off .invincible_finished). Both are particle presentation with
-            // no Common-layer facade — deferred to the client render, same as every other EFFECT_* here.
+            // QC racer_frame: a booster puff (EFFECT_RACER_BOOSTER) gated on .wait every 0.2s, BEFORE .wait is
+            // reset below — emitted behind the craft (origin - fwd*32) thrown forward at the current speed.
+            if (Time - vehicle.VehWait > 0.2f)
+                EffectEmitter.Emit("RACER_BOOSTER", vehicle.Origin - forward * 32f,
+                    forward * QMath.VLen(vehicle.Velocity), 1);
             vehicle.VehWait = Time; // reset the energy regen-pause
 
             if (inLiquid)
@@ -456,6 +462,17 @@ public sealed class Racer : Vehicle
             {
                 vehicle.VehicleEnergy -= AfterburnCost * dt;
                 df += forward * SpeedAfterburn;
+            }
+
+            // QC racer_frame: an under-craft smoke trail (EFFECT_SMOKE_SMALL), gated on .invincible_finished
+            // (reused) for a 0.1+rand*0.1s cadence. Trace straight down 256u and puff at the ground hit.
+            if (Api.Services is not null && vehicle.VehSmokeTime < Time)
+            {
+                TraceResult down = Api.Trace.Trace(vehicle.Origin, Vector3.Zero, Vector3.Zero,
+                    vehicle.Origin - new Vector3(0, 0, 256f), MoveFilter.Normal, vehicle);
+                if (down.Fraction < 1f)
+                    EffectEmitter.Emit("SMOKE_SMALL", down.EndPos, Vector3.Zero, 1);
+                vehicle.VehSmokeTime = Time + 0.1f + Prandom.Float() * 0.1f;
             }
 
             // QC: the boost sound is reused with .strength_finished as a 10.92s loop-length delay so it isn't
@@ -540,9 +557,6 @@ public sealed class Racer : Vehicle
         player.VehReload2 = reloadSpan > 0f
             ? QMath.Bound(0f, 100f * (Time - vehicle.VehReloadStart) / reloadSpan, 100f)
             : 100f;
-
-        // TODO(port,client): qcsrc/common/vehicles/vehicle/racer.qc racer_frame — EFFECT_RACER_BOOSTER booster
-        //                    puff + under-craft smoke trail (particle presentation; no Common-layer facade).
     }
 
     /// <summary>Port of <c>racer_align4point</c>: four engine springs + the resulting upward push and pitch/roll torque.</summary>
@@ -626,6 +640,10 @@ public sealed class Racer : Vehicle
         vehicle.DeadState = DeadFlag.Dying;
         vehicle.MoveType = MoveType.Bounce;
 
+        // QC vr_death: a medium explosion at the wreck and a colormod darken on the dying hull.
+        EffectEmitter.Emit("EXPLOSION_MEDIUM", vehicle.Origin, Vector3.Zero, 1);
+        vehicle.ColorModKey = new Vector3(-0.5f, -0.5f, -0.5f); // QC vr_death: instance.colormod = '-0.5 -0.5 -0.5'
+
         // QC racer_diethink: tumble (avelocity), then after a random delay racer_blowup detonates.
         float delay = Time + 2f + Prandom.Range(0f, 3f);
         vehicle.VehBulletCounter = 1 + (int)Prandom.Range(0f, 2f); // .cnt = deadtouch detonation countdown
@@ -648,7 +666,7 @@ public sealed class Racer : Vehicle
             if (Time >= delay) Blowup(self);
         };
         vehicle.NextThink = Time;
-        // TODO(port,client): EFFECT_EXPLOSION_MEDIUM, colormod darken, stop-networking (setSendEntity null).
+        // NOTE(port,net): setSendEntity(func_null) "stop networking the wreck" is a net-layer concern, unmodeled.
     }
 
     /// <summary>Port of <c>racer_blowup</c>: the delayed radius blast, then schedule respawn at the spawn point.</summary>
@@ -700,7 +718,9 @@ public sealed class Racer : Vehicle
             CannonDamage, CannonRadius, CannonForce, size: 0f,
             DeathTypes.VhWakiGun, health: 0f, lifetime: 0f, // racer_weapon.qc: DEATH_VH_WAKI_GUN
             fireSound: "vehicles/lasergun_fire.wav");
-        // TODO(port,client): EFFECT_RACER_MUZZLEFLASH muzzle effect + CSQCProjectile visual.
+        // QC vehicles_projectile: Send_Effect(_mzlfx, proj.origin, proj.velocity, 1) — the muzzle flash at the
+        // bolt's spawn point thrown along its velocity (CSQCProjectile bolt trail remains a client-render concern).
+        EffectEmitter.Emit("RACER_MUZZLEFLASH", org, vel, 1);
     }
 
     // void racer_fire_rocket() — racer_weapon.qc: the secondary rocket (guided when locked, else ground-hugging).
@@ -715,6 +735,10 @@ public sealed class Racer : Vehicle
             DeathTypes.VhWakiRocket, health: 20f, lifetime: 15f, // racer_weapon.qc: DEATH_VH_WAKI_ROCKET
             fireSound: "vehicles/rocket_fire.wav");
         rocket.ClassName = "racer_rocket";
+
+        // QC vehicles_projectile: Send_Effect(EFFECT_RACER_ROCKETLAUNCH, proj.origin, proj.velocity, 1) — the
+        // launch flash (the PROJECTILE_WAKIROCKET CSQC rocket trail remains a client-render concern).
+        EffectEmitter.Emit("RACER_ROCKETLAUNCH", org, vel, 1);
 
         // Guidance parameters (racer_fire_rocket): per-tick accel, turn rate, lifetime, target.
         rocket.VehProjAccel = RocketAccel * FrameTime;

@@ -203,7 +203,8 @@ public static class Platforms
     /// <summary>QC <c>plat_go_down</c>: lower toward pos2.</summary>
     public static void PlatGoDown(Entity this_)
     {
-        MapMover.Sound(this_, SoundChannel.Voice, this_.Noise);
+        // Base plat_go_down uses CH_TRIGGER_SINGLE (=3); the port's Item slot = 3 is that channel.
+        MapMover.Sound(this_, SoundChannel.Item, this_.Noise);
         this_.MoverState = MapMover.StateDown;
         MapMover.CalcMove(this_, this_.Pos2, MapMover.SpeedType.Linear, this_.Speed, PlatHitBottom);
     }
@@ -211,7 +212,8 @@ public static class Platforms
     /// <summary>QC <c>plat_go_up</c>: raise toward pos1.</summary>
     public static void PlatGoUp(Entity this_)
     {
-        MapMover.Sound(this_, SoundChannel.Voice, this_.Noise);
+        // Base plat_go_up uses CH_TRIGGER_SINGLE (=3); the port's Item slot = 3 is that channel.
+        MapMover.Sound(this_, SoundChannel.Item, this_.Noise);
         this_.MoverState = MapMover.StateUp;
         MapMover.CalcMove(this_, this_.Pos1, MapMover.SpeedType.Linear, this_.Speed, PlatHitTop);
     }
@@ -219,7 +221,8 @@ public static class Platforms
     /// <summary>QC <c>plat_hit_top</c>: reached the top; wait 3s then go down.</summary>
     private static void PlatHitTop(Entity this_)
     {
-        MapMover.Sound(this_, SoundChannel.Voice, this_.Noise1);
+        // Base plat_hit_top uses CH_TRIGGER_SINGLE (=3); the port's Item slot = 3 is that channel.
+        MapMover.Sound(this_, SoundChannel.Item, this_.Noise1);
         this_.MoverState = MapMover.StateTop;
         this_.Think = PlatGoDown;
         this_.NextThink = this_.LTime + 3f;
@@ -228,7 +231,8 @@ public static class Platforms
     /// <summary>QC <c>plat_hit_bottom</c>: reached the bottom and rests.</summary>
     private static void PlatHitBottom(Entity this_)
     {
-        MapMover.Sound(this_, SoundChannel.Voice, this_.Noise1);
+        // Base plat_hit_bottom uses CH_TRIGGER_SINGLE (=3); the port's Item slot = 3 is that channel.
+        MapMover.Sound(this_, SoundChannel.Item, this_.Noise1);
         this_.MoverState = MapMover.StateBottom;
     }
 

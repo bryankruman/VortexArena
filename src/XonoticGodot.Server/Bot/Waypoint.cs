@@ -143,8 +143,8 @@ public sealed class WaypointNetwork
     /// <summary>QC autocvar_sv_gravity default. Drives the fall-time term of travel cost.</summary>
     public float Gravity = 800f;
 
-    /// <summary>Apparent jump height (QC jumpheight_vec.z, derived from sv_jumpvelocity); falls beyond this add a time penalty.</summary>
-    public float JumpHeight = 130f;
+    /// <summary>Apparent jump height (QC jumpheight_vec.z = sv_jumpvelocity^2/(2*sv_gravity) = 270^2/1600 ≈ 45.56); falls beyond this add a time penalty.</summary>
+    public float JumpHeight = 45.5625f;
 
     /// <summary>QC autocvar_sv_jumpvelocity default. Used to derive <see cref="JumpHeightTime"/>.</summary>
     public float JumpVelocity = 270f;

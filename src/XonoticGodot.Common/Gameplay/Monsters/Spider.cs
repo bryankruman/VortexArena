@@ -35,10 +35,42 @@ public sealed class Spider : Monster
         NetName = "spider";
         DisplayName = "Spider";
         Model = "models/monsters/spider.dpm";
+        // The Base spider ships NO models/monsters/spider.dpm_*.sounds file (only golem + zombie do), so QC
+        // Monster_Sound resolves every voice cue (pain/death/melee/sight/idle/spawn) to an EMPTY sample and
+        // sound7 plays nothing — the Base spider is silent for all voice cues (only its electro_fire2 web cue,
+        // played directly via SND_SpiderAttack_FIRE, sounds). An empty SoundCues set mirrors that: MonsterSound
+        // advances the throttle window but emits no sample, so no port-invented monsters/spider_<cue>.wav fires.
+        SoundCues = new System.Collections.Generic.HashSet<string>();
         StartHealth = 180f;             // g_monster_spider_health
         Damage = 35f;                   // bite damage
         Speed = 500f;                   // run speed
     }
+
+    // METHOD(Spider, mr_pain) — spider.qc:192: pain_finished = animstate_endtime, i.e. the length of the pain
+    // anim group. The spider's pain1/pain2 groups (spider.dpm.framegroups: '298 11 25' / '309 11 25') are 11
+    // frames at 25 fps = 0.44s, wider than the generic 0.34s baseline. MarkPain reads this as the pain window.
+    public override float PainWindow => 11f / 25f; // anim_pain1/pain2 '7/8' = 11 frames @ 25 fps
+
+    // METHOD(Spider, mr_anim) — spider.qc:208. The spider.dpm frame-group start indices (spider.dpm.framegroups:
+    // group 0 = bite, 1 = death01, 2 = death02, 3 = fire01, 5 = idle, 7 = pain01, 8 = pain02, 10 = walkforward).
+    // QC stamps the first component of each animfixfps vector onto .frame; DriveAnimFrame plays it client-side
+    // (CSQCMODEL_AUTOUPDATE). The logical Attack phase covers both the bite (anim_melee '0') and the web shoot
+    // (anim_shoot '3'); QC mr_pain/mr_death pick pain1/pain2 and die1/die2 at random — the driver's per-event
+    // AnimVariant carries the pain pick, and the death die1/die2 pair maps off the corpse-pose flag like the
+    // sibling monsters (Mage/Zombie).
+    public override float? AnimFrame(MonsterAnimPhase phase, bool die2) => AnimFrame(phase, die2, 0);
+
+    public override float? AnimFrame(MonsterAnimPhase phase, bool die2, int variant) => phase switch
+    {
+        MonsterAnimPhase.Idle => 5f,                // anim_idle '5 1 1'
+        MonsterAnimPhase.Walk => 10f,               // anim_walk '10 1 1'
+        MonsterAnimPhase.Run => 10f,                // anim_run '10 1 1' (same group as walk in QC)
+        MonsterAnimPhase.Attack => 0f,              // anim_melee '0 1 5' (bite); anim_shoot '3' folds in like siblings
+        MonsterAnimPhase.Shoot => 3f,               // anim_shoot '3 1 1' (web fire)
+        MonsterAnimPhase.Pain => variant != 0 ? 8f : 7f, // anim_pain1 '7 1 1' / anim_pain2 '8 1 1' (QC random per pain)
+        MonsterAnimPhase.Death => die2 ? 2f : 1f,   // anim_die1 '1 1 1' / anim_die2 '2 1 1' (QC random pick)
+        _ => 5f,                                     // fall back to idle
+    };
 
     // Monster_Spawn + METHOD(Spider, mr_setup) — spider.qc
     public override void Spawn(Entity e)
@@ -94,7 +126,9 @@ public sealed class Spider : Monster
     {
         st.AttackDelay = MonsterAI.Now + WebDelay;
         st.AttackFinished = MonsterAI.Now + WebDelay;
-        st.Anim = MonsterAI.MonsterAnim.Attack;
+        // QC wr_think (NPC web branch): setanim(actor.anim_shoot) — the spider plays its web-fire group ('3'),
+        // distinct from the bite's anim_melee ('0'). Drive the Shoot phase so DriveAnimFrame stamps frame 3.
+        st.Anim = MonsterAI.MonsterAnim.Shoot;
 
         MonsterAI.FaceTarget(e, target);
         Vector3 dir = QMath.Normalize((target.Origin + new Vector3(0, 0, 10)) - e.Origin);
@@ -135,7 +169,12 @@ public sealed class Spider : Monster
         // QC W_SetupProjVelocity_Explicit(..., web_speed, web_speed_up, ...) adds an upward launch component.
         web.Velocity += new Vector3(0, 0, MonsterAI.Cvar("g_monster_spider_attack_web_speed_up", WebSpeedUp));
 
-        Api.Sound.Play(e, SoundChannel.Weapon, "weapons/electro_fire2.wav");
+        // QC fires SND_SpiderAttack_FIRE (electro_fire2) TWICE per web shot: once from W_SetupShot_Dir on the
+        // weapon channel (CH_WEAPON_B) during wr_think, then again explicitly in M_Spider_Attack_Web on CH_SHOTS.
+        // Reproduce both cues (the only sounds the Base spider actually makes — its voice cues are silent; see
+        // the empty SoundCues set above).
+        Api.Sound.Play(e, SoundChannel.Weapon, "weapons/electro_fire2.wav");   // W_SetupShot_Dir SND_SpiderAttack_FIRE
+        Api.Sound.Play(e, SoundChannel.ShotsAuto, "weapons/electro_fire2.wav"); // M_Spider_Attack_Web sound() CH_SHOTS
     }
 }
 

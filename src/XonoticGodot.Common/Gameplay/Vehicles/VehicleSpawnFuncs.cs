@@ -42,6 +42,13 @@ public static class VehicleSpawnFuncs
         e.SpawnAngles = e.Angles;
         e.SpawnPos = e.Origin;
 
+        // QC vehicle_initialize:1203-1204: clear a map-authored .team when the gametype isn't teamplay OR
+        // g_vehicles_teams is off (default 1). Without this a vehicle carrying a leftover team key in a non-team
+        // gametype would wrongly read as team-owned (blocking enemy boarding / steal, mis-coloring the HUD). The
+        // targetname-controller branch that ASSIGNS .team is still unported, but this clamp is independent of it.
+        if (e.Team != 0f && (!Scoring.GameScores.Teamplay || !TeamsEnabled()))
+            e.Team = 0f;
+
         // QC vehicle_initialize + the deferred vehicles_spawn → vr_spawn: stamp the vehicle (model/hitbox/health/
         // shield/energy + capability flags) and arm its think. The port folds all of that into the descriptor's
         // Spawn (which calls VehicleCommon.SpawnVehicle and sets e.Think/e.NextThink itself). After this the hull
@@ -92,5 +99,17 @@ public static class VehicleSpawnFuncs
         string s = Api.Cvars.GetString(name);
         if (string.IsNullOrEmpty(s)) return true; // unset → enabled (cfg default is 1)
         return Api.Cvars.GetFloat(name) != 0f;     // present → 0 disables (QC !autocvar)
+    }
+
+    /// <summary>
+    /// QC <c>autocvar_g_vehicles_teams</c> (sv_vehicles.qh, default 1): whether vehicles honor team ownership.
+    /// Absent/unset reads as ON (the cfg default); an explicit 0 disables team-bound vehicles.
+    /// </summary>
+    private static bool TeamsEnabled()
+    {
+        if (Api.Services is null) return true; // no cvar store (headless): default-on like the cfg
+        string s = Api.Cvars.GetString("g_vehicles_teams");
+        if (string.IsNullOrEmpty(s)) return true; // unset → enabled (cfg default is 1)
+        return Api.Cvars.GetFloat("g_vehicles_teams") != 0f;
     }
 }

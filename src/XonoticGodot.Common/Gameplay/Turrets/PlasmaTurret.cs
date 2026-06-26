@@ -121,11 +121,21 @@ public class PlasmaTurret : Turret  // non-sealed: PlasmaDualTurret derives from
             FireInstagibBeam(turret, st.ShotOrg, dir);
         else
         {
-            TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
+            Entity ball = TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 1f, health: 0f,
                 ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, DeathTypes.TurretPlasma, spread: ShotSpread);
+            // QC plasma_weapon.qc: turret_projectile(..., PROJECTILE_ELECTRO_BEAM, ...). The client classifies a
+            // model-less turret bolt by its networked classname+netname (ProjectileCatalog.Classify keys
+            // "electro_bolt"/"elaser" onto PROJECTILE_ELECTRO_BEAM); stamping the netname gives it the blue plasma
+            // trail. (turret_projectile leaves netname empty → Generic; this overrides it to the QC type.)
+            ball.NetName = "electro_bolt";
 
             if (Api.Services is not null)
+            {
                 Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/hagar_fire.wav");
+                // QC plasma_weapon.qc:23 (PlasmaAttack.wr_think): Send_Effect(EFFECT_BLASTER_MUZZLEFLASH,
+                // tur_shotorg, tur_shotdir_updated * 1000, 1) — emitted unconditionally after the projectile.
+                EffectEmitter.Emit("BLASTER_MUZZLEFLASH", st.ShotOrg, dir * 1000f, 1);
+            }
         }
 
         // QC plasma.qc tr_attack: `if (it.tur_head.frame == 0) it.tur_head.frame = 1` — kick off the 5-frame head
@@ -133,9 +143,10 @@ public class PlasmaTurret : Turret  // non-sealed: PlasmaDualTurret derives from
         if (turret.Frame == 0f)
             turret.Frame = 1f;
 
-        // NOTE (client-render): PROJECTILE_ELECTRO_BEAM CSQC trail, EFFECT_BLASTER_MUZZLEFLASH (the head frame is
-        // networked via Entity.Frame, but the static base.md3 body has no spin frames — the real head model
-        // plasma.md3 needs a tur_head sub-entity / CSQC turret net layer to render it; that remains unported).
+        // The PROJECTILE_ELECTRO_BEAM CSQC trail (ball.NetName="electro_bolt") and EFFECT_BLASTER_MUZZLEFLASH
+        // (emitted above) are now wired. Remaining client-render gap: the head frame is networked via
+        // Entity.Frame, but the static base.md3 body has no spin frames — the real head model plasma.md3 needs a
+        // tur_head sub-entity / CSQC turret net layer to render it (no turret net layer exists in the port yet).
     }
 
     /// <summary>
@@ -147,8 +158,23 @@ public class PlasmaTurret : Turret  // non-sealed: PlasmaDualTurret derives from
     protected static void FireInstagibBeam(Entity turret, Vector3 shotOrg, Vector3 dir)
     {
         TurretCombat.FireBullet(turret, shotOrg, dir, spread: 0f,
-            damage: InstagibRailDamage, force: InstagibRailForce, DeathTypes.TurretPlasma);
-        // NOTE (client-render): EFFECT_VORTEX_MUZZLEFLASH + the team-coloured EFFECT_VAPORIZER_BEAM hit beam.
+            damage: InstagibRailDamage, force: InstagibRailForce, DeathTypes.TurretPlasma, out Vector3 endPos);
+
+        // QC plasma.qc tr_attack instagib branch (after FireRailgunBullet):
+        //   Send_Effect(EFFECT_VORTEX_MUZZLEFLASH, tur_shotorg, tur_shotdir_updated * 1000, 1);
+        //   vector v = WarpZone_UnTransformOrigin(WarpZone_trace_transform, trace_endpos);
+        //   vector rgb = Team_ColorRGB(it.team);
+        //   Send_Effect_Except(EFFECT_VAPORIZER_BEAM, tur_shotorg, v, 1, rgb, rgb, NULL);
+        // The muzzle flash, then the team-coloured rail beam swept muzzle -> trace impact. (Warpzone untransform
+        // is a no-op without warpzones — endPos is already the world impact point.) VAPORIZER_BEAM is a trail
+        // effect, so its Velocity arg is the beam end and the count is ignored (matching the Vaporizer weapon).
+        if (Api.Services is not null)
+        {
+            EffectEmitter.Emit("VORTEX_MUZZLEFLASH", shotOrg, dir * 1000f, 1);
+            Vector3 rgb = Teams.ColorRgb((int)turret.Team);
+            var beam = Effects.ByName("VAPORIZER_BEAM");
+            EffectEmitter.Emit(beam, shotOrg, endPos, 0, rgb, rgb, except: null);
+        }
     }
 
     /// <summary>QC FireRailgunBullet damage for the instagib plasma turret (plasma.qc tr_attack: 1e10, an

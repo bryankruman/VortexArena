@@ -2,6 +2,7 @@ using System.Numerics;
 using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
+using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay.Damage
@@ -429,7 +430,10 @@ public sealed class DamageSystem : IDamageSystem
         {
             targ.Pusher = attacker;
             targ.PushLTime = Now() + Cvar(CvarMaxPushTime, DefMaxPushTime);
-            targ.IsTypeFrag = false; // PHYS_INPUT_BUTTON_CHAT(this) — chat input not wired here
+            // QC player.qc:304 — this.istypefrag = PHYS_INPUT_BUTTON_CHAT(this): the VICTIM's chat-button
+            // state at the moment of the hit decides whether the kill counts as a typefrag. ButtonChat is
+            // written per-frame from the player's input Typing intent in PlayerPhysics (already live).
+            targ.IsTypeFrag = targ.ButtonChat;
         }
         else if (Now() < targ.PushLTime)
         {
@@ -501,6 +505,26 @@ public sealed class DamageSystem : IDamageSystem
                 }
                 if (take > 0f)
                     EffectEmitter.TeBlood(hitLoc, force.LengthSquared() > 0f ? Vector3.Normalize(-force) * 400f : Vector3.Zero, (int)(take * 0.2f + 1f));
+
+                // Bot aim shake (QC player.qc:388-395): throw off bot aim temporarily when damaged.
+                // QC: if(IS_BOT_CLIENT(this) && GetResource(this, RES_HEALTH) >= 1)
+                //   shake = damage * 5 / (bound(0, skill, 100) + 1)
+                //   v_angle.x += (random()*2-1)*shake; v_angle.y += (random()*2-1)*shake
+                //   v_angle.x = bound(-90, v_angle.x, 90)
+                // Applied AFTER the subtract (uses post-subtract health to skip dead targets);
+                // "damage" here is the pre-split, handicap-adjusted damage, matching QC's local.
+                if (targ is Player { IsBot: true } botTarg && targ.GetResource(ResourceType.Health) >= 1f)
+                {
+                    // QC bound(0, skill, 100): the live "skill" engine cvar (unset == 0 → divisor 1, max shake),
+                    // NOT a fabricated default. Read the raw value so a 0/unset skill matches QC's bound exactly.
+                    float skillCvar = Api.Services is not null ? Api.Cvars.GetFloat("skill") : 0f;
+                    float skill = QClamp(skillCvar, 0f, 100f);
+                    float shake = damage * 5f / (skill + 1f);
+                    botTarg.ViewAngles = new Vector3(
+                        QClamp(botTarg.ViewAngles.X + Prandom.Signed() * shake, -90f, 90f),
+                        botTarg.ViewAngles.Y + Prandom.Signed() * shake,
+                        botTarg.ViewAngles.Z);
+                }
             }
             else
             {

@@ -294,26 +294,30 @@ public sealed class Bans
 
     /// <summary>
     /// QC <c>Ban_Enforce</c>: kick every currently-connected client matching ban slot <paramref name="j"/>
-    /// (or all slots if j&lt;0). No-op without a wired <see cref="Roster"/>.
+    /// (or all slots if j&lt;0). Emits a per-client <c>^1NOTE:^7 banned client &lt;name&gt;^7 has to go\n</c>
+    /// line (concatenated into one bprint) and appends <c>": affects &lt;name&gt;, ..."</c> to the reason,
+    /// matching Base exactly (server/ipban.qc:Ban_Enforce). No-op without a wired <see cref="Roster"/>.
     /// </summary>
     public void Enforce(int j, string reason)
     {
         if (Roster is null) return;
-        var affected = new List<Player>();
+        // QC Ban_Enforce: build `s` as per-client "^1NOTE:^7 banned client <name>^7 has to go\n" lines,
+        // append ": affects <name>, ..." to the reason as the roster is walked, then bprint(s).
+        var sb = new StringBuilder();
         foreach (Player p in Roster())
         {
-            if (j < 0 ? IsClientBanned(p) : IsClientBannedBySlot(p, j))
-                affected.Add(p);
-        }
-        if (affected.Count == 0) return;
-        var names = new StringBuilder();
-        foreach (Player p in affected)
-        {
-            if (names.Length > 0) names.Append(", ");
-            names.Append(p.NetName);
+            if (!(j < 0 ? IsClientBanned(p) : IsClientBannedBySlot(p, j))) continue;
+            if (!string.IsNullOrEmpty(reason))
+            {
+                reason = sb.Length == 0
+                    ? reason + ": affects " + p.NetName
+                    : reason + ", " + p.NetName;
+            }
+            sb.Append("^1NOTE:^7 banned client ").Append(p.NetName).Append("^7 has to go\n");
             DropClient?.Invoke(p, string.IsNullOrEmpty(reason) ? "banned" : reason);
         }
-        Echo($"^1banned: {names} {(string.IsNullOrEmpty(reason) ? "" : "(" + reason + ")")}");
+        if (sb.Length > 0)
+            Echo(sb.ToString());
     }
 
     private bool IsClientBannedBySlot(Player client, int slot)
@@ -330,19 +334,25 @@ public sealed class Bans
         return ip.Idfp is null;
     }
 
-    /// <summary>QC <c>Ban_View</c>: print each active ban (with its <c>unban #N</c> index) + the total count.</summary>
+    /// <summary>
+    /// QC <c>Ban_View</c>: print a header, each active ban (with its <c>unban #N</c> index), and the Base
+    /// footer <c>^2Done listing all active (N) bans.</c> (server/ipban.qc:Ban_View).
+    /// </summary>
     public void View()
     {
         if (!_loaded) Load();
+        // QC: LOG_INFO("^2Listing all existing active bans:");
+        Echo("^2Listing all existing active bans:");
         float now = Now;
         int n = 0;
         for (int i = 0; i < _bans.Count; i++)
         {
             if (_bans[i].IsEmpty || now > _bans[i].Expire) continue;
-            Echo($"#{i}: {_bans[i].Ip} is still banned for {_bans[i].Expire - now:0} seconds");
+            Echo($"  #{i}: {_bans[i].Ip} is still banned for {_bans[i].Expire - now:0} seconds");
             n++;
         }
-        Echo($"{n} ban(s) active");
+        // QC: LOG_INFO("^2Done listing all active (", ftos(n), ") bans.");
+        Echo($"^2Done listing all active ({n}) bans.");
     }
 
     // =============================================================================================

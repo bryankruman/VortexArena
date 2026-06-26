@@ -823,6 +823,13 @@ public sealed class GameWorld
         Warmup.MapMinPlayers = () => Cvars.Int("map_minplayers");
         // - badteams (ReadyCount): teams unbalanced by >= sv_teamnagger; the size compute lives in Teamplay.
         Warmup.BadTeams = () => Teamplay.TeamsUnbalancedForNag(Clients.Players);
+
+        // QC TeamBalance_RemoveExcessPlayers / Remove_Countdown (teamplay.qc:677-763): on a leave that unbalances a
+        // 2-team match, move the newest excess joiner to spectators after a g_balance_teams_remove_wait countdown.
+        Teamplay.Now = () => Time;
+        Teamplay.MoveToSpectator = p => Clients.PutObserverInServer(p);
+        Clients.OnAfterClientDisconnect = () => Teamplay.RemoveExcessPlayers(Clients.Players, Cvars.Bool("g_campaign"));
+
         // - timeout_status (ReadyCount top): cannot reset the game while a timeout is active/pending.
         Warmup.TimeoutActive = () => Timeout.Active;
         // - teamplay_lockonrestart (ReadyRestart_force): lockteams = !warmup_stage on each restart.
@@ -915,6 +922,17 @@ public sealed class GameWorld
             }
         };
 
+        // QC spawnfunc(worldspawn) (server/world.qc:882-920): install the fixed animated-lightstyle table (the 12
+        // named flicker/pulse/candle/strobe styles + style 63) so map lights driven by a style index have their
+        // animation string. Server-side authority half; the client animation consumer is a separate render unit.
+        XonoticGodot.Common.Gameplay.LightStyles.InstallWorldspawnTable();
+
+        // QC readlevelcvars (server/world.qc:2187): the level-cvar side-effects this unit owns — publish the
+        // networked serverflags bits (fullbright / pickup-timer) from sv_allow_fullbright / sv_forbid_pickuptimer.
+        // Runs once at boot (warmup resolution, the other readlevelcvars half, lives in Warmup.Begin below) and
+        // re-runs on any later sv_allow_fullbright / sv_forbid_pickuptimer change via the cvar-change watcher.
+        ReadLevelCvars();
+
         // Honor a host-set start time: if the host raised GameStartTime before Boot (a custom countdown) or
         // warmup is enabled, run the warmup/countdown flow; otherwise keep the immediate-start default (0) so
         // headless callers that step the sim straight away aren't frozen by a default countdown.
@@ -946,6 +964,10 @@ public sealed class GameWorld
         // QC game_starttime (vote.qc:1009): before the match starts, calling a vote is rejected unless
         // sv_vote_gamestart. Was unwired (default () => 0 so `Now < 0` never true) — wire to the live start time.
         Voting.GameStartTime = () => GameStartTime;
+        // QC IS_CLIENT(caller) (server/utils.qh:13 = caller.flags & FL_CLIENT, vote.qc:1020): a vote may only be
+        // called by a fully connected client (the flag is set in ClientConnect, cleared on disconnect). Was unwired
+        // (default _ => true) so the "Only connected clients can vote" guard never fired — wire it live.
+        Voting.IsClient = p => (p.Flags & EntFlags.Client) != 0;
         // QC the map/nextmap vote validation (ValidateMap → MapInfo_FixName + recent-map + gametype-support gate).
         // Returns the validated map name or null with the reason in `error`. The recent-map block is bypassed by
         // sv_vote_override_mostrecent (and only applies to a real caller, not a console-issued vote).
@@ -1265,8 +1287,85 @@ public sealed class GameWorld
     /// </summary>
     private void SendCampaignWelcome(Player p)
     {
-        // QC sprintf(_("Level %d:"), campaign_level) — campaign_level here is Campaign_GetLevelNum (1-based).
-        Campaign.Log?.Invoke($"^F1Level {Campaign.LevelNum}:^7 ^BG{p.NetName}^7, ^BGpress ^F2jump^BG to enter the game.");
+        // QC SendWelcomeMessage (campaign branch) networks Campaign_GetLevelNum() to the connecting CLIENT, whose
+        // CSQC net_handle_ServerWelcome (client/main.qc:1379) builds the Welcome dialog string
+        //   strcat(CCR("^F1"), sprintf(_("Level %d:"), n), sprintf(CCR(" ^BG%s\n\n"), "_LEVEL_DESC"),
+        //          sprintf(CCR(_("^BGPress ^F2%s^BG to enter the game")), getcommandkey(_("jump"), "+jump")))
+        // where "_LEVEL_DESC" is a placeholder the MENU then substitutes with this level's per-level DESCRIPTION
+        // (the shortdesc column, which the SVQC campaign slice drops). The port has no CSQC Welcome dialog; it
+        // surfaces the same string as a per-client chat line. Faithful pieces reproduced here:
+        //   1. the per-level description (was wrongly the player's own name) — sourced from the all-levels
+        //      catalogue (the menu's CampaignFile_Load complement) keyed by the absolute level index;
+        //   2. the +jump keybind resolved exactly like Base's getcommandkey (the hook/offhand tips above do the
+        //      same), instead of the literal word "jump";
+        //   3. per-client delivery (QC SendWelcomeMessage is sent per-client, not bprinted) — so it does not
+        //      re-spam every already-connected player on each new join.
+        string desc = CampaignLevelDescription(Campaign.Name, Campaign.Level);
+        string jumpKey = XonoticGodot.Engine.Console.BindTable.CommandKey("jump", "+jump");
+        // QC: " ^BG%s\n\n" + "^BGPress ^F2%s^BG to enter the game". The dialog's \n\n becomes " — " on the one
+        // chat line; the description is shown only when the level actually carries one (QC's _LEVEL_DESC is the
+        // shortdesc, which can be empty).
+        string descPart = string.IsNullOrEmpty(desc) ? "" : $" ^BG{desc}";
+        string line = $"^F1Level {Campaign.LevelNum}:{descPart}^7 — ^BGPress ^F2{jumpKey}^BG to enter the game";
+        if (Commands.ChatToPlayer is not null)
+            Commands.ChatToPlayer.Invoke(p, line);
+        else
+            Campaign.Log?.Invoke(line); // bare host / test fallback (no per-client sink wired)
+    }
+
+    /// <summary>
+    /// The per-level description (QC's <c>_LEVEL_DESC</c> menu substitution). Base's Welcome dialog
+    /// (<c>menu/xonotic/dialog_welcome.qc:70</c>) builds it as <c>shortdesc + "\n\n" + longdesc</c> from the two
+    /// description columns the SVQC campaign slice drops. This re-parses the campaign file through the all-levels
+    /// catalogue (the menu-side <c>CampaignFile_Load</c> complement, which keeps both columns) and returns the
+    /// matching level's combined description, or "" when the file/level/description is absent. The level is keyed
+    /// by absolute index — QC indexes <c>campaign_shortdesc[campaign_level]</c> (the networked value minus one).
+    /// </summary>
+    private string CampaignLevelDescription(string name, int level)
+    {
+        if (ConfigReader is null)
+            return "";
+        string? text = ConfigReader(CampaignCatalog.FileName(name));
+        if (text is null)
+            return "";
+        foreach (CampaignLevel lvl in CampaignCatalog.Parse(text, out _))
+        {
+            if (lvl.Index != level)
+                continue;
+            // QC: strcat(campaign_shortdesc[level], "\n\n", campaign_longdesc[level]). The longdesc column embeds
+            // literal "\n" escapes between its briefing sentences (real campaignxonoticbeta.txt); on the single
+            // chat line those newlines (and the "\n\n" join) collapse to spaces so the briefing reads as one line.
+            // Either column may be empty (e.g. a level with only a title).
+            string s = lvl.ShortDesc;
+            string l = UnescapeNewlinesToSpaces(lvl.LongDesc);
+            if (s.Length != 0 && l.Length != 0)
+                return $"{s} — {l}";
+            return s.Length != 0 ? s : l;
+        }
+        return "";
+    }
+
+    /// <summary>Collapse the literal <c>\n</c> escape sequences in a campaign briefing column to single spaces
+    /// (the longdesc column stores its sentence breaks as the two-character escape <c>\n</c>), trimming runs.</summary>
+    private static string UnescapeNewlinesToSpaces(string s)
+    {
+        if (s.Length == 0)
+            return s;
+        // Replace the literal two-char escape "\n" (backslash + n) with a space, then squeeze whitespace runs.
+        string flat = s.Replace("\\n", " ");
+        var sb = new System.Text.StringBuilder(flat.Length);
+        bool prevSpace = false;
+        foreach (char c in flat)
+        {
+            bool isSpace = c == ' ' || c == '\t';
+            if (isSpace)
+            {
+                if (!prevSpace) sb.Append(' ');
+                prevSpace = true;
+            }
+            else { sb.Append(c); prevSpace = false; }
+        }
+        return sb.ToString().Trim();
     }
 
     /// <summary>QC the PutPlayerInServer tail: start the alivetime clock + reset the anticheat view window.</summary>
@@ -1427,6 +1526,36 @@ public sealed class GameWorld
     {
         if (name.StartsWith("g_balance", System.StringComparison.Ordinal))
             _weaponBalanceDirty = true;
+        // QC: the engine doesn't clear serverflags on map change, but readlevelcvars re-derives the two
+        // world-rules bits every level; re-publish them when an admin toggles either source cvar mid-session.
+        else if (name == "sv_allow_fullbright" || name == "sv_forbid_pickuptimer")
+            ReadLevelCvars();
+    }
+
+    /// <summary>
+    /// QC <c>readlevelcvars</c> serverflags side-effect (server/world.qc:2189-2195): publish the networked
+    /// <c>serverflags</c> bits this unit owns — <see cref="ServerFlags.AllowFullbright"/> from
+    /// <c>sv_allow_fullbright</c> and <see cref="ServerFlags.ForbidPickupTimer"/> from <c>sv_forbid_pickuptimer</c>.
+    /// The value is mirrored into the <c>serverflags</c> cvar so a shared-store listen-server client reads the
+    /// same flags its server set (the client gates fullbright player rendering, client/view.qc:1115, and the
+    /// HUD pickup timer, client/hud/panel/pickup.qc:91, off these bits). The warmup/limit half of readlevelcvars
+    /// lives in <see cref="WarmupController.Begin"/>.
+    /// </summary>
+    private void ReadLevelCvars()
+    {
+        int flags = ServerFlags.Value;
+        // QC: serverflags &= ~SERVERFLAG_ALLOW_FULLBRIGHT; if(cvar("sv_allow_fullbright")) serverflags |= ...
+        flags &= ~ServerFlags.AllowFullbright;
+        if (Cvars.Bool("sv_allow_fullbright"))
+            flags |= ServerFlags.AllowFullbright;
+        // QC: serverflags &= ~SERVERFLAG_FORBID_PICKUPTIMER; if(cvar("sv_forbid_pickuptimer")) serverflags |= ...
+        flags &= ~ServerFlags.ForbidPickupTimer;
+        if (Cvars.Bool("sv_forbid_pickuptimer"))
+            flags |= ServerFlags.ForbidPickupTimer;
+
+        ServerFlags.Value = flags;
+        // Mirror onto the cvar so the (shared-store) client reads the engine-networked QC `serverflags` global.
+        Cvars.Set("serverflags", flags);
     }
 
     /// <summary>
@@ -1681,7 +1810,7 @@ public sealed class GameWorld
             XonoticGodot.Common.Physics.MovementInput vehInput = VehicleBoarding.ToInput(input);
             p.VehInput = vehInput;
             p.Vehicle.VehInput = vehInput;
-            OnPlayerPostThink(p);
+            OnPlayerPostThink(p, input);
             return;
         }
 
@@ -1732,7 +1861,7 @@ public sealed class GameWorld
 
         // ---- PlayerPostThink (QC client.qc PlayerPostThink) ----
         using (Prof.Sample("move.post"))
-            OnPlayerPostThink(p);
+            OnPlayerPostThink(p, input);
     }
 
     /// <summary>
@@ -1741,16 +1870,28 @@ public sealed class GameWorld
     /// active status-effect expiry/burn, and the active weapon's per-frame think. Mirrors the QC order
     /// (DrownPlayer in PlayerPostThink; player_regen + StatusEffects + the weapon frame in PlayerFrame).
     /// </summary>
-    private void OnPlayerPostThink(Player p)
+    private void OnPlayerPostThink(Player p, IMovementInput input)
     {
         // QC: an un-joined observer runs ObserverOrSpectatorThink, NOT PlayerPostThink — no drown/regen/
         // statuseffects/weapon frame. Critically, running Regen here would climb the observer's Health off 0
         // and (via the owner-state snapshot) drop the connect overlay before the player actually spawns.
         if (p.IsObserver)
+        {
+            // QC PlayerPostThink (server/client.qc:2861): `else { STAT(PRESSED_KEYS, this) = 0; }` — an observer
+            // clears its own pressed-keys stat (a free-fly observer has no movement of its own; while FOLLOWING a
+            // player the spectate-copy mirrors the spectatee's bits instead). Keep the stat clean so the strafe/
+            // pressed-keys HUD doesn't show stale held keys for a now-spectating client.
+            PlayerFrameLogic.ClearPressedKeys(p);
             return;
+        }
 
         ServerPlayerState st = PlayerStates.Of(p);
         bool gameStopped = GameStopped || Time < GameStartTime;
+
+        // QC GetPressedKeys (server/client.qc:1767), called from PlayerPostThink: compute the player's held-button
+        // bitset from this tick's move command and store it in the networked PRESSED_KEYS stat (Player.PressedKeys)
+        // so the pressed-keys / strafe HUD can show a SPECTATED player's held keys.
+        PlayerFrameLogic.GetPressedKeys(p, input, gameStopped);
 
         // QC DrownPlayer: maintain the air timer and deal drown damage when submerged too long.
         PlayerFrameLogic.DrownPlayer(p, st, gameStopped);
@@ -2596,6 +2737,10 @@ public sealed class GameWorld
     {
         if (!Teamplay.IsTeamGame || GameStopped)
             return;
+
+        // QC Remove_Countdown think (teamplay.qc:677): drive the excess-player removal countdown at 1 Hz (it
+        // self-gates on its own nextthink), independent of the 3s bot-autobalance throttle below.
+        Teamplay.TickRemoveCountdown(Clients.Players, Cvars.Bool("g_campaign"));
         // QC TeamBalance_AutoBalanceBots: bot autobalance is UNCONDITIONAL — the g_balance_teams /
         // prevent_imbalance gate is explicitly commented out in QC ("we always want auto-balanced bots"). Only
         // intermission stops it, which the GameStopped check above already covers.
@@ -2876,6 +3021,8 @@ public sealed class GameWorld
     private bool _nextLevelFired;
     private bool _mapFlowStarted;
     private bool _mapChangeApplied;
+    // QC gametypevote_finished: true once the gametype vote has been resolved and its switch applied.
+    private bool _gametypeVoteApplied;
 
     /// <summary>The map the end-of-match flow selected to switch to (QC the changelevel target), or "" until chosen.</summary>
     public string SelectedNextMap { get; private set; } = "";
@@ -3077,6 +3224,11 @@ public sealed class GameWorld
         // QC MUTATOR_CALLHOOK(MatchEnd): the trailing match-end hook (CTF flag cleanup, kh_finalize, instagib
         // countdown stop). Fired last, mirroring NextLevel's order — just before the localcmd("sv_hook_gameend")
         // admin-script alias, which has no stock-config behaviour in the port.
+        // NOTE: QC FixIntermissionClient also stamps RES_HEALTH = -2342 (the first-intermission-phase sentinel).
+        // It is intentionally NOT reproduced here: DarkPlaces' SVC_INTERMISSION suppresses the whole gameplay HUD,
+        // so the value is never shown; the port has no intermission HUD suppression, so the listen-server
+        // HealthArmor panel (bound directly to Player.Health) would render a literal "-2342". The observable
+        // view freeze (mouse-look lock + viewmodel hide + death-cam suppression) is handled client-side in NetGame.
         MutatorHooks.FireMatchEnd();
     }
 
@@ -3162,41 +3314,128 @@ public sealed class GameWorld
                 return;
             }
 
-            // ---- otherwise: a map vote, or a silent rotation ----
-            if (Cvars.Int("g_maplist_votable") > 0 && Clients.PlayerCount > 0)
+            // ---- otherwise: a gametype vote (optional), then a map vote, or a silent rotation ----
+
+            // QC MapVote_Think → GameTypeVote_Start: when sv_vote_gametype is set, run a pre-map gametype
+            // ballot before starting the map vote. (sv_vote_gametype defaults to 0, so this is opt-in.)
+            if (Cvars.Bool("sv_vote_gametype") && Clients.PlayerCount > 0 && !_gametypeVoteApplied)
             {
-                Rotation.Init(MapName);
-                var ballot = Rotation.BuildBallot(Cvars.Int("g_maplist_votable"));
-                if (ballot.Count > 1)
+                string currentGt = GameType?.NetName ?? DefaultGameType;
+                MapVote.StartGametype(Clients.PlayerCount, currentGt);
+                if (MapVote.Finished)
                 {
-                    // QC MapVote_AddVotableMaps seeds player suggestions ahead of the rotation maps; each carries
-                    // the suggester's netname (QC mapvote_maps_suggesters) so the panel's "Suggested by:" line and
-                    // g_maplist_votable_show_suggester can populate.
-                    var suggestions = Commands.MapSuggestions
-                        .Select(s => (s.Map, s.Suggester))
-                        .ToList();
-                    MapVote.Start(ballot, Clients.PlayerCount, Cvars.FloatOr("g_maplist_votable_timeout", 30f), suggestions);
-                    return; // the vote runs; Tick resolves it below
+                    // Degenerate: 0 or 1 available gametypes — apply immediately and fall through to map vote.
+                    ApplyGametypeSwitch();
                 }
-                // a degenerate ballot (0/1 candidate) — fall through to the rotation pick.
+                else
+                {
+                    return; // gametype vote runs; handled in the Running/Finished blocks below
+                }
             }
 
-            // no vote: silent rotation (QC GotoNextMap).
-            Rotation.Init(MapName);
-            string next = Rotation.GetNextMap();
-            ApplyMapChange(string.IsNullOrEmpty(next) ? MapName : next);
+            StartMapVoteOrRotation();
             return;
         }
 
-        // ---- the map vote is running: tick it, apply the winner when it finishes ----
+        // ---- a vote is running: tick it and apply when it finishes ----
         if (MapVote.Running)
         {
             MapVote.Tick();
             return;
         }
-        // QC MapVote_Think: hold the result for the 1 s winner-reveal delay before the level actually changes.
-        if (MapVote.Finished && MapVote.ReadyToChangeLevel && !_mapChangeApplied)
-            ApplyMapChange(string.IsNullOrEmpty(MapVote.WinningMap) ? MapName : MapVote.WinningMap);
+        if (MapVote.Finished && !_mapChangeApplied)
+        {
+            if (MapVote.IsGametypeVote && MapVote.ReadyToChangeLevel)
+            {
+                // QC GameTypeVote_Finished: apply the gametype switch, then immediately start the map vote.
+                ApplyGametypeSwitch();
+                StartMapVoteOrRotation();
+                return;
+            }
+            // QC MapVote_Think: hold the result for the 1 s winner-reveal delay before the level actually changes.
+            if (!MapVote.IsGametypeVote && MapVote.ReadyToChangeLevel)
+                ApplyMapChange(string.IsNullOrEmpty(MapVote.WinningMap) ? MapName : MapVote.WinningMap);
+        }
+    }
+
+    /// <summary>
+    /// QC <c>GameTypeVote_SetGametype</c>: apply the gametype switch chosen by the gametype vote. Sets the
+    /// <c>gametype</c> cvar so the next map boots with the voted gametype. When <c>sv_vote_gametype_maplist_reset</c>
+    /// is set and a per-gametype maplist cvar (<c>sv_vote_gametype_&lt;name&gt;_maplist</c>) is configured, rewrites
+    /// <c>g_maplist</c> with that value. If the cvar is not set but reset is requested and the port knows the
+    /// gametype, the existing <c>g_maplist</c> is kept (the port has no full MapInfo_ListAllowedMaps enumerate).
+    ///
+    /// <para>Also fires <see cref="XonoticGodot.Server.Commands.GameTypeVoteHookHandler"/> for
+    /// <c>sv_vote_gametype_hook_all</c> and <c>sv_vote_gametype_hook_&lt;name&gt;</c> (QC <c>localcmd</c>).</para>
+    /// </summary>
+    private void ApplyGametypeSwitch()
+    {
+        _gametypeVoteApplied = true;
+        // QC voted_gametype_string: the winning BALLOT name (which may be a custom alias). Used for the hooks +
+        // the per-gametype maplist lookup, exactly as Base keys them off voted_gametype_string.
+        string gt = MapVote.VotedGametype;
+        if (string.IsNullOrEmpty(gt))
+            return; // no gametype won (degenerate ballot with 0 available options): keep current gametype.
+
+        // QC voted_gametype = GameTypeVote_Type_FromString(...): resolve the ballot name to the REAL gametype
+        // (a custom alias maps through sv_vote_gametype_<name>_type). MapInfo_SwitchGameType switches to that
+        // resolved type — so the `gametype` cvar (which ResolveGameType reads at boot) must hold the real name,
+        // not the alias, or the next level would fall back to DM.
+        string realType = gt;
+        if (GameTypes.ByName(gt) is null)
+        {
+            string aliasType = Cvars.String($"sv_vote_gametype_{gt}_type");
+            if (GameTypes.ByName(aliasType) is not null)
+                realType = aliasType;
+        }
+
+        // QC MapInfo_SwitchGameType: set the gametype cvar for the next level boot (the resolved real type).
+        Cvars.Set("gametype", realType);
+
+        // QC localcmd(sv_vote_gametype_hook_all) + localcmd(sv_vote_gametype_hook_<name>): run the hooks if wired.
+        // Base keys the per-gametype hook off voted_gametype_string (the ballot name / alias).
+        Commands.GameTypeVoteHookHandler?.Invoke("all");
+        Commands.GameTypeVoteHookHandler?.Invoke(gt);
+
+        // QC sv_vote_gametype_maplist_reset: optionally rewrite g_maplist for the new gametype.
+        // Per-gametype maplist: sv_vote_gametype_<name>_maplist (a custom maplist for that specific gametype).
+        string perGtMaplist = Cvars.String($"sv_vote_gametype_{gt}_maplist");
+        if (!string.IsNullOrEmpty(perGtMaplist))
+        {
+            Cvars.Set("g_maplist", perGtMaplist);
+        }
+        // else: sv_vote_gametype_maplist_reset is set but no per-gametype list → keep the current g_maplist
+        // (the port has no full MapInfo_ListAllowedMaps enumerate to generate a fresh list).
+    }
+
+    /// <summary>
+    /// QC after the override chain / gametype vote: start a map vote if the ballot has &gt;1 candidates, or
+    /// apply a silent rotation if not. Extracted so both the normal path and the post-gametype-vote path share it.
+    /// </summary>
+    private void StartMapVoteOrRotation()
+    {
+        if (Cvars.Int("g_maplist_votable") > 0 && Clients.PlayerCount > 0)
+        {
+            Rotation.Init(MapName);
+            var ballot = Rotation.BuildBallot(Cvars.Int("g_maplist_votable"));
+            if (ballot.Count > 1)
+            {
+                // QC MapVote_AddVotableMaps seeds player suggestions ahead of the rotation maps; each carries
+                // the suggester's netname (QC mapvote_maps_suggesters) so the panel's "Suggested by:" line and
+                // g_maplist_votable_show_suggester can populate.
+                var suggestions = Commands.MapSuggestions
+                    .Select(s => (s.Map, s.Suggester))
+                    .ToList();
+                MapVote.Start(ballot, Clients.PlayerCount, Cvars.FloatOr("g_maplist_votable_timeout", 30f), suggestions);
+                return; // the vote runs; Tick resolves it on the next frame
+            }
+            // a degenerate ballot (0/1 candidate) — fall through to the rotation pick.
+        }
+
+        // no vote: silent rotation (QC GotoNextMap).
+        Rotation.Init(MapName);
+        string next = Rotation.GetNextMap();
+        ApplyMapChange(string.IsNullOrEmpty(next) ? MapName : next);
     }
 
     /// <summary>Apply the chosen next map (QC Map_Goto): mark it recent + route it to the host's changelevel.</summary>
@@ -3546,7 +3785,7 @@ public sealed class GameWorld
         Intermission.Reset();
         OverTime.Reset(); // [T42] clear the overtime / sudden-death checkrules state for the fresh match
         // re-arm the end-of-match flow + the per-match infrastructure so a fresh match runs clean.
-        _nextLevelFired = _mapFlowStarted = _mapChangeApplied = false;
+        _nextLevelFired = _mapFlowStarted = _mapChangeApplied = _gametypeVoteApplied = false;
         SelectedNextMap = "";
         PlayerStats.ResetAll(Clients.Players, Teamplay.IsTeamGame ? Teams.Active(Teamplay.TeamCount) : null);
         Warmup.ReadyRestart(forceWarmupEnd: true);   // ends warmup, arms the countdown, runs ResetMap

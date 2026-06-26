@@ -78,8 +78,13 @@ public static class NetProtocol
     /// tier, gated by QC's <c>Item_ItemsTime_SetTimesForAllPlayers</c> send rule
     /// (<c>warmup_stage || !IS_PLAYER || sv_itemstime==2</c>) so the ItemsTimePanel works for a pure remote
     /// client (not just the listen host). Unknown to old clients (dispatch falls through harmlessly).
+    ///
+    /// v11: extended the match-clock channel (<see cref="NetControl.MatchState"/>) with STAT(OVERTIMES) — a
+    /// trailing 32-bit field so the TIMER panel's persistent "Overtime #N" / "Sudden Death" subtext shows on
+    /// every client (the one-shot overtime center notifications were already wired). Same-build lockstep: the
+    /// field is read unconditionally, so the version bump keeps the parity hash honest.
     /// </summary>
-    public const uint ProtocolVersion = 10;
+    public const uint ProtocolVersion = 11;
 
     /// <summary>Ordered, reliable ENet channel — handshake, spawns/removes, notifications, scores.</summary>
     public const int ReliableChannel = 0;

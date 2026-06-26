@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
@@ -86,11 +87,36 @@ public sealed class Mage : Monster
         st.MonsterLoot = MonsterAI.CvarString("g_monster_mage_loot", "health_big");
     }
 
+    // Per-entity flag so the mr_death die1/die2 pick happens exactly once per death (the descriptor is a
+    // shared singleton). Reclaimed when the corpse is removed/GC'd; a respawn re-clears DeathLanded in MarkDead.
+    private sealed class DeathState { public bool DiePicked; }
+    private static readonly ConditionalWeakTable<Entity, DeathState> _deathStates = new();
+
     // METHOD(Mage, mr_think) — mage.qc: heal/shield decision pass, THEN the shared chase/attack loop.
     public override void Think(Entity e)
     {
         var st = MonsterAI.StateOf(e);
         if (st is null) return;
+
+        // METHOD(Mage, mr_death): setanim(random() > 0.5 ? anim_die2 : anim_die1). The shared MarkDead sets the
+        // logical Death phase (which DriveAnimFrame maps to die1 by default); a mage picks die2 50% of the time.
+        // mr_death runs once on the brain tick when the monster transitions to dead, so do the pick once here.
+        if (e.DeadState != DeadFlag.No || e.Health <= 0f)
+        {
+            var ds = _deathStates.GetOrCreateValue(e);
+            if (!ds.DiePicked)
+            {
+                ds.DiePicked = true;
+                // st.DeathLanded selects the die2 frame group in AnimFrame above (QC anim_die2 '10 1 0.5').
+                st.DeathLanded = MonsterRandom.Next() > 0.5f;
+            }
+            MonsterAI.RunThink(e, st);
+            return;
+        }
+
+        // Alive again (respawn): clear the one-shot so a future death re-rolls die1/die2.
+        if (_deathStates.TryGetValue(e, out DeathState? alive) && alive.DiePicked)
+            alive.DiePicked = false;
 
         // Heal trigger: when our own health is low OR a nearby ally needs help, pulse a heal (QC mr_think).
         if (MonsterRandom.Next() < 0.5f && MonsterAI.Now >= st.AttackFinished
@@ -159,8 +185,13 @@ public sealed class Mage : Monster
             force: 0f, deathType: DeathTypes.MonsterMage, // mage.qc M_Mage_Attack_Spike: DEATH_MONSTER_MAGE
             moveType: MoveType.FlyMissile, lifetime: 7f,
             sizeMin: Vector3.Zero, sizeMax: Vector3.Zero,
-            // M_Mage_Attack_Spike_Explode: grenade_impact on detonation (SND_MageSpike_IMPACT).
-            onExplode: p => Api.Sound.Play(p, SoundChannel.ShotsAuto, "weapons/grenade_impact.wav"),
+            // M_Mage_Attack_Spike_Explode: grenade_impact on detonation (SND_MageSpike_IMPACT) +
+            // Send_Effect(EFFECT_EXPLOSION_SMALL, this.origin, '0 0 0', 1) (mage.qc:129,133).
+            onExplode: p =>
+            {
+                Api.Sound.Play(p, SoundChannel.ShotsAuto, "weapons/grenade_impact.wav");
+                EffectEmitter.Emit("EXPLOSION_SMALL", p.Origin, Vector3.Zero, 1);
+            },
             onThink: p =>
             {
                 if (!MonsterFramework.HomeProjectile(p, deathTime, turn, accel, decel, speedMax,
@@ -192,6 +223,9 @@ public sealed class Mage : Monster
         WeaponSplash.RadiusDamage(e, e.Origin, PushDamage, PushDamage, PushRadius,
             e, 0, PushForce, deathTag: DeathTypes.MonsterMage);
 
+        // mage.qc M_Mage_Attack_Push:308 — Send_Effect(EFFECT_TE_EXPLOSION, this.origin, '0 0 0', 1).
+        EffectEmitter.Emit("TE_EXPLOSION", e.Origin, Vector3.Zero, 1);
+
         Api.Sound.Play(e, SoundChannel.Weapon, "weapons/tagexp1.wav");
     }
 
@@ -204,13 +238,20 @@ public sealed class Mage : Monster
 
         // QC: if (teleport_random && random() <= teleport_random) MoveToRandomLocationWithinBounds(...).
         float randChance = MonsterAI.Cvar("g_monster_mage_attack_teleport_random", TeleportRandom);
-        if (randChance != 0f && MonsterRandom.Next() <= randChance && RandomRelocate(e))
+        if (randChance != 0f && MonsterRandom.Next() <= randChance)
         {
-            // Face the target (yaw only) and set the cooldown — the random branch is self-contained.
-            Vector3 ra = QMath.VecToAngles(target.Origin - e.Origin);
-            e.Angles = new Vector3(0f, ra.Y, 0f);
-            st.AttackFinished = MonsterAI.Now + TeleportDelay;
-            return;
+            Vector3 oldpos = e.Origin; // mage.qc:324 — captured before the relocation
+            if (RandomRelocate(e))
+            {
+                // Face the target (yaw only) and set the cooldown — the random branch is self-contained.
+                Vector3 ra = QMath.VecToAngles(target.Origin - e.Origin);
+                e.Angles = new Vector3(0f, ra.Y, 0f);
+                // mage.qc:333-334 — Send_Effect(EFFECT_SPAWN) at both the old and new origin.
+                EffectEmitter.Emit("SPAWN", oldpos, Vector3.Zero, 1);
+                EffectEmitter.Emit("SPAWN", e.Origin, Vector3.Zero, 1);
+                st.AttackFinished = MonsterAI.Now + TeleportDelay;
+                return;
+            }
         }
 
         if ((target.Flags & EntFlags.OnGround) == 0) return; // QC: target must be grounded for the behind-blink
@@ -221,7 +262,12 @@ public sealed class Mage : Monster
         TraceResult tr = Api.Trace.Trace(center, e.Mins, e.Maxs, center + back * 200f, MoveFilter.NoMonsters, e);
         if (tr.Fraction < 1f) return;
 
-        Api.Entities.SetOrigin(e, tr.EndPos);
+        Vector3 newpos = tr.EndPos;
+        // mage.qc:351-352 — Send_Effect(EFFECT_SPAWN) at both the old origin and the destination.
+        EffectEmitter.Emit("SPAWN", e.Origin, Vector3.Zero, 1);
+        EffectEmitter.Emit("SPAWN", newpos, Vector3.Zero, 1);
+
+        Api.Entities.SetOrigin(e, newpos);
         Vector3 a = QMath.VecToAngles(target.Origin - e.Origin);
         e.Angles = new Vector3(-a.X, a.Y, 0f);
         e.Velocity *= 0.5f;
@@ -279,28 +325,42 @@ public sealed class Mage : Monster
             if (!HealCheck(e, it, skin)) continue;
             washealed = true;
 
+            // QC Send_Effect uses vec2(it.velocity) — the velocity with its Z component dropped.
+            Vector3 fxVel = new Vector3(it.Velocity.X, it.Velocity.Y, 0f);
             if ((it.Flags & EntFlags.Client) != 0)
             {
+                // QC M_Mage_Defend_Heal: per-skin heal + Send_Effect(fx, it.origin, vec2(it.velocity), 5).
+                string? fx = null;
                 switch (skin)
                 {
                     case 0:
                         it.GiveResourceWithLimit(ResourceType.Health, HealAllies, regenStableHp);
+                        fx = "HEALING";
                         break;
                     case 1: // ammo top-up
                         if (it.AmmoCells > 0f) it.GiveResourceWithLimit(ResourceType.Cells, 1, MonsterAI.Cvar("g_pickup_cells_max", 180f));
                         if (it.AmmoRockets > 0f) it.GiveResourceWithLimit(ResourceType.Rockets, 1, MonsterAI.Cvar("g_pickup_rockets_max", 160f));
                         if (it.AmmoShells > 0f) it.GiveResourceWithLimit(ResourceType.Shells, 2, MonsterAI.Cvar("g_pickup_shells_max", 60f));
                         if (it.AmmoBullets > 0f) it.GiveResourceWithLimit(ResourceType.Bullets, 5, MonsterAI.Cvar("g_pickup_nails_max", 320f));
+                        fx = "AMMO_REGEN";
                         break;
                     case 2: // armor repair
                         if (it.ArmorValue < regenStableArmor)
+                        {
                             it.GiveResourceWithLimit(ResourceType.Armor, HealAllies, regenStableArmor);
+                            fx = "ARMOR_REPAIR";
+                        }
                         break;
                 }
+                // QC emits the per-skin effect unconditionally after the switch (EFFECT_Null on an unmatched
+                // skin / armor-already-full is a no-op in Emit — fx == null here mirrors that).
+                if (fx is not null)
+                    EffectEmitter.Emit(fx, it.Origin, fxVel, 5);
             }
             else
             {
-                // Ally monster: heal toward its own max (no resource limit on non-players).
+                // Ally monster: Send_Effect(EFFECT_HEALING) then heal toward its own max (no resource limit).
+                EffectEmitter.Emit("HEALING", it.Origin, fxVel, 5);
                 it.GiveResourceWithLimit(ResourceType.Health, HealAllies, it.MaxHealth);
             }
         }

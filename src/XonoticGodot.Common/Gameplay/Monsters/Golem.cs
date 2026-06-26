@@ -58,15 +58,22 @@ public sealed class Golem : Monster
     //   anim_idle '0 1 1'  anim_walk '1 1 1'  anim_run '2 1 1'  anim_melee2 '4 1 5'  anim_melee3 '5 1 5'
     //   anim_melee1 '6 1 5'  anim_pain1 '7 1 2'  anim_pain2 '8 1 2'  anim_spawn '12 1 5'
     //   anim_die1 '13 1 0.5'  anim_die2 '15 1 0.5'
-    // The Attack phase covers both the melee combo (melee2/melee3) and the ranged smash (melee1); we play the
-    // melee2 group (4) as the representative attack, as the close-range claw combo is the golem's primary tell.
-    public override float? AnimFrame(MonsterAnimPhase phase, bool die2) => phase switch
+    // The Attack phase covers both the melee combo (melee2/melee3) and the ranged smash (melee1). QC
+    // M_Golem_Attack picks anim_melee2 '4' / anim_melee3 '5' at random per melee dispatch; the driver records
+    // that pick in MonsterState.AnimVariant and passes it here as `variant` (0 -> melee2, 1 -> melee3). The
+    // 2-arg overload (used where no variant was chosen) keeps the melee2 representative group.
+    public override float? AnimFrame(MonsterAnimPhase phase, bool die2) => AnimFrame(phase, die2, 0);
+
+    public override float? AnimFrame(MonsterAnimPhase phase, bool die2, int variant) => phase switch
     {
         MonsterAnimPhase.Idle => 0f,    // anim_idle '0 1 1'
         MonsterAnimPhase.Walk => 1f,    // anim_walk '1 1 1'
         MonsterAnimPhase.Run => 2f,     // anim_run '2 1 1'
-        MonsterAnimPhase.Attack => 4f,  // anim_melee2 '4 1 5' (claw combo; smash uses melee1 '6')
-        MonsterAnimPhase.Pain => 7f,    // anim_pain1 '7 1 2'
+        // anim_melee2 '4 1 5' (variant 0) / anim_melee3 '5 1 5' (variant 1) — random per dispatch; smash uses melee1 '6'.
+        MonsterAnimPhase.Attack => variant != 0 ? 5f : 4f,
+        // anim_pain1 '7 1 2' (variant 0) / anim_pain2 '8 1 2' (variant 1) — random per pain event (golem.qc:241).
+        MonsterAnimPhase.Pain => variant != 0 ? 8f : 7f,
+        MonsterAnimPhase.Spawn => 12f,  // anim_spawn '12 1 5' (golem.qc:270)
         MonsterAnimPhase.Death => die2 ? 15f : 13f, // anim_die1 '13 …' -> anim_die2 '15 …'
         _ => 0f,
     };
@@ -104,7 +111,9 @@ public sealed class Golem : Monster
         float spawnAnim = 1f / 5f; // anim_spawn '12 1 5': framecount(1) / fps(5)
         st.SpawnTime = MonsterAI.Now + spawnAnim;
         MonsterFramework.ApplyFor(MonsterFramework.SpawnShield, e, spawnAnim);
-        st.Anim = MonsterAI.MonsterAnim.Idle;
+        // QC mr_setup: setanim(anim_spawn) — play the spawn group '12' during the spawn window; RunThink's
+        // spawn_time gate stamps this onto Entity.Frame until SpawnTime, then Move flips it to idle/walk/run.
+        st.Anim = MonsterAI.MonsterAnim.Spawn;
     }
 
     // METHOD(Golem, mr_think) — golem.qc
@@ -162,6 +171,11 @@ public sealed class Golem : Monster
         MonsterAI.QueueDelayedAttack(e, st, windUp: 1.1f, totalLock: 1.4f, action: self =>
         {
             Vector3 forward = QMath.Forward(self.Angles);
+            // golem.qc:27 — Send_Effect(EFFECT_EXPLOSION_MEDIUM, (origin + v_forward*150) - ('0 0 1'*maxs.z), '0 0 0', 1):
+            // a ground-pound dust/debris burst in front of the golem, dropped to its feet by the bbox top.
+            Vector3 fxOrigin = (self.Origin + forward * 150f) - new Vector3(0, 0, self.Maxs.Z);
+            EffectEmitter.Emit("EXPLOSION_MEDIUM", fxOrigin);
+
             Vector3 loc = self.Origin + forward * 50f;
             // golem.qc M_Golem_Attack_Smash: the ground-pound blast is DEATH_MONSTER_GOLEM_SMASH.
             WeaponSplash.RadiusDamage(self, loc, SmashDamage * skill, SmashDamage * skill * 0.5f, SmashRange,
@@ -199,6 +213,9 @@ public sealed class Golem : Monster
                 makeTrigger: true,              // golem.qc:141 PROJECTILE_MAKETRIGGER
                 onExplode: p =>
                 {
+                    // golem.qc:59 — Send_Effect(EFFECT_ELECTRO_IMPACT, this.origin, '0 0 0', 1): the expanding
+                    // electro impact puff at the detonation point (matches the spider web explode, Spider.cs:114).
+                    EffectEmitter.Emit("ELECTRO_IMPACT", p.Origin);
                     // Chained zaps: arc to every damageable target in the wide zap radius (te_csqc_lightningarc
                     // beam is CSQC), each taking lightning_damage_zap * skillmod (QC FOREACH_ENTITY_RADIUS).
                     MonsterFramework.ChainedZaps(p, p.Owner, p.Origin, LightningRadiusZap,

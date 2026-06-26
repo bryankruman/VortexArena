@@ -37,6 +37,9 @@ public static class Jumppads
     public const int PvBidirectionalZ = 1 << 5;  // PUSH_VELOCITY_BIDIRECTIONAL_Z
     public const int PvClampNegativeAdds = 1 << 6; // PUSH_VELOCITY_CLAMP_NEGATIVE_ADDS
 
+    /// <summary>QC <c>NUM_JUMPPADSUSED</c> (jumppads.qh:27): size of the per-player recent-jumppad ring.</summary>
+    private const int NumJumppadsUsed = 3;
+
     private const string CvarGravity = "sv_gravity";
     private const float DefGravity = 800f;
 
@@ -231,15 +234,30 @@ public static class Jumppads
                 self.PushLTime = MapMover.Now() + 0.2f;
                 MapMover.Sound(targ, SoundChannel.Auto, self.Noise);
             }
+            // QC jumppads.qc:380-388: multi-pad combo bookkeeping. Bump jumppadcount once per DISTINCT pad in
+            // the current air-time (the jumppadsused ring dedupes a re-touch of the same pad), so a player who
+            // chains several pads gets a >1 count (read by bot nav / the combo trace). jumppadcount is reset on
+            // land/jump in PlayerPhysics.
+            Entity?[] used = targ.JumpPadsUsed ??= new Entity?[NumJumppadsUsed];
+            bool found = false;
+            for (int i = 0; i < targ.JumpPadCount && i < NumJumppadsUsed; i++)
+                if (ReferenceEquals(used[i], self))
+                    found = true;
+            if (!found)
+            {
+                used[targ.JumpPadCount % NumJumppadsUsed] = self;
+                ++targ.JumpPadCount;
+            }
+
             // QC: a message-jumppad center-prints this.message to the launched real client (jumppads.qc:392-393).
-            // Real-client/non-empty/handler gating is done inside the seam; bots fall through (lastteleport stamp).
+            // Real-client/non-empty gating is done inside the seam; bots fall through (lastteleport stamp).
             MapMover.Centerprint(targ, self.Message);
             targ.LastTeleportTime = MapMover.Now();
             targ.LastTeleportOrigin = targ.Origin;
 
             // QC: reset who pushed you into a hazard so the jumppad doesn't keep crediting an old attacker for a
-            // later kill (jumppads.qc:404-405). animdecide_setaction(ANIMACTION_JUMP) and the jumppadcount /
-            // jumppadsused multi-pad kill-credit bookkeeping need cross-file fields/seams (see todos).
+            // later kill (jumppads.qc:407-409). (animdecide_setaction(ANIMACTION_JUMP) is the third-person jump
+            // pose only — the port has no animdecide action seam, so it stays a documented presentation gap.)
             targ.PushLTime = 0f;
             targ.IsTypeFrag = false;
         }

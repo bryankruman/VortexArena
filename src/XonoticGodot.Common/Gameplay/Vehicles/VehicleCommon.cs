@@ -469,7 +469,8 @@ namespace XonoticGodot.Common.Gameplay
         /// pilot and let the descriptor run its death FX + respawn. The per-weapon vehicle damage-rate table is
         /// applied here (<see cref="VehicleDamageRate"/>).
         ///
-        /// Deferred vs QC (client-only): the shield-hit cosmetic entity + SND_ONS_* hit sounds, antilag.
+        /// Deferred vs QC (client-only): the shield-hit cosmetic entity (vehicle_shieldent colormod/alpha flash),
+        /// antilag. The SND_ONS_* hit/shield sounds ARE emitted here (spamsound on CH_PAIN, sound_allowed-gated).
         /// </summary>
         public static void DamageVehicle(Entity vehic, Entity? inflictor, Entity? attacker,
             float damage, string deathType, Vector3 hitLoc, Vector3 force)
@@ -496,23 +497,31 @@ namespace XonoticGodot.Common.Gameplay
                     // and play the heavy hit (SND_ONS_HIT2) at CH_PAIN, VOL_BASE, ATTEN_NORM.
                     vehic.TakeResource(ResourceType.Health, MathF.Abs(vehic.VehicleShield));
                     vehic.VehicleShield = 0f;
-                    if (Api.Services is not null)
-                        Api.Sound.Play(vehic, SoundChannel.Body, "onslaught/ons_hit2.wav", 0.7f, 0.5f);
+                    // QC (sv_vehicles.qc:670-671): spamsound(this, CH_PAIN, SND_ONS_HIT2, VOL_BASE, ATTEN_NORM)
+                    // gated by sound_allowed(MSG_BROADCAST, attacker). CH_PAIN (-6) is the stacking auto channel.
+                    if (Api.Services is not null && SoundAllowedGate.IsAllowed(attacker))
+                        SoundSystem.SpamSoundRaw(vehic, "onslaught/ons_hit2.wav", Time,
+                            SoundChannel.PainAuto, SoundLevels.VolBase, SoundLevels.AttenNorm);
                     // NOTE (client-render): the vehicle_shieldent colormod+alpha hit flash is a CSQC visual.
                 }
                 else
                 {
-                    // Shield absorbed it: the electricity sparkle (SND_ONS_ELECTRICITY_EXPLODE), VOL_BASE, ATTEN_NORM.
-                    if (Api.Services is not null)
-                        Api.Sound.Play(vehic, SoundChannel.Body, "onslaught/electricity_explode.wav", 0.7f, 0.5f);
+                    // Shield absorbed it: QC (sv_vehicles.qc:674-675) spamsound(this, CH_PAIN,
+                    // SND_ONS_ELECTRICITY_EXPLODE, VOL_BASE, ATTEN_NORM) gated by sound_allowed(MSG_BROADCAST, attacker).
+                    if (Api.Services is not null && SoundAllowedGate.IsAllowed(attacker))
+                        SoundSystem.SpamSoundRaw(vehic, "onslaught/electricity_explode.wav", Time,
+                            SoundChannel.PainAuto, SoundLevels.VolBase, SoundLevels.AttenNorm);
                 }
             }
             else
             {
                 vehic.TakeResource(ResourceType.Health, damage);
-                // QC vehicles_damage: spamsound(this, CH_PAIN, SND_ONS_HIT2, VOL_BASE, ATTEN_NORM) on a raw hit.
-                if (Api.Services is not null)
-                    Api.Sound.Play(vehic, SoundChannel.Body, "onslaught/ons_hit2.wav", 0.7f, 0.5f);
+                // QC (sv_vehicles.qc:681-682): spamsound(this, CH_PAIN, SND_ONS_HIT2, VOL_BASE, ATTEN_NORM)
+                // gated by sound_allowed(MSG_BROADCAST, attacker). spamsound rate-limits to once per sim step so
+                // repeated touch-damage calls don't over-emit. CH_PAIN (-6) is the stacking auto channel.
+                if (Api.Services is not null && SoundAllowedGate.IsAllowed(attacker))
+                    SoundSystem.SpamSoundRaw(vehic, "onslaught/ons_hit2.wav", Time,
+                        SoundChannel.PainAuto, SoundLevels.VolBase, SoundLevels.AttenNorm);
             }
 
             // QC applies knockback scaled by .damageforcescale (set per vehicle in vr_spawn), else raw force.
@@ -605,25 +614,44 @@ namespace XonoticGodot.Common.Gameplay
             Api.Entities.SetSize(proj, new Vector3(-s, -s, -s), new Vector3(s, s, s));
             Api.Entities.SetOrigin(proj, origin);
 
-            if (health > 0f)
-            {
-                proj.TakeDamage = DamageMode.Aim;
-                proj.Health = health;
-            }
-            else
-            {
-                proj.Flags |= EntFlags.NoTarget;
-            }
-
             void Explode(Entity self)
             {
                 self.Touch = null;
                 self.Think = null;
                 self.TakeDamage = DamageMode.No;
+                self.GtEventDamage = null; // QC vehicles_projectile_explode: this.event_damage = func_null
                 // Carry the per-vehicle special deathtype (vh_*_gun/_rocket/…) through the blast so a kill
                 // routes to the vehicle obituary line, not a generic weapon line.
                 WeaponSplash.RadiusDamage(self, self.Origin, damage, 0f, radius, self.DmgInflictor, 0, force, deathTag: deathType);
                 Api.Entities.Remove(self);
+            }
+
+            if (health > 0f)
+            {
+                proj.TakeDamage = DamageMode.Aim;
+                proj.Health = health;
+                // QC vehicles_projectile(): _health -> proj.event_damage = vehicles_projectile_damage. The shootable
+                // vehicle bolt/rocket can be SHOT DOWN — it takes RES_HEALTH damage, accepts the knockback, and
+                // detonates once depleted. DamageSystem.EventDamage routes a non-player victim with a GtEventDamage
+                // to it, so installing this here is what makes the projectile destructible on the live path.
+                proj.GtEventDamage = (self, inflictor, _attacker, _deathType, dmg, _hitLoc, frc) =>
+                {
+                    // QC: "Ignore damage from other projectiles from my owner (dont mess up volly's)" — a vehicle's
+                    // own salvo (same owning vehicle) passes straight through its in-flight projectiles.
+                    if (inflictor is not null && ReferenceEquals(inflictor.Owner, self.Owner))
+                        return;
+
+                    self.TakeResource(ResourceType.Health, dmg);
+                    self.Velocity += frc;
+                    // QC: GetResource(this, RES_HEALTH) < 1 -> detonate (takedamage NO, event_damage null,
+                    // setthink(adaptor_think2use) at time, which fires .use -> vehicles_projectile_explode).
+                    if (self.GetResource(ResourceType.Health) < 1f)
+                        Explode(self);
+                };
+            }
+            else
+            {
+                proj.Flags |= EntFlags.NoTarget;
             }
 
             proj.Touch = (self, _) => Explode(self);
@@ -633,10 +661,9 @@ namespace XonoticGodot.Common.Gameplay
             if (fireSound is not null)
                 Api.Sound.Play(owner, SoundChannel.Weapon, fireSound);
 
-            // NOTE — cross-boundary: CSQCProjectile networking + muzzle EFFECT_* (client/net), the bot-dodge
-            // list (bot AI), and the owner==owner friendly-projectile pass-through (a RadiusDamage owner-filter
-            // detail in the damage system). The server projectile — movetype, ownership, splash, lifetime,
-            // fire sound — is wired above.
+            // NOTE — cross-boundary: CSQCProjectile networking + muzzle EFFECT_* (client/net) and the bot-dodge
+            // list (bot AI). The server projectile — movetype, ownership, splash, lifetime, fire sound, and the
+            // shootable-projectile event_damage (incl. the owner==owner salvo pass-through) — is wired above.
             return proj;
         }
 
@@ -687,6 +714,14 @@ namespace XonoticGodot.Common.Gameplay
         /// </summary>
         public static void PainFrame(Entity vehic)
         {
+            // QC vehicles_think (sv_vehicles.qc:1084): when owned, mirror VEHICLESTAT_W2MODE onto the pilot every
+            // think so the client knows the vehicle's secondary-weapon mode (Raptor bomb/missile, Spiderbot rocket
+            // guided/dumb). The descriptors write vehicle.VehW2Mode; this is the per-tick owner mirror. PainFrame is
+            // the shared think hub (called from every descriptor's Think tail, like QC vehicles_painframe), so the
+            // mirror lives here.
+            if (vehic.Owner is not null)
+                vehic.Owner.VehW2Mode = vehic.VehW2Mode;
+
             // QC: myhealth = owner ? owner.vehicle_health : (GetResource(RES_HEALTH)/max_health)*100.
             float myHealth = vehic.Owner is not null
                 ? vehic.Owner.VehicleHealth

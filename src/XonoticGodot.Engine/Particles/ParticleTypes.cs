@@ -48,10 +48,12 @@ public sealed class ParticleEmitterInfo
     public int Tex0 = 63;
     public int Tex1 = 63;
 
-    // --- stain ---
+    // --- stain (DP baselineparticleeffectinfo, cl_particles.c:271-274) ---
     public int StainTex0 = -1, StainTex1 = -1;
-    public uint StainColor0 = 0xFFFFFF, StainColor1 = 0xFFFFFF;
-    public float StainSizeMin = 1f, StainSizeMax = 1f;
+    // staincolor default {(unsigned int)-1,...}: a MODDING FACTOR on the particle colour (0x808080 neutral),
+    // and -1 (== 0xFFFFFFFF, signed -1) is the "stain = particle colour" shorthand the NewParticle branch reads.
+    public uint StainColor0 = 0xFFFFFFFF, StainColor1 = 0xFFFFFFFF;
+    public float StainSizeMin = 2f, StainSizeMax = 2f; // DP baseline stainsize = {2,2}
     public float StainAlphaMin = 1f, StainAlphaMax = 1f;
     public bool HasStain => StainTex0 >= 0 && StainTex1 > StainTex0;
 

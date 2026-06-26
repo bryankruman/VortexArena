@@ -572,6 +572,10 @@ public sealed class ClientNet : IDisposable
     /// map name shown on the scoreboard's "Next map:" line. Empty until the server has a queued/rotation pick.</summary>
     public string NextMap { get; private set; } = "";
 
+    /// <summary>QC STAT(OVERTIMES) (common/stats.qh): 0 = none, N = the Nth overtime, OVERTIME_SUDDENDEATH (1&lt;&lt;24)
+    /// = sudden death. Drives the TIMER panel's persistent "Overtime #N" / "Sudden Death" subtext.</summary>
+    public int MatchOvertimes { get; private set; }
+
     private void HandleMatchState(ref BitReader r)
     {
         float gameStart = r.ReadFloat();
@@ -580,6 +584,7 @@ public sealed class ClientNet : IDisposable
         float warmupLimit = r.ReadFloat();
         bool intermission = r.ReadBool();
         string nextMap = r.ReadString();
+        int overtimes = r.ReadLong();
         if (r.BadRead)
             return;
         MatchStartTime = gameStart;
@@ -588,6 +593,7 @@ public sealed class ClientNet : IDisposable
         MatchWarmupLimit = warmupLimit;
         MatchIntermission = intermission;
         NextMap = nextMap ?? "";
+        MatchOvertimes = overtimes;
         HasMatchState = true;
     }
 

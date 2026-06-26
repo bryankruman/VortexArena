@@ -137,6 +137,10 @@ public sealed class MlrsTurret : Turret
 
         Entity rocket = TurretSpawn.Projectile(turret, st.ShotOrg, dir, ShotSpeed, size: 6f, health: 10f,
             ShotDamage, edgeDamage: 0f, ShotRadius, ShotForce, DeathTypes.TurretMlrs, spread: ShotSpread);
+        // QC mlrs_weapon.qc: turret_projectile(..., PROJECTILE_ROCKET, ...). Stamp the netname so the client
+        // classifies the model-less shell as a rocket (smoke trail + rocket-fly loop) instead of Generic. A
+        // shootable hull (health 10), so the FLAC can shoot it down mid-flight.
+        rocket.NetName = "devastator";
 
         // QC: nextthink = time + max(tur_impacttime, (shot_radius*2)/shot_speed) — detonate near the target.
         // For an AI turret the floor uses the per-shot shot_radius (125); the shot_radius=500 override is set
@@ -146,9 +150,17 @@ public sealed class MlrsTurret : Turret
         rocket.NextThink = (Api.Services is not null ? Api.Clock.Time : 0f) + fuse;
 
         if (Api.Services is not null)
+        {
+            // mlrs_weapon.qc:26 — te_explosion(missile.origin): a muzzle explosion temp-entity at the rocket's
+            // spawn origin (= st.ShotOrg), emitted server-side so every viewer sees it identically (the same
+            // launch-flash convention HellionTurret.Attack / WalkerTurret.FireRocket use).
+            EffectEmitter.TeExplosion(rocket.Origin);
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/rocket_fire.wav");
+        }
 
-        // NOTE (client-render): the head ammo-gauge frame (0 full..6 empty) + PROJECTILE_ROCKET CSQC trail +
-        // muzzle flash. The server-side fire (mlrs.qc) is done above.
+        // NOTE (client-render): the head ammo-gauge frame (0 full..6 empty) still needs a head sub-entity / CSQC
+        // edict. The PROJECTILE_ROCKET CSQC trail IS wired (rocket.NetName above feeds ProjectileCatalog → rocket
+        // smoke trail + rocket-fly loop) and the te_explosion muzzle flash is now emitted above. The server-side
+        // fire (mlrs.qc) is done above.
     }
 }

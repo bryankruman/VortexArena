@@ -64,6 +64,25 @@ public abstract partial class Monster : IRegistered
     /// </summary>
     public virtual float? AnimFrame(MonsterAnimPhase phase, bool die2) => null;
 
+    /// <summary>
+    /// Variant-aware frame lookup (QC <c>setanim(random ? anim_pain1 : anim_pain2)</c>): like
+    /// <see cref="AnimFrame(MonsterAnimPhase,bool)"/> but with a per-phase <paramref name="variant"/> index the
+    /// driver chose when the phase was (re)entered, letting a monster alternate between two interchangeable
+    /// groups (golem pain1/pain2, melee2/melee3). The default ignores the variant and forwards to the 2-arg
+    /// overload, so descriptors that don't use variants need no change.
+    /// </summary>
+    public virtual float? AnimFrame(MonsterAnimPhase phase, bool die2, int variant) => AnimFrame(phase, die2);
+
+    /// <summary>
+    /// Called once when the monster dies (QC <c>mr_death</c>) to choose the death animation variant.
+    /// Returns <c>true</c> to select die2, <c>false</c> to select die1. The default is <c>false</c>
+    /// (die1 always, correct for monsters that keep the falling → landed split via DeadThink).
+    /// The zombie overrides this to roll <c>random() &gt; 0.5</c>, matching Base's immediate die1/die2
+    /// pick in <c>mr_death</c>. The result is stored in <see cref="MonsterAI.MonsterState.DeathLanded"/>
+    /// so <see cref="MonsterAI.DriveAnimFrame"/> routes it to the descriptor's <c>AnimFrame(die2)</c>.
+    /// </summary>
+    public virtual bool RollDeathVariant() => false;
+
     /// <summary>Initialize a spawned monster entity.</summary>
     public virtual void Spawn(Entity e) { }
     /// <summary>Per-think AI step.</summary>

@@ -105,6 +105,30 @@ public sealed class Teamplay
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Player, object> _botForcedTeam = new();
 
     /// <summary>
+    /// QC <c>PutObserverInServer(player, true, true)</c>: move a player to spectators (used by the excess-player
+    /// removal). The host wires this to <c>ClientManager.PutObserverInServer</c>. A no-op until wired (the
+    /// removal then can't kick, matching a host that hasn't enabled the feature).
+    /// </summary>
+    public Action<Player>? MoveToSpectator { get; set; }
+
+    /// <summary>QC <c>time</c>: the absolute sim clock, for the excess-removal countdown's 1-second cadence.
+    /// Defaults to a monotonic stand-in of 0 (the countdown then advances one tick per <see cref="TickRemoveCountdown"/>
+    /// call). The host wires this to the live sim time.</summary>
+    public Func<float> Now { get; set; } = static () => 0f;
+
+    /// <summary>QC <c>remove_countdown</c>: the active excess-player removal countdown (null = none running).</summary>
+    private RemoveCountdownState? _removeCountdown;
+
+    /// <summary>QC the <c>remove_countdown</c> entity state: the player to be removed, its remaining lifetime
+    /// (whole seconds), and the next 1-second think time.</summary>
+    private sealed class RemoveCountdownState
+    {
+        public Player Target = null!;   // QC remove_countdown.enemy
+        public int Lifetime;            // QC remove_countdown.lifetime (seconds remaining)
+        public float NextThink;         // QC remove_countdown.nextthink
+    }
+
+    /// <summary>
     /// Construct the team manager. <paramref name="teamCount"/> is clamped to 2..4 for a team game (QC
     /// gametype team count, e.g. g_tdm_teams). <paramref name="scores"/> (optional) is consulted for the
     /// lowest-score tiebreak; without it, ties fall to the lowest-index team like the base helper.
@@ -256,7 +280,8 @@ public sealed class Teamplay
         if (botForced != 0)
         {
             int forcedColor = IndexToTeam(botForced);
-            joiner.Team = forcedColor;
+            // QC SetPlayerTeam → SetPlayerColors: set .team AND .clientcolors (the auto-join skips the mutator hook).
+            SetPlayerColors(joiner, forcedColor - 1);
             return forcedColor;
         }
 
@@ -270,7 +295,7 @@ public sealed class Teamplay
             if (idx >= 1 && idx <= TeamCount && allowed[idx - 1])
             {
                 int forcedColor = IndexToTeam(idx);
-                joiner.Team = forcedColor;
+                SetPlayerColors(joiner, forcedColor - 1);
                 return forcedColor;
             }
         }
@@ -327,7 +352,8 @@ public sealed class Teamplay
         if (bestTeam == Teams.None)
             bestTeam = Teams.Red; // degenerate guard (matches TeamBalance.JoinSmallestTeam)
 
-        joiner.Team = bestTeam;
+        // QC SetPlayerTeam → SetPlayerColors: set .team AND .clientcolors (the auto-join skips the mutator hook).
+        SetPlayerColors(joiner, bestTeam - 1);
         return bestTeam;
     }
 
@@ -361,12 +387,61 @@ public sealed class Teamplay
         if (MutatorHooks.PlayerChangeTeam.Call(ref pre))
             return false;
 
-        player.Team = newTeam;
+        // QC Player_SetTeamIndex tail: a spectator sentinel zeroes clientcolors and sets team = -1; otherwise the
+        // team is applied through SetPlayerColors(player, new_team - 1) so .team AND .clientcolors stay consistent.
+        if (newTeam == Teams.None || newTeam == TeamForceSpectator)
+        {
+            player.ClientColors = 0;
+            player.Team = newTeam == TeamForceSpectator ? TeamForceSpectator : Teams.None;
+        }
+        else
+        {
+            SetPlayerColors(player, newTeam - 1);
+        }
 
         // QC MUTATOR_CALLHOOK(Player_ChangedTeam, ...): react after the change (return value ignored).
         var post = new MutatorHooks.PlayerChangedTeamArgs(player, oldIndex, newIndex);
         MutatorHooks.PlayerChangedTeam.Call(ref post);
         return true;
+    }
+
+    /// <summary>
+    /// QC <c>setcolor</c> (server/teamplay.qc:190): store <paramref name="player"/>'s packed
+    /// <c>clientcolors</c> and derive the team from it — in a team game <c>team = (clr &amp; 15) + 1</c> (the low
+    /// nibble + 1 maps to a team color code), in FFA <c>team = -1</c>. The single low-level color sink.
+    /// </summary>
+    public void SetColor(Player player, int clr)
+    {
+        player.ClientColors = clr;
+        // QC setcolor: in teamplay team = (clr & 15) + 1 (the packed color's low nibble + 1 IS the team color
+        // code 4/13/12/9 directly — NOT an index); in FFA the team stays at the neutral sentinel (-1).
+        player.Team = IsTeamGame ? (clr & 15) + 1 : TeamForceSpectator;
+    }
+
+    /// <summary>
+    /// QC <c>SetPlayerColors</c> (server/teamplay.qc:225): split <paramref name="color"/> into pants (low nibble)
+    /// and shirt (high nibble); in a team game force BOTH to the team color (<c>16*pants + pants</c>) so the player
+    /// model is fully team-colored, in FFA keep the player's chosen <c>shirt + pants</c>. Routes through
+    /// <see cref="SetColor"/>, which also re-derives <c>.team</c>.
+    /// </summary>
+    public void SetPlayerColors(Player player, int color)
+    {
+        int pants = color & 0x0F;
+        int shirt = color & 0xF0;
+        if (IsTeamGame)
+            SetColor(player, 16 * pants + pants);
+        else
+            SetColor(player, shirt + pants);
+    }
+
+    /// <summary>
+    /// QC <c>SV_ChangeTeam</c> (server/teamplay.qc:1340): the engine <c>color</c> command hook. Only re-colors the
+    /// player in a NON-team game (in teamplay the color is owned by the team, so a manual recolor is ignored).
+    /// </summary>
+    public void ChangeTeam(Player player, int newColor)
+    {
+        if (!IsTeamGame)
+            SetPlayerColors(player, newColor);
     }
 
     /// <summary>
@@ -782,5 +857,125 @@ public sealed class Teamplay
             if (score < lowestScore) { lowestScore = score; lowest = p; }
         }
         return lowest;
+    }
+
+    // ----- excess-player removal (QC TeamBalance_RemoveExcessPlayers / Remove_Countdown) -----
+
+    /// <summary>QC <c>autocvar_g_balance_teams_remove</c>: move the newest excess player to spectators on a leave.</summary>
+    private bool RemoveExcessEnabled =>
+        Api.Services is not null && Api.Cvars.GetFloat("g_balance_teams_remove") != 0f;
+
+    /// <summary>QC <c>autocvar_g_balance_teams_remove_wait</c> (default 10): warning seconds before the move (0 = now).</summary>
+    private int RemoveWaitSeconds =>
+        Api.Services is not null ? (int)Api.Cvars.GetFloat("g_balance_teams_remove_wait") : 10;
+
+    /// <summary>
+    /// QC <c>TeamBalance_RemoveExcessPlayers</c> (server/teamplay.qc:702): on a leave that unbalances a 2-team
+    /// match, move the NEWEST joiner (highest <see cref="Player.StartPlayTime"/>) on each overfull team to
+    /// spectators — after a <c>g_balance_teams_remove_wait</c>-second countdown nag (or immediately if 0).
+    /// Only runs in a 2-team game, not campaign, and only when <c>g_balance_teams_remove</c> is set. Called from
+    /// the disconnect path (the leaver is already out of <paramref name="roster"/>) and re-entrantly from the
+    /// countdown's expiry. <paramref name="isCampaign"/> mirrors QC's <c>autocvar_g_campaign</c> guard.
+    /// </summary>
+    public void RemoveExcessPlayers(IReadOnlyList<Player> roster, bool isCampaign = false)
+    {
+        // QC: if (AVAILABLE_TEAMS != 2 || autocvar_g_campaign) return;
+        if (!IsTeamGame || TeamCount != 2 || isCampaign || !RemoveExcessEnabled)
+            return;
+
+        // QC: min = the smallest team's m_num_players.
+        int min = int.MaxValue;
+        foreach (int team in Teams.Active(TeamCount))
+        {
+            int cur = TeamBalance.CountTeam(team, roster);
+            if (cur < min) min = cur;
+        }
+        if (min == int.MaxValue)
+            return;
+
+        // QC: for each team with excess (cur > 0 && cur > min), pick the newest joiner and move it to spec.
+        foreach (int team in Teams.Active(TeamCount))
+        {
+            int cur = TeamBalance.CountTeam(team, roster);
+            if (cur <= 0 || cur <= min)
+                continue;
+
+            // QC: newest joiner on this team = max CS(it).startplaytime.
+            Player? latest = null;
+            float latestTime = 0f;
+            for (int i = 0; i < roster.Count; i++)
+            {
+                Player p = roster[i];
+                if ((int)p.Team != team)
+                    continue;
+                if (latest is null || p.StartPlayTime > latestTime)
+                {
+                    latestTime = p.StartPlayTime;
+                    latest = p;
+                }
+            }
+            if (latest is null)
+                continue;
+
+            int wait = RemoveWaitSeconds;
+            if (wait > 0)
+            {
+                // QC: a warning countdown before moving to spectate (CENTER_MOVETOSPEC_REMOVE with the wait COUNT).
+                if (_removeCountdown is null)
+                {
+                    _removeCountdown = new RemoveCountdownState { NextThink = Now() };
+                    NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "MOVETOSPEC_REMOVE",
+                        latest.NetName, wait);
+                }
+                _removeCountdown.Target = latest;
+                _removeCountdown.Lifetime = wait;
+            }
+            else
+            {
+                // QC: move to spectators immediately (INFO_MOVETOSPEC_REMOVE then PutObserverInServer).
+                NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "MOVETOSPEC_REMOVE", latest.NetName);
+                MoveToSpectator?.Invoke(latest);
+            }
+        }
+    }
+
+    /// <summary>
+    /// QC <c>Remove_Countdown</c> (server/teamplay.qc:677): the 1-second think driving the excess-player removal
+    /// nag. Once the lifetime runs out (or the teams become even again), the queued player is moved to spectators
+    /// (only if the lifetime actually expired), the center nag is retracted, and the excess check re-runs in case
+    /// someone else also left during the countdown. Call once per server frame; it self-gates to a 1 Hz cadence.
+    /// </summary>
+    public void TickRemoveCountdown(IReadOnlyList<Player> roster, bool isCampaign = false)
+    {
+        if (_removeCountdown is null)
+            return;
+
+        float now = Now();
+        if (now < _removeCountdown.NextThink)
+            return;
+
+        // QC Remove_Countdown: fire when the lifetime is spent OR the teams equalised again (someone re-balanced).
+        if (_removeCountdown.Lifetime <= 0 || SizeDifference(roster) == 0)
+        {
+            if (_removeCountdown.Lifetime <= 0)
+            {
+                // QC: lifetime expired → announce + actually move the player to spectators.
+                Player target = _removeCountdown.Target;
+                NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "MOVETOSPEC_REMOVE", target.NetName);
+                MoveToSpectator?.Invoke(target);
+            }
+
+            // QC: Kill_Notification(..., MSG_CENTER, CPID_REMOVE) — retract the running countdown center print.
+            NotificationSystem.SendCenterKill(NotifBroadcast.All, null, "CPID_REMOVE");
+            _removeCountdown = null;
+
+            // QC: re-check for excess in case someone also left while in countdown.
+            RemoveExcessPlayers(roster, isCampaign);
+            return;
+        }
+
+        // QC: --lifetime; nextthink = time + 1.
+        _removeCountdown.Lifetime--;
+        _removeCountdown.NextThink = now + 1f;
     }
 }

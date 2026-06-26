@@ -146,11 +146,24 @@ public static class MoveTypePhysics
         for (int bump = 0; bump < FlyMove.MaxClipPlanes && moveTime > 0f; bump++)
         {
             Vector3 move = ent.Velocity * moveTime;
-            // Fly traps may move while stuck (DP passes checkstuck=false for FLY); our PushEntity
-            // doesn't unstick yet, so doTouch is the only difference and we keep it on.
+            // Fly traps may move while stuck (DP passes checkstuck=false for FLY); our PushEntity nudges
+            // out of solid inline for non-FLY movetypes (its own SV_NudgeOutOfSolid pass), so the
+            // _Movetype_UnstickEntity retry of toss.qc:60-82 is folded into that PushEntity call.
             if (!ctx.PushEntity(out TraceResult trace, ent, move, doTouch: true))
                 return; // teleported
             if (ent.IsFreed) return;
+
+            // toss.qc:60-82 bmodelstartsolid give-up: if after the push (and PushEntity's own unstick pass)
+            // the entity is STILL fully embedded in a brush model (allsolid, zero progress, hit a SOLID_BSP),
+            // it is immovably stuck — stop wasting CPU, zero velocity and rest on ground (matches Base).
+            // World-brush hits report a null trace.Ent in the port; a bmodel mover reports its Bsp entity.
+            if (trace.AllSolid && trace.Fraction == 0f && (trace.Ent == null || trace.Ent.Solid == Solid.Bsp))
+            {
+                ent.Velocity = Vector3.Zero;
+                ent.Flags |= EntFlags.OnGround;
+                return;
+            }
+
             if (trace.Fraction == 1f) break;
 
             moveTime *= 1f - MathF.Min(1f, trace.Fraction);
@@ -220,8 +233,9 @@ public static class MoveTypePhysics
     }
 
     // =============================================================================================
-    // SV_CheckWaterTransition (sv_phys.c:2410) — update watertype/waterlevel from point contents and
-    // emit a splash sound on a water surface crossing.
+    // _Movetype_CheckWaterTransition (movetypes.qc:368, DP SV_CheckWaterTransition sv_phys.c:2410) — update
+    // watertype/waterlevel from point contents and fire the entity's .contentstransition callback (set
+    // per-entity) on a content crossing. The movetype layer itself emits NO sound (Base-faithful).
     // =============================================================================================
 
     public static void CheckWaterTransition(PhysicsContext ctx, Entity ent)
@@ -231,14 +245,15 @@ public static class MoveTypePhysics
 
         if (ent.WaterType == 0)
         {
-            // just spawned here: take the contents, waterlevel 1 if liquid (fixedcheckwatertransition path).
-            // fall through to the assignment below.
+            // just spawned here. GAMEPLAYFIX_WATERTRANSITION default 1 (Xonotic) — take the fall-through
+            // assignment below; the cvar-0 early-out (watertype=contents, waterlevel=1) is not modeled.
         }
-        else if ((ent.WaterType == (int)Contents.Water || ent.WaterType == (int)Contents.Slime)
-                 != (cont == (int)Contents.Water || cont == (int)Contents.Slime))
+        else if (ent.WaterType != cont)
         {
-            // crossed a water/slime surface → splash (SV_StartSound watersplash).
-            ctx.PlaySound(ent, SoundChannel.Auto, "misc/water_in.wav");
+            // Base _Movetype_CheckWaterTransition (movetypes.qc:385): route through the per-entity
+            // contentstransition callback on a native-contents change. Base emits NO hardcoded cue here —
+            // the splash/exit sound and any lava/slime contact effect live in the callback, set per-entity.
+            ent.ContentsTransition?.Invoke(ent, ent.WaterType, cont);
         }
 
         if (cont <= (int)Contents.Water) // CONTENTS_WATER (-3) or lower (slime/lava) == in liquid
@@ -249,6 +264,7 @@ public static class MoveTypePhysics
         else
         {
             ent.WaterType = (int)Contents.Empty;
+            // GAMEPLAYFIX_WATERTRANSITION 1 (Xonotic default) → waterlevel 0 on exit.
             ent.WaterLevel = 0;
         }
     }
@@ -472,6 +488,12 @@ public static class MoveTypePhysics
         Vector3 point = ent.Origin;
         point.Z = ent.Origin.Z + ent.Mins.Z + 1f;
         int cont = ctx.Trace.PointContents(point);
+
+        // Base _Movetype_CheckWater (movetypes.qc:340): fire the per-entity contentstransition callback on a
+        // native-contents change at the feet probe, BEFORE the waterlevel reset. Base emits no sound itself.
+        int nativeContents = NativeContentsFromSuper(cont);
+        if (ent.WaterType != 0 && ent.WaterType != nativeContents)
+            ent.ContentsTransition?.Invoke(ent, ent.WaterType, nativeContents);
 
         ent.WaterLevel = 0;
         ent.WaterType = (int)Contents.Empty;
