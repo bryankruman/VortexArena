@@ -9,7 +9,7 @@ summary:
     - "Carry layer is now live but incomplete: view-ball follow + carrier slowdown (highspeed 0.8) + forteam auto-return are ported and live, but the safe-pass crosshair lock and the networked NB_CARRYING objective-status bit are still absent."
     - "No HUD mod-icon: no carrying indicator, no charge-meter bar, no nexball event-chase camera; STAT(OBJECTIVE_STATUS)/NB_METERSTART not networked."
     - "Weapon-arena enforcement absent: the nb PlayerSpawn/PlayerPreThink/WantWeapon/FilterItem/ItemTouch/ForbidThrow/ForbidDrop mutator hooks that strip normal weapons and grant WEP_NEXBALL are not ported."
-    - "Minor: goal SCORE sound uses kh/capture not ctf/respawn.wav; football maps spawn a basketball (SpawnBall hard-codes basketball=true); drop-on-disconnect / drop-on-observe hooks absent; ball scale 1.3 + glow_trail render still client-deferred."
+    - "Minor: ball scale 1.3 + glow_trail render still client-deferred; g_nexball_sound_bounce gate is honored but no bounce throttle on the basketball world bounce."
 features:
   - id: nexball.init.initialize
     name: "Mode init: teams, score/lead limit, meter-period rounding, radar"
@@ -76,26 +76,25 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:ScoreGoal"
     constants:
       - { name: "delay_goal", base: "3 s (0 for OUT)", port: "3 s (DelayGoal; *0 for OUT)", match: true }
-      - { name: "goal noise (score)", base: "ctf/respawn.wav", port: "KH_CAPTURE (kh/capture)", match: false }
+      - { name: "goal noise (score)", base: "ctf/respawn.wav", port: "NB_GOAL (ctf/respawn)", match: true }
       - { name: "goal noise (fault/out)", base: "TYPEHIT", port: "TYPEHIT", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Score sound is kh/capture, not ctf/respawn.wav (close cue, wrong sample); fault/out TYPEHIT is correct."
       - "No bprint / Send_Notification goal announcement (Goaaaaal! / own-goal / fault / out text)."
       - "GOAL_TOUCHPLAYER spawnflag is approximated: GoalTouchEntity always treats a touching ball-carrier as a hit (the port has no per-goal spawnflag bit), and the early BallTeam/BallPusher clear differs from QC (which keeps them through the glide) but is behaviorally equivalent under the ball.cnt!=0 guard."
     verification:
       - { kind: unit, ref: "NexballSpawnTests EndToEnd_BallIntoEnemyGoal / OwnGoal / OutVolume", result: pass }
-      - { kind: code-read, ref: "GoalTouch sets cnt=1 + delay_goal reset + football-control conversion; carrier walk-in fires via player TouchAreaGrid, free ball fires via ball TouchAreaGrid after a football kick/drop", result: pass }
+      - { kind: code-read, ref: "GoalTouch plays NB_GOAL (ctf/respawn) for score, TYPEHIT for fault/out; sets cnt=1 + delay_goal reset + football-control conversion; SoundsList.cs:113 maps NB_GOAL -> ctf/respawn", result: pass }
     confidence: high
-    notes: "Unchanged since last audit. Residual: wrong score sample + no announcement; logic/values/timing remain faithful and live."
+    notes: "DRIFT (audio partial->faithful): the goal SCORE sound is now the QC-faithful ctf/respawn.wav (SoundsList NB_GOAL = \"ctf/respawn\"), no longer kh/capture; fault/out remains TYPEHIT. Residual: presentation announcement (bprint) still missing; logic/values/timing remain faithful and live."
 
   - id: nexball.goal.limit_win
     name: "Goal limit + winning-team latch (GameRules_limit_score) + lead limit"
@@ -178,13 +177,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "WireObjectiveSpawns calls nb.SpawnBall(e.Origin) with the default basketball=true for BOTH nexball_basketball AND nexball_football — a football-only map therefore spawns a (carryable) basketball instead of a kick-only football. The classname should select the kind."
-      - "Scale 1.3 + glow_trail rendering are still client-deferred (model path + trail color are configured; bbox/effects/playerclip/relocate are exact)."
+      - "Scale 1.3 + glow_trail rendering are still client-deferred (model path + trail color are configured; SpawnForGametype never sets e.Scale; bbox/effects/playerclip/relocate are exact)."
     verification:
       - { kind: unit, ref: "NexballSpawnTests BallSpawnfunc_SpawnsBall_AndSetsBallHome / FootballAlias / BallAliases", result: pass }
-      - { kind: code-read, ref: "SpawnBall now sets EF_LOWPRECISION + the playerclip content mask + performs RelocateNexball (tracebox/move-out-of-solid); BallConfig supplies model/bbox/effects; GameWorld arm hard-codes basketball", result: pass }
+      - { kind: code-read, ref: "SpawnBall sets EF_LOWPRECISION + the playerclip content mask + performs RelocateNexball (tracebox/move-out-of-solid); BallConfig supplies model/bbox/effects; GameWorld.cs:2659-2666 now switches on e.ClassName -> SpawnBall(basketball:true) for nexball_basketball and SpawnBall(basketball:false) for nexball_football", result: pass }
     confidence: high
-    notes: "DRIFT (values partial->faithful, plus a NEW liveness/logic gap): EF_LOWPRECISION, the playerclip dphitcontentsmask, and relocate_nexball (tracebox + move-out-of-solid) are now all applied (previously gaps). NEW GAP: the WireObjectiveSpawns arm spawns a basketball for nexball_football because SpawnBall's basketball flag defaults true and the classname isn't passed."
+    notes: "DRIFT (logic gap closed): the WireObjectiveSpawns arm (GameWorld.cs:2657-2670) now switches on the classname so nexball_football spawns a kick-only football (basketball:false) and nexball_basketball a carryable basketball — the prior baseline NEW GAP (football map spawned a basketball) is FIXED. EF_LOWPRECISION, the playerclip dphitcontentsmask, and relocate_nexball remain applied. Residual: scale 1.3 + glow_trail are still client-deferred."
 
   - id: nexball.ball.lifecycle
     name: "Ball lifecycle thinks: delay_start release, 4-step ResetBall glide, idle reset"
@@ -314,6 +312,8 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:DropBall(carrier)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:DropOwner / DropOwnerThink"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:OnDeath"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:OnPlayerRemoved"
+      - "src/XonoticGodot.Server/ClientManager.cs:517 (PutObserverInServer), 770 (ClientDisconnect)"
     constants:
       - { name: "g_nexball_basketball_delay_hold", base: "20 s (DropOwner think)", port: "20 s (DelayHold)", match: true }
       - { name: "DropOwner shove", base: "('0 0 0.75' - v_forward) * 1000", port: "(0,0,0.75 - fwd) * 1000", match: true }
@@ -324,16 +324,15 @@ features:
       timing: faithful
       presentation: missing
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Drop-on-death is wired (OnDeath -> DropBall(carrier)); drop-on-disconnect and drop-on-observe (ClientDisconnect / MakePlayerObserver / nb_DropBall hooks) are NOT wired (InfraClientDisconnect / PutObserverInServer don't drop the ball)."
       - "No ground waypoint sprite on drop (client-deferred)."
     verification:
-      - { kind: code-read, ref: "DropBall restores bounce+touch, inherits carrier velocity, arms MinIdle reset; DropOwner shoves the camper up-and-back and re-drops; OnDeath drops on kill; grep finds no disconnect/observe DropBall call in the Server layer", result: pass }
+      - { kind: code-read, ref: "DropBall restores bounce+touch, inherits carrier velocity, arms MinIdle reset; DropOwner shoves the camper up-and-back and re-drops; OnDeath drops on kill; OnPlayerRemoved -> DropBall(player) is called from ClientManager.cs:517 (observer demote) AND :770 (disconnect)", result: pass }
     confidence: high
-    notes: "Unchanged since last audit. DropBall velocity inheritance + idle-reset scheduling + the anti-ballcamp DropOwner shove are faithful and live on death. Residual liveness gap: the disconnect/observe detach hooks."
+    notes: "DRIFT (liveness partial->live): drop-on-disconnect and drop-on-observe are now wired — OnPlayerRemoved overrides DropBall(player) and the server dispatches it from both ClientManager paths (PutObserverInServer + ClientDisconnect), matching QC's nb_DropBall via the ClientDisconnect/MakePlayerObserver hooks. DropBall velocity inheritance + idle-reset scheduling + the anti-ballcamp DropOwner shove remain faithful and live on death."
 
   - id: nexball.carry.perframe
     name: "Carry per-frame: view-ball follow, safe-pass lock, carrier-slowdown, carrying status"
@@ -444,30 +443,28 @@ features:
       - "common/gametypes/gametype/nexball/sv_nexball.qc:football_touch/basketball_touch/InitBall/GoalTouch (_sound)"
       - "common/gametypes/gametype/nexball/sv_weapon.qc:W_Nexball_Attack/Touch (SND_NB_SHOOT1/SHOOT2/STEAL)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:BasketballTouch/FootballTouch (NB_BOUNCE), InitBall (NB_DROP), GoalTouch (KH_CAPTURE/TYPEHIT)"
-      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs:109-113 (NB_BOUNCE/DROP/SHOOT1/SHOOT2/STEAL)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:BasketballTouch/FootballTouch (NB_BOUNCE), InitBall (NB_DROP), GoalTouch (NB_GOAL/TYPEHIT)"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs:109-116 (NB_BOUNCE/DROP/GOAL/SHOOT1/SHOOT2/STEAL)"
     constants:
-      - { name: "g_nexball_sound_bounce", base: "1 (gate on the bounce noise)", port: "always plays NB_BOUNCE (no gate)", match: false }
+      - { name: "g_nexball_sound_bounce", base: "1 (gate on the bounce noise)", port: "honored: _bounceSoundEnabled gates NB_BOUNCE per SpawnBall (default 1)", match: true }
       - { name: "bounce sound (noise)", base: "SND(NB_BOUNCE)", port: "NB_BOUNCE", match: true }
       - { name: "drop sound (noise1, InitBall)", base: "SND(NB_DROP)", port: "NB_DROP", match: true }
-      - { name: "goal sound (score)", base: "ctf/respawn.wav", port: "KH_CAPTURE (kh/capture)", match: false }
+      - { name: "goal sound (score)", base: "ctf/respawn.wav", port: "NB_GOAL (ctf/respawn)", match: true }
     status:
       logic: na
       values: na
       timing: na
       presentation: na
-      audio: partial
+      audio: faithful
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Bounce (NB_BOUNCE), drop (NB_DROP/InitBall) and fault/out (TYPEHIT) sounds are played live; the SCORE goal sound is kh/capture not ctf/respawn.wav."
-      - "g_nexball_sound_bounce gate is not honored (bounce always plays)."
-      - "SHOOT1/SHOOT2/STEAL are registered but still dead — they belong to the missing BallStealer weapon."
+      - "SHOOT1/SHOOT2/STEAL are registered (SoundsList) but still dead — they belong to the missing BallStealer weapon (see nexball.weapon.ballstealer)."
     verification:
-      - { kind: code-read, ref: "SoundSystem.PlayOn(NB_BOUNCE) in both touch handlers, NB_DROP in InitBall, goal sound in GoalTouch; SHOOT/STEAL have no caller", result: partial }
+      - { kind: code-read, ref: "SoundSystem.PlayOn(NB_BOUNCE) in both touch handlers (gated by _bounceSoundEnabled = g_nexball_sound_bounce), NB_DROP in InitBall, NB_GOAL (ctf/respawn) for score + TYPEHIT for fault/out in GoalTouch; SHOOT/STEAL have no caller", result: partial }
     confidence: high
-    notes: "Unchanged since last audit. Ball bounce/drop/goal sound API is called on the live path. Residual: wrong score sample, no bounce-gate cvar, weapon shoot/steal samples stay dead pending the weapon."
+    notes: "DRIFT (audio partial->faithful): the SCORE goal sound is now the faithful ctf/respawn.wav (NB_GOAL), and the g_nexball_sound_bounce gate is now honored (SpawnBall sets _bounceSoundEnabled and the touch handlers respect it). Bounce/drop/goal/fault sounds all play correctly on the live path. Residual liveness: SHOOT/STEAL stay dead pending the BallStealer weapon."
 
   - id: nexball.hud.modicon
     name: "HUD mod icon (carrying indicator + power-meter bar) + eventchase"

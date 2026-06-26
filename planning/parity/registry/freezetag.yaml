@@ -1,15 +1,15 @@
 unit: freezetag
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-25"  # drift re-check 2026-06-25
 summary:
-  feature_count: 22
+  feature_count: 23
   worst_gaps:
-    - "FIXED since last audit: frozen-player damage immunity is now LIVE. FreezeTag.Activate subscribes OnDamageCalculate onto the live MutatorHooks.DamageCalculate (fired DamageSystem.cs:256); a frozen, non-NEEDKILL/non-teamchange target now takes 0 health damage with force scaled by g_frozen_force (0.6). The HP=1 frozen body can no longer be chip-killed."
-    - "FIXED since last audit: revive_auto_reducible is now LIVE — shooting a frozen enemy accumulates hit force (maxforce 400, forcefactor 0.01) and subtracts seconds from its auto-thaw timeout, restoring the core 'don't shoot frozen enemies' tactic. Implemented in OnDamageCalculate (FreezeTag.cs:410-437)."
-    - "FIXED since last audit: cl_eventchase_frozen third-person cam now LIVE on the listen-server path (NetGame.cs:4293 feeds ViewState.IsFrozen from LocalServerPlayer's Frozen status effect; FirstPersonView.WantEventChase engages the pull-back cam). Pure-remote-client coverage still pending."
+    - "FIXED since last audit: nade self-revive (g_freezetag_revive_nade) is now a real revive, not a suppression stub. FreezeTag.OnDamageCalculate (FreezeTag.cs:485-499) Unfreezes a frozen player hit by their OWN nade within 0.1s of the toss, restores g_freezetag_revive_nade_health (40), suppresses the hit, and sends INFO_FREEZETAG_REVIVED_NADE + CENTER_FREEZETAG_REVIVE_SELF — all on the live DamageCalculate hook (DamageSystem.cs:264)."
+    - "FIXED since last audit: mid-round spawn-as-frozen (MUTATOR_HOOKFUNCTION ft PlayerSpawn) is now implemented+live (OnPlayerSpawn, FreezeTag.cs:310-324) via MutatorHooks.PlayerSpawn — a player spawning while a round is live joins frozen with CENTER_FREEZETAG_SPAWN_LATE. Now has its own row (freezetag.spawn.late)."
+    - "FIXED since last audit: SPAWN_LATE + REVIVED_NADE notifications now HAVE producers (OnPlayerSpawn and the nade self-revive branch) — the baseline listed both as 'declared but never sent'."
     - "STILL OPEN: no ice (MDL_ICE) entity model — only the icy player-model colormod tint (ClientWorld.FrozenColormod). The signature ice cube is absent."
-    - "PARTIAL: void/lava NEEDKILL soft-kill relocate (g_frozen_damage_trigger) is still missing (FT OnDamageCalculate only zeroes non-NEEDKILL damage; the relocate-to-spawn needs the server spawn selector and is not done). g_frozen_revive_falldamage IS now implemented+live. Nade self-revive (g_freezetag_revive_nade) still a NadesMutator damage-suppression stub with no actual unfreeze."
+    - "STILL OPEN: void/lava NEEDKILL soft-kill relocate (g_frozen_damage_trigger 0) is still missing (FT OnDamageCalculate leaves NEEDKILL deathtypes alone; the relocate-to-spawn needs the server spawn selector and is not done). Default cvar 1 = die, so dormant at stock anyway."
 features:
   - id: freezetag.mode.registration
     name: "Mode registration: teams, team-spawns, score/lead limits, FT scoring fields"
@@ -336,24 +336,24 @@ features:
       - { name: "g_frozen_damage_trigger", base: "1 (frozen die in void/lava)", port: "none (no relocate path)", match: false }
       - { name: "g_frozen_revive_falldamage", base: "0 (off)", port: "g_frozen_revive_falldamage cvar, fallback 0", match: true }
       - { name: "g_frozen_revive_falldamage_health", base: "40", port: "g_frozen_revive_falldamage_health cvar, fallback 40", match: true }
-      - { name: "g_freezetag_revive_nade / _nade_health", base: "1 / 40", port: "NadesMutator reads g_freezetag_revive_nade (live=1 via gametypes-server.cfg); only suppresses nade damage on a frozen self-hit, NO unfreeze/revive-health", match: false }
+      - { name: "g_freezetag_revive_nade / _nade_health", base: "1 / 40", port: "FreezeTag.OnDamageCalculate (FreezeTag.cs:485-499): a frozen player's own DEATH_NADE within 0.1s of toss → Unfreeze + restore g_freezetag_revive_nade_health (40) + suppress hit + INFO_REVIVED_NADE/CENTER_REVIVE_SELF; live=1 via gametypes-server.cfg", match: true }
     status:
       logic: partial
-      values: partial
+      values: faithful
       timing: na
-      presentation: partial
-      audio: partial
+      presentation: faithful
+      audio: faithful
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No soft-kill relocate path (g_frozen_damage_trigger): the NEEDKILL soft-kill (restore HP=1+armor, teleport to a spawn point, no weapon reset) in PlayerDies / the Damage_Calculate relocate branch is absent — FT.OnDamageCalculate leaves NEEDKILL deathtypes alone (frozen player dies in void/lava), and the relocate needs the server spawn selector (intentionally NOT done in the gametype layer, per the FreezeTag.cs comment ~390)."
-      - "Fall-damage revive (g_frozen_revive_falldamage) IS now implemented and live (FreezeTag.cs:444-453): a hard enough DEATH_FALL hit thaws the player to falldamage_health (40) and sends FREEZETAG_REVIVED_FALL/_REVIVE_SELF. Default off, so it's dormant at stock cvars but correct when enabled."
-      - "Nade self-revive is still a damage-suppression stub: NadesMutator.OnDamageCalculate zeroes damage/force for a frozen player's own DEATH_NADE within 0.1s of the toss, but explicitly does NOT unfreeze or restore revive-health (comment: 'FreezeTag owns freezetag_Unfreeze'). g_freezetag_revive_nade ships 1 (gametypes-server.cfg:414) so the suppression is live, but no actual self-revive occurs and FREEZETAG_REVIVED_NADE is never sent."
+      - "STILL OPEN — no soft-kill relocate path (g_frozen_damage_trigger 0): the NEEDKILL soft-kill (restore HP=1+armor, teleport to a spawn point, no weapon reset) in PlayerDies / the Damage_Calculate relocate branch is absent — FT.OnDamageCalculate leaves NEEDKILL deathtypes alone (frozen player dies in void/lava), and the relocate needs the server spawn selector (intentionally NOT done in the gametype layer). Base default cvar is 1 = die, so this branch is dormant at stock cvars regardless."
+      - "Fall-damage revive (g_frozen_revive_falldamage) is implemented and live (FreezeTag.cs:507-515): a hard enough DEATH_FALL hit thaws the player to falldamage_health (40) and sends FREEZETAG_REVIVED_FALL/_REVIVE_SELF. Default off, so dormant at stock cvars but correct when enabled."
+      - "Nade self-revive is now FULLY implemented (FIX since baseline): FreezeTag.OnDamageCalculate (FreezeTag.cs:485-499) Unfreezes the player, restores g_freezetag_revive_nade_health (40), suppresses damage/force, and sends INFO_FREEZETAG_REVIVED_NADE + CENTER_FREEZETAG_REVIVE_SELF. g_freezetag_revive_nade ships 1 so it is live. (NadesMutator still also zeroes the same hit, but the actual unfreeze now lives in FT, hook-order-independent.)"
     verification:
-      - { kind: code-read, ref: "FreezeTag.OnDamageCalculate implements fall-damage revive (live) but NOT the NEEDKILL void/lava relocate; NadesMutator.OnDamageCalculate (line 249-267) suppresses damage only, no unfreeze. No g_frozen_damage_trigger relocate reference in src/game.", result: fail }
+      - { kind: code-read, ref: "FreezeTag.OnDamageCalculate implements fall-damage revive AND nade self-revive (both live via MutatorHooks.DamageCalculate, DamageSystem.cs:264) but NOT the NEEDKILL void/lava relocate. No g_frozen_damage_trigger relocate reference in src/game.", result: partial }
     confidence: high
-    notes: "PARTIAL FIX since last audit: g_frozen_revive_falldamage is now implemented and live (was missing). The void/lava NEEDKILL soft-kill relocate and the actual nade self-revive remain open. Liveness upgraded to partial (fall-revive path is live; relocate + nade-unfreeze absent)."
+    notes: "FIX since last audit: nade self-revive is now a REAL revive (Unfreeze + health + notifications), not a suppression stub — logic/values/presentation/audio for that branch are now faithful. Only the void/lava NEEDKILL soft-kill relocate remains open (and it is default-dormant). Liveness stays partial (relocate absent)."
 
   - id: freezetag.revive.spawnshield
     name: "Post-revive spawn shield (g_freezetag_revive_spawnshield)"
@@ -576,23 +576,21 @@ features:
       - { name: "revive lines", base: "CENTER_FREEZETAG_REVIVE/REVIVED + INFO_FREEZETAG_REVIVED", port: "same three sent on manual revive", match: true }
       - { name: "auto-revive line", base: "CENTER+INFO_FREEZETAG_AUTO_REVIVED (f1=frozen seconds)", port: "same, frozenTime = round(now - FrozenTime)", match: true }
       - { name: "fall-revive line", base: "INFO_FREEZETAG_REVIVED_FALL + CENTER_FREEZETAG_REVIVE_SELF", port: "sent from OnDamageCalculate fall-revive branch", match: true }
-      - { name: "spawn-late / nade lines", base: "CENTER_FREEZETAG_SPAWN_LATE; INFO_FREEZETAG_REVIVED_NADE", port: "declared but never sent (no producers)", match: false }
+      - { name: "spawn-late / nade lines", base: "CENTER_FREEZETAG_SPAWN_LATE; INFO_FREEZETAG_REVIVED_NADE", port: "SPAWN_LATE sent by OnPlayerSpawn (FreezeTag.cs:321); REVIVED_NADE sent by the nade self-revive branch (FreezeTag.cs:496)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: faithful
-      audio: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "SPAWN_LATE (joining mid-round as frozen) and REVIVED_NADE are declared in NotificationsList but never sent (their producing events — nade self-revive and spawn-as-frozen — are themselves unimplemented; see freezetag.damage.softkill_void). REVIVED_FALL/REVIVE_SELF ARE now sent from the live fall-damage-revive branch."
-      - "FT-specific notification announcer SOUNDS: these INFO/CENTER notifications carry no announcer cue in Base either, so audio is mostly na; marked partial because the dependent spawn-late/nade events that would round it out are absent."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "Freeze sends INFO/CENTER_FREEZETAG_SELF or INFO_FREEZETAG_FREEZE; ReviveTick sends CENTER_FREEZETAG_REVIVE/REVIVED + INFO_FREEZETAG_REVIVED (manual) and CENTER+INFO_FREEZETAG_AUTO_REVIVED (auto); OnDamageCalculate sends INFO_FREEZETAG_REVIVED_FALL + CENTER_FREEZETAG_REVIVE_SELF on a fall-revive; all on the live NotificationSystem with the host NotificationNetSink shipping to clients", result: pass }
+      - { kind: code-read, ref: "Freeze sends INFO/CENTER_FREEZETAG_SELF or INFO_FREEZETAG_FREEZE; ReviveTick sends CENTER_FREEZETAG_REVIVE/REVIVED + INFO_FREEZETAG_REVIVED (manual) and CENTER+INFO_FREEZETAG_AUTO_REVIVED (auto); OnDamageCalculate sends INFO_FREEZETAG_REVIVED_FALL/REVIVED_NADE + CENTER_FREEZETAG_REVIVE_SELF on a fall/nade revive; OnPlayerSpawn sends CENTER_FREEZETAG_SPAWN_LATE; all on the live NotificationSystem with the host NotificationNetSink shipping to clients", result: pass }
     confidence: high
-    notes: "Freeze/self/manual-revive/auto-revive AND fall-revive notifications are wired onto the live NotificationSystem, which the host nets to clients. Only the spawn-late + nade variants remain unsent because their triggering events are still unimplemented. REVIVE_SELF closed (now sent by the fall-revive branch)."
+    notes: "FIX since last audit: every FT notification line now has a live producer. SPAWN_LATE fires from OnPlayerSpawn (live MutatorHooks.PlayerSpawn) and REVIVED_NADE from the nade self-revive branch (live DamageCalculate) — the baseline listed both as 'declared but never sent'. The full freeze/self/manual-revive/auto-revive/fall-revive/nade-revive/spawn-late set is wired onto the live NotificationSystem, which the host nets to clients."
 
   - id: freezetag.presentation.overlay_eventchase
     name: "Full-screen frozen overlay tint + cl_eventchase_frozen cam + damage HUD"
@@ -656,3 +654,31 @@ features:
       - { kind: code-read, ref: "BotBrain.ShouldAttack returns false for a Frozen-status target (BotBrain.cs:792-793); no havocbot_role_ft / freeplayers-rating references in src (only the generic frozen-skip)", result: partial }
     confidence: medium
     notes: "PARTIAL FIX since last audit: the frozen-target attack gating is now satisfied via BotBrain's generic frozen-status skip (the baseline recorded it as not modeled). The FT-specific freeing/offense ROLE logic (route to + revive frozen teammates) remains missing — generic combat may still wander into range and incidentally revive."
+
+  - id: freezetag.spawn.late
+    name: "Mid-round joiner spawns AS FROZEN (PlayerSpawn → SPAWN_LATE)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerSpawn)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnPlayerSpawn"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:PlayerSpawn"
+    constants:
+      - { name: "spawn-while-round-live → freeze", base: "round_handler_IsRoundStarted → freezetag_Freeze(player, NULL) + CENTER_FREEZETAG_SPAWN_LATE", port: "Handler.IsRoundStarted → Freeze(player, null, announce:false) + CENTER_FREEZETAG_SPAWN_LATE", match: true }
+      - { name: "round-reset respawn excluded", base: "freezetag_frozen_timeout == -1 (reset_map_players) → no freeze", port: "gated on Handler.IsRoundStarted (false during countdown) so reset respawns are excluded", match: true }
+      - { name: "attacker (no score)", base: "NULL attacker → no score change", port: "attacker null → no score change", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base also handles the dead-player respawn path (freezetag_frozen_timeout <= -2 → freeze with no SPAWN_LATE center line) as a distinct case; the port folds mid-round (re)spawns into the single IsRoundStarted gate. Outcome (a mid-round materializing player ends up frozen) matches; the dead-vs-late distinction is cosmetic."
+    verification:
+      - { kind: code-read, ref: "OnPlayerSpawn (FreezeTag.cs:310-324) registered on MutatorHooks.PlayerSpawn in Activate (FreezeTag.cs:258-259); fires when Handler.IsRoundStarted and player not already frozen/match not ended; sends CENTER_FREEZETAG_SPAWN_LATE then Freeze(player, null, announce:false)", result: pass }
+    confidence: high
+    notes: "NEW row (coverage gap in the baseline registry). The mid-round spawn-as-frozen behavior is implemented and live — a player joining a live round can't run around; they spawn frozen with the SPAWN_LATE center line. Closes the 'spawn-as-frozen unimplemented' note the baseline carried under freezetag.damage.softkill_void."

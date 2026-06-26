@@ -1,11 +1,12 @@
 unit: domination
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-26"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Round-not-started capture gate is dead: Domination.RoundStartedSource is never assigned by the host (GameWorld wires RoundEndTimeSource @2053 but NOT RoundStartedSource — zero references outside Domination.cs), so the QC `round_handler_IsActive && !IsRoundStarted` block never fires (round-based variant only, non-default)."
+    - "Round-not-started capture gate is dead: Domination.RoundStartedSource is never assigned by the host (GameWorld wires RoundEndTimeSource @2265 but NOT RoundStartedSource — zero references outside Domination.cs), so the QC `round_handler_IsActive && !IsRoundStarted` block never fires (round-based variant only, non-default)."
+    - "Round-based round time limit is 180s not 120s: GameWorld's Domination EnableRounds call (@2264) omits the roundTimeLimit/countdown/endDelay args, so RoundHandler.Init is never called and the generic 180s default stands instead of autocvar_g_domination_round_timelimit (120). Warmup 5s matches only by default coincidence (round-based variant only, non-default)."
     - "dom_EventLog (`:dom:taken:` sv_eventlog gamelog echo on capture) is not ported — no GameLogEcho call in the capture path (telemetry-only; affects server gamelog parsers)."
     - "Round-based player-blocking (QC reset_map_players + PlayerSpawn set player_blocked = !IsRoundStarted) is not mirrored — the port's RoundStart clears no per-player block flag (round-based variant only, non-default)."
 features:
@@ -38,7 +39,7 @@ features:
     gaps:
       - "g_domination_teams_override>=2 (force-N and disable dom_team) handled for team count, but dom_team palette entities (per-team point models/sounds) are not implemented; the port hardcodes the default dom_<color>.md3 palette in DomPointModel."
     verification:
-      - { kind: code, ref: "PointLimit roundbased branch reads g_domination_roundbased_point_limit (default 5); LeadLimit reads g_domination_point_leadlimit; GameWorld ActivateGameType case Domination @2045", result: pass }
+      - { kind: code, ref: "PointLimit roundbased branch reads g_domination_roundbased_point_limit (default 5); LeadLimit reads g_domination_point_leadlimit; GameWorld ActivateGameType case Domination @2257", result: pass }
     confidence: high
     notes: "Roundbased cap limit (5) applied in PointLimit; LeadLimit reads dom-specific g_domination_point_leadlimit. Both match Base ONADD. Unchanged 2026-06-25 re-verify."
 
@@ -54,7 +55,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:DropPointToFloor"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:DomPointModel"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:AnimateDomPoint"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (objective sink @2315)"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns Domination arm (objective sink @2527 -> SpawnControlPoint @2531)"
     constants:
       - { name: "bbox", base: "(-48,-48,-32)..(48,48,32)", port: "(-48,-48,-32)..(48,48,32)", match: true }
       - { name: "per_point_frags(amt)", base: "1", port: "1", match: true }
@@ -75,7 +76,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "objective sink @2315 -> SpawnControlPoint -> SpawnObjective (Touch/Think wired); e.Team=initialTeam; e.Model=DomPointModel; e.ScaleFactor=0.6; +20 then DropPointToFloor box trace; EF_LOWPRECISION/EF_FULLBRIGHT set; AnimateDomPoint advances self.Frame every TWidth(0.02) wrapping at TLength(239), called from PointThinkEntity live", result: pass }
+      - { kind: code, ref: "objective sink @2531 -> SpawnControlPoint -> SpawnObjective (Touch/Think wired); e.Team=initialTeam; e.Model=DomPointModel; e.ScaleFactor=0.6; +20 then DropPointToFloor box trace; EF_LOWPRECISION/EF_FULLBRIGHT set; AnimateDomPoint advances self.Frame every TWidth(0.02) wrapping at TLength(239), called from PointThinkEntity live", result: pass }
     confidence: high
     notes: "FIX 2026-06-25 (re-verify): presentation partial->faithful; scale match false->true (e.ScaleFactor=0.6f now set, line 374); frame_anim match false->true (AnimateDomPoint ported with TWidth 0.02 / TLength 239 and called live each think from PointThinkEntity). The two residual presentation gaps from the prior audit (no frame loop, scale not applied) are both closed. The point body model (dom_<color>.md3 / dom_unclaimed.md3) is set on spawn AND on capture, and the '+0 0 20 then DropToFloor' placement is reproduced via DropPointToFloor box-trace."
 
@@ -100,7 +101,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Round-not-started capture gate is DEAD: CapturePoint checks RoundStartedSource, but GameWorld.ActivateGameType never assigns it (only RoundEndTimeSource is wired @2053; RoundStartedSource has zero references outside Domination.cs), so in the round-based variant a captured point is NOT blocked while a round is active-but-unstarted (QC round_handler_IsActive && !IsRoundStarted)."
+      - "Round-not-started capture gate is DEAD: CapturePoint checks RoundStartedSource, but GameWorld.ActivateGameType never assigns it (only RoundEndTimeSource is wired @2265; RoundStartedSource has zero references outside Domination.cs), so in the round-based variant a captured point is NOT blocked while a round is active-but-unstarted (QC round_handler_IsActive && !IsRoundStarted)."
       - "IS_INDEPENDENT_PLAYER skip not mirrored (port has no independent-player concept here)."
       - "Capture is instant (no neutral interim state); Base's neutral-during-delay is purely cosmetic (capturetime path is commented out in QC), so functionally equivalent."
     verification:
@@ -197,26 +198,26 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:CheckRoundWinner"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:CountAndFindRoundWinner"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:RoundStart"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (EnableRounds + RoundEndTimeSource @2052)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (EnableRounds + RoundEndTimeSource @2264)"
     constants:
-      - { name: "round_timelimit_s", base: "120", port: "via RoundEndTimeSource (host round handler)", match: unknown }
-      - { name: "warmup_s", base: "5", port: "via EnableRounds (host round handler)", match: unknown }
+      - { name: "round_timelimit_s", base: "120 (autocvar_g_domination_round_timelimit; round_handler_Init arg)", port: "180 (RoundHandler default; EnableRounds @2264 passes NO roundTimeLimit so Init is never called)", match: false }
+      - { name: "warmup_s", base: "5 (autocvar_g_domination_warmup)", port: "5 (RoundHandler.CountdownLength default; matches by coincidence of defaults)", match: true }
       - { name: "caps_to_win_match", base: "5 (roundbased_point_limit)", port: "5 (enforced in CheckRoundWinner)", match: true }
     status:
       logic: faithful
       values: partial
-      timing: unknown
+      timing: partial
       presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "round_timelimit (120) and warmup (5) pass through the host round handler; the numeric parity of those host-supplied values is unverified."
+      - "Round time limit is WRONG: Base round_handler_Init uses autocvar_g_domination_round_timelimit (default 120s), but GameWorld.ActivateGameType's Domination arm (@2264) calls EnableRounds(dom.CanRoundStart, dom.CheckRoundWinner, dom.RoundStart) with NO endDelay/countdown/roundTimeLimit args — so RoundHandler.Init is never called and the round keeps the generic default RoundTimeLimit=180s (and EndDelay=5s). The port's round-based dom rounds run 180s instead of 120s. (Warmup 5s matches only because the RoundHandler default countdown is also 5.)"
     verification:
-      - { kind: code, ref: "CheckRoundWinner: capLimit=PointLimit(=5 roundbased); GetTeamCaps(winner)>=capLimit -> LeaderTeam+MatchEnded; sends ROUND_OVER (Center+Info) and ROUND_TEAM_WIN_<team> (Center+Info) — all registered in NotificationsList.cs:711-724,853,950+; GameWorld EnableRounds @2052 + RoundEndTimeSource @2053; MatchHasEnded reads dom.MatchEnded", result: pass }
+      - { kind: code, ref: "GameWorld.cs:2257-2272 Domination arm: EnableRounds(dom.CanRoundStart, dom.CheckRoundWinner, dom.RoundStart) — no roundTimeLimit/countdown/endDelay passed; EnableRounds @1490 only calls Rounds.Init when ALL THREE of endDelay/countdown/roundTimeLimit are non-null, so dom keeps RoundHandler defaults (Gameplay/GameTypes/RoundHandler.cs CountdownLength=5f, EndDelay=5f, RoundTimeLimit=180f). Base gametypes-server.cfg: g_domination_round_timelimit 120, g_domination_warmup 5. CheckRoundWinner caps logic + ROUND_OVER/ROUND_TEAM_WIN_<team> notifs all present (NotificationsList.cs:711-724,853,950+)", result: fail }
     confidence: high
-    notes: "Per-round CENTER/INFO notifications (ROUND_OVER + ROUND_TEAM_WIN_<RED/BLUE/YELLOW/PINK>) sent directly from CheckRoundWinner (all registered in NotificationsList.cs). Cumulative 5-cap match win + single-round resolution + time-out no-winner wired. Roundbased is non-default (g_domination_roundbased 0). Unchanged 2026-06-25 re-verify."
+    notes: "RE-AUDIT 2026-06-26: round_timelimit constant resolved unknown->false and timing unknown->partial. The baseline assumed the host round handler supplied the 120/5 values; it does NOT — the Domination EnableRounds call (unlike CA/FreezeTag which pass their own cvars) omits the round-timing args, so the generic RoundHandler defaults (180/5/5) stand. Round timelimit is therefore 180 (port) vs 120 (Base) — a real values/timing mismatch, though round-based is non-default (g_domination_roundbased 0). Per-round CENTER/INFO notifications + cumulative 5-cap match win + single-round resolution + time-out no-winner remain correctly wired."
 
   - id: domination.capture.audio
     name: "Capture sound (DOM_CLAIM) + narration (play2all)"

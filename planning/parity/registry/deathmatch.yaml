@@ -5,9 +5,9 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 8
   worst_gaps:
-    - "Respawn 10-9-8 announcer-countdown value is computed (Player.RespawnCountdown) but still never presented (no reader/announcer)"
     - "Teamkill escalation curve (g_teamkill_punishing) unmodeled — unreachable in FFA DM"
     - "OnDeath writes victim.GtDeaths/GtSuicides which have no readers (harmless dead writes; scoreboard counts come from Scores.GiveFrags read-through)"
+    - "Overtime 'Overtime has begun' announcer not traced end-to-end from DM (framework-owned; audio status unknown)"
 features:
   - id: deathmatch.gametype.identity
     name: "Deathmatch gametype registration & identity (dm, FFA, USEPOINTS|PREFERRED)"
@@ -244,6 +244,9 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Player/RespawnTiming.cs:GametypeDefaulted"
       - "src/XonoticGodot.Server/GameWorld.cs:DeadPlayerThink (RespawnTiming.Calculate(..., GameType?.NetName))"
       - "src/XonoticGodot.Server/GameWorld.cs:OnClientMove"
+      - "src/XonoticGodot.Server/GameWorld.cs:ShowRespawnCountdown (10-9-8 announcer reader)"
+      - "src/XonoticGodot.Server/GameWorld.cs:AnnceIfEnabledTo (NUM_RESPAWN_n send, opt-in/disabled by default)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:NUM_RESPAWN_{n} (enabled:false)"
     constants:
       - { name: "dm_respawn_delay_small", base: "g_dm_respawn_delay_small 0 → fallback g_respawn_delay_small 2", port: "g_respawn_delay_small (fallback 2)", match: true }
       - { name: "dm_respawn_delay_large", base: "g_dm_respawn_delay_large 0 → fallback g_respawn_delay_large 2", port: "g_respawn_delay_large (fallback 2)", match: true }
@@ -255,21 +258,22 @@ features:
       - { name: "respawn_countdown_arm", base: "10-count when sdelay+waves>=5 and wait>1.75s", port: "RespawnCountdown=10 (same condition)", match: true }
       - { name: "forced_respawn", base: "g_forced_respawn → RESPAWN_FORCE flag", port: "g_forced_respawn → RespawnFlag.Force", match: true }
       - { name: "GAMETYPE_DEFAULTED_SETTING dm-prefix", base: "reads g_dm_respawn_delay_* first, then g_respawn_delay_*; honors g_respawn_delay_forced; negative override→0", port: "GametypeDefaulted('dm', ...) reads g_dm_respawn_delay_* first then generic; negative→0, zero-or-g_respawn_delay_forced→max(0,generic)", match: true }
+      - { name: "respawn_countdown_announce", base: "ShowRespawnCountdown ceil(respawn_time-time), 0.5s overlap guard, Announcer_PickNumber(CNT_RESPAWN,n)→ANNCE_NUM_RESPAWN_n NOTIF_ONE; NUM_RESPAWN ships disabled (opt-in)", port: "GameWorld.ShowRespawnCountdown identical ceil + 0.5s guard, AnnceIfEnabledTo→NUM_RESPAWN_n OneOnly; NUM_RESPAWN_n registered enabled:false", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
-      audio: missing
+      presentation: faithful
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Respawn 10-9-8 countdown announcer is STILL not presented: Player.RespawnCountdown is computed by RespawnTiming.Calculate but still has NO reader/announcer (only SpawnSystem resets it). The respawn-time STAT is networked (RespawnTimeStat) but the spoken 10..1 countdown is absent. (This presentation/audio gap is owned by sv-client-lifecycle.dead.respawn_countdown_announce.)"
+    gaps: []
     verification:
       - { kind: code, ref: "RespawnTiming.Calculate vs calculate_player_respawn_time client.qc:1399-1485 — pcount scaling, waves ceil-quantize, respawn_time_max, countdown arm, RESPAWN_FORCE all present and matching", result: pass }
-      - { kind: code, ref: "RespawnTiming.GametypeDefaulted vs GAMETYPE_DEFAULTED_SETTING (client.qh:347-351): negative→0, zero-or-g_respawn_delay_forced→max(0,generic), else override — exact match; live caller GameWorld.cs:2419 passes GameType?.NetName='dm' so g_dm_respawn_delay_* is now consulted", result: pass }
-      - { kind: code, ref: "GameWorld.DeadPlayerThink (DEAD_* machine) driven per-tick from OnClientMove; on death edge calls RespawnTiming.Calculate(p, roster, teamplay, GameType?.NetName) which overrides any flat delay a gametype obituary set", result: pass }
-      - { kind: code, ref: "grep readers of Player.RespawnCountdown across src+game → still only RespawnTiming write + SpawnSystem reset; no announcer", result: fail }
+      - { kind: code, ref: "RespawnTiming.GametypeDefaulted vs GAMETYPE_DEFAULTED_SETTING (client.qh:347-351): negative→0, zero-or-g_respawn_delay_forced→max(0,generic), else override — exact match; live caller GameWorld.cs passes GameType?.NetName='dm' so g_dm_respawn_delay_* is now consulted", result: pass }
+      - { kind: code, ref: "GameWorld.DeadPlayerThink (DEAD_* machine) driven per-tick from OnClientMove (line 1787); on death edge calls RespawnTiming.Calculate(p, roster, teamplay, GameType?.NetName)", result: pass }
+      - { kind: code, ref: "GameWorld.ShowRespawnCountdown (GameWorld.cs:2986-3006) is a line-faithful port of ShowRespawnCountdown (client.qc:2043-2060): IS_DEAD guard, ceil(respawn_time-time), number<=respawn_countdown, 0.5s overlap guard, NUM_RESPAWN_n send; called from DeadPlayerThink:2968 every dead tick → READER now LIVE (was fail in 2026-06-25 baseline)", result: pass }
+      - { kind: code, ref: "NotificationsList NUM_RESPAWN_{n} registered enabled:false (matches Base opt-in announcer); AnnceIfEnabledTo gates on the shipped Enabled flag so it stays silent at defaults exactly like Base", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-22: RespawnTiming.cs was reworked to implement GAMETYPE_DEFAULTED_SETTING via the new GametypeDefaulted(gametype, ...) helper, and the live DeadPlayerThink caller (GameWorld.cs:2419) now passes GameType?.NetName ('dm'). So the gametype-prefixed g_dm_respawn_delay_* cvars and g_respawn_delay_forced are now honored (identical at DM defaults where g_dm_*=0 → generic). The live path remains GameWorld.DeadPlayerThink → RespawnTiming.Calculate. Deathmatch.ScheduleRespawn/RespawnDelay (the flat 2s) remains DEAD CODE (overridden in GameWorld). Only remaining gap: the 10-count respawn announcer is unspoken (presentation/audio), tracked in sv-client-lifecycle."
+    notes: "FIXED since 2026-06-25 baseline: the 10-9-8 respawn-countdown announcer is now implemented and LIVE. GameWorld.ShowRespawnCountdown (GameWorld.cs:2986) is a line-faithful port of Base ShowRespawnCountdown (client.qc:2043-2060), called from DeadPlayerThink (line 2968) on every dead-player tick (the same OnClientMove→DeadPlayerThink path that drives RespawnTiming.Calculate). It reads Player.RespawnCountdown (the value RespawnTiming seeds to 10 for waits>=5s), fires NUM_RESPAWN_n via AnnceIfEnabledTo→NotificationSystem.Send(OneOnly). Like Base, the NUM_RESPAWN announcer ships disabled (enabled:false), so it is silent at defaults until the player opts in — that is faithful, not a gap. The earlier 'no reader/announcer' fail is resolved. Deathmatch.ScheduleRespawn/RespawnDelay (the flat 2s) remains DEAD CODE (overridden in GameWorld), unchanged."

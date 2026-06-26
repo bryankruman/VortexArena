@@ -1,6 +1,6 @@
 # Needs in-game check
 
-_Generated 2026-06-26. 38 features whose presentation/liveness/timing code-reading could not confirm. Verify by running the app and observing._
+_Generated 2026-06-26. 37 features whose presentation/liveness/timing code-reading could not confirm. Verify by running the app and observing._
 
 | unit | feature | uncertain | what to look for |
 |---|---|---|---|
@@ -18,7 +18,6 @@ _Generated 2026-06-26. 38 features whose presentation/liveness/timing code-readi
 | `cl-hud` | `cl-hud.panel.strafehud` | timing | Strafe bar present and fed; faithful-to-stock-strafehud detail unverified. |
 | `cl-hud` | `cl-hud.panel.pickup` | timing | Recent-pickup line with icon + name + xcount fade present and fed. |
 | `cl-hud` | `cl-hud.panel.minigame` | timing | All 4 Base minigame HUD panels are ported and live via the MinigameClient coordinator (board renderer + menu + help). Board/status combined into MinigameRenderer. |
-| `domination` | `domination.roundbased.win` | timing | Per-round CENTER/INFO notifications (ROUND_OVER + ROUND_TEAM_WIN_<RED/BLUE/YELLOW/PINK>) sent directly from CheckRoundWinner (all registered in NotificationsList.cs). Cumulative 5-cap match win + single-round resolution + time-out no-winner wired. Roundbased is non-default (g_domination_roundbased 0). Unchanged 2026-06-25 re-verify. |
 | `fx-effectinfo` | `fx-effectinfo.emit.te_builtins` | low-conf | Added by adversarial pass (draft omitted a row; only the spec port-mapping table mentioned te_*). Caller coverage of these specific wrappers not exhaustively traced; weapon/combo emission largely uses Emit(Effect,...) directly. |
 | `invasion` | `invasion.client.point_limit_menu` | low-conf | Newly mapped (registry coverage gap). Menu-only; the cvar g_invasion_point_limit is still honored at runtime (invasion.win.point_limit) regardless of the missing slider. Confidence low — the port menu wiring was not exhaustively traced. |
 | `mapobject-target` | `mapobject-target.location.spawn` | presentation,liveness | Re-verified 2026-06-22 unchanged. Passive SOLID_NOT point pushed to MapObjectsState.Locations; matches target_push_init + IL_PUSH(g_locations). info_location copies netname->message then re-sets classname. |

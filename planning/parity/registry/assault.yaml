@@ -2,11 +2,15 @@ unit: assault
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
+# Re-audited 2026-06-25 (drift check): no status/liveness drift on any of 18 rows; all Wave-6a
+# ports remain live and faithful. port_ref/verification line numbers refreshed (GameWorld.cs grew
+# ~400 lines since the prior audit). The three unmapped hooks (OnEntityPreSpawn / VehicleInit /
+# PlayHitsound) still have no port equivalent (tracked in worst_gaps / new_unmapped).
 summary:
   feature_count: 18
   worst_gaps:
-    - "Wave 6a closed most of the round-flow + UX-logic gaps. Spawn-point team swap (AssaultSwapSpawnTeams, GameWorld.cs:3249), roundstart turret team-swap + unteamed-turret seeding (AssaultTurretRoundstart, GameWorld.cs:3215), the objective waypoint-sprite server state (SpawnObjectiveSprite + WaypointSprites.Think), the destructible heal path (HealDestructible + GtEventHeal), the objective-aware spawn evalfunc (ShouldRejectSpawnSpot wired at SpawnSystem.cs:408), the warmup-incompatible ReadLevelCvars override (g_warmup=0 + sv_ready_restart_after_countdown=0, GameWorld.cs:1853-1854), and the timelimit=20 mapinfo default (GameWorld.cs:1860-1861) are all now LIVE. The bot Assault role was rewritten to the QC active-objective filter + correct radii (650/3000) and ratingscale (20000)."
-    - "Residual round machinery: (1) the 5s AS_ROUND_DELAY freeze still does NOT actually freeze the game — GameStopped (GameWorld.cs:1267 = Intermission||MatchEnded||Timeout) ignores SecondRoundPending, so players keep moving/firing/respawning during the inter-round window (QC sets game_stopped=true). DriveFrame still correctly awards no win while pending. (2) bprint('Starting second round...') chat line is not emitted (cosmetic; the centerprint IS sent)."
+    - "Wave 6a closed most of the round-flow + UX-logic gaps; all still LIVE this re-audit (line numbers drifted, symbols intact). Spawn-point team swap (AssaultSwapSpawnTeams, GameWorld.cs:3953), roundstart turret team-swap + unteamed-turret seeding (AssaultTurretRoundstart, GameWorld.cs:3919), the objective waypoint-sprite server state (SpawnObjectiveSprite + WaypointSprites.Think GameWorld.cs:2030), the destructible heal path (HealDestructible + GtEventHeal GameWorld.cs:2621), the objective-aware spawn evalfunc (ShouldRejectSpawnSpot wired at SpawnSystem.cs:448), the warmup-incompatible ReadLevelCvars override (g_warmup=0 + sv_ready_restart_after_countdown=0, GameWorld.cs:2329-2330), and the timelimit=20 mapinfo default (GameWorld.cs:2336-2337) are all LIVE. The bot Assault role rates the QC active-objective filter + correct radii (650/3000) and ratingscale (20000)."
+    - "Residual round machinery (UNCHANGED): (1) the 5s AS_ROUND_DELAY freeze still does NOT actually freeze the game — GameStopped (GameWorld.cs:1678 = Intermission.Running||MatchEnded) ignores SecondRoundPending, so players keep moving/firing/respawning during the inter-round window (QC sets game_stopped=true). DriveFrame still correctly awards no win while pending. (2) bprint('Starting second round...') chat line is not emitted (cosmetic; the centerprint IS sent)."
     - "Presentation: the waypoint sprites + health bars are spawned/updated/ticked SERVER-SIDE (and the net layer is structured to read WaypointSprites.Active per peer) but there is NO client render/networking path yet — no on-screen objective marker, health bar, or radar icon actually reaches the player. The destructible-heal sprite update is likewise server-only. So the underlying objective-marker LOGIC is now faithful+live, but the visible presentation is still absent."
     - "Bot fidelity residual: RoleAssault now rates only active-objective destructibles with Base radii/ratingscale, but still omits the 120s havocbot_role_timeout, the PVS-best-waypoint pick around each target, and the havocbot_attack_time 2s commitment window. Behaviorally faithful; the commitment/timeout nuance is approximate."
     - "Unmapped Base hooks (registry coverage gaps): MUTATOR_HOOKFUNCTION(as, OnEntityPreSpawn) deletes info_player_team1-4 (foreign team spawns); MUTATOR_HOOKFUNCTION(as, VehicleInit) sets veh.nextthink=time+0.5; MUTATOR_HOOKFUNCTION(as, PlayHitsound) returns true for a func_assault_destructible victim. None have a port equivalent and none had a registry row."
@@ -48,7 +52,7 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:spawnfunc(func_assault_destructible)"
       - "common/gametypes/gametype/assault/sv_assault.qc:assault_setenemytoobjective"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (Assault arm, GameWorld.cs:2084)"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (Assault arm, GameWorld.cs:2573); ResolveObjectiveGraph called post-spawn at GameWorld.cs:707"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:ResolveObjectiveGraph"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:StageDecreaser"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:GametypeObjectiveSpawns (Assault block)"
@@ -132,7 +136,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DamageDestructible"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DecreaseObjective"
-      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (func_assault_destructible GtEventDamage, GameWorld.cs:2115-2126)"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (func_assault_destructible GtEventDamage, GameWorld.cs:2604-2615)"
     constants:
       - { name: "team_gate", base: "actor.team == assault_attacker_team", port: "byTeam == State.AttackerTeam", match: true }
       - { name: "score_on_hit", base: "SCORE += dmg (or remaining hlth on kill)", port: "actor.ScoreFrags += removed", match: true }
@@ -191,6 +195,7 @@ features:
       - "src/XonoticGodot.Server/GameWorld.cs:IsMatchOver (Assault arm)"
       - "src/XonoticGodot.Server/GameWorld.cs:TryGetWinner (Assault arm)"
       - "src/XonoticGodot.Server/GameWorld.cs:Boot (TargetUtilities.IsCampaign assignment)"
+      - "src/XonoticGodot.Server/GameWorld.cs:GameStopped (GameWorld.cs:1678 — does NOT include SecondRoundPending)"
     constants:
       - { name: "winning_team_score_sentinel", base: "ST_ASSAULT_OBJECTIVES set to 666", port: "SetTeamScore(slot, 666)", match: true }
       - { name: "campaign_single_round_end", base: "ent.cnt == 1 || autocvar_g_campaign => WINNING_YES", port: "isFinalRound || Round>=1 || (IsCampaign?.Invoke() ?? false)", match: true }
@@ -205,7 +210,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Residual (cosmetic-flow): the 5s AS_ROUND_DELAY between a round-1 attacker win and the round-2 swap is modeled as SecondRoundPending/_secondRoundDueAt but does NOT actually freeze the game — GameStopped (GameWorld.cs:1267 = Intermission||MatchEnded||Timeout) ignores SecondRoundPending, so players keep moving/firing during the window (QC sets game_stopped=true). DriveFrame still correctly returns false (awards no win) while pending, so the match outcome is unaffected; only the visible freeze is missing."
+      - "Residual (cosmetic-flow): the 5s AS_ROUND_DELAY between a round-1 attacker win and the round-2 swap is modeled as SecondRoundPending/_secondRoundDueAt but does NOT actually freeze the game — GameStopped (GameWorld.cs:1678 = Intermission.Running||MatchEnded) ignores SecondRoundPending, so players keep moving/firing during the window (QC sets game_stopped=true). DriveFrame still correctly returns false (awards no win) while pending, so the match outcome is unaffected; only the visible freeze is missing."
     verification:
       - { kind: code_read, ref: "Assault.cs:686 campaign = TargetUtilities.IsCampaign?.Invoke(); IsCampaign assigned in Boot (=> Cvars.Bool('g_campaign')). Campaign single-round end terminates the match.", result: pass }
       - { kind: code_read, ref: "Assault.cs:688 if(isFinalRound||Round>=1||campaign) MatchEnded=true; else (round-1 non-campaign) SecondRoundPending=true + _secondRoundDueAt=now+RoundDelay. DriveFrame fires StartSecondRound when due — LIVE via DriveGametypeFrame.", result: pass }
@@ -224,7 +229,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:StartSecondRound"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DriveFrame (SecondRoundPending branch)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:AssaultState.FirstRoundDestroyTime"
-      - "src/XonoticGodot.Server/GameWorld.cs:Activate (aslt.OnSecondRoundRestart assignment, GameWorld.cs:1874)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Activate (aslt.OnSecondRoundRestart assignment, GameWorld.cs:2350)"
     constants:
       - { name: "AS_ROUND_DELAY", base: "5 (seconds inter-round freeze)", port: "RoundDelay = 5f", match: true }
       - { name: "round2_timelimit", base: "ceil(time - AS_ROUND_DELAY - game_starttime)/60 minutes", port: "ceil(FirstRoundDestroyTime/60) min; DriveFrame uses FirstRoundDestroyTime sec directly", match: true }
@@ -240,7 +245,7 @@ features:
     gaps:
       - "Residual: the 5s AS_ROUND_DELAY freeze is timed correctly (DriveFrame waits _secondRoundDueAt) but does NOT set game_stopped — play is not actually frozen during the window (see assault.win.attacker_round). bprint('Starting second round...') chat line is not emitted (cosmetic)."
     verification:
-      - { kind: code_read, ref: "DriveFrame Assault.cs:830-835: if(SecondRoundPending){ if(now>=_secondRoundDueAt) StartSecondRound(); return false; } — LIVE per-tick. OnSecondRoundRestart (GameWorld.cs:1874) re-stamps GameStartTime, ResetMap(fakeRoundStart:true), AssaultSwapSpawnTeams(), AssaultTurretRoundstart().", result: pass }
+      - { kind: code_read, ref: "DriveFrame Assault.cs:830-835: if(SecondRoundPending){ if(now>=_secondRoundDueAt) StartSecondRound(); return false; } — LIVE per-tick (DriveGametypeFrame GameWorld.cs:2814). OnSecondRoundRestart (GameWorld.cs:2350) re-stamps GameStartTime, ResetMap(fakeRoundStart:true), AssaultSwapSpawnTeams(), AssaultTurretRoundstart().", result: pass }
       - { kind: test, ref: "AssaultSpawnTests.cs:AttackerWin_SchedulesSecondRound_ThenSwapsRolesAfterTheDelay (Round->1, AttackerTeam Red->Blue, chain re-armed, restart fired)", result: pass }
     confidence: high
     notes: "Improved this audit: OnSecondRoundRestart now ALSO swaps spawn-point teams + runs the turret roundstart team-swap (were separate residual gaps in the baseline). Only remaining residuals are the non-enforced freeze and the missing bprint line."
@@ -254,9 +259,9 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:TimeLimitReached"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DriveFrame"
       - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (Assault arm)"
-      - "src/XonoticGodot.Server/GameWorld.cs:Activate (Assault timelimit=20 default, GameWorld.cs:1860-1861)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Activate (Assault timelimit=20 default, GameWorld.cs:2336-2337)"
     constants:
-      - { name: "default_timelimit_min", base: "20 (timelimit=20 default args)", port: "Activate asserts timelimit=20 when unset (GameWorld.cs:1860-1861); DriveFrame reads live cvar*60", match: true }
+      - { name: "default_timelimit_min", base: "20 (timelimit=20 default args)", port: "Activate asserts timelimit=20 when unset (GameWorld.cs:2336-2337); DriveFrame reads live cvar*60", match: true }
     status:
       logic: faithful
       values: faithful
@@ -268,7 +273,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "GameWorld.cs:1860 if(Cvars.FloatOr('timelimit',0)<=0) Cvars.Set('timelimit',20) — the Base mapinfo default ('timelimit=20', assault.qh) is now asserted for Assault when nothing configured one.", result: pass }
+      - { kind: code_read, ref: "GameWorld.cs:2336 if(Cvars.FloatOr('timelimit',0)<=0) Cvars.Set('timelimit',20) — the Base mapinfo default ('timelimit=20', assault.qh) is now asserted for Assault when nothing configured one.", result: pass }
       - { kind: code_read, ref: "Assault.cs:793 TimeLimitReached guards (MatchEnded||SecondRoundPending). DriveFrame round-1 non-final and round-2 both reach it: round 2's limit = FirstRoundDestroyTime; defender win is terminal in both rounds.", result: pass }
     confidence: high
     notes: "FIXED this audit (values): the Base default timelimit=20 is now stamped in Activate (Wave 6a), so the defender-timelimit win fires even with no map/cvar timelimit. values partial->faithful."
@@ -282,7 +287,7 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:assault_new_round (g_saved_team team swap)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:275-276 (info_player_attacker/defender registration)"
-      - "src/XonoticGodot.Server/GameWorld.cs:AssaultSwapSpawnTeams (GameWorld.cs:3249)"
+      - "src/XonoticGodot.Server/GameWorld.cs:AssaultSwapSpawnTeams (GameWorld.cs:3953)"
     constants:
       - { name: "attacker_team", base: "NUM_TEAM_1 (red)", port: "Teams.Red", match: true }
       - { name: "defender_team", base: "NUM_TEAM_2 (blue)", port: "Teams.Blue", match: true }
@@ -298,7 +303,7 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "AssaultSpawnTests.cs:InfoPlayerAttackerDefender_BecomeTeamSpawnPoints (round-1 stamping)", result: pass }
-      - { kind: code_read, ref: "AssaultSwapSpawnTeams (GameWorld.cs:3249) flips each info_player_deathmatch edict's Red<->Blue team on round 2; invoked from OnSecondRoundRestart (GameWorld.cs:1881). The new attackers now spawn at the geographic attacker location.", result: pass }
+      - { kind: code_read, ref: "AssaultSwapSpawnTeams (GameWorld.cs:3953) flips each info_player_deathmatch edict's Red<->Blue team on round 2; invoked from OnSecondRoundRestart (GameWorld.cs:2357). The new attackers now spawn at the geographic attacker location.", result: pass }
     confidence: high
     notes: "FIXED this audit: the round-2 spawn-point team swap is now implemented (AssaultSwapSpawnTeams, QC assault_new_round g_saved_team.team_saved swap) and wired into OnSecondRoundRestart. logic partial->faithful, liveness partial->live."
 
@@ -344,7 +349,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:SpawnObjectiveSprite"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DisownSprite"
       - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointSprites (SpawnFixed/UpdateHealth/UpdateMaxHealth/Disown/Kill)"
-      - "src/XonoticGodot.Server/GameWorld.cs:1557 (WaypointSprites.Think per-tick)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2030 (WaypointSprites.Think per-tick)"
     constants:
       - { name: "sprite_defend", base: "WP_AssaultDefend (radar RADARICON_OBJECTIVE)", port: "RadarIconObjective=1 + WaypointObjectiveColor orange", match: true }
       - { name: "sprite_attacker_view", base: "WP_AssaultDestroy + UpdateMaxHealth/UpdateHealth", port: "SpawnObjectiveSprite('AssaultDestroy', UpdateMaxHealth/UpdateHealth)", match: true }
@@ -360,7 +365,7 @@ features:
     gaps:
       - "Presentation only: the objective waypoint sprite is now spawned, health-bar-updated, disowned-on-destroy, and ticked SERVER-SIDE (SpawnObjectiveSprite + WaypointSprites.Think, GameWorld.cs:1557). But there is NO client render/networking path — no code reads WaypointSprites.Active to serialize/render it (net+engine grep empty). So the attacker has no actual on-screen objective marker, health bar, or radar icon yet. The state machine is faithful; the visible pixels are absent."
     verification:
-      - { kind: code_read, ref: "Assault.cs:394 SpawnObjectiveSprite (WP_AssaultDestroy + UpdateMaxHealth/UpdateHealth); DamageDestructible updates the bar each hit; DisownSprite on destroy. WaypointSprites.Think() ticked live at GameWorld.cs:1557.", result: pass }
+      - { kind: code_read, ref: "Assault.cs:394 SpawnObjectiveSprite (WP_AssaultDestroy + UpdateMaxHealth/UpdateHealth); DamageDestructible updates the bar each hit; DisownSprite on destroy. WaypointSprites.Think() ticked live at GameWorld.cs:2030.", result: pass }
       - { kind: code_read, ref: "grep WaypointSprites.Active across src/XonoticGodot.Net + .Engine: empty — no client serialize/render of waypoint sprites", result: fail }
     confidence: high
     notes: "FIXED (logic/values/timing/liveness) this audit: Wave 6a ported the full server-side waypoint-sprite state for the objective (spawn/update/disown/think). Presentation stays MISSING because no client-side renderer/networking surfaces the sprite. logic/values/timing missing->faithful, liveness na->live; presentation still missing."
@@ -375,7 +380,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:Wall"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:StageWall"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DriveWalls"
-      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (func_assault_wall case, GameWorld.cs:2140-2152)"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (func_assault_wall case, GameWorld.cs:2629-2641)"
     constants:
       - { name: "think_interval", base: "0.2 s (nextthink = time + 0.2)", port: "per-frame (DriveWalls runs every tick from DriveFrame)", match: false }
       - { name: "hide_predicate", base: "GetResource(enemy, RES_HEALTH) < 0", port: "ObjectiveRef.Health < 0f", match: true }
@@ -392,7 +397,7 @@ features:
       - "Timing: QC re-evaluates each func_assault_wall on a 0.2s nextthink; the port re-evaluates every tick (DriveWalls from the per-frame DriveFrame) but only re-stamps the edict on a state transition. Functionally equivalent (toggle happens at most ~0.2s sooner); transition-gated and cheap. Not a behavioral divergence."
     verification:
       - { kind: test, ref: "AssaultSpawnTests.cs:FuncAssaultWall_HidesWhenItsObjectiveIsDestroyed_AndIsSolidWhileItLives", result: pass }
-      - { kind: code_read, ref: "DriveWalls (Assault.cs:333-360) toggles edict.Model/edict.Solid (Bsp<->Not) on objective health; DriveFrame calls DriveWalls every tick (Assault.cs:822); StageWall staged from GameWorld.cs:2151 and linked in ResolveObjectiveGraph.", result: pass }
+      - { kind: code_read, ref: "DriveWalls (Assault.cs:333-360) toggles edict.Model/edict.Solid (Bsp<->Not) on objective health; DriveFrame calls DriveWalls every tick (Assault.cs:822); StageWall staged from GameWorld.cs:2640 and linked in ResolveObjectiveGraph.", result: pass }
     confidence: high
     notes: "Unchanged. The Wall POJO + StageWall + DriveWalls faithfully hide the wall (model='' + SOLID_NOT) once its objective is destroyed and keep it SOLID_BSP/visible otherwise. timing partial (per-frame vs 0.2s think, parity-neutral)."
 
@@ -403,9 +408,9 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:assault_roundstart_use"
       - "common/gametypes/gametype/assault/sv_assault.qc:MUTATOR_HOOKFUNCTION(as, TurretSpawn)"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:AssaultTurretRoundstart (GameWorld.cs:3215)"
-      - "src/XonoticGodot.Server/GameWorld.cs:Boot (initial roundstart, GameWorld.cs:649)"
-      - "src/XonoticGodot.Server/GameWorld.cs:OnSecondRoundRestart (round-2 swap, GameWorld.cs:1886)"
+      - "src/XonoticGodot.Server/GameWorld.cs:AssaultTurretRoundstart (GameWorld.cs:3919)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (initial roundstart, GameWorld.cs:712)"
+      - "src/XonoticGodot.Server/GameWorld.cs:OnSecondRoundRestart (round-2 swap, GameWorld.cs:2362)"
     constants:
       - { name: "unteamed_seed", base: "turret.team == assault_attacker_team when 0/FLOAT_MAX (TurretSpawn hook)", port: "e.Team = attackerTeam when 0/float.MaxValue", match: true }
       - { name: "team_swap", base: "NUM_TEAM_1 <-> NUM_TEAM_2 then turret_respawn", base_note: "campaign forbids the swap (assault_turrets_teamswap_forbidden)", port: "Red<->Blue then TurretAI.Respawn; campaign-guarded", match: true }
@@ -420,7 +425,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "AssaultTurretRoundstart (GameWorld.cs:3215): seeds unteamed turrets to the attacker team, swaps Red<->Blue, TurretAI.Respawn; campaign-guarded (no swap in campaign, QC assault_turrets_teamswap_forbidden). Called at initial roundstart (GameWorld.cs:649) and on round 2 (GameWorld.cs:1886).", result: pass }
+      - { kind: code_read, ref: "AssaultTurretRoundstart (GameWorld.cs:3919): seeds unteamed turrets to the attacker team, swaps Red<->Blue, TurretAI.Respawn; campaign-guarded (no swap in campaign, QC assault_turrets_teamswap_forbidden). Called at initial roundstart (GameWorld.cs:712) and on round 2 (GameWorld.cs:2362).", result: pass }
     confidence: high
     notes: "FIXED this audit: was wholly unimplemented (no-op). Wave 6a ported the assault_roundstart_use turret swap + the TurretSpawn unteamed-seeding hook, both campaign-guarded, wired into the initial roundstart AND the round-2 restart. logic/values missing->faithful, liveness na->live."
 
@@ -463,7 +468,7 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:target_objective_spawn_evalfunc"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:ShouldRejectSpawnSpot"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:408 (SpotEvalReject in ScoreSpot)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:448 (SpotEvalReject in ScoreSpot)"
     constants:
       - { name: "reject_score", base: "'-1 0 0' when hlth<0 or hlth>=ASSAULT_VALUE_INACTIVE", port: "ShouldRejectSpawnSpot returns true (-> (-1,0) in ScoreSpot) when Health<0 or Health>=ObjectiveInactive", match: true }
     status:
@@ -477,7 +482,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "Assault.Activate (Assault.cs:597) installs SpawnSystem.SpotEvalReject = ShouldRejectSpawnSpot; SpawnSystem.ScoreSpot (SpawnSystem.cs:408) on the target-checking path returns (-1,0) when SpotEvalReject(spot) is true; ShouldRejectSpawnSpot follows spot.Target to its objective and rejects when destroyed (<0) or inactive (>=ObjectiveInactive). Cleared on Deactivate.", result: pass }
+      - { kind: code_read, ref: "Assault.Activate (Assault.cs:597) installs SpawnSystem.SpotEvalReject = ShouldRejectSpawnSpot; SpawnSystem.ScoreSpot (SpawnSystem.cs:448) on the target-checking path returns (-1,0) when SpotEvalReject(spot) is true; ShouldRejectSpawnSpot follows spot.Target to its objective and rejects when destroyed (<0) or inactive (>=ObjectiveInactive). Cleared on Deactivate.", result: pass }
     confidence: high
     notes: "FIXED this audit: Wave 6a added ShouldRejectSpawnSpot + the SpawnSystem.SpotEvalReject seam (QC target_objective_spawn_evalfunc / Spawn_Score spawn_evalfunc chain). Attacker spawns are now deprioritized near inactive/destroyed objectives. logic/values missing->faithful, liveness na->live."
 
@@ -489,8 +494,8 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:spawnfunc(func_assault_destructible) (this.event_heal = destructible_heal)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:HealDestructible"
-      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (func_assault_destructible GtEventHeal, GameWorld.cs:2132)"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageContracts.cs:77 (Heal -> GtEventHeal dispatch)"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (func_assault_destructible GtEventHeal, GameWorld.cs:2621)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageContracts.cs:102 (Heal -> GtEventHeal dispatch)"
     constants:
       - { name: "true_limit", base: "(limit != RES_LIMIT_NONE) ? limit : targ.max_health", port: "limit != Resources.LimitNone ? limit : wall.MaxHealth", match: true }
       - { name: "heal_guard", base: "bail if hlth<=0 || hlth>=true_limit (already destroyed/full)", port: "same guard", match: true }
@@ -506,7 +511,7 @@ features:
     gaps:
       - "Presentation: the heal updates the wall's waypoint-sprite health bar server-side (WaypointSprites.UpdateHealth) but, like all the Assault sprites, that bar is not surfaced to the client (no waypoint render/network path). QC's func_breakable_colormod (the visible color tint on a healed wall) is not modeled. The heal LOGIC + health restoration is faithful + live."
     verification:
-      - { kind: code_read, ref: "HealDestructible (Assault.cs:482): true_limit + already-destroyed/full guard + GiveResourceWithLimit clamp + sprite UpdateHealth. Wired live via e.GtEventHeal (GameWorld.cs:2132); Combat.Heal (DamageContracts.cs:77) dispatches to GtEventHeal; Arc.cs:332 invokes it for non-player heal targets.", result: pass }
+      - { kind: code_read, ref: "HealDestructible (Assault.cs:482): true_limit + already-destroyed/full guard + GiveResourceWithLimit clamp + sprite UpdateHealth. Wired live via e.GtEventHeal (GameWorld.cs:2621); Combat.Heal (DamageContracts.cs:102) dispatches to GtEventHeal for a non-player target.", result: pass }
     confidence: high
     notes: "FIXED this audit: Wave 6a ported destructible_heal as HealDestructible + the func_assault_destructible GtEventHeal seam, reachable live from the heal-beam/nade pipeline. logic/values missing->faithful, liveness na->live; presentation partial (the sprite-bar update is server-only and func_breakable_colormod is absent)."
 
@@ -517,7 +522,7 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:MUTATOR_HOOKFUNCTION(as, ReadLevelCvars)"
       - "common/gametypes/gametype/assault/sv_assault.qc:MUTATOR_HOOKFUNCTION(as, ReadyRestart_Deny)"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:Activate (Assault arm, GameWorld.cs:1851-1855)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Activate (Assault arm, GameWorld.cs:2327-2331)"
     constants:
       - { name: "warmup_stage", base: "0 (forced for Assault)", port: "Cvars.Set('g_warmup', 0) when not campaign", match: true }
       - { name: "sv_ready_restart_after_countdown", base: "0 (forced for Assault)", port: "Cvars.Set('sv_ready_restart_after_countdown', 0) when not campaign", match: true }
@@ -533,6 +538,6 @@ features:
     gaps:
       - "ReadyRestart_Deny (the QC round-2 gate) is structurally unneeded in the port (round 2 is driven by the in-Assault SecondRoundPending timer, not a ready-restart), so it is not modeled — but its functional effect (no manual ready-restart mid-Assault) is achieved by sv_ready_restart_after_countdown=0. The QC assault_turrets_teamswap_forbidden flag (set in ReadyRestart_Deny under campaign) is mirrored by the campaign guard in AssaultTurretRoundstart."
     verification:
-      - { kind: code_read, ref: "GameWorld.cs:1851-1855: if not campaign, Cvars.Set('g_warmup',0) + Cvars.Set('sv_ready_restart_after_countdown',0) — QC (as, ReadLevelCvars) warmup_stage=0 + sv_ready_restart_after_countdown=0. Live in Activate.", result: pass }
+      - { kind: code_read, ref: "GameWorld.cs:2327-2331: if not campaign, Cvars.Set('g_warmup',0) + Cvars.Set('sv_ready_restart_after_countdown',0) — QC (as, ReadLevelCvars) warmup_stage=0 + sv_ready_restart_after_countdown=0. Live in Activate.", result: pass }
     confidence: high
     notes: "FIXED this audit: Wave 6a forces g_warmup=0 + sv_ready_restart_after_countdown=0 for Assault (non-campaign) in Activate, matching the QC ReadLevelCvars override. logic/values missing->faithful, liveness na->live. The ReadyRestart_Deny gate itself stays mooted by the port's own round-timer architecture (intended; functional effect covered)."

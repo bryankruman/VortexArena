@@ -1,14 +1,15 @@
 unit: keyhunt
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"  # drift re-audit; KeyHunt.cs was edited Jun-25 (Wave-6a) after the 06-22 baseline
+last_audited: "2026-06-25"  # drift re-audit; KeyHunt.cs was edited AGAIN Jun-26 (1551 lines) after the 06-25 baseline — waypoint sprites now LIVE
 summary:
   feature_count: 21
   worst_gaps:
-    - "MAJOR FORWARD DRIFT since the 06-22 baseline: KeyHunt.cs (1441 lines) was substantially edited on Jun-25 (Wave-6a). SEVEN baseline gaps genuinely CLOSED: (1) carried-key orbit NOW IMPLEMENTED (OrbitCarriedKey: makevectors yaw = SpawnAngle + (now%360)*KeyXySpeed, origin = carrier + fwd*KeyXyDist + z*KeyZShift; constants KH_KEY_XYDIST 24 / XYSPEED 45 / ZSHIFT 22 all now match Base) — keyhunt.key.carried_orbit fixed missing/partial->faithful. (2) carrier/noncarrier 9-way damage+force matrix NOW IMPLEMENTED + LIVE (OnDamageCalculate subscribed to MutatorHooks.DamageCalculate, dispatched at DamageSystem.cs:256) — keyhunt.combat.carrier_damage_force missing->faithful/live. (3) lava/slime/trigger return_when_unreachable + force-reteam NOW IMPLEMENTED + LIVE (KeyDamage via GtEventDamage installed in SpawnKey, routed at DamageSystem.cs:331-333) — keyhunt.unreachable.damage_destroy missing->faithful/live."
-    - "FORWARD DRIFT continued: (4) observe/disconnect drop NOW WIRED: OnPlayerRemoved override calls DropAllKeys(player, suicide:true), dispatched from ClientManager.cs:473/682 — keyhunt.drop.on_death liveness partial->live, timing partial->faithful (3 of 4 Base drop hooks now wired; only DropSpecialItems edge remains, but PlayerDies+observer+disconnect cover the player-visible cases). (5) per-carrier SP_SCORE + nades_GiveBonus NOW CREDITED on capture (WinnerTeam: each carrier c.ScoreFrags += chunk + Nades.NadeBonus.GiveBonus) — keyhunt.capture.scoring logic partial->faithful. (6) destroy distribution NOW full DistributeEvenly + destroyed_holdingkey ownfactor (LoserTeam destruction branch) — keyhunt.loss.loser_team_push_destroy logic/values partial->faithful. (7) per-team spawn angle 360*i/teamCount NOW set (SpawnKey: key.SpawnAngle) — keyhunt.round.spawn_keys spawn_angle constant now matches; delay_tracking now implemented + scheduled — keyhunt.controller.round_loop values partial->faithful."
-    - "Bot role STILL only partial-logic (single collapsed freelancer-style rating vs Base's 4-role behavior tree with timeouts) but LIVE and correct (FindByClass('item_kh_key') + key.GtCarrier; BotRoles.cs:96 dispatch). Spawned classname item_kh_key matches the bot search."
-    - "REMAINING gaps (now far fewer): waypoint sprites entirely unimplemented (keyhunt.waypoints.sprites — Run here / Key Carrier overhead + radar sprites, and the tracking-device visibility gating is moot without them); DropSpecialItems drop edge unwired (minor — covered by the other 3 hooks); the dead AssignKey method (harmless, routes to correct geometry); push/carrier-frag credited via ScoreFrags rather than the team-aware SCORE pipeline (mechanism divergence, magnitude faithful); capture customflash approximated by TE_EXPLOSION."
+    - "NEW FORWARD DRIFT since the 06-25 baseline: KeyHunt.cs grew 1441->1551 lines (Jun-26 edit, commit c59134e). The single biggest baseline gap CLOSED: WAYPOINT SPRITES are now FULLY IMPLEMENTED + LIVE. CollectWaypoints (KeyHunt.cs:1324-1376) rebuilds per-tick: a WP_KeyDropped marker on each loose key + a team-colored WP_KeyCarrier{Red,Blue,Yellow,Pink} marker on each carrier, flipped to WP_KeyCarrierFinish ('Run here') when one team owns all keys. The tracking-device gate + per-viewer visibility predicates (DroppedKeyWaypointVisibleFor / CarrierWaypointVisibleFor) faithfully mirror kh_Key_waypointsprite_visible_for_player + kh_KeyCarrier_waypointsprite_visible_for_player (spec/warmup/same-team/invisibility/tracking rules). All 7 def names registered in WaypointRegistry (Waypoints.cs:128-134). Consumed LIVE at ServerNet.cs:1022 (SendWaypoints). keyhunt.waypoints.sprites: missing/na -> faithful/live."
+    - "CASCADE from the waypoint fix: keyhunt.controller.round_loop presentation partial->faithful (the delay_tracking / TrackingEnabled flag now has a real sprite target it gates — DroppedKeyWaypointVisibleFor/CarrierWaypointVisibleFor return TrackingEnabled, so the 'tracking device powers up after delay_tracking' reveal is now player-visible). keyhunt.notify.center_info: the 'Run here'(Finish)<->'Key Carrier' waypoint flip on the all-owned transition is now implemented (CollectWaypoints picks KeyCarrierFinish vs the team-colored sprite from the live AllOwnedByWhichTeam state); that gap removed."
+    - "Carried from the 06-25 Wave-6a baseline (all still TRUE/verified): carried-key orbit (OrbitCarriedKey, KH_KEY_XYDIST 24/XYSPEED 45/ZSHIFT 22 match), 9-way carrier/noncarrier damage+force matrix (OnDamageCalculate, live via MutatorHooks.DamageCalculate), lava/slime return_when_unreachable (KeyDamage via GtEventDamage), observe/disconnect drop (OnPlayerRemoved->DropAllKeys), per-carrier SP_SCORE + nades_GiveBonus on capture, full DistributeEvenly destroy split, per-team spawn angle. All faithful + live."
+    - "Bot role STILL only partial-logic (single collapsed freelancer-style rating vs Base's 4-role behavior tree carrier/defense/offense/freelancer with HavocBot_ChooseRole random pick + role timeouts) but LIVE and correct (FindByClass('item_kh_key') + key.GtCarrier; BotRoles.cs:96 dispatch)."
+    - "REMAINING gaps (now minor): bot 4-role tree collapsed to one rating (keyhunt.bot.role logic/values partial); DropSpecialItems drop edge unwired (covered by PlayerDies+observer+disconnect); damageforcescale unread (no-op at stock 1); push/carrier-frag/capture credited via ScoreFrags rather than the team-aware SCORE float2int pipeline (mechanism divergence, magnitude faithful); capture customflash approximated by TE_EXPLOSION; the dead AssignKey method (harmless, routes to correct geometry); minor waypoint nuance — Base's 3-state WaypointSprite_UpdateSprites shows teammates 'Key carrier'(WP_KeyCarrierFriend) vs enemies the team-colored sprite, while the port shows one team-colored sprite to both (KeyCarrierFriend def registered but unused on the live path)."
 features:
   - id: keyhunt.controller.round_loop
     name: "Controller round loop: wait-for-players -> countdown -> start round"
@@ -28,20 +29,20 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "delay_tracking is now IMPLEMENTED as a timer: StartRound sets TrackingEnabled=false and schedules _trackingEnableTime = now + delay_tracking (KEYHUNT_SCAN center-print sent when delay_tracking >= 0); TickKeys flips TrackingEnabled true once the timer elapses. The flag is honored, but it only gates waypoint-sprite visibility — and the sprites themselves are still unimplemented (keyhunt.waypoints.sprites), so the reveal has no player-visible target yet (presentation: partial)."
       - "Base kh_WaitForPlayers/kh_StartRound also gate on time >= game_starttime; the port's Tick does not gate the round on game_starttime (minor: warmup-edge timing only). Note KH also calls the generic EnableRounds() with no callbacks, so a parallel generic RoundHandler sits in InProgress forever — it serves the round-counter + the impulse gate only, and KH's own Phase machine is the authority."
     verification:
       - { kind: code, ref: "GameWorld.cs per-frame objective switch 'case KeyHunt kh: kh.Tick(); break;'", result: pass }
       - { kind: code, ref: "ActivateGameType: kh.Activate() + kh.SetRoster(Clients.Players) (live backing list); deactivates every gametype before Activate (clean re-arm)", result: pass }
-      - { kind: code, ref: "KeyHunt.cs:585-593 StartRound: TrackingEnabled=false + CenterAll('KEYHUNT_SCAN', delayTracking) + _trackingEnableTime=now+delayTracking; KeyHunt.cs:868-872 TickKeys flips TrackingEnabled when now>=_trackingEnableTime", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:585-596 StartRound: TrackingEnabled=false + CenterAll('KEYHUNT_SCAN', delayTracking) + _trackingEnableTime=now+delayTracking; KeyHunt.cs:871-875 TickKeys flips TrackingEnabled when now>=_trackingEnableTime", result: pass }
+      - { kind: code, ref: "DRIFT 06-26: the TrackingEnabled flag now gates a REAL sprite target — DroppedKeyWaypointVisibleFor (KeyHunt.cs:1386) / CarrierWaypointVisibleFor (KeyHunt.cs:1402) return TrackingEnabled, so the delay_tracking reveal is player-visible (waypoint sprites now implemented). presentation upgraded partial->faithful.", result: pass }
     confidence: high
-    notes: "FIXED values partial->faithful: delay_tracking (default 10) now read + scheduled (DefaultDelayTracking=10, matches Base). Controller live; ROUNDSTART + SCAN center-prints wired. presentation stays partial only because the tracking flag gates not-yet-implemented waypoint sprites."
+    notes: "FIXED presentation partial->faithful (Jun-26 drift): delay_tracking (default 10) was already read + scheduled; the 06-25 baseline held presentation at partial ONLY because the tracking flag gated not-yet-implemented sprites. Those sprites now exist (keyhunt.waypoints.sprites faithful/live), so the tracking-device reveal is now a real player-visible behavior. Controller live; ROUNDSTART + SCAN center-prints wired."
 
   - id: keyhunt.round.spawn_keys
     name: "Spawn one key per team onto a random live teammate at round start"
@@ -521,14 +522,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The 'Run here'(Finish) <-> 'Key Carrier'(Friend) waypoint-sprite flip on the all-owned transition is absent (waypoint sprites unimplemented — see keyhunt.waypoints.sprites). The interfere/meet/help CENTER volley itself IS implemented."
       - "Capture VFX uses TE_EXPLOSION at the midpoint as a stand-in for te_customflash; the NEXUIZPLASMA carrier-chain trail is faithful."
     verification:
-      - { kind: code, ref: "KeyHunt.cs:1260-1303 UpdateInterfereMessages: time+0.2 deferred volley, MEET (carrier) / HELP (teammate) / INTERFERE_<team> (others) — matches Base kh_Key_Think interferemsg block", result: pass }
-      - { kind: code, ref: "KeyHunt.cs:1177-1254 WinnerTeam+CaptureVfx: ROUND_TEAM_WIN center + KEYHUNT_CAPTURE info + EmitTrail(TR_NEXUIZPLASMA) chain + TE_EXPLOSION midpoint + SoundGlobal(KH_CAPTURE)", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:1266-1309 UpdateInterfereMessages: time+0.2 deferred volley, MEET (carrier) / HELP (teammate) / INTERFERE_<team> (others) — matches Base kh_Key_Think interferemsg block", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:1181-1258 WinnerTeam+CaptureVfx: ROUND_TEAM_WIN center + KEYHUNT_CAPTURE info + EmitTrail(TR_NEXUIZPLASMA) chain + TE_EXPLOSION midpoint + SoundGlobal(KH_CAPTURE)", result: pass }
+      - { kind: code, ref: "DRIFT 06-26: the 'Run here'(Finish)<->team-colored waypoint flip on the all-owned transition is now implemented — CollectWaypoints (KeyHunt.cs:1336-1338) picks KeyCarrierFinish vs CarrierSpriteForTeam from the live AllOwnedByWhichTeam state. The prior 'waypoint flip absent' gap is RESOLVED.", result: pass }
       - { kind: code, ref: "NotificationsList registers all KEYHUNT_* + ROUND_TEAM_WIN/LOSS; KeyHunt.cs sends START/SCAN/ROUNDSTART/INTERFERE/MEET/HELP/PICKUP/DROP/LOST/PUSHED/DESTROYED/CAPTURE", result: pass }
     confidence: high
-    notes: "UNCHANGED + faithful (the whole notification storm + capture VFX/jingle on live paths). The PUSHED line is genuinely reachable. Residual: no waypoint flip (sprites missing), customflash approximated by TE_EXPLOSION."
+    notes: "FIXED (Jun-26 drift) — the prior 'waypoint flip absent' residual is resolved (sprites now implemented, see keyhunt.waypoints.sprites). The whole notification storm + capture VFX/jingle stay faithful on live paths; the PUSHED line is genuinely reachable. Only residual: customflash approximated by TE_EXPLOSION."
 
   - id: keyhunt.hud.objective_status
     name: "OBJECTIVE_STATUS key-state pack + HUD modicons"
@@ -564,25 +565,33 @@ features:
     base_refs:
       - "common/gametypes/gametype/keyhunt/sv_keyhunt.qc:kh_Key_Spawn"
       - "common/gametypes/gametype/keyhunt/sv_keyhunt.qc:kh_Key_AssignTo"
-    port_refs: []
+      - "common/gametypes/gametype/keyhunt/sv_keyhunt.qc:kh_KeyCarrier_waypointsprite_visible_for_player"
+      - "common/gametypes/gametype/keyhunt/sv_keyhunt.qc:kh_Key_waypointsprite_visible_for_player"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:CollectWaypoints"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:DroppedKeyWaypointVisibleFor"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:CarrierWaypointVisibleFor"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointRegistry (KeyDropped / KeyCarrier{Red,Blue,Yellow,Pink,Friend,Finish})"
     constants:
-      - { name: "KH_KEY_WP_ZSHIFT", base: "20", port: "unimplemented", match: false }
+      - { name: "KH_KEY_WP_ZSHIFT", base: "20", port: "20 (KeyWpZShift, dropped-key offset)", match: true }
+      - { name: "carrier_wp_offset", base: "WaypointSprite_AttachCarrier head offset '0 0 64'", port: "(0,0,64) carrier offset", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: no WP_KeyDropped sprite over loose keys and no WP_KeyCarrier{Red,Blue,Yellow,Pink}/Friend/Finish sprite over carriers; the radar/over-head waypoints and the 'Run here'(Finish) <-> 'Key Carrier'(Friend) flip on the all-owned transition are absent."
-      - "The kh_tracking_enabled / delay_tracking visibility gating is now COMPUTED in the port (TrackingEnabled flips after delay_tracking), but it has no sprite target to gate — so it is moot until sprites land."
+      - "Minor presentation nuance: Base uses the 3-state WaypointSprite_UpdateSprites(me, friend, third) so a teammate sees 'Key carrier'(WP_KeyCarrierFriend) while everyone else sees the team-colored WP_KeyCarrier{Red,..}; the port's CollectWaypoints shows the SAME team-colored sprite to both teammates and enemies (KeyCarrierFriend is registered in WaypointRegistry but not selected on the live path). The 'Run here'(Finish) all-owned flip IS faithful for all viewers. Radar tint + visibility gating identical."
     verification:
-      - { kind: code, ref: "No WP_Key* / waypoint sprite spawn in KeyHunt.cs (grep finds none)", result: pass }
+      - { kind: code, ref: "KeyHunt.cs:1324-1376 CollectWaypoints: per-tick rebuild — loose key -> WP_KeyDropped at z=KeyWpZShift(20); carried -> KeyCarrierFinish (all-owned) else CarrierSpriteForTeam at head offset (0,0,64), SpriteRule.Teamplay, per-viewer VisibleForPlayer predicate", result: pass }
+      - { kind: code, ref: "DroppedKeyWaypointVisibleFor (1380-1387) mirrors kh_Key_waypointsprite_visible_for_player (spec/warmup always, else TrackingEnabled); CarrierWaypointVisibleFor (1392-1403) mirrors kh_KeyCarrier_visible (spec/warmup/same-team always, invisibility hides, else TrackingEnabled)", result: pass }
+      - { kind: code, ref: "LIVE: ServerNet.cs:1022 _world.GameType?.CollectWaypoints(_wpScratch) in SendWaypoints (the per-frame waypoint network feed). WaypointRegistry (Waypoints.cs:128-134) registers all 7 KH def names.", result: pass }
     confidence: high
-    notes: "UNCHANGED (still missing). NB the tracking-device timer (TrackingEnabled / delay_tracking) is now implemented in the controller (see keyhunt.controller.round_loop) but gates only these not-yet-existing sprites."
+    notes: "FIXED missing->faithful/live (Jun-26 drift, commit c59134e): the whole waypoint-sprite system landed — WP_KeyDropped over loose keys, team-colored carrier markers flipping to WP_KeyCarrierFinish ('Run here') on the all-owned transition, the radar tint, and the kh_tracking_enabled / delay_tracking visibility gate (now with a real sprite target). port_refs were empty in the baseline. Only the teammate-facing 'Key carrier'(Friend) sub-state is approximated by the team-colored sprite (minor)."
 
   - id: keyhunt.bot.role
     name: "Bot KeyHunt role (carrier/defense/offense/freelancer goal rating)"
