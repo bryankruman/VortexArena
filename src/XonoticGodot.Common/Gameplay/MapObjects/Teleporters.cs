@@ -41,6 +41,15 @@ public static class Teleporters
     /// <summary>QC nudge applied to a destination origin so the player hull clears the floor: 1 - mins.z - 24.</summary>
     public const float DestZNudge = 1f - (-24f) - 24f; // = 1 (PL_MIN.z = -24)
 
+    /// <summary>
+    /// QC <c>WarpZone_PostTeleportPlayer_Callback</c> tail (<c>teleporters.qc:310</c>): the server-only
+    /// <c>anticheat_fixangle(pl)</c> call fired on a real, server-side (non-predicted) player teleport. The
+    /// teleport view-snap forcibly sets the player's facing, so the anticheat opens its snap-aim suppression
+    /// window — otherwise a legit teleport-induced view snap inflates the strafebot_new / idle_snapaim signal.
+    /// The server (GameWorld) wires this to <c>AntiCheat.FixAngle</c>; left null (and inert) on a pure client.
+    /// </summary>
+    public static Action<Entity>? OnPlayerFixAngle;
+
     /// <summary><c>spawnfunc(trigger_teleport)</c>.</summary>
     public static void TeleportSetup(Entity this_)
     {
@@ -97,6 +106,38 @@ public static class Teleporters
 
         if (this_.Solid == Solid.Trigger)
             this_.Touch = TeleportTouch;
+    }
+
+    /// <summary>
+    /// QC the <c>teleporttotarget</c> cheat (<c>server/cheats.qc</c> CheatCommand case): teleport
+    /// <paramref name="player"/> to the teleport destination named <paramref name="targetName"/>. Spawns a
+    /// transient <c>cheattriggerteleport</c> (a non-trigger, so <c>teleport_findtarget</c> never wires a touch),
+    /// resolves its target the way <c>teleport_findtarget</c> does (cache the single destination in <c>.Enemy</c>,
+    /// or leave it null for multi / a random per-teleport pick), then runs <see cref="SimpleTeleportPlayer"/>.
+    /// Returns true when a destination was found and the teleport ran (QC's <c>!wasfreed(ent)</c> gate — the QC
+    /// <c>objerror</c> on a missing target frees the transient and skips the teleport).
+    /// </summary>
+    public static bool TeleportToTarget(Entity player, string? targetName)
+    {
+        if (Api.Services is null || string.IsNullOrEmpty(targetName))
+            return false;
+
+        Entity ent = Api.Entities.Spawn();
+        ent.ClassName = "cheattriggerteleport";
+        ent.Target = targetName;
+
+        // QC teleport_findtarget: count destinations, cache the single one in .enemy (0 -> objerror+free, many -> random).
+        var dests = MapMover.FindByTargetName(targetName).ToList();
+        if (dests.Count == 0)
+        {
+            Api.Entities.Remove(ent); // QC objerror("Teleporter with nonexistent target") -> wasfreed(ent)
+            return false;
+        }
+        ent.Enemy = dests.Count == 1 ? dests[0] : null;
+
+        Entity? dest = SimpleTeleportPlayer(ent, player);
+        Api.Entities.Remove(ent);
+        return dest is not null;
     }
 
     /// <summary>QC <c>trigger_teleport_use</c>: teamplay claims the teleporter for the activator's team.</summary>
@@ -341,6 +382,18 @@ public static class Teleporters
 
                 player.LastTeleportTime = MapMover.Now();
                 player.LastTeleportOrigin = from;
+
+                // [sv-antilag.clear.on_spawn] A teleport relocates the player; wipe its lag-comp ring so a
+                // shot can't rewind it back through the portal toward its pre-teleport position (Base fires
+                // antilag_clear on teleport via the same lifecycle as spawn). Explicit, so a SHORT portal hop
+                // that lands within the origin-jump heuristic's threshold still clears.
+                player.AntilagNeedsClear = true;
+
+                // QC WarpZone_PostTeleportPlayer_Callback (teleporters.qc:310, #ifdef SVQC + IS_PLAYER): a teleport
+                // forcibly snaps the view, so open the anticheat snap-aim suppression window. Server-only — gated
+                // by !predicted (the SVQC side), so client prediction never touches it. Inert until the server
+                // wires OnPlayerFixAngle.
+                OnPlayerFixAngle?.Invoke(player);
             }
         }
     }

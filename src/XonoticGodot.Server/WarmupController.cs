@@ -251,6 +251,7 @@ public sealed class WarmupController
                 WarmupStage = !CampaignActive && Cvars.WarmupStage; // re-enter warmup (CAN change after this point)
                 GameStartTime = Now;
                 _lastCountdownSecond = int.MinValue; // re-arm the announcer for the next countdown
+                _pendingResetAt = null; // abort cancels any deferred (after-countdown) reset
                 OnCountdownStop?.Invoke(totalPlayers < MinPlayers ? MinPlayers : -1);
                 // QC GiveWarmupResources re-give when reset_map already ran at countdown start is a per-player
                 // loadout concern owned by SpawnSystem/GameWorld — see todos (warmup loadout re-give on abort).
@@ -291,6 +292,14 @@ public sealed class WarmupController
     {
         if (!_started)
             return;
+
+        // QC restart_timer think (ReadyRestart_force, sv_ready_restart_after_countdown==1): once the countdown
+        // reaches game_starttime, run the deferred reset_map(false). Fires exactly once (cleared on dispatch).
+        if (_pendingResetAt is float resetAt && Now >= resetAt)
+        {
+            _pendingResetAt = null;
+            ResetMap?.Invoke(/*fakeRoundStart*/ false);
+        }
 
         // T40: drive the pre-match (game-start) countdown announcer at 1 Hz (QC CSQC Announcer_Countdown,
         // CNT_GAMESTART). Only outside warmup, while time < game_starttime. Mirrors countdown_rounded going
@@ -358,9 +367,28 @@ public sealed class WarmupController
 
         OnMatchRestart?.Invoke();
 
-        // QC: reset_map(false) re-spawns players + resets map objects + clears scores (full restart).
-        ResetMap?.Invoke(/*fakeRoundStart*/ false);
+        // QC ReadyRestart_force (vote.qc:480-516): sv_ready_restart_after_countdown chooses WHEN reset_map runs.
+        //   - Default (0) or in warmup: reset_map(false) runs NOW, at countdown start — players/items snap to spawn
+        //     immediately and stand frozen through the countdown.
+        //   - sv_ready_restart_after_countdown==1 && !warmup: a restart_timer think is armed at game_starttime; the
+        //     reset is DEFERRED until the countdown finishes, so players keep moving during the countdown and only
+        //     reset the instant the match goes live. Modelled here with a pending-reset time the Think loop fires
+        //     (the restart_timer think's ReadyRestart_think calls reset_map(false) at game_starttime).
+        if (!WarmupStage && Cvars.FloatOr("sv_ready_restart_after_countdown", 0f) != 0f)
+        {
+            _pendingResetAt = GameStartTime;
+        }
+        else
+        {
+            _pendingResetAt = null;
+            // QC: reset_map(false) re-spawns players + resets map objects + clears scores (full restart).
+            ResetMap?.Invoke(/*fakeRoundStart*/ false);
+        }
     }
+
+    // QC ReadyRestart_force restart_timer: the time at which a deferred reset_map(false) should fire, or null when
+    // no deferral is pending (sv_ready_restart_after_countdown disabled / warmup). Driven by Think().
+    private float? _pendingResetAt;
 
     /// <summary>True if the match is currently in its pre-live countdown (QC <c>time &lt; game_starttime</c> live phase).</summary>
     public bool CountdownRunning => _started && !WarmupStage && Now < GameStartTime;

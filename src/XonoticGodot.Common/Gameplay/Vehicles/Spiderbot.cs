@@ -447,7 +447,7 @@ public sealed class Spiderbot : Vehicle
         Vector3 d = QMath.Normalize(dir);
         for (int pass = 0; pass < 4; ++pass) // bounded pierce count
         {
-            Vector3 end = from + d * WeaponFiring.MaxShotDistance;
+            Vector3 end = from + d * WeaponFiring.CurrentMaxShotDistance;
             TraceResult tr = Api.Trace.Trace(from, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, attacker);
             if (tr.Ent is not null && tr.Ent.TakeDamage != DamageMode.No)
             {
@@ -553,7 +553,7 @@ public sealed class Spiderbot : Vehicle
                 rocket.VehGuideTarget = target;
                 // Choose a clearance height and solve the ballistic arc.
                 float h1 = Api.Services is not null
-                    ? 0.75f * QMath.VLen(v - Api.Trace.Trace(v, Vector3.Zero, Vector3.Zero, v + new Vector3(0, 0, WeaponFiring.MaxShotDistance), MoveFilter.WorldOnly, vehicle).EndPos)
+                    ? 0.75f * QMath.VLen(v - Api.Trace.Trace(v, Vector3.Zero, Vector3.Zero, v + new Vector3(0, 0, WeaponFiring.CurrentMaxShotDistance), MoveFilter.WorldOnly, vehicle).EndPos)
                     : 256f;
                 float h2 = Api.Services is not null
                     ? 0.75f * QMath.VLen(target - v)

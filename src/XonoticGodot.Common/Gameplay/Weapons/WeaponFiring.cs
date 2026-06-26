@@ -37,8 +37,27 @@ public readonly struct ShotInfo
 /// </summary>
 public static class WeaponFiring
 {
-    /// <summary>QC max_shot_distance (constants.qh) — the default trueaim trace range.</summary>
+    /// <summary>QC <c>max_shot_distance</c> default (constants.qh) — the fallback trueaim trace range used until
+    /// a map is loaded and <see cref="CurrentMaxShotDistance"/> is recomputed from the world bounds.</summary>
     public const float MaxShotDistance = 32768f;
+
+    /// <summary>
+    /// QC per-map <c>max_shot_distance</c> (world.qc:731 <c>min(230000, vlen(world.maxs - world.mins))</c>): the
+    /// global hitscan/trueaim/turret trace range, recomputed each map from the world diagonal at boot (see
+    /// <c>GameWorld.Boot</c>). Sentinel ranges (a caller passing the default) resolve to this; explicit
+    /// "shoot to the edge of the world" sites read it directly. Defaults to the <see cref="MaxShotDistance"/>
+    /// constant so headless callers before any map load behave exactly as before.
+    /// </summary>
+    public static float CurrentMaxShotDistance = MaxShotDistance;
+
+    /// <summary>
+    /// QC <c>max_shot_distance = min(230000, vlen(world.maxs - world.mins))</c> (world.qc:731): set the per-map
+    /// global trace range from the world bounding box. NetRadiant caps a map side at 131072qu (≈227023qu corner
+    /// to corner); the 230000 ceiling avoids float-precision issues on oversized maps. Called once per map at
+    /// boot with the world's collision min/max.
+    /// </summary>
+    public static void SetMaxShotDistanceFromWorldBounds(Vector3 worldMins, Vector3 worldMaxs)
+        => CurrentMaxShotDistance = System.Math.Min(230000f, QMath.VLen(worldMaxs - worldMins));
 
     /// <summary>
     /// Generic gun-muzzle offset in the actor's view frame, in Quake model-local coords (X = forward, Y = +left,
@@ -107,9 +126,13 @@ public static class WeaponFiring
     /// accuracy/hitplot bookkeeping, and g_antilag modes 1/3.
     /// </summary>
     public static ShotInfo SetupShot(Entity actor, Vector3 forward, Vector3 mins, Vector3 maxs,
-        float range = MaxShotDistance, bool penetrateWalls = false,
+        float range = -1f, bool penetrateWalls = false,
         Weapon? wep = null, float maxDamage = 0f, float recoil = 0f)
     {
+        // A negative sentinel range means "use the per-map global max_shot_distance" (QC W_SetupShot defaults
+        // its range arg to the global max_shot_distance); explicit positive ranges (per-weapon caps) stand.
+        if (range < 0f) range = CurrentMaxShotDistance;
+
         // [T57] track max damage — the accuracy FIRED credit (QC tracing.qc:64-66): each weapon passes the
         // shot's potential damage (its QC W_SetupShot maxdamage arg) so the accuracy% denominator grows.
         // Zero maxDamage (porto/seeker missile) is filtered by accuracy_add's all-zero guard.
@@ -197,7 +220,7 @@ public static class WeaponFiring
     }
 
     /// <summary>W_SetupShot convenience overload (zero projectile size, v_forward direction).</summary>
-    public static ShotInfo SetupShot(Entity actor, Vector3 forward, float range = MaxShotDistance,
+    public static ShotInfo SetupShot(Entity actor, Vector3 forward, float range = -1f,
         bool penetrateWalls = false, Weapon? wep = null, float maxDamage = 0f, float recoil = 0f)
         => SetupShot(actor, forward, Vector3.Zero, Vector3.Zero, range, penetrateWalls, wep, maxDamage, recoil);
 

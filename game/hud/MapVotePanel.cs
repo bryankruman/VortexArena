@@ -94,6 +94,14 @@ public partial class MapVotePanel : HudPanel
     /// <summary>QC <c>mv_selection</c>: index of the cell currently under the cursor/keyboard (-1 = none).</summary>
     public int Selection { get; set; } = -1;
 
+    /// <summary>QC <c>mv_num_maps</c>: the number of map cells on the grid (excludes the abstain row). Stamped
+    /// each frame by <see cref="DrawPanel"/> so the input handler (QC <c>MapVote_Move*</c>) can navigate.</summary>
+    public int MapCount => _candidates.Count;
+
+    /// <summary>QC <c>mv_columns</c>: the grid column count chosen by the best-aspect layout, stamped each frame
+    /// by <see cref="DrawPanel"/> so the keyboard up/down navigation matches what's drawn.</summary>
+    public int Columns { get; private set; } = 1;
+
     /// <summary>QC <c>mv_winner</c>: 1-based index of the winning candidate once decided (0 = not yet).</summary>
     public int Winner { get; set; }
 
@@ -356,10 +364,16 @@ public partial class MapVotePanel : HudPanel
         // QC item_aspect: gametype items are wider (3:1) than map items (5:3) to fit the description text.
         float itemAspect = GametypeVote ? 3f / 1f : 5f / 3f;
         int columns = BestColumns(n, w, gridH, itemAspect);
+        Columns = columns; // QC mv_columns: expose the live layout to the input handler's up/down navigation.
         int rows = Mathf.CeilToInt(n / (float)columns);
 
         float cellW = w / columns;
         float cellH = gridH / rows;
+
+        // Cache the grid geometry so a mouse click can hit-test the drawn cells (QC mv_mouse_selection).
+        _gridOrigin = new Vector2(pad, gridTop);
+        _cellSize = new Vector2(cellW, cellH);
+        _gridColumns = columns;
 
         // QC mv_winner_alpha = max(0.2, 1 - sqrt(max(0, time - mv_winner_time))): losers fade back on reveal.
         float winnerAlpha = 1f;
@@ -765,5 +779,178 @@ public partial class MapVotePanel : HudPanel
         if (abstainId == OwnVote) return new Color(0f, 1f, 0f, alpha);
         if (abstainId == Selection) return new Color(1f, 1f, 0f, alpha);
         return new Color(1f, 1f, 0.55f, alpha);
+    }
+
+    // =====================================================================================
+    //  Input (QC client/mapvoting.qc MapVote_InputEvent + MapVote_Move* + MapVote_SendChoice)
+    // =====================================================================================
+
+    /// <summary>Set by the host (NetGame) to forward a chosen 0-based ballot index to the server as
+    /// <c>impulse N+1</c> — the port's <c>MapVote_SendChoice</c> (QC <c>localcmd("impulse ", index+1)</c>).</summary>
+    public System.Action<int>? CastChoice { get; set; }
+
+    /// <summary>True when this option index is available (QC <c>mv_flags[i] &amp; GTV_AVAILABLE</c>).</summary>
+    private bool IsAvailable(int i) => i >= 0 && i < _candidates.Count && _candidates[i].Available;
+
+    // QC MapVote_MoveLeft/Right/Up/Down: move the selection, skipping unavailable cells (except the own vote).
+    private int MoveLeft(int pos)
+    {
+        int n = MapCount;
+        if (n <= 0) return -1;
+        int imp = pos < 0 ? n - 1 : (pos < 1 ? n - 1 : pos - 1);
+        if (!IsAvailable(imp) && imp != OwnVote) imp = MoveLeft(imp);
+        return imp;
+    }
+    private int MoveRight(int pos)
+    {
+        int n = MapCount;
+        if (n <= 0) return -1;
+        int imp = pos < 0 ? 0 : (pos >= n - 1 ? 0 : pos + 1);
+        if (!IsAvailable(imp) && imp != OwnVote) imp = MoveRight(imp);
+        return imp;
+    }
+    private int MoveUp(int pos)
+    {
+        int n = MapCount;
+        if (n <= 0) return -1;
+        int cols = System.Math.Max(1, Columns);
+        int imp;
+        if (pos < 0) imp = n - 1;
+        else
+        {
+            imp = pos - cols;
+            if (imp < 0)
+            {
+                int rows = Mathf.CeilToInt(n / (float)cols);
+                imp = imp == -cols ? cols * rows - 1 : imp + cols * rows - 1; // pos == 0 wraps to last cell
+            }
+        }
+        if (imp >= n) imp = n - 1; // a ragged last row can leave imp past the cells
+        if (!IsAvailable(imp) && imp != OwnVote) imp = MoveUp(imp);
+        return imp;
+    }
+    private int MoveDown(int pos)
+    {
+        int n = MapCount;
+        if (n <= 0) return -1;
+        int cols = System.Math.Max(1, Columns);
+        int imp;
+        if (pos < 0) imp = 0;
+        else
+        {
+            imp = pos + cols;
+            if (imp >= n)
+            {
+                int col = imp % cols;
+                imp = col == cols - 1 ? 0 : col + 1; // wrap to the next column's top
+            }
+        }
+        if (imp >= n) imp = 0;
+        if (!IsAvailable(imp) && imp != OwnVote) imp = MoveDown(imp);
+        return imp;
+    }
+
+    /// <summary>QC <c>MapVote_SendChoice(index)</c>: cast the 0-based ballot option (forwarded as impulse N+1).</summary>
+    private void SendChoice(int index)
+    {
+        if (index < 0 || index >= MapCount) return;
+        CastChoice?.Invoke(index);
+    }
+
+    private int _firstDigit;
+
+    /// <summary>
+    /// QC <c>MapVote_InputEvent</c> (client/mapvoting.qc:930): move the selection (arrows), cast the selection
+    /// (enter/space), cast by number (digits, Ctrl+digit for two-digit indices), or cast/select by mouse click.
+    /// Returns true if the event was consumed (so the host can mark it handled). No-op once a winner is shown or
+    /// while the panel isn't active (QC <c>!mv_active</c>).
+    /// </summary>
+    public bool HandleVoteKey(Key key, bool ctrl)
+    {
+        if (!Active || MapCount <= 0) return false;
+        if (Winner > 0) return true; // a winner is being revealed — swallow but do nothing (QC `if (mv_winner) return true`).
+
+        switch (key)
+        {
+            case Key.Right: Selection = MoveRight(Selection); return true;
+            case Key.Left:  Selection = MoveLeft(Selection);  return true;
+            case Key.Down:  Selection = MoveDown(Selection);  return true;
+            case Key.Up:    Selection = MoveUp(Selection);    return true;
+            case Key.Enter:
+            case Key.KpEnter:
+            case Key.Space:
+                if (Selection >= 0) SendChoice(Selection);
+                return true;
+        }
+
+        // QC digit cast: '1'..'9' → 1..9, '0' → 10. Keypad digits map the same.
+        int imp = DigitImpulse(key);
+        if (imp == 0) return false;
+
+        // QC Ctrl+digit two-digit entry: first digit is buffered, second completes the index.
+        if (ctrl)
+        {
+            if (_firstDigit == 0) { _firstDigit = imp % 10; return true; }
+            imp = _firstDigit * 10 + (imp % 10);
+            _firstDigit = 0;
+        }
+
+        if (imp <= MapCount)
+            SendChoice(imp - 1); // QC localcmd impulse imp (1-based) → 0-based choice
+        return true;
+    }
+
+    /// <summary>QC the mouse path in <c>MapVote_InputEvent</c>: a left-click on the hovered cell casts it.</summary>
+    public bool HandleVoteClick(Vector2 localPos)
+    {
+        if (!Active || MapCount <= 0 || Winner > 0) return false;
+        int hit = CellAt(localPos);
+        if (hit < 0) return false;
+        Selection = hit;
+        SendChoice(hit);
+        return true;
+    }
+
+    /// <summary>QC <c>mv_mouse_selection</c>: mouse hover moves the selection (highlight) without casting.</summary>
+    public void HandleVoteHover(Vector2 localPos)
+    {
+        if (!Active || MapCount <= 0 || Winner > 0) return;
+        int hit = CellAt(localPos);
+        if (hit >= 0) Selection = hit;
+    }
+
+    /// <summary>Map a digit/keypad key to its 1-based ballot impulse (QC the '1'..'0' / K_KP_* cases).</summary>
+    private static int DigitImpulse(Key key) => key switch
+    {
+        Key.Key1 or Key.Kp1 => 1,
+        Key.Key2 or Key.Kp2 => 2,
+        Key.Key3 or Key.Kp3 => 3,
+        Key.Key4 or Key.Kp4 => 4,
+        Key.Key5 or Key.Kp5 => 5,
+        Key.Key6 or Key.Kp6 => 6,
+        Key.Key7 or Key.Kp7 => 7,
+        Key.Key8 or Key.Kp8 => 8,
+        Key.Key9 or Key.Kp9 => 9,
+        Key.Key0 or Key.Kp0 => 10,
+        _ => 0,
+    };
+
+    // Cached grid geometry from the last DrawPanel so a click can be hit-tested against the drawn cells.
+    private Vector2 _gridOrigin;
+    private Vector2 _cellSize;
+    private int _gridColumns = 1;
+
+    /// <summary>Hit-test a panel-local point against the drawn candidate grid; returns the 0-based cell index or -1.</summary>
+    private int CellAt(Vector2 localPos)
+    {
+        if (_cellSize.X <= 0f || _cellSize.Y <= 0f) return -1;
+        float rx = localPos.X - _gridOrigin.X;
+        float ry = localPos.Y - _gridOrigin.Y;
+        if (rx < 0f || ry < 0f) return -1;
+        int col = (int)(rx / _cellSize.X);
+        int row = (int)(ry / _cellSize.Y);
+        if (col < 0 || col >= _gridColumns) return -1;
+        int idx = row * _gridColumns + col;
+        return idx >= 0 && idx < MapCount ? idx : -1;
     }
 }

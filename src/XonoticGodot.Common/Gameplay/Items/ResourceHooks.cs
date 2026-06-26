@@ -26,6 +26,14 @@ public static class ResourceHooks
     public struct GiveResourceArgs { public Entity Receiver; public ResourceType Resource; public float Amount; }
     public static readonly HookChain<GiveResourceArgs> GiveResource = new();
 
+    /// <summary>QC GiveResourceWithLimit hook (sv_resources.qc:165): a mutator may forbid or rewrite the amount/limit before the trim.</summary>
+    public struct GiveResourceWithLimitArgs { public Entity Receiver; public ResourceType Resource; public float Amount; public float Limit; public bool Forbid; }
+    public static readonly HookChain<GiveResourceWithLimitArgs> GiveResourceWithLimit = new();
+
+    /// <summary>QC TakeResource hook (sv_resources.qc:191): a mutator may forbid or rewrite the resource drain.</summary>
+    public struct TakeResourceArgs { public Entity Receiver; public ResourceType Resource; public float Amount; public bool Forbid; }
+    public static readonly HookChain<TakeResourceArgs> TakeResource = new();
+
     /// <summary>QC ResourceAmountChanged hook: fired after a resource value actually changes (HUD/score reactions).</summary>
     public struct ResourceChangedArgs { public Entity Entity; public ResourceType Resource; public float Amount; }
     public static readonly HookChain<ResourceChangedArgs> ResourceAmountChanged = new();
@@ -62,6 +70,30 @@ public static class ResourceHooks
         var args = new GiveResourceArgs { Receiver = e, Resource = res, Amount = amount };
         GiveResource.Call(ref args);
         return args.Amount;
+    }
+
+    /// <summary>
+    /// Run the GiveResourceWithLimit hook (QC sv_resources.qc:165). Returns true if forbidden; updates amount and
+    /// limit via out parameters so the caller can apply them after the hook.
+    /// </summary>
+    internal static bool CallGiveResourceWithLimit(Entity e, ResourceType res, ref float amount, ref float limit)
+    {
+        if (GiveResourceWithLimit.Count == 0) return false;
+        var args = new GiveResourceWithLimitArgs { Receiver = e, Resource = res, Amount = amount, Limit = limit, Forbid = false };
+        GiveResourceWithLimit.Call(ref args);
+        amount = args.Amount;
+        limit  = args.Limit;
+        return args.Forbid;
+    }
+
+    /// <summary>Run the TakeResource hook (QC sv_resources.qc:191); returns true if forbidden, with (maybe rewritten) amount.</summary>
+    internal static bool CallTakeResource(Entity e, ResourceType res, ref float amount)
+    {
+        if (TakeResource.Count == 0) return false;
+        var args = new TakeResourceArgs { Receiver = e, Resource = res, Amount = amount, Forbid = false };
+        TakeResource.Call(ref args);
+        amount = args.Amount;
+        return args.Forbid;
     }
 
     internal static void CallResourceAmountChanged(Entity e, ResourceType res, float amount)

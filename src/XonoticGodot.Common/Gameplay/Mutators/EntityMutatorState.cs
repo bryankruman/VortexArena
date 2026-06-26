@@ -190,7 +190,10 @@ namespace XonoticGodot.Common.Framework
         public const int Additive   = 32;    // EF_ADDITIVE
         public const int NoDraw     = 16;    // EF_NODRAW — model not rendered
         public const int NoShadow   = 4096;  // EF_NOSHADOW (dpextensions.qc:171) — was mislabeled as 8192 (=EF_NODEPTHTEST)
+        public const int NoDepthTest = 8192; // EF_NODEPTHTEST (dpextensions.qc) — draw-through-walls (g_nodepthtestplayers)
         public const int Stardust   = 2048;  // EF_STARDUST — sparkle particles (buff pickups)
+        public const int RestartAnim = 1 << 20; // EF_RESTARTANIM_BIT (dpextensions.qc:187) — restart the model anim
+        public const int Teleport    = 1 << 21; // EF_TELEPORT_BIT (dpextensions.qc:205) — teleport sparkle on (re)spawn
     }
 
     /// <summary>

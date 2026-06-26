@@ -41,9 +41,15 @@ public partial class Entity
     /// </summary>
     public float DamageForceScale;
 
-    // --- teamplay damage accounting (QC .dmg_team) ---
+    // --- teamplay damage accounting (QC .dmg_team / CS(player).teamkill_*) ---
     /// <summary>QC <c>.dmg_team</c>: running total of team damage this attacker has dealt (threshold/mirror).</summary>
     public float DmgTeam;
+    /// <summary>QC <c>CS(attacker).teamkill_complain</c>: sim time after which the next teamkill complaint voice may fire (5s cooldown).</summary>
+    public float TeamKillComplainTime;
+    /// <summary>QC <c>CS(attacker).teamkill_soundtime</c>: sim time at which the deferred complaint voice should play (0.4s delay). 0 = none pending.</summary>
+    public float TeamKillSoundTime;
+    /// <summary>QC <c>CS(attacker).teamkill_soundsource</c>: the victim entity to play the "teamshoot" voice on.</summary>
+    public Entity? TeamKillSoundSource;
 
     // --- handicap (QC CS(player).m_handicap_give / m_handicap_take) ---
     /// <summary>QC forced+voluntary "give" handicap (damage this entity DEALS is divided by this). 1 = none.</summary>

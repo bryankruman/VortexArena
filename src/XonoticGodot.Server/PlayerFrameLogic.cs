@@ -40,10 +40,25 @@ public static class PlayerFrameLogic
     /// </summary>
     public static void Regen(Player p, ServerPlayerState st, float frameTime)
     {
-        // QC: MUTATOR_CALLHOOK(PlayerRegen, ...). Only the "disable regen" return is modeled in this port's
-        // hook (the in/out tuning slots are deferred), so a true return skips the health/armor RotRegen.
-        var regenArgs = new MutatorHooks.PlayerRegenArgs(p);
+        // QC: MUTATOR_CALLHOOK(PlayerRegen, this, max_mod, regen_mod, rot_mod, limit_mod, regen_health,
+        // regen_health_linear, regen_health_rot, regen_health_rotlinear, regen_health_stable,
+        // regen_health_rotstable) — all 10 in/out tuning slots are seeded from cvars and passed through the
+        // hook so mutators (handicap, buffs, etc.) may rewrite them. A true return disables health+armor regen.
+        var regenArgs = new MutatorHooks.PlayerRegenArgs(
+            player:               p,
+            regenHealth:          Cvars.Float("g_balance_health_regen"),
+            regenHealthLinear:    Cvars.Float("g_balance_health_regenlinear"),
+            regenHealthRot:       Cvars.Float("g_balance_health_rot"),
+            regenHealthRotLinear: Cvars.Float("g_balance_health_rotlinear"),
+            regenHealthStable:    Cvars.Float("g_balance_health_regenstable"),
+            regenHealthRotStable: Cvars.Float("g_balance_health_rotstable"));
         bool regenDisabled = MutatorHooks.PlayerRegen.Call(ref regenArgs);
+
+        // Read back the (possibly mutator-rewritten) tuning mods + health values.
+        float maxMod    = regenArgs.MaxMod;
+        float regenMod  = regenArgs.RegenMod;
+        float rotMod    = regenArgs.RotMod;
+        float limitMod  = regenArgs.LimitMod;
 
         float now = Now;
 
@@ -54,23 +69,23 @@ public static class PlayerFrameLogic
             // tick all share ONE storage. They were previously split across a separate ServerPlayerState copy
             // that the damage/pickup paths never wrote — so getting hit never paused regen and over-stacked
             // health/armor rotted with no grace (REGEN1/REGEN2).
-            // ----- armor (QC RES_ARMOR; no max_mod applied to armor) -----
+            // ----- armor (QC RES_ARMOR; no max_mod applied to armor, per QC comment client.qc:1724) -----
             float armorRegenStable = Cvars.Float("g_balance_armor_regenstable");
             float armorRotStable = Cvars.Float("g_balance_armor_rotstable");
-            float armorRegenFt = now > p.PauseRegenFinished ? frameTime : 0f;
-            float armorRotFt = now > p.PauseRotArmorFinished ? frameTime : 0f;
-            RotRegen(p, ResourceType.Armor,
+            float armorRegenFt = now > p.PauseRegenFinished ? regenMod * frameTime : 0f;
+            float armorRotFt = now > p.PauseRotArmorFinished ? rotMod * frameTime : 0f;
+            RotRegen(p, ResourceType.Armor, limitMod,
                 armorRegenStable, Cvars.Float("g_balance_armor_regen"), Cvars.Float("g_balance_armor_regenlinear"), armorRegenFt,
                 armorRotStable, Cvars.Float("g_balance_armor_rot"), Cvars.Float("g_balance_armor_rotlinear"), armorRotFt);
 
-            // ----- health (QC RES_HEALTH) -----
-            float healthRegenStable = Cvars.Float("g_balance_health_regenstable");
-            float healthRotStable = Cvars.Float("g_balance_health_rotstable");
-            float healthRegenFt = now > p.PauseRegenFinished ? frameTime : 0f;
-            float healthRotFt = now > p.PauseRotHealthFinished ? frameTime : 0f;
-            RotRegen(p, ResourceType.Health,
-                healthRegenStable, Cvars.Float("g_balance_health_regen"), Cvars.Float("g_balance_health_regenlinear"), healthRegenFt,
-                healthRotStable, Cvars.Float("g_balance_health_rot"), Cvars.Float("g_balance_health_rotlinear"), healthRotFt);
+            // ----- health (QC RES_HEALTH; max_mod scales stable set-points, per client.qc:1725-1726) -----
+            float healthRegenStable = regenArgs.RegenHealthStable * maxMod;
+            float healthRotStable   = regenArgs.RegenHealthRotStable * maxMod;
+            float healthRegenFt = now > p.PauseRegenFinished ? regenMod * frameTime : 0f;
+            float healthRotFt = now > p.PauseRotHealthFinished ? rotMod * frameTime : 0f;
+            RotRegen(p, ResourceType.Health, limitMod,
+                healthRegenStable, regenArgs.RegenHealth, regenArgs.RegenHealthLinear, healthRegenFt,
+                healthRotStable, regenArgs.RegenHealthRot, regenArgs.RegenHealthRotLinear, healthRotFt);
         }
 
         // QC: "if player rotted to death... die!" — checked even when regen was disabled.
@@ -94,20 +109,54 @@ public static class PlayerFrameLogic
             bool ownsFuelRegen = (p.Items & (int)ItemFlag.FuelRegen) != 0;
             float fuelRegenStable = Cvars.Float("g_balance_fuel_regenstable");
             float fuelRotStable = Cvars.Float("g_balance_fuel_rotstable");
+            // QC: fuel regen/rot frametime uses raw frametime (no regen_mod/rot_mod), and limit_mod = 1 (QC
+            // client.qc:1750: `RotRegen(this, RES_FUEL, 1, ...)` — the four mods don't apply to fuel).
             float fuelRegenFt = (now > p.PauseRegenFinished && ownsFuelRegen) ? frameTime : 0f;
             float fuelRotFt = now > p.PauseRotFuelFinished ? frameTime : 0f;
-            RotRegen(p, ResourceType.Fuel,
+            RotRegen(p, ResourceType.Fuel, 1f,
                 fuelRegenStable, Cvars.Float("g_balance_fuel_regen"), Cvars.Float("g_balance_fuel_regenlinear"), fuelRegenFt,
                 fuelRotStable, Cvars.Float("g_balance_fuel_rot"), Cvars.Float("g_balance_fuel_rotlinear"), fuelRotFt);
+        }
+
+        // QC client.qc:2491: this.dmg_team = max(0, this.dmg_team - g_teamdamage_resetspeed * frametime).
+        // Bleed off accumulated team damage so repeated single hits don't permanently lock in mirror punishment.
+        float resetSpeed = Cvars.FloatOr("g_teamdamage_resetspeed", 20f);
+        if (p.DmgTeam > 0f)
+            p.DmgTeam = MathF.Max(0f, p.DmgTeam - resetSpeed * frameTime);
+
+        // QC client.qc:2745-2753: deferred teamkill complaint voice (CS(attacker).teamkill_soundtime / teamkill_soundsource).
+        // After teamplay_mode 4 friendly-fire, the offender's victim plays the "teamshoot" voice 0.4s later.
+        // The attacker's entity tracks the timer + the victim entity; here we check it and fire the sound.
+        if (p.TeamKillSoundTime != 0f && now > p.TeamKillSoundTime)
+        {
+            p.TeamKillSoundTime = 0f;
+            Entity? victim = p.TeamKillSoundSource;
+            p.TeamKillSoundSource = null;
+            if (victim is not null && !victim.IsFreed)
+            {
+                // QC: PlayerSound(e, playersound_teamshoot, CH_VOICE, VOL_BASEVOICE, VOICETYPE_LASTATTACKER_ONLY, 1)
+                // where e = the victim entity. pusher is temporarily the attacker so the sound uses the attacker's
+                // voice (VOICETYPE_LASTATTACKER_ONLY reads pusher). Port: play "teamshoot" voice on the victim;
+                // the model sound dir is resolved from the victim's model+skin (same as DamageSystem.ModelSoundDir).
+                Entity? oldPusher = victim.Pusher;
+                victim.Pusher = p;
+                string? soundDir = Sounds.ModelSoundsFile(victim.Model, (int)victim.Skin);
+                SoundSystem.PlayPlayerSound(victim, "teamshoot", soundDir,
+                    SoundLevels.VolBaseVoice,
+                    SoundLevels.AttenNorm);
+                victim.Pusher = oldPusher;
+            }
         }
     }
 
     /// <summary>
     /// QC <c>RotRegen</c>: move a resource toward its rot-stable value when above it (rotting) or toward its
-    /// regen-stable value when below it (regenerating), then clamp to the resource limit. Faithful port
-    /// including the snap-when-close behavior of <see cref="CalcRegen"/>/<see cref="CalcRot"/>.
+    /// regen-stable value when below it (regenerating), then clamp to the resource limit scaled by
+    /// <paramref name="limitMod"/> (QC client.qc:1680). Faithful port including the snap-when-close behavior
+    /// of <see cref="CalcRegen"/>/<see cref="CalcRot"/>. <paramref name="limitMod"/> = 1 for stock play and
+    /// the fuel block (which always passes 1); mutators that scale the resource cap write it via PlayerRegenArgs.
     /// </summary>
-    public static void RotRegen(Player p, ResourceType res,
+    public static void RotRegen(Player p, ResourceType res, float limitMod,
         float regenStable, float regenFactor, float regenLinear, float regenFrameTime,
         float rotStable, float rotFactor, float rotLinear, float rotFrameTime)
     {
@@ -131,7 +180,9 @@ public static class PlayerFrameLogic
             }
         }
 
-        float limit = Resources.GetResourceLimit(p, res);
+        // QC client.qc:1680: `float limit = GetResourceLimit(this, res) * limit_mod;` — the mutator may scale
+        // the effective ceiling (e.g. a handicap mutator that raises max HP also shifts the regen ceiling).
+        float limit = Resources.GetResourceLimit(p, res) * limitMod;
         if (limit != Resources.LimitNone && current > limit)
             current = limit;
 
@@ -304,7 +355,7 @@ public static class PlayerFrameLogic
     /// <summary>
     /// QC <c>player_powerups()</c> (server/client.qc:1539-1635) — the per-frame powerup pass, reduced to the
     /// slice this port models: snapshot the player's item bitmask (QC <c>items_prev</c>), run the superweapon
-    /// countdown (<see cref="SuperweaponTimeout"/>, the WEPSET_SUPERWEAPONS block), then fire the
+    /// countdown (<see cref="SuperweaponPass"/>, the WEPSET_SUPERWEAPONS block), then fire the
     /// <see cref="MutatorHooks.PlayerPowerups"/> hook with <c>(player, items_prev)</c> — the
     /// <c>MUTATOR_CALLHOOK(PlayerPowerups, this, items_prev)</c> at the tail of QC's function. The hook lets a
     /// mutator manipulate the values powerup items set this frame (the C# successor to QC's instagib/overkill
@@ -314,54 +365,189 @@ public static class PlayerFrameLogic
     /// </summary>
     public static void PlayerPowerups(Player p)
     {
+        // QC client.qc:1539-1544: the jetpack modelflag + the EF_NODEPTHTEST clear-each-frame run unconditionally
+        // (even when dead/gibbed). MF_ROCKET is a model-render flag with no Entity.ModelFlags channel in the port,
+        // so the jetpack rocket-trail modelflag is dropped (cosmetic; the jetpack itself fires its own effect).
+        // EF_NODEPTHTEST is cleared every frame and re-set below if g_nodepthtestplayers is on (QC client.qc:1542).
+        p.Effects &= ~EffectFlags.NoDepthTest;
+
+        // QC client.qc:1547-1548: a dead player loses its superweapon / unlimited bits (with the power-off sound).
+        if (p.IsDead)
+            PlayerPowerupsRemoveAll(p, true);
+
+        // QC client.qc:1550-1551: a gibbed (alpha < 0) or dead player (not in a vehicle) skips the rest of the
+        // function entirely — no items_prev, no superweapon block, NO PlayerPowerups hook. Mirror that bare
+        // return so a corpse neither accrues superweapon flags nor fires the per-frame powerup mutator hook.
+        if ((p.Alpha < 0f || p.IsDead) && p.Vehicle is null)
+            return;
+
         // QC: items_prev = this.items — captured BEFORE the superweapon checks mutate it, so the hook sees the
         // pre-pass bitmask.
         int itemsPrev = p.Items;
 
-        SuperweaponTimeout(p);
+        SuperweaponPass(p);
+
+        // QC client.qc:1628-1632: draw-through-walls / fullbright debug toggles, OR'd in after the powerup block.
+        if (Cvars.Bool("g_nodepthtestplayers"))
+            p.Effects |= EffectFlags.NoDepthTest;
+        if (Cvars.Bool("g_fullbrightplayers"))
+            p.Effects |= EffectFlags.FullBright;
 
         // QC tail: MUTATOR_CALLHOOK(PlayerPowerups, this, items_prev).
         var args = new MutatorHooks.PlayerPowerupsArgs(p, itemsPrev);
         MutatorHooks.PlayerPowerups.Call(ref args);
     }
 
-    /// <summary>
-    /// QC the superweapon countdown (server/client.qc PlayerPreThink, the WEPSET_SUPERWEAPONS block): while a
-    /// player holds any superweapon, the <c>Superweapon</c> status effect (armed at spawn/pickup for
-    /// <c>g_balance_superweapons_time</c>) ticks down; once it lapses — and the player doesn't have unlimited
-    /// superweapons — every superweapon is stripped from the owned set (and the active slot reselects). With
-    /// IT_UNLIMITED_SUPERWEAPONS the effect is kept refreshed so it never expires. Uses the central
-    /// NetName→superweapon registry (<see cref="Weapons.Superweapons"/>). Call once per frame per live player.
-    /// </summary>
-    public static void SuperweaponTimeout(Player p)
-    {
-        if (!Weapons.OwnsAnySuperWeapon(p.OwnedWeapons)) return;
-        if (StatusEffectsCatalog.Superweapon is not { } sw) return;
+    /// <summary>QC <c>!g_cts</c> for the broadcast superweapon-pickup INFO line: a CTS map suppresses the
+    /// "picked up a Superweapon" broadcast (it's part of the start loadout). Host-wired (default: not CTS).</summary>
+    public static System.Func<bool> IsCtsGametype { get; set; } = static () => false;
 
-        bool unlimited = (p.Items & (int)ItemFlag.UnlimitedSuperweapons) != 0;
-        if (unlimited)
-        {
-            // QC: keep the timer pinned in the future so the superweapon never lapses.
-            StatusEffectsCatalog.Apply(p, sw, 999f);
+    /// <summary>
+    /// QC <c>player_powerups_remove_all(this, allow_poweroff_sound)</c> (server/client.qc:1521-1535): strip the
+    /// superweapon / unlimited-ammo / unlimited-superweapon item bits and, when allowed, play the power-off sound.
+    /// Called on death (allow=true) and on disconnect (allow=IS_PLAYER). The sound only plays for a live client
+    /// after the first second of the match and only if the unlimited bits weren't part of the start loadout (so an
+    /// arena's permanent unlimited ammo doesn't beep). Returns nothing; mutates <paramref name="p"/>'s item bits.
+    /// </summary>
+    public static void PlayerPowerupsRemoveAll(Player p, bool allowPoweroffSound)
+    {
+        const int powerBits = (int)ItemFlag.Superweapon | (int)ItemFlag.UnlimitedAmmo | (int)ItemFlag.UnlimitedSuperweapons;
+        if ((p.Items & powerBits) == 0)
             return;
+
+        // QC: don't play the poweroff sound when the game restarts or the player disconnects mid-loadout-unlimited.
+        if (allowPoweroffSound && Api.Services is not null)
+        {
+            float gameStart = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
+            int startItems = StartItemFlagsCache();
+            bool startUnlimited = (startItems & ((int)ItemFlag.UnlimitedAmmo | (int)ItemFlag.UnlimitedSuperweapons)) != 0;
+            if (Api.Clock.Time > gameStart + 1f && !startUnlimited)
+                Api.Sound.Play(p, SoundChannel.Auto, "misc/poweroff.wav");
         }
 
-        // The StatusEffects tick removes the effect once its time lapses; absence => the superweapon expired.
-        if (StatusEffectsCatalog.Has(p, sw)) return;
+        p.Items &= ~powerBits;
+    }
 
+    // QC start_items & (IT_UNLIMITED_AMMO|IT_UNLIMITED_SUPERWEAPONS): whether the match's start loadout grants
+    // permanent unlimited ammo/superweapons (an arena). Derived from the same SetStartItems pass the spawn uses.
+    private static int StartItemFlagsCache()
+    {
+        var l = SpawnSystem.ComputeStartItems();
+        int flags = 0;
+        if (l.ItemFlags.Contains("UNLIMITED_AMMO")) flags |= (int)ItemFlag.UnlimitedAmmo;
+        if (l.ItemFlags.Contains("UNLIMITED_SUPERWEAPONS")) flags |= (int)ItemFlag.UnlimitedSuperweapons;
+        return flags;
+    }
+
+    /// <summary>
+    /// QC the superweapon block of <c>player_powerups()</c> (server/client.qc:1556-1604): the four-case state
+    /// machine over the <c>IT_SUPERWEAPON</c> item bit (<see cref="ItemFlag.Superweapon"/>) and whether the player
+    /// still OWNS a superweapon (QC <c>WEPSET_SUPERWEAPONS</c> ≙ <see cref="Weapons.OwnsAnySuperWeapon"/>):
+    /// <list type="bullet">
+    /// <item>has the bit but no longer owns one → strip the effect + bit, <c>CENTER_SUPERWEAPON_LOST</c>;</item>
+    /// <item>has the bit + unlimited → keep it pinned (never runs out);</item>
+    /// <item>has the bit + a finite timer → <c>play_countdown(SND_POWEROFF)</c> the last seconds; when it lapses,
+    ///   clear the bit + the owned superweapons, <c>CENTER_SUPERWEAPON_BROKEN</c>;</item>
+    /// <item>owns one but doesn't have the bit yet → if the timer is live (or unlimited) set the bit (+ the pickup
+    ///   notifications unless unlimited), else expire the effect and strip the owned superweapons.</item>
+    /// </list>
+    /// Call once per frame per live player. The IT_SUPERWEAPON bit drives the HUD superweapon ammo readout.
+    /// </summary>
+    private static void SuperweaponPass(Player p)
+    {
+        if (StatusEffectsCatalog.Superweapon is not { } sw) return;
+
+        bool hasBit = (p.Items & (int)ItemFlag.Superweapon) != 0;
+        bool ownsSuper = Weapons.OwnsAnySuperWeapon(p.OwnedWeapons);
+        bool unlimited = (p.Items & (int)ItemFlag.UnlimitedSuperweapons) != 0;
+        float now = Now;
+
+        if (hasBit)
+        {
+            if (!ownsSuper)
+            {
+                // QC: no longer holding a superweapon → drop the effect + bit + "Superweapons have been lost".
+                StatusEffectsCatalog.Remove(p, sw);
+                p.Items &= ~(int)ItemFlag.Superweapon;
+                NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Center, "SUPERWEAPON_LOST");
+            }
+            else if (unlimited)
+            {
+                // QC: "don't let them run out" — nothing to do.
+            }
+            else
+            {
+                // QC play_countdown(this, StatusEffects_gettime(Superweapon), SND_POWEROFF): beep the last seconds.
+                float finished = StatusEffectsCatalog.GetTime(p, sw, now);
+                PlayCountdown(p, finished, now);
+                if (now >= finished)
+                {
+                    p.Items &= ~(int)ItemFlag.Superweapon;
+                    StripOwnedSuperweapons(p);
+                    NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Center, "SUPERWEAPON_BROKEN");
+                }
+            }
+        }
+        else if (ownsSuper)
+        {
+            // QC: keep the unlimited timer pinned so GetTime never lapses (port: persistence handled by the
+            // PersistentCheck on the effect; re-apply a far-future window when unlimited so a fresh pickup arms it).
+            if (unlimited && !StatusEffectsCatalog.Has(p, sw))
+                StatusEffectsCatalog.Apply(p, sw, 999f);
+
+            if (now < StatusEffectsCatalog.GetTime(p, sw, now) || unlimited)
+            {
+                p.Items |= (int)ItemFlag.Superweapon;
+                if (!unlimited)
+                {
+                    // QC: broadcast "<name> picked up a Superweapon" (unless CTS, where it's part of the loadout),
+                    // and centerprint "You now have a superweapon" to the owner.
+                    if (!IsCtsGametype())
+                        NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "SUPERWEAPON_PICKUP", p.NetName);
+                    NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Center, "SUPERWEAPON_PICKUP");
+                }
+            }
+            else
+            {
+                // QC: timer lapsed without ever setting the bit → expire the effect + strip the owned superweapons.
+                if (StatusEffectsCatalog.Has(p, sw))
+                    StatusEffectsCatalog.Remove(p, sw);
+                StripOwnedSuperweapons(p);
+            }
+        }
+        else if (StatusEffectsCatalog.Has(p, sw))
+        {
+            // QC: a stray Superweapon effect with no superweapon owned → clear it.
+            StatusEffectsCatalog.Remove(p, sw);
+        }
+    }
+
+    // QC STAT(WEAPONS,this) &= ~WEPSET_SUPERWEAPONS: drop every owned superweapon; reselect if the active slot
+    // was one (the weapon frame picks the best remaining from the owned set).
+    private static void StripOwnedSuperweapons(Player p)
+    {
         bool strippedActive = false;
         foreach (Weapon w in Weapons.Superweapons)
         {
             if (p.OwnedWeapons.Remove(w.NetName) && p.ActiveWeaponId == w.RegistryId)
                 strippedActive = true;
         }
-        // If the active weapon was a stripped superweapon, fall back to the best remaining (the weapon system
-        // reselects from the owned set; clearing the active id forces that on the next weapon frame).
         if (strippedActive)
         {
             p.ActiveWeaponId = -1;
             p.SwitchWeaponId = -1;
         }
+    }
+
+    // QC play_countdown(this, finished, samp) (server/client.qc:1532): beep once per integer second crossed in
+    // the last 6 seconds before <paramref name="finished"/> (SND_POWEROFF = misc/poweroff.wav, CH_INFO).
+    private static void PlayCountdown(Player p, float finished, float now)
+    {
+        if (Api.Services is null || finished <= 0f) return;
+        float frametime = Api.Clock.FrameTime;
+        float timeLeft = finished - now;
+        if (timeLeft < 6f && MathF.Floor(timeLeft - frametime) != MathF.Floor(timeLeft))
+            Api.Sound.Play(p, SoundChannel.Auto, "misc/poweroff.wav");
     }
 
     private static float Now => Api.Services is not null ? Api.Clock.Time : 0f;

@@ -46,6 +46,16 @@ public partial class Entity
     /// </summary>
     public int DpHitContentsMask;
 
+    /// <summary>
+    /// [sv-antilag.clear.on_spawn] Sticky one-shot request to wipe this entity's lag-comp position ring
+    /// (port of the explicit <c>antilag_clear</c> call Base fires from <c>PutClientInServer</c>
+    /// (client.qc:858) and on vehicle enter/exit). Set by (re)spawn / teleport / vehicle-boarding; the net
+    /// driver clears the ring and resets the flag on its next antilag record pass. This catches the case the
+    /// per-tick origin-jump heuristic misses — a respawn/teleport that lands WITHIN the jump threshold of the
+    /// previous origin would otherwise leave stale history, letting a shot rewind toward the old position.
+    /// </summary>
+    public bool AntilagNeedsClear;
+
     public EntFlags Flags;
     public Entity? GroundEntity;
     public int WaterLevel;

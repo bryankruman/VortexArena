@@ -140,7 +140,7 @@ public sealed class OkNex : Weapon
 
         // FireRailgunBullet(actor, weaponentity, w_shotorg, w_shotorg + w_shotdir * max_shot_distance, mydmg, true, myforce, ...)
         // headshotNotify mirrors the Vortex (false): the OK Nex does not announce headshots.
-        Vector3 end = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
+        Vector3 end = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
         WeaponFiring.FireRailgunBullet(actor, shot.Origin, end, mydmg, RegistryId, myforce,
             headshotNotify: false);
 

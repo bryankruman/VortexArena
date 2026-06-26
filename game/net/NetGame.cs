@@ -1566,10 +1566,13 @@ public sealed partial class NetGame : Node3D
             return;
 
         int id = _client.ActiveWeaponId;
-        // Hide the gun when holstered (id<0), dead (Health<=0), OR the event/death chase camera is active — QC
+        // Hide the gun when holstered (id<0), dead (Health<=0), the event/death chase camera is active — QC
         // view.qc viewmodel_draw masks the viewmodel when STAT(HEALTH)<=0 || chase_active (the shared view tracks
         // ChaseActive after UpdateCamera ran this frame), so the third-person death-cam doesn't show a floating gun.
-        bool hidden = id < 0 || id >= XonoticGodot.Common.Gameplay.Weapons.Count || _client.Health <= 0 || _view.ChaseActive;
+        // ALSO hidden at intermission: QC FixIntermissionClient sets each weapon entity's effects = EF_NODRAW so the
+        // viewmodel disappears once the match ends and the scoreboard takes over.
+        bool hidden = id < 0 || id >= XonoticGodot.Common.Gameplay.Weapons.Count
+            || _client.Health <= 0 || _view.ChaseActive || _client.MatchIntermission;
 
         if (id == _equippedWeaponId)
         {
@@ -2248,6 +2251,11 @@ public sealed partial class NetGame : Node3D
         if (_serverThread is not null)
             using (XonoticGodot.Game.Client.FrameProfiler.Scope("server.tick"))
                 _server?.PumpTransportThreaded(dt);
+
+        // QC target_music_kill() at NextLevel: stop the map music at intermission (works on both the listen-server
+        // and pure-client paths — the flag is networked via ClientNet.MatchIntermission).
+        if (_musicPlayer is not null && _client is not null)
+            _musicPlayer.Intermission = _client.MatchIntermission;
 
         // Feed the music player the current server time so trigger_music touch freshness works.
         if (_musicPlayer is not null && _serverWorld is not null)
@@ -3407,12 +3415,20 @@ public sealed partial class NetGame : Node3D
         if (_scoreboard is null || _client is null)
             return;
 
-        bool show = XonoticGodot.Engine.Console.BindTable.ShowScores;
+        // QC Scoreboard_WouldDraw (scoreboard.qc): at intermission==1 the scoreboard force-draws (no +showscores
+        // key needed); at intermission==2 — when the MapVote panel owns the screen — it hides. We model
+        // intermission==2 as "the MapVote panel is currently showing" (UpdateMapVotePanel owns mv.Visible).
+        bool mapVoteShowing = _fullHud is not null && _fullHud.MapVote.Visible;
+        bool intermissionShow = _client.MatchIntermission && !mapVoteShowing;
+        bool show = XonoticGodot.Engine.Console.BindTable.ShowScores || intermissionShow;
         // QC scoreboard.qc:2411: drive the cross-fade via scoreboard_active (the Active setter ramps _fadeAlpha
         // in/out in _Process and hides the panel once fully faded out) rather than popping Visible — this is what
         // makes hud_panel_scoreboard_fadeinspeed/fadeoutspeed actually animate on the live path.
         if (_scoreboard.Active != show)
             _scoreboard.Active = show;
+        // QC GET_NEXTMAP: feed the "Next map:" line from the server-broadcast _nextmap (ClientNet.NextMap).
+        if (show && _scoreboard.NextMap != _client.NextMap)
+            _scoreboard.NextMap = _client.NextMap;
         // Feed the networked respawn line every frame while shown (QC STAT(RESPAWN_TIME), scoreboard.qc:2764) so
         // the countdown ticks even between score-version changes; this is the live caller for the respawn block.
         if (show)
@@ -3769,6 +3785,17 @@ public sealed partial class NetGame : Node3D
             return;
         }
 
+        // Map-vote panel input (QC client/mapvoting.qc MapVote_InputEvent): while the end-of-match ballot is
+        // showing, arrows move the selection and enter/space/digits/click cast it as `impulse N` (routed through
+        // the server's impulse path, the port's MapVote_SendChoice). Runs before the gameplay binds so a digit/
+        // arrow during the vote casts instead of switching weapons. Console-open still wins (handled above).
+        if (!ConsoleState.IsOpen && _fullHud is { } voteHud && voteHud.MapVote.Visible
+            && HandleMapVoteInput(voteHud.MapVote, @event))
+        {
+            GetViewport().SetInputAsHandled();
+            return;
+        }
+
         // Bind-driven gameplay input (DP key bindings): a keyboard/mouse-button press/release drives the +/-
         // held-button state and runs one-shot bound commands. Routed through RunBoundCommand, which converts the
         // WEAPON-SWITCH / RELOAD binds into a C2S impulse (the QC usercmd.impulse channel — the real way a human
@@ -3791,6 +3818,46 @@ public sealed partial class NetGame : Node3D
             _viewAngles.X += motion.Relative.Y * sens * PitchSign();
             _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
         }
+    }
+
+    /// <summary>
+    /// QC client/mapvoting.qc <c>MapVote_InputEvent</c>: feed a keyboard/mouse event to the showing map-vote
+    /// panel. Arrows move the selection; enter/space/digits/left-click cast a vote, which the panel forwards
+    /// (via <see cref="MapVotePanel.CastChoice"/>) to <see cref="CastMapVote"/>. Returns true when the panel
+    /// consumed the event. The <see cref="MapVotePanel.CastChoice"/> hook is wired lazily here so it always
+    /// targets the current local server player.
+    /// </summary>
+    private bool HandleMapVoteInput(XonoticGodot.Game.Hud.MapVotePanel panel, InputEvent @event)
+    {
+        panel.CastChoice = CastMapVote; // QC MapVote_SendChoice → localcmd("impulse N")
+
+        switch (@event)
+        {
+            case InputEventKey { Pressed: true, Echo: false } keyEv:
+                return panel.HandleVoteKey(keyEv.Keycode, keyEv.CtrlPressed);
+            case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } mb:
+                return panel.HandleVoteClick(mb.Position - panel.PanelRect.Position);
+            case InputEventMouseMotion mm:
+                // Hovering moves the selection but doesn't consume the event or cast (QC mv_mouse_selection).
+                panel.HandleVoteHover(mm.Position - panel.PanelRect.Position);
+                return false;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// QC client <c>MapVote_SendChoice(index)</c> → <c>localcmd("impulse ", index+1)</c>: cast the local player's
+    /// vote for the 0-based ballot option. On a listen server this routes through the in-process server's impulse
+    /// command (the same path a console <c>impulse N</c> takes — <see cref="Commands.DispatchImpulse"/> →
+    /// <see cref="MapVoting.CastVote"/>). On a pure remote client there is no server-side MapVoting object, so the
+    /// cast is a no-op until a real ENT_CLIENT_MAPVOTE round-trip exists (see sv-mapvoting.net.sync).
+    /// </summary>
+    private void CastMapVote(int index)
+    {
+        Player? me = LocalServerPlayer;
+        if (_serverWorld is null || me is null)
+            return;
+        _serverWorld.Commands.Execute($"impulse {index + 1}", isServerConsole: false, caller: me);
     }
 
     /// <summary>

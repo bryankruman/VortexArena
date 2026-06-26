@@ -128,8 +128,13 @@ public static class TurretAI
     public const int TrackFluidPrecise  = 2; ///< smooth absolute movement
     public const int TrackFluidInertia  = 3; ///< simulated inertia ("wobbly")
 
-    /// <summary>QC max_shot_distance (constants.qh) — the hitscan/aim trace ceiling.</summary>
+    /// <summary>QC <c>max_shot_distance</c> default (constants.qh) — the fallback hitscan/aim trace ceiling.</summary>
     public const float MaxShotDistance = 32768f;
+
+    /// <summary>QC per-map <c>max_shot_distance</c> (world.qc:731): the live world-bounds trace ceiling. Mirrors
+    /// <see cref="WeaponFiring.CurrentMaxShotDistance"/> so turret traces reach exactly as far as Base on both
+    /// oversized and tiny maps.</summary>
+    public static float CurrentMaxShotDistance => WeaponFiring.CurrentMaxShotDistance;
 
     /// <summary>QC autocvar_sv_gravity default — used by the z-predict gravity arc lead.</summary>
     public const float Gravity = 800f;

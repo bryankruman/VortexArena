@@ -211,9 +211,11 @@ public sealed class NadeNapalmBoom : INadeBoom
 
         float dd = (self.Origin - chosenImpact).Length();
         dd = damage + (edgeDamage - damage) * (dd / dist);
-        // QC: Fire_AddDamage(chosen, owner, d * burntime, burntime, deathtype). Total dd*burntime over burntime
-        // seconds == dd damage-per-second, which is the burn strength the status-effects tick applies.
-        StatusEffectsCatalog.Apply(chosen, burning, burnTime, strength: dd, source: owner ?? self);
+        // QC napalm.qc:32: Fire_AddDamage(chosen, this.realowner, d * burntime, burntime, this.projectiledeathtype)
+        // where projectiledeathtype = DEATH_NADE_NAPALM. Port: route through FireAddDamage so the LEMMA merge
+        // applies (stacked napalm burns combine correctly) and the burn ticks carry the nade_napalm deathtype
+        // for proper obituary attribution instead of the generic "fire" fallback.
+        StatusEffectsCatalog.FireAddDamage(chosen, owner ?? self, dd * burnTime, burnTime, NadeDeathTypes.Napalm);
     }
 
     private static bool IsFrozen(Entity e)

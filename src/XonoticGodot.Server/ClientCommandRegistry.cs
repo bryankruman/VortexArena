@@ -96,7 +96,7 @@ public static class ClientCommandRegistry
         "spawnmob", "killmob",
 
         // ---- QC CheatCommand verbs (server/cheats.qc) — client-callable, gated internally by sv_cheats ----
-        "god", "notarget", "noclip", "fly", "give", "usetarget", "killtarget",
+        "god", "notarget", "noclip", "fly", "give", "usetarget", "killtarget", "teleporttotarget",
 
         // ---- sandbox (QC the SV_ParseClientCommand mutator hook in sandbox/sv_sandbox.qc). The client `sandbox`
         //      alias (commands.cfg:193) emits `cmd g_sandbox <sub> …`, so the wire verb is `g_sandbox`. It is a

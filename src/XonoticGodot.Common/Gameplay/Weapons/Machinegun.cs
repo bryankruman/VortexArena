@@ -228,7 +228,7 @@ public sealed class Machinegun : Weapon
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         // fired credit: QC machinegun.qc:164 passes the raw sustained_damage (heat scaling applies to the
         // dealt damage only, not the accuracy denominator).
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true,
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.CurrentMaxShotDistance, penetrateWalls: true,
             wep: this, maxDamage: Cvars.SustainedDamage);
         Recoil(actor);
 
@@ -259,7 +259,7 @@ public sealed class Machinegun : Weapon
         // Re-sample the shot each round (QC W_SetupShot per call) so aim tracks the player mid-burst.
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         // fired credit per burst round: sustained_damage (QC machinegun.qc:217).
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true,
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.CurrentMaxShotDistance, penetrateWalls: true,
             wep: this, maxDamage: Cvars.SustainedDamage);
         Recoil(actor); // per-round punchangle kick (QC sets it every W_MachineGun_Attack_Burst call)
 
@@ -311,7 +311,7 @@ public sealed class Machinegun : Weapon
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         // fired credit: the selected per-shot damage (QC W_SetupShot uses the same first/sustained pick).
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true,
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.CurrentMaxShotDistance, penetrateWalls: true,
             wep: this, maxDamage: damage);
         Recoil(actor);
 
@@ -364,9 +364,9 @@ public sealed class Machinegun : Weapon
         string? deathTag = secondary
             ? Damage.DeathTypes.WithHitType(Damage.DeathTypes.FromWeapon(NetName), Damage.DeathTypes.Secondary)
             : null;
-        WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, damage,
+        WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, damage,
             RegistryId, spread, Cvars.SolidPenetration, force: force, deathTag: deathTag);
-        Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
+        Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
         TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
         // QC: w_backoff * 1000 = the impact surface normal (trace_plane_normal), falling back to -force_dir when
         // no surface was hit. impTr.PlaneNormal IS that surface normal — far more faithful than -shot.Dir for

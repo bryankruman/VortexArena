@@ -773,8 +773,9 @@ public static class MonsterAI
         // QC Monster_Move:826-840 — the match-state halt: game_stopped, the prematch clock (time < game_starttime),
         // and the round-not-started gate all force the monster to brake-and-idle (it doesn't roam/chase before the
         // match goes live or after it stops). RunThink's spawn_time gate covers `time < this.spawn_time`; the
-        // MonsterMove mutator hook + draggedby + campaign_bots_may_start remain host concerns (deferred).
-        if (MatchHalted())
+        // campaign bots-may-start hold (QC sv_monsters.qc:846 `autocvar_g_campaign && !campaign_bots_may_start`) is
+        // now wired via CampaignMovementHeld (the MonsterMove mutator hook + draggedby remain host concerns).
+        if (MatchHalted() || CampaignMovementHeld())
         {
             BrakeSimple(self, st.StopSpeed, flyOrSwim);
             if (Now >= st.SpawnTime) st.Anim = MonsterAnim.Idle;
@@ -1792,6 +1793,18 @@ public static class MonsterAI
         float gameStart = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
         return Now < gameStart;
     }
+
+    /// <summary>
+    /// QC <c>(autocvar_g_campaign &amp;&amp; !campaign_bots_may_start)</c> (sv_monsters.qc:846 Monster_Move /
+    /// :1165 Monster_Move_2D): in a campaign, monster MOVEMENT is frozen until the human spawns. The server wires this
+    /// to <c>g_campaign &amp;&amp; !Campaign.BotsMayStart</c>; unset (non-campaign play, headless tests) → never holds.
+    /// This is the move-specific gate ONLY — QC does NOT key target acquisition (Monster_ValidTarget) off it, so it is
+    /// kept out of <see cref="MatchHalted"/> (shared with ValidTarget).
+    /// </summary>
+    public static System.Func<bool>? CampaignBotHold;
+
+    /// <summary>True when monster movement must hold for the campaign bots-may-start gate (see <see cref="CampaignBotHold"/>).</summary>
+    public static bool CampaignMovementHeld() => CampaignBotHold?.Invoke() ?? false;
 
     /// <summary>QC WATERLEVEL_WETFEET: the threshold below which a swimmer is considered out of water.</summary>
     public const int WaterLevel_WetFeet = 1;

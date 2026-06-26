@@ -147,13 +147,13 @@ public sealed class OkHmg : Weapon
         DecreaseAmmo(actor, slot, Cvars.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.CurrentMaxShotDistance, penetrateWalls: true);
 
         // okhmg_spread = bound(spread_min, spread_min + spread_add * misc_bulletcounter, spread_max)
         float spread = QMath.Clamp(Cvars.SpreadMin + Cvars.SpreadAdd * st.MiscBulletCounter,
             Cvars.SpreadMin, Cvars.SpreadMax);
 
-        WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, Cvars.Damage,
+        WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, Cvars.Damage,
             RegistryId, spread, Cvars.SolidPenetration, force: Cvars.Force);
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/uzi_fire.wav");
 

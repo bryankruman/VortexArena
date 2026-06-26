@@ -146,8 +146,9 @@ public static class Resources
     {
         if (amount <= 0f) return;
         // QC sv_resources.qc:165: MUTATOR_CALLHOOK(GiveResourceWithLimit, …) may forbid or rewrite
-        // amount/limit before the trim. No shipped mutator subscribes (latent), and ResourceHooks has no
-        // GiveResourceWithLimit chain yet — see todos to add it; faithful for stock play.
+        // amount/limit before the trim (M_ARGV read-back on res_type/amount/limit).
+        if (ResourceHooks.CallGiveResourceWithLimit(e, res, ref amount, ref limit)) return;
+        if (amount <= 0f) return;
         float current = GetResource(e, res);
         if (limit != LimitNone && current + amount > limit)
             amount = limit - current;
@@ -159,8 +160,8 @@ public static class Resources
     {
         if (amount <= 0f) return;
         // QC sv_resources.qc:191: MUTATOR_CALLHOOK(TakeResource, …) may forbid or rewrite the drain.
-        // No shipped mutator subscribes (latent), and ResourceHooks has no TakeResource chain yet —
-        // see todos to add it; faithful for stock play.
+        if (ResourceHooks.CallTakeResource(e, res, ref amount)) return;
+        if (amount <= 0f) return;
         SetResource(e, res, GetResource(e, res) - amount);
     }
 

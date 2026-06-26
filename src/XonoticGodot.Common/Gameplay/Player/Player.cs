@@ -94,6 +94,11 @@ public sealed class Player : Entity
     /// <summary>QC <c>.maycheat</c>: a per-player override that always permits cheats regardless of <c>sv_cheats</c>.</summary>
     public bool MayCheat;
 
+    /// <summary>QC <c>.lip</c> (reused by server/cheats.qc): the count of corpse clones this player has spawned this
+    /// life via the CLONE_MOVING/CLONE_STANDING cheats. The clone impulses are permitted (independent of
+    /// <c>sv_cheats</c>) while this is below <c>sv_clones</c> — see <c>Cheats.Allowed</c>.</summary>
+    public int Lip;
+
     /// <summary>
     /// QC <c>.winning</c>: set at match end for the player(s) who won (the scoreboard leader, or each member of
     /// the winning team). Read by the campaign win/lose check and the end-of-match flow. Cleared on (re)spawn.

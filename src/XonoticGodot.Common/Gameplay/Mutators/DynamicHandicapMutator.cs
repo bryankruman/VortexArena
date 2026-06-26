@@ -49,8 +49,14 @@ public sealed class DynamicHandicapMutator : MutatorBase
     /// The port selects the gametype as a C# object (never stamps a <c>g_cts</c>/<c>g_race</c> cvar), so this
     /// must be wired from the server side to <c>GameType is Cts or Race</c> — the same provider-seam pattern as
     /// <see cref="Items.ItemPickupRules.CtsActiveProvider"/>. Null provider = false (the common non-CTS/RACE case).
+    /// Forwards to the shared <see cref="Handicap.DisabledProvider"/> so the whole forced-handicap subsystem
+    /// (Handicap_Initialize / SetForcedHandicap / UpdateHandicapLevel) shares a single CTS/RACE gate.
     /// </summary>
-    public static System.Func<bool>? HandicapDisabledProvider;
+    public static System.Func<bool>? HandicapDisabledProvider
+    {
+        get => Handicap.DisabledProvider;
+        set => Handicap.DisabledProvider = value;
+    }
 
     // QC: REGISTER_MUTATOR(dynamic_handicap, autocvar_g_dynamic_handicap && !HANDICAP_DISABLED());
     // HANDICAP_DISABLED() (server/handicap.qh:57) == (IS_GAMETYPE(CTS) || IS_GAMETYPE(RACE)) — in CTS/RACE the
@@ -62,7 +68,7 @@ public sealed class DynamicHandicapMutator : MutatorBase
 
     // QC HANDICAP_DISABLED(): CTS or RACE gametype. Detected via the server-wired provider (GameType is Cts/Race),
     // NOT the bare g_cts/g_race cvars — the port never sets those, so reading them would leave this guard dead.
-    private static bool HandicapDisabled => HandicapDisabledProvider?.Invoke() ?? false;
+    private static bool HandicapDisabled => Handicap.Disabled;
 
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _onSpawn;
     private HookHandler<MutatorHooks.PlayerDiesArgs>? _onDies;
@@ -129,16 +135,24 @@ public sealed class DynamicHandicapMutator : MutatorBase
     {
         if (Api.Services is null) return;
 
+        // QC mean: FOREACH_CLIENT(IS_PLAYER(it)) — only LIVE players (excludes observers/spectators). In QC an
+        // observing client is transmuted to classname "observer" so IS_PLAYER (classname == "player") skips it;
+        // this port keeps the single Player edict and marks the observer phase with IsObserver, so that flag is
+        // the IS_PLAYER discriminator here (a non-Player client edict is treated as a player, like a bare flag).
         float totalScore = 0f;
         int totalPlayers = 0;
         foreach (Entity it in Api.Entities.FindByClass("player"))
         {
             if (it.IsFreed || (it.Flags & EntFlags.Client) == 0) continue;
+            if (it is Player ply && ply.IsObserver) continue;
             totalScore += GameScores.Get(it, GameScores.Score);
             ++totalPlayers;
         }
         if (totalPlayers == 0) return;
 
+        // QC application: FOREACH_CLIENT(true) — EVERY client incl. spectators/observers, so a spectator's stale
+        // forced handicap is clamped back too (it iterates the whole roster, not just IS_PLAYER). In this port
+        // an observer keeps classname "player" + FL_CLIENT, so FindByClass("player") already covers all clients.
         float meanScore = totalScore / totalPlayers;
         foreach (Entity it in Api.Entities.FindByClass("player"))
         {
@@ -152,52 +166,10 @@ public sealed class DynamicHandicapMutator : MutatorBase
             handicap = ClampHandicap(handicap);
             // QC Handicap_SetForcedHandicap(it, h, false) then (it, h, true): the give (deal-less) and take
             // (receive-more) multipliers. DamageSystem reads both (HandicapTotal). Each call guards value<=0 and
-            // tails into Handicap_UpdateHandicapLevel.
-            SetForcedHandicap(it, handicap, false);
-            SetForcedHandicap(it, handicap, true);
+            // tails into Handicap_UpdateHandicapLevel — now via the shared Handicap subsystem (server/handicap.qc).
+            Handicap.SetForcedHandicap(it, handicap, false);
+            Handicap.SetForcedHandicap(it, handicap, true);
         }
-    }
-
-    // void Handicap_SetForcedHandicap(entity player, float value, bool receiving) (server/handicap.qc:81-94).
-    // Errors on a non-positive value (QC error() -> Log.Fatal), writes the give/take field, then refreshes the
-    // networked handicap level. The fold in UpdateHandicap keeps values strictly positive, so the guard never
-    // fires in normal play — it matches Base's hard fault on an invalid forced handicap.
-    private static void SetForcedHandicap(Entity player, float value, bool receiving)
-    {
-        if (HandicapDisabled) return;
-        if (value <= 0f)
-            Log.Fatal("Handicap_SetForcedHandicap: Invalid handicap value.");
-        if (receiving) player.HandicapTake = value;
-        else player.HandicapGive = value;
-        UpdateHandicapLevel(player);
-    }
-
-    // void Handicap_UpdateHandicapLevel(entity player) (server/handicap.qc:104-115)
-    // Maps the both-ways average TOTAL handicap (1 .. HANDICAP_MAX_LEVEL_EQUIVALENT=2.0) to an int level 0..16,
-    // networked to clients purely to color the player_handicap scoreboard icon. Base uses the full total handicap
-    // (forced * voluntary); for this mutator the forced half is what we just set and voluntary defaults to 1, so
-    // we derive the level from the give/take values written above.
-    private static void UpdateHandicapLevel(Entity player)
-    {
-        if (HandicapDisabled)
-        {
-            player.HandicapLevel = 0;
-            return;
-        }
-        float total = (player.HandicapTake + player.HandicapGive) / 2f;
-        player.HandicapLevel = (int)MathF.Floor(MapBoundRanges(total, 1f, HandicapMaxLevelEquivalent, 0f, 16f));
-    }
-
-    // QC HANDICAP_MAX_LEVEL_EQUIVALENT (server/handicap.qh:66) = 2.0.
-    private const float HandicapMaxLevelEquivalent = 2.0f;
-
-    // QC map_bound_ranges(x, from_min, from_max, to_min, to_max): clamp x to [from_min, from_max] then lerp into
-    // [to_min, to_max] (matches DodgingMutator.MapBoundRanges).
-    private static float MapBoundRanges(float x, float fromMin, float fromMax, float toMin, float toMax)
-    {
-        if (x <= fromMin) return toMin;
-        if (x >= fromMax) return toMax;
-        return toMin + (toMax - toMin) * (x - fromMin) / (fromMax - fromMin);
     }
 
     // float DynamicHandicap_ClampHandicap(float handicap)

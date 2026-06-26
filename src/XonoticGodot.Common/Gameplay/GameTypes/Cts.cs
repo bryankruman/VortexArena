@@ -353,13 +353,18 @@ public sealed class Cts : GameType
     public float ServerRecord => RaceRecords.ServerRecord(MapName, RecordType);
     public string ServerRecordHolder => RaceRecords.ServerRecordHolder(MapName, RecordType);
 
-    /// <summary>QC g_cts_finish_kill_delay: schedule the runner to be retracted to start after the kill delay.</summary>
+    /// <summary>QC Race_FinalCheckpoint (sv_cts.qc:342-349): silently kill the runner after the finish kill delay
+    /// so they can't keep their finish-line speed.</summary>
     private void ScheduleRetract(Player p, float now)
     {
-        // QC sv_cts.qc: g_cts_finish_kill_delay defaults to 2 s; only an explicit 0 disables the retract and -1
-        // makes it instant. When the gametypes cfg isn't loaded the cvar reads empty → fall back to the 2 s default
-        // (the old fallback-to-0 retracted the runner instantly without the cfg).
+        // QC sv_cts.qc:347 `if(autocvar_g_cts_finish_kill_delay)`: the whole silent-kill is gated on the cvar, so a
+        // value of exactly 0 means DO NOT KILL — no retract is scheduled at all (the runner just keeps running).
+        // -1 makes it instant (ceil(-1) = -1 → cnt<=0 → kill on the first think). When the gametypes cfg isn't
+        // loaded the cvar reads empty → fall back to the 2 s default.
         float delay = TryCvar(CvarFinishKillDelay, out float v) ? v : DefaultFinishKillDelay;
+        if (delay == 0f)
+            return; // QC: 0 = never kill on finish
+        // -1 (instant) and any positive duration both schedule; the negative collapses to "fire this frame".
         _retractAt[p] = now + System.MathF.Max(0f, delay);
     }
 

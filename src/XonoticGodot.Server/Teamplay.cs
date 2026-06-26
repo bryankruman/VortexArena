@@ -1,5 +1,7 @@
+using System;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Gameplay.Damage;
+using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Server;
@@ -63,8 +65,28 @@ public sealed class Teamplay
     /// </summary>
     public Func<Player, float> SkillProvider { get; set; } = static _ => 5f;
 
+    /// <summary>
+    /// QC <c>warmup_stage</c> for the team-strength ramp: the score-ratio scaling in
+    /// <see cref="CompareTeams"/> only applies once the match has started (<c>!warmup_stage &amp;&amp; time &gt;
+    /// game_starttime</c>). Defaults to "in warmup" (the ramp is inert) so a host that hasn't wired a match
+    /// clock — and the deterministic tests — keep the plain count/skill comparison. The host wires this to the
+    /// live warmup controller.
+    /// </summary>
+    public Func<bool> IsWarmup { get; set; } = static () => true;
+
+    /// <summary>
+    /// QC <c>(time - game_starttime)</c> for the team-strength ramp: seconds elapsed since the match clock
+    /// started (≤ 0 while in warmup / before game_starttime). Used with <see cref="TimeLimitSeconds"/> to scale
+    /// the score-ratio strength bias by <c>min(1, elapsed/timelimit)^1.5</c>. Defaults to 0 (ramp inert).
+    /// </summary>
+    public Func<float> SecondsSinceMatchStart { get; set; } = static () => 0f;
+
     /// <summary>QC the fixed skill variance stand-in (no TrueSkill ratings here): the inverse weight per player.</summary>
     private const float SkillVariance = 1f;
+
+    /// <summary>QC <c>server_skill_average</c>: the inverse-variance weighted mean skill of all rated clients,
+    /// recomputed per balance pass in <see cref="MeasureAllTeams"/>. Falls back to 1000 (QC) when nobody is rated.</summary>
+    private float _serverSkillAverage = 1000f;
 
     /// <summary>
     /// QC <c>.team_forced</c>: the per-player forced-team index (1..4 a real team, <see cref="TeamForceDefault"/>,
@@ -253,8 +275,18 @@ public sealed class Teamplay
             }
         }
 
+        // QC TeamBalance_GetTeamCounts: compute the server skill average once before tallying each team.
+        RecomputeServerSkillAverage(roster);
+        bool joinerHuman = !joiner.IsBot;
+
+        // QC TeamBalance_FindBestTeams + TeamBalance_FindBestTeam: gather ALL best (tied) teams, then pick one at
+        // RANDOM among them (RandomSelection over the equal-best set) — Base randomizes ties; it does not pick a
+        // fixed lowest index. A single best team is returned directly.
         int bestTeam = Teams.None;
         TeamStrength best = default;
+        int tieCount = 0;            // QC RandomSelection reservoir count of equal-best teams
+        int reservoir = Teams.None;  // the currently-chosen tied team
+        bool joinerOnBest = false;   // QC: is the joiner already sitting on one of the best teams?
 
         int ti = 0;
         foreach (int team in Teams.Active(TeamCount))
@@ -264,19 +296,77 @@ public sealed class Teamplay
 
             // QC TeamBalance_CompareTeamsInternal: order teams by player count first, then by team strength
             // (skill+score) as a tiebreak — a smaller team wins outright; equal-size teams break to the weaker.
-            TeamStrength cand = MeasureTeam(team, roster, joiner);
-            if (bestTeam == Teams.None || CompareTeams(cand, best) < 0)
+            TeamStrength cand = MeasureTeam(team, roster, joiner, joinerHuman);
+            int cmp = bestTeam == Teams.None ? -1 : CompareTeams(cand, best);
+            if (cmp < 0)
             {
                 best = cand;
                 bestTeam = team;
+                tieCount = 1;
+                reservoir = team;
+                joinerOnBest = (int)joiner.Team == team;
+            }
+            else if (cmp == 0)
+            {
+                // QC RandomSelection_AddFloat(i, 1, 1): uniform reservoir pick among equally-best teams.
+                tieCount++;
+                if (Prandom.Float() * tieCount < 1f)
+                    reservoir = team;
+                if ((int)joiner.Team == team)
+                    joinerOnBest = true;
             }
         }
 
+        // QC TeamBalance_FindBestTeam: don't punish players for UI mistakes — if the joiner is already on one of
+        // the best teams, keep it rather than randomly reshuffling them to another equal-best team.
+        if (joinerOnBest && (int)joiner.Team != Teams.None)
+            return (int)joiner.Team;
+
+        if (reservoir != Teams.None)
+            bestTeam = reservoir;
         if (bestTeam == Teams.None)
             bestTeam = Teams.Red; // degenerate guard (matches TeamBalance.JoinSmallestTeam)
 
         joiner.Team = bestTeam;
         return bestTeam;
+    }
+
+    /// <summary>QC <c>Team_TeamToIndex</c>: map a team color code (1..4 colors) to its 1..4 index, or 0 for none.</summary>
+    public static int TeamToIndex(int team)
+    {
+        for (int i = 0; i < Teams.All.Length; i++)
+            if (Teams.All[i] == team) return i + 1;
+        return 0;
+    }
+
+    /// <summary>
+    /// QC <c>Player_SetTeamIndex</c> (server/teamplay.qc:239): change <paramref name="player"/>'s team to
+    /// <paramref name="newTeam"/> (a color code), firing the <c>Player_ChangeTeam</c> mutator hook BEFORE the
+    /// change (a handler may return true to BLOCK it) and <c>Player_ChangedTeam</c> AFTER. Early-outs as a no-op
+    /// (returning true) when the player is already on that team. Returns false only when a mutator vetoed the
+    /// change; the caller (the team-change command / shuffle / autobalance path) should then leave the team be.
+    /// This is the single team-set seam that replaces a bare <c>player.Team = ...</c> so mutators can veto/react.
+    /// </summary>
+    public bool SetTeam(Player player, int newTeam)
+    {
+        // QC: early-out if already on this team (the "already on this team" guard lives in Player_SetTeamIndex).
+        if ((int)player.Team == newTeam)
+            return true;
+
+        int oldIndex = TeamToIndex((int)player.Team);
+        int newIndex = TeamToIndex(newTeam);
+
+        // QC MUTATOR_CALLHOOK(Player_ChangeTeam, ...) == true → blocked.
+        var pre = new MutatorHooks.PlayerChangeTeamArgs(player, oldIndex, newIndex);
+        if (MutatorHooks.PlayerChangeTeam.Call(ref pre))
+            return false;
+
+        player.Team = newTeam;
+
+        // QC MUTATOR_CALLHOOK(Player_ChangedTeam, ...): react after the change (return value ignored).
+        var post = new MutatorHooks.PlayerChangedTeamArgs(player, oldIndex, newIndex);
+        MutatorHooks.PlayerChangedTeam.Call(ref post);
+        return true;
     }
 
     /// <summary>
@@ -286,6 +376,14 @@ public sealed class Teamplay
     /// </summary>
     private bool SkillWeightingEnabled =>
         Api.Services is not null && Api.Cvars.GetFloat("g_balance_teams_skill") != 0f;
+
+    /// <summary>QC <c>autocvar_timelimit &gt; 0 ? autocvar_timelimit * 60 : 20 * 60</c>: the match length in
+    /// seconds used to ramp the score-strength bias (a 0/unset timelimit falls back to 20 minutes).</summary>
+    private static float TimeLimitSeconds()
+    {
+        float tl = Api.Services is not null ? Api.Cvars.GetFloat("timelimit") : 0f;
+        return tl > 0f ? tl * 60f : 20f * 60f;
+    }
 
     /// <summary>
     /// QC the per-team balance entity (teamplay.qc:840-931): the player count plus the inverse-variance weighted
@@ -306,15 +404,46 @@ public sealed class Teamplay
     }
 
     /// <summary>
-    /// QC teamplay.qc:840-931 (TeamBalance_GetTeamCounts inner loop): tally a team's player count and its
-    /// inverse-variance weighted mean skill from <see cref="SkillProvider"/>, plus its current score. With the
-    /// flat per-player variance stand-in, <c>mass</c> is the rated-player count, the weighted mean is the plain
-    /// mean skill, and <c>m_skill_var = 1/mass</c>. Excludes <paramref name="ignore"/> (the joining/switching
-    /// player is scored against the team it would join, not counted as already on it).
+    /// QC <c>m_skill_mu &amp;&amp; m_skill_var</c>: whether a player carries a real (TrueSkill) rating. The port has
+    /// no TrueSkill, so a bot's fed <see cref="SkillProvider"/> value counts as "rated" and every human is
+    /// "unranked" (its assumed skill is derived from the server average via the unranked factor, exactly like QC).
     /// </summary>
-    private TeamStrength MeasureTeam(int team, IReadOnlyList<Player> roster, Player? ignore)
+    private bool IsRated(Player p) => p.IsBot && SkillProvider(p) != 0f;
+
+    /// <summary>
+    /// QC <c>TeamBalance_GetTeamCounts</c>'s <c>server_skill_average</c> pre-pass: the inverse-variance weighted
+    /// mean skill of all rated clients in <paramref name="roster"/>, scaled by
+    /// <c>g_balance_teams_skill_unranked_factor</c>. Stored in <see cref="_serverSkillAverage"/> for the per-team
+    /// unranked contribution. Falls back to QC's 1000 when nobody is rated (or the factor is ≤ 0).
+    /// </summary>
+    private void RecomputeServerSkillAverage(IReadOnlyList<Player> roster)
     {
-        int count = 0;
+        float muSum = 0f, weightSum = 0f;
+        for (int i = 0; i < roster.Count; i++)
+        {
+            Player p = roster[i];
+            if (!IsRated(p)) continue;
+            float w = 1f / SkillVariance;
+            muSum += SkillProvider(p) * w;
+            weightSum += w;
+        }
+        float factor = Api.Services is not null ? Api.Cvars.GetFloat("g_balance_teams_skill_unranked_factor") : 0f;
+        _serverSkillAverage = (weightSum != 0f && factor > 0f) ? factor * muSum / weightSum : 1000f;
+    }
+
+    /// <summary>
+    /// QC teamplay.qc:840-931 (TeamBalance_GetTeamCounts inner loop): tally a team's player count and its
+    /// inverse-variance weighted mean skill, plus its current score. Rated players (bots) contribute their
+    /// <see cref="SkillProvider"/> rating at weight <c>1/var</c>; unranked players (humans) contribute the
+    /// server-average skill (<see cref="_serverSkillAverage"/>) at weight <c>1/(avg*0.25)^2</c> — the QC
+    /// down-weighting of clients with no rating. <c>m_skill_mu = muSum/mass</c>, <c>m_skill_var = 1/mass</c>.
+    /// Pass <see cref="RecomputeServerSkillAverage"/> first. Excludes <paramref name="ignore"/> (the joining
+    /// player is scored against the team it would join, not counted as already on it). <paramref name="joinerHuman"/>
+    /// selects net counts (humans deduct leavable bots) per QC's IS_REAL_CLIENT size branch.
+    /// </summary>
+    private TeamStrength MeasureTeam(int team, IReadOnlyList<Player> roster, Player? ignore, bool joinerHuman)
+    {
+        int count = 0, bots = 0;
         float muSum = 0f, mass = 0f;
         for (int i = 0; i < roster.Count; i++)
         {
@@ -322,18 +451,47 @@ public sealed class Teamplay
             if (ReferenceEquals(p, ignore)) continue;
             if ((int)p.Team != team) continue;
             count++;
-            float mu = SkillProvider(p);
-            if (mu != 0f)
+            if (p.IsBot) bots++;
+            if (IsRated(p))
             {
                 float weight = 1f / SkillVariance; // QC skill_weight = 1 / m_skill_var
-                muSum += mu * weight;
+                muSum += SkillProvider(p) * weight;
                 mass += weight;
             }
+        }
+        // QC: each unranked client (here: humans) uses the server-average skill at the unranked weight.
+        int unranked = count - RatedCount(team, roster, ignore);
+        if (unranked > 0)
+        {
+            float avgVar = (_serverSkillAverage * 0.25f) * (_serverSkillAverage * 0.25f);
+            float w = avgVar != 0f ? 1f / avgVar : 0f;
+            muSum += _serverSkillAverage * w * unranked;
+            mass += w * unranked;
         }
         float skillMu = mass > 0f ? muSum / mass : 0f;     // QC m_skill_mu /= mass
         float skillVar = mass > 0f ? 1f / mass : 0f;       // QC m_skill_var = 1 / mass
         int score = _scores?.TeamScore(team) ?? 0;
-        return new TeamStrength(count, skillMu, skillVar, score);
+
+        // QC m_num_players_net: a human joiner sees the team size minus the bots that would leave to make room
+        // (one leavable bot per team), so a team that is all-bots reads as smaller to a human. A bot joiner uses
+        // the raw count. We approximate bots_would_leave as 1 deductible bot per non-empty bot-holding team.
+        int size = joinerHuman ? count - System.Math.Min(bots, 1) : count;
+        return new TeamStrength(size, skillMu, skillVar, score);
+    }
+
+    /// <summary>Count the rated (bot) players on a team, excluding <paramref name="ignore"/> — the rated half of the
+    /// per-team tally, used to derive the unranked client count for the skill-average contribution.</summary>
+    private int RatedCount(int team, IReadOnlyList<Player> roster, Player? ignore)
+    {
+        int n = 0;
+        for (int i = 0; i < roster.Count; i++)
+        {
+            Player p = roster[i];
+            if (ReferenceEquals(p, ignore)) continue;
+            if ((int)p.Team != team) continue;
+            if (IsRated(p)) n++;
+        }
+        return n;
     }
 
     /// <summary>
@@ -360,11 +518,20 @@ public sealed class Teamplay
         float strengthA = useSkill ? a.SkillMu : 1f;
         float strengthB = useSkill ? b.SkillMu : 1f;
 
-        // QC the score ramp uses time-into-match; without that scalar here we apply the team score directly as a
-        // strength bias (a team that is winning is "stronger" so the joiner avoids it), preserving the lower-score
-        // tiebreak the port already had.
-        strengthA *= 1f + a.Score * 0.0001f;
-        strengthB *= 1f + b.Score * 0.0001f;
+        // QC TeamBalance_CompareTeamsInternal score ramp: early in a match scores are ~random (too few samples),
+        // so the team_score ratio is only applied once the match has started and ramped in with
+        // min(1, (time-game_starttime)/timelimit)^1.5. A team with score 0 is treated as 0.96875 (31/32) so a
+        // team with 1 point reads as stronger than one with 0 (but only slightly, sample size being small).
+        // Applying the full ratio to team A alone is equivalent to applying half to each. While in warmup / before
+        // the match clock starts the ramp is skipped entirely (strength stays the pure count/skill comparison).
+        if (!IsWarmup() && SecondsSinceMatchStart() > 0f)
+        {
+            float timelimitSec = TimeLimitSeconds();
+            float scoreA = a.Score != 0 ? a.Score : 0.96875f;
+            float scoreB = b.Score != 0 ? b.Score : 0.96875f;
+            float ramp = MathF.Pow(MathF.Min(1f, SecondsSinceMatchStart() / timelimitSec), 1.5f);
+            strengthA *= 1f + (scoreA / scoreB - 1f) * ramp;
+        }
 
         if (strengthA < strengthB) return -1; // QC: weaker team => preferable.
         if (strengthA > strengthB) return 1;
@@ -425,8 +592,12 @@ public sealed class Teamplay
             Player? bot = LowestScoringBotOnTeam(roster, largeTeam);
             if (bot is not null)
             {
-                bot.Team = smallTeam;
-                return bot;
+                // QC SetPlayerTeam(bot, smallest, TEAM_CHANGE_AUTO): the move fires the team-change hooks (a mutator
+                // may veto). If vetoed, try the next-largest team instead of forcing the move.
+                if (SetTeam(bot, smallTeam))
+                    return bot;
+                consideredLargest.Add(largeTeam);
+                continue;
             }
             consideredLargest.Add(largeTeam); // no movable bot here; try the next-largest team
         }
@@ -536,6 +707,8 @@ public sealed class Teamplay
             return true;
 
         bool[] allowed = AllowedTeams(switcher);
+        RecomputeServerSkillAverage(roster);
+        bool switcherHuman = !switcher.IsBot;
 
         // QC TeamBalance_FindBestTeams: compute the best (by the size→strength ladder) candidate, then accept the
         // target only if it ties that best — i.e. switching there doesn't make teams more unbalanced.
@@ -553,7 +726,7 @@ public sealed class Teamplay
                 if (team == targetTeam) return false; // banned team (bot_vs_human) is never switchable.
                 continue;
             }
-            TeamStrength cand = MeasureTeam(team, roster, switcher);
+            TeamStrength cand = MeasureTeam(team, roster, switcher, switcherHuman);
             if (!haveBest || CompareTeams(cand, best) < 0)
             {
                 best = cand;

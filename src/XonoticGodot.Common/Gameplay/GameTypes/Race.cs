@@ -411,6 +411,13 @@ public sealed class Race : GameType
             rs.RespawnSpot = null;
             rs.Started = false;
         }
+        // QC rc_SetLimits (sv_race.qc:391): radar_showenemies = true — race reveals every racer on the radar (and,
+        // server-side, sends every player's private ent_cs fields to everyone via the ServerNet privacy-mask gate),
+        // since there are no enemies to hide in a time-trial. Mirror the global so both the client radar and the
+        // server-side ent_cs strip read the faithful value.
+        if (Api.Services is not null)
+            Api.Cvars.Set("radar_showenemies", "1");
+
         // QC rc_SetLimits: g_race_teams 2..4 makes race a team game (members add up laps to ST_RACE_LAPS).
         TeamGame = RaceTeams >= 2;
         if (TeamGame)

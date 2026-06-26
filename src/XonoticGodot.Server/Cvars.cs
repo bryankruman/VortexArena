@@ -135,6 +135,8 @@ public static class Cvars
 
         // ---- intermission / map change (xonotic-server.cfg) ----
         new("sv_mapchange_delay", "5", Save, "scoreboard hold before map change"),
+        new("sv_intermission_cdtrack", "", Save, "music track(s) looped at intermission (empty = keep none); a random word is chosen"),
+        new("sv_autoscreenshot", "0", Save, "force clients with cl_autoscreenshot to screenshot the end-of-match scoreboard"),
         new("g_maplist_votable", "6", Save, "candidates on the end-of-match map vote"),
         new("g_maplist_votable_timeout", "30", Save, "map vote duration"),
         new("g_maplist_votable_abstain", "0", Save),
@@ -155,11 +157,22 @@ public static class Cvars
         // QC xonotic-server.cfg:446 g_balance_kill_delay: the countdown (seconds) between a `kill` command / team
         // change and the player actually dying — the kill-indicator/announcer countdown reads this.
         new("g_balance_kill_delay", "2", Save, "delay (seconds) before a `kill` command actually kills you"),
+        // QC xonotic-server.cfg:447 g_balance_kill_antispam: added to the next-allowed-kill time on a repeat `kill`
+        // (clientkill_nexttime carry-forward) so mashing `kill` keeps extending the countdown. XPM/XDF set 0.
+        new("g_balance_kill_antispam", "5", Save, "time added to the next allowed `kill` when you mash the command"),
         // QC sv_teamnagger (xonotic-server.cfg:300): team-size gap threshold for the unbalanced-teams nag; g_warmup
         // won't end while it's tripped. The warmup badteams gate (ReadyCount) reads this via Teamplay.
         new("sv_teamnagger", "2", Save, "team size difference threshold for the unbalanced-teams nag (0 = off)"),
         // QC teamplay_lockonrestart (xonotic-server.cfg:29): lock teams once the match restarts (ReadyRestart_force).
         new("teamplay_lockonrestart", "0", Save, "lock teams once all players readied up and the game restarted"),
+        // QC server/teamplay.qc:41-44 + xonotic-server.cfg: the forced-team id/IP lists. Player_DetermineForcedTeam
+        // matches a connecting client's crypto-id/IP against these space-separated lists to pin them to a team;
+        // g_forced_team_otherwise (red|blue|yellow|pink|spectate|default) is the fallback for unlisted clients.
+        new("g_forced_team_red", "", Save, "space-separated id/IP list forced onto the red team"),
+        new("g_forced_team_blue", "", Save, "space-separated id/IP list forced onto the blue team"),
+        new("g_forced_team_yellow", "", Save, "space-separated id/IP list forced onto the yellow team"),
+        new("g_forced_team_pink", "", Save, "space-separated id/IP list forced onto the pink team"),
+        new("g_forced_team_otherwise", "default", Save, "forced-team action for unlisted clients (red|blue|yellow|pink|spectate|default)"),
 
         // ---- health / armor regen + rot (balance-xonotic.cfg; values match stock so regen works without
         //      a loaded balance cfg — the port's old 0 defaults left health regen OFF out of the box) ----
@@ -344,14 +357,15 @@ public static class Cvars
         new("sv_vote_no_stops_vote", "0", Save, "caller voting no cancels their own vote"),
         new("sv_vote_nospectators", "0", Save, "0=spectators vote, 1=except warmup/intermission, 2=never"),
         new("sv_vote_gamestart", "0", Save, "allow vote calling before the match starts"),
-        new("sv_vote_limit", "80", Save, "max votable command length (0 = no limit)"),
+        new("sv_vote_limit", "160", Save, "max votable command length (0 = no limit)"), // commands.cfg:361
         new("sv_vote_debug", "0", Save, "include bots as voters; print debug banner"),
         new("sv_vote_override_mostrecent", "0", Save, "allow voting a recently-played map"),
+        new("sv_status_privacy", "1", Save, "hide IP/crypto_id from who/status replies shown to clients"), // commands.cfg:157
 
         // ---- cheats (server/cheats.qc) ----
         new("sv_cheats", "0", Notify, "0=off, 1=cheats, 2=cheats for non-players + wider teleport"),
         new("g_grab_range", "200", Save, "non-cheat object drag range"),
-        new("g_max_info_autoscreenshot", "60", Save),
+        new("g_max_info_autoscreenshot", "3", Save), // xonotic-server.cfg:643
         new("sv_clones", "0", Save, "max clones a player may spawn (cheat)"),
         new("g_allow_checkpoints", "0", Save, "speedrun checkpoint teleport is not a cheat"),
 
@@ -364,7 +378,8 @@ public static class Cvars
         new("g_chatban_list", "", Save, "muted players (IP/id prefixes)"),
         new("g_playban_list", "", Save, "forced-spectate players (IP/id prefixes)"),
         new("g_voteban_list", "", Save, "vote-banned players (IP/id prefixes)"),
-        new("g_playban_minigames", "1", Save, "also remove play-banned players from minigames"),
+        // QC xonotic-server.cfg:436 — default 0 (play-banned players ARE allowed into minigames out of the box).
+        new("g_playban_minigames", "0", Save, "disallow playbanned players (forced to spectate) from minigames"),
 
         // ---- event log + player stats (server/gamelog.qc + common/playerstats.qc) ----
         new("sv_eventlog", "0", Save, "enable the event log"),
@@ -421,9 +436,17 @@ public static class Cvars
         new("g_maplist_votable_suggestions_override_mostrecent", "0", Save),
         new("sv_vote_gametype", "0", Save, "run a gametype vote before the map vote"),
         new("sv_vote_gametype_timeout", "20", Save),
-        new("sv_vote_gametype_options", "dm tdm ctf", Save),
+        // QC xonotic-server.cfg ships "dm tdm ca ctf" (ca was missing here).
+        new("sv_vote_gametype_options", "dm tdm ca ctf", Save),
+        new("sv_vote_gametype_reduce_time", "10", Save, "reduce gametype options after this many seconds; 0 = disable"),
+        new("sv_vote_gametype_reduce_count", "2", Save, "gametype options kept after reduce"),
+        new("sv_vote_gametype_detail", "1", Save, "show vote counts during the gametype vote"),
+        new("sv_vote_gametype_default_current", "1", Save, "the current gametype wins a tie among 0-vote options"),
+        new("sv_vote_gametype_maplist_reset", "1", Save, "reset g_maplist when the gametype changes"),
         new("samelevel", "0", "restart the same map instead of rotating"),
         new("lastlevel", "0"),
+        new("quit_when_empty", "0", "if set, the server quits at match end when only bots remain"),
+        new("quit_and_redirect", "", "if set to a server address, all clients are redirected there at match end"),
         new("timelimit_increment", "5", Save, "minutes added by extendmatchtime"),
         new("timelimit_decrement", "5", Save, "minutes removed by reducematchtime"),
         new("timelimit_min", "5", Save),

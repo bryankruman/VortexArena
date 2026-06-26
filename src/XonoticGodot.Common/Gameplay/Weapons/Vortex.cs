@@ -292,7 +292,7 @@ public sealed class Vortex : Weapon
 
         // FireRailgunBullet: pierces targets, applies knockback `myforce` (+ falloff cvars when set).
         // headshotNotify: false — the Vortex does NOT announce headshots (QC vortex.qc:144).
-        Vector3 end = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
+        Vector3 end = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
         Entity? hit = WeaponFiring.FireRailgunBullet(actor, shot.Origin, end, mydmg, RegistryId, myforce,
             headshotNotify: false);
 

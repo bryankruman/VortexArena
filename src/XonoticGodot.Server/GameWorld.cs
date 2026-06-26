@@ -494,9 +494,35 @@ public sealed class GameWorld
         if (Cvars.Bool("g_campaign"))
         {
             if (ConfigReader is not null) Campaign.FileReader = ConfigReader;
+
+            // QC Campaign_Invalid() reads GetMapname() + MapInfo_CurrentGametype() to confirm the engine actually
+            // landed on the campaign file's level-0 map/gametype, else CampaignBailout. Wire those two host probes
+            // (previously null → both checks skipped → the guard was inert):
+            //  - LoadedMapName: the map the host is booting (world.MapName, set by the menu/Shell from the campaign).
+            //  - GametypeMismatch: QC compares MapInfo_CurrentGametype() to MapInfo_Type_FromString(gametype[0]).
+            //    The port resolves both names through GameTypes.ByName (the same fallback ResolveGameType uses), so a
+            //    campaign file naming an unregistered gametype — which ResolveGameType would silently fall back to DM —
+            //    is detected as a mismatch. Compares by resolved NetName so "dm" == the Deathmatch singleton.
+            Campaign.LoadedMapName = () => MapName;
+            Campaign.GametypeMismatch = wanted =>
+            {
+                // The running gametype the host will boot is the campaign's own choice (it drives gameTypeName just
+                // below — QC ran MapInfo_SwitchGameType right before Campaign_Invalid). Resolve both, compare NetName.
+                GameType? running = ResolveGameType(Campaign.CurrentGametype);
+                GameType? want = GameTypes.ByName(wanted);
+                if (want is null) return true; // file named an unregistered gametype (no MapInfo type) → QC bailout
+                return !string.Equals(running?.NetName, want.NetName, StringComparison.Ordinal);
+            };
+
             if (Campaign.PreInit() && !string.IsNullOrEmpty(Campaign.CurrentGametype))
                 gameTypeName = Campaign.CurrentGametype;
         }
+
+        // QC the `radar_showenemies` server global is fresh (0 = enemies hidden) at every gametype init; only Race
+        // (rc_SetLimits → true) and Nexball (nb_Initialize → g_nexball_radar_showallplayers) re-set it. Reset the
+        // mirror cvar here BEFORE OnInit so a Race/Nexball map followed by a DM map doesn't inherit a stale "1" (and
+        // leak every player's private ent_cs fields via the ServerNet enemy-privacy mask).
+        Cvars.Set("radar_showenemies", "0");
 
         // 2) resolve + activate the gametype (QC MapInfo_LoadedGametype → REGISTER_GAMETYPE singleton).
         GameType = ResolveGameType(gameTypeName);
@@ -506,6 +532,10 @@ public sealed class GameWorld
         //       outside CTS both entities self-delete (quake3.qc:198,231). Unwired this defaults to false, so
         //       those entities would be deleted even on a CTS map — point it at the live gametype here.
         CompatRemaps.IsCtsActive = () => GameType is Cts;
+
+        // QC player_powerups (client.qc:1583): the "<name> picked up a Superweapon" broadcast is suppressed on a
+        // CTS map (the superweapon is part of the fixed start loadout there). Wire the same gametype check.
+        PlayerFrameLogic.IsCtsGametype = () => GameType is Cts;
 
         // QC the global `q3compat` int (server/compat/quake3.qh:3), set during worldspawn from
         // _MapInfo_FindArenaFile(mapname, ".arena"/".defi") (world.qc:964-965) — i.e. the existence of a sibling
@@ -525,6 +555,11 @@ public sealed class GameWorld
         // Feed real per-bot skills into the skill-weighted team balance (QC m_skill_mu): a stronger bot counts
         // as "more" than a weaker one. Humans use the flat reference rating (no TrueSkill ratings modeled).
         Teamplay.SkillProvider = p => p.IsBot ? p.BotSkill : 5f;
+        // QC TeamBalance_CompareTeamsInternal score-strength ramp (only past warmup + game_starttime): feed the
+        // live warmup flag + seconds-since-match-start so the team_score ratio bias ramps in over the match
+        // (min(1,(time-start)/timelimit)^1.5) instead of applying a flat bias.
+        Teamplay.IsWarmup = () => Warmup.WarmupStage;
+        Teamplay.SecondsSinceMatchStart = () => Time - GameStartTime;
         Clients = new ClientManager(Simulation, Scores, Teamplay, Match) { ServerEntities = ServerServices.ServerEntities, PlayerStates = PlayerStates, TeamsLocked = TeamsLocked };
 
         // [T39] the bot population (QC bot_serverframe): brains are created for EVERY bot connect path via the
@@ -631,6 +666,16 @@ public sealed class GameWorld
         // (QC monsters_total/monsters_killed are server globals cleared when a new map spawns). Without this the
         // scoreboard map-stats row accumulates across every Invasion map played in one process run.
         XonoticGodot.Common.Gameplay.MonsterAI.ResetCounters();
+        // QC sv_monsters.qc:846/1165 `(autocvar_g_campaign && !campaign_bots_may_start)`: in a campaign, monsters
+        // freeze (like bots) until the human spawns. Wired here every Boot so it never goes stale; previously the
+        // monster move/think gate ignored Campaign.BotsMayStart entirely.
+        XonoticGodot.Common.Gameplay.MonsterAI.CampaignBotHold = () => Cvars.Bool("g_campaign") && !Campaign.BotsMayStart;
+        // QC sv_lms.qc:85 `campaign_bots_may_start`: the LMS campaign human-lost early end keys off the human having
+        // spawned. Wire the same Campaign.BotsMayStart probe (every Boot so it never goes stale).
+        XonoticGodot.Common.Gameplay.LastManStanding.CampaignBotsMayStart = () => Campaign.BotsMayStart;
+        // QC sv_campcheck.qc:51 `(autocvar_g_campaign && !campaign_bots_may_start)`: the campcheck re-grace holds in
+        // a campaign until the human spawns. Wire the same probe (every Boot so it never goes stale).
+        XonoticGodot.Common.Gameplay.CampcheckMutator.CampaignBotHold = () => Cvars.Bool("g_campaign") && !Campaign.BotsMayStart;
 
         // 6) spawn the map's entities (QC the BSP entity-lump loop → spawnfunc_CLASSNAME).
         SpawnMapEntities();
@@ -676,6 +721,22 @@ public sealed class GameWorld
         //     derive each trigger_warpzone brush's plane from its geometry (+ any trigger_warpzone_position
         //     orientation) and link the pairs. No-op when the map has no warpzones.
         Warpzones.InitMapZones();
+
+        // 6a‴) [sv-world-rules.misc.max_shot_distance] QC world.qc:731 (InitGameplayMode):
+        //       max_shot_distance = min(230000, vlen(world.maxs - world.mins)). The global hitscan/trueaim/turret
+        //       trace ceiling is the world diagonal, capped at 230000qu (NetRadiant's ~227023qu corner-to-corner
+        //       plus float-precision headroom). Recompute it per map from the built collision bounds so on huge
+        //       maps traces reach as far as Base, and on tiny maps they clamp tighter than the 32768qu fallback.
+        //       A degenerate/empty collision world (no BSP brushes, e.g. a headless unit-test fixture) leaves both
+        //       bounds at the origin — keep the 32768qu constant fallback rather than collapsing the range to 0.
+        //       (CurrentMaxShotDistance is process-static, so reset the fallback explicitly to avoid inheriting a
+        //       prior map's value on a degenerate fixture.)
+        if (Collision.WorldMaxs != Collision.WorldMins)
+            XonoticGodot.Common.Gameplay.WeaponFiring.SetMaxShotDistanceFromWorldBounds(
+                Collision.WorldMins, Collision.WorldMaxs);
+        else
+            XonoticGodot.Common.Gameplay.WeaponFiring.CurrentMaxShotDistance =
+                XonoticGodot.Common.Gameplay.WeaponFiring.MaxShotDistance;
 
         // 6a″) [T45] wire this match's warpzone manager onto the trace service (QC global g_warpzones) so
         //       hitscan/projectile traces and radius-damage queries recurse through linked portals — a rocket or
@@ -789,12 +850,56 @@ public sealed class GameWorld
         // self-kill the old instant CmdKill ran (QC ClientKill_Now → Damage(this,this,this,100000,DEATH_KILL)).
         KillCountdown.Now = () => Time;
         KillCountdown.KillDelay = () => Cvars.FloatOr("g_balance_kill_delay", 2f);
+        // QC xonotic-server.cfg:447 g_balance_kill_antispam (default 5, XPM/XDF 0): the repeat-`kill` carry-forward.
+        KillCountdown.KillAntispam = () => Cvars.FloatOr("g_balance_kill_antispam", 5f);
         KillCountdown.RoundActiveNotStarted = () => Rounds is { IsRoundStarted: false };
         KillCountdown.GameStopped = () => GameStopped;
         KillCountdown.StateOf = PlayerStates.Of;
         KillCountdown.PerformKill = static p =>
             XonoticGodot.Common.Gameplay.Damage.Combat.Damage(p, p, p, 100000f,
                 XonoticGodot.Common.Gameplay.Damage.DeathTypes.Kill, p.Origin, System.Numerics.Vector3.Zero);
+        // QC MUTATOR_CALLHOOK(ClientKill, this, killtime) (clientkill.qc:101). The three live gametype hooks:
+        //  - ft (sv_freezetag.qc:438): return STAT(FROZEN) → a frozen player CANNOT self-kill (closes the exploit
+        //    where the eventual PerformKill defeated the freeze; frozen is health=1 but not IsDead, so CmdKill's
+        //    IsDead gate missed it).
+        //  - cts (sv_cts.qc:337): killtime = 0 (instant); rc (sv_race.qc:114): killtime = 0 only while qualifying.
+        KillCountdown.ClientKillHook = (Player p, ref float killtime) =>
+        {
+            if (GameType is FreezeTag ft && ft.IsFrozen(p))
+                return true; // forbid the kill entirely
+            if (GameType is Cts)
+                killtime = 0f;
+            else if (GameType is Race rc && rc.Qualifying)
+                killtime = 0f;
+            return false;
+        };
+        // QC ClientKill_Now_TeamChange (clientkill.qc:18): resolve the deferred intent on countdown expiry.
+        KillCountdown.PerformTeamChange = (p, target) =>
+        {
+            if (target == -2)
+            {
+                // QC -2 → become observer (the spectate command already gated sv_spectate before deferring).
+                Clients.PutObserverInServer(p);
+            }
+            else
+            {
+                // QC SetPlayerTeam(Team_TeamToIndex(target), TEAM_CHANGE_MANUAL): the move kills the player. Mirrors
+                // CmdSelectTeam's old instant path, now run only after the countdown has elapsed. SetTeam fires the
+                // Player_ChangeTeam/ChangedTeam mutator hooks (a mutator may veto); if it vetoes, leave the team be.
+                if (Teamplay.SetTeam(p, target))
+                {
+                    Teamplay.KillPlayerForTeamChange(p);
+                    // QC SetPlayerTeam: when a HUMAN changes team, synchronously autobalance the bots so the manual
+                    // switch is compensated immediately (not just on the next timer poll).
+                    if (!p.IsBot)
+                    {
+                        Player? moved = Teamplay.AutoBalanceBots(Clients.Players);
+                        if (moved is not null)
+                            Teamplay.KillPlayerForTeamChange(moved);
+                    }
+                }
+            }
+        };
 
         // Honor a host-set start time: if the host raised GameStartTime before Boot (a custom countdown) or
         // warmup is enabled, run the warmup/countdown flow; otherwise keep the immediate-start default (0) so
@@ -816,6 +921,31 @@ public sealed class GameWorld
         // QC vote.qc:911 — the `allready` vote is only votable during warmup (warmup_stage). Without this the
         // predicate defaults to () => false and an allready vote is always rejected with "Game already started".
         Voting.WarmupStage = () => Warmup.WarmupStage;
+        // QC IS_PLAYER(it) (server/utils.qh:9 = classname == "player"): an in-game player, not a spectator/observer.
+        // Drives the spectator-exclusion branch in VoteCount (!spectators_allowed && realPlayers>0) so that under
+        // sv_vote_nospectators 2 a spectator's ballot is dropped. (The port has no separate .ingame round flag, so
+        // INGAME stays default-false and the real-player set is exactly the non-observers — see Chat.cs IsIngame.)
+        Voting.IsPlayer = p => !p.IsObserver && p.FragsStatus != Player.FragsSpectator;
+        // QC timeout_status (vote.qc:1022/1170): no vote other than `timein` may be called while a timeout is
+        // pending/active. Was unwired (default () => false) so the guard never fired — wire it live.
+        Voting.TimeoutActive = () => Timeout.Active;
+        // QC game_starttime (vote.qc:1009): before the match starts, calling a vote is rejected unless
+        // sv_vote_gamestart. Was unwired (default () => 0 so `Now < 0` never true) — wire to the live start time.
+        Voting.GameStartTime = () => GameStartTime;
+        // QC the map/nextmap vote validation (ValidateMap → MapInfo_FixName + recent-map + gametype-support gate).
+        // Returns the validated map name or null with the reason in `error`. The recent-map block is bypassed by
+        // sv_vote_override_mostrecent (and only applies to a real caller, not a console-issued vote).
+        Voting.ValidateMap = (string map, bool fromConsole, out string error) =>
+        {
+            error = "";
+            if (string.IsNullOrEmpty(map) || !Rotation.MapExists(map))
+            { error = "This map is not available on this server."; return null; }
+            if (!fromConsole && !Cvars.Bool("sv_vote_override_mostrecent") && MapRotation.IsRecent(map))
+            { error = "This server does not allow for recent maps to be played again. Please be patient for some rounds."; return null; }
+            if (!Rotation.MapSupportsGametype(map))
+            { error = $"^1Invalid mapname, \"^3{map}^1\" does not support the current gametype."; return null; }
+            return map;
+        };
 
         WireServerInfrastructure();
     }
@@ -862,12 +992,31 @@ public sealed class GameWorld
         Cheats.Init();
         Cheats.Log = line => Commands.ChatBroadcast?.Invoke(line);
 
-        // Anticheat: ping provider for the snap-aim suppression window.
+        // Anticheat: ping provider for the snap-aim suppression window. The default is 0 (LAN/bot/headless host);
+        // a net host (ServerNet) overrides this with the real per-client smoothed ping.
         AntiCheat.PingProvider = _ => 0f;
+
+        // QC anticheat_fixangle from teleporters.qc:310 (WarpZone_PostTeleportPlayer_Callback, #ifdef SVQC): a
+        // server-side player teleport forcibly snaps the view, so open the snap-aim suppression window for the
+        // ping-scaled interval (else a legit teleport view-snap inflates strafebot_new / idle_snapaim). The spawn
+        // path already calls FixAngle directly (InfraClientSpawn); this covers the teleport source. Bots are never
+        // fed to the anticheat detectors, so skip them.
+        Teleporters.OnPlayerFixAngle = e =>
+        {
+            if (e is Player tp && !tp.IsBot)
+                AntiCheat.FixAngle(tp, Time, AntiCheat.PingProvider(tp));
+        };
 
         // Event log: console sink → broadcast; gated by sv_eventlog at the call sites.
         GameLog.ConsoleSink = line => Commands.ChatBroadcast?.Invoke(line);
-        GameLog.MatchId = MapName;
+        // QC world.qc:949 matchid = sprintf("%d.%s.%06d", autocvar_sv_eventlog_files_counter, strftime_s(),
+        // random()*1e6): a per-match correlation id "<counter>.<unixtime>.<rand6>" (≤64 chars, no : ; ' " \ $).
+        // Using the map name alone (the old value) collides across rematches on the same map and weakens eventlog
+        // correlation. strftime_s() is the server's unix timestamp; random()*1e6 is a 6-digit zero-padded tag.
+        long unixTime = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        int rand6 = System.Random.Shared.Next(0, 1_000_000);
+        GameLog.MatchId = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+            "{0}.{1}.{2:D6}", Cvars.Int("sv_eventlog_files_counter"), unixTime, rand6);
         if (Cvars.Bool("sv_eventlog"))
         {
             // QC GameLogInit (server/gamelog.qc:50): MUTATOR_CALLHOOK(BuildMutatorsString, ":gameinfo:mutators:LIST")
@@ -899,6 +1048,24 @@ public sealed class GameWorld
         Timeout.GameStartTime = () => GameStartTime;
         Timeout.IsPlayerOf = p => !p.IsDead || true; // any connected client may call (faithful: IS_PLAYER)
         Timeout.Broadcast = line => Commands.ChatBroadcast?.Invoke(line);
+        // QC cvar_set("slowmo", ...) (common.qc timeout_handler_think): the pause is NOT game_stopped — it is the
+        // engine slowmo running at TIMEOUT_SLOWMO_VALUE (0.0001), so players can still inch. ServerNet reads the
+        // live `slowmo` cvar into Simulation.TimeScale every frame, so driving the cvar here genuinely time-scales
+        // the whole sim. Restored to the captured original on resume.
+        Timeout.ApplySlowmo = v => Cvars.Set("slowmo", v.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        // QC the per-second CENTER_TIMEOUT_BEGINNING/ENDING countdown center-prints + the ANNCE_PREPARE warning cue.
+        // QC sends these as MSG_CENTER (a per-client center-print that OVERWRITES the prior second's number). The
+        // Godot-free core has no networked center-print channel, so the host carries them as chat-broadcast lines.
+        // The BEGINNING countdown is short (sv_timeout_leadtime, 4s) so it is surfaced in full; the ENDING countdown
+        // runs for the whole pause in QC (overwriting), which would flood chat here — so only the final-stretch
+        // "game resumes in N" lines (≤ sv_timeout_resumetime+1, the actionable window) are broadcast.
+        Timeout.CenterPrintBeginning = n => Commands.ChatBroadcast?.Invoke($"^3Timeout begins in ^1{n}");
+        Timeout.CenterPrintEnding = n =>
+        {
+            if (n <= (int)Cvars.FloatOr("sv_timeout_resumetime", 3f) + 1)
+                Commands.ChatBroadcast?.Invoke($"^3Game resumes in ^1{n}");
+        };
+        Timeout.AnnouncePrepare = () => Commands.ChatBroadcast?.Invoke("^3Prepare!");
 
         // Map rotation + vote: the change-level pipeline applies the winner; current map seeds the cursor.
         MapVote.Reseed(unchecked((int)(uint)MapName.GetHashCode()));
@@ -976,6 +1143,20 @@ public sealed class GameWorld
         // QC Ban_MaybeEnforceBanOnce: a banned client is dropped on connect.
         if (Bans.MaybeEnforceBan(p))
             return;
+
+        // QC ClientConnect (server/client.qc:1242-1247): re-apply the SOFT bans for a client found on the
+        // playban / chatban prefix lists, so a muted or play-banned offender who reconnects (or persists across
+        // a map change) does not silently regain the right to talk or play.
+        //   - playban (client.qc:1243): TRANSMUTE(Observer, this). The port already transmutes EVERY connecting
+        //     client to an observer (ClientManager.RegisterClient) and the join gate (Clients.ForcedSpectate =
+        //     Bans.IsPlayBanned) refuses their re-join, so the force-spectate is already in effect; the explicit
+        //     PutObserverInServer here keeps it faithful/defensive if some path left them non-observing.
+        //   - chatban (client.qc:1246): CS(this).muted = true. This was the genuinely-missing live leg — the
+        //     Muted fake-accept flag (Chat.cs) was only set at the instant `mute` ran, never re-applied on connect.
+        if (Bans.IsPlayBanned(p) && !p.IsObserver)
+            Clients.PutObserverInServer(p);
+        if (Bans.IsChatBanned(p))
+            p.Muted = true;
 
         if (Cvars.Bool("sv_eventlog"))
         {
@@ -1124,6 +1305,10 @@ public sealed class GameWorld
         float? endDelay = null, float? countdown = null, float? roundTimeLimit = null)
     {
         Rounds ??= new RoundHandler { GameStartTime = GameStartTime };
+        // QC round_handler.qc:38: !(autocvar_g_campaign && !campaign_bots_may_start) AND-gates the countdown, so a
+        // campaign round is held until the human spawns (campaign_bots_may_start flips on first real-client spawn,
+        // GameWorld.OnClientSpawned → Campaign.BotsMayStart). Previously DEFERRED (RoundHandler comment); now wired.
+        Rounds.CampaignBotHold = () => Cvars.Bool("g_campaign") && !Campaign.BotsMayStart;
         // QC weaponUseForbidden (weaponsystem.qc:426): round_handler_IsActive() && !round_handler_IsRoundStarted()
         // — block weapon fire during the pre-round grace window (warmup/countdown/end-delay). The headless
         // WeaponFireDriver can't reach the live handler, so wire the predicate here for every round-based mode.
@@ -1191,6 +1376,24 @@ public sealed class GameWorld
     /// </summary>
     public void Shutdown()
     {
+        // QC server/world.qc:2631 (SV_Shutdown): Ban_SaveBans() — re-persist the ban store at session end so the
+        // saved seconds-remaining are refreshed against the final clock (the per-Insert/Delete save keeps the list
+        // current, but a long session's remaining-time would otherwise be stale by the session length on next load).
+        // Save() is a no-op unless the store was loaded, matching Base.
+        Bans.Save();
+
+        // QC Shutdown (world.qc:2627-2628): if a timeout pause is ACTIVE when the world is torn down, restore the
+        // captured original slowmo so the engine doesn't stay stuck at TIMEOUT_SLOWMO_VALUE for the next map.
+        Timeout.ResetSlowmoOnShutdown();
+
+        // QC Shutdown (world.qc:2634): PlayerStats_GameReport(false) — an unfinished match (the world is being
+        // torn down WITHOUT having gone through NextLevel/intermission, e.g. an admin endmatch/map change or a
+        // listen-server quit mid-game) still files a final report, flagged unfinished. NextLevel already files the
+        // finished:true report on the normal end-of-match path, so only report here when intermission never ran —
+        // otherwise the same (now-finished) match would be double-reported.
+        if (!Intermission.Running)
+            PlayerStats.GameReport(finished: false, Clients.Players, Time, Teamplay.IsTeamGame);
+
         Services.CvarsImpl.Changed -= OnServerCvarChanged;
     }
 
@@ -1276,9 +1479,12 @@ public sealed class GameWorld
             KillCountdown.Tick(killCountdownPlayers[i]);
     }
 
-    /// <summary>True when the match is frozen (intermission, ended, or a timeout pause) — QC <c>game_stopped</c>.
-    /// Internal so the bot population's serverframe can honor the same gate (QC bot.qc:704).</summary>
-    internal bool GameStopped => Intermission.Running || MatchEnded || Timeout.IsPaused;
+    /// <summary>True when the match is frozen (intermission or ended) — QC <c>game_stopped</c>.
+    /// Internal so the bot population's serverframe can honor the same gate (QC bot.qc:704).
+    /// NB: a timeout pause is deliberately NOT game_stopped (QC common.qc never sets game_stopped for a timeout —
+    /// it runs the engine slowmo at TIMEOUT_SLOWMO_VALUE 0.0001 so players can still inch). The pause is realised
+    /// through <see cref="TimeoutController.ApplySlowmo"/> driving the live <c>slowmo</c> cvar, not a hard freeze.</summary>
+    internal bool GameStopped => Intermission.Running || MatchEnded;
 
     /// <summary>
     /// QC <c>CreatureFrame_All</c> (player slice): run the per-frame contents + fall damage for each player.
@@ -1323,6 +1529,14 @@ public sealed class GameWorld
         }
 
         // ---- PlayerPreThink (QC client.qc PlayerPreThink) ----
+        // QC PlayerPreThink (client.qc:2880) calls anticheat_prethink EVERY frame to zero the div0_evade offset,
+        // which re-arms the evade reseed branch in anticheat_physics so it samples the global evasion phase walk
+        // once per frame. Without this re-arm the offset is set once and never re-zeroed, so the div0_evade
+        // detector accumulates against a single stale phase sample. Real clients only — mirrors the Physics gate
+        // below (bots are never fed to the anticheat detectors).
+        if (!p.IsBot)
+            AntiCheat.PreThink(p);
+
         // Fire the per-frame player hook (dodging/multijump/instagib drive their state machines here).
         var pre = new MutatorHooks.PlayerPreThinkArgs(p);
         using (Prof.Sample("move.pre"))
@@ -1488,15 +1702,17 @@ public sealed class GameWorld
             using (Prof.Sample("mp.fx"))
                 StatusEffectsCatalog.Tick(p, Time);
 
-            // QC player_powerups(): the superweapon countdown (strip held superweapons once their timer lapses,
-            // after the tick expires it) + the MUTATOR_CALLHOOK(PlayerPowerups) tail hook (instagib/overkill
-            // manipulate the per-frame powerup values here).
-            PlayerFrameLogic.PlayerPowerups(p);
-
             // QC the per-frame weapon driver (W_WeaponFrame): run the full fire state machine for the player.
             using (Prof.Sample("mp.weapon"))
                 WeaponThink(p);
         }
+
+        // QC player_powerups() (client.qc:2356): called in PlayerThink AFTER the game_stopped early-out but
+        // OUTSIDE the dead branch — it runs for a dead player too (it strips powerups + plays the power-off sound
+        // on death, and clears the EF_NODEPTHTEST debug flag every frame). Its own dead/gibbed early-outs gate the
+        // powerup-flag application, so driving it for any non-observer live-or-dead player here matches QC.
+        if (!gameStopped)
+            PlayerFrameLogic.PlayerPowerups(p);
 
         // QC PlayerPreThink tail (client.qc:2762): target_voicescript_next(this) — advance the player's active
         // scripted voice-line sequence one step per tick (play the next line, schedule the following). QC calls
@@ -1540,9 +1756,10 @@ public sealed class GameWorld
     /// </summary>
     private void OnEndFrame()
     {
-        // [T37] SEAM E: publish the world's frozen state to the vehicle subsystem (QC game_stopped) so vehicles
-        // park during intermission/match-end/timeout and the boarding path blocks board/exit while stopped.
+        // [T37] SEAM E: publish the world's frozen state to the vehicle subsystem and scoring layer (QC game_stopped)
+        // so vehicles park and score additions drop during intermission/match-end/timeout.
         XonoticGodot.Common.Gameplay.VehicleCommon.GameStopped = GameStopped;
+        XonoticGodot.Common.Gameplay.Scoring.GameScores.GameStopped = GameStopped;
 
         // 1) gametype per-frame step (QC the gametype's StartFrame/CheckRules slice). MatchController.Tick
         //    respawns due players (off Player.RespawnTime, set by the gametype's obituary handler) and keeps
@@ -1571,7 +1788,13 @@ public sealed class GameWorld
         // 3) end-of-match check + intermission (QC CheckRules_World → NextLevel, then IntermissionThink).
         CheckRulesAndIntermission();
 
-        // 4) QC anticheat_endframe: advance the global evade phase walk (server/anticheat.qc).
+        // 4) QC anticheat_endframe: advance the global evade phase walk (server/anticheat.qc). Base's endframe
+        // also runs FOREACH_CLIENT(it.fixangle, anticheat_fixangle(it)) as a catch-all for forced view changes,
+        // but in the port the only two server-side .fixangle sources — respawn (InfraClientSpawn → FixAngle) and
+        // teleport (Teleporters.OnPlayerFixAngle → FixAngle, wired in this world) — already open the window
+        // directly at their call site, exactly like Base also calls anticheat_fixangle straight from teleporters.
+        // The networked Player.FixAngle flag has no server-side per-frame reset (the client predictor/listen host
+        // own it), so feeding it here would perpetually re-arm the window; passing no fixAngleClients is correct.
         AntiCheat.EndFrame(Simulation.FrameTime, Time);
 
         // 5) the post-resolution server hook (QC the tail of the server frame).
@@ -2037,7 +2260,20 @@ public sealed class GameWorld
                 break;
             case Cts cts:
                 cts.Activate();
-                cts.OnFinishRetract = p => Clients.Spawn(p);
+                // QC Race_FinalCheckpoint (sv_cts.qc:342) → ClientKill_Silent(player, g_cts_finish_kill_delay):
+                // the finish retract is a real *silent* self-kill (DEATH_KILL), not a teleport-respawn — so it
+                // produces a death event / obituary / death stat. CTS's PlayerDies hook forces an instant respawn
+                // (RESPAWN_FORCE) which returns the runner to a start spawn and re-prepares the run. The Cts timer
+                // already honored the kill delay (and the 0 = never / -1 = instant cases); this just makes the
+                // expiry lethal through the damage pipeline instead of a bare respawn.
+                cts.OnFinishRetract = p =>
+                {
+                    if (p.IsDead || p.IsObserver)
+                        return; // already gone (e.g. a real death cancelled the run first)
+                    XonoticGodot.Common.Gameplay.Damage.Combat.Damage(p, p, p, 100000f,
+                        XonoticGodot.Common.Gameplay.Damage.DeathTypes.Kill, p.Origin,
+                        System.Numerics.Vector3.Zero);
+                };
                 break;
 
             default:
@@ -2275,8 +2511,9 @@ public sealed class GameWorld
     {
         if (!Teamplay.IsTeamGame || GameStopped)
             return;
-        if (Cvars.Float("g_balance_teams") == 0f && Cvars.Float("g_balance_teams_prevent_imbalance") == 0f)
-            return;
+        // QC TeamBalance_AutoBalanceBots: bot autobalance is UNCONDITIONAL — the g_balance_teams /
+        // prevent_imbalance gate is explicitly commented out in QC ("we always want auto-balanced bots"). Only
+        // intermission stops it, which the GameStopped check above already covers.
         if (Time < _nextTeamBalanceTime)
             return;
         _nextTeamBalanceTime = Time + 3f; // QC re-checks balance periodically, not every frame
@@ -2491,12 +2728,55 @@ public sealed class GameWorld
                 break;
         }
 
+        // QC PlayerThink dead branch calls ShowRespawnCountdown(this) (client.qc:2043-2060): play the spoken
+        // 10-9-8 respawn announcer as each whole second of the wait is crossed.
+        ShowRespawnCountdown(p);
+
         // QC STAT(RESPAWN_TIME) (client.qc:2421-2436): the client shows the countdown / "press fire" prompt off
         // this. Negated while RESPAWNING so the client knows a respawn is imminent; 0 while SILENT.
         if ((p.RespawnFlags & RespawnFlag.Silent) != 0)
             p.RespawnTimeStat = 0f;
         else
             p.RespawnTimeStat = p.DeadState == DeadFlag.Respawning ? -p.RespawnTime : p.RespawnTime;
+    }
+
+    /// <summary>
+    /// QC <c>ShowRespawnCountdown</c> (server/client.qc:2043-2060): while a dead player waits for a long-enough
+    /// respawn (<see cref="RespawnTiming"/> seeds <c>respawn_countdown = 10</c> for waits ≥5 s, else -1), play the
+    /// spoken number announcer (<c>Announcer_PickNumber(CNT_RESPAWN, n)</c> → <c>ANNCE_NUM_RESPAWN_n</c>) once per
+    /// whole second crossed. The 0.5 s overlap guard prevents double-firing when two ticks land in the same second.
+    /// The NUM_RESPAWN announcer ships disabled by default (matches Base — it's an opt-in announcer), so this stays
+    /// silent until the player enables the respawn-countdown sounds, then becomes live with no further wiring.
+    /// </summary>
+    private void ShowRespawnCountdown(Player p)
+    {
+        // QC: if (!IS_DEAD(this)) return; — only a dead player counting down.
+        if (p.DeadState == DeadFlag.No)
+            return;
+        // RespawnTiming seeds -1 for a too-short (or denied) wait → no announcer.
+        if (p.RespawnCountdown < 0)
+            return;
+
+        float now = Time;
+        int number = (int)MathF.Ceiling(p.RespawnTime - now);
+        if (number <= 0)
+            return;
+        if (number <= p.RespawnCountdown)
+        {
+            p.RespawnCountdown = number - 1;
+            // QC: only say it if it is the same number even in 0.5 s; prevents overlapping sounds.
+            if ((int)MathF.Ceiling(p.RespawnTime - (now + 0.5f)) == number)
+                AnnceIfEnabledTo(p, "NUM_RESPAWN_" + number);
+        }
+    }
+
+    // QC Announcer_PickNumber(CNT_RESPAWN, n) → ANNCE_NUM_RESPAWN_n, sent to the one dead player. Gated on the
+    // notification's shipped Enabled flag exactly like the game-start countdown (NUM_RESPAWN ships disabled).
+    private static void AnnceIfEnabledTo(Player p, string bareName)
+    {
+        var n = Notifications.ByName(MsgType.Annce, bareName);
+        if (n is { Enabled: true })
+            NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Annce, bareName);
     }
 
     // =============================================================================================
@@ -2509,6 +2789,15 @@ public sealed class GameWorld
 
     /// <summary>The map the end-of-match flow selected to switch to (QC the changelevel target), or "" until chosen.</summary>
     public string SelectedNextMap { get; private set; } = "";
+
+    /// <summary>
+    /// QC <c>get_nextmap()</c> / the <c>_nextmap</c> the server broadcasts to clients via
+    /// <c>Set_NextMap</c>/<c>Send_NextMap_To_Player</c> (the scoreboard "Next map:" line). It is the chosen map
+    /// once the flow has run (<see cref="SelectedNextMap"/>), else the explicitly queued map (gotomap / vote /
+    /// campaign). Empty for a plain rotation until the hold elapses and the rotation pick is made.
+    /// </summary>
+    public string NextMapBroadcast =>
+        !string.IsNullOrEmpty(SelectedNextMap) ? SelectedNextMap : QueuedNextMap;
 
     private void CheckRulesAndIntermission()
     {
@@ -2660,6 +2949,14 @@ public sealed class GameWorld
     /// </summary>
     private void NextLevel()
     {
+        // QC VoteReset(true): cancel/clear any in-flight vote at match end. The warmup/intermission gate already
+        // blocks NEW votes, but an active vote must be retracted explicitly to match Base.
+        Voting.Stop();
+
+        // QC MUTATOR_CALLHOOK(MatchEnd_BeforeScores): runs before the per-player report so a mode can lock in
+        // final scores the scoreboard then reports (ClanArena/Survival end-of-match adjustments).
+        MutatorHooks.FireMatchEndBeforeScores();
+
         MarkWinners();
 
         if (Cvars.Bool("sv_eventlog"))
@@ -2670,6 +2967,10 @@ public sealed class GameWorld
 
         // QC PlayerStats_GameReport(true): build the per-player/per-team report (upload is an engine concern).
         PlayerStats.GameReport(finished: true, Clients.Players, Time, Teamplay.IsTeamGame);
+
+        // QC Kill_Notification(NOTIF_ALL, NULL, MSG_CENTER, CPID_Null): retract every lingering centerprint so the
+        // scoreboard isn't covered by stale center text (a null cpid clears every group).
+        NotificationSystem.SendCenterKill(NotifBroadcast.All, null);
 
         // QC CampaignPreIntermission: decide won/lost + persist progress (only when in campaign).
         if (Cvars.Bool("g_campaign") && !Campaign.Aborted)
@@ -2682,6 +2983,11 @@ public sealed class GameWorld
 
         // QC the demo stop at match end.
         Demo.OnMatchEnd();
+
+        // QC MUTATOR_CALLHOOK(MatchEnd): the trailing match-end hook (CTF flag cleanup, kh_finalize, instagib
+        // countdown stop). Fired last, mirroring NextLevel's order — just before the localcmd("sv_hook_gameend")
+        // admin-script alias, which has no stock-config behaviour in the port.
+        MutatorHooks.FireMatchEnd();
     }
 
     /// <summary>QC the winner latch: set <see cref="Player.Winning"/> for the FFA leader / each winning-team member.</summary>
@@ -2729,6 +3035,22 @@ public sealed class GameWorld
                     return;
                 }
             }
+            // QC quit_when_empty: when only bots remain (player_count <= currentbots), shut the server down
+            // instead of changing level. Decision is taken here; the actual quit is the host's QuitHandler.
+            if (Cvars.Bool("quit_when_empty") && Clients.PlayerCount <= Clients.BotCount)
+            {
+                _mapChangeApplied = true; // suppress any further map flow this match
+                Commands.QuitHandler?.Invoke();
+                return;
+            }
+            // QC quit_and_redirect: redirect every client to another server at match end.
+            string redirect = Cvars.String("quit_and_redirect");
+            if (!string.IsNullOrEmpty(redirect))
+            {
+                _mapChangeApplied = true;
+                Commands.RedirectHandler?.Invoke(redirect);
+                return;
+            }
             // an explicit queued map (gotomap / nextmap vote / campaign) wins.
             if (!string.IsNullOrEmpty(QueuedNextMap))
             {
@@ -2741,6 +3063,14 @@ public sealed class GameWorld
                 ApplyMapChange(MapName);
                 return;
             }
+            // QC lastlevel (single-player): show the menu after the final map instead of rotating.
+            if (Cvars.Bool("lastlevel"))
+            {
+                _mapChangeApplied = true;
+                Cvars.Set("lastlevel", "0"); // QC `set lastlevel 0`
+                Commands.LastLevelHandler?.Invoke();
+                return;
+            }
 
             // ---- otherwise: a map vote, or a silent rotation ----
             if (Cvars.Int("g_maplist_votable") > 0 && Clients.PlayerCount > 0)
@@ -2749,9 +3079,11 @@ public sealed class GameWorld
                 var ballot = Rotation.BuildBallot(Cvars.Int("g_maplist_votable"));
                 if (ballot.Count > 1)
                 {
-                    // QC MapVote_AddVotableMaps seeds player suggestions ahead of the rotation maps.
+                    // QC MapVote_AddVotableMaps seeds player suggestions ahead of the rotation maps; each carries
+                    // the suggester's netname (QC mapvote_maps_suggesters) so the panel's "Suggested by:" line and
+                    // g_maplist_votable_show_suggester can populate.
                     var suggestions = Commands.MapSuggestions
-                        .Select(m => (Map: m, Suggester: ""))
+                        .Select(s => (s.Map, s.Suggester))
                         .ToList();
                     MapVote.Start(ballot, Clients.PlayerCount, Cvars.FloatOr("g_maplist_votable_timeout", 30f), suggestions);
                     return; // the vote runs; Tick resolves it below

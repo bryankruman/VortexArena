@@ -72,19 +72,22 @@ public static class WeaponImpulses
         }
 
         // ---- custom-priority cycling (prev/best/next, groups 0-9) ----
+        // QC weapon_priority_handle (impulse.qc:89-104) cycles the PER-GROUP list cvar_cl_weaponpriorities[number]
+        // (= cl_weaponpriority0..9), NOT the single main cl_weaponpriority. The group number is the impulse offset
+        // within each block (prev 200-209 / best 210-219 / next 220-229).
         if (imp >= PriorityPrevFirst && imp <= PriorityPrevFirst + 9)
         {
-            if (!dead) PriorityHandle(actor, dir: -1);
+            if (!dead) PriorityHandle(actor, dir: -1, number: imp - PriorityPrevFirst);
             return true;
         }
         if (imp >= PriorityBestFirst && imp <= PriorityBestFirst + 9)
         {
-            if (!dead) PriorityHandle(actor, dir: 0); // "best" within the priority group
+            if (!dead) PriorityHandle(actor, dir: 0, number: imp - PriorityBestFirst); // "best" within the priority group
             return true;
         }
         if (imp >= PriorityNextFirst && imp <= PriorityNextFirst + 9)
         {
-            if (!dead) PriorityHandle(actor, dir: +1);
+            if (!dead) PriorityHandle(actor, dir: +1, number: imp - PriorityNextFirst);
             return true;
         }
 
@@ -132,9 +135,15 @@ public static class WeaponImpulses
         return false; // not a weapon impulse
     }
 
-    /// <summary>QC <c>weapon_priority_handle</c>: cycle by the active custom priority list (cl_weaponpriority).</summary>
-    private static void PriorityHandle(Entity actor, int dir)
-        => Inventory.CycleWeapon(actor, Inventory.WeaponPriority(actor), dir);
+    /// <summary>
+    /// QC <c>weapon_priority_handle</c> (impulse.qc:89-104): cycle the player's PER-GROUP custom priority list
+    /// <c>cvar_cl_weaponpriorities[number]</c> (= <c>cl_weaponpriority0..9</c>, the explosives/energy/hitscan/…
+    /// category lists) in <paramref name="dir"/> (prev=-1 / best=0 / next=+1). Routes through
+    /// <see cref="Inventory.CycleWeaponGroup"/> so the group <paramref name="number"/> selects the right category
+    /// list rather than always cycling the single main <c>cl_weaponpriority</c>.
+    /// </summary>
+    private static void PriorityHandle(Entity actor, int dir, int number)
+        => Inventory.CycleWeaponGroup(actor, number, dir);
 
     /// <summary>
     /// QC <c>weapon_byid_handle</c> (server/impulse.qc:150): switch directly to the weapon whose

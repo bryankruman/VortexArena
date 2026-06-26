@@ -104,6 +104,11 @@ public static class DeathTypes
     /// <summary>QC DEATH_GENERIC — unattributed damage.</summary>
     public const string Generic = "generic";
 
+    /// <summary>QC DEATH_CHEAT (deathtypes/all.inc:5) — the r00t cheat's radius nuke (server/cheats.qc CHIMPULSE_R00T).
+    /// Registered with DEATH_SELF_CHEAT / DEATH_MURDER_CHEAT and an empty .message (a plain murder, no special
+    /// category); the obituary uses the generic cheat murder line.</summary>
+    public const string Cheat = "cheat";
+
     /// <summary>QC DEATH_CAMP — campcheck mutator anti-camp damage. Self-only (no murder line); the obituary
     /// is the camp-specific DEATH_SELF_CAMP ("thought they found a nice camping ground" / "Die camper!").</summary>
     public const string Camp = "camp";

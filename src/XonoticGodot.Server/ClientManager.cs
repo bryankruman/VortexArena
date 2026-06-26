@@ -54,6 +54,15 @@ public sealed class ClientManager
         }
     }
 
+    /// <summary>
+    /// QC <c>CS_CVAR(this).cvar_cl_clippedspectating</c> (server/client.qc:2589): a free-fly spectator's per-client
+    /// "pass through walls?" preference. <c>false</c> (the default, <c>cl_clippedspectating 0</c>) = <see
+    /// cref="MoveType.Noclip"/> (free flight, no collision); <c>true</c> = <see cref="MoveType.FlyWorldOnly"/>
+    /// (collide with the world). Wired by <c>Commands(GameWorld)</c> to the replicated-cvar store; null/unwired →
+    /// the Base default (noclip), preserving the previous no-net-state behaviour for tests/headless paths.
+    /// </summary>
+    public static System.Func<Player, bool>? ClippedSpectatingProvider { get; set; }
+
     private readonly List<ClientInfo> _clients = new();
     private readonly List<Player> _players = new();          // dense Player view (matches SimulationLoop.Clients)
     private readonly SimulationLoop _sim;
@@ -236,7 +245,10 @@ public sealed class ClientManager
         if (isBot)
         {
             p.AutoJoinChecked = 1; // QC CS(this).autojoin_checked = 1
-            Join(p);
+            // QC: a forced-spectate client (g_forced_team_otherwise "spectate") stays an observer even when it's a
+            // bot — don't auto-join it into the match.
+            if (!(_teamplay.IsTeamGame && _teamplay.GetForcedTeam(p) == Teamplay.TeamForceSpectator))
+                Join(p);
             OnBotConnected?.Invoke(p); // [T39] QC bot_clientconnect: hand the new bot its AI brain
         }
 
@@ -306,6 +318,12 @@ public sealed class ClientManager
         if (now < info.JoinTime + MinSpecTime) // QC: time < jointime + MIN_SPEC_TIME
             return false;
         if (_teamplay.IsTeamGame && TeamsLocked) // QC: teamplay && lockteams
+            return false;
+        // QC Player_DetermineForcedTeam -> TEAM_FORCE_SPECTATOR (g_forced_team_otherwise "spectate"): an
+        // unlisted client whose forced-team resolved to the spectator sentinel is pinned as an observer and may
+        // never join the match (server/client.qc joinAllowed reads team_forced). The campaign / id-list real-team
+        // branch is honored separately by AssignBestTeam; this is the spectate-routing half.
+        if (_teamplay.IsTeamGame && _teamplay.GetForcedTeam(p) == Teamplay.TeamForceSpectator)
             return false;
         // QC Join_Try: a play-banned (forced-spectate) client may not join (CENTER_JOIN_PLAYBAN). Wired by the
         // host to Bans.IsPlayBanned; null until wired (e.g. headless test harness) so the gate is a no-op there.
@@ -391,7 +409,17 @@ public sealed class ClientManager
         {
             if (info.SpecNextReleased)
             {
-                if (attackHeld) { info.SpecNextReleased = false; SpectateNext(p); }
+                if (attackHeld)
+                {
+                    info.SpecNextReleased = false;
+                    // QC ObserverOrSpectatorThink (client.qc:2544-2545): sv_spectate 2 forbids following a SPECIFIC
+                    // player (free-fly is still allowed) outside warmup — show CENTER_SPECTATE_SPEC_NOTALLOWED
+                    // instead of cycling. vote_master (an admin override) isn't modeled, so this applies to all.
+                    if (Api.Cvars.GetFloat("sv_spectate") == 2f && !(IsWarmup?.Invoke() ?? false))
+                        NotificationSystem.Center(p, "SPECTATE_SPEC_NOTALLOWED");
+                    else
+                        SpectateNext(p);
+                }
             }
             else if (!attackHeld) { info.SpecNextReleased = true; }
 
@@ -411,6 +439,18 @@ public sealed class ClientManager
                 StopSpectating(p);
             else
                 SpectateCopy(p, spec);
+        }
+
+        // QC PlayerPreThink free-fly branch (server/client.qc:2588-2593): a NOT-following (free-fly) spectator's
+        // movetype is recomputed each tick from its per-client cl_clippedspectating preference —
+        // `wouldclip ? MOVETYPE_FLY_WORLDONLY : MOVETYPE_NOCLIP`. The Base default (cl_clippedspectating 0) is
+        // NOCLIP (pass through walls); the port previously hardcoded FLY_WORLDONLY (always clipped), the opposite.
+        // Honor the replicated cvar here so a spectator who sets it gets the right collision behaviour. (The QC
+        // momentary +use toggle is a transient cosmetic override and is not modelled; the persistent preference is.)
+        if (p.Spectatee is null && p.MoveType is MoveType.Noclip or MoveType.FlyWorldOnly)
+        {
+            bool wouldClip = ClippedSpectatingProvider?.Invoke(p) ?? false;
+            p.MoveType = wouldClip ? MoveType.FlyWorldOnly : MoveType.Noclip;
         }
 
         // QC PlayerPreThink delayed autojoin (server/client.qc:2708): a REAL client that hasn't joined autojoins
@@ -651,9 +691,29 @@ public sealed class ClientManager
         // reset the server-only per-player timers (QC PutPlayerInServer clears air/regen/contents state).
         PlayerStates?.Of(p).OnSpawn();
 
+        // [sv-handicap.init.defaults_to_one] QC Handicap_Initialize(this) (server/handicap.qc:16-23), called from
+        // PutClientInServer (server/client.qc:1240): reset the FORCED handicaps to 1 (no handicap) every (re)spawn
+        // so a stale forced handicap from a previous round/match doesn't bleed across, and refresh handicap_level.
+        // Runs BEFORE the PlayerSpawn mutator hook so the dynamic_handicap recompute (below) immediately overwrites
+        // the reset with the freshly-computed value, matching Base's PutClientInServer → dynamic_handicap order.
+        XonoticGodot.Common.Gameplay.Handicap.Initialize(p);
+
         // QC: MUTATOR_CALLHOOK(PlayerSpawn, spot, this) — fired after the shared spawn setup.
         var args = new MutatorHooks.PlayerSpawnArgs(p, sp.Value.Source);
         MutatorHooks.PlayerSpawn.Call(ref args);
+
+        // QC PutPlayerInServer (client.qc:815-821): fire the spawnpoint's .target on spawn — a map can wire a
+        // target_relay/trigger off the spot the player materialized on (lights, doors, scoring triggers). The
+        // assault/race hack temporarily nulls spot.target so those modes (whose spawnpoints chain checkpoints via
+        // .target) don't re-trigger the chain on every respawn. CTS is a Race variant (QC g_race covers it).
+        if (sp.Value.Source is { } spot)
+        {
+            bool suppressTarget = _match.GameType is Assault or Race or Cts;
+            string savedTarget = spot.Target;
+            if (suppressTarget) spot.Target = "";
+            MapMover.UseTargets(spot, p, null);
+            if (suppressTarget) spot.Target = savedTarget;
+        }
 
         p.Winning = false;          // QC: a fresh spawn clears the end-of-match winner latch
         OnClientSpawn?.Invoke(p);   // §5 spawn hooks (alivetime start, anticheat view reset)
@@ -679,6 +739,18 @@ public sealed class ClientManager
         // so a stale burning/superweapon timer doesn't survive on a recycled player object.
         StatusEffectsCatalog.RemoveAll(p, StatusEffectRemoval.Normal);
         StatusEffectsCatalog.ClearAll(p);
+
+        // QC ClientDisconnect (client.qc:1305): if (this.vehicle) vehicles_exit(this.vehicle, VHEF_RELEASE) — a
+        // disconnecting pilot is ejected so the vehicle is freed for others (and the leaving player's object
+        // isn't left coupled to a live vehicle). VehicleBoarding.Exit is the same VHEF_RELEASE used by the
+        // rot-death path; a no-op when not in a vehicle.
+        if (p.Vehicle is not null)
+            VehicleBoarding.Exit(p);
+
+        // QC ClientDisconnect (client.qc:1335): player_powerups_remove_all(this, IS_PLAYER(this)) — strip the
+        // superweapon / unlimited item bits and play the power-off sound only if the leaver was a live player
+        // (an observer carries no powerups). Mirrors the death-time strip so a recycled player object is clean.
+        PlayerFrameLogic.PlayerPowerupsRemoveAll(p, !p.IsObserver);
 
         OnClientDisconnect?.Invoke(p); // §5 disconnect hooks (finalize stats, :part:, voter/timeout cleanup)
 

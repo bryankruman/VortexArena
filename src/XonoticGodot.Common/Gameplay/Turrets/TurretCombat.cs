@@ -30,7 +30,7 @@ public static class TurretCombat
         if (Api.Services is null) return null;
 
         Vector3 shotDir = ApplySpread(dir, spread);
-        Vector3 end = start + shotDir * TurretAI.MaxShotDistance;
+        Vector3 end = start + shotDir * TurretAI.CurrentMaxShotDistance;
         TraceResult tr = Api.Trace.Trace(start, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, turret);
 
         Entity? hit = tr.Ent;

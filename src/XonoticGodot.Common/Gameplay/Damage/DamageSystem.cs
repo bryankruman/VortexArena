@@ -43,14 +43,15 @@ public sealed class DamageSystem : IDamageSystem
     private const string CvarPlayerForceScale    = "g_player_damageforcescale";      // xonotic-server.cfg: 2
     private const string CvarDamagePushSpeed     = "g_balance_damagepush_speedfactor";// balance-xonotic.cfg: 2.5
 
-    private const string CvarTeamplayMode        = "teamplay_mode";                  // 2 (team modes)
+    private const string CvarTeamplayMode        = "teamplay_mode";                  // 4 (team modes; xonotic-server.cfg:279)
     private const string CvarFriendlyFire        = "g_friendlyfire";                 // 0.5
     private const string CvarFriendlyFireVirtual = "g_friendlyfire_virtual";         // 1
-    private const string CvarFriendlyFireVirtualForce = "g_friendlyfire_virtual_force"; // 0
+    private const string CvarFriendlyFireVirtualForce = "g_friendlyfire_virtual_force"; // 1 (xonotic-server.cfg:285)
     private const string CvarMirrorDamage        = "g_mirrordamage";                 // 0.7
     private const string CvarMirrorDamageVirtual = "g_mirrordamage_virtual";         // 1
     private const string CvarMirrorDamageOnlyWeapons = "g_mirrordamage_onlyweapons"; // 0
     private const string CvarTeamDamageThreshold = "g_teamdamage_threshold";         // 40
+    private const string CvarTeamDamageResetSpeed = "g_teamdamage_resetspeed";       // 20
     private const string CvarMaxPushTime         = "g_maxpushtime";                  // 8
     private const string CvarSpawnShieldBlock    = "g_spawnshield_blockdamage";      // 1
     private const string CvarPauseHealthRegen    = "g_balance_pause_health_regen";   // 5
@@ -68,6 +69,9 @@ public sealed class DamageSystem : IDamageSystem
     private const float DefFriendlyFire       = 0.5f;
     private const float DefMirrorDamage       = 0.7f;
     private const float DefTeamDamageThreshold = 40f;
+    private const float DefTeamDamageResetSpeed = 20f;
+    private const float DefTeamplayMode       = 4f;   // xonotic-server.cfg:279 teamplay_mode 4
+    private const float DefFriendlyFireVirtualForce = 1f; // xonotic-server.cfg:285 g_friendlyfire_virtual_force 1
     private const float DefMaxPushTime        = 8f;
     private const float DefSpawnShieldBlock   = 1f;
     private const float DefPauseHealthRegen   = 5f;
@@ -176,7 +180,7 @@ public sealed class DamageSystem : IDamageSystem
                 }
                 else if (!IsFrozenStat(targ) && Teams.SameTeam(atk, targ))
                 {
-                    int mode = (int)Cvar(CvarTeamplayMode, 2f);
+                    int mode = (int)Cvar(CvarTeamplayMode, DefTeamplayMode);
                     if (mode == 1)
                         damage = 0f;
                     else if (!ReferenceEquals(atk, targ))
@@ -225,7 +229,10 @@ public sealed class DamageSystem : IDamageSystem
                                     targ.DmgSave += vs;
                                     targ.DmgInflictor = inflictor;
                                     damage = 0f;
-                                    if (!CvarBool(CvarFriendlyFireVirtualForce))
+                                    // QC: g_friendlyfire_virtual_force 1 (xonotic-server.cfg:285) — keep knockback
+                                    // even when friendlyfire is virtual (graphics-only). Default 1 means force IS
+                                    // applied; only when explicitly set to 0 is it zeroed.
+                                    if (Cvar(CvarFriendlyFireVirtualForce, DefFriendlyFireVirtualForce) == 0f)
                                         force = Vector3.Zero;
                                 }
                             }
@@ -262,10 +269,29 @@ public sealed class DamageSystem : IDamageSystem
             if (attacker is not null && ReferenceEquals(attacker, targ))
                 damage *= Cvar(CvarSelfDamagePercent, DefSelfDamagePercent);
 
-            // (hit-sound / accuracy accounting — QC damage.qc ~618 — is host/stats-side; omitted here.
-            //  complainTeamDamage past this point only drives the team-kill complaint SOUND, which the
-            //  host renders, so it has no further effect on the simulation.)
-            _ = complainTeamDamage;
+            // QC damage.qc ~618: same-team hit-sound and the team-kill complaint SOUND timer.
+            // When the attacker has dealt enough team-damage to trigger complainTeamDamage > 0, and the
+            // cooldown CS(attacker).teamkill_complain has elapsed, schedule a deferred complaint voice
+            // on the victim: the attacker's "teamshoot" voice plays 0.4s later via PlayerFrameLogic.
+            // QC damage.qc:654-664 (inside the "same-team hit" block):
+            //   if (!STAT(FROZEN, victim) && !(deathtype & HITTYPE_SPAM))
+            //     if (complainteamdamage > 0 && time > CS(attacker).teamkill_complain)
+            //       CS(attacker).teamkill_complain = time + 5;
+            //       CS(attacker).teamkill_soundtime = time + 0.4;
+            //       CS(attacker).teamkill_soundsource = targ;
+            if (complainTeamDamage > 0f
+                && attacker is not null && IsPlayer(attacker)
+                && !IsFrozenStat(targ)
+                && !DeathTypes.HasHitType(deathType, DeathTypes.Spam))
+            {
+                float now = Now();
+                if (now > attacker.TeamKillComplainTime)
+                {
+                    attacker.TeamKillComplainTime = now + 5f;
+                    attacker.TeamKillSoundTime    = now + 0.4f;
+                    attacker.TeamKillSoundSource  = targ;
+                }
+            }
         }
 
         // ----- apply knockback (QC damage.qc "apply push" ~671) -----

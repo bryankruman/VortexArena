@@ -300,6 +300,11 @@ public sealed class ServerNet : IDisposable
         // time (antilag.qc). Weapons call LagComp.Begin/End ambiently; this routes it to our rewind/restore.
         LagComp.Provider = new LagCompProvider(this);
 
+        // Feed the anticheat's snap-aim suppression window the real per-client ping (QC ANTILAG_LATENCY = the same
+        // CS(e).ping the lag-comp rewind uses). FixAngle takes ping in MILLISECONDS (it multiplies by 0.001 like
+        // QC), but EstimatedPing returns the smoothed round trip in SECONDS, so scale up. 0 for a LAN/bot client.
+        _world.AntiCheat.PingProvider = p => EstimatedPing(p) * 1000f;
+
         // Per-player physics resolution (T54, QC Physics_UpdateStats → Physics_ClientOption): the shared sim
         // asks this for each player's preset-resolved movevar vector. Returns null when g_physics_clientselect
         // is off (the stock default) — the sim then reads the global cvars exactly as before.
@@ -890,8 +895,10 @@ public sealed class ServerNet : IDisposable
         bool warmup = _world.Warmup.WarmupStage;
         float warmupLimit = _world.Warmup.WarmupLimit;
         bool intermission = _world.Intermission.Running;
+        // QC Set_NextMap / Send_NextMap_To_Player: the upcoming map name → the scoreboard "Next map:" line.
+        string nextMap = _world.NextMapBroadcast ?? "";
 
-        string key = $"{gameStart:F2}|{timeLimitSec:F1}|{(warmup ? 1 : 0)}|{warmupLimit:F1}|{(intermission ? 1 : 0)}";
+        string key = $"{gameStart:F2}|{timeLimitSec:F1}|{(warmup ? 1 : 0)}|{warmupLimit:F1}|{(intermission ? 1 : 0)}|{nextMap}";
         if (key == _lastMatchStateKey && _world.Time < _nextMatchStateSend)
             return;
         _lastMatchStateKey = key;
@@ -904,6 +911,7 @@ public sealed class ServerNet : IDisposable
         _scratchWriter.WriteBool(warmup);
         _scratchWriter.WriteFloat(warmupLimit);
         _scratchWriter.WriteBool(intermission);
+        _scratchWriter.WriteString(nextMap);
 
         foreach (PeerState st in _peers.Values)   // real network peers (matches BroadcastSnapshots; excludes bots)
             if (st.Accepted && st.Player is not null)
@@ -1503,6 +1511,14 @@ public sealed class ServerNet : IDisposable
         // (§12.8) DP sv_cullentities_pvs: read once per broadcast — the per-recipient PVS filter is applied below.
         bool cullEntitiesPvs = _world.Services.Cvars.GetFloat("sv_cullentities_pvs") != 0f;
 
+        // ent_cs enemy-privacy mask (common/ent_cs.qc:_entcs_send ENTCS_PUBLICMASK gating). Read the two server-side
+        // globals the gate depends on ONCE per broadcast: `radar_showenemies` (a server global Race forces true and
+        // Nexball mirrors from g_nexball_radar_showallplayers — when set, every player's private fields go to
+        // everyone) and `teamplay` (SAME_TEAM is `teamplay ? a.team==b.team : a==b`). When neither holds, a live
+        // player's private ent_cs fields (origin/angles/health/armor) are stripped for enemy recipients below.
+        bool radarShowEnemies = _world.Services.Cvars.GetFloat("radar_showenemies") != 0f;
+        bool teamplay = _world.GameType?.TeamGame ?? false;
+
         foreach (PeerState st in _peers.Values)
         {
             if (!st.Accepted || st.Player is null)
@@ -1598,7 +1614,8 @@ public sealed class ServerNet : IDisposable
             // delta-compressed entity section (everyone but the recipient's own entity). DP-faithful per-client
             // PVS cull (sv_cullentities_pvs): out-of-PVS entities are dropped from THIS client's set and the
             // delta encoder removes them against its baseline (re-spawning them when they return into view).
-            IReadOnlyDictionary<int, NetEntityState> sendSet = RelevantEntitiesFor(owner, st.NetId, cullEntitiesPvs);
+            IReadOnlyDictionary<int, NetEntityState> sendSet =
+                RelevantEntitiesFor(st, owner, st.NetId, cullEntitiesPvs, radarShowEnemies, teamplay);
             st.SnapHistory.EncodeSnapshot(_snapshotWriter, sendSet, _snapshotSeq, excludeEntNum: st.NetId);
 
             // Snapshots are normally unreliable (latest-wins, loss-tolerant), but the FIRST frame to a client is a
@@ -1664,13 +1681,21 @@ public sealed class ServerNet : IDisposable
             bool teleported = _lastSnapOrigin.TryGetValue(p, out NVec3 prev)
                               && (p.Origin - prev).Length() > TeleportTickDistance;
 
+            // [sv-antilag.clear.on_spawn] Explicit antilag_clear request from the spawn/teleport/vehicle-board
+            // lifecycle (PutPlayerInServer sets Entity.AntilagNeedsClear, port of PutClientInServer's
+            // antilag_clear, client.qc:858). This catches a (re)spawn/teleport that lands WITHIN the
+            // TeleportTickDistance heuristic's threshold of the previous origin — which the jump test alone
+            // would miss, leaving stale history that could rewind a fresh player toward its corpse. One-shot.
+            bool explicitClear = p.AntilagNeedsClear;
+            p.AntilagNeedsClear = false;
+
             // record the position history for lag compensation (antilag_record(it, CS(it), altime)).
             if (!_antilag.TryGetValue(p, out AntilagBuffer? hist))
             {
                 hist = new AntilagBuffer();
                 _antilag[p] = hist;
             }
-            if (teleported)
+            if (teleported || explicitClear)
             {
                 hist.Clear();                 // antilag_clear: drop pre-teleport history before recording the new pos
                 _lastSnapOrigin.Remove(p);    // forget the pre-jump origin so the post-jump baseline is this frame's
@@ -1824,32 +1849,92 @@ public sealed class ServerNet : IDisposable
     }
 
     /// <summary>
-    /// (§12.8) Build the per-recipient entity set fed to the delta encoder: DP's <c>SV_MarkWriteEntityStateToClient</c>
-    /// PVS cull (<c>sv_cullentities_pvs</c>). Returns <see cref="_entityScratch"/> unchanged when culling is off /
-    /// the map is unvised / the recipient is dead-or-spectating (no stable own-eye viewpoint) / the eye is in solid
-    /// — all conservative "send everything" fallbacks. Otherwise drops entities whose bounds aren't in the
-    /// recipient's PVS; the delta encoder turns those into removals against this client's baseline (and re-spawns
-    /// them when they return), so appear/disappear is handled by the existing per-client history.
+    /// (§12.8) Build the per-recipient entity set fed to the delta encoder. Two per-recipient filters compose here:
+    /// <list type="bullet">
+    /// <item>DP's <c>SV_MarkWriteEntityStateToClient</c> PVS cull (<c>sv_cullentities_pvs</c>): drop entities whose
+    /// bounds aren't in the recipient's PVS (the delta encoder turns those into removals against this client's
+    /// baseline and re-spawns them when they return). Disabled when culling is off / the map is unvised / the
+    /// recipient is dead-or-spectating / the eye is in solid — all conservative "send everything" fallbacks.</item>
+    /// <item>The ent_cs enemy-privacy mask (common/ent_cs.qc:_entcs_send, ENTCS_PUBLICMASK): for a live remote
+    /// PLAYER whose recipient is an enemy active player (not <paramref name="radarShowEnemies"/>, not SAME_TEAM),
+    /// strip the private ent_cs HEALTH/ARMOR resource slice so a modified client can't read every enemy's exact
+    /// hit-points. Stripped fields are zeroed on the wire (a constant, so the delta sends one zero on first sight
+    /// then nothing — equivalent to QC never including the bit in this recipient's SendFlags; the client's enemy
+    /// value stays the default 0, and the shownames status bar is team-gated client-side anyway).</item>
+    /// </list>
+    /// NB on ORIGIN/ANGLES: QC also marks those ent_cs props private, but in QC the VISIBLE player MODEL is a
+    /// SEPARATE csqcmodel channel that is sent (PVS-gated) regardless of the ent_cs mask — the mask only hides the
+    /// out-of-PVS radar GPS. The port folds the model + ent_cs into one state whose origin IS the render position,
+    /// and already PVS-culls the whole entity when out of view (the bullet above), so an enemy's origin is governed
+    /// by PVS exactly as QC's csqcmodel origin is. Freezing origin here would wrongly stall a VISIBLE enemy's model,
+    /// so only HEALTH/ARMOR (which have no csqcmodel counterpart and are otherwise leaked even for visible enemies)
+    /// are stripped. The residual out-of-PVS GPS degrade is its own tracked gap (csqcmodel.force_updates).
+    ///
+    /// Returns <see cref="_entityScratch"/> unchanged only when NEITHER filter applies (a fast no-op path).
     /// </summary>
-    private IReadOnlyDictionary<int, NetEntityState> RelevantEntitiesFor(Player owner, int ownNetId, bool cullPvs)
+    private IReadOnlyDictionary<int, NetEntityState> RelevantEntitiesFor(
+        PeerState st, Player owner, int ownNetId, bool cullPvs, bool radarShowEnemies, bool teamplay)
     {
-        if (!cullPvs || _world.Pvs is not { HasVis: true } pvs || owner.IsDead || owner.IsObserver)
+        // ent_cs privacy applies only when the recipient is an enemy that could read another player's private
+        // fields: a live, active player (IS_PLAYER(to) || INGAME(to) → !IsObserver) in a game where enemies aren't
+        // globally revealed. A spectator/observer recipient gets everyone's private fields (QC: the
+        // `!(IS_PLAYER(to) || INGAME(to))` branch keeps them) — free spectating sees all.
+        bool applyPrivacy = !radarShowEnemies && !owner.IsObserver;
+
+        bool havePvsCull = cullPvs && _world.Pvs is { HasVis: true } && !owner.IsDead && !owner.IsObserver;
+
+        // Fast path: neither filter narrows the set → send the shared scratch as-is.
+        if (!havePvsCull && !applyPrivacy)
             return _entityScratch;
 
-        NVec3 eye = owner.Origin + owner.ViewOfs;
-        int viewerCluster = pvs.LeafCluster(pvs.FindLeaf(eye));
-        if (viewerCluster < 0)
-            return _entityScratch; // eye in solid / outside the tree → conservatively send all
+        int viewerCluster = -1;
+        XonoticGodot.Formats.Bsp.BspPvs? pvs = null;
+        if (havePvsCull)
+        {
+            pvs = _world.Pvs;
+            NVec3 eye = owner.Origin + owner.ViewOfs;
+            viewerCluster = pvs!.LeafCluster(pvs.FindLeaf(eye));
+            if (viewerCluster < 0)
+                havePvsCull = false; // eye in solid / outside the tree → conservatively send all (no PVS cull)
+        }
+
+        // Privacy still applies even with PVS culling off, so if neither now narrows the set, take the fast path.
+        if (!havePvsCull && !applyPrivacy)
+            return _entityScratch;
+
+        int ownerTeam = (int)owner.Team;
 
         _relevantScratch.Clear();
         foreach (KeyValuePair<int, NetEntityState> kv in _entityScratch)
         {
-            // Never cull the recipient's own entity (EncodeSnapshot excludes it anyway), and keep anything whose
-            // bounds touch a cluster the recipient can see.
-            if (kv.Key == ownNetId
-                || !_entityBounds.TryGetValue(kv.Key, out (NVec3 Min, NVec3 Max) b)
-                || pvs.BoxAnyClusterVisibleFrom(viewerCluster, b.Min, b.Max))
-                _relevantScratch[kv.Key] = kv.Value;
+            bool isOwn = kv.Key == ownNetId;
+
+            // PVS cull: never cull the recipient's own entity (EncodeSnapshot excludes it anyway); keep anything
+            // whose bounds touch a cluster the recipient can see.
+            if (havePvsCull && !isOwn
+                && _entityBounds.TryGetValue(kv.Key, out (NVec3 Min, NVec3 Max) b)
+                && !pvs!.BoxAnyClusterVisibleFrom(viewerCluster, b.Min, b.Max))
+                continue; // out of PVS → drop (delta turns it into a removal)
+
+            NetEntityState state = kv.Value;
+
+            // ent_cs enemy-privacy mask: a live remote PLAYER (the entcs owner IS_PLAYER) whose recipient is an
+            // enemy → strip the private HEALTH/ARMOR slice. SAME_TEAM = teamplay ? sameTeamColor : (to == player);
+            // a distinct player is never the same entity, so in a non-team game EVERY other player is an enemy (you
+            // never learn anyone else's HP — FFA). Own entity is excluded from the snapshot anyway, so it's unmasked.
+            if (applyPrivacy && !isOwn && state.Kind == NetEntityKind.Player)
+            {
+                bool sameTeam = teamplay && ownerTeam != 0 && state.Colormap == ownerTeam;
+                if (!sameTeam)
+                {
+                    // Zero the private resource fields (constant → one zero on first sight, then the delta is silent;
+                    // matches QC ANDing HEALTH/ARMOR out of this recipient's SendFlags so its value stays default 0).
+                    state.Health = 0;
+                    state.Armor = 0;
+                }
+            }
+
+            _relevantScratch[kv.Key] = state;
         }
         return _relevantScratch;
     }

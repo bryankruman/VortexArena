@@ -28,9 +28,14 @@ public readonly struct ScoreRowWire
     /// quantized to a 0..255 byte (QC <c>min(ceil(ping_packetloss*255),255)</c>, server/world.qc:74). 0 = no loss
     /// (or a bot / unknown). The client de-quantizes to a 0..1 fraction for the SP_PL column.</summary>
     public readonly int PacketLossByte;
+    /// <summary>QC <c>.handicap_level</c> (server/handicap.qh:64) networked via ENTCS (common/ent_cs.qc:180,
+    /// WriteByte/ReadByte). An int 0..16 mapped from the player's both-ways average total handicap; 0 = no
+    /// handicap. The client draws the <c>player_handicap</c> scoreboard icon (white@1 → red@16) when it's nonzero
+    /// (scoreboard.qc:1003-1009). The port has no separate ENTCS stream, so it rides this scoreboard block.</summary>
+    public readonly int HandicapLevel;
     public ScoreRowWire(int netId, int[] columns, string name = "", int team = 0, bool isSpectator = false,
-        int packetLossByte = 0)
-    { NetId = netId; Columns = columns; Name = name ?? ""; Team = team; IsSpectator = isSpectator; PacketLossByte = packetLossByte; }
+        int packetLossByte = 0, int handicapLevel = 0)
+    { NetId = netId; Columns = columns; Name = name ?? ""; Team = team; IsSpectator = isSpectator; PacketLossByte = packetLossByte; HandicapLevel = handicapLevel; }
 }
 
 /// <summary>The parsed scoreboard (client side after <see cref="ScoreboardBlock.Deserialize"/>).</summary>
@@ -75,7 +80,8 @@ public static class ScoreboardBlock
         var rows = new List<ScoreRowWire>();
         foreach (var (netId, p) in players)
             rows.Add(new ScoreRowWire(netId, GameScores.CaptureColumns(p), p.NetName, (int)p.Team,
-                isSpectator: p is Player { IsObserver: true }));
+                isSpectator: p is Player { IsObserver: true },
+                handicapLevel: p.HandicapLevel)); // QC ENTCS handicap_level slice (common/ent_cs.qc:180)
         return rows;
     }
 
@@ -98,6 +104,7 @@ public static class ScoreboardBlock
             w.WriteByte(row.Team & 0xFF); // entcs team slice (QC entcs_GetScoreTeam)
             w.WriteBool(row.IsSpectator); // QC pl.team == NUM_SPECTATOR (drives Scoreboard_Spectators_Draw)
             w.WriteByte(row.PacketLossByte & 0xFF); // QC ping_packetloss byte (server/world.qc:74)
+            w.WriteByte(row.HandicapLevel & 0xFF); // QC ENTCS handicap_level WriteByte (common/ent_cs.qc:181)
             int m = System.Math.Min(row.Columns.Length, n);
             for (int j = 0; j < n; j++)
                 w.WriteInt24(j < m ? row.Columns[j] : 0);
@@ -141,9 +148,10 @@ public static class ScoreboardBlock
             int team = r.ReadByte();          // entcs team slice
             bool isSpec = r.ReadBool();        // QC pl.team == NUM_SPECTATOR
             int plByte = r.ReadByte();          // QC ping_packetloss byte
+            int handicap = r.ReadByte();        // QC ENTCS handicap_level ReadByte (common/ent_cs.qc:182)
             var cols = new int[n];
             for (int j = 0; j < n; j++) cols[j] = r.ReadInt24();
-            if (!r.BadRead) sb.Rows.Add(new ScoreRowWire(netId, cols, name, team, isSpec, plByte));
+            if (!r.BadRead) sb.Rows.Add(new ScoreRowWire(netId, cols, name, team, isSpec, plByte, handicap));
         }
         int teams = r.ReadByte();
         for (int i = 0; i < teams; i++)

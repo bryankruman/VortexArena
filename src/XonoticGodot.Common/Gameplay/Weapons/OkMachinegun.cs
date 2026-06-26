@@ -121,7 +121,7 @@ public sealed class OkMachinegun : Weapon
         DecreaseAmmo(actor, slot, Cvars.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true);
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.CurrentMaxShotDistance, penetrateWalls: true);
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/uzi_fire.wav");
 
         // QC okmachinegun.qc:24-28 — punchangle recoil PRNG unless g_norecoil: random()-0.5 on pitch+yaw.
@@ -133,7 +133,7 @@ public sealed class OkMachinegun : Weapon
             Cvars.SpreadMin, Cvars.SpreadMax);
 
         // fireBullet_falloff with the EFFECT_RIFLE tracer trail (okmachinegun.qc:36-48).
-        WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, Cvars.Damage,
+        WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, Cvars.Damage,
             RegistryId, spread, Cvars.SolidPenetration,
             Cvars.DamageFalloffHalflife, Cvars.DamageFalloffMinDist, Cvars.DamageFalloffMaxDist,
             force: Cvars.Force, falloffForceHalflife: Cvars.DamageFalloffForceHalflife,

@@ -297,7 +297,7 @@ public sealed class Rifle : Weapon
         // Pass wep/maxDamage so the accuracy FIRED denominator grows (QC W_SetupShot maxdamage = dmg*shots,
         // rifle.qc:12); without it the rifle never registered an accuracy% shot.
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true,
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.CurrentMaxShotDistance, penetrateWalls: true,
             wep: this, maxDamage: bal.Damage * shots, recoil: 2f);
         // When zoomed QC re-aims straight from the eye (w_shotdir = v_forward) so the long-range shot is
         // pixel-accurate; the zoom button isn't part of the headless input, so we keep the trueaim origin.
@@ -308,10 +308,10 @@ public sealed class Rifle : Weapon
         for (int i = 0; i < shots; ++i)
         {
             // fireBullet_falloff: per-bullet spread, solid penetration multi-hit, distance falloff, force, tracer.
-            WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, bal.Damage,
+            WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, bal.Damage,
                 deathType, bal.Spread, bal.SolidPenetration, force: bal.Force,
                 headshotMultiplier: bal.HeadshotMultiplier, tracerEffect: tracerEffect);
-            Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
+            Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
             TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
             // w_backoff = the impact surface normal (trace_plane_normal), -force_dir fallback when no hit.
             Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;

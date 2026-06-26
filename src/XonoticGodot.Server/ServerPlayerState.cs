@@ -38,6 +38,15 @@ public sealed class ServerPlayerState
     public bool KillCntdownActive;
     public int KillCntdownCnt;
     public float KillCntdownNextThink;
+    // QC .float clientkill_nexttime — the anti-spam carry-forward floor: a repeat `kill` raises killtime by
+    // (clientkill_nexttime - time) so mashing the command extends the countdown rather than restarting it.
+    public float KillCntdownNextTime;
+    // QC .killindicator.count == 1 — the indicator is "silent" (no announcer / center-print / digit), used by the
+    // CTS finish silent kill. A silent indicator with killtime<=0 also enables the instant-kill shortcut.
+    public bool KillCntdownSilent;
+    // QC .int killindicator_teamchange — the deferred intent the countdown resolves on expiry: 0 = just die,
+    // -2 = spectate, >0 = move to that team. ClientKill_Now branches on this instead of the plain self-kill.
+    public int KillCntdownTeamChange;
 
     /// <summary>Reset the transient timers on (re)spawn (QC PutPlayerInServer clears these). The regen/rot
     /// pause timers are primed on the Entity by SpawnSystem.PutPlayerInServer (REGEN3), not here.</summary>
@@ -52,6 +61,11 @@ public sealed class ServerPlayerState
         KillCntdownActive = false;
         KillCntdownCnt = 0;
         KillCntdownNextThink = 0f;
+        KillCntdownSilent = false;
+        KillCntdownTeamChange = 0;
+        // NOTE: KillCntdownNextTime (QC .clientkill_nexttime) is intentionally NOT reset here — the anti-spam
+        // carry-forward is a client-edict field in Base that persists across deaths/respawns, so mashing `kill`
+        // through a respawn still extends the next allowed kill.
     }
 }
 

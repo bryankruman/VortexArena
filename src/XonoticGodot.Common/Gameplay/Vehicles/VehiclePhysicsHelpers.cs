@@ -329,7 +329,7 @@ public static class VehiclePhysics
         if (Api.Services is null) return TraceResult.Miss(vehic.Origin + QMath.Forward(viewAngles) * 1000f);
         Vector3 start = vehic.Origin;
         Vector3 fwd = QMath.Forward(viewAngles);
-        return Api.Trace.Trace(start, Vector3.Zero, Vector3.Zero, start + fwd * WeaponFiring.MaxShotDistance,
+        return Api.Trace.Trace(start, Vector3.Zero, Vector3.Zero, start + fwd * WeaponFiring.CurrentMaxShotDistance,
             MoveFilter.Normal, ignore);
     }
 

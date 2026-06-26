@@ -26,9 +26,10 @@ namespace XonoticGodot.Server;
 ///
 /// <para>Deviations (commented at each site): the MUTATOR_CALLHOOK ChatMessage/ChatMessageTo/PreFormatMessage/
 /// FormatMessage hooks have no port infrastructure yet (no chat mutator bus), so they are omitted; the
-/// active_minigame team branch and the permanent-ignore ServerProgsDB persistence are out of scope (the port
-/// keys ignores by PersistentId in-memory). Delivery is abstracted behind <see cref="Commands"/> sinks so the
-/// routing/ignore logic is testable headless without the net layer.</para>
+/// permanent-ignore ServerProgsDB persistence is out of scope (the port keys ignores by PersistentId in-memory).
+/// The active_minigame team branch IS wired (a say_team from inside a minigame routes to co-session participants
+/// via <see cref="MinigameSessionManager.ActiveSessionOf"/>). Delivery is abstracted behind <see cref="Commands"/>
+/// sinks so the routing/ignore logic is testable headless without the net layer.</para>
 /// </summary>
 public sealed class Chat
 {
@@ -359,6 +360,22 @@ public sealed class Chat
                 if (cmsgstr != "")
                     CenterPrint(privatesay, cmsgstr);
             }
+            else if (teamsay != 0 && source is not null && _world.Minigames.ActiveSessionOf(source) is { } minigame)
+            {
+                // chat.qc:309-321 — a say_team from inside a minigame routes to co-session participants (minigame
+                // players are usually observers), not the player's team/spectator pool, and logs :chat_minigame:.
+                Sprint(source, sourcemsgstr);
+                DedicatedPrint(msgstr);
+                foreach (Player it in RealClients())
+                {
+                    if (ReferenceEquals(it, source) || !ReferenceEquals(_world.Minigames.ActiveSessionOf(it), minigame))
+                        continue;
+                    if (sourceIsReal && IgnorePlayerInList(it, source))
+                        continue;
+                    Sprint(it, msgstr);
+                }
+                eventLogMsg = $":chat_minigame:{source.PlayerId}:{minigame.NetName}:{msgin}";
+            }
             else if (teamsay > 0) // team message — teammates only
             {
                 Sprint(source!, sourcemsgstr);
@@ -423,8 +440,8 @@ public sealed class Chat
     // ignore-list CRUD (qcsrc/server/command/cmd.qc:47-195)
     // =============================================================================================
 
-    /// <summary>QC IGNORE_MAXPLAYERS (server/command/cmd.qh): the cap on a single player's ignore list.</summary>
-    public const int IgnoreMaxPlayers = 50;
+    /// <summary>QC IGNORE_MAXPLAYERS (server/command/cmd.qh:11 = 16): the cap on a single player's ignore list.</summary>
+    public const int IgnoreMaxPlayers = 16;
 
     /// <summary>
     /// QC <c>ignore_playerinlist(this, pl)</c> (cmd.qc:134): is <paramref name="pl"/> ignored by
@@ -476,8 +493,9 @@ public sealed class Chat
     /// (the QC <c>n = 7</c> replacement budget). Supported tokens mirror chat.qc:555-582 — %% (literal %), \n /
     /// \\ (slash escapes), %a armor, %h health, %l/%y/%d location, %o/%O origin, %w/%W weapon/ammo name, %x aimed
     /// entity, %s/%S speed, %t/%T time. The crosshair-trace tokens (%y aim location, %x aimed entity) resolve
-    /// against the source's view trace; the port has no server-side crosshair tracer wired into chat, so they
-    /// fall back to "somewhere"/"nothing" (the QC values when nothing is hit) rather than crashing.
+    /// against a lazily-computed server-side view trace from the source's eyes (chat.qc:533-539's
+    /// WarpZone_crosshair_trace_plusvisibletriggers; the port traces along the player's view angles rather than the
+    /// CSQC-reported cursor, which the port does not network).
     /// </summary>
     public string FormatMessage(Player self, string msg)
     {
@@ -489,6 +507,12 @@ public sealed class Chat
         int p = 0;
         int n = 7;
         var sb = new StringBuilder();
+
+        // chat.qc:533-539 — lazy crosshair trace (computed once, on the first escape). cursor = trace_endpos for
+        // %y; cursorEnt = trace_ent for %x.
+        bool traced = false;
+        System.Numerics.Vector3 cursor = self.Origin;
+        Entity? cursorEnt = null;
 
         while (true)
         {
@@ -504,6 +528,13 @@ public sealed class Chat
             if (pos < 0)
                 break;
 
+            // chat.qc:533-539 — trace once, before the first replacement is resolved.
+            if (!traced)
+            {
+                CrosshairTrace(self, out cursor, out cursorEnt);
+                traced = true;
+            }
+
             // append everything before the escape verbatim, then resolve the 2-char escape.
             sb.Append(msg, p, pos - p);
             if (pos + 1 >= msg.Length)
@@ -516,7 +547,7 @@ public sealed class Chat
 
             char escapeToken = msg[pos];
             char escape = msg[pos + 1];
-            string? replacement = ResolveEscape(self, escapeToken, escape);
+            string? replacement = ResolveEscape(self, escapeToken, escape, cursor, cursorEnt);
 
             if (replacement is null)
             {
@@ -538,7 +569,8 @@ public sealed class Chat
 
     /// <summary>Resolve one formatmessage escape (chat.qc:555-582). Returns null for the QC <c>break</c> cases
     /// (ON_SLASH/NO_SLASH that abort the expansion loop) so the caller stops and emits the rest verbatim.</summary>
-    private string? ResolveEscape(Player self, char escapeToken, char escape)
+    private string? ResolveEscape(Player self, char escapeToken, char escape,
+        System.Numerics.Vector3 cursor, Entity? cursorEnt)
     {
         bool isSlash = escapeToken == '\\';
         switch (escape)
@@ -550,14 +582,16 @@ public sealed class Chat
             case 'a': return isSlash ? null : Ftos(MathF.Floor(self.GetResource(ResourceType.Armor)));
             case 'h': return isSlash ? null : PlayerHealth(self);
             case 'l': return isSlash ? null : NearestLocation(self.Origin);
-            case 'y': return isSlash ? null : NearestLocation(self.Origin); // crosshair trace unwired → self loc
-            case 'd': return isSlash ? null : NearestLocation(self.Origin); // death_origin unwired → self loc
+            case 'y': return isSlash ? null : NearestLocation(cursor); // chat.qc:563 — NearestLocation(cursor)
+            case 'd': return isSlash ? null : NearestLocation(self.DeathOrigin); // chat.qc:564 — where they last died
             case 'o': return isSlash ? null : Vtos(self.Origin);
             case 'O': return isSlash ? null : string.Format(CultureInfo.InvariantCulture,
                 "'{0:F6} {1:F6} {2:F6}'", self.Origin.X, self.Origin.Y, self.Origin.Z);
             case 'w': return isSlash ? null : WeaponName(self);
             case 'W': return isSlash ? null : AmmoName(self);
-            case 'x': return isSlash ? null : "nothing"; // aimed-entity trace unwired
+            // chat.qc:569 — (cursor_ent.netname == "" || !cursor_ent) ? "nothing" : cursor_ent.netname.
+            case 'x': return isSlash ? null : (cursorEnt is null || string.IsNullOrEmpty(cursorEnt.NetName))
+                ? "nothing" : cursorEnt.NetName;
             case 's': return isSlash ? null : Ftos(HorizontalSpeed(self));
             case 'S': return isSlash ? null : Ftos(self.Velocity.Length());
             case 't': return isSlash ? null : SecondsToString((int)MathF.Ceiling(
@@ -571,14 +605,40 @@ public sealed class Chat
         }
     }
 
-    /// <summary>QC <c>PlayerHealth(this)</c> (chat.qc:461): the %h replacement.</summary>
-    private static string PlayerHealth(Player self)
+    /// <summary>QC <c>PlayerHealth(this)</c> (chat.qc:461): the %h replacement. The 2342-mapvote "observing" case
+    /// (chat.qc:466) maps <c>mapvote_initialized</c> to the port's <see cref="MapVoting.Running"/> (the end-of-match
+    /// map vote is in progress).</summary>
+    private string PlayerHealth(Player self)
     {
         float h = MathF.Floor(self.GetResource(ResourceType.Health));
         if (h == -666f) return "spectating";
-        if (h == -2342f) return "observing";
+        if (h == -2342f || (h == 2342f && (_world.MapVote?.Running ?? false))) return "observing";
         if (h <= 0f || self.IsDead) return "dead";
         return Ftos(h);
+    }
+
+    /// <summary>
+    /// QC <c>WarpZone_crosshair_trace_plusvisibletriggers(this)</c> (chat.qc:535, server/weapons/tracing.qc:559):
+    /// the lazy crosshair trace that backs %y (aim location) and %x (aimed entity). Base traces from the CSQC-reported
+    /// cursor (cursor_trace_start/endpos); the port doesn't network that, so it traces along the player's view angles
+    /// from the eyes (origin + view_ofs) out to <c>max_shot_distance</c> — the same pattern editmob's aim trace uses
+    /// (Commands.TraceLookedAtMonster). <paramref name="cursor"/> = the trace endpos; <paramref name="cursorEnt"/> =
+    /// the hit entity (null = world/nothing).
+    /// </summary>
+    private static void CrosshairTrace(Player self, out System.Numerics.Vector3 cursor, out Entity? cursorEnt)
+    {
+        cursor = self.Origin;
+        cursorEnt = null;
+        if (Api.Services is null)
+            return;
+        System.Numerics.Vector3 eyes = self.Origin + self.ViewOfs;
+        System.Numerics.Vector3 aim = self.ViewAngles != System.Numerics.Vector3.Zero ? self.ViewAngles : self.Angles;
+        XonoticGodot.Common.Math.QMath.AngleVectors(aim, out System.Numerics.Vector3 forward, out _, out _);
+        System.Numerics.Vector3 end = eyes + forward * WeaponFiring.CurrentMaxShotDistance;
+        TraceResult tr = Api.Trace.Trace(eyes, System.Numerics.Vector3.Zero, System.Numerics.Vector3.Zero,
+            end, MoveFilter.Normal, self);
+        cursor = tr.EndPos;
+        cursorEnt = tr.Ent;
     }
 
     /// <summary>
@@ -669,8 +729,15 @@ public sealed class Chat
         NotificationSystem.SendCenterRaw(NotifBroadcast.OneOnly, client, text);
     }
 
-    /// <summary>QC <c>dedicated_print(text)</c>: echo a line to the SERVER console only (not the clients).</summary>
-    private void DedicatedPrint(string text) => _world.Commands.ChatConsole?.Invoke(text);
+    /// <summary>QC <c>dedicated_print(text)</c> (server/main.qc:233-236): echo a line to the SERVER console only,
+    /// and ONLY on a dedicated server (<c>if (autocvar_sv_dedicated) print(input)</c>). On a listen server
+    /// (sv_dedicated 0) this is a no-op — the host's own client already sees the chat in its HUD, so Base prints
+    /// nothing on stdout.</summary>
+    private void DedicatedPrint(string text)
+    {
+        if (Cvars.Bool("sv_dedicated"))
+            _world.Commands.ChatConsole?.Invoke(text);
+    }
 
     /// <summary>QC <c>Send_Notification(NOTIF_ONE_ONLY, source, MSG_INFO, INFO_*)</c>: an info notification to the
     /// gated sender. The port surfaces it as a chat sprint to that player (the notification text channel).</summary>

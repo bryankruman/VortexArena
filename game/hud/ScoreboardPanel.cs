@@ -57,9 +57,13 @@ public partial class ScoreboardPanel : HudPanel
         public readonly bool Eliminated;
         /// <summary>Full registry-indexed column values (QC scores(field)) when fed from the wire; else null.</summary>
         public readonly int[]? Columns;
+        /// <summary>QC <c>.handicap_level</c> (entcs, scoreboard.qc:1003): 0..16; 0 = no handicap. When nonzero the
+        /// row draws the <c>player_handicap</c> icon tinted white@1 → red@16 next to the name.</summary>
+        public readonly int HandicapLevel;
 
         public ScoreRow(string name, int score, int team = 0, int deaths = -1, int ping = -1,
-            bool isLocal = false, int[]? columns = null, bool eliminated = false, float packetLoss = 0f)
+            bool isLocal = false, int[]? columns = null, bool eliminated = false, float packetLoss = 0f,
+            int handicapLevel = 0)
         {
             Name = name ?? "";
             Score = score;
@@ -70,6 +74,7 @@ public partial class ScoreboardPanel : HudPanel
             IsLocal = isLocal;
             Eliminated = eliminated;
             Columns = columns;
+            HandicapLevel = handicapLevel;
         }
 
         /// <summary>QC <c>pl.(scores(field))</c>: read a column value (0 when not networked / no column data).</summary>
@@ -241,7 +246,9 @@ public partial class ScoreboardPanel : HudPanel
                     packetLoss: wr.PacketLossByte / 255f,
                     // QC pl.eliminated (NET_HANDLE ENT_CLIENT_ELIMINATEDPLAYERS, client/main.qc:819): flag the
                     // rows the round-status block marked eliminated so DrawRow greys them.
-                    eliminated: eliminatedNetIds is not null && eliminatedNetIds.Contains(wr.NetId)));
+                    eliminated: eliminatedNetIds is not null && eliminatedNetIds.Contains(wr.NetId),
+                    // QC entcs handicap_level (scoreboard.qc:1003): the player_handicap icon level (0 = none).
+                    handicapLevel: wr.HandicapLevel));
             }
 
             _teamScores.Clear();
@@ -961,7 +968,23 @@ public partial class ScoreboardPanel : HudPanel
             if (c.Kind == ColumnKind.Separator) continue;
             FieldText ft = GetField(r, c);
             if (c.Kind == ColumnKind.Name)
-                DrawColored(new Vector2(layout.ColX[i], y + 3f), ft.Text, rowFg, 16);
+            {
+                float nameX = layout.ColX[i];
+                // QC scoreboard.qc:1003-1009 — the player_handicap extra icon (a 32x32 square drawn next to the
+                // name) when handicap_level != 0, tinted '1 0 0' + '0 1 1' * ((16 - lvl) / 15): white at level 1,
+                // red at level 16. The panel has no gfx texture path, so render the square as a faithful colored
+                // marker with the EXACT tint, then offset the name so it doesn't overlap.
+                if (r.HandicapLevel != 0)
+                {
+                    int lvl = r.HandicapLevel;
+                    float t = (16f - lvl) / 15f; // 1.0 @ lvl 1 (white) → 0.0 @ lvl 16 (red)
+                    Color hc = new(1f, t, t, rowAlpha); // '1 0 0' + '0 1 1' * t
+                    float sq = rowH - 6f;
+                    DrawRect(new Rect2(nameX, y + 3f, sq, sq), hc);
+                    nameX += sq + 4f;
+                }
+                DrawColored(new Vector2(nameX, y + 3f), ft.Text, rowFg, 16);
+            }
             else
                 DrawTextRight(layout.ColRight[i], y + 3f, layout.NumW,
                     ft.Text, new Color(ft.Color.R, ft.Color.G, ft.Color.B, ft.Color.A * rowAlpha), 16);

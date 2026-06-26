@@ -110,7 +110,7 @@ public sealed class OkShotgun : Weapon
         int pellets = (int)Cvars.Bullets;
         for (int i = 0; i < pellets; ++i)
         {
-            WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, Cvars.Damage,
+            WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, Cvars.Damage,
                 RegistryId, Cvars.Spread, Cvars.SolidPenetration, force: Cvars.Force);
         }
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/shotgun_fire.wav");

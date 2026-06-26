@@ -224,6 +224,11 @@ public static class VehicleBoarding
         // team/ammo reset) then applies the per-vehicle movetype/HUD seed.
         info.Enter(vehicle, pl);
 
+        // [sv-antilag.clear.on_spawn] QC clears the antilag ring on vehicle enter (sv_vehicles.qc) so a shot
+        // can't rewind the now-seated player toward its pre-board position. Set the explicit one-shot flag the
+        // net driver honors on its next record pass (Entity.AntilagNeedsClear).
+        pl.AntilagNeedsClear = true;
+
         // QC: MUTATOR_CALLHOOK(VehicleEnter, pl, veh) — fired after seating. Notify-style (return unused).
         var a = new MutatorHooks.VehicleEnterArgs(pl, vehicle);
         MutatorHooks.VehicleEnter.Call(ref a);
@@ -251,6 +256,11 @@ public static class VehicleBoarding
             return;
 
         Entity seat = pl.Vehicle;
+
+        // [sv-antilag.clear.on_spawn] QC clears the antilag ring on vehicle exit too (sv_vehicles.qc:775 +
+        // the per-vehicle exit fns) — the player is relocated to the eject point, so old history must not
+        // rewind a shot back into the vehicle. One-shot flag honored by the net driver's next record pass.
+        pl.AntilagNeedsClear = true;
 
         // QC: if (vehic.vehicle_flags & VHF_PLAYERSLOT) { vehic.vehicle_exit(vehic, eject); return; }
         // A gunner's "vehicle" is the gun SLOT — exit it via the body's multi-seat exit, NOT the pilot path.

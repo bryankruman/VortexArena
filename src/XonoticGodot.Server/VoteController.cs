@@ -94,6 +94,18 @@ public sealed class VoteController
     /// the match has started, vote.qc:913). Host-wires to <c>Warmup.WarmupStage</c>.</summary>
     public Func<bool> WarmupStage { get; set; } = static () => false;
 
+    /// <summary>QC <c>ValidateMap</c> (vote.qc): normalize + validate a map/nextmap vote argument
+    /// (<c>MapInfo_FixName</c> + the <c>sv_vote_override_mostrecent</c> recent-map block + <c>MapInfo_CheckMap</c>
+    /// gametype-support gate). Returns the validated map name, or null with the rejection reason in
+    /// <c>error</c>. <c>fromConsole</c> (caller is server console) bypasses the recent-map block, like QC's
+    /// <c>caller</c> guard. Host-wires to the map catalog/rotation; default accepts a non-empty name.</summary>
+    public delegate string? ValidateMapDelegate(string map, bool fromConsole, out string error);
+
+    /// <summary>Host-wired map validator (see <see cref="ValidateMapDelegate"/>). Default: accept any non-empty name.</summary>
+    public ValidateMapDelegate ValidateMap { get; set; } =
+        static (string map, bool fromConsole, out string error) =>
+        { error = ""; return string.IsNullOrEmpty(map) ? null : map; };
+
     /// <summary>Whether a player can become master (granted via login or a won master vote).</summary>
     public bool IsMaster(Player p) => _masters.Contains(p);
 
@@ -516,6 +528,56 @@ public sealed class VoteController
         return command.IndexOf(';') < 0 && command.IndexOf('\n') < 0 && command.IndexOf('\r') < 0 && command.IndexOf('$') < 0;
     }
 
+    /// <summary>
+    /// QC <c>VoteCommand_checkargs</c>: apply the per-command arg restriction cvar
+    /// <c>sv_vote_command_restriction_&lt;cmd&gt;</c>. The restriction is <c>"&lt;minargs&gt;[;charlist[;charlist...]]"</c>:
+    /// the first field is the minimum arg count, each subsequent <c>;</c>-separated field is the allowed-character
+    /// list for that positional arg (empty = any char allowed). An unset/empty restriction permits everything.
+    /// Returns false (reject) when the arg count is short or an arg contains a disallowed character.
+    /// </summary>
+    private static bool CheckArgs(CommandContext ctx, int startpos)
+    {
+        string cmdrestriction = Cvars.String("sv_vote_command_restriction_" + ctx.Arg(startpos));
+        if (string.IsNullOrEmpty(cmdrestriction)) return true; // unset/empty → no restriction (QC)
+
+        int argc = ctx.ArgCount;
+        startpos++; // skip the command name (QC ++startpos)
+
+        // QC: minargs = stof(cmdrestriction); if (argc - startpos < minargs) return false.
+        int firstSemi = cmdrestriction.IndexOf(';');
+        string minPart = firstSemi < 0 ? cmdrestriction : cmdrestriction.Substring(0, firstSemi);
+        int minargs = (int)ToFloat(minPart);
+        if (argc - startpos < minargs) return false;
+
+        int p = firstSemi; // index of the first semicolon (QC strstrofs(...,";",0))
+        for (; ; )
+        {
+            if (startpos >= argc) break;            // all args checked → GOOD
+            if (p < 0)                              // no more charlists
+            {
+                if (argc - startpos == minargs) break; // exactly minargs left → GOOD
+                return false;
+            }
+            int q = cmdrestriction.IndexOf(';', p + 1); // next semicolon
+            string charlist = q < 0
+                ? cmdrestriction.Substring(p + 1)
+                : cmdrestriction.Substring(p + 1, q - (p + 1));
+            if (charlist.Length != 0)
+            {
+                string arg = ctx.Arg(startpos);
+                for (int check = 0; check < arg.Length; check++)
+                    if (charlist.IndexOf(arg[check]) < 0) return false; // disallowed char
+            }
+            startpos++;
+            minargs--;
+            p = q;
+        }
+        return true;
+    }
+
+    private static float ToFloat(string s)
+        => float.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : 0f;
+
     /// <summary>QC the map/chmap→gotomap normalization used by the whitelist check.</summary>
     private static string ApplyReplacements(string s)
         => (" " + s + " ").Replace(" map ", " gotomap ").Replace(" chmap ", " gotomap ");
@@ -546,6 +608,9 @@ public sealed class VoteController
 
         string first = ctx.Arg(startpos).ToLowerInvariant();
         if (caller is not null && !CheckInList(first, list)) return 0;
+
+        // QC VoteCommand_checkargs: per-command arg restriction (sv_vote_command_restriction_<cmd>).
+        if (!CheckArgs(ctx, startpos)) return 0;
 
         switch (first)
         {
@@ -582,16 +647,17 @@ public sealed class VoteController
             case "chmap":
             case "gotomap":
             {
-                string map = ctx.Arg(startpos + 1);
-                if (string.IsNullOrEmpty(map)) { parseError = "^1Invalid map name."; return -1; }
+                // QC: vote_command = ValidateMap(argv(startpos+1), caller); if (!vote_command) return -1.
+                string? map = ValidateMap(ctx.Arg(startpos + 1), caller is null, out parseError);
+                if (string.IsNullOrEmpty(map)) return -1;
                 parsedCommand = $"gotomap {map}";
                 parsedDisplay = $"^1gotomap {map}";
                 return 1;
             }
             case "nextmap":
             {
-                string map = ctx.Arg(startpos + 1);
-                if (string.IsNullOrEmpty(map)) { parseError = "^1Invalid map name."; return -1; }
+                string? map = ValidateMap(ctx.Arg(startpos + 1), caller is null, out parseError);
+                if (string.IsNullOrEmpty(map)) return -1;
                 parsedCommand = $"nextmap {map}";
                 parsedDisplay = $"^1nextmap {map}";
                 return 1;

@@ -32,6 +32,24 @@ public sealed class KillCountdown
     /// <summary>QC <c>autocvar_g_balance_kill_delay</c> (shipped 2): countdown seconds before the death lands.</summary>
     public System.Func<float> KillDelay { get; set; } = static () => 2f;
 
+    /// <summary>QC <c>autocvar_g_balance_kill_antispam</c> (shipped 5; XPM/XDF 0): seconds added to the
+    /// next-allowed-kill time on a repeat `kill`, clamped to ≤ 2 s during an unstarted round (clientkill.qc:147-149).</summary>
+    public System.Func<float> KillAntispam { get; set; } = static () => 5f;
+
+    /// <summary>QC <c>MUTATOR_CALLHOOK(ClientKill, this, killtime)</c> (clientkill.qc:101): returns true to ABORT the
+    /// whole kill (e.g. freezetag returns STAT(FROZEN) so a frozen player can't self-kill); otherwise it may
+    /// rewrite <paramref name="killtime"/> via the ref (cts forces 0; race forces 0 while qualifying). Default = no
+    /// hook (never aborts, leaves killtime untouched).</summary>
+    public KillHook ClientKillHook { get; set; } = static (Player _, ref float _) => false;
+
+    /// <summary>QC <c>ClientKill_Now_TeamChange</c> (clientkill.qc:18): resolve a deferred team-change/spectate intent
+    /// (-2 = observer, &gt;0 = move to that team). Wired by the host; the team move itself does the kill.</summary>
+    public System.Action<Player, int> PerformTeamChange { get; set; } = static (_, _) => { };
+
+    /// <summary>QC the <c>MUTATOR_CALLHOOK(ClientKill, this, killtime)</c> delegate shape: out-param the (possibly
+    /// rewritten) kill delay, return true to forbid the kill entirely.</summary>
+    public delegate bool KillHook(Player player, ref float killtime);
+
     /// <summary>QC the round-active-but-not-started clamp (<c>round_handler_IsActive() &amp;&amp; !round_handler_IsRoundStarted()</c>):
     /// when true the countdown is clamped to ≤ 1 s (clientkill.qc:105-106).</summary>
     public System.Func<bool> RoundActiveNotStarted { get; set; } = static () => false;
@@ -58,10 +76,17 @@ public sealed class KillCountdown
     /// </summary>
     public bool Begin(Player player, int targetTeam = 0)
     {
+        // QC clientkill.qc:96 — bail if the match is over.
         if (GameStopped())
             return false;
 
         float killtime = KillDelay();
+
+        // QC clientkill.qc:101-103: the ClientKill mutator hook. A mutator may forbid the kill entirely (freezetag
+        // returns STAT(FROZEN) for a frozen player) or rewrite killtime (cts forces 0; race forces 0 while
+        // qualifying). On an abort nothing happens — no countdown, no death.
+        if (ClientKillHook(player, ref killtime))
+            return false;
 
         // QC clientkill.qc:105-106: clamp to ≤ 1 s while a round is active but not yet started.
         if (RoundActiveNotStarted())
@@ -69,21 +94,44 @@ public sealed class KillCountdown
 
         ServerPlayerState st = StateOf(player);
 
+        // QC clientkill.qc:133 — stash the deferred intent the countdown resolves on expiry.
+        st.KillCntdownTeamChange = targetTeam;
+
+        // QC clientkill.qc:136-140: if killtime<=0 and a *silent* killindicator already exists (count==1, the CTS
+        // finish indicator), kill instantly. This is the only path that resolves a queued silent indicator early.
+        if (killtime <= 0f && st.KillCntdownActive && st.KillCntdownSilent)
+        {
+            PerformKillNow(player, st);
+            return false;
+        }
+
         // QC clientkill.qc:142 `if (!this.killindicator)`: only arm a fresh countdown when none is running — a
         // repeated `kill` keeps the existing cnt (it does not restart the clock). The center-print is still
         // (re)sent below from the live cnt, exactly like the unconditional `if (this.killindicator)` block.
         if (!st.KillCntdownActive)
         {
+            // QC clientkill.qc:144-151: the anti-spam carry-forward — only while alive. Raise this kill's delay by
+            // any still-pending next-allowed-kill window so mashing `kill` extends (never shortcuts) the countdown,
+            // then push the next-allowed-kill time out by killtime + the antispam window.
+            if (!player.IsDead)
+            {
+                killtime = System.Math.Max(killtime, st.KillCntdownNextTime - Now());
+                float antispam = KillAntispam();
+                if (RoundActiveNotStarted())
+                    antispam = System.Math.Min(antispam, 2f);
+                st.KillCntdownNextTime = Now() + killtime + antispam;
+            }
+
             // QC clientkill.qc:153 — killtime<=0 || not a live player || already dead → kill now (no countdown).
             if (killtime <= 0f || player.IsDead)
             {
-                st.KillCntdownActive = false;
-                PerformKill(player);
+                PerformKillNow(player, st);
                 return false;
             }
 
             // QC clientkill.qc:169-170: cnt = ceil(killtime); the indicator's count is bound(0, cnt, 10).
             st.KillCntdownActive = true;
+            st.KillCntdownSilent = false;
             st.KillCntdownCnt = (int)System.Math.Ceiling(killtime);
             // QC: nextthink = starttime + lip*0.05 ≈ now (lip staggering is a cosmetic clones detail, not modeled);
             // the first think fires on the next driven tick, announcing the full cnt.
@@ -91,7 +139,7 @@ public sealed class KillCountdown
         }
 
         // QC clientkill.qc:188-207: the CENTER_TEAMCHANGE_* print, sent with the live count when cnt > 0 and the
-        // target is a real client.
+        // target is a real client. (A silent indicator never reaches Begin's print path in QC.)
         if (IsRealClient(player) && st.KillCntdownCnt > 0)
         {
             string? notif = TeamChangeCenterName(targetTeam);
@@ -100,6 +148,39 @@ public sealed class KillCountdown
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// QC <c>ClientKill_Silent(this, _delay)</c> (clientkill.qc:212): spawn/reuse a *silent* killindicator
+    /// (count==1 → no announcer, center-print, or digit) that ticks <c>ceil(_delay)</c> seconds and then runs the
+    /// real kill. Used by the CTS finish to silently kill the runner so they can't keep their speed. A delay ≤ 0
+    /// kills on the next tick (QC ceil(0)=0 → cnt<=0 → ClientKill_Now). The caller is responsible for the Base
+    /// gate <c>if (autocvar_g_cts_finish_kill_delay)</c> (0 = don't kill at all).
+    /// </summary>
+    public void BeginSilent(Player player, float delay, int targetTeam = 0)
+    {
+        if (GameStopped())
+            return;
+        ServerPlayerState st = StateOf(player);
+        st.KillCntdownTeamChange = targetTeam;
+        st.KillCntdownActive = true;
+        st.KillCntdownSilent = true;            // QC count = 1
+        st.KillCntdownCnt = (int)System.Math.Ceiling(delay);
+        st.KillCntdownNextThink = Now();
+    }
+
+    // QC ClientKill_Now (clientkill.qc:36-60): the lethal step. If a team-change intent is queued, resolve it (the
+    // move itself does the kill); otherwise run the self-kill Damage. Clears the indicator either way.
+    private void PerformKillNow(Player player, ServerPlayerState st)
+    {
+        st.KillCntdownActive = false;
+        st.KillCntdownSilent = false;
+        int target = st.KillCntdownTeamChange;
+        st.KillCntdownTeamChange = 0;
+        if (target != 0)
+            PerformTeamChange(player, target);   // QC ClientKill_Now_TeamChange (-2 spectate / >0 team move)
+        else
+            PerformKill(player);
     }
 
     /// <summary>
@@ -126,18 +207,18 @@ public sealed class KillCountdown
         // Drive the per-second think(s): QC nextthink = time + 1 each tick. Catch up if multiple seconds elapsed.
         while (st.KillCntdownActive && now >= st.KillCntdownNextThink)
         {
-            // QC: cnt <= 0 → ClientKill_Now (the death lands).
+            // QC: cnt <= 0 → ClientKill_Now (the death — or the deferred team change — lands).
             if (st.KillCntdownCnt <= 0)
             {
-                st.KillCntdownActive = false;
-                PerformKill(player);
+                PerformKillNow(player, st);
                 return;
             }
 
-            // QC clientkill.qc:79-85: announce the current number (cnt <= 10) to a real client. The announcer is
-            // gated on the notification's Enabled flag (NUM_KILL is shipped disabled — N___NEVER in Base — so this
-            // stays silent by default but becomes live the instant the player enables the kill announcer).
-            if (st.KillCntdownCnt <= 10 && IsRealClient(player))
+            // QC clientkill.qc:77 `if (this.count != 1)`: a silent indicator (CTS finish) plays no announcer.
+            // Otherwise QC clientkill.qc:79-85: announce the current number (cnt <= 10) to a real client. The
+            // announcer is gated on the notification's Enabled flag (NUM_KILL is shipped disabled — N___NEVER in
+            // Base — so it stays silent by default but becomes live the instant the player enables it).
+            if (!st.KillCntdownSilent && st.KillCntdownCnt <= 10 && IsRealClient(player))
                 AnnceIfEnabled(player, "NUM_KILL_" + st.KillCntdownCnt);
 
             st.KillCntdownNextThink += 1f;

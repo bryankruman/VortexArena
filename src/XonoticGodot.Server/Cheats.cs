@@ -9,17 +9,19 @@ namespace XonoticGodot.Server;
 /// <c>CheatsAllowed</c> / <c>CheatCommand</c> + the cheat accounting). It gates cheats behind
 /// <c>sv_cheats</c> (snapshotted at init, like QC's <c>gamestart_sv_cheats</c>, so a mid-match cvar change
 /// doesn't take effect until restart) and implements the simple, pure-logic cheats: <c>god</c>, <c>notarget</c>,
-/// <c>noclip</c>, <c>fly</c>, <c>give</c>, and <c>usetarget</c>/<c>killtarget</c>. Each successful cheat bumps a
+/// <c>noclip</c>, <c>fly</c>, <c>give</c>, <c>usetarget</c>/<c>killtarget</c>, <c>teleporttotarget</c>, the
+/// <c>R00T</c> radius-nuke impulse, and the <c>GIVE_ALL</c> impulse. Each successful cheat bumps a
 /// per-player and a global cheat counter (QC <c>cheatcount</c> / <c>cheatcount_total</c>), which the campaign
 /// reads to refuse saving progress when cheats were used.
 ///
 /// Faithful to QC: <see cref="Allowed"/> requires BOTH the snapshot AND the live <c>sv_cheats</c> (except the
 /// <see cref="Player"/>-level <c>maycheat</c> override); dead players can't cheat unless <paramref name="ignoreDead"/>;
 /// at <c>sv_cheats &gt;= 2</c> non-players (observers) may cheat too. A refused cheat command broadcasts the QC
-/// "Player ... tried to use cheat '...'" notice (QC <c>CheatsAllowed</c>'s <c>logattempt</c> branch). The trace/particle/file-I/O cheats
-/// (teleport-to-random-location, the clone/copybody, r00t radius nuke, the drag object-carry subsystem, the
-/// particle and race/map-editor tooling) depend on engine services outside this Godot-free core and are not
-/// part of it; the gameplay-state cheats above are complete.
+/// "Player ... tried to use cheat '...'" notice (QC <c>CheatsAllowed</c>'s <c>logattempt</c> branch). The
+/// remaining trace/particle/file-I/O cheats (the emergency teleport-to-random-location/info_autoscreenshot,
+/// the clone/copybody, the speedrun personal-waypoint, the drag object-carry subsystem, and the
+/// particle/<c>make</c>/<c>penalty</c> + race map-editor tooling) depend on engine services outside this
+/// Godot-free core and are not part of it; the gameplay-state cheats above are complete.
 /// </summary>
 public sealed class Cheats
 {
@@ -63,12 +65,17 @@ public sealed class Cheats
     /// broadcasts the QC "Player ... tried to use cheat '<paramref name="cheatName"/>'" notice (QC's
     /// <c>bprintf</c> branch). The dead-player and observer guards refuse SILENTLY, as in Base.
     /// </summary>
-    public bool Allowed(Player p, bool ignoreDead = false, bool logAttempt = false, string? cheatName = null)
+    public bool Allowed(Player p, bool ignoreDead = false, bool logAttempt = false, string? cheatName = null,
+        bool cloneImpulse = false)
     {
         // QC CheatsAllowed returns 0 SILENTLY on the dead-player and observer guards; only the
         // final sv_cheats==0 fall-through logs the attempt. Match that placement.
         if (!ignoreDead && p.IsDead) return false;
         if (GameStartCheats < 2 && (p.Flags & EntFlags.Client) == 0) return false; // observer guard
+        // QC cheats.qc:66-68 — the CLONE_MOVING/CLONE_STANDING impulses are permitted INDEPENDENTLY of sv_cheats
+        // while the player is still under their per-life clone budget (this.lip < sv_clones). lip counts the clones
+        // already spawned this life.
+        if (cloneImpulse && p.Lip < Cvars.Int("sv_clones")) return true;
         if (p.MayCheat) return true;
         if (GameStartCheats != 0 && Cvars.Int("sv_cheats") != 0) return true;
         return Refuse(p, logAttempt, cheatName);
@@ -144,6 +151,12 @@ public sealed class Cheats
                 AddCheats(p, 1);
                 return true;
 
+            case "teleporttotarget":
+                if (!Allowed(p, logAttempt: true, cheatName: verb)) return false;
+                // QC: DID_CHEAT only when teleport_findtarget found a destination and the teleport ran.
+                if (TeleportToTarget(p, argv.Length > 1 ? argv[1] : "")) AddCheats(p, 1);
+                return true;
+
             default:
                 return false;
         }
@@ -160,6 +173,55 @@ public sealed class Cheats
         if (ok) AddCheats(p, 1);
         return ok;
     }
+
+    /// <summary>
+    /// QC the <c>R00T</c> impulse (impulse 148, <c>CheatImpulse</c> CHIMPULSE_R00T): nuke a random living enemy.
+    /// Picks a uniformly-random live enemy player from <paramref name="roster"/> (QC RandomSelection over
+    /// <c>IS_PLAYER(it) &amp;&amp; !IS_DEAD(it) &amp;&amp; DIFF_TEAM(it, this)</c>), falling back to the caller
+    /// when there is none, then spawns the rocket-explode effect + impact sound at the victim and applies
+    /// <c>RadiusDamage(1000 dmg, 0 edge, 128 radius, 500 force, DEATH_CHEAT)</c>. Logs "404 Sportsmanship not
+    /// found." and counts a cheat. <paramref name="roster"/> is the connected-client list (observers and dead
+    /// players are filtered out here).
+    /// </summary>
+    public bool R00t(Player p, IReadOnlyList<Player> roster)
+    {
+        if (!Allowed(p, logAttempt: true, cheatName: "impulse 148")) return false;
+
+        // QC: RandomSelection over every IS_PLAYER && !IS_DEAD && DIFF_TEAM enemy (reservoir-sample one uniformly).
+        Entity victim = p;
+        int seen = 0;
+        for (int i = 0; i < roster.Count; i++)
+        {
+            Player it = roster[i];
+            if (it.IsObserver || it.IsDead) continue; // QC IS_PLAYER(it) && !IS_DEAD(it)
+            if (it.Team == p.Team) continue; // QC DIFF_TEAM(it, this): a.team != b.team (FFA: all 0 -> self-nuke)
+            seen++;
+            if (XonoticGodot.Common.Math.Prandom.RangeInt(0, seen) == 0)
+                victim = it;
+        }
+
+        // QC: Send_Effect(EFFECT_ROCKET_EXPLODE) + sound(CH_SHOTS, SND_ROCKET_IMPACT) at the victim.
+        EffectEmitter.Emit("ROCKET_EXPLODE", victim.Origin);
+        WeaponSplash.ImpactSound(victim, "weapons/rocket_impact.wav");
+
+        // QC: RadiusDamage(spawn at victim, this, 1000, 0, 128, NULL, NULL, 500, DEATH_CHEAT, DMG_NOWEP, victim).
+        WeaponSplash.RadiusDamage(
+            inflictor: victim, center: victim.Origin, damage: 1000f, edgeDamage: 0f, radius: 128f,
+            attacker: p, deathType: 0, force: 500f, directHit: victim,
+            deathTag: XonoticGodot.Common.Gameplay.Damage.DeathTypes.Cheat);
+
+        Echo("404 Sportsmanship not found.");
+        AddCheats(p, 1);
+        return true;
+    }
+
+    /// <summary>
+    /// QC the <c>teleporttotarget</c> cheat command (<c>CheatCommand</c> case): teleport the caller to a named
+    /// teleport-destination target. QC spawns a transient <c>cheattriggerteleport</c>, sets <c>.target</c>,
+    /// runs <c>teleport_findtarget</c>, and (when a destination was found) <c>Simple_TeleportPlayer</c>.
+    /// </summary>
+    private static bool TeleportToTarget(Player p, string targetName)
+        => Teleporters.TeleportToTarget(p, targetName);
 
     // =============================================================================================
     // give (QC GiveItems — the cheat-side give parser, reduced to the gameplay-state slice)

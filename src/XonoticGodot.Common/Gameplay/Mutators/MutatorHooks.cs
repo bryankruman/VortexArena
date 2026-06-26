@@ -60,6 +60,37 @@ public static class MutatorHooks
     public static readonly HookChain<ClientDisconnectArgs> ClientDisconnect = new();
 
     /// <summary>
+    /// EV_Player_ChangeTeam (server/mutators/events.qh) — fired from QC <c>Player_SetTeamIndex</c> BEFORE a team
+    /// change is applied. A handler returning <c>true</c> BLOCKS the change (the player keeps the old team), so a
+    /// mutator can veto a balance override or a per-mode team move. Slot0 the player, slot1 the old team index
+    /// (1..4 or 0/-1), slot2 the requested new team index.
+    /// </summary>
+    public struct PlayerChangeTeamArgs
+    {
+        public readonly Entity Player;    // MUTATOR_ARGV_0_entity
+        public readonly int OldTeamIndex; // MUTATOR_ARGV_1_int
+        public readonly int NewTeamIndex; // MUTATOR_ARGV_2_int
+        public PlayerChangeTeamArgs(Entity player, int oldTeamIndex, int newTeamIndex)
+        { Player = player; OldTeamIndex = oldTeamIndex; NewTeamIndex = newTeamIndex; }
+    }
+    public static readonly HookChain<PlayerChangeTeamArgs> PlayerChangeTeam = new();
+
+    /// <summary>
+    /// EV_Player_ChangedTeam (server/mutators/events.qh) — fired from QC <c>Player_SetTeamIndex</c> AFTER a team
+    /// change has been applied, so a mutator can react (per-mode side effects, stat resets). Same slots as
+    /// <see cref="PlayerChangeTeam"/>; the return value is ignored.
+    /// </summary>
+    public struct PlayerChangedTeamArgs
+    {
+        public readonly Entity Player;    // MUTATOR_ARGV_0_entity
+        public readonly int OldTeamIndex; // MUTATOR_ARGV_1_int
+        public readonly int NewTeamIndex; // MUTATOR_ARGV_2_int
+        public PlayerChangedTeamArgs(Entity player, int oldTeamIndex, int newTeamIndex)
+        { Player = player; OldTeamIndex = oldTeamIndex; NewTeamIndex = newTeamIndex; }
+    }
+    public static readonly HookChain<PlayerChangedTeamArgs> PlayerChangedTeam = new();
+
+    /// <summary>
     /// EV_Spawn_Score (server/mutators/events.qh) — fired from QC <c>Spawn_Score</c> (server/spawnpoints.qc)
     /// for EACH candidate spawn spot while selecting a spawnpoint, so a mutator can bias the spot's priority.
     /// Slot0 the player being spawned, slot1 the spawn spot entity, slot2 the spot's spawn-score vector
@@ -155,12 +186,49 @@ public static class MutatorHooks
 
     /// <summary>
     /// EV_PlayerRegen — called each think frame; a handler returning true disables regen (QC instagib).
-    /// The full in/out regen-tuning slots are deferred; only the "disable" return is modeled for now.
+    /// Slots 1-10 are the in/out tuning parameters that mutators may rewrite (QC client.qc:1699-1710):
+    ///   max_mod   — scales the health regen/rot stable set-point (health only, not armor).
+    ///   regen_mod — multiplies the regen frametime for armor+health (speed scaling).
+    ///   rot_mod   — multiplies the rot frametime for armor+health (speed scaling).
+    ///   limit_mod — multiplies GetResourceLimit for RotRegen's upper clamp.
+    ///   regen_health / regen_health_linear / regen_health_rot / regen_health_rotlinear /
+    ///   regen_health_stable / regen_health_rotstable — the six health balance values (may be overridden
+    ///   by a mutator instead of the cvar reads). Default to the cvar values seeded by the caller.
+    /// A return of true short-circuits the health+armor RotRegen (does NOT skip the fuel block or rot-to-death).
     /// </summary>
     public struct PlayerRegenArgs
     {
-        public readonly Entity Player;   // MUTATOR_ARGV_0_entity
-        public PlayerRegenArgs(Entity player) { Player = player; }
+        public readonly Entity Player;   // MUTATOR_ARGV_0_entity — not rewritten
+        // QC M_ARGV(1..4, float) — the four multiplier mods (in/out, default 1).
+        public float MaxMod;             // MUTATOR_ARGV_1_float
+        public float RegenMod;           // MUTATOR_ARGV_2_float
+        public float RotMod;             // MUTATOR_ARGV_3_float
+        public float LimitMod;           // MUTATOR_ARGV_4_float
+        // QC M_ARGV(5..10, float) — the six health balance values (in/out, initialized from cvars).
+        public float RegenHealth;            // MUTATOR_ARGV_5_float
+        public float RegenHealthLinear;      // MUTATOR_ARGV_6_float
+        public float RegenHealthRot;         // MUTATOR_ARGV_7_float
+        public float RegenHealthRotLinear;   // MUTATOR_ARGV_8_float
+        public float RegenHealthStable;      // MUTATOR_ARGV_9_float
+        public float RegenHealthRotStable;   // MUTATOR_ARGV_10_float
+
+        public PlayerRegenArgs(Entity player,
+            float regenHealth, float regenHealthLinear,
+            float regenHealthRot, float regenHealthRotLinear,
+            float regenHealthStable, float regenHealthRotStable)
+        {
+            Player              = player;
+            MaxMod              = 1f;
+            RegenMod            = 1f;
+            RotMod              = 1f;
+            LimitMod            = 1f;
+            RegenHealth         = regenHealth;
+            RegenHealthLinear   = regenHealthLinear;
+            RegenHealthRot      = regenHealthRot;
+            RegenHealthRotLinear = regenHealthRotLinear;
+            RegenHealthStable   = regenHealthStable;
+            RegenHealthRotStable = regenHealthRotStable;
+        }
     }
     public static readonly HookChain<PlayerRegenArgs> PlayerRegen = new();
 
@@ -975,6 +1043,38 @@ public static class MutatorHooks
     {
         var a = new SandboxEditAllowedArgs(player);
         return SandboxEditAllowed.Call(ref a);
+    }
+
+    // ---- match-end hooks (server/world.qc NextLevel) ----------------------------------------------------
+
+    /// <summary>
+    /// EV_MatchEnd_BeforeScores (server/mutators/events.qh) — fired near the TOP of <c>NextLevel()</c>, before
+    /// the per-player scores/stats are dumped (right after <c>VoteReset</c>). Lets a mode lock in final state
+    /// that the scoreboard then reports (e.g. ClanArena/Survival end-of-match score adjustments). No args.
+    /// </summary>
+    public struct MatchEndBeforeScoresArgs { }
+    public static readonly HookChain<MatchEndBeforeScoresArgs> MatchEndBeforeScores = new();
+
+    /// <summary>Fire <see cref="MatchEndBeforeScores"/> (QC <c>MUTATOR_CALLHOOK(MatchEnd_BeforeScores)</c>).</summary>
+    public static bool FireMatchEndBeforeScores()
+    {
+        var a = new MatchEndBeforeScoresArgs();
+        return MatchEndBeforeScores.Call(ref a);
+    }
+
+    /// <summary>
+    /// EV_MatchEnd (server/mutators/events.qh) — fired near the END of <c>NextLevel()</c>, after the winner
+    /// banner + intermission setup, just before <c>localcmd("sv_hook_gameend")</c>. The CTF flag cleanup,
+    /// KeyHunt <c>kh_finalize()</c>, and the instagib countdown stop hang off this. No args.
+    /// </summary>
+    public struct MatchEndArgs { }
+    public static readonly HookChain<MatchEndArgs> MatchEnd = new();
+
+    /// <summary>Fire <see cref="MatchEnd"/> (QC <c>MUTATOR_CALLHOOK(MatchEnd)</c>).</summary>
+    public static bool FireMatchEnd()
+    {
+        var a = new MatchEndArgs();
+        return MatchEnd.Call(ref a);
     }
 }
 

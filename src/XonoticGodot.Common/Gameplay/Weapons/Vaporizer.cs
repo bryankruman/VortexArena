@@ -153,7 +153,7 @@ public sealed class Vaporizer : Weapon
 
         // FireRailgunBullet: pierces targets, applies the configured knockback force (+ falloff if set).
         // headshotNotify: true — the Vaporizer announces headshots (QC vaporizer.qc:145).
-        Vector3 end = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
+        Vector3 end = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
         Entity? hit = WeaponFiring.FireRailgunBullet(actor, shot.Origin, end, damage, RegistryId, Primary.Force,
             headshotNotify: true);
 

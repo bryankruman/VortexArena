@@ -43,6 +43,15 @@ public sealed partial class MusicPlayer : Node
     /// <summary>Volume multiplier from bgmvolume cvar (0-1). Updated externally each frame or on cvar change.</summary>
     public float BgmVolume { get; set; } = 0.7f;
 
+    /// <summary>
+    /// QC <c>target_music_kill()</c> at <c>NextLevel</c>: when the match reaches intermission the map music is
+    /// stopped (the cdtrack / target_music / trigger_music sources are silenced) so the scoreboard plays over
+    /// silence rather than the looping map track. Set by the host from the networked intermission flag. (The
+    /// Base intermission <c>cd loop sv_intermission_cdtrack</c> switch is empty by default, so killing the map
+    /// music is the visible behaviour.)
+    /// </summary>
+    public bool Intermission { get; set; }
+
     // ---- live state ----
     private AudioStreamPlayer? _playerA;   // the two crossfade slots
     private AudioStreamPlayer? _playerB;
@@ -114,6 +123,11 @@ public sealed partial class MusicPlayer : Node
         {
             EvaluateMusicSources(out bestTrack, out bestVolume, out fadeIn, out fadeOut);
         }
+
+        // QC target_music_kill() at NextLevel: at intermission silence the map music regardless of the
+        // priority stack so the scoreboard plays over silence. Falls through to the FadeOutCurrent path below.
+        if (Intermission)
+            bestTrack = "";
 
         // --- if the best track changed, start a crossfade ---
         // The OUTGOING track fades on ITS OWN fade_rate (captured when it started — QC TargetMusic_Advance

@@ -566,6 +566,10 @@ public sealed class ClientNet : IDisposable
     /// <summary>End-of-match intermission/scoreboard-freeze flag.</summary>
     public bool MatchIntermission { get; private set; }
 
+    /// <summary>QC GET_NEXTMAP / the <c>_nextmap</c> the server broadcasts (Send_NextMap_To_Player) — the upcoming
+    /// map name shown on the scoreboard's "Next map:" line. Empty until the server has a queued/rotation pick.</summary>
+    public string NextMap { get; private set; } = "";
+
     private void HandleMatchState(ref BitReader r)
     {
         float gameStart = r.ReadFloat();
@@ -573,6 +577,7 @@ public sealed class ClientNet : IDisposable
         bool warmup = r.ReadBool();
         float warmupLimit = r.ReadFloat();
         bool intermission = r.ReadBool();
+        string nextMap = r.ReadString();
         if (r.BadRead)
             return;
         MatchStartTime = gameStart;
@@ -580,6 +585,7 @@ public sealed class ClientNet : IDisposable
         MatchWarmup = warmup;
         MatchWarmupLimit = warmupLimit;
         MatchIntermission = intermission;
+        NextMap = nextMap ?? "";
         HasMatchState = true;
     }
 

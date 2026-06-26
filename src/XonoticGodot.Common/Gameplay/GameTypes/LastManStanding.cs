@@ -556,6 +556,13 @@ public sealed class LastManStanding : GameType
     public bool TimeLimitCancelled { get; private set; }
 
     /// <summary>
+    /// QC <c>campaign_bots_may_start</c> (sv_lms.qc:85): true once the human has spawned in a campaign. The server
+    /// wires this to <c>Campaign.BotsMayStart</c>; unset (non-campaign / headless test) → false (the campaign
+    /// human-lost early-end never fires).
+    /// </summary>
+    public static System.Func<bool>? CampaignBotsMayStart;
+
+    /// <summary>
     /// QC <c>WinningCondition_LMS</c> (sv_lms.qc:60): drive the LMS end-of-match check. Returns no-winner while the
     /// match hasn't begun (warmup / pre-start countdown). With ≥2 living players the match continues — except the
     /// time limit is cancelled (<see cref="TimeLimitCancelled"/>) when the top two lives counts are equal (QC
@@ -591,6 +598,23 @@ public sealed class LastManStanding : GameType
 
         if (alive > 1)
         {
+            // QC sv_lms.qc:84-92 — campaign human-lost early end: with the campaign live AND the human spawned
+            // (campaign_bots_may_start), if the (first) real client has 0 lives the level is over (WINNING_YES,
+            // "human player lost, game over"). Bots fighting on don't keep a lost campaign running.
+            if (Cvar("g_campaign", 0f) != 0f && (CampaignBotsMayStart?.Invoke() ?? false))
+            {
+                foreach (KeyValuePair<Player, LmsState> kv in _states)
+                {
+                    if (kv.Key.IsBot) continue;        // QC FOREACH_CLIENT IS_REAL_CLIENT (first real client; break)
+                    if (kv.Value.Lives <= 0)
+                    {
+                        MatchEnded = true;             // QC return WINNING_YES — the campaign level ends (human lost)
+                        return;
+                    }
+                    break;                              // QC: break after the first real client
+                }
+            }
+
             // QC: two or more living players — game continues. Run WinningConditionHelper: if the top two LIVES
             // counts are equal, cancel the time limit (WINNING_NEVER); otherwise let the timelimit decide.
             TimeLimitCancelled = TopTwoLivesEqual();

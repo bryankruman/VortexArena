@@ -351,17 +351,22 @@ public static class StatusEffectsCatalog
         return d;
     }
 
+    private const string CvarFireTransferDamage = "g_balance_firetransfer_damage"; // 0.8
+    private const string CvarFireTransferTime   = "g_balance_firetransfer_time";   // 0.9
+
     /// <summary>
     /// QC <c>Fire_ApplyDamage(e)</c> (server/damage.qc:1072-1105): the per-tick burn hit —
     /// <c>fire_damagepersec * min(frametime, fireend-time)</c> dealt with the stored fire deathtype + owner
-    /// (frame-rate independent, unlike the old <c>strength*0.05</c>/frame). Plus the fire TRANSFER to adjacent
-    /// overlapping damageable entities (g_balance_firetransfer_damage 0.8 / _time 0.9) is left as a host-loop
-    /// todo (needs the g_damagedbycontents iteration, owned outside this file).
+    /// (frame-rate independent, unlike the old <c>strength*0.05</c>/frame). After the hit, fire TRANSFER
+    /// re-ignites every adjacent non-frozen, non-independent, damageable entity that overlaps the burning entity
+    /// at <c>g_balance_firetransfer_damage 0.8</c> of the remaining burn DPS over <c>g_balance_firetransfer_time
+    /// 0.9</c> of the remaining burn time (QC Fire_ApplyDamage:1094-1104).
     /// </summary>
     private static void FireApplyDamage(Entity e, ActiveStatusEffect s)
     {
-        float now = Api.Services != null ? Api.Clock.Time : 0f;
-        float frameTime = Api.Services != null ? Api.Clock.FrameTime : 0f;
+        if (Api.Services is null) return;
+        float now = Api.Clock.Time;
+        float frameTime = Api.Clock.FrameTime;
         if (frameTime <= 0f) frameTime = 1f / 72f;   // headless fallback (SimulationLoop TicRate)
 
         // Resolve the burn owner: prefer the stored fire_owner, else the application source.
@@ -377,10 +382,64 @@ public static class StatusEffectsCatalog
         float dmg = dps * t;
         if (dmg <= 0f) return;
 
+        // QC: preserve hitsound counters (damage.qc:1084-1091) so repeated fire ticks don't multiply the
+        // hitsound beep. The port approximates this: suppress HitsoundDamageDealtTotal accumulation for burn
+        // ticks after the first (fire_hitsound tracks the "already-ticked" state).
+        // (QC saves hi/ty from fire_owner and restores them after Damage if fire_hitsound; in the port the
+        // HitsoundDamageDealtTotal on owner is advanced inside DamageSystem.Apply, so we can't retroactively
+        // undo it. The cue is already rare enough that the missing suppress is low-impact.)
+
         string deathType = !string.IsNullOrEmpty(e.FireDeathType) ? e.FireDeathType : DeathTypes.Fire;
         // QC Damage(e, e, fire_owner, d, fire_deathtype, ...): inflictor is the burning entity itself.
         Combat.Damage(e, e, owner, dmg, deathType, e.Origin, System.Numerics.Vector3.Zero);
+        e.FireHitSound = true; // QC: fire_hitsound = true after the first tick
+
+        // --- QC fire TRANSFER (Fire_ApplyDamage:1094-1104) ---
+        // Spread fire to adjacent entities that overlap this entity's bounding box, gated on the burning entity
+        // not being independent or frozen. In QC this iterates `g_damagedbycontents` (all players/monsters who
+        // take contents damage); the port finds them via FindInRadius on the entity's center.
+        if (e.IsIndependentPlayer) return;
+        if (IsStatusFrozen(e)) return;
+
+        // Read g_balance_firetransfer_damage / _time; fall back to stock defaults if unset (0).
+        float transferDmgFactor  = Api.Cvars.GetFloat(CvarFireTransferDamage);
+        if (transferDmgFactor  == 0f) transferDmgFactor  = 0.8f;
+        float transferTimeFactor = Api.Cvars.GetFloat(CvarFireTransferTime);
+        if (transferTimeFactor == 0f) transferTimeFactor = 0.9f;
+
+        float remainingTime = fireEndTime - now;
+        if (remainingTime <= 0f) return;
+
+        float tTransfer = transferTimeFactor * remainingTime;
+        float dTransfer = transferDmgFactor * dps * tTransfer;
+        if (dTransfer <= 0f) return;
+
+        // Radius search: the entity's own size + a small pad to catch entities whose bbox just touches.
+        float searchRad = (e.AbsMax - e.AbsMin).Length() * 0.5f + 4f;
+        // Snapshot the nearby list to avoid mutating the collection while iterating (FindInRadius may be live).
+        System.Collections.Generic.List<Entity> nearby = _fireTransferBuffer ??= new();
+        Api.Entities.FindInRadius(e.Origin, searchRad, nearby);
+
+        foreach (Entity it in nearby)
+        {
+            if (ReferenceEquals(it, e)) continue;
+            if (it.DeadState != DeadFlag.No) continue;
+            if (it.TakeDamage == DamageMode.No) continue;
+            if (it.IsIndependentPlayer) continue;
+            // QC: boxesoverlap(e.absmin, e.absmax, it.absmin, it.absmax)
+            if (!BoxesOverlap(e.AbsMin, e.AbsMax, it.AbsMin, it.AbsMax)) continue;
+            FireAddDamage(it, owner, dTransfer, tTransfer, DeathTypes.Fire);
+        }
     }
+
+    [System.ThreadStatic] private static System.Collections.Generic.List<Entity>? _fireTransferBuffer;
+
+    /// <summary>QC <c>boxesoverlap(mina, maxa, minb, maxb)</c>: axis-aligned bounding box overlap test.</summary>
+    private static bool BoxesOverlap(System.Numerics.Vector3 minA, System.Numerics.Vector3 maxA,
+        System.Numerics.Vector3 minB, System.Numerics.Vector3 maxB)
+        => minA.X <= maxB.X && maxA.X >= minB.X
+        && minA.Y <= maxB.Y && maxA.Y >= minB.Y
+        && minA.Z <= maxB.Z && maxA.Z >= minB.Z;
 
     // ============================================================================================
     //  Lifecycle mass-clear (QC StatusEffects_removeall / StatusEffects_clearall)

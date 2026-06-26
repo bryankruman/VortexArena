@@ -15,8 +15,9 @@ namespace XonoticGodot.Common.Gameplay;
 /// This port covers the full pellet fan (spread, solid penetration, distance falloff, knockback force),
 /// the melee swing (swing-arc damage scaling + multi-hit dedupe, HITTYPE_SECONDARY slap obituary, per-trace
 /// woosh fx), shell-casing eject, the impact ricochet ping, and the out-of-ammo auto-melee fallback.
-/// Left out (weapon-frame/online concerns): the multi-frame melee sweep + melee_delay wind-up timing, the
-/// staged triple-shot (secondary==2) frame sequence, and antilag take-back on the melee/setup traces.
+/// The melee swing trace is antilag-bracketed (LagComp around the sweep, QC WarpZone_traceline_antilag,
+/// shotgun.qc:124). Left out (weapon-frame/online concerns): the multi-frame melee sweep + melee_delay
+/// wind-up timing, and the staged triple-shot (secondary==2) frame sequence.
 /// </summary>
 [Weapon]
 public sealed class Shotgun : Weapon
@@ -191,9 +192,9 @@ public sealed class Shotgun : Weapon
         // per-pellet path (g_balance_shotgun_primary_spread_pattern defaults off in xonotic balance).
         for (int i = 0; i < pellets; ++i)
         {
-            WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, Primary.Damage,
+            WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, Primary.Damage,
                 deathType, Primary.Spread, Primary.SolidPenetration, force: Primary.Force);
-            Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
+            Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
             TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
             // w_backoff = the impact surface normal (trace_plane_normal), -force_dir fallback when no hit.
             Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
@@ -235,6 +236,14 @@ public sealed class Shotgun : Weapon
         // secondary threads HITTYPE_SECONDARY into its damage tag.
         string slapDeathType = DeathTypes.WithHitType(DeathTypes.FromWeapon(NetName), DeathTypes.Secondary);
 
+        // [sv-antilag.melee.secondary] Base traces each swing-arc segment through WarpZone_traceline_antilag
+        // (shotgun.qc:124, at ANTILAG_LATENCY for a client owner), so a high-ping slap connects on a moving
+        // target where the shooter saw it. Bracket the whole sweep in the shared LagComp facade (the same
+        // machinery FireBullet/Arc use): it rewinds players/monsters/nades to the shooter's view-time and
+        // widens the shooter's hit-mask to include CORPSE, then restores both — a no-op on a client/test/bot.
+        LagComp.Begin(actor);
+        try
+        {
         Entity? lastHit = null;
         for (int i = 0; i < traces; ++i)
         {
@@ -265,6 +274,11 @@ public sealed class Shotgun : Weapon
                 }
                 break; // single hit per swing
             }
+        }
+        }
+        finally
+        {
+            LagComp.End();
         }
     }
 

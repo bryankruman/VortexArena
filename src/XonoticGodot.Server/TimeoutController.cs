@@ -234,6 +234,18 @@ public sealed class TimeoutController
         _lastCountdownSecond = secondsLeft;
     }
 
+    /// <summary>
+    /// QC <c>Shutdown</c> (world.qc:2627-2628): <c>if (timeout_status == TIMEOUT_ACTIVE) cvar_set("slowmo",
+    /// ftos(orig_slowmo))</c>. On world teardown while a pause is ACTIVE, restore the captured original slowmo so
+    /// the engine doesn't keep running at <see cref="SlowmoValue"/> after the match is gone. A no-op when no
+    /// pause is active (LEADTIME/INACTIVE leave slowmo untouched, exactly like Base which only checks ACTIVE).
+    /// </summary>
+    public void ResetSlowmoOnShutdown()
+    {
+        if (Status == ActivePause)
+            ApplySlowmo?.Invoke(_restoreSlowmo);
+    }
+
     private void Reset()
     {
         Status = Inactive;

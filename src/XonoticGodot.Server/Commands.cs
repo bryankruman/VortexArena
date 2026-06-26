@@ -140,6 +140,27 @@ public sealed class Commands
     public Action<string>? ChangeLevelHandler { get; set; }
 
     /// <summary>
+    /// Optional sink the host wires to shut the server down (QC <c>localcmd("quit\n")</c>). Invoked at match end
+    /// by the <c>quit_when_empty</c> override in <see cref="GameWorld.DriveEndOfMatchMapFlow"/>. When unwired the
+    /// decision is still taken (no map change happens) but the process keeps running.
+    /// </summary>
+    public Action? QuitHandler { get; set; }
+
+    /// <summary>
+    /// Optional sink the host wires to redirect every client to another server at match end (QC
+    /// <c>redirection_target</c> → the per-client <c>reconnect</c> stuffcmd). Arg: the target server address from
+    /// <c>quit_and_redirect</c>. When unwired the redirect is a no-op (no map change happens either).
+    /// </summary>
+    public Action<string>? RedirectHandler { get; set; }
+
+    /// <summary>
+    /// Optional sink the host wires for the single-player <c>lastlevel</c> override (QC
+    /// <c>cvar_settemp_restore(); localcmd("set lastlevel 0\ntogglemenu 1\n")</c>) — show the menu after the
+    /// final campaign/last map instead of rotating. When unwired the decision is taken but no menu opens.
+    /// </summary>
+    public Action? LastLevelHandler { get; set; }
+
+    /// <summary>
     /// The sim-clock deferred-command queue (DP <c>defer</c> / <c>Cbuf_Execute_Deferred</c>). Backs the
     /// <c>defer</c> + <c>nextframe</c> commands; pumped each server tick by <c>GameWorld.OnStartFrame</c>
     /// (<c>Commands.Deferred.Pump(Time, cmd =&gt; Commands.Execute(cmd, isServerConsole: true))</c>). The passed
@@ -281,9 +302,10 @@ public sealed class Commands
         }
     }
 
-    /// <summary>QC <c>mapvote_suggestions</c>: maps players suggested for the end-of-match ballot (the <c>suggestmap</c>
-    /// command). Kept here (the port's <see cref="MapVoting"/> defers the suggestion array); deduped, order kept.</summary>
-    private readonly List<string> _mapSuggestions = new();
+    /// <summary>QC <c>mapvote_maps_suggestions</c> / <c>mapvote_maps_suggesters</c>: maps players suggested for the
+    /// end-of-match ballot (the <c>suggestmap</c> command), each paired with the suggester's netname (QC
+    /// <c>mapvote_maps_suggesters[i] = this.netname</c>). Deduped by map, order kept.</summary>
+    private readonly List<(string Map, string Suggester)> _mapSuggestions = new();
 
     /// <summary>QC the per-client auto-switch flag read (default off). Exposed so the pickup path can honor it.</summary>
     public bool GetAutoswitch(Player p) => _autoswitch.TryGetValue(p, out bool v) && v;
@@ -412,6 +434,14 @@ public sealed class Commands
         // (mutators.cfg:12 seta cl_dodging 0). Non-Player entities (never reached for a real player) read false.
         DodgingMutator.ClientDodgingProvider = e =>
             e is Player p && GetClientCvarFloat(p, "cl_dodging", 0f) != 0f;
+
+        // Per-client free-fly spectator wall-collision (QC server/client.qc:2589
+        // wouldclip = CS_CVAR(this).cvar_cl_clippedspectating). Point ClientManager's free-fly movetype recompute at
+        // this world's replicated-cvar store: a spectator who sets cl_clippedspectating 1 collides with the world
+        // (MOVETYPE_FLY_WORLDONLY) instead of the default noclip pass-through. Already allowlisted + stored
+        // (SentCvarAllowlist) — this is the missing server-side CONSUMER. Unset defaults to 0 (false → noclip), the
+        // Base default. Non-Player entities (never a real spectator) read false.
+        ClientManager.ClippedSpectatingProvider = p => GetClientCvarFloat(p, "cl_clippedspectating", 0f) != 0f;
     }
 
     /// <summary>
@@ -476,6 +506,14 @@ public sealed class Commands
             ctx.Print($"Unknown command \"{argv[0]}\"");
             return ctx;
         }
+
+        // QC SV_ParseClientCommand (server/command/cmd.qc:1181): "if we're banned, don't even parse the command" —
+        // Ban_MaybeEnforceBanOnce(this) re-checks the ban list on a remote client's command, not just at connect, so
+        // a ban INSERTED after the client connected (e.g. an admin `ban`s them mid-session, or the list changed on a
+        // map carry-over) still drops them the moment they next act. A no-op for an unbanned client; for a banned one
+        // it notifies + drops and we must stop parsing (the client entity is gone). Server-console/rcon is exempt.
+        if (!isServerConsole && caller is not null && _world.Bans.MaybeEnforceBan(caller))
+            return ctx;
 
         if (_commands.TryGetValue(argv[0], out ConsoleCommand? cmd))
         {
@@ -649,6 +687,9 @@ public sealed class Commands
         Register("voteban", "voteban <player> — ban a player from voting", ctx => CmdListAdd(ctx, "g_voteban_list", "voteban"));
         Register("unvoteban", "unvoteban <player> — lift a voteban", ctx => CmdListRemove(ctx, "g_voteban_list", "unvoteban"));
 
+        // ---- anticheat (QC GameCommand_anticheat, sv_cmd.qc:232) ----
+        Register("anticheat", "anticheat <client> — dump a player's anticheat verdict to the event log", CmdAnticheat);
+
         // ---- cheats (QC CheatCommand — routed for a client via cmd) ----
         Register("god", "god — toggle godmode (needs sv_cheats)", CmdCheat);
         Register("notarget", "notarget — toggle notarget (needs sv_cheats)", CmdCheat);
@@ -657,6 +698,7 @@ public sealed class Commands
         Register("give", "give <all|weapon|resource amount> — give items (needs sv_cheats)", CmdCheat);
         Register("usetarget", "usetarget <targetname> — fire a named target (needs sv_cheats)", CmdCheat);
         Register("killtarget", "killtarget <targetname> — remove a named target (needs sv_cheats)", CmdCheat);
+        Register("teleporttotarget", "teleporttotarget <targetname> — teleport to a named teleport target (needs sv_cheats)", CmdCheat);
 
         // ---- sandbox (QC the SV_ParseClientCommand hook in common/mutators/mutator/sandbox/sv_sandbox.qc). The
         //      client `sandbox` alias emits `cmd g_sandbox <sub> …`; route it to the SandboxMutator's HandleCommand
@@ -857,6 +899,36 @@ public sealed class Commands
             _world.Clients.ClientDisconnect(target);
             ctx.Print($"removed {target.NetName}");
         }
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>GameCommand_anticheat</c> (sv_cmd.qc:232): dump a chosen player's live anticheat verdict to the
+    /// event log on demand (<c>sv_cmd anticheat &lt;client&gt;</c>). Resolves the target by entity number or name
+    /// (QC <c>GetIndexedEntity</c> + <c>VerifyClientEntity</c>), then runs <c>anticheat_report_to_eventlog</c> —
+    /// which (like the disconnect path) emits the <c>:anticheat:</c> lines to <see cref="GameLog"/> gated on
+    /// <c>sv_eventlog</c>. Admin/console only (the privilege split rejects a remote client before this runs).
+    /// </summary>
+    private bool CmdAnticheat(CommandContext ctx)
+    {
+        if (ctx.ArgCount < 2)
+        {
+            ctx.Print("Usage: anticheat <client>");
+            ctx.Print("  <client> is the entity number or name of the player.");
+            return true;
+        }
+        Player? target = FindPlayerByNameOrId(ctx.Arg(1));
+        if (target is null)
+        {
+            ctx.Print($"anticheat: no player matching \"{ctx.Arg(1)}\".");
+            return true;
+        }
+        // QC anticheat_report_to_eventlog self-gates on autocvar_sv_eventlog; the port gates at the call site
+        // exactly like the disconnect path (GameWorld.InfraClientDisconnect), feeding the same GameLog.Echo sink.
+        if (Cvars.Bool("sv_eventlog"))
+            _world.AntiCheat.ReportToEventLog(target, _world.Time, _world.GameLog.Echo);
+        else
+            ctx.Print("anticheat: sv_eventlog is disabled; enable it to record the report.");
         return true;
     }
 
@@ -1161,22 +1233,46 @@ public sealed class Commands
 
     private bool CmdShuffleTeams(CommandContext ctx)
     {
-        if (!_world.Teamplay.IsTeamGame) { ctx.Print("Can't shuffle teams in a non-team game."); return true; }
-        var players = new List<Player>(_world.Clients.Players);
-        int teamCount = _world.Teamplay.TeamCount;
-        int idx = 0;
-        // round-robin assignment in a stable order (QC FOREACH_CLIENT_RANDOM; deterministic here).
+        // QC shuffleteams() (sv_cmd.qc:1340).
+        if (!_world.Teamplay.IsTeamGame) { ctx.Print("Can't shuffle teams when currently not playing a team game."); return true; }
+
+        // QC FOREACH_CLIENT(IS_PLAYER||INGAME): the present playing roster (the port treats non-observers as in-game).
+        var players = new List<Player>();
+        foreach (Player p in _world.Clients.Players)
+            if (!p.IsObserver && p.FragsStatus != Player.FragsSpectator)
+                players.Add(p);
+
+        // QC: refuse the shuffle if any player is pinned to a forced team (g_forced_team_*).
         foreach (Player p in players)
+            if (_world.Teamplay.HasRealForcedTeam(p))
+            { ctx.Print("Can't shuffle teams because at least one player has a forced team."); return true; }
+
+        int teamCount = _world.Teamplay.TeamCount;
+        if (teamCount <= 0) { ctx.Print("Can't shuffle teams: no teams available."); return true; }
+
+        // QC FOREACH_CLIENT_RANDOM (server/utils.qh): a reservoir shuffle of the roster using random(), so the
+        // round-robin team assignment falls on a randomized order (not a stable one). Prandom.Float() == QC random().
+        var shuffled = new List<Player>(players.Count);
+        foreach (Player it in players)
         {
-            int target = Teams.All[idx % teamCount];
+            int j = (int)MathF.Floor(XonoticGodot.Common.Math.Prandom.Float() * (shuffled.Count + 1));
+            if (j == shuffled.Count) shuffled.Add(it);
+            else { shuffled.Add(shuffled[j]); shuffled[j] = it; }
+        }
+
+        int teamIndex = 0;
+        foreach (Player p in shuffled)
+        {
+            int target = Teams.All[teamIndex % teamCount];
             if ((int)p.Team != target)
             {
-                p.Team = target;
-                _world.Teamplay.KillPlayerForTeamChange(p);
+                // QC MoveToTeam → SetPlayerTeam: fire the team-change hooks (mutator veto) on each shuffle move.
+                if (_world.Teamplay.SetTeam(p, target))
+                    _world.Teamplay.KillPlayerForTeamChange(p);
             }
-            idx++;
+            teamIndex = (teamIndex + 1) % teamCount;
         }
-        ChatBroadcast?.Invoke("^2* Teams have been shuffled.");
+        ChatBroadcast?.Invoke("Successfully shuffled the players around randomly.");
         return true;
     }
 
@@ -1195,8 +1291,9 @@ public sealed class Commands
         if (!_world.Teamplay.IsTeamGame) { ctx.Print("not a team game"); return true; }
         int team = dest == "auto" ? _world.Teamplay.AssignBestTeam(target, _world.Clients.Players) : TeamFromName(dest);
         if (team == Teams.None) { ctx.Print($"invalid team \"{dest}\""); return true; }
-        target.Team = team;
-        _world.Teamplay.KillPlayerForTeamChange(target);
+        // QC MoveToTeam → SetPlayerTeam: the team set fires the Player_ChangeTeam/ChangedTeam hooks (mutator veto).
+        if (_world.Teamplay.SetTeam(target, team))
+            _world.Teamplay.KillPlayerForTeamChange(target);
         ctx.Print($"moved {target.NetName} to {Teams.Name(team)}");
         return true;
     }
@@ -1276,19 +1373,25 @@ public sealed class Commands
             if (lst.OutOfGame && lst.Rank > 0)
                 return true; // forbidden — already eliminated/ranked, can't drop to a free spectator
         }
-        // QC ClientCommand_spectate: run the REAL observer transition (free-fly, non-solid, model hidden,
-        // weapons stripped) — not just flip the scoreboard sentinel as before, which left the player a solid,
-        // shootable, still-scoring actor (SPEC4/LOOP2).
-        _world.Clients.PutObserverInServer(p);
-        // optional <client> arg → follow that player (QC Spectate(this, GetFilteredEntity(argv(1)))).
+        // optional <client> arg → follow that player (QC Spectate(this, GetFilteredEntity(argv(1)))). The follow
+        // path is NOT deferred in QC (cmd.qc:862 calls Spectate directly), so keep the immediate observer+follow:
+        // run the REAL observer transition (free-fly, non-solid, model hidden, weapons stripped), then follow.
         if (ctx.ArgCount >= 2 && ctx.Arg(1) != "0")
         {
+            _world.Clients.PutObserverInServer(p);
             Player? tgt = FindPlayerByName(ctx.Arg(1));
             if (tgt is not null && !tgt.IsObserver && !tgt.IsDead && !ReferenceEquals(tgt, p))
                 _world.Clients.Spectate(p, tgt);
             else
                 ctx.Print($"no player matching \"{ctx.Arg(1)}\"");
+            ctx.Print("now spectating");
+            return true;
         }
+        // QC ClientCommand_spectate (cmd.qc:886): a plain `spectate` defers the observer transition through
+        // ClientKill_TeamChange(caller, -2) — the g_balance_kill_delay countdown (grey CENTER_TEAMCHANGE_SPECTATE
+        // print + the cancel window), not an instant PutObserverInServer. Begin resolves -2 → PutObserverInServer
+        // on expiry (or immediately when the delay is <= 0).
+        _world.KillCountdown.Begin(p, -2);
         ctx.Print("now spectating");
         return true;
     }
@@ -1305,22 +1408,60 @@ public sealed class Commands
             ctx.Print("selectteam can not be used as your team is forced");
             return true;
         }
+        Player caller = ctx.Caller;
         string sel = ctx.Arg(1).ToLowerInvariant();
-        int team = sel == "auto" ? _world.Teamplay.AssignBestTeam(ctx.Caller, _world.Clients.Players) : TeamFromName(sel);
+        int oldTeam = (int)caller.Team;
+
+        if (sel == "auto")
+        {
+            // QC ClientKill_TeamChange targetteam == -1, team <= 0 branch (clientkill.qc:110-116): an observer / not-
+            // yet-teamed player auto-selecting defers the autoselect to Join() (team_selected = -1; return) so the
+            // join queue isn't skipped — no countdown. Apply the chosen team immediately as their pending join team.
+            if (oldTeam <= 0)
+            {
+                _world.Teamplay.AssignBestTeam(caller, _world.Clients.Players); // sets caller.Team to the best team
+                ctx.Print($"auto-selected {Teams.Name((int)caller.Team)}");
+                return true;
+            }
+            // QC ClientKill_TeamChange targetteam == -1 (clientkill.qc:118-132): decide the best team NOW so the
+            // balancer treats this player as on the team they're about to join, and so we can early-out if they're
+            // already on a best team instead of counting down for nothing. AssignBestTeam computes (and would apply)
+            // the best team; restore the live team afterwards so the move stays DEFERRED through the countdown — the
+            // countdown's PerformTeamChange applies it at expiry, exactly like SetPlayerTeam in QC.
+            int best = _world.Teamplay.AssignBestTeam(caller, _world.Clients.Players);
+            caller.Team = oldTeam;
+            if (best == Teams.None) { ctx.Print($"invalid team \"{sel}\""); return true; }
+            // QC clientkill.qc:127-131: already on a best team → CENTER_TEAMCHANGE_ALREADYBEST, no countdown.
+            if (best == oldTeam)
+            {
+                if (!caller.IsBot)
+                    NotificationSystem.Send(NotifBroadcast.OneOnly, caller, MsgType.Center, "TEAMCHANGE_ALREADYBEST");
+                ctx.Print("already on the best team");
+                return true;
+            }
+            // QC joinAllowed → ClientKill_TeamChange(caller, best): defer the move through the kill countdown.
+            _world.KillCountdown.Begin(caller, best);
+            ctx.Print($"changing to {Teams.Name(best)}");
+            return true;
+        }
+
+        int team = TeamFromName(sel);
         if (team == Teams.None) { ctx.Print($"invalid team \"{sel}\""); return true; }
-        if ((int)ctx.Caller.Team == team) { ctx.Print("already on that team"); return true; }
+        // QC cmd.qc:730 (INFO/CENTER_TEAMCHANGE_SAME): an explicit re-select of your current team is a no-op.
+        if (oldTeam == team) { ctx.Print("already on that team"); return true; }
         // QC cmd.qc:746 (g_balance_teams_prevent_imbalance): an explicit (non-auto) switch to a stronger/larger
-        // team mid-match is rejected — a human may only switch to a current best (smallest/lowest-score) team. Auto
-        // already lands on a best team; warmup, bots, and a disabled cvar are allowed through inside the gate.
-        if (sel != "auto"
-            && !_world.Teamplay.IsTeamAllowedForSwitch(ctx.Caller, team, _world.Clients.Players, _world.Warmup.WarmupStage))
+        // team mid-match is rejected — a human may only switch to a current best (smallest/lowest-score) team.
+        // Warmup, bots, and a disabled cvar are allowed through inside the gate.
+        if (!_world.Teamplay.IsTeamAllowedForSwitch(caller, team, _world.Clients.Players, _world.Warmup.WarmupStage))
         {
             ctx.Print("You cannot change to a larger team.");
             return true;
         }
-        ctx.Caller.Team = team;
-        _world.Teamplay.KillPlayerForTeamChange(ctx.Caller);
-        ctx.Print($"joined {Teams.Name(team)}");
+        // QC cmd.qc:764 ClientKill_TeamChange(caller, team_num): defer the team move through the g_balance_kill_delay
+        // countdown (the team-colored CENTER_TEAMCHANGE_<team> print + cancel window). The actual team set + kill is
+        // run by KillCountdown.PerformTeamChange at expiry (or immediately when the delay is <= 0).
+        _world.KillCountdown.Begin(caller, team);
+        ctx.Print($"changing to {Teams.Name(team)}");
         return true;
     }
 
@@ -1402,20 +1543,33 @@ public sealed class Commands
     }
 
     /// <summary>QC <c>IMPULSE(waypoint_clear[_personal])</c> (server/impulse.qc:496-521): remove the caller's
-    /// personal waypoint, or all of their deployed waypoints. The CTS/race checkpoint-personal teleport reset is
-    /// not modeled (the port has no <c>.personal</c> checkpoint entity here).</summary>
+    /// personal waypoint, or all of their deployed waypoints. In CTS/race with <c>g_allow_checkpoints</c> set, the
+    /// personal-waypoint clear also self-kills the runner (QC routes it through <c>ClientKill</c>) so a speedrunner
+    /// resets back to their personal checkpoint. The <c>.personal</c> checkpoint *entity* itself is still not
+    /// modeled, so the reset lands at the gametype's normal start/respawn spawn rather than a stored origin.</summary>
     private bool CmdWaypointClear(CommandContext ctx, bool personalOnly)
     {
         if (ctx.Caller is null) { ctx.Print("waypoint is a client command"); return true; }
+        Player p = ctx.Caller;
         if (personalOnly)
         {
-            Waypoints.WaypointSprites.ClearPersonal(ctx.Caller);
+            Waypoints.WaypointSprites.ClearPersonal(p);
             ctx.Print("personal waypoint cleared");
         }
         else
         {
-            Waypoints.WaypointSprites.ClearOwned(ctx.Caller);
+            Waypoints.WaypointSprites.ClearOwned(p);
             ctx.Print("all waypoints cleared");
+        }
+        // QC impulse.qc:504/517: `if((g_cts || g_race) && autocvar_g_allow_checkpoints) ClientKill(this);` — the
+        // checkpoint-reset self-kill, gated off by default (g_allow_checkpoints 0). Defer it through the same kill
+        // machinery as the `kill` command (CTS forces killtime 0 via the ClientKill hook → instant).
+        if ((_world.GameType is XonoticGodot.Common.Gameplay.Cts
+                || _world.GameType is XonoticGodot.Common.Gameplay.Race)
+            && Cvars.Bool("g_allow_checkpoints")
+            && !p.IsObserver && p.FragsStatus != Player.FragsSpectator && !p.IsDead)
+        {
+            _world.KillCountdown.Begin(p, 0);
         }
         return true;
     }
@@ -1610,6 +1764,12 @@ public sealed class Commands
         // COUNTDOWN before the pause (timeout_status == TIMEOUT_LEADTIME) must NOT block impulses, so gate on the
         // active-pause predicate (IsPaused == Status==ActivePause), not the broader .Active (Status != Inactive).
         if (_world.Intermission.Running) return true;
+        // QC impulse.qc:379 `if (MinigameImpulse(this, imp)) return;` — a player seated in a minigame session
+        // consumes the impulse as a minigame MOVE before anything else (QC runs it even BEFORE the timeout gate,
+        // right after game_stopped). Route it here so a player in a minigame pressing a weapon key drives a
+        // minigame move instead of weapon selection. MinigameSessionManager.Impulse no-ops (returns false) when
+        // the caller isn't in an active session, leaving the normal weapon path untouched.
+        if (_world.Minigames.Impulse(caller, imp)) return true;
         if (_world.Timeout.IsPaused) return true;
         // QC impulse.qc:383-395 — round-not-started gate: while a round handler is ACTIVE but the round hasn't
         // started (the CA/Freezetag pre-round warmup countdown), forbid the three "act on the world" impulses
@@ -1625,14 +1785,53 @@ public sealed class Commands
         // keys (1/2/3, weapnext/prev) switch vehicle modes when seated with zero extra net work.
         if (caller.Vehicle is not null && !VehicleCommon.IsDead(caller.Vehicle) && VehicleBoarding.Impulse(caller, imp))
             return true;
-        // QC CheatImpulse (impulse.qc:398, cheats.qc:184): impulse 99 (CHIMPULSE_GIVE_ALL) is the only pure-logic
-        // cheat impulse the port models — route it to Cheats.GiveAll, which runs the sv_cheats gate (and counts the
-        // cheat) itself. The clone/speedrun/teleport/r00t/drag impulses need engine services and remain unported.
+        // QC CheatImpulse (impulse.qc:398, cheats.qc:184): impulse 99 (CHIMPULSE_GIVE_ALL) — route it to
+        // Cheats.GiveAll, which runs the sv_cheats gate (and counts the cheat) itself. The clone/speedrun/teleport/
+        // drag impulses need engine services and remain unported; R00T (148) is handled just below.
         if (imp == 99)
         {
             _world.Cheats.GiveAll(caller); // silently no-ops (returns false) when sv_cheats disallows it, like QC
             return true;
         }
+        // QC CheatImpulse CHIMPULSE_R00T (148, cheats.qc:264): nuke a random living enemy. Like GIVE_ALL it runs
+        // the sv_cheats gate + counts the cheat itself, and silently no-ops when disallowed. Clone (140/142),
+        // speedrun (30/141), teleport (143) and drag impulses need engine services and remain unported.
+        if (imp == 148)
+        {
+            _world.Cheats.R00t(caller, _world.Clients.Players);
+            return true;
+        }
+        // QC waypoint impulses (impulse.qc:414-521, all.qh:133-144): personal/here/danger waypoint-sprite deploy
+        // and the HELP-ME follow ping + clear-personal/clear-all. The port already has the live deploy/clear
+        // handlers (CmdWaypointDeploy / CmdWaypointClear, registered as console commands); route the impulse
+        // numbers onto them so a bind firing `impulse 30..48` deploys/clears the sprite, not just the named alias.
+        // The _crosshair/_death variants reuse the player's origin (same simplification documented on CmdWaypointDeploy
+        // — no server-side crosshair trace / death_origin on this path).
+        switch (imp)
+        {
+            case 30: case 31: case 32: return CmdWaypointDeploy(ctx, WpDeploy.Personal);
+            case 33:                   return CmdWaypointDeploy(ctx, WpDeploy.Helpme);
+            case 34: case 35: case 36: return CmdWaypointDeploy(ctx, WpDeploy.Here);
+            case 37: case 38: case 39: return CmdWaypointDeploy(ctx, WpDeploy.Danger);
+            case 47:                   return CmdWaypointClear(ctx, personalOnly: true);
+            case 48:                   return CmdWaypointClear(ctx, personalOnly: false);
+        }
+
+        // QC IMPULSE(use) -> PlayerUseKey (impulse.qc:409, client.qc:2620): the +use key routed through the
+        // impulse path. This must run the FULL PlayerUseKey sequence — not just the vehicle enter/exit +
+        // PlayerUseKey mutator hook that WeaponImpulses.UseHandle -> VehicleBoarding.UseKey covers, but ALSO the
+        // CTF flag throw / pass-request (QC MUTATOR_HOOKFUNCTION(ctf, PlayerUseKey), sv_ctf.qc:2452). CTF's hook
+        // needs the live roster (to find a carrier to request a pass from), which the generic PlayerUseKeyArgs
+        // chain doesn't carry, so it's driven explicitly here — identically to the +use BUTTON edge
+        // (ServerNet.UseKeyEdge), so a player who BINDS `impulse 21` gets the same flag-throw/pass as `+use`.
+        if (imp == 21)
+        {
+            VehicleBoarding.UseKey(caller);
+            if (_world.GameType is XonoticGodot.Common.Gameplay.Ctf ctf)
+                ctf.HandleUseKey(caller, _world.Clients.Players);
+            return true;
+        }
+
         if (!WeaponImpulses.Handle(caller, imp))
             ctx.Print($"impulse {imp} not handled");
         return true;
@@ -1856,11 +2055,46 @@ public sealed class Commands
 
     private bool CmdWho(CommandContext ctx)
     {
-        ctx.Print($"{"#",-4} {"name",-18} {"team",-8} {"bot",-4} address");
+        // QC CommonCommand_who (common.qc): the ent/name/ping/pl/time/ip/crypto_id table with the
+        // sv_status_privacy hiding. privacy = caller && sv_status_privacy (the server console always sees all).
+        bool privacy = !ctx.IsServerConsole && Cvars.Bool("sv_status_privacy");
+        // QC: separator = strreplace("%", " ", strcat(argv(1) ? argv(1) : " ", "^7")). The col gaps use the
+        // separator; default is a single space.
+        string separator = (ctx.ArgCount >= 2 && ctx.Arg(1) != "" ? ctx.Arg(1) : " ").Replace("%", " ") + "^7";
+        string sp = separator; // inter-column separator
+
+        ctx.Print("List of client information" + (privacy ? " (some data is hidden for privacy)" : "") + ":");
+        ctx.Print($" #{"ent",-3}{sp}{"nickname",-20}{sp}{"ping",-5}{sp}{"pl",-3}{sp}{"time",-9}{sp}{"ip",-16}{sp}crypto_id ");
+
+        int total = 0;
+        var fmt = System.Globalization.CultureInfo.InvariantCulture;
         foreach (Player p in _world.Clients.Players)
-            ctx.Print($"{p.Index,-4} {p.NetName,-18} {Teams.Name((int)p.Team),-8} {(p.IsBot ? "yes" : "no"),-4} {(ctx.IsServerConsole ? p.NetAddress : "")}");
+        {
+            string addr, crypto;
+            if (p.IsBot) { addr = "null/botclient"; crypto = "null/botclient"; }
+            else if (privacy) { addr = "hidden"; crypto = "hidden"; }
+            else { addr = string.IsNullOrEmpty(p.NetAddress) ? "" : p.NetAddress; crypto = p.PersistentId; }
+
+            // ping / packetloss: the headless core carries no live ping (the net host owns it); 0 here.
+            int ping = 0, pl = 0;
+            // QC process_time(1, time - jointime) = HH:MM:SS since join.
+            float jointime = _world.Clients.InfoOf(p)?.JoinTime ?? 0f;
+            int secs = (int)MathF.Max(0f, _world.Time - jointime);
+            string t = $"{secs / 3600:00}:{(secs / 60) % 60:00}:{secs % 60:00}";
+
+            ctx.Print($" #{p.Index,-3}{sp}{Truncate(p.NetName, 20),-20}{sp}{ping.ToString(fmt),-5}{sp}{pl.ToString(fmt),-3}{sp}{t,-9}{sp}{addr,-16}{sp}{crypto} ");
+            total++;
+        }
+        // QC maxclients (engine slot count). The Godot-free core has no engine maxclients cvar; fall back to the
+        // live roster size when it is unset so the footer still reads sensibly.
+        int slots = Cvars.Int("maxclients");
+        if (slots <= 0) slots = total;
+        ctx.Print($"Finished listing {total} client(s) out of {slots} slots.");
         return true;
     }
+
+    /// <summary>QC the <c>%-20.20s</c> precision: truncate to at most <paramref name="max"/> chars.</summary>
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s.Substring(0, max);
 
     private bool CmdTime(CommandContext ctx)
     {
@@ -2113,20 +2347,35 @@ public sealed class Commands
             ctx.Print("The map you suggested is not available on this server.");
             return true;
         }
+        // QC mapvoting.qc:141-142 — the recent-map gate (unless _suggestions_override_mostrecent): a map that just
+        // played can't be re-suggested so players get a rotation. Map_IsRecent reads g_maplist_mostrecent.
+        if (!Cvars.Bool("g_maplist_votable_suggestions_override_mostrecent") && MapRotation.IsRecent(map))
+        {
+            ctx.Print("This server does not allow for recent maps to be played again. Please be patient for some rounds.");
+            return true;
+        }
+        // QC mapvoting.qc:144-145 — gametype-support gate (skipped during a gametype vote, which the port doesn't run).
+        if (!Cvars.Bool("sv_vote_gametype") && !_world.Rotation.MapSupportsGametype(map))
+        {
+            ctx.Print("The map you suggested does not support the current gametype.");
+            return true;
+        }
         // QC mapvoting.qc:147-149 — already-suggested dedup.
-        if (_mapSuggestions.Contains(map, StringComparer.OrdinalIgnoreCase))
+        if (_mapSuggestions.Any(s => string.Equals(s.Map, map, StringComparison.OrdinalIgnoreCase)))
         {
             ctx.Print("This map was already suggested.");
             return true;
         }
-        _mapSuggestions.Add(map);
+        // QC mapvoting.qc:160-161 — store the map AND the suggester's netname (mapvote_maps_suggesters[i]).
+        _mapSuggestions.Add((map, ctx.Caller.NetName ?? ""));
         // QC mapvoting.qc:165 — strcat("Suggestion of ", m, " accepted.").
         ctx.Print($"Suggestion of {map} accepted.");
         return true;
     }
 
-    /// <summary>The maps players have suggested for the next end-of-match ballot (QC mapvote_suggestions).</summary>
-    public IReadOnlyList<string> MapSuggestions => _mapSuggestions;
+    /// <summary>The (map, suggester) pairs players have suggested for the next end-of-match ballot
+    /// (QC mapvote_maps_suggestions / mapvote_maps_suggesters).</summary>
+    public IReadOnlyList<(string Map, string Suggester)> MapSuggestions => _mapSuggestions;
 
     /// <summary>Clear the suggestion list (the host calls this when a new ballot is built).</summary>
     public void ClearMapSuggestions() => _mapSuggestions.Clear();

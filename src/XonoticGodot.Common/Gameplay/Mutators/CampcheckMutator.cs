@@ -47,6 +47,13 @@ public sealed class CampcheckMutator : MutatorBase
 
     public CampcheckMutator() => NetName = "campcheck";
 
+    /// <summary>
+    /// QC <c>(autocvar_g_campaign &amp;&amp; !campaign_bots_may_start)</c> (sv_campcheck.qc:51): in a campaign, hold the
+    /// camp-check re-grace until the human spawns. The server wires this to <c>g_campaign &amp;&amp; !Campaign.BotsMayStart</c>;
+    /// unset (non-campaign / headless test) → never holds.
+    /// </summary>
+    public static System.Func<bool>? CampaignBotHold;
+
     // QC: REGISTER_MUTATOR(campcheck, expr_evaluate(autocvar_g_campcheck)) — g_campcheck is a string.
     public override bool IsEnabled =>
         Api.Services is not null && ExprEvaluate(Api.Cvars.GetString("g_campcheck"));
@@ -123,13 +130,16 @@ public sealed class CampcheckMutator : MutatorBase
             delta.Z = 0f;
             player.CampcheckTraveledDistance += MathF.Abs(delta.Length());
 
-            // QC: pre-match / round-not-started re-grace — zero the accumulator and push the next check out by
-            // interval*2 so a player who held still across the round-start transition isn't camp-checked on the
-            // first post-start interval (sv_campcheck.qc:51-55). The campaign-bot-wait and round_active-but-not-
-            // started portions of the QC condition have no Common-reachable seam yet (see todos); the
-            // time < game_starttime portion is wired via StartItem.GameStartTimeProvider.
+            // QC sv_campcheck.qc:51 — pre-match / campaign-wait / round-not-started re-grace: zero the accumulator
+            // and push the next check out by interval*2 so a player who held still across the round/level start
+            // transition isn't camp-checked on the first post-start interval. Full QC condition:
+            //   (autocvar_g_campaign && !campaign_bots_may_start) || (time < game_starttime)
+            //   || (round_handler_IsActive() && !round_handler_IsRoundStarted())
+            // All three portions are now wired: the campaign-bot wait via CampaignBotHold (host seam), the prematch
+            // clock via StartItem.GameStartTimeProvider, and the round-not-started via RoundHandler's Common seam.
             float gameStartTime = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
-            if (time < gameStartTime)
+            bool campaignWait = CampaignBotHold?.Invoke() ?? false;
+            if (campaignWait || time < gameStartTime || RoundHandler.RoundGateBlocks())
             {
                 player.CampcheckNextCheck = time + Interval * 2f;
                 player.CampcheckTraveledDistance = 0f;

@@ -119,6 +119,13 @@ public sealed class PlayerStats
         foreach (string a in new[] { "kill-spree-3", "kill-spree-5", "kill-spree-10", "kill-spree-15",
                      "kill-spree-20", "kill-spree-25", "kill-spree-30", "botlike", "firstblood", "firstvictim" })
             AddEvent("achievement-" + a);
+
+        // QC anticheat_register_to_playerstats() (playerstats.qc:339): pre-register the anticheat event slots
+        // (anticheat-_time + one per detector) so the per-player anticheat feed at FinalizePlayer lands in the
+        // game report. Base's PlayerStats_GameReport_Event DROPS unregistered events, so registration is the
+        // register-then-emit contract; the port's AddEvent already dedupes/orders, and ReportToPlayerStats emits
+        // these exact ids.
+        AntiCheat.RegisterPlayerStats(AddEvent);
     }
 
     /// <summary>QC <c>PlayerStats_GameReport_Reset_All</c>: close + re-init the DB (on match restart).</summary>

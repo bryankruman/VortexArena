@@ -358,17 +358,37 @@ public static class SpawnSystem
         float resolvedTeamCheck = float.IsNaN(teamCheck) ? ComputeTeamCheck(forPlayer, anyPoint)
                                 : (anyPoint ? -1f : teamCheck);
 
-        // Spawn_ScoreAll + Spawn_FilterOutBadSpots: score each spot, keep prio >= 0.
-        // score = (prio, weight): weight is the distance to the nearest live OTHER player.
-        var scored = new List<(Entity spot, float prio, float weight)>(spots.Count);
-        foreach (var spot in spots)
+        // QC SelectSpawnPoint anypoint branch (spawnpoints.qc:413-416): `if(anypoint) spot =
+        // Spawn_WeightedPoint(firstspot, 1, 1, 1);` — Spawn_FilterOutBadSpots/Spawn_ScoreAll is NEVER called, so
+        // every spot keeps its default '0 0 0' score: weight = bound(1,0,1)^1 * cnt = cnt, priority = 0. The pick
+        // is therefore a uniform (cnt-weighted) random over ALL spots, with NO startsolid / team / active /
+        // restriction filtering. Seed each spot at (prio 0, weight 0) and weighted-pick directly.
+        if (anyPoint)
         {
-            (float prio, float weight) = ScoreSpot(forPlayer, spot, livePlayers, resolvedTeamCheck, targetCheck);
-            if (prio >= 0f)
-                scored.Add((spot, prio, weight));
+            var all = new List<(Entity spot, float prio, float weight)>(spots.Count);
+            foreach (var spot in spots)
+                all.Add((spot, 0f, 0f));
+            return ToSpawnPoint(WeightedPick(all, lower: 1f, upper: 1f, exponent: 1f));
         }
 
-        // QC: "note this returns the original list if none survived" — fall back to every spot unscored-ish.
+        // Spawn_ScoreAll + Spawn_FilterOutBadSpots: score each spot, keep prio >= 0.
+        // score = (prio, weight): weight is the distance to the nearest live OTHER player. Base always primary-
+        // filters with targetcheck=true (spawnpoints.qc:419); the port's targetCheck arg drives the primary pass
+        // (true on the live ClientManager path, false on the bot/match sim paths where the gate is intentionally off).
+        var scored = ScoreAndFilter(forPlayer, spots, livePlayers, resolvedTeamCheck, targetCheck);
+
+        // QC SelectSpawnPoint emergency fallback (spawnpoints.qc:421-435): "double check without targets — fixes
+        // some crashes with improperly repacked maps". When the target-checking filter dropped EVERY spot, re-run
+        // the filter once with targetcheck=false (relaxes the ACTIVE_ACTIVE gate + the assault spawn_evalfunc /
+        // race-target requirement) before giving up. This is what keeps a player off the prio-0 in-solid fallback
+        // when the only thing rejecting the spots was the target/active gate, not their geometry. Only meaningful
+        // after a primary pass that target-checked (targetCheck=false already relaxed those gates).
+        if (scored.Count == 0 && targetCheck)
+            scored = ScoreAndFilter(forPlayer, spots, livePlayers, resolvedTeamCheck, targetCheck: false);
+
+        // QC: "note this returns the original list if none survived" — if even the targetcheck=false re-filter
+        // came back empty (e.g. a wrong-team filter, or all spots still embedded in solid), fall back to every
+        // spot at (prio 0, weight 0) so the player still gets placed somewhere rather than the select erroring.
         if (scored.Count == 0)
         {
             foreach (var spot in spots)
@@ -383,6 +403,25 @@ public static class SpawnSystem
             : WeightedPick(scored, lower: 1f, upper: 5000f, exponent: 5f);
 
         return ToSpawnPoint(chosen);
+    }
+
+    /// <summary>
+    /// Port of <c>Spawn_FilterOutBadSpots</c> (via <c>Spawn_ScoreAll</c>, spawnpoints.qc:303-334): score every
+    /// spot with the given <paramref name="targetCheck"/> and keep only those with prio &gt;= 0. Factored out so
+    /// <see cref="SelectSpawnPoint"/> can run it twice — once target-checking, then (if nothing survived) the
+    /// emergency re-filter with <paramref name="targetCheck"/>=false (spawnpoints.qc:421-435).
+    /// </summary>
+    private static List<(Entity spot, float prio, float weight)> ScoreAndFilter(Player forPlayer,
+        List<Entity> spots, IReadOnlyList<Player> livePlayers, float teamCheck, bool targetCheck)
+    {
+        var scored = new List<(Entity spot, float prio, float weight)>(spots.Count);
+        foreach (var spot in spots)
+        {
+            (float prio, float weight) = ScoreSpot(forPlayer, spot, livePlayers, teamCheck, targetCheck);
+            if (prio >= 0f)
+                scored.Add((spot, prio, weight));
+        }
+        return scored;
     }
 
     /// <summary>
@@ -484,7 +523,11 @@ public static class SpawnSystem
 
         foreach (var (spot, prio, weight) in scored)
         {
-            float w = MathF.Pow(QBound(lower, weight, upper), exponent);
+            // QC Spawn_WeightedPoint (spawnpoints.qc:344): weight = bound(lower, score.y, upper)^exponent * spot.cnt.
+            // .cnt lets a mapper weight a cluster of nearby spawnpoints more heavily; relocate_spawnpoint defaults
+            // it to 1 (`if(!this.cnt) this.cnt = 1`), so a spot that left Cnt at 0 (the port's default) counts as 1.
+            int cnt = spot.Cnt != 0 ? spot.Cnt : 1;
+            float w = MathF.Pow(QBound(lower, weight, upper), exponent) * cnt;
             // QC priority: (weight >= lower) * 0.5 + prio — higher-priority candidates are preferred and
             // a strictly-higher priority resets the reservoir (never undercut by a lower-priority pick).
             float priority = (weight >= lower ? 0.5f : 0f) + prio;
@@ -588,6 +631,11 @@ public static class SpawnSystem
         // reset. Without this, after the first death+respawn the player stayed flagged a corpse forever: it could
         // never re-enter PlayerDamage (so it couldn't die again or award a frag) and was bullet-penetrable.
         p.IsCorpse = false;
+        // [sv-antilag.clear.on_spawn] QC PutClientInServer fires antilag_clear(this, CS(this)) (client.qc:858)
+        // so the freshly-(re)spawned player's lag-comp ring is wiped — a shot can't rewind it toward its old
+        // (pre-respawn) position for the next ~0.4s. The net driver honors this flag on its next record pass.
+        // Explicit (vs the origin-jump heuristic) so even a respawn landing near the previous origin clears.
+        p.AntilagNeedsClear = true;
         p.Alpha = MutatorHooks.DefaultPlayerAlpha; // QC default_player_alpha (client.qc:788) — cloaked/running-guns lower this
         p.BallisticsDensity = 0f;          // QC live-player density (corpse density reset)
         p.RespawnFlags = RespawnFlag.None; // QC this.respawn_flags = 0
@@ -679,6 +727,21 @@ public static class SpawnSystem
         // to the effect either rendering or not.
         EffectEmitter.Emit("SPAWN", p.Origin);
 
+        // Spawn SOUND (QC client/spawnpoints.qc:64 `sound(this, CH_TRIGGER, SND_SPAWN, VOL_BASE, ATTEN_NORM)`),
+        // the audio half of the SpawnEvent. Base gates the whole event send on g_spawn_alloweffects (default 3 =
+        // particles | sound); the client then plays the sound when `cl_spawn_event_sound && (alloweffects & BIT(1))`.
+        // Model that server-side: emit SND_SPAWN on CH_TRIGGER when alloweffects has bit1 set (the client cvar is
+        // default-on, so this is the live gate). Played on the player so it follows the spawn origin like the burst.
+        if (Api.Services is not null && ((int)CvarOr("g_spawn_alloweffects", 3f) & 2) != 0)
+            SoundSystem.PlayOn(p, Sounds.ByName("SPAWN"), SoundChannel.TriggerAuto, SoundLevels.VolBase, SoundLevels.AttenNorm);
+
+        // QC client.qc:630 `this.effects = EF_TELEPORT_BIT | EF_RESTARTANIM_BIT;` — set the teleport-sparkle +
+        // anim-restart effect bits on the (re)spawned player model. The client csqcmodel hooks consume these to
+        // play the teleport flash and restart the player's animation on the respawn edge. Both bits are networked
+        // through Entity.Effects. OR'd (not assigned) so a powerup/instagib glow applied elsewhere on the spawn
+        // path isn't clobbered — those bits are re-applied by their own mutator hooks regardless of order here.
+        p.Effects |= EffectFlags.Teleport | EffectFlags.RestartAnim;
+
         // --- spawn shield (QC PutPlayerInServer ~659/674: StatusEffects_apply(SpawnShield, this, shieldtime)) ---
         // The damage pipeline reads the shield off Entity.SpawnShieldExpire (an absolute sim time), so set it
         // here to now + g_spawnshieldtime. Firing a weapon clears it (handled by the weapon/damage side).
@@ -695,6 +758,29 @@ public static class SpawnSystem
         p.PauseRotArmorFinished  = now + CvarOr("g_balance_pause_armor_rot_spawn", 5f);
         p.PauseRotFuelFinished   = now + CvarOr("g_balance_pause_fuel_rot_spawn", 10f);
 
+        // QC client.qc:665-669: if (!sv_ready_restart_after_countdown && time < game_starttime), extend each
+        // primed pause timer (and the spawn shield) by (game_starttime - time) so timers don't elapse while
+        // the pre-match countdown is running and the player is frozen. Without this a player who spawns at the
+        // start of a countdown has already burned through their rot-pause by the time the match goes live.
+        // StartItem.GameStartTimeProvider is the same host-wired seam DamageSystem/CampcheckMutator etc. use
+        // for game_starttime; sv_ready_restart_after_countdown is read via the cvar facade (default 0).
+        float gameStartTime = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
+        if (gameStartTime > now)
+        {
+            bool afterCountdown = CvarOr("sv_ready_restart_after_countdown", 0f) != 0f;
+            if (!afterCountdown)
+            {
+                float countdownRemaining = gameStartTime - now;
+                // QC client.qc:667-671 extends ONLY shieldtime + pauserotarmor + pauserothealth + pauseregen by f.
+                // pauserotfuel_finished is deliberately NOT extended (fuel rot keeps elapsing through the countdown).
+                p.PauseRegenFinished     += countdownRemaining;
+                p.PauseRotHealthFinished += countdownRemaining;
+                p.PauseRotArmorFinished  += countdownRemaining;
+                // Extend the spawn shield by the same offset (QC client.qc:667: shieldtime += f before apply).
+                p.SpawnShieldExpire += countdownRemaining;
+            }
+        }
+
         // --- player model (QC PutPlayerInServer: this.model = ""; FixPlayermodel(this) → setplayermodel;
         //     server/client.qc:720-721 / :241-248) ---
         // sv_defaultplayermodel is the universal default ("models/player/erebus.iqm"). With sv_defaultcharacter 0
@@ -710,13 +796,6 @@ public static class SpawnSystem
         else
             p.Model = playerModel;
         p.Skin = Cvar(CvarDefaultPlayerSkin, 0f);
-
-        // QC also rolls the damage-rot/regen pause windows forward by g_balance_pause_*_spawn and, while the
-        // pre-match countdown is still running (time < game_starttime), extends the shield + pauses by the
-        // remaining countdown so spawn protection lasts into live play. Those pause-finished timers and the
-        // countdown clock live on the MatchController (warmup/start-time state) which this static spawn helper
-        // doesn't own — NOTE: re-apply the (game_starttime - time) shield/pause extension once the spawn path
-        // runs with a match-time handle. The base shield above already protects normal (non-countdown) spawns.
 
         // NOTE (client/networking): weapon view entities (CL_SpawnWeaponentity), SpawnEvent networking, the bot
         // aim reset and fixangle/v_angle are client-render / bot-AI concerns handled by the renderer and bot
