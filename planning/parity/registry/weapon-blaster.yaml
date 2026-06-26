@@ -1,13 +1,13 @@
 unit: weapon-blaster
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
-  feature_count: 11
+  feature_count: 12
   worst_gaps:
-    - "bot_dodge/bot_dodgerating projectile-danger list still missing: bots now LEAD the Blaster (generic ShotLead) but do NOT specifically dodge incoming bolts; Blaster.Attack omits the bolt's bot_dodge=true/bot_dodgerating assignment"
+    - "bot_dodge/bot_dodgerating projectile-danger CONSUMER still missing: the bolt now sets bot_dodge=true/bot_dodgerating (producer fixed) but no havocbot_dodge danger-list consumer (findchainfloat(bot_dodge)) exists, so bots still do not specifically dodge incoming bolts (they only LEAD via generic ShotLead)"
     - "no networked PROJECTILE_BLASTER flying-bolt trail/sprite (CSQCProjectile client render)"
-    - "trueaim_minrange clamp (g_trueaim_minrange) still not applied in shot setup"
+    - "impact particle uses -normalize(velocity) as the w_backoff plane normal (approximation); impact sound+particle emitted server-side instead of CSQC wr_impacteffect (intended divergence)"
 features:
   - id: weapon-blaster.identity.registration
     name: "Blaster identity, flags, models, infinite ammo"
@@ -126,7 +126,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:SetupShot"
     constants:
       - { name: "antilag (blaster)", base: "false", port: "false (projectile, no antilag arg)", match: true }
-      - { name: "trueaim_minrange clamp", base: "g_trueaim_minrange", port: "not applied", match: false }
+      - { name: "trueaim_minrange clamp", base: "g_trueaim_minrange (default 44)", port: "applied (WeaponFiring.cs:220-222, cvar g_trueaim_minrange fallback 44)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -136,12 +136,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "trueaim minrange clamp (g_trueaim_minrange) STILL not applied (Wave-1/2 added LagComp.Begin/End to WeaponFiring but no minrange clamp). Antilag takeback now wired generally, but has no effect for the blaster which fires antilag=false. Warpzone trueaim IS implemented (WeaponFiring.cs)."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "tracing.qc W_SetupShot_Dir vs WeaponFiring.SetupShot: eye->trueaim trace, muzzle-offset nudge, punchangle_x=-recoil all present; warpzone trueaim present; grep trueaim_minrange in WeaponFiring.cs -> no match", result: pass }
+      - { kind: code_read, ref: "tracing.qc W_SetupShot_Dir vs WeaponFiring.SetupShot: eye->trueaim trace, muzzle-offset nudge, punchangle_x=-recoil all present; warpzone trueaim present", result: pass }
+      - { kind: code_read, ref: "WeaponFiring.cs:216-222 — trueaim_minrange clamp NOW PORTED: if VLen(shotEnd-eye) < g_trueaim_minrange (cvar, default 44) shotEnd = eye + normalize(forward)*minrange. Reached by Blaster.Attack->SetupShot", result: pass }
     confidence: high
-    notes: "Eye->trueaim trace, muzzle-offset nudge and punchangle_x=-recoil match. Per-model tag_shot muzzle offset registered from parsed models; falls back to a generic offset on a tag-less/dedicated path. Recoil only applied to clients with g_norecoil off. Wave-1/2 wired LagComp into SetupShot (no-op for the antilag=false blaster); trueaim_minrange remains the one open gap."
+    notes: "FIX (2026-06-25 audit): the g_trueaim_minrange clamp is now applied (WeaponFiring.cs:216-222) — the one previously-open shot-setup gap is closed. Eye->trueaim trace, muzzle-offset nudge and punchangle_x=-recoil match. Per-model tag_shot muzzle offset registered from parsed models; falls back to a generic offset on a tag-less/dedicated path. Recoil only applied to clients with g_norecoil off. LagComp wired (no-op for the antilag=false blaster)."
 
   - id: weapon-blaster.shot.velocity
     name: "Bolt launch velocity (W_SetupProjVelocity_Explicit)"
@@ -336,7 +336,8 @@ features:
       - "src/XonoticGodot.Server/Bot/BotAim.cs:ShotLead"
     constants:
       - { name: "bot_aim(speed, 0, lifetime, false, true) lead", base: "leads target for projectile (speed 6000)", port: "generic ShotLead(enemyCenter, enemy.Velocity, CurrentShotSpeed()); blaster speed read from g_balance_blaster_primary_speed (6000)", match: true }
-      - { name: "bot_dodge / bot_dodgerating", base: "true / damage (bolt registered in g_bot_dodge danger list)", port: "none (Blaster.Attack omits bot_dodge=true/bot_dodgerating; no projectile-danger list)", match: false }
+      - { name: "bot_dodge / bot_dodgerating (producer)", base: "missile.bot_dodge=true / bot_dodgerating=damage + IL_PUSH(g_bot_dodge)", port: "missile.BotDodge=true / BotDodgeRating=Primary.Damage (Blaster.cs:156-157); Entity.BotDodge/BotDodgeRating fields exist", match: true }
+      - { name: "bot_dodge danger-list (consumer)", base: "havocbot_dodge findchainfloat(bot_dodge,true) avoids the bolt (SUPERBOT-gated)", port: "none (no findchainfloat/danger-list consumer in src/.../Bot; flags inert)", match: false }
     status:
       logic: partial
       values: partial
@@ -347,10 +348,38 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "bot_dodge/bot_dodgerating projectile-danger list NOT implemented: bots do not specifically avoid incoming blaster bolts. Blaster.Attack sets no bot_dodge=true/bot_dodgerating=damage on the bolt, and there is no danger-list/dodge-rating registry in src/.../Bot (BotDanger covers only trigger_hurt/fall hazards). The generic CombatMovement strafe is evasive combat movement, not the QC bolt-specific avoidance."
+      - "bot_dodge danger-list CONSUMER still NOT implemented: the bolt now SETS bot_dodge=true/bot_dodgerating (Blaster.cs:156-157, producer fixed) and Entity carries BotDodge/BotDodgeRating, but no havocbot_dodge consumer (findchainfloat(bot_dodge,true)) exists in src/.../Bot, so the flags are inert and bots still do not specifically avoid incoming blaster bolts. The generic CombatMovement strafe is evasive combat movement, not the QC bolt-specific avoidance."
       - "lead is a GENERIC engine-level projectile lead (BotBrain.ShotLead using the weapon's speed cvar), not the per-weapon wr_aim hook; faithful in effect for the blaster (leads at speed 6000), but the wr_aim/bot_aim weapon-dispatch seam itself is not modeled."
     verification:
       - { kind: code_read, ref: "BotBrain.AimAndDecideFire: shotSpeed = CurrentShotSpeed() (non-hitscan weapon reads g_balance_<wep>_primary_speed); lead = Aim.ShotLead(enemyCenter, enemy.Velocity, shotSpeed); the bot LEADS the blaster bolt", result: pass }
-      - { kind: code_read, ref: "grep DodgeRating|bot_dodge|DodgeList|RegisterDanger across src/.../Bot -> no projectile-dodge system; Blaster.Attack (Blaster.cs:127-172) sets no bot_dodge/bot_dodgerating on the missile", result: pass }
+      - { kind: code_read, ref: "Blaster.cs:156-157 NOW sets missile.BotDodge=true; missile.BotDodgeRating=Primary.Damage; Entity.cs:84-100 defines the fields. grep BotDodge|bot_dodge|DodgeList across src/.../Bot -> still NO consumer (only generic combat-movement strafe at BotBrain.cs:378,460-465)", result: pass }
     confidence: high
-    notes: "PARTIAL FIX (Wave-1/2): the aim/lead half is now closed -- a generic ShotLead in BotBrain leads non-hitscan weapons by their speed cvar, so bots lead the Blaster (baseline 'no per-weapon aim lead' gap resolved in effect). The dodge half is STILL OPEN: no bot_dodge/bot_dodgerating danger-list, and the bolt is not flagged as dodgeable. Baseline logic/values were 'missing' -> now 'partial' (lead present, dodge absent)."
+    notes: "PARTIAL FIX (2026-06-25 audit): the PRODUCER half of bot-dodge is now closed -- Blaster.Attack sets bot_dodge=true/bot_dodgerating=damage on the bolt and Entity exposes the fields (baseline recorded these as OMITTED, match:false). The CONSUMER half is STILL OPEN: no havocbot_dodge danger-list (findchainfloat(bot_dodge)), so the flags are inert and bots do not dodge bolts. Aim/lead half remains closed (generic ShotLead). Net status stays logic/values:partial (lead present + producer flag set, but dodge behaviour still does not manifest)."
+
+  - id: weapon-blaster.notification.kill_suicide
+    name: "Blaster kill/suicide death notifications (wr_killmessage / wr_suicidemessage)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/blaster.qc:wr_suicidemessage"
+      - "common/weapons/weapon/blaster.qc:wr_killmessage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:49"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:126"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1182"
+    constants:
+      - { name: "kill notif", base: "WEAPON_BLASTER_MURDER", port: "WEAPON_BLASTER_MURDER", match: true }
+      - { name: "suicide notif", base: "WEAPON_BLASTER_SUICIDE", port: "WEAPON_BLASTER_SUICIDE (self->DEATH_SELF_GENERIC)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "blaster.qc:128-136 wr_suicidemessage/wr_killmessage vs DeathMessages.cs:48-49,125-126 (case \"blaster\" -> WEAPON_BLASTER_MURDER / WEAPON_BLASTER_SUICIDE) and NotificationsList.cs:1182-1183 (Multi registrations)", result: pass }
+    confidence: medium
+    notes: "Added 2026-06-25 audit (registry coverage gap — was unmapped in the baseline). The blaster's deathtype routes to the correct murder/suicide notification ids; registered as Multi notifications. The MENUQC describe() weapon-guide text remains unmapped (pure menu documentation, out of gameplay scope)."

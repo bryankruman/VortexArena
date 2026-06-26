@@ -1,16 +1,16 @@
 unit: weapon-minelayer
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
-  feature_count: 13
+  feature_count: 14
   worst_gaps:
     - "Whole weapon is WEP_FLAG_MUTATORBLOCKED: never in a normal-match loadout (GiveItems.cs:340 skips MutatorBlocked|Hidden), only reachable via weaponarena/NewToys/impulse-give → fire-path liveness stays partial, not live (verified unchanged)."
     - "Mine shoot-down is fully LIVE and faithful: MakeShootable installs GtEventDamage (DamageSystem.EventDamage:331-334 dispatches non-player targets), a depleted mine detonates, AND the W_MineLayer_Damage knock-loose branch (damageforcescale bounce/re-stick/avelocity while hp>0) runs via the MakeShootable onHit per-hit seam (Projectiles.ShootDown fires onHit before the gate/hp-subtract per QC ordering). exception=1 is exactly the ML-mine case that passes stock g_projectiles_damage -2."
     - "Remote-detonate sound semantics still diverge: Base plays SND_MINE_DET as soon as PlacedMines flags ANY mine; port plays mine_det only if at least one mine actually passes the spawnshield+team-safety gate and detonates."
     - "Surface-normal facing (angles = vectoangles(-trace_plane_normal)) is approximated from -velocity, not the real trace plane; SetMovetypeFollow (stick to a moving platform) still not modeled."
     - "Airshot achievement + out-of-ammo forced weapon switch (W_MineLayer_Explode tail) still not implemented."
-    - "Bot wr_aim (mine-detonation AI) still not ported — bots lay but never remote-detonate."
+    - "Bot wr_aim is now FULLY PORTED + LIVE: BotWantsDetonate (Minelayer.cs:413) implements the skill>=2 detonation-desirability math (self/team/enemy damage weighting, 0.75*coredamage group threshold, 0.1*coredamage tracking detonate, skill>6.5 self-preservation veto), dispatched by BotBrain.cs:366 (suppresses primary when it detonates). Over-limit primary suppression handled by WrThink's gate. Only the random distance/skill gate uses an approximate frametime."
 features:
   - id: minelayer.fire.lay_mine
     name: "Primary fire: lay a tossed mine"
@@ -379,20 +379,52 @@ features:
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/minelayer.qc:MineLayer.wr_aim"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:BotWantsDetonate"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:366"
+    constants:
+      - { name: "skill_min_detonate", base: "2", port: "2", match: true }
+      - { name: "group_detonate_threshold", base: "0.75*coredamage", port: "0.75*coredamage", match: true }
+      - { name: "tracking_detonate_threshold", base: "0.1*coredamage", port: "0.1*coredamage", match: true }
+      - { name: "self_preservation_skill", base: "6.5", port: "6.5", match: true }
+      - { name: "skill_tracking_split", base: "9 (skill>9 fast path)", port: "9", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The skill<=9 distance/skill random gate uses an approximate per-think frametime constant (0.05f) rather than the true bot-think frametime, so the low-skill long-range detonation probability is approximate (QC random()/distance*300 > frametime*bound(0,(10-skill)*0.2,1)). Behaviorally close; exact probability differs slightly."
+      - "Over-limit primary-fire suppression (QC wr_aim:382-383 clears BUTTON_ATCK when at the mine limit) is not done inside BotWantsDetonate; it is handled instead by WrThink's over-limit gate (NotifyOverLimit returns before PrepareAttack). Net effect on the live path is equivalent — a bot at the limit cannot lay another mine — but the suppression site differs."
+      - "Liveness moot in practice while the weapon stays MutatorBlocked, but the dispatch (BotBrain.BotWantsDetonate) IS on the live bot decision path when the weapon is granted."
+    verification:
+      - { kind: code, ref: "Minelayer.BotWantsDetonate (Minelayer.cs:413-541) reproduces wr_aim:387-461: skill>=2 gate, per-mine x per-target self/team/enemy damage with bound(0,edge+(core-edge)*sqrt(1-d/r),10000), desirabledamage = enemy - selfdamage*selfdamagepercent (shield) - teamdamage (teamplay), skill>9 tracking detonate, skill<=9 enemy-direction+random gate, 0.75*coredamage group threshold, skill>6.5 selfdamage>health veto", result: pass }
+      - { kind: code, ref: "BotBrain.cs:365-370 calls ChosenWeapon.BotWantsDetonate(bot, slot0, Skill, Players(), ShouldAttack) every think; on true sets wantAttack=false, wantAttack2=true (QC 'don't fire a new shot at the same time')", result: pass }
+    confidence: high
+    notes: "FIXED since last audit: the baseline recorded this as logic:missing / port_refs:[] (wr_aim deferred for all weapons). The full mine-detonation AI is now ported in Minelayer.BotWantsDetonate and dispatched live by BotBrain. Damage model, desirability math, skill gates, and self-preservation veto all match Base. Residual: approximate frametime in the low-skill random gate + the primary-suppress site moved to WrThink."
+
+  - id: minelayer.player.reset
+    name: "Per-player mine-count reset on respawn (wr_resetplayer)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:MineLayer.wr_resetplayer"
     port_refs: []
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
       liveness: na
-    intended_divergence: false
-    divergence_rationale: null
-    gaps:
-      - "Per-weapon wr_aim is not ported (deferred for all weapons per BotBrain). Bots lay mines via the generic primary fire path but never set BUTTON_ATCK2 to remote-detonate, and ignore the over-limit fire suppression + the skill-gated (skill>=2) detonation-desirability math (selfdamage/teamdamage/enemydamage weighting, the 0.75*coredamage group-detonate threshold, the skill>6.5 self-preservation veto)."
+    intended_divergence: true
+    divergence_rationale: "QC wr_resetplayer zeroes the cached .minelayer_mines HUD counter on each slot at respawn/reset (W_MineLayer_Count is recomputed into it in wr_think). The port has no cached mine counter — CountMines (Minelayer.cs:544) enumerates the live g_mines analogue (FindByClass('mine')) on every read — so there is no stale per-player field to reset. The Minelayer does not override WrResetPlayer (the base no-op is correct). Behaviorally equivalent: the displayed/used mine count is always current."
+    gaps: []
     verification:
-      - { kind: code, ref: "no minelayer wr_aim under src/**/Bot*; BotBrain defers per-weapon wr_aim", result: fail }
+      - { kind: code, ref: "Minelayer has no WrResetPlayer override (GameplayBases.cs:164 base no-op); CountMines (Minelayer.cs:544) counts FindByClass('mine') owned by actor live — no cached minelayer_mines field exists to go stale", result: pass }
     confidence: high
-    notes: "Re-verified unchanged this pass. Bots use the Mine Layer poorly (place-and-forget); no group-detonation tactics. Moot in practice while the weapon stays MutatorBlocked."
+    notes: "Newly mapped this pass (was an unmapped Base symbol). The QC reset only clears a HUD display cache; the port computes the count live, so the reset is structurally unnecessary — marked intended divergence rather than a gap."

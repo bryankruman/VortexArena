@@ -1,15 +1,15 @@
 unit: weapon-tuba
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
-  feature_count: 10
+  feature_count: 11
   worst_gaps:
-    - "Note sound is still largely silent: NoteSample now builds the real per-pitch/instrument name (closing the flat 'tuba_loopnote.wav' dead-asset), BUT it does a raw ftos(note) lookup with NO pitch-step rounding, and most GetNote outputs (2,3,4,5,1,7,9,10,11,-1,-5,-4) are NOT multiples of 6 so they have NO asset on disk (only -18/-12/-6/0/6/12/18/24 exist). Base's CSQC tubasound rounds note to the nearest multiple of cl_tuba_pitchstep and pitch-shifts via sound7; that crossfade/fade/sustain/ENT_CLIENT_TUBANOTE networking is unported."
-    - "Melody recognition + magic-ear chat (W_Tuba_HasPlayed / tuba_lastnotes) still entirely missing — maps that gate logic on a played tune cannot work."
+    - "Note SOUND has no sustain/fade/pitch-shift: the port now snaps the requested note to the nearest on-disk multiple-of-6 sample (PitchStepNote) so the lookup resolves to a REAL file (closing the baseline's raw-note miss), but it still fires one static one-shot per ~0.05s blast tick rather than Base's held loop that crossfades between two neighbour samples (sound7 speed shift) and fades on release (cl_tuba_fadetime). No ENT_CLIENT_TUBANOTE networking / cl_tuba_volume/attenuation."
     - "wr_aim (bot fire) still missing — bots won't use the tuba."
-    - "Sustained note entity has no NoteThink: no self-expiry on teleport_time, no per-listener re-origin/SendFlags, no tuba_lastnotes record on NoteOff."
-    - "GetNote still derives movestate from velocity (intended divergence) and omits crouch/jump/team pitch shifts — inaudible while the note sound is unported."
+    - "GetNote still derives movestate from velocity (intended divergence) and omits crouch/jump/team pitch shifts — inaudible while the sustained note sound is unported."
+    - "Per-instrument view models (h_akordeon/h_kleinbottle via CSQC weaponname/wr_viewmodel) still unwired (render-only)."
+    - "Melody recognition is now LIVE+faithful (HasPlayed wired into the magic-ear pipeline); only the cosmetic 'NAME played on the @!#%'n Tuba: ...' bprint chat line on a recognised melody is still unwired."
 features:
   - id: weapon-tuba.fire.note_blast
     name: "Held-fire note: refire-gated radius blast centered on player"
@@ -138,11 +138,11 @@ features:
     intended_divergence: true
     divergence_rationale: "Movement-key bits and crouch/jump/team tuning aren't carried to the headless weapon entity, so the port derives the movestate from horizontal velocity vs facing and applies only the +7 secondary shift. Pitch feeds ONLY the (still mostly-unported/silent) note sound, so the divergence has no gameplay effect today; flagged so it isn't re-reported. Would need real input bits to be faithful once audio lands."
     gaps:
-      - "Chosen note differs from Base (velocity proxy, missing crouch/jump/team shifts). Note that the velocity-proxy notes also do not land on cl_tuba_pitchstep multiples, compounding the missing-asset problem in weapon-tuba.audio.note_sound."
+      - "Chosen note differs from Base (velocity proxy, missing crouch/jump/team shifts). The velocity-proxy notes no longer cause a missing-asset miss in weapon-tuba.audio.note_sound — that row's PitchStepNote now snaps any note (multiple-of-6 or not) to a real sample — so this divergence only changes which sample plays, not whether one plays."
     verification:
-      - { kind: read, ref: "Tuba.GetNote vs tuba.qc:136-203 — 1..9 table identical, +7 secondary present; crouch/jump/team shifts + movement-key source absent", result: fail }
+      - { kind: read, ref: "Tuba.GetNote (Tuba.cs:275-293) vs tuba.qc:136-203 — 1..9 table identical, +7 secondary present; crouch/jump/team shifts + movement-key source absent (velocity proxy w/ +-16 thresholds)", result: fail }
     confidence: high
-    notes: "Unchanged vs baseline (intended divergence retained). The note value is stored on the spawned tuba_note entity (.Count) and now used to build the sound sample name, but the input-derivation divergence stands."
+    notes: "Unchanged vs baseline (intended divergence retained). The note value is stored on the spawned tuba_note entity (.Count), snapped to a real sample for the note sound, AND recorded into the tuba_lastnotes ring for melody recognition — but the input-derivation divergence (velocity proxy, no crouch/jump/team shift) stands."
 
   - id: weapon-tuba.note.sustain_lifetime
     name: "Sustained note entity: spawn, refresh-on-hold, off-on-release, keep-alive"
@@ -157,23 +157,22 @@ features:
     constants:
       - { name: "keep-alive teleport_time", base: "time + refire*2*W_WeaponRateFactor", port: "time + refire*2 (MaxHealth, no consumer)", match: false }
     status:
-      logic: partial
+      logic: faithful
       values: partial
       timing: partial
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port spawns a tuba_note marker and refreshes/deletes it on hold/release, but the keep-alive MaxHealth is never read (no NoteThink) — the entity has no self-expiry or re-origin/SendFlags logic; it exists only to track current note pitch/instrument for restart detection."
-      - "W_WeaponRateFactor scaling on the keep-alive is omitted (only matters under haste/rate modifiers)."
-      - "No W_Tuba_NoteThink server-side per-listener volume/angle re-origin + SendFlags (moot until sound networking exists)."
-      - "W_Tuba_NoteOff does not record tuba_lastnotes (see weapon-tuba.melody.recognition)."
+      - "W_WeaponRateFactor scaling on the keep-alive — the port DOES multiply refire*2 by WeaponRateFactor(actor) (Tuba.cs:163), so this matches Base; only relevant under haste/rate modifiers."
+      - "No W_Tuba_NoteThink server-side per-listener volume/angle re-origin + SendFlags (moot until tuba-note sound networking exists). The port's NoteThink only models the teleport_time self-expiry, not the re-origin broadcast."
     verification:
-      - { kind: read, ref: "Tuba.NoteOn/NoteOff vs tuba.qc:99-134,262-319; MaxHealth set but no consumer (grep)", result: fail }
+      - { kind: read, ref: "Tuba.NoteOn spawns note, sets MaxHealth=time+refire*2*WeaponRateFactor; NoteThink (Tuba.cs:224-235) reads MaxHealth and self-NoteOffs when lapsed; NextThink kept live", result: pass }
+      - { kind: read, ref: "Tuba.NoteOff (Tuba.cs:197-218) NOW records tuba_lastnotes ring entry (on,off,pitch) + bumps count, then runs MagicEarProcessAllEars — the baseline 'does not record tuba_lastnotes' gap is CLOSED", result: pass }
     confidence: high
-    notes: "Unchanged vs baseline. The note-on/refresh/off restart state machine is faithful in shape; the entity is inert beyond that."
+    notes: "FIXED vs baseline (partial/partial liveness -> faithful logic + live). The keep-alive MaxHealth IS now consumed: NoteThink self-expires the note on teleport_time lapse (matching W_Tuba_NoteThink's expiry branch), and NoteOff records the tuba_lastnotes history that feeds melody recognition. The rate-factor scaling is present. Only the per-listener re-origin/SendFlags broadcast remains (moot without note-sound networking) -> timing/values kept partial."
 
   - id: weapon-tuba.fx.smoke_ring
     name: "Per-note smoke ring puff"
@@ -219,31 +218,32 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteOn"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteSample"
     constants:
-      - { name: "asset name scheme", base: "TUBA_STARTNOTE: 'tuba'+(i?ftos(i):'')+'_loopnote'+ftos(n)", port: "'weapons/tuba'+(i!=0?i:'')+'_loopnote'+note+'.wav' (Tuba.cs:227)", match: true }
-      - { name: "available samples on disk", base: "only notes -18,-12,-6,0,6,12,18,24 (cl_tuba_pitchstep=6 multiples) per 3 instruments", port: "same data; but NoteSample requests raw GetNote note (often a non-multiple) -> file absent", match: false }
-      - { name: "cl_tuba_pitchstep rounding/crossfade", base: "6; tubasound rounds note to nearest step + sound7 speed shift + 2-sample crossfade", port: "not honored (raw note lookup, no rounding)", match: false }
+      - { name: "asset name scheme", base: "TUBA_STARTNOTE: 'tuba'+(i?ftos(i):'')+'_loopnote'+ftos(n)", port: "'weapons/tuba'+(i!=0?i:'')+'_loopnote'+note+'.wav' (Tuba.cs:300-305)", match: true }
+      - { name: "available samples on disk", base: "only notes -18,-12,-6,0,6,12,18,24 (cl_tuba_pitchstep=6 multiples) per 3 instruments", port: "same 49 .ogg files; NoteSample now requests PitchStepNote(note) -> snaps to a multiple of 6, so the lookup hits a REAL file", match: true }
+      - { name: "cl_tuba_pitchstep rounding", base: "6; tubasound rounds note to nearest step", port: "honored — PitchStepNote (Tuba.cs:244-266) reads cl_tuba_pitchstep (default 6), rounds to nearest multiple, clamps to [-18,24]", match: true }
+      - { name: "cl_tuba_pitchstep crossfade/sound7", base: "2-sample crossfade + sound7 speed shift on the remainder m", port: "not honored — picks nearest sample only, no pitch-shift of the residual", match: false }
       - { name: "cl_tuba_volume", base: "1", port: "not honored", match: false }
       - { name: "cl_tuba_attenuation", base: "0.5", port: "not honored", match: false }
-      - { name: "cl_tuba_fadetime", base: "0.25", port: "not honored", match: false }
+      - { name: "cl_tuba_fadetime", base: "0.25", port: "not honored (no sustain/fade)", match: false }
     status:
       logic: partial
-      values: missing
+      values: partial
       timing: missing
       presentation: partial
       audio: partial
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "NoteSample builds the correct per-pitch/instrument asset NAME (closing the baseline's flat 'tuba_loopnote.wav' which existed for NO file), but it looks up the RAW GetNote note with no cl_tuba_pitchstep rounding. The on-disk samples exist ONLY at multiples of 6 (-18,-12,-6,0,6,12,18,24); GetNote's common outputs (2,3,4,5,1,7,9,10,11,-1,-5,-4) have NO matching file, so the majority of played notes still resolve to a missing asset (likely silent). Only note 0 / +-6 (and the rare +-12/etc) hit a real sample."
-      - "No pitch-step crossfade / sound7 speed shift: Base picks the nearest available multiple-of-step sample and pitch-shifts the remainder; the port plays only the exact-name sample or nothing."
+      - "No pitch-step crossfade / sound7 speed shift: Base rounds note to the nearest multiple-of-step sample AND crossfades to its neighbour while pitch-shifting the remainder m via sound7; the port now correctly snaps to the nearest recorded sample (PitchStepNote) so a real file always plays, but it plays that one sample flat — the residual pitch is not shifted."
       - "No sustained note: the port fires one static one-shot per blast tick (~0.05s) rather than a held loop that fades on release (cl_tuba_fadetime)."
       - "No client volume/attenuation cvars, no per-listener distance attenuation, no ENT_CLIENT_TUBANOTE networking (remote players' tuba notes are not driven by a dedicated note entity)."
     verification:
-      - { kind: read, ref: "Tuba.NoteSample vs tuba.qc:430 TUBA_STARTNOTE — name scheme matches", result: pass }
-      - { kind: asset, ref: "find assets -iname 'tuba*loopnote*.ogg' = 49 files at note multiples of 6 only; GetNote outputs are mostly non-multiples -> lookup misses", result: fail }
+      - { kind: read, ref: "Tuba.NoteSample vs tuba.qc:430 TUBA_STARTNOTE — name scheme matches; NoteOn (Tuba.cs:176) plays NoteSample(instrument, PitchStepNote(note))", result: pass }
+      - { kind: read, ref: "PitchStepNote (Tuba.cs:244-266) honors cl_tuba_pitchstep (default 6), MathF.Round to nearest multiple, clamps lo=-18/hi=24 — matches the on-disk sample grid", result: pass }
+      - { kind: asset, ref: "find assets -iname '*loopnote*.ogg' = 49 files at note multiples of 6 only (-18,-12,-6,0,6,12,18,24 x3 instruments); PitchStepNote always lands on one of these -> lookup HITS", result: pass }
     confidence: high
-    notes: "PARTIAL FIX vs baseline. The dead flat-asset string ('tuba_loopnote.wav', no such file) is replaced by the real per-pitch/instrument name scheme, so notes 0/+-6/etc now resolve to real samples — a genuine improvement. BUT without cl_tuba_pitchstep rounding most GetNote notes still name a non-existent file, and there is no sustain/fade/pitch-shift/networking, so the weapon's defining sustained-pitched-note feel is still largely unimplemented. Upgraded audio missing->partial; values/timing remain missing."
+    notes: "FURTHER FIX vs baseline. The baseline's worst defect (NoteSample looked up the RAW GetNote note, which is usually a non-multiple-of-6 -> missing file -> silent) is RESOLVED: NoteOn now passes the note through PitchStepNote, which honors cl_tuba_pitchstep and snaps to the nearest on-disk sample, so a real sound plays for every note. Remaining: no sound7 crossfade/residual-pitch-shift, no sustain/fade loop, no client volume/attenuation cvars, no ENT_CLIENT_TUBANOTE networking. values missing->partial (pitchstep now honored, attenuation/volume/fadetime still not); audio stays partial; timing stays missing (no sustain/fade)."
 
   - id: weapon-tuba.melody.recognition
     name: "Melody recognition + magic-ear chat (W_Tuba_HasPlayed / lastnotes)"
@@ -251,25 +251,33 @@ features:
     base_refs:
       - "common/weapons/weapon/tuba.qc:W_Tuba_HasPlayed"
       - "common/weapons/weapon/tuba.qc:W_Tuba_NoteOff (tuba_lastnotes + magicear bprint)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:HasPlayed"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteOff"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/EntityWeaponState.cs:358-366 (TubaLastNotes ring)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:521-550 (MagicEarProcessMessage TUBA branch)"
     constants:
-      - { name: "MAX_TUBANOTES ring buffer", base: "32", port: "none", match: false }
+      - { name: "MAX_TUBANOTES ring buffer", base: "32", port: "Tuba.MaxTubaNotes = 32; EntityWeaponState.TubaLastNotes = new Vector3[32]", match: true }
+      - { name: "instrument filter (instrument<0 = any)", base: "if (instrument >= 0 && tuba_instrument != instrument) return false", port: "same (Tuba.cs:358-359)", match: true }
+      - { name: "note/rhythm verification (pitchshift, nolength, mmin/mmax tempo bounds)", base: "W_Tuba_HasPlayed tuba.qc:24-92", port: "ported line-for-line (Tuba.cs:361-403)", match: true }
+      - { name: "ignorePitch = !MAGICEAR_TUBA_EXACTPITCH", base: "tuba.qc magicear EXACTPITCH spawnflag", port: "ignorePitch = (SpawnFlags & MagicEarTubaExactPitch) == 0 (LogicGates.cs:529)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No tuba_lastnotes history is recorded on note-off (Tuba.NoteOff comments the omission explicitly), so W_Tuba_HasPlayed (map magic-ear melody triggers) cannot work."
-      - "No 'NAME played on the @!#%'n Tuba/Accordeon/Klein Bottle: ...' chat line on a recognized melody."
+      - "The cosmetic 'NAME played on the @!#%'n Tuba/Accordeon/Klein Bottle: ...' bprint chat line on a recognised melody is NOT emitted — the magic-ear TRIGGER (UseTargets) fires, but the broadcast-print of the matched message text needs a bprint seam absent in Common (Tuba.NoteOff:213-214 notes this)."
     verification:
-      - { kind: read, ref: "No W_Tuba_HasPlayed / tuba_lastnotes / magicear processing in port (grep); Tuba.NoteOff:188-189 explicitly notes the omission", result: fail }
+      - { kind: read, ref: "Tuba.HasPlayed (Tuba.cs:345-407) ports W_Tuba_HasPlayed (tuba.qc:13-97) — tokenize, count gate, instrument filter, backwards note walk w/ pitchshift, nolength rhythm bounds, clears count on match", result: pass }
+      - { kind: trace, ref: "Tuba.NoteOff records vec3(on,off,pitch) into TubaLastNotes ring + bumps count, then calls LogicGates.MagicEarProcessAllEars(actor,0,null,'') -> MagicEarProcessMessage TUBA branch (empty msg) -> Tuba.HasPlayed per slot -> UseTargets on match", result: pass }
+      - { kind: trace, ref: "MagicEarProcessAllEars also live from server Chat.cs:143 (the say pipeline); the TUBA-mode empty-message path is the melody trigger", result: pass }
     confidence: high
-    notes: "Unchanged vs baseline. Mechanically required for any map that gates logic on a played tune; otherwise cosmetic chat."
+    notes: "FIXED vs baseline (missing/na -> faithful/live). The whole W_Tuba_HasPlayed melody-recognition engine is now ported (HasPlayed) AND the tuba_lastnotes history is recorded on NoteOff, which then drives the live magic-ear pipeline (MagicEarProcessMessage TUBA branch -> UseTargets). Maps that gate logic on a played tune now work. Only the cosmetic 'NAME played on the @!#%'n Tuba: ...' broadcast chat line remains unwired (needs a bprint seam) -> presentation: partial."
 
   - id: weapon-tuba.setup.instrument_reset
     name: "wr_setup resets instrument to Tuba on (re)equip"
@@ -330,6 +338,29 @@ features:
       - "Crosshair gfx/crosshairtuba and weapon-image weapontuba assets exist in data but live-render wiring not verified (headless audit)."
     verification:
       - { kind: trace, ref: "WeaponOrder.cs:209 lists tuba; impulse 1; ctor flags/color/models vs tuba.qh", result: pass }
-      - { kind: read, ref: "All 6 tuba notifications in NotificationsList.cs; wr_aim absent (grep)", result: pass }
+      - { kind: read, ref: "All 6 tuba notifications in NotificationsList.cs; wr_aim absent — no BotWantsSecondary override in Tuba.cs (grep)", result: pass }
     confidence: high
-    notes: "Unchanged vs baseline. Core identity, flags, color, models and infinite-ammo are faithful and live. wr_aim and the per-instrument render assets remain the open gaps."
+    notes: "Unchanged vs baseline. Core identity, flags, color, models and infinite-ammo are faithful and live. wr_aim (no BotWantsSecondary override) and the per-instrument render assets remain the open gaps."
+
+  - id: weapon-tuba.describe.guide
+    name: "Weapon-guide describe text (MENUQC)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/tuba.qc:describe (METHOD Tuba, describe — tuba.qc:600-612)"
+    port_refs: []
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The MENUQC weapon-guide describe paragraphs (tuba.qc:600-612 — close-range ear-bleeding music, secondary higher pitch, breath-only ammo, movement-key pitch, keybinds, DPS line) are not ported; the port has no in-menu weapon guide for the tuba."
+    verification:
+      - { kind: code, ref: "Base tuba.qc:598-614 describe() (MENUQC) has no corresponding port symbol; no weapon-guide page text for tuba in the port (grep)", result: fail }
+    confidence: high
+    notes: "NEW ROW (registry coverage gap, mirrors weapon-electro.describe_guide). MENUQC guide text — low priority, not gameplay; tracked for registry completeness."

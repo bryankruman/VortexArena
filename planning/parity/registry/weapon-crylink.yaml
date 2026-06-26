@@ -3,12 +3,11 @@ category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 10
+  feature_count: 12
   worst_gaps:
-    - "Chain-detonate gate is approximate, not exact: QC gates W_Crylink_Touch on RadiusDamage's totaldamage RETURN (actual damage dealt). Port's WeaponSplash.RadiusDamage is still VOID (verified: signature returns void, WeaponSplash.cs:49), so OnTouch substitutes `couldDamage = f*damage>0 || f*edge>0` (Crylink.cs:408). Reachable divergence: a secondary spike (linkexplode 1) hitting a WALL with no damageable target nearby chain-detonates the group in the port (couldDamage true, WouldHitFriendly false) where Base would NOT (totaldamage 0). Needs a RadiusDamage signature change to close exactly."
-    - "SetupShot for crylink still omits wep/maxDamage args (Crylink.cs:203 `WeaponFiring.SetupShot(actor, forward, recoil:2f)`), so crylink never seeds the accuracy 'fired/max' denominator. QC W_Crylink_Attack/Attack2 pass `maxdmg = damage*shots*(1+bouncefactor*bounces)(+joinexplode_damage)` (crylink.qc:288-291,384-387). Splash HITS now credit accuracy (RadiusDamage passes accuracyWeapon:this), but the fired-shot denominator is unseeded. Shared projectile-weapon gap (Mortar/Hagar same)."
     - "LinkJoin head-dangle edge case: port keys the group on the C# group[0] list head and cannot re-head the ring to a live spike the way QC's queuenext/queueprev does. If the head spike dies before release the survivors don't converge (WrThink still clears wait-release so the player isn't stranded). Edge case, no stock-balance impact."
     - "WarpZone reference-frame transforms (WarpZone_RefSys_Transform*) in W_Crylink_LinkJoin omitted — no-op without warpzones."
+    - "Bot aim (wr_aim) not ported for Crylink — bots never fire the weapon via the QC bot_aim path (no per-weapon WrAim override; see crylink.bot.wr_aim). Same gap shape as other un-ported weapon bot-aim methods."
 features:
   - id: crylink.identity
     name: "Weapon identity, flags, models, color, balance defaults"
@@ -75,13 +74,13 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "SetupShot called as WeaponFiring.SetupShot(actor, forward, recoil:2f) WITHOUT wep/maxDamage args (Crylink.cs:203), so crylink never seeds the accuracy 'fired' denominator. QC passes maxdmg=damage*shots*(1+bouncefactor*bounces)+joinexplode_damage (crylink.qc:288-291). The maxDamage overload EXISTS (WeaponFiring.cs:175-177) — the call site just doesn't supply it. Shared projectile-weapon gap (Mortar/Hagar same). Splash HITS now do credit accuracy (RadiusDamage passes accuracyWeapon:this, Crylink.cs:410)."
+    gaps: []
     verification:
-      - { kind: value_diff, ref: "bal-wep-xonotic.cfg:273-296 vs Crylink.Configure", result: pass }
+      - { kind: value_diff, ref: "bal-wep-xonotic.cfg:273-296 vs Crylink.Configure — all 18 primary defaults match line-for-line", result: pass }
       - { kind: code_read, ref: "crylink.qc:281-378 vs Crylink.cs:Attack — circular spread (CalculateSpreadPattern shot 0 centered), ProjectileVelocity, MoveType.BounceMissile, fire sound + muzzleflash all faithful; primary middle-spike index 0 matches QC (counter==0)", result: pass }
+      - { kind: code_read, ref: "SetupShot accuracy 'fired' denominator now seeded: Crylink.cs:223-225 computes maxDmg = damage*shots*(1+bouncedamagefactor*bounces)[+joinexplode_damage] and calls WeaponFiring.SetupShot(actor, forward, wep:this, maxDamage:maxDmg, recoil:2f) — matches crylink.qc:285-291 W_SetupShot maxdamage arg", result: pass }
     confidence: high
-    notes: "RE-VERIFIED 2026-06-22. Fire sound played explicitly (Crylink.cs:278 weapons/crylink_fire.wav) on SoundChannel.Weapon; muzzleflash CRYLINK_MUZZLEFLASH emitted (Crylink.cs:279). Live via WeaponFireDriver.Frame -> WrThink -> Attack (WeaponFireDriver.cs:163). No change vs baseline."
+    notes: "RE-AUDITED 2026-06-25: the baseline SetupShot-omits-maxDamage gap is now CLOSED — Crylink.Attack passes wep:this + the QC maxdmg formula (Crylink.cs:223-225), so the accuracy fired/max denominator is seeded exactly as QC. Fire sound played explicitly (Crylink.cs:300 weapons/crylink_fire.wav) on SoundChannel.Weapon; muzzleflash CRYLINK_MUZZLEFLASH emitted (Crylink.cs:301). Live via WeaponFireDriver -> WrThink -> Attack. FIX vs baseline (gap removed)."
 
   - id: crylink.secondary.attack
     name: "Secondary: 5-spike tight group, strong pull (W_Crylink_Attack2)"
@@ -135,7 +134,7 @@ features:
       - { name: "secondary_bouncedamagefactor", base: "0.5", port: "0.5", match: true }
       - { name: "fade scalar a", base: "bound(0, 1-(time-fade_time)*fade_rate, 1)", port: "Clamp(1-(Time-MaxHealth)*Health,0,1)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: faithful
@@ -143,14 +142,13 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Chain-detonate gate is approximate, not exact: QC requires RadiusDamage's totaldamage RETURN > 0 (crylink.qc:235,247); port's RadiusDamage is VOID (verified WeaponSplash.cs:49) so OnTouch uses `couldDamage = f*damage>0 || f*edge>0` (Crylink.cs:408,414). Reachable for secondary (linkexplode 1): a secondary spike striking a WALL with no damageable target nearby chain-detonates in the port (couldDamage true, WouldHitFriendly false) where Base would not (totaldamage 0). Needs a RadiusDamage signature change."
-      - "RadiusDamage now passes accuracyWeapon:this so splash HITS credit accuracy; but the FIRED denominator is still unseeded (SetupShot omits maxDamage — tracked on crylink.primary.attack)."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "crylink.qc:226-274 vs Crylink.cs:OnTouch — fade scalar/finalhit/bounce-factor/RadiusDamage faithful; chain-detonate checked FIRST on any damaging touch (Crylink.cs:414-424) matching QC ordering (chain THEN else-finalhit, crylink.qc:248-265); owner=NULL (Crylink.cs:440) + HITTYPE_BOUNCE tag (Crylink.cs:441-447) done", result: pass }
-      - { kind: code_read, ref: "Crylink.cs:398/:419/:428 ImpactSound plays crylink_impact.wav (primary) / crylink_impact2.wav (secondary); both .ogg samples present (assets/data/sound/weapons)", result: pass }
+      - { kind: code_read, ref: "crylink.qc:226-274 vs Crylink.cs:OnTouch — fade scalar/finalhit/bounce-factor/RadiusDamage faithful; chain-detonate checked FIRST on any damaging touch (Crylink.cs:436-446) matching QC ordering (chain THEN else-finalhit, crylink.qc:248-265); owner=NULL (Crylink.cs:462) + HITTYPE_BOUNCE tag (Crylink.cs:463-470) done", result: pass }
+      - { kind: code_read, ref: "WeaponSplash.RadiusDamage now RETURNS total_damage_to_creatures (WeaponSplash.cs:55,264), gated on MapMover.IsCreature (WeaponSplash.cs:202) so a wall-only hit returns 0; OnTouch gates chain-detonate on the EXACT `totalDamage > 0f` (Crylink.cs:431-437), matching crylink.qc:248-249 `if (totaldamage && (...))`", result: pass }
+      - { kind: code_read, ref: "Crylink.cs:441/:450/:509 ImpactSound plays crylink_impact.wav (primary) / crylink_impact2.wav (secondary), matching QC SND_CRYLINK_IMPACT/IMPACT2 keyed off HITTYPE_SECONDARY; both samples present", result: pass }
     confidence: high
-    notes: "RE-VERIFIED 2026-06-22 (Wave-2 fixes confirmed): (1) impact-SOUND mapping correct — primary plays crylink_impact, secondary crylink_impact2; (2) linkexplode chain-detonate checked on ANY damaging touch BEFORE the finalhit branch, matching QC's totaldamage-first ordering; (3) bounce path clears owner (self.Owner=null) so a bounced spike can hurt its firer, and tags HITTYPE_BOUNCE; (4) RadiusDamage passes directHit + accuracyWeapon + deathTag. RESIDUAL: the totaldamage>0 gate is still approximated (RadiusDamage confirmed void). No change vs baseline — logic stays partial on the gate only."
+    notes: "RE-AUDITED 2026-06-25 (FIX): the baseline's only residual — the approximate chain-detonate gate (because RadiusDamage was VOID) — is now CLOSED. WeaponSplash.RadiusDamage returns total_damage_to_creatures (creature-gated, WeaponSplash.cs:202,264) and OnTouch gates the chain on the exact `totalDamage > 0f` (Crylink.cs:436). The reachable divergence (a secondary spike hitting a bare wall chain-detonating in the port but not in Base) is eliminated: a wall-only blast returns 0 -> no chain, exactly as Base. logic partial -> faithful."
 
   - id: crylink.linkjoin.converge_on_release
     name: "Link-join: held group converges on release (W_Crylink_LinkJoin)"
@@ -208,12 +206,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Chain-detonate is entered on the approximate `couldDamage` gate rather than QC's exact totaldamage>0 (tracked on crylink.projectile.touch_bounce_fade — the only residual divergence in the chain-detonate path)."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "crylink.qc:57-85 + 209-260 vs Crylink.cs:LinkExplode (474-495) + WouldHitFriendly (456-469) — per-link faded RadiusDamage faithful; WouldHitFriendly friendly-gate implemented (Teams.SameTeam @ Teams.cs:35 + Api.Entities.FindInRadius @ Services.cs:61 both verified real); directHit threaded into each link's RadiusDamage (Crylink.cs:485); no JOINEXPLODE emitted from chain (Crylink.cs:492-494)", result: pass }
+      - { kind: code_read, ref: "crylink.qc:57-85 + 209-260 vs Crylink.cs:LinkExplode (496-517) + WouldHitFriendly (478-491) — per-link faded RadiusDamage faithful; WouldHitFriendly friendly-gate implemented (Teams.SameTeam + Api.Entities.FindInRadius); directHit threaded into each link's RadiusDamage (Crylink.cs:507-508); no JOINEXPLODE emitted from chain (Crylink.cs:514-516)", result: pass }
+      - { kind: code_read, ref: "chain-detonate now entered on the EXACT totaldamage>0 gate (Crylink.cs:436, via WeaponSplash.RadiusDamage return) rather than the prior approximate couldDamage — matches crylink.qc:248-249", result: pass }
     confidence: high
-    notes: "RE-VERIFIED 2026-06-22 (Wave-2 fixes confirmed): (1) W_Crylink_Touch_WouldHitFriendly ported (WouldHitFriendly) and gates linkexplode==1 — secondary chains refrain near teammates, matching Base (rad+16 padding = QC rad+MAX_DAMAGEEXTRARADIUS); (2) per-link impact sound correct (crylink_impact / crylink_impact2 by mode); (3) directHit (the original toucher) passed into each link's RadiusDamage (QC directhitentity); (4) the wrong-trigger CRYLINK_JOINEXPLODE emission removed from LinkExplode. Flat group-list iteration vs Base recursive queuenext walk (same net per-spike faded blast). No change vs baseline."
+    notes: "RE-AUDITED 2026-06-25: (1) W_Crylink_Touch_WouldHitFriendly ported (WouldHitFriendly) and gates linkexplode==1 — secondary chains refrain near teammates, matching Base (rad+16 = QC rad+MAX_DAMAGEEXTRARADIUS); (2) per-link impact sound correct (crylink_impact / crylink_impact2 by mode); (3) directHit (original toucher) passed into each link's RadiusDamage (QC directhitentity); (4) no wrong-trigger CRYLINK_JOINEXPLODE from chain. The baseline's residual gap — entering on the approximate couldDamage gate — is CLOSED now that OnTouch gates on the exact RadiusDamage totaldamage return. Gap removed."
 
   - id: crylink.linkjoin.joinexplode_bonus
     name: "Convergence join-explode bonus + EFFECT_CRYLINK_JOINEXPLODE (W_Crylink_LinkJoinEffect_Think)"
@@ -313,13 +311,13 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:75-78"
       - "game/client/ProjectileCatalog.cs:146-149"
-      - "game/net/NetGame.cs:1787"
+      - "game/net/NetGame.cs:1989"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:Attack"
     constants:
       - { name: "CRYLINK_IMPACT (primary)", base: "crylink_impactbig", port: "crylink_impactbig", match: true }
       - { name: "CRYLINK_IMPACT2 (secondary)", base: "crylink_impact", port: "crylink_impact", match: true }
       - { name: "CRYLINK_JOINEXPLODE", base: "crylink_joinexplode", port: "crylink_joinexplode", match: true }
-      - { name: "CRYLINK_MUZZLEFLASH", base: "crylink_muzzleflash", port: "crylink_muzzleflash (NetGame:1787)", match: true }
+      - { name: "CRYLINK_MUZZLEFLASH", base: "crylink_muzzleflash", port: "crylink_muzzleflash (NetGame:1989)", match: true }
       - { name: "trail effect", base: "TR_CRYLINKPLASMA", port: "TR_CRYLINKPLASMA (purple shards)", match: true }
     status:
       logic: faithful
@@ -335,4 +333,56 @@ features:
       - { kind: code_read, ref: "EffectsList.cs:75-78 vs all.inc:48-51 — impact big/small swap correct (CRYLINK_IMPACT=crylink_impactbig, CRYLINK_IMPACT2=crylink_impact); CRYLINK_JOINEXPLODE + CRYLINK_MUZZLEFLASH registered", result: pass }
       - { kind: code_read, ref: "ProjectileCatalog.cs:146-149 Crylink/CrylinkBouncing -> TR_CRYLINKPLASMA PurplePlasma GlowSprite + light; NetGame:1787 'crylink'->CRYLINK_MUZZLEFLASH", result: pass }
     confidence: high
-    notes: "RE-VERIFIED 2026-06-22. The convergence CRYLINK_JOINEXPLODE sparkle fires from the correct trigger (the meeting-time think, crylink.linkjoin.joinexplode_bonus) — the previous wrong-trigger emission from LinkExplode is removed. Purple plasma shard trail for both bouncing and non-bouncing variants, faithful to projectile.qc. Impact-SOUND fidelity is tracked under crylink.projectile.touch_bounce_fade. No change vs baseline."
+    notes: "RE-AUDITED 2026-06-25. The convergence CRYLINK_JOINEXPLODE sparkle fires from the correct trigger (the meeting-time think, crylink.linkjoin.joinexplode_bonus) — no wrong-trigger emission from LinkExplode. Purple plasma shard trail for both bouncing and non-bouncing variants, faithful to projectile.qc. Effect names match all.inc:48-51 line-for-line (re-verified). NetGame muzzleflash mapping moved to NetGame.cs:1989 ('crylink' -> CRYLINK_MUZZLEFLASH). Impact-SOUND fidelity tracked under crylink.projectile.touch_bounce_fade. No status change vs baseline (port_ref line updated)."
+
+  - id: crylink.notifications.kill_suicide_message
+    name: "Kill/suicide obituary messages (wr_killmessage / wr_suicidemessage)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:wr_suicidemessage"
+      - "common/weapons/weapon/crylink.qc:wr_killmessage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:351-352"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:51-52"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:128-129"
+    constants:
+      - { name: "murder notif", base: "WEAPON_CRYLINK_MURDER", port: "WEAPON_CRYLINK_MURDER", match: true }
+      - { name: "suicide notif", base: "WEAPON_CRYLINK_SUICIDE", port: "WEAPON_CRYLINK_SUICIDE", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "NotificationsList.cs:351-352 registers CRYLINK_MURDER (\"felt the strong pull of ... Crylink\") + CRYLINK_SUICIDE; the multi WEAPON_CRYLINK_MURDER/SUICIDE at NotificationsList.cs:1184-1185; DeathMessages.cs:51-52,128-129 maps the 'crylink' deathtype string -> WEAPON_CRYLINK_MURDER / WEAPON_CRYLINK_SUICIDE (crylink.qc:575,580)", result: pass }
+    confidence: high
+    notes: "ADDED 2026-06-25 (registry coverage gap — feature existed unmapped). QC wr_killmessage->WEAPON_CRYLINK_MURDER and wr_suicidemessage->WEAPON_CRYLINK_SUICIDE are both ported: the notifications are registered and the crylink deathtype-string is mapped to them in DeathMessages (the obituary dispatch). Faithful and live via the death-message pipeline. spec file already marks this FAITHFUL (specs/weapon-crylink.md:118)."
+
+  - id: crylink.bot.wr_aim
+    name: "Bot aim (wr_aim): bias toward primary/secondary, lead the target"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:wr_aim"
+    port_refs: []
+    constants:
+      - { name: "primary-fire bias", base: "random() < 0.10 -> primary, else secondary", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No Crylink WrAim override — the QC METHOD(Crylink, wr_aim) (10% chance primary via bot_aim(speed,0,middle_lifetime), else secondary) is not ported. Bots cannot select/lead a crylink shot through the per-weapon bot-aim path. Other weapons (Vaporizer/Shotgun/Minelayer/Rifle/Fireball/Devastator/Machinegun) DO have WrAim, so a generic fallback does not cover crylink. Same un-ported-bot-aim shape as several other weapons."
+    verification:
+      - { kind: code_read, ref: "crylink.qc:wr_aim present; no WrAim/wr_aim symbol in Crylink.cs (grep), and Crylink not among the WrAim-implementing weapon files", result: fail }
+    confidence: high
+    notes: "ADDED 2026-06-25 (registry coverage gap — Base feature with no port symbol). Bot aim for crylink is unimplemented; bots won't fire it via the QC bot_aim path. Not stock-balance-critical for human play but a real bot-behavior gap."

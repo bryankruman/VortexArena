@@ -1,11 +1,10 @@
 unit: weapon-seeker
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 11
   worst_gaps:
-    - "Shootable missile self-damage scaling NOT modeled: Base W_Seeker_Missile_Damage drains health by damage*0.25 when the firer shoots their OWN missile vs full damage for others; Projectiles.ShootDown subtracts full damage regardless of attacker. (Shoot-down itself is now LIVE via Projectiles.MakeShootable -> GtEventDamage -> DamageSystem.EventDamage; only the self-scaling and the HP-aware drain differ.)"
     - "Missile body scale=2 (Base draws the missile model at 2x) still not applied to the port projectile (presentation)."
     - "Tag-strike spark missing: TagTouch plays the tag_impact cue but never emits te_knightspike(findbetterlocation(origin,8)); no TE_SPIKE/knightspike point-effect is ported (only the TR_KNIGHTSPIKE trail exists)."
     - "Type-1 RADARICON_TAGGED waypoint sprite (WaypointSprite_Spawn WP_Seeker) still absent — no WP_Seeker is registered (type-1-only, non-default layout)."
@@ -179,25 +178,24 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Projectiles.cs:ShootDown"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:EventDamage"
     constants:
-      - { name: "missile_health", base: "5", port: "5 (now applied)", match: true }
-      - { name: "missile_damageforcescale", base: "4", port: "4 (now applied)", match: true }
-      - { name: "self-damage scale", base: "x0.25 (realowner==attacker)", port: "x1 (no attacker check)", match: false }
+      - { name: "missile_health", base: "5", port: "5", match: true }
+      - { name: "missile_damageforcescale", base: "4", port: "4", match: true }
+      - { name: "self-damage scale", base: "x0.25 (realowner==attacker)", port: "x0.25 (self.Owner==attacker)", match: true }
       - { name: "exception (W_CheckProjectileDamage)", base: "-1 (no exceptions)", port: "-1", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Self-damage scaling NOT ported: Base drains RES_HEALTH by damage*0.25 when realowner==attacker (the firer shooting their own missile) vs full damage for everyone else; Projectiles.ShootDown (Projectiles.cs:90) subtracts full `damage` unconditionally. So a firer's own splash/shot depletes the missile 4x faster than Base."
+    gaps: []
     verification:
-      - { kind: code, ref: "VERIFIED 2026-06-22 (FIX, partial): FireMissile now calls Projectiles.MakeShootable(missile, exception:-1) which installs GtEventDamage; DamageSystem.EventDamage (DamageSystem.cs:331) dispatches a non-player victim's GtEventDamage on the live path; RadiusDamage enumerates TakeDamage!=No targets (WeaponSplash.cs:82) so a missile in blast radius is hit. ShootDown runs CheckProjectileDamage(g_projectiles_damage, exception -1) gate, subtracts hp, and fires ProjectileDamage->ExplodeMissile only at hp<=0. ONLY the x0.25 self-scaling is missing.", result: pass }
+      - { kind: code, ref: "VERIFIED 2026-06-25 (FIX): FireMissile now passes a damageScale lambda to Projectiles.MakeShootable (Seeker.cs:239-245) returning damage*0.25 when self.Owner==attacker, else full damage; ShootDown applies it after the g_projectiles_damage gate, before hp subtraction (Projectiles.cs:114-116). RealOwner=>Owner (DamageEntityState.cs:161) so self.Owner==attacker is exactly Base realowner==attacker. missile_health 5 + damageforcescale 4 applied; W_CheckProjectileDamage exception -1 matches. Shoot-down is live via GtEventDamage (DamageSystem.EventDamage dispatches non-player victims), detonates only at hp<=0.", result: pass }
     confidence: high
-    notes: "MAJOR Wave-1 fix: the cross-weapon ProjectileDamage dead-callback root cause is RESOLVED — the new Projectiles.MakeShootable shim installs GtEventDamage (which DamageSystem.EventDamage already dispatches for non-players), so missiles/tags/grenades/mines/orbs are now genuinely shootable on the live match path. Baseline status was logic:stub/liveness:dead -> now logic:partial/liveness:live. Residual: the firer-self-hit x0.25 scaling (and the missile only detonates at hp<=0, which IS now modeled, vs the baseline's 'detonates on first damage')."
+    notes: "FIXED 2026-06-25: the firer-self-hit x0.25 self-scaling — the sole residual baseline gap — is now ported via the new damageScale parameter on MakeShootable/ShootDown. Together with the Wave-1 MakeShootable shim (which resolved the cross-weapon dead ProjectileDamage callback) the missile shoot-down is now fully faithful: full damage for other attackers, damage*0.25 for the firer's own splash/shot, detonation only when hp reaches 0."
 
   - id: weapon-seeker.flac_fire
     name: "FLAC secondary spray (f_diff muzzle cycle, spread, short-lived explosive)"

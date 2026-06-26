@@ -1,14 +1,14 @@
 unit: weapon-electro
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
-  feature_count: 12
+  feature_count: 15
   worst_gaps:
-    - "Midair-combo (primary_midaircombo_radius) is now logic/values FAITHFUL (Wave-5 added a dedicated MidairTriggerCombo with own/teammate/enemy gating + the separate midaircombo_speed first-orb delay), but it is still DEAD on the live path because the xonotic default cvar is 0 (it only runs in samual/xdf where radius=100)."
-    - "checkammo1/2 still omit Base's clip-load OR-term (weapon_load[m_id] >= ammo); a no-op while reload_ammo defaults 0, so it never fires in stock play."
-    - "IS_INDEPENDENT_PLAYER owner-gate is ported in the midair path but Entity.IsIndependentPlayer is hardwired false (no independent-player mode ported), so it is dead-OFF-equivalent; the non-midair W_Electro_TriggerCombo still omits the gate (same harmless effect)."
+    - "Midair-combo (primary_midaircombo_radius) is logic/values FAITHFUL (a dedicated MidairTriggerCombo with own/teammate/enemy gating + the separate midaircombo_speed first-orb delay), but it is still DEAD on the live path because the xonotic default cvar is 0 (it only runs in samual/xdf where radius=100)."
+    - "IS_INDEPENDENT_PLAYER owner-gate is ported in the midair path but Entity.IsIndependentPlayer is hardwired false (DamageEntityState.cs:158, no independent-player mode ported), so it is dead-OFF-equivalent; the non-midair W_Electro_TriggerCombo still omits the gate entirely (same harmless effect)."
     - "Combo explode-over-time (combo_duration, default 0) and sticky orbs (MOVETYPE_FOLLOW, stick default 0) are intentionally omitted; harmless at defaults."
+    - "Registry coverage gaps (newly added as rows this audit): bot wr_aim targeting, the Electro_Orb CSQC net-link/scale-pulse draw, and the MENUQC weapon-guide describe text."
 features:
   - id: electro.primary.fire_gate
     name: "Primary bolt fire gate (refire + refire2 interlock)"
@@ -311,7 +311,7 @@ features:
       - { name: "combo_safeammocheck", base: "1", port: "true (CheckAmmoSecondary needs Secondary.Ammo+Primary.Ammo)", match: true }
       - { name: "reload_ammo", base: "0 (reload off by default)", port: "generic WrReload path", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -320,12 +320,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Neither CheckAmmoPrimary nor CheckAmmoSecondary includes the clip-load OR-term (weapon_load[m_id] >= ammo) Base's wr_checkammo1/2 add for the reloadable weapon. A no-op while reload_ammo defaults 0 (clip never loaded), so it never affects stock play."
-      - "No Electro-specific wr_reload override (Base's is W_Reload(min(pri,sec) ammo, SND_RELOAD)); relies on the generic WeaponFireGate.WrReload, acceptable since reload_ammo defaults 0."
+      - "No Electro-specific wr_reload override (Base's is W_Reload(min(pri,sec) ammo, SND_RELOAD)); relies on the generic WeaponFireGate.WrReload. Acceptable since reload_ammo defaults 0; the reload amount min(4,2)=2 differs from the generic path only on a reload-enabled server (harmless at stock defaults)."
     verification:
-      - { kind: code, ref: "Configure seeds CombocSafeAmmoCheck=BalBool(combo_safeammocheck,true). CheckAmmoSecondary (Electro.cs:497-501): need = safeammocheck ? Secondary.Ammo+Primary.Ammo : Secondary.Ammo; GetResource(Cells)>=need — matches QC wr_checkammo2 safeammocheck term. WeaponAmmo.Check (WeaponFireGate.cs:492) routes Electro live; consumed by CheckAmmoWithAutoSwitch.", result: pass }
+      - { kind: code, ref: "Configure seeds CombocSafeAmmoCheck=BalBool(combo_safeammocheck,true). CheckAmmoPrimary (Electro.cs:542-544): GetResource(Cells)>=Primary.Ammo OR GetWeaponLoad(state,RegistryId)>=Primary.Ammo — both terms now present, matching QC wr_checkammo1:669-671. CheckAmmoSecondary (Electro.cs:549-554): need = safeammocheck ? Secondary.Ammo+Primary.Ammo : Secondary.Ammo; GetResource(Cells)>=need OR GetWeaponLoad>=need — matches QC wr_checkammo2:677-687 incl. the clip-load OR-term. WeaponAmmo.Check routes Electro live; consumed by CheckAmmoWithAutoSwitch.", result: pass }
     confidence: high
-    notes: "FIXED: combo_safeammocheck now implemented (secondary check requires the follow-up combo bolt's ammo, so the weapon auto-switches away when it should). Logic stays partial only for the clip-load OR-term (no-op at stock reload_ammo 0)."
+    notes: "FIX since 2026-06-22 baseline (logic partial->faithful): the clip-load OR-term (weapon_load[m_id] >= ammo) is now present in BOTH CheckAmmoPrimary and CheckAmmoSecondary via GetWeaponLoad(...), so wr_checkammo1/2 are now line-for-line faithful (the baseline's sole logic gap is closed). combo_safeammocheck stays implemented. Only the cosmetic no-Electro-specific-wr_reload remains (no-op at stock reload_ammo 0)."
 
   - id: electro.deathmessages
     name: "Kill / suicide obituary lines (bolt/orb/combo variants)"
@@ -378,3 +377,82 @@ features:
       - { kind: code, ref: "ExplodeBolt (Electro.cs:279-283) now tests directHit (threaded from the bolt Touch handler) TakeDamage==Aim && Flags&Client && !=owner && !SameTeam && DeadState==No && IsFlying(directHit) and calls NotificationSystem.Announce(owner,'ACHIEVEMENT_ELECTROBITCH'). IsFlying (481-488) ports the airshot test (not onground, not swimming, 24u floor clearance). ANNCE 'electrobitch' registered (NotificationsList.cs:85) + sound (SoundsList.cs:283).", result: pass }
     confidence: high
     notes: "FIXED missing->faithful+live: the airshot ELECTROBITCH announcement is now ported and fired on a direct bolt kill of a flying enemy. Matches W_Electro_Explode:197-200. Resolves the standing audio-parity MEMORY note for electro."
+
+  - id: electro.bot_aim
+    name: "Bot aim heuristic (primary lead-aim, occasional secondary mortar lob)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:wr_aim (METHOD Electro, wr_aim)"
+    port_refs: []
+    constants:
+      - { name: "primary_speed", base: "2500", port: "n/a", match: false }
+      - { name: "secondary_speed", base: "1000", port: "n/a", match: false }
+      - { name: "secondary_speed_up", base: "200", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No Electro-specific bot aim is ported. Base wr_aim leads with bot_aim at primary_speed (or hitscan-ish when speed==0) and, with a small random chance (bot_secondary_electromooth), switches to a secondary mortar-style lob using secondary_speed/speed_up; switches back at >1000u range. The port BotBrain.cs has no electro branch. Bots can still fire generically but without the primary/secondary mix or the lead-time tuning."
+    verification:
+      - { kind: code, ref: "Grep '[Ee]lectro' in src/XonoticGodot.Server/Bot/BotBrain.cs -> no matches; no per-weapon wr_aim port for electro found.", result: fail }
+    confidence: medium
+    notes: "NEW ROW (registry coverage gap, not a drift). Base electro.qc:599-626 wr_aim is unmapped. Bot-aim parity is generally weak across the weapon registry; tracking here for completeness. Not on the stock human play path."
+
+  - id: electro.orb.csqc_netlink_draw
+    name: "Orb CSQC net-link + scale-pulse / spin draw"
+    layer: [presentation, shared]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:electro_orb_send (SVQC Net_LinkEntity)"
+      - "common/weapons/weapon/electro.qc:electro_orb_draw (CSQC scale pulse + avelocity spin)"
+      - "common/weapons/weapon/electro.qc:electro_orb_setup"
+    port_refs:
+      - "game/client/ProjectileCatalog.cs:ProjectileType.Electro (ebomb model, electro_fly loop)"
+      - "game/client/ProjectileRenderer.cs:OnSpawn / AttachLoopSound"
+    constants:
+      - { name: "orb_setup_scale_factor", base: "combo_radius*0.05 * bound(0,(ltime-time)*4,1)", port: "none (procedural catalog glow, no shrink-on-death pulse)", match: false }
+      - { name: "orb_avelocity", base: "'7 0 11' (spin)", port: "none", match: false }
+      - { name: "orb_alpha", base: "0.7", port: "catalog-tuned", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The dedicated REGISTER_NET_LINKED(Electro_Orb) link/draw is not reproduced 1:1: Base streams the orb as its own CSQC entity (electro_orb_send writes origin+owner+lifetime; electro_orb_draw applies a (ltime-time)-based scale shrink as the orb nears expiry plus an avelocity spin '7 0 11', alpha 0.7). The port renders the orb via the generic ProjectileCatalog/ProjectileRenderer Electro body (ebomb model + TR_NEXUIZPLASMA trail + dynamic light + electro_fly loop). The in-flight identity matches; the time-based shrink pulse and explicit spin axis are cosmetic and unreproduced."
+    verification:
+      - { kind: code, ref: "Base electro.qc:7-66 (electro_orb_draw scale pulse + electro_orb_send/NET_HANDLE) has no 1:1 port; the orb is instead networked as a generic projectile (ServerNet.Classify->Projectile) and drawn by ProjectileCatalog.Electro / ProjectileRenderer.OnSpawn. Loop sound (electro_fly) is attached. Overlaps electro.secondary.orb_projectile (which records the same scale-pulse omission).", result: pass }
+    confidence: medium
+    notes: "NEW ROW (registry coverage gap). The orb's in-flight render is already covered live under electro.secondary.orb_projectile; this row tracks the specific CSQC net-link entity + scale-pulse/spin draw as its own line. Visual identity is faithful; only the death-shrink pulse and explicit spin axis are missing (cosmetic)."
+
+  - id: electro.describe_guide
+    name: "Weapon-guide describe text (MENUQC)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/electro.qc:describe (METHOD Electro, describe)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The MENUQC weapon-guide describe paragraphs (electro.qc:753-767 — primary/secondary/combo description + DPS guide line) are not ported; the port has no in-menu weapon guide for electro."
+    verification:
+      - { kind: code, ref: "Base electro.qc:749-769 describe() (MENUQC) has no corresponding port symbol; no weapon-guide page text for electro found in the port.", result: fail }
+    confidence: medium
+    notes: "NEW ROW (registry coverage gap). MENUQC guide text — low priority, not gameplay; tracked for registry completeness."

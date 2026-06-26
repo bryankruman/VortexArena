@@ -1,7 +1,7 @@
 unit: overkill-weapons
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 14
   worst_gaps:

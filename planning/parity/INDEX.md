@@ -1,6 +1,6 @@
 # Parity Index
 
-_Generated 2026-06-25 from 154 units, 2005 features._
+_Generated 2026-06-25 from 154 units, 2017 features._
 
 Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liveness `live`/`DEAD`/`~`/`?`.
 
@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1556 | 176 | 16 | 253 | 3 | 1 |
-| values | 0 | 1478 | 151 | 198 | 161 | 0 | 17 |
-| timing | 0 | 951 | 111 | 858 | 65 | 0 | 20 |
-| presentation | 0 | 380 | 243 | 1137 | 238 | 0 | 7 |
-| audio | 0 | 234 | 44 | 1663 | 58 | 0 | 6 |
-| liveness | 15 | 0 | 0 | 178 | 159 | 0 | 13 |
+| logic | 0 | 1583 | 174 | 17 | 239 | 3 | 1 |
+| values | 0 | 1495 | 149 | 200 | 156 | 0 | 17 |
+| timing | 0 | 958 | 108 | 868 | 63 | 0 | 20 |
+| presentation | 0 | 387 | 243 | 1142 | 238 | 0 | 7 |
+| audio | 0 | 239 | 42 | 1674 | 56 | 0 | 6 |
+| liveness | 15 | 0 | 0 | 178 | 156 | 0 | 13 |
 
 ## Features by unit
 
@@ -2480,16 +2480,16 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-arc.beam.curve_direction` | Beam direction curving toward aim, limited by max angle + return speed | OK | ~ | OK | - | - | live | high |
 | `weapon-arc.beam.heal_teammates` | Beam heals teammates (health + armor) instead of damaging | OK | OK | OK | - | - | live | high |
 | `weapon-arc.beam.falloff` | Exponential distance falloff on beam damage + force | OK | OK | - | - | - | live | high |
-| `weapon-arc.beam.heat_overheat` | Barrel heat accumulation, overheat jam, and cooldown | ~ | OK | OK | MISS | ~ | live | high |
-| `weapon-arc.beam.burst_variant` | Burst beam (secondary when bolt=0): higher damage/heat/ammo beam | ~ | OK | OK | MISS | OK | live | medium |
+| `weapon-arc.beam.heat_overheat` | Barrel heat accumulation, overheat jam, and cooldown | ~ | OK | OK | ~ | ~ | live | high |
+| `weapon-arc.beam.burst_variant` | Burst beam (secondary when bolt=0): higher damage/heat/ammo beam | OK | OK | OK | MISS | OK | live | high |
 | `weapon-arc.bolt.secondary_burst` | Bolt secondary: fire a burst of bouncing explosive bolts | ~ | OK | ~ | ~ | OK | live | high |
 | `weapon-arc.bolt.explode_bounce` | Bolt impact: bounce-or-explode with radius damage + shoot-down | OK | OK | OK | OK | OK | live | high |
 | `weapon-arc.checkammo` | Ammo checks (wr_checkammo1/2) + out-of-ammo auto-switch | OK | OK | - | - | - | live | high |
 | `weapon-arc.beam.visual` | Visible beam rendering (Draw_ArcBeam / ENT_CLIENT_ARC_BEAM) | ~ | MISS | ~ | ~ | - | live | high |
-| `weapon-arc.heat_persistence` | Heat drop/pickup migration + reset on death (wr_drop/pickup/resetplayer/playerdeath) | MISS | - | - | - | - | - | high |
+| `weapon-arc.heat_persistence` | Heat drop/pickup migration + reset on death (wr_drop/pickup/resetplayer/playerdeath) | ~ | - | - | - | - | live | high |
 | `weapon-arc.smoke_overheat_fx` | Arc_Smoke: overheat smoke, overheat fire particles, overheat loop sound | MISS | MISS | MISS | MISS | MISS | - | high |
 
-### `weapon-blaster` (weapon) — 11 features
+### `weapon-blaster` (weapon) — 12 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -2504,21 +2504,24 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-blaster.secondary.lastweapon` | Secondary = switch back to previous weapon (W_LastWeapon), not a fire mode | OK | - | - | - | - | live | medium |
 | `weapon-blaster.offhand.fire` | Offhand blaster (g_offhand_blaster mutator) fires without switching weapons | OK | OK | OK | - | - | ~ | high |
 | `weapon-blaster.bot.aim_dodge` | Bot weapon aim (wr_aim projectile lead) + bot_dodge of incoming bolts | ~ | ~ | - | - | - | ~ | high |
+| `weapon-blaster.notification.kill_suicide` | Blaster kill/suicide death notifications (wr_killmessage / wr_suicidemessage) | OK | OK | - | OK | - | live | medium |
 
-### `weapon-crylink` (weapon) — 10 features
+### `weapon-crylink` (weapon) — 12 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `crylink.identity` | Weapon identity, flags, models, color, balance defaults | OK | OK | OK | OK | - | live | high |
 | `crylink.primary.attack` | Primary: 6-spike circular burst (W_Crylink_Attack) | OK | OK | OK | OK | OK | live | high |
 | `crylink.secondary.attack` | Secondary: 5-spike tight group, strong pull (W_Crylink_Attack2) | OK | OK | OK | OK | OK | live | high |
-| `crylink.projectile.touch_bounce_fade` | Spike touch: faded radius damage, limited bounces, bounce-damage factor | ~ | OK | OK | OK | OK | live | high |
+| `crylink.projectile.touch_bounce_fade` | Spike touch: faded radius damage, limited bounces, bounce-damage factor | OK | OK | OK | OK | OK | live | high |
 | `crylink.linkjoin.converge_on_release` | Link-join: held group converges on release (W_Crylink_LinkJoin) | OK | OK | OK | - | - | live | high |
 | `crylink.linkexplode.chain_detonate` | Link-explode: chain-detonate the group on a damaging hit (W_Crylink_LinkExplode) | OK | OK | OK | OK | OK | live | high |
 | `crylink.linkjoin.joinexplode_bonus` | Convergence join-explode bonus + EFFECT_CRYLINK_JOINEXPLODE (W_Crylink_LinkJoinEffect_Think) | OK | OK | OK | OK | - | live | high |
 | `crylink.ammo.checkammo` | Per-mode ammo check + wait-release ammo guard (wr_checkammo1/2) | OK | OK | - | - | - | live | high |
 | `crylink.reload` | Forced reload + clip system (wr_reload) | OK | OK | OK | - | OK | DEAD | high |
 | `crylink.fx.trail_muzzle_impact` | Trail (purple plasma), muzzle flash, impact particle, projectile render *(intended)* | OK | OK | OK | OK | - | live | high |
+| `crylink.notifications.kill_suicide_message` | Kill/suicide obituary messages (wr_killmessage / wr_suicidemessage) | OK | OK | - | OK | - | live | high |
+| `crylink.bot.wr_aim` | Bot aim (wr_aim): bias toward primary/secondary, lead the target | MISS | MISS | - | - | - | - | high |
 
 ### `weapon-devastator` (weapon) — 11 features
 
@@ -2528,15 +2531,15 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-devastator.flight.acceleration` | Rocket acceleration from speedstart toward speed | OK | OK | OK | - | - | live | high |
 | `weapon-devastator.flight.laser_guide` | Laser guiding: steer rocket toward owner aim (guiderate-capped, goal-point lead) | OK | OK | OK | OK | OK | live | high |
 | `weapon-devastator.explode.contact` | Contact / lifetime explosion: radius damage + force_xyscale knockback | OK | OK | OK | OK | OK | live | high |
-| `weapon-devastator.explode.remote` | Secondary remote detonation (rl_detonate_later + spawnshield/proximity gate) | OK | OK | OK | OK | OK | live | high |
+| `weapon-devastator.explode.remote` | Secondary remote detonation (rl_detonate_later + spawnshield/proximity gate + rocket-jump variant) | OK | OK | OK | OK | OK | live | high |
 | `weapon-devastator.rocket.shootdown` | Shootable rocket (event_damage destroys it -> explode) | OK | OK | OK | - | - | live | high |
 | `weapon-devastator.firer.transparency` | Rocket transparent to firer (PROJECTILE_MAKETRIGGER SOLID_CORPSE) | OK | OK | - | - | - | live | high |
 | `weapon-devastator.ammo.checkammo_reload` | Ammo check / reload / reset-on-death / kill-message | OK | OK | OK | - | - | live | high |
 | `weapon-devastator.presentation.flight_fx` | Flying rocket model/trail/spin/light/fly-sound + muzzle flash | OK | OK | OK | ~ | OK | ~ | medium |
 | `weapon-devastator.explode.airshot` | Airshot achievement on a mid-air direct enemy kill (ANNCE_ACHIEVEMENT_AIRSHOT) | OK | OK | - | OK | OK | live | high |
-| `weapon-devastator.bot.aim` | Per-weapon bot aim + auto-detonation (wr_aim) | MISS | MISS | MISS | - | - | - | high |
+| `weapon-devastator.bot.aim` | Per-weapon bot aim + auto-detonation (wr_aim) | OK | OK | OK | - | - | live | high |
 
-### `weapon-electro` (weapon) — 12 features
+### `weapon-electro` (weapon) — 15 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -2549,9 +2552,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `electro.secondary.orb_projectile` | Secondary orb projectile (MOVETYPE_BOUNCE, gravity, shootable HP, in-flight visual) | OK | OK | OK | OK | OK | live | high |
 | `electro.secondary.orb_touch_explode` | Orb touch: explode on player vs bounce (+ bounce sound, detonation sound) | OK | OK | - | OK | OK | live | high |
 | `electro.secondary.orb_shotdown_combo` | Shoot-down orb converts to a combo blast | OK | OK | - | OK | OK | live | high |
-| `electro.ammo_reload` | Ammo checks + reload (cells, combo_safeammocheck) | ~ | OK | - | - | - | live | high |
+| `electro.ammo_reload` | Ammo checks + reload (cells, combo_safeammocheck) | OK | OK | - | - | - | live | high |
 | `electro.deathmessages` | Kill / suicide obituary lines (bolt/orb/combo variants) | OK | OK | - | OK | - | live | high |
 | `electro.electrobitch_announce` | ELECTROBITCH airshot announcement (direct bolt kill on flying enemy) | OK | OK | - | OK | OK | live | high |
+| `electro.bot_aim` | Bot aim heuristic (primary lead-aim, occasional secondary mortar lob) | MISS | MISS | - | - | - | - | medium |
+| `electro.orb.csqc_netlink_draw` | Orb CSQC net-link + scale-pulse / spin draw | OK | ~ | - | ~ | OK | live | medium |
+| `electro.describe_guide` | Weapon-guide describe text (MENUQC) | MISS | - | - | MISS | - | - | medium |
 
 ### `weapon-fireball` (weapon) — 13 features
 
@@ -2569,7 +2575,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-fireball.secondary.firemine` | Secondary: lob gravity bouncing firemine (MOVETYPE_BOUNCE, ±4, up-launch) | OK | OK | OK | ~ | OK | live | high |
 | `weapon-fireball.secondary.firemine.lifecycle` | Firemine think/touch: scorch nearby, self-destruct at lifetime, ignite-on-touch-or-bounce | OK | OK | OK | OK | OK | live | high |
 | `weapon-fireball.burn.model` | Fire damage-over-time (Fire_AddDamage / Fire_ApplyDamage) backing both projectiles' burns | OK | OK | OK | - | - | live | high |
-| `weapon-fireball.bot.obituary` | Bot aim (wr_aim) + kill/suicide obituary lines (FIREMINE vs BLAST) | ~ | ~ | - | ~ | - | ~ | high |
+| `weapon-fireball.bot.obituary` | Bot aim (wr_aim) + kill/suicide obituary lines (FIREMINE vs BLAST) | OK | ~ | - | OK | - | live | high |
 
 ### `weapon-hagar` (weapon) — 12 features
 
@@ -2586,7 +2592,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `hagar.hud.load_ring` | Crosshair Hagar load ring | OK | OK | - | OK | - | live | high |
 | `hagar.identity` | Weapon identity, flags, models, pickup/switch balance | OK | OK | OK | OK | - | live | high |
 | `hagar.notifications.killmessages` | Burst-vs-spray kill message + suicide message | OK | - | - | OK | - | live | high |
-| `hagar.load_lifecycle` | Load-state lifecycle: release/give-back on switch-away, death, reset, equip | MISS | MISS | - | - | MISS | - | high |
+| `hagar.load_lifecycle` | Load-state lifecycle: release/give-back on switch-away, death, reset, equip | OK | OK | - | - | OK | live | high |
 
 ### `weapon-hlac` (weapon) — 9 features
 
@@ -2598,7 +2604,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-hlac.bolt.impact` | Bolt radius-damage burst on touch / lifetime | OK | OK | OK | - | - | live | high |
 | `weapon-hlac.projectile.velocity` | Shared projectile-velocity setup (W_SetupProjVelocity_Basic) *(intended)* | OK | OK | - | - | - | live | medium |
 | `weapon-hlac.recoil.punchangle` | Per-shot punchangle recoil kick | OK | OK | - | OK | - | live | high |
-| `weapon-hlac.ammo.checkreload` | Ammo check + reload (wr_checkammo / wr_reload / forced reload) | ~ | OK | OK | - | OK | live | high |
+| `weapon-hlac.ammo.checkreload` | Ammo check + reload (wr_checkammo / wr_reload / forced reload) | OK | OK | OK | - | OK | live | high |
 | `weapon-hlac.fx.muzzle_impact` | Muzzle flash, impact effect, fire/impact sounds | OK | OK | - | ~ | OK | live | medium |
 | `weapon-hlac.identity.metadata` | Weapon identity, kill/suicide notifications, registration/liveness | OK | OK | - | OK | - | live | high |
 
@@ -2607,7 +2613,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `weapon-hook.identity.attributes` | Weapon identity, models, color, flags, ammo type | OK | OK | - | ~ | - | live | high |
-| `weapon-hook.primary.state_machine` | Primary grapple lifecycle (fire/reel/remove hook_state machine) | OK | ~ | OK | - | - | live | high |
+| `weapon-hook.primary.state_machine` | Primary grapple lifecycle (fire/reel/remove hook_state machine) | OK | OK | OK | - | - | live | high |
 | `weapon-hook.primary.hooked_fuel_drain` | Hooked-state fuel drain + free grace period | OK | OK | OK | - | - | live | high |
 | `weapon-hook.primary.fire_grapplinghook` | FireGrapplingHook: launch the chain projectile | ~ | OK | OK | ~ | OK | live | high |
 | `weapon-hook.primary.latch` | GrapplingHookTouch / GrapplingHook_Stop: latch onto what it hits | OK | - | OK | ~ | OK | live | high |
@@ -2637,7 +2643,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `machinegun.bot.wr_aim` | Bot fire logic (wr_aim distance-based primary/secondary selection) | OK | OK | - | - | - | live | high |
 | `machinegun.notification.kill_suicide` | Kill/suicide obituary (MURDER_SNIPE vs MURDER_SPRAY, THINKING_WITH_PORTALS suicide) | OK | OK | - | OK | - | ~ | high |
 
-### `weapon-minelayer` (weapon) — 13 features
+### `weapon-minelayer` (weapon) — 14 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -2653,7 +2659,8 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `minelayer.mine.render` | Placed-mine model + networking (visible mine) | - | OK | - | ~ | - | ~ | high |
 | `minelayer.ammo.checks` | Ammo checks + reload | OK | OK | OK | - | - | ~ | medium |
 | `minelayer.obituary` | Suicide / murder obituary messages | OK | - | - | OK | - | live | high |
-| `minelayer.bot.aim` | Bot AI: lay + remote-detonate decision (wr_aim) | MISS | - | - | - | - | - | high |
+| `minelayer.bot.aim` | Bot AI: lay + remote-detonate decision (wr_aim) | OK | OK | OK | - | - | live | high |
+| `minelayer.player.reset` | Per-player mine-count reset on respawn (wr_resetplayer) *(intended)* | OK | - | - | - | - | - | high |
 
 ### `weapon-mortar` (weapon) — 11 features
 
@@ -2671,23 +2678,25 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `mortar.fx.airshot` | Airshot achievement announcement | OK | - | - | - | OK | live | high |
 | `mortar.notifications.killmessages` | Bounce-vs-explode kill / suicide obituary | OK | - | - | OK | - | live | high |
 
-### `weapon-porto` (weapon) — 11 features
+### `weapon-porto` (weapon) — 13 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `weapon-porto.identity.attributes` | Weapon identity, models, color, flags, ammo type | OK | OK | - | ~ | - | live | high |
 | `weapon-porto.fire.launch` | Fire: eye-shot launch of the bouncing portal projectile | OK | OK | OK | - | OK | live | high |
-| `weapon-porto.fire.refire_gate` | Fire gating: single-portal latch + porto_forbidden + refire | ~ | OK | OK | - | - | ~ | high |
+| `weapon-porto.fire.refire_gate` | Fire gating: single-portal latch + porto_forbidden + refire | OK | OK | OK | - | - | live | high |
 | `weapon-porto.fire.aim_hold` | Secondary aim-hold (porto_v_angle) in non-secondary mode | ~ | OK | OK | - | - | DEAD | medium |
 | `weapon-porto.touch.placement_tree` | On-touch portal placement decision tree (in/out/combined red->blue) | ~ | OK | OK | - | OK | live | high |
 | `weapon-porto.touch.portal_spawn` | Realise the placed portal (Portal_SpawnIn/OutPortalAtTrace) as a warpzone *(intended)* | ~ | ? | ? | ? | - | live | medium |
 | `weapon-porto.lifecycle.lifetime_self_destruct` | Lifetime self-destruct + success cleanup (Think/Fail/Success) | ~ | OK | OK | - | OK | live | high |
-| `weapon-porto.lifecycle.death_reset_cleanup` | Death / respawn cleanup (W_Porto_Remove, wr_resetplayer) | MISS | MISS | MISS | - | - | - | high |
+| `weapon-porto.lifecycle.death_reset_cleanup` | Death / respawn cleanup (W_Porto_Remove, wr_resetplayer) | OK | OK | OK | - | - | ~ | high |
 | `weapon-porto.presentation.trajectory_preview` | Portal-aim trajectory preview (Porto_Draw reflecting red/blue polyline) | MISS | MISS | MISS | MISS | - | - | high |
 | `weapon-porto.presentation.projectile_render` | Projectile render (PORTO_RED / PORTO_BLUE, trail, scale) | OK | OK | - | ~ | - | ? | medium |
 | `weapon-porto.fire.strength_boost` | Strength powerup launch-speed boost | OK | OK | - | - | - | live | high |
+| `weapon-porto.bot.aim` | Bot aim/fire decision (wr_aim) | MISS | MISS | MISS | - | - | - | high |
+| `weapon-porto.bot.dodge_projectile` | Bot dodge rating on the launched porto projectile | MISS | MISS | - | - | - | - | high |
 
-### `weapon-rifle` (weapon) — 16 features
+### `weapon-rifle` (weapon) — 17 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -2697,7 +2706,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `rifle.fire.bullet` | W_Rifle_FireBullet — fire `shots` piercing hitscan bullets (damage/spread/penetration/falloff/force/headshot/accuracy) | OK | OK | - | - | - | live | high |
 | `rifle.ammo.decrease` | W_DecreaseAmmo — clip-aware ammo consumption per shot | OK | OK | - | - | - | live | high |
 | `rifle.reload` | Reload system (wr_reload, forced reload, secondary `reload` flag, wr_checkammo clip term) | OK | OK | OK | OK | OK | live | high |
-| `rifle.deathtype.secondary` | HITTYPE_SECONDARY deathtype flag → secondary kill-message variant (hail) | ~ | - | - | ~ | - | live | high |
+| `rifle.deathtype.secondary` | HITTYPE_SECONDARY deathtype flag → secondary kill-message variant (hail) | OK | - | - | OK | - | live | high |
 | `rifle.fx.muzzleflash` | Muzzle flash effect (EFFECT_RIFLE_MUZZLEFLASH) | OK | OK | - | OK | - | live | medium |
 | `rifle.fx.impact` | Bullet impact effect (EFFECT_RIFLE_IMPACT == machinegun_impact) | OK | OK | - | ~ | - | live | medium |
 | `rifle.fx.tracer` | Bullet tracer trail (EFFECT_RIFLE primary / EFFECT_RIFLE_WEAK secondary) | OK | OK | - | OK | - | live | high |
@@ -2707,6 +2716,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `rifle.zoom_eye` | Zoom-from-eye shot re-aim (BUTTON_ZOOM/ZOOMSCRIPT) + wr_zoom/wr_zoomdir | ~ | - | - | ~ | - | ~ | medium |
 | `rifle.bot_aim` | Bot aim — riflemooth primary/secondary toggle (wr_aim) | OK | OK | - | - | - | live | high |
 | `rifle.resetplayer` | wr_resetplayer — burst accumulator reset on spawn *(intended)* | OK | OK | OK | - | - | live | high |
+| `rifle.suicidemessage` | wr_suicidemessage — weapon-suicide obituary (WEAPON_THINKING_WITH_PORTALS easter egg) | OK | OK | - | OK | - | live | high |
 
 ### `weapon-seeker` (weapon) — 11 features
 
@@ -2717,7 +2727,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-seeker.missile_fire` | Homing missile launch (spawn, velocity, ammo, muzzle) | OK | OK | OK | ~ | OK | live | high |
 | `weapon-seeker.missile_homing` | Missile think: accel/decel speed clamp + turnrate homing + smart world-avoidance | OK | OK | OK | - | - | live | high |
 | `weapon-seeker.missile_explode` | Missile explosion (radius damage + knockback + impact cue) | OK | OK | OK | OK | OK | live | high |
-| `weapon-seeker.missile_shootdown` | Shootable missile (HP pool, self-damage x0.25, explode-on-death) | ~ | ~ | - | - | - | live | high |
+| `weapon-seeker.missile_shootdown` | Shootable missile (HP pool, self-damage x0.25, explode-on-death) | OK | OK | - | - | - | live | high |
 | `weapon-seeker.flac_fire` | FLAC secondary spray (f_diff muzzle cycle, spread, short-lived explosive) | OK | OK | OK | OK | OK | live | high |
 | `weapon-seeker.tag_fire` | Tag dart launch + on-touch tracker registration (with dedupe + impact cue) | OK | OK | OK | ~ | OK | live | high |
 | `weapon-seeker.tag_shootdown` | Shootable tag dart (HP pool, explode-on-death) | OK | OK | - | - | OK | live | high |
@@ -2729,19 +2739,19 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `weapon-shotgun.primary.attack_fan` | Primary fire: 12-pellet hitscan fan | OK | OK | OK | - | - | live | high |
-| `weapon-shotgun.primary.spread_style` | Pellet spread distribution (hitscan spread style) | ~ | ~ | - | - | - | live | high |
+| `weapon-shotgun.primary.spread_style` | Pellet spread distribution (hitscan spread style) | OK | OK | - | - | - | live | high |
 | `weapon-shotgun.primary.firebullet_falloff` | Per-pellet trace: falloff + solid penetration + force | OK | ~ | - | - | - | live | high |
-| `weapon-shotgun.primary.setupshot_recoil` | W_SetupShot: trueaim, muzzle offset, recoil punch | OK | ~ | - | OK | - | live | medium |
+| `weapon-shotgun.primary.setupshot_recoil` | W_SetupShot: trueaim, muzzle offset, recoil punch | OK | OK | - | OK | - | live | high |
 | `weapon-shotgun.primary.refire_timer` | Primary refire gating via private shotgun_primarytime | OK | OK | OK | - | - | live | high |
-| `weapon-shotgun.secondary.melee_swing` | Secondary melee slap (swing-arc damage + multihit) | ~ | ~ | ~ | - | - | live | high |
-| `weapon-shotgun.secondary.melee_routing` | Secondary routing: melee gate + out-of-ammo auto-melee + alt triple-shot | ~ | ~ | OK | - | - | ~ | high |
+| `weapon-shotgun.secondary.melee_swing` | Secondary melee slap (swing-arc damage + multihit + multi-frame think) | OK | OK | OK | - | - | live | high |
+| `weapon-shotgun.secondary.melee_routing` | Secondary routing: melee gate + out-of-ammo auto-melee + alt triple-shot | ~ | OK | OK | - | - | ~ | high |
 | `weapon-shotgun.ammo.checkammo_reload` | Ammo checks + reload | OK | ~ | OK | - | - | live | medium |
-| `weapon-shotgun.bot.wr_aim` | Bot aim: melee vs ranged selection | MISS | MISS | - | - | - | - | high |
+| `weapon-shotgun.bot.wr_aim` | Bot aim: melee vs ranged selection | OK | OK | - | - | - | live | high |
 | `weapon-shotgun.fx.muzzle_impact` | Muzzleflash + bullet-impact particle *(intended)* | ~ | - | - | ~ | - | live | medium |
-| `weapon-shotgun.fx.impact_ricochet_audio` | Impact ricochet sound + melee woosh + casing eject | ~ | ~ | MISS | OK | ~ | live | high |
+| `weapon-shotgun.fx.impact_ricochet_audio` | Impact ricochet sound + melee woosh + casing eject | OK | OK | OK | OK | OK | live | high |
 | `weapon-shotgun.notify.killmessage` | Obituary: slap vs blast kill message + suicide line | OK | OK | - | - | - | live | high |
 
-### `weapon-tuba` (weapon) — 10 features
+### `weapon-tuba` (weapon) — 11 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -2749,14 +2759,15 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-tuba.deathtype.instrument_bits` | Death-type carries instrument/secondary bits for obituary selection | OK | OK | - | OK | - | live | high |
 | `weapon-tuba.reload.instrument_cycle` | Reload cycles instrument Tuba -> Accordion -> Klein Bottle | OK | OK | OK | ~ | - | live | high |
 | `weapon-tuba.pitch.getnote` | Note pitch selection from movement state *(intended)* | ~ | ~ | - | - | - | live | high |
-| `weapon-tuba.note.sustain_lifetime` | Sustained note entity: spawn, refresh-on-hold, off-on-release, keep-alive | ~ | ~ | ~ | - | - | ~ | high |
+| `weapon-tuba.note.sustain_lifetime` | Sustained note entity: spawn, refresh-on-hold, off-on-release, keep-alive | OK | ~ | ~ | - | - | live | high |
 | `weapon-tuba.fx.smoke_ring` | Per-note smoke ring puff | OK | OK | OK | ~ | - | live | high |
-| `weapon-tuba.audio.note_sound` | Sustained pitched note sound (loop sample, pitch step, fade, attenuation, networking) | ~ | MISS | MISS | ~ | ~ | ~ | high |
-| `weapon-tuba.melody.recognition` | Melody recognition + magic-ear chat (W_Tuba_HasPlayed / lastnotes) | MISS | MISS | MISS | MISS | - | - | high |
+| `weapon-tuba.audio.note_sound` | Sustained pitched note sound (loop sample, pitch step, fade, attenuation, networking) | ~ | ~ | MISS | ~ | ~ | live | high |
+| `weapon-tuba.melody.recognition` | Melody recognition + magic-ear chat (W_Tuba_HasPlayed / lastnotes) | OK | OK | OK | ~ | - | live | high |
 | `weapon-tuba.setup.instrument_reset` | wr_setup resets instrument to Tuba on (re)equip | OK | OK | - | - | - | live | high |
 | `weapon-tuba.identity.metadata` | Weapon identity, flags, models, ammo, bot aim, registration/liveness | OK | OK | - | ~ | - | live | high |
+| `weapon-tuba.describe.guide` | Weapon-guide describe text (MENUQC) | - | - | - | MISS | - | - | high |
 
-### `weapon-vaporizer` (weapon) — 12 features
+### `weapon-vaporizer` (weapon) — 13 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -2765,13 +2776,14 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-vaporizer.primary.fire_sound` | Primary fire sound (minstanexfire) | OK | OK | OK | - | OK | live | high |
 | `weapon-vaporizer.primary.beam_particle` | Rail beam visual (cylindric beam) + muzzle flash | OK | ~ | OK | ~ | - | live | high |
 | `weapon-vaporizer.primary.impact_effect` | Beam impact effect + sound (VORTEX_IMPACT / neximpact) | OK | OK | - | OK | OK | live | high |
-| `weapon-vaporizer.primary.achievements` | Yoda (airshot) + Impressive (every-2nd headshot) announcer achievements | MISS | MISS | - | MISS | MISS | - | high |
+| `weapon-vaporizer.primary.achievements` | Yoda (airshot) + Impressive (every-2nd headshot) announcer achievements | OK | OK | - | OK | OK | live | high |
 | `weapon-vaporizer.secondary.blaster_laser` | Secondary Blaster knockback laser (plain instagib) | OK | OK | OK | - | - | ~ | high |
 | `weapon-vaporizer.rm.primary_explosion` | Rocket-Minsta: explosion at the rail endpoint | OK | OK | - | MISS | - | ? | high |
-| `weapon-vaporizer.rm.laser_barrage` | Rocket-Minsta: secondary bouncing-laser fan + rapid-fire ladder | ~ | OK | ~ | ~ | OK | ? | high |
-| `weapon-vaporizer.ammo.consumption` | Ammo consumption + checkammo + reload | ~ | ~ | - | - | - | ~ | high |
-| `weapon-vaporizer.instagib.integration` | InstaGib integration (start loadout, armor-as-lives, gib, blaster nullify, bleed-out) | OK | OK | OK | ~ | ~ | live | high |
+| `weapon-vaporizer.rm.laser_barrage` | Rocket-Minsta: secondary bouncing-laser fan + rapid-fire ladder | OK | OK | OK | ~ | OK | ? | high |
+| `weapon-vaporizer.ammo.consumption` | Ammo consumption + checkammo + reload + bot aim | OK | ~ | - | - | - | ~ | high |
+| `weapon-vaporizer.instagib.integration` | InstaGib integration (start loadout, armor-as-lives, gib, blaster nullify, bleed-out) | OK | OK | OK | OK | OK | live | high |
 | `weapon-vaporizer.messages.kill_suicide` | Kill / suicide death messages (WEAPON_VAPORIZER_MURDER / WEAPON_THINKING_WITH_PORTALS) | OK | OK | - | - | - | ? | medium |
+| `weapon-vaporizer.client.reticle` | Client reticle / zoom (wr_init precache + wr_zoom button_zoom) | MISS | MISS | - | MISS | - | - | medium |
 
 ### `weapon-vortex` (weapon) — 14 features
 
@@ -2784,7 +2796,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-vortex.attack.charge_damage` | Charge-scaled damage/force + charge consume on fire | OK | OK | OK | - | - | live | high |
 | `weapon-vortex.attack.railgun_pierce` | Hitscan rail: pierce all targets, exponential falloff dmg+force, stop at world | OK | OK | OK | - | ~ | live | high |
 | `weapon-vortex.attack.overcharge_sound` | Overcharge zap sound when charge > charge_animlimit | OK | OK | OK | - | OK | live | high |
-| `weapon-vortex.fx.beam` | Charged beam particle (EFFECT_VORTEX_BEAM) with charge-scale + team tint | ~ | ~ | OK | ~ | - | live | high |
+| `weapon-vortex.fx.beam` | Charged beam particle (EFFECT_VORTEX_BEAM) with charge-scale + team tint | OK | ~ | OK | ~ | - | live | high |
 | `weapon-vortex.fx.charge_glow` | Player-model charge glow (wr_glow / vortex_glowcolor) | MISS | - | - | MISS | - | - | high |
 | `weapon-vortex.fx.impact_muzzle` | Impact burst + muzzle flash | OK | OK | OK | OK | OK | live | medium |
 | `weapon-vortex.hud.charge_ring` | Charge ring (+ chargepool inner ring) on the crosshair | OK | OK | OK | OK | - | ~ | high |

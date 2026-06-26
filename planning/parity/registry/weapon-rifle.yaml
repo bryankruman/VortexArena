@@ -1,29 +1,31 @@
 unit: weapon-rifle
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
-# Re-audited 2026-06-22 (post Wave-1/2 + second-pass fix-up + Wave-5 FULL, branch
-# claude/parity-port-waves, HEAD 023ba70): adversarial re-verification of all 16 rows against current
-# Base+port. Wave-5's full run DID touch the rifle this time: two previously open rows are now CLOSED.
-#   * rifle.bot_aim: Rifle now overrides BotWantsSecondary (Rifle.cs:133) implementing wr_aim's
-#     riflemooth toggle (force-primary>1000u, 1% flip-to-sec, 3% flip-back). LIVE: BotBrain.cs:354
-#     calls w.BotWantsSecondary(...) and routes the result onto ButtonAttack2 (BotBrain.cs:357,403).
-#     The per-bot SecondaryToggle/Random01 carry via BotAimState (GameplayBases.cs:24). FIX.
-#   * rifle.resetplayer: Rifle now overrides WrSetup (Rifle.cs:118) seeding RifleAccumulator =
-#     time - bursttime, dispatched live by WeaponFireDriver.cs:281 on switch-in. Same documented
-#     switch-in-vs-respawn convention as Vortex/OkNex/Tuba (intended port-wide divergence). FIX.
-# Still open (2): deathtype.secondary (one-line FireBullet deathTag omission — UNCHANGED), zoom_eye
-# (no server zoom button — UNCHANGED). NO regressions: Wave-5's WeaponFiring.cs change added LagComp
-# antilag bracketing to SetupShot's trueaim traces (improvement, rifle-neutral); all rifle constants
-# + call paths intact. The deathTag channel (FireBullet deathTag param + ApplyDamage override +
-# DeathMessages rifle HAIL/PIERCING branch DeathMessages.cs:82-85) re-confirmed ready & unused by rifle.
+last_audited: "2026-06-25"
+# Re-audited 2026-06-25 (drift check, branch claude/parity-port-waves, HEAD f86d947): adversarial
+# re-verification of all 16 rows + Base re-scan. ONE FIX since the 2026-06-22 baseline:
+#   * rifle.deathtype.secondary (was the baseline's #1 worst gap): NOW CLOSED. Rifle.FireBullets
+#     builds deathTag = WithHitType(FromWeapon(NetName), Secondary) for the secondary (Rifle.cs:310-312)
+#     and passes it into WeaponFiring.FireBullet (Rifle.cs:320, deathTag: param). FireBullet routes it
+#     to ApplyDamage (WeaponFiring.cs:362) so the kill carries HITTYPE_SECONDARY; DeathMessages.cs:82-85
+#     emits WEAPON_RIFLE_MURDER_HAIL for the secondary. The *_PIERCING (BOUNCE) variants stay unused —
+#     VERIFIED FAITHFUL: Base fireBullet_falloff (tracing.qc:363-537) never sets HITTYPE_BOUNCE on a
+#     bullet either, so HITTYPE_BOUNCE is dead-on-rifle in Base too. logic/presentation partial->faithful.
+# Still open (1): zoom_eye (no server zoom button — UNCHANGED, Rifle.cs:302-304 keeps trueaim origin).
+# NO regressions. bot_aim + resetplayer (closed in Wave-5) re-confirmed live: BotBrain.cs:355 calls
+# BotWantsSecondary; WeaponFireDriver.cs:284 calls WrSetup. audio.ric stays audio:partial (PlayRic->PlayOn
+# still uses default channel not CH_SHOTS) BUT the QC ricochet throttle (prevric 0.25s window + 5% w_random
+# roll, shotgun.qc:404-409) is now faithfully ported in BulletImpactFx (WeaponFiring.cs:547-558) — refined
+# the row's gap/notes accordingly. NEW UNMAPPED: rifle.suicidemessage (wr_suicidemessage ->
+# WEAPON_THINKING_WITH_PORTALS), faithfully covered by DeathMessages.SelectSuicideMessage default — row added.
 summary:
-  feature_count: 16
+  feature_count: 17
   worst_gaps:
-    - "Secondary kills still print WEAPON_RIFLE_MURDER not *_MURDER_HAIL: FireBullets calls FireBullet (Rifle.cs:311-313) with NO deathTag. The deathTag channel that carries HITTYPE_SECONDARY EXISTS (WeaponFiring.FireBullet deathTag param cs:239 -> ApplyDamage cs:319,667 -> DeathTypes tag) and MachineGun's snipe secondary already uses it; DeathMessages.cs:82-85 has the faithful RIFLE HAIL/PIERCING branch keyed off sec/bounce. So this remains a ONE-LINE omission in the rifle's secondary fire path, not a missing API. Worst remaining gap."
-    - "Zoom-from-eye shot re-aim still not ported (headless server has no zoom button); low impact, only matters while scoped (Rifle.cs:303-304 keeps the trueaim origin)"
-    - "(now CLOSED) Rifle bot wr_aim: BotWantsSecondary (Rifle.cs:133) ports the riflemooth pri/sec toggle and is LIVE via BotBrain.cs:354 -> ButtonAttack2; bots now use the rifle secondary at close range"
-    - "(now CLOSED) wr_resetplayer: WrSetup (Rifle.cs:118) seeds rifle_accumulator = time-bursttime, dispatched live by WeaponFireDriver.cs:281 (switch-in, the established Vortex/OkNex convention)"
+    - "Zoom-from-eye shot re-aim still not ported (headless server has no zoom button); low impact, only matters while scoped (Rifle.cs:302-304 keeps the trueaim origin)"
+    - "MINOR: ricochet ping plays on the RIC sound's default channel, not Base's CH_SHOTS (rifle.audio.ric) — inaudible in practice"
+    - "(now CLOSED) Secondary HAIL kill message: Rifle.FireBullets builds deathTag=WithHitType(FromWeapon,Secondary) (Rifle.cs:310-312) and passes it to FireBullet (Rifle.cs:320) -> ApplyDamage; secondary kills print WEAPON_RIFLE_MURDER_HAIL. *_PIERCING variants correctly unused (Base never sets HITTYPE_BOUNCE on bullets either)"
+    - "(closed Wave-5) Rifle bot wr_aim: BotWantsSecondary (Rifle.cs:133) ports the riflemooth pri/sec toggle, LIVE via BotBrain.cs:355 -> ButtonAttack2"
+    - "(closed Wave-5) wr_resetplayer: WrSetup (Rifle.cs:118) seeds rifle_accumulator = time-bursttime, dispatched live by WeaponFireDriver.cs:284 (switch-in, the established Vortex/OkNex convention)"
     - "(closed prior pass) Brass casing ejection networks + renders the real bouncing brass via registered CASING_BULLET/CASING_SHELL Effects -> WriteEffect -> EffectSystem.Spawn -> SpawnCasing"
 features:
   - id: rifle.identity
@@ -247,26 +249,27 @@ features:
       - "common/weapons/weapon/rifle.qc:W_Rifle_Attack2 (m_id | HITTYPE_SECONDARY)"
       - "common/weapons/weapon/rifle.qc:wr_killmessage"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (deathType = RegistryId, cs:305; FireBullet call cs:311-313)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (deathTag = WithHitType(FromWeapon(NetName), Secondary) for secondary, cs:310-312; passed to FireBullet cs:320)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:81-85 (rifle case)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireBullet/ApplyDamage (deathTag channel, cs:239/319/667)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireBullet/ApplyDamage (deathTag channel, cs:270/362/719)"
     constants:
-      - { name: "secondary deathtype flag", base: "m_id | HITTYPE_SECONDARY", port: "RegistryId only, no deathTag passed", match: false }
+      - { name: "secondary deathtype flag", base: "m_id | HITTYPE_SECONDARY", port: "deathTag = WithHitType(FromWeapon, Secondary) for secondary fire", match: true }
+      - { name: "*_PIERCING (HITTYPE_BOUNCE) variant", base: "wr_killmessage BOUNCE branch", port: "no bounce tag (faithful — Base fireBullet_falloff never sets HITTYPE_BOUNCE on a bullet)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN (UNCHANGED this pass). Secondary rifle kills still print WEAPON_RIFLE_MURDER instead of WEAPON_RIFLE_MURDER_HAIL because Rifle.FireBullets builds deathType=RegistryId (Rifle.cs:305) and calls WeaponFiring.FireBullet (Rifle.cs:311-313) WITHOUT a deathTag. The HITTYPE-carrying channel EXISTS and is wired: WeaponFiring.FireBullet has a `deathTag` param (cs:239) that flows to ApplyDamage (cs:319,667), and MachineGun's mode-0 snipe secondary already uses it. DeathMessages.cs:82-85 has the faithful RIFLE HAIL/PIERCING branch keyed off sec/bounce. So this is a ONE-LINE omission in the rifle's secondary fire path, not a missing API."
+    gaps: []
     verification:
-      - { kind: code, ref: "Rifle.cs:305 deathType=RegistryId; FireBullet call (cs:311-313) passes no deathTag for the secondary; DeathMessages.cs:82-85 keys HAIL off the sec flag and is reachable (the deathTag channel is live & used by MachineGun)", result: fail }
+      - { kind: code, ref: "Rifle.cs:310-312 builds deathTag for secondary; Rifle.cs:320 FireBullet(..., deathTag: deathTag) -> WeaponFiring.cs:362 ApplyDamage(..., deathTag) so the kill carries HITTYPE_SECONDARY; DeathMessages.cs:82-85 emits WEAPON_RIFLE_MURDER_HAIL for sec", result: pass }
+      - { kind: code, ref: "Base tracing.qc:363-537 fireBullet_falloff passes `dtype` through unchanged — never ORs HITTYPE_BOUNCE — so *_PIERCING is dead-on-rifle in Base too; the port omitting the bounce tag is faithful, not a gap", result: pass }
     confidence: high
-    notes: "STILL OPEN, worst remaining gap. The deathTag channel exists and is exercised by MachineGun. The rifle simply needs to build deathTag = WithHitType(FromWeapon(NetName), Secondary) for its secondary fire (and add HITTYPE_BOUNCE handling for the *_PIERCING bounce variants). Cross-ref fx-deathtypes / weapon-machinegun units."
+    notes: "FIX vs baseline (logic partial->faithful, presentation partial->faithful). The baseline's #1 worst gap is closed: the deathTag channel (re-confirmed live & used by MachineGun) now carries the rifle's HITTYPE_SECONDARY so secondary kills print WEAPON_RIFLE_MURDER_HAIL. Verified the *_PIERCING omission is FAITHFUL: Base never sets HITTYPE_BOUNCE on a fireBullet shot, so that DeathMessages branch is unreachable in Base as well. Cross-ref fx-deathtypes / weapon-machinegun units."
 
   - id: rifle.fx.muzzleflash
     name: "Muzzle flash effect (EFFECT_RIFLE_MUZZLEFLASH)"
@@ -410,9 +413,10 @@ features:
     gaps:
       - "MINOR channel mismatch: Base plays SND_RIC_RANDOM on CH_SHOTS; the port's PlayRic->PlayOn uses the RIC sound's default channel hint (Weapon), not CH_SHOTS. Inaudible difference in practice (affects only same-channel sound cutoff), but not byte-faithful."
     verification:
-      - { kind: code, ref: "Rifle.cs:279 BulletImpactFx -> WeaponFiring.cs BulletImpactFx -> SoundSystem.PlayRic -> PickRegistered('RIC') -> PlayOn; RIC1..3 registered (SoundsList.cs:68, weapons/ric*) + ric1-3.ogg present", result: pass }
+      - { kind: code, ref: "Rifle.cs:326 BulletImpactFx -> WeaponFiring.cs:540 BulletImpactFx -> SoundSystem.PlayRic -> PickRegistered('RIC') -> PlayOn; RIC1..3 registered (weapons/ric*) + ric1-3.ogg present", result: pass }
+      - { kind: code, ref: "WeaponFiring.cs:547-558 ports the QC ricochet throttle (shotgun.qc:404-409): prevric 0.25s per-actor window + 5% w_random (Prandom.Float()<0.05) roll, prevric reset on every gate pass", result: pass }
     confidence: high
-    notes: "WAVE-2 FIX: the previously-missing impact ricochet now plays. PlayRic picks a deterministic ric1..3 (Prandom) and routes through the standard live PlayOn sound seam. NOTE: emitted server-side per bullet inside FireBullets (broadcast) rather than CSQC-local like Base; this matches the rifle.fx.impact server-emit divergence. Same fix now also serves the MachineGun. Only residual: CH_SHOTS channel."
+    notes: "Impact ricochet plays via PlayRic (deterministic ric1..3, Prandom) through the live PlayOn seam. Re-verified 2026-06-25: the QC ricochet THROTTLE (prevric 0.25s window + 5% roll, shotgun.qc:404-409) is faithfully ported in BulletImpactFx (cs:547-558) so a multi-pellet/bullet burst doesn't spray overlapping rics. Emitted server-side per bullet (broadcast) rather than CSQC-local like Base; matches the rifle.fx.impact server-emit divergence. Same path serves the MachineGun. Only residual: CH_SHOTS channel."
 
   - id: rifle.casings
     name: "Brass casing ejection (g_casings >= 2)"
@@ -479,7 +483,7 @@ features:
       - "common/weapons/weapon/rifle.qc:wr_aim"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:BotWantsSecondary (cs:133)"
-      - "src/XonoticGodot.Server/Bot/BotBrain.cs:354 (dispatch -> ButtonAttack2)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:355 (dispatch -> ButtonAttack2)"
       - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:BotAimState (cs:24)"
     constants:
       - { name: "to-secondary flip chance", base: "1% (random()<0.01)", port: "ctx.Random01<0.01 (cs:141)", match: true }
@@ -511,7 +515,7 @@ features:
       - "common/weapons/weapon/rifle.qc:wr_resetplayer"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:WrSetup (cs:118)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:281 (newwep.WrSetup on switch-in)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:284 (newwep.WrSetup on switch-in)"
     constants:
       - { name: "accumulator reset", base: "rifle_accumulator = time - bursttime", port: "RifleAccumulator = Api.Clock.Time - BurstTime (cs:120)", match: true }
     status:
@@ -528,3 +532,27 @@ features:
       - { kind: code, ref: "Rifle.cs:118-121 WrSetup sets RifleAccumulator = Api.Clock.Time - BurstTime vs rifle.qc:168-175 wr_resetplayer; WeaponFireDriver.cs:281 calls newwep.WrSetup(player, slot) on equip (same live path Vortex/OkNex/Tuba use)", result: pass }
     confidence: high
     notes: "FIX vs baseline (missing/dead -> faithful/live, intended_divergence for the switch-in-vs-respawn placement). Wave-5 added the Rifle.WrSetup override; RifleAccumulator (EntityWeaponState.cs) is now seeded on equip. Benign in practice at stock bursttime 0. Mirrors the established port-wide convention (Vortex/OkNex charge seed, Tuba instrument reset) of routing wr_resetplayer/wr_setup seeds through the switch-in dispatch."
+
+  - id: rifle.suicidemessage
+    name: "wr_suicidemessage — weapon-suicide obituary (WEAPON_THINKING_WITH_PORTALS easter egg)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/rifle.qc:wr_suicidemessage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:SelectSuicideMessage (cs:115; rifle falls to the default)"
+    constants:
+      - { name: "suicide notification", base: "WEAPON_THINKING_WITH_PORTALS", port: "WEAPON_THINKING_WITH_PORTALS (default case)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "rifle.qc:182-185 wr_suicidemessage returns WEAPON_THINKING_WITH_PORTALS; DeathMessages.SelectSuicideMessage (cs:115) has no rifle case so it returns the shared WEAPON_THINKING_WITH_PORTALS default — identical result", result: pass }
+    confidence: high
+    notes: "NEW ROW (2026-06-25 drift re-scan): the rifle's wr_suicidemessage was a previously-unmapped Base symbol. Like most hitscan weapons the rifle has no custom suicide line and returns the generic WEAPON_THINKING_WITH_PORTALS easter egg (you can't really suicide with a hitscan); the port's SelectSuicideMessage default supplies exactly that, so this is faithful & live with no dedicated rifle code needed. Cross-ref fx-deathtypes."

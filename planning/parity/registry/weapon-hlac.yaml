@@ -1,13 +1,12 @@
 unit: weapon-hlac
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 9
   worst_gaps:
     - "wr_aim (bot projectile-lead aim) still not implemented — bots lead/aim HLAC bolts worse than Base"
     - "bolt client render via CSQCProjectile(PROJECTILE_HLAC) (bolt model/trail) still unverified on the live render path"
-    - "wr_checkammo is reserve-only (no clip-OR term) + forced-reload branch unported; both dormant at default reload_ammo 0 (HLAC ships un-clipped)"
     - "muzzle/impact green->blaster v0.8.6 compat fallback not ported (cosmetic; both green effects are registered)"
 features:
   - id: weapon-hlac.primary.attack
@@ -215,7 +214,7 @@ features:
       - { name: "reload_time", base: "2", port: "2", match: true }
       - { name: "wr_reload ammo floor", base: "min(pri.ammo, sec.ammo)=1", port: "max(1, ReloadingAmmoMin())=1", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -223,13 +222,14 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Port wr_checkammo is reserve-only (cells >= ammo); Base also passes if weapon_load[m_id] >= ammo (clip OR reserve). No observable effect at default reload_ammo 0 (HLAC ships un-clipped). Unchanged by Wave-2."
-      - "Forced-reload branch in wr_think (hlac.qc:163-167) not ported; dormant at default reload_ammo 0. Unchanged by Wave-2."
+    gaps: []
     verification:
-      - { kind: read, ref: "CheckAmmoPrimary/Secondary (Hlac.cs:294,297) reserve-only vs hlac.qc:188-200 (clip OR reserve); WrThink has no forced-reload branch vs hlac.qc:163-167", result: fail }
+      - { kind: read, ref: "CheckAmmoPrimary/Secondary (Hlac.cs:309-316) now resolve `reserve >= ammo || GetWeaponLoad(...) >= ammo` — the clip-OR-reserve term, matching hlac.qc:188-200 (GetResource >= ammo + weapon_load[m_id] >= ammo). Same pattern as Electro/Rifle/Shotgun/Vortex.", result: pass }
+      - { kind: read, ref: "WrThink (Hlac.cs:120-124) now has the forced-reload branch: if (ReloadingAmmo() != 0 && st.ClipLoad < min(Primary.Ammo, Secondary.Ammo)) WrReload + return; mirrors hlac.qc:163-167 (g_balance_hlac_reload_ammo && clip_load < min(pri.ammo,sec.ammo)).", result: pass }
+      - { kind: trace, ref: "HasAmmo dispatch (WeaponFireGate.cs:517) routes the live ammo gate to Hlac.CheckAmmoPrimary/Secondary; ReloadingAmmo()/ReloadingTime() resolve g_balance_hlac_reload_ammo (0) / reload_time (2) via the generic Bal path (WeaponFireGate.cs:408-414).", result: pass }
+      - { kind: value-diff, ref: "reload_ammo 0 / reload_time 2 vs bal-wep-xonotic.cfg:549-550; wr_reload floor = min(pri.ammo 1, sec.ammo 6) = 1 (ReloadingAmmoMin, Hlac.cs:186)", result: pass }
     confidence: high
-    notes: "STILL OPEN (benign at default). Generic base WrReload + SND_RELOAD covers the reload; the clip-OR-reserve ammo term and forced-reload check matter only if reload_ammo is set >0, which is not the shipped default."
+    notes: "WAVE-6+ FIX (both baseline gaps closed; re-verified 2026-06-25). wr_checkammo1/2 now carry the clip-OR-reserve term (GetWeaponLoad), and WrThink has the forced-reload branch. Both still dormant at the shipped default reload_ammo 0 (HLAC un-clipped) but the logic is now bit-faithful to Base if reload_ammo is set >0. Generic base WrReload + SND_RELOAD covers the reload."
 
   - id: weapon-hlac.fx.muzzle_impact
     name: "Muzzle flash, impact effect, fire/impact sounds"

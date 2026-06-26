@@ -1,15 +1,15 @@
 unit: weapon-hagar
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 12
   worst_gaps:
-    - "RESOLVED (Wave-5): the loadable secondary hold-to-charge state machine is now ported and driven live each frame (AttackLoad) — partial 1-3 loads, 0.5s/rocket charge, auto-release after load_hold, abort-on-primary give-back, loadblock gate. Re-verified live: WeaponFireDriver.Frame calls WrThink(Primary) every tick with st.ButtonAttack/ButtonAttack2 set (driver.cs:134,163), AttackLoad runs first inside it."
-    - "RESOLVED (Wave-5): Hagar load/charge audio (SND_HAGAR_LOAD per-rocket tick + SND_HAGAR_BEEP last-rocket/abort/warning beeps) now play from the charge machine."
-    - "RESOLVED (Wave-5): the HUD Hagar load ring now draws — the charge machine writes a live st.HagarLoad; UpdateCrosshairWeaponRings (NetGame.cs:2826, called per-frame at :2302) feeds it to CrosshairPanel.HagarLoad which draws the ring (CrosshairPanel.cs:906)."
-    - "RESOLVED (Wave-5): burst-vs-spray + suicide kill messages now differentiate (Explode passes the HITTYPE-carrying deathtag); the non-loaded bouncing secondary stays correctly load-0-only (matching Base) and now tags HITTYPE_BOUNCE."
-    - "NEW (this audit): the Hagar load-state LIFECYCLE hooks are unported (hagar.load_lifecycle row) — wr_gonethink (release loaded rockets when switching away), wr_playerdeath (release on death if load_releasedeath), wr_resetplayer (clear load on reset), and wr_setup's load give-back. With the charge machine now LIVE this is a real divergence: a player who switches/dies mid-charge keeps ammo deducted with no give-back/release."
+    - "RESOLVED (Wave-5): the loadable secondary hold-to-charge state machine is ported and driven live each frame (AttackLoad) — partial 1-3 loads, 0.5s/rocket charge, auto-release after load_hold, abort-on-primary give-back, loadblock gate. Re-verified live 2026-06-25: WeaponFireDriver.Frame calls WrThink(Primary) every tick with st.ButtonAttack/ButtonAttack2 set (driver.cs:134,163), AttackLoad runs first inside it."
+    - "RESOLVED (Wave-5): Hagar load/charge audio (SND_HAGAR_LOAD per-rocket tick + SND_HAGAR_BEEP last-rocket/abort/warning beeps) play from the charge machine."
+    - "RESOLVED (Wave-5): the HUD Hagar load ring draws — the charge machine writes a live st.HagarLoad; UpdateCrosshairWeaponRings (NetGame.cs:2915) feeds it to CrosshairPanel.HagarLoad which draws the ring (CrosshairPanel.cs:906)."
+    - "FIXED (this 2026-06-25 audit): the load-state LIFECYCLE hooks (hagar.load_lifecycle) are now PORTED and LIVE — WrSetup (Hagar.cs:455, dispatched WeaponFireDriver.cs:284), WrGoneThink (Hagar.cs:470, dispatched WeaponFireDriver.cs:250), WrPlayerDeath (Hagar.cs:483, dispatched DamageSystem.cs:614), WrResetPlayer (Hagar.cs:499, dispatched SpawnSystem.cs:814). The 2026-06-22 'rockets+ammo vanish on switch/death mid-charge' divergence is CLOSED."
+    - "Minor residual: WrPlayerDeath/WrResetPlayer dispatch only on the currently-active weapon (Inventory.CurrentWeapon) — Base wr_resetplayer iterates ALL weaponslots. Equivalent in the single-active-weapon port (load lives only on the held weapon) but narrower than Base."
 features:
   - id: hagar.primary.attack
     name: "Primary rapid-fire straight rocket stream"
@@ -43,9 +43,9 @@ features:
     gaps: []
     verification:
       - { kind: value_diff, ref: "bal-wep-xonotic.cfg:384-394 vs Hagar.Configure", result: pass }
-      - { kind: code_read, ref: "hagar.qc:98-141 vs Hagar.cs:Attack; live via WeaponFireDriver.Frame (GameWorld.cs:1182)", result: pass }
+      - { kind: code_read, ref: "hagar.qc:98-141 vs Hagar.cs:Attack; live via WeaponFireDriver.Frame WrThink(Primary):163", result: pass }
     confidence: high
-    notes: "MOVETYPE_FLY straight rocket, bursts on impact/lifetime/shot-down. Refire 0.16667 enforced by PrepareAttack gate. Muzzle/fire emitted server-side (port convention). Wave-2 added Projectiles.MakeShootable to this rocket — the W_Hagar_Damage shoot-down gate is now applied here (see hagar.damage.shootdown)."
+    notes: "MOVETYPE_FLY straight rocket, bursts on impact/lifetime/shot-down. Refire 0.16667 enforced by PrepareAttack gate. Muzzle/fire emitted server-side (port convention). Projectiles.MakeShootable applies the W_Hagar_Damage shoot-down gate (see hagar.damage.shootdown)."
 
   - id: hagar.secondary.bounce
     name: "Non-loaded secondary: single bouncing rocket"
@@ -74,14 +74,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Reachable only at g_balance_hagar_secondary_load=0 (non-stock) — this matches Base, where stock secondary_load=1 also routes the alt-fire to the load machine and never reaches W_Hagar_Attack2. SecondaryLoad is now cvar-seeded from g_balance_hagar_secondary_load (Wave-5), so a load=0 config genuinely runs AttackBounce/BounceTouch; at stock load=1 it is correctly unreachable in BOTH Base and port."
-      - "FIXED Wave-5: HITTYPE_BOUNCE is now OR'd onto the bounce-rocket deathtype at explode time (BounceDeath when self.Count>0), matching Base W_Hagar_Touch2 — the bounce kill-message variant flag survives."
+      - "Reachable only at g_balance_hagar_secondary_load=0 (non-stock) — this matches Base, where stock secondary_load=1 also routes the alt-fire to the load machine and never reaches W_Hagar_Attack2. SecondaryLoad is cvar-seeded from g_balance_hagar_secondary_load, so a load=0 config genuinely runs AttackBounce/BounceTouch; at stock load=1 it is correctly unreachable in BOTH Base and port."
     verification:
-      - { kind: code_read, ref: "hagar.qc:82-95 W_Hagar_Touch2 vs Hagar.cs:207-220 BounceTouch — now keys ONLY on toucher.takedamage==DAMAGE_AIM, emits HAGAR_BOUNCE, sets angles, clears owner; matches Base", result: pass }
-      - { kind: code_read, ref: "Hagar.cs:64 SecondaryLoad=true (never reassigned) + WrThink:122 gate; bal-wep-xonotic.cfg:406 secondary_load=1 -> AttackBounce unreachable at stock", result: fail }
-      - { kind: code_read, ref: "EffectEmitter.Emit(\"HAGAR_BOUNCE\") at Hagar.cs:217 resolves the registered effect (EffectsList.cs:101) and queues to the live effect Sink", result: pass }
+      - { kind: code_read, ref: "hagar.qc:82-95 W_Hagar_Touch2 vs Hagar.cs:231-248 BounceTouch — keys ONLY on toucher.takedamage==DAMAGE_AIM, emits HAGAR_BOUNCE, sets angles, clears owner, ORs HITTYPE_BOUNCE at explode time; matches Base", result: pass }
+      - { kind: code_read, ref: "Hagar.cs:127 loadableSecondary gate + WrThink:147; bal-wep-xonotic.cfg:406 secondary_load=1 -> AttackBounce unreachable at stock (matches Base)", result: pass }
+      - { kind: code_read, ref: "EffectEmitter.Emit(\"HAGAR_BOUNCE\") at Hagar.cs:244 resolves the registered effect (EffectsList.cs:110) and queues to the live effect Sink", result: pass }
     confidence: high
-    notes: "FIXED in Wave-2: BounceTouch now (1) emits EFFECT_HAGAR_BOUNCE on the bounce, (2) keys only on DAMAGE_AIM (the spurious EntFlags.Client OR removed), and (3) sets owner=NULL so a bounced rocket can hurt its firer — all bit-faithful to Base W_Hagar_Touch2. The MakeShootable shoot-down gate was also added. The math+FX are now faithful, but the path is STILL DEAD at the stock balance every public match uses (load=1); reachable only at non-stock load=0."
+    notes: "Bit-faithful to Base W_Hagar_Touch2: emits EFFECT_HAGAR_BOUNCE on the bounce, keys only on DAMAGE_AIM, sets owner=NULL so a bounced rocket can hurt its firer, ORs HITTYPE_BOUNCE. MakeShootable shoot-down gate applied. DEAD at the stock balance every public match uses (load=1), exactly like Base; reachable only at non-stock load=0."
 
   - id: hagar.secondary.load_release
     name: "Loaded secondary salvo (release fan + per-shot bias spread)"
@@ -109,12 +108,12 @@ features:
     divergence_rationale: null
     gaps:
       - "load_animtime (0.2) post-release anim time is folded into the secondary refire gate (AnimtimeFor returns 0; release schedules become-READY after Secondary.Refire) — cosmetic anim-only."
-      - "Salvo damage matches per-rocket sec.damage but the W_SetupShot accuracy/recoil pass uses sec.damage*shots in Base (cosmetic accuracy denominator)."
+      - "Salvo W_SetupShot accuracy/recoil pass uses sec.damage*shots in Base (cosmetic accuracy denominator); the port's SetupShot does not scale the recoil arg by shots."
     verification:
-      - { kind: code_read, ref: "hagar.qc:193-259 vs Hagar.cs:AttackLoadRelease — now fires the ACTUAL charged count (st.HagarLoad, 1..load_max), advances the shared refire timer, sets hagar_loadstep + clears hagar_load", result: pass }
+      - { kind: code_read, ref: "hagar.qc:193-259 vs Hagar.cs:346-413 AttackLoadRelease — fires the ACTUAL charged count (st.HagarLoad, 1..load_max), advances the shared refire timer, sets HagarLoadStep + clears HagarLoad", result: pass }
       - { kind: value_diff, ref: "bal-wep-xonotic.cfg:407-415 load_* vs Hagar.Configure", result: pass }
     confidence: high
-    notes: "FIXED in Wave-5: the release now fires the real charged count (a partial 1-3 load releases 1-3 rockets, not a forced load_max salvo), driven by the live charge machine (hagar.secondary.load_charge_machine). Fan + bias-spread per-shot math remains bit-for-bit faithful (W_CalculateSpreadPattern pattern 1 + spread_pershot)."
+    notes: "Release fires the real charged count (a partial 1-3 load releases 1-3 rockets, not a forced load_max salvo), driven by the live charge machine. Fan + bias-spread per-shot math bit-for-bit faithful (W_CalculateSpreadPattern pattern 1 + spread_pershot)."
 
   - id: hagar.secondary.load_charge_machine
     name: "Hold-to-charge incremental load state machine"
@@ -139,15 +138,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "load_animtime (0.2) post-release anim time is folded into the secondary refire gate (the Hagar has no separate animtime cvar in the port; release schedules become-READY after Secondary.Refire) — cosmetic anim-only."
-      - "Re-verified 2026-06-22: the load==0 out-of-ammo branch (hagar.qc:357-363 wr_checkammo1+2 -> W_SwitchToOtherWeapon when neither has ammo) is NOT ported — the port's AttackLoad else-branch only resets the beep/warning flags. Minor: out-of-ammo auto-switch from the empty-hand upkeep tick is dropped (the player keeps the empty Hagar instead of auto-switching)."
+      - "load_animtime (0.2) post-release anim time is folded into the secondary refire gate (no separate animtime cvar in the port; release schedules become-READY after Secondary.Refire) — cosmetic anim-only."
+      - "Re-verified 2026-06-25: the load==0 out-of-ammo branch (hagar.qc:357-363 wr_checkammo1+2 -> W_SwitchToOtherWeapon when neither has ammo) is NOT ported — the port's AttackLoad else-branch only resets the beep/warning flags. Minor: out-of-ammo auto-switch from the empty-hand upkeep tick is dropped (the player keeps the empty Hagar instead of auto-switching)."
     verification:
-      - { kind: code_read, ref: "hagar.qc:261-365 W_Hagar_Attack2_Load vs Hagar.cs:254-343 AttackLoad — per-rocket load@load_speed, last/abort/warning beeps, auto-release@load_hold, abort-on-primary give-back, loadblock gate all ported; ammo give-back on abort uses GiveResource(ammo*load); RE-VERIFIED LIVE 2026-06-22", result: pass }
-      - { kind: code_read, ref: "WeaponFireDriver.Frame: SetButtons(st,atck,atck2) at :134 then WrThink(Primary) at :163 EVERY tick (ClearButtons after at :166); AttackLoad reads st.ButtonAttack/ButtonAttack2 live — held-button state confirmed present", result: pass }
-      - { kind: code_read, ref: "WrThink(Primary) runs AttackLoad every tick (QC 'must always run each frame'); driver supplies per-tick st.ButtonAttack/ButtonAttack2 (WeaponFireDriver.cs:163,134) — the earlier 'headless layer lacks held-button state' rationale no longer holds", result: pass }
-      - { kind: grep, ref: "HagarLoad/HagarLoadStep/HagarLoadBlock/HagarLoadBeep/HagarWarning now read+written in AttackLoad/AttackLoadRelease", result: pass }
+      - { kind: code_read, ref: "hagar.qc:261-365 W_Hagar_Attack2_Load vs Hagar.cs:254-343 AttackLoad — per-rocket load@load_speed, last/abort/warning beeps, auto-release@load_hold, abort-on-primary give-back, loadblock gate all ported; ammo give-back on abort uses GiveResource(ammo*load)", result: pass }
+      - { kind: code_read, ref: "WeaponFireDriver.Frame: SetButtons(st,atck,atck2) at :134 then WrThink(Primary) at :163 EVERY tick (ClearButtons after at :166); AttackLoad reads st.ButtonAttack/ButtonAttack2 live", result: pass }
+      - { kind: grep, ref: "HagarLoad/HagarLoadStep/HagarLoadBlock/HagarLoadBeep/HagarWarning read+written in AttackLoad/AttackLoadRelease", result: pass }
     confidence: high
-    notes: "FIXED in Wave-5. The incremental hold-to-charge machine is now ported and driven live each frame: one rocket per load_speed while ATCK2 held (max load_max), per-rocket load tick + last/abort/warning beeps, auto-release after load_hold, abort-on-primary give-back (load_abort), and the must-release loadblock gate. Key enabler: WeaponFireDriver already carries per-tick held-button state, so the prior 'summarized salvo' divergence is closed."
+    notes: "The incremental hold-to-charge machine is ported and driven live each frame: one rocket per load_speed while ATCK2 held (max load_max), per-rocket load tick + last/abort/warning beeps, auto-release after load_hold, abort-on-primary give-back (load_abort), and the must-release loadblock gate. WeaponFireDriver carries per-tick held-button state."
 
   - id: hagar.secondary.load_audio
     name: "Load / beep / warning charge sounds"
@@ -168,9 +166,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "AttackLoad plays weapons/hagar_load.wav (SND_HAGAR_LOAD, VOL_BASE*0.8, CH_WEAPON_A) per loaded rocket, and weapons/hagar_beep.wav (SND_HAGAR_BEEP, VOL_BASE) on last-rocket/abort/warning — assets hagar_load.ogg/hagar_beep.ogg present", result: pass }
+      - { kind: code_read, ref: "AttackLoad plays weapons/hagar_load.wav (SND_HAGAR_LOAD, VOL_BASE*0.8, CH_WEAPON) per loaded rocket, and weapons/hagar_beep.wav (SND_HAGAR_BEEP, VOL_BASE) on last-rocket/abort/warning — assets present", result: pass }
     confidence: high
-    notes: "FIXED in Wave-5 alongside the charge machine. SND_HAGAR_LOAD plays on each per-rocket load tick; SND_HAGAR_BEEP plays on the last-rocket-loaded beep, the abort beep, and the about-to-auto-release warning beep (all the QC W_Hagar_Attack2_Load sound() calls)."
+    notes: "SND_HAGAR_LOAD plays on each per-rocket load tick; SND_HAGAR_BEEP plays on the last-rocket-loaded beep, the abort beep, and the about-to-auto-release warning beep (all the QC W_Hagar_Attack2_Load sound() calls)."
 
   - id: hagar.damage.shootdown
     name: "Shootable rocket -> burst when shot (W_Hagar_Damage)"
@@ -196,15 +194,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "exception value hardcoded to 1f on all three spawn paths; Base W_Hagar_Damage computes a DYNAMIC is_linkexplode (load_linkexplode=0 for same-owner secondary-load link, else -1). MOOT at stock g_projectiles_damage=-2 (both Base and port reject ALL projectile damage, so no rocket is shootable). Diverges only at non-stock modes -1/0/1, where the port would let any rocket be shot down while Base would not (the stock exception list is electro-combo/ML-mines, not general hagar shoot-down)."
-      - "this.angles = vectoangles(this.velocity) re-orient on taking (non-lethal) damage is not ported (cosmetic; the rocket already self-aligns its angles to velocity each frame only on bounce)."
+      - "exception value hardcoded to 1f on all three spawn paths; Base W_Hagar_Damage computes a DYNAMIC is_linkexplode (load_linkexplode=0 for same-owner secondary-load link, else -1). MOOT at stock g_projectiles_damage=-2 (both Base and port reject ALL projectile damage, so no rocket is shootable). Diverges only at non-stock modes -1/0/1."
+      - "this.angles = vectoangles(this.velocity) re-orient on taking (non-lethal) damage is not ported (cosmetic; the rocket already self-aligns its angles to velocity only on bounce)."
       - "damageforcescale (knockback applied to the rocket when shot) not modeled; moot at default 0."
     verification:
-      - { kind: code_read, ref: "hagar.qc:53-74 W_Hagar_Damage vs Projectiles.MakeShootable/ShootDown (Hagar.cs:167,196,255): recursion guard + W_CheckProjectileDamage gate + RES_HEALTH subtract + detonate only at hp<=0 all faithful", result: pass }
-      - { kind: code_read, ref: "live path: missile.TakeDamage=Yes + GtEventDamage installed by MakeShootable; DamageSystem.EventDamage (DamageSystem.cs:331-334) dispatches non-player GtEventDamage from the live Damage() apply path (DamageSystem.cs:280)", result: pass }
-      - { kind: value_diff, ref: "balance-xonotic.cfg:202 g_projectiles_damage -2; bal-wep-xonotic.cfg:410 load_linkexplode 0 — exception:1 hardcode diverges but is masked at stock", result: partial }
+      - { kind: code_read, ref: "hagar.qc:53-74 W_Hagar_Damage vs Projectiles.MakeShootable (Hagar.cs:183,215,393): recursion guard + W_CheckProjectileDamage gate + RES_HEALTH subtract + detonate only at hp<=0 all faithful", result: pass }
+      - { kind: code_read, ref: "live path: missile.TakeDamage=Yes + ProjectileDamage callback installed by MakeShootable; DamageSystem dispatches non-player damage from the live Damage() apply path", result: pass }
+      - { kind: value_diff, ref: "balance-xonotic.cfg g_projectiles_damage -2; bal-wep-xonotic.cfg:410 load_linkexplode 0 — exception:1 hardcode diverges but is masked at stock", result: partial }
     confidence: high
-    notes: "MAJOR FIX in Wave-2 (was logic:partial). Previously the rocket detonated on ANY incoming damage with no gate and no HP accounting. Now Projectiles.MakeShootable installs the faithful W_CheckProjectileDamage gate + RES_HEALTH subtraction, and only detonates at hp<=0 (a non-lethal graze survives). Wired live via Entity.GtEventDamage dispatched by DamageSystem.EventDamage. Residual: exception:1 hardcode instead of the dynamic is_linkexplode — harmless at stock -2 but not bit-faithful at non-default g_projectiles_damage."
+    notes: "Projectiles.MakeShootable installs the faithful W_CheckProjectileDamage gate + RES_HEALTH subtraction, and only detonates at hp<=0 (a non-lethal graze survives). Residual: exception:1 hardcode instead of the dynamic is_linkexplode — harmless at stock -2 but not bit-faithful at non-default g_projectiles_damage."
 
   - id: hagar.explosion.radiusdamage
     name: "Explosion: radius damage + knockback"
@@ -234,7 +232,7 @@ features:
     verification:
       - { kind: code_read, ref: "hagar.qc:7-46 -> WeaponSplash.RadiusDamage (faithful RadiusDamageForSource port)", result: pass }
     confidence: high
-    notes: "UNCHANGED by Wave-2. No bounce protection, matching Base comment. LOS sampling, force falloff and nearest-point metric all in the shared splash helper."
+    notes: "No bounce protection, matching Base comment. LOS sampling, force falloff and nearest-point metric all in the shared splash helper."
 
   - id: hagar.fx.muzzle_explode_trail
     name: "Muzzle flash, explosion particle, rocket trail, impact sound, bounce spark"
@@ -247,7 +245,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:Explode"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:BounceTouch"
       - "game/client/ProjectileCatalog.cs:Hagar"
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:101"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:110"
     constants:
       - { name: "rocket_model_scale", base: "0.75", port: "0.75", match: true }
     status:
@@ -261,11 +259,11 @@ features:
     divergence_rationale: "Muzzleflash, fire sound and explosion are emitted server-side and networked rather than in CSQC wr_impacteffect; this is the port-wide presentation convention and is visually/aurally equivalent."
     gaps: []
     verification:
-      - { kind: code_read, ref: "ProjectileCatalog Hagar/HagarBouncing RocketMesh scale 0.75 + HAGAR_ROCKET trail; Explode emits HAGAR_EXPLODE", result: pass }
-      - { kind: code_read, ref: "EFFECT_HAGAR_BOUNCE now emitted in BounceTouch (Hagar.cs:217) via the live EffectEmitter Sink (registered EffectsList.cs:101)", result: pass }
+      - { kind: code_read, ref: "ProjectileCatalog Hagar/HagarBouncing RocketMesh scale 0.75 + HAGAR_ROCKET trail; Explode emits HAGAR_EXPLODE (Hagar.cs:450)", result: pass }
+      - { kind: code_read, ref: "EFFECT_HAGAR_BOUNCE emitted in BounceTouch (Hagar.cs:244) via the live EffectEmitter Sink (registered EffectsList.cs:110)", result: pass }
       - { kind: code_read, ref: "FLACEXP1..3 == hagexp1..3 (SoundsList.cs:77) so FlacExp() realizes SND_HAGEXP_RANDOM", result: pass }
     confidence: high
-    notes: "FIX in Wave-2: the previously-open 'EFFECT_HAGAR_BOUNCE not emitted on bounce' gap is now closed (BounceTouch emits it) — though that emission only reaches the live path at non-stock load=0 (see hagar.secondary.bounce liveness). Random hagexp1/2/3 explosion sound faithful (despite the FLACEXP alias name). HAGAR_MUZZLEFLASH on every fire path."
+    notes: "EFFECT_HAGAR_BOUNCE emitted on bounce (only reaches the live path at non-stock load=0, see hagar.secondary.bounce). Random hagexp1/2/3 explosion sound faithful (despite the FLACEXP alias name). HAGAR_MUZZLEFLASH on every fire path."
 
   - id: hagar.hud.load_ring
     name: "Crosshair Hagar load ring"
@@ -287,9 +285,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "AttackLoad writes WeaponSlotState.HagarLoad (1..load_max while charging, 0 on release); NetGame.cs:2853 feeds it to CrosshairPanel.HagarLoad; the ring draws while HagarLoad>0 (CrosshairPanel.cs:906-913)", result: pass }
+      - { kind: code_read, ref: "AttackLoad writes WeaponSlotState.HagarLoad (1..load_max while charging, 0 on release); NetGame.cs:2915 feeds it to CrosshairPanel.HagarLoad; the ring draws while HagarLoad>0 (CrosshairPanel.cs:906-909)", result: pass }
     confidence: high
-    notes: "FIXED in Wave-5. Now that the charge machine drives a live st.HagarLoad, the already-present NetGame feed (x.HagarLoad = st.HagarLoad) and CrosshairPanel draw code render the load ring 1/4..4/4 while charging."
+    notes: "The charge machine drives a live st.HagarLoad; the NetGame feed (x.HagarLoad = st.HagarLoad, x.HagarLoadMax = hg.Secondary.LoadMax at NetGame.cs:2915-2916) and CrosshairPanel draw code render the load ring 1/4..4/4 while charging."
 
   - id: hagar.identity
     name: "Weapon identity, flags, models, pickup/switch balance"
@@ -320,7 +318,7 @@ features:
     verification:
       - { kind: code_read, ref: "hagar.qh:20-86 vs Hagar ctor + WeaponFireGate defaults", result: pass }
     confidence: high
-    notes: "UNCHANGED by Wave-2. All identity attributes and models (h_hagar.iqm / v_hagar.md3 / g_hagar.md3) match."
+    notes: "All identity attributes and models (h_hagar.iqm / v_hagar.md3 / g_hagar.md3) match."
 
   - id: hagar.notifications.killmessages
     name: "Burst-vs-spray kill message + suicide message"
@@ -345,9 +343,9 @@ features:
     gaps: []
     verification:
       - { kind: code_read, ref: "DeathMessages.SelectKillMessage(\"hagar\",dt) returns MURDER_BURST when HITTYPE_SECONDARY else MURDER_SPRAY; SelectSuicideMessage returns WEAPON_HAGAR_SUICIDE — matches hagar.qc:478-489", result: pass }
-      - { kind: code_read, ref: "Hagar.Explode now passes deathTag (FromWeapon(hagar) | HITTYPE_SECONDARY for the loaded burst + bouncing secondary, + HITTYPE_BOUNCE once bounced) into WeaponSplash.RadiusDamage; primary = no tag = spray", result: pass }
+      - { kind: code_read, ref: "Hagar.Explode passes deathTag (FromWeapon(hagar) | HITTYPE_SECONDARY for the loaded burst + bouncing secondary, + HITTYPE_BOUNCE once bounced) into WeaponSplash.RadiusDamage; primary = no tag = spray", result: pass }
     confidence: high
-    notes: "FIXED in Wave-5. The central DeathMessages selector already had faithful hagar branches; the missing piece was Hagar.Explode passing the HITTYPE-carrying deathtag so the obituary can tell BURST (secondary) from SPRAY (primary) and tag a bounce kill. WEAPON_HAGAR_SUICIDE is selected by SelectSuicideMessage on any hagar self-death."
+    notes: "DeathMessages selector has faithful hagar branches; Hagar.Explode passes the HITTYPE-carrying deathtag so the obituary tells BURST (secondary) from SPRAY (primary) and tags a bounce kill. WEAPON_HAGAR_SUICIDE on any hagar self-death."
 
   - id: hagar.load_lifecycle
     name: "Load-state lifecycle: release/give-back on switch-away, death, reset, equip"
@@ -357,24 +355,31 @@ features:
       - "common/weapons/weapon/hagar.qc:wr_playerdeath"
       - "common/weapons/weapon/hagar.qc:wr_resetplayer"
       - "common/weapons/weapon/hagar.qc:wr_setup"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:WrSetup"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:WrGoneThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:WrPlayerDeath"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:WrResetPlayer"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:250 (WrGoneThink on switch-drop)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:284 (WrSetup on switch-in)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:614 (WrPlayerDeath on death)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:814 (WrResetPlayer on respawn)"
     constants:
-      - { name: "secondary_load_releasedeath", base: "1", port: "not ported", match: false }
+      - { name: "secondary_load_releasedeath", base: "0", port: "0 (Bal default, read in WrPlayerDeath)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
-      audio: missing
-      liveness: na
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "wr_gonethink (hagar.qc:422-430): when the player switches AWAY from the Hagar with rockets loaded, Base sets WS_READY and calls W_Hagar_Attack2_Load_Release to fire the charged salvo. NOT ported — the driver has no wr_gonethink dispatch, so a switch-away mid-charge silently drops the loaded rockets (ammo already deducted, never fired, never given back)."
-      - "wr_playerdeath (hagar.qc:465-470): on death with rockets loaded AND load_releasedeath=1 (stock), Base releases the salvo. NOT ported."
-      - "wr_resetplayer (hagar.qc:456-463): clears hagar_load on every weaponslot when the player is reset (round restart). NOT ported — stale HagarLoad could persist on the slot state across a reset."
-      - "wr_setup (hagar.qc:432-440): on equip, clears hagar_loadblock and gives back ammo for any residual hagar_load. Hagar does NOT override WrSetup (the driver DOES call WrSetup on switch-in, WeaponFireDriver.cs:281, and other weapons override it — so the seam exists, the Hagar just doesn't use it)."
+      - "WrPlayerDeath / WrResetPlayer dispatch only on the currently-active weapon (Inventory.CurrentWeapon), whereas Base wr_resetplayer iterates ALL weaponslots clearing hagar_load on each. Equivalent in the single-active-weapon port (load only exists on the held Hagar) but narrower than Base's all-slot sweep — latent once dual-wield lands."
     verification:
-      - { kind: code_read, ref: "grep WrGoneThink/WrPlayerDeath/WrResetPlayer/WrSetup in Hagar.cs -> none; driver only dispatches WrSetup (WeaponFireDriver.cs:281). No gonethink/playerdeath/resetplayer dispatch exists anywhere in the port weapon driver.", result: fail }
+      - { kind: code_read, ref: "Hagar.cs:455-504 WrSetup/WrGoneThink/WrPlayerDeath/WrResetPlayer match hagar.qc:422-470 (loadblock clear + ammo give-back on equip; WS_READY + release on switch-away; release on death if releasedeath; clear load on reset)", result: pass }
+      - { kind: code_read, ref: "Live dispatch: WrGoneThink WeaponFireDriver.cs:250 (oldwep.WrGoneThink in the switch drop phase); WrSetup :284 (newwep.WrSetup on raise); WrPlayerDeath DamageSystem.cs:614 (on player death); WrResetPlayer SpawnSystem.cs:814 (on respawn)", result: pass }
+      - { kind: value_diff, ref: "bal-wep-xonotic.cfg:412 secondary_load_releasedeath 0 — Bal default in WrPlayerDeath is 0, matches; release fires only at non-stock releasedeath=1", result: pass }
     confidence: high
-    notes: "NEW gap surfaced by this 2026-06-22 re-audit (was not a registry row pre-Wave-5 because the charge machine that creates load-state was itself dead). Now that AttackLoad genuinely accumulates st.HagarLoad with per-rocket ammo deducted, the missing lifecycle hooks are a real, reproducible divergence: switch-away or die mid-charge and the rockets+ammo vanish instead of firing/refunding. Low player-facing severity (edge timing) but bit-unfaithful. Fix needs a wr_gonethink/wr_playerdeath/wr_resetplayer dispatch in WeaponFireDriver plus a Hagar WrSetup override; AttackLoadRelease already exists to call."
+    notes: "FIXED THIS AUDIT (2026-06-25; was logic/values/audio:missing, port_refs:[], all-dimensions-dead). All four lifecycle hooks are now ported AND dispatched live by the driver/damage/spawn systems. A switch-away or death mid-charge now releases the salvo (or, on equip/reset, gives the ammo back and clears load) instead of silently dropping the rockets+ammo. NOTE: the prior baseline recorded releasedeath base as '1' — that was WRONG; bal-wep-xonotic.cfg:412 sets it to 0, so the stock behavior is NO release on death (the port's Bal default 0 is correct)."

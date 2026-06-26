@@ -1,16 +1,16 @@
 unit: weapon-vortex
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-24"
+last_audited: "2026-06-25"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Charge ring beam tint / scale still blocked: vortex_charge is networked to the local HUD only on the listen-server HOST path (NetGame.UpdateCrosshairWeaponRings reads LocalServerPlayer's slot state); a PURE remote client has no charge stat, so the ring is host-only and the beam/glow tint+scale still have no client-side charge value cross-client. The charge ring itself now fills on the host."
-    - "Beam is STILL not charge-scaled (sqrt(charge) alpha/spacing) and not team-color-tinted (vortex_glowcolor) — looks identical at every charge level and ignores team colors. Vortex.cs:312 emits VORTEX_BEAM as a plain trail with no charge/color args (UNCHANGED). Also blocked by charge not being networked cross-client."
-    - "Player-model charge glow (wr_glow / vortex_glowcolor) STILL not ported — the Wave-3 CsqcModelEffects glow changes are generic role/powerup forced-EF_*/glowmod overrides, NOT vortex-charge-driven; carrier model does not brighten as charge builds."
-    - "No nexwhoosh beam fly-by sound to nearby players — FireRailgunBullet still defers the whoosh (WeaponFiring.cs:358)."
+    - "Beam is STILL not charge-scaled (sqrt(charge) alpha/fade/trail-spacing): a barely-charged shot and a full shot look identical. The team-color tint (vortex_glowcolor) and the cl_particles_oldvortexbeam legacy-beam switch are now BOTH ported (EmitBeam in Vortex.cs), but EffectRequest carries no per-emission alpha so the sqrt(charge) brightness modulation has no port-side hook."
+    - "Charge ring + beam tint still partly blocked: vortex_charge is networked to the local HUD only on the listen-server HOST path (NetGame.UpdateCrosshairWeaponRings reads LocalServerPlayer's slot state); a PURE remote client has no charge stat. The beam team-tint is now computed server-side from the firer's charge+team so it broadcasts to all clients, but the per-recipient cl_tracers_teamcolor nuance is collapsed to a single broadcast emit."
+    - "Player-model charge glow (wr_glow / vortex_glowcolor) STILL not ported — VortexGlowColor exists in Vortex.cs but is only consumed by the beam tint; no player-model glow feeder. Carrier model does not brighten as charge builds."
+    - "No nexwhoosh beam fly-by sound to nearby players — FireRailgunBullet still defers the whoosh (WeaponFiring.cs:426 comment)."
   notable_fixes_this_audit:
-    - "FIXED weapon-vortex.hud.charge_ring (stub/dead -> faithful/partial-live, HOST path): Wave-5 added NetGame.UpdateCrosshairWeaponRings (NetGame.cs:2826), called every frame at NetGame.cs:2302, which now WRITES CrosshairPanel.ChargeFraction = st.VortexCharge and ChargePool = st.VortexChargePoolAmmo for the active vortex slot off LocalServerPlayer. The previously-grep-conclusive dead feeder now has a live writer; with stock charge sitting at 0.5->1.0 the crosshair charge ring genuinely fills. Liveness is `partial` (host/listen-server only — a pure remote client still has no charge data)."
+    - "FIXED weapon-vortex.fx.beam (partial -> mostly faithful): Vortex.cs now has a full EmitBeam method (replacing the old plain `EffectEmitter.Emit(\"VORTEX_BEAM\", ...)`): (1) selects VORTEX_BEAM_OLD when cl_particles_oldvortexbeam!=0 (legacy-beam gap FIXED); (2) computes vortex_glowcolor team tint via VortexGlowColor + ColormapPaletteColor and passes rgb as colorMin/colorMax through the EffectEmitter.Emit(effect,origin,vel,count,colorMin,colorMax,except) overload (team-tint gap FIXED, carried in EffectRequest). VORTEX_BEAM_OLD is now registered AND selected (EffectsList.cs:86). Only the sqrt(charge) alpha/fade scaling remains unported (no per-emission alpha field)."
 features:
   - id: weapon-vortex.charge.regen_passive
     name: "Passive charge regen toward charge_limit"
@@ -220,10 +220,10 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:VORTEX_BEAM"
     constants:
       - { name: "beam alpha/spacing scale", base: "sqrt(charge)", port: "none (constant)", match: false }
-      - { name: "cl_tracers_teamcolor tint", base: "vortex_glowcolor(colors, charge)", port: "none", match: false }
-      - { name: "cl_particles_oldvortexbeam", base: "selects EFFECT_VORTEX_BEAM_OLD", port: "registered but not selected", match: false }
+      - { name: "cl_tracers_teamcolor tint", base: "vortex_glowcolor(colors, charge)", port: "vortex_glowcolor(actor.Team, max(0.25, sqrt(charge)))", match: true }
+      - { name: "cl_particles_oldvortexbeam", base: "selects EFFECT_VORTEX_BEAM_OLD", port: "registered AND selected (EmitBeam)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: partial
       timing: faithful
       presentation: partial
@@ -232,13 +232,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Beam is emitted at a constant intensity: alpha/fade/trail-spacing are NOT scaled by sqrt(charge), so a barely-charged shot and a full shot look identical."
-      - "In team modes (cl_tracers_teamcolor), the beam is NOT tinted to the shooter's team color via vortex_glowcolor — it always uses the default beam color."
-      - "cl_particles_oldvortexbeam does not switch to the legacy EFFECT_VORTEX_BEAM_OLD beam."
+      - "Beam is emitted at a constant intensity: alpha/fade/trail-spacing are NOT scaled by sqrt(charge), so a barely-charged shot and a full shot look identical. EffectRequest carries colorMin/colorMax but no per-emission alpha, so the sqrt(charge) brightness modulation has no port-side hook."
+      - "Team tint is computed server-side from the FIRER's charge+team and broadcast as a single colour (EmitBeam), so the per-recipient cl_tracers_teamcolor / cl_particles_oldvortexbeam client-cvar nuance is collapsed to one broadcast emit (the broadcast reads the host's cvars)."
     verification:
-      - { kind: codetrace, ref: "Vortex.cs:312 EffectEmitter.Emit('VORTEX_BEAM', shot.Origin, impTr.EndPos, 0) — STILL no charge/color args after Wave-2; EffectsList registers it as a plain trail", result: fail }
+      - { kind: codetrace, ref: "Vortex.cs:312 now calls EmitBeam(actor, shot.Origin, impTr.EndPos, charge); EmitBeam (Vortex.cs:331-360) selects VORTEX_BEAM_OLD when cl_particles_oldvortexbeam!=0, and on (teamplay&&cl_tracers_teamcolor==1)||==2 computes vortex_glowcolor(actor.Team, max(0.25, sqrt(charge))) and emits via Emit(effect,origin,endpos,0,rgb,rgb). VORTEX_BEAM_OLD registered at EffectsList.cs:86.", result: pass }
+      - { kind: codetrace, ref: "EffectEmitter.Emit(Effect,origin,vel,count,colorMin,colorMax,except) (EffectEmitter.cs:205) carries colorMin/colorMax into EffectRequest — the team tint is genuinely plumbed, not a dead literal. No alpha field exists, so the sqrt(charge) scaling is still unported.", result: fail }
     confidence: high
-    notes: "UNCHANGED THIS AUDIT (Vortex.cs:312 still emits VORTEX_BEAM as a plain trail with no charge/color args). Beam IS drawn and broadcast (EffectNetSink), so the wire is live; the charge-driven visual modulation and team tint are still missing. Root cause: charge level is server-only (EntityWeaponState) and only networked to the HOST HUD (the Wave-5 charge-ring feeder), not to every client — any port-side cross-client tint/scale needs the charge value sent to clients first. Same blocker as the missing charge glow."
+    notes: "FIXED THIS AUDIT (presentation/logic improved): the Wave-6 EmitBeam port added the team-color tint (vortex_glowcolor → colorMin/colorMax) and the cl_particles_oldvortexbeam legacy-beam switch — both previously-recorded gaps are now closed. The beam is computed server-side from the firer's charge+team and broadcast, so the tint reaches all clients (no per-client charge stat needed for the colour). The ONE residual defect is the sqrt(charge) alpha/fade/spacing modulation: EffectRequest has no alpha channel, so values+presentation stay `partial`; logic is now faithful (branching + color derivation fully ported)."
 
   - id: weapon-vortex.fx.charge_glow
     name: "Player-model charge glow (wr_glow / vortex_glowcolor)"
