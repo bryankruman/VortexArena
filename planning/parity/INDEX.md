@@ -1,6 +1,6 @@
 # Parity Index
 
-_Generated 2026-06-25 from 154 units, 2017 features._
+_Generated 2026-06-25 from 154 units, 2020 features._
 
 Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liveness `live`/`DEAD`/`~`/`?`.
 
@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1583 | 174 | 17 | 239 | 3 | 1 |
-| values | 0 | 1495 | 149 | 200 | 156 | 0 | 17 |
-| timing | 0 | 958 | 108 | 868 | 63 | 0 | 20 |
-| presentation | 0 | 387 | 243 | 1142 | 238 | 0 | 7 |
-| audio | 0 | 239 | 42 | 1674 | 56 | 0 | 6 |
-| liveness | 15 | 0 | 0 | 178 | 156 | 0 | 13 |
+| logic | 0 | 1604 | 164 | 17 | 230 | 4 | 1 |
+| values | 0 | 1523 | 138 | 199 | 144 | 0 | 16 |
+| timing | 0 | 971 | 100 | 868 | 61 | 0 | 20 |
+| presentation | 0 | 401 | 235 | 1143 | 234 | 0 | 7 |
+| audio | 0 | 240 | 41 | 1677 | 56 | 0 | 6 |
+| liveness | 16 | 0 | 0 | 168 | 154 | 0 | 13 |
 
 ## Features by unit
 
@@ -85,17 +85,17 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `cl-centerprint.ring.add_replace` | Message ring + add / replace-by-cpid | OK | OK | OK | OK | - | live | high |
 | `cl-centerprint.feed.msg_center` | MSG_CENTER notification feed → panel *(intended)* | OK | OK | OK | OK | - | live | high |
-| `cl-centerprint.countdown.count_token` | ^COUNT countdown decrement | ~ | ~ | ~ | OK | - | live | high |
-| `cl-centerprint.fade.in_out` | Per-message fade in / out | OK | ~ | ~ | ~ | - | live | high |
+| `cl-centerprint.countdown.count_token` | ^COUNT countdown decrement | OK | OK | OK | OK | - | live | high |
+| `cl-centerprint.fade.in_out` | Per-message fade in / out | OK | OK | OK | OK | - | live | high |
 | `cl-centerprint.fade.subsequent` | Subsequent-message two-pass progressive fade | OK | OK | OK | OK | - | live | high |
-| `cl-centerprint.layout.draw` | Layout: flip / align / wrap / ^BOLD / color codes / font scales | OK | ~ | - | OK | - | live | high |
+| `cl-centerprint.layout.draw` | Layout: flip / align / wrap / ^BOLD / color codes / font scales | OK | OK | - | OK | - | live | high |
 | `cl-centerprint.kill.group` | centerprint_Kill — graceful group fade-out | OK | OK | OK | OK | - | live | high |
 | `cl-centerprint.kill.all_remote` | MSG_CENTER_KILL — remote group / all kill from server | OK | OK | OK | OK | - | live | high |
-| `cl-centerprint.title.gametype` | Gametype title line (centerprint_SetTitle + Announcer driver) | OK | ~ | OK | OK | - | live | high |
+| `cl-centerprint.title.gametype` | Gametype title line (centerprint_SetTitle + Announcer driver) | OK | OK | OK | OK | - | live | high |
 | `cl-centerprint.title.duel` | Duel title 'left vs right' (centerprint_SetDuelTitle + Announcer_Duel) | OK | OK | OK | OK | - | live | high |
 | `cl-centerprint.feed.engine_builtin` | Raw engine centerprint() builtin → panel (map/trigger/door/item/target_print text) | OK | - | - | OK | OK | live | high |
 | `cl-centerprint.feed.chat_tell` | Server chat 'tell'/private-message centerprint (cmsg/sourcecmsg) | OK | OK | - | OK | - | live | high |
-| `cl-centerprint.config.preview` | HUD-config live preview messages + title | MISS | - | - | MISS | - | - | medium |
+| `cl-centerprint.config.preview` | HUD-config live preview messages + title | OK | OK | OK | OK | - | live | high |
 
 ### `cl-crosshair` (client) — 17 features
 
@@ -143,10 +143,10 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-hud.engine.registry_and_order` | Panel registry, z-order, panel-order cvar | OK | OK | - | ~ | - | live | high |
 | `cl-hud.engine.loadcvars` | Per-frame cvar-driven layout (HUD_Panel_LoadCvars) | OK | OK | OK | OK | - | live | high |
 | `cl-hud.engine.skin_border` | 9-slice skin border (draw_BorderPicture) | OK | OK | - | ~ | - | live | medium |
-| `cl-hud.engine.progressbar` | Progress-bar primitive (HUD_Panel_DrawProgressBar) | ~ | ~ | - | ~ | - | live | high |
-| `cl-hud.engine.num_color` | Value tint gradient (HUD_Get_Num_Color) | ~ | ~ | ~ | ~ | - | live | high |
+| `cl-hud.engine.progressbar` | Progress-bar primitive (HUD_Panel_DrawProgressBar) | OK | OK | - | ~ | - | live | high |
+| `cl-hud.engine.num_color` | Value tint gradient (HUD_Get_Num_Color) | OK | OK | OK | OK | - | live | high |
 | `cl-hud.engine.dynamic_shake` | Damage-keyed whole-HUD shake (Hud_Dynamic_Frame shake) | OK | OK | OK | OK | - | live | high |
-| `cl-hud.engine.dynamic_follow` | HUD sway with viewmodel (hud_dynamic_follow) | MISS | MISS | MISS | MISS | - | - | high |
+| `cl-hud.engine.dynamic_follow` | HUD sway with viewmodel (hud_dynamic_follow) | OK | OK | OK | OK | - | live | high |
 | `cl-hud.engine.dock` | HUD dock background (hud_dock) | OK | OK | - | OK | - | live | high |
 | `cl-hud.engine.configure_mode` | HUD configure-mode editor (hud_config.qc) | OK | OK | ? | OK | - | live | medium |
 | `cl-hud.panel.weapons` | Weapons panel (#0) | OK | OK | ? | ~ | - | live | medium |
@@ -155,10 +155,10 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-hud.panel.healtharmor` | Health/armor panel (#3) | OK | OK | OK | ~ | - | live | high |
 | `cl-hud.panel.notify` | Notify / kill-feed panel (#4) | OK | OK | OK | OK | - | live | high |
 | `cl-hud.panel.timer` | Timer panel (#5) | OK | ? | OK | OK | - | live | medium |
-| `cl-hud.panel.radar` | Radar / minimap panel (#6) | ~ | ? | - | ~ | - | ~ | medium |
+| `cl-hud.panel.radar` | Radar / minimap panel (#6) | OK | OK | - | ~ | - | ~ | medium |
 | `cl-hud.panel.score` | Score overlay panel (#7) | OK | OK | - | OK | - | live | high |
 | `cl-hud.panel.racetimer` | Race timer panel (#8) | OK | OK | OK | OK | - | live | high |
-| `cl-hud.panel.vote` | Vote panel (#9) | OK | ~ | OK | OK | - | live | high |
+| `cl-hud.panel.vote` | Vote panel (#9) | OK | OK | OK | OK | - | live | high |
 | `cl-hud.panel.modicons` | Mod icons panel (#10) | ~ | ? | ? | ~ | - | live | medium |
 | `cl-hud.panel.pressedkeys` | Pressed-keys panel (#11) | OK | ? | - | ~ | - | ~ | low |
 | `cl-hud.panel.chat` | Chat panel (#12) *(intended)* | ~ | - | ~ | OK | - | live | high |
@@ -187,7 +187,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-scoreboard.field.formatting` | Per-field value formatting (ScoreString/frags/kdr/sum/dmg) | ~ | OK | - | ~ | - | live | high |
 | `cl-scoreboard.field.ping` | Ping column value + color bands *(intended)* | ~ | ~ | - | ~ | - | DEAD | high |
 | `cl-scoreboard.field.packetloss` | Packet-loss (pl) column | OK | OK | - | OK | - | live | high |
-| `cl-scoreboard.field.name_icons` | Name-cell icons (player color / ready / handicap / ignored / wants-join) | MISS | MISS | MISS | MISS | - | - | high |
+| `cl-scoreboard.field.name_icons` | Name-cell icons (player color / ready / handicap / ignored / wants-join) | ~ | ~ | ~ | ~ | - | ~ | high |
 | `cl-scoreboard.sort.players` | Player row sort (primary/secondary/registry order) | OK | OK | - | OK | - | live | high |
 | `cl-scoreboard.teams.grouping_totals` | Team sections + per-team totals | OK | ~ | - | ~ | - | live | high |
 | `cl-scoreboard.row.highlights` | Row highlights (stripe / self / eliminated) | OK | OK | - | OK | - | live | high |
@@ -207,7 +207,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `cl-shownames.core.master_enable` | Master enable + per-client iteration | OK | OK | OK | OK | - | live | high |
-| `cl-shownames.gate.team_enemy` | Team / enemy visibility gate | ~ | OK | - | - | - | live | high |
+| `cl-shownames.gate.team_enemy` | Team / enemy visibility gate | OK | OK | - | - | - | live | high |
 | `cl-shownames.gate.self_spectatee` | Own-tag in chase + spectatee-switch window | OK | OK | OK | ~ | - | ~ | high |
 | `cl-shownames.los.traceline` | Line-of-sight occlusion test *(intended)* | ~ | OK | - | - | - | live | high |
 | `cl-shownames.fade.ramp` | Six-branch fade ramp (dead/blocked/offscreen/overlap/team/enemy) | OK | OK | OK | OK | - | live | high |
@@ -216,27 +216,28 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-shownames.distance.fade` | Distance fade + hard cull | OK | OK | - | OK | - | live | high |
 | `cl-shownames.resize.distance` | Distance resize (shrink, floor 0.5) | OK | OK | - | OK | - | live | high |
 | `cl-shownames.status.bar` | Teammate health/armor status bar | OK | OK | - | ~ | - | live | medium |
-| `cl-shownames.name.decolorize` | Name draw + decolorize + width-truncation | ~ | OK | - | ~ | - | live | high |
+| `cl-shownames.name.decolorize` | Name draw + decolorize + width-truncation | OK | OK | - | ~ | - | live | high |
 | `cl-shownames.alpha.entcs_getalpha` | entcs_GetAlpha model-alpha factor + ShowNames_Draw mutator hook | OK | OK | - | OK | - | live | high |
-| `cl-shownames.entcs.private_healtharmor` | entcs private-slice gating of health/armor (enemy zeroing) | ~ | - | - | OK | - | live | medium |
+| `cl-shownames.entcs.private_healtharmor` | entcs private-slice gating of health/armor (enemy zeroing) | OK | OK | - | OK | - | live | high |
 
-### `cl-teamradar` (client) — 13 features
+### `cl-teamradar` (client) — 14 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `cl-teamradar.transform.coords` | World/texcoord/2D coordinate transforms | OK | ~ | - | OK | - | live | high |
+| `cl-teamradar.transform.coords` | World/texcoord/2D coordinate transforms | OK | OK | - | OK | - | live | high |
 | `cl-teamradar.background.minimap` | Minimap background image (gfx/<map>_radar / _mini) | OK | OK | - | OK | - | live | medium |
 | `cl-teamradar.blip.player` | Team-colored player facing-arrow blip | OK | OK | - | OK | - | live | high |
 | `cl-teamradar.blip.enumeration` | entcs player enumeration (all players, local last) | OK | OK | - | OK | - | live | high |
-| `cl-teamradar.icon.objective` | Objective radar icons (CTF flags / DOM / KH / waypoints) | OK | ~ | - | ~ | - | live | high |
-| `cl-teamradar.icon.ping` | Ping pulse rings (gfx/teamradar_ping, teamradar_times) | MISS | MISS | MISS | MISS | - | - | high |
+| `cl-teamradar.icon.objective` | Objective radar icons (CTF flags / DOM / KH / waypoints) | OK | OK | - | OK | - | live | high |
+| `cl-teamradar.icon.ping` | Ping pulse rings (gfx/teamradar_ping, teamradar_times) | OK | OK | OK | OK | - | live | high |
 | `cl-teamradar.links.onslaught` | Onslaught radar links (control-point connection lines) | MISS | MISS | MISS | MISS | - | - | high |
 | `cl-teamradar.maximized.map` | Maximized fullscreen tactical radar (m bind) | MISS | MISS | MISS | MISS | - | - | high |
 | `cl-teamradar.maximized.click` | Clickable radar: ONS spawn-point select + teleport, input/mouse/ESC | MISS | MISS | MISS | MISS | - | - | high |
 | `cl-teamradar.cvar.rotation` | Rotation modes (player-aligned vs cardinal lock) | OK | OK | - | OK | - | live | high |
 | `cl-teamradar.cvar.zoomscale` | Zoom / scale blend (bigsize vs normalsize) | ~ | ~ | - | ~ | - | live | high |
-| `cl-teamradar.cvar.defaults` | cvar registration + defaults / panel enable + visibility | ~ | ~ | - | ~ | - | ~ | high |
+| `cl-teamradar.cvar.defaults` | cvar registration + defaults / panel enable + visibility | OK | OK | - | OK | - | ~ | high |
 | `cl-teamradar.mutator.hook` | TeamRadar_Draw mutator hook (allow extra blips on radar) | MISS | - | - | MISS | - | - | medium |
+| `cl-teamradar.cvar.dynamichud` | dynamichud scaling toggle + cvar export to skin | stub | OK | - | MISS | - | DEAD | medium |
 
 ### `cl-view` (client) — 21 features
 
@@ -245,16 +246,16 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-view.zoom.fov_state_machine` | Zoom / FOV state machine (current_viewzoom integration, 0.75 frustum, sensitivity) | OK | OK | OK | OK | - | live | high |
 | `cl-view.zoom.spawn_zoom` | Spawn-zoom (zoom out from 1/factor on respawn) | OK | OK | OK | OK | - | live | high |
 | `cl-view.zoom.weapon_zoom` | Weapon zoom fold-in (Vortex secondary zoom) | OK | OK | OK | OK | - | live | medium |
-| `cl-view.zoom.velocity_zoom` | Velocity-based FOV zoom (cl_velocityzoom) | MISS | MISS | MISS | MISS | - | - | high |
-| `cl-view.zoom.zoom_scroll` | Zoom-scroll (mousewheel adjusts zoom factor while zooming) | MISS | MISS | MISS | MISS | - | - | high |
-| `cl-view.zoom.zoomscript_buttonstatus` | Zoomscript auto-zoom + zoom-button management (View_CheckButtonStatus) | ~ | ~ | - | - | - | ~ | high |
+| `cl-view.zoom.velocity_zoom` | Velocity-based FOV zoom (cl_velocityzoom) | OK | OK | OK | OK | - | live | high |
+| `cl-view.zoom.zoom_scroll` | Zoom-scroll (mousewheel adjusts zoom factor while zooming) | OK | OK | OK | OK | - | live | high |
+| `cl-view.zoom.zoomscript_buttonstatus` | Zoomscript auto-zoom + zoom-button management (View_CheckButtonStatus) | OK | OK | - | - | - | live | high |
 | `cl-view.chase.event_death_cam` | Event / death chase camera (cl_eventchase_death corpse-settle pull-back) | OK | OK | OK | OK | - | live | high |
 | `cl-view.chase.classic_thirdperson` | Classic chase_active third-person + spectator camera (chase_back/up/front/overhead; View_SpectatorCamera) | ~ | OK | OK | ~ | - | ~ | high |
 | `cl-view.kick.punch_angle` | Punch-angle recoil kick (view angle, networked + decayed) | OK | OK | OK | OK | - | live | high |
 | `cl-view.kick.punch_vector` | Punch-vector recoil kick (view origin) | OK | OK | OK | OK | - | live | high |
-| `cl-view.bob.view_bob` | View bobbing (vertical cl_bob, horizontal cl_bob2, fall-bob cl_bobfall) | MISS | MISS | MISS | MISS | - | - | high |
-| `cl-view.roll.view_roll` | View roll when strafing (cl_rollangle / CalcRoll) | MISS | MISS | MISS | MISS | - | - | high |
-| `cl-view.tilt.death_idle` | Death tilt (v_deathtilt) + idle view-wave (v_idlescale) | MISS | MISS | MISS | MISS | - | - | high |
+| `cl-view.bob.view_bob` | View bobbing (vertical cl_bob, horizontal cl_bob2, fall-bob cl_bobfall) | OK | OK | OK | OK | - | live | high |
+| `cl-view.roll.view_roll` | View roll when strafing (cl_rollangle / CalcRoll) | OK | OK | OK | OK | - | live | high |
+| `cl-view.tilt.death_idle` | Death tilt (v_deathtilt) + idle view-wave (v_idlescale) | OK | OK | OK | OK | - | live | high |
 | `cl-view.smooth.stair_viewheight` | Stair + viewheight smoothing (stairsmoothz glide + viewheightavg blend) *(intended)* | OK | OK | OK | OK | - | ~ | high |
 | `cl-view.screen.damage_flash` | Damage red screen flash (HUD_Damage) | OK | OK | OK | ~ | - | live | high |
 | `cl-view.screen.liquid_tint` | Liquid screen tint (HUD_Contents) | OK | OK | OK | OK | - | live | high |
@@ -264,22 +265,23 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-view.viewmodel.sway` | Viewmodel sway (cl_followmodel / cl_leanmodel / cl_bobmodel) | OK | OK | OK | OK | - | live | high |
 | `cl-view.demo.free_camera_lockview_ortho` | Demo free camera + lockview + orthoview + viewloc + FPS report | MISS | MISS | MISS | MISS | - | - | high |
 
-### `cl-viewmodel` (client) — 12 features
+### `cl-viewmodel` (client) — 13 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `cl-viewmodel.model.select_and_rig` | View-model entity + model select (invisible-hand vs full-rig), rebuild on weapon change | OK | OK | OK | OK | - | live | high |
 | `cl-viewmodel.anim.networked_frames` | Networked weapon fire/idle/reload animation (wframe temp entity) | ~ | MISS | MISS | ~ | - | ~ | high |
-| `cl-viewmodel.model.skin_colormap_glow_effects` | Per-child skin / team colormap / glowmod / EF_NODEPTHTEST / cheap effects mask | MISS | MISS | - | MISS | - | - | high |
-| `cl-viewmodel.alpha.viewmodel_alpha` | View-model alpha (cl_viewmodel_alpha / _alpha_min, vehicle/dead/intermission/chase hide) | ~ | MISS | - | ~ | - | ~ | high |
-| `cl-viewmodel.align.gunalign_gunoffset` | Shot-origin alignment (cl_gunalign 1/2/3/4) + cl_gunoffset | ~ | ~ | - | ~ | - | ~ | high |
+| `cl-viewmodel.model.skin_colormap_glow_effects` | Per-child skin / team colormap / glowmod / EF_NODEPTHTEST / cheap effects mask | ~ | ~ | - | ~ | - | live | high |
+| `cl-viewmodel.alpha.viewmodel_alpha` | View-model alpha (cl_viewmodel_alpha / _alpha_min, vehicle/dead/intermission/chase hide) | OK | OK | - | OK | - | live | high |
+| `cl-viewmodel.align.gunalign_gunoffset` | Shot-origin alignment (cl_gunalign 1/2/3/4) + cl_gunoffset | OK | ~ | - | OK | - | live | high |
 | `cl-viewmodel.switch.raise_lower_anim` | Weapon-switch raise/lower (barrel-tip -90*f*f keyed to switchdelay/weapon_nextthink) *(intended)* | ~ | ~ | ~ | ~ | - | live | high |
 | `cl-viewmodel.sway.followmodel` | Follow sway (velocity lowpass -> acceleration offset, cl_followmodel) | OK | OK | OK | OK | - | live | high |
 | `cl-viewmodel.sway.leanmodel` | Lean sway (view-angle highpass -> gun roll/pitch, cl_leanmodel) | OK | OK | OK | OK | - | live | high |
 | `cl-viewmodel.sway.bobmodel` | Bob sway (ground-walk sinusoidal side/up sway, cl_bobmodel) | OK | OK | OK | OK | - | live | high |
 | `cl-viewmodel.muzzle.flash_particle` | Muzzle flash particle (local firer + remote world-space, m_muzzleeffect) | OK | ~ | OK | ~ | - | live | medium |
 | `cl-viewmodel.muzzle.flash_model` | Muzzle flash MODEL (spinning flash md3 for Devastator + Machinegun) | MISS | MISS | MISS | MISS | - | - | high |
-| `cl-viewmodel.casings.brass_eject` | Brass / shell casings (eject, tumble, bounce, fade, bounce sounds) | OK | ~ | ~ | OK | MISS | live | high |
+| `cl-viewmodel.casings.brass_eject` | Brass / shell casings (eject, tumble, bounce, fade, bounce sounds) | OK | OK | ~ | OK | OK | live | high |
+| `cl-viewmodel.model.wr_viewmodel_override` | Per-weapon view-model override (wr_viewmodel, e.g. Tuba note-driven model swap) | MISS | - | - | MISS | - | - | medium |
 
 ### `damage-pipeline` (damage) — 9 features
 
@@ -1752,7 +1754,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `physics-movetypes.flymove.slide` | FlyMove slide-and-step solver (clip planes, crease, gravity half-step) | OK | OK | OK | - | - | live | high |
 | `physics-movetypes.clipvelocity` | ClipVelocity (slide off plane with overbounce + STOP_EPSILON snap) | OK | OK | - | - | - | live | high |
 | `physics-movetypes.toss.ballistic` | Toss/Fly ballistic move + ground-rest, suspended-corpse rules | OK | OK | OK | - | - | live | high |
-| `physics-movetypes.toss.bounce` | Bounce/BounceMissile restitution + bouncestop settle (grenades, casings, balls) | OK | ~ | OK | - | - | live | high |
+| `physics-movetypes.toss.bounce` | Bounce/BounceMissile restitution + bouncestop settle (grenades, casings, balls) | OK | OK | OK | - | - | live | high |
 | `physics-movetypes.step.physics` | MOVETYPE_STEP integrator (monster bodies) | OK | OK | OK | - | - | live | high |
 | `physics-movetypes.walk.stepmove` | WalkMove slide + explicit stair up/down stepping | OK | OK | OK | - | - | live | high |
 | `physics-movetypes.push.pusher` | MOVETYPE_PUSH movers (local-time advance + think) | OK | OK | OK | - | - | live | high |
@@ -1762,7 +1764,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `physics-movetypes.checkwater` | CheckWater / CheckWaterTransition (waterlevel + transition cue) | OK | OK | OK | - | ~ | live | high |
 | `physics-movetypes.pushentity.impact` | PushEntity sweep + Impact dual-dispatch + NudgeOutOfSolid *(intended)* | OK | OK | OK | - | - | live | high |
 
-### `physics-player` (physics) — 16 features
+### `physics-player` (physics) — 17 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -1776,12 +1778,13 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `physics-player.jump.playerjump` | PlayerJump (guards, jumpspeedcap, landing friction, jump velocity) | OK | OK | OK | - | ~ | live | high |
 | `physics-player.water.swim` | Swimming (water friction/accel, hold-jump rise, dive, frozen-resurface) | ~ | OK | OK | - | - | ? | medium |
 | `physics-player.ladder` | Ladder climb (gravity-free, func_water override) | ~ | OK | OK | - | - | ? | medium |
-| `physics-player.jetpack` | Jetpack thrust (PM_jetpack closed-form, fuel drain, pauseregen) | OK | ~ | OK | - | - | ? | medium |
+| `physics-player.jetpack` | Jetpack thrust (PM_jetpack closed-form, fuel drain, pauseregen) | OK | OK | OK | - | - | ? | medium |
 | `physics-player.crouch` | Crouch hull resize + view offset (PM_ClientMovement_UpdateStatus) | ~ | OK | OK | OK | - | live | high |
 | `physics-player.integrator.walkmove_flymove` | Slide-and-step collision integrator (SV_WalkMove / SV_FlyMove + stair step/down) *(intended)* | OK | OK | OK | - | - | live | high |
 | `physics-player.movement_sounds` | Footsteps + landing sounds (PM_Footsteps / PM_check_hitground) *(intended)* | OK | OK | ~ | - | OK | live | high |
 | `physics-player.spectator_control` | Spectator free-flight speed ladder (sys_phys_spectator_control) *(intended)* | OK | OK | OK | - | - | live | high |
-| `physics-player.specialcommand` | PM_check_specialcommand (xwxw... button cheat-code -> give-all) | MISS | MISS | - | - | - | - | high |
+| `physics-player.specialcommand` | PM_check_specialcommand (xwxw... button cheat-code -> give-all) | OK | OK | OK | - | - | live | high |
+| `physics-player.punch_decay` | View-punch decay (PM_check_punch: punchangle/punchvector bleed) | OK | OK | OK | - | - | live | high |
 
 ### `scoring` (scoring) — 14 features
 

@@ -1,7 +1,7 @@
 unit: cl-csqcmodel
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 12
   worst_gaps:
@@ -178,7 +178,7 @@ features:
       - { kind: code, ref: "ClientWorld.cs:1273 `_ = CsqcModelLod.SelectLodIndex(...)` result discarded; 1274 comment 'keep lod0 (the QC fexists-miss path)' — UNCHANGED by Wave 5", result: fail }
       - { kind: code, ref: "Base/data models/player/{erebus,gak,gakmasked}_lod{1,2}.iqm + models/monsters/{golem,spider,nanomage,wyvern}_lod1.dpm EXIST — the no-op swap regresses default content", result: fail }
     confidence: high
-    notes: "SelectLodIndex distance pick and NearestPointOnBox are faithful ports; the swap is the dead part. ApplyLod is live (called from DriveCsqcModelHooks) but inert. STILL OPEN — Wave 5 did not wire the swap."
+    notes: "SelectLodIndex distance pick and NearestPointOnBox are faithful ports; the swap is the dead part. ApplyLod is live (called from DriveCsqcModelHooks) but inert. STILL OPEN — Wave 5 did not wire the swap; re-verified 2026-06-25 at ClientWorld.cs:1290 `_ = CsqcModelLod.SelectLodIndex(...)` discarded, line 1291 comment 'keep lod0' — UNCHANGED (Wave 6e implemented 0 cl-csqcmodel gaps per its own commit message)."
   - id: cl-csqcmodel.skeleton.upper_lower_aim
     name: "Skeletal upper/lower split + aim bones + fixbone"
     layer: [presentation]
@@ -251,7 +251,7 @@ features:
       - { kind: code, ref: "LocomotionBlend.cs SelectLegs (6-state, 20/220 thresholds) live via PlayerModel.Pose; no anim_state/action wire in NetEntity/EntityField — UNCHANGED by Wave 5", result: fail }
       - { kind: code, ref: "grep anim_state/anim_upper_action/anim_lower_action across src+game net layer: absent (NetEntity EntityField has no anim_* bit)", result: fail }
     confidence: high
-    notes: "Still the dominant parity gap. Liveness=partial: a coarse legs heuristic IS live (SelectLegs), but the action/8-direction/duck-directional/framerate systems are missing entirely. The remote-velocity + on-ground + ducked flags that feed SelectLegs ARE networked, so legs animate; the upper-body actions are not. STILL OPEN — Wave 5 did not network the anim_* block."
+    notes: "Still the dominant parity gap. Liveness=partial: a coarse legs heuristic IS live (SelectLegs, re-verified 2026-06-25: enum Idle/Walk/Run/Jump/Crouch/Dead at LocomotionBlend.cs:72, thresholds 20/220 at 83-84), but the action/8-direction/duck-directional/framerate systems are missing entirely. The remote-velocity + on-ground + ducked flags that feed SelectLegs ARE networked, so legs animate; the upper-body actions are not. STILL OPEN — no anim_* bit in NetEntity (re-verified absent); neither Wave 5 nor Wave 6 networked the anim_* block."
   - id: cl-csqcmodel.fallbackframe.remap
     name: "Fallback frame remap (missing-frame substitution)"
     layer: [presentation]

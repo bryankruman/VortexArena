@@ -1,7 +1,7 @@
 unit: cl-crosshair
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 17
   worst_gaps:
@@ -19,7 +19,7 @@ features:
       - "client/hud/crosshair.qc:HUD_Crosshair (213-256)"
     port_refs:
       - "game/hud/CrosshairPanel.cs:DrawPanel (553-559)"
-      - "game/net/NetGame.cs:2640"
+      - "game/net/NetGame.cs:3366"
       - "game/hud/HudManager.cs:322"
     constants:
       - { name: "crosshair_enabled", base: "1", port: "1", match: true }
@@ -36,9 +36,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port gates only on Visible + crosshair_enabled/size/alpha/number; Base's full suppress set (scoreboard/camera/intermission2/game-stopped/lockview/spectatee==-1/HEALTH<=0/DrawCrosshair mutator hook/viewloc/minigame menu/CAMERA_SPECTATOR==2/hud!=HUD_NORMAL) is reduced to the NetGame Visible toggle (havePlayer at NetGame:2640)."
+      - "Port gates only on Visible + crosshair_enabled/size/alpha/number; Base's full suppress set (scoreboard/camera/intermission2/game-stopped/lockview/spectatee==-1/HEALTH<=0/DrawCrosshair mutator hook/viewloc/minigame menu/CAMERA_SPECTATOR==2/hud!=HUD_NORMAL) is reduced to the NetGame Visible toggle (havePlayer at NetGame:3366)."
     verification:
-      - { kind: code, ref: "Crosshair.Player set HudManager.cs:322; Visible toggled NetGame.cs:2640-41 on havePlayer (live for host AND remote, not _server-gated); enabled/size/alpha read in DrawPanel; cfg defaults verified against crosshairs.cfg:6-10", result: pass }
+      - { kind: code, ref: "Crosshair.Player set HudManager.cs:322; Visible toggled NetGame.cs:3366-67 on havePlayer (live for host AND remote, not _server-gated); enabled/size/alpha read in DrawPanel; cfg defaults verified against crosshairs.cfg", result: pass }
     confidence: high
     notes: "Panel is genuinely live each frame. Defaults bit-faithful to crosshairs.cfg (incl. number 16). crosshair_size 0 / alpha 0 early-outs ported (DrawPanel 558-559, 622). UNCHANGED this pass."
 
@@ -147,8 +147,8 @@ features:
       - "game/hud/CrosshairPanel.cs:PulsePickup (512-516)"
       - "game/hud/CrosshairPanel.cs:_Process (447-451)"
       - "game/hud/CrosshairPanel.cs:DrawPanel (570-571)"
-      - "game/net/NetGame.cs:UpdatePickupFeed (2760-2813)"
-      - "game/net/NetGame.cs:2806"
+      - "game/net/NetGame.cs:UpdatePickupFeed (2818-2871)"
+      - "game/net/NetGame.cs:2864"
     constants:
       - { name: "crosshair_pickup", base: "0.25", port: "0.25", match: true }
       - { name: "crosshair_pickup_speed", base: "4", port: "4", match: true }
@@ -162,10 +162,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED (host path): UpdatePickupFeed now calls CrosshairPanel.PulsePickup() (NetGame:2806) when a new weapon or a resource jump is detected on the LocalServerPlayer (re-baselined on respawn so the spawn loadout isn't counted). The crosshair bumps on item pickup on the host/listen-server. Still host-only: the detection reads LocalServerPlayer, so a pure remote client (LocalServerPlayer==null) gets no pulse — the networked STAT(LAST_PICKUP) equivalent is not read back into the panel client-side."
+      - "FIXED (host path): UpdatePickupFeed now calls CrosshairPanel.PulsePickup() (NetGame:2864) when a new weapon or a resource jump is detected on the LocalServerPlayer (re-baselined on respawn so the spawn loadout isn't counted). The crosshair bumps on item pickup on the host/listen-server. Still host-only: the detection reads LocalServerPlayer, so a pure remote client (LocalServerPlayer==null) gets no pulse — the networked STAT(LAST_PICKUP) equivalent is not read back into the panel client-side."
       - "Pickup trigger is derived (new-weapon-owned or per-frame resource jump > threshold) rather than the Base STAT(LAST_PICKUP) tick; approximate but matches the visible cue for the host player."
     verification:
-      - { kind: code, ref: ".PulsePickup() called UpdatePickupFeed NetGame:2806 (live, called unconditionally at NetGame:2690 but internally gated on LocalServerPlayer != null); decay math (scale += sin(_pickupSize)*pickup, decays by pickup_speed*dt) faithful in CrosshairPanel _Process/DrawPanel", result: pass }
+      - { kind: code, ref: ".PulsePickup() called UpdatePickupFeed NetGame:2864 (live, called from UpdatePickupFeed at NetGame:2747 but internally gated on LocalServerPlayer != null); decay math (scale += sin(_pickupSize)*pickup, decays by pickup_speed*dt) faithful in CrosshairPanel _Process/DrawPanel", result: pass }
     confidence: high
     notes: "PREVIOUSLY DEAD (no caller); now live on the host path. Decay math is a faithful port. Liveness partial because remote clients are still unfed."
 
@@ -178,7 +178,7 @@ features:
     port_refs:
       - "game/hud/CrosshairPanel.cs:_Process (434-444)"
       - "game/hud/CrosshairPanel.cs:DrawPanel (573-593)"
-      - "game/net/NetGame.cs:2275-2279"
+      - "game/net/NetGame.cs:2298-2302"
     constants:
       - { name: "crosshair_hitindication", base: "0.5", port: "0.5", match: true }
       - { name: "crosshair_hitindication_color", base: "10 -10 -10", port: "10 -10 -10", match: true }
@@ -194,10 +194,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Host-only: HitFlash=1 is set only inside `if (_server is not null)` (NetGame:2278, driven by the host-side damagetext mutator drain). A pure remote client gets no hit-indication bump/flash even though HitDamageDealtTotal is networked (ServerNet.cs) and the client diffs it for the hit SOUND — but not for the crosshair flash."
+      - "Host-only: HitFlash=1 is set only inside `if (_server is not null)` (NetGame:2301, driven by the host-side damagetext mutator drain). A pure remote client gets no hit-indication bump/flash even though HitDamageDealtTotal is networked (ServerNet.cs) and the client diffs it for the hit SOUND — but not for the crosshair flash."
       - "Coupled to the damagetext mutator events rather than the Base path (UpdateDamage diffs STAT(HITSOUND_DAMAGE_DEALT_TOTAL) on STAT(HIT_TIME) advance); fires on local-player-dealt damage only (ev.Attacker==localPlayer && ev.Target!=localPlayer)."
     verification:
-      - { kind: code, ref: "Crosshair.HitFlash = 1f at NetGame.cs:2278 inside the `_server is not null` block (only path); _Process drives the QC-style _hitIndSize countdown from HitFlash; per-channel color add + per-weapon-color cvar match Base 383-398", result: pass }
+      - { kind: code, ref: "Crosshair.HitFlash = 1f at NetGame.cs:2301 inside the `_server is not null` block (only path); _Process drives the QC-style _hitIndSize countdown from HitFlash; per-channel color add + per-weapon-color cvar match Base 383-398", result: pass }
     confidence: high
     notes: "Decay + per-channel color add match Base. The legacy HitColor lerp (DrawPanel:591-592) is layered on top as an equivalent cue. UNCHANGED this pass (still host-only)."
 
@@ -292,7 +292,7 @@ features:
     port_refs:
       - "game/hud/CrosshairPanel.cs:DrawStatRing (866-895)"
       - "game/hud/CrosshairPanel.cs:ChargeRingValue (961-966)"
-      - "game/net/NetGame.cs:UpdateCrosshairWeaponRings (2826-2854)"
+      - "game/net/NetGame.cs:UpdateCrosshairWeaponRings (2884-2912)"
     constants:
       - { name: "crosshair_ring_vortex", base: "1", port: "1", match: true }
       - { name: "crosshair_ring_vortex_alpha", base: "0.15", port: "0.15", match: true }
@@ -310,10 +310,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED (host path): UpdateCrosshairWeaponRings now feeds CrosshairPanel.ChargeFraction = st.VortexCharge and .ChargePool = st.VortexChargePoolAmmo (NetGame:2847-48) while a vortex/vaporizer/*nex* weapon is active off the host-side slot-0 WeaponSlotState (the C# home of QC wepent.*). The Vortex charge ring + inner chargepool/moving-average ring now render for the host player. VortexCharge is genuinely produced server-side (Vortex.cs/OkNex.cs). Still host-only: read off LocalServerPlayer inside `if (_server is not null)`; a pure remote client (LocalServerPlayer==null) gets the -1 sentinel and no ring."
+      - "FIXED (host path): UpdateCrosshairWeaponRings now feeds CrosshairPanel.ChargeFraction = st.VortexCharge and .ChargePool = st.VortexChargePoolAmmo (NetGame:2905-06) while a vortex/vaporizer/*nex* weapon is active off the host-side slot-0 WeaponSlotState (the C# home of QC wepent.*). The Vortex charge ring + inner chargepool/moving-average ring now render for the host player. VortexCharge is genuinely produced server-side (Vortex.cs/OkNex.cs). Still host-only: read off LocalServerPlayer inside `if (_server is not null)`; a pure remote client (LocalServerPlayer==null) gets the -1 sentinel and no ring."
       - "Minor fidelity: ChargePool is fed unconditionally for vortex-like weapons (default VortexChargePoolAmmo=1f), so the inner chargepool ring shows even when secondary chargepool isn't enabled; Base gates the inner-pool branch on use_vortex_chargepool. Overkill-Nex weapon itself is otherwise absent from this port."
     verification:
-      - { kind: code, ref: "ChargeFraction/ChargePool fed NetGame:2847-48 on the active vortex-like slot; sentinel -1 reset otherwise (2852-53); panel ChargeRingValue + DrawStatRing inner/outer math faithful (CrosshairPanel:866-895)", result: pass }
+      - { kind: code, ref: "ChargeFraction/ChargePool fed NetGame:2905-06 on the active vortex-like slot; sentinel -1 reset otherwise (2910-11); panel ChargeRingValue + DrawStatRing inner/outer math faithful (CrosshairPanel:866-895)", result: pass }
     confidence: high
     notes: "PREVIOUSLY DEAD; now live on the host path. Ring math (outer nexgun ring + inner pool/movingavg) is a faithful port. Liveness partial (remote clients unfed)."
 
@@ -324,7 +324,7 @@ features:
       - "client/hud/crosshair.qc:HUD_Crosshair (536-549)"
     port_refs:
       - "game/hud/CrosshairPanel.cs:DrawStatRing (914-924)"
-      - "game/net/NetGame.cs:UpdateCrosshairWeaponRings (2857-2866)"
+      - "game/net/NetGame.cs:UpdateCrosshairWeaponRings (2914-2924)"
     constants:
       - { name: "crosshair_ring_reload", base: "1", port: "1", match: true }
       - { name: "crosshair_ring_reload_size", base: "2.5", port: "2.5", match: true }
@@ -340,9 +340,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED (host path): UpdateCrosshairWeaponRings now feeds CrosshairPanel.ClipLoad = st.ClipLoad and .ClipSize = st.ClipSize when the active slot has a clip (NetGame:2859-60). The ammo ring renders for every reloadable weapon on the host. ClipLoad/ClipSize are genuinely maintained on the slot by WeaponFireGate/WeaponFireDriver. Still host-only: read off LocalServerPlayer inside `if (_server is not null)`; remote clients get the -1/0 sentinel and no ring."
+      - "FIXED (host path): UpdateCrosshairWeaponRings now feeds CrosshairPanel.ClipLoad = st.ClipLoad and .ClipSize = st.ClipSize when the active slot has a clip (NetGame:2917-18). The ammo ring renders for every reloadable weapon on the host. ClipLoad/ClipSize are genuinely maintained on the slot by WeaponFireGate/WeaponFireDriver. Still host-only: read off LocalServerPlayer inside `if (_server is not null)`; remote clients get the -1/0 sentinel and no ring."
     verification:
-      - { kind: code, ref: "ClipLoad/ClipSize fed NetGame:2859-60 when st.ClipSize>0; panel DrawStatRing reload branch (915-923) + Rifle-80 art faithful; clip state produced by WeaponFireGate.cs", result: pass }
+      - { kind: code, ref: "ClipLoad/ClipSize fed NetGame:2917-18 when st.ClipSize>0; panel DrawStatRing reload branch (976-985) + Rifle-80 art faithful; clip state produced by WeaponFireGate.cs", result: pass }
     confidence: high
     notes: "PREVIOUSLY DEAD; now live on the host path. Faithful clip_load/clip_size fraction + Rifle-80 art branch. Liveness partial (remote clients unfed)."
 
@@ -353,7 +353,7 @@ features:
       - "client/hud/crosshair.qc:HUD_Crosshair (522-535, 550-557)"
     port_refs:
       - "game/hud/CrosshairPanel.cs:DrawStatRing (896-913, 925-938)"
-      - "game/net/NetGame.cs:UpdateCrosshairWeaponRings (2868-2907)"
+      - "game/net/NetGame.cs:UpdateCrosshairWeaponRings (2926-2968)"
     constants:
       - { name: "crosshair_ring_minelayer_alpha", base: "0.15", port: "0.15", match: true }
       - { name: "crosshair_ring_hagar_alpha", base: "0.15", port: "0.15", match: true }
@@ -370,9 +370,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED (host path): UpdateCrosshairWeaponRings now feeds CrosshairPanel.HagarLoad (st.HagarLoad, NetGame:2871), .MineCount (live g_mines scan of mines owned by the player, 2884-86), and .ArcHeat (st.BeamHeat/OverheatMax with the overheat-jam latch, 2899-2902) when the matching weapon is active. Mine-count, Hagar burst-load, and Arc overheat rings now render for the host player. HagarLoad/BeamHeat/ArcOverheat are genuinely produced server-side (Hagar.cs/Arc.cs). Still host-only: read off LocalServerPlayer inside `if (_server is not null)`; remote clients get the -1 sentinel and no ring."
+      - "FIXED (host path): UpdateCrosshairWeaponRings now feeds CrosshairPanel.HagarLoad (st.HagarLoad, NetGame:2929), .MineCount (live g_mines scan of mines owned by the player, 2941-44), and .ArcHeat (st.BeamHeat/OverheatMax with the overheat-jam latch, 2960-63) when the matching weapon is active. Mine-count, Hagar burst-load, and Arc overheat rings now render for the host player. HagarLoad/BeamHeat/ArcOverheat are genuinely produced server-side (Hagar.cs/Arc.cs). Still host-only: read off LocalServerPlayer inside `if (_server is not null)`; remote clients get the -1 sentinel and no ring."
     verification:
-      - { kind: code, ref: "HagarLoad/MineCount/ArcHeat fed NetGame:2871-2902 on the matching active weapon; panel DrawStatRing branches (896-913,925-938) faithful; Arc heat percent (st.BeamHeat/OverheatMax + latch) mirrors Arc_GetHeat_Percent; weapon-side state produced by Hagar.cs/Arc.cs", result: pass }
+      - { kind: code, ref: "HagarLoad/MineCount/ArcHeat fed NetGame:2929-2963 on the matching active weapon; panel DrawStatRing branches (957-998) faithful; Arc heat percent (st.BeamHeat/OverheatMax + latch) mirrors Arc_GetHeat_Percent; weapon-side state produced by Hagar.cs/Arc.cs", result: pass }
     confidence: high
     notes: "PREVIOUSLY DEAD; now live on the host path. Mine fraction, Hagar load fraction, and Arc cold/hot alpha+color lerp all match Base. Liveness partial (remote clients unfed)."
 
@@ -436,7 +436,7 @@ features:
       - "client/view.qc:HUD_Draw (1006-1022)"
     port_refs:
       - "game/hud/CrosshairPanel.cs:DrawObjectiveRings (812-845)"
-      - "game/net/NetGame.cs:2293-2294"
+      - "game/net/NetGame.cs:2327-2328"
     constants:
       - { name: "priority order", base: "NADE > CAPTURE > REVIVE", port: "NADE > CAPTURE > REVIVE", match: true }
       - { name: "nade ring color", base: "'0.25 0.90 1' + (t,-t,-t)", port: "same", match: true }
@@ -452,10 +452,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "PARTIAL FIX: REVIVE_PROGRESS is now fed (NetGame:2294, _fullHud.Crosshair.ReviveProgress = LocalServerPlayer?.ReviveProgress) alongside NadeTimer (2293), both host-only inside `if (_server is not null)`. Player.ReviveProgress is genuinely mirrored each tick by FreezeTag (FreezeTag.cs:532), so the host player's thaw ring now renders. STILL OPEN: CAPTURE_PROGRESS is never assigned on any path (grep finds only test-side .CaptureProgress=) so the capture ring is DEAD; and although NetEntityState.ReviveProgress IS networked to remote clients (ServerNet.cs:1668), NOTHING reads it back into the panel client-side — a pure remote client gets no nade/thaw ring."
+      - "PARTIAL FIX: REVIVE_PROGRESS is now fed (NetGame:2328, _fullHud.Crosshair.ReviveProgress = LocalServerPlayer?.ReviveProgress) alongside NadeTimer (2327), both host-only inside `if (_server is not null)`. Player.ReviveProgress is genuinely mirrored each tick by FreezeTag (FreezeTag.cs), so the host player's thaw ring now renders. STILL OPEN: CAPTURE_PROGRESS is never assigned on any production path (grep finds only test-side .CaptureProgress= plus the networked NetEntity.CaptureProgress field which ServerNet.cs:1741 explicitly leaves 0 with a comment that no gametype sets it) so the capture ring is DEAD; and although NetEntityState.ReviveProgress IS networked to remote clients (ServerNet.cs), NOTHING reads it back into the panel client-side — a pure remote client gets no nade/thaw ring."
       - "Rings drawn centred on the crosshair panel (radius 64px) rather than at Base's `0.5*conwidth, 0.6*conheight` screen anchor with `0.1*conheight` radius; nade-timer text label (cl_nade_timer 2) not drawn."
     verification:
-      - { kind: code, ref: "NadeTimer + ReviveProgress fed NetGame:2293-94 (host path); no client reader of networked NadeTimer/ReviveProgress into the panel; CaptureProgress unfed anywhere; DrawObjectiveRings priority+color+gate faithful to view.qc:1006-1022 and called from DrawPanel:551", result: pass }
+      - { kind: code, ref: "NadeTimer + ReviveProgress fed NetGame:2327-28 (host path); no client reader of networked NadeTimer/ReviveProgress into the panel; CaptureProgress unfed in production (ServerNet.cs:1741 leaves it 0); DrawObjectiveRings priority+color+gate faithful to view.qc:1006-1022 and called from DrawPanel:569", result: pass }
     confidence: high
     notes: "Color/priority/gate faithful. Nade + thaw rings now live on the host path (thaw newly fed this pass); capture ring still dead; remote-client read-back still missing. Anchor + label are the presentation gaps."
 

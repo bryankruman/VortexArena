@@ -1,7 +1,7 @@
 unit: cl-scoreboard
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 21
   worst_gaps:
@@ -10,10 +10,11 @@ summary:
     - "Item-stats block (per-item pickup-count icon grid) still entirely missing (no SetItemStats/DrawItemStats; inventory not networked for it)."
     - "Ping column still never networked (SetWireRows always passes ping -1 → dim '-'); color bands still hardcoded 75/200/500 vs Base cvar-driven 20/80/200."
     - "fps and skill columns still never render; packet-loss (pl) column always blank (not networked)."
-    - "Name cell still missing all icons: player-color square, ready, handicap, ignored, and the (Q) wants-join marker."
+    - "Name cell handicap icon now LIVE (handicap_level networked end-to-end, exact '1 0 0'+'0 1 1'*((16-lvl)/15) tint); still missing player-color square, ready, ignored, and the (Q) wants-join marker."
     - "Accuracy block still drawn as plain '%' text, not the per-weapon icon grid; no showdelay/warmup/doublerows/nocolors."
     - "Map-stats secrets row still never fed (only monsters); death-scoreboard + intermission-forced visibility still not ported."
   notable_fixes_since_last_audit:
+    - "RE-AUDIT 2026-06-25: ONE new fix — the name-cell HANDICAP icon is now LIVE end-to-end (was fully missing). Entity.HandicapLevel (Handicap.UpdateHandicapLevel maps the both-ways average to 0..16) → ScoreboardBlock.CaptureRows handicapLevel slice → ScoreRowWire.HandicapLevel WriteByte/ReadByte → SetWireRows row.HandicapLevel → DrawRow renders a colored square with the EXACT QC tint '1 0 0' + '0 1 1' * ((16-lvl)/15) (white@1 → red@16), name offset to avoid overlap. Fed on the live UpdateScoreboard path (NetGame.cs:3502 SetWireRows). The other 4 name icons (player-color swatch, ready, ignored, (Q) wants-join) remain missing. No regressions; all prior Wave-5 fixes re-confirmed live."
     - "RE-AUDIT 2026-06-22 (post-Wave-5 re-verify): the five Wave-5 fixes recorded last audit were independently re-traced END-TO-END and all CONFIRMED still live + faithful — 0 fixes, 0 regressions vs the prior audit. Line refs refreshed to current code."
     - "Cross-fade in/out: LIVE (re-confirmed). NetGame.UpdateScoreboard:3407 sets ScoreboardPanel.Active=show; Active setter + _Process:661 ramp + _everActive:696 drive PanelFade on the real match path (UpdateScoreboard called from line 2716)."
     - "Respawn-status line: LIVE + three-state (re-confirmed). Server sets Player.RespawnTimeStat (GameWorld.cs:2328, negated while DeadFlag.Respawning), networked via ClientNet.RespawnTimeStat, fed every frame by UpdateScoreboard:3413; DrawRespawn:1045 renders the full QC dead/wait/press-jump line."
@@ -213,25 +214,31 @@ features:
       - "client/hud/panel/scoreboard.qc:Scoreboard_GetName"
       - "client/hud/panel/scoreboard.qc:Scoreboard_AddPlayerId"
       - "client/hud/panel/scoreboard.qc:Scoreboard_DrawItem"
-    port_refs: []
+    port_refs:
+      - "game/hud/ScoreboardPanel.cs:DrawRow (handicap icon)"
+      - "game/hud/ScoreboardPanel.cs:SetWireRows (HandicapLevel)"
+      - "src/XonoticGodot.Net/ScoreboardBlock.cs:ScoreRowWire (HandicapLevel)"
+      - "src/XonoticGodot.Common/Gameplay/Handicap.cs:UpdateHandicapLevel"
     constants:
       - { name: "playerid", base: "0", port: "none", match: false }
       - { name: "playerid_prefix", base: "#", port: "none", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No player-color shirt/pants swatch (gfx/scoreboard/playercolor_*), no pulsing ready check, no handicap icon (white→red by level), no ignored icon, no pulsing (Q) wants-join team marker, and no playerid '#N' prefix (Scoreboard_AddPlayerId). GetField Name returns the raw name only."
+      - "Handicap icon is now PORTED + LIVE (DrawRow:977-985 draws a square at the EXACT QC tint '1 0 0' + '0 1 1' * ((16-lvl)/15), white@1 → red@16, fed by the networked handicap_level)."
+      - "Still missing: player-color shirt/pants swatch (gfx/scoreboard/playercolor_*), pulsing ready check, ignored icon, the pulsing (Q) wants-join team marker, and the playerid '#N' prefix (Scoreboard_AddPlayerId)."
+      - "Handicap icon is drawn as a flat colored square (no gfx/scoreboard/player_handicap texture); presentation faithful in tint but not in the actual icon art."
     verification:
-      - { kind: code, ref: "GetField ColumnKind.Name returns new FieldText(r.Name, white); no icon plumbing in ScoreboardPanel", result: fail }
+      - { kind: code, ref: "Handicap fed live: Handicap.UpdateHandicapLevel → Entity.HandicapLevel → ScoreboardBlock.CaptureRows:84 → ScoreRowWire WriteByte:107/ReadByte:151 → SetWireRows:251 handicapLevel → DrawRow:977-985 colored square at the exact QC tint; fed on the live UpdateScoreboard path (NetGame.cs:3502). The other 4 icons absent (GetField Name returns raw name; no playercolor/ready/ignored/wants-join plumbing). Re-verified 2026-06-25.", result: partial }
     confidence: high
-    notes: "QC draws these as overlapping drawpic icons sized by Scoreboard_FixColumnWidth. Unchanged this audit."
+    notes: "FIXED (handicap icon) since 2026-06-22: was fully missing → now the handicap level networks end-to-end and renders at the exact tint. The other name-cell icons (QC drawpic overlays sized by Scoreboard_FixColumnWidth) remain unported."
 
   - id: cl-scoreboard.sort.players
     name: "Player row sort (primary/secondary/registry order)"

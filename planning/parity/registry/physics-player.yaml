@@ -3,9 +3,9 @@ category: physics
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 16
+  feature_count: 17
   worst_gaps:
-    - "The secret movement-input cheat sequence ('xwxwxsxsxaxdxaxdx1x ' decoded from the button mask each tick -> CHIMPULSE_GIVE_ALL) that triggers CHIMPULSE_GIVE_ALL is not implemented (cheat-only, low impact)."
+    - "View-punch decay (PM_check_punch) was UNMAPPED in the baseline registry; now added as physics-player.punch_decay (ported as CheckPunch, faithful + live, server-authority only)."
     - "Jump audio diverges: the port plays player/jump.wav UNCONDITIONALLY on every jump, but Base gates the jump grunt on autocvar_g_jump_grunt (stock 0 = SILENT) and also drives animdecide_setaction(ANIMACTION_JUMP) — so the port is audibly louder than stock Base on a normal jump (audio:partial, unchanged this audit)."
     - "Movement-sound cadence is Base-faithful (g_footsteps gate + 0.3+random()*0.1 jitter + nextstep window + ladder bail all ported, re-confirmed live 2026-06-25); residuals: the lastground+0.2 gate is functionally inert because the port updates LastGroundTime BEFORE UpdateMovementSounds runs (so it reads now), and PM_check_hitground's active-grappling-hook bail is still unported (CheckHitground only does the ladder leg) — the ButtonHook input bit is now genuinely live (ServerNet.cs:1432 decodes InputButtons.Hook; WeaponFireDriver consumes it for the offhand-hook weapon), but there is still no shared per-weapon hook Entity field for CheckHitground to read, so the bail leg stays unported."
     - "func_water waterlevel-from-volume override (physics.qc:280-299) is NOT computed in LadderMove, and the viewloc 1D-rail sub-cases (ladder wishvel.z = movement_old.x; water wishvel.z = -160 + a separate viewloc accel path) are not ported — inert on stock Xonotic maps but real Base branches."
@@ -318,14 +318,14 @@ features:
       - { name: "g_jetpack_acceleration_side", base: "1200", port: "1200", match: true }
       - { name: "g_jetpack_acceleration_up", base: "600", port: "600", match: true }
       - { name: "g_jetpack_antigravity", base: "0.8", port: "0.8", match: true }
-      - { name: "g_jetpack_maxspeed_side", base: "1500", port: "1500", match: true }
+      - { name: "g_jetpack_maxspeed_side", base: "1200 (balance-xonotic.cfg:248; 1500 is the nexuiz25 balance)", port: "1200 (cvar-read, JetpackMaxSpeedSide fallback)", match: true }
       - { name: "g_jetpack_maxspeed_up", base: "600", port: "600", match: true }
       - { name: "g_jetpack_fuel", base: "8 /s", port: "8", match: true }
       - { name: "g_jetpack_reverse_thrust", base: "0 (off)", port: "0", match: true }
       - { name: "g_balance_pause_fuel_regen", base: "2", port: "2 (PauseFuelRegen)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
@@ -333,13 +333,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Jetpack tunables are HARDCODED constants in PlayerPhysics (JetpackAccelSide etc.), not read from g_jetpack_* cvars via FromCvars — a server retuning the jetpack won't take effect; the baked values match the stock cfg exactly so it is values:partial not values:missing."
-      - "PM_jetpack maxspd_mod factor (player.qc:742 maxairspd *= max(1, maxspd_mod)) is hardcoded to max(1,1)=1 in the port (PlayerPhysics.cs:670); inert for a normal player (maxspeed_mod==1) but a spectator/high-speed-mod jetpack would diverge — unreachable in practice."
+      - "PM_jetpack maxspd_mod factor (player.qc:742 maxairspd *= max(1, maxspd_mod)) is now threaded through PMJetpack as maxspeedMod (PlayerPhysics.cs:886 `mp.MaxAirSpeed * MathF.Max(1f, maxspeedMod)`), so it is NO LONGER hardcoded to 1 — a spectator/high-speed-mod jetpack scales correctly. (Was a gap in the baseline; closed.) Residual: still unreachable in normal play (a real player has maxspeed_mod==1)."
       - "cl_jetpack_jump is pinned ON / mode-1 semantics (JetpackJumpEnabled const); QC mode 2 (latched thrust between frames) is not modelled."
     verification:
       - { kind: code, ref: "PMJetpack vs player.qc:735-840 (unit-sphere closed-form best-accel over a_side/a_up/a_add, fxy/fz caps, fuel TakeResource, pauseregen, reverse-thrust branch)", result: pass }
+      - { kind: value, ref: "g_jetpack_* tunables now CVAR-READ live via JetpackCvar (PMJetpack PlayerPhysics.cs:874-880; CheckPlayerJump fuel gate :982) with the stock balance-xonotic.cfg:245-251 values as fallbacks — antigrav 0.8, accel_side 1200, accel_up 600, maxspeed_side 1200, maxspeed_up 600, fuel 8, reverse 0; all confirmed against the cfg", result: pass }
     confidence: medium
-    notes: "Closed-form thrust math ported verbatim incl. the reverse-thrust crouch branch. Liveness unknown: reached only when the Jetpack item is held + activated; not behaviorally tested. values:partial because the g_jetpack_* tunables are baked as constants rather than cvar-read."
+    notes: "Closed-form thrust math ported verbatim incl. the reverse-thrust crouch branch. 2026-06-25 RE-AUDIT: values UPGRADED partial->faithful — the g_jetpack_* tunables are now read live as cvars (JetpackCvar in PMJetpack + the CheckPlayerJump fuel gate), so a retuning server takes effect; the baked constants are only fallbacks and now carry the CORRECT stock values. Two baseline values defects fixed: (1) JetpackMaxSpeedSide was 1500 (the nexuiz25 balance) and is now 1200 to match balance-xonotic.cfg:248; (2) the maxspd_mod factor (player.qc:742) is now threaded through as maxspeedMod rather than hardcoded max(1,1). Liveness still unknown: reached only when the Jetpack item is held + activated; not behaviorally tested."
 
   - id: physics-player.crouch
     name: "Crouch hull resize + view offset (PM_ClientMovement_UpdateStatus)"
@@ -485,21 +485,52 @@ features:
     base_refs:
       - "common/physics/player.qc:PM_check_specialcommand"
       - "common/physics/player.qc:SpecialCommand"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:CheckSpecialCommand"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:SpecialCommand"
+      - "src/XonoticGodot.Server/GameWorld.cs:1003 (SpecialCommandGiveAll = p => Cheats.GiveAll(p))"
     constants:
-      - { name: "sequence", base: "\"xwxwxsxsxaxdxaxdx1x \"", port: "n/a", match: false }
+      - { name: "sequence", base: "\"xwxwxsxsxaxdxaxdx1x \"", port: "\"xwxwxsxsxaxdxaxdx1x \" (SpecialCommandSequence)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: na
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The secret movement-input cheat sequence (each tick decodes PHYS_INPUT_BUTTON_MASK -> a character, advances a position pointer through 'xwxwxsxsxaxdxaxdx1x ', resets on mismatch) that triggers CHIMPULSE_GIVE_ALL via SpecialCommand (when sv_cheats or maycheat) is not implemented — entering the konami-style code does nothing. Cheat-only, low gameplay impact, but a real Base feature."
+      - "Minor intended divergence: Base returns true from sys_phys_override on sequence completion to SKIP that tick's physics; the port instead just fires give-all and lets physics run normally (avoids a 1-tick server/client prediction skew for a cheat-only side effect). Cosmetic, single-tick, cheat-only."
     verification:
-      - { kind: code, ref: "grep specialcommand/xwxwxsxs/Plugh over src/ -> no matches", result: fail }
+      - { kind: code, ref: "CheckSpecialCommand (PlayerPhysics.cs:530-573) vs PM_check_specialcommand (player.qc:592-624): button-mask decode (0->x, ATCK->1, ATCK2->space, BACKWARD->s, FORWARD->w, LEFT->a, RIGHT->d, else ?), pointer advance on match / reset on mismatch, completion -> SpecialCommand. Decode mirrors PHYS_INPUT_BUTTON_MASK (player.qh:191) — multi-bit / jump/zoom/crouch/hook/use masks all -> '?'", result: pass }
+      - { kind: code, ref: "sequence literal \"xwxwxsxsxaxdxaxdx1x \" matches player.qc:580; per-player pointer Entity.SpecialCommandPos (PlayerPhysicsState.cs:69) mirrors CS(this).specialcommand_pos", result: pass }
+      - { kind: code, ref: "liveness: called from Move (PlayerPhysics.cs:162-163) on the non-predicted (server-authority) tick only — matches QC #ifdef SVQC; SpecialCommandGiveAll wired live at GameWorld.cs:1003 -> Cheats.GiveAll (runs the sv_cheats/maycheat gate, like QC SpecialCommand)", result: pass }
     confidence: high
-    notes: "Base decodes the button mask each tick in sys_phys_override -> PM_check_specialcommand and advances specialcommand_pos; completing it runs SpecialCommand -> CheatImpulse(CHIMPULSE_GIVE_ALL). Entirely absent from the port physics path. (sys_phys_override's PlayerPhysplug hook is a separate vehicle/plugin seam, also not on this path.)"
+    notes: "2026-06-25 RE-AUDIT: FIX — was missing/missing/na with empty port_refs in the baseline; now FULLY ported and LIVE. The button-mask decode, the 'xwxwxsxsxaxdxaxdx1x ' walk, the per-player pointer (SpecialCommandPos), and the give-all completion are all present (CheckSpecialCommand/SpecialCommand) and reachable on the server-authority tick. The give-all seam is installed at GameWorld boot (SpecialCommandGiveAll = p => Cheats.GiveAll(p)), and Cheats.GiveAll runs the autocvar_sv_cheats/maycheat gate exactly like the QC SpecialCommand body. Predicted-tick skip matches the QC #ifdef SVQC gating. The only divergence is the single-tick physics-skip on completion (intended, cheat-only)."
+
+  - id: physics-player.punch_decay
+    name: "View-punch decay (PM_check_punch: punchangle/punchvector bleed)"
+    layer: [authority]
+    base_refs:
+      - "common/physics/player.qc:PM_check_punch"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:CheckPunch"
+    constants:
+      - { name: "punchangle decay rate", base: "10 (deg/s)", port: "10f", match: true }
+      - { name: "punchvector decay rate", base: "30 (u/s)", port: "30f", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "CheckPunch (PlayerPhysics.cs:1823-1839) vs PM_check_punch (player.qc:625-646): punchangle f = vlen - 10*dt (normalize*f else zero); punchvector f = vlen - 30*dt (normalize*f else zero). Byte-exact magnitude-minus-rate-dt re-normalized bleed", result: pass }
+      - { kind: code, ref: "liveness: called from Move (PlayerPhysics.cs:409) every tick; server-authority only — `if (predicted) return;` mirrors the QC #ifdef SVQC body. Punch is SET on firing (WeaponFiring.SetupShot recoil -> punchangle.x) and networked to the owner view", result: pass }
+    confidence: high
+    notes: "2026-06-25 NEW ROW (registry coverage gap): PM_check_punch is a common/physics/player.qc function the baseline registry had no row for, even though it is ported (CheckPunch) and live. The view-punch (recoil kick) bleeds toward zero each authoritative tick — punchangle 10 deg/s, punchvector 30 u/s — preserving direction. Server-only and networked, so suppressed on client prediction replays to avoid double-decay (matches the QC #ifdef SVQC gate). Byte-faithful to Base."

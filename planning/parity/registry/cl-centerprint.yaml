@@ -1,14 +1,13 @@
 unit: cl-centerprint
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 13
   worst_gaps:
-    - "COUNTDOWN_ROUNDSTART ^COUNT still reads flts[0]=round# instead of f2=seconds — in round-based modes the countdown shows the ROUND NUMBER where the seconds should tick (durcnt arg-selection still not modeled; HudNotifications.ShowCenter hardcodes count=flts[0] and GameWorld broadcasts (round+1, seconds))."
-    - "hud_panel_centerprint_fade_in default is still 0 in the port vs 0.15 in Base — messages pop in with no fade-in ramp."
-    - "Shipped HUD skins (hud_luma/hud_luminos*.cfg) set fontscale_bold=1.2 / fontscale_title=1.3; the port keeps the header defaults 1.4/1.8 — bold lines + titles render slightly larger than stock skins."
-    - "HUD-config live preview (rotating sample centerprint lines + 'Title' in the HUD editor) is still unimplemented; the panel renders empty while being positioned."
+    - "MOTD/welcome is still shown via the DialogWelcome menu rather than the centerprint panel (Base shows the MOTD on the panel). Minor surface difference, not separately rowed."
+    - "Panel does not reproduce Base's slide-below-scoreboard/radar repositioning (HUD_CenterPrint:221-242) — minor layout-only omission, not separately rowed."
+    - "No remaining numeric/logic countdown or fade gaps: the durcnt arg-selection (ResolveDurcnt), per-step duration, fade_in=0.15, fontscale 1.2/1.3 skin defaults, and the HUD-editor live preview are all now faithful + live (Wave fixes since the 2026-06-22 audit)."
 features:
   - id: cl-centerprint.ring.add_replace
     name: "Message ring + add / replace-by-cpid"
@@ -83,26 +82,24 @@ features:
     constants:
       - { name: "countdown forces fade_in/out=0", base: "yes", port: "yes (MessageAlpha countdown branch)", match: true }
       - { name: "always-laid-out at ~0 alpha", base: "yes (hold position)", port: "yes (isCountdown skip-guard)", match: true }
-      - { name: "durcnt COUNTDOWN_GAMESTART", base: "\"1 f1\" → dur=1s/step, count=f1(seconds)", port: "dur=3 (DefaultDuration), count=flts[0]=f1(seconds)", match: false }
-      - { name: "durcnt COUNTDOWN_ROUNDSTART", base: "\"1 f2\" → dur=1s/step, count=f2(seconds), %s=f1(round)", port: "dur=3, count=flts[0]=f1(ROUND#), %s=f1", match: false }
-      - { name: "per-step duration", base: "1s (durcnt first token)", port: "DefaultDuration=3 always", match: false }
+      - { name: "durcnt COUNTDOWN_GAMESTART", base: "\"1 f1\" → dur=1s/step, count=f1(seconds)", port: "ResolveDurcnt(\"1 f1\",flts)→dur=1, count=f1=flts[0]=seconds", match: true }
+      - { name: "durcnt COUNTDOWN_ROUNDSTART", base: "\"1 f2\" → dur=1s/step, count=f2(seconds), %s=f1(round)", port: "ResolveDurcnt(\"1 f2\",flts)→dur=1, count=f2=flts[1]=seconds; %s=f1=round", match: true }
+      - { name: "per-step duration", base: "1s (durcnt first token)", port: "1s (ResolveDurcnt token0; Push duration=1 → _Process decrement window = m.Duration=1)", match: true }
     status:
-      logic: partial
-      values: partial
-      timing: partial
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN (unchanged by Wave-2/5): ShowCenter (HudNotifications.cs:181) hardcodes the ^COUNT value to flts[0] regardless of which float the notification's durcnt selects. COUNTDOWN_ROUNDSTART's durcnt is \"1 f2\" (count=f2=seconds, f1=round# feeding the %s in 'Round %s starts in'), but GameWorld.cs:1494 broadcasts Send(...,round+1,secondsLeft) so flts[0]=round# — the ^COUNT shows the ROUND NUMBER instead of the seconds in round-based modes (GAMESTART's flts[0]=seconds is correct). Latent risk for any future ^COUNT notification whose count is not the first float."
-      - "STILL OPEN: the Base durcnt per-step DURATION (1s) is ignored: ShowCenter always uses CenterPrintPanel.DefaultDuration=3, so the panel's own decrement window is 3s, not 1s. The per-second server re-broadcast masks this for GAMESTART/ROUNDSTART (each second refreshes the slot), but the panel-local ^COUNT decrement (CenterPrintPanel._Process) ticks on the wrong (3s) cadence between broadcasts."
+    gaps: []
     verification:
-      - { kind: value_diff, ref: "all.inc:568 COUNTDOWN_ROUNDSTART durcnt \"1 f2\"; NotificationsList.cs:413 args=\"f1\" + format 'Round %s starts in'; GameWorld.cs:1494 Send(...,round+1,secondsLeft); HudNotifications.cs:181 count=(int)flts[0]=round+1", result: fail }
-      - { kind: code, ref: "Base Announcer_Countdown emits the center ONCE (this.skin latch) then lets ^COUNT tick locally; port GameWorld re-broadcasts every countdown tick (BroadcastGameStartCountdown/BroadcastRoundStartCountdown called per second)", result: fail }
+      - { kind: value_diff, ref: "all.inc:567-568 COUNTDOWN_GAMESTART durcnt \"1 f1\" / ROUNDSTART \"1 f2\"; NotificationsList.cs:82-83 CenterDurcnt stamps the same specs onto Notification.Durcnt; HudNotifications.cs:183 ResolveDurcnt selects token0=duration, token1=count via fN ref; GameWorld.cs:1885 Send(...,secondsLeft), 1892 Send(...,round+1,secondsLeft) → f2=flts[1]=secondsLeft is correctly selected", result: pass }
+      - { kind: code, ref: "Push(text,duration=1,cpid,count) → Message.Duration=1; _Process decrements Count each m.Duration (=1s) window (CenterPrintPanel.cs:343-352). Server still re-broadcasts each second (intended no-CSQC cadence) but the panel-local ^COUNT now ticks at the correct 1s window", result: pass }
     confidence: high
-    notes: "INTENDED part: the port has no CSQC Announcer_Countdown think loop, so the countdown is server-driven — GameWorld re-broadcasts COUNTDOWN_GAMESTART/_ROUNDSTART once per second (each replacing the CPID_ROUND slot) instead of Base's once-then-local-^COUNT. That cadence is a deliberate consequence of the no-CSQC architecture. The wrong-^COUNT-arg in ROUNDSTART and the ignored per-step duration are NOT intended (hence intended_divergence=false) and are UNCHANGED by the Wave work. End-of-countdown via MSG_MULTI \"BEGIN\" → CENTER_COUNTDOWN_BEGIN (CPID_ROUND) matches; the new title-clear on BEGIN/abort (SendCenterTitle '') is correct."
+    notes: "BOTH baseline countdown gaps FIXED (partial→faithful). HudNotifications now models the QC durcnt arg-selection: ResolveDurcnt/ResolveDurcntToken (HudNotifications.cs:208-244) splits durcnt into token0=display-duration, token1=^COUNT-count, each resolved as a literal, an fN float-arg reference (1-based), or item_centime. NotificationsList.CenterDurcnt stamps the Base durcnt specs (\"1 f2\" for ROUNDSTART) onto Notification.Durcnt, so ROUNDSTART's count now correctly reads f2=flts[1]=secondsLeft (not flts[0]=round#), and the per-step duration is 1s (not the old DefaultDuration=3). INTENDED, unchanged: the server-driven once-per-second re-broadcast (no CSQC Announcer_Countdown think loop) — a deliberate no-CSQC consequence, but now numerically/timing-faithful. End-of-countdown via MSG_MULTI \"BEGIN\" + title-clear on BEGIN/abort still correct."
 
   - id: cl-centerprint.fade.in_out
     name: "Per-message fade in / out"
@@ -114,24 +111,23 @@ features:
       - "game/hud/CenterPrintPanel.cs:MessageAlpha"
       - "game/hud/CenterPrintPanel.cs:RegisterDefaults"
     constants:
-      - { name: "hud_panel_centerprint_fade_in", base: "0.15", port: "0", match: false }
+      - { name: "hud_panel_centerprint_fade_in", base: "0.15", port: "0.15", match: true }
       - { name: "hud_panel_centerprint_fade_out", base: "0.15", port: "0.15", match: true }
       - { name: "fade_out hard cap", base: "min(5, fade_out)", port: "min(5, fade_out)", match: true }
     status:
       logic: faithful
-      values: partial
-      timing: partial
-      presentation: partial
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN (unchanged): hud_panel_centerprint_fade_in default is 0 in the port (RegisterDefaults registers \"0\" at CenterPrintPanel.cs:208; CvarF(\"fade_in\", 0f) also defaults to 0) vs 0.15 in Base (centerprint.qh:6) — messages pop in instantly with no fade-in ramp."
+    gaps: []
     verification:
-      - { kind: value_diff, ref: "CenterPrintPanel.cs:208 registers fade_in \"0\"; centerprint.qh:6 defaults it to 0.15", result: fail }
+      - { kind: value_diff, ref: "CenterPrintPanel.cs:283 registers fade_in \"0.15\"; CvarF(\"fade_in\", 0.15f) at :304; centerprint.qh:6 defaults it to 0.15 — now match", result: pass }
     confidence: high
-    notes: "fade_out (0.15) and the min(5,..) cap match exactly; only the fade_in default diverges. CPID_TIMEIN fade-exemption (Base centerprint.qc:378) is not reproduced, but TIMEIN is not emitted in the port so it is moot."
+    notes: "FIXED (fade_in 0→0.15, partial→faithful). fade_in default now 0.15 (RegisterDefaults registers \"0.15\" + the live read defaults to 0.15), matching Base centerprint.qh:6; messages now ramp in instead of popping. fade_out (0.15) and the min(5,..) cap match exactly. CPID_TIMEIN fade-exemption (Base centerprint.qc:378) is not reproduced, but TIMEIN is not emitted in the port so it is moot."
 
   - id: cl-centerprint.fade.subsequent
     name: "Subsequent-message two-pass progressive fade"
@@ -173,25 +169,23 @@ features:
       - "game/hud/CenterPrintPanel.cs:WrapLine"
     constants:
       - { name: "fontscale", base: "1", port: "1", match: true }
-      - { name: "fontscale_bold (header default)", base: "1.4", port: "1.4", match: true }
-      - { name: "fontscale_bold (shipped skin)", base: "1.2 (hud_luma/luminos cfgs)", port: "1.4 (skin override not applied)", match: false }
-      - { name: "fontscale_title (shipped skin)", base: "1.3 (hud_luma/luminos cfgs)", port: "1.8 (skin override not applied)", match: false }
+      - { name: "fontscale_bold (shipped skin)", base: "1.2 (hud_luma/luminos cfgs:290)", port: "1.2 (RegisterDefaults + live read both default 1.2)", match: true }
+      - { name: "fontscale_title (shipped skin)", base: "1.3 (hud_luma/luminos cfgs:291)", port: "1.3 (RegisterDefaults + live read both default 1.3)", match: true }
       - { name: "BOLD_OPERATOR", base: "^BOLD", port: "^BOLD", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN (unchanged): Base shipped HUD skins (hud_luma.cfg/hud_luminos*.cfg:289-291) set fontscale_bold=1.2 / fontscale_title=1.3, overriding the header defaults; the port keeps the header defaults (1.4/1.8). Bold message lines + (now-live) titles render slightly larger than the stock skin."
+    gaps: []
     verification:
-      - { kind: code, ref: "flip bottom-up pre-measure block, align lerp, word-wrap + single-word hard-break, ^BOLD bold-font swap all present and behavior-matched", result: pass }
+      - { kind: code, ref: "flip bottom-up pre-measure block, align lerp, word-wrap + single-word hard-break, ^BOLD bold-font swap all present and behavior-matched; fontscale_bold=1.2/title=1.3 registered at CenterPrintPanel.cs:280-281 + live-read defaults at :302-303 match hud_luma.cfg:290-291", result: pass }
     confidence: high
-    notes: "Word-wrap is reimplemented (not QC getWrappedLine) but matches behavior incl. hard-break of an over-long single word. Panel does NOT reproduce Base's slide-below-scoreboard/radar repositioning (HUD_CenterPrint:221-242) — minor layout-only omission; not separately rowed. Title rendering is now exercised live (see title rows), so the title fontscale skin gap is now visible in-match."
+    notes: "FIXED (fontscale_bold 1.4→1.2, title 1.8→1.3 baked as port defaults, partial→faithful values). The port now registers the loaded-skin (luma/luminos) values 1.2/1.3 as the defaults instead of the centerprint.qh header defaults 1.4/1.8, so bold message lines + titles render at the stock-skin size. Word-wrap is reimplemented (not QC getWrappedLine) but matches behavior incl. hard-break of an over-long single word. Panel does NOT reproduce Base's slide-below-scoreboard/radar repositioning (HUD_CenterPrint:221-242) — minor layout-only omission; not separately rowed."
 
   - id: cl-centerprint.kill.group
     name: "centerprint_Kill — graceful group fade-out"
@@ -263,23 +257,22 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:SendCenterTitle"
       - "src/XonoticGodot.Server/GameWorld.cs:BroadcastCountdownTitle"
     constants:
-      - { name: "fontscale_title", base: "1.8 header / 1.3 shipped skin", port: "1.8 (skin override not applied)", match: false }
+      - { name: "fontscale_title", base: "1.3 shipped skin", port: "1.3 (skin override now applied as default)", match: true }
       - { name: "title text", base: "^BG + MapInfo_Type_ToText(gametype)", port: "^BG + GameType.DisplayName", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Title fontscale uses the header default 1.8, not the shipped-skin 1.3 (shared with layout.draw row); titles render larger than the stock skin. Minor values-only divergence."
+    gaps: []
     verification:
-      - { kind: code, ref: "GameWorld.cs:1529 SendCenterTitle(All,null,\"^BG\"+name) once per armed countdown (BroadcastCountdownTitle, non-Duel) → wire MsgType.CenterTitle → HudNotifications.cs:140 SetTitle; cleared via empty SendCenterTitle on BEGIN/abort/roundstop", result: pass }
+      - { kind: code, ref: "BroadcastCountdownTitle SendCenterTitle(All,null,\"^BG\"+name) once per armed countdown (non-Duel) → wire MsgType.CenterTitle → HudNotifications.cs:140 SetTitle; cleared via empty SendCenterTitle on BEGIN/abort/roundstop; titleFont = cpFont*FontScaleTitle with FontScaleTitle default now 1.3 (CenterPrintPanel.cs:303)", result: pass }
     confidence: high
-    notes: "FIXED dead→live + logic partial→faithful. The server now drives the gametype-name title server-side (no CSQC Announcer needed): BroadcastCountdownTitle sets ^BG<DisplayName> once per armed game-start countdown and clears it on BEGIN (GameWorld.cs:1460), countdown abort (732/735), and round-stop (1550). DrawTitle rendering (bold title + underline at fontscale_title) was already faithful. Only the skin fontscale override remains."
+    notes: "FIXED dead→live + logic partial→faithful (prior wave) AND the title fontscale skin gap now closed (1.8→1.3, values partial→faithful) — shared with layout.draw. The server drives the gametype-name title server-side (no CSQC Announcer needed): BroadcastCountdownTitle sets ^BG<DisplayName> once per armed game-start countdown and clears it on BEGIN, countdown abort, and round-stop. DrawTitle rendering (bold title + underline at fontscale_title) is faithful, now at the stock-skin scale."
 
   - id: cl-centerprint.title.duel
     name: "Duel title 'left vs right' (centerprint_SetDuelTitle + Announcer_Duel)"
@@ -377,20 +370,28 @@ features:
     layer: [presentation]
     base_refs:
       - "client/hud/panel/centerprint.qc:HUD_CenterPrint (autocvar__hud_configure block 189-217)"
-    port_refs: []
-    constants: []
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:UpdateHudConfigurePreview"
+      - "game/hud/CenterPrintPanel.cs:_Process (calls it per-frame)"
+      - "game/hud/HudConfigEditor.cs:548 (sets IsHighlighted)"
+      - "game/hud/HudConfig.cs:76 (registers _hud_configure)"
+    constants:
+      - { name: "countdown sample (id floor(r*1000), dur 1, count 10)", base: "r>0.8", port: "r>0.8f, Push(...,1f,id,10)", match: true }
+      - { name: "multiline sample (id 0, dur 20, ^BOLD line)", base: "r>0.55", port: "r>0.55f, Push(...,20f)", match: true }
+      - { name: "standard sample (AddStandard)", base: "else", port: "else Add(...)", match: true }
+      - { name: "regen cadence highlighted", base: "time+1+random()*4", port: "_now+1.0+rng*4.0", match: true }
+      - { name: "regen cadence non-highlighted", base: "time+10-random()*3", port: "_now+10.0-rng*3.0", match: true }
     status:
-      logic: missing
-      values: na
-      timing: na
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN (unchanged): when the HUD editor is open, Base generates rotating sample centerprint lines (countdown/multiline/standard/'Generic message') + a 'Title' line so the panel previews live while being positioned. The port's CenterPrintPanel has no _hud_configure preview path, so the centerprint panel renders empty in the HUD editor."
+    gaps: []
     verification:
-      - { kind: code, ref: "no autocvar__hud_configure / preview-generation branch in CenterPrintPanel.cs", result: fail }
-    confidence: medium
-    notes: "Cosmetic/editor-only; low gameplay impact but a real Base behavior the panel omits. Whether the port's HUD editor relies on per-panel self-preview at all is a separate question (HudConfig)."
+      - { kind: code, ref: "UpdateHudConfigurePreview (CenterPrintPanel.cs:210-263) reproduces the autocvar__hud_configure branch: enter→ClearAll+immediate gen, highlighted→SetTitle(\"Title\")+rotating countdown/multiline/standard on time+1+rand*4, non-highlighted→'Generic message' on time+10-rand*3, leave→ClearTitle+ClearAll; gated on GlobalF(_hud_configure) and IsHighlighted (set by HudConfigEditor.cs:548)", result: pass }
+    confidence: high
+    notes: "FIXED missing/dead→faithful/live. The HUD-editor live preview is now implemented and wired: _Process calls UpdateHudConfigurePreview every frame, self-gating on the _hud_configure cvar (registered HudConfig.cs:76, toggled by the HUD setup dialog). The rotating sample lines + 'Title' (when this is the highlighted panel) match the Base r-thresholds, ids, durations, count, and randomized regen cadences. IsHighlighted is driven live by HudConfigEditor."

@@ -1,35 +1,34 @@
 unit: cl-view
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"  # re-audited post Wave-5 (claude/parity-port-waves)
+last_audited: "2026-06-25"  # drift re-audit; the cl_player.qc view-effect chain (bob/roll/tilt/idle/velocityzoom/zoomscroll/zoomscript) is now fully ported + live
 summary:
   feature_count: 21
   worst_gaps:
-    - "Spectator third-person camera (View_SpectatorCamera / STAT(CAMERA_SPECTATOR) toggle / IMP_weapon_drop cycling) is still absent — spectating a player renders FIRST person (NetGame:4174 follow-cam returns before the chase logic). The user chase_active third-person cam IS now live (Wave-5), but chase_front (spectating-only) is hardcoded off."
+    - "Spectator third-person camera (View_SpectatorCamera / STAT(CAMERA_SPECTATOR) toggle / IMP_weapon_drop cycling) is still absent — spectating a player renders FIRST person (the follow-cam builds its own first-person ViewState before the chase logic). The user chase_active third-person cam IS live; chase_front (spectating-only) is hardcoded off (FirstPersonView:728 spectating=false)."
     - "HUD_Damage draws a solid red ColorRect instead of the gfx/blood splatter texture, and the gentle-mode (cl_gentle) solid/randomized-colour path is not ported."
     - "GLSL blur/sharpen post-process (damage/content blur, powerup edge-sharpen, View_BlurTest) and night-vision are not implemented (engine shader cvars, no Godot analogue)."
-    - "Velocity-zoom, zoom-scroll, and the zoomscript auto-zoom (fov<=59.5 -> +button9) are not implemented (menu cvars exist but no live reader)."
-    - "viewloc (2.5D side-scroller View Location camera, GetViewLocationFOV) is not ported."
+    - "viewloc (2.5D side-scroller View Location camera, GetViewLocationFOV), demo free camera (CSQC_Demo_Camera), lockview, orthoview, and the server FPS report are not ported (niche dev/demo tools, off the normal-match camera path)."
 features:
   - id: cl-view.zoom.fov_state_machine
     name: "Zoom / FOV state machine (current_viewzoom integration, 0.75 frustum, sensitivity)"
     layer: [presentation]
     base_refs:
-      - "client/view.qc:GetCurrentFov"
-      - "client/view.qc:IsZooming"
-      - "client/view.qc:View_UpdateFov"
+      - "client/view.qc:GetCurrentFov (488)"
+      - "client/view.qc:IsZooming (424)"
+      - "client/view.qc:View_UpdateFov (1650)"
     port_refs:
       - "game/client/FirstPersonView.cs:UpdateZoom"
       - "game/client/FirstPersonView.cs:ComputeVerticalFov"
       - "game/net/NetGame.cs:UpdateCamera"
       - "game/net/NetGame.cs:SeedViewCvars"
     constants:
-      - { name: "fov", base: "100", port: "100 (seeded NetGame:1352)", match: true }
-      - { name: "cl_zoomfactor", base: "5 (clamp 1..30 else 2.5)", port: "5 (seeded NetGame:1346; fallback 2.5)", match: true }
-      - { name: "cl_zoomspeed", base: "8 (0.5..16 else 3.5)", port: "8 (seeded NetGame:1347; fallback 3.5)", match: true }
+      - { name: "fov", base: "100", port: "100 (BaseFov; fov cvar overrides live)", match: true }
+      - { name: "cl_zoomfactor", base: "5 (clamp 1..30 else 2.5)", port: "5 (seeded; fallback 2.5, clamp 1..30)", match: true }
+      - { name: "cl_zoomspeed", base: "8 (0.5..16 else 3.5)", port: "8 (seeded; fallback 3.5, clamp 0.5..16)", match: true }
       - { name: "cl_zoomsensitivity", base: "0", port: "0 (seeded)", match: true }
-      - { name: "frustum_aspect_norm", base: "0.75", port: "0.75 (FirstPersonView:219)", match: true }
-      - { name: "MAX_ZOOMFACTOR", base: "30", port: "30", match: true }
+      - { name: "frustum_aspect_norm", base: "0.75", port: "0.75 (FirstPersonView:332)", match: true }
+      - { name: "MAX_ZOOMFACTOR", base: "30", port: "30 (FirstPersonView:126)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -41,19 +40,19 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "FirstPersonView.UpdateZoom + ComputeVerticalFov match GetCurrentFov; cvars seeded NetGame.SeedViewCvars 1346-1352; UpdateCamera live on net path", result: pass }
+      - { kind: code, ref: "FirstPersonView.UpdateZoom + ComputeVerticalFov match GetCurrentFov; cvars seeded SeedViewCvars; UpdateCamera live on net path (NetGame:4460 UpdateView)", result: pass }
     confidence: high
-    notes: "current_viewzoom integration, current_zoomfraction, setsensitivityscale (current_viewzoom**(1-zoomsensitivity)), and the *0.75 4:3 frustum all match exactly. Velocityzoom multiplier (GetCurrentFov:574-601) is absent but defaults off (see velocity_zoom row). The 2.5/3.5 fallbacks match Base's out-of-range clamp."
+    notes: "current_viewzoom integration, current_zoomfraction, setsensitivityscale (current_viewzoom**(1-zoomsensitivity)), and the *0.75 4:3 frustum all match. The velocityzoom multiplier is now folded in via ComputeVelocityZoom (FirstPersonView:423) — see velocity_zoom row (default off, no effect). The 2.5/3.5 fallbacks match Base's out-of-range clamp."
 
   - id: cl-view.zoom.spawn_zoom
     name: "Spawn-zoom (zoom out from 1/factor on respawn)"
     layer: [presentation]
     base_refs:
-      - "client/view.qc:GetCurrentFov (spawn branch ~512-520)"
+      - "client/view.qc:GetCurrentFov (spawn branch)"
       - "client/spawnpoints.qc:82-86"
     port_refs:
       - "game/client/FirstPersonView.cs:TriggerSpawnZoom"
-      - "game/net/NetGame.cs:2361-2369"
+      - "game/net/NetGame.cs:2608"
     constants:
       - { name: "cl_spawnzoom", base: "1", port: "1 (seeded)", match: true }
       - { name: "cl_spawnzoom_factor", base: "2", port: "2 (seeded)", match: true }
@@ -69,7 +68,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Health 0->>0 edge arms TriggerSpawnZoom (NetGame:2361-2369); ease-out in UpdateZoom 170-178", result: pass }
+      - { kind: code, ref: "Health 0->>0 edge arms TriggerSpawnZoom (NetGame:2608); ease-out in UpdateZoom 253-261", result: pass }
     confidence: high
     notes: "Net path derives the (re)spawn edge from a Health 0->>0 transition since it has no Teleport; faithful intended substitution. Spawn-zoom branch sits above the normal zoom and is cancelled by manual +zoom, matching GetCurrentFov."
 
@@ -79,7 +78,7 @@ features:
     base_refs:
       - "client/view.qc:IsZooming (wr_zoomdir loop)"
     port_refs:
-      - "game/net/NetGame.cs:2379-2382"
+      - "game/net/NetGame.cs:2624 (weaponZoom -> ZoomHeld)"
     constants: []
     status:
       logic: faithful
@@ -92,7 +91,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "activeWep.ZoomOnSecondary && Attack2Held -> _view.ZoomHeld (NetGame:2381-2382)", result: pass }
+      - { kind: code, ref: "active weapon secondary-zoom folded into ZoomHeld (NetGame:2624)", result: pass }
     confidence: medium
     notes: "Port folds the active weapon's secondary-fire zoom into button_zoom like IsZooming. Only the one active weapon is checked (port has a single weapon slot on this path); Base loops MAX_WEAPONSLOTS but stock single-wield matches."
 
@@ -101,94 +100,99 @@ features:
     layer: [presentation]
     base_refs:
       - "client/view.qc:GetCurrentFov (velocityzoom block 574-601)"
-    port_refs: []
+    port_refs:
+      - "game/client/FirstPersonView.cs:ComputeVelocityZoom (434)"
+      - "game/client/FirstPersonView.cs:UpdateCamera (velocityZoom fold, 422-423)"
     constants:
-      - { name: "cl_velocityzoom_enabled", base: "0 (off by default)", port: "none", match: false }
-      - { name: "cl_velocityzoom_factor", base: "0", port: "none", match: false }
-      - { name: "cl_velocityzoom_type", base: "3", port: "none", match: false }
-      - { name: "cl_velocityzoom_speed", base: "1000", port: "none", match: false }
-      - { name: "cl_velocityzoom_time", base: "0.2", port: "none", match: false }
+      - { name: "cl_velocityzoom_enabled", base: "0 (off by default)", port: "0 (read live)", match: true }
+      - { name: "cl_velocityzoom_factor", base: "0", port: "0 (read live)", match: true }
+      - { name: "cl_velocityzoom_type", base: "3", port: "3 (read live)", match: true }
+      - { name: "cl_velocityzoom_speed", base: "1000", port: "1000 (read live)", match: true }
+      - { name: "cl_velocityzoom_time", base: "0.2", port: "0.2 (read live)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "FOV does not widen/narrow with player speed; the cl_velocityzoom_* menu controls do nothing (ComputeVerticalFov omits the velocityzoom frustum multiplier)."
+    gaps: []
     verification:
-      - { kind: grep, ref: "velocityzoom only in DialogSettingsEffects.cs/DialogSettingsGame.cs (menu widgets), no view reader; FirstPersonView.ComputeVerticalFov has no velocity term", result: fail }
+      - { kind: code, ref: "ComputeVelocityZoom ports the velocityzoom block: curspeed type 1/2/3 (fwd-dot velocity), low-pass _avgSpeed over cl_velocityzoom_time, float2range11 (f/(|f|+1)) + exp(); folded into the rendered fov in UpdateCamera (FirstPersonView:422-423). Live on the net path (UpdateView NetGame:4460). All cvars read live with faithful fallbacks.", result: pass }
     confidence: high
-    notes: "Off by default in stock Xonotic (cl_velocityzoom_enabled 0), so a default match is unaffected; opt-in only."
+    notes: "FIXED since the 2026-06-22 baseline (was missing): the velocity-based FOV widen/narrow is now ported and wired. Off by default in stock Xonotic (cl_velocityzoom_enabled 0), so a default match is unaffected; opt-in only — but the seam is now faithful and live so enabling the cvars takes effect. The type 0 disable and the intermission/spectator zero branch are handled (intermission branch not on the net first-person path)."
 
   - id: cl-view.zoom.zoom_scroll
     name: "Zoom-scroll (mousewheel adjusts zoom factor while zooming)"
     layer: [presentation]
     base_refs:
-      - "client/view.qc:ZoomScroll"
-      - "client/view.qc:View_InputEvent"
-    port_refs: []
+      - "client/view.qc:ZoomScroll (450)"
+      - "client/view.qc:View_InputEvent (465)"
+      - "client/view.qc:GetCurrentFov (523-544 zoomscroll integration)"
+    port_refs:
+      - "game/client/FirstPersonView.cs:NotifyZoomScroll (197)"
+      - "game/client/FirstPersonView.cs:UpdateZoom (zoomscroll branch 264-289)"
+      - "game/net/NetGame.cs:3873-3876 (mousewheel -> NotifyZoomScroll)"
     constants:
-      - { name: "cl_zoomscroll", base: "1", port: "none", match: false }
-      - { name: "cl_zoomscroll_scale", base: "0.2", port: "none", match: false }
-      - { name: "cl_zoomscroll_speed", base: "16", port: "none", match: false }
+      - { name: "cl_zoomscroll", base: "1", port: "1 (read live)", match: true }
+      - { name: "cl_zoomscroll_scale", base: "0.2", port: "0.2 (read live)", match: true }
+      - { name: "cl_zoomscroll_speed", base: "16", port: "16 (read live)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Holding +zoom and scrolling the mousewheel does not change the zoom factor (no ZoomScroll / View_InputEvent reader)."
+    gaps: []
     verification:
-      - { kind: grep, ref: "no ZoomScroll / cl_zoomscroll reader in src/ or game/", result: fail }
+      - { kind: code, ref: "NotifyZoomScroll (ZoomScroll port): only while cl_zoomscroll on + actively zooming, scales zoomscroll_factor_target by 1+min(|scale|,1) clamped [1,MAX_ZOOMFACTOR]; UpdateZoom eases zoomscroll_factor toward target (frametime-independent avg) and REPLACES zoomfactor; wired to K_MWHEELUP/DOWN gated on ZoomHeld (NetGame:3873-3876).", result: pass }
     confidence: high
-    notes: "Default ON but requires the player to actively scroll while zoomed; no passive effect, so a stock match without scrolling is unaffected."
+    notes: "FIXED since the 2026-06-22 baseline (was missing): holding +zoom and scrolling now changes the zoom factor. Default ON but requires the player to actively scroll while zoomed; no passive effect, so a stock match without scrolling is unaffected."
 
   - id: cl-view.zoom.zoomscript_buttonstatus
     name: "Zoomscript auto-zoom + zoom-button management (View_CheckButtonStatus)"
     layer: [presentation]
     base_refs:
-      - "client/view.qc:View_CheckButtonStatus"
+      - "client/view.qc:View_CheckButtonStatus (1472)"
     port_refs:
-      - "game/net/NetGame.cs:2378 (zoomActive gate)"
+      - "game/client/FirstPersonView.cs:UpdateZoom (zoomscript_caught 233-239)"
+      - "game/net/NetGame.cs:2624 (zoomActive gate, Health>0)"
     constants:
       - { name: "cl_unpress_zoom_on_death", base: "1", port: "implicit (zoom suppressed when Health<=0)", match: true }
+      - { name: "fov_auto_zoom_threshold", base: "59.5 (+button9 when fov<=59.5)", port: "59.5 (FirstPersonView:237)", match: true }
       - { name: "cl_unpress_zoom_on_weapon_switch", base: "1", port: "none", match: false }
       - { name: "cl_unpress_attack_on_weapon_switch", base: "1", port: "none", match: false }
-      - { name: "fov_auto_zoom_threshold", base: "59.5 (+button9 when fov<=59.5)", port: "none", match: false }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Zoomscript auto-zoom (autocvar_fov <= 59.5 -> localcmd +button9, zoomscript_caught) is not ported."
-      - "cl_unpress_zoom_on_weapon_switch / cl_unpress_attack_on_weapon_switch and the cl_hook_activeweapon localcmd are not modelled."
+      - "cl_unpress_zoom_on_weapon_switch / cl_unpress_attack_on_weapon_switch and the cl_hook_activeweapon localcmd are not modelled (niche scripting glue)."
       - "isdemo() zoom-via-__togglezoom fallback is absent."
     verification:
-      - { kind: code, ref: "NetGame:2378 zoomActive = ... && Health>0 covers unpress-zoom-on-death; no zoomscript/weapon-switch-unpress/hook handling found", result: fail }
+      - { kind: code, ref: "FirstPersonView.UpdateZoom (233-239): autocvar_fov <= 59.5 sets _zoomScriptCaught, which folds into the zoom integration exactly like held +zoom AND feeds the reticle full-alpha branch (ZoomScriptCaught exposed, read NetGame:2672 -> ReticleOverlay). unpress-zoom-on-death covered by NetGame:2624 zoomActive && Health>0.", result: pass }
     confidence: high
-    notes: "Only the unpress-zoom-on-death behaviour is reproduced (host gates ZoomHeld off when dead). The rest is niche scripting glue. The zoomscript_caught state also feeds DrawReticle's fade (reticle row notes its absence)."
+    notes: "FIXED since the 2026-06-22 baseline (was partial): the zoomscript auto-zoom (autocvar_fov <= 59.5 -> zoomscript_caught) is now ported in UpdateZoom — it engages the zoom like +button9 and drives the reticle's full-alpha branch (closing the gap noted in the reticle row). Remaining absences are the weapon-switch unpress + cl_hook_activeweapon localcmd glue and the demo togglezoom fallback — niche scripting only."
 
   - id: cl-view.chase.event_death_cam
     name: "Event / death chase camera (cl_eventchase_death corpse-settle pull-back)"
     layer: [presentation]
     base_refs:
-      - "client/view.qc:WantEventchase"
-      - "client/view.qc:View_EventChase"
+      - "client/view.qc:WantEventchase (730)"
+      - "client/view.qc:View_EventChase (767)"
     port_refs:
-      - "game/client/FirstPersonView.cs:ApplyEventChase"
+      - "game/client/FirstPersonView.cs:WantEventChase (628)"
+      - "game/client/FirstPersonView.cs:ApplyEventChase (642)"
     constants:
       - { name: "cl_eventchase_death", base: "2 (settle then latch)", port: "2 (seeded)", match: true }
       - { name: "cl_eventchase_distance", base: "140", port: "140 (seeded)", match: true }
@@ -196,7 +200,7 @@ features:
       - { name: "cl_eventchase_viewoffset", base: "'0 0 20'", port: "'0 0 20'", match: true }
       - { name: "cl_eventchase_mins", base: "'-12 -12 -8'", port: "'-12 -12 -8'", match: true }
       - { name: "cl_eventchase_maxs", base: "'12 12 8'", port: "'12 12 8'", match: true }
-      - { name: "cl_eventchase_frozen", base: "0 (off by default)", port: "0 (read live via Cvar default; not seeded but default matches)", match: true }
+      - { name: "cl_eventchase_frozen", base: "0 (off by default)", port: "0 (read live; default matches)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -209,24 +213,24 @@ features:
     gaps:
       - "Vehicle chase (cl_eventchase_vehicle/_vehicle_distance), spectated-change chase (cl_eventchase_spectated_change), and the game-stop/intermission/viewloc chase triggers in WantEventchase are not ported (death + frozen + host-forced chase only)."
     verification:
-      - { kind: code, ref: "ApplyEventChase: death==2 velocity-settle gate + latch + viewoffset ceiling trace + box-trace pull-back; frozenChase = st.IsFrozen && cl_eventchase_frozen!=0 (FirstPersonView:284-287); IsFrozen fed live from FreezeTag Frozen status (NetGame:4176)", result: pass }
+      - { kind: code, ref: "ApplyEventChase: death==2 velocity-settle gate + latch + viewoffset ceiling trace + box-trace pull-back; frozenChase = st.IsFrozen && cl_eventchase_frozen!=0 (FirstPersonView:638); IsFrozen fed live from FreezeTag Frozen status (NetGame:4449)", result: pass }
     confidence: high
-    notes: "Death-cam is faithful (corpse-settle gate, eventchase_running latch, ceiling-aware viewoffset, eased distance, world-only box-trace with start-solid fallback). Wave-5 closed the frozen-state chase: cl_ft WantEventchase is now ported — IsFrozen (live FreezeTag Frozen status effect on the host-side local Player) + cl_eventchase_frozen (read live, default 0 = off, matching Base) engages the pull-back. The other WantEventchase entry conditions (vehicle/spectated-change/intermission/viewloc) remain absent."
+    notes: "Death-cam is faithful (corpse-settle gate, eventchase_running latch, ceiling-aware viewoffset, eased distance, world-only box-trace with start-solid fallback). The frozen-state chase is ported — IsFrozen (live FreezeTag Frozen status effect on the host-side local Player) + cl_eventchase_frozen (read live, default 0 = off, matching Base) engages the pull-back. The other WantEventchase entry conditions (vehicle/spectated-change/intermission/viewloc) remain absent."
 
   - id: cl-view.chase.classic_thirdperson
     name: "Classic chase_active third-person + spectator camera (chase_back/up/front/overhead; View_SpectatorCamera)"
     layer: [presentation]
     base_refs:
-      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_ApplyChase"
-      - "client/view.qc:View_SpectatorCamera"
+      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_ApplyChase (453)"
+      - "client/view.qc:View_SpectatorCamera (655)"
     port_refs:
-      - "game/client/FirstPersonView.cs:ApplyClassicChase (FirstPersonView:401)"
-      - "game/client/FirstPersonView.cs:UpdateCamera (classicChase branch, ~247)"
-      - "game/net/NetGame.cs:2611 (CameraMode = chase_active != 0 ? Chase : None)"
+      - "game/client/FirstPersonView.cs:ApplyClassicChase (719)"
+      - "game/client/FirstPersonView.cs:UpdateCamera (classicChase branch, 351)"
+      - "game/net/NetGame.cs:2630 (CameraMode = chase_active != 0 ? Chase : None)"
     constants:
       - { name: "chase_back", base: "user (menu 10..100; DP default 48)", port: "live Cvar(\"chase_back\", 48)", match: true }
       - { name: "chase_up", base: "user (menu 10..50; DP default 24)", port: "live Cvar(\"chase_up\", 24)", match: true }
-      - { name: "chase_front", base: "0 (spectating only)", port: "live Cvar(\"chase_front\", 0); but spectating hardcoded false → selfie branch dead", match: false }
+      - { name: "chase_front", base: "0 (spectating only)", port: "live Cvar(\"chase_front\", 0); but spectating hardcoded false (FirstPersonView:728) -> selfie branch dead", match: false }
       - { name: "chase_overhead", base: "0", port: "live Cvar(\"chase_overhead\", 0); 5x5 grid trace ported", match: true }
       - { name: "chase_pitchangle", base: "user", port: "live Cvar(\"chase_pitchangle\", 0)", match: true }
     status:
@@ -239,26 +243,26 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Spectator third-person (View_SpectatorCamera + STAT(CAMERA_SPECTATOR) 1/2 toggle, IMP_weapon_drop cycling) is NOT ported — spectating a player renders FIRST person: the follow-cam (NetGame:4174) builds its own first-person ViewState and returns before the chase_active CameraMode logic runs."
-      - "chase_front (the frontal selfie cam) is effectively dead: ApplyClassicChase hardcodes `spectating = false` (FirstPersonView:~415), and chase_front is QC-guarded to spectating only — so it never engages. The view-flip + overhead-while-spectating paths are untested live."
+      - "Spectator third-person (View_SpectatorCamera + STAT(CAMERA_SPECTATOR) 1/2 toggle, IMP_weapon_drop cycling) is NOT ported — spectating a player renders FIRST person: the follow-cam builds its own first-person ViewState and returns before the chase_active CameraMode logic runs."
+      - "chase_front (the frontal selfie cam) is effectively dead: ApplyClassicChase hardcodes `spectating = false` (FirstPersonView:728), and chase_front is QC-guarded to spectating only — so it never engages. The view-flip + overhead-while-spectating paths are untested live."
     verification:
-      - { kind: code, ref: "NetGame:2611 sets CameraMode = chase_active!=0 (live render path); ApplyClassicChase (FirstPersonView:401) ports CSQCPlayer_ApplyChase: pull-back along forward by chase_back + lift chase_up + world trace + 8/4 back-off, chase_overhead 5x5 grid lowest-ceiling, chase_pitchangle; chase_* read live via Cvar(); menu radio/sliders wired (DialogSettingsGame:457,487,490,496). Spectate follow-cam still first-person (NetGame:4174); spectating=false disables chase_front.", result: partial }
+      - { kind: code, ref: "NetGame:2630 sets CameraMode = chase_active!=0 (live render path); ApplyClassicChase (FirstPersonView:719) ports CSQCPlayer_ApplyChase: pull-back along forward by chase_back + lift chase_up + world trace + 8/4 back-off, chase_overhead 5x5 grid lowest-ceiling, chase_pitchangle; chase_* read live via Cvar(). Spectate follow-cam still first-person; spectating=false disables chase_front.", result: partial }
     confidence: high
-    notes: "Wave-5 closed the BIG gap: the user chase_active third-person cam is now genuinely LIVE — NetGame:2611 sets CameraMode from the chase_active cvar each frame (the menu Perspective radio + chase_back/chase_up sliders are no longer dead), and ApplyClassicChase faithfully ports CSQCPlayer_ApplyChase (default pull-back branch + the chase_overhead 5x5 grid + chase_pitchangle, with world box/line traces). STILL OPEN: (1) the dedicated SPECTATOR camera (View_SpectatorCamera / CAMERA_SPECTATOR toggle / weapon-drop cycling) — spectating renders first-person; (2) chase_front, guarded to spectating in QC, is wired but unreachable because the local-player chase sets spectating=false. liveness: partial (own-player chase live; spectator-chase path absent)."
+    notes: "The user chase_active third-person cam is genuinely LIVE — NetGame:2630 sets CameraMode from the chase_active cvar each frame, and ApplyClassicChase faithfully ports CSQCPlayer_ApplyChase (default pull-back branch + chase_overhead 5x5 grid + chase_pitchangle, with world box/line traces). STILL OPEN: (1) the dedicated SPECTATOR camera (View_SpectatorCamera / CAMERA_SPECTATOR toggle / weapon-drop cycling) — spectating renders first-person; (2) chase_front, guarded to spectating in QC, is wired but unreachable (local-player chase sets spectating=false). liveness: partial (own-player chase live; spectator-chase path absent)."
 
   - id: cl-view.kick.punch_angle
     name: "Punch-angle recoil kick (view angle, networked + decayed)"
     layer: [authority, presentation]
     base_refs:
-      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_CalcRefdef (view_angles += view_punchangle)"
+      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_CalcRefdef (view_angles += view_punchangle, 566)"
       - "common/physics/player.qc:PM_check_punch (punchangle decay)"
     port_refs:
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:CheckPunch"
-      - "game/net/ServerNet.cs:1980 (writes PunchAngle)"
-      - "game/net/ClientNet.cs:772 (reads PunchAngle)"
-      - "game/net/NetGame.cs:3529 (view_angles += PunchAngle)"
+      - "game/net/ServerNet.cs (writes PunchAngle)"
+      - "game/net/ClientNet.cs (reads PunchAngle)"
+      - "game/net/NetGame.cs (view_angles += PunchAngle)"
     constants:
-      - { name: "punchangle_decay_deg_per_s", base: "10", port: "10 (PlayerPhysics:1585)", match: true }
+      - { name: "punchangle_decay_deg_per_s", base: "10", port: "10 (PlayerPhysics CheckPunch)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -270,7 +274,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "PunchAngle decayed 10deg/s server-side (CheckPunch, skipped on predicted replays), networked (ServerNet:1980 / ClientNet:772), added to rendered view only (NetGame:3529)", result: pass }
+      - { kind: code, ref: "PunchAngle decayed 10deg/s server-side (CheckPunch, skipped on predicted replays), networked (ServerNet/ClientNet), added to rendered view only", result: pass }
     confidence: high
     notes: "Added to the rendered view only; the aim sent to the server (_viewAngles) stays unpunched so shots track the crosshair, matching QC. Decay matches PM_check_punch (vlen - 10*dt, normalize)."
 
@@ -278,16 +282,16 @@ features:
     name: "Punch-vector recoil kick (view origin)"
     layer: [authority, presentation]
     base_refs:
-      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_CalcRefdef (vieworg += view_punchvector)"
+      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_CalcRefdef (vieworg += view_punchvector, 570)"
       - "common/physics/player.qc:PM_check_punch (punchvector decay 30u/s)"
     port_refs:
-      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:CheckPunch (decay, PlayerPhysics:1630)"
-      - "game/net/ServerNet.cs:2063 (writes PunchVector, owner block)"
-      - "game/net/ClientNet.cs:814 (reads PunchVector)"
-      - "game/net/NetGame.cs:4283 (PunchOriginQuake = _client.PunchVector)"
-      - "game/client/FirstPersonView.cs:UpdateCamera (camQuake += st.PunchOriginQuake, first-person branch only)"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:CheckPunch (decay)"
+      - "game/net/ServerNet.cs (writes PunchVector, owner block)"
+      - "game/net/ClientNet.cs (reads PunchVector)"
+      - "game/net/NetGame.cs:4445 (PunchOriginQuake = _client.PunchVector)"
+      - "game/client/FirstPersonView.cs:UpdateCamera (camQuake += st.PunchOriginQuake, first-person branch only, 391)"
     constants:
-      - { name: "punchvector_decay_u_per_s", base: "30", port: "30 (decayed server-side, PlayerPhysics:1630)", match: true }
+      - { name: "punchvector_decay_u_per_s", base: "30", port: "30 (decayed server-side)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -299,93 +303,107 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Full seam wired end-to-end: PunchVector decayed 30u/s (PlayerPhysics:1630), networked in the owner block right after PunchAngle (ServerNet:2063 / ClientNet:814), fed to the shared view as PunchOriginQuake (NetGame:4283), and added to the rendered camera origin in the FIRST-PERSON branch ONLY (FirstPersonView UpdateCamera: `if(!ChaseActive) camQuake += st.PunchOriginQuake`) so a death/frozen/chase pull-back is never jolted — matching cl_player.qc:570 `vieworg += view_punchvector`.", result: pass }
+      - { kind: code, ref: "Full seam wired end-to-end: PunchVector decayed 30u/s, networked in the owner block right after PunchAngle, fed to the shared view as PunchOriginQuake (NetGame:4445), and added to the rendered camera origin in the FIRST-PERSON branch ONLY (FirstPersonView:389-391 `if(!ChaseActive) camQuake += st.PunchOriginQuake`) so a death/frozen/chase pull-back is never jolted — matching cl_player.qc:570.", result: pass }
     confidence: high
-    notes: "Wave-5 closed this: the view-origin recoil kick is now wired end-to-end and applied to the rendered eye (first-person only, suppressed during chase). Decay matches PM_check_punch (30 u/s). NOTE: no STOCK Xonotic content drives view_punchvector non-zero (only resets/decay; Minelayer reuses .PunchVector as a movedir alias, not a view kick), so the on-screen effect is still nil under default content — but the parity seam is genuinely faithful + live now, so any future origin kick renders correctly."
+    notes: "The view-origin recoil kick is wired end-to-end and applied to the rendered eye (first-person only, suppressed during chase). Decay matches PM_check_punch (30 u/s). NOTE: no STOCK Xonotic content drives view_punchvector non-zero (only resets/decay; Minelayer reuses .PunchVector as a movedir alias, not a view kick), so the on-screen effect is still nil under default content — but the parity seam is faithful + live."
 
   - id: cl-view.bob.view_bob
     name: "View bobbing (vertical cl_bob, horizontal cl_bob2, fall-bob cl_bobfall)"
     layer: [presentation]
     base_refs:
-      - "client/view.qc:viewmodel_animate (TODO: cl_bob/cl_bob2/cl_bobfall stubs, 273-285)"
-    port_refs: []
+      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_ApplyBobbing (321)"
+    port_refs:
+      - "game/client/FirstPersonView.cs:ApplyBobbing (532)"
+      - "game/net/NetGame.cs:4457-4458 (OnGround/JumpHeld fed into ViewState)"
     constants:
-      - { name: "cl_bob", base: "0 (off by default; DP 0.02)", port: "none", match: false }
-      - { name: "cl_bobcycle", base: "0.5", port: "none", match: false }
-      - { name: "cl_bob2", base: "0", port: "none", match: false }
-      - { name: "cl_bobfall", base: "0.05", port: "none", match: false }
-      - { name: "cl_bobfallminspeed", base: "200", port: "none", match: false }
+      - { name: "cl_bob", base: "0 (off by default; DP 0.02)", port: "0 (read live)", match: true }
+      - { name: "cl_bobcycle", base: "0.5", port: "0.5 (read live)", match: true }
+      - { name: "cl_bob_limit", base: "7", port: "7 (read live)", match: true }
+      - { name: "cl_bobup", base: "0.5", port: "0.5 (read live)", match: true }
+      - { name: "cl_bob_velocity_limit", base: "400", port: "400 (read live)", match: true }
+      - { name: "cl_bob2", base: "0", port: "0 (read live)", match: true }
+      - { name: "cl_bob2cycle", base: "1", port: "1 (read live)", match: true }
+      - { name: "cl_bob2smooth", base: "0.05", port: "0.05 (read live)", match: true }
+      - { name: "cl_bobfall", base: "0.05", port: "0.05 (read live)", match: true }
+      - { name: "cl_bobfallcycle", base: "3", port: "3 (read live)", match: true }
+      - { name: "cl_bobfallminspeed", base: "200", port: "200 (read live)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The view does not bob up/down while running (cl_bob), side-to-side (cl_bob2), or swing on landing (cl_bobfall)."
+      - "The cl_bob_limit_heightcheck trace path (default 0) is omitted (documented; the default-0 branch is the one that runs)."
     verification:
-      - { kind: grep, ref: "no ApplyBobbing / cl_bob view reader (cl_bob/cl_bobfall only in DialogSettingsGame.cs). Note: even BASE leaves view-bob as TODO stubs in viewmodel_animate — only the gun bobs (bobmodel), not the view.", result: fail }
+      - { kind: code, ref: "ApplyBobbing ports CSQCPlayer_ApplyBobbing: vertical bob (bobup sin, xyspeed-proportional), horizontal bob2 (cos cycle + bob2_smooth ground-decay blocked while jumping), fall-bob (bobfall_speed/swing). All cvars read live with Base defaults. OnGround/JumpHeld/Velocity fed via ViewState (NetGame:4457-4458); UpdateView live (NetGame:4460).", result: pass }
     confidence: high
-    notes: "cl_bob 0 / cl_bob2 0 are the shipped defaults and Base itself only TODO-stubs the view-bob (the actual cl_bobfall etc. is unimplemented in stock CSQC too); so a stock match shows no view-bob in EITHER. The gun-bob (cl_bobmodel) IS ported — see viewmodel.sway."
+    notes: "FIXED since the 2026-06-22 baseline (was missing — and the baseline note that even Base only TODO-stubbed this was WRONG: CSQCPlayer_ApplyBobbing IS a full implementation in cl_player.qc:321, the view.qc:273-285 stubs were a separate dead branch). The port now faithfully transcribes the cl_player.qc bobbing. cl_bob 0 / cl_bob2 0 are the shipped defaults so a stock match still shows no view-bob — opt-in only. Only the heightcheck trace (default off) is omitted."
 
   - id: cl-view.roll.view_roll
     name: "View roll when strafing (cl_rollangle / CalcRoll)"
     layer: [presentation]
     base_refs:
-      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_CalcRefdef (V_CalcRefdef / roll)"
-    port_refs: []
+      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_CalcRoll (432)"
+    port_refs:
+      - "game/client/FirstPersonView.cs:CalcRoll (509)"
+      - "game/client/FirstPersonView.cs:UpdateCamera (viewAngles.Z += CalcRoll, 377)"
     constants:
-      - { name: "cl_rollangle", base: "0 (off by default; DP 2.0)", port: "none", match: false }
-      - { name: "cl_rollspeed", base: "200", port: "none", match: false }
+      - { name: "cl_rollangle", base: "0 (off by default; DP 2.0)", port: "0 (read live)", match: true }
+      - { name: "cl_rollspeed", base: "200 (DP default; QC autocvar 0)", port: "200 (fallback)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The camera does not roll/bank when strafing sideways."
+    gaps: []
     verification:
-      - { kind: grep, ref: "no CalcRoll / cl_rollangle reader in the view path", result: fail }
+      - { kind: code, ref: "CalcRoll ports CSQCPlayer_CalcRoll: side = velocity.v_right, ramp to cl_rollangle past cl_rollspeed, signed; added to view_angles.z in UpdateCamera (FirstPersonView:377). Live on the net path.", result: pass }
     confidence: high
-    notes: "cl_rollangle 0 is the shipped default, so a stock match shows no roll regardless; opt-in only."
+    notes: "FIXED since the 2026-06-22 baseline (was missing): the camera now banks when strafing. cl_rollangle 0 is the shipped default so a stock match shows no roll regardless; opt-in only. cl_rollspeed has no QC autocvar default (0) so the DP 200 fallback is used — matches Base behaviour."
 
   - id: cl-view.tilt.death_idle
     name: "Death tilt (v_deathtilt) + idle view-wave (v_idlescale)"
     layer: [presentation]
     base_refs:
-      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_CalcRefdef (deathtilt / idlescale)"
-    port_refs: []
+      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_ApplyDeathTilt (278)"
+      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_ApplyIdleScaling (296)"
+    port_refs:
+      - "game/client/FirstPersonView.cs:ApplyDeathTilt (470)"
+      - "game/client/FirstPersonView.cs:ApplyIdleScaling (493)"
     constants:
-      - { name: "v_deathtilt", base: "0 (off by default)", port: "none", match: false }
-      - { name: "v_idlescale", base: "0 (off by default)", port: "none", match: false }
+      - { name: "v_deathtilt", base: "0 (off by default)", port: "0 (read live)", match: true }
+      - { name: "v_deathtiltangle", base: "80", port: "80 (fallback)", match: true }
+      - { name: "v_idlescale", base: "0 (off by default)", port: "0 (read live)", match: true }
+      - { name: "v_ipitch_cycle/_iyaw_cycle/_iroll_cycle", base: "1 / 2 / 0.5", port: "1 / 2 / 0.5 (fallback)", match: true }
+      - { name: "v_ipitch_level/_iyaw_level/_iroll_level", base: "0.3 / 0.3 / 0.1", port: "0.3 / 0.3 / 0.1 (fallback)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "No view roll on death (v_deathtilt) and no idle sin-wave of the view angles (v_idlescale)."
+    gaps: []
     verification:
-      - { kind: grep, ref: "no DeathTilt / idlescale reader (v_idlescale only a dead menu checkbox in DialogSettingsGame.cs)", result: fail }
+      - { kind: code, ref: "ApplyDeathTilt ports CSQCPlayer_ApplyDeathTilt (min((time-death_time)*8,1)*v_deathtiltangle, bails under cl_eventchase_death 2 default); ApplyIdleScaling ports CSQCPlayer_ApplyIdleScaling (sin-wave pitch/yaw/roll). Death edge tracked via _deathTime/_wasDead; idle runs after the chase split (FirstPersonView:398). Live on the net path.", result: pass }
     confidence: high
-    notes: "Both off by default in stock Xonotic (and v_deathtilt is incompatible with cl_eventchase_death 2 anyway, which is the default); opt-in only."
+    notes: "FIXED since the 2026-06-22 baseline (was missing): both death-tilt and idle-wave are now ported. Both off by default in stock Xonotic (v_deathtilt 0 / v_idlescale 0) and v_deathtilt is QC-skipped under the default cl_eventchase_death 2, so a stock match shows neither — opt-in only. The death-cam incompatibility guard is faithfully reproduced."
 
   - id: cl-view.smooth.stair_viewheight
     name: "Stair + viewheight smoothing (stairsmoothz glide + viewheightavg blend)"
     layer: [presentation]
     base_refs:
-      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_ApplySmoothing (220-242)"
+      - "lib/csqcmodel/cl_player.qc:CSQCPlayer_ApplySmoothing (227)"
     port_refs:
       - "src/XonoticGodot.Net/FaithfulViewSmoothing.cs"
       - "game/net/NetGame.cs:3494-3521"
@@ -404,7 +422,7 @@ features:
     divergence_rationale: "Faithful mode (cl_movement_smoothing_faithful, default on) uses the exact bounded stairsmoothz glide + viewheightavg blend; the port-default-mode alternative uses an adaptive render-only stair offset (ClientNet.PredictedStairOffset) to fight the 1/72-quantized server-render-clock jitter (see camera-drift-render-smoothing memory). The stepheight processing is the only intentional divergence in the faithful path."
     gaps: []
     verification:
-      - { kind: code, ref: "FaithfulViewSmoothing.Apply mirrors cl_player.qc 220-242 (bound() glide + lowpass eye blend, teleport/airborne/networked-ground snaps); wired live NetGame:3494-3510 when faithfulSmoothing; port-mode adaptive offset is the deliberate alternative", result: pass }
+      - { kind: code, ref: "FaithfulViewSmoothing.Apply mirrors cl_player.qc CSQCPlayer_ApplySmoothing (bound() glide + lowpass eye blend, teleport/airborne/networked-ground snaps); wired live NetGame:3494-3510 when faithfulSmoothing; port-mode adaptive offset is the deliberate alternative", result: pass }
     confidence: high
     notes: "Two paths: faithful (bit-faithful transcription) and the adaptive port-default. liveness: partial because only one path runs at a time per cl_movement_smoothing_faithful."
 
@@ -415,7 +433,7 @@ features:
       - "client/view.qc:HUD_Damage (1237)"
     port_refs:
       - "game/client/ViewEffects.cs:UpdateDamage"
-      - "game/net/NetGame.cs:2436-2451"
+      - "game/net/NetGame.cs:2639 (UpdateEffects)"
     constants:
       - { name: "hud_damage", base: "0.55", port: "0.55", match: true }
       - { name: "hud_damage_factor", base: "0.025", port: "0.025", match: true }
@@ -438,7 +456,7 @@ features:
       - "Draws a flat red ColorRect, not the gfx/blood splatter texture Base uses."
       - "The gentle-mode (cl_gentle / cl_gentle_damage) solid/randomized-colour path is not ported."
     verification:
-      - { kind: code, ref: "UpdateDamage: myhealth_flash accumulate/decay, pain threshold + near-death sin-pulse (1256-1264 ported), respawn/observe clears; reads hud_damage_color cvar; live via NetGame UpdateEffects", result: pass }
+      - { kind: code, ref: "UpdateDamage: myhealth_flash accumulate/decay, pain threshold + near-death sin-pulse (ported), respawn/observe clears; reads hud_damage_color cvar; live via NetGame UpdateEffects", result: pass }
     confidence: high
     notes: "Accumulator + pain-threshold + near-death sin-pulse + respawn/observe edge handling all match; only the visual is a solid rect vs the gfx/blood texture, plus the gentle-mode path."
 
@@ -470,7 +488,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "UpdateContents: contentavgalpha low-pass fade in/out + per-content colour + colour latch while fading out; eye contents sampled at final render origin (FirstPersonView:254)", result: pass }
+      - { kind: code, ref: "UpdateContents: contentavgalpha low-pass fade in/out + per-content colour + colour latch while fading out; eye contents sampled at final render origin (FirstPersonView:416)", result: pass }
     confidence: high
     notes: "Eye contents sampled at the FINAL render origin (the pulled-back cam during chase) matching pointcontents(view_origin), view.qc:1176."
 
@@ -480,7 +498,7 @@ features:
     base_refs:
       - "common/gametypes/gametype/freezetag/cl_freezetag.qc:HUD_Draw_overlay (29-44)"
     port_refs:
-      - "game/client/ViewEffects.cs:UpdateFrozenOverlay"
+      - "game/client/ViewEffects.cs:UpdateFrozenOverlay (292)"
       - "game/net/NetGame.cs:2655-2661"
     constants:
       - { name: "base_color", base: "'0.25 0.90 1'", port: "'0.25 0.90 1'", match: true }
@@ -498,9 +516,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "UpdateFrozenOverlay mirrors HUD_Draw_overlay exactly: base '0.25 0.90 1', col_fade/alpha_fade formulas + colour-warm; gated on STAT(FROZEN). Wired live NetGame:2655-2661 off the host-side local Player Frozen status effect + REVIVE_PROGRESS (FreezeTag.ReviveTick). A pure remote client reads frozen=false (no overlay).", result: pass }
+      - { kind: code, ref: "UpdateFrozenOverlay mirrors HUD_Draw_overlay exactly: base '0.25 0.90 1', col_fade/alpha_fade formulas + colour-warm; gated on STAT(FROZEN). Wired live NetGame:2655-2661 off the host-side local Player Frozen status effect + REVIVE_PROGRESS. A pure remote client reads frozen=false (no overlay).", result: pass }
     confidence: high
-    notes: "Wave-5 addition (previously unmapped). Full-screen ColorRect composited above the damage + liquid tints. Faithful icy-blue tint that warms toward white and fades out as the thaw ring (STAT(REVIVE_PROGRESS)) fills. Driven by the live FreezeTag gametype, same source as the crosshair thaw ring. liveness: live only in Freeze Tag (the gametype gates STAT(FROZEN)); a pure remote (non-host) client has no LocalServerPlayer so reads false — the cross-client wepent/stat follow-up is the same limitation noted on the crosshair revive ring."
+    notes: "Full-screen ColorRect composited above the damage + liquid tints. Faithful icy-blue tint that warms toward white and fades out as the thaw ring (STAT(REVIVE_PROGRESS)) fills. Driven by the live FreezeTag gametype, same source as the crosshair thaw ring. liveness: live only in Freeze Tag (the gametype gates STAT(FROZEN)); a pure remote (non-host) client has no LocalServerPlayer so reads false — the cross-client wepent/stat follow-up is the same limitation noted on the crosshair revive ring."
 
   - id: cl-view.screen.postprocess_nightvision
     name: "GLSL blur/sharpen post-process + night-vision + blur-test"
@@ -536,15 +554,15 @@ features:
     base_refs:
       - "client/hud/crosshair.qc:DrawReticle (648-717)"
     port_refs:
-      - "game/client/ReticleOverlay.cs:UpdateReticle"
-      - "game/net/NetGame.cs:2420"
+      - "game/client/ReticleOverlay.cs:UpdateReticle (75)"
+      - "game/net/NetGame.cs:2670-2672"
     constants:
       - { name: "cl_reticle", base: "1", port: "1", match: true }
       - { name: "cl_reticle_stretch", base: "0", port: "0", match: true }
       - { name: "cl_reticle_chase", base: "0", port: "0", match: true }
       - { name: "cl_reticle_weapon", base: "1", port: "1", match: true }
       - { name: "cl_reticle_normal_alpha", base: "1", port: "1", match: true }
-      - { name: "reticle_fade_floor", base: "max(0.25, zoomfraction)", port: "Max(0.25, zoomFraction)", match: true }
+      - { name: "reticle_fade_floor", base: "zoomscript_caught ? 1 : max(0.25, zoomfraction)", port: "zoomScriptCaught ? 1 : Max(0.25, zoomFraction)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -554,12 +572,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "zoomscript_caught is not modelled (always the max(0.25, fraction) branch) — a negligible edge tied to the unported auto-zoom-on-low-fov script (see zoomscript_buttonstatus row)."
+    gaps: []
     verification:
-      - { kind: code, ref: "UpdateReticle: type selection (generic/weapon), 0.25 fade floor, dead/spectate/chase suppression (unless cl_reticle_chase), stretch vs square geometry; live NetGame:2420", result: pass }
+      - { kind: code, ref: "UpdateReticle: type selection (generic/weapon), zoomscript_caught full-alpha vs 0.25 fade floor (ReticleOverlay:107,118), dead/spectate/chase suppression (unless cl_reticle_chase), stretch vs square geometry; live NetGame:2670-2672 (now passes _view.ZoomScriptCaught)", result: pass }
     confidence: high
-    notes: "Type selection (none/generic/weapon-scope), the max(0.25, zoomfraction) fade, the square-centred vs stretched geometry, and the suppression conditions all match DrawReticle."
+    notes: "Type selection (none/generic/weapon-scope), the zoomscript_caught ? 1 : max(0.25, zoomfraction) fade, the square-centred vs stretched geometry, and the suppression conditions all match DrawReticle. The prior zoomscript_caught gap is CLOSED — the zoomscript auto-zoom (FirstPersonView.ZoomScriptCaught) now feeds the full-alpha branch."
 
   - id: cl-view.viewmodel.sway
     name: "Viewmodel sway (cl_followmodel / cl_leanmodel / cl_bobmodel)"
@@ -570,11 +587,11 @@ features:
       - "client/view.qc:leanmodel_ofs (167)"
       - "client/view.qc:bobmodel_ofs (203)"
     port_refs:
-      - "game/client/ViewModel.cs:UpdateSway"
-      - "game/client/ViewModel.cs:FollowModelOffset"
-      - "game/client/ViewModel.cs:LeanModelOffset"
-      - "game/client/ViewModel.cs:BobModelOffset"
-      - "game/net/NetGame.cs:1127 (ViewStateProvider = BuildViewState)"
+      - "game/client/ViewModel.cs:UpdateSway (639)"
+      - "game/client/ViewModel.cs:FollowModelOffset (697)"
+      - "game/client/ViewModel.cs:LeanModelOffset (730)"
+      - "game/client/ViewModel.cs:BobModelOffset (765)"
+      - "game/net/NetGame.cs:1306 (ViewStateProvider = BuildViewState)"
     constants:
       - { name: "cl_followmodel", base: "1", port: "true", match: true }
       - { name: "cl_followmodel_speed", base: "0.3", port: "0.3", match: true }
@@ -604,9 +621,9 @@ features:
     gaps:
       - "Sway constants are [Export] fields with hardcoded defaults rather than live cl_*model_* cvar reads, so changing those cvars at runtime has no effect (values still match the shipped defaults)."
       - "cl_followmodel_velocity_absolute branch (calc_followmodel_ofs:125,152-161) is not ported (default 0, so the view-relative branch — which IS ported — is the default path)."
-      - "UpdateSway does not gate on chase/dead like viewmodel_animate:260 (autocvar_chase_active || HEALTH<=0), but the whole viewmodel node is hidden during chase/dead (NetGame:1373), so the sway is not observable then anyway."
+      - "UpdateSway does not gate on chase/dead like viewmodel_animate:260 (autocvar_chase_active || HEALTH<=0), but the whole viewmodel node is hidden during chase/dead, so the sway is not observable then anyway."
     verification:
-      - { kind: code, ref: "UpdateSway ports avg_factor/lowpass/highpass macro chains + bobmodel time-offset + map_bound_ranges; ViewStateProvider=BuildViewState live (NetGame:1127); constants match xonotic-client.cfg", result: pass }
+      - { kind: code, ref: "UpdateSway ports avg_factor/lowpass/highpass macro chains + bobmodel time-offset + map_bound_ranges; ViewStateProvider=BuildViewState live (NetGame:1306); constants match xonotic-client.cfg", result: pass }
     confidence: high
     notes: "Faithful low/high-pass chains, the bob run-up scale, and all constants match. Divergences: cvar liveness (defaults baked as Exports) and the unported velocity_absolute opt-in branch — both default-equivalent."
 
@@ -635,6 +652,6 @@ features:
     gaps:
       - "No demo free/chase camera (CSQC_Demo_Camera), no view lock (cl_lockview), no orthographic radar-render view (cl_orthoview / View_Ortho), no viewloc 2.5D side-scroller camera (GetViewLocationFOV), and no FPS report to the server (fpscounter_update STAT(SHOWFPS))."
     verification:
-      - { kind: grep, ref: "no CSQC_Demo_Camera / cl_lockview / cl_orthoview / viewloc implementation in src/ or game/", result: fail }
+      - { kind: grep, ref: "no CSQC_Demo_Camera / cl_lockview / cl_orthoview / viewloc / GetViewLocationFOV / fpscounter implementation in src/ or game/", result: fail }
     confidence: high
     notes: "Demo replay camera is tracked separately on the demo-cinematics branch. Orthoview is a dev/radar tool; viewloc is a niche 2.5D-map feature; lockview and the server FPS report are minor. None are on the normal-match camera path."
