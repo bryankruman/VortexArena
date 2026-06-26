@@ -234,7 +234,15 @@ public sealed class Seeker : Weapon
 
         // W_Seeker_Missile_Damage shoot-down (W1-projectile-net): route RadiusDamage onto ProjectileDamage so a
         // player can shoot the missile out of the air. No exception (W_CheckProjectileDamage(...,-1)), per Base.
-        Projectiles.MakeShootable(missile, exception: -1f);
+        // Self-damage scaling: if the firer shoots their own missile, damage is multiplied by 0.25 (QC base:
+        // "if (this.realowner == attacker) TakeResource(this, RES_HEALTH, (damage * 0.25))").
+        Projectiles.MakeShootable(missile, exception: -1f,
+            damageScale: (self, attacker, damage) =>
+            {
+                if (attacker is not null && ReferenceEquals(self.Owner, attacker))
+                    return damage * 0.25f;
+                return damage;
+            });
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/seeker_fire.wav");
         EffectEmitter.Emit("SEEKER_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);

@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
@@ -71,6 +72,24 @@ public sealed class Vaporizer : Weapon
         var st = actor.WeaponState(slot);
         bool rm = Api.Services is not null && Api.Cvars.GetFloat("g_rm") != 0f;
 
+        // Forced reload (vaporizer.qc:288-303): when reloading is enabled (reload_ammo != 0) and the clip has
+        // dropped below the cheapest per-shot cost, reload before firing. vaporizer_ammo = (g_instagib ? 1 :
+        // primary_ammo); if the Blaster-laser secondary also draws from the clip (blaster_ammo set) the floor is
+        // the smaller of the two. reload_ammo defaults 0, so this is latent today (matches Base on the bare
+        // config) but ports the branch faithfully. hagar_load (the RM rapid latch) is cleared on a reload.
+        if (ReloadingAmmo() != 0f)
+        {
+            float vaporizerAmmo = InstagibActive ? 1f : Primary.Ammo;
+            float blasterAmmo = Cvar("g_balance_blaster_primary_ammo", 0f);
+            float floor = blasterAmmo > 0f ? MathF.Min(vaporizerAmmo, blasterAmmo) : vaporizerAmmo;
+            if (st.ClipLoad < floor)
+            {
+                WrReload(actor, slot);
+                st.HagarLoad = 0; // rocket minsta exclusive var (vaporizer.qc:294/301)
+                return;
+            }
+        }
+
         // QC vaporizer.qc:353-354: releasing the laser button resets hagar_load so the next press restarts from
         // the fan + rapid_delay. In QC the rail-primary `if` and the laser `if` are independent (no early return),
         // and the trailing `else` clears hagar_load whenever neither fire condition held. The port's Primary call
@@ -140,9 +159,33 @@ public sealed class Vaporizer : Weapon
     public override float RefireFor(FireMode fire) => Primary.Refire;
     public override float AnimtimeFor(FireMode fire) => Primary.Animtime;
 
+    // METHOD(Vaporizer, wr_setup / wr_resetplayer) — vaporizer.qc:357-360 + 379-382: clear the impressive
+    // every-2nd-hit streak (actor.vaporizer_lasthit = 0) when the weapon becomes active and on a player reset
+    // (respawn / round restart), so the streak never carries across lives.
+    public override void WrSetup(Entity actor, WeaponSlot slot) => SetLastHit(actor, 0);
+    public override void WrResetPlayer(Entity actor, WeaponSlot slot) => SetLastHit(actor, 0);
+
+    // METHOD(Vaporizer, wr_aim) — vaporizer.qc:278-284. With ammo (or IT_UNLIMITED_AMMO) the bot fires the rail
+    // PRIMARY (a near-instant hitscan, bot_aim speed 1000000); out of ammo it falls back to the Blaster-laser
+    // SECONDARY. The generic BotBrain owns the shot lead/decision; this hook owns only the primary/secondary
+    // button pick, mirroring the Rifle/MachineGun pattern. (The bot brain leads a hitscan weapon straight at the
+    // target — correct for the rail primary; the rare out-of-ammo secondary laser's projectile lead is not
+    // separately modeled because the brain keys lead-speed off the weapon's hitscan flag, not the live fire mode.)
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
+    {
+        // primary branch when (items & IT_UNLIMITED_AMMO) || GetResource(ammo_type) > 0; else secondary.
+        bool unlimited = ctx.Actor is { } a && (a.UnlimitedAmmo || (a.Items & (int)ItemFlag.UnlimitedAmmo) != 0);
+        bool hasAmmo = unlimited || (ctx.Actor is { } b && b.GetResource(AmmoType) > 0f);
+        return !hasAmmo;
+    }
+
     // W_Vaporizer_Attack — instant rail beam dealing a huge fixed chunk of damage. vaporizer.qc
     private void Attack(Entity actor, WeaponSlot slot)
     {
+        // QC vaporizer.qc:133: capture IsFlying(actor) BEFORE the trace — FireRailgunBullet clobbers the trace
+        // globals the yoda mid-air-kill check reads, so sample the shooter's airborne status here first.
+        bool flying = IsFlying(actor);
+
         // damage = (primary_damage > 0) ? primary_damage : 10000 (instant kill).
         float damage = Primary.Damage > 0f ? Primary.Damage : 10000f;
 
@@ -188,7 +231,57 @@ public sealed class Vaporizer : Weapon
         // LIVE cvar only — a non-instagib Vaporizer pickup spends the full primary_ammo per shot.
         actor.TakeResource(AmmoType, InstagibActive ? 1f : Primary.Ammo);
 
-        // Deferred (client render): yoda/impressive achievements, the CSQC beam team-color/colorboost.
+        // Yoda (mid-air rail kill) + Impressive (every-other cross-team rail hit) announcements — QC
+        // vaporizer.qc:141-167. QC sets the `yoda`/`impressive_hits` globals inside the Damage path
+        // (server/damage.qc:646-651) on a cross-team damaging hit, with yoda also requiring a flying PLAYER
+        // victim. FireRailgunBullet doesn't surface those globals, so (mirroring the sister Vortex) re-derive
+        // them from the rail's first pierced victim. Done AFTER the trace + ammo, exactly like Base.
+        Announce(actor, hit, flying);
+
+        // Deferred (client render): the CSQC beam team-color/colorboost.
+    }
+
+    // Per-actor `vaporizer_lasthit` (QC .float vaporizer_lasthit, vaporizer.qc:161-167 + wr_setup/wr_resetplayer
+    // reset to 0). QC stores it on the player edict; the port has no Vaporizer field on Entity (cross-file), so
+    // we track it in a weak side-table keyed by actor — same observable "only every second consecutive hit"
+    // cadence, no Entity.cs edit. Mirrors Vortex._vortexLastHit.
+    private static readonly ConditionalWeakTable<Entity, StrongBox<int>> _vaporizerLastHit = new();
+
+    private static int GetLastHit(Entity actor) => _vaporizerLastHit.TryGetValue(actor, out var b) ? b.Value : 0;
+    private static void SetLastHit(Entity actor, int v) => _vaporizerLastHit.GetOrCreateValue(actor).Value = v;
+
+    // Yoda / Impressive — port of vaporizer.qc:141-167. `flying` is the shooter's airborne status captured
+    // before the trace. `hit` is FireRailgunBullet's first pierced victim (the rail's primary target). This
+    // mirrors Vortex.Announce; the Vaporizer differs from the Vortex only in firing headshotNotify and reading
+    // its own vaporizer_lasthit toggle (both handled here).
+    private void Announce(Entity actor, Entity? hit, bool flying)
+    {
+        if ((actor.Flags & EntFlags.Client) == 0) return; // only real clients get announces
+
+        // QC ++impressive_hits (damage.qc:646): a cross-team damaging hit on a hittable victim. The rail always
+        // deals damage > 0, so any live, damageable, cross-team target counts as an impressive hit.
+        bool impressiveHit = hit is not null
+            && hit.TakeDamage != DamageMode.No
+            && hit.DeadState == DeadFlag.No
+            && !ReferenceEquals(hit, actor)
+            && !Teams.SameTeam(hit, actor);
+
+        // QC yoda (damage.qc:648-651): the victim is a non-special-death PLAYER and IsFlying(victim); plus the
+        // vaporizer block also gates on the SHOOTER flying (vaporizer.qc:159 `if (yoda && flying)`).
+        if (impressiveHit && flying
+            && (hit!.Flags & EntFlags.Client) != 0 && IsFlying(hit))
+            NotificationSystem.Announce(actor, "ACHIEVEMENT_YODA");
+
+        // QC vaporizer.qc:161-167: impressive fires only when THIS shot AND the previous one both landed a hit
+        // (actor.vaporizer_lasthit), then resets so it's every-other; vaporizer_lasthit is then set to this
+        // shot's hit state.
+        int impressive = impressiveHit ? 1 : 0;
+        if (impressive != 0 && GetLastHit(actor) != 0)
+        {
+            NotificationSystem.Announce(actor, "ACHIEVEMENT_IMPRESSIVE");
+            impressive = 0; // only every second time
+        }
+        SetLastHit(actor, impressive);
     }
 
     // W_RocketMinsta_Explosion — radius blast at the rail endpoint (g_rm_*). vaporizer.qc:108.

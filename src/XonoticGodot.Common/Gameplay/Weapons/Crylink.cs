@@ -216,7 +216,13 @@ public sealed class Crylink : Weapon
         actor.TakeResource(AmmoType, bal.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out Vector3 right, out Vector3 up);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, recoil: 2f);
+
+        // QC W_Crylink_Attack/Attack2 (crylink.qc:285-291,384-388): compute maxdmg for the accuracy
+        // "fired" denominator (W_SetupShot maxdamage arg → accuracy_add fired credit).
+        //   maxdmg = damage * shots * (1 + bouncedamagefactor * bounces) [+ joinexplode_damage if joinexplode]
+        float maxDmg = bal.Damage * bal.Shots * (1f + bal.BounceDamageFactor * bal.Bounces);
+        if (bal.JoinExplode != 0) maxDmg += bal.JoinExplodeDamage;
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, wep: this, maxDamage: maxDmg, recoil: 2f);
 
         int shots = bal.Shots;
         float damage = bal.Damage, edge = bal.EdgeDamage, radius = bal.Radius, force = bal.Force;
@@ -418,16 +424,16 @@ public sealed class Crylink : Weapon
         bool finalHit = self.Count <= 0 || other.TakeDamage != DamageMode.No;
         float f = (finalHit ? 1f : bounceFactor) * a;
 
-        // QC RadiusDamage returns totaldamage (the chain-detonate gate). The port's RadiusDamage is void, so we
-        // approximate `totaldamage > 0` with "this hit could deal damage" (faded core damage non-zero); a real
-        // damage-dealt readback is a cross-file RadiusDamage signature change (noted in todos).
-        bool couldDamage = f * damage > 0f || f * edge > 0f;
-        WeaponSplash.RadiusDamage(self, self.Origin, f * damage, f * edge, radius, realOwner, RegistryId,
-            f * force, directHit: other, accuracyWeapon: this, deathTag: deathType);
+        // QC RadiusDamage returns totaldamage = total_damage_to_creatures (damage.qc:931). The port now returns
+        // this from WeaponSplash.RadiusDamage so the chain-detonate gate can be EXACT (crylink.qc:249:
+        // `if (totaldamage && ((linkexplode==1 && !WouldHitFriendly)||(linkexplode==2)))`).
+        // A secondary spike hitting a bare wall returns 0 → no chain-detonate, exactly matching Base.
+        float totalDamage = WeaponSplash.RadiusDamage(self, self.Origin, f * damage, f * edge, radius, realOwner,
+            RegistryId, f * force, directHit: other, accuracyWeapon: this, deathTag: deathType);
 
         // QC ordering: chain-detonate FIRST on ANY damaging touch (incl. a non-final bounce) when linkexplode
         // says so — linkexplode==1 is friendly-gated (refrains near teammates), linkexplode==2 is unconditional.
-        bool chainDetonate = couldDamage &&
+        bool chainDetonate = totalDamage > 0f &&
             ((linkExplode == 1 && !WouldHitFriendly(self, realOwner, radius)) || linkExplode == 2);
         if (chainDetonate)
         {

@@ -213,6 +213,14 @@ public static class WeaponFiring
             LagComp.End();
         }
 
+        // QC W_SetupShot (tracing.qc:60-62): un-adjust trueaim if w_shotend is too close — if the centered shot
+        // would land within g_trueaim_minrange (default 44) of the eye, ignore the trueaim point and aim straight
+        // forward at the minrange distance. Without this, a point-blank trueaim hit (e.g. a wall right in your
+        // face) would skew the muzzle-offset shot direction noticeably; clamping keeps it forward.
+        float trueaimMinrange = Api.Services is null ? 44f : Api.Cvars.GetFloat("g_trueaim_minrange");
+        if (trueaimMinrange > 0f && QMath.VLen(shotEnd - eye) < trueaimMinrange)
+            shotEnd = eye + QMath.Normalize(forward) * trueaimMinrange;
+
         Vector3 shotDir = QMath.Normalize(shotEnd - shotOrg);
         if (shotDir == Vector3.Zero) shotDir = QMath.Normalize(forward);
 
@@ -269,7 +277,9 @@ public static class WeaponFiring
         LagComp.Begin(actor); // rewind other players to the shooter's view-time for fair hit-reg (antilag.qc)
         try
         {
-        dir = CalculateSpread(QMath.Normalize(dir), spread, mustNormalize: true);
+        // QC fireBullet passes autocvar_g_hitscan_spread_style (tracing.qc:370); xonotic default is 4 (gauss-2D
+        // on the aim plane), a denser-centre, plane-constrained scatter — NOT the style-0 uniform sphere.
+        dir = CalculateSpread(QMath.Normalize(dir), spread, mustNormalize: true, HitscanSpreadStyle);
         Vector3 end = start + dir * range;
 
         // [W1-weaponfire-fx] resolve the bullet tracer trail effect once (QC fireBullet's tracer_effect arg).
@@ -283,9 +293,14 @@ public static class WeaponFiring
         bool headshot = false; // QC fireBullet_falloff: one of the hit targets was a headshot
         Vector3 cur = start;
 
-        // QC g_ballistics_solidpenetration_exponent default, g_ballistics_mindistance default.
-        const float ballisticsExponent = 1f;
-        const float ballisticsMinDistance = 1f;
+        // QC g_ballistics_solidpenetration_exponent (xonotic-server.cfg:474 default 1) and
+        // g_ballistics_mindistance (xonotic-server.cfg:470 default 2): the penetration exponent and the
+        // minimum solid-thickness a bullet must clear to keep going. Read live so a server cvar tweak
+        // takes; the Base xonotic defaults (1 / 2) hold for headless tests with no cvar service.
+        float ballisticsExponent = Api.Services is null ? 1f
+            : (Api.Cvars.GetFloat("g_ballistics_solidpenetration_exponent") is var be && be > 0f ? be : 1f);
+        float ballisticsMinDistance = Api.Services is null ? 2f
+            : (Api.Cvars.GetFloat("g_ballistics_mindistance") is var bd && bd > 0f ? bd : 2f);
 
         for (int guard = 0; guard < 32; ++guard)
         {
@@ -529,9 +544,18 @@ public static class WeaponFiring
         if (!string.IsNullOrEmpty(impactEffect))
             EffectEmitter.Emit(impactEffect, impactPos + backoff * 2f, backoff * 1000f);
 
-        // QC: if (!w_issilent) sound(actor, CH_SHOTS, SND_RIC_RANDOM(), VOL_BASE, ATTN_NORM).
-        if (!silent && actor is not null)
-            SoundSystem.PlayRic(actor);
+        // QC shotgun.qc:404-409: if (!w_issilent && time - actor.prevric > 0.25) { if (w_random < 0.05)
+        //   sound(actor, CH_SHOTS, SND_RIC_RANDOM(), ...); actor.prevric = time; }
+        // So the ricochet ping is throttled to at most once per 0.25s PER actor, and even then only a 5% roll
+        // (w_random < 0.05, w_random = prandom()) actually plays it — otherwise a 12-pellet blast would spray a
+        // dozen overlapping rics. The prevric window is reset on every gate pass, sound or not (matching Base).
+        float now = Api.Services is null ? 0f : Api.Clock.Time;
+        if (!silent && actor is not null && now - actor.PrevRic > 0.25f)
+        {
+            if (Prandom.Float() < 0.05f)
+                SoundSystem.PlayRic(actor);
+            actor.PrevRic = now;
+        }
     }
 
     /// <summary>
@@ -721,18 +745,144 @@ public static class WeaponFiring
     public static float WeaponSpreadFactor =>
         Api.Services is null ? 1f : (Api.Cvars.GetFloat("g_weaponspreadfactor") is var f && f > 0f ? f : 1f);
 
+    /// <summary>QC <c>W_SPREAD_GAUSS_MAX_STDEV</c> (calculations.qh:5) — clamp on the gauss spread variate
+    /// "to prevent the extremely rare wild shot".</summary>
+    private const float SpreadGaussMaxStdev = 4f;
+
+    /// <summary>autocvar_g_hitscan_spread_style (balance-xonotic.cfg:209 default 4 = gauss 2D plane) — the
+    /// scatter distribution every <see cref="FireBullet"/> uses. Read live; falls back to the Base xonotic
+    /// default 4 when no cvar service is installed (headless tests).</summary>
+    public static int HitscanSpreadStyle =>
+        Api.Services is null ? 4 : (int)Api.Cvars.GetFloat("g_hitscan_spread_style");
+
+    /// <summary>QC <c>solve_cubic_pq(p, q)</c> (calculations.qc:73) — roots of the depressed cubic
+    /// <c>x^3 + p·x + q = 0</c>, returned as a vec3.</summary>
+    private static Vector3 SolveCubicPq(float p, float q)
+    {
+        float d = q * q / 4f + p * p * p / 27f;
+        if (d < 0f)
+        {
+            // casus irreducibilis
+            float a = 1f / 3f * MathF.Acos(-q / 2f * MathF.Sqrt(-27f / (p * p * p)));
+            float u = MathF.Sqrt(-4f / 3f * p);
+            return u * new Vector3(
+                MathF.Cos(a + 2f / 3f * QMath.Pi),
+                MathF.Cos(a + 4f / 3f * QMath.Pi),
+                MathF.Cos(a));
+        }
+        else if (d == 0f)
+        {
+            if (p == 0f) return Vector3.Zero;
+            float u = 3f * q / p;
+            float vv = -u / 2f;
+            return u >= vv ? new Vector3(vv, vv, u) : new Vector3(u, vv, vv);
+        }
+        else
+        {
+            // cardano (cbrt)
+            float a = MathF.Cbrt(-q / 2f + MathF.Sqrt(d)) + MathF.Cbrt(-q / 2f - MathF.Sqrt(d));
+            return new Vector3(a, a, a);
+        }
+    }
+
+    /// <summary>QC <c>solve_cubic_abcd(a, b, c, d)</c> (calculations.qc:110) — roots of
+    /// <c>a·x^3 + b·x^2 + c·x + d = 0</c> via the depressed-cubic substitution.</summary>
+    private static Vector3 SolveCubicAbcd(float a, float b, float c, float d)
+    {
+        float p = 9f * a * c - 3f * b * b;
+        float q = 27f * a * a * d - 9f * a * b * c + 2f * b * b * b;
+        Vector3 v = SolveCubicPq(p, q);
+        v = (v - b * Vector3.One) * (1f / (3f * a));
+        if (a < 0f)
+            v += new Vector3(1f, 0f, -1f) * (v.Z - v.X); // swap x, z
+        return v;
+    }
+
+    /// <summary>QC <c>cliptoplane(v, p)</c> (calculations.qc:68) — project <paramref name="v"/> onto the plane
+    /// whose normal is <paramref name="p"/> (remove the component along p): <c>v - (v·p)·p</c>.</summary>
+    private static Vector3 ClipToPlane(Vector3 v, Vector3 p) => v - Vector3.Dot(v, p) * p;
+
+    /// <summary>QC <c>findperpendicular(v)</c> (calculations.qc:125) — a unit vector perpendicular to
+    /// <paramref name="v"/>: <c>normalize(cliptoplane('v.z -v.x v.y', v))</c>.</summary>
+    private static Vector3 FindPerpendicular(Vector3 v)
+        => QMath.Normalize(ClipToPlane(new Vector3(v.Z, -v.X, v.Y), v));
+
     /// <summary>
-    /// Port of W_CalculateSpread (calculations.qc) — the default spread style 0 used by both projectile and
-    /// hitscan paths: <c>dir + randomvec() * spread</c>, optionally re-normalized. Uses the deterministic
-    /// <see cref="Prandom"/> (QC random()/randomvec()), so server and predicting client agree (ADR-0010).
+    /// Port of W_CalculateSpread (calculations.qc) used by both projectile and hitscan paths. The hitscan
+    /// path passes the live <see cref="HitscanSpreadStyle"/> (Base xonotic default 4 = gauss-2D on the aim
+    /// plane); projectile callers use style 0 (<c>dir + randomvec() * spread</c>). Uses the deterministic
+    /// <see cref="Prandom"/> (QC random()/randomvec()/gsl_ran_ugaussian), so server and predicting client
+    /// agree (ADR-0010). The per-style sigma factors and density functions mirror QC exactly.
     /// </summary>
-    public static Vector3 CalculateSpread(Vector3 dir, float spread, bool mustNormalize)
+    public static Vector3 CalculateSpread(Vector3 dir, float spread, bool mustNormalize, int spreadStyle = 0)
     {
         spread *= WeaponSpreadFactor;
         if (spread <= 0f) return mustNormalize ? QMath.Normalize(dir) : dir;
 
-        Vector3 v = dir + Prandom.Vec() * spread; // spread_style 0: randomvec() uniform in the unit ball (density sqrt(1-r^2))
-        return mustNormalize ? QMath.Normalize(v) : v;
+        Vector3 v1, v2;
+        float sigma, dx, dy, r;
+        switch (spreadStyle)
+        {
+            default:
+            case 0:
+                // baseline: randomvec() uniform in the unit ball (density sqrt(1-r^2))
+                v1 = dir + Prandom.Vec() * spread;
+                return mustNormalize ? QMath.Normalize(v1) : v1;
+            case 1:
+                // flattened sphere
+                return QMath.Normalize(dir + ClipToPlane(Prandom.Vec() * spread, dir));
+            case 2:
+                // circle spread (stddev sqrt(1/2) at sigma=1, factor matches baseline stddev)
+                sigma = spread * 0.89442719099991587855f;
+                v1 = FindPerpendicular(dir);
+                v2 = Vector3.Cross(dir, v1);
+                dx = Prandom.Float() * 2f * QMath.Pi;
+                dy = MathF.Sin(dx);
+                dx = MathF.Cos(dx);
+                r = MathF.Sqrt(Prandom.Float());
+                return QMath.Normalize(dir + (v1 * dx + v2 * dy) * r * sigma);
+            case 3: // gauss 3d
+                sigma = spread * 0.44721359549996f;
+                v1 = new Vector3(Prandom.Gaussian() * sigma, Prandom.Gaussian() * sigma, Prandom.Gaussian() * sigma);
+                if (v1.LengthSquared() > SpreadGaussMaxStdev * SpreadGaussMaxStdev)
+                    v1 = QMath.Normalize(v1) * SpreadGaussMaxStdev;
+                v2 = dir + v1;
+                return mustNormalize ? QMath.Normalize(v2) : v2;
+            case 4: // gauss 2d (Base xonotic default) — clipped to the aim plane
+                sigma = spread * 0.44721359549996f;
+                v1 = new Vector3(Prandom.Gaussian() * sigma, Prandom.Gaussian() * sigma, Prandom.Gaussian() * sigma);
+                if (v1.LengthSquared() > SpreadGaussMaxStdev * SpreadGaussMaxStdev)
+                    v1 = QMath.Normalize(v1) * SpreadGaussMaxStdev;
+                return QMath.Normalize(dir + ClipToPlane(v1, dir));
+            case 5: // 1-r (linear falloff)
+                sigma = spread * 1.154700538379252f;
+                v1 = FindPerpendicular(dir);
+                v2 = Vector3.Cross(dir, v1);
+                dx = Prandom.Float() * 2f * QMath.Pi;
+                dy = MathF.Sin(dx);
+                dx = MathF.Cos(dx);
+                r = SolveCubicAbcd(-2f, 3f, 0f, -Prandom.Float()).Y;
+                return QMath.Normalize(dir + (v1 * dx + v2 * dy) * r * sigma);
+            case 6: // 1-r^2 (quadratic falloff)
+                sigma = spread * 1.095445115010332f;
+                v1 = FindPerpendicular(dir);
+                v2 = Vector3.Cross(dir, v1);
+                dx = Prandom.Float() * 2f * QMath.Pi;
+                dy = MathF.Sin(dx);
+                dx = MathF.Cos(dx);
+                r = MathF.Sqrt(1f - MathF.Sqrt(1f - Prandom.Float()));
+                return QMath.Normalize(dir + (v1 * dx + v2 * dy) * r * sigma);
+            case 7: // (1-r)(2-r) (stronger falloff)
+                sigma = spread * 1.224744871391589f;
+                v1 = FindPerpendicular(dir);
+                v2 = Vector3.Cross(dir, v1);
+                dx = Prandom.Float() * 2f * QMath.Pi;
+                dy = MathF.Sin(dx);
+                dx = MathF.Cos(dx);
+                r = 1f - MathF.Sqrt(Prandom.Float());
+                r = 1f - MathF.Sqrt(r);
+                return QMath.Normalize(dir + (v1 * dx + v2 * dy) * r * sigma);
+        }
     }
 
     /// <summary>

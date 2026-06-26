@@ -524,7 +524,8 @@ internal static class WeaponAmmo
         Hook hk => secondary ? hk.CheckAmmoSecondary(actor) : hk.CheckAmmoPrimary(actor),
         Tuba => true,
         Porto => true,
-        Vaporizer vp => vp.CheckAmmoPrimary(actor),
+        // wr_checkammo1 (rail, cells) / wr_checkammo2 (Blaster-laser secondary; free at the default Blaster ammo 0).
+        Vaporizer vp => secondary ? vp.CheckAmmoSecondary(actor) : vp.CheckAmmoPrimary(actor),
         // Overkill weapons (okmachinegun.qc / okshotgun.qc / oknex.qc / okhmg.qc / okrpc.qc): without these
         // cases they fell through to the default `true`, so wr_checkammo never ran. OkMachinegun/OkNex use the
         // primary check for both modes (the secondary is the unlimited blaster jump / the zoom key, like

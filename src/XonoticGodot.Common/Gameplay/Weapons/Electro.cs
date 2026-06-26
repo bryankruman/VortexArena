@@ -536,16 +536,20 @@ public sealed class Electro : Weapon
         return tr.Fraction >= 1f;
     }
 
-    // METHOD(Electro, wr_checkammo1) — electro.qc:667. Base also ORs in the clip-load term (weapon_load >= ammo)
-    // for the reloadable weapon; with reload_ammo defaulting 0 the clip is unused, so the resource check matches.
-    public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Primary.Ammo;
+    // METHOD(Electro, wr_checkammo1) — electro.qc:667-671: have ammo if the shared pool OR the persistent
+    // magazine (weapon_load[m_id], reloadable) can cover one primary shot. The clip-load OR-term is a no-op
+    // while reload_ammo defaults 0 (clip never loaded), but is ported for faithfulness on a reload-enabled server.
+    public bool CheckAmmoPrimary(Entity actor)
+        => actor.GetResource(AmmoType) >= Primary.Ammo
+        || GetWeaponLoad(actor.WeaponState(new WeaponSlot(0)), RegistryId) >= Primary.Ammo;
 
-    // METHOD(Electro, wr_checkammo2) — electro.qc:674. QC combo_safeammocheck (default 1): "true if you can fire
-    // at least one secondary blob AND one primary shot after it" — so the auto-switch leaves the weapon while it
-    // can still afford the follow-up combo bolt, not just one bare orb.
+    // METHOD(Electro, wr_checkammo2) — electro.qc:674-687. QC combo_safeammocheck (default 1): "true if you can
+    // fire at least one secondary blob AND one primary shot after it" — so the auto-switch leaves the weapon while
+    // it can still afford the follow-up combo bolt, not just one bare orb. Pool OR magazine, same as wr_checkammo1.
     public bool CheckAmmoSecondary(Entity actor)
     {
         float need = CombocSafeAmmoCheck ? Secondary.Ammo + Primary.Ammo : Secondary.Ammo;
-        return actor.GetResource(AmmoType) >= need;
+        return actor.GetResource(AmmoType) >= need
+            || GetWeaponLoad(actor.WeaponState(new WeaponSlot(0)), RegistryId) >= need;
     }
 }

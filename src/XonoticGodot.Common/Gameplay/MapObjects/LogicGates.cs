@@ -518,8 +518,36 @@ public static class LogicGates
 
         if (string.IsNullOrEmpty(msgin))
         {
-            // TUBA mode (msgin empty) — out of scope (W_Tuba_HasPlayed). Always returns msgin here.
-            return msgin;
+            // TUBA mode (an empty say message — fired from W_Tuba_NoteOff). Only a MAGICEAR_TUBA ear listens for
+            // a played melody; every other ear ignores the empty message. magicear.qc:19-46.
+            if ((ear.SpawnFlags & MagicEarTuba) == 0)
+                return msgin;
+
+            // ear.movedir = (instrument+1, mintempo, maxtempo); MagicEarSetup already did --movedir.x so movedir.x
+            // is the instrument index (-1 = any). EXACTPITCH disables transposition (ignorePitch = !exactpitch).
+            System.Numerics.Vector3 md = ear.MoveDir;
+            bool ignorePitch = (ear.SpawnFlags & MagicEarTubaExactPitch) == 0;
+
+            // Every weapon slot must match the melody (QC loops slots and returns on the first miss). A bot/dead
+            // source can still match a MAGICEAR_REPLACE_OUTSIDE ear (domatch passed above).
+            for (int slot = 0; slot < WeaponFireDriver.MaxWeaponSlots; ++slot)
+            {
+                if (!Tuba.HasPlayed(source, new WeaponSlot(slot), ear.Message, (int)md.X, ignorePitch, md.Y, md.Z))
+                    return msgin;
+            }
+
+            MagicEarMatched = true;
+
+            if (dotrigger)
+            {
+                // QC blanks .message so SUB_UseTargets doesn't centerprint the pattern, fires, then restores it.
+                string savemessage = ear.Message;
+                ear.Message = "";
+                MapMover.UseTargets(ear, source, null);
+                ear.Message = savemessage;
+            }
+
+            return !string.IsNullOrEmpty(ear.NetName) ? ear.NetName : msgin;
         }
 
         if ((ear.SpawnFlags & MagicEarTuba) != 0) // ENOTUBA

@@ -800,6 +800,20 @@ public static class SpawnSystem
         // NOTE (client/networking): weapon view entities (CL_SpawnWeaponentity), SpawnEvent networking, the bot
         // aim reset and fixangle/v_angle are client-render / bot-AI concerns handled by the renderer and bot
         // agents; the server-authoritative owned-weapon set + the player model (above) are applied here.
+
+        // QC wr_resetplayer: each weapon resets its per-player state when the player respawns (e.g. Hagar clears loaded rockets).
+        for (int slot = 0; slot < WeaponFireDriver.MaxWeaponSlots; ++slot)
+        {
+            Weapon? wep = null;
+            if (slot == 0)
+                wep = Inventory.CurrentWeapon(p); // the active weapon after SwitchToBest above
+            // Slot 0 is populated; higher slots (future dual-wield) are empty. Call WrResetPlayer for all populated slots.
+            if (wep is not null)
+            {
+                var weaponentity = new WeaponSlot(slot);
+                wep.WrResetPlayer(p, weaponentity);
+            }
+        }
     }
 
     /// <summary>

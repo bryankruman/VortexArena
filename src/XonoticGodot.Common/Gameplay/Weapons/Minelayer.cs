@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Scoring;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -16,8 +17,9 @@ namespace XonoticGodot.Common.Gameplay;
 /// countdown, proximity-trigger detonation with the team-safety protection delay, owner-death auto-detonate,
 /// mine shoot-down (damageforcescale knock-loose + destroy), the spawnshield/team-safety gated remote
 /// detonate, and the splash damage. The mine is modelled (models/mine.md3), shoot-down is live via
-/// Projectiles.MakeShootable, the proximity team-filter keys off the owner's team, and the over-limit press
-/// gives the WEAPON_MINELAYER_LIMIT feedback. Only the airshot achievement, the exact surface-normal facing,
+/// Projectiles.MakeShootable, the proximity team-filter keys off the owner's team, the over-limit press
+/// gives the WEAPON_MINELAYER_LIMIT feedback, and the bot wr_aim (BotWantsDetonate) implements the full
+/// skill-gated detonation-desirability math. Only the airshot achievement, the exact surface-normal facing,
 /// the out-of-ammo forced weapon switch, and CSQC in-flight mine networking are left out (render/online/HUD).
 /// </summary>
 [Weapon]
@@ -340,12 +342,26 @@ public sealed class Minelayer : Weapon
 
     // W_MineLayer_RemoteExplode (secondary) — remote-detonate this actor's mines, gated by the spawnshield
     // timer (detonatedelay) and a team-safety radius check (don't blow up near a friend). minelayer.qc
+    //
+    // Sound semantics (Base minelayer.qc:483-487 / W_MineLayer_PlacedMines):
+    //   Base FIRST calls W_MineLayer_PlacedMines(detonate=true) which iterates ALL mines and flags
+    //   minelayer_detonate=true on each; it plays SND_MINE_DET as soon as ANY mine was newly flagged —
+    //   regardless of whether any mine will actually pass the spawnshield/team-safety gate this tick.
+    //   With detonatedelay=-1 (proximity safety), the sound fires even if every mine is still inside the
+    //   self-safety radius and nothing actually detonates.  The per-mine gates run later, in W_MineLayer_Think.
+    //   Reproduce by: play the sound if ANY mine belonging to this actor exists (= W_MineLayer_PlacedMines
+    //   found at least one mine to flag), then apply the gates to decide which ones actually fire.
     private void RemoteDetonate(Entity actor)
     {
-        bool any = false;
         // Snapshot first: the blast removes mines and RadiusDamage re-enumerates the world.
         var mines = Api.Entities.FindByClass("mine")
             .Where(e => ReferenceEquals(e.Owner, actor) && !e.IsFreed).ToList();
+
+        // QC W_MineLayer_PlacedMines: plays mine_det as soon as ANY mine was newly flagged (before the gates).
+        // The sound fires whenever the actor has at least one placed mine — matches Base wr_think:483-487.
+        if (mines.Count > 0)
+            Api.Sound.Play(actor, SoundChannel.Body, "weapons/mine_det.wav");
+
         foreach (Entity e in mines)
         {
             // spawnshield gate (QC W_MineLayer_RemoteExplode, minelayer.qc:142-145): detonatedelay >= 0 requires
@@ -371,7 +387,6 @@ public sealed class Minelayer : Weapon
                 if (friendNear) continue;
             }
 
-            any = true;
             e.Touch = null;
             e.Think = null;
             e.TakeDamage = DamageMode.No;
@@ -385,8 +400,144 @@ public sealed class Minelayer : Weapon
                 Cvars.RemoteRadius, actor, RegistryId, Cvars.RemoteForce);
             Api.Entities.Remove(e);
         }
-        if (any)
-            Api.Sound.Play(actor, SoundChannel.Body, "weapons/mine_det.wav");
+    }
+
+    // MineLayer.wr_aim (minelayer.qc:379-461) — bot detonation AI.
+    // Over-limit: suppress primary fire (bot already has max mines, no point laying another).
+    // skill>=2: estimate self/team/enemy damage from each placed mine vs each bot target;
+    //   set ATCK2 (remote-detonate) when desirable damage >= 0.75*coredamage (group-detonate threshold) or
+    //   when the bot is tracking an enemy and the mine is roughly aimed at them (0.1*coredamage threshold);
+    //   cancel if self-damage would kill the bot (skill>6.5 veto). Suppress primary when detonating.
+    // Plugs into BotBrain.BotWantsDetonate (the brain calls this regardless of primary-fire and, when it
+    // returns true, suppresses primary + sets ATCK2 — exactly the QC "don't fire at the same time" pattern).
+    public override bool BotWantsDetonate(
+        Entity actor, WeaponSlot slot, float skill,
+        System.Collections.Generic.IEnumerable<Entity> targets,
+        System.Func<Entity, Entity, bool> shouldAttack)
+    {
+        if (Api.Services is null) return false;
+        if (skill < 2f) return false; // skill 0/1 bots won't detonate mines (QC wr_aim:387)
+
+        // Collect this actor's placed mines (QC IL_EACH(g_mines, it.realowner == actor)).
+        var mines = new System.Collections.Generic.List<Entity>();
+        foreach (Entity m in Api.Entities.FindByClass("mine"))
+        {
+            if (!m.IsFreed && ReferenceEquals(m.Owner, actor)) mines.Add(m);
+        }
+        if (mines.Count == 0) return false;
+
+        // QC wr_aim: suppress primary fire when at the mine limit so the bot doesn't waste ammo.
+        // (The primary-suppress path is handled by WrThink's over-limit gate; here we only decide ATCK2.)
+
+        // Compute damage scores: same approach as the QC wr_aim but with stationary mines.
+        // QC uses a simpler linear damage model: d = bound(0, edgedamage + (coredamage - edgedamage) *
+        //   sqrt(1 - d * reciprocalEdgeRadius), 10000) — note sqrt(1-dist/radius) approximation.
+        float edgedamage = Cvars.EdgeDamage;
+        float coredamage = Cvars.Damage;
+        float edgeradius = Cvars.Radius;
+        float reciprocalEdgeRadius = edgeradius > 0f ? 1f / edgeradius : 0f;
+
+        float selfdamage = 0f, teamdamage = 0f, enemydamage = 0f;
+
+        foreach (Entity mine in mines)
+        {
+            foreach (Entity it in targets)
+            {
+                if (it.IsFreed) continue;
+                bool isSelf = ReferenceEquals(it, actor);
+                bool isTeam = !isSelf && Teams.SameTeam(it, actor);
+                bool isEnemy = !isSelf && !isTeam && shouldAttack(actor, it);
+                if (!isSelf && !isTeam && !isEnemy) continue;
+
+                // QC: target_pos = origin + (mins + maxs) * 0.5 (the entity's world-space box center).
+                Vector3 targetPos = it.Origin + (it.Mins + it.Maxs) * 0.5f;
+                float dist = (targetPos - mine.Origin).Length();
+                // QC damage formula: bound(0, edgedamage + (coredamage - edgedamage) * sqrt(1 - dist/radius), 10000)
+                // Only applies inside the blast radius.
+                float dmg = 0f;
+                if (dist < edgeradius)
+                {
+                    float ratio = MathF.Max(0f, 1f - dist * reciprocalEdgeRadius);
+                    dmg = QMath.Bound(0f, edgedamage + (coredamage - edgedamage) * MathF.Sqrt(ratio), 10000f);
+                }
+
+                if (isSelf) selfdamage += dmg;
+                else if (isTeam) teamdamage += dmg;
+                else enemydamage += dmg;
+            }
+        }
+
+        // QC desirabledamage = enemydamage - selfdamage*selfdamagepercent (shield) - teamdamage (teamplay).
+        float desirabledamage = enemydamage;
+        // QC: if actor has shield (not spawnshield), subtract selfdamage * g_balance_selfdamagepercent.
+        var shieldEffect = StatusEffectsCatalog.ByName("shield");
+        var spawnShield = StatusEffectsCatalog.ByName("spawnshield");
+        bool hasShield = shieldEffect is not null && StatusEffectsCatalog.Has(actor, shieldEffect);
+        bool hasSpawnShield = spawnShield is not null && StatusEffectsCatalog.Has(actor, spawnShield);
+        if (hasShield && !hasSpawnShield)
+        {
+            float pct = Api.Cvars.GetFloat("g_balance_selfdamagepercent");
+            desirabledamage -= selfdamage * pct;
+        }
+        if (GameScores.Teamplay && actor.Team != 0f)
+            desirabledamage -= teamdamage;
+
+        // QC wr_aim:423-460 — the per-mine tracking check (skill <= 9) vs the fast skill>9 path.
+        // Port uses makevectors(actor.v_angle) -> v_forward to find the forward direction.
+        QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
+
+        bool wantDetonate = false;
+
+        foreach (Entity mine in mines)
+        {
+            // QC skill > 9: only detonate if mine is roughly between the bot and the tracked target AND
+            // desirabledamage >= 0.1 * coredamage (minelayer.qc:427-434).
+            if (skill > 9f)
+            {
+                foreach (Entity it in targets)
+                {
+                    if (it.IsFreed) continue;
+                    if (!shouldAttack(actor, it)) continue;
+                    Vector3 toMineFromTarget = QMath.Normalize(mine.Origin - it.Origin);
+                    if (Vector3.Dot(forward, toMineFromTarget) < 0.1f && desirabledamage >= 0.1f * coredamage)
+                        wantDetonate = true;
+                }
+            }
+            else
+            {
+                // QC skill <= 9: "bots are assumed to use the mine light to see if the mine gets near a player"
+                // (minelayer.qc:439-448): detonate if the bot is looking roughly toward the mine's direction
+                // from the enemy position, enemy is a real player, desirabledamage threshold met, and a random
+                // distance/skill gate passes (lower skill = lower chance at distance, QC random()/distance*300
+                // vs frametime*bound(0,(10-skill)*0.2,1)).
+                Entity? enemy = actor.Enemy;
+                if (enemy is not null && !enemy.IsFreed)
+                {
+                    Vector3 toMineFromEnemy = QMath.Normalize(mine.Origin - enemy.Origin);
+                    if ((enemy.Flags & EntFlags.Client) != 0 // IS_PLAYER
+                        && Vector3.Dot(forward, toMineFromEnemy) < 0.1f
+                        && desirabledamage >= 0.1f * coredamage)
+                    {
+                        float distance = QMath.Bound(300f, (actor.Origin - enemy.Origin).Length(), 30000f);
+                        float frameTime = 0.05f; // approximate; the QC frametime per bot think interval
+                        float threshold = frameTime * QMath.Bound(0f, (10f - skill) * 0.2f, 1f);
+                        if ((float)Random.Shared.NextDouble() / distance * 300f > threshold)
+                            wantDetonate = true;
+                    }
+                }
+            }
+        }
+
+        // QC wr_aim:453-454: if desirabledamage >= 0.75*coredamage, detonate regardless of tracking.
+        // "this should do group damage in rare fortunate events"
+        if (desirabledamage >= 0.75f * coredamage)
+            wantDetonate = true;
+
+        // QC wr_aim:455-456: skill>6.5 self-preservation veto — don't detonate if it would kill us.
+        if (skill > 6.5f && selfdamage > actor.GetResource(ResourceType.Health))
+            wantDetonate = false;
+
+        return wantDetonate;
     }
 
     /// <summary>Count this actor's live mines (QC W_MineLayer_Count over the g_mines list).</summary>

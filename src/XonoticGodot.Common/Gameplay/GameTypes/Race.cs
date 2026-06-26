@@ -365,6 +365,13 @@ public sealed class Race : GameType
         st.RespawnCheckpoint = cpIndex; // QC player.race_respawn_checkpoint = this.race_checkpoint
         st.Started = true;              // QC player.race_started = 1
 
+        // QC checkpoint_passed (server/race.qc:729-731): "remove unauthorized equipment" — a racer crossing a
+        // checkpoint has all their portals torn down (Portal_ClearAll) and porto re-firing is forbidden for the
+        // next 2 server frames (porto_forbidden = 2, decremented each frame by the porto_ticker mutator) so they
+        // can't portal across the checkpoint reset.
+        Porto.PortalClearAll?.Invoke(p);
+        p.WeaponState(new WeaponSlot(0)).PortoForbidden = 2;
+
         // QC race_SendTime (server/race.qc:493): a lap is CLOSED (scored) at race_timed_checkpoint, which is the
         // start line (0) on a closed loop or the highest spawnflag-8 CP on a start!=finish track. Compute from the
         // live TimedCheckpoint (spawn-order independent) rather than the cached per-entity flag.

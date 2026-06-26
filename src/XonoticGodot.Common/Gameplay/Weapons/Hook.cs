@@ -105,6 +105,11 @@ public sealed class Hook : Weapon
         GrappleAirFriction = Bal("g_balance_grapplehook_airfriction", 0.2f);
         GrappleHealth = Bal("g_balance_grapplehook_health", 50f);
         GrappleNadeTime = Bal("g_balance_grapplehook_nade_time", 0.7f);
+        // autocvar_g_balance_grapplehook_gravity: 0 = the chain flies straight (MOVETYPE_FLY); >0 makes it a
+        // falling toss (MOVETYPE_TOSS with this gravity scale). Base default 0.
+        GrappleGravity = Bal("g_balance_grapplehook_gravity", 0f);
+        // g_balance_pause_fuel_regen: a hooked player's health/armor/fuel regen is inhibited for this long.
+        PauseFuelRegen = Bal("g_balance_pause_fuel_regen", 2f);
         // autocvar_g_grappling_hook_tarzan: 0 = straight constant-speed reel, 2 = elastic rope that can
         // also pull players/nades. Base default is 2 (balance-xonotic.cfg:253).
         GrappleTarzan = (int)Bal("g_grappling_hook_tarzan", 2f);
@@ -128,6 +133,10 @@ public sealed class Hook : Weapon
     public float GrappleHealth = 50f;
     /// <summary>g_balance_grapplehook_nade_time — re-think delay given to a hooked nade when released.</summary>
     public float GrappleNadeTime = 0.7f;
+    /// <summary>g_balance_grapplehook_gravity — &gt;0 makes the chain fall (MOVETYPE_TOSS) instead of flying straight.</summary>
+    public float GrappleGravity = 0f;
+    /// <summary>g_balance_pause_fuel_regen — seconds a hooked player's regen is inhibited each tick while hooked.</summary>
+    public float PauseFuelRegen = 2f;
     /// <summary>g_grappling_hook_tarzan — 0 = straight reel, &gt;=2 = elastic rope that can pull players/nades.</summary>
     public int GrappleTarzan = 2;
 
@@ -183,7 +192,15 @@ public sealed class Hook : Weapon
         // While hooked, drain fuel over time (after the free grace period) and stop if it runs out.
         if (st.Hook is not null)
         {
-            st.HookRefire = MathF.Max(st.HookRefire, Api.Clock.Time + Primary.Refire);
+            // QC hook.qc wr_think: hook_refire = max(hook_refire, time + pri.refire * W_WeaponRateFactor(actor)).
+            st.HookRefire = MathF.Max(st.HookRefire, Api.Clock.Time + Primary.Refire * WeaponRateFactor(actor));
+
+            // QC: the hook also inhibits health regeneration, but only for 1 second (g_balance_pause_fuel_regen),
+            // unless unlimited ammo. PauseRegenFinished gates the player's health/armor/fuel regen tick.
+            bool unlimitedAmmo = actor.UnlimitedAmmo || (actor.Items & (1 << 0)) != 0; // IT_UNLIMITED_AMMO
+            if (!unlimitedAmmo)
+                actor.PauseRegenFinished = MathF.Max(actor.PauseRegenFinished, Api.Clock.Time + PauseFuelRegen);
+
             if (st.Hook.Health > 0f) // .state == 1 means latched (reuse Health>0 as the latched flag)
             {
                 float hookedTimeMax = Primary.HookedTimeMax;
@@ -191,7 +208,7 @@ public sealed class Hook : Weapon
                     st.HookState |= HookState.Removing;
 
                 float hookedFuel = Primary.HookedAmmo;
-                if (hookedFuel > 0f && Api.Clock.Time > st.HookTimeFuelDecrease)
+                if (hookedFuel > 0f && Api.Clock.Time > st.HookTimeFuelDecrease && !unlimitedAmmo)
                 {
                     float need = (Api.Clock.Time - st.HookTimeFuelDecrease) * hookedFuel;
                     if (actor.GetResource(AmmoType) >= need)
@@ -219,14 +236,15 @@ public sealed class Hook : Weapon
         // Process the state machine: (re)fire or remove.
         if ((st.HookState & HookState.Firing) != 0)
         {
-            if (st.Hook is not null) RemoveHook(st);
+            if (st.Hook is not null) RemoveHook(st, actor);
             FireGrapplingHook(actor, slot, st);
             st.HookState &= ~HookState.Firing;
-            st.HookRefire = MathF.Max(st.HookRefire, Api.Clock.Time + Primary.Refire);
+            // QC: hook_refire = max(hook_refire, time + g_balance_grapplehook_refire * W_WeaponRateFactor(actor)).
+            st.HookRefire = MathF.Max(st.HookRefire, Api.Clock.Time + Primary.Refire * WeaponRateFactor(actor));
         }
         else if ((st.HookState & HookState.Removing) != 0)
         {
-            if (st.Hook is not null) RemoveHook(st);
+            if (st.Hook is not null) RemoveHook(st, actor);
             st.HookState &= ~HookState.Removing;
         }
     }
@@ -236,12 +254,18 @@ public sealed class Hook : Weapon
     {
         Vector3 forward = QMath.Forward(actor.Angles);
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
+        // QC FireGrapplingHook: W_MuzzleFlash(WEP_HOOK, actor, weaponentity, w_shotorg, '0 0 0') — the hook's
+        // generic muzzle effect (grapple_muzzleflash) at the gun muzzle. (Same effect the secondary emits.)
+        EffectEmitter.Emit("HOOK_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
         Entity hook = Api.Entities.Spawn();
         hook.ClassName = "grapplinghook";
         hook.Owner = actor;
         hook.NetName = NetName;
-        hook.MoveType = MoveType.Fly;
+        // QC: set_movetype(missile, g_balance_grapplehook_gravity ? MOVETYPE_TOSS : MOVETYPE_FLY). With gravity on
+        // the chain falls under its own gravity instead of flying dead straight.
+        hook.MoveType = GrappleGravity != 0f ? MoveType.Toss : MoveType.Fly;
+        if (GrappleGravity != 0f) hook.Gravity = GrappleGravity;
         Projectiles.MakeTrigger(hook); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         hook.Flags = EntFlags.Item;
         hook.TakeDamage = DamageMode.Aim; // shootable
@@ -255,7 +279,18 @@ public sealed class Hook : Weapon
         hook.Touch = (self, other) => GrapplingHookTouch(self, other, actor, slot);
         hook.Think = self => GrapplingHookThink(self, actor, slot);
         hook.NextThink = Api.Clock.Time;
-        hook.ProjectileDamage = (self, attacker) => RemoveHook(actor.WeaponState(slot));
+        // GrapplingHook_Damage (server/hook.qc): on shoot-down credit the attacker as the owner's pusher for the
+        // istypefrag frag-attribution window, then remove the hook (restoring the owner's movetype).
+        hook.ProjectileDamage = (self, attacker) =>
+        {
+            if (attacker is not null && !ReferenceEquals(attacker, actor))
+            {
+                actor.Pusher = attacker;
+                actor.PushLTime = Api.Clock.Time + Bal("g_maxpushtime", 8f);
+                actor.IsTypeFrag = false; // PHYS_INPUT_BUTTON_CHAT(realowner) — chat input not wired here
+            }
+            RemoveHook(actor.WeaponState(slot), actor);
+        };
 
         // MUTATOR_CALLHOOK(EditProjectile, actor, missile) (server/hook.qc FireGrapplingHook).
         var ep = new MutatorHooks.EditProjectileArgs(actor, hook);
@@ -310,7 +345,7 @@ public sealed class Hook : Weapon
         if (hook.Health > 0f && hook.Aiment is { } aim0
             && (aim0.IsFreed || ((aim0.Flags & EntFlags.Item) != 0 && aim0.ClassName != "nade")))
         {
-            RemoveHook(st);
+            RemoveHook(st, actor);
             return;
         }
 
@@ -415,14 +450,18 @@ public sealed class Hook : Weapon
     }
 
     // RemoveHook / GrapplingHookReset — drop the chain and restore the owner's movement.
-    private void RemoveHook(WeaponSlotState st)
+    private void RemoveHook(WeaponSlotState st, Entity? owner = null)
     {
+        // QC RemoveHook: if (player.move_movetype == MOVETYPE_FLY) set_movetype(player, MOVETYPE_WALK);
+        // The non-tarzan straight reel puts the owner in MOVETYPE_FLY; restore WALK explicitly on remove so the
+        // player doesn't keep flying after the hook is dropped (the tarzan reel already flips FLY->WALK per think).
+        if (owner is not null && owner.MoveType == MoveType.Fly)
+            owner.MoveType = MoveType.Walk;
         if (st.Hook is not null)
         {
             Api.Entities.Remove(st.Hook);
             st.Hook = null;
         }
-        // the player's movetype is restored to walk by the movement system once velocity is reapplied.
     }
 
     // W_Hook_Attack2 — lob a gravity bomb that falls under its own gravity and pulls victims in. hook.qc

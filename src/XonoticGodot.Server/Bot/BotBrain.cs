@@ -351,11 +351,22 @@ public sealed class BotBrain
                 // QC wr_aim re-rolls random() each decision and persists its toggle on the actor (the rifle's
                 // bot_secondary_riflemooth); carry that per-bot state + a fresh draw into the weapon's wr_aim.
                 _botAimState.Random01 = (float)_rng.NextDouble();
+                _botAimState.Actor = bot; // QC wr_aim's `actor` — an ammo-conditional wr_aim (Vaporizer) reads it
                 if (w.BotWantsSecondary((enemy.Origin - bot.Origin).Length(), Skill, ref _botAimState))
                 {
                     wantAttack = false;
                     wantAttack2 = true;
                 }
+            }
+            // QC wr_aim auto-detonation (devastator.qc:360-450): regardless of whether the bot is taking a shot
+            // this frame, a skill >= 2 bot may remote-detonate its in-flight rockets when the predicted splash
+            // damage favours it. This runs independently of the primary-fire decision and, when it fires the
+            // secondary, suppresses the primary ("don't fire a new shot at the same time", devastator.qc:447-449).
+            if (ChosenWeapon is { } dw
+                && dw.BotWantsDetonate(bot, new WeaponSlot(0), Skill, Players(), ShouldAttack))
+            {
+                wantAttack = false;
+                wantAttack2 = true;
             }
             // QC havocbot_ai:142-146: bot_nofire (and independent_players) suppress the fire button while
             // leaving aim + combat movement intact.
@@ -431,7 +442,10 @@ public sealed class BotBrain
         if (shotSpeed > 0f && CurrentWeaponIsLobbed())
             dir = Aim.BallisticArc(lead, shotSpeed, ProjectileGravity());
 
-        float maxDev = Aim.MaxFireDeviation(lead, Skill, accurate: shotSpeed <= 0f);
+        // QC wr_aim's shot_accurate argument: hitscan shots are accurate by default; a weapon may override (the
+        // Devastator relaxes accuracy when its rockets are guidable — devastator.qc:356-357).
+        bool accurate = ChosenWeapon?.BotAimAccurate() ?? (shotSpeed <= 0f);
+        float maxDev = Aim.MaxFireDeviation(lead, Skill, accurate);
         Aim.AimAt(dir, Bot.Origin, Skill, dt, now, maxDev, hasEnemy: true);
 
         // line of fire check (QC traceline shotorg -> enemy center): don't shoot a wall/teammate
@@ -629,7 +643,9 @@ public sealed class BotBrain
         if ((w.SpawnFlags & WeaponFlags.TypeHitscan) != 0)
             return 0f; // hitscan: aim straight at the target
         float s = Api.Cvars.GetFloat(BalanceNames(w).Speed);
-        return s > 0f ? s : DefaultShotSpeed;
+        // QC wr_aim may override the speed the bot leads by (the Devastator leads as if its rocket flew much
+        // faster, "simulating rocket guide" — devastator.qc:351-355). Default returns the cvar speed unchanged.
+        return w.BotAimShotSpeed(s > 0f ? s : DefaultShotSpeed);
     }
 
     /// <summary>True if the chosen weapon lobs under gravity (mortar/nade), so the aim should arc the shot.</summary>

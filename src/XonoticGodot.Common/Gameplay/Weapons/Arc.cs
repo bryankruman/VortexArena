@@ -170,9 +170,14 @@ public sealed class Arc : Weapon
         if (fire == FireMode.Primary)
         {
             bool beamPrimary = st.ButtonAttack;                       // primary held -> normal beam
-            bool beamBurst = st.ButtonAttack2 && !BoltEnabled;        // secondary held + no bolt -> burst beam
+            // QC arc.qc:205-209 latches beam_bursting on the beam entity once a burst beam starts; the beam KEEPS
+            // bursting after ATCK2 is released until the beam itself ends. So burst is `(ATCK2 && !bolt) || latch`,
+            // not a fresh per-tick read — once latched it stays burst-typed (damage/heat/ammo) for this beam's life.
+            bool beamBurst = (st.ButtonAttack2 && !BoltEnabled) || st.BeamBursting;
             if (beamPrimary || beamBurst)
             {
+                if (beamBurst && !beamPrimary)
+                    st.BeamBursting = true; // latch (arc.qc:207-208) — survives ATCK2 release until the beam ends
                 BeamTick(actor, slot, st, burst: beamBurst && !beamPrimary);
             }
             else
@@ -188,6 +193,7 @@ public sealed class Arc : Weapon
                 }
                 BeamCooldown(st, burst: false);
                 st.ArcBeam = null;
+                st.BeamBursting = false; // beam ended: clear the burst latch (QC deletes the beam entity)
             }
         }
         else if (fire == FireMode.Secondary && BoltEnabled)
@@ -210,6 +216,16 @@ public sealed class Arc : Weapon
             return;
         }
         float cooldownSpeed = CooldownSpeed(st, burst);
+        // QC arc.qc:240-245: when the beam ends with any cooldown_speed, latch arc_cooldown (the HUD heat-% scale)
+        // and — if cooldown_release is set OR we ended via overheat — latch arc_overheat to the time the heat
+        // takes to bleed off at that speed. cooldown_release lets the heat ring/refire-gate linger even on a clean
+        // release (dormant at stock cooldown_release 0; the overheat case is handled at the BeamTick jam site).
+        if (cooldownSpeed != 0f)
+        {
+            if (Beam.CooldownRelease != 0f)
+                st.ArcOverheat = Api.Clock.Time + st.BeamHeat / cooldownSpeed;
+            st.ArcCooldown = cooldownSpeed;
+        }
         if (cooldownSpeed > 0f && st.BeamHeat > 0f)
             st.BeamHeat = MathF.Max(0f, st.BeamHeat - cooldownSpeed * Api.Clock.FrameTime);
         st.BeamInitialized = false;
@@ -239,13 +255,16 @@ public sealed class Arc : Weapon
                 // overheat_min) and the jam lasts `time + heat / cooldown_speed` — i.e. as long as it takes to bleed
                 // the accumulated heat back off at the cooldown rate (~overheat_max/cooldown), NOT a fixed
                 // overheat_max seconds. Falls back to overheat_max only if cooldown is disabled (no bleed rate).
+                // arc_cooldown is latched too (QC own.arc_cooldown = cooldown_speed) — it scales the HUD heat ring.
                 float cooldownSpeed = CooldownSpeed(st, burst);
                 st.ArcOverheat = Api.Clock.Time + (cooldownSpeed > 0f ? st.BeamHeat / cooldownSpeed : Beam.OverheatMax);
+                if (cooldownSpeed != 0f) st.ArcCooldown = cooldownSpeed;
                 Api.Sound.Stop(actor, SoundChannel.Weapon);          // end the beam loop before the stop cue
                 Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/arc_stop.wav"); // QC arc.qc:237 SND_ARC_STOP
             }
             BeamCooldown(st, burst);
             st.ArcBeam = null;
+            st.BeamBursting = false; // overheat ends the beam (QC deletes arc_beam): clear the burst latch
             return;
         }
         st.ArcOverheat = 0f;
@@ -369,12 +388,24 @@ public sealed class Arc : Weapon
     // (every bolt_count-th bolt enforces the longer refire2) is tracked via misc_bulletcounter. arc.qc
     private void AttackBoltBurst(Entity actor, WeaponSlot slot, WeaponSlotState st)
     {
-        actor.TakeResource(AmmoType, Bolt.Ammo);
+        // QC arc.qc:610-625: bolt_ammo is the cost of the WHOLE burst. Scale to_shoot down to the affordable
+        // fraction (floor(bolt_count * min(1, ammo/bolt_ammo))) so a near-empty mag fires fewer bolts instead of
+        // mag-dumping, and decrease ammo once by min(bolt_ammo, ammo) (never below 0). With stock bolt_count 1 /
+        // bolt_ammo 1 and the >=1 cells gate this is the same flat single-bolt consume as before.
+        int toShoot = Bolt.Count;
+        float ammoAvailable = actor.GetResource(AmmoType);
+        if (Bolt.Ammo > 0f)
+        {
+            float burstFraction = MathF.Min(1f, ammoAvailable / Bolt.Ammo);
+            toShoot = (int)MathF.Floor(toShoot * burstFraction);
+            float toUse = MathF.Min(Bolt.Ammo, ammoAvailable);
+            actor.TakeResource(AmmoType, toUse);
+        }
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward, recoil: 2f); // QC arc.qc bolt recoil 2
 
-        int count = Bolt.Count;
+        int count = toShoot;
         if (count < 1) count = 1;
         for (int i = 0; i < count; ++i)
         {
@@ -454,6 +485,25 @@ public sealed class Arc : Weapon
         Vector3 backoff = self.Velocity.LengthSquared() > 1e-6f ? -QMath.Normalize(self.Velocity) : Vector3.Zero;
         EffectEmitter.Emit("ELECTRO_IMPACT", self.Origin, backoff * 1000f);
         Api.Entities.Remove(self);
+    }
+
+    // METHOD(Arc, wr_resetplayer / wr_playerdeath) — arc.qc:701-716: clear the overheat jam + cooldown latch (and
+    // the ATCK-prev edge) when the player respawns / dies, so a fresh life never starts mid-jam. The port has no
+    // respawn-wide weapon-reset hook, so — like Vortex/Rifle/OkNex's per-slot seed (see Rifle.WrSetup) — this runs
+    // in wr_setup (switch-in, live-dispatched by WeaponFireDriver on raise/spawn). Heat is per-slot here, so a
+    // switch away+back also re-clears (benign: the beam is gone while the weapon is holstered anyway). Base also
+    // migrates arc_overheat/arc_cooldown across a dropped/picked-up Arc (wr_drop/wr_pickup); the port has no
+    // weapon-throw/heat-carry path yet (WeaponThrowing.cs notes no weapon implements wr_drop), so that half stays
+    // unported and is tracked under weapon-arc.heat_persistence.
+    public override void WrSetup(Entity actor, WeaponSlot slot)
+    {
+        var st = actor.WeaponState(slot);
+        st.ArcOverheat = 0f;
+        st.ArcCooldown = 0f;
+        st.BeamHeat = 0f;
+        st.BeamBursting = false;
+        st.ArcBeam = null;
+        st.BeamInitialized = false;
     }
 
     // QC the Arc has no _primary_/_secondary_ refire cvars: the primary is the continuous beam (beam_refire,

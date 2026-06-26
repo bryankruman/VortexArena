@@ -120,6 +120,10 @@ public sealed class Warpzone
     /// the partner's targets on a crossing (QC <c>SUB_UseTargets_SkipTargets(this.enemy, ...)</c>).</summary>
     public Warpzone? Partner;
 
+    /// <summary>The owning player for a Porto-weapon portal (QC <c>portal.owner</c>), or null for a map warpzone.
+    /// Used by <see cref="WarpzoneManager.ClearAllPortoPortals"/> to tear down every portal of one owner on death/reset.</summary>
+    public Entity? Owner;
+
     public bool Linked => Transform.Valid;
 }
 
@@ -375,7 +379,7 @@ public sealed class WarpzoneManager
     public void PlacePortoPortal(Vector3 origin, Vector3 surfaceNormal, bool isInPortal, int portalId, Entity? owner)
     {
         Vector3 angles = QMath.FixedVecToAngles(surfaceNormal); // forward = the wall normal
-        var wz = new Warpzone { InOrigin = origin, InAngles = angles, TargetName = $"porto_{portalId}_{(isInPortal ? "in" : "out")}" };
+        var wz = new Warpzone { InOrigin = origin, InAngles = angles, Owner = owner, TargetName = $"porto_{portalId}_{(isInPortal ? "in" : "out")}" };
         SpawnTriggerFor(wz, PortoMins, PortoMaxs);
         Add(wz);
 
@@ -412,6 +416,32 @@ public sealed class WarpzoneManager
         {
             Warpzone wz = _zones[i];
             if (wz.TargetName == $"porto_{portalId}_in" || wz.TargetName == $"porto_{portalId}_out")
+                RemoveZone(wz);
+        }
+    }
+
+    /// <summary>
+    /// QC <c>Portal_ClearAll_PortalsOnly(own)</c>: tear down EVERY portal belonging to <paramref name="owner"/> (both
+    /// the pending in-portals and the fully-placed in/out pairs), regardless of shot id. Driven on player death/reset
+    /// (QC <c>Portal_ClearAll</c>, called from MakePlayerObserver / ClientDisconnect / the race respawn). Wire
+    /// <c>Porto.PortalClearAll</c> to this on the host.
+    /// </summary>
+    public void ClearAllPortoPortals(Entity? owner)
+    {
+        // Pending (unpartnered) in-portals of this owner.
+        var pendingKeys = new List<(Entity?, int)>();
+        foreach (var kv in _pendingPorto)
+            if (ReferenceEquals(kv.Key.Item1, owner)) pendingKeys.Add(kv.Key);
+        foreach (var k in pendingKeys)
+        {
+            if (_pendingPorto.TryGetValue(k, out Warpzone? z)) RemoveZone(z);
+            _pendingPorto.Remove(k);
+        }
+        // Any fully-placed Porto zone of this owner (and, via RemoveZone, its partner).
+        for (int i = _zones.Count - 1; i >= 0; i--)
+        {
+            Warpzone wz = _zones[i];
+            if (ReferenceEquals(wz.Owner, owner) && wz.TargetName.StartsWith("porto_", System.StringComparison.Ordinal))
                 RemoveZone(wz);
         }
     }

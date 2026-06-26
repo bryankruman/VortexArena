@@ -332,6 +332,10 @@ public sealed class WeaponSlotState
     public float BeamHeat;
     /// <summary>QC <c>.arc_overheat</c> — server time the overheat jam lasts until.</summary>
     public float ArcOverheat;
+    /// <summary>QC <c>.arc_cooldown</c> — the cooldown speed latched when the beam ended (HUD heat-% scale).</summary>
+    public float ArcCooldown;
+    /// <summary>QC <c>.beam_bursting</c> — latched once the burst beam starts; keeps bursting until the beam ends.</summary>
+    public bool BeamBursting;
     /// <summary>QC <c>.beam_dir</c> — the current beam direction (lags the aim, curving toward it).</summary>
     public Vector3 BeamDir;
     /// <summary>Whether <see cref="BeamDir"/> has been seeded yet (QC beam_initialized).</summary>
@@ -350,6 +354,16 @@ public sealed class WeaponSlotState
     /// <summary>QC <c>actor.(weaponentity).tuba_note</c> — the sustained note entity while a key is held.</summary>
     public Entity? TubaNote;
     public float TubaSmokeTime;
+
+    // QC tuba.qc MAX_TUBANOTES = 32: the melody-recognition ring buffer (per weapon slot, like QC stores
+    // tuba_lastnotes[] / tuba_lastnotes_last / tuba_lastnotes_cnt on actor.(weaponentity)). Each entry is the
+    // just-ended note as vec3(on=start time, off=end time, pitch=note); W_Tuba_HasPlayed walks it backwards.
+    /// <summary>QC <c>.tuba_lastnotes_last</c> — index of the most-recently recorded note in the ring.</summary>
+    public int TubaLastNotesLast;
+    /// <summary>QC <c>.tuba_lastnotes_cnt</c> — how many notes are valid in the ring (capped at MAX_TUBANOTES).</summary>
+    public int TubaLastNotesCount;
+    /// <summary>QC <c>.tuba_lastnotes[MAX_TUBANOTES]</c> — ring of (on, off, pitch) note records.</summary>
+    public Vector3[] TubaLastNotes = new Vector3[Tuba.MaxTubaNotes];
 
     // --- Hook grapple (server/hook.qc) ---
     /// <summary>QC <c>actor.(weaponentity).hook</c> — the live grapple chain entity.</summary>

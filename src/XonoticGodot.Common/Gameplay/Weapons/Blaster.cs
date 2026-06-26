@@ -149,6 +149,13 @@ public sealed class Blaster : Weapon
         Projectiles.MakeTrigger(missile); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         missile.Flags = EntFlags.Item; // QC FL_PROJECTILE (no dedicated flag in EntFlags yet)
 
+        // QC blaster.qc:64-65,83 — mark the bolt as a dodgeable hazard (bot_dodge/bot_dodgerating + IL_PUSH on
+        // the g_bot_dodge list). Producer side only: the havocbot_dodge danger-list consumer
+        // (findchainfloat(bot_dodge, true), gated on SUPERBOT) is not yet ported, so this is inert today —
+        // bots LEAD the bolt (BotBrain.ShotLead) but do not yet specifically dodge incoming bolts.
+        missile.BotDodge = true;
+        missile.BotDodgeRating = Primary.Damage;
+
         // settouch(missile, W_Blaster_Touch); — detonate + radius damage on contact.
         missile.Touch = (self, other) => OnTouch(self, other);
 

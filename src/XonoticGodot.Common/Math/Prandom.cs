@@ -35,6 +35,30 @@ public static class Prandom
     /// <summary>Uniform float in [-1,1).</summary>
     public static float Signed() => Float() * 2f - 1f;
 
+    private static float _gaussLast;
+    private static bool _gaussLastSet;
+
+    /// <summary>
+    /// A Gaussian (normal) random variate with mean 0 and standard deviation 1 (QC
+    /// <c>gsl_ran_ugaussian</c>, lib/random.qc:87) — the Box-Muller transform, caching the second variate
+    /// of each pair exactly as the GSL/QC code does. Uses the deterministic <see cref="Float"/> stream so
+    /// server and predicting client agree (ADR-0010). Used by the gauss spread styles (W_CalculateSpread 3/4).
+    /// </summary>
+    public static float Gaussian()
+    {
+        if (_gaussLastSet)
+        {
+            _gaussLastSet = false;
+            return _gaussLast;
+        }
+
+        float a = Float() * (2f * QMath.Pi);
+        float b = MathF.Sqrt(-2f * MathF.Log(Float()));
+        _gaussLast = MathF.Cos(a) * b;
+        _gaussLastSet = true;
+        return MathF.Sin(a) * b;
+    }
+
     public static float Range(float min, float max) => min + (max - min) * Float();
 
     public static int RangeInt(int minInclusive, int maxExclusive)

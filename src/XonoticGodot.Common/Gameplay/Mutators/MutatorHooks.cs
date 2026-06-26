@@ -1076,6 +1076,43 @@ public static class MutatorHooks
         var a = new MatchEndArgs();
         return MatchEnd.Call(ref a);
     }
+
+    // Nade mutator hooks (common/mutators/mutator/nades/sv_nades.qc MUTATOR_HOOKABLE events)
+
+    /// <summary>
+    /// EV_Nade_Damage — fired from NadeProjectile.NadeDamage for each nade hit; a handler returning true
+    /// consumes the hook (the nade's damage is adjusted per the mutator's logic, and other handlers don't
+    /// run). Slot0 the nade entity, slot1 the attacking weapon (deathtype-resolved), slot2 damage (in/out),
+    /// slot3 force (in/out). okhmg_nadesupport (okhmg.qc:5-12) subscribes here to scale nade self-damage
+    /// when the nade is damaged by the HMG.
+    /// </summary>
+    public struct NadeDamageArgs
+    {
+        public readonly Entity Nade;         // MUTATOR_ARGV_0_entity
+        public readonly string Weapon;       // MUTATOR_ARGV_1_string (weapon NetName from deathtype)
+        public float Damage;                 // MUTATOR_ARGV_2_float (in/out)
+        public Vector3 Force;                // MUTATOR_ARGV_3_vector (in/out)
+
+        public NadeDamageArgs(Entity nade, string weapon, float damage, Vector3 force)
+        {
+            Nade = nade;
+            Weapon = weapon;
+            Damage = damage;
+            Force = force;
+        }
+    }
+    public static readonly HookChain<NadeDamageArgs> NadeDamage = new();
+
+    /// <summary>
+    /// Fire <see cref="NadeDamage"/> for a nade being damaged (QC <c>MUTATOR_CALLHOOK(Nade_Damage,
+    /// this, attacking_weapon, damage, force)</c>). Returns true if a handler consumed the hook (damage
+    /// scaling). The nade damage path (<see cref="NadeProjectile.NadeDamage"/>) calls this to allow
+    /// per-weapon damage adjustments.
+    /// </summary>
+    public static bool FireNadeDamage(ref NadeDamageArgs args)
+    {
+        return NadeDamage.Call(ref args);
+    }
 }
 
 /// <summary>

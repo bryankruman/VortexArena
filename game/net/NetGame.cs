@@ -2940,9 +2940,12 @@ public sealed partial class NetGame : Node3D
         if (net == "arc" && active is Arc arc && arc.Beam.OverheatMax > 0f)
         {
             float now = Api.Clock.Time;
+            // QC Arc_GetHeat_Percent (arc.qc:62-68): while a beam is live the ring is beam_heat/overheat_max; after
+            // it ends the latched arc_overheat timestamp decays the ring, SCALED by arc_cooldown (the cooldown_speed
+            // captured when the beam stopped) so a hot release fades the ring proportionally to its bleed rate.
             float pct = st.BeamHeat > 0f
                 ? st.BeamHeat / arc.Beam.OverheatMax
-                : (st.ArcOverheat > now ? (st.ArcOverheat - now) / arc.Beam.OverheatMax : 0f);
+                : (st.ArcOverheat > now ? (st.ArcOverheat - now) / arc.Beam.OverheatMax * st.ArcCooldown : 0f);
             x.ArcHeat = Godot.Mathf.Clamp(pct, 0f, 1f);
         }
         else

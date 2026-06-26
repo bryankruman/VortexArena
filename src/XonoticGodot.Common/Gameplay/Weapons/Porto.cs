@@ -242,11 +242,11 @@ public sealed class Porto : Weapon
         }
 
         // QC NOIMPACT (sky / noimpact face): hard fail, no portal (porto.qc:199-205). On a combined (cnt<0) shot
-        // also clear any already-placed in-portal of this shot.
+        // QC clears ALL of the owner's portals (Portal_ClearAll_PortalsOnly, porto.qc:204), not just this shot's.
         if (surf.IsNoImpact)
         {
             Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/unsupported.wav");
-            if (self.Count < 0) PortalClearWithId?.Invoke(self.Owner, (int)self.LTime);
+            if (self.Count < 0) PortalClearAll?.Invoke(self.Owner);
             CleanupProjectile(self, slot);
             return;
         }
@@ -261,6 +261,8 @@ public sealed class Porto : Weapon
             bool isIn = self.Count == 0;
             PlacePortal(self, surf.Normal, isInPortal: isIn);
             Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/create.wav");
+            // QC Send_Notification(NOTIF_ONE, realowner, MSG_CENTER, CENTER_PORTO_CREATED_IN/OUT).
+            NotifyOwner(self, isIn ? "PORTO_CREATED_IN" : "PORTO_CREATED_OUT");
             PortoSuccess(self, slot);
         }
         else if ((self.Effects & EffectRed) != 0)
@@ -270,6 +272,7 @@ public sealed class Porto : Weapon
             self.Effects |= EffectBlue;
             PlacePortal(self, surf.Normal, isInPortal: true);
             Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/create.wav");
+            NotifyOwner(self, "PORTO_CREATED_IN"); // QC CENTER_PORTO_CREATED_IN on the in-portal of a combined shot
             self.AVelocity = ReflectAbout(self.AVelocity, surf.Normal); // QC: right_vector reflected off in-portal plane
             self.Velocity = ReflectAbout(self.Velocity, surf.Normal);
             self.Angles = QMath.VecToAngles(self.Velocity); // bounce onward as blue
@@ -279,6 +282,7 @@ public sealed class Porto : Weapon
             // blue shot landed: place the out-portal and finish.
             PlacePortal(self, surf.Normal, isInPortal: false);
             Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/create.wav");
+            NotifyOwner(self, "PORTO_CREATED_OUT"); // QC CENTER_PORTO_CREATED_OUT
             PortoSuccess(self, slot);
         }
     }
@@ -362,6 +366,12 @@ public sealed class Porto : Weapon
     public static System.Action<Entity, int>? PortalClearWithId;
 
     /// <summary>
+    /// Host hook for QC Portal_ClearAll_PortalsOnly(owner) — clears ALL of an owner's portals (used on
+    /// player death/reset, and on a combined-shot noimpact/blue-stage hard fail). Null = no host wired (no-op).
+    /// </summary>
+    public static System.Action<Entity>? PortalClearAll;
+
+    /// <summary>
     /// Place an in/out portal at the projectile's current position/orientation, realised as a warpzone via
     /// <see cref="PortalSpawner"/> (the warpzone teleporter the player walks through). The plane forward is the
     /// impact-surface normal recovered by <see cref="ProbeImpact"/> (the true wall plane, falling back to the
@@ -370,6 +380,14 @@ public sealed class Porto : Weapon
     /// </summary>
     private void PlacePortal(Entity self, Vector3 normal, bool isInPortal)
         => PortalSpawner?.Invoke(new PortalRequest(self.Origin, normal, isInPortal, (int)self.LTime, self.Owner));
+
+    /// <summary>QC Send_Notification(NOTIF_ONE, this.realowner, MSG_CENTER, CENTER_PORTO_*): center-print the
+    /// portal create/fail status to the firing player (skipped if the owner is gone). No-op headless (no Sink wired).</summary>
+    private static void NotifyOwner(Entity self, string centerName)
+    {
+        if (self.Owner is { IsFreed: false } owner)
+            NotificationSystem.Center(owner, centerName);
+    }
 
     // W_Porto_Success — portal placed: clear the single-portal latch and remove the projectile.
     private void PortoSuccess(Entity self, WeaponSlot slot) => CleanupProjectile(self, slot);
@@ -406,6 +424,36 @@ public sealed class Porto : Weapon
     public float StrengthForce = 3f;
     private const int EffectRed = 1 << 14;   // EF_RED
     private const int EffectBlue = 1 << 15;  // EF_BLUE
+
+    // METHOD(PortoLaunch, wr_resetplayer) — porto.qc:409. On respawn/reset, drop the single-portal latch so the
+    // player can fire a fresh porto (QC: actor.porto_current = NULL).
+    public override void WrResetPlayer(Entity actor, WeaponSlot slot)
+    {
+        WeaponSlotState st = actor.WeaponState(slot);
+        st.PortoCurrent = null;
+    }
+
+    // W_Porto_Remove (porto.qc:151) — driven on player death by the QC Portal_ClearAll path
+    // (server/portals.qc:586-590 → MakePlayerObserver / ClientDisconnect). On the owner's death we tear down ALL
+    // of their live portals (Portal_ClearAll_PortalsOnly) and HARD-fail the in-flight projectile if it's still
+    // theirs: clear the porto_current latch, clear this shot's in-portal if combined (cnt<0), and delete it. A hard
+    // fail (failhard=true) skips the throwable-drop branch — a dead player can't drop the porto as a pickup.
+    public override void WrPlayerDeath(Entity actor, WeaponSlot slot)
+    {
+        // Portal_ClearAll: remove every portal this owner placed (QC Portal_ClearAll_PortalsOnly).
+        PortalClearAll?.Invoke(actor);
+
+        WeaponSlotState st = actor.WeaponState(slot);
+        Entity? gren = st.PortoCurrent;
+        if (gren is null || gren.IsFreed) { st.PortoCurrent = null; return; }
+
+        // W_Porto_Fail(this, failhard:true): a combined (cnt<0) shot's pending in-portal was already cleared by the
+        // ClearAll above; clear the latch and delete the projectile (no sound, no throwable-drop on a hard fail).
+        st.PortoCurrent = null;
+        gren.Touch = null;
+        gren.Think = null;
+        Api.Entities.Remove(gren);
+    }
 
     // METHOD(PortoLaunch, wr_checkammo1/2) — porto.qc (infinite ammo).
     public bool CheckAmmoPrimary(Entity actor) => true;

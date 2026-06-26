@@ -95,6 +95,7 @@ public sealed class OverkillMutator : MutatorBase
     private HookHandler<MutatorHooks.SetStartItemsArgs>? _onSetStartItems;
     private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _onFilterItemDef;
     private HookHandler<MutatorHooks.RandomItemsClassNameArgs>? _onRandomItems;
+    private HookHandler<MutatorHooks.NadeDamageArgs>? _onNadeDamage;
 
     public override void Hook()
     {
@@ -107,6 +108,7 @@ public sealed class OverkillMutator : MutatorBase
         _onSetStartItems ??= OnSetStartItems;
         _onFilterItemDef ??= OnFilterItemDefinition;
         _onRandomItems ??= OnRandomItemsGetClassName;
+        _onNadeDamage ??= OnNadeDamage;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc, HookOrder.Last); // QC CBC_ORDER_LAST
         MutatorHooks.PlayerDies.Add(_onPlayerDies);
@@ -117,6 +119,7 @@ public sealed class OverkillMutator : MutatorBase
         MutatorHooks.SetStartItems.Add(_onSetStartItems, HookOrder.Last);
         MutatorHooks.FilterItemDefinition.Add(_onFilterItemDef);
         MutatorHooks.RandomItemsGetClassName.Add(_onRandomItems);
+        MutatorHooks.NadeDamage.Add(_onNadeDamage);
 
         if (Api.Services is not null)
         {
@@ -160,6 +163,7 @@ public sealed class OverkillMutator : MutatorBase
         if (_onSetStartItems is not null) MutatorHooks.SetStartItems.Remove(_onSetStartItems);
         if (_onFilterItemDef is not null) MutatorHooks.FilterItemDefinition.Remove(_onFilterItemDef);
         if (_onRandomItems is not null) MutatorHooks.RandomItemsGetClassName.Remove(_onRandomItems);
+        if (_onNadeDamage is not null) MutatorHooks.NadeDamage.Remove(_onNadeDamage);
     }
 
     // QC the overkill g_overkill_items pool (sv_overkill.qh:35-39): the five overkill MAP items, by their
@@ -412,5 +416,21 @@ public sealed class OverkillMutator : MutatorBase
         if (StartHmg) l.Weapons.Add("okhmg");
         l.ItemFlags.Add("UNLIMITED_AMMO");
         return false;
+    }
+
+    // MUTATOR_HOOKFUNCTION(okhmg_nadesupport, Nade_Damage) — port of okhmg.qc:5-12. Scale nade self-damage
+    // to 10% of max health when the nade is damaged by the overkill HMG (e.g., throwing a nade while holding
+    // the HMG and taking splash damage from the nade's own explosion).
+    private bool OnNadeDamage(ref MutatorHooks.NadeDamageArgs args)
+    {
+        // QC: if (M_ARGV(1, entity) != WEP_OVERKILL_HMG) return;
+        // The args.Weapon is already the weapon NetName (resolved by the hook caller from the deathtype).
+        if (args.Weapon != "okhmg")
+            return false;
+
+        // QC: return = true; M_ARGV(2, float) /* damage */ = (M_ARGV(0, entity)).max_health * 0.1;
+        // Scale the damage to 10% of the nade's max health.
+        args.Damage = args.Nade.MaxHealth * 0.1f;
+        return true; // Consumed: the hook handled the damage scaling.
     }
 }

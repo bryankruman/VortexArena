@@ -16,8 +16,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// the melee swing (swing-arc damage scaling + multi-hit dedupe, HITTYPE_SECONDARY slap obituary, per-trace
 /// woosh fx), shell-casing eject, the impact ricochet ping, and the out-of-ammo auto-melee fallback.
 /// The melee swing trace is antilag-bracketed (LagComp around the sweep, QC WarpZone_traceline_antilag,
-/// shotgun.qc:124). Left out (weapon-frame/online concerns): the multi-frame melee sweep + melee_delay
-/// wind-up timing, and the staged triple-shot (secondary==2) frame sequence.
+/// shotgun.qc:124). The melee now runs as Base does: a scheduled meleetemp think after the melee_delay (0.25s)
+/// wind-up that spreads its melee_traces across melee_time (0.15s), aborting on melee_no_doubleslap if the owner
+/// dies mid-swing. Left out (weapon-frame concern): the staged triple-shot (secondary==2) Frame1->Frame2 3-blast
+/// sequence — the secondary==2 path fires a single blast (with the correct alt_refire/alt_animtime timing).
 /// </summary>
 [Weapon]
 public sealed class Shotgun : Weapon
@@ -40,12 +42,15 @@ public sealed class Shotgun : Weapon
     {
         public int   Secondary;            // g_balance_shotgun_secondary (0=off, 1=melee, 2=triple-shot)
         public float Animtime;             // g_balance_shotgun_secondary_animtime
+        public float AltAnimtime;          // g_balance_shotgun_secondary_alt_animtime (triple-shot)
         public float Damage;               // g_balance_shotgun_secondary_damage (vs players)
         public float Force;                // g_balance_shotgun_secondary_force
         public float Refire;               // g_balance_shotgun_secondary_refire
+        public float AltRefire;            // g_balance_shotgun_secondary_alt_refire (triple-shot)
         public bool  MeleeBlockedByFiring; // g_balance_shotgun_secondary_melee_blockedbyfiring (default 0)
         public float MeleeDelay;           // g_balance_shotgun_secondary_melee_delay
         public float MeleeMultihit;        // g_balance_shotgun_secondary_melee_multihit
+        public bool  MeleeNoDoubleslap;    // g_balance_shotgun_secondary_melee_no_doubleslap (default 1)
         public float MeleeNonplayerDamage; // g_balance_shotgun_secondary_melee_nonplayerdamage
         public float MeleeRange;           // g_balance_shotgun_secondary_melee_range
         public float MeleeSwingSide;       // g_balance_shotgun_secondary_melee_swing_side
@@ -89,12 +94,15 @@ public sealed class Shotgun : Weapon
 
         Secondary.Secondary = BalInt("g_balance_shotgun_secondary", 1);
         Secondary.Animtime = Bal("g_balance_shotgun_secondary_animtime", 1.15f);
+        Secondary.AltAnimtime = Bal("g_balance_shotgun_secondary_alt_animtime", 0.2f);
         Secondary.Damage = Bal("g_balance_shotgun_secondary_damage", 70f);
         Secondary.Force = Bal("g_balance_shotgun_secondary_force", 200f);
         Secondary.Refire = Bal("g_balance_shotgun_secondary_refire", 1.25f);
+        Secondary.AltRefire = Bal("g_balance_shotgun_secondary_alt_refire", 1.2f);
         Secondary.MeleeBlockedByFiring = BalBool("g_balance_shotgun_secondary_melee_blockedbyfiring", false);
         Secondary.MeleeDelay = Bal("g_balance_shotgun_secondary_melee_delay", 0.25f);
         Secondary.MeleeMultihit = Bal("g_balance_shotgun_secondary_melee_multihit", 1f);
+        Secondary.MeleeNoDoubleslap = BalBool("g_balance_shotgun_secondary_melee_no_doubleslap", true);
         Secondary.MeleeNonplayerDamage = Bal("g_balance_shotgun_secondary_melee_nonplayerdamage", 40f);
         Secondary.MeleeRange = Bal("g_balance_shotgun_secondary_melee_range", 120f);
         Secondary.MeleeSwingSide = Bal("g_balance_shotgun_secondary_melee_swing_side", 120f);
@@ -128,13 +136,15 @@ public sealed class Shotgun : Weapon
         {
             if (Secondary.Secondary == 2)
             {
-                // secondary==2 triple-shot: same private-timer pattern as primary (QC passes alt_animtime into
-                // weapon_prepareattack and parks the real refire in shotgun_primarytime).
+                // secondary==2 triple-shot: same private-timer pattern as primary. QC passes the SEPARATE
+                // alt_animtime (0.2) into weapon_prepareattack and parks alt_refire (1.2) in shotgun_primarytime
+                // (shotgun.qc:316,334) — NOT the melee refire/animtime (1.25/1.15). The staged Frame1->Frame2
+                // 3-blast sequence itself is a weapon-frame loop concern; this path fires a single blast.
                 if (Api.Clock.Time >= st.ShotgunPrimaryTime
-                    && PrepareAttack(actor, slot, fire, attackTime: Secondary.Animtime))
+                    && PrepareAttack(actor, slot, fire, attackTime: Secondary.AltAnimtime))
                 {
                     Attack(actor, slot);
-                    st.ShotgunPrimaryTime = Api.Clock.Time + Secondary.Refire * rate;
+                    st.ShotgunPrimaryTime = Api.Clock.Time + Secondary.AltRefire * rate;
                 }
             }
         }
@@ -168,6 +178,13 @@ public sealed class Shotgun : Weapon
         // Multi-frame scheduling of the triple-shot (W_Shotgun_Attack3_Frame1/2) is a weapon-frame loop concern
         // driven by the weapon-system tick, not the blast.
     }
+
+    // METHOD(Shotgun, wr_aim) — shotgun.qc:267-273. A bot presses ATCK2 (the melee slap) when the enemy is
+    // within melee_range, otherwise ATCK (the pellet fan). The brain has already decided the shot via the
+    // generic BotAim; this hook only owns the primary-vs-secondary button pick. Returning true routes the shot
+    // onto ATCK2.
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
+        => enemyDistance <= Secondary.MeleeRange;
 
     // Refire/animtime from the (cvar-seeded) balance blocks (primary fan vs secondary melee/triple).
     public override float RefireFor(FireMode fire) => fire == FireMode.Secondary ? Secondary.Refire : Primary.Refire;
@@ -214,83 +231,148 @@ public sealed class Shotgun : Weapon
         WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Shell);
     }
 
-    // W_Shotgun_Attack2 + W_Shotgun_Melee_Think — a single melee swing in front of the actor. shotgun.qc
+    // W_Shotgun_Attack2 — start a melee swing. shotgun.qc:193-204. Plays the swing sound and schedules the
+    // W_Shotgun_Melee_Think to begin after melee_delay, spreading its melee_traces over melee_time.
     private void Melee(Entity actor, WeaponSlot slot)
     {
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/shotgun_melee.wav");
 
+        float rate = WeaponRateFactor(actor);
+
+        // QC spawns a `meleetemp` think entity (shotgun.qc:198-203): realowner = actor, think =
+        // W_Shotgun_Melee_Think, nextthink = time + melee_delay * rate. The think then runs over melee_time,
+        // doing a batch of swing traces each server frame so a target can move out of a partially-completed
+        // swing and the slap lands after the 0.25s wind-up rather than instantly.
+        Entity meleetemp = Api.Entities.Spawn();
+        meleetemp.ClassName = "meleetemp";
+        meleetemp.Owner = actor;          // QC realowner
+        meleetemp.MoveType = MoveType.None; // only runs its think (SimulationLoop MOVETYPE_NONE path)
+        meleetemp.Solid = Solid.Not;
+
+        // Swing state carried across the multi-frame think (QC .cnt / .swing_prev / .swing_alreadyhit). Held in
+        // a closure-captured holder rather than on the shared Entity so no scratch fields leak onto every entity.
+        var swing = new MeleeSwingState();
+        meleetemp.Think = self => MeleeThink(self, actor, rate, swing);
+        meleetemp.NextThink = Api.Clock.Time + Secondary.MeleeDelay * rate;
+    }
+
+    /// <summary>Swing state for the multi-frame melee think (QC <c>.cnt</c>/<c>.swing_prev</c>/<c>.swing_alreadyhit</c>).</summary>
+    private sealed class MeleeSwingState
+    {
+        public float Cnt;            // swing start time (0 until the first think run sets it)
+        public float SwingPrev;      // the next trace index to start from
+        public Entity? AlreadyHit;   // multihit dedupe across frames
+    }
+
+    // W_Shotgun_Melee_Think — shotgun.qc:88-191. Runs each server frame across melee_time, performing the
+    // batch of swing-arc traces due this frame (swing_prev..f) and applying swing-scaled damage; re-schedules
+    // itself until melee_time elapses, then frees the think entity.
+    private void MeleeThink(Entity self, Entity actor, float rate, MeleeSwingState swing)
+    {
+        float now = Api.Clock.Time;
+
+        if (swing.Cnt == 0f) // QC: if (!this.cnt) — set the swing start + play the strength sound
+        {
+            swing.Cnt = now;
+            MutatorHooks.FireWPlayStrengthSound(actor);
+        }
+
+        // QC: give up now if the owner died mid-swing (melee_no_doubleslap, shotgun.qc:104-108).
+        if (actor.DeadState != DeadFlag.No && Secondary.MeleeNoDoubleslap)
+        {
+            Api.Entities.Remove(self);
+            return;
+        }
+
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out Vector3 right, out Vector3 up);
         Vector3 eye = actor.Origin + actor.ViewOfs;
 
-        // QC's W_Shotgun_Melee_Think spreads the melee_traces sweep across the swing arc over melee_time
-        // (one batch of traces per server frame, with swing_alreadyhit dedupe persisting across frames). We
-        // collapse that to a single pass over the whole arc — gameplay-equivalent for a one-shot swing:
-        // swing_factor runs +1..-1 across the arc and scales the damage by min(1, swing_factor + 1).
-        int traces = (int)Secondary.MeleeTraces;
-        if (traces < 1) traces = 1;
+        // swing percentage based on elapsed time (shotgun.qc:99-101): the swing fans the traces out over
+        // melee_time so later frames do later (lower-index) traces.
+        float meleetime = Secondary.MeleeTime * rate;
+        float swingPct = QMath.Clamp((swing.Cnt + meleetime - now) / meleetime, 0f, 10f);
+        float f = (1f - swingPct) * Secondary.MeleeTraces;
 
-        // QC tags every melee Damage() with WEP_SHOTGUN.m_id | HITTYPE_SECONDARY (shotgun.qc:152), which is what
-        // selects WEAPON_SHOTGUN_MURDER_SLAP over WEAPON_SHOTGUN_MURDER in wr_killmessage. The int-deathtype
-        // ApplyDamage seam can't carry the HITTYPE bit (it resolves the id to a bare weapon tag), so the slap
-        // routes through Combat.Damage directly with the secondary-tagged deathtype, mirroring how Crylink's
-        // secondary threads HITTYPE_SECONDARY into its damage tag.
+        // QC tags every melee Damage() with WEP_SHOTGUN.m_id | HITTYPE_SECONDARY (shotgun.qc:152), which selects
+        // WEAPON_SHOTGUN_MURDER_SLAP over WEAPON_SHOTGUN_MURDER in wr_killmessage. The int-deathtype ApplyDamage
+        // seam can't carry the HITTYPE bit, so the slap routes through Combat.Damage directly with the
+        // secondary-tagged deathtype, mirroring how Crylink's secondary threads HITTYPE_SECONDARY.
         string slapDeathType = DeathTypes.WithHitType(DeathTypes.FromWeapon(NetName), DeathTypes.Secondary);
 
+        Vector3 meleePath = up * Secondary.MeleeSwingUp + right * Secondary.MeleeSwingSide;
+
         // [sv-antilag.melee.secondary] Base traces each swing-arc segment through WarpZone_traceline_antilag
-        // (shotgun.qc:124, at ANTILAG_LATENCY for a client owner), so a high-ping slap connects on a moving
-        // target where the shooter saw it. Bracket the whole sweep in the shared LagComp facade (the same
-        // machinery FireBullet/Arc use): it rewinds players/monsters/nades to the shooter's view-time and
-        // widens the shooter's hit-mask to include CORPSE, then restores both — a no-op on a client/test/bot.
+        // (shotgun.qc:124, at ANTILAG_LATENCY for a client owner). Bracket this frame's batch in the shared
+        // LagComp facade — no-op on a client/test/bot.
         LagComp.Begin(actor);
         try
         {
-        Entity? lastHit = null;
-        for (int i = 0; i < traces; ++i)
-        {
-            float swingFactor = (1f - (i / Secondary.MeleeTraces)) * 2f - 1f;
-            Vector3 meleePath = up * Secondary.MeleeSwingUp + right * Secondary.MeleeSwingSide;
-            Vector3 targPos = eye + meleePath * swingFactor + forward * Secondary.MeleeRange;
-
-            TraceResult tr = Api.Trace.Trace(eye, Vector3.Zero, Vector3.Zero, targPos, MoveFilter.Normal, actor);
-            // QC Send_Effect(EFFECT_SHOTGUN_WOOSH, trace_endpos, -melee_path, 1) per swing trace (shotgun.qc:126),
-            // plus the swing sound is already played once above; the woosh fx is emitted at each sweep endpoint.
-            WeaponFiring.MeleeWoosh(actor, tr.EndPos, -meleePath, "SHOTGUN_WOOSH", swingSound: null);
-
-            Entity? victim = tr.Ent;
-            if (tr.Fraction < 1f && victim is not null && victim.TakeDamage != DamageMode.No && victim != lastHit)
+            float i = swing.SwingPrev;
+            for (; i < f; ++i)
             {
-                // is_player ? damage : melee_nonplayerdamage, scaled by min(1, swing_factor + 1).
-                bool isPlayer = (victim.Flags & EntFlags.Client) != 0;
-                float baseDmg = isPlayer ? Secondary.Damage : Secondary.MeleeNonplayerDamage;
-                float swingDamage = baseDmg * MathF.Min(1f, swingFactor + 1f);
+                float swingFactor = (1f - (i / Secondary.MeleeTraces)) * 2f - 1f;
+                Vector3 targPos = eye + meleePath * swingFactor + forward * Secondary.MeleeRange;
 
-                Vector3 force = forward * Secondary.Force;
-                Combat.Damage(victim, actor, actor, swingDamage, slapDeathType, eye, force);
+                TraceResult tr = Api.Trace.Trace(eye, Vector3.Zero, Vector3.Zero, targPos, MoveFilter.Normal, actor);
+                // QC Send_Effect(EFFECT_SHOTGUN_WOOSH, trace_endpos, -melee_path, 1) per swing trace.
+                WeaponFiring.MeleeWoosh(actor, tr.EndPos, -meleePath, "SHOTGUN_WOOSH", swingSound: null);
 
-                if (Secondary.MeleeMultihit != 0f)
+                Entity? victim = tr.Ent;
+                if (tr.Fraction < 1f && victim is not null && victim.TakeDamage != DamageMode.No
+                    && !ReferenceEquals(victim, swing.AlreadyHit))
                 {
-                    lastHit = victim; // allow multiple hits per swing, but not the same target twice
-                    continue;
+                    // is_player ? damage : melee_nonplayerdamage, scaled by min(1, swing_factor + 1). QC's
+                    // is_player = IS_PLAYER || classname=="body" || IS_MONSTER (shotgun.qc:134).
+                    bool isPlayer = (victim.Flags & EntFlags.Client) != 0 || victim.IsCorpse
+                                  || (victim.Flags & EntFlags.Monster) != 0;
+                    float baseDmg = isPlayer ? Secondary.Damage : Secondary.MeleeNonplayerDamage;
+                    if (!isPlayer && Secondary.MeleeNonplayerDamage == 0f) continue; // QC nonplayer gate
+                    float swingDamage = baseDmg * MathF.Min(1f, swingFactor + 1f);
+
+                    Vector3 force = forward * Secondary.Force;
+                    Combat.Damage(victim, actor, actor, swingDamage, slapDeathType, eye, force);
+
+                    if (Secondary.MeleeMultihit != 0f)
+                    {
+                        swing.AlreadyHit = victim; // allow multiple hits per swing, but never the same target twice
+                        continue;
+                    }
+                    // single hit per swing -> done
+                    Api.Entities.Remove(self);
+                    return;
                 }
-                break; // single hit per swing
             }
-        }
+            swing.SwingPrev = i;
         }
         finally
         {
             LagComp.End();
         }
+
+        if (now >= swing.Cnt + meleetime)
+        {
+            Api.Entities.Remove(self); // swing finished
+            return;
+        }
+
+        // set up next frame (QC: this.nextthink = time) — the SimulationLoop re-runs us next tick.
+        self.NextThink = now;
     }
 
-    // METHOD(Shotgun, wr_checkammo1) — shotgun.qc
-    public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Primary.Ammo;
+    // METHOD(Shotgun, wr_checkammo1) — shotgun.qc:354-359: have ammo if the shared pool OR the persistent
+    // magazine (weapon_load[m_id], reloadable) can cover one primary shot (reload_ammo defaults 0 so the clip
+    // term is moot for default play, but it must be present for a reloadable shotgun ruleset).
+    public bool CheckAmmoPrimary(Entity actor)
+        => actor.GetResource(AmmoType) >= Primary.Ammo
+        || GetWeaponLoad(actor.WeaponState(new WeaponSlot(0)), RegistryId) >= Primary.Ammo;
 
-    // METHOD(Shotgun, wr_checkammo2) — shotgun.qc. 1 = melee (no ammo), 2 = triple-shot (uses primary ammo),
+    // METHOD(Shotgun, wr_checkammo2) — shotgun.qc:361-376. 1 = melee (no ammo), 2 = triple-shot (pool OR clip),
     // else secondary unavailable.
     public bool CheckAmmoSecondary(Entity actor) => Secondary.Secondary switch
     {
         1 => true,
-        2 => actor.GetResource(AmmoType) >= Primary.Ammo,
+        2 => actor.GetResource(AmmoType) >= Primary.Ammo
+          || GetWeaponLoad(actor.WeaponState(new WeaponSlot(0)), RegistryId) >= Primary.Ammo,
         _ => false,
     };
 }

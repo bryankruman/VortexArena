@@ -423,6 +423,9 @@ public sealed class GameWorld
         // tear that orphaned in-portal (+ any linked partner) back out so it doesn't outlive the failed shot.
         XonoticGodot.Common.Gameplay.Porto.PortalClearWithId = (owner, id) =>
             Warpzones.ClearPortoPortal(owner, id);
+        // QC Portal_ClearAll_PortalsOnly: on the owner's death/reset, tear down ALL of their porto portals.
+        XonoticGodot.Common.Gameplay.Porto.PortalClearAll = owner =>
+            Warpzones.ClearAllPortoPortals(owner);
 
         // Bridge the (stateless) trigger_warpzone(/_position) spawnfuncs to THIS match's warpzone manager, so a
         // map's warpzone brushes register here; the planes are derived + the pairs linked in InitMapZones below.

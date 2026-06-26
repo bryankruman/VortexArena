@@ -185,25 +185,45 @@ public static class NadeProjectile
             || nade.NadeBonusType == (NadeRegistry.Spawn?.Id ?? -1))
             return;
 
-        // QC adjusts damage & force per attacking weapon (Nade_Damage mutator hook deferred). The blaster
-        // launches with no damage; vortex/vaporizer launch hard + chunk; machinegun/shotgun chip. The
-        // deathtype carries the weapon NetName (DeathTypes.WeaponNetNameOf).
+        // QC adjusts damage & force per attacking weapon. The blaster launches with no damage;
+        // vortex/vaporizer launch hard + chunk; machinegun/shotgun chip. The deathtype carries the
+        // weapon NetName (DeathTypes.WeaponNetNameOf).
         string wep = Damage.DeathTypes.WeaponNetNameOf(deathType);
         bool secondary = Damage.DeathTypes.HasHitType(deathType, Damage.DeathTypes.Secondary);
-        switch (wep)
+
+        // QC sv_nades.qc:259-277 is a single if/else-if chain headed by the Nade_Damage mutator hook:
+        //   if (MUTATOR_CALLHOOK(Nade_Damage, ...)) {}        // hook overrode damage/force -> skip defaults
+        //   else if (BLASTER) { force *= 1.5; damage = 0; }
+        //   else if (VORTEX|VAPORIZER|OVERKILL_NEX) { ... }
+        //   else if (MACHINEGUN|OVERKILL_MACHINEGUN) { ... }
+        //   else if (SHOTGUN|OVERKILL_SHOTGUN) { ... }
+        // So the hook fires FIRST (on the un-adjusted force/damage) and, when it returns true, the
+        // per-weapon defaults are skipped entirely. okhmg_nadesupport (OverkillMutator.OnNadeDamage)
+        // returns true for the OK HMG and rewrites damage to max_health*0.1.
+        var nadeDamageArgs = new MutatorHooks.NadeDamageArgs(nade, wep, damage, force);
+        if (MutatorHooks.FireNadeDamage(ref nadeDamageArgs))
         {
-            case "blaster":
-                force *= 1.5f; damage = 0f; break;
-            case "vortex":
-            case "vaporizer":
-            case "okvortex":
-                force *= 6f; damage = nade.MaxHealth * 0.55f; break;
-            case "machinegun":
-            case "okmachinegun":
-                damage = nade.MaxHealth * 0.1f; break;
-            case "shotgun":
-            case "okshotgun":
-                if (!secondary) damage = nade.MaxHealth * 1.15f; break;
+            // A mutator consumed the hook (returned true): use its adjusted damage/force, skip defaults.
+            damage = nadeDamageArgs.Damage;
+            force = nadeDamageArgs.Force;
+        }
+        else
+        {
+            switch (wep)
+            {
+                case "blaster":
+                    force *= 1.5f; damage = 0f; break;
+                case "vortex":
+                case "vaporizer":
+                case "oknex": // QC WEP_OVERKILL_NEX (NetName "oknex")
+                    force *= 6f; damage = nade.MaxHealth * 0.55f; break;
+                case "machinegun":
+                case "okmachinegun":
+                    damage = nade.MaxHealth * 0.1f; break;
+                case "shotgun":
+                case "okshotgun":
+                    if (!secondary) damage = nade.MaxHealth * 1.15f; break;
+            }
         }
 
         // QC melee slaps (sv_nades.qc:279-285): a weapon whose attack is flagged WEP_TYPE_MELEE_PRI (primary)

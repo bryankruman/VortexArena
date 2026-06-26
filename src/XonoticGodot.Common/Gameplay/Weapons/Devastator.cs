@@ -498,4 +498,143 @@ public sealed class Devastator : Weapon
 
     // METHOD(Devastator, wr_checkammo1) — devastator.qc
     public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Cvars.Ammo;
+
+    // --- bot aim / auto-detonation (METHOD(Devastator, wr_aim) — devastator.qc:339-451) ----------------------
+
+    // QC devastator.qc:351-355: "simulate rocket guide by calculating rocket trajectory with higher speed —
+    // 20 times faster at 90 degrees guide rate." Lead the target as if the rocket flew this much faster, so the
+    // bot fires ahead the way a guided rocket can actually curve onto a moving target. The defaultSpeed the brain
+    // hands us is ignored (QC uses WEP_CVAR speed, not the brain's projectile speed). 9.489 ~= sqrt(90).
+    public override float BotAimShotSpeed(float defaultSpeed)
+    {
+        float spd = Cvars.Speed;
+        if (Cvars.GuideRate > 0f)
+            spd *= MathF.Sqrt(Cvars.GuideRate) * (20f / 9.489f);
+        return spd;
+    }
+
+    // QC devastator.qc:356-357: bots needn't fire with high accuracy at long range when the rocket can be guided.
+    public override bool? BotAimAccurate() => Cvars.GuideRate < 50f;
+
+    // QC devastator.qc:341-348 + 360-450: decide whether to remote-detonate the bot's in-flight rockets.
+    public override bool BotWantsDetonate(
+        Entity actor, WeaponSlot slot, float skill,
+        System.Collections.Generic.IEnumerable<Entity> targets,
+        System.Func<Entity, Entity, bool> shouldAttack)
+    {
+        if (Api.Services is null) return false;
+        // QC skill 0/1 bots won't detonate rockets at all.
+        if (skill < 2f) return false;
+
+        // Gather this actor's live rockets once (QC IL_EACH(g_projectiles, realowner == actor && "rocket")).
+        // We must materialize because both the fire-again gate and the damage loop iterate them.
+        var rockets = new System.Collections.Generic.List<Entity>();
+        foreach (Entity r in Api.Entities.FindByClass("rocket"))
+        {
+            if (r.IsFreed || !ReferenceEquals(r.Owner, actor) || r.NetName != NetName) continue;
+            rockets.Add(r);
+        }
+        if (rockets.Count == 0) return false;
+
+        // QC pred_time = bound(0.02, 0.02 + (8 - skill) * 0.01, 0.1): a short skill-scaled look-ahead.
+        float predTime = QMath.Bound(0.02f, 0.02f + (8f - skill) * 0.01f, 0.1f);
+
+        float edgedamage = Cvars.EdgeDamage;
+        float coredamage = Cvars.Damage;
+        float edgeradius = Cvars.Radius;
+
+        float selfdamage = 0f, teamdamage = 0f, enemydamage = 0f;
+        float predSelfdamage = 0f, predTeamdamage = 0f, predEnemydamage = 0f;
+
+        var strength = StatusEffectsCatalog.ByName("strength");
+        var shield = StatusEffectsCatalog.ByName("shield");
+        float strengthMul = Api.Cvars.GetFloat("g_balance_powerup_strength_damage");
+        float invincibleMul = Api.Cvars.GetFloat("g_balance_powerup_invincible_takedamage");
+
+        foreach (Entity rocket in rockets)
+        {
+            foreach (Entity it in targets)
+            {
+                if (it.IsFreed) continue;
+                // QC g_bot_targets membership ~= a damageable bot target; the same-self / same-team / enemy
+                // classification below mirrors the QC branch order (self -> team -> bot_shouldattack enemy).
+                bool isSelf = ReferenceEquals(it, actor);
+                bool isTeam = !isSelf && Teams.SameTeam(it, actor);
+                bool isEnemy = !isSelf && !isTeam && shouldAttack(actor, it);
+                if (!isSelf && !isTeam && !isEnemy) continue;
+
+                // QC: target_pos = origin + (maxs - mins) * 0.5 (the box centre offset, NOT the true centre —
+                // faithful to the QC which adds the size, matching its bot damage estimate).
+                Vector3 targetPos = it.Origin + (it.Maxs - it.Mins) * 0.5f;
+
+                float dist = (targetPos - rocket.Origin).Length();
+                float dmg = 0f;
+                if (dist <= edgeradius)
+                {
+                    float f = edgeradius > 0f ? MathF.Max(0f, 1f - dist / edgeradius) : 1f;
+                    dmg = coredamage * f + edgedamage * (1f - f);
+                }
+
+                float predDist = (targetPos + it.Velocity * predTime
+                    - (rocket.Origin + rocket.Velocity * predTime)).Length();
+                float predDmg = 0f;
+                if (predDist <= edgeradius)
+                {
+                    float f = edgeradius > 0f ? MathF.Max(0f, 1f - predDist / edgeradius) : 1f;
+                    predDmg = coredamage * f + edgedamage * (1f - f);
+                }
+
+                if (isSelf)
+                {
+                    // QC: strength boosts OWN damage dealt; shield reduces damage taken.
+                    if (strength is not null && StatusEffectsCatalog.Has(it, strength)) dmg *= strengthMul;
+                    if (shield is not null && StatusEffectsCatalog.Has(it, shield)) dmg *= invincibleMul;
+                    selfdamage += dmg;
+                    predSelfdamage += predDmg;
+                }
+                else if (isTeam)
+                {
+                    if (shield is not null && StatusEffectsCatalog.Has(it, shield)) dmg *= invincibleMul;
+                    teamdamage += dmg;
+                    predTeamdamage += predDmg;
+                }
+                else // enemy
+                {
+                    if (shield is not null && StatusEffectsCatalog.Has(it, shield)) dmg *= invincibleMul;
+                    enemydamage += dmg;
+                    predEnemydamage += predDmg;
+                }
+            }
+        }
+
+        // QC devastator.qc:423-432: self-damage scaled by g_balance_selfdamagepercent; if the SHOOTER has
+        // Strength, all of its (team/enemy) damage dealt is boosted.
+        float selfdamagepercent = Api.Cvars.GetFloat("g_balance_selfdamagepercent");
+        selfdamage *= selfdamagepercent;
+        predSelfdamage *= selfdamagepercent;
+        if (strength is not null && StatusEffectsCatalog.Has(actor, strength))
+        {
+            teamdamage *= strengthMul;
+            predTeamdamage *= strengthMul;
+            enemydamage *= strengthMul;
+            predEnemydamage *= strengthMul;
+        }
+
+        float goodDamage = enemydamage;
+        float predGoodDamage = predEnemydamage;
+        float badDamage = selfdamage + teamdamage;
+        float predBadDamage = predSelfdamage + predTeamdamage;
+
+        // QC devastator.qc:441-442: detonate if the predicted good damage is about to drop (current good damage is
+        // the maximum) or the predicted bad damage is getting too high, AND the current good damage is worthwhile
+        // and outweighs the bad by 1.5x.
+        bool detonate = goodDamage > coredamage * 0.1f && goodDamage > badDamage * 1.5f
+            && (predGoodDamage < goodDamage + 2f || predGoodDamage < predBadDamage * 1.5f);
+
+        // QC devastator.qc:444-445: a skill >= 7 bot won't detonate a rocket that would kill itself.
+        if (skill >= 7f && selfdamage > actor.GetResource(ResourceType.Health))
+            detonate = false;
+
+        return detonate;
+    }
 }

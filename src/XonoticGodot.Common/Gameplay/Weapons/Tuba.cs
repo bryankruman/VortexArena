@@ -1,3 +1,4 @@
+using System;
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay.Damage;
@@ -25,6 +26,11 @@ namespace XonoticGodot.Common.Gameplay;
 [Weapon]
 public sealed class Tuba : Weapon
 {
+    // CSQC tuba.qc:432-434 — the playable note range and the ring-buffer depth.
+    public const int TubaMin = -18;        // TUBA_MIN
+    public const int TubaMax = 27;         // TUBA_MAX
+    public const int MaxTubaNotes = 32;    // MAX_TUBANOTES (melody ring-buffer depth)
+
     /// <summary>Balance block — QC WEP_CVAR(WEP_TUBA, *) (single block, no PRI/SEC split).</summary>
     public struct Balance
     {
@@ -142,12 +148,19 @@ public sealed class Tuba : Weapon
             n.NetName = NetName;
             n.Count = note;                 // .cnt = note pitch
             n.Frame = st.TubaInstrument;    // which instrument
+            n.LTime = Api.Clock.Time;       // QC note.spawnshieldtime = time (the note's START time)
             Api.Entities.SetOrigin(n, actor.Origin);
+            // QC: setthink(note, W_Tuba_NoteThink); note.nextthink = time. The note self-expires once its
+            // keep-alive (teleport_time / MaxHealth) lapses — i.e. when the player stops refreshing it.
+            n.Think = self => NoteThink(self, actor, slot);
+            n.NextThink = Api.Clock.Time;
             st.TubaNote = n;
         }
         // teleport_time: keep the note alive a little past the refire so a held note doesn't gap.
+        // QC tuba.qc:292 — time + refire * 2 * W_WeaponRateFactor(actor). Scaled by the rate factor so a
+        // haste/slow modifier that changes the refire keeps the keep-alive in step. Stored in MaxHealth.
         if (st.TubaNote is not null)
-            st.TubaNote.MaxHealth = Api.Clock.Time + Cvars.Refire * 2f;
+            st.TubaNote.MaxHealth = Api.Clock.Time + Cvars.Refire * 2f * WeaponRateFactor(actor);
 
         WeaponSplash.RadiusDamage(actor, actor.Origin, Cvars.Damage, Cvars.EdgeDamage, Cvars.Radius,
             actor, RegistryId, Cvars.Force, deathTag: deathTag);
@@ -156,7 +169,11 @@ public sealed class Tuba : Weapon
         // faded client-side via ENT_CLIENT_TUBANOTE. The note-sound networking is render-only; here we cue the
         // per-pitch/instrument sample so the lookup resolves to a real asset (tubaN_loopnoteM.ogg) instead of
         // the non-existent flat "tuba_loopnote.wav". The sustained loop/fade/pitch-step remains a client gap.
-        Api.Sound.Play(actor, SoundChannel.Weapon, NoteSample(st.TubaInstrument, note));
+        // Base's tubasound (tuba.qc:438-489) only loads samples that exist on disk — those at multiples of
+        // cl_tuba_pitchstep (default 6), TUBA_MIN..TUBA_MAX — and pitch-shifts the remainder via sound7. With no
+        // sound7 we pick the nearest available recorded sample (PitchStepNote), so the lookup hits a real file
+        // (e.g. note 4 -> tuba_loopnote6) instead of the missing exact-pitch one.
+        Api.Sound.Play(actor, SoundChannel.Weapon, NoteSample(st.TubaInstrument, PitchStepNote(note)));
 
         // Per-note smoke ring (EFFECT_SMOKE_RING), throttled to 0.25s, with a per-instrument vertical offset.
         // tuba.qc:307-318. QC reads the weapon-tag origin (gettaginfo); headless, we approximate from the
@@ -180,13 +197,72 @@ public sealed class Tuba : Weapon
     private void NoteOff(Entity actor, WeaponSlot slot)
     {
         var st = actor.WeaponState(slot);
-        if (st.TubaNote is not null)
+        Entity? note = st.TubaNote;
+        if (note is null)
+            return;
+
+        // QC: only the OWNING slot's current note records history (if (actor.(weaponentity).tuba_note == this)).
+        // Record the just-ended note into the ring buffer as vec3(on=note.spawnshieldtime, off=time, pitch=cnt),
+        // advance the write cursor, and bump the (capped) count. tuba.qc:107-112.
+        st.TubaLastNotesLast = (st.TubaLastNotesLast + 1) % MaxTubaNotes;
+        st.TubaLastNotes[st.TubaLastNotesLast] = new Vector3(note.LTime, Api.Clock.Time, note.Count);
+        st.TubaNote = null;
+        st.TubaLastNotesCount = System.Math.Min(st.TubaLastNotesCount + 1, MaxTubaNotes); // bound(0, cnt+1, MAX)
+
+        // QC then runs the just-played note buffer through every magic-ear in TUBA mode (an empty say message),
+        // so map melody triggers (W_Tuba_HasPlayed) fire. tuba.qc:114-131. The non-empty bprint chat line
+        // ("NAME played on the @!#%'n Tuba: ...") needs a broadcast-print seam absent in Common (see todos).
+        LogicGates.MagicEarProcessAllEars(actor, 0, null, "");
+
+        if (!note.IsFreed) Api.Entities.Remove(note);
+    }
+
+    // W_Tuba_NoteThink — the per-frame keep-alive on the sustained note entity (tuba.qc:226-260). The note
+    // self-expires once its keep-alive (teleport_time / MaxHealth) lapses — i.e. the player stopped refreshing
+    // it (released fire, or a frame was skipped past the keep-alive). The QC per-listener volume/angle re-origin
+    // + SendFlags is moot here (no tuba-note sound networking), so we only model the self-expiry.
+    private void NoteThink(Entity self, Entity actor, WeaponSlot slot)
+    {
+        var st = actor.WeaponState(slot);
+        if (st.TubaNote != self)
+            return; // superseded (restarted at a new pitch/instrument) — the old note already off'd.
+        if (Api.Clock.Time > self.MaxHealth) // QC: if (time > this.teleport_time) W_Tuba_NoteOff(this);
         {
-            if (!st.TubaNote.IsFreed) Api.Entities.Remove(st.TubaNote);
-            st.TubaNote = null;
+            NoteOff(actor, slot);
+            return;
         }
-        // NOTE: QC also records this note into tuba_lastnotes (the melody-recognition ring buffer used by map
-        // magic-ear triggers / W_Tuba_HasPlayed) here. That history + chat is not modeled (see todos).
+        self.NextThink = Api.Clock.Time;
+    }
+
+    /// <summary>
+    /// Snap a raw note pitch to the nearest sample that actually exists on disk. Base only records loop samples
+    /// at multiples of <c>cl_tuba_pitchstep</c> (default 6) across TUBA_MIN..TUBA_MAX (tuba.qc PRECACHE:591-594)
+    /// and pitch-shifts the remainder with sound7; without sound7 we pick the nearest recorded multiple, clamped
+    /// to the available range, so the asset lookup resolves to a real file. With pitchstep 0 the raw note is
+    /// returned (Base's no-pitch-step branch loads the exact-pitch sample).
+    /// </summary>
+    private static int PitchStepNote(int note)
+    {
+        // Default 6 (xonotic-client.cfg ships `cl_tuba_pitchstep 6`, and the loop samples only exist at
+        // multiples of 6). Honor an EXPLICIT 0 (Base's no-pitch-step / exact-pitch lookup) but fall back to 6
+        // when the cvar is unregistered, so a headless context still snaps to a real sample.
+        int step = 6;
+        if (Api.Services is not null)
+        {
+            string s = Api.Cvars.GetString("cl_tuba_pitchstep");
+            if (!string.IsNullOrEmpty(s))
+                step = (int)Api.Cvars.GetFloat("cl_tuba_pitchstep");
+        }
+        if (step <= 0)
+            return note;
+
+        // Round to the nearest multiple of step (QC tubasound plays the e.note - m neighbour and shifts m; the
+        // nearest recorded sample is the faithful no-sound7 stand-in).
+        int rounded = (int)MathF.Round(note / (float)step) * step;
+        // Clamp into the recorded range. The highest recorded multiple at/under TUBA_MAX (27) is 24.
+        int hi = (TubaMax / step) * step;
+        int lo = -(((-TubaMin) / step) * step); // lowest recorded multiple at/over TUBA_MIN (-18) is -18
+        return rounded < lo ? lo : (rounded > hi ? hi : rounded);
     }
 
     /// <summary>
@@ -259,4 +335,78 @@ public sealed class Tuba : Weapon
     // METHOD(Tuba, wr_checkammo1/2) — tuba.qc (infinite ammo).
     public bool CheckAmmoPrimary(Entity actor) => true;
     public bool CheckAmmoSecondary(Entity actor) => true;
+
+    /// <summary>
+    /// Port of <c>W_Tuba_HasPlayed</c> (tuba.qc:13-97): test whether the last N notes recorded for
+    /// <paramref name="slot"/> form the given <paramref name="melody"/> ("pitch.duration pitch.duration ..."),
+    /// optionally ignoring absolute pitch (transposing) and within a tempo window. On a match it clears the
+    /// slot's note count (so the melody can't immediately re-trigger). Used by map magic-ear melody triggers.
+    /// </summary>
+    public static bool HasPlayed(Entity pl, WeaponSlot slot, string melody, int instrument,
+        bool ignorePitch, float minTempo, float maxTempo)
+    {
+        var st = pl.WeaponState(slot);
+
+        // Tokenize the melody into note tokens (QC tokenize_console). A token "P.D" carries pitch P and a
+        // fractional duration D (note: floor(P.D) == P is the "no length" / pitch-only form).
+        string[] tokens = melody.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+        int n = tokens.Length;
+        if (n > st.TubaLastNotesCount)
+            return false;
+
+        // Instrument filter: instrument < 0 means "any". tuba.qc:20-21.
+        if (instrument >= 0 && st.TubaInstrument != instrument)
+            return false;
+
+        float pitchshift = 0f;
+        bool nolength = false;
+
+        // Verify the NOTES (read the ring backwards: i=0 is the most-recent note). tuba.qc:24-41.
+        for (int i = 0; i < n; ++i)
+        {
+            Vector3 v = st.TubaLastNotes[((st.TubaLastNotesLast - i) % MaxTubaNotes + MaxTubaNotes) % MaxTubaNotes];
+            float ai = ParseFloat(tokens[n - i - 1]);
+            float np = MathF.Floor(ai);
+            if (ai == np)
+                nolength = true;
+            if (ignorePitch && i == 0)
+                pitchshift = np - v.Z;
+            else if (v.Z + pitchshift != np)
+                return false;
+        }
+
+        // Verify the RHYTHM unless a pitch-only token was present. tuba.qc:44-92.
+        if (!nolength)
+        {
+            float mmin = maxTempo > 0f ? 240f / maxTempo : 0f;
+            float mmax = minTempo > 0f ? 240f / minTempo : 240f;
+
+            float ti = 0f;
+            for (int i = 0; i < n; ++i)
+            {
+                Vector3 vi = st.TubaLastNotes[((st.TubaLastNotesLast - i) % MaxTubaNotes + MaxTubaNotes) % MaxTubaNotes];
+                float ai = ParseFloat(tokens[n - i - 1]);
+                ti -= 1f / (ai - MathF.Floor(ai));
+                float tj = ti;
+                for (int j = i + 1; j < n; ++j)
+                {
+                    Vector3 vj = st.TubaLastNotes[((st.TubaLastNotesLast - j) % MaxTubaNotes + MaxTubaNotes) % MaxTubaNotes];
+                    float aj = ParseFloat(tokens[n - j - 1]);
+                    tj -= aj - MathF.Floor(aj);
+                    mmin = MathF.Max(mmin, (vi.X - vj.Y) / (ti - tj)); // lower bound
+                    mmax = MathF.Min(mmax, (vi.Y - vj.X) / (ti - tj)); // upper bound
+                }
+            }
+
+            if (mmin > mmax) // rhythm fail
+                return false;
+        }
+
+        st.TubaLastNotesCount = 0;
+        return true;
+    }
+
+    private static float ParseFloat(string s)
+        => float.TryParse(s, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out float f) ? f : 0f;
 }

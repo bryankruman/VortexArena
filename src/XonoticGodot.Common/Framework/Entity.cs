@@ -81,6 +81,32 @@ public partial class Entity
     public int SpawnFlags, Items;
     public float Team, Frags;
 
+    // --- bot-avoidance / dodging (QC .bot_dodge / .bot_dodgerating) ---
+    /// <summary>
+    /// QC <c>.bot_dodge</c> — marks this entity as a projectile/hazard the havocbot dodge logic should avoid.
+    /// Projectiles set this to true so bots calculate evasive maneuvers. Default false.
+    /// See <c>havocbot_dodge(entity this)</c> (server/bot/default/havocbot/havocbot.qc:1773), which iterates
+    /// <c>findchainfloat(bot_dodge, true)</c> over the g_bot_dodge list. NOTE: the danger-list consumer is not
+    /// yet ported (CombatMovement uses a generic strafe), so this flag is currently inert producer-side scaffolding.
+    /// </summary>
+    public bool BotDodge;
+
+    /// <summary>
+    /// QC <c>.bot_dodgerating</c> — relative danger/damage of a dodgeable projectile, used by the havocbot
+    /// dodge calculation to weight the evasion vector. Typically the damage the projectile deals (e.g., a
+    /// Blaster bolt sets this to its damage 20). The bot_dodge flag must be true for this to have effect.
+    /// Default 0.
+    /// </summary>
+    public float BotDodgeRating;
+
+    /// <summary>
+    /// QC <c>.prevric</c> (shotgun.qc:398) — the last time this actor played a bullet-impact ricochet ping.
+    /// The impact FX throttles the ricochet sound to at most once per 0.25s per actor (and then only a 5%
+    /// roll plays it), so a 12-pellet shotgun blast doesn't spray a dozen overlapping ric sounds. Server-side
+    /// here (the port emits impact FX server-side) rather than CSQC. Default 0.
+    /// </summary>
+    public float PrevRic;
+
     public Entity() { }
 
     public bool OnGround => (Flags & EntFlags.OnGround) != 0;

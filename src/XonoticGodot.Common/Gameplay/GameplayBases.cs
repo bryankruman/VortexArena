@@ -28,6 +28,11 @@ public struct BotAimState
 
     /// <summary>A fresh QC <c>random()</c> draw in [0,1) for this decision (the brain re-rolls it each call).</summary>
     public float Random01;
+
+    /// <summary>The deciding bot actor (QC wr_aim's <c>actor</c>), so an ammo-conditional wr_aim (e.g. the
+    /// Vaporizer: rail primary while it has cells, else the Blaster-laser secondary) can read its resources.
+    /// Set by the bot brain before each <see cref="Weapon.BotWantsSecondary"/> call; null in non-bot contexts.</summary>
+    public Entity? Actor;
 }
 
 /// <summary>
@@ -116,8 +121,47 @@ public abstract partial class Weapon : IRegistered
     /// </summary>
     public virtual bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx) => false;
 
+    /// <summary>
+    /// QC <c>wr_aim</c> projectile-speed override for the bot's shot lead. QC's wr_aim calls
+    /// <c>bot_aim(actor, …, spd, …)</c> with a per-weapon speed; the brain leads the target by that speed. Most
+    /// weapons just lead by their projectile's actual launch speed (the default = <paramref name="defaultSpeed"/>,
+    /// the brain's read of the weapon's primary-fire speed cvar). The Devastator overrides this to lead as if the
+    /// rocket flew much faster, "simulating rocket guide" (devastator.qc:351-355). Return 0 for hitscan/no-lead.
+    /// </summary>
+    public virtual float BotAimShotSpeed(float defaultSpeed) => defaultSpeed;
+
+    /// <summary>
+    /// QC <c>wr_aim</c>'s <c>shot_accurate</c> argument to <c>bot_aim</c> (the fire-deviation cone tightness):
+    /// <c>null</c> = use the brain's default (hitscan ⇒ accurate, projectile ⇒ relaxed). The Devastator returns
+    /// <c>false</c> when its rockets are guidable (<c>guiderate &lt; 50</c>) — "no need to fire with high accuracy
+    /// on large distances if rockets can be guided" (devastator.qc:356-357).
+    /// </summary>
+    public virtual bool? BotAimAccurate() => null;
+
+    /// <summary>
+    /// QC <c>wr_aim</c>'s auto-detonation decision (the skill ≥ 2 block of devastator.qc:360-450): decide whether
+    /// the bot should press SECONDARY this frame to remote-detonate its in-flight projectiles, by predicting the
+    /// splash damage to self / teammates / enemies (now vs. a short look-ahead). Default <c>false</c> (no weapon
+    /// auto-detonates). The Devastator implements the full predicted-damage heuristic + the skill ≥ 7 self-kill
+    /// veto. When this returns true the brain also suppresses the primary fire (QC "don't fire a new shot at the
+    /// same time"). <paramref name="shouldAttack"/> is the brain's <c>bot_shouldattack</c> filter (actor, target).
+    /// </summary>
+    public virtual bool BotWantsDetonate(
+        Entity actor, WeaponSlot slot, float skill,
+        System.Collections.Generic.IEnumerable<Entity> targets,
+        System.Func<Entity, Entity, bool> shouldAttack) => false;
+
     /// <summary>Per-actor setup when the weapon becomes active (QC wr_setup).</summary>
     public virtual void WrSetup(Entity actor, WeaponSlot slot) { }
+
+    /// <summary>Called when the player switches away from this weapon (QC wr_gonethink). A weapon may fire/reset any state held mid-action.</summary>
+    public virtual void WrGoneThink(Entity actor, WeaponSlot slot) { }
+
+    /// <summary>Called when the player dies while holding this weapon (QC wr_playerdeath). A weapon may fire/reset any state held mid-action.</summary>
+    public virtual void WrPlayerDeath(Entity actor, WeaponSlot slot) { }
+
+    /// <summary>Called when the player is reset (round restart, etc.) (QC wr_resetplayer). A weapon must clear any per-player state held on the slot.</summary>
+    public virtual void WrResetPlayer(Entity actor, WeaponSlot slot) { }
 
     /// <summary>
     /// Seed this weapon's balance block from the <c>g_balance_*</c> cvars (QC W_PROPS / WEP_CVAR). Called once

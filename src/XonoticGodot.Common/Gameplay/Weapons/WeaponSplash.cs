@@ -46,11 +46,17 @@ public static class WeaponSplash
     /// </list>
     /// The Damage_DamageInfo blast-effect networking is the only deferred piece (client render).
     /// </summary>
-    public static void RadiusDamage(Entity inflictor, Vector3 center, float damage, float edgeDamage,
+    /// <summary>
+    /// Returns the total damage dealt to creatures (iscreature targets) — QC RadiusDamageForSource's
+    /// <c>total_damage_to_creatures</c> return value (damage.qc:931). Callers that only need the side-effects
+    /// (damage + force application) can discard the return value; callers that gate behaviour on whether any
+    /// creature was actually hit (e.g. W_Crylink_Touch's chain-detonate gate, crylink.qc:249) must capture it.
+    /// </summary>
+    public static float RadiusDamage(Entity inflictor, Vector3 center, float damage, float edgeDamage,
         float radius, Entity? attacker, int deathType, float force = 0f, Vector3? forceScale = null,
         Entity? directHit = null, Weapon? accuracyWeapon = null, string? deathTag = null)
     {
-        if (Api.Services is null || radius <= 0f) return;
+        if (Api.Services is null || radius <= 0f) return 0f;
         Entity src = attacker ?? inflictor;
 
         // balance-xonotic.cfg:200-201 — both 0.75 (the old 0.5/0.7 fallbacks matched neither balance nor QC).
@@ -62,6 +68,10 @@ public static class WeaponSplash
         // port's int deathType can't carry vehicle/special sources apart, so the credit is explicit —
         // null (vehicles/monsters/breakables) means no credit, matching QC's DEATH_ISSPECIAL gate).
         float statDamageDone = 0f;
+        // QC RadiusDamageForSource total_damage_to_creatures (damage.qc:911): damage dealt to ANY creature
+        // (iscreature), regardless of team. This is the value RadiusDamage RETURNS in QC — used by
+        // W_Crylink_Touch to gate chain-detonation on "did this blast actually hurt anything alive?".
+        float totalDamageToCreatures = 0f;
 
         // QC searches a padded radius (rad + MAX_DAMAGEEXTRARADIUS, damage.qc:746) so the per-target
         // nearest-point check below — not the broadphase pre-filter — is the binding constraint.
@@ -179,10 +189,23 @@ public static class WeaponSplash
                     hitLoc = visibleAccum / hits; // QC: hitloc = the mean visible sample
             }
 
-            // [T57] accumulate the accuracy tally BEFORE Damage (QC damage.qc:911-914, iscreature → the
-            // IsGoodDamage client gate) so the killing blast still counts.
-            if (WeaponAccuracyEvents.IsGoodDamage(src, e))
-                statDamageDone += finalDmg;
+            // QC damage.qc:909-914: if (targ.iscreature) { total_damage_to_creatures += finaldmg; if
+            // (accuracy_isgooddamage(attacker, targ)) stat_damagedone += finaldmg; } — BOTH tallies are gated
+            // on .iscreature (players/monsters, and vehicles/turrets in QC). The port mirrors this with
+            // MapMover.IsCreature (Client|Monster flags — the faithful equivalent in this entity model, where
+            // vehicles/turrets carry neither). This MUST NOT be the loop's broad TakeDamage != No filter: a
+            // damageable NON-creature (another projectile/spike/grenade, a func_breakable, a door) passes
+            // TakeDamage != No but is not iscreature, so it must NOT contribute to total_damage_to_creatures —
+            // otherwise the crylink chain-detonate gate (crylink.qc:249) would fire on a spike that only
+            // splashed a wall-object with no living target nearby, which is exactly the divergence this return
+            // value exists to close.
+            if (MapMover.IsCreature(e))
+            {
+                totalDamageToCreatures += finalDmg;
+                // [T57] accuracy tally BEFORE Damage (QC damage.qc:913-914, isgooddamage gate).
+                if (WeaponAccuracyEvents.IsGoodDamage(src, e))
+                    statDamageDone += finalDmg;
+            }
 
             // NOTE: self-damage scaling (g_balance_selfdamagepercent) is applied ONCE, authoritatively, inside
             // DamageSystem.Apply (QC damage.qc:614-615 — only Damage() scales it; RadiusDamageForSource does
@@ -234,6 +257,11 @@ public static class WeaponSplash
         // accuracy_add(attacker, DEATH_WEAPONOF(dt), 0, min(max(coredamage, edgedamage), stat_damagedone), 0)).
         if (accuracyWeapon is not null)
             WeaponAccuracyEvents.Hit(src, accuracyWeapon, MathF.Min(MathF.Max(damage, edgeDamage), statDamageDone));
+
+        // QC RadiusDamageForSource returns total_damage_to_creatures (damage.qc:931). Callers that need to gate
+        // on whether the blast actually hurt any living entity (e.g. W_Crylink_Touch chain-detonate at
+        // crylink.qc:249: `if (totaldamage && ...)`) capture this; others discard it.
+        return totalDamageToCreatures;
     }
 
     private static float Cvar(string name, float fallback)

@@ -309,13 +309,92 @@ public sealed class Vortex : Weapon
         DecreaseAmmo(actor, slot, isSecondary ? Cvars.SecondaryAmmo : Cvars.Ammo);
 
         TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, end, MoveFilter.WorldOnly, actor);
-        EffectEmitter.Emit("VORTEX_BEAM", shot.Origin, impTr.EndPos, 0);
+        EmitBeam(actor, shot.Origin, impTr.EndPos, charge);
         WeaponSplash.ImpactSoundAt(impTr.EndPos, "weapons/neximpact.wav"); // QC SND_VORTEX_IMPACT (wr_impacteffect)
         // QC vortex wr_impacteffect: boxparticles(EFFECT_VORTEX_IMPACT, .., '0 0 0', '0 0 0', 1, ..) — the impact
         // burst carries NO inherited velocity (its own velocityjitter/sizeincrease do the work).
         EffectEmitter.Emit("VORTEX_IMPACT", impTr.EndPos);
         EffectEmitter.Emit("VORTEX_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
+
+    // Charged beam particle — port of vortex.qc:37-82 (SendCSQCVortexBeamParticle + the
+    // TE_CSQC_VORTEXBEAMPARTICLE NET_HANDLE). QC nets shotorg/endpos/charge(byte)/owner and the CLIENT draws the
+    // EFFECT_VORTEX_BEAM trail, with charge=sqrt(charge) divided across trail spacing and alpha, and — in team
+    // mode with cl_tracers_teamcolor — tinted via vortex_glowcolor(owner_colors, charge). The port emits the beam
+    // server-side and broadcasts the colour, so the team tint is computed here from the FIRER's charge + team.
+    //
+    // Limitations (charge is server-only, not networked cross-client): the sqrt(charge) ALPHA/FADE/trail-spacing
+    // scaling has no port-side hook (EffectSystem.Spawn carries no per-emission alpha for trails), so the beam's
+    // brightness is unmodulated — only the colour tint is reproduced. cl_tracers_teamcolor / cl_particles_oldvortexbeam
+    // are read here as the single broadcast value (the per-recipient client cvar nuance is not reproducible from a
+    // single broadcast emit).
+    private void EmitBeam(Entity actor, Vector3 shotorg, Vector3 endpos, float charge)
+    {
+        // QC vortex.qc:61: charge = sqrt(charge) (the value the client would receive as a 0..255 byte, /255).
+        float beamCharge = MathF.Sqrt(QMath.Clamp(charge, 0f, 1f));
+
+        // QC vortex.qc:76-79: cl_particles_oldvortexbeam selects the legacy EFFECT_VORTEX_BEAM_OLD beam.
+        bool oldBeam = Api.Services is not null && Api.Cvars.GetFloat("cl_particles_oldvortexbeam") != 0f;
+        string beamEffect = oldBeam ? "VORTEX_BEAM_OLD" : "VORTEX_BEAM";
+
+        // QC vortex.qc:63: (teamplay && cl_tracers_teamcolor == 1) || cl_tracers_teamcolor == 2. cl_tracers_teamcolor
+        // is an unregistered client cvar (default 0 → no tint even in team games), so the team tint is opt-in.
+        int tracers = Api.Services is null ? 0 : (int)Api.Cvars.GetFloat("cl_tracers_teamcolor");
+        bool teamplay = Api.Services is not null && Api.Cvars.GetFloat("teamplay") != 0f;
+        bool useColor = (teamplay && tracers == 1) || tracers == 2;
+
+        if (useColor)
+        {
+            // QC vortex.qc:65-69: vortex_glowcolor(owner_colors, max(0.25, charge)); fall back to the plain player
+            // colour if charging is off (rgb == 0). Entity.Team carries the NUM_TEAM_* palette code (== the low
+            // colormap nibble for a teamplay player), so it stands in for entcs_GetClientColors(owner)&0x0F.
+            Vector3 rgb = VortexGlowColor((int)actor.Team, MathF.Max(0.25f, beamCharge));
+            if (rgb == Vector3.Zero)
+                rgb = ColormapPaletteColor(((int)actor.Team) & 0x0F);
+            var beam = Effects.ByName(beamEffect);
+            EffectEmitter.Emit(beam, shotorg, endpos, 0, rgb, rgb, except: null);
+            return;
+        }
+
+        EffectEmitter.Emit(beamEffect, shotorg, endpos, 0);
+    }
+
+    // vector vortex_glowcolor(int actor_colors, float charge) — vortex.qc:7-26. Builds the charge-blended player
+    // glow colour: f = min(1, charge/animlimit) of 0.3*mycolors, plus (above animlimit) an extra
+    // (charge-animlimit)/(1-animlimit) of 0.7*mycolors. mycolors = colormapPaletteColor(actor_colors & 0x0F, pants).
+    // A zero result is nudged off pure black (the engine treats '0 0 0' as "use the model's own glow").
+    private Vector3 VortexGlowColor(int actorColors, float charge)
+    {
+        if (!Cvars.Charge)
+            return Vector3.Zero;
+
+        float animlimit = Cvars.ChargeAnimLimit;
+        Vector3 mycolors = ColormapPaletteColor(actorColors & 0x0F);
+
+        float f = MathF.Min(1f, animlimit > 0f ? charge / animlimit : 1f);
+        Vector3 g = f * (mycolors * 0.3f);
+        if (charge > animlimit)
+        {
+            f = (charge - animlimit) / (1f - animlimit);
+            g += f * (mycolors * 0.7f);
+        }
+        // transition color can't be '0 0 0' as it defaults to player model glow color (vortex.qc:22-23)
+        if (g == Vector3.Zero)
+            g = new Vector3(0f, 0f, 0.000001f);
+        return g;
+    }
+
+    // colormapPaletteColor(c, isPants=true) over the team palette (lib/color.qh). Entity.Team only ever holds the
+    // standard NUM_TEAM_* codes (4/13/12/9), so just the team colours are needed here; the shirt/pants phase is
+    // irrelevant for the solid team codes. Matches CsqcModelAppearance.ColormapPaletteColor for these values.
+    private static Vector3 ColormapPaletteColor(int c) => c switch
+    {
+        4  => new Vector3(1f, 0f, 0f),           // red    (NUM_TEAM_1)
+        13 => new Vector3(0f, 0.333333f, 1f),    // blue   (NUM_TEAM_2)
+        12 => new Vector3(1f, 1f, 0f),           // yellow (NUM_TEAM_3)
+        9  => new Vector3(1f, 0f, 1f),           // pink/magenta (NUM_TEAM_4, palette 9)
+        _  => Vector3.Zero,
+    };
 
     // Per-actor `vortex_lasthit` (QC .float vortex_lasthit, vortex.qc:156-162). QC stores it on the player
     // edict; the port has no Vortex field on Entity (cross-file), so we track it in a weak side-table keyed

@@ -451,6 +451,58 @@ public sealed class Hagar : Weapon
         Api.Entities.Remove(self);
     }
 
+    // METHOD(Hagar, wr_setup) — hagar.qc:432-440
+    public override void WrSetup(Entity actor, WeaponSlot slot)
+    {
+        // QC: actor.(weaponentity).hagar_loadblock = false; — clear the must-release gate.
+        WeaponSlotState st = actor.WeaponState(slot);
+        st.HagarLoadBlock = false;
+        // QC: if (hagar_load) { W_DecreaseAmmo(..., -ammo*load, ...) → give back ammo }
+        if (st.HagarLoad > 0)
+        {
+            actor.GiveResource(AmmoType, Secondary.Ammo * st.HagarLoad);
+            st.HagarLoad = 0;
+        }
+    }
+
+    // METHOD(Hagar, wr_gonethink) — hagar.qc:422-430
+    // Called when the player switches AWAY from the Hagar with rockets loaded: release the charged salvo.
+    public override void WrGoneThink(Entity actor, WeaponSlot slot)
+    {
+        WeaponSlotState st = actor.WeaponState(slot);
+        if (st.HagarLoad > 0)
+        {
+            // QC: actor.(weaponentity).state = WS_READY; W_Hagar_Attack2_Load_Release(...)
+            st.State = WeaponFireState.Ready;
+            AttackLoadRelease(actor, slot);
+        }
+    }
+
+    // METHOD(Hagar, wr_playerdeath) — hagar.qc:465-470
+    // Called when the player dies with rockets loaded (if load_releasedeath=1): release the charged salvo.
+    public override void WrPlayerDeath(Entity actor, WeaponSlot slot)
+    {
+        // QC: if (load_releasedeath) W_Hagar_Attack2_Load_Release(...) — default load_releasedeath is 0.
+        float loadReleaseDeath = Bal("g_balance_hagar_secondary_load_releasedeath", 0f);
+        if (loadReleaseDeath != 0f)
+        {
+            // QC wr_playerdeath calls the release directly (NO state = WS_READY first, unlike wr_gonethink);
+            // AttackLoadRelease sets WS_INUSE itself, so no pre-set is needed.
+            WeaponSlotState st = actor.WeaponState(slot);
+            if (st.HagarLoad > 0)
+                AttackLoadRelease(actor, slot);
+        }
+    }
+
+    // METHOD(Hagar, wr_resetplayer) — hagar.qc:456-463
+    // Called when the player is reset (round restart, etc.): clear loaded rockets on this slot.
+    public override void WrResetPlayer(Entity actor, WeaponSlot slot)
+    {
+        // QC: actor.(weaponentity).hagar_load = 0; — clear the load counter on reset.
+        WeaponSlotState st = actor.WeaponState(slot);
+        st.HagarLoad = 0;
+    }
+
     // METHOD(Hagar, wr_checkammo1) — hagar.qc
     public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Primary.Ammo;
 

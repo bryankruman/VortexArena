@@ -76,12 +76,18 @@ public static class Projectiles
     /// Mine Layer's <c>damageforcescale</c> knock-loose: bounce + .wait re-stick + avelocity spin). It receives
     /// <c>(self, inflictor, attacker, force)</c>. Most projectiles leave this null (they only react at hp&lt;=0 via
     /// <see cref="Entity.ProjectileDamage"/>).</para>
+    ///
+    /// <para><paramref name="damageScale"/> is an OPTIONAL function that scales the damage dealt to the projectile
+    /// health (applied AFTER the gate, BEFORE hp subtraction). Receives <c>(self, attacker, damage)</c> and returns
+    /// the scaled damage. Most projectiles leave this null (full damage). Used by Seeker missiles to implement
+    /// <c>damage * 0.25</c> self-scaling when the firer shoots their own missile.</para>
     /// </summary>
     public static void MakeShootable(Entity e, float exception = -1f,
-        Action<Entity, Entity?, Entity?, Vector3>? onHit = null)
+        Action<Entity, Entity?, Entity?, Vector3>? onHit = null,
+        Func<Entity, Entity?, float, float>? damageScale = null)
     {
         e.GtEventDamage = (self, inflictor, attacker, deathType, damage, _, force) =>
-            ShootDown(self, inflictor, attacker, deathType, damage, force, exception, onHit);
+            ShootDown(self, inflictor, attacker, deathType, damage, force, exception, onHit, damageScale);
     }
 
     /// <summary>
@@ -91,7 +97,8 @@ public static class Projectiles
     /// </summary>
     private static void ShootDown(Entity self, Entity? inflictor, Entity? attacker, string deathType,
         float damage, Vector3 force, float exception,
-        Action<Entity, Entity?, Entity?, Vector3>? onHit)
+        Action<Entity, Entity?, Entity?, Vector3>? onHit,
+        Func<Entity, Entity?, float, float>? damageScale)
     {
         if (self.Health <= 0f)
             return; // already exploding (recursion guard — QC GetResource(this, RES_HEALTH) <= 0)
@@ -104,6 +111,10 @@ public static class Projectiles
         if (!CheckProjectileDamage(inflictor?.RealOwner, self.RealOwner, deathType, exception))
             return; // g_projectiles_damage says to halt
 
+        // Apply optional damage scaling (e.g., Seeker missile self-damage × 0.25).
+        if (damageScale is not null)
+            damage = damageScale(self, attacker, damage);
+
         self.Health -= damage; // QC TakeResource(this, RES_HEALTH, damage)
         if (self.Health > 0f)
             return; // graze: the projectile survives — do NOT detonate (W_PrepareExplosionByDamage only fires at <=0)
@@ -112,6 +123,16 @@ public static class Projectiles
         // ProjectileDamage callback — e.g. Mortar.Explode, Arc.ExplodeBolt, Minelayer.OnMineDamage). The callback
         // owns the actual burst (and a HP-aware callback like Minelayer's knock-loose can still branch on hp).
         self.TakeDamage = DamageMode.No;
+
+        // QC W_PrepareExplosionByDamage owner-reassign: when a CLIENT shot the projectile down and the server isn't
+        // running g_projectiles_keep_owner, credit the kill to the shooter (owner = realowner = attacker). Under the
+        // stock balance-xonotic.cfg default (g_projectiles_keep_owner 1) this is a no-op; the Nexuiz/overkill/samual/
+        // xdf balances set it 0, where the shooter-down kill is then credited to whoever shot it. RealOwner aliases
+        // Owner in the port, so assigning Owner is the full QC `owner = realowner = attacker`.
+        if (attacker is not null && (attacker.Flags & EntFlags.Client) != 0
+            && Api.Cvars.GetFloat("g_projectiles_keep_owner") == 0f)
+            self.Owner = attacker;
+
         self.ProjectileDamage?.Invoke(self, attacker);
     }
 

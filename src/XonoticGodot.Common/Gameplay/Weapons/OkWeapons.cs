@@ -25,9 +25,12 @@ namespace XonoticGodot.Common.Gameplay;
 internal static class OkWeapons
 {
     /// <summary>
-    /// Run the shared Overkill secondary blaster-jump for <paramref name="actor"/> on this tick. No-op unless
-    /// <paramref name="secondaryRefireType"/> is 1, the secondary button is held, and the player's
-    /// <see cref="Entity.JumpInterval"/> gate has elapsed.
+    /// Run the shared Overkill secondary blaster-jump for <paramref name="actor"/> on this tick. Handles
+    /// <paramref name="secondaryRefireType"/> == 1 only (the blaster fires on the dedicated jump_interval timer).
+    /// The alternative <paramref name="secondaryRefireType"/> == 0 (shared ATTACK_FINISHED timer) is NOT
+    /// implemented because it requires the weapon's PrepareAttack method, which this static helper cannot reach.
+    /// The QC default is 1 for all five OK weapons at stock balance (g_balance_okhmg_secondary_refire_type=1 etc.),
+    /// so the refire_type==0 path is NOT used and this gap has no observable effect at stock balance.
     /// </summary>
     public static void FireSecondaryBlasterJump(Entity actor, WeaponSlot slot, FireMode fire, int secondaryRefireType)
     {

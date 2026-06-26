@@ -606,6 +606,14 @@ public sealed class DamageSystem : IDamageSystem
         };
         Combat.Death.Call(ref death);
 
+        // QC wr_playerdeath: the weapon the player dies with may fire/release any state held mid-action (e.g. Hagar's loaded rockets).
+        Weapon? weapon = Inventory.CurrentWeapon(victim);
+        if (weapon is not null)
+        {
+            var slot = new WeaponSlot(0); // single-weapon port currently uses slot 0
+            weapon.WrPlayerDeath(victim, slot);
+        }
+
         // A non-player victim with its OWN death handler (turret/monster/breakable) wired onto the Death bus has
         // just run it (e.g. TurretAI.Die -> SOLID_NOT + respawn schedule, DeadState advanced past DeadFlag.No).
         // In QC those entities carry their death in .event_damage and the generic player-corpse path below is

@@ -202,6 +202,36 @@ public sealed class Fireball : Weapon
     public override float RefireFor(FireMode fire) => fire == FireMode.Secondary ? Secondary.Refire : Primary.Refire;
     public override float AnimtimeFor(FireMode fire) => fire == FireMode.Secondary ? Secondary.Animtime : Primary.Animtime;
 
+    // METHOD(Fireball, wr_aim) — common/weapons/weapon/fireball.qc. The bot toggles between the primary fireball
+    // and the secondary firemine on a slow random clock (the actor's .bot_primary_fireballmooth). While the
+    // toggle is clear it leads/fires the slow primary fireball; once it rolls onto the secondary it lobs firemines
+    // until it rolls back. The brain leads + decides the shot generically (via BotAimShotSpeed below); this hook
+    // only picks WHICH button that decided shot is routed to and advances the QC toggle's random flip.
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
+    {
+        // ctx.SecondaryToggle mirrors actor.bot_primary_fireballmooth. The button QC presses THIS frame is the
+        // PRE-flip toggle state (QC checks !bot_primary_fireballmooth, fires the matching mode, THEN may flip).
+        bool fireSecondary = ctx.SecondaryToggle;
+        if (!ctx.SecondaryToggle)
+        {
+            // primary path: random() < 0.02 -> start preferring the secondary firemine next time.
+            if (ctx.Random01 < 0.02f)
+                ctx.SecondaryToggle = true;
+        }
+        else
+        {
+            // secondary path: random() < 0.01 -> go back to the primary fireball next time.
+            if (ctx.Random01 < 0.01f)
+                ctx.SecondaryToggle = false;
+        }
+        return fireSecondary;
+    }
+
+    // METHOD(Fireball, wr_aim): the primary leads with bot_aim(speed 1200). The brain reads this for the shot
+    // lead (the secondary firemine leads at speed 900 in QC, but the button-route happens after the lead like
+    // every other port wr_aim — leading by the primary speed is the shared simplification).
+    public override float BotAimShotSpeed(float defaultSpeed) => Primary.Speed;
+
     // W_Fireball_Attack1 — launch a large, slow, shootable fireball that bursts on impact. fireball.qc
     private void Attack1(Entity actor, WeaponSlot slot)
     {

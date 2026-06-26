@@ -245,6 +245,9 @@ public static class WeaponFireDriver
                 // the new weapon can raise once the drop animation has played.
                 st.SwitchingWeaponId = targetId;
                 Weapon? oldwep = CurrentWeaponOf(st);
+                // QC wr_gonethink: the weapon we're leaving should fire/release any state held (e.g. Hagar's loaded rockets).
+                if (oldwep is not null)
+                    oldwep.WrGoneThink(player, slot);
                 float dropDelay = oldwep?.SwitchDelayDrop() ?? 0f;
                 st.State = WeaponFireState.Drop;
                 // Switching cancels any in-progress reload: scheduling the drop think here overwrites the pending

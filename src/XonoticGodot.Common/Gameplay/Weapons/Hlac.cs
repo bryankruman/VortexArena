@@ -113,6 +113,16 @@ public sealed class Hlac : Weapon
     public override void WrThink(Entity actor, WeaponSlot slot, FireMode fire)
     {
         var st = actor.WeaponState(slot);
+
+        // QC hlac.qc:163-167 forced reload: if reloading is enabled (reload_ammo != 0) and the clip has dropped
+        // below the cheapest per-shot cost, reload before doing anything else. ReloadingAmmo() resolves
+        // g_balance_hlac_reload_ammo (default 0); since HLAC ships un-clipped, this branch is dormant at default.
+        if (ReloadingAmmo() != 0f && st.ClipLoad < MathF.Min(Primary.Ammo, Secondary.Ammo))
+        {
+            WrReload(actor, slot);
+            return;
+        }
+
         if (fire == FireMode.Primary)
         {
             // QC wr_think (hlac.qc:169-176): on a FRESH primary press (weapon_prepareattack succeeds only
@@ -170,6 +180,10 @@ public sealed class Hlac : Weapon
     // Refire/animtime from the (cvar-seeded) per-mode balance blocks.
     public override float RefireFor(FireMode fire) => fire == FireMode.Secondary ? Secondary.Refire : Primary.Refire;
     public override float AnimtimeFor(FireMode fire) => fire == FireMode.Secondary ? Secondary.Animtime : Primary.Animtime;
+
+    // QC wr_reload (hlac.qc:202-205): W_Reload(actor, weaponentity, min(WEP_CVAR_PRI(ammo), WEP_CVAR_SEC(ammo)),
+    // SND_RELOAD) — the reload's per-shot ammo floor is the cheaper of the two modes' costs, not the generic 1.
+    protected override float ReloadingAmmoMin() => MathF.Min(Primary.Ammo, Secondary.Ammo);
 
     /// <summary>
     /// QC IS_DUCKED(actor) &amp;&amp; IS_ONGROUND(actor) → spread *= spread_crouchmod (hlac.qc:33-34 primary,
@@ -290,9 +304,14 @@ public sealed class Hlac : Weapon
         Api.Entities.Remove(self);
     }
 
-    // METHOD(HLAC, wr_checkammo1) — hlac.qc
-    public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Primary.Ammo;
+    // METHOD(HLAC, wr_checkammo1) — hlac.qc:188-192: have ammo if the shared pool OR the persistent magazine
+    // (weapon_load[id], reloadable) can cover one primary shot. Returns true if reserve >= ammo OR clip >= ammo.
+    public bool CheckAmmoPrimary(Entity actor)
+        => actor.GetResource(AmmoType) >= Primary.Ammo
+        || GetWeaponLoad(actor.WeaponState(new WeaponSlot(0)), RegistryId) >= Primary.Ammo;
 
-    // METHOD(HLAC, wr_checkammo2) — hlac.qc
-    public bool CheckAmmoSecondary(Entity actor) => actor.GetResource(AmmoType) >= Secondary.Ammo;
+    // METHOD(HLAC, wr_checkammo2) — hlac.qc:195-199: pool OR magazine, for the secondary shot cost.
+    public bool CheckAmmoSecondary(Entity actor)
+        => actor.GetResource(AmmoType) >= Secondary.Ammo
+        || GetWeaponLoad(actor.WeaponState(new WeaponSlot(0)), RegistryId) >= Secondary.Ammo;
 }

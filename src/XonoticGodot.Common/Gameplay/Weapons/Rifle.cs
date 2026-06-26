@@ -302,7 +302,14 @@ public sealed class Rifle : Weapon
         // When zoomed QC re-aims straight from the eye (w_shotdir = v_forward) so the long-range shot is
         // pixel-accurate; the zoom button isn't part of the headless input, so we keep the trueaim origin.
 
-        int deathType = RegistryId; // QC also OR's HITTYPE_SECONDARY for kill-message wording (cosmetic).
+        int deathType = RegistryId;
+        // QC W_Rifle_Attack2 (rifle.qc:49): m_id | HITTYPE_SECONDARY — the secondary flag is what drives
+        // DeathMessages' HAIL branch (rifle.qc:187 / DeathMessages.cs:82-85). The int deathType can't pack
+        // HITTYPE_SECONDARY bits, so carry it as a string deathTag (same pattern as MachineGun.FireOne's snipe
+        // secondary, Machinegun.cs:364-365) so ApplyDamage's DeathTypes override path routes the kill message.
+        string? deathTag = secondary
+            ? Damage.DeathTypes.WithHitType(Damage.DeathTypes.FromWeapon(NetName), Damage.DeathTypes.Secondary)
+            : null;
         // QC: tracer ? EFFECT_RIFLE : EFFECT_RIFLE_WEAK (rifle.qc:34). The primary's signature visible tracer.
         string tracerEffect = bal.Tracer != 0f ? "RIFLE" : "RIFLE_WEAK";
         for (int i = 0; i < shots; ++i)
@@ -310,7 +317,7 @@ public sealed class Rifle : Weapon
             // fireBullet_falloff: per-bullet spread, solid penetration multi-hit, distance falloff, force, tracer.
             WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, bal.Damage,
                 deathType, bal.Spread, bal.SolidPenetration, force: bal.Force,
-                headshotMultiplier: bal.HeadshotMultiplier, tracerEffect: tracerEffect);
+                headshotMultiplier: bal.HeadshotMultiplier, tracerEffect: tracerEffect, deathTag: deathTag);
             Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
             TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
             // w_backoff = the impact surface normal (trace_plane_normal), -force_dir fallback when no hit.
