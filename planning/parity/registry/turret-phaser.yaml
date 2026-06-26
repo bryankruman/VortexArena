@@ -1,16 +1,15 @@
 unit: turret-phaser
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
-  feature_count: 12
+  feature_count: 13
   worst_gaps:
-    - "Beam is single-hit in the port; Base FireImoBeam penetrates and damages/slows EVERY entity in the line"
     - "No beam model visual (MDL_TUR_PHASER_BEAM) and no head charge/discharge frame animation (tr_think)"
-    - "Aim uses shotTimeCompensate+zPredict lead flags that Base phaser does NOT set (aim_flags = TFL_AIM_LEAD only)"
-    - "Phaser beam sound is now FIXED (Wave-5): turrets/phaser hum + 2s re-trigger + neximpact impact + silence-on-end all live"
-    - "Respawn time defaults to 60 (shared Init default) instead of the cfg's 90"
-    - "Beam never registers on g_bot_dodge (bot_dodge=true, bot_dodgerating=shot_dmg) — bots do not avoid the phaser beam; the port has no g_bot_dodge projectile-avoidance system at all"
+    - "Head model (phaser.md3) is not attached as a separate tracking head bone"
+    - "Beam never registers on g_bot_dodge (port beam omits bot_dodge/bot_dodgerating; no havocbot danger-list consumer) — bots do not avoid the phaser beam"
+    - "Target-selection biases (rangebias 0.85, anglebias 0.25, samebias 0, missilebias 0) are not passed — phaser scores targets with the generic 1.0 defaults"
+    - "firecheck does not model the fireflag==2 discharge window (subsumed by the 4s refire hold)"
 features:
   - id: turret-phaser.spawn.map_entity
     name: "Map placement + per-frame think wiring (spawnfunc turret_phaser)"
@@ -34,9 +33,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "MapObjectsRegistry.cs:226 SpawnFuncs.Register(turret_phaser) -> GameWorld SpawnMapEntities -> RunThink", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry SpawnFuncs.Register(turret_phaser) -> GameWorld SpawnMapEntities -> RunThink", result: pass }
     confidence: high
-    notes: "Gated by g_turrets master switch (default on). Whether stock maps actually place turret_phaser is unverified (rare in rotation). Unchanged by the Wave-2/5 edits (PhaserTurret.cs is byte-identical to main)."
+    notes: "Gated by g_turrets master switch (default on). Whether stock maps actually place turret_phaser is unverified (rare in rotation). Unchanged."
 
   - id: turret-phaser.identity.model_hitbox
     name: "Identity, hitbox, health, body/head models"
@@ -66,7 +65,7 @@ features:
     verification:
       - { kind: value, ref: "phaser.qh vs PhaserTurret.cs ctor / TurretSpawn.Init", result: pass }
     confidence: high
-    notes: "Hitbox/health/body model match; head-bone attachment is a client-render concern deferred in TurretAI. Unchanged this wave."
+    notes: "Hitbox/health/body model match; head-bone attachment is a client-render concern deferred in TurretAI. Unchanged."
 
   - id: turret-phaser.setup.flags
     name: "tr_setup ammo + aim flags (energy/recharge/recieve, lead-only)"
@@ -78,22 +77,25 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Spawn"
     constants:
       - { name: "ammo_flags", base: "ENERGY|RECHARGE|RECIEVE", port: "ammo pool (max/recharge modeled)", match: true }
-      - { name: "aim_flags", base: "TFL_AIM_LEAD only", port: "lead + shotTimeCompensate + zPredict", match: false }
+      - { name: "aim_flags", base: "TFL_AIM_LEAD only", port: "lead only (shotTimeCompensate/zPredict at false defaults)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Port enables shotTimeCompensate + zPredict in the aim params (PhaserTurret.Think:65), but Base phaser's aim_flags is TFL_AIM_LEAD only (no shot-time compensation, no z-prediction). Port leads differently, especially vs airborne targets."
+    gaps: []
     verification:
-      - { kind: value, ref: "phaser.qc tr_setup aim_flags=TFL_AIM_LEAD vs PhaserTurret.cs:62-65 TurretParams(shotTimeCompensate:true, zPredict:true)", result: fail }
+      - { kind: value, ref: "phaser.qc tr_setup aim_flags=TFL_AIM_LEAD vs PhaserTurret.Think TurretParams(lead:true) — shotTimeCompensate/zPredict not passed, default false (TurretAI.cs:1068)", result: pass }
     confidence: high
-    notes: "Phaser is hitscan so shot-time compensation is arguably moot, but Base does not request it; z-predict adds a gravity-arc lead Base omits. STILL OPEN — PhaserTurret.Think unchanged this wave."
+    notes: >-
+      FIXED since baseline. The earlier audit recorded the port passing shotTimeCompensate:true + zPredict:true,
+      which diverged from Base (TFL_AIM_LEAD only). The current PhaserTurret.Think (PhaserTurret.cs:69-73) passes
+      only lead:true; shotTimeCompensate and zPredict are left at their false struct defaults, matching Base exactly.
+      Hitscan shotSpeed (35000) is a port aim-lead convenience and is moot for a hitscan beam."
 
   - id: turret-phaser.firecheck.fireflag_guard
     name: "Custom firecheck: block fire while beam active/discharging (fireflag)"
@@ -113,11 +115,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port holds AttackFinished = endTime to block re-fire during the beam (functional analogue), but does not model the fireflag==2 DISCHARGE window during which Base also forbids fire (~5 frames after the beam ends, until the head animation returns to idle)."
+      - "Port holds AttackFinished = endTime to block re-fire during the beam (functional analogue), but does not model the fireflag==2 DISCHARGE window during which Base also forbids fire (~5 tr_think frames after the beam ends, until the head animation returns to idle)."
     verification:
       - { kind: code, ref: "phaser.qc turret_phaser_firecheck (fireflag != 0) vs PhaserTurret.BeamThink AttackFinished hold", result: fail }
     confidence: medium
-    notes: "The discharge-window difference is small (a few frames); shot_refire (4s) dominates the gap anyway. STILL OPEN — unchanged this wave. NOTE: the new g_turrets_nofire master gate (TurretAI.Fire) does not affect this; firecheck guard is still purely the AttackFinished hold."
+    notes: "The discharge-window difference is tiny (~0.07s) and subsumed by shot_refire (4s), the only refire gate the port consults. STILL OPEN — unchanged."
 
   - id: turret-phaser.fire.beam_spawn
     name: "wr_think: spawn the sustained PhaserTurret_beam"
@@ -143,7 +145,7 @@ features:
     verification:
       - { kind: code, ref: "phaser_weapon.qc wr_think vs PhaserTurret.Attack", result: pass }
     confidence: high
-    notes: "Beam owns the refire: Attack sets endTime; BeamThink re-parks AttackFinished each frame, matching QC beam.cnt + attack_finished overwrite. Unchanged this wave."
+    notes: "Beam owns the refire: Attack sets endTime; BeamThink re-parks AttackFinished each frame, matching QC beam.cnt + attack_finished overwrite. Unchanged."
 
   - id: turret-phaser.fire.beam_think_trace
     name: "beam_think: per-frame trace, damage + slow, refire reset on end"
@@ -170,7 +172,7 @@ features:
     verification:
       - { kind: code, ref: "phaser_weapon.qc beam_think vs PhaserTurret.BeamThink", result: pass }
     confidence: high
-    notes: "Re-trace along the head aim every frame, tear down at time>cnt or actor dead, then arm now+shot_refire — faithful. (Multi-hit vs single-hit is split out below.) Unchanged this wave."
+    notes: "Re-trace along the head aim every frame, tear down at time>cnt or actor dead, then arm now+shot_refire — faithful. Unchanged."
 
   - id: turret-phaser.fire.imobeam_multihit
     name: "FireImoBeam penetrating multi-target hit + slow"
@@ -182,7 +184,7 @@ features:
     constants:
       - { name: "f_velfactor (slow)", base: "0.75", port: "0.75 (VelFactor)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -190,12 +192,18 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base FireImoBeam is railgun-style PENETRATING: it makes each hit entity unsolid and re-traces until it hits a wall (SOLID_BSP), then damages AND slows EVERY entity along the beam. The port does a single Api.Trace.Trace and damages/slows only the first hit (tr.Ent, PhaserTurret.BeamThink:127-136). Players lined up behind one another are all hit in Base, only the front one in the port."
+    gaps: []
     verification:
-      - { kind: code, ref: "util.qc FireImoBeam (g_railgunhit penetration loop) vs PhaserTurret.BeamThink single Api.Trace.Trace", result: fail }
+      - { kind: code, ref: "util.qc FireImoBeam (g_railgunhit penetration loop: make-unsolid, re-trace, restore, damage+slow ALL hit) vs PhaserTurret.BeamThink:155-186 pierced-list loop (Solid.Not each hit, re-trace, restore solidity, Combat.Damage + velocity*=0.75 each)", result: pass }
     confidence: high
-    notes: "The velocity*=0.75 slow is faithful for the single entity the port hits; the gap is the missing penetration/multi-hit. STILL OPEN — unchanged this wave."
+    notes: >-
+      FIXED since baseline. The earlier audit recorded a single Api.Trace.Trace hitting only tr.Ent (the front
+      target). The current BeamThink implements the full FireImoBeam penetration: it loops up to 64 times, making
+      each hit entity Solid.Not and re-tracing until it hits a world brush (Solid.Bsp) or empty trace, restores
+      solidity, then damages + slows every entity collected (Combat.Damage DEATH_TURRET_PHASER + velocity*=VelFactor).
+      Players lined up behind one another are now all hit, matching Base. One minor nuance vs Base: the port uses the
+      per-hit tr.EndPos as the damage location, whereas Base records railgunhitloc = end (wall endpoint) for all hits —
+      a cosmetic damage-origin difference only, not a logic/values defect."
 
   - id: turret-phaser.fire.bot_dodge
     name: "Beam registers as a dodgeable threat (bot_dodge / g_bot_dodge)"
@@ -204,7 +212,7 @@ features:
       - "common/turrets/turret/phaser_weapon.qc:wr_think"
     port_refs: []
     constants:
-      - { name: "bot_dodge", base: "true", port: "none", match: false }
+      - { name: "bot_dodge", base: "true", port: "none (beam never sets Entity.BotDodge)", match: false }
       - { name: "bot_dodgerating", base: "shot_dmg (100)", port: "none", match: false }
     status:
       logic: missing
@@ -216,11 +224,41 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base wr_think sets beam.bot_dodge=true, beam.bot_dodgerating=shot_dmg and IL_PUSHes the beam onto g_bot_dodge so havocbots actively strafe out of the phaser beam. The port spawns the beam without any dodge registration and has no g_bot_dodge avoidance system: BotBrain only does the generic havocbot_dodge strafe-on-clock (BotBrain.cs:346/425/430), not threat-list avoidance. Bots will not specifically dodge the beam."
+      - "Base wr_think sets beam.bot_dodge=true, beam.bot_dodgerating=shot_dmg and IL_PUSHes the beam onto g_bot_dodge so havocbots actively strafe out of the phaser beam. The port's PhaserTurret.Attack/BeamThink spawn the beam without setting Entity.BotDodge/BotDodgeRating (those fields now EXIST on Entity and are set by e.g. Blaster.cs, but the phaser beam omits them). The havocbot_dodge danger-list CONSUMER is also still unported, so even producer-side wiring would be inert today."
     verification:
-      - { kind: code, ref: "phaser_weapon.qc wr_think bot_dodge/IL_PUSH(g_bot_dodge) vs grep g_bot_dodge in port = only havocbot_dodge strafe-clock, no projectile-avoidance feed", result: fail }
+      - { kind: code, ref: "phaser_weapon.qc wr_think bot_dodge/IL_PUSH(g_bot_dodge) vs PhaserTurret beam spawn (no BotDodge set) + no havocbot danger-list consumer in port", result: fail }
     confidence: high
-    notes: "Engine-wide gap, not phaser-specific: the whole g_bot_dodge avoidance feed is unported. Minor in practice (affects bot quality vs this turret only). STILL OPEN — unchanged this wave."
+    notes: "Two-part gap: (1) phaser beam doesn't even set the now-existing BotDodge producer fields; (2) the engine-wide g_bot_dodge avoidance consumer is unported. Minor in practice (bot quality vs this turret only). STILL OPEN — unchanged."
+
+  - id: turret-phaser.fire.target_select_bias
+    name: "Per-unit target-selection scoring biases (range/angle/same/missile/player)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_select_target"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
+    constants:
+      - { name: "target_select_rangebias", base: "0.85", port: "1.0 (default, not passed)", match: false }
+      - { name: "target_select_anglebias", base: "0.25", port: "1.0 (default, not passed)", match: false }
+      - { name: "target_select_samebias", base: "0", port: "1.0 (default, not passed)", match: false }
+      - { name: "target_select_missilebias", base: "0", port: "1.0 (default, not passed)", match: false }
+      - { name: "target_select_playerbias", base: "1", port: "1.0 (default)", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "PhaserTurret.Think builds TurretParams without the phaser-specific scoring biases (turrets.cfg:302-306: rangebias 0.85, samebias 0, anglebias 0.25, missilebias 0, playerbias 1), so RangeBias/AngleBias/SameBias/MissileBias all default to 1.0. The scoring machinery (TurretAI.cs:381) is faithful and live, but the phaser's target-priority weighting differs from Base — it weights distance and angle more heavily and does not zero out same-target/missile bias."
+    verification:
+      - { kind: value, ref: "turrets.cfg:302-306 g_turrets_unit_phaser_target_select_*bias vs PhaserTurret.Think TurretParams (bias args omitted -> defaults 1.0, TurretAI.cs:1070)", result: fail }
+    confidence: high
+    notes: "Newly mapped (was not a row in the baseline). Affects which target the phaser prefers, not whether/how it fires. Other turret units may share this omission."
 
   - id: turret-phaser.fire.extra_slow_status
     name: "Port-only layered slow/disability status effect"
@@ -243,7 +281,7 @@ features:
     verification:
       - { kind: code, ref: "PhaserTurret.ApplySlow (no Base counterpart)", result: pass }
     confidence: medium
-    notes: "Only applies if the catalog offers a buff_disability effect; otherwise a no-op. Cosmetic/feel-only on top of the faithful velocity slow. Unchanged this wave."
+    notes: "Only applies if the catalog offers a buff_disability effect; otherwise a no-op. Cosmetic/feel-only on top of the faithful velocity slow. Unchanged."
 
   - id: turret-phaser.audio.beam_sound
     name: "Phaser beam sound (start + 2s re-trigger + silence-on-end) and impact cue"
@@ -273,24 +311,15 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "all.inc:152 SOUND(TUR_PHASER, turrets/phaser) == PhaserTurret.SndPhaser; registered SoundsList.cs:143", result: pass }
-      - { kind: code, ref: "Attack:103 Sound.Play(beam, Body, turrets/phaser) on spawn + Attack:109 PlayAt(impact.EndPos, ShotsAuto, neximpact)", result: pass }
-      - { kind: code, ref: "BeamThink:132-137 2s re-trigger (now-nextHum>0 -> Play + re-arm), nextHum carried via re-parked delegate", result: pass }
-      - { kind: code, ref: "BeamThink:125 Sound.Stop(beam, Body) on end == QC sound(this, CH_SHOTS_SINGLE, SND_Null)", result: pass }
-      - { kind: value, ref: "CH_SHOTS_SINGLE=4==SoundChannel.Body, CH_SHOTS=-4==SoundChannel.ShotsAuto (Services.cs:111,120)", result: pass }
+      - { kind: code, ref: "Attack:107 Sound.Play(beam, Body, turrets/phaser) on spawn + Attack:113 PlayAt(impact.EndPos, ShotsAuto, neximpact)", result: pass }
+      - { kind: code, ref: "BeamThink:141-145 2s re-trigger (now-nextHum>0 -> Play + re-arm), nextHum carried via re-parked delegate", result: pass }
+      - { kind: code, ref: "BeamThink:134 Sound.Stop(beam, Body) on end == QC sound(this, CH_SHOTS_SINGLE, SND_Null)", result: pass }
     confidence: high
     notes: >-
-      FIXED this wave (Wave-5, commit 023ba70 area). Baseline played a single weapons/electro_fire.wav
-      at fire-start and nothing else (dead/missing). Now: the SND_TUR_PHASER hum (turrets/phaser) starts
-      on the BEAM edict on CH_SHOTS_SINGLE so it follows the beam and can be silenced on end; it re-triggers
-      every 2s while burning (shot_spread clock, here carried as nextHum through the re-parked think delegate);
-      the neximpact impact cue plays once at the spawn-time trace endpoint on CH_SHOTS; and the hum is stopped
-      (Sound.Stop) on beam termination. All sample names, channels, volume/atten verified against Base.
-      The Attack/BeamThink path is the same live RunCombat->fire path already confirmed live for the beam-spawn
-      row, so liveness flips dead->live. One faithful simplification vs QC: Base's turret-edict branch does NOT
-      play electro_fire (that is the player-manned wr_think branch only) — the port correctly drops it. The QC
-      also nudges tur_head.frame (1/10) for the head anim alongside these sounds; that visual remains a separate
-      gap tracked under presentation.beam_visual_and_head_anim, not here.
+      Faithful. The SND_TUR_PHASER hum starts on the BEAM edict on CH_SHOTS_SINGLE so it follows the beam and is
+      silenced on end; it re-triggers every 2s while burning; the neximpact impact cue plays once at the spawn-time
+      trace endpoint; the hum is stopped on beam termination. One faithful simplification vs QC: Base's turret-edict
+      branch does NOT play electro_fire (player-manned branch only) — the port correctly drops it. Unchanged."
 
   - id: turret-phaser.presentation.beam_visual_and_head_anim
     name: "Beam model visual (MDL_TUR_PHASER_BEAM) + head charge/discharge animation (tr_think)"
@@ -313,12 +342,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No PhaserTurret_beam model spawned/scaled to the impact distance (acknowledged TODO comment in Attack:97)."
+      - "No PhaserTurret_beam model spawned/scaled to the impact distance (acknowledged TODO comment in Attack:115)."
       - "No tr_think head-frame state machine: the head never plays the charge (1..10) or discharge (->15->0) animation. The fireflag concept is absent in the port."
     verification:
-      - { kind: code, ref: "phaser.qc tr_think + setmodel(MDL_TUR_PHASER_BEAM) — no port equivalent (PhaserTurret.cs:97 TODO)", result: fail }
+      - { kind: code, ref: "phaser.qc tr_think + setmodel(MDL_TUR_PHASER_BEAM) — no port equivalent (PhaserTurret.cs:115 NOTE)", result: fail }
     confidence: high
-    notes: "The beam is intentionally 'invisible' per the menu description, but Base still draws a faint scaled beam model + animates the head; both are client-render TODOs in the port. STILL OPEN — unchanged this wave."
+    notes: "The beam is intentionally 'invisible' per the menu description, but Base still draws a faint scaled beam model + animates the head; both are client-render TODOs in the port. STILL OPEN — unchanged."
 
   - id: turret-phaser.lifecycle.respawn_time
     name: "Death + respawn timer"
@@ -329,32 +358,25 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Spawn"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:EventDamage"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Respawn"
     constants:
-      - { name: "respawntime", base: "90 (turrets.cfg:287)", port: "60 (shared Init default; PhaserTurret.Spawn passes no respawnTime)", match: false }
+      - { name: "respawntime", base: "90 (turrets.cfg:287)", port: "90 (RespawnTime const passed to TurretSpawn.Init)", match: true }
     status:
       logic: faithful
-      values: partial
-      timing: partial
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "PhaserTurret.Spawn calls TurretSpawn.Init without a respawnTime argument, so it inherits the shared default 60s (TurretSpawn.Init:45) instead of the phaser cfg's 90s. The turret respawns 30s too early. STILL OPEN — the Wave edits touched TurretSpawn.Init but did not change the 60s default nor make PhaserTurret pass 90."
+    gaps: []
     verification:
-      - { kind: value, ref: "turrets.cfg:287 (90) vs TurretSpawn.Init default 60 / PhaserTurret.Spawn omits arg", result: fail }
+      - { kind: value, ref: "turrets.cfg:287 (90) vs PhaserTurret.cs:31 RespawnTime=90f passed via Spawn:62 respawnTime: RespawnTime -> TurretSpawn.Init:76 st.RespawnTime", result: pass }
     confidence: high
     notes: >-
-      Death/respawn lifecycle itself is shared and faithful (TurretAI.Die/Respawn); only the per-unit
-      respawntime value is wrong. The Wave-2/5 shared-turret edits made the death path strictly MORE
-      faithful to Base — TurretAI.Die now omits the port-added ammo-scaled RadiusDamage blast (Base
-      turret_die has it commented out, sv_turrets.qc:182) and TurretAI.Damage no longer adopts the
-      attacker as an enemy (Base never reads TFL_DMG_RETALIATE) — and TurretSpawn.Init now wires
-      e.GtEventDamage = TurretAI.EventDamage so the turret's own pre-damage gate + health subtract runs
-      via DamageSystem.EventDamage instead of PlayerDamage. These were not tracked as gaps in this row's
-      logic (already faithful) so the row status is unchanged; the respawn-time value gap remains the
-      only open defect.
+      FIXED since baseline. The earlier audit recorded PhaserTurret.Spawn omitting the respawnTime argument and
+      inheriting the shared 60s default. The current Spawn passes respawnTime: RespawnTime (=90f), matching
+      turrets.cfg g_turrets_unit_phaser_respawntime 90 exactly. Death/respawn lifecycle itself remains shared and
+      faithful (TurretAI.Die/Respawn)."

@@ -1,12 +1,12 @@
 unit: vehicle-spiderbot
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 16
   worst_gaps:
     - "Death blowup is still simplified on presentation: no 4 physics gib entities (head MF_ROCKET+EF_FLAME bounce+fade via spiderbot_headfade, 2 tossed guns body-vel v_forward*700, body frame 11) and no spiderbot_headfade head EXPLOSION_BIG+ROCKET_IMPACT on final fade; the per-burn EFFECT_EXPLOSION_SMALL visual is still a TODO. The ~10% burn-tick SND_ROCKET_IMPACT audio + the 250-dmg blast + 45s respawn ARE faithful."
-    - "vr_impact / bouncepain (g_vehicle_spiderbot_bouncepain) still not ported; pushable (jumppad launches) + mass=5000 still not modeled. Stock bouncepain default '0 0 0' is a no-op, so zero live effect with stock cvars."
+    - "FIXED-SINCE-BASELINE: vr_impact / bouncepain (g_vehicle_spiderbot_bouncepain) is now ported (Spiderbot.Impact) and live via VehicleCommon.Touch — a faithful no-op at the stock '0 0 0' default (the bouncepain cvar is not yet server-overridable). pushable IS now set (vehicle.PushableFlag=true in Spawn — jumppad launches modeled); only mass=5000 remains unmodeled (no mass field)."
     - "Client-only presentation still TODO across the unit: EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH, gun barrel spin, aux crosshairs, vehicle_ammo2/reload2 HUD %, EFFECT_SPIDERBOT_ROCKETLAUNCH / PROJECTILE_SPIDERROCKET visuals, walk/strafe/idle engine sounds (re-architected client-side), and the per-pain EFFECT_SMOKE_SMALL puff (the gameplay-authoritative DmgShake jitter from vehicles_painframe IS now produced)."
     - "view_ofs '0 0 70' / height 170 (seated camera offset + chase distance) still not modeled on the headless server descriptor (client-view concern)."
     - "FIXED since 2026-06-22 baseline (commit 4be8357): the Wave-2 locomotion-gravity regression (GravityTicrateFactor read an unregistered cvar -> 1.0 -> 2x-too-strong gravity) is resolved — the factor is now hardcoded 0.5, matching QC's sv_gameplayfix_gravityunaffectedbyticrate default-true. Also fixed: vr_spawn no longer wrongly nulls Touch (run-over crush restored), and vehicles_painframe is now invoked each Think (low-health DmgShake jitter)."
@@ -51,7 +51,7 @@ features:
       - "common/vehicles/vehicle/spiderbot.qc:spawnfunc(vehicle_spiderbot)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:Spiderbot"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:221"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:239"
     constants:
       - { name: "g_vehicle_spiderbot (master)", base: "true (1)", port: "MasterSwitchEnabled('g_vehicle_spiderbot')", match: true }
     status:
@@ -65,7 +65,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "MapObjectsRegistry.cs:221 SpawnFuncs.Register('vehicle_spiderbot', VehicleSpawnFuncs.Spiderbot) -> Spawn gates on the master cvar then runs def.Spawn", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.cs:239 SpawnFuncs.Register('vehicle_spiderbot', VehicleSpawnFuncs.Spiderbot) -> Spawn gates on the master cvar then runs def.Spawn", result: pass }
     confidence: high
     notes: "Unchanged by Waves 1-2. Records pos1/pos2 then runs the descriptor Spawn."
 
@@ -88,7 +88,7 @@ features:
       - { name: "movetype", base: "MOVETYPE_STEP", port: "MoveType.Step", match: true }
       - { name: "solid", base: "SOLID_SLIDEBOX", port: "Solid.SlideBox", match: true }
       - { name: "touch handler", base: "vehicles_touch (vr_spawn does NOT settouch func_null)", port: "shared VehicleCommon.Touch (Spawn no longer nulls Touch)", match: true }
-      - { name: "pushable", base: "true (jumppads)", port: "not set", match: false }
+      - { name: "pushable", base: "true (jumppads)", port: "vehicle.PushableFlag = true (Spiderbot.cs:136)", match: true }
       - { name: "health_regen / pause", base: "10 / 5", port: "10 / 5", match: true }
       - { name: "shield_regen / pause", base: "25 / 0.35", port: "25 / 0.35", match: true }
     status:
@@ -101,14 +101,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "pushable (jumppad launches the spiderbot) is set in QC vr_setup but has no port concept; the spiderbot can ride jumppads in Base."
       - "mass=5000 is not modeled (no mass field on the entity); affects push/knockback interactions QC scales by mass."
       - "Port adds a MoveGround vehicle flag not present in QC vr_setup; harmless shared-helper flag, not a Base value."
     verification:
       - { kind: code, ref: "Spiderbot.Spawn sets health/shield/respawntime/gravity/damageforcescale/movetype/solid + the gun sub-entities; flags HasShield|ShieldRegen|HealthRegen|MoveGround|DmgShake", result: pass }
       - { kind: code, ref: "Spawn no longer sets vehicle.Touch=null (commit 4be8357); SpawnVehicle installs VehicleCommon.Touch (crush/ram/board) and it now survives spawn — matches Base vr_spawn which has no settouch func_null (spiderbot.qc:581-605)", result: pass }
+      - { kind: code, ref: "Spawn sets vehicle.PushableFlag=true (Spiderbot.cs:136); MapObjectsCommon.IsPushable (MapObjectsCommon.cs:190) checks .PushableFlag FIRST before the IS_VEHICLE exclusion, matching QC isPushable (triggers.qc:5) + vr_setup instance.pushable=true — the walker can now ride jumppads", result: pass }
     confidence: high
-    notes: "FIXED-SINCE-BASELINE (4be8357): Spawn previously nulled Touch (disabling run-over crush), diverging from Base vr_spawn; the reset is removed so the shared crush/touch handler stays live. Gun1/gun2 head sub-entities created once. tur_head.frame=1, body frame=5 (idle). VehicleAmmo1 seeded full."
+    notes: "FIXED-SINCE-BASELINE: (1) pushable is now modeled (PushableFlag=true -> jumppad/conveyor pushes, matching vr_setup); (2) Touch reset removed (4be8357) so run-over crush stays live, matching Base vr_spawn. Only mass=5000 remains unmodeled (no mass field), so values stays partial. Gun1/gun2 head sub-entities created once. tur_head.frame=1, body frame=5 (idle). VehicleAmmo1 seeded full."
 
   - id: vehicle-spiderbot.enter
     name: "vr_enter — W2MODE=GUIDE, seat the pilot, reattach a carried CTF flag to the head"
@@ -278,7 +278,7 @@ features:
       - { name: "turnspeed", base: "90", port: "90", match: true }
       - { name: "turnspeed_strafe", base: "300", port: "300", match: true }
       - { name: "movement_inertia", base: "0.15", port: "0.15", match: true }
-      - { name: "gravity step factor g", base: "0.5 if sv_gameplayfix_gravityunaffectedbyticrate (default true) else 1 => 0.5 in stock", port: "GravityTicrateFactor() => 0.5f (hardcoded constant, Spiderbot.cs:710)", match: true }
+      - { name: "gravity step factor g", base: "0.5 if sv_gameplayfix_gravityunaffectedbyticrate (default true) else 1 => 0.5 in stock", port: "GravityTicrateFactor() => 0.5f (hardcoded constant, Spiderbot.cs:744)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -292,7 +292,7 @@ features:
       - "Body-turn step multiplies by dt=0.1 (the elapsed think dt), matching QC's aggregate per-frame rate; response is quantized to the 0.1s think cadence (coarser granularity, not wrong-magnitude)."
     verification:
       - { kind: code, ref: "Frame: idle->BrakeSimple(50); forward/back->MoveSimple(walk500); strafe->MoveSimple(strafe400); body yaw turned by turnspeed*dt; vert preserved + g*dt*sv_gravity step when velz<=20 with g=GravityTicrateFactor()", result: pass }
-      - { kind: code, ref: "GravityTicrateFactor (Spiderbot.cs:710) now returns a constant 0.5f (commit 4be8357), matching QC's sv_gameplayfix_gravityunaffectedbyticrate default-true and the engine's hardcoded GravityUnaffectedByTicrate (FlyMove/PlayerPhysics). No unregistered-cvar read remains.", result: pass }
+      - { kind: code, ref: "GravityTicrateFactor (Spiderbot.cs:744) now returns a constant 0.5f (commit 4be8357), matching QC's sv_gameplayfix_gravityunaffectedbyticrate default-true and the engine's hardcoded GravityUnaffectedByTicrate (FlyMove/PlayerPhysics). No unregistered-cvar read remains.", result: pass }
     confidence: high
     notes: "FIXED-SINCE-BASELINE (4be8357): the Wave-2 gravity regression (unregistered-cvar read -> factor 1.0 -> 2x-too-strong gravity) is resolved — factor hardcoded back to 0.5. Body-turn timing was already FIXED in Wave-2 (dt=0.1 step). Frame indices (0/1 fwd/back, 2/3 strafe, 5 idle) set as the networked body frame. Walk/strafe/idle engine sounds re-architected client-side."
 
@@ -445,7 +445,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:SetMode"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:CycleMode"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:Impulse"
-      - "src/XonoticGodot.Server/Commands.cs:1324"
+      - "src/XonoticGodot.Server/Commands.cs:1786"
     constants:
       - { name: "SBRM_VOLLY/GUIDE/ARTILLERY", base: "1/2/3", port: "1/2/3", match: true }
       - { name: "impulse map", base: "1->VOLLY 2->GUIDE 3->ARTILLERY; next(10)/prev(11,12) cycle [1..3] wrap", port: "same", match: true }
@@ -462,7 +462,7 @@ features:
       - "CSQCVehicleSetup HUD/crosshair networking on the QC mode-set is deferred; the W2MODE state itself is set + networked via the vehicle stat."
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.Impulse_Spiderbot_SetsAndCyclesRocketMode — board, default GUIDE, set 1->VOLLY/3->ARTILLERY, cycle 10/12 wrap", result: pass }
-      - { kind: code, ref: "Commands.cs:1324 routes VehicleBoarding.Impulse before the weapon-impulse path for a seated pilot; VehicleBoarding Spiderbot case maps 1/2/3 + 10/11/12", result: pass }
+      - { kind: code, ref: "Commands.cs:1786 routes VehicleBoarding.Impulse before the weapon-impulse path for a seated pilot; VehicleBoarding Spiderbot case maps 1/2/3 + 10/11/12", result: pass }
     confidence: high
     notes: "Unchanged by Waves 1-2. VehicleBoarding resolves the gunner-slot body via VehSlotOwner before dispatch."
 
@@ -508,21 +508,23 @@ features:
     layer: [authority]
     base_refs:
       - "common/vehicles/vehicle/spiderbot.qc:METHOD(Spiderbot, vr_impact)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:Impact"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:Impact"
     constants:
-      - { name: "bouncepain", base: "'0 0 0' (default no-op)", port: "not implemented", match: false }
+      - { name: "bouncepain", base: "'0 0 0' (default no-op)", port: "Vector3.Zero (hardcoded default; guard skips vehicles_impact, matching QC falsy-vector)", match: true }
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC vr_impact calls vehicles_impact(minspeed, factor, max_damage) from the bouncepain cvar; not ported. Default bouncepain='0 0 0' makes it a no-op, so zero live effect with stock cvars — flagged for completeness only. (Note: sibling vehicles Bumblebee.vr_impact and Racer.vr_impact ARE ported, so the vehicles_impact helper exists to reuse.)"
+      - "QC vr_impact is `if (autocvar_g_vehicle_spiderbot_bouncepain) vehicles_impact(...)`. The port's Spiderbot.Impact (Spiderbot.cs:155-165) mirrors this exactly: it guards on `bouncepain != Vector3.Zero` with bouncepain hardcoded to the stock default '0 0 0', so the guard is always false and vehicles_impact is skipped — a faithful no-op at stock cvars (QC's vector cvar is likewise falsy). A server-overridable bouncepain cvar is not exposed, so a non-default '0 0 0' override cannot be reproduced; the VehicleCommon.Impact (vehicles_impact) helper it would call IS present and used by Racer/Bumblebee."
     verification:
-      - { kind: code, ref: "No vr_impact/bouncepain handler in Spiderbot.cs or VehicleCommon for the spiderbot; impact-pain dispatch absent", result: pass }
+      - { kind: code, ref: "Spiderbot.Impact override (Spiderbot.cs:155-165) guards on bouncepain!=Zero (default Zero) -> no-op; VehicleCommon.Touch dispatches vehic.VehicleDef?.Impact(vehic) on the live touch path (VehicleCommon.cs:769, QC info.vr_impact)", result: pass }
     confidence: high
-    notes: "Unchanged by Waves 1-2. Lowest-priority gap; the stock default neutralizes it. Would only matter on a server that sets g_vehicle_spiderbot_bouncepain."
+    notes: "FIXED-SINCE-BASELINE: the vr_impact handler is now ported (Spiderbot.Impact) and live (dispatched from VehicleCommon.Touch when PlayTime<time). Logic faithful (guard + skip), no-op with the stock '0 0 0' bouncepain default exactly as QC. Lowest-priority; only matters on a server that sets g_vehicle_spiderbot_bouncepain (cvar not yet exposed)."

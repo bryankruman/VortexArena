@@ -1,13 +1,11 @@
 unit: turret-plasma
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 13
   worst_gaps:
-    - "No turret presentation: head never visibly aims/spins, no team color, no waypoint sprite/healthbar, no damage smoke/sparks, no death gibs — renders as a static base.md3 block (no head sub-entity, no CSQC turret net layer)."
-    - "TFL_FIRECHECK_AFF (don't fire when the predicted impact hits a teammate) is still not modeled in the fire gate."
-    - "TFL_DMG_HEADSHAKE jitter is not applied (no rendered/networked head bone to perturb)."
+    - "No turret PRESENTATION: head never visibly aims/spins (the body is a static base.md3 with no head sub-entity / CSQC turret net layer), no team color, no waypoint sprite/healthbar, no damage smoke/sparks, no death gibs. NOTE: the head-spin frame logic + head-shake jitter are now ported server-side (run on e.Frame / TurretState.HeadAngles); only the client RENDER of them is missing."
     - "Unit balance is still baked into C# consts rather than read from g_turrets_unit_plasma_* — the values MATCH the cfg, but server cvar overrides / turret_scale_* / g_turrets_reloadcvars still have no effect (the framework cvars targetscan/aimidle/nofire ARE read)."
 features:
   - id: turret-plasma.spawn.mapplacement
@@ -125,25 +123,23 @@ features:
     constants:
       - { name: "aim_flags", base: "LEAD | SHOTTIMECOMPENSATE | SPLASH", port: "lead+shotTimeCompensate+aimSplash (zPredict:false)", match: true }
       - { name: "ammo_flags", base: "ENERGY|RECHARGE|RECIEVE", port: "ammo regen always on (no flag model)", match: true }
-      - { name: "firecheck_flags AFF", base: "TFL_FIRECHECK_AFF (avoid FF impact)", port: "not modeled (no impactent FF pre-check)", match: false }
-      - { name: "damage_flags HEADSHAKE", base: "TFL_DMG_HEADSHAKE", port: "not modeled (no server head bone; jitter omitted in EventDamage)", match: false }
+      - { name: "firecheck_flags AFF", base: "TFL_FIRECHECK_AFF (avoid FF impact)", port: "FireCheckDefault|FireCheckAff; gate in RunCombat (TurretAI.cs:689)", match: true }
+      - { name: "damage_flags HEADSHAKE", base: "TFL_DMG_HEADSHAKE", port: "headShake:true -> jitter applied in EventDamage (TurretAI.cs:887)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "TFL_FIRECHECK_AFF (don't fire when the predicted impact would hit a teammate) is still not modeled in the fire gate."
-      - "TFL_DMG_HEADSHAKE jitter is not applied (TurretAI.EventDamage omits the head-angle shake; the port has no rendered head bone to perturb)."
+    gaps: []
     verification:
       - { kind: code, ref: "plasma.qc tr_setup aim_flags (LEAD|SHOTTIMECOMPENSATE|SPLASH) vs MakeParams(lead:true, shotTimeCompensate:true, aimSplash:true, zPredict:false) — ZPredict matches Base (does NOT set TFL_AIM_ZPREDICT)", result: pass }
-      - { kind: code, ref: "no TFL_FIRECHECK_AFF in RunCombat fire gate; no HEADSHAKE jitter in EventDamage (sv_turrets.qc:227-233 has it; port omits)", result: fail }
+      - { kind: code, ref: "AFF now modeled: MakeParams/Think pass fireCheckFlags = FireCheckDefault|FireCheckAff; RunCombat (TurretAI.cs:689) withholds the shot when ImpactEnt is same-team. HEADSHAKE now modeled: Spawn passes headShake:true; EventDamage (TurretAI.cs:887-891) jitters TurretState.HeadAngles X/Y by (Prandom-0.5)*take, matching turret_damage:228-233", result: pass }
     confidence: high
-    notes: "ZPredict matches Base aim_flags. AFF firecheck and HEADSHAKE jitter remain unmodeled. Unchanged by the fix-up pass."
+    notes: "FIX: both AFF firecheck and HEADSHAKE jitter are now ported server-side (baseline recorded both as unmodeled). AFF is a live fire-gate branch; HEADSHAKE perturbs the server-only TurretState.HeadAngles (logic/values faithful — only the client RENDER of that head jitter is still absent, tracked under the presentation/headspin rows). ZPredict matches Base aim_flags."
 
   - id: turret-plasma.think.pipeline
     name: "Per-frame think: ammo regen, acquire/scan delays, aim, track, fire gate"
@@ -334,24 +330,31 @@ features:
     base_refs:
       - "common/turrets/turret/plasma.qc:PlasmaTurret.tr_think"
       - "common/turrets/turret/plasma.qc:PlasmaTurret.tr_attack (frame=1 trigger)"
-    port_refs: []
+      - "common/turrets/turret/plasma_dual.qc:DualPlasmaTurret.tr_think"
+      - "common/turrets/turret/plasma_dual.qc:DualPlasmaTurret.tr_attack (++frame)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaTurret.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Attack"
     constants:
-      - { name: "frame cycle", base: "if frame!=0 ++frame; if frame>5 frame=0; attack sets frame=1", port: "none", match: false }
+      - { name: "single frame cycle", base: "if frame!=0 ++frame; if frame>5 frame=0; attack sets frame=1 if 0", port: "same (PlasmaTurret.Think/Attack on e.Frame)", match: true }
+      - { name: "dual frame cycle", base: "if frame!=0 && frame!=3 ++frame; if frame>6 frame=0; attack does ++frame after if/else", port: "same (PlasmaDualTurret.Think/Attack on e.Frame)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: missing
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No turret head/spin presentation: there is no server head bone (tur_head.frame) and no CSQC turret net layer — the head never visibly aims or spins; renders as a static base.md3 block."
+      - "PRESENTATION only: the frame-cycle logic now runs server-side on the turret edict's e.Frame, but the body is a static base.md3 with no head-spin frames and there is no rendered tur_head sub-entity / CSQC turret net layer — so the spin is computed but never visibly shown."
     verification:
-      - { kind: code, ref: "no tr_think head-frame / TNSF_ANIM equivalent in port (PlasmaDualTurret.Attack documents ++tur_head.frame as un-ported cross-file work)", result: fail }
+      - { kind: code, ref: "PlasmaTurret.Think advances e.Frame 1..5 wrap-to-0 (idle at 0) and Attack sets frame=1 when 0 — matches plasma.qc tr_think/tr_attack. PlasmaDualTurret.Think advances 1..6 idling at BOTH 0 and 3, Attack does unconditional ++frame after the if/else — matches plasma_dual.qc tr_think/tr_attack:36. Think is live (TurretSpawnFuncs:47 e.Think -> def.Think, driven by SV_RunThink)", result: pass }
     confidence: high
-    notes: "The 5-frame head spin per shot is still unimplemented; subsumed by the broader no-presentation gap. Unchanged by the fix-up pass."
+    notes: "FIX: the per-shot head-spin frame cycle is now PORTED for both single (0..5, idle-at-0) and dual (0..6, idle-at-0-and-3), running live on the turret edict's networked Entity.Frame (the HellionTurret/HkTurret pattern, since the port has no separate tur_head bone). logic/values/timing went missing->faithful and liveness na->live. Only the visible RENDER of the spin remains absent (base.md3 has no head frames), so presentation stays missing."
 
   - id: turret-plasma.damage.gate_retaliate
     name: "turret_damage: inactive invuln, friendly-fire scale, headshake (no retaliate)"
@@ -368,7 +371,7 @@ features:
       - { name: "friendly fire scale", base: "*g_friendlyfire (0 => no dmg)", port: "*g_friendlyfire (<=0 => return 0)", match: true }
       - { name: "retaliate (TFL_DMG_RETALIATE)", base: "flag set but NEVER read — no this.enemy=attacker", port: "no retaliation (matches Base)", match: true }
       - { name: "MOVE shove", base: "velocity += vforce if TUR_FLAG_MOVE", port: "Velocity += force if st.Movable", match: true }
-      - { name: "headshake jitter", base: "head angles += (random-0.5)*damage", port: "not modeled (no server head bone)", match: false }
+      - { name: "headshake jitter", base: "head angles += (random-0.5)*damage", port: "TurretState.HeadAngles X/Y += (Prandom-0.5)*take (EventDamage, TurretAI.cs:887-891)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -379,13 +382,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "TFL_DMG_HEADSHAKE jitter (head angles += (random-0.5)*damage) is not applied — the port has no rendered/networked head bone to perturb."
+      - "PRESENTATION (tracked under headspin/presentation rows): the headshake jitter now perturbs the server-only TurretState.HeadAngles but is never networked/rendered, so the head-recoil flinch is not visible client-side."
     verification:
       - { kind: code, ref: "Base turret_damage (sv_turrets.qc:207-251) has NO this.enemy=attacker; port Damage no longer retaliates (fix-up removed the port-added `turret.Enemy = attacker`), now matching Base", result: pass }
       - { kind: code, ref: "TurretSpawn.Init sets e.GtEventDamage = TurretAI.EventDamage; DamageSystem.EventDamage (l.331) routes non-player edicts with GtEventDamage to it (same seam monsters/onslaught use); EventDamage gates via Damage(), then TakeResource(Health), fires Combat.Death when health<=0", result: pass }
       - { kind: test, ref: "tests/XonoticGodot.Tests/TurretLifecycleTests.cs", result: pass }
     confidence: high
-    notes: "FIX: the fix-up pass removed the port-added retaliation (`turret.Enemy = attacker`). Base sets TFL_DMG_RETALIATE on machinegun defaults but NO code reads it — a Base turret never turns to face its attacker; acquisition is scan/score-only. The earlier baseline wrongly recorded retaliate as a faithful match. Inactive invuln, FF scaling, MOVE shove all faithful and LIVE via the GtEventDamage shim. HEADSHAKE jitter is the one unmodeled sub-feature (presentation-coupled)."
+    notes: "Inactive invuln, FF scaling, MOVE shove, no-retaliate all faithful and LIVE via the GtEventDamage shim. UPDATE 2026-06-25: the TFL_DMG_HEADSHAKE jitter is now ALSO modeled — EventDamage (TurretAI.cs:887-891) perturbs TurretState.HeadAngles by (Prandom-0.5)*take on pitch+yaw (using the post-friendlyfire-scaled value, matching Base turret_damage:225/228-233). Only the client render of that head jitter is still absent (presentation, tracked under headspin)."
 
   - id: turret-plasma.death.die_respawn
     name: "Death + respawn (turret_die / turret_hide / turret_respawn)"

@@ -1,7 +1,7 @@
 unit: vehicle-raptor
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 14
   worst_gaps:
@@ -59,7 +59,7 @@ features:
       - "common/vehicles/vehicle/raptor.qc:spawnfunc(vehicle_raptor)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:Raptor"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:220"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:238"
       - "src/XonoticGodot.Engine/Simulation/SimulationLoop.cs:281"
     constants:
       - { name: "master cvar g_vehicle_raptor", base: "true", port: "g_vehicle_raptor (default-on)", match: true }

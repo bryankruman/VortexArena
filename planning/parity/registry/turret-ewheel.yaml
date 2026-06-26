@@ -1,14 +1,14 @@
 unit: turret-ewheel
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 12
   worst_gaps:
-    - "No locomotion drive-frame animation (frames 0..4 / turrets_setframe) and no CSQC rolling draw + low-health sparks (ewheel_draw)"
-    - "No waypoint path following (ewheel_move_path / ewheel_findtarget / turret_checkpoint graph) — an idle ewheel with a path set brakes in place instead of roaming its path chain"
+    - "CSQC ewheel_draw rolling integration (origin += velocity*dt, head angles += avelocity*dt, MOVETYPE_BOUNCE+gravity) not ported — the low-health spark temp-entity IS now emitted server-side"
     - "Head model (ewheel-gun1.md3) not instantiated as a separate head bone entity (no tag_head attachment); ROAM spawnflag not modeled"
     - "Fire presentation absent: no EFFECT_BLASTER_MUZZLEFLASH, no PROJECTILE_BLASTER client trail, no two-cannon head-frame alternation"
+    - "ammo_flags ENERGY|RECHARGE|RECIEVE modeled only as an ammo pool (no energy/recharge/receive bookkeeping); recharge rate itself honored"
 features:
   - id: turret-ewheel.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -35,7 +35,7 @@ features:
     divergence_rationale: null
     gaps:
       - "Head model (ewheel-gun1.md3) not instantiated as a separate head entity; no tag_head attachment."
-      - "ROAM spawnflag not modeled (path-roaming covered by turret-ewheel.drive.path, which is still missing)."
+      - "ROAM spawnflag not modeled as an explicit flag (the path-roaming behavior it gates is now implemented and live — see turret-ewheel.drive.path)."
     verification:
       - { kind: test, ref: "TurretLifecycleTests.EwheelSpawn_PinsHealthAndCoreSetup", result: pass }
       - { kind: code_read, ref: "ewheel.qh vs EWheelTurret ctor + Spawn", result: pass }
@@ -173,25 +173,32 @@ features:
     base_refs:
       - "common/turrets/turret/ewheel.qc:17"
       - "common/turrets/turret/ewheel.qc:111"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Drive"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:EWheelFindTarget"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:NextCheckpoint"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:CloseToTarget"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:Checkpoint"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:233"
     constants:
-      - { name: "path_node_proximity", base: "64", port: "none", match: false }
-      - { name: "path move speed", base: "speed_fast 500", port: "none", match: false }
+      - { name: "path_node_proximity", base: "64", port: "64 (PathNodeProximity, CloseToTarget box overlap)", match: true }
+      - { name: "path move speed", base: "speed_fast 500", port: "500 (MoveSimple(fwd, SpeedFast))", match: true }
+      - { name: "steerlib_attract2 params", base: "0.5, 500, 0.95", port: "SteerAttract2(0.5, 500, 0.95)", match: true }
+      - { name: "chain link", base: "pathcurrent.enemy (non-FANCYPATH; EWHEEL_FANCYPATH commented out)", port: "NextCheckpoint via find(targetname) — matches non-FANCYPATH default", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "No turret_checkpoint waypoint graph / path roaming: an idle ewheel with a target set brakes in place instead of following its path chain (Base ewheel_move_path / ewheel_findtarget)."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "no path/checkpoint code in EWheelTurret.Drive (Enemy==null -> brake only); comment explicitly notes 'no waypoint path graph in this port'", result: fail }
+      - { kind: code_read, ref: "EWheelTurret.Drive enemy==null && pathcurrent!=null branch advances the chain at 64u (CloseToTarget) and rolls toward the node at SpeedFast 500 with SteerAttract2(0.5,500,0.95); EWheelFindTarget resolves the entry turret_checkpoint by targetname; turret_checkpoint spawnfunc registered in MapObjectsRegistry (live) and floor-snaps + IndexRegisters the node", result: pass }
     confidence: high
-    notes: "STILL OPEN. Port comment explicitly states the map-waypoint path chase is left out (no waypoint graph in this port). Unchanged by Wave-1/2."
+    notes: "FIX (post-Wave-2, 2026-06-25): waypoint path roaming is now FULLY ported and LIVE — turret_checkpoint spawnfunc registered + floor-snapped + indexed by targetname; EWheelFindTarget wires the entry node on spawn/respawn; the path branch advances at 64u proximity and rolls at speed_fast 500 via SteerAttract2(0.5,500,0.95). Port deliberately implements the non-FANCYPATH chain (pathcurrent.enemy resolved by targetname), which is exactly Base's default (EWHEEL_FANCYPATH is #commented-out)."
   - id: turret-ewheel.drive.idle
     name: "ewheel_move_idle: brake to a stop + idle frame"
     layer: [authority, presentation]
@@ -202,22 +209,21 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretMath.cs:BrakeSimple"
     constants:
       - { name: "speed_stop", base: "25", port: "25", match: true }
-      - { name: "idle frame", base: "0 (with TNSF_ANIM)", port: "none", match: false }
+      - { name: "idle frame", base: "0 (with TNSF_ANIM)", port: "0 (SetFrame(AnimStop) → networked Entity.Frame)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "No idle-frame reset (Base sets frame 0 + nets TNSF_ANIM) — covered by turret-ewheel.anim.driveframes."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "ewheel_move_idle vs Drive enemy==null branch — brake force is now SpeedStop 25", result: pass }
+      - { kind: code_read, ref: "ewheel_move_idle vs Drive enemy==null && pathcurrent==null branch — SetFrame(e, AnimStop) resets frame 0 (networked via NetEntity.Frame), then BrakeSimple(SpeedStop 25)", result: pass }
     confidence: high
-    notes: "FIX (Wave-2): brake force corrected 100->25 (matches Base speed_stop). Logic/values now faithful; idle-frame reset still missing (presentation)."
+    notes: "FIX (post-Wave-2, 2026-06-25): the idle-frame reset is now present — Drive's idle branch calls SetFrame(e, AnimStop=0) before braking, and Entity.Frame is network-synced (NetEntity EntityField.Frame), matching Base's frame 0 + TNSF_ANIM. Brake force already SpeedStop 25 (Wave-2)."
   - id: turret-ewheel.weapon.fire
     name: "EWheelAttack: fast blaster bolt volley (2 shots, near-hitscan)"
     layer: [authority]
@@ -322,26 +328,29 @@ features:
     layer: [presentation]
     base_refs:
       - "common/turrets/turret/ewheel.qc:220"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Drive"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:TeSpark"
     constants:
-      - { name: "spark health threshold", base: "127", port: "none", match: false }
-      - { name: "spark chance/frame", base: "0.05", port: "none", match: false }
-      - { name: "client movetype", base: "MOVETYPE_BOUNCE + gravity 1", port: "none", match: false }
+      - { name: "spark health threshold", base: "127", port: "127 (SparkHealthThreshold)", match: true }
+      - { name: "spark chance/frame", base: "0.05", port: "0.05 (SparkChance)", match: true }
+      - { name: "spark velocity/count", base: "randomvec()*256 + '0 0 256', 16", port: "Prandom.Vec()*256 + (0,0,256), 16", match: true }
+      - { name: "client movetype roll", base: "MOVETYPE_BOUNCE + gravity 1, origin += velocity*dt", port: "none (client-render, deferred)", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No CSQC ewheel_draw: model does not visibly roll (origin += velocity*dt, head angles += avelocity*dt) and damaged ewheels (<127 hp) do not emit te_spark."
+      - "CSQC ewheel_draw rolling integration not ported: the model does not client-side roll (origin += velocity*dt, head angles += avelocity*dt, MOVETYPE_BOUNCE+gravity). The server already networks origin/velocity, so the visible motion follows the netted transform rather than the client integration."
     verification:
-      - { kind: code_read, ref: "no client draw counterpart for ewheel (only a deferred NOTE comment)", result: fail }
+      - { kind: code_read, ref: "Drive emits EffectEmitter.TeSpark(origin+'0 0 40', Prandom.Vec()*256+'0 0 256', 16) when health<127 at 5%/frame — values match Base ewheel_draw; emitted server-side as a networked temp-entity so all viewers see it. The rolling origin/head integration is intentionally left as client render (NOTE in source)", result: pass }
     confidence: high
-    notes: "STILL OPEN. Pure client presentation; not implemented. Unchanged by Wave-1/2."
+    notes: "FIX (post-Wave-2, 2026-06-25): the low-health spark temp-entity is now emitted (server-side networked TE_SPARK, <127 hp, 5%/frame, exact Base velocity/count) — logic/values/timing faithful. The pure-client rolling-draw integration (origin/head roll, MOVETYPE_BOUNCE) is deliberately deferred to client render, so presentation is partial not missing."
   - id: turret-ewheel.anim.driveframes
     name: "Locomotion drive-frame animation (frames 0..4)"
     layer: [authority, presentation]
@@ -349,21 +358,25 @@ features:
       - "common/turrets/turret/ewheel.qc:11"
       - "common/turrets/turret/ewheel.qc:95"
       - "common/turrets/sv_turrets.qc:turrets_setframe"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:SetFrame"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Drive"
+      - "src/XonoticGodot.Net/NetEntity.cs:113"
     constants:
-      - { name: "anim frames", base: "stop=0,fwd_slow=1,fwd_fast=2,bck_slow=3,bck_fast=4", port: "none", match: false }
+      - { name: "anim frames", base: "stop=0,fwd_slow=1,fwd_fast=2,bck_slow=3,bck_fast=4", port: "AnimStop=0,AnimFwdSlow=1,AnimFwdFast=2,AnimBckSlow=3,AnimBckFast=4", match: true }
+      - { name: "frame selection (enemy branch)", base: "fwd_fast@yaw<1, fwd_slow@yaw<2 & else, bck_slow when too close, stop otherwise", port: "identical (fwd_slow reused for both the <2 and else slower branch, exactly as Base)", match: true }
+      - { name: "net sync", base: "SendFlags |= TNSF_ANIM + anim_start_time", port: "Entity.Frame is networked (NetEntity EntityField.Frame, WriteUShort)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "No locomotion frame selection (turrets_setframe) and no TNSF_ANIM net sync; the wheel never shows the correct drive animation for its motion state."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "no frame handling in EWheelTurret (only a deferred NOTE comment)", result: fail }
+      - { kind: code_read, ref: "EWheelTurret.SetFrame stamps the locomotion frame (0..4) onto Entity.Frame in the enemy branch (turrets_setframe tail) and the idle branch (frame 0); Entity.Frame is network-synced via NetEntity.Frame (EntityField.Frame, WriteUShort/ReadUShort), so the client model animator plays the correct drive frame. bck_fast(4) defined but unused — exactly as Base (ewheel_anim_bck_fast is also unused in ewheel.qc)", result: pass }
     confidence: high
-    notes: "STILL OPEN. Frame set drives both server frame state and client anim; entirely absent in port. Unchanged by Wave-1/2."
+    notes: "FIX (post-Wave-2, 2026-06-25): locomotion drive-frame selection is now ported and LIVE — SetFrame writes the motion-state frame (stop/fwd_slow/fwd_fast/bck_slow) onto the networked Entity.Frame, replacing Base's turrets_setframe + TNSF_ANIM. The enemy-branch frame gating matches Base bit-for-bit (incl. reusing fwd_slow for both off-axis speeds and the unused bck_fast)."

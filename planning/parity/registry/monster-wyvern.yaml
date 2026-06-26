@@ -1,12 +1,11 @@
 unit: monster-wyvern
 category: monster
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 17
   worst_gaps:
-    - "In-flight fireball renders as a GENERIC CSQC projectile, not PROJECTILE_FIREMINE: the monster_projectile IS networked + drawn, but ProjectileCatalog.Classify resolves netname 'wyvern' -> Generic, so there is no fire-mine fire-sprite/glow/FIREMINE trail."
-    - "The wyvern's MENUQC describe() flavor prose is not surfaced (DialogMonsterTools lists only the name)."
+    - "anim_melee '5 1 5' and anim_pain2 '4 1 2' have no distinct phase (port collapses melee+ranged onto Attack=anim_shoot 6 and uses a single Pain=pain1=3 without pain1/pain2 alternation) — cosmetic, no behavioral difference."
 features:
   - id: wyvern.identity.spawnflags_hitbox
     name: "Identity, fly spawnflags, asymmetric hitbox"
@@ -215,22 +214,21 @@ features:
       - "game/net/ServerNet.cs:2004 (Classify -> NetEntityKind.Projectile for the monster_projectile)"
       - "game/client/ProjectileCatalog.cs:237 (Classify) / :180 (Firemine Desc, FireSprite + FIREMINE trail)"
     constants:
-      - { name: "csqc projectile type", base: "PROJECTILE_FIREMINE", port: "Generic (netname 'wyvern' matches no Firemine/Fireball key)", match: false }
+      - { name: "csqc projectile type", base: "PROJECTILE_FIREMINE", port: "Firemine (netname 'wyvern' -> Firemine branch in ProjectileCatalog.Classify)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "In-flight fireball renders as the GENERIC CSQC projectile, not PROJECTILE_FIREMINE. The monster_projectile is networked (FlyMissile + FL_PROJECTILE marker + Owner => ServerNet.Classify NetEntityKind.Projectile) and the client DOES draw a projectile, but ProjectileCatalog.Classify keys on classname/model/netname = 'monster_projectile  wyvern', which matches no Firemine/Fireball rule and falls through to Generic — so there is no fire-mine FireSprite body, FireOrange glow, light, or FIREMINE trail."
+    gaps: []
     verification:
-      - { kind: source, ref: "Re-verified 06-22 (post Wave-5): SpawnProjectile (MonsterAI.cs:1320) sets ClassName='monster_projectile', NetName=Def.NetName ('wyvern'), no Model, MoveType.FlyMissile, Flags|=Item, Owner=actor. ServerNet.Classify (:2004) returns Projectile. ProjectileCatalog.Classify (:237) on 'monster_projectile  wyvern' hits NO firemine/fireball branch -> Generic (:275). A Firemine Desc EXISTS (:180) but is unreachable for the wyvern netname. UNCHANGED by Wave-5.", result: fail }
+      - { kind: source, ref: "Re-verified 06-25: SpawnProjectile (MonsterAI.cs:1440) sets ClassName='monster_projectile', NetName=st.Def.NetName ('wyvern'), MoveType.FlyMissile, Flags|=Item, Owner=actor. ServerNet.Classify (:2104) returns NetEntityKind.Projectile (Item marker + Owner + projectile movetype). Client ProjectileCatalog.Classify (:237) on 'monster_projectile  wyvern' now hits an explicit `Has(s,\"wyvern\") -> ProjectileType.Firemine` branch (:266-269, keyed before \"fireball\"). Firemine Desc (:180) = FireSprite body, FireOrange glow + HasLight, FIREMINE trail, fireball_fly loop sound. So the in-flight fireball draws the fire-mine visual.", result: pass }
     confidence: high
-    notes: "STILL OPEN: the projectile IS CSQC-networked and rendered, but as the wrong (Generic) visual. To close: add a 'wyvern'->Firemine (or a monster_projectile+netname) branch in ProjectileCatalog.Classify, OR set proj.Model/ClassName so it keys to Firemine. Same spawner is shared by mage/golem (which DO match via netname 'mage'/'golem')."
+    notes: "FIXED since the 06-22 baseline: a `wyvern`->Firemine rule was added to ProjectileCatalog.Classify (ProjectileCatalog.cs:266-269), closing the long-standing Generic-fallback gap. The projectile is CSQC-networked (Projectile kind) and now renders the PROJECTILE_FIREMINE visual matching QC wr_think's CSQCProjectile(..., PROJECTILE_FIREMINE, ...). Same spawner is shared by mage/golem (which match via netname 'mage'/'golem')."
 
   - id: wyvern.fireball.fire_sound
     name: "Fireball launch sound (electro_fire)"
@@ -453,21 +451,20 @@ features:
     base_refs:
       - "common/monsters/monster/wyvern.qc:METHOD(Wyvern, describe)"
     port_refs:
-      - "game/menu/dialogs/DialogMonsterTools.cs:27 (\"wyvern\", \"Wyvern\" entry only)"
+      - "game/menu/dialogs/DialogMonsterTools.cs:51-53 (\"wyvern\",\"Wyvern\" entry with full Describe prose as radio tooltip)"
     constants:
-      - { name: "describe prose", base: "\"a flying reptilian monster that glides around hunting for fresh prey...\"", port: "none", match: false }
+      - { name: "describe prose", base: "\"The Wyvern is a flying reptilian monster that glides around hunting for fresh prey. While fragile, ... launching deadly fireballs ... high damage and causing burning.\"", port: "same string (radio tooltip)", match: true }
     status:
-      logic: missing
-      values: na
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The wyvern's MENUQC describe() prose is not surfaced: DialogMonsterTools only lists the monster name in a toggle, with no description text. (Note: even Base shows describe() only in the monster-book page, not the monster-tools dialog; the port has no monster-book equivalent.)"
+    gaps: []
     verification:
-      - { kind: source, ref: "DialogMonsterTools.cs has only the (\"wyvern\",\"Wyvern\") name entry; no 'flying reptilian'/'fresh prey'/describe text anywhere. Unchanged by Wave-5.", result: fail }
+      - { kind: source, ref: "Re-verified 06-25: DialogMonsterTools.cs:25 Monsters[] tuple carries a Describe field; the ('wyvern','Wyvern', <prose>) entry (:51-53) contains the full describe() text ('flying reptilian monster that glides around hunting for fresh prey ... launching deadly fireballs ... high damage and causing burning'). The radio control surfaces Describe as its tooltip (same pattern as DialogMutators). Base itself only shows describe() in a monster-book page; the port routes it onto the closest available surface.", result: pass }
     confidence: high
-    notes: "STILL OPEN: MENUQC-only flavor text; low gameplay impact. Mirrors monster-spider.menu.describe."
+    notes: "FIXED since the 06-22 baseline: the MENUQC describe() prose is now surfaced as the monster radio-button tooltip in DialogMonsterTools (text matches Base verbatim). Mirrors the now-fixed describe rows for the other monsters in the same dialog."

@@ -1,14 +1,14 @@
 unit: monster-mage
 category: monster
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 10
   worst_gaps:
-    - "Shield STILL reduces damage ~80% in port (MarkPain:1389-1393 take*=(1-blockpercent) when STATUSEFFECT_Shield active) vs ~0.8% in Base (healtharmor_applydamage with RES_ARMOR/100); the faithful ~0.8% armor split (MonsterEventDamage) is ALSO applied, so the divergence is DOUBLE-COUNTED. Wave-2 corrected the cfg/field default to 0.8 but did NOT remove the extra MarkPain cut — shielded mage remains ~100x too tanky. MarkPain's own fallback default is still 0.9 (not 0.8)."
     - "CSQC spike projectile model (PROJECTILE_MAGE_SPIKE) still not wired — spike has no client-visible model/trail."
     - "Send_Effect particles for push (TE_EXPLOSION), spike (EXPLOSION_SMALL), teleport (SPAWN), and heal (HEALING/AMMO_REGEN/ARMOR_REPAIR) still not emitted (CSQC presentation)."
     - "mr_death random die1/die2 anim pick and mr_anim concrete frame groups (shoot/melee/duckjump/die) still collapsed into the shared logical-phase enum."
+    - "RandomRelocate / mr_think need_help scans remain behavioral approximations of the QC builtins (not bit-exact)."
 features:
   - id: monster-mage.spawn.setup
     name: "Spawn + mr_setup (health, speeds, loot, size, attackfunc)"
@@ -197,26 +197,24 @@ features:
     constants:
       - { name: "g_monster_mage_shield_time", base: "3", port: "3 (cfg)", match: true }
       - { name: "g_monster_mage_shield_delay", base: "7", port: "7 (cfg)", match: true }
-      - { name: "g_monster_mage_shield_blockpercent", base: "0.8", port: "0.8 (cfg/Mage.cs); 0.9 MarkPain:1391 fallback", match: false }
-      - { name: "effective_damage_reduction", base: "~0.8% (damage*RES_ARMOR/100, RES_ARMOR=0.8)", port: "~80% (MarkPain:1392 take*=(1-0.8)) PLUS the faithful ~0.8% armor split in MonsterEventDamage:1539 — DOUBLE-COUNTED", match: false }
+      - { name: "g_monster_mage_shield_blockpercent", base: "0.8", port: "0.8 (cfg/Mage.cs:46)", match: true }
+      - { name: "effective_damage_reduction", base: "~0.8% (damage*RES_ARMOR/100, RES_ARMOR=0.8)", port: "~0.8% (MonsterEventDamage:1700 ArmorValue/100, RaiseShield set ArmorValue=0.8) — single application, faithful", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: na
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN (the #1 worst gap): shield reduces damage ~80% in the port (MarkPain:1389-1393 does take*=(1-blockpercent) when STATUSEFFECT_Shield active) vs ~0.8% in Base (Monster_Damage:1091 healtharmor_applydamage(100, RES_ARMOR/100) => save=damage*(0.8/100)). The QC shield is near-cosmetic; the port makes the shielded mage ~100x more durable. Worse: the port ALSO applies the faithful ~0.8% armor split (MonsterEventDamage:1539 ArmorValue/100, where RaiseShield set ArmorValue=0.8), so the ~80% MarkPain cut is ON TOP of the correct armor block — the divergence is double-counted. Wave-2 corrected the cfg/Mage.cs default 0.9->0.8 but did NOT remove the extra MarkPain reduction."
-      - "Inline C# shield_blockpercent fallback in MarkPain:1391 is STILL 0.9 (not 0.8). Dead at runtime (cfg wins) but wrong in headless tests / if monsters.cfg not exec'd. Mage.cs's own field default WAS fixed to 0.8."
+    gaps: []
     verification:
-      - { kind: value-diff, ref: "MarkPain:1389-1393 (take*=(1-block)) STILL present vs Monster_Damage:1091 + healtharmor_applydamage save=bound(0,damage*0.008,100)", result: fail }
-      - { kind: code, ref: "MonsterEventDamage:1539-1543 does the faithful armor split (ArmorValue/100) AND THEN MarkPain re-cuts by (1-block) — double application", result: fail }
-      - { kind: code, ref: "RaiseShield:353 sets ArmorValue=blockpercent; RunStatusTimers:1108-1113 restores armor + removes Shield at ShieldExpire", result: pass }
+      - { kind: code, ref: "MarkPain:1540-1593 — the old take*=(1-blockpercent) shield cut + the 0.9 fallback are GONE; MarkPain now subtracts `take` directly (self.Health -= take) with no shield-specific reduction", result: pass }
+      - { kind: value-diff, ref: "MonsterEventDamage:1700-1704 is the SOLE armor handling: armorBlock = ArmorValue/100; save = clamp(damage*armorBlock,0,100); take = damage-save == Monster_Damage:1091 healtharmor_applydamage(100, RES_ARMOR/100). RaiseShield ArmorValue=0.8 => ~0.8% block, single application", result: pass }
+      - { kind: code, ref: "RaiseShield:361-375 sets ArmorValue=blockpercent(cfg 0.8); RunStatusTimers:1255-1262 restores ShieldRestoreArmor + removes Shield at ShieldExpire", result: pass }
     confidence: high
-    notes: "PARTIALLY ADDRESSED by Wave-2 (cfg/field default 0.9->0.8, wrongly-invented mage_sight voice on shield removed -> audio now faithful), but the CORE divergence (~80% MarkPain cut double-counted on top of the faithful ~0.8% armor block) is UNCHANGED. Baseline monster armor (RES_ARMOR=bound(0.2,0.5*SKILLMOD,0.9)) is modeled (Setup:243-244, MonsterEventDamage:1539). Shield duration/cooldown and armor bump-then-restore are timing-faithful. Needs an owner call on whether the buff is intentional, then removal of the MarkPain block (and fix the 0.9 fallback)."
+    notes: "FIXED since the 2026-06-22 baseline: the #1 worst gap (double-counted ~80% MarkPain shield cut + hardcoded 0.9 fallback) is fully resolved. MarkPain no longer references blockpercent or STATUSEFFECT_Shield at all — the entire `take*=(1-blockpercent)` block and its 0.9 fallback were deleted. The shield now reduces damage exactly once, via the faithful ArmorValue/100 armor split in MonsterEventDamage (RaiseShield sets ArmorValue to the cfg 0.8 => ~0.8% reduction, Base-faithful, near-cosmetic by design). Baseline monster armor (bound(0.2,0.5*SKILLMOD,0.9), Setup:255) is modeled; shield duration/cooldown and armor bump-then-restore are timing-faithful; no invented sound (audio faithful)."
 
   - id: monster-mage.defend.heal
     name: "Radius heal of self/allies (skin variants: health/ammo/armor)"

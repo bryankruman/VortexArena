@@ -1,18 +1,16 @@
 unit: turret-hk
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 11
   worst_gaps:
-    - "Guidance accel/decel constants STILL hardcoded & wrong in GuidedProjectile.HkThink (accel 1.05/accel2 1.1/decel 0.85 vs Base 1.025/1.05/0.9) — wrong speed envelope (turnrate WAS fixed to 0.25)"
-    - "Fuel-out behavior differs: Base goes inert (MOVETYPE_BOUNCE, stops thinking, drops as a dud) at cnt<time; port still detonates at TTL and conflates the 30s fuel window with the 30s TTL"
-    - "No re-seek of nearest valid target when enemy lost (Base scans g_damagedbycontents within 5000u via hk_is_valid_target); port still only nulls a dead enemy and holds heading"
     - "No external target reception (turret_hk_addtarget / TUR_FLAG_RECIEVETARGETS): HK cannot be fed a designated target"
-    - "No WEP_HK player special-attack weapon (hidden/dev path) — not ported at all"
+    - "No WEP_HK player special-attack weapon (hidden/dev path, impulse 9) — not ported at all"
     - "Head model (hk.md3) not instantiated as a separate head entity; no tag_head attachment"
-    - "No tr_think head-frame animation, no muzzle te_explosion, no PROJECTILE_ROCKET trail (presentation)"
+    - "No muzzle te_explosion on launch, no PROJECTILE_ROCKET trail/smoke on the rocket (presentation)"
     - "Select/firecheck flag set still diverges (no SelectVehicles/SelectTriggerTarget consts; AFF not a discrete gate)"
+    - "tr_think head-frame cycler now ported on the turret edict's own frame (no separate tur_head entity), but no real head model to display the animation"
 features:
   - id: turret-hk.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -193,22 +191,22 @@ features:
     constants:
       - { name: "shot_speed (band floor)", base: "500", port: "500", match: true }
       - { name: "shot_speed_max", base: "1000", port: "1000", match: true }
-      - { name: "shot_speed_turnrate", base: "0.25", port: "0.25 (FIXED: HkTurret passes ShotTurnRate=0.25, consumed via g.TurnRate at HkThink:272)", match: true }
-      - { name: "shot_speed_accel", base: "1.025", port: "1.05 (STILL hardcoded in HkThink:226)", match: false }
-      - { name: "shot_speed_accel2", base: "1.05", port: "1.1 (STILL hardcoded at HkThink:263,269)", match: false }
-      - { name: "shot_speed_decel", base: "0.9", port: "0.85 (STILL hardcoded at HkThink:224)", match: false }
+      - { name: "shot_speed_turnrate", base: "0.25", port: "0.25 (HkTurret passes ShotTurnRate=0.25, consumed via g.TurnRate at HkThink:318)", match: true }
+      - { name: "shot_speed_accel", base: "1.025", port: "1.025 (FIXED: HkTurret passes ShotSpeedAccel=1.025 -> g.Accel, consumed at HkThink:260)", match: true }
+      - { name: "shot_speed_accel2", base: "1.05", port: "1.05 (FIXED: HkTurret passes ShotSpeedAccel2=1.05 -> g.Accel2, consumed at HkThink:297,303)", match: true }
+      - { name: "shot_speed_decel", base: "0.9", port: "0.9 (FIXED: HkTurret passes ShotSpeedDecel=0.9 -> g.Decel, consumed at HkThink:258)", match: true }
       - { name: "proximity detonate", base: "shot_radius * 0.25 = 50", port: "Radius * 0.25 = 50", match: true }
       - { name: "lead time clamp", base: "min(dist/speed, 0.5)", port: "min(dist/speed, 0.5)", match: true }
       - { name: "forward trace len", base: "myspeed * 3", port: "myspeed * 3", match: true }
       - { name: "seek trace len", base: "myspeed * 2.95", port: "myspeed * 2.95", match: true }
       - { name: "panic ff threshold", base: "ff < 0.5 -> pt_seek 1", port: "ff < 0.5 -> ptSeek 1", match: true }
       - { name: "clear-path dist", base: "1000", port: "1000", match: true }
-      - { name: "fuel window cnt", base: "time + 30", port: "FuelTime now+30 AND ExpireTime now+30 (conflated)", match: false }
-      - { name: "fuel-out behavior", base: "MOVETYPE_BOUNCE + nextthink=0 (inert dud)", port: "Detonate at TTL", match: false }
-      - { name: "re-seek radius (no enemy)", base: "5000 over g_damagedbycontents (hk_is_valid_target)", port: "keeps current heading; no re-seek scan", match: false }
+      - { name: "fuel window cnt", base: "time + 30", port: "FuelTime now+30 (HK lifecycle gate; ExpireTime/TTL never read in HkThink)", match: true }
+      - { name: "fuel-out behavior", base: "MOVETYPE_BOUNCE + nextthink=0 (inert dud)", port: "FIXED: MoveType.Bounce + Think=null + NextThink=0 at HkThink:307-314", match: true }
+      - { name: "re-seek radius (no enemy)", base: "5000 over g_damagedbycontents (hk_is_valid_target)", port: "FIXED: FindInRadius(5000) + HkIsValidTarget gate at HkThink:209-220", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
@@ -216,14 +214,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "accel/decel constants STILL hardcoded & wrong in GuidedProjectile.HkThink (1.05/1.1/0.85 vs cfg 1.025/1.05/0.9) — accelerates and brakes faster than Base; whole speed envelope off. (GuidedProjectile.cs was NOT touched by Wave-2.)"
-      - "Fuel-out: Base makes the rocket inert (MOVETYPE_BOUNCE, nextthink=0) so it drops as a dud at cnt<time; port still collapses the 30s fuel window into the 30s TTL and DETONATES at expiry instead."
-      - "No re-seek of the nearest valid target when the enemy is lost (Base scans g_damagedbycontents within 5000u via hk_is_valid_target; HkThink only nulls a dead enemy and holds heading)."
-      - "Minor: angular-offset 'ad' computed as 0 when enemy is null (port guards the null); Base derefs null enemy.origin = '0 0 0' yielding a non-zero ad — edge-case divergence only when re-seek would have run."
+      - "Re-seek iterates the port's FindInRadius spatial query rather than Base's IL_EACH(g_damagedbycontents) list; functionally equivalent valid-target scan (HkIsValidTarget mirrors hk_is_valid_target), but the candidate set is derived differently (any nearby entity vs the damaged-by-contents list)."
+      - "Minor: when enemy is null, port computes angular-offset 'ad' = 0 (explicit null guard, HkThink:252-254); Base derefs null enemy.origin = '0 0 0' yielding a non-zero ad. Post-re-seek the enemy is normally re-acquired, so this branch is rarely hit."
     verification:
-      - { kind: code_read, ref: "hk_weapon.qc turret_hk_missile_think vs GuidedProjectile.HkThink line-by-line; turrets.cfg consts. turnRate fixed at the HkTurret call site (0.25, consumed); accel/decel literals 1.05/1.1/0.85 unchanged in HkThink; fuel-out still detonates; no re-seek scan.", result: pass }
+      - { kind: code_read, ref: "hk_weapon.qc turret_hk_missile_think vs GuidedProjectile.HkThink line-by-line + GuidanceState defaults; turrets.cfg consts. accel/decel/accel2 now threaded from HkTurret (ShotSpeedAccel 1.025 / Accel2 1.05 / Decel 0.9) and consumed via g.Accel/g.Accel2/g.Decel; fuel-out goes inert (MoveType.Bounce, Think=null, NextThink=0); re-seek scans FindInRadius(5000) with HkIsValidTarget.", result: pass }
     confidence: high
-    notes: "PARTIAL FIX: shot_speed_turnrate corrected 0.1->0.25 (HkTurret now passes ShotTurnRate=0.25, consumed via g.TurnRate). STILL OPEN: accel/decel constants hardcoded wrong in HkThink, fuel-out dud behavior, target re-seek. Funnel-steering structure remains faithfully ported."
+    notes: "BASELINE GAPS CLOSED (3). (1) accel/decel/accel2 corrected 1.05/1.1/0.85 -> 1.025/1.05/0.9: HkTurret now passes them as ShotSpeedAccel/Accel2/Decel and HkThink consumes g.Accel/g.Accel2/g.Decel. (2) Fuel-out now goes inert (MoveType.Bounce + Think=null + NextThink=0, drops as a dud) instead of detonating; FuelTime is the sole HK lifecycle gate and TTL/ExpireTime is never read in HkThink (de-conflated). (3) Target re-seek implemented: when enemy lost, scans FindInRadius(5000) and applies the faithful HkIsValidTarget gate (port of hk_is_valid_target). Funnel-steering, lead-clamp, panic turn, trace lengths all remain faithful. Two minor residuals: re-seek candidate-set derivation differs (FindInRadius vs g_damagedbycontents list) and the null-enemy 'ad' edge case."
   - id: turret-hk.target.recieve
     name: "External target reception (turret_hk_addtarget / TUR_FLAG_RECIEVETARGETS)"
     layer: [authority]
@@ -310,24 +306,27 @@ features:
     base_refs:
       - "common/turrets/turret/hk.qc:15"
       - "common/turrets/turret/hk_weapon.qc:40"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HkTurret.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HkTurret.cs:Attack"
     constants:
-      - { name: "frame cycle", base: "++frame, wrap > 5 -> 0", port: "none", match: false }
+      - { name: "frame cycle", base: "if frame!=0: ++frame, wrap > 5 -> 0", port: "if Frame!=0: Frame+=1, Frame>5 -> 0 (HkTurret.Think:87-90)", match: true }
+      - { name: "fire-time kick", base: "if tur_head.frame==0: ++tur_head.frame (hk_weapon.qc:40-42)", port: "if turret.Frame==0: Frame+=1 (HkTurret.Attack:127-128)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No tr_think head-frame cycler (0..5) and no fire-time kick (++tur_head.frame); the launcher head never plays its load/cycle animation."
+      - "Frame cycler runs on the turret edict's own .Frame (the port has no separate tur_head bone entity), and there is no hk.md3 head model instantiated, so the 0..5 load/cycle animation is computed but never visibly displayed."
     verification:
-      - { kind: code_read, ref: "no frame handling in HkTurret / TurretSpawn", result: fail }
+      - { kind: code_read, ref: "HkTurret.Think advances e.Frame 0..5 each think (gated on Frame!=0); HkTurret.Attack kicks it off (Frame==0 -> ++Frame) mirroring hk_weapon.qc:40-42. tr_think logic faithful; no head model to render it.", result: pass }
     confidence: high
-    notes: "Cosmetic head animation; entirely absent in port (consistent with other ported turrets' missing frame handling). Unchanged from baseline."
+    notes: "FIX from baseline: the tr_think head-frame cycler (0..5) AND the fire-time kick are now ported (run on the turret's own .Frame since there is no separate head entity). Logic/values/timing faithful; presentation still partial because no hk.md3 head model is instantiated to display the frame animation (see turret-hk.identity.def head_model gap)."
   - id: turret-hk.head.track
     name: "Head rotation: track type + aim clamps"
     layer: [authority]

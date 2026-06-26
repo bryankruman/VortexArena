@@ -1,16 +1,14 @@
 unit: turret-walker
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 12
   worst_gaps:
-    - "Rocket up-and-over loop maneuver still unported (Base: 1% chance on LAUNCH and 1% per in-flight think to enter loop->loop2->loop3); port rockets only ever steer straight-pull, plus no te_explosion launch flash and no tag_rocket01/02 alternation."
-    - "Rocket te_explosion launch flash, tag_rocket01/02 muzzle alternation, and the minigun EFFECT_BLASTER_MUZZLEFLASH / EFFECT_BULLET tracer are all client-render presentation, still unported (server fire is faithful). (Note: the SWIM gait, previously suspected dead, is in fact LIVE — MOVETYPE_STEP turrets get Entity.WaterLevel computed by the engine WalkMove/CheckWater path each tick.)"
-    - "No head entity (walker_head_minigun.md3): the minigun head is not a separate tracked/spinning tur_head entity (no tag attachment)."
-    - "No CSQC walker_draw + no gait animation frames: no 4-point ground-align, no head avelocity spin, no low-hp te_spark, no walk/run/melee model frames (turrets_setframe + TNSF_MOVE)."
-    - "No minigun EFFECT_BLASTER_MUZZLEFLASH / EFFECT_BULLET tracer."
-    - "No waypoint path-following (walker_move_path / walker_findtarget / turret_checkpoint graph); no ground-snap home pose on first spawn (Base tracebox-drops a non-STEP spawn to the floor before switching to STEP)."
+    - "No head entity (walker_head_minigun.md3): the minigun head is not a separate tracked/spinning tur_head entity (no tag attachment). Consequently the minigun muzzleflash and all rockets fire from a single muzzle org (no tag_rocket01/02 alternation)."
+    - "No CSQC walker_draw locomotion: no 4-point ground-align over terrain, no head avelocity spin, and no walk/run/melee model frames (turrets_setframe + TNSF_MOVE). (The low-hp te_spark and the rocket-launch te_explosion ARE now emitted server-side.)"
+    - "No minigun EFFECT_BLASTER_MUZZLEFLASH / EFFECT_BULLET tracer (client-render)."
+    - "Walker brain does not consume the turret_checkpoint waypoint chain: a walker with a `target` set does not patrol its path graph (walker_move_path / walker_findtarget / pathcurrent are unported on the walker side, though the turret_checkpoint node spawnfunc itself now exists)."
 features:
   - id: turret-walker.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -41,7 +39,7 @@ features:
     verification:
       - { kind: code_read, ref: "walker.qh vs WalkerTurret ctor + Spawn", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 1-2: identity/hitbox/body model/health faithful; head bone still not modeled."
+    notes: "Unchanged: identity/hitbox/body model/health faithful; head bone still not modeled."
   - id: turret-walker.setup.tr_setup
     name: "tr_setup: SlideBox/Step creature, select flags, ammo flags, home pose"
     layer: [authority]
@@ -60,22 +58,21 @@ features:
       - { name: "ammo_max", base: "4000", port: "4000", match: true }
       - { name: "ammo_recharge", base: "100", port: "100", match: true }
       - { name: "aim_flags", base: "TFL_AIM_LEAD", port: "lead=true", match: true }
-      - { name: "ground-snap home pose", base: "non-STEP first spawn: tracebox down 10000, origin = endpos+'0 0 4', store pos1/pos2", port: "uses e.Origin directly (no ground snap)", match: false }
+      - { name: "ground-snap home pose", base: "non-STEP first spawn: tracebox down 10000, origin = endpos+'0 0 4', store pos1/pos2", port: "tracebox from origin+'0 0 128' down 10000, origin = endpos+'0 0 4' (Spawn:111-121), then home pose stored for OnRespawn", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "No ground-snap home pose: Base tracebox-drops the spawn to the floor (and stores pos1/pos2) on the first non-STEP setup before switching to STEP; the port treats the map origin as the home pose."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "walker.qc tr_setup vs Spawn/Init; Select const now = Players|RangeLimits|TeamCheck|Los (no SelectAngleLimits)", result: pass }
+      - { kind: code_read, ref: "walker.qc tr_setup vs Spawn/Init; Select const = Players|RangeLimits|TeamCheck|Los; ground-snap drop now done in Spawn (tracebox down 10000 with mins/maxs, +'0 0 4') before Init/STEP, home = post-drop origin", result: pass }
     confidence: high
-    notes: "FIXED in Wave 2: the spurious SelectAngleLimits was removed, so the select-flag set now matches Base exactly. Remaining gap is the missing first-spawn ground-snap."
+    notes: "FIXED since last audit: the first-spawn ground-snap home pose is now ported (Spawn tracebox-drops the map origin to the floor before switching to STEP, mirroring Base tr_setup). Select-flag set already matched Base."
   - id: turret-walker.spawn.liveness
     name: "Map spawnfunc wiring + per-frame think (turret_walker placed on map)"
     layer: [authority]
@@ -130,9 +127,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "RunCombat vs turret_think/firecheck; targetscan_maxdelay now Cvar(...,1f) (TurretAI.cs:553); Think MeleeUntil gate vs walker_firecheck", result: pass }
+      - { kind: code_read, ref: "RunCombat vs turret_think/firecheck; Think MeleeUntil gate vs walker_firecheck (WalkerTurret.cs:159-167)", result: pass }
     confidence: high
-    notes: "FIXED in Wave 2: targetscan_maxdelay is now cvar-backed defaulting to 1 (was hardcoded 0.6), matching Base. Combat flow + fire-while-melee block faithful."
+    notes: "Unchanged-faithful: combat flow + fire-while-melee block faithful; targetscan_maxdelay cvar-backed default 1 matching Base."
   - id: turret-walker.drive.chase
     name: "tr_think locomotion: chase enemy (run/walk) + body yaw"
     layer: [authority]
@@ -164,9 +161,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "ApplyGait (WalkerTurret.cs:288-348): turny applied raw via bound(-turny, ShortAngle(realAngle.Y,..), turny) with NO frameTime factor; the old DoMovement turny*frameTime was removed (git show main vs HEAD)", result: pass }
+      - { kind: code_read, ref: "ApplyGait (WalkerTurret.cs:319-379): turny applied raw via bound(-turny, ShortAngle(realAngle.Y,..), turny) with NO frameTime factor", result: pass }
     confidence: high
-    notes: "FIXED in Wave 2: the body-yaw turn is now applied as raw degrees once per think (matching Base turret_think nextthink=time), not frametime-scaled. Speeds/threshold/attract2/friction unchanged-faithful."
+    notes: "Unchanged-faithful: body-yaw turn applied as raw degrees once per think (matching Base turret_think nextthink=time). Speeds/threshold/attract2/friction faithful."
   - id: turret-walker.drive.idle_roam
     name: "Idle roam/wander + last-seen pursuit + waypoint path following"
     layer: [authority]
@@ -182,7 +179,7 @@ features:
       - { name: "last-seen chase window", base: "<=10s and within 128u", port: "<=10s and within 128u", match: true }
       - { name: "wander moveto blend", base: "moveto*0.9 + (origin+v_forward*500+randomvec*400)*0.1", port: "moveto*0.9 + (origin+fwd*500 + Prandom.Vec()*400)*0.1", match: true }
       - { name: "wander LOS probe", base: "traceline ahead 128 + down 256, set idletime=-1337 to re-pick", port: "fwd 128 + down 256 probes, HeadIdleTime=-1337", match: true }
-      - { name: "path node proximity", base: "64 (turret_checkpoint chain)", port: "none", match: false }
+      - { name: "path node proximity", base: "64 (turret_checkpoint chain)", port: "none (walker brain has no pathcurrent consumption; checkpoint nodes spawn but are not patrolled)", match: false }
       - { name: "speed_roam", base: "100", port: "100 (SpeedRoam; reached only via Gait.Roam, not assigned)", match: true }
     status:
       logic: partial
@@ -194,12 +191,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No waypoint path-following (walker_move_path / walker_findtarget / turret_checkpoint graph) — a walker with a `target` set does not patrol its path chain (map-graph concern, not ported)."
+      - "Walker brain does not consume the turret_checkpoint waypoint chain (walker_move_path / walker_findtarget / pathcurrent unported on the walker side): a walker with a `target` set does not patrol its path graph. The turret_checkpoint/walker_checkpoint node spawnfunc itself is now registered (TurretSpawnFuncs.Checkpoint), but the walker never reads it."
       - "TSL_ROAM (TSF_NO_PATHBREAK) roam-walk branch not plumbed: the port has no roam spawnflag, so it always takes the stop-and-idle branch (Base also defaults to stop when the flag is unset, so behavior matches a plain walker)."
     verification:
-      - { kind: code_read, ref: "IdleSelect (WalkerTurret.cs:241-285): enemy_last_loc/time pursuit + LOS-probe wander + idle stop cycle vs walker.qc:362-419; called live from DoMovement when e.Enemy is null", result: pass }
+      - { kind: code_read, ref: "IdleSelect (WalkerTurret.cs:272-316): enemy_last_loc/time pursuit + LOS-probe wander + idle stop cycle vs walker.qc:362-419; called live from DoMovement when e.Enemy is null. No pathcurrent reference in WalkerTurret.cs.", result: pass }
     confidence: high
-    notes: "FIXED in Wave 2: the entire no-enemy IDLE ROAM/WANDER + LAST-SEEN PURSUIT subtree (was wholly missing) is now ported and live — an enemy-less walker LOS-probes a wander heading and chases the enemy's last spot for up to 10s. Only waypoint path-following + the optional TSL_ROAM roam-walk remain unported."
+    notes: "Unchanged behaviorally for the walker brain: the no-enemy IDLE ROAM/WANDER + LAST-SEEN PURSUIT subtree is ported and live. The turret_checkpoint node spawnfunc now exists, but the walker brain still does not patrol path chains, and TSL_ROAM remains unplumbed."
   - id: turret-walker.drive.gaits_extra
     name: "Extra gaits: swim / jump / land / pain / strafe / turn"
     layer: [authority, presentation]
@@ -231,10 +228,10 @@ features:
       - "No standalone STRAFE_L/R or PAIN gaits (Base never drives these from the SVQC brain either — they are leftover model anim states — so this is parity-by-omission, not a behavioral gap)."
       - "JUMP/LAND/TURN gait cases exist in ApplyGait but are never assigned (same as Base — the brain never sets them)."
     verification:
-      - { kind: code_read, ref: "WalkerMoveTo waterlevel switch + ApplyGait Swim/Jump/Land/Turn/Roam cases vs walker.qc:471-537. SWIM gait is LIVE: the walker is MOVETYPE_STEP, and MoveTypePhysics.RunEntity routes Step through WalkMove (MoveTypePhysics.cs:66/75) which calls CheckWater (line 331) -> WaterLevel 0/1/2/3 via the 3-pt hull probe (MoveTypePhysics.cs:470-492) + CheckWaterTransition every tick. So e.WaterLevel IS computed for STEP turrets and the WETFEET/SWIMMING/SUBMERGED branches fire. RE-VERIFIED 2026-06-22 against current MoveTypePhysics.cs.", result: pass }
-      - { kind: code_read, ref: "WalkerMoveTo case 0 (WATERLEVEL_NONE) does `goto case 1` (no break) — faithfully reproducing Base's fall-through (walker.qc:253-264 case NONE has no break): on dry land the RUN it just set is immediately clobbered to WALK by the WETFEET/SWIMMING case, exactly as in Base.", result: pass }
+      - { kind: code_read, ref: "WalkerMoveTo waterlevel switch + ApplyGait Swim/Jump/Land/Turn/Roam cases vs walker.qc:471-537. SWIM gait is LIVE: the walker is MOVETYPE_STEP, and MoveTypePhysics routes Step through WalkMove -> CheckWater -> WaterLevel every tick, so the WETFEET/SWIMMING/SUBMERGED branches fire.", result: pass }
+      - { kind: code_read, ref: "WalkerMoveTo case 0 (WATERLEVEL_NONE) does `goto case 1` (no break) — faithfully reproducing Base's fall-through (walker.qc:253-264).", result: pass }
     confidence: high
-    notes: "FIXED in Wave 2 and LIVE: the SWIM gait logic + constants are ported faithfully AND reachable — MOVETYPE_STEP turrets get WaterLevel computed by the engine WalkMove/CheckWater path each tick (the earlier 'dead on drive' note was a false positive). JUMP/LAND/TURN/STRAFE/PAIN are unreachable in Base too (parity-by-omission)."
+    notes: "Unchanged: SWIM gait ported faithfully AND reachable (STEP turrets get WaterLevel via WalkMove/CheckWater each tick). JUMP/LAND/TURN/STRAFE/PAIN are unreachable in Base too (parity-by-omission)."
   - id: turret-walker.weapon.minigun
     name: "WalkerTurretAttack: near-hitscan minigun (fireBullet + force)"
     layer: [authority]
@@ -267,9 +264,9 @@ features:
       - "No EFFECT_BLASTER_MUZZLEFLASH at the head tag and no EFFECT_BULLET tracer on fire (client-render)."
     verification:
       - { kind: test, ref: "MonsterTurretVehicleObituaryTests (shared turret-gun deathtype, walker-gun call site)", result: pass }
-      - { kind: code_read, ref: "walker_weapon.qc wr_think + fireBullet vs Attack/FireBullet; ShotSpeed const now 18000 (was 34920)", result: pass }
+      - { kind: code_read, ref: "walker_weapon.qc wr_think + fireBullet vs Attack/FireBullet; ShotSpeed const 18000", result: pass }
     confidence: high
-    notes: "FIXED in Wave 2: lead-aim shot_speed corrected 34920 -> 18000 (matches turrets.cfg). Bullet damage/spread/force/refire/deathtype/sound all faithful; only the muzzleflash/tracer presentation remains."
+    notes: "Unchanged-faithful: bullet damage/spread/force/refire/deathtype/sound all faithful; only the muzzleflash/tracer presentation remains."
   - id: turret-walker.weapon.rocket
     name: "Rocket volley: 4 homing rockets + reload (walker_fire_rocket / walker_rocket_think)"
     layer: [authority]
@@ -280,6 +277,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/WalkerTurret.cs:FireRocket"
       - "src/XonoticGodot.Common/Gameplay/Turrets/GuidedProjectile.cs:WalkerRocketThink"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/GuidedProjectile.cs:WalkerRocketLoop"
     constants:
       - { name: "rocket_damage", base: "45", port: "45", match: true }
       - { name: "rocket_radius", base: "150", port: "150", match: true }
@@ -293,25 +291,25 @@ features:
       - { name: "rocket hp / TTL", base: "25 / time+9", port: "25 / ttl 9", match: true }
       - { name: "jitter re-roll", base: "0.5s, randomvec*min(edist,...)", port: "0.5s, Prandom.Vec*min(edist,...)", match: true }
       - { name: "launch sound", base: "SND_TUR_WALKER_FIRE = hagar_fire", port: "weapons/hagar_fire.wav", match: true }
-      - { name: "te_explosion launch flash", base: "yes", port: "none", match: false }
-      - { name: "walker_rocket_loop maneuver (1%)", base: "yes (up-and-over): 1% on launch AND 1% per in-flight think", port: "none", match: false }
+      - { name: "te_explosion launch flash", base: "yes", port: "EffectEmitter.TeExplosion(st.ShotOrg) in FireRocket:425", match: true }
+      - { name: "walker_rocket_loop maneuver (1%)", base: "yes (up-and-over): 1% on launch AND 1% per in-flight think -> loop/loop2/loop3", port: "yes: 1% on launch (Launch:142) + 1%/think (WalkerRocketThink:346) -> WalkerRocketLoop/2/3 with InLoop sentinel", match: true }
+      - { name: "tag_rocket01/02 muzzle alternation", base: "yes (gettaginfo of tag_rocket01/02 by shot_volly parity)", port: "none (fires from single st.ShotOrg)", match: false }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No walker_rocket_loop up-and-over maneuver (Base: 1% chance on LAUNCH and 1% per in-flight think to enter loop->loop2->loop3); WalkerRocketThink only models the straight steer-pull."
-      - "No te_explosion launch flash at the rocket muzzle (client-render)."
-      - "No tag_rocket01/tag_rocket02 alternation (port has no head tags; fires from a single muzzle org)."
+      - "No tag_rocket01/tag_rocket02 alternation (port has no head tags; all rockets fire from a single muzzle org)."
+      - "No EFFECT_BLASTER_MUZZLEFLASH presentation; only the te_explosion launch flash is emitted (Base's launch te_explosion IS now reproduced)."
     verification:
-      - { kind: code_read, ref: "FireRocket plays weapons/hagar_fire.wav (SND_TUR_WALKER_FIRE = hagar_fire, verified all.inc:154); WalkerRocketThink (GuidedProjectile.cs:280-308) RE-CONFIRMED 2026-06-22 to have no loop state machine, no random()<0.01 roll, no shot_dmg==1337 sentinel, no te_explosion (grep for loop/1337/0.01 in GuidedProjectile.cs returns nothing). Ballistics/damage/burst/jitter/steer-pull faithful; the loop maneuver + launch flash + tag alternation remain unported.", result: pass }
+      - { kind: code_read, ref: "FireRocket plays weapons/hagar_fire.wav + EffectEmitter.TeExplosion(st.ShotOrg). WalkerRocketThink (GuidedProjectile.cs:326-358) now has the random()<0.01 loop roll + InLoop sentinel; WalkerRocketLoop/Loop2/Loop3 (GuidedProjectile.cs:366-415) model the up-and-over (+300 up, then back to start, then -200) faithful to walker.qc:153-202; Launch:138-144 has the 1% launch roll. Ballistics/damage/burst/jitter/steer-pull faithful.", result: pass }
     confidence: high
-    notes: "FIXED in Wave 2: the launch sound is now hagar_fire (was weapons/rocket_fire.wav) — audio now faithful. Ballistics/damage/burst/jitter/steer-pull faithful; the loop maneuver, launch flash, and tag alternation remain missing (logic: partial)."
+    notes: "FIXED since last audit: (1) the walker_rocket_loop up-and-over maneuver (1% launch + 1%/think + loop/loop2/loop3 + 1337/InLoop sentinel) is now ported in GuidedProjectile, so logic is now faithful; (2) the te_explosion launch flash is now emitted server-side in FireRocket. Remaining presentation gap: tag_rocket01/02 muzzle alternation + EFFECT_BLASTER_MUZZLEFLASH."
   - id: turret-walker.weapon.melee
     name: "Melee bite (walker_melee_do_dmg): radius hit in front"
     layer: [authority]
@@ -369,9 +367,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "Think passes trackType: TurretAI.TrackStepMotor (WalkerTurret.cs:137); Track honors STEPMOTOR with hard per-frame angle clamp (TurretAI.cs:484-492); turrets.cfg track_type 1", result: pass }
+      - { kind: code_read, ref: "Think passes trackType: TurretAI.TrackStepMotor (WalkerTurret.cs:156); Track honors STEPMOTOR with hard per-frame angle clamp; turrets.cfg track_type 1", result: pass }
     confidence: high
-    notes: "FIXED in Wave 2: track_type is now STEPMOTOR(1) (was FluidInertia(3)), matching turrets.cfg — the head now aims with the hard per-frame angle clamp, not blended inertia/wobble. Aim speed + clamps already matched."
+    notes: "Unchanged-faithful: track_type STEPMOTOR(1), hard per-frame angle clamp; aim speed + clamps match."
   - id: turret-walker.client.draw
     name: "CSQC walker_draw + locomotion anim frames"
     layer: [presentation]
@@ -379,26 +377,28 @@ features:
       - "common/turrets/turret/walker.qc:615"
       - "common/turrets/turret/walker.qc:558"
       - "common/turrets/sv_turrets.qc:turrets_setframe"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/WalkerTurret.cs:DoMovement"
     constants:
       - { name: "groundalign4point", base: "(300,100,0.25,45)", port: "none", match: false }
-      - { name: "spark health threshold", base: "127", port: "none", match: false }
-      - { name: "spark chance/frame", base: "0.15", port: "none", match: false }
+      - { name: "spark health threshold", base: "127", port: "127 (SparkHealthThreshold)", match: true }
+      - { name: "spark chance/frame", base: "0.15", port: "0.15 (SparkChance)", match: true }
+      - { name: "spark TE", base: "te_spark(origin+'0 0 40', randomvec*256+'0 0 256', 16)", port: "EffectEmitter.TeSpark(origin+'0 0 40', Prandom.Vec*256+'0 0 256', 16)", match: true }
       - { name: "client movetype", base: "MOVETYPE_BOUNCE + gravity 1", port: "none", match: false }
       - { name: "anim frames", base: "12-state animflag via turrets_setframe + TNSF_MOVE", port: "none", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "No walk/run/melee animation frames (turrets_setframe(animflag) + TNSF_MOVE net): the walker model never plays its gait animations."
-      - "No CSQC walker_draw: no 4-point ground-align over terrain, no head avelocity spin, and damaged walkers (<127 hp) do not emit te_spark."
+      - "No CSQC walker_draw 4-point ground-align over terrain and no head avelocity spin (pure client render, still absent)."
     verification:
-      - { kind: code_read, ref: "no client draw / turrets_setframe counterpart for walker (WalkerTurret.cs only notes TNSF_MOVE/setframe as out-of-scope)", result: fail }
+      - { kind: code_read, ref: "Low-hp te_spark (<127 hp, 15%/frame) now emitted server-side in DoMovement (WalkerTurret.cs:236-242) as a networked temp-entity, faithful to walker.qc:627-629. The ground-align/head-spin/anim-frames (turrets_setframe/TNSF_MOVE) counterpart still has no port.", result: pass }
     confidence: high
-    notes: "Unchanged: pure presentation/anim layer, still entirely absent in the port (server-side gait state is now produced, but nothing nets/animates it)."
+    notes: "PARTIALLY FIXED since last audit: the low-hp te_spark (the one networked, viewer-independent part of walker_draw) is now emitted server-side (same convention as EWheelTurret). The pure-client ground-align, head-spin, and the gait animation frames + TNSF_MOVE networking remain absent."

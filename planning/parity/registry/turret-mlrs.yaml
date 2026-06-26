@@ -1,13 +1,12 @@
 unit: turret-mlrs
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 8
   worst_gaps:
-    - "Head-shake on damage STILL not implemented: Base turret_damage jolts tur_head.angles.x AND .y by (random-0.5)*damage (a server-side aim disturbance under fire); the Wave-2 EventDamage/Damage path applies friendly-fire scaling + retaliation + health subtract + death bus but never jolts the head angles"
-    - "VOLLYALWAYS only partially honored: the Wave-2 mid-burst branch in MlrsTurret.Think covers the enemy-NULL case (burst completes after target lost), but the enemy-PRESENT mid-burst case still falls through to RunCombat, which re-applies the RangeMin + OnTarget gates each shot — Base turret_firecheck:889 early-returns true mid-burst and SKIPS those re-checks (only refire + ammo gate), so a burst still aborts if the live target slips inside range_min or off the muzzle line mid-volley"
-    - "No head entity / ammo-gauge frame (tr_think frame 0..6 by remaining ammo); no muzzle te_explosion; no PROJECTILE_ROCKET CSQC trail/light; no client turret_draw (head spin / low-hp sparks+smoke) or death gib toss"
+    - "No head entity / head model (mlrs.md3) instantiated as a separate tur_head bone: the ammo-gauge frame is driven onto the turret edict's OWN .Frame (logic/values faithful) but there is no tag_head attachment, so it is not netted as a distinct head and the head model never renders/animates separately"
+    - "No client presentation: no muzzle te_explosion on rocket spawn; no PROJECTILE_ROCKET CSQC trail/dynamic light; no client turret_draw (head spin via avelocity, low-hp <127 sparks / <85 large-smoke / <32 small-smoke); turret death gib toss (base-gibN.md3 + head_model) only fires on the NORESPAWN server path, not the normal client turret_die"
 features:
   - id: turret-mlrs.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -35,11 +34,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Head model (mlrs.md3) not instantiated as a separate tur_head entity; no tag_head attachment (so the ammo-gauge frame has nothing to animate). Unchanged by Wave-2."
+      - "Head model (mlrs.md3) not instantiated as a separate tur_head entity; no tag_head attachment. The ammo-gauge frame now rides the turret's own .Frame (see turret-mlrs.anim.ammogauge) but the head model is not separately rendered/animated."
     verification:
       - { kind: code_read, ref: "mlrs.qh vs MlrsTurret ctor + Spawn", result: pass }
     confidence: high
-    notes: "Identity/hitbox/base model/health faithful; the separate head entity + head model are not modeled. Wave-2 did not touch this row."
+    notes: "Identity/hitbox/base model/health faithful; the separate head entity + head model are not modeled."
   - id: turret-mlrs.setup.tr_setup
     name: "tr_setup: ammo/aim/shoot flags, volley seed, select/track defaults"
     layer: [authority]
@@ -54,13 +53,13 @@ features:
     constants:
       - { name: "ammo_flags", base: "TFL_AMMO_ROCKETS|TFL_AMMO_RECHARGE", port: "ammo pool + recharge (flag bits not modeled)", match: true }
       - { name: "aim_flags", base: "TFL_AIM_LEAD|TFL_AIM_SHOTTIMECOMPENSATE (+SPLASH auto)", port: "lead+shotTimeCompensate+aimSplash (zPredict:false)", match: true }
-      - { name: "shoot_flags VOLLYALWAYS", base: "TFL_SHOOT_VOLLYALWAYS set", port: "modeled (mid-burst branch in Think) — see turret-mlrs.combat.brain for the residual", match: true }
-      - { name: "damage_flags HEADSHAKE", base: "TFL_DMG_HEADSHAKE set (jolts tur_head.angles x+y)", port: "still NOT implemented (EventDamage/Damage have no head jolt)", match: false }
+      - { name: "shoot_flags VOLLYALWAYS", base: "TFL_SHOOT_VOLLYALWAYS set", port: "modeled (mid-burst branch in Think, enemy-present AND enemy-null)", match: true }
+      - { name: "damage_flags HEADSHAKE", base: "TFL_DMG_HEADSHAKE set (jolts tur_head.angles x+y)", port: "headShake:true -> st.HeadShake -> EventDamage jolts HeadAngles x+y", match: true }
       - { name: "shot_volly", base: "6", port: "6", match: true }
       - { name: "select_flags", base: "LOS|TEAMCHECK|RANGELIMITS|ANGLELIMITS|PLAYERS", port: "Los|TeamCheck|RangeLimits|AngleLimits|Players", match: true }
       - { name: "track_type", base: "3 (FLUIDINERTIA)", port: "3 (TrackFluidInertia)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -68,12 +67,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "TFL_DMG_HEADSHAKE still not implemented: Base sets it in tr_setup and turret_damage jolts tur_head.angles.x and .y by (random-0.5)*damage; the port's Wave-2 damage path (TurretAI.EventDamage -> Damage) never jolts the head angles (verified: no st.HeadAngles mutation on damage)."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "mlrs.qc tr_setup (aim_flags=LEAD|SHOTTIMECOMPENSATE; VOLLYALWAYS; HEADSHAKE) vs MlrsTurret.Think params (zPredict:false now; VOLLYALWAYS branch present) + TurretAI.EventDamage/Damage (no head jolt)", result: fail }
+      - { kind: code_read, ref: "mlrs.qc tr_setup (aim_flags=LEAD|SHOTTIMECOMPENSATE; VOLLYALWAYS; HEADSHAKE) vs MlrsTurret.Spawn(headShake:true) + Think params (zPredict:false; vollyAlways:true) + TurretSpawn.Init:79 st.HeadShake + TurretAI.EventDamage:887-891 head jolt", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: TFL_AIM_ZPREDICT removed (aim_flags now LEAD|SHOTTIMECOMPENSATE+auto-SPLASH, matching Base) and VOLLYALWAYS is now modeled. Logic stays partial only because HEADSHAKE is still absent."
+    notes: "FIXED vs baseline: TFL_DMG_HEADSHAKE now implemented (Spawn passes headShake:true; EventDamage jolts HeadAngles.X/.Y by (Prandom.Float()-0.5)*take, bit-faithful to turret_damage:228-234). With ZPREDICT already removed, VOLLYALWAYS modeled, and HEADSHAKE now present, every tr_setup flag is faithful — logic upgraded partial->faithful."
   - id: turret-mlrs.spawn.liveness
     name: "Map spawnfunc wiring + per-frame think (turret_mlrs placed on map)"
     layer: [authority]
@@ -100,7 +98,7 @@ features:
     verification:
       - { kind: code_read, ref: "MapObjectsRegistry.cs:208 registers turret_mlrs -> TurretSpawnFuncs.Mlrs -> Spawn(\"mlrs\") -> Turrets.ByName + def.Spawn + Think re-armed each frame (NextThink=Now); GameInit calls RegisterAll", result: pass }
     confidence: high
-    notes: "Confirmed live by code read; unchanged by Wave-2. Not observed in an actual match (whether a loaded stock map places turret_mlrs is unconfirmed)."
+    notes: "Confirmed live by code read. Not observed in an actual match (whether a loaded stock map places turret_mlrs is unconfirmed)."
   - id: turret-mlrs.combat.brain
     name: "Acquire/aim/lead/track/fire combat brain incl. VOLLYALWAYS burst completion + target scoring"
     layer: [authority]
@@ -131,12 +129,12 @@ features:
       - { name: "target_select_missilebias", base: "0", port: "0 (MissileBias passed)", match: true }
       - { name: "target_select_playerbias", base: "1", port: "1 (PlayerBias passed)", match: true }
       - { name: "targetscan_mindelay", base: "0.1", port: "0.1 (Cvar fallback)", match: true }
-      - { name: "targetscan_maxdelay", base: "1", port: "1 (Cvar fallback; was hardcoded 0.6)", match: true }
+      - { name: "targetscan_maxdelay", base: "1", port: "1 (Cvar fallback)", match: true }
       - { name: "aimidle_delay", base: "5", port: "5 (Cvar fallback)", match: true }
-      - { name: "aim_firetolerance_dist", base: "120", port: "120 (FireToleranceDist; now used in LOS firetolerance gate)", match: true }
+      - { name: "aim_firetolerance_dist", base: "120", port: "120 (FireToleranceDist)", match: true }
       - { name: "g_turrets_nofire mid-think gate", base: "checked in turret_fire", port: "implemented in TurretAI.Fire (Cvar gate)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -144,14 +142,13 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "VOLLYALWAYS residual: MlrsTurret.Think now has a mid-burst branch (st.Active && Enemy is null && VollyCounter != shot_volly) that aims at the last solution + fires to finish the burst after the target is lost — this closes the enemy-NULL case (turret_think:1059). BUT when the enemy is still PRESENT mid-burst, Think falls through to RunCombat, which unconditionally re-applies `DistAimPos < RangeMin` and `OnTarget(... FireToleranceDist)` before firing. Base turret_firecheck:889 early-returns TRUE mid-burst (only the refire + ammo gate remain), so a live-target burst still aborts in the port if the target slips inside range_min or off the muzzle line mid-volley. Minor residual vs the now-fixed bulk of VOLLYALWAYS."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "turret_think:1059 VOLLYALWAYS (enemy-null) vs MlrsTurret.Think mid-burst branch (covered); turret_firecheck:889 mid-burst early-return vs RunCombat:589-592 (still gated) — enemy-present residual", result: fail }
-      - { kind: code_read, ref: "turrets.cfg mlrs biases/range_optimal vs MlrsTurret consts (0.25/0.5/0.5/0/1, optimal 500) all now passed into TurretParams + used in ScoreTarget:300-328", result: pass }
+      - { kind: code_read, ref: "MlrsTurret.Think mid-burst branch fires for BOTH enemy-present and enemy-null (st.Active && VollyCounter != ShotVolly), ahead of RunCombat, skipping range/LOS re-checks — matches turret_firecheck:888 VOLLYALWAYS early-return + turret_think:1057 else-branch", result: pass }
+      - { kind: code_read, ref: "turrets.cfg mlrs biases/range_optimal vs MlrsTurret consts (0.25/0.5/0.5/0/1, optimal 500) passed into TurretParams + used in ScoreTarget", result: pass }
       - { kind: code_read, ref: "TurretAI.Cvar() backs targetscan_maxdelay=1 / mindelay=0.1 / aimidle=5 / nofire=0; Fire() honors g_turrets_nofire; cfg defaults == fallbacks", result: pass }
     confidence: high
-    notes: "Major Wave-2 fixes: ALL target-select biases now match Base (0.25/0.5/0.5/0/1), range_optimal 500, targetscan_maxdelay 1 (was 0.6), aimidle/mindelay cvar-backed, g_turrets_nofire mid-think gate implemented. VOLLYALWAYS now modeled for the enemy-lost case; only the enemy-present-mid-burst firecheck early-return nuance remains, so logic is still partial (close)."
+    notes: "FIXED vs baseline: the VOLLYALWAYS enemy-present residual is gone. The Think mid-burst branch now fires for both the enemy-present and enemy-null cases ahead of RunCombat (so a live-target burst no longer aborts when the target slips inside range_min / off the muzzle line mid-volley), matching turret_firecheck:888. All biases/ranges/scan delays already faithful. Logic upgraded partial->faithful."
   - id: turret-mlrs.head.track
     name: "Head rotation: FluidInertia track + aim clamps"
     layer: [authority]
@@ -179,33 +176,35 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "turrets.cfg mlrs aim/track cvars (maxpitch 20, accel_pitch 0.5, accel_rot 0.7, blendrate 0.2) vs MlrsTurret.Think (all passed) + TurretParams fields + TurretAI.Track:498-520", result: pass }
+      - { kind: code_read, ref: "turrets.cfg mlrs aim/track cvars (maxpitch 20, accel_pitch 0.5, accel_rot 0.7, blendrate 0.2) vs MlrsTurret.Think (all passed) + TurretParams fields + TurretAI.Track:520-577", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: aim_maxpitch 30->20, and track_accel_rot (0.7) + track_blendrate (0.2) are now explicitly passed instead of falling back to framework defaults (0.5/0.35). FluidInertia head slew + clamps now match the mlrs cfg exactly."
+    notes: "FluidInertia head slew + clamps match the mlrs cfg exactly (maxpitch 20, accel_pitch 0.5, accel_rot 0.7, blendrate 0.2)."
   - id: turret-mlrs.anim.ammogauge
     name: "tr_think head ammo-gauge frame (0 full .. 6 empty by remaining ammo)"
     layer: [authority, presentation]
     base_refs:
       - "common/turrets/turret/mlrs.qc:11"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/MlrsTurret.cs:Think"
     constants:
-      - { name: "frame formula", base: "bound(0, 6 - floor(0.1 + ammo/shot_dmg), 6)", port: "none", match: false }
-      - { name: "frame range", base: "0..6 (300hp ammo / 50 dmg)", port: "none", match: false }
+      - { name: "frame formula", base: "bound(0, 6 - floor(0.1 + ammo/shot_dmg), 6)", port: "Bound(0, 6 - floor(0.1 + Ammo/ShotDamage), 6)", match: true }
+      - { name: "frame range", base: "0..6 (300hp ammo / 50 dmg)", port: "0..6 (AmmoMax 300 / ShotDamage 50)", match: true }
+      - { name: "frame target", base: "it.tur_head.frame (separate head entity, netted via TNSF)", port: "e.Frame (turret edict's own frame; no separate head bone)", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No head ammo-gauge: Base tr_think maps remaining ammo to head model frame 0 (full) .. 6 (empty) every think and nets it; port has neither the head entity nor any frame handling (explicitly deferred as cosmetic in MlrsTurret.cs). Unchanged by Wave-2."
+      - "Frame formula now ported every think onto the turret edict's OWN .Frame (Bound(0, 6 - floor(0.1 + Ammo/ShotDamage), 6)) — logic/values/timing faithful. But Base writes it to the separate tur_head entity's .frame and nets that head; the port has no distinct head bone entity, so the gauge is not rendered on a separately-attached mlrs.md3 head. Presentation partial."
     verification:
-      - { kind: code_read, ref: "mlrs.qc:11 tr_think vs MlrsTurret (no frame code; tr_think has no port counterpart)", result: fail }
+      - { kind: code_read, ref: "mlrs.qc:11-19 tr_think (it.tur_head.frame = bound(0,6-floor(0.1+ammo/shot_dmg),6)) vs MlrsTurret.Think:78 (e.Frame = QMath.Bound(0,6f-MathF.Floor(0.1f+st.Ammo/ShotDamage),6f))", result: pass }
     confidence: high
-    notes: "Pure cosmetic gauge driven by tr_think; entirely absent in the port. Wave-2 did not address it."
+    notes: "FIXED vs baseline (was missing/empty port_refs): the tr_think ammo-gauge frame formula is now computed every think and applied to e.Frame, matching Base bit-for-bit. Logic/values/timing upgraded missing->faithful. Presentation stays partial only because there is no separate netted tur_head entity carrying the frame."
   - id: turret-mlrs.weapon.fire
     name: "MLRSTurretAttack: 6-rocket splash volley (unguided, shootable, travel-time fuse)"
     layer: [authority]
@@ -227,7 +226,7 @@ features:
       - { name: "projectile size", base: "6", port: "6", match: true }
       - { name: "projectile health (shootable)", base: "10", port: "10", match: true }
       - { name: "lifetime", base: "9 (turret_projectile)", port: "9", match: true }
-      - { name: "fuse", base: "max(tur_impacttime, (shot_radius 125 *2)/shot_speed) [AI path]", port: "max(distAimPos/speed, (125*2)/speed) — now uses ShotRadius 125", match: true }
+      - { name: "fuse", base: "max(tur_impacttime, (shot_radius 125 *2)/shot_speed) [AI path]", port: "max(distAimPos/speed, (125*2)/speed) — uses ShotRadius 125", match: true }
       - { name: "deathtype", base: "DEATH_TURRET_MLRS", port: "DeathTypes.TurretMlrs", match: true }
       - { name: "missile_flags", base: "MIF_SPLASH", port: "splash via radius damage", match: true }
     status:
@@ -246,7 +245,7 @@ features:
       - { kind: code_read, ref: "mlrs_weapon.qc wr_think + turret_projectile vs MlrsTurret.Attack (spread 0.05, fuse floor ShotRadius 125) + TurretSpawn.Projectile", result: pass }
       - { kind: code_read, ref: "DeathTypes.cs TurretMlrs registered (DeathCategory.Turret); Api.Sound.Play weapons/rocket_fire on fire", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: shot_spread 0.0125->0.05 (now matches Base, no longer ~4x tighter) and the fuse floor now uses the per-shot shot_radius 125 instead of the 500 player-branch override (so AI fuse floor is (125*2)/2000=0.125s, matching Base). Damage/radius/speed/force/health/lifetime/deathtype faithful, fire sound plays. Only presentation (muzzle explosion + rocket trail) remains absent."
+    notes: "Damage/radius/speed/force/spread/health/lifetime/fuse/deathtype faithful, fire sound plays. Only presentation (muzzle explosion + rocket trail) remains absent."
   - id: turret-mlrs.damage.lifecycle
     name: "Damage gating, head-shake, death + respawn"
     layer: [authority]
@@ -264,24 +263,23 @@ features:
       - { name: "respawntime", base: "60", port: "60 (Init default)", match: true }
       - { name: "inactive/dead take no damage", base: "yes", port: "yes (Damage gate)", match: true }
       - { name: "friendlyfire gate", base: "g_friendlyfire", port: "g_friendlyfire", match: true }
-      - { name: "head-shake on damage", base: "TFL_DMG_HEADSHAKE (tur_head.angles x+y += (random-0.5)*dmg)", port: "STILL NOT implemented", match: false }
+      - { name: "head-shake on damage", base: "TFL_DMG_HEADSHAKE (tur_head.angles x+y += (random-0.5)*dmg)", port: "EventDamage: HeadAngles.X/.Y += (Prandom.Float()-0.5)*take", match: true }
       - { name: "respawn resets ammo/volley", base: "ammo=ammo_max, volly=shot_volly", port: "Respawn resets ammo=AmmoMax, volly", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
-      audio: unknown
+      audio: partial
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Head-shake on damage STILL not implemented: Base turret_damage adds (random-0.5)*damage to tur_head.angles.x AND .y (a server-side aim disturbance that throws off the next shots when the turret is under fire). Wave-2 added the proper damage routing (TurretSpawn.Init wires e.GtEventDamage = TurretAI.EventDamage; DamageSystem.EventDamage:331-334 dispatches non-player edicts to it on the live damage path), and EventDamage runs the pre-damage gate (TurretAI.Damage: dead/inactive immunity, friendly-fire scaling, MOVE shove, retaliation) + health subtract + Combat.Death bus — but it never jolts st.HeadAngles. So the HEADSHAKE aim disturbance is absent."
-      - "No client death presentation: Base cl_turrets.qc turret_die plays SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE and tosses base-gibN.md3 + head_model gibs; port has no turret death gib/effect counterpart."
+      - "No client death presentation on the NORMAL (respawning) path: Base cl_turrets.qc turret_die plays SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE and tosses base-gibN.md3 + head_model gibs. The port fires the explosion sound + ROCKET_EXPLODE FX only on the NORESPAWN branch (Die:927-931); a respawning MLRS death emits no gib/effect/sound."
       - "No client turret_draw (cl_turrets.qc): the head does not visibly spin (angles += avelocity*dt) and a damaged MLRS emits no low-health sparks (<127 hp -> te_spark) or smoke (<85 EFFECT_SMOKE_LARGE / <32 EFFECT_SMOKE_SMALL)."
     verification:
-      - { kind: code_read, ref: "turret_damage (HEADSHAKE at sv_turrets.qc:228-232 jolts x+y) vs TurretAI.EventDamage+Damage (gate/retaliate/subtract/death, NO head jolt) + Die/Respawn (respawnTime 60 == mlrs cfg)", result: fail }
-      - { kind: code_read, ref: "TurretSpawn.Init:90 e.GtEventDamage=TurretAI.EventDamage; DamageSystem.EventDamage:280,331 routes non-player edict -> live", result: pass }
-      - { kind: code_read, ref: "cl_turrets.qc turret_draw/turret_die (shared) has no port counterpart", result: fail }
+      - { kind: code_read, ref: "turret_damage HEADSHAKE (sv_turrets.qc:228-234 jolts x+y) vs TurretAI.EventDamage:887-891 (st.HeadShake -> HeadAngles.X/.Y += (Prandom.Float()-0.5)*take) — MATCH; Die/Respawn respawnTime 60 == mlrs cfg", result: pass }
+      - { kind: code_read, ref: "TurretSpawn.Init e.GtEventDamage=TurretAI.EventDamage; DamageSystem.EventDamage routes non-player edict -> live; Init:79 st.HeadShake=headShake(true)", result: pass }
+      - { kind: code_read, ref: "cl_turrets.qc turret_draw + normal-path turret_die gib/effect has no port counterpart (only NORESPAWN server FX in Die)", result: fail }
     confidence: high
-    notes: "Wave-2 improved the damage INTEGRATION: the turret now carries its own .event_damage (GtEventDamage shim) so DamageSystem routes hits to TurretAI.EventDamage on the live path (gate + own health subtract + death bus) instead of relying solely on the Death-bus subscription. Damage gating + death/respawn lifecycle remain faithful (respawn 60 == cfg). Logic stays partial ONLY because the server HEADSHAKE aim jolt is still absent; client death/draw presentation also still missing."
+    notes: "FIXED vs baseline: the server HEADSHAKE aim jolt is now implemented (EventDamage jolts HeadAngles.X/.Y by (Prandom.Float()-0.5)*take, bit-faithful to turret_damage:228-234) on the live damage path, so the logic dimension upgrades partial->faithful. Damage gating + death/respawn lifecycle faithful (respawn 60 == cfg). Audio downgraded na->partial: a NORESPAWN death plays rocket_impact, but the normal respawning-death path plays no SND_ROCKET_IMPACT. Client death gib/effect/draw presentation still missing."

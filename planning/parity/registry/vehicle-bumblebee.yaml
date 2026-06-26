@@ -1,13 +1,14 @@
 unit: vehicle-bumblebee
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 15
   worst_gaps:
-    - "Signature networked BRG_* healray/damage beam (the visible green/red ray + bumble_raygun_draw multi-segment cylinder, the ENT_CLIENT_BUMBLE_RAYGUN net entity) NOT IMPLEMENTED — only a placeholder EffectEmitter.TeHealBeam/TeBeam stub (now colour-faithful: pure green heal / pure red damage). Raygun LOGIC fully faithful + live; only the networked beam visual + a freezetag-only FROZEN lock guard remain."
+    - "Signature networked BRG_* healray/damage beam (the visible green/red ray + bumble_raygun_draw multi-segment cylinder, the ENT_CLIENT_BUMBLE_RAYGUN net entity) NOT IMPLEMENTED — only a placeholder EffectEmitter.TeHealBeam/TeBeam stub (colour-faithful: pure green heal / pure red damage). Raygun LOGIC fully faithful + live; only the networked beam visual remains."
     - "vr_death gib toss (gun1/gun2/gun3 + body via vehicle_tossgib) and the tumble EFFECT_EXPLOSION_SMALL/MEDIUM/BIG + SND_ROCKET_IMPACT death FX + bumblebee_dead_touch (50% early body blowup) NOT IMPLEMENTED. The death LOGIC/blast/respawn is LIVE (GtEventDamage seam); only the gib/FX/audio presentation remains."
-    - "Wave-5 PARTIAL FIX of presentation: the PILOT in-vehicle HUD (0..100% health/shield/energy/ammo1/ammo2 bars, vr_hud) + ONE auxiliary heal-lock crosshair are now LIVE (NetGame.UpdateVehicleHud, called each frame at NetGame.cs:2323; pilot stat-mirror + VehLockTarget/VehLockStrength). STILL missing: the networked BRG beam, the GUNNER aux crosshairs (lead '1 0 1' + per-gun reload-color, both gunner-side and pilot-mirrored), the gunner cockpit HUD (ConfigureForVehicle never reaches BumblebeeGun), the 'No right/left gunner!' prompts, cosmetic gun models + cockpit offsets + scale 1.5, MENUQC describe text."
+    - "Wave-7 FIX of presentation: the GUNNER cockpit HUD (BumblebeeGun art kind selected by NetGame.UpdateVehicleHud) + BOTH gunner aux crosshairs (magenta '1 0 1' lead + reload-color READY, both gunner-side AND pilot-mirrored via FeedPilotGunnerAux) are now LIVE. The PILOT in-vehicle HUD + heal-lock aux crosshair were already live (Wave-5). STILL missing: the networked BRG beam, the 'No right/left gunner!' blinking prompts, cosmetic gun models + cockpit offsets + scale 1.5, MENUQC describe text."
+    - "Wave-7 FIX of FROZEN lock guards: the freezetag STAT(FROZEN, ...) skip+drop is now ported on BOTH the pilot heal-lock (Bumblebee.cs:367/371) and the gunner cannon-lock (585/589) via the shared IsFrozen() helper — closing the prior freezetag-only logic gap on pilot.raygun and gunner.frame."
     - "FIXED Wave-4 (impact.bouncepain): proper `override Impact(Entity)` -> VehicleCommon.Impact(1,100,200); Think snapshots OldVelocity; Bumblebee's own .Touch chains VehicleCommon.Touch (QC lines 391/404) so the vr_impact dispatch is reached. Live, faithful to Base's touch-board bounce-pain."
 features:
   - id: vehicle-bumblebee.spawn.spawnfunc
@@ -179,14 +180,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Heal-lock target test omits the QC frozen guards (`STAT(FROZEN, trace_ent)` skip + `STAT(FROZEN, enemy)` lock-drop, bumblebee.qc:519/524) — a freezetag-only edge: the heal beam can lock onto / heal a frozen teammate. Minor; everything else in the lock/heal logic is faithful."
-      - "The visible BRG_* beam is a placeholder EffectEmitter.TeHealBeam/TeBeam stub (Bumblebee.cs:649-651), not the networked CSQC bumble_raygun beam; the per-tick BRG_START/BRG_END send + `wait = time + 1` beam-hold + the bumble_raygun_draw multi-segment cylinder are not modeled. Beam COLOUR is now bit-faithful (pure green heal / pure red damage)."
+      - "The visible BRG_* beam is a placeholder EffectEmitter.TeHealBeam/TeBeam stub (Bumblebee.cs:698-700), not the networked CSQC bumble_raygun beam; the per-tick BRG_START/BRG_END send + `wait = time + 1` beam-hold + the bumble_raygun_draw multi-segment cylinder are not modeled. Beam COLOUR is bit-faithful (pure green heal / pure red damage)."
     verification:
       - { kind: code, ref: "FireRay implements both modes (Damage at dps*frametime DEATH_GENERIC + energy drain by aps in damage mode; Heal + armor/shield top-up teamplay-gated in heal mode) + instagib extralives armor cap; constants diffed equal", result: pass }
-      - { kind: code, ref: "Heal hp-limit: Bumblebee.cs:673 uses Resources.LimitNone (-1, uncapped) for a non-client heal target — matching QC's `IS_PLAYER ? healgun_hmax : RES_LIMIT_NONE` exactly.", result: pass }
-      - { kind: code, ref: "Wave-5 presentation gain: Frame now publishes the heal-lock target via vehicle.VehLockTarget/VehLockStrength (Bumblebee.cs:377-378); NetGame.UpdateVehicleHud (NetGame.cs:2981, live each frame) projects it as ONE auxiliary lock crosshair (vCROSS_HEAL aux xhair). The multi-segment networked beam visual still absent.", result: pass }
+      - { kind: code, ref: "Heal hp-limit: Bumblebee.cs:722 uses Resources.LimitNone (-1, uncapped) for a non-client heal target — matching QC's `IS_PLAYER ? healgun_hmax : RES_LIMIT_NONE` exactly.", result: pass }
+      - { kind: code, ref: "Wave-7 FIX: the heal-lock FROZEN guards (QC bumblebee.qc:520/526) are now ported — Bumblebee.cs:367 drops the lock when the locked teammate IsFrozen, and :371 skips a frozen candidate when acquiring (via the shared IsFrozen() helper, Bumblebee.cs:654). The prior freezetag-only logic gap is closed.", result: pass }
+      - { kind: code, ref: "Wave-5 presentation gain: Frame publishes the heal-lock target via vehicle.VehLockTarget/VehLockStrength (Bumblebee.cs:381-382); NetGame.UpdateVehicleHud (NetGame.cs:2981, live each frame) projects it as ONE auxiliary lock crosshair (vCROSS_LOCK aux xhair). The multi-segment networked beam visual still absent.", result: pass }
     confidence: high
-    notes: "FROZEN lock guards (small freezetag-only logic gap) remain; the networked beam visual stays missing but the heal-lock crosshair is now LIVE (Wave-5) so presentation is partial (was missing). Both raygun modes + heal lock run live once boarded."
+    notes: "Wave-7 FIX: the FROZEN heal-lock guards are now ported (logic stays faithful, gap closed). The networked beam visual stays missing but the heal-lock crosshair is LIVE (Wave-5) so presentation is partial. Both raygun modes + heal lock run live once boarded."
 
   - id: vehicle-bumblebee.gunner.frame
     name: "Side-gunner turret: per-gun lock + lead + aim + plasma fire"
@@ -208,20 +209,20 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Gunner aux crosshairs ('1 0 1' lead xhair + the per-gun reload-color xhair on BOTH the gunner (slot 0) and the pilot (slot 1/2), QC bumblebee_gunner_frame UpdateAuxiliaryXhair) NOT IMPLEMENTED — GunnerFrame never writes any VehLockTarget/aux feed. The Wave-5 pilot HUD feeder (NetGame.UpdateVehicleHud) only handles the pilot's single heal-lock aux xhair; the gunner aux pair is still absent."
-      - "Gunner cockpit HUD % mirroring NOT IMPLEMENTED: GunnerFrame does not mirror vehicle_health/shield/energy/ammo onto the gunner player, AND NetGame.UpdateVehicleHud's ConfigureForVehicle resolves only from the pilot's vehicle NetName 'bumblebee' (the BumblebeeGun art kind is never selected) — so a local gunner gets stale/zero HUD bars."
-      - "Per-gun lock test omits the QC frozen guards (`STAT(FROZEN, gun.enemy)` lock-drop + `STAT(FROZEN, trace_ent)` skip, bumblebee.qc:113/119) — the same freezetag-only edge as the pilot heal-lock: the cannon can lock onto a frozen enemy. Minor; everything else in the lock/lead/aim/fire logic is faithful."
+      - "Gunner aux crosshairs + cockpit HUD are now LIVE (Wave-7): GunnerFrame writes VehGunnerLeadPoint/Valid + VehGunnerHitPoint/Valid (Bumblebee.cs:605/648) and mirrors gunner.VehicleHealth/Shield/Ammo1/Energy (632-636); NetGame.UpdateVehicleHud selects the BumblebeeGun art for a seated gunner and projects the magenta '1 0 1' LEAD (aux slot 1) + reload-color READY (aux slot 0) crosshairs, AND mirrors the gunner READY markers onto the PILOT (slots 1/2 via FeedPilotGunnerAux). RESIDUAL presentation: cosmetic gun cockpit models + viewport offsets are still not built (HUD bars/crosshairs render, but the 3D gun cockpit art does not)."
     verification:
-      - { kind: code, ref: "GunnerFrame (Bumblebee.cs:558-577) mirrors bumblebee_gunner_frame lock/lead/aim/fire; the QC z-velocity*0.1 lead damping for a MOVETYPE_WALK target IS ported (Bumblebee.cs:574: if MoveType.Walk lead.Z*=0.1f). Re-verified 2026-06-22: lock_time/team gates (2.5 teamplay / 0.5 ffa) match QC; the FROZEN guards (qc:113/119) are absent (newly recorded gap, applies same as raygun row)", result: pass }
+      - { kind: code, ref: "GunnerFrame (Bumblebee.cs:567-650) mirrors bumblebee_gunner_frame lock/lead/aim/fire; the QC z-velocity*0.1 lead damping for a MOVETYPE_WALK target IS ported (Bumblebee.cs:601: if MoveType.Walk lead.Z*=0.1f). lock_time/team gates (2.5 teamplay / 0.5 ffa) match QC.", result: pass }
+      - { kind: code, ref: "Wave-7 FIX (FROZEN guards): Bumblebee.cs:585 drops the cannon lock when the locked enemy IsFrozen and :589 skips a frozen candidate when acquiring (QC bumblebee.qc:113/119) — the prior freezetag-only logic gap is closed.", result: pass }
+      - { kind: code, ref: "Wave-7 FIX (presentation): GunnerFrame publishes the aux-crosshair feed (VehGunnerLeadPoint/HitPoint at :605/648) + mirrors the body 0..100 stats onto the gunner (:632-636); NetGame.UpdateVehicleHud (NetGame.cs:2998 isGunner branch) selects VehicleHudKind.BumblebeeGun and draws the lead+ready aux crosshairs, plus FeedPilotGunnerAux (NetGame.cs:3056) mirrors them onto the pilot.", result: pass }
       - { kind: test, ref: "VehicleRuntimeTests.Bumblebee_GunnerFire_SpawnsAProjectile drives UseKey+Tick and asserts a projectile spawns", result: pass }
     confidence: high
-    notes: "Wave-2 LIVE (was dead) + walk-target z-lead damping fixed. Re-audited 2026-06-25: logic/values/timing re-confirmed faithful & live (no GunnerFrame code change in Wave-5). Residual presentation: the GUNNER aux crosshairs + gunner cockpit HUD remain missing — the Wave-5 HUD/aux feeder serves the PILOT only (ConfigureForVehicle never reaches BumblebeeGun; GunnerFrame writes no aux feed). Plus the missing FROZEN lock guard (small freezetag-only logic edge, same as the raygun row)."
+    notes: "Wave-2 LIVE (was dead) + walk-target z-lead damping fixed. Wave-7 (re-audited 2026-06-25): TWO fixes vs the Wave-5 baseline — (1) the GUNNER aux crosshairs + gunner cockpit HUD are now live (presentation missing->partial), and (2) the FROZEN cannon-lock guard is now ported (logic gap closed). Residual presentation: cosmetic gun cockpit models. The shared notification 'No right/left gunner!' prompt lives on the client.presentation row."
 
   - id: vehicle-bumblebee.gunner.cannon
     name: "Side-gunner plasma cannon projectile (bumblebee_fire_cannon)"
@@ -478,12 +479,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The networked BRG_* healray/damage beam (the signature green/red ray; ENT_CLIENT_BUMBLE_RAYGUN, bumble_raygun_send/NET_HANDLE) + bumble_raygun_draw multi-segment Draw_CylindricLine cylinder NOT IMPLEMENTED (placeholder EffectEmitter.TeHealBeam/TeBeam stub only; colour now bit-faithful)."
-      - "Wave-5 LIVE NOW: the PILOT in-vehicle HUD (vr_hud-equivalent 0..100% health/shield/energy/ammo1/ammo2 bars) + ONE auxiliary heal-lock crosshair render via NetGame.UpdateVehicleHud each frame. STILL missing: the GUNNER cockpit HUD (BumblebeeGun art kind never selected — ConfigureForVehicle keys off the pilot vehicle only), the two GUNNER aux crosshairs (vCROSS_BURST lead + reload-color), vr_crosshair vCROSS_HEAL pointer, the 'No right/left gunner!' blinking prompts, CSQC_BUMBLE_GUN_HUD."
-      - "Cosmetic gun models (CANNON_RIGHT/LEFT/CENTER) + cockpit/viewport offsets + scale 1.5 NOT IMPLEMENTED."
+      - "The networked BRG_* healray/damage beam (the signature green/red ray; ENT_CLIENT_BUMBLE_RAYGUN, bumble_raygun_send/NET_HANDLE) + bumble_raygun_draw multi-segment Draw_CylindricLine cylinder NOT IMPLEMENTED (placeholder EffectEmitter.TeHealBeam/TeBeam stub only; colour bit-faithful)."
+      - "Wave-7 LIVE NOW (in addition to the Wave-5 pilot HUD): the GUNNER cockpit HUD (VehicleHudKind.BumblebeeGun selected for a seated gunner, NetGame.cs:3001) + the two GUNNER aux crosshairs (magenta '1 0 1' lead + reload-color READY, NetGame.cs:3025-3034) + the PILOT mirror of both gunners' READY markers (FeedPilotGunnerAux, NetGame.cs:3050-3051) all render each frame. STILL missing: the 'No right/left gunner!' blinking prompts (vr_hud text drawn when AuxiliaryXhair[1]/[2] are absent), and the vr_crosshair vCROSS_HEAL pilot pointer (the aux LOCK crosshair is drawn but not the dedicated vCROSS_HEAL center pointer)."
+      - "Cosmetic gun models (CANNON_RIGHT/LEFT/CENTER) + gun cockpit + cockpit/viewport offsets + scale 1.5 NOT IMPLEMENTED."
       - "MENUQC describe text (the three-passenger role explanation) NOT IMPLEMENTED."
     verification:
-      - { kind: code, ref: "Wave-5 FIX: NetGame.UpdateVehicleHud (called live at NetGame.cs:2323) configures the VehicleHud Bumblebee art set, mirrors p.VehicleHealth/Shield/Energy/Ammo1/Ammo2 -> [0,1] bars, and projects veh.VehLockTarget at strength VehLockStrength as one SetAuxiliaryXhairLock. Pilot stat source is Bumblebee.Frame:395-399 (mirror) + :377-378 (lock feed), matching bumblebee_pilot_frame's VEHICLE_UPDATE_PLAYER + aux-xhair.", result: pass }
-      - { kind: code, ref: "STILL missing: networked BRG beam entity, the gunner aux-crosshair pair + gunner cockpit HUD (ConfigureForVehicle never reaches BumblebeeGun), MENUQC describe, cosmetic models. EFFECT_BUMBLEBEE_HEAL_* names registered but the beam entity itself is absent.", result: fail }
+      - { kind: code, ref: "Wave-5 FIX (pilot): NetGame.UpdateVehicleHud (called live at NetGame.cs:2342) configures the VehicleHud Bumblebee art set, mirrors p.VehicleHealth/Shield/Energy/Ammo1/Ammo2 -> [0,1] bars, and projects veh.VehLockTarget at strength VehLockStrength as one SetAuxiliaryXhairLock. Pilot stat source is Bumblebee.Frame:399-403 (mirror) + :381-382 (lock feed).", result: pass }
+      - { kind: code, ref: "Wave-7 FIX (gunner): UpdateVehicleHud's isGunner branch (NetGame.cs:2998-3036) selects VehicleHudKind.BumblebeeGun (3001), mirrors the gunner's 0..100 bars, and draws the magenta '1 0 1' LEAD (slot 1) + reload-color READY (slot 0) aux crosshairs from veh.VehGunnerLeadPoint/HitPoint; FeedPilotGunnerAux (3056) mirrors the two gunner READY markers onto the PILOT (slots 1/2). The gunner-side HUD + the gunner+pilot aux-crosshair pair are now genuinely live.", result: pass }
+      - { kind: code, ref: "STILL missing: networked BRG beam entity, MENUQC describe, cosmetic models, the 'No right/left gunner!' prompts, and the vCROSS_HEAL pilot pointer. EFFECT_BUMBLEBEE_HEAL_* names registered but the beam entity itself is absent.", result: fail }
     confidence: high
-    notes: "Wave-5 PARTIAL FIX (was fully missing/dead): the pilot in-vehicle HUD + heal-lock aux crosshair are now genuinely live on the host path. Status raised missing->partial / dead->partial. The signature networked beam, gunner-side HUD/crosshairs, cosmetic models, and describe text remain. audio=na (heal beam silent in QC; cannon audio lives on gunner.cannon)."
+    notes: "Wave-7 FIX (was Wave-5 partial): the GUNNER cockpit HUD + both gunner aux crosshairs (gunner-side + pilot-mirror) are now live on the host path, on top of the Wave-5 pilot HUD + heal-lock crosshair. The signature networked BRG beam, cosmetic models, describe text, and the 'No gunner!' prompts remain. audio=na (heal beam silent in QC; cannon audio lives on gunner.cannon)."

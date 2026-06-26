@@ -1,15 +1,15 @@
 unit: monster-zombie
 category: monster
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 11
-  reaudit_note: "Re-audited 2026-06-22 against branch claude/parity-port-waves HEAD (023ba70 Wave-5 finish), which is TWO commits past the prior baseline (66e378f). The new post-baseline change is a genuine ANIMATION wiring: Zombie.AnimFrame override (Zombie.cs:180) + MonsterAI.DriveAnimFrame (MonsterAI.cs:1084) now translate the logical MonsterAnim phase into the descriptor's concrete MD3 frame-group start index and STAMP it onto Entity.Frame each think. Verified the full live chain: RunThink (Zombie.Think:86, ticked by SV_RunThink) -> DriveAnimFrame -> AnimFrame -> self.Frame; ServerNet networks Frame for the monster's Generic kind (ServerNet.cs:1752, Classify:2009); ClientEntityView applies e.Frame=s.Frame AND calls OnEntityUpdate(frameDriven:true) for Generic (ClientEntityView.cs:200-203); ClientWorld sets anim.FollowEntityFrame=true (ClientWorld.cs:1595) so the ModelAnimator follows the networked frame. Frame VALUES match Base mr_anim EXACTLY (idle 19 / walk-run 27 / melee 4 / pain1 20 / die1 9 / die2 12). So the formerly-DEAD animation row is now LIVE and mostly faithful. Residual presentation divergences: spawn anim '30 1 3' (frame 30) is never played (spawn folds into Idle 19), pain2 (22) / die2 (12 unreachable: zombie sets no DeathLanded) variety is dropped, and the block frames (blockstart 8 / blockend 7) are not played (DefendBlock uses the Attack phase -> frame 4) — and the leap phase also maps to the melee frame 4 rather than anim_shoot '0 1 5' (frame 0). NET: 4 gaps_closed (animation dead->live; melee/pain/death presentation missing->faithful-or-partial), 0 regressions. Audio gate (SoundCues={death,sight,idle}) and all constants/liveness unchanged."
+  reaudit_note: "Re-audited 2026-06-25 against branch claude/parity-port-waves HEAD. SECOND animation FIX wave since the prior baseline (2026-06-22). The MonsterAnimPhase enum (EntityClasses.cs:79) and the internal MonsterAnim enum (MonsterAI.cs:194) BOTH gained Spawn/Block/BlockEnd/Shoot slots, and the zombie now declares + DRIVES every one of them: Zombie.AnimFrame (Zombie.cs:194) maps spawn->30, block->8, blockend->7, shoot->0 (plus the previously-mapped idle 19/walk-run 27/melee 4/pain 20/die1 9). Zombie.Spawn sets st.Anim=Spawn (Zombie.cs:79) and RunThink stamps it during the spawn window (MonsterAI.cs:1144-1147); DefendBlock sets Block then BlockEnd via the delayed end (Zombie.cs:177,182); Leap is called with MonsterAnim.Shoot (Zombie.cs:132) and Leap sets st.Anim=leapAnim (MonsterAI.cs:1347). So the spawn (30), block (8/7) and leap-shoot (0) poses that the prior baseline recorded as 'folds into Idle/Attack' ARE NOW PLAYED. Live chain unchanged + re-verified: RunThink->DriveAnimFrame->AnimFrame->self.Frame; ServerNet networks Frame for the Generic kind (ServerNet.cs:1808, Classify:2125); ClientEntityView (now game/net/ClientEntityView.cs:196-203) feeds Generic->OnEntityUpdate(frameDriven:true); ClientWorld sets anim.FollowEntityFrame (ClientWorld.cs:1622). NET vs 2026-06-22 baseline: 4 fixes (setup spawn-anim partial->faithful; block partial->faithful; leap partial->faithful; presentation.animation values/timing/presentation partial->faithful). 0 regressions. Residual presentation gaps now reduced to just TWO: pain2 '22 1 2' is dropped (port always plays pain1=20) and die2 '12 1 0.5' is unreachable for the zombie (DriveAnimFrame's die2 is gated on st.DeathLanded, which only the wyvern sets — the zombie installs no dead-think). Audio gate (SoundCues={death,sight,idle}) + all constants/liveness unchanged."
   worst_gaps:
-    - "FIXED (Wave-5 finish 023ba70): zombie animation is now LIVE. Zombie.AnimFrame + MonsterAI.DriveAnimFrame stamp the per-phase MD3 frame onto the networked Entity.Frame (idle 19 / walk-run 27 / melee 4 / pain1 20 / die1 9, all matching Base mr_anim), the monster networks as Generic with frameDriven:true, and the client ModelAnimator FollowEntityFrame plays it. Idle/walk/run/melee/pain/death are now visible. Was fully dead at baseline."
-    - "Animation presentation is now PARTIAL, not complete: (a) spawn anim '30 1 3' (frame 30) is never played — Zombie.Spawn folds spawn into Idle (frame 19) during the spawn-shield window; (b) pain2 '22 1 2' and the random pain1/pain2 alternation are dropped (port always plays pain1=20); (c) die2 '12 1 0.5' is unreachable for the zombie (DriveAnimFrame's die2 is gated on st.DeathLanded which the zombie never sets — no zombie dead-think), so the zombie always plays die1=9 instead of Base's random die1/die2; (d) blockstart/blockend ('8 1 1'/'7 1 1') and the leap anim_shoot ('0 1 5', frame 0) are not played — DefendBlock and Leap both set the Attack phase -> frame 4 (melee), so block and leap show the melee pose rather than their own."
-    - "Sound DELIVERY still diverges from Base's GlobalSound .sounds-file table: the port plays a literal monsters/<name>_<cue>.wav while the shipped asset is sound/monsters/zombie/<cue>.ogg, with no random sample and no skin-keyed Monster_Sounds_Update. Moot for the zombie's three audible cues (the SoundCues gate fires exactly {death,sight,idle}, and death.ogg is a real shipped asset so death is audible in effect) but the path-form + sample-table machinery remains unported (latent/cosmetic)."
-    - "Spawn no-think/no-push window is still hardcoded to 1/3s rather than derived from anim_spawn '30 1 3' via animfixfps/animstate_endtime (close approximation, not model-exact); and the spawn frame itself is not shown (see animation gap)."
+    - "Animation is now LIVE and broadly FAITHFUL: spawn (30), idle (19), walk/run (27), melee (4), block/blockend (8/7), leap-shoot (0), pain1 (20) and die1 (9) are all stamped onto the networked Entity.Frame by DriveAnimFrame and played by the client ModelAnimator (FollowEntityFrame). The MonsterAnimPhase enum now has dedicated Spawn/Block/BlockEnd/Shoot slots, so the zombie's spawn pose, block stance, and leap pose play their OWN frames (not the folded Idle/melee they used at the prior baseline)."
+    - "Two residual presentation gaps remain (random ANIM VARIANT loss only): (a) pain2 '22 1 2' and the random pain1/pain2 alternation are dropped — the port always plays pain1 (frame 20); (b) die2 '12 1 0.5' is unreachable for the zombie because DriveAnimFrame's die2 is gated on st.DeathLanded, which only a per-monster dead-think sets (the wyvern's land flag); the zombie installs no dead-think, so it always plays die1 (frame 9) where Base alternates die1/die2 at random."
+    - "Sound DELIVERY still diverges from Base's GlobalSound .sounds-file table: the port plays a literal monsters/zombie/<cue>.ogg (SoundExt='.ogg') while the table machinery (random sample, skin-keyed Monster_Sounds_Update) is unported. Moot for the zombie's three audible cues (the SoundCues gate fires exactly {death,sight,idle}, and death.ogg is a real shipped asset so death is audible in effect) but the sample-table machinery remains latent/cosmetic."
+    - "Spawn no-think/no-push window is still hardcoded to 1/3s rather than derived from anim_spawn '30 1 3' via animfixfps/animstate_endtime (close approximation, not model-exact). The spawn POSE itself (frame 30) is now played — only the per-frame fps/duration of the group is approximate."
 features:
   - id: monster-zombie.identity.def
     name: "Zombie identity / model / bbox / class flags"
@@ -36,9 +36,9 @@ features:
     gaps:
       - "Class flags (UNDEAD/MELEE/RIDE) are documented in comments but not stored as spawnflags; MON_FLAG_RIDE (monster riding) is unported across the whole monster family."
     verification:
-      - { kind: code-read, ref: "zombie.qh vs Zombie.cs ctor+Spawn (ctor seeds SoundCues; unchanged since prior audit)", result: pass }
+      - { kind: code-read, ref: "zombie.qh vs Zombie.cs ctor+Spawn (ctor seeds SoundCues + SoundExt='.ogg'; unchanged since prior audit)", result: pass }
     confidence: high
-    notes: "Identity/size faithful. The categorical flags carry no behavior the zombie itself needs except UNDEAD's corpse-respawn, which is implemented via AlwaysRespawn+RespawnAtDeathPoint+gib threshold. Unchanged by Wave-5 finish."
+    notes: "Identity/size faithful. The categorical flags carry no behavior the zombie itself needs except UNDEAD's corpse-respawn, which is implemented via AlwaysRespawn+RespawnAtDeathPoint+gib threshold. Unchanged by the 2026-06-25 anim wave."
 
   - id: monster-zombie.setup.mr_setup
     name: "Spawn setup: always-respawn at death point, loot, spawn shield, no-push spawn window"
@@ -47,8 +47,9 @@ features:
       - "common/monsters/monster/zombie.qc:mr_setup"
       - "common/monsters/sv_monsters.qc:Monster_Spawn_Setup:1364 (monstersound_spawn)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:Spawn"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Setup (spawn-sound MonsterSound:319, SoundCues-gated)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:Spawn (sets st.Anim=Spawn)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Setup (spawn-sound MonsterSound, SoundCues-gated)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:RunThink:1144 (DriveAnimFrame during spawn window)"
     constants:
       - { name: "g_monster_zombie_health", base: "200", port: "200 (live cvar; 200 fallback)", match: true }
       - { name: "g_monster_zombie_speed_walk", base: "300", port: "300", match: true }
@@ -58,25 +59,24 @@ features:
       - { name: "respawntime", base: "0.2", port: "0.2", match: true }
       - { name: "spawn_damageforcescale", base: "0.0001", port: "0.0001", match: true }
       - { name: "spawn_sound_cue", base: "COMMENTED OUT in zombie.dpm_0.sounds -> empty sample -> SILENT", port: "'spawn' NOT in SoundCues -> no Play call -> SILENT", match: true }
-      - { name: "anim_spawn frame", base: "'30 1 3' (frame 30 plays during spawn window)", port: "spawn folds into Idle -> frame 19; frame 30 never shown", match: false }
+      - { name: "anim_spawn frame", base: "'30 1 3' (frame 30 plays during spawn window)", port: "Spawn sets st.Anim=Spawn -> DriveAnimFrame stamps frame 30 during the spawn window", match: true }
     status:
       logic: faithful
       values: faithful
       timing: partial
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Spawn-anim/no-think window hardcoded to 1/3s instead of being derived from anim_spawn '30 1 3' via animfixfps/animstate_endtime (close approximation, not model-exact)."
-      - "The spawn anim frame group (30) itself is never played: Zombie.Spawn sets st.Anim=Idle for the spawn-shield window, so DriveAnimFrame shows frame 19 (idle) rather than the Base spawn pose (presentation)."
+      - "Spawn-anim/no-think window hardcoded to 1/3s instead of being derived from anim_spawn '30 1 3' via animfixfps/animstate_endtime (close approximation, not model-exact). The spawn POSE (frame 30) IS played; only the per-frame fps/duration of the group is approximate (timing)."
     verification:
-      - { kind: code-read, ref: "zombie.qc:mr_setup vs Zombie.Spawn + MonsterAI.Setup", result: pass }
+      - { kind: code-read, ref: "zombie.qc:mr_setup vs Zombie.Spawn (st.Anim=MonsterAnim.Spawn, Zombie.cs:79) + MonsterAI.Setup + RunThink:1144 (DriveAnimFrame in spawn window) + AnimFrame(Spawn)=30 (Zombie.cs:202)", result: pass }
       - { kind: value-diff, ref: "monsters.cfg lines 2-13 vs Zombie.cs cvar reads", result: pass }
-      - { kind: data-file, ref: "zombie.dpm_0.sounds: //spawn commented out; SoundCues={death,sight,idle} excludes spawn -> MonsterSound:677 cueDefined=false -> no Play", result: pass }
+      - { kind: data-file, ref: "zombie.dpm_0.sounds: //spawn commented out; SoundCues={death,sight,idle} excludes spawn -> cueDefined=false -> no Play", result: pass }
     confidence: high
-    notes: "Spawn-sound regression remains gone: Setup calls MonsterSound(e,st,'spawn',...) (mirroring Base) but the SoundCues gate excludes 'spawn' so no sample is emitted — matching Base's empty-sample/silent behavior. NORESPAWN cleared, APPEAR cleared, RESPAWN_DEATHPOINT set, respawntime 0.2, SpawnShield + 0.0001 forcescale faithful. Now-downgraded presentation to partial: with DriveAnimFrame live the rest of the anim table plays, but spawn deliberately idles (frame 19) so the spawn pose (30) is not shown."
+    notes: "FIX (2026-06-25): the spawn pose is now played. The MonsterAnimPhase enum gained a Spawn slot, Zombie.Spawn sets st.Anim=MonsterAnim.Spawn (Zombie.cs:79), and RunThink's spawn-window branch (MonsterAI.cs:1144-1147) calls DriveAnimFrame so frame 30 is stamped onto the networked Entity.Frame during the shield window. Presentation partial->faithful. Spawn-sound regression remains gone (SoundCues excludes 'spawn' -> silent, matching Base's empty sample). NORESPAWN cleared, APPEAR cleared, RESPAWN_DEATHPOINT set, respawntime 0.2, SpawnShield + 0.0001 forcescale faithful. Timing stays partial (the 1/3s window is a hardcoded approximation of animstate_endtime)."
 
   - id: monster-zombie.think.forcescale_restore
     name: "Per-think: restore knockback scale after spawn animation"
@@ -101,7 +101,7 @@ features:
     verification:
       - { kind: code-read, ref: "zombie.qc:mr_think vs Zombie.Think (unchanged)", result: pass }
     confidence: high
-    notes: "Once time>=spawn_time, forcescale restored to 0.55; then RunThink runs the shared chase/attack loop (which now also calls DriveAnimFrame). Ticked live by SimulationLoop.RunThink. Unchanged."
+    notes: "Once time>=spawn_time, forcescale restored to 0.55; then RunThink runs the shared chase/attack loop (which also calls DriveAnimFrame). Ticked live by SimulationLoop.RunThink. Unchanged."
 
   - id: monster-zombie.attack.melee
     name: "Melee attack: 3-way anim roll + forward traceline damage"
@@ -112,7 +112,7 @@ features:
       - "common/monsters/sv_monsters.qc:468/478 (monstersound_melee on connecting swing)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:Attack"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MeleeAttack (melee-sound MonsterSound:1205, SoundCues-gated)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MeleeAttack (melee-sound MonsterSound, SoundCues-gated)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:AnimFrame (Attack -> frame 4)"
     constants:
       - { name: "g_monster_zombie_attack_melee_damage", base: "55", port: "55 (live cvar)", match: true }
@@ -133,9 +133,9 @@ features:
     gaps: []
     verification:
       - { kind: code-read, ref: "zombie.qc:M_Zombie_Attack + Monster_Attack_Melee vs Zombie.Attack + MeleeAttack + AnimFrame", result: pass }
-      - { kind: data-file, ref: "zombie.dpm_0.sounds: //melee commented out; SoundCues excludes melee -> MonsterSound:677 cueDefined=false -> no Play", result: pass }
+      - { kind: data-file, ref: "zombie.dpm_0.sounds: //melee commented out; SoundCues excludes melee -> cueDefined=false -> no Play", result: pass }
     confidence: high
-    notes: "FIXED presentation: with DriveAnimFrame live, the Attack phase now stamps frame 4 onto Entity.Frame and the client plays it. The 3-way melee1/2/3 roll is faithful to collapse because Base sets ALL THREE to '4 1 5' (frame 4) — there is no visible variety to lose; the server still consumes a PRNG draw for stream parity. Melee-connect-sound regression stays gone (SoundCues excludes melee). Damage*skillmod via real Combat.Damage, correct deathtype, dostop=true freeze, cooldown=delay."
+    notes: "With DriveAnimFrame live, the Attack phase stamps frame 4 onto Entity.Frame and the client plays it. The 3-way melee1/2/3 roll is faithful to collapse because Base sets ALL THREE to '4 1 5' (frame 4) — no visible variety to lose; the server still consumes a PRNG draw for stream parity. Melee-connect-sound regression stays gone (SoundCues excludes melee). Damage*skillmod via real Combat.Damage, correct deathtype, dostop=true freeze, cooldown=delay. Unchanged by the 2026-06-25 wave."
 
   - id: monster-zombie.attack.block
     name: "Defend block: raise armor + freeze when hurt vs healthy enemy"
@@ -144,8 +144,9 @@ features:
       - "common/monsters/monster/zombie.qc:M_Zombie_Defend_Block"
       - "common/monsters/monster/zombie.qc:M_Zombie_Defend_Block_End"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:DefendBlock"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:DefendBlock (sets Anim=Block, then BlockEnd via delay)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:QueueDelayedAttack"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:AnimFrame (Block -> 8 / BlockEnd -> 7)"
     constants:
       - { name: "block_chance", base: "random()<0.3", port: "0.3", match: true }
       - { name: "self_health_cond", base: "<75", port: "<75", match: true }
@@ -154,24 +155,23 @@ features:
       - { name: "block_freeze_time", base: "2.1", port: "2.1", match: true }
       - { name: "block_end_delay", base: "2 (Monster_Delay)", port: "2 (windUp)", match: true }
       - { name: "g_monsters_armor_blockpercent (restore)", base: "0.5", port: "0.5 fallback", match: true }
-      - { name: "block_anim_frames", base: "blockstart '8 1 1' / blockend '7 1 1'", port: "DefendBlock sets Attack phase -> frame 4 (melee), not 8/7", match: false }
+      - { name: "block_anim_frames", base: "blockstart '8 1 1' / blockend '7 1 1'", port: "Block phase -> 8 (start); BlockEnd phase -> 7 (end)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "blockstart/blockend anim frames ('8 1 1' / '7 1 1') are still not played: DefendBlock sets st.Anim=Attack, so DriveAnimFrame shows the melee frame (4) during the block window rather than the block pose (presentation)."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "zombie.qc:M_Zombie_Defend_Block(_End) vs Zombie.DefendBlock (sets Anim=Attack)", result: pass }
-      - { kind: value-diff, ref: "monsters.cfg:127 g_monsters_armor_blockpercent=0.5 vs DefendBlock fallback 0.5 (Zombie.cs:164)", result: pass }
-      - { kind: data-file, ref: "Base M_Zombie_Defend_Block plays no sound; port plays no block sound (Zombie.cs:171 comment)", result: pass }
+      - { kind: code-read, ref: "zombie.qc:M_Zombie_Defend_Block(_End) vs Zombie.DefendBlock (st.Anim=Block at Zombie.cs:182; BlockEnd in the delayed callback at Zombie.cs:177) + AnimFrame(Block)=8 / (BlockEnd)=7 (Zombie.cs:203-204)", result: pass }
+      - { kind: value-diff, ref: "monsters.cfg:127 g_monsters_armor_blockpercent=0.5 vs DefendBlock fallback 0.5 (Zombie.cs:170)", result: pass }
+      - { kind: data-file, ref: "Base M_Zombie_Defend_Block plays no sound; port plays no block sound (Zombie.cs:185 comment)", result: pass }
     confidence: high
-    notes: "Armor-restore fallback 0.5 (matches g_monsters_armor_blockpercent) and silent block both verified. Animation is now LIVE in general, but the block phase is mapped to the Attack/melee frame (4) rather than the dedicated blockstart/blockend frames — so block shows the melee pose. Presentation downgraded missing->partial (something plays, but the wrong frame). The MonsterAnim enum has no Block phase to carry 8/7."
+    notes: "FIX (2026-06-25): the block now plays its OWN frames. The MonsterAnim enum gained Block + BlockEnd slots; DefendBlock sets st.Anim=Block at the start (Zombie.cs:182, deliberately after QueueDelayedAttack so the generic Attack stamp doesn't win) and the delayed end-callback sets st.Anim=BlockEnd (Zombie.cs:177); AnimFrame maps Block->8 (blockstart) and BlockEnd->7 (blockend). Presentation partial->faithful. Armor-restore fallback 0.5 (matches g_monsters_armor_blockpercent) and silent block both still verified."
 
   - id: monster-zombie.attack.leap
     name: "Leap attack: ballistic toss toward enemy when at range"
@@ -180,30 +180,30 @@ features:
       - "common/monsters/monster/zombie.qc:M_Zombie_Attack (RANGED case)"
       - "common/monsters/sv_monsters.qc:Monster_Attack_Leap / Monster_Attack_Leap_Check"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:Attack"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Leap"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:Attack (Leap with MonsterAnim.Shoot)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Leap (st.Anim=leapAnim:1347)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:TraceToss"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:AnimFrame (Shoot -> frame 0)"
     constants:
       - { name: "g_monster_zombie_attack_leap_speed", base: "500", port: "500 (live cvar)", match: true }
       - { name: "leap_vertical_boost", base: "'0 0 200'", port: "(0,0,200)", match: true }
       - { name: "g_monster_zombie_attack_leap_delay", base: "1.5", port: "1.5 (live cvar)", match: true }
       - { name: "leap_guard", base: "grounded + !attacking + alive + tracetoss hits enemy", port: "same guards + TraceToss", match: true }
-      - { name: "leap_anim_frame", base: "anim_shoot '0 1 5' (frame 0)", port: "Leap sets Attack phase -> frame 4 (melee), not 0", match: false }
+      - { name: "leap_anim_frame", base: "anim_shoot '0 1 5' (frame 0)", port: "Leap(MonsterAnim.Shoot) -> frame 0", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "anim_shoot '0 1 5' (frame 0) leap animation is not played: Leap sets the Attack phase, which maps to the melee frame (4); so the leap shows the melee pose rather than the shoot pose (presentation)."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "zombie.qc RANGED + Monster_Attack_Leap(_Check) vs Zombie.Attack + Leap (sets Anim=Attack)", result: pass }
+      - { kind: code-read, ref: "zombie.qc RANGED + Monster_Attack_Leap(_Check) vs Zombie.Attack (Leap(..., MonsterAnim.Shoot), Zombie.cs:132) + Leap (st.Anim=leapAnim:1347) + AnimFrame(Shoot)=0 (Zombie.cs:205)", result: pass }
     confidence: medium
-    notes: "Leap velocity, vertical boost, guards, and tracetoss-lands-on-enemy gate all faithful. TraceToss is a stepped approximation of QC tracetoss (medium confidence on arc fidelity). Base zombie has NO ranged cue ('//ranged' commented out) and SoundCues excludes 'ranged', so leap is audio:na (correct). Presentation downgraded na->partial: animation is now live but the leap maps to the Attack/melee frame (4) instead of anim_shoot (0)."
+    notes: "FIX (2026-06-25): the leap now plays anim_shoot (frame 0). Leap takes a leapAnim parameter (default Attack) and sets st.Anim=leapAnim (MonsterAI.cs:1347); Zombie.Attack passes MonsterAnim.Shoot; AnimFrame maps Shoot->0. Presentation partial->faithful. Leap velocity, vertical boost, guards, and tracetoss-lands-on-enemy gate all faithful. TraceToss is a stepped approximation of QC tracetoss (medium confidence on arc fidelity). Base zombie has NO ranged cue ('//ranged' commented out) and SoundCues excludes 'ranged', so leap is audio:na (correct)."
 
   - id: monster-zombie.attack.leap_touch
     name: "Leap contact: contact damage + knockback, then disarm to stop spam"
@@ -240,11 +240,11 @@ features:
       - "common/monsters/sv_monsters.qc:Monster_Damage:1101 (monstersound_pain, 1.2, true, CH_PAIN)"
       - "common/monsters/sv_monsters.qc:Monster_Sound:368"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkPain (MonsterSound:1444; st.Anim=Pain:1441)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkPain (st.Anim=Pain:1559; MonsterSound:1563)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterSound (SoundCues gate)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:AnimFrame (Pain -> frame 20)"
     constants:
-      - { name: "pain_finished_window", base: "time+0.34", port: "Now + st.Def.PainWindow; Zombie inherits Monster.PainWindow=>0.34f (EntityClasses.cs), no override -> 0.34", match: true }
+      - { name: "pain_finished_window", base: "time+0.34", port: "Now + st.Def.PainWindow; Zombie inherits Monster.PainWindow=>0.34f, no override -> 0.34", match: true }
       - { name: "pain_throttle (msound_delay)", base: "1.2 (delaytoo)", port: "1.2 (delayToo)", match: true }
       - { name: "g_monsters_sounds gate", base: "autocvar_g_monsters_sounds", port: "Cvar g_monsters_sounds (default 1)", match: true }
       - { name: "pain_anim_frame", base: "random()>0.5 -> pain1 '20 1 2' / pain2 '22 1 2'", port: "Pain phase -> frame 20 (pain1 only; pain2 dropped)", match: false }
@@ -259,13 +259,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "pain2 '22 1 2' and the random pain1/pain2 alternation are dropped: the port always plays pain1 (frame 20). Minor visual variety loss only (presentation)."
+      - "pain2 '22 1 2' and the random pain1/pain2 alternation are dropped: the port always plays pain1 (frame 20). Minor visual variety loss only (presentation). The MonsterAnim Pain phase carries no alternate slot."
       - "Sound DELIVERY machinery (GlobalSound .sounds-file table, random sample, skin-keyed Monster_Sounds_Update) still unported — moot for the zombie since pain is correctly silent, but the path-form/sample-table seam is absent (latent)."
     verification:
-      - { kind: code-read, ref: "zombie.qc:mr_pain (pain_finished=time+0.34, setanim pain1/2) vs MarkPain (PainFinished=Now+PainWindow, Anim=Pain) + AnimFrame(Pain)=20 + MonsterSound (g_monsters_sounds + 1.2s throttle + SoundCues)", result: pass }
-      - { kind: data-file, ref: "zombie.dpm_0.sounds //pain commented out; SoundCues={death,sight,idle} excludes pain -> MonsterSound:677 cueDefined=false -> no Play", result: pass }
+      - { kind: code-read, ref: "zombie.qc:mr_pain (pain_finished=time+0.34, setanim pain1/2) vs MarkPain (PainFinished=Now+PainWindow:1558, Anim=Pain:1559) + AnimFrame(Pain)=20 + MonsterSound (g_monsters_sounds + 1.2s throttle + SoundCues)", result: pass }
+      - { kind: data-file, ref: "zombie.dpm_0.sounds //pain commented out; SoundCues={death,sight,idle} excludes pain -> cueDefined=false -> no Play", result: pass }
     confidence: high
-    notes: "FIXED presentation: pain1 (frame 20) is now stamped onto Entity.Frame via DriveAnimFrame and played client-side. Marked faithful because the dropped variant is the secondary pain2 only (Base picks 20 or 22 at random; 20 is a correct member of the set). Pain-sound regression stays gone (SoundCues excludes pain -> silent, matching Base). g_monsters_sounds master gate + 1.2s throttle faithful. Only the pain2 variety and the latent delivery-machinery seam remain."
+    notes: "pain1 (frame 20) is stamped onto Entity.Frame via DriveAnimFrame and played client-side. Marked faithful because the dropped variant is the secondary pain2 only (Base picks 20 or 22 at random; 20 is a correct member of the set). Pain-sound regression stays gone (SoundCues excludes pain -> silent). g_monsters_sounds master gate + 1.2s throttle faithful. Only the pain2 variety and the latent delivery-machinery seam remain. Unchanged by the 2026-06-25 wave."
 
   - id: monster-zombie.death.mr_death
     name: "Death: corpse + death anim + death sound + respawn machinery"
@@ -274,14 +274,14 @@ features:
       - "common/monsters/monster/zombie.qc:mr_death"
       - "common/monsters/sv_monsters.qc:Monster_Dead:1044 (monstersound_death) / Monster_Dead_Damage"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkDead (st.Anim=Death:1524)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkDead (st.Anim=Death:1643)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterDeadDamage"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterSound (death cue:1491)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkDead (death cue:1610)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:AnimFrame (Death -> die1=9 / die2=12)"
     constants:
       - { name: "death_armor_restore", base: "g_monsters_armor_blockpercent=0.5", port: "handled generically", match: true }
       - { name: "death_anim_frame", base: "random()>0.5 -> die1 '9 1 0.5' / die2 '12 1 0.5'", port: "Death phase -> frame 9 (die1); die2=12 unreachable (zombie sets no DeathLanded)", match: false }
-      - { name: "death_sound", base: "death cue DEFINED in .sounds (audible)", port: "'death' IN SoundCues -> Play monsters/zombie_death.wav (asset death.ogg present)", match: true }
+      - { name: "death_sound", base: "death cue DEFINED in .sounds (audible)", port: "'death' IN SoundCues -> Play monsters/zombie/death.ogg (asset present)", match: true }
       - { name: "g_monsters_sounds gate", base: "autocvar_g_monsters_sounds", port: "gated via MonsterSound", match: true }
       - { name: "corpse_gib_threshold", base: "-50 (Monster_Dead_Damage)", port: "-50", match: true }
       - { name: "live_gib_threshold", base: "-100", port: "-100", match: true }
@@ -295,13 +295,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "die2 '12 1 0.5' is unreachable for the zombie: DriveAnimFrame selects die2 only when st.DeathLanded is true, which is set by a per-monster dead-think (e.g. the wyvern's land flag); the zombie installs no such dead-think, so it always plays die1 (frame 9). Base picks die1/die2 at random, so the zombie permanently drops the die2 death variant (presentation)."
-      - "Sound DELIVERY uses literal monsters/zombie_death.wav while the shipped asset is sound/monsters/zombie/death.ogg (no GlobalSound table lookup, no random sample, no .ogg extension); the death cue IS a real shipped asset so this is audible/faithful in effect, but the path-form seam is latent."
+      - "die2 '12 1 0.5' is unreachable for the zombie: DriveAnimFrame selects die2 only when st.DeathLanded is true, set by a per-monster dead-think (only the wyvern's land flag, Wyvern.cs:130). The zombie installs no such dead-think, so it always plays die1 (frame 9). Base picks die1/die2 at random, so the zombie permanently drops the die2 death variant (presentation)."
+      - "Sound DELIVERY uses literal monsters/zombie/death.ogg (SoundExt='.ogg') with no GlobalSound table lookup / random sample; the death cue IS a real shipped asset so this is audible/faithful in effect, but the table machinery is latent."
     verification:
-      - { kind: code-read, ref: "zombie.qc:mr_death (setanim die1/die2) + Monster_Dead(_Damage) vs MarkDead (Anim=Death) + AnimFrame(Death) + DriveAnimFrame (die2 gated on DeathLanded) + MonsterDeadDamage (MonsterSound:1491, g_monsters_sounds + SoundCues gated)", result: pass }
+      - { kind: code-read, ref: "zombie.qc:mr_death (setanim die1/die2) + Monster_Dead(_Damage) vs MarkDead (Anim=Death:1643, MonsterSound death:1610) + AnimFrame(Death) + DriveAnimFrame (die2 gated on DeathLanded:1188) + dead-branch DriveAnimFrame (RunThink:1128)", result: pass }
       - { kind: data-file, ref: "zombie.dpm_0.sounds: 'death' defined; SoundCues includes 'death'; sound/monsters/zombie/death.ogg present", result: pass }
     confidence: high
-    notes: "FIXED (partial): die1 (frame 9) is now stamped and played client-side via DriveAnimFrame on the dead branch (RunThink:1030). Death sound + corpse + loot + scoring + gib thresholds faithful. Presentation downgraded missing->partial (not faithful): the zombie never reaches die2 (frame 12) because DeathLanded is a per-monster landing flag the zombie never sets, whereas Base alternates die1/die2 randomly. The death-sound path-form seam remains latent (but audible in effect)."
+    notes: "die1 (frame 9) is stamped and played client-side via DriveAnimFrame on the dead branch (RunThink:1128). Death sound + corpse + loot + scoring + gib thresholds faithful. Presentation stays partial: the zombie never reaches die2 (frame 12) because DeathLanded is a per-monster landing flag only the wyvern sets, whereas Base alternates die1/die2 randomly. The death-sound path-form seam remains latent (but audible in effect). Unchanged by the 2026-06-25 wave."
 
   - id: monster-zombie.respawn.undead
     name: "Always-respawn at death point (undead): corpse rises unless gibbed"
@@ -311,7 +311,7 @@ features:
       - "common/monsters/sv_monsters.qc:Monster_Respawn_Check / Monster_Respawn / Monster_Dead_Think"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:RespawnCheck"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Respawn"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:Respawn (clears DeathLanded:1842)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:DeadThink"
     constants:
       - { name: "always_respawn", base: "NORESPAWN cleared (zombies always respawn)", port: "AlwaysRespawn=true", match: true }
@@ -329,9 +329,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "zombie.qc:mr_setup + Monster_Respawn(_Check)/Dead_Think vs RespawnCheck/Respawn/DeadThink; Respawn:1722 now also clears st.DeathLanded", result: pass }
+      - { kind: code-read, ref: "zombie.qc:mr_setup + Monster_Respawn(_Check)/Dead_Think vs RespawnCheck/Respawn/DeadThink; Respawn:1841 sets Anim=Idle + clears st.DeathLanded:1842", result: pass }
     confidence: medium
-    notes: "AlwaysRespawn bypasses g_monsters_respawn/NORESPAWN; respawns at death point after corpse lifetime + 0.2s. Gibbing (corpse health <=-50, or live <=-100) removes the body and prevents the rise. Respawn now also resets st.DeathLanded=false (MonsterAI.cs:1722) so a respawned monster isn't stuck on a die2 corpse frame — harmless for the zombie (which never sets it). Not yet exercised end-to-end in a live match (no stock map places it)."
+    notes: "AlwaysRespawn bypasses g_monsters_respawn/NORESPAWN; respawns at death point after corpse lifetime + 0.2s. Gibbing (corpse health <=-50, or live <=-100) removes the body and prevents the rise. Respawn resets st.DeathLanded=false (MonsterAI.cs:1842) so a respawned monster isn't stuck on a die2 corpse frame — harmless for the zombie (which never sets it). Not yet exercised end-to-end in a live match (no stock map places it)."
 
   - id: monster-zombie.presentation.animation
     name: "Zombie model animation (mr_anim frame groups)"
@@ -339,34 +339,35 @@ features:
     base_refs:
       - "common/monsters/monster/zombie.qc:mr_anim"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:AnimFrame (phase->frame table)"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:DriveAnimFrame (stamps Entity.Frame each think)"
-      - "game/net/ServerNet.cs:1752 (networks Frame for Generic kind)"
-      - "game/net/ClientEntityView.cs:200-203 (Generic -> OnEntityUpdate frameDriven:true)"
-      - "game/client/ClientWorld.cs:1595 (anim.FollowEntityFrame); game/client/ModelAnimator.cs (FollowEntityFrame playback)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:AnimFrame (phase->frame table; full Spawn/Block/BlockEnd/Shoot)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:DriveAnimFrame:1186 (stamps Entity.Frame each think)"
+      - "src/XonoticGodot.Common/Gameplay/EntityClasses.cs:79 (MonsterAnimPhase enum: Idle..Shoot)"
+      - "game/net/ServerNet.cs:1808 (networks Frame for Generic kind; Classify:2125)"
+      - "game/net/ClientEntityView.cs:196-203 (Generic -> OnEntityUpdate frameDriven:true)"
+      - "game/client/ClientWorld.cs:1622 (anim.FollowEntityFrame); ModelAnimator (FollowEntityFrame playback)"
     constants:
-      - { name: "anim_spawn", base: "'30 1 3'", port: "not played (spawn folds into Idle 19)", match: false }
+      - { name: "anim_spawn", base: "'30 1 3'", port: "30 (Spawn)", match: true }
       - { name: "anim_walk/run", base: "'27 1 1'", port: "27 (Walk/Run)", match: true }
       - { name: "anim_idle", base: "'19 1 1'", port: "19 (Idle)", match: true }
       - { name: "anim_pain1/2", base: "'20 1 2' / '22 1 2'", port: "20 (pain1 only; pain2 dropped)", match: false }
       - { name: "anim_melee1/2/3", base: "'4 1 5' (all three)", port: "4 (Attack)", match: true }
-      - { name: "anim_shoot", base: "'0 1 5'", port: "not mapped (leap uses Attack frame 4)", match: false }
+      - { name: "anim_shoot", base: "'0 1 5'", port: "0 (Shoot)", match: true }
       - { name: "anim_die1/2", base: "'9 1 0.5' / '12 1 0.5'", port: "9 (die1); die2=12 unreachable (no zombie DeathLanded)", match: false }
-      - { name: "anim_blockstart/end", base: "'8 1 1' / '7 1 1'", port: "not mapped (block uses Attack frame 4)", match: false }
+      - { name: "anim_blockstart/end", base: "'8 1 1' / '7 1 1'", port: "8 (Block) / 7 (BlockEnd)", match: true }
     status:
       logic: na
-      values: partial
+      values: faithful
       timing: partial
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Core phases NOW LIVE + faithful: idle (19), walk/run (27), melee (4), pain1 (20), die1 (9) are stamped onto the networked Entity.Frame by DriveAnimFrame and played by the client ModelAnimator (FollowEntityFrame). The monster networks as Generic and ClientEntityView feeds it frameDriven:true. The 6-value MonsterAnim phase enum is now consumed for playback, not just timing."
-      - "Residual: the phase enum has no Spawn/Block/Shoot slots, so anim_spawn (30) folds into Idle (19), anim_blockstart/end (8/7) and anim_shoot (0) both map to the Attack/melee frame (4). die2 (12) is unreachable (no zombie DeathLanded) and pain2 (22) is dropped — the random pain1/pain2 and die1/die2 alternations collapse to a single member each. Timing per-frame fps (the second/third animfixfps components, e.g. '… 1 0.5' = 2s) is not modeled by the phase enum."
+      - "Two random-variant losses remain: pain2 (22) is dropped (the port always plays pain1=20) and die2 (12) is unreachable for the zombie (DriveAnimFrame's die2 is gated on st.DeathLanded, which only the wyvern sets — the zombie has no dead-think). Base alternates pain1/pain2 and die1/die2 at random; the zombie collapses each to its first member. All OTHER 12 frame groups (spawn 30, idle 19, walk/run 27, melee 4, pain1 20, die1 9, blockstart 8, blockend 7, shoot 0) are now mapped and played byte-exact."
+      - "Per-frame fps/duration (the second/third animfixfps components, e.g. '… 1 0.5' = 2s) is not modeled by the phase enum (timing)."
     verification:
-      - { kind: code-read, ref: "Zombie.AnimFrame frames match zombie.qc mr_anim (19/27/4/20/9/12); DriveAnimFrame stamps Entity.Frame; ServerNet networks Frame; ClientEntityView Generic->frameDriven:true; ClientWorld FollowEntityFrame", result: pass }
-      - { kind: code-read, ref: "live-chain trace: Zombie.Think->RunThink (SV_RunThink)->DriveAnimFrame->AnimFrame->self.Frame", result: pass }
+      - { kind: code-read, ref: "Zombie.AnimFrame (Zombie.cs:194-207) maps all of 30/19/27/4/20/9/8/7/0 (+die2 12 gated); DriveAnimFrame:1188 stamps Entity.Frame via ToPhase; MonsterAnimPhase enum has Spawn/Block/BlockEnd/Shoot (EntityClasses.cs:79)", result: pass }
+      - { kind: code-read, ref: "live-chain trace: Zombie.Think->RunThink (SV_RunThink)->DriveAnimFrame->AnimFrame->self.Frame; ServerNet networks Frame (Generic); ClientEntityView Generic->frameDriven:true; ClientWorld FollowEntityFrame:1622", result: pass }
     confidence: high
-    notes: "MAJOR FIX (Wave-5 finish 023ba70): the formerly fully-dead animation row is now live and mostly faithful. Frame VALUES are byte-exact vs Base mr_anim. The whole monster family shares the AnimFrame/DriveAnimFrame mechanism; the zombie declares 6 of its 14 Base frame groups, collapsing the duplicate-frame ones (melee1/2/3 all=4, walk=run=27) faithfully and folding the 4 unmapped phases (spawn/block/shoot, plus the pain2/die2 alternates) onto their nearest phase. Status: values/timing/presentation partial (not faithful) because of those 4 unmapped groups + the dropped fps/alternation; liveness flipped dead->live."
+    notes: "FIX (2026-06-25): the second animation wave closed the spawn/block/shoot folds. BOTH the descriptor MonsterAnimPhase enum (EntityClasses.cs:79) and the internal MonsterAnim enum (MonsterAI.cs:194) gained Spawn/Block/BlockEnd/Shoot, the zombie declares all 9 distinct frame groups (collapsing the duplicate-frame ones — melee1/2/3 all=4, walk=run=27 — faithfully), and Spawn/DefendBlock/Leap each set their own phase. Frame VALUES are byte-exact vs Base mr_anim. values: partial->faithful, presentation: partial->faithful. timing stays partial (per-frame fps not modeled). The only residual divergence is the dropped pain2/die2 RANDOM alternates (each collapses to its first member); that is a variant-variety loss, not a wrong frame."

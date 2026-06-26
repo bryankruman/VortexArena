@@ -1,12 +1,12 @@
 unit: turret-tesla
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 8
   worst_gaps:
     - "Head coil never visually spins: tr_think computes HeadAVelocity/HeadAngles server-side (logic/values/timing faithful) but no head-bone entity (tesla_head.md3) renders it — grep confirms HeadAngles has zero render-node consumer, so the menacing charge spin is invisible."
-    - "No scan throttle: Base turret_tesla_firecheck gates the radius rescan with target_select_time + mindelay(0.1)/maxdelay(1); the port re-validates the held enemy on the 0.5s window but still runs a full SelectTarget EVERY think (TeslaTurret.Think:82 unconditional) — more CPU, behaviourally near-identical given the 1.5s refire."
+    - "Idle crackle arc reach distribution: Prandom.Vec() returns a cube [-1,1]^3 while QC randomvec() (#91) reject-samples a uniform unit-sphere direction; the *350 idle endpoint is a slightly different shape (cosmetic-only)."
 features:
   - id: turret-tesla.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -145,27 +145,27 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TeslaTurret.cs:Think"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:SelectTarget"
     constants:
-      - { name: "targetscan_mindelay", base: "0.1 (g_turrets_targetscan_mindelay)", port: "not applied to Tesla (SelectTarget called unconditionally every think, Think:82)", match: false }
-      - { name: "targetscan_maxdelay", base: "1 (g_turrets_targetscan_maxdelay)", port: "not applied to Tesla (no target_select_time scan-interval gate)", match: false }
-      - { name: "target re-validate window", base: "0.5 (target_validate_time = time + 0.5)", port: "TargetValidateTime gate: when held enemy invalid, clear + set now+0.5f", match: true }
+      - { name: "targetscan_mindelay", base: "0.1 (autocvar_g_turrets_targetscan_mindelay)", port: "TurretAI.Cvar(\"g_turrets_targetscan_mindelay\", 0.1f); now < TargetSelectTime+mindelay -> suppress scan (Think:102)", match: true }
+      - { name: "targetscan_maxdelay", base: "1 (autocvar_g_turrets_targetscan_maxdelay)", port: "TurretAI.Cvar(\"g_turrets_targetscan_maxdelay\", 1f); now > TargetSelectTime+maxdelay -> force scan (Think:89)", match: true }
+      - { name: "target re-validate window", base: "0.5 (target_validate_time = time + 0.5)", port: "TargetValidateTime gate: when held enemy invalid, clear + set now+0.5f (Think:93-99)", match: true }
+      - { name: "scan only when forced/invalid, then stamp time", base: "this.enemy = turret_select_target; this.target_select_time = time", port: "if doTargetScan: e.Enemy = SelectTarget; st.TargetSelectTime = now (Think:106-110)", match: true }
       - { name: "refire gate (attack_finished)", base: "yes", port: "AttackFinished > now -> return", match: true }
       - { name: "own-ammo gate (ammo >= shot_dmg)", base: "yes", port: "Ammo < ShotDamage -> return", match: true }
       - { name: "requires enemy != NULL", base: "yes", port: "Enemy is null -> return", match: true }
     status:
       logic: faithful
-      values: partial
-      timing: partial
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "No scan throttle: Base turret_tesla_firecheck rate-limits the radius rescan via target_select_time + mindelay(0.1)/maxdelay(1) and only rescans when the held target went invalid or the maxdelay elapsed. The port models the 0.5s held-enemy re-validate window but runs a full SelectTarget on EVERY think (TeslaTurret.Think:82, unconditional) — more CPU, behaviourally near-identical given the 1.5s refire. STILL OPEN."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "tesla.qc turret_tesla_firecheck (do_target_scan via maxdelay OR invalid-target, suppressed by mindelay, then turret_firecheck refire+ammo, enemy!=NULL) vs TeslaTurret.Think gate sequence: 0.5s re-validate present, SelectTarget still unconditional, then AttackFinished/Ammo/enemy gates", result: pass }
+      - { kind: code_read, ref: "tesla.qc turret_tesla_firecheck (do_target_scan via maxdelay OR invalid-target, suppressed by mindelay, then turret_firecheck refire+ammo, enemy!=NULL) vs TeslaTurret.Think:83-114 — full scan-throttle now ported: cvar-backed mindelay/maxdelay (TurretAI.Cvar defaults 0.1/1), TargetSelectTime stamp, 0.5s re-validate, then AttackFinished/Ammo/enemy gates. Matches Base structure line-for-line.", result: pass }
     confidence: high
-    notes: "Cooldown+ammo+target gate + 0.5s held-target re-validate window all faithful and live. The per-frame scan mindelay/maxdelay throttle is still simplified away (low gameplay impact for a fixed turret given the 1.5s refire). Unchanged from prior audit."
+    notes: "FIXED since prior audit: the scan-throttle that was previously simplified away (SelectTarget ran every think) is now fully ported — TeslaTurret.Think:83-110 replicates turret_tesla_firecheck's do_target_scan logic with cvar-backed mindelay(0.1)/maxdelay(1) gating via TargetSelectTime, only re-selecting on maxdelay-elapsed OR held-target-invalid and suppressing under mindelay. Cooldown+ammo+target gate + 0.5s re-validate also faithful and live. Fully faithful now."
   - id: turret-tesla.weapon.chain
     name: "Chain-lightning discharge (toast loop): nearest-LOS first hop, 10-hop decay"
     layer: [authority]

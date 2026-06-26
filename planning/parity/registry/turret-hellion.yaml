@@ -1,14 +1,14 @@
 unit: turret-hellion
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 10
   worst_gaps:
-    - "Death blast STILL fired by the port (TurretAI.Die: RadiusDamage min(ammo,50), edge *0.25, radius *5, force 250) while Base turret_die has its RadiusDamage line COMMENTED OUT (sv_turrets.qc:181) — a hellion (and every turret) does NO death explosion in Base. Wave-2 did not touch this; it remains a logic+values divergence on every turret death."
-    - "Fire gate still adds an OnTarget muzzle-alignment check (~AIMDIST) and runs an LOS trace at target SELECTION; Base hellion firecheck has neither AIMDIST nor LOS (it fires once range/cool/ammo allow, the missile finds its own way). Base TFL_FIRECHECK_AFF (friendly-fire avoidance) still not modeled (own row turret-hellion.weapon.aff)."
-    - "No launcher head-spin animation (tr_think frame 1..6->0, ++frame on each shot), no head model (hellion.md3) as a separate spinning-launcher entity, no two-cannon tag_fire/tag_fire2 muzzle alternation, no te_explosion launch puff, no PROJECTILE_ROCKET trail / MIF_SPLASH|MIF_PROXY|MIF_GUIDED_HEAT flags."
-    - "FIXED in Wave-2: blast radius 500->80, missile proximity 16u / stray-out 400u, shot_spread 0.08 launch scatter, target_range_optimal 4500, all four target-select biases (0.7/0.01/0.01/0), targetscan_maxdelay default 1, respawntime 90, track_accel 0.25/0.6/0.25, and the extra select ANGLELIMITS removed."
+    - "Presentation only: no head MODEL (hellion.md3) instantiated as a separate spinning-launcher bone entity, so the now-cycling tur_head.frame state drives no visible spin; no two-cannon tag_fire/tag_fire2 muzzle alternation (single computed ShotOrg); no te_explosion launch puff; no PROJECTILE_ROCKET CSQC trail / MIF_SPLASH|MIF_PROXY|MIF_GUIDED_HEAT smoke."
+    - "spawnflags still only partially mapped (FASTPROJ n/a; splash via radius damage; PLAYER/MISSILE implicit)."
+    - "FIXED since 2026-06-22 (Wave 7, commit 8cb57e3): death blast REMOVED from TurretAI.Die to match Base's commented-out RadiusDamage (sv_turrets.qc:182); TFL_FIRECHECK_AFF now modeled (RunCombat L689 + hellion FireCheck flags L67); firecheck flags now DEAD|DISTANCES|TEAMCHECK|REFIRE|AFF|AMMO_OWN with NO AIMDIST/LOS (matches Base); launcher head-spin frame cycle (tr_think 1..6->0 + ++frame per shot) now ported live in HellionTurret.Think/Attack."
+    - "Already-faithful from prior wave: blast radius 80, missile proximity 16u / stray-out 400u, shot_spread 0.08, target_range_optimal 4500, all four target-select biases (0.7/0.01/0.01/0), targetscan_maxdelay default 1, respawntime 90, track_accel 0.25/0.6/0.25, select ANGLELIMITS removed."
 features:
   - id: turret-hellion.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -39,7 +39,7 @@ features:
     verification:
       - { kind: code_read, ref: "hellion.qh vs HellionTurret ctor + Spawn (unchanged by Wave-2)", result: pass }
     confidence: high
-    notes: "Identity/hitbox/base model/health faithful; spinning head model + tag bones not modeled. Unchanged this wave."
+    notes: "Identity/hitbox/base model/health faithful; the separate spinning head MODEL (hellion.md3) + tag bones are still not instantiated as a distinct entity (presentation partial). The head-spin frame STATE itself is now cycled on the turret edict (see turret-hellion.anim.headspin) but without a head-model bone it is not visibly rendered."
   - id: turret-hellion.setup.tr_setup
     name: "tr_setup: aim/select/firecheck/ammo flags, fluid-inertia tracker"
     layer: [authority]
@@ -52,14 +52,14 @@ features:
     constants:
       - { name: "aim_flags", base: "TFL_AIM_SIMPLE", port: "aimSimple:true", match: true }
       - { name: "select_flags", base: "LOS|PLAYERS|RANGELIMITS|TEAMCHECK (+MISSILES via TUR_FLAG_MISSILE)", port: "Los|Players|RangeLimits|TeamCheck|Missiles (ANGLELIMITS removed)", match: true }
-      - { name: "firecheck_flags", base: "DEAD|DISTANCES|TEAMCHECK|REFIRE|AFF|AMMO_OWN (no LOS, no AIMDIST)", port: "cooldown+ammo+rangeMin+OnTarget(~AIMDIST)+LOS-at-select; no AFF", match: false }
+      - { name: "firecheck_flags", base: "DEAD|DISTANCES|TEAMCHECK|REFIRE|AFF|AMMO_OWN (no LOS, no AIMDIST)", port: "FireCheckDead|Distances|TeamCheck|Refire|Aff|AmmoOwn (no AimDist, no Los) — HellionTurret.cs:66-67", match: true }
       - { name: "ammo_flags", base: "ROCKETS|RECHARGE", port: "ammo pool + recharge (RECHARGE)", match: true }
       - { name: "track_type", base: "3 (fluid inertia)", port: "TrackFluidInertia (3)", match: true }
       - { name: "track_accel_pitch", base: "0.25", port: "0.25 (TrackAccelPitch passed + consumed)", match: true }
       - { name: "track_accel_rot", base: "0.6", port: "0.6 (TrackAccelRot passed + consumed)", match: true }
       - { name: "track_blendrate", base: "0.25", port: "0.25 (TrackBlendRate passed + consumed)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -67,12 +67,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Fire gate includes an OnTarget muzzle-alignment check (~AIMDIST) and runs an LOS trace at target selection; Base hellion firecheck has neither AIMDIST nor LOS. Base TFL_FIRECHECK_AFF not modeled (tracked as turret-hellion.weapon.aff)."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "hellion.qc tr_setup vs HellionTurret.Think TurretParams (Select drops AngleLimits; trackAccel 0.25/0.6/0.25 passed and consumed in TurretAI fluid-inertia tracker L497-499); turrets.cfg track_accel_* + select flags re-read", result: pass }
+      - { kind: code_read, ref: "hellion.qc:18-24 tr_setup vs HellionTurret.cs FireCheck (L66-67) + Select (L60-61) + TurretParams: firecheck now DEAD|DISTANCES|TEAMCHECK|REFIRE|AFF|AMMO_OWN with NO AimDist/Los (matches Base exactly); the AIMDIST gate in RunCombat L696 is now flag-driven and hellion does not set it; AFF gate RunCombat L689 driven by hellion's FireCheckAff. Select drops AngleLimits; trackAccel 0.25/0.6/0.25 consumed in fluid-inertia tracker", result: pass }
     confidence: high
-    notes: "FIXED: extra ANGLELIMITS removed from Select (now matches Base), and track_accel_pitch/rot/blendrate now pass the hellion cfg values (0.25/0.6/0.25) and are consumed by the tracker. Residual logic divergence: OnTarget (~AIMDIST) + LOS-at-select that Base hellion firecheck omits, plus missing AFF."
+    notes: "FIXED since 2026-06-22 (Wave 7): firecheck_flags now bit-faithful — the previously port-added OnTarget(~AIMDIST) gate is flag-driven (hellion omits AIMDIST) and AFF is now set + honoured. No remaining logic divergence in setup; LOS at SELECT is correct (Base tr_setup L21 sets TFL_TARGETSELECT_LOS)."
   - id: turret-hellion.spawn.liveness
     name: "Map spawnfunc wiring + per-frame think (turret_hellion placed on map)"
     layer: [authority]
@@ -178,7 +177,7 @@ features:
     divergence_rationale: null
     gaps:
       - "No te_explosion launch puff at the muzzle."
-      - "No two-cannon tag_fire/tag_fire2 muzzle alternation (single computed ShotOrg origin; couples to the missing head-spin frame that selects the tag)."
+      - "No two-cannon tag_fire/tag_fire2 muzzle alternation (single computed ShotOrg origin). The head-spin frame state that Base uses to SELECT the tag is now cycled (turret-hellion.anim.headspin) but there is no head-model bone, so the muzzle-tag alternation stays a client-render gap."
       - "No PROJECTILE_ROCKET CSQC trail / MIF_SPLASH|MIF_PROXY|MIF_GUIDED_HEAT flags (no visible smoke trail)."
     verification:
       - { kind: code_read, ref: "hellion_weapon.qc wr_think turret_projectile (normalize(v_forward + randomvec()*shot_spread)) vs HellionTurret.Attack dir = Normalize(dir + Prandom.Vec()*ShotSpread 0.08) -> GuidedProjectile.Launch; Prandom.Vec() = signed [-1,1] per axis", result: pass }
@@ -250,25 +249,27 @@ features:
     layer: [authority, presentation]
     base_refs:
       - "common/turrets/turret/hellion.qc:11"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HellionTurret.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HellionTurret.cs:Attack"
     constants:
-      - { name: "frame cycle", base: "++frame while !=0; wrap at >=7 to 0", port: "none", match: false }
-      - { name: "kick on shot (++tur_head.frame)", base: "yes (hellion_weapon.qc:42)", port: "none", match: false }
+      - { name: "frame cycle", base: "++frame while !=0; wrap at >=7 to 0", port: "Think: if(e.Frame!=0)e.Frame+=1; if(e.Frame>=7)e.Frame=0 (L89-90)", match: true }
+      - { name: "kick on shot (++tur_head.frame)", base: "yes (hellion_weapon.qc:42)", port: "turret.Frame += 1f on each Attack (L129)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: missing
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No tur_head.frame handling: the launcher never spins (Base cycles frames 1..6->0, kicked on each shot via ++actor.tur_head.frame) — the head model is static. Base ALSO uses the frame to pick the firing muzzle tag (tag_fire vs tag_fire2), so its absence couples to the missing two-cannon alternation. There is still no per-frame tr_think dispatch in the port turret loop."
+      - "Server-authoritative frame STATE is now cycled (idle 0 -> spinning 1..6 kicked per shot, wrap at >=7), but there is no separate head MODEL entity (hellion.md3) attached to a bone, so the cycling frame drives no VISIBLE spinning launcher and is not used to select the firing muzzle tag (tag_fire vs tag_fire2 / two-cannon alternation) — both remain client-render gaps tracked here + on turret-hellion.weapon.launch."
     verification:
-      - { kind: code_read, ref: "no frame handling in HellionTurret / TurretAI; Think has no tr_think analogue and Attack never advances frame (unchanged by Wave-2)", result: fail }
+      - { kind: code_read, ref: "hellion.qc:11-17 tr_think (frame 1..6->0) vs HellionTurret.Think L89-90 (e.Frame cycle, run every think before RunCombat); hellion_weapon.qc:42 ++actor.tur_head.frame vs Attack L129 turret.Frame+=1; Think is armed every frame on the live spawn path (turret-hellion.spawn.liveness)", result: pass }
     confidence: high
-    notes: "Still entirely absent in port. Pure launcher-spin animation (also selects the firing muzzle tag in Base). Unchanged this wave."
+    notes: "FIXED since 2026-06-22 (Wave 7, commit 8cb57e3): the tr_think frame cycle + per-shot kick are now ported and live (logic/values/timing faithful). The port has no head-bone entity so it cycles the turret edict's own .frame (same pattern as HkTurret). Presentation (the actually-visible spin + tag-driven muzzle) still missing — needs the attached head model."
   - id: turret-hellion.damage.lifecycle
     name: "Damage gating, retaliation, death + respawn"
     layer: [authority]
@@ -286,43 +287,43 @@ features:
       - { name: "inactive/dead take no damage", base: "yes", port: "yes", match: true }
       - { name: "friendlyfire gate", base: "g_friendlyfire", port: "g_friendlyfire", match: true }
       - { name: "retaliate (attacker becomes target)", base: "TFL_DMG_RETALIATE", port: "yes", match: true }
-      - { name: "death blast", base: "NONE (RadiusDamage commented out, sv_turrets.qc:181)", port: "min(ammo,50) blast + edge*0.25 + force*5, DeathTypes.Turret (STILL ACTIVE)", match: false }
+      - { name: "death blast", base: "NONE (RadiusDamage commented out, sv_turrets.qc:182)", port: "NONE — TurretAI.Die L918-919 omits the blast to match Base", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
-      audio: unknown
+      audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Death blast STILL present in port (TurretAI.Die: RadiusDamage min(ammo,50), edge min(ammo,50)*0.25, radius min(ammo,50)*5, force 250) but Base turret_die has its RadiusDamage line COMMENTED OUT (sv_turrets.qc:181) — Base does NO death explosion. The port adds damage/knockback on every turret death Base never delivers (affects all turrets, surfaced here). NOT closed by Wave-2."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "turret_die (RadiusDamage commented out line 181) vs TurretAI.Die (active RadiusDamage boom = min(ammo,50)); HellionTurret.Spawn now passes respawnTime: RespawnTime(90) to TurretSpawn.Init (default still 60 but overridden); Wave-2 also wired the live damage path via e.GtEventDamage = TurretAI.EventDamage routed by DamageSystem.EventDamage L331-333", result: fail }
+      - { kind: code_read, ref: "turret_die (RadiusDamage commented out, sv_turrets.qc:182) vs TurretAI.Die L907-942: blast REMOVED (L918-919 explicitly note Base's disabled RadiusDamage); respawn branch schedules respawn after RespawnTime(90); NoRespawn branch matches Base FX (rocket_impact sound + ROCKET_EXPLODE). Live damage entrypoint e.GtEventDamage=TurretAI.EventDamage wired in TurretSpawn.Init L93, routed by DamageSystem; pre-damage gate (TurretAI.Damage) + own health subtract + Combat.Death on lethal", result: pass }
     confidence: high
-    notes: "FIXED: respawntime now 90 (was the generic 60 default). Wave-2 also added a real live damage entrypoint: TurretSpawn installs e.GtEventDamage = TurretAI.EventDamage, which DamageSystem routes (L331) so the turret runs its own pre-damage gate + health subtract + Combat.Death on lethal hits. STILL OPEN: the death blast that Base disabled is still fired by TurretAI.Die."
+    notes: "FIXED since 2026-06-22 (Wave 7, commit 8cb57e3): the port-added death blast that Base has commented out is now REMOVED (TurretAI.Die L918-919) — turrets deal no area damage on death, matching Base. respawntime 90 + live damage path (GtEventDamage seam) remain wired. Audio: Base respawn branch (hellion respawns) plays no death sound; the NoRespawn FX branch matches Base — so na for the hellion."
   - id: turret-hellion.weapon.aff
     name: "Friendly-fire-avoidance fire gate (TFL_FIRECHECK_AFF)"
     layer: [authority]
     base_refs:
       - "common/turrets/turret/hellion.qc:22"
       - "common/turrets/sv_turrets.qc:turret_firecheck"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HellionTurret.cs:66"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
     constants:
-      - { name: "firecheck AFF (withhold shot if a teammate is in the line of fire)", base: "TFL_FIRECHECK_AFF set", port: "not modeled", match: false }
+      - { name: "firecheck AFF (withhold shot if a teammate is in the line of fire)", base: "TFL_FIRECHECK_AFF set", port: "FireCheckAff set (HellionTurret.cs:67) + honoured in RunCombat L689", match: true }
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base hellion firecheck_flags include TFL_FIRECHECK_AFF (avoid-friendly-fire): turret_firecheck withholds the shot when a friendly would be hit. The port RunCombat fire gate has no AFF check, so a port hellion can fire through/at a teammate on a path Base would block."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "hellion.qc:22 firecheck_flags includes TFL_FIRECHECK_AFF; RunCombat fire gate (cooldown/ammo/rangeMin/OnTarget) has no friendly-line-of-fire test (unchanged by Wave-2)", result: fail }
+      - { kind: code_read, ref: "hellion.qc:22 firecheck_flags includes TFL_FIRECHECK_AFF; HellionTurret.cs:66-67 FireCheck includes TurretAI.FireCheckAff, passed via TurretParams.fireCheckFlags; RunCombat L686-690 — when (FireCheckFlags & FireCheckAff) and the predicted impact ent (st.ImpactEnt from the muzzle-forward tracebox, UpdateImpact L725) is SameTeam, the shot is withheld (return enemy)", result: pass }
     confidence: high
-    notes: "Still missing: the AFF firecheck flag is real Base behaviour with no port analogue. Unchanged this wave."
+    notes: "FIXED since 2026-06-22 (Wave 7, commit 8cb57e3): TFL_FIRECHECK_AFF now modeled and live — the hellion sets FireCheckAff and RunCombat's fire gate (L689) withholds a shot whose predicted impact lands on a same-team entity. Driven off the real tracebox impact ent (UpdateImpact), matching Base turret_firecheck's friendly-line-of-fire test."

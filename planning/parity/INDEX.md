@@ -1,6 +1,6 @@
 # Parity Index
 
-_Generated 2026-06-25 from 154 units, 2020 features._
+_Generated 2026-06-26 from 154 units, 2023 features._
 
 Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liveness `live`/`DEAD`/`~`/`?`.
 
@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1604 | 164 | 17 | 230 | 4 | 1 |
-| values | 0 | 1523 | 138 | 199 | 144 | 0 | 16 |
-| timing | 0 | 971 | 100 | 868 | 61 | 0 | 20 |
-| presentation | 0 | 401 | 235 | 1143 | 234 | 0 | 7 |
-| audio | 0 | 240 | 41 | 1677 | 56 | 0 | 6 |
-| liveness | 16 | 0 | 0 | 168 | 154 | 0 | 13 |
+| logic | 0 | 1650 | 146 | 18 | 204 | 4 | 1 |
+| values | 0 | 1555 | 121 | 200 | 131 | 0 | 16 |
+| timing | 0 | 995 | 86 | 869 | 54 | 0 | 19 |
+| presentation | 0 | 409 | 220 | 1145 | 242 | 0 | 7 |
+| audio | 0 | 245 | 40 | 1681 | 53 | 0 | 4 |
+| liveness | 18 | 0 | 0 | 149 | 153 | 0 | 13 |
 
 ## Features by unit
 
@@ -951,33 +951,34 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `monster-framework.spawn.setup` | Field stamping + defaults (Monster_Spawn_Setup / Setup) | OK | OK | OK | ~ | OK | live | high |
 | `monster-framework.spawn.miniboss` | Miniboss setup (Monster_Miniboss_Setup) | OK | OK | - | OK | - | live | high |
 | `monster-framework.lifecycle.appear_use_touch` | Appear / Use / Touch acquisition (Monster_Appear/Use/Touch) | OK | OK | OK | - | - | live | high |
-| `monster-framework.target.validtarget` | Target validity (Monster_ValidTarget) | ~ | ~ | - | - | - | live | high |
-| `monster-framework.target.find_enemycheck` | Target acquisition + enemy retention (Monster_FindTarget / Monster_Enemy_Check) | OK | ~ | OK | - | OK | live | high |
+| `monster-framework.target.validtarget` | Target validity (Monster_ValidTarget) | ~ | OK | - | - | - | live | high |
+| `monster-framework.target.find_enemycheck` | Target acquisition + enemy retention (Monster_FindTarget / Monster_Enemy_Check) | OK | OK | OK | - | OK | live | high |
 | `monster-framework.move.brain` | Movement brain (Monster_Move / Move_Target / WanderTarget) | ~ | OK | ~ | - | OK | live | high |
-| `monster-framework.move.danger` | Edge/lava danger avoidance (Monster_CheckDanger) | ~ | OK | - | - | - | live | high |
+| `monster-framework.move.danger` | Edge/lava danger avoidance (Monster_CheckDanger) | OK | OK | - | - | - | live | high |
 | `monster-framework.attack.dispatch` | Attack gating + dispatch (Monster_Attack_Check) | OK | OK | OK | - | OK | live | high |
 | `monster-framework.attack.primitives` | Melee / leap / projectile primitives (Monster_Attack_Melee/Leap + projectile spawns) | OK | OK | OK | - | OK | live | high |
 | `monster-framework.damage.pain_death` | Pain / death / corpse (Monster_Damage / Monster_Dead / Monster_Dead_Damage) *(intended)* | OK | OK | OK | - | ~ | live | high |
-| `monster-framework.lifecycle.respawn_reset` | Respawn + round-restart reset + scoring (Monster_Respawn / Monster_Reset / score) | OK | OK | OK | - | - | ~ | high |
+| `monster-framework.lifecycle.respawn_reset` | Respawn + round-restart reset + scoring (Monster_Respawn / Monster_Reset / score) | OK | OK | OK | - | - | live | high |
 | `monster-framework.spawn_drivers.stats` | Spawn drivers + monster_spawner + map-stats (spawnmonster / monster_spawner / monsters_setstatus) | OK | OK | - | - | - | live | high |
-| `monster-framework.presentation.team_colors` | Team / skill colors + radar (monster_setupcolors / monster_changeteam) | MISS | MISS | - | MISS | - | - | high |
+| `monster-framework.presentation.team_colors` | Team / skill colors + radar (monster_setupcolors / monster_changeteam) | OK | OK | - | ~ | - | ~ | high |
 | `monster-framework.presentation.healthbar_sounds_anim` | Presentation: healthbar sprite + monster sounds + CSQC anim *(intended)* | ~ | ~ | ~ | MISS | ~ | ~ | high |
 
-### `monster-golem` (monster) — 11 features
+### `monster-golem` (monster) — 12 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `monster-golem.spawn.setup` | Spawn + mr_setup (health/ranges/speeds/loot/spawn-shield/hitbox) | OK | OK | ~ | - | - | live | high |
+| `monster-golem.spawn.setup` | Spawn + mr_setup (health/ranges/speeds/loot/spawn-shield/hitbox) | OK | OK | OK | - | - | live | high |
 | `monster-golem.spawnfunc.alias` | monster_golem spawnfunc + monster_shambler compat alias (live map placement) | OK | OK | - | - | - | live | high |
 | `monster-golem.brain.think` | Per-frame brain: enemy acquire, move, attack dispatch | OK | OK | OK | - | - | live | high |
-| `monster-golem.attack.melee_combo` | Melee combo: 1-3 claw swings 0.5s apart | OK | OK | ~ | MISS | ~ | live | high |
+| `monster-golem.attack.melee_combo` | Melee combo: 1-3 claw swings 0.5s apart | OK | OK | OK | MISS | OK | live | high |
 | `monster-golem.attack.smash` | Ranged ground-smash: leap + radius AoE in front | OK | OK | OK | MISS | OK | live | high |
 | `monster-golem.attack.lightning` | Ranged lightning chunk: bouncing shootable projectile, 5s fuse | OK | OK | OK | MISS | OK | live | high |
 | `monster-golem.attack.lightning_explode` | Lightning detonation: small blast + chained zaps to wide radius | OK | OK | OK | ~ | OK | live | high |
-| `monster-golem.pain` | Pain reaction (mr_pain): pain window + pain animation | OK | ~ | ~ | MISS | ~ | live | high |
-| `monster-golem.death` | Death (mr_death + Monster_Dead): corpse, loot, scoring, death anim | OK | OK | OK | MISS | ~ | live | high |
-| `monster-golem.audio.voice_cues` | Monster_Sound voice cues (idle/sight/melee/spawn/pain/death) + antilag throttle | ~ | ~ | ~ | - | ~ | live | high |
-| `monster-golem.anim_frames` | Animation frame-group table (mr_anim) for .dpm playback | - | MISS | MISS | MISS | - | - | high |
+| `monster-golem.pain` | Pain reaction (mr_pain): pain window + pain animation | OK | OK | OK | ~ | OK | live | high |
+| `monster-golem.death` | Death (mr_death + Monster_Dead): corpse, loot, scoring, death anim | OK | OK | OK | ~ | OK | live | high |
+| `monster-golem.audio.voice_cues` | Monster_Sound voice cues (idle/sight/melee/spawn/pain/death) + antilag throttle | OK | OK | OK | - | ~ | live | high |
+| `monster-golem.anim_frames` | Animation frame-group table (mr_anim) for .dpm playback | - | ~ | ~ | ~ | - | live | high |
+| `monster-golem.menu.describe` | Monsterpedia describe() flavor text (MENUQC) | - | - | - | MISS | - | - | high |
 
 ### `monster-mage` (monster) — 10 features
 
@@ -988,7 +989,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `monster-mage.attack.spike` | Homing electric spike (one in flight, seeker guidance) | OK | OK | OK | MISS | OK | live | high |
 | `monster-mage.attack.push` | Explosive close-range push (AoE shove) | OK | OK | OK | MISS | OK | live | high |
 | `monster-mage.attack.teleport` | Teleport behind / random-relocate near the target | OK | OK | OK | MISS | OK | live | high |
-| `monster-mage.defend.shield` | Self damage-blocking shield | ~ | ~ | OK | - | OK | live | high |
+| `monster-mage.defend.shield` | Self damage-blocking shield | OK | OK | OK | - | OK | live | high |
 | `monster-mage.defend.heal` | Radius heal of self/allies (skin variants: health/ammo/armor) | OK | OK | OK | MISS | OK | live | high |
 | `monster-mage.think.decide` | Per-think heal/shield decision (mr_think) | OK | OK | OK | - | - | live | high |
 | `monster-mage.death.pain` | Pain reaction + death anim (mr_pain / mr_death) | OK | OK | OK | ~ | OK | live | high |
@@ -1004,7 +1005,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `monster-spider.attack.bite` | Melee bite (Monster_Attack_Melee, DEATH_MONSTER_SPIDER) | OK | OK | OK | ~ | ~ | live | high |
 | `monster-spider.attack.web_projectile` | Ranged web projectile (bouncing plasma, no direct damage) | OK | OK | OK | OK | OK | live | high |
 | `monster-spider.web.applies_webbed` | Web explosion applies STATUSEFFECT_Webbed in radius (except spiders) | OK | OK | OK | - | - | live | high |
-| `monster-spider.web.player_slow` | Webbed PLAYER move-speed slow (spiderweb PlayerPhysics_UpdateStats: HIGHSPEED *= 0.5) | MISS | MISS | - | - | - | - | high |
+| `monster-spider.web.player_slow` | Webbed PLAYER move-speed slow (spiderweb PlayerPhysics_UpdateStats: HIGHSPEED *= 0.5) | OK | OK | OK | - | - | live | high |
 | `monster-spider.web.monster_slow` | Webbed MONSTER move-speed slow (spiderweb MonsterMove hook: run/walk *= 0.5) *(intended)* | OK | OK | OK | - | - | live | high |
 | `monster-spider.web.electro_impact_fx` | Web explosion EFFECT_ELECTRO_IMPACT particle | - | - | - | OK | - | live | high |
 | `monster-spider.attack.web_sound` | Web fire sound (electro_fire2) | OK | OK | OK | - | ~ | live | medium |
@@ -1027,7 +1028,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `wyvern.fireball.radiusdamage` | Fireball explosion: radius damage + knockback | OK | OK | - | - | - | live | high |
 | `wyvern.fireball.burning` | Fireball ignites everything in radius (burning DoT) | OK | OK | OK | - | - | live | high |
 | `wyvern.fireball.explode_effect` | Fireball blast particle (EFFECT_FIREBALL_EXPLODE) | OK | OK | - | OK | - | live | high |
-| `wyvern.fireball.firemine_visual` | In-flight fireball CSQC visual (PROJECTILE_FIREMINE) | ~ | - | - | ~ | - | ~ | high |
+| `wyvern.fireball.firemine_visual` | In-flight fireball CSQC visual (PROJECTILE_FIREMINE) | OK | - | - | OK | - | live | high |
 | `wyvern.fireball.fire_sound` | Fireball launch sound (electro_fire) | OK | OK | OK | - | OK | live | high |
 | `wyvern.brain.think_move` | Per-frame brain: flying chase + attack check | OK | OK | OK | - | - | live | high |
 | `wyvern.pain` | Pain reaction (0.5s window, pain anim) | OK | OK | OK | OK | OK | live | high |
@@ -1036,23 +1037,23 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `wyvern.anim.frame_table` | Animation frame groups (mr_anim) | OK | OK | OK | OK | - | live | high |
 | `wyvern.obituary` | Kill notification (was fireballed by a Wyvern) | OK | OK | - | OK | - | live | high |
 | `wyvern.spawnfunc` | Map spawnfunc monster_wyvern (+ spawner/random/Invasion) | OK | OK | OK | - | - | live | high |
-| `wyvern.menu.describe` | MENUQC monster-tooltip description text | MISS | - | - | MISS | - | - | high |
+| `wyvern.menu.describe` | MENUQC monster-tooltip description text | OK | OK | - | OK | - | live | high |
 
 ### `monster-zombie` (monster) — 11 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `monster-zombie.identity.def` | Zombie identity / model / bbox / class flags | OK | OK | - | OK | - | live | high |
-| `monster-zombie.setup.mr_setup` | Spawn setup: always-respawn at death point, loot, spawn shield, no-push spawn window | OK | OK | ~ | ~ | OK | live | high |
+| `monster-zombie.setup.mr_setup` | Spawn setup: always-respawn at death point, loot, spawn shield, no-push spawn window | OK | OK | ~ | OK | OK | live | high |
 | `monster-zombie.think.forcescale_restore` | Per-think: restore knockback scale after spawn animation | OK | OK | OK | - | - | live | high |
 | `monster-zombie.attack.melee` | Melee attack: 3-way anim roll + forward traceline damage | OK | OK | OK | OK | OK | live | high |
-| `monster-zombie.attack.block` | Defend block: raise armor + freeze when hurt vs healthy enemy | OK | OK | OK | ~ | OK | live | high |
-| `monster-zombie.attack.leap` | Leap attack: ballistic toss toward enemy when at range | OK | OK | OK | ~ | - | live | medium |
+| `monster-zombie.attack.block` | Defend block: raise armor + freeze when hurt vs healthy enemy | OK | OK | OK | OK | OK | live | high |
+| `monster-zombie.attack.leap` | Leap attack: ballistic toss toward enemy when at range | OK | OK | OK | OK | - | live | medium |
 | `monster-zombie.attack.leap_touch` | Leap contact: contact damage + knockback, then disarm to stop spam | OK | OK | OK | - | - | live | high |
 | `monster-zombie.pain.mr_pain` | Pain reaction: brief pain window + pain anim + (now-silent) hurt sound | OK | OK | OK | OK | OK | live | high |
 | `monster-zombie.death.mr_death` | Death: corpse + death anim + death sound + respawn machinery | OK | OK | OK | ~ | OK | live | high |
 | `monster-zombie.respawn.undead` | Always-respawn at death point (undead): corpse rises unless gibbed | OK | OK | OK | - | - | live | medium |
-| `monster-zombie.presentation.animation` | Zombie model animation (mr_anim frame groups) | - | ~ | ~ | ~ | - | live | high |
+| `monster-zombie.presentation.animation` | Zombie model animation (mr_anim frame groups) | - | OK | ~ | OK | - | live | high |
 
 ### `mutator-bloodloss` (mutator) — 8 features
 
@@ -2152,15 +2153,15 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-ewheel.spawn.liveness` | Map spawnfunc wiring + per-frame think (turret_ewheel placed on map) | OK | OK | OK | - | - | live | high |
 | `turret-ewheel.combat.brain` | Acquire/aim/fire combat brain (shared turret_think framework) | OK | OK | OK | - | - | live | high |
 | `turret-ewheel.drive.enemy` | tr_think locomotion: chase/kite/hold toward enemy + body yaw | OK | OK | OK | - | - | live | high |
-| `turret-ewheel.drive.path` | Waypoint path following (ewheel_move_path / ewheel_findtarget) | MISS | MISS | MISS | - | - | - | high |
-| `turret-ewheel.drive.idle` | ewheel_move_idle: brake to a stop + idle frame | OK | OK | OK | MISS | - | live | high |
+| `turret-ewheel.drive.path` | Waypoint path following (ewheel_move_path / ewheel_findtarget) | OK | OK | OK | - | - | live | high |
+| `turret-ewheel.drive.idle` | ewheel_move_idle: brake to a stop + idle frame | OK | OK | OK | OK | - | live | high |
 | `turret-ewheel.weapon.fire` | EWheelAttack: fast blaster bolt volley (2 shots, near-hitscan) | OK | OK | OK | MISS | ~ | live | high |
 | `turret-ewheel.damage.lifecycle` | Damage gating, head-shake, MOVE-shove, death + respawn | OK | OK | OK | - | ? | live | high |
 | `turret-ewheel.head.track` | Head rotation: track type + aim clamps | OK | OK | OK | - | - | live | high |
-| `turret-ewheel.client.draw` | CSQC rolling draw + low-health sparks (ewheel_draw) | MISS | MISS | MISS | MISS | - | - | high |
-| `turret-ewheel.anim.driveframes` | Locomotion drive-frame animation (frames 0..4) | MISS | MISS | MISS | MISS | - | - | high |
+| `turret-ewheel.client.draw` | CSQC rolling draw + low-health sparks (ewheel_draw) | OK | OK | OK | ~ | - | live | high |
+| `turret-ewheel.anim.driveframes` | Locomotion drive-frame animation (frames 0..4) | OK | OK | OK | OK | - | live | high |
 
-### `turret-flac` (turret) — 10 features
+### `turret-flac` (turret) — 11 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -2170,10 +2171,11 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-flac.target.scoring_biases` | Target-selection scoring biases (range/angle/missile/player/same) | OK | OK | - | - | - | live | high |
 | `turret-flac.aim.lead_compensate` | Lead aim + shot-traveltime compensation (intercept a fast missile) | OK | OK | OK | - | - | live | high |
 | `turret-flac.aim.track_motor` | Head track motor (fluid-inertia) + per-axis aim limits | OK | OK | OK | - | - | live | high |
-| `turret-flac.fire.flak_shell` | Flak shell fire: fast splash projectile + timed air-burst fuse | OK | OK | ~ | MISS | OK | live | high |
+| `turret-flac.fire.flak_shell` | Flak shell fire: fast splash projectile + timed air-burst fuse | OK | OK | OK | MISS | OK | live | high |
 | `turret-flac.lifecycle.respawn` | Death + respawn timer (and the port's extra death blast) | OK | OK | OK | - | - | live | high |
 | `turret-flac.obituary.death_message` | FLAC kill obituary / death notification (DEATH_TURRET_FLAC) | OK | OK | - | OK | - | live | high |
-| `turret-flac.weapon.player_form` | Hidden player FLAC weapon (FlacAttack, impulse 5) | MISS | MISS | MISS | MISS | MISS | - | high |
+| `turret-flac.weapon.player_form` | Hidden player FLAC weapon (FlacAttack, impulse 5) | OK | OK | OK | MISS | OK | DEAD | high |
+| `turret-flac.damage.headshake` | TFL_DMG_HEADSHAKE: head flinches off-aim when the turret is hit | MISS | - | - | - | - | DEAD | high |
 
 ### `turret-framework` (turret) — 14 features
 
@@ -2186,13 +2188,13 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-framework.acquire.target` | Target acquisition: radius scan + validate cascade + bias scoring | OK | OK | OK | - | - | live | high |
 | `turret-framework.aim.predict` | Aim prediction: lead + shot-traveltime + z-gravity + splash (turret_aim_generic) | OK | OK | OK | - | - | live | high |
 | `turret-framework.track.head` | Head tracking motors + per-axis clamps (turret_track) *(intended)* | OK | ~ | OK | - | - | live | high |
-| `turret-framework.fire.gate` | Fire gate + fire bookkeeping (turret_firecheck / turret_fire) | ~ | OK | OK | - | - | live | medium |
+| `turret-framework.fire.gate` | Fire gate + fire bookkeeping (turret_firecheck / turret_fire) | OK | OK | OK | - | - | live | high |
 | `turret-framework.projectile.generic` | Generic turret projectile (turret_projectile) | OK | OK | OK | MISS | ~ | live | high |
 | `turret-framework.lifecycle.use_damage` | Activation + damage gate (turret_use / turret_damage / turret_heal) | OK | OK | OK | - | - | live | high |
-| `turret-framework.lifecycle.death_respawn` | Death + respawn (turret_die / turret_hide / turret_respawn) | OK | ~ | ~ | - | - | live | high |
+| `turret-framework.lifecycle.death_respawn` | Death + respawn (turret_die / turret_hide / turret_respawn) | OK | OK | ~ | - | - | live | high |
 | `turret-framework.net.sync` | Turret networking (turret_send / TNSF_* / ENT_CLIENT_TURRET) | MISS | MISS | MISS | MISS | - | - | high |
 | `turret-framework.client.presentation` | Client presentation (cl_turrets.qc: construct/draw/draw2d/die/gibs/changeteam) | MISS | MISS | MISS | MISS | MISS | - | high |
-| `turret-framework.mapents.path_trigger` | Waypoint path + receive-target entities (turret_checkpoint / targettrigger / manager) | MISS | MISS | MISS | - | - | - | high |
+| `turret-framework.mapents.path_trigger` | Waypoint path + receive-target entities (turret_checkpoint / targettrigger / manager) | ~ | ~ | ~ | - | - | live | high |
 
 ### `turret-fusionreactor` (turret) — 8 features
 
@@ -2200,11 +2202,11 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `turret-fusionreactor.identity.def` | Identity / model / hitbox / support class flags | OK | OK | - | ~ | - | live | high |
 | `turret-fusionreactor.setup.tr_setup` | Setup flags: energy+recharge ammo, own-team range-limited targeting, HITALLVALID, no aim/track, head spin seed | OK | OK | - | MISS | - | live | high |
-| `turret-fusionreactor.recharge.sweep` | HITALLVALID per-think recharge sweep (find same-team turrets in range, top each up) | ~ | OK | ~ | - | - | live | high |
-| `turret-fusionreactor.firecheck` | Per-recipient firecheck (same team, alive, in range, recipient not full, own ammo, recipient uses energy) | ~ | OK | OK | - | - | live | high |
+| `turret-fusionreactor.recharge.sweep` | HITALLVALID per-think recharge: top up ONE eligible same-team energy turret per shot_refire | OK | OK | OK | - | - | live | high |
+| `turret-fusionreactor.firecheck` | Per-recipient firecheck (same team, alive, in range, recipient not full, own ammo, recipient uses energy) | OK | OK | OK | - | - | live | high |
 | `turret-fusionreactor.ammo.regen` | Self ammo regeneration (recharge toward ammo_max each frame) | OK | OK | OK | - | - | live | high |
-| `turret-fusionreactor.fx.attack` | te_smallflash at recharged recipient + ammo-scaled head spin | MISS | MISS | MISS | MISS | - | - | high |
-| `turret-fusionreactor.spawn.lifecycle` | Spawnfunc + master switch + think wiring + damage/use/death/respawn | OK | ~ | OK | - | - | live | high |
+| `turret-fusionreactor.fx.attack` | te_smallflash at recharged recipient + ammo-scaled head spin | OK | ~ | OK | ~ | - | ~ | high |
+| `turret-fusionreactor.spawn.lifecycle` | Spawnfunc + master switch + think wiring + damage/use/death/respawn | OK | OK | OK | - | - | live | high |
 | `turret-fusionreactor.mutator.validtarget_hook` | FusionReactor_ValidTarget mutator override hook | MISS | - | - | - | - | - | medium |
 
 ### `turret-hellion` (turret) — 10 features
@@ -2212,15 +2214,15 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `turret-hellion.identity.def` | Identity, hitbox, models, spawnflags | OK | OK | - | ~ | - | live | high |
-| `turret-hellion.setup.tr_setup` | tr_setup: aim/select/firecheck/ammo flags, fluid-inertia tracker | ~ | OK | OK | - | - | live | high |
+| `turret-hellion.setup.tr_setup` | tr_setup: aim/select/firecheck/ammo flags, fluid-inertia tracker | OK | OK | OK | - | - | live | high |
 | `turret-hellion.spawn.liveness` | Map spawnfunc wiring + per-frame think (turret_hellion placed on map) | OK | OK | OK | - | - | live | high |
 | `turret-hellion.combat.brain` | Acquire/aim/track/fire combat brain (AIM_SIMPLE, shared framework) | OK | OK | OK | - | - | live | high |
 | `turret-hellion.weapon.launch` | HellionAttack: launch a heat-seeking missile (2-shot volley) | OK | OK | OK | MISS | OK | live | high |
 | `turret-hellion.missile.guidance` | turret_hellion_missile_think: heat-seeking lead-predict + accelerate | OK | OK | OK | - | - | live | high |
 | `turret-hellion.missile.detonate` | Missile detonation: touch / proximity / fuel-out / shot-down -> radius damage | OK | OK | OK | - | - | live | high |
-| `turret-hellion.anim.headspin` | Launcher head-spin animation (tr_think frame 1..6 -> 0) | MISS | MISS | MISS | MISS | - | - | high |
-| `turret-hellion.damage.lifecycle` | Damage gating, retaliation, death + respawn | ~ | OK | OK | - | ? | live | high |
-| `turret-hellion.weapon.aff` | Friendly-fire-avoidance fire gate (TFL_FIRECHECK_AFF) | MISS | - | - | - | - | - | high |
+| `turret-hellion.anim.headspin` | Launcher head-spin animation (tr_think frame 1..6 -> 0) | OK | OK | OK | MISS | - | live | high |
+| `turret-hellion.damage.lifecycle` | Damage gating, retaliation, death + respawn | OK | OK | OK | - | - | live | high |
+| `turret-hellion.weapon.aff` | Friendly-fire-avoidance fire gate (TFL_FIRECHECK_AFF) | OK | - | - | - | - | live | high |
 
 ### `turret-hk` (turret) — 11 features
 
@@ -2231,11 +2233,11 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-hk.spawn.liveness` | Map spawnfunc wiring + per-frame think (turret_hk placed on map) | OK | OK | OK | - | - | live | high |
 | `turret-hk.combat.brain` | Acquire/aim/track/fire combat brain (shared turret framework) | OK | OK | OK | - | - | live | high |
 | `turret-hk.weapon.fire` | wr_think (turret branch): launch the guided rocket | OK | OK | OK | ~ | OK | live | high |
-| `turret-hk.weapon.guidance` | turret_hk_missile_think: obstacle-avoiding guided-rocket flight model | ~ | ~ | OK | - | - | live | high |
+| `turret-hk.weapon.guidance` | turret_hk_missile_think: obstacle-avoiding guided-rocket flight model | OK | OK | OK | - | - | live | high |
 | `turret-hk.target.recieve` | External target reception (turret_hk_addtarget / TUR_FLAG_RECIEVETARGETS) | MISS | MISS | - | - | - | - | high |
 | `turret-hk.weapon.player` | WEP_HK player special-attack weapon (hidden, impulse 9) | MISS | MISS | MISS | MISS | MISS | - | high |
 | `turret-hk.damage.lifecycle` | Damage gating, retaliation, death + respawn | OK | OK | OK | - | ? | live | high |
-| `turret-hk.anim.head` | tr_think head-frame animation (launcher cycle 0..5) | MISS | MISS | MISS | MISS | - | - | high |
+| `turret-hk.anim.head` | tr_think head-frame animation (launcher cycle 0..5) | OK | OK | OK | ~ | - | live | high |
 | `turret-hk.head.track` | Head rotation: track type + aim clamps | OK | OK | OK | - | - | live | high |
 
 ### `turret-machinegun` (turret) — 14 features
@@ -2247,14 +2249,14 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-machinegun.setup.flags` | tr_setup behaviour flags (target/aim/ammo/damage/turret) | OK | OK | - | - | - | live | high |
 | `turret-machinegun.tunables.balance` | Per-unit balance tunables (g_turrets_unit_machinegun_*) | OK | OK | OK | - | - | live | high |
 | `turret-machinegun.think.loop` | Per-frame think (ammo regen + acquire/aim/track/fire driver) | OK | OK | OK | - | - | live | high |
-| `turret-machinegun.target.validate` | turret_validate_target reject cascade | ~ | OK | - | - | - | live | high |
+| `turret-machinegun.target.validate` | turret_validate_target reject cascade | OK | OK | - | - | - | live | high |
 | `turret-machinegun.target.score` | turret_targetscore_generic bias-weighted scoring | OK | OK | - | - | - | live | high |
 | `turret-machinegun.aim.lead` | turret_aim_generic lead + shot-traveltime compensation | OK | OK | OK | - | - | live | high |
 | `turret-machinegun.track.fluidinertia` | turret_track FLUIDINERTIA head slew | OK | OK | OK | - | - | live | medium |
-| `turret-machinegun.fire.gate_volley` | turret_firecheck + turret_fire refire/volley bookkeeping | ~ | OK | OK | - | - | live | high |
+| `turret-machinegun.fire.gate_volley` | turret_firecheck + turret_fire refire/volley bookkeeping | OK | OK | OK | - | - | live | high |
 | `turret-machinegun.weapon.firebullet` | wr_think fireBullet (hitscan bullet + spread + force) | OK | OK | - | MISS | OK | live | high |
 | `turret-machinegun.lifecycle.use_team` | turret_use: adopt activator team, set active | OK | OK | - | - | - | live | medium |
-| `turret-machinegun.lifecycle.damage` | turret_damage gate: inactive-immunity, friendly-fire, headshake | ~ | OK | - | MISS | - | live | high |
+| `turret-machinegun.lifecycle.damage` | turret_damage gate: inactive-immunity, friendly-fire, headshake | OK | OK | - | ~ | - | live | high |
 | `turret-machinegun.lifecycle.die_respawn` | turret_die / turret_respawn (+ death FX, gibs) | OK | OK | OK | MISS | MISS | live | high |
 
 ### `turret-mlrs` (turret) — 8 features
@@ -2262,30 +2264,31 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `turret-mlrs.identity.def` | Identity, hitbox, models, spawnflags | OK | OK | - | ~ | - | live | high |
-| `turret-mlrs.setup.tr_setup` | tr_setup: ammo/aim/shoot flags, volley seed, select/track defaults | ~ | OK | - | - | - | live | high |
+| `turret-mlrs.setup.tr_setup` | tr_setup: ammo/aim/shoot flags, volley seed, select/track defaults | OK | OK | - | - | - | live | high |
 | `turret-mlrs.spawn.liveness` | Map spawnfunc wiring + per-frame think (turret_mlrs placed on map) | OK | OK | OK | - | - | live | high |
-| `turret-mlrs.combat.brain` | Acquire/aim/lead/track/fire combat brain incl. VOLLYALWAYS burst completion + target scoring | ~ | OK | OK | - | - | live | high |
+| `turret-mlrs.combat.brain` | Acquire/aim/lead/track/fire combat brain incl. VOLLYALWAYS burst completion + target scoring | OK | OK | OK | - | - | live | high |
 | `turret-mlrs.head.track` | Head rotation: FluidInertia track + aim clamps | OK | OK | OK | - | - | live | high |
-| `turret-mlrs.anim.ammogauge` | tr_think head ammo-gauge frame (0 full .. 6 empty by remaining ammo) | MISS | MISS | MISS | MISS | - | - | high |
+| `turret-mlrs.anim.ammogauge` | tr_think head ammo-gauge frame (0 full .. 6 empty by remaining ammo) | OK | OK | OK | ~ | - | live | high |
 | `turret-mlrs.weapon.fire` | MLRSTurretAttack: 6-rocket splash volley (unguided, shootable, travel-time fuse) | OK | OK | OK | MISS | OK | live | high |
-| `turret-mlrs.damage.lifecycle` | Damage gating, head-shake, death + respawn | ~ | OK | OK | MISS | ? | live | high |
+| `turret-mlrs.damage.lifecycle` | Damage gating, head-shake, death + respawn | OK | OK | OK | MISS | ~ | live | high |
 
-### `turret-phaser` (turret) — 12 features
+### `turret-phaser` (turret) — 13 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `turret-phaser.spawn.map_entity` | Map placement + per-frame think wiring (spawnfunc turret_phaser) | OK | OK | OK | - | - | live | high |
 | `turret-phaser.identity.model_hitbox` | Identity, hitbox, health, body/head models | OK | OK | - | ~ | - | live | high |
-| `turret-phaser.setup.flags` | tr_setup ammo + aim flags (energy/recharge/recieve, lead-only) | ~ | ~ | - | - | - | live | high |
+| `turret-phaser.setup.flags` | tr_setup ammo + aim flags (energy/recharge/recieve, lead-only) | OK | OK | - | - | - | live | high |
 | `turret-phaser.firecheck.fireflag_guard` | Custom firecheck: block fire while beam active/discharging (fireflag) | ~ | OK | OK | - | - | live | medium |
 | `turret-phaser.fire.beam_spawn` | wr_think: spawn the sustained PhaserTurret_beam | OK | OK | OK | - | - | live | high |
 | `turret-phaser.fire.beam_think_trace` | beam_think: per-frame trace, damage + slow, refire reset on end | OK | OK | OK | - | - | live | high |
-| `turret-phaser.fire.imobeam_multihit` | FireImoBeam penetrating multi-target hit + slow | ~ | OK | OK | - | - | live | high |
+| `turret-phaser.fire.imobeam_multihit` | FireImoBeam penetrating multi-target hit + slow | OK | OK | OK | - | - | live | high |
 | `turret-phaser.fire.bot_dodge` | Beam registers as a dodgeable threat (bot_dodge / g_bot_dodge) | MISS | MISS | - | - | - | - | high |
+| `turret-phaser.fire.target_select_bias` | Per-unit target-selection scoring biases (range/angle/same/missile/player) | OK | ~ | - | - | - | live | high |
 | `turret-phaser.fire.extra_slow_status` | Port-only layered slow/disability status effect *(intended)* | OK | - | OK | - | - | live | medium |
 | `turret-phaser.audio.beam_sound` | Phaser beam sound (start + 2s re-trigger + silence-on-end) and impact cue | OK | OK | OK | - | OK | live | high |
 | `turret-phaser.presentation.beam_visual_and_head_anim` | Beam model visual (MDL_TUR_PHASER_BEAM) + head charge/discharge animation (tr_think) | MISS | MISS | MISS | MISS | - | - | high |
-| `turret-phaser.lifecycle.respawn_time` | Death + respawn timer | OK | ~ | ~ | - | - | live | high |
+| `turret-phaser.lifecycle.respawn_time` | Death + respawn timer | OK | OK | OK | - | - | live | high |
 
 ### `turret-plasma` (turret) — 13 features
 
@@ -2294,14 +2297,14 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-plasma.spawn.mapplacement` | Map placement spawnfunc + initialize (turret_plasma / turret_plasma_dual) | OK | OK | OK | - | - | live | high |
 | `turret-plasma.identity.model_hitbox` | Identity, hitbox, model, health, weapon binding | OK | OK | - | ~ | - | live | high |
 | `turret-plasma.balance.cvars` | Balance constants (damage/refire/range/ammo/aim) from g_turrets_unit_plasma_* | OK | OK | - | - | - | live | high |
-| `turret-plasma.setup.flags` | tr_setup flag configuration (ammo/damage/firecheck/aim flags) | OK | ~ | - | - | - | live | high |
+| `turret-plasma.setup.flags` | tr_setup flag configuration (ammo/damage/firecheck/aim flags) | OK | OK | - | - | - | live | high |
 | `turret-plasma.think.pipeline` | Per-frame think: ammo regen, acquire/scan delays, aim, track, fire gate | OK | OK | OK | - | - | live | high |
 | `turret-plasma.target.select_score` | Target validation + bias-weighted scoring + selection | OK | OK | - | - | - | live | high |
 | `turret-plasma.aim.lead_splash` | Aim prediction: lead + shot-traveltime compensate + ground splash | OK | OK | OK | - | - | live | high |
 | `turret-plasma.track.fluid_inertia` | Head track motor (fluid-inertia) with per-axis pitch/rot clamps | OK | OK | OK | MISS | - | live | high |
 | `turret-plasma.attack.plasma_ball` | tr_attack: plasma ball projectile (PlasmaAttack.wr_think) + radius damage | OK | OK | OK | MISS | OK | live | high |
 | `turret-plasma.attack.instagib_railgun` | tr_attack instagib override: instant railgun beam | OK | OK | OK | MISS | OK | live | high |
-| `turret-plasma.headspin.frame_anim` | Head spin frame animation after each shot (tr_think frame 1->5) | MISS | MISS | MISS | MISS | - | - | high |
+| `turret-plasma.headspin.frame_anim` | Head spin frame animation after each shot (tr_think frame 1->5) | OK | OK | OK | MISS | - | live | high |
 | `turret-plasma.damage.gate_retaliate` | turret_damage: inactive invuln, friendly-fire scale, headshake (no retaliate) | OK | OK | - | - | - | live | high |
 | `turret-plasma.death.die_respawn` | Death + respawn (turret_die / turret_hide / turret_respawn) | OK | OK | OK | MISS | MISS | live | high |
 
@@ -2317,9 +2320,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-plasma_dual.target.scoring_biases` | Target scoring biases (rangebias/samebias/anglebias/playerbias/missilebias) | OK | OK | - | - | - | live | high |
 | `turret-plasma_dual.aim.lead_splash_predict` | Aiming: lead + shot-time compensation + z-predict + splash (aim at feet) | OK | OK | OK | - | - | live | high |
 | `turret-plasma_dual.track.head_motor` | Head tracking: FLUIDINERTIA motor, pitch/rot clamps | OK | OK | OK | - | - | live | high |
-| `turret-plasma_dual.damage.gating_die_respawn` | Damage handling: friendly-fire scale, MOVE-shove, die + timed respawn | OK | OK | ? | MISS | MISS | live | high |
-| `turret-plasma_dual.damage.headshake` | TFL_DMG_HEADSHAKE: jolt head angles by random*damage on hit | MISS | MISS | - | MISS | - | - | high |
-| `turret-plasma_dual.presentation.head_frame_anim` | Head-frame wheel animation (tr_think 0..6 + ++frame on fire) | MISS | MISS | MISS | MISS | - | - | high |
+| `turret-plasma_dual.damage.gating_die_respawn` | Damage handling: friendly-fire scale, MOVE-shove, die + timed respawn | OK | OK | OK | MISS | MISS | live | high |
+| `turret-plasma_dual.damage.headshake` | TFL_DMG_HEADSHAKE: jolt head angles by random*damage on hit | OK | OK | OK | MISS | - | live | high |
+| `turret-plasma_dual.presentation.head_frame_anim` | Head-frame wheel animation (tr_think 0..6 + ++frame on fire) | OK | OK | OK | MISS | - | live | high |
 
 ### `turret-tesla` (turret) — 8 features
 
@@ -2329,7 +2332,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-tesla.setup.tr_setup` | tr_setup: select/validate flags, ammo flags, custom firecheck, no aim/track | OK | OK | - | - | - | live | high |
 | `turret-tesla.damage.lifecycle` | Damage gating, ammo regen, death blast + respawn | OK | OK | OK | - | - | live | high |
 | `turret-tesla.spawn.liveness` | Map spawnfunc wiring + per-frame think (turret_tesla placed on map) | OK | OK | OK | - | - | live | high |
-| `turret-tesla.firecheck.custom` | Custom firecheck: rescan throttle + re-validate + cooldown + ammo + target gate | OK | ~ | ~ | - | - | live | high |
+| `turret-tesla.firecheck.custom` | Custom firecheck: rescan throttle + re-validate + cooldown + ammo + target gate | OK | OK | OK | - | - | live | high |
 | `turret-tesla.weapon.chain` | Chain-lightning discharge (toast loop): nearest-LOS first hop, 10-hop decay | OK | OK | OK | - | - | live | high |
 | `turret-tesla.weapon.arc_fx` | Per-hop lightning arc visual + discharge sound | OK | OK | OK | OK | OK | live | high |
 | `turret-tesla.anim.tr_think` | tr_think head spin-up + idle random crackle arc | OK | OK | OK | ~ | - | live | high |
@@ -2339,17 +2342,17 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `turret-walker.identity.def` | Identity, hitbox, models, spawnflags | OK | OK | - | ~ | - | live | high |
-| `turret-walker.setup.tr_setup` | tr_setup: SlideBox/Step creature, select flags, ammo flags, home pose | OK | ~ | - | - | - | live | high |
+| `turret-walker.setup.tr_setup` | tr_setup: SlideBox/Step creature, select flags, ammo flags, home pose | OK | OK | - | - | - | live | high |
 | `turret-walker.spawn.liveness` | Map spawnfunc wiring + per-frame think (turret_walker placed on map) | OK | OK | OK | - | - | live | high |
 | `turret-walker.combat.brain` | Acquire/aim/fire combat brain (shared turret_think framework) | OK | OK | OK | - | - | live | high |
 | `turret-walker.drive.chase` | tr_think locomotion: chase enemy (run/walk) + body yaw | OK | OK | OK | - | - | live | high |
 | `turret-walker.drive.idle_roam` | Idle roam/wander + last-seen pursuit + waypoint path following | ~ | OK | OK | - | - | live | high |
 | `turret-walker.drive.gaits_extra` | Extra gaits: swim / jump / land / pain / strafe / turn | ~ | OK | OK | MISS | - | live | high |
 | `turret-walker.weapon.minigun` | WalkerTurretAttack: near-hitscan minigun (fireBullet + force) | OK | OK | OK | MISS | OK | live | high |
-| `turret-walker.weapon.rocket` | Rocket volley: 4 homing rockets + reload (walker_fire_rocket / walker_rocket_think) | ~ | OK | OK | MISS | OK | live | high |
+| `turret-walker.weapon.rocket` | Rocket volley: 4 homing rockets + reload (walker_fire_rocket / walker_rocket_think) | OK | OK | OK | ~ | OK | live | high |
 | `turret-walker.weapon.melee` | Melee bite (walker_melee_do_dmg): radius hit in front | OK | OK | OK | - | - | live | high |
 | `turret-walker.head.track` | Head rotation: track type + aim clamps | OK | OK | OK | - | - | live | high |
-| `turret-walker.client.draw` | CSQC walker_draw + locomotion anim frames | MISS | MISS | MISS | MISS | - | - | high |
+| `turret-walker.client.draw` | CSQC walker_draw + locomotion anim frames | ~ | ~ | ~ | ~ | - | ~ | high |
 
 ### `vehicle-bumblebee` (vehicle) — 15 features
 
@@ -2361,7 +2364,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `vehicle-bumblebee.setup.vr_setup` | vr_setup: capability-flag derivation + respawntime | OK | OK | - | - | - | live | high |
 | `vehicle-bumblebee.pilot.flight` | Pilot flight controller (avelocity yaw/pitch, thrust, roll, climb) | OK | OK | OK | - | - | live | high |
 | `vehicle-bumblebee.pilot.raygun` | Center raygun: heal-beam (default) + damage-beam, target lock, energy gate | OK | OK | OK | ~ | - | live | high |
-| `vehicle-bumblebee.gunner.frame` | Side-gunner turret: per-gun lock + lead + aim + plasma fire | OK | OK | OK | MISS | - | live | high |
+| `vehicle-bumblebee.gunner.frame` | Side-gunner turret: per-gun lock + lead + aim + plasma fire | OK | OK | OK | ~ | - | live | high |
 | `vehicle-bumblebee.gunner.cannon` | Side-gunner plasma cannon projectile (bumblebee_fire_cannon) | OK | OK | - | MISS | OK | live | high |
 | `vehicle-bumblebee.regen` | Regen: per-gun cannon ammo + body shield/energy/health | OK | OK | OK | - | - | live | high |
 | `vehicle-bumblebee.multiseat.enter` | Multi-seat boarding: gunner-slot assignment + role ordering | OK | OK | OK | - | - | live | high |
@@ -2379,7 +2382,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `vehicle-framework.spawn.respawn` | vehicles_spawn — reset to idle/ownerless/shootable at spawn point | OK | OK | OK | ~ | - | live | high |
 | `vehicle-framework.think.tick` | vehicles_think — per-tick think cadence + painframe + W2MODE mirror | OK | OK | OK | ~ | - | live | high |
 | `vehicle-framework.enter.handshake` | vehicles_enter — board guards, gunner branch, player freeze + link | OK | OK | OK | ~ | - | live | high |
-| `vehicle-framework.enter.steal` | g_vehicles_steal — enemy-team boarding (shield zero + intruder waypoint) | ~ | ~ | - | MISS | - | ~ | high |
+| `vehicle-framework.enter.steal` | g_vehicles_steal — enemy-team boarding (shield zero + intruder waypoint) | OK | OK | - | MISS | - | live | high |
 | `vehicle-framework.exit.handshake` | vehicles_exit — eject + restore player, return + recolor vehicle | OK | OK | OK | ~ | - | live | high |
 | `vehicle-framework.exit.findgoodexit` | vehicles_findgoodexit — clear drop spot for the ejected pilot | OK | OK | - | - | - | live | high |
 | `vehicle-framework.combat.damage` | vehicles_damage — per-weapon rate, shield-then-health, death eject | OK | OK | OK | ~ | ~ | live | high |
@@ -2388,13 +2391,13 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `vehicle-framework.combat.crush` | vehicles_touch crush + vehicles_crushable — run over players/monsters | OK | OK | - | - | - | live | high |
 | `vehicle-framework.combat.impact` | vehicles_impact — fall/collision self-damage | OK | OK | OK | - | - | live | high |
 | `vehicle-framework.combat.painframe` | vehicles_painframe — low-health smoke + DMGSHAKE/DMGROLL jitter | OK | OK | OK | ~ | - | live | high |
-| `vehicle-framework.aim.locktarget` | vehicles_locktarget — homing lock-on build/decay + lock sounds | ~ | OK | OK | ~ | OK | live | high |
+| `vehicle-framework.aim.locktarget` | vehicles_locktarget — homing lock-on build/decay + lock sounds | OK | OK | OK | ~ | OK | live | high |
 | `vehicle-framework.aim.aimturret` | vehicle_aimturret — slew turret head toward a world target within limits | OK | OK | OK | - | - | live | high |
 | `vehicle-framework.projectile.shared` | vehicles_projectile — generic vehicle bolt/rocket (splash, lifetime, shootable) | OK | OK | OK | ~ | OK | live | high |
 | `vehicle-framework.physics.force_fromtag` | vehicles_force_fromtag_hover/maglev + vehicle_altitude — hover springs | OK | OK | - | - | - | live | high |
-| `vehicle-framework.respawn.return_waypoint` | vehicles_setreturn / showwp / return — return waypoint + living-vehicle return | ~ | ~ | ~ | MISS | - | ~ | high |
+| `vehicle-framework.respawn.return_waypoint` | vehicles_setreturn / showwp / return — return waypoint + living-vehicle return | OK | OK | OK | MISS | - | live | high |
 | `vehicle-framework.impulse.mode_switch` | vehicle_impulse — per-vehicle mode set/cycle before weapon impulses | OK | OK | - | - | - | live | high |
-| `vehicle-framework.presentation.hud_camera_xhair` | Vehicles_drawHUD / drawCrosshair / AuxiliaryXhair / CSQCVehicleSetup + cockpit camera | ~ | OK | - | ~ | MISS | live | high |
+| `vehicle-framework.presentation.hud_camera_xhair` | Vehicles_drawHUD / drawCrosshair / AuxiliaryXhair / CSQCVehicleSetup + cockpit camera | OK | OK | - | ~ | MISS | live | high |
 | `vehicle-framework.hooks.init_touch` | MUTATOR_CALLHOOK(VehicleInit / VehicleTouch) dispatch | OK | - | - | - | - | live | high |
 
 ### `vehicle-racer` (vehicle) — 13 features
@@ -2402,15 +2405,15 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `vehicle-racer.identity.def` | Identity, hitbox, models, spawnflags | OK | OK | - | ~ | - | live | high |
-| `vehicle-racer.spawn.lifecycle` | vr_spawn / vr_setup: movetype, solid, health/shield/energy, regen capability flags | OK | ~ | - | ~ | - | live | high |
+| `vehicle-racer.spawn.lifecycle` | vr_spawn / vr_setup: movetype, solid, health/shield/energy, regen capability flags, bounce/mass | OK | OK | - | ~ | - | live | high |
 | `vehicle-racer.spawnfunc.liveness` | Map spawnfunc wiring + master cvar gate + per-cvar tunable retune | OK | OK | OK | - | - | live | high |
-| `vehicle-racer.board.usekey` | +use board / exit + guards (PlayerUseKey -> vehicles_enter/exit) | ~ | OK | OK | - | - | live | high |
-| `vehicle-racer.drive.hover4point` | racer_align4point: 4 engine springs + pitch/roll torque + stabilizer | ~ | OK | OK | - | - | live | high |
-| `vehicle-racer.drive.controller` | racer_frame: yaw/pitch/roll toward view, friction, wishmove, downforce | ~ | ~ | OK | - | - | live | high |
-| `vehicle-racer.drive.afterburn` | Afterburn (jump): energy drain + boost thrust (water vs air) | OK | OK | ~ | MISS | ~ | live | high |
-| `vehicle-racer.weapon.cannon` | Primary energy laser cannon (rapid, energy-gated) | ~ | OK | OK | MISS | OK | live | high |
-| `vehicle-racer.weapon.rocket` | Secondary rocket pair (lock-on / homing / ground-hugging) | ~ | OK | OK | MISS | OK | live | high |
-| `vehicle-racer.weapon.rockethud` | Secondary HUD ammo/reload mirror (vehicle_ammo2 / vehicle_reload2) | MISS | MISS | MISS | MISS | - | - | high |
+| `vehicle-racer.board.usekey` | +use board / exit + guards (PlayerUseKey -> vehicles_enter/exit) | OK | OK | OK | - | - | live | high |
+| `vehicle-racer.drive.hover4point` | racer_align4point: 4 engine springs + pitch/roll torque + stabilizer | OK | OK | OK | - | - | live | high |
+| `vehicle-racer.drive.controller` | racer_frame: yaw/pitch/roll toward view, friction, wishmove, downforce | OK | OK | OK | - | - | live | high |
+| `vehicle-racer.drive.afterburn` | Afterburn (jump): energy drain + boost thrust (water vs air) + engine-sound state machine | OK | OK | OK | MISS | OK | live | high |
+| `vehicle-racer.weapon.cannon` | Primary energy laser cannon (rapid, energy-gated) | OK | OK | OK | MISS | OK | live | high |
+| `vehicle-racer.weapon.rocket` | Secondary rocket pair (lock-on / homing / ground-hugging) | OK | OK | OK | MISS | OK | live | high |
+| `vehicle-racer.weapon.rockethud` | Secondary HUD ammo/reload mirror (vehicle_ammo2 / vehicle_reload2) | OK | OK | OK | ~ | - | live | high |
 | `vehicle-racer.regen.resources` | Per-frame shield/energy/health regen + player %-stat mirror | OK | OK | OK | - | - | live | high |
 | `vehicle-racer.death.blowup` | vr_death tumble -> deadtouch/timed blowup -> radius blast -> respawn | OK | OK | OK | MISS | MISS | live | high |
 | `vehicle-racer.impact.bouncepain` | vr_impact: ram/collision fall-damage (vehicles_impact bouncepain) | OK | OK | OK | - | - | live | high |
@@ -2453,7 +2456,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `vehicle-spiderbot.weapon.guide_release` | Guided-rocket steering think + guide-release on button-up | OK | OK | OK | - | - | live | high |
 | `vehicle-spiderbot.weapon.modeswitch` | Rocket-mode set/cycle impulses (VOLLY/GUIDE/ARTILLERY) | OK | OK | - | - | - | live | high |
 | `vehicle-spiderbot.death.blowup` | vr_death + spiderbot_blowup (burn, gib entities, 250-dmg blast, respawn) | OK | OK | OK | ~ | OK | live | high |
-| `vehicle-spiderbot.impact.bouncepain` | vr_impact — bounce/fall impact pain (g_vehicle_spiderbot_bouncepain) | MISS | - | - | - | - | - | high |
+| `vehicle-spiderbot.impact.bouncepain` | vr_impact — bounce/fall impact pain (g_vehicle_spiderbot_bouncepain) | OK | - | - | - | - | live | high |
 
 ### `overkill-weapons` (weapon) — 14 features
 

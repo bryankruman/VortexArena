@@ -1,19 +1,21 @@
 unit: turret-flac
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
-# Re-audited 2026-06-22 post second-pass fix-up (commit 4be8357). Death blast removed; respawn-offset gap retracted.
+last_audited: "2026-06-25"
+# Re-audited 2026-06-25 (drift check). Two FIXES since 2026-06-22: (1) fuse time now forward-traced (timing faithful);
+# (2) the hidden player FLAC weapon (FlacWeapon) is now implemented faithfully but UNREGISTERED -> liveness dead, not na.
+# One NEW gap surfaced: TFL_DMG_HEADSHAKE is unwired for Flac though the engine now supports headShake (used by MLRS/MG/Plasma).
 summary:
-  feature_count: 10
+  feature_count: 11
   worst_gaps:
-    - "fuse time uses DistAimPos/shotSpeed (muzzle->aim distance) instead of Base tur_impacttime, which comes from a forward tracebox to trace_endpos (sv_turrets.qc:523) — diverges when geometry stops the shot short"
-    - "all presentation missing: PROJECTILE_HAGAR trail, BLASTER muzzleflash, head-frame cycle, TFL_DMG_HEADSHAKE head-shake, head model/bone"
-    - "hidden player FLAC weapon (FlacAttack, impulse 5) not implemented"
+    - "all presentation missing: PROJECTILE_HAGAR trail, BLASTER muzzleflash, head-frame cycle, head model/bone"
+    - "TFL_DMG_HEADSHAKE not wired for Flac: FlacTurret.Spawn omits headShake:true though the port engine supports it (TurretAI.Damage:887, used by MLRS/MG/Plasma) — Flac head never flinches on a hit"
+    - "hidden player FLAC weapon (FlacWeapon) implemented faithfully but [Weapon] registration intentionally OFF (impulse-5 collision w/ Raptor + test-contract churn) -> liveness dead"
   notable_fixes_since_last_audit:
-    - "Second-pass commit (4be8357) REMOVED the port-added on-death RadiusDamage blast in TurretAI.Die — now matches Base turret_die, whose ammo-scaled blast is commented out (sv_turrets.qc:182). lifecycle.respawn logic+values upgraded partial->faithful."
-    - "Baseline correction: the alleged -0.2 respawn timing offset is NOT a real divergence. Base nets respawntime exactly (turret_die: nextthink=time+0.2 -> turret_hide; turret_hide: nextthink=time+respawntime-0.2; 0.2 cancels). The port schedules now+respawntime from Die. timing was already faithful; that sub-gap is dropped."
-    - "Second-pass also threaded aim_firetolerance_dist (150) into ValidTarget's LOS-block tolerance (TurretAI.cs:200-201, was hardcoded 64f) matching sv_turrets.qc:791, and removed the never-read TFL_DMG_RETALIATE attacker-adoption from TurretAI.Damage (Base never reads that flag) — both increase damage/aim-path fidelity."
-    - "(Prior Wave-2, still standing) the numeric/aim/bias/track gaps: shot_spread 0.0125->0.02, target_range_optimal 2000->1250, aim_maxpitch 90->35, respawntime 60->90, biases rangebias 0.25/anglebias 0.5/playerbias 0 passed, track accel_rot 0.7/blendrate 0.2 passed, zPredict aim flag dropped."
+    - "fire.flak_shell timing partial->faithful: TurretAI.UpdateImpact (TurretAI.cs:725-750) now does a forward tracebox from the muzzle to aimpos and sets ImpactTime = vlen(ShotOrg - trace_endpos)/shot_speed, matching Base sv_turrets.qc:519-523. The fuse-base-time constant now matches; the headless fallback (no Trace service) keeps DistAimPos/shotSpeed for deterministic tests (== Base when the path is clear)."
+    - "weapon.player_form logic/values/timing/audio missing->faithful: a FlacWeapon : Weapon class (FlacTurret.cs:168-261) now ports the IS_PLAYER branch of wr_think (impulse 5, SpecialAttack|Hidden, fixed 10s fuse, PortoLaunch no-ammo, 0.5s anim / 1s refire, fire sound). BUT the [Weapon] registration is intentionally OFF (line 163) to avoid impulse-5 collision with Raptor + WeaponById/MenuWeaponOrder test churn, so liveness is dead, not na. presentation (muzzleflash) still missing."
+    - "(Prior 2026-06-22, commit 4be8357, still standing) on-death RadiusDamage blast REMOVED from TurretAI.Die (matches Base commented-out blast sv_turrets.qc:182); aim_firetolerance_dist 150 threaded into ValidTarget LOS tolerance; TFL_DMG_RETALIATE attacker-adoption removed; respawn -0.2 'offset' confirmed not real."
+    - "(Prior Wave-2, still standing) shot_spread 0.0125->0.02, target_range_optimal 2000->1250, aim_maxpitch 90->35, respawntime 60->90, biases rangebias 0.25/anglebias 0.5/playerbias 0 passed, track accel_rot 0.7/blendrate 0.2 passed, zPredict aim flag dropped."
 features:
   - id: turret-flac.identity.spawn
     name: "FLAC turret identity, hitbox, model, health, map spawn"
@@ -204,7 +206,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:Attack"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Projectile"
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Fire,RunCombat"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Fire,RunCombat,UpdateImpact(725-750)"
     constants:
       - { name: "shot_dmg", base: "20", port: "20", match: true }
       - { name: "shot_radius", base: "100", port: "100", match: true }
@@ -222,26 +224,25 @@ features:
       - { name: "snap radius", base: "shot_radius*3", port: "ShotRadius*3", match: true }
       - { name: "lifetime fallback nextthink", base: "time + 9", port: "now + 9", match: true }
       - { name: "fuse jitter", base: "random()*0.01 - random()*0.01", port: "Prandom.Float()*0.01 - Prandom.Float()*0.01", match: true }
-      - { name: "fuse base time", base: "tur_impacttime = vlen(tur_shotorg - trace_endpos)/shot_speed (forward tracebox, sv_turrets.qc:523)", port: "DistAimPos / shot_speed (no forward trace)", match: false }
+      - { name: "fuse base time", base: "tur_impacttime = vlen(tur_shotorg - trace_endpos)/shot_speed (forward tracebox, sv_turrets.qc:519-523)", port: "ImpactTime = vlen(ShotOrg - trace_endpos)/shotSpeed via forward tracebox (TurretAI.UpdateImpact:738-750); headless fallback = DistAimPos/shotSpeed (== Base on clear path)", match: true }
       - { name: "missile_flags", base: "MIF_SPLASH | MIF_PROXY", port: "n/a (no missile_flags field; behaviour folded into the fuse think)", match: false }
     status:
       logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: missing
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Fuse time uses DistAimPos/shotSpeed (muzzle->aim distance) instead of Base tur_impacttime, which comes from a forward tracebox (sv_turrets.qc:510-523) to trace_endpos; diverges when geometry would stop the shot short of the aim point."
       - "Presentation missing: PROJECTILE_HAGAR shell trail (turret_projectile spawns with className 'turret_projectile', so the client classifier never maps it to a Flac/FLAC_TRAIL projectile type), EFFECT_BLASTER_MUZZLEFLASH, head-frame cycle (++frame wrap 4)."
     verification:
       - { kind: code, ref: "shot_spread now 0.02 (turrets.cfg:64), target_range_optimal now 1250 (turrets.cfg:71); FlacTurret.Attack reproduces snap-to-enemy + edge==core RadiusDamage; shot_dmg/radius/speed/force/refire match turrets.cfg:60-65", result: pass }
-      - { kind: code, ref: "fuse base time still DistAimPos/ShotSpeed (FlacTurret.Attack:105) vs Base forward-traced tur_impacttime (sv_turrets.qc:523)", result: fail }
+      - { kind: code, ref: "FIXED: FlacTurret.Attack:118 now uses st.ImpactTime; TurretAI.UpdateImpact (725-750) does a forward Trace from ShotOrg to ShotOrg+ShotDir*DistAimPos and sets ImpactTime = vlen(ShotOrg - trace_endpos)/shot_speed, matching Base sv_turrets.qc:519-523. Headless fallback keeps DistAimPos/shot_speed (== Base when path is clear)", result: pass }
       - { kind: code, ref: "fire sound weapons/hagar_fire.wav played on SoundChannel.Weapon (matches SND_FlacAttack_FIRE = W_Sound(hagar_fire))", result: pass }
     confidence: high
-    notes: "FIXED since prior audit: shot_spread (0.0125->0.02) and target_range_optimal (2000->1250) now match Base, so values is faithful. STILL OPEN: the fuse-time derivation (DistAimPos vs forward-traced trace_endpos) and all client FX. The signature flak mechanic (timed fuse + air-burst snap-to-enemy + full-radius damage) and the fire sound were already faithful."
+    notes: "FIXED since prior audit: the fuse-time derivation now uses a forward tracebox (TurretAI.UpdateImpact) so geometry between the muzzle and aimpos shortens the fuse to where the shell actually detonates — timing partial->faithful. STILL OPEN: client FX (PROJECTILE_HAGAR trail, BLASTER muzzleflash, head-frame cycle). The signature flak mechanic (timed fuse + air-burst snap-to-enemy + full-radius damage), values, and fire sound are all faithful."
 
   - id: turret-flac.lifecycle.respawn
     name: "Death + respawn timer (and the port's extra death blast)"
@@ -311,23 +312,58 @@ features:
     base_refs:
       - "common/turrets/turret/flac_weapon.qh:CLASS(FlacAttack)"
       - "common/turrets/turret/flac_weapon.qc:METHOD(FlacAttack, wr_think) (IS_PLAYER branch)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:FlacWeapon(168-261) (class FlacWeapon : Weapon; ctor + WrThink + AnimtimeFor + RefireFor)"
     constants:
-      - { name: "impulse", base: "5", port: "n/a", match: false }
-      - { name: "spawnflags", base: "WEP_FLAG_SPECIALATTACK | WEP_FLAG_HIDDEN", port: "n/a", match: false }
-      - { name: "player fuse tur_impacttime", base: "10 (fixed)", port: "n/a", match: false }
+      - { name: "impulse", base: "5", port: "5 (Impulse = 5)", match: true }
+      - { name: "spawnflags", base: "WEP_FLAG_SPECIALATTACK | WEP_FLAG_HIDDEN", port: "WeaponFlags.SpecialAttack | WeaponFlags.Hidden", match: true }
+      - { name: "player fuse tur_impacttime", base: "10 (fixed)", port: "10 (PlayerFuse = 10f)", match: true }
+      - { name: "base class / ammo", base: "PortoLaunch (no ammo cost)", port: "no AmmoType (PortoLaunch-style)", match: true }
+      - { name: "anim time / refire", base: "weapon_thinkf(WFRAME_FIRE1,0.5) + prepareattack attacktime 1", port: "AnimtimeFor 0.5 / RefireFor 1", match: true }
+      - { name: "[Weapon] registration", base: "REGISTER_WEAPON (live, impulse-selectable)", port: "INTENTIONALLY OFF (no [Weapon] attr) -> no live caller", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: missing
-      audio: missing
-      liveness: na
+      audio: faithful
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The hidden/dev player-fired FLAC weapon (impulse 5, WEP_FLAG_HIDDEN, fixed 10s fuse, base class PortoLaunch) is not implemented. Low impact: not used in normal play or default arenas."
+      - "FlacWeapon is implemented but its [Weapon] registration is intentionally OFF (FlacTurret.cs:163): impulse 5 collides with the Raptor bomb-mode impulse and registering shifts WeaponById/MenuWeaponOrder, which would break those test contracts. So the hidden player FLAC weapon has NO live caller (liveness dead)."
+      - "presentation: EFFECT_BLASTER_MUZZLEFLASH muzzle flash deferred (client-render only), same as the turret form."
     verification:
-      - { kind: code, ref: "no FlacAttack / WEP_FLAC player weapon in src (only the turret FlacTurret); flac references in src are all turret/sound/effect/notification", result: fail }
+      - { kind: code, ref: "FlacWeapon : Weapon (FlacTurret.cs:168-261) ports the IS_PLAYER branch of wr_think: Impulse 5, SpawnFlags SpecialAttack|Hidden, PlayerFuse 10f, WrThink (SetupShot + turret_projectile + fuse-think override + hagar_fire sound), AnimtimeFor 0.5 / RefireFor 1. Constants match flac_weapon.qh/qc", result: pass }
+      - { kind: code, ref: "[Weapon] attribute is commented OFF (FlacTurret.cs:163); no WEP_FLAC/WEP_TUR_FLAC registration grep hit in src -> the class has no live dispatch path -> liveness dead", result: fail }
     confidence: high
-    notes: "Unchanged since prior audit. Shares wr_think with the turret in Base (branches on IS_PLAYER). Only the turret-AI path is ported. The player form is a hidden developer feature, out of Wave-1/2 scope."
+    notes: "FIX since prior audit: the player form is now FAITHFULLY ported (logic/values/timing/audio) rather than missing — but it is DEAD, not live: the [Weapon] registration is deliberately disabled to avoid the impulse-5/Raptor collision and WeaponById/MenuWeaponOrder test churn. Re-add [Weapon] in a future pass that updates those test contracts + makes impulse routing vehicle-context-aware. Shares balance constants with the turret via FlacTurret.Pub* aliases."
+
+  - id: turret-flac.damage.headshake
+    name: "TFL_DMG_HEADSHAKE: head flinches off-aim when the turret is hit"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/flac.qc:METHOD(Flac, tr_setup) (damage_flags |= TFL_DMG_HEADSHAKE)"
+      - "common/turrets/sv_turrets.qc:turret_damage (228-234, TFL_DMG_HEADSHAKE head jolt)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:Spawn (TurretSpawn.Init call — headShake arg NOT passed)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init (headShake param, default false)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Damage(883-891) (HeadShake-gated head jolt)"
+    constants:
+      - { name: "damage_flags TFL_DMG_HEADSHAKE", base: "set (flac.qc tr_setup)", port: "NOT set for Flac (headShake defaults false)", match: false }
+      - { name: "head jolt magnitude", base: "+= crandom()*damage on pitch+yaw (post-FF-scaled take)", port: "(Prandom.Float()-0.5)*take on pitch+yaw — engine impl present + correct, just not enabled for Flac", match: true }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base flac.qc tr_setup sets damage_flags |= TFL_DMG_HEADSHAKE, so a hit jolts the FLAC head off-aim by ±take on pitch+yaw (turret_damage:228-234). The port engine supports this (TurretAI.Damage:887, gated on st.HeadShake) and MLRS/Machinegun/Plasma turrets pass headShake:true — but FlacTurret.Spawn omits the headShake:true argument, so the Flac head never flinches. The engine path exists but is unreachable for this unit (liveness dead)."
+    verification:
+      - { kind: code, ref: "Base flac.qc:15 — it.damage_flags |= TFL_DMG_HEADSHAKE. Port FlacTurret.Spawn (FlacTurret.cs:75-77) calls TurretSpawn.Init WITHOUT headShake, which defaults false (TurretSpawn.cs:46); TurretAI.Damage head-jolt (883-891) is gated on stHit.HeadShake -> never runs for Flac", result: fail }
+    confidence: high
+    notes: "NEW GAP (not in prior baseline as its own row; was only mentioned obliquely under the fire row's presentation gaps). Headshake is an AUTHORITY/aim behavior, not presentation: it perturbs the head-local aim angles on the server, so the next track tick has to re-acquire — it affects fire accuracy under sustained fire, not just visuals. Low-effort fix: pass headShake:true in FlacTurret.Spawn like the other three turrets do."

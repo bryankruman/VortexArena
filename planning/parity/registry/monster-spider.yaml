@@ -1,11 +1,10 @@
 unit: monster-spider
 category: monster
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-25"
 summary:
   feature_count: 17
   worst_gaps:
-    - "Webbed status STILL does NOT slow a hit PLAYER: the spiderweb PlayerPhysics_UpdateStats hook (STAT(MOVEVARS_HIGHSPEED) *= 0.5 while webbed) is NOT ported. Re-verified post-wave: the Wave-2 PlayerPhysics.cs edit only reworked footstep cadence (jitter RNG + g_footsteps gate + ladder bail); grep 'Webbed' across src still matches only Spider.cs/MonsterAI.cs/StatusEffects.cs/MonsterFramework.cs — NONE in PlayerPhysics.cs. A webbed player runs at full speed; the spider's signature crowd-control has no effect on players. The integration seam (player.SpeedMultiplier *= mp.HighSpeed via the PlayerPhysics mutator hook) exists and is unused for this."
     - "No monster client frame animation: the DPM frame-group map (mr_anim: walk/run/shoot/melee/pain1-2/die1-2/idle) is still not driven for monsters. The Wave-2 CsqcModelAppearance/CsqcModelEffectFlags are PLAYER-model appearance (force-model/colors/glow/death-fade) — they do NOT consume the server's MonsterAnim phase. MonsterAI.cs:1058-1059 still explicitly defers CSQC monster frame playback, so the spider renders static (no visible walk/bite/web/pain/die animation). Shared monster-presentation gap, all five monsters."
     - "Spider mr_pain/mr_death specialisation absent: QC picks random pain1/pain2 (pain_finished = animstate_endtime) and random die1/die2; the port still uses the generic MarkPain (fixed 0.34s window, generic Pain phase) and generic MarkDead (generic Death phase). Decoupled from the (unported) anim length."
     - "Pain/death/melee/sight/idle/spawn voice cues are port-invented: the Base spider has NO .sounds file (verified: only golem.dpm_0.sounds and zombie.dpm_0.sounds exist, no spider.dpm_*.sounds), so QC Monster_Sound resolves sample=\"\" and sound7 plays an EMPTY sample (silence) for these cues. The port's MonsterSound hardcodes monsters/spider_<cue>.wav whenever the def has a model, so it emits voice sounds the Base spider is silent for. Faithful in throttle/gate/structure to Monster_Sound, divergent in the actual cue source."
@@ -205,24 +204,27 @@ features:
     layer: [authority, shared]
     base_refs:
       - "common/monsters/monster/spider.qc:MUTATOR_HOOKFUNCTION(spiderweb, PlayerPhysics_UpdateStats)"
-    port_refs: []
+      - "common/monsters/monster/spider.qc:REGISTER_MUTATOR(spiderweb, true)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs:SpiderWebMutator (OnPlayerPhysics)"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:252 (MutatorHooks.PlayerPhysics.Call)"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:283-284 (ApplyHighSpeed fold)"
     constants:
-      - { name: "speed multiplier while webbed", base: "0.5", port: "none", match: false }
+      - { name: "speed multiplier while webbed", base: "0.5", port: "0.5", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: na
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN after Wave-1/2. Nothing in PlayerPhysics (UpdateStats) checks STATUSEFFECT_Webbed to halve MOVEVARS_HIGHSPEED. Re-verified post-wave: grep 'Webbed' across src matches only Spider.cs/MonsterAI.cs/StatusEffects.cs/MonsterFramework.cs — NONE in PlayerPhysics.cs. The Wave-2 PlayerPhysics.cs diff (git diff main...HEAD) only reworked footstep cadence (jitter RNG + g_footsteps gate + ladder bail) — entirely unrelated to the web slow. A webbed player runs at full speed; only the monster-vs-monster slow (web.monster_slow) is ported."
+    gaps: []
     verification:
-      - { kind: code, ref: "Grep 'Webbed' across src: NO match in PlayerPhysics.cs (only Monsters/* + StatusEffects.cs). git diff main...HEAD PlayerPhysics.cs = footstep cadence only (FootstepJitterRng, g_footsteps gate, LadderEntity bail).", result: fail }
+      - { kind: code, ref: "NEW SpiderWebMutator ([Mutator], Spider.cs:153-183) ports MUTATOR_HOOKFUNCTION(spiderweb, PlayerPhysics_UpdateStats): IsEnabled => Api.Services != null (mirrors REGISTER_MUTATOR(spiderweb,true), always-on); Hook() subscribes OnPlayerPhysics to MutatorHooks.PlayerPhysics; OnPlayerPhysics: if (StatusEffectsCatalog.Has(player, MonsterFramework.Webbed)) player.SpeedMultiplier *= 0.5f. Liveness traced: [Mutator] -> Mutators.All (source-gen registry) -> MutatorActivation.Apply (GameWorld.cs:601) Adds it (Hook()); PlayerPhysics.cs:251-252 fires MutatorHooks.PlayerPhysics.Call every tick; PlayerPhysics.cs:283-284 folds SpeedMultiplier into mp.ApplyHighSpeed — same path the entrap nade / Speed powerup / Nexball carrier ride.", result: pass }
     confidence: high
-    notes: "The integration point EXISTS: PlayerPhysics seeds player.SpeedMultiplier = mp.HighSpeed then fires the PlayerPhysics mutator hook and folds SpeedMultiplier into ApplyHighSpeed (the Speed powerup / entrap nade / buffs all ride this). A spiderweb-equivalent handler reading the Webbed status to set SpeedMultiplier *= 0.5 would close this. Not addressed by Wave-1/2."
+    notes: "FIXED since the 2026-06-22 audit (committed in 8cb57e3 'Wave 7 — niche-entity gaps'). A webbed player now moves at HALF top speed for the Webbed duration. Implemented as a self-contained [Mutator] (SpiderWebMutator) riding MutatorHooks.PlayerPhysics rather than editing PlayerPhysics directly — same observable effect as the QC PlayerPhysics_UpdateStats hook, structurally a mutator-hook (matching QC's MUTATOR_HOOKFUNCTION). 0.5 multiplier matches Base exactly. The Webbed status itself is applied by the web explode (web.applies_webbed)."
 
   - id: monster-spider.web.monster_slow
     name: "Webbed MONSTER move-speed slow (spiderweb MonsterMove hook: run/walk *= 0.5)"
