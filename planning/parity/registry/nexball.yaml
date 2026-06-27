@@ -1,15 +1,15 @@
 unit: nexball
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
-  feature_count: 20
+  feature_count: 21
   worst_gaps:
     - "Ball-launcher weapon (BallStealer / WEP_NEXBALL) is FULLY PORTED and LIVE — a basketball carrier can charge-and-shoot the ball (power meter, primary launch), safe-pass to a locked teammate (homing arc), and tackle/steal (secondary projectile). The safe-pass CROSSHAIR LOCK is now also ported (CarryFrame -> UpdateSafePassLock runs crosshair_trace each frame and sets ball.enemy/ball.wait), so the secondary safe-pass branch is now reachable on the live path. The whole weapon + carry chain is faithful & live."
-    - "STAT(OBJECTIVE_STATUS) NB_CARRYING bit is still not networked (no nexball case in any GametypeStatusBlock; no NB_CARRYING anywhere in the port); held-ball forteam-return notification (INFO_NEXBALL_RETURN_HELD) not sent."
+    - "STAT(OBJECTIVE_STATUS) NB_CARRYING bit is still not networked (no nexball case in any GametypeStatusBlock; no NB_CARRYING anywhere in the port); the HUD-only NB_METERSTART meter byte is not networked either."
     - "No HUD mod-icon: no carrying indicator, no charge-meter progress bar, no nexball event-chase camera; accuracy/item-stats scoreboard panels not hidden for nexball. NB_METERSTART also not networked so a drawer would have no data."
-    - "Minor presentation: ball scale 1.3 + glow_trail render still client-deferred (SpawnForGametype never sets e.Scale); carrier glow + waypoint sprites + viewmodel scale (0.25) + EF_FLAME lock indicator client-deferred (QC ball_customize is CSQC)."
-    - "SpectateCopy hook (copy NB_METERSTART to spectator) absent; ForbidDropCurrentWeapon's WEP_MORTAR special-case folded/approximated into ForbidThrow."
+    - "Minor presentation: ball scale 1.3 + glow_trail render still client-deferred (SpawnForGametype never sets e.Scale); carrier glow + viewmodel scale (0.25) + EF_FLAME lock indicator client-deferred (QC ball_customize is CSQC). NOTE: the WP_NbBall + WP_NbGoal waypoint sprites ARE now ported & live (CollectWaypoints) — earlier 'client-deferred' notes were stale."
+    - "SpectateCopy hook (copy NB_METERSTART to spectator) absent; ForbidDropCurrentWeapon's WEP_MORTAR special-case folded/approximated into ForbidThrow; LogNB :nexball: eventlog lines + the SendWaypoint radar-bit hook not ported (minor)."
 features:
   - id: nexball.init.initialize
     name: "Mode init: teams, score/lead limit, meter-period rounding, radar"
@@ -212,11 +212,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "InitBall does not WaypointSprite_Ping (waypoint sprites are client-deferred)."
+      - "InitBall does not WaypointSprite_Ping (the ball waypoint sprite itself IS now spawned via CollectWaypoints; only the QC ping/flash request on release is unported)."
     verification:
-      - { kind: code-read, ref: "BallThink dispatches InitBall (release) vs ResetBall (4-step glide cnt 2->4) via _releasePending; GameWorld syncs nb.GameStartTime each Nexball frame; SimulationLoop.RunThink fires it each due tick", result: pass }
+      - { kind: code-read, ref: "BallThink dispatches InitBall (release) vs ResetBall (4-step glide cnt 2->4) via _releasePending; GameWorld:3401 syncs nb.GameStartTime each Nexball frame; SimulationLoop.RunThink fires it each due tick", result: pass }
     confidence: high
-    notes: "Unchanged since last audit. GameStartTime synced from world (GameWorld:3034); first release fires at game_starttime + delay_start. Only the waypoint-ping (client) remains."
+    notes: "Unchanged since last audit. GameStartTime synced from world (GameWorld:3401); first release fires at game_starttime + delay_start. Only the waypoint-ping (a flash request) remains; the WP_NbBall sprite is now drawn (see nexball.waypoint.sprites)."
 
   - id: nexball.ball.football_kick
     name: "Football kick physics (soccer-style velocity boost on touch)"
@@ -287,18 +287,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No carrier waypoint sprite; the carrier glow effect bit is cleared on the ball but not rendered on the carrier (client-deferred)."
+      - "The carrier glow effect bit is cleared on the ball but not rendered on the carrier (client EF, deferred). The carrier waypoint sprite (WP_NbBall AttachCarrier) IS now drawn via CollectWaypoints (see nexball.waypoint.sprites)."
     verification:
       - { kind: unit, ref: "NexballSpawnTests EndToEnd_* (ownership)", result: pass }
-      - { kind: code-read, ref: "GiveBall sets team/pusher/dropper, the different-team forteam lifetime (60 s), AttachToCarrier, the 20 s DropOwner think, AND the weapon-arena swap via SaveAndApplyNexballWeapons (save normal set -> grant+switch BallStealer). A steal-time previous-carrier detach + weapon restore are handled at the top of GiveBall.", result: pass }
+      - { kind: code-read, ref: "GiveBall sets team/pusher/dropper, the different-team forteam lifetime (60 s), AttachToCarrier, the 20 s DropOwner think, AND the weapon-arena swap via SaveAndApplyNexballWeapons (save normal set -> grant+switch BallStealer). A steal-time previous-carrier detach + weapon restore are handled at the top of GiveBall. CollectWaypoints emits the carrier WP_NbBall sprite.", result: pass }
     confidence: high
-    notes: "DRIFT (logic partial->faithful): the weapon-arena swap to WEP_NEXBALL is now implemented (SaveAndApplyNexballWeapons saves the carrier's normal set and grants/switches BallStealer); the prior blocking gap (no BallStealer weapon) is FIXED. forteam lifetime (60 s) + anti-ballcamp DropOwner (20 s) remain faithful. Residual: client carrier glow/waypoint."
+    notes: "DRIFT (presentation missing->partial): the carrier WP_NbBall waypoint sprite is now ported & live (CollectWaypoints). Only the carrier glow EF bit remains client-deferred. (logic/values/timing already faithful from the prior weapon-arena fix.)"
 
   - id: nexball.ball.dropball
     name: "DropBall / DropOwner / drop on death/disconnect/observe"
@@ -322,17 +322,16 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "No ground waypoint sprite on drop (client-deferred)."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "DropBall restores bounce+touch, inherits carrier velocity, arms MinIdle reset, clears NbMeterStart + restores the carrier's saved weapons; DropOwner shoves the camper up-and-back; OnDeath drops on kill; OnPlayerRemoved -> DropBall(player) from ClientManager.cs:517 + :770", result: pass }
+      - { kind: code-read, ref: "DropBall restores bounce+touch, inherits carrier velocity, arms MinIdle reset, clears NbMeterStart + restores the carrier's saved weapons; DropOwner shoves the camper up-and-back; OnDeath drops on kill; OnPlayerRemoved -> DropBall(player) from ClientManager.cs:517 + :770. The loose-ball WP_NbBall ground sprite ('0 0 64' offset) is emitted by CollectWaypoints.", result: pass }
     confidence: high
-    notes: "Unchanged since last audit on liveness (drop-on-disconnect/observe wired). DropBall(carrier) now also clears the power-meter + restores saved weapons (weapon-arena teardown), consistent with QC PlayerPreThink non-carrier restore."
+    notes: "DRIFT (presentation missing->faithful): the loose ground-ball WP_NbBall sprite (QC DropBall WaypointSprite_Spawn at '0 0 64') is now drawn via CollectWaypoints (see nexball.waypoint.sprites). DropBall(carrier) also clears the power-meter + restores saved weapons (weapon-arena teardown)."
 
   - id: nexball.carry.perframe
     name: "Carry per-frame: view-ball follow, safe-pass lock, carrier-slowdown, carrying status"
@@ -345,7 +344,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:CarryFrame"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:UpdateSafePassLock"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:OnPlayerPhysics + CarrierHighspeed"
-      - "src/XonoticGodot.Server/GameWorld.cs:3303 (CarryFrame)"
+      - "src/XonoticGodot.Server/GameWorld.cs:3403 (CarryFrame)"
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs (MutatorHooks.PlayerPhysics.Call)"
     constants:
       - { name: "g_nexball_basketball_carrier_highspeed", base: "0.8", port: "0.8 (DefaultCarrierHighspeed; cvar-read via CarrierHighspeed)", match: true }
@@ -364,10 +363,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STAT(OBJECTIVE_STATUS) NB_CARRYING bit is not networked (no NB_CARRYING anywhere in the port; no nexball case in any GametypeStatusBlock); the held-ball forteam-return notification (INFO_NEXBALL_RETURN_HELD) is not sent (the drop+reset effect IS applied)."
+      - "STAT(OBJECTIVE_STATUS) NB_CARRYING bit is not networked (no NB_CARRYING anywhere in the port; no nexball case in any GametypeStatusBlock). NOTE: the held-ball forteam-return notification IS now sent (CarryFrame -> NotificationSystem.Info NEXBALL_RETURN_HELD_<team>) and the drop+reset effect IS applied."
       - "No per-frame viewmodel scale (0.25) / EF_FLAME safe-pass lock indicator (client; QC ball_customize is CSQC setcefc)."
     verification:
-      - { kind: code-read, ref: "CarryFrame (GameWorld:3303) positions the view-ball at origin+view_ofs+viewmodel_offset, force-returns the team-held ball past its forteam lifetime, and calls UpdateSafePassLock; UpdateSafePassLock crosshair_traces the carrier and locks ball.enemy (GtSafePassTarget) + ball.wait (GtSafePassExpire) onto a live teammate within safepass_maxdist=5000 for holdtime=0.75. OnPlayerPhysics applies the 0.8 carrier highspeed via the live PlayerPhysics hook.", result: pass }
+      - { kind: code-read, ref: "CarryFrame (GameWorld:3403) positions the view-ball at origin+view_ofs+viewmodel_offset, force-returns the team-held ball past its forteam lifetime (with NEXBALL_RETURN_HELD notification), and calls UpdateSafePassLock; UpdateSafePassLock crosshair_traces the carrier and locks ball.enemy (GtSafePassTarget) + ball.wait (GtSafePassExpire) onto a live teammate within safepass_maxdist=5000 for holdtime=0.75. OnPlayerPhysics applies the 0.8 carrier highspeed via the live PlayerPhysics hook.", result: pass }
     confidence: high
     notes: "DRIFT (FIX: logic partial->faithful, values partial->faithful). The safe-pass CROSSHAIR LOCK is now ported: UpdateSafePassLock (called from CarryFrame) runs the per-frame crosshair_trace, expires stale locks (ball.wait < time), and sets ball.enemy + ball.wait on a live teammate within safepass_maxdist, so the BallStealer secondary safe-pass arc is now reachable on the live path. safepass_maxdist/holdtime are consumed. View-ball follow + forteam auto-return + carrier slowdown remain live and faithful. Residual is purely client (NB_CARRYING networking + viewmodel scale/flame)."
 
@@ -610,3 +609,35 @@ features:
       - { kind: code-read, ref: "BallConfig.WithKindDefaults sets BounceFactor=0.6, BounceStop=0.075 for both Nexball kinds; BallEntity.Pushable defaults true; SpawnForGametype applies them to the MOVETYPE_BOUNCE ball edict. Nexball.SpawnBall passes a BallConfig that only overrides Touch/Think/RespawnTime/Effects, so the kind defaults stand.", result: pass }
     confidence: high
     notes: "NEWLY MAPPED (registry coverage gap). The ball MOVETYPE_BOUNCE tuning + jumppad pushability are ported via the shared BallEntity framework and live, matching Base at default values; only the per-mode cvar read is hard-coded to the default."
+
+  - id: nexball.waypoint.sprites
+    name: "Waypoint sprites: WP_NbBall (carrier + loose ball) + WP_NbGoal (per-team, enemy-only)"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:GiveBall (WaypointSprite_AttachCarrier WP_NbBall)"
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:DropBall / SpawnBall (WaypointSprite_Spawn WP_NbBall '0 0 64')"
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:SpawnGoal (WaypointSprite_SpawnFixed WP_NbGoal) + nb_Goal_Customize"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:CollectWaypoints"
+      - "game/net/ServerNet.cs:1103 (SendWaypoints -> GameType.CollectWaypoints), :492 (per-frame send)"
+    constants:
+      - { name: "WP_NbBall carrier offset / radaricon", base: "AttachCarrier, RADARICON_FLAGCARRIER", port: "Owner=carrier, RadarIcon=1 (FLAGCARRIER)", match: true }
+      - { name: "WP_NbBall loose offset", base: "'0 0 64'", port: "ball.Origin + (0,0,64)", match: true }
+      - { name: "WP_NbGoal visibility", base: "nb_Goal_Customize: hidden for SAME_TEAM(viewer, goal)", port: "VisibleForPlayer = viewer.Team != goalTeam", match: true }
+      - { name: "WP_NbGoal radaricon", base: "RADARICON_NONE", port: "RadarIcon=0 (NONE)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "InitBall/GoalTouch WaypointSprite_Ping (the ball-release/goal flash request) is not emitted (the sprite itself is drawn each tick via the pull model; only the one-shot ping/flash is absent)."
+      - "The SendWaypoint hook radar-bit mask (M_ARGV(2,int) &= ~0x80) is not reproduced (minor radar-icon detail)."
+    verification:
+      - { kind: code-read, ref: "Nexball.CollectWaypoints emits WP_NbBall on the carrier (Owner=carrier, RADARICON_FLAGCARRIER) or on the loose ball at origin+'0 0 64' (only while _ballCnt==0, suppressed during the reset glide), and one WP_NbGoal per valid team goal at its center tinted the team color, hidden for viewers on the goal's own team. ServerNet.SendWaypoints (per-frame, :492) calls GameType.CollectWaypoints (:1107) on the live server path.", result: pass }
+    confidence: high
+    notes: "NEWLY MAPPED + DRIFT (FIX). Earlier audits recorded nexball waypoint sprites as 'client-deferred'/missing; they are in fact ported and LIVE via the pull-model CollectWaypoints (same mechanism as CTF/Domination/KeyHunt), shipped by ServerNet.SendWaypoints. Only the one-shot WaypointSprite_Ping flash + the SendWaypoint radar-bit mask remain unported."

@@ -30,6 +30,8 @@ the row is explicitly marked `intended_divergence: true` with a rationale.
 | `PARITY-GAPS.md` | Generated: gaps ranked by gameplay impact. The actionable backlog. |
 | `NEEDS-INGAME-CHECK.md` | Generated: rows whose presentation/liveness code-reading couldn't confirm — the manual in-game verify queue. |
 | `PORTING-PLAN.md` | Generated: the **wave-based execution plan** for closing the gaps (how to do the work, in parallel). See below. |
+| `REMAINING-WAVES.md` | Live wave tracker: which waves are done and the remaining final waves (16–17 + verification). |
+| `EXECUTION-STRATEGY.md` | The reusable **plan→apply harness + model-tiering rule** every porting wave runs. Read before authoring a wave. |
 
 ## The two workflows
 

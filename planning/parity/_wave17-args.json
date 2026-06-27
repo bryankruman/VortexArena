@@ -1,0 +1,280 @@
+{
+"units": [
+{
+"unit": "assault",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 5
+},
+{
+"unit": "cl-crosshair",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 15
+},
+{
+"unit": "cl-hud",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 9
+},
+{
+"unit": "cl-scoreboard",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 11
+},
+{
+"unit": "cl-shownames",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 1
+},
+{
+"unit": "cl-teamradar",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 7
+},
+{
+"unit": "cl-view",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "cl-viewmodel",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 5
+},
+{
+"unit": "fx-deathtypes",
+"stream": "presentation",
+"tier": "haiku",
+"gaps": 1
+},
+{
+"unit": "fx-effectinfo",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "fx-notifications",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "fx-sounds",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "mapobject-func",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 7
+},
+{
+"unit": "monster-golem",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 4
+},
+{
+"unit": "monster-mage",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "mutator-damagetext",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 1
+},
+{
+"unit": "mutator-dynamic_handicap",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 1
+},
+{
+"unit": "mutator-nades",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 13
+},
+{
+"unit": "mutator-new_toys",
+"stream": "presentation",
+"tier": "haiku",
+"gaps": 1
+},
+{
+"unit": "mutator-powerups",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "mutator-sandbox",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 8
+},
+{
+"unit": "mutator-walljump",
+"stream": "presentation",
+"tier": "haiku",
+"gaps": 2
+},
+{
+"unit": "nexball",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 10
+},
+{
+"unit": "onslaught",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 11
+},
+{
+"unit": "sv-campaign",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 1
+},
+{
+"unit": "tka",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 5
+},
+{
+"unit": "turret-ewheel",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "turret-flac",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "turret-fusionreactor",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 4
+},
+{
+"unit": "turret-hellion",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "turret-machinegun",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "turret-mlrs",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "turret-plasma",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 4
+},
+{
+"unit": "turret-plasma_dual",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "turret-tesla",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "vehicle-bumblebee",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 6
+},
+{
+"unit": "vehicle-framework",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 14
+},
+{
+"unit": "vehicle-racer",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 5
+},
+{
+"unit": "vehicle-raptor",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 15
+},
+{
+"unit": "vehicle-spiderbot",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 4
+},
+{
+"unit": "weapon-blaster",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "weapon-devastator",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "weapon-fireball",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 6
+},
+{
+"unit": "weapon-hlac",
+"stream": "presentation",
+"tier": "haiku",
+"gaps": 1
+},
+{
+"unit": "weapon-rifle",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 1
+},
+{
+"unit": "weapon-tuba",
+"stream": "presentation",
+"tier": "opus",
+"gaps": 6
+}
+]
+}

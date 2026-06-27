@@ -5,9 +5,9 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 16
   worst_gaps:
-    - "Death-log item codes (S/I for Strength/Shield) still unported (LogDeath_AppendItemCodes — the port's kill log carries no :items= field; GameLog.Kill is uncalled). This is now the single largest residual gap in the unit."
-    - "Strength/Shield glow renders primarily as a colored OmniLight3D rather than the exact EF_ADDITIVE|EF_FULLBRIGHT whole-body additive recolor (a documented CsqcModelEffects render gap)."
+    - "Strength/Shield glow renders primarily as a colored OmniLight3D rather than the exact EF_ADDITIVE|EF_FULLBRIGHT whole-body additive recolor (a documented CsqcModelEffects render gap) — now the single largest residual gap in the unit."
     - "Pickup/powerdown notifications fire the powerdown center-print on ANY falling edge (Base gates it on STATUSEFFECT_REMOVE_TIMEOUT only); stopsound(CH_TRIGGER_SINGLE) on removal still unported."
+    - "DRIFT 2026-06-27 (re-audit): the last big gap closed — the death-log item codes (LogDeath_AppendItemCodes, S/I) are now ported and LIVE (PowerupsMutator.LogDeathAppendItemCodes overrides MutatorBase, chained by MutatorActivation.LogDeathAppendItemCodes, folded into the :kill:...:items= line via Scores.AppendItemcodes/EmitLogDeath, sunk to GameLog.Echo gated on sv_eventlog at GameWorld.cs:852). obituary_mutator_strings logic+presentation partial->faithful, gap closed."
     - "DRIFT 2026-06-27: two more gaps closed since 06-25 — m_botvalue is now set on the port pickups (11000 base / 3000 jetpack+fuelregen, PowerupItem.cs:37/196/250) and consumed live in BotRoles.cs:313 (defs_spawn_gate values:partial->faithful); and the jetpack/fuelregen m_spawnfunc_hookreplace -> ITEM_Fuel is now ported (PowerupItem.cs:221/263) and dispatched live (ItemSpawnFuncs.cs:297) (jetpack.start_item_hookreplace logic missing->faithful, liveness na->live)."
     - "DRIFT 2026-06-25: Wave-8d closed three gaps wholesale — invisibility exterior-weapon alpha + vehicle guard (invisibility.alpha presentation faithful), radar CustomizeWaypoint stealth (invisibility.stealth logic+presentation faithful, via ServerNet.WaypointVisible), and the dropped-powerup WP_Item countdown waypoint + ItemTouched hook (drop.ondeath_onuse logic+presentation faithful). jetpack-fuel fallback also fixed to 8."
 features:
@@ -390,23 +390,25 @@ features:
       - "common/mutators/mutator/powerups/sv_powerups.qc:BuildMutatorsPrettyString (196-202)"
       - "common/mutators/mutator/powerups/sv_powerups.qc:BuildMutatorsString (212-218)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:BuildMutatorsString (173), BuildMutatorsPrettyString (164)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:BuildMutatorsString (198), BuildMutatorsPrettyString (189), LogDeathAppendItemCodes (211)"
+      - "src/XonoticGodot.Server/Scores.cs:AppendItemcodes (619), EmitLogDeath (599)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:LogDeathAppendItemCodes (137)"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Death log does not append 'S' (Strength) / 'I' (Shield) item codes for a victim who held the powerup (LogDeath_AppendItemCodes unported — the port's kill log carries no :items= field)."
+    gaps: []
     verification:
-      - { kind: code, ref: "FIXED since baseline (server-browser strings): PowerupsMutator now overrides BuildMutatorsString (-> ':no_powerups' when g_powerups==0, ':powerups' when >0) and BuildMutatorsPrettyString (-> ', No powerups' / ', Powerups'), matching sv_powerups.qc:196-218. These run live via the MutatorActivation.BuildMutatorsString/PrettyString chains (called from GameWorld.cs:876 gamelog init + the votescreen pretty-string). LogDeath_AppendItemCodes still has no port chain (grep finds only a doc-comment).", result: pass }
+      - { kind: code, ref: "Server-browser strings (already fixed): PowerupsMutator overrides BuildMutatorsString (-> ':no_powerups'/':powerups') and BuildMutatorsPrettyString (-> ', No powerups'/', Powerups'), matching sv_powerups.qc:196-218; run live via the MutatorActivation.BuildMutatorsString/PrettyString chains. Re-verified 2026-06-27.", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-27 (FIX): LogDeath_AppendItemCodes is now ported and LIVE. PowerupsMutator.LogDeathAppendItemCodes (PowerupsMutator.cs:211) appends 'S' when Strength is active and 'I' when Shield is active — bit-faithful to sv_powerups.qc:17-28. Chained by MutatorActivation.LogDeathAppendItemCodes (MutatorActivation.cs:137-141), invoked from Scores.AppendItemcodes (Scores.cs:634) which builds the per-slot weapon codes + 'T'-on-chat then runs the mutator chain (port of server/damage.qc:81 AppendItemcodes). EmitLogDeath (Scores.cs:599-611) builds ':kill:<mode>:<killer>:<killed>:type=<dt>:items=<codes>' (+ ':victimitems=' when killer!=killed) and calls the Scores.LogDeath sink; EmitLogDeath is called live from the Obituary scoring path (Scores.cs:576). Sink wired at GameWorld.cs:852 (Scores.LogDeath = line => if(sv_eventlog) GameLog.Echo(line)). The S/I codes now ride the :items=/:victimitems= field on the kill event-log line.", result: pass }
     confidence: high
-    notes: "FIX since baseline (logic missing->partial, presentation missing->partial, liveness na->live). The server-browser/scoreboard mutator tokens are now emitted; the death-log S/I item codes remain the one unported half (the kill log carries no item-codes field yet)."
+    notes: "FIX since baseline (logic partial->faithful, presentation partial->faithful, gap closed). Both halves are now ported+live: the server-browser/scoreboard mutator tokens AND the death-log S/I item codes. The LogDeath pipeline (EmitLogDeath -> AppendItemcodes -> MutatorActivation.LogDeathAppendItemCodes -> PowerupsMutator) is fully wired and fired on the real Obituary death path, sunk to GameLog.Echo gated on sv_eventlog."
 
   - id: powerups.hud.timer_bars
     name: "HUD active-powerups panel (timer bars + icons)"

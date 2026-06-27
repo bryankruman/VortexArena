@@ -5,7 +5,6 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 35
   worst_gaps:
-    - "Directional skin border variants render as the full 9-slice frame, not the engine's edge-masked crops (cl-hud.engine.skin_border)."
     - "Radar maximized clickable mode (ons spawn / teleport select) is still unported; the discovered radar panel stays force-hidden and the live one is the standalone _radar. (The BSP _mini minimap texture + bigsize/normalsize math ARE now ported — fixed since baseline by Wave 8c.)"
     - "Pure --connect (remote) clients still have no vote / mapvote net channel; those panels stay blank there (listen-server only)."
     - "Race timer / checkpoints fed from host-side Race state, not the TE_CSQC_RACE wire — no splits on a pure --connect client."
@@ -67,16 +66,15 @@ features:
       - "game/hud/HudPanel.cs:DrawBackground"
     constants:
       - { name: "BORDER_MULTIPLIER", base: "4", port: "border slice", match: true }
-      - { name: "border_* directional variants", base: "engine-synthesized crops of border_default", port: "full 9-slice for all variants (suffix masking is a follow-up)", match: false }
-    status: { logic: faithful, values: faithful, timing: na, presentation: partial, audio: na, liveness: live }
+      - { name: "border_* directional variants", base: "separate skin texture files (border_default_south, border_corner_northwest, ...), NOT engine crops — draw_BorderPicture always renders the full 9-slice of whatever pic resolved", port: "full 9-slice of the resolved per-variant texture (skin->default chain)", match: true }
+    status: { logic: faithful, values: faithful, timing: na, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Directional border variants (_south/_north/_east/_corner_*) render as the full 9-slice frame rather than the engine's edge-masked crops; bg-enabled panels show a full frame where Base shows a partial edge."
+    gaps: []
     verification:
-      - { kind: code, ref: "HudSkin resolves skin->default chain", result: pass }
-    confidence: medium
-    notes: "Phase-1 simplification acknowledged in the contract (§4.2). Unchanged by Wave 5/6/8."
+      - { kind: code, ref: "HudSkin.DrawBorderPicture (lib/draw.qh draw_BorderPicture) is a line-for-line port: the borderSize<0 whole-image branch, the ==0 central-only branch, the narrow (left+right columns) branch, the shortH (top+bottom rows) branch, the not-wide-AND-not-high four-corner branch, and the full 9-slice with the exact 0/0.25/0.75/1 UV grid. ResolveBorderTex selects the per-variant texture (gfx/hud/<skin>/<bg> -> default -> border_default), so directional variants render their own art — matching Base, which has NO edge-masking (the directional look is in the texture art, not engine crops).", result: pass }
+    confidence: high
+    notes: "RECLASSIFIED to faithful (2026-06-27): the prior 'partial' rested on a wrong model of Base — draw_BorderPicture (lib/draw.qh) ALWAYS renders the full 9-slice of the resolved pic; the directional variants (_south/_north/_corner_*) are separate texture files shipped by the skin, not engine-synthesized crops, and the directional look comes from each texture's own art. The port resolves each variant name to its own texture and renders the identical 9-slice (all five size-branches ported). So there was no real divergence to begin with."
 
   - id: cl-hud.engine.progressbar
     name: "Progress-bar primitive (HUD_Panel_DrawProgressBar)"

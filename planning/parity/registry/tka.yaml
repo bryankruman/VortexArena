@@ -1,7 +1,25 @@
 unit: tka
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
+# 2026-06-27 (6th pass, drift re-verify): NO drift on any of the 18 rows. Every per-dimension status, constant,
+#   and liveness claim re-confirmed against current Base + port. 0 fixes, 0 regressions, 0 newly-unmapped gameplay
+#   features. Current live-wiring sites (line numbers shifted again): SpawnBall GameWorld.cs:775 (case TeamKeepaway),
+#   Activate :2877, ForbidAttackHook install :2881, Tick :3397, winner report :4215-4217, DamageCalculate.Call
+#   DamageSystem.cs:264, PlayerPhysics.Call PlayerPhysics.cs:261, FirePlayerUseKey VehicleBoarding.cs:106,
+#   OnPlayerRemoved ClientManager.cs:535 (observer) + :814 (disconnect), ClearPlayerOnJoin ClientManager.cs:294
+#   -> GameScores.cs:637 FirePreferPlayerScore_Clear, BallStatusFor GametypeStatusBlock.cs:124, ModIcons Kind
+#   TeamKeepaway=8 GametypeStatusBlock.cs:46/120-124, CollectWaypoints pull ServerNet.cs:1107 + per-peer predicate
+#   :1169 (WaypointVisible -> VisibleForPlayer), bot RoleKeepaway BotRoles.cs:99 -> BotObjectiveRoles.cs:RoleKeepaway
+#   (carrier enemyplayers 10000 + items 10000; collector enemyplayers 500 + items 10000 + ball 8000/4000 dist 2000;
+#   FindByClass "keepawayball" == BallEntity.cs ClassName). All 16 Base MUTATOR_HOOKFUNCTIONs re-enumerated and
+#   still mapped (reset_map_global/PlayerDies/GiveFragsForKill/Scores_CountFragsRemaining/PlayerPreThink/PlayerUseKey/
+#   Damage_Calculate/ClientDisconnect/MakePlayerObserver/PlayerPowerups[empty no-op stub]/PlayerPhysics_UpdateStats/
+#   Bot_ForbidAttack/HavocBot_ChooseRole/DropSpecialItems/SpectateCopy/PreferPlayerScore_Clear). The TeamKeepaway
+#   gametype-class metadata (m_isAlwaysSupported 8spawn/4096diam, m_isForcedSupported g_tka_on_ka_maps/g_tka_on_tdm_maps,
+#   m_configuremenu, m_parse_mapinfo) remain map-eligibility/menu registration concerns, out of the gameplay registry's
+#   scope (consistent with prior passes — not flagged as gameplay gaps). No code changes to TeamKeepaway.cs/BallEntity.cs
+#   since the prior audit.
 # 2026-06-25 (5th pass, drift re-verify): ONE fix on the 18 rows. tka.score.preferplayerscore upgraded
 #   logic missing->faithful, liveness dead->live: the rejoin-clear path is now WIRED + LIVE. Since the prior
 #   baseline (which recorded ClearPlayerOnJoin as having NO live caller and TKA never supplying the veto),
@@ -79,7 +97,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:SpawnBall"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/BallEntity.cs:SpawnForGametype"
-      - "src/XonoticGodot.Server/GameWorld.cs:718"
+      - "src/XonoticGodot.Server/GameWorld.cs:775"
     constants:
       - { name: "g_tkaball_count", base: "1", port: "1 (single ball; multi-ball loop not modeled)", match: true }
       - { name: "ball_bbox", base: "-24 -24 -24 .. 24 24 24", port: "-24 -24 -24 .. 24 24 24 (BallKind.KeepawayBall)", match: true }
@@ -386,7 +404,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:DamageScale"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:DamageForceScale"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:OnDamageCalculate"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:263"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:264"
     constants:
       - { name: "ballcarrier_damage_cvar", base: "g_tka_ballcarrier_damage (vector 1 1 1)", port: "g_tka_ballcarrier_damage parsed as a vector, fallback 1", match: true }
       - { name: "ballcarrier_force", base: "g_tka_ballcarrier_force (vector 1 1 1)", port: "g_tka_ballcarrier_force (DamageForceScale getter), fallback 1", match: true }
@@ -418,7 +436,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:OnPlayerPhysics"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:BallCarrierHighspeed"
-      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:252"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:261"
     constants:
       - { name: "g_tka_ballcarrier_highspeed", base: "1", port: "g_tka_ballcarrier_highspeed (correct cvar), fallback 1", match: true }
     status:
@@ -447,8 +465,8 @@ features:
       - "common/gametypes/gametype/tka/tka.qh:gametype_init pointlimit=50 leadlimit=0"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:CheckPointLimit"
-      - "src/XonoticGodot.Server/GameWorld.cs:2583"
-      - "src/XonoticGodot.Server/GameWorld.cs:3201"
+      - "src/XonoticGodot.Server/GameWorld.cs:3397"
+      - "src/XonoticGodot.Server/GameWorld.cs:4215"
     constants:
       - { name: "pointlimit_default", base: "50 (mapinfo; g_tka_point_limit=-1->mapinfo)", port: "50 (DefaultPointLimit)", match: true }
       - { name: "leadlimit_default", base: "0 (g_tka_point_leadlimit -> mapinfo 0)", port: "0 (LeadLimit; modeled in CheckPointLimit)", match: true }
@@ -511,7 +529,7 @@ features:
       - "common/gametypes/gametype/tka/sv_tka.qc:SpectateCopy"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:BallStatusFor"
-      - "src/XonoticGodot.Net/GametypeStatusBlock.cs:120"
+      - "src/XonoticGodot.Net/GametypeStatusBlock.cs:124"
       - "game/net/NetGame.cs:3772"
       - "game/hud/ModIconsPanel.cs:DrawTeamKeepaway"
     constants:
@@ -549,7 +567,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:CollectWaypoints"
       - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointRegistry"
-      - "game/net/ServerNet.cs:923"
+      - "game/net/ServerNet.cs:1107"
       - "game/client/WaypointSpriteLayer.cs"
     constants:
       - { name: "g_tkaball_tracking", base: "1 (0=none/1=always/2=dropped-only)", port: "g_tkaball_tracking read; 0=none, 1=always, 2=dropped-only (CarrierWaypointVisibleFor returns BallTracking==1 for enemies)", match: true }
@@ -591,7 +609,7 @@ features:
       - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:FindBall"
       - "src/XonoticGodot.Server/Bot/BotRoles.cs:99"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:ForbidBotAttack"
-      - "src/XonoticGodot.Server/GameWorld.cs:2097"
+      - "src/XonoticGodot.Server/GameWorld.cs:2881"
     constants:
       - { name: "ball_goalrating_scale", base: "8000 (enemy) / 4000 (sameteam) ratingscale, distance 2000", port: "RatingBall 8000 / RatingBallSameTeam 4000, distance 2000 (TeamGame-gated sameteam split)", match: true }
       - { name: "ball_class", base: "new(keepawayball) -> classname keepawayball", port: "FindBall queries 'keepawayball' (matches BallEntity.cs:105)", match: true }

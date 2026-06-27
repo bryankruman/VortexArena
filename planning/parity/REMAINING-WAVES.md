@@ -1,35 +1,59 @@
-# Remaining parity waves (after Waves 1–2 + fix-up)
+# Remaining parity waves
 
-_Generated from the post-implementation registry. ~1,370 open gap-dimensions (~1,080 by the stricter
-`PARITY-GAPS.md` "listed-gap" count). Ordered by recommended execution: ROI + dependency._
+_Rewritten 2026-06-27. The original Waves 5–11 roadmap was fully executed, then extended by residual-sweep
+Waves 12–15. This file now tracks the **final two porting waves (16–17)** that close the long tail, plus a
+verification follow-up. Read [EXECUTION-STRATEGY.md](EXECUTION-STRATEGY.md) for the harness + model-tiering._
 
-| Wave | Theme | ~Gaps | High-impact | Notes |
-|---|---|---:|---:|---|
-| **5** | **Wiring / dead seams** | **~120** | ~63 | Coded-but-not-live features (Assault 2nd-round caller, mutator ItemTouch hooks, weapon FX callers, dead HUD feeders). **Do first** — cheap fixes, big behavioral payoff; mirrors the successful second-pass. |
-| **6** | **Gameplay logic & balance** | **~755** | ~218 | THE bulk. Split by category (below). The core gameplay-correctness lever. |
-| **7** | **Niche entities** | **~210** | ~0 | turrets ~91 · vehicles ~65 · monsters ~56. Self-contained, lower priority (mostly Onslaught/Assault/Invasion-only). |
-| **8** | **Presentation: HUD / CSQC / models / overlays** | **~150** | ~0 | Per-gametype mod-icon render, race-timer feed, frozen/damage overlays, viewmodels, world models. Depends on the server state produced by Waves 5–6. |
-| **9** | **Map objects & world physics** | **~80** | ~0 | Remaining func_/trigger_/target_ behaviors, movetypes, the centerprint/reset seams. |
-| **10** | **Bot AI & navigation** | **~30** | ~0 | wr_aim alt-fire/detonate/combos, havocbot_dodge, weapon-priority lists, danger-routing producer. |
-| **11** | **Audio & announcer cues** | **~25** | ~0 | Remaining un-fired sound cues + announcer edges. |
+## Done
 
-## Wave 6 sub-batches (the ~755 bulk, split by category for parallel execution)
+Waves **1–2 + fix-up · 5 · 6a–6e · 7 · 8a–8e · 9–11 · 12a–12d · 13 · 14a–14b · 15a–15c** are complete and
+committed, each re-verified with 0 regressions. See `git log --grep parity`.
 
-| Sub | Category | ~Gaps | Examples |
-|---|---|---:|---|
-| 6a | gametypes | ~190 | Assault 2nd-round machinery, Onslaught link/spawn, Nexball ballstealer, CTS/Race rules, KeyHunt push/destroy |
-| 6b | mutators | ~180 | status-effect networking, superspec ItemTouch, instagib/overkill/nades completion, buff perks |
-| 6c | server systems | ~135 | mapvoting, teamplay autobalance, commands/votes, intermission, spawnpoints |
-| 6d | weapons | ~106 | per-weapon fire-mode/reload/charge details, secondary modes, balance constants |
-| 6e | client-logic + physics | ~100 | client-side gameplay calcs (HUD math, prediction), movement edge cases |
+## Current state (2026-06-27)
 
-## Execution notes
-- **Wave 5 first** is the highest ROI: each is a small wiring fix that flips a `dead`/`stub` feature to `live`,
-  exactly like the second-pass fix-up that closed 110 gaps with surgical edits.
-- Waves 6a–6e are **one-agent-per-file** parallel batches (same harness as Wave 2); run via the batched
-  self-retry workflow to ride the throttle, with a `dotnet build` + `dotnet test` gate after each.
-- Wave 8 (presentation) should follow 5–6 because most of it **consumes** server state those waves produce
-  (a HUD feed is dead until the server sends the value).
-- After each wave: `Workflow{name:"parity-diff", args:{scope:"<units>", mode:"update"}}` to re-verify what
-  actually closed, then `python tools/parity-assemble.py` to refresh the gap count.
-- Counts are approximate and will shift as gaps close and the adversarial verify reclassifies rows.
+`PARITY-GAPS.md`: **524 features carry an open gap-dimension**, but the makeup is now mostly *fidelity polish*,
+not absent features:
+
+| worst dim | count | meaning |
+|---|---:|---|
+| presentation:partial | 123 | works, not pixel-faithful |
+| logic:partial | 116 | mostly-correct, edge cases unported |
+| logic:**missing** | 78 | genuinely absent behaviour |
+| presentation:**missing** | 65 | absent visual |
+| liveness:partial/dead | 68 | coded but partly/not on the live path |
+| values/timing/audio | ~38 | constants / framerates / un-fired cues |
+
+`_remaining-plan.json` scopes the work as **112 units / 507 open gaps** across 5 streams:
+`gameplay 51·209 · presentation 46·222 · server-admin 9·26 · foundation 4·29 · bot 2·21`.
+
+## The plan — 2 porting waves (dependency-minimal)
+
+The only hard ordering is **state producers → presentation consumers** (a HUD/render feed is dead until the
+server produces its value). Foundation folds into Wave 16 (its primitives land first inside the apply
+ordering). That makes **two** porting waves the minimum; conflicts are handled inside each wave by the
+plan→apply harness, not by splitting waves.
+
+### Wave 16 — State producers · 66 units · 285 gaps
+foundation (4) + gameplay (51) + server-admin (9) + bot (2). Everything server-side/networking/logic that
+produces gameplay state and the wire values presentation needs.
+- Plan-phase tiers: **49 opus · 13 sonnet · 4 haiku**. Apply/gate/verify: **all opus**.
+- Headliners: ClanArena INGAME-state machine, Freezetag frag/alone/ice completion, CTS checkpoints, Nexball
+  carrier state, Onslaught link/spawn, weapon edge-cases (minelayer, vortex rot-decay, overkill), the 4
+  foundation primitives (cl-csqcmodel, net-entity-state, sv-client-lifecycle, sv-world-rules), bot AI roles.
+
+### Wave 17 — Presentation consumers · 46 units · 222 gaps
+HUD panels, CSQC render, world models, overlays, viewmodels, vehicle/monster/turret visuals — consumes the
+state Wave 16 produces.
+- Plan-phase tiers: **42 opus · 4 haiku**. Apply/gate/verify: **all opus**.
+- Headliners: Onslaught client presentation, warpzone see-through render, hook rope-line, porto trajectory
+  preview, freezetag ice model, vehicle/monster render fidelity, scoreboard item-stats/interactive UI.
+
+### Follow-up — Verification (not a porting wave)
+The 30 [NEEDS-INGAME-CHECK.md](NEEDS-INGAME-CHECK.md) items are fidelity/liveness that only a live run
+confirms (HUD timing, water/ladder/jetpack physics, bugrigs feel). Cleared by running the app (`/verify`),
+not by code agents.
+
+## Execution loop
+For each wave: run the `_wave-port.workflow.js` Workflow → confirm `dotnet build`/`dotnet test` green →
+`git commit` + `git push` → run `parity-diff` re-verify (folded into the wave's Verify phase) →
+`python tools/parity-assemble.py` to refresh the gap count → launch the next wave.

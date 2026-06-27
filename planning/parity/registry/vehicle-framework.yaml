@@ -1,7 +1,38 @@
 unit: vehicle-framework
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
+# DRIFT RE-AUDIT after Waves 13-15 (HEAD 322fc26; prior audit was Wave 12 @ 0b3c2a8). 0 regressions, 4 FIXES
+# this pass — two of them close the two worst gaps the prior pass had just promoted to NEW ROWS:
+#   (1) lifecycle.reset missing->faithful + na->live: vehicles_reset is now FULLY PORTED. SpawnVehicle installs
+#       vehic.Reset = VehiclesReset (VehicleCommon.cs:390); VehiclesReset (VehicleCommon.cs:897-917) does
+#       exit-pilot(VHEF_RELEASE via descriptor Exit) + clearreturn (cancels the scheduled return Think) + respawn
+#       (descriptor Spawn), and it fires on the LIVE round/match-restart path — GameWorld.ResetMapObjects
+#       (GameWorld.cs:4619-4641) iterates every non-client server entity and invokes e.Reset, called from the
+#       reset sweep at GameWorld.cs:4579. Bit-faithful to sv_vehicles.qc:1095/1118 (the map-scripted ACTIVE_NOT
+#       gate is absent, so it always respawns — matches the stock-map all-ACTIVE common case).
+#   (2) death.gibs missing->faithful (all dims) + na->live: vehicle_tossgib + vehicles_gib_explode/touch/think
+#       are now PORTED — VehicleCommon.TossGib (VehicleCommon.cs:957) + GibExplode (:933), and they are called
+#       LIVE from Bumblebee.vr_death (Bumblebee.cs:474-487: the 3 gun gibs, tossed off the wreck with
+#       velocity+spin, 50/50 burn, 50/50 explode, 6s window, real cannon model strings). Bit-faithful to
+#       sv_vehicles.qc:274-326 + bumblebee.qc:817-819. Base is the ONLY consumer of vehicle_tossgib and only the
+#       Bumblebee uses it, so the framework row is live via its sole consumer. Minor divergence: the 4th Base
+#       gib (the BODY tossgib, bumblebee.qc:821) is NOT tossed — the port keeps the diethink/blowup/respawn on
+#       the original body in place (functionally equivalent, one fewer throwaway entity; documented Bumblebee.cs:535).
+#   (3) combat.painframe presentation partial->faithful: PainFrame now emits the low-health smoke puff
+#       (EFFECT_SMOKE_SMALL at origin + randomvec()*80) via EffectEmitter (VehicleCommon.cs:752-753) — the one
+#       remaining deferred piece. Bit-faithful to vehicles_painframe (sv_vehicles.qc:605).
+#   (4) think.tick presentation partial->faithful: same smoke fix — PainFrame is the shared think hub the row's
+#       presentation gap pointed at; with the smoke now emitted, the row's only deferred piece is closed.
+# STILL OPEN (re-verified at HEAD 322fc26): the in-vehicle cockpit/chase camera (no SVC_SETVIEWPORT client
+# reader — grep confirms no p.Vehicle viewport read anywhere in game/), the CSQC steal/return waypoints +
+# radar icons, the vehicle_shieldent hit flash, the delayspawn/controller init branches, and cross-client
+# VEHICLESTAT_* networking for a pure-remote pilot (UpdateVehicleHud reads LocalServerPlayer / host path).
+# NON-DRIFT Waves 13-15 polish (NOT framework rows): Bumblebee gained the "No left/right gunner!" blink HUD
+# prompts (NetGame.cs, vehicle-bumblebee row) and Spiderbot gained its OWN spiderbot_blowup 4-piece physics
+# gib system (head/2guns/body, spiderbot.qc:408-458 — a descriptor-specific gib path, NOT the framework
+# vehicle_tossgib, so it belongs to the vehicle-spiderbot row, not death.gibs).
+# ---- prior pass (Wave 12 @ 0b3c2a8) ----
 # DRIFT RE-AUDIT after Wave 12 (HEAD 0b3c2a8; prior audit was Waves 9-11 @ ff8a699). 0 regressions this pass.
 # CHANGES: (1) Vehicles_drawCrosshair (the centered per-mode reticle + the Raptor bomb dropmark) is NOW PORTED +
 #   LIVE — VehicleHud.DrawMainReticle + DrawBombDropmark (VehicleHud.cs:383/411), fed every frame by
@@ -71,12 +102,15 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 23
   worst_gaps:
-    - "In-vehicle cockpit/chase camera remains DEAD: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport), so the pilot keeps the normal player view (grep confirms only NOTE comments in VehicleBoarding/VehicleCommon). (The HUD panel + aux crosshair + the centered per-mode reticle + the Raptor bomb dropmark are now all LIVE; the framework low-health/shield HUD alarm is LIVE; the Raptor's incoming-missile alarm is live.)"
-    - "death.gibs (vehicle_tossgib + vehicles_gib_explode/touch/think, sv_vehicles.qc:274-326) is UNPORTED — a destroyed vehicle drops no flying debris gibs (only a NOTE in Bumblebee.cs:502). NEW ROW this pass."
-    - "lifecycle.reset (the QC `.reset = vehicles_reset` round-restart hook, sv_vehicles.qc:1095/1118) is NOT registered in the port — a vehicle is not ejected/cleared/respawned on round restart via the reset path. NEW ROW this pass."
+    - "In-vehicle cockpit/chase camera remains DEAD: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport), so the pilot keeps the normal player view (grep confirms NO p.Vehicle viewport read anywhere in game/). (The HUD panel + aux crosshair + the centered per-mode reticle + the Raptor bomb dropmark are now all LIVE; the framework low-health/shield HUD alarm is LIVE; the Raptor's incoming-missile alarm is live.)"
     - "init.initialize STILL omits delayspawn jitter and the targetname/ACTIVE map-scripted controller (vehicle_use, sv_vehicles.qc:1178-1201/1276-1277). (The drop-to-floor tracebox AND the g_vehicles_teams clear-branch are ported; the deferral is now documented in-code at VehicleSpawnFuncs.cs:78-86.)"
-    - "Presentation deferrals persist (all CSQC): steal WP_VehicleIntruder waypoint + steal centerprints, the WP_Vehicle return-waypoint/radar icon, the painframe EFFECT_SMOKE_SMALL (EffectEmitter exists in the Common layer but PainFrame still doesn't emit it), the vehicle_shieldent hit flash."
+    - "Presentation deferrals persist (all CSQC): steal WP_VehicleIntruder waypoint + steal centerprints, the WP_Vehicle return-waypoint/radar icon, the vehicle_shieldent hit flash. (The painframe EFFECT_SMOKE_SMALL is now EMITTED — no longer a gap.)"
     - "Cross-client VEHICLESTAT_* networking for a pure-remote pilot is still unwired: UpdateVehicleHud reads LocalServerPlayer (host path)."
+    - "death.gibs body-gib divergence: the Bumblebee's 3 GUN gibs are tossed (vehicle_tossgib live), but the 4th Base gib — the BODY tossgib (bumblebee.qc:821) — is not; the port keeps the diethink/blowup/respawn on the original body (functionally equivalent, documented). Minor."
+  fixes_landed_waves13_15:
+    - "lifecycle.reset missing->faithful + na->live: vehicles_reset is now FULLY PORTED. SpawnVehicle installs vehic.Reset = VehiclesReset (VehicleCommon.cs:390); VehiclesReset (VehicleCommon.cs:897-917) ejects any pilot (descriptor Exit = VHEF_RELEASE), cancels the scheduled return Think (clearreturn), and respawns via the descriptor Spawn. Fired LIVE on the round/match-restart path: GameWorld.ResetMapObjects (GameWorld.cs:4619-4641) invokes e.Reset on every non-client server entity, from the reset sweep at GameWorld.cs:4579. Bit-faithful to sv_vehicles.qc:1095/1118 (ACTIVE_NOT gate absent -> always respawns, matching all-ACTIVE stock maps)."
+    - "death.gibs missing->faithful (all dims) + na->live: VehicleCommon.TossGib (VehicleCommon.cs:957) + GibExplode (:933) ported and called LIVE from Bumblebee.vr_death (Bumblebee.cs:474-487) — the 3 gun gibs tossed with velocity+spin, 50/50 burn, 50/50 explode, 6s window, real cannon models. Bit-faithful to sv_vehicles.qc:274-326 + bumblebee.qc:817-819. Bumblebee is Base's sole vehicle_tossgib consumer."
+    - "combat.painframe + think.tick presentation partial->faithful: PainFrame now emits the EFFECT_SMOKE_SMALL low-health smoke puff (origin + randomvec()*80) via EffectEmitter (VehicleCommon.cs:752-753) — the one deferred piece both rows pointed at. Bit-faithful to vehicles_painframe (sv_vehicles.qc:605)."
   fixes_landed_wave12:
     - "hud_camera_xhair presentation narrowed: Vehicles_drawCrosshair (cl_vehicles.qc:293) is now ported + LIVE — the centered per-mode reticle (VehicleHud.DrawMainReticle, vCROSS_BURST/vCROSS_RAIN selected by VehW2Mode) + the Raptor bomb dropmark (VehicleHud.DrawBombDropmark; green live tracetoss prediction via VehiclePhysics.BombDropPredict when reload2==1, red lingering marker for 5s after a drop), fed every frame by NetGame.FeedRaptorReticle (NetGame.cs:3306-3357). Presentation STAYS partial only because the cockpit/chase camera is still dead."
   fixes_landed_wave11:
@@ -103,7 +137,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:56 (drop-to-floor tracebox — NOW PORTED)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:73 (InitVehicle veto + delete)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:89 (MasterSwitchEnabled)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:398 (InitVehicle)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:409 (InitVehicle)"
     constants:
       - { name: "g_vehicles (master)", base: "1", port: "1 (MasterSwitchEnabled per-vehicle g_vehicle_X !autocvar)", match: true }
       - { name: "g_vehicles_teams", base: "1", port: "1 (team-clear branch NOW PORTED, VehicleSpawnFuncs.cs:48-49 + TeamsEnabled)", match: true }
@@ -135,13 +169,14 @@ features:
     base_refs:
       - "common/vehicles/sv_vehicles.qc:1107 (vehicles_spawn)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:348 (SpawnVehicle)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:353 (SpawnVehicle)"
     constants:
       - { name: "MOVETYPE_STEP / SOLID_SLIDEBOX / DAMAGE_AIM / DEAD_NO / FL_NOTARGET", base: "set", port: "set", match: true }
       - { name: "angles=pos2; setorigin(pos1)", base: "yes", port: "yes (SpawnAngles/SpawnPos)", match: true }
       - { name: "this.event_damage = vehicles_damage", base: "set", port: "set (vehic.GtEventDamage = EventDamage)", match: true }
       - { name: "this.touch = vehicles_touch", base: "set", port: "set (vehic.Touch = Touch)", match: true }
-      - { name: "this.event_heal = vehicles_heal", base: "set", port: "set (vehic.GtEventHeal = HealVehicle, VehicleCommon.cs:379)", match: true }
+      - { name: "this.event_heal = vehicles_heal", base: "set", port: "set (vehic.GtEventHeal = HealVehicle, VehicleCommon.cs:384)", match: true }
+      - { name: "this.reset = vehicles_reset", base: "set", port: "set (vehic.Reset = VehiclesReset, VehicleCommon.cs:390 — NOW PORTED; see lifecycle.reset)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -154,7 +189,7 @@ features:
     gaps:
       - "EFFECT_TELEPORT spawn flash, CSQCMODEL_AUTOINIT, hook-removal sweep, and vehicles_reset_colors are deferred (client/presentation)."
     verification:
-      - { kind: code, ref: "SpawnVehicle (VehicleCommon.cs:348-389) sets GtEventDamage/Touch/GtEventHeal + owner/movetype/solid/takedamage/deadflag/FL_NOTARGET + placement", result: pass }
+      - { kind: code, ref: "SpawnVehicle (VehicleCommon.cs:353-400) sets GtEventDamage/Touch/GtEventHeal/Reset + owner/movetype/solid/takedamage/deadflag/FL_NOTARGET + placement", result: pass }
       - { kind: code, ref: "all 4 descriptor Spawn() call VehicleCommon.SpawnVehicle; none re-null Touch at spawn (Touch=null sites are only in vr_death blowup)", result: pass }
     confidence: high
     notes: "Unchanged vs baseline (faithful + live). All three framework callbacks (event_damage/touch/event_heal) installed at spawn."
@@ -168,7 +203,7 @@ features:
       - "common/vehicles/sv_vehicles.qh:20 (g_vehicles_thinkrate)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:179 (DefaultThinkRate)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:722 (W2MODE owner-mirror in PainFrame — NOW PORTED)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:733 (W2MODE owner-mirror in PainFrame)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:339 (PainFrame call from Think)"
     constants:
       - { name: "g_vehicles_thinkrate", base: "0.1", port: "0.1 (DefaultThinkRate; descriptors may override)", match: true }
@@ -177,18 +212,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The painframe smoke particle (EFFECT_SMOKE_SMALL) is deferred — note: EffectEmitter now EXISTS in the Common layer (used by the descriptor death/muzzle FX) so the old 'no headless emitter' rationale is stale, but PainFrame still does not emit the smoke. The authoritative jitter IS produced (see combat.painframe)."
+    gaps: []
     verification:
       - { kind: code, ref: "descriptors set Think/NextThink and self-reschedule; VehicleCommon.PainFrame called at the Think tail of all 4 (Racer:339 Raptor Spiderbot Bumblebee)", result: pass }
-      - { kind: code, ref: "W2MODE owner-mirror NOW PORTED: VehicleCommon.PainFrame:722-723 mirrors vehic.Owner.VehW2Mode = vehic.VehW2Mode every think (the shared think hub), bit-faithful to vehicles_think:1084", result: pass }
+      - { kind: code, ref: "W2MODE owner-mirror NOW PORTED: VehicleCommon.PainFrame:733-734 mirrors vehic.Owner.VehW2Mode = vehic.VehW2Mode every think (the shared think hub), bit-faithful to vehicles_think:1084", result: pass }
+      - { kind: code, ref: "the painframe smoke (EFFECT_SMOKE_SMALL) is now emitted by the shared PainFrame hub (VehicleCommon.cs:752-753 via EffectEmitter) -> presentation gap closed", result: pass }
     confidence: high
-    notes: "IMPROVED vs baseline: the VEHICLESTAT_W2MODE owner-mirror is now ported (Wave 8, PainFrame). Status stays faithful (the mirror was the one open sub-gap, now closed; still harmless as the live HUD does not read W2Mode). Painframe smoke remains the only deferred piece."
+    notes: "FIXED vs baseline (presentation partial->faithful): the painframe EFFECT_SMOKE_SMALL is now emitted from the shared PainFrame hub (Waves 13-15). The W2MODE owner-mirror was already ported (Wave 8). All dimensions now faithful + live."
 
   - id: vehicle-framework.enter.handshake
     name: "vehicles_enter — board guards, gunner branch, player freeze + link"
@@ -197,7 +232,7 @@ features:
       - "common/vehicles/sv_vehicles.qc:931 (vehicles_enter)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:163 (Enter)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:204 (EnterVehicle)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:209 (EnterVehicle)"
     constants:
       - { name: "g_vehicles_allow_bots", base: "0", port: "0", match: true }
       - { name: "vehicle_enter_delay", base: "2", port: "2 (set on exit)", match: true }
@@ -228,7 +263,7 @@ features:
       - "common/vehicles/sv_vehicles.qh:11 (g_vehicles_steal)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:212 (steal branch — NOW PORTED)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:297 (ExitVehicle restores SHIELDREGEN from old flags)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:302 (ExitVehicle restores SHIELDREGEN from old flags)"
     constants:
       - { name: "g_vehicles_steal", base: "1 (allow stealing; vehicles.cfg:5, sv_vehicles.qh:11 default true)", port: "1 (Cvar fallback 1f; DiffTeam now boards)", match: true }
       - { name: "shield=0 + old_vehicle_flags backup + ~VHF_SHIELDREGEN", base: "yes", port: "yes (VehicleBoarding.cs:217-219, restored in ExitVehicle:297)", match: true }
@@ -258,7 +293,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:262 (Exit)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:307 (SetReturn — NOW CALLED from Exit)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:253 (ExitVehicle)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:258 (ExitVehicle)"
     constants:
       - { name: "vehicle_enter_delay on exit", base: "time+2", port: "time+2", match: true }
       - { name: "vehic.phase re-entry gate", base: "time+1", port: "time+1 (VehPhase)", match: true }
@@ -289,7 +324,7 @@ features:
       - "common/vehicles/sv_vehicles.qc:751 (vehicles_findgoodexit)"
       - "common/vehicles/sv_vehicles.qh:19 (g_vehicles_exit_attempts)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:309 (FindGoodExit)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:314 (FindGoodExit)"
     constants:
       - { name: "g_vehicles_exit_attempts", base: "25", port: "25", match: true }
       - { name: "ring radius", base: "1.5 * vlen(maxs-mins)", port: "1.5 * VLen(maxs-mins)", match: true }
@@ -315,9 +350,9 @@ features:
       - "common/vehicles/sv_vehicles.qc:625 (vehicles_damage)"
       - "common/vehicles/sv_vehicles.qh:24-29 (damagerate cvars)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:461 (EventDamage — the installed .event_damage shim)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:474 (DamageVehicle)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:550 (VehicleDamageRate)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:472 (EventDamage — the installed .event_damage shim)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:486 (DamageVehicle)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:570 (VehicleDamageRate)"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:331 (EventDamage routing of non-players)"
     constants:
       - { name: "g_vehicles_vortex_damagerate", base: "0.75", port: "0.75 (live)", match: true }
@@ -327,7 +362,7 @@ features:
       - { name: "g_vehicles_tag_damagerate (seeker)", base: "5", port: "5 (live)", match: true }
       - { name: "g_vehicles_weapon_damagerate (other)", base: "2", port: "2 (live)", match: true }
       - { name: "this.pain_finished = time", base: "set", port: "set (vehic.PainFinished = Time)", match: true }
-      - { name: "hit sounds (shield-break/raw SND_ONS_HIT2, shield-absorb SND_ONS_ELECTRICITY_EXPLODE) + sound_allowed + spamsound CH_PAIN/VOL_BASE/ATTEN_NORM", base: "yes (sv_vehicles.qc:669-682)", port: "yes (SoundAllowedGate.IsAllowed + SoundSystem.SpamSoundRaw, VehicleCommon.cs:502-524)", match: true }
+      - { name: "hit sounds (shield-break/raw SND_ONS_HIT2, shield-absorb SND_ONS_ELECTRICITY_EXPLODE) + sound_allowed + spamsound CH_PAIN/VOL_BASE/ATTEN_NORM", base: "yes (sv_vehicles.qc:669-682)", port: "yes (SoundAllowedGate.IsAllowed + SoundSystem.SpamSoundRaw, VehicleCommon.cs:513-535)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -354,8 +389,8 @@ features:
     base_refs:
       - "common/vehicles/sv_vehicles.qc:708 (vehicles_heal)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:658 (HealVehicle — the .event_heal sink body)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:379 (vehic.GtEventHeal = HealVehicle install)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:696 (HealVehicle — the .event_heal sink body)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:384 (vehic.GtEventHeal = HealVehicle install)"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageContracts.cs:73 (Combat.Heal -> target.GtEventHeal dispatch)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:333 (live caller: Arc heal-beam non-player branch)"
     constants:
@@ -374,7 +409,7 @@ features:
       - "func_heal map-object and the mage healing entity are not separately ported, but the .event_heal SINK is reachable on the live path via the Arc heal-beam non-player friendly branch (Combat.Heal -> vehic.GtEventHeal)."
       - "The Bumblebee healray remains a separate heal SOURCE with its own inline GiveResourceWithLimit (not routed through this sink)."
     verification:
-      - { kind: code, ref: "HealVehicle body (VehicleCommon.cs:658-671) faithful to vehicles_heal; signature matches the GtEventHeal delegate", result: pass }
+      - { kind: code, ref: "HealVehicle body (VehicleCommon.cs:696-709) faithful to vehicles_heal; signature matches the GtEventHeal delegate", result: pass }
       - { kind: code, ref: "SpawnVehicle installs vehic.GtEventHeal; DamageContracts.Heal invokes target.GtEventHeal; Arc.cs:333 calls Combat.Heal on a non-player friendly target — full live chain traced", result: pass }
     confidence: high
     notes: "Unchanged vs baseline (faithful + live). The event_heal sink is installed at spawn AND reachable from the live Arc heal-beam dispatch."
@@ -386,8 +421,8 @@ features:
       - "common/vehicles/sv_vehicles.qc:549 (vehicles_regen)"
       - "common/vehicles/sv_vehicles.qc:564 (vehicles_regen_resource)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:410 (Regen)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:430 (RegenResource — mirrors owner.VehicleHealth)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:421 (Regen)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:441 (RegenResource — mirrors owner.VehicleHealth)"
     constants:
       - { name: "regen-pause gate (timer + rpause < time)", base: "yes", port: "yes", match: true }
       - { name: "healthscale (rate *= health/max_health)", base: "optional", port: "optional", match: true }
@@ -416,8 +451,8 @@ features:
       - "common/vehicles/sv_vehicles.qc:721 (vehicles_crushable)"
       - "common/vehicles/sv_vehicles.qh:13-15 (crush cvars)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:743 (Touch)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:727 (Crushable)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:793 (Touch)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:777 (Crushable)"
     constants:
       - { name: "g_vehicles_crush_dmg", base: "70", port: "70 (Cvar fallback)", match: true }
       - { name: "g_vehicles_crush_force", base: "50", port: "50 (Cvar fallback)", match: true }
@@ -449,7 +484,7 @@ features:
       - "common/vehicles/sv_vehicles.qc:731 (vehicles_impact)"
       - "common/vehicles/vehicle/racer.qc:81 / raptor.qc:56 / bumblebee.qc:73 / spiderbot.qc:46 (bouncepain)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:785 (Impact)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:835 (Impact)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:217 (vr_impact 200/0.15/150)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:673 (vr_impact 1/4/1000)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:398 (vr_impact 1/100/200)"
@@ -484,7 +519,8 @@ features:
       - "common/vehicles/sv_vehicles.qc:594 (vehicles_painframe)"
       - "common/vehicles/vehicle.qh:103-105 (VHF_DMGSHAKE/DMGROLL/DMGHEADROLL)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:688 (PainFrame)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:726 (PainFrame)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:752 (EFFECT_SMOKE_SMALL emit — NOW PORTED)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:339 / Raptor.cs:262 / Spiderbot.cs:247 / Bumblebee.cs:289 (live callers)"
     constants:
       - { name: "trigger threshold", base: "health <= 50%", port: "myHealth <= 50 (PainFrame)", match: true }
@@ -495,18 +531,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Smoke particle (EFFECT_SMOKE_SMALL at origin + randomvec()*80) is deferred — the only unported piece. NOTE: EffectEmitter now EXISTS in the Common layer (Wave 8 wired it for the descriptor death/muzzle FX), so the old 'no headless emitter' rationale is stale; PainFrame simply does not call it yet. The authoritative velocity/angle jitter IS produced."
+    gaps: []
     verification:
-      - { kind: code, ref: "PainFrame body bit-faithful to vehicles_painframe (VehicleCommon.cs:688-717): <=50% gate, cadence, DMGSHAKE velocity, DMGROLL/DMGHEADROLL angle jitter", result: pass }
+      - { kind: code, ref: "PainFrame body bit-faithful to vehicles_painframe (VehicleCommon.cs:726-767): <=50% gate, cadence, DMGSHAKE velocity, DMGROLL/DMGHEADROLL angle jitter", result: pass }
+      - { kind: code, ref: "EFFECT_SMOKE_SMALL now emitted: VehicleCommon.cs:752-753 EffectEmitter.Emit(\"SMOKE_SMALL\", origin + Prandom.Vec()*80, 0, 1) — bit-faithful to sv_vehicles.qc:605", result: pass }
       - { kind: code, ref: "called at the Think tail of all 4 descriptors; all 4 set VHF_DMGSHAKE and the ground/air vehicles set VHF_DMGROLL", result: pass }
     confidence: high
-    notes: "Unchanged vs baseline (faithful + live). Only the cosmetic smoke particle is deferred."
+    notes: "FIXED vs baseline (presentation partial->faithful): Waves 13-15 wired the EFFECT_SMOKE_SMALL low-health smoke puff via EffectEmitter (the one deferred piece). All dimensions now faithful + live."
 
   - id: vehicle-framework.aim.locktarget
     name: "vehicles_locktarget — homing lock-on build/decay + lock sounds"
@@ -571,8 +607,8 @@ features:
       - "common/vehicles/sv_vehicles.qc:221 (vehicles_projectile)"
       - "common/vehicles/sv_vehicles.qc:165 (vehicles_projectile_damage)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:588 (SpawnProjectile)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:626 (GtEventDamage on shootable projectile — NOW PORTED)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:608 (SpawnProjectile)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:648 (GtEventDamage on shootable projectile)"
     constants:
       - { name: "default lifetime (nextthink)", base: "time + 30", port: "30 fallback", match: true }
       - { name: "movetype", base: "MOVETYPE_FLYMISSILE", port: "MoveType.FlyMissile", match: true }
@@ -591,7 +627,7 @@ features:
       - "g_bot_dodge list (bot AI) deferred."
     verification:
       - { kind: code, ref: "SpawnProjectile makes a FLYMISSILE trigger bbox owned by the vehicle, RadiusDamage on touch/think, 30s lifetime, optional fire sound; carries the per-vehicle deathtag through the blast", result: pass }
-      - { kind: code, ref: "VehicleCommon.cs:626-647 NOW installs proj.GtEventDamage on the health>0 branch: takes RES_HEALTH, velocity += force, detonates when health<1, and ignores same-owner inflictor (inflictor.owner==self.owner) — bit-faithful to vehicles_projectile_damage (sv_vehicles.qc:165-180). DamageSystem.EventDamage routes a non-player victim with a GtEventDamage to it, so the bolt is destructible on the live path", result: pass }
+      - { kind: code, ref: "VehicleCommon.cs:648-661 installs proj.GtEventDamage on the health>0 branch: takes RES_HEALTH, velocity += force, detonates when health<1, and ignores same-owner inflictor (inflictor.owner==self.owner) — bit-faithful to vehicles_projectile_damage (sv_vehicles.qc:165-180). DamageSystem.EventDamage routes a non-player victim with a GtEventDamage to it, so the bolt is destructible on the live path", result: pass }
     confidence: high
     notes: "FIXED vs baseline (values partial->faithful): Wave 8 ported the shootable-projectile event_damage handler (incl. the owner==owner salvo pass-through). A shootable vehicle bolt/rocket can now be shot down. Only the CSQCProjectile trail/model visual remains (presentation)."
 
@@ -632,11 +668,11 @@ features:
       - "common/vehicles/sv_vehicles.qc:463 (vehicles_showwp)"
       - "common/vehicles/sv_vehicles.qc:442 (vehicles_return)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:819 (SetReturn)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:869 (SetReturn)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:307 (Exit -> SetReturn, living-vehicle return)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:540 (DamageVehicle death tail -> SetReturn)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:560 (DamageVehicle death tail -> SetReturn)"
     constants:
-      - { name: "return delay", base: "respawntime-5 dead / respawntime-1 alive", port: "respawntime-5 dead / respawntime-1 alive (SetReturn:829)", match: true }
+      - { name: "return delay", base: "respawntime-5 dead / respawntime-1 alive", port: "respawntime-5 dead / respawntime-1 alive (SetReturn:879)", match: true }
       - { name: "WP_Vehicle return waypoint", base: "spawned (vehicle_return + vehicles_showwp)", port: "none (deferred, CSQC)", match: false }
     status:
       logic: faithful
@@ -650,7 +686,7 @@ features:
     gaps:
       - "No WP_Vehicle return waypoint / radar icon is shown while a vehicle returns (still deferred, CSQC). Base spawns a separate vehicle_return entity with vehicles_showwp as think; the port re-arms the vehicle's own think directly (functionally equivalent for the return SCHEDULE, but no radar icon)."
     verification:
-      - { kind: code, ref: "SetReturn re-arms Think=descriptor.Spawn after respawntime-5 (dead) / respawntime-1 (alive), matching Base min(time+respawntime, time+respawntime-N); called from BOTH the DamageVehicle death tail (:540) AND VehicleBoarding.Exit (:307)", result: pass }
+      - { kind: code, ref: "SetReturn re-arms Think=descriptor.Spawn after respawntime-5 (dead) / respawntime-1 (alive), matching Base min(time+respawntime, time+respawntime-N); called from BOTH the DamageVehicle death tail (:560) AND VehicleBoarding.Exit (:307)", result: pass }
       - { kind: code, ref: "no WP_Vehicle waypoint entity anywhere (grep) -> radar icon still deferred", result: fail }
     confidence: high
     notes: "FIXED vs baseline (logic/values/timing partial->faithful, liveness partial->live): the abandoned-living return is now wired (Exit->SetReturn) AND the return-delay constant now matches Base (respawntime-5/-1). Only the CSQC return waypoint/radar icon remains."
@@ -697,9 +733,9 @@ features:
       - "game/hud/VehicleHud.cs:383 (DrawMainReticle — Vehicles_drawCrosshair centered per-mode reticle, NOW PORTED)"
       - "game/hud/VehicleHud.cs:411 (DrawBombDropmark — Raptor vr_crosshair tracetoss dropmark, NOW PORTED)"
       - "game/hud/HudManager.cs:133 (registered)"
-      - "game/net/NetGame.cs:2981 (UpdateVehicleHud — the live feeder)"
-      - "game/net/NetGame.cs:3306 (FeedRaptorReticle — live per-frame reticle+dropmark feed)"
-      - "game/net/NetGame.cs:2323 (called every frame on the host HUD path)"
+      - "game/net/NetGame.cs:3300 (UpdateVehicleHud — the live feeder)"
+      - "game/net/NetGame.cs:3392 (FeedRaptorReticle — live per-frame reticle+dropmark feed)"
+      - "game/net/NetGame.cs:2644 (called every frame on the host HUD path)"
     constants:
       - { name: "cl_vehicles_hudscale", base: "0.5", port: "0.5 (in VehicleHud)", match: true }
       - { name: "cl_vehicles_crosshair_size", base: "0.5", port: "0.5", match: true }
@@ -719,10 +755,10 @@ features:
       - "Host-only feeder: UpdateVehicleHud reads LocalServerPlayer (host path). The cross-client VEHICLESTAT_* networking for a pure remote pilot is still unwired."
       - "Vehicles_drawCrosshair is ported for the Raptor only (bomb/flare reticle + dropmark); the other vehicles' per-mode reticles are not yet wired (FeedRaptorReticle clears the centered reticle for non-Raptor)."
     verification:
-      - { kind: code, ref: "NetGame.UpdateVehicleHud (NetGame.cs:3158) called every frame from the host HUD block (:2503): ConfigureForVehicle by NetName, mirrors VehicleHealth/Shield/Energy/Ammo1/2 onto the panel, SetAuxiliaryXhairLock, hud.Exit() when not piloting", result: pass }
+      - { kind: code, ref: "NetGame.UpdateVehicleHud (NetGame.cs:3300) called every frame from the host HUD block (:2644): ConfigureForVehicle by NetName, mirrors VehicleHealth/Shield/Energy/Ammo1/2 onto the panel, SetAuxiliaryXhairLock, hud.Exit() when not piloting", result: pass }
       - { kind: code, ref: "ALL FOUR vehicles now mirror their full stat set onto the pilot (Wave 7 added Raptor shield/energy + Spiderbot shield/ammo1), so the HUD shows correct shield/energy/ammo for every vehicle", result: pass }
       - { kind: code, ref: "framework low-health/shield alarm NOW WIRED + LIVE (Wave 11, ff8a699): VehicleHud._Process->UpdateAlarms (VehicleHud.cs:167-247) plays SND_VEH_ALARM (vehicles/alarm, health<25%, +2s re-arm) / SND_VEH_ALARM_SHIELD (vehicles/alarm_shield, shield<25%, +1s re-arm) gated by cl_vehicles_alarm (default 0 -> silent, matching Base), SND_Null stop on recover/exit; AudioLoader fed at NetGame.cs:1402 (_fullHud.Vehicle.AudioLoader=_assets.LoadSound). Bit-faithful to vehicle_alarm + Vehicles_drawHUD (cl_vehicles.qc:3-9/228-267)", result: pass }
-      - { kind: code, ref: "Vehicles_drawCrosshair NOW PORTED + LIVE (Wave 12a): VehicleHud.DrawMainReticle (centered vCROSS_BURST/vCROSS_RAIN reticle, colorized by health) + DrawBombDropmark (Raptor tracetoss dropmark, green-live/red-linger), fed every frame by NetGame.FeedRaptorReticle (NetGame.cs:3306-3357) via VehiclePhysics.BombDropPredict — bit-faithful to cl_vehicles.qc:293 + raptor.qc:767-833", result: pass }
+      - { kind: code, ref: "Vehicles_drawCrosshair PORTED + LIVE (Wave 12a): VehicleHud.DrawMainReticle (centered vCROSS_BURST/vCROSS_RAIN reticle, colorized by health) + DrawBombDropmark (Raptor tracetoss dropmark, green-live/red-linger), fed every frame by NetGame.FeedRaptorReticle (NetGame.cs:3392-3443) via VehiclePhysics.BombDropPredict — bit-faithful to cl_vehicles.qc:293 + raptor.qc:767-833", result: pass }
       - { kind: code, ref: "no client reads p.Vehicle to set a viewport (grep -> only NOTE comments) -> cockpit/chase camera still dead", result: fail }
     confidence: high
     notes: "IMPROVED vs baseline (presentation gap narrowed; status stays partial): Wave 12a ported Vehicles_drawCrosshair — the centered per-mode reticle + the Raptor bomb dropmark — fed live from NetGame.FeedRaptorReticle. Audio stays faithful (Wave 11 alarm). Presentation remains partial ONLY because the cockpit/chase camera (SVC_SETVIEWPORT) is still dead and the non-Raptor per-mode reticles aren't wired; cross-client VEHICLESTAT_* networking still TODO. All four vehicles' HUD shows correct shield/energy/ammo (Wave 7)."
@@ -763,27 +799,33 @@ features:
     base_refs:
       - "common/vehicles/sv_vehicles.qc:1095 (vehicles_reset)"
       - "common/vehicles/sv_vehicles.qc:1118 (this.reset = vehicles_reset install in vehicles_setup)"
-    port_refs: []
+      - "common/vehicles/sv_vehicles.qc:426 (vehicles_clearreturn)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:390 (vehic.Reset = VehiclesReset install in SpawnVehicle)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:897 (VehiclesReset — exit + clearreturn + respawn)"
+      - "src/XonoticGodot.Server/GameWorld.cs:4640 (ResetMapObjects invokes e.Reset on every non-client entity)"
+      - "src/XonoticGodot.Server/GameWorld.cs:4579 (reset sweep call on round/match restart)"
     constants:
-      - { name: "on round reset: if owner -> vehicles_exit(VHEF_RELEASE)", base: "yes", port: "none", match: false }
-      - { name: "vehicles_clearreturn (remove return-helper entities)", base: "called", port: "none", match: false }
-      - { name: "respawn if active != ACTIVE_NOT (vehicles_spawn)", base: "yes", port: "none", match: false }
+      - { name: "on round reset: if owner -> vehicles_exit(VHEF_RELEASE)", base: "yes", port: "yes (VehiclesReset:902-904 -> descriptor Exit -> ExitVehicle)", match: true }
+      - { name: "vehicles_clearreturn (cancel pending return)", base: "called", port: "yes (VehiclesReset:910-911 nulls Think + NextThink before respawn)", match: true }
+      - { name: "respawn if active != ACTIVE_NOT (vehicles_spawn)", base: "yes", port: "yes (VehiclesReset:916 -> descriptor Spawn; ACTIVE_NOT gate absent -> always respawns)", match: false }
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The QC `.reset = vehicles_reset` round-restart hook is NOT registered on any port vehicle (grep: no GtReset/.Reset assignment in src/.../Vehicles). On a round/match restart Base ejects any pilot (vehicles_exit VHEF_RELEASE), removes the return-helper entities (vehicles_clearreturn), and respawns the vehicle when active. The port has no equivalent reset path — a vehicle's state across a round boundary depends on whatever the generic spawn/respawn does, not this hook."
+      - "The map-scripted ACTIVE_NOT gate (`if (this.active != ACTIVE_NOT) vehicles_spawn`) is not ported — the port has no per-vehicle active state, so VehiclesReset ALWAYS respawns. Matches the stock-map common case (every vehicle is ACTIVE_ACTIVE) but a map that deactivated a vehicle via a controller would see it respawn on reset where Base would leave it dormant. (Tied to the same unported targetname/ACTIVE controller as init.initialize.)"
+      - "vehicles_clearreturn is folded into VehiclesReset (cancels the vehicle's own scheduled return Think) rather than removing a separate return-helper entity — the port never spawns a return-helper entity (SetReturn re-arms the vehicle's own Think), so this is functionally equivalent."
     verification:
-      - { kind: code, ref: "Base installs this.reset = vehicles_reset (sv_vehicles.qc:1118); vehicles_reset (1095) does exit+clearreturn+spawn", result: pass }
-      - { kind: code, ref: "grep GtReset / .Reset = in src/XonoticGodot.Common/Gameplay/Vehicles -> no matches; only the per-respawn SpawnVehicle exists, not the round-restart .reset hook", result: fail }
+      - { kind: code, ref: "SpawnVehicle installs vehic.Reset = VehiclesReset (VehicleCommon.cs:390); VehiclesReset (897-917) ejects pilot (descriptor Exit), cancels the return Think, respawns (descriptor Spawn) — bit-faithful to vehicles_reset (sv_vehicles.qc:1095) minus the ACTIVE gate", result: pass }
+      - { kind: code, ref: "LIVE: GameWorld.ResetMapObjects (GameWorld.cs:4619-4641) iterates ServerEntities.All and invokes e.Reset?.Invoke(e) on every non-client entity; called from the round/match reset sweep at GameWorld.cs:4579 (same path every mover/breakable/logic-gate .Reset uses)", result: pass }
     confidence: high
-    notes: "NEW ROW (registry coverage gap found this pass): the round-restart .reset hook is unmapped and unported. Previously not mentioned in any row."
+    notes: "FIXED vs baseline (logic missing->faithful, liveness na->live): Waves 13-15 ported vehicles_reset and wired it onto Entity.Reset, fired live by the host's round/match-restart reset sweep. Only the map-scripted ACTIVE gate (which depends on the unported targetname controller) remains — kept as a values:na note since there are no numeric constants."
 
   - id: vehicle-framework.death.gibs
     name: "vehicle_tossgib / vehicles_gib_* — flying debris gibs on vehicle death"
@@ -793,25 +835,32 @@ features:
       - "common/vehicles/sv_vehicles.qc:274 (vehicles_gib_explode)"
       - "common/vehicles/sv_vehicles.qc:282 (vehicles_gib_touch)"
       - "common/vehicles/sv_vehicles.qc:287 (vehicles_gib_think)"
-    port_refs: []
+      - "common/vehicles/vehicle/bumblebee.qc:817 (the sole consumer — bumblebee vr_death tosses gun gibs)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:957 (TossGib)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:933 (GibExplode — vehicles_gib_explode/touch)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:1001 (non-explode gib alpha-fade think — vehicles_gib_think)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:474 (live caller — vr_death tosses 3 gun gibs)"
     constants:
-      - { name: "gib MOVETYPE_TOSS / SOLID_CORPSE / colormod '-0.5 -0.5 -0.5' / EF_LOWPRECISION", base: "set", port: "none", match: false }
-      - { name: "explode gib: SND_ROCKET_IMPACT + 2x EFFECT_EXPLOSION_SMALL, nextthink time+random*explode", base: "yes", port: "none", match: false }
-      - { name: "non-explode gib: alpha fade -0.1/0.1s, lifetime cnt=time+maxtime", base: "yes", port: "none", match: false }
-      - { name: "EF_FLAME burn flag", base: "optional", port: "none", match: false }
+      - { name: "gib MOVETYPE_TOSS / SOLID_CORPSE / colormod '-0.5 -0.5 -0.5' / EF_LOWPRECISION", base: "set", port: "set (TossGib:979-982)", match: true }
+      - { name: "explode gib: SND_ROCKET_IMPACT + 2x EFFECT_EXPLOSION_SMALL, nextthink time+random*explode", base: "yes", port: "yes (GibExplode:938-944; nextthink time+random*maxtime, TossGib:993)", match: true }
+      - { name: "non-explode gib: alpha fade -0.1/0.1s, lifetime cnt=time+maxtime", base: "yes", port: "yes (TossGib:1001-1012: alpha -=0.1, nextthink +0.1, delete at deadline)", match: true }
+      - { name: "EF_FLAME burn flag", base: "optional", port: "optional (TossGib:985-986)", match: true }
+      - { name: "body tossgib (4th gib, bumblebee.qc:821)", base: "tossed", port: "NOT tossed — diethink/blowup/respawn kept on the original body (documented Bumblebee.cs:535)", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: missing
-      liveness: na
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "vehicle_tossgib (the vehicle_gib physics-entity subsystem) is UNPORTED — only a NOTE comment at Bumblebee.cs:502. A destroyed vehicle's vr_death does not spawn the flying debris gibs (model gib at a tag, tossed with velocity+avelocity, optional burn/explode, alpha fade, explosion FX + rocket-impact sound on contact). The descriptors emit a single death EXPLOSION_* FX (Wave 8) but no per-piece gibs."
+      - "The 4th Base gib — the BODY tossgib (bumblebee.qc:821) — is not spawned; the port keeps the diethink/blowup/respawn cycle on the original vehicle body in place instead (functionally equivalent for the death->blowup->respawn loop, one fewer throwaway entity; documented at Bumblebee.cs:535-538). Only the 3 GUN gibs are tossed."
+      - "EFFECT_EXPLOSION_SMALL at the wreck origin (gib_explode's wp00 blast) uses gib.GoalEntity as the QC .wp00 link — faithful, but the wreck may have respawned by the time a 6s-window gib explodes (minor edge case)."
     verification:
-      - { kind: code, ref: "Base vehicle_tossgib (sv_vehicles.qc:296) + gib_explode/touch/think (274-292) build/animate the debris", result: pass }
-      - { kind: code, ref: "grep tossgib/VehicleGib/gib_explode in port -> only a NOTE in Bumblebee.cs:502; no implementation", result: fail }
+      - { kind: code, ref: "TossGib (VehicleCommon.cs:957-1015) builds the model gib at a tag, MOVETYPE_TOSS/SOLID_CORPSE/colormod/EF_LOWPRECISION, velocity+avelocity, optional EF_FLAME, explode-on-contact-or-timer (GibExplode: rocket_impact + 2x EXPLOSION_SMALL) or alpha-fade think — bit-faithful to sv_vehicles.qc:274-326", result: pass }
+      - { kind: code, ref: "LIVE: Bumblebee.vr_death (Bumblebee.cs:474-487, the descriptor Death called from DamageVehicle's death tail) tosses 3 gun gibs via VehicleCommon.TossGib with the real cannon model strings; Bumblebee is Base's sole vehicle_tossgib consumer (bumblebee.qc:817-819)", result: pass }
     confidence: high
-    notes: "NEW ROW (registry coverage gap found this pass): death gibs were previously only mentioned as a deferred gap in spawn.respawn/think.tick summaries. Promoted to its own row; missing on all dimensions."
+    notes: "FIXED vs baseline (missing->faithful on all dimensions, na->live): Waves 13-15 ported the vehicle_gib physics-entity subsystem (TossGib + GibExplode + the fade think) and wired it live into Bumblebee's death. Only the 4th BODY gib is intentionally folded into the body's own diethink (documented divergence)."

@@ -1,7 +1,13 @@
 unit: mapobject-func
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
+# re-audited 2026-06-27 on branch claude/parity-port-waves (drift check). NO STATUS DRIFT vs the 2026-06-25
+# pass — all 17 feature rows re-verified faithful/live exactly as recorded. Only line numbers shifted post-Wave-12:
+# GameWorld.ResetMapObjects body is now at GameWorld.cs:4619 and e.Reset?.Invoke at :4640 (was :4216/:4234),
+# called from :4579; seam intact. pointparticles/rainsnow/stardust func_* emitters confirmed covered by
+# mapobject-misc (not unmapped here). Prior-pass notes below remain accurate.
+# ---- prior pass (2026-06-25) ----
 # re-audited 2026-06-25 on branch claude/parity-port-waves (drift check). KEY DELTA vs the prior pass:
 # DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open is now PORTED (commit ff8a699 Waves 9-11).
 # DoorUse reads the firing trigger's .trigger_reverse via MapMover.CurrentUseTrigger (set by UseTargets,
@@ -110,7 +116,7 @@ features:
     gaps:
       - "func_breakable_reset's team_saved restore is not reproduced (no team_saved field at this layer) and func_breakable_look_restore is presentation-only (colormod); the core behave-restore/destroyed state IS reset. door_reset's CSQC SendFlags |= SF_TRIGGER_RESET is skipped (door networking latent/commented in Base)."
     verification:
-      - { kind: code_read, ref: "RE-VERIFIED 2026-06-25 (drift, post-Wave-9-11): GameWorld.ResetMapObjects (GameWorld.cs:4216-4236) iterates every non-client server entity (snapshot of ServerEntities.Inner.All) and invokes e.Reset?.Invoke(e) at :4234 (after the projectile/weapon_proj* cull). Each mover installs Entity.Reset at spawn (grep `.Reset =` in MapObjects/): Doors.cs DoorReset (Doors.cs:209; assigned at Doors.cs:73 DoorSetup + :133 DoorRotatingSetup; snaps Origin/Angles to Pos1, STATE_BOTTOM, ACTIVE, clears Think/Velocity, re-inits keys), Buttons.cs ButtonReset (assigned :42), Platforms.cs PlatReset (assigned :80), MovingBrushes.cs RotatingReset (assigned :75), Breakable.cs BreakableReset (assigned :82), TargetUtilities.cs SecretReset (assigned :757). Buttons.cs:15 comment is CORRECT.", result: pass }
+      - { kind: code_read, ref: "RE-VERIFIED 2026-06-27 (drift): GameWorld.ResetMapObjects (GameWorld.cs:4619 body, called from :4579) iterates every non-client server entity (snapshot of ServerEntities.Inner.All) and invokes e.Reset?.Invoke(e) at :4640 (after the projectile/weapon_proj* cull). Line numbers shifted from the 2026-06-25 pass (:4216/:4234) by post-Wave-12 commits; seam unchanged. Each mover installs Entity.Reset at spawn (grep `.Reset =` in MapObjects/): Doors.cs DoorReset (Doors.cs:209; assigned at Doors.cs:73 DoorSetup + :133 DoorRotatingSetup; snaps Origin/Angles to Pos1, STATE_BOTTOM, ACTIVE, clears Think/Velocity, re-inits keys), Buttons.cs ButtonReset (assigned :42), Platforms.cs PlatReset (assigned :80), MovingBrushes.cs RotatingReset (assigned :77), Breakable.cs BreakableReset (assigned :82), TargetUtilities.cs SecretReset (assigned :786). Buttons.cs:15 comment is CORRECT.", result: pass }
       - { kind: liveness, ref: "Live caller chain confirmed 2026-06-25: Warmup.ResetMap + Rounds.OnRoundReset(fakeRoundStart:true) fire on the real `restart`/vote-restart/round-restart path -> ResetMap -> ResetMapObjects (GameWorld.cs:4183 caller, :4216 body). Snapshot iteration so MonsterAI.Reset (which removes SPAWNED monsters) is safe.", result: pass }
     confidence: high
     notes: "WAVE-5 FIX-UP: the round-restart .reset pass is now genuinely live. ResetMapObjects fires every map entity's Entity.Reset (the QC reset_map_global model) — door/plat/button/breakable/rotating/secret all snap home + re-arm, and monster/logic-gate/target-music .Reset hooks (previously assigned but never dispatched from GameWorld) now fire too. Spawn-time initial placement was already live; this closes the round-restart hole. Residual: breakable team_saved + colormod look_restore (minor, noted in gaps)."
@@ -264,7 +270,7 @@ features:
     divergence_rationale: null
     gaps:
       - "the pressed-state alternate texture (Frame=1) is set on the entity but whether the brush model renders the alt frame in-engine is unverified (presentation)."
-      - "CORRECTED 2026-06-25: button_reset round-restart re-arm is LIVE — ButtonReset is assigned at Buttons.cs:42 and dispatched by GameWorld.ResetMapObjects (GameWorld.cs:3887). The prior gap note claiming it was 'STILL dead' / the comment is wrong was stale; the Buttons.cs:15 comment is correct. (See mapobject-func.reset.)"
+      - "CORRECTED 2026-06-25: button_reset round-restart re-arm is LIVE — ButtonReset is assigned at Buttons.cs:42 and dispatched by GameWorld.ResetMapObjects (GameWorld.cs:4640). The prior gap note claiming it was 'STILL dead' / the comment is wrong was stale; the Buttons.cs:15 comment is correct. (See mapobject-func.reset.)"
     verification:
       - { kind: code_read, ref: "button.qc vs Buttons.cs: button_damage is now a per-hit .event_damage callback installed via MapMover.InstallEventDamage(this_, ButtonDamage); NOSPLASH (!IsSpecial & HasHitType Splash -> return), DONTACCUMULATEDMG (Health<=damage single-hit, no subtract), default accumulate (Health-=damage; <=0 -> fire), health=-1 fire-on-any all reproduced; Active gate matches QC. The old Combat.Death accumulate-hook is REMOVED.", result: pass }
       - { kind: liveness, ref: "Entity.GtEventDamage dispatched per-hit by DamageSystem.EventDamage (DamageSystem.cs:331-335) on the live Damage() path (line 280); SpawnFuncs.Register(func_button); fire sound via MapMover.Sound", result: pass }
@@ -593,7 +599,7 @@ features:
     intended_divergence: true
     divergence_rationale: "QC sets classname='door' and a per-entity .event_damage; the port uses a DISTINCT classname 'door_secret' (so it stays out of the shared door OnDeath/LinkDoors classname dispatch) and a real per-entity event_damage analogue (Entity.GtEventDamage, dispatched by DamageSystem.EventDamage). Slide mechanics, touch, blocked, use are otherwise identical. Forced by the shared-dispatch architecture."
     gaps:
-      - "secret_reset round-restart re-arm is LIVE — SecretReset is assigned at TargetUtilities.cs:637 and dispatched by GameWorld.ResetMapObjects; spawn-time placement (oldorigin, shootable re-arm) is also applied and faithful. (CORRECTED 2026-06-25; prior 'STILL dead' note was stale — see mapobject-func.reset.)"
+      - "secret_reset round-restart re-arm is LIVE — SecretReset is assigned at TargetUtilities.cs:786 and dispatched by GameWorld.ResetMapObjects; spawn-time placement (oldorigin, shootable re-arm) is also applied and faithful. (CORRECTED 2026-06-25; prior 'STILL dead' note was stale — see mapobject-func.reset.)"
       - "secret_blocked deals no damage (QC leaves the T_Damage commented out too — faithful)."
       - "no CSQC ENT_CLIENT draw/networking (latent in Base); brush syncs via engine entity state."
     verification:

@@ -1,8 +1,14 @@
 unit: onslaught
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
-# NOTE: drift re-audit 2026-06-25 — the Onslaught click-radar SERVER path is now ported + LIVE: the `ons_spawn`
+last_audited: "2026-06-27"
+# NOTE: drift re-audit 2026-06-27 — NO drift. All 18 feature rows re-verified against current Base
+# (sv_onslaught.qc) + port (Onslaught.cs / OnslaughtControlPoint.cs, both touched 2026-06-27 but content
+# unchanged vs the 2026-06-25 truth). All Base cvar defaults reconfirmed in gametypes-server.cfg (gen 2500,
+# cp 1000, buildhealth 100, buildtime 5, regen 20, round_timelimit 500, warmup 5, teleport_radius 200,
+# teleport_wait 5, spawn_choose 1, click_radius 500, shield_force 100 — all match). Live wiring intact:
+# Commands.cs ons_spawn + impulse-21 +use; GameWorld WireObjectiveSpawns + ons.ResolveLinks() + ons.Tick().
+# Carried forward (unchanged) from 2026-06-25 — the Onslaught click-radar SERVER path is ported + LIVE: the `ons_spawn`
 # client command (Commands.cs:CmdOnsSpawn, registered) routes to HandleOnsSpawnCommand which SETS GtOnsSpawnBy +
 # RESPAWN_FORCE for a dead picker (so OnPlayerSpawn → OnsTeleport finally fires) or teleports a live player between
 # own CPs; the +use key (impulse 21) routes to HandleUseKey (the next-to-own-CP gate). spawn_choose teleport-on-
