@@ -453,6 +453,31 @@ public sealed class Bumblebee : Vehicle
         // the origin directly — the helper only pushes the FX clear of a surface, not a gameplay difference).
         EffectEmitter.Emit("EXPLOSION_MEDIUM", vehicle.Origin, Vector3.Zero, 1);
 
+        // QC vr_death (bumblebee.qc:816-819): fixedmakevectors(angles); toss the three gun gibs off the wreck —
+        // each cannon flung outward along the body axes + jitter, spinning, 50/50 burning and 50/50 exploding,
+        // over a 6s window. The gun gibs carry their cannon model strings so the debris is the real plasma/ray
+        // models. This is the per-piece wreckage the descriptors' single death EXPLOSION couldn't show.
+        QMath.AngleVectors(vehicle.Angles, out Vector3 vf, out Vector3 vr, out Vector3 vu);
+        Entity? g1 = vehicle.VehGun1, g2 = vehicle.VehGun2, g3 = vehicle.VehGun3;
+        if (g1 is not null)
+        {
+            g1.Model = "models/vehicles/bumblebee_plasma_right.dpm"; // MDL_VEH_BUMBLEBEE_CANNON_RIGHT (gun1)
+            VehicleCommon.TossGib(vehicle, g1, vehicle.Velocity + 300f * vr + 100f * vu + 200f * Prandom.Vec(),
+                "cannon_right", Prandom.Float() < 0.5f, Prandom.Float() < 0.5f, 6f, Prandom.Vec() * 200f);
+        }
+        if (g2 is not null)
+        {
+            g2.Model = "models/vehicles/bumblebee_plasma_left.dpm"; // MDL_VEH_BUMBLEBEE_CANNON_LEFT (gun2)
+            VehicleCommon.TossGib(vehicle, g2, vehicle.Velocity + -300f * vr + 100f * vu + 200f * Prandom.Vec(),
+                "cannon_left", Prandom.Float() < 0.5f, Prandom.Float() < 0.5f, 6f, Prandom.Vec() * 200f);
+        }
+        if (g3 is not null)
+        {
+            g3.Model = "models/vehicles/bumblebee_ray.dpm"; // MDL_VEH_BUMBLEBEE_CANNON_CENTER (gun3/raygun)
+            VehicleCommon.TossGib(vehicle, g3, vehicle.Velocity + 300f * vf + -100f * vu + 200f * Prandom.Vec(),
+                "raygun", Prandom.Float() < 0.5f, Prandom.Float() < 0.5f, 6f, Prandom.Vec() * 300f);
+        }
+
         // QC vr_death tail: a 50% chance the tossed body blows up early on contact (bumblebee_dead_touch). The
         // port keeps the body in place rather than spawning a separate gib, so model the contact-blowup on the
         // body's own .Touch: a fired/bumped corpse detonates immediately into bumblebee_blowup.
@@ -498,9 +523,11 @@ public sealed class Bumblebee : Vehicle
             self.NextThink = Time + 0.1f;
         };
         vehicle.NextThink = Time;
-        // TODO(port,client): qcsrc/common/vehicles/vehicle/bumblebee.qc vr_death — gib the gun1/gun2/gun3 + body
-        //                    via vehicle_tossgib (the vehicle_gib physics-entity subsystem is not ported),
-        //                    hide the heal-ray beam (visual only).
+        // NOTE: the gun1/gun2/gun3 wreckage gibs ARE now tossed (above, via VehicleCommon.TossGib — the
+        // vehicle_gib physics-entity subsystem). Base also replaces the BODY with a separate tossgib that runs the
+        // diethink; the port keeps the diethink/blowup + respawn on the original body in place (functionally
+        // equivalent for the death->blowup->respawn cycle, with one fewer throwaway entity). The heal-ray beam
+        // hide (gun3.enemy EF_NODRAW) is a client-only visual and remains deferred.
     }
 
     // ============================ MULTI-SEAT ============================

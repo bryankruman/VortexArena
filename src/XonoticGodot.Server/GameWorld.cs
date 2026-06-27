@@ -836,6 +836,11 @@ public sealed class GameWorld
         // per-client selections land in Commands via the sentcvar receive leg; point the obituary dispatch at them.
         Scores.ChoiceStateProvider = Commands.GetChoiceState;
 
+        // QC LogDeath (server/damage.qc:100) → GameLogEcho: wire the kill event-log sink so Scores.Obituary emits
+        // the :kill:...:items= line (with the powerups S/I item codes). Gated on sv_eventlog at the call site (QC's
+        // pattern — LogDeath itself checks autocvar_sv_eventlog; same idiom as MapVote/dom/ka EventLogEcho).
+        Scores.LogDeath = line => { if (Cvars.Bool("sv_eventlog")) GameLog.Echo(line); };
+
         // [T38] QC sv_minigames.qc: the minigame session manager (create/join/part/end). The `minigame` command
         // (Commands.cs) reads this. Cvar gates use the shared facade; observer-forcing is left unwired for P0
         // (sv_minigames_observer ships 0 = don't force, so it's a no-op; the spectator hooks are T44's domain).
@@ -3135,7 +3140,9 @@ public sealed class GameWorld
                         ons.CpCombat.SpawnGenerator((int)e.Team, e.Origin, e.TargetName);
                         break;
                     case "onslaught_controlpoint":
-                        ons.CpCombat.SpawnControlPoint(_nextOnsCpId++, e.Origin, e.TargetName);
+                        // QC: .targetname → graph node name (link resolution); .target → fired on capture
+                        // (SUB_UseTargets in ons_ControlPoint_Icon_BuildThink — server-side map logic).
+                        ons.CpCombat.SpawnControlPoint(_nextOnsCpId++, e.Origin, e.TargetName, e.Target);
                         break;
                     case "onslaught_link":
                         // QC spawnfunc(onslaught_link) + ons_DelayedLinkSetup (INITPRIO_FINDTARGET): a link names

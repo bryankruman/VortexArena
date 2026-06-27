@@ -336,6 +336,15 @@ public abstract partial class MutatorBase : IRegistered
     public virtual string BuildMutatorsPrettyString(string s) => s;
 
     /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(&lt;mut&gt;, LogDeath_AppendItemCodes)</c> (e.g. powerups/sv_powerups.qc:17,
+    /// ctf/sv_ctf.qc:2701, keyhunt/sv_keyhunt.qc:1340): append this mutator's per-player death-log item code(s)
+    /// to <paramref name="s"/> and return it (QC <c>M_ARGV(1, string) = strcat(M_ARGV(1, string), "S")</c>).
+    /// Built into the <c>:items=</c> / <c>:victimitems=</c> field of the <c>:kill:</c> event-log line for the
+    /// given <paramref name="player"/> (powerups: "S" Strength, "I" Shield). Default: no contribution.
+    /// </summary>
+    public virtual string LogDeathAppendItemCodes(Entity player, string s) => s;
+
+    /// <summary>
     /// QC <c>MUTATOR_HOOKFUNCTION(&lt;mut&gt;, SetModname)</c> (server/world.qc:1090): override the server's
     /// <c>modname</c> serverinfo key. A mutator that constitutes a full "mod experience" (instagib, overkill, NIX)
     /// returns true and overwrites the modname string. Default: no override (pass through unchanged).

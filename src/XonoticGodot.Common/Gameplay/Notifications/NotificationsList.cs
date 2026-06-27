@@ -773,6 +773,28 @@ public static class NotificationsList
         Notifications.Info("NEXBALL_RETURN_HELD_BLUE", 0, 0, "", "", "^BGThe ^4BLUE^BG team held the ball for too long", "");
         Notifications.Info("NEXBALL_RETURN_HELD_YELLOW", 0, 0, "", "", "^BGThe ^3YELLOW^BG team held the ball for too long", "");
         Notifications.Info("NEXBALL_RETURN_HELD_PINK", 0, 0, "", "", "^BGThe ^6PINK^BG team held the ball for too long", "");
+        // QC GoalTouch bprint announcements (sv_nexball.qc:390-414) ported as INFO lines (the port collapses
+        // server bprints to INFO, like Domination). s1 = the scorer's netname. The team name is baked into the
+        // per-team variant (the established KEYHUNT/ONSLAUGHT/CTF convention), matching Team_ColoredFullName.
+        Notifications.Info("NEXBALL_GOAL_RED", 1, 0, "s1", "", "^BGGoaaaaal! ^BG%s^BG scored a point for the ^1RED^BG team", "");
+        Notifications.Info("NEXBALL_GOAL_BLUE", 1, 0, "s1", "", "^BGGoaaaaal! ^BG%s^BG scored a point for the ^4BLUE^BG team", "");
+        Notifications.Info("NEXBALL_GOAL_YELLOW", 1, 0, "s1", "", "^BGGoaaaaal! ^BG%s^BG scored a point for the ^3YELLOW^BG team", "");
+        Notifications.Info("NEXBALL_GOAL_PINK", 1, 0, "s1", "", "^BGGoaaaaal! ^BG%s^BG scored a point for the ^6PINK^BG team", "");
+        // QC own-goal: "Boo! <name>^7 scored a goal against their own team!"
+        Notifications.Info("NEXBALL_OWNGOAL", 1, 0, "s1", "", "^BGBoo! ^BG%s^BG scored a goal against their own team!", "");
+        // QC fault (two-team): "<otherteam> gets a point due to <name>^7's silliness." The team is the one that GAINS.
+        Notifications.Info("NEXBALL_FAULT_RED", 1, 0, "s1", "", "^1RED^BG gets a point due to ^BG%s^BG's silliness", "");
+        Notifications.Info("NEXBALL_FAULT_BLUE", 1, 0, "s1", "", "^4BLUE^BG gets a point due to ^BG%s^BG's silliness", "");
+        Notifications.Info("NEXBALL_FAULT_YELLOW", 1, 0, "s1", "", "^3YELLOW^BG gets a point due to ^BG%s^BG's silliness", "");
+        Notifications.Info("NEXBALL_FAULT_PINK", 1, 0, "s1", "", "^6PINK^BG gets a point due to ^BG%s^BG's silliness", "");
+        // QC fault (>2-team): "<ballteam> loses a point due to <name>^7's silliness." The team is the one that LOSES.
+        Notifications.Info("NEXBALL_FAULT_LOSE_RED", 1, 0, "s1", "", "^1RED^BG loses a point due to ^BG%s^BG's silliness", "");
+        Notifications.Info("NEXBALL_FAULT_LOSE_BLUE", 1, 0, "s1", "", "^4BLUE^BG loses a point due to ^BG%s^BG's silliness", "");
+        Notifications.Info("NEXBALL_FAULT_LOSE_YELLOW", 1, 0, "s1", "", "^3YELLOW^BG loses a point due to ^BG%s^BG's silliness", "");
+        Notifications.Info("NEXBALL_FAULT_LOSE_PINK", 1, 0, "s1", "", "^6PINK^BG loses a point due to ^BG%s^BG's silliness", "");
+        // QC out: a carried ball out-of-bounds names the carrier; a loose ball just "was returned".
+        Notifications.Info("NEXBALL_OUT_PLAYER", 1, 0, "s1", "", "^BG%s^BG went out of bounds", "");
+        Notifications.Info("NEXBALL_OUT", 0, 0, "", "", "^BGThe ball was returned", "");
         Notifications.Info("ONSLAUGHT_CAPTURE", 2, 0, "s1 s2", "", "^BG%s^BG captured %s^BG control point", "");
         Notifications.Info("ONSLAUGHT_CAPTURE_NONAME", 1, 0, "s1", "", "^BG%s^BG captured a control point", "");
         Notifications.Info("ONSLAUGHT_CPDESTROYED_RED", 2, 0, "s1 s2", "", "^1RED^BG team %s^BG control point has been destroyed by %s", "");

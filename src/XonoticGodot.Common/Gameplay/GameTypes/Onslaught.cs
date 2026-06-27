@@ -72,6 +72,9 @@ public sealed class Onslaught : GameType
         public bool Captured;
         /// <summary>QC .islinked: powered (reachable from its team's generator through same-team links).</summary>
         public bool Linked;
+        /// <summary>QC .waslinked: the previous <see cref="Linked"/> value, tracked by the steady-state icon think so a
+        /// link-state change can re-fire the CP's map targets (re-team linked spawnpoints) exactly once per flip.</summary>
+        public bool WasLinked;
         /// <summary>QC .isshielded: invulnerable — true unless an enemy-owned powered neighbor exposes it.</summary>
         public bool Shielded = true;
         /// <summary>Generator state when <see cref="IsGenerator"/> (health/destroyed), else null.</summary>

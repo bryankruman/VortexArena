@@ -4414,6 +4414,11 @@ public sealed partial class NetGame : Node3D
         // the rest the cvar is 0 and BuildLimitsHeader's (ll < fl || fl <= 0) guard drops the term.
         _scoreboard.LeadLimit = (int)cvars.GetFloat("leadlimit");
         _scoreboard.LeadAndFragLimit = cvars.GetFloat("leadlimit_and_fraglimit") != 0f;
+        // QC gametype.m_hidelimits (mapinfo.qh:128, GAMETYPE_FLAG_HIDELIMITS; scoreboard.qc:2551): only LMS sets
+        // it (lms.qh:11), suppressing the frag/lead limit terms — only the timelimit shows on that line.
+        _scoreboard.HideLimits = XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype == "lms";
+        // QC global `campaign` (scoreboard.qc:2574): a single-player campaign suppresses the "N/M players" line.
+        _scoreboard.Campaign = !string.IsNullOrEmpty(_campaignName);
         FeedMapStats();
     }
 

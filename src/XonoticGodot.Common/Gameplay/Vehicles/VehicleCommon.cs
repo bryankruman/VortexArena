@@ -383,6 +383,12 @@ namespace XonoticGodot.Common.Gameplay
             // owner % mirror) exactly like the Onslaught generator/icon GtEventHeal sinks.
             vehic.GtEventHeal = HealVehicle;
 
+            // QC vehicles_spawn:1118 — this.reset = vehicles_reset. Install the round/match-restart hook so the
+            // host's reset sweep (GameWorld.ResetMapObjects → Entity.Reset) ejects any pilot, clears the pending
+            // return, and respawns the vehicle on a round boundary (VehiclesReset), exactly like the movers/items/
+            // monsters that install their own Entity.Reset at spawn.
+            vehic.Reset = VehiclesReset;
+
             // QC: return to spawn (this.angles = pos2; setorigin(this, pos1)).
             vehic.Angles = vehic.SpawnAngles;
             if (Api.Services is not null)
@@ -738,9 +744,13 @@ namespace XonoticGodot.Common.Gameplay
                 // QC: pain_frame = time + max(0.1, 0.1 + random()*0.5*_ftmp).
                 vehic.PainFrame = Time + MathF.Max(0.1f, 0.1f + Prandom.Float() * 0.5f * ftmp);
 
-                // QC: Send_Effect(EFFECT_SMOKE_SMALL, origin + randomvec()*80, '0 0 0', 1) — presentation; the
-                // headless Common layer has no particle/temp-entity emitter, so the smoke is deferred (NOTE:
-                // client/net). The gameplay-authoritative jitter below runs regardless.
+                // QC vehicles_painframe (sv_vehicles.qc:605): Send_Effect(EFFECT_SMOKE_SMALL,
+                // origin + randomvec()*80, '0 0 0', 1) — the low-health smoke puff. EffectEmitter now exists in
+                // the Common layer (used by the descriptor death/muzzle FX + Racer's under-craft trail), so the
+                // old "no headless emitter" deferral no longer applies: emit the same server-authoritative
+                // Send_Effect the descriptors do.
+                if (Api.Services is not null)
+                    EffectEmitter.Emit("SMOKE_SMALL", vehic.Origin + Prandom.Vec() * 80f, Vector3.Zero, 1);
 
                 if ((vehic.VehicleFlags & VehicleFlags.DmgShake) != 0)
                     vehic.Velocity += Prandom.Vec() * 30f; // QC: velocity += randomvec()*30
@@ -873,6 +883,135 @@ namespace XonoticGodot.Common.Gameplay
             // NOTE — cross-boundary (CSQC): the WP_Vehicle return waypoint + radar icon (vehicles_showwp) and the
             // EFFECT_TELEPORT return flash are presentation and unported; the authoritative return SCHEDULE is set
             // above.
+        }
+
+        /// <summary>
+        /// Port of <c>vehicles_reset()</c> (sv_vehicles.qc:1095) — the round/match-restart <c>.reset</c> hook. On a
+        /// round restart the host's reset sweep (GameWorld.ResetMapObjects → <see cref="Entity.Reset"/>) fires this
+        /// for every vehicle: release any pilot (QC <c>vehicles_exit(VHEF_RELEASE)</c>), clear any pending
+        /// return-to-spawn schedule (QC <c>vehicles_clearreturn</c>), and respawn the vehicle when it is active (QC
+        /// <c>if (active != ACTIVE_NOT) vehicles_spawn(this)</c>). The port has no map-scripted ACTIVE state, so —
+        /// matching the stock-map common case where every vehicle is ACTIVE_ACTIVE — it always respawns.
+        /// Installed onto <see cref="Entity.Reset"/> in <see cref="SpawnVehicle"/>.
+        /// </summary>
+        public static void VehiclesReset(Entity vehic)
+        {
+            // QC: if (this.owner) vehicles_exit(this, VHEF_RELEASE) — eject/release any pilot back to a walking
+            // player. The descriptor's Exit() computes the eject vector + calls ExitVehicle, exactly like the death
+            // path's release (DamageVehicle), so route through it to keep the player-restore identical.
+            Entity? pilot = vehic.Owner;
+            if (pilot is not null)
+                vehic.VehicleDef?.Exit(vehic, pilot);
+
+            // QC: vehicles_clearreturn(this) — remove the "return helper" entity that would otherwise re-run
+            // vehicles_spawn on its own schedule. The port has no separate return-helper entity (SetReturn re-arms
+            // the vehicle's OWN Think), so clearing the return means cancelling that scheduled Think before the
+            // unconditional respawn below re-arms the normal think — otherwise a stale return Think could fire first.
+            vehic.Think = null;
+            vehic.NextThink = 0f;
+
+            // QC: if (this.active != ACTIVE_NOT) vehicles_spawn(this) — return the vehicle to its idle, ownerless,
+            // full-health state at its spawn point (which also re-arms vehicles_think). The descriptor's Spawn folds
+            // vehicle_initialize's per-vehicle setup + vehicles_spawn; SetReturn uses it as the return target too.
+            vehic.VehicleDef?.Spawn(vehic);
+        }
+
+        // =====================================================================================
+        // GIBS — port of vehicle_tossgib + vehicles_gib_explode/touch/think (sv_vehicles.qc ~274-326).
+        // =====================================================================================
+
+        /// <summary>QC EF_FLAME (dpextensions.qc:125) — the burning-debris flame the client renders.</summary>
+        private const int EfFlame = 1024;
+        /// <summary>QC EF_LOWPRECISION (dpextensions) — bandwidth hint for a short-lived debris entity.</summary>
+        private const int EfLowPrecision = 4194304;
+
+        /// <summary>
+        /// Port of <c>vehicles_gib_explode()</c> (sv_vehicles.qc:274): a tossed debris gib that detonates — play
+        /// SND_ROCKET_IMPACT and pop two EFFECT_EXPLOSION_SMALL (one drifting near the gib, one at the dead
+        /// vehicle's origin via <c>wp00</c>), then remove the gib. Gibs are pure FX (no RadiusDamage).
+        /// </summary>
+        private static void GibExplode(Entity gib)
+        {
+            if (Api.Services is not null)
+            {
+                // QC: sound(this, CH_SHOTS, SND_ROCKET_IMPACT, VOL_BASE, ATTEN_NORM).
+                Api.Sound.Play(gib, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav");
+                // QC: Send_Effect(EFFECT_EXPLOSION_SMALL, randomvec()*80 + (origin + '0 0 100'), '0 0 0', 1)
+                EffectEmitter.Emit("EXPLOSION_SMALL", Prandom.Vec() * 80f + (gib.Origin + new Vector3(0f, 0f, 100f)), Vector3.Zero, 1);
+                // QC: Send_Effect(EFFECT_EXPLOSION_SMALL, this.wp00.origin + '0 0 64', '0 0 0', 1) — at the wreck.
+                Vector3 wreckOrigin = gib.GoalEntity is not null ? gib.GoalEntity.Origin : gib.Origin;
+                EffectEmitter.Emit("EXPLOSION_SMALL", wreckOrigin + new Vector3(0f, 0f, 64f), Vector3.Zero, 1);
+                Api.Entities.Remove(gib);
+            }
+        }
+
+        /// <summary>
+        /// Port of <c>vehicle_tossgib()</c> (sv_vehicles.qc:296): spawn a model debris gib at a tag of the dying
+        /// vehicle and toss it with <paramref name="vel"/> + <paramref name="rot"/> spin. Burning gibs trail flame
+        /// (EF_FLAME); <paramref name="explode"/> gibs blow up on contact / after a random delay; the rest fade out
+        /// over <paramref name="maxtime"/>. The debris is the per-piece wreckage Base scatters from a destroyed
+        /// vehicle's <c>vr_death</c> (only the Bumblebee uses it). Pure presentation/physics: a gib never deals
+        /// damage. <paramref name="template"/> supplies the model; <paramref name="tag"/> the spawn origin (empty =
+        /// the vehicle origin, for the body gib).
+        /// </summary>
+        public static Entity TossGib(Entity vehic, Entity template, Vector3 vel, string tag,
+            bool burn, bool explode, float maxtime, Vector3 rot)
+        {
+            Entity gib = Api.Services is not null ? Api.Entities.Spawn() : new Entity();
+            gib.ClassName = "vehicle_gib";
+            gib.GoalEntity = vehic; // QC .wp00 = the dead vehicle (gib_explode pops a blast at its origin)
+
+            // QC: _setmodel(_gib, _template.model). The gun gibs carry their cannon model strings; the body gib
+            // reuses the vehicle body model. Fall back to the vehicle model when a sub-gun has no model string.
+            string model = !string.IsNullOrEmpty(template.Model) ? template.Model : vehic.Model;
+            gib.Model = model;
+            if (Api.Services is not null && !string.IsNullOrEmpty(model))
+                Api.Entities.SetModel(gib, model);
+
+            // QC: org = gettaginfo(this, gettagindex(this, _tag)); setorigin(_gib, org). Empty tag -> vehicle origin.
+            Vector3 org = string.IsNullOrEmpty(tag) ? vehic.Origin : VehiclePhysics.TagOrigin(vehic, tag);
+            if (Api.Services is not null)
+                Api.Entities.SetOrigin(gib, org);
+            else
+                gib.Origin = org;
+
+            gib.Velocity = vel;
+            gib.MoveType = MoveType.Toss;     // QC: MOVETYPE_TOSS
+            gib.Solid = Solid.Corpse;         // QC: SOLID_CORPSE
+            gib.ColorModKey = new Vector3(-0.5f, -0.5f, -0.5f); // QC: colormod = '-0.5 -0.5 -0.5' (darkened wreckage)
+            gib.Effects = EfLowPrecision;     // QC: effects = EF_LOWPRECISION
+            gib.AVelocity = rot;              // QC: avelocity = _rot
+
+            if (burn)
+                gib.Effects |= EfFlame;       // QC: if (_burn) effects |= EF_FLAME
+
+            if (explode)
+            {
+                // QC: setthink(gib_explode); nextthink = time + random()*_explode; settouch(gib_touch).
+                // (Base passes the same _maxtime value as _explode for the random detonation window.)
+                gib.Think = GibExplode;
+                gib.NextThink = Time + Prandom.Float() * maxtime;
+                gib.Touch = (self, _) => GibExplode(self); // QC vehicles_gib_touch -> vehicles_gib_explode
+            }
+            else
+            {
+                // QC: cnt = time + _maxtime; setthink(gib_think); nextthink = time + _maxtime - 1; alpha = 1.
+                float deadline = Time + maxtime;
+                gib.Alpha = 1f;
+                gib.Think = self =>
+                {
+                    // QC vehicles_gib_think: alpha -= 0.1; if (cnt >= time) delete; else nextthink = time + 0.1.
+                    self.Alpha -= 0.1f;
+                    if (deadline <= Time)
+                    {
+                        if (Api.Services is not null) Api.Entities.Remove(self);
+                    }
+                    else
+                        self.NextThink = Time + 0.1f;
+                };
+                gib.NextThink = Time + MathF.Max(0f, maxtime - 1f);
+            }
+            return gib;
         }
 
         /// <summary>QC IS_DEAD(e).</summary>

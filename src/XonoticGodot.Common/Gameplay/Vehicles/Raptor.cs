@@ -467,6 +467,11 @@ public sealed class Raptor : Vehicle
         vehicle.Velocity = vehicle.Velocity * 0.9f + new Vector3(0, 0, -1800f) * (hgt / 256f) * FrameTime;
         Vector3 a = vehicle.Angles; a.X *= 0.95f; a.Z *= 0.95f; vehicle.Angles = a;
 
+        // QC raptor_land: as the raptor descends below 128u the animation frame ramps with altitude
+        // (drives the visible model + the rotor avelocity on the client; tracked server-side here for fidelity).
+        if (hgt < 128f && hgt > 0f)
+            vehicle.VehAnimFrame = (hgt / 128f) * 25f;
+
         if (hgt < 16f)
         {
             vehicle.MoveType = MoveType.Toss;
@@ -550,8 +555,11 @@ public sealed class Raptor : Vehicle
         else { gun = vehicle.VehGun2; if (vehicle.VehBulletCounter >= 4) vehicle.VehBulletCounter = 0; }
 
         var (org, fwd) = VehiclePhysics.TagOriginForward(gun ?? vehicle, "fire1");
-        QMath.AngleVectors(QMath.VecToAngles(fwd), out Vector3 f, out Vector3 r, out Vector3 u);
-        Vector3 vel = Prandom.Spread(f, r, u, CannonSpread) * CannonSpeed;
+        // QC raptor_weapons.qc RaptorCannon.wr_think: normalize(dir + randomvec() * cannon_spread) * cannon_speed
+        // — a unit-ball offset added DIRECTLY to forward (perturbing forward too), NOT the uniform-in-disc
+        // right/up cone Prandom.Spread projects. Match the QC distribution exactly for this weapon.
+        Vector3 dir = QMath.Normalize(fwd + Prandom.Vec() * CannonSpread);
+        Vector3 vel = dir * CannonSpeed;
 
         VehicleCommon.SpawnProjectile(vehicle, player, org, vel,
             CannonDamage, CannonRadius, CannonForce, size: 0f,

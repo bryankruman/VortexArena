@@ -385,8 +385,9 @@ public sealed class Nexball : GameType
         // QC nexball_setstatus: a team-held ball that has outlived its forteam lifetime is force-returned.
         if (_ballLifetime > 0f && _ballLifetime < GametypeEntities.Now && ball.GtCarrier is Player held)
         {
-            // QC: Send_Notification(... INFO_NEXBALL_RETURN_HELD) — the held-ball-returned notice is a client
-            // message (deferred); the drop + glide-home reset is the authoritative effect and IS applied.
+            // QC nexball_setstatus: Send_Notification(NOTIF_ALL, MSG_INFO, APP_TEAM_NUM(this.team,
+            // INFO_NEXBALL_RETURN_HELD)) — announce the team that held the ball too long, keyed by the holder's team.
+            NotificationSystem.Info($"NEXBALL_RETURN_HELD_{TeamSuffix((int)held.Team)}");
             DropBall(held.Origin, Vector3.Zero); // QC DropBall(ball, owner.origin, '0 0 0')
             _ballCnt = 0;
             ResetBall();                          // QC ResetBall(ball) — start the glide-home state machine
@@ -664,18 +665,39 @@ public sealed class Nexball : GameType
 
         int otherTeam = TeamCountIsTwo() && BallTeam != Teams.None ? OtherTeam(BallTeam) : Teams.None;
 
+        // QC: the scorer name for the bprint announcement (IS_CLIENT(ball.pusher) ? netname : "Someone (?)").
+        string pname = BallPusher?.NetName ?? "Someone (?)";
+        bool ballWasCarried = BallEntity?.GtCarrier is Player; // QC: ball.owner set ⇒ GOAL_TOUCHPLAYER carrier scored
+
         if (goalTeam == GoalOut)
         {
             // QC GOAL_OUT: pscore = 0 — no score, the ball is just returned (delay 0).
+            // QC bprint: a carried ball out-of-bounds names the carrier; a loose ball "was returned".
+            if (ballWasCarried)
+                NotificationSystem.Info("NEXBALL_OUT_PLAYER", pname);
+            else
+                NotificationSystem.Info("NEXBALL_OUT");
         }
-        else if (goalTeam == GoalFault || goalTeam == BallTeam)
+        else if (goalTeam == BallTeam)
         {
-            // QC fault or own-goal: pscore = -1.
+            // QC own-goal: pscore = -1, bprint "Boo! <name> scored a goal against their own team!".
+            NotificationSystem.Info("NEXBALL_OWNGOAL", pname);
+            ScoreGoal(BallTeam, GoalKind.OwnGoal, otherTeam);
+        }
+        else if (goalTeam == GoalFault)
+        {
+            // QC fault: pscore = -1. Two-team → the OTHER team gains a point ("<otherteam> gets a point due to
+            // <name>'s silliness"); >2-team → the ball's team loses one ("<ballteam> loses a point ...").
+            if (TeamCountIsTwo())
+                NotificationSystem.Info($"NEXBALL_FAULT_{TeamSuffix(otherTeam)}", pname);
+            else
+                NotificationSystem.Info($"NEXBALL_FAULT_LOSE_{TeamSuffix(BallTeam)}", pname);
             ScoreGoal(BallTeam, GoalKind.OwnGoal, otherTeam);
         }
         else
         {
-            // QC enemy goal: pscore = +1 for the ball's team.
+            // QC enemy goal: pscore = +1 for the ball's team, bprint "Goaaaaal! <name> scored a point for the <team>".
+            NotificationSystem.Info($"NEXBALL_GOAL_{TeamSuffix(BallTeam)}", pname);
             ScoreGoal(BallTeam, GoalKind.Score, otherTeam);
         }
 
@@ -1176,6 +1198,13 @@ public sealed class Nexball : GameType
         CheckGoalLimit();
     }
 
+    /// <summary>The team-color suffix used to key the per-team INFO notifications (QC Team_ColoredFullName baked
+    /// into the per-team notification variant, matching the CTF/KeyHunt/Onslaught convention).</summary>
+    private static string TeamSuffix(int team) => team switch
+    {
+        Teams.Red => "RED", Teams.Blue => "BLUE", Teams.Yellow => "YELLOW", Teams.Pink => "PINK", _ => "NEUTRAL",
+    };
+
     private void AddTeamGoal(int team, int delta)
         => GS.AddToTeam(team, GS.TeamSlotSecondary, delta); // QC TeamScore_AddToTeam(team, ST_NEXBALL_GOALS, delta)
 
@@ -1249,6 +1278,75 @@ public sealed class Nexball : GameType
         // QC nb_DropBall: if(player.ballcarried && g_nexball) DropBall(player.ballcarried, player.origin, player.velocity).
         DropBall(player); // no-op unless this player is the live ball's carrier
     }
+
+    /// <summary>
+    /// QC nexball waypoint sprites, rebuilt each tick from live state (the port's pull model, like CTF/Domination):
+    ///  - WP_NbBall (sv_nexball.qc): attached to the CARRIER while held (QC GiveBall WaypointSprite_AttachCarrier
+    ///    on plyr), else floating on the LOOSE ball at its ground position +'0 0 64' (QC DropBall / SpawnBall
+    ///    WaypointSprite_Spawn at the ball, offset '0 0 64'). Suppressed during the goal/idle reset glide
+    ///    (_ballCnt != 0) — there is no in-play ball to mark while it returns home.
+    ///  - WP_NbGoal (sv_nexball.qc SpawnGoal WaypointSprite_SpawnFixed): one fixed marker per team goal at its
+    ///    center, shown only to the OTHER team (QC nb_Goal_Customize: SAME_TEAM(viewer, goal) → hidden), tinted the
+    ///    goal team's color. Fault/out volumes get no waypoint (QC only spawns one for a valid team goal).
+    /// </summary>
+    public override void CollectWaypoints(List<Waypoints.WaypointSprite> into)
+    {
+        // WP_NbBall — only while a live ball is actually in play (not mid-reset glide / pre-release).
+        if (BallEntity is Entity ball && _ballCnt == 0)
+        {
+            if (ball.GtCarrier is Player carrier)
+            {
+                // QC GiveBall: WaypointSprite_AttachCarrier(WP_NbBall, plyr, ...) — rides the carrier.
+                into.Add(new Waypoints.WaypointSprite
+                {
+                    SpriteName = "NbBall",
+                    Owner = carrier,
+                    Team = 0,                       // shown to everyone (carrier marker)
+                    Color = NbBallColor,
+                    RadarIcon = 1,                  // RADARICON_FLAGCARRIER
+                    Health = -1f,                   // QC "no health bar please"
+                });
+            }
+            else
+            {
+                // QC DropBall / SpawnBall: WaypointSprite at the ball, offset '0 0 64'.
+                into.Add(new Waypoints.WaypointSprite
+                {
+                    SpriteName = "NbBall",
+                    FixedOrigin = ball.Origin + new Vector3(0f, 0f, 64f),
+                    Team = 0,
+                    Color = NbBallColor,
+                    RadarIcon = 1,
+                    Health = -1f,
+                });
+            }
+        }
+
+        // WP_NbGoal — one fixed marker per VALID team goal, shown to the enemy team only (QC nb_Goal_Customize).
+        foreach (Entity g in Goals)
+        {
+            int goalTeam = g.GtHomeTeam;
+            if (goalTeam is GoalFault or GoalOut || goalTeam == Teams.None)
+                continue; // QC: WaypointSprite_SpawnFixed only for Team_IsValidTeam(this.team) && != GOAL_OUT
+            int gt = goalTeam; // capture for the closure
+            into.Add(new Waypoints.WaypointSprite
+            {
+                SpriteName = "NbGoal",
+                // QC WaypointSprite_SpawnFixed((absmin+absmax)*0.5) — the goal volume's center. The port spawns the
+                // goal at its center origin (SpawnObjective), so g.Origin is already the midpoint.
+                FixedOrigin = g.Origin,
+                Team = goalTeam,
+                Color = Teams.ColorRgb(goalTeam),
+                RadarIcon = 0, // QC RADARICON_NONE (goals are not radar dots)
+                Health = -1f,
+                // QC nb_Goal_Customize: hide for a viewer on the goal's OWN team (you defend your own goal).
+                VisibleForPlayer = viewer => viewer is null || (int)viewer.Team != gt,
+            });
+        }
+    }
+
+    /// <summary>QC WP_NbBall radar color (the ball waypoint tint), matching the waypoint-def palette.</summary>
+    private static readonly Vector3 NbBallColor = new(0.91f, 0.85f, 0.62f);
 
     /// <summary>Kills don't score in Nexball (the ball does); a carrier who dies drops the ball.</summary>
     private bool OnDeath(ref DeathEvent ev)

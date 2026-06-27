@@ -35,9 +35,13 @@
 //   - the WP_Item countdown waypoint sprite on a dropped powerup + powerups_DropItem_Think (the time-left bar)
 //     + the ItemTouched waypoint-kill-on-pickup hook.
 //
-// Still deferred — needs a cross-file seam that doesn't exist in the port yet:
-//   - the obituary item codes (LogDeath_AppendItemCodes — the port has no LogDeath kill-log pipeline wired into
-//     the death path yet; GameLog.Kill is uncalled and carries no :items= field).
+// Wave-15 additions (now live for this file):
+//   - the obituary item codes (LogDeath_AppendItemCodes, sv_powerups.qc:17): the new virtual
+//     MutatorBase.LogDeathAppendItemCodes (chained by MutatorActivation) appends "S" (Strength)/"I" (Shield) to
+//     a player's death-log item codes. The port's LogDeath pipeline is now wired: Scores.Obituary builds the
+//     :kill:<mode>:<killer>:<killed>:type=<dt>:items=<codes> line (server/damage.qc:100 LogDeath +
+//     AppendItemcodes) and hands it to GameLog via the Scores.LogDeath sink (GameWorld wires it, gated on
+//     sv_eventlog). The S/I codes ride that :items=/:victimitems= field.
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
@@ -197,6 +201,18 @@ public sealed class PowerupsMutator : MutatorBase
         float g = Api.Cvars.GetFloat("g_powerups");
         if (g == 0f) return s + ":no_powerups";
         if (g > 0f) return s + ":powerups";
+        return s;
+    }
+
+    // ---- death-log item codes (sv_powerups.qc:17 LogDeath_AppendItemCodes) ----
+    // QC appends "S" when the player holds Strength and "I" when they hold Shield, into the player's
+    // death-log item-code field (:items= / :victimitems=). Chained by MutatorActivation.LogDeathAppendItemCodes
+    // and folded into the :kill: line by Scores.LogDeath (the port's LogDeath).
+    public override string LogDeathAppendItemCodes(Entity player, string s)
+    {
+        if (Active(player, "strength")) s += "S";
+        if (Active(player, "shield")) s += "I";
+        // QC TODO comment: item codes for other powerups? (none yet)
         return s;
     }
 

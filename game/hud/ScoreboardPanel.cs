@@ -102,6 +102,15 @@ public partial class ScoreboardPanel : HudPanel
     /// <summary>True when the active gametype is teamplay (groups rows into team sections + shows team totals).</summary>
     public bool TeamPlay { get; set; }
 
+    /// <summary>QC <c>gametype.m_hidelimits</c> (mapinfo.qh:50, GAMETYPE_FLAG_HIDELIMITS; scoreboard.qc:2551):
+    /// when set the fraglimit + leadlimit terms are suppressed from the game-info limits line (only the timelimit
+    /// shows). The only stock gametype that sets it is LMS (lms.qh:11). Fed by the match layer.</summary>
+    public bool HideLimits { get; set; }
+
+    /// <summary>QC global <c>campaign</c> (scoreboard.qc:2574): in a single-player campaign the "N/M players" map
+    /// line is suppressed (the count is meaningless). Fed by the match layer.</summary>
+    public bool Campaign { get; set; }
+
     // ---- spectator list (QC Scoreboard_Spectators_Draw) ----
 
     /// <summary>One spectator entry (QC the NUM_SPECTATOR rows: name + ping). Fed via <see cref="SetSpectators"/>.</summary>
@@ -858,7 +867,8 @@ public partial class ScoreboardPanel : HudPanel
         // Map + player count line (QC left-aligned: "Map: <name>   N/M players").
         string mapLine = "";
         if (!string.IsNullOrEmpty(MapName)) mapLine = $"^7Map: ^2{MapName}";
-        if (PlayerCount > 0 || MaxPlayerCount > 0)
+        // QC scoreboard.qc:2574: if (campaign) str = "" — the player-count is meaningless in single-player.
+        if (!Campaign && (PlayerCount > 0 || MaxPlayerCount > 0))
         {
             int max = MaxPlayerCount > 0 ? MaxPlayerCount : PlayerCount;
             mapLine = (mapLine.Length != 0 ? mapLine + "    " : "") + $"^5{PlayerCount}^7/^5{max} ^7players";
@@ -875,24 +885,29 @@ public partial class ScoreboardPanel : HudPanel
     /// Color-coded for the right-aligned game-info line. Empty when no limits.</summary>
     private string BuildLimitsHeader()
     {
-        // QC scoreboard.qc:2544-2571: tl / fl / ll / ll_and_fl. m_hidelimits suppresses fl + ll entirely.
+        // QC scoreboard.qc:2544-2571: tl / fl / ll / ll_and_fl. m_hidelimits suppresses fl + ll entirely
+        // (only the timelimit shows); the only stock gametype that sets it is LMS.
         string str = "";
         if (TimeLimitMinutes > 0) str = $"^3{TimeLimitMinutes}";
 
-        int fl = FragLimit;
-        int ll = LeadLimit;
-        if (fl > 0)
+        // QC scoreboard.qc:2551: if (!gametype.m_hidelimits) — skip the whole frag/lead block when hidden.
+        if (!HideLimits)
         {
-            if (str.Length != 0) str += "^7 / ";   // QC delimiter
-            str += FraglimitDraw(fl, isLeadLimit: false);
-        }
-        // QC: ll > 0 && (ll < fl || fl <= 0) — don't show a lead limit that can never be reached before fraglimit.
-        if (ll > 0 && (ll < fl || fl <= 0))
-        {
-            if (TimeLimitMinutes > 0 || fl > 0)
-                // QC: "^7 & " when leadlimit_and_fraglimit (both needed) and fl > 0, else "^7 / ".
-                str += (LeadAndFragLimit && fl > 0) ? "^7 & " : "^7 / ";
-            str += FraglimitDraw(ll, isLeadLimit: true);
+            int fl = FragLimit;
+            int ll = LeadLimit;
+            if (fl > 0)
+            {
+                if (str.Length != 0) str += "^7 / ";   // QC delimiter
+                str += FraglimitDraw(fl, isLeadLimit: false);
+            }
+            // QC: ll > 0 && (ll < fl || fl <= 0) — don't show a lead limit that can never be reached before fraglimit.
+            if (ll > 0 && (ll < fl || fl <= 0))
+            {
+                if (TimeLimitMinutes > 0 || fl > 0)
+                    // QC: "^7 & " when leadlimit_and_fraglimit (both needed) and fl > 0, else "^7 / ".
+                    str += (LeadAndFragLimit && fl > 0) ? "^7 & " : "^7 / ";
+                str += FraglimitDraw(ll, isLeadLimit: true);
+            }
         }
         return str;
     }
@@ -1253,19 +1268,24 @@ public partial class ScoreboardPanel : HudPanel
         if (_accuracy.Count == 0) return y;           // not networked yet — block hidden (QC gates on data)
         if (y > Size2.Y - 40f) return y;
 
-        // QC: "Accuracy stats (average %d%%)" header.
+        // QC: "Accuracy stats (average %d%%)" header. QC scoreboard.qc:1947 computes the average as
+        // floor(sum * 100 / weapons_with_stats + 0.5) — round-half-up (the port's per-weapon values are already
+        // 0..100, so the *100 is absorbed; sum the 0..100 values and round-half-up the mean).
         int sum = 0, n = 0;
         foreach (var kv in _accuracy) if (kv.Value >= 0) { sum += kv.Value; n++; }
         if (n == 0) return y;
-        int avg = sum / n;
+        int avg = Mathf.FloorToInt((float)sum / n + 0.5f);
         DrawText(new Vector2(x, y), $"Accuracy stats (average {avg}%)", new Color(1f, 1f, 1f, 0.9f * fade), 14);
         y += 20f;
+        // QC scoreboard.qc:1894-1895: with accuracy_nocolors the cells are drawn flat white (rgb = '1 1 1'),
+        // bypassing the per-weapon Accuracy_GetColor ramp.
+        bool noColors = CvarF("accuracy_nocolors", 0f) != 0f;
         float cx = x + 8f;
         foreach (var kv in _accuracy)
         {
             if (kv.Value < 0) continue; // weapon never fired (QC skips)
             string cell = $"{kv.Value}%";
-            Color ac = AccuracyColor(kv.Value);
+            Color ac = noColors ? new Color(1f, 1f, 1f, 1f) : AccuracyColor(kv.Value);
             DrawText(new Vector2(cx, y), cell, new Color(ac.R, ac.G, ac.B, ac.A * fade), 14);
             cx += MeasureText(cell, 14) + 14f;
             if (cx > x + w - 40f) { cx = x + 8f; y += 18f; if (y > Size2.Y - 24f) break; }
@@ -1500,6 +1520,9 @@ public partial class ScoreboardPanel : HudPanel
         c.Register("hud_panel_scoreboard_respawntime_decimals", "1", CvarFlags.Save);
         // table look (scoreboard.qc:69-77)
         c.Register("hud_panel_scoreboard_table_bg_alpha", "0", CvarFlags.Save);
+        // QC scoreboard.qc:70 + the Scoreboard_Draw_Export skin-cvar list (scoreboard.qc:29): the table bg
+        // texture scale (border_default 9-slice). Registered so it round-trips through the HUD-skin export.
+        c.Register("hud_panel_scoreboard_table_bg_scale", "0.25", CvarFlags.Save);
         c.Register("hud_panel_scoreboard_table_fg_alpha", "0.9", CvarFlags.Save);
         c.Register("hud_panel_scoreboard_table_fg_alpha_self", "1", CvarFlags.Save);
         c.Register("hud_panel_scoreboard_table_highlight", "1", CvarFlags.Save);
@@ -1508,9 +1531,12 @@ public partial class ScoreboardPanel : HudPanel
         c.Register("hud_panel_scoreboard_table_highlight_alpha_eliminated", "0.6", CvarFlags.Save);
         // team bg tint (scoreboard.qc:78)
         c.Register("hud_panel_scoreboard_bg_teams_color_team", "0", CvarFlags.Save);
-        // accuracy block (scoreboard.qc:82-83)
+        // accuracy block (scoreboard.qc:82-84)
         c.Register("hud_panel_scoreboard_accuracy", "1", CvarFlags.Save);
         c.Register("hud_panel_scoreboard_accuracy_doublerows", "0", CvarFlags.Save);
+        // QC scoreboard.qc:84 + the Scoreboard_Draw_Export skin-cvar list (scoreboard.qc:38): draw accuracy cells
+        // without the per-weapon color ramp. Registered so it round-trips through the HUD-skin export.
+        c.Register("hud_panel_scoreboard_accuracy_nocolors", "0", CvarFlags.Save);
         // item-stats block (scoreboard.qc:88-89)
         c.Register("hud_panel_scoreboard_itemstats", "1", CvarFlags.Save);
         c.Register("hud_panel_scoreboard_itemstats_doublerows", "0", CvarFlags.Save);

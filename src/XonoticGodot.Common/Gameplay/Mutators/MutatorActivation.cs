@@ -1,3 +1,5 @@
+using XonoticGodot.Common.Framework;
+
 namespace XonoticGodot.Common.Gameplay;
 
 /// <summary>
@@ -123,6 +125,20 @@ public static class MutatorActivation
         foreach (MutatorBase mut in Mutators.All)
             if (mut.Added)
                 s = mut.BuildMutatorsPrettyString(s);
+        return s;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_CALLHOOK(LogDeath_AppendItemCodes, player, s)</c> (server/damage.qc:95, inside
+    /// <c>AppendItemcodes</c>): run the LogDeath item-code hook chain — each active mutator appends its
+    /// per-player death-log item code(s) (powerups "S"/"I", ctf "F", …) to the accumulator. Returns the
+    /// full string. Only added mutators contribute (mirrors the QC hook firing only for subscribed handlers).
+    /// </summary>
+    public static string LogDeathAppendItemCodes(Entity player, string s)
+    {
+        foreach (MutatorBase mut in Mutators.All)
+            if (mut.Added)
+                s = mut.LogDeathAppendItemCodes(player, s);
         return s;
     }
 

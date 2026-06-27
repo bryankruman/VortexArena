@@ -337,10 +337,12 @@ public sealed class OnslaughtControlPoint
 
     /// <summary>
     /// QC ons_ControlPoint_Setup with the control point's map <c>.targetname</c> (<paramref name="name"/>) so an
-    /// <c>onslaught_link</c> can reference it: same as <see cref="SpawnControlPoint(int,Vector3)"/> but the graph
-    /// node is name-indexed (<see cref="Onslaught.NodeByName"/>) for deferred link resolution.
+    /// <c>onslaught_link</c> can reference it, and its map <c>.target</c> (<paramref name="target"/>) fired on
+    /// capture (QC <c>SUB_UseTargets</c> in ons_ControlPoint_Icon_BuildThink): same as
+    /// <see cref="SpawnControlPoint(int,Vector3)"/> but the graph node is name-indexed
+    /// (<see cref="Onslaught.NodeByName"/>) for deferred link resolution.
     /// </summary>
-    public Entity? SpawnControlPoint(int controlPointId, Vector3 origin, string? name)
+    public Entity? SpawnControlPoint(int controlPointId, Vector3 origin, string? name, string? target = null)
     {
         if (_ons.ControlPointNode(controlPointId) is null)
             _ons.AddControlPoint(controlPointId, name);
@@ -350,10 +352,21 @@ public sealed class OnslaughtControlPoint
         if (e is not null)
         {
             e.GtPointId = controlPointId;
+            // QC ons_ControlPoint_Icon_BuildThink (sv_onslaught.qc:605): SUB_UseTargets(this.owner, …) fires the
+            // captured CP's map .target — a server-side map-logic hook (e.g. a captured point opens a door). Carry
+            // the map .target onto the CP entity so IconBuildThink can fire it on completion.
+            e.Target = target ?? "";
             e.Solid = Solid.BBox; // QC SOLID_BBOX (the pad), the touch trigger volume is the bbox here
             // QC ons_ControlPoint_Setup (sv_onslaught.qc:787): ons_CaptureShield_Spawn(this, MDL_ONS_CP_SHIELD) —
             // the spinning additive push-shield around the control point.
             SpawnCaptureShield(e, "models/onslaught/controlpoint_shield.md3");
+
+            // QC ons_ControlPoint_Setup (sv_onslaught.qc:777): SUB_UseTargets(this, this, NULL) — fire the CP's
+            // map .target at spawn "to reset the structures, playerspawns etc." (a neutral CP unteams its linked
+            // spawnpoints on map load). The node starts neutral/unlinked so WasLinked stays false (no double-fire
+            // on the first IconThink link change).
+            if (e.Target.Length > 0)
+                MapMover.UseTargets(e, e, null);
         }
         return e;
     }
@@ -474,8 +487,15 @@ public sealed class OnslaughtControlPoint
                 SoundSystem.PlayOn(self, Sounds.ByName("ONS_CONTROLPOINT_BUILT"));
 
             // QC: cp.iscaptured = true; capture credit to ons_toucher (SCORE +10 + ONS_CAPS); onslaught_updatelinks.
-            Player? toucher = ControlPointBuilder(cpId);
+            Entity? cpEnt = ControlPointEntity(cpId);
+            Player? toucher = cpEnt?.GtCapturer as Player;
             _ons.CaptureControlPoint(cpId, self.GtHomeTeam, toucher);
+
+            // QC ons_ControlPoint_Icon_BuildThink (sv_onslaught.qc:605): SUB_UseTargets(this.owner, this, NULL) —
+            // fire the captured control point's map .target (server-side map logic, e.g. open a gate). The icon
+            // is the trigger; the captured CP entity is the activator.
+            if (cpEnt is not null && cpEnt.Target.Length > 0)
+                MapMover.UseTargets(cpEnt, self, null);
 
             // QC ons_ControlPoint_Icon_BuildThink (sv_onslaught.qc:584-600): the capture notification. The port's
             // control point carries no map .message (CP name), so emit the NONAME variants (faithful when message=="").
@@ -550,6 +570,24 @@ public sealed class OnslaughtControlPoint
             self.GtObjHealth += self.GtBuildRate;
             if (self.GtObjHealth > self.GtObjMaxHealth)
                 self.GtObjHealth = self.GtObjMaxHealth;
+        }
+
+        // QC ons_ControlPoint_Icon_Think (sv_onslaught.qc:527-540): when the point's powered (.islinked) state
+        // flips, re-fire its map .target (SUB_UseTargets) so linked spawnpoints re-team — with the CP's team
+        // temporarily zeroed while it's freshly UN-linked (a cut-off point unteams its spawnpoints). Fires once
+        // per flip via the node's WasLinked latch.
+        if (node is not null && node.Linked != node.WasLinked)
+        {
+            Entity? cpEnt = ControlPointEntity(cpId);
+            if (cpEnt is not null && cpEnt.Target.Length > 0)
+            {
+                float t = cpEnt.Team;
+                if (!node.Linked)
+                    cpEnt.Team = Teams.None; // QC: if(!islinked) this.owner.team = 0
+                MapMover.UseTargets(cpEnt, self, null);
+                cpEnt.Team = t;              // QC: this.owner.team = t
+            }
+            node.WasLinked = node.Linked;
         }
 
         // QC ons_ControlPoint_Icon_Think damaged-fx (sv_onslaught.qc:542-551): the more damaged the icon, the
@@ -679,6 +717,12 @@ public sealed class OnslaughtControlPoint
                 node.Linked = false;
             }
             _ons.UpdateLinks();
+
+            // QC ons_ControlPoint_Icon_Damage (sv_onslaught.qc:447): SUB_UseTargets(this.owner, this, NULL) —
+            // fire the reverted control point's map .target (server-side map logic) when the icon is destroyed.
+            Entity? cpEnt = ControlPointEntity(cpId);
+            if (cpEnt is not null && cpEnt.Target.Length > 0)
+                MapMover.UseTargets(cpEnt, self, null);
 
             // delete(this): retire the icon entity.
             self.Think = null;
@@ -879,14 +923,16 @@ public sealed class OnslaughtControlPoint
     }
 
     /// <summary>The player who started the build on a control point (QC cp.ons_toucher), or null.</summary>
-    private Player? ControlPointBuilder(int cpId)
+    private Player? ControlPointBuilder(int cpId) => ControlPointEntity(cpId)?.GtCapturer as Player;
+
+    /// <summary>The control-point world entity (QC the icon's <c>this.owner</c>) for a given id, or null.</summary>
+    private Entity? ControlPointEntity(int cpId)
     {
         if (Api.Services is null)
             return null;
-        // The builder was stashed on the control-point world entity's GtCapturer; find it by id.
         foreach (Entity e in Api.Entities.FindByClass("onslaught_controlpoint"))
             if (e.GtPointId == cpId)
-                return e.GtCapturer as Player;
+                return e;
         return null;
     }
 

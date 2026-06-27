@@ -324,6 +324,14 @@ public sealed class Scores
     /// </summary>
     public Func<Player, NotificationChoiceState?>? ChoiceStateProvider { get; set; }
 
+    /// <summary>
+    /// QC <c>GameLogEcho</c> seam for the kill event-log line — the host wires this to <c>GameLog.Echo</c>
+    /// (gated on <c>sv_eventlog</c> at the call site, the QC pattern). When set, <see cref="Obituary"/> emits
+    /// the <c>:kill:&lt;mode&gt;:&lt;killer&gt;:&lt;killed&gt;:type=&lt;deathtype&gt;:items=…</c> line (the port's
+    /// <c>LogDeath</c>, server/damage.qc:100). Null (a standalone test / unwired host) → no kill log emitted.
+    /// </summary>
+    public Action<string>? LogDeath { get; set; }
+
     private HookHandler<DeathEvent>? _deathHandler;
 
     /// <summary>
@@ -554,6 +562,20 @@ public sealed class Scores
             RecordWeaponKill(attacker, victim, deathType);
         }
 
+        // QC LogDeath (server/damage.qc:303/315/329/468): the structured :kill: event-log line, emitted from
+        // INSIDE Obituary for each scoring branch. Mode mirrors QC: self-death -> "suicide", world/trap (no
+        // attacker) -> "accident", teamkill -> "tk", enemy frag -> "frag".
+        if (LogDeath is not null)
+        {
+            string mode = ReferenceEquals(attacker, victim) ? "suicide"
+                        : attacker is null ? "accident"
+                        : teamKill ? "tk"
+                        : "frag";
+            // QC LogDeath(mode, deathtype, killer, killed): killer = attacker (== targ for suicide/accident).
+            Player killer = attacker ?? victim;
+            EmitLogDeath(mode, deathType, killer, victim);
+        }
+
         // QC Obituary's notification + sound emission (server/damage.qc:268-477): kill feed, frag/typefrag/
         // teamkill centerprints, the killstreak announcer, and first blood. Runs AFTER the scoring above so the
         // attacker's KillStreak reflects this kill (the 3rd kill announces KILLSTREAK_03). T40.
@@ -566,6 +588,51 @@ public sealed class Scores
             vrow.KillStreak = 0;
             vrow.MultiKill = 0;
         }
+    }
+
+    /// <summary>
+    /// Port of QC <c>LogDeath</c> (server/damage.qc:100): build the colon-delimited <c>:kill:</c> event-log
+    /// line and hand it to the <see cref="LogDeath"/> sink. Format (QC):
+    /// <c>:kill:&lt;mode&gt;:&lt;killerid&gt;:&lt;killedid&gt;:type=&lt;deathtype&gt;:items=&lt;killer codes&gt;</c>,
+    /// plus <c>:victimitems=&lt;killed codes&gt;</c> when killer != killed.
+    /// </summary>
+    private void EmitLogDeath(string mode, string deathType, Player killer, Player killed)
+    {
+        // QC strcat(":kill:", mode, ":", playerid(killer), ":", playerid(killed), ":type=", Deathtype_Name, ":items=").
+        // The port's deathType IS the deathtype name (dual int/string deathtype), so it maps to Deathtype_Name directly.
+        string s = $":kill:{mode}:{killer.PlayerId}:{killed.PlayerId}:type={deathType}:items=";
+        s = AppendItemcodes(s, killer);
+        if (!ReferenceEquals(killed, killer))
+        {
+            s += ":victimitems=";
+            s = AppendItemcodes(s, killed);
+        }
+        LogDeath?.Invoke(s);
+    }
+
+    /// <summary>
+    /// Port of QC <c>AppendItemcodes</c> (server/damage.qc:81): append a player's death-log item codes — the
+    /// per-slot held weapon id (falling back to the previous weapon when none is current; slot 0 always emits
+    /// even when 0), a trailing "T" when chatting (typing), then the <c>LogDeath_AppendItemCodes</c> mutator
+    /// chain (powerups "S"/"I", etc.).
+    /// </summary>
+    private static string AppendItemcodes(string s, Player player)
+    {
+        for (int slot = 0; slot < MutatorConstants.MaxWeaponSlots; ++slot)
+        {
+            var st = player.WeaponState(new WeaponSlot(slot));
+            int w = st.CurrentWeaponId;
+            if (w <= 0)
+                w = st.PrevWeaponId; // QC: previous weapon (.cnt)
+            if (w > 0 || slot == 0)
+                s += (w > 0 ? w : 0).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        // QC: if(PHYS_INPUT_BUTTON_CHAT(player)) s = strcat(s, "T");
+        if (player.ButtonChat)
+            s += "T";
+        // QC: MUTATOR_CALLHOOK(LogDeath_AppendItemCodes, player, s) → S/I (powerups), F (ctf), …
+        s = MutatorActivation.LogDeathAppendItemCodes(player, s);
+        return s;
     }
 
     /// <summary>
