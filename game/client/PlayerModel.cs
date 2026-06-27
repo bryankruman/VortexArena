@@ -51,6 +51,17 @@ public partial class PlayerModel : Node3D
     private int _frameTick;          // running Pose-call counter, parity-matched against _farPhase
     private static int _farPhaseSeq; // running counter to spread the phase across models
 
+    // QW1: a child Node3D that tracks the resolved weapon bone ("tag_weapon"), so a remote skeletal player's
+    // held weapon attaches to the HAND bone, not the body root. Parented under the Skeleton3D so its transform
+    // is in the same space as the posed bones (worldGodot[]); PushBones sets its local transform from the
+    // resolved BoneWeapon. Null when the weapon bone is unresolved (the caller falls back to old behavior).
+    private Node3D? _tagWeapon;
+    private int _boneWeaponIndex; // 0-based index into the Skeleton3D bones (BoneWeapon - 1); -1 = unresolved
+
+    /// <summary>The marker tracking the resolved weapon bone, or null when the bone is unresolved / not skeletal.
+    /// Used by <c>ClientWorld.GetAttachmentMarker</c> to attach a remote player's weapon to the hand bone.</summary>
+    public Node3D? TagWeaponMarker => _tagWeapon;
+
     /// <summary>True once the skeleton + poser are wired (a non-skeletal IQM stays a static prop).</summary>
     public bool Active { get; private set; }
 
@@ -125,6 +136,22 @@ public partial class PlayerModel : Node3D
         _player = new PlayerSkeleton(_mgr, model, cfg);
 
         BuildClipTable(iqm, groups);
+
+        // QW1: wire the weapon-tag marker once the poser knows the resolved weapon bone. BoneWeapon is a 1-based
+        // bonenum (0 = unresolved); the Skeleton3D bones are 0-based in the SAME order, so the index is
+        // BoneWeapon - 1. Parent the marker under the Skeleton3D so PushBones can drive its LOCAL transform from
+        // worldGodot[boneIdx] (already in the skeleton's pose space). Leave it null when the bone is unresolved so
+        // GetAttachmentMarker falls back to the old entity-root behavior.
+        _boneWeaponIndex = _player.BoneWeapon - 1;
+        if (_boneWeaponIndex >= 0 && _boneWeaponIndex < _skeleton.GetBoneCount())
+        {
+            _tagWeapon = new Node3D { Name = "tag_weapon" };
+            _skeleton.AddChild(_tagWeapon);
+        }
+        else
+        {
+            _boneWeaponIndex = -1;
+        }
 
         Active = true;
 
@@ -315,6 +342,13 @@ public partial class PlayerModel : Node3D
                 _boneScaleNonUnit[i] = false;
             }
         }
+
+        // QW1: drive the weapon-tag marker from the resolved weapon bone. worldGodot[boneIdx] is the bone's
+        // transform in the Skeleton3D's pose space (already conjugated Quake→Godot exactly like every body bone
+        // above); the marker is a child of the Skeleton3D, so that transform IS its local transform. A remote
+        // player's held weapon (reparented to this marker by ViewEntityRenderer) then tracks the hand bone.
+        if (_tagWeapon is not null && (uint)_boneWeaponIndex < (uint)n)
+            _tagWeapon.Transform = worldGodot[_boneWeaponIndex];
     }
 
     /// <summary>True when a bone scale is unit within a small epsilon (so the scale interop can be skipped).</summary>

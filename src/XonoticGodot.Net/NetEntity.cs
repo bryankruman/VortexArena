@@ -94,6 +94,19 @@ public enum EntityField : uint
     // Invisibility powerup, and any death/spawn fade. Sent as a byte (0..255 = 0..1) only when it changes; the
     // default (fully opaque) never sets the bit, so an opaque entity costs nothing on the wire.
     Alpha = 1 << 17,
+
+    // [W14a-anim] the QC csqcmodel upper-body ACTION channel (the animdecide getupperanim result + its start time —
+    // SHOOT/MELEE/PAIN/DRAW/TAUNT/DEAD). Bit 18, verified free. Carries a one-byte action id + the action's start
+    // time (a raw float, the same client-observed-time intended divergence as csqcmodel death_time). The producer
+    // (server animdecide, LI1) is a later wave; this wave RESERVES the wire so Wave-15 is unblocked — the fields stay
+    // at their defaults (UpperAction 0 = idle), so the bit stays clear and costs nothing until a producer sets them.
+    AnimAction = 1 << 18,
+
+    // [W14a-wepent] the QC wepent exterior-weapon block (common/wepent.qh: m_switchweapon / m_switchingweapon /
+    // .state raise/drop / viewmodel skin / weapon alpha / gunalign). Bit 19, verified free. Lets the client render a
+    // remote player's weapon switch (raise/lower), exterior-weapon transparency (Cloaked/Running-Guns gun fade), the
+    // viewmodel skin, and the gun-align side. Sent only when any wepent field differs from the baseline.
+    Wepent = 1 << 19,
 }
 
 /// <summary>
@@ -156,8 +169,37 @@ public struct NetEntityState
     /// </summary>
     public byte[]? StatusEffects;
 
+    // [W14a-anim] QC csqcmodel upper-body action overlay (the animdecide getupperanim result). RESERVED this wave —
+    // the server producer (LI1) lands later; defaults (UpperAction 0 = idle) keep the EntityField.AnimAction bit clear.
+    /// <summary>QC animdecide upper-body action id (0 = idle/no-overlay; SHOOT/MELEE/PAIN1/PAIN2/DRAW/TAUNT/DEAD).
+    /// The client plays this as a torso overlay on top of the velocity-derived legs (LI3).</summary>
+    public byte UpperAction;
+    /// <summary>QC the action's start time (server time the upper-body action began) — a raw float, the same
+    /// client-observed-time intended divergence as the csqcmodel death_time channel; the client derives the action's
+    /// play phase as <c>now − AnimActionTime</c>.</summary>
+    public float AnimActionTime;
+
+    // [W14a-wepent] QC wepent exterior-weapon block (common/wepent.qh) — the remote third-person held weapon's
+    // switch/transparency/skin state. Defaults (-1 switch ids, 0 phase/skin/alpha/align) keep the EntityField.Wepent
+    // bit clear so a player not mid-switch with an opaque opaque-skin gun costs nothing on the wire.
+    /// <summary>QC <c>.m_switchweapon</c> — the weapon RegistryId the slot is switching TO (-1 = none/keep).</summary>
+    public int SwitchWeapon;
+    /// <summary>QC <c>.m_switchingweapon</c> — the in-transition weapon being switched-to mid raise/drop (-1 = none).</summary>
+    public int SwitchingWeapon;
+    /// <summary>QC the slot's <c>.state</c> compressed to the render-relevant phase: 0 = ready/idle, 1 = WS_RAISE
+    /// (raising in), 2 = WS_DROP (lowering out). Drives the remote weapon raise/lower tween (QW5).</summary>
+    public byte WepPhase;
+    /// <summary>QC the exterior weapon's <c>.skin</c> (viewmodel skin variant) applied to the built held model.</summary>
+    public byte ViewmodelSkin;
+    /// <summary>QC the exterior weapon's <c>.alpha</c>, quantized exactly like the body <see cref="Alpha"/> (0 = opaque
+    /// and not networked; 1..254 = alpha/255; 255 = the QC <c>-1</c> hidden sentinel — Running Guns hides the player
+    /// but keeps the gun visible, so the gun's alpha is networked independently).</summary>
+    public byte WepAlpha;
+    /// <summary>QC the gun-align side (cl_gunalign / w_gunalign) — which hand/side the exterior weapon sits on.</summary>
+    public byte GunAlign;
+
     /// <summary>A fresh state carrying just an id (the implicit baseline for a never-seen entity — a "spawn").</summary>
-    public static NetEntityState Empty(int entNum) => new() { EntNum = entNum };
+    public static NetEntityState Empty(int entNum) => new() { EntNum = entNum, SwitchWeapon = -1, SwitchingWeapon = -1 };
 
     /// <summary>The set of fields that differ between <paramref name="baseline"/> and <paramref name="current"/> (the SendFlags).</summary>
     public static EntityField Diff(in NetEntityState baseline, in NetEntityState current)
@@ -186,6 +228,18 @@ public struct NetEntityState
         // The status-effect blob is a byte[]; compare by CONTENT (not reference) so the full bitmap is re-sent only
         // when it actually changes. null and empty both mean "no effects" and compare equal.
         if (!StatusBlobEqual(baseline.StatusEffects, current.StatusEffects)) m |= EntityField.StatusEffects;
+        // [W14a-anim] the upper-body action overlay — re-send when the action id OR its start time changes (a new
+        // SHOOT/PAIN/… latch, or a re-latch of the same action). Both default 0 → the bit stays clear when idle.
+        if (baseline.UpperAction != current.UpperAction
+            || baseline.AnimActionTime != current.AnimActionTime) m |= EntityField.AnimAction;
+        // [W14a-wepent] the exterior-weapon block — re-send when ANY wepent field differs (a switch start/finish, a
+        // raise/drop phase change, the gun alpha/skin/align changing). All-default (-1/-1/0/0/0/0) keeps it clear.
+        if (baseline.SwitchWeapon != current.SwitchWeapon
+            || baseline.SwitchingWeapon != current.SwitchingWeapon
+            || baseline.WepPhase != current.WepPhase
+            || baseline.ViewmodelSkin != current.ViewmodelSkin
+            || baseline.WepAlpha != current.WepAlpha
+            || baseline.GunAlign != current.GunAlign) m |= EntityField.Wepent;
         return m;
     }
 
@@ -249,6 +303,24 @@ public static class EntityStateCodec
             w.WriteUShort(n);
             if (n > 0) w.WriteBytes(blob);
         }
+        // [W14a-anim] upper-body action: a byte action id + the raw float start time (the death_time-class divergence).
+        if ((mask & EntityField.AnimAction) != 0)
+        {
+            w.WriteByte(current.UpperAction);
+            w.WriteFloat(current.AnimActionTime);
+        }
+        // [W14a-wepent] exterior-weapon block: switch/switching as signed shorts (-1 = none), then the four bytes
+        // phase/skin/alpha/align. (Porto held-angle + tuba note are RESERVED — deferred to a later wave; when added
+        // they MUST be appended AFTER GunAlign and read in the same order, or every later field desyncs.)
+        if ((mask & EntityField.Wepent) != 0)
+        {
+            w.WriteShort(current.SwitchWeapon);
+            w.WriteShort(current.SwitchingWeapon);
+            w.WriteByte(current.WepPhase);
+            w.WriteByte(current.ViewmodelSkin);
+            w.WriteByte(current.WepAlpha); // 0 = opaque; 1..254 = alpha/255; 255 = hidden (-1)
+            w.WriteByte(current.GunAlign);
+        }
         return mask;
     }
 
@@ -287,6 +359,22 @@ public static class EntityStateCodec
             // n == 0 (effects cleared) decodes to an empty array so the client distinguishes "field present, now
             // empty" (clear the list) from "field absent" (keep the baseline's blob).
             s.StatusEffects = n > 0 ? r.ReadBytes(n).ToArray() : System.Array.Empty<byte>();
+        }
+        // [W14a-anim] upper-body action (byte id + float start time).
+        if ((mask & EntityField.AnimAction) != 0)
+        {
+            s.UpperAction = (byte)r.ReadByte();
+            s.AnimActionTime = r.ReadFloat();
+        }
+        // [W14a-wepent] exterior-weapon block — SAME order as WriteDelta (switch/switching shorts, then the four bytes).
+        if ((mask & EntityField.Wepent) != 0)
+        {
+            s.SwitchWeapon = r.ReadShort();
+            s.SwitchingWeapon = r.ReadShort();
+            s.WepPhase = (byte)r.ReadByte();
+            s.ViewmodelSkin = (byte)r.ReadByte();
+            s.WepAlpha = (byte)r.ReadByte();
+            s.GunAlign = (byte)r.ReadByte();
         }
         return s;
     }

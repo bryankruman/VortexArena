@@ -220,4 +220,12 @@ public enum NetControl : byte
     /// when <c>sv_itemstime==2</c>), so the ItemsTimePanel respawn countdowns work for a pure remote client.
     /// Decoded into <see cref="ClientNet"/>'s item-time fields; unknown to old clients.</summary>
     ItemsTime = 20,
+
+    // ---- client init constants (the C# port of QC's ENT_CLIENT_INIT / ClientInit_misc bundle) ----
+    /// <summary>Server → client (reliable): the one-shot ClientInit_misc constant bundle (QC server/client.qc:907) —
+    /// the per-server gameplay constants the client needs at session init: the hook + arc shot origins, the fog
+    /// string, armor blockpercent, damagepush speedfactor, serverflags, g_trueaim_minrange, and the nexball meter
+    /// period. Sent once right after <see cref="HandshakeAccept"/> (the welcome/accept handshake). Decoded into
+    /// <see cref="ClientNet"/>'s client-init constant stores; unknown to old clients (dispatch falls through).</summary>
+    ClientInit = 21,
 }

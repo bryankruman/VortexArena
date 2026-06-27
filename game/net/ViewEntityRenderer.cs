@@ -29,11 +29,23 @@ public sealed class ViewEntityRenderer
     /// <summary>The hand offset (Godot local space, relative to the player's posed frame) the weapon sits at.</summary>
     public Vector3 HandOffset { get; set; } = new(6f, 36f, -18f);
 
+    // [W14a QW5] Weapon-switch raise/lower timing — the third-person counterpart of ViewModel.RaiseTime /
+    // HolsterTime (view.qc viewmodel_draw raise/drop). On a switch the held world weapon dips down out of the hand
+    // (WS_DROP) and the new one rises back into place (WS_RAISE) instead of the model popping in/out.
+    private const float SwitchRaiseTime = 0.15f;   // seconds to raise the new gun into place (WS_RAISE)
+    private const float SwitchDropTime = 0.10f;    // seconds to lower the gun out (WS_DROP)
+    private const float SwitchLowerDistance = 22f; // Godot units the gun dips below the hand when fully lowered
+
     private sealed class Held
     {
         public Node3D Holder = null!;  // posed to the player frame each Update
+        public Node3D? Model;          // the built weapon model child (offset by HandOffset + the switch dip)
         public int WeaponId = int.MinValue;
         public float LastAlpha = float.NaN; // last applied render alpha (QC exteriorweaponentity.alpha)
+
+        // [W14a QW5] Remote weapon-switch render state (decoded from the wepent block onto the proxy Entity).
+        public byte SwitchPhase;       // last seen WepPhase (0 ready, 1 = WS_RAISE, 2 = WS_DROP)
+        public float SwitchOffset;     // [0,1] raise/lower lerp: 0 = fully raised (rest), 1 = fully lowered
     }
 
     private readonly Dictionary<int, Held> _held = new();
@@ -72,14 +84,24 @@ public sealed class ViewEntityRenderer
             h.Holder.Rotation = new Vector3(0f, -Mathf.DegToRad(e.Angles.Y), 0f);
         }
 
+        // [W14a QW5] Pick which model to show during a switch, faithful to view.qc viewmodel_draw: WS_DROP
+        // (phase 2) lowers the OLD weapon out of the hand, then at the bottom the model swaps and WS_RAISE
+        // (phase 1) raises the NEW weapon (.m_switchingweapon) into place. Outside a transition (phase 0) show the
+        // settled active weapon. Standalone ViewModel entities ignore the wepent block (model index only).
+        bool playerHeld = s.Kind == NetEntityKind.Player;
+        int displayWeaponId = (playerHeld && e.WepPhase == 1 && e.SwitchingWeapon >= 0)
+            ? e.SwitchingWeapon
+            : weaponId;
+
         // Rebuild the mesh only when the weapon changed (CSQCMODEL: a weapon swap respawns the wepent).
-        int key = s.Kind == NetEntityKind.ViewModel ? -1 - s.ModelIndex : weaponId;
+        int key = s.Kind == NetEntityKind.ViewModel ? -1 - s.ModelIndex : displayWeaponId;
         if (h.WeaponId != key)
         {
             h.WeaponId = key;
             FreeChildren(h.Holder);
-            Node3D? model = WeaponModelFactory?.Invoke(weaponId);
+            Node3D? model = WeaponModelFactory?.Invoke(s.Kind == NetEntityKind.ViewModel ? weaponId : displayWeaponId);
             model ??= Placeholder();
+            h.Model = model;
             if (GodotObject.IsInstanceValid(h.Holder))
             {
                 model.Position = HandOffset;
@@ -87,6 +109,11 @@ public sealed class ViewEntityRenderer
             }
             h.LastAlpha = float.NaN; // fresh meshes start opaque — force a re-apply of the current alpha below
         }
+
+        // [W14a QW5] Drive the raise/lower dip off the networked WepPhase (1 = WS_RAISE, 2 = WS_DROP); phase 0
+        // (ready) settles the gun back to rest. The offset advances per frame in Process so it animates smoothly
+        // regardless of snapshot cadence.
+        h.SwitchPhase = playerHeld ? e.WepPhase : (byte)0;
 
         // QC CL_ExteriorWeaponentity_Think (server/weapons/weaponsystem.qc:170-175): the exterior weapon entity
         // does NOT simply copy the owner's alpha — it resolves through the three-way default rule:
@@ -98,7 +125,13 @@ public sealed class ViewEntityRenderer
         // player. Copying owner.alpha unconditionally would hide the gun too, defeating the mutator. Cloaked's
         // 0.25 also routes through branch 1 (default_weapon_alpha == default_player_alpha), so the gun fades with
         // the player; a per-player Invisibility powerup fade routes through branch 2 (owner != default → match).
-        float weaponAlpha = ResolveExteriorWeaponAlpha(e.Alpha);
+        // [W14a QW5] Prefer the dedicated exterior-weapon alpha (QC wepent .alpha, networked independently of the
+        // body so Running Guns can hide the body but keep the gun visible). The server sends 1 (the opaque
+        // default sentinel) when it has no explicit exterior alpha; in that case fall back to the legacy
+        // owner-alpha resolution below so existing Cloaked/Invisibility behaviour is unchanged.
+        float weaponAlpha = playerHeld && e.WepAlpha != 1f
+            ? e.WepAlpha
+            : ResolveExteriorWeaponAlpha(e.Alpha);
         if (GodotObject.IsInstanceValid(h.Holder) && weaponAlpha != h.LastAlpha)
         {
             h.LastAlpha = weaponAlpha;
@@ -152,8 +185,37 @@ public sealed class ViewEntityRenderer
             h.Holder.QueueFree();
     }
 
-    /// <summary>Per-frame hook (no-op today — the holder is re-posed in <see cref="Update"/>).</summary>
-    public void Process() { }
+    /// <summary>
+    /// [W14a QW5] Per-frame hook: advance each held weapon's switch raise/lower dip toward the target set by its
+    /// networked <see cref="Held.SwitchPhase"/> and re-place the model. Phase 2 (WS_DROP) lowers the gun out of
+    /// the hand; phase 1 (WS_RAISE) and phase 0 (ready) raise it back into place. Uses the engine frame delta so
+    /// the tween is smooth regardless of snapshot cadence (the holder pose itself is refreshed in Update).
+    /// </summary>
+    public void Process()
+    {
+        float dt = (float)(GodotObject.IsInstanceValid(_render) ? _render.GetProcessDeltaTime() : 0.0);
+        foreach (Held h in _held.Values)
+            AdvanceSwitch(h, dt);
+    }
+
+    /// <summary>
+    /// Move a held weapon's dip toward its phase target (down on WS_DROP, up otherwise) and apply it as a Y-offset
+    /// below the hand. The drop and raise use distinct rates (Base switchdelay_drop / switchdelay_raise).
+    /// </summary>
+    private void AdvanceSwitch(Held h, float dt)
+    {
+        float target = h.SwitchPhase == 2 ? 1f : 0f;            // WS_DROP lowers; ready/raise settle to rest
+        float rate = h.SwitchPhase == 2 ? SwitchDropTime : SwitchRaiseTime;
+        h.SwitchOffset = Mathf.MoveToward(h.SwitchOffset, target, dt / Mathf.Max(rate, 1e-3f));
+
+        if (h.Model is null || !GodotObject.IsInstanceValid(h.Model))
+            return;
+        // The model rests at HandOffset; the dip lowers it (Godot −Y) and tucks it slightly back toward the body
+        // (−Z, the player frame's backward) so it reads as stowed rather than sinking through the hand. A zero dip
+        // (SwitchOffset 0) leaves the gun exactly at the hand offset.
+        float dip = h.SwitchOffset * SwitchLowerDistance;
+        h.Model.Position = HandOffset + new Vector3(0f, -dip, -dip * 0.25f);
+    }
 
     /// <summary>Free every weapon view-entity (client teardown).</summary>
     public void Clear()

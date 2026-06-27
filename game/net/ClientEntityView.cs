@@ -136,6 +136,21 @@ public sealed partial class ClientEntityView : Node
         e.Health = s.Health;
         e.Team = s.Colormap;
         e.ActiveWeaponId = s.Weapon;
+        // [W14a-anim] decode the upper-body action overlay (QC csqcmodel animdecide getupperanim) onto the proxy so a
+        // future torso-overlay render (LI3) plays the server-decided SHOOT/PAIN/DRAW/TAUNT/DEAD action over the
+        // velocity-derived legs. RESERVED — no server producer yet, so these are 0/idle until LI1 lands.
+        e.UpperAction = s.UpperAction;
+        e.AnimActionTime = s.AnimActionTime;
+        // [W14a-wepent] decode the exterior-weapon block (QC common/wepent.qh) onto the proxy: the remote third-person
+        // held weapon's switch target / in-transition weapon / raise-drop phase / skin / align, plus the gun's own
+        // alpha (mapped exactly like the body Alpha: 0 = opaque, 255 = hidden -1, else byte/255). Drives the remote
+        // weapon switch raise/lower tween + exterior-weapon transparency (QW5; ViewEntityRenderer reads them).
+        e.SwitchWeapon = s.SwitchWeapon;
+        e.SwitchingWeapon = s.SwitchingWeapon;
+        e.WepPhase = s.WepPhase;
+        e.ViewmodelSkin = s.ViewmodelSkin;
+        e.GunAlign = s.GunAlign;
+        e.WepAlpha = s.WepAlpha switch { 0 => 1f, 255 => -1f, _ => s.WepAlpha / 255f };
         // QC ITS_EXPIRING (item snapshot flag): drives ClientWorld's loot despawn animation. Refreshed every
         // frame so it tracks the networked status (only ever set by the server on an expiring loot item).
         e.ItemExpiringFx = (s.Flags & NetEntityFlags.ItemExpiring) != 0;

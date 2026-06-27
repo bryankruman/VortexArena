@@ -180,6 +180,11 @@ public sealed class GameWorld
     /// </summary>
     public WarmupController Warmup { get; } = new();
 
+    /// <summary>QC <c>randomseed</c> (server/world.qc): the networked deterministic-RNG seed, re-rolled every 5s and
+    /// broadcast on the match-state channel so a predicting client can reproduce the server's random stream. Ticked
+    /// from <see cref="OnStartFrame"/>; the wire ride lives in ServerNet.SendMatchState. [W14a]</summary>
+    public RandomSeed RandomSeed { get; } = new();
+
     /// <summary>The in-match call-vote system (QC server/command/vote.qc). Wired to <see cref="Commands"/>.</summary>
     public VoteController Voting { get; } = new();
 
@@ -1760,6 +1765,10 @@ public sealed class GameWorld
         // but only when the warmup/countdown flow is actually driving (else a host-set GameStartTime stands).
         if (Warmup.IsStarted)
             GameStartTime = Warmup.GameStartTime;
+
+        // QC RandomSeed_Think (server/world.qc:601): re-roll the networked deterministic-RNG seed every 5s. The
+        // changed value rides the next SendMatchState broadcast (ServerNet). [W14a]
+        RandomSeed.Tick(Time);
 
         // QC StartFrame: the warmup limit check that ends warmup and restarts the match.
         using (Prof.Sample("start.warmup"))

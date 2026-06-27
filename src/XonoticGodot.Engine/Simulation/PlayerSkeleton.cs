@@ -77,6 +77,10 @@ public sealed class PlayerSkeleton
 
     public int Handle => _skel;
 
+    /// <summary>The resolved weapon attachment bone (1-based bonenum; 0 = unresolved). The renderer hangs a
+    /// remote player's held weapon off this bone (QC <c>tag_weapon</c>).</summary>
+    public int BoneWeapon => _cfg.BoneWeapon;
+
     /// <summary>QC <c>skeleton_from_frames</c> skeleton creation + <c>skeleton_markbones</c>.</summary>
     private void EnsureCreated()
     {

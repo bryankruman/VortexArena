@@ -529,6 +529,7 @@ public sealed class ClientNet : IDisposable
             case NetControl.MatchState: HandleMatchState(ref r); break;
             case NetControl.Waypoints: HandleWaypoints(ref r); break;
             case NetControl.ItemsTime: HandleItemsTime(ref r); break;
+            case NetControl.ClientInit: HandleClientInit(ref r); break;
             default: break;
         }
     }
@@ -576,6 +577,17 @@ public sealed class ClientNet : IDisposable
     /// = sudden death. Drives the TIMER panel's persistent "Overtime #N" / "Sudden Death" subtext.</summary>
     public int MatchOvertimes { get; private set; }
 
+    /// <summary>[W14a] QC <c>randomseed.cnt</c> (server/world.qc): the server's networked deterministic-RNG seed
+    /// (0..65535), re-rolled every 5s and delivered on the match-state channel. The client reseeds
+    /// <see cref="RandomRng"/> from it so a future predicting effect can reproduce the server's random stream. There
+    /// is no client effect consuming it yet (the seam is shipped additive); 0 until the first match-state arrives.</summary>
+    public int RandomSeed { get; private set; }
+
+    /// <summary>[W14a] The client's per-instance deterministic RNG (QC psrandom), reseeded from the networked
+    /// <see cref="RandomSeed"/>. Per-instance (NOT the static <see cref="XonoticGodot.Common.Math.Prandom"/> default)
+    /// so on a listen server the client's draws never corrupt the server world's stream. RESERVED — no consumer yet.</summary>
+    public XonoticGodot.Common.Math.PrandomContext RandomRng { get; } = new();
+
     private void HandleMatchState(ref BitReader r)
     {
         float gameStart = r.ReadFloat();
@@ -585,6 +597,9 @@ public sealed class ClientNet : IDisposable
         bool intermission = r.ReadBool();
         string nextMap = r.ReadString();
         int overtimes = r.ReadLong();
+        // [W14a] QC randomseed.cnt — read in the SAME trailing position ServerNet.SendMatchState appended it (after
+        // overtimes). A truncated old-server packet leaves BadRead set; we guard below so a missing seed is harmless.
+        int randomSeed = r.ReadUShort();
         if (r.BadRead)
             return;
         MatchStartTime = gameStart;
@@ -594,7 +609,67 @@ public sealed class ClientNet : IDisposable
         MatchIntermission = intermission;
         NextMap = nextMap ?? "";
         MatchOvertimes = overtimes;
+        // [W14a] reseed the per-instance deterministic RNG only when the seed actually changes (every 5s server-side),
+        // so a steady ~1×/s match-state heartbeat doesn't keep resetting the stream mid-window.
+        if (randomSeed != RandomSeed)
+        {
+            RandomSeed = randomSeed;
+            RandomRng.Seed((uint)randomSeed);
+        }
         HasMatchState = true;
+    }
+
+    // ---- client init constants (S2C NetControl.ClientInit; QC ENT_CLIENT_INIT / ClientInit_misc) ----
+
+    /// <summary>[W14a-QW4] True once the one-shot <see cref="NetControl.ClientInit"/> constant bundle has arrived.</summary>
+    public bool HasClientInit { get; private set; }
+
+    /// <summary>QC <c>hook_shotorigin</c> — the grappling-hook muzzle offset (the port models a single offset, not the
+    /// Base per-cl_gunalign array; see ServerNet.SendClientInit). Used to position the hook reel/beam visual.</summary>
+    public NVec3 HookShotOrigin { get; private set; }
+
+    /// <summary>QC <c>autocvar_g_trueaim_minrange</c> — the min range below which true-aim crosshair correction is
+    /// skipped (the client crosshair true-aim trace reads it).</summary>
+    public float TrueAimMinRange { get; private set; }
+
+    /// <summary>QC <c>g_balance_damagepush_speedfactor</c> — the knockback velocity scale (decoded for the client-side
+    /// damage-push prediction; RESERVED until a client consumer reads it).</summary>
+    public float DamagePushSpeedFactor { get; private set; }
+
+    /// <summary>QC <c>g_balance_armor_blockpercent</c> (Base <c>armorblockpercent</c>) — the fraction of damage armor
+    /// absorbs; the client damage/HUD math reads it.</summary>
+    public float ArmorBlockPercent { get; private set; }
+
+    /// <summary>QC networked <c>serverflags</c> — the SERVERFLAG_* bitmap (fullbright / forbid-pickuptimer / teamplay).
+    /// The client gates fullbright player rendering + the HUD pickup timer off these bits.</summary>
+    public int ServerFlags { get; private set; }
+
+    /// <summary>QC <c>world.fog</c> (when <c>sv_foginterval</c>) — the server's fog string, or "" when none.</summary>
+    public string ServerFog { get; private set; } = "";
+
+    /// <summary>QC <c>g_nexball_meter_period</c> — the nexball powershot meter cycle period.</summary>
+    public float NexballMeterPeriod { get; private set; }
+
+    private void HandleClientInit(ref BitReader r)
+    {
+        // Same field order as ServerNet.SendClientInit.
+        NVec3 hookOrigin = r.ReadVector(NetPrecision.Float);
+        float trueAimMin = r.ReadFloat();
+        float damagePush = r.ReadFloat();
+        float armorBlock = r.ReadFloat();
+        int serverFlags = r.ReadLong();
+        string fog = r.ReadString();
+        float nexballMeter = r.ReadFloat();
+        if (r.BadRead)
+            return;
+        HookShotOrigin = hookOrigin;
+        TrueAimMinRange = trueAimMin;
+        DamagePushSpeedFactor = damagePush;
+        ArmorBlockPercent = armorBlock;
+        ServerFlags = serverFlags;
+        ServerFog = fog ?? "";
+        NexballMeterPeriod = nexballMeter;
+        HasClientInit = true;
     }
 
     // ---- waypoint sprites (S2C NetControl.Waypoints; QC the networked ENT_CLIENT_WAYPOINT entities) ----

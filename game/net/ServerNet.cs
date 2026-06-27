@@ -964,8 +964,12 @@ public sealed class ServerNet : IDisposable
         // Drives the TIMER panel's persistent overtime/sudden-death subtext (the one-shot center notifications are
         // sent separately by the overtime cascade).
         int overtimes = _world.OverTime.Overtimes;
+        // [W14a] QC randomseed: the networked deterministic-RNG seed (re-rolled every 5s). Rides this packet (the
+        // smallest diff that reaches every accepted peer); the changed value is part of the dedup key below so a
+        // re-roll forces an immediate re-send instead of waiting for the ~1×/s heartbeat.
+        int randomSeed = _world.RandomSeed.Current;
 
-        string key = $"{gameStart:F2}|{timeLimitSec:F1}|{(warmup ? 1 : 0)}|{warmupLimit:F1}|{(intermission ? 1 : 0)}|{nextMap}|{overtimes}";
+        string key = $"{gameStart:F2}|{timeLimitSec:F1}|{(warmup ? 1 : 0)}|{warmupLimit:F1}|{(intermission ? 1 : 0)}|{nextMap}|{overtimes}|{randomSeed}";
         if (key == _lastMatchStateKey && _world.Time < _nextMatchStateSend)
             return;
         _lastMatchStateKey = key;
@@ -980,10 +984,50 @@ public sealed class ServerNet : IDisposable
         _scratchWriter.WriteBool(intermission);
         _scratchWriter.WriteString(nextMap);
         _scratchWriter.WriteLong(overtimes); // 32-bit: OVERTIME_SUDDENDEATH (1<<24) exceeds the 24-bit range
+        // [W14a] QC randomseed.cnt (0..65535) — APPENDED at the END (an old client stops reading before this and is
+        // unaffected; ClientNet.HandleMatchState reads it in this same trailing position). Reserve a comment for any
+        // future trailing match-state field: it MUST go AFTER this and be read in the same order.
+        _scratchWriter.WriteUShort(randomSeed);
 
         foreach (PeerState st in _peers.Values)   // real network peers (matches BroadcastSnapshots; excludes bots)
             if (st.Accepted && st.Player is not null)
                 _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
+    }
+
+    /// <summary>
+    /// [W14a-QW4] QC <c>ClientInit_misc</c> (server/client.qc:907) — the one-shot per-server gameplay-constant bundle
+    /// sent once to a joining client right after <see cref="NetControl.HandshakeAccept"/> (the welcome/accept
+    /// handshake leg). Carries the constants a pure remote client needs at session init: the hook muzzle shot origin,
+    /// <c>g_trueaim_minrange</c>, <c>g_balance_damagepush_speedfactor</c>, <c>g_balance_armor_blockpercent</c>, the
+    /// networked <c>serverflags</c>, the map fog string, and <c>g_nexball_meter_period</c>. Field order mirrors
+    /// <see cref="ClientNet.HandleClientInit"/>.
+    ///
+    /// Port divergence vs Base: QC sends FOUR hook + four arc shot origins (one per cl_gunalign side) compressed via
+    /// compressShotOrigin; the port models the hook muzzle as a single offset (<c>Hook.HookShotOrigin</c>) and computes
+    /// the arc muzzle inline (no stored arc_shotorigin), so only the single hook origin is networked here as a raw
+    /// vector. The per-align arc array is RESERVED for a later wave if/when the port models it server-side.
+    /// </summary>
+    private void SendClientInit(int peerId)
+    {
+        var cvars = _world.Services.Cvars;
+        _scratchWriter.Reset();
+        _scratchWriter.WriteByte((byte)NetControl.ClientInit);
+        // QC hook_shotorigin[s] (a single port offset; see the divergence note above) — raw float vector.
+        _scratchWriter.WriteVector(XonoticGodot.Common.Gameplay.Hook.HookShotOrigin, NetPrecision.Float);
+        // QC autocvar_g_trueaim_minrange (WriteCoord) — the min range below which true-aim is skipped.
+        _scratchWriter.WriteFloat(cvars.GetFloat("g_trueaim_minrange"));
+        // QC this.cnt * 255 → g_balance_damagepush_speedfactor; this.count * 255 → g_balance_armor_blockpercent. The
+        // port sends them as raw floats (no /255 byte quantization) — a faithful value with more precision than Base.
+        _scratchWriter.WriteFloat(cvars.GetFloat("g_balance_damagepush_speedfactor"));
+        _scratchWriter.WriteFloat(cvars.GetFloat("g_balance_armor_blockpercent"));
+        // QC serverflags (the networked SERVERFLAG_* bitmap — fullbright/forbid-pickuptimer/teamplay).
+        _scratchWriter.WriteLong(XonoticGodot.Common.Gameplay.ServerFlags.Value);
+        // QC: if (autocvar_sv_foginterval && world.fog != "") WriteString(world.fog) else WriteString("").
+        string fog = cvars.GetFloat("sv_foginterval") != 0f ? cvars.GetString("sv_fog") : "";
+        _scratchWriter.WriteString(fog ?? "");
+        // QC g_nexball_meter_period (the nexball powershot meter cycle period).
+        _scratchWriter.WriteFloat(cvars.GetFloat("g_nexball_meter_period"));
+        _transport.Send(peerId, _scratchWriter.WrittenSpan, reliable: true);
     }
 
     /// <summary>Push the item respawn-time table to each peer — the C# port of QC's CSQC <c>itemstime</c> net
@@ -1255,6 +1299,12 @@ public sealed class ServerNet : IDisposable
         _scratchWriter.WriteFloat(1f / SimulationLoopTicRate);     // server tick RATE in Hz (1/dt) for client timing
         _scratchWriter.WriteString(_serverName);                   // server display name (for the client UI)
         _transport.Send(peerId, _scratchWriter.WrittenSpan, reliable: true);
+
+        // [W14a-QW4] QC ClientInit_misc (server/client.qc:907): right after the accept, send the one-shot per-server
+        // gameplay-constant bundle (the welcome/accept handshake leg) so a pure remote client has the constants the
+        // hook/arc/trueaim/damagepush/armor/fog paths read.
+        SendClientInit(peerId);
+
         GD.Print($"[ServerNet] peer {peerId} accepted as '{info.Player.NetName}' (netId {peerId}, id {st.IdentityFingerprint[..8]}).");
     }
 
@@ -1913,6 +1963,28 @@ public sealed class ServerNet : IDisposable
                 HitDamageDealtTotal = p.HitsoundDamageDealtTotal,
                 NadeTimer = p.NadeTimer,
                 ReviveProgress = p.ReviveProgress,
+                // [W14a-wepent] the exterior-weapon block (QC common/wepent.qh) populated from the live slot-0 weapon
+                // state machine — the remote third-person held weapon's switch/transparency/skin. UpperAction /
+                // AnimActionTime are intentionally left at their defaults (idle); the server animdecide producer (LI1)
+                // is a later wave, so the AnimAction wire stays RESERVED but unused this wave.
+                SwitchWeapon = p.WeaponState(new WeaponSlot(0)).SwitchWeaponId,
+                SwitchingWeapon = p.WeaponState(new WeaponSlot(0)).SwitchingWeaponId,
+                // QC the slot's WS_* .state compressed to the render-relevant phase: WS_RAISE → 1, WS_DROP → 2, else 0.
+                WepPhase = p.WeaponState(new WeaponSlot(0)).State switch
+                {
+                    WeaponFireState.Raise => (byte)1,
+                    WeaponFireState.Drop => (byte)2,
+                    _ => (byte)0,
+                },
+                // QC the exterior weapon entity's .alpha — quantized exactly like the body alpha (0 = opaque, not
+                // networked; 255 = hidden). Running Guns hides the body (body Alpha = -1 hidden) but keeps the gun
+                // (DefaultWeaponAlpha = +1), and Cloaked fades both; the exterior-weapon alpha is the SetDefaultAlpha
+                // hook's DefaultWeaponAlpha, networked independently of the body Alpha above so the two can differ.
+                WepAlpha = (byte)QuantizeAlpha(XonoticGodot.Common.Gameplay.MutatorHooks.DefaultWeaponAlpha),
+                // ViewmodelSkin / GunAlign have NO server-side producer in the port (the viewmodel skin variant and
+                // cl_gunalign side are client-local concepts; QC networks them off the wepent entity, which the port
+                // doesn't yet model server-side). Left at their defaults (0) — the wire is RESERVED for a later wave
+                // once a server-side exterior-weapon entity carries them; defaulting keeps them from desyncing.
             };
             // QC PutPlayerInServer sets effects |= EF_TELEPORT_BIT on every (re)spawn (client.qc:630), which tells
             // the engine to CANCEL position interpolation for that update so the model snaps to its spawn spot
@@ -1983,6 +2055,11 @@ public sealed class ServerNet : IDisposable
                 EntNum = netId,
                 Kind = kind,
                 ModelIndex = e.ModelIndex,
+                // [W14a-wepent] non-player entities carry no exterior-weapon block; default the switch ids to the
+                // -1 "none" sentinel so they MATCH the NetEntityState.Empty baseline and the EntityField.Wepent bit
+                // stays clear (a non-player entity costs nothing for the wepent group on the wire).
+                SwitchWeapon = -1,
+                SwitchingWeapon = -1,
                 Model = netModel,                  // QC .model (or, for a projectile, its catalog key) — resolved by name
                 Frame = (int)e.Frame,
                 Skin = (int)e.Skin,

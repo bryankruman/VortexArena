@@ -561,6 +561,16 @@ public partial class ClientWorld : Node3D
     /// </summary>
     public Node3D? GetAttachmentMarker(int ownerIndex, string tagName)
     {
+        // QW1: a skeletal player (the primary player path) exposes the resolved weapon bone as a tracked
+        // "tag_weapon" marker — return it FIRST so the held weapon attaches to the HAND bone, not the body root.
+        // When the weapon bone is unresolved (TagWeaponMarker null) fall through to the old animator/entity-root
+        // behavior below.
+        if (_playerModels.TryGetValue(ownerIndex, out PlayerModel? pm) && GodotObject.IsInstanceValid(pm))
+        {
+            Node3D? tag = pm.TagWeaponMarker;
+            if (tag is not null && GodotObject.IsInstanceValid(tag))
+                return tag;
+        }
         if (_animators.TryGetValue(ownerIndex, out ModelAnimator? anim) && GodotObject.IsInstanceValid(anim))
         {
             Marker3D? m = string.IsNullOrEmpty(tagName) ? null : anim.GetTag(tagName);
