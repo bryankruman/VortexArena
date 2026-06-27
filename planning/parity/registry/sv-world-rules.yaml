@@ -3,9 +3,9 @@ category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
 summary:
-  feature_count: 19
+  feature_count: 20
   worst_gaps:
-    - "RandomSeed shared-RNG broadcast entity and RedirectionThink server-redirect are still absent (no shared client RNG seed; no mass-reconnect command). PingPLReport is now PARTIAL (FIX 2026-06-27): the packet-loss column IS networked via the scoreboard block + consumed by the HUD PL column, but the ping column and the playerstats latency feed are still missing."
+    - "RandomSeed shared-RNG broadcast is now PORTED + LIVE (FIX 2026-06-27): server producer (RandomSeed.cs ticked every frame) + match-state network seam + per-instance client PrandomContext, with the 5s/65536 re-roll constants matching Base — but no client EFFECT consumes the decoded seed yet (presentationally inert; seed value not bit-exact by design). RedirectionThink is now PARTIAL + LIVE (FIX 2026-06-27): quit_and_redirect reconnects clients at match end via RedirectHandler -> MenuCommand.Connect, but the 'self' restart variant, sv_public -2, the two-pass retry loop, and the quit_and_redirect_timer defer are unported. PingPLReport stays PARTIAL: PL networked + consumed by the HUD PL column, but the ping column is hard -1 and the playerstats latency feed is still missing."
     - "DumpStats (:scores:/:status: console+eventlog scores dump) is now PORTED and LIVE (FIX 2026-06-27): Commands.DumpStats(final) is called at NextLevel (final=true) + via the `printstats` server command (final=false); the per-call score-LOG-FILE open/append (sv_logscores_file path) is the only residual (the eventlog-file sink covers structured logging)."
     - "GameWorld.Shutdown does slowmo-reset + ban-save + unfinished PlayerStats_GameReport(false), but ServerProgsDB persistence, bot_endgame, CheatShutdown and WeaponStats_Shutdown on teardown are still absent."
     - "World-layer leadlimit / leadlimit_and_fraglimit WIN semantics and the CheckRules_World mutator hook are still not evaluated in the checkrules cascade (leadlimit math only feeds the frags-remaining announcer). WinningCondition_RanOutOfSpawns is PORTED."
@@ -292,24 +292,33 @@ features:
     base_refs:
       - "server/world.qc:RandomSeed_Spawn"
       - "server/world.qc:RandomSeed_Think"
-    port_refs: []
+      - "server/world.qc:RandomSeed_Send"
+    port_refs:
+      - "src/XonoticGodot.Server/RandomSeed.cs"
+      - "src/XonoticGodot.Server/GameWorld.cs:RandomSeed (field cs:186)"
+      - "src/XonoticGodot.Server/GameWorld.cs:OnStartFrame (RandomSeed.Tick cs:1771)"
+      - "game/net/ServerNet.cs:SendMatchState (cs:967-987)"
+      - "game/net/ClientNet.cs:ReadMatchState (cs:600-618)"
     constants:
-      - { name: "reroll_period_s", base: "5", port: "none", match: false }
+      - { name: "reroll_period_s", base: "5 (this.nextthink = time + 5, world.qc:602)", port: "5 (RandomSeed.RerollPeriod, RandomSeed.cs:23)", match: true }
+      - { name: "seed_range", base: "bound(0, floor(random()*65536), 65535) (world.qc:601)", port: "Clamp(floor(rand*65536),0,65535) (RandomSeed.cs:54)", match: true }
+      - { name: "seed_value_bit_exact", base: "engine random() stream", port: "process System.Random (NOT bit-exact; no client effect consumes it yet)", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: partial
       audio: na
-      liveness: na
-    intended_divergence: false
-    divergence_rationale: null
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The seed VALUE is rolled from a process RNG, not Base's engine random() stream, so it is not bit-exact with Base. This is harmless and deliberate: no client EFFECT currently consumes the decoded seed (the client RandomRng PrandomContext has no downstream reader — grep returns none), so only the seam (re-roll cadence + network round-trip + per-context reseed) needs to agree, and it does. The mechanism also folds the seed onto the existing SendMatchState packet rather than a dedicated ENT_CLIENT_RANDOMSEED networked entity (smallest diff that reaches every accepted peer; appended trailing so an old client truncates harmlessly)."
     gaps:
-      - "No shared server->client RNG seed: client-side random effects cannot be kept deterministic with the server."
+      - "No client effect consumes the decoded shared seed yet: ClientNet.RandomRng (PrandomContext, reseeded on change at ClientNet.cs:617) has no downstream reader, so the seed produces no observable deterministic spread/effect — the seam exists but is presentationally inert until a consumer is wired."
+      - "Seed value is not bit-exact with Base's engine random() stream (intended; see divergence_rationale)."
     verification:
-      - { kind: code, ref: "grep RandomSeed across src/ — no match; world.qc:608/601", result: fail }
+      - { kind: code, ref: "RandomSeed.cs: Reroll = Clamp(floor(rand*65536),0,65535), 5s RerollPeriod (==world.qc:601-602); Tick(Time) called LIVE per server frame at GameWorld.OnStartFrame (cs:1771); instance owned by GameWorld (cs:186). Wire: ServerNet.SendMatchState appends RandomSeed.Current as a UShort at the end of the match-state packet (cs:970/987); ClientNet.ReadMatchState reads it trailing (cs:602), reseeds RandomRng only on change (cs:614-617). No client consumer of RandomRng (grep src/+game/ — none).", result: pass }
     confidence: high
-    notes: "STILL OPEN — unchanged. Networked entity (ENT_CLIENT_RANDOMSEED, RandomSeed_Send) rerolled every 5s; absent in the port."
+    notes: "FIX since 2026-06-27: RandomSeed is now PORTED and LIVE — the server producer (RandomSeed.cs, ticked every frame), the network seam (folded onto SendMatchState, decoded into a per-instance PrandomContext), and the 5s/65536 re-roll constants all match Base. missing->faithful (logic), missing->partial (values: seed not bit-exact by design), missing->faithful (timing), missing->partial (presentation: no consumer yet so inert), na->live (liveness). intended_divergence set: process RNG instead of engine random() + match-state packet instead of ENT_CLIENT_RANDOMSEED. STILL OPEN: no client effect reads the decoded seed, so the shared-RNG determinism it enables is unused."
   - id: sv-world-rules.entity.pingplreport
     name: "PingPLReport ping/packet-loss client report"
     layer: [authority, presentation]
@@ -422,23 +431,29 @@ features:
     layer: [authority]
     base_refs:
       - "server/world.qc:RedirectionThink"
-    port_refs: []
-    constants: []
+      - "server/intermission.qc:redirection_target = autocvar_quit_and_redirect"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveEndOfMatchMapFlow (quit_and_redirect cs:3975-3982)"
+      - "src/XonoticGodot.Server/Commands.cs:RedirectHandler (cs:154)"
+      - "game/net/NetGame.cs:RedirectHandler wiring (cs:777/810)"
+    constants:
+      - { name: "quit_and_redirect", base: "\"\" (empty default)", port: "\"\" (Cvars.cs:495)", match: true }
+      - { name: "quit_and_redirect_timer", base: "defer-reconnect delay (autocvar_quit_and_redirect_timer)", port: "none — port reconnects immediately, no defer timer", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: partial
+      values: partial
+      timing: partial
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No server-redirect / mass-reconnect command (sv_redirect_target / quit_and_redirect)."
+      - "Only the core quit_and_redirect path is ported (read at match-end map flow, RedirectHandler -> MenuCommand.Connect reconnects the local/listen client). MISSING: the 'self' restart variant (redirection_target == \"self\" -> disconnect; defer reconnect), the cvar_set sv_public -2 advertise-suppression, the per-second retry loop with redirection_timeout/redirection_nextthink (Base tries twice to catch slow clients), the quit_and_redirect_timer defer delay, and the localcmd quit once all clients are gone."
     verification:
-      - { kind: code, ref: "grep RedirectionThink/sv_redirect across src/ — no match; world.qc:2560", result: fail }
+      - { kind: code, ref: "GameWorld.DriveEndOfMatchMapFlow reads quit_and_redirect (cs:3976), and on non-empty fires Commands.RedirectHandler(redirect) (cs:3980) then returns (suppresses map rotation). RedirectHandler wired LIVE on both threaded + non-threaded host branches (NetGame.cs:777/810) -> Callable.CallDeferred(MenuCommand.Connect(addr)). Base sets redirection_target from autocvar_quit_and_redirect at intermission (intermission.qc:363) and calls RedirectionThink() per frame from main.qc:341. No sv_public/-2, no retry loop, no defer timer (grep).", result: partial }
     confidence: high
-    notes: "STILL OPEN — unchanged. Admin convenience feature; low gameplay impact."
+    notes: "FIX since 2026-06-27: quit_and_redirect is now PORTED and LIVE — at end-of-match the server reads the cvar and reconnects clients to the target address via RedirectHandler -> MenuCommand.Connect (deferred so it tears down the game tree safely). missing->partial (logic/values/timing), na->live. STILL OPEN: the 'self' restart variant, sv_public -2 advertise-suppress, the two-pass per-second retry loop (redirection_timeout/nextthink), and the quit_and_redirect_timer defer delay — the port reconnects immediately and once. Admin convenience feature; low gameplay impact."
   - id: sv-world-rules.misc.shutdown
     name: "Shutdown: persist DB/bans + slowmo/playerstats/bot teardown"
     layer: [authority]
@@ -500,20 +515,47 @@ features:
     base_refs:
       - "server/world.qc:InitializeEntity"
       - "server/world.qc:InitializeEntitiesRun"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:RunPostSpawn"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (RunPostSpawn cs:739)"
     constants: []
     status:
-      logic: unknown
+      logic: partial
       values: na
-      timing: unknown
+      timing: faithful
       presentation: na
       audio: na
-      liveness: unknown
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port does NOT reproduce Base's generic order-sorted linked list (InitializeEntity(e, func, order) sorted by initialize_entity_order). Instead it reproduces the same BEHAVIORAL ordering with a fixed-sequence drain: MapObjectsRegistry.RunPostSpawn() (called once at Boot after the whole BSP entity lump has spawned) runs the door-link pass FIRST (INITPRIO_LINKDOORS) then the INITPRIO_FINDTARGET pass (DynamicLight/ViewLocation/Follow/AdvancedMovers/Teleporters/InfoAutoScreenshot deferred-init queues), each family draining its own pending queue. The few entities that need it carry their own deferred-resolve list; there is no single generic priority queue."
+    gaps:
+      - "Only the families that actually need post-spawn ordering carry a deferred-init queue (doors, dynlights, view-locations, follow, advanced movers, teleporters, info_autoscreenshot). The general INITPRIO mechanism (e.g. INITPRIO_GAMETYPE_FALLBACK GameplayMode_DelayedInit, INITPRIO_DROPTOFLOOR DropToFloor, the weaponarena_available_*_update FINDTARGET passes) is not driven by a unified queue; whether every Base INITPRIO consumer has a port analogue is not exhaustively traced. The reset_map .reset2 second-pass (already tracked under warmup.reset_map) is handled by a separate two-stage Reset/Reset2 invoke, not this queue."
+    verification:
+      - { kind: code, ref: "MapObjectsRegistry.RunPostSpawn (cs:331-344): RunDeferredLinks (door-link, QC INITPRIO_LINKDOORS) then per-family RunDeferredInit drains (FINDTARGET pass) in fixed priority order; called LIVE once at GameWorld.Boot (cs:739) after the BSP lump spawns. Base: world.qc:2229 (InitializeEntity order-sorted insert), world.qc:2262 (InitializeEntitiesRun drain). No generic initialize_entity_order linked list in the port (grep).", result: partial }
+    confidence: medium
+    notes: "RECLASSIFIED since 2026-06-25 (unknown->partial/faithful/live): the port DOES implement the deferred post-spawn ordering primitive — MapObjectsRegistry.RunPostSpawn drains per-family init queues in INITPRIO order (links before findtarget), live at Boot. It is a fixed-sequence drain rather than Base's generic order-sorted queue (intended_divergence), so logic=partial (covers the families that need it, not a unified queue) but timing=faithful (drained once after the whole lump) and liveness=live. The reset_map .reset2 two-stage pass is handled separately. Status was previously left unknown pending this trace."
+  - id: sv-world-rules.boot.default_alpha
+    name: "SetDefaultAlpha default player/weapon alpha resolution"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:SetDefaultAlpha"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:FireSetDefaultAlpha"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (FireSetDefaultAlpha cs:647)"
+    constants:
+      - { name: "g_player_alpha", base: "autocvar_g_player_alpha; 0 -> 1 fallback (world.qc:109-110)", port: "g_player_alpha; 0 -> 1 fallback (MutatorHooks.cs:1041)", match: true }
+      - { name: "default_weapon_alpha", base: "= default_player_alpha (world.qc:112)", port: "WeaponAlpha = playerAlpha (MutatorHooks.cs:1041+)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base defers spawnfunc post-init work through an order-sorted queue (InitializeEntity(e, func, order) builds a linked list sorted by initialize_entity_order; InitializeEntitiesRun drains it on the first frame so e.g. lower-order items spawn before higher-order ones). This is the ordering mechanism behind the reset_map .reset/.reset2 two-stage pass already flagged under sv-world-rules.warmup.reset_map. No equivalent ordered-deferred-init queue is identified in the port; whether the port relies on BSP-lump spawn order or a different mechanism is not yet traced."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep InitializeEntity/initialize_entity_order across src/ — no match. Base: world.qc:2229 (InitializeEntity), world.qc:2262 (InitializeEntitiesRun, drained from spawnfunc(worldspawn)/the first frame).", result: fail }
-    confidence: medium
-    notes: "NEW ROW (registry coverage gap, 2026-06-25). The deferred-spawn ordering infrastructure was previously implicit under boot.worldspawn's 'heavy QC init list (host/engine-side)' note. Tracked explicitly because it is the ordering primitive the reset_map .reset2 second-pass gap depends on. Status left unknown pending a trace of how the port orders entity post-spawn init."
+      - { kind: code, ref: "MutatorHooks.FireSetDefaultAlpha (cs:1039-1058): seeds playerAlpha from g_player_alpha with the 0->1 fallback, weaponAlpha = playerAlpha, then fires the SetDefaultAlpha hook chain (Cloaked lowers to g_balance_cloaked_alpha, RunningGuns weapon-alpha) — faithful to world.qc:105-114's MUTATOR_CALLHOOK(SetDefaultAlpha) gate + default branch. Resolved (DefaultPlayerAlpha, DefaultWeaponAlpha) cached on GameWorld and read by spawn/death/loadout. Called LIVE at GameWorld.Boot (cs:647). DamageSystem corpse inherits DefaultPlayerAlpha (cs:693).", result: pass }
+    confidence: high
+    notes: "NEW ROW (registry coverage gap, 2026-06-27). SetDefaultAlpha was unmapped though fully ported: MutatorHooks.FireSetDefaultAlpha mirrors world.qc:105-114 (g_player_alpha 0->1 fallback, weapon alpha = player alpha, mutator-hook override for Cloaked/RunningGuns), fired live at Boot and cached on GameWorld for spawn/death/loadout reads. faithful + live."

@@ -5,6 +5,7 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 22
   worst_gaps:
+    - "(NEW-GAP 2026-06-27 drift, values) idle/spectator cvar DEFAULTS diverge from Base out of the box: sv_maxidle_playertospectator (Base 60, port 0 → port never moves an idle player to spec), sv_maxidle_minplayers (Base 2, port 0), and g_maxplayers_spectator_blocktime (Base 10, port 5 → the sv_spectate=0 grace is halved). All three are read live; the machinery is correct but the numeric defaults are wrong. frame.idle_kick + frame.spectator_kick values faithful->partial."
     - "(RESOLVED 2026-06-27 drift) frame.name_and_version — previously all-missing — is now FULLY ported and LIVE. PlayerFrameNameAndGodMode (GameWorld.cs:1985, called from PlayerFrameIdleAll :1877 once per server frame per real client) does the line-for-line client.qc:2900-2955 block: sv_name_maxlength (64) visible-length truncation + ^7 (TruncateVisible honoring color codes) + 'name truncated' sprint, invisible-name → Player#<id> + 'invisible names not allowed' sprint, the :name: GameLog line (netname_previous assume-unchanged guard), and INFO_GODMODE_OFF when FL_GODMODE drops while max_armorvalue is set. The version-nag is ALSO ported: version_nagtime is armed at connect (ClientManager.cs:229 = Now+10+random()*10, exact Base formula) and Commands.CheckClientVersion (Commands.cs:427), fired from PlayerPreThink (GameWorld.cs:2159-2166), sends INFO_VERSION_BETA/OUTDATED/OLD by comparing the client's replicated g_xonoticversion (sent via the internal `clientversion` command, Commands.cs:3248) against the server's, with the git/autobuild beta branch. Only residual: the QC ignore_list_send interleave is a separate ignore-list feature (still deferred)."
     - "Join queue + team-selection ordering (queuePlayer / TeamBalance_JoinBestTeam priority pass, queued-team dibs conflict) not modeled: in team modes the queued-team conflict resolution and best-team-by-skill ordering are absent; PutPlayerInServer's own wants_join>0 / bot_forced_team / TeamBalance_JoinBestTeam team-assign is also not run (the port pre-assigns at connect only). (Wave-2 added the JOIN_PLAY / JOIN_PLAY_TEAM notification tail; the queue-conflict / ANNCE_BEGIN branches stay deferred.)"
     - "joinAllowed is reduced to MIN_SPEC_TIME + lockteams + forced-spectator + playban + a gametype gate: version-mismatch, g_maxping, and the queue/nJoinAllowed (g_maxplayers/GetPlayerLimit/bots_would_leave) capacity gate are still missing — a mismatched/high-ping/over-cap client can still join, and no CENTER_JOIN_PREVENT*/PING/VERSIONMISMATCH centerprints fire."
@@ -26,6 +27,8 @@ summary:
     - "frame.drown_player: the surfaced-after-out-of-air gasp NOW plays playersound_gasp — DrownPlayer's surface branch calls SoundSystem.PlayPlayerSound(p, \"gasp\", ...) when AirFinished was set and < time (PlayerFrameLogic.cs:236-240), the same per-model voice resolution as the pain/teamkill voices; gasp is a real player-sound id. audio missing->faithful; the row is now fully faithful with no gaps."
     - "connect.fix_client_cvars_welcome: a PARTIAL welcome channel now exists on the live connect path (InfraClientConnect, GameWorld.cs:1192) — the campaign welcome level-num (SendCampaignWelcome, GameWorld.cs:1231/1288, QC SendWelcomeMessage campaign branch) and the grappling-hook BuildGameplayTipsString tip (GameWorld.cs:1239-1248) are surfaced to the connecting client. logic/presentation missing->partial, liveness na->partial. The bulk stays absent: FixClientCvars cvar push, clientstuff, cmd clientversion, set _teams_available, the MOTD/hostname/map/mutators message, ClientInit_misc, Send_NextMap_To_Player."
   drift_2026_06_27_reverify:
+    - "frame.idle_kick (NEW-GAP, values regression): the port's idle cvar DEFAULTS diverge from Base. Base autocvar source defaults (server/client.qh:38-39): sv_maxidle_minplayers=2, sv_maxidle_playertospectator=60; the shipped xonotic-server.cfg further sets sv_maxidle_alsokickspectators 1 and sv_maxidle_playertospectator 60. The port (Cvars.cs:349-351) ships sv_maxidle_playertospectator=0, sv_maxidle_minplayers=0, sv_maxidle_alsokickspectators=0 — and they ARE read live (GameWorld.cs:1853-1856). So out-of-the-box the port NEVER moves an idle player to spectator (Base does after 60s), and the minplayers floor differs (Base needs >=2 humans before the idle kick arms; port arms at 0). The previous audit recorded { base:'0', port:'0', match:true } for both — WRONG. values faithful->partial. logic/timing/liveness stay faithful/live (the machinery is correct; only the numeric defaults are off)."
+    - "frame.spectator_kick + observer.put_observer_in_server (NEW-GAP, values): g_maxplayers_spectator_blocktime — Base ships 10 (xonotic-server.cfg:33; source autocvar has no inline default = 0), the port ships 5 (Cvars.cs:355) and reads it live (GameWorld.cs:1856). The spectator_kick row claimed { base:'5 s grace', port:'5 s', match:true } — the Base value is 10, not 5, so port mismatches. spectator_kick values faithful->partial; the observer row's blocktime constant (was base:'used for SPECTATE_WARNING', match:false) is corrected to the concrete 10-vs-5 mismatch. The spectator-kick grace is therefore HALF the Base duration out of the box."
     - "frame.name_and_version: FIXED — previously all-missing, now FULLY ported and LIVE. PlayerFrameNameAndGodMode (GameWorld.cs:1985) is called once per server frame per real client from PlayerFrameIdleAll (:1877), a line-for-line port of client.qc:2900-2955: sv_name_maxlength (default 64, matches Base) visible-length truncation + ^7 append (TruncateVisible counts only non-color glyphs) + the 'name truncated' warning sprint; isInvisibleString → Player#<id> rename + 'invisible names not allowed' sprint; the :name: GameLog.NameChange line gated on the netname_previous assume-unchanged guard + sv_eventlog; and INFO_GODMODE_OFF (absorbed-damage report + max_armorvalue clear) when FL_GODMODE drops. The version-nag is ALSO ported and LIVE: version_nagtime armed at ClientConnect (ClientManager.cs:229 = Now+10+random()*10, the exact Base version_nagtime formula) and Commands.CheckClientVersion (Commands.cs:427) fired from PlayerPreThink (GameWorld.cs:2159-2166); it reads the client's replicated g_xonoticversion (sent via the internal `clientversion` command, Commands.cs:3248, fire-once), runs the git/autobuild beta branch + vercmp, and sends INFO_VERSION_BETA/OUTDATED/OLD. all dims missing->faithful, liveness na->live (4 fixes). Build verified (server project compiles clean). Only residual: the QC ignore_list_send interleave (a separate ignore-list feature)."
     - "connect.fix_client_cvars_welcome: the welcome channel EXPANDED again — the non-campaign branch is now wired (SendMutatorsWelcome, GameWorld.cs:1387, the LIVE consumer of MutatorActivation.BuildMutatorsPrettyString → 'Active modifications:' line), plus the g_mutatormsg server mutator message and the sv_motd MOTD (with \\n-escape expansion), and the offhand-blaster gameplay tip (GameWorld.cs:1314) alongside the existing campaign + grappling-hook tips. Dimension floor stays logic/presentation:partial, liveness:partial (no dimension flip — the row was already partial), but materially more of SendWelcomeMessage is now delivered. Still absent: FixClientCvars cvar-push stuffcmd, clientstuff, set _teams_available, ClientInit_misc per-client init entity, Send_NextMap_To_Player."
     - "connect.client_connect: the version_nagtime constant is now ported (ClientManager.cs:229) — constant match flips false->true. Row dimensions unchanged (values already faithful); the connect-side version-nag arming is now the live seed for the frame.name_and_version version-nag."
@@ -212,7 +215,7 @@ features:
       - "src/XonoticGodot.Server/ClientManager.cs:PutObserverInServer"
     constants:
       - { name: "g_balance_armor_start", base: "RES_ARMOR set to this for observer", port: "Cvars.FloatOr(g_balance_armor_start, 0) (Wave-2)", match: true }
-      - { name: "g_maxplayers_spectator_blocktime", base: "used for SPECTATE_WARNING", port: "none", match: false }
+      - { name: "g_maxplayers_spectator_blocktime", base: "10 (used for SPECTATE_WARNING; the one-shot warning value)", port: "none here (the live enforcement is the frame.spectator_kick row, which ships 5)", match: false }
     status:
       logic: partial
       values: faithful
@@ -521,15 +524,15 @@ features:
       - "src/XonoticGodot.Server/ServerPlayerState.cs:IdleSince/IdleKickLastTimeLeft (~36)"
     constants:
       - { name: "sv_maxidle", base: "0 (off)", port: "0 (Cvars.cs:348)", match: true }
-      - { name: "sv_maxidle_playertospectator", base: "0", port: "0 (Cvars.cs:349)", match: true }
-      - { name: "sv_maxidle_minplayers", base: "0", port: "0 (Cvars.cs:350)", match: true }
-      - { name: "sv_maxidle_alsokickspectators", base: "0", port: "0 (Cvars.cs:351)", match: true }
+      - { name: "sv_maxidle_playertospectator", base: "60 (server/client.qh:39; cfg also 60)", port: "0 (Cvars.cs:349)", match: false }
+      - { name: "sv_maxidle_minplayers", base: "2 (server/client.qh:38)", port: "0 (Cvars.cs:350)", match: false }
+      - { name: "sv_maxidle_alsokickspectators", base: "0 source default (xonotic-server.cfg sets 1)", port: "0 (Cvars.cs:351)", match: true }
       - { name: "alivetime afk threshold", base: "30 s", port: "30 s (GameWorld.cs:1745)", match: true }
       - { name: "countdown_time", base: "max(min(10,maxidle-1), ceil(maxidle*0.33))", port: "same (GameWorld.cs:1822)", match: true }
       - { name: "sv_maxidle_slots", base: "0 (dedicated free-slot threshold)", port: "read but gate skipped (no engine maxclients)", match: false }
     status:
       logic: faithful
-      values: faithful
+      values: partial
       timing: faithful
       presentation: faithful
       audio: faithful
@@ -537,6 +540,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
+      - "DRIFT 2026-06-27 (values): the port's idle cvar DEFAULTS diverge from Base. Base sources sv_maxidle_playertospectator=60 (server/client.qh:39) and sv_maxidle_minplayers=2 (qh:38); the port ships both at 0 (Cvars.cs:349-350) and reads them live (GameWorld.cs:1853-1856). Out of the box the port NEVER does move-to-spec (Base does after 60s) and arms the idle kick with 0 minplayers (Base needs >=2 humans). The machinery is correct — only the numeric defaults are wrong."
       - "The dedicated-server sv_maxidle_slots free-slot threshold (maxclients - totalClients > sv_maxidle_slots disables the kick) is NOT enforced — the headless core has no engine-level maxclients to read, so the slots gate is a no-op (the cvars are read but skipped). Off by default; only affects a dedicated operator who sets sv_maxidle_slots."
     verification:
       - { kind: code, ref: "GameWorld.cs:1701-1871 PlayerFrameIdleAll (alivetime AFK-gate :1742-1747, spectator-kick :1749-1778, idle-kick/move-to-spec :1780-1869, TALK2 countdown bang via SoundSystem.Play2 :1867); activity tracker GameWorld.cs:1971-1999; notifications DISCONNECT_IDLING/MOVETOSPEC_IDLING(_QUEUE)/QUIT_KICK_IDLING all in NotificationsList.cs", result: pass }
@@ -551,11 +555,11 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/GameWorld.cs:PlayerFrameIdleAll (sv_spectate=0 block ~1749-1778)"
     constants:
-      - { name: "g_maxplayers_spectator_blocktime", base: "5 s grace before kick", port: "5 s (Cvars.cs:355)", match: true }
+      - { name: "g_maxplayers_spectator_blocktime", base: "10 s grace (xonotic-server.cfg:33; source autocvar = 0)", port: "5 s (Cvars.cs:355)", match: false }
       - { name: "sv_spectate", base: "1 (on)", port: "1; ==0 now drives the kick (GameWorld.cs:1753)", match: true }
     status:
       logic: faithful
-      values: faithful
+      values: partial
       timing: faithful
       presentation: faithful
       audio: na
@@ -563,6 +567,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
+      - "DRIFT 2026-06-27 (values): g_maxplayers_spectator_blocktime ships 5 in the port (Cvars.cs:355) but Base ships 10 (xonotic-server.cfg:33), so the sv_spectate=0 spectator-kick grace is HALF the Base duration out of the box. Read live at GameWorld.cs:1856."
       - "The port resets the grace clock via the spectator's JoinTime (QC spectatortime) rather than a dedicated spectatortime field; behaviorally equivalent (spectatortime is set to jointime on PutObserverInServer in QC). The dropclient_schedule deferred-drop is realised as a direct ClientDisconnect after the grace, which is functionally the same outcome."
     verification:
       - { kind: code, ref: "GameWorld.cs:1749-1778 (sv_spectate==0 → SPECTATE_WARNING MSG_MULTI then ClientDisconnect + QUIT_KICK_SPECTATING after blocktime grace); SPECTATE_WARNING/QUIT_KICK_SPECTATING in NotificationsList.cs:822/1047/1177/803", result: pass }

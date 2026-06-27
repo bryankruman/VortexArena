@@ -1,6 +1,6 @@
 # Parity Index
 
-_Generated 2026-06-27 from 154 units, 2114 features._
+_Generated 2026-06-27 from 154 units, 2115 features._
 
 Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liveness `live`/`DEAD`/`~`/`?`.
 
@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1840 | 91 | 28 | 148 | 4 | 3 |
-| values | 0 | 1723 | 68 | 226 | 84 | 0 | 13 |
-| timing | 0 | 1079 | 49 | 926 | 42 | 0 | 18 |
-| presentation | 0 | 574 | 138 | 1196 | 200 | 0 | 6 |
-| audio | 0 | 312 | 10 | 1769 | 19 | 1 | 3 |
-| liveness | 23 | 0 | 0 | 98 | 99 | 0 | 10 |
+| logic | 0 | 1842 | 88 | 28 | 151 | 4 | 2 |
+| values | 0 | 1722 | 65 | 226 | 89 | 0 | 13 |
+| timing | 0 | 1081 | 46 | 927 | 44 | 0 | 17 |
+| presentation | 0 | 574 | 136 | 1197 | 202 | 0 | 6 |
+| audio | 0 | 312 | 10 | 1770 | 19 | 1 | 3 |
+| liveness | 23 | 0 | 0 | 95 | 100 | 0 | 9 |
 
 ## Features by unit
 
@@ -1759,10 +1759,10 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `net-entity-state.entcs.privacy_mask` | ent_cs public/private mask (radar_showenemies / SAME_TEAM) *(intended)* | OK | ~ | - | - | - | live | high |
 | `net-entity-state.wepent.active_weapon` | wepent active/held weapon (local viewmodel + remote third-person) *(intended)* | OK | OK | OK | OK | - | live | high |
 | `net-entity-state.wepent.charges_clip_heat` | wepent charge/clip/heat HUD fields (vortex/oknex charge+pool, clip_load/size, hagar_load, minelayer_mines, arc_heat) *(intended)* | OK | OK | OK | OK | - | ~ | medium |
-| `net-entity-state.wepent.switch_alpha_misc` | wepent switch/alpha/gunalign/porto/tuba/skin viewmodel fields | MISS | MISS | MISS | MISS | - | - | medium |
+| `net-entity-state.wepent.switch_alpha_misc` | wepent switch/alpha/gunalign/porto/tuba/skin viewmodel fields *(intended)* | ~ | ~ | ~ | ~ | - | ~ | high |
 | `net-entity-state.csqcmodel.appearance_hook` | csqcmodel appearance hook (force model/colors, unique enemy colors, death-fade) | OK | OK | - | OK | - | live | high |
 | `net-entity-state.replicate.client_cvars` | Client->server cvar replication (REPLICATE / cmd sentcvar) | OK | ~ | OK | - | - | live | high |
-| `net-entity-state.csqcmodel.anim_state` | csqcmodel networked anim action state (upper/lower-body action split) *(intended)* | ~ | MISS | MISS | ~ | - | ~ | medium |
+| `net-entity-state.csqcmodel.anim_state` | csqcmodel networked anim action state (upper/lower-body action split) *(intended)* | ~ | MISS | MISS | ~ | - | ~ | high |
 | `net-entity-state.csqcmodel.alpha` | csqcmodel per-entity render alpha (m_alpha / .alpha transparency channel) *(intended)* | OK | OK | OK | OK | - | live | high |
 
 ### `fx-deathtypes` (notification) — 11 features
@@ -1987,8 +1987,8 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-client-lifecycle.frame.contents_fall_damage` | CreatureFrame liquids + fall damage (per-frame) | OK | OK | OK | - | - | live | medium |
 | `sv-client-lifecycle.frame.player_powerups` | player_powerups: superweapon countdown + PlayerPowerups hook | OK | OK | OK | OK | OK | live | high |
 | `sv-client-lifecycle.frame.pressed_keys` | GetPressedKeys: PRESSED_KEYS stat for the HUD | OK | OK | OK | ~ | - | live | high |
-| `sv-client-lifecycle.frame.idle_kick` | sv_maxidle idle-kick / move-to-spectator + alivetime afk-gate | OK | OK | OK | OK | OK | live | high |
-| `sv-client-lifecycle.frame.spectator_kick` | sv_spectate-disabled spectator kick + SPECTATE_WARNING | OK | OK | OK | OK | - | live | high |
+| `sv-client-lifecycle.frame.idle_kick` | sv_maxidle idle-kick / move-to-spectator + alivetime afk-gate | OK | ~ | OK | OK | OK | live | high |
+| `sv-client-lifecycle.frame.spectator_kick` | sv_spectate-disabled spectator kick + SPECTATE_WARNING | OK | ~ | OK | OK | - | live | high |
 | `sv-client-lifecycle.frame.name_and_version` | Version nag + nameless/too-long/invisible name enforcement + GOD MODE info | OK | OK | OK | OK | - | live | high |
 | `sv-client-lifecycle.frame.prethink_misc` | PlayerPreThink misc: PlayerUseKey edge, SetZoomState, voice sounds, chat bubble | ~ | - | - | MISS | ~ | ~ | medium |
 | `sv-client-lifecycle.disconnect.client_disconnect` | ClientDisconnect: teardown | ~ | OK | OK | OK | - | live | high |
@@ -2163,7 +2163,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-teamplay.lock.lockonrestart` | Auto-lock teams on ready-restart (teamplay_lockonrestart) | OK | OK | - | - | - | live | high |
 | `sv-teamplay.bot.bot_forced_team` | Bot forced team (bot_forced_team from bot config/connect) | OK | OK | - | - | - | live | high |
 
-### `sv-world-rules` (server) — 19 features
+### `sv-world-rules` (server) — 20 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -2177,15 +2177,16 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-world-rules.checkrules.cascade` | CheckRules_World per-frame win cascade | ~ | OK | OK | - | ~ | live | high |
 | `sv-world-rules.checkrules.overtime` | Overtime / sudden-death (InitiateSuddenDeath/Overtime/GetWinningCode) | OK | OK | OK | OK | ~ | live | high |
 | `sv-world-rules.nextlevel.intermission` | NextLevel + intermission entry / map-change timer | OK | OK | OK | ~ | - | live | high |
-| `sv-world-rules.entity.randomseed` | RandomSeed shared-RNG broadcast entity | MISS | MISS | MISS | MISS | - | - | high |
+| `sv-world-rules.entity.randomseed` | RandomSeed shared-RNG broadcast entity *(intended)* | OK | ~ | OK | ~ | - | live | high |
 | `sv-world-rules.entity.pingplreport` | PingPLReport ping/packet-loss client report | ~ | ~ | ~ | ~ | - | ~ | high |
 | `sv-world-rules.boot.lightstyles` | Animated lightstyle table install | OK | OK | OK | ~ | - | live | high |
 | `sv-world-rules.misc.start_delay` | g_start_delay pre-match join window | OK | OK | OK | - | - | live | high |
 | `sv-world-rules.misc.max_shot_distance` | max_shot_distance from world bounds | OK | OK | - | - | - | live | high |
-| `sv-world-rules.misc.redirection` | RedirectionThink server redirect | MISS | MISS | MISS | - | - | - | high |
+| `sv-world-rules.misc.redirection` | RedirectionThink server redirect | ~ | ~ | ~ | - | - | live | high |
 | `sv-world-rules.misc.shutdown` | Shutdown: persist DB/bans + slowmo/playerstats/bot teardown | ~ | - | - | - | - | live | high |
 | `sv-world-rules.eventlog.dumpstats` | DumpStats final/periodic scores dump (:scores: / :status:) | OK | OK | OK | - | - | live | high |
-| `sv-world-rules.boot.initialize_entity_queue` | InitializeEntity ordered deferred-spawn queue | ? | - | ? | - | - | ? | medium |
+| `sv-world-rules.boot.initialize_entity_queue` | InitializeEntity ordered deferred-spawn queue *(intended)* | ~ | - | OK | - | - | live | medium |
+| `sv-world-rules.boot.default_alpha` | SetDefaultAlpha default player/weapon alpha resolution | OK | OK | - | - | - | live | high |
 
 ### `fx-sounds` (sound) — 15 features
 
