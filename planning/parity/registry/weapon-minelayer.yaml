@@ -1,15 +1,15 @@
 unit: weapon-minelayer
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
-  feature_count: 14
+  feature_count: 15
   worst_gaps:
     - "Whole weapon is WEP_FLAG_MUTATORBLOCKED: never in a normal-match loadout (GiveItems.cs:340 skips MutatorBlocked|Hidden), only reachable via weaponarena/NewToys/impulse-give → fire-path liveness stays partial, not live (verified unchanged)."
-    - "Mine shoot-down is fully LIVE and faithful: MakeShootable installs GtEventDamage (DamageSystem.EventDamage:331-334 dispatches non-player targets), a depleted mine detonates, AND the W_MineLayer_Damage knock-loose branch (damageforcescale bounce/re-stick/avelocity while hp>0) runs via the MakeShootable onHit per-hit seam (Projectiles.ShootDown fires onHit before the gate/hp-subtract per QC ordering). exception=1 is exactly the ML-mine case that passes stock g_projectiles_damage -2."
-    - "Remote-detonate sound semantics: port now plays mine_det if the actor has ANY placed mine (matches Base W_MineLayer_PlacedMines), so the audio-cue divergence recorded earlier is gone; remaining remote-detonate divergence is the inline-vs-next-tick detonation ordering (behaviorally equivalent)."
-    - "Airshot achievement + out-of-ammo forced weapon switch (W_MineLayer_Explode tail) still not implemented."
-    - "Bot wr_aim is now FULLY PORTED + LIVE: BotWantsDetonate (Minelayer.cs:413) implements the skill>=2 detonation-desirability math (self/team/enemy damage weighting, 0.75*coredamage group threshold, 0.1*coredamage tracking detonate, skill>6.5 self-preservation veto), dispatched by BotBrain.cs:366 (suppresses primary when it detonates). Over-limit primary suppression handled by WrThink's gate. Only the random distance/skill gate uses an approximate frametime."
+    - "Mine shoot-down is fully LIVE and faithful: MakeShootable installs GtEventDamage (DamageSystem.EventDamage:358-360 dispatches non-player targets), a depleted mine detonates, AND the W_MineLayer_Damage knock-loose branch (damageforcescale bounce/re-stick/avelocity while hp>0) runs via the MakeShootable onHit per-hit seam (Projectiles.ShootDown fires onHit before the gate/hp-subtract per QC ordering). exception=1 is exactly the ML-mine case that passes stock g_projectiles_damage -2."
+    - "Remote-detonate sound semantics: port plays mine_det if the actor has ANY placed mine (matches Base W_MineLayer_PlacedMines); remaining remote-detonate divergence is the inline-vs-next-tick detonation ordering (behaviorally equivalent)."
+    - "FIXED since last audit: airshot achievement (Explode airshot branch -> NotificationSystem.Announce('ACHIEVEMENT_AIRSHOT'); structurally unreachable for the mine in Base too since every W_MineLayer_Explode caller passes directhitentity=NULL) AND the out-of-ammo forced weapon switch (ForceSwitchIfOutOfAmmo -> SwitchToOtherWeapon in WeaponFireGate) are NOW IMPLEMENTED on both the proximity/lifetime Explode and the RemoteDetonate tail."
+    - "Bot wr_aim is FULLY PORTED + LIVE: BotWantsDetonate (Minelayer.cs:525) implements the skill>=2 detonation-desirability math (self/team/enemy damage weighting, 0.75*coredamage group threshold, 0.1*coredamage tracking detonate, skill>6.5 self-preservation veto), dispatched by BotBrain.cs:416-420 (suppresses primary when it detonates). Over-limit primary suppression handled by WrThink's gate. Only the random distance/skill gate uses an approximate frametime."
 features:
   - id: minelayer.fire.lay_mine
     name: "Primary fire: lay a tossed mine"
@@ -249,9 +249,9 @@ features:
       - "deathtype HITTYPE_BOUNCE tag on remote blasts not set (obituary picks the splash murder string regardless; inert)."
       - "Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine)."
     verification:
-      - { kind: code, ref: "RemoteDetonate (Minelayer.cs:410-459): plays mine_det as soon as the actor has ANY placed mine (mines.Count>0) — matches Base W_MineLayer_PlacedMines flagging minelayer_detonate before the gates; THEN per-mine spawnshield-timer gate (ProjectileDetonateTime>=0) else proximity self-safety (RemoteRadius); team-safety reads actor.Team (correctly set); sets velocity=PunchVector(movedir) on a stuck mine before the blast", result: pass }
+      - { kind: code, ref: "RemoteDetonate (Minelayer.cs:459-515): plays mine_det as soon as the actor has ANY placed mine (mines.Count>0) — matches Base W_MineLayer_PlacedMines flagging minelayer_detonate before the gates; THEN per-mine spawnshield-timer gate (ProjectileDetonateTime>=0) else proximity self-safety (RemoteRadius); team-safety reads actor.Team (correctly set); sets velocity=PunchVector(movedir) on a stuck mine before the blast; ForceSwitchIfOutOfAmmo tail (W_MineLayer_DoRemoteExplode:122-134) runs once after the blasts", result: pass }
     confidence: high
-    notes: "FIXED since last audit: the sound-cue divergence the baseline recorded is gone — RemoteDetonate now plays mine_det whenever the actor has at least one placed mine (mines.Count>0, = W_MineLayer_PlacedMines found a mine to flag), regardless of whether any mine passes the spawnshield/team-safety gate, exactly like Base wr_think:483-487. logic+audio partial->faithful. Spawnshield/team-safety gate reads Entity.ProjectileDetonateTime so the RocketFlying EditProjectile clear opens detonation immediately. Residual: inline-vs-next-tick ordering + inert HITTYPE_BOUNCE tag (both behaviorally equivalent)."
+    notes: "Re-verified. RemoteDetonate plays mine_det whenever the actor has at least one placed mine (mines.Count>0, = W_MineLayer_PlacedMines found a mine to flag), regardless of whether any mine passes the spawnshield/team-safety gate, exactly like Base wr_think:483-487. Spawnshield/team-safety gate reads Entity.ProjectileDetonateTime so the RocketFlying EditProjectile clear opens detonation immediately. The W_MineLayer_DoRemoteExplode out-of-ammo forced-switch tail is now ported (ForceSwitchIfOutOfAmmo, shared with Explode). Residual: inline-vs-next-tick ordering + inert HITTYPE_BOUNCE tag (both behaviorally equivalent)."
 
   - id: minelayer.mine.explode
     name: "Explosion: radius damage + knockback + fx"
@@ -277,13 +277,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Airshot achievement (ANNCE_ACHIEVEMENT_AIRSHOT on a direct hit to an enemy flying player) not implemented."
-      - "Out-of-ammo forced weapon switch after the last mine fires (Base W_MineLayer_Explode tail: ATTACK_FINISHED + m_switchweapon = w_getbestweapon) is not done here."
+      - "Airshot-achievement branch is ported (Explode:391-395 -> NotificationSystem.Announce('ACHIEVEMENT_AIRSHOT')) but UNREACHABLE for the mine in Base too: every W_MineLayer_Explode caller (Explode_think, ProximityExplode) passes directhitentity=NULL, so the QC `if (directhitentity.takedamage == DAMAGE_AIM ...)` guard never fires for a mine. Carried for structural fidelity. Not a gap (faithful to the unreachable Base branch)."
       - "Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine)."
     verification:
-      - { kind: code, ref: "Explode (Minelayer.cs:326-339): WeaponSplash.RadiusDamage(40/20/175/250) + mine_exp sound + ROCKET_EXPLODE effect (EffectsList.cs:116), then Remove", result: pass }
+      - { kind: code, ref: "Explode (Minelayer.cs:384-414): airshot announce branch (directHit DAMAGE_AIM + flying enemy), then WeaponSplash.RadiusDamage(40/20/175/250) + mine_exp sound + ROCKET_EXPLODE effect (EffectsList.cs), ForceSwitchIfOutOfAmmo, then Remove", result: pass }
+      - { kind: code, ref: "ForceSwitchIfOutOfAmmo (Minelayer.cs:420-435): owner still wields ML + rocket resource depleted + !IT_UNLIMITED_AMMO -> locate the slot holding the ML and SwitchToOtherWeapon (WeaponFireGate.cs:469 = w_getbestweapon + ATTACK_FINISHED/m_switchweapon). Matches W_MineLayer_Explode tail minelayer.qc:80-92", result: pass }
     confidence: high
-    notes: "Re-verified. EFFECT_ROCKET_EXPLODE + mine_exp faithful (matches CSQC wr_impacteffect). RadiusDamage is the shared faithful blast model. Residual gaps are gametype/HUD-layer (airshot announce, ammo-out weapon switch)."
+    notes: "FIXED since last audit: the two baseline gaps (airshot achievement + out-of-ammo forced weapon switch) are now implemented. The airshot branch is faithful to Base's (unreachable-for-mine) DAMAGE_AIM guard; the out-of-ammo switch reproduces the W_MineLayer_Explode tail via ForceSwitchIfOutOfAmmo->SwitchToOtherWeapon. EFFECT_ROCKET_EXPLODE + mine_exp faithful (matches CSQC wr_impacteffect). RadiusDamage is the shared faithful blast model."
 
   - id: minelayer.mine.render
     name: "Placed-mine model + networking (visible mine)"
@@ -378,7 +378,7 @@ features:
       - "common/weapons/weapon/minelayer.qc:MineLayer.wr_aim"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs:BotWantsDetonate"
-      - "src/XonoticGodot.Server/Bot/BotBrain.cs:366"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:416"
     constants:
       - { name: "skill_min_detonate", base: "2", port: "2", match: true }
       - { name: "group_detonate_threshold", base: "0.75*coredamage", port: "0.75*coredamage", match: true }
@@ -399,8 +399,8 @@ features:
       - "Over-limit primary-fire suppression (QC wr_aim:382-383 clears BUTTON_ATCK when at the mine limit) is not done inside BotWantsDetonate; it is handled instead by WrThink's over-limit gate (NotifyOverLimit returns before PrepareAttack). Net effect on the live path is equivalent — a bot at the limit cannot lay another mine — but the suppression site differs."
       - "Liveness moot in practice while the weapon stays MutatorBlocked, but the dispatch (BotBrain.BotWantsDetonate) IS on the live bot decision path when the weapon is granted."
     verification:
-      - { kind: code, ref: "Minelayer.BotWantsDetonate (Minelayer.cs:413-541) reproduces wr_aim:387-461: skill>=2 gate, per-mine x per-target self/team/enemy damage with bound(0,edge+(core-edge)*sqrt(1-d/r),10000), desirabledamage = enemy - selfdamage*selfdamagepercent (shield) - teamdamage (teamplay), skill>9 tracking detonate, skill<=9 enemy-direction+random gate, 0.75*coredamage group threshold, skill>6.5 selfdamage>health veto", result: pass }
-      - { kind: code, ref: "BotBrain.cs:365-370 calls ChosenWeapon.BotWantsDetonate(bot, slot0, Skill, Players(), ShouldAttack) every think; on true sets wantAttack=false, wantAttack2=true (QC 'don't fire a new shot at the same time')", result: pass }
+      - { kind: code, ref: "Minelayer.BotWantsDetonate (Minelayer.cs:525-653) reproduces wr_aim:387-461: skill>=2 gate, per-mine x per-target self/team/enemy damage with bound(0,edge+(core-edge)*sqrt(1-d/r),10000), desirabledamage = enemy - selfdamage*selfdamagepercent (shield) - teamdamage (teamplay), skill>9 tracking detonate, skill<=9 enemy-direction+random gate, 0.75*coredamage group threshold, skill>6.5 selfdamage>health veto", result: pass }
+      - { kind: code, ref: "BotBrain.cs:416-420 calls ChosenWeapon.BotWantsDetonate(bot, slot0, Skill, Players(), ShouldAttack) every think; on true sets wantAttack2=true (QC 'don't fire a new shot at the same time')", result: pass }
     confidence: high
     notes: "FIXED since last audit: the baseline recorded this as logic:missing / port_refs:[] (wr_aim deferred for all weapons). The full mine-detonation AI is now ported in Minelayer.BotWantsDetonate and dispatched live by BotBrain. Damage model, desirability math, skill gates, and self-preservation veto all match Base. Residual: approximate frametime in the low-skill random gate + the primary-suppress site moved to WrThink."
 
@@ -425,3 +425,26 @@ features:
       - { kind: code, ref: "Minelayer has no WrResetPlayer override (GameplayBases.cs:164 base no-op); CountMines (Minelayer.cs:544) counts FindByClass('mine') owned by actor live — no cached minelayer_mines field exists to go stale", result: pass }
     confidence: high
     notes: "Newly mapped this pass (was an unmapped Base symbol). The QC reset only clears a HUD display cache; the port computes the count live, so the reset is structurally unnecessary — marked intended divergence rather than a gap."
+
+  - id: minelayer.describe
+    name: "In-menu weapon-guide prose (describe)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/minelayer.qc:MineLayer.describe"
+    port_refs: []
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The MENUQC describe() weapon-guide prose (minelayer.qc:549-563 — the multi-paragraph in-menu weapon description shown in the Weapons guide page) has no port analogue. Several other weapons reference describe() only in comments (Electro.cs:98, Tuba.cs:63, Crylink.cs:160) but the port has no weapon-guide menu page, so this is a menu-only presentation gap (no gameplay effect)."
+    verification:
+      - { kind: code, ref: "No port weapon-guide page / describe() text for the Mine Layer; grep for 'places mines on the ground' returns no port match", result: fail }
+    confidence: high
+    notes: "Newly mapped this pass (was an unmapped Base MENUQC symbol). Out-of-scope menu prose; recorded for registry coverage completeness. Marked missing/na — purely informational in-menu text, not a gameplay feature."

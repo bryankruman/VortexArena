@@ -6,10 +6,10 @@ summary:
   feature_count: 17
   worst_gaps:
     - "raptor.impact: CONFIRMED LIVE (fixup commit 4be8357) — Spawn() no longer nulls vehicle.Touch, Think() snapshots OldVelocity, Spawn seeds PlayTime; verified full dispatch chain MoveTypePhysics(BounceMissile)->PushEntity(doTouch)->FlyMove->VehicleCommon.Touch->VehicleDef.Impact->vehicles_impact. Wiring is symmetric with Racer."
-    - "raptor.painframe: NEWLY WIRED LIVE (fixup commit 4be8357) — Raptor.Think now calls VehicleCommon.PainFrame; faithful port of vehicles_painframe (<=50%-health shake/roll jitter live; EFFECT_SMOKE_SMALL deferred)."
-    - "Still no presentation at all: no rotor spinners/anglefix, no takeoff/land model animation frame, no cosmetic bomb/tail models, no muzzle/explosion/CSQC-projectile FX, no flare flame glow, no low-health smoke."
-    - "No CSQC HUD/crosshair: missing the dual reticle + the dropmark bomb-impact marker + the aux lock crosshair color feedback."
-    - "Engine fly sound (SND_VEH_RAPTOR_SPEED every ~7.96s) and death tumble SND_ROCKET_IMPACT not played."
+    - "raptor.painframe: WIRED LIVE — Raptor.Think calls VehicleCommon.PainFrame; faithful port of vehicles_painframe (<=50%-health shake/roll jitter live; only EFFECT_SMOKE_SMALL puff deferred — the headless Common layer has no particle emitter)."
+    - "DRIFT FIX (2026-06-25, post-Wave-12a): server-side audio + FX emission is now LIVE for several rows the prior baseline still recorded as missing — engine fly sound (SND_VEH_RAPTOR_SPEED, both Takeoff+Frame), death-tumble SND_ROCKET_IMPACT + EXPLOSION_MEDIUM/SMALL, and the cluster-bomb RAPTOR_BOMB_SPREAD puff are all emitted via Api.Sound.Play / EffectEmitter (Send_Effect equivalent). Audio upgraded missing->faithful (takeoff, flight, death); presentation upgraded missing->partial/faithful (bombs, death)."
+    - "Remaining presentation is client-render only: no rotor spinners/anglefix, no takeoff/land model animation frame, no cosmetic bomb/tail/cockpit models, no CSQCProjectile bolt/bomb trails, no RAPTOR_MUZZLEFLASH on the cannon (still TODO — racer got its muzzleflash, raptor did NOT), no flare flame glow/model, no low-health smoke."
+    - "No CSQC HUD/crosshair: missing the dual reticle + the dropmark bomb-impact marker + the aux lock crosshair color feedback (the reload2/ammo2 stats the HUD reads ARE now fed by Think — Wave-12a)."
     - "mass=1 is set on the entity but is INERT — the port's MoveTypePhysics never reads .Mass, so the bounce-missile mass tuning has no behavioral effect (bouncefactor IS live, verified MoveTypePhysics.cs:163-164)."
 features:
   - id: raptor.spawn.setup
@@ -122,23 +122,23 @@ features:
       - { name: "takefftime", base: "1.5", port: "1.5", match: true }
       - { name: "frame target", base: "25", port: "25", match: true }
       - { name: "rise clamp", base: "min(vel.z*1.5, 256)", port: "min(vel.z*1.5, 256)", match: true }
+      - { name: "engine sound period", base: "time+7.955812 (soundlength raptor_speed.wav)", port: "Time+7.955812f, VehSoundNextTime gate", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
-      audio: missing
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Animation frame ramp tracked (VehAnimFrame) but drives no visible model; rotor avelocity ramp (90 + frame/25*25000) absent (no rotor entities)."
-      - "Engine fly sound (SND_VEH_RAPTOR_SPEED every 7.955812s) not played during takeoff."
+      - "Animation frame ramp tracked (VehAnimFrame) but drives no visible model; rotor avelocity ramp (90 + frame/25*25000) absent (no rotor entities) — presentation only."
       - "Wave-2 added a button-clear (ATCK/ATCK2/CROUCH) at the end of Takeoff, but it writes vehicle.VehInput which GameWorld.cs:1104-1105 overwrites with fresh player input every tick BEFORE the next Think — so the clear is effectively a no-op on the live path. QC's per-tick button zero is faithful but the port's input-refresh architecture makes it inert (minor — input only reaches Frame, not Takeoff, so no fire/dive actually leaks)."
     verification:
-      - { kind: code, ref: "Raptor.cs:Takeoff vs raptor_takeoff frame/rise math; VehInput refresh GameWorld.cs:1104", result: pass }
+      - { kind: code, ref: "Raptor.cs:286-290 Takeoff plays vehicles/raptor_speed.wav on SoundChannel.Item gated on VehSoundNextTime (matches QC raptor_takeoff CH_TRIGGER_SINGLE/7.955812s); frame/rise math vs raptor_takeoff; VehInput refresh GameWorld.cs:1104", result: pass }
     confidence: high
-    notes: "Hand-off to flight modeled with VehSoundState 0->1. Port Takeoff ramps frame+rise; the button-clear added in Wave-2 is overwritten by the per-tick input cache so it doesn't change behavior."
+    notes: "DRIFT FIX 2026-06-25: audio missing->faithful. The SND_VEH_RAPTOR_SPEED engine note IS played in Takeoff (Raptor.cs:286-290) on the same VehSoundNextTime gate the flight phase uses, so the note carries seamlessly through the handoff — was already present at commit ff8a699 but the prior baseline still recorded audio:missing. Hand-off to flight modeled with VehSoundState 0->1. Only the rotor/frame model animation (presentation) remains."
 
   - id: raptor.flight_controller
     name: "Free-flight avelocity controller (raptor_frame physics)"
@@ -160,23 +160,23 @@ features:
       - { name: "avelocity damping", base: "*0.9", port: "*0.9", match: true }
       - { name: "strafe roll clamp", base: "bound(-30, .z + move.y/strafe, 30)", port: "same", match: true }
       - { name: "pitch bias fwd/back", base: "+5 / -20", port: "+5 / -20", match: true }
+      - { name: "engine sound period", base: "time+7.955812 (soundlength raptor_speed.wav)", port: "Time+7.955812f, VehSoundNextTime gate", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
-      audio: missing
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Engine fly sound (every 7.955812s) not played."
-      - "No visible model pitch/roll/yaw pose beyond entity angles; player glue origin+'0 0 32' done but no cockpit/exterior model."
+      - "No visible model pitch/roll/yaw pose beyond entity angles; player glue origin+'0 0 32' done but no cockpit/exterior model (presentation only)."
     verification:
-      - { kind: code, ref: "Raptor.cs:Frame vs raptor_frame yaw/pitch/thrust/hover-flip step-by-step; FixedVecToAngles confirmed equivalent to QC df=vectoangles+df.x=-df.x", result: pass }
+      - { kind: code, ref: "Raptor.cs:Frame vs raptor_frame yaw/pitch/thrust/hover-flip step-by-step; FixedVecToAngles confirmed equivalent to QC df=vectoangles+df.x=-df.x; engine fly sound Raptor.cs:417-421 plays vehicles/raptor_speed.wav gated on VehSoundNextTime (matches raptor_frame:158-164)", result: pass }
       - { kind: test, ref: "VehicleRuntimeTests Drive_* (racer-driven, same shared seam) — input reaches the controller seam, velocity builds", result: pass }
     confidence: high
-    notes: "Hover-flip guard, yaw-relative thrust (movestyle 1), roll-on-strafe with 0.95 decay all present. Unchanged by Wave-2."
+    notes: "DRIFT FIX 2026-06-25: audio missing->faithful. The SND_VEH_RAPTOR_SPEED loop IS played in Frame (Raptor.cs:417-421) on the VehSoundNextTime gate, matching raptor_frame. Hover-flip guard, yaw-relative thrust (movestyle 1), roll-on-strafe with 0.95 decay all present. Only the cockpit/exterior model pose (presentation) remains."
 
   - id: raptor.cannon_aim_lock
     name: "Twin-cannon turret aim + target lock + lead predict"
@@ -284,17 +284,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No CSQCProjectile visual (PROJECTILE_RAPTORBOMB / RAPTORBOMBLET) for bomb/bomblet, no Damage_DamageInfo (DEATH_VH_RAPT_FRAGMENT) fragment effect on burst (presentation only)."
+      - "No CSQCProjectile visual (PROJECTILE_RAPTORBOMB / RAPTORBOMBLET) for the falling bomb/bomblet (client-render trail only)."
+      - "The burst FX is partial: RAPTOR_BOMB_SPREAD particle puff IS now emitted (Send_Effect equivalent), but the bomb-casing shell-fragment gibs (RaptorCBShellfragToss, the CSQC half of Damage_DamageInfo DEATH_VH_RAPT_FRAGMENT) are still client-only — see raptor.cb_shellfrag_gib."
     verification:
-      - { kind: code, ref: "Raptor.cs:DropOneBomb burst loop + clear-fall trace + touch-delay vs raptor_bomb_burst/raptor_bomblet_touch/raptor_bombdrop — direction (norm_vel*bomblet_alt), cnt=time+10 window, nextthink gating, random()*explode_delay all match", result: pass }
+      - { kind: code, ref: "Raptor.cs:DropOneBomb burst loop + clear-fall trace + touch-delay vs raptor_bomb_burst/raptor_bomblet_touch/raptor_bombdrop — direction (norm_vel*bomblet_alt), cnt=time+10 window, nextthink gating, random()*explode_delay all match; Raptor.cs:617 EffectEmitter.Emit('RAPTOR_BOMB_SPREAD', origin, velocity, 1) on burst (RAPTOR_BOMB_SPREAD registered EffectsList.cs:145)", result: pass }
     confidence: high
-    notes: "Wave-2 FIXED both prior timing gaps: (1) the bomblet_alt clear-fall altitude test (traceline origin->origin+norm_vel*bomblet_alt; defer if trace_fraction==1 or within bomblet_radius of owner) is now ported and matches QC exactly, with the cnt=time+10 window and the bomblet_alt-gated nextthink (time vs time+bomblet_time); (2) the random()*bomblet_explode_delay staggered touch detonation is now ported (touch reschedules Boom for Time+Prandom.Float()*0.4 instead of instant). Only the CSQC bomb/bomblet/fragment visuals remain. Two bombs from bombmount_left/right, MakeTrigger transparency, 8 bomblets with spread, RadiusDamage values exact."
+    notes: "DRIFT FIX 2026-06-25 (Wave-12a): presentation missing->partial — the cluster-burst RAPTOR_BOMB_SPREAD puff (the particle half of DEATH_VH_RAPT_FRAGMENT) is now emitted server-side via EffectEmitter. Wave-2 FIXED the two timing gaps: (1) the bomblet_alt clear-fall altitude test (traceline origin->origin+norm_vel*bomblet_alt; defer if trace_fraction==1 or within bomblet_radius of owner) matches QC, with the cnt=time+10 window and bomblet_alt-gated nextthink; (2) the random()*bomblet_explode_delay staggered touch detonation. Two bombs from bombmount_left/right, MakeTrigger transparency, 8 bomblets with spread, RadiusDamage values exact. Only the CSQC bomb/bomblet trails + the shell-fragment gibs remain."
 
   - id: raptor.flares
     name: "Secondary — decoy flares (missile seduction)"
@@ -447,24 +448,25 @@ features:
       - { name: "blowup radius", base: "250", port: "250", match: true }
       - { name: "blowup force", base: "250", port: "250", match: true }
       - { name: "deathtype", base: "DEATH_VH_RAPT_DEATH", port: "DeathTypes.VhRaptDeath", match: true }
-      - { name: "diethink small-explosion chance", base: "random()<0.05", port: "NOT IMPLEMENTED (presentation FX)", match: false }
+      - { name: "death effect", base: "EFFECT_EXPLOSION_MEDIUM (Send_Effect, findbetterlocation)", port: "EffectEmitter.Emit('EXPLOSION_MEDIUM', origin) (findbetterlocation nudge deferred — cosmetic)", match: true }
+      - { name: "diethink small-explosion chance", base: "random()<0.05 -> EFFECT_EXPLOSION_SMALL + SND_ROCKET_IMPACT", port: "Prandom.Float()<0.05f -> EffectEmitter EXPLOSION_SMALL + Api.Sound rocket_impact.wav", match: true }
       - { name: "colormod (dying tint)", base: "'-0.5 -0.5 -0.5'", port: "'-0.5 -0.5 -0.5' (ColorModKey set in Death)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
-      audio: missing
+      presentation: partial
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No EFFECT_EXPLOSION_MEDIUM on death (findbetterlocation), no per-think 5% EFFECT_EXPLOSION_SMALL + SND_ROCKET_IMPACT during the tumble (TODO marked in Death think)."
+      - "EXPLOSION_MEDIUM (death) + the per-think 5% EXPLOSION_SMALL ARE now emitted via EffectEmitter, but the findbetterlocation surface-nudge for the medium blast is not reproduced (FX at origin directly) — cosmetic offset only, matching every other vehicle vr_death port. No cosmetic wreck model / EF_NODRAW handling (presentation)."
     verification:
-      - { kind: code, ref: "Raptor.cs:Death/Blowup vs vr_death/raptor_diethink/raptor_blowup; colormod now set; Death invoked live via VehicleCommon.cs:458 when health<=0", result: pass }
+      - { kind: code, ref: "Raptor.cs:495 EffectEmitter.Emit('EXPLOSION_MEDIUM', origin) + Raptor.cs:505-509 5% Api.Sound.Play(rocket_impact.wav, CH_SHOTS) + EffectEmitter EXPLOSION_SMALL during tumble vs vr_death/raptor_diethink/raptor_blowup; colormod set; Death invoked live via VehicleCommon.cs:458 when health<=0; EXPLOSION_MEDIUM/SMALL registered EffectsList.cs:29-30", result: pass }
       - { kind: test, ref: "MonsterTurretVehicleObituaryTests / NotificationPolishTests cover vh_raptor_* death strings", result: pass }
     confidence: high
-    notes: "Tumble + delayed touch/timeout blowup + reset-to-SpawnPos respawn (respawntime 40) all present; Death wired live via VehicleCommon vehicles_damage path. Wave-2 added the dying colormod '-0.5 -0.5 -0.5' (cosmetic value now matches). Only the explosion FX/sound during the tumble remain missing."
+    notes: "DRIFT FIX 2026-06-25: presentation missing->partial, audio missing->faithful; the diethink-chance constant flipped match false->true. The EXPLOSION_MEDIUM death blast + the per-think 5% EXPLOSION_SMALL + SND_ROCKET_IMPACT (rocket_impact.wav on CH_SHOTS) are all emitted server-side (Send_Effect / sound equivalents) — were present at ff8a699 but the prior baseline still recorded these as NOT IMPLEMENTED/missing. Tumble + delayed touch/timeout blowup + reset-to-SpawnPos respawn (respawntime 40) + dying colormod '-0.5 -0.5 -0.5' all faithful and live via the vehicles_damage path. Only the findbetterlocation nudge + the wreck model (presentation) remain."
 
   - id: raptor.painframe
     name: "Low-health pain frame (smoke + damage shake/roll jitter)"

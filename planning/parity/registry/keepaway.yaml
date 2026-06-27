@@ -3,13 +3,13 @@ category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 16
+  feature_count: 19
   worst_gaps:
     - "Loose-ball placement still uses the QC FALLBACK path (random info_player_* spawnpoint), NOT the full MoveToRandomMapLocation world-bounds sampler with SOLID/SLIME/LAVA/SKY content rejection — functionally close, not bit-identical."
     - "Ball/carrier presentation residuals: no EFFECT_KA_BALL_RESPAWN particle at relocate, no EFFECT_BALL_SPARKS on world-touch, no client ball model/glow_trail render, carried-ball scale 0.75 + invisibility-alpha sync not applied."
     - "Multi-ball chaining (g_keepaway_ballcarrier_maxballs, cnt chain / ka_PlayerReset chain advance) is collapsed to a single ball; the structural carrier/collector bot-role split is one adaptive RoleKeepaway."
     - "NOIMPACT fall-off respawn branch (ka_TouchEvent trace_dphitq3surfaceflags & Q3SURFACEFLAG_NOIMPACT) is unported; the NEEDKILL damage respawn branch IS covered."
-    - "Minor unmapped Base features: the :ka: gamelog echoes (ka_EventLog), reset_map_global float2int-decimal reset, and PreferPlayerScore_Clear are not modeled (low impact)."
+    - "Minor unported Base features (now MAPPED as rows): the :ka: gamelog echoes (ka_EventLog), reset_map_global float2int-decimal reset, and PreferPlayerScore_Clear are not modeled (low impact)."
 features:
   - id: keepaway.ball.spawn
     name: "Ball spawn at map start (single keepawayball)"
@@ -529,3 +529,82 @@ features:
       - { kind: codetrace, ref: "GameWorld.cs:2820 ka.RecomputeLeader → AnnounceFragsRemaining; ScoreTimePoints != 0 suppresses (Keepaway.cs:620-621); else CountFragsRemaining (Keepaway.cs:644)", result: pass }
     confidence: high
     notes: "FIXED post-baseline: the timepoints-gated frags-remaining announce is now ported + live via RecomputeLeader/AnnounceFragsRemaining."
+
+  - id: keepaway.log.eventlog
+    name: "Gamelog :ka: pickup/dropped echoes (ka_EventLog)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_EventLog"
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_TouchEvent (ka_EventLog pickup)"
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_DropEvent (ka_EventLog dropped)"
+    port_refs: []
+    constants:
+      - { name: "log_format", base: "strcat(\":ka:\", mode, \":\", ftos(actor.playerid))", port: "none", match: false }
+      - { name: "guard", base: "autocvar_sv_eventlog", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ka_EventLog writes a `:ka:pickup:<playerid>` / `:ka:dropped:<playerid>` line to the server gamelog (GameLogEcho, gated by sv_eventlog) on every pickup (ka_TouchEvent) and drop (ka_DropEvent). The port's PickUp/Drop emit notifications + sounds but never call any gamelog/eventlog sink with the `:ka:` tag — grep for ':ka:' / ka_EventLog / GameLogEcho returns nothing in src/ or game/."
+      - "Low impact: affects only server-side stat-tracking log scraping, not gameplay or any client-visible behavior."
+    verification:
+      - { kind: codetrace, ref: "Grep ':ka:' / ka_EventLog / GameLogEcho across src/ + game/ — no port equivalent on PickUp/Drop", result: fail }
+    confidence: high
+    notes: "NEWLY MAPPED (was an unrecorded coverage gap noted only in summary.worst_gaps). The :ka: gamelog echoes are entirely unported. Pure server-logging feature, no gameplay effect."
+
+  - id: keepaway.score.resetmapglobal
+    name: "reset_map_global: clear per-client float2int decimal accumulator"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:MUTATOR_HOOKFUNCTION(ka, reset_map_global)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:Activate"
+    constants:
+      - { name: "reset_scope", base: "FOREACH_CLIENT(true) it.float2int_decimal_fld = 0", port: "Keepaway._timePointsRemainder = 0 (single accumulator, reset in Activate)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC's reset_map_global hook clears the shared `.float2int_decimal_fld` (the fractional-score carry) on EVERY client at a global map reset. The port keeps a SINGLE gametype-level remainder (_timePointsRemainder) rather than a per-player field, and zeroes it in Activate (Keepaway.cs:157) at match (re)start — functionally equivalent for the single-ball case (only the lone carrier ever accrues fractional points), but it is not a per-client FOREACH reset and is not wired to a dedicated reset_map_global seam."
+      - "Low impact: the only observable effect would be a sub-1-point fractional-score carry surviving a map reset, which Activate already clears; the per-client breadth matters only if multiple players simultaneously held fractional remainders, which the single-ball model precludes."
+    verification:
+      - { kind: codetrace, ref: "Keepaway.cs:157 Activate resets _timePointsRemainder=0 at match start; no per-client float2int_decimal_fld field nor a reset_map_global hook subscription", result: pass }
+    confidence: high
+    notes: "NEWLY MAPPED (was noted only in summary.worst_gaps). The fractional-score carry IS reset (via Activate), but as one gametype accumulator rather than QC's per-client field cleared by reset_map_global. Equivalent for single-ball ka."
+
+  - id: keepaway.score.preferplayerscore
+    name: "PreferPlayerScore_Clear (suppress team-score preference in FFA ka)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/keepaway/sv_keepaway.qc:MUTATOR_HOOKFUNCTION(ka, PreferPlayerScore_Clear)"
+    port_refs: []
+    constants:
+      - { name: "return", base: "return true", port: "none", match: false }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC ka's PreferPlayerScore_Clear hook returns true, signalling the scoreboard/win logic to prefer per-PLAYER score over team score (ka is FFA). The port has no PreferPlayerScore_Clear hook on MutatorHooks and no subscription."
+      - "Functionally covered structurally: the port already models ka as FFA (TeamGame=false, keepaway.ffa.framing) so the scoring framework never applies a team-score preference in the first place — the QC hook is the mechanism by which the SAME outcome is reached in the shared QC scoring code. So the end state matches, but the explicit hook is unmodeled."
+    verification:
+      - { kind: codetrace, ref: "Grep PreferPlayerScore across src/ — no MutatorHooks member, no ka subscription; TeamGame=false already yields per-player FFA scoring", result: fail }
+    confidence: medium
+    notes: "NEWLY MAPPED (was noted only in summary.worst_gaps). The hook itself is unported, but its effect (per-player FFA scoring, no team preference) is already achieved by the port's FFA framing — equivalent outcome, missing mechanism."

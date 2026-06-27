@@ -2,37 +2,35 @@ unit: mutator-buffs
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
-# Re-audited 2026-06-25 (drift check vs the 2026-06-25 baseline; branch claude/parity-port-waves @ dfcab20).
-# ONE MAJOR FIX since the prior write, plus its liveness cascade — 0 regressions:
-#   - buffs.item.spawnfunc (the #1 worst-gap): map buff pickups are now FULLY IMPLEMENTED and LIVE. The port
-#     adds BuffsMutator.SpawnMapBuff + a complete spawnfunc table (ItemSpawnFuncs.RegisterBuffSpawnFuncs):
-#     item_buff_random, item_buff_<type> for all 13 buffs, the _team1.._team4 per-team variants, AND the
-#     Q3TA/Q3A/WOP compat classnames (item_ammoregen/item_scout/item_doubler/item_jumper/item_regen/
-#     item_revival/item_guard/holdable_teleporter/holdable_invulnerability/holdable_kamikaze/item_flight),
-#     matching Base BUFF_SPAWNFUNCS + BUFF_SPAWNFUNC_Q3COMPAT. ConfigureBuffEntity (buff_Init) sets the relic
-#     model (MDL_BUFF = models/relics/relic.md3, asset present), ITEM_D_MINS..ITEM_L_MAXS box, MOVETYPE_TOSS,
-#     FullBright|Stardust|NoShadow, the activate-cooldown (g_buffs_cooldown_activate + game_starttime), touch,
-#     and the per-frame think. LIVE PATH: GameInit -> MapObjectsRegistry.RegisterAll -> ItemSpawnFuncs.Register
-#     -> RegisterBuffSpawnFuncs; the BSP entity lump dispatches each classname via SpawnFuncs.TrySpawn
-#     (GameWorld.cs:3582). So maps that place item_buff_* now spawn real buff pickups.
-#   - LIVENESS CASCADE: every item-gated row that the prior baseline marked liveness:partial *because no buff
-#     item could exist on a map* is now genuinely reachable on the live path. Upgraded partial->live:
-#     touch_pickup, needkill_respawn, respawn_cooldown, random_location, new_type_weighting, available,
-#     notifications (pickup branch). The auto_spawn row stays partial (its own g_buffs_spawn_count>0 default-0
-#     gate is unchanged), but the map path no longer depends on it.
-# Residual: per-buff skin/color/glowmod (buff.m_skin/m_color) is NOT set on the spawned item, so the pickup
-# renders as the uncolored relic (presentation partial on spawnfunc). The OTHER two obtain-path/presentation
-# blockers persist UNCHANGED: still no FilterItem powerup-replace (buffs.replace_powerups), and no carrier
-# buff_model glow / buff_Effect trail / WP_Buff waypoint / observer-disconnect cleanup. Disability projectile-
-# speed (WeaponSpeedFactor) + monster-move (MonsterMove) slows still absent. All perk rows re-verified
-# live+faithful, unchanged.
+# Re-audited 2026-06-25 (drift check vs the prior 2026-06-25 baseline; branch claude/parity-port-waves).
+# TWO MAJOR FIXES since the prior write — 0 regressions:
+#   - buffs.replace_powerups (a recorded worst-gap; was missing/empty port_refs): the FilterItem powerup-replace
+#     obtain path is now FULLY IMPLEMENTED and LIVE. BuffsMutator subscribes MutatorHooks.FilterItem (Hook():107)
+#     and OnFilterItem (912-931) mirrors Base: returns false in the g_buffs<0 mode, gated on
+#     g_buffs_replace_powerups, replaces an item.Pickup.IsPowerup item with a fresh random buff via
+#     buff_SpawnReplacement (setorigin/angles/noalign + ConfigureBuffEntity(null)). LIVE: StartItem.cs:119 calls
+#     MutatorHooks.FireFilterItem(item) on the real item-spawn path. So in the g_buffs>0 "replace" mode, map
+#     powerups now become buffs — the SECOND obtain path. logic/values missing->faithful, liveness na->live.
+#   - buffs.medic.regen (was logic/values/timing:partial — ad-hoc MedicTick + OnPlayerRegen returns false +
+#     rot_mod dropped): now QC-faithful. MedicTick is DELETED. OnPlayerRegen (774-781) sets RotMod=g_buffs_medic_rot
+#     (0.2), LimitMod=MaxMod=g_buffs_medic_max (1.5), RegenMod=g_buffs_medic_regen (1.7) — exactly QC's
+#     M_ARGV(1..4) slots. PlayerFrameLogic.Regen (PlayerFrameLogic.cs:56-89) consumes all four on the live path
+#     (rot_mod gates rotFrameTime, max_mod scales the health stable set-points, limit_mod scales the cap). The
+#     g_buffs_medic_rot constant now matches Base. logic/values/timing partial->faithful; verification fail->pass.
+# Both fixes clear baseline worst_gaps #1 (FilterItem) and #4 (medic ad-hoc regen).
+# Unchanged from the prior audit: map buff pickups via item_buff_* spawnfuncs are LIVE (buffs.item.spawnfunc,
+# ItemSpawnFuncs.RegisterBuffSpawnFuncs -> SpawnMapBuff -> ConfigureBuffEntity); the residual presentation gap is
+# that per-buff skin/color/glowmod (buff.m_skin/m_color) is NOT applied to the spawned item (uncolored relic).
+# Still absent: carrier buff_model glow / buff_Effect trail / WP_Buff waypoint / observer-disconnect cleanup;
+# disability projectile-speed (WeaponSpeedFactor) + monster-move (MonsterMove) slows. All other perk rows
+# re-verified live+faithful, unchanged. All 13 Base buff types + all sv_buffs.qc features have rows (no new
+# unmapped Base features).
 summary:
   feature_count: 34
   worst_gaps:
-    - "FilterItem powerup-replacement (g_buffs>0 mode) is still not implemented (buffs.replace_powerups), so that obtain path is dead — but map buff items now spawn (item_buff_* spawnfuncs are live), so buffs ARE obtainable on maps that place them."
     - "Spawned buff items render as the uncolored relic: per-buff skin/color/glowmod (buff.m_skin/m_color) is not applied (presentation partial on buffs.item.spawnfunc); no carrier buff_model glow, no buff_Effect trail, no WP_Buff waypoint."
     - "Disability buff fire-rate slow is LIVE (WeaponRateFactor x1.5), but projectile-speed (WeaponSpeedFactor x0.7) and monster run/walk (MonsterMove x0.7) slows are still absent."
-    - "No observer/disconnect cleanup; medic regen uses an ad-hoc per-frame heal (no rot-mod); seencount weighting differs (intended)."
+    - "No observer/disconnect cleanup (buffs.observer_cleanup) — moot only because the carrier buff_model glow it cleans up is itself unimplemented."
 features:
   - id: buffs.core.enable
     name: "Buffs mutator enable (g_buffs)"
@@ -344,28 +342,24 @@ features:
       - "common/mutators/mutator/buffs/buff/medic.qc:MUTATOR_HOOKFUNCTION(buffs, PlayerRegen)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnPlayerRegen"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:MedicTick"
     constants:
       - { name: "g_buffs_medic_regen", base: "1.7", port: "1.7", match: true }
       - { name: "g_buffs_medic_max", base: "1.5", port: "1.5", match: true }
-      - { name: "g_buffs_medic_rot", base: "0.2", port: "dropped (no rot multiplier)", match: false }
+      - { name: "g_buffs_medic_rot", base: "0.2", port: "0.2 (RotMod = g_buffs_medic_rot)", match: true }
     status:
-      logic: partial
-      values: partial
-      timing: partial
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "QC PlayerRegen scales the existing regen/limit(max)/rot factors (rot_mod=0.2, limit_mod=max_mod=1.5, regen_mod=1.7); port no-ops PlayerRegen (returns false) and runs a separate ad-hoc per-frame heal toward a recomputed medic max in MedicTick."
-      - "Health-rot multiplier (0.2 = slower rot above stable) is still not applied — above-max health rots at the normal rate."
-      - "Regen pacing/ceiling differs from QC's folded multipliers."
+    gaps: []
     verification:
-      - { kind: code, ref: "OnPlayerRegen returns false (BuffsMutator.cs:655); MedicTick (813-821) is a separate frame heal; medic.qc sets rot/limit/regen mods", result: fail }
-    confidence: medium
-    notes: "Unchanged. Functionally heals faster, but the exact curve, the limit_mod application, and the rot behavior all diverge."
+      - { kind: code, ref: "OnPlayerRegen (BuffsMutator.cs:774-781) sets RotMod=g_buffs_medic_rot (0.2), LimitMod=MaxMod=g_buffs_medic_max (1.5), RegenMod=g_buffs_medic_regen (1.7) — QC M_ARGV(1..4) slots; PlayerFrameLogic.Regen (PlayerFrameLogic.cs:56-89) consumes all four on the live path (rot_mod gates rotFrameTime, max_mod scales health stable set-points, limit_mod scales the cap)", result: pass }
+    confidence: high
+    notes: "FIXED since the prior 2026-06-25 baseline: the ad-hoc MedicTick is DELETED; OnPlayerRegen now scales the shared regen/limit(max)/rot factors exactly like QC PlayerRegen (rot_mod=0.2 slower above-stable rot, limit_mod=max_mod=1.5 raised ceiling, regen_mod=1.7 faster heal). The live regen loop reads them. logic/values/timing partial->faithful; g_buffs_medic_rot now applied (was dropped); verification fail->pass."
 
   - id: buffs.vampire
     name: "Vampire buff — heal on damage dealt"
@@ -811,25 +805,29 @@ features:
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/buffs/sv_buffs.qc:MUTATOR_HOOKFUNCTION(buffs, FilterItem)"
-    port_refs: []
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_SpawnReplacement"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnFilterItem"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:ConfigureBuffEntity"
     constants:
-      - { name: "g_buffs_replace_powerups", base: "0", port: "none", match: false }
-      - { name: "g_buffs_replace_available", base: "1", port: "none", match: false }
+      - { name: "g_buffs_replace_powerups", base: "0", port: "0 (read via Api.Cvars)", match: true }
+      - { name: "g_buffs < 0 disables replace", base: "yes (return false)", port: "yes (return false when g_buffs<0)", match: true }
+      - { name: "g_buffs_replace_available", base: "1", port: "read in ConfigureBuffEntity (re-roll unavailable type)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: na
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Still no FilterItem hook in BuffsMutator: with g_buffs>=0 and g_buffs_replace_powerups, QC replaces every powerup item with a random buff (buff_SpawnReplacement). The g_buffs>0 'replace' mode is entirely non-functional, removing the second obtain path. (A FilterItemDefinition hook chain exists in MutatorHooks.cs but BuffsMutator does not subscribe it.)"
+      - "Replacement buff item inherits the spawnfunc presentation gap (buffs.item.spawnfunc): per-buff skin/color/glowmod is not applied, so the replaced powerup renders as the uncolored relic. No carrier glow/waypoint either."
     verification:
-      - { kind: code, ref: "no FilterItem powerup-replace in BuffsMutator (mutator doesn't subscribe FilterItem/FilterItemDefinition)", result: fail }
+      - { kind: code, ref: "OnFilterItem (BuffsMutator.cs:912-931): returns false when g_buffs<0; gated on g_buffs_replace_powerups; item.Pickup.IsPowerup check; buff_SpawnReplacement (setorigin/angles/noalign + ConfigureBuffEntity(null random)); returns true to delete the powerup. Subscribes MutatorHooks.FilterItem (Hook():107). LIVE: StartItem.cs:119 calls MutatorHooks.FireFilterItem(item) on the item-spawn path", result: pass }
     confidence: high
-    notes: "Unchanged. Second of the three QC obtain paths; only a stripped spawn_count exists."
+    notes: "FIXED since the prior 2026-06-25 baseline (was missing, empty port_refs — a recorded worst-gap): the FilterItem powerup-replace obtain path is now fully implemented and LIVE. In the g_buffs>0 'replace' mode, map powerups are swapped for random buffs (buff_SpawnReplacement), matching Base; the g_buffs<0 'no auto-replace' mode is honored. logic/values missing->faithful, liveness na->live. Residual presentation gap is shared with buffs.item.spawnfunc (uncolored relic)."
 
   - id: buffs.mutator_string
     name: "Report as active mutator (BuildMutatorsString / PrettyString)"

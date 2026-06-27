@@ -79,7 +79,9 @@ Also RE-SCAN the Base source for features that exist in Base but have NO row in 
 ${mode === 'update'
   ? `MODE=update: REWRITE ${REGDIR}/${u.id}.yaml with the current truth (corrected statuses, gaps,
      constants, confidence) per SCHEMA.md, bump last_audited to "${label}" if it is a date, and ADD
-     rows for any new_unmapped features. Set wrote_files/rewrote_registry true.`
+     rows for any new_unmapped features. Set wrote_files/rewrote_registry true.
+     CRITICAL: PRESERVE the existing 'base_ref_rev:' field VERBATIM — it is a PINNED Base revision, NOT the
+     local Base git HEAD. Do not read it from git; copy the string already in the baseline yaml unchanged.`
   : `MODE=diff: DO NOT modify any file. Report changes only. Set wrote_files/rewrote_registry false.`}
 
 Return the structured diff. If nothing differs and nothing is unmapped, set changed=false with empty arrays.`

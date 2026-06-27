@@ -1,14 +1,14 @@
 unit: cl-viewmodel
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 13
   worst_gaps:
     - "Per-child m_skin (wepskin) is not applied; the gun renders with its base material. Team colormap is an approximate whole-model albedo tint, not a true palette colormap swap (colormap/glowmod ARE now applied — colormod + Vortex/team glow)."
     - "Weapon-switch animation is a slide-down, not Base's barrel-tip (this.angles_x = -90*f*f), and is not keyed to per-weapon switchdelay_raise/drop or weapon_nextthink (port does not network wframe)."
     - "No networked weapon fire/idle/reload animation (the QC wframe temp entity is not networked); the gun never visibly cycles or reloads."
-    - "Muzzle-flash MODEL is ported for 4 weapons (Devastator/MineLayer→flash.md3, Machinegun/Shotgun→uziflash.md3) but the Vortex/Vaporizer (nexflash.md3) and Overkill (HMG/MachineGun/RPC) flash models are not mapped."
+    - "Muzzle-flash MODEL md3 frame is not cycled (port spawns a static node and fades/shrinks it without advancing the md3 flash frame); all 7 Base m_muzzlemodel weapons are now mapped."
 features:
   - id: cl-viewmodel.model.select_and_rig
     name: "View-model entity + model select (invisible-hand vs full-rig), rebuild on weapon change"
@@ -325,23 +325,25 @@ features:
     notes: "Both local and remote particle flashes are LIVE. Remote emit confirmed faithful to Send_Effect_Except (every weapon passes except: actor). Position is heuristic (tag socket) not the QC view-projection; not runtime-verified for on-screen match. Secondary fire genuinely does not flash."
 
   - id: cl-viewmodel.muzzle.flash_model
-    name: "Muzzle flash MODEL (spinning flash md3 for Devastator + Machinegun + Shotgun + MineLayer)"
+    name: "Muzzle flash MODEL (spinning flash md3 for the 7 m_muzzlemodel weapons: Devastator/MineLayer/OkRPC=flash.md3, Machinegun/Shotgun/OkHMG/OkMachinegun=uziflash.md3)"
     layer: [presentation]
     base_refs:
       - "common/weapons/all.qc:W_MuzzleFlash_Model"
       - "common/weapons/all.qc:W_MuzzleFlash_Model_Think"
       - "common/weapons/all.qc:W_MuzzleFlash (m_muzzlemodel != MDL_Null gate, line 776)"
+      - "common/weapons/weapon/devastator.qh:27 / minelayer.qh:29 / machinegun.qh:24 / shotgun.qh:25 (m_muzzlemodel ATTRIB)"
+      - "common/mutators/mutator/overkill/{okhmg,okmachinegun,okrpc}.qh (m_muzzlemodel ATTRIB)"
     port_refs:
       - "game/client/ViewModel.cs:SpawnMuzzleFlashModel"
       - "game/client/ViewModel.cs:FlashModelFactory"
       - "game/net/NetGame.cs:MuzzleModelFor"
-      - "game/net/NetGame.cs:1325 (FlashModelFactory wiring)"
+      - "game/net/NetGame.cs:1386 (FlashModelFactory wiring)"
     constants:
-      - { name: "m_muzzlemodel", base: "Devastator/MineLayer/Arc=flash.md3, Machinegun/Shotgun=uziflash.md3, Vortex/Vaporizer=nexflash.md3, Overkill HMG/MG/RPC (else MDL_Null)", port: "MuzzleModelFor: devastator/minelayer=flash.md3, machinegun/shotgun=uziflash.md3 (Vortex/Vaporizer/Overkill not mapped)", match: false }
+      - { name: "m_muzzlemodel set (Base m_muzzlemodel != MDL_Null)", base: "Devastator/MineLayer/OkRPC=flash.md3, Machinegun/Shotgun/OkHMG/OkMachinegun=uziflash.md3; Vortex/Vaporizer/Arc/all others=MDL_Null (NO model flash — they define a MUZZLEFLASH MODEL but their m_muzzlemodel ATTRIB is MDL_Null)", port: "MuzzleModelFor: devastator/minelayer/okrpc=flash.md3, machinegun/shotgun/okhmg/okmachinegun=uziflash.md3; everything else \"\"", match: true }
       - { name: "flash think", base: "frame+=2, scale*=0.5, alpha-=0.25 every 0.05s; start scale 0.75 alpha 0.75 frame 2; EF_ADDITIVE|EF_FULLBRIGHT", port: "scale*=0.5, alpha-=0.25 over 3x 0.05s ticks via Tween; start scale 0.75 alpha 0.75; Unshaded+Add blend (EF_FULLBRIGHT|EF_ADDITIVE)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: faithful
       audio: na
@@ -349,12 +351,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "MuzzleModelFor only maps Devastator/MineLayer (flash.md3) and Machinegun/Shotgun (uziflash.md3); Base also sets m_muzzlemodel for Vortex/Vaporizer (nexflash.md3) and the Overkill HMG/MachineGun/RPC — those weapons get no model flash in the port."
       - "Frame is animated in Base via frame+=2 (the md3 flash frame cycle); the port spawns a fresh static node and fades/shrinks it without advancing the md3 frame."
     verification:
-      - { kind: code, ref: "ViewModel.SpawnMuzzleFlashModel (gated on FlashModelFactory + non-empty MuzzleModelPath) spawns the flash node at the muzzle marker, scale 0.75 alpha 0.75, EF_ADDITIVE|EF_FULLBRIGHT (ApplyFlashMaterialFx), then a 3-step Tween (scale*=0.5, alpha-=0.25 each 0.05s) matching W_MuzzleFlash_Model_Think; FlashModelFactory wired live at NetGame:1325 to _assets.LoadModel; MuzzleModelFor (NetGame:2141) maps devastator/minelayer->flash.md3, machinegun/shotgun->uziflash.md3", result: pass }
+      - { kind: code, ref: "ViewModel.SpawnMuzzleFlashModel (gated on FlashModelFactory + non-empty MuzzleModelPath) spawns the flash node at the muzzle marker, scale 0.75 alpha 0.75, EF_ADDITIVE|EF_FULLBRIGHT (ApplyFlashMaterialFx), then a 3-step Tween (scale*=0.5, alpha-=0.25 each 0.05s) matching W_MuzzleFlash_Model_Think; FlashModelFactory wired live at NetGame:1386 to _assets.LoadModel; MuzzleModelFor (NetGame:2216) maps devastator/minelayer/okrpc->flash.md3, machinegun/shotgun/okhmg/okmachinegun->uziflash.md3; Base re-verified: only those 7 weapons set m_muzzlemodel != MDL_Null (Vortex/Vaporizer/Arc are MDL_Null despite defining a nexflash/flash MODEL macro), so the port set now exactly matches Base", result: pass }
     confidence: high
-    notes: "FIXED since baseline (was logic/values/timing/presentation missing, liveness na): the spinning/fading flash model IS now ported and LIVE. SpawnMuzzleFlashModel attaches a flash md3 (via FlashModelFactory->LoadModel) at the muzzle socket and runs the exact W_MuzzleFlash_Model_Think tick sequence (scale*=0.5, alpha-=0.25 per 0.05s, 3 ticks, EF_ADDITIVE|EF_FULLBRIGHT). Residual values gap: MuzzleModelFor only covers 4 of the ~7+ Base weapons that set m_muzzlemodel (missing Vortex/Vaporizer nexflash and the Overkill weapons), and the md3 frame is not cycled."
+    notes: "FIX + reclassification since baseline (was values:partial). Re-audit of Base m_muzzlemodel ATTRIBs: the seven weapons that attach a model flash are Devastator/MineLayer/OkRPC (flash.md3) and Machinegun/Shotgun/OkHMG/OkMachinegun (uziflash.md3). Vortex/Vaporizer/Arc DEFINE a MUZZLEFLASH MODEL constant (nexflash.md3 / flash.md3) but their m_muzzlemodel ATTRIB is MDL_Null, so they attach NO model flash — the prior baseline gap listing nexflash/Overkill as missing was partly a real gap (Overkill, now mapped: okrpc/okhmg/okmachinegun added to MuzzleModelFor) and partly a registry error (Vortex/Vaporizer never set m_muzzlemodel). The port now covers the full Base set. Sole residual gap: the md3 flash frame is not cycled (frame+=2)."
 
   - id: cl-viewmodel.casings.brass_eject
     name: "Brass / shell casings (eject, tumble, bounce, fade, bounce sounds)"

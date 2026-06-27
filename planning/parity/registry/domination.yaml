@@ -1,14 +1,14 @@
 unit: domination
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-26"
+last_audited: "2026-06-25"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Round-not-started capture gate is dead: Domination.RoundStartedSource is never assigned by the host (GameWorld wires RoundEndTimeSource @2265 but NOT RoundStartedSource — zero references outside Domination.cs), so the QC `round_handler_IsActive && !IsRoundStarted` block never fires (round-based variant only, non-default)."
-    - "Round-based round time limit is 180s not 120s: GameWorld's Domination EnableRounds call (@2264) omits the roundTimeLimit/countdown/endDelay args, so RoundHandler.Init is never called and the generic 180s default stands instead of autocvar_g_domination_round_timelimit (120). Warmup 5s matches only by default coincidence (round-based variant only, non-default)."
-    - "dom_EventLog (`:dom:taken:` sv_eventlog gamelog echo on capture) is not ported — no GameLogEcho call in the capture path (telemetry-only; affects server gamelog parsers)."
+    - "Round-not-started capture gate is dead: Domination.RoundStartedSource is never assigned by the host (GameWorld wires RoundEndTimeSource @2751 but NOT RoundStartedSource — zero references outside Domination.cs), so the QC `round_handler_IsActive && !IsRoundStarted` block never fires (round-based variant only, non-default)."
     - "Round-based player-blocking (QC reset_map_players + PlayerSpawn set player_blocked = !IsRoundStarted) is not mirrored — the port's RoundStart clears no per-player block flag (round-based variant only, non-default)."
+    - "dom_team palette entities (per-team point models/sounds/messages from map dom_team edicts) are not implemented; the port hardcodes the default dom_<color>.md3 palette in DomPointModel (non-default maps only)."
+    - "WaypointSprite_Ping (one-shot radar ping on capture) is not emitted separately; the port rebuilds the sprite set each tick (pull model) so ownership/color updates flow, but the explicit ping flash is absent."
 features:
   - id: domination.init.mutator_limits
     name: "Mutator register + score/lead limit + team setup"
@@ -101,7 +101,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Round-not-started capture gate is DEAD: CapturePoint checks RoundStartedSource, but GameWorld.ActivateGameType never assigns it (only RoundEndTimeSource is wired @2265; RoundStartedSource has zero references outside Domination.cs), so in the round-based variant a captured point is NOT blocked while a round is active-but-unstarted (QC round_handler_IsActive && !IsRoundStarted)."
+      - "Round-not-started capture gate is DEAD: CapturePoint checks RoundStartedSource, but GameWorld.ActivateGameType never assigns it (only RoundEndTimeSource is wired @2751; RoundStartedSource has zero references outside Domination.cs), so in the round-based variant a captured point is NOT blocked while a round is active-but-unstarted (QC round_handler_IsActive && !IsRoundStarted)."
       - "IS_INDEPENDENT_PLAYER skip not mirrored (port has no independent-player concept here)."
       - "Capture is instant (no neutral interim state); Base's neutral-during-delay is purely cosmetic (capturetime path is commented out in QC), so functionally equivalent."
     verification:
@@ -198,26 +198,26 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:CheckRoundWinner"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:CountAndFindRoundWinner"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:RoundStart"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (EnableRounds + RoundEndTimeSource @2264)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (EnableRounds + RoundEndTimeSource @2744-2751)"
     constants:
-      - { name: "round_timelimit_s", base: "120 (autocvar_g_domination_round_timelimit; round_handler_Init arg)", port: "180 (RoundHandler default; EnableRounds @2264 passes NO roundTimeLimit so Init is never called)", match: false }
-      - { name: "warmup_s", base: "5 (autocvar_g_domination_warmup)", port: "5 (RoundHandler.CountdownLength default; matches by coincidence of defaults)", match: true }
+      - { name: "round_timelimit_s", base: "120 (autocvar_g_domination_round_timelimit; round_handler_Init arg)", port: "120 (EnableRounds @2750 passes roundTimeLimit: Cvars.FloatOr(\"g_domination_round_timelimit\", 120))", match: true }
+      - { name: "warmup_s", base: "5 (autocvar_g_domination_warmup)", port: "5 (EnableRounds @2749 passes countdown: Cvars.FloatOr(\"g_domination_warmup\", 5))", match: true }
+      - { name: "end_delay_s", base: "5 (round_handler_Init first arg)", port: "5 (EnableRounds @2748 passes endDelay: 5f)", match: true }
       - { name: "caps_to_win_match", base: "5 (roundbased_point_limit)", port: "5 (enforced in CheckRoundWinner)", match: true }
     status:
       logic: faithful
-      values: partial
-      timing: partial
+      values: faithful
+      timing: faithful
       presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Round time limit is WRONG: Base round_handler_Init uses autocvar_g_domination_round_timelimit (default 120s), but GameWorld.ActivateGameType's Domination arm (@2264) calls EnableRounds(dom.CanRoundStart, dom.CheckRoundWinner, dom.RoundStart) with NO endDelay/countdown/roundTimeLimit args — so RoundHandler.Init is never called and the round keeps the generic default RoundTimeLimit=180s (and EndDelay=5s). The port's round-based dom rounds run 180s instead of 120s. (Warmup 5s matches only because the RoundHandler default countdown is also 5.)"
+    gaps: []
     verification:
-      - { kind: code, ref: "GameWorld.cs:2257-2272 Domination arm: EnableRounds(dom.CanRoundStart, dom.CheckRoundWinner, dom.RoundStart) — no roundTimeLimit/countdown/endDelay passed; EnableRounds @1490 only calls Rounds.Init when ALL THREE of endDelay/countdown/roundTimeLimit are non-null, so dom keeps RoundHandler defaults (Gameplay/GameTypes/RoundHandler.cs CountdownLength=5f, EndDelay=5f, RoundTimeLimit=180f). Base gametypes-server.cfg: g_domination_round_timelimit 120, g_domination_warmup 5. CheckRoundWinner caps logic + ROUND_OVER/ROUND_TEAM_WIN_<team> notifs all present (NotificationsList.cs:711-724,853,950+)", result: fail }
+      - { kind: code, ref: "GameWorld.cs:2744-2750 Domination arm now calls EnableRounds(dom.CanRoundStart, dom.CheckRoundWinner, dom.RoundStart, endDelay: 5f, countdown: Cvars.FloatOr(\"g_domination_warmup\", 5f), roundTimeLimit: Cvars.FloatOr(\"g_domination_round_timelimit\", 120f)); EnableRounds @1594 calls Rounds.Init(d,c,rtl) since all three are non-null, so the round uses 120/5/5 not the generic 180 default. Base gametypes-server.cfg: g_domination_round_timelimit 120, g_domination_warmup 5. CheckRoundWinner caps logic + ROUND_OVER/ROUND_TEAM_WIN_<team> notifs all present", result: pass }
     confidence: high
-    notes: "RE-AUDIT 2026-06-26: round_timelimit constant resolved unknown->false and timing unknown->partial. The baseline assumed the host round handler supplied the 120/5 values; it does NOT — the Domination EnableRounds call (unlike CA/FreezeTag which pass their own cvars) omits the round-timing args, so the generic RoundHandler defaults (180/5/5) stand. Round timelimit is therefore 180 (port) vs 120 (Base) — a real values/timing mismatch, though round-based is non-default (g_domination_roundbased 0). Per-round CENTER/INFO notifications + cumulative 5-cap match win + single-round resolution + time-out no-winner remain correctly wired."
+    notes: "FIX 2026-06-25 (re-verify): round_timelimit values partial->faithful and timing partial->faithful. The prior baseline (2026-06-26) recorded a 180-vs-120 mismatch because the Domination EnableRounds call omitted the round-timing args; the call now passes endDelay:5/countdown:g_domination_warmup(5)/roundTimeLimit:g_domination_round_timelimit(120), so Rounds.Init runs with the correct dom cvars (matching CA/FreezeTag). round_timelimit_s match false->true; warmup now read from the cvar (not coincidence); added end_delay_s (5, match). Round-based is non-default (g_domination_roundbased 0). Per-round CENTER/INFO notifications + cumulative 5-cap match win + single-round resolution + time-out no-winner all correctly wired."
 
   - id: domination.capture.audio
     name: "Capture sound (DOM_CLAIM) + narration (play2all)"
@@ -368,25 +368,26 @@ features:
     base_refs:
       - "common/gametypes/gametype/domination/sv_domination.qc:dom_EventLog"
       - "common/gametypes/gametype/domination/sv_domination.qc:dompoint_captured (dom_EventLog(\"taken\", ...))"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:EventLogEcho (field) + CapturePoint (invoke @487)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (dom.EventLogEcho wire @2735)"
     constants:
-      - { name: "eventlog_tag", base: ":dom:taken:<team_before>[:<playerid>]", port: "none", match: false }
-      - { name: "sv_eventlog_gate", base: "autocvar_sv_eventlog", port: "none", match: false }
+      - { name: "eventlog_tag", base: ":dom:taken:<team_before>[:<playerid>]", port: ":dom:taken:<teamBefore>[:<playerId>] (CapturePoint @487)", match: true }
+      - { name: "sv_eventlog_gate", base: "autocvar_sv_eventlog", port: "Cvars.Bool(\"sv_eventlog\") at wire site (GameWorld @2735)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "dom_EventLog (the `:dom:taken:<team_before>:<playerid>` GameLogEcho on capture, gated by sv_eventlog) is not ported — no GameLogEcho call in CapturePoint/dompoint_captured. Telemetry-only (server gamelog parsers / stats), no in-game effect."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep dom_EventLog/GameLogEcho/':dom:' in Domination.cs + GameWorld.cs -> no match", result: fail }
+      - { kind: code, ref: "CapturePoint @487: EventLogEcho?.Invoke(\":dom:taken:\" + teamBefore + (player.PlayerId > 0 ? \":\" + player.PlayerId : \"\")) where teamBefore = point.OwnerTeam before reassignment (QC this.team = PREVIOUS team); GameWorld @2735 wires dom.EventLogEcho = line => { if (Cvars.Bool(\"sv_eventlog\")) GameLog.Echo(line); } in the Domination ActivateGameType arm", result: pass }
     confidence: high
-    notes: "Coverage gap added 2026-06-25 re-verify. QC dompoint_captured calls dom_EventLog(\"taken\", this.team, this.dmg_inflictor) which GameLogEchos `:dom:taken:<team>[:<playerid>]` when sv_eventlog is set. The port has no equivalent. Low impact (server-side log telemetry only)."
+    notes: "FIX 2026-06-25 (re-verify): logic/values missing->faithful, liveness na->live. The dom_EventLog seam is now ported: Domination.EventLogEcho (Domination.cs:100) is invoked in CapturePoint with the `:dom:taken:<team_before>[:<playerid>]` line (teamBefore captured before OwnerTeam reassignment, matching QC dom_EventLog(\"taken\", this.team, this.dmg_inflictor)), and GameWorld.ActivateGameType wires it to GameLog.Echo gated by sv_eventlog. Telemetry-only (server gamelog parsers / stats)."
 
   - id: domination.roundbased.player_blocked
     name: "Round-based player-blocking on round start / spawn"

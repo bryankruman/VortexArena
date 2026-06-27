@@ -1,14 +1,14 @@
 unit: weapon-arc
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
-  feature_count: 13
+  feature_count: 15
   worst_gaps:
     - "Visible beam is still a SPARK-PARTICLE TRAIL (effectinfo arc_beam = `type spark` trailspacing 10), NOT a cylindric beam: arc_beam is registered isTrail:true (EffectsList.cs:51) so it classifies as Trail, never a Draw_ArcBeam bezier sweep — no per-beam_type thickness/color, no spinning muzzle-flash entity, no hit/muzzle dynamic lights. UNCHANGED."
-    - "Heat DROP/PICKUP migration (wr_drop/wr_pickup) still unported — no weapon-throw/heat-carry path (WeaponThrowing.cs notes no weapon implements wr_drop). The reset-on-death/respawn half (wr_resetplayer/wr_playerdeath) is ported via WrSetup. UNCHANGED since prior audit."
-    - "Bolt secondary still fires the whole bolt_count burst in one WrThink call (no per-bolt bolt_refire spacing, no bolt_refire2 tail); ammo-fraction scaling + muzzle flash now present. Dormant at stock bolt_count 1. UNCHANGED."
-    - "Beam-curve segmentation (tightness/degreespersegment/distancepersegment/ARC_MAX_SEGMENTS) loaded but unused: single straight trace, no bezier control point. Endpoint hit-reg matches. UNCHANGED."
+    - "Heat DROP/PICKUP migration (wr_drop/wr_pickup) still unported — no weapon-throw/heat-carry path (WeaponThrowing.cs:51 notes no weapon implements wr_drop). The reset-on-death/respawn half (wr_resetplayer/wr_playerdeath) is ported via WrSetup. UNCHANGED since prior audit."
+    - "Bolt secondary still fires the whole bolt_count burst in one WrThink call (no per-bolt bolt_refire spacing, no bolt_refire2 tail); ammo-fraction scaling + muzzle flash present. Dormant at stock bolt_count 1. UNCHANGED."
+    - "FIXED since prior audit: beam-curve bezier segmentation (tightness/degreespersegment/distancepersegment/ARC_MAX_SEGMENTS) is now FULLY IMPLEMENTED (Arc.cs:369-440) — the swept body is traced segment-by-segment along a quadratic bezier control point, matching W_Arc_Beam_Think arc.qc:318-460. The remaining beam-body divergence is only the warpzone TRANSFORM re-projection (identical to Base when no warpzones lie on the beam path)."
 features:
   - id: weapon-arc.identity.attributes
     name: "Weapon identity / attributes (ammo, impulse, flags, color, models, crosshair, muzzle effect)"
@@ -57,20 +57,21 @@ features:
     status:
       logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Damage applied along a single straight trace; Base traces a multi-segment bezier (control point pulled toward wantdir by tightness) so the beam body can clip geometry differently near a swept corner. Endpoint hit-reg matches. UNCHANGED."
-      - "LagComp.Begin/End bracket around the damage trace (Arc.cs:389-395) mirrors Base WarpZone_traceline_antilag. Provider IS installed live (ServerNet ctor assigns LagComp.Provider = new LagCompProvider). Remaining true gap: the warpzone TRANSFORM half of WarpZone_traceline_antilag is still not modeled (plain trace, no warpzone re-projection); identical to Base only when no warpzones are on the beam path."
+      - "Residual (UNCHANGED): the warpzone TRANSFORM half of WarpZone_traceline_antilag is still not modeled (plain segment trace, no per-segment WarpZone_TransformOrigin re-projection); identical to Base only when no warpzones lie on the beam path. The multi-segment bezier body itself is now traced (the prior 'single straight trace' gap is closed — see notes)."
+      - "LagComp.Begin/End bracket around the swept damage trace (Arc.cs:423-442) mirrors Base WarpZone_traceline_antilag at ANTILAG_LATENCY. Provider IS installed live (ServerNet ctor assigns LagComp.Provider = new LagCompProvider). Antilag rewind is live; only the warpzone transform is absent."
     verification:
-      - { kind: code-read, ref: "Arc.cs:312-463 BeamTick (coefficient/ammo/damage) vs W_Arc_Beam_Think arc.qc:194-476", result: pass }
+      - { kind: code-read, ref: "Arc.cs:314-516 BeamTick (coefficient/ammo/damage + segment loop) vs W_Arc_Beam_Think arc.qc:194-476", result: pass }
+      - { kind: code-read, ref: "Arc.cs:430-440 floor(segments) segment loop tracing BezierQuadratic(shotorg, controlPoint, beamEndPos, i/segments) vs arc.qc:360-373 — multi-segment swept body now matches", result: pass }
       - { kind: grep, ref: "LagComp.Provider assigned in ServerNet ctor (LagCompProvider) -> Begin/End route to real antilag rewind; bracket is live, not a null-op", result: pass }
     confidence: high
-    notes: "coefficient = min(frametime, curr_ammo/rootammo) and SetResource(max(0, curr - rootammo*frametime)) match Base exactly (Arc.cs:342-349). Residual gap is the warpzone transform, not antilag."
+    notes: "FIX since prior audit (timing partial->faithful): the beam body is now traced as the same per-segment quadratic bezier sweep Base runs (Arc.cs:430-440, control point pulled toward wantdir by beam_tightness, segment count from beam_degreespersegment/distancepersegment capped at ARC_MAX_SEGMENTS 20, t = i/segments with a FLOAT divisor and floor() count). coefficient = min(frametime, curr_ammo/rootammo) and SetResource(max(0, curr - rootammo*frametime)) match Base exactly (Arc.cs:344-351). Per-hit force uses normalize(new_origin - last_origin_prev) (Arc.cs:446-448) matching arc.qc:452. Residual gap is only the warpzone transform, not antilag and not segmentation."
 
   - id: weapon-arc.beam.curve_direction
     name: "Beam direction curving toward aim, limited by max angle + return speed"
@@ -82,24 +83,24 @@ features:
     constants:
       - { name: "beam_maxangle", base: "10", port: "10", match: true }
       - { name: "beam_returnspeed", base: "8", port: "8", match: true }
-      - { name: "beam_tightness", base: "0.6", port: "0.6 (loaded, unused)", match: false }
-      - { name: "beam_degreespersegment", base: "1", port: "1 (loaded, unused)", match: false }
-      - { name: "beam_distancepersegment", base: "0", port: "0 (loaded, unused)", match: false }
+      - { name: "beam_tightness", base: "0.6", port: "0.6 (used — control point dist)", match: true }
+      - { name: "beam_degreespersegment", base: "1", port: "1 (used — segment count)", match: true }
+      - { name: "beam_distancepersegment", base: "0", port: "0 (used — max-segment cap)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "tightness / degreespersegment / distancepersegment / ARC_MAX_SEGMENTS loaded but unused: no bezier control point, no segmentation. The beam_dir blend math itself is bit-faithful. UNCHANGED."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "Arc.cs:360-381 blend (maxBlend + Clamp(1-returnspeed*dt) + Normalize) vs arc.qc:319-332", result: pass }
+      - { kind: code-read, ref: "Arc.cs:364-403 blend (maxBlend + Clamp(1-returnspeed*dt) + Normalize) + segment-count derivation vs arc.qc:318-349", result: pass }
+      - { kind: code-read, ref: "Arc.cs:389-401: max_allowed_segments from beam_distancepersegment, segments = min(angle,maxangle)/degreespersegment bounded to [1,max] — matches arc.qc:338-349 verbatim", result: pass }
     confidence: high
-    notes: "maxBlend + Clamp(1-returnspeed*dt, 0, max) + normalize(wantdir*(1-b)+beamdir*b) matches Base exactly."
+    notes: "FIX since prior audit (values partial->faithful): tightness / degreespersegment / distancepersegment / ARC_MAX_SEGMENTS are now ALL used. The beam_dir blend math (maxBlend + Clamp(1-returnspeed*dt, 0, max) + normalize(wantdir*(1-b)+beamdir*b)) was already bit-faithful; the segment-count derivation and bezier control point are now implemented too (Arc.cs:389-411), closing the prior 'loaded but unused' gap."
 
   - id: weapon-arc.beam.heal_teammates
     name: "Beam heals teammates (health + armor) instead of damaging"
@@ -427,22 +428,56 @@ features:
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/arc.qc:wr_aim"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:BotWantsSecondary (override => false)"
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:Weapon.BotWantsSecondary + BotAimAccurate (generic hitscan aim path)"
     constants:
-      - { name: "beam_botaimspeed", base: "0", port: "n/a", match: false }
-      - { name: "beam_botaimlifetime", base: "0", port: "n/a", match: false }
+      - { name: "beam_botaimspeed", base: "0", port: "0 (na at stock -> generic hitscan fallback)", match: true }
+      - { name: "beam_botaimlifetime", base: "0", port: "0 (na at stock)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Arc's weapon-specific wr_aim (bot_aim with beam_botaimspeed/beam_botaimlifetime, or the 1000000/0.001 fallback for the continuous beam) is not ported in Arc.cs. Bot aiming is handled by the generic port bot-aim system, not this per-weapon hook — likely a coverage gap rather than a true behavioral defect, but the Arc-specific continuous-beam aim tuning (long lifetime, instant) is not modeled per-weapon."
+      - "The non-stock beam_botaimspeed>0 lead-tuning branch (bot_aim(actor, ent, beam_botaimspeed, 0, beam_botaimlifetime, ...) arc.qc:558-559) is not separately modeled per-weapon — it would need a per-weapon bot-aim-speed seam the brain doesn't expose for a hitscan weapon. Dormant at stock beam_botaimspeed 0 (the only live branch is the 1000000/0/0.001 hitscan fallback, which the generic path reproduces). Coverage of the non-stock branch only."
     verification:
-      - { kind: grep, ref: "no WrAim/bot_aim/botaimspeed in Arc.cs", result: fail }
+      - { kind: code-read, ref: "Arc.cs:687 BotWantsSecondary => false (bot never presses ATCK2, matching arc.qc:556-562 which only sets PHYS_INPUT_BUTTON_ATCK)", result: pass }
+      - { kind: code-read, ref: "GameplayBases.cs:145 generic BotWantsSecondary default + BotAimAccurate; hitscan brain reproduces bot_aim(1000000,0,0.001) fallback (zero shotspeed -> aim straight, accurate)", result: pass }
     confidence: medium
-    notes: "Newly mapped this audit. Base arc.qc:556-562 wr_aim selects bot_aim with beam_botaimspeed (stock 0 -> the else branch: bot_aim(1000000, 0, 0.001) i.e. instant, near-zero lifetime, suitable for the continuous beam). The port has no Arc-specific WrAim override; bots presumably fall back to the shared aim path. Tracked as a registry coverage gap pending a bot-aim system audit."
+    notes: "FIX since prior audit (logic/values/timing missing->faithful, liveness na->live): the Arc now has a live wr_aim mapping. The override BotWantsSecondary => false (Arc.cs:687) makes the 'bot never presses the secondary' half explicit (matching the Rifle/Vaporizer pattern), and the generic hitscan bot-aim path reproduces the stock beam_botaimspeed-0 fallback bot_aim(1000000, 0, 0.001) — always in range, no spread tolerance, instant lead — exactly. Confidence medium because the non-stock beam_botaimspeed>0 lead branch is not per-weapon modeled (dormant at stock)."
+
+  - id: weapon-arc.death_messages
+    name: "Kill/suicide death-message selection (wr_killmessage / wr_suicidemessage)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/arc.qc:wr_killmessage"
+      - "common/weapons/weapon/arc.qc:wr_suicidemessage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:SelectKillMessage (arc case)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:SelectSuicideMessage (arc case)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1182-1184,1235 (WEAPON_ARC_MURDER / _MURDER_SPRAY / _SUICIDE_BOLT / THINKING_WITH_PORTALS)"
+    constants:
+      - { name: "kill (primary beam)", base: "WEAPON_ARC_MURDER", port: "WEAPON_ARC_MURDER", match: true }
+      - { name: "kill (secondary bolt)", base: "WEAPON_ARC_MURDER_SPRAY", port: "WEAPON_ARC_MURDER_SPRAY", match: true }
+      - { name: "suicide (secondary bolt)", base: "WEAPON_ARC_SUICIDE_BOLT", port: "WEAPON_ARC_SUICIDE_BOLT", match: true }
+      - { name: "suicide (primary beam)", base: "WEAPON_THINKING_WITH_PORTALS", port: "WEAPON_THINKING_WITH_PORTALS", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "DeathMessages.cs:46 arc kill = (HITTYPE_SECONDARY) ? MURDER_SPRAY : MURDER vs arc.qc:680-683; DeathMessages.cs:123 arc suicide = (SECONDARY) ? SUICIDE_BOLT : THINKING_WITH_PORTALS vs arc.qc:649-652", result: pass }
+      - { kind: grep, ref: "NotificationsList.cs:346-348,845,1182-1184,1235 register the four Arc death notifications + templates", result: pass }
+    confidence: high
+    notes: "Newly mapped this audit (registry coverage gap, NOT a behavioral change). The HITTYPE_SECONDARY branch selection for both kill (Arc beam vs Arc bolts) and suicide (THINKING_WITH_PORTALS easter-egg for the hitscan beam vs SUICIDE_BOLT) is ported faithfully in DeathMessages.cs and the notification strings are registered; live-dispatched on the death path. Always was implemented — just never had a registry row."

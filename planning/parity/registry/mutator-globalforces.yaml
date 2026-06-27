@@ -1,22 +1,23 @@
 unit: mutator-globalforces
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 6
   worst_gaps:
-    - "BuildMutatorsPrettyString token (', Global forces') is wired in MutatorActivation.BuildMutatorsPrettyString but has NO live caller in the Server (only the machine-string ':GlobalForces' token is invoked, via GameWorld GameLogInit). Cosmetic / scoreboard-votescreen parity only — the pretty mutator line is never emitted. Otherwise the unit is fully faithful + live."
+    - "None — unit is fully faithful + fully live. The BuildMutatorsPrettyString advertisement (the lone remaining gap in the prior audit) is now LIVE: GameWorld.SendMutatorsWelcome (GameWorld.cs:1392, called per-join from ClientConnect GameWorld.cs:1291) and the 'modifications' serverinfo key (GameWorld.cs:1128) both consume the pretty chain. The machine token ':GlobalForces' stays live via GameLogInit (GameWorld.cs:1117)."
 features:
   - id: mutator-globalforces.register.enable
     name: "Mutator registration + enable/scale cvar (g_globalforces doubles as force multiplier)"
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/globalforces/sv_globalforces.qc:7 (REGISTER_MUTATOR(mutator_globalforces, autocvar_g_globalforces))"
+      - "common/mutators/mutator/globalforces/sv_globalforces.qc:3 (AUTOCVAR(g_globalforces, float, false))"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:39 (IsEnabled => Cvars.GetFloat(\"g_globalforces\") != 0)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:44 (Hook)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:60 (Apply loop: IsEnabled -> Add -> Hook)"
-      - "src/XonoticGodot.Server/GameWorld.cs:511 (MutatorActivation.Apply)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:80 (Apply loop: IsEnabled -> Add -> Hook)"
+      - "src/XonoticGodot.Server/GameWorld.cs:614 (MutatorActivation.Apply)"
     constants:
       - { name: "g_globalforces", base: "0 (off; doubles as force scale, mutators.cfg:495)", port: "0 default; Scale read from g_globalforces cvar (GlobalForcesMutator.cs:51)", match: true }
     status:
@@ -30,10 +31,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: trace, ref: "[Mutator] source-gen -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:511, gated on IsEnabled) -> Add() -> Hook() subscribes OnPlayerDamage to PlayerDamageSplitHealthArmor chain", result: pass }
-      - { kind: test, ref: "MutatorBatchT19Tests.cs:101 Assert.NotNull(Mutators.ByName(\"globalforces\")); Boot(g_globalforces=1) activates it", result: pass }
+      - { kind: trace, ref: "[Mutator] source-gen -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:614, gated on IsEnabled) -> Add() -> Hook() subscribes OnPlayerDamage to PlayerDamageSplitHealthArmor chain", result: pass }
+      - { kind: test, ref: "MutatorBatchT19Tests.cs:109 Assert.NotNull(Mutators.ByName(\"globalforces\")); Boot(g_globalforces=1) activates it", result: pass }
     confidence: high
-    notes: "Enable cvar IS the scale (QC damage_force * autocvar_g_globalforces; port Scale = Cvars.GetFloat(\"g_globalforces\")). Base is a PLAIN REGISTER_MUTATOR with NO instagib/arena exclusion predicate (unlike NIX), so the port's bare `g_globalforces != 0` predicate is faithful — verified against the full 31-line sv_globalforces.qc. Activation loop confirmed live (MutatorActivation.Apply reconciles IsEnabled -> Add -> Hook). UNCHANGED by Wave-2 (diff touched only the spread filter)."
+    notes: "Enable cvar IS the scale (QC damage_force * autocvar_g_globalforces; port Scale = Cvars.GetFloat(\"g_globalforces\")). Base is a PLAIN REGISTER_MUTATOR with NO instagib/arena exclusion predicate (unlike NIX), so the port's bare `g_globalforces != 0` predicate is faithful — verified against the full 32-line sv_globalforces.qc. Activation loop confirmed live (MutatorActivation.Apply at line 80 reconciles IsEnabled -> Add -> Hook). Line numbers shifted vs the 2026-06-25 baseline (Apply 60->80, GameWorld activation 511->614); symbols identical."
 
   - id: mutator-globalforces.spread.hook
     name: "Knockback spread on PlayerDamage_SplitHealthArmor: push every other in-range player by the damage force"
@@ -44,14 +45,14 @@ features:
       - "server/utils.qh:9 (IS_PLAYER(v) := (v).classname == STR_PLAYER — server-side, classname-only, NO dead test)"
       - "server/mutators/events.qh (EV_PlayerDamage_SplitHealthArmor argv: force = M_ARGV(3))"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:72 (OnPlayerDamage)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:68 (IsPlayer = Client flag ONLY, no DeadState test — Wave-2 change)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:89-91 (FindByClass(\"player\") minus target, gated on IsPlayer)"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:438 (PlayerDamageSplitHealthArmor.Call with force)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:80 (OnPlayerDamage)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:76 (IsPlayer = Client flag ONLY, no DeadState test)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:97-99 (FindByClass(\"player\") minus target, gated on IsPlayer)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:468 (PlayerDamageSplitHealthArmor.Call with force)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/GameHooks.cs:41 (PlayerDamageArgs.Force = M_ARGV(3))"
     constants:
-      - { name: "damage_force = M_ARGV(3) * g_globalforces", base: "force * autocvar_g_globalforces", port: "args.Force * Scale (GlobalForcesMutator.cs:83)", match: true }
-      - { name: "loop_set", base: "FOREACH_CLIENT(IS_PLAYER(it) && it != frag_target) [server IS_PLAYER = classname=='player', NO dead test]", port: "FindByClass(\"player\") minus target, gated on IsPlayer (Client flag only — DeadState filter removed in Wave-2)", match: true }
+      - { name: "damage_force = M_ARGV(3) * g_globalforces", base: "force * autocvar_g_globalforces", port: "args.Force * Scale (GlobalForcesMutator.cs:91)", match: true }
+      - { name: "loop_set", base: "FOREACH_CLIENT(IS_PLAYER(it) && it != frag_target) [server IS_PLAYER = classname=='player', NO dead test]", port: "FindByClass(\"player\") minus target, gated on IsPlayer (Client flag only)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -63,21 +64,22 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: trace, ref: "DamageSystem.cs:387-404 fires PlayerDamageSplitHealthArmor with force (info.Force through Damage_Calculate); OnPlayerDamage iterates FindByClass(player) excluding only the target", result: pass }
-      - { kind: trace, ref: "Death path DamageSystem.cs:628-632 leaves the corpse with EntFlags.Client set and ClassName unchanged (still \"player\"); it only gains IsCorpse/Solid.Corpse/DeadState=Dying. So FindByClass(\"player\") still returns it AND IsPlayer (Client-flag only) still accepts it — corpses are now shoved, matching Base's classname-only IS_PLAYER. Observers excluded (classname != \"player\").", result: pass }
-      - { kind: test, ref: "MutatorBatchT19Tests.cs:248 GlobalForces_PushesNearbyPlayer_OnDamage — Combat.Damage on target with force (0,0,600) shoves an in-range bystander (Velocity becomes non-zero) end-to-end through the live hook", result: pass }
+      - { kind: trace, ref: "DamageSystem.cs:468 fires PlayerDamageSplitHealthArmor with force (info.Force through Damage_Calculate); OnPlayerDamage iterates FindByClass(player) excluding only the target", result: pass }
+      - { kind: trace, ref: "On death the port leaves the corpse with EntFlags.Client set and ClassName unchanged (still \"player\"); FindByClass(\"player\") still returns it AND IsPlayer (Client-flag only) still accepts it — corpses are shoved, matching Base's classname-only IS_PLAYER. Observers excluded (classname != \"player\").", result: pass }
+      - { kind: test, ref: "MutatorBatchT19Tests.cs:256 GlobalForces_PushesNearbyPlayer_OnDamage — Combat.Damage on target with force shoves an in-range bystander (Velocity becomes non-zero) end-to-end through the live hook", result: pass }
     confidence: high
-    notes: "FIXED in Wave-2 (commit ec788f7): the prior DeadState==No filter (IsLivePlayer) was a port divergence that froze just-killed corpses; it has been removed (GlobalForcesMutator.cs:68 IsPlayer = Client-flag only). VERIFIED ADVERSARIALLY: on death the port does NOT reclass the entity nor clear EntFlags.Client (DamageSystem.cs:628-632), and ClassName is set once at Player.cs:35 and never changed — so the corpse satisfies both FindByClass(\"player\") and the Client-flag IsPlayer, exactly mirroring Base's classname-only IS_PLAYER (utils.qh:9). Over-inclusion ruled out: observers/spectators do not carry classname \"player\". Hook fires once per player-damage application (DamageSystem.cs:401), matching Base cadence. The zero-force early-out (GlobalForcesMutator.cs:84) is behaviorally identical to Base's no-op loop. The two unit tests are unchanged by Wave-2 and still pass."
+    notes: "IsPlayer = Client-flag only (no DeadState filter), so just-killed corpses (still classed \"player\", EntFlags.Client retained — DamageSystem death path does not reclass) are shoved, mirroring Base's classname-only IS_PLAYER (utils.qh:9). Observers/spectators do not carry classname \"player\" so over-inclusion is ruled out. Hook fires once per player-damage application (DamageSystem.cs:468), matching Base cadence. The zero-force early-out (GlobalForcesMutator.cs:92) is behaviorally identical to Base's no-op loop."
 
   - id: mutator-globalforces.spread.noself
     name: "Self-damage skip (g_globalforces_noself)"
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/globalforces/sv_globalforces.qc:20 (if (autocvar_g_globalforces_noself && frag_target == frag_attacker) return)"
+      - "common/mutators/mutator/globalforces/sv_globalforces.qc:4 (AUTOCVAR(g_globalforces_noself, bool, true))"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:80 (if (NoSelf && ReferenceEquals(target, attacker)) return false)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:88 (if (NoSelf && ReferenceEquals(target, attacker)) return false)"
     constants:
-      - { name: "g_globalforces_noself", base: "1 / true (mutators.cfg:496)", port: "true (NoSelf default; ReadBool)", match: true }
+      - { name: "g_globalforces_noself", base: "1 / true (sv_globalforces.qc:4 AUTOCVAR default)", port: "true (NoSelf default; ReadBool)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -89,19 +91,20 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: trace, ref: "GlobalForcesMutator.cs:80 early-return mirrors sv_globalforces.qc:20", result: pass }
+      - { kind: trace, ref: "GlobalForcesMutator.cs:88 early-return mirrors sv_globalforces.qc:20", result: pass }
     confidence: high
-    notes: "Even with noself off, the FOREACH/it!=target loop guard prevents the direct self-target from double-applying; only OTHER in-range players get pushed (matches Base edge-case note). UNCHANGED by Wave-2."
+    notes: "Even with noself off, the FOREACH/it!=target loop guard prevents the direct self-target from double-applying; only OTHER in-range players get pushed (matches Base edge-case note)."
 
   - id: mutator-globalforces.spread.range
     name: "Range gate measured from the target (g_globalforces_range)"
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/globalforces/sv_globalforces.qc:23-26 (if (range) if (vdist(it.origin - frag_target.origin, >, range)) continue)"
+      - "common/mutators/mutator/globalforces/sv_globalforces.qc:6 (AUTOCVAR(g_globalforces_range, float, 1000))"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:94 (Range != 0 && Vector3.Distance(it.Origin, target.Origin) > Range)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:102 (Range != 0 && Vector3.Distance(it.Origin, target.Origin) > Range)"
     constants:
-      - { name: "g_globalforces_range", base: "1000 qu (0 = unlimited, mutators.cfg:498)", port: "1000 (Range default; 0 = unlimited)", match: true }
+      - { name: "g_globalforces_range", base: "1000 qu (0 = unlimited, sv_globalforces.qc:6 AUTOCVAR default)", port: "1000 (Range default; 0 = unlimited)", match: true }
       - { name: "range_center", base: "frag_target.origin", port: "target.Origin", match: true }
     status:
       logic: faithful
@@ -115,28 +118,29 @@ features:
     gaps: []
     verification:
       - { kind: trace, ref: "Distance check centered on target.Origin, gated on Range!=0, matches QC vdist", result: pass }
-      - { kind: test, ref: "MutatorBatchT19Tests.cs:263 GlobalForces_SkipsOutOfRangePlayer — a player 5000u away stays at zero velocity with range=200", result: pass }
+      - { kind: test, ref: "MutatorBatchT19Tests.cs:271 GlobalForces_SkipsOutOfRangePlayer — a player far away stays at zero velocity with small range", result: pass }
     confidence: high
-    notes: "Radius is centered on the victim, not the attacker/inflictor — port matches. Range-skip behavior unit-tested. UNCHANGED by Wave-2."
+    notes: "Radius is centered on the victim, not the attacker/inflictor — port matches. Range is read via ReadFloat which honors an explicitly-set 0 (unlimited) distinct from unset; this is more faithful than the older `if (v!=0)` guard. Range-skip behavior unit-tested."
 
   - id: mutator-globalforces.spread.selfscale_calcpush
     name: "Per-player push: attacker self-scale + damageforcescale + momentum-clamped calcpush"
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/globalforces/sv_globalforces.qc:28-29 (f = (it==frag_attacker)?self:1; it.velocity += damage_explosion_calcpush(f*it.damageforcescale*damage_force, it.velocity, speedfactor))"
+      - "common/mutators/mutator/globalforces/sv_globalforces.qc:5 (AUTOCVAR(g_globalforces_self, float, 1))"
       - "common/weapons/calculations.qc:39 (damage_explosion_calcpush)"
       - "common/weapons/calculations.qc:7 (explosion_calcpush_getmultiplier)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:97-99 (f selfscale, it.Velocity += DamageExplosionCalcPush)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:109 (DamageExplosionCalcPush)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:119 (ExplosionCalcPushGetMultiplier)"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:599 (player DamageForceScale = g_player_damageforcescale default 2)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:105-107 (f selfscale, it.Velocity += DamageExplosionCalcPush)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:117 (DamageExplosionCalcPush)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:127 (ExplosionCalcPushGetMultiplier)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:709 (player DamageForceScale = g_player_damageforcescale default 2)"
     constants:
-      - { name: "g_globalforces_self", base: "1 (attacker-only scale, mutators.cfg:497)", port: "1 (SelfScale default)", match: true }
-      - { name: "g_balance_damagepush_speedfactor", base: "2.5 (balance-xonotic.cfg:215; 0 on balance-nexuiz25.cfg:119)", port: "read live from cvar each hit (GlobalForcesMutator.cs:86)", match: true }
-      - { name: "g_player_damageforcescale (it.damageforcescale for live players)", base: "2 (default)", port: "2 (SpawnSystem.cs:599)", match: true }
-      - { name: "calcpush: speedfactor<1 -> raw force", base: "if (speedfactor < 1) return explosion_f (calculations.qc:42)", port: "if (speedFactor < 1f) return explosionForce (GlobalForcesMutator.cs:111)", match: true }
-      - { name: "multiplier: a = v.(v-tv); a<=0 -> 0 else a/(v.v)", base: "explosion_calcpush_getmultiplier (calculations.qc:7-18)", port: "ExplosionCalcPushGetMultiplier (GlobalForcesMutator.cs:119-124)", match: true }
+      - { name: "g_globalforces_self", base: "1 (attacker-only scale, sv_globalforces.qc:5 AUTOCVAR default)", port: "1 (SelfScale default; read via ReadFloat honoring explicit 0)", match: true }
+      - { name: "g_balance_damagepush_speedfactor", base: "2.5 (balance-xonotic.cfg:215; 0 on balance-nexuiz25.cfg:119)", port: "read live from cvar each hit (GlobalForcesMutator.cs:94)", match: true }
+      - { name: "g_player_damageforcescale (it.damageforcescale for live players)", base: "2 (default)", port: "2 (SpawnSystem.cs:709)", match: true }
+      - { name: "calcpush: speedfactor<1 -> raw force", base: "if (speedfactor < 1) return explosion_f (calculations.qc:42)", port: "if (speedFactor < 1f) return explosionForce (GlobalForcesMutator.cs:119)", match: true }
+      - { name: "multiplier: a = v.(v-tv); a<=0 -> 0 else a/(v.v)", base: "explosion_calcpush_getmultiplier (calculations.qc:7-18)", port: "ExplosionCalcPushGetMultiplier (GlobalForcesMutator.cs:127-132)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -149,9 +153,9 @@ features:
     gaps: []
     verification:
       - { kind: value, ref: "ExplosionCalcPushGetMultiplier dot-product math bit-matches calculations.qc:7-18 (a=v.(v-tv); a<=0->0; else a/(v.v)); calcpush branch matches calculations.qc:39-60 (speedfactor<1 raw, else f*multiplier(f*sf, tv))", result: pass }
-      - { kind: trace, ref: "it.DamageForceScale populated for live players via SpawnSystem.cs:532 (g_player_damageforcescale=2), so f*it.DamageForceScale*damageForce mirrors Base", result: pass }
+      - { kind: trace, ref: "it.DamageForceScale populated for live players via SpawnSystem.cs:709 (g_player_damageforcescale=2), so f*it.DamageForceScale*damageForce mirrors Base", result: pass }
     confidence: high
-    notes: "calcpush + multiplier replicated locally (the port damage system keeps its copy private); math is bit-faithful against calculations.qc. damageforcescale (it.DamageForceScale) and per-hit speedfactor read match Base. UNCHANGED by Wave-2 (line numbers shifted +3 from the new IsPlayer comment block; symbols identical)."
+    notes: "calcpush + multiplier replicated locally (the port damage system keeps its copy private); math is bit-faithful against calculations.qc. damageforcescale (it.DamageForceScale) and per-hit speedfactor read match Base. Line numbers shifted vs baseline (port file grew a ReadFloat helper + explicit-0 handling); symbols identical."
 
   - id: mutator-globalforces.advertise.mutatorstring
     name: "Mutator-list advertisement (':GlobalForces' / ', Global forces')"
@@ -160,27 +164,28 @@ features:
       - "common/mutators/mutator/globalforces/sv_globalforces.qc:9-11 (MUTATOR_HOOKFUNCTION(mutator_globalforces, BuildMutatorsString) -> strcat ':GlobalForces')"
       - "common/mutators/mutator/globalforces/sv_globalforces.qc:13-15 (MUTATOR_HOOKFUNCTION(mutator_globalforces, BuildMutatorsPrettyString) -> strcat ', Global forces')"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:66 (BuildMutatorsString override => s + \":GlobalForces\")"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:69 (BuildMutatorsPrettyString override => s + \", Global forces\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:68 (BuildMutatorsString override => s + \":GlobalForces\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs:71 (BuildMutatorsPrettyString override => s + \", Global forces\")"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108 (BuildMutatorsString chain over active mutators)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:121 (BuildMutatorsPrettyString chain over active mutators)"
-      - "src/XonoticGodot.Server/GameWorld.cs:876 (GameLogInit calls MutatorActivation.BuildMutatorsString — LIVE caller for the machine token, gated on sv_eventlog)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1117 (GameLogInit calls MutatorActivation.BuildMutatorsString — LIVE caller for the machine token, gated on sv_eventlog)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1128 (match-start: BuildMutatorsPrettyString -> 'modifications' serverinfo key — LIVE)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1392 (SendMutatorsWelcome -> BuildMutatorsPrettyString, called per-join from ClientConnect GameWorld.cs:1291 — LIVE)"
     constants:
-      - { name: "mutator_tag (machine)", base: "':GlobalForces' (string)", port: "':GlobalForces' (GlobalForcesMutator.cs:66)", match: true }
-      - { name: "mutator_tag (pretty)", base: "', Global forces' (pretty)", port: "', Global forces' (GlobalForcesMutator.cs:69)", match: true }
+      - { name: "mutator_tag (machine)", base: "':GlobalForces' (string)", port: "':GlobalForces' (GlobalForcesMutator.cs:68)", match: true }
+      - { name: "mutator_tag (pretty)", base: "', Global forces' (pretty)", port: "', Global forces' (GlobalForcesMutator.cs:71)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
       presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "BuildMutatorsPrettyString chain (MutatorActivation.cs:121) has NO live caller in src/XonoticGodot.Server (grep 'BuildMutatorsPrettyString(' returns no Server callsite), so the ', Global forces' pretty token is never emitted — the QC consumer is server/client.qc:1107 (scoreboard/votescreen mutator line). The machine token ':GlobalForces' IS live (GameWorld.cs:876 GameLogInit). Cosmetic only; no gameplay effect."
+    gaps: []
     verification:
-      - { kind: grep, ref: "grep -n 'BuildMutatorsString|BuildMutatorsPrettyString' src/ -> GlobalForcesMutator.cs:66/69 overrides; MutatorActivation.cs:108/121 chains; GameWorld.cs:876 live caller for the machine token. The full advertisement mechanism now exists port-wide (~22 mutators override it).", result: pass }
-      - { kind: grep, ref: "grep -n 'BuildMutatorsPrettyString(' src/XonoticGodot.Server -> no matches: the pretty chain handler is wired but uncalled (dead pretty token).", result: fail }
+      - { kind: grep, ref: "grep 'BuildMutatorsString|BuildMutatorsPrettyString' src/ -> GlobalForcesMutator.cs:68/71 overrides; MutatorActivation.cs:108/121 chains. The advertisement mechanism is implemented port-wide (~22 mutators override it).", result: pass }
+      - { kind: trace, ref: "BuildMutatorsPrettyString now has TWO live Server callers: GameWorld.cs:1128 (writes 'modifications' serverinfo at match-start) and GameWorld.cs:1392 SendMutatorsWelcome (invoked per non-bot join from ClientConnect GameWorld.cs:1291, emits 'Active modifications: ^3...' via ChatToPlayer with the leading ', ' stripped — QC server/client.qc:1107 / client/main.qc:1438). Machine token ':GlobalForces' live via GameWorld.cs:1117 GameLogInit.", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-22 baseline: the BuildMutatorsString/PrettyString advertisement mechanism is now implemented port-wide (MutatorActivation.cs chains + ~22 per-mutator overrides). GlobalForcesMutator.cs:66/69 override both with the bit-exact Base tokens (sv_globalforces.qc:10 ':GlobalForces', :14 ', Global forces'). The machine token is LIVE via GameWorld.cs:876 GameLogInit (sv_eventlog gate). The pretty token's chain (MutatorActivation.cs:121) is built but has no live Server caller, so liveness=partial — tracked as the unit's only remaining gap."
+    notes: "FIXED since the 2026-06-25 baseline (which had liveness=partial / pretty token uncalled): the BuildMutatorsPrettyString chain is now LIVE. GameWorld.SendMutatorsWelcome (GameWorld.cs:1387-1399) runs the chain per non-bot join (ClientConnect GameWorld.cs:1291), strips the leading ', ', and surfaces 'Active modifications: ^3<list>' to the connecting client via ChatToPlayer — the port's stand-in for QC's networked CSQC Welcome dialog (server/client.qc:1107, client/main.qc:1438). A second live consumer writes the 'modifications' serverinfo key at match-start (GameWorld.cs:1128). Both bit-exact Base tokens (':GlobalForces', ', Global forces')."

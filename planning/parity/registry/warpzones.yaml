@@ -1,7 +1,7 @@
 unit: warpzones
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-26"
+last_audited: "2026-06-27"
 summary:
   feature_count: 18
   worst_gaps:
@@ -73,8 +73,8 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneSpawns"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.AddMapZone"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:110"
-      - "src/XonoticGodot.Server/GameWorld.cs:433"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:114"
+      - "src/XonoticGodot.Server/GameWorld.cs:436"
     constants:
       - { name: "scale default", base: "modelscale then 1", port: "not modeled (scale=1 implicit)", match: false }
       - { name: "solid / movetype", base: "SOLID_TRIGGER / MOVETYPE_NONE", port: "Solid.Trigger / MoveType.None", match: true }
@@ -92,9 +92,9 @@ features:
       - "scale/modelscale and the warpzone_isboxy box-vs-exacttrigger distinction from WarpZoneLib_ExactTrigger_Init are not modeled; the EF_NODEPTHTEST render flag and WarpZone_Send CSQC serialisation are unported (no client entity)."
     verification:
       - { kind: unit_test, ref: "WarpzoneSpawnTests.MapWarpzones_Spawn_Orient_And_Link_FromBrushGeometry", result: pass }
-      - { kind: code, ref: "RE-AUDIT 2026-06-26: the 2026-06-25 misc_warpzone_position new-gap is now CLOSED. MapObjectsRegistry.cs:114 registers `misc_warpzone_position` -> WarpzoneSpawns.MiscWarpzonePositionSetup, which re-classes the edict to trigger_warpzone_position and routes it through the same Sink (Warpzone.cs:794-800). A map authored with the bare canonical name now orients its zone identically. Server build clean (0 errors).", result: pass }
+      - { kind: code, ref: "RE-AUDIT 2026-06-27: misc_warpzone_position alias still CLOSED. MapObjectsRegistry.cs:118 registers `misc_warpzone_position` -> WarpzoneSpawns.MiscWarpzonePositionSetup (Warpzone.cs:913), which re-classes the edict to trigger_warpzone_position and routes it through the same Sink. A map authored with the bare canonical name orients its zone identically.", result: pass }
     confidence: high
-    notes: "FIX (2026-06-26): the misc_warpzone_position alias is registered. Three position spawnfuncs now map (trigger_warpzone, trigger_warpzone_position, misc_warpzone_position; MapObjectsRegistry.cs:110-114). Sink WarpzoneSpawns.Sink wired in GameWorld.cs:434 to Warpzones.OnMapEntity; deferred plane/link in InitMapZones (GameWorld.cs:741). Residual values gap: scale/modelscale + warpzone_isboxy box-vs-exacttrigger (status stays values: partial)."
+    notes: "Three position spawnfuncs map (trigger_warpzone, trigger_warpzone_position, misc_warpzone_position; MapObjectsRegistry.cs:114-118). Sink WarpzoneSpawns.Sink wired in GameWorld.cs:436 to Warpzones.OnMapEntity; deferred plane/link in InitMapZones (GameWorld.cs:752). Residual values gap: scale/modelscale + warpzone_isboxy box-vs-exacttrigger (status stays values: partial). RE-AUDIT 2026-06-27: line refs refreshed, no status change."
   - id: warpzones.spawn.brushplane
     name: "Auto-orient IN plane from brush geometry (getsurface* area-weighted normal)"
     layer: [authority]
@@ -129,7 +129,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.Link"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.InitMapZones"
-      - "src/XonoticGodot.Server/GameWorld.cs:741"
+      - "src/XonoticGodot.Server/GameWorld.cs:752"
       - "src/XonoticGodot.Server/Cvars.cs:105"
     constants:
       - { name: "sv_warpzone_allow_selftarget", base: "0", port: "0", match: true }
@@ -146,7 +146,7 @@ features:
     verification:
       - { kind: unit_test, ref: "WarpzoneSpawnTests.MapWarpzones_TwoWayLink_WhenOnlyOneCarriesTarget", result: pass }
     confidence: high
-    notes: "Two-pass forward+reverse pairing mirrors QC this.enemy=e2; e2.enemy=this. Cvar registered and read once per link pass. RE-AUDIT 2026-06-26: GameWorld InitMapZones caller at :741 (Link() inside InitMapZones, Warpzone.cs:578); status unchanged (faithful)."
+    notes: "Two-pass forward+reverse pairing mirrors QC this.enemy=e2; e2.enemy=this. Cvar registered and read once per link pass. RE-AUDIT 2026-06-27: GameWorld InitMapZones caller at :752 (Link() inside InitMapZones, Warpzone.cs:691); status unchanged (faithful)."
   - id: warpzones.teleport.player
     name: "Player/projectile crossing: warp origin/velocity/angles, momentum-preserved"
     layer: [authority, shared]
@@ -214,7 +214,7 @@ features:
       - "lib/warpzone/common.qc:WarpZone_TraceLine"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Warpzone/WarpzoneRadiusQuery.cs:WarpzoneTrace.TraceLineWarpzone"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:183"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:195"
       - "src/XonoticGodot.Engine/Collision/TraceServiceWarpzoneExt.cs:TraceServiceWarpzoneBridge"
     constants:
       - { name: "chained-zone cap", base: "i = 16", port: "MaxZoneDepth = 16", match: true }
@@ -231,7 +231,7 @@ features:
     verification:
       - { kind: unit_test, ref: "WarpzoneTraceTests.TraceLine_Crosses_One_Portal_And_Accumulates_The_Transform / TraceLine_Pathological_Self_Recrossing_Chain_Stops_At_The_Guard", result: pass }
     confidence: high
-    notes: "Live callers: WeaponFiring.cs:183 (aim), :313 + :461 (hitscan). Manager published via TraceService.SetWarpzoneManager (GameWorld.cs:763). RE-AUDIT 2026-06-26: chained-zone cap=16 and all callers verified intact; status unchanged (faithful/live)."
+    notes: "Live callers: WeaponFiring.cs:195 (aim), :325 + :489 (hitscan). Manager published via TraceService.SetWarpzoneManager (GameWorld.cs:774). RE-AUDIT 2026-06-27: chained-zone cap=16 (WarpzoneRadiusQuery.cs:129) and all callers verified intact; status unchanged (faithful/live)."
   - id: warpzones.combat.findradius
     name: "Splash radius damage reaches victims through portals (blast-frame falloff)"
     layer: [shared]
@@ -276,7 +276,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.Teleport (ActivateTime self-skip + Pusher/PushLTime/IsTypeFrag kill-credit)"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:ClearPortoPortal"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:ClearAllPortoPortals"
-      - "src/XonoticGodot.Server/GameWorld.cs:422"
+      - "src/XonoticGodot.Server/GameWorld.cs:425"
     constants:
       - { name: "porto trigger bounds", base: "weapon-defined", port: "+/-48 box (PortoMins/Maxs)", match: false }
       - { name: "portal_activatetime grace", base: "time + 0.1 (portals.qc:304,646)", port: "now + 0.1f (ActivateTime; Warpzone.cs:233,418)", match: true }
@@ -321,9 +321,9 @@ features:
     gaps:
       - "No Godot SubViewport+Camera3D renders the linked OUT side onto the portal surface; HeroMaterials.BuildPortal (HeroMaterials.cs:168) is a static dark near-black StandardMaterial3D mirror. The warpzone reads as an opaque/wavy wall — you cannot see through it. PVS-fade and the r_water enable HACK are also absent."
     verification:
-      - { kind: code, ref: "grep NetGame.cs warpzone/portal/SubViewport/FixView = empty; HeroMaterials.cs:168 placeholder", result: fail }
+      - { kind: code, ref: "RE-AUDIT 2026-06-27: grep NetGame.cs for warpzone/portal/SubViewport/FixView render = still empty (NetGame only drives the PREDICTION adapter EntityMovementStep, no portal render); game/loaders/HeroMaterials.cs BuildPortal still a dark metallic StandardMaterial3D placeholder (HeroKind.Portal, :54/:72 'screen-space portal/mirror render is out of scope').", result: fail }
     confidence: high
-    notes: "Primary runtime break #1. NetGame.cs has zero warpzone code."
+    notes: "Primary runtime break #1. NetGame.cs has zero warpzone RENDER code (it does drive the crossing PREDICTION via EntityMovementStep). HeroMaterials moved to game/loaders/HeroMaterials.cs; BuildPortal placeholder unchanged."
   - id: warpzones.client.fixview
     name: "Seamless view across the seam (FixView / FixNearClip / View_Inside / FixPMove)"
     layer: [presentation]
@@ -375,7 +375,7 @@ features:
     verification:
       - { kind: code, ref: "no warpzone_teleported send / FixVAngle in port", result: fail }
     confidence: high
-    notes: "EF_TELEPORT_BIT constant exists (CsqcModelEffectFlags.cs:44) but is not toggled by the warpzone teleport."
+    notes: "Distinct from EF_TELEPORT_BIT (which IS now toggled on a crossing — see warpzones.teleport.player, Warpzone.cs:312 — to cancel REMOTE-model interp): this row is the LOCAL view-rotate/input-rotate (WarpZone_PlayerPhysics_FixVAngle re-rotates v_angle; ENT_CLIENT_WARPZONE_TELEPORTED + CL_RotateMoves spin the client's own view through the seam), which remains unported. The origin no longer rubber-bands (prediction row is live) but the camera still snaps angularly. RE-AUDIT 2026-06-27: no warpzone_teleported send / FixVAngle symbols in port; status unchanged."
   - id: warpzones.client.prediction
     name: "Client-side prediction of a warpzone crossing"
     layer: [presentation, shared]
@@ -385,7 +385,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Engine/Simulation/TriggerTouch.cs:PredictWarpzonesAmbient"
       - "game/net/EntityMovementStep.cs:107"
-      - "game/net/NetGame.cs:1026"
+      - "game/net/NetGame.cs:1087"
     constants: []
     status:
       logic: faithful
@@ -399,7 +399,7 @@ features:
     gaps:
       - "Render/view side of the crossing still missing: a predicted warp relocates the carrier in lockstep with authority (no rubber-band) and stamps .fixangle, but the seamless view-rotate/portal render (warpzones.client.render / .fixview / .teleported_view) is unported — the camera still snaps visually across the seam even though the origin no longer corrects."
     verification:
-      - { kind: code, ref: "FIX 2026-06-23: PredictWarpzonesAmbient is now CALLED on the live prediction path (EntityMovementStep.Step, after PredictTeleportsAmbient) AND its crossing gate was rewritten to the plane-side test Dot((origin+view_ofs)-InOrigin, InForward) >= 0 -> skip, matching WarpzoneManager.Teleport (Warpzone.cs:256) EXACTLY. AmbientManager published per-match via TraceService.SetWarpzoneManager (GameWorld.cs:763); the predictor's live caller chain is NetGame.cs:1026 (EntityMovementStep) -> Step -> PredictWarpzonesAmbient (EntityMovementStep.cs:107). RE-VERIFIED 2026-06-26 on branch claude/parity-port-waves: gate still matches WarpzoneManager.Teleport exactly (Dot(point-InOrigin, InForward) >= 0 -> skip; TriggerTouch.cs:192+), caller chain intact.", result: pass }
+      - { kind: code, ref: "RE-AUDIT 2026-06-27 (branch claude/parity-port-waves): PredictWarpzonesAmbient still CALLED on the live prediction path (EntityMovementStep.Step:107, after PredictTeleportsAmbient) with the plane-side gate Dot((origin+view_ofs)-InOrigin, InForward) >= 0 -> skip matching WarpzoneManager.Teleport (Warpzone.cs:299) EXACTLY. AmbientManager published per-match via TraceService.SetWarpzoneManager (GameWorld.cs:774); predictor caller chain NetGame _movementStep (EntityMovementStep, NetGame.cs:1087) -> Step -> PredictWarpzonesAmbient (TriggerTouch.cs:192). Gate + caller chain intact.", result: pass }
     confidence: high
     notes: "FIX (2026-06-23): liveness dead->live, logic stub->faithful. Wave-2 wrote PredictWarpzonesAmbient but left it unwired and carrying the stale velocity-direction gate; both are now resolved — EntityMovementStep drives it each predicted tick and the gate matches authority, so a warpzone crossing is client-predicted (origin no longer rubber-bands). Remaining open: the client render/view-rotate (separate rows warpzones.client.render/.fixview/.teleported_view)."
   - id: warpzones.camera
@@ -440,9 +440,9 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.ThinkMovingZones"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.Reconnect / ReconnectByTarget / OnReconnectUse"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneSpawns.TriggerWarpzoneReconnectSetup"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:116"
-      - "src/XonoticGodot.Server/GameWorld.cs:437"
-      - "src/XonoticGodot.Server/GameWorld.cs:1648"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:120"
+      - "src/XonoticGodot.Server/GameWorld.cs:439"
+      - "src/XonoticGodot.Server/GameWorld.cs:1742"
     constants:
       - { name: "spawnflag 1 -> per-frame Think", base: "moving-warpzone re-derive when org/angles change (server.qc:716-728)", port: "Warpzone.Moving = spawnflags&1; ThinkMovingZones self-gates on SaveOrigin/_Angles/_EOrigin/_EAngles", match: true }
       - { name: "reconnect spawnflag 1 (skip visible zones)", base: "!(spawnflags&1 && visible_to_some_client(e)) (server.qc:790)", port: "no client-visibility test (reconnects regardless; conservative)", match: false }
@@ -459,7 +459,7 @@ features:
       - "The reconnect spawnflag-1 'don't reconnect a zone a client can currently see' cosmetic skip (visible_to_some_client, server.qc:790-792) is not honoured — the port reconnects every matching zone regardless. This is a seam-pop avoidance, not a correctness gate; the conservative port may briefly pop a visible seam on a runtime reconnect."
       - "WarpZone_Camera reconnect (warpzone_camera_first loop, server.qc:791,799) is absent because the func_camera variant (warpzones.camera) is itself unported."
     verification:
-      - { kind: code, ref: "FIX 2026-06-26: ThinkMovingZones (moving-warpzone per-frame re-derive, self-gated on warpzone_save_* snapshot, Warpzone.cs:607-633) + Reconnect/ReconnectByTarget/OnReconnectUse (runtime re-link, Warpzone.cs:653-690) now implemented and LIVE: ThinkMovingZones called every server frame (GameWorld.cs:1648); trigger_warpzone_reconnect + target_warpzone_reconnect spawnfuncs registered (MapObjectsRegistry.cs:116-117) with the use-handler routed via WarpzoneSpawns.ReconnectSink -> OnReconnectUse (GameWorld.cs:437). WarpZone_Think snapshot/re-derive matches server.qc:714-731; trigger_warpzone_reconnect_use target-matching matches server.qc:785-805. Server build clean (0 errors).", result: pass }
+      - { kind: code, ref: "RE-AUDIT 2026-06-27: ThinkMovingZones (moving-warpzone per-frame re-derive, self-gated on warpzone_save_* snapshot, Warpzone.cs:720-746) + Reconnect/ReconnectByTarget/OnReconnectUse (runtime re-link, Warpzone.cs:766-803) implemented and LIVE: ThinkMovingZones called every server frame (GameWorld.cs:1742); trigger_warpzone_reconnect + target_warpzone_reconnect spawnfuncs registered (MapObjectsRegistry.cs:120-121) with the use-handler routed via WarpzoneSpawns.ReconnectSink -> OnReconnectUse (GameWorld.cs:439). WarpZone_Think snapshot/re-derive matches server.qc:714-731; trigger_warpzone_reconnect_use target-matching matches server.qc:785-805. No status change.", result: pass }
     confidence: high
     notes: "FIX (2026-06-26): logic missing->faithful, timing missing->faithful, liveness na->live. Moving warpzones (spawnflag 1) now re-derive their transform per frame when the brush moved (WarpZone_Think); a runtime trigger_warpzone_reconnect/target_warpzone_reconnect re-derives + re-links its matching zones. Porto-weapon portals (Owner != null) are excluded from the map-warpzone reconnect (keep their two-way link). Only the cosmetic visible-zone skip + the camera-variant reconnect remain (both minor)."
   - id: warpzones.observer_warp
@@ -470,7 +470,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.WarpObservers"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.FindOverlapping / TeleportNoTargets"
-      - "src/XonoticGodot.Server/GameWorld.cs:1649"
+      - "src/XonoticGodot.Server/GameWorld.cs:1743"
     constants:
       - { name: "observer gate", base: "IS_OBSERVER(it) || it.solid == SOLID_NOT (server.qc:756)", port: "it.Solid == Solid.Not || Player.IsObserver (Warpzone.cs:707-708)", match: true }
       - { name: "plane-side gate", base: "WarpZone_PlaneDist(e, origin+view_ofs) <= 0 -> warp (server.qc:764)", port: "Dot(point-InOrigin, InForward) > 0 -> skip (Warpzone.cs:714)", match: true }
@@ -487,7 +487,7 @@ features:
     gaps:
       - "The teleportable simple-teleporter half of WarpZone_StartFrame's observer pass (server.qc:768-774, Teleport_Find + Simple_TeleportPlayer for observers) is a teleporter concern, not handled here. WarpZone_StoreProjectileData per-frame projectile snapshot (server.qc:749) is still absent (only relevant to the unported client view-rotate / FixVAngle path)."
     verification:
-      - { kind: code, ref: "FIX 2026-06-26: WarpObservers now implemented and LIVE — called every server frame with Clients.Players (GameWorld.cs:1649). For each observer / SOLID_NOT client it WarpZone_Find's the overlapping zone (FindOverlapping AABB test), applies the plane-side gate, and warps via TeleportNoTargets (no target relay, no kill-credit), matching WarpZone_StartFrame's FOREACH_CLIENT observer block (server.qc:751-766) and WarpZone_Teleport(e,-1,0). Same-frame finishtime guard reused. Server build clean (0 errors).", result: pass }
+      - { kind: code, ref: "RE-AUDIT 2026-06-27: WarpObservers implemented and LIVE — called every server frame with Clients.Players (GameWorld.cs:1743). For each observer / SOLID_NOT client it WarpZone_Find's the overlapping zone (FindOverlapping AABB test), applies the plane-side gate, and warps via TeleportNoTargets (no target relay, no kill-credit), matching WarpZone_StartFrame's FOREACH_CLIENT observer block (server.qc:751-766) and WarpZone_Teleport(e,-1,0). Same-frame finishtime guard reused. Server build clean (0 errors).", result: pass }
     confidence: high
     notes: "FIX (2026-06-26): logic missing->faithful, timing missing->faithful, liveness na->live. Spectators / dead-respawning (SOLID_NOT) clients now pass through warpzones each frame without tripping the zone's relays. Live-player crossing remains driven by the touch pass (faithful). Only the simple-teleporter observer half + the projectile-data snapshot remain."
   - id: warpzones.combat.traceextras

@@ -1,14 +1,14 @@
 unit: sv-ipban
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-26"
+last_audited: "2026-06-27"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Play-ban is FULLY enforced on the live join path: CmdJoin consults g_playban_list (Commands.cs:1359) AND now EMITS the CENTER_JOIN_PLAYBAN center-print to the refused joiner (Commands.cs:1363, NotificationSystem.Send), AND ClientManager.JoinAllowed gates via Bans.IsPlayBanned (ClientManager.cs:334, the auto-join/team-menu leg). CmdPlayBan runs the real observer transition (PutObserverInServer) + active minigame removal. (The centerprint was registered-but-never-emitted in the 2026-06-22/06-25 baselines — NOW FIXED. The join_gate is the only row that changed.)"
-    - "Connect-time chatban/playban re-application is LIVE (InfraClientConnect, GameWorld.cs:1210-1213 reads Bans.IsPlayBanned/IsChatBanned): a muted/play-banned player who reconnects or survives a map change is re-spectated / re-muted."
-    - "g_playban_minigames default is 0 in the port (Cvars.cs:387), matching Base (xonotic-server.cfg:436). Out of the box the port does not remove/block play-banned players from minigames."
-    - "Shutdown Ban_SaveBans is wired (GameWorld.Shutdown, GameWorld.cs:1574): the persisted seconds-remaining is refreshed against the final clock at session end."
+    - "Play-ban is FULLY enforced on the live join path: CmdJoin consults g_playban_list (Commands.cs:1486) AND EMITS the CENTER_JOIN_PLAYBAN center-print to the refused joiner (Commands.cs:1490, NotificationSystem.Send), AND ClientManager.JoinAllowed gates via Bans.IsPlayBanned (ClientManager.cs:334, the auto-join/team-menu leg). CmdPlayBan runs the real observer transition (PutObserverInServer) + active minigame removal."
+    - "Connect-time chatban/playban re-application is LIVE (InfraClientConnect, GameWorld.cs:1261-1263 reads Bans.IsPlayBanned/IsChatBanned): a muted/play-banned player who reconnects or survives a map change is re-spectated / re-muted."
+    - "g_playban_minigames default is 0 in the port (Cvars.cs:410), matching Base (xonotic-server.cfg:436). Out of the box the port does not remove/block play-banned players from minigames."
+    - "Shutdown Ban_SaveBans is wired (GameWorld.Shutdown, GameWorld.cs:1678): the persisted seconds-remaining is refreshed against the final clock at session end."
     - "Online cross-server ban-list sync (g_ban_sync_*, bansyncer entity, uri_get protocol) is entirely absent (intended divergence)."
 features:
   - id: sv-ipban.mask.derive
@@ -77,7 +77,7 @@ features:
       - "server/command/cmd.qc:1181"
     port_refs:
       - "src/XonoticGodot.Server/Bans.cs:MaybeEnforceBan"
-      - "src/XonoticGodot.Server/GameWorld.cs:1198"
+      - "src/XonoticGodot.Server/GameWorld.cs:1249"
     constants:
       - { name: "g_ban_telluser", base: "1", port: "1", match: true }
     status:
@@ -92,7 +92,7 @@ features:
     gaps:
       - "Base uses Ban_MaybeEnforceBanOnce (a one-shot .ban_checked flag) AND re-checks on the client's first command (cmd.qc:1181); the port enforces only once on connect (GameWorld.cs:1144 InfraClientConnect) with no first-command re-check. Low impact (connect-time drop is dominant)."
     verification:
-      - { kind: code, ref: "GameWorld.cs:1198 Bans.MaybeEnforceBan(p) in InfraClientConnect; no cmd.qc:1181-equivalent first-command re-check", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1249 Bans.MaybeEnforceBan(p) in InfraClientConnect; no cmd.qc:1181-equivalent first-command re-check", result: pass }
     confidence: high
     notes: "Wired live on the connect path; the once-flag and first-command leg are not modeled. Unchanged since baseline."
 
@@ -156,7 +156,7 @@ features:
       - "server/ipban.qc:Ban_Enforce"
     port_refs:
       - "src/XonoticGodot.Server/Bans.cs:Enforce"
-      - "src/XonoticGodot.Server/GameWorld.cs:998"
+      - "src/XonoticGodot.Server/GameWorld.cs:1047"
     constants: []
     status:
       logic: faithful
@@ -170,7 +170,7 @@ features:
     gaps:
       - "The bprint summary wording differs (port \"^1banned: <names> (<reason>)\" vs Base per-client \"^1NOTE:^7 banned client <name>^7 has to go\\n\" + the \": affects <name>, ...\" reason-append). Functionally equivalent; cosmetic."
     verification:
-      - { kind: code, ref: "GameWorld.cs:998-999 wires Bans.Roster (Clients.Players) + Bans.DropClient (KickHandler+ClientDisconnect)", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1047-1048 wires Bans.Roster (Clients.Players) + Bans.DropClient (KickHandler+ClientDisconnect)", result: pass }
     confidence: high
     notes: "Roster + DropClient wired by the host; drop behavior faithful, message wording diverges. Unchanged since baseline."
 
@@ -185,8 +185,8 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/Bans.cs:Save"
       - "src/XonoticGodot.Server/Bans.cs:Load"
-      - "src/XonoticGodot.Server/GameWorld.cs:1001"
-      - "src/XonoticGodot.Server/GameWorld.cs:1574"
+      - "src/XonoticGodot.Server/GameWorld.cs:1050"
+      - "src/XonoticGodot.Server/GameWorld.cs:1678"
     constants:
       - { name: "g_banned_list", base: "\"\"", port: "\"\"", match: true }
       - { name: "format_version", base: "\"1\" + (ip secs)*", port: "same", match: true }
@@ -203,7 +203,7 @@ features:
       - "Load does not spawn the bansyncer think entity (Base Ban_LoadBans creates one); moot here because online sync is absent (intended divergence — see sv-ipban.sync.online)."
     verification:
       - { kind: test, ref: "ServerInfraTests.Bans_SaveLoad_RoundTripsThroughCvar", result: pass }
-      - { kind: code, ref: "Bans.cs:367 round-trips remaining-seconds; GameWorld.cs:1001 Load() at world init; GameWorld.cs:1574 Bans.Save() in Shutdown() (SV_Shutdown re-persist) wired", result: pass }
+      - { kind: code, ref: "Bans.cs:367 round-trips remaining-seconds; GameWorld.cs:1050 Load() at world init; GameWorld.cs:1678 Bans.Save() in Shutdown() (SV_Shutdown re-persist) wired", result: pass }
     confidence: high
     notes: "The shutdown Ban_SaveBans (Base world.qc:2631) is wired in GameWorld.Shutdown (GameWorld.cs:1574), so a long session's persisted seconds-remaining is refreshed against the final clock. The per-Insert/Delete save keeps the list current between sessions. Only the (moot, intended) bansyncer-think entity remains unspawned. Unchanged since 2026-06-25 baseline (line refs refreshed)."
 
@@ -254,7 +254,7 @@ features:
       - "src/XonoticGodot.Server/Bans.cs:AddToList"
       - "src/XonoticGodot.Server/Bans.cs:PlayerInList"
       - "src/XonoticGodot.Server/Bans.cs:IsChatBanned"
-      - "src/XonoticGodot.Server/GameWorld.cs:1212"
+      - "src/XonoticGodot.Server/GameWorld.cs:1263"
     constants:
       - { name: "g_chatban_list", base: "\"\"", port: "\"\"", match: true }
     status:
@@ -269,9 +269,9 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "ServerInfraTests.Bans_PrefixList_MuteMatchesByIpAndId", result: pass }
-      - { kind: code, ref: "Chat.cs:314 fake-accepts source.Muted; GameWorld.cs:1212 InfraClientConnect calls Bans.IsChatBanned(p) -> p.Muted = true (the connect-time re-mute, Base client.qc:1246)", result: pass }
+      - { kind: code, ref: "Chat.cs:314 fake-accepts source.Muted; GameWorld.cs:1263 InfraClientConnect calls Bans.IsChatBanned(p) -> p.Muted = true (the connect-time re-mute, Base client.qc:1246)", result: pass }
     confidence: high
-    notes: "Connect-time re-mute is LIVE — InfraClientConnect (GameWorld.cs:1212) reads Bans.IsChatBanned and re-sets Player.Muted, so a muted player who reconnects (or persists across a map change) stays muted. Chat.cs:314 fake-accepts a muted sender. Unchanged since 2026-06-25 baseline (line refs refreshed)."
+    notes: "Connect-time re-mute is LIVE — InfraClientConnect (GameWorld.cs:1263) reads Bans.IsChatBanned and re-sets Player.Muted, so a muted player who reconnects (or persists across a map change) stays muted. Chat.cs:314 fake-accepts a muted sender. Unchanged since 2026-06-26 baseline (line refs refreshed)."
 
   - id: sv-ipban.softban.playban
     name: "Playban (g_playban_list): force spectate + minigame removal + connect re-apply"
@@ -286,7 +286,7 @@ features:
       - "src/XonoticGodot.Server/ClientManager.cs:PutObserverInServer"
       - "src/XonoticGodot.Common/Gameplay/Minigames/MinigameSessionManager.cs:Part"
       - "src/XonoticGodot.Common/Gameplay/Minigames/MinigameSessionManager.cs:PlayBanned"
-      - "src/XonoticGodot.Server/GameWorld.cs:1210"
+      - "src/XonoticGodot.Server/GameWorld.cs:1261"
     constants:
       - { name: "g_playban_list", base: "\"\"", port: "\"\"", match: true }
       - { name: "g_playban_minigames", base: "0", port: "0", match: true }
@@ -301,10 +301,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Commands.cs:1954-1967 CmdPlayBan calls _world.Clients.PutObserverInServer(target) + _world.Minigames.Part(target) when g_playban_minigames", result: pass }
-      - { kind: code, ref: "Cvars.cs:387 g_playban_minigames default \"0\" matching Base; GameWorld.cs:1210 InfraClientConnect calls Bans.IsPlayBanned(p) && !p.IsObserver -> Clients.PutObserverInServer (connect-time re-spectate, Base client.qc:1243)", result: pass }
+      - { kind: code, ref: "Commands.cs:2188-2192 CmdPlayBan calls _world.Clients.PutObserverInServer(target) + _world.Minigames.Part(target) when g_playban_minigames", result: pass }
+      - { kind: code, ref: "Cvars.cs:410 g_playban_minigames default \"0\" matching Base; GameWorld.cs:1261 InfraClientConnect calls Bans.IsPlayBanned(p) && !p.IsObserver -> Clients.PutObserverInServer (connect-time re-spectate, Base client.qc:1243)", result: pass }
     confidence: high
-    notes: "Play-ban is faithful and live: (values) g_playban_minigames default 0 matches Base (xonotic-server.cfg:436); (liveness) connect-time re-spectate is LIVE — InfraClientConnect (GameWorld.cs:1210) reads Bans.IsPlayBanned and runs PutObserverInServer for a reconnecting play-banned player; CmdPlayBan runs the real observer transition + minigame removal. The join-gate centerprint (sv-ipban.softban.playban.join_gate) is now also fixed. Unchanged here since 2026-06-25 baseline (line refs refreshed)."
+    notes: "Play-ban is faithful and live: (values) g_playban_minigames default 0 matches Base (xonotic-server.cfg:436); (liveness) connect-time re-spectate is LIVE — InfraClientConnect (GameWorld.cs:1261) reads Bans.IsPlayBanned and runs PutObserverInServer for a reconnecting play-banned player; CmdPlayBan runs the real observer transition + minigame removal. The join-gate centerprint (sv-ipban.softban.playban.join_gate) is now also fixed. Unchanged here since 2026-06-26 baseline (line refs refreshed)."
 
   - id: sv-ipban.softban.playban.join_gate
     name: "Playban join-attempt enforcement: a play-banned client cannot (re)join the game"
@@ -315,7 +315,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/Commands.cs:CmdJoin"
       - "src/XonoticGodot.Server/ClientManager.cs:JoinAllowed"
-      - "src/XonoticGodot.Server/GameWorld.cs:1006"
+      - "src/XonoticGodot.Server/GameWorld.cs:1055"
     constants: []
     status:
       logic: faithful
@@ -328,8 +328,8 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Commands.cs:1359-1364 CmdJoin: if((IsObserver||FragsStatus==FragsSpectator) && Bans.PlayerInList(p,g_playban_list)) refuse AND NotificationSystem.Send(OneOnly, p, Center, JOIN_PLAYBAN) — mirrors Base !INGAME(this)&&PlayerInList + Send_Notification MSG_CENTER CENTER_JOIN_PLAYBAN; `join` registered Commands.cs:674", result: pass }
-      - { kind: code, ref: "ClientManager.cs:334 JoinAllowed gates via ForcedSpectate(=Bans.IsPlayBanned, wired GameWorld.cs:1006) — covers the auto-join/team-menu leg too; NotificationSystem.Send dispatches Center to Sink (real per-client emit, NotificationSystem.cs:172-175)", result: pass }
+      - { kind: code, ref: "Commands.cs:1486-1491 CmdJoin: if((IsObserver||FragsStatus==FragsSpectator) && Bans.PlayerInList(p,g_playban_list)) refuse AND NotificationSystem.Send(OneOnly, p, Center, JOIN_PLAYBAN) — mirrors Base !INGAME(this)&&PlayerInList + Send_Notification MSG_CENTER CENTER_JOIN_PLAYBAN; `join` registered Commands.cs:789", result: pass }
+      - { kind: code, ref: "ClientManager.cs:334 JoinAllowed gates via ForcedSpectate(=Bans.IsPlayBanned, wired GameWorld.cs:1055) — covers the auto-join/team-menu leg too; NotificationSystem.Send dispatches Center to Sink (real per-client emit, NotificationSystem.cs:172-175)", result: pass }
     confidence: high
     notes: "FIXED since 2026-06-25 baseline (presentation missing->faithful): CmdJoin now EMITS the CENTER_JOIN_PLAYBAN center-print (Commands.cs:1363, NotificationSystem.Send OneOnly→Center, bot-guarded) instead of the old ctx.Print console text — matching Base Send_Notification MSG_CENTER. The earlier minor-scope liveness caveat is also closed: ClientManager.JoinAllowed (cs:334) now consults Bans.IsPlayBanned via the ForcedSpectate seam, so the auto-join/team-menu legs are gated too, not just the `join` command. Play-ban join enforcement is now fully faithful on all dimensions."
 
@@ -344,8 +344,8 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/Commands.cs:528"
       - "src/XonoticGodot.Server/Commands.cs:CmdListAdd"
-      - "src/XonoticGodot.Server/VoteController.cs:152"
-      - "src/XonoticGodot.Server/VoteController.cs:271"
+      - "src/XonoticGodot.Server/VoteController.cs:166"
+      - "src/XonoticGodot.Server/VoteController.cs:295"
       - "src/XonoticGodot.Server/Bans.cs:PlayerInList"
     constants:
       - { name: "g_voteban_list", base: "\"\"", port: "\"\"", match: true }
@@ -360,7 +360,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "VoteController.cs:152 blocks calling votes for g_voteban_list members; :271 blocks casting; Commands.cs voteban/unvoteban registered via CmdListAdd/Remove", result: pass }
+      - { kind: code, ref: "VoteController.cs:166 blocks calling votes for g_voteban_list members; :295 blocks casting; Commands.cs voteban/unvoteban registered via CmdListAdd/Remove", result: pass }
     confidence: medium
     notes: "Wired live in the vote controller (call + cast); still uses Bans.PlayerInList directly (the Bans.IsVoteBanned helper, Bans.cs:473, is unused convenience code). No unit test — code-traced only, hence medium confidence."
 

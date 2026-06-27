@@ -1,15 +1,16 @@
 unit: freezetag
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"  # drift re-check 2026-06-25
+last_audited: "2026-06-25"  # drift re-check 2026-06-25 (re-verified 2026-06-26: 23 prior rows unchanged; 6 new coverage rows added)
 summary:
-  feature_count: 23
+  feature_count: 29
   worst_gaps:
-    - "FIXED since last audit: nade self-revive (g_freezetag_revive_nade) is now a real revive, not a suppression stub. FreezeTag.OnDamageCalculate (FreezeTag.cs:485-499) Unfreezes a frozen player hit by their OWN nade within 0.1s of the toss, restores g_freezetag_revive_nade_health (40), suppresses the hit, and sends INFO_FREEZETAG_REVIVED_NADE + CENTER_FREEZETAG_REVIVE_SELF — all on the live DamageCalculate hook (DamageSystem.cs:264)."
-    - "FIXED since last audit: mid-round spawn-as-frozen (MUTATOR_HOOKFUNCTION ft PlayerSpawn) is now implemented+live (OnPlayerSpawn, FreezeTag.cs:310-324) via MutatorHooks.PlayerSpawn — a player spawning while a round is live joins frozen with CENTER_FREEZETAG_SPAWN_LATE. Now has its own row (freezetag.spawn.late)."
-    - "FIXED since last audit: SPAWN_LATE + REVIVED_NADE notifications now HAVE producers (OnPlayerSpawn and the nade self-revive branch) — the baseline listed both as 'declared but never sent'."
-    - "STILL OPEN: no ice (MDL_ICE) entity model — only the icy player-model colormod tint (ClientWorld.FrozenColormod). The signature ice cube is absent."
+    - "NEW (coverage gap): FT does NOT subscribe MutatorHooks.GiveFragsForKill to zero the engine frag (unlike CA/Keepaway/TKA which do). GiveFragsForKill.Call fires live (Scores.cs:544) and awards a +1 kill/score on an enemy frag, ON TOP of FT's own freeze ±1 SCORE matrix — a likely engine-frag/score double-count. Base ft GiveFragsForKill sets the delta to 0. See freezetag.scoring.no_kill_frags."
+    - "NEW (coverage gap): g_freezetag_weaponarena default 'most_available' is NOT applied — Base ft SetWeaponArena defaults the FT arena so players spawn with (almost) the full arsenal; the port has no FT SetWeaponArena handler, so FT players get only the start loadout. See freezetag.weaponarena."
+    - "NEW (coverage gap): no PlayerRegen-while-frozen gate (Base ft PlayerRegen returns frozen → no health/armor regen). See freezetag.frozen.no_regen. Also no ItemTouch/BuffTouch frozen-pickup gate (freezetag.frozen.no_pickup)."
+    - "STILL OPEN: no ice (MDL_ICE) entity model — only the icy player-model colormod tint (ClientWorld.FrozenColormod). The signature ice cube is absent. Also no ANIMSTATE_FROZEN frozen pose (freezetag.presentation.frozen_anim)."
     - "STILL OPEN: void/lava NEEDKILL soft-kill relocate (g_frozen_damage_trigger 0) is still missing (FT OnDamageCalculate leaves NEEDKILL deathtypes alone; the relocate-to-spawn needs the server spawn selector and is not done). Default cvar 1 = die, so dormant at stock anyway."
+    - "FIXED (prior audit, still holds): nade self-revive, mid-round spawn-as-frozen, revive_auto_reducible, and frozen damage-immunity are all implemented and live."
 features:
   - id: freezetag.mode.registration
     name: "Mode registration: teams, team-spawns, score/lead limits, FT scoring fields"
@@ -682,3 +683,148 @@ features:
       - { kind: code-read, ref: "OnPlayerSpawn (FreezeTag.cs:310-324) registered on MutatorHooks.PlayerSpawn in Activate (FreezeTag.cs:258-259); fires when Handler.IsRoundStarted and player not already frozen/match not ended; sends CENTER_FREEZETAG_SPAWN_LATE then Freeze(player, null, announce:false)", result: pass }
     confidence: high
     notes: "NEW row (coverage gap in the baseline registry). The mid-round spawn-as-frozen behavior is implemented and live — a player joining a live round can't run around; they spawn frozen with the SPAWN_LATE center line. Closes the 'spawn-as-frozen unimplemented' note the baseline carried under freezetag.damage.softkill_void."
+
+  - id: freezetag.scoring.no_kill_frags
+    name: "No engine frags counted on a freeze-kill (GiveFragsForKill → 0)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, GiveFragsForKill, CBC_ORDER_FIRST)"
+    port_refs: []
+    constants:
+      - { name: "frag delta on kill", base: "M_ARGV(2,float) = 0 (return true)", port: "not subscribed → engine GiveFrags awards +1", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base ft GiveFragsForKill sets the per-kill frag delta to 0 (no normal frags in Freeze Tag; only the freeze ±1 SCORE matrix + round wins score). The port's FreezeTag.Activate does NOT subscribe MutatorHooks.GiveFragsForKill (CA, Keepaway, TeamKeepaway all do). The hook fires live in Scores.cs:544 and, on an enemy frag, GiveFrags(attacker, victim, +1) still runs — so an FT enemy freeze likely awards a +1 engine kill/score ON TOP of FreezeTag.Freeze's own ScoreFrags ±1 matrix, double-counting. Add an OnGiveFragsForKill that zeroes the delta (mirror CA/Keepaway)."
+    verification:
+      - { kind: code-read, ref: "grep GiveFragsForKill in FreezeTag.cs → only a doc-comment mention, no Add(); Scores.cs:543-546 fires GiveFragsForKill.Call then GiveFrags(...,+1)", result: fail }
+    confidence: medium
+    notes: "NEW row — registry coverage gap. Magnitude of the leak depends on whether the FT death/score path reaches Scores.GiveFrags for a frozen victim; the missing GiveFragsForKill→0 suppression is the same one CA implements and is almost certainly required for FT score parity."
+
+  - id: freezetag.weaponarena
+    name: "FT default weapon arena (g_freezetag_weaponarena 'most_available')"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, SetWeaponArena)"
+    port_refs: []
+    constants:
+      - { name: "g_freezetag_weaponarena", base: "'most_available' (gametypes-server.cfg:429)", port: "none (no FT SetWeaponArena handler)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base ft SetWeaponArena defaults the weapon arena to g_freezetag_weaponarena ('most_available') when no arena is otherwise set, so FT players spawn with (nearly) the full arsenal rather than just the start loadout. The port has no FT SetWeaponArena handler (CA has OnSetWeaponArena for g_ca_weaponarena 'most'); FT players get only the OnSetStartItems loadout. Significant loadout divergence vs stock FT."
+    verification:
+      - { kind: code-read, ref: "no SetWeaponArena subscription in FreezeTag.cs; CA's OnSetWeaponArena is the model; g_freezetag_weaponarena 'most_available' confirmed in gametypes-server.cfg:429", result: fail }
+    confidence: high
+    notes: "NEW row — registry coverage gap. The start loadout (freezetag.startitems) is faithful, but the arena weapon set on top of it is missing."
+
+  - id: freezetag.frozen.no_regen
+    name: "Frozen players don't regen health/armor (PlayerRegen)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerRegen)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base ft PlayerRegen returns STAT(FROZEN) → a frozen player's health/armor regen is suppressed (they stay at HP=1 while frozen). No generic frozen-status regen gate found in the port (StatusEffects.cs gates fire-transfer/grapple on frozen, but not regen), and FreezeTag has no PlayerRegen handler (CA has OnPlayerRegen). A frozen FT player could slowly regen above HP=1. Default g_balance regen makes this minor (the freeze visual/score don't read HP), but it diverges from Base."
+    verification:
+      - { kind: code-read, ref: "no PlayerRegen subscription in FreezeTag.cs; no IsStatusFrozen check in any regen path (grep)", result: fail }
+    confidence: medium
+    notes: "NEW row — registry coverage gap. Effectively cosmetic unless regen interacts with the HP=1 frozen-body invariant elsewhere."
+
+  - id: freezetag.frozen.no_pickup
+    name: "Frozen players can't pick up items or buffs (ItemTouch/BuffTouch)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, ItemTouch)"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, BuffTouch)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base ft ItemTouch returns MUT_ITEMTOUCH_RETURN and BuffTouch returns STAT(FROZEN) for a frozen toucher — a frozen player walking (or being shoved) over an item/buff does NOT collect it. No FT ItemTouch/BuffTouch handler in the port and no generic frozen-status item gate found. Edge-case (frozen players can't move on their own) but a pushed/teleported frozen body could illegitimately pick items up."
+    verification:
+      - { kind: code-read, ref: "no ItemTouch/BuffTouch subscription in FreezeTag.cs; item-pickup paths show no frozen gate (grep)", result: fail }
+    confidence: medium
+    notes: "NEW row — registry coverage gap. Low impact because frozen players can't initiate movement, but Base explicitly blocks it."
+
+  - id: freezetag.frags.center_message
+    name: "Per-freeze choice centerprint ('You froze X' / 'You were frozen by Y')"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, FragCenterMessage)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:CHOICE_FRAG_FREEZE/FRAGGED_FREEZE"
+    constants:
+      - { name: "attacker line", base: "CHOICE_FRAG_FREEZE 'You froze X'", port: "declared (NotificationsList.cs:1270) — no FT producer wiring", match: false }
+      - { name: "target line", base: "CHOICE_FRAGGED_FREEZE 'You were frozen by Y'", port: "declared (NotificationsList.cs:1271) — no FT producer", match: false }
+    status:
+      logic: missing
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base ft FragCenterMessage replaces the generic kill centerprint with CHOICE_FRAG_FREEZE (attacker: 'You froze X', with kill count + ping) and CHOICE_FRAGGED_FREEZE (target: 'You were frozen by Y'), suppressing it entirely when the target was already frozen (pushed off a cliff). The choice notifications are DECLARED in NotificationsList.cs (1270-1271) but FreezeTag has no FragCenterMessage hook to emit them — they have no live producer. The kill-feed INFO lines (INFO_FREEZETAG_FREEZE/SELF) DO fire (covered by freezetag.presentation.notifications); only the per-kill CHOICE centerprint to the two involved players is missing."
+    verification:
+      - { kind: code-read, ref: "FRAG_FREEZE/FRAGGED_FREEZE choices declared NotificationsList.cs:1270-1271; no FragCenterMessage hook or producer in FreezeTag.cs", result: fail }
+    confidence: high
+    notes: "NEW row — registry coverage gap. Distinct from the INFO kill-feed lines (which are faithful); this is the personal centerprint the attacker/victim see on a freeze."
+
+  - id: freezetag.presentation.frozen_anim
+    name: "Frozen-pose player animation (PlayerAnim ANIMSTATE_FROZEN)"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerAnim)"
+    port_refs: []
+    constants:
+      - { name: "anim flag", base: "M_ARGV(1,int) |= ANIMSTATE_FROZEN when STAT(FROZEN)", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base ft PlayerAnim ORs ANIMSTATE_FROZEN into the player's animation state so a frozen player holds the static frozen pose. The port conveys frozen-ness only via the FrozenColormod tint (freezetag.presentation.ice_model); the frozen animation-state freeze is not applied, so a frozen player's normal animation may keep playing under the tint."
+    verification:
+      - { kind: code-read, ref: "no ANIMSTATE_FROZEN / frozen-anim handling in src or game (grep)", result: fail }
+    confidence: medium
+    notes: "NEW row — registry coverage gap. Cosmetic; pairs with the missing MDL_ICE entity (freezetag.presentation.ice_model)."

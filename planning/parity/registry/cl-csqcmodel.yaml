@@ -1,14 +1,14 @@
 unit: cl-csqcmodel
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 12
   worst_gaps:
-    - "animdecide STILL not ported: upper-body ACTIONS (shoot/pain/draw/taunt/melee on the torso) never play on third-person models, and the 8-direction + duck-variant locomotion (~24 clips) is replaced by a coarse 6-state speed heuristic (no strafe/backward/duck-directional anims); anim_state/anim_upper/lower_action+time still not networked (grep confirms zero anim_* bits in NetEntity/ClientEntityView)"
+    - "animdecide UPPER-BODY ACTIONS still not ported (shoot/pain/draw/taunt/melee torso overlays never play; anim_state/anim_upper/lower_action+time still not networked — grep confirms zero anim_* bits in NetEntity/ClientEntityView). BUT the 8-direction + duck-variant LOCOMOTION is now FAITHFULLY PORTED AND LIVE (drift fix 2026-06-27): LocomotionBlend.SelectLegsDirectional + ImplicitDirection (1:1 port of animdecide_setimplicitstate vdist>10/0.5-cot + animdecide_getloweranim 21-state directional/duckwalk switch) drives PlayerModel.Pose (PlayerModel.cs:171); BuildClipTable maps all 21 directional/duck clips with the animfixfps fallback cascade. Remaining locomotion gap = per-anim framerates (die 0.5/shoot 5/jump 10/draw 3/taunt 0.33) still unused (clips picked by name @ 20fps default)."
     - "CSQCMODEL networking contract still mostly unmapped, BUT alpha is now FULLY wired end-to-end (Wave 5 closed the dead-on-consume gap): server QuantizeAlpha producer -> codec -> ClientEntityView maps s.Alpha->e.Alpha (0->opaque, else byte/255) -> PlayerModel.ApplyAlpha renders per-instance Transparency, so Cloaked/Invisibility/fade now render translucent. Still NOT networked: colormod (ALL entities, BIT(8)), scale (BIT(12)), traileffect (BIT(2)), modelflags (BIT(2)) except the client re-derives MF_ROCKET from the new UsingJetpack flag, non-player glowmod (BIT(8)), v_angle (BIT(10)), the whole anim_* block"
     - "MF_* model flags still not networked, BUT MF_ROCKET is now re-derived client-side and LIVE: the new NetEntityFlags.UsingJetpack (1<<8) flows server->client->e.UsingJetpack->ComposeForcedAppearance(jetpackActive:true)->CsqcModelEffects.Apply(forced)->DriveJetpackLoop + rocket-trail return. So the jetpack loop + MF_ROCKET trail now fire for remote players. Still dead: the other MF trails (grenade/gib/tracer) for non-jetpack entities (modelFlags base still 0), and the forced-glowmod TINT (ApplyForcedGlowmod, zero callers). NOTE (2026-06-25 reclassification): the Strength/Shield EF_BLUE/EF_RED role-glow is NOT dead — it is achieved LIVE via PowerupsMutator setting player.Effects (the dead path is only the redundant ComposeForcedAppearance(strength,shield) seam)"
-    - "LOD swap is STILL a no-op (UNCHANGED): SelectLodIndex is computed faithfully (ClientWorld.cs:1273 `_ = SelectLodIndex(...)`) but discarded — stock player models (erebus/gak/gakmasked) AND monsters (golem/spider/...) ship _lod1/_lod2, so with default cl_playerdetailreduction 4 distant players/monsters always render full-detail lod0 (real regression, persists)"
+    - "LOD swap is STILL a no-op (UNCHANGED, re-verified 2026-06-27): SelectLodIndex is computed faithfully (ClientWorld.cs:1304 `_ = CsqcModelLod.SelectLodIndex(...)`) but discarded — stock player models (erebus/gak/gakmasked) AND monsters (golem/spider/...) ship _lod1/_lod2, so with default cl_playerdetailreduction 4 distant players/monsters always render full-detail lod0 (real regression, persists)"
     - "Per-player FORCED glowmod TINT (gametype/powerup role color RECOLORING the model surface over the colormap-derived glowmod) is built (ApplyForcedGlowmod + ForcedAppearance.HasForcedGlowmod) but STILL DEAD — no caller ever composes or passes a forced glowmod; the live jetpack composition passes forcedGlowmod (-1,-1,-1) = unset. (Distinct from the role-glow LIGHTS, which ARE live via PowerupsMutator EF_BLUE/EF_RED.)"
 features:
   - id: cl-csqcmodel.predraw.dispatch_order
@@ -172,13 +172,13 @@ features:
     intended_divergence: true
     divergence_rationale: "INTENDED only for the two unported renderer globals: view_quality (a renderer LOD-quality global) and current_viewzoom have no port equivalent, both pinned to 1 — adaptive-quality / zoom LOD scaling is deliberately absent. The missing _lodN SWAP is NOT an intended divergence (see gaps): it is deferred render work; stock player + monster models DO ship _lodN."
     gaps:
-      - "REAL REGRESSION (STILL OPEN, unchanged by Wave 5): stock player models erebus/gak/gakmasked AND monsters golem/spider/nanomage/wyvern ship _lod1/_lod2 in Base/data; with default cl_playerdetailreduction 4, Base downshifts distant players/monsters to lod1/lod2, but the port discards the computed index (ClientWorld.cs:1273 `_ = SelectLodIndex(...)`, line 1274 comment 'keep lod0') and ALWAYS renders lod0. So distant detail never reduces for default content (perf + visible-detail parity gap)."
+      - "REAL REGRESSION (STILL OPEN, re-verified 2026-06-27): stock player models erebus/gak/gakmasked AND monsters golem/spider/nanomage/wyvern ship _lod1/_lod2 in Base/data; with default cl_playerdetailreduction 4, Base downshifts distant players/monsters to lod1/lod2, but the port discards the computed index (ClientWorld.cs:1304 `_ = CsqcModelLod.SelectLodIndex(...)`, line 1305 comment 'keep lod0 (the QC fexists-miss path)') and ALWAYS renders lod0. So distant detail never reduces for default content (perf + visible-detail parity gap)."
       - "view_quality and current_viewzoom are pinned to 1 (no port equivalent), so adaptive-quality / zoom LOD scaling is absent. (Intended.)"
     verification:
-      - { kind: code, ref: "ClientWorld.cs:1273 `_ = CsqcModelLod.SelectLodIndex(...)` result discarded; 1274 comment 'keep lod0 (the QC fexists-miss path)' — UNCHANGED by Wave 5", result: fail }
+      - { kind: code, ref: "ClientWorld.cs:1304 `_ = CsqcModelLod.SelectLodIndex(...)` result discarded; 1305 comment 'keep lod0 (the QC fexists-miss path)' — re-verified 2026-06-27 still discarded", result: fail }
       - { kind: code, ref: "Base/data models/player/{erebus,gak,gakmasked}_lod{1,2}.iqm + models/monsters/{golem,spider,nanomage,wyvern}_lod1.dpm EXIST — the no-op swap regresses default content", result: fail }
     confidence: high
-    notes: "SelectLodIndex distance pick and NearestPointOnBox are faithful ports; the swap is the dead part. ApplyLod is live (called from DriveCsqcModelHooks) but inert. STILL OPEN — Wave 5 did not wire the swap; re-verified 2026-06-25 at ClientWorld.cs:1290 `_ = CsqcModelLod.SelectLodIndex(...)` discarded, line 1291 comment 'keep lod0' — UNCHANGED (Wave 6e implemented 0 cl-csqcmodel gaps per its own commit message)."
+    notes: "SelectLodIndex distance pick and NearestPointOnBox are faithful ports; the swap is the dead part. ApplyLod is live (called from DriveCsqcModelHooks) but inert. STILL OPEN — re-verified 2026-06-27 at ClientWorld.cs:1304 `_ = CsqcModelLod.SelectLodIndex(...)` discarded, line 1305 comment 'keep lod0 (the QC fexists-miss path)' — UNCHANGED."
   - id: cl-csqcmodel.skeleton.upper_lower_aim
     name: "Skeletal upper/lower split + aim bones + fixbone"
     layer: [presentation]
@@ -220,19 +220,23 @@ features:
       - "common/animdecide.qc:animdecide_getupperanim"
       - "common/animdecide.qc:animdecide_load_if_needed"
     port_refs:
-      - "src/XonoticGodot.Engine/Simulation/LocomotionBlend.cs:SelectLegs"
+      - "src/XonoticGodot.Engine/Simulation/LocomotionBlend.cs:SelectLegsDirectional"
+      - "src/XonoticGodot.Engine/Simulation/LocomotionBlend.cs:ImplicitDirection"
       - "src/XonoticGodot.Engine/Simulation/LocomotionBlend.cs:Split"
+      - "game/client/PlayerModel.cs:Pose"
+      - "game/client/PlayerModel.cs:BuildClipTable"
     constants:
-      - { name: "8-direction detection (v.x/v.y with 0.5 cot threshold + vdist>10)", base: "yes", port: "none (6-state by 2D speed)", match: false }
-      - { name: "locomotion states", base: "~24 (run/runbackwards/strafeL/R/forwardL/R/backL/R + 7 duckwalk variants + idle/jump/duckidle/duckjump)", port: "6 (Idle/Walk/Run/Jump/Crouch/Dead)", match: false }
-      - { name: "walk/run speed thresholds (u/s)", base: "vdist>10 trigger; no walk/run split (frame group named anims)", port: "20 / 220", match: false }
-      - { name: "upper-body actions (draw/pain1/pain2/shoot/taunt/melee)", base: "yes (priority DEAD>ACTIVE>IDLE)", port: "none (static idle/aim torso)", match: false }
+      - { name: "8-direction detection (v.x/v.y with 0.5 cot threshold + vdist>10)", base: "yes (animdecide.qc:268-277)", port: "ImplicitDirection: vdist>10 + 0.5 cot fwd/back/right/left — match", match: true }
+      - { name: "locomotion states", base: "~21 (run/runbackwards/strafeL/R/forwardL/R/backL/R + duckwalk 8-dir variants + idle/jump/duckidle/duckjump/death)", port: "DirLocomotion 21-state set (same enum), mapped 1:1", match: true }
+      - { name: "directional switch (getloweranim fblr mask)", base: "animdecide.qc:196-239 (standing + ducked switches)", port: "SelectLegsDirectional standing+ducked switch — match", match: true }
+      - { name: "clip fallback cascade (animfixfps fallback arg)", base: "diagonals->straight strafe->run; duckwalk dirs->duckwalk; etc (animdecide.qc:80-95)", port: "BuildClipTable Pick(...) keyword fallback chain — match", match: true }
+      - { name: "upper-body actions (draw/pain1/pain2/shoot/taunt/melee)", base: "yes (priority DEAD>ACTIVE>IDLE)", port: "none (static idle/aim torso, torsoTime=0)", match: false }
       - { name: "die framerate (fps)", base: "0.5 (2s)", port: "fuzzy name match @ 20fps fallback", match: false }
-      - { name: "shoot framerate (fps)", base: "5", port: "n/a", match: false }
-      - { name: "jump framerate (fps)", base: "10", port: "n/a", match: false }
-      - { name: "draw framerate (fps)", base: "3", port: "n/a", match: false }
-      - { name: "taunt framerate (fps)", base: "0.33", port: "n/a", match: false }
-      - { name: "networked anim inputs", base: "anim_state BIT(7), anim_time, anim_lower_action/time BIT(8), anim_upper_action/time BIT(9)", port: "none networked", match: false }
+      - { name: "shoot framerate (fps)", base: "5", port: "n/a (no action overlay)", match: false }
+      - { name: "jump framerate (fps)", base: "10", port: "name-picked @ 20fps default", match: false }
+      - { name: "draw framerate (fps)", base: "3", port: "n/a (no action overlay)", match: false }
+      - { name: "taunt framerate (fps)", base: "0.33", port: "n/a (no action overlay)", match: false }
+      - { name: "networked anim inputs", base: "anim_state BIT(7), anim_time, anim_lower_action/time BIT(8), anim_upper_action/time BIT(9)", port: "none networked (locomotion needs none — inferred from velocity/angles; only the ACTION overlays need the wire)", match: false }
     status:
       logic: partial
       values: partial
@@ -243,15 +247,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "animdecide is NOT ported: the networked anim_state / anim_upper_action / anim_lower_action / anim_time inputs are not sent or read (grep confirms zero anim_* bits in NetEntity/ClientEntityView), so upper-body ACTIONS (shoot/melee/pain/draw/taunt overlays on the torso) never play on the third-person model."
-      - "The 8-direction + duck-variant locomotion (~24 movement clips incl. runbackwards, strafeleft/right, forwardleft/right, backleft/right, duckwalk* directional set) is replaced by a coarse 6-state heuristic keyed only on 2D speed (20/220 u/s), on-ground, ducked, dead: remote players show a single forward-run cycle regardless of direction, never visibly shoot/flinch/reload/taunt with the torso, and ducking shows a generic crouch."
-      - "Per-anim framerates (die 0.5fps, shoot 5, jump 10, draw 3, taunt 0.33) and the per-clip framegroup names are not used; clips are picked by a fuzzy name Contains match with a 20fps fallback."
-      - "The CSQC-side implicit jump detection (ground->air transition sets ANIMACTION_JUMP) is approximated by the on-ground->Jump clip pick; no end-of-jump-anim freeze."
+      - "Upper-body ACTIONS still NOT ported: the networked anim_state / anim_upper_action / anim_lower_action / anim_time inputs are not sent or read (grep confirms zero anim_* bits in NetEntity/ClientEntityView), so shoot/melee/pain/draw/taunt torso overlays never play on the third-person model (the torso shows a single stable idle/aim clip, Split torsoTime=0)."
+      - "Per-anim framerates (die 0.5fps, shoot 5, jump 10, draw 3, taunt 0.33) and the per-clip framegroup names are not used; clips are picked by a fuzzy name Contains match with a 20fps default (BuildClipTable.Pick + FrameGroup(...,20f,...))."
+      - "The CSQC-side implicit jump detection (ground->air transition sets ANIMACTION_JUMP) is approximated by the inAir->Jump/DuckJump clip pick; no explicit end-of-jump-anim freeze (the comment 'play the END of the jump anim' notes the intent but the non-looping clamp is the approximation)."
     verification:
-      - { kind: code, ref: "LocomotionBlend.cs SelectLegs (6-state, 20/220 thresholds) live via PlayerModel.Pose; no anim_state/action wire in NetEntity/EntityField — UNCHANGED by Wave 5", result: fail }
-      - { kind: code, ref: "grep anim_state/anim_upper_action/anim_lower_action across src+game net layer: absent (NetEntity EntityField has no anim_* bit)", result: fail }
+      - { kind: code, ref: "PlayerModel.cs:171 `loco = LocomotionBlend.SelectLegsDirectional(e.Velocity, e.Angles, e.OnGround, e.IsDucked, dead)` on the live Pose path; _legClips[21] resolved in BuildClipTable (PlayerModel.cs:367-388) — 8-direction + duck-variant LOCOMOTION now LIVE", result: pass }
+      - { kind: code, ref: "LocomotionBlend.cs:125-142 ImplicitDirection = 1:1 port of animdecide_setimplicitstate (vdist>10, 0.5 cot, F/B/L/R); :150-189 SelectLegsDirectional = animdecide_getloweranim standing+ducked switch", result: pass }
+      - { kind: code, ref: "grep anim_state/anim_upper_action/anim_lower_action across src+game net layer: absent (NetEntity EntityField has no anim_* bit) — upper-body ACTION overlays still not networked/ported", result: fail }
     confidence: high
-    notes: "Still the dominant parity gap. Liveness=partial: a coarse legs heuristic IS live (SelectLegs, re-verified 2026-06-25: enum Idle/Walk/Run/Jump/Crouch/Dead at LocomotionBlend.cs:72, thresholds 20/220 at 83-84), but the action/8-direction/duck-directional/framerate systems are missing entirely. The remote-velocity + on-ground + ducked flags that feed SelectLegs ARE networked, so legs animate; the upper-body actions are not. STILL OPEN — no anim_* bit in NetEntity (re-verified absent); neither Wave 5 nor Wave 6 networked the anim_* block."
+    notes: "DRIFT FIX 2026-06-27: the 8-direction + duck-variant LOCOMOTION (the baseline's dominant gap) is now FAITHFULLY PORTED AND LIVE. LocomotionBlend gained SelectLegsDirectional (21-state DirLocomotion) + ImplicitDirection (the animdecide_setimplicitstate vdist>10/0.5-cot 8-direction detection), both 1:1 ports, driven from PlayerModel.Pose (PlayerModel.cs:171) on the skeletal player path; BuildClipTable resolves all 21 directional/duck clips with the animfixfps fallback cascade. So remote players now show strafe/backward/diagonal/duckwalk-directional cycles, not a single forward run. logic upgraded partial->faithful on the locomotion mechanism (still partial overall because the ACTION state machine is absent); liveness stays partial (locomotion live, actions dead). STILL OPEN: upper-body ACTION overlays (shoot/pain/draw/taunt/melee), the anim_* networking they require, and the per-anim framerates. The coarse 6-state SelectLegs(speed 20/220) helper still exists for the MD3 path but the skeletal player path uses the faithful directional set."
   - id: cl-csqcmodel.fallbackframe.remap
     name: "Fallback frame remap (missing-frame substitution)"
     layer: [presentation]

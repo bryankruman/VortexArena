@@ -1,12 +1,12 @@
 unit: mutator-spawn_near_teammate
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 8
   worst_gaps:
-    - "cl_spawn_near_teammate is still read as a host-global cvar (Api.Cvars.GetFloat, lines 106/165), not a per-player REPLICATEd value (cvar_cl_spawn_near_teammate), so the ignore_spawnpoint==2 per-client opt-in mode is not per-player."
-    - "weaponLocked(teammate) and PHYS_INPUT_BUTTON_CHAT(teammate) relocate gates are still hardcoded false (no per-player weapon-lock / chat-button input reachable) — a faithful subset that may relocate beside a mate Base would skip for a weapon lock or for typing."
+    - "cl_spawn_near_teammate is still read as a host-global cvar (Api.Cvars.GetFloat, lines 107/166), not a per-player REPLICATEd value (cvar_cl_spawn_near_teammate), so the ignore_spawnpoint==2 per-client opt-in mode is not per-player."
+    - "weaponLocked(teammate) ports only the reachable freeze subset (FrozenStat || STATUSEFFECT_Frozen); QC's game_stopped / player_blocked / LockWeapon-hook portions are not modeled — a minor faithful-subset divergence on the relocate eligibility gate."
 features:
   - id: mutator-spawn_near_teammate.registration.cvar_gate
     name: "Mutator registration + cvar gate (expr_evaluate g_spawn_near_teammate)"
@@ -31,7 +31,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "cl_spawn_near_teammate is read as a host-global cvar (Api.Cvars.GetFloat, lines 106/165), not a per-player REPLICATEd value (cvar_cl_spawn_near_teammate); the ignore_spawnpoint==2 per-client opt-in mode is therefore not per-player. (Carried over from baseline — still open.)"
+      - "cl_spawn_near_teammate is read as a host-global cvar (Api.Cvars.GetFloat, lines 107/166), not a per-player REPLICATEd value (cvar_cl_spawn_near_teammate); the ignore_spawnpoint==2 per-client opt-in mode is therefore not per-player. (Carried over from baseline — still open.)"
       - "MINOR/cosmetic: ExprToken tests the comparison operators in the order >= <= == != === !== > < whereas Base BINOP source order is >= <= > < == != === !==. The '> / <' before '== / !=' difference only changes the split point for a pathological token that contains BOTH a '>'/'<' and an '=='/'!=' (e.g. 'a>b==c'); no real ruleset/cvar value has such a token, so the live result is identical. The code comment overclaims 'EXACTLY QC's BINOP source order'."
     verification:
       - { kind: code-read, ref: "ExprEvaluate (489)/ExprToken (506) vs lib/cvar.qh:48-104 — leading +/- handling, whitespace tokenize, BINOP AND-chain, bare-token (ftos(f)==k ? f : cvar(k)) truthiness with '!' invert: all present and matching", result: pass }
@@ -48,8 +48,8 @@ features:
       - "server/spawnpoints.qh (SPAWN_PRIO_NEAR_TEAMMATE_FOUND / _SAMETEAM)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs:95 (OnSpawnScore)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs:127 (checkpvs gate)"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:465 (ScoreSpot → SpawnScore.Call)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs:128 (checkpvs gate)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:566 (ScoreSpot → SpawnScore.Call)"
     constants:
       - { name: "SPAWN_PRIO_NEAR_TEAMMATE_FOUND", base: "200", port: "200", match: true }
       - { name: "SPAWN_PRIO_NEAR_TEAMMATE_SAMETEAM", base: "100", port: "100", match: true }
@@ -67,8 +67,8 @@ features:
     gaps: []
     verification:
       - { kind: unit-test, ref: "MutatorBatchT19Tests.SpawnNearTeammate_RaisesPriority_NearLiveTeammate (+200) / _Inert_WhenNotTeamplay", result: pass }
-      - { kind: code-read, ref: "OnSpawnScore reservoir pick + 48u/distance window vs QC FOREACH_CLIENT; checkpvs gate now wired at line 127 (Api.Trace.CheckPvs)", result: pass }
-      - { kind: code-read, ref: "Api.Trace.CheckPvs (Services.cs:49 / TraceService.cs:178) is backed by the compiled BSP PVS (BspPvs.IsInPvs); the host sets Services.Pvs from the loaded BSP at GameWorld.cs:471, so the gate is live in a real match (conservatively visible only on a non-BSP/test world)", result: pass }
+      - { kind: code-read, ref: "OnSpawnScore reservoir pick + 48u/distance window vs QC FOREACH_CLIENT; checkpvs gate wired at line 128 (Api.Trace.CheckPvs)", result: pass }
+      - { kind: code-read, ref: "Api.Trace.CheckPvs is backed by the compiled BSP PVS (BspPvs.IsInPvs); the host sets Services.Pvs from the loaded BSP, so the gate is live in a real match (conservatively visible only on a non-BSP/test world)", result: pass }
     confidence: high
     notes: "WAVE-7 FIX (baseline = logic partial; the single open item was the absent checkpvs visibility gate). The gate is now ported and live: OnSpawnScore line 127 calls Api.Trace.CheckPvs(spot.Origin, it.Origin) — the same DP-faithful PVS query other ported features (BotBrain) use — so the biased/look-at teammate set matches Base instead of being a superset. Uniform reservoir pick (Prandom) over other living same-team players in the 48u..distance window; +200 found / +100 same-team. Constants all match. logic upgraded partial→faithful."
 
@@ -80,7 +80,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs:171-177 (OnPlayerSpawn look-at branch)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs:438 (FaceAngles → FixAngle/FixAngleAngles)"
-      - "src/XonoticGodot.Server/ClientManager.cs:636,656 (PutPlayerInServer THEN PlayerSpawn.Call)"
+      - "src/XonoticGodot.Server/ClientManager.cs:722,749 (PutPlayerInServer THEN PlayerSpawn.Call)"
     constants: []
     status:
       logic: faithful
@@ -94,7 +94,7 @@ features:
     gaps: []
     verification:
       - { kind: code-read, ref: "OnPlayerSpawn:176 computes QMath.FixedVecToAngles(mate.Origin - player.Origin) (== vectoangles + pitch flip), roll-zeroed, and routes through FaceAngles which sets player.Angles + FixAngle=true + FixAngleAngles", result: pass }
-      - { kind: code-read, ref: "ClientManager.Spawn calls PutPlayerInServer (line 636, latches FixAngle/FixAngleAngles=sp.Angles) BEFORE MutatorHooks.PlayerSpawn.Call (line 656) — so the mutator OVERWRITES the spawnpoint latch on the same respawn edge, exactly as Base's 'fixangle is already set' comment", result: pass }
+      - { kind: code-read, ref: "ClientManager.Spawn calls PutPlayerInServer (line 722, latches FixAngle/FixAngleAngles=sp.Angles) BEFORE MutatorHooks.PlayerSpawn.Call (line 749) — so the mutator OVERWRITES the spawnpoint latch on the same respawn edge, exactly as Base's 'fixangle is already set' comment", result: pass }
     confidence: high
     notes: "The look-at branch routes through FaceAngles, which latches the FixAngle/FixAngleAngles channel that actually reaches the client — and the ordering (PutPlayerInServer before PlayerSpawn.Call in ClientManager) means the mutator's facing wins. The angle math (FixedVecToAngles == vectoangles + explicit pitch flip, roll-zeroed) is correct. Genuinely live + faithful end to end."
 
@@ -111,7 +111,7 @@ features:
       - { name: "g_spawn_near_teammate_ignore_spawnpoint_check_health", base: "1", port: "1 (cvar, shipped)", match: true }
       - { name: "g_balance_health_regenstable", base: "100", port: "100 (cvar, shipped)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -120,12 +120,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "weaponLocked(teammate) gate is always false in the port (WeaponLocked returns false, line 462; no per-player weapon-lock reachable): may relocate beside a mate Base would skip. (Unchanged from baseline — still open, minor.)"
-      - "PHYS_INPUT_BUTTON_CHAT (teammate typing) gate is always false in the port (IsChatting returns false, line 466; no chat-button input plumbed): may relocate beside a typing mate Base would skip. (Unchanged from baseline — still open, minor.)"
+      - "MINOR/subset: WeaponLocked (line 468) ports only the reachable freeze subset (Entity.FrozenStat != 0 || STATUSEFFECT_Frozen) — the same reachable piece as CampcheckMutator.WeaponLocked. QC's weaponLocked also covers game_starttime/sv_ready_restart_after_countdown, game_stopped, player_blocked, and the LockWeapon mutator hook, none of which have a port equivalent on the spawn path. No observable divergence in a normal live match (spawns only fire mid-match)."
     verification:
-      - { kind: code-read, ref: "WeaponLocked()/IsChatting() hardcoded false (lines 462/466); team/health/dead/timer/spawnshield/self/maxTested-after-pass gates ported faithfully", result: partial }
+      - { kind: code-read, ref: "IsChatting(mate) = e.ButtonChat (line 478), the live PlayerPhysics-written Typing-intent field that campcheck/typefrag also read; WeaponLocked(mate) = FrozenStat||STATUSEFFECT_Frozen (line 468). Both gates are now real (NOT hardcoded false as in baseline). team/health/dead/timer/spawnshield/self/maxTested-after-pass gates ported faithfully", result: pass }
+      - { kind: code-read, ref: "Entity.ButtonChat written by PlayerPhysics from the Typing intent; FrozenStat in DamageEntityState.cs:107; both live fields used across DamageSystem/Hook/Teleporters/Warpzone typefrag and CampcheckMutator", result: pass }
     confidence: high
-    notes: "1-player-team advantage guard, FOREACH_CLIENT_RANDOM (deterministic Fisher-Yates via Prandom Shuffle), `tested` incremented only after passing all gates, and the maxTested cap are ported correctly. msnt_timer in a ConditionalWeakTable. Wired live via ClientManager.Spawn:656 → PlayerSpawn.Call. The two false-stubbed input gates are the only open items."
+    notes: "DRIFT-FIX (baseline = logic partial; the two open items were the chat-button and weapon-lock gates being hardcoded false). Both are now genuinely ported: IsChatting reads the live Entity.ButtonChat field (line 478) and WeaponLocked checks FrozenStat || STATUSEFFECT_Frozen (line 468), mirroring CampcheckMutator's identical gates. 1-player-team advantage guard, FOREACH_CLIENT_RANDOM (deterministic Fisher-Yates via Prandom Shuffle), `tested` incremented only after passing all gates, and the maxTested cap are ported correctly. msnt_timer in a ConditionalWeakTable. Wired live via ClientManager.Spawn:749 → PlayerSpawn.Call. logic upgraded partial→faithful; only the minor weaponLocked-subset note remains."
 
   - id: mutator-spawn_near_teammate.relocate.spot_search
     name: "Relocate mode: 6-offset trace search for a clear floor beside the teammate"
@@ -168,8 +168,8 @@ features:
       - "common/mutators/mutator/spawn_near_teammate/sv_spawn_near_teammate.qc:166-202"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs:250-301 (pair commit + closetodeath)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs:275 (player.DeathOrigin)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs:423 (Place → FaceAngles)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs:276 (player.DeathOrigin)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs:424 (Place → FaceAngles)"
     constants:
       - { name: "g_spawn_near_teammate_ignore_spawnpoint_closetodeath", base: "1", port: "1 (cvar, shipped)", match: true }
       - { name: "g_spawn_near_teammate_ignore_spawnpoint_delay", base: "2.5 s", port: "2.5 (cvar, shipped)", match: true }
@@ -185,8 +185,8 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "Place (423) uses Api.Entities.SetOrigin + FaceAngles (latches FixAngle/FixAngleAngles); closetodeath (275) uses player.DeathOrigin; delay/delay_death timers armed as Base (time+delay on mate, time+delay_death on player)", result: pass }
-      - { kind: code-read, ref: "Player.DeathOrigin (Player.cs:176) is a real field latched in DamageSystem.Killed (DamageSystem.cs:562, QC Obituary targ.death_origin = targ.origin) on the live death path; zero until first death, matching QC's default-zero .death_origin", result: pass }
+      - { kind: code-read, ref: "Place (424) uses Api.Entities.SetOrigin + FaceAngles (latches FixAngle/FixAngleAngles); closetodeath (276) uses player.DeathOrigin; delay/delay_death timers armed as Base (time+delay on mate, time+delay_death on player)", result: pass }
+      - { kind: code-read, ref: "Player.DeathOrigin (Player.cs:216) is a real field latched in DamageSystem.Killed (DamageSystem.cs:612, QC Obituary targ.death_origin = targ.origin) on the live death path; zero until first death, matching QC's default-zero .death_origin", result: pass }
     confidence: high
     notes: "WAVE-7 FIX (baseline = logic partial; the open item was closetodeath using the current origin as a death-origin proxy because no .death_origin field existed). Player.DeathOrigin now exists and is latched on the live Killed path (DamageSystem.cs:562), and the closetodeath branch (line 275) measures vlen2(chosen.origin - player.DeathOrigin) from it — matching Base. Pair-wise commit (act on odd index when a spot was chosen), immediate setorigin+cooldown when !closetodeath, deferred nearest-to-death best-spot when closetodeath: all ported. delay/delay_death cooldowns armed exactly as Base. The relocate facing (Place: mate.Angles, roll-zeroed) routes through FaceAngles → FixAngle/FixAngleAngles. logic upgraded partial→faithful."
 
@@ -221,7 +221,7 @@ features:
     base_refs:
       - "common/mutators/mutator/spawn_near_teammate/sv_spawn_near_teammate.qc:36,66,90 (IS_PLAYER / FOREACH_CLIENT)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs:451 (IsPlayer = EntFlags.Client)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs:452 (IsPlayer = EntFlags.Client)"
     constants: []
     status:
       logic: faithful

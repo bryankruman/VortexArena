@@ -1,14 +1,14 @@
 unit: turret-fusionreactor
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"  # re-verified: no drift
+last_audited: "2026-06-25"  # re-audited 2026-06-25: mutator hook now FIXED (was missing); te_smallflash now real TE_SMALLFLASH block; +1 unmapped (MENUQC describe)
 summary:
-  feature_count: 8
+  feature_count: 9
   worst_gaps:
-    - "No client presentation at all: turrets have no networked ENT_CLIENT_TURRET entity in the port, so the reactor renders nothing — no model, no ammo-scaled head spin (Base '0 250 0'*ammo/ammo_max), no waypoint sprite/healthbar, no death/gib FX. (te_smallflash IS now emitted at each recipient, but it resolves to a generic muzzle-flash approximation, not the networked te_smallflash temp-entity.)"
+    - "No client presentation at all: turrets have no networked ENT_CLIENT_TURRET entity in the port, so the reactor renders nothing — no model, no ammo-scaled head spin (Base '0 250 0'*ammo/ammo_max), no waypoint sprite/healthbar, no death/gib FX."
     - "head_model (reactor.md3) is not carried — no head entity exists in the port turret model; the initial head spin (50 deg/s) + scale 0.75 + ammo-scaled spin all depend on the absent client head render."
     - "TUR_FLAG_SUPPORT/AMMOSOURCE are not stored as flags; support behavior is hardcoded in the C# class instead of derived from spawnflags (functionally harmless — AMMOSOURCE is purely declarative in Base, SUPPORT only selects targetscore_support which the reactor never uses)."
-    - "The FusionReactor_ValidTarget mutator override hook is not implemented (no stock Xonotic mutator registers it, so it is inert in Base too)."
+    - "MENUQC describe() turret help text is not ported (no menu turret-codex equivalent in the port)."
 features:
   - id: turret-fusionreactor.identity.def
     name: "Identity / model / hitbox / support class flags"
@@ -163,10 +163,12 @@ features:
       - "common/turrets/cl_turrets.qc:turret_draw (head angle integration)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/FusionReactorTurret.cs:Think (EffectEmitter.TeSmallflash + HeadAVelocity)"
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:250 (TeSmallflash)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:252 (TeSmallflash)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:260 (Effects.Register TE_SMALLFLASH)"
     constants:
       - { name: "head avelocity scale", base: "'0 250 0' * ammo/ammo_max", port: "st.HeadAVelocity = '0 250*ammo/ammo_max 0' (computed, but no client head render integrates it)", match: false }
       - { name: "smallflash origin", base: "0.5*(enemy.absmin+enemy.absmax)", port: "0.5*(ally.AbsMin+ally.AbsMax)", match: true }
+      - { name: "smallflash effect block", base: "te_smallflash builtin -> TE_SMALLFLASH effectinfo", port: "Emit(\"TE_SMALLFLASH\") -> registered TE_SMALLFLASH block", match: true }
     status:
       logic: faithful
       values: partial
@@ -178,11 +180,11 @@ features:
     divergence_rationale: null
     gaps:
       - "No client turret render (ENT_CLIENT_TURRET): the reactor renders no model and no head, so the ammo-scaled head spin (Base '0 250 0'*ammo/ammo_max, up to 250 deg/s) is computed onto TurretState.HeadAVelocity but never integrated/displayed. No waypoint sprite/healthbar/death FX either."
-      - "te_smallflash now IS emitted at each recipient's bbox centre (EffectEmitter.TeSmallflash), but it resolves to a generic BLASTER_MUZZLEFLASH-style flash, not the networked DarkPlaces te_smallflash temp-entity — presentation approximation."
     verification:
-      - { kind: code-read, ref: "tr_attack/tr_think FX vs FusionReactorTurret.Think (now calls EffectEmitter.TeSmallflash at recipient + sets HeadAVelocity; no ENT_CLIENT_TURRET render integrates the head spin)", result: partial }
+      - { kind: code-read, ref: "tr_attack/tr_think FX vs FusionReactorTurret.Think (calls EffectEmitter.TeSmallflash at recipient + sets HeadAVelocity; no ENT_CLIENT_TURRET render integrates the head spin)", result: partial }
+      - { kind: code-read, ref: "EffectsList.cs:260 registers TE_SMALLFLASH as its own effectinfo block (NOT a substitute), EffectEmitter.TeSmallflash emits it by id", result: pass }
     confidence: high
-    notes: "PARTIAL FIX since 2026-06-22 baseline: the smallflash is now actually emitted (was comment-only) at the correct origin and on the right cadence — logic/timing faithful, presentation approximate. The ammo-scaled head spin value is computed correctly but still has no client render to display it (whole-family turret client-render gap)."
+    notes: "te_smallflash CORRECTION (2026-06-25): the recipient flash is no longer a generic muzzle-flash approximation — TE_SMALLFLASH is registered as its own effectinfo block and EffectEmitter.TeSmallflash networks it by id, so logic/values/timing/presentation of the flash itself are faithful. presentation stays 'partial' ONLY because of the missing ENT_CLIENT_TURRET head render (the ammo-scaled head spin value is computed correctly but has no client render to display it — whole-family turret client-render gap)."
 
   - id: turret-fusionreactor.spawn.lifecycle
     name: "Spawnfunc + master switch + think wiring + damage/use/death/respawn"
@@ -221,20 +223,49 @@ features:
     layer: [authority]
     base_refs:
       - "common/turrets/turret/fusionreactor.qc:turret_fusionreactor_firecheck (MUTATOR_CALLHOOK FusionReactor_ValidTarget)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:1232 (FusionReactorValidTargetArgs / HookChain) / 1253 (FireFusionReactorValidTarget)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FusionReactorTurret.cs:81 (Think calls MutatorHooks.FireFusionReactorValidTarget, branches on tri-state)"
+    constants:
+      - { name: "MUT_FUSREAC_TARG_CONTINUE", base: "0 (fall through)", port: "null (normal firecheck applies)", match: true }
+      - { name: "MUT_FUSREAC_TARG_VALID", base: "1 (force accept)", port: "true (force accept, skip gates)", match: true }
+      - { name: "MUT_FUSREAC_TARG_INVALID", base: "2 (force reject)", port: "false (skip candidate)", match: true }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "MUTATOR_CALLHOOK(FusionReactor_ValidTarget) tri-state vs MutatorHooks.FireFusionReactorValidTarget (null/true/false) wired at FusionReactorTurret.cs:81 ahead of the normal firecheck gates", result: pass }
+      - { kind: liveness-trace, ref: "FusionReactorTurret.Think (live per-frame think) calls FireFusionReactorValidTarget for every candidate; fast-path returns null when no handlers, matching Base CALLHOOK with no registrations", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-25 audit (baseline had logic:missing, port_refs:[]): the FusionReactor_ValidTarget hook chain now exists (MutatorHooks.FusionReactorValidTarget) with a faithful tri-state model (null=CONTINUE, true=VALID force-accept, false=INVALID force-reject) and is wired LIVE into the firecheck at FusionReactorTurret.cs:81 — VALID short-circuits past the own-ammo/recipient-full/energy gates exactly like Base. No stock Xonotic mutator registers a handler, so the fast path returns null (gates apply) just as Base's empty CALLHOOK does; behavior is bit-faithful and the seam is ready for a future mod."
+
+  - id: turret-fusionreactor.menu.describe
+    name: "MENUQC turret-codex help text (describe)"
+    layer: [presentation]
+    base_refs:
+      - "common/turrets/turret/fusionreactor.qc:METHOD(FusionReactor, describe) (MENUQC)"
     port_refs: []
-    constants: []
+    constants:
+      - { name: "describe text", base: "\"The %s is a bit of a unique turret... generating power for nearby turrets...\" + \"This is the only turret that doesn't directly attack its targets.\"", port: "none", match: false }
     status:
       logic: missing
       values: na
       timing: na
-      presentation: na
+      presentation: missing
       audio: na
       liveness: na
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The FusionReactor_ValidTarget mutator hook (lets a mutator force-accept/reject a recharge target) is not implemented; no stock Xonotic mutator registers it, so it is presently inert in Base too."
+      - "The MENUQC describe() help string (shown in the menu turret codex) is not ported — the port has no menu turret-description surface for the Fusion Reactor."
     verification:
-      - { kind: code-read, ref: "MUTATOR_CALLHOOK in firecheck vs no port hook", result: fail }
-    confidence: medium
-    notes: "Cross-boundary on the port mutator-hook system. No stock content depends on it, so the gameplay impact is currently nil; recorded for completeness."
+      - { kind: code-read, ref: "fusionreactor.qc MENUQC describe vs grep of port for the help strings (none found)", result: fail }
+    confidence: high
+    notes: "Newly mapped 2026-06-25 (coverage gap in prior baseline). Menu-only cosmetic codex text; zero gameplay impact. Mirrors the describe row tracked in turret-hk.yaml."

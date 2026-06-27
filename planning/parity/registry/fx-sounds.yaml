@@ -3,13 +3,12 @@ category: sound
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 16
+  feature_count: 15
   worst_gaps:
-    - "play2 IS now ported (SoundSystem.Play2) AND live (idle-kick TALK2 GameWorld.cs:1867, ONS shield-block OnslaughtControlPoint.cs:817); play2team is ported (Play2Team) but DEAD (no caller — Base uses it for ONS_*_UNDERATTACK; the port emits those via PlayGlobal, a per-team->global divergence). Many Base play2 sites (weapon UNAVAILABLE, doors, keylock, vehicle lock) remain unwired."
-    - "play2all port (PlayGlobal) does NOT honor QC play2all's `if(autocvar_bot_sound_monopoly) return;` gate — when bot_sound_monopoly=1 global cues still play (NEW gap this pass)."
-    - "sound_allowed owner-walk re-home (body->enemy / realowner / owner) is implemented (SoundAllowedGate.WalkOwner) but DEAD: no caller re-homes corpse/projectile sounds to the originating player. The bot_sound_monopoly gate is implemented + live only on the vehicle hit/shield paths, not on every emit."
     - "_GlobalSound AUTOTAUNT per-recipient probability roll (tauntrand < cl_autotaunt) still omitted (per-client cvar not networked); TAUNT animdecide_setaction(ANIMACTION_TAUNT) still not fired (no anim-action seam)."
     - "GlobalSound_pitch model-scale pitch shift (scale != 1 squeak/deepen) still not ported; wire carries a flat pitch byte."
+    - "play2 per-recipient MSG_ONE targeting is still a broadcast approximation (SoundWire has no per-client send); exact only on a single-human listen server. Vehicle lock/locking play2 sites remain unwired."
+    - "sound_allowed gate (IsAllowed + owner-walk) is now live on the SoundSystem.PlayOn/SpamSound family, but raw Api.Sound.Play (SV_StartSound) direct calls still bypass it; MSG_ONE 'sounds to self always pass' branch still omitted."
 features:
   - id: fx-sounds.registry.sound_table
     name: "Sound registry (SOUND(name,path) table) + path resolution"
@@ -192,18 +191,17 @@ features:
       timing: na
       presentation: na
       audio: faithful
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "SoundAllowedGate.WalkOwner (owner-walk re-home) is implemented but DEAD: no caller uses it to re-home corpse/projectile sounds to the originating player before the gate check."
-      - "IsAllowed (bot_sound_monopoly gate) is live only on the vehicle hit/shield emit paths (VehicleCommon.cs:502/511/522); it is NOT applied on the general one-shot emit path (SoundService.Play / PlayOn), so most SVQC emits bypass the gate."
+      - "Raw Api.Sound.Play (SV_StartSound) direct calls still bypass the gate — IsAllowed/owner-walk is applied by the SoundSystem.PlayOn/PlayRaw/SpamSound family (the primary emit idiom, ~50 live call sites) but a few callers emit via Api.Sound.Play directly (e.g. weapon UNAVAILABLE, some map-object cues), which are ungated."
       - "QC MSG_ONE 'sounds to self always pass' branch omitted (no per-recipient msg_entity context at the gate; documented cosmetic edge-case)."
     verification:
-      - { kind: code, ref: "SoundAllowedGate.WalkOwner mirrors body->enemy/realowner/owner; IsAllowed mirrors `autocvar_bot_sound_monopoly && IS_REAL_CLIENT(e)` -> deny", result: pass }
-      - { kind: grep, ref: "callers: SoundAllowedGate.IsAllowed only at VehicleCommon.cs:502/511/522 (+ SpamSound internal); WalkOwner has ZERO callers; SoundService.Play has no gate", result: fail }
+      - { kind: code, ref: "SoundAllowedGate.WalkOwner mirrors body->enemy/realowner/owner; IsAllowed (SoundSystem.cs:54-69) walks the owner chain then mirrors `autocvar_bot_sound_monopoly && IS_REAL_CLIENT(e)` -> deny", result: pass }
+      - { kind: grep, ref: "IsAllowed now called by every SoundSystem.PlayOn/PlayRaw/SpamSound overload (SoundSystem.cs:188/197/206/223/361/379) + VehicleCommon.cs:507/516/527; SoundSystem.PlayOn/SpamSound used at ~50 live call sites across DamageSystem/Ctf/KeyHunt/OnslaughtControlPoint/etc. WalkOwner is reached via IsAllowed on the general emit path (no longer dead).", result: pass }
     confidence: high
-    notes: "FIX (partial) since baseline: SoundAllowedGate now exists and faithfully ports both halves (owner-walk + bot_sound_monopoly), and the bot_sound_monopoly gate is LIVE on the vehicle paths and inside SpamSound. Regression scope vs baseline 'missing': logic/values/audio missing->faithful, liveness na->partial. Residual: owner-walk has no live caller (dead) and the gate is not on the general emit path."
+    notes: "FIX since baseline: IsAllowed now calls WalkOwner internally (SoundSystem.cs:62) so owner-walk re-home is LIVE on every gated emit (was DEAD), and the bot_sound_monopoly gate is now applied on the general SoundSystem.PlayOn/SpamSound emit family (was only the vehicle paths). liveness partial->live; the two baseline gaps (WalkOwner dead, gate only on vehicle paths) are resolved. Residual: raw Api.Sound.Play direct calls bypass the gate; MSG_ONE self-pass branch omitted."
 
   - id: fx-sounds.emit.play2_family
     name: "play2 / play2team / play2all / spamsound"
@@ -220,7 +218,7 @@ features:
     constants:
       - { name: "play2", base: "soundtoat(MSG_ONE, NULL, '0 0 0', CH_INFO, file, VOL_BASE, ATTEN_NONE)", port: "Play2: Api.Sound.Play(recipient, Auto, sample, VolBase, AttenNone)", match: true }
       - { name: "play2team", base: "if(monopoly)return; FOREACH_CLIENT(IS_PLAYER&&IS_REAL_CLIENT&&team==t) play2", port: "Play2Team: monopoly early-return + per-team roster filter -> Play2", match: true }
-      - { name: "play2all", base: "if(autocvar_bot_sound_monopoly) return; _sound(NULL,CH_INFO,samp,VOL_BASE,ATTEN_NONE)", port: "PlayGlobal (shared emitter, ATTEN_NONE) — NO monopoly gate", match: false }
+      - { name: "play2all", base: "if(autocvar_bot_sound_monopoly) return; _sound(NULL,CH_INFO,samp,VOL_BASE,ATTEN_NONE)", port: "PlayGlobal/PlayGlobalRaw (shared emitter, ATTEN_NONE) — now WITH monopoly gate", match: true }
       - { name: "spamsound_gate", base: "if(time > e.spamtime){ e.spamtime=time; sound(...) }", port: "SpamSound: if(now > emitter.SpamTime){ SpamTime=now; Play(...) }", match: true }
     status:
       logic: faithful
@@ -232,15 +230,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "play2team (Play2Team) is ported but DEAD — zero live callers. Base calls play2team for ONS_CONTROLPOINT_UNDERATTACK / ONS_GENERATOR_UNDERATTACK (sv_onslaught.qc:386/943); the port emits those via PlayGlobal instead (OnslaughtControlPoint.cs:249), a per-team -> global broadcast divergence."
-      - "play2all port (PlayGlobal) omits QC play2all's `if(autocvar_bot_sound_monopoly) return;` gate, so global cues still play when bot_sound_monopoly=1."
-      - "Many Base play2 call sites remain unwired in the port: weapon UNAVAILABLE (selection.qc/weaponsystem.qc/minelayer.qc), func_door / door_secret noises, keylock/keys, vehicle lock/locking (sv_vehicles.qc:114-139), trigger TALK, target_voicescript. Only TALK2 idle-kick + ONS shield-block are wired."
+      - "play2 per-recipient targeting is a broadcast approximation: QC play2 sends MSG_ONE (msg_entity=e) so EXACTLY one client hears it; the port's SoundWire has no per-client send, so Play2/Play2Team broadcast to all connected clients — exact only on a single-human listen server."
+      - "Vehicle lock/locking play2 sites (sv_vehicles.qc:114-139) remain unwired; a couple of map-object/weapon cues use Api.Sound.Play directly rather than the SoundSystem.Play2 idiom (functionally audible, but not per-recipient and not gated)."
     verification:
       - { kind: code, ref: "SpamSound/SpamSoundRaw mirror QC spamsound (sound_allowed gate + time>spamtime + set spamtime); Entity.SpamTime added; Play2/Play2Raw/Play2Team/Play2TeamRaw mirror play2/play2team (CH_INFO/VOL_BASE/ATTEN_NONE; play2team monopoly+team filter)", result: pass }
-      - { kind: grep, ref: "Play2 LIVE: GameWorld.cs:1867 (idle-kick TALK2), OnslaughtControlPoint.cs:817 (ONS shield-block ONS_DAMAGEBLOCKEDBYSHIELD). spamsound LIVE: NadeProjectile.cs:154 + VehicleCommon.cs:503/512/523. play2all -> PlayGlobal (live, gametype callers). Play2Team: ZERO callers (dead)", result: pass }
-      - { kind: code, ref: "PlayGlobal (SoundSystem.cs:288-306) has no bot_sound_monopoly check, unlike QC play2all (all.qc:143-145)", result: fail }
+      - { kind: grep, ref: "Play2 LIVE: GameWorld.cs:1966 (idle-kick TALK2), OnslaughtControlPoint.cs:856 (ONS shield-block). Play2Team LIVE: OnslaughtControlPoint.cs:271 (ONS_GENERATOR_UNDERATTACK), :613 (ONS_CONTROLPOINT_UNDERATTACK). spamsound LIVE: NadeProjectile.cs + VehicleCommon.cs. play2all -> PlayGlobal (live, KH/ONS/DOM gametype callers). Other play2 sites wired: Minelayer/WeaponFireGate UNAVAILABLE, Doors, VoiceScript, target_print TALK, MapMover.Sound", result: pass }
+      - { kind: code, ref: "PlayGlobal/PlayGlobalRaw (SoundSystem.cs:310-339) now apply the bot_sound_monopoly early-return, matching QC play2all (all.qc:143-145)", result: pass }
     confidence: high
-    notes: "FIX since baseline (Play2 added in commit ff8a699, after the prior audit): play2 is now ported (SoundSystem.Play2 + raw/name overloads) AND live on 2 paths (idle-kick countdown TALK2, ONS shield-block), so logic/values/audio go partial->faithful. play2team is also ported (Play2Team with monopoly+team filter) but DEAD (no caller; ONS underattack cues use PlayGlobal). spamsound + play2all stay live. liveness stays partial: play2team dead + many Base play2 sites unwired. NEW gap: PlayGlobal misses play2all's monopoly gate."
+    notes: "FIX since baseline: (1) Play2Team is now LIVE — wired to BOTH ONS underattack cues (OnslaughtControlPoint.cs:271/613) with the QC per-team roster filter, replacing the prior PlayGlobal divergence (dead->live, resolves the per-team->global divergence). (2) PlayGlobal/PlayGlobalRaw now honor play2all's bot_sound_monopoly gate (the baseline's NEW gap is closed; play2all constant match false->true). (3) Many previously-unwired play2 sites are now wired (UNAVAILABLE, doors, voicescript, target_print, mapmover). liveness stays partial only because the MSG_ONE per-recipient targeting is a broadcast approximation and vehicle lock cues remain unwired."
 
   - id: fx-sounds.voice.playersound_registry
     name: "PlayerSounds / GlobalSounds registries (body sound ids)"
@@ -440,10 +437,10 @@ features:
     constants:
       - { name: "hit_sample", base: "misc/hit (SOUND(HIT)) -> sound/misc/hit.wav", port: "misc/hit (AudioLoader) -> res://sound/misc/hit.wav fallback", match: true }
       - { name: "antispam_time", base: "cl_hitsound_antispam_time 0.05", port: "AntiSpamInterval 0.05", match: true }
-      - { name: "pitch_formula", base: "gradient: (b*d*(a-1)+a*c*(1-b))/(d*(a-1)+c*(1-b)), mode 3 mirrored", port: "linear ramp nom +/- (max-nom)*damage/maxdamage", match: false }
+      - { name: "pitch_formula", base: "gradient: (b*d*(a-1)+a*c*(1-b))/(d*(a-1)+c*(1-b)), mode 3 mirrored", port: "ComputePitch: same gradient formula (a=max_pitch,b=min_pitch,c=nom_damage,d=damage); mode 3 mirror (a-b)/2+b", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: faithful
       audio: faithful
@@ -451,9 +448,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Pitch curve simplified: the port uses a linear damage->pitch ramp (mode 2/3) instead of QC's asymptotic gradient function (a=cl_hitsound_max_pitch, b=cl_hitsound_min_pitch, c=cl_hitsound_nom_damage); audible only as a slightly different pitch shape, and only for cl_hitsound 2/3 (default 1 = fixed pitch, identical)."
+      - "Anti-spam uses real-time (Time.GetTicksMsec) rather than sim time; QC also has an arc_hack that ignores cl_hitsound_antispam_time when the Arc is held + cl_hitsound>=2 (not ported). Minor: port adds an explicit Clamp([min,max]) the QC curve approaches but doesn't apply — negligible (the gradient stays in range)."
     verification:
-      - { kind: code, ref: "HitSound.cs:118 loads 'misc/hit' (fallback res://sound/misc/hit.wav) — matches SOUND(HIT,'misc/hit'); shipped file assets/data/.../sound/misc/hit.wav confirmed on disk; no 'hitconfirm' refs remain", result: pass }
-      - { kind: code, ref: "ComputePitch mode 2 (decreasing) / mode 3 (increasing) is a linear ramp vs QC gradient formula (view.qc:937-949)", result: fail }
+      - { kind: code, ref: "HitSound.cs:142 loads 'misc/hit' (fallback res://sound/misc/hit.wav) — matches SOUND(HIT,'misc/hit'); shipped file assets/data/.../sound/misc/hit.wav confirmed; no 'hitconfirm' refs remain", result: pass }
+      - { kind: code, ref: "ComputePitch (HitSound.cs:96-128) now implements QC's gradient pitch_shift = (b*d*(a-1)+a*c*(1-b))/(d*(a-1)+c*(1-b)) with the mode-3 mirror (a-b)/2+b, bit-faithful to view.qc:937-949; cvar defaults max=1.5/min=0.75/nom=25 match view.qh", result: pass }
     confidence: high
-    notes: "FIX (root): the long-standing hitsound-silent bug is RESOLVED — HitSound.cs now loads misc/hit (with res://sound/misc/hit.wav fallback), the shipped file, instead of the nonexistent misc/hitconfirm. audio missing->faithful, presentation partial->faithful, values partial->faithful for the sample. Only residual: the mode 2/3 pitch curve is a linear approximation of QC's gradient function (values: partial) — inaudible at the default cl_hitsound 1."
+    notes: "FIX since baseline: the mode 2/3 pitch curve was a linear ramp; it now implements QC's exact asymptotic gradient function (ComputePitch, HitSound.cs:96-128) with the mode-3 mirror, so values partial->faithful and pitch_formula constant match false->true. The earlier hitsound-silent fix (misc/hit, not misc/hitconfirm) remains in place. Residual nits only: real-time vs sim-time anti-spam + the unported arc_hack."

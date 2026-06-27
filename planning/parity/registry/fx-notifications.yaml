@@ -5,7 +5,7 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 16
   worst_gaps:
-    - "Spectator-follow recipients are STILL not routed: ServerNet.NotificationReaches omits the QC `IS_SPEC(to) && to.enemy == other` clause (and the matching AllExcept/Team nuances), so spectators following a player miss that player's personal NOTIF_ONE/TEAM notifications. Unchanged."
+    - "FIXED this audit (Wave 12b, 2026-06-26): ServerNet.NotificationReaches now implements the QC spectator-follow clause `IS_SPEC(to) && to.enemy == other` for ALL four cases (One, AllExcept, Team, TeamExcept) via `p.IsObserver && p.Spectatee == d.Target`, including the TeamExcept `to.enemy != other` guard. Spectators following a player now receive that player's personal NOTIF_ONE/TEAM notifications. Residual: NOTIF_TEAM/TEAM_EXCEPT still require `d.Target is Player` (a null/non-Player target reaches nobody), a benign edge case."
     - "Token expansion runs SERVER-side and reads the SERVER's notification_show_location / _show_sprees* cvars, so all clients get the server's preference (no per-client control) — the only residual is per-client preference, not a default-correctness defect. FIXED this audit: the three CvarBool fallback-polarity defects (location now defaults false, both *_specialonly now default true) and item_wepammo (now returns the real ammo type cells/rockets/shells/bullets/fuel). Race tokens (f*race_time/race_diff/race_col) and key-bind tokens (pass_key/nade_key/join_key) and the s3#s2/#s2 hash-replace tokens are still unimplemented in ResolveOne (drop to '')."
     - "Gentle-mode is LIVE but server-global: GameWorld mirrors sv_gentle onto NotificationSystem.GentleMode each tick, so per-CLIENT cl_gentle preference is lost (a deliberate consequence of server-side text formatting). Functionally correct for sv_gentle servers."
 features:
@@ -79,8 +79,8 @@ features:
       - "common/notifications/all.qc:1362 (REGISTER_NET_LINKED ENT_CLIENT_NOTIFICATION)"
       - "common/notifications/all.qc:1365 (NET_HANDLE ENT_CLIENT_NOTIFICATION)"
     port_refs:
-      - "game/net/ServerNet.cs:288 (NotificationSystem.Sink = NotificationNetSink)"
-      - "game/net/ServerNet.cs:2370 (FlushNotifications), :2423 (WriteNotification — writes RegistryId + WireType + text + args)"
+      - "game/net/ServerNet.cs:301 (NotificationSystem.Sink = NotificationNetSink)"
+      - "game/net/ServerNet.cs:2705 (FlushNotifications), :2779 (WriteNotification — writes RegistryId + WireType + text + args)"
       - "game/net/ClientNet.cs:1140 (HandleReliableBundle decode -> Notifications.ById(:1155) -> NotificationReceived)"
       - "game/net/NetGame.cs (OnNotificationReceived -> HudNotifications.OnNotification)"
     constants:
@@ -97,8 +97,8 @@ features:
     gaps:
       - "Per-client display cvars (notification_show_location / _show_sprees*) and gentle mode cannot vary per recipient — the server's value applies to everyone (see fx-notifications.args.tokens, fx-notifications.gentle.variants)."
     verification:
-      - { kind: code, ref: "WriteNotification (:2423) writes RegistryId (:2425) + (byte)d.WireType (:2426) so the server-driven CenterKill/Title/DuelTitle/Raw type overrides survive the wire and the client can recover icon/cpid/durcnt; client HandleReliableBundle (:1143-1156) reads RegistryId back, resolves Notifications.ById, forwards via NotificationEvent", result: pass }
-      - { kind: code, ref: "ServerNet.NotificationNetSink (:288) -> CaptureNotification -> FlushNotifications (:2370) -> WriteNotification (:2423) -> ClientNet decode (:1140) -> NetGame.OnNotificationReceived -> HudNotifications.OnNotification (traced)", result: pass }
+      - { kind: code, ref: "WriteNotification (:2779) writes RegistryId (:2781) + (byte)d.WireType (:2782) so the server-driven CenterKill/Title/DuelTitle/Raw type overrides survive the wire and the client can recover icon/cpid/durcnt; client HandleReliableBundle (:1143-1156) reads RegistryId back, resolves Notifications.ById, forwards via NotificationEvent", result: pass }
+      - { kind: code, ref: "ServerNet.NotificationNetSink (:301) -> CaptureNotification (:2554) -> FlushNotifications (:2705) -> WriteNotification (:2779) -> ClientNet decode (:1140) -> NetGame.OnNotificationReceived -> HudNotifications.OnNotification (traced)", result: pass }
       - { kind: test, ref: "ClientFeedbackTests, CountdownAnnouncerTests (end-to-end notify)", result: pass }
     confidence: high
     notes: "Reliable channel (matches QC linked-entity reliability). RegistryId resolves the Notification on the client to recover icon/cpid/queuetime AND durcnt; the four server-driven center variants round-trip via WireType. The common formatted-text divergence is intended."
@@ -109,10 +109,10 @@ features:
     base_refs:
       - "common/notifications/all.qc:62 (Notification_ShouldSend)"
     port_refs:
-      - "game/net/ServerNet.cs:2399 (NotificationReaches)"
+      - "game/net/ServerNet.cs:2738 (NotificationReaches)"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: na
       presentation: na
@@ -121,12 +121,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN (unchanged this wave): NotificationReaches (:2399-2417) omits the QC spectator-follow clause: NOTIF_ONE should also reach `IS_SPEC(to) && to.enemy == other`; NOTIF_TEAM the spec whose `enemy.team == other.team`; NOTIF_ALL_EXCEPT must also exclude `IS_SPEC(to) && to.enemy == other`; NOTIF_TEAM_EXCEPT has a parallel spec nuance. The port covers only the direct player match for each, so a spectator following a player will not receive that player's personal NOTIF_ONE/TEAM notifications."
-      - "TEAM/TEAM_EXCEPT require `d.Target is Player`; a null-team or non-Player target silently reaches nobody (QC NOTIF_TEAM tolerates a missing/zero team)."
+      - "Minor residual: NOTIF_TEAM/TEAM_EXCEPT require `d.Target is Player` (NotificationReaches :2757/:2764); a null-team or non-Player target silently reaches nobody (QC NOTIF_TEAM dereferences other_client.team, so a non-player target is an edge case there too). Benign."
     verification:
-      - { kind: code, ref: "ServerNet.NotificationReaches switch (:2401-2416) vs Notification_ShouldSend (all.qc:62-91): no IS_SPEC branch in any case; AllExcept and Team[Except] also lack the spec nuance", result: fail }
+      - { kind: code, ref: "ServerNet.NotificationReaches switch (:2740-2772) vs Notification_ShouldSend (all.qc:62-91): One reaches `p.IsObserver && p.Spectatee == d.Target` (= IS_SPEC && to.enemy == other); AllExcept excludes the same; Team adds `p.Spectatee?.Team == t.Team`; TeamExcept adds the spec-team branch WITH the `p.Spectatee != d.Target` guard. All four spec-aware cases now match QC.", result: pass }
     confidence: high
-    notes: "ALL/ALL_EXCEPT/ONE/ONE_ONLY direct-recipient routing is correct; the gap is the spectator-follow clauses (all four spec-aware cases) and the missing-team edge case. This wave did not touch this method."
+    notes: "FIXED (Wave 12b, 2026-06-26, commit 6da9e80 — added after the prior 2026-06-25 audit): the spectator-follow clauses for all four spec-aware broadcast modes were added, so a spectator following a player now receives that player's personal NOTIF_ONE/TEAM notifications. The only residual is the non-Player-target edge case in TEAM/TEAM_EXCEPT (benign). ALL/ALL_EXCEPT/ONE/ONE_ONLY direct-recipient routing already correct."
 
   - id: fx-notifications.args.tokens
     name: "Arg-token expansion (NOTIF_ARGUMENT_LIST / Local_Notification_sprintf)"
@@ -392,9 +391,9 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:116 (GentleMode), :358 (SelectTemplate)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs (gentle arg captured per Info/Center)"
-      - "src/XonoticGodot.Server/GameWorld.cs:1612 (GentleMode = sv_gentle != 0, per-tick StartFrame)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1716 (GentleMode = sv_gentle != 0, per-tick StartFrame)"
     constants:
-      - { name: "cl_gentle / sv_gentle source", base: "GENTLE (cl_gentle/sv_gentle)", port: "GentleMode <- sv_gentle (GameWorld.cs:1612), per-tick", match: true }
+      - { name: "cl_gentle / sv_gentle source", base: "GENTLE (cl_gentle/sv_gentle)", port: "GentleMode <- sv_gentle (GameWorld.cs:1716), per-tick", match: true }
     status:
       logic: faithful
       values: faithful
@@ -407,8 +406,8 @@ features:
     gaps:
       - "Per-client cl_gentle preference is lost: gentle mode is a single server-global value (sv_gentle). A client wanting gentle text on a non-gentle server cannot get it."
     verification:
-      - { kind: code, ref: "GameWorld.cs:1612 assigns NotificationSystem.GentleMode = Api.Cvars.GetFloat(\"sv_gentle\") != 0f in the per-tick StartFrame; SelectTemplate (:358) returns n.Gentle when GentleMode && Gentle present; gentle strings registered per Info/Center", result: pass }
-      - { kind: code, ref: "grep `GentleMode =` across src/game -> 1 assignment (GameWorld.cs:1612), still live", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1716 assigns NotificationSystem.GentleMode = Api.Cvars.GetFloat(\"sv_gentle\") != 0f in the per-tick StartFrame; SelectTemplate (:358) returns n.Gentle when GentleMode && Gentle present; gentle strings registered per Info/Center", result: pass }
+      - { kind: code, ref: "grep `GentleMode =` across src/game -> 1 assignment (GameWorld.cs:1716), still live", result: pass }
     confidence: high
     notes: "The gentle toggle is LIVE — GameWorld drives GentleMode from sv_gentle every tick, so the gentle string variants (stored per notification) are actually selected. Intended divergence because the server-side formatting makes it global rather than per-client."
 
@@ -422,10 +421,11 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:210 (SendCenterKill)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/Notification.cs:40 (MsgType.CenterKill)"
-      - "game/net/ServerNet.cs:2426 (WriteNotification writes WireType)"
+      - "game/net/ServerNet.cs:2782 (WriteNotification writes WireType)"
       - "game/hud/HudNotifications.cs:126 (CenterKill case -> CenterPrint.Kill / ClearAll)"
-      - "src/XonoticGodot.Server/GameWorld.cs:752 (warmup abort -> SendCenterKill CPID_ROUND), :3024 (world reset -> SendCenterKill null=KillAll)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:174 (on death -> SendCenterKill CPID_CAMPCHECK)"
+      - "src/XonoticGodot.Server/GameWorld.cs:864 (warmup abort -> CPID_ROUND), :1914 (idle warning clear -> CPID_IDLING), :3810/:4491 (world reset -> KillAll)"
+      - "src/XonoticGodot.Server/Teamplay.cs:1080 (team change -> CPID_REMOVE)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:200 (on death -> CPID_CAMPCHECK), InstagibMutator.cs:392 (find-ammo cleared -> CPID_INSTAGIB_FINDAMMO)"
     constants:
       - { name: "empty cpid -> KillAll", base: "CPID_Null -> centerprint_KillAll (all.qc:1389)", port: "empty/null text -> CenterPrint.ClearAll (HudNotifications.cs:129)", match: true }
     status:
@@ -438,12 +438,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Still fewer call sites than Base's 19+: the port wires SendCenterKill at the warmup-countdown abort (CPID_ROUND), the world reset (KillAll), and campcheck death (CPID_CAMPCHECK). Base's idle/join-prevention, keyhunt, vehicles, instagib find-ammo and nades kill sites are not yet wired (some route their warnings differently or aren't ported). Coverage is correct where wired but narrower than Base."
+      - "Call-site coverage NARROWED this audit (now 7 distinct sites): warmup abort (CPID_ROUND), idle warning (CPID_IDLING), world reset x2 (KillAll), team change (CPID_REMOVE), campcheck death (CPID_CAMPCHECK), instagib find-ammo (CPID_INSTAGIB_FINDAMMO). The prior 'idle/join-prevention and instagib find-ammo not wired' note is closed. Base's keyhunt, vehicles and nades kill sites remain unported (those features aren't ported). Coverage correct where wired."
     verification:
-      - { kind: code, ref: "MsgType.CenterKill added (Notification.cs:40); SendCenterKill (NotificationSystem.cs:210) hangs the dispatch off a COUNTDOWN_BEGIN/GAMESTART carrier with WireType=CenterKill; WriteNotification writes WireType (:2426); client HudNotifications routes CenterKill -> CenterPrint.Kill(cpid) or ClearAll on empty (:126-133)", result: pass }
-      - { kind: code, ref: "live callers: GameWorld.cs:752 (warmup abort -> CPID_ROUND), :3024 (world reset -> null/KillAll), CampcheckMutator.cs:174 (death -> CPID_CAMPCHECK); all on real paths", result: pass }
+      - { kind: code, ref: "MsgType.CenterKill added (Notification.cs:40); SendCenterKill (NotificationSystem.cs:210) hangs the dispatch off a COUNTDOWN_BEGIN/GAMESTART carrier with WireType=CenterKill; WriteNotification writes WireType (:2782); client HudNotifications routes CenterKill -> CenterPrint.Kill(cpid) or ClearAll on empty (:126-133)", result: pass }
+      - { kind: code, ref: "7 live callers: GameWorld.cs:864/1914/3810/4491, Teamplay.cs:1080, CampcheckMutator.cs:200, InstagibMutator.cs:392; all on real paths", result: pass }
     confidence: high
-    notes: "MSG_CENTER_KILL is a real wire type with a live server->client path. This wave added a third live caller (CampcheckMutator CPID_CAMPCHECK). Remaining gap is breadth of call sites, not the mechanism."
+    notes: "MSG_CENTER_KILL is a real wire type with a live server->client path. Wave 12b broadened the call sites (idle CPID_IDLING, team CPID_REMOVE, instagib CPID_INSTAGIB_FINDAMMO added). Remaining gap is breadth (unported gametypes), not the mechanism."
 
   - id: fx-notifications.center.title
     name: "Server-driven centerprint title / duel title (centerprint_SetTitle / _SetDuelTitle / _ClearTitle)"
@@ -457,7 +457,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Notifications/Notification.cs:46 (MsgType.CenterTitle), :52 (CenterDuelTitle)"
       - "game/hud/HudNotifications.cs:134 (CenterTitle case), :142 (CenterDuelTitle case)"
       - "game/hud/CenterPrintPanel.cs:162 (SetTitle), :174 (SetDuelTitle), :183 (ClearTitle)"
-      - "src/XonoticGodot.Server/GameWorld.cs:1633 (BroadcastCountdownTitle), :1659 (^BG title), :1651 (duel pair), :755/:1590/:1680 (title clear)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2581 (BroadcastCountdownTitle), :2607 (^BG title), :2599 (duel pair), :867/:2538/:2628 (title clear)"
     constants:
       - { name: "gametype title prefix", base: "strcat(\"^BG\", MapInfo_Type_ToText(gametype))", port: "\"^BG\" + name (GameWorld.cs:1659)", match: true }
       - { name: "duel title source", base: "top two non-spectator players (Announcer_Duel)", port: "top two non-observer/non-spectator players (GameWorld.cs BroadcastCountdownTitle)", match: true }
@@ -473,8 +473,8 @@ features:
     gaps:
       - "The CenterPrintPanel must render the title/duel-title strings above the countdown in the same style as Base centerprint.qc; this audit verified the send/route/setter wiring (SetTitle/SetDuelTitle/ClearTitle exist and are called) but did not visually confirm the on-screen layout."
     verification:
-      - { kind: code, ref: "BroadcastCountdownTitle (GameWorld.cs:1633) called from the live countdown path (:1611); sends ^BG<gametype> (non-duel) or the duel pair; title cleared on BEGIN (:1590), abort (:755) and round-stop (:1680)", result: pass }
-      - { kind: code, ref: "wire: SendCenterTitle/SendCenterDuelTitle set WireType=CenterTitle/CenterDuelTitle -> WriteNotification(:2426) -> client HudNotifications routes to CenterPrint.SetTitle/SetDuelTitle/ClearTitle (:134-145)", result: pass }
+      - { kind: code, ref: "BroadcastCountdownTitle (GameWorld.cs:2581) called from the live countdown path (:2559); sends ^BG<gametype> (non-duel) or the duel pair; title cleared on BEGIN (:2538), abort (:867) and round-stop (:2628)", result: pass }
+      - { kind: code, ref: "wire: SendCenterTitle/SendCenterDuelTitle set WireType=CenterTitle/CenterDuelTitle -> WriteNotification(:2782) -> client HudNotifications routes to CenterPrint.SetTitle/SetDuelTitle/ClearTitle (:134-145)", result: pass }
     confidence: medium
     notes: "Send/route/setter chain fully wired and live on the gamestart-countdown path; confidence medium pending a visual confirmation of the panel layout. Duel-title re-sent only when the pair changes (QC Announcer_Duel parity)."
 

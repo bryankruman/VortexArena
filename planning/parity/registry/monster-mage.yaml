@@ -7,9 +7,8 @@ summary:
   worst_gaps:
     - "CSQC spike projectile model (PROJECTILE_MAGE_SPIKE) still not wired — the spike has no client-visible model/trail in flight (SpawnProjectile sets no projectile visual; detonation particle EXPLOSION_SMALL IS now emitted)."
     - "Healed-ally waypoint-sprite health update (WaypointSprite_UpdateHealth, mage.qc:280-281) not invoked in the port."
-    - "mr_death random die1/die2 anim pick is now modeled (DeathLanded coin-flip) but mr_anim concrete frame groups (shoot/melee/duckjump) are still collapsed into the shared logical Attack phase."
     - "RandomRelocate / mr_think need_help scans remain behavioral approximations of the QC builtins (not bit-exact)."
-    - "MENUQC describe() bestiary prose not surfaced in the port (newly mapped)."
+    - "MENUQC describe() bestiary prose is now ported verbatim in Mage.Describe() but has NO caller/UI surface (dead — no bestiary tooltip exists in the port)."
 features:
   - id: monster-mage.spawn.setup
     name: "Spawn + mr_setup (health, speeds, loot, size, attackfunc)"
@@ -21,7 +20,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:Spawn"
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterSpawnFuncs.cs:Mage"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:212"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:222"
     constants:
       - { name: "g_monster_mage_health", base: "400", port: "400 (cfg)", match: true }
       - { name: "g_monster_mage_speed_walk", base: "250", port: "250 (cfg)", match: true }
@@ -42,10 +41,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "MapObjectsRegistry.cs:212 SpawnFuncs.Register(monster_mage) -> MonsterSpawnFuncs.Mage:29 -> Spawn(mage) -> MonsterAI.Setup; e.Think wired -> RunThink", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.cs:222 SpawnFuncs.Register(monster_mage) -> MonsterSpawnFuncs.Mage -> Spawn(mage) -> MonsterAI.Setup; e.Think wired -> RunThink", result: pass }
       - { kind: value-diff, ref: "assets/data/xonotic-data.pk3dir/monsters.cfg g_monster_mage_* == Base monsters.cfg (lines 31-64, line-for-line verified 2026-06-25)", result: pass }
     confidence: high
-    notes: "Setup values flow through MonsterAI.Cvar from the shipped monsters.cfg, which matches Base exactly. Skin randomized 0..4 like QC; heal switch handles 0/1/2 (skins 3/4 = no per-skin heal, same as Base). MonsterSound(spawn) at Setup keeps audio:faithful. (Registry line moved 198->212 since baseline; spawn/dispatch chain re-verified live.)"
+    notes: "Setup values flow through MonsterAI.Cvar from the shipped monsters.cfg, which matches Base exactly. Skin randomized 0..4 like QC; heal switch handles 0/1/2 (skins 3/4 = no per-skin heal, same as Base). MonsterSound(spawn) at Setup keeps audio:faithful. (Registry line moved 212->222 since baseline; spawn/dispatch chain re-verified live 2026-06-25.)"
 
   - id: monster-mage.attack.select
     name: "Attack selection (melee push vs ranged teleport/spike)"
@@ -71,9 +70,9 @@ features:
     divergence_rationale: "Port re-derives melee/ranged from enemy distance inside Mage.Attack and calls Push/Teleport/FireSpike directly, rather than routing through WEP_MAGE_SPIKE.wr_think / OFFHAND_MAGE_TELEPORT.offhand_think. The weapon-entity wrapper is not modeled; the branch chances and gating are behaviorally equivalent."
     gaps: []
     verification:
-      - { kind: code, ref: "MonsterAI.AttackCheck:1102 -> st.Def.Attack:1109 -> Mage.Attack:139 distance split (<=AttackRange push 0.7; else teleport 0.1 / spike !ActiveSpike 0.45)", result: pass }
+      - { kind: code, ref: "MonsterAI.AttackCheck:1242 -> st.Def.Attack -> Mage.Attack:157 distance split (<=AttackRange push 0.7; else teleport 0.1 / spike !ActiveSpike 0.45)", result: pass }
     confidence: high
-    notes: "Inline TeleportChance fallback 0.1 matches cfg. Mage.Attack re-checks st.AttackFinished at its top. Per-attack cooldowns set inside each sub-attack. Spike one-at-a-time via st.ActiveSpike (QC .mage_spike). (AttackCheck moved 980->1102 since baseline.)"
+    notes: "Inline TeleportChance fallback 0.1 matches cfg. Mage.Attack re-checks st.AttackFinished at its top. Per-attack cooldowns set inside each sub-attack. Spike one-at-a-time via st.ActiveSpike (QC .mage_spike). (AttackCheck moved 1102->1242 since baseline; re-verified 2026-06-25.)"
 
   - id: monster-mage.attack.spike
     name: "Homing electric spike (one in flight, seeker guidance)"
@@ -117,7 +116,7 @@ features:
     verification:
       - { kind: code, ref: "FireSpike:183 -> SpawnProjectile (think NextThink=Now) -> HomeProjectile per-frame; Explode (MonsterAI.cs:1497) RadiusDamage + onExplode + clears ActiveSpike", result: pass }
       - { kind: code, ref: "onExplode (Mage.cs:190-194) plays weapons/grenade_impact.wav AND EffectEmitter.Emit(EXPLOSION_SMALL) -> EffectsList.cs:29 registered effect explosion_small; detonation particle is now LIVE-emitted (was missing at baseline)", result: pass }
-      - { kind: code, ref: "SpawnProjectile (MonsterAI.cs:1451-1536) sets ClassName=monster_projectile, no CSQCProjectile/ProjectileType -> no in-flight model; FireSpike sets no model either", result: fail }
+      - { kind: code, ref: "SpawnProjectile (MonsterAI.cs:1591-1676) sets ClassName=monster_projectile, no CSQCProjectile/ProjectileType -> no in-flight model; FireSpike sets no model either (re-verified 2026-06-25)", result: fail }
     confidence: high
     notes: "FIX since baseline: the EXPLOSION_SMALL detonation particle (mage.qc:133 Send_Effect) is now emitted via EffectEmitter (EffectsList registers EXPLOSION_SMALL->explosion_small; Sink is the host networking sink). presentation upgraded missing->partial: detonation particle done, but the in-flight CSQC spike MODEL remains unwired. Inline constants match Base; spike muzzle re-derives +30 up/-14 right via AngleVectors; FIRE sound electro_fire, IMPACT grenade_impact. Homing math faithful; one-at-a-time via st.ActiveSpike."
 
@@ -317,47 +316,50 @@ features:
     constants:
       - { name: "anim_idle", base: "0 1 1", port: "AnimFrame Idle => 0", match: true }
       - { name: "anim_walk/run", base: "1 1 1", port: "AnimFrame Walk/Run => 1", match: true }
-      - { name: "anim_shoot", base: "2 1 5", port: "AnimFrame Attack => 2 (start index)", match: true }
+      - { name: "anim_shoot", base: "2 1 5", port: "AnimFrame Attack variant 0 => 2 (spike fire)", match: true }
+      - { name: "anim_duckjump", base: "4 1 5", port: "AnimFrame Attack variant 1 => 4 (Push)", match: true }
+      - { name: "anim_melee", base: "5 1 5", port: "AnimFrame Attack variant 2 => 5 (Heal pulse)", match: true }
       - { name: "anim_pain1", base: "6 1 2", port: "AnimFrame Pain => 6", match: true }
       - { name: "anim_die1/die2", base: "9/10 1 0.5", port: "AnimFrame Death => die2 ? 10 : 9", match: true }
-      - { name: "anim_melee", base: "5 1 5", port: "folds into Attack (start 2), not its own group", match: false }
-      - { name: "anim_duckjump", base: "4 1 5", port: "folds into Attack (start 2), not its own group", match: false }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: unknown
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Push (anim_melee '5') and duckjump (anim_duckjump '4') frame groups collapse into the single Attack start-frame 2 (anim_shoot); the distinct melee/duckjump frame ranges from mr_anim are not played separately."
+      - "timing (animfixfps fps normalization — the '<start> 1 <fps>' frame-rate component) is not modeled; only the start frame index is stamped onto Entity.Frame, so per-group playback rate is not normalized to Base."
     verification:
-      - { kind: code, ref: "Mage.cs:66 AnimFrame returns the QC start indices (Idle 0 / Walk-Run 1 / Attack 2 / Pain 6 / Death 9|10) stamped onto Entity.Frame and played client-side via DriveAnimFrame/CSQCMODEL_AUTOUPDATE — idle/walk/run/shoot/pain/die match; melee/duckjump collapse into Attack", result: pass }
-    confidence: medium
-    notes: "RECLASSIFIED since baseline: the port now has a concrete AnimFrame(phase, die2) override (Mage.cs:66) that returns the actual nanomage.dpm frame start indices and stamps them onto the networked Entity.Frame for client playback — so values went missing->partial (most groups correct; only melee '5'/duckjump '4' fold into shoot '2'), presentation missing->partial (real frame indices drive the renderer; the shoot-anim covers push/duckjump), liveness partial->live (AnimFrame is wired into the anim driver). die1/die2 random pick handled in monster-mage.death.pain. timing (animfixfps fps normalization) still unknown."
+      - { kind: code, ref: "Mage.cs:69 AnimFrame(phase, die2, variant) returns the QC start indices: Idle 0 / Walk-Run 1 / Attack variant{0=>2 shoot,1=>4 duckjump,2=>5 melee} / Pain 6 / Death 9|10 — stamped onto Entity.Frame and played client-side via DriveAnimFrame/CSQCMODEL_AUTOUPDATE", result: pass }
+      - { kind: code, ref: "AnimVariant set per attack: FireSpike->0 (Mage.cs:187), Push->1 (240), HealPulse->2 (394), RaiseShield->0 (457); DriveAnimFrame (MonsterAI.cs:1346) passes AnimVariant through to AnimFrame", result: pass }
+    confidence: high
+    notes: "FIX since the 2026-06-25 baseline: AnimFrame now takes a variant arg (Mage.cs:69) and the Attack phase maps variant 0->anim_shoot '2', variant 1->anim_duckjump '4', variant 2->anim_melee '5' — matching M_Mage_Attack_Push (setanim anim_duckjump) and M_Mage_Defend_Heal (setanim anim_melee). The melee/duckjump-collapse gap is RESOLVED: values partial->faithful (all 7 groups now correct), presentation partial->faithful (distinct frame groups play per attack). die1/die2 random pick handled in monster-mage.death.pain. Only timing (animfixfps fps normalization) remains unknown."
 
   - id: monster-mage.menu.describe
     name: "MENUQC monster-tooltip description text"
     layer: [presentation]
     base_refs:
       - "common/monsters/monster/mage.qc:METHOD(Mage, describe):515"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:Describe"
     constants:
-      - { name: "describe prose", base: "Wielding nanotechnology as if it were sorcery, the Mage employs a range of unique abilities... (5 paragraphs)", port: "none", match: false }
+      - { name: "describe prose", base: "Wielding nanotechnology as if it were sorcery, the Mage employs a range of unique abilities... (5 paragraphs)", port: "verbatim 5-paragraph prose concatenated into Mage.Describe() (Mage.cs:86-93)", match: true }
     status:
       logic: na
-      values: missing
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The mage's MENUQC describe() bestiary prose (mage.qc:515-527, 5 paragraphs on the homing sphere / shield+push / heal variants / teleport) is NOT surfaced in the port. No mage describe text exists anywhere in src/ or assets/; DialogMonsterTools is a spawn/edit tool, not a describe-tooltip surface (same as the spider/golem/wyvern describe rows)."
+      - "Mage.Describe() (Mage.cs:86-93) is the verbatim bestiary prose but has NO caller: the only references to Describe() are the base virtual (EntityClasses.cs:106) and unrelated DPM/DeferredCommands.Describe overloads. No bestiary/monster-tooltip UI surface in the port renders descriptor Describe() text, so the prose never reaches the screen."
     verification:
-      - { kind: code, ref: "grep 'Wielding nanotechnology|Mage employs' over src/ + assets/ returns no matches; no describe surface for the mage", result: fail }
+      - { kind: code, ref: "Mage.cs:86 override string? Describe() returns the 5-paragraph prose verbatim (== mage.qc:519-525 PAR() text)", result: pass }
+      - { kind: code, ref: "grep '.Describe(' over src/ shows no caller of the monster-descriptor Describe() — only EntityClasses.cs:106 base virtual + DPM/DeferredCommands unrelated overloads; no bestiary UI surface", result: fail }
     confidence: high
-    notes: "NEWLY MAPPED (registry coverage gap, not new drift): monster-spider/golem/wyvern registries already track their describe() row; monster-mage was missing one. MENUQC-only flavor text, low gameplay impact. Listed for completeness/parity with siblings."
+    notes: "FIX (partial) since the 2026-06-25 baseline: the describe prose is now PORTED verbatim in Mage.Describe() (values missing->faithful; matches mage.qc 5-PAR text), so presentation missing->partial (text exists in code) but liveness na->dead (no UI surface calls Describe(), same dead-code state as the spider/golem describe overrides). MENUQC-only flavor text, low gameplay impact."

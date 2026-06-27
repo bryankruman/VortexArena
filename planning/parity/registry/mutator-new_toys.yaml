@@ -1,13 +1,13 @@
 unit: mutator-new_toys
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 9
   worst_gaps:
     - "SetStartItems has no start_weapons_defaultmask: the port rewrites the WHOLE StartLoadout.Weapons set rather than only the default-mask bits. Unobservable with the stock blaster-only default; would diverge if a server set a partial start_weapons_defaultmask."
-    - "Warmup loadout STILL bypasses the NewToys SetStartItems weapon swap: ApplyWarmupLoadout (SpawnSystem.cs:1075) calls ComputeStartItems() only to read the warmup fuel value, then builds the warmup weapon set from the arena/allguns/normal split — it never applies the ALWAYS/RANDOM core->new-toy rearrange to warmup_start_weapons (Base rearranges warmup_start_weapons via the same hook). Masked in stock play (autoreplace default 0)."
-    - "weapon_defaultspawnfunc's WEP_FLAG_MUTATORBLOCKED map-spawn rejection is intentionally NOT enforced in WeaponSpawn (ItemSpawnFuncs.cs:235 NOTE): a blocked weapon placed directly on a map still spawns. Deferred as a separate broad-impact parity item; orthogonal to New Toys' own replacement chain (which is now ported)."
+    - "Warmup loadout STILL bypasses the NewToys SetStartItems weapon swap: ApplyWarmupLoadout (SpawnSystem.cs:1148) calls ComputeStartItems() only to read the warmup fuel value, then builds the warmup weapon set from the arena/allguns/normal split — it never applies the ALWAYS/RANDOM core->new-toy rearrange to warmup_start_weapons (Base rearranges warmup_start_weapons via the same hook). Masked in stock play (autoreplace default 0)."
+    - "weapon_defaultspawnfunc's WEP_FLAG_MUTATORBLOCKED map-spawn rejection is intentionally NOT enforced in WeaponSpawn (ItemSpawnFuncs.cs:310 NOTE): a blocked weapon placed directly on a map still spawns. Deferred as a separate broad-impact parity item; orthogonal to New Toys' own replacement chain (which is now ported)."
 features:
   - id: mutator-new_toys.enable.predicate
     name: "Enable predicate (g_new_toys gate + instagib/overkill exclusion + registration/subscription)"
@@ -17,7 +17,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/NewToysMutator.cs:49 IsEnabled"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
-      - "src/XonoticGodot.Server/GameWorld.cs:602 (MutatorActivation.Apply call)"
+      - "src/XonoticGodot.Server/GameWorld.cs:614 (MutatorActivation.Apply call)"
     constants:
       - { name: "g_new_toys", base: "1 (mutators.cfg:338)", port: "1 (assets/.../mutators.cfg:338)", match: true }
       - { name: "exclude when instagib active", base: "!MUTATOR_IS_ENABLED(mutator_instagib)", port: "g_instagib == 0", match: true }
@@ -33,8 +33,8 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "NewToysMutator.cs:49-53 IsEnabled = ExprEvaluate(g_new_toys) && g_instagib==0 && g_overkill==0; MutatorActivation.Apply() at GameWorld.cs:602 calls Hook() for each enabled [Mutator]-discovered mutator", result: pass }
-      - { kind: value, ref: "Base mutators.cfg:338 'set g_new_toys 1' == port assets xonotic-data.pk3dir/mutators.cfg:338 (verified identical this audit, both line 338); MutatorActivation.Apply now called at GameWorld.cs:602", result: pass }
+      - { kind: code, ref: "NewToysMutator.cs:49-53 IsEnabled = ExprEvaluate(g_new_toys) && g_instagib==0 && g_overkill==0; MutatorActivation.Apply() at GameWorld.cs:614 calls Hook() for each enabled [Mutator]-discovered mutator", result: pass }
+      - { kind: value, ref: "Base mutators.cfg:338 'set g_new_toys 1' == port assets xonotic-data.pk3dir/mutators.cfg:338 (verified identical this audit, both line 338); MutatorActivation.Apply now called at GameWorld.cs:614", result: pass }
     confidence: high
     notes: "Unchanged. Port reads g_instagib/g_overkill cvars directly rather than the mutator-enabled flag; functionally equivalent. Live on the boot path (MutatorActivation.Apply, idempotent MutatorBase.Added guard)."
 
@@ -109,13 +109,13 @@ features:
       - "common/mutators/mutator/new_toys/sv_new_toys.qc:141 MUTATOR_HOOKFUNCTION(nt, SetStartItems)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/NewToysMutator.cs:133 OnSetStartItems"
-      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:857 ComputeStartItems (fires SetStartItems.Call at cs:911)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:313 SetStartItems"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:930 ComputeStartItems (fires SetStartItems.Call at cs:984)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs SetStartItems"
     constants:
       - { name: "RANDOM mode result", base: "OR BOTH core+newtoy bits (player gets BOTH)", port: "OR BOTH tokens into the resolved set (NewToysMutator.cs:146-152)", match: true }
       - { name: "ALWAYS mode result", base: "newtoy bit only (core dropped)", port: "newtoy token only (resolved set drops core)", match: true }
       - { name: "applies under start_weapons_defaultmask", base: "newdefault &= start_weapons_defaultmask", port: "operates on whole StartLoadout.Weapons (no defaultmask concept)", match: false }
-      - { name: "warmup_start_weapons rearrange", base: "yes (warmup_newdefault & warmup_start_weapons_defaultmask)", port: "none — ApplyWarmupLoadout (SpawnSystem.cs:1075) builds the warmup weapon set from the arena/allguns split, never applies the NewToys swap", match: false }
+      - { name: "warmup_start_weapons rearrange", base: "yes (warmup_newdefault & warmup_start_weapons_defaultmask)", port: "none — ApplyWarmupLoadout (SpawnSystem.cs:1148) builds the warmup weapon set from the arena/allguns split, never applies the NewToys swap", match: false }
     status:
       logic: faithful
       values: faithful
@@ -127,9 +127,9 @@ features:
     divergence_rationale: null
     gaps:
       - "No start_weapons_defaultmask: the port rewrites the whole StartLoadout.Weapons set (l.Weapons.Clear() + union rebuild) rather than only the bits in the default mask. Unobservable with the stock blaster-only default; would diverge if a server set a partial start_weapons_defaultmask."
-      - "No warmup-loadout rearrange: ApplyWarmupLoadout (SpawnSystem.cs:1075) calls ComputeStartItems() only to read the warmup fuel value, then builds the warmup weapon set from the arena/allguns/normal split (SetWeaponArena seam) — the NewToys ALWAYS/RANDOM core->new-toy swap never applies to warmup_start_weapons (Base rearranges it via the same SetStartItems hook). g_warmup_allguns DOES include the now-unblocked new toys (it filters on the cleared MutatorBlocked flag) but does NOT perform the per-weapon core->new-toy replacement."
+      - "No warmup-loadout rearrange: ApplyWarmupLoadout (SpawnSystem.cs:1148) calls ComputeStartItems() only to read the warmup fuel value, then builds the warmup weapon set from the arena/allguns/normal split (SetWeaponArena seam) — the NewToys ALWAYS/RANDOM core->new-toy swap never applies to warmup_start_weapons (Base rearranges it via the same SetStartItems hook). g_warmup_allguns DOES include the now-unblocked new toys (it filters on the cleared MutatorBlocked flag) but does NOT perform the per-weapon core->new-toy replacement."
     verification:
-      - { kind: code, ref: "OnSetStartItems (cs:133-158) ORs EVERY token of nt_GetReplacement into a HashSet then rebuilds Weapons from the union — matches QC's bit-OR-both (RANDOM keeps core+newtoy, ALWAYS drops core). SetStartItems.Call fired live in SpawnSystem.ComputeStartItems (cs:911). Warmup uses ApplyWarmupLoadout (cs:1075) which calls ComputeStartItems only for fuel + fires SetWeaponArena but does NOT apply the SetStartItems weapon swap to the warmup arsenal", result: pass }
+      - { kind: code, ref: "OnSetStartItems (cs:133-158) ORs EVERY token of nt_GetReplacement into a HashSet then rebuilds Weapons from the union — matches QC's bit-OR-both (RANDOM keeps core+newtoy, ALWAYS drops core). SetStartItems.Call fired live in SpawnSystem.ComputeStartItems (cs:984). Warmup uses ApplyWarmupLoadout (cs:1148) which calls ComputeStartItems only for fuel + fires SetWeaponArena but does NOT apply the SetStartItems weapon swap to the warmup arsenal", result: pass }
       - { kind: behavioral, ref: "default DefaultLoadout={blaster} has no replacement so the hook is a no-op in stock play (matches Base); autoreplace default 0 (NEVER) so even configured maps don't swap unless explicitly set", result: pass }
     confidence: high
     notes: "Unchanged this audit. RANDOM-mode is bit-faithful (ORs BOTH core+newtoy, not a coin-flip). Two gaps remain, both masked in stock play: (1) no start_weapons_defaultmask, (2) the warmup loadout path still bypasses the SetStartItems weapon rearrange (it only reads the seam's fuel value)."
@@ -143,17 +143,17 @@ features:
       - "server/weapons/spawning.qc:W_Apply_Weaponreplace"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/NewToysMutator.cs:161 OnSetWeaponreplace"
-      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:228 WeaponSpawn (fires FireSetWeaponreplace at cs:245)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:494 SetWeaponreplace / FireSetWeaponreplace (cs:502)"
-      - "src/XonoticGodot.Server/GameWorld.cs:3654 (parses map \"new_toys\" key onto Entity.NewToys)"
-      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:300 W_Apply_Weaponreplace"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:303 WeaponSpawn (fires FireSetWeaponreplace at cs:320)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs SetWeaponreplace / FireSetWeaponreplace"
+      - "src/XonoticGodot.Server/GameWorld.cs:4254 (parses map \"new_toys\" key onto Entity.NewToys)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:375 W_Apply_Weaponreplace"
     constants:
-      - { name: "per-entity .new_toys map key", base: "ret = wep.new_toys", port: "GameWorld.cs:3654 parses BSP \"new_toys\" -> Entity.NewToys; OnSetWeaponreplace cs:171 reads args.Item.NewToys", match: true }
+      - { name: "per-entity .new_toys map key", base: "ret = wep.new_toys", port: "GameWorld.cs:4254 parses BSP \"new_toys\" -> Entity.NewToys; OnSetWeaponreplace cs:171 reads args.Item.NewToys", match: true }
       - { name: "auto replacement fallback", base: "nt_GetReplacement(wepinfo.netname, autoreplace)", port: "GetReplacement(args.Weapon.NetName, AutoReplace) (cs:173)", match: true }
       - { name: "random_items early-out", base: "if random_items enabled, no replace", port: "Mutators.ByName('random_items') IsEnabled -> return (cs:164)", match: true }
       - { name: "W_Apply_Weaponreplace post-pass", base: "applied", port: "ItemSpawnFuncs.W_Apply_Weaponreplace(ret) (cs:176)", match: true }
       - { name: "SetWeaponreplace hook chain exists", base: "yes (MUTATOR_CALLHOOK in weapon_defaultspawnfunc)", port: "yes — MutatorHooks.SetWeaponreplace + FireSetWeaponreplace, fired in WeaponSpawn (cs:245)", match: true }
-      - { name: "WEP_FLAG_MUTATORBLOCKED map-spawn rejection", base: "yes (startitem_failed in weapon_defaultspawnfunc)", port: "none (ItemSpawnFuncs.cs:235 NOTE — deferred as a broad-impact separate item)", match: false }
+      - { name: "WEP_FLAG_MUTATORBLOCKED map-spawn rejection", base: "yes (startitem_failed in weapon_defaultspawnfunc)", port: "none (ItemSpawnFuncs.cs:310 NOTE — deferred as a broad-impact separate item)", match: false }
     status:
       logic: faithful
       values: faithful
@@ -164,12 +164,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC's >=2-token replacement links the extra weapons as one --internalteam team-item group (the engine shows ONE of the set); the port has no team-item select group at this layer, so each extra token spawns its OWN world weapon (ItemSpawnFuncs.cs:254-272). The faithful SET of weapons is present; the single-show grouping is the deviation (already noted in StartItem)."
-      - "weapon_defaultspawnfunc's WEP_FLAG_MUTATORBLOCKED map-spawn rejection is intentionally NOT enforced in WeaponSpawn (ItemSpawnFuncs.cs:235 NOTE) — a blocked weapon placed directly on a map still spawns. Deferred as a separate broad-impact parity item; does not affect the New-Toys replacement chain itself."
+      - "QC's >=2-token replacement links the extra weapons as one --internalteam team-item group (the engine shows ONE of the set); the port has no team-item select group at this layer, so each extra token spawns its OWN world weapon (ItemSpawnFuncs.cs WeaponSpawn token loop). The faithful SET of weapons is present; the single-show grouping is the deviation (already noted in StartItem)."
+      - "weapon_defaultspawnfunc's WEP_FLAG_MUTATORBLOCKED map-spawn rejection is intentionally NOT enforced in WeaponSpawn (ItemSpawnFuncs.cs:310 NOTE) — a blocked weapon placed directly on a map still spawns. Deferred as a separate broad-impact parity item; does not affect the New-Toys replacement chain itself."
     verification:
-      - { kind: code, ref: "OnSetWeaponreplace (cs:161-178): random_items early-out (cs:164), map-key-or-auto pick (cs:171-173), W_Apply_Weaponreplace post-pass (cs:176). Wired live: WeaponSpawn (ItemSpawnFuncs.cs:228) — registered per-weapon at cs:151 + for compat classnames at cs:128 — runs W_Apply_Weaponreplace then FireSetWeaponreplace (cs:244-245) for every non-loot non-already-replaced map weapon, tokenizes the result, and spawns the resolved weapon(s). GameWorld.cs:3654 parses the BSP \"new_toys\" key onto Entity.NewToys on the live map-load path", result: pass }
+      - { kind: code, ref: "OnSetWeaponreplace (cs:161-178): random_items early-out (cs:164), map-key-or-auto pick (cs:171-173), W_Apply_Weaponreplace post-pass (cs:176). Wired live: WeaponSpawn (ItemSpawnFuncs.cs:303) — registered per-weapon at cs:165 + for compat classnames at cs:146 — runs W_Apply_Weaponreplace then FireSetWeaponreplace (cs:319-320) for every non-loot non-already-replaced map weapon, tokenizes the result, and spawns the resolved weapon(s). GameWorld.cs:4254 parses the BSP \"new_toys\" key onto Entity.NewToys on the live map-load path", result: pass }
     confidence: high
-    notes: "FIXED in Wave-6b (was missing/na in the 2026-06-22 baseline — the mutator's PRIMARY gameplay function): the SetWeaponreplace seam (MutatorHooks.SetWeaponreplace/FireSetWeaponreplace), the BSP \"new_toys\" key parse (GameWorld.cs:3654 -> Entity.NewToys), the random_items early-out, and the W_Apply_Weaponreplace post-pass are all ported and wired live through ItemSpawnFuncs.WeaponSpawn. With g_new_toys_autoreplace 1/2 a map's weapon_vortex now spawns a Rifle, and a weapon_vortex with '\"new_toys\" \"rifle\"' is honoured. Two residual deviations remain (team-item single-show grouping; map-spawn mutatorblocked rejection deferred)."
+    notes: "FIXED in Wave-6b (was missing/na in the 2026-06-22 baseline — the mutator's PRIMARY gameplay function): the SetWeaponreplace seam (MutatorHooks.SetWeaponreplace/FireSetWeaponreplace), the BSP \"new_toys\" key parse (GameWorld.cs:4254 -> Entity.NewToys), the random_items early-out, and the W_Apply_Weaponreplace post-pass are all ported and wired live through ItemSpawnFuncs.WeaponSpawn. With g_new_toys_autoreplace 1/2 a map's weapon_vortex now spawns a Rifle, and a weapon_vortex with '\"new_toys\" \"rifle\"' is honoured. Two residual deviations remain (team-item single-show grouping; map-spawn mutatorblocked rejection deferred)."
 
   - id: mutator-new_toys.pickup.roflsound
     name: "FilterItem — swap new-toy pickup sound to the 'New toys, new toys!' roflsound"
@@ -178,8 +178,8 @@ features:
       - "common/mutators/mutator/new_toys/sv_new_toys.qc:210 MUTATOR_HOOKFUNCTION(nt, FilterItem)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/NewToysMutator.cs:181 OnFilterItem"
-      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:102 (fires FilterItemDefinition)"
-      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:728 PlayPickupSound (consumes ItemPickupSoundOverride)"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:105 (fires FilterItemDefinition)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:847 PlayPickupSound (consumes ItemPickupSoundOverride)"
       - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs:73 (WEAPONPICKUP_NEW_TOYS)"
     constants:
       - { name: "g_new_toys_use_pickupsound", base: "0 (false) (mutators.cfg:340)", port: "0 (assets mutators.cfg:340), now READ in OnFilterItem (cs:190)", match: true }
@@ -197,7 +197,7 @@ features:
     gaps:
       - "Off by default (g_new_toys_use_pickupsound 0) — the roflsound only plays when the cvar is set, matching Base. Port gates on item.Pickup.IsWeaponPickup + IsNewToy(item.NetName) (the weapon-pickup def carries its weapon as NetName) rather than QC's item.weapon int; equivalent selector."
     verification:
-      - { kind: code, ref: "OnFilterItem (cs:181-195): isWeaponPickup && IsNewToy(item.NetName) && g_new_toys_use_pickupsound != 0 -> item.ItemPickupSoundOverride = 'WEAPONPICKUP_NEW_TOYS'. Live: StartItem.Spawn fires FilterItemDefinition (cs:102) for every spawned item with NetName already set (cs:101); ItemPickupRules.PlayPickupSound (cs:728) reads ItemPickupSoundOverride first, so the override is observed on the real pickup path. SoundsList.cs:73 registers WEAPONPICKUP_NEW_TOYS -> 'weaponpickup_new_toys'", result: pass }
+      - { kind: code, ref: "OnFilterItem (cs:181-195): isWeaponPickup && IsNewToy(item.NetName) && g_new_toys_use_pickupsound != 0 -> item.ItemPickupSoundOverride = 'WEAPONPICKUP_NEW_TOYS'. Live: StartItem.Spawn fires FilterItemDefinition (cs:105) for every spawned item with NetName already set (cs:104); ItemPickupRules.PlayPickupSound (cs:847) reads ItemPickupSoundOverride first, so the override is observed on the real pickup path. SoundsList.cs:73 registers WEAPONPICKUP_NEW_TOYS -> 'weaponpickup_new_toys'", result: pass }
     confidence: high
     notes: "FIXED in Wave-6b (was missing/na in the 2026-06-22 baseline): the FilterItem pickup-sound override is now wired — OnFilterItem reads g_new_toys_use_pickupsound and stamps Entity.ItemPickupSoundOverride to the registered WEAPONPICKUP_NEW_TOYS roflsound, consumed by PlayPickupSound. Off by default (cvar 0) so the audible swap only shows when the cvar is set, matching Base."
 
@@ -207,24 +207,25 @@ features:
     base_refs:
       - "common/mutators/mutator/new_toys/new_toys.qc:25 METHOD(MutatorNewToys, describe)"
       - "common/mutators/mutator/new_toys/new_toys.qh:6 CLASS(MutatorNewToys, Mutator)"
-    port_refs: []
+    port_refs:
+      - "game/menu/dialogs/DialogMutators.cs:213-220 (describe() text carried on the New Toys checkbox tooltip)"
     constants:
-      - { name: "describe() info page", base: "yes (PAGE_TEXT listing new-toy weapons + instagib/ok exclusivity)", port: "none", match: false }
+      - { name: "describe() info page", base: "yes (PAGE_TEXT: gimmicky-weapons intro + instagib/ok exclusivity + FOREACH new-toy weapon list)", port: "yes — full text on the g_new_toys checkbox tooltip: intro + 'can't be enabled concurrently' note + 'Seeker, Mine Layer, HLAC, Rifle, Arc'", match: true }
     status:
-      logic: missing
-      values: na
+      logic: faithful
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN — the MENUQC mutator describe() page (a help/info blurb in the mutator picker naming the current new-toy weapons and noting mutual exclusivity with InstaGib/Overkill) is not ported. This is a general port-wide menu-describe gap shared across all mutators, not specific to New Toys. Cosmetic."
+      - "The describe() content (gimmicky-weapons intro, InstaGib/Overkill mutual-exclusivity note, and the current new-toy weapon list) IS ported, but as the New Toys checkbox tooltip rather than a dedicated PAGE_TEXT describe-page widget (the port has no describe-page surface — DialogMutators.cs:214 comment). Presentation surface differs; text is faithful. The weapon list is a hardcoded literal ('Seeker, Mine Layer, HLAC, Rifle, Arc') instead of Base's runtime FOREACH(Weapons, nt_IsNewToy) enumeration, so it would not auto-update if the new-toy set changed — inert at the current fixed set."
     verification:
-      - { kind: code, ref: "grep describe/MutatorNewToys in game/ = no New-Toys describe-page implementation (DialogMutators.cs holds only the checkbox + radios, no info blurb)", result: fail }
-    confidence: medium
-    notes: "STILL OPEN (low impact); the gameplay-relevant menu controls (checkbox + autoreplace radios + priority-list suffix) ARE present. Tracked as a feature row because describe() is a distinct Base symbol."
+      - { kind: code, ref: "DialogMutators.cs:213-220 — comment 'Port of MutatorNewToys.describe() (new_toys.qc:25)'; the checkbox tooltip carries the full describe() text (intro + InstaGib/Overkill exclusivity + the Seeker/Mine Layer/HLAC/Rifle/Arc list). Live on the create-game mutators dialog", result: pass }
+    confidence: high
+    notes: "FIXED this audit (was missing/missing in the 2026-06-25 baseline): MutatorNewToys.describe() is now ported as the New Toys checkbox tooltip (DialogMutators.cs:213-220) — faithful text content (intro + instagib/ok exclusivity + new-toy weapon list). Presentation kept partial because it rides on a tooltip rather than a dedicated describe-page widget, and the weapon list is a hardcoded literal rather than the runtime FOREACH enumeration."
 
   - id: mutator-new_toys.menu.create_game_controls
     name: "Create-game menu: New Toys checkbox + Never/Always/Randomly autoreplace radios"
@@ -232,12 +233,12 @@ features:
     base_refs:
       - "menu/xonotic/dialog_multiplayer_create_mutators.qc:138-150"
     port_refs:
-      - "game/menu/dialogs/DialogMutators.cs:188-205"
+      - "game/menu/dialogs/DialogMutators.cs:216-235"
     constants:
-      - { name: "g_new_toys checkbox", base: "yes", port: "yes (DialogMutators.cs:188)", match: true }
-      - { name: "g_new_toys_autoreplace radios", base: "Never/Always/Randomly (0/1/2)", port: "Never/Always/Randomly (0/1/2) (cs:199-201)", match: true }
-      - { name: "radios gated on g_new_toys", base: "checkCompatibility_newtoys_autoreplace", port: "Dependent.Bind on g_new_toys (cs:205)", match: true }
-      - { name: "checkbox gated on not-instagib", base: "weapon-arena/instagib compat test", port: "Dependent.Bind on g_instagib (cs:191, approximation)", match: true }
+      - { name: "g_new_toys checkbox", base: "yes", port: "yes (DialogMutators.cs:216)", match: true }
+      - { name: "g_new_toys_autoreplace radios", base: "Never/Always/Randomly (0/1/2)", port: "Never/Always/Randomly (0/1/2) (cs:230-232)", match: true }
+      - { name: "radios gated on g_new_toys", base: "checkCompatibility_newtoys_autoreplace", port: "Dependent.Bind on g_new_toys (cs:235)", match: true }
+      - { name: "checkbox gated on not-instagib", base: "weapon-arena/instagib compat test", port: "Dependent.Bind on g_instagib (cs:222, approximation)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -250,7 +251,7 @@ features:
     gaps:
       - "The Base checkbox dependency is the full weapon-arena/instagib compatibility test; the port approximates it as a plain not-instagib dependency (DialogMutators.cs comment notes the approximation). Edge-case behavior under arena combos may differ slightly."
     verification:
-      - { kind: code, ref: "DialogMutators.cs:188-205 builds the g_new_toys CheckBox + 3 g_new_toys_autoreplace RadioButtons (values '0'/'1'/'2', labels Never/Always/Randomly) gated via Dependent.Bind(ntaRow, g_new_toys, 1, 1)", result: pass }
+      - { kind: code, ref: "DialogMutators.cs:216-235 builds the g_new_toys CheckBox + 3 g_new_toys_autoreplace RadioButtons (values '0'/'1'/'2', labels Never/Always/Randomly) gated via Dependent.Bind(ntaRow, g_new_toys, 1, 1)", result: pass }
     confidence: high
     notes: "Unchanged. Menu controls present and faithful in cvars/labels; only the checkbox enable-dependency is an approximation of the QC compatibility test."
 
@@ -262,7 +263,7 @@ features:
       - "menu/xonotic/dialog_settings_game_weapons.qc"
     port_refs:
       - "game/menu/framework/WeaponPriorityList.cs:85-87"
-      - "game/menu/dialogs/DialogSettingsGame.cs:604"
+      - "game/menu/dialogs/DialogSettingsGame.cs:605"
     constants:
       - { name: "suffix on mutator-blocked weapons", base: "'(Mutator weapon)'", port: "' *' (header notes '(* = mutator weapon)')", match: false }
     status:
@@ -276,6 +277,6 @@ features:
     divergence_rationale: "Port marks mutator-blocked weapons in the priority list with a ' *' suffix plus a '(* = mutator weapon)' header instead of the per-row '(Mutator weapon)' text. Same meaning (driven by WEP_FLAG_MUTATORBLOCKED), compacter presentation choice for the list widget."
     gaps: []
     verification:
-      - { kind: code, ref: "WeaponPriorityList.cs:85-87 appends ' *' for WeaponFlags.MutatorBlocked; DialogSettingsGame.cs:604 header 'Weapon Priority List (* = mutator weapon)'", result: pass }
+      - { kind: code, ref: "WeaponPriorityList.cs:85-87 appends ' *' for WeaponFlags.MutatorBlocked; DialogSettingsGame.cs:605 header 'Weapon Priority List (* = mutator weapon)'", result: pass }
     confidence: high
     notes: "Unchanged. Same WEP_FLAG_MUTATORBLOCKED-driven marking as Base, rendered as '*' + a legend rather than inline '(Mutator weapon)'. Deliberate UI choice -> intended divergence."

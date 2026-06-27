@@ -1,14 +1,14 @@
 unit: mutator-overkill
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
-  feature_count: 16
+  feature_count: 17
   worst_gaps:
-    - "Monsters drop no loot and their normal drop is not suppressed (MonsterDropItem hook chain does not exist in the port)."
     - "Secondary Blaster does not work during the round countdown (Overkill does not subscribe the live PlayerPreThink chain)."
     - "No item-respawn waypoints for surviving health/armor (Item_RespawnCountdown / Item_ScheduleRespawn hook chains do not exist)."
     - "MUTATOR_ONADD precache_all_playermodels(ok_player) and the g_overkill_items IntrusiveList are never built (player model missing; the random pool uses a hard-coded name list instead)."
+    - "ok_weapons sub-mutator unblock-gate not modeled (OK weapons exist as direct registrations; no WEP_FLAG_MUTATORBLOCKED gating)."
     - "Client cl_overkill cvar_settemp(g_overkill,1) sync is still absent (cosmetic/client only; the server-side mod-name strings, SetModname, and pretty-string are now live)."
 features:
   - id: overkill.enable.predicate
@@ -148,25 +148,28 @@ features:
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, MonsterDropItem)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnMonsterDropItem"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:DropItem"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:DropItem"
     constants:
-      - { name: "g_overkill_loot_monster", base: "armor_small", port: "none", match: false }
-      - { name: "g_overkill_loot_monster_time", base: "5", port: "none", match: false }
+      - { name: "g_overkill_loot_monster", base: "armor_small", port: "armor_small", match: true }
+      - { name: "g_overkill_loot_monster_time", base: "5", port: "5", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Monsters drop no Overkill loot and their normal drop is not suppressed. No MonsterDropItem hook chain exists in the port (grep MonsterDropItem.Call → zero hits), so there is nothing to subscribe. UNCHANGED by Wave-2."
+      - "Minor: same \"random\" keyword fallback stub as the player-loot row (RandomFromList resolves \"random\"→armor_small); default g_overkill_loot_monster is armor_small so only affects servers that set it to \"random\". Monster types themselves are only partially ported, but the hook chain + handler are now present and faithful."
     verification:
-      - { kind: code, ref: "no MonsterDropItem hook chain or handler anywhere in src/ (grep MonsterDropItem.Call → 0)", result: fail }
+      - { kind: code, ref: "MonsterDropItem hook chain now EXISTS (MutatorHooks.cs:334 HookChain, FireMonsterDropItem cs:341) and is LIVE: MonsterFramework.DropItem calls FireMonsterDropItem(self,itemList,attacker) (MonsterFramework.cs:219) then bails on an empty list. OverkillMutator subscribes it (Hook cs:124 MonsterDropItem.Add) → OnMonsterDropItem (cs:282) flings g_overkill_loot_monster loot off the corpse via DropItem→StartItem.SpawnLoot and sets args.ItemList=\"\" to suppress the vanilla drop. Launch math + lifetime defaults match Base.", result: pass }
     confidence: high
-    notes: "Monsters are themselves largely unported, but the hook chain/handler is absent regardless."
+    notes: "MAJOR FIX (missing→faithful/live across logic/values/timing/presentation/liveness). Since the baseline the MonsterDropItem hook chain was added (MutatorHooks.cs) and wired into the live monster loot driver (MonsterFramework.DropItem), and Overkill now subscribes it. The loot drops are collectible (full StartItem.SpawnLoot pipeline, same as the player-loot row) and the normal drop is cancelled by clearing the list. Constants now match Base (armor_small / 5)."
   - id: overkill.respawn.remember_restore_weapon
     name: "Remember held weapon at death, re-select on respawn (HMG->MG, RPC->Nex)"
     layer: [authority]
@@ -414,3 +417,27 @@ features:
       - { kind: code, ref: "OverkillMutator overrides BuildMutatorsString → \":OK\" (cs:411), BuildMutatorsPrettyString → \", Overkill\" (cs:415), and SetModname → (\"Overkill\", true) (cs:420). ALL THREE chains are now LIVE: BuildMutatorsString called from GameWorld.cs:1068 (gated on sv_eventlog, gamelog mutators field); BuildMutatorsPrettyString called from GameWorld.cs:1079 (PutClientInServer 'modifications' serverinfo, leading ', ' stripped); SetModname called from GameWorld.cs:609 (worldspawn modname override, CBC_ORDER_ANY first-wins). No cl_overkill client sync.", result: pass }
     confidence: high
     notes: "FIX (partial→faithful/live across logic/values/presentation/liveness). Since the prior audit the SetModname hook chain was ADDED and wired (MutatorActivation.SetModname → GameWorld.cs:604-612), and the BuildMutatorsPrettyString chain GAINED a live consumer (GameWorld.cs:1073-1081 sets the 'modifications' serverinfo key per QC PutClientInServer). Overkill's modname now resolves to 'Overkill' and the pretty token ', Overkill' is now emitted. Only the client cl_overkill cvar_settemp sync remains absent (cosmetic). Cosmetic / reporting only; no gameplay impact."
+  - id: overkill.okhmg.nade_selfdamage_scale
+    name: "okhmg_nadesupport Nade_Damage: scale OK-HMG nade self-damage to 10% max health"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/okhmg.qc:REGISTER_MUTATOR(okhmg_nadesupport) MUTATOR_HOOKFUNCTION(okhmg_nadesupport, Nade_Damage)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnNadeDamage"
+    constants:
+      - { name: "nade_selfdamage_fraction", base: "max_health * 0.1", port: "Nade.MaxHealth * 0.1f", match: true }
+      - { name: "weapon_guard", base: "WEP_OVERKILL_HMG", port: "okhmg", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base registers this as a SEPARATE always-on mutator (okhmg_nadesupport, predicate `true`) rather than gating it on the ok mutator; the port folds the handler into OverkillMutator, so it is only active while Overkill is enabled. The OK-HMG superweapon can only be obtained/used under Overkill in practice, so the effective behavior matches; the difference is the registration vehicle, not the rule (guard on weapon==okhmg + 10%-max-health damage scaling is bit-faithful)."
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnNadeDamage (OverkillMutator.cs:470) subscribed to MutatorHooks.NadeDamage (Hook cs:132 NadeDamage.Add). The NadeDamage chain is LIVE: FireNadeDamage (MutatorHooks.cs:1325) is called from NadeProjectile.cs:208 on the nade-damage path. Guard `args.Weapon != \"okhmg\" → no-op`, else args.Damage = Nade.MaxHealth*0.1 and return true (consumed) — matches okhmg.qc:8-11 exactly.", result: pass }
+    confidence: high
+    notes: "NEWLY MAPPED (was absent from the registry). The okhmg_nadesupport Nade_Damage hook was previously untracked; the port implements it inside OverkillMutator and it is live via NadeProjectile. Intended divergence: Base's separate always-on okhmg_nadesupport mutator is folded into the ok-gated OverkillMutator (functionally equivalent since the OK-HMG only exists under Overkill)."

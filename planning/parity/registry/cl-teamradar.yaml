@@ -1,7 +1,7 @@
 unit: cl-teamradar
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 14
   worst_gaps:
@@ -50,7 +50,7 @@ features:
       - "client/main.qc:CSQC_Parse_StuffCmd (minimapname/mi_min/mi_max load, ~line 139)"
     port_refs:
       - "game/hud/RadarPanel.cs:DrawPanel (minimap quad)"
-      - "game/net/NetGame.cs:1441 (MapName + BSP bounds feed)"
+      - "game/net/NetGame.cs:1543 (MapName + BSP bounds feed)"
     constants:
       - { name: "image lookup", base: "gfx/<short>_radar then gfx/<short>_mini else \"\"", port: "gfx/<MapName>_radar then _mini (TextureCache.GetFirst)", match: true }
       - { name: "bounds", base: "mi_min/mi_max from worldspawn minimap texcoords", port: "BSP Models[0].Mins/Maxs XY", match: partial }
@@ -69,7 +69,7 @@ features:
       - "Base resolves mi_min/mi_max from minimap texcoords (get_mi_min_max_texcoords); port uses raw BSP worldspawn model bounds, which can differ from a hand-authored _radar texcoord rect (misalignment on maps whose minimap rect != BSP bounds)."
       - "Base hard-gates the WHOLE small radar on minimapname != \"\" (radar.qc:203 early-return): no minimap image => no radar at all. Port always draws the dark playfield + blips even when no image resolves — a behavioral divergence (radar shows on imageless maps)."
     verification:
-      - { kind: code, ref: "NetGame.cs:1441-1456 feeds MapName + BSP bounds; DrawPanel draws rotated textured quad with yinvert UVs through WorldToScreen (now v_flipped-aware via flipX)", result: pass }
+      - { kind: code, ref: "NetGame.cs:1543-1558 feeds MapName + BSP bounds; DrawPanel draws rotated textured quad with yinvert UVs through WorldToScreen (now v_flipped-aware via flipX)", result: pass }
     confidence: medium
     notes: "Image + bounds wired live in NetGame; alignment depends on BSP bounds matching the authored minimap rect, and the port draws even when no image (Base would blank)."
 
@@ -137,7 +137,7 @@ features:
       - "common/mutators/mutator/waypoints/waypointsprites.qc:spritelookupcolor (~line 220)"
     port_refs:
       - "game/hud/RadarPanel.cs:DrawPanel (waypoint loop)"
-      - "game/net/ServerNet.cs:968"
+      - "game/net/ServerNet.cs:1097"
       - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:RadarIcon"
     constants:
       - { name: "icon sprite", base: "gfx/teamradar_icon_<m_radaricon>; EVERY core RADARICON id is 0 (none) or 1, so the only sprite Base ever draws is gfx/teamradar_icon_1", port: "gfx/teamradar_icon_1 (single fixed name; the prior dead icon_2 selector is gone)", match: true }
@@ -168,8 +168,8 @@ features:
       - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Ping (cnt |= BIT(7), line 897)"
     port_refs:
       - "game/hud/RadarPanel.cs:DrawPingPulse"
-      - "game/net/ClientNet.cs:RadarPingTime (bit-7 decode + stamp, lines 608-632)"
-      - "game/net/ServerNet.cs:968 (bit-7 encode via IsPinging)"
+      - "game/net/ClientNet.cs:RadarPingTime (bit-7 decode + stamp, lines 615-639)"
+      - "game/net/ServerNet.cs:1097 (bit-7 encode via IsPinging)"
       - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:Ping / IsPinging"
     constants:
       - { name: "ping bit", base: "icon byte bit 7 stamps teamradar_times[ring]", port: "ServerNet writes (RadarIcon & 0x7F) | (IsPinging ? 0x80 : 0); client decodes bit 0x80 → _radarPingTimes[id]", match: true }
@@ -344,7 +344,7 @@ features:
       - "game/hud/RadarPanel.cs:RegisterDefaults"
       - "game/hud/RadarPanel.cs:DrawPanel (hud_panel_radar 0/1/2 enable gating, lines 158-162)"
       - "game/hud/HudManager.cs:114 (StartHiddenIds hides discovered radar)"
-      - "game/net/NetGame.cs:1441 (standalone instance, 256x256 at 24,24)"
+      - "game/net/NetGame.cs:1543 (standalone instance, 256x256 at 24,24)"
     constants:
       - { name: "foreground_alpha default", base: "0.8 * panel_fg_alpha (when unset)", port: "registered 0.8; draw falls back to 0.8 when <=0/non-finite", match: true }
       - { name: "scale default", base: "4096 (when unset)", port: "registered 4096", match: true }
@@ -366,7 +366,7 @@ features:
       - "Discovered HUD-registry radar is force-hidden (HudManager StartHiddenIds 'radar'), so only the standalone NetGame instance (256x256 at 24,24) is live — the enable/team gating runs against the standalone draw, which is correct, but the discovered panel never participates."
       - "No hud_panel_radar_size cvar analogue (port keys off live control size + the 2500u range fallback instead of the 128px default)."
     verification:
-      - { kind: code, ref: "RegisterDefaults (RadarPanel.cs:129-147) now registers the QC CODE defaults (scale 4096, foreground_alpha 0.8, maximized_rotation 1); DrawPanel:158-162 honors hud_panel_radar 0/1/2 (disable + non-team gating against GameScores.Teamplay); HudManager StartHiddenIds:114; NetGame.cs:1441", result: pass }
+      - { kind: code, ref: "RegisterDefaults (RadarPanel.cs:129-147) now registers the QC CODE defaults (scale 4096, foreground_alpha 0.8, maximized_rotation 1); DrawPanel:158-162 honors hud_panel_radar 0/1/2 (disable + non-team gating against GameScores.Teamplay); HudManager StartHiddenIds:114; NetGame.cs:1543", result: pass }
     confidence: high
     notes: "FIXES since 2026-06-22: (1) registered defaults are now the QC code defaults (scale 4096, fg_alpha 0.8, maximized_rotation 1), not the luma-skin values (8192/1/0); (2) hud_panel_radar 0/1/2 enable+team gating is now honored at runtime in DrawPanel. Liveness stays partial only because the discovered HUD panel is force-hidden and the single live radar is the standalone NetGame instance."
 

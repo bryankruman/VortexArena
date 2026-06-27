@@ -5,10 +5,8 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 12
   worst_gaps:
-    - "No head entity (walker_head_minigun.md3): the minigun head is not a separate tracked/spinning tur_head entity (no tag attachment). Consequently the minigun muzzleflash and all rockets fire from a single muzzle org (no tag_rocket01/02 alternation)."
-    - "No CSQC walker_draw locomotion: no 4-point ground-align over terrain, no head avelocity spin, and no walk/run/melee model frames (turrets_setframe + TNSF_MOVE). (The low-hp te_spark and the rocket-launch te_explosion ARE now emitted server-side.)"
-    - "No minigun EFFECT_BLASTER_MUZZLEFLASH / EFFECT_BULLET tracer (client-render)."
-    - "Walker brain does not consume the turret_checkpoint waypoint chain: a walker with a `target` set does not patrol its path graph (walker_move_path / walker_findtarget / pathcurrent are unported on the walker side, though the turret_checkpoint node spawnfunc itself now exists)."
+    - "No head entity (walker_head_minigun.md3): the minigun head is not a separate tracked/spinning tur_head entity (no tag attachment). The minigun muzzleflash now falls back to the shot org, and rocket muzzle alternation now selects tag_rocket01/02 via the model service but gracefully falls back to a single shot org when the body model is headless."
+    - "No CSQC walker_draw locomotion render: no 4-point ground-align over terrain and no head avelocity spin (pure client view). The per-gait Entity.Frame is now stamped server-side but the client EntityNode does not consume it as a model animation, so the walk/run/melee gait animations still do not visibly play."
 features:
   - id: turret-walker.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -175,14 +173,15 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/WalkerTurret.cs:IdleSelect"
     constants:
       - { name: "idle stop time", base: "1 + random*5", port: "1 + Prandom.Float()*5", match: true }
-      - { name: "roam walk time (TSL_ROAM, 50%)", base: "4 + random*2", port: "none (TSL_ROAM spawnflag not plumbed; defaults to stop branch)", match: false }
+      - { name: "roam walk time (TSL_ROAM, 50%)", base: "4 + random*2", port: "now + 4 + Prandom.Float()*2 (TslRoam spawnflag plumbed; IdleSelect roam branch)", match: true }
       - { name: "last-seen chase window", base: "<=10s and within 128u", port: "<=10s and within 128u", match: true }
       - { name: "wander moveto blend", base: "moveto*0.9 + (origin+v_forward*500+randomvec*400)*0.1", port: "moveto*0.9 + (origin+fwd*500 + Prandom.Vec()*400)*0.1", match: true }
       - { name: "wander LOS probe", base: "traceline ahead 128 + down 256, set idletime=-1337 to re-pick", port: "fwd 128 + down 256 probes, HeadIdleTime=-1337", match: true }
-      - { name: "path node proximity", base: "64 (turret_checkpoint chain)", port: "none (walker brain has no pathcurrent consumption; checkpoint nodes spawn but are not patrolled)", match: false }
-      - { name: "speed_roam", base: "100", port: "100 (SpeedRoam; reached only via Gait.Roam, not assigned)", match: true }
+      - { name: "path node proximity", base: "64 (turret_checkpoint chain)", port: "64 (PathNodeProximity; WalkerMovePath advances PathCurrent via CloseToTarget)", match: true }
+      - { name: "TSF_NO_PATHBREAK (stick to path with enemy)", base: "walker.qc:360", port: "TsfNoPathbreak = BIT(3); DoMovement:228 sticks to WalkerMovePath even with an enemy", match: true }
+      - { name: "speed_roam", base: "100", port: "100 (SpeedRoam; reached via Gait.Roam — assigned only in Base via ANIM_ROAM, which the SVQC brain itself never sets, parity-by-omission)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -190,13 +189,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Walker brain does not consume the turret_checkpoint waypoint chain (walker_move_path / walker_findtarget / pathcurrent unported on the walker side): a walker with a `target` set does not patrol its path graph. The turret_checkpoint/walker_checkpoint node spawnfunc itself is now registered (TurretSpawnFuncs.Checkpoint), but the walker never reads it."
-      - "TSL_ROAM (TSF_NO_PATHBREAK) roam-walk branch not plumbed: the port has no roam spawnflag, so it always takes the stop-and-idle branch (Base also defaults to stop when the flag is unset, so behavior matches a plain walker)."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "IdleSelect (WalkerTurret.cs:272-316): enemy_last_loc/time pursuit + LOS-probe wander + idle stop cycle vs walker.qc:362-419; called live from DoMovement when e.Enemy is null. No pathcurrent reference in WalkerTurret.cs.", result: pass }
+      - { kind: code_read, ref: "IdleSelect (WalkerTurret.cs:384-438): enemy_last_loc/time pursuit + LOS-probe wander + idle stop/roam cycle (TslRoam-gated roam branch) vs walker.qc:362-419; called live from DoMovement when e.Enemy is null and no path. WalkerMovePath (WalkerTurret.cs:340-352) + WalkerFindTarget (176-182) + NextCheckpoint (359-364) consume the turret_checkpoint chain via TurretState.PathCurrent; wired live from Spawn (WalkerFindTarget at :167, re-armed in OnRespawn) and DoMovement (TsfNoPathbreak branch :228, no-enemy branch :235).", result: pass }
     confidence: high
-    notes: "Unchanged behaviorally for the walker brain: the no-enemy IDLE ROAM/WANDER + LAST-SEEN PURSUIT subtree is ported and live. The turret_checkpoint node spawnfunc now exists, but the walker brain still does not patrol path chains, and TSL_ROAM remains unplumbed."
+    notes: "FIXED since last audit: (1) the walker brain now consumes the turret_checkpoint waypoint chain — WalkerFindTarget resolves the entry checkpoint by targetname, WalkerMovePath advances the PathCurrent chain (NextCheckpoint follows checkpoint.target), and the TSF_NO_PATHBREAK flag (TsfNoPathbreak) makes it stick to the path even with an enemy in view; (2) the TSL_ROAM roam-walk branch is now plumbed (TslRoam-gated, 4+random*2s roam). Logic is now faithful."
   - id: turret-walker.drive.gaits_extra
     name: "Extra gaits: swim / jump / land / pain / strafe / turn"
     layer: [authority, presentation]
@@ -255,18 +252,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No EFFECT_BLASTER_MUZZLEFLASH at the head tag and no EFFECT_BULLET tracer on fire (client-render)."
+      - "Muzzleflash + bullet tracer are emitted at the shared shot org (st.ShotOrg) rather than a dedicated head muzzle tag, since the port has no tur_head sub-entity. Both effects ARE emitted (networked, viewer-independent)."
     verification:
       - { kind: test, ref: "MonsterTurretVehicleObituaryTests (shared turret-gun deathtype, walker-gun call site)", result: pass }
-      - { kind: code_read, ref: "walker_weapon.qc wr_think + fireBullet vs Attack/FireBullet; ShotSpeed const 18000", result: pass }
+      - { kind: code_read, ref: "walker_weapon.qc wr_think (EFFECT_BULLET + EFFECT_BLASTER_MUZZLEFLASH, both OUTSIDE the isPlayer gate) vs Attack (WalkerTurret.cs:582-603): FireBullet(..., tracerEffect: BULLET) emits the EFFECT_BULLET trail and EffectEmitter.Emit(BLASTER_MUZZLEFLASH, st.ShotOrg, dir*1000f, 1) emits the muzzleflash, both server-side networked effects. ShotSpeed const 18000.", result: pass }
     confidence: high
-    notes: "Unchanged-faithful: bullet damage/spread/force/refire/deathtype/sound all faithful; only the muzzleflash/tracer presentation remains."
+    notes: "FIXED since last audit: the EFFECT_BLASTER_MUZZLEFLASH and EFFECT_BULLET tracer are now emitted server-side (the same convention as the ewheel/flac/machinegun turrets), so the minigun presentation is now faithful. Only divergence: emitted at the shot org, not a head tag (no tur_head sub-entity in the port)."
   - id: turret-walker.weapon.rocket
     name: "Rocket volley: 4 homing rockets + reload (walker_fire_rocket / walker_rocket_think)"
     layer: [authority]
@@ -293,23 +290,22 @@ features:
       - { name: "launch sound", base: "SND_TUR_WALKER_FIRE = hagar_fire", port: "weapons/hagar_fire.wav", match: true }
       - { name: "te_explosion launch flash", base: "yes", port: "EffectEmitter.TeExplosion(st.ShotOrg) in FireRocket:425", match: true }
       - { name: "walker_rocket_loop maneuver (1%)", base: "yes (up-and-over): 1% on launch AND 1% per in-flight think -> loop/loop2/loop3", port: "yes: 1% on launch (Launch:142) + 1%/think (WalkerRocketThink:346) -> WalkerRocketLoop/2/3 with InLoop sentinel", match: true }
-      - { name: "tag_rocket01/02 muzzle alternation", base: "yes (gettaginfo of tag_rocket01/02 by shot_volly parity)", port: "none (fires from single st.ShotOrg)", match: false }
+      - { name: "tag_rocket01/02 muzzle alternation", base: "yes (gettaginfo of tag_rocket01/02 by shot_volly parity)", port: "yes: FireRocket selects tag_rocket01/02 by post-decrement volly parity and resolves it via Api.Models.TryGetTag; falls back to st.ShotOrg if the body model is headless", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No tag_rocket01/tag_rocket02 alternation (port has no head tags; all rockets fire from a single muzzle org)."
-      - "No EFFECT_BLASTER_MUZZLEFLASH presentation; only the te_explosion launch flash is emitted (Base's launch te_explosion IS now reproduced)."
+      - "Tag resolution is graceful-fallback: if the loaded walker_body.md3 has no tag_rocket01/02 bones, all rockets fire from the shared shot org (the port has no separate tur_head sub-entity that owns the tags)."
     verification:
-      - { kind: code_read, ref: "FireRocket plays weapons/hagar_fire.wav + EffectEmitter.TeExplosion(st.ShotOrg). WalkerRocketThink (GuidedProjectile.cs:326-358) now has the random()<0.01 loop roll + InLoop sentinel; WalkerRocketLoop/Loop2/Loop3 (GuidedProjectile.cs:366-415) model the up-and-over (+300 up, then back to start, then -200) faithful to walker.qc:153-202; Launch:138-144 has the 1% launch roll. Ballistics/damage/burst/jitter/steer-pull faithful.", result: pass }
+      - { kind: code_read, ref: "FireRocket (WalkerTurret.cs:551-578): muzzleTag = (RocketVolly>1 ? tag_rocket01 : tag_rocket02) matching walker.qc:447 post-decrement parity, resolved via Api.Models.TryGetTag(turret, muzzleTag,...) with graceful st.ShotOrg fallback; plays weapons/hagar_fire.wav + EffectEmitter.TeExplosion(org). WalkerRocketThink (GuidedProjectile.cs:332-364) has the random()<0.01 loop roll + InLoop sentinel; WalkerRocketLoop/Loop2/Loop3 (GuidedProjectile.cs:372-421) model the up-and-over (+300 up, then back to start, then -200) faithful to walker_weapon.qc:153-202; Launch:144-150 has the 1% launch roll. Ballistics/damage/burst/jitter/steer-pull faithful.", result: pass }
     confidence: high
-    notes: "FIXED since last audit: (1) the walker_rocket_loop up-and-over maneuver (1% launch + 1%/think + loop/loop2/loop3 + 1337/InLoop sentinel) is now ported in GuidedProjectile, so logic is now faithful; (2) the te_explosion launch flash is now emitted server-side in FireRocket. Remaining presentation gap: tag_rocket01/02 muzzle alternation + EFFECT_BLASTER_MUZZLEFLASH."
+    notes: "FIXED since last audit: (1) tag_rocket01/02 muzzle alternation is now ported (post-decrement volly parity resolved via Api.Models.TryGetTag), so presentation is now faithful; (2) the walker_rocket_loop up-and-over maneuver and the te_explosion launch flash were already ported. Base emits NO EFFECT_BLASTER_MUZZLEFLASH for rockets (only te_explosion), so there was never a muzzleflash gap here."
   - id: turret-walker.weapon.melee
     name: "Melee bite (walker_melee_do_dmg): radius hit in front"
     layer: [authority]
@@ -396,9 +392,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No walk/run/melee animation frames (turrets_setframe(animflag) + TNSF_MOVE net): the walker model never plays its gait animations."
+      - "Gait frame is stamped server-side (DoMovement SetFrame(e, animflag) writes Entity.Frame, faithful to turrets_setframe), but the client EntityNode does not consume Entity.Frame as a model animation, so the walk/run/melee gait animations still do not visibly play. TNSF_MOVE origin/velocity netting also has no dedicated counterpart (origin rides the shared entity feed)."
       - "No CSQC walker_draw 4-point ground-align over terrain and no head avelocity spin (pure client render, still absent)."
     verification:
-      - { kind: code_read, ref: "Low-hp te_spark (<127 hp, 15%/frame) now emitted server-side in DoMovement (WalkerTurret.cs:236-242) as a networked temp-entity, faithful to walker.qc:627-629. The ground-align/head-spin/anim-frames (turrets_setframe/TNSF_MOVE) counterpart still has no port.", result: pass }
+      - { kind: code_read, ref: "Low-hp te_spark (<127 hp, 15%/frame) emitted server-side in DoMovement (WalkerTurret.cs:286-292) as a networked temp-entity, faithful to walker.qc:627-629. SetFrame (WalkerTurret.cs:311-314) writes Entity.Frame = animflag, but game/EntityNode.cs does not read Entity.Frame for model animation (grep: no Frame consumer), so it is a no-op for presentation. Ground-align/head-spin counterpart still has no port.", result: pass }
     confidence: high
-    notes: "PARTIALLY FIXED since last audit: the low-hp te_spark (the one networked, viewer-independent part of walker_draw) is now emitted server-side (same convention as EWheelTurret). The pure-client ground-align, head-spin, and the gait animation frames + TNSF_MOVE networking remain absent."
+    notes: "Largely unchanged since last audit: the low-hp te_spark (the one networked, viewer-independent part of walker_draw) is emitted server-side (same convention as EWheelTurret). The per-gait Entity.Frame is now stamped server-side BUT the client EntityNode does not consume it, so the gait animations still do not play; the pure-client ground-align + head-spin remain absent."

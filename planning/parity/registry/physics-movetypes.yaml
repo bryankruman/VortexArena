@@ -1,14 +1,15 @@
 unit: physics-movetypes
 category: physics
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Movetype_Physics_MatchTicrate (sub-tick interpolation: tic_* snapshots, floor(dt/tr) whole frames clamped to 32, residual-dt trace continuation + gravity half-step, sloppy straight-line interp) is STILL entirely missing — no between-tick interpolation in this layer for client-side moveables (gibs/casings/projectiles/trains). Re-grep 2026-06-25/26: zero hits for MatchTicrate/tic_origin/tic_velocity in src/."
-    - "(RESOLVED since 2026-06-25 baseline) MOVETYPE_PHYSICS-rider fast-path in PushMove (push.qc:123-129) IS NOW implemented (FlyMove.cs:407-414: translate+relink+continue, skips the PushEntity sweep). Corpse/zero-thickness rider squash (push.qc:166-173) also now zeroes mins/maxs (FlyMove.cs:444-452). Both landed in commit faa4e89; push.pushmove logic partial->faithful. Only residual is the non-behavioral findradius-vs-flat-scan broadphase style."
+    - "Movetype_Physics_MatchTicrate (sub-tick interpolation: tic_* snapshots, floor(dt/tr) whole frames clamped to 32, residual-dt trace continuation + gravity half-step, sloppy straight-line interp) is STILL entirely missing — no between-tick interpolation in this layer for client-side moveables (gibs/casings/projectiles/trains). Re-grep 2026-06-27: zero hits for MatchTicrate/tic_origin/tic_velocity/tic_flags in src/."
     - "Toss bmodelstartsolid retry: Base re-runs _Movetype_UnstickEntity on a bmodel-embedded bounce then retries the push and gives up (zero-vel + SET_ONGROUND) if still stuck (toss.qc:60-82); the port's PushEntity nudges inline but PhysicsToss does not replicate the explicit unstick-retry-give-up sequence."
-    - "(RESOLVED since 2026-06-25 baseline) CheckWaterTransition's hardcoded misc/water_in.wav cue is GONE — both CheckWater and CheckWaterTransition now route through the per-entity .ContentsTransition callback (Entity.ContentsTransition, MoveTypePhysics.cs:256/496), exactly matching Base which emits no sound in the movetype layer. checkwater row now fully faithful (audio na)."
+    - "NEW (recorded 2026-06-27, minor): the port sets its _suspendedInAir flag for ANY non-null GroundEntity on a toss-rest (MoveTypePhysics.cs:228-229), whereas Base sets move_suspendedinair ONLY when trace_ent.solid == SOLID_BSP (toss.qc:130-131). Diverges only in the corner case where a non-BSP, non-world mover is the ground and is later freed — the port treats that rest as suspended where Base would not. Low impact; toss row stays faithful overall."
+    - "(stable) push.pushmove MOVETYPE_PHYSICS-rider fast-path (push.qc:123-129 -> FlyMove.cs:409-414) and corpse/zero-thickness squash (push.qc:166-173 -> FlyMove.cs:444-452) remain implemented (commit faa4e89). Only residual is the non-behavioral findradius-vs-flat-scan broadphase style."
+    - "(stable) CheckWaterTransition emits no sound; both CheckWater and CheckWaterTransition route through the per-entity .ContentsTransition callback (MoveTypePhysics.cs:256/496), matching Base. checkwater row faithful (audio na)."
 features:
   - id: physics-movetypes.dispatch.frame
     name: "Per-tick movetype dispatch + live server entity loop"
@@ -119,10 +120,11 @@ features:
     gaps:
       - "Base re-runs _Movetype_UnstickEntity on a bmodelstartsolid bounce and retries the push (toss.qc:60-82); the port's PushEntity skips the nudge for MOVETYPE_FLY and otherwise nudges inside PushEntity — but PhysicsToss does NOT replicate the explicit unstick-then-retry-then-give-up (zero-velocity + SET_ONGROUND) sequence, so a projectile fully embedded in a bmodel is handled differently than Base's dedicated retry."
       - "noairborncorpse_allowsuspendeditems is hardcoded to the =1 path (always returns after dropping the freed-mover groundentity). Matches Xonotic default 1."
+      - "NEW (2026-06-27): suspended-in-air flag condition is broader than Base. Base sets move_suspendedinair only when the ground is a brush model (trace_ent.solid == SOLID_BSP, toss.qc:130-131); the port adds the entity to _suspendedInAir for ANY non-null GroundEntity (MoveTypePhysics.cs:228-229). Only matters when a non-BSP, non-world mover is the resting ground and is later freed: the port then treats the rest as suspended (clears groundentity, keeps resting) where Base would fall through to re-simulate. Corner case, low impact; does not change the row's overall faithful status."
     verification:
-      - { kind: code, ref: "PhysicsToss (MoveTypePhysics.cs:105) vs toss.qc: onground early-outs (upward/world/suspended-mover/overlap MoveTypePhysics.cs:108-133), gravity half-step Toss/Bounce only (:139), avelocity, default-branch rest+suspendedinair all match", result: pass }
+      - { kind: code, ref: "PhysicsToss (MoveTypePhysics.cs:105) vs toss.qc: onground early-outs (upward/world/suspended-mover/overlap MoveTypePhysics.cs:108-133), gravity half-step Toss/Bounce only (:139-140), avelocity (:143), bmodelstartsolid give-up (:160-165 vs toss.qc:75-81), default-branch rest all match. Divergence: _suspendedInAir.Add (:228-229) lacks Base's SOLID_BSP gate (toss.qc:130-131).", result: pass }
     confidence: high
-    notes: "Unchanged structurally by Wave-2. Live for dropped items, flags/keys, nades, gibs, projectiles, vehicles, monster gibs. Bounce-restitution numbers split into physics-movetypes.toss.bounce."
+    notes: "Structurally unchanged. Live for dropped items, flags/keys, nades, gibs, projectiles, vehicles, monster gibs. Bounce-restitution numbers split into physics-movetypes.toss.bounce. 2026-06-27 re-audit: added the move_suspendedinair SOLID_BSP-gate divergence as a minor gap (logic faithful overall — only a freed non-BSP-mover ground corner case differs)."
 
   - id: physics-movetypes.toss.bounce
     name: "Bounce/BounceMissile restitution + bouncestop settle (grenades, casings, balls)"
@@ -137,12 +139,12 @@ features:
       - { name: "bouncefactor (BOUNCEMISSILE)", base: "(!this.bouncefactor)?1.0:this.bouncefactor", port: "ent.BounceFactor==0 ? 1.0 : ent.BounceFactor (MoveTypePhysics.cs:163)", match: true }
       - { name: "bouncestop (BOUNCE)", base: "(!this.bouncestop)?60/800:this.bouncestop", port: "ent.BounceStop==0 ? 60/800 : ent.BounceStop (MoveTypePhysics.cs:173)", match: true }
       - { name: "mortar grenade bounce", base: "0.5 / 0.075 (g_balance_mortar_bounce*)", port: "wired Mortar.cs:169-170 (0.5/0.075)", match: true }
-      - { name: "electro-secondary orb bounce", base: "0.3 / 0.05 (g_balance_electro_secondary_bounce*)", port: "wired Electro.cs:377-378 (0.3/0.05)", match: true }
+      - { name: "electro-secondary orb bounce", base: "0.3 / 0.05 (g_balance_electro_secondary_bounce*)", port: "Electro.cs:137-138 reads cvars (0.3/0.05) -> wired orb.BounceFactor/BounceStop (Electro.cs:426-427)", match: true }
       - { name: "raptor vehicle bounce", base: "0.2 / 0 (g_vehicle_raptor_bounce*)", port: "wired Raptor.cs:130-131 (0.2/0)", match: true }
-      - { name: "spider web projectile bounce", base: "0.3 / 0.05 (spider.qc:154-155)", port: "Spider.cs:109 passes 0.3/0.05 -> SpawnProjectile now ASSIGNS them (MonsterAI.cs:1332-1333)", match: true }
-      - { name: "golem zap projectile bounce", base: "0.5 / 0.075 (golem)", port: "Golem.cs:153 passes 0.5/0.075 -> SpawnProjectile ASSIGNS them (MonsterAI.cs:1332-1333)", match: true }
+      - { name: "spider web projectile bounce", base: "0.3 / 0.05 (spider.qc:154-155)", port: "Spider.cs passes 0.3/0.05 -> SpawnProjectile ASSIGNS them (MonsterAI.cs:1608-1609)", match: true }
+      - { name: "golem zap projectile bounce", base: "0.5 / 0.075 (golem)", port: "Golem.cs passes 0.5/0.075 -> SpawnProjectile ASSIGNS them (MonsterAI.cs:1608-1609)", match: true }
       - { name: "nexball basketball/football bounce", base: "0.6 / 0.075 (g_nexball_{basketball,football}_bounce*)", port: "BallConfig.WithKindDefaults sets 0.6/0.075 (BallEntity.cs:130-131) -> wired e.BounceFactor/BounceStop (BallEntity.cs:200-201)", match: true }
-      - { name: "racer chassis bounce", base: "0.25 / 0 (g_vehicle_racer_bounce*)", port: "Racer.cs:53-54 fields 0.25/0 -> wired vehicle.BounceFactor/BounceStop (Racer.cs:194-195)", match: true }
+      - { name: "racer chassis bounce", base: "0.25 / 0 (g_vehicle_racer_bounce*)", port: "Racer.cs:57-58 fields 0.25/0 -> wired vehicle.BounceFactor/BounceStop (Racer.cs:205-206)", match: true }
       - { name: "grenadebouncedownslopes (d source)", base: "1 -> d = trace_plane_normal * velocity (SIGNED)", port: "Vector3.Dot(normal, vel) (SIGNED) (MoveTypePhysics.cs:177)", match: true }
       - { name: "slidemoveprojectiles", base: "0 (Xonotic) -> movetime=0 after bounce", port: "movetime=0 after bounce", match: true }
     status:
@@ -156,9 +158,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "MoveTypePhysics.cs:163,172-177 read ent.BounceFactor/BounceStop + signed Dot. All five live producers now wire correct values: Mortar.cs:169-170 (0.5/0.075), Electro.cs:377-378 (0.3/0.05), Raptor.cs:130-131 (0.2/0), MonsterAI.SpawnProjectile.cs:1332-1333 assigns the bounceFactor/bounceStop params (spider 0.3/0.05 via Spider.cs:109, golem 0.5/0.075 via Golem.cs:153), BallEntity.cs:130-131/200-201 (nexball 0.6/0.075), Racer.cs:53-54/194-195 (racer 0.25/0). All match Base.", result: pass }
+      - { kind: code, ref: "MoveTypePhysics.cs:163,172-177,185-191 read ent.BounceFactor/BounceStop + signed Dot (toss.qc:89-142). All live producers wire correct values: Mortar.cs:169-170 (0.5/0.075), Electro.cs:426-427 (0.3/0.05), Raptor.cs:130-131 (0.2/0), MonsterAI.SpawnProjectile assigns the bounceFactor/bounceStop params (MonsterAI.cs:1608-1609; spider 0.3/0.05, golem 0.5/0.075), BallEntity.cs:130-131/200-201 (nexball 0.6/0.075), Racer.cs:57-58/205-206 (racer 0.25/0). All match Base. Re-verified 2026-06-27.", result: pass }
     confidence: high
-    notes: "FIXED since the 2026-06-22 baseline (Wave-6e, faa4e89): the three previously-open value gaps are all closed. (1) MonsterAI.SpawnProjectile now ASSIGNS proj.BounceFactor/BounceStop from its params (MonsterAI.cs:1332-1333) — spider web 0.3/0.05 and golem zap 0.5/0.075 now reach the integrator. (2) BallEntity grew BounceFactor/BounceStop fields with the nexball 0.6/0.075 defaults (BallEntity.cs:69-74,130-131) wired at spawn (200-201). (3) Racer grew the fields 0.25/0 (Racer.cs:53-54) wired at spawn (194-195). Control flow + numerics + signed-d were already faithful. values now faithful. Casings are NOT on this server path — they ride the client-only ShellCasings.cs system (own bounce 0.25 shell / 0.5 bullet, faithful), out of this unit's scope."
+    notes: "Stable since the Wave-6e fix (faa4e89): all bounce producers ASSIGN proj/orb/ball/vehicle BounceFactor/BounceStop and the integrator reads them with the signed grenadebouncedownslopes d. 2026-06-27 re-audit: values unchanged, only verification line numbers refreshed (Electro/MonsterAI/Racer files were edited elsewhere, shifting the cited lines). Casings are NOT on this server path — they ride the client-only ShellCasings.cs system (own bounce 0.25 shell / 0.5 bullet, faithful), out of this unit's scope."
 
   - id: physics-movetypes.step.physics
     name: "MOVETYPE_STEP integrator (monster bodies)"
@@ -330,9 +332,9 @@ features:
     gaps:
       - "STILL OPEN: No Movetype_Physics_MatchTicrate equivalent and no tic_* snapshot fields on Entity (grep: zero hits in src/ for MatchTicrate/tic_origin/tic_velocity). Entities advance only on the fixed server tick, with no between-tick interpolation in this layer. In Base this smooths CSQC gibs/casings/projectiles/trains at render rate; whether visible in the port depends on its separate render-side interpolation (PredictionBuffer/ClientNet — out of this unit's scope)."
     verification:
-      - { kind: code, ref: "no MatchTicrate/tic_origin/sloppy symbols anywhere in src/ (re-grepped 2026-06-25, unchanged); Entity.cs has no tic_* fields", result: fail }
+      - { kind: code, ref: "no MatchTicrate/tic_origin/tic_velocity/tic_flags/sloppy symbols anywhere in src/ (re-grepped 2026-06-27, still zero hits); Entity.cs has no tic_* snapshot fields", result: fail }
     confidence: high
-    notes: "Unchanged since baseline. Equivalent for server-authoritative entities (fixed-tick only); a smoothness gap for client-side moveables unless masked by a separate render interp layer."
+    notes: "Unchanged since baseline (re-confirmed 2026-06-27). Equivalent for server-authoritative entities (fixed-tick only); a smoothness gap for client-side moveables unless masked by a separate render interp layer (PredictionBuffer/ClientNet — out of this unit's scope)."
 
   - id: physics-movetypes.checkwater
     name: "CheckWater / CheckWaterTransition (waterlevel + transition cue)"

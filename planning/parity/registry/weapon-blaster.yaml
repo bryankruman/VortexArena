@@ -1,13 +1,13 @@
 unit: weapon-blaster
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 12
   worst_gaps:
-    - "bot_dodge/bot_dodgerating projectile-danger CONSUMER still missing: the bolt now sets bot_dodge=true/bot_dodgerating (producer fixed) but no havocbot_dodge danger-list consumer (findchainfloat(bot_dodge)) exists, so bots still do not specifically dodge incoming bolts (they only LEAD via generic ShotLead)"
-    - "no networked PROJECTILE_BLASTER flying-bolt trail/sprite (CSQCProjectile client render)"
+    - "no networked PROJECTILE_BLASTER flying-bolt trail/sprite (CSQCProjectile client render) for the in-hand bolt"
     - "impact particle uses -normalize(velocity) as the w_backoff plane normal (approximation); impact sound+particle emitted server-side instead of CSQC wr_impacteffect (intended divergence)"
+    - "bot lead is the GENERIC engine-level projectile lead (BotBrain.ShotLead reading the weapon speed cvar), not the per-weapon wr_aim dispatch seam (faithful in effect for the blaster, leads at speed 6000)"
 features:
   - id: weapon-blaster.identity.registration
     name: "Blaster identity, flags, models, infinite ammo"
@@ -337,24 +337,24 @@ features:
     constants:
       - { name: "bot_aim(speed, 0, lifetime, false, true) lead", base: "leads target for projectile (speed 6000)", port: "generic ShotLead(enemyCenter, enemy.Velocity, CurrentShotSpeed()); blaster speed read from g_balance_blaster_primary_speed (6000)", match: true }
       - { name: "bot_dodge / bot_dodgerating (producer)", base: "missile.bot_dodge=true / bot_dodgerating=damage + IL_PUSH(g_bot_dodge)", port: "missile.BotDodge=true / BotDodgeRating=Primary.Damage (Blaster.cs:156-157); Entity.BotDodge/BotDodgeRating fields exist", match: true }
-      - { name: "bot_dodge danger-list (consumer)", base: "havocbot_dodge findchainfloat(bot_dodge,true) avoids the bolt (SUPERBOT-gated)", port: "none (no findchainfloat/danger-list consumer in src/.../Bot; flags inert)", match: false }
+      - { name: "bot_dodge danger-list (consumer)", base: "havocbot_dodge findchainfloat(bot_dodge,true) avoids the bolt (SUPERBOT-gated)", port: "BotBrain.HavocbotDodge (BotBrain.cs:608) scans Api.Entities.All for BotDodge edicts, SUPERBOT-gated (Skill>SuperbotSkill 100), folds the world-space dodge vector into the wish-move (BotBrain.cs:462-489)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "bot_dodge danger-list CONSUMER still NOT implemented: the bolt now SETS bot_dodge=true/bot_dodgerating (Blaster.cs:156-157, producer fixed) and Entity carries BotDodge/BotDodgeRating, but no havocbot_dodge consumer (findchainfloat(bot_dodge,true)) exists in src/.../Bot, so the flags are inert and bots still do not specifically avoid incoming blaster bolts. The generic CombatMovement strafe is evasive combat movement, not the QC bolt-specific avoidance."
       - "lead is a GENERIC engine-level projectile lead (BotBrain.ShotLead using the weapon's speed cvar), not the per-weapon wr_aim hook; faithful in effect for the blaster (leads at speed 6000), but the wr_aim/bot_aim weapon-dispatch seam itself is not modeled."
+      - "dodge is SUPERBOT-gated (Skill>100) exactly as in Base (havocbot_dodge is disabled for non-SUPERBOT bots there too), so under stock skill levels bots do not specifically swerve from bolts; this matches Base behaviour, it is not a port limitation."
     verification:
-      - { kind: code_read, ref: "BotBrain.AimAndDecideFire: shotSpeed = CurrentShotSpeed() (non-hitscan weapon reads g_balance_<wep>_primary_speed); lead = Aim.ShotLead(enemyCenter, enemy.Velocity, shotSpeed); the bot LEADS the blaster bolt", result: pass }
-      - { kind: code_read, ref: "Blaster.cs:156-157 NOW sets missile.BotDodge=true; missile.BotDodgeRating=Primary.Damage; Entity.cs:84-100 defines the fields. grep BotDodge|bot_dodge|DodgeList across src/.../Bot -> still NO consumer (only generic combat-movement strafe at BotBrain.cs:378,460-465)", result: pass }
+      - { kind: code_read, ref: "BotBrain.AimAndDecideFire: shotSpeed = CurrentShotSpeed() (non-hitscan weapon reads g_balance_<wep>_primary_speed via BotBrain.cs:809); lead = Aim.ShotLead(enemyCenter, enemy.Velocity, shotSpeed); the bot LEADS the blaster bolt at speed 6000", result: pass }
+      - { kind: code_read, ref: "Blaster.cs:156-157 sets missile.BotDodge=true; missile.BotDodgeRating=Primary.Damage (producer). BotBrain.HavocbotDodge (BotBrain.cs:599-663) is the CONSUMER: findchainfloat(bot_dodge,true) analogue scanning Api.Entities.All, perpendicular-to-flight dodge for moving hazards, SUPERBOT gate (Skill<=SuperbotSkill -> '0 0 0'), owner-skip; called live at BotBrain.cs:462 inside the per-tick decide flow and blended into the wish-move (cs:481-487)", result: pass }
     confidence: high
-    notes: "PARTIAL FIX (2026-06-25 audit): the PRODUCER half of bot-dodge is now closed -- Blaster.Attack sets bot_dodge=true/bot_dodgerating=damage on the bolt and Entity exposes the fields (baseline recorded these as OMITTED, match:false). The CONSUMER half is STILL OPEN: no havocbot_dodge danger-list (findchainfloat(bot_dodge)), so the flags are inert and bots do not dodge bolts. Aim/lead half remains closed (generic ShotLead). Net status stays logic/values:partial (lead present + producer flag set, but dodge behaviour still does not manifest)."
+    notes: "FIX (2026-06-27 audit): the bot-dodge CONSUMER is now IMPLEMENTED and LIVE -- BotBrain.HavocbotDodge (added since the 2026-06-25 baseline) ports havocbot_dodge's findchainfloat(bot_dodge,true) danger-list scan, returning a world-space dodge vector that BotBrain folds into the wish-move (BotBrain.cs:462-489) on the real bot decide tick. SUPERBOT gate (Skill>SuperbotSkill 100) mirrors Base, which itself disables havocbot_dodge for non-SUPERBOT bots, so the gating is FAITHFUL not a port shortfall. Producer (Blaster.cs:156-157 bot_dodge/bot_dodgerating) and aim lead (generic ShotLead at the blaster speed cvar 6000) remain in place. Net: baseline logic/values:partial + liveness:partial -> faithful/faithful/live. Residual: the lead uses the generic engine ShotLead rather than the per-weapon wr_aim dispatch seam (faithful in effect)."
 
   - id: weapon-blaster.notification.kill_suicide
     name: "Blaster kill/suicide death notifications (wr_killmessage / wr_suicidemessage)"

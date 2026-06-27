@@ -8,7 +8,7 @@ summary:
     - "Healthbar waypoint sprite (g_monsters_healthbars, WP_Monster) still not implemented: no monster health bars, no per-hit health update, no _Kill on death (the single largest remaining gap)."
     - "Monster sounds are GATED + THROTTLED, honour a per-monster .sounds cue set (SoundCues; Zombie={death,sight,idle}.ogg, Golem={death,sight,melee,pain,idle}.wav with variant counts, Spider=empty/silent), and route via a per-monster SoundDir/SoundExt/SoundCueCount (random-variant suffix) — but the path is still STATICALLY DERIVED from the descriptor, not the runtime .sounds-file GlobalSound parse + skin-keyed Monster_Sounds_Update. Mage/Wyvern still carry SoundCues==null (play-all) though Base ships no .sounds for them either (should be silent like Spider)."
     - "g_monsters_quake_resize (MONSTER_SIZE_QUAKE x1.3) and g_monsters_playerclip_collisions (DPCONTENTS_PLAYERCLIP on the hit-contents mask) still not ported."
-    - "ValidTarget still omits QC's checkpvs coarse cull, vehicle-vs-melee rejection, and the alpha<0.5 fade gate (headless Entity has no render-alpha field). Typefrag/chat gate and crouch 75% range scaling are now LIVE (Entity.ButtonChat/ButtonCrouch are written by PlayerPhysics)."
+    - "DRIFT FIX (2026-06-26b): ValidTarget is now FULLY faithful — the three previously-missing gates are all ported + live: checkpvs coarse cull (Api.Trace.CheckPvs, MonsterAI.cs:714), vehicle-vs-melee rejection (targ.VehicleDef && !Def.IsRanged, :669), and the alpha<0.5 fade gate (live Entity.Alpha written by PowerupsMutator/BuffsMutator/Cloaked, :700; the same alpha-drop now also fires in EnemyCheck:857). Typefrag/chat + crouch 75% range scaling remain live."
     - "monster_changeteam is now ported (MonsterAI.ChangeTeam) but has NO live external caller (teamplay monster re-team is invoked only inside the monster module today); the team radar-icon update inside it is still a no-op pending the WP_Monster sprite."
     - "MonsterCheckBossFlag (miniboss-veto) + MonsterDropItem mutator hooks remain unported (minor residuals)."
 features:
@@ -156,7 +156,7 @@ features:
       - { name: "g_monsters_target_infront_2d", base: "1", port: "1", match: true }
       - { name: "g_monsters_typefrag", base: "1", port: "1 (gate now LIVE: targ.ButtonChat read)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -165,16 +165,16 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "PVS line-of-sight uses a traceline only; QC also does checkpvs(eye, targ) before the trace. Traceline is stricter so behavior is close, but a different-PVS-leaf but traceline-visible target would be acquired where QC would not. (UNCHANGED.)"
-      - "Alpha-fade gate (QC alpha<0.5 && alpha!=0 rejects) is a no-op: the headless Entity has no alpha field, so a faded/cloaked target stays targetable. (UNCHANGED.)"
-      - "Vehicle-vs-melee rejection (QC: IS_VEHICLE(targ) && !MON_FLAG_RANGED) not in ValidTarget; the port's ValidTarget has no vehicle gate at all. (UNCHANGED.)"
-      - "DRIFT FIX (2026-06-25): the typefrag/chat gate is now PORTED + LIVE — ValidTarget (MonsterAI.cs:644) rejects a chatting target when g_monsters_typefrag==0 via targ.ButtonChat, the live input mirror written by PlayerPhysics.cs:243 (player.ButtonChat = input.Typing) every physics frame. Matches QC default-1 (gate inactive) and diverges correctly only when the cvar is 0."
+      - "DRIFT FIX (2026-06-26b): the PVS coarse cull is now PORTED + LIVE — ValidTarget (MonsterAI.cs:714) calls Api.Trace.CheckPvs(eye, targCenter) (gated on Api.Services, like the turret port) BEFORE the fine traceline, exactly as QC checkpvs(eye, targ). Headless tests with no compiled BSP PVS fall through to the traceline (deterministic). Closes the long-standing checkpvs omission."
+      - "DRIFT FIX (2026-06-26b): the alpha<0.5 fade gate is now PORTED + LIVE — ValidTarget (MonsterAI.cs:700) rejects targ.Alpha != 0 && targ.Alpha < 0.5 using the live Entity.Alpha (DamageEntityState.cs:149, default 1=opaque; dropped to the invisibility alpha by PowerupsMutator.cs:383 / BuffsMutator.cs:957 / Cloaked composition). EnemyCheck (MonsterAI.cs:857) drops a chased enemy on the same gate. A cloaked/invisible target is now correctly un-targetable."
+      - "DRIFT FIX (2026-06-26b): the vehicle-vs-melee rejection is now PORTED — ValidTarget (MonsterAI.cs:669) rejects targ.VehicleDef (a target driving a vehicle, VehicleCommon.cs:31) for a non-ranged monster (!Def.IsRanged), and the dead/notarget gates carry the matching !IS_VEHICLE guard (:676/:679). Mirrors QC Monster_ValidTarget:108-114."
+      - "DRIFT FIX (2026-06-25): the typefrag/chat gate is now PORTED + LIVE — ValidTarget (MonsterAI.cs:684) rejects a chatting target when g_monsters_typefrag==0 via targ.ButtonChat, the live input mirror written by PlayerPhysics every physics frame. Matches QC default-1 (gate inactive)."
     verification:
-      - { kind: code, ref: "ValidTarget covers self/dead/notarget/team/follow/lineofsight-trace/facing-cone + MatchHalted + the now-live typefrag(ButtonChat) gate; still missing checkpvs+alpha+vehicle", result: pass }
-      - { kind: code, ref: "MatchHalted (MonsterAI.cs:1903) reads VehicleCommon.GameStopped (per-tick server write) + StartItem.GameStartTimeProvider prematch; the g_game_stopped cvar fallback is inert/harmless. RunThink->ValidTarget/Move live on the match path.", result: pass }
-      - { kind: code, ref: "targ.ButtonChat live writer = PlayerPhysics.cs:243 (= input.Typing); field on EntityMutatorState.cs:29", result: pass }
+      - { kind: code, ref: "ValidTarget now covers self/dead/notarget/team/follow + checkpvs(MonsterAI.cs:714)+lineofsight-trace + alpha<0.5(:700) + vehicle-vs-melee(:669) + facing-cone + MatchHalted + typefrag(ButtonChat); diffed line-for-line vs QC Monster_ValidTarget:101-135 — all gates present", result: pass }
+      - { kind: code, ref: "Seams confirmed real: Api.Trace.CheckPvs (Services.cs:49, also used by TurretAI), Entity.Alpha (DamageEntityState.cs:149, live writers PowerupsMutator/BuffsMutator), Entity.VehicleDef (VehicleCommon.cs:31), Monster.IsRanged (EntityClasses.cs:93)", result: pass }
+      - { kind: code, ref: "MatchHalted reads VehicleCommon.GameStopped (per-tick server write) + StartItem.GameStartTimeProvider prematch; RunThink->ValidTarget/Move live on the match path", result: pass }
     confidence: high
-    notes: "DRIFT FIX (2026-06-25): the typefrag/chat gate moved from no-op to LIVE (Entity.ButtonChat now exists + is written every physics frame), so values is now faithful. Core rejection set + facing cone + MatchHalted faithful. logic stays partial only for the three remaining omissions: checkpvs coarse cull, vehicle-vs-melee rejection, alpha<0.5 fade gate."
+    notes: "DRIFT FIX (2026-06-26b): logic moved partial->faithful — the THREE remaining omissions (checkpvs coarse cull, vehicle-vs-melee rejection, alpha<0.5 fade gate) are ALL now ported, the supporting Entity.Alpha / Entity.VehicleDef seams + Api.Trace.CheckPvs now exist and are live. ValidTarget is now a line-for-line faithful port of QC Monster_ValidTarget. (The IS_SPEC/IS_OBSERVER spectator gate is covered by the takedamage==NO / health<=0 checks a spectating client already carries.)"
 
   - id: monster-framework.target.find_enemycheck
     name: "Target acquisition + enemy retention (Monster_FindTarget / Monster_Enemy_Check)"
@@ -201,7 +201,7 @@ features:
     gaps:
       - "DRIFT FIX (2026-06-25): crouch 75% range scaling is now LIVE — FindTarget (MonsterAI.cs:720) scales trange by 0.75 for a crouching client via IsCrouching(it) = e.ButtonCrouch, the live input mirror written by PlayerPhysics.cs:242 (player.ButtonCrouch = input.ButtonCrouch). A crouching target now gets the QC stealth/range benefit."
       - "QC scans the g_monster_targets intrusive list (anything with .monster_attack); the port scans FindInRadius for players (+ other monsters only in teamplay). Behaviorally equivalent for the stock target set. (UNCHANGED.)"
-      - "Alpha<0.5 enemy drop (QC) remains a no-op (headless Entity has no render-alpha field) — same documented deferral as ValidTarget. The LOS-retrace + frozen drops are faithful."
+      - "DRIFT FIX (2026-06-26b): the alpha<0.5 enemy drop is now PORTED + LIVE — EnemyCheck (MonsterAI.cs:857) drops a chased enemy when en.Alpha < 0.5 && en.Alpha != 0 using the live Entity.Alpha (DamageEntityState.cs:149), so a chased enemy that activates invisibility/cloak is released, matching the now-live alpha gate in ValidTarget. The LOS-retrace + frozen drops were already faithful."
     verification:
       - { kind: code, ref: "EnemyCheck re-traces LOS (Api.Trace MOVE_NOMONSTERS; drop when Fraction<1 && Ent!=enemy) AND drops a frozen enemy (StatusEffectsCatalog.Has(en,Frozen)) — matches QC Monster_Enemy_Check:1247-1265", result: pass }
       - { kind: code, ref: "FindTarget crouch scale now LIVE: IsCrouching(it)=e.ButtonCrouch (PlayerPhysics.cs:242); MonsterSound(sight) gated/throttled; recheck cadence 1s", result: pass }

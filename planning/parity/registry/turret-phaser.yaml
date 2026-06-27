@@ -5,11 +5,8 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 14
   worst_gaps:
-    - "No beam model visual (MDL_TUR_PHASER_BEAM scaled to impact) and no phaser.md3 head bone attached — the head charge/discharge FRAME animation (tr_think) is now ported, but rides the turret edict's Entity.Frame with no visible head model"
-    - "Beam never registers on g_bot_dodge (port beam omits bot_dodge/bot_dodgerating; no havocbot danger-list consumer) — bots do not avoid the phaser beam"
-    - "Target-selection biases (rangebias 0.85, anglebias 0.25, samebias 0, missilebias 0) are not passed — phaser scores targets with the generic 1.0 defaults"
-    - "Per-unit head-track tuning not passed: track_accel_rot 0.65 and track_blendrate 0.2 fall back to TurretParams defaults (0.5 / 0.35) — head-tracking feel diverges"
-    - "firecheck does not model the fireflag==2 discharge window as a fire-block (subsumed by the 4s refire hold); the fireflag state is now tracked but not consulted by the firecheck gate"
+    - "No beam model visual (MDL_TUR_PHASER_BEAM scaled to impact) and no phaser.md3 head bone attached — the head charge/discharge FRAME animation (tr_think) is ported, but rides the turret edict's Entity.Frame with no visible head model"
+    - "Beam never registers on g_bot_dodge (port beam sets BotDodge/BotDodgeRating producer fields, but the havocbot danger-list CONSUMER is unported) — bots do not avoid the phaser beam"
 features:
   - id: turret-phaser.spawn.map_entity
     name: "Map placement + per-frame think wiring (spawnfunc turret_phaser)"
@@ -106,7 +103,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:BeamThink"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -114,12 +111,16 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Port holds AttackFinished = endTime to block re-fire during the beam (functional analogue), but the firecheck gate does not CONSULT the fireflag==2 DISCHARGE window during which Base also forbids fire (~5 tr_think frames after the beam ends, until the head animation returns to idle). NOTE: the fireflag STATE is now tracked (FireFlag set to 1 in Attack, 2 in BeamThink end, reset to 0 by TrThinkHeadAnim) for the head animation, but RunCombat's firecheck never reads it — the fire-block is still purely the shot_refire (4s) AttackFinished hold."
+    gaps: []
     verification:
-      - { kind: code, ref: "phaser.qc turret_phaser_firecheck (fireflag != 0) vs PhaserTurret firecheck path: TurretState.FireFlag now tracked but not consulted by RunCombat's TFL_FIRECHECK_REFIRE gate; fire-block via AttackFinished hold only", result: fail }
-    confidence: medium
-    notes: "The discharge-window difference is tiny (~0.07s) and subsumed by shot_refire (4s), the only refire gate the port consults. The fireflag state machine now EXISTS (used for the head animation) but the firecheck still does not branch on it — functionally equivalent. STILL OPEN."
+      - { kind: code, ref: "phaser.qc turret_phaser_firecheck (if fireflag != 0 return false) vs TurretAI.RunCombat:719 `if (st.FireFlag != 0) return enemy;` — the fire gate now consults FireFlag directly (the port analogue of .turret_firecheckfunc), blocking fire across BOTH the beam-active (FireFlag==1) and discharge (FireFlag==2) windows, exactly as Base", result: pass }
+    confidence: high
+    notes: >-
+      FIXED since baseline. The earlier audit recorded the fireflag state being tracked but NOT consulted by the
+      firecheck gate (fire-block was purely the shot_refire AttackFinished hold), missing Base's fireflag==2
+      discharge-window block (~5 tr_think frames after the beam ends). RunCombat now reads st.FireFlag in its fire
+      gate (TurretAI.cs:719): fire is blocked for the entire FireFlag != 0 window — beam active AND discharge —
+      matching turret_phaser_firecheck. No other turret sets FireFlag, so this guard is inert for them.
 
   - id: turret-phaser.fire.beam_spawn
     name: "wr_think: spawn the sustained PhaserTurret_beam"
@@ -239,26 +240,25 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Think"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
     constants:
-      - { name: "target_select_rangebias", base: "0.85", port: "1.0 (default, not passed)", match: false }
-      - { name: "target_select_anglebias", base: "0.25", port: "1.0 (default, not passed)", match: false }
-      - { name: "target_select_samebias", base: "0", port: "1.0 (default, not passed)", match: false }
-      - { name: "target_select_missilebias", base: "0", port: "1.0 (default, not passed)", match: false }
-      - { name: "target_select_playerbias", base: "1", port: "1.0 (default)", match: true }
+      - { name: "target_select_rangebias", base: "0.85", port: "0.85 (rangeBias passed)", match: true }
+      - { name: "target_select_anglebias", base: "0.25", port: "0.25 (angleBias passed)", match: true }
+      - { name: "target_select_samebias", base: "0", port: "0 (sameBias passed)", match: true }
+      - { name: "target_select_missilebias", base: "0", port: "0 (missileBias passed)", match: true }
+      - { name: "target_select_playerbias", base: "1", port: "1.0 (playerBias passed)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "PhaserTurret.Think builds TurretParams without the phaser-specific scoring biases (turrets.cfg:302-306: rangebias 0.85, samebias 0, anglebias 0.25, missilebias 0, playerbias 1), so RangeBias/AngleBias/SameBias/MissileBias all default to 1.0. The scoring machinery (TurretAI.cs:381) is faithful and live, but the phaser's target-priority weighting differs from Base — it weights distance and angle more heavily and does not zero out same-target/missile bias."
+    gaps: []
     verification:
-      - { kind: value, ref: "turrets.cfg:302-306 g_turrets_unit_phaser_target_select_*bias vs PhaserTurret.Think TurretParams (bias args omitted -> defaults 1.0, TurretAI.cs:1070)", result: fail }
+      - { kind: value, ref: "turrets.cfg:302-306 g_turrets_unit_phaser_target_select_*bias vs PhaserTurret.Think TurretParams(rangeBias:0.85, sameBias:0, angleBias:0.25, missileBias:0, playerBias:1) (PhaserTurret.cs:88) — consumed live in ScoreTarget/select (TurretAI.cs:435-443,468)", result: pass }
     confidence: high
-    notes: "Newly mapped (was not a row in the baseline). Affects which target the phaser prefers, not whether/how it fires. Other turret units may share this omission."
+    notes: "FIXED since baseline. The earlier audit recorded the bias args omitted (defaulting to 1.0); PhaserTurret.Think now passes all five phaser-specific biases, matching turrets.cfg exactly, and they are consumed live by the faithful scoring machinery."
 
   - id: turret-phaser.fire.extra_slow_status
     name: "Port-only layered slow/disability status effect"
@@ -371,24 +371,23 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
     constants:
       - { name: "track_type", base: "3 (fluid inertia)", port: "3 (TrackFluidInertia, passed)", match: true }
-      - { name: "track_accel_pitch", base: "0.5", port: "0.5 (TurretParams default, not passed)", match: true }
-      - { name: "track_accel_rot", base: "0.65", port: "0.5 (TurretParams default, not passed)", match: false }
-      - { name: "track_blendrate", base: "0.2", port: "0.35 (TurretParams default, not passed)", match: false }
+      - { name: "track_accel_pitch", base: "0.5", port: "0.5 (trackAccelPitch passed)", match: true }
+      - { name: "track_accel_rot", base: "0.65", port: "0.65 (trackAccelRot passed)", match: true }
+      - { name: "track_blendrate", base: "0.2", port: "0.2 (trackBlendRate passed)", match: true }
     status:
       logic: faithful
-      values: partial
-      timing: partial
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "PhaserTurret.Think passes only trackType:3 to TurretParams; track_accel_rot (0.65) and track_blendrate (0.2) are NOT passed, so they fall back to the TurretParams defaults (0.5 / 0.35). The TrackFluidInertia motor (TurretAI.cs:556-561) is faithful and live, but the phaser's head turns/settles at a slightly different rate than Base — track_accel_pitch (0.5) happens to match the default so it is correct."
+    gaps: []
     verification:
-      - { kind: value, ref: "turrets.cfg:317-320 (track_type 3, accel_pitch 0.5, accel_rot 0.65, blendrate 0.2) vs PhaserTurret.Think TurretParams(trackType:3) — accel_rot/blendrate omitted -> defaults 0.5/0.35 (TurretAI.cs:1085-1086)", result: fail }
+      - { kind: value, ref: "turrets.cfg:317-320 (track_type 3, accel_pitch 0.5, accel_rot 0.65, blendrate 0.2) vs PhaserTurret.Think TurretParams(trackType:TrackFluidInertia, trackAccelPitch:0.5, trackAccelRot:0.65, trackBlendRate:0.2) (PhaserTurret.cs:89-90) — consumed live in the TrackFluidInertia motor (TurretAI.cs:614-615)", result: pass }
     confidence: high
-    notes: "Newly mapped (no baseline row). Affects head-tracking FEEL only (how fast/smoothly the head slews to a target), not whether/what it hits. accel_pitch coincidentally matches the default. Likely shared with other turret units that pass only trackType."
+    notes: "FIXED since baseline. The earlier audit recorded only trackType:3 being passed (accel_rot/blendrate falling back to defaults 0.5/0.35). PhaserTurret.Think now passes all four track-tuning args matching turrets.cfg exactly, and TrackAccelRot/TrackBlendRate are consumed live by the head motor."
 
   - id: turret-phaser.lifecycle.respawn_time
     name: "Death + respawn timer"

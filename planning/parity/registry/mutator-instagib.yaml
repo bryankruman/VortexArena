@@ -1,31 +1,26 @@
 unit: mutator-instagib
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 22
   worst_gaps:
-    - "Monster integration still absent: MonsterDropItem (drop 'vaporizer_cells'), MonsterSpawn (MON_MAGE skin=1), and the RandomItems_GetRandomItemClassName -> RandomItems_GetRandomInstagibItemClassName weighted instagib-item pick (sv_instagib.qc:102-121) have no port hooks. Niche (only matters with the monsters/random-items mutators stacked on instagib)."
     - "Item-flag ONADD/ONREMOVE unblocking (IL_EACH g_instagib_items + ITEM_FLAG_MUTATORBLOCKED toggling) is not literally ported; the port instead leaves VaporizerCells/ExtraLife un-blocked and lets FilterItemDefinition gate them per-match (documented deliberate mechanism, behaviorally equivalent for keep/delete)."
     - "MatchEnd is not a dedicated FOREACH_CLIENT(instagib_stop_countdown) sweep; the per-tick game_stopped branch in AmmoCheck (reads the real VehicleCommon.GameStopped) covers it within ~1 tick — behaviorally equivalent for the visible centerprint, but not the literal match-end shape."
+    - "spawn.fullbright: EF_FULLBRIGHT flag is set on the live spawn path but whether the Godot renderer actually renders the model fullbright is still unverified (behavioral check pending)."
   audit_note: >-
-    2026-06-25 drift re-audit. The port surged FAR past the prior baseline — five features that the baseline
-    still recorded as missing/partial are now faithful and live: (1) items.defs — VaporizerCellsItem +
-    ExtraLifeItem classes now EXIST (InstagibItems.cs) with faithful constants (a_cells.md3 / respawn 45 /
-    color 0.816 0.941 0.541 / g_h100.md3 / red), and the spawnfuncs item_vaporizer_cells +
-    item_minst_cells alias + item_extralife are registered (ItemSpawnFuncs.cs:72-74) — missing->faithful,
-    na->live. (2) items.filter — the entity-level OnFilterItem hook (InstagibMutator.cs:538) is now LIVE
-    (dispatched MutatorHooks.FireFilterItem at StartItem.cs:116 for both Spawn and SpawnLoot) and ports the
-    random-powerup deck, ammo->VaporizerCells replace, Devastator/Vortex replace, jetpack-keep, the
-    Vaporizer-loot cells-seed (= g_instagib_ammo_drop), and the generic cells>ammo_drop clamp — values
-    partial->faithful, presentation missing->faithful. (3) damage.yoda — now ported (OnDamageCalculate sets
-    target.InstagibAlphaYoda, line 274) and LIVE (read in Vaporizer.Announce:283 -> ACHIEVEMENT_YODA) —
-    missing->faithful. (4) misc.strings_monsters — SetModname('InstaGib') is now ported (override line 733)
-    AND live (dispatched GameWorld.cs:609); BuildMutatorsPrettyString is now LIVE too (dispatched
-    GameWorld.cs:1079 into the 'modifications' serverinfo key) — liveness partial->live, only the monster
-    hooks + RandomItems pick remain missing. (5) items.touch — the live ItemTouch seam now has real input
-    (the VaporizerCells/ExtraLife economy exists), so the cells-full-heal + extra-life branches are
-    functionally reachable. No regressions found.
+    2026-06-27 drift re-audit. The unit is now essentially fully faithful and live. Single drift vs the
+    2026-06-25 baseline: misc.strings_monsters — the three monster/random-items hooks the baseline recorded
+    as MISSING (its three "worst gaps") are now all ported AND live. (1) MonsterDropItem (drop
+    "vaporizer_cells") OnMonsterDropItem (InstagibMutator.cs:742) dispatched LIVE via FireMonsterDropItem at
+    MonsterFramework.cs:219. (2) MonsterSpawn (Mage skin=1) OnMonsterSpawn (line 752) dispatched LIVE via
+    FireMonsterSpawn at MonsterAI.cs:510. (3) RandomItems_GetRandomItemClassName -> the weighted instagib-item
+    pool pick OnRandomItemsGetClassName (line 773) dispatched LIVE via FireRandomItemsGetClassName at
+    RandomItemsMutator.cs:305. So misc.strings_monsters: logic partial->faithful, liveness partial->live.
+    All other rows re-verified unchanged from the 2026-06-25 baseline (items.defs/filter/touch, damage.yoda,
+    countdown, loadout, etc. remain faithful+live; constants re-confirmed against mutators.cfg:
+    extralives 1 / ammo_start 10 / ammo_drop 5 / invis_time 30 / speed_time 30). No regressions; no new
+    unmapped Base features. base_ref_rev unchanged.
 features:
   - id: mutator-instagib.enable.predicate
     name: "Enable predicate + instagib item-list/flag setup (ONADD)"
@@ -555,25 +550,25 @@ features:
     base_refs:
       - "common/mutators/mutator/instagib/sv_instagib.qc:415-429 BuildMutatorsString/BuildMutatorsPrettyString/SetModname; sv_instagib.qc:102-121 RandomItems_GetRandomItemClassName/MonsterDropItem/MonsterSpawn"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/InstagibMutator.cs:724 BuildMutatorsString / 728 BuildMutatorsPrettyString / 733 SetModname"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/InstagibMutator.cs:803 BuildMutatorsString / 807 BuildMutatorsPrettyString / 812 SetModname"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/InstagibMutator.cs:742 OnMonsterDropItem / 752 OnMonsterSpawn / 773 OnRandomItemsGetClassName"
     constants:
-      - { name: "mutators_string_token", base: "':instagib'", port: "':instagib' (line 724)", match: true }
-      - { name: "mutators_pretty_token", base: "', InstaGib'", port: "', InstaGib' (line 728)", match: true }
-      - { name: "modname", base: "'InstaGib'", port: "'InstaGib' (line 733)", match: true }
+      - { name: "mutators_string_token", base: "':instagib'", port: "':instagib' (line 803)", match: true }
+      - { name: "mutators_pretty_token", base: "', InstaGib'", port: "', InstaGib' (line 807)", match: true }
+      - { name: "modname", base: "'InstaGib'", port: "'InstaGib' (line 812)", match: true }
+      - { name: "monster_drop", base: "'vaporizer_cells'", port: "'vaporizer_cells' (line 744)", match: true }
+      - { name: "mage_skin", base: "MON_MAGE -> skin 1", port: "mage -> Skin=1 (line 757-758)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "MonsterDropItem (drop 'vaporizer_cells', sv_instagib.qc:109-112) not ported — no instagib MonsterDropItem hook."
-      - "MonsterSpawn (MON_MAGE skin=1, sv_instagib.qc:114-121) not ported — no instagib MonsterSpawn hook."
-      - "RandomItems_GetRandomItemClassName -> RandomItems_GetRandomInstagibItemClassName (weighted instagib-item pick over g_instagib_items, sv_instagib.qc:24-39,102-107) not ported."
+    gaps: []
     verification:
-      - { kind: code, ref: "BuildMutatorsString override (line 724) LIVE via MutatorActivation.BuildMutatorsString -> GameWorld.cs:1068 (':instagib' to gamelog). BuildMutatorsPrettyString override (line 728) LIVE via MutatorActivation.BuildMutatorsPrettyString -> GameWorld.cs:1079 (', InstaGib' stripped into the 'modifications' serverinfo key). SetModname override (line 733) LIVE via MutatorActivation.SetModname -> GameWorld.cs:609 ('InstaGib' modname). MonsterDropItem/MonsterSpawn/RandomItems pick still absent (grep -> no instagib hooks)", result: partial }
+      - { kind: code, ref: "BuildMutatorsString override (line 803) LIVE via MutatorActivation.BuildMutatorsString -> GameWorld.cs:1068 (':instagib' to gamelog). BuildMutatorsPrettyString override (line 807) LIVE -> GameWorld.cs:1079 (', InstaGib' into 'modifications' serverinfo). SetModname override (line 812) LIVE -> GameWorld.cs:609 ('InstaGib' modname). MonsterDropItem OnMonsterDropItem (line 742, sets ItemList='vaporizer_cells') dispatched LIVE via MutatorHooks.FireMonsterDropItem at MonsterFramework.cs:219. MonsterSpawn OnMonsterSpawn (line 752, Mage->Skin=1) dispatched LIVE via FireMonsterSpawn at MonsterAI.cs:510. RandomItems pick OnRandomItemsGetClassName (line 773, weighted reservoir over the 4-item instagib pool {vaporizer_cells,extralife,invisibility,speed} keyed by g_<prefix>_<canonical>_probability) dispatched LIVE via FireRandomItemsGetClassName at RandomItemsMutator.cs:305", result: pass }
     confidence: high
-    notes: "FIXED since baseline (liveness partial->live for the string/modname trio): SetModname is now ported AND live (GameWorld.cs:609), and BuildMutatorsPrettyString is now live too (GameWorld.cs:1079 — baseline said its chain had no caller). The three monster/random-items hooks remain missing — niche (only matter with monsters/random-items stacked on instagib)."
+    notes: "FIXED since 2026-06-25 baseline (logic partial->faithful, liveness partial->live): the three monster/random-items hooks the baseline recorded as MISSING are now all ported AND live. MonsterDropItem drops 'vaporizer_cells' (matches QC 109-112); MonsterSpawn gives the Mage skin=1 (matches 114-121); the RandomItems hook substitutes the instagib item pool (port of RandomItems_GetRandomInstagibItemClassName, 24-39,102-107). The string/modname trio remains live. Whole row now faithful."

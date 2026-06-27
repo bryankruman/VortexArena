@@ -1,15 +1,15 @@
 unit: sv-world-rules
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 19
   worst_gaps:
-    - "RandomSeed / PingPLReport broadcast entities and RedirectionThink are still absent (no shared client RNG seed, no scoreboard ping/PL feed, no server-redirect command)."
-    - "DumpStats (final/periodic :scores:/:status: eventlog+file scores dump on every match end via NextLevel) has no port analogue — the eventlog scores feed is missing."
-    - "GameWorld.Shutdown now does slowmo-reset + ban-save + unfinished PlayerStats_GameReport(false), but ServerProgsDB persistence, bot_endgame, CheatShutdown and WeaponStats_Shutdown on teardown are still absent."
-    - "World-layer leadlimit / leadlimit_and_fraglimit WIN semantics and the CheckRules_World mutator hook are still not evaluated in the checkrules cascade (leadlimit math only feeds the frags-remaining announcer). WinningCondition_RanOutOfSpawns is now PORTED (FIX 2026-06-25)."
-    - "serverflags + animated-lightstyle table are now installed server-side (authority faithful+live) but the CLIENT consumers are still unported: no fullbright/pickup-timer gate reads the serverflags bits, and no render consumer animates the lightstyle table (presentation still missing on both)."
+    - "RandomSeed shared-RNG broadcast entity and RedirectionThink server-redirect are still absent (no shared client RNG seed; no mass-reconnect command). PingPLReport is now PARTIAL (FIX 2026-06-27): the packet-loss column IS networked via the scoreboard block + consumed by the HUD PL column, but the ping column and the playerstats latency feed are still missing."
+    - "DumpStats (:scores:/:status: console+eventlog scores dump) is now PORTED and LIVE (FIX 2026-06-27): Commands.DumpStats(final) is called at NextLevel (final=true) + via the `printstats` server command (final=false); the per-call score-LOG-FILE open/append (sv_logscores_file path) is the only residual (the eventlog-file sink covers structured logging)."
+    - "GameWorld.Shutdown does slowmo-reset + ban-save + unfinished PlayerStats_GameReport(false), but ServerProgsDB persistence, bot_endgame, CheatShutdown and WeaponStats_Shutdown on teardown are still absent."
+    - "World-layer leadlimit / leadlimit_and_fraglimit WIN semantics and the CheckRules_World mutator hook are still not evaluated in the checkrules cascade (leadlimit math only feeds the frags-remaining announcer). WinningCondition_RanOutOfSpawns is PORTED."
+    - "serverflags + animated-lightstyle CLIENT consumers are now PARTIAL (FIX 2026-06-27): the HUD pickup-timer gate reads SERVERFLAG_FORBID_PICKUPTIMER (PickupPanel) and a styled dynlight animates via LightStyles.Sample (DynamicLightRenderer). STILL OPEN: no fullbright player-render gate reads SERVERFLAG_ALLOW_FULLBRIGHT, and world-brush lightmap animation for named styles is unported (styled geometry renders steady; only the dynlight node flickers)."
 features:
   - id: sv-world-rules.boot.worldspawn
     name: "worldspawn map-init bookkeeping"
@@ -21,7 +21,7 @@ features:
       - "src/XonoticGodot.Server/GameWorld.cs:Boot"
       - "src/XonoticGodot.Server/GameWorld.cs:ApplyWorldspawn"
     constants:
-      - { name: "matchid_format", base: "<counter>.<unixtime>.<rand6> (sprintf %d.%s.%06d)", port: "string.Format \"{0}.{1}.{2:D6}\" (sv_eventlog_files_counter . unix . rand6) GameWorld.cs:1018", match: true }
+      - { name: "matchid_format", base: "<counter>.<unixtime>.<rand6> (sprintf %d.%s.%06d)", port: "string.Format \"{0}.{1}.{2:D6}\" (sv_eventlog_files_counter . unix . rand6) GameWorld.cs:1110", match: true }
     status:
       logic: faithful
       values: faithful
@@ -99,6 +99,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/ServerFlags.cs"
       - "src/XonoticGodot.Server/GameWorld.cs:ReadLevelCvars"
       - "src/XonoticGodot.Server/GameWorld.cs:Boot"
+      - "game/hud/PickupPanel.cs"
     constants:
       - { name: "SERVERFLAG_ALLOW_FULLBRIGHT", base: "BIT(0) from sv_allow_fullbright", port: "1<<0 from sv_allow_fullbright (ServerFlags.cs:24)", match: true }
       - { name: "SERVERFLAG_FORBID_PICKUPTIMER", base: "BIT(4) from sv_forbid_pickuptimer", port: "1<<4 from sv_forbid_pickuptimer (ServerFlags.cs:36)", match: true }
@@ -108,17 +109,17 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Client-side consumer not ported: nothing reads the published serverflags bits to actually gate fullbright player rendering (Base client/view.qc:1115) or hide the HUD item-pickup timer (Base client/hud/panel/pickup.qc:91). The server publishes ServerFlags.Value + the `serverflags` cvar mirror, but no port render/HUD code consumes it — so the two bits have no player-observable effect yet (presentation: missing)."
+      - "Only the FORBID_PICKUPTIMER consumer is ported: the HUD pickup panel reads the bit to gate the leading match timer (PickupPanel.cs:169-173, QC client/hud/panel/pickup.qc:91). The ALLOW_FULLBRIGHT consumer is still unported — nothing reads SERVERFLAG_ALLOW_FULLBRIGHT to gate fullbright player rendering (Base client/view.qc:1115 cl_fullbright gate), so that bit has no on-screen effect."
     verification:
-      - { kind: code, ref: "ServerFlags.cs (full SERVERFLAG_* bit table, AllowFullbright=1<<0/ForbidPickupTimer=1<<4) + GameWorld.ReadLevelCvars (cs:1545-1558: clears+sets both bits from sv_allow_fullbright/sv_forbid_pickuptimer, writes ServerFlags.Value and mirrors to the `serverflags` cvar). LIVE: called at GameWorld.Boot (cs:934) and re-run on either source cvar change via OnServerCvarChanged (cs:1531-1532). vs readlevelcvars:2189-2195. No client consumer of the bits exists (grep: no fullbright/pickuptimer gate reads serverflags).", result: partial }
+      - { kind: code, ref: "ServerFlags.cs (SERVERFLAG_* bit table, AllowFullbright=1<<0/ForbidPickupTimer=1<<4) + GameWorld.ReadLevelCvars (cs:1650-1660: clears+sets both bits, writes ServerFlags.Value and mirrors to the `serverflags` cvar). LIVE at GameWorld.Boot + re-run on source cvar change. CLIENT consumer now LIVE for the pickup-timer half: PickupPanel.cs:169-173 reads (serverflags & SERVERFLAG_FORBID_PICKUPTIMER) from the shared store to enforce the showtimer==1 gate (only 'spectating' shows the timer when forbidden). No fullbright player-render gate reads the bit (grep game/: no SERVERFLAG_ALLOW_FULLBRIGHT consumer). vs readlevelcvars:2189-2195.", result: partial }
     confidence: high
-    notes: "FIX since 2026-06-25: the server-side authority half is now PORTED and LIVE — ServerFlags.cs holds the SERVERFLAG_* bit table, and GameWorld.ReadLevelCvars derives the two world-rules bits from sv_allow_fullbright/sv_forbid_pickuptimer at Boot + re-derives on cvar change, publishing ServerFlags.Value and mirroring to the `serverflags` cvar for the shared-store client. logic+values missing->faithful, liveness na->live. STILL OPEN: the client consumer (the actual fullbright/pickup-timer gate) is unported, so presentation stays missing and the bits have no on-screen effect yet."
+    notes: "FIX since 2026-06-25 (presentation): the FORBID_PICKUPTIMER client consumer is now PORTED and LIVE — the HUD pickup panel gates its leading match timer on the published serverflag exactly as QC. presentation missing->partial. STILL OPEN: the ALLOW_FULLBRIGHT consumer (the fullbright player-render gate) is unported, so that bit still has no observable effect. Server-side authority half (ServerFlags table + ReadLevelCvars derive/publish) remains faithful+live."
   - id: sv-world-rules.warmup.ready_count
     name: "ReadyCount ready-up majority + countdown abort"
     layer: [authority]
@@ -194,12 +195,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No per-client accuracy_reset / Inventory_clear pass on reset_map."
-      - "The waypoint/assault .reset2 second pass (FOREACH_ENTITY_FLOAT_ORDERED two-stage ordering) is not separately driven — only the single .reset callback per entity fires."
+      - "No per-client accuracy_reset pass on reset_map (the per-player hit/fire accuracy counters are not zeroed). Inventory_clear is subsumed by the Clients.Spawn -> PutClientInServer start-loadout re-give."
     verification:
-      - { kind: code, ref: "ResetMap (GameWorld.cs:3497-3551: Score_ClearAll on real restart, Mayhem/TeamMayhem/CTS/LMS reset_map_players, round reset, per-player zero-vel + StatusEffectsCatalog.RemoveAll + PlayerStates.OnSpawn + Clients.Spawn, minigames+centerprint kill) / ResetMapObjects (3558-3578: projectile delete THEN e.Reset?.Invoke(e) for every non-client entity) vs reset_map:351-430", result: partial }
+      - { kind: code, ref: "ResetMap (GameWorld.cs:4456-4492: Score clear on real restart, reset_map_players, round reset, per-player zero-vel + PlayerPowerupsRemoveAll + StatusEffectsCatalog.RemoveAll + PlayerStates.OnSpawn + Clients.Spawn, minigames+centerprint kill) / ResetMapObjects (4500-4534): pass 1 = projectile delete THEN e.Reset?.Invoke for every non-client entity; pass 2 = e.Reset2?.Invoke for every non-client entity (the waypoint/assault-roundstart LAST pass). vs reset_map:351-430", result: partial }
     confidence: high
-    notes: "FIXED since 2026-06-22: ResetMapObjects now FIRES every non-client map entity's .reset callback (e.Reset?.Invoke, GameWorld.cs:3576), returning movers/items to spawn — no longer projectile-only-delete. Also added LMS reset_map_players. Score clear, round reset, per-player zero-velocity + Spawn, status-effects RemoveAll, and projectile deletion remain present and gated on time<=game_starttime. STILL OPEN: per-client accuracy/inventory reset and the .reset2 second pass."
+    notes: "FIX since 2026-06-25: the .reset2 second pass is now PORTED — ResetMapObjects runs the QC two-stage order (pass 1: delete projectiles + fire every non-client .reset; pass 2: fire every non-client .reset2 after the first pass completes, GameWorld.cs:4524-4533), so waypoint sprites + the Assault round-start trigger re-arm only after movers/spawnpoints reset. The .reset pass and LMS reset_map_players remain present; score clear, round reset, per-player zero-velocity + PlayerPowerupsRemoveAll + Spawn, status-effects RemoveAll, projectile deletion all gated on time<=game_starttime. logic stays partial. STILL OPEN: per-client accuracy reset (Inventory_clear is subsumed by the spawn re-give)."
   - id: sv-world-rules.checkrules.cascade
     name: "CheckRules_World per-frame win cascade"
     layer: [authority]
@@ -237,27 +237,27 @@ features:
       - "server/world.qc:GetWinningCode"
     port_refs:
       - "src/XonoticGodot.Server/OverTimeManager.cs"
+      - "game/hud/TimerPanel.cs"
     constants:
       - { name: "timelimit_overtime", base: "2 (min)", port: "2 (Cvars.cs:114)", match: true }
       - { name: "timelimit_overtimes", base: "0", port: "0 (Cvars.cs:115)", match: true }
       - { name: "timelimit_suddendeath", base: "5 (min)", port: "5 (Cvars.cs:116)", match: true }
-      - { name: "OVERTIME_SUDDENDEATH", base: "BITS(24)=16777216", port: "1<<24", match: true }
+      - { name: "OVERTIME_SUDDENDEATH", base: "BITS(24)=16777216", port: "1<<24 (OverTimeManager.cs:53 / TimerPanel.cs:29)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: partial
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STAT(OVERTIMES) is not networked to clients (the HUD OVERTIME banner has no server feed) — deferred per T42."
       - "race/qualifying race_StartCompleting branch deliberately omitted (those modes latch their own winner)."
     verification:
-      - { kind: code, ref: "OverTimeManager vs world.qc:1467-1536; constants vs Cvars.cs:114-116 (2/0/5) + xonotic-server.cfg", result: pass }
+      - { kind: code, ref: "OverTimeManager vs world.qc:1467-1536; constants vs Cvars.cs:114-116 (2/0/5) + xonotic-server.cfg. STAT(OVERTIMES) NOW NETWORKED: OverTimeManager.Overtimes (OverTimeManager.cs:74) -> ServerNet.SendMatchState -> ClientNet.MatchOvertimes -> TimerPanel.Overtimes (TimerPanel.cs:82-92), which renders the 'Overtime'/'Overtime #N'/'Sudden Death' subtext (sentinel OVERTIME_SUDDENDEATH = 1<<24 handled both sides).", result: pass }
     confidence: high
-    notes: "Unchanged; still faithful. Decision logic, constants, sentinel handling (overtimesadded=-1), and the just-begun-suddendeath revert are all faithful; only the client networking of the overtime stat is deferred."
+    notes: "FIX since 2026-06-25 (presentation): STAT(OVERTIMES) is now networked end-to-end — OverTimeManager.Overtimes rides the MatchState packet to ClientNet.MatchOvertimes and the HUD TimerPanel renders the overtime / sudden-death banner subtext (with the 1<<24 sudden-death sentinel). presentation partial->faithful. Decision logic, constants, sentinel handling (overtimesadded=-1) and the just-begun-suddendeath revert remain faithful+live. audio stays partial (one-shot overtime/sudden-death center notifications are sent via NotificationSystem; the announcer voice cue parity is not separately verified here)."
   - id: sv-world-rules.nextlevel.intermission
     name: "NextLevel + intermission entry / map-change timer"
     layer: [authority]
@@ -279,13 +279,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DumpStats(true) final scores dump at NextLevel is not called (see sv-world-rules.eventlog.dumpstats); target_music_kill and the MatchEnd_BeforeScores/MatchEnd mutator hooks are also not invoked here."
+      - "target_music_kill (stop any playing trigger-music entity at match end) is not invoked here — no MusicKill analogue in the port."
       - "MatchEnd_RestoreSpectatorStatus (move match-joiners back to spectator at match end) is not called here (see new_unmapped)."
       - "The bprint team/player 'wins the match' broadcast lines are handled by the notification layer, not this path (verify coverage in sv-notification)."
     verification:
-      - { kind: code, ref: "GameWorld.NextLevel (GameWorld.cs:2950+) + Intermission.Begin vs world.qc:1404-1464", result: pass }
+      - { kind: code, ref: "GameWorld.NextLevel (GameWorld.cs:3780+) + Intermission.Begin vs world.qc:1404-1464. DumpStats(true) NOW called (GameWorld.cs:3797). MatchEnd_BeforeScores hook NOW fired before the report (GameWorld.cs:3791 -> MutatorHooks.FireMatchEndBeforeScores) and the trailing MatchEnd hook NOW fired (GameWorld.cs:3832 -> MutatorHooks.FireMatchEnd). No target_music_kill / MatchEnd_RestoreSpectatorStatus (grep).", result: pass }
     confidence: high
-    notes: "Unchanged; still faithful on the core path. Winner marking, :gameover eventlog, playerstats report, campaign pre-intermission, demo stop, and exittime = time + sv_mapchange_delay (or -1 empty) are all present. DumpStats(true) and MatchEnd_RestoreSpectatorStatus from this same QC path are now tracked as separate gaps."
+    notes: "FIX since 2026-06-25: two NextLevel sub-steps that were absent are now wired — DumpStats(true) (now tracked faithful under sv-world-rules.eventlog.dumpstats) AND the MatchEnd_BeforeScores + MatchEnd mutator hooks (both fired, before/after the per-player report mirroring QC's order). Core path stays faithful: winner marking, :gameover eventlog, playerstats report, campaign pre-intermission, demo stop, exittime = time + sv_mapchange_delay (or -1 empty). STILL OPEN: target_music_kill and MatchEnd_RestoreSpectatorStatus from this same QC path."
   - id: sv-world-rules.entity.randomseed
     name: "RandomSeed shared-RNG broadcast entity"
     layer: [authority, presentation]
@@ -316,25 +316,30 @@ features:
     base_refs:
       - "server/world.qc:PingPLReport_Spawn"
       - "server/world.qc:PingPLReport_Think"
-    port_refs: []
+    port_refs:
+      - "game/net/ServerNet.cs:BuildScoreboard"
+      - "src/XonoticGodot.Net/ScoreboardBlock.cs:ScoreRowWire"
+      - "game/hud/ScoreboardPanel.cs:SetRows"
     constants:
-      - { name: "LATENCY_THINKRATE", base: "10 (s)", port: "none", match: false }
-      - { name: "report_period_s", base: "3 / maxclients", port: "none", match: false }
+      - { name: "ping_packetloss_byte", base: "min(ceil(ping_packetloss*255),255) (world.qc:74)", port: "min(ceil(PacketLoss*255),255) (ServerNet.cs:2234)", match: true }
+      - { name: "LATENCY_THINKRATE", base: "10 (s) — playerstats latency record", port: "none (no latency feed)", match: false }
+      - { name: "report_period_s", base: "3 / maxclients", port: "n/a — PL folded into the per-tick scoreboard block, not a round-robin entity", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No server->client ping / packet-loss / movement-loss report; scoreboard ping column and playerstats latency have no feed."
+      - "Only the packet-loss (PL) half is fed: the port has NO ping feed — the scoreboard ping column is hard -1 (ScoreboardPanel.cs:228/249 'Ping isn't networked per row yet'), and there is no playerstats latency record (the LATENCY_THINKRATE=10s avg-latency accumulation for the xonstat report)."
+      - "Mechanism diverges: Base uses the TE_CSQC_PINGPLREPORT round-robin entity (one client per think, 3/maxclients s); the port quantizes ENet PacketLoss to a 0..255 byte and folds it into the per-tick scoreboard wire (ScoreRowWire.PacketLossByte), de-quantized client-side for the PL column."
     verification:
-      - { kind: code, ref: "grep PingPLReport/ping_packetloss/PINGPLREPORT across src/ — no match; world.qc:96/58", result: fail }
+      - { kind: code, ref: "ServerNet.BuildScoreboard (ServerNet.cs:2230-2242) computes plByte = min(ceil(_transport.PacketLoss(peer)*255),255) per connected human (bots/unmapped = 0) and packs it into ScoreRowWire.PacketLossByte; ScoreboardBlock.cs:119/172 writes/reads the byte; ScoreboardPanel.cs:251 de-quantizes the 0..255 loss byte to a 0..1 fraction for the PL column. Ping left -1 (ScoreboardPanel.cs:228/249). No PingPLReport entity / no latency record (grep). vs world.qc:74/96/58.", result: partial }
     confidence: high
-    notes: "STILL OPEN — unchanged. TE_CSQC_PINGPLREPORT round-robins one client per think (3/maxclients s); records latency for playerstats every LATENCY_THINKRATE=10 s; absent in the port."
+    notes: "FIX since 2026-06-25: the PL half is now PORTED and LIVE — measured ENet packet loss is quantized to the same 0..255 byte as QC (min(ceil(loss*255),255)) and networked via the scoreboard block, then consumed by the HUD PL column. missing->partial on logic/values/timing/presentation, na->partial on liveness. STILL OPEN: the ping column has no per-row feed (hard -1) and the playerstats latency average (LATENCY_THINKRATE=10s) is unported. Mechanism intentionally folds PL into the existing scoreboard wire rather than reproducing the TE_CSQC_PINGPLREPORT round-robin entity."
   - id: sv-world-rules.boot.lightstyles
     name: "Animated lightstyle table install"
     layer: [authority, presentation]
@@ -343,6 +348,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/LightStyles.cs"
       - "src/XonoticGodot.Server/GameWorld.cs:Boot"
+      - "game/client/DynamicLightRenderer.cs"
     constants:
       - { name: "lightstyle_count", base: "12 named (0-11) + style 63", port: "12 named (0-11) + style 63 (LightStyles.cs:46-59)", match: true }
       - { name: "frame_strings", base: "world.qc:882-920 verbatim", port: "verbatim identical (LightStyles.cs:46-59)", match: true }
@@ -351,17 +357,17 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Client render consumer not ported: nothing samples LightStyles.Sample to modulate map-light/dynlight brightness per frame, so a map light driven by a style index still does not visibly animate. The server-side table install is present, but the presentation (the actual light animation) is unconsumed (DynamicLightRenderer renders a steady radius)."
+      - "Styled lights animate by modulating only the dynlight's own RADIUS (DynamicLightRenderer samples LightStyles.Sample at 10fps and scales OmniRange). DarkPlaces additionally animates WORLD-BRUSH lightmaps for named styles; the port has no lightmap-modulation subsystem, so styled world geometry renders steady (only the dynlight node flickers). (Tracked also under mapobject-misc.yaml.)"
     verification:
-      - { kind: code, ref: "LightStyles.cs: 12 named styles (0-11) + style 63, frame strings byte-for-byte identical to world.qc:882-920, 10fps Quake decode ('a'=0.0..'m'=1.0). InstallWorldspawnTable() called LIVE at GameWorld.Boot (cs:928). No render caller of LightStyles.Sample (grep). vs spawnfunc(worldspawn) lightstyle(0..11)+lightstyle(63).", result: partial }
+      - { kind: code, ref: "LightStyles.cs: 12 named styles (0-11) + style 63, frame strings byte-for-byte identical to world.qc:882-920, 10fps Quake decode ('a'=0.0..'m'=1.0). InstallWorldspawnTable() called LIVE at GameWorld.Boot. CLIENT consumer now LIVE: DynamicLightRenderer.cs:146-148 samples LightStyles.Sample(e.LightStyle, msec/1000) and modulates OmniRange per frame (full-dark frame turns the light off); instantiated on the live client path (ClientWorld). vs spawnfunc(worldspawn) lightstyle(0..11)+lightstyle(63).", result: partial }
     confidence: high
-    notes: "FIX since 2026-06-25: the server-side worldspawn lightstyle table is now PORTED and installed LIVE at Boot — LightStyles.InstallWorldspawnTable() loads the 12 named styles + style 63 with frame strings verbatim from world.qc:882-920, plus a Sample() decoder at the Quake 10fps convention. logic+values+timing missing->faithful (authority half), liveness na->live. STILL OPEN: the client render consumer that actually animates a styled light is unported, so presentation stays missing."
+    notes: "FIX since 2026-06-25 (presentation): the client render consumer is now PORTED and LIVE — DynamicLightRenderer samples LightStyles.Sample(style, wall-clock) at 10fps and modulates a styled dynlight's radius each frame, so a styled light visibly flickers/pulses/strobes. presentation missing->partial. STILL OPEN: world-brush lightmap animation for named styles (the port animates only the dynlight node's radius, not lightmapped geometry). Server-side table install + Sample decoder remain faithful+live."
   - id: sv-world-rules.misc.start_delay
     name: "g_start_delay pre-match join window"
     layer: [authority]
@@ -463,26 +469,31 @@ features:
     layer: [authority]
     base_refs:
       - "server/world.qc:DumpStats"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:DumpStats"
+      - "src/XonoticGodot.Server/Commands.cs:CmdPrintStats"
+      - "src/XonoticGodot.Server/GameWorld.cs:NextLevel"
     constants:
-      - { name: "final_prefix", base: ":scores:", port: "none", match: false }
-      - { name: "status_prefix", base: ":status:", port: "none", match: false }
-      - { name: "sv_logscores_console / sv_logscores_file", base: "console/file score-line sinks", port: "none", match: false }
+      - { name: "final_prefix", base: ":scores:", port: ":scores: (Commands.cs:2632)", match: true }
+      - { name: "status_prefix", base: ":status:", port: ":status: (Commands.cs:2632)", match: true }
+      - { name: "sv_logscores_console", base: "0 (xonotic-server.cfg:336)", port: "0 (Cvars.cs:423)", match: true }
+      - { name: "sv_logscores_bots", base: "0 (xonotic-server.cfg:339)", port: "0 (Cvars.cs:426)", match: true }
+      - { name: "sv_logscores_file", base: "console/file score-line sinks", port: "registered (Cvars.cs:424) but per-call file open/append omitted (eventlog-file sink covers it)", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DumpStats(final) emits a :scores:<gametype>_<map>:<time> (final, at NextLevel) or :status:... (periodic, via the printstats/status console cmd) block — a per-player score/ping/team/handicap line dump — to console (sv_logscores_console), the eventlog (sv_eventlog), and a log file (sv_logscores_file). The port has no analogue: no final scores block is written to the eventlog at match end, and there is no printstats/status server command."
+      - "The dedicated per-call score-LOG-FILE open/append (Base appends each block to sv_logscores_filename when sv_logscores_file is on) is not reproduced — the port routes the same blocks to the structured eventlog-file sink (sv_eventlog_files) instead, so a standalone scores.log is not written."
     verification:
-      - { kind: code, ref: "grep DumpStats/printstats/:scores:/:status:/logscores across src/ — no match. Base callers: world.qc:1429 (NextLevel, final=true) + sv_cmd.qc:1249 (printstats cmd, final=false). world.qc:1264.", result: fail }
+      - { kind: code, ref: "Commands.DumpStats(final) (Commands.cs:2619-2682) emits :scores:/:status:<gametype>_<map>:<time>, :labels:player:, per-player :player:see-labels: rows, teamplay :labels:teamscores: + per-team :teamscores:see-labels:, and :end — to console (sv_logscores_console, forced on for !final) and eventlog (sv_eventlog, final only; suppressed-to-console when sv_eventlog_console). GetPlayerScoreString/GetTeamScoreString/GetScoreLogLabel port scores.qc:599/610/671. LIVE callers: GameWorld.NextLevel (GameWorld.cs:3797, final=true) + the `printstats` server command (Commands.cs:867 -> CmdPrintStats, final=false). vs world.qc:1264/1429 + sv_cmd.qc:1249.", result: pass }
     confidence: high
-    notes: "NEW ROW (registry coverage gap, 2026-06-25). World-rules authority feature: the end-of-match eventlog/file scores feed that external stats parsers (e.g. server score trackers) consume. Missing entirely. Distinct from PlayerStats_GameReport (the xonstat upload, which IS ported); DumpStats is the local console/eventlog/file score-line dump."
+    notes: "FIX since 2026-06-25: DumpStats is now fully PORTED and LIVE. The colon-delimited score-log block (header + player label/value rows + teamscore rows + :end) is built by Commands.DumpStats and driven both at intermission (NextLevel, final=true → eventlog + console) and via the new `printstats` server command (final=false → console only). The score-string helpers (GetScoreLogLabel sort-priority/lower-is-better suffixes, GetPlayerScoreString/GetTeamScoreString) faithfully mirror scores.qc. logic+values+timing missing->faithful, liveness na->live. Only residual: the standalone sv_logscores_file flat-file append (the eventlog-file sink covers structured logging)."
   - id: sv-world-rules.boot.initialize_entity_queue
     name: "InitializeEntity ordered deferred-spawn queue"
     layer: [authority]

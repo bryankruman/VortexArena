@@ -1,15 +1,15 @@
 unit: sv-commands-votes
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"  # drift re-audit 2026-06-25: vote + timeout announcer/center-print cues are now wired through the LIVE NotificationSystem (MSG_ANNCE / MSG_CENTER), not chat-broadcast text — presentation/audio fixes on vote.call / vote.resolve / timeout.state_machine.
+last_audited: "2026-06-27"  # drift re-audit 2026-06-27: adminmsg / delrec / printstats are now implemented + live (faithful ports of GameCommand_adminmsg / delrec→race_deleteTime / printstats→DumpStats); removed from the debug_tools.missing row (9 verbs remain). GameWorld.cs port_refs path moved game/world/ → src/XonoticGodot.Server/. All vote/timeout/ban logic + constants unchanged and re-verified faithful.
 summary:
-  feature_count: 16
+  feature_count: 17
   worst_gaps:
-    - "radarmap / gettaginfo / animbench / bbox / trace / stuffto / adminmsg / delrec / database / effectindexdump / make_mapinfo / printstats: still not registered as commands (missing). (anticheat IS implemented.)"
+    - "radarmap / gettaginfo / animbench / bbox / trace / stuffto / database / effectindexdump / make_mapinfo: still not registered as commands (missing). (anticheat, adminmsg, delrec, printstats ARE now implemented.)"
     - "master vote: sv_vote_master_ids (auto-login by crypto fingerprint on connect) is still not honored (the cvar exists but only as a private-cvar mask entry in CommandReplies; no ClientConnect auto-login)."
     - "who: ping/packetloss columns carry 0 in the Godot-free core (the net host owns live ping); a documented core limitation, not a logic gap. Full column table + sv_status_privacy hiding are present."
     - "Cross-server online ban sync (uri_get / g_ban_sync_*) is deliberately out of the headless core (intended divergence; local ban store complete)."
-    - "FIXED in this re-audit: the vote/timeout presentation+audio cues are now LIVE through the real NotificationSystem channel — Voting.AnnounceVoteCall/Accept/Fail → NotificationSystem.Send(MSG_ANNCE, VOTE_CALL/VOTE_ACCEPT/VOTE_FAIL) (GameWorld.cs:960-962), Timeout.CenterPrintBeginning/Ending → MSG_CENTER TIMEOUT_BEGINNING/ENDING with the COUNT arg (overwriting per-second center-print, GameWorld.cs:1126-1129), Timeout.AnnouncePrepare → MSG_ANNCE PREPARE (GameWorld.cs:1131). The baseline recorded these as chat-broadcast-only (audio missing/partial). vote.call audio missing→faithful, vote.resolve presentation partial→faithful + audio missing→faithful, timeout presentation/audio partial→faithful. (Prior fixes — IsClient/timeout/game_starttime guards, spectator exclusion, ValidateMap, checkargs, slowmo, full who table, randomized shuffleteams, anticheat — all retained and re-verified; constants unchanged vs Base.)"
+    - "FIXED in this re-audit (2026-06-27): adminmsg / delrec / printstats are now registered + live faithful ports (Commands.cs CmdAdminMsg / CmdDelRec / CmdPrintStats) — removed from the debug_tools.missing row. Earlier-fixed (2026-06-25, retained): the vote/timeout presentation+audio cues are LIVE through the real NotificationSystem channel — Voting.AnnounceVoteCall/Accept/Fail → MSG_ANNCE VOTE_CALL/VOTE_ACCEPT/VOTE_FAIL (GameWorld.cs:998-1000), Timeout.CenterPrintBeginning/Ending → MSG_CENTER TIMEOUT_BEGINNING/ENDING with the COUNT arg (GameWorld.cs:1164-1167), Timeout.AnnouncePrepare → MSG_ANNCE PREPARE (GameWorld.cs:1169). (Prior fixes — IsClient/timeout/game_starttime guards, spectator exclusion, ValidateMap, checkargs, slowmo, full who table, randomized shuffleteams, anticheat — all retained and re-verified; constants unchanged vs Base.)"
 features:
   - id: sv-commands-votes.dispatch.client_parse
     name: "Client command dispatch (cmd <verb>) + privilege split + flood/UTF-8/ban pre-gates"
@@ -62,7 +62,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "~12 SERVER_COMMANDS still unimplemented (see sv-commands-votes.debug_tools.missing row); the dispatch shell itself is faithful. (Down from ~13 — anticheat is now implemented.)"
+      - "~9 SERVER_COMMANDS still unimplemented (see sv-commands-votes.debug_tools.missing row); the dispatch shell itself is faithful. (Down from ~12 — adminmsg/delrec/printstats now implemented, after anticheat earlier.)"
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerClientCommandsTests.cs", result: pass }
       - { kind: code, ref: "Commands.cs Execute gate + RegisterBuiltins", result: pass }
@@ -94,9 +94,9 @@ features:
       - "The networked Nagger vote HUD entity (the on-screen vote prompt) is not emitted by this core — a client-side networked-entity presentation gap. The ANNCE_VOTE_CALL announcer cue IS now played (audio fixed)."
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Vote_CallAndPass_SinglePlayerAutoMajority", result: pass }
-      - { kind: code, ref: "VoteController.cs:162-228 CmdCall full guard chain (voteban, sv_vote_call, game_starttime, already-called, spectator gate, IS_CLIENT, timeout_status, wait cooldown, nasty-char, whitelist parse, caller auto-yes); AnnounceVoteCall fired at CmdCall:226-227 when tmpPlayerCount>1 && Active. GameWorld.cs:960 Voting.AnnounceVoteCall = () => NotificationSystem.Send(MSG_ANNCE, VOTE_CALL) (the live announcer channel); :966/971/974/977/981 wires WarmupStage/IsPlayer/TimeoutActive/GameStartTime/IsClient ALL LIVE. Voting.IsClient = p => (p.Flags & EntFlags.Client) != 0 (GameWorld.cs:981) — the FL_CLIENT flag.", result: pass }
+      - { kind: code, ref: "VoteController.cs:162-228 CmdCall full guard chain (voteban, sv_vote_call, game_starttime, already-called, spectator gate, IS_CLIENT, timeout_status, wait cooldown, nasty-char, whitelist parse, caller auto-yes); AnnounceVoteCall fired at CmdCall:226-227 when tmpPlayerCount>1 && Active. src/XonoticGodot.Server/GameWorld.cs:998 Voting.AnnounceVoteCall = () => NotificationSystem.Send(MSG_ANNCE, VOTE_CALL) (the live announcer channel); :966/971/974/977/981 wires WarmupStage/IsPlayer/TimeoutActive/GameStartTime/IsClient ALL LIVE. Voting.IsClient = p => (p.Flags & EntFlags.Client) != 0 (GameWorld.cs:981) — the FL_CLIENT flag.", result: pass }
     confidence: high
-    notes: "FIX (drift re-audit 2026-06-25): audio missing→faithful. ANNCE_VOTE_CALL is now emitted via the real NotificationSystem MSG_ANNCE channel (GameWorld.cs:960, same path as every other server announcer cue), fired in CmdCall when >1 real player is present and the vote is still open — the baseline recorded this as broadcast-text-only. The earlier (2026-06-25 baseline) IsClient live-wiring fix is retained: Voting.IsClient is wired in GameWorld.cs:981 (p.Flags & FL_CLIENT), so the QC `caller && !IS_CLIENT(caller)` guard genuinely fires. logic fully faithful. Presentation stays partial: only the networked Nagger vote-HUD entity is still unsent. Voteban check, sv_vote_call, already-called, wait cooldown, nasty-char + whitelist parse, caller auto-yes, timeout-active guard, game_starttime guard, spectator gate all present and live; constants match Base (sv_vote_timeout 24 / wait 120 / limit 160)."
+    notes: "FIX (drift re-audit 2026-06-25): audio missing→faithful. ANNCE_VOTE_CALL is now emitted via the real NotificationSystem MSG_ANNCE channel (src/XonoticGodot.Server/GameWorld.cs:998, same path as every other server announcer cue), fired in CmdCall when >1 real player is present and the vote is still open — the baseline recorded this as broadcast-text-only. The earlier (2026-06-25 baseline) IsClient live-wiring fix is retained: Voting.IsClient is wired in GameWorld.cs:981 (p.Flags & FL_CLIENT), so the QC `caller && !IS_CLIENT(caller)` guard genuinely fires. logic fully faithful. Presentation stays partial: only the networked Nagger vote-HUD entity is still unsent. Voteban check, sv_vote_call, already-called, wait cooldown, nasty-char + whitelist parse, caller auto-yes, timeout-active guard, game_starttime guard, spectator gate all present and live; constants match Base (sv_vote_timeout 24 / wait 120 / limit 160)."
 
   - id: sv-commands-votes.vote.parse_whitelist
     name: "VoteCommand_parse — whitelist match, nasty-char sanitize, command rewriting"
@@ -476,15 +476,48 @@ features:
     confidence: high
     notes: "FIX (since baseline, Wave 5/6): shuffleteams now uses a FOREACH_CLIENT_RANDOM reservoir shuffle (Prandom.Float(), unbiased) instead of the deterministic round-robin — the last baseline value gap is closed. values upgraded partial->faithful, confidence medium->high. extend/reducematchtime read timelimit_increment/decrement (default 5 min); ChangeMatchTime replicates the full QC changematchtime clamp."
 
+  - id: sv-commands-votes.admin.adminmsg_delrec_printstats
+    name: "adminmsg / delrec / printstats — admin message + race-record delete + score dump"
+    layer: [authority]
+    base_refs:
+      - "server/command/sv_cmd.qc:GameCommand_adminmsg"
+      - "server/command/sv_cmd.qc:GameCommand_delrec"
+      - "server/command/sv_cmd.qc:GameCommand_printstats"
+      - "server/race.qc:race_deleteTime"
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:CmdAdminMsg"
+      - "src/XonoticGodot.Server/Commands.cs:CmdDelRec"
+      - "src/XonoticGodot.Server/Commands.cs:CmdPrintStats"
+      - "src/XonoticGodot.Server/Commands.cs:DumpStats"
+    constants:
+      - { name: "adminmsg attribution", base: "GetCallerName(NULL) = sv_adminnick / 'SERVER ADMIN'", port: "sv_adminnick / 'SERVER ADMIN'", match: true }
+      - { name: "delrec record_type", base: "CTS_RECORD under cts else RACE_RECORD", port: "RaceRecords.CtsRecord (cts) / RaceRecord", match: true }
+      - { name: "printstats", base: "DumpStats(false)", port: "DumpStats(final:false)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "adminmsg: the headless core has no infobar, so the infobartime branch falls back to the centerprint+chat delivery (value accepted for cfg compatibility). The centerprint/chat lines themselves are faithful."
+    verification:
+      - { kind: code, ref: "Commands.cs:2702 CmdAdminMsg (comma→space target split, GetCallerName(NULL)=sv_adminnick, MSG_CENTER ^3<admin>:\\n^7<msg> + chat ^3<admin>^7: <msg>, bprint success summary); :2760 CmdDelRec → RaceRecords.DeleteTime(map, record_type, rank) resolving cts→CtsRecord; :2686 CmdPrintStats → DumpStats(false); all three Register()ed at Commands.cs:867/908/909", result: pass }
+    confidence: high
+    notes: "FIX (drift re-audit 2026-06-27): adminmsg / delrec / printstats moved missing→faithful + na→live. All three are now registered + faithful ports of GameCommand_adminmsg / delrec (race_deleteTime) / printstats (DumpStats(false)). Removed from the debug_tools.missing row (now 9 verbs remain). adminmsg attributes to the server admin nick (QC GetCallerName(NULL), NOT the caller); delrec resolves the active gametype's record_type the same way CommandReplies.GetRankings does; printstats calls the same DumpStats path as the eventlog dump."
+
   - id: sv-commands-votes.debug_tools.missing
-    name: "radarmap / gettaginfo / animbench / bbox / trace / stuffto / adminmsg / delrec / database / effectindexdump / make_mapinfo / printstats"
+    name: "radarmap / gettaginfo / animbench / bbox / trace / stuffto / database / effectindexdump / make_mapinfo"
     layer: [authority]
     base_refs:
       - "server/command/radarmap.qc:GameCommand_radarmap"
       - "server/command/sv_cmd.qc:GameCommand_gettaginfo"
       - "server/command/sv_cmd.qc:GameCommand_stuffto"
       - "server/command/sv_cmd.qc:GameCommand_trace"
-      - "server/command/sv_cmd.qc:GameCommand_adminmsg"
+      - "server/command/sv_cmd.qc:GameCommand_bbox"
     port_refs: []
     constants: []
     status:
@@ -498,8 +531,8 @@ features:
     divergence_rationale: null
     gaps:
       - "radarmap is not registered: no in-game radar-image (XPM) generation for the minimap."
-      - "gettaginfo / animbench / bbox / trace / stuffto / adminmsg / delrec / database / effectindexdump / make_mapinfo / printstats console verbs are unimplemented (no Register() calls)."
+      - "gettaginfo / animbench / bbox / trace / stuffto / database / effectindexdump / make_mapinfo console verbs are unimplemented (no Register() calls)."
     verification:
-      - { kind: code, ref: "Commands.cs grep Register(\"radarmap|gettaginfo|stuffto|adminmsg|trace|bbox|...\") -> no matches; Register(\"anticheat\") DOES match (now implemented, removed from this row)", result: fail }
+      - { kind: code, ref: "Commands.cs grep Register(\"radarmap|gettaginfo|stuffto|trace|bbox|database|effectindexdump|make_mapinfo|animbench\") -> no matches; Register(\"adminmsg\"|\"delrec\"|\"printstats\"|\"anticheat\") DO match (now implemented, moved out of this row)", result: fail }
     confidence: high
-    notes: "FIX (since baseline, Wave 5/6): the `anticheat` report command IS now implemented (Commands.cs CmdAnticheat = GameCommand_anticheat → anticheat_report_to_eventlog, gated on sv_eventlog) and is REMOVED from this missing-row. The remaining 12 verbs (radarmap is #ifdef RADARMAP, the rest are offline-mapper / admin-debug tools) are still absent. Not on the live match path."
+    notes: "FIX (drift re-audit 2026-06-27): adminmsg / delrec / printstats are now implemented (faithful ports — see the new sv-commands-votes.admin.adminmsg_delrec_printstats row) and are REMOVED from this missing-row, leaving 9 verbs (was 12). The `anticheat` command was likewise removed in a prior wave. The remaining 9 (radarmap is #ifdef RADARMAP, the rest are offline-mapper / admin-debug / scripting tools) are still absent. Not on the live match path."

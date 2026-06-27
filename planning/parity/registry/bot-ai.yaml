@@ -1,38 +1,42 @@
 unit: bot-ai
 category: bot
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
-# Re-audited after Waves 9-11 (commit ff8a699) on branch claude/parity-port-waves. Wave 10 landed three
-# concrete bot-ai improvements over the 2026-06-22 baseline:
-#   (1) bot-ai.move.keyboard: havocbot_keyboard_movement is now PORTED & LIVE (was fully missing) —
-#       BotNavigation.KeyboardMovement/BlendKeyboard quantize the analog wish-move onto keyboard dirs with
-#       the skill-tiered direction gating + distance blend, driven from Steer when skill<10.
-#   (2) bot-ai.weapon.wr_aim (top worst-gap): ButtonAttack2 is NO LONGER hardcoded false — the brain now
-#       drives SECONDARY fire and projectile DETONATION via per-weapon wr_aim hooks (Weapon.BotWantsSecondary /
-#       BotWantsDetonate). Implemented on 8 of Base's 18 wr_aim weapons (Devastator full detonate heuristic,
-#       MachineGun long-range burst, Rifle, Vaporizer, Minelayer, Fireball, Tuba, Shotgun). Still missing the
-#       MAX_WEAPONSLOTS per-slot loop and the headline combos (mortar airburst / electro combo / hagar burst /
-#       vortex charge), so the row is improved but still partial.
-#   (3) bot-ai.move.steer: the brain's danger-check JumpStepHeight is now JumpStepHeightLive
-#       (StepHeightLive + JumpHeightApex*0.85 ≈ 70 @ stock), matching Base jumpstepheightvec — the hardcoded-48
-#       const divergence in the BRAIN path is closed (the public const + BotTracewalk still use 48).
-#   (4) bot-ai.population.namemodel: the bots.txt skin column (argv2) is now parsed & re-applied after spawn
-#       (_preferredSkin). shirt/pants (argv3/4) + the 12 skill columns are still unparsed.
-# Minor: bot-ai.aim.lead gained a per-weapon BotAimShotSpeed lead-speed override hook (Devastator leads as if
-# guided), narrowing — but not closing — the lead gap (the 10-trace tracetoss vs closed-form arc is unchanged).
-# Still-OPEN worst-gaps: havocbot_dodge projectile dodge, weapon-priority lists / combos in weapon.choose,
-# straight-line goal rating (not Dijkstra) + flat rangebias, dead danger-ROUTING producer, jetpack/rocketjump,
-# bot scripting. No regressions. No newly-unmapped Base features.
+last_audited: "2026-06-27"
+# Drift re-audit (2026-06-27) on branch claude/parity-port-waves. The previous 2026-06-25 baseline was STALE
+# relative to the current code (BotBrain/BotAim/BotPopulation edited 2026-06-26). All drift this pass is FIXES;
+# NO regressions, NO newly-unmapped Base features. Concrete improvements found:
+#   (1) bot-ai.combat.dodge: havocbot_dodge is NOW PORTED (BotBrain.HavocbotDodge, called live from ThinkProduce):
+#       a faithful port of havocbot.qc:1773 — SUPERBOT-gated (skill>100) flight-path scan over bot_dodge-flagged
+#       edicts, returning a world-space evade vector folded into the wish-move (skill-scaled, checkdanger-vetoed,
+#       upward-dodge jump). The previous "havocbot_dodge not ported / deferred" gap is closed for the consumer;
+#       the generic CombatMovement strafe still runs for all skills as the non-SUPERBOT stand-in. Residual: only
+#       3 port projectiles set Entity.BotDodge (Blaster/Porto + PhaserTurret beam) vs Base's ~20+ producers.
+#   (2) bot-ai.weapon.wr_aim: coverage 8 -> 12 of Base's 18 wr_aim weapons (added Electro, Crylink, Arc, Porto).
+#       The ELECTRO combo (electromooth primary/secondary toggle) is now a faithful port; Porto's wr_aim fire-veto
+#       (BotForbidsFire in secondary mode) and CTS _independent_players fire-suppress are wired. Still missing:
+#       mortar airburst, hagar burst, vortex charge, seeker, hlac, blaster wr_aim; still no MAX_WEAPONSLOTS loop.
+#   (3) bot-ai.aim.fire: the long-range fire-hesitation chance + fire-timer now include the bot_aggresskill term
+#       (BotAim aggr = skill + AggresSkill); the previous "omits bot_aggresskill" gap is CLOSED -> values faithful.
+#   (4) bot-ai.aim.aimdir: the fire-cone factor now folds bot_aimskill (MaxFireDeviation f += (10-(skill+AimSkill))).
+#   (5) bot-ai.population.namemodel: shirt/pants color columns (argv3/4) are NOW parsed -> packed 16*shirt+pants,
+#       applied via Teamplay.SetColor in FFA + re-stamped after respawn (random-nibble fallback). logic -> faithful.
+#   (6) bot-ai.skill.modifiers: the per-bot modifier set now carries FOUR facets (single knob + MoveSkill +
+#       AggresSkill (argv11) + AimSkill (argv13)), not 1-2; bots.txt's two fire-relevant skill columns are read.
+#   (7) bot-ai.aim.lead: the per-weapon BotAimShotSpeed override is now used by Crylink + Fireball too (not only
+#       Devastator), narrowing the per-weaponentity-speed gap further.
+# Still-OPEN worst-gaps (unchanged): straight-line goal rating (not Dijkstra) + flat rangebias=2000, dead
+# danger-ROUTING producer, weapon-priority lists in weapon.choose, the 4 remaining headline combos
+# (mortar/hagar/vortex/seeker), jetpack/rocketjump, bot scripting.
 summary:
   feature_count: 21
   worst_gaps:
-    - "wr_aim secondary/detonate is now LIVE but partial: ButtonAttack2 is driven and 8 of Base's 18 wr_aim weapons have a port hook (incl. the full Devastator detonate heuristic), but there is still no MAX_WEAPONSLOTS per-slot loop and the headline weapon combos — mortar airburst, electro combo, hagar burst, vortex charge — are NOT ported, so bots still don't do those alt-fire combos. (IMPROVED by Wave 10.)"
-    - "Combat movement is invented (periodic strafe-direction flip + health-advantage close/flee bias), not QC havocbot_dodge which sidesteps specific incoming projectiles by their flight path; bots don't specifically dodge a rocket the way stock bots do. (UNCHANGED — Wave 10 honestly deferred havocbot_dodge.)"
-    - "Bot scripting entirely missing: the bot_cmd command queue (PAUSE/CONTINUE/WAIT/TURN/MOVETO/AIM/PRESSKEY/RELEASEKEY/SELECTWEAPON/IMPULSE/IF/ELSE/FI/BARRIER/SOUND/CC/CONSOLE) does nothing, so map/console bot scripts, cutscene-driven bots, and g_waypointeditor bot driving are inert. (UNCHANGED.)"
-    - "Weapon picking is a hitscan-at-range / splash-up-close bucket choosing the highest-impulse owned weapon, not the QC ordered far/mid/close priority lists; bots mis-prioritize weapons vs stock. No weapon-combo holding behaviour. (UNCHANGED — Wave 10 honestly deferred weapon-priority lists.)"
     - "Goal rating still uses straight-line inverse distance (f*rangebias/(rangebias+vlen(dist))) instead of the QC waypoint-cost (Dijkstra) field, and rangebias is still hardcoded 2000 at every call; bots can prefer a goal near in a straight line but far by path. (UNCHANGED.)"
-    - "Per-waypoint danger-cost ROUTING is still inert: a Waypoint.Danger field exists and A* adds it (cost + nb.Danger), but NOTHING sets Danger (no botframe_updatedangerousobjects producer), so it is always 0 — the consumer is dead. Routing still doesn't detour around chronically dangerous waypoints. (UNCHANGED.)"
-    - "Jetpack navigation and rocketjump/trigger_hurt escape are still missing. (UNCHANGED — Wave 10 deferred. Keyboard-movement emulation, previously listed here, is now PORTED.)"
+    - "Per-waypoint danger-cost ROUTING is still inert: a Waypoint.Danger field exists and A* adds it, but NOTHING sets Danger (no botframe_updatedangerousobjects producer), so it is always 0 — the consumer is dead. (UNCHANGED.)"
+    - "Weapon picking is a hitscan-at-range / splash-up-close bucket choosing the highest-impulse owned weapon, not the QC ordered far/mid/close priority lists; bots mis-prioritize weapons vs stock. No weapon-combo holding behaviour. (UNCHANGED.)"
+    - "wr_aim is ported on 12 of Base's 18 weapons (up from 8) and there is still no MAX_WEAPONSLOTS per-slot loop; the remaining headline combos — mortar airburst, hagar burst, vortex charge (electro combo is now ported) — are NOT implemented. (NARROWED 2026-06-27.)"
+    - "Bot scripting entirely missing: the bot_cmd command queue does nothing, so map/console bot scripts, cutscene-driven bots, and g_waypointeditor bot driving are inert. (UNCHANGED.)"
+    - "havocbot_dodge is now ported (SUPERBOT-gated projectile flight-path evade, live), but only 3 port projectiles flag Entity.BotDodge (Blaster/Porto + PhaserTurret) vs Base's ~20+ producers, so most incoming projectiles still aren't dodged; non-SUPERBOT bots still only strafe via the generic CombatMovement. (IMPROVED 2026-06-27.)"
+    - "Jetpack navigation and rocketjump/trigger_hurt escape are still missing. (UNCHANGED.)"
 
 features:
   - id: bot-ai.population.fixcount
@@ -70,7 +74,7 @@ features:
       - { kind: code, ref: "TargetBotCount read branch-for-branch vs bot_fixcount:623-664", result: pass }
       - { kind: code, ref: "GameWorld.OnStartFrame Bots.ServerFrame()", result: pass }
     confidence: high
-    notes: "Unchanged by Waves 9-11. intermission keep-unless-empty, game-stopped skip, and skill-cvar resync all ported. The bunnyhop waypoint-link re-cost across the 1.25x threshold has a live analogue — WaypointNetwork.ForMap takes a skill arg and sets net.Skill BEFORE link costs bake; a mid-match `skill N` change resyncs every bot's BotSkill but does NOT re-cost the already-baked shared graph (minor divergence; QC reads the global skill live per call)."
+    notes: "Unchanged. intermission keep-unless-empty, game-stopped skip, and skill-cvar resync all ported. A mid-match `skill N` change resyncs every bot's BotSkill but does NOT re-cost the already-baked shared waypoint graph (minor divergence; QC reads the global skill live per call)."
 
   - id: bot-ai.population.strategytoken
     name: "Strategy-token rotation (one goal search per frame)"
@@ -98,7 +102,7 @@ features:
     notes: "Unchanged. Matches QC: token only walks the non-observer/non-paused bot_list; dead/observer holder still consumes the token so rotation doesn't freeze on a corpse."
 
   - id: bot-ai.population.namemodel
-    name: "Bot name/model/skin from bots.txt (prefix/suffix, dedup, model path, skin, forced team)"
+    name: "Bot name/model/skin from bots.txt (prefix/suffix, dedup, model path, skin, shirt/pants, forced team)"
     layer: [authority]
     base_refs:
       - "server/bot/default/bot.qc:bot_setnameandstuff"
@@ -107,15 +111,16 @@ features:
       - "src/XonoticGodot.Server/Bot/BotPopulation.cs:ParseBotFile"
       - "src/XonoticGodot.Server/Bot/BotPopulation.cs:SpawnBot"
       - "src/XonoticGodot.Server/Bot/BotPopulation.cs:ApplyPreferredSkin"
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:ParseColorNibble"
     constants:
       - { name: "bot_prefix", base: "[BOT]", port: "[BOT] (cvar)", match: true }
       - { name: "bot_suffix", base: "(empty)", port: "(empty) (cvar)", match: true }
       - { name: "model path", base: "models/player/<model>.iqm", port: "models/player/<model>.iqm", match: true }
-      - { name: "skin column (argv2 → playerskin, default 0)", base: "bot_skin = argv(2); this.playerskin", port: "argv2 parsed → _preferredSkin, re-applied after each spawn", match: true }
-      - { name: "forced-team column (argv5, 1..4)", base: "bot_forced_team = stof(argv(5))", port: "argv5 parsed 1..4 → SetBotForcedTeam + AssignBestTeam", match: true }
-      - { name: "shirt/pants columns (argv3/4 → setcolor)", base: "bot_shirt/bot_pants → setcolor(shirt*16+pants)", port: "not parsed", match: false }
+      - { name: "skin column (argv2 -> playerskin, default 0)", base: "bot_skin = argv(2); this.playerskin", port: "argv2 parsed -> _preferredSkin, re-applied after each spawn", match: true }
+      - { name: "shirt/pants columns (argv3/4 -> setcolor)", base: "bot_shirt/bot_pants -> setcolor(16*shirt+pants); blank cell randomizes nibble 0..14", port: "argv3/4 parsed -> packed 16*shirt+pants, SetColor in FFA + re-stamped after respawn; random-nibble fallback", match: true }
+      - { name: "forced-team column (argv5, 1..4)", base: "bot_forced_team = stof(argv(5))", port: "argv5 parsed 1..4 -> SetBotForcedTeam + AssignBestTeam", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -124,11 +129,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "shirt/pants color columns (argv3/argv4 → setcolor) and the 12 per-bot skill-modifier columns of bots.txt are still not parsed (name+model+skin+forced-team only); shirt/pants need a server-side player-color/colormap field the port lacks, and the skill columns drive the skill-modifier gap elsewhere."
+      - "Only the two fire-relevant skill-modifier columns (argv11 bot_aggresskill, argv13 bot_aimskill) are read; the other 10 of bots.txt's 12 skill columns are folded into the single BotSkill knob (tracked under bot-ai.skill.modifiers)."
     verification:
-      - { kind: code, ref: "ParseBotFile splits tab rows, reads f[0] name + f[1] model + f[2] skin + f[5] forced-team; ApplyPreferredSkin re-stamps p.Skin after each spawn (mirrors QC FixPlayermodel honoring playerskin); SpawnBot pins the team in teamplay — verified live on the bot-add path", result: pass }
+      - { kind: code, ref: "ParseBotFile splits tab rows: f[0] name + f[1] model + f[2] skin + f[3]/f[4] shirt/pants (ParseColorNibble) + f[5] forced-team; PickNameAndModel applies skin (_preferredSkin re-stamped after each spawn), color (SetColor in FFA, stored for respawn) and forced-team. Verified live on the bot-add path.", result: pass }
     confidence: high
-    notes: "WAVE-10 FIX (gap narrowed): the bots.txt SKIN column (argv2) is now parsed and re-applied after each spawn via _preferredSkin (faithful to QC this.playerskin, which survives the spawn-reset to sv_defaultplayerskin). Name+model+forced-team remain ported. Still unparsed: the shirt/pants color columns (argv3/4) and the 12 skill columns."
+    notes: "DRIFT FIX (2026-06-27, logic partial->faithful): the bots.txt SHIRT/PANTS color columns (argv3/4) are now parsed and applied (packed 16*shirt+pants, SetColor in FFA, re-stamped after respawn, with the QC random-nibble fallback for blank cells). Name+model+skin+forced-team remain ported. The skill-column folding lives in bot-ai.skill.modifiers."
 
   - id: bot-ai.think.throttle
     name: "Per-bot think throttle + god mode + ping (bot_think)"
@@ -166,6 +171,7 @@ features:
       - "server/bot/default/aim.qc:bot_aimdir"
     port_refs:
       - "src/XonoticGodot.Server/Bot/BotAim.cs:AimAt"
+      - "src/XonoticGodot.Server/Bot/BotAim.cs:MaxFireDeviation"
     constants:
       - { name: "bot_ai_aimskill_offset", base: "1.8", port: "1.8 (read live)", match: true }
       - { name: "bot_ai_aimskill_think", base: "1", port: "1 (read live)", match: true }
@@ -175,6 +181,7 @@ features:
       - { name: "order_mix_1st..5th", base: "0.01/0.075/0.01/0.0375/0.01", port: "same (read live)", match: true }
       - { name: "order_filter_1st..5th", base: "0.2/0.2/0.1/0.2/0.25", port: "same (read live)", match: true }
       - { name: "enemy_factor", base: "5 enemy / 2 roam", port: "5 / 2", match: true }
+      - { name: "per-bot bot_aimskill (fire-cone factor)", base: "f += bound(0,(10-(skill+bot_aimskill))*0.3,3)", port: "MaxFireDeviation folds AimSkill (read from bots.txt argv13)", match: true }
       - { name: "SUPERBOT", base: "skill>100", port: "skill>100", match: true }
     status:
       logic: faithful
@@ -187,12 +194,12 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "BotAim.AimAt line-compared to bot_aimdir incl. filter cascade, mouseaim, turn rate; each aimskill_* read via Cvars.FloatOr per frame", result: pass }
+      - { kind: code, ref: "BotAim.AimAt line-compared to bot_aimdir incl. filter cascade, mouseaim, turn rate; MaxFireDeviation now folds the per-bot AimSkill term (10-(skill+AimSkill))*0.3", result: pass }
     confidence: high
-    notes: "Unchanged. The aim constants are read each AimAt frame from the bot_ai_aimskill_* cvars (defaults equal stock). Near line-for-line port of the filter cascade + skill^3 turn + SUPERBOT snap."
+    notes: "DRIFT (within-faithful): the fire-cone factor now folds the per-bot bot_aimskill modifier (argv13) read from bots.txt, matching aim.qc:372. The aim constants are still read each frame from the bot_ai_aimskill_* cvars (defaults equal stock). Near line-for-line port of the filter cascade + skill^3 turn + SUPERBOT snap."
 
   - id: bot-ai.aim.fire
-    name: "Fire decision (maxfiredeviation cone + fire timer + LOS)"
+    name: "Fire decision (maxfiredeviation cone + fire timer + LOS + aggression)"
     layer: [authority]
     base_refs:
       - "server/bot/default/aim.qc:bot_aim"
@@ -203,25 +210,25 @@ features:
       - "src/XonoticGodot.Server/Bot/BotAim.cs:ShouldFire"
     constants:
       - { name: "maxfiredeviation", base: "1000/(dist-9) - 0.35, capped 90", port: "same", match: true }
-      - { name: "accuracy factor f", base: "(accurate?1:1.6)+bound(0,(10-skill)*0.3,3)", port: "same", match: true }
-      - { name: "fire timer", base: "bound(0.1, 0.5-skill*0.05, 0.5)", port: "same", match: true }
+      - { name: "accuracy factor f", base: "(accurate?1:1.6)+bound(0,(10-(skill+aimskill))*0.3,3)", port: "same (AimSkill folded)", match: true }
+      - { name: "fire timer", base: "bound(0.1, 0.5-(skill+aggres)*0.05, 0.5)", port: "bound(0.1, 0.5-aggr*0.05, 0.5), aggr = skill+AggresSkill", match: true }
       - { name: "bot_ai_aimskill_firetolerance", base: "1", port: "Cvars.Bool read live", match: true }
-      - { name: "long-range fire chance", base: "rand*rand > bound(0,(skill+aggres)*0.05,1)", port: "rand*rand > bound(0,skill*0.05,1) (no aggres term)", match: false }
+      - { name: "close-range fast-fire band", base: "hitDist < 500 + 500*bound(0,skill+aggres,10)", port: "same (aggr = skill+AggresSkill)", match: true }
+      - { name: "long-range fire chance", base: "rand*rand > bound(0,(skill+aggres)*0.05,1)", port: "rand*rand > bound(0,aggr*0.05,1), aggr = skill+AggresSkill", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Long-range fire-hesitation chance still omits the bot_aggresskill modifier (port uses skill only), so per-bot aggression variance is lost. (UNCHANGED.)"
+    gaps: []
     verification:
-      - { kind: code, ref: "MaxFireDeviation + ShouldFire vs bot_aim/bot_aimdir fire block; firetolerance reads the cvar each fire decision; BotAimAccurate override now consulted (Devastator)", result: pass }
+      - { kind: code, ref: "MaxFireDeviation + ShouldFire vs bot_aim/bot_aimdir fire block; the close-range band, long-range chance and fire-timer all now use aggr = skill + AggresSkill (BotAim.cs:279-286); AggresSkill stamped each think from bot.BotAggresSkill (bots.txt argv11). firetolerance + BotAimAccurate override consulted.", result: pass }
     confidence: high
-    notes: "Unchanged. firetolerance read from cvar each frame. The accurate flag now also honors the per-weapon BotAimAccurate() override (Devastator relaxes accuracy when its rocket is guidable). The aggression-term gap in the long-range fire chance is still open."
+    notes: "DRIFT FIX (2026-06-27, values partial->faithful): the long-range fire-hesitation chance, the close-range fast-fire band and the fire-timer cooldown now ALL include the bot_aggresskill modifier (aggr = skill + AggresSkill). The previous 'omits bot_aggresskill' gap is closed — per-bot aggression variance is restored. firetolerance read each frame; the accurate flag honors the per-weapon BotAimAccurate() override (Devastator)."
 
   - id: bot-ai.aim.lead
     name: "Projectile lead + ballistic arc (bot_shotlead / findtrajectorywithleading)"
@@ -235,7 +242,7 @@ features:
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:CurrentShotSpeed"
     constants:
       - { name: "lead time", base: "shotdelay + dist/shotspeed", port: "shotdelay + dist/shotspeed", match: true }
-      - { name: "per-weapon lead speed override (wr_aim spd)", base: "wr_aim passes a per-weapon shotspeed to bot_aim", port: "Weapon.BotAimShotSpeed override (Devastator leads as if guided); default = primary_speed cvar", match: true }
+      - { name: "per-weapon lead speed override (wr_aim spd)", base: "wr_aim passes a per-weapon shotspeed to bot_aim", port: "Weapon.BotAimShotSpeed override (Devastator/Crylink/Fireball); default = primary_speed cvar", match: true }
       - { name: "trajectory search", base: "10 traces, pitch += 0.1, tracetoss onto faked target", port: "closed-form 0.5*g*t^2 drop, 45-deg range guard", match: false }
     status:
       logic: partial
@@ -248,11 +255,11 @@ features:
     divergence_rationale: null
     gaps:
       - "Ballistic aim is a closed-form gravity-drop approximation, not QC's 10-trace tracetoss search; lobbed-weapon aim (mortar/nade) is less accurate, especially with obstacles in the arc, and never traces the world to confirm the toss lands. (UNCHANGED.)"
-      - "Shot speed is read from g_balance_<wep>_primary_speed/gravity for the single ChosenWeapon (now via a BotAimShotSpeed override hook), not per-weaponentity with W_WeaponSpeedFactor applied; weapons without those cvars are treated as hitscan (no lead). (PARTIALLY NARROWED — the per-weapon override exists but is only used by Devastator.)"
+      - "Shot speed is read from g_balance_<wep>_primary_speed/gravity for the single ChosenWeapon (via the BotAimShotSpeed override hook, now used by Devastator/Crylink/Fireball), not per-weaponentity with W_WeaponSpeedFactor applied; weapons without those cvars are treated as hitscan (no lead). (PARTIALLY NARROWED.)"
     verification:
-      - { kind: code, ref: "ShotLead matches bot_shotlead; CurrentShotSpeed reads the ChosenWeapon primary_speed cvar and applies Weapon.BotAimShotSpeed; BallisticArc is a documented approximation of findtrajectorywithleading", result: fail }
+      - { kind: code, ref: "ShotLead matches bot_shotlead; CurrentShotSpeed reads the ChosenWeapon primary_speed cvar and applies Weapon.BotAimShotSpeed(s, ref ctx); BallisticArc is a documented approximation of findtrajectorywithleading", result: fail }
     confidence: medium
-    notes: "MINOR WAVE-10 IMPROVEMENT: a per-weapon BotAimShotSpeed override hook was added (the Devastator now leads as if the rocket flew much faster, simulating guide — devastator.qc:351-355). Hitscan lead is faithful; the gravity case (closed-form vs 10-trace tracetoss) is still the weak spot and unchanged."
+    notes: "DRIFT (minor narrowing 2026-06-27): the per-weapon BotAimShotSpeed override is now used by Crylink and Fireball in addition to Devastator (the ctx overload also lets a weapon vary lead-speed by secondary toggle). The closed-form gravity case (vs the 10-trace tracetoss) is still the weak spot and unchanged."
 
   - id: bot-ai.target.chooseenemy
     name: "Enemy selection (nearest attackable with LOS, sticky tracking, SUPERBOT rating)"
@@ -304,9 +311,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ShouldAttack vs bot_shouldattack: team/neutral/ignore-bots/takedamage/dead/notarget/alpha/frozen filters present, THEN the ForbidAttackHook veto at the tail. Hook null by default, reset to null on every gametype activation, set ONLY for Survival (StatusOf(bot)==StatusOf(victim)) — verified live on the Survival activation path.", result: pass }
+      - { kind: code, ref: "ShouldAttack vs bot_shouldattack: team/neutral/ignore-bots/takedamage/dead/notarget/alpha/frozen filters present, THEN the ForbidAttackHook veto + MutatorHooks.FireBotForbidAttack (powerups Invisibility) at the tail. Hook reset to null on every gametype activation, set ONLY for Survival.", result: pass }
     confidence: high
-    notes: "Unchanged. The QC bot_shouldattack tail MUTATOR_CALLHOOK(Bot_ForbidAttack) is ported as a static ForbidAttackHook veto, LIVE for Survival and reset on gametype switch. in-chat (typefrag) check present. No remaining gaps."
+    notes: "Unchanged. The QC bot_shouldattack tail MUTATOR_CALLHOOK(Bot_ForbidAttack) is ported as a static ForbidAttackHook veto (Survival) PLUS the Common-side MutatorHooks.FireBotForbidAttack chain (powerups Invisibility). in-chat (typefrag) check present. No remaining gaps."
 
   - id: bot-ai.weapon.choose
     name: "Weapon selection by range + combos (havocbot_chooseweapon)"
@@ -333,13 +340,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Weapon picking is a hitscan-at-range / splash-up-close bucket choosing the highest-impulse owned weapon, not the QC ordered far/mid/close priority lists. (UNCHANGED — Wave 10 honestly deferred.)"
+      - "Weapon picking is a hitscan-at-range / splash-up-close bucket choosing the highest-impulse owned weapon, not the QC ordered far/mid/close priority lists. (UNCHANGED.)"
       - "No weapon-combo behaviour (bot_ai_weapon_combo): bots don't hold a weapon for a follow-up combo shot. (UNCHANGED.)"
       - "No bot_rangepreference shift, so per-bot 'sniper vs spammer' weapon-range personalities are absent. (UNCHANGED.)"
     verification:
       - { kind: code, ref: "ChooseWeapon hitscan/splash buckets, no priority list / combo / rangepref", result: fail }
     confidence: high
-    notes: "Unchanged. Distance thresholds are read from the real cvar; the selection algorithm itself is simplified. (Distinct from weapon.wr_aim, which got the secondary/detonate fire driver in Wave 10.)"
+    notes: "Unchanged. Distance thresholds are read from the real cvar; the selection algorithm itself is simplified. (Distinct from weapon.wr_aim, which owns the secondary/detonate fire driver.)"
 
   - id: bot-ai.weapon.reload
     name: "Idle weapon reload (havocbot_ai not-attacking branch)"
@@ -351,7 +358,7 @@ features:
     constants:
       - { name: "held-weapon reload skill gate", base: "skill >= 2", port: "skill >= 2", match: true }
       - { name: "inventory pre-reload skill gate", base: "skill >= 5", port: "skill >= 5", match: true }
-      - { name: "reload impulse", base: "IMP_weapon_reload (20)", port: "WeaponImpulses.Handle(bot, 20) → ReloadHandle → W_Reload", match: true }
+      - { name: "reload impulse", base: "IMP_weapon_reload (20)", port: "WeaponImpulses.Handle(bot, 20) -> ReloadHandle -> W_Reload", match: true }
     status:
       logic: faithful
       values: faithful
@@ -363,7 +370,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "IdleReload called from ThinkProduce when no enemy this frame; skill>=2 reloads partial held clip via impulse 20 (reaches ReloadHandle), skill>=5 pre-rotates to an owned Reloadable weapon whose stored clip < ReloadingAmmo()", result: pass }
+      - { kind: code, ref: "IdleReload called from ThinkProduce when no enemy this frame; skill>=2 reloads partial held clip via impulse 20, skill>=5 pre-rotates to an owned Reloadable weapon whose stored clip < ReloadingAmmo()", result: pass }
     confidence: high
     notes: "Unchanged. skill>=2 held-weapon reload uses the same impulse-20 path a human's +reload drives; skill>=5 pre-rotation switches to the first under-loaded owned Reloadable weapon. ClipLoad<0 sentinel respected."
 
@@ -373,19 +380,23 @@ features:
     base_refs:
       - "server/bot/default/havocbot/havocbot.qc:havocbot_ai"
       - "common/weapons/weapon/devastator.qc:wr_aim"
-      - "common/weapons/weapon/machinegun.qc:wr_aim"
+      - "common/weapons/weapon/electro.qc:wr_aim"
+      - "common/weapons/weapon/crylink.qc:wr_aim"
+      - "common/weapons/weapon/porto.qc:wr_aim"
     port_refs:
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:AimAndDecideFire"
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:Emit"
       - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:Weapon.BotWantsSecondary"
       - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:Weapon.BotWantsDetonate"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:BotWantsDetonate"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:BotWantsSecondary"
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:Weapon.BotForbidsFire"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:BotWantsSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:BotWantsSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:BotForbidsFire"
     constants:
       - { name: "weapon slots driven", base: "MAX_WEAPONSLOTS (all), each wr_aim", port: "1 (the ChosenWeapon's wr_aim hooks only)", match: false }
-      - { name: "ButtonAttack2 (secondary)", base: "set by wr_aim per weapon", port: "driven by Weapon.BotWantsSecondary / BotWantsDetonate (no longer hardcoded false)", match: true }
-      - { name: "wr_aim weapon coverage", base: "18 weapons have wr_aim", port: "8 ported (Devastator/MachineGun/Rifle/Vaporizer/Minelayer/Fireball/Tuba/Shotgun)", match: false }
-      - { name: "weapon combos (mortar airburst / electro combo / hagar burst / vortex charge)", base: "wr_aim per weapon", port: "not implemented", match: false }
+      - { name: "ButtonAttack2 (secondary)", base: "set by wr_aim per weapon", port: "driven by Weapon.BotWantsSecondary / BotWantsDetonate (not hardcoded false)", match: true }
+      - { name: "wr_aim weapon coverage", base: "18 weapons have wr_aim", port: "12 ported (Devastator/MachineGun/Rifle/Vaporizer/Minelayer/Fireball/Tuba/Shotgun/Electro/Crylink/Arc/Porto)", match: false }
+      - { name: "weapon combos (mortar airburst / hagar burst / vortex charge / seeker)", base: "wr_aim per weapon", port: "not implemented (electro combo IS ported)", match: false }
     status:
       logic: partial
       values: na
@@ -396,13 +407,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Only the ChosenWeapon's wr_aim is consulted — there is no MAX_WEAPONSLOTS per-slot loop (Base runs wr_aim for every owned weapon slot each think). (NEW residual after Wave 10.)"
-      - "wr_aim is ported on only 8 of Base's 18 wr_aim weapons; the headline weapon COMBOS — mortar airburst, electro combo, hagar burst, vortex charge — are NOT ported, so bots still don't do those alt-fire combos. (NARROWED from 'never any secondary'.)"
+      - "Only the ChosenWeapon's wr_aim is consulted — there is no MAX_WEAPONSLOTS per-slot loop (Base runs wr_aim for every owned weapon slot each think). (UNCHANGED.)"
+      - "wr_aim is ported on 12 of Base's 18 wr_aim weapons; still missing: mortar (airburst), hagar (burst), vortex (charge), seeker, hlac, blaster. (NARROWED 2026-06-27 from 8/18; electro combo + porto fire-veto + crylink/arc pick are now ported.)"
       - "lastfiredweapon combo bookkeeping is not modeled; combos that depend on the previously-fired weapon don't trigger."
     verification:
-      - { kind: code, ref: "Emit now sets ButtonAttack2=wantAttack2 (BotBrain.cs:429); the brain consults ChosenWeapon.BotWantsSecondary (range-gated secondary, e.g. MachineGun burst) and BotWantsDetonate (Devastator full predicted-damage detonate heuristic) each think and moves the shot from ATCK to ATCK2; Mortar/Electro/Hagar/Vortex/Crylink/Arc/Seeker/Hlac/Porto/Blaster have NO wr_aim override.", result: pass }
+      - { kind: code, ref: "Emit sets ButtonAttack2=wantAttack2; the brain consults ChosenWeapon.BotWantsSecondary (Electro electromooth toggle + range gate, Crylink 10/90 pick, MachineGun burst), BotWantsDetonate (Devastator full predicted-damage detonate), and BotForbidsFire (Porto secondary mode + CTS _independent_players). Mortar/Hagar/Vortex/Seeker/Hlac/Blaster have NO wr_aim override.", result: pass }
     confidence: high
-    notes: "WAVE-10 FIX (top worst-gap, partial→improved + partial→live): ButtonAttack2 is NO LONGER hardcoded false. The brain now drives SECONDARY fire and projectile DETONATION via per-weapon wr_aim hooks (Weapon.BotWantsSecondary / BotWantsDetonate, with a BotAimState scratch carrying the rifle-style persistent toggle + a fresh RNG draw + the actor). The Devastator detonate is a full port of devastator.qc:360-450 (skill-scaled pred_time, self/team/enemy splash sum, skill>=7 self-kill veto). STILL PARTIAL: only the ChosenWeapon is consulted (no per-slot loop), only 8/18 weapons have a hook, and the headline combos (mortar airburst / electro combo / hagar burst / vortex charge) are not ported."
+    notes: "DRIFT FIX (2026-06-27, coverage narrowed): wr_aim coverage rose 8 -> 12 weapons. New since the 2026-06-25 baseline: ELECTRO (faithful electromooth primary/secondary toggle = the electro combo decision), CRYLINK (10/90 primary/secondary pick), ARC (explicit no-secondary), PORTO (BotForbidsFire fire-veto in secondary mode; CTS _independent_players also suppresses fire). Devastator detonate is a full port of devastator.qc:360-450. STILL PARTIAL: only the ChosenWeapon is consulted (no per-slot loop), and the remaining headline combos (mortar airburst / hagar burst / vortex charge / seeker) are not ported."
 
   - id: bot-ai.roles.goalrating
     name: "Roles + goal rating (havocbot_role_generic / objective roles, routerating)"
@@ -423,7 +434,7 @@ features:
       - { name: "distance metric", base: "navigation_routerating cost over the waypoint graph (Dijkstra path length)", port: "straight-line vlen(goal-from)", match: false }
       - { name: "rating discount", base: "f * rangebias/(rangebias+pathcost)", port: "f * rangebias/(rangebias+straightdist)", match: false }
       - { name: "rangebias (items/enemies/roam)", base: "per-rating-call (e.g. items 2000, enemies BOT_RATING_ENEMY)", port: "2000 (all calls)", match: false }
-      - { name: "item time-item lead", base: "powerups: clamp(skill/10)*6s; items: skill>=9 → 4s; powerups rated even when jittered", port: "same (powerup clamp(skill/10)*6, item skill>=9 → 4, powerup jitter-exempt)", match: true }
+      - { name: "item time-item lead", base: "powerups: clamp(skill/10)*6s; items: skill>=9 -> 4s; powerups rated even when jittered", port: "same (powerup clamp(skill/10)*6, item skill>=9 -> 4, powerup jitter-exempt)", match: true }
       - { name: "enemyplayers gates", base: "bot_nofire return; waterlevel>WETFEET return; skip vel>2×maxspeed", port: "same three gates", match: true }
       - { name: "roam shell", base: "range 500, sradius peel, stop at first contributing shell, wp_goal_prev deprioritize", port: "range 500 shell peel + recent-goal (prev0) deprioritize (0.1)", match: true }
       - { name: "strategy interval", base: "bot_ai_strategyinterval 7 (5.5 moving target)", port: "7 (cvar); no separate moving-target interval", match: false }
@@ -437,14 +448,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Goal rating still uses straight-line inverse distance (f*rangebias/(rangebias+vlen(dist))) instead of the QC waypoint-cost (Dijkstra) field; bots can prefer a goal near in a straight line but far by path. (UNCHANGED — GoalRater.Rate is still vlen.)"
+      - "Goal rating still uses straight-line inverse distance (f*rangebias/(rangebias+vlen(dist))) instead of the QC waypoint-cost (Dijkstra) field; bots can prefer a goal near in a straight line but far by path. (UNCHANGED.)"
       - "rangebias is still hardcoded 2000 for every rate call (items/enemies/roam) instead of the per-rating-call bias QC uses. (UNCHANGED.)"
       - "No separate _movingtarget (5.5s) strategy interval for goals that can move. (UNCHANGED.)"
       - "enemyplayers aggression refinement: QC skill>3 nudges the t factor by Strength/Shield powerup timers (StatusEffects_gettime); the port has no status-effect-expiry accessor yet, so that refinement is deferred."
     verification:
-      - { kind: code, ref: "GoalRater.Rate still vlen straight-line (BotRoles.cs:58); rangebias 2000 at all call sites. Powerup time-item lead + jitter exemption, enemyplayers nofire/water/speed gates, roam-shell peel + recent-goal deprioritize all present & matching Base roles.qc:176-228.", result: fail }
+      - { kind: code, ref: "GoalRater.Rate still vlen straight-line (BotRoles.cs); rangebias 2000 at all call sites. Powerup time-item lead + jitter exemption, enemyplayers nofire/water/speed gates, roam-shell peel + recent-goal deprioritize all present & matching Base roles.qc:176-228.", result: fail }
     confidence: high
-    notes: "Unchanged by Waves 9-11. The HEADLINE divergence — straight-line distance instead of the waypoint Dijkstra cost, and the flat rangebias=2000 — is still open. The role dispatch (generic DM + per-gametype objective roles) remains live & wired. SetGoal still does A* only AFTER the (straight-line) pick."
+    notes: "Unchanged. The HEADLINE divergence — straight-line distance instead of the waypoint Dijkstra cost, and the flat rangebias=2000 — is still open. The role dispatch (generic DM + per-gametype objective roles) remains live & wired. SetGoal still does A* only AFTER the (straight-line) pick."
 
   - id: bot-ai.move.steer
     name: "Goal-stack steering + obstacle/step jump (havocbot_movetogoal)"
@@ -474,11 +485,11 @@ features:
     divergence_rationale: null
     gaps:
       - "QC's full movetogoal handling of teleport/ladder/box-volume waypoints, water swim-up, and the per-goal stop/turn logic is partially collapsed; complex waypoint traversal is less robust than stock. (UNCHANGED.)"
-      - "BotTracewalk (reachability test, separate from the brain danger check) still uses a hardcoded JumpStepHeight const = 48 rather than the live derivation; non-default physics doesn't adjust that one path. (Minor — the brain danger check and Steer reach are now live.)"
+      - "BotTracewalk (reachability test, separate from the brain danger check) still uses a hardcoded JumpStepHeight const = 48 rather than the live derivation; non-default physics doesn't adjust that one path. (Minor.)"
     verification:
-      - { kind: code, ref: "Steer reads sv_stepheight live + StepHeightLive+JumpHeightApex for the jump trace; the BRAIN danger check (BotBrain.cs:319) now reads JumpStepHeightLive (=StepHeightLive+JumpHeightApex*0.85 ≈ 70 @ stock), matching Base jumpstepheightvec. TravelCost ports waypoint_gettravelcost underwater/crouch/JUMP-source fall math; LinearCost bunnyhop 1.25x applies (Skill seeded in ForMap).", result: pass }
+      - { kind: code, ref: "Steer reads sv_stepheight live + StepHeightLive+JumpHeightApex for the jump trace; the BRAIN danger check reads JumpStepHeightLive (≈70 @ stock). TravelCost ports waypoint_gettravelcost underwater/crouch/JUMP-source fall math; LinearCost bunnyhop 1.25x applies (Skill seeded in ForMap).", result: pass }
     confidence: high
-    notes: "WAVE-10 FIX (gap closed): the brain's danger-check jump-step height is now JumpStepHeightLive (StepHeightLive + JumpHeightApex*0.85 ≈ 70 @ stock), matching Base bot_calculate_stepheightvec's jumpstepheightvec and the live Steer reach — the previous hardcoded-48 const divergence in the BRAIN path is gone. The public JumpStepHeight const (48) and BotTracewalk's local copy remain as compile-time defaults (Tracewalk still uses 48). Core 'walk to goal, jump over obstacles' faithful; jetpack/rocketjump are separate (missing) features."
+    notes: "Unchanged. Core 'walk to goal, jump over obstacles' faithful; the brain danger-check jump-step height is JumpStepHeightLive (≈70 @ stock). BotTracewalk's local copy still uses 48. jetpack/rocketjump are separate (missing) features."
 
   - id: bot-ai.move.bunnyhop
     name: "Bunnyhopping toward far goals (havocbot_bunnyhop)"
@@ -504,9 +515,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Bunnyhop gating (skill+moveskill/attacking/speed/ground/water/duck/deviation/jump-distance) vs havocbot_bunnyhop", result: pass }
+      - { kind: code, ref: "Bunnyhop gating (skill+moveskill/attacking/speed/ground/water/duck/deviation/jump-distance) vs havocbot_bunnyhop; suppressed when the danger brake engaged (WantBunnyhop gate)", result: pass }
     confidence: high
-    notes: "Unchanged. Reads the bunnyhop cvars at runtime; jump-distance-vs-remaining gate present; bot_moveskill folded into the skill gate (midair mutator zeroes MoveSkill on spawn)."
+    notes: "Unchanged. Reads the bunnyhop cvars at runtime; jump-distance-vs-remaining gate present; bot_moveskill folded into the skill gate (midair mutator zeroes MoveSkill on spawn). Bunnyhop intent is held separately (WantBunnyhop) so the post-danger-probe brake can suppress it."
 
   - id: bot-ai.move.danger
     name: "Danger look-ahead (lava/void/cliff/trigger_hurt) + evade"
@@ -536,11 +547,11 @@ features:
     divergence_rationale: null
     gaps:
       - "Danger evade is still brake-only: the QC lateral evadedanger vector (steer along the safe edge, distance scaled by skill) is collapsed into a reverse-velocity brake, so bots back straight off a ledge instead of sidestepping along it. (UNCHANGED.)"
-      - "Per-waypoint danger-cost ROUTING is inert: a Waypoint.Danger field exists and A* adds nb.Danger, but no botframe_updatedangerousobjects producer ever SETS Danger (it is always 0, BotPopulation.cs:203 notes it unported), so routing still does not avoid chronically dangerous waypoints — the consumer is dead. (UNCHANGED.)"
+      - "Per-waypoint danger-cost ROUTING is inert: a Waypoint.Danger field exists and A* adds nb.Danger, but no botframe_updatedangerousobjects producer ever SETS Danger (always 0), so routing still does not avoid chronically dangerous waypoints — the consumer is dead. (UNCHANGED.)"
     verification:
       - { kind: code, ref: "CheckDanger classifies SKY/cliff/lava/trigger_hurt 0-4; HitsTriggerHurt runs the exact tracebox_hits_box slab math. Waypoint.Danger added to A* but never assigned (botframe_updatedangerousobjects unported).", result: pass }
     confidence: high
-    notes: "Unchanged by Waves 9-11. The trigger_hurt overlap test is an exact port of QC tracebox_hits_box. The per-waypoint danger ROUTING consumer is wired but its producer is still missing (dead). The brake-vs-lateral-evade divergence is unchanged."
+    notes: "Unchanged. The trigger_hurt overlap test is an exact port of QC tracebox_hits_box. The per-waypoint danger ROUTING consumer is wired but its producer is still missing (dead). The brake-vs-lateral-evade divergence is unchanged."
 
   - id: bot-ai.combat.dodge
     name: "Combat movement (projectile dodge + retreat)"
@@ -549,10 +560,13 @@ features:
       - "server/bot/default/havocbot/havocbot.qc:havocbot_dodge"
       - "server/bot/default/havocbot/havocbot.qc:havocbot_movetogoal"
     port_refs:
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:HavocbotDodge"
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:CombatMovement"
     constants:
-      - { name: "dodge applies", base: "SUPERBOT only (skill>100)", port: "all skills", match: false }
-      - { name: "dodge basis", base: "specific bot_dodge projectiles by flight path", port: "generic strafe flip + HP-bias", match: false }
+      - { name: "dodge applies (SUPERBOT gate)", base: "SUPERBOT only (skill>100)", port: "HavocbotDodge SUPERBOT-gated (skill>100); generic CombatMovement strafe for all skills", match: true }
+      - { name: "dodge basis", base: "scan bot_dodge edicts, evade perpendicular to flight path; bestdanger=-20", port: "HavocbotDodge = faithful flight-path scan (bestDanger=-20); plus generic strafe-flip+HP-bias", match: true }
+      - { name: "dodge scale", base: "bound(0, 0.5 + (skill+bot_dodgeskill)*0.1, 1)", port: "clamp(0.5 + skill*0.1, 0, 1)", match: true }
+      - { name: "bot_dodge producer coverage", base: "~20+ projectile/beam types set bot_dodge", port: "3 (Blaster bolt, Porto grenade, PhaserTurret beam)", match: false }
     status:
       logic: partial
       values: partial
@@ -563,12 +577,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Combat movement is invented (periodic strafe-direction flip + health-advantage close/flee bias), not QC havocbot_dodge which sidesteps specific incoming projectiles by their flight path. (UNCHANGED — Wave 10 honestly deferred havocbot_dodge.)"
-      - "The SUPERBOT random-direction combat jitter (havocbot_movetogoal:1280-1307) is not reproduced; only the generic strafe stands in. (UNCHANGED.)"
+      - "Only 3 port projectiles flag Entity.BotDodge (Blaster bolt, Porto grenade, PhaserTurret beam) vs Base's ~20+ producers, so most incoming projectiles still aren't dodged even by a SUPERBOT. (NEW RESIDUAL after the dodge port.)"
+      - "Non-SUPERBOT bots still only do the generic CombatMovement strafe-flip + HP-bias (an invented behaviour), not a per-projectile dodge — Base also restricts havocbot_dodge to SUPERBOT, so this matches stock, but the generic strafe is not a Base behaviour. (UNCHANGED.)"
+      - "The SUPERBOT random-direction combat jitter (havocbot_movetogoal:1280-1307) is not reproduced. (UNCHANGED.)"
     verification:
-      - { kind: code, ref: "CombatMovement strafe-flip + HP bias blend; no bot_dodge projectile scan", result: fail }
+      - { kind: code, ref: "HavocbotDodge (BotBrain.cs:608) is a faithful port of havocbot.qc:1773 — SUPERBOT gate, bestdanger=-20, flight-path component removal, perpendicular vs back-away branches; called live from ThinkProduce (BotBrain.cs:462), scaled + checkdanger-vetoed + folded into the wish-move with an upward-dodge jump. CombatMovement strafe stands in for non-SUPERBOT.", result: pass }
     confidence: high
-    notes: "Unchanged — STILL OPEN (worst-gap). Functional (bots strafe and retreat when outgunned) but not a port of the QC dodge algorithm."
+    notes: "DRIFT FIX (2026-06-27): havocbot_dodge is NOW PORTED and live (HavocbotDodge), a faithful port of the QC flight-path projectile evade, SUPERBOT-gated exactly like Base. The SUPERBOT gate + dodge-basis constants now MATCH. Residual: only 3 port projectiles set Entity.BotDodge (vs Base's many), so dodge fires rarely; and the generic CombatMovement strafe remains the invented non-SUPERBOT fallback. Previously this row's worst-gap was 'havocbot_dodge not ported'."
 
   - id: bot-ai.special.jetpack_rocketjump
     name: "Jetpack navigation + rocketjump/jetpack trigger_hurt escape"
@@ -624,9 +639,9 @@ features:
     gaps:
       - "QC stores the latched keyboard move × sv_maxspeed; the port latches the normalized -1..1 move and applies maxspeed in the Steer caller — equivalent result, slightly different intermediate representation (cosmetic, not behavioral)."
     verification:
-      - { kind: code, ref: "KeyboardMovement quantizes the normalized local move onto keyboard dirs with the skill-tiered direction gating + re-key clock + anti-stuck cap, then BlendKeyboard blends back toward analog scaled by distance/bot_ai_keyboard_distance; called from Steer when Skill<10 (BotNavigation.cs:342). Line-compared to havocbot_keyboard_movement (havocbot.qc:272-341).", result: pass }
+      - { kind: code, ref: "KeyboardMovement quantizes the normalized local move onto keyboard dirs with the skill-tiered direction gating + re-key clock + anti-stuck cap, then BlendKeyboard blends back toward analog scaled by distance/bot_ai_keyboard_distance; called from Steer when Skill<10. Line-compared to havocbot_keyboard_movement (havocbot.qc:272-341).", result: pass }
     confidence: high
-    notes: "WAVE-10 FIX (missing→faithful, na→live): havocbot_keyboard_movement is now ported. Below skill 10 the bot quantizes its analog wish-move onto keyboard directions with the skill-tiered diagonal gating and a skill-scaled re-key clock, then blends back toward analog as it nears the goal (so close-in maneuvering stays smooth). Cvars (distance 250 / threshold 0.57) read live. Low-skill bots now strafe/turn coarser, matching stock instead of always emitting a precise analog move."
+    notes: "Unchanged (faithful, live). Below skill 10 the bot quantizes its analog wish-move onto keyboard directions with the skill-tiered diagonal gating + skill-scaled re-key clock, then blends back toward analog as it nears the goal. Cvars (distance 250 / threshold 0.57) read live."
 
   - id: bot-ai.scripting.commands
     name: "Bot scripting command queue (bot_cmd / scripting.qc)"
@@ -662,10 +677,11 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/Bot/BotPopulation.cs:ServerFrame"
       - "src/XonoticGodot.Server/Bot/BotPopulation.cs:Autoskill"
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:ReadSkillColumn"
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:Skill"
     constants:
       - { name: "skill (default)", base: "8 (server cfg)", port: "Cvars.Skill seeds BotSkill", match: true }
-      - { name: "per-bot skill modifiers", base: "12 randomized columns (move/dodge/ping/weapon/aggres/range/aim/offset/mouse/think/ai/keyboard)", port: "single BotSkill knob (+ MoveSkill carrying bot_moveskill)", match: false }
+      - { name: "per-bot skill modifiers", base: "12 randomized columns (move/dodge/ping/weapon/aggres/range/aim/offset/mouse/think/ai/keyboard)", port: "4 facets carried: single BotSkill knob + MoveSkill + AggresSkill (argv11) + AimSkill (argv13); other 8 folded", match: false }
       - { name: "skill_auto / autoskill", base: "0 / auto-tune to best human (5 s recheck, ±2 frag band, cap 17 / floor 0)", port: "Autoskill ported: 5 s recheck, bestplayer*factor±2 band, cap 17 / floor 0", match: true }
       - { name: "autoskill metric", base: "totalfrags (gross kills)", port: "ScoreFrags (net SCORE)", match: false }
     status:
@@ -676,11 +692,11 @@ features:
       audio: na
       liveness: partial
     intended_divergence: true
-    divergence_rationale: "The port deliberately folds QC's 12 randomized per-bot skill modifier columns into a single BotSkill knob (documented in BotPopulation/BotBrain). This keeps the same overall skill axis without reading the bots.txt skill columns or simulating per-facet variance; a population of equal-skill bots is more homogeneous than stock, but skill scaling of aim/reaction/aggression is preserved. (bot_moveskill is now also carried as BotNavigation.MoveSkill for the bunnyhop/keyboard gate, so the midair mutator's moveskill nuke works.)"
+    divergence_rationale: "The port deliberately folds the bulk of QC's 12 randomized per-bot skill modifier columns into a single BotSkill knob, carrying only the facets it can apply faithfully: bot_moveskill (bunnyhop/keyboard gate), bot_aggresskill (argv11, fire decision) and bot_aimskill (argv13, fire-cone factor). This keeps the same overall skill axis without simulating every per-facet variance; a population is more homogeneous than stock but skill scaling of aim/reaction/aggression is preserved."
     gaps:
-      - "The 12 per-bot skill-modifier columns remain folded into one knob (the intended divergence; bot_moveskill is the one facet now carried separately, for the bunnyhop + keyboard-movement gates)."
+      - "8 of the 12 per-bot skill-modifier columns remain folded into the single knob (the intended divergence); MoveSkill, AggresSkill (argv11) and AimSkill (argv13) are the three carried separately."
       - "autoskill uses ScoreFrags (net SCORE) rather than QC's totalfrags (gross kills) as the frag metric — a minor difference in what 'frags gained' means per window; logic/timing/band are otherwise faithful."
     verification:
-      - { kind: code, ref: "Autoskill ported line-for-line vs bot.qc:569-613 (best player vs best bot frags-since-check, ±2 factor band, cap 17/floor 0, middle-band keeps counters, no-human/no-bot resets); driven every 5 s from ServerFrame when skill_auto!=0. Single-knob skill confirmed (+ MoveSkill).", result: pass }
+      - { kind: code, ref: "Autoskill ported line-for-line vs bot.qc:569-613 (best player vs best bot frags-since-check, ±2 factor band, cap 17/floor 0); driven every 5 s from ServerFrame when skill_auto!=0. ReadSkillColumn parses argv11/argv13 into BotAggresSkill/BotAimSkill; single-knob skill + MoveSkill confirmed.", result: pass }
     confidence: high
-    notes: "Unchanged by Waves 9-11 (the keyboard-movement skill tiers now read the same single knob + MoveSkill). autoskill/skill_auto is ported and live; the single-knob skill simplification remains the intended divergence; only residual within this row: the totalfrags-vs-ScoreFrags metric nuance."
+    notes: "DRIFT FIX (2026-06-27, gap narrowed): the per-bot modifier set now carries FOUR facets (single knob + MoveSkill + AggresSkill argv11 + AimSkill argv13), up from 1-2 — bots.txt's two fire-relevant skill columns are now read and wired to the fire decision (bot-ai.aim.fire) and the fire-cone factor (bot-ai.aim.aimdir). autoskill/skill_auto is ported and live; the single-knob simplification for the remaining 8 columns remains the intended divergence; residual: the totalfrags-vs-ScoreFrags metric nuance."

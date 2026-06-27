@@ -1,12 +1,12 @@
 unit: mutator-multijump
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 7
   worst_gaps:
-    - "BuildMutatorsPrettyString (', Multi jump' scoreboard/votescreen label) override now EXISTS and the MutatorActivation.BuildMutatorsPrettyString aggregator exists, but it has NO live consumer in the Server project (no scoreboard/votescreen producer calls it). The machine-readable ':multijump' code tag IS live (consumed by the gamelog BuildMutatorsString chain, GameWorld.cs:876)."
     - "multijump_count is still not networked as a stat; whether predicted client re-jump grants stay synced with the server tally near the count limit is still untraced (unchanged, unknown/low)."
+    - "Per-client cl_multijump round-trip is structurally complete (allowlisted + provider-wired) but not runtime-verified end-to-end (no live sentcvar round-trip test)."
 features:
   - id: mutator-multijump.enable.registration
     name: "Registration + enable cvar (g_multijump is both switch and extra-jump count)"
@@ -17,7 +17,7 @@ features:
       - "mutators.cfg:474 (set g_multijump 0)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/MultijumpMutator.cs:59-60 (IsEnabled), :65-84 (Hook caches tuning cvars)"
-      - "src/XonoticGodot.Server/GameWorld.cs:511 (MutatorActivation.Apply on the live boot path)"
+      - "src/XonoticGodot.Server/GameWorld.cs:614 (MutatorActivation.Apply on the live boot path)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:60-69 (Apply: only IsEnabled mutators are Hook()ed)"
     constants:
       - { name: "g_multijump default", base: "0 (disabled)", port: "0 via cvar store; field fallback MaxJumps=1 (unused when disabled because Hook() is not called)", match: true }
@@ -34,7 +34,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "[Mutator] attr -> Mutators.All; MutatorActivation.Apply() at GameWorld.cs:511 calls Add()->Hook() only for IsEnabled mutators; Hook() subscribes PlayerPhysics + PlayerJump chains", result: pass }
+      - { kind: code, ref: "[Mutator] attr -> Mutators.All; MutatorActivation.Apply() at GameWorld.cs:614 calls Add()->Hook() only for IsEnabled mutators; Hook() subscribes PlayerPhysics + PlayerJump chains", result: pass }
     confidence: high
     notes: "Unchanged this audit. The cvar value is simultaneously the enable switch AND the extra-jump count (-1 = infinite). CSQC registers always-true and reads STAT(MULTIJUMP); the port runs a single shared physics path and only hooks the mutator when g_multijump!=0, so its in-hook `MaxJumps==0 -> return` guard is effectively dead (mirrors Base CSQC's `if(!PHYS_MULTIJUMP) return`). Tuning cvars are cached in Hook() from the loaded mutators.cfg store; a mid-match g_multijump* change is not re-read until Apply() re-runs (same caching pattern as bloodloss; no live-reread test was performed). Base stats.qh:153-167 + mutators.cfg:471-479 re-verified 2026-06-25: all defaults unchanged."
 
@@ -112,9 +112,9 @@ features:
       - "mutators.cfg:473,475 (seta cl_multijump -1; set g_multijump_client 1)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/MultijumpMutator.cs:46 (ClientDefault field), :54 (ClientMultijumpProvider hook), :82 (ClientDefault read from g_multijump_client cvar), :110-114 (gate: provider->-1->ClientDefault substitution, >1 -> return)"
-      - "src/XonoticGodot.Server/Commands.cs:198 (\"cl_multijump\" NOW IN SentCvarAllowlist), :404-405 (ClientMultijumpProvider assigned in Commands ctor: e is Player p ? (int)GetClientCvarFloat(p,\"cl_multijump\",-1f) : -1), :2200-2214 (CmdSentCvar stores allowlisted names into the per-client store)"
+      - "src/XonoticGodot.Server/Commands.cs:228 (\"cl_multijump\" IN SentCvarAllowlist, declared at :210), :550-551 (ClientMultijumpProvider assigned in Commands ctor: e is Player p ? (int)GetClientCvarFloat(p,\"cl_multijump\",-1f) : -1), :3201 (CmdSentCvar gates on SentCvarAllowlist before storing into the per-client store), :333 (GetClientCvarFloat reads it back)"
     constants:
-      - { name: "cl_multijump (replicated per-client field) default", base: "-1 (server decides)", port: "provider reads GetClientCvarFloat(p,\"cl_multijump\",-1f); cl_multijump is now allowlisted so a client `sentcvar cl_multijump <n>` lands in the per-client store and is read back", match: true }
+      - { name: "cl_multijump (replicated per-client field) default", base: "-1 (server decides)", port: "provider reads GetClientCvarFloat(p,\"cl_multijump\",-1f) (Commands.cs:551); cl_multijump is allowlisted (Commands.cs:228) so a client `sentcvar cl_multijump <n>` passes the CmdSentCvar gate (:3201), lands in the per-client store, and is read back", match: true }
       - { name: "g_multijump_client (STAT MULTIJUMP_CLIENT, the server default for cl_multijump==-1) default", base: "1 (true)", port: "ClientDefault = (int)Cvars.GetFloat(\"g_multijump_client\") -> 1 (mutators.cfg:475); read and honored", match: true }
       - { name: "disable rule", base: "client_multijump > 1 -> return (no multijump for this client)", port: "clientMultijump > 1 -> return (logic present and fed by a LIVE, now-stored provider value)", match: true }
     status:
@@ -128,9 +128,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "FIXED since baseline. SentCvarAllowlist now contains 'cl_multijump' (Commands.cs:198) -> CmdSentCvar (Commands.cs:2200-2214) accepts and stores the client's replicated value. ClientMultijumpProvider assigned in the live Commands ctor (Commands.cs:404-405, constructed on the boot path) reading GetClientCvarFloat(p,'cl_multijump',-1f) from that store. Mutator gate (MultijumpMutator.cs:110-114) substitutes ClientDefault on -1 and returns on >1. g_multijump_client read at :82. Same end-to-end pattern as the now-working cl_dodging provider. The whole per-client opt-out(0)/cap(>1)/default(-1) path now fires.", result: pass }
+      - { kind: code, ref: "Verified 2026-06-27 (lines re-resolved). SentCvarAllowlist contains 'cl_multijump' (Commands.cs:228) -> CmdSentCvar gates on the allowlist at Commands.cs:3201 and stores the client's replicated value. ClientMultijumpProvider assigned in the live Commands ctor (Commands.cs:550-551) reading GetClientCvarFloat(p,'cl_multijump',-1f) (:333) from that store. Mutator gate (MultijumpMutator.cs:110-114) substitutes ClientDefault on -1 and returns on >1. g_multijump_client read at :82. Same end-to-end pattern as the now-working cl_dodging provider (Commands.cs:560). The whole per-client opt-out(0)/cap(>1)/default(-1) path is wired.", result: pass }
     confidence: high
-    notes: "FIX since baseline. The two seams the baseline flagged are both now closed: (1) 'cl_multijump' was ADDED to SentCvarAllowlist (Commands.cs:198, with an explaining comment referencing the REPLICATE field), so the client's replicated value is no longer dropped by CmdSentCvar -- it lands in the per-client store; (2) ClientMultijumpProvider is assigned in the live Commands ctor (Commands.cs:404-405) reading that store. The mutator-side gate logic was already correct. Net result: a client who sets cl_multijump 0 (opt out) or 2+ (cap off) is now honored, and -1 (default) defers to the server's g_multijump_client. The ready-gate truthiness factor and the `>1 -> return` cap in rejump_grant are now fed real per-client values. NOTE: Base REPLICATE type is `bool` at qc:5 but `int` at qh:4 REPLICATE_INIT; the port stores/reads as int (via GetClientCvarFloat -> (int)) which correctly carries the -1/0/1/2+ value semantics the gate logic needs. Not runtime-verified end-to-end (no live sentcvar round-trip test), but the wiring is structurally complete and mirrors a verified sibling (dodging)."
+    notes: "Faithful + live (unchanged this audit; line refs re-resolved 2026-06-27). The two seams the original baseline flagged are both closed: (1) 'cl_multijump' is in SentCvarAllowlist (Commands.cs:228, with an explaining comment referencing the REPLICATE field), so the client's replicated value is no longer dropped by CmdSentCvar (gate at :3201) -- it lands in the per-client store; (2) ClientMultijumpProvider is assigned in the live Commands ctor (Commands.cs:550-551) reading that store. The mutator-side gate logic was already correct. Net result: a client who sets cl_multijump 0 (opt out) or 2+ (cap off) is now honored, and -1 (default) defers to the server's g_multijump_client. The ready-gate truthiness factor and the `>1 -> return` cap in rejump_grant are now fed real per-client values. NOTE: Base REPLICATE type is `bool` at qc:5 but `int` at qh:4 REPLICATE_INIT; the port stores/reads as int (via GetClientCvarFloat -> (int)) which correctly carries the -1/0/1/2+ value semantics the gate logic needs. Not runtime-verified end-to-end (no live sentcvar round-trip test), but the wiring is structurally complete and mirrors a verified sibling (dodging)."
 
   - id: mutator-multijump.jump.dodging_redirect
     name: "Dodging horizontal-velocity redirect toward movement wish on a re-jump (g_multijump_dodging)"
@@ -195,22 +195,22 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/MultijumpMutator.cs:170 (BuildMutatorsString override -> s + \":multijump\"), :173 (BuildMutatorsPrettyString override -> s + \", Multi jump\")"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108-114 (BuildMutatorsString aggregator), :121-127 (BuildMutatorsPrettyString aggregator)"
-      - "src/XonoticGodot.Server/GameWorld.cs:876 (MutatorActivation.BuildMutatorsString(\"\") consumed by gamelog init -- LIVE for the machine tag)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1117 (MutatorActivation.BuildMutatorsString(\"\") consumed by gamelog init, gated by sv_eventlog -- LIVE for the machine tag)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1128 (MutatorActivation.BuildMutatorsPrettyString(\"\") -> 'modifications' serverinfo key at match init), :1392 (SendMutatorsWelcome, called at :1291 on the real-client welcome path) -- LIVE for the pretty label"
     constants:
       - { name: "code tag", base: "\":multijump\"", port: "\":multijump\" via override; aggregated + consumed by gamelog (LIVE)", match: true }
-      - { name: "pretty tag", base: "\", Multi jump\"", port: "\", Multi jump\" via override; aggregator exists but NO live consumer in Server (no scoreboard/votescreen producer)", match: true }
+      - { name: "pretty tag", base: "\", Multi jump\"", port: "\", Multi jump\" via override; aggregated + consumed by SendMutatorsWelcome / 'modifications' serverinfo (LIVE)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
       presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "BuildMutatorsPrettyString (', Multi jump') override and MutatorActivation.BuildMutatorsPrettyString aggregator both exist, but the aggregator has NO live consumer in the Server project -- nothing calls BuildMutatorsPrettyString() to feed a scoreboard/votescreen line (grep over src/XonoticGodot.Server: zero callers). So the human-readable label never reaches a UI. The machine ':multijump' tag IS live (consumed by gamelog init, GameWorld.cs:876, gated by sv_eventlog)."
+    gaps: []
     verification:
-      - { kind: code, ref: "FIX since baseline. Overrides at MultijumpMutator.cs:170,173. MutatorActivation.BuildMutatorsString aggregator (MutatorActivation.cs:108) is CALLED at GameWorld.cs:876 -> ':multijump' is live. BuildMutatorsPrettyString aggregator (MutatorActivation.cs:121) exists but grep BuildMutatorsPrettyString\\( over src/XonoticGodot.Server returns zero callers -> pretty tag has no live consumer.", result: pass }
+      - { kind: code, ref: "FIX since baseline. Overrides at MultijumpMutator.cs:170,173. BuildMutatorsString aggregator (MutatorActivation.cs:108) CALLED at GameWorld.cs:1117 (gamelog init) -> ':multijump' live. BuildMutatorsPrettyString aggregator (MutatorActivation.cs:121) now CALLED at GameWorld.cs:1128 ('modifications' serverinfo at match init) AND :1392 in SendMutatorsWelcome, which is invoked at :1291 on the non-bot client-welcome path -> ', Multi jump' pretty label reaches a real client. grep BuildMutatorsPrettyString over src/XonoticGodot.Server now returns live callers (was zero at baseline).", result: pass }
     confidence: high
-    notes: "FIX since baseline. The baseline recorded this as fully missing (no overrides, no aggregator). Both per-mutator overrides now exist (matching the now-pervasive pattern across ~20 mutators), and the central MutatorActivation aggregators were added. The machine-readable ':multijump' code tag is now produced AND consumed live (gamelog BuildMutatorsString chain at GameWorld.cs:876). The ', Multi jump' pretty label is produced and aggregatable but has no downstream consumer yet (no scoreboard/votescreen string is built from BuildMutatorsPrettyString in the Server project) -- hence liveness: partial. Cosmetic; does not affect gameplay."
+    notes: "FIX since baseline (liveness partial -> live). At the prior audit both per-mutator overrides + the central MutatorActivation aggregators existed, but the pretty-string aggregator had NO live consumer (only the machine ':multijump' tag was consumed by the gamelog chain). Since then a live consumer was added: GameWorld.SendMutatorsWelcome (GameWorld.cs:1387) calls MutatorActivation.BuildMutatorsPrettyString(\"\"), strips the leading ', ', and surfaces 'Active modifications: ^3<list>' to the connecting real client via the per-client chat sink (QC SendWelcomeMessage non-campaign branch, server/client.qc:1107); it is invoked at GameWorld.cs:1291 on the client-welcome path for every non-bot join. The same pretty string is also stored into the 'modifications' serverinfo key at match init (GameWorld.cs:1128). The machine ':multijump' code tag remains live via the gamelog BuildMutatorsString chain (GameWorld.cs:1117, gated by sv_eventlog). Both tags are now produced AND consumed on the live path; cosmetic, no gameplay effect."

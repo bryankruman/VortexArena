@@ -1,13 +1,12 @@
 unit: mutator-random_items
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 11
   worst_gaps:
     - "Item_IsDefinitionAllowed is approximated by def.ItemDef.IsAllowed (MutatorBlocked spawnflag only), not the broader QC allow-list / gametype gates — a latent narrow divergence under mutator-restricted item sets, harmless for stock pools."
-    - "Instagib's RandomItems_GetRandomItemClassName override is intentionally NOT wired (Overkill's IS): InstagibMutator has no RandomItemsGetClassName subscriber, so under instagib the random pool falls through to vanilla rather than substituting vaporizer_cells / extralife. Deferred until those Instagib items are ported (their classnames cannot resolve to a pickup yet)."
-    - "No real gameplay-logic gaps remain after Wave 6b: the map-replacement half (FilterItem + ItemTouched), recursion guard, ok_item flag, mod-injection hook (Overkill), and mutator-string hooks are all ported and live. Two minor caveats: Instagib's RandomItems override is intentionally deferred, and Item_IsDefinitionAllowed is approximated by the MutatorBlocked spawnflag."
+    - "No real gameplay-logic gaps remain. The mod-injection hook is now FULLY wired: BOTH the Overkill AND the Instagib RandomItems_GetRandomItemClassName overrides are live (Instagib substitutes vaporizer_cells/extralife/invisibility/speed — its items are now ported and resolve to real pickups). Only minor caveat: Item_IsDefinitionAllowed is approximated by the MutatorBlocked spawnflag."
 features:
   - id: random_items.gate.enable
     name: "Enable gate + mutator registration (g_random_items || g_random_loot)"
@@ -128,28 +127,28 @@ features:
       - "common/mutators/mutator/random_items/sv_random_items.qc:56 (CALLHOOK at entry of RandomItems_GetRandomItemClassName)"
       - "common/mutators/mutator/overkill/sv_overkill.qc:58 (ok override); common/mutators/mutator/instagib/sv_instagib.qc:102 (instagib override)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:675 (RandomItemsGetClassName HookChain); :682 (FireRandomItemsGetClassName)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:858 (RandomItemsGetClassName HookChain); :865 (FireRandomItemsGetClassName)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:305 (CALLHOOK at GetRandomItemClassName entry)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:119 (hook Add); :174 (OnRandomItemsGetClassName override)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:131 (hook Add); :193 (OnRandomItemsGetClassName override)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/InstagibMutator.cs:152 (hook Add); :773 (OnRandomItemsGetClassName override)"
     constants:
-      - { name: "hook event EV_RandomItems_GetRandomItemClassName(prefix -> classname)", base: "present", port: "RandomItemsGetClassName HookChain (MutatorHooks.cs:675)", match: true }
-      - { name: "overkill pool override (g_overkill_items + okhmg/okrpc)", base: "RandomItems_GetRandomOverkillItemClassName (sv_overkill.qc:21)", port: "OnRandomItemsGetClassName (OverkillMutator.cs:174-205)", match: true }
-      - { name: "instagib pool override (vaporizer_cells/extralife)", base: "sv_instagib.qc:102", port: "none (deferred until items ported)", match: false }
+      - { name: "hook event EV_RandomItems_GetRandomItemClassName(prefix -> classname)", base: "present", port: "RandomItemsGetClassName HookChain (MutatorHooks.cs:858)", match: true }
+      - { name: "overkill pool override (g_overkill_items + okhmg/okrpc)", base: "RandomItems_GetRandomOverkillItemClassName (sv_overkill.qc:21)", port: "OnRandomItemsGetClassName (OverkillMutator.cs:193)", match: true }
+      - { name: "instagib pool override (vaporizer_cells/extralife/invisibility/speed)", base: "RandomItems_GetRandomInstagibItemClassName (sv_instagib.qc:24); hook at :102", port: "OnRandomItemsGetClassName (InstagibMutator.cs:773-799)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The Instagib override (sv_instagib.qc:102, substituting vaporizer_cells/extralife) is NOT wired: InstagibMutator has no RandomItemsGetClassName subscriber. Deferred until those Instagib items are ported (their classnames cannot resolve to a Pickup yet). Under instagib the random pool falls through to vanilla."
+    gaps: []
     verification:
-      - { kind: code, ref: "GetRandomItemClassName (:302) fires MutatorHooks.FireRandomItemsGetClassName(prefix) BEFORE the vanilla fallback; OverkillMutator.OnRandomItemsGetClassName (:174) subscribes (Add at :119, only when Overkill enabled) and substitutes g_overkill_items + okhmg/okrpc weighted by g_{prefix}_{canonical}_probability, consuming the pick. InstagibMutator has no such subscriber (grep returns nothing).", result: pass }
+      - { kind: code, ref: "GetRandomItemClassName (:302) fires MutatorHooks.FireRandomItemsGetClassName(prefix) BEFORE the vanilla fallback. OverkillMutator.OnRandomItemsGetClassName (:193) subscribes (Add at :131) and substitutes g_overkill_items + okhmg/okrpc. InstagibMutator.OnRandomItemsGetClassName (:773) subscribes (Add at :152) and weighted-picks over the fixed instagib pool {vaporizer_cells, extralife, invisibility, speed} by g_{prefix}_{canonical}_probability, returning true to consume the pick. Both Hook() calls run ONLY when the mutator IsEnabled (MutatorActivation.Apply gates on IsEnabled at MutatorActivation.cs:84, called live from GameWorld.cs:614). The 4 instagib items are now ported (InstagibItems.cs:27/70, PowerupItem.cs:126/155, registered ItemSpawnFuncs.cs:62/63/72/74) so their classnames resolve to real pickups via RandomItemsMutator.ResolvePickup.", result: pass }
     confidence: high
-    notes: "FIX vs baseline (was missing/na): the mod-injection hook seam exists and the Overkill override is live, so randomitems-overkill.cfg's overkill probabilities are now reachable. liveness=partial because Instagib's override remains intentionally deferred."
+    notes: "FIX vs baseline: the Instagib override is now WIRED and live (baseline recorded it as missing/deferred, liveness=partial). InstagibMutator.OnRandomItemsGetClassName subscribes when instagib is enabled and substitutes the instagib pool; its items (vaporizer_cells/extralife/invisibility/speed) are ported and resolve. Both mod-injection overrides (Overkill + Instagib) are now live → liveness=live, instagib constant match=true, gap cleared."
 
   - id: random_items.map.filter_replace
     name: "Map-item replacement on spawn (FilterItem -> RandomItems_ReplaceMapItem)"
@@ -161,8 +160,8 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:129 (OnFilterItem)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:160 (ReplaceMapItem)"
-      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:116 (FireFilterItem caller)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:622 (FilterItem HookChain)"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:119 (FireFilterItem caller)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:805 (FilterItem HookChain); :812 (FireFilterItem)"
     constants:
       - { name: "g_random_items_replace_* default", base: "\"random\"", port: "read from cvar g_random_items_replace_{classname} (RandomItemsMutator.cs:165)", match: true }
       - { name: "new_item.lifetime", base: "-1 (permanent)", port: "ItemIsLoot=false; SpawnFuncs.TrySpawn (non-loot StartItem path) (:191-196)", match: true }
@@ -191,8 +190,8 @@ features:
       - "common/mutators/mutator/random_items/sv_random_items.qc:347 (ItemTouched hook, CBC_ORDER_LAST)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:140 (OnItemTouched)"
-      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:417 (FireItemTouched caller)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:649 (ItemTouched HookChain)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:418 (FireItemTouched caller)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:832 (ItemTouched HookChain); :839 (FireItemTouched)"
     constants:
       - { name: "Item_ScheduleRespawn(new_item) + delete(item)", base: "respawn the replacement, drop original", port: "ScheduleRespawn(newItem) + RemoveItem(item) (:147-148)", match: true }
       - { name: "ITEM_IS_LOOT skip", base: "present (:355)", port: "if (item.ItemIsLoot) return false (:144)", match: true }
@@ -234,7 +233,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "MutatorHooks.PlayerDies.Call fired live from DamageSystem.cs:589; OnPlayerDies count/position math matches QC. The items it spawns are real pickups (random_items.loot.spawn_item).", result: pass }
+      - { kind: code, ref: "MutatorHooks.PlayerDies.Call fired live from DamageSystem.cs:658; OnPlayerDies count/position math matches QC. The items it spawns are real pickups (random_items.loot.spawn_item).", result: pass }
     confidence: high
     notes: "Count + spawn position faithful, hook genuinely live; the loot it drops is functional."
 

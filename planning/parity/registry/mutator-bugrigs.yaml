@@ -5,9 +5,8 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 7
   worst_gaps:
-    - "player.disableclientprediction = 2 is not set (Base force-disables prediction per-tick); port treats bugrigs as server-authoritative so likely inert, but this is UNVERIFIED under the port's net smoothing/error-compensation layer."
-    - "RaceCarPhysics rendered rig fidelity (surface-snap + body lean + smoothing) is logic/value-faithful line-for-line but has NO in-game visual verification (presentation: unknown)."
-    - "BuildMutatorsPrettyString contribution (', Bug rigs') is implemented but the MutatorActivation.BuildMutatorsPrettyString *chain* has no live consumer in the port (no scoreboard/votescreen reader) — the pretty token is dead; only the machine ':bugrigs' token is live (consumed at gamelog init)."
+    - "RaceCarPhysics rendered rig fidelity (surface-snap + body lean + smoothing) is logic/value-faithful line-for-line but has NO in-game visual verification (presentation: unknown). The forced chase camera that makes it observable IS now ported, but the integrated rig feel/rendered body has still not been eyeballed."
+    - "player.disableclientprediction = 2 is not written, but this is now a VERIFIED intended no-op: the port's client predictor (EntityMovementStep) runs the SAME RaceCarPhysics via the shared MutatorHooks.PMPhysics chain, so prediction is already in lockstep with authority and there is nothing for a prediction-disable flag to suppress."
 features:
   - id: mutator-bugrigs.registration.cvars
     name: "Mutator registration + 15 g_bugrigs_* cvar load (bugrigs_SetVars)"
@@ -17,8 +16,8 @@ features:
       - "common/mutators/mutator/bugrigs/bugrigs.qc:65-82 bugrigs_SetVars"
       - "mutators.cfg:503-517"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:78 SetVars"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:55 IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:89 SetVars"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:66 IsEnabled"
       - "assets/data/xonotic-data.pk3dir/mutators.cfg:503-517"
     constants:
       - { name: "g_bugrigs", base: "0", port: "0", match: true }
@@ -47,8 +46,8 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "BugrigsMutator.SetVars (:78-95) reads all 15 g_bugrigs_* cvars vs bugrigs.qc:65-82; defaults byte-diffed assets mutators.cfg:503-517 == Base mutators.cfg:503-517 (identical, incl. friction_floor 50 / friction_brake 950 / friction_air 0.00001)", result: pass }
-      - { kind: code, ref: "IsEnabled (:55) = Api.Cvars.GetFloat(\"g_bugrigs\")!=0 mirrors cvar(\"g_bugrigs\") gate", result: pass }
+      - { kind: code, ref: "BugrigsMutator.SetVars (:89-106) reads all 15 g_bugrigs_* cvars vs bugrigs.qc:65-82; defaults byte-diffed assets mutators.cfg:503-517 == Base mutators.cfg:503-517 (identical, incl. friction_floor 50 / friction_brake 950 / friction_air 0.00001)", result: pass }
+      - { kind: code, ref: "IsEnabled (:66) = Api.Cvars.GetFloat(\"g_bugrigs\")!=0 mirrors cvar(\"g_bugrigs\") gate", result: pass }
     confidence: high
     notes: "All 15 cvars present with identical Base defaults (verified by direct diff of both mutators.cfg). SetVars called from Hook() (QC MUTATOR_ONADD). IsEnabled has the same no-exclusion shape as NIX (g_bugrigs!=0 only) but bugrigs has no instagib/arena mutual-exclusion in Base, so that is faithful, not a gap."
   - id: mutator-bugrigs.activation.liveness
@@ -58,9 +57,9 @@ features:
       - "common/mutators/base.qh Mutator_Add"
       - "common/mutators/mutator/bugrigs/bugrigs.qc:16 REGISTER_MUTATOR"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:61 Hook"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:72 Hook"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs Apply"
-      - "src/XonoticGodot.Server/GameWorld.cs:535 MutatorActivation.Apply()"
+      - "src/XonoticGodot.Server/GameWorld.cs:614 MutatorActivation.Apply()"
     constants: []
     status:
       logic: faithful
@@ -73,9 +72,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "[Mutator] attr -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:535, on the live server boot path, comment 5b) -> Hook() Adds _onPmPhysics to MutatorHooks.PMPhysics + _onPlayerPhysics to MutatorHooks.PlayerPhysics", result: pass }
+      - { kind: code, ref: "[Mutator] attr -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:614, on the live server boot path, comment 5b) -> Hook() Adds _onPmPhysics to MutatorHooks.PMPhysics + _onPlayerPhysics to MutatorHooks.PlayerPhysics", result: pass }
     confidence: high
-    notes: "Apply() is on the live server boot path (GameWorld.cs:535, before map entities spawn). Idempotent Add mirrors QC m_added. Hook() also calls SetVars()."
+    notes: "Apply() is on the live server boot path (GameWorld.cs:614, before map entities spawn). Idempotent Add mirrors QC m_added. Hook() also calls SetVars()."
   - id: mutator-bugrigs.pm_physics.replace_move
     name: "PM_Physics hook fully replaces the move with RaceCarPhysics"
     layer: [shared]
@@ -83,8 +82,8 @@ features:
       - "common/mutators/mutator/bugrigs/bugrigs.qc:311-324 MUTATOR_HOOKFUNCTION(bugrigs, PM_Physics)"
       - "ecs/systems/physics.qc:108 else-if MUTATOR_CALLHOOK(PM_Physics)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:100 OnPmPhysics"
-      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:278 (else-if CallPmPhysics)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:133 OnPmPhysics"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:364 (else-if CallPmPhysics)"
     constants: []
     status:
       logic: faithful
@@ -97,7 +96,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnPmPhysics (:100-114) vs bugrigs.qc:311-324: gate (g_bugrigs && IsPlayer), restore Angles=BugrigsPrevAngles, RaceCarPhysics, return true. IsPlayer = (Flags & EntFlags.Client)!=0 mirrors IS_PLAYER", result: pass }
+      - { kind: code, ref: "OnPmPhysics (:133-147) vs bugrigs.qc:311-324: gate (g_bugrigs && IsPlayer), restore Angles=BugrigsPrevAngles, RaceCarPhysics, return true. IsPlayer = (Flags & EntFlags.Client)!=0 mirrors IS_PLAYER", result: pass }
       - { kind: code, ref: "Branch order verified identical: PlayerPhysics.cs WaterJump->PMPhysics->Fly->Swim->Ladder->Jetpack->Ground->Air == physics.qc:98-108+ FL_WATERJUMP->PM_Physics->MOVETYPE_FLY/IsFlying->SWIMMING->ladder. bugrigs reached before all fallbacks, so it replaces the move", result: pass }
       - { kind: test, ref: "MutatorBatchT51Tests Bugrigs_PMPhysics_ReplacesMove_OnlyWhenEnabled / Bugrigs_Disabled_DoesNotReplaceMove (per suite green)", result: pass }
     confidence: high
@@ -108,26 +107,26 @@ features:
     base_refs:
       - "common/mutators/mutator/bugrigs/bugrigs.qc:326-335 MUTATOR_HOOKFUNCTION(bugrigs, PlayerPhysics)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:117 OnPlayerPhysics"
-      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:189 MutatorHooks.PlayerPhysics.Call"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:150 OnPlayerPhysics"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:260 MutatorHooks.PlayerPhysics.Call"
     constants:
-      - { name: "disableclientprediction", base: "2", port: "not set", match: false }
+      - { name: "disableclientprediction", base: "2", port: "not set (verified inert)", match: false }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
-    intended_divergence: false
-    divergence_rationale: null
-    gaps:
-      - "player.disableclientprediction = 2 is not set (Base force-disables prediction every tick for a bugrigs player). The port treats bugrigs as server-authoritative so this is LIKELY inert, but that is unverified under the port's net smoothing / cl_movement_errorcompensation layer — could surface as camera/position drift for a bugrigs client."
+    intended_divergence: true
+    divergence_rationale: "player.disableclientprediction = 2 is intentionally NOT written. In Base it is a DP server->client engine flag (dpextensions) that tells the native DarkPlaces client to skip its built-in movement prediction for the rig; no QC reads it. VERIFIED inert in the port: the client-prediction carrier (game/net EntityMovementStep -> PlayerPhysics.Move -> CallPmPhysics) runs the SAME RaceCarPhysics through the shared static MutatorHooks.PMPhysics chain on the shared Api collision world (PlayerPhysics.cs:364/446-449), so the predicted rig is already in lockstep with authority — there is nothing for a prediction-disable flag to suppress. Writing to a field nothing reads would be dead code. Same stance as Race's freeze."
+    gaps: []
     verification:
-      - { kind: code, ref: "OnPlayerPhysics (:117-125) vs bugrigs.qc:326-335: g_bugrigs gate + BugrigsPrevAngles = Angles present; disableclientprediction write is explicitly commented as a follow-up, NOT implemented", result: partial }
-      - { kind: test, ref: "MutatorBatchT51Tests Bugrigs_PlayerPhysics_StashesPrevAngles (per suite green)", result: pass }
+      - { kind: code, ref: "OnPlayerPhysics (:150-161) vs bugrigs.qc:326-335: g_bugrigs gate + BugrigsPrevAngles = Angles present and live (fired at PlayerPhysics.cs:260-261). disableclientprediction write intentionally omitted per divergence_rationale", result: pass }
+      - { kind: code, ref: "Inertness verified: EntityMovementStep (client predictor, game/net) drives PlayerPhysics.Move which calls MutatorHooks.PMPhysics.Call -> RaceCarPhysics (PlayerPhysics.cs:364,446-449) — same shared sim as authority, so client prediction already matches the rig move", result: pass }
+      - { kind: test, ref: "MutatorBatchT51Tests Bugrigs_PlayerPhysics_StashesPrevAngles (:217) (per suite green)", result: pass }
     confidence: high
-    notes: "Prevangles stash is faithful and live (fired at PlayerPhysics.cs:189). The disableclientprediction=2 write is the only missing piece; its harmlessness in the port is plausible but UNVERIFIED (no automated camera coverage; see camera-drift memory note)."
+    notes: "RECLASSIFIED 2026-06-25: was logic/values=partial with an unverified disableclientprediction gap. The omission is now a VERIFIED intended no-op (the shared PMPhysics chain runs RaceCarPhysics in the client predictor too, giving the same lockstep the DP flag would protect). Prevangles stash is faithful and live."
   - id: mutator-bugrigs.racecar.drive_model
     name: "RaceCarPhysics drive model (steer/accel/friction, planar surface-align vs FLY, body pitch/roll, smoothing) + racecar_angle"
     layer: [shared]
@@ -135,8 +134,8 @@ features:
       - "common/mutators/mutator/bugrigs/bugrigs.qc:104-306 RaceCarPhysics"
       - "common/mutators/mutator/bugrigs/bugrigs.qc:86-102 racecar_angle"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:162 RaceCarPhysics"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:147 RacecarAngle"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:198 RaceCarPhysics"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:183 RacecarAngle"
     constants:
       - { name: "responsiveness f = 1/(1+(|v|/speed_ref)^speed_pow)", base: "speed_ref=400, speed_pow=2", port: "400, 2", match: true }
       - { name: "racecar_angle angle_mult = forward/(800+forward)", base: "800", port: "800", match: true }
@@ -155,7 +154,7 @@ features:
     divergence_rationale: "Planar branch adds an explicit Api.Entities.SetOrigin(self, neworigin) because the port engine does not auto-integrate a NOCLIP entity's trace-derived origin the way DarkPlaces MOVETYPE_NOCLIP does; this reproduces the same net displacement Base gets from the engine push. Pitch-convention is per-call-site: FixedVecToAngles for the planar surface-align (bugrigs.qc:242-248 vectoangles), plain VecToAngles2 for the final body pitch/roll (bugrigs.qc:271-278) and the smoothing pass (bugrigs.qc:303), matching the QC vectoangles/vectoangles2 originals (the intermediate body angle is re-vectored by the smoothing pass, so the un-negated form is faithful)."
     gaps: []
     verification:
-      - { kind: code, ref: "Line-by-line RaceCarPhysics (:162-352) vs bugrigs.qc:104-306: reverse-speeding digital-brake, f responsiveness, steerfactor/accelfactor reverse_spinning/speeding branches, accel<0 vs >=0 friction_floor/brake branches incl reverse_stopping, planar 3-tracebox align (up 1024, xy move, down-to-surface) + <0.5 cancel + SET/UNSET_ONGROUND + NOCLIP, FLY fallback, 4u body-pitch trace, racecar_angle (:147 vs :86-102) all match", result: pass }
+      - { kind: code, ref: "Line-by-line RaceCarPhysics (:198-388) vs bugrigs.qc:104-306: reverse-speeding digital-brake, f responsiveness, steerfactor/accelfactor reverse_spinning/speeding branches, accel<0 vs >=0 friction_floor/brake branches incl reverse_stopping, planar 3-tracebox align (up 1024, xy move, down-to-surface) + <0.5 cancel + SET/UNSET_ONGROUND + NOCLIP, FLY fallback, 4u body-pitch trace, racecar_angle (:183 vs :86-102) all match", result: pass }
       - { kind: test, ref: "MutatorBatchT51Tests asserts rig movetype becomes Noclip/Fly after the hook (per suite green)", result: pass }
     confidence: medium
     notes: "Algorithm and all 6 numeric constants match Base line-for-line (MathF vs QC float math). presentation downgraded faithful->unknown: the drive model's whole purpose is the rendered rig orientation (surface-snap + body lean + smoothing writes to self.Angles), but there is NO in-game/visual verification of the integrated rig feel or rendered body fidelity, and the forced chase camera that makes it observable is itself missing (see chase_camera row). Per SCHEMA rule 5, unverified visible fidelity is 'unknown', not 'faithful'."
@@ -165,8 +164,8 @@ features:
     base_refs:
       - "common/mutators/mutator/bugrigs/bugrigs.qc:339-344 MUTATOR_HOOKFUNCTION(bugrigs, ClientConnect)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:120 OnClientConnect"
-      - "src/XonoticGodot.Server/GameWorld.cs:1011 bugrigsConnect.OnClientConnect(p)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:126 OnClientConnect"
+      - "src/XonoticGodot.Server/GameWorld.cs:1336 bugrigsConnect.OnClientConnect(p)"
     constants:
       - { name: "chase_active", base: "1 (settemp via stuffcmd on ClientConnect)", port: "1 (Api.Cvars.Set, human-only)", match: true }
     status:
@@ -180,7 +179,7 @@ features:
     divergence_rationale: "Base stuffcmds 'cl_cmd settemp chase_active 1' to the connecting client; the in-process listen server has no networked stuffcmd channel, so the faithful analogue is a direct Api.Cvars.Set('chase_active','1') (the client view reads chase_active each frame via NetGame CameraMode). The caller is gated to !p.IsBot because bots have no view (matches the human-only observable effect of the QC stuffcmd) and to bugrigsConnect.Added (mirrors QC ClientConnect only firing while the mutator is active)."
     gaps: []
     verification:
-      - { kind: code, ref: "OnClientConnect (:120-124) sets chase_active=1; dispatched at GameWorld.cs:1011-1012 in InfraClientConnect (live connect tail, alongside superspec's connect), gated on !p.IsBot && Mutators.ByName('bugrigs').Added", result: pass }
+      - { kind: code, ref: "OnClientConnect (:126-130) sets chase_active=1; dispatched at GameWorld.cs:1336-1337 in InfraClientConnect (live connect tail, alongside superspec's connect), gated on !p.IsBot && Mutators.ByName('bugrigs').Added", result: pass }
     confidence: high
     notes: "FIXED since 2026-06-22 baseline: the mutator now drives the forced chase camera on connect. The port has no generic MutatorHooks.ClientConnect chain, so this is hand-dispatched from GameWorld.InfraClientConnect (same pattern as superspec). settemp/temporariness is not modelled but the observable effect (3rd-person view for the bugrigs client) is faithful."
   - id: mutator-bugrigs.serverinfo.mutator_strings
@@ -190,10 +189,11 @@ features:
       - "common/mutators/mutator/bugrigs/bugrigs.qc:346-349 MUTATOR_HOOKFUNCTION(bugrigs, BuildMutatorsString)"
       - "common/mutators/mutator/bugrigs/bugrigs.qc:351-354 MUTATOR_HOOKFUNCTION(bugrigs, BuildMutatorsPrettyString)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:105 BuildMutatorsString"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:108 BuildMutatorsPrettyString"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108 BuildMutatorsString chain"
-      - "src/XonoticGodot.Server/GameWorld.cs:876 MutatorActivation.BuildMutatorsString (gamelog init)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:111 BuildMutatorsString"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs:114 BuildMutatorsPrettyString"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108 BuildMutatorsString chain / :121 BuildMutatorsPrettyString chain"
+      - "src/XonoticGodot.Server/GameWorld.cs:1117 MutatorActivation.BuildMutatorsString (gamelog init)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1392 SendMutatorsWelcome / :1128 modifications serverinfo (BuildMutatorsPrettyString consumers)"
     constants:
       - { name: "machine token", base: "\":bugrigs\"", port: "\":bugrigs\"", match: true }
       - { name: "pretty token", base: "\", Bug rigs\"", port: "\", Bug rigs\"", match: true }
@@ -203,12 +203,11 @@ features:
       timing: na
       presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "BuildMutatorsPrettyString chain (MutatorActivation.BuildMutatorsPrettyString) has NO live consumer in the port — no scoreboard/votescreen/endmatch reader calls it — so the ', Bug rigs' pretty token, though implemented and correct, is never displayed. The machine ':bugrigs' token IS live (consumed at gamelog init, GameWorld.cs:876)."
+    gaps: []
     verification:
-      - { kind: code, ref: "BugrigsMutator.cs:105/108 override BuildMutatorsString/PrettyString with the exact Base tokens. BuildMutatorsString chain consumed live at GameWorld.cs:876 (sv_eventlog gamelog init). grep MutatorActivation.BuildMutatorsPrettyString: zero callers — pretty chain dead", result: partial }
+      - { kind: code, ref: "BugrigsMutator.cs:111/114 override BuildMutatorsString/PrettyString with the exact Base tokens. Machine chain consumed live at GameWorld.cs:1117 (sv_eventlog gamelog init). Pretty chain NOW consumed live: SendMutatorsWelcome (GameWorld.cs:1387-1399, dispatched at :1291 on the non-campaign client-connect tail, sends 'Active modifications: ^3<list>' to the joining client via the per-client chat sink) + the 'modifications' serverinfo cvar set at match start (:1128-1130)", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-22 baseline: both tokens are now overridden with the exact Base strings (the earlier RocketFlyingMutator 'whole family unported' note is stale — the family is now broadly ported). Machine token is live; pretty token is value-correct but its chain has no consumer yet (liveness: partial)."
+    notes: "FIXED since 2026-06-25 baseline: the BuildMutatorsPrettyString chain now HAS a live consumer (SendMutatorsWelcome on connect, GameWorld.cs:1291/1387; plus the 'modifications' serverinfo cvar at match start). The earlier 'pretty token dead' gap is resolved — liveness partial -> live. settemp/temporariness is not modelled; the welcome line goes to the connecting human via chat in place of the Base networked CSQC Welcome dialog (no networked welcome channel in the in-process listen server)."

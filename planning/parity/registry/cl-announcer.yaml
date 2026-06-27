@@ -1,12 +1,12 @@
 unit: cl-announcer
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-22"
+last_audited: "2026-06-27"
 summary:
   feature_count: 9
   worst_gaps:
-    - "Announcer voice-pack mutator override (AnnouncerOption MUTATOR_CALLHOOK, used by overkill) is unported: a mutator cannot swap the announcer voice (the user cvar cl_announcer IS now honored)."
     - "Duel title uses connection/join order for the top two players, not scoreboard sort order (QC players.sort_next): the two duelers can appear left/right-swapped vs Base."
+    - "AnnouncerResolver in NetGame captures the voice once at HUD setup, so a mid-match cl_announcer change isn't picked up (minor; Base re-reads the cvar each AnnouncerFilename call)."
     - "Title (gametype/duel) + ROUNDSTOP paths are wired live but have NO automated test — verified by full-chain code read only."
 features:
   - id: cl-announcer.driver.frame
@@ -188,28 +188,30 @@ features:
       - "client/announcer.qc:AnnouncerOption"
       - "common/notifications/all.qc:AnnouncerFilename"
     port_refs:
-      - "game/net/NetGame.cs:1388"
+      - "game/net/NetGame.cs:1488-1497"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:FireAnnouncerOption"
       - "game/hud/HudNotifications.cs:AnnouncerVoice"
       - "game/hud/HudNotifications.cs:AntiSpamInterval"
     constants:
       - { name: "cl_announcer default", base: "\"default\"", port: "\"default\" (field default; overwritten by cvar when set)", match: true }
       - { name: "cl_announcer_antispam default", base: "2", port: "2f (field default; overwritten by cvar when set)", match: true }
+      - { name: "AnnouncerOption hook", base: "MUTATOR_CALLHOOK(AnnouncerOption, ret); ret = M_ARGV(0) (no stock mutator registers it)", port: "MutatorHooks.FireAnnouncerOption(voice) fired at HUD setup; no handler => pass-through", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
       presentation: faithful
       audio: faithful
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base AnnouncerFilename resolves the voice pack via AnnouncerOption() = autocvar_cl_announcer + the MUTATOR_CALLHOOK(AnnouncerOption) override (used to swap the announcer voice, e.g. overkill). The port reads the user cvar but has no AnnouncerOption mutator hook, so a mutator cannot override the announcer voice. (Also: AnnouncerResolver in NetGame captures the voice once at HUD setup, so a mid-match cl_announcer change isn't picked up — minor.)"
+      - "AnnouncerResolver in NetGame captures the voice once at HUD setup, so a mid-match cl_announcer change isn't picked up. Base re-reads autocvar_cl_announcer (via AnnouncerOption) on every AnnouncerFilename() call. Minor: voice packs are not changed mid-match in practice."
     verification:
-      - { kind: code, ref: "NetGame.cs:1388-1395 reads cl_announcer -> HudNotifications.AnnouncerVoice and cl_announcer_antispam -> AntiSpamInterval from _sharedCvars at live HUD setup (defaults match xonotic-client.cfg:357-358 when unset)", result: pass }
-      - { kind: code, ref: "grep: still no AnnouncerOption mutator hook in src/** or game/** (Base client/announcer.qc:14-20 + client/mutators/events.qh:105)", result: fail }
+      - { kind: code, ref: "NetGame.cs:1488-1497 reads cl_announcer -> HudNotifications.AnnouncerVoice and cl_announcer_antispam -> AntiSpamInterval from _sharedCvars at live HUD setup (defaults match xonotic-client.cfg:357-358 when unset)", result: pass }
+      - { kind: code, ref: "AnnouncerOption mutator-callhook NOW PORTED: MutatorHooks.FireAnnouncerOption(voice) (MutatorHooks.cs:1357) is fired live at NetGame.cs:1494 to let a mutator rewrite the voice pack (QC announcer.qc:14-20). With no handler registered (the stock case — verified: no MUTATOR_HOOKFUNCTION(AnnouncerOption) anywhere in current Base, overkill included) it returns the cvar value unchanged, exactly like Base.", result: pass }
     confidence: high
-    notes: "WAVE 5 FIX: NetGame now reads cl_announcer / cl_announcer_antispam from the client cvar store and assigns AnnouncerVoice / AntiSpamInterval, so the two user cvars are honored (baseline 'dead, cvars inert' is resolved). Residual: the AnnouncerOption mutator-callhook voice override (overkill) is still unported (liveness partial — the user-cvar path is live, the mutator-override path is dead)."
+    notes: "FIX (2026-06-27 audit): the AnnouncerOption mutator-callhook override is now ported (MutatorHooks.AnnouncerOption / FireAnnouncerOption) and fired live in NetGame at HUD setup, resolving the baseline's partial-liveness gap. Note on baseline wording: the claim that overkill USES this hook to swap the voice is incorrect for the current Base rev — no stock mutator (overkill included) registers an AnnouncerOption handler, and Base ships only the 'default' voice pack; the hook is a no-op pass-through out of the box, which the port now matches. The user cvars (cl_announcer / cl_announcer_antispam) remain honored (Wave 5). Residual: voice captured once at HUD setup (minor)."
   - id: cl-announcer.title.gametype
     name: "Gametype-name centerprint title above countdown"
     layer: [presentation]

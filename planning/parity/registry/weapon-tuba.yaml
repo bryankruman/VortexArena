@@ -1,7 +1,7 @@
 unit: weapon-tuba
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 11
   worst_gaps:
@@ -321,8 +321,8 @@ features:
       - "common/weapons/weapon/tuba.qc:wr_checkammo2"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:Tuba (ctor)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:BotWantsSecondary (Tuba.cs:126-127)"
-      - "src/XonoticGodot.Server/Bot/BotBrain.cs:359-369 (live wr_aim dispatch)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:BotWantsSecondary (Tuba.cs:128-129)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:406 (live wr_aim dispatch)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponOrder.cs:209"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:282"
     constants:
@@ -348,7 +348,7 @@ features:
     verification:
       - { kind: trace, ref: "WeaponOrder.cs:209 lists tuba; impulse 1; ctor flags/color/models vs tuba.qh", result: pass }
       - { kind: read, ref: "All 6 tuba notifications in NotificationsList.cs", result: pass }
-      - { kind: trace, ref: "Tuba.BotWantsSecondary (Tuba.cs:126-127) overrides wr_aim — enemyDistance<Radius && Random01>0.5; dispatched live from BotBrain.cs:359-369 (fresh Random01 draw, routes ATCK->ATCK2) — matches tuba.qc:321-332", result: pass }
+      - { kind: trace, ref: "Tuba.BotWantsSecondary (Tuba.cs:128-129) overrides wr_aim — enemyDistance<Radius && Random01>0.5; dispatched live from BotBrain.cs:406 (fresh Random01 draw, routes ATCK->ATCK2) — matches tuba.qc:321-332", result: pass }
     confidence: high
     notes: "FIXED vs baseline (wr_aim missing -> faithful+live). Tuba now overrides BotWantsSecondary (the wr_aim seam): a bot within the 200u note radius rolls a fresh random()>0.5 to pick primary vs secondary, exactly matching W_Tuba_NoteOn's vdist<radius / coin-flip — bots can now play the tuba in combat. The override is invoked on the live bot path (BotBrain dispatches it for the chosen weapon). Core identity, flags, color, models and infinite-ammo remain faithful and live. Only the per-instrument render assets (view models / crosshair) remain — presentation stays partial."
 

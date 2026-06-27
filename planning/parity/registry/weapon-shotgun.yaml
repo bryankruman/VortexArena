@@ -1,16 +1,15 @@
 unit: weapon-shotgun
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
-  feature_count: 12
+  feature_count: 13
   worst_gaps:
     - "Antilag takeback is STILL per-pellet (each FireBullet calls LagComp.Begin) rather than ONCE for the whole volley as Base does outside the loop (shotgun.qc:23-26 antilag_takeback_all); functionally-equivalent hit-reg but redundant rewind work per pellet."
     - "g_ballistics_penetrate_clips (default 1) / weapclip handling still not modeled (no weapclip distinction in FireBullet)."
-    - "Alt triple-shot (secondary==2) still fires a single Attack instead of the staged Frame1->Frame2 3-blast sequence + its dry-fire W_SwitchWeapon_Force. Non-default mode (alt timing 1.2/0.2 now correct)."
     - "Muzzleflash uziflash.md3 model attachment still not verified to render (only the SHOTGUN_MUZZLEFLASH particle is emitted)."
     - "SHOTGUN_IMPACT is emitted per pellet server-side (~12/shot) via a second WorldOnly trace (intended divergence — no CSQC layer), not the single CSQC w_org + w_backoff*2 impact; emits on the world hit even when the pellet struck a player."
-    - "wr_checkammo1/2 omit the clip-load OR-term (latent; reload_ammo defaults 0 so moot for default play). pickup_ammo (15) not read in Shotgun.cs (item-pickup concern)."
+    - "pickup_ammo (15) not read in Shotgun.cs (item-pickup concern). MENUQC describe() weapon-guide prose has no port."
 
 features:
   - id: weapon-shotgun.primary.attack_fan
@@ -210,6 +209,9 @@ features:
       - "server/weapons/weaponsystem.qc:weapon_prepareattack_checkammo (the empty-primary silent early-out)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:WrThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:Attack3Frame1"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:Attack3Frame2"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:ScheduleThink (Frame1/Frame2 scheduling; dispatched in WeaponFireDriver.Frame:145-150)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:PrepareAttackImpl (buttonFire gate)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:CheckAmmoWithAutoSwitch (Shotgun melee silent early-out)"
     constants:
@@ -218,23 +220,23 @@ features:
       - { name: "secondary_refire", base: "1.25 s", port: "1.25", match: true }
       - { name: "alt_refire / alt_animtime", base: "1.2 / 0.2 (bal-wep-xonotic.cfg:66,65)", port: "1.2 / 0.2 (Secondary.AltRefire/AltAnimtime, Shotgun.cs:144,147)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Alt triple-shot (secondary==2) still fires a single Attack (W_Shotgun_Attack) instead of the staged Frame1->Frame2 3-blast sequence + its dry-fire W_SwitchWeapon_Force. Non-default mode (the single-blast path now uses the correct alt_refire/alt_animtime timing)."
+    gaps: []
     verification:
       - { kind: code, ref: "WrThink: emptyPrimaryAutoMelee (fire==Primary && !bot && GetResource<=0 && ClipLoad==0 && !unlimited) -> PrepareAttack(FireMode.Secondary, attackTime NaN, buttonFire: fire)", result: pass }
       - { kind: code, ref: "PrepareAttackImpl: held = buttonFire==Secondary ? ButtonAttack2 : ButtonAttack — empty-primary press passes buttonFire=Primary -> checks ButtonAttack (held) -> proceeds; auto-melee LIVE", result: pass }
       - { kind: code, ref: "CheckAmmoWithAutoSwitch: Shotgun melee-secondary primary early-out returns false silently (no dry-fire click, no auto-switch) so the auto-melee can slap (weaponsystem.qc:254-256)", result: pass }
-      - { kind: code, ref: "secondary==2 single-blast now schedules with Secondary.AltAnimtime (0.2) / Secondary.AltRefire (1.2) — matches alt_animtime/alt_refire (shotgun.qc:316,334)", result: pass }
+      - { kind: code, ref: "secondary==2 triple-shot: WrThink fires blast 1 + schedules Attack3Frame1 (Shotgun.cs:150-159) via WeaponFireDriver.ScheduleThink at alt_animtime; Attack3Frame1 fires blast 2 + schedules Attack3Frame2 (Shotgun.cs:248-269); Attack3Frame2 fires blast 3 + returns to ready (Shotgun.cs:274-297). Each Frame guards on CheckAmmoSecondary + SwitchToOtherWeapon when dry — faithful to W_Shotgun_Attack3_Frame1/2 (shotgun.qc:207-263)", result: pass }
+      - { kind: code, ref: "scheduled Frames are LIVE: WeaponFireDriver.Frame dispatches st.WeaponThink at WeaponNextThink (WeaponFireDriver.cs:145-150). alt_refire 1.2 / alt_animtime 0.2 parked in ShotgunPrimaryTime (Shotgun.cs:154-156)", result: pass }
     confidence: high
-    notes: "FIX vs baseline (values partial -> faithful for the alt timing). The baseline recorded the triple-shot single-blast path using the wrong Secondary.Refire/Animtime (1.25/1.15); the port now uses the SEPARATE alt_refire/alt_animtime (1.2/0.2). Out-of-ammo auto-melee remains LIVE (buttonFire override gates ATK1 while committing the secondary mode; silent early-out). The staged Frame1->Frame2 triple-shot sequence itself remains a single blast (non-default mode), so logic stays partial and liveness partial (melee + auto-melee live; staged triple-shot dead)."
+    notes: "FIX vs baseline (logic partial -> faithful, liveness partial -> live). The baseline recorded the alt triple-shot (secondary==2) as a single blast with the staged Frame1->Frame2 sequence dead. The port now fully ports the staged 3-blast sequence: WrThink fires the first blast then schedules Attack3Frame1 via WeaponFireDriver.ScheduleThink (dispatched on the live path in WeaponFireDriver.Frame), Frame1 fires the second and schedules Frame2, Frame2 fires the third and returns to ready — each with a per-blast CheckAmmoSecondary guard + SwitchToOtherWeapon (W_SwitchWeapon_Force) dry-fire path. Out-of-ammo auto-melee remains LIVE; melee gate + alt timing (1.2/0.2) faithful. Triple-shot only runs under the non-default g_balance_shotgun_secondary 2, but the path is wired and reachable, so liveness is live."
 
   - id: weapon-shotgun.ammo.checkammo_reload
     name: "Ammo checks + reload"
@@ -394,3 +396,26 @@ features:
       - { kind: code, ref: "Combat.Damage carries DeathType string -> Scores.EmitObituary -> SelectKillMessage(WeaponNetNameOf, deathType) -> sec true -> WEAPON_SHOTGUN_MURDER_SLAP", result: pass }
     confidence: high
     notes: "The slap tags HITTYPE_SECONDARY (DeathTypes.Secondary suffix) and routes through Combat.Damage with the tagged string, so the |secondary suffix survives to Scores.EmitObituary -> SelectKillMessage -> WEAPON_SHOTGUN_MURDER_SLAP. Blast tags no suffix -> WEAPON_SHOTGUN_MURDER. Suicide line faithful. Faithful + live, unchanged."
+
+  - id: weapon-shotgun.menu.describe
+    name: "MENUQC weapon-guide prose (describe)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/shotgun.qc:describe (MENUQC, shotgun.qc:416-428)"
+    port_refs: []
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The MENUQC describe() weapon-guide prose (primary single round spreading into pellets, secondary slap timing, ammo/falloff blurb + W_Guide_Keybinds/DPS) has no port. Other weapons (Crylink/Electro/Tuba) reference a describe seam but the shotgun text is not ported. Menu-only documentation; no gameplay impact."
+    verification:
+      - { kind: code, ref: "grep describe/PAGE_TEXT across src/.../Weapons: no Shotgun describe port; Base shotgun.qc:416-428 has the MENUQC describe()", result: fail }
+    confidence: high
+    notes: "New row (registry coverage gap, not a regression). MENUQC-only in-menu weapon guide prose; cosmetic documentation feature with no gameplay path."

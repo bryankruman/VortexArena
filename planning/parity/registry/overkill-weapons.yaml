@@ -1,10 +1,11 @@
 unit: overkill-weapons
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
-  feature_count: 14
+  feature_count: 17
   worst_gaps:
+    - "2026-06-27 drift re-audit: NO regressions or fixes on the 14 existing rows — the port (Ok*.cs, edited 2026-06-26) still matches the Wave-8b baseline exactly (all balance constants verified against bal-wep-xonotic.cfg:792-922; FX/casing/recoil/tracer/muzzle/impact seams all still wired LIVE). THREE newly-unmapped Base features added this pass: bot AI (wr_aim), oknex sniper zoom (wr_zoom/wr_zoomdir), and the standalone g_overkill_weapons activation path."
     - "Wave-8b CLOSED the fire/impact presentation gap across ALL FIVE OK weapons (drift since the 2026-06-25 baseline, which recorded these as missing): okmachinegun/okhmg/okshotgun/oknex/okrpc now ALL emit W_MuzzleFlash (registered EFFECT names), wr_impacteffect impact puff + impact/ricochet sound, and the bullet weapons (okmg/okhmg/okshotgun) eject casings (g_casings gate) + recoil PRNG + EFFECT_RIFLE/RIFLE_WEAK tracer. The baseline's central claim that 'okhmg/okshotgun/oknex are byte-identical to main / got NONE of the FX seam' is now STALE — they were all migrated in commit 31aa799 (Wave 8b)."
     - "okrpc shoot-down remains LIVE+faithful: OkRpc.Attack:166 calls Projectiles.MakeShootable(missile, exception:-1); correctly inert under stock g_projectiles_damage=-2, exactly like Base."
     - "STILL OPEN (okrpc online/networking subset): missile not CSQC-networked (no visible flying chainsaw, CSQCProjectile(PROJECTILE_RPC) omitted), not registered for bot dodge (IL_PUSH g_bot_dodge), and not damagedbycontents (IL_PUSH g_damagedbycontents) — lava/slime won't detonate the in-flight chainsaw even at g_projectiles_damage>=0."
@@ -488,3 +489,87 @@ features:
       - { kind: code-read, ref: "OkMachinegun/OkHmg/OkShotgun/OkNex/OkRpc all call EffectEmitter.Emit(<muzzle>) + BulletImpactFx/ImpactSound + (bullet weapons) EjectCasing/recoil; effect names registered in EffectsList.cs (SHOTGUN/MACHINEGUN/VORTEX/ROCKET _MUZZLEFLASH+_IMPACT/_EXPLODE); seam BulletImpactFx/EjectCasing live in WeaponFiring.cs:578-641", result: pass }
     confidence: high
     notes: "Drift: this row was 'partial/partial/partial' in the 2026-06-25 baseline (only okmachinegun's casing/tracer/recoil migrated). Wave-8b (31aa799) wired the muzzle flash + impact FX + ric across all five weapons and back-filled the casing/tracer/recoil onto okhmg+okshotgun. Fire sounds (uzi_fire/nexfire/rocket_fire/shotgun_fire) play server-side as before."
+
+  - id: overkill-weapons.shared.bot_ai
+    name: "Bot AI fire-button selection (wr_aim) for the five OK weapons"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/okmachinegun.qc:wr_aim (range gate 3000-skill*200)"
+      - "common/mutators/mutator/overkill/okhmg.qc:wr_aim (range gate 3000-skill*200)"
+      - "common/mutators/mutator/overkill/oknex.qc:wr_aim (always primary; ATCK2 only if charge)"
+      - "common/mutators/mutator/overkill/okrpc.qc:wr_aim (bot_aim with speed+lifetime lead)"
+      - "common/mutators/mutator/overkill/okshotgun.qc:wr_aim (>bot_range 512 -> ATCK2 blaster poke, else ATCK1)"
+    port_refs: []
+    constants:
+      - { name: "okshotgun bot_range", base: "512", port: "none", match: false }
+      - { name: "okmg/okhmg bot range gate", base: "3000 - bound(0,skill,10)*200", port: "none", match: false }
+      - { name: "okrpc bot lead speed", base: "WEP_CVAR_PRI(speed)=2500", port: "default (no override)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "NONE of the five OK weapons override the port's generic bot-aim seam (Weapon.BotWantsSecondary / BotAimShotSpeed / BotAimAccurate in GameplayBases.cs) — Ok*.cs have zero bot-AI overrides. Bots fall back to the default (always press PRIMARY, hitscan straight aim)."
+      - "okshotgun: QC fires ATCK2 (the no-damage blaster jump, as a ranged poke) when the target is beyond bot_range=512, and ATCK1 within range. The default never presses ATCK2 -> bots never do the ranged-blaster behavior."
+      - "okmachinegun + okhmg: QC only presses ATCK at all within 3000 - skill*200 units; the default presses ATCK at any range."
+      - "okrpc: QC leads the target by the projectile speed (2500) over its lifetime; the default BotAimShotSpeed returns defaultSpeed (no okrpc lead override) -> bots mis-lead the flying chainsaw."
+      - "oknex: QC presses ATCK2 only when charge is enabled (default off), so its default-primary behavior is the one case the generic fallback actually matches."
+    verification:
+      - { kind: code-read, ref: "grep wr_aim/BotWantsSecondary/BotAimShotSpeed in Ok*.cs returns nothing; Base okshotgun.qc:4-9, okmachinegun.qc:64-68, okhmg.qc:65-69, oknex.qc:113-122, okrpc.qc:144-147", result: pass }
+    confidence: high
+    notes: "NEW row (2026-06-27 drift audit) — previously unmapped. Bot-only; humans unaffected. Severity low: bots still fight with the OK loadout via the generic fallback, just with wrong range-gating / no projectile lead / no shotgun ranged-blaster poke. Other ported weapons (Arc/Crylink/etc.) DO override these seams, so the pattern exists; the OK weapons just never got it."
+
+  - id: overkill-weapons.oknex.zoom
+    name: "OK Nex sniper zoom (wr_zoom / wr_zoomdir)"
+    layer: [presentation, authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/oknex.qc:307-310 (SVQC wr_zoom)"
+      - "common/mutators/mutator/overkill/oknex.qc:330-341 (CSQC wr_zoom + wr_zoomdir)"
+    port_refs: []
+    constants:
+      - { name: "secondary (zoom-on-ATCK2 gate)", base: "2 (blaster) -> ATCK2 does NOT zoom at stock", port: "n/a", match: true }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "oknex wr_zoom/wr_zoomdir not ported as an OK-Nex-specific override. At stock balance (secondary==2 = blaster), the QC gate `!WEP_CVAR(secondary)` is false, so ATCK2 does NOT trigger zoom — the OK Nex only zooms via the dedicated zoom button (button_zoom/zoomscript), i.e. the generic per-weapon zoom path. So at stock balance the observable behavior is the generic zoom button only; no OK-Nex-specific divergence is visible."
+      - "If a server sets g_balance_oknex_secondary 0, QC would zoom on ATCK2 (and forgo the blaster secondary) — that non-default branch is unmodeled."
+    verification:
+      - { kind: code-read, ref: "Base oknex.qc:307-341; no wr_zoom/WrZoom override in OkNex.cs. Stock secondary=2 (bal-wep-xonotic.cfg:857) means ATCK2-zoom is OFF by default.", result: pass }
+    confidence: medium
+    notes: "NEW row (2026-06-27 drift audit) — previously unmapped. At stock balance the OK Nex zoom is effectively the generic zoom-button behavior (likely covered by the shared client zoom path); the OK-Nex-specific ATCK2-zoom branch is dormant (secondary==2). Listed for registry completeness; severity low at stock balance."
+
+  - id: overkill-weapons.mode.weapons_activation
+    name: "Standalone ok_weapons activation via g_overkill_weapons (independent of g_overkill)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_weapons.qc:3 REGISTER_MUTATOR(ok_weapons, expr_evaluate(autocvar_g_overkill_weapons) || MUTATOR_IS_ENABLED(ok))"
+    port_refs: []
+    constants:
+      - { name: "g_overkill_weapons", base: "string cvar; unblocks the 5 OK weapons standalone", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base has a SECOND activation path: the ok_weapons mutator un-blocks (clears WEP_FLAG_MUTATORBLOCKED on) the five OK weapons whenever g_overkill_weapons evaluates true, EVEN WITHOUT full Overkill mode (g_overkill). This lets a server add the OK weapons to an otherwise-normal game. The port couples OK-weapon availability to OverkillMutator (g_overkill) only (OverkillMutator.IsEnabled = g_overkill!=0); there is no g_overkill_weapons reader anywhere in src/."
+    verification:
+      - { kind: code-read, ref: "grep g_overkill_weapons in src/ returns nothing; Base sv_weapons.qc:1-22 REGISTER_MUTATOR(ok_weapons,...) ONADD/ONREMOVE toggles MUTATORBLOCKED", result: pass }
+    confidence: high
+    notes: "NEW row (2026-06-27 drift audit) — previously the mode.enablement row only covered the g_overkill path. Niche server-config feature (a string cvar listing OK weapons to allow standalone); not on any shipped gametype path. Severity low."

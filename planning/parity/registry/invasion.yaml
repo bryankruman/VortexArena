@@ -1,6 +1,6 @@
 unit: invasion
 category: gametype
-base_ref_rev: "v0.8.6-1779-g863cd3e84"  # port code re-audited at Wave-6e drift re-check (2026-06-25)
+base_ref_rev: "v0.8.6-1779-g863cd3e84"  # port code re-audited at Wave-12 drift re-check (2026-06-25)
 last_audited: "2026-06-25"
 summary:
   feature_count: 29
@@ -8,8 +8,8 @@ summary:
     - "HUNT win is derived from the port's own Wave.MaxSpawned/Killed + LiveMonsters counters PLUS the live world monster list (Invasion.cs LiveNonRespawnedMonsterCount), not exclusively Base's g_monsters; fidelity unverified on a real HUNT map."
     - "MoveToRandomMapLocation spawn fallback still missing (monsters pile at world origin when a map registers no invasion_spawnpoint — PickSpawnOrigin returns Vector3.Zero)."
     - "spawn_point.target_range/target2 copy not modeled (no spawn-point entity in the port — only the origin is carried into SpawnMonsterDef)."
-    - "Console-command guards AllowMobSpawning / AllowMobButcher (block spawnmob/butcher during an invasion) are not ported (newly mapped: invasion.rules.mob_command_guards)."
-    - "Wave-6a (commit e596bf0) CLOSED the two largest open gaps: STAGE now requires ceil(realplayers*0.7) distinct REAL players (TriggerRoundEnd threshold via _endReached + the GameWorld touch volume passing the player), and the point limit now ends on the LEADING player's KILLS (CheckPointLimit/TopKillsScore) not the cumulative total; the cl_invasion DrawScoreboardItemStats accuracy-panel hide is also now live."
+    - "g_monsters is not force-set (cvar_settemp); the port spawns monsters directly, so the equivalence relies on the spawn path rather than the global toggle."
+    - "Drift re-check (2026-06-25, Wave-12): FOUR rows that the prior baseline recorded as missing are now FAITHFUL + LIVE — AccuracyTargetValid (WeaponAccuracyEvents.TargetValidProvider wired in Activate), the MonsterSpawn dphitcontentsmask stamp (Invasion.cs:881 DpHitContentsMask honored by TraceService), and the AllowMobSpawning/AllowMobButcher console-command guards (Commands.cs:3357/3417 block spawnmob/butcher during an invasion); the m_configuremenu 'Point limit:' slider is also present (CreateGameScreen.cs ModeMenus['inv'], deliberately disabled exactly as Base passes string_null)."
 features:
   - id: invasion.core.registration
     name: "Invasion gametype registration + init (g_monsters forced, score limit)"
@@ -667,28 +667,30 @@ features:
     notes: "FIXED missing→faithful+live (Wave-6a, commit e596bf0): the accuracy item-stats panel is now suppressed in Invasion (gametype gate in the live DrawAccuracy). The underlying AccuracyTargetValid server hook (monsters as invalid accuracy targets) is still unported — see new row invasion.rules.accuracy_target_valid — but the visible scoreboard suppression this row tracks is now done."
 
   - id: invasion.rules.accuracy_target_valid
-    name: "Monsters are invalid weapon-accuracy targets (AccuracyTargetValid)"
+    name: "Monsters are valid weapon-accuracy targets (AccuracyTargetValid → MUT_ACCADD_INVALID)"
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, AccuracyTargetValid)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:AccuracyTargetValid"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponAccuracyEvents.cs:IsGoodDamage (TargetValidProvider)"
     constants:
-      - { name: "monster_acc_result", base: "MUT_ACCADD_INVALID", port: "none", match: false }
+      - { name: "monster_acc_result", base: "MUT_ACCADD_INVALID (always count)", port: "AccuracyTarget.Invalid (always count)", match: true }
+      - { name: "non_monster_acc_result", base: "MUT_ACCADD_INDIFFERENT", port: "AccuracyTarget.Indifferent", match: true }
     status:
-      logic: missing
-      values: na
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base's AccuracyTargetValid hook returns MUT_ACCADD_INVALID for monster targets so hits on monsters don't count toward weapon accuracy stats. The port has no AccuracyTargetValid hook chain (WeaponAccuracyEvents), so monster hits still feed the accuracy tally on the server side. The CLIENT-side scoreboard hides the accuracy panel entirely in Invasion (invasion.client.hide_item_stats), so the server-side mis-tally is not visible, but the underlying accuracy data is still wrong."
+    gaps: []
     verification:
-      - { kind: code, ref: "no AccuracyTargetValid mutator hook in the port; grep AccuracyTargetValid → WeaponAccuracyEvents.cs:95 doc-comment 'No AccuracyTargetValid mutator chain exists in the port yet' + ScoreboardPanel.cs:1138 note; weapon accuracy accumulation has no monster-target gate", result: fail }
-    confidence: medium
-    notes: "Newly mapped (registry coverage gap). Largely masked by the scoreboard panel hide, but the server-side accuracy accumulation is non-faithful for monster hits."
+      - { kind: code, ref: "Invasion.cs:399 Activate installs WeaponAccuracyEvents.TargetValidProvider = AccuracyTargetValid; handler (Invasion.cs:462-465) returns Invalid for IsMonster(target) else Indifferent — matching MUT_ACCADD_INVALID/INDIFFERENT exactly; consulted live by WeaponAccuracyEvents.IsGoodDamage:128/134-135 (the gate every accuracy credit site evaluates); removed in Deactivate:432", result: pass }
+    confidence: high
+    notes: "FIXED missing→faithful+live (drift re-check 2026-06-25, Wave-12): the AccuracyTargetValid mutator chain is now ported via the WeaponAccuracyEvents.TargetValidProvider seam. NOTE the semantics: MUT_ACCADD_INVALID means 'always count' (so monster hits DO feed accuracy, since a non-client monster would otherwise fail the IS_CLIENT gate) — the prior baseline row inverted this. The client scoreboard still hides the accuracy panel in Invasion (invasion.client.hide_item_stats), but the underlying tally is now Base-faithful."
 
   - id: invasion.rules.mob_command_guards
     name: "Block spawnmob/butcher console commands during an invasion (AllowMobSpawning / AllowMobButcher)"
@@ -696,68 +698,71 @@ features:
     base_refs:
       - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, AllowMobSpawning)"
       - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, AllowMobButcher)"
-    port_refs: []
-    constants: []
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:CmdEditMob (spawn case)"
+      - "src/XonoticGodot.Server/Commands.cs:CmdEditMob (butcher case)"
+    constants:
+      - { name: "spawn_block_msg", base: "You cannot spawn monsters during an invasion!", port: "You cannot spawn monsters during an invasion!", match: true }
+      - { name: "butcher_block_msg", base: "This command does not work during an invasion!", port: "This command does not work during an invasion!", match: true }
     status:
-      logic: missing
-      values: na
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base blocks the spawnmob console command (AllowMobSpawning: 'You cannot spawn monsters during an invasion!') and the butcher command (AllowMobButcher: 'This command does not work during an invasion!') while Invasion is active. The port has neither hook — Commands.cs:2363 explicitly notes 'no port analog (no AllowMobSpawning hook); skipped', so a player/admin could spawnmob or butcher mid-invasion."
+    gaps: []
     verification:
-      - { kind: code, ref: "Commands.cs:2616 comment 'MUTATOR_CALLHOOK(AllowMobSpawning) — no port analog (no AllowMobSpawning hook); skipped'; no AllowMobButcher equivalent anywhere", result: fail }
+      - { kind: code, ref: "Commands.cs:3357 spawn case: if (_world.GameType is Invasion) print 'You cannot spawn monsters during an invasion!' return — matching QC AllowMobSpawning; Commands.cs:3417 butcher case: if (_world.GameType is Invasion) print 'This command does not work during an invasion!' return — matching QC AllowMobButcher; both on the live editmob/spawnmob command path", result: pass }
     confidence: high
-    notes: "Newly mapped (registry coverage gap). Minor admin/console-guard parity; no effect on normal play unless someone runs spawnmob/butcher during an invasion."
+    notes: "FIXED missing→faithful+live (drift re-check 2026-06-25, Wave-12): both console-command guards are now ported as direct GameType==Invasion checks (the port has no AllowMobSpawning/AllowMobButcher mutator hook chain, so the guard is inlined at the spawnmob/butcher command sites — behaviorally equivalent and the message strings match Base verbatim)."
 
   - id: invasion.spawn.monster_hitcontents
     name: "MonsterSpawn stamps monster dphitcontentsmask = SOLID|BODY|BOTCLIP|MONSTERCLIP"
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/invasion/sv_invasion.qc:MUTATOR_HOOKFUNCTION(inv, MonsterSpawn) (mon.dphitcontentsmask = ...)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:SpawnMonsterDef (m.DpHitContentsMask)"
     constants:
-      - { name: "dphitcontentsmask", base: "DPCONTENTS_SOLID | DPCONTENTS_BODY | DPCONTENTS_BOTCLIP | DPCONTENTS_MONSTERCLIP", port: "none (default monster mask)", match: false }
+      - { name: "dphitcontentsmask", base: "DPCONTENTS_SOLID | DPCONTENTS_BODY | DPCONTENTS_BOTCLIP | DPCONTENTS_MONSTERCLIP", port: "SuperContentsSolid|Body|BotClip|MonsterClip (0x1|0x2000000|0x800|0x200)", match: true }
     status:
-      logic: missing
-      values: na
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base's MonsterSpawn hook stamps every invasion monster with dphitcontentsmask = SOLID|BODY|BOTCLIP|MONSTERCLIP so the monster collides with bot-clip + monster-clip brushes. The port never sets this in the invasion spawn path (MonsterAI.cs only sets a special mask for the golem/spider PROJECTILE_MAKETRIGGER case at :1470); invasion monsters use the default monster collision mask, so they may ignore botclip/monsterclip volumes a Base server would honor. Minor — only affects maps that fence monster movement with those brush types."
+    gaps: []
     verification:
-      - { kind: code, ref: "grep dphitcontents/MONSTERCLIP/BOTCLIP in MonsterAI.cs → only the golem/spider trigger mask (MonsterAI.cs:1470); no invasion MonsterSpawn equivalent; Invasion.cs:826 SpawnMonsterDef sets no hit-contents mask", result: fail }
-    confidence: medium
-    notes: "Newly mapped (registry coverage gap, 2026-06-25 re-audit). Base's MonsterSpawn also serves as the live HUNT/STAGE win dispatch via CheckRules_World→WinningCondition_Invasion, but that decision flow is already covered by invasion.win.hunt / invasion.win.stage; this row tracks only the unported collision-mask stamp."
+      - { kind: code, ref: "Invasion.cs:82-86 MonsterHitContentsMask = SOLID|BODY|BOTCLIP|MONSTERCLIP mirrored from SuperContents bits; Invasion.cs:881 SpawnMonsterDef sets m.DpHitContentsMask = MonsterHitContentsMask after MonsterAI.SpawnMonster; honored live by TraceService.cs:562-563 (an entity's own movement/collision trace uses Entity.DpHitContentsMask when nonzero)", result: pass }
+    confidence: high
+    notes: "FIXED missing→faithful+live (drift re-check 2026-06-25, Wave-12): every invasion monster now gets the SOLID|BODY|BOTCLIP|MONSTERCLIP mask stamped on spawn, so its own movement trace honors bot-clip + monster-clip AI hint brushes (the BOTCLIP bit being the part Base adds on top of the default SlideBox monster mask). Base's MonsterSpawn also serves as the live HUNT/STAGE win dispatch via CheckRules_World→WinningCondition_Invasion, covered by invasion.win.hunt / invasion.win.stage."
 
   - id: invasion.client.point_limit_menu
-    name: "Map-config point-limit menu slider (m_configuremenu 50..500)"
+    name: "Map-config point-limit menu slider (m_configuremenu 50..500, disabled)"
     layer: [presentation]
     base_refs:
       - "common/gametypes/gametype/invasion/invasion.qh:METHOD(Invasion, m_configuremenu)"
-    port_refs: []
+    port_refs:
+      - "game/menu/CreateGameScreen.cs:ModeMenus[\"inv\"] / ConfigureModeRows"
     constants:
-      - { name: "pointlimit_slider", base: "50..500 step 10", port: "none", match: false }
+      - { name: "pointlimit_slider", base: "50..500 step 10, pCvar=string_null (disabled)", port: "50..500 step 10, FragCvar=\"\" (disabled, greyed)", match: true }
     status:
-      logic: missing
-      values: na
+      logic: na
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base exposes a 'Point limit:' slider (50..500, step 10) in the create-game gametype menu via m_configuremenu. The port's create-game menu has no Invasion-specific point-limit slider row."
+    gaps: []
     verification:
-      - { kind: code, ref: "no Invasion m_configuremenu point-limit slider in the port create-game menu", result: fail }
-    confidence: low
-    notes: "Newly mapped (registry coverage gap). Menu-only; the cvar g_invasion_point_limit is still honored at runtime (invasion.win.point_limit) regardless of the missing slider. Confidence low — the port menu wiring was not exhaustively traced."
+      - { kind: code, ref: "CreateGameScreen.cs:87 ModeMenus[\"inv\"] = ModeMenu('Point limit:', '', 50, 500, 10, null); ConfigureModeRows:324-339 sets the 'Point limit:' label and — because FragCvar is empty (matching Base's string_null pCvar) — greys it at 0.4 alpha with no functional slider control, exactly as Base m_configuremenu disables the pair (invasion.qh:28 returns(...,string_null,string_null,string_null)); on the live create-game menu path", result: pass }
+    confidence: high
+    notes: "FIXED missing→faithful+live (drift re-check 2026-06-25, Wave-12; prior baseline confidence-low under-record): the create-game menu DOES carry the Invasion 'Point limit:' row with the right label/range/step, deliberately disabled (no cvar binding) — which is precisely what Base does (m_configuremenu passes string_null for pCvar, same as Assault/CTS/Onslaught). The runtime limit is still set via g_invasion_point_limit / mapinfo pointlimit=50 (invasion.win.point_limit)."

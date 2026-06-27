@@ -1,14 +1,14 @@
 unit: weapon-vaporizer
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 12
   worst_gaps:
-    - "RM-laser bolts have no confirmed distinct CSQC visual: Vaporizer.cs tags netname 'rocketminsta' intending a RocketMinstaLaser/elaser descriptor, but no such client projectile descriptor exists in the port — the bolt likely renders as a generic plasma/laser; also skips W_CalculateProjectileVelocity's owner-velocity Newtonian inheritance (only g_weaponspeedfactor is modeled, which IS correct since Base forces forceAbsolute=true)."
     - "Primary rail beam is a generic networked trail (TE_TEI_G3/_HIT), not the bespoke team-colored cylindric VaporizerBeam (cl_vaporizerbeam_teamcolor/colorboost/lifetime CSQC path unmodeled)."
     - "Instagib flag hardcoded true on the class default — a bare non-instagib Vaporizer pickup treats ammo as instagib (1 cell) on the class default, though Attack/CheckAmmo re-read g_instagib so under-the-mutator behaviour is correct."
-  verifier_notes: "Re-audit 2026-06-25 (drift check) on branch claude/parity-port-waves at/after Wave-6e (HEAD dfcab20). The code has advanced beyond the 2026-06-25 baseline on TWO rows. (1) RM-EXPLOSION PRESENTATION — RocketMinstaExplosion (Vaporizer.cs:321-322) now emits the Devastator explosion presentation at the rail endpoint: EffectEmitter.Emit('ROCKET_EXPLODE') + WeaponSplash.ImpactSoundAt('weapons/rocket_impact.wav') (SND_ROCKET_IMPACT), exactly as Devastator.Explode does — the QC blast is tagged WEP_DEVASTATOR.m_id so CSQC routes it through devastator wr_impacteffect (EFFECT_ROCKET_EXPLODE + SND_ROCKET_IMPACT). ROCKET_EXPLODE effect registered (EffectsList.cs:116), rocket_impact.ogg asset present. Was presentation:missing -> faithful. The blast row is no longer a worst_gap. (2) CLIENT RETICLE — the Vaporizer now declares Reticle => 'gfx/reticle_nex' (Vaporizer.cs:41, overriding Weapon.Reticle GameplayBases.cs:85); ReticleOverlay.UpdateReticle (game/client/ReticleOverlay.cs:75-95) precaches/draws it under cl_reticle && cl_reticle_weapon when button_zoom || zoomscript_caught, and is called LIVE from NetGame.cs:2842 with the active weapon. ZoomOnSecondary=false matches Base (no secondary zoom). reticle_nex.tga asset present. Was logic/values/presentation:missing, liveness:na -> faithful/live. (3) New enhancement inside the (already faithful) achievements row: instagib cloaked-victim alpha-yoda now modeled (InstagibAlphaYoda, Vaporizer.cs:283-284; set InstagibMutator.cs:275) — no status change (row was already faithful/live). All g_rm/g_rm_laser cvar fallbacks re-confirmed against mutators.cfg:441-460 (exact match). NO regressions. STILL OPEN: RM-laser distinct CSQC bolt visual (descriptor absent despite netname tag) + rapid_animtime, primary cylindric VaporizerBeam team-color/colorboost CSQC path, Instagib-hardcoded-true bare class default, g_rm/g_rm_laser live-path reachability untraced (liveness:unknown on the two RM rows)."
+    - "RM-laser rapid stream omits weapon_thinkf WFRAME_FIRE2 rapid_animtime (cosmetic view-model anim frame only; logic/timing/values/bolt visual all faithful)."
+  verifier_notes: "Re-audit 2026-06-27 (drift check) on branch claude/parity-port-waves. ONE real FIX since the 2026-06-25 baseline + three liveness upgrades; no regressions. (1) RM-LASER CSQC BOLT VISUAL — the baseline's #1 worst_gap is RESOLVED. The port now carries a full distinct RocketMinstaLaser projectile descriptor (ProjectileCatalog.cs:222-224: ProjectileType.RocketMinstaLaser, ModelPath models/elaser.mdl, TrailEffect 'ROCKETMINSTA_LASER' = LaserRed thin red streak, GlowSprite fallback), the trail effect is registered (EffectsList.cs:264 ROCKETMINSTA_LASER -> rocketminsta_laser_neutral isTrail), the netname->type classifier matches 'rocketminsta' BEFORE the generic 'rocket' check (ProjectileCatalog.cs:269 — avoids the rocket-substring misclassification), and ProjectileRenderer.cs:127-128 applies the per-bolt team colormod (colormapPaletteColor) faithfully to PROJECTILE_ROCKETMINSTA_LASER. So Vaporizer.cs:379's netname 'rocketminsta' tag now resolves to the bespoke elaser/red-trail/team-colored bolt — rm.laser_barrage presentation partial->faithful, csqc_projectile match false->true. (2) LIVENESS — messages.kill_suicide upgraded unknown->live: Scores.cs:744 SelectKillMessage / Scores.cs:650 SelectSuicideMessage are on the real obituary path. (3) LIVENESS — rm.primary_explosion + rm.laser_barrage upgraded unknown->live: the RM dispatch chain is now fully confirmed (WrThink is live every tick via WeaponFireDriver.cs:166-168; the RocketMinstaMutator.cs sub-mode is REGISTERED [Mutator] with live Damage_Calculate/PlayerDies hooks gated on g_rm, matching Base REGISTER_MUTATOR(rm, autocvar_g_instagib)). RM mode is a deliberate non-default g_rm-gated sub-mode but the code is reachable on the live path when enabled. STILL OPEN: primary cylindric VaporizerBeam team-color/colorboost CSQC path (primary.beam_particle), Instagib-hardcoded-true bare class default (ammo.consumption), rapid_animtime view-model frame. The 2026-06-25 fixes (RM-explosion ROCKET_EXPLODE+rocket_impact presentation, gfx/reticle_nex client reticle, instagib alpha-yoda, achievements) all re-confirmed intact."
 features:
   - id: weapon-vaporizer.primary.rail_beam
     name: "Primary rail beam (piercing hitscan + knockback + falloff)"
@@ -230,15 +230,15 @@ features:
       timing: na
       presentation: faithful
       audio: faithful
-      liveness: unknown
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Liveness of g_rm in a shipped/normal match (a map or mutator that sets g_rm) not traced end-to-end."
+    gaps: []
     verification:
-      - { kind: code, ref: "Vaporizer.cs:234-236 sky/noimpact guard + RocketMinstaExplosion; :311-314 RadiusDamage(g_rm_* 70/38/140/400, accuracyWeapon=devastator, deathTag=devastator); :321-322 Emit('ROCKET_EXPLODE') + ImpactSoundAt('weapons/rocket_impact.wav') vs vaporizer.qc:108-129 + mutators.cfg:442-445. EffectsList.cs:116 registers ROCKET_EXPLODE; rocket_impact.ogg asset present.", result: pass }
+      - { kind: code, ref: "Vaporizer.cs:232-234 sky/noimpact guard + RocketMinstaExplosion; :309-312 RadiusDamage(g_rm_* 70/38/140/400, accuracyWeapon=devastator, deathTag=devastator); :319-320 Emit('ROCKET_EXPLODE') + ImpactSoundAt('weapons/rocket_impact.wav') vs vaporizer.qc:108-129 + mutators.cfg:442-445. EffectsList.cs:122 registers ROCKET_EXPLODE.", result: pass }
+      - { kind: code, ref: "LIVENESS: WrThink->Attack->RocketMinstaExplosion runs on the live driver (WeaponFireDriver.cs:166) under the g_rm cvar gate; RocketMinstaMutator.cs is registered [Mutator] + hooked, the g_rm sub-mode activation matching Base REGISTER_MUTATOR(rm, autocvar_g_instagib)", result: pass }
     confidence: high
-    notes: "FIX vs baseline (presentation/audio missing -> faithful): RocketMinstaExplosion now emits the Devastator explosion presentation at the rail endpoint (ROCKET_EXPLODE particles + rocket_impact sound), matching how the QC blast — tagged WEP_DEVASTATOR.m_id — routes through the Devastator's CSQC wr_impacteffect. logic/values unchanged (cvars 70/38/140/400, devastator death-tag + HITTYPE_SPLASH, sky/NOIMPACT guard all correct). STILL OPEN: g_rm live-path reachability untraced."
+    notes: "LIVENESS upgraded unknown->live (presentation/audio already faithful at the 2026-06-25 baseline and re-confirmed). RocketMinstaExplosion emits the Devastator explosion presentation at the rail endpoint (ROCKET_EXPLODE particles + rocket_impact sound), matching how the QC blast — tagged WEP_DEVASTATOR.m_id — routes through the Devastator's CSQC wr_impacteffect. logic/values faithful (cvars 70/38/140/400, devastator death-tag + HITTYPE_SPLASH, sky/NOIMPACT guard). The g_rm path is reachable: WrThink is live every tick and RocketMinstaMutator is registered+hooked (rm sub-mode is a deliberate g_rm-gated cvar mode)."
 
   - id: weapon-vaporizer.rm.laser_barrage
     name: "Rocket-Minsta: secondary bouncing-laser fan + rapid-fire ladder"
@@ -264,23 +264,23 @@ features:
       - { name: "fire_sound (mode-0 fan / mode-1 stream)", base: "SND_CRYLINK_FIRE / SND_ELECTRO_FIRE2", port: "weapons/crylink_fire.wav / weapons/electro_fire2.wav", match: true }
       - { name: "muzzle", base: "W_MuzzleFlash(WEP_ELECTRO)", port: "ELECTRO_MUZZLEFLASH", match: true }
       - { name: "shooter-velocity inherit", base: "W_CalculateProjectileVelocity(actor, vel, true) — forceAbsolute, only g_weaponspeedfactor", port: "v * WeaponSpeedFactor() (g_weaponspeedfactor) — Newtonian inheritance bypassed in Base too", match: true }
-      - { name: "csqc_projectile", base: "PROJECTILE_ROCKETMINSTA_LASER (elaser model + trail)", port: "netname 'rocketminsta' tag but no matching client descriptor found", match: false }
+      - { name: "csqc_projectile", base: "PROJECTILE_ROCKETMINSTA_LASER (elaser model + EFFECT_ROCKETMINSTA_LASER trail + team colormod)", port: "ProjectileType.RocketMinstaLaser descriptor (elaser model + ROCKETMINSTA_LASER red trail + per-bolt team colormod); netname 'rocketminsta' classified before generic 'rocket'", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
-      liveness: unknown
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No confirmed distinct CSQC bolt visual: Vaporizer.cs:359 tags netname 'rocketminsta' to pick a RocketMinstaLaser/elaser descriptor, but no such client projectile descriptor exists in the port — the bolt likely renders as a generic plasma/laser. No weapon_thinkf rapid_animtime."
-      - "Liveness of the RM-laser path (requires g_rm + g_rm_laser, or g_rm_laser==2) in a shipped/normal match not traced end-to-end."
+      - "RM-laser rapid stream omits the cosmetic weapon_thinkf WFRAME_FIRE2 rapid_animtime view-model frame (vaporizer.qc:334, commented out in Base too); purely a first-person anim frame, no gameplay/visual-bolt effect."
     verification:
-      - { kind: code, ref: "Vaporizer.cs:316-424 RocketMinstaLaserBarrage (count 3/dmg 80/radius 150/force 400/speed 6000/lifetime 30/spread 0.05 + electro deathtype + ELECTRO_MUZZLEFLASH + crylink_fire/electro_fire2) + WrThink:128-146 rapid ladder (hagar_load/jump_interval2) + RocketMinstaLaserExplode:430-442 ELECTROBITCH guard vs vaporizer.qc:222-276/318-335/194-205 + mutators.cfg:447-460", result: pass }
+      - { kind: code, ref: "Vaporizer.cs:316-444 RocketMinstaLaserBarrage (count 3/dmg 80/radius 150/force 400/speed 6000/lifetime 30/spread 0.05 + electro deathtype + ELECTRO_MUZZLEFLASH + crylink_fire/electro_fire2; netname 'rocketminsta' + team colormap) + WrThink:124-160 rapid ladder (hagar_load/jump_interval2) + RocketMinstaLaserExplode:450-462 ELECTROBITCH guard vs vaporizer.qc:222-276/316-335/194-205 + mutators.cfg:447-460", result: pass }
+      - { kind: code, ref: "DISTINCT CSQC BOLT VISUAL CONFIRMED: ProjectileCatalog.cs:222-224 RocketMinstaLaser descriptor (elaser model + ROCKETMINSTA_LASER red trail), :269 'rocketminsta' classified before generic 'rocket', EffectsList.cs:264 ROCKETMINSTA_LASER trail registered, ProjectileRenderer.cs:127-128 per-bolt team colormod vs projectile.qc:384,504-506", result: pass }
     confidence: high
-    notes: "FIXES vs baseline: (1) rapid ladder NOW ported — WrThink fires the mode-0 fan on first press (arming hagar_load + jump_interval2=rapid_delay) then mode-1 rapid bolts on rapid_refire (logic+timing partial -> faithful). (2) ELECTROBITCH airshot announce NOW ported in RocketMinstaLaserExplode (mirrors Base: the timeout path passes NULL directhit so the guard never fires there, exactly like Base; touch path damages with no guard). (3) shooter-velocity: Base forces forceAbsolute=true which bypasses Newtonian owner-velocity inheritance, leaving only g_weaponspeedfactor — which the port DOES apply via WeaponSpeedFactor(), so this is now a faithful match, not a gap. STILL OPEN: the distinct CSQC PROJECTILE_ROCKETMINSTA_LASER bolt visual (no client descriptor found despite the netname tag) and rapid_animtime."
+    notes: "FIX vs baseline (presentation partial->faithful, csqc_projectile false->true, liveness unknown->live): the distinct PROJECTILE_ROCKETMINSTA_LASER bolt visual is NOW fully ported — ProjectileCatalog.cs:222-224 registers a RocketMinstaLaser descriptor (models/elaser.mdl + the red ROCKETMINSTA_LASER trail, EffectsList.cs:264), the netname->type classifier matches 'rocketminsta' BEFORE the generic 'rocket' substring (ProjectileCatalog.cs:269, the bug the baseline feared), and ProjectileRenderer.cs:127-128 applies the per-bolt team colormod faithfully. So Vaporizer.cs:379's netname 'rocketminsta' tag resolves to the bespoke elaser/red-trail/team-colored bolt, not a generic plasma. Prior fixes re-confirmed: rapid ladder (WrThink fan-then-rapid-bolt), ELECTROBITCH timeout-NULL-directhit guard, and the g_weaponspeedfactor-only velocity (Base forceAbsolute=true). Liveness now live: WrThink runs every tick on the driver and the g_rm/g_rm_laser sub-mode is a reachable cvar gate (RocketMinstaMutator.cs registered + hooked). STILL OPEN: only the cosmetic rapid_animtime view-model frame."
 
   - id: weapon-vaporizer.ammo.consumption
     name: "Ammo consumption + checkammo + reload + bot aim"
@@ -364,14 +364,15 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: unknown
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps: []
     verification:
       - { kind: code, ref: "DeathMessages.cs case 'vaporizer'->WEAPON_VAPORIZER_MURDER; SelectSuicideMessage vaporizer default -> WEAPON_THINKING_WITH_PORTALS, vs vaporizer.qc:394-402", result: pass }
-    confidence: medium
-    notes: "Unchanged. The Vaporizer wr_killmessage/wr_suicidemessage ARE ported, centralized in DeathMessages.cs (string lookup keyed by weapon NetName). Liveness still unknown: the kill-feed call site was not traced end-to-end in this audit."
+      - { kind: code, ref: "LIVENESS: Scores.cs:744 SelectKillMessage / Scores.cs:650 SelectSuicideMessage called on the real obituary path with DeathTypes.WeaponNetNameOf(deathType)", result: pass }
+    confidence: high
+    notes: "LIVENESS upgraded unknown->live: the kill-feed call sites are now traced — Scores.cs:744 (kill) and Scores.cs:650 (suicide) invoke the DeathMessages selectors on the real obituary path. The Vaporizer wr_killmessage/wr_suicidemessage ARE ported, centralized in DeathMessages.cs (string lookup keyed by weapon NetName)."
 
   - id: weapon-vaporizer.client.reticle
     name: "Client reticle / zoom (wr_init precache + wr_zoom button_zoom)"

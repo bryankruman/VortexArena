@@ -1,14 +1,14 @@
 unit: mutator-itemstime
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 10
   worst_gaps:
-    - "Spectator/warmup respawn waypoint sprites for timed items (g_waypointsprite_itemstime default 2, SPRITERULE_SPECTATOR / Item_RespawnCountdown) are STILL not implemented. No waypoint-sprite producer for itemstime exists (grep across src + game -> no matches)."
     - "hud_panel_itemstime_hidebig (Base default 0/false) is registered as an orphan menu checkbox only (DialogHudPanelItemsTime.cs:80); it is neither registered in ItemsTimePanel.RegisterDefaults nor read by DrawPanel — a user setting hidebig 1 is silently dead (matches stock default false)."
     - "The _hud_configure HUD-editor preview (Base Item_ItemsTime_GetTime returns fake times: ArmorMega+8, ArmorBig+0, HealthMega+0, Strength+4) is not ported; the items-time panel shows nothing in the HUD editor."
-    - "RESOLVED since 2026-06-25: the CSQC itemstime net message (NetControl.ItemsTime=20), the per-player send tiers/gate (SetTimesForAllPlayers warmup||!IS_PLAYER||sv_itemstime==2), the networked STAT(ITEMSTIME) tier, and the remote-client HUD feed are now ALL ported (ServerNet.SendItemsTime / ClientNet.HandleItemsTime / NetGame.cs:2500-2515). The panel works for a pure remote/dedicated-server client, not just the listen host."
+    - "RESOLVED since 2026-06-25 (Wave 7/8): the CSQC itemstime net message (NetControl.ItemsTime=20), the per-player send tiers/gate, the networked STAT(ITEMSTIME) tier, and the remote-client HUD feed are all ported — the panel works for a pure remote/dedicated-server client."
+    - "RESOLVED at the 2026-06-27 drift check: the spectator/warmup respawn waypoint sprites for timed items (SPRITERULE_SPECTATOR / Item_RespawnCountdown) are now implemented and LIVE — ItemPickupRules.RespawnCountdown spawns the countdown waypoint with the server-side sv_itemstime audience gate (ServerNet.WaypointVisible). Residual divergence: the client g_waypointsprite_itemstime cvar is dead (gate enforced server-side) and the countdown cue is positional not per-client soundto."
 features:
   - id: mutator-itemstime.set.timed_items
     name: "Tracked timed-item set (powerups + mega/big health+armor + superweapons aggregate)"
@@ -183,7 +183,7 @@ features:
       - { kind: code, ref: "NetGame.cs:2461-2475 (host path) wires it LIVE: panelMode=hud_panel_itemstime, spectatee=_client.SpectateeStatus, warmup=_client.MatchWarmup, tier=itm.Tier(=sv_itemstime); Visible=show; times fed only when show", result: pass }
       - { kind: code, ref: "NetGame.cs:2500-2515 (REMOTE-client path) wires the SAME gate with the NETWORKED tier: ShouldDraw(panelMode, _client.SpectateeStatus, _client.MatchWarmup, _client.ItemsTimeTier) -> SetItemTimes(_client.ItemTimes)", result: pass }
     confidence: high
-    notes: "The gate logic is byte-faithful and now LIVE on BOTH paths: the listen host (itm.Tier) and the pure remote client (ClientNet.ItemsTimeTier off the network). Previously (2026-06-25) the gap was 'live only on the listen host'; that residual host-only limitation is now resolved by the remote-client feed. spectatee!=0 correctly includes the free-fly observer (-1). HudManager's StartHiddenIds membership means the manager won't fight the data-driven Visible. Residual: the _hud_configure preview path is still absent (see hud.draw)."
+    notes: "The gate logic is byte-faithful and now LIVE on BOTH paths: the listen host (itm.Tier) and the pure remote client (ClientNet.ItemsTimeTier off the network). Previously (2026-06-25) the gap was 'live only on the listen host'; that residual host-only limitation is now resolved by the remote-client feed. spectatee!=0 correctly includes the free-fly observer (-1). HudManager's StartHiddenIds membership means the manager won't fight the data-driven Visible. Residual: the _hud_configure preview path is still absent (see hud.draw). Verified unchanged at the 2026-06-27 drift check (NetGame.cs:2536-2589)."
 
   - id: mutator-itemstime.net.itemstime_stat
     name: "STAT(ITEMSTIME) client stat (= live sv_itemstime tier)"
@@ -205,13 +205,12 @@ features:
       liveness: live
     intended_divergence: true
     divergence_rationale: "Base registers STAT(ITEMSTIME) as a generic networked player stat (the stat system streams autocvar_sv_itemstime). The port has no generic stat registry; instead the tier is sourced on the server from ItemstimeMutator.Tier (= sv_itemstime) and carried as the leading byte of the dedicated NetControl.ItemsTime message, decoded into ClientNet.ItemsTimeTier. Same value, same liveness, carried on the itemstime channel rather than a general STAT block."
-    gaps:
-      - "The waypoint-sprite consumer of STAT(ITEMSTIME) (waypoints.spectator_sprites) is still unported, so that second consumer of the tier remains unsatisfied (the tier value itself now reaches the client)."
+    gaps: []
     verification:
       - { kind: code, ref: "ItemstimeMutator.Tier => (int)Api.Cvars.GetFloat('sv_itemstime') (= QC autocvar_sv_itemstime, stats.qh:138 source)", result: pass }
       - { kind: code, ref: "game/net/ServerNet.cs:SendItemsTime writes `(byte)tier` first; game/net/ClientNet.cs:HandleItemsTime reads it into ItemsTimeTier; consumed by ShouldDraw on both host (itm.Tier) and remote (_client.ItemsTimeTier) paths", result: pass }
     confidence: high
-    notes: "FIXED since the 2026-06-25 baseline (was logic/liveness=partial, 'host-modeled only, not networked'). The tier is now genuinely networked to a remote client as the leading byte of NetControl.ItemsTime and consumed live by the enable gate on both paths. Marked intended_divergence because it rides the itemstime channel instead of a generic REGISTER_STAT block (the port has no such registry). The only residual is the absent waypoint-sprite consumer."
+    notes: "FIXED since the 2026-06-25 baseline (was logic/liveness=partial, 'host-modeled only, not networked'). The tier is now genuinely networked to a remote client as the leading byte of NetControl.ItemsTime and consumed live by the enable gate on both paths. Marked intended_divergence because it rides the itemstime channel instead of a generic REGISTER_STAT block (the port has no such registry). The second consumer of the tier — the spectator waypoint gate — is now ALSO satisfied (ServerNet.WaypointVisible reads sv_itemstime server-side; waypoints.spectator_sprites is no longer a gap)."
 
   - id: mutator-itemstime.hud.draw
     name: "HUD draw: grid layout, countdown, color/blink, checkmark, progress bar, expanding flash"
@@ -281,25 +280,33 @@ features:
 
   - id: mutator-itemstime.waypoints.spectator_sprites
     name: "Spectator/warmup respawn waypoint sprites for timed items"
-    layer: [presentation]
+    layer: [authority, presentation]
     base_refs:
       - "common/mutators/mutator/waypoints/waypointsprites.qc:495"
       - "server/items/items.qc:293"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:RespawnCountdown"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/ItemstimeMutator.cs:IsSpectatorOnlyItem"
+      - "game/net/ServerNet.cs:WaypointVisible"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:SpriteRule.Spectator"
     constants:
-      - { name: "g_waypointsprite_itemstime_default", base: "2 (xonotic-client.cfg:518)", port: "none", match: false }
+      - { name: "g_waypointsprite_itemstime_default", base: "2 (xonotic-client.cfg:518)", port: "cvar present in assets/data/.../xonotic-client.cfg:518 but UNREAD (no client draw-side gate); the spectator visibility is enforced server-side by ServerNet.WaypointVisible instead", match: false }
+      - { name: "spectator_rule_gate", base: "SPRITERULE_SPECTATOR + (sv_itemstime!=0; live players hidden unless warmup||sv_itemstime==2)", port: "SpriteRule.Spectator: sv_itemstime==0 -> hidden; !warmup && isPlayer && sv_itemstime!=2 -> hidden; else visible (ServerNet.cs:1142-1150)", match: true }
+      - { name: "build_finished", base: "WaypointSprite_UpdateBuildFinished at scheduledrespawntime", port: "WaypointSprites.UpdateBuildFinished(wp, item.ScheduledRespawnTime)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: na
-      liveness: na
-    intended_divergence: false
-    divergence_rationale: null
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base gates the SPRITERULE_SPECTATOR respawn waypoint CLIENT-side via autocvar_g_waypointsprite_itemstime (1=spectating, 2=+warmup/sv_itemstime==2; default 2) in Draw_WaypointSprite. The port enforces the same spectator/warmup/sv_itemstime==2 audience SERVER-side in ServerNet.WaypointVisible (the SpriteRule.Spectator case) and does NOT read the client g_waypointsprite_itemstime cvar (which is present in xonotic-client.cfg but dead) — so a client cannot override the gate. The delivered visibility (only spectators in a live round, everyone in warmup / sv_itemstime==2) matches; only the gate location and the client override differ. Also: QC plays SND(ITEMRESPAWNCOUNTDOWN) per visible client via soundto(MSG_ONE); the port emits a single positional CH_TRIGGER cue on the item (ATTEN_NORM falloff) since the Common layer has no per-client soundto seam — slight over-broadcast to nearby live players."
     gaps:
-      - "No waypointsprite_itemstime / SPRITERULE_SPECTATOR support in the port: timed (SpectatorOnly) items (mega health/armor) get no spectator/warmup respawn-countdown waypoint sprite (Item_RespawnCountdown sets SPRITERULE_SPECTATOR + WaypointSprite_UpdateBuildFinished at time+ITEM_RESPAWN_TICKS), and the g_waypointsprite_itemstime cvar (default 2) is unregistered. STILL OPEN (grep waypointsprite_itemstime / SPRITERULE_SPECTATOR / g_waypointsprite_itemstime across src + game -> no matches, 2026-06-25 drift check)."
+      - "The client-side g_waypointsprite_itemstime cvar (xonotic-client.cfg:518, default 2) is present but UNREAD — a client overriding it (e.g. to 1 or 0) has no effect; the spectator/warmup audience is enforced server-side in ServerNet.WaypointVisible instead. Documented in src/XonoticGodot.Server/Cvars.cs:578-584."
+      - "The per-second ITEMRESPAWNCOUNTDOWN countdown cue is broadcast positionally on the item (CH_TRIGGER, ATTEN_NORM) rather than soundto(MSG_ONE) per waypoint-visible client, so it can leak to nearby live players for a SpectatorOnly item (no per-client soundto seam in the Common layer)."
     verification:
-      - { kind: code, ref: "grep waypointsprite_itemstime / SPRITERULE_SPECTATOR / g_waypointsprite_itemstime across src + game -> no matches (2026-06-25 drift check; no change)", result: fail }
-    confidence: medium
-    notes: "Tied to itemstime but lives in the waypoints subsystem; cross-listed here as part of the unit's spectator behavior. The dependency on the networked STAT(ITEMSTIME) is now satisfiable (the tier reaches the client via ClientNet.ItemsTimeTier), but no waypoint-sprite producer exists. UNCHANGED at this drift check — this is now the unit's single largest remaining gap."
+      - { kind: code, ref: "ItemPickupRules.RespawnCountdown (ItemPickupRules.cs:771-826) spawns the countdown waypoint on the first tick, rule = SpriteRule.Spectator for IsSpectatorOnlyItem (Mega/Big Health+Armor) else Default; UpdateBuildFinished(wp, ScheduledRespawnTime); wired LIVE as item.Think = RespawnCountdown (ItemPickupRules.cs:660)", result: pass }
+      - { kind: code, ref: "ServerNet.WaypointVisible SpriteRule.Spectator case (ServerNet.cs:1142-1150): sv_itemstime==0 hide; !warmup && isPlayer && sv_itemstime!=2 hide; else show — the SVQC-side equivalent of QC's client Draw_WaypointSprite g_waypointsprite_itemstime gate", result: pass }
+    confidence: high
+    notes: "FIXED since the 2026-06-25 baseline (was fully missing, empty port_refs, the unit's single largest gap). Now implemented end-to-end: producer (ItemPickupRules.RespawnCountdown spawns the SPRITERULE_SPECTATOR countdown waypoint for Mega/Big Health+Armor, with the build-progress bar to scheduledrespawntime and the per-tick ITEMRESPAWNCOUNTDOWN sound), the SpriteRule.Spectator enum, and the server-side visibility gate (ServerNet.WaypointVisible) reproducing the sv_itemstime 1/2/warmup audience. Modeled as intended_divergence because the gate moved to the server (the client g_waypointsprite_itemstime cvar is dead) and the countdown sound is positional rather than per-client soundto."

@@ -1,13 +1,13 @@
 unit: resources
 category: item
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 9
   worst_gaps:
-    - "api.take: TakeResourceWithLimit STILL does NOT fire its own QC mutator hook (sv_resources.qc:211) — Resources.cs:175-181 reads `current`/clamps but never calls a ResourceHooks chain (only an explanatory comment). The plain TakeResource hook IS now wired (ResourceHooks.TakeResource + CallTakeResource at Resources.cs:163). No shipped mutator subscribes to any ResourceHooks chain, so the residual WithLimit-hook seam is latent."
-    - "api.setresource: SetResource hook reads back res_type (M_ARGV(8) entity) in Base so a mutator may rewrite the RESOURCE TYPE, not just the amount; the port's CallSetResource still carries only `ref amount` (ResourceHooks.cs:57-64) — res_type is fixed. No shipped mutator rewrites res_type, so latent."
-    - "api.registry: cosmetic-only — Resource metadata (ammo m_name/m_icon/m_color, fuel m_hidden) isn't on a Resource object (handled in the panel/items layer); Base networks ammo_fuel as a STAT vs the port's Entity field. Behaviorally equivalent for the HUD. NOTE: the three baseline 'missing mutator-hook' gaps (TakeResource, GiveResourceWithLimit, PlayerRegen 10-slot, warmup-countdown offset) were ALL CLOSED since 2026-06-22."
+    - "api.registry: cosmetic-only — Resource metadata (ammo m_name/m_icon/m_color, fuel m_hidden) isn't on a Resource object (handled in the panel/items layer); Base networks ammo_fuel as a STAT vs the port's Entity field. Behaviorally equivalent for the HUD."
+    - "ALL mutator-hook seams (GetResourceLimit/SetResource/GiveResource/GiveResourceWithLimit/TakeResource/TakeResourceWithLimit + ResourceAmountChanged/ResourceWasted) are now FULLY wired with res_type/amount/limit read-back, matching the QC M_ARGV pattern. No shipped mutator subscribes to any ResourceHooks chain yet, so every chain is latent (early-returns when Count==0) but the seams are present + faithful."
+    - "NOTE: as of 2026-06-27 the two residual baseline gaps (SetResource res_type rewrite-back, TakeResourceWithLimit own hook) are CLOSED — both api.setresource and api.take are now logic:faithful."
 features:
   - id: resources.api.registry
     name: "RES_* resource registry + field indirection (health/armor/5 ammo)"
@@ -83,7 +83,7 @@ features:
     constants:
       - { name: "waste behavior", base: "amount_wasted = amount-max; fire ResourceWasted", port: "same", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -91,12 +91,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base's SetResource hook reads back BOTH res_type (M_ARGV(8) entity) and amount (M_ARGV(9)) after the forbid check, so a mutator may rewrite the RESOURCE TYPE as well as the amount. The port's CallSetResource (ResourceHooks.cs:57-64) only rewrites the amount (ref float); res_type is fixed. No shipped mutator rewrites res_type, so latent."
+    gaps: []
     verification:
-      - { kind: code, ref: "Resources.SetResource (Resources.cs:100-114) forbid/clamp/changed/wasted vs sv_resources.qc:87-113; ResourceHooks.CallSetResource still carries only `ref amount` (ResourceHooks.cs:57-64)", result: pass }
+      - { kind: code, ref: "Resources.SetResource (Resources.cs:100-115) forbid/clamp/changed/wasted vs sv_resources.qc:87-113; ResourceHooks.CallSetResource NOW carries `ref res, ref amount` (ResourceHooks.cs:66-74) so a mutator can rewrite the RESOURCE TYPE as well as the amount, matching Base's M_ARGV(8,entity)+M_ARGV(9,float) read-back at sv_resources.qc:94-95", result: pass }
     confidence: high
-    notes: "SetResource hook may forbid or rewrite amount; ResourceAmountChanged fires only on a real change; ResourceWasted fires only when wasted>0 (matches QC's amount_wasted==0 early-return). logic stays partial only for the res_type rewrite-back. Unchanged this wave."
+    notes: "FIX since 2026-06-25: CallSetResource was widened from `ref amount` to `ref res, ref amount` (Resources.cs:104 + ResourceHooks.cs:66-74), so the res_type rewrite-back is now faithful — the last baseline gap on this row is CLOSED -> logic partial->faithful. SetResource hook may forbid, rewrite amount, OR rewrite res_type; ResourceAmountChanged fires only on a real change; ResourceWasted fires only when wasted>0 (matches QC's amount_wasted==0 early-return). No mutator subscribes to the chain yet (latent, early-returns when Count==0)."
   - id: resources.api.give
     name: "GiveResource / GiveResourceWithLimit (+ per-resource rot-pause push)"
     layer: [authority]
@@ -139,7 +138,7 @@ features:
       - { name: "amount<=0 no-op (SVQC)", base: "yes", port: "yes", match: true }
       - { name: "TakeResourceWithLimit clamp", base: "if (current-amount < -limit) amount = -limit + current", port: "if (current-amount < -limit) amount = current - limit", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -147,12 +146,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "TakeResourceWithLimit STILL does NOT fire its own QC mutator hook (sv_resources.qc:211 MUTATOR_CALLHOOK(TakeResourceWithLimit)) — Resources.cs:172-182 clamps the drain and delegates to TakeResource but never calls a ResourceHooks chain (comment only; ResourceHooks has no TakeResourceWithLimit chain). It does delegate to TakeResource (which now DOES fire the TakeResource hook), so the inner hook still runs; only the WithLimit-specific hook is absent. No shipped mutator subscribes, so latent."
+    gaps: []
     verification:
-      - { kind: code, ref: "Resources.TakeResource (Resources.cs:159-166) vs sv_resources.qc:184-203 — NOW fires the QC TakeResource hook (ResourceHooks.CallTakeResource at Resources.cs:163 -> ResourceHooks.TakeResource chain, ref amount). Resources.TakeResourceWithLimit (Resources.cs:172-182) vs sv_resources.qc:205-228 — clamp `amount = current - limit` algebraically identical to QC `amount = -limit + current_amount`; its own WithLimit hook still NOT fired (comment only). Live caller ItemPickupRules.cs:246 (GiveAmmoTo drain branch) mirrors items.qc:507", result: pass }
+      - { kind: code, ref: "Resources.TakeResource (Resources.cs:162-169) vs sv_resources.qc:185-203 — fires the QC TakeResource hook (CallTakeResource at Resources.cs:166 -> ResourceHooks.TakeResource chain, ref res/amount). Resources.TakeResourceWithLimit (Resources.cs:175-186) vs sv_resources.qc:205-229 — NOW fires its own WithLimit hook (CallTakeResourceWithLimit at Resources.cs:180 -> ResourceHooks.TakeResourceWithLimit chain, ref res/amount/limit, ResourceHooks.cs:124-133) BEFORE the clamp, matching sv_resources.qc:211; clamp `amount = current - limit` algebraically identical to QC `amount = -limit + current_amount`. Live caller ItemPickupRules.cs (GiveAmmoTo drain branch) mirrors items.qc", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22: the plain TakeResource mutator hook was added (ResourceHooks.TakeResource chain + CallTakeResource call-site, ref amount), closing that baseline gap. TakeResourceWithLimit (formula-faithful, live on the item-pickup drain path) STILL lacks its own WithLimit-specific hook, so logic stays partial for that one residual seam. No mutator subscribes to any ResourceHooks chain (all latent)."
+    notes: "FIX since 2026-06-25: the TakeResourceWithLimit chain + CallTakeResourceWithLimit call-site (ref res/amount/limit) were added (Resources.cs:180 + ResourceHooks.cs:124-133), closing the last baseline gap on this row -> logic partial->faithful. Both TakeResource and TakeResourceWithLimit now fire their own QC hooks with full res_type/amount/limit read-back. Formula-faithful, live on the item-pickup drain path. No mutator subscribes to any ResourceHooks chain yet (all latent, early-return when Count==0)."
   - id: resources.regen.loop
     name: "player_regen + RotRegen + CalcRegen/CalcRot (health/armor/fuel regen and rot)"
     layer: [authority]

@@ -1,13 +1,13 @@
 unit: weapon-crylink
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 12
   worst_gaps:
     - "LinkJoin head-dangle edge case: port keys the group on the C# group[0] list head and cannot re-head the ring to a live spike the way QC's queuenext/queueprev does. If the head spike dies before release the survivors don't converge (WrThink still clears wait-release so the player isn't stranded). Edge case, no stock-balance impact."
     - "WarpZone reference-frame transforms (WarpZone_RefSys_Transform*) in W_Crylink_LinkJoin omitted — no-op without warpzones."
-    - "Bot aim (wr_aim) not ported for Crylink — bots never fire the weapon via the QC bot_aim path (no per-weapon WrAim override; see crylink.bot.wr_aim). Same gap shape as other un-ported weapon bot-aim methods."
+    - "Bot aim (wr_aim) secondary lead-speed: the 10/90 primary/secondary button pick is now ported + live (BotWantsSecondary), but BotAimShotSpeed returns a single lead speed (Primary.Speed) for both modes rather than QC's per-mode bot_aim(secondary_speed) — the shared port-wide wr_aim lead simplification, not a crylink-specific defect."
 features:
   - id: crylink.identity
     name: "Weapon identity, flags, models, color, balance defaults"
@@ -368,21 +368,27 @@ features:
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/crylink.qc:wr_aim"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:BotWantsSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:BotAimShotSpeed"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:406"
     constants:
-      - { name: "primary-fire bias", base: "random() < 0.10 -> primary, else secondary", port: "none", match: false }
+      - { name: "primary-fire bias", base: "random() < 0.10 -> primary, else secondary", port: "ctx.Random01 >= 0.10 -> secondary (i.e. 10% primary, 90% secondary)", match: true }
+      - { name: "primary lead speed", base: "bot_aim(primary_speed,...)", port: "BotAimShotSpeed => Primary.Speed", match: true }
+      - { name: "secondary lead speed", base: "bot_aim(secondary_speed,...)", port: "BotAimShotSpeed => Primary.Speed (single-speed lead, shared simplification)", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No Crylink WrAim override — the QC METHOD(Crylink, wr_aim) (10% chance primary via bot_aim(speed,0,middle_lifetime), else secondary) is not ported. Bots cannot select/lead a crylink shot through the per-weapon bot-aim path. Other weapons (Vaporizer/Shotgun/Minelayer/Rifle/Fireball/Devastator/Machinegun) DO have WrAim, so a generic fallback does not cover crylink. Same un-ported-bot-aim shape as several other weapons."
+      - "Secondary lead speed: QC's wr_aim leads the secondary shot at WEP_CVAR_SEC(speed) (3000); the port's BotAimShotSpeed returns a single speed (Primary.Speed=2000) regardless of which mode the 10/90 pick routes to. This is the shared port-wide wr_aim lead-speed simplification (the brain keys lead off one per-weapon BotAimShotSpeed, not per-fire-mode), tracked at bot-ai.aim.lead — not a crylink-specific logic defect. The mode-PICK and the primary lead are faithful."
     verification:
-      - { kind: code_read, ref: "crylink.qc:wr_aim present; no WrAim/wr_aim symbol in Crylink.cs (grep), and Crylink not among the WrAim-implementing weapon files", result: fail }
+      - { kind: code_read, ref: "Crylink.cs:209-213 BotWantsSecondary returns ctx.Random01 >= 0.10f (10% primary, 90% secondary) == QC random()<0.10; Crylink.cs:219 BotAimShotSpeed => Primary.Speed", result: pass }
+      - { kind: code_read, ref: "live dispatch: BotBrain.cs:404-406 sets ctx.Random01 + ctx.Actor then calls w.BotWantsSecondary(...) on the real bot fire-decision path; base hook GameplayBases.cs:145 default false overridden by Crylink", result: pass }
     confidence: high
-    notes: "ADDED 2026-06-25 (registry coverage gap — Base feature with no port symbol). Bot aim for crylink is unimplemented; bots won't fire it via the QC bot_aim path. Not stock-balance-critical for human play but a real bot-behavior gap."
+    notes: "RE-AUDITED 2026-06-27 (FIX vs baseline): the baseline recorded this as missing/na with empty port_refs. The port now implements the QC METHOD(Crylink, wr_aim) via the shared BotWantsSecondary/BotAimShotSpeed hooks (same Wave-12 pattern that closed bot-aim across Shotgun/Rifle/Fireball/Electro/Machinegun/Tuba/Vaporizer). The 10%-primary / 90%-secondary button pick is bit-faithful and LIVE via BotBrain.cs:406. Only residual is the single-speed lead (secondary uses 2000 not 3000), the documented shared bot-aim limitation. missing -> faithful, dead/na -> live."

@@ -2,7 +2,26 @@ unit: tka
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
-# re-audited 2026-06-25 (drift check, 2nd pass). Since the prior 2026-06-25 baseline, TWO MORE features were
+# 2026-06-25 (5th pass, drift re-verify): ONE fix on the 18 rows. tka.score.preferplayerscore upgraded
+#   logic missing->faithful, liveness dead->live: the rejoin-clear path is now WIRED + LIVE. Since the prior
+#   baseline (which recorded ClearPlayerOnJoin as having NO live caller and TKA never supplying the veto),
+#   the port grew (a) a live caller — ClientManager.Join (ClientManager.cs:294) calls
+#   GameScores.ClearPlayerOnJoin(p) on every (re)join, and (b) a GLOBAL hook consult — ClearPlayerOnJoin
+#   (GameScores.cs:636-637) now ORs in MutatorHooks.FirePreferPlayerScore_Clear(p) (MutatorHooks.cs:580-583
+#   -> HookChain.Call) instead of relying on a per-caller delegate. TKA subscribes that chain in Activate
+#   (TeamKeepaway.cs:404-405 MutatorHooks.PreferPlayerScore_Clear.Add) and OnPreferPlayerScoreClear returns
+#   true, so under g_score_resetonjoin -1 the TKA veto now fires and the score is kept. No-op at the default
+#   resetonjoin 0 (mode==0 short-circuits before the veto) so still no stock-server divergence — but the
+#   feature is now connected exactly like Base, matching the QC MUTATOR_HOOKFUNCTION(tka, PreferPlayerScore_Clear).
+#   1 fix, 0 regressions, 0 newly-unmapped Base features. All other 17 rows re-confirmed (line numbers shifted:
+#   SpawnBall GameWorld.cs:745, Activate :2797, ForbidAttackHook :2801-2802, Tick :3297, winner report
+#   :4111-4113, DamageCalculate.Call DamageSystem.cs:264, PlayerPhysics.Call PlayerPhysics.cs:261,
+#   FirePlayerUseKey VehicleBoarding.cs:106, OnPlayerRemoved ClientManager.cs:535 (observer) + :814 (disconnect),
+#   CollectWaypoints pull ServerNet.cs:1060 + per-peer predicate :1119-1122, BallStatusFor GametypeStatusBlock.cs:124,
+#   ModIcons feed NetGame.cs:4266-4268, bot RoleKeepaway BotRoles.cs:99 + enemyplayers 10000/500
+#   BotObjectiveRoles.cs:550/557, ForbidAttackHook consumed BotBrain.cs:979). All 16 Base MUTATOR_HOOKFUNCTIONs
+#   re-enumerated and still mapped (PlayerPowerups sv_tka.qc:546 remains an empty no-op stub — nothing to port).
+# 2026-06-25 (4th pass, drift re-verify): Since the prior 2026-06-25 baseline, TWO MORE features were
 # upgraded LIVE and one constant flipped to match. 2 fixes, 0 regressions, 0 newly-unmapped Base features.
 #   - tka.ball.drop: liveness partial -> LIVE. The use-key, observer, and disconnect drop triggers are now all
 #     wired: OnUseKey subscribes MutatorHooks.PlayerUseKey (Activate, TeamKeepaway.cs:387), fired live via
@@ -607,20 +626,22 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ClearPlayerOnJoin"
     constants:
-      - { name: "prefer_clear_return", base: "true (TKA always prefers to KEEP player score, so with g_score_resetonjoin -1 the score is NOT wiped on rejoin)", port: "no TKA wiring (ClearPlayerOnJoin preferClear delegate is never supplied for TKA)", match: false }
+      - { name: "prefer_clear_return", base: "true (TKA always prefers to KEEP player score, so with g_score_resetonjoin -1 the score is NOT wiped on rejoin)", port: "true (OnPreferPlayerScoreClear returns true, subscribed to MutatorHooks.PreferPlayerScore_Clear in Activate)", match: true }
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base TKA subscribes PreferPlayerScore_Clear and returns true: when g_score_resetonjoin == -1, a player who specs out and rejoins KEEPS their score (the hook vetoes the conditional wipe). The port has a generic seam — GameScores.ClearPlayerOnJoin takes a preferClear delegate that maps to MUTATOR_CALLHOOK(PreferPlayerScore_Clear) — but TKA never supplies it, so the veto is absent."
-      - "Moot on stock servers: the default g_score_resetonjoin is 0, which short-circuits ClearPlayerOnJoin before the hook is consulted (and ClearPlayerOnJoin itself currently has NO live caller anywhere — the rejoin-clear path is dead). So there is no stock-server divergence; the gap only manifests under the admin -1 config."
+      - "FIXED (logic missing -> faithful, liveness dead -> live): the rejoin-clear veto is now wired AND on a live path. (1) TKA subscribes the hook in Activate (TeamKeepaway.cs:404-405 MutatorHooks.PreferPlayerScore_Clear.Add(OnPreferPlayerScoreClear)); OnPreferPlayerScoreClear returns true (TeamKeepaway.cs:423-426), matching QC MUTATOR_HOOKFUNCTION(tka, PreferPlayerScore_Clear){ return true; }. (2) The clear path is consumed live: ClientManager.Join (ClientManager.cs:294) calls GameScores.ClearPlayerOnJoin(p) on every (re)join."
+      - "The veto is now consulted via the GLOBAL hook chain rather than a per-caller delegate: ClearPlayerOnJoin (GameScores.cs:636-637) ORs in MutatorHooks.FirePreferPlayerScore_Clear(p) (MutatorHooks.cs:580-583 -> PreferPlayerScore_Clear.Call), so any subscribing gametype (TKA) vetoes the -1 wipe. The prior baseline's two blockers (TKA never supplies the delegate; ClearPlayerOnJoin has no live caller) are both resolved."
+      - "No-op on stock servers: the default g_score_resetonjoin is 0, so ClearPlayerOnJoin short-circuits (mode==0) BEFORE the veto matters. Faithful to Base (which also no-ops at 0). The veto only changes behavior under the admin g_score_resetonjoin -1 config, where TKA now correctly KEEPS the rejoiner's score."
     verification:
-      - { kind: codetrace, ref: "Base sv_tka.qc:609 MUTATOR_HOOKFUNCTION(tka, PreferPlayerScore_Clear){ return true; }; port GameScores.ClearPlayerOnJoin(p, preferClear) honors the -1 veto but no TKA site passes preferClear, and ClearPlayerOnJoin has zero callers -> dead", result: fail }
+      - { kind: codetrace, ref: "Base sv_tka.qc:609 MUTATOR_HOOKFUNCTION(tka, PreferPlayerScore_Clear){ return true; }; port Activate (TeamKeepaway.cs:404-405) subscribes OnPreferPlayerScoreClear (returns true) to MutatorHooks.PreferPlayerScore_Clear", result: pass }
+      - { kind: codetrace, ref: "live path: ClientManager.Join (ClientManager.cs:294) -> GameScores.ClearPlayerOnJoin(p) -> FirePreferPlayerScore_Clear(p) (GameScores.cs:637) -> PreferPlayerScore_Clear.Call (MutatorHooks.cs:583) -> TKA veto; gated on g_score_resetonjoin (default 0 = no-op, matching Base)", result: pass }
     confidence: high
-    notes: "Newly-mapped Base hook (was unmapped in the prior baseline). No-op on stock servers (resetonjoin default 0); only matters for the g_score_resetonjoin -1 admin config, where the whole rejoin-clear path is currently dead in the port anyway."
+    notes: "FIX this pass (logic missing -> faithful, liveness dead -> live): since the prior baseline the port grew a live ClearPlayerOnJoin caller (ClientManager.Join) and a global PreferPlayerScore_Clear hook consult; TKA's veto subscription is now both present and reachable. No-op at the default resetonjoin 0, so still no stock-server divergence — connected exactly like Base."

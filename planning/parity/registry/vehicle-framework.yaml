@@ -2,6 +2,24 @@ unit: vehicle-framework
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
+# DRIFT RE-AUDIT after Wave 12 (HEAD 0b3c2a8; prior audit was Waves 9-11 @ ff8a699). 0 regressions this pass.
+# CHANGES: (1) Vehicles_drawCrosshair (the centered per-mode reticle + the Raptor bomb dropmark) is NOW PORTED +
+#   LIVE — VehicleHud.DrawMainReticle + DrawBombDropmark (VehicleHud.cs:383/411), fed every frame by
+#   NetGame.FeedRaptorReticle (NetGame.cs:3306-3357) from UpdateVehicleHud, with the tracetoss bomb-impact
+#   predictor VehiclePhysics.BombDropPredict (VehiclePhysicsHelpers.cs:341+). This narrows hud_camera_xhair's
+#   presentation gap (drawCrosshair was implicitly unported); presentation STAYS partial because the cockpit/chase
+#   camera (SVC_SETVIEWPORT) is still dead. (2) TWO registry coverage gaps were found and given new rows this pass:
+#   vehicle-framework.lifecycle.reset (the QC `.reset = vehicles_reset` round-restart hook, sv_vehicles.qc:1095/1118
+#   — eject pilot + clearreturn + respawn — NOT registered in the port: no GtReset/.Reset on any vehicle) and
+#   vehicle-framework.death.gibs (vehicle_tossgib + vehicles_gib_explode/touch/think, sv_vehicles.qc:274-326 —
+#   NOT ported, only a NOTE in Bumblebee.cs:502; previously only mentioned as a deferred gap in other rows). The
+#   gunner-slot framework fn vehicle_addplayerslot (sv_vehicles.qc:328) is covered by registry vehicle-bumblebee
+#   (its only consumer), so it is intentionally NOT a framework row.
+# Core framework rows (init/spawn/think/enter/exit/combat/aim/projectile/physics/impulse/hooks) all RE-VERIFIED
+# unchanged + faithful + live; only line numbers shifted from inserted code (SpawnVehicle 348->353, DamageVehicle
+# 474->480, HealVehicle 658->690, PainFrame 688->720). The init.initialize delayspawn/controller deferral is now
+# documented in-code (VehicleSpawnFuncs.cs:78-86) but still genuinely unported (values/timing stay partial).
+# ---- prior pass (Waves 9-11 @ ff8a699) ----
 # DRIFT RE-AUDIT after Waves 9-11 (HEAD ff8a699; prior audit was Wave 8 @ 9f65cb5). ONE drift this pass, 0
 # regressions: the framework LOW-HEALTH/SHIELD HUD ALARM is now PORTED + LIVE (Wave 11, ff8a699). VehicleHud
 # gained UpdateAlarms (VehicleHud.cs:167-247): SND_VEH_ALARM (vehicles/alarm, health<25%, +2s re-arm) /
@@ -51,12 +69,16 @@ last_audited: "2026-06-25"
 # so the old "no headless emitter" rationale is stale, but PainFrame still does not emit it -> real gap), the
 # vehicle_shieldent hit flash, and the death gibs (vehicle_tossgib).
 summary:
-  feature_count: 21
+  feature_count: 23
   worst_gaps:
-    - "In-vehicle cockpit/chase camera remains DEAD: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport), so the pilot keeps the normal player view (grep confirms only NOTE comments in VehicleBoarding/VehicleCommon). (The HUD panel + aux crosshair are LIVE; the framework low-health/shield HUD alarm is NOW WIRED + LIVE as of Wave 11; the Raptor's separate incoming-missile alarm is live.)"
-    - "init.initialize STILL omits delayspawn jitter and the targetname/ACTIVE map-scripted controller (vehicle_use, sv_vehicles.qc:1178-1201/1276-1277). (The drop-to-floor tracebox AND the g_vehicles_teams clear-branch are now ported.)"
-    - "Presentation deferrals persist (all CSQC): steal WP_VehicleIntruder waypoint + steal centerprints, the WP_Vehicle return-waypoint/radar icon, the painframe EFFECT_SMOKE_SMALL (EffectEmitter now exists in the Common layer but PainFrame still doesn't emit it), the vehicle_shieldent hit flash, and the death gibs (vehicle_tossgib / vehicles_gib_*)."
+    - "In-vehicle cockpit/chase camera remains DEAD: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport), so the pilot keeps the normal player view (grep confirms only NOTE comments in VehicleBoarding/VehicleCommon). (The HUD panel + aux crosshair + the centered per-mode reticle + the Raptor bomb dropmark are now all LIVE; the framework low-health/shield HUD alarm is LIVE; the Raptor's incoming-missile alarm is live.)"
+    - "death.gibs (vehicle_tossgib + vehicles_gib_explode/touch/think, sv_vehicles.qc:274-326) is UNPORTED — a destroyed vehicle drops no flying debris gibs (only a NOTE in Bumblebee.cs:502). NEW ROW this pass."
+    - "lifecycle.reset (the QC `.reset = vehicles_reset` round-restart hook, sv_vehicles.qc:1095/1118) is NOT registered in the port — a vehicle is not ejected/cleared/respawned on round restart via the reset path. NEW ROW this pass."
+    - "init.initialize STILL omits delayspawn jitter and the targetname/ACTIVE map-scripted controller (vehicle_use, sv_vehicles.qc:1178-1201/1276-1277). (The drop-to-floor tracebox AND the g_vehicles_teams clear-branch are ported; the deferral is now documented in-code at VehicleSpawnFuncs.cs:78-86.)"
+    - "Presentation deferrals persist (all CSQC): steal WP_VehicleIntruder waypoint + steal centerprints, the WP_Vehicle return-waypoint/radar icon, the painframe EFFECT_SMOKE_SMALL (EffectEmitter exists in the Common layer but PainFrame still doesn't emit it), the vehicle_shieldent hit flash."
     - "Cross-client VEHICLESTAT_* networking for a pure-remote pilot is still unwired: UpdateVehicleHud reads LocalServerPlayer (host path)."
+  fixes_landed_wave12:
+    - "hud_camera_xhair presentation narrowed: Vehicles_drawCrosshair (cl_vehicles.qc:293) is now ported + LIVE — the centered per-mode reticle (VehicleHud.DrawMainReticle, vCROSS_BURST/vCROSS_RAIN selected by VehW2Mode) + the Raptor bomb dropmark (VehicleHud.DrawBombDropmark; green live tracetoss prediction via VehiclePhysics.BombDropPredict when reload2==1, red lingering marker for 5s after a drop), fed every frame by NetGame.FeedRaptorReticle (NetGame.cs:3306-3357). Presentation STAYS partial only because the cockpit/chase camera is still dead."
   fixes_landed_wave11:
     - "hud_camera_xhair audio missing->faithful: the framework low-health/shield HUD alarm is now ported + LIVE (VehicleHud.UpdateAlarms, VehicleHud.cs:167-247). SND_VEH_ALARM (vehicles/alarm, health<25%, +2s re-arm) / SND_VEH_ALARM_SHIELD (vehicles/alarm_shield, shield<25%, +1s re-arm), gated by cl_vehicles_alarm (default 0 -> silent, matching Base), SND_Null stop on recover/exit; AudioLoader fed at NetGame.cs:1402, driven by UpdateVehicleHud's per-frame Health/Shield mirror. Bit-faithful to vehicle_alarm + Vehicles_drawHUD (cl_vehicles.qc:3-9/228-267). The only remaining DEAD piece of the row is the cockpit/chase camera."
     - "(descriptor-level, not framework rows) Raptor incoming-missile cue corrected to vehicles/missile_alarm.wav (SND_VEH_MISSILE_ALARM, was wrongly vehicles/alarm.wav) + VOL_BASE/ATTEN_NONE; Raptor vr_death now emits EFFECT_EXPLOSION_MEDIUM and diethink emits EFFECT_EXPLOSION_SMALL."
@@ -672,8 +694,11 @@ features:
       - "common/vehicles/sv_vehicles.qc:78 (CSQCVehicleSetup)"
     port_refs:
       - "game/hud/VehicleHud.cs:24 (VehicleHud panel — full draw)"
+      - "game/hud/VehicleHud.cs:383 (DrawMainReticle — Vehicles_drawCrosshair centered per-mode reticle, NOW PORTED)"
+      - "game/hud/VehicleHud.cs:411 (DrawBombDropmark — Raptor vr_crosshair tracetoss dropmark, NOW PORTED)"
       - "game/hud/HudManager.cs:133 (registered)"
       - "game/net/NetGame.cs:2981 (UpdateVehicleHud — the live feeder)"
+      - "game/net/NetGame.cs:3306 (FeedRaptorReticle — live per-frame reticle+dropmark feed)"
       - "game/net/NetGame.cs:2323 (called every frame on the host HUD path)"
     constants:
       - { name: "cl_vehicles_hudscale", base: "0.5", port: "0.5 (in VehicleHud)", match: true }
@@ -690,15 +715,17 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Cockpit/chase camera STILL dead: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport) — the pilot keeps the normal player view. (This is the only remaining DEAD piece of this row; it is its own viewport concern, not the HUD panel.)"
+      - "Cockpit/chase camera STILL dead: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport) — the pilot keeps the normal player view. (This is the only remaining DEAD piece of this row; it is its own viewport concern, not the HUD panel/crosshair.)"
       - "Host-only feeder: UpdateVehicleHud reads LocalServerPlayer (host path). The cross-client VEHICLESTAT_* networking for a pure remote pilot is still unwired."
+      - "Vehicles_drawCrosshair is ported for the Raptor only (bomb/flare reticle + dropmark); the other vehicles' per-mode reticles are not yet wired (FeedRaptorReticle clears the centered reticle for non-Raptor)."
     verification:
       - { kind: code, ref: "NetGame.UpdateVehicleHud (NetGame.cs:3158) called every frame from the host HUD block (:2503): ConfigureForVehicle by NetName, mirrors VehicleHealth/Shield/Energy/Ammo1/2 onto the panel, SetAuxiliaryXhairLock, hud.Exit() when not piloting", result: pass }
       - { kind: code, ref: "ALL FOUR vehicles now mirror their full stat set onto the pilot (Wave 7 added Raptor shield/energy + Spiderbot shield/ammo1), so the HUD shows correct shield/energy/ammo for every vehicle", result: pass }
       - { kind: code, ref: "framework low-health/shield alarm NOW WIRED + LIVE (Wave 11, ff8a699): VehicleHud._Process->UpdateAlarms (VehicleHud.cs:167-247) plays SND_VEH_ALARM (vehicles/alarm, health<25%, +2s re-arm) / SND_VEH_ALARM_SHIELD (vehicles/alarm_shield, shield<25%, +1s re-arm) gated by cl_vehicles_alarm (default 0 -> silent, matching Base), SND_Null stop on recover/exit; AudioLoader fed at NetGame.cs:1402 (_fullHud.Vehicle.AudioLoader=_assets.LoadSound). Bit-faithful to vehicle_alarm + Vehicles_drawHUD (cl_vehicles.qc:3-9/228-267)", result: pass }
+      - { kind: code, ref: "Vehicles_drawCrosshair NOW PORTED + LIVE (Wave 12a): VehicleHud.DrawMainReticle (centered vCROSS_BURST/vCROSS_RAIN reticle, colorized by health) + DrawBombDropmark (Raptor tracetoss dropmark, green-live/red-linger), fed every frame by NetGame.FeedRaptorReticle (NetGame.cs:3306-3357) via VehiclePhysics.BombDropPredict — bit-faithful to cl_vehicles.qc:293 + raptor.qc:767-833", result: pass }
       - { kind: code, ref: "no client reads p.Vehicle to set a viewport (grep -> only NOTE comments) -> cockpit/chase camera still dead", result: fail }
     confidence: high
-    notes: "FIXED vs baseline (audio missing->faithful): Wave 11 (ff8a699) ported the framework low-health/shield HUD alarm into VehicleHud (UpdateAlarms, gated by cl_vehicles_alarm default 0, SND_VEH_ALARM/SND_VEH_ALARM_SHIELD with the +2s/+1s re-arm + SND_Null stop) and fed its AudioLoader from NetGame, driven live by UpdateVehicleHud's per-frame Health/Shield mirror. The cockpit/chase camera remains the only DEAD piece; cross-client VEHICLESTAT_* networking still TODO. All four vehicles' HUD shows correct shield/energy/ammo (Wave 7)."
+    notes: "IMPROVED vs baseline (presentation gap narrowed; status stays partial): Wave 12a ported Vehicles_drawCrosshair — the centered per-mode reticle + the Raptor bomb dropmark — fed live from NetGame.FeedRaptorReticle. Audio stays faithful (Wave 11 alarm). Presentation remains partial ONLY because the cockpit/chase camera (SVC_SETVIEWPORT) is still dead and the non-Raptor per-mode reticles aren't wired; cross-client VEHICLESTAT_* networking still TODO. All four vehicles' HUD shows correct shield/energy/ammo (Wave 7)."
 
   - id: vehicle-framework.hooks.init_touch
     name: "MUTATOR_CALLHOOK(VehicleInit / VehicleTouch) dispatch"
@@ -729,3 +756,62 @@ features:
       - { kind: code, ref: "FireVehicleInit called from VehicleSpawnFuncs.Spawn:73 with Api.Entities.Remove(e) on a true return — VehicleInit veto LIVE", result: pass }
     confidence: high
     notes: "Unchanged vs baseline (faithful + live). Both VehicleInit and VehicleTouch dispatch on the live path; chains empty by default (matches Base)."
+
+  - id: vehicle-framework.lifecycle.reset
+    name: "vehicles_reset — round/match-restart eject + clearreturn + respawn (.reset hook)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/sv_vehicles.qc:1095 (vehicles_reset)"
+      - "common/vehicles/sv_vehicles.qc:1118 (this.reset = vehicles_reset install in vehicles_setup)"
+    port_refs: []
+    constants:
+      - { name: "on round reset: if owner -> vehicles_exit(VHEF_RELEASE)", base: "yes", port: "none", match: false }
+      - { name: "vehicles_clearreturn (remove return-helper entities)", base: "called", port: "none", match: false }
+      - { name: "respawn if active != ACTIVE_NOT (vehicles_spawn)", base: "yes", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The QC `.reset = vehicles_reset` round-restart hook is NOT registered on any port vehicle (grep: no GtReset/.Reset assignment in src/.../Vehicles). On a round/match restart Base ejects any pilot (vehicles_exit VHEF_RELEASE), removes the return-helper entities (vehicles_clearreturn), and respawns the vehicle when active. The port has no equivalent reset path — a vehicle's state across a round boundary depends on whatever the generic spawn/respawn does, not this hook."
+    verification:
+      - { kind: code, ref: "Base installs this.reset = vehicles_reset (sv_vehicles.qc:1118); vehicles_reset (1095) does exit+clearreturn+spawn", result: pass }
+      - { kind: code, ref: "grep GtReset / .Reset = in src/XonoticGodot.Common/Gameplay/Vehicles -> no matches; only the per-respawn SpawnVehicle exists, not the round-restart .reset hook", result: fail }
+    confidence: high
+    notes: "NEW ROW (registry coverage gap found this pass): the round-restart .reset hook is unmapped and unported. Previously not mentioned in any row."
+
+  - id: vehicle-framework.death.gibs
+    name: "vehicle_tossgib / vehicles_gib_* — flying debris gibs on vehicle death"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/vehicles/sv_vehicles.qc:296 (vehicle_tossgib)"
+      - "common/vehicles/sv_vehicles.qc:274 (vehicles_gib_explode)"
+      - "common/vehicles/sv_vehicles.qc:282 (vehicles_gib_touch)"
+      - "common/vehicles/sv_vehicles.qc:287 (vehicles_gib_think)"
+    port_refs: []
+    constants:
+      - { name: "gib MOVETYPE_TOSS / SOLID_CORPSE / colormod '-0.5 -0.5 -0.5' / EF_LOWPRECISION", base: "set", port: "none", match: false }
+      - { name: "explode gib: SND_ROCKET_IMPACT + 2x EFFECT_EXPLOSION_SMALL, nextthink time+random*explode", base: "yes", port: "none", match: false }
+      - { name: "non-explode gib: alpha fade -0.1/0.1s, lifetime cnt=time+maxtime", base: "yes", port: "none", match: false }
+      - { name: "EF_FLAME burn flag", base: "optional", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "vehicle_tossgib (the vehicle_gib physics-entity subsystem) is UNPORTED — only a NOTE comment at Bumblebee.cs:502. A destroyed vehicle's vr_death does not spawn the flying debris gibs (model gib at a tag, tossed with velocity+avelocity, optional burn/explode, alpha fade, explosion FX + rocket-impact sound on contact). The descriptors emit a single death EXPLOSION_* FX (Wave 8) but no per-piece gibs."
+    verification:
+      - { kind: code, ref: "Base vehicle_tossgib (sv_vehicles.qc:296) + gib_explode/touch/think (274-292) build/animate the debris", result: pass }
+      - { kind: code, ref: "grep tossgib/VehicleGib/gib_explode in port -> only a NOTE in Bumblebee.cs:502; no implementation", result: fail }
+    confidence: high
+    notes: "NEW ROW (registry coverage gap found this pass): death gibs were previously only mentioned as a deferred gap in spawn.respawn/think.tick summaries. Promoted to its own row; missing on all dimensions."

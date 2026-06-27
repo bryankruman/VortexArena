@@ -1,14 +1,13 @@
 unit: mapobject-misc
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 12
   worst_gaps:
     - "func_clientwall distance-fade not rendered: fade_start/fade_end/alpha_max/alpha_min/fade_vertical_offset + PVS alpha-cull (Ent_Wall_PreDraw) are stored on the entity but no renderer applies them, and the antiwall solid-toggle relay (g_clientmodel_use) is unported"
     - "bgmscript ADSR not ported: func_clientwall/func_pointparticles never animate alpha/position/emission to the map music"
-    - "item_key pickup centerprint is silently dropped: KeySetup/KeyTouch grant the keys (live) and MapMover.Centerprint IS called, but the CenterprintHandler sink is never assigned in source, so the 'You've picked up the X key!' message no-ops"
-    - "models.qc colormap value is stored on Entity.ColorMapOverride but no renderer team-tints the prop on screen yet"
+    - "models.qc colormap value is stored on Entity.ColorMapOverride (RENDER_COLORMAPPED bit set) but no renderer team-tints the prop on screen yet"
 features:
   - id: mapobject-misc.laser.server_logic
     name: "misc_laser damage + detector think (aim, trace, team gate, enter/exit latch)"
@@ -202,26 +201,25 @@ features:
       - { name: "EF_LOWPRECISION", base: "set", port: "EfLowPrecision (4194304)", match: true }
       - { name: "FLOATING spawnflag -> noalign -> MOVETYPE_NONE else TOSS", base: "yes", port: "yes", match: true }
       - { name: "pickup sound", base: "play2(toucher, SND(ITEMPICKUP))", port: "MapMover.Sound(toucher, TriggerAuto, .Noise)", match: true }
-      - { name: "pickup centerprint", base: "centerprint(toucher, message)", port: "MapMover.Centerprint called but CenterprintHandler unassigned -> no-op", match: false }
+      - { name: "pickup centerprint", base: "centerprint(toucher, message)", port: "MapMover.Centerprint -> MapObjectsCommon.Centerprint -> NotificationSystem.SendCenterRaw(OneOnly) (live channel)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "item_key pickup centerprint ('You've picked up the X key!') is silently dropped: MapMover.Centerprint(toucher, this.Message) IS called but MapObjectsCommon.CenterprintHandler (declared MapObjectsCommon.cs:851) is never ASSIGNED anywhere in game/ or src/ (grep 'CenterprintHandler =' = 0 hits), so Centerprint no-ops on the live path."
-      - "Only the Q3COMPAT_COMMON QL +8z origin nudge is omitted (no Q3-compat global; documented). NOTE: the item_keys_names[lowestbit] save IS now implemented (MapObjectsRegistry.cs:460 records this.netname per key bit; ItemKeysKeylist :386 builds the keylist string) and is LIVE — consumed by Doors.cs:537 and Triggers.cs:946 for the door/keylock 'You need <the SILVER key>' centerprints."
+      - "Only the Q3COMPAT_COMMON QL +8z origin nudge is omitted (no Q3-compat global; documented). NOTE: the item_keys_names[lowestbit] save IS implemented (MapObjectsRegistry.cs:460 records this.netname per key bit; ItemKeysKeylist :386 builds the keylist string) and is LIVE — consumed by Doors.cs:537 and Triggers.cs:946 for the door/keylock 'You need <the SILVER key>' centerprints."
     verification:
-      - { kind: code, ref: "MapObjectsRegistry.cs:154-159 registers item_key/item_key1/item_key2/item_key_gold/silver/master with correct BIT pre-stamps; KeySetup/SpawnItemKey/KeyTouch (349-516) vs keys.qc:77-264 — multi-bit reject (excl. master), per-id netname/colormod, bbox, TOSS/NONE, touch grant + fire-target-once-with-blanked-message all match", result: pass }
-      - { kind: code, ref: "MF_ROTATE now wired: SpawnItemKey sets this_.ModelSpinRotate=true (MapObjectsRegistry.cs:481); EntityNode.cs:84-88 adds yawDeg += 100*fmod(time,3.6) — byte-faithful to csqcmodel_hooks.qc:617", result: pass }
-      - { kind: code, ref: "consumer chain consistent: KeyTouch grants toucher.ItemKeys (line 507); Doors.cs/Triggers.cs read the same Entity.ItemKeys — a granted key actually opens a keylock/key-gated door", result: pass }
-      - { kind: grep, ref: "CenterprintHandler: only declaration at MapObjectsCommon.cs:851, NO 'CenterprintHandler =' assignment in source (binaries excluded) -> Centerprint no-ops", result: fail }
+      - { kind: code, ref: "MapObjectsRegistry.cs:154-159 registers item_key/item_key1/item_key2/item_key_gold/silver/master with correct BIT pre-stamps; KeySetup/SpawnItemKey/KeyTouch (349-521) vs keys.qc:77-264 — multi-bit reject (excl. master), per-id netname/colormod, bbox, TOSS/NONE, touch grant + fire-target-once-with-blanked-message all match", result: pass }
+      - { kind: code, ref: "MF_ROTATE wired: SpawnItemKey sets this_.ModelSpinRotate=true (MapObjectsRegistry.cs:481); EntityNode.cs:84-88 adds yawDeg += 100*fmod(time,3.6) — byte-faithful to csqcmodel_hooks.qc:617", result: pass }
+      - { kind: code, ref: "consumer chain consistent: KeyTouch grants toucher.ItemKeys (line 519); Doors.cs/Triggers.cs read the same Entity.ItemKeys — a granted key actually opens a keylock/key-gated door", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.cs:521 KeyTouch calls MapMover.Centerprint(toucher, this_.Message); MapObjectsCommon.Centerprint (MapObjectsCommon.cs:860-871) now routes through NotificationSystem.SendCenterRaw(NotifBroadcast.OneOnly, actor, message) -> Sink.Dispatch -> CenterPrintPanel (a live channel), no longer dependent on the unassigned CenterprintHandler delegate, so the pickup message reaches the toucher on the live path", result: pass }
     confidence: high
-    notes: "MOSTLY FIXED. MF_ROTATE key spin is now wired (Wave-8e: ModelSpinRotate bool + EntityNode yaw spin matching DP's 100deg/s wrap-at-3.6s). Grant logic + pickup sound + consumer chain (Doors/Triggers read same Entity.ItemKeys) remain live. The ONE residual presentation gap is the centerprint sink: MapMover.Centerprint is invoked on touch but no host code assigns CenterprintHandler, so the pickup message no-ops."
+    notes: "FIXED 2026-06-27 (this audit). The last residual presentation gap closed: MapObjectsCommon.Centerprint was rewired (the same 2026-06-25 fix recorded in mapobject-func/target/triggers) from the dead CenterprintHandler delegate to a direct NotificationSystem.SendCenterRaw(CenterRaw) call, so the 'You've picked up the X key!' centerprint now reaches the activator. CenterprintHandler remains as an OPTIONAL extra observer hook (fired in addition), no longer the delivery path. MF_ROTATE key spin (Wave-8e), grant logic, pickup sound, and consumer chain (Doors/Triggers read same Entity.ItemKeys) all live and faithful. presentation partial->faithful."
 
   - id: mapobject-misc.teleport_dest.marker
     name: "info_teleport_destination / misc_teleporter_dest endpoint"

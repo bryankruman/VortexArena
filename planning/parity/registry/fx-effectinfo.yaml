@@ -1,7 +1,7 @@
 unit: fx-effectinfo
 category: effect
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 10
   worst_gaps:
@@ -65,7 +65,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "EffectEmitter guards match Send_Effect_Except; the live sink is ServerNet.EffectNetSink (set ServerNet.cs:287) -> CaptureEffect -> FlushEffects with Except exclusion", result: pass }
+      - { kind: code, ref: "EffectEmitter guards match Send_Effect_Except; the live sink is ServerNet.EffectNetSink (set ServerNet.cs:300) -> CaptureEffect -> FlushEffects with Except exclusion", result: pass }
     confidence: high
     notes: "Server gameplay (damage/ctf/items/weapons) calls EffectEmitter.Emit; ServerNet's EffectNetSink captures into _effectQueue and FlushEffects networks per recipient. On a listen server ClientWorld.RenderSink ALSO mirrors emissions in-process to the local renderer (wraps the inner net sink)."
 

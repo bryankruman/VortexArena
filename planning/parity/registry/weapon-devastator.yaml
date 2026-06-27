@@ -1,13 +1,13 @@
 unit: weapon-devastator
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 14
   worst_gaps:
     - "Ammo-refund auto-switch (cnt=m_id; ATTACK_FINISHED=time; m_switchweapon=w_getbestweapon when out of rockets after a blast) is STILL not ported on either contact (devastator.qc:47-56) or remote (devastator.qc:128-136) explode."
-    - "wr_resetplayer (clear lastrocket + rl_release on all slots on death) is STILL not overridden for the Devastator; Unregister(self) on explode clears lastrocket per-rocket, but a respawn/reset does not proactively clear a still-live rocket reference or reset rl_release."
-    - "missile.damagedbycontents / IL_PUSH(g_damagedbycontents) (a rocket explodes when it enters lava/slime) is STILL not ported — the port's contents-damage loop (GameWorld.cs:~1691, was 1494) iterates only the live player roster, not projectiles."
+    - "wr_resetplayer (clear lastrocket + rl_release on all slots on death) is STILL not overridden for the Devastator; Unregister(self) on explode clears lastrocket per-rocket, but a respawn/reset does not proactively clear a still-live rocket reference or reset rl_release. (Confirmed 2026-06-27: Devastator.cs has no WrResetPlayer override; Hagar/Hook/Porto/Vortex/Vaporizer/Rifle/Arc do.)"
+    - "missile.damagedbycontents / IL_PUSH(g_damagedbycontents) (a rocket explodes when it enters lava/slime) is STILL not ported — but the cause has SHIFTED: GameWorld.CreatureFrameAll (GameWorld.cs:2114-2124) NOW sweeps projectiles flagged Entity.DamagedByContents and routes them through PlayerFrameLogic.ProjectileContentsDamage->Combat.Damage (Electro orbs use this). The Devastator rocket simply never sets missile.DamagedByContents=true in Devastator.Attack, so it is excluded from the sweep. One-line gap, infra already present."
     - "wr_think secondary gate omits the QC `m_switchweapon == thiswep` precondition (you can only remote-detonate while the Devastator is the active weapon); RemoteDetonate flags any owned rocket regardless of active weapon. Minor."
 features:
   - id: weapon-devastator.fire.launch
@@ -210,12 +210,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "missile.damagedbycontents / IL_PUSH(g_damagedbycontents) (rocket explodes when it enters lava/slime) is not ported — the port's contents-damage loop (GameWorld.cs:1494) iterates only the live player roster, not projectiles."
+      - "missile.damagedbycontents / IL_PUSH(g_damagedbycontents) (rocket explodes when it enters lava/slime) is not ported. CORRECTED 2026-06-27: the prior reason (loop iterates only players) is STALE — GameWorld.CreatureFrameAll (GameWorld.cs:2114-2124) now sweeps any entity with Entity.DamagedByContents through PlayerFrameLogic.ProjectileContentsDamage->Combat.Damage (which would route through the rocket's MakeShootable HP/explode shim). The remaining defect is just that Devastator.Attack never sets missile.DamagedByContents=true, so the rocket is excluded; the supporting infra now exists (Electro orbs use it)."
     verification:
       - { kind: code, ref: "Devastator.Attack:223 calls Projectiles.MakeShootable(missile, exception:-1) which installs GtEventDamage; DamageSystem.EventDamage dispatches GtEventDamage for any non-player damageable victim -> LIVE shoot-down path", result: pass }
       - { kind: code, ref: "MakeShootable shim: hp<=0 recursion guard, CheckProjectileDamage(g_projectiles_damage) gate, Health -= damage, fires ProjectileDamage (Explode bounced:true) only at hp<=0 — matches W_Devastator_Damage -> W_PrepareExplosionByDamage (devastator.qc:270-282)", result: pass }
     confidence: high
-    notes: "Projectiles.MakeShootable installs the shoot-down on GtEventDamage (the channel DamageSystem.EventDamage dispatches for non-player damageables), wraps W_CheckProjectileDamage + incremental RES_HEALTH subtraction, and only detonates at hp<=0 with HITTYPE_BOUNCE. Under stock balance-xonotic g_projectiles_damage -2 no projectile is shootable at all — faithful to Base. Sole remaining gap: lava/slime damagedbycontents. Unchanged this pass."
+    notes: "Projectiles.MakeShootable installs the shoot-down on GtEventDamage (the channel DamageSystem.EventDamage dispatches for non-player damageables), wraps W_CheckProjectileDamage + incremental RES_HEALTH subtraction, and only detonates at hp<=0 with HITTYPE_BOUNCE. Under stock balance-xonotic g_projectiles_damage -2 no projectile is shootable at all — faithful to Base. Sole remaining gap: lava/slime damagedbycontents — and the contents-sweep infra now EXISTS (GameWorld.cs:2114; reclassified 2026-06-27), the rocket just isn't enrolled (missing missile.DamagedByContents=true). Logic/values/timing still faithful (shoot-down is the live primary path)."
 
   - id: weapon-devastator.firer.transparency
     name: "Rocket transparent to firer (PROJECTILE_MAKETRIGGER SOLID_CORPSE)"
@@ -354,8 +354,8 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:BotAimShotSpeed"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:BotAimAccurate"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:BotWantsDetonate"
-      - "src/XonoticGodot.Server/Bot/BotBrain.cs:AimAndDecideFire (BotAimAccurate at :447, BotWantsDetonate at :366)"
-      - "src/XonoticGodot.Server/Bot/BotBrain.cs:CurrentShotSpeed (BotAimShotSpeed at :648)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:AimAndDecideFire (BotAimAccurate at :545, BotWantsDetonate at :417)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:CurrentShotSpeed (BotAimShotSpeed at :802/:814)"
     constants:
       - { name: "guide-rate speed scale", base: "spd *= sqrt(guiderate)*(20/9.489) when guiderate>0", port: "spd *= sqrt(GuideRate)*(20/9.489) when GuideRate>0 (BotAimShotSpeed)", match: true }
       - { name: "shot_accurate gate", base: "guiderate < 50", port: "Cvars.GuideRate < 50 (BotAimAccurate)", match: true }
@@ -375,9 +375,9 @@ features:
       - "BotWantsDetonate iterates the brain's Players() as the target set rather than QC's g_bot_targets intrusive list (close approximation; both filter to damageable bot targets, but a non-player damageable target would be missed)."
       - "The 'don't fire a new shot while detonating' interlock is enforced by the brain (BotBrain:368-369 sets wantAttack=false when BotWantsDetonate is true), not inside the weapon — equivalent effect."
     verification:
-      - { kind: code, ref: "Devastator.BotAimShotSpeed/BotAimAccurate/BotWantsDetonate override GameplayBases virtuals; BotBrain wires all three live: CurrentShotSpeed->BotAimShotSpeed (:648), AimAndDecideFire->BotAimAccurate (:447), and the post-aim block calls BotWantsDetonate (:366) suppressing primary fire on detonate", result: pass }
+      - { kind: code, ref: "Devastator.BotAimShotSpeed/BotAimAccurate/BotWantsDetonate override GameplayBases virtuals; BotBrain wires all three live: CurrentShotSpeed->BotAimShotSpeed (:802 via the base (float,ref) overload that delegates to (float)), AimAndDecideFire->BotAimAccurate (:545), and the post-aim block calls BotWantsDetonate (:417) suppressing primary fire on detonate", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (missing->faithful, na->live): wr_aim is now FULLY ported and LIVE. (1) BotAimShotSpeed implements the guide-rate-scaled projectile-speed lead (aim as if the rocket flew sqrt(guiderate)*(20/9.489) faster); (2) BotAimAccurate relaxes long-range accuracy when guiderate<50; (3) BotWantsDetonate implements the skill>=2 detonation decision from predicted self/team/enemy splash damage (with strength/shield multipliers, selfdamagepercent, pred_time look-ahead) and the skill>=7 self-kill veto. All three are invoked on the live bot firing path; BotBrain.cs no longer defers wr_aim. Re-verified 2026-06-25: BotWantsDetonate at BotBrain.cs:376, BotAimAccurate at :457, BotAimShotSpeed via CurrentShotSpeed at :658 (minor line drift from baseline 366/447/648; all still live)."
+    notes: "wr_aim is FULLY ported and LIVE. (1) BotAimShotSpeed implements the guide-rate-scaled projectile-speed lead (aim as if the rocket flew sqrt(guiderate)*(20/9.489) faster); (2) BotAimAccurate relaxes long-range accuracy when guiderate<50; (3) BotWantsDetonate implements the skill>=2 detonation decision from predicted self/team/enemy splash damage (with strength/shield multipliers, selfdamagepercent, pred_time look-ahead) and the skill>=7 self-kill veto. Re-verified 2026-06-27: BotWantsDetonate at BotBrain.cs:417, BotAimAccurate at :545, BotAimShotSpeed via CurrentShotSpeed at :802 (line drift from baseline 366/457/658; all still live). Devastator overrides only BotAimShotSpeed(float); BotBrain calls the (float,ref BotAimState) overload, whose base impl (GameplayBases.cs:172) delegates to (float) — so the override is reached. Unchanged in substance."
 
   - id: weapon-devastator.presentation.impact_fx
     name: "Impact explosion effect + sound (wr_impacteffect: EFFECT_ROCKET_EXPLODE + SND_ROCKET_IMPACT)"

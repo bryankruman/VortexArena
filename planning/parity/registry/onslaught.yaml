@@ -2,14 +2,21 @@ unit: onslaught
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
-# NOTE: drift re-audit 2026-06-26 — CaptureShield, ons_Teleport/spawn placement, and icon spark sounds now ported.
+# NOTE: drift re-audit 2026-06-25 — the Onslaught click-radar SERVER path is now ported + LIVE: the `ons_spawn`
+# client command (Commands.cs:CmdOnsSpawn, registered) routes to HandleOnsSpawnCommand which SETS GtOnsSpawnBy +
+# RESPAWN_FORCE for a dead picker (so OnPlayerSpawn → OnsTeleport finally fires) or teleports a live player between
+# own CPs; the +use key (impulse 21) routes to HandleUseKey (the next-to-own-CP gate). spawn_choose teleport-on-
+# respawn is no longer dead — only the client-side click-radar HUD + the death-time auto-open stuffcmd remain
+# deferred. g_onslaught_click_radius (500) now ported. Prior pass (2026-06-26 label) added CaptureShield, ons_Teleport,
+# spawn placement, icon spark sounds.
 summary:
   feature_count: 18
   worst_gaps:
     - "No CSQC presentation: no generator/control-point/icon world models RENDERED on the client, no progressive damage-model swaps, no icon bob/spin/punch animation, no radar link lines, no objective death-cam (ons_camSetup), no generator explosion sequence, and no particle effects (EFFECT_SPARKS/CAP/RAGE/ROCKET_EXPLODE) or waypoint-sprite build/health bars. (Server-side the shield/icon/generator entities now carry a Model + EF_ADDITIVE + avelocity, but rendering them is still client-deferred.)"
-    - "spawn_choose teleport-on-respawn is wired but DEAD: the OnPlayerSpawn hook teleports to player.GtOnsSpawnBy, but nothing ever SETS GtOnsSpawnBy (no click-radar HUD, no ons_spawn client command, no PlayerUseKey CP-to-CP teleport offer). The cvar-gated spawn_at_controlpoints / spawn_at_generator placement IS live (default OFF)."
     - "Bot Onslaught role filters by shield + team-neighbor off the live graph and skips CPs when a generator is attackable; residual: no waypoint-near-objective routing (navigation_routerating), no havocbot_attack_time throttle, no enemyplayers rating, no havocbot_ons_target teammate-cost balancing (timing partial)."
-    - "FIXED this pass: (1) CaptureShield is now PORTED + LIVE (SpawnCaptureShield/ShieldTouchEntity) — the spinning push-shield entity, the enemy-push, ONS_DAMAGEBLOCKEDBYSHIELD play2, and the GENERATOR/CONTROLPOINT_SHIELDED center-print all fire on the live BSP path. (2) ons_Teleport + spawn_at_controlpoints/spawn_at_generator placement PORTED + wired via the live PlayerSpawn hook (teleport-on-respawn dead — see above). (3) icon-damaged spark sounds (ONS_SPARK1/2) now emit in IconThink (audio faithful)."
+    - "Spawn/teleport residual (now LIVE): the click-radar server pick (ons_spawn cmd + HandleOnsSpawnCommand) and the +use gate (HandleUseKey) are ported and wired; the CLIENT-side click-radar HUD that generates the clicked 2D map position, plus the death-time auto-open (PlayerDies stuffcmd `qc_cmd_cl hud clickradar` gated on ons_Count_SelfControlPoints>1), are still client-deferred. spawn_at_controlpoints / spawn_at_generator placement live (default OFF)."
+    - "FIXED this pass: onslaught.spawn.teleport_choose liveness partial→live — the ons_spawn client command + HandleOnsSpawnCommand now SET GtOnsSpawnBy (+RESPAWN_FORCE) on the live path, so the spawn_choose teleport-on-respawn branch actually fires; +use (impulse 21) routes to HandleUseKey; g_onslaught_click_radius now ported (match false→true)."
+    - "Unmapped Base hooks (registry coverage gaps): PlayHitsound (objective-hit hitsound gating), SendWaypoint, SpectateCopy (copy ons_spawn_by to spectator), TurretValidateTarget/TurretThink/TurretSpawn + MonsterMove/MonsterSpawn (turret/monster integration), reset_map_global/ClientDisconnect/MakePlayerObserver."
 
 features:
   - id: onslaught.graph.power_propagation
@@ -386,12 +393,16 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:OnPlayerSpawn (MutatorHooks.PlayerSpawn handler)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:OnsTeleport"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:SpawnAtNode"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:CountSelfControlPoints"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:HandleOnsSpawnCommand (SETS GtOnsSpawnBy + RESPAWN_FORCE / live teleport)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:HandleUseKey (PlayerUseKey next-to-own-CP gate)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:NearestControlPoint / NearestControlPoint2D / CountSelfControlPoints"
+      - "src/XonoticGodot.Server/Commands.cs:CmdOnsSpawn (Register(\"ons_spawn\", …)) — the live SV_ParseClientCommand ons_spawn hook"
+      - "src/XonoticGodot.Server/Commands.cs:2104-2113 impulse 21 (+use) → ons.HandleUseKey"
     constants:
       - { name: "g_onslaught_teleport_radius", base: "200", port: "200 (CvarTeleportRadius fallback)", match: true }
       - { name: "g_onslaught_teleport_wait", base: "5", port: "5 (CvarTeleportWait fallback)", match: true }
       - { name: "g_onslaught_spawn_choose", base: "1", port: "1 (CvarSpawnChoose fallback)", match: true }
-      - { name: "g_onslaught_click_radius", base: "500", port: "none (click-radar not ported)", match: false }
+      - { name: "g_onslaught_click_radius", base: "500", port: "500 (CvarClickRadius fallback, HandleOnsSpawnCommand)", match: true }
       - { name: "g_onslaught_spawn_at_controlpoints", base: "0", port: "0 (CvarSpawnAtCps fallback)", match: true }
       - { name: "g_onslaught_spawn_at_controlpoints_chance", base: "0.5", port: "0.5 (CvarSpawnAtCpsChance fallback)", match: true }
       - { name: "g_onslaught_spawn_at_generator", base: "0", port: "0 (CvarSpawnAtGen fallback)", match: true }
@@ -401,19 +412,21 @@ features:
       timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD subfeature: the spawn_choose teleport-on-respawn (OnPlayerSpawn → OnsTeleport(player.GtOnsSpawnBy)) is wired but GtOnsSpawnBy is NEVER SET by any path — no click-radar HUD, no ons_spawn client command, no PlayerUseKey CP-to-CP teleport offer (the g_onslaught_click_radius pick + the on-death respawn-picker). So on a real match a player never actually teleports to a chosen CP. spawn_choose defaults ON in Base."
+      - "LIVE (was dead): the spawn_choose teleport-on-respawn now fires end-to-end. A dead player issues `cmd ons_spawn [x y z]` (Commands.cs:CmdOnsSpawn, registered) → HandleOnsSpawnCommand picks the nearest same-team CP/gen to the clicked 2D position (NearestControlPoint2D, within g_onslaught_click_radius=500) and SETS player.GtOnsSpawnBy + RESPAWN_FORCE; the forced respawn then runs OnPlayerSpawn → OnsTeleport(GtOnsSpawnBy). A LIVE player issuing ons_spawn teleports between own CPs directly. The +use key (impulse 21) routes to HandleUseKey (next-to-own-CP gate)."
       - "LIVE subfeature: spawn_at_controlpoints / spawn_at_generator placement near the nearest (or random) same-team node to the death location is faithfully ported (OnPlayerSpawn → SpawnAtNode, 10 narrowing tracebox+traceline iterations, face-away angles). Both default OFF in Base."
-      - "ons_Teleport itself (OnsTeleport) is faithful: 16 narrowing iterations, random disc around target, tracebox+traceline clear-spot check, face-away + teleport_antispam = time + teleport_wait. Reachable directly but only invoked from the dead spawn_choose branch. ONS_TELEPORT/ONS_TELEPORT_ANTISPAM center notifications registered but only emitted by the absent use-key offer."
+      - "ons_Teleport itself (OnsTeleport) is faithful: 16 narrowing iterations, random disc around target, tracebox+traceline clear-spot check, face-away + teleport_antispam = time + teleport_wait."
+      - "RESIDUAL (client-deferred): the click-radar HUD that generates the clicked 2D position (the CSQC `qc_cmd_cl hud clickradar` overlay) is unported, and the PlayerDies death-time auto-open stuffcmd (gated on ons_Count_SelfControlPoints>1) is not wired — CountSelfControlPoints exists but has no live caller. ONS_TELEPORT_ANTISPAM center print path is via the alive-teleport reply only. A player can still drive the whole feature manually via `cmd ons_spawn x y z`."
     verification:
-      - { kind: code_read, ref: "Onslaught.cs:681-829 OnPlayerSpawn/OnsTeleport/SpawnAtNode vs sv_onslaught.qc:1603-1816 — teleport disc + spawn placement logic + constants (radius 200, wait 5, scales, jitters 128/256, z-offsets 96/128) match", result: pass }
-      - { kind: code_read, ref: "OnPlayerSpawn wired live via MutatorHooks.PlayerSpawn.Add(_spawnHandler) in Activate; player.DeathOrigin latched in DamageSystem.cs:612 so SpawnAtNode is reachable", result: pass }
-      - { kind: code_read, ref: "grep GtOnsSpawnBy in src — only DECLARED + READ in OnPlayerSpawn; NEVER SET (no click-radar/ons_spawn/PlayerUseKey) → spawn_choose teleport branch dead", result: fail }
+      - { kind: code_read, ref: "Onslaught.cs:681-963 OnPlayerSpawn/OnsTeleport/SpawnAtNode/HandleOnsSpawnCommand/HandleUseKey vs sv_onslaught.qc:1603-2005 — teleport disc + spawn placement + click-radar pick logic + constants (radius 200, wait 5, click 500, jitters 128/256, z-offsets 96/128) match", result: pass }
+      - { kind: code_read, ref: "Commands.cs:802 Register(\"ons_spawn\", …, CmdOnsSpawn); CmdOnsSpawn:1673 → ons.HandleOnsSpawnCommand; HandleOnsSpawnCommand:950 player.GtOnsSpawnBy = closestTarget + RespawnFlags |= Force — the live caller that SETS GtOnsSpawnBy", result: pass }
+      - { kind: code_read, ref: "Commands.cs:2111-2112 impulse 21 (+use) → ons.HandleUseKey; GameWorld.cs:3380/3430 honors RespawnFlag.Force on respawn; OnPlayerSpawn reads GtOnsSpawnBy and teleports", result: pass }
+      - { kind: code_read, ref: "grep clickradar/CountSelfControlPoints — CountSelfControlPoints has NO live caller (death-time auto-open stuffcmd not wired); client click-radar HUD absent → residual client-deferred", result: fail }
     confidence: high
-    notes: "FIX: missing→faithful (logic/values/timing), liveness na→partial. ons_Teleport + spawn_at_controlpoints/generator placement are ported and the PlayerSpawn hook is live; the spawn_at_* placement actually runs (cvar-gated OFF). The spawn_choose teleport-on-respawn is wired but dead because the client click-radar that sets GtOnsSpawnBy + the use-key teleport offer are unported — that residual keeps liveness at partial."
+    notes: "FIX: liveness partial→live. The Onslaught click-radar SERVER pipeline is now ported + wired: the `ons_spawn` client command (CmdOnsSpawn, registered) + HandleOnsSpawnCommand SET GtOnsSpawnBy + RESPAWN_FORCE (the missing setter the prior pass flagged as the dead-branch cause), and +use (impulse 21) → HandleUseKey. spawn_choose teleport-on-respawn now fires end-to-end on the live path; g_onslaught_click_radius now ported (match false→true). Only the CLIENT click-radar HUD + the PlayerDies death-time auto-open stuffcmd remain deferred (CountSelfControlPoints still has no live caller)."
 
   - id: onslaught.cp.proximity_decap
     name: "Proximity de-capture (stand near a point to flip it)"

@@ -1,13 +1,12 @@
 unit: mutator-campcheck
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 10
   worst_gaps:
-    - "Chat-typing exemption is structurally present but INERT on the live net path: the gate now has the `(TypeCheck || !ButtonChat)` term and g_campcheck_typecheck is genuinely consulted, and player.ButtonChat is fed from input.Typing in PlayerPhysics — BUT the wire never carries the typing flag (InputButtons has no Chat bit and ServerNet.ToMovementInput never sets Typing), so for a real network client ButtonChat is permanently false. Result: a typing player is still NOT actually exempted in multiplayer. Gate logic faithful; carrier liveness partial."
-    - "Pre-match reset is STILL PARTIAL: the time<game_starttime re-grace (interval*2) is live via StartItem.GameStartTimeProvider, but the campaign-bot-wait (g_campaign && !campaign_bots_may_start) and round-active-but-not-started (round_handler_IsActive && !round_handler_IsRoundStarted) portions are still missing (no Common-reachable seam)."
-    - "weaponLocked gate is now PARTIAL (was missing): the port checks the freeze subset (FrozenStat || STATUSEFFECT_Frozen, mirroring WeaponFireDriver) but the broader QC weaponLocked() pieces (player_blocked, the LockWeapon mutator hook) are not modeled; the game_stopped/game_starttime halves are covered by the gate's other terms."
+    - "Chat-typing exemption is structurally present but INERT on the live net path: the gate has the `(TypeCheck || !ButtonChat)` term and g_campcheck_typecheck is genuinely consulted, and player.ButtonChat is fed from input.Typing in PlayerPhysics — BUT the wire never carries the typing flag (InputButtons has no Chat bit and ServerNet.ToMovementInput never sets Typing), so for a real network client ButtonChat is permanently false. Result: a typing player is still NOT actually exempted in multiplayer. Gate logic faithful; carrier liveness partial."
+    - "weaponLocked gate is the freeze subset only: the port checks FrozenStat || STATUSEFFECT_Frozen (mirroring WeaponFireDriver) but the broader QC weaponLocked() pieces (player_blocked, the LockWeapon mutator hook) are not modeled; the game_stopped/game_starttime halves are covered by the gate's other terms. Logic faithful, scope partial."
     - "CopyBody clone origin STILL MISSING but architecturally moot: the port reuses the live player edict on respawn (no corpse clone), so there is no clone to carry campcheck_prevorigin onto; PlayerSpawn re-inits the fields. Treated as intended divergence."
 features:
   - id: campcheck.mutator.registration
@@ -20,7 +19,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:IsEnabled"
       - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:Hook"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
-      - "src/XonoticGodot.Server/GameWorld.cs:559"
+      - "src/XonoticGodot.Server/GameWorld.cs:614"
     constants:
       - { name: "g_campcheck", base: "0 (string, expr_evaluate truthy)", port: 'ExprEvaluate(GetString("g_campcheck"))', match: true }
       - { name: "g_campcheck_interval", base: "10 s", port: "Interval = GetFloat (10)", match: true }
@@ -38,7 +37,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "[Mutator] discovery -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:559) -> Hook(); cvar reads vs mutators.cfg:328-331 (port mutators.cfg matches: interval 10/damage 100/distance 1800). Hook reads g_campcheck_typecheck into TypeCheck. Since the prior audit (Wave-6b) the TypeCheck value is now ALSO consulted in the PreThink gate (CampcheckMutator.cs:118).", result: pass }
+      - { kind: code-read, ref: "[Mutator] discovery -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:614) -> Hook(); cvar reads vs mutators.cfg:328-331 (port mutators.cfg matches: interval 10/damage 100/distance 1800). Hook reads g_campcheck_typecheck into TypeCheck. Since the prior audit (Wave-6b) the TypeCheck value is now ALSO consulted in the PreThink gate (CampcheckMutator.cs:118).", result: pass }
     confidence: high
     notes: "Default g_campcheck 0 keeps it off exactly like Base. ExprEvaluate matches QC ''/'0'/'false' -> off. Hook() reads the cvars via plain GetFloat (not the 0-fallback Cvar helper); harmless since the port's mutators.cfg ships all four. UPDATE 2026-06-25: g_campcheck_typecheck is now READ AND USED in the gate (no longer read-but-dead) — see campcheck.realclient.gate."
 
@@ -129,7 +128,7 @@ features:
       - "common/mutators/mutator/campcheck/sv_campcheck.qc:91"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:OnPlayerSpawn"
-      - "src/XonoticGodot.Server/ClientManager.cs:649"
+      - "src/XonoticGodot.Server/ClientManager.cs:749"
     constants:
       - { name: "spawn grace", base: "nextcheck = time + interval*2", port: "CampcheckNextCheck = time + Interval*2", match: true }
       - { name: "spawn distance", base: "traveled = 0", port: "CampcheckTraveledDistance = 0", match: true }
@@ -156,7 +155,7 @@ features:
       - "common/notifications/all.inc:574"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:OnPlayerPreThink"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:854"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:857"
     constants:
       - { name: "CENTER_CAMPCHECK text", base: '^F2Don''t camp!', port: '^F2Don''t camp!', match: true }
       - { name: "CPID", base: "CPID_CAMPCHECK", port: "CPID_CAMPCHECK", match: true }
@@ -171,7 +170,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "NotificationSystem.Send(One, player, Center, 'CAMPCHECK') at CampcheckMutator.cs:142; NotificationsList.cs:854 Center('CAMPCHECK', ..., 'CPID_CAMPCHECK', '^F2Don't camp!') matches all.inc:574", result: pass }
+      - { kind: code-read, ref: "NotificationSystem.Send(One, player, Center, 'CAMPCHECK') at CampcheckMutator.cs:142; NotificationsList.cs:857 Center('CAMPCHECK', ..., 'CPID_CAMPCHECK', '^F2Don't camp!') matches all.inc:574", result: pass }
     confidence: high
     notes: "Sent on a sub-distance interval; client-side rendering fidelity of the centerprint is the general notification system's concern, not campcheck-specific."
 
@@ -187,8 +186,8 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Damage/DeathTypes.cs:Camp"
       - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:SelectSpecial"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:219"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:505"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1115"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:508"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1118"
       - "src/XonoticGodot.Server/Scores.cs:592"
     constants:
       - { name: "self obituary line", base: "DEATH_SELF_CAMP -> info '^BG%s^K1 thought they found a nice camping ground%s%s' / center '^K1Die camper!'", port: "SelectSpecial('camp', murder:false) -> 'DEATH_SELF_CAMP'; info NotificationsList.cs:219 '^BG%s^K1 thought they found a nice camping ground%s%s' + center :505 '^K1Die camper!'", match: true }
@@ -204,7 +203,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "DeathMessages.SelectSpecial has `DeathTypes.Camp => \"CAMP\"`, murder-direction guard maps CAMP->FRAG (no DEATH_MURDER_CAMP, matching the NULL murder col in Base all.inc). Scores.EmitObituary suicide branch routes a non-weapon 'camp' death through SelectSpecial(deathType,false) -> 'DEATH_SELF_CAMP'. DEATH_SELF_CAMP registered as Multi (NotificationsList.cs:1115) with info row :219 + center row :505, both byte-matching Base all.inc:315/:658.", result: pass }
+      - { kind: code-read, ref: "DeathMessages.SelectSpecial has `DeathTypes.Camp => \"CAMP\"`, murder-direction guard maps CAMP->FRAG (no DEATH_MURDER_CAMP, matching the NULL murder col in Base all.inc). Scores.EmitObituary suicide branch routes a non-weapon 'camp' death through SelectSpecial(deathType,false) -> 'DEATH_SELF_CAMP'. DEATH_SELF_CAMP registered as Multi (NotificationsList.cs:1118) with info row :219 + center row :508, both byte-matching Base all.inc:315/:658.", result: pass }
     confidence: high
     notes: "The camp deathtype resolves to the camp-specific suicide obituary (kill-feed info line + 'Die camper!' centerprint). Camp is intentionally self-only (no DEATH_MURDER_CAMP), matching Base's NULL murder column."
 
@@ -249,25 +248,28 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:OnPlayerPreThink"
       - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:GameStartTimeProvider"
-      - "src/XonoticGodot.Server/GameWorld.cs:578"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/RoundHandler.cs:RoundGateBlocks"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:CampaignBotHold"
+      - "src/XonoticGodot.Server/GameWorld.cs:639"
+      - "src/XonoticGodot.Server/GameWorld.cs:707"
+      - "src/XonoticGodot.Server/GameWorld.cs:1584"
     constants:
       - { name: "live gate", base: "!game_stopped && !warmup_stage && time >= game_starttime", port: "!VehicleCommon.GameStopped only", match: false }
-      - { name: "round/campaign reset block", base: "(g_campaign && !campaign_bots_may_start) || time<game_starttime || (round_active && !round_started) -> nextcheck=time+interval*2, traveled=0", port: "time<game_starttime portion live (re-grace via StartItem.GameStartTimeProvider, wired GameWorld.cs:578); campaign-bot-wait and round-active-not-started portions STILL MISSING", match: false }
+      - { name: "round/campaign reset block", base: "(g_campaign && !campaign_bots_may_start) || time<game_starttime || (round_active && !round_started) -> nextcheck=time+interval*2, traveled=0", port: "ALL THREE portions now wired live: campaignWait via CampaignBotHold (g_campaign && !Campaign.BotsMayStart, GameWorld.cs:707); time<game_starttime via StartItem.GameStartTimeProvider (GameWorld.cs:639); round-active-not-started via RoundHandler.RoundGateBlocks() <- RoundNotStartedProvider (Rounds is {IsRoundStarted:false}, GameWorld.cs:1584). Reset sets nextcheck=time+interval*2, traveled=0", match: true }
     status:
-      logic: partial
-      values: partial
-      timing: partial
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: true
-    divergence_rationale: "The !warmup_stage && time>=game_starttime portion of the LIVE gate collapses to !GameStopped — a sim-wide convention shared by sibling PlayerPreThink mutators (TouchExplode, Bloodloss), since the headless sim's only match-live signal is GameStopped. NOTE: only the time<game_starttime piece of the separate RESET block is ported; the campaign-bot-wait and round-active-but-not-started reset portions remain genuinely missing and are real gaps, not covered by this convention."
-    gaps:
-      - "Partial pre-match reset: the time<game_starttime re-grace (nextcheck=time+interval*2, traveled=0) is wired live via StartItem.GameStartTimeProvider (GameWorld.cs:578). Still missing: the campaign-bot-wait portion (g_campaign && !campaign_bots_may_start) and the round-active-but-not-started portion (round_handler_IsActive && !round_handler_IsRoundStarted), neither of which has a Common-reachable seam yet."
+    divergence_rationale: "The !warmup_stage && time>=game_starttime portion of the LIVE gate collapses to !GameStopped — a sim-wide convention shared by sibling PlayerPreThink mutators (TouchExplode, Bloodloss), since the headless sim's only match-live signal is GameStopped. The separate RESET block is now ported in full (all three OR terms). The round-handler / campaign-bot seams are mode-scoped: RoundGateBlocks() returns false outside round modes (provider null), exactly matching QC where round_handler_IsActive() is false there; campaignWait is false outside campaigns — so the reset is inert exactly where Base is inert."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "OnPlayerPreThink lines 131-136 add `if(time < GameStartTimeProvider()) { nextcheck=time+interval*2; traveled=0 }`; GameStartTimeProvider wired at GameWorld.cs:578 -> live. No campaign/round-handler reset term. TouchExplode/Bloodloss confirm the GameStopped-only live-gate convention.", result: partial }
+      - { kind: code-read, ref: "OnPlayerPreThink lines 140-146 build `if(campaignWait || time < gameStartTime || RoundHandler.RoundGateBlocks()){ nextcheck=time+interval*2; traveled=0 }`. campaignWait=CampaignBotHold (wired GameWorld.cs:707 = g_campaign && !Campaign.BotsMayStart); gameStartTime=GameStartTimeProvider (wired GameWorld.cs:639); RoundGateBlocks()=RoundNotStartedProvider (wired in round setup GameWorld.cs:1584, nulled :2658). All three reset OR-terms present and live — full QC reset block (sv_campcheck.qc:51).", result: pass }
     confidence: high
-    notes: "Remaining gaps: campaign-bot-wait and round-not-started reset portions (no seam). Split intent: warmup/game_starttime LIVE-gate collapse is intended; the residual reset-block omissions are unintended."
+    notes: "FIXED since the 2026-06-25 baseline: the campaign-bot-wait and round-active-but-not-started reset portions — which the baseline recorded as STILL MISSING (no Common-reachable seam) — are now wired live via CampcheckMutator.CampaignBotHold (GameWorld.cs:707) and RoundHandler.RoundGateBlocks/RoundNotStartedProvider (GameWorld.cs:1584). The full sv_campcheck.qc:51 reset block (all three OR terms) is now ported. logic/values/timing upgraded partial->faithful. The remaining intended_divergence is solely the warmup/game_starttime LIVE-gate collapse to !GameStopped (sim convention)."
 
   - id: campcheck.lifecycle.misc
     name: "PlayerDies centerprint clear, CopyBody clone origin, BuildMutatorsString advertise"
@@ -280,10 +282,10 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:OnPlayerDies"
       - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:BuildMutatorsString"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:SendCenterKill"
-      - "src/XonoticGodot.Server/GameWorld.cs:876"
+      - "src/XonoticGodot.Server/GameWorld.cs:1117"
     constants:
       - { name: "PlayerDies clears centerprint", base: "Kill_Notification(NOTIF_ONE, target, MSG_CENTER, CPID_CAMPCHECK)", port: "OnPlayerDies calls NotificationSystem.SendCenterKill(One, target, 'CPID_CAMPCHECK')", match: true }
-      - { name: "BuildMutatorsString", base: 'strcat(s, ":CampCheck")', port: "override BuildMutatorsString(s) => s + ':CampCheck'; run via MutatorActivation.BuildMutatorsString chain at GameWorld.cs:876 (sv_eventlog gamelog init)", match: true }
+      - { name: "BuildMutatorsString", base: 'strcat(s, ":CampCheck")', port: "override BuildMutatorsString(s) => s + ':CampCheck'; run via MutatorActivation.BuildMutatorsString chain at GameWorld.cs:1117 (sv_eventlog gamelog init)", match: true }
       - { name: "CopyBody clone prevorigin", base: "clone.campcheck_prevorigin = player.campcheck_prevorigin", port: "no CopyBody hook in the port; the live edict is REUSED on respawn (no corpse clone), and PlayerSpawn re-inits the fields", match: false }
     status:
       logic: faithful
@@ -297,6 +299,6 @@ features:
     gaps:
       - "CopyBody clone's campcheck_prevorigin not copied — but architecturally moot in the port (no corpse clone; the edict is reused and PlayerSpawn re-inits the fields). Intended divergence, not a behavior gap."
     verification:
-      - { kind: code-read, ref: "OnPlayerDies (CampcheckMutator.cs:185-192) calls NotificationSystem.SendCenterKill(One, args.Target, 'CPID_CAMPCHECK') — PlayerDies hook fired live (DamageSystem). BuildMutatorsString override (CampcheckMutator.cs:198) dispatched via MutatorActivation.BuildMutatorsString (MutatorActivation.cs:108) called live at GameWorld.cs:876 under sv_eventlog (mirrors QC GameLogInit). grep confirms NO CopyBody hook anywhere in the port (SpawnSystem.cs:585 documents the edict-reuse rationale).", result: pass }
+      - { kind: code-read, ref: "OnPlayerDies (CampcheckMutator.cs:185-192) calls NotificationSystem.SendCenterKill(One, args.Target, 'CPID_CAMPCHECK') — PlayerDies hook fired live (DamageSystem). BuildMutatorsString override (CampcheckMutator.cs:198) dispatched via MutatorActivation.BuildMutatorsString (MutatorActivation.cs:108) called live at GameWorld.cs:1117 under sv_eventlog (mirrors QC GameLogInit). grep confirms NO CopyBody hook anywhere in the port (SpawnSystem.cs:585 documents the edict-reuse rationale).", result: pass }
     confidence: high
     notes: "FIXED since baseline (Wave-6b): BuildMutatorsString ':CampCheck' advertise is now implemented and live (was missing — no hook to subscribe to). PlayerDies centerprint-clear was already live (Wave-5). Only CopyBody remains unported, and it is intended divergence (the port reuses the player edict on respawn instead of cloning a corpse)."

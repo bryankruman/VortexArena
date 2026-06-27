@@ -1,10 +1,11 @@
 unit: physics-player
 category: physics
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
-  feature_count: 18
+  feature_count: 19
   worst_gaps:
+    - "2026-06-27 drift re-audit: 0 regressions, 0 fixes, 0 reclassifications — every existing row re-derived against Base (ecs/systems/physics.qc + sv_physics.qc + common/physics/player.qc + walk.qc) and the port (PlayerPhysics.cs / PMAccelerate.cs) and confirmed byte-current. All core constants re-verified against physics.cfg (maxspeed 360, jumpvelocity 260, friction 6/slick 0.5, accelerate 15, airaccelerate 2, airaccel_qw -0.8, airstrafeaccel_qw -0.95, airspeedlimit_nonqw 900, maxairstrafespeed 100, airstrafeaccelerate 18, aircontrol 100, airstopaccelerate 3, warsowbunny_turnaccel 0) — all match. PM_check_punch decay (10/30) and the g_jump_grunt-gated playersound_jump confirmed. ONE registry coverage gap closed: added physics-player.landing_event (sys_phys_land / the phys_land subscription) — the jumppadcount reset is ported (live, inline in PlayerJump/swim), the speedmeter + jumppad-combo LOG_TRACEF debug logs are unported (debug-only). NOT added as rows (out of scope for this physics unit): sys_phys_monitor's parm_idlesince idle-stamp + anticheat_physics (server idle-kick / anticheat layer, not movement), sys_phys_ai (bot_think — bot unit), and WarpZone_PlayerPhysics_FixVAngle in sys_phys_fix (warpzone unit)."
     - "View-punch decay (PM_check_punch) was UNMAPPED in the baseline registry; now added as physics-player.punch_decay (ported as CheckPunch, faithful + live, server-authority only)."
     - "Jump audio FIXED 2026-06-25 re-audit (Wave-8e commit 412ca19): the port now gates the jump grunt on autocvar_g_jump_grunt (stock 0 = SILENT, matching Base) AND plays the per-model jump VOICE (PlayPlayerSound(player, \"jump\", ...) via the model .sounds manifest) instead of a fixed player/jump.wav — both baseline audio gaps closed, audio upgraded partial->faithful. RESIDUAL: the companion animdecide_setaction(ANIMACTION_JUMP) (player.qc:491) still has no anim-action seam in the port (same as the walljump port)."
     - "Movement-sound cadence is Base-faithful (g_footsteps gate + 0.3+random()*0.1 jitter + nextstep window + ladder bail all ported, re-confirmed live 2026-06-25); residuals: the lastground+0.2 gate is functionally inert because the port updates LastGroundTime BEFORE UpdateMovementSounds runs (so it reads now), and PM_check_hitground's active-grappling-hook bail is still unported (CheckHitground only does the ladder leg) — the ButtonHook input bit is now genuinely live (ServerNet.cs:1432 decodes InputButtons.Hook; WeaponFireDriver consumes it for the offhand-hook weapon), but there is still no shared per-weapon hook Entity field for CheckHitground to read, so the bail leg stays unported."
@@ -560,3 +561,30 @@ features:
       - { kind: code, ref: "GameWorld.OnClientMove:1937-1944 (preMatchFreeze = Time < GameStartTime && !Warmup.WarmupStage; canMove gates PM_Main) vs sv_physics.qc:48-64 sys_phys_pregame_hold (allowed_to_move = time >= game_starttime && !game_stopped). Warmup-playable + match-over/intermission held both covered by the same canMove chain (!MatchEnded && !Intermission.Running)", result: pass }
     confidence: high
     notes: "2026-06-25 NEW ROW (registry coverage gap): sys_phys_pregame_hold is a real sv_physics.qc movement-bearing function the baseline registry had no row for. The port reproduces its observable effect (no player movement before game_starttime, warmup excepted; held while game_stopped via MatchEnded/Intermission) live on every server tick, but at the GameWorld input-gating layer instead of inside PlayerPhysics — an intended structural divergence (the headless sim has no MOVETYPE_NONE/disableclientprediction edict bridge). Logic+timing faithful; the only residual is the absence of the client-side disableclientprediction latch (cosmetic prediction-only)."
+
+  - id: physics-player.landing_event
+    name: "Landing event (sys_phys_land: jumppadcount reset + speedmeter/combo logs)"
+    layer: [authority]
+    base_refs:
+      - "ecs/systems/sv_physics.qc:sys_phys_land"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:PlayerJump"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base fires sys_phys_land via the phys_land event (emit(phys_land, this) at physics.qc:152, subscribed in STATIC_INIT(sys_phys)) on the ground-branch landing edge (!WAS_ONGROUND). It does three things: (1) reset jumppadcount to 0, (2) LOG_TRACEF the landing velocity when autocvar_speedmeter is set, (3) LOG_TRACEF an N-x jumppad combo when jumppadcount > 1. The port has no phys_land event bus; it resets JumpPadCount inline where Base's landing logic runs — in PlayerJump (PlayerPhysics.cs:1123, the !WasOnGround landing block) and the swim branch (PlayerPhysics.cs:385, com_phys_water sets jumppadcount=0) — so the MOVEMENT-BEARING effect (the jumppad-combo counter reset) is faithful and live. The two LOG_TRACEF calls are debug diagnostics (speedmeter / combo log), not gameplay, and are unported."
+    gaps:
+      - "The speedmeter landing-velocity LOG_TRACEF (sv_physics.qc:121-122, gated on autocvar_speedmeter) is not ported — a developer-diagnostic log only, no gameplay effect."
+      - "The jumppad-combo LOG_TRACEF (sv_physics.qc:124-125, jumppadcount > 1) is not ported — diagnostic log only."
+      - "The port has no phys_land event/subscription bus; the jumppadcount reset is open-coded at the landing site rather than dispatched through an event. Structural, no observable difference."
+    verification:
+      - { kind: code, ref: "sys_phys_land (sv_physics.qc:119-128) jumppadcount=0 vs PlayerPhysics.cs:1123 (landing block: this.jumppadcount=0) + :385 (swim branch). emit(phys_land) fires at physics.qc:152 on the !WAS_ONGROUND ground-branch edge — the same point PlayerJump's landing-friction block runs.", result: pass }
+      - { kind: code, ref: "speedmeter + jumppad-combo LOG_TRACEF (sv_physics.qc:121-125) — no port analogue (diagnostic logs only)", result: fail }
+    confidence: high
+    notes: "2026-06-27 NEW ROW (registry coverage gap): sys_phys_land is a real sv_physics.qc movement-adjacent function (the phys_land event subscriber) the baseline registry had no row for. Its only gameplay effect — resetting jumppadcount on landing — is reproduced live in the port (open-coded in PlayerJump's landing block and the swim branch, matching the Base edge), so logic/timing are faithful. The two LOG_TRACEF debug logs (autocvar_speedmeter landing-velocity, jumppad-combo) are diagnostic-only and unported (intended). Verified against sv_physics.qc:119-134 + physics.qc:148-155."

@@ -1,15 +1,16 @@
 unit: weapon-electro
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 19
   worst_gaps:
     - "Midair-combo (primary_midaircombo_radius) is logic/values FAITHFUL (a dedicated MidairTriggerCombo with own/teammate/enemy gating + the separate midaircombo_speed first-orb delay), but it is still DEAD on the live path because the xonotic default cvar is 0 (it only runs in samual/xdf where radius=100)."
     - "IS_INDEPENDENT_PLAYER owner-gate is ported in the midair path but Entity.IsIndependentPlayer is hardwired false (DamageEntityState.cs:158, no independent-player mode ported), so it is dead-OFF-equivalent; the non-midair W_Electro_TriggerCombo still omits the gate entirely (same harmless effect)."
-    - "Combo explode-over-time (combo_duration, default 0) and sticky orbs (stick default 0, stick_lifetime -1) are intentionally omitted; harmless at xonotic defaults (now tracked as dedicated rows)."
-    - "Orb damagedbycontents (default 1, ON) is NOT ported — a live orb is not destroyed by lava/slime/drowning in the port; the only on-by-default unported electro feature."
-    - "Registry coverage gaps tracked as rows: bot wr_aim targeting, the Electro_Orb CSQC net-link/scale-pulse draw, the MENUQC weapon-guide describe text, plus (this audit) the sticky-orb mechanic, combo explode-over-time, the secondary orb_limit rubble cap, and orb damagedbycontents."
+    - "Combo explode-over-time (combo_duration, default 0) and sticky orbs (stick default 0, stick_lifetime -1) are intentionally omitted; harmless at xonotic defaults (tracked as dedicated rows)."
+    - "FIXED 2026-06-27: Orb damagedbycontents (default 1, ON) is now ported+live (AttackOrb sets orb.DamagedByContents; GameWorld.CreatureFrameAll sweep -> PlayerFrameLogic.ProjectileContentsDamage detonates an orb resting in lava/slime as a SECONDARY blast). No more on-by-default unported electro feature."
+    - "FIXED 2026-06-27: bot wr_aim (electromooth) mode pick + 1000u range gate now ported+live (Electro.BotWantsSecondary, wired in BotBrain.cs:406); only the secondary lead VALUES remain off (the bot leads both modes at primary_speed 2500, not secondary_speed/speed_up — Electro does not override BotAimShotSpeed)."
+    - "Registry coverage gaps still tracked as rows: the Electro_Orb CSQC net-link/scale-pulse draw, the MENUQC weapon-guide describe text (now partial), the sticky-orb mechanic, combo explode-over-time, and the secondary orb_limit rubble cap (all off-by-default)."
 features:
   - id: electro.primary.fire_gate
     name: "Primary bolt fire gate (refire + refire2 interlock)"
@@ -384,26 +385,28 @@ features:
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/electro.qc:wr_aim (METHOD Electro, wr_aim)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:BotWantsSecondary"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:406 (w.BotWantsSecondary dispatch)"
     constants:
-      - { name: "primary_speed", base: "2500", port: "n/a", match: false }
-      - { name: "secondary_speed", base: "1000", port: "n/a", match: false }
-      - { name: "secondary_speed_up", base: "200", port: "n/a", match: false }
+      - { name: "primary_speed", base: "2500", port: "2500 (lead via generic BotAimShotSpeed)", match: true }
+      - { name: "secondary_speed", base: "1000", port: "n/a (bot leads secondary at primary_speed 2500, not 1000)", match: false }
+      - { name: "secondary_speed_up", base: "200", port: "n/a (not used for the secondary lead)", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: partial
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No Electro-specific bot aim is ported. Base wr_aim leads with bot_aim at primary_speed (or hitscan-ish when speed==0) and, with a small random chance (bot_secondary_electromooth), switches to a secondary mortar-style lob using secondary_speed/speed_up; switches back at >1000u range. The port BotBrain.cs has no electro branch. Bots can still fire generically but without the primary/secondary mix or the lead-time tuning."
+      - "The secondary mortar-lob LEAD still uses primary_speed: Electro does not override Weapon.BotAimShotSpeed, so when the bot flips to the orb mode (electromooth), BotBrain leads the target as if the orb flew at primary_speed (2500) instead of the QC secondary_speed/speed_up (1000/200). The mode pick + 1000u range gate + flip probabilities are faithful; only the secondary lead-speed tuning is off (a shared limitation with the Rifle's secondary)."
     verification:
-      - { kind: code, ref: "Grep '[Ee]lectro' in src/XonoticGodot.Server/Bot/BotBrain.cs -> no matches; no per-weapon wr_aim port for electro found.", result: fail }
-    confidence: medium
-    notes: "NEW ROW (registry coverage gap, not a drift). Base electro.qc:599-626 wr_aim is unmapped. Bot-aim parity is generally weak across the weapon registry; tracking here for completeness. Not on the stock human play path."
+      - { kind: code, ref: "Electro.BotWantsSecondary (Electro.cs:239-256) ports the electromooth toggle: vdist>1000 -> force primary (SecondaryToggle=false); preferring-primary -> random()<0.01 flip to secondary; preferring-secondary -> random()<0.03 flip back; returns the pre-flip button (electro.qc:599-626). Wired live: BotBrain.cs:404-409 stamps Random01/Actor and routes the result onto attack2. BotBrain.ShotSpeed (BotBrain.cs:809-814) calls w.BotAimShotSpeed(primary speed cvar) — Electro has no override, so the secondary lead is not retuned.", result: pass }
+    confidence: high
+    notes: "FIX since 2026-06-25 baseline (logic missing->faithful, liveness na->live): the electromooth mode-pick + range gate is now ported and dispatched live from BotBrain. values stays partial — the secondary lead-speed tuning (secondary_speed/speed_up) is not applied. Base electro.qc:599-626."
 
   - id: electro.orb.csqc_netlink_draw
     name: "Orb CSQC net-link + scale-pulse / spin draw"
@@ -540,21 +543,26 @@ features:
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/electro.qc:W_Electro_Attack_Orb (proj.damagedbycontents / g_damagedbycontents)"
-    port_refs: []
+      - "server/main.qc:CreatureFrame_hotliquids (projectile branch)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:AttackOrb (orb.DamagedByContents = Secondary.DamagedByContents)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2110-2124 (CreatureFrameAll g_damagedbycontents sweep)"
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:ProjectileContentsDamage"
     constants:
-      - { name: "secondary_damagedbycontents", base: "1 (ON by default)", port: "none", match: false }
+      - { name: "secondary_damagedbycontents", base: "1 (ON by default)", port: "true (BalBool, seeded in Configure)", match: true }
+      - { name: "g_balance_contents_projectiledamage", base: "(content damage per tick)", port: "read live in ProjectileContentsDamage", match: true }
+      - { name: "g_balance_contents_damagerate", base: "0.2", port: "0.2", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: na
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "g_balance_electro_secondary_damagedbycontents defaults 1 (ON), so in Base a live orb resting in lava/slime or fully submerged takes content damage and detonates. The port never pushes the orb onto g_damagedbycontents (no DamagedByContents wiring for projectiles at all — only monsters/turrets/instagib reference the field), so an orb is immune to environmental hazards. The only on-by-default electro secondary feature that is unported."
+    gaps: []
     verification:
-      - { kind: code, ref: "AttackOrb (Electro.cs:372-434) sets no DamagedByContents flag; grep DamagedByContents in src -> only Monsters/Turrets/Instagib/StatusEffects, no projectile-contents pipeline. damagedbycontents default 1 (bal-wep-xonotic.cfg:247).", result: fail }
+      - { kind: code, ref: "AttackOrb (Electro.cs:432) sets orb.DamagedByContents = Secondary.DamagedByContents (BalBool damagedbycontents, default true). GameWorld.CreatureFrameAll (GameWorld.cs:2114-2124) scans the non-client entity table and, for each DamagedByContents entity not in MOVETYPE_NOCLIP, calls PlayerFrameLogic.ProjectileContentsDamage (PlayerFrameLogic.cs:404). That gates on contents<=WATER && waterlevel>0, rate-limits via ContentsDamageTime (g_balance_contents_damagerate 0.2), and for lava/slime applies g_balance_contents_projectiledamage*rate*waterlevel through Combat.Damage with a NULL inflictor -> the orb's GtEventDamage shoot-down shim subtracts HP and (null inflictor -> non-combo branch) detonates it as a plain SECONDARY blast. Matches QC W_Electro_Attack_Orb:561-563 + CreatureFrame_hotliquids + W_Electro_Orb_Damage non-combo path.", result: pass }
     confidence: high
-    notes: "NEW ROW (registry coverage gap, genuine on-by-default gap). Low impact (only matters for orbs that come to rest in hazard volumes) but it is the lone non-default-off secondary mechanic missing from the port."
+    notes: "FIX since 2026-06-25 baseline (logic/values missing->faithful, liveness na->live): the orb is now enrolled in the g_damagedbycontents sweep and detonates as a SECONDARY blast when resting in lava/slime. The lone on-by-default electro gap from the baseline is closed. The cross-cutting projectile-contents pipeline (GameWorld sweep + PlayerFrameLogic.ProjectileContentsDamage) is shared by any DamagedByContents projectile."

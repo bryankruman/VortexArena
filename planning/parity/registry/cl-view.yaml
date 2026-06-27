@@ -1,7 +1,7 @@
 unit: cl-view
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"  # drift re-audit: HUD_Damage now uses the gfx/blood splatter + gentle-mode path (presentation fix); spectator third-person + chase_front are now wired live (NetGame UpdateCamera spectate branch)
+last_audited: "2026-06-27"  # drift re-audit: no status change since 2026-06-25 — code unchanged (Wave 8c already incorporated; Wave 12d only shifted NetGame line numbers + added unrelated ViewModel code). NetGame port_ref line numbers refreshed to current.
 summary:
   feature_count: 21
   worst_gaps:
@@ -39,7 +39,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "FirstPersonView.UpdateZoom + ComputeVerticalFov match GetCurrentFov; cvars seeded SeedViewCvars; UpdateCamera live on net path (NetGame:4460 UpdateView)", result: pass }
+      - { kind: code, ref: "FirstPersonView.UpdateZoom + ComputeVerticalFov match GetCurrentFov; cvars seeded SeedViewCvars; UpdateCamera live on net path (NetGame:5138 UpdateView)", result: pass }
     confidence: high
     notes: "current_viewzoom integration, current_zoomfraction, setsensitivityscale (current_viewzoom**(1-zoomsensitivity)), and the *0.75 4:3 frustum all match. The velocityzoom multiplier is now folded in via ComputeVelocityZoom (FirstPersonView:423) — see velocity_zoom row (default off, no effect). The 2.5/3.5 fallbacks match Base's out-of-range clamp."
 
@@ -51,7 +51,7 @@ features:
       - "client/spawnpoints.qc:82-86"
     port_refs:
       - "game/client/FirstPersonView.cs:TriggerSpawnZoom"
-      - "game/net/NetGame.cs:2608"
+      - "game/net/NetGame.cs:2855 (TriggerSpawnZoom on Health 0->>0 edge)"
     constants:
       - { name: "cl_spawnzoom", base: "1", port: "1 (seeded)", match: true }
       - { name: "cl_spawnzoom_factor", base: "2", port: "2 (seeded)", match: true }
@@ -77,7 +77,7 @@ features:
     base_refs:
       - "client/view.qc:IsZooming (wr_zoomdir loop)"
     port_refs:
-      - "game/net/NetGame.cs:2624 (weaponZoom -> ZoomHeld)"
+      - "game/net/NetGame.cs:~2890 (weaponZoom -> ZoomHeld, zoomActive gate)"
     constants: []
     status:
       logic: faithful
@@ -119,7 +119,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ComputeVelocityZoom ports the velocityzoom block: curspeed type 1/2/3 (fwd-dot velocity), low-pass _avgSpeed over cl_velocityzoom_time, float2range11 (f/(|f|+1)) + exp(); folded into the rendered fov in UpdateCamera (FirstPersonView:422-423). Live on the net path (UpdateView NetGame:4460). All cvars read live with faithful fallbacks.", result: pass }
+      - { kind: code, ref: "ComputeVelocityZoom ports the velocityzoom block: curspeed type 1/2/3 (fwd-dot velocity), low-pass _avgSpeed over cl_velocityzoom_time, float2range11 (f/(|f|+1)) + exp(); folded into the rendered fov in UpdateCamera (FirstPersonView:428-429). Live on the net path (UpdateView NetGame:5138). All cvars read live with faithful fallbacks.", result: pass }
     confidence: high
     notes: "FIXED since the 2026-06-22 baseline (was missing): the velocity-based FOV widen/narrow is now ported and wired. Off by default in stock Xonotic (cl_velocityzoom_enabled 0), so a default match is unaffected; opt-in only — but the seam is now faithful and live so enabling the cvars takes effect. The type 0 disable and the intermission/spectator zero branch are handled (intermission branch not on the net first-person path)."
 
@@ -133,7 +133,7 @@ features:
     port_refs:
       - "game/client/FirstPersonView.cs:NotifyZoomScroll (197)"
       - "game/client/FirstPersonView.cs:UpdateZoom (zoomscroll branch 264-289)"
-      - "game/net/NetGame.cs:3873-3876 (mousewheel -> NotifyZoomScroll)"
+      - "game/net/NetGame.cs:4503 (mousewheel -> NotifyZoomScroll)"
     constants:
       - { name: "cl_zoomscroll", base: "1", port: "1 (read live)", match: true }
       - { name: "cl_zoomscroll_scale", base: "0.2", port: "0.2 (read live)", match: true }
@@ -160,7 +160,7 @@ features:
       - "client/view.qc:View_CheckButtonStatus (1472)"
     port_refs:
       - "game/client/FirstPersonView.cs:UpdateZoom (zoomscript_caught 233-239)"
-      - "game/net/NetGame.cs:2624 (zoomActive gate, Health>0)"
+      - "game/net/NetGame.cs:~2890 (zoomActive gate, Health>0)"
     constants:
       - { name: "cl_unpress_zoom_on_death", base: "1", port: "implicit (zoom suppressed when Health<=0)", match: true }
       - { name: "fov_auto_zoom_threshold", base: "59.5 (+button9 when fov<=59.5)", port: "59.5 (FirstPersonView:237)", match: true }
@@ -225,8 +225,8 @@ features:
     port_refs:
       - "game/client/FirstPersonView.cs:ApplyClassicChase (725)"
       - "game/client/FirstPersonView.cs:UpdateCamera (classicChase branch, 357)"
-      - "game/net/NetGame.cs:2802 (own-player CameraMode = chase_active != 0 ? Chase : None)"
-      - "game/net/NetGame.cs:4770-4791 (spectate branch: _view.Spectating = true + CameraMode from chase_active, anchored to spectatee pose)"
+      - "game/net/NetGame.cs:2877 (own-player CameraMode = chase_active != 0 ? Chase : None)"
+      - "game/net/NetGame.cs:5001-5021 (spectate branch: _view.Spectating = true + CameraMode from chase_active, anchored to spectatee pose)"
     constants:
       - { name: "chase_back", base: "user (menu 10..100; DP default 48)", port: "live Cvar(\"chase_back\", 48)", match: true }
       - { name: "chase_up", base: "user (menu 10..50; DP default 24)", port: "live Cvar(\"chase_up\", 24)", match: true }
@@ -245,7 +245,7 @@ features:
     gaps:
       - "The server-side spectator-camera mode toggle is not ported: View_SpectatorCamera's STAT(CAMERA_SPECTATOR) 1/2 state + IMP_weapon_drop cycling (the chase_active<=0 auto-switch that flips chase_active to -2 and Impulse_Sends weapon-drop to cycle the server spectator camera) has no port analogue. The port drives the spectator third-person purely from the user chase_active cvar."
     verification:
-      - { kind: code, ref: "NetGame:2802 sets own-player CameraMode = chase_active!=0; NetGame:4770-4791 spectate branch sets _view.Spectating = true AND CameraMode = chase_active!=0 ? Chase, anchored to the sampled spectatee pose -> spectating a player with chase_active set now renders THIRD person and the chase_front selfie branch (Spectating-gated) is reachable. ApplyClassicChase (FirstPersonView:725) ports CSQCPlayer_ApplyChase (pull-back + chase_overhead 5x5 grid + chase_pitchangle + chase_front flip).", result: pass }
+      - { kind: code, ref: "NetGame:2877 sets own-player CameraMode = chase_active!=0; NetGame:5001-5021 spectate branch sets _view.Spectating = true AND CameraMode = chase_active!=0 ? Chase, anchored to the sampled spectatee pose -> spectating a player with chase_active set now renders THIRD person and the chase_front selfie branch (Spectating-gated) is reachable. ApplyClassicChase (FirstPersonView:725) ports CSQCPlayer_ApplyChase (pull-back + chase_overhead 5x5 grid + chase_pitchangle + chase_front flip).", result: pass }
     confidence: high
     notes: "FIXED since the prior baseline: spectating a player now renders THIRD person when the user enables chase_active (NetGame UpdateCamera spectate branch sets _view.Spectating + Chase anchored to the spectatee pose), and chase_front (the frontal selfie, QC-guarded to spectating) is now reachable because Spectating is true on that path. liveness: live (own-player chase + spectator chase both wired). STILL OPEN (logic: partial): the STAT(CAMERA_SPECTATOR) server mode toggle + IMP_weapon_drop cycling auto-switch path in View_SpectatorCamera is not ported — pressing weapon-drop to cycle the server-side spectator camera mode has no effect."
 
@@ -287,7 +287,7 @@ features:
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:CheckPunch (decay)"
       - "game/net/ServerNet.cs (writes PunchVector, owner block)"
       - "game/net/ClientNet.cs (reads PunchVector)"
-      - "game/net/NetGame.cs:4445 (PunchOriginQuake = _client.PunchVector)"
+      - "game/net/NetGame.cs:5123 (PunchOriginQuake = _client.PunchVector)"
       - "game/client/FirstPersonView.cs:UpdateCamera (camQuake += st.PunchOriginQuake, first-person branch only, 391)"
     constants:
       - { name: "punchvector_decay_u_per_s", base: "30", port: "30 (decayed server-side)", match: true }
@@ -313,7 +313,7 @@ features:
       - "lib/csqcmodel/cl_player.qc:CSQCPlayer_ApplyBobbing (321)"
     port_refs:
       - "game/client/FirstPersonView.cs:ApplyBobbing (532)"
-      - "game/net/NetGame.cs:4457-4458 (OnGround/JumpHeld fed into ViewState)"
+      - "game/net/NetGame.cs:5135-5136 (OnGround/JumpHeld fed into ViewState)"
     constants:
       - { name: "cl_bob", base: "0 (off by default; DP 0.02)", port: "0 (read live)", match: true }
       - { name: "cl_bobcycle", base: "0.5", port: "0.5 (read live)", match: true }
@@ -338,7 +338,7 @@ features:
     gaps:
       - "The cl_bob_limit_heightcheck trace path (default 0) is omitted (documented; the default-0 branch is the one that runs)."
     verification:
-      - { kind: code, ref: "ApplyBobbing ports CSQCPlayer_ApplyBobbing: vertical bob (bobup sin, xyspeed-proportional), horizontal bob2 (cos cycle + bob2_smooth ground-decay blocked while jumping), fall-bob (bobfall_speed/swing). All cvars read live with Base defaults. OnGround/JumpHeld/Velocity fed via ViewState (NetGame:4457-4458); UpdateView live (NetGame:4460).", result: pass }
+      - { kind: code, ref: "ApplyBobbing ports CSQCPlayer_ApplyBobbing: vertical bob (bobup sin, xyspeed-proportional), horizontal bob2 (cos cycle + bob2_smooth ground-decay blocked while jumping), fall-bob (bobfall_speed/swing). All cvars read live with Base defaults. OnGround/JumpHeld/Velocity fed via ViewState (NetGame:5135-5136); UpdateView live (NetGame:5138).", result: pass }
     confidence: high
     notes: "FIXED since the 2026-06-22 baseline (was missing — and the baseline note that even Base only TODO-stubbed this was WRONG: CSQCPlayer_ApplyBobbing IS a full implementation in cl_player.qc:321, the view.qc:273-285 stubs were a separate dead branch). The port now faithfully transcribes the cl_player.qc bobbing. cl_bob 0 / cl_bob2 0 are the shipped defaults so a stock match still shows no view-bob — opt-in only. Only the heightcheck trace (default off) is omitted."
 
@@ -405,7 +405,7 @@ features:
       - "lib/csqcmodel/cl_player.qc:CSQCPlayer_ApplySmoothing (227)"
     port_refs:
       - "src/XonoticGodot.Net/FaithfulViewSmoothing.cs"
-      - "game/net/NetGame.cs:3494-3521"
+      - "game/net/NetGame.cs:5085-5098 (faithfulSmoothing path) / 5111 (port-mode adaptive offset)"
     constants:
       - { name: "cl_stairsmoothspeed", base: "200", port: "200", match: true }
       - { name: "cl_smoothviewheight", base: "0.05", port: "0.05", match: true }
@@ -421,7 +421,7 @@ features:
     divergence_rationale: "Faithful mode (cl_movement_smoothing_faithful, default on) uses the exact bounded stairsmoothz glide + viewheightavg blend; the port-default-mode alternative uses an adaptive render-only stair offset (ClientNet.PredictedStairOffset) to fight the 1/72-quantized server-render-clock jitter (see camera-drift-render-smoothing memory). The stepheight processing is the only intentional divergence in the faithful path."
     gaps: []
     verification:
-      - { kind: code, ref: "FaithfulViewSmoothing.Apply mirrors cl_player.qc CSQCPlayer_ApplySmoothing (bound() glide + lowpass eye blend, teleport/airborne/networked-ground snaps); wired live NetGame:3494-3510 when faithfulSmoothing; port-mode adaptive offset is the deliberate alternative", result: pass }
+      - { kind: code, ref: "FaithfulViewSmoothing.Apply mirrors cl_player.qc CSQCPlayer_ApplySmoothing (bound() glide + lowpass eye blend, teleport/airborne/networked-ground snaps); wired live NetGame:5085-5098 when faithfulSmoothing; port-mode adaptive offset (NetGame:5111) is the deliberate alternative", result: pass }
     confidence: high
     notes: "Two paths: faithful (bit-faithful transcription) and the adaptive port-default. liveness: partial because only one path runs at a time per cl_movement_smoothing_faithful."
 
@@ -434,7 +434,7 @@ features:
       - "game/client/ViewEffects.cs:UpdateDamage (177)"
       - "game/client/ViewEffects.cs:SetSplatAlpha (286, gfx/blood splatter)"
       - "game/client/ViewEffects.cs:MakeBloodSplat (114)"
-      - "game/net/NetGame.cs:2873 (UpdateEffects)"
+      - "game/net/NetGame.cs:2949 (UpdateEffects)"
     constants:
       - { name: "hud_damage", base: "0.55", port: "0.55", match: true }
       - { name: "hud_damage_factor", base: "0.025", port: "0.025", match: true }
@@ -461,7 +461,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "UpdateDamage: myhealth_flash accumulate/decay, pain threshold + near-death sin-pulse, respawn/observe clears; the default path now draws the gfx/blood splatter (SetSplatAlpha: square max(conwidth,conheight) centred, tinted hud_damage_color) and the gentle path (cl_gentle/cl_gentle_damage) draws the solid coloured rect with gentle_alpha_multiplier + the cl_gentle_damage==2 randomized colour — matching HUD_Damage view.qc:1293-1305; live via NetGame:2873 UpdateEffects.", result: pass }
+      - { kind: code, ref: "UpdateDamage: myhealth_flash accumulate/decay, pain threshold + near-death sin-pulse, respawn/observe clears; the default path now draws the gfx/blood splatter (SetSplatAlpha: square max(conwidth,conheight) centred, tinted hud_damage_color) and the gentle path (cl_gentle/cl_gentle_damage) draws the solid coloured rect with gentle_alpha_multiplier + the cl_gentle_damage==2 randomized colour — matching HUD_Damage view.qc:1293-1305; live via NetGame:2949 UpdateEffects.", result: pass }
     confidence: high
     notes: "FIXED since the 2026-06-22 baseline (was presentation: partial): the default damage flash now uses the gfx/blood splatter texture (centred square, max(conwidth,conheight), tinted hud_damage_color) instead of a flat red rect, with a solid-rect fallback only when gfx/blood is missing; AND the gentle-mode (cl_gentle / cl_gentle_damage) solid-flash path is ported (alpha * gentle_alpha_multiplier; cl_gentle_damage==2 randomizes the colour while the flash is gone). Accumulator + pain-threshold + near-death sin-pulse + respawn/observe edge handling all match. Both former presentation gaps closed."
 
@@ -504,7 +504,7 @@ features:
       - "common/gametypes/gametype/freezetag/cl_freezetag.qc:HUD_Draw_overlay (29-44)"
     port_refs:
       - "game/client/ViewEffects.cs:UpdateFrozenOverlay (292)"
-      - "game/net/NetGame.cs:2655-2661"
+      - "game/net/NetGame.cs:~2955-2961 (UpdateFrozenOverlay off FreezeTag Frozen status + ReviveProgress)"
     constants:
       - { name: "base_color", base: "'0.25 0.90 1'", port: "'0.25 0.90 1'", match: true }
       - { name: "col_fade", base: "max(0, REVIVE_PROGRESS*2 - 1)", port: "max(0, p*2-1)", match: true }
@@ -521,7 +521,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "UpdateFrozenOverlay mirrors HUD_Draw_overlay exactly: base '0.25 0.90 1', col_fade/alpha_fade formulas + colour-warm; gated on STAT(FROZEN). Wired live NetGame:2655-2661 off the host-side local Player Frozen status effect + REVIVE_PROGRESS. A pure remote client reads frozen=false (no overlay).", result: pass }
+      - { kind: code, ref: "UpdateFrozenOverlay mirrors HUD_Draw_overlay exactly: base '0.25 0.90 1', col_fade/alpha_fade formulas + colour-warm; gated on STAT(FROZEN). Wired live NetGame:~2958 off the host-side local Player Frozen status effect + REVIVE_PROGRESS. A pure remote client reads frozen=false (no overlay).", result: pass }
     confidence: high
     notes: "Full-screen ColorRect composited above the damage + liquid tints. Faithful icy-blue tint that warms toward white and fades out as the thaw ring (STAT(REVIVE_PROGRESS)) fills. Driven by the live FreezeTag gametype, same source as the crosshair thaw ring. liveness: live only in Freeze Tag (the gametype gates STAT(FROZEN)); a pure remote (non-host) client has no LocalServerPlayer so reads false — the cross-client wepent/stat follow-up is the same limitation noted on the crosshair revive ring."
 
@@ -560,7 +560,7 @@ features:
       - "client/hud/crosshair.qc:DrawReticle (648-717)"
     port_refs:
       - "game/client/ReticleOverlay.cs:UpdateReticle (75)"
-      - "game/net/NetGame.cs:2670-2672"
+      - "game/net/NetGame.cs:2917-2919 (UpdateReticle, passes _view.ZoomScriptCaught)"
     constants:
       - { name: "cl_reticle", base: "1", port: "1", match: true }
       - { name: "cl_reticle_stretch", base: "0", port: "0", match: true }
@@ -579,7 +579,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "UpdateReticle: type selection (generic/weapon), zoomscript_caught full-alpha vs 0.25 fade floor (ReticleOverlay:107,118), dead/spectate/chase suppression (unless cl_reticle_chase), stretch vs square geometry; live NetGame:2670-2672 (now passes _view.ZoomScriptCaught)", result: pass }
+      - { kind: code, ref: "UpdateReticle: type selection (generic/weapon), zoomscript_caught full-alpha vs 0.25 fade floor (ReticleOverlay:107,118), dead/spectate/chase suppression (unless cl_reticle_chase), stretch vs square geometry; live NetGame:2917-2919 (now passes _view.ZoomScriptCaught)", result: pass }
     confidence: high
     notes: "Type selection (none/generic/weapon-scope), the zoomscript_caught ? 1 : max(0.25, zoomfraction) fade, the square-centred vs stretched geometry, and the suppression conditions all match DrawReticle. The prior zoomscript_caught gap is CLOSED — the zoomscript auto-zoom (FirstPersonView.ZoomScriptCaught) now feeds the full-alpha branch."
 
@@ -596,7 +596,7 @@ features:
       - "game/client/ViewModel.cs:FollowModelOffset (697)"
       - "game/client/ViewModel.cs:LeanModelOffset (730)"
       - "game/client/ViewModel.cs:BobModelOffset (765)"
-      - "game/net/NetGame.cs:1306 (ViewStateProvider = BuildViewState)"
+      - "game/net/NetGame.cs:1379 (ViewStateProvider = BuildViewState)"
     constants:
       - { name: "cl_followmodel", base: "1", port: "true", match: true }
       - { name: "cl_followmodel_speed", base: "0.3", port: "0.3", match: true }
@@ -628,7 +628,7 @@ features:
       - "cl_followmodel_velocity_absolute branch (calc_followmodel_ofs:125,152-161) is not ported (default 0, so the view-relative branch — which IS ported — is the default path)."
       - "UpdateSway does not gate on chase/dead like viewmodel_animate:260 (autocvar_chase_active || HEALTH<=0), but the whole viewmodel node is hidden during chase/dead, so the sway is not observable then anyway."
     verification:
-      - { kind: code, ref: "UpdateSway ports avg_factor/lowpass/highpass macro chains + bobmodel time-offset + map_bound_ranges; ViewStateProvider=BuildViewState live (NetGame:1306); constants match xonotic-client.cfg", result: pass }
+      - { kind: code, ref: "UpdateSway ports avg_factor/lowpass/highpass macro chains + bobmodel time-offset + map_bound_ranges; ViewStateProvider=BuildViewState live (NetGame:1379); constants match xonotic-client.cfg", result: pass }
     confidence: high
     notes: "Faithful low/high-pass chains, the bob run-up scale, and all constants match. Divergences: cvar liveness (defaults baked as Exports) and the unported velocity_absolute opt-in branch — both default-equivalent."
 

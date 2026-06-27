@@ -1,15 +1,15 @@
 unit: mutator-waypoints
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 17
   worst_gaps:
-    - "Objective-marker MANAGER carrier sub-API still has no live caller: AttachCarrier / DetachCarrier / UpdateTeamRadar are uncalled (CTF/KH/Ka/Tka/Dom/FT producers build WaypointSprite records directly in CollectWaypoints and bypass the manager). SpawnFixed/Spawn/UpdateHealth/UpdateMaxHealth/UpdateRule/UpdateBuildFinished/Ping/Kill/Disown are ALL live now (Assault objectives, itemstime respawn countdown, Seeker tags, powerup drops)."
-    - "Producer coverage WIDENED again: CTF + Domination + FreezeTag + Keepaway + TeamKeepaway + Key Hunt + LMS now emit via CollectWaypoints; Assault via the manager; itemstime item-respawn countdown + Seeker tagged-target + powerup-drop countdown via the manager. Still MISSING: Onslaught CP/generators, Nexball balls/goals, Race start/finish/checkpoint, monster/turret/vehicle/buff markers, and the g_showweaponspawns 'where is weapon' WP_Weapon spawn-markers (Weapon_whereis — newly mapped this audit as waypoints.weapon.whereis)."
+    - "Objective-marker MANAGER carrier sub-API still has no live caller: AttachCarrier / DetachCarrier / UpdateTeamRadar are uncalled (CTF/KH/Ka/Tka/Dom/FT producers build WaypointSprite records directly in CollectWaypoints and bypass the manager). SpawnFixed/Spawn/UpdateHealth/UpdateMaxHealth/UpdateRule/UpdateBuildFinished/Ping/Kill/Disown are ALL live now (Assault objectives, itemstime respawn countdown, Seeker tags, powerup drops, Weapon_whereis)."
+    - "Producer coverage WIDENED again: CTF + Domination + FreezeTag + Keepaway + TeamKeepaway + Key Hunt + LMS emit via CollectWaypoints; Assault via the manager; itemstime item-respawn countdown + Seeker tagged-target + powerup-drop countdown + Weapon_whereis (g_showweaponspawns) via the manager. Still MISSING: Onslaught CP/generators, Nexball balls/goals, Race start/finish/checkpoint, monster/turret/vehicle/buff markers."
     - "TEAMPLAY three-image (netname/2/3) per-audience swap still absent — the port networks a single SpriteName and does the team filter server-side only."
     - "Flag-carrier HEALTH BAR + auto-helpme-on-hit on CTF carriers still absent (AttachCarrier has no live caller; Ctf.CollectWaypoints sets Health=-1)."
-    - "wp_extra-driven per-instance blink (superweapon Weapon=2 / Item=m_waypointblink) still not modeled. Radar PING ring pulse is now IMPLEMENTED (RadarPanel.DrawPingPulse + ClientNet bit-7 stamp), driven live by the itemstime respawn countdown."
+    - "wp_extra-driven per-instance blink (superweapon Weapon=2 / Item=m_waypointblink) still not modeled. Radar PING ring pulse is IMPLEMENTED (RadarPanel.DrawPingPulse + ClientNet bit-7 stamp), driven live by the itemstime respawn countdown. FIX this audit: Weapon_whereis (g_showweaponspawns) is now ported + live (Inventory.cs)."
 features:
   - id: waypoints.registry.defs
     name: "Waypoint-kind registry (WP_* defs: text/icon/color/blink)"
@@ -38,7 +38,7 @@ features:
     divergence_rationale: null
     gaps:
       - "Residual: the wp_extra-DRIVEN spritelookupblinkvalue overrides (superweapon Weapon=2, Item=item.m_waypointblink) are not modeled — Weapon's def blink is a flat 1 and there is no per-instance wp_extra blink lookup. Harmless while those producers (superweapon pickups) are absent. The Seeker/Item/Weapon DEFS are now exercised by live producers; only the wp_extra per-instance blink override is unmodeled."
-      - "liveness: partial — defs are reachable only once their gametype emits waypoints; CTF + Domination + FreezeTag + Keepaway + TeamKeepaway + Assault + Key Hunt + LMS + itemstime (Item/Weapon) + Seeker + player-deployed pings now exercise their defs. Still NOT on the live path: Ons*/Nb*/Race*/Monster/Vehicle*/Buff."
+      - "liveness: partial — defs are reachable only once their gametype emits waypoints; CTF + Domination + FreezeTag + Keepaway + TeamKeepaway + Assault + Key Hunt + LMS + itemstime (Item/Weapon) + Seeker + Weapon_whereis (Weapon def) + player-deployed pings now exercise their defs. Still NOT on the live path: Ons*/Nb*/Race*/Monster/Vehicle*/Buff."
     verification:
       - { kind: code-read, ref: "all.inc (63 REGISTER_WAYPOINT) vs WaypointRegistry.Build (63 Add(...)) — names/text/icon/color/blink line-by-line; texts match", result: pass }
     confidence: high
@@ -72,7 +72,7 @@ features:
     divergence_rationale: null
     gaps:
       - "DEPLOY + CLEAR + HELPME slice is live (DeployFixed/DeployPersonal/Attach/ClearPersonal/ClearOwned/HelpMePing from Commands.cs; Reset() + Think() in GameWorld; SendWaypoints merges WaypointSprites.Active per peer)."
-      - "OBJECTIVE/UPDATE slice is BROADLY live now: SpawnFixed/Spawn/UpdateMaxHealth/UpdateHealth/Disown/Kill via Assault (SpawnObjectiveSprite); Spawn/UpdateBuildFinished/Ping/Kill via itemstime (ItemPickupRules.RespawnCountdown, ItemPickupRules.cs:757/768/783); Spawn/UpdateRule/Kill via Seeker (Seeker.cs:496/514/519); Spawn/UpdateMaxHealth/UpdateHealth/Kill via powerup drops (PowerupsMutator.cs:541-575). FIX vs baseline which marked Ping/UpdateBuildFinished/UpdateRule zero-caller dead."
+      - "OBJECTIVE/UPDATE slice is BROADLY live now: SpawnFixed/Spawn/UpdateMaxHealth/UpdateHealth/Disown/Kill via Assault (SpawnObjectiveSprite); Spawn/UpdateBuildFinished/Ping/Kill via itemstime (ItemPickupRules.RespawnCountdown, ItemPickupRules.cs:794/809/824); Spawn/UpdateRule/Kill via Seeker (Seeker.cs:496/514/519); Spawn/UpdateMaxHealth/UpdateHealth/Kill via powerup drops (PowerupsMutator.cs:541-575); Spawn (personal, radarIcon 0) via Weapon_whereis (Inventory.cs:403). FIX vs baseline which marked Ping/UpdateBuildFinished/UpdateRule zero-caller dead."
       - "Still NO live caller: AttachCarrier, DetachCarrier, UpdateTeamRadar — the CTF/Dom/FreezeTag/Keepaway/KeyHunt/LMS producers build WaypointSprite records directly in CollectWaypoints (not via the manager carrier helper)."
     verification:
       - { kind: code-read, ref: "grep callers → Commands.cs (Deploy/Attach/Clear) + GameWorld.cs (Reset/Think) + Assault.cs:401/407/411/412/446/467/493/768 + ItemPickupRules.cs:712/740/757/768/783 + Seeker.cs:493/496/501/514/519/540 + PowerupsMutator.cs:346/541/543/545/563/566/575; AttachCarrier/DetachCarrier/UpdateTeamRadar → ZERO non-test callers", result: partial }
@@ -106,7 +106,7 @@ features:
     divergence_rationale: null
     gaps:
       - "Seven live CollectWaypoints producers now: CTF (flag base/dropped/carrier), Domination (control-point markers), FreezeTag (Frozen/Reviving + thaw-progress health bar), Keepaway (KaBall/KaBallCarrier, tracking-gated), TeamKeepaway (team-colored TkaBallCarrier<team>/KaBall, tracking-gated), Key Hunt (KeyDropped + KeyCarrier<team>/KeyCarrierFinish, tracking-gated per-viewer predicates), LMS (LmsLeader on each leader, show-window gated). Plus Assault via the manager API, and itemstime/Seeker/powerup-drop via the manager. All reached via ServerNet.SendWaypoints:1022 per tick. FIX vs baseline (was CTF+Dom+FT+Ka+Tka)."
-      - "Still missing as CollectWaypoints producers: Onslaught control points + generators, Nexball balls + goals, Race start/finish/checkpoint, monster/turret/vehicle/buff markers, and the g_showweaponspawns 'where is weapon' temporary WP_Weapon markers (Weapon_whereis — see waypoints.weapon.whereis)."
+      - "Still missing as CollectWaypoints producers: Onslaught control points + generators, Nexball balls + goals, Race start/finish/checkpoint, monster/turret/vehicle/buff markers. (Weapon_whereis is now ported as an on-demand manager producer — see waypoints.weapon.whereis — not via CollectWaypoints.)"
     verification:
       - { kind: code-read, ref: "grep 'override.*CollectWaypoints' → Ctf.cs:401 + Domination.cs:518 + FreezeTag.cs:770 + Keepaway.cs:659 + TeamKeepaway.cs:721 + KeyHunt.cs:1324 + LastManStanding.cs:836; all reached via ServerNet.SendWaypoints (ServerNet.cs:1022) per tick", result: partial }
     confidence: high
@@ -440,7 +440,7 @@ features:
       - "audio: partial — QC soundto(MSG_ONE) plays ITEMRESPAWNCOUNTDOWN per visible client; the port's Common layer has no per-client soundto seam, so it emits a single positional cue on CH_TRIGGER (ATTEN_NORM). SpectatorOnly items over-broadcast slightly to nearby live players — the only divergence."
       - "wp_extra-driven per-item icon/color (m_waypointblink etc.) not networked — WP_Item renders generic magenta, WP_Weapon generic black/client-resolved."
     verification:
-      - { kind: code-read, ref: "ItemPickupRules.RespawnCountdown (ItemPickupRules.cs:734-785): Spawn(757) + UpdateBuildFinished(768) + Ping(783) + ITEMRESPAWNCOUNTDOWN sound(782); killed at Respawn (712/740). Reached via item respawn Think chain", result: pass }
+      - { kind: code-read, ref: "ItemPickupRules.RespawnCountdown: Spawn(794) + UpdateBuildFinished(809) + Ping(824) + ITEMRESPAWNCOUNTDOWN sound; killed at Respawn (~745). Reached via item respawn Think chain (item.Think = RespawnCountdown, line 660)", result: pass }
     confidence: high
     notes: "NEW ROW (was unmapped; baseline listed itemstime markers as entirely absent). Now a live producer of WP_Item/WP_Weapon countdown waypoints with build-progress bar, radar ping, and respawn-countdown sound. The sole gap is the per-client soundto approximation."
 
@@ -511,24 +511,32 @@ features:
     layer: [authority]
     base_refs:
       - "server/weapons/selection.qc:Weapon_whereis"
+      - "server/weapons/selection.qc:client_hasweapon"
       - "common/mutators/mutator/waypoints/all.inc:REGISTER_WAYPOINT(Weapon)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:Weapon_whereis"
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:ClientHasWeapon"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WhereisLifetime"
     constants:
-      - { name: "g_showweaponspawns", base: "1 (1=on weapon-key when unowned, 2=incl dropped, 3=all sharing impulse)", port: "not implemented", match: false }
-      - { name: "marker lifetime / radar", base: "-2 (instant, no fade) / RADARICON_NONE (in-world only, not on radar)", port: "n/a", match: false }
-      - { name: "head offset", base: "origin + ('0 0 1'*maxs.z)*1.2", port: "n/a", match: false }
+      - { name: "g_showweaponspawns", base: "1 (1=on weapon-key when unowned, 2=incl dropped, 3=all sharing impulse)", port: "g_showweaponspawns read live; all three modes ported (showSpawns==0 guard, <2 loot skip, >=3 impulse-group loop)", match: true }
+      - { name: "marker lifetime / radar", base: "-2 (instant, no fade) / RADARICON_NONE (in-world only, not on radar)", port: "WhereisLifetime 2.5 (re-spawned each press) / radarIcon 0 (RADARICON_NONE, in-world only)", match: false }
+      - { name: "head offset", base: "origin + ('0 0 1'*maxs.z)*1.2", port: "Origin + (0,0, Maxs.Z*1.2)", match: true }
+      - { name: "wp_extra (client weapon-icon id)", base: "wp.wp_extra = this.m_id", port: "wp.WpExtra = weapon.RegistryId", match: true }
+      - { name: "showto / hidden-weapon guard", base: "showto = cl (personal); skip WEP_FLAG_HIDDEN", port: "VisibleForPlayer = requester only; skip WeaponFlags.Hidden", match: true }
     status:
-      logic: missing
-      values: na
-      timing: na
-      presentation: missing
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Weapon_whereis is not ported: when a player presses a weapon key for a weapon they don't own (and g_showweaponspawns != 0), Base spawns a short-lived WP_Weapon sprite over every matching weapon-spawn item (wp_extra = the weapon id for client icon resolution), RADARICON_NONE so in-world only. The port has no equivalent — no g_showweaponspawns cvar wiring and no whereis producer. WP_Weapon is otherwise live only via the itemstime respawn countdown."
+      - "FIX vs baseline (was missing/dead): Weapon_whereis is now ported in Inventory.cs and live — on the complain path of client_hasweapon (reached from the weapon-switch/cycle impulse via GetCycleWeapon:503 + SwitchWeaponWithComplain:518), when a non-bot player presses a weapon key for a weapon they don't own and g_showweaponspawns != 0, it scans the live item set and spawns a personal WP_Weapon sprite over every matching shown weapon-spawn (wp_extra = weapon id, radarIcon 0 = in-world only). All three g_showweaponspawns modes (1/2/3, loot skip, impulse-group expansion) are modeled."
+      - "values/timing: the marker lifetime diverges — Base uses -2 ('instant, no fade', re-spawned every press), the port uses a flat WhereisLifetime=2.5s deployed-style fade. Functionally similar (a brief on-demand marker) but not the bit-exact one-frame-then-re-spawn cadence. Minor."
+      - "wp_extra-driven client weapon-icon resolution: WpExtra is now SET on the sprite, but it is still not networked (waypoints.net.serialize gap), so the client renders the generic Weapon def rather than the per-weapon icon. Cosmetic."
     verification:
-      - { kind: code-read, ref: "Base server/weapons/selection.qc:34 Weapon_whereis (IL_EACH g_items → WaypointSprite_Spawn WP_Weapon, lifetime -2, RADARICON_NONE, wp_extra=m_id); port grep 'whereis|showweaponspawns' over src/+game/ → ZERO hits", result: fail }
+      - { kind: code-read, ref: "Inventory.Weapon_whereis (Inventory.cs:367-410): g_showweaponspawns guard + WEP_FLAG_HIDDEN skip + live item scan (WeaponPickup + OwnedWeaponSet.Has + ItemAvailable + shown model) + loot/showSpawns<2 skip + head offset maxs.z*1.2 + WP_Weapon Spawn radarIcon 0 + WpExtra=RegistryId + personal VisibleForPlayer; callers ClientHasWeapon complain-path (Inventory.cs:337-354) reached from GetCycleWeapon:503 + SwitchWeaponWithComplain:518 (server weapon-switch impulse)", result: pass }
     confidence: high
-    notes: "NEW ROW (newly-unmapped Base feature). The only Base waypoint producer with no registry coverage. Distinct from the itemstime respawn-countdown WP_Weapon: this is the on-demand 'where can I find weapon X' spawn-marker burst (g_showweaponspawns). Not ported."
+    notes: "FIX vs baseline (missing→faithful, dead→live): Weapon_whereis is now a live producer of on-demand WP_Weapon spawn-markers via the weapon-key complain path, with all three g_showweaponspawns modes. Residual: -2 vs 2.5s lifetime (values/timing partial) and un-networked wp_extra (generic icon). No dedicated test."

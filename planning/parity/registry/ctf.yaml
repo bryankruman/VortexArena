@@ -3,7 +3,7 @@ category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 19
+  feature_count: 24
   worst_gaps:
     - "Flag model is static at base: no md3 wave/bob/rotate animation, no glow trail (g_ctf_flag_glowtrails), no dynamic team light (g_ctf_dynamiclights). Dropped/thrown/passed flags DO move under MoveType.Toss/Fly physics and the carried flag trails its carrier each tick."
     - "Capture-time PERSISTENT record (ctf_CaptureRecord ServerProgsDB write + cross-session g_ctf_leaderboard) is unported (needs a persistent DB); the in-match fastest-cap broadcast CTF_CAPTURE_TIME/_BROKEN/_UNBROKEN IS now fired. The takedamage flag-return path (g_ctf_flag_health/_return_damage/_return_when_unreachable) and two-flag g_ctf_reverse remain unported."
@@ -583,3 +583,118 @@ features:
       - { kind: trace, ref: "BotRoles.ChooseRole(\"ctf\") => BotObjectiveRoles.RoleCtf; wired at the live bot spawn (BotPopulation/BotController); Role(this,_rater) invoked per strategy frame (BotBrain)", result: pass }
     confidence: medium
     notes: "RoleCtf is the live CTF bot role — selected by gametype NetName at bot spawn and invoked by the strategy-token brain each frame; logic remains a faithful collapse of the six QC roles."
+
+  - id: ctf.flag.map_reset
+    name: "Flag reset on map/round reset (ctf_Reset)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/ctf/sv_ctf.qc:ctf_Reset"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC ctf_Reset (the flag edict's reset() hook, called by the engine on reset_map / round restart) throws any carried flag with DROP_RESET, clears flag.enemy, and ctf_RespawnFlag's it. The port has no flag reset() wiring — on a round/map reset the flag's at-base/dropped/carried state is not force-restored via this path. Flags ARE reset implicitly at Activate() (Flags dict reseed) but there is no per-round ctf_Reset equivalent."
+    verification:
+      - { kind: code, ref: "no ctf_Reset / reset() hook on the flag entity in Ctf.cs; Activate() reseeds Flags but no DROP_RESET-on-reset path", result: fail }
+    confidence: medium
+    notes: "Unmapped in the prior baseline. Minor: matters only for in-place round/map resets that don't re-run Activate(). DROP_RESET (FlagDropType.Reset enum value exists) is never dispatched."
+
+  - id: ctf.match_end_freeze
+    name: "Freeze dropped/passing flags at match end (MatchEnd)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, MatchEnd)"
+    port_refs: []
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC the ctf MatchEnd hook walks g_flags and, for any FLAG_DROPPED/FLAG_PASSING flag, locks it (MOVETYPE_NONE, DAMAGE_NO, SOLID_NOT, nextthink=false) so a live flag cannot move/be-touched after the game is over. The port has the MatchEnded gate (Pickup/Capture/Throw/Pass/Tick early-return when MatchEnded), which stops the STATE MACHINE, but it does not freeze the physical dropped/passing flag ENTITY: a MoveType.Toss dropped flag keeps integrating + its FlagThinkEntity keeps re-arming after MatchEnded."
+    verification:
+      - { kind: code, ref: "Ctf.cs MatchEnded gates the gameplay handlers but FlagThinkEntity has no MatchEnded guard and the dropped-flag entity's MoveType.Toss / NextThink are not cleared at match end", result: fail }
+    confidence: medium
+    notes: "Unmapped in the prior baseline. Partial: the gameplay OUTCOME (no scoring after match end) is faithful via the MatchEnded gate, but the visible flag-freeze nuance is not reproduced."
+
+  - id: ctf.abort_speedrun
+    name: "Return carried flag on speedrun abort (AbortSpeedrun)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, AbortSpeedrun)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC the ctf AbortSpeedrun hook: when a player aborts a speedrun (CTS/race-style speedrunning) while carrying a flag, the flag is force-respawned (ctf_RespawnFlag) and INFO_CTF_FLAGRETURN_ABORTRUN is broadcast. The port has no AbortSpeedrun dispatch (the speedrun/CTS abort path is not wired into CTF), so a carried flag is not auto-returned on a speedrun abort."
+    verification:
+      - { kind: code, ref: "no AbortSpeedrun hook in Ctf.cs; INFO_CTF_FLAGRETURN_ABORTRUN never fired", result: fail }
+    confidence: medium
+    notes: "Unmapped in the prior baseline. Niche: only reachable on a speedrun-enabled map (CTS-in-CTF), an uncommon combination."
+
+  - id: ctf.drop_special_items
+    name: "Throw flag on DropSpecialItems"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, DropSpecialItems)"
+    port_refs: []
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC the ctf DropSpecialItems hook throws a carried flag (ctf_Handle_Throw DROP_THROW) when the generic DropSpecialItems event fires (e.g. nade-drop / forced item-drop). The port drops a carried flag on death (OnDeath -> DropFlag) but has no DropSpecialItems hook, so any non-death special-item-drop path that exists for other items does NOT also eject the flag."
+    verification:
+      - { kind: code, ref: "DropFlag is called from OnDeath only; no DropSpecialItems hook in Ctf.cs", result: fail }
+    confidence: low
+    notes: "Unmapped in the prior baseline. The common case (death drops the flag) IS covered by ctf.flag.drop_on_death; this row only tracks the separate DropSpecialItems event, which may not have a live dispatch in the port at all."
+
+  - id: ctf.logdeath_itemcode
+    name: "Flag-carrier death-log item code ('F')"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, LogDeath_AppendItemCodes)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC appends the item code 'F' to a player's death-log line when they die carrying the flag (LogDeath_AppendItemCodes). The port's death logging does not append the CTF flag item code."
+    verification:
+      - { kind: code, ref: "no LogDeath_AppendItemCodes CTF hook in the port", result: fail }
+    confidence: low
+    notes: "Unmapped in the prior baseline. Cosmetic server-log detail (the 'F' marker in player_death log lines); no gameplay impact."

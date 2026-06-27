@@ -2,29 +2,38 @@ unit: assault
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
-# Re-audited 2026-06-25 (drift check): ONE real drift since the prior same-day audit — the QC
-# MUTATOR_HOOKFUNCTION(as, PlayHitsound) hook now HAS a port equivalent (Assault.OnPlayHitsound,
-# registered into MutatorHooks.PlayHitsound in Activate). It is no longer a registry coverage gap, so
-# it graduates from new_unmapped to its OWN feature row (assault.notify.play_hitsound). BUT the hook
-# chain is DEAD: MutatorHooks.FirePlayHitsound (MutatorHooks.cs:535) has ZERO callers — the port's
-# hitsound is driven entirely by the STAT(HITSOUND_DAMAGE_DEALT_TOTAL) accumulator (DamageSystem.cs:337-343,
-# player-victims only) and never consults the PlayHitsound mutator hook. So the handler is registered but
-# unreachable (liveness: dead). Behaviorally parity-neutral (a func_assault_destructible victim isn't a
-# player so neither path fires a hitsound for it), but the code now exists and is dead.
-# All other 18 rows: no status/liveness drift. Port line numbers refreshed — GameWorld.cs grew ~300-400
-# lines since the prior audit (AssaultTurretRoundstart 3919->4248, AssaultSwapSpawnTeams 3953->4282,
-# Assault Activate arm 2327-2331->2560-2562, OnSecondRoundRestart 2350->2581, GameStopped 1678->1878,
-# DriveFrame drive 2814->3045, WireObjectiveSpawns 2573->2746). Two unmapped hooks remain with no port
-# equivalent (OnEntityPreSpawn delete info_player_team1-4; VehicleInit nextthink+0.5) — still new_unmapped.
+# Re-audited 2026-06-25 (drift check): ONE real drift since the prior audit — the bot Assault role
+# (assault.bot.objective_role) was UPGRADED and its timing graduates partial -> faithful. RoleAssault
+# (BotObjectiveRoles.cs:662) now implements all three previously-missing havocbot_goalrating_ast_targets
+# nuances: (1) the 120s havocbot_role_timeout (BotBrain.AssaultRoleTimeout, set to now+120, role reset on
+# expiry — BotObjectiveRoles.cs:678-685); (2) the PVS-best-waypoint pick per target (radius shell
+# 500->1000->1500, !GENERATED waypoint, CheckPvs(wp,wallCenter), lowest VisitCount wins, ++VisitCount
+# load-balance, routerating dist 4000 — BotObjectiveRoles.cs:724-751); (3) the havocbot_attack_time 2s
+# commitment window (now<AssaultAttackTime early-returns; set to now+2 when the bot has PVS to both the wall
+# and the chosen waypoint — BotObjectiveRoles.cs:687-692,753-760). The role_timeout_s constant is therefore
+# now a MATCH (was "none"/false). All radii/ratingscales unchanged (offense 650 / defense 3000, ast 20000,
+# items 30000/10000). Dispatched live for "assault"/"as" (BotRoles.cs:101).
+# All other 18 rows: no status/liveness drift this audit. PlayHitsound (assault.notify.play_hitsound) stays
+# DEAD: MutatorHooks.FirePlayHitsound (now MutatorHooks.cs:611, was :535) STILL has ZERO callers — the
+# hitsound is driven entirely by STAT(HITSOUND_DAMAGE_DEALT_TOTAL) (DamageSystem.cs:337, player-victims only)
+# and never fires the hook. Waypoint-sprite presentation stays MISSING (no client render/net path; only DLL
+# hits in src/XonoticGodot.Net, no source). Base rev moved (v0.8.6-1779-g863cd3e84 -> v0.8.6-151-gf6b1980)
+# but the assault Base source is functionally identical to the recorded spec.
+# Port line numbers refreshed — GameWorld.cs grew further (AssaultTurretRoundstart 4248->4546,
+# AssaultSwapSpawnTeams 4282->4580, Assault Activate arm 2560-2562->2816-2826, OnSecondRoundRestart
+# 2581->2839, GameStopped 1878->2090, DriveGametypeFrame 3045->3256, WireObjectiveSpawns 2746->3013).
+# Two unmapped hooks remain with no port equivalent (OnEntityPreSpawn delete info_player_team1-4; VehicleInit
+# nextthink+0.5) — still new_unmapped.
 summary:
   feature_count: 19
   worst_gaps:
-    - "Wave 6a closed most of the round-flow + UX-logic gaps; all still LIVE this re-audit (line numbers drifted, symbols intact). Spawn-point team swap (AssaultSwapSpawnTeams, GameWorld.cs:4282), roundstart turret team-swap + unteamed-turret seeding (AssaultTurretRoundstart, GameWorld.cs:4248), the objective waypoint-sprite server state (SpawnObjectiveSprite + WaypointSprites.Think), the destructible heal path (HealDestructible + GtEventHeal), the objective-aware spawn evalfunc (ShouldRejectSpawnSpot wired in SpawnSystem.ScoreSpot), the warmup-incompatible ReadLevelCvars override (g_warmup=0 + sv_ready_restart_after_countdown=0, GameWorld.cs:2560-2561) and the timelimit=20 mapinfo default (GameWorld.cs:2567-2568) are all LIVE. The bot Assault role rates the QC active-objective filter + correct radii (650/3000) and ratingscale (20000)."
-    - "NEW (this audit): the QC PlayHitsound hook is now ported (Assault.OnPlayHitsound, registered in Activate) but DEAD — MutatorHooks.FirePlayHitsound has no callers; the hitsound pipeline uses STAT(HITSOUND_DAMAGE_DEALT_TOTAL) and never fires the hook. Registered handler, unreachable. Parity-neutral."
-    - "Residual round machinery (UNCHANGED): (1) the 5s AS_ROUND_DELAY freeze still does NOT actually freeze the game — GameStopped (GameWorld.cs:1878 = Intermission.Running||MatchEnded) ignores SecondRoundPending, so players keep moving/firing/respawning during the inter-round window (QC sets game_stopped=true). DriveFrame still correctly awards no win while pending. (2) bprint('Starting second round...') chat line is not emitted (cosmetic; the centerprint IS sent)."
+    - "Wave 6a closed most of the round-flow + UX-logic gaps; all still LIVE this re-audit (line numbers drifted, symbols intact). Spawn-point team swap (AssaultSwapSpawnTeams, GameWorld.cs:4580), roundstart turret team-swap + unteamed-turret seeding (AssaultTurretRoundstart, GameWorld.cs:4546), the objective waypoint-sprite server state (SpawnObjectiveSprite + WaypointSprites.Think), the destructible heal path (HealDestructible + GtEventHeal), the objective-aware spawn evalfunc (ShouldRejectSpawnSpot wired in SpawnSystem.ScoreSpot), the warmup-incompatible ReadLevelCvars override (g_warmup=0 + sv_ready_restart_after_countdown=0, GameWorld.cs:2818-2819) and the timelimit=20 mapinfo default (GameWorld.cs:2825-2826) are all LIVE."
+    - "FIX (this audit): the bot Assault role is now timing-FAITHFUL. RoleAssault (BotObjectiveRoles.cs:662) gained the 120s havocbot_role_timeout, the per-target PVS-best-waypoint pick (radius shell 500->1500, lowest VisitCount, ++VisitCount load-balance, routerating 4000), and the havocbot_attack_time 2s commitment window — the three nuances the prior audit recorded as missing. Radii (650/3000), ast ratingscale (20000), items (30000/10000) unchanged."
+    - "PlayHitsound (assault.notify.play_hitsound) stays DEAD: the QC hook is ported (Assault.OnPlayHitsound, registered in Activate) but MutatorHooks.FirePlayHitsound (MutatorHooks.cs:611) has ZERO callers; the hitsound pipeline uses STAT(HITSOUND_DAMAGE_DEALT_TOTAL) and never fires the hook. Registered handler, unreachable. Parity-neutral."
+    - "Residual round machinery (UNCHANGED): (1) the 5s AS_ROUND_DELAY freeze still does NOT actually freeze the game — GameStopped (GameWorld.cs:2090 = Intermission.Running||MatchEnded) ignores SecondRoundPending, so players keep moving/firing/respawning during the inter-round window (QC sets game_stopped=true). DriveFrame still correctly awards no win while pending. (2) bprint('Starting second round...') chat line is not emitted (cosmetic; the centerprint IS sent)."
     - "Presentation: the waypoint sprites + health bars are spawned/updated/ticked SERVER-SIDE (WaypointSprites.Active exists, Waypoints.cs:244) but there is NO client render/networking path yet — nothing in src/XonoticGodot.Net reads WaypointSprites, so no on-screen objective marker, health bar, or radar icon reaches the player. The destructible-heal sprite update is likewise server-only. The objective-marker LOGIC is faithful+live; the visible presentation is still absent."
-    - "Bot fidelity residual: RoleAssault now rates only active-objective destructibles with Base radii/ratingscale, but still omits the 120s havocbot_role_timeout, the PVS-best-waypoint pick around each target, and the havocbot_attack_time 2s commitment window. Behaviorally faithful; the commitment/timeout nuance is approximate."
-    - "Unmapped Base hooks (registry coverage gaps): MUTATOR_HOOKFUNCTION(as, OnEntityPreSpawn) deletes info_player_team1-4 (foreign team spawns) — the OnEntityPreSpawn hook chain now exists (MutatorHooks.cs:680, used by NixMutator) but Assault registers no handler on it; MUTATOR_HOOKFUNCTION(as, VehicleInit) sets veh.nextthink=time+0.5. Neither has a port equivalent. (PlayHitsound is no longer here — it graduated to a feature row.)"
+    - "Bot fidelity: RoleAssault (BotObjectiveRoles.cs:662) is now timing-faithful — active-objective destructible filter, Base radii/ratingscale, the 120s havocbot_role_timeout, the PVS-best-waypoint pick around each target (radius shell 500->1500), and the havocbot_attack_time 2s commitment window are all present (upgraded this audit)."
+    - "Unmapped Base hooks (registry coverage gaps): MUTATOR_HOOKFUNCTION(as, OnEntityPreSpawn) deletes info_player_team1-4 (foreign team spawns) — the OnEntityPreSpawn hook chain now exists (MutatorHooks.cs:749, used by NixMutator) but Assault registers no handler on it; MUTATOR_HOOKFUNCTION(as, VehicleInit) sets veh.nextthink=time+0.5. Neither has a port equivalent. (PlayHitsound is no longer here — it graduated to a feature row.)"
 features:
   - id: assault.mode.registration
     name: "Assault gametype registration + scoring layout (always red vs blue)"
@@ -63,7 +72,7 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:spawnfunc(func_assault_destructible)"
       - "common/gametypes/gametype/assault/sv_assault.qc:assault_setenemytoobjective"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (Assault arm, GameWorld.cs:2746); ResolveObjectiveGraph called post-spawn at GameWorld.cs:711"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns (Assault arm, GameWorld.cs:3013); ResolveObjectiveGraph called post-spawn at GameWorld.cs:722"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:ResolveObjectiveGraph"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:StageDecreaser"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:GametypeObjectiveSpawns (Assault block)"
@@ -206,7 +215,7 @@ features:
       - "src/XonoticGodot.Server/GameWorld.cs:IsMatchOver (Assault arm)"
       - "src/XonoticGodot.Server/GameWorld.cs:TryGetWinner (Assault arm)"
       - "src/XonoticGodot.Server/GameWorld.cs:Boot (TargetUtilities.IsCampaign assignment)"
-      - "src/XonoticGodot.Server/GameWorld.cs:GameStopped (GameWorld.cs:1878 — does NOT include SecondRoundPending)"
+      - "src/XonoticGodot.Server/GameWorld.cs:GameStopped (GameWorld.cs:2090 — does NOT include SecondRoundPending)"
     constants:
       - { name: "winning_team_score_sentinel", base: "ST_ASSAULT_OBJECTIVES set to 666", port: "SetTeamScore(slot, 666)", match: true }
       - { name: "campaign_single_round_end", base: "ent.cnt == 1 || autocvar_g_campaign => WINNING_YES", port: "isFinalRound || Round>=1 || (IsCampaign?.Invoke() ?? false)", match: true }
@@ -221,7 +230,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Residual (cosmetic-flow): the 5s AS_ROUND_DELAY between a round-1 attacker win and the round-2 swap is modeled as SecondRoundPending/_secondRoundDueAt but does NOT actually freeze the game — GameStopped (GameWorld.cs:1878 = Intermission.Running||MatchEnded) ignores SecondRoundPending, so players keep moving/firing during the window (QC sets game_stopped=true). DriveFrame still correctly returns false (awards no win) while pending, so the match outcome is unaffected; only the visible freeze is missing."
+      - "Residual (cosmetic-flow): the 5s AS_ROUND_DELAY between a round-1 attacker win and the round-2 swap is modeled as SecondRoundPending/_secondRoundDueAt but does NOT actually freeze the game — GameStopped (GameWorld.cs:2090 = Intermission.Running||MatchEnded) ignores SecondRoundPending, so players keep moving/firing during the window (QC sets game_stopped=true). DriveFrame still correctly returns false (awards no win) while pending, so the match outcome is unaffected; only the visible freeze is missing."
     verification:
       - { kind: code_read, ref: "Assault.cs:717 campaign = TargetUtilities.IsCampaign?.Invoke(); IsCampaign assigned in Boot (=> Cvars.Bool('g_campaign')). Campaign single-round end terminates the match.", result: pass }
       - { kind: code_read, ref: "Assault.cs:719 if(isFinalRound||Round>=1||campaign) MatchEnded=true; else (round-1 non-campaign) SecondRoundPending=true + _secondRoundDueAt=now+RoundDelay. DriveFrame fires StartSecondRound when due — LIVE via DriveGametypeFrame.", result: pass }
@@ -240,7 +249,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:StartSecondRound"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DriveFrame (SecondRoundPending branch)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:AssaultState.FirstRoundDestroyTime"
-      - "src/XonoticGodot.Server/GameWorld.cs:Activate (aslt.OnSecondRoundRestart assignment, GameWorld.cs:2581)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Activate (aslt.OnSecondRoundRestart assignment, GameWorld.cs:2839)"
     constants:
       - { name: "AS_ROUND_DELAY", base: "5 (seconds inter-round freeze)", port: "RoundDelay = 5f", match: true }
       - { name: "round2_timelimit", base: "ceil(time - AS_ROUND_DELAY - game_starttime)/60 minutes", port: "ceil(FirstRoundDestroyTime/60) min; DriveFrame uses FirstRoundDestroyTime sec directly", match: true }
@@ -256,7 +265,7 @@ features:
     gaps:
       - "Residual: the 5s AS_ROUND_DELAY freeze is timed correctly (DriveFrame waits _secondRoundDueAt) but does NOT set game_stopped — play is not actually frozen during the window (see assault.win.attacker_round). bprint('Starting second round...') chat line is not emitted (cosmetic)."
     verification:
-      - { kind: code_read, ref: "DriveFrame Assault.cs:861-866: if(SecondRoundPending){ if(now>=_secondRoundDueAt) StartSecondRound(); return false; } — LIVE per-tick (DriveGametypeFrame GameWorld.cs:3045). OnSecondRoundRestart (GameWorld.cs:2581) re-stamps GameStartTime, ResetMap(fakeRoundStart:true), AssaultSwapSpawnTeams(), AssaultTurretRoundstart().", result: pass }
+      - { kind: code_read, ref: "DriveFrame Assault.cs:861-866: if(SecondRoundPending){ if(now>=_secondRoundDueAt) StartSecondRound(); return false; } — LIVE per-tick (DriveGametypeFrame GameWorld.cs:3256). OnSecondRoundRestart (GameWorld.cs:2839) re-stamps GameStartTime, ResetMap(fakeRoundStart:true), AssaultSwapSpawnTeams(), AssaultTurretRoundstart().", result: pass }
       - { kind: test, ref: "AssaultSpawnTests.cs:AttackerWin_SchedulesSecondRound_ThenSwapsRolesAfterTheDelay (Round->1, AttackerTeam Red->Blue, chain re-armed, restart fired)", result: pass }
     confidence: high
     notes: "OnSecondRoundRestart swaps spawn-point teams + runs the turret roundstart team-swap. Only remaining residuals are the non-enforced freeze and the missing bprint line. Unchanged."
@@ -269,7 +278,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:TimeLimitReached"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DriveFrame"
-      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (Assault arm, GameWorld.cs:3045)"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame (Assault arm, GameWorld.cs:3256)"
       - "src/XonoticGodot.Server/GameWorld.cs:Activate (Assault timelimit=20 default, GameWorld.cs:2567-2568)"
     constants:
       - { name: "default_timelimit_min", base: "20 (timelimit=20 default args)", port: "Activate asserts timelimit=20 when unset (GameWorld.cs:2567-2568); DriveFrame reads live cvar*60", match: true }
@@ -298,7 +307,7 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:assault_new_round (g_saved_team team swap)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:275-276 (info_player_attacker/defender registration)"
-      - "src/XonoticGodot.Server/GameWorld.cs:AssaultSwapSpawnTeams (GameWorld.cs:4282)"
+      - "src/XonoticGodot.Server/GameWorld.cs:AssaultSwapSpawnTeams (GameWorld.cs:4580)"
     constants:
       - { name: "attacker_team", base: "NUM_TEAM_1 (red)", port: "Teams.Red", match: true }
       - { name: "defender_team", base: "NUM_TEAM_2 (blue)", port: "Teams.Blue", match: true }
@@ -314,7 +323,7 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "AssaultSpawnTests.cs:InfoPlayerAttackerDefender_BecomeTeamSpawnPoints (round-1 stamping)", result: pass }
-      - { kind: code_read, ref: "AssaultSwapSpawnTeams (GameWorld.cs:4282) flips each info_player_deathmatch edict's Red<->Blue team on round 2; invoked from OnSecondRoundRestart (GameWorld.cs:2588). The new attackers now spawn at the geographic attacker location.", result: pass }
+      - { kind: code_read, ref: "AssaultSwapSpawnTeams (GameWorld.cs:4580) flips each info_player_deathmatch edict's Red<->Blue team on round 2; invoked from OnSecondRoundRestart (GameWorld.cs:2846). The new attackers now spawn at the geographic attacker location.", result: pass }
     confidence: high
     notes: "Unchanged. The round-2 spawn-point team swap (AssaultSwapSpawnTeams, QC assault_new_round g_saved_team.team_saved swap) is wired into OnSecondRoundRestart."
 
@@ -419,9 +428,9 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:assault_roundstart_use"
       - "common/gametypes/gametype/assault/sv_assault.qc:MUTATOR_HOOKFUNCTION(as, TurretSpawn)"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:AssaultTurretRoundstart (GameWorld.cs:4248)"
-      - "src/XonoticGodot.Server/GameWorld.cs:Boot (initial roundstart, GameWorld.cs:716)"
-      - "src/XonoticGodot.Server/GameWorld.cs:OnSecondRoundRestart (round-2 swap, GameWorld.cs:2593)"
+      - "src/XonoticGodot.Server/GameWorld.cs:AssaultTurretRoundstart (GameWorld.cs:4546)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (initial roundstart, GameWorld.cs:727)"
+      - "src/XonoticGodot.Server/GameWorld.cs:OnSecondRoundRestart (round-2 swap, GameWorld.cs:2851)"
     constants:
       - { name: "unteamed_seed", base: "turret.team == assault_attacker_team when 0/FLOAT_MAX (TurretSpawn hook)", port: "e.Team = attackerTeam when 0/float.MaxValue", match: true }
       - { name: "team_swap", base: "NUM_TEAM_1 <-> NUM_TEAM_2 then turret_respawn", base_note: "campaign forbids the swap (assault_turrets_teamswap_forbidden)", port: "Red<->Blue then TurretAI.Respawn; campaign-guarded", match: true }
@@ -436,7 +445,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "AssaultTurretRoundstart (GameWorld.cs:4248): seeds unteamed turrets to the attacker team, swaps Red<->Blue, TurretAI.Respawn; campaign-guarded (no swap in campaign, QC assault_turrets_teamswap_forbidden). Called at initial roundstart (GameWorld.cs:716) and on round 2 (GameWorld.cs:2593).", result: pass }
+      - { kind: code_read, ref: "AssaultTurretRoundstart (GameWorld.cs:4546): seeds unteamed turrets to the attacker team, swaps Red<->Blue, TurretAI.Respawn; campaign-guarded (no swap in campaign, QC assault_turrets_teamswap_forbidden). Called at initial roundstart (GameWorld.cs:727) and on round 2 (GameWorld.cs:2851).", result: pass }
     confidence: high
     notes: "Unchanged. The assault_roundstart_use turret swap + the TurretSpawn unteamed-seeding hook, both campaign-guarded, are wired into the initial roundstart AND the round-2 restart."
 
@@ -448,29 +457,31 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:havocbot_role_ast_defense"
       - "common/gametypes/gametype/assault/sv_assault.qc:havocbot_goalrating_ast_targets"
     port_refs:
-      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RoleAssault (BotObjectiveRoles.cs:453)"
-      - "src/XonoticGodot.Server/Bot/BotRoles.cs:ChooseRole (assault/as)"
+      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RoleAssault (BotObjectiveRoles.cs:662)"
+      - "src/XonoticGodot.Server/Bot/BotRoles.cs:ChooseRole (assault/as, BotRoles.cs:101)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:AssaultRoleTimeout/AssaultAttackTime (BotBrain.cs:112,121)"
     constants:
       - { name: "offense_enemyplayers_radius", base: "650 (havocbot_goalrating_enemyplayers org-radius, offense)", port: "650 (attacker)", match: true }
       - { name: "defense_enemyplayers_radius", base: "3000 (havocbot_goalrating_enemyplayers org-radius, defense)", port: "3000 (defender)", match: true }
-      - { name: "ast_targets_ratingscale", base: "20000", port: "RatingGenerator=20000 (BotObjectiveRoles.cs:28)", match: true }
+      - { name: "ast_targets_ratingscale", base: "20000", port: "RatingGenerator=20000 (BotObjectiveRoles.cs:29)", match: true }
       - { name: "items_ratingscale", base: "30000 radius 10000", port: "30000 radius 10000", match: true }
-      - { name: "role_timeout_s", base: "120 (havocbot_role_timeout = time+120)", port: "none (no role timeout/commit)", match: false }
+      - { name: "role_timeout_s", base: "120 (havocbot_role_timeout = time+120)", port: "120f (AssaultRoleTimeout = now+120, BotObjectiveRoles.cs:679)", match: true }
+      - { name: "attack_time_window_s", base: "2 (havocbot_attack_time = time+2)", port: "now+2f (AssaultAttackTime, BotObjectiveRoles.cs:759)", match: true }
+      - { name: "waypoint_radius_shell", base: "500..1500 step 500 (FOREACH_ENTITY_RADIUS)", port: "500f..1500f step 500f (BotObjectiveRoles.cs:727)", match: true }
     status:
       logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "RoleAssault rates EVERY destructible whose linked objective is active (QC active-objective filter), with the Base radii (650 offense / 3000 defense) and ratingscale (20000), plus items 30000/10000. Still omits the 120s havocbot_role_timeout, the PVS-best-waypoint pick around each target, and the havocbot_attack_time 2s commitment window — so the role refreshes every nav timeout rather than committing for a fixed period."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "BotObjectiveRoles.cs:453 RoleAssault: rates only Active-objective destructibles at RatingGenerator(20000, BotObjectiveRoles.cs:28); enemyplayers attacker 650 / defender 3000; items 30000/10000; roam 3000. BotRoles.ChooseRole dispatches it live for assault/as.", result: pass }
+      - { kind: code_read, ref: "BotObjectiveRoles.cs:662 RoleAssault: rates only Active-objective destructibles at RatingGenerator(20000, BotObjectiveRoles.cs:29); per target picks the lowest-VisitCount !GENERATED waypoint within an expanding 500->1500 PVS shell (routerating dist 4000) and ++VisitCount load-balances; sets AssaultAttackTime=now+2 when the bot has PVS to both wall and waypoint; 120s AssaultRoleTimeout resets the role; enemyplayers attacker 650 / defender 3000; items 30000/10000; roam 3000. BotRoles.ChooseRole (BotRoles.cs:101) dispatches it live for assault/as.", result: pass }
     confidence: high
-    notes: "Unchanged. logic/values faithful (active-objective filter, Base radii/ratingscale). timing stays partial (no 120s role timeout / attack-time commitment)."
+    notes: "UPGRADED this audit: timing partial -> faithful. RoleAssault now faithfully implements havocbot_goalrating_ast_targets in full — the active-objective filter + Base radii/ratingscale (logic/values, already faithful) PLUS the 120s havocbot_role_timeout, the per-target PVS-best-waypoint pick (radius shell 500->1500, lowest VisitCount, ++VisitCount load-balance), and the havocbot_attack_time 2s commitment window. role_timeout_s + attack_time_window_s constants now match."
 
   - id: assault.spawns.objective_evalfunc
     name: "Objective-aware spawn-point eval (deprioritize spots near inactive/destroyed objectives)"
@@ -560,7 +571,7 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:MUTATOR_HOOKFUNCTION(as, PlayHitsound)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:OnPlayHitsound"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:PlayHitsound (chain) / FirePlayHitsound (MutatorHooks.cs:535)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:PlayHitsound (chain) / FirePlayHitsound (MutatorHooks.cs:611)"
     constants:
       - { name: "force_for_victim", base: "return (frag_victim.classname == 'func_assault_destructible')", port: "victim.ClassName == 'func_assault_destructible' (or DestructibleFor != null) => true", match: true }
     status:
@@ -573,9 +584,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The PlayHitsound handler is registered (Assault.cs:598-599) and its predicate matches QC exactly, but the hook chain is DEAD: MutatorHooks.FirePlayHitsound (MutatorHooks.cs:535) has ZERO callers. The port's hitsound is driven entirely by the STAT(HITSOUND_DAMAGE_DEALT_TOTAL) accumulator (DamageSystem.cs:337-343), which only accrues for IS_PLAYER victims and never consults the PlayHitsound mutator hook. So the assault forced-hitsound on a wall victim never actually plays. Behaviorally parity-neutral (a func_assault_destructible victim isn't a player, so the stat path wouldn't fire a hitsound either), but the code is unreachable."
+      - "The PlayHitsound handler is registered (Assault.cs:598-599) and its predicate matches QC exactly, but the hook chain is DEAD: MutatorHooks.FirePlayHitsound (MutatorHooks.cs:611) has ZERO callers. The port's hitsound is driven entirely by the STAT(HITSOUND_DAMAGE_DEALT_TOTAL) accumulator (DamageSystem.cs:337-343), which only accrues for IS_PLAYER victims and never consults the PlayHitsound mutator hook. So the assault forced-hitsound on a wall victim never actually plays. Behaviorally parity-neutral (a func_assault_destructible victim isn't a player, so the stat path wouldn't fire a hitsound either), but the code is unreachable."
     verification:
       - { kind: code_read, ref: "Assault.cs:672 OnPlayHitsound returns true for a func_assault_destructible victim; registered into MutatorHooks.PlayHitsound at Assault.cs:599.", result: pass }
-      - { kind: code_read, ref: "grep FirePlayHitsound across src: defined at MutatorHooks.cs:535, ZERO callers. DamageSystem hitsound uses HITSOUND_DAMAGE_DEALT_TOTAL (DamageSystem.cs:337) and never fires the PlayHitsound hook.", result: fail }
+      - { kind: code_read, ref: "grep FirePlayHitsound across src: defined at MutatorHooks.cs:611, ZERO callers. DamageSystem hitsound uses HITSOUND_DAMAGE_DEALT_TOTAL (DamageSystem.cs:337) and never fires the PlayHitsound hook.", result: fail }
     confidence: high
     notes: "NEW row this audit: the QC PlayHitsound hook now HAS a port equivalent (was new_unmapped). Predicate is faithful, but the dispatcher is never called, so liveness=dead and the forced hitsound (audio) is effectively a stub. Wiring FirePlayHitsound into the damage/hitsound pipeline would make it live."

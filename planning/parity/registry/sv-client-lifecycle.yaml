@@ -1,10 +1,11 @@
 unit: sv-client-lifecycle
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 22
   worst_gaps:
+    - "(RESOLVED 2026-06-27 drift) frame.name_and_version — previously all-missing — is now FULLY ported and LIVE. PlayerFrameNameAndGodMode (GameWorld.cs:1985, called from PlayerFrameIdleAll :1877 once per server frame per real client) does the line-for-line client.qc:2900-2955 block: sv_name_maxlength (64) visible-length truncation + ^7 (TruncateVisible honoring color codes) + 'name truncated' sprint, invisible-name → Player#<id> + 'invisible names not allowed' sprint, the :name: GameLog line (netname_previous assume-unchanged guard), and INFO_GODMODE_OFF when FL_GODMODE drops while max_armorvalue is set. The version-nag is ALSO ported: version_nagtime is armed at connect (ClientManager.cs:229 = Now+10+random()*10, exact Base formula) and Commands.CheckClientVersion (Commands.cs:427), fired from PlayerPreThink (GameWorld.cs:2159-2166), sends INFO_VERSION_BETA/OUTDATED/OLD by comparing the client's replicated g_xonoticversion (sent via the internal `clientversion` command, Commands.cs:3248) against the server's, with the git/autobuild beta branch. Only residual: the QC ignore_list_send interleave is a separate ignore-list feature (still deferred)."
     - "Join queue + team-selection ordering (queuePlayer / TeamBalance_JoinBestTeam priority pass, queued-team dibs conflict) not modeled: in team modes the queued-team conflict resolution and best-team-by-skill ordering are absent; PutPlayerInServer's own wants_join>0 / bot_forced_team / TeamBalance_JoinBestTeam team-assign is also not run (the port pre-assigns at connect only). (Wave-2 added the JOIN_PLAY / JOIN_PLAY_TEAM notification tail; the queue-conflict / ANNCE_BEGIN branches stay deferred.)"
     - "joinAllowed is reduced to MIN_SPEC_TIME + lockteams + forced-spectator + playban + a gametype gate: version-mismatch, g_maxping, and the queue/nJoinAllowed (g_maxplayers/GetPlayerLimit/bots_would_leave) capacity gate are still missing — a mismatched/high-ping/over-cap client can still join, and no CENTER_JOIN_PREVENT*/PING/VERSIONMISMATCH centerprints fire."
     - "PRESSED_KEYS server-side is now FIXED (GetPressedKeys ported + live in OnPlayerPostThink, observer-clear, SpectateCopy inherit); the only residual is the net layer — Player.PressedKeys is not in the owner-state protocol and PressedKeysPanel.PressedKeysOverride is never fed, so a SPECTATED player's keys don't reach the client HUD."
@@ -24,6 +25,10 @@ summary:
     - "frame.pressed_keys: the server-authoritative GetPressedKeys is NOW ported and LIVE — PlayerFrameLogic.GetPressedKeys (PlayerFrameLogic.cs:281) is called from OnPlayerPostThink (GameWorld.cs:1894) every server frame for a live player, with the IS_DUCKED held-crouch workaround; the observer branch clears PRESSED_KEYS via ClearPressedKeys (GameWorld.cs:1884); and SpectateCopy inherits the spectatee's bits (ClientManager.cs:631). logic partial->faithful, timing na->faithful, liveness partial->live. presentation STAYS partial: Player.PressedKeys is not in the owner-state net protocol and PressedKeysPanel.PressedKeysOverride is still never set, so a spectated player's keys don't reach the client HUD (the local-player panel already works from client bind state)."
     - "frame.drown_player: the surfaced-after-out-of-air gasp NOW plays playersound_gasp — DrownPlayer's surface branch calls SoundSystem.PlayPlayerSound(p, \"gasp\", ...) when AirFinished was set and < time (PlayerFrameLogic.cs:236-240), the same per-model voice resolution as the pain/teamkill voices; gasp is a real player-sound id. audio missing->faithful; the row is now fully faithful with no gaps."
     - "connect.fix_client_cvars_welcome: a PARTIAL welcome channel now exists on the live connect path (InfraClientConnect, GameWorld.cs:1192) — the campaign welcome level-num (SendCampaignWelcome, GameWorld.cs:1231/1288, QC SendWelcomeMessage campaign branch) and the grappling-hook BuildGameplayTipsString tip (GameWorld.cs:1239-1248) are surfaced to the connecting client. logic/presentation missing->partial, liveness na->partial. The bulk stays absent: FixClientCvars cvar push, clientstuff, cmd clientversion, set _teams_available, the MOTD/hostname/map/mutators message, ClientInit_misc, Send_NextMap_To_Player."
+  drift_2026_06_27_reverify:
+    - "frame.name_and_version: FIXED — previously all-missing, now FULLY ported and LIVE. PlayerFrameNameAndGodMode (GameWorld.cs:1985) is called once per server frame per real client from PlayerFrameIdleAll (:1877), a line-for-line port of client.qc:2900-2955: sv_name_maxlength (default 64, matches Base) visible-length truncation + ^7 append (TruncateVisible counts only non-color glyphs) + the 'name truncated' warning sprint; isInvisibleString → Player#<id> rename + 'invisible names not allowed' sprint; the :name: GameLog.NameChange line gated on the netname_previous assume-unchanged guard + sv_eventlog; and INFO_GODMODE_OFF (absorbed-damage report + max_armorvalue clear) when FL_GODMODE drops. The version-nag is ALSO ported and LIVE: version_nagtime armed at ClientConnect (ClientManager.cs:229 = Now+10+random()*10, the exact Base version_nagtime formula) and Commands.CheckClientVersion (Commands.cs:427) fired from PlayerPreThink (GameWorld.cs:2159-2166); it reads the client's replicated g_xonoticversion (sent via the internal `clientversion` command, Commands.cs:3248, fire-once), runs the git/autobuild beta branch + vercmp, and sends INFO_VERSION_BETA/OUTDATED/OLD. all dims missing->faithful, liveness na->live (4 fixes). Build verified (server project compiles clean). Only residual: the QC ignore_list_send interleave (a separate ignore-list feature)."
+    - "connect.fix_client_cvars_welcome: the welcome channel EXPANDED again — the non-campaign branch is now wired (SendMutatorsWelcome, GameWorld.cs:1387, the LIVE consumer of MutatorActivation.BuildMutatorsPrettyString → 'Active modifications:' line), plus the g_mutatormsg server mutator message and the sv_motd MOTD (with \\n-escape expansion), and the offhand-blaster gameplay tip (GameWorld.cs:1314) alongside the existing campaign + grappling-hook tips. Dimension floor stays logic/presentation:partial, liveness:partial (no dimension flip — the row was already partial), but materially more of SendWelcomeMessage is now delivered. Still absent: FixClientCvars cvar-push stuffcmd, clientstuff, set _teams_available, ClientInit_misc per-client init entity, Send_NextMap_To_Player."
+    - "connect.client_connect: the version_nagtime constant is now ported (ClientManager.cs:229) — constant match flips false->true. Row dimensions unchanged (values already faithful); the connect-side version-nag arming is now the live seed for the frame.name_and_version version-nag."
 features:
   - id: sv-client-lifecycle.connect.client_connect
     name: "ClientConnect: accept a client as an observer"
@@ -36,7 +41,7 @@ features:
       - "game/net/ServerNet.cs:DriveConnect (admit ~1054)"
     constants:
       - { name: "MIN_SPEC_TIME", base: "1 s", port: "1 s (ClientManager.MinSpecTime)", match: true }
-      - { name: "version_nagtime", base: "time + 10 + random()*10", port: "none", match: false }
+      - { name: "version_nagtime", base: "time + 10 + random()*10", port: "Now + 10 + random()*10 (ClientManager.cs:229)", match: true }
     status:
       logic: partial
       values: faithful
@@ -47,8 +52,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Connect-side server->client channel deferred (see connect.fix_client_cvars_welcome row): no clientstuff/FixClientCvars/clientversion/_teams_available stuffcmds, no sv_notice_join/MOTD, no Handicap_Initialize/playban/chatban, no model_randomizer, no Send_NextMap."
-      - "Player_DetermineForcedTeam / forced-team-otherwise spectator routing not modeled (team is pre-assigned via AssignBestTeam only)."
+      - "Connect-side server->client channel partly deferred (see connect.fix_client_cvars_welcome row): no clientstuff/FixClientCvars/_teams_available stuffcmds, no Handicap_Initialize-here/model_randomizer, no Send_NextMap. (The version_nagtime arming, the `clientversion` request handler, the MOTD/g_mutatormsg/mutators welcome lines, and playban/chatban ARE now wired.)"
+      - "Player_DetermineForcedTeam / forced-team-otherwise spectator routing IS now wired (ClientManager.cs:220 DetermineForcedTeam), with team pre-assigned via AssignBestTeam for team games."
     verification:
       - { kind: code, ref: "game/net/ServerNet.cs:1054 ClientConnect admit; ClientManager.cs:149-222", result: pass }
     confidence: high
@@ -76,12 +81,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Only fragments of the welcome channel exist: the campaign welcome level-num (SendCampaignWelcome) and the grappling-hook gameplay tip (BuildGameplayTipsString) are surfaced to the connecting client. Still unmodeled: FixClientCvars (cl_jumpspeedcap_min/max, cl_shootfromfixedorigin, prediction/gentle), clientstuff, cmd clientversion, set _teams_available, the sv_notice_join/SendWelcomeMessage MOTD/hostname/map/mutators body, Send_NextMap_To_Player, and the ClientInit_misc per-client init entity (armor-blockpercent, damagepush speedfactor, fog, serverflags, g_trueaim_minrange, hook/arc shot origins)."
-      - "The port pushes a few physics-relevant cvars via per-client replicated-cvar tables; there is no MOTD, no version request, and no per-client init-entity carrying the server's damage/fog/trueaim constants."
+      - "More of the welcome channel exists now: the campaign welcome level-num (SendCampaignWelcome), the non-campaign 'Active modifications:' line (SendMutatorsWelcome → BuildMutatorsPrettyString), the g_mutatormsg server mutator message, the sv_motd MOTD (\\n-escapes expanded), and the grappling-hook + offhand-blaster gameplay tips are all surfaced to the connecting client. Still unmodeled: FixClientCvars (cl_jumpspeedcap_min/max, cl_shootfromfixedorigin, prediction/gentle), clientstuff, set _teams_available, Send_NextMap_To_Player, and the ClientInit_misc per-client init entity (armor-blockpercent, damagepush speedfactor, fog, serverflags, g_trueaim_minrange, hook/arc shot origins)."
+      - "The port pushes a few physics-relevant cvars via per-client replicated-cvar tables; there is no FixClientCvars cvar-push stuffcmd and no per-client ClientInit_misc init-entity carrying the server's damage/fog/trueaim constants. (The `cmd clientversion` request IS now handled — Commands.cs:3248 — and its mismatch nag fires via frame.name_and_version.)"
     verification:
-      - { kind: code, ref: "GameWorld.cs:1230-1248 (SendCampaignWelcome + hook tip on InfraClientConnect); grep: no FixClientCvars/_teams_available/Send_NextMap in src+game", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1277-1321 (SendCampaignWelcome/SendMutatorsWelcome/g_mutatormsg/sv_motd + hook+offhand tips on InfraClientConnect); SendMutatorsWelcome:1387-1418; grep: no FixClientCvars/_teams_available/Send_NextMap/ClientInit_misc in src", result: pass }
     confidence: high
-    notes: "DRIFT 2026-06-25: a PARTIAL welcome channel now exists on the live connect path — the campaign welcome line + the grappling-hook tip are delivered per-client (skipped for bots). logic/presentation missing->partial, liveness na->partial. The bulk server->client config/welcome subsystem (FixClientCvars cvar push, MOTD, version request, ClientInit_misc init-entity, Send_NextMap) is still absent; the replicated-cvar table remains the only functional stand-in for the physics cvars."
+    notes: "DRIFT 2026-06-27: the welcome channel expanded again — beyond the campaign line + hook tip, the non-campaign branch now delivers the BuildMutatorsPrettyString 'Active modifications:' line, the g_mutatormsg message, the sv_motd MOTD, and the offhand-blaster tip, all per-client via the chat sink (skipped for bots). Dimension statuses stay partial (no flip — the row was already logic/presentation/liveness:partial; values/timing stay missing as no numeric constants are involved). The remaining absent pieces are FixClientCvars cvar-push, clientstuff, _teams_available, ClientInit_misc init-entity, Send_NextMap; the replicated-cvar table remains the stand-in for the physics cvars."
 
   - id: sv-client-lifecycle.join.join_player
     name: "Join: observer -> live player"
@@ -569,27 +574,30 @@ features:
     layer: [authority]
     base_refs:
       - "server/client.qc:PlayerFrame (version nag ~2924; name check ~2900; godmode ~2950)"
-    port_refs: []
+      - "server/client.qc:ClientConnect (version_nagtime arm ~1151)"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:PlayerFrameNameAndGodMode (~1985, called from PlayerFrameIdleAll ~1877)"
+      - "src/XonoticGodot.Server/Commands.cs:CheckClientVersion (~427, called from PlayerPreThink GameWorld.cs:2159)"
+      - "src/XonoticGodot.Server/Commands.cs:CmdClientVersion (~3248, the internal `clientversion` request handler)"
+      - "src/XonoticGodot.Server/ClientManager.cs:ClientConnect (VersionNagTime arm ~229)"
     constants:
-      - { name: "sv_name_maxlength", base: "64", port: "none", match: false }
-      - { name: "version_nagtime", base: "time + 10 + random()*10", port: "none", match: false }
+      - { name: "sv_name_maxlength", base: "64", port: "64 (Cvars.cs:364)", match: true }
+      - { name: "version_nagtime", base: "time + 10 + random()*10", port: "Now + 10 + random()*10 (ClientManager.cs:229)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Outdated/old-client/beta version-nag INFO notifications (INFO_VERSION_OUTDATED/OLD/BETA via vercmp + version_nagtime) never sent."
-      - "Names are not truncated to sv_name_maxlength, invisible names not replaced with Player#<id>, the :name: event-log line and 'name was truncated/invisible' sprints are absent."
-      - "GOD MODE info (INFO_GODMODE_OFF when FL_GODMODE drops) not modeled."
+      - "QC interleaves ignore_list_send (client.qc:2947) between the name check and GOD MODE block; that is a separate ignore-list feature and remains deferred (tracked under the disconnect/prethink rows). isInvisibleString is an approximation (strip-colors + whitespace/control/nbsp test) rather than the exact QC invisible-glyph table, but catches the common ''/'^9 ' abuse."
     verification:
-      - { kind: code, ref: "grep: no version_nag / sv_name_maxlength / INFO_GODMODE_OFF in src+game", result: fail }
-    confidence: medium
-    notes: "Administrative/cosmetic; absence is observable (long/invisible names persist, no version warnings)."
+      - { kind: code, ref: "GameWorld.cs:1985-2028 PlayerFrameNameAndGodMode (truncate/invisible/eventlog/godmode), called per real client from PlayerFrameIdleAll:1877; Commands.cs:427-471 CheckClientVersion (BETA/OUTDATED/OLD via vercmp + git branch); ClientManager.cs:229 version_nagtime arm; Commands.cs:3248 CmdClientVersion; NotificationsList.cs:728/834-836 GODMODE_OFF/VERSION_*; server project builds clean", result: pass }
+    confidence: high
+    notes: "DRIFT 2026-06-27: FIXED — previously all-missing, now FULLY ported and LIVE. PlayerFrameNameAndGodMode is a line-for-line port of client.qc:2900-2955: sv_name_maxlength (64, matches Base) VISIBLE-length truncation (TruncateVisible preserves ^d/^xRGB color codes, counts only real glyphs) + ^7 append + 'name truncated' sprint; isInvisibleString → Player#<id> + 'invisible names not allowed' sprint; the :name: GameLog.NameChange line gated on the netname_previous assume-unchanged guard + sv_eventlog; INFO_GODMODE_OFF (absorbed-damage report + max_armorvalue clear) when FL_GODMODE drops. The version-nag is also LIVE: version_nagtime is armed at ClientConnect (Now+10+random()*10, the exact Base formula) and CheckClientVersion fires from PlayerPreThink once the timer elapses, reads the client's replicated g_xonoticversion (sent via the internal `clientversion` command), runs the git/autobuild beta branch + vercmp, and sends INFO_VERSION_BETA/OUTDATED/OLD. all dims missing->faithful, liveness na->live (4 dimension fixes)."
 
   - id: sv-client-lifecycle.frame.prethink_misc
     name: "PlayerPreThink misc: PlayerUseKey edge, SetZoomState, voice sounds, chat bubble"

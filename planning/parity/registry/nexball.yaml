@@ -3,12 +3,12 @@ category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-25"
 summary:
-  feature_count: 22
+  feature_count: 20
   worst_gaps:
-    - "Ball-launcher weapon (BallStealer / WEP_NEXBALL) is now FULLY PORTED and LIVE — a basketball carrier can charge-and-shoot the ball (power meter, primary launch) and tackle/steal (secondary projectile). The remaining weapon gap is the safe-pass CROSSHAIR LOCK (PlayerPreThink crosshair_trace that sets ball.enemy): the secondary safe-pass arc + homing think exist but nothing ever locks a teammate, so the arc is unreachable on the live path."
-    - "STAT(OBJECTIVE_STATUS) NB_CARRYING bit is still not networked (no nexball case in GametypeStatusBlock; appears only in comments); held-ball forteam-return notification (INFO_NEXBALL_RETURN_HELD) not sent."
-    - "No HUD mod-icon: no carrying indicator, no charge-meter progress bar, no nexball event-chase camera; accuracy/item-stats scoreboard panels not hidden for nexball."
-    - "Minor presentation: ball scale 1.3 + glow_trail render still client-deferred (SpawnForGametype never sets e.Scale); carrier glow + waypoint sprites client-deferred."
+    - "Ball-launcher weapon (BallStealer / WEP_NEXBALL) is FULLY PORTED and LIVE — a basketball carrier can charge-and-shoot the ball (power meter, primary launch), safe-pass to a locked teammate (homing arc), and tackle/steal (secondary projectile). The safe-pass CROSSHAIR LOCK is now also ported (CarryFrame -> UpdateSafePassLock runs crosshair_trace each frame and sets ball.enemy/ball.wait), so the secondary safe-pass branch is now reachable on the live path. The whole weapon + carry chain is faithful & live."
+    - "STAT(OBJECTIVE_STATUS) NB_CARRYING bit is still not networked (no nexball case in any GametypeStatusBlock; no NB_CARRYING anywhere in the port); held-ball forteam-return notification (INFO_NEXBALL_RETURN_HELD) not sent."
+    - "No HUD mod-icon: no carrying indicator, no charge-meter progress bar, no nexball event-chase camera; accuracy/item-stats scoreboard panels not hidden for nexball. NB_METERSTART also not networked so a drawer would have no data."
+    - "Minor presentation: ball scale 1.3 + glow_trail render still client-deferred (SpawnForGametype never sets e.Scale); carrier glow + waypoint sprites + viewmodel scale (0.25) + EF_FLAME lock indicator client-deferred (QC ball_customize is CSQC)."
     - "SpectateCopy hook (copy NB_METERSTART to spectator) absent; ForbidDropCurrentWeapon's WEP_MORTAR special-case folded/approximated into ForbidThrow."
 features:
   - id: nexball.init.initialize
@@ -343,19 +343,20 @@ features:
       - "common/gametypes/gametype/nexball/sv_nexball.qc:MUTATOR_HOOKFUNCTION(nb,PlayerPhysics_UpdateStats)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:CarryFrame"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:UpdateSafePassLock"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:OnPlayerPhysics + CarrierHighspeed"
-      - "src/XonoticGodot.Server/GameWorld.cs:3036 (CarryFrame)"
-      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:221 (MutatorHooks.PlayerPhysics.Call)"
+      - "src/XonoticGodot.Server/GameWorld.cs:3303 (CarryFrame)"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs (MutatorHooks.PlayerPhysics.Call)"
     constants:
       - { name: "g_nexball_basketball_carrier_highspeed", base: "0.8", port: "0.8 (DefaultCarrierHighspeed; cvar-read via CarrierHighspeed)", match: true }
       - { name: "g_nexball_viewmodel_offset", base: "8 8 0", port: "8 8 0 (ViewModelOffset)", match: true }
-      - { name: "g_nexball_viewmodel_scale", base: "0.25", port: "none (client viewmodel scale)", match: false }
-      - { name: "g_nexball_safepass_maxdist", base: "5000", port: "none (no crosshair lock)", match: false }
-      - { name: "g_nexball_safepass_holdtime", base: "0.75 s", port: "none (no crosshair lock)", match: false }
+      - { name: "g_nexball_viewmodel_scale", base: "0.25", port: "none (client viewmodel scale; QC ball_customize is CSQC)", match: false }
+      - { name: "g_nexball_safepass_maxdist", base: "5000", port: "5000 (UpdateSafePassLock; cvar-read, gates the crosshair lock)", match: true }
+      - { name: "g_nexball_safepass_holdtime", base: "0.75 s", port: "0.75 (UpdateSafePassLock sets ball.wait = time + holdtime; cvar-read)", match: true }
       - { name: "g_nexball_safepass_turnrate", base: "0.1", port: "0.1 (read in Nexball.HomingThink for the safe-pass arc)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: missing
       audio: na
@@ -363,13 +364,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The safe-pass CROSSHAIR LOCK is not ported: QC PlayerPreThink runs crosshair_trace(player) each frame and, when the crosshair is on a live teammate within safepass_maxdist, sets ball.enemy + ball.wait (holdtime). CarryFrame does NOT do this trace, so BallSafePassTarget (ball.enemy) is never set on the live path and the BallStealer secondary safe-pass arc + HomingThink are unreachable (the secondary always falls through to the tackle projectile). safepass_maxdist / holdtime are unconsumed."
-      - "STAT(OBJECTIVE_STATUS) NB_CARRYING bit is not networked (NB_CARRYING appears only in comments; no nexball case in GametypeStatusBlock); the held-ball forteam-return notification (INFO_NEXBALL_RETURN_HELD) is not sent (the drop+reset effect IS applied)."
-      - "No per-frame viewmodel scale (0.25) / EF_FLAME safe-pass lock indicator (client)."
+      - "STAT(OBJECTIVE_STATUS) NB_CARRYING bit is not networked (no NB_CARRYING anywhere in the port; no nexball case in any GametypeStatusBlock); the held-ball forteam-return notification (INFO_NEXBALL_RETURN_HELD) is not sent (the drop+reset effect IS applied)."
+      - "No per-frame viewmodel scale (0.25) / EF_FLAME safe-pass lock indicator (client; QC ball_customize is CSQC setcefc)."
     verification:
-      - { kind: code-read, ref: "CarryFrame (GameWorld:3036) positions the view-ball at origin+view_ofs+viewmodel_offset and force-returns the team-held ball past its forteam lifetime; OnPlayerPhysics applies the 0.8 carrier highspeed via the live PlayerPhysics hook. No crosshair_trace -> ball.enemy is never set.", result: pass }
+      - { kind: code-read, ref: "CarryFrame (GameWorld:3303) positions the view-ball at origin+view_ofs+viewmodel_offset, force-returns the team-held ball past its forteam lifetime, and calls UpdateSafePassLock; UpdateSafePassLock crosshair_traces the carrier and locks ball.enemy (GtSafePassTarget) + ball.wait (GtSafePassExpire) onto a live teammate within safepass_maxdist=5000 for holdtime=0.75. OnPlayerPhysics applies the 0.8 carrier highspeed via the live PlayerPhysics hook.", result: pass }
     confidence: high
-    notes: "DRIFT (notes/refs only; status unchanged logic/values partial): the safe-pass IMPLEMENTATION now exists (HomingThink steers the ball, turnrate 0.1 read live) but its TRIGGER — the per-frame crosshair lock that sets ball.enemy — is still missing, so the arc never fires on the live path. The blocking framing changed from 'needs the weapon' to 'needs the crosshair lock'. View-ball follow + forteam auto-return + carrier slowdown remain live and faithful."
+    notes: "DRIFT (FIX: logic partial->faithful, values partial->faithful). The safe-pass CROSSHAIR LOCK is now ported: UpdateSafePassLock (called from CarryFrame) runs the per-frame crosshair_trace, expires stale locks (ball.wait < time), and sets ball.enemy + ball.wait on a live teammate within safepass_maxdist, so the BallStealer secondary safe-pass arc is now reachable on the live path. safepass_maxdist/holdtime are consumed. View-ball follow + forteam auto-return + carrier slowdown remain live and faithful. Residual is purely client (NB_CARRYING networking + viewmodel scale/flame)."
 
   - id: nexball.weapon.ballstealer
     name: "Ball-launcher weapon (BallStealer): primary launch, power meter, secondary tackle/safe-pass"
@@ -391,7 +391,7 @@ features:
       - { name: "g_balance_nexball_secondary_refire", base: "0.6 s", port: "0.6 (DefaultSecondaryRefire)", match: true }
       - { name: "g_nexball_tackling", base: "1", port: "cvar-read (TacklingEnabled; default true)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
@@ -400,14 +400,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Safe-pass secondary branch is unreachable on the live path: it fires only when BallSafePassTarget (ball.enemy) is set, but the crosshair lock that sets it (PlayerPreThink crosshair_trace) is not ported (see nexball.carry.perframe). The DoSecondary safe-pass arc + Nexball.HomingThink exist and are bit-faithful, but always fall through to the tackle projectile."
       - "Primary launch routes velocity through WeaponFiring.ProjectileVelocity (newton-style OFF, no owner-velocity inheritance) where QC uses W_CalculateProjectileVelocity(actor, actor.velocity, ...); intended port-wide convention, but means the carrier's velocity is not added to the launched ball."
       - "TackleTouch shove uses the secondary_force cvar directly (QC multiplies by toucher.damageforcescale, untracked in the headless player model — equals Base when damageforcescale==1)."
-      - "No viewmodel / muzzle-flash / projectile model presentation (CSQC); WEP_NEXBALL is not added to the scoreboard-suppressed weapon list separately (uses BallStealer identity, not WEP_PORTO spoofing)."
+      - "No viewmodel / muzzle-flash / projectile model presentation (CSQC); QC spoofs WEP_PORTO.m_id in W_SetupShot to keep duplicates off the scoreboard — the port uses BallStealer identity instead (cosmetic, no scoreboard column for it)."
     verification:
-      - { kind: code-read, ref: "BallStealer is [Weapon]-registered (auto-registered like Porto/Rifle), granted on spawn (Nexball.OnPlayerSpawn) and swapped on pickup (GiveBall->SaveAndApplyNexballWeapons). WrThink: meter start-on-press / fire-on-release (primary), safe-pass-or-tackle (secondary). DoLaunch drops the ball at shotdir*speed*mul; DoSecondary spawns the ballstealer tackle projectile -> TackleTouch shoves+steals. Sounds NB_SHOOT1/SHOOT2/STEAL played.", result: pass }
+      - { kind: code-read, ref: "BallStealer is [Weapon]-registered (auto-registered like Porto/Rifle), granted on spawn (Nexball.OnPlayerSpawn) and swapped on pickup (GiveBall->SaveAndApplyNexballWeapons). WrThink: meter start-on-press / fire-on-release (primary), safe-pass-or-tackle (secondary). DoSecondary's safe-pass branch reads nb.BallSafePassTarget (now set live by CarryFrame->UpdateSafePassLock) and fires the homing arc; otherwise the ballstealer tackle projectile -> TackleTouch shoves+steals. Sounds NB_SHOOT1/SHOOT2/STEAL played.", result: pass }
     confidence: high
-    notes: "MAJOR FIX (missing -> live). The BallStealer weapon is now fully ported and LIVE: a carrier can charge-and-shoot the ball (power meter), and tackle/steal with the secondary. The remaining defect is the safe-pass crosshair lock (logic: partial because the secondary's pass branch can never trigger). Was the largest nexball gap; now mostly closed."
+    notes: "DRIFT (FIX: logic partial->faithful). The safe-pass secondary branch is now reachable on the live path — the crosshair lock that sets ball.enemy is ported (nexball.carry.perframe UpdateSafePassLock). The BallStealer weapon is fully ported and LIVE: charge-and-shoot (power meter), homing safe-pass to a locked teammate, and tackle/steal. Residual defects are convention-level (newton-style velocity, damageforcescale) + client presentation."
 
   - id: nexball.weapon.power_meter
     name: "Basketball power meter (charge-and-release launch strength)"
@@ -490,11 +489,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ModIconsPanel has no nexball drawer: no 'carrying' icon and no charge-meter progress bar (grep finds no nexball case in ModIcons/GametypeStatusBlock)."
+      - "ModIconsPanel has no nexball drawer: no 'carrying' icon and no charge-meter progress bar (grep finds no nexball case in ModIcons / any GametypeStatusBlock)."
       - "No event-chase (third-person) cam when not carrying; accuracy/item-stats scoreboard panels not hidden for nexball."
-      - "STAT(OBJECTIVE_STATUS) NB_CARRYING + STAT(NB_METERSTART) are not networked, so even a drawer would have no data."
+      - "STAT(OBJECTIVE_STATUS) NB_CARRYING + STAT(NB_METERSTART) are not networked (NB_CARRYING does not exist anywhere in the port), so even a drawer would have no data."
     verification:
-      - { kind: code-read, ref: "no NexBall case in the HUD ModIconsPanel; no nexball case in GametypeStatusBlock; grep finds no nexball HUD/modicon code", result: fail }
+      - { kind: code-read, ref: "no NexBall case in the HUD ModIconsPanel; no nexball case in any GametypeStatusBlock; grep finds no nexball HUD/modicon code and no NB_CARRYING/NbCarrying symbol", result: fail }
     confidence: high
     notes: "STILL OPEN. The weapon/power-meter logic now exists server-side, but neither NB_CARRYING nor NB_METERSTART is networked and there is no HUD drawer, so the carrying indicator + charge bar + eventchase remain entirely missing."
 
@@ -584,3 +583,30 @@ features:
       - { kind: code-read, ref: "OnFilterItem (removes loot BallStealer pickups), OnItemTouch (carriers can't pick up weapon items), OnForbidThrowCurrentWeapon (can't throw the BallStealer) all registered live in Activate via MutatorHooks.FilterItem/ItemTouch/ForbidThrowCurrentWeapon and removed in Deactivate", result: pass }
     confidence: high
     notes: "FIX (missing -> live/partial). FilterItem + ItemTouch + ForbidThrowCurrentWeapon are now ported and wired live as mutator hooks. Residual: QC's ForbidDropCurrentWeapon WEP_MORTAR special-case (purpose unknown in Base) is not reproduced."
+
+  - id: nexball.ball.bounce_jumppad
+    name: "Ball bounce tuning (bouncefactor/bouncestop) + jumppad pushability"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/nexball/sv_nexball.qc:spawnfunc(nexball_basketball/football) (bouncefactor/bouncestop/pushable)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/BallEntity.cs:BallConfig.WithKindDefaults (BounceFactor/BounceStop/Pushable)"
+    constants:
+      - { name: "g_nexball_basketball_bouncefactor / g_nexball_football_bouncefactor", base: "0.6 (both)", port: "0.6 (WithKindDefaults default; NOT cvar-read)", match: true }
+      - { name: "g_nexball_basketball_bouncestop / g_nexball_football_bouncestop", base: "0.075 (both)", port: "0.075 (WithKindDefaults default; NOT cvar-read)", match: true }
+      - { name: "g_nexball_basketball_jumppad / g_nexball_football_jumppad", base: "true (this.pushable)", port: "Pushable=true default (NOT cvar-read)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "BounceFactor (0.6) / BounceStop (0.075) / Pushable (true) are hard-coded defaults in BallConfig.WithKindDefaults rather than read from the per-mode g_nexball_{basketball,football}_{bouncefactor,bouncestop,jumppad} cvars at spawn (QC reads them off the spawnfunc). Values equal Base at the gametypes-server.cfg defaults, so a non-default cvar override would not take effect."
+    verification:
+      - { kind: code-read, ref: "BallConfig.WithKindDefaults sets BounceFactor=0.6, BounceStop=0.075 for both Nexball kinds; BallEntity.Pushable defaults true; SpawnForGametype applies them to the MOVETYPE_BOUNCE ball edict. Nexball.SpawnBall passes a BallConfig that only overrides Touch/Think/RespawnTime/Effects, so the kind defaults stand.", result: pass }
+    confidence: high
+    notes: "NEWLY MAPPED (registry coverage gap). The ball MOVETYPE_BOUNCE tuning + jumppad pushability are ported via the shared BallEntity framework and live, matching Base at default values; only the per-mode cvar read is hard-coded to the default."

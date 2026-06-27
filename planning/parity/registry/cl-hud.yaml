@@ -1,7 +1,7 @@
 unit: cl-hud
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 35
   worst_gaps:
@@ -413,16 +413,18 @@ features:
       - "client/hud/panel/modicons.qc:HUD_ModIcons"
     port_refs:
       - "game/hud/ModIconsPanel.cs"
-    constants: []
-    status: { logic: partial, values: unknown, timing: unknown, presentation: partial, audio: na, liveness: live }
+    constants:
+      - { name: "mode coverage", base: "11 HUD_Mod handlers (CA/CTF/Dom/FreezeTag/KH/Keepaway/LMS/NexBall/Race/Survival/TeamKeepaway)", port: "10 ported (CTF/Keyhunt/Dom/CA/FreezeTag/Survival/Assault/Keepaway/TeamKeepaway/LMS/Race); NexBall missing", match: false }
+    status: { logic: faithful, values: unknown, timing: unknown, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Mode coverage is now CA/FreezeTag/Keyhunt/Survival/Assault/Domination/CTF/Keepaway; the full per-gametype icon-art fidelity (dom point ownership icons, some flag transitions) is partial."
+      - "NexBall modicon (HUD_Mod_NexBall) is not ported (the port has no NexBall gametype yet)."
+      - "Per-gametype icon-art fidelity (dom point-ownership icons) is approximate; not all runtime-verified."
     verification:
-      - { kind: code, ref: "NetGame sets ModIcons.Mode + KeepawayCarrying from the GametypeStatusBlock (Keepaway carrier net id resolved vs LocalNetId)", result: pass }
+      - { kind: code, ref: "ModIconsPanel.DrawPanel switches over Ctf/Keyhunt/Domination/ClanArena/FreezeTag/Survival/Assault/Keepaway/TeamKeepaway/Lms/Race; Wave 12d (0b3c2a8) ported the QC CTF per-flag status-change crossfade (CtfTrack prevstatus latch + DrawIconExpanding drawpic_aspect_skin_expanding, f=bound(0,elapsed*2,1)); NetGame sets ModIcons.Mode + KeepawayCarrying from the GametypeStatusBlock", result: pass }
     confidence: medium
-    notes: "Keepaway mode added (HUD_Mod_Keepaway: carry icon blink + status-change expand, fed live from the Keepaway status block). Driven live from gametype; icon-art fidelity per mode still varies."
+    notes: "Improved since baseline (Wave 12d 0b3c2a8): the CTF flag status-change crossfade is now a line-for-line port (old status expands+fades out via drawpic_aspect_skin_expanding while new fades in), and LMS/Race/TeamKeepaway modes were added — now 10 of Base's 11 HUD_Mod handlers. Remaining: NexBall modicon (no NexBall gametype in the port) + approximate dom icon art."
 
   - id: cl-hud.panel.pressedkeys
     name: "Pressed-keys panel (#11)"
@@ -432,17 +434,17 @@ features:
     port_refs:
       - "game/hud/PressedKeysPanel.cs"
     constants:
-      - { name: "_aspect", base: "1.8", port: "registered", match: true }
-      - { name: "enable", base: "0/1/2 (off/spectating/always)", port: "show-mode", match: true }
-    status: { logic: faithful, values: unknown, timing: na, presentation: partial, audio: na, liveness: partial }
+      - { name: "_aspect", base: "1.8", port: "1.8", match: true }
+      - { name: "enable", base: "0/1/2 (off/spectated-only/always)", port: "0/1/2 with the QC spectatee_status gate", match: true }
+    status: { logic: faithful, values: faithful, timing: na, presentation: partial, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Spectating-only enable gate + the key_*/key_*_inv art coverage not runtime-verified; only shows for the local/spectated pressed-keys stat."
+      - "key_*/key_*_inv per-key art coverage not all runtime-verified (the inverted/pressed art set)."
     verification:
-      - { kind: code, ref: "PressedKeysPanel discovered; show-mode gated", result: pass }
-    confidence: low
-    notes: "Key grid present; data feed for spectated players not confirmed."
+      - { kind: code, ref: "Wave 12d (0b3c2a8) ported the QC HUD_PressedKeys spectatee gate (SpectateeStatus<0 observer never shows; <=0 shows only when enable>=2; >0 any non-zero enable; bypassed while Configuring), fed live from NetGame ~line 3886 mapping ClientNet IsObserving=>-1 / SpectatingNetId=>>0", result: pass }
+    confidence: medium
+    notes: "Improved since baseline (Wave 12d 0b3c2a8): the spectatee_status enable gate (-1/0/>0) is now ported and fed live each frame, so the spectating-only/always semantics are faithful. Remaining: per-key art fidelity unverified."
 
   - id: cl-hud.panel.chat
     name: "Chat panel (#12)"
@@ -592,6 +594,7 @@ features:
       - "game/hud/ScoreboardPanel.cs"
     constants:
       - { name: "_fadeinspeed / _fadeoutspeed", base: "10 / 5", port: "registered", match: true }
+      - { name: "ping bands (_ping_low/_medium/_high)", base: "20 / 80 / 200", port: "20 / 80 / 200 (read live; was hardcoded 75/200/500)", match: true }
       - { name: "layout source", base: "hud_panel_scoreboard_pos/_size", port: "hardcoded Configure rect in NetGame", match: false }
     status: { logic: faithful, values: faithful, timing: unknown, presentation: faithful, audio: na, liveness: live }
     intended_divergence: true
@@ -599,9 +602,9 @@ features:
     gaps:
       - "Scoreboard ignores hud_panel_scoreboard_pos/_size (manual rect, intended divergence). Spectator-row ping is not networked per-row yet (shown as unknown / N/A)."
     verification:
-      - { kind: code, ref: "_scoreboard fed SetWireRows (splitting IsSpectator rows into the spectator block) + RespawnStat/RespawnServerTime/RespawnJumpKey (3-state respawn line) + SetAccuracy + FeedScoreboardHeader from ClientNet; Wave 8c (0d649bb) added the per-round scores averaging (SP_FRAGS/KDRATIO/SUM/dmg/score divided by SP_ROUNDS_PL), the leadlimit '^2+N' header term, and the SP_SKILL '...'/'N/A' formatting", result: pass }
+      - { kind: code, ref: "_scoreboard fed SetWireRows (splitting IsSpectator rows into the spectator block) + RespawnStat/RespawnServerTime/RespawnJumpKey (3-state respawn line) + SetAccuracy + FeedScoreboardHeader from ClientNet; Wave 8c (0d649bb) added the per-round scores averaging + leadlimit header + SP_SKILL formatting; Wave 12d (0b3c2a8) fixed PingColor to read the QC ping_low/medium/high bands (20/80/200, was hardcoded 75/200/500) and added the team_size_position 'N/M' team head-count display", result: pass }
     confidence: medium
-    notes: "Improved since baseline (Wave 8c 0d649bb): the scoreboard now does the QC per-round column averaging (scores_per_round → frags/kdr/sum/dmg/score divided by rounds_played, with the right %.1f/%.2f precision), the leadlimit-and-fraglimit header math, and the SP_SKILL formatting. The spectator/observer block split + faithful 3-state respawn line were earlier fixes. Remaining: the layout cvar-pos divergence (intended) + per-row spectator ping not networked."
+    notes: "Improved since baseline (Wave 12d 0b3c2a8): the SP_PING colorization bands now match the QC defaults (20/80/200, read live) instead of the old hardcoded 75/200/500 value gap, and the team_size_position 'N/M' (team size / total) team-box term is ported. Earlier (Wave 8c) fixes: per-round column averaging, leadlimit/fraglimit header math, SP_SKILL formatting, spectator/observer block split, 3-state respawn line. Remaining: the layout cvar-pos divergence (intended) + per-row spectator ping not networked."
 
   - id: cl-hud.panel.strafehud
     name: "Strafe HUD panel"
@@ -631,15 +634,14 @@ features:
       - "game/hud/PickupPanel.cs"
     constants:
       - { name: "_time / _fade_out / _iconsize", base: "3 / 0.15 / 1.5", port: "registered", match: true }
-    status: { logic: faithful, values: faithful, timing: unknown, presentation: faithful, audio: na, liveness: live }
+    status: { logic: faithful, values: faithful, timing: faithful, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Item-respawn-timer (_showtimer) display fidelity not runtime-verified."
+    gaps: []
     verification:
-      - { kind: code, ref: "NetGame feeds PickupPanel on pickup events", result: pass }
+      - { kind: code, ref: "NetGame feeds PickupPanel on pickup events; Wave 8e (412ca19) ported the QC _showtimer leading-match-timer gate: showtimer!=0 AND ((showtimer==1 AND !(serverflags & SERVERFLAG_FORBID_PICKUPTIMER)) OR spectatee_status), reading serverflags from the shared store", result: pass }
     confidence: medium
-    notes: "Recent-pickup line with icon + name + xcount fade present and fed."
+    notes: "Improved since baseline (Wave 8e 412ca19): the _showtimer leading-match-timer gate now honors the SERVERFLAG_FORBID_PICKUPTIMER serverflag + the spectating override, matching the QC HUD_Pickup logic. Recent-pickup line with icon + name + xcount fade present and fed."
 
   - id: cl-hud.panel.checkpoints
     name: "Checkpoints panel (#27)"

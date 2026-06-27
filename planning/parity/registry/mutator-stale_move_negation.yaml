@@ -1,11 +1,10 @@
 unit: mutator-stale_move_negation
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 5
-  worst_gaps:
-    - "BuildMutatorsPrettyString chain has no live caller: the mutator's machine token (:StaleMoveNegation) now reaches the eventlog via MutatorActivation.BuildMutatorsString (GameWorld.cs:876), but the pretty label (', Stale-move negation') is dead — MutatorActivation.BuildMutatorsPrettyString is defined yet never invoked by the server (no votescreen/scoreboard consumer ported)."
+  worst_gaps: []
 features:
   - id: smneg.registration.enable
     name: "Mutator registration + g_smneg enable predicate"
@@ -15,7 +14,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/StaleMoveNegationMutator.cs:IsEnabled"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
-      - "src/XonoticGodot.Server/GameWorld.cs:563"
+      - "src/XonoticGodot.Server/GameWorld.cs:614"
     constants:
       - { name: "g_smneg", base: "false (mutators.cfg 0)", port: "g_smneg != 0", match: true }
     status:
@@ -29,10 +28,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "reflection [Mutator] -> Registry<MutatorBase> -> Mutators.All -> MutatorActivation.Apply() at GameWorld.cs:563 (verified, in the live ChangeLevel/ActivateGameType path) -> Hook(). Activation call shifted 535->563 by surrounding Wave-6 edits; MutatorActivation.cs Apply() itself unchanged on this branch.", result: pass }
+      - { kind: code, ref: "reflection [Mutator] -> Registry<MutatorBase> -> Mutators.All -> MutatorActivation.Apply() at GameWorld.cs:614 (verified, in the live ChangeLevel/ActivateGameType path) -> Hook(). Activation call shifted 563->614 by surrounding edits; MutatorActivation.cs Apply() itself unchanged.", result: pass }
       - { kind: test, ref: "MutatorBatchT19Tests.cs Assert.NotNull(Mutators.ByName(\"stale_move_negation\")); Boot((\"g_smneg\",\"1\")) activates it (test unchanged on this branch)", result: pass }
     confidence: high
-    notes: "REGISTER_MUTATOR(mutator_smneg, autocvar_g_smneg) <-> IsEnabled gate (g_smneg!=0). Apply() is the live STATIC_INIT_LATE analogue, confirmed at GameWorld.cs:563 inside the gametype-activation path. IsEnabled also requires Api.Services!=null (port harness guard, no Base analogue, behaviorally inert on the live path). Unchanged by Wave-1/2."
+    notes: "REGISTER_MUTATOR(mutator_smneg, autocvar_g_smneg) <-> IsEnabled gate (g_smneg!=0). Apply() is the live STATIC_INIT_LATE analogue, confirmed at GameWorld.cs:614 inside the gametype-activation path. IsEnabled also requires Api.Services!=null (port harness guard, no Base analogue, behaviorally inert on the live path)."
 
   - id: smneg.tunables
     name: "Tunable cvars + defaults (bonus, asymptote, cooldown_factor, start_health)"
@@ -101,7 +100,7 @@ features:
       - "qcsrc/server/damage.qc:601"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/StaleMoveNegationMutator.cs:OnDamageCalculate"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:256"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:264"
     constants:
       - { name: "damage scale", base: "M_ARGV(4) *= f", port: "args.Damage *= f", match: true }
       - { name: "force scale", base: "M_ARGV(6) *= f", port: "args.Force *= f", match: true }
@@ -119,7 +118,7 @@ features:
     divergence_rationale: "Per-attacker per-weapon weight stored in a ConditionalWeakTable keyed by the attacker entity instead of QC's per-CS() .float x_smneg_weight[] field. Behaviorally identical: server-only, non-networked, lives for the match; chosen to avoid adding an Entity field. Deathtype is a string (project-wide) vs QC int+DEATH_WEAPONMASK; WeaponNetNameOf empty is the faithful analogue of DEATH_WEAPONOF==WEP_Null. The Base FOREACH `it != WEP_Null` guard is automatically satisfied: this port registers NO Null weapon, so Weapons.All holds only real weapons and the loop's `other.RegistryId == wid` skip mirrors `it != w`."
     gaps: []
     verification:
-      - { kind: code, ref: "hook fires at DamageSystem.cs:256 (MutatorHooks.DamageCalculate.Call) AFTER global g_weapondamage/forcefactor (lines 242-251) and BEFORE the self-damage percent (line 263) — same pipeline position as Base damage.qc:601. Hook position re-verified (line shifted 219->256 by Wave-2 edits, ordering relative to factors/self-damage unchanged). OnDamageCalculate body unchanged by Wave-1/2.", result: pass }
+      - { kind: code, ref: "hook fires at DamageSystem.cs:264 (MutatorHooks.DamageCalculate.Call) AFTER the global damage/force factors and BEFORE the self-damage percent — same pipeline position as Base damage.qc:601. Hook position re-verified (line shifted 256->264 by surrounding edits, ordering relative to factors/self-damage unchanged). OnDamageCalculate body unchanged.", result: pass }
       - { kind: test, ref: "MutatorBatchT19Tests.cs StaleMoveNegation_RepeatedSameWeapon_ScalesDamageDown drives Combat.Damage 7x with the same weapon; asserts last hit < first hit (full live damage path: Combat.Damage -> DamageSystem -> hook)", result: pass }
     confidence: high
     notes: "Event-driven decay (per hit), no timers — identical to Base. Both early-out and the staleness decay are exercised end-to-end through the real damage pipeline in the unit test. Unchanged by Wave-1/2."
@@ -135,7 +134,8 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/StaleMoveNegationMutator.cs:BuildMutatorsPrettyString"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:BuildMutatorsString"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:BuildMutatorsPrettyString"
-      - "src/XonoticGodot.Server/GameWorld.cs:876"
+      - "src/XonoticGodot.Server/GameWorld.cs:1117"
+      - "src/XonoticGodot.Server/GameWorld.cs:1392 (SendMutatorsWelcome)"
     constants:
       - { name: "machine token", base: "\":StaleMoveNegation\"", port: "\":StaleMoveNegation\"", match: true }
       - { name: "pretty string", base: "\", Stale-move negation\"", port: "\", Stale-move negation\"", match: true }
@@ -145,13 +145,12 @@ features:
       timing: na
       presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "BuildMutatorsPrettyString chain is DEAD: MutatorActivation.BuildMutatorsPrettyString exists and the smneg override returns ', Stale-move negation', but no server code invokes the pretty-string chain (QC server/client.qc:1107 votescreen/scoreboard consumer not ported). So the pretty label never reaches any UI."
+    gaps: []
     verification:
-      - { kind: code, ref: "smneg overrides BuildMutatorsString (=> s+\":StaleMoveNegation\") and BuildMutatorsPrettyString (=> s+\", Stale-move negation\") at StaleMoveNegationMutator.cs:74,78, matching the two QC MUTATOR_HOOKFUNCTIONs byte-for-byte. MutatorActivation now provides both chain runners (lines 108,121) iterating active mutators.", result: pass }
-      - { kind: code, ref: "machine-string chain is LIVE: GameWorld.cs:876 calls MutatorActivation.BuildMutatorsString(\"\") in Init() under sv_eventlog, splitting on ':' to feed GameLog.Init. Pretty-string chain is DEAD: grep BuildMutatorsPrettyString( across src finds only the chain definition (MutatorActivation.cs:121) — zero server callers.", result: pass }
+      - { kind: code, ref: "smneg overrides BuildMutatorsString (=> s+\":StaleMoveNegation\") and BuildMutatorsPrettyString (=> s+\", Stale-move negation\") at StaleMoveNegationMutator.cs:74,78, matching the two QC MUTATOR_HOOKFUNCTIONs byte-for-byte. MutatorActivation provides both chain runners (BuildMutatorsString:108, BuildMutatorsPrettyString:121) iterating active (Added) mutators.", result: pass }
+      - { kind: code, ref: "machine-string chain is LIVE: GameWorld.cs:1117 calls MutatorActivation.BuildMutatorsString(\"\") in Init() under sv_eventlog, splitting on ':' to feed GameLog.Init. Pretty-string chain is now ALSO LIVE: GameWorld.SendMutatorsWelcome (GameWorld.cs:1387, called from InfraClientConnect:1290-1291 on the non-campaign/non-bot client-join path) invokes MutatorActivation.BuildMutatorsPrettyString(\"\"), strips the leading ', ', and surfaces 'Active modifications: ^3<list>' to the connecting client via Commands.ChatToPlayer (QC SendWelcomeMessage non-campaign branch, server/client.qc:1107). A second live write at GameWorld.cs:1128 stores it to the 'modifications' serverinfo key at match start.", result: pass }
     confidence: high
-    notes: "FIXED since baseline (was fully missing): the mutator-string subsystem now exists. Both per-mutator hooks ported verbatim and registered via the virtual MutatorBase.BuildMutatorsString/PrettyString overrides + the two MutatorActivation chain runners. Machine token is live (eventlog path, GameWorld.cs:876). The pretty label remains unreachable — the votescreen/scoreboard consumer that would call BuildMutatorsPrettyString is not ported — so liveness is partial. Shared across every mutator with these hooks, not smneg-specific."
+    notes: "FIX since baseline (liveness partial -> live): the BuildMutatorsPrettyString chain now has a live consumer. Both per-mutator hooks ported verbatim and registered via the virtual MutatorBase.BuildMutatorsString/PrettyString overrides + the two MutatorActivation chain runners. Machine token is live (eventlog, GameWorld.cs:1117). The pretty label is now reachable: SendMutatorsWelcome (the port's analogue of the QC SendWelcomeMessage CSQC welcome dialog) runs it on the live client-connect path and prints 'Active modifications: ...' to the joining client. Shared across every mutator with these hooks, not smneg-specific."

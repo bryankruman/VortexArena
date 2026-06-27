@@ -381,7 +381,7 @@ features:
       - { name: "anim_walk", base: "'1 1 1'", port: "1", match: true }
       - { name: "anim_run", base: "'2 1 1'", port: "2", match: true }
       - { name: "anim_melee2/melee3", base: "'4/5 1 5' (random per melee dispatch)", port: "Attack variant 0->4 / 1->5", match: true }
-      - { name: "anim_melee1 (smash)", base: "'6 1 5'", port: "smash uses Attack group (melee2 '4'); not melee1 '6'", match: false }
+      - { name: "anim_melee1 (smash)", base: "'6 1 5' (golem.qc:264 now uncommented; RANGED smash branch golem.qc:193 setanim(anim_melee1))", port: "Smash sets AnimVariant=2 (Golem.cs:190) -> AnimFrame Attack+variant2 -> frame 6 (Golem.cs:75)", match: true }
       - { name: "anim_pain1/pain2", base: "'7/8 1 2' (random per pain)", port: "Pain variant 0->7 / 1->8", match: true }
       - { name: "anim_spawn", base: "'12 1 5'", port: "Spawn -> 12", match: true }
       - { name: "anim_die1/die2", base: "'13/15 1 0.5'", port: "Death -> 13, die2 -> 15 on DeathLanded", match: true }
@@ -396,12 +396,12 @@ features:
     divergence_rationale: null
     gaps:
       - "AnimFrame stamps only the group START index onto Entity.Frame (server-side, per think via DriveAnimFrame). The animfixfps framecount/fps per-frame playback advance WITHIN a group is not driven — there is no true .dpm frame timeline; the client renders a single stamped frame per phase/group (timing/presentation partial)."
-      - "Smash maps to the Attack group (melee2 '4'), not the dedicated anim_melee1 '6' the QC ranged-smash branch uses (setanim(anim_melee1)) — a representative-group simplification (presentation)."
     verification:
-      - { kind: code-read, ref: "Golem.cs:67-79 AnimFrame maps Idle/Walk/Run/Attack(4|5)/Pain(7|8)/Spawn(12)/Death(13|15) with variant; DriveAnimFrame:1204-1206 stamps it onto self.Frame each think — LIVE", result: pass }
-      - { kind: code-read, ref: "AnimVariant set by QueueCombo:1433 (melee) + MonsterEventDamage:1583 (pain); Spawn phase set in Golem.Spawn:116 -> group 12 now stamped", result: pass }
+      - { kind: code-read, ref: "Golem.cs:68-81 AnimFrame maps Idle(0)/Walk(1)/Run(2)/Attack(variant2->6 smash|1->5 melee3|0->4 melee2)/Pain(7|8)/Spawn(12)/Death(13|15); DriveAnimFrame:1344-1348 stamps it onto self.Frame each think — LIVE", result: pass }
+      - { kind: code-read, ref: "AnimVariant set by QueueCombo (melee 0/1), MonsterEventDamage:1573 (pain 0/1), Golem.Smash:190 (smash =2 -> frame 6 anim_melee1), Golem.ThrowLightning:247 (lightning =0 -> frame 4 anim_melee2); Spawn phase set in Golem.Spawn:118 -> group 12 stamped", result: pass }
+      - { kind: value-diff, ref: "Base golem.qc:264 anim_melee1 = animfixfps('6 1 5') NOW UNCOMMENTED + RANGED smash branch :193 setanim(anim_melee1); port routes smash variant2 -> frame 6 — match restored", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-25 — values UPGRADED partial->faithful: the table now selects the correct group per phase AND variant (Attack melee2/melee3, Pain pain1/pain2 both random-driven via AnimVariant; Spawn group 12 stamped). timing/presentation stay partial: no intra-group fps playback timeline (only the group start frame is stamped), and the smash still reuses the Attack/melee2 group rather than anim_melee1 '6'."
+    notes: "Re-audited 2026-06-25 — one presentation gap REMOVED (constant anim_melee1 fixed false->true). The prior 'smash reuses melee2 not anim_melee1' gap is RESOLVED: Base now defines anim_melee1 '6 1 5' (golem.qc:264, previously commented) and its RANGED smash branch (golem.qc:193) calls setanim(anim_melee1); the port maps smash to AnimVariant=2 -> frame 6 (Golem.cs:75,190). The ranged-lightning branch correctly stamps anim_melee2 '4' (variant 0). Values faithful (all groups + variants correct per phase incl. smash). timing AND presentation stay partial for the SAME residual reason: only the group START frame is stamped per phase — there is no intra-group animfixfps fps playback timeline, so the model shows the correct starting pose but does not animate through the group."
 
   - id: monster-golem.menu.describe
     name: "Monsterpedia describe() flavor text (MENUQC)"

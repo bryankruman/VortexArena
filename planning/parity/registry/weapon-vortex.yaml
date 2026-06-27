@@ -1,15 +1,15 @@
 unit: weapon-vortex
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 16
   worst_gaps:
     - "Beam is STILL not charge-scaled (sqrt(charge) alpha/fade/trail-spacing): a barely-charged shot and a full shot look identical. The team-color tint (vortex_glowcolor) and the cl_particles_oldvortexbeam legacy-beam switch are now BOTH ported (EmitBeam in Vortex.cs), but EffectRequest carries no per-emission alpha so the sqrt(charge) brightness modulation has no port-side hook."
-    - "Charge ring + beam tint still partly blocked: vortex_charge is networked to the local HUD only on the listen-server HOST path (NetGame.UpdateCrosshairWeaponRings reads LocalServerPlayer's slot state); a PURE remote client has no charge stat. The beam team-tint is now computed server-side from the firer's charge+team so it broadcasts to all clients, but the per-recipient cl_tracers_teamcolor nuance is collapsed to a single broadcast emit."
-    - "Player-model charge glow (wr_glow / vortex_glowcolor) STILL not ported — VortexGlowColor exists in Vortex.cs but is only consumed by the beam tint; no player-model glow feeder. Carrier model does not brighten as charge builds."
+    - "Charge ring + view-model charge glow still partly blocked: vortex_charge is read only on the listen-server HOST path (NetGame reads LocalServerPlayer's slot state for both the HUD ring AND the new view-model glow); a PURE remote client has no charge stat. The beam team-tint is computed server-side from the firer's charge+team so it broadcasts to all clients, but the per-recipient cl_tracers_teamcolor nuance is collapsed to a single broadcast emit."
+    - "Charge glow targets the FIRST-PERSON view model (the local player's own gun), not the EXTERIOR carrier/player model QC's wr_glow brightens for other players to see. The local player's gun now brightens with charge (host path), but a remote observer still sees the carrier identical regardless of charge."
   notable_fixes_this_audit:
-    - "FIXED weapon-vortex.attack.railgun_pierce (audio partial -> faithful): the nexwhoosh beam fly-by sound is now fully implemented in FireRailgunBullet (WeaponFiring.cs:492-517). It iterates every real client (skipping the shooter and bots), computes the nearest point on the beam to each (start + dir*bound(0,(it.origin-start)*dir,length)), and plays a random nexwhoosh sample (NexWhooshSample -> SoundVariantGroups.NexWhoosh, SND_NEXWHOOSH_RANDOM) via Api.Sound.PlayAt at that point with VOL_BASEVOICE / ATTEN_IDLE on CH_SHOTS — bit-faithful to QC tracing.qc:293-312. The previously-recorded 'whoosh still deferred' gap and its `fail` verification are now stale. ONLY nuance not reproduced: the QC `IS_SPEC(it) && it.enemy == this` (don't whoosh a spectator following the shooter) skip, because spectator-follow data isn't available in the Common layer."
+    - "FIXED weapon-vortex.fx.charge_glow (missing -> partial / dead -> partial-live): a charge-driven wr_glow port now EXISTS and is LIVE on the host path. NetGame.UpdateViewModelTeamGlow (NetGame.cs:1734-1768, called every frame from EquipNetworkedWeapon NetGame.cs:1687) reads the local player's VortexCharge (max(0.25,charge)), runs a port of vortex_glowcolor (NetGame.VortexGlowColor NetGame.cs:1773 — f*color*0.3 below animlimit 0.5, +f*color*0.7 above) and pushes it to the first-person view model via SetTeamGlow, with the '0 0 0' -> team-color fallback. Baseline recorded this row as fully missing with empty port_refs; that is now stale. Residual gaps: (1) applied to the first-person VIEW model, not the exterior player/carrier model other players see; (2) host-only (no cross-client charge stat). Reclassified from missing/na to partial/partial-live."
 features:
   - id: weapon-vortex.charge.regen_passive
     name: "Passive charge regen toward charge_limit"
@@ -244,24 +244,31 @@ features:
     base_refs:
       - "common/weapons/weapon/vortex.qc:wr_glow"
       - "common/weapons/weapon/vortex.qc:vortex_glowcolor"
-    port_refs: []
+    port_refs:
+      - "game/net/NetGame.cs:UpdateViewModelTeamGlow"
+      - "game/net/NetGame.cs:VortexGlowColor"
     constants:
-      - { name: "wr_glow", base: "vortex_glowcolor(actor_colors, max(0.25, vortex_charge))", port: "none", match: false }
+      - { name: "wr_glow", base: "vortex_glowcolor(actor_colors, max(0.25, vortex_charge))", port: "VortexGlowColor(teamColor, max(0.25, VortexCharge))", match: true }
+      - { name: "charge_animlimit (glow ramp split)", base: "0.5", port: "0.5 (inlined const)", match: true }
+      - { name: "glow blend (below/above animlimit)", base: "f*colors*0.3 ; +f*colors*0.7", port: "f*colors*0.3 ; +f*colors*0.7", match: true }
     status:
-      logic: missing
-      values: na
-      timing: na
-      presentation: missing
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC's wr_glow brightens the wielder's player model proportionally to vortex_charge (via vortex_glowcolor, team-tinted, f scaled by charge_animlimit). The port has no wr_glow override and emits no charge-driven player-model glow — the carrier looks identical regardless of charge. Also blocked by charge not being networked to clients."
+      - "Glow is applied to the FIRST-PERSON VIEW model (the local player's own gun, via ViewModel.SetTeamGlow), NOT the exterior player/carrier model that QC's wr_glow→weaponentity_glowmod brightens for OTHER players. So the local player's gun now brightens with charge, but a remote observer still sees the carrier identical regardless of charge."
+      - "Host-only: VortexCharge is read off LocalServerPlayer's slot state (NetGame.UpdateViewModelTeamGlow), so on a pure remote client there is no charge value and the glow stays at the base team color. Same cross-client-charge-STAT root cause as the charge ring and beam tint."
     verification:
-      - { kind: codetrace, ref: "Grep wr_glow/glowcolor/VortexGlow over src+game -> only OkNex.cs doc comment; no glow override on Vortex; no player-model glow feeder. The Wave-2/3 CsqcModelEffects.cs glow edits are GENERIC role/powerup/flame glow (forced EF_* bits), NOT vortex-charge driven.", result: fail }
+      - { kind: codetrace, ref: "NetGame.cs:1757-1764 — for net=='vortex'/'vaporizer'/contains 'nex' && LocalServerPlayer alive, reads charge=max(0.25, WeaponState(0).VortexCharge) and computes glow=VortexGlowColor(teamColor,charge); '0 0 0' falls back to teamColor. VortexGlowColor (NetGame.cs:1773-1784) ports vortex_glowcolor: f=min(1,charge/0.5)*0.3 then +(charge-0.5)/0.5*0.7 above animlimit. Pushed via _viewModel.SetTeamGlow.", result: pass }
+      - { kind: codetrace, ref: "Live path: EquipNetworkedWeapon (NetGame.cs:1669) calls UpdateViewModelTeamGlow() (NetGame.cs:1687) on the per-frame weapon-model update, host path. Confirmed the ONLY vortex-charge-driven glow feeder in the codebase (CsqcModelEffects.ApplyForcedGlowmod is generic role/powerup/colormap glow, not charge).", result: pass }
+      - { kind: codetrace, ref: "Glow targets _viewModel (first-person view model), not the exterior CsqcModel player model; remote observers' carrier glow is unfed by charge. VortexCharge has no cross-client snapshot/STAT (host-only).", result: fail }
     confidence: high
-    notes: "UNCHANGED THIS AUDIT. Cosmetic; charge being server-only is the shared root cause with the dead charge ring and the un-scaled beam tint. Wave-2 added generic per-player model glow but no vortex-charge feeder, so the carrier still does not brighten as charge builds."
+    notes: "FIXED THIS AUDIT (missing/na -> partial/partial-live). The baseline's empty port_refs + 'no wr_glow override anywhere' is now stale: NetGame.UpdateViewModelTeamGlow is a faithful, live (host-path) port of wr_glow/vortex_glowcolor driving the FIRST-PERSON gun glow with charge. Values (animlimit 0.5, 0.3/0.7 blend, max(0.25,charge) floor) are bit-faithful. Downgraded only to partial (not faithful) because QC's wr_glow brightens the EXTERIOR carrier model seen by others, whereas the port glows the local view model; liveness partial because host-only (no cross-client charge STAT)."
 
   - id: weapon-vortex.fx.impact_muzzle
     name: "Impact burst + muzzle flash"
@@ -313,8 +320,8 @@ features:
     gaps:
       - "Host-only: the charge stat is fed from LocalServerPlayer's slot state (NetGame.UpdateCrosshairWeaponRings), so the ring fills on a listen-server / single-player host but a PURE remote client has no charge data and still sees no ring. QC networks vortex_charge as a STAT to every client; the port still has no cross-client charge stat (the wepent-props follow-up)."
     verification:
-      - { kind: codetrace, ref: "NetGame.cs:2847-2848 now WRITES x.ChargeFraction = st.VortexCharge and x.ChargePool = st.VortexChargePoolAmmo for the active vortex slot (net is 'vortex'/'vaporizer'/contains 'nex'); reset to -1 sentinels otherwise (NetGame.cs:2834,2852). The previously-dead feeder now has a live writer.", result: pass }
-      - { kind: codetrace, ref: "Live path: NetGame.cs:2302 calls UpdateCrosshairWeaponRings() every frame inside the local-player HUD update. Off LocalServerPlayer (NetGame.cs:217) — null on a pure client, so host-only.", result: pass }
+      - { kind: codetrace, ref: "NetGame.cs:3153-3154 WRITES x.ChargeFraction = st.VortexCharge and x.ChargePool = st.VortexChargePoolAmmo for the active vortex slot (net is 'vortex'/'vaporizer'/contains 'nex'); reset to -1 sentinels otherwise (NetGame.cs:3140,3158-3159). The previously-dead feeder has a live writer.", result: pass }
+      - { kind: codetrace, ref: "Live path: NetGame.cs:2567 calls UpdateCrosshairWeaponRings() every frame inside the local-player HUD update. Off LocalServerPlayer (null on a pure client), so host-only.", result: pass }
       - { kind: codetrace, ref: "Render: CrosshairPanel.DrawStatRing (CrosshairPanel.cs:847) draws when crosshair_ring_vortex!=0 && vortexLike && charge>0; ChargeRingValue (CrosshairPanel.cs:961) returns Clamp(ChargeFraction). WeaponHud.IsChargeWeapon resolves the nested Cvars.Charge (true stock), so the ring is enabled. ChargePool drives the inner ring.", result: pass }
       - { kind: codetrace, ref: "VortexCharge still written only by server gameplay (Vortex.cs); no cross-client snapshot/STAT carries it — so a non-host remote client still has no charge value.", result: fail }
     confidence: high
@@ -450,22 +457,25 @@ features:
     layer: [authority]
     base_refs:
       - "common/weapons/weapon/vortex.qc:wr_aim"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:Weapon.BotWantsSecondary"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:ShotSpeedFor"
     constants:
-      - { name: "bot_aim(shotspeed)", base: "1000000 (hitscan: effectively instant)", port: "none", match: false }
-      - { name: "bot_aim(shotspeedupward)", base: "0", port: "none", match: false }
+      - { name: "bot_aim(shotspeed)", base: "1000000 (hitscan: effectively instant)", port: "hitscan branch => near-instant lead (BotBrain.cs:807)", match: true }
+      - { name: "bot_aim(shotspeedupward)", base: "0", port: "0 (no upward lead for hitscan)", match: true }
+      - { name: "primary/secondary pick", base: "always primary (no ammo-conditional branch)", port: "BotWantsSecondary default => false (primary)", match: true }
     status:
-      logic: missing
-      values: na
-      timing: na
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "QC wr_aim calls bot_aim(actor, weaponentity, 1000000, 0, 1, false, true) and presses ATTACK when the bot has a lined-up target — the per-weapon bot aiming hook. The port's Weapon base has no WrAim/bot-aim override path at all (grep for WrAim/bot_aim over the weapon system returns nothing), so vortex bots have no weapon-specific aim solver. Likely belongs to a future bot unit; recorded here as a Base-side coverage gap for this weapon file."
+    gaps: []
     verification:
-      - { kind: codetrace, ref: "grep 'WrAim|bot_aim|BotAim' over src/.../Weapons + Vortex.cs -> no override anywhere; Weapon base class has no bot-aim virtual.", result: fail }
-    confidence: medium
-    notes: "Newly mapped (was missing a row). Bot weapon-aim is unported across the whole weapon system, not vortex-specific; flagged here because wr_aim is a real vortex.qc symbol. Tracking under the vortex unit until a dedicated bot-weapon-aim unit exists."
+      - { kind: codetrace, ref: "Bot-aim is now a generic Weapon base capability driven by BotBrain. BotBrain.cs:406 calls w.BotWantsSecondary(dist,skill,ctx) to pick the fire mode; Vortex does NOT override it so it inherits the base default `=> false` (GameplayBases.cs:145) = fire PRIMARY — correct for a stock no-secondary hitscan weapon. For TypeHitscan weapons (BotBrain.cs:807,823) the brain leads straight at the target at near-instant shot speed = QC bot_aim(...,1000000,0,...).", result: pass }
+      - { kind: codetrace, ref: "Live path: BotBrain drives the bot's aim/fire each AimInterval (BotBrain.cs:33,525-545) and presses attack when the shot is lined up + accurate (BotAimAccurate default => null → accurate for the no-guidance hitscan rail). Vortex needs no per-weapon override because the base defaults already encode wr_aim's behavior for it.", result: pass }
+    confidence: high
+    notes: "FIXED THIS AUDIT (missing/na -> faithful/live). The baseline's 'bot weapon-aim is unported across the whole weapon system' is now stale: a generic bot-aim base (Weapon.BotWantsSecondary / BotAimShotSpeed / BotAimAccurate) + the BotBrain port now drive per-weapon bot aiming, and many weapons (MachineGun/Rifle/Vaporizer/Devastator/...) override it. The Vortex correctly needs NO override — its stock behavior (always-primary, hitscan straight-shot) IS the base default, so wr_aim is faithfully reproduced via the live generic path."

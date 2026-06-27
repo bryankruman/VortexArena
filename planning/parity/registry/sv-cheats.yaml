@@ -1,14 +1,15 @@
 unit: sv-cheats
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 19
   worst_gaps:
-    - "No CopyBody / corpse-clone mechanic (CLONE_MOVING 140 / CLONE_STANDING 142); sv_clones is an unread stub (Cvars.cs:374) and the clone-allowance gating branch IS now present (Cheats.cs:79) but moot without the impulses."
-    - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range g_grab_range), no te_lightning1 drag beam, no dragbox/dragpoint race map editor; g_grab_range cvar exists (Cvars.cs:372) but is never read."
-    - "No SPEEDRUN_INIT/SPEEDRUN personal-waypoint, no TELEPORT (MoveToRandomMapLocation for the player / info_autoscreenshot map entity), no CLONE_MOVING/CLONE_STANDING CopyBody clones, no CheatFrame/Drag object-carry + dragbox/dragpoint race map-editor."
-    - "info_autoscreenshot map spawnfunc still missing (logic); its cap cvar g_max_info_autoscreenshot is at Base default 3 (Cvars.cs:373)."
+    - "No CopyBody / corpse-clone mechanic (CLONE_MOVING 140 / CLONE_STANDING 142); sv_clones is an unread stub (Cvars.cs:397) and the clone-allowance gating branch IS present (Cheats.cs:80) but moot without the impulses."
+    - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range g_grab_range), no te_lightning1 drag beam, no dragbox/dragpoint race map editor; g_grab_range cvar exists (Cvars.cs:395) but is never read."
+    - "No SPEEDRUN_INIT/SPEEDRUN personal-waypoint snapshot/restore, no CLONE_MOVING/CLONE_STANDING CopyBody clones, no CheatFrame/Drag object-carry + dragbox/dragpoint race map-editor."
+    - "info_autoscreenshot map spawnfunc still missing (logic); its cap cvar g_max_info_autoscreenshot is at Base default 3 (Cvars.cs:396). The TELEPORT impulse's noclip-preferred autoscreenshot path is therefore always inert (falls back to random)."
+    - "TELEPORT impulse (143) is now implemented + live but PARTIAL: uses a spawnpoint-sampling fallback rather than the true MoveToRandomMapLocation world-bounds sampler, and the 100 / 100000 attempt-count constants are not honored."
 features:
   - id: sv-cheats.gating.cheats_allowed
     name: "CheatsAllowed — sv_cheats snapshot + dead/observer/maycheat gating + refusal logging"
@@ -263,8 +264,8 @@ features:
       - "common/impulses/all.qh:156"
     port_refs:
       - "src/XonoticGodot.Server/Cheats.cs:GiveAll"
-      - "src/XonoticGodot.Server/Commands.cs:1613 (DispatchImpulse: if (imp == 99) Cheats.GiveAll)"
-      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:69 (impulse allowlisted)"
+      - "src/XonoticGodot.Server/Commands.cs:2054 (DispatchImpulse: if (imp == 99) Cheats.GiveAll)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:70 (impulse allowlisted)"
     constants:
       - { name: "impulse number", base: "99", port: "99 (DispatchImpulse routes imp==99)", match: true }
     status:
@@ -293,7 +294,7 @@ features:
     constants:
       - { name: "impulse numbers", base: "140 / 142", port: "none", match: false }
       - { name: "moving clone push", base: "v_forward*300", port: "none", match: false }
-      - { name: "sv_clones (clone cap)", base: "0", port: "0 (stub, Cvars.cs:374; now READ by the gate's clone branch but no CLONE impulse consumes it)", match: true }
+      - { name: "sv_clones (clone cap)", base: "0", port: "0 (stub, Cvars.cs:397; READ by the gate's clone branch but no CLONE impulse consumes it)", match: true }
     status:
       logic: missing
       values: missing
@@ -306,7 +307,7 @@ features:
     gaps:
       - "No CopyBody / corpse-clone mechanic; the clone impulses do nothing and sv_clones is unread. Unchanged by Wave-5."
     verification:
-      - { kind: code, ref: "grep CopyBody/CHIMPULSE/sv_clones in src/** -> SpawnSystem.cs mentions CopyBody only in a comment; no clone impulse handler (DispatchImpulse has no 140/142 case); cvar stub at Cvars.cs:374. The gate's clone-allowance branch now EXISTS (Cheats.cs:79) but is never reached (no caller passes cloneImpulse:true). Re-verified 2026-06-25.", result: fail }
+      - { kind: code, ref: "grep CopyBody/CHIMPULSE/sv_clones in src/** -> SpawnSystem.cs mentions CopyBody only in a comment; no clone impulse handler (DispatchImpulse has no 140/142 case); cvar stub at Cvars.cs:397. The gate's clone-allowance branch EXISTS (Cheats.cs:80) but is never reached (no caller passes cloneImpulse:true). Re-verified 2026-06-27.", result: fail }
     confidence: high
     notes: "Requires a CopyBody corpse-spawn primitive that the port lacks. SpawnSystem.cs:518 references CopyBody only in a comment about respawn reusing the live edict."
 
@@ -342,25 +343,31 @@ features:
     base_refs:
       - "server/cheats.qc:CheatImpulse (CHIMPULSE_TELEPORT)"
       - "common/impulses/all.qh:160"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Teleport"
+      - "src/XonoticGodot.Server/Commands.cs:2069 (DispatchImpulse: if (imp == 143) Cheats.Teleport)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:70 (impulse allowlisted)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/BallEntity.cs:RandomMapLocation"
     constants:
-      - { name: "impulse number", base: "143", port: "none", match: false }
-      - { name: "MoveToRandomMapLocation attempts", base: "100 (sv_cheats<2) / 100000", port: "none", match: false }
+      - { name: "impulse number", base: "143", port: "143 (DispatchImpulse routes imp==143)", match: true }
+      - { name: "MoveToRandomMapLocation attempts", base: "100 (sv_cheats<2) / 100000", port: "none (uses a spawnpoint-sampling fallback, no attempt-count tuning)", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: partial
+      values: partial
+      timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No emergency player-teleport cheat: neither the info_autoscreenshot path nor a player-side MoveToRandomMapLocation exists. (Note: a BallEntity.Relocate / MoveToRandomMapLocation exists for the Keepaway/Nexball/Invasion BALL, but that is the gametype ball-respawn mechanic, NOT the player-teleport cheat — different consumer, not reusable here.) Unchanged by Wave-5."
+      - "Random-location path uses BallEntity.RandomMapLocation (a spawnpoint-sampling fallback), NOT the true MoveToRandomMapLocation world-bounds sampler; the 100 / 100000 attempt-count constants (the sv_cheats<2 vs >=2 wider search) and the DPCONTENTS/Q3SURFACEFLAG_SKY content masks are not honored."
+      - "The noclip-preferred info_autoscreenshot path (Cheats.cs:300-318) is correctly coded but always inert: no info_autoscreenshot spawnfunc exists (sv-cheats.mapent.info_autoscreenshot is still missing), so FindByClass returns nothing and it falls through to the random path — which is exactly Base behavior on a map with no autoscreenshot points."
     verification:
-      - { kind: code, ref: "grep MoveToRandomMapLocation in src/** -> only BallEntity.cs (ball respawn) + Invasion/Keepaway callers; no player-teleport cheat; no info_autoscreenshot", result: fail }
+      - { kind: code, ref: "NOW WIRED + IMPLEMENTED: Cheats.Teleport (Cheats.cs:294-339) — if noclip, find/consume an info_autoscreenshot then setorigin+fixangle; else BallEntity.RandomMapLocation, snap origin, flip pitch (angles_x = -angles.x), zero velocity, DID_CHEAT on success. DispatchImpulse (Commands.cs:2069) routes imp==143; 'impulse' allowlisted (ClientCommandRegistry.cs:70). Re-verified 2026-06-27.", result: pass }
+      - { kind: code, ref: "Teleport (Cheats.cs:294-339) vs server/cheats.qc:235-263 — noclip autoscreenshot branch / random fallback / fixangle / zero-velocity / DID_CHEAT-on-success flow matches; diverges on the random sampler (spawnpoint-based) and the attempt-count constants.", result: pass }
     confidence: high
-    notes: "Depends on info_autoscreenshot (also missing) and a player random-map-location finder the port lacks."
+    notes: "FIXED since the 2026-06-25 baseline (which recorded this fully missing with empty port_refs). The TELEPORT impulse is now implemented AND live on the match path via DispatchImpulse(imp==143). logic/values are PARTIAL: the autoscreenshot path is inert (entity never spawned) and the random fallback substitutes a spawnpoint sampler for the true world-bounds MoveToRandomMapLocation, dropping the 100/100000 attempt-count tuning. (Note: BallEntity.RandomMapLocation is shared with the Keepaway/Nexball/Invasion ball respawn — here reused for the player teleport.)"
 
   - id: sv-cheats.impulse.r00t
     name: "Cheat impulse R00T (148) — nuke a random enemy"
@@ -370,8 +377,8 @@ features:
       - "common/impulses/all.qh:161"
     port_refs:
       - "src/XonoticGodot.Server/Cheats.cs:R00t"
-      - "src/XonoticGodot.Server/Commands.cs:1799 (DispatchImpulse: if (imp == 148) Cheats.R00t)"
-      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:69 (impulse allowlisted)"
+      - "src/XonoticGodot.Server/Commands.cs:2062 (DispatchImpulse: if (imp == 148) Cheats.R00t)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:70 (impulse allowlisted)"
       - "src/XonoticGodot.Common/Gameplay/Damage/DeathTypes.cs:110 (Cheat = 'cheat')"
     constants:
       - { name: "impulse number", base: "148", port: "148 (DispatchImpulse routes imp==148)", match: true }
@@ -468,7 +475,7 @@ features:
       - "server/cheats.qc:DragBox_Think"
     port_refs: []
     constants:
-      - { name: "g_grab_range (non-cheat drag range)", base: "200", port: "200 (dead cvar stub, Cvars.cs:372)", match: true }
+      - { name: "g_grab_range (non-cheat drag range)", base: "200", port: "200 (dead cvar stub, Cvars.cs:395)", match: true }
       - { name: "initial dragspeed", base: "64", port: "none", match: false }
       - { name: "draggee gravity while held", base: "0.00001", port: "none", match: false }
     status:
@@ -483,9 +490,9 @@ features:
     gaps:
       - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range), no te_lightning1 drag beam. Unchanged by Wave-5."
       - "No dragbox_spawn/dragpoint_spawn/drag_remove/drag_setcnt/drag_save/drag_saveraceent/drag_clear race-checkpoint map-editor commands."
-      - "g_grab_range cvar exists (Cvars.cs:372) but is never read (no consumer)."
+      - "g_grab_range cvar exists (Cvars.cs:395) but is never read (no consumer)."
     verification:
-      - { kind: code, ref: "grep Drag(/CheatFrame/dragbox in src/** -> none (g_grab_range cvar stub only at Cvars.cs:372). Re-verified 2026-06-25.", result: fail }
+      - { kind: code, ref: "grep Drag(/CheatFrame/dragbox in src/** -> none (g_grab_range cvar stub only at Cvars.cs:395). Re-verified 2026-06-27.", result: fail }
     confidence: high
     notes: "Large subsystem (object carry + race map editor). CheatFrame is the only cheat entry point invoked every frame in Base; the port has no equivalent per-frame cheat hook."
 
@@ -497,7 +504,7 @@ features:
       - "server/cheats.qc:info_autoscreenshot_findtarget"
     port_refs: []
     constants:
-      - { name: "g_max_info_autoscreenshot", base: "3 (xonotic-server.cfg:643)", port: "3 (cvar stub, Cvars.cs:373; no spawnfunc reads it)", match: true }
+      - { name: "g_max_info_autoscreenshot", base: "3 (xonotic-server.cfg:643)", port: "3 (cvar stub, Cvars.cs:396; no spawnfunc reads it)", match: true }
     status:
       logic: missing
       values: faithful
@@ -508,9 +515,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No info_autoscreenshot spawnfunc: the entity is dropped on map load and the TELEPORT cheat's preferred destination never exists."
+      - "No info_autoscreenshot spawnfunc: the entity is dropped on map load and the (now-implemented) TELEPORT cheat's noclip-preferred destination never exists, so TELEPORT always uses the random fallback."
     verification:
-      - { kind: code, ref: "grep info_autoscreenshot in src/** -> none (no spawnfunc); Cvars.cs:373 g_max_info_autoscreenshot default is now 3, matching Base xonotic-server.cfg:643. Re-verified 2026-06-25.", result: fail }
+      - { kind: code, ref: "grep info_autoscreenshot in src/** -> only Cheats.Teleport's FindByClass lookup (consumer); NO spawnfunc creates the entity. Cvars.cs:396 g_max_info_autoscreenshot default is 3, matching Base xonotic-server.cfg:643. Re-verified 2026-06-27.", result: fail }
     confidence: high
     notes: "Map-author entity; the cap cvar exists as a stub (no consumer) but its default is now CORRECT (3, was 60 in the baseline — FIXED). The spawnfunc logic is still absent."
 

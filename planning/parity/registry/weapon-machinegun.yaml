@@ -1,13 +1,13 @@
 unit: weapon-machinegun
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 14
-  audit_note: "Drift re-audit at port HEAD 9f65cb5 (Wave-8) against Base xonotic-v0.8.6-151-gf6b1980. Two genuine FIXES since the last baseline, both on machinegun.fire.bullet_trace: (1) Machinegun.FireOne now passes `tracerEffect: \"BULLET\"` (Machinegun.cs:368) — the EFFECT_BULLET tracer trail is finally wired (was the #1 worst gap), so presentation partial->faithful; (2) g_ballistics_solidpenetration_exponent and g_ballistics_mindistance are now read LIVE in FireBullet (WeaponFiring.cs:300-303) instead of hardcoded consts. Two registry CONSTANT CORRECTIONS on the same row: the baseline recorded g_ballistics_mindistance base=1 (the true Base xonotic-server.cfg default is 2) and hitscan_spread_style base=0 (the true balance-xonotic.cfg default is 4 = gauss-2D plane); the port reads both live and defaults to the correct Base values, so both now MATCH. No regressions on any row. All 13 prior rows re-verified live/faithful (line numbers shifted but seams intact: bot ButtonAttack2 routing BotBrain.cs:365/424, zoom NetGame.cs:2795 + ReticleOverlay.cs:98, SNIPE/SPRAY DeathMessages.cs:73). NEW UNMAPPED row added: wr_reload / wr_checkammo2 (forced-reload + zoom-suppressing checkammo2) — a real Base feature the port does not model; reload_ammo defaults 0 so it is dead in stock play."
+  audit_note: "Drift re-audit 2026-06-27 at port HEAD (branch claude/parity-port-waves) against Base machinegun.{qh,qc}. ONE genuine FIX since the 2026-06-25 baseline, on machinegun.reload.checkammo: the reload + wr_checkammo2 path is now FULLY modeled. The baseline had this row at logic:missing with the wr_checkammo2 constant match:false. The port now has (a) a shared reload pipeline in the base class WeaponFireGate.cs (WrReload->WReload->WReloadedAndReady, faithful to W_Reload/W_ReloadedAndReady), (b) the MachineGun WrReload override with the QC misc_bulletcounter<0 mid-burst guard + ReloadingAmmoMin = min(max(sustained,first),burst) (Machinegun.cs:504,510), (c) the forced-reload branch at the head of WrThink (Machinegun.cs:120), and (d) CheckAmmoSecondary (wr_checkammo2) with BOTH the zoom-suppress gate AND the burst_ammo_per_shot per-shot ammo gate, wired live into WrThink (Machinegun.cs:150,479). So logic missing->faithful and the wr_checkammo2 constant flips match:false->true. liveness stays dead (reload_ammo defaults 0 in xonotic balance so the reload cycle is inert) but the code is now genuinely live-when-enabled. All 13 other rows re-verified faithful/live, no regressions: bullet tracer wired (FireOne tracerEffect \"BULLET\" Machinegun.cs:397), ballistics exponent/mindistance + hitscan_spread_style read live with correct Base defaults (WeaponFiring.cs:308-315,818-822), bot ButtonAttack2 routing live (BotBrain.cs:406,512), zoom via ZoomOnSecondary wired in NetGame + ReticleOverlay.cs:98, SNIPE/SPRAY + THINKING_WITH_PORTALS DeathMessages.cs:73,150."
   worst_gaps:
     - "SNIPE obituary only reachable via the non-default mode-0 secondary: g_balance_machinegun_mode defaults to 1, so AttackSingle/AttackFrame/the snipe path are dead on the live path. Faithful to Base (xonotic balance is also mode 1), but means MURDER_SNIPE never fires in stock play in either Base or port."
-    - "Forced reload (wr_reload) + the zoom-suppressing wr_checkammo2 ammo gate are NOT modeled in the port (new unmapped row machinegun.reload.checkammo). reload_ammo defaults 0 (reload off) in xonotic balance, so the path is dead in stock play, but a server enabling reload_ammo would diverge."
+    - "Reload (wr_reload / forced-reload / wr_checkammo2) is now FULLY modeled and faithful, but inert at stock balance: reload_ammo defaults 0, so no clip/reload cycle runs in either Base or port. A server enabling reload_ammo>0 now behaves correctly (previously the port would have diverged)."
 features:
   - id: machinegun.identity
     name: "MachineGun registration & identity (flags, color, ammo, models, impulse)"
@@ -426,26 +426,33 @@ features:
       - "common/weapons/weapon/machinegun.qc:wr_think (forced-reload top branch)"
       - "common/weapons/weapon/machinegun.qc:wr_checkammo2"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:CheckAmmoPrimary (wr_checkammo1 only)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:WrReload (override, misc_bulletcounter<0 mid-burst guard, :510)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:ReloadingAmmoMin (min(max(sustained,first),burst), :504)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:WrThink (forced-reload head branch, :120)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:CheckAmmoSecondary (wr_checkammo2: zoom-suppress + burst_ammo_per_shot, :479)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WrReload/WReload/WReloadedAndReady (shared reload pipeline, :223/239/315)"
     constants:
-      - { name: "reload_ammo", base: "0 (reload disabled in xonotic balance)", port: "0 (Cvars.ReloadAmmo, read but unused)", match: true }
-      - { name: "reload_time", base: "2", port: "2 (Cvars.ReloadTime, read but unused)", match: true }
-      - { name: "wr_checkammo2 zoom-suppress", base: "want_zoom -> return false (mode1&&!burst || mode0&&!first)", port: "not modeled (only CheckAmmoPrimary exists)", match: false }
+      - { name: "reload_ammo", base: "0 (reload disabled in xonotic balance)", port: "0 (ReloadingAmmo() reads g_balance_machinegun_reload_ammo live, WeaponFireGate.cs:408)", match: true }
+      - { name: "reload_time", base: "2", port: "2 (ReloadingTime() reads g_balance_machinegun_reload_time live, WeaponFireGate.cs:411)", match: true }
+      - { name: "wr_reload ammo_min", base: "min(max(sustained_ammo,first_ammo),burst_ammo)", port: "MathF.Min(MathF.Max(SustainedAmmo,FirstAmmo),BurstAmmo) (Machinegun.cs:505)", match: true }
+      - { name: "wr_reload mid-burst guard", base: "if (misc_bulletcounter < 0) return", port: "if MiscBulletCounter < 0 return (Machinegun.cs:513)", match: true }
+      - { name: "wr_checkammo2 zoom-suppress", base: "want_zoom -> return false (mode1&&!burst || mode0&&!first)", port: "same (Machinegun.cs:483-485)", match: true }
+      - { name: "wr_checkammo2 burst_ammo_per_shot", base: "GetResource >= burst_ammo / burst", port: "GetResource >= BurstAmmo/Burst (Machinegun.cs:491-492)", match: true }
     status:
-      logic: missing
+      logic: faithful
       values: faithful
-      timing: na
+      timing: faithful
       presentation: na
       audio: na
       liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "wr_reload (the forced-reload branch at the top of wr_think, plus the manual W_Reload that respects misc_bulletcounter<0 to let a burst finish) is NOT modeled. Comment in WrThink (Machinegun.cs:141) explicitly notes 'reload_ammo isn't modeled, so ammo == the resource'. reload_ammo defaults 0 in bal-wep-xonotic.cfg so the path is dead in stock play; a server setting reload_ammo>0 would diverge (no clip, no reload cycle)."
-      - "wr_checkammo2 is not ported as a separate gate: it returns false (suppresses the burst as a fire mode) when ATTACK2 is a zoom, and computes burst_ammo_per_shot. The port instead relies on ZoomOnSecondary in WrThink to suppress the burst, which is behaviorally equivalent for the zoom case at default balance, but the per-shot burst_ammo_per_shot ammo gate is absent."
+      - "Inert at stock balance only: reload_ammo defaults 0 in bal-wep-xonotic.cfg, so the forced-reload branch (WrThink:120 gated on ReloadingAmmo()!=0) and the clip cycle never run in stock play — identical to Base, where reload is likewise off. The code is now fully present and faithful, so liveness is 'dead' purely because no stock cvar reaches it; a server setting reload_ammo>0 exercises the same clip/reload behavior as Base."
     verification:
-      - { kind: code, ref: "Base machinegun.qc:280-286 forced-reload branch + wr_reload:386-391 (misc_bulletcounter<0 guard, W_Reload min(max(sustained,first),burst))", result: pass }
-      - { kind: code, ref: "Port Machinegun.cs has no Reload/W_Reload modeling; ReloadAmmo/ReloadTime cvars are read into Balance but never consumed", result: fail }
-      - { kind: code, ref: "reload_ammo default 0 (bal-wep-xonotic.cfg:107) -> forced-reload + clip path dead in stock play; no live-path divergence at default balance", result: pass }
+      - { kind: code, ref: "Base machinegun.qc forced-reload branch (wr_think top) + wr_reload (misc_bulletcounter<0 guard, W_Reload min(max(sustained,first),burst)) vs Machinegun.cs:120/504/510 — match", result: pass }
+      - { kind: code, ref: "Shared reload pipeline WeaponFireGate.cs WrReload->WReload->WReloadedAndReady faithfully ports W_Reload/W_ReloadedAndReady (reloadable flag check, not-full, has-ammo, clip_load -1 sentinel, schedule reload_time, top-up from pool)", result: pass }
+      - { kind: code, ref: "CheckAmmoSecondary (Machinegun.cs:479) ports wr_checkammo2: want_zoom->false + burst_ammo_per_shot = burst_ammo/burst for mode1; wired live into WrThink burst gate (Machinegun.cs:150)", result: pass }
+      - { kind: code, ref: "ReloadingAmmo() reads g_balance_machinegun_reload_ammo live (default 0, WeaponFireGate.cs:408) -> forced-reload + clip path dead in stock play, no live-path divergence at default balance", result: pass }
     confidence: high
-    notes: "NEW UNMAPPED row (added 2026-06-25 drift audit). Reload is generally unmodeled across the port's reloadable weapons. At the stock xonotic balance reload_ammo=0 so this is dead and the MG behaves identically to Base (ammo == resource, no clip). Logged as missing/dead so a future reload epic has a tracked row; values faithful because the (unused) cvars carry the correct Base defaults."
+    notes: "FIXED since the 2026-06-25 baseline (logic missing->faithful; wr_checkammo2 constant match false->true). The port now has a full, shared reload subsystem (WeaponFireGate.WrReload/WReload/WReloadedAndReady) plus the MachineGun-specific override (mid-burst guard, ammo_min floor), the forced-reload head branch in WrThink, and the complete wr_checkammo2 gate (zoom-suppress + per-shot burst ammo). At the stock xonotic balance reload_ammo=0 so the cycle is inert and the MG behaves identically to Base (ammo == resource, no clip) — hence liveness stays 'dead', but it is now genuinely live-when-enabled rather than unmodeled."

@@ -6,9 +6,7 @@ summary:
   feature_count: 17
   worst_gaps:
     - "Client DPM frame playback still not wired: the server now computes + networks the correct per-phase MD3 frame (DriveAnimFrame -> Spider.AnimFrame -> Entity.Frame, LIVE), but the CLIENT renders the spider's spider.dpm through the EntityModelFactory/DpmBuilder path, which builds an AnimationPlayer NOT bound to the entity and never consumes the networked Entity.Frame (only the MD3 ModelAnimator morph path honours FollowEntityFrame). So the spider's server anim PHASE is now correct/networked but the visible DPM model still does not play walk/bite/web/pain/die from it. Shared monster-presentation gap (all DPM/IQM monsters)."
-    - "Spider mr_death random die1/die2 not wired: AnimFrame maps Death->die1('1')/die2('2'), but Spider does NOT override RollDeathVariant() (defaults false), so the death phase always resolves die1 — the QC random()>0.5 die1/die2 pick is absent (Zombie overrides RollDeathVariant; Spider does not). Moot until the client renders the frame anyway."
     - "Player-wielded SpiderAttack weapon (impulse 9, IS_PLAYER path: attack_range 60, weapon_prepareattack, Monster_FindTarget) still unported — reachable only via MON_FLAG_RIDE monster-riding (no riding mode) or dev tooling; low gameplay impact."
-    - "MENUQC describe() tooltip prose still not surfaced (DialogMonsterTools is the spawn/edit tool, not a describe surface); low gameplay impact."
 features:
   - id: monster-spider.identity.registration
     name: "Spider monster type registration + identity (model, name, hitbox, spawnflags)"
@@ -397,7 +395,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkDead"
       - "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs:AnimFrame (Death branch)"
     constants:
-      - { name: "death anim", base: "random anim_die1/die2", port: "Death -> die1('1') only (RollDeathVariant not overridden)", match: false }
+      - { name: "death anim", base: "random anim_die1/die2 (random()>0.5 ? die2 : die1)", port: "Death -> die2('2')/die1('1') via RollDeathVariant() = MonsterRandom.Next()>0.5", match: true }
       - { name: "corpse lifetime", base: "time+5", port: "Now+5", match: true }
       - { name: "live gib threshold", base: "health <= -100", port: "health <= -100", match: true }
       - { name: "corpse gib threshold", base: "Monster_Dead_Damage -50", port: "-50", match: true }
@@ -411,12 +409,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC mr_death picks anim_die1/anim_die2 at random (random()>0.5). The port's AnimFrame maps Death->die1('1')/die2('2') keyed off the die2 flag (st.DeathLanded = RollDeathVariant()), but Spider does NOT override RollDeathVariant() (defaults false), so the death phase ALWAYS resolves die1 — the random pick is absent (Zombie overrides RollDeathVariant; Spider does not)."
-      - "CLIENT DPM playback missing anyway: even die1 is not rendered because the DPM model does not consume the networked Entity.Frame (see monster-spider.anim.mr_anim)."
+      - "CLIENT DPM playback missing: the chosen die1/die2 frame is networked on Entity.Frame but the DPM model does not consume it (see monster-spider.anim.mr_anim), so neither death variant is visually rendered. Presentation partial; the random pick itself is now wired server-side."
     verification:
-      - { kind: code, ref: "Spider has no MarkDead override; MonsterAI.MarkDead sets st.Anim=Death, st.DeathLanded = def.RollDeathVariant() (defaults false for Spider) -> AnimFrame Death->die1('1'). Death cue: MonsterSound(self,st,'death',0f,false,Voice) (1634) — empty SoundCues -> silent, matching Base's no-.sounds spider. Corpse lifetime +5s, gib at -100 (live)/-50 (corpse), scoring, MonsterDies->NadeBonus all faithful.", result: pass }
+      - { kind: code, ref: "Spider.RollDeathVariant() => MonsterRandom.Next() > 0.5f (Spider.cs:80); MonsterAI.MarkDead sets st.Anim=Death, st.DeathLanded = def.RollDeathVariant() (MonsterAI.cs:1813) -> AnimFrame Death-> die2 ? 2f : 1f. High roll -> die2 (frame 2), low -> die1 (frame 1), matching QC `random()>0.5 ? anim_die2 : anim_die1` exactly. Death cue: MonsterSound(self,st,'death',0f,false,Voice) — empty SoundCues -> silent, matching Base's no-.sounds spider. Corpse lifetime +5s, gib at -100 (live)/-50 (corpse), scoring, MonsterDies->NadeBonus all faithful.", result: pass }
     confidence: high
-    notes: "FIX since prior audit: AUDIO partial->faithful — the death cue is now SILENT (empty SoundCues) matching Base's silent spider, instead of the prior port-invented monsters/spider_death.wav. Presentation stays partial: the Death frame IS now mapped (die1/die2) and networked, but (a) Spider doesn't override RollDeathVariant so the random die1/die2 pick is missing, and (b) the client DPM doesn't render the networked frame. Corpse/loot/scoring/NadeBonus all faithful."
+    notes: "FIX since prior audit: VALUES partial->faithful (death-anim constant match false->true) — Spider now overrides RollDeathVariant() (Spider.cs:80) so the QC random()>0.5 die1/die2 pick is wired server-side (matching the sibling Zombie). The Death frame is mapped (die1/die2) AND the random pick now selects between them. Presentation stays partial only because the client DPM doesn't render the networked frame. Corpse/loot/scoring/NadeBonus all faithful; audio silent (empty SoundCues) matching Base."
 
   - id: monster-spider.think.brain
     name: "Per-frame brain: enemy acquire, move, attack-check (Monster_Think)"
@@ -482,21 +479,22 @@ features:
     layer: [presentation]
     base_refs:
       - "common/monsters/monster/spider.qc:METHOD(Spider, describe):256"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs:Describe (83-86)"
+      - "game/menu/dialogs/DialogMonsterTools.cs:34-37 (spider tooltip)"
     constants:
-      - { name: "describe prose", base: "The Spider is a large mechanically-enhanced arachnoid adept at hunting speedy enemies.", port: "none", match: false }
+      - { name: "describe prose", base: "The Spider is a large mechanically-enhanced arachnoid adept at hunting speedy enemies. To slow down its target, the Spider launches a synthetic web-like substance from its cannons. Approaching its enwebbed prey, the Spider will inflict a series of high damage bites.", port: "same prose (Spider.Describe + DialogMonsterTools spider radio tooltip)", match: true }
     status:
       logic: na
-      values: missing
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
-    intended_divergence: false
-    divergence_rationale: null
-    gaps:
-      - "STILL OPEN. The spider's MENUQC describe() prose (spider.qc:256) is NOT surfaced in the port. DialogMonsterTools.cs is the spawn/edit tool (a radio group of monster netnames + Spawn/Remove/movetarget/recolor buttons) — it does NOT display any per-monster describe() tooltip text. No other port path surfaces the describe prose."
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base surfaces describe() on a dedicated MENUQC monster-book/page widget, which the port lacks. Following the DialogMutators pattern, the port rides the describe prose on the DialogMonsterTools spawn-radio tooltip (the closest faithful surface). Same text, different host widget."
+    gaps: []
     verification:
-      - { kind: code, ref: "DialogMonsterTools.cs lists (\"spider\",\"Spider\") as a spawn-type radio option only; no describe() prose anywhere in the dialog or src. Base describe() at spider.qc:252-256.", result: fail }
-    confidence: medium
-    notes: "MENUQC-only flavor text; low gameplay impact. Confirmed missing; listed for completeness."
+      - { kind: code, ref: "Spider.cs:83-86 Describe() returns the full 3-sentence prose verbatim from spider.qc:256-258; DialogMonsterTools.cs:34-37 lists (\"spider\",\"Spider\", <same prose>) and BuildUi (line 101) feeds it as the radio-button tooltip via Widgets.RadioButton(..., describe). Prose matches Base word-for-word.", result: pass }
+    confidence: high
+    notes: "FIX since prior audit: values/presentation missing->faithful, liveness na->live. The spider's describe() prose IS now surfaced — both as Monster.Describe() override (Spider.cs:83) and on the DialogMonsterTools spawn-radio tooltip (the port's describe surface, mirroring DialogMutators). Intended-divergence on the host widget (tooltip vs Base's monster-book page); prose is verbatim."

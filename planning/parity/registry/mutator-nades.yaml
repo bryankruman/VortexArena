@@ -1,16 +1,17 @@
 unit: mutator-nades
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-26"
+last_audited: "2026-06-27"
 summary:
   feature_count: 22
   worst_gaps:
     - "THROW INPUT IS NOW LIVE (Wave-5, commit 66e378f): InputCommand.InputButtons gained the Hook bit (BIT(6) / PHYS_INPUT_BUTTON_HOOK, InputCommand.cs:20), and the full chain is wired end-to-end: the `+hook` bind (BindInput.cs:46 / KeyBindings.cs:43) -> BindTable._hook/HookHeld -> NetGame.cs:3984 sets the bit -> ServerNet.cs:1415 decodes ButtonHook -> WeaponFireDriver.Frame (GameWorld.cs:1368, live per-tick PostThink) sets player.OffhandFirePressed -> NadesMutator.OnPlayerPreThink reads it and drives NadeThrow.OffhandThink. The weapon_drop second-press path is ALSO live now: NadesMutator subscribes ForbidThrowCurrentWeapon (CBC_ORDER_LAST), which WeaponThrowing.ThrowWeapon/IsWeaponThrowable (the live impulse-17 `weapon_drop` path, WeaponImpulses.cs:117/181) dispatches -> NadeThrow.CheckThrow. So a player can now prime, charge, and throw a nade in a real match. The entire subsystem (charge, toss, all 11 booms, pickup, shoot-down, orbs, bonus economy) is reachable — liveness flips dead->live across nearly every row. One caveat: OffhandFirePressed is set in tick N's PostThink and read in tick N+1's PreThink (a 1-tick latency), but the held-button state persists across ticks so prime/charge/release work correctly; this is the faithful headless analogue of the engine offhand_think dispatch."
     - "Most PRESENTATION is still missing (headless port): no projectile model/trail (nade_customize/spawn_held_nade trail), no orb 3D model + 2D color flash (orb_draw/orb_draw2d), no darkness blind overlay (HUD_DarkBlinking) + SND_BLIND, no spawn-loc EF_STARDUST, no DrawAmmoNades bonus-nade ammo-panel icon. The wired charge ring (CrosshairPanel.NadeTimer) NOW actually shows because a nade can finally be primed."
-    - "Lifecycle cleanup IMPROVED in Wave-6b (commit f86d947): NadesMutator now ALSO subscribes MakePlayerObserver + ClientDisconnect, both wired to RemovePlayer = port of nades_RemovePlayer (nades_Clear + RemoveBonus + delete nade_spawnloc), and BOTH hook chains have live callers (ClientManager.cs:480 MakePlayerObserver.Call, :707 ClientDisconnect.Call). So a held nade / banked bonus / spawn marker no longer leaks across observer or disconnect. STILL ABSENT: reset_map_global (round-reset FOREACH_CLIENT nades_RemovePlayer) + PutClientInServer (RemoveBonus) + SpectateCopy + DropSpecialItems — their HookChains do not exist in MutatorHooks, so a held nade / banked bonus / spawn marker still leaks across round-reset/respawn-into-server, and a spectator's nade HUD state is not mirrored. The death-drop toss IS handled (PlayerDies hook), but the dedicated DropSpecialItems hook is unported."
+    - "Lifecycle cleanup is now NEARLY COMPLETE (DRIFT 2026-06-27, post Wave-12b): on top of the Wave-6b MakePlayerObserver + ClientDisconnect leaks-fix, the port now ALSO wires reset_map_global (NadesMutator.ResetMapGlobal, called live GameWorld.cs:4454 ResetMap), PutClientInServer (OnPutClientInServer = RemoveBonus, called live ClientManager.cs:720 respawn), and SpectateCopy (OnSpectateCopy mirrors the spectatee's nade HUD/bonus stats, called live ClientManager.cs:662) — three of the four previously-missing hooks. All are g_nades-gated host seams (no MutatorHooks chain needed). The round-reset / respawn-into-server / spectator-mirror leaks are CLOSED. ONLY the dedicated DropSpecialItems hook remains unported, and its common case (the death-toss) is already covered by the PlayerDies hook; the residual is the non-death special-item-drop toss. lifecycle logic partial->faithful, liveness partial->live."
     - "nade_damage NOW INCLUDES the melee-slap branch (force*10, damage=max_health*0.1 for WEP_TYPE_MELEE_PRI/SEC, faithful) AND the Nade_Damage MUTATOR_CALLHOOK is now invoked (NadeProjectile.cs:207 MutatorHooks.FireNadeDamage; OverkillMutator.OnNadeDamage subscribes for okhmg_nadesupport) — this closed the last logic gap on the damage row. Remaining: napalm ball damageforcescale 4 still not applied (modeled as Burning status, no knockback); ice revival_time<1.5s re-freeze skip omitted; freezetag revive-nade still suppresses damage but never unfreezes/revives (FreezeTag seam). pokenade monster_lifetime (150s despawn) is ported + live."
     - "REGISTRY-FIX (2026-06-25): BuildMutatorsString/BuildMutatorsPrettyString are now OVERRIDDEN (NadesMutator.cs:79-80 -> ':Nades' / ', Nades'), so the display.mutators_string row flips missing->faithful (was newly-mapped 2026-06-25 as missing; the override exists in current code). MonsterDies bonus also flips dead->live: NadeBonus.OnMonsterDies now has a live caller at MonsterAI.cs:1695 (direct call from the monster death path, no MutatorHooks.MonsterDies chain needed)."
-    - "DRIFT 2026-06-26 (fix): the bonus.economy bank-a-nade notification + sound are now EMITTED (NadeBonus.GiveBonus, NadeBonus.cs:53-54): CENTER_NADE_BONUS via NotificationSystem.Send + SND_NADE_BONUS via SoundSystem.PlayOn, both registered (NotificationsList.cs:496, SoundsList.cs:180 -> kh/alarm == Base SND_KH_ALARM) and on the live path. bonus.economy presentation+audio missing->faithful. Additionally the VIP/flagcarrier bonus multiplier (g_nades_bonus_score_time_flagcarrier=2 + GameRules_scoring_is_vip + KH key count) is now wired in OnPlayerDies/OnPlayerPreThink — the previously-MISSING flagcarrier cvar is consumed (constant match false->true); logic/values held at partial pending per-gametype ScoringIsVip/KeyHuntKeyCount fidelity. No other drift since 2026-06-25; the four lifecycle hook chains (reset_map_global/PutClientInServer/SpectateCopy/DropSpecialItems) remain absent and all Base hooks are mapped (no new_unmapped)."
+    - "DRIFT 2026-06-27 (fixes, post Wave-12b commit 6da9e80): a broad fidelity sweep closed five logic/values gaps. (1) LIFECYCLE: reset_map_global + PutClientInServer + SpectateCopy now exist as NadesMutator static seams (ResetMapGlobal/OnPutClientInServer/OnSpectateCopy, NadesMutator.cs:321/337/349) AND have LIVE host callers (GameWorld.cs:4454 ResetMap, ClientManager.cs:720 respawn, ClientManager.cs:662 SpectateCopy) — three of the four previously-missing lifecycle hooks are now wired+live; only the dedicated DropSpecialItems hook remains unported (its common case, the death-toss, is already covered by PlayerDies). lifecycle logic partial->faithful, liveness partial->live. (2) ICE: the just-revived re-freeze skip (revival_time<1.5s, NadeIceBoom.cs:105) AND the round-not-started delete guard (RoundHandler.RoundGateBlocks, :60) are now implemented — ice logic partial->faithful. (3) NAPALM: water-contents velocity damping (WaterDamp via PointContents, NadeNapalmBoom.cs:37) AND the round-not-started guard are now ported; and damageforcescale=4 is RECLASSIFIED as inert-in-Base (the balls/fountain use PROJECTILE_MAKETRIGGER and never set takedamage=DAMAGE_AIM, so the Base force scale never multiplies anything either — napalm.qc:69-83) — napalm logic partial->faithful, values partial->faithful, the damageforcescale constant match false->true. (4) ENTRAP/VEIL/DARKNESS: the entrap monster run/walk slow (MonsterAI.cs:1011-1012) AND the veil monster-alpha lapse (MonsterAI.cs:945-946) are now ported inline in MonsterAI.Move — entrap_veil_darkness logic partial->faithful; only render (veil enemy tint, darkness blind overlay) + audio (SND_BLIND) gaps remain. All Base hooks remain mapped (no new_unmapped)."
+    - "DRIFT 2026-06-26 (fix): the bonus.economy bank-a-nade notification + sound are now EMITTED (NadeBonus.GiveBonus, NadeBonus.cs:53-54): CENTER_NADE_BONUS via NotificationSystem.Send + SND_NADE_BONUS via SoundSystem.PlayOn, both registered (NotificationsList.cs:496, SoundsList.cs:180 -> kh/alarm == Base SND_KH_ALARM) and on the live path. bonus.economy presentation+audio missing->faithful. Additionally the VIP/flagcarrier bonus multiplier (g_nades_bonus_score_time_flagcarrier=2 + GameRules_scoring_is_vip + KH key count) is now wired in OnPlayerDies/OnPlayerPreThink — the previously-MISSING flagcarrier cvar is consumed (constant match false->true); logic/values held at partial pending per-gametype ScoringIsVip/KeyHuntKeyCount fidelity."
 features:
   - id: mutator-nades.enable.predicate
     name: "Enable predicate + offhand assignment (g_nades)"
@@ -301,7 +302,7 @@ features:
       - { name: "g_nades_napalm_ball_radius", base: "100 (mutators.cfg:257)", port: "100", match: true }
       - { name: "g_nades_napalm_ball_lifetime", base: "7 (mutators.cfg:256)", port: "7", match: true }
       - { name: "g_nades_napalm_ball_spread", base: "500 (mutators.cfg:253)", port: "500", match: true }
-      - { name: "g_nades_napalm_ball_damageforcescale", base: "4 (mutators.cfg:254)", port: "MISSING", match: false }
+      - { name: "g_nades_napalm_ball_damageforcescale", base: "4 (mutators.cfg:254)", port: "inert in Base too (no takedamage=DAMAGE_AIM)", match: true }
       - { name: "g_nades_napalm_fountain_lifetime", base: "3 (mutators.cfg:259)", port: "3", match: true }
       - { name: "g_nades_napalm_fountain_delay", base: "0.5 (mutators.cfg:260)", port: "0.5", match: true }
       - { name: "g_nades_napalm_fountain_damage", base: "50 (mutators.cfg:261)", port: "50", match: true }
@@ -310,8 +311,8 @@ features:
       - { name: "g_nades_napalm_burntime", base: "0.5 (mutators.cfg:249)", port: "0.5", match: true }
       - { name: "g_nades_napalm_selfdamage", base: "1 (mutators.cfg:250)", port: "1", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: faithful
       presentation: missing
       audio: partial
@@ -319,13 +320,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "g_nades_napalm_ball_damageforcescale (4) is not applied: napalm is modeled as the Burning status effect with no knockback, so the fireball/fountain damage-force push (QC proj.damageforcescale) is missing."
-      - "Water-contents velocity damping (pointcontents CONTENT_WATER -> velocity*0.5 / z=200) and the round-not-started fountain/ball delete guard are omitted; EFFECT_FIREBALL_LASER trail + EF_FLAME ball effect omitted (render)."
+      - "EFFECT_FIREBALL_LASER trail + EF_FLAME ball effect omitted (render). SND_NADE_NAPALM_FIRE spamsound on ball-eject is not emitted (audio partial)."
     verification:
-      - { kind: code, ref: "NadeNapalmBoom RandomSelection 1/(1+d) target pick + Fire_AddDamage->Burning(strength=dps) vs napalm_damage; confirmed proj.damageforcescale (napalm.qc:83) has no port equivalent", result: pass }
-      - { kind: code, ref: "Now LIVE (input wired)", result: pass }
+      - { kind: code, ref: "NadeNapalmBoom RandomSelection 1/(1+d) target pick + Fire_AddDamage->Burning(strength=dps) vs napalm_damage — match", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-27 (fix): water-contents velocity damping is now ported (WaterDamp via Api.Trace.PointContents, NadeNapalmBoom.cs:37-46) and the round-not-started delete guard (RoundHandler.RoundGateBlocks, :119/143) is wired. damageforcescale=4 RECLASSIFIED non-divergent: Base sets proj.damageforcescale (napalm.qc:83) but the ball/fountain use PROJECTILE_MAKETRIGGER and never set takedamage=DAMAGE_AIM (napalm.qc:69-76), so a trigger that can't receive a damage event never has the scale applied — inert in Base too. logic/values partial->faithful.", result: pass }
     confidence: high
-    notes: "Fire_AddDamage(d*burntime, burntime) == d dps over burntime -> burn strength = d. Team/self/frozen exclusion faithful. liveness dead->live; damageforcescale + water-damp gaps unchanged."
+    notes: "Fire_AddDamage(d*burntime, burntime) == d dps over burntime -> burn strength = d. Team/self/frozen exclusion faithful. DRIFT 2026-06-27: water-damp + round-guard now ported (logic partial->faithful); damageforcescale=4 reclassified inert-in-Base (values partial->faithful, constant match false->true). Residual: render trail/flame + the ball-eject napalm-fire sound."
 
   - id: mutator-nades.boom.ice
     name: "Ice: freeze field"
@@ -341,7 +341,7 @@ features:
       - { name: "g_nades_ice_explode", base: "0 (mutators.cfg:268)", port: "0", match: true }
       - { name: "tick", base: "0.1s, special 0.3s start", port: "0.1 / 0.3", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
@@ -350,13 +350,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The recently-revived skip (revival_time, time-revival_time < 1.5s) is omitted, so a just-unfrozen player can be immediately re-frozen (confirmed ice.qc:59)."
-      - "The round-not-started delete guard is omitted (relevant only in CA/round modes). The muzzleflash/icefield particle gate omitted (render)."
+      - "The muzzleflash/icefield particle gate is omitted (render)."
     verification:
       - { kind: code, ref: "NadeIceBoom.IceThink declining current_freeze_time + teamcheck 0/1/2 + STATUSEFFECT_Frozen apply vs nade_ice_think", result: pass }
-      - { kind: code, ref: "Now LIVE (input wired)", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-27 (fix): the recently-revived re-freeze skip is now ported (NadeIceBoom.cs:105: if (it.RevivalTime != 0f && (now - it.RevivalTime) < 1.5f) continue == ice.qc:59), AND the round-not-started delete guard is wired (NadeIceBoom.cs:60 RoundHandler.RoundGateBlocks == ice.qc:14). logic partial->faithful.", result: pass }
     confidence: high
-    notes: "ice_explode reuses NadeBlast.RadiusDamage with NadeDeathTypes.Ice. Freeze duration declines as the field ages (current_freeze_time = ltime-time-0.1) — faithful. liveness dead->live; revival-skip gap unchanged."
+    notes: "ice_explode reuses NadeBlast.RadiusDamage with NadeDeathTypes.Ice. Freeze duration declines as the field ages (current_freeze_time = ltime-time-0.1) — faithful. DRIFT 2026-06-27: revival-skip + round-not-started guard now ported (logic partial->faithful); only the render particle gate remains."
 
   - id: mutator-nades.boom.translocate
     name: "Translocate: teleport thrower to detonation"
@@ -496,7 +495,7 @@ features:
       - { name: "g_nades_veil_time/radius", base: "8 / 250 (mutators.cfg:305-306)", port: "8/250", match: true }
       - { name: "g_nades_darkness_time/radius/teamcheck", base: "4 / 300 / 2 (mutators.cfg:319-322)", port: "4/300/2", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: missing
@@ -505,14 +504,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Entrap MonsterMove run/walk slow is omitted (no MonsterMove hook chain in the port)."
-      - "Veil tint of enemies (render colormod) omitted; only the teammate alpha-hide is ported. Veil monster-alpha lapse omitted."
+      - "Veil tint of enemies (render colormod) omitted; only the teammate alpha-hide is ported."
       - "Darkness blind overlay (HUD_DarkBlinking full-screen fill) + SND_BLIND are CSQC-only and missing; only the NadeDarknessTime deadline is set server-side."
     verification:
       - { kind: code, ref: "EntrapTouch strength**dt damp + NadeEntrapSpeedMutator PlayerPhysics; VeilTouch alpha-hide; DarknessThink teamcheck+NadeDarknessTime vs the three .qc", result: pass }
-      - { kind: code, ref: "Now LIVE (input wired)", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-27 (fix): the entrap monster run/walk slow (MonsterAI.cs:1011-1012: if (self.NadeEntrapTime > Now) speed *= EntrapSpeed() == entrap.qc:48) AND the veil monster-alpha lapse (MonsterAI.cs:945-946) are now ported inline in MonsterAI.Move (the port has no MonsterMove hook chain; MonsterMove-hook effects are inlined there). Both are dormant for the same reason as Base: the orb touch only flags nade_entrap_time/nade_veil_time on real clients, never on monsters. logic partial->faithful.", result: pass }
     confidence: high
-    notes: "Entrap speed slow wired as a separate g_nades-gated [Mutator] on PlayerPhysics (SpeedMultiplier *= entrap_speed). Velocity damp is ticrate-independent (strength**dt, dt capped 0.15s). liveness dead->live; render/audio gaps unchanged."
+    notes: "Entrap speed slow wired as a separate g_nades-gated [Mutator] on PlayerPhysics (SpeedMultiplier *= entrap_speed). Velocity damp is ticrate-independent (strength**dt, dt capped 0.15s). DRIFT 2026-06-27: entrap monster-slow + veil monster-alpha lapse now ported inline in MonsterAI.Move (logic partial->faithful); residual gaps are render (veil enemy tint, darkness overlay) + audio (SND_BLIND)."
 
   - id: mutator-nades.boom.monster
     name: "Pokenade: spawn monster"
@@ -595,27 +593,25 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Nades/NadeBonus.cs:RemoveBonus"
       - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnVehicleEnter"
       - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnMakePlayerObserver / OnClientDisconnect / RemovePlayer"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:ResetMapGlobal / OnPutClientInServer / OnSpectateCopy (host seams)"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED Wave-6b (commit f86d947): MakePlayerObserver + ClientDisconnect are now subscribed and wired to RemovePlayer (port of nades_RemovePlayer = nades_Clear + RemoveBonus + delete nade_spawnloc, sv_nades.qc:914), and BOTH hook chains have live callers (ClientManager.cs:480/707). A held nade / banked bonus / spawn marker no longer leaks across observer or disconnect."
-      - "STILL MISSING: reset_map_global (round-reset FOREACH_CLIENT nades_RemovePlayer, sv_nades.qc:932) + PutClientInServer (RemoveBonus, sv_nades.qc:470) have no port HookChain — a banked bonus / held nade still leaks across a round reset and across the respawn-into-server path."
-      - "STILL MISSING: DropSpecialItems (the dedicated death-drop toss hook, sv_nades.qc:906) has no port HookChain. NOTE: the death-toss itself IS handled by the PlayerDies hook (OnPlayerDies tosses the held nade) — but the QC DropSpecialItems hook (which also tosses on non-death special-item drops) is unported."
-      - "STILL MISSING: SpectateCopy (copy NADE_TIMER/NADE_BONUS_TYPE/NADE_BONUS/NADE_BONUS_SCORE/pokenade_type to the spectator, sv_nades.qc:937) has no port hook — a spectator's nade HUD ring / bonus state is not mirrored from the spectatee."
+      - "DropSpecialItems (the dedicated special-item-drop toss hook, sv_nades.qc:906) has no port HookChain. The hook's common case — the death-toss — IS handled by the PlayerDies hook (OnPlayerDies tosses the held nade with '0 0 100'); the unported residual is the non-death special-item-drop toss ('0 0 0'), which has no live trigger in the port today. Minor."
     verification:
       - { kind: code, ref: "Wave-2 (commit ec788f7): NadesMutator.Hook adds MutatorHooks.VehicleEnter; OnVehicleEnter tosses player.Nade with Toss(player,true,(0,0,100),max(NadeWait,Time+0.05)) == sv_nades.qc:667 — faithful + live (VehicleEnter.Call live in VehicleBoarding.cs)", result: pass }
-      - { kind: code, ref: "Wave-6b: NadesMutator.cs:69-70 adds MakePlayerObserver + ClientDisconnect; RemovePlayer (NadesMutator.cs:276) = nades_Clear + RemoveBonus + delete NadeSpawnLoc == nades_RemovePlayer (sv_nades.qc:914-920); both Call sites live (ClientManager.cs:480, :707)", result: pass }
-      - { kind: code, ref: "grep reset_map_global|PutClientInServer|SpectateCopy|DropSpecialItems in MutatorHooks.cs HookChain<> -> none of these four chains exist; NadesMutator.Hook subscribes only PlayerSpawn/PreThink/Dies/DamageCalc/VehicleEnter/ForbidThrow/MakePlayerObserver/ClientDisconnect", result: fail }
+      - { kind: code, ref: "Wave-6b: NadesMutator.cs:69-70 adds MakePlayerObserver + ClientDisconnect; RemovePlayer (NadesMutator.cs:293) = nades_Clear + RemoveBonus + delete NadeSpawnLoc == nades_RemovePlayer (sv_nades.qc:914-920); both Call sites live (ClientManager.cs MakePlayerObserver/ClientDisconnect)", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-27 (fix): reset_map_global + PutClientInServer + SpectateCopy are now implemented as g_nades-gated host seams (NadesMutator.cs:321 ResetMapGlobal = FOREACH_CLIENT RemovePlayer == sv_nades.qc:932; :337 OnPutClientInServer = RemoveBonus == sv_nades.qc:470; :349 OnSpectateCopy = copy NADE_TIMER/BONUS_TYPE/pokenade_type/BONUS/BONUS_SCORE == sv_nades.qc:937) and ALL THREE have live callers: GameWorld.cs:4454 (ResetMap), ClientManager.cs:720 (respawn Spawn path, before PlayerSpawn), ClientManager.cs:662 (SpectateCopy). The round-reset / respawn-into-server / spectator-mirror leaks are closed. logic partial->faithful, liveness partial->live.", result: pass }
     confidence: high
-    notes: "Wave-6b closed the observer + disconnect leaks (MakePlayerObserver + ClientDisconnect now live, faithful nades_RemovePlayer). VehicleEnter toss (Wave-2) is live; the death-toss is covered by PlayerDies. Still absent: reset_map_global, PutClientInServer, SpectateCopy, and the dedicated DropSpecialItems hook (their HookChains do not exist). With throw input live (Wave-5), the residual leaks are real: a player holding a nade / banked bonus across a round reset or respawn-into-server, and a spectator's nade HUD state. logic partial (4 hooks still missing), liveness partial (VehicleEnter + observer/disconnect + death-toss-via-PlayerDies live; 4 hooks dead)."
+    notes: "DRIFT 2026-06-27: reset_map_global / PutClientInServer / SpectateCopy now wired as live host seams (gated by NadesMutator.Active = g_nades!=0), joining the already-live VehicleEnter (Wave-2), MakePlayerObserver/ClientDisconnect (Wave-6b), and the PlayerDies death-toss. The only unported piece is the dedicated DropSpecialItems hook (its death-toss case is covered by PlayerDies; the non-death special-item-drop toss is the residual). logic faithful, liveness live."
 
   - id: mutator-nades.damage.freezetag_revive
     name: "Damage_Calculate: freezetag revive-nade"

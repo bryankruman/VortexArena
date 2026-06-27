@@ -1,14 +1,13 @@
 unit: weapon-hook
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 12
   worst_gaps:
-    - "No hook ROPE line is ever drawn: there is still no GrapplingHookSend/ENT_CLIENT_HOOK rope stream and no Draw_CylindricLine renderer. The chain HEAD is networked as a generic projectile and rendered as a red Hookbomb spike WHILE IN FLIGHT, but the connecting rope between player and latch point is absent."
-    - "Latched hook still goes INVISIBLE: GrapplingHook_Stop sets MoveType.None, which is not a projectile movetype, so ServerNet.Classify (IsProjectileMoveType, ServerNet.cs:2095/2115) drops the model-less chain from the snapshot (Generic with no alias model) — the spike vanishes the moment the hook latches. Base keeps the latched hook + rope drawn via CSQC."
-    - "No central RemoveGrapplingHooks reset on freezetag-freeze / teleport / vehicle-enter / wr_resetplayer; the hook is cleared only via the weapon's own state machine."
-    - "FIXED since the 2026-06-22 audit: hook fire now emits the W_MuzzleFlash effect (HOOK_MUZZLEFLASH), honours g_balance_grapplehook_gravity TOSS-mode movetype, applies W_WeaponRateFactor on refire, sets the 1s pauseregen inhibit + IT_UNLIMITED_AMMO drain guard, restores the owner FLY->WALK on RemoveHook, and credits the shoot-down pusher/pushltime. The offhand +hook button remains wired end-to-end (Wave 5)."
+    - "No hook ROPE line is ever drawn: there is still no GrapplingHookSend/ENT_CLIENT_HOOK rope stream and no Draw_CylindricLine/Draw_GrapplingHook renderer. The chain HEAD is networked as a generic projectile and rendered as a red Hookbomb spike WHILE IN FLIGHT, but the connecting rope between player and latch point is absent."
+    - "Latched hook still goes INVISIBLE: GrapplingHook_Stop sets MoveType.None, which is not a projectile movetype, so ServerNet.Classify (IsProjectileMoveType, ServerNet.cs:2319-2320/2339) drops the model-less chain from the snapshot (Generic with no alias model) — the spike vanishes the moment the hook latches. Base keeps the latched hook + rope drawn via CSQC."
+    - "FIXED since the 2026-06-25 audit: a central RemoveGrapplingHooks(pl) reset now EXISTS (Hook.cs:479) and is wired LIVE into observer/disconnect (ClientManager.cs:549/805), freezetag/status-effect Frozen apply (StatusEffects.cs:155), teleport (Teleporters.cs:251/273), vehicle-enter (VehicleBoarding.cs:229), and wr_resetplayer (Hook.cs:592, dispatched per slot by SpawnSystem.cs:905). The offhand +hook is now SAME-TICK (published in OnClientMove before PlayerPreThink, GameWorld.cs:2143-2148) with a vehicle gate."
 features:
   - id: weapon-hook.identity.attributes
     name: "Weapon identity, models, color, flags, ammo type"
@@ -36,9 +35,9 @@ features:
     verification:
       - { kind: code, ref: "Hook.cs ctor vs hook.qh CLASS(Hook)", result: pass }
       - { kind: code, ref: "Hook in WeaponOrder.cs registry list; ItemSpawnFuncs.cs registers weapon_hook map pickup", result: pass }
-      - { kind: code, ref: "Crosshair override (Hook.cs:75-76 'gfx/crosshairhook'/0.5) vs hook.qh:31-32 ATTRIB w_crosshair/w_crosshair_size; consumed LIVE by CrosshairPanel.cs:1292-1322 (weapon.Crosshair + weapon.CrosshairSize)", result: pass }
+      - { kind: code, ref: "Crosshair override (Hook.cs:75-76 'gfx/crosshairhook'/0.5) vs hook.qh:31-32 ATTRIB w_crosshair/w_crosshair_size; consumed LIVE by CrosshairPanel.cs (weapon.Crosshair + weapon.CrosshairSize)", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-25: the per-weapon crosshair (w_crosshair gfx/crosshairhook, size 0.5) is now carried on the port weapon (Hook.cs:75-76 override the GameplayBases.cs:93/100 virtuals) and is consumed live by CrosshairPanel.cs:1292-1322 — presentation partial->faithful, crosshair constant false->true, last open gap closed. Auto-registered via [Weapon]; obtainable + selectable on the normal match path."
+    notes: "Unchanged since 2026-06-25. Per-weapon crosshair carried on the port weapon (Hook.cs:75-76) and consumed live by CrosshairPanel. Auto-registered via [Weapon]; obtainable + selectable on the normal match path."
 
   - id: weapon-hook.primary.state_machine
     name: "Primary grapple lifecycle (fire/reel/remove hook_state machine)"
@@ -51,8 +50,8 @@ features:
       - { name: "pri.refire", base: "0.2 s", port: "0.2 s", match: true }
       - { name: "pri.ammo", base: "5 fuel", port: "5 fuel", match: true }
       - { name: "pri.animtime", base: "0.3 s", port: "0.3 s", match: true }
-      - { name: "W_WeaponRateFactor on refire", base: "applied", port: "applied (Hook.cs:196,243)", match: true }
-      - { name: "pauseregen 1s regen inhibit", base: "yes (g_balance_pause_fuel_regen)", port: "yes (Hook.cs:199-202, PauseRegenFinished)", match: true }
+      - { name: "W_WeaponRateFactor on refire", base: "applied", port: "applied (Hook.cs:200,247)", match: true }
+      - { name: "pauseregen 1s regen inhibit", base: "yes (g_balance_pause_fuel_regen)", port: "yes (Hook.cs:204-206, PauseRegenFinished)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -63,12 +62,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No offhand best-weapon switch (W_SwitchWeapon_Force/w_getbestweapon) when fuel runs out mid-reel."
+      - "No offhand best-weapon switch (W_SwitchWeapon_Force/w_getbestweapon) when fuel runs out mid-reel (hook.qc fuel-out branch: if m_weapon != WEP_Null switch to best weapon)."
     verification:
-      - { kind: code, ref: "Hook.WrThink Primary branch vs wr_think; WeaponRateFactor(actor) applied on HookRefire (Hook.cs:196,243); PauseRegenFinished set 1s w/ IT_UNLIMITED_AMMO guard (Hook.cs:199-202)", result: pass }
+      - { kind: code, ref: "Hook.WrThink Primary branch vs wr_think; WeaponRateFactor(actor) applied on HookRefire (Hook.cs:200,247); PauseRegenFinished set 1s w/ IT_UNLIMITED_AMMO guard (Hook.cs:204-206)", result: pass }
       - { kind: code, ref: "WeaponFireDriver.Frame calls WrThink(Primary) every tick for the active slot-0 weapon", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22: the W_WeaponRateFactor refire scaling and the 1s pauseregen (health/armor/fuel regen) inhibit are now ported (values partial->faithful, two constant mismatches resolved). Press/release latch, WAITING_FOR_RELEASE, hooked_time_max, HOOK_PULLING, FIRING/REMOVING tail all faithful; latched .state==1 modelled as hook.Health>0. Only residual gap is the fuel-out best-weapon auto-switch (offhand)."
+    notes: "Unchanged. Press/release latch, WAITING_FOR_RELEASE, hooked_time_max, HOOK_PULLING, FIRING/REMOVING tail all faithful; latched .state==1 modelled as hook.Health>0; W_WeaponRateFactor refire scaling + 1s pauseregen inhibit ported. Only residual gap is the fuel-out best-weapon auto-switch (offhand)."
 
   - id: weapon-hook.primary.hooked_fuel_drain
     name: "Hooked-state fuel drain + free grace period"
@@ -92,9 +91,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "WrThink hooked-fuel block vs QC fuel drain; IT_UNLIMITED_AMMO guard now present (Hook.cs:211, !unlimitedAmmo)", result: pass }
+      - { kind: code, ref: "WrThink hooked-fuel block vs QC fuel drain; IT_UNLIMITED_AMMO guard present (Hook.cs:215, !unlimitedAmmo)", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22: the drain block now skips entirely under IT_UNLIMITED_AMMO (the missing guard is now in place at Hook.cs:211), so the last open gap is resolved — fully faithful. Free for hooked_time_free seconds, then drains hooked_ammo/s; fuel-out forces remove. Offhand path tops fuel up when useammo off (so the drain is a no-op)."
+    notes: "Unchanged. The drain block skips entirely under IT_UNLIMITED_AMMO. Free for hooked_time_free seconds, then drains hooked_ammo/s; fuel-out forces remove. Offhand path tops fuel up when useammo off (so the drain is a no-op)."
 
   - id: weapon-hook.primary.fire_grapplinghook
     name: "FireGrapplingHook: launch the chain projectile"
@@ -107,8 +106,8 @@ features:
       - { name: "grapplehook_speed_fly", base: "1800 qu/s", port: "Bal(g_balance_grapplehook_speed_fly,1800)", match: true }
       - { name: "grapplehook_health", base: "50 hp", port: "Bal(g_balance_grapplehook_health,50)", match: true }
       - { name: "chain bbox", base: "'-3 -3 -3'..'3 3 3'", port: "same", match: true }
-      - { name: "movetype", base: "FLY (TOSS if grapplehook_gravity)", port: "FLY (TOSS if GrappleGravity, Hook.cs:267)", match: true }
-      - { name: "muzzle flash", base: "W_MuzzleFlash (EFFECT_HOOK_MUZZLEFLASH)", port: "EffectEmitter.Emit(HOOK_MUZZLEFLASH) (Hook.cs:259)", match: true }
+      - { name: "movetype", base: "FLY (TOSS if grapplehook_gravity)", port: "FLY (TOSS if GrappleGravity, Hook.cs:271)", match: true }
+      - { name: "muzzle flash", base: "W_MuzzleFlash (EFFECT_HOOK_MUZZLEFLASH)", port: "EffectEmitter.Emit(HOOK_MUZZLEFLASH) (Hook.cs:263)", match: true }
     status:
       logic: partial
       values: faithful
@@ -121,12 +120,13 @@ features:
     gaps:
       - "No dedicated hook entity stream (GrapplingHookSend / ENT_CLIENT_HOOK with hook_start/hook_end). The chain HEAD IS networked via the generic projectile feed (ServerNet.Classify -> Projectile: FL_PROJECTILE/Item + Owner + MoveType.Fly) and renders as a red Hookbomb spike — but with no rope-endpoint stream there is no rope line (see weapon-hook.presentation.rope_line)."
       - "No WarpZone refsys tracking (WarpZone_RefSys_SpawnSameRefSys)."
+      - "weaponLocked(actor)/actor.vehicle early-return guard at the top of FireGrapplingHook not ported (the offhand path now gates the vehicle case upstream at GameWorld.cs:2147, but the direct weapon-fire path lacks the weaponLocked guard)."
     verification:
       - { kind: code, ref: "Hook.FireGrapplingHook vs server/hook.qc FireGrapplingHook", result: pass }
-      - { kind: code, ref: "ServerNet.Classify: grapplinghook (Item+Owner+Fly) -> Projectile; ProjectileCatalog grapplinghook/hook -> Hookbomb (ProjectileCatalog.cs:255)", result: pass }
-      - { kind: code, ref: "W_MuzzleFlash ported: EffectEmitter.Emit(HOOK_MUZZLEFLASH) at shot origin (Hook.cs:259); HOOK_MUZZLEFLASH=grapple_muzzleflash registered (EffectsList.cs:123); gravity-TOSS movetype honoured (Hook.cs:267-268)", result: pass }
+      - { kind: code, ref: "ServerNet.Classify: grapplinghook (Item+Owner+Fly) -> Projectile (ServerNet.cs:2339); ProjectileCatalog grapplinghook/hook -> Hookbomb", result: pass }
+      - { kind: code, ref: "W_MuzzleFlash ported: EffectEmitter.Emit(HOOK_MUZZLEFLASH) at shot origin (Hook.cs:263); gravity-TOSS movetype honoured (Hook.cs:271-272)", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22: (1) the hook muzzle flash is now emitted (HOOK_MUZZLEFLASH = grapple_muzzleflash, the same EFFECT_HOOK_MUZZLEFLASH Base's W_MuzzleFlash plays) and (2) the g_balance_grapplehook_gravity TOSS-mode movetype is now honoured — both prior constant mismatches resolved. Logic stays partial only for the absent WarpZone refsys; presentation stays partial only because the dedicated rope-endpoint stream is still absent (tracked in rope_line). Plays hook_fire sound; shootable HP set; EditProjectile mutator hook called."
+    notes: "Unchanged classification. Hook muzzle flash emitted (HOOK_MUZZLEFLASH = grapple_muzzleflash) and g_balance_grapplehook_gravity TOSS-mode movetype honoured. Logic stays partial for the absent WarpZone refsys + the unported weaponLocked guard; presentation stays partial because the dedicated rope-endpoint stream is still absent (tracked in rope_line). Plays hook_fire sound; shootable HP set; EditProjectile mutator hook called."
 
   - id: weapon-hook.primary.latch
     name: "GrapplingHookTouch / GrapplingHook_Stop: latch onto what it hits"
@@ -147,11 +147,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Latched hook becomes INVISIBLE: GrapplingHook_Stop sets MoveType.None, which is NOT a projectile movetype, so ServerNet.Classify (IsProjectileMoveType, ServerNet.cs:2095/2115) no longer classifies it as Projectile; with no model it falls to Generic and is dropped from the render. The rendered spike disappears on latch. Base keeps the latched hook drawn via CSQC."
+      - "Latched hook becomes INVISIBLE: GrapplingHook_Stop sets MoveType.None (Hook.cs:318), which is NOT a projectile movetype, so ServerNet.Classify (IsProjectileMoveType, ServerNet.cs:2319-2320/2339) no longer classifies it as Projectile; with no model it falls to Generic and is dropped from the render. The rendered spike disappears on latch. Base keeps the latched hook drawn via CSQC."
     verification:
       - { kind: code, ref: "GrapplingHookTouch vs QC touch+Stop+SetMovetypeFollow", result: pass }
-      - { kind: code, ref: "EFFECT_HOOK_IMPACT now emitted: EffectEmitter.Emit(\"HOOK_IMPACT\", origin); HOOK_IMPACT=grapple_impact registered EffectsList.cs:122", result: pass }
-      - { kind: code, ref: "ServerNet.Classify: MoveType.None model-less entity -> Generic (no alias model) -> dropped (IsProjectileMoveType excludes None, ServerNet.cs:2095)", result: fail }
+      - { kind: code, ref: "EFFECT_HOOK_IMPACT emitted: EffectEmitter.Emit(\"HOOK_IMPACT\", origin) (Hook.cs:315); hook_impact sound played", result: pass }
+      - { kind: code, ref: "ServerNet.Classify: MoveType.None model-less entity -> Generic (no alias model) -> dropped (IsProjectileMoveType excludes None, ServerNet.cs:2319-2320)", result: fail }
     confidence: high
     notes: "Unchanged. Emits the EFFECT_HOOK_IMPACT particle on latch AND ports SetMovetypeFollow — records the hit entity as hook.Aiment, clamps the follow-offset into the player bbox, and tracks a moving aiment each think (GrapplingHookThink re-origins the chain to follow.Origin+ViewOfs). This is the precondition vampirehook drains off. STILL OPEN: the latched head is invisible (MoveType.None drops it from the snapshot)."
 
@@ -170,7 +170,7 @@ features:
       - { name: "grapplehook_airfriction", base: "0.2", port: "Bal(...,0.2)", match: true }
       - { name: "grapplehook_force_rubber_overstretch", base: "1000", port: "Bal(...,1000)", match: true }
       - { name: "grapplehook_length_min", base: "50 qu", port: "Bal(...,50)", match: true }
-      - { name: "reel myorg origin", base: "origin+view_ofs+hook_shotorigin('8 8 -12')", port: "origin+ViewOfs (no gun offset)", match: false }
+      - { name: "reel myorg origin", base: "origin+view_ofs+hook_shotorigin('8 8 -12')", port: "origin+ViewOfs (no gun offset, Hook.cs:374)", match: false }
     status:
       logic: faithful
       values: faithful
@@ -181,15 +181,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Reel origin omits the gun shot-origin offset (hook_shotorigin), so latch/length geometry is slightly offset from Base."
+      - "Reel origin omits the gun shot-origin offset (hook_shotorigin '8 8 -12'), so latch/length geometry is slightly offset from Base."
       - "Base applies the rubber-band velocity to pull_entity only `if (!frozen_pulling && !(aiment.flags & FL_PROJECTILE))`; the port always writes actor.Velocity. Differs only when the aiment is a projectile/frozen (edge case)."
-      - "Mutator velocity_multiplier / pull_entity rewrite from GrappleHookThink not honoured (port's GrappleHookThinkArgs carries no such args); pull_frozen (g_balance_grapplehook_pull_frozen) and the frozen-pull early-remove are not ported; no WarpZone refsys transforms."
-      - "pusher/pushltime/istypefrag frag attribution on the PULLED aiment (tarzan>=2 reel-to-victim) not set (the shoot-down frag credit IS now set, but the reel-pull credit window is separate; out of scope)."
+      - "Mutator tarzan/pull_entity/velocity_multiplier rewrite from GrappleHookThink not honoured (port's GrappleHookThinkArgs carries no such args); pull_frozen (g_balance_grapplehook_pull_frozen) and the frozen-pull early-remove are not ported; no WarpZone refsys transforms."
+      - "pusher/pushltime/istypefrag frag attribution on the PULLED aiment (tarzan>=2 reel-to-victim) not set (the shoot-down frag credit IS set, but the reel-pull credit window is separate; out of scope)."
     verification:
       - { kind: code, ref: "GrapplingHookThink tarzan branch (newlength/overstretch/spring/airfriction + tarzan>=2 aiment pull) vs server/hook.qc tarzan branch", result: pass }
-      - { kind: value, ref: "balance-xonotic.cfg:253 g_grappling_hook_tarzan 2; speed_pull/force_rubber/stretch/airfriction all match Base", result: pass }
+      - { kind: value, ref: "balance-xonotic.cfg g_grappling_hook_tarzan 2; speed_pull/force_rubber/stretch/airfriction all match Base", result: pass }
     confidence: high
-    notes: "Unchanged. The elastic tarzan rubber-band reel (hook_length shorten toward minlength, overstretch spring, airfriction, spring-to-latch) AND the tarzan>=2 half-impulse pull of a hooked player/nade — a near-bit transcription of Base's tarzan branch; the old straight tarzan-0 reel is kept as the else branch. All grapplehook_* and tarzan constants read from the balance cfg (defaults match). Residual divergences are minor (gun-offset, projectile-aiment velocity guard, mutator velocity_multiplier, pull_frozen, warpzone). Fires the GrappleHookThink mutator hook (feeds vampirehook)."
+    notes: "Unchanged. The elastic tarzan rubber-band reel (hook_length shorten toward minlength, overstretch spring, airfriction, spring-to-latch) AND the tarzan>=2 half-impulse pull of a hooked player/nade — a near-bit transcription of Base's tarzan branch; the old straight tarzan-0 reel is kept as the else branch. Residual divergences are minor (gun-offset, projectile-aiment velocity guard, mutator velocity_multiplier, pull_frozen, warpzone). Fires the GrappleHookThink mutator hook (feeds vampirehook)."
 
   - id: weapon-hook.primary.remove_reset
     name: "RemoveHook / RemoveGrapplingHooks / reset + shoot-down"
@@ -201,9 +201,11 @@ features:
       - "common/weapons/weapon/hook.qc:Hook.wr_resetplayer"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:RemoveHook"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:RemoveGrapplingHooks"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:WrResetPlayer"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: faithful
       presentation: na
@@ -212,12 +214,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No central RemoveGrapplingHooks reset on freezetag-freeze / teleport / vehicle-enter / wr_resetplayer; the hook is cleared only via the weapon's own state machine."
-      - "Shoot-down frag attribution sets pusher/pushltime but hardcodes istypefrag=false (chat-input PHYS_INPUT_BUTTON_CHAT not wired), so the istypefrag obituary classification differs from Base in the chat-while-shot-down edge case."
+      - "Shoot-down frag attribution sets pusher/pushltime + istypefrag=actor.ButtonChat (Hook.cs:296), which is now faithful to Base's PHYS_INPUT_BUTTON_CHAT classification (prior hardcoded-false gap resolved)."
     verification:
-      - { kind: code, ref: "Hook.RemoveHook + ProjectileDamage callback vs server/hook.qc RemoveHook/GrapplingHook_Damage; FLY->WALK restore now in RemoveHook (Hook.cs:458-459); pusher/pushltime credit set (Hook.cs:286-291)", result: pass }
-    confidence: medium
-    notes: "FIX since 2026-06-22: (1) RemoveHook now explicitly restores the owner MOVETYPE_FLY->MOVETYPE_WALK (Hook.cs:458-459, was deferred to the movement system) and (2) the shoot-down now credits the attacker as the owner's pusher/pushltime for the istypefrag frag window (Hook.cs:286-291) — both prior gaps largely resolved. Residual: no central RemoveGrapplingHooks reset on freeze/teleport/vehicle/wr_resetplayer, and istypefrag is hardcoded false. Live (reached via the weapon state machine each tick); the top-of-think guard drops a hook whose followed entity vanished / is a non-nade projectile."
+      - { kind: code, ref: "Hook.RemoveHook + ProjectileDamage callback vs server/hook.qc RemoveHook/GrapplingHook_Damage; FLY->WALK restore in RemoveHook (Hook.cs:464-465); pusher/pushltime/istypefrag credit set (Hook.cs:290-297)", result: pass }
+      - { kind: code, ref: "RemoveGrapplingHooks(pl) static (Hook.cs:479) wired LIVE: ClientManager.cs:549 (PutObserverInServer) + :805 (ClientDisconnect); StatusEffects.cs:155 (Frozen OnApply); Teleporters.cs:251/273; VehicleBoarding.cs:229 (vehicles_enter)", result: pass }
+      - { kind: code, ref: "WrResetPlayer (Hook.cs:590) calls RemoveGrapplingHooks + resets hook timers; dispatched per populated slot by SpawnSystem.cs:905 (and NixMutator.cs:287)", result: pass }
+    confidence: high
+    notes: "FIX since 2026-06-25: the central RemoveGrapplingHooks reset now EXISTS (Hook.cs:479-492, FLY->WALK + clears every slot's .hook) and is wired LIVE into observer/disconnect, freezetag/Frozen-status apply, teleport, vehicle-enter, and wr_resetplayer (live via SpawnSystem) — the long-standing 'no central reset' worst-gap is resolved (logic partial->faithful). RemoveHook restores FLY->WALK; shoot-down credits pusher/pushltime + istypefrag=ButtonChat. The top-of-think guard drops a hook whose followed entity vanished / is a non-nade projectile. The only residual divergence from GrapplingHook_Damage is that the port's callback re-applies damage via the projectile-HP path rather than the QC TakeResource ordering (behaviourally equivalent shoot-down)."
 
   - id: weapon-hook.secondary.gravity_bomb
     name: "Secondary: lob the gravity bomb (W_Hook_Attack2)"
@@ -248,7 +251,7 @@ features:
       - "No bot_dodge/bot_dodgerating, missile_flags (MIF_SPLASH|MIF_ARC), or damagedbycontents on the bomb (bot AI + lava/contents-detonation; out of scope here)."
     verification:
       - { kind: code, ref: "AttackGravityBomb vs W_Hook_Attack2", result: pass }
-      - { kind: code, ref: "hookbomb (Item+Owner+Toss) -> ServerNet Projectile; ProjectileCatalog -> Hookbomb render (ProjectileCatalog.cs:254); HOOK_MUZZLEFLASH emitted", result: pass }
+      - { kind: code, ref: "hookbomb (Item+Owner+Toss) -> ServerNet Projectile; ProjectileCatalog -> Hookbomb render; HOOK_MUZZLEFLASH emitted (Hook.cs:531)", result: pass }
     confidence: high
     notes: "Unchanged. Toss launch, lifetime+touch+shoot-down detonation, shootable HP all faithful; bomb networked + rendered as a Hookbomb projectile; hookbomb_fire sound + HOOK_MUZZLEFLASH effect emitted."
 
@@ -273,18 +276,17 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "HITTYPE_SPAM flag not OR'd into the deathtype after the first blast tick (cosmetic deathtype/obituary detail)."
-      - "EF_NODRAW is not set on the bomb at blast start (Base hides the model while the pull ticks); minor visual."
+    gaps: []
     verification:
       - { kind: code, ref: "ExplodeThink power-curve delta vs W_Hook_ExplodeThink", result: pass }
+      - { kind: code, ref: "EF_NODRAW set on blast start (Hook.cs:541, self.Effects |= EffectFlags.NoDraw); HITTYPE_SPAM OR'd into deathtype after the first tick (Hook.cs:573, DeathTypes.WithHitType(..., Spam))", result: pass }
     confidence: high
-    notes: "Unchanged. The centrepiece: f = prev_remaining - clamp(1-dt/duration,0,1)^power applied each 0.05s tick so the cumulative blast == one full RadiusDamage, spread over duration. EFFECT_HOOK_EXPLODE emitted at blast start."
+    notes: "FIX since 2026-06-25: the two prior presentation/deathtype gaps are resolved — EF_NODRAW is now set on the bomb at blast start (Hook.cs:541, hides the model while the pull ticks) and HITTYPE_SPAM is now OR'd into the deathtype after the first blast tick (Hook.cs:573), matching W_Hook_ExplodeThink. The centrepiece power-curve (f = prev_remaining - clamp(1-dt/duration,0,1)^power applied each 0.05s tick so the cumulative blast == one full RadiusDamage) is faithful. EFFECT_HOOK_EXPLODE emitted at blast start."
 
   - id: weapon-hook.offhand.mutator
     name: "Grappling Hook offhand mutator (g_grappling_hook)"
@@ -301,22 +303,21 @@ features:
     status:
       logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Residual 1-tick read/publish latency: OffhandFirePressed is published in PlayerPostThink (WeaponFireDriver.Frame, line 66) but read in PlayerPreThink (HookMutator.OnPlayerPreThink), which runs EARLIER in the same OnClientMove tick — so the offhand-think observes the +hook button one server tick (~1/72 s) stale. QC dispatches offhand_think inside W_WeaponFrame same-frame. Functionally castable; minor latency (timing: partial)."
       - "No useammo ammo_factor toggle on the Hook weapon (handled via fuel top-up instead) — behaviourally equivalent; only matters with g_grappling_hook_useammo on."
-      - "No in-mutator vehicle / weaponUseForbidden gate on the +hook key: WeaponUseForbidden (WeaponFireDriver.cs) is a stub returning false, and the seated case is excluded only by WeaponThink's early return, which can leave OffhandFirePressed un-zeroed/stale while seated (edge case)."
+      - "weaponUseForbidden side of the QC gate (weaponsystem.qc:609-611) is not modelled (WeaponUseForbidden is a stub returning false); the vehicle case IS now gated (GameWorld.cs:2147 `&& p.Vehicle is null`)."
     verification:
-      - { kind: code, ref: "HookMutator OnPlayerPreThink; MutatorHooks.PlayerPreThink.Call live in GameWorld", result: pass }
-      - { kind: code, ref: "Full input chain traced LIVE: BindInput.cs:46 (hook->+hook) -> BindTable.cs:129/169 (_hook/HookHeld) -> NetGame.cs:4175 (buttons|=InputButtons.Hook) -> InputCommand.cs:20 (Hook=BIT(6)) -> ServerNet.cs:1466 (ButtonHook) -> WeaponFireDriver.cs:66 (OffhandFirePressed=ButtonHook) -> HookMutator.cs:103 (st.ButtonAttack=OffhandFirePressed) -> Hook.WrThink fires FireGrapplingHook", result: pass }
-      - { kind: code, ref: "ordering: PreThink (read) precedes PostThink->WeaponThink->Frame (publish) within OnClientMove -> 1-tick read-publish latency", result: pass }
+      - { kind: code, ref: "HookMutator OnPlayerPreThink (HookMutator.cs:94-112); MutatorHooks.PlayerPreThink.Call live in GameWorld.cs:2169-2171", result: pass }
+      - { kind: code, ref: "Full input chain traced LIVE: BindInput -> BindTable (_hook/HookHeld) -> NetGame (buttons|=InputButtons.Hook) -> InputCommand (Hook=BIT(6)) -> ServerNet.cs:1617 (ButtonHook) -> GameWorld.cs:2147 (OffhandFirePressed = hookPressed && Vehicle is null) -> HookMutator.cs:103 (st.ButtonAttack=OffhandFirePressed) -> Hook.WrThink fires FireGrapplingHook", result: pass }
+      - { kind: code, ref: "ordering: OffhandFirePressed published in OnClientMove (GameWorld.cs:2143-2148) BEFORE PlayerPreThink (line 2169) -> SAME-TICK offhand-think, no read/publish latency (bots keep the PostThink publish in WeaponFireDriver.cs:69)", result: pass }
     confidence: high
-    notes: "Live (Wave 5, commit 66e378f). The +hook offhand-fire button is delivered to the server (Entity.OffhandFirePressed = input.ButtonHook in WeaponFireDriver.Frame), reviving the offhand grappling hook (instahook ruleset g_grappling_hook 1 + grappling-hook campaign specials). Offhand assign + filter-item suppress + start-fuel grant remain faithful. The only residual is a 1-tick read/publish latency (timing partial). Input-chain line refs re-verified 2026-06-25 (small line shifts: BindTable 131->129, NetGame 3984->4175, ServerNet 1415->1466)."
+    notes: "FIX since 2026-06-25: the prior 1-tick read/publish latency is RESOLVED (timing partial->faithful) — the human offhand button is now published in OnClientMove BEFORE the PlayerPreThink hook (GameWorld.cs:2143-2148), so the grapple reacts same-tick like QC's W_WeaponFrame; bots (who never bind +hook) keep the PostThink publish. A vehicle gate was also added (GameWorld.cs:2147 zeroes the key in a vehicle, QC weaponsystem.qc:609-611). Offhand assign + filter-item suppress + start-fuel grant remain faithful. Residual: useammo ammo_factor toggle + the weaponUseForbidden half of the QC gate."
 
   - id: weapon-hook.mutator.vampirehook
     name: "Vampire Hook (drain HP while hooked to an enemy)"
@@ -342,9 +343,9 @@ features:
       - "Drains only on a DIRECT hook hit onto an enemy player; with tarzan reel-to-victim a hooked player can also be pulled, which works, but the drain still requires the chain's aiment to be that player (matches Base, since Base also keys on thehook.aiment)."
     verification:
       - { kind: code, ref: "VampireHookMutator.OnGrappleHookThink vs sv_vampirehook.qc (last_dmg gate, time<game_starttime block, team/enemy/frozen/alive guards, Damage(WEP_HOOK)+Heal, team-heal self-drain)", result: pass }
-      - { kind: code, ref: "Hook.GrapplingHookTouch sets self.Aiment=other (SetMovetypeFollow port); thehook.RealOwner=>Owner=firing actor; GrappleHookThink.Call invoked each think", result: pass }
+      - { kind: code, ref: "Hook.GrapplingHookTouch sets self.Aiment=other (SetMovetypeFollow port); thehook.RealOwner=>Owner=firing actor; GrappleHookThink.Call invoked each think (Hook.cs:363-364)", result: pass }
     confidence: high
-    notes: "Live. The latch records the hit entity as hook.Aiment (SetMovetypeFollow port in GrapplingHookTouch), so a direct hook hit on an enemy player satisfies the IS_PLAYER(aiment) guard and the per-damagerate drain/heal fires on the live match path (when g_vampirehook is set). The GrappleHookThink mutator hook is dispatched each think by Hook.GrapplingHookThink. Body is a faithful transcription of the QC guards + Damage/Heal."
+    notes: "Unchanged. The latch records the hit entity as hook.Aiment (SetMovetypeFollow port in GrapplingHookTouch), so a direct hook hit on an enemy player satisfies the IS_PLAYER(aiment) guard and the per-damagerate drain/heal fires on the live match path (when g_vampirehook is set). The GrappleHookThink mutator hook is dispatched each think by Hook.GrapplingHookThink. Body is a faithful transcription of the QC guards + Damage/Heal."
 
   - id: weapon-hook.presentation.rope_line
     name: "CSQC rope line rendering (Draw_GrapplingHook)"
@@ -368,8 +369,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No hook ROPE line is drawn. There is no GrapplingHookSend/ENT_CLIENT_HOOK stream (with hook_start/hook_end), no Draw_CylindricLine, and no team-coloured rope texture/WarpZone-traced segment in game/. The chain HEAD is networked + rendered as a Hookbomb spike while in flight (and disappears once latched), but the connecting rope between the firer's gun and the latch point is entirely absent."
+      - "No hook ROPE line is drawn. There is no GrapplingHookSend/ENT_CLIENT_HOOK stream (with hook_start/hook_end), no Draw_CylindricLine/Draw_GrapplingHook, and no team-coloured rope texture/WarpZone-traced segment in game/ (all Draw_CylindricLine hits in game/ are unrelated beam/laser/porto renderers). The chain HEAD is networked + rendered as a Hookbomb spike while in flight (and disappears once latched), but the connecting rope between the firer's gun and the latch point is entirely absent."
     verification:
-      - { kind: code, ref: "no Draw_GrapplingHook/CylindricLine/ENT_CLIENT_HOOK in game/ source (only registry/specs/planning docs); chain head only classified as ProjectileType.Hookbomb (a spike), no rope", result: fail }
+      - { kind: code, ref: "no Draw_GrapplingHook/ENT_CLIENT_HOOK/GrapplingHookSend in game/ or src/ (only this registry + spec docs); chain head only classified as ProjectileType.Hookbomb (a spike), no rope", result: fail }
     confidence: high
-    notes: "STILL OPEN. Distinct from the chain-head spike (rendered while flying). The rope line itself + the dedicated hook entity stream are unimplemented presentation."
+    notes: "STILL OPEN. Distinct from the chain-head spike (rendered while flying). The rope line itself + the dedicated hook entity stream (with a DrawGrapplingHook mutator hook for team colour) are unimplemented presentation."

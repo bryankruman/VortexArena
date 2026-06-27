@@ -5,11 +5,12 @@ last_audited: "2026-06-25"
 summary:
   feature_count: 16
   worst_gaps:
-    - "DUAL-HANDLER DESYNC RESOLVED (verified 2026-06-26): the prior single biggest defect remains GONE. The Survival arm drives the ONE live GameWorld.Rounds handler off Survival's OWN predicates — EnableRounds(surv.HandlerCanRoundStart, ()=>{surv.CheckWinningCondition(); return surv.RoundOver;}, onRoundStart: surv.AssignRoles, endDelay 5, countdown g_survival_warmup, roundTimeLimit g_survival_round_timelimit) at GameWorld.cs:2411-2417 — AND wires _roundPrep (roster) + _roundSync = MirrorRoundTiming(survRounds, surv.Handler) at 2421-2422, exactly like CA/FreezeTag. The live handler fires AssignRoles at round start, uses CheckWinningCondition (not the degenerate team-based DefaultCanRoundEnd) for round-end, and mirrors RoundEndTime/RoundsPlayed/GameStartTime/IsRoundStarted into surv.Handler every frame (GameWorld.cs:4040-4051). DriveGametypeFrame's Survival arm no longer ticks surv.Handler (GameWorld.cs:2834-2843) — it only feeds the roster + runs an idempotent CheckWinningCondition safety net. The secret-role moment and the map-reset/respawn-unlock moment coincide."
-    - "Notifications remain LIVE (verified 2026-06-26): surv.Notifications = new SurvivalNotifyHost() (GameWorld.cs:2436) routes Role/RoundResult/Alone to NotificationSystem.Send, whose live server sink is NotificationNetSink (installed unconditionally at ServerNet.cs:300). RoundResult sends BOTH Center AND Info (SurvivalNotifyHost.RoundResult, GameWorld.cs:4138-4139) matching Base's MSG_CENTER+MSG_INFO pairs. Player sees role at round start, win/tie banner (incl. INFO line) at round end, and the last-of-side 'alone' prompt."
-    - "Survival is STILL absent from GameWorld.MatchEnded (the switch at GameWorld.cs:297-319 has no Survival arm → falls to `_ => false`) — Survival has no MatchEnded latch; the overall match-end / intermission path for Survival is unverified. The registration asserts the Base mapinfo defaults at activation (timelimit=20 at GameWorld.cs:2399-2400, fraglimit=12 at 2401-2402)."
-    - "FIXED (2026-06-25→26 audit): the green-prey/red-hunter player-model/scoreboard COLORMAP override (SURV_COLOR_PREY 51 / SURV_COLOR_HUNTER 68, colormap = 1024 + plcolor, cl_survival.qc NET_HANDLE + ForcePlayercolors_Skip) is now PORTED + LIVE on the client appearance path — ClientWorld.ResolveForcedColormap (game/client/ClientWorld.cs:1359-1367) returns 1024+68 for a known hunter / 1024+51 otherwise, BEFORE the force-color resolution so it overrides cl_forceplayercolors (matching QC CBC_ORDER_LAST). Fed by NetGame.BuildAppearanceContext (game/net/NetGame.cs:5290-5298, ctx.SurvivalActive + ctx.SurvivalHunterIds = the disclosed-hunter set), so mid-round prey see all-green (no hunter ids leaked) and own-hunters see red, honoring the disclosure invariant. The prior single presentation gap is closed."
-    - "Remaining minor gaps: (1) cl_surv DrawScoreboard_Force (force the scoreboard open while GAME_STOPPED so players see who the hunter was) is still not modeled; (2) the Survival mid-round late-join force-observe (Base ForbidSpawn + PutClientInServer: !allowed_to_spawn ⇒ TRANSMUTE Observer + INFO_CA_JOIN_LATE) is NOT wired for Survival — the generic GametypeJoinGate exists but is installed only for LMS — see new row survival.join.late_join_observe."
+    - "DUAL-HANDLER DESYNC RESOLVED (re-verified 2026-06-25 drift): the Survival arm drives the ONE live GameWorld.Rounds handler off Survival's OWN predicates — EnableRounds(surv.HandlerCanRoundStart, ()=>{surv.CheckWinningCondition(); return surv.RoundOver;}, onRoundStart: surv.AssignRoles, endDelay 5, countdown g_survival_warmup, roundTimeLimit g_survival_round_timelimit) at GameWorld.cs:2900-2906 — AND wires _roundPrep (roster) + _roundSync = MirrorRoundTiming(survRounds, surv.Handler) at 2910-2911, exactly like CA/FreezeTag. DriveGametypeFrame's Survival arm no longer ticks surv.Handler (GameWorld.cs:3332-3340) — it only feeds the roster + runs an idempotent CheckWinningCondition safety net."
+    - "FIXED (2026-06-25 drift): the Survival mid-round late-join force-observe (Base ForbidSpawn + PutClientInServer: !allowed_to_spawn ⇒ no client spawns) is NOW ported + LIVE. Survival.CanJoin/OnJoin (Survival.cs:603-624) are installed in the Survival arm — Clients.GametypeJoinGate = p => surv.CanJoin(p, surv.RoleAssigned) && GametypeHasFreeSlot(p); Clients.GametypeOnJoin = p => surv.OnJoin(p) (GameWorld.cs:2920-2921) — and consulted live in ClientManager (join gate at ClientManager.cs:356, OnJoin at :298). The prior `missing` row survival.join.late_join_observe is closed."
+    - "Notifications remain LIVE (re-verified 2026-06-25): surv.Notifications = new SurvivalNotifyHost() (GameWorld.cs:2934) routes Role/RoundResult/Alone to NotificationSystem.Send. RoundResult sends BOTH Center AND Info (SurvivalNotifyHost.RoundResult) matching Base's MSG_CENTER+MSG_INFO pairs."
+    - "Survival is STILL absent from GameWorld.MatchEnded (the switch at GameWorld.cs:300-321 has no Survival arm → falls to `_ => false`) — Survival has no MatchEnded latch; the overall match-end / intermission path for Survival is unverified. The registration asserts the Base mapinfo defaults at activation (timelimit=20 at GameWorld.cs:2888-2889, fraglimit=12 at 2890-2891)."
+    - "Player COLORMAP override remains FIXED + LIVE (re-verified 2026-06-25): SURV_COLOR_PREY 51 / SURV_COLOR_HUNTER 68 (colormap = 1024 + plcolor) ported on the client appearance path — ClientWorld.ResolveForcedColormap (game/client/ClientWorld.cs:1359-1367, consts at 300-301) returns 1024+68 hunter / 1024+51 prey, BEFORE force-color resolution (QC CBC_ORDER_LAST). Fed by NetGame.BuildAppearanceContext (game/net/NetGame.cs:5511-5525, ctx.SurvivalActive + ctx.SurvivalHunterIds = disclosed-hunter set), honoring the disclosure invariant."
+    - "Remaining minor gap: cl_surv DrawScoreboard_Force (force the scoreboard open while GAME_STOPPED so players see who the hunter was) is still not modeled — see survival.presentation.player_colors_and_notifications."
 
 features:
   - id: survival.gametype.registration
@@ -20,10 +21,10 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:Survival()"
       - "src/XonoticGodot.Server/GameWorld.cs:ResolveGameType"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (Survival arm timelimit/fraglimit asserts, 2399-2402)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (Survival arm timelimit/fraglimit asserts, 2888-2891)"
     constants:
       - { name: "net_name", base: "surv", port: "surv", match: true }
-      - { name: "default_match", base: "timelimit=20 pointlimit=12", port: "asserted at activation: timelimit=20 (GameWorld.cs:2399-2400) + fraglimit=12 (2401-2402) when unconfigured", match: true }
+      - { name: "default_match", base: "timelimit=20 pointlimit=12", port: "asserted at activation: timelimit=20 (GameWorld.cs:2888-2889) + fraglimit=12 (2890-2891) when unconfigured", match: true }
       - { name: "team_game", base: "USEPOINTS only (no teams)", port: "TeamGame=false", match: true }
     status:
       logic: faithful
@@ -37,9 +38,9 @@ features:
     gaps:
       - "m_isForcedSupported (LMS-map inheritance: g_survival_not_lms_maps gate → any LMS map auto-supports Survival, cl/survival.qh) is not modeled in the gametype class; map-support inheritance is unverified. m_isAlwaysSupported=true is also not modeled."
     verification:
-      - { kind: code, ref: "[GameType] attr + NetName=surv (Survival.cs:119) resolves; ResolveGameType maps 'surv' to Survival; ActivateGameType asserts timelimit=20/fraglimit=12 when unconfigured (GameWorld.cs:2399-2402)", result: pass }
+      - { kind: code, ref: "[GameType] attr + NetName=surv (Survival.cs:119) resolves; ResolveGameType maps 'surv' to Survival; ActivateGameType asserts timelimit=20/fraglimit=12 when unconfigured (GameWorld.cs:2888-2891)", result: pass }
     confidence: high
-    notes: "UPGRADED values partial→faithful: the timelimit=20 pointlimit=12 mapinfo defaults are now asserted at activation (GameWorld.cs:2399-2402), matching Base's gametype_init default args. Only the m_isForcedSupported LMS-map auto-support remains unmodeled (a coverage gap, not a value mismatch)."
+    notes: "values faithful: the timelimit=20 pointlimit=12 mapinfo defaults are asserted at activation (GameWorld.cs:2888-2891), matching Base's gametype_init default args (survival.qh:12). Only m_isForcedSupported (g_survival_not_lms_maps → LMS-map auto-support, survival.qh:18-27) + m_isAlwaysSupported=true remain unmodeled (a coverage gap, not a value mismatch). Re-verified 2026-06-25 (line refs updated)."
 
   - id: survival.round.assign_roles
     name: "Round start secretly assigns hunters (live-only count, bounded, random pick)"
@@ -49,7 +50,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:AssignRoles"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:HunterCount"
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (EnableRounds onRoundStart: surv.AssignRoles, 2414)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (EnableRounds onRoundStart: surv.AssignRoles, 2903)"
     constants:
       - { name: "g_survival_hunter_count", base: "0.25", port: "0.25 (cvar; 0.25f fallback)", match: true }
       - { name: "hunter_count_formula", base: "bound(1, cvar>=1?cvar:floor(live*cvar), live-1)", port: "same", match: true }
@@ -66,8 +67,8 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "SurvivalRolesTests (live-only count, bound formula, random pick, <2 guard) pass", result: pass }
-      - { kind: code, ref: "AssignRoles is the live round-start callback: EnableRounds(..., onRoundStart: () => surv.AssignRoles(Clients.Players)) at GameWorld.cs:2414. The single live GameWorld.Rounds handler now fires it at cnt==0, and surv.Handler timing is mirrored via _roundSync=MirrorRoundTiming (GameWorld.cs:2422, 4040-4051). The secret-role moment now coincides with the live round-start/respawn-unlock.", result: pass }
-      - { kind: code, ref: "Per-live-player Notifications.Role(p, isHunter) tail call (Survival.cs:285-287) is LIVE: surv.Notifications = SurvivalNotifyHost (GameWorld.cs:2436) → NotificationSystem.Send(OneOnly, Center, SURVIVAL_HUNTER/SURVIVAL_SURVIVOR) → NotificationNetSink broadcast.", result: pass }
+      - { kind: code, ref: "AssignRoles is the live round-start callback: EnableRounds(..., onRoundStart: () => surv.AssignRoles(Clients.Players)) at GameWorld.cs:2903. The single live GameWorld.Rounds handler fires it at cnt==0, and surv.Handler timing is mirrored via _roundSync=MirrorRoundTiming (GameWorld.cs:2911, 4667). The secret-role moment coincides with the live round-start/respawn-unlock.", result: pass }
+      - { kind: code, ref: "Per-live-player Notifications.Role(p, isHunter) tail call (Survival.cs:285-287) is LIVE: surv.Notifications = SurvivalNotifyHost (GameWorld.cs:2934) → NotificationSystem.Send(OneOnly, Center, SURVIVAL_HUNTER/SURVIVAL_SURVIVOR) → NotificationNetSink broadcast.", result: pass }
     confidence: high
     notes: "FIXED timing unknown→faithful: the prior dual-handler desync is resolved. AssignRoles is now the actual live round-start callback (not a second independently-timed handler), and surv.Handler's clock is mirrored from the live handler each frame. Assignment algorithm faithful + live + role-notify live."
 
@@ -79,11 +80,11 @@ features:
       - "common/gametypes/gametype/survival/sv_survival.qc:surv_Initialize"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/RoundHandler.cs:Tick"
-      - "src/XonoticGodot.Server/GameWorld.cs:EnableRounds (Survival arm, 2411-2417)"
-      - "src/XonoticGodot.Server/GameWorld.cs:MirrorRoundTiming (4040-4051)"
+      - "src/XonoticGodot.Server/GameWorld.cs:EnableRounds (Survival arm, 2900-2906)"
+      - "src/XonoticGodot.Server/GameWorld.cs:MirrorRoundTiming (4667)"
     constants:
-      - { name: "round_handler_Init(delay, warmup, timelimit)", base: "(5, g_survival_warmup=10, g_survival_round_timelimit=120)", port: "EnableRounds endDelay=5, countdown=g_survival_warmup||10, roundTimeLimit=g_survival_round_timelimit||120 (GameWorld.cs:2415-2417); end-delay arg hardcoded 5 (NOT g_survival_round_enddelay)", match: true }
-      - { name: "round_handler_Spawn predicates", base: "Surv_CheckPlayers / Surv_CheckWinner / Surv_RoundStart", port: "HandlerCanRoundStart / CheckWinningCondition / AssignRoles (GameWorld.cs:2412-2414)", match: true }
+      - { name: "round_handler_Init(delay, warmup, timelimit)", base: "(5, g_survival_warmup=10, g_survival_round_timelimit=120)", port: "EnableRounds endDelay=5, countdown=g_survival_warmup||10, roundTimeLimit=g_survival_round_timelimit||120 (GameWorld.cs:2904-2906); end-delay arg hardcoded 5 (NOT g_survival_round_enddelay)", match: true }
+      - { name: "round_handler_Spawn predicates", base: "Surv_CheckPlayers / Surv_CheckWinner / Surv_RoundStart", port: "HandlerCanRoundStart / CheckWinningCondition / AssignRoles (GameWorld.cs:2901-2903)", match: true }
       - { name: "countdown_granularity", base: "1 Hz", port: "1 Hz", match: true }
     status:
       logic: faithful
@@ -97,7 +98,7 @@ features:
     gaps:
       - "Surv_CheckWinner's QC re-Init side effect after a round (round_handler_Init(5, warmup, timelimit) re-arming the next round inside the win check) is handled by the generic RoundHandler.OnRoundReset → ResetMap path rather than an explicit re-Init call; behaviorally equivalent for the next-round cadence but not a literal port of the QC re-Init line."
     verification:
-      - { kind: code, ref: "Single live handler: EnableRounds(surv.HandlerCanRoundStart, ()=>{surv.CheckWinningCondition(); return surv.RoundOver;}, onRoundStart: surv.AssignRoles, endDelay 5, countdown g_survival_warmup||10, roundTimeLimit g_survival_round_timelimit||120) at GameWorld.cs:2411-2417. _roundPrep=SetRoster + _roundSync=MirrorRoundTiming wired at 2421-2422. surv.Handler is no longer separately ticked (DriveGametypeFrame, GameWorld.cs:2834-2843).", result: pass }
+      - { kind: code, ref: "Single live handler: EnableRounds(surv.HandlerCanRoundStart, ()=>{surv.CheckWinningCondition(); return surv.RoundOver;}, onRoundStart: surv.AssignRoles, endDelay 5, countdown g_survival_warmup||10, roundTimeLimit g_survival_round_timelimit||120) at GameWorld.cs:2900-2906. _roundPrep=SetRoster + _roundSync=MirrorRoundTiming wired at 2910-2911. surv.Handler is no longer separately ticked (DriveGametypeFrame, GameWorld.cs:3332-3340).", result: pass }
       - { kind: code, ref: "MirrorRoundTiming (GameWorld.cs:4040-4051) copies RoundEndTime/RoundsPlayed/GameStartTime + MirrorRoundStarted(live.IsRoundStarted) into surv.Handler every frame — so surv.Handler's IsRoundStarted/RoundEndTime read the LIVE state the gametype's gates (RoleAssigned, RoundTimedOut) depend on.", result: pass }
     confidence: high
     notes: "FIXED logic partial→faithful, liveness partial→live: the dual-drive architecture is GONE through this audit (2026-06-25). The live GameWorld.Rounds handler is now driven by Survival's own Surv_CheckPlayers/CheckWinner/RoundStart predicates and its timing is mirrored into surv.Handler each frame, matching the CA/FreezeTag pattern. Init constant fallbacks remain faithful (values)."
@@ -207,8 +208,8 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "GametypeStatusTests wipes prey then asserts RoundOver + disclosure", result: pass }
-      - { kind: code, ref: "CheckWinningCondition (Survival.cs:448-501): both-sides-alive resets _endDelayTime (cs:468); the enddelay>0 deferral path (cs:474-491) schedules/waits the deferral matching QC sv_survival.qc:114-128; resolves hunters/prey/tie (cs:493-500). Called as the live round-end predicate (GameWorld.cs:2413) AND on every death (OnDeath cs:384) AND per-frame in DriveGametypeFrame (GameWorld.cs:2842).", result: pass }
-      - { kind: code, ref: "Round-result notify (incl. ROUND_TIED) LIVE: CheckWinningCondition → Notifications.RoundResult(side) → SurvivalNotifyHost.RoundResult → NotificationSystem.Send(All, Center+Info, SURVIVAL_HUNTER_WIN/SURVIVAL_SURVIVOR_WIN/ROUND_TIED) (GameWorld.cs:4130-4139).", result: pass }
+      - { kind: code, ref: "CheckWinningCondition (Survival.cs:451-504): both-sides-alive resets _endDelayTime (cs:471); the enddelay>0 deferral path (cs:477-494) schedules/waits the deferral matching QC sv_survival.qc:114-128; resolves hunters/prey/tie (cs:496-503). Called as the live round-end predicate (GameWorld.cs:2902) AND on every death (OnDeath cs:387) AND per-frame in DriveGametypeFrame (GameWorld.cs:3340).", result: pass }
+      - { kind: code, ref: "Round-result notify (incl. ROUND_TIED) LIVE: CheckWinningCondition → Notifications.RoundResult(side) → SurvivalNotifyHost.RoundResult → NotificationSystem.Send(All, Center+Info, SURVIVAL_HUNTER_WIN/SURVIVAL_SURVIVOR_WIN/ROUND_TIED) (GameWorld.cs:4757-4767, Center+Info at 4765-4766).", result: pass }
     confidence: high
     notes: "FIXED timing partial→faithful: the enddelay>0 deferral path (round_handler_SetEndDelayTime + re-check + both-sides-alive reset) is now fully modeled in CheckWinningCondition (cs:468, 474-491), reading the live-mirrored RoundEndTime. Latch + winning-side + tie branch faithful and live; win/tie banner live."
 
@@ -267,7 +268,7 @@ features:
       - "QC clears the bot command queue (bot_clearqueue) on a bot's death; the port has no bot command-queue subsystem to clear (noted at Survival.cs:369-370) — behaviorally moot (the bot simply stays eliminated)."
       - "surv_isEliminated also flags joining players (INGAME_JOINING / FRAGS_PLAYER_OUT_OF_GAME); the port has no joining state, so a late joiner is not marked eliminated until the next AssignRoles."
     verification:
-      - { kind: code, ref: "OnDeath sets Alive=false (Survival.cs:356); applies RESPAWN_SILENT + RespawnTime=time+2 while a round is live (cs:363-367) and RESPAWN_FORCE always (cs:368) — matching QC PlayerDies sv_survival.qc:377-383. RespawnDuePlayers gated on Rounds.IsRoundStarted (GameWorld.cs:2401); IsEliminatedPlayer feeds the wire eliminated set.", result: pass }
+      - { kind: code, ref: "OnDeath sets Alive=false (Survival.cs:359); applies RESPAWN_SILENT + RespawnTime=time+2 while a round is live (cs:366-370) and RESPAWN_FORCE always (cs:371) — matching QC PlayerDies sv_survival.qc:377-383. RespawnDuePlayers gated on Rounds.IsRoundStarted (GameWorld.cs:3402); IsEliminatedPlayer feeds the wire eliminated set.", result: pass }
     confidence: high
     notes: "UPGRADED timing partial→faithful: the silent-forced-respawn camera nuance (RESPAWN_SILENT + respawn_time+2 while a round is live, RESPAWN_FORCE always) is now ported (OnDeath cs:363-368), closing the prior gap. Remaining: the bot-queue clear (no subsystem to port) and the late-join joining-state flag."
 
@@ -330,7 +331,7 @@ features:
     verification:
       - { kind: test, ref: "GametypeStatusTests.Surv_HunterIdsNeverLeakToPreyMidRound_DisclosedAtRoundEnd", result: pass }
     confidence: high
-    notes: "Unchanged. Anti-cheat invariant (hunters never leak to prey mid-round; everyone gets the set at round end) is pinned and live via DisclosesHuntersTo (Survival.cs:587)."
+    notes: "Unchanged. Anti-cheat invariant (hunters never leak to prey mid-round; everyone gets the set at round end) is pinned and live via DisclosesHuntersTo (Survival.cs:590), consulted in GametypeStatusBlock.cs:143."
 
   - id: survival.hud.own_role_tag
     name: "Mod-icons own-role tag (Hunter red / Survivor green), hidden pre-round"
@@ -367,11 +368,11 @@ features:
       - "common/gametypes/gametype/survival/sv_survival.qc:Surv_RoundStart (CENTER_SURVIVAL_SURVIVOR/HUNTER), Surv_CheckWinner (SURVIVAL_*_WIN / ROUND_TIED)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:ISurvivalNotifications (Role/RoundResult)"
-      - "src/XonoticGodot.Server/GameWorld.cs:SurvivalNotifyHost (host sink, wired at GameWorld.cs:2436)"
+      - "src/XonoticGodot.Server/GameWorld.cs:SurvivalNotifyHost (host sink, wired at GameWorld.cs:2934)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs (SURVIVAL_*/ROUND_TIED declared)"
       - "game/net/ServerNet.cs:NotificationNetSink (live broadcast sink, installed at ServerNet.cs:300)"
       - "game/client/ClientWorld.cs:ResolveForcedColormap (Survival colormap override, 1359-1367)"
-      - "game/net/NetGame.cs:BuildAppearanceContext (SurvivalActive + SurvivalHunterIds, 5290-5298)"
+      - "game/net/NetGame.cs:BuildAppearanceContext (SurvivalActive + SurvivalHunterIds, 5511-5525)"
     constants:
       - { name: "SURV_COLOR_PREY / SURV_COLOR_HUNTER", base: "51 (green) / 68 (red) colormap override (colormap = 1024 + plcolor)", port: "1024+51 prey / 1024+68 hunter applied in ResolveForcedColormap (ClientWorld.cs:1366), returned BEFORE force-color resolution (overrides cl_forceplayercolors, matching CBC_ORDER_LAST)", match: true }
     status:
@@ -386,8 +387,8 @@ features:
     gaps:
       - "cl_surv DrawScoreboard_Force (show the scoreboard while GAME_STOPPED so players see who the hunter was) is not modeled as a Survival-specific force — the round-end disclosure colors are applied to player models/scoreboard, but the scoreboard is not auto-forced open at GAME_STOPPED."
     verification:
-      - { kind: code, ref: "Notifications LIVE: surv.Notifications = SurvivalNotifyHost (GameWorld.cs:2436) routes Role/RoundResult to NotificationSystem.Send; live sink is NotificationNetSink (ServerNet.cs:300, installed unconditionally). RoundResult sends BOTH Center AND Info (GameWorld.cs:4138-4139). Center+info templates resolve (NotificationsList.cs). Role/RoundResult reached on the live round-start/round-end path.", result: pass }
-      - { kind: code, ref: "Colormap override LIVE + faithful: ClientWorld.ResolveForcedColormap (game/client/ClientWorld.cs:1359-1367) returns 1024+SurvColorHunter(68) for a known hunter else 1024+SurvColorPrey(51), returning BEFORE the cl_forceplayercolors resolution (QC ForcePlayercolors_Skip CBC_ORDER_LAST override). Fed by NetGame.BuildAppearanceContext (game/net/NetGame.cs:5290-5298): ctx.SurvivalActive set once a Survival status block is received (MyStatus!=0 OR HunterNetIds disclosed) + ctx.SurvivalHunterIds = the DISCLOSED hunter set, so mid-round prey see all-green (no hunter ids leak) and own-hunters/round-end see red — honors the disclosure invariant. Applied via ModelTint.ApplyAppearance on the player render path (ClientWorld.cs:616/1583/1604).", result: pass }
+      - { kind: code, ref: "Notifications LIVE: surv.Notifications = SurvivalNotifyHost (GameWorld.cs:2934) routes Role/RoundResult to NotificationSystem.Send. RoundResult sends BOTH Center AND Info (GameWorld.cs:4765-4766). Center+info templates resolve (NotificationsList.cs). Role/RoundResult reached on the live round-start/round-end path.", result: pass }
+      - { kind: code, ref: "Colormap override LIVE + faithful: ClientWorld.ResolveForcedColormap (game/client/ClientWorld.cs:1359-1367; SurvColorPrey=51/SurvColorHunter=68 consts at 300-301) returns 1024+SurvColorHunter(68) for a known hunter else 1024+SurvColorPrey(51), returning BEFORE the cl_forceplayercolors resolution (QC ForcePlayercolors_Skip CBC_ORDER_LAST override). Fed by NetGame.BuildAppearanceContext (game/net/NetGame.cs:5511-5525): ctx.SurvivalActive + ctx.SurvivalHunterIds = the DISCLOSED hunter set, so mid-round prey see all-green (no hunter ids leak) and own-hunters/round-end see red — honors the disclosure invariant.", result: pass }
     confidence: high
     notes: "FIXED values partial→faithful + presentation partial→faithful (2026-06-25→26 audit): the SURV_COLOR_PREY 51 / SURV_COLOR_HUNTER 68 colormap override (colormap = 1024 + plcolor, applied last to beat cl_forceplayercolors — Base cl_survival.qc NET_HANDLE + ForcePlayercolors_Skip) is now ported + live on the client appearance path, fed by the disclosure-respecting hunter set. Notifications remain logic-faithful + LIVE (incl. the INFO line). Only remaining sub-gap: the GAME_STOPPED DrawScoreboard_Force."
 
@@ -397,7 +398,7 @@ features:
     base_refs:
       - "common/gametypes/gametype/survival/sv_survival.qc:MUTATOR_HOOKFUNCTION(surv, Bot_ForbidAttack)"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (Survival arm, Bot.BotBrain.ForbidAttackHook, 2429-2431)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (Survival arm, Bot.BotBrain.ForbidAttackHook, 2927-2929)"
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:ShouldAttack (ForbidAttackHook consult)"
     constants:
       - { name: "forbid_rule", base: "targ.survival_status == bot.survival_status → forbid", port: "surv.StatusOf(bot) == surv.StatusOf(victim) → forbid (both must be Player)", match: true }
@@ -411,11 +412,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Minor: the port restricts the veto to `self is Player && targ is Player` (GameWorld.cs:2429-2431). Base evaluates `targ.survival_status == bot.survival_status` unconditionally — for non-player targets both sides read 0/None and Base would also veto when the bot is prey/None. The port does NOT veto non-player targets. With no monsters in stock Survival this is behaviorally moot, but it is a small narrowing of Base's rule."
+      - "Minor: the port restricts the veto to `self is Player && targ is Player` (GameWorld.cs:2927-2929). Base evaluates `targ.survival_status == bot.survival_status` unconditionally — for non-player targets both sides read 0/None and Base would also veto when the bot is prey/None. The port does NOT veto non-player targets. With no monsters in stock Survival this is behaviorally moot, but it is a small narrowing of Base's rule."
     verification:
-      - { kind: code, ref: "ForbidAttackHook assigned in the Survival arm (GameWorld.cs:2429-2431) and consulted live in BotBrain. Reset to null at the head of ActivateGameType (GameWorld.cs:2192) so a gametype switch does not leak the veto. Matches Base sv_survival.qc:489.", result: pass }
+      - { kind: code, ref: "ForbidAttackHook assigned in the Survival arm (GameWorld.cs:2927-2929) and consulted live in BotBrain. Reset to null at the head of ActivateGameType (GameWorld.cs:2660) so a gametype switch does not leak the veto. Matches Base sv_survival.qc:489.", result: pass }
     confidence: high
-    notes: "Live + faithful. ForbidAttackHook is cleared to null at ActivateGameType entry (2192) and re-installed only by the incoming mode's arm. No dedicated test yet."
+    notes: "Live + faithful. ForbidAttackHook is cleared to null at ActivateGameType entry (2660) and re-installed only by the incoming mode's arm. No dedicated test yet."
 
   - id: survival.notify.last_survivor_alone
     name: "Last living member of a side gets the 'you are alone' center notify"
@@ -426,7 +427,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:NotifyLastForTeam"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:OnPlayerRemoved (disconnect/observe dispatch)"
-      - "src/XonoticGodot.Server/ClientManager.cs:473/682 (OnPlayerRemoved call sites)"
+      - "src/XonoticGodot.Server/ClientManager.cs:535/814 (OnPlayerRemoved call sites)"
       - "src/XonoticGodot.Server/GameWorld.cs:SurvivalNotifyHost.Alone (live sink)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:ALONE (declared)"
     constants:
@@ -442,10 +443,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "NotifyLastForTeam called from THREE QC-faithful sites: (1) the death path (OnDeath cs:335-336), (2) ClientDisconnect (ClientManager.cs:682 → OnPlayerRemoved cs:434-441), (3) MakePlayerObserver/forced-spectate (ClientManager.cs:473 → OnPlayerRemoved). Survival.OnPlayerRemoved (cs:434-441) gates on the leaver still being Alive, matching QC's IS_PLAYER && !IS_DEAD.", result: pass }
-      - { kind: code, ref: "Alone is LIVE: surv.Notifications = SurvivalNotifyHost (GameWorld.cs:2436) → Alone → NotificationSystem.Send(OneOnly, Center, ALONE). ALONE template resolves (NotificationsList.cs).", result: pass }
+      - { kind: code, ref: "NotifyLastForTeam called from THREE QC-faithful sites: (1) the death path (OnDeath cs:335-336), (2) ClientDisconnect (ClientManager.cs:814 → OnPlayerRemoved cs:437-444), (3) MakePlayerObserver/forced-spectate (ClientManager.cs:535 → OnPlayerRemoved). Survival.OnPlayerRemoved (cs:437-444) gates on the leaver still being Alive, matching QC's IS_PLAYER && !IS_DEAD.", result: pass }
+      - { kind: code, ref: "Alone is LIVE: surv.Notifications = SurvivalNotifyHost (GameWorld.cs:2934) → Alone → NotificationSystem.Send(OneOnly, Center, ALONE) (GameWorld.cs:4771-4772). ALONE template resolves (NotificationsList.cs).", result: pass }
     confidence: high
-    notes: "FIXED timing partial→faithful: the disconnect + forced-observe call sites are now wired via Survival.OnPlayerRemoved (cs:434-441), dispatched from ClientManager.cs:473 (PutObserverInServer) and :682 (ClientDisconnect) — closing the prior gap where 'alone' fired only on an ally's death. All three QC surv_LastPlayerForTeam_Notify call sites (PlayerDies/ClientDisconnect/MakePlayerObserver) are now ported + live."
+    notes: "timing faithful: the disconnect + forced-observe call sites are wired via Survival.OnPlayerRemoved (cs:437-444), dispatched from ClientManager.cs:535 (MakePlayerObserver demotion) and :814 (ClientDisconnect) — all three QC surv_LastPlayerForTeam_Notify call sites (PlayerDies/ClientDisconnect/MakePlayerObserver) are ported + live. Re-verified 2026-06-25 (line refs updated: 473/682 → 535/814)."
 
   - id: survival.join.late_join_observe
     name: "Mid-round joiner is forced to observe (no spawn until next round)"
@@ -453,21 +454,25 @@ features:
     base_refs:
       - "common/gametypes/gametype/survival/sv_survival.qc:MUTATOR_HOOKFUNCTION(surv, ForbidSpawn)"
       - "common/gametypes/gametype/survival/sv_survival.qc:MUTATOR_HOOKFUNCTION(surv, PutClientInServer)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:CanJoin (603-610)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs:OnJoin (620-624)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (Survival arm join-gate wiring, 2920-2921)"
+      - "src/XonoticGodot.Server/ClientManager.cs:356 (GametypeJoinGate consulted) / :298 (GametypeOnJoin)"
     constants:
-      - { name: "forbid_spawn_gate", base: "!allowed_to_spawn && INGAME(player) → ForbidSpawn true; PutClientInServer: !allowed_to_spawn && IS_PLAYER → TRANSMUTE(Observer) + INGAME_STATUS_JOINING + INFO_CA_JOIN_LATE", port: "not wired for Survival (generic ClientManager.GametypeJoinGate installed only for LMS, GameWorld.cs:1147)", match: false }
+      - { name: "forbid_spawn_gate", base: "!allowed_to_spawn && INGAME(player) → ForbidSpawn true; PutClientInServer: !allowed_to_spawn && IS_PLAYER → TRANSMUTE(Observer) + INGAME_STATUS_JOINING + INFO_CA_JOIN_LATE", port: "CanJoin(p, RoleAssigned) returns false while a round is live (Survival.cs:603-610) → join refused → client stays observer; OnJoin registers an ALLOWED (pre-round/warmup) joiner. Wired GameWorld.cs:2920-2921; consulted ClientManager.cs:356.", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
-    intended_divergence: false
-    divergence_rationale: null
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base splits the lockout across two QC hooks (ForbidSpawn forbids INGAME players; PutClientInServer force-TRANSMUTEs the rest to Observer + INGAME_STATUS_JOINING + INFO_CA_JOIN_LATE). The port collapses both into a single join-gate outcome — CanJoin refuses every join while the round is live so the would-be joiner stays an observer (the same net state Base leaves it in) until the next round reset re-admits everyone (AssignRoles). The combined behavioral outcome (no client enters the world mid-round) matches; the INFO_CA_JOIN_LATE 'you joined late' info-print and the explicit INGAME_STATUS_JOINING bookkeeping are not separately reproduced (see gaps)."
     gaps:
-      - "Survival's ForbidSpawn / PutClientInServer mid-round force-observe is NOT wired. Base forces a player who joins while a round is live (!allowed_to_spawn) into Observer state (TRANSMUTE Observer), marks them INGAME_STATUS_JOINING, and sends INFO_CA_JOIN_LATE so they sit out until the next round. The port has a generic ClientManager.GametypeJoinGate + GametypeOnJoin mechanism, but it is installed only for the LMS arm (GameWorld.cs:1147) — Survival's ActivateGameType arm (GameWorld.cs:2393-2437) never sets it. So a player who joins mid-round in the port is not forced to spectate by the gametype; round integrity for mid-round joiners is unverified. (Related: the registration row already notes a late joiner is not marked eliminated until the next AssignRoles.)"
+      - "The INFO_CA_JOIN_LATE 'you joined too late, sit out this round' info-print and QC's INGAME_STATUS_JOINING marking are not reproduced — the port refuses the join outright rather than admitting an observer with a joining flag. Behaviorally equivalent (the client sits out until the next round) but the player gets no explicit 'join late' message, and surv_isEliminated's INGAME_JOINING branch (the late joiner counted as eliminated this round) has no port analogue (the refused client simply isn't tracked until OnJoin/AssignRoles)."
     verification:
-      - { kind: code, ref: "GameWorld.cs Survival arm (2393-2437) does NOT assign Clients.GametypeJoinGate / GametypeOnJoin; only the LMS arm wires the gate (GameWorld.cs:1147). No Survival !allowed_to_spawn join lockout exists.", result: fail }
+      - { kind: code, ref: "Survival.CanJoin (Survival.cs:603-610) returns false when roundStarted (RoleAssigned). Wired live in the Survival arm: Clients.GametypeJoinGate = p => surv.CanJoin(p, surv.RoleAssigned) && GametypeHasFreeSlot(p); Clients.GametypeOnJoin = p => surv.OnJoin(p) (GameWorld.cs:2920-2921). Gate consulted on the join path (ClientManager.cs:356), OnJoin invoked at :298. The gate + onJoin defaults are reset at ActivateGameType entry (GameWorld.cs:2660-2663) so the Survival arm's wiring doesn't leak to the next mode.", result: pass }
     confidence: high
-    notes: "NEW row (2026-06-26 drift scan): a coverage gap the prior baseline only referenced obliquely (inside survival.gametype.registration / survival.death.eliminate). The Survival ForbidSpawn + PutClientInServer mid-round force-observe lockout is unmapped + unimplemented. Behaviorally moot in a 1-round-at-a-time listen test but a real authority gap for mid-round joins on a populated server."
+    notes: "FIXED missing→faithful + liveness na→live (2026-06-25 drift): the Survival mid-round late-join force-observe is now ported (Survival.CanJoin/OnJoin) and wired live (GameWorld.cs:2920-2921; consulted ClientManager.cs:356/298). The baseline recorded port_refs:[] / all-missing / liveness:na; the port has since implemented + wired it. Only remaining sub-gap: the INFO_CA_JOIN_LATE message + INGAME_STATUS_JOINING bookkeeping aren't separately reproduced (the port refuses the join entirely instead of admitting a flagged observer)."
