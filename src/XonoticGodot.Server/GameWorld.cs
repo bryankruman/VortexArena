@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using System.Numerics;
 using XonoticGodot.Common;
 using XonoticGodot.Common.Config;
@@ -1930,6 +1932,22 @@ public sealed class GameWorld
             PlayerFrameLogic.ContentsDamage(p, st);
             PlayerFrameLogic.FallDamage(p, st);
         }
+
+        // QC CreatureFrame_All also sweeps the g_damagedbycontents PROJECTILES (an electro orb when
+        // g_balance_electro_secondary_damagedbycontents is on, default 1): a projectile resting in lava/slime
+        // takes content damage and detonates. The port has no intrusive list, so scan the non-client entity
+        // table for the flag (set in W_Electro_Attack_Orb). MOVETYPE_NOCLIP projectiles are skipped (main.qc:190).
+        var all = Services.Entities.All;
+        if (all is not null)
+        {
+            for (int i = 0; i < all.Count; i++)
+            {
+                Entity e = all[i];
+                if (e.IsFreed || !e.DamagedByContents) continue;
+                if (e.MoveType == MoveType.Noclip) continue;
+                PlayerFrameLogic.ProjectileContentsDamage(e);
+            }
+        }
     }
 
     /// <summary>
@@ -1963,6 +1981,15 @@ public sealed class GameWorld
         // below (bots are never fed to the anticheat detectors).
         if (!p.IsBot)
             AntiCheat.PreThink(p);
+
+        // QC PlayerPreThink version-nagging (client.qc:2925-2943): when the version_nagtime timer fires, check
+        // the client's g_xonoticversion against the server's and send a mismatch notification. Real clients only.
+        if (!p.IsBot)
+        {
+            var clientInfo = Clients.Clients.FirstOrDefault(c => c.Player == p);
+            if (clientInfo != null)
+                Commands.CheckClientVersion(clientInfo, Time);
+        }
 
         // Fire the per-frame player hook (dodging/multijump/instagib drive their state machines here).
         var pre = new MutatorHooks.PlayerPreThinkArgs(p);
@@ -3590,6 +3617,10 @@ public sealed class GameWorld
         MutatorHooks.FireMatchEndBeforeScores();
 
         MarkWinners();
+
+        // QC DumpStats(true) (server/world.qc:1429): emit the colon-delimited final score log before the :gameover
+        // event-log line and before PlayerStats. Respects sv_logscores_console / sv_eventlog / sv_logscores_bots.
+        Commands.DumpStats(final: true);
 
         if (Cvars.Bool("sv_eventlog"))
         {

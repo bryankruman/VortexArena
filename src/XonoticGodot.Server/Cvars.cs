@@ -412,6 +412,16 @@ public static class Cvars
         new("sv_eventlog_files_timestamps", "1", Save),
         new("sv_eventlog_ipv6_delimiter", "0", Save, "replace ':' with '_' in logged IPs"),
         new("g_playerstats_gamereport_uri", "", Save, "stats upload endpoint ('' = disabled)"),
+        // ---- score log (server/world.qc DumpStats / sv_cmd.qc printstats) ----
+        new("sv_logscores_console", "0", Save, "print scores to server console"), // xonotic-server.cfg:336
+        new("sv_logscores_file", "0", Save, "print scores to file"),              // xonotic-server.cfg:337
+        new("sv_logscores_filename", "scores.log", Save, "score-log filename"),   // xonotic-server.cfg:338
+        new("sv_logscores_bots", "0", Save, "exclude bots by default"),           // xonotic-server.cfg:339 (Base default 0, NOT 1)
+        // QC g_score_resetonjoin (xonotic-server.cfg:302): 0 = keep score on (re)join (default), 1 = always wipe,
+        // -1 = wipe unless the PreferPlayerScore_Clear hook vetoes. Read by GameScores.ClearPlayerOnJoin on the
+        // spectator→player join path; MUST be registered so an admin's 1/-1 override actually applies.
+        new("g_score_resetonjoin", "0", Save,
+            "reset players' scores when they rejoin the match (-1 = only where speccing+rejoining could be abused)"),
 
         // ---- serverflags sources (server/world.qc readlevelcvars → the networked `serverflags` global, the
         //      client gates fullbright + the pickup timer off these). Defaults from xonotic-server.cfg:611/614. ----

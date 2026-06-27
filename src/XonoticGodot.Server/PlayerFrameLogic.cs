@@ -387,6 +387,42 @@ public static class PlayerFrameLogic
     }
 
     /// <summary>
+    /// QC <c>CreatureFrame_hotliquids</c> PROJECTILE branch (server/main.qc:78-84): a projectile resting in a
+    /// hot liquid takes content damage. Mirrors the <c>FL_PROJECTILE</c> arm of the player path above, but uses
+    /// <c>g_balance_contents_projectiledamage</c> (not the player lava/slime cvars) and applies the SAME value
+    /// for both lava and slime. Rate-limited by the entity's <see cref="Entity.ContentsDamageTime"/>.
+    ///
+    /// <para>The damage routes through <see cref="Combat.Damage"/> with a NULL inflictor (DEATH_LAVA/DEATH_SLIME),
+    /// exactly like Base's <c>Damage(this, NULL, NULL, ...)</c>: the projectile's own <c>event_damage</c> (its
+    /// installed <see cref="Entity.GtEventDamage"/> shoot-down shim) subtracts HP and detonates it at &lt;= 0.
+    /// Because the inflictor is NULL (not an <c>electro_orb_chain</c>/<c>electro_bolt</c>), Base's
+    /// <c>W_Electro_Orb_Damage</c> takes the NON-combo branch and bursts the orb as a plain SECONDARY blast. The
+    /// orb's shim distinguishes that case off the null inflictor (see Electro.AttackOrb's ProjectileDamage), so a
+    /// content death detonates as a secondary blast, not a combo.</para>
+    /// Call once per server frame per damaged-by-contents projectile (the QC <c>g_damagedbycontents</c> sweep).
+    /// </summary>
+    public static void ProjectileContentsDamage(Entity proj)
+    {
+        // QC CreatureFrame_Liquids gate: contents <= WATER with waterlevel > 0 == in a liquid (water itself does
+        // no projectile damage; only the lava/slime branches below deal any).
+        if (!(proj.WaterType <= ContentWater && proj.WaterLevel > 0))
+            return;
+
+        float now = Now;
+        if (proj.ContentsDamageTime >= now)
+            return;
+        float rate = Cvars.FloatOr("g_balance_contents_damagerate", 0.2f);
+        proj.ContentsDamageTime = now + rate;
+
+        // QC main.qc:80-83: projectile content damage = projectiledamage * damagerate * waterlevel, same for both.
+        float dmg = Cvars.Float("g_balance_contents_projectiledamage") * rate * proj.WaterLevel;
+        if (proj.WaterType == ContentLava)
+            Combat.Damage(proj, null, null, dmg, DeathTypes.Lava, proj.Origin, Vector3.Zero);
+        else if (proj.WaterType == ContentSlime)
+            Combat.Damage(proj, null, null, dmg, DeathTypes.Slime, proj.Origin, Vector3.Zero);
+    }
+
+    /// <summary>
     /// QC <c>CreatureFrame_FallDamage</c>: deal damage when the player's speed dropped sharply this frame
     /// (a hard landing). Uses the velocity delta between <see cref="ServerPlayerState.OldVelocity"/> and the
     /// current velocity (QC captures oldvelocity at the end of each CreatureFrame). Also applies the

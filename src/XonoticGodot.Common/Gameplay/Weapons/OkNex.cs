@@ -88,8 +88,11 @@ public sealed class OkNex : Weapon
         if (Cvars.Charge && st.VortexCharge < Cvars.ChargeLimit)
             st.VortexCharge = MathF.Min(1f, st.VortexCharge + Cvars.ChargeRate * Api.Clock.FrameTime);
 
-        // Secondary blaster-jump on the dedicated jump_interval timer (refire_type 1).
-        OkWeapons.FireSecondaryBlasterJump(actor, slot, fire, Cvars.SecondaryRefireType);
+        // Secondary blaster-jump: refire_type 1 = own jump_interval; refire_type 0 = shared ATTACK_FINISHED.
+        // QC oknex.qc:174 passes `true` (secondary ammo check) on the refire_type==0 path. NOTE: QC oknex
+        // additionally gates that branch on WEP_CVAR(WEP_OVERKILL_NEX, secondary) == 2 (oknex.qc:171); both
+        // refire_type==0 and secondary==2 are non-default, so this extra gate is a known residual nuance.
+        OkWeapons.FireSecondaryBlasterJump(this, actor, slot, fire, Cvars.SecondaryRefireType, FireMode.Secondary);
 
         // forced reload
         if (Cvars.ReloadAmmo != 0f && st.ClipLoad < Cvars.Ammo)

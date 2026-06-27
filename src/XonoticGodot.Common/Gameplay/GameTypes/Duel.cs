@@ -158,6 +158,8 @@ public sealed class Duel : GameType
         // key. Re-pin it so switching from a column-mode reverts the scoreboard to sorting by score.
         Scoring.GameScores.ScoreRulesBasics(teams: false);
         Scoring.GameScores.SetSortKeys(Scoring.GameScores.Score);
+        // QC fragsleft_last reset: re-arm the "N frags left" announcer (duel's Scores_CountFragsRemaining hook).
+        Scoring.GameScores.ResetFragsRemaining();
         _deathHandler = OnDeath;
         Combat.Death.Add(_deathHandler);
 
@@ -235,18 +237,31 @@ public sealed class Duel : GameType
     /// <summary>Authoritative leader + frag-limit pass over the (two-player) roster.</summary>
     public void RecomputeLeader(IReadOnlyList<Player> players)
     {
-        Player? best = null;
+        Player? best = null, second = null;
         for (int i = 0; i < players.Count; i++)
         {
             Player p = players[i];
             if (best is null || p.ScoreFrags > best.ScoreFrags)
+            {
+                second = best;
                 best = p;
+            }
+            else if (second is null || p.ScoreFrags > second.ScoreFrags)
+            {
+                second = p;
+            }
         }
         Leader = best;
 
         float limit = FragLimit;
         if (limit > 0f && best is not null && best.ScoreFrags >= limit)
             MatchEnded = true;
+
+        // QC MUTATOR_HOOKFUNCTION(duel, Scores_CountFragsRemaining) returns true: announce "N frags left" once
+        // as the leader approaches the fraglimit (WinningCondition_Scores remaining-frags announcer, server/world.qc:1590-1622).
+        int topScore = best is not null ? best.ScoreFrags : 0;
+        int secondScore = second is not null ? second.ScoreFrags : 0;
+        Scoring.GameScores.CountFragsRemaining(limit, 0f, topScore, secondScore, suddenDeathEnding: false);
     }
 
     private static bool TryCvar(string name, out float value)

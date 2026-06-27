@@ -96,8 +96,8 @@ public partial class Entity
     /// QC <c>.bot_dodge</c> — marks this entity as a projectile/hazard the havocbot dodge logic should avoid.
     /// Projectiles set this to true so bots calculate evasive maneuvers. Default false.
     /// See <c>havocbot_dodge(entity this)</c> (server/bot/default/havocbot/havocbot.qc:1773), which iterates
-    /// <c>findchainfloat(bot_dodge, true)</c> over the g_bot_dodge list. NOTE: the danger-list consumer is not
-    /// yet ported (CombatMovement uses a generic strafe), so this flag is currently inert producer-side scaffolding.
+    /// <c>findchainfloat(bot_dodge, true)</c> over the g_bot_dodge list. The danger-list consumer IS ported
+    /// (BotBrain.HavocbotDodge, SUPERBOT-gated): a SUPERBOT bot swerves away from a flagged incoming hazard.
     /// </summary>
     public bool BotDodge;
 

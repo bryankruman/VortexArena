@@ -631,12 +631,18 @@ public sealed class DamageSystem : IDamageSystem
         Combat.Death.Call(ref death);
 
         // QC wr_playerdeath: the weapon the player dies with may fire/release any state held mid-action (e.g. Hagar's loaded rockets).
+        var deathSlot = new WeaponSlot(0); // single-weapon port currently uses slot 0
         Weapon? weapon = Inventory.CurrentWeapon(victim);
         if (weapon is not null)
-        {
-            var slot = new WeaponSlot(0); // single-weapon port currently uses slot 0
-            weapon.WrPlayerDeath(victim, slot);
-        }
+            weapon.WrPlayerDeath(victim, deathSlot);
+
+        // QC server/player.qc:514 Portal_ClearAllLater(this): on death the porto's portal cleanup
+        // (Portal_ClearAll + W_Porto_Remove) runs UNCONDITIONALLY, NOT only when the player holds the porto — a
+        // placed portal or in-flight porto must be torn down even if the victim died holding a different weapon.
+        // The port folds that cleanup into Porto.WrPlayerDeath; the held-weapon dispatch above already ran it when
+        // porto IS the current weapon, so here we run it ONLY for an owned-but-not-held porto (avoids a double call).
+        if (Registry<Weapon>.ByName("porto") is { } porto && porto != weapon && Inventory.HasWeapon(victim, porto))
+            porto.WrPlayerDeath(victim, deathSlot);
 
         // A non-player victim with its OWN death handler (turret/monster/breakable) wired onto the Death bus has
         // just run it (e.g. TurretAI.Die -> SOLID_NOT + respawn schedule, DeadState advanced past DeadFlag.No).

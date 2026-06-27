@@ -40,14 +40,6 @@ public sealed class Vaporizer : Weapon
     // sister Vortex. The crosshair (gfx/crosshairminstanex size 0.6) is wired centrally in CrosshairPanel.
     public override string? Reticle => "gfx/reticle_nex";
 
-    /// <summary>
-    /// Whether the instagib mutator is active. In QC this is autocvar_g_instagib: when set, each shot costs
-    /// exactly 1 cell and the beam deals its instant-kill 10000 damage. The vaporizer is the instagib
-    /// default loadout weapon.
-    /// </summary>
-    public bool Instagib = true;
-
-
     public Vaporizer()
     {
         NetName = "vaporizer";
@@ -70,8 +62,6 @@ public sealed class Vaporizer : Weapon
         Primary.Damage = Bal("g_balance_vaporizer_primary_damage", 150f);
         Primary.Force = Bal("g_balance_vaporizer_primary_force", 800f);
         Primary.Refire = Bal("g_balance_vaporizer_primary_refire", 1f);
-
-        Instagib = true;
     }
 
     // METHOD(Vaporizer, wr_think) — common/weapons/weapon/vaporizer.qc
@@ -157,6 +147,14 @@ public sealed class Vaporizer : Weapon
                 // QC vaporizer.qc:340: jump_interval = time + WEP_CVAR_PRI(WEP_BLASTER, refire) *
                 // W_WeaponRateFactor(actor) — the sv_weaponrate (+ Speed powerup/buff) scaling.
                 st.JumpInterval = Api.Clock.Time + 0.7f * WeaponRateFactor(actor); // WEP_CVAR_PRI(WEP_BLASTER, refire)
+
+                // QC vaporizer.qc:343-344: W_DecreaseAmmo(thiswep, actor, WEP_CVAR_PRI(WEP_BLASTER, ammo), weaponentity)
+                // only fires when the Blaster primary_ammo cvar is set (default 0 — no ammo cost). Harmless at default
+                // but ported faithfully so a server that sets g_balance_blaster_primary_ammo != 0 gets the right cost.
+                float blasterAmmoCost = Cvar("g_balance_blaster_primary_ammo", 0f);
+                if (blasterAmmoCost > 0f)
+                    actor.TakeResource(AmmoType, blasterAmmoCost);
+
                 BlasterSecondary(actor, slot);
             }
         }
@@ -502,11 +500,11 @@ public sealed class Vaporizer : Weapon
         return blasterAmmo <= 0f || actor.GetResource(AmmoType) >= blasterAmmo;
     }
 
-    /// <summary>QC <c>autocvar_g_instagib</c>: the live instagib gate. <see cref="Instagib"/> is the class default
-    /// (true — the Vaporizer is the instagib loadout weapon), but the per-shot/per-check cost must re-read the
-    /// cvar so a non-instagib Vaporizer pickup spends/needs the full <c>primary_ammo</c> (vaporizer.qc reads
-    /// <c>autocvar_g_instagib</c> at every W_DecreaseAmmo / wr_checkammo).</summary>
-    private bool InstagibActive => Instagib && (Api.Services is null || Api.Cvars.GetFloat("g_instagib") != 0f);
+    /// <summary>QC <c>autocvar_g_instagib</c>: the live instagib gate (vaporizer.qc re-reads this at every
+    /// W_DecreaseAmmo / wr_checkammo call). A non-instagib map pickup of the Vaporizer correctly spends/checks
+    /// <c>primary_ammo</c> (10 cells) rather than the instagib 1-cell cost. Returns <c>false</c> when services
+    /// are unavailable (headless/test context without a live game — treat as no mutator).</summary>
+    private bool InstagibActive => Api.Services is not null && Api.Cvars.GetFloat("g_instagib") != 0f;
 
     /// <summary>QC Q3SURFACEFLAG_NOIMPACT (BIT(0)) — a surface nothing impacts; the RM explosion is suppressed
     /// when the rail endpoint lands on it (or on sky), matching vaporizer.qc:170.</summary>

@@ -111,6 +111,18 @@ public sealed class Machinegun : Weapon
     public override void WrThink(Entity actor, WeaponSlot slot, FireMode fire)
     {
         var st = actor.WeaponState(slot);
+
+        // QC machinegun.qc:280-286 — forced-reload head of wr_think: if reloading is enabled
+        // (reload_ammo != 0) and the clip dropped below the cheapest per-shot cost, reload before firing —
+        // BUT not while a burst is running (misc_bulletcounter < 0). Uses the shared reload subsystem
+        // (WrReload/WReload/clip_load), matching the Rifle/Crylink/Hlac siblings. Dead at stock balance
+        // (reload_ammo defaults 0) but genuinely live when a server enables it.
+        if (ReloadingAmmo() != 0f && st.ClipLoad < ReloadingAmmoMin() && st.MiscBulletCounter >= 0)
+        {
+            WrReload(actor, slot);
+            return;
+        }
+
         if (Cvars.Mode == 1)
         {
             if (fire == FireMode.Primary)
@@ -132,16 +144,31 @@ public sealed class Machinegun : Weapon
                 // round; W_MachineGun_Attack_Burst self-reschedules every burst_refire for each remaining round.
                 if (PrepareAttack(actor, slot, fire, attackTime: 0f))
                 {
-                    float available = actor.GetResource(AmmoType);
+                    // QC machinegun.qc:301-307 — wr_checkammo2 gate: if secondary is zoom or not enough ammo
+                    // for a burst, bail out. At default balance (mode 1, burst 3), ZoomOnSecondary is false
+                    // (burst > 0), so this mostly gates on ammo.
+                    if (!CheckAmmoSecondary(actor)
+                        && !(actor.UnlimitedAmmo || (actor.Items & (1 << 0)) != 0)) // !IT_UNLIMITED_AMMO
+                    {
+                        // Not enough ammo: switch away (QC W_SwitchWeapon_Force) and return to ready.
+                        // The port skips forced switch (handled by higher-level AI); just mark ready.
+                        st.State = WeaponFireState.Ready;
+                        return;
+                    }
+
+                    // QC machinegun.qc:309-311: ammo_available = clip_load when reload is enabled, else the
+                    // resource pool. Identical to the resource at stock balance (reload_ammo=0).
+                    float available = ReloadingAmmo() != 0f ? st.ClipLoad : actor.GetResource(AmmoType);
                     int toShoot = (int)MathF.Max(0f, Cvars.Burst);
                     bool unlimited = actor.UnlimitedAmmo || (actor.Items & (1 << 0)) != 0; // IT_UNLIMITED_AMMO
                     if (!unlimited)
                     {
                         // Don't mag-dump: scale rounds to a <=1 fraction of the magazine, and only use what's
-                        // there (QC burst_fraction + to_use). reload_ammo isn't modeled, so ammo == the resource.
+                        // there (QC burst_fraction + to_use).
                         float burstFraction = Cvars.BurstAmmo > 0f ? MathF.Min(1f, available / Cvars.BurstAmmo) : 1f;
                         toShoot = (int)MathF.Floor(toShoot * burstFraction);
-                        actor.TakeResource(AmmoType, MathF.Min(Cvars.BurstAmmo, available));
+                        // QC to_use = min(burst_ammo, ammo_available), drained via W_DecreaseAmmo (clip-aware).
+                        DecreaseAmmo(actor, slot, MathF.Min(Cvars.BurstAmmo, available));
                     }
                     // Bursting counts up to 0 from a negative (QC misc_bulletcounter = -to_shoot).
                     st.MiscBulletCounter = -toShoot;
@@ -248,7 +275,9 @@ public sealed class Machinegun : Weapon
 
         st.MachinegunSpreadAccumulation = spreadAccum + Cvars.SpreadAdd;
         ++st.MiscBulletCounter;
-        actor.TakeResource(AmmoType, Cvars.SustainedAmmo);
+        // QC W_DecreaseAmmo: drains the clip when reload is enabled, else the resource pool (identical at
+        // stock reload_ammo=0). Was a bare TakeResource (correct only with reload off).
+        DecreaseAmmo(actor, slot, Cvars.SustainedAmmo);
     }
 
     // W_MachineGun_Attack_Burst — fires ONE burst round (fresh aim + recoil each round), then self-reschedules
@@ -319,7 +348,7 @@ public sealed class Machinegun : Weapon
         // The mode-0 secondary "snipe" ORs HITTYPE_SECONDARY into the bullet deathtype (QC wr_think:
         // thiswep.m_id | HITTYPE_SECONDARY) so the kill reads MURDER_SNIPE; primary stays the plain tag.
         FireOne(actor, shot, damage, spread * CrouchSpreadMod(actor), force, secondary: secondary);
-        actor.TakeResource(AmmoType, ammo);
+        DecreaseAmmo(actor, slot, ammo); // QC W_DecreaseAmmo (clip-aware; resource pool at stock reload_ammo=0)
 
         // QC W_MachineGun_Attack (machinegun.qc:68): every mode-0 round re-parks ATTACK_FINISHED at
         // first_refire — the after-stream cooldown floor the held-fire frame loop runs above.
@@ -442,5 +471,47 @@ public sealed class Machinegun : Weapon
     {
         float need = Cvars.Mode == 1 ? Cvars.SustainedAmmo : Cvars.FirstAmmo;
         return actor.GetResource(AmmoType) >= need;
+    }
+
+    // METHOD(MachineGun, wr_checkammo2) — machinegun.qc:366. Returns false if secondary is a zoom
+    // (not a fire mode), or if not enough ammo for a burst round. The check uses per-round ammo
+    // (burst_ammo / burst) for mode 1 burst secondary.
+    public bool CheckAmmoSecondary(Entity actor)
+    {
+        // QC machinegun.qc:368: want_zoom = (mode 1 && !burst) || (mode 0 && !first).
+        // If the secondary slot is a zoom, it's not a fire mode and wr_checkammo2 returns false.
+        bool wantZoom = (Cvars.Mode == 1 && Cvars.Burst <= 0f) || (Cvars.Mode == 0 && !Cvars.First);
+        if (wantZoom)
+            return false;
+
+        // Secondary fire mode exists: check ammo. QC computes per-shot: burst_ammo_per_shot = burst_ammo / burst.
+        if (Cvars.Mode == 1)
+        {
+            // Mode 1 burst secondary: need burst_ammo_per_shot
+            float burstPerShot = Cvars.Burst > 0f ? Cvars.BurstAmmo / Cvars.Burst : Cvars.BurstAmmo;
+            return actor.GetResource(AmmoType) >= burstPerShot;
+        }
+        else
+        {
+            // Mode 0 secondary snipe: need first_ammo (same as primary attack)
+            return actor.GetResource(AmmoType) >= Cvars.FirstAmmo;
+        }
+    }
+
+    // QC wr_reload (machinegun.qc:390) passes W_Reload's sent_ammo_min = min(max(sustained_ammo, first_ammo),
+    // burst_ammo): the cheapest per-shot floor below which a reload is pointless. Also the threshold the
+    // forced-reload gate in WrThink compares clip_load against (machinegun.qc:281).
+    protected override float ReloadingAmmoMin()
+        => MathF.Min(MathF.Max(Cvars.SustainedAmmo, Cvars.FirstAmmo), Cvars.BurstAmmo);
+
+    // METHOD(MachineGun, wr_reload) — machinegun.qc:386. Runs the shared reload pipeline, but FIRST honors the
+    // MachineGun's weapon-specific precondition: don't interrupt a running burst (misc_bulletcounter < 0 means a
+    // burst is counting up to 0). Dead at stock balance (reload_ammo defaults 0 -> base WReload early-outs).
+    public override void WrReload(Entity actor, WeaponSlot slot)
+    {
+        // QC machinegun.qc:388: if (actor.(weaponentity).misc_bulletcounter < 0) return;
+        if (actor.WeaponState(slot).MiscBulletCounter < 0)
+            return;
+        base.WrReload(actor, slot);
     }
 }

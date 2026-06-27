@@ -18,8 +18,9 @@ namespace XonoticGodot.Common.Gameplay;
 /// The melee swing trace is antilag-bracketed (LagComp around the sweep, QC WarpZone_traceline_antilag,
 /// shotgun.qc:124). The melee now runs as Base does: a scheduled meleetemp think after the melee_delay (0.25s)
 /// wind-up that spreads its melee_traces across melee_time (0.15s), aborting on melee_no_doubleslap if the owner
-/// dies mid-swing. Left out (weapon-frame concern): the staged triple-shot (secondary==2) Frame1->Frame2 3-blast
-/// sequence — the secondary==2 path fires a single blast (with the correct alt_refire/alt_animtime timing).
+/// dies mid-swing. The alt triple-shot (secondary==2) fires three staged blasts: initial blast in WrThink,
+/// then Frame1 and Frame2 each scheduled at alt_animtime intervals via WeaponFireDriver.ScheduleThink, with
+/// per-blast ammo checks + W_SwitchWeapon_Force (faithful to W_Shotgun_Attack3_Frame1/2, shotgun.qc:207-263).
 /// </summary>
 [Weapon]
 public sealed class Shotgun : Weapon
@@ -138,13 +139,23 @@ public sealed class Shotgun : Weapon
             {
                 // secondary==2 triple-shot: same private-timer pattern as primary. QC passes the SEPARATE
                 // alt_animtime (0.2) into weapon_prepareattack and parks alt_refire (1.2) in shotgun_primarytime
-                // (shotgun.qc:316,334) — NOT the melee refire/animtime (1.25/1.15). The staged Frame1->Frame2
-                // 3-blast sequence itself is a weapon-frame loop concern; this path fires a single blast.
+                // (shotgun.qc:316,334) — NOT the melee refire/animtime (1.25/1.15).
+                //
+                // After the first blast, QC schedules W_Shotgun_Attack3_Frame1 via weapon_thinkf(alt_animtime)
+                // (shotgun.qc:335): Frame1 fires a second blast and schedules Frame2; Frame2 fires a third and
+                // returns to ready. Each Frame checks ammo and calls W_SwitchWeapon_Force if dry. The staged
+                // schedule uses the same WeaponFireDriver.ScheduleThink seam that weapon_thinkf uses — the last
+                // write wins, so scheduling Frame1 here OVERWRITES the w_ready that PrepareAttack just parked
+                // (PrepareAttack schedules animtime for ready; we replace it with animtime for Frame1).
                 if (Api.Clock.Time >= st.ShotgunPrimaryTime
                     && PrepareAttack(actor, slot, fire, attackTime: Secondary.AltAnimtime))
                 {
                     Attack(actor, slot);
                     st.ShotgunPrimaryTime = Api.Clock.Time + Secondary.AltRefire * rate;
+                    // Schedule Frame1 (overwrites the w_ready PrepareAttack parked — QC weapon_thinkf last-wins).
+                    float frameDelay = Secondary.AltAnimtime * rate;
+                    WeaponFireDriver.ScheduleThink(st, frameDelay,
+                        (pl, sl) => Attack3Frame1(pl, sl));
                 }
             }
         }
@@ -175,8 +186,8 @@ public sealed class Shotgun : Weapon
         {
             Melee(actor, slot);
         }
-        // Multi-frame scheduling of the triple-shot (W_Shotgun_Attack3_Frame1/2) is a weapon-frame loop concern
-        // driven by the weapon-system tick, not the blast.
+        // Multi-frame scheduling of the triple-shot (W_Shotgun_Attack3_Frame1/2) is driven via
+        // WeaponFireDriver.ScheduleThink above (secondary==2 path schedules Frame1 after each blast).
     }
 
     // METHOD(Shotgun, wr_aim) — shotgun.qc:267-273. A bot presses ATCK2 (the melee slap) when the enemy is
@@ -229,6 +240,60 @@ public sealed class Shotgun : Weapon
         // shotgun view-frame eject velocity (up (30 - rand*5), shotgun.qc:82), then routes the Shell casing to
         // the client's EffectSystem.SpawnCasing (a real bouncing brass shell).
         WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Shell);
+    }
+
+    // W_Shotgun_Attack3_Frame1 — second blast of the alt triple-shot sequence. shotgun.qc:236-263.
+    // Called by the weapon-think scheduled after the first blast fires. Checks ammo (wr_checkammo2),
+    // force-switches to the best weapon if dry, fires a second blast, then schedules Frame2.
+    private void Attack3Frame1(Entity actor, WeaponSlot slot)
+    {
+        bool unlimited = actor.UnlimitedAmmo || (actor.Items & ItUnlimitedAmmo) != 0;
+        // QC wr_checkammo2 on secondary==2: pool OR clip >= primary_ammo.
+        if (!CheckAmmoSecondary(actor) && !unlimited)
+        {
+            // W_SwitchWeapon_Force: switch to the best usable weapon (QC w_getbestweapon).
+            SwitchToOtherWeapon(actor, slot);
+            // QC: weapon_thinkf + w_ready -> become ready so the new weapon can raise.
+            WeaponSlotState st2 = actor.WeaponState(slot);
+            if (st2.State == WeaponFireState.InUse)
+                st2.State = WeaponFireState.Ready;
+            return;
+        }
+
+        Attack(actor, slot);
+
+        // Schedule Frame2 after alt_animtime (QC: weapon_thinkf(..., alt_animtime, W_Shotgun_Attack3_Frame2)).
+        float rate = WeaponRateFactor(actor);
+        WeaponFireDriver.ScheduleThink(actor.WeaponState(slot), Secondary.AltAnimtime * rate,
+            (pl, sl) => Attack3Frame2(pl, sl));
+    }
+
+    // W_Shotgun_Attack3_Frame2 — third (final) blast of the alt triple-shot. shotgun.qc:207-234.
+    // Checks ammo, force-switches if dry, fires the last blast, then returns the slot to READY.
+    // QC passes is_primary=true to trick the last shot into playing the full reload sound.
+    private void Attack3Frame2(Entity actor, WeaponSlot slot)
+    {
+        bool unlimited = actor.UnlimitedAmmo || (actor.Items & ItUnlimitedAmmo) != 0;
+        if (!CheckAmmoSecondary(actor) && !unlimited)
+        {
+            SwitchToOtherWeapon(actor, slot);
+            WeaponSlotState st2 = actor.WeaponState(slot);
+            if (st2.State == WeaponFireState.InUse)
+                st2.State = WeaponFireState.Ready;
+            return;
+        }
+
+        Attack(actor, slot);
+
+        // QC: weapon_thinkf(actor, weaponentity, WFRAME_FIRE1, alt_animtime, w_ready) — return to ready.
+        float rate = WeaponRateFactor(actor);
+        WeaponFireDriver.ScheduleThink(actor.WeaponState(slot), Secondary.AltAnimtime * rate,
+            static (pl, sl) =>
+            {
+                WeaponSlotState s3 = pl.WeaponState(sl);
+                if (s3.State == WeaponFireState.InUse)
+                    s3.State = WeaponFireState.Ready;
+            });
     }
 
     // W_Shotgun_Attack2 — start a melee swing. shotgun.qc:193-204. Plays the swing sound and schedules the

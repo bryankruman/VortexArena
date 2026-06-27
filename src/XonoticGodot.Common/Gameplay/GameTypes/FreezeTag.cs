@@ -213,6 +213,8 @@ public sealed class FreezeTag : GameType
         Frozen.Clear();
         _reviveTime.Clear();
         Scoring.GameScores.ResetTeams(); // QC Score_ClearAll at match start: zero both team slots before declaring
+        // QC fragsleft_last reset: re-arm the "N rounds left" announcer (ft's Scores_CountFragsRemaining hook).
+        Scoring.GameScores.ResetFragsRemaining();
 
         // QC sv_freezetag.qc GameRules_scoring(freezetag_teams, SFL_SORT_PRIO_PRIMARY, 0, {
         // field_team(ST_FT_ROUNDS, "rounds", PRIMARY); field(SP_FREEZETAG_REVIVALS, "revivals", 0); }): SP_SCORE
@@ -1004,6 +1006,11 @@ public sealed class FreezeTag : GameType
         float leadLimit = LeadLimit;
         if (leadLimit > 0f && secondTeam != Teams.None && (bestScore - GetTeamRounds(secondTeam)) >= leadLimit)
             MatchEnded = true;
+
+        // QC MUTATOR_HOOKFUNCTION(ft, Scores_CountFragsRemaining) returns true: announce "N rounds left" once as
+        // the leading team approaches the round limit (WinningCondition_Scores remaining-frags announcer).
+        int secondScore = secondTeam == Teams.None ? 0 : GetTeamRounds(secondTeam);
+        Scoring.GameScores.CountFragsRemaining(limit, leadLimit, bestScore, secondScore, suddenDeathEnding: false);
     }
 
     private FrozenState GetState(Player p)

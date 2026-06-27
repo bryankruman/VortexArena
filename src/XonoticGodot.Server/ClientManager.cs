@@ -46,6 +46,14 @@ public sealed class ClientManager
         /// <summary>Edge tracker for the observer's +attack2 (drop to free-fly) press.</summary>
         public bool SpecFreeflyReleased { get; internal set; } = true;
 
+        /// <summary>
+        /// QC <c>CS(this).version_nagtime</c> (server/client.qc:1151, 2925): timer for version-mismatch
+        /// notifications. Set to 10-20 seconds after client connect; when the timer fires, a notification is
+        /// sent if the client's <c>g_xonoticversion</c> differs from the server's. The timer is then zeroed
+        /// to fire only once. 0 = timer has fired or not yet armed.
+        /// </summary>
+        public float VersionNagTime { get; internal set; } = 0f;
+
         public ClientInfo(Player player, bool isBot)
         {
             Player = player;
@@ -216,6 +224,9 @@ public sealed class ClientManager
             _teamplay.AssignBestTeam(p, _players);
 
         info.JoinTime = Now;
+        // QC ClientConnect (server/client.qc:1151): arm the version-nagging timer 10-20 seconds after connect,
+        // so the version check fires once during the player's session (PlayerPreThink @ 2925-2943).
+        info.VersionNagTime = Now + 10f + (float)new System.Random().NextDouble() * 10f;
 
         // QC ClientConnect ends by TRANSMUTE(Observer, this) (server/client.qc:1164): a connecting client is an
         // OBSERVER, not yet a live player — it only enters the match via Join() (on +jump/+attack, a delayed
@@ -274,6 +285,13 @@ public sealed class ClientManager
         p.SpectateeStatus = 0;
         p.WantsJoin = 0;          // QC this.wants_join = 0
         p.JoinJumpReleased = true;
+
+        // QC PutClientInServer (server/client.qc:776-780): when a player was a spectator (killcount ==
+        // FRAGS_SPECTATOR) PlayerScore_Clear is called on the (re)join — gated by g_score_resetonjoin (default
+        // 0 = no-op; 1 = always clear; -1 = clear unless PreferPlayerScore_Clear hook vetoes). This is the live
+        // arm of the resetonjoin feature: at the default (0) it is a no-op, so joiners keep their score; only
+        // diverges when an admin explicitly sets 1 or -1.
+        XonoticGodot.Common.Gameplay.Scoring.GameScores.ClearPlayerOnJoin(p);
 
         // QC the gametype PutClientInServer / lms_AddPlayer seed: register the joiner with the gametype (LMS seeds
         // its lives column + clamps a late joiner to the lowest life count) BEFORE the spawn loadout is applied.

@@ -92,8 +92,8 @@ public sealed class OkRpc : Weapon
     {
         var st = actor.WeaponState(slot);
 
-        // Secondary blaster-jump on the dedicated jump_interval timer (refire_type 1).
-        OkWeapons.FireSecondaryBlasterJump(actor, slot, fire, Cvars.SecondaryRefireType);
+        // Secondary blaster-jump: refire_type 1 = own jump_interval; refire_type 0 = shared ATTACK_FINISHED.
+        OkWeapons.FireSecondaryBlasterJump(this, actor, slot, fire, Cvars.SecondaryRefireType);
 
         // forced reload
         if (Cvars.ReloadAmmo != 0f && st.ClipLoad < Cvars.Ammo)

@@ -452,6 +452,8 @@ public sealed class Race : GameType
         Winner = null;
         SuddenDeath = false;
         RaceCompleting = false;
+        // QC fragsleft_last reset: re-arm the "N laps left" announcer (rc's Scores_CountFragsRemaining hook, !qualifying).
+        Scoring.GameScores.ResetFragsRemaining();
         // QC race_ClearRecords (server/race.qc): reset the round-best speed award; the persisted all-time best
         // (speedaward_alltimebest, kept in the DB) is re-loaded lazily so it survives map resets.
         _speedawardSpeed = 0f;
@@ -1067,6 +1069,27 @@ public sealed class Race : GameType
         // (set by FinishRacer/StartCompleting the moment the first racer hits the limit).
         if (!SuddenDeath && Qualifying == false && RaceCompleting && completed < total)
             SuddenDeath = true;
+
+        // QC MUTATOR_HOOKFUNCTION(rc, Scores_CountFragsRemaining) returns true when !g_race_qualifying:
+        // announce "N laps left" once as the leader approaches the lap limit, but only in race mode (not
+        // qualifying time-trial, where the primary key is SP_RACE_FASTEST, not laps).
+        if (!Qualifying && Api.Services is not null)
+        {
+            float lapLimit = LapLimit;
+            // Compute the top and second lap counts from SP_RACE_LAPS (the primary key in race mode).
+            Scoring.ScoreField? lapsField = Scoring.GameScores.Field("RACE_LAPS");
+            if (lapsField is not null)
+            {
+                int topLaps = 0, secondLaps = 0;
+                foreach (var kv in _states)
+                {
+                    int laps = Scoring.GameScores.Get(kv.Key, lapsField);
+                    if (laps > topLaps) { secondLaps = topLaps; topLaps = laps; }
+                    else if (laps > secondLaps) secondLaps = laps;
+                }
+                Scoring.GameScores.CountFragsRemaining(lapLimit, 0f, topLaps, secondLaps, suddenDeathEnding: false);
+            }
+        }
     }
 
     /// <summary>

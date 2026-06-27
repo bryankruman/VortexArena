@@ -354,6 +354,9 @@ public sealed class TeamKeepaway : GameType
         _timePointsRemainder = 0f;
         _bcTimeRemainder = 0f;
         GS.ResetTeams(); // QC Score_ClearAll at match start: zero both team slots before declaring
+        // QC fragsleft_last reset: re-arm the "N points left" announcer (tka's Scores_CountFragsRemaining hook,
+        // gated on !g_tka_score_timepoints).
+        GS.ResetFragsRemaining();
 
         // QC sv_tka.qc GameRules_scoring(tka_teams, SFL_SORT_PRIO_PRIMARY, SFL_SORT_PRIO_PRIMARY, {
         // field(SP_TKA_PICKUPS, "pickups", 0); field(SP_TKA_CARRIERKILLS, "bckills", 0); field(SP_TKA_BCTIME,
@@ -708,16 +711,24 @@ public sealed class TeamKeepaway : GameType
 
         // QC GameRules_limit_lead: the leader winning by at least the lead limit ends the match.
         int lead = LeadLimit;
+        int secondTeam = GS.SecondTeam();
+        int secondScore = secondTeam == Teams.None ? 0 : ScoreFor(secondTeam);
         if (lead > 0)
         {
-            int secondTeam = GS.SecondTeam();
-            int secondScore = secondTeam == Teams.None ? 0 : ScoreFor(secondTeam);
             if (leaderScore - secondScore >= lead)
             {
                 MatchEnded = true;
                 WinningTeam = leaderTeam;
+                return;
             }
         }
+
+        // QC MUTATOR_HOOKFUNCTION(tka, Scores_CountFragsRemaining) returns !autocvar_g_tka_score_timepoints:
+        // announce "N points left" once as the leading team approaches the point limit, but only when
+        // timed-possession scoring is off (time-points makes the score continuous, rendering 1/2/3 meaningless).
+        bool timePoints = TryCvar(CvarScoreTimePoint, out float tp) && tp != 0f;
+        if (!timePoints)
+            GS.CountFragsRemaining(limit, lead, leaderScore, secondScore, suddenDeathEnding: false);
     }
 
     private int ScoreKillAc => TryCvar(CvarScoreKillAc, out float v) ? (int)v : DefaultScoreKillAc;

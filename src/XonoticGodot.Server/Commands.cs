@@ -356,6 +356,121 @@ public sealed class Commands
     }
 
     /// <summary>
+    /// QC <c>vercmp</c> / <c>vercmp_recursive</c> (lib/string.qh:543-572): compare two version strings token by
+    /// token (split on '.'). For each token pair the QC algorithm is: first the numeric difference
+    /// <c>stof(s1) - stof(s2)</c> (QC <c>stof</c> parses the leading number, non-numeric → 0); if that ties, a
+    /// case-insensitive <c>strcasecmp</c>; if that ties too, the side that ran out of tokens first is smaller
+    /// (so "0.8" &lt; "0.8.6"). Returns &lt;0 if lhs &lt; rhs, 0 if equal, &gt;0 if lhs &gt; rhs. (The QC
+    /// <c>"git"</c> early-outs in <c>vercmp</c> are handled by the caller's strstrofs git checks before this
+    /// runs, so they are intentionally not duplicated here.)
+    /// </summary>
+    private static int VersionCompare(string lhs, string rhs)
+    {
+        // QC vercmp early-out: strcasecmp(v1, v2) == 0.
+        if (string.Equals(lhs, rhs, StringComparison.OrdinalIgnoreCase))
+            return 0;
+        return VersionCompareRecursive(lhs, rhs);
+    }
+
+    /// <summary>QC <c>vercmp_recursive</c> (lib/string.qh:543): one token (up to the first '.') of each side,
+    /// numeric-then-case-insensitive compare, recurse on the remainder.</summary>
+    private static int VersionCompareRecursive(string v1, string v2)
+    {
+        int dot1 = v1.IndexOf('.');
+        int dot2 = v2.IndexOf('.');
+        string s1 = dot1 == -1 ? v1 : v1.Substring(0, dot1);
+        string s2 = dot2 == -1 ? v2 : v2.Substring(0, dot2);
+
+        // QC: float r = stof(s1) - stof(s2); if (r != 0) return r;
+        float r = QcStof(s1) - QcStof(s2);
+        if (r < 0) return -1;
+        if (r > 0) return 1;
+
+        // QC: r = strcasecmp(s1, s2); if (r != 0) return r;
+        int c = string.Compare(s1, s2, StringComparison.OrdinalIgnoreCase);
+        if (c != 0) return c;
+
+        // QC token-count tiebreak: the side with no remaining '.' token is smaller.
+        if (dot1 == -1)
+            return (dot2 == -1) ? 0 : -1;
+        if (dot2 == -1)
+            return 1;
+        return VersionCompareRecursive(v1.Substring(dot1 + 1), v2.Substring(dot2 + 1));
+    }
+
+    /// <summary>QC <c>stof</c> semantics: parse the leading numeric prefix of a string; any non-numeric content
+    /// (or an empty string) yields 0.</summary>
+    private static float QcStof(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return 0f;
+        int i = 0;
+        if (s[0] == '+' || s[0] == '-') i = 1;
+        int start = i;
+        bool dot = false;
+        while (i < s.Length && (char.IsDigit(s[i]) || (s[i] == '.' && !dot)))
+        {
+            if (s[i] == '.') dot = true;
+            i++;
+        }
+        if (i == start) return 0f; // no digits after the optional sign
+        string num = s.Substring(0, i);
+        return float.TryParse(num, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out float f) ? f : 0f;
+    }
+
+    /// <summary>
+    /// QC PlayerPreThink version-nagging logic (server/client.qc:2925-2943): if the client's
+    /// <c>g_xonoticversion</c> differs from the server's, send a version-mismatch notification. Called once
+    /// per player session when the version_nagtime timer fires. Does nothing if the client hasn't sent its
+    /// version string yet (the g_xonoticversion replicated cvar is empty).
+    /// </summary>
+    public void CheckClientVersion(ClientManager.ClientInfo client, float serverTime)
+    {
+        if (client.VersionNagTime == 0f || serverTime <= client.VersionNagTime)
+            return; // Timer not armed or not yet fired.
+        client.VersionNagTime = 0f; // Fire once only.
+
+        Player p = client.Player;
+        string clientVersion = GetClientCvar(p, "g_xonoticversion", "");
+        if (string.IsNullOrEmpty(clientVersion))
+            return; // Client hasn't sent version yet — nothing to compare.
+
+        string serverVersion = Api.Cvars.GetString("g_xonoticversion") ?? "";
+        if (string.IsNullOrEmpty(serverVersion))
+            return; // Server has no version set — skip check.
+
+        // Check if either client or server is a git/autobuild version; if so, send the BETA notification.
+        // QC: strstrofs(clientVersion, "git", 0) >= 0 || strstrofs(clientVersion, "autobuild", 0) >= 0
+        bool clientIsGit = clientVersion.Contains("git", StringComparison.OrdinalIgnoreCase)
+            || clientVersion.Contains("autobuild", StringComparison.OrdinalIgnoreCase);
+        bool serverIsGit = serverVersion.Contains("git", StringComparison.OrdinalIgnoreCase)
+            || serverVersion.Contains("autobuild", StringComparison.OrdinalIgnoreCase);
+
+        if (clientIsGit)
+        {
+            // Git client — no notification (QC has an empty case here).
+        }
+        else if (serverIsGit)
+        {
+            // Git server with a release client — send BETA notification.
+            NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Info, "VERSION_BETA",
+                serverVersion, clientVersion);
+        }
+        else
+        {
+            // Both are release versions — compare them.
+            int cmp = VersionCompare(clientVersion, serverVersion);
+            if (cmp < 0) // Client is older than server.
+                NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Info, "VERSION_OUTDATED",
+                    serverVersion, clientVersion);
+            else if (cmp > 0) // Client is newer than server.
+                NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Info, "VERSION_OLD",
+                    serverVersion, clientVersion);
+            // else: versions match — no notification.
+        }
+    }
+
+    /// <summary>
     /// Drop every per-client table entry for a departed player (the QC clientstate entity being freed on
     /// disconnect). The net layer calls this from its disconnect/bot-removal paths so the dictionaries don't
     /// retain dead Player references across a long-running server.
@@ -749,6 +864,7 @@ public sealed class Commands
         Register("help", "help [command] — list commands or describe one", CmdHelp);
         Register("status", "status — print match/roster status", CmdStatus);
         Register("teamstatus", "teamstatus — print player/team scores", CmdTeamStatus);
+        Register("printstats", "printstats — dump score log (non-final) to console", CmdPrintStats);
         Register("who", "who — list connected clients", CmdWho);
         Register("time", "time — print the server time readouts", CmdTime);
         Register("info", "info <request> — print an admin info string", CmdInfo);
@@ -2274,6 +2390,218 @@ public sealed class Commands
 
     /// <summary>QC <c>strlennocol</c>: visible length, ignoring ^-color codes.</summary>
     private static int VisibleLen(string s) => XonoticGodot.Common.Diagnostics.Log.StripColors(s).Length;
+
+    // =============================================================================================
+    // score log (QC DumpStats / GetPlayerScoreString / GetTeamScoreString / GetScoreLogLabel,
+    // server/world.qc:1264 + server/scores.qc:599) — `printstats` command + intermission call
+    // =============================================================================================
+
+    /// <summary>
+    /// QC <c>GetScoreLogLabel(label, fl)</c> (server/scores.qc:599): append sort-priority + lower-is-better
+    /// suffixes to the column name so log-parsers know which column wins ties and which direction is better.
+    /// Order: append <c>&lt;</c> for LowerIsBetter, then <c>!!</c> for PRIMARY, <c>!</c> for SECONDARY.
+    /// </summary>
+    private static string GetScoreLogLabel(string label, XonoticGodot.Common.Gameplay.Scoring.ScoreFlags fl)
+    {
+        if ((fl & XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.LowerIsBetter) != 0)
+            label += "<";
+        if ((fl & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) == XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioPrimary)
+            label += "!!";
+        else if ((fl & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) == XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioSecondary)
+            label += "!";
+        return label;
+    }
+
+    /// <summary>
+    /// QC <c>GetPlayerScoreString(pl, shortString)</c> (server/scores.qc:610): when <paramref name="pl"/> is null,
+    /// returns the comma-separated column-label header in declaration order: primary!!, then secondary!, then others;
+    /// when non-null, returns the matching comma-separated numeric values from that player's scorekeeper. The
+    /// <paramref name="shortString"/> param mirrors QC (0 = full; 1 = primary+secondary; 2 = primary only) — the
+    /// call sites in DumpStats always pass 0 (shortString=false).
+    /// </summary>
+    private static string GetPlayerScoreString(Player? pl, bool shortString = false)
+    {
+        var sb = new System.Text.StringBuilder();
+        var fields = XonoticGodot.Common.Gameplay.Scoring.GameScores.Fields;
+        if (pl is null)
+        {
+            // label header — primary first, then secondary, then the rest (unless shortString trims them)
+            foreach (var f in fields)
+                if (f.Label != "" && !f.ClientOnly && (f.Flags & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) == XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioPrimary)
+                    sb.Append(GetScoreLogLabel(f.Label, f.Flags)).Append(',');
+            if (!shortString)
+            {
+                foreach (var f in fields)
+                    if (f.Label != "" && !f.ClientOnly && (f.Flags & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) == XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioSecondary)
+                        sb.Append(GetScoreLogLabel(f.Label, f.Flags)).Append(',');
+                foreach (var f in fields)
+                    if (f.Label != "" && !f.ClientOnly
+                        && (f.Flags & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) != XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioPrimary
+                        && (f.Flags & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) != XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioSecondary)
+                        sb.Append(GetScoreLogLabel(f.Label, f.Flags)).Append(',');
+            }
+        }
+        else
+        {
+            // numeric values — same order: primary, secondary, rest
+            foreach (var f in fields)
+                if (f.Label != "" && !f.ClientOnly && (f.Flags & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) == XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioPrimary)
+                    sb.Append(XonoticGodot.Common.Gameplay.Scoring.GameScores.Get(pl, f)).Append(',');
+            if (!shortString)
+            {
+                foreach (var f in fields)
+                    if (f.Label != "" && !f.ClientOnly && (f.Flags & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) == XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioSecondary)
+                        sb.Append(XonoticGodot.Common.Gameplay.Scoring.GameScores.Get(pl, f)).Append(',');
+                foreach (var f in fields)
+                    if (f.Label != "" && !f.ClientOnly
+                        && (f.Flags & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) != XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioPrimary
+                        && (f.Flags & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) != XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioSecondary)
+                        sb.Append(XonoticGodot.Common.Gameplay.Scoring.GameScores.Get(pl, f)).Append(',');
+            }
+        }
+        // QC: substring(out, 0, strlen(out) - 1) — strip trailing comma
+        if (sb.Length > 0 && sb[sb.Length - 1] == ',') sb.Length--;
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// QC <c>GetTeamScoreString(tm, shortString)</c> (server/scores.qc:671): tm=0 → column-label header;
+    /// tm&gt;0 → numeric team-score values (primary, then secondary, then rest). Like GetPlayerScoreString,
+    /// shortString=false (the only caller, DumpStats, always passes 0).
+    /// </summary>
+    private static string GetTeamScoreString(int tm, bool shortString = false)
+    {
+        var sb = new System.Text.StringBuilder();
+        if (tm == 0)
+        {
+            // label header
+            for (int i = 0; i < XonoticGodot.Common.Gameplay.Scoring.GameScores.MaxTeamScore; i++)
+                if (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamLabel(i) != ""
+                    && (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamFlags(i) & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) == XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioPrimary)
+                    sb.Append(GetScoreLogLabel(XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamLabel(i), XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamFlags(i))).Append(',');
+            if (!shortString)
+            {
+                for (int i = 0; i < XonoticGodot.Common.Gameplay.Scoring.GameScores.MaxTeamScore; i++)
+                    if (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamLabel(i) != ""
+                        && (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamFlags(i) & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) == XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioSecondary)
+                        sb.Append(GetScoreLogLabel(XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamLabel(i), XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamFlags(i))).Append(',');
+                for (int i = 0; i < XonoticGodot.Common.Gameplay.Scoring.GameScores.MaxTeamScore; i++)
+                    if (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamLabel(i) != ""
+                        && (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamFlags(i) & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) != XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioPrimary
+                        && (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamFlags(i) & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) != XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioSecondary)
+                        sb.Append(GetScoreLogLabel(XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamLabel(i), XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamFlags(i))).Append(',');
+            }
+        }
+        else
+        {
+            // numeric values: QC teamscorekeepers[tm-1] non-null check — we always have storage so write directly.
+            for (int i = 0; i < XonoticGodot.Common.Gameplay.Scoring.GameScores.MaxTeamScore; i++)
+                if (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamLabel(i) != ""
+                    && (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamFlags(i) & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) == XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioPrimary)
+                    sb.Append(XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamScore(tm, i)).Append(',');
+            if (!shortString)
+            {
+                for (int i = 0; i < XonoticGodot.Common.Gameplay.Scoring.GameScores.MaxTeamScore; i++)
+                    if (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamLabel(i) != ""
+                        && (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamFlags(i) & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) == XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioSecondary)
+                        sb.Append(XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamScore(tm, i)).Append(',');
+                for (int i = 0; i < XonoticGodot.Common.Gameplay.Scoring.GameScores.MaxTeamScore; i++)
+                    if (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamLabel(i) != ""
+                        && (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamFlags(i) & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) != XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioPrimary
+                        && (XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamFlags(i) & XonoticGodot.Common.Gameplay.Scoring.ScoreFlagsExtensions.SortPrioMask) != XonoticGodot.Common.Gameplay.Scoring.ScoreFlags.SortPrioSecondary)
+                        sb.Append(XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamScore(tm, i)).Append(',');
+            }
+        }
+        if (sb.Length > 0 && sb[sb.Length - 1] == ',') sb.Length--;
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// QC <c>DumpStats(final)</c> (server/world.qc:1264): emit the colon-delimited score-log block to the
+    /// console / event-log / file sinks as appropriate. When <paramref name="final"/> is true (intermission),
+    /// the header token is <c>:scores:</c> and the eventlog sink is enabled; when false (printstats command),
+    /// the header token is <c>:status:</c>, always to console, never to eventlog. The QC sink logic:
+    /// <list type="bullet">
+    /// <item>to_console = sv_logscores_console (overridden to true when !final)</item>
+    /// <item>to_eventlog = sv_eventlog (cleared when !final; also cleared when sv_eventlog_console avoids doubles)</item>
+    /// <item>file: the port omits the per-call file open/close (Base appends to sv_logscores_filename) — the
+    ///   event-log file sink (sv_eventlog_files) already covers structured logging for the port.</item>
+    /// </list>
+    /// Called at intermission from <see cref="GameWorld.NextLevel"/> (final=true) and via the
+    /// <c>printstats</c> server command (final=false).
+    /// </summary>
+    internal void DumpStats(bool final)
+    {
+        bool toConsole = Cvars.Bool("sv_logscores_console");
+        bool toEventlog = final && Cvars.Bool("sv_eventlog");
+        if (!final)
+            toConsole = true; // printstats: always to console
+
+        // QC: if sv_eventlog_console is on, the eventlog already writes to console → suppress to_console to avoid doubles
+        if (toEventlog && Cvars.Bool("sv_eventlog_console"))
+            toConsole = false;
+
+        string gametype = _world.GameType?.NetName ?? "dm";
+        string mapName = _world.MapName ?? "";
+        string s = (final ? ":scores:" : ":status:") + gametype + "_" + mapName + ":" + (int)MathF.Round(_world.Time);
+        if (toConsole) _world.GameLog.ConsoleSink?.Invoke(s);
+        if (toEventlog) _world.GameLog.Echo(s);
+
+        // :labels:player:<col!!,col!,col,...>
+        s = ":labels:player:" + GetPlayerScoreString(null);
+        if (toConsole) _world.GameLog.ConsoleSink?.Invoke(s);
+        if (toEventlog) _world.GameLog.Echo(s);
+
+        // per-player rows: real clients (human + bots). QC: IS_REAL_CLIENT || (IS_BOT_CLIENT && logscores_bots).
+        bool logBots = Cvars.Bool("sv_logscores_bots");
+        foreach (Player p in _world.Clients.Players)
+        {
+            if (p.IsBot && !logBots) continue;
+
+            float jointime = _world.Clients.InfoOf(p)?.JoinTime ?? 0f;
+            int elapsed = (int)MathF.Round(MathF.Max(0f, _world.Time - jointime));
+            bool isPlayer = p.FragsStatus != Player.FragsSpectator;
+            string teamOrSpec = isPlayer ? ((int)p.Team).ToString(System.Globalization.CultureInfo.InvariantCulture) : "spectator";
+
+            // QC :player:see-labels:<scores>:<elapsed>:<team|spectator>:<playerid>:<name>
+            // console omits playerid (LOG_HELP just gets name appended); eventlog includes playerid.
+            string prefix = ":player:see-labels:" + GetPlayerScoreString(p) + ":" + elapsed + ":" + teamOrSpec + ":";
+            if (toConsole) _world.GameLog.ConsoleSink?.Invoke(prefix + p.NetName);
+            if (toEventlog) _world.GameLog.Echo(prefix + p.PlayerId + ":" + p.NetName);
+        }
+
+        // teamplay: :labels:teamscores: + per-team :teamscores:see-labels: for teams 1..15
+        if (XonoticGodot.Common.Gameplay.Scoring.GameScores.Teamplay)
+        {
+            s = ":labels:teamscores:" + GetTeamScoreString(0);
+            if (toConsole) _world.GameLog.ConsoleSink?.Invoke(s);
+            if (toEventlog) _world.GameLog.Echo(s);
+
+            for (int i = 1; i < 16; i++)
+            {
+                // QC: `else if((sk = teamscorekeepers[tm - 1]))` — only emit for teams that actually have a
+                // scorekeeper. The port keys team scores by team COLOUR CODE (Red=4/Blue=13/Yellow=12/Pink=9),
+                // so the active team set is the key set of the score dict; an unused colour-code index gets no row.
+                if (!XonoticGodot.Common.Gameplay.Scoring.GameScores.TeamScores.ContainsKey(i)) continue;
+                string ts = GetTeamScoreString(i);
+                if (ts == "") continue; // no labeled team-score slots at all
+                s = ":teamscores:see-labels:" + ts + ":" + i;
+                if (toConsole) _world.GameLog.ConsoleSink?.Invoke(s);
+                if (toEventlog) _world.GameLog.Echo(s);
+            }
+        }
+
+        if (toConsole) _world.GameLog.ConsoleSink?.Invoke(":end");
+        if (toEventlog) _world.GameLog.Echo(":end");
+    }
+
+    /// <summary>QC <c>sv_cmd.qc:1249</c> <c>printstats</c>: dump a non-final score snapshot to the console.
+    /// Always prints regardless of sv_logscores_console; never to the eventlog (final=false).</summary>
+    private bool CmdPrintStats(CommandContext ctx)
+    {
+        DumpStats(final: false);
+        return true;
+    }
 
     private bool CmdWho(CommandContext ctx)
     {

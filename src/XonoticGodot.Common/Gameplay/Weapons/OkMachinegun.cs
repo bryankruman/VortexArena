@@ -87,8 +87,9 @@ public sealed class OkMachinegun : Weapon
     {
         var st = actor.WeaponState(slot);
 
-        // Secondary blaster-jump on the dedicated jump_interval timer (refire_type 1).
-        OkWeapons.FireSecondaryBlasterJump(actor, slot, fire, Cvars.SecondaryRefireType);
+        // Secondary blaster-jump on the dedicated jump_interval timer (refire_type 1). QC okmachinegun.qc:107
+        // passes `true` (secondary ammo check) on the refire_type==0 path.
+        OkWeapons.FireSecondaryBlasterJump(this, actor, slot, fire, Cvars.SecondaryRefireType, FireMode.Secondary);
 
         // forced reload: if reloadable and the clip is below a primary shot, reload.
         if (Cvars.ReloadAmmo != 0f && st.ClipLoad < Cvars.Ammo)

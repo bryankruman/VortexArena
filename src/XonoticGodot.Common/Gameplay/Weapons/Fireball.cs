@@ -227,10 +227,23 @@ public sealed class Fireball : Weapon
         return fireSecondary;
     }
 
-    // METHOD(Fireball, wr_aim): the primary leads with bot_aim(speed 1200). The brain reads this for the shot
-    // lead (the secondary firemine leads at speed 900 in QC, but the button-route happens after the lead like
-    // every other port wr_aim — leading by the primary speed is the shared simplification).
-    public override float BotAimShotSpeed(float defaultSpeed) => Primary.Speed;
+    // METHOD(Fireball, wr_aim): QC calls bot_aim with DIFFERENT speeds depending on the current toggle:
+    //   primary path:   bot_aim(speed 1200, up 0,   lifetime, false, false)
+    //   secondary path: bot_aim(speed 900,  up 100, lifetime, true,  false)
+    // The brain calls BotAimShotSpeed(defaultSpeed, ref ctx) BEFORE BotWantsSecondary (which routes the fire
+    // button). ctx.SecondaryToggle carries the PRE-flip toggle value — the mode the bot will actually fire this
+    // frame — so we read it here to select the correct lead speed. The lead is bot_shotlead, which uses ONLY the
+    // HORIZONTAL shotspeed (aim.qc:336: targvelocity * (delay + dist/shotspeed)); the vertical speed_up=100 is
+    // consumed solely by bot_aim's gravity arc (findtrajectorywithleading, applygravity=true) — handled
+    // independently by the brain's BallisticArc. So the faithful secondary lead speed is the horizontal 900.
+    public override float BotAimShotSpeed(float defaultSpeed) => Primary.Speed; // fallback: primary speed
+
+    public override float BotAimShotSpeed(float defaultSpeed, ref BotAimState ctx)
+    {
+        // Secondary firemine leads by the horizontal shotspeed 900 (QC bot_aim's shotspeed arg → bot_shotlead);
+        // speed_up 100 is the arc-only component, not part of the lead distance. Primary fireball leads by 1200.
+        return ctx.SecondaryToggle ? Secondary.Speed : Primary.Speed;
+    }
 
     // W_Fireball_Attack1 — launch a large, slow, shootable fireball that bursts on impact. fireball.qc
     private void Attack1(Entity actor, WeaponSlot slot)

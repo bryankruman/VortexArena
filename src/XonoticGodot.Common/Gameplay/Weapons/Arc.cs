@@ -17,8 +17,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// This port covers the per-frame beam DPS, the curving beam direction (beam_dir blended toward the aim,
 /// limited by beam_maxangle/returnspeed), the heat / overheat-jam / cooldown model, exponential distance
 /// falloff, teammate healing (health + armor), the burst-beam variant, the bouncing bolt secondary with
-/// shoot-down, and the splash damage. Only the bezier multi-segment rendering and CSQC beam networking are
-/// left out (the single trace along beam_dir is the gameplay-equivalent of the segmented sweep).
+/// shoot-down, and the splash damage. The curving beam body is traced as the same quadratic-bezier multi-segment
+/// sweep the Base server runs (control point pulled toward wantdir by beam_tightness, segment count from
+/// beam_degreespersegment/distancepersegment, capped at ARC_MAX_SEGMENTS); only the CSQC beam *rendering* (the
+/// Draw_ArcBeam networked entity) and the warpzone re-projection half of the antilag trace are left out.
 /// </summary>
 [Weapon]
 public sealed class Arc : Weapon
@@ -364,7 +366,9 @@ public sealed class Arc : Weapon
             st.BeamDir = wantDir;
             st.BeamInitialized = true;
         }
-        else if (st.BeamDir != wantDir)
+        // QC arc.qc:318: segments default to 1; the curve only segments when beam_dir is actually lagging wantdir.
+        float segments = 1f;
+        if (st.BeamDir != wantDir)
         {
             float angle = (wantDir - st.BeamDir).Length() * QMath.Rad2Deg;
             if (angle < 0.01f)
@@ -377,24 +381,73 @@ public sealed class Arc : Weapon
                 if (angle > Beam.MaxAngle) maxBlend = Beam.MaxAngle / angle;
                 float blend = QMath.Clamp(1f - Beam.ReturnSpeed * Api.Clock.FrameTime, 0f, maxBlend);
                 st.BeamDir = QMath.Normalize(wantDir * (1f - blend) + st.BeamDir * blend);
+
+                // QC arc.qc:337-349: how many bezier segments to break the curved body into. Capped at
+                // ARC_MAX_SEGMENTS (20); beam_distancepersegment lowers the cap by path length, beam_degreespersegment
+                // sets the count from the turn angle (clamped to beam_maxangle). At stock degrees/distance defaults
+                // (1 / 0) a curving beam segments by its angle, smoothing the swept body around a corner.
+                const float ArcMaxSegments = 20f;
+                float maxAllowedSegments = ArcMaxSegments;
+                if (Beam.DistancePerSegment != 0f)
+                {
+                    // QC arc.qc:341 uses vlen(w_shotdir) (a unit vector ~= 1) — reproduce verbatim.
+                    maxAllowedSegments = 1f + wantDir.Length() / Beam.DistancePerSegment;
+                    maxAllowedSegments = QMath.Clamp(maxAllowedSegments, 1f, ArcMaxSegments);
+                }
+                if (Beam.DegreesPerSegment != 0f)
+                {
+                    segments = MathF.Min(angle, Beam.MaxAngle) / Beam.DegreesPerSegment;
+                    segments = QMath.Clamp(segments, 1f, maxAllowedSegments);
+                }
             }
         }
 
-        // Single straight segment along the (curved) beam_dir — the QC bezier segmentation is a render-side
-        // smoothing of this same trace.
-        Vector3 end = shot.Origin + st.BeamDir * Beam.Range;
+        // QC arc.qc:352-354: a quadratic bezier from w_shotorg through a control point pulled toward wantdir by
+        // beam_tightness, ending at w_shotorg + beam_dir*range. With segments==1 this collapses to the endpoint
+        // (a straight trace along beam_dir); a curving beam traces the bowed body segment-by-segment so it can clip
+        // geometry near a swept corner the straight endpoint would miss.
+        Vector3 beamEndPos = shot.Origin + st.BeamDir * Beam.Range;
+        float controlPointDist = Beam.Range * QMath.Clamp(1f - Beam.Tightness, 0.001f, 1f);
+        Vector3 controlPoint = shot.Origin + wantDir * controlPointDist;
+
+        // QC arc.qc:360-460: trace the bezier segment-by-segment from w_shotorg; the first segment that hits
+        // terminates the beam. last_origin_prev feeds the damage force direction (normalize(new_origin - prev)).
+        Vector3 lastOrigin = shot.Origin;
+        Vector3 lastOriginPrev = Vector3.Zero;
+        Vector3 end = beamEndPos; // straight-beam fallback for the force dir + trail endpoint
+        TraceResult tr = default;
+        bool hitSomething = false;
         // QC arc.qc:375 traces through WarpZone_traceline_antilag at ANTILAG_LATENCY: rewind other players to the
-        // shooter's view-time so a high-ping player's beam connects on a strafing target. Bracket the damage trace
-        // (no-op on a client / bot-only server / test where no lag-comp provider is installed).
+        // shooter's view-time so a high-ping player's beam connects on a strafing target. Bracket the whole swept
+        // trace (no-op on a client / bot-only server / test where no lag-comp provider is installed).
         LagComp.Begin(actor);
-        TraceResult tr;
         try
         {
-            tr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, actor);
+            // QC arc.qc:360 loops `for (i = 1; i <= segments; ++i)` with a FLOAT segments and t = i/segments — so
+            // the iteration count is floor(segments) and, when segments is fractional, the last t is < 1 (the trace
+            // intentionally stops just shy of the full endpoint). Reproduce both: floor for the count, the float
+            // divisor for t.
+            int segCount = (int)MathF.Floor(segments);
+            if (segCount < 1) segCount = 1;
+            for (int i = 1; i <= segCount; ++i)
+            {
+                Vector3 newOrigin = BezierQuadratic(shot.Origin, controlPoint, beamEndPos, i / segments);
+                tr = Api.Trace.Trace(lastOrigin, Vector3.Zero, Vector3.Zero, newOrigin, MoveFilter.Normal, actor);
+                lastOriginPrev = lastOrigin;
+                lastOrigin = tr.EndPos;
+                end = newOrigin; // the swept direction for this segment (matches QC's per-segment new_origin)
+                if (tr.Fraction < 1f) { hitSomething = true; break; }
+            }
         }
         finally { LagComp.End(); }
 
-        Entity? hit = tr.Ent;
+        // QC's per-hit force direction is normalize(new_origin - last_origin_prev) (the swept segment dir), not
+        // the whole-beam dir; fall back to beam_dir when there is no prior segment (single straight segment).
+        Vector3 segDir = hitSomething && (end - lastOriginPrev).LengthSquared() > 1e-6f
+            ? QMath.Normalize(end - lastOriginPrev)
+            : st.BeamDir;
+
+        Entity? hit = hitSomething ? tr.Ent : null;
         // QC arc.qc:420 sets beam_type = ARC_BT_HEAL when the beam connects to a teammate with healing
         // configured; the CSQC trail then uses the heal-beam variant (ARC_BEAM_HEAL). Track it so the emitted
         // trail matches the gameplay outcome instead of always emitting the damage trail.
@@ -445,8 +498,8 @@ public sealed class Arc : Weapon
                         Beam.FalloffHalflifeDist, (tr.EndPos - shot.Origin).Length())
                     : 1f;
                 float damage = perSec * coefficient * falloff;
-                Vector3 dir = QMath.Normalize(end - shot.Origin);
-                Vector3 force = dir * (Beam.Force * coefficient * falloff);
+                // QC arc.qc:452-455: force direction is the swept segment direction (new_dir), not the whole-beam dir.
+                Vector3 force = segDir * (Beam.Force * coefficient * falloff);
                 WeaponFiring.ApplyDamage(hit, actor, damage, RegistryId, force: force, hitLoc: tr.EndPos);
             }
         }
@@ -621,4 +674,20 @@ public sealed class Arc : Weapon
             return cells >= Bolt.Ammo;
         return Beam.OverheatMax > 0f && (Beam.BurstAmmo == 0f || cells > 0f);
     }
+
+    // METHOD(Arc, wr_aim) — arc.qc:556-562. The Arc bot always presses the PRIMARY beam (never the secondary):
+    // QC's wr_aim sets PHYS_INPUT_BUTTON_ATCK from bot_aim and never touches ATCK2. With the stock
+    // beam_botaimspeed 0 it uses the hitscan fallback bot_aim(1000000, 0, 0.001) — "always in range, no spread
+    // tolerance, instant lead" — the same near-zero-lead aim the generic BotBrain already produces for any
+    // WEP_TYPE_HITSCAN weapon (BotBrain.CurrentShotSpeed returns 0 for hitscan -> aim straight; BotAimAccurate
+    // null -> hitscan is accurate). So the generic path reproduces the fallback exactly; this override only
+    // makes the "never secondary" half explicit (matching the Rifle/Vaporizer pattern). The non-stock
+    // beam_botaimspeed>0 lead-tuning branch is dormant at stock and not separately modeled (it would need a
+    // per-weapon bot-aim-speed seam the brain doesn't expose for a hitscan weapon).
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx) => false;
+
+    // lib/math.qh bezier_quadratic_getpoint(a, b, c, t) = (c - 2b + a)*t^2 + (b - a)*2t + a. Used to walk the
+    // curving beam body in BeamTick (arc.qc:368).
+    private static Vector3 BezierQuadratic(Vector3 a, Vector3 b, Vector3 c, float t)
+        => (c - 2f * b + a) * (t * t) + (b - a) * (2f * t) + a;
 }

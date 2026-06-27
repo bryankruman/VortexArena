@@ -839,12 +839,18 @@ public static class SpawnSystem
         // aim reset and fixangle/v_angle are client-render / bot-AI concerns handled by the renderer and bot
         // agents; the server-authoritative owned-weapon set + the player model (above) are applied here.
 
-        // QC wr_resetplayer: each weapon resets its per-player state when the player respawns (e.g. Hagar clears loaded rockets).
+        // QC wr_resetplayer (server/client.qc:800 FOREACH(Weapons, true, it.wr_resetplayer(...))): Base runs
+        // wr_resetplayer for EVERY registered weapon on respawn, not just the held one (e.g. Hagar clears loaded
+        // rockets, porto clears porto_current). The held-weapon dispatch below covers the common case; the porto
+        // latch in particular must be cleared on respawn even when the player isn't holding porto (a placed/queued
+        // porto from a prior life would otherwise keep the single-portal latch set), so dispatch porto's reset
+        // unconditionally for an owned-but-not-held porto.
+        Weapon? current = null;
         for (int slot = 0; slot < WeaponFireDriver.MaxWeaponSlots; ++slot)
         {
             Weapon? wep = null;
             if (slot == 0)
-                wep = Inventory.CurrentWeapon(p); // the active weapon after SwitchToBest above
+                wep = current = Inventory.CurrentWeapon(p); // the active weapon after SwitchToBest above
             // Slot 0 is populated; higher slots (future dual-wield) are empty. Call WrResetPlayer for all populated slots.
             if (wep is not null)
             {
@@ -852,6 +858,8 @@ public static class SpawnSystem
                 wep.WrResetPlayer(p, weaponentity);
             }
         }
+        if (Registry<Weapon>.ByName("porto") is { } porto && porto != current)
+            porto.WrResetPlayer(p, new WeaponSlot(0));
     }
 
     /// <summary>

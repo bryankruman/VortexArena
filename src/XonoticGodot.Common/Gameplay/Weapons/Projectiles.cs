@@ -133,7 +133,24 @@ public static class Projectiles
             && Api.Cvars.GetFloat("g_projectiles_keep_owner") == 0f)
             self.Owner = attacker;
 
-        self.ProjectileDamage?.Invoke(self, attacker);
+        // Expose the damaging inflictor to the explode handler (QC W_*_Damage reads `inflictor`). The Electro orb
+        // uses it to take Base's combo-vs-secondary branch (electro.qc:484): an electro_orb_chain/electro_bolt
+        // inflictor combos, a NULL inflictor (lava/slime contents death) bursts as a plain secondary blast.
+        self.DmgInflictor = inflictor;
+
+        // QC W_PrepareExplosionByDamage: "do not explode NOW but in the NEXT FRAME! because recursive calls to
+        // RadiusDamage are not allowed" (common.qc:100-103: nextthink = time; setthink(this, explode)). This shim
+        // runs INSIDE the damage pipeline (EventDamage, itself reached from a RadiusDamage find-loop), so firing
+        // the explode synchronously would re-enter RadiusDamage recursively — exactly what Base defers to avoid.
+        // Schedule the per-weapon explode handler on the next think tick instead (overwriting the projectile's
+        // own periodic think, like setthink does). The MUTATOR_CALLHOOK(PrepareExplosionByDamage) Base fires here
+        // has ZERO subscribers in stock xonotic-data, so it is faithfully omitted (a no-op hook).
+        Action<Entity, Entity?>? explode = self.ProjectileDamage;
+        if (explode is not null)
+        {
+            self.Think = s => explode(s, attacker);
+            self.NextThink = Api.Clock.Time; // QC nextthink = time → runs on the next sim step
+        }
     }
 
     /// <summary>

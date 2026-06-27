@@ -112,6 +112,18 @@ public static class WeaponFiring
     /// <summary>QC Q3SURFACEFLAG_SKY — a shot hitting this surface stops (no impact/penetration).</summary>
     public const int Q3SurfaceFlagSky = 0x4;
 
+    // QC weapclip surface-flag constants (dpdefs/upstream/csprogsdefs.qc + dpextensions.qc):
+    //   Q3SURFACEFLAG_NODRAW  = 128  (0x80)  — nodraw (caulk / weapclip shaders)
+    //   Q3SURFACEFLAG_NONSOLID = 16384 (0x4000) — nonsolid (trans)
+    //   DPCONTENTS_OPAQUE = 4096 (0x1000) — only fully opaque brushes get this
+    //
+    // tracing.qc:424-427: a surface with NODRAW && !NONSOLID && !OPAQUE-contents is a weapclip.
+    // weapclip shaders (common/weapclip, common/noimpact) are solid+nodraw+trans, so they block bullets
+    // unless autocvar_g_ballistics_penetrate_clips (default 1) is nonzero.
+    private const int Q3SurfaceFlagNoDraw  = 0x80;   // Q3SURFACEFLAG_NODRAW
+    private const int Q3SurfaceFlagNonSolid = 0x4000; // Q3SURFACEFLAG_NONSOLID
+    private const int DpContentsOpaque = 0x1000;      // DPCONTENTS_OPAQUE
+
     /// <summary>
     /// Port of W_SetupShot_Dir_ProjectileSize_Range (server/weapons/tracing.qc): from the actor's eye,
     /// trace forward along <paramref name="forward"/> to find the trueaim point, then nudge the muzzle
@@ -330,6 +342,14 @@ public static class WeaponFiring
             if (tr.Fraction >= 1f) break;                          // hit nothing -> done
             if ((tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagSky) != 0) break; // sky stops the bullet
 
+            // QC tracing.qc:424-481 weapclip check: a surface that is NODRAW && !NONSOLID && !OPAQUE-content
+            // is a weapclip (common/weapclip or common/noimpact shader — solid+nodraw+trans, used to clip shots
+            // without a visible brush). The bullet passes through unless g_ballistics_penetrate_clips == 0.
+            // Default is 1 (penetrates), so weapon clips are transparent to bullets by default.
+            bool isWeapclip = (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagNoDraw) != 0
+                           && (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagNonSolid) == 0
+                           && (tr.DpHitContents & DpContentsOpaque) == 0;
+
             // Avoid hitting the same entity twice (engine re-hit) and self-damage.
             if (hit is not null && !ReferenceEquals(hit, actor) && !ReferenceEquals(hit, lastHit)
                 && hit.TakeDamage != DamageMode.No)
@@ -369,6 +389,14 @@ public static class WeaponFiring
                     totalDamage += damage * damageFraction;
                     WeaponAccuracyEvents.Hit(actor, Inventory.CurrentWeapon(actor), addedDamage); // add to hit
                 }
+            }
+
+            // QC tracing.qc:480-481: weapclip stops the bullet when g_ballistics_penetrate_clips == 0.
+            // Default 1 means clips are transparent; with 0 the weapclip acts as a hard shot boundary.
+            if (isWeapclip)
+            {
+                float penetrateClips = Api.Services is null ? 1f : Api.Cvars.GetFloat("g_ballistics_penetrate_clips");
+                if (penetrateClips == 0f) break;
             }
 
             // Penetrate the solid we just hit, if allowed. -1 means "no penetration ever".

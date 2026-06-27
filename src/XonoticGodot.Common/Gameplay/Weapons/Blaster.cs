@@ -150,9 +150,9 @@ public sealed class Blaster : Weapon
         missile.Flags = EntFlags.Item; // QC FL_PROJECTILE (no dedicated flag in EntFlags yet)
 
         // QC blaster.qc:64-65,83 — mark the bolt as a dodgeable hazard (bot_dodge/bot_dodgerating + IL_PUSH on
-        // the g_bot_dodge list). Producer side only: the havocbot_dodge danger-list consumer
-        // (findchainfloat(bot_dodge, true), gated on SUPERBOT) is not yet ported, so this is inert today —
-        // bots LEAD the bolt (BotBrain.ShotLead) but do not yet specifically dodge incoming bolts.
+        // the g_bot_dodge list). The havocbot_dodge danger-list consumer (findchainfloat(bot_dodge, true),
+        // SUPERBOT-gated) IS ported (BotBrain.HavocbotDodge), so a SUPERBOT bot specifically swerves away from
+        // an incoming bolt; lower-skill bots only LEAD it (BotBrain.ShotLead) + strafe via CombatMovement.
         missile.BotDodge = true;
         missile.BotDodgeRating = Primary.Damage;
 

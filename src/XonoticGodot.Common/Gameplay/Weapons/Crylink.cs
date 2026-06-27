@@ -202,6 +202,22 @@ public sealed class Crylink : Weapon
         }
     }
 
+    // METHOD(Crylink, wr_aim) — crylink.qc:485-491. With a 10% chance the bot fires the primary (leading at
+    // primary speed with primary middle_lifetime as the time-to-impact estimate); otherwise it fires the
+    // secondary (leading at secondary speed with secondary middle_lifetime). The brain's BotBrain owns the shot
+    // lead and decision; this hook owns only the 10/90 primary/secondary button pick.
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
+    {
+        // 10% primary, 90% secondary (QC random() < 0.10)
+        return ctx.Random01 >= 0.10f;
+    }
+
+    // Lead the target by the primary speed (matching QC bot_aim call on primary), which dominates the fire
+    // decision since it has the (typical) faster speed. Secondary is also projected (via its own _middle_lifetime)
+    // but BotWantsSecondary routes the final shot independently of the lead (common pattern: lead generic, button-route
+    // per-weapon).
+    public override float BotAimShotSpeed(float defaultSpeed) => Primary.Speed;
+
     // Refire/animtime from the (cvar-seeded) per-mode balance blocks.
     public override float RefireFor(FireMode fire) => (fire == FireMode.Secondary ? Secondary : Primary).Refire;
     public override float AnimtimeFor(FireMode fire) => (fire == FireMode.Secondary ? Secondary : Primary).Animtime;

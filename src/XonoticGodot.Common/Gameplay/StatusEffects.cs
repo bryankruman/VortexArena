@@ -96,6 +96,14 @@ public sealed class StatusEffectDef : IRegistered
     /// </summary>
     public Action<Entity, ActiveStatusEffect>? OnRemove;
 
+    /// <summary>
+    /// QC per-effect <c>m_apply</c> override that runs only on the <c>!wasactive</c> transition (i.e. the first
+    /// time the effect becomes active — sv_status_effects.qc m_apply / frozen.qc:46-53): invoked once when the
+    /// effect is freshly added (NOT on a refresh of an already-active effect). Frozen uses this to drop the
+    /// actor's grappling hooks (frozen.qc:50 RemoveGrapplingHooks(actor)). Null = no on-apply mechanics.
+    /// </summary>
+    public Action<Entity>? OnApply;
+
     public StatusEffectDef(string name, bool isBuff = false) { Name = name; IsBuff = isBuff; }
 }
 
@@ -137,8 +145,15 @@ public static class StatusEffectsCatalog
         void R(StatusEffectDef d) => Registry<StatusEffectDef>.Register(d);
 
         // --- core debuffs / status (status_effect/*.qh) ---
-        // STATUSEFFECT_Frozen (frozen.qh): m_color '0 0.62 1', hidden.
-        R(new StatusEffectDef("frozen") { Hidden = true, Color = (0f, 0.62f, 1f) });
+        // STATUSEFFECT_Frozen (frozen.qh): m_color '0 0.62 1', hidden. m_apply (frozen.qc:50) drops the actor's
+        // grappling hooks on the !wasactive transition — both freezetag freeze and nade-ice freeze route
+        // through this shared apply, so wiring it here mirrors Base's single chokepoint (no per-call-site dup).
+        R(new StatusEffectDef("frozen")
+        {
+            Hidden = true,
+            Color = (0f, 0.62f, 1f),
+            OnApply = Hook.RemoveGrapplingHooks,
+        });
         // STATUSEFFECT_Burning (burning.qh): EF_FLAME flame + Fire_ApplyDamage. m_persistent = burning while
         // standing in lava (g_balance_contents_playerdamage_lava_burn, default 0). m_tick self-extinguishes in
         // non-lava water or while STAT(FROZEN). m_sound_rm = the steam-burst hiss (burning.qh SND_Burning_Remove).
@@ -535,6 +550,9 @@ public static class StatusEffectsCatalog
             Source = source,
             Flags = StatusEffectFlags.Active,
         });
+        // QC m_apply !wasactive transition (frozen.qc:46-53): the per-effect on-apply mechanics run only the
+        // first time the effect becomes active (it was NOT present above). Frozen drops the actor's grapples.
+        def.OnApply?.Invoke(e);
         Update(e);   // QC StatusEffects_update(actor)
     }
 

@@ -49,6 +49,20 @@ public partial class Entity
     public float BounceStop;
 
     /// <summary>
+    /// QC <c>.damagedbycontents</c> (server/damage.qh:45) — when true this entity is enrolled in the
+    /// <c>g_damagedbycontents</c> per-frame sweep (server/main.qc CreatureFrame_All): a projectile resting in
+    /// lava/slime (or a fully-submerged drowner) takes content damage. Set on an electro orb when
+    /// <c>g_balance_electro_secondary_damagedbycontents</c> is on (default 1). Default false.
+    /// </summary>
+    public bool DamagedByContents;
+
+    /// <summary>
+    /// QC <c>.contents_damagetime</c> (server/main.qc CreatureFrame_hotliquids) — the next sim time this entity
+    /// may take liquid content damage (rate-limited by <c>g_balance_contents_damagerate</c>). 0 = ready now.
+    /// </summary>
+    public float ContentsDamageTime;
+
+    /// <summary>
     /// QC <c>.event_damage</c> for shootable PROJECTILES (rockets/grenades/mines/orbs/tags/bolts). When a
     /// projectile's HP drops to 0 from being shot, it explodes via this handler (QC W_*_Damage ->
     /// W_PrepareExplosionByDamage). The weapons install this when they spawn a damageable projectile; the

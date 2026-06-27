@@ -28,9 +28,9 @@
 //     onto solids a player hits, so the QC vehicles_touch -> vehicles_enter path can't fire. The default is
 //     use-key, so UseKey() below is the parity path; touch-mode is a flagged partial.
 //   * The controller/targetname/ACTIVE_NOT/delayspawn init scheduling, the `g_vehicles_steal` enemy-board
-//     gameplay (shield zero + flags backup + intruder waypoint), vehicles_setreturn for a LIVING abandoned
-//     vehicle, and RemoveGrapplingHooks(pl) are NOT ported here (cross-boundary / out of scope — see notes
-//     at each site). The destroyed-vehicle respawn IS handled (descriptor Death()).
+//     gameplay (shield zero + flags backup + intruder waypoint), and vehicles_setreturn for a LIVING abandoned
+//     vehicle are NOT ported here (cross-boundary / out of scope — see notes at each site). The
+//     destroyed-vehicle respawn IS handled (descriptor Death()). RemoveGrapplingHooks(pl) IS now wired.
 //   * Client-side seated prediction (disableclientprediction=1) is out of scope — the server is authoritative
 //     and fully testable headlessly.
 
@@ -224,10 +224,9 @@ public static class VehicleBoarding
             // applied above so a stolen vehicle behaves correctly server-side.
         }
 
-        // QC: RemoveGrapplingHooks(pl).
-        // NOTE — cross-boundary (out of scope): detaching the boarder's own in-flight grappling hook. The
-        // port's hook reset is a private, per-weapon-slot routine (Weapons/Hook.cs RemoveHook(slot)) with no
-        // public "drop this player's hooks" entry; deferred (a held hook on board is a rare edge case).
+        // QC sv_vehicles.qc:981 vehicles_enter: RemoveGrapplingHooks(pl) — drop the boarder's own in-flight
+        // grappling hooks (and restore FLY->WALK) so a held hook can't keep reeling the now-seated player.
+        Hook.RemoveGrapplingHooks(pl);
 
         // Board as PILOT: the descriptor vr_enter runs VehicleCommon.EnterVehicle (the link + physics freeze +
         // team/ammo reset) then applies the per-vehicle movetype/HUD seed.

@@ -422,6 +422,14 @@ public sealed class BotBrain
                 wantAttack = false;
                 wantAttack2 = false;
             }
+            // QC per-weapon wr_aim total fire suppression: the Port-O-Launch's wr_aim only presses ATCK in the
+            // non-secondary balance mode and never in stock (secondary) play (porto.qc:wr_aim), so a porto-holding
+            // bot must hold fire entirely. Apply the weapon's veto after every other fire decision.
+            if (ChosenWeapon is { } fw && fw.BotForbidsFire())
+            {
+                wantAttack = false;
+                wantAttack2 = false;
+            }
             // combat movement (QC havocbot_dodge + the retreat-when-outgunned behaviour): strafe to dodge
             // incoming fire and, if much weaker than the enemy, back away while still facing it.
             move = CombatMovement(enemy, move, now);
@@ -440,11 +448,45 @@ public sealed class BotBrain
         if (enemy is not { IsFreed: false })
             IdleReload(bot, now);
 
+        // 4c) projectile dodge (QC havocbot_dodge fold in havocbot_movetogoal:1185-1204,1269,1320-1330):
+        // SUPERBOT bots specifically swerve away from incoming bolts/hazards on the bot_dodge danger list.
+        // Computed in world space, scaled by skill, then blended into the (local-frame) wish-move just like
+        // QC's `dir = normalize(dir + dodge + ...)`. Folded AFTER CombatMovement so it isn't clobbered.
+        bool dodgeJump = false;
+        Vector3 worldDodge = HavocbotDodge();
+        if (worldDodge != Vector3.Zero)
+        {
+            // QC: dodge *= bound(0, 0.5 + (skill + bot_dodgeskill) * 0.1, 1). bot_dodgeskill defaults 0; SUPERBOT
+            // skill (>100) saturates the bound to 1, so the dodge is applied at full strength.
+            float dodgeScale = System.Math.Clamp(0.5f + Skill * 0.1f, 0f, 1f);
+            // QC: don't dodge into a known danger (lava/cliff) — probe the spot we'd swerve toward.
+            Vector3 eye = bot.Origin + Aim.ViewOffset;
+            int dr = BotDanger.CheckDanger(bot, eye, eye + worldDodge * 32f, bot.Origin.Z, Nav.Mins, Nav.Maxs,
+                onGround, jumpHeld || Nav.WantJump, moving: true, committed: false);
+            if (dr is > 0 and < 4)
+            {
+                worldDodge = Vector3.Zero; // QC: dodge = '0 0 0' when checkdanger trips
+            }
+            else
+            {
+                // QC: a dodge with an upward component may add a jump (skill-scaled chance); a SUPERBOT
+                // dodges decisively, so apply the upward dodge jump deterministically here.
+                if (worldDodge.Z > 0f) dodgeJump = true;
+                Vector3 localDodge = Nav.WorldToLocalMove(worldDodge, Aim.ViewAngles.Y) * dodgeScale;
+                Vector3 sum = new(move.X + localDodge.X, move.Y + localDodge.Y, 0f);
+                if (sum != Vector3.Zero)
+                {
+                    sum = QMath.Normalize(sum) * Nav.MaxSpeed;
+                    move = new Vector3(sum.X, sum.Y, move.Z); // preserve navigation/combat vertical
+                }
+            }
+        }
+
         // 5) assemble the command (the caller's same-tick physics/weapon drivers consume it).
         // QC havocbot.qc:1315: bunnyhop is suppressed when the danger brake (do_break/evadedanger) engaged this
         // frame. Steer keeps its bunnyhop intent in WantBunnyhop (separate from WantJump) precisely so this
         // late, post-danger-probe gate can be applied — a braking bot no longer keeps the jump button held.
-        bool wantJump = Nav.WantJump || (Nav.WantBunnyhop && !dangerBrakeEngaged);
+        bool wantJump = Nav.WantJump || dodgeJump || (Nav.WantBunnyhop && !dangerBrakeEngaged);
         if (wantJump)
             _jumpTime = now;        // QC bot_jump_time: keep jump held ~0.2s so ramp jumps register
         return Emit(bot, move, wantJump || jumpHeld, Nav.WantCrouch, wantAttack, wantAttack2, dt);
@@ -546,6 +588,72 @@ public sealed class BotBrain
         Vector3 blended = QMath.Normalize(combat * 0.75f + new Vector3(navLocal.X, navLocal.Y, 0f) * 0.25f);
         float speed = Nav.MaxSpeed;
         return new Vector3(blended.X * speed, blended.Y * speed, navMove.Z);
+    }
+
+    /// <summary>
+    /// QC <c>havocbot_dodge</c> (server/bot/default/havocbot/havocbot.qc:1773): scan the danger list
+    /// (<c>findchainfloat(bot_dodge, true)</c> over the g_bot_dodge IntrusiveList — here every non-client edict
+    /// flagged <see cref="Entity.BotDodge"/>, e.g. an in-flight Blaster bolt or a turret beam) and return a
+    /// WORLD-space unit vector pointing away from the most dangerous incoming/nearby hazard, or zero if none.
+    /// SUPERBOT-gated in Base ("disabled because too expensive ... re-enable only for bots with high enough
+    /// skill"), so non-SUPERBOT bots never specifically dodge bolts (they still strafe via CombatMovement).
+    /// The caller scales + folds this into the move (QC: <c>dir = normalize(dir + dodge + ...)</c>).
+    /// </summary>
+    private Vector3 HavocbotDodge()
+    {
+        // QC: if (!SUPERBOT) return '0 0 0';  (the port's SUPERBOT gate is Skill > BotAim.SuperbotSkill)
+        if (Skill <= BotAim.SuperbotSkill)
+            return Vector3.Zero;
+
+        IReadOnlyList<Entity>? all = Api.Entities.All;
+        if (all is null)
+            return Vector3.Zero; // minimal fakes don't expose the table; nothing to dodge
+
+        Vector3 origin = Bot.Origin;
+        float maxspeed = Nav.MaxSpeed; // QC autocvar_sv_maxspeed
+        Vector3 dodge = Vector3.Zero;
+        float bestDanger = -20f; // QC bestdanger = -20
+
+        for (int i = 0; i < all.Count; i++)
+        {
+            Entity head = all[i];
+            if (head.IsFreed || !head.BotDodge) continue;
+            if (ReferenceEquals(head.Owner, Bot)) continue; // QC: head.owner != this (don't dodge own shots)
+
+            float rating = head.BotDodgeRating;
+            float vl = head.Velocity.Length();
+            if (vl > maxspeed * 0.3f)
+            {
+                // moving hazard: dodge perpendicular to its flight path.
+                Vector3 n = QMath.Normalize(head.Velocity);
+                Vector3 v = origin - head.Origin;
+                float d = QMath.Dot(v, n); // distance along the flight axis
+                if (d > -rating && d < vl * 0.2f + rating)
+                {
+                    // remove the forward (flight-axis) component, leaving the lateral offset from the path.
+                    v -= n * d;
+                    float danger = rating - v.Length();
+                    if (bestDanger < danger)
+                    {
+                        bestDanger = danger;
+                        dodge = QMath.Normalize(v); // dodge to the side of the object
+                    }
+                }
+            }
+            else
+            {
+                // slow/stationary hazard: back straight away from it.
+                Vector3 away = origin - head.Origin;
+                float danger = rating - away.Length();
+                if (bestDanger < danger)
+                {
+                    bestDanger = danger;
+                    dodge = QMath.Normalize(away);
+                }
+            }
+        }
+
+        return dodge;
     }
 
     /// <summary>The weapon the bot has chosen to fire (QC <c>.switchweapon</c>), set by <see cref="ChooseWeapon"/>.</summary>
@@ -694,8 +802,10 @@ public sealed class BotBrain
             return 0f; // hitscan: aim straight at the target
         float s = Api.Cvars.GetFloat(BalanceNames(w).Speed);
         // QC wr_aim may override the speed the bot leads by (the Devastator leads as if its rocket flew much
-        // faster, "simulating rocket guide" — devastator.qc:351-355). Default returns the cvar speed unchanged.
-        return w.BotAimShotSpeed(s > 0f ? s : DefaultShotSpeed);
+        // faster, "simulating rocket guide" — devastator.qc:351-355). A weapon that fires at a different speed on
+        // secondary (Fireball: 900 vs 1200) reads ctx.SecondaryToggle to pick the right lead. Default falls through
+        // to the 1-arg overload (no ctx) so existing weapons need not change.
+        return w.BotAimShotSpeed(s > 0f ? s : DefaultShotSpeed, ref _botAimState);
     }
 
     /// <summary>True if the chosen weapon lobs under gravity (mortar/nade), so the aim should arc the shot.</summary>

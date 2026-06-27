@@ -62,6 +62,7 @@ public sealed class Electro : Weapon
         public float Speed;            // g_balance_electro_secondary_speed
         public float SpeedUp;          // g_balance_electro_secondary_speed_up
         public bool  TouchExplode;     // g_balance_electro_secondary_touchexplode
+        public bool  DamagedByContents;// g_balance_electro_secondary_damagedbycontents (orb dies in lava/slime)
     }
 
     /// <summary>Combo balance — QC WEP_CVAR(WEP_ELECTRO, combo_*).</summary>
@@ -148,6 +149,7 @@ public sealed class Electro : Weapon
         Secondary.Speed = Bal("g_balance_electro_secondary_speed", 1000f);
         Secondary.SpeedUp = Bal("g_balance_electro_secondary_speed_up", 200f);
         Secondary.TouchExplode = BalBool("g_balance_electro_secondary_touchexplode", true);
+        Secondary.DamagedByContents = BalBool("g_balance_electro_secondary_damagedbycontents", true); // ON by default
 
         Combo.ComboRadius = Bal("g_balance_electro_combo_comboradius", 300f);
         Combo.Damage = Bal("g_balance_electro_combo_damage", 50f);
@@ -223,6 +225,35 @@ public sealed class Electro : Weapon
     // Refire/animtime from the (cvar-seeded) per-mode balance blocks.
     public override float RefireFor(FireMode fire) => fire == FireMode.Secondary ? Secondary.Refire : Primary.Refire;
     public override float AnimtimeFor(FireMode fire) => fire == FireMode.Secondary ? Secondary.Animtime : Primary.Animtime;
+
+    // METHOD(Electro, wr_aim) — common/weapons/weapon/electro.qc:599-626. The "electromooth" bot toggle: bots
+    // mostly fire the fast straight primary bolt, but occasionally flip to a mortar-style secondary orb lob.
+    //   * beyond 1000 units -> force primary (the lobbed orb is useless at range): clear the toggle (electro.qc:602-603).
+    //   * while preferring primary  -> 1% chance per decision to flip to secondary (random() < 0.01, electro.qc:613).
+    //   * while preferring secondary -> 3% chance per decision to flip back to primary (random() < 0.03, electro.qc:622).
+    // QC presses the button for the CURRENT toggle state, then rolls the flip for the NEXT decision; returning true
+    // routes the bot's already-decided shot onto the secondary button (BotBrain dispatch). The shot lead itself is
+    // handled by the generic BotAim — QC's primary bot_aim leads by primary_speed (or near-hitscan when speed==0),
+    // the secondary by secondary_speed/speed_up; in this port the lead rides the weapon's primary speed cvar via the
+    // brain (a shared limitation with the Rifle's secondary; the mode pick + range gate are the faithful part here).
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
+    {
+        if (enemyDistance > 1000f)
+            ctx.SecondaryToggle = false; // vdist(... > 1000) -> bot_secondary_electromooth = false
+
+        bool fireSecondary = ctx.SecondaryToggle; // the button QC presses THIS frame (pre-flip)
+        if (!ctx.SecondaryToggle)
+        {
+            if (ctx.Random01 < 0.01f) // random() < 0.01 -> start preferring secondary next time
+                ctx.SecondaryToggle = true;
+        }
+        else
+        {
+            if (ctx.Random01 < 0.03f) // random() < 0.03 -> go back to preferring primary next time
+                ctx.SecondaryToggle = false;
+        }
+        return fireSecondary;
+    }
 
     // W_Electro_Attack_Bolt — fast straight bolt that bursts on impact. electro.qc
     private void AttackBolt(Entity actor, WeaponSlot slot)
@@ -394,6 +425,11 @@ public sealed class Electro : Weapon
         orb.DamageForceScale = Secondary.DamageForceScale;
         orb.BounceFactor = Secondary.BounceFactor; // engine MOVETYPE_BOUNCE uses these
         orb.BounceStop = Secondary.BounceStop;
+        // QC W_Electro_Attack_Orb:561-563 — proj.damagedbycontents = (cvar); if set, IL_PUSH(g_damagedbycontents).
+        // The port's GameWorld.CreatureFrameAll sweep enrolls any DamagedByContents entity, so an orb resting in
+        // lava/slime takes content damage and detonates (default ON). Content damage routes a NULL inflictor
+        // through the orb's GtEventDamage shoot-down shim -> ProjectileDamage at hp<=0 (see note below).
+        orb.DamagedByContents = Secondary.DamagedByContents;
 
         // W_SetupProjVelocity_UP_SEC: velocity = normalize(dir + up*(speed_up/speed)) * speed.
         orb.Velocity = WeaponFiring.ProjectileVelocity(dir, up, Secondary.Speed, Secondary.SpeedUp);
@@ -407,18 +443,31 @@ public sealed class Electro : Weapon
         orb.Touch = (self, other) => OrbTouch(self, other, bounced);
         orb.Think = self => ExplodeOrb(self, bounced); // adaptor_think2use_hittype_splash at lifetime
         orb.NextThink = Api.Clock.Time + Secondary.Lifetime;
-        // W_Electro_Orb_Damage: a shot-down orb detonates as a combo (crediting whoever shot it).
-        // Projectiles.MakeShootable installs the QC W_CheckProjectileDamage gate + HP-subtract shim (combo-able,
-        // exception 1 so it passes the stock g_projectiles_damage -2), then fires this ProjectileDamage at hp<=0.
+        // W_Electro_Orb_Damage (electro.qc:478-512): a shot-down orb that drops to <=0 HP detonates. QC branches on
+        // is_combo = (inflictor.classname == "electro_orb_chain" || "electro_bolt"): an electro blast converts it to
+        // a COMBO (crediting whoever shot it); ANY OTHER inflictor — another weapon, or a NULL inflictor from a
+        // lava/slime contents death (CreatureFrame_hotliquids) — bursts it as a plain SECONDARY blast instead.
+        // Projectiles.MakeShootable installs the QC W_CheckProjectileDamage gate + HP-subtract shim (exception 1 so a
+        // combo passes the stock g_projectiles_damage -2; contents deaths pass via the contents branch of the gate),
+        // sets self.DmgInflictor, then fires this ProjectileDamage at hp<=0.
         orb.ProjectileDamage = (self, attacker) =>
         {
-            self.Owner = attacker ?? self.Owner;
-            self.Touch = null; self.Think = null; self.TakeDamage = DamageMode.No;
-            WeaponSplash.RadiusDamage(self, self.Origin, Combo.Damage, Combo.EdgeDamage, Combo.Radius,
-                self.Owner, RegistryId, Combo.Force, accuracyWeapon: this, deathTag: DeathCombo);
-            EffectEmitter.Emit("ELECTRO_COMBO", self.Origin);
-            WeaponSplash.ImpactSound(self, "weapons/electro_impact_combo.wav"); // QC SND_ELECTRO_IMPACT_COMBO
-            Api.Entities.Remove(self);
+            string? infl = self.DmgInflictor?.ClassName;
+            bool isCombo = infl == "electro_orb_chain" || infl == "electro_bolt";
+            if (isCombo)
+            {
+                self.Owner = attacker ?? self.Owner;
+                self.Touch = null; self.Think = null; self.TakeDamage = DamageMode.No;
+                WeaponSplash.RadiusDamage(self, self.Origin, Combo.Damage, Combo.EdgeDamage, Combo.Radius,
+                    self.Owner, RegistryId, Combo.Force, accuracyWeapon: this, deathTag: DeathCombo);
+                EffectEmitter.Emit("ELECTRO_COMBO", self.Origin);
+                WeaponSplash.ImpactSound(self, "weapons/electro_impact_combo.wav"); // QC SND_ELECTRO_IMPACT_COMBO
+                Api.Entities.Remove(self);
+                return;
+            }
+            // Non-combo death (other weapon / lava / slime): QC sets use=W_Electro_Explode_use + adaptor_think2use,
+            // i.e. the orb's normal SECONDARY explode. Reuse the same ExplodeOrb path the lifetime/touch use.
+            ExplodeOrb(self, bounced);
         };
         // Wire the shoot-down-into-combo path live (Wave-1 seam): exception 1 = combo-able regardless of the
         // stock g_projectiles_damage -2, matching QC W_Electro_Orb_Damage's is_combo branch.

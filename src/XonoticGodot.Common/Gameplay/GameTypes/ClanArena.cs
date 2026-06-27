@@ -171,6 +171,8 @@ public sealed class ClanArena : GameType
         LeaderTeam = Teams.None;
         Round.Reset();
         Scoring.GameScores.ResetTeams(); // QC Score_ClearAll at match start: zero both team slots before declaring
+        // QC fragsleft_last reset: re-arm the "N rounds left" announcer (ca's Scores_CountFragsRemaining hook).
+        Scoring.GameScores.ResetFragsRemaining();
 
         // QC sv_clanarena.qh GameRules_scoring(teamplay_bitmask, SFL_SORT_PRIO_PRIMARY, 0, {
         // field_team(ST_CA_ROUNDS, "rounds", PRIMARY); }): the player primary is SP_SCORE (damage2score accrual);
@@ -781,6 +783,12 @@ public sealed class ClanArena : GameType
         float leadLimit = LeadLimit;
         if (leadLimit > 0f && secondTeam != Teams.None && (bestScore - GetTeamRounds(secondTeam)) >= leadLimit)
             MatchEnded = true;
+
+        // QC MUTATOR_HOOKFUNCTION(ca, Scores_CountFragsRemaining) returns true: announce "N rounds left" once as
+        // the leading team approaches the round limit (WinningCondition_Scores remaining-frags announcer).
+        // For team modes the top/second "scores" are the ST_CA_ROUNDS team totals (primary slot).
+        int secondScore = secondTeam == Teams.None ? 0 : GetTeamRounds(secondTeam);
+        Scoring.GameScores.CountFragsRemaining(limit, leadLimit, bestScore, secondScore, suddenDeathEnding: false);
     }
 
     private static bool TryCvar(string name, out float value)

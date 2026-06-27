@@ -583,6 +583,20 @@ public sealed class Hook : Weapon
         }
     }
 
+    // METHOD(Hook, wr_resetplayer) — common/weapons/weapon/hook.qc:240-249. On (re)spawn / round reset, drop
+    // ALL of the player's grapple chains (RemoveGrapplingHooks restores FLY->WALK + clears every slot's .hook)
+    // and reset this slot's hook timers (hook_time = 0, hook_refire = time). The port dispatches WrResetPlayer
+    // per populated slot (SpawnSystem); RemoveGrapplingHooks(actor) is idempotent across the repeated calls.
+    public override void WrResetPlayer(Entity actor, WeaponSlot slot)
+    {
+        RemoveGrapplingHooks(actor);
+        var st = actor.WeaponState(slot);
+        st.HookState = HookState.None;
+        st.HookTimeHooked = 0f;
+        st.HookTimeFuelDecrease = 0f;
+        st.HookRefire = Api.Clock.Time;
+    }
+
     // METHOD(Hook, wr_checkammo1) — hook.qc (needs fuel to fire the hook).
     public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Primary.Ammo;
 

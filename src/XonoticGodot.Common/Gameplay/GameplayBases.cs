@@ -145,13 +145,31 @@ public abstract partial class Weapon : IRegistered
     public virtual bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx) => false;
 
     /// <summary>
+    /// QC <c>wr_aim</c> total fire suppression: a weapon's <c>wr_aim</c> may decline to press EITHER fire button
+    /// this frame regardless of the bot's generic aim decision. Default <c>false</c> (the bot fires per the generic
+    /// aim/range logic). The Port-O-Launch overrides this: its <c>wr_aim</c> only ever presses ATCK in the
+    /// non-secondary balance mode and never in the default (secondary) mode (porto.qc:wr_aim), so a porto-holding
+    /// bot must not fire in stock play. Checked by the brain AFTER it has decided on a shot, suppressing both
+    /// ATCK and ATCK2 when true.
+    /// </summary>
+    public virtual bool BotForbidsFire() => false;
+
+    /// <summary>
     /// QC <c>wr_aim</c> projectile-speed override for the bot's shot lead. QC's wr_aim calls
     /// <c>bot_aim(actor, …, spd, …)</c> with a per-weapon speed; the brain leads the target by that speed. Most
     /// weapons just lead by their projectile's actual launch speed (the default = <paramref name="defaultSpeed"/>,
     /// the brain's read of the weapon's primary-fire speed cvar). The Devastator overrides this to lead as if the
     /// rocket flew much faster, "simulating rocket guide" (devastator.qc:351-355). Return 0 for hitscan/no-lead.
+    ///
+    /// <para>The <paramref name="ctx"/> overload lets a weapon that fires at DIFFERENT speeds on primary vs secondary
+    /// (e.g. the Fireball: primary 1200, secondary firemine 900) select the correct lead speed based on the bot's
+    /// current <see cref="BotAimState.SecondaryToggle"/>. The brain calls the ctx overload; the default
+    /// implementation falls through to the 1-arg overload so existing weapons need not change.</para>
     /// </summary>
     public virtual float BotAimShotSpeed(float defaultSpeed) => defaultSpeed;
+
+    /// <inheritdoc cref="BotAimShotSpeed(float)"/>
+    public virtual float BotAimShotSpeed(float defaultSpeed, ref BotAimState ctx) => BotAimShotSpeed(defaultSpeed);
 
     /// <summary>
     /// QC <c>wr_aim</c>'s <c>shot_accurate</c> argument to <c>bot_aim</c> (the fire-deviation cone tightness):

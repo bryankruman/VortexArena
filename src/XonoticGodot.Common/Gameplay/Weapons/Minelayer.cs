@@ -383,6 +383,17 @@ public sealed class Minelayer : Weapon
     // way, so the tag is carried only as documentation — kept as a param to mark the faithful call sites.)
     private void Explode(Entity self, Entity? directHit, bool bounce = false)
     {
+        // QC airshot achievement (minelayer.qc:60-63): a flying enemy DIRECTLY struck mid-air earns the owner the
+        // airshot announce. Tested before the entity is removed. NOTE: every minelayer caller of W_MineLayer_Explode
+        // passes directhitentity = NULL (W_MineLayer_Explode_think and W_MineLayer_ProximityExplode both pass NULL),
+        // so this branch is unreachable for the mine in Base too — ported for structural fidelity (it would fire if a
+        // direct-hit path were ever added).
+        if (directHit is not null && self.Owner is { } airOwner
+            && directHit.TakeDamage == DamageMode.Aim && (directHit.Flags & EntFlags.Client) != 0
+            && !Teams.SameTeam(directHit, airOwner) && !ReferenceEquals(directHit, airOwner) // QC DIFF_TEAM
+            && directHit.DeadState == DeadFlag.No && IsFlying(directHit))
+            NotificationSystem.Announce(airOwner, "ACHIEVEMENT_AIRSHOT");
+
         self.Touch = null;
         self.Think = null;
         self.TakeDamage = DamageMode.No;
@@ -392,8 +403,46 @@ public sealed class Minelayer : Weapon
 
         WeaponSplash.ImpactSound(self, "weapons/mine_exp.wav"); // QC SND_MINE_EXP (wr_impacteffect)
         EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
+
+        // QC W_MineLayer_Explode tail (minelayer.qc:80-92): if the owner is still holding the Mine Layer and is now
+        // out of ammo (and not unlimited), force a switch to the best other weapon. This is the same out-of-ammo
+        // auto-switch every other weapon runs via WeaponFireGate; the mine carries no slot, so locate the slot
+        // currently holding the Mine Layer on the owner.
+        ForceSwitchIfOutOfAmmo(self.Owner);
+
         Api.Entities.Remove(self);
-        // (The airshot achievement + out-of-ammo weapon switch are gametype/HUD concerns layered elsewhere.)
+    }
+
+    // W_MineLayer_Explode/DoRemoteExplode tail (minelayer.qc:80-92, :122-134): after the last mine's blast, if the
+    // owner still wields the Mine Layer and the rocket resource is now depleted (and not IT_UNLIMITED_AMMO), force a
+    // switch to the best other owned weapon. SwitchToOtherWeapon (WeaponFireGate) ports w_getbestweapon + the
+    // ATTACK_FINISHED/m_switchweapon assignment.
+    private void ForceSwitchIfOutOfAmmo(Entity? owner)
+    {
+        if (owner is null || owner.IsFreed) return;
+        if (owner.UnlimitedAmmo || (owner.Items & (1 << 0)) != 0) return; // IT_UNLIMITED_AMMO = BIT(0)
+        if (CheckAmmoPrimary(owner)) return; // still has ammo for another mine — no switch
+
+        for (int i = 0; i < MutatorConstants.MaxWeaponSlots; ++i)
+        {
+            var slot = new WeaponSlot(i);
+            if (owner.WeaponState(slot).CurrentWeaponId == RegistryId)
+            {
+                SwitchToOtherWeapon(owner, slot);
+                return;
+            }
+        }
+    }
+
+    // bool IsFlying(entity) — common/physics/player.qc, the airshot test: airborne, not swimming, and at least
+    // 24u of clearance below (so a player skimming the ground doesn't count). Mirrors Devastator.IsFlying.
+    private static bool IsFlying(Entity e)
+    {
+        if (e.OnGround) return false;
+        if (e.WaterLevel >= 2) return false; // WATERLEVEL_SWIMMING
+        TraceResult tr = Api.Trace.Trace(e.Origin, e.Mins, e.Maxs,
+            e.Origin - new Vector3(0f, 0f, 24f), MoveFilter.Normal, e);
+        return tr.Fraction >= 1f;
     }
 
     // W_MineLayer_RemoteExplode (secondary) — remote-detonate this actor's mines, gated by the spawnshield
@@ -418,6 +467,7 @@ public sealed class Minelayer : Weapon
         if (mines.Count > 0)
             Api.Sound.Play(actor, SoundChannel.Body, "weapons/mine_det.wav");
 
+        bool anyDetonated = false;
         foreach (Entity e in mines)
         {
             // spawnshield gate (QC W_MineLayer_RemoteExplode, minelayer.qc:142-145): detonatedelay >= 0 requires
@@ -455,7 +505,13 @@ public sealed class Minelayer : Weapon
             WeaponSplash.RadiusDamage(e, e.Origin, Cvars.RemoteDamage, Cvars.RemoteEdgeDamage,
                 Cvars.RemoteRadius, actor, RegistryId, Cvars.RemoteForce);
             Api.Entities.Remove(e);
+            anyDetonated = true;
         }
+
+        // QC W_MineLayer_DoRemoteExplode tail (minelayer.qc:122-134): same out-of-ammo forced weapon switch as the
+        // proximity/lifetime explode. Runs once after the blasts (per-mine in QC, but idempotent once switched away).
+        if (anyDetonated)
+            ForceSwitchIfOutOfAmmo(actor);
     }
 
     // MineLayer.wr_aim (minelayer.qc:379-461) — bot detonation AI.

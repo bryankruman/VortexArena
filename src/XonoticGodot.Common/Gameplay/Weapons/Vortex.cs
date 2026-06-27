@@ -323,11 +323,17 @@ public sealed class Vortex : Weapon
     // mode with cl_tracers_teamcolor — tinted via vortex_glowcolor(owner_colors, charge). The port emits the beam
     // server-side and broadcasts the colour, so the team tint is computed here from the FIRER's charge + team.
     //
-    // Limitations (charge is server-only, not networked cross-client): the sqrt(charge) ALPHA/FADE/trail-spacing
-    // scaling has no port-side hook (EffectSystem.Spawn carries no per-emission alpha for trails), so the beam's
-    // brightness is unmodulated — only the colour tint is reproduced. cl_tracers_teamcolor / cl_particles_oldvortexbeam
-    // are read here as the single broadcast value (the per-recipient client cvar nuance is not reproducible from a
-    // single broadcast emit).
+    // Limitation (sqrt(charge) alpha/fade NOT ported): QC sets particles_alphamin/max/fade = sqrt(charge) on the
+    // CSQC client, dividing the brightness evenly across trail spacing and alpha — so a barely-charged beam is
+    // faint and a full one is bright. EffectRequest carries only a colorMin/colorMax tint, NOT a per-emission
+    // alpha, so the charge brightness modulation has no faithful port-side hook. We deliberately DO NOT abuse the
+    // colour channel for it on the default path: in QC's non-teamcolor path the beam keeps its native effectinfo
+    // colour (nex_beam, pale-blue) and only the ALPHA scales — overriding colorMin/colorMax with a grey "dim"
+    // value would corrupt the beam's signature colour (turn it grey/white) which is a worse divergence than the
+    // un-scaled alpha. So the default path emits with NO colour override (native colour preserved). The team-tint
+    // path below IS charge-scaled, because vortex_glowcolor intrinsically folds charge into the colour itself.
+    //   The per-recipient cl_tracers_teamcolor / cl_particles_oldvortexbeam cvar nuance is collapsed to the
+    //   firer's broadcast values (server-side emit; individual client cvar reads are not reproducible).
     private void EmitBeam(Entity actor, Vector3 shotorg, Vector3 endpos, float charge)
     {
         // QC vortex.qc:61: charge = sqrt(charge) (the value the client would receive as a 0..255 byte, /255).
@@ -348,6 +354,8 @@ public sealed class Vortex : Weapon
             // QC vortex.qc:65-69: vortex_glowcolor(owner_colors, max(0.25, charge)); fall back to the plain player
             // colour if charging is off (rgb == 0). Entity.Team carries the NUM_TEAM_* palette code (== the low
             // colormap nibble for a teamplay player), so it stands in for entcs_GetClientColors(owner)&0x0F.
+            // vortex_glowcolor intrinsically scales by charge (f*0.3 below animlimit, +f*0.7 above), so the
+            // team-tinted beam brightness IS charge-proportional through the colour itself.
             Vector3 rgb = VortexGlowColor((int)actor.Team, MathF.Max(0.25f, beamCharge));
             if (rgb == Vector3.Zero)
                 rgb = ColormapPaletteColor(((int)actor.Team) & 0x0F);
@@ -356,6 +364,9 @@ public sealed class Vortex : Weapon
             return;
         }
 
+        // Default (no team tint) path: emit with NO colour override so the beam keeps its native effectinfo
+        // colour, matching QC (which only scales alpha here, leaving particles_colormin/max untouched). The
+        // sqrt(charge) alpha/fade modulation is unported (no per-emission alpha channel — see header comment).
         EffectEmitter.Emit(beamEffect, shotorg, endpos, 0);
     }
 

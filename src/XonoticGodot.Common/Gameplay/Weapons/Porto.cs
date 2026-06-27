@@ -145,6 +145,15 @@ public sealed class Porto : Weapon
     public override float RefireFor(FireMode fire) => (fire == FireMode.Secondary ? Secondary : Primary).Refire;
     public override float AnimtimeFor(FireMode fire) => (fire == FireMode.Secondary ? Secondary : Primary).Animtime;
 
+    // METHOD(PortoLaunch, wr_aim) — porto.qc:342. QC clears ATCK/ATCK2, then in NON-secondary mode runs
+    // bot_aim(speed, lifetime) and presses ATCK if a target is found; in the default (secondary) mode it presses
+    // nothing. The port's generic bot-aim path already leads by the primary speed (BotAimShotSpeed default =
+    // primary speed cvar) and presses ATCK when a target is in the deviation cone — which reproduces the
+    // non-secondary bot_aim decision. The only Base divergence is the secondary mode, where porto's wr_aim never
+    // fires: veto all bot fire when secondary mode is on (the stock default), so a porto-holding bot holds fire.
+    // (Porto never presses ATCK2 via the bot path — BotWantsSecondary stays the default false.)
+    public override bool BotForbidsFire() => SecondaryEnabled;
+
     // W_Porto_Attack — launch a bouncing portal projectile that tracks its right_vector for orientation. porto.qc
     private void Attack(Entity actor, WeaponSlot slot, WeaponSlotState st, ModeBalance bal, int type)
     {
@@ -177,6 +186,11 @@ public sealed class Porto : Weapon
         gren.MoveType = MoveType.BounceMissile;
         Projectiles.MakeTrigger(gren); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         gren.Flags = EntFlags.Item; // QC FL_PROJECTILE
+        // QC: gren.bot_dodge = true; gren.bot_dodgerating = 200; IL_PUSH(g_bot_dodge, gren). The BotBrain's
+        // HavocbotDodge scan (the port's g_bot_dodge equivalent) reads these flags off every non-client edict, so
+        // setting them here is all that's needed for a SUPERBOT to steer away from an incoming porto projectile.
+        gren.BotDodge = true;
+        gren.BotDodgeRating = 200f;
         gren.LTime = Api.Clock.Time; // portal_id (unique per shot)
         Api.Entities.SetSize(gren, Vector3.Zero, Vector3.Zero);
         Api.Entities.SetOrigin(gren, origin);
@@ -255,8 +269,22 @@ public sealed class Porto : Weapon
         if (surf.IsNoImpact)
         {
             Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/unsupported.wav");
+            // QC: W_Porto_Fail(this, false) THEN, for a combined shot, Portal_ClearAll_PortalsOnly(realowner).
             if (self.Count < 0) PortalClearAll?.Invoke(self.Owner);
-            CleanupProjectile(self, slot);
+            PortoFail(self, slot, failhard: false, planeNormal: surf.Normal);
+            return;
+        }
+
+        // QC CheckWireframeBox 96^3 surface-size gate (porto.qc Portal_SpawnIn/OutPortalAtTrace -> CheckWireframeBox):
+        // a portal needs a flat 96qu surface to fit; on a wall too small/cluttered the QC spawner returns false, so
+        // the touch acts like a placement failure (SND_PORTO_UNSUPPORTED + W_Porto_Fail, clearing all owner portals
+        // for a combined cnt<0 shot). The port has no headless spawn success/fail handshake, so apply the same gate
+        // here before any placement branch.
+        if (!CheckWireframeBox(self, surf.Normal))
+        {
+            Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/unsupported.wav");
+            if (self.Count < 0) PortalClearAll?.Invoke(self.Owner);
+            PortoFail(self, slot, failhard: false, planeNormal: surf.Normal);
             return;
         }
 
@@ -298,6 +326,27 @@ public sealed class Porto : Weapon
 
     /// <summary>QC DPCONTENTS_PLAYERCLIP — clip brushes a porto reflects off instead of placing on.</summary>
     private const int DpContentsPlayerClip = 256;
+
+    /// <summary>QC CheckWireframeBox 96qu portal extent — a portal needs a flat 96^3 region to fit at the hit.</summary>
+    private const float WireframeBox = 96f;
+
+    /// <summary>
+    /// QC <c>CheckWireframeBox(this, org, v_right*96, v_up*96, v_forward*96)</c> (the portal surface-size gate
+    /// Base runs inside Portal_SpawnIn/OutPortalAtTrace). A portal needs a clear flat 96^3 region at the wall. We
+    /// approximate Base's edge-traced wireframe with a single 96^3 box-trace sat flush against the hit face
+    /// (centre pushed out along the normal so it doesn't start embedded): if the box sits clear of geometry the
+    /// surface is large/flat enough to host a portal. Mirrors the client preview's CheckWireframeBox.
+    /// </summary>
+    private bool CheckWireframeBox(Entity self, Vector3 normal)
+    {
+        if (normal.LengthSquared() <= 0.0001f) return true; // no usable plane → don't reject (fail open, as today)
+        const float half = WireframeBox * 0.5f;
+        Vector3 mins = new(-half, -half, -half);
+        Vector3 maxs = new(half, half, half);
+        Vector3 centre = self.Origin + Vector3.Normalize(normal) * (half + 1f);
+        TraceResult tr = Api.Trace.Trace(centre, mins, maxs, centre, MoveFilter.WorldOnly, self);
+        return !tr.StartSolid;
+    }
 
     /// <summary>Impact-face data recovered from the re-probe trace: the Q3 surface category + the true plane normal.</summary>
     private readonly struct ImpactSurface
@@ -404,15 +453,96 @@ public sealed class Porto : Weapon
     // W_Porto_Think — the lifetime ran out with the projectile still unspent.
     //   QC: if the owner reconnected/respawned as a different player -> plain delete (no fail behaviour);
     //       else W_Porto_Fail(this, false). W_Porto_Fail itself plays NO sound (the unsupported cue belongs to
-    //       the touch-fail path only) — so a pure lifetime expiry is silent. On a combined (cnt<0) shot a soft
-    //       fail also clears any in-portal already placed by this shot.
+    //       the touch-fail path only) — so a pure lifetime expiry is silent.
     private void PortoThink(Entity self, WeaponSlot slot)
     {
-        bool ownerGone = self.Owner is null || self.Owner.IsFreed;
-        if (!ownerGone && self.Count < 0)
-            PortalClearWithId?.Invoke(self.Owner!, (int)self.LTime);
-        // (No throwable-drop / center-print: see lifecycle gap. No sound — W_Porto_Fail is silent.)
+        // QC W_Porto_Think: a plain delete (no fail) if the owner is gone/reconnected as a different player.
+        if (self.Owner is null || self.Owner.IsFreed)
+        {
+            CleanupProjectile(self, slot);
+            return;
+        }
+        // QC sets trace_plane_normal = '0 0 0' before W_Porto_Fail, so the timeout-drop's setorigin adds no offset.
+        PortoFail(self, slot, failhard: false, planeNormal: Vector3.Zero);
+    }
+
+    // W_Porto_Fail(this, failhard) — porto.qc:114. Soft-fail teardown for a combined (cnt<0) shot: clear any
+    // in-portal this shot already placed, drop the single-portal latch, and — if this is a SOFT fail, the owner
+    // is the same player, alive, and NO LONGER owns porto — drop the porto as a tossed pickup arcing back toward
+    // the player (CENTER_PORTO_FAILED) when it would land within 128qu of them. A hard fail (death/reset) skips
+    // the drop. The projectile is always removed at the end.
+    private void PortoFail(Entity self, WeaponSlot slot, bool failhard, Vector3 planeNormal)
+    {
+        // QC: if (this.cnt < 0) Portal_ClearWithID(realowner, portal_id);  (clear the already-placed in-portal)
+        if (self.Count < 0 && self.Owner is { IsFreed: false })
+            PortalClearWithId?.Invoke(self.Owner, (int)self.LTime);
+
+        Entity? owner = self.Owner;
+        // QC soft-fail throwable-drop gate (porto.qc:128): cnt<0 && !failhard && playerid match && !dead &&
+        // the player no longer owns porto. (The port keys "playerid match" on the live owner reference.)
+        if (self.Count < 0 && !failhard
+            && owner is { IsFreed: false }
+            && owner.DeadState == DeadFlag.No
+            && Registry<Weapon>.ByName("porto") is { } portoWep && !Inventory.HasWeapon(owner, portoWep))
+        {
+            TryThrowableDrop(self, slot, owner, planeNormal, portoWep);
+        }
+
         CleanupProjectile(self, slot);
+    }
+
+    /// <summary>ITEM_D_MINS / ITEM_D_MAXS (common/items/item.qh:82-83) — the dropped-item hull the porto takes on
+    /// before the toss so its tracetoss/nudge sees an item-sized box.</summary>
+    private static readonly Vector3 ItemDropMins = new(-30f, -30f, 0f);
+    private static readonly Vector3 ItemDropMaxs = new(30f, 30f, 48f);
+
+    // QC W_Porto_Fail soft-fail drop body (porto.qc:131-146): size the projectile as a dropped item, nudge it
+    // out of solid, compute the toss velocity that arcs it back toward the owner (trigger_push_calculatevelocity,
+    // height 128), and — if the ballistic arc would land within 128qu of the owner — spawn the porto as tossed
+    // loot (W_ThrowNewWeapon) and center-print CENTER_PORTO_FAILED.
+    private void TryThrowableDrop(Entity self, WeaponSlot slot, Entity owner, Vector3 planeNormal, Weapon portoWep)
+    {
+        // setsize(this, ITEM_D_MINS, ITEM_D_MAXS); setorigin(this, this.origin + trace_plane_normal);
+        Api.Entities.SetSize(self, ItemDropMins, ItemDropMaxs);
+        Api.Entities.SetOrigin(self, self.Origin + planeNormal);
+        // (QC nudgeoutofsolid_OrFallback gate: the engine extrication isn't reachable from this layer; after a
+        // free-flight timeout the projectile origin is in open air, so proceed as if the nudge succeeded.)
+
+        // velocity = trigger_push_calculatevelocity(origin, realowner, 128, this).
+        self.Velocity = Jumppads.CalculateVelocity(self.Origin, owner, 128f, self);
+
+        // tracetoss(this, this): does the arc land within 128qu of the owner? (QC vdist(trace_endpos-org,<,128))
+        Vector3 landing = TraceTossEnd(self, self.Velocity);
+        if ((landing - owner.Origin).Length() >= 128f)
+            return;
+
+        // W_ThrowNewWeapon(realowner, WEP_PORTO, 0, origin, velocity, weaponentity) — spawn the tossed pickup, then
+        // CENTER_PORTO_FAILED. doreduce=false (the porto carries no ammo). The projectile `self` is removed by the
+        // caller; ThrowNewWeapon spawns a fresh loot entity (QC spawns a new weapon_info, never reusing the gren).
+        WeaponThrowing.ThrowNewWeapon(owner, portoWep, doreduce: false, self.Origin, self.Velocity, slot);
+        NotifyOwner(self, "PORTO_FAILED");
+    }
+
+    /// <summary>Approximate QC <c>tracetoss</c> (mirrors MonsterAI.TraceToss): stepped ballistic integration of
+    /// <paramref name="self"/> launched at <paramref name="vel"/> under gravity; returns the first contact point
+    /// (or the end of the arc on a miss). Used to gate the soft-fail drop on "lands near the owner".</summary>
+    private static Vector3 TraceTossEnd(Entity self, Vector3 vel)
+    {
+        float g = (Api.Services is not null ? Api.Cvars.GetFloat("sv_gravity") : 800f);
+        if (g <= 0f) g = 800f;
+        g *= self.Gravity != 0f ? self.Gravity : 1f;
+        Vector3 pos = self.Origin;
+        Vector3 v = vel;
+        const float step = 0.05f;
+        for (int i = 0; i < 80; i++) // ~4s of flight
+        {
+            Vector3 next = pos + v * step;
+            TraceResult tr = Api.Trace.Trace(pos, self.Mins, self.Maxs, next, MoveFilter.Normal, self);
+            if (tr.Fraction < 1f) return tr.EndPos;
+            pos = next;
+            v.Z -= g * step;
+        }
+        return pos;
     }
 
     // Shared teardown: clear the owner's per-slot porto_current latch for THIS projectile, then delete it.
