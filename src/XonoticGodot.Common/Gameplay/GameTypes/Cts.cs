@@ -210,6 +210,13 @@ public sealed class Cts : GameType
             // INDEPENDENT_PLAYERS (server/client.qh): players don't fight each other — bots hold fire and the PvP
             // score columns drop (DeclareScoreRules independent:true). The port's _independent_players cvar is the
             // forced authoritative latch the bot brain reads (BotBrain havocbot_ai fire gate).
+
+            // QC MUTATOR_ONADD: GameRules_limit_score(0); GameRules_limit_lead(0). CTS is a pure time-trial with no
+            // frag/lead win condition — the match is bounded only by the time limit. The port models the score/lead
+            // limits as the fraglimit/leadlimit cvars (same as Race.SaveRaceLimits / the GameWorld limit reads), so
+            // clearing them to 0 (0 = "no limit") faithfully reproduces the ONADD clears.
+            Api.Cvars.Set("fraglimit", "0");              // QC MUTATOR_ONADD: GameRules_limit_score(0)
+            Api.Cvars.Set("leadlimit", "0");              // QC MUTATOR_ONADD: GameRules_limit_lead(0)
         }
 
         DeclareScoreRules();

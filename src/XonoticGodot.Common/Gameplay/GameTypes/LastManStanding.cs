@@ -81,6 +81,13 @@ public sealed class LastManStanding : GameType
 
         /// <summary>QC <c>.lms_leader</c>: this player currently leads on lives (gets a leader waypoint sprite).</summary>
         public bool IsLeader;
+
+        /// <summary>
+        /// QC <c>INGAME_STATUS_JOINING</c>: set when a player joins mid-match (not before game_starttime).
+        /// Cleared by <see cref="LastManStanding.OnPlayerSpawn"/> after the least-healthy health/armor clamp is
+        /// applied (QC: <c>INGAME_STATUS_SET(player, INGAME_STATUS_JOINED)</c> at the end of PlayerSpawn).
+        /// </summary>
+        public bool IsJoiningMidMatch;
     }
 
     /// <summary>The lives/rank table, keyed by player (QC stored on the client edict's scoring fields).</summary>
@@ -96,6 +103,7 @@ public sealed class LastManStanding : GameType
     private HookHandler<MutatorHooks.ItemTouchArgs>? _itemTouchHandler;
     private HookHandler<MutatorHooks.PlayerPowerupsArgs>? _powerupsHandler;
     private HookHandler<MutatorHooks.MakePlayerObserverArgs>? _makeObserverHandler;
+    private HookHandler<MutatorHooks.PlayerSpawnArgs>? _spawnHandler;
 
     /// <summary>Optional sink for the host/controller to react to a frag/elimination.</summary>
     public IMatchEvents? Events;
@@ -322,6 +330,13 @@ public sealed class LastManStanding : GameType
         // This is the path Base calls lms_RemovePlayer from non-disconnect forced-spectator demotion.
         _makeObserverHandler = OnMakePlayerObserver;
         MutatorHooks.MakePlayerObserver.Add(_makeObserverHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(lms, PlayerSpawn) (sv_lms.qc:298): a mid-match joiner (INGAME_JOINING) spawns
+        // with health/armor clamped to the minimum among same-lives living players (the least-healthy clone), so
+        // they can't out-heal the field on their first spawn. Normal re-spawns of already-JOINED players are
+        // unaffected (only the IsJoiningMidMatch flag, cleared here after one spawn, triggers the clamp).
+        _spawnHandler = OnPlayerSpawn;
+        MutatorHooks.PlayerSpawn.Add(_spawnHandler);
     }
 
     /// <summary>QC <c>GameRules_scoring_add</c>: mirror the authoritative <see cref="LmsState"/> into the networked
@@ -350,6 +365,7 @@ public sealed class LastManStanding : GameType
         if (_itemTouchHandler is not null) { MutatorHooks.ItemTouch.Remove(_itemTouchHandler); _itemTouchHandler = null; }
         if (_powerupsHandler is not null) { MutatorHooks.PlayerPowerups.Remove(_powerupsHandler); _powerupsHandler = null; }
         if (_makeObserverHandler is not null) { MutatorHooks.MakePlayerObserver.Remove(_makeObserverHandler); _makeObserverHandler = null; }
+        if (_spawnHandler is not null) { MutatorHooks.PlayerSpawn.Remove(_spawnHandler); _spawnHandler = null; }
     }
 
     /// <summary>Look up (or lazily create, seeded with <see cref="StartingLives"/>) a player's LMS state.</summary>
@@ -376,7 +392,10 @@ public sealed class LastManStanding : GameType
             int lives = NewPlayerLives();
             if (lives <= 0)
                 return false; // QC: lives <= 0 → not added (the match is locked to late joiners)
-            _states[p] = new LmsState { Lives = lives };
+            // QC lms_AddPlayer mid-match: INGAME_STATUS_SET(player, INGAME_STATUS_JOINING) — mark the player as
+            // joining mid-match so the PlayerSpawn hook can apply the least-healthy health/armor clamp on first
+            // spawn. IsJoiningMidMatch is cleared by OnPlayerSpawn after the clamp (INGAME_STATUS_SET → JOINED).
+            _states[p] = new LmsState { Lives = lives, IsJoiningMidMatch = true };
         }
         SyncColumns(p, GetState(p)); // seed LMS_LIVES on the scoreboard
         return true;
@@ -959,6 +978,74 @@ public sealed class LastManStanding : GameType
         // clear the leaver's lives, and broadcast INFO_LMS_NOLIVES. Map to voluntary:true here (same branch).
         // During warmup / pre-start, RemovePlayer early-returns after dropping the state (no rank assigned).
         RemovePlayer(p, voluntary: true, warmupOrPreStart: PreMatch);
+        return false;
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(lms, PlayerSpawn) (sv_lms.qc:298): on a mid-match joiner's FIRST spawn, clamp
+    /// their health and armor to the minimum among living players with the same life count (the "least-healthy
+    /// clone"). This ensures a late joiner can't out-heal the field on arrival. The clamp uses the recorded
+    /// <see cref="LastForfeiterHealth"/>/<see cref="LastForfeiterArmor"/> as a floor (from a player who forfeited
+    /// with the same lives) AND scans all same-lives living players for the current minimum — mirroring Base's:
+    /// <code>
+    ///   if (last_forfeiter_lives == pl_lives) min = last_forfeiter_health/armor;
+    ///   FOREACH_CLIENT(it != player &amp;&amp; IS_PLAYER(it) &amp;&amp; !IS_DEAD(it) &amp;&amp; LMS_LIVES == pl_lives)
+    ///     min = min(min, it.health/armor);
+    ///   if (min != start_health) SetResource(health, max(1, min));
+    ///   if (min_armor != start_armor) SetResource(armor, min_armor);
+    /// </code>
+    /// Only fires for a player flagged <see cref="LmsState.IsJoiningMidMatch"/>; that flag is cleared here
+    /// (QC: <c>INGAME_STATUS_SET(player, INGAME_STATUS_JOINED)</c>). During warmup/pre-start the clamp is
+    /// skipped (Base: <c>if (warmup_stage || time &lt; game_starttime) return true</c>).
+    /// </summary>
+    private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)
+    {
+        if (args.Player is not Player player)
+            return false;
+
+        // QC: if (warmup_stage || time < game_starttime) return true — no clamp during warmup/pre-start.
+        if (PreMatch)
+            return false;
+
+        if (!_states.TryGetValue(player, out LmsState? st) || !st.IsJoiningMidMatch)
+            return false;
+
+        // QC: INGAME_STATUS_SET(player, INGAME_STATUS_JOINED) — clear the joining flag now (one-shot).
+        st.IsJoiningMidMatch = false;
+
+        int plLives = st.Lives;
+        float startHealth = Cvar("g_lms_start_health", 200f);
+        float startArmor  = Cvar("g_lms_start_armor",  200f);
+
+        // Seed minimums from last_forfeiter_* if the forfeiter had the same lives count.
+        float minHealth = startHealth;
+        float minArmor  = startArmor;
+        if (_lastForfeiterLives != 0 && _lastForfeiterLives == plLives)
+        {
+            minHealth = _lastForfeiterHealth;
+            minArmor  = _lastForfeiterArmor;
+        }
+
+        // QC: FOREACH_CLIENT(it != player && IS_PLAYER(it) && !IS_DEAD(it) && LMS_LIVES == pl_lives): scan all
+        // living same-lives players for the current minimum health/armor.
+        foreach (KeyValuePair<Player, LmsState> kv in _states)
+        {
+            if (ReferenceEquals(kv.Key, player)) continue;
+            if (kv.Value.OutOfGame) continue;
+            if (kv.Value.Lives != plLives) continue;
+            if (kv.Key.IsDead) continue;
+            float h = kv.Key.GetResource(ResourceType.Health);
+            float a = kv.Key.GetResource(ResourceType.Armor);
+            if (h < minHealth) minHealth = h;
+            if (a < minArmor)  minArmor  = a;
+        }
+
+        // QC: only clamp if below the start values (a fresh field means no clamp needed).
+        if (minHealth != startHealth)
+            player.SetResource(ResourceType.Health, System.Math.Max(1f, minHealth)); // QC: max(1, min_health)
+        if (minArmor != startArmor)
+            player.SetResource(ResourceType.Armor, minArmor);
+
         return false;
     }
 

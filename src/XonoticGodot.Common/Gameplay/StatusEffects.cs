@@ -62,8 +62,14 @@ public sealed class StatusEffectDef : IRegistered
     public string? DisplayName;
     /// <summary>QC <c>m_icon</c> (all.qh:40): the HUD progress-bar icon name (null where the QC attrib is #if 0'd).</summary>
     public string? Icon;
-    /// <summary>QC <c>m_color</c> (all.qh:41, default '1 1 1'): the HUD progress-bar tint (RGB 0..1).</summary>
+    /// <summary>QC <c>m_color</c> (all.qh:41, default '1 1 1'): the HUD progress-bar tint (RGB 0..1).
+    /// For a buff this is also the pickup item's <c>color</c>/<c>glowmod</c> (sv_buffs.qc:305-306).</summary>
     public (float R, float G, float B) Color = (1f, 1f, 1f);
+
+    /// <summary>QC <c>Buff.m_skin</c> (buffs.qh:25, default 0): the relic.md3 skin index the buff pickup item
+    /// (and carrier glow model) wears, one per buff type (sv_buffs.qc:307 <c>this.skin = buff.m_skin</c>). Each
+    /// buff's <c>.qh</c> overrides it; non-buff effects leave it 0.</summary>
+    public int Skin;
 
     /// <summary>
     /// QC <c>m_sound_rm</c> (all.qh:44): the sound played on a NORMAL removal of an active, non-persistent
@@ -221,9 +227,21 @@ public static class StatusEffectsCatalog
         R(new StatusEffectDef("invisibility") { DisplayName = "Invisibility", Icon = "buff_invisible", Color = (0.5f, 0.5f, 1f) });
 
         // --- buffs (mutators/mutator/buffs/buff/*.qh): the exact QC set, offered by BuffsMutator ---
-        foreach (var b in new[] { "ammo", "bash", "disability", "flight", "inferno", "jump", "luck",
-                                  "magnet", "medic", "resistance", "swapper", "vampire", "vengeance" })
-            R(new StatusEffectDef("buff_" + b, isBuff: true));
+        // m_skin / m_color taken straight from each buff's .qh ATTRIB; the pickup item wears the skin and is
+        // tinted by the color (sv_buffs.qc:305-307 this.color/glowmod/skin = buff.m_color/m_color/m_skin).
+        R(new StatusEffectDef("buff_ammo", isBuff: true)       { Skin = 3,  Color = (0.29f, 0.37f, 1f) });
+        R(new StatusEffectDef("buff_bash", isBuff: true)       { Skin = 5,  Color = (1f, 0.39f, 0f) });
+        R(new StatusEffectDef("buff_disability", isBuff: true) { Skin = 7,  Color = (0.94f, 0.3f, 1f) });
+        R(new StatusEffectDef("buff_flight", isBuff: true)     { Skin = 11, Color = (0.23f, 0.44f, 1f) });
+        R(new StatusEffectDef("buff_inferno", isBuff: true)    { Skin = 16, Color = (1f, 0.62f, 0f) });
+        R(new StatusEffectDef("buff_jump", isBuff: true)       { Skin = 10, Color = (0.24f, 0.78f, 1f) });
+        R(new StatusEffectDef("buff_luck", isBuff: true)       { Skin = 19, Color = (0.17f, 0.85f, 0.12f) });
+        R(new StatusEffectDef("buff_magnet", isBuff: true)     { Skin = 18, Color = (1f, 0.95f, 0.18f) });
+        R(new StatusEffectDef("buff_medic", isBuff: true)      { Skin = 1,  Color = (1f, 0.12f, 0f) });
+        R(new StatusEffectDef("buff_resistance", isBuff: true) { Skin = 0,  Color = (0.36f, 1f, 0.07f) });
+        R(new StatusEffectDef("buff_swapper", isBuff: true)    { Skin = 17, Color = (0.63f, 0.36f, 1f) });
+        R(new StatusEffectDef("buff_vampire", isBuff: true)    { Skin = 2,  Color = (1f, 0f, 0.24f) });
+        R(new StatusEffectDef("buff_vengeance", isBuff: true)  { Skin = 15, Color = (1f, 0.23f, 0.61f) });
 
         Registry<StatusEffectDef>.Sort();
     }

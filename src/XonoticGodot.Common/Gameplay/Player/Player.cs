@@ -126,6 +126,23 @@ public sealed class Player : Entity
     public int Lip;
 
     /// <summary>
+    /// QC <c>.speedrunning</c> (server/cheats.qc CHIMPULSE_SPEEDRUN): set when the player has teleported back to
+    /// their <see cref="PersonalCheckpoint"/> via the SPEEDRUN (141) cheat impulse. A flag the speedrun timing
+    /// reads to know a run was aborted/reset.
+    /// </summary>
+    public bool Speedrunning;
+
+    /// <summary>
+    /// QC the <c>.personal</c> (<c>personal_wp</c>) checkpoint entity (server/cheats.qc CHIMPULSE_SPEEDRUN_INIT):
+    /// the player's snapshotted speedrun checkpoint — origin/view-angle/velocity plus the full resource/weapon/
+    /// item/status-effect/pause-timer state taken when <c>waypoint_personal_here</c> (impulse 30) is pressed, and
+    /// restored when <c>SPEEDRUN</c> (impulse 141) is pressed. Modeled as a value snapshot on the player rather
+    /// than a separate entity (the QC <c>personal_wp</c> edict only ever stores state — it is never simulated).
+    /// <c>null</c> until the player first deploys a personal waypoint this life.
+    /// </summary>
+    public PersonalCheckpoint? PersonalCheckpoint;
+
+    /// <summary>
     /// QC <c>.winning</c>: set at match end for the player(s) who won (the scoreboard leader, or each member of
     /// the winning team). Read by the campaign win/lose check and the end-of-match flow. Cleared on (re)spawn.
     /// </summary>

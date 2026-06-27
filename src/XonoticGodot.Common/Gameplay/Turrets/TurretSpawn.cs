@@ -92,6 +92,13 @@ public static class TurretSpawn
         e.Use = (self, activator) => TurretAI.Use(self, activator);
         e.GtEventDamage = TurretAI.EventDamage;
 
+        // QC turret_initialize: this.event_heal = turret_heal (sv_turrets.qc:1338) — the framework heal SINK.
+        // A friendly heal source (Arc heal-beam / heal nade / mage / bumblebee healgun) dispatches through
+        // Combat.Heal -> target.GtEventHeal, so a damaged-but-alive turret can be repaired by its team toward its
+        // max_health. turret_die clears this (event_heal = func_null) so a dead turret cannot be healed back up;
+        // turret_respawn re-installs it (the port's Respawn re-runs Spawn-equivalent setup via this Init path).
+        e.GtEventHeal = TurretAI.Heal;
+
         // QC turret_initialize: this.reset = turret_reset (sv_turrets.qc:1342), which runs turret_respawn — the
         // round-restart hook the round handler fires on every map entity (GameWorld.ResetMapObjects ->
         // Entity.Reset). It restores a damaged/dead turret to full setup (health/ammo/volley/head, re-active) at

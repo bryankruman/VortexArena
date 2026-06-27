@@ -26,9 +26,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// <summary>
 /// The logic-gate / activator-relay trigger entities (flipflop / monoflop / multivibrator / disablerelay /
 /// relay_if / relay_teamcheck / relay_activate* / gamestart / magicear). Each setup is a spawnfunc registered
-/// by <see cref="MapObjectsRegistry"/>. Faithful ports; the per-gate <c>.reset</c> bodies are included where
-/// they map cleanly, but the engine has no <c>.reset</c> map-restart pass yet (GameWorld.ResetMapObjects is a
-/// stub), so they stay dormant until that infra lands — core <c>.use</c> behavior is unaffected.
+/// by <see cref="MapObjectsRegistry"/>. Faithful ports; the per-gate <c>.reset</c> bodies are installed where Base
+/// installs them (flipflop/monoflop/disablerelay/relay_if/relay_teamcheck/relay_activate*) and driven by the live
+/// GameWorld.ResetMapObjects pump (e.Reset, plus gamestart's e.Reset2). trigger_multivibrator deliberately gets no
+/// reset (Base's spawnfunc installs none).
 /// </summary>
 public static class LogicGates
 {
@@ -62,7 +63,9 @@ public static class LogicGates
         this_.Use = FlipflopUse;
         this_.ClassName = "trigger_flipflop";
         MapMover.IndexRegister(this_);
-        // QC: this.reset = spawnfunc_trigger_flipflop (a perfect resetter) — dormant until reset infra exists.
+        // QC flipflop.qc:23: this.reset = spawnfunc_trigger_flipflop (a perfect resetter). Re-running the spawnfunc
+        // re-asserts active + the START_ENABLED initial latch; the central ResetMapObjects pump drives it (e.Reset).
+        this_.Reset = FlipflopSetup;
     }
 
     /// <summary>QC <c>flipflop_use</c>: toggle the latch; fire targets only when it flips ON.</summary>
@@ -96,7 +99,9 @@ public static class LogicGates
         this_.GateState = 0;
         this_.ClassName = "trigger_monoflop";
         MapMover.IndexRegister(this_);
-        // QC: this.reset = monoflop_reset — dormant until reset infra exists.
+        // QC monoflop.qc:64: this.reset = monoflop_reset. Driven by the central ResetMapObjects pump (e.Reset);
+        // re-arms the latch so an ON-state monoflop snaps off on a round restart.
+        this_.Reset = MonoflopReset;
     }
 
     /// <summary>QC <c>monoflop_use</c>: (re)arm the off-timer to time+wait every press; fire ON only on the rising edge.</summary>
@@ -158,6 +163,9 @@ public static class LogicGates
         this_.ClassName = "trigger_multivibrator";
         MapMover.IndexRegister(this_);
 
+        // NOTE: Base spawnfunc(trigger_multivibrator) (multivibrator.qc:131-149) installs NO this.reset — unlike the
+        // other gates it is NOT registered with the round-restart reset pump. multivibrator_reset is called inline
+        // only for the targeted-init branch below. So we deliberately do NOT assign this_.Reset here (faithful).
         if (!string.IsNullOrEmpty(this_.TargetName))
             MultivibratorReset(this_);
     }
@@ -225,7 +233,9 @@ public static class LogicGates
         this_.Use = DisableRelayUse;
         this_.ClassName = "trigger_disablerelay";
         MapMover.IndexRegister(this_);
-        // QC: this.reset = spawnfunc_trigger_disablerelay (resets fully) — dormant until reset infra exists.
+        // QC disablerelay.qc:28: this.reset = spawnfunc_trigger_disablerelay (resets fully) — re-asserts active.
+        // Driven by the central ResetMapObjects pump (e.Reset).
+        this_.Reset = DisableRelaySetup;
     }
 
     /// <summary>
@@ -274,7 +284,9 @@ public static class LogicGates
         this_.Use = RelayIfUse;
         this_.ClassName = "trigger_relay_if";
         MapMover.IndexRegister(this_);
-        // QC: this.reset = spawnfunc_trigger_relay_if (resets fully) — dormant until reset infra exists.
+        // QC relay_if.qc:25: this.reset = spawnfunc_trigger_relay_if (resets fully) — re-asserts active.
+        // Driven by the central ResetMapObjects pump (e.Reset).
+        this_.Reset = RelayIfSetup;
     }
 
     /// <summary>QC <c>trigger_relay_if_use</c>: compare cvar_string(netname) vs cvar_string(message).</summary>
@@ -306,11 +318,23 @@ public static class LogicGates
     public static void RelayTeamCheckSetup(Entity this_)
     {
         this_.Active = MapMover.ActiveActive;
-        // QC: this.team_saved = this.team; IL_PUSH(g_saved_team, this) — only used by the (dormant) reset; skip.
+        // QC relay_teamcheck.qc:38: this.team_saved = this.team; IL_PUSH(g_saved_team, this) — captured so the
+        // reset can restore the original team gate after a round/match scramble.
+        this_.TeamSaved = this_.Team;
         this_.Use = RelayTeamCheckUse;
         this_.ClassName = "trigger_relay_teamcheck";
         MapMover.IndexRegister(this_);
-        // QC: this.reset = trigger_relay_teamcheck_reset — dormant until reset infra exists.
+        // QC relay_teamcheck.qc:39: this.reset = trigger_relay_teamcheck_reset. Driven by the central
+        // ResetMapObjects pump (e.Reset).
+        this_.Reset = RelayTeamCheckReset;
+    }
+
+    /// <summary>QC <c>trigger_relay_teamcheck_reset</c> (relay_teamcheck.qc:31): re-assert active and restore the
+    /// spawn-time team gate from <see cref="Entity.TeamSaved"/> on a round/match restart.</summary>
+    private static void RelayTeamCheckReset(Entity self)
+    {
+        self.Active = MapMover.ActiveActive;
+        self.Team = self.TeamSaved;
     }
 
     /// <summary>QC <c>trigger_relay_teamcheck_use</c>.</summary>
@@ -350,7 +374,9 @@ public static class LogicGates
         this_.Active = MapMover.ActiveActive;
         this_.Use = RelayActivatorsUse;
         MapMover.IndexRegister(this_);
-        // QC: this.reset = relay_activators_init (doubles as reset) — dormant until reset infra exists.
+        // QC relay_activators.qc:30: this.reset = relay_activators_init (doubles as reset) — re-asserts active.
+        // Driven by the central ResetMapObjects pump (e.Reset).
+        this_.Reset = RelayActivatorsInit;
     }
 
     /// <summary><c>spawnfunc(relay_activate)</c> — sets named targets ACTIVE.</summary>

@@ -137,7 +137,7 @@ public sealed class Crylink : Weapon
     public int SecondarySpreadType = 1;
     /// <summary>g_balance_crylink_*_joindelay — min time the group must persist before it can link-join.</summary>
     public float PrimaryJoinDelay = 0.1f;
-    public float SecondaryJoinDelay = 0.1f;
+    public float SecondaryJoinDelay = 0f;
 
     // METHOD(Crylink, wr_think) — common/weapons/weapon/crylink.qc
     public override void WrThink(Entity actor, WeaponSlot slot, FireMode fire)
@@ -286,6 +286,10 @@ public sealed class Crylink : Weapon
             }
             proj.Velocity = WeaponFiring.ProjectileVelocity(dir, up, bal.Speed);
             proj.Angles = QMath.VecToAngles(proj.Velocity);
+
+            // QC crylink.qc:306-307,405-406 — flag each spike as a dodgeable hazard (rating = per-mode spike damage).
+            proj.BotDodge = true;
+            proj.BotDodgeRating = bal.Damage;
 
             // The center spike uses middle_lifetime/middle_fadetime, the rest other_*. fade_time/fade_rate
             // scale the spike's damage down to 0 over fadetime once its lifetime starts running out. Each spike

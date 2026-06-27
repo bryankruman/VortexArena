@@ -33,8 +33,8 @@ namespace XonoticGodot.Common.Gameplay;
 ///  - the point-limit + lead-limit end-of-match check;
 ///  - reset_map_players (clear GtTotalDamageDealt).
 ///
-/// Deferred (NOTE — cross-boundary): score networking/HUD, skill-weighted team balance, the
-/// Scores_CountFragsRemaining announcer suppression, the tmayhem_team map-entity team colors, and warmup.
+/// Deferred (NOTE — cross-boundary): score networking/HUD, skill-weighted team balance,
+/// the tmayhem_team map-entity team colors, and warmup.
 /// </summary>
 [GameType]
 public sealed class TeamMayhem : GameType
@@ -88,27 +88,25 @@ public sealed class TeamMayhem : GameType
         //
         // QC tmayhem.qh gametype_init applies "timelimit=20 pointlimit=1500 teams=2 leadlimit=0" at gametype
         // registration. The point/lead limits are read on demand (PointLimit/LeadLimit fall back to 1500/0), but
-        // the timelimit is a generic engine cvar, so we seed the gametype default here. Unlike a guarded "only if
-        // still default" seed, QC's _MapInfo_Map_ApplyGametypeEx (common/mapinfo.qc:551,572) FIRST resets timelimit
-        // to its compiled defstring, THEN unconditionally applies the gametype default string's `timelimit=20`, so a
-        // prior mode's non-20 leftover (e.g. LMS's 20 / a vote / a previous round) is always reset to tmayhem's 20.
+        // the timelimit is a generic engine cvar, so we seed the gametype default here exactly as Tdm/Mayhem do.
         SeedTimeLimit(DefaultTimeLimitMinutes);
     }
 
     /// <summary>
-    /// Apply tmayhem's gametype-default timelimit (gametype_init "timelimit=20"), unconditionally, mirroring QC's
-    /// <c>_MapInfo_Map_ApplyGametypeEx</c> (common/mapinfo.qc:551 then :572): the gametype defaults string forces
-    /// <c>cvar_set("timelimit", "20")</c> on every gametype-select, resetting any non-20 timelimit a prior mode,
-    /// vote, or round left in place. (For tmayhem the generic <c>timelimit</c> default is itself 20, so for stock
-    /// play this is observably a no-op; the unconditional set is what actually closes the "non-20 leftover not
-    /// reset" gap. A host wanting a different limit re-applies it after select via the menu/vote, exactly as a
-    /// mapinfo <c>timelimit=</c> override does in QC.)
+    /// Apply tmayhem's gametype-default timelimit (gametype_init "timelimit=20") if the host has not overridden it.
+    /// QC's _MapInfo_Map_ApplyGametypeEx resets timelimit to its defstring then applies the gametype default string;
+    /// the port's generic <c>timelimit</c> default is itself 20 (== tmayhem's default), so for stock play this is a
+    /// no-op. We only seed when the live value still equals the generic default — an explicit host/server.cfg
+    /// timelimit (including 0 = "no time limit") is a deliberate choice that wins, matching the guarded Tdm/Mayhem
+    /// sibling pattern (Tdm.SeedTimeLimit).
     /// </summary>
     private static void SeedTimeLimit(float minutes)
     {
         if (Api.Services is null)
             return;
-        Api.Cvars.Set(CvarTimeLimit, minutes.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        const float genericDefault = 20f; // Cvars.cs generic timelimit default
+        if (Api.Cvars.GetFloat(CvarTimeLimit) == genericDefault)
+            Api.Cvars.Set(CvarTimeLimit, minutes.ToString(System.Globalization.CultureInfo.InvariantCulture));
     }
 
     /// <summary>
@@ -414,6 +412,11 @@ public sealed class TeamMayhem : GameType
         float leadLimit = LeadLimit;
         if (leadLimit > 0f && secondTeam != Teams.None && (bestScore - GetTeamScore(secondTeam)) >= leadLimit)
             MatchEnded = true;
+
+        // QC MUTATOR_HOOKFUNCTION(tmayhem, Scores_CountFragsRemaining) is commented out (disabled): Team Mayhem's
+        // upscaled score (damage-weight + frag-weight, often 1000+ limit) doesn't play well with per-frag
+        // announcements; a single shot (~40-80 dmg = 2-3 score) would trigger "2/3 frags left" as the match ends,
+        // leaving no time for the cue to process. The port matches this by not calling CountFragsRemaining.
     }
 
     // ----- cvar helpers (the gametype TryCvar idiom) ---------------------------------------------------

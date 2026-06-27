@@ -158,6 +158,28 @@ public static class RaceRecords
         return new RaceRecordResult(kind, newpos, prevpos, oldrec, oldHolder);
     }
 
+    /// <summary>
+    /// QC <c>race_setTime</c> classify-only prefix (server/race.qc:376-403): would a time of
+    /// <paramref name="t"/> by <paramref name="uid"/> be a NEW record (not a fail) for this map + type? This
+    /// is the non-mutating decision the consent gate needs: Base only emits <c>INFO_RACE_NEW_MISSING_NAME</c>
+    /// (uid present but the player withheld the <c>cl_allow_uid*</c> consent) once it has confirmed the time
+    /// WOULD rank — a non-ranking time still just fails. Mirrors <see cref="SetTime"/>'s fail branches without
+    /// touching the table.
+    /// </summary>
+    public static bool WouldBeNewRecord(string map, string type, float t, string uid)
+    {
+        int newpos = ReadPos(map, type, t);
+
+        int prevpos = 0;
+        for (int i = 1; i <= RankingsCnt; i++)
+            if (ReadUid(map, type, i) == uid && uid.Length != 0) prevpos = i;
+
+        // already-ranked player whose new time isn't better → fail; unranked time → fail.
+        if (prevpos != 0 && (newpos == 0 || prevpos < newpos)) return false;
+        if (newpos == 0) return false;
+        return true;
+    }
+
     /// <summary>The server record (rank 1) time for a map + type (0 if none).</summary>
     public static float ServerRecord(string map, string type) => ReadTime(map, type, 1);
     public static string ServerRecordHolder(string map, string type) => ReadName(map, type, 1);

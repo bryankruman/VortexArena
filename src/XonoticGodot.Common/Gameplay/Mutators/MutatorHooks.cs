@@ -317,6 +317,30 @@ public static class MutatorHooks
     }
 
     /// <summary>
+    /// EV_MonsterCheckBossFlag (server/mutators/events.qh:420-427) — "called when checking if a monster should be
+    /// a miniboss". Slot0 the monster (read-only). A handler returning <c>true</c> PREVENTS the monster from
+    /// becoming a miniboss (QC <c>Monster_Miniboss_Setup</c>:531 clears MONSTERFLAG_MINIBOSS and returns). No
+    /// stock Xonotic mutator implements this hook (it is a dead hook in Base), but the chain is wired for parity
+    /// so a custom mutator can veto miniboss status exactly as QC allows.
+    /// </summary>
+    public struct MonsterCheckBossFlagArgs
+    {
+        public readonly Entity Monster; // MUTATOR_ARGV_0_entity
+        public MonsterCheckBossFlagArgs(Entity monster) { Monster = monster; }
+    }
+    public static readonly HookChain<MonsterCheckBossFlagArgs> MonsterCheckBossFlag = new();
+
+    /// <summary>
+    /// Fire <see cref="MonsterCheckBossFlag"/> for a monster (QC <c>MUTATOR_CALLHOOK(MonsterCheckBossFlag, this)</c>
+    /// in <c>Monster_Miniboss_Setup</c>:531). Returns true if any mutator vetoes miniboss status.
+    /// </summary>
+    public static bool FireMonsterCheckBossFlag(Entity monster)
+    {
+        var a = new MonsterCheckBossFlagArgs(monster);
+        return MonsterCheckBossFlag.Call(ref a);
+    }
+
+    /// <summary>
     /// EV_MonsterDropItem (server/mutators/events.qh:383-390) — "called when a monster is dropping loot".
     /// Slot0 the monster (read-only), slot1 the item-list string (in/out — a handler may replace it to override
     /// what loot is dropped; setting it to "" suppresses the drop entirely), slot2 the attacker (read-only).
@@ -733,6 +757,60 @@ public static class MutatorHooks
         public FilterItemDefinitionArgs(Entity definition) { Definition = definition; }
     }
     public static readonly HookChain<FilterItemDefinitionArgs> FilterItemDefinition = new();
+
+    /// <summary>
+    /// EV_Item_ScheduleRespawn (server/mutators/events.qh) — fired from QC <c>Item_ScheduleRespawnIn</c>
+    /// (server/items/items.qc:329): <c>set_itemstime || MUTATOR_CALLHOOK(Item_ScheduleRespawn, e, t)</c>. A
+    /// handler returning <c>true</c> forces the item onto the visible respawn-countdown (waypoint) path for a
+    /// long respawn even when the item isn't a default itemstime item. Slot0 the item entity, slot1 the
+    /// scheduled respawn time. Overkill subscribes here so the surviving Mega/Big health/armor get a countdown
+    /// waypoint.
+    /// </summary>
+    public struct ItemScheduleRespawnArgs
+    {
+        public readonly Entity Item;   // MUTATOR_ARGV_0_entity
+        public readonly float Time;    // MUTATOR_ARGV_1_float
+        public ItemScheduleRespawnArgs(Entity item, float time) { Item = item; Time = time; }
+    }
+    public static readonly HookChain<ItemScheduleRespawnArgs> ItemScheduleRespawn = new();
+
+    /// <summary>
+    /// Fire <see cref="ItemScheduleRespawn"/> for an item being scheduled (QC
+    /// <c>MUTATOR_CALLHOOK(Item_ScheduleRespawn, e, t)</c>); returns true if a handler wants the visible
+    /// countdown-waypoint path. The item-respawn owner (<c>ItemPickupRules.ScheduleRespawnIn</c>) calls this.
+    /// </summary>
+    public static bool FireItemScheduleRespawn(Entity item, float time)
+    {
+        var a = new ItemScheduleRespawnArgs(item, time);
+        return ItemScheduleRespawn.Call(ref a);
+    }
+
+    /// <summary>
+    /// EV_Item_RespawnCountdown (server/mutators/events.qh) — fired from QC <c>Item_RespawnCountdown</c>
+    /// (server/items/items.qc:289) on the first countdown tick, after the waypoint is spawned. A handler
+    /// returning <c>true</c> suppresses the spectator-only waypoint rule (QC: the
+    /// <c>Item_ItemsTime_SpectatorOnly(def) &amp;&amp; !mutator_returnvalue</c> guard) so the countdown waypoint
+    /// shows for ALL players, not just spectators. Slot0 the item entity. Overkill subscribes here so the
+    /// surviving Mega/Big health/armor waypoints are visible to everyone.
+    /// </summary>
+    public struct ItemRespawnCountdownArgs
+    {
+        public readonly Entity Item;   // MUTATOR_ARGV_0_entity
+        public ItemRespawnCountdownArgs(Entity item) { Item = item; }
+    }
+    public static readonly HookChain<ItemRespawnCountdownArgs> ItemRespawnCountdown = new();
+
+    /// <summary>
+    /// Fire <see cref="ItemRespawnCountdown"/> for an item starting its countdown (QC
+    /// <c>MUTATOR_CALLHOOK(Item_RespawnCountdown, this)</c>); returns true if a handler wants the waypoint
+    /// shown to everyone (not spectator-only). The item-respawn owner (<c>ItemPickupRules.RespawnCountdown</c>)
+    /// calls this on the first countdown tick.
+    /// </summary>
+    public static bool FireItemRespawnCountdown(Entity item)
+    {
+        var a = new ItemRespawnCountdownArgs(item);
+        return ItemRespawnCountdown.Call(ref a);
+    }
 
     /// <summary>
     /// EV_OnEntityPreSpawn (server/mutators/events.qh) — fired from QC's <c>SV_OnEntityPreSpawnFunction</c> for

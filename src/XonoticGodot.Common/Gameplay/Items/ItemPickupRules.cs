@@ -37,6 +37,10 @@ public static class ItemPickupRules
     /// <summary>QC DPCONTENTS_NODROP (the SUPERCONTENTS bit). Loot in a NODROP brush (lava) is deleted at spawn.</summary>
     public const int NoDropContents = unchecked((int)0x80000000);
 
+    /// <summary>QC Q3SURFACEFLAG_SKY (q3 surface flag bit). Loot resting on a sky brush is killed on touch
+    /// (ITEM_TOUCH_NEEDKILL's sky half — items.qh:122).</summary>
+    public const int Q3SurfaceFlagSky = 0x4;
+
     private static float Now => Api.Services != null ? Api.Clock.Time : 0f;
 
     /// <summary>
@@ -367,10 +371,12 @@ public static class ItemPickupRules
         }
 
         // (3) MUTATOR_CALLHOOK(ItemTouch, this, toucher) (items.qc:706) — fired here, after the gate and BEFORE
-        //     the expiring-timer adjust + give, so a subscriber sees the item's raw powerup timers. The stock
-        //     superspec hook always returns CONTINUE (never blocks the pickup), so the return is informational
-        //     only and the common path proceeds regardless.
-        MutatorHooks.FireItemTouch(item, toucher);
+        //     the expiring-timer adjust + give, so a subscriber sees the item's raw powerup timers. QC
+        //     Item_Touch does `if (MUTATOR_CALLHOOK(ItemTouch, this, toucher)) return;` — a handler returning
+        //     MUT_ITEMTOUCH_RETURN (true) ABORTS the pickup (Freeze Tag blocks a frozen toucher; the stock
+        //     superspec hook always returns CONTINUE so the common path proceeds).
+        if (MutatorHooks.FireItemTouch(item, toucher))
+            return;
 
         // (4) an expiring loot item's powerup timers are stored absolute-from-now; subtract `time` so the give's
         //     max(t, time + finished) treats them as remaining (QC items.qc:714-721). Restored if nothing taken.
@@ -652,6 +658,13 @@ public static class ItemPickupRules
     /// </summary>
     public static void ScheduleRespawnIn(Entity item, float t)
     {
+        // QC items.qc:329 — the visible-countdown gate is (set_itemstime || MUTATOR_CALLHOOK(Item_ScheduleRespawn,
+        // e, t)) && (t - ITEM_RESPAWN_TICKS) > 0. The port already routes EVERY long respawn (> ITEM_RESPAWN_TICKS)
+        // through the countdown-waypoint path (it doesn't gate on the itemstime set), so the mutator hook can only
+        // KEEP an item on the countdown path, never pull one off it — firing it here makes the Overkill
+        // Item_ScheduleRespawn hook live (it forces its surviving Mega/Big health+armor onto the waypoint path,
+        // which they already take) without altering the existing non-mutator behavior.
+        _ = MutatorHooks.FireItemScheduleRespawn(item, t);
         if (t - RespawnTicks > 0f)
         {
             item.NextThink = Now + System.MathF.Max(0f, t - RespawnTicks);
@@ -791,13 +804,19 @@ public static class ItemPickupRules
             System.Numerics.Vector3 color = isWeapon
                 ? System.Numerics.Vector3.Zero               // WP_Weapon: black, weapon color resolved client-side
                 : new System.Numerics.Vector3(1f, 0f, 1f);   // WP_Item: magenta
+            // QC items.qc:289 — MUTATOR_CALLHOOK(Item_RespawnCountdown, this) on the first tick (after the
+            // waypoint is spawned). The return value gates the SPRITERULE_SPECTATOR restriction below:
+            // Item_ItemsTime_SpectatorOnly(def) && !mutator_returnvalue. Overkill returns true for its surviving
+            // Mega/Big health+armor so those countdown waypoints show for EVERYONE, not just spectators.
+            bool mutatorOverride = MutatorHooks.FireItemRespawnCountdown(item);
             Waypoints.WaypointSprite wp = Waypoints.WaypointSprites.Spawn(
                 spriteName, 0f, 0f, item, new System.Numerics.Vector3(0f, 0f, 64f), item.Origin,
                 0, color, radarIcon: 1,
                 // QC: only the SpectatorOnly set (Mega/Big Health+Armor) gets SPRITERULE_SPECTATOR (the server
                 // per-peer gate, ServerNet.WaypointVisible, reproduces the sv_itemstime 1/2 mode); every other
-                // item's countdown waypoint is SPRITERULE_DEFAULT (visible to everyone, like a flag base).
-                rule: ItemstimeMutator.IsSpectatorOnlyItem(item.ClassName)
+                // item's countdown waypoint is SPRITERULE_DEFAULT (visible to everyone, like a flag base). A
+                // mutator (Overkill) returning true from Item_RespawnCountdown lifts the spectator restriction.
+                rule: ItemstimeMutator.IsSpectatorOnlyItem(item.ClassName) && !mutatorOverride
                     ? Waypoints.SpriteRule.Spectator
                     : Waypoints.SpriteRule.Default,
                 hideable: true);
@@ -944,13 +963,16 @@ public static class ItemPickupRules
     }
 
     // QC ITEM_TOUCH_NEEDKILL(): the loot's spot is a NODROP brush (lava) or a sky surface. We trace a zero-length
-    // line at the item and test the hit contents (the port has no separate dpstartcontents global).
+    // line at the item and test the hit contents + the q3 surface flags (the port has no separate dpstartcontents
+    // global, so we fold the QC `(trace_dpstartcontents | trace_dphitcontents) & DPCONTENTS_NODROP` into the
+    // single hit-contents test). The sky-surface half (Q3SURFACEFLAG_SKY) kills loot that lands on a sky brush.
     private static bool LootInNoDrop(Entity item)
     {
         if (Api.Services is null) return false;
         TraceResult tr = Api.Trace.Trace(item.Origin, System.Numerics.Vector3.Zero, System.Numerics.Vector3.Zero,
             item.Origin, MoveFilter.Normal, item);
-        return (tr.DpHitContents & NoDropContents) != 0;
+        return (tr.DpHitContents & NoDropContents) != 0
+            || (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagSky) != 0;
     }
 
     // QC: a superweapon weapon pickup never weapon-stays. The port has no per-item weapon link here; approximate

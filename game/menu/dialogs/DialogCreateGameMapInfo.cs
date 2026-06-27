@@ -44,7 +44,11 @@ public partial class DialogCreateGameMapInfo : Control, IMenuScreen
         SizeFlagsHorizontal = SizeFlags.ExpandFill;
         SizeFlagsVertical = SizeFlags.ExpandFill;
 
-        var backend = new MapInfoBackend(MenuDataBridge.ReadText, MenuDataBridge.ImageExists);
+        var backend = new MapInfoBackend(MenuDataBridge.ReadText, MenuDataBridge.ImageExists)
+        {
+            // QC Duel.m_isForcedSupported: wire g_duel_not_dm_maps (default 0 → forced support active).
+            ForceDuelOnDmMaps = MenuState.Cvars.GetFloat("g_duel_not_dm_maps") == 0f,
+        };
         MapInfo info = backend.Get(_bspName);          // QC MapInfo_Get_ByID
         string previewBase = backend.PreviewImage(_bspName); // QC preview fallback chain
 

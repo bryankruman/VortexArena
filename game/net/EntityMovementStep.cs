@@ -64,6 +64,9 @@ public sealed class EntityMovementStep : IMovementStep
             ButtonAttack1 = (b & InputButtons.Attack) != 0,
             ButtonAttack2 = (b & InputButtons.Attack2) != 0,
             ButtonUse = (b & InputButtons.Use) != 0,
+            // PHYS_INPUT_BUTTON_CHAT — keep the predictor in lockstep with ServerNet.ToMovementInput so the typing
+            // movement block (PM_check_blocked zeroes the wish-move) is predicted identically to the authority.
+            Typing = (b & InputButtons.Chat) != 0,
             // This is client-side prediction (and its reconciliation replays) — suppress the server-owned
             // footstep/landing sounds so a predicted landing doesn't fire (and replays don't multiply) them.
             Predicted = true,

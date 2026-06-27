@@ -409,12 +409,18 @@ public sealed class PlayerPhysics : IPlayerPhysics
         }
 
         // ----- end-of-tick bookkeeping (QC sys_phys_postupdate) -----
+        // Base runs PM_check_hitground/PM_Footsteps at physics.qc:90-91 BEFORE sys_phys_postupdate sets
+        // `this.lastground = time` at physics.qc:188, so the footstep `time >= lastground + 0.2` gate reads the
+        // PRIOR-tick lastground (it lags one tick and genuinely suppresses the first grounded frame after a
+        // >0.2s fall). The port runs UpdateMovementSounds after the postupdate update, so capture the prior
+        // value here and feed it to Footsteps — reproducing Base's one-tick-lagged gate instead of reading `now`.
+        float priorLastGroundTime = player.LastGroundTime;
         if (player.OnGround)
             player.LastGroundTime = Now();
         // conveyors: restore velocity out of the conveyor frame
         if (onConveyor)
             player.Velocity += player.ConveyorMoveDir;
-        UpdateMovementSounds(player, mp, input.Predicted);
+        UpdateMovementSounds(player, mp, input.Predicted, priorLastGroundTime);
         CheckPunch(player, dt, input.Predicted);
         player.LastFlags = player.Flags;
 
@@ -1280,6 +1286,13 @@ public sealed class PlayerPhysics : IPlayerPhysics
         MutatorHooks.PlayerCanCrouch.Call(ref cc);
         doCrouch = cc.DoCrouch;
 
+        // QC PM_ClientMovement_UpdateStatus:206-208 — disable crouching on Q1BSP, which lacks a suitable
+        // cliphull (the crouch hull would equal the standing hull). Base tests STAT(PL_CROUCH_MAX).z ==
+        // STAT(PL_MAX).z. Inert on stock Xonotic maps (Q3BSP: crouch maxs.z 25 != standing maxs.z 45), but a
+        // real Base branch — reproduced for fidelity on a hypothetical Q1BSP map / a server retuning the hulls.
+        if (CrouchMaxs.Z == mp.PlayerMaxs.Z)
+            doCrouch = false;
+
         if (doCrouch)
         {
             if (!player.IsDucked)
@@ -1863,7 +1876,7 @@ public sealed class PlayerPhysics : IPlayerPhysics
 
     // --- movement sounds (QC PM_check_hitground / footsteps in sys_phys_postupdate) ---
 
-    private static void UpdateMovementSounds(Entity player, in MovementParameters mp, bool predicted)
+    private static void UpdateMovementSounds(Entity player, in MovementParameters mp, bool predicted, float priorLastGroundTime)
     {
         if (Api.Services is null)
             return;
@@ -1886,7 +1899,7 @@ public sealed class PlayerPhysics : IPlayerPhysics
         if (player.OnGround)
         {
             CheckHitground(player);
-            Footsteps(player, mp);
+            Footsteps(player, mp, priorLastGroundTime);
         }
         else if (IsFlying(player))
         {
@@ -1905,9 +1918,14 @@ public sealed class PlayerPhysics : IPlayerPhysics
         if (player.WaterLevel >= WaterLevelSwimming)
             return;
         // QC PM_check_hitground bails on a ladder or while any weapon slot holds an active grappling hook
-        // (player.qc:669-678). The port models the ladder via player.LadderEntity; the hook is not yet a
-        // shared Entity field (see todos), so only the ladder leg is reproduced here.
+        // (player.qc:669-676): a hooked player swinging in to a surface shouldn't trigger the landing thud.
+        // The ladder is modelled via player.LadderEntity; the hook is the per-slot WeaponSlotState.Hook (the
+        // same field UpdateCrouch's have_hook reads), so walk the populated slots like the QC loop.
         if (player.LadderEntity is not null)
+            return;
+        bool haveHook = false;
+        player.ForEachWeaponSlot(s => { if (s.Hook is not null) haveHook = true; });
+        if (haveHook)
             return;
         // QC nextstep = time + 0.3 + random()*0.1: jittered suppression window after landing.
         player.LastFootstepTime = Now() + FootstepIntervalBase + FootstepJitter();
@@ -1921,7 +1939,7 @@ public sealed class PlayerPhysics : IPlayerPhysics
     /// <summary>QC <c>PM_Footsteps</c> (player.qc:689): periodic footsteps while moving on the ground, throttled
     /// to <see cref="FootstepIntervalBase"/> (jittered) and gated on speed + g_footsteps. Silent while ducked.
     /// Emitted on CH_PLAYER (auto) so consecutive steps stack rather than cancel each other.</summary>
-    private static void Footsteps(Entity player, in MovementParameters mp)
+    private static void Footsteps(Entity player, in MovementParameters mp, float priorLastGroundTime)
     {
         // QC: if (!autocvar_g_footsteps) return; — server-side master gate (xonotic-server.cfg:306 default 1).
         // Read raw (treat unset as the stock 1, so an absent cvar keeps footsteps on as in Base).
@@ -1931,8 +1949,11 @@ public sealed class PlayerPhysics : IPlayerPhysics
             return;
         float now = Now();
         // QC: if (time >= this.lastground + 0.2) return; — only within 0.2s of the last grounded tick. OnGround
-        // flickers on stairs/slopes so this gates footsteps to genuinely-grounded motion.
-        if (now >= player.LastGroundTime + 0.2f)
+        // flickers on stairs/slopes so this gates footsteps to genuinely-grounded motion. Base reads the
+        // PRIOR-tick lastground (PM_Footsteps runs before sys_phys_postupdate writes lastground=time), so the
+        // port feeds the captured prior value here instead of the now-updated player.LastGroundTime — without
+        // this, the gate would read `now` (set this same tick) and never fire (the inert-gate bug).
+        if (now >= priorLastGroundTime + 0.2f)
             return;
         float speed2 = Vec2LenSq(player.Velocity);
         float threshold = mp.MaxSpeed * FootstepSpeedThreshold;

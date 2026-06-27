@@ -217,6 +217,7 @@ public sealed class Ctf : GameType
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageHandler;
     private HookHandler<MutatorHooks.VehicleEnterArgs>? _vehicleEnterHandler;
     private HookHandler<MutatorHooks.VehicleExitArgs>? _vehicleExitHandler;
+    private HookHandler<MutatorHooks.MatchEndArgs>? _matchEndHandler;
 
     // ----- flagcarrier damage/force factors + auto-helpme (g_ctf_flagcarrier_*; gametypes-server.cfg, all 1) -----
     private const string CvarFcSelfDamage = "g_ctf_flagcarrier_selfdamagefactor"; // 1
@@ -351,6 +352,10 @@ public sealed class Ctf : GameType
         MutatorHooks.VehicleEnter.Add(_vehicleEnterHandler);
         _vehicleExitHandler = OnVehicleExit;
         MutatorHooks.VehicleExit.Add(_vehicleExitHandler);
+        // QC MUTATOR_HOOKFUNCTION(ctf, MatchEnd): lock any dropped/passing flag the instant the game ends so a
+        // live flag can't keep moving or be touched during intermission.
+        _matchEndHandler = OnMatchEnd;
+        MutatorHooks.MatchEnd.Add(_matchEndHandler);
     }
 
     /// <summary>
@@ -405,6 +410,11 @@ public sealed class Ctf : GameType
         {
             MutatorHooks.VehicleExit.Remove(_vehicleExitHandler);
             _vehicleExitHandler = null;
+        }
+        if (_matchEndHandler is not null)
+        {
+            MutatorHooks.MatchEnd.Remove(_matchEndHandler);
+            _matchEndHandler = null;
         }
     }
 
@@ -1346,6 +1356,10 @@ public sealed class Ctf : GameType
             e.GtSpawnAngles = angles;
             e.GtStatus = (int)FlagStatus.AtBase;
             e.NextThink = GametypeEntities.Now + 0.2f; // QC FLAG_THINKRATE
+            // QC ctf_FlagSetup: flag.reset = ctf_Reset (sv_ctf.qc:1380). The engine round/map reset
+            // (GameWorld.ResetMapObjects → Entity.Reset) fires this so a carried/dropped/passing flag is
+            // force-thrown (DROP_RESET) and respawned at base on an in-place round/map reset.
+            e.Reset = FlagResetEntity;
 
             // QC ctf_FlagSetup: give the flag its MODEL + per-team SKIN from the g_ctf_flag_<team>_model / _skin
             // cvars (gametypes-server.cfg: models/ctf/flags.md3, skin 0..4 = red/blue/yellow/pink/neutral). The
@@ -1477,6 +1491,32 @@ public sealed class Ctf : GameType
         e.GtDropTime = 0f;
         e.GtLandTime = 0f;
         GametypeEntities.SetOrigin(e, e.GtSpawnOrigin);
+    }
+
+    /// <summary>
+    /// QC ctf_Reset (sv_ctf.qc:1298), installed as the flag entity's <c>.reset</c> hook (ctf_FlagSetup:1380) and
+    /// fired by the engine round/map reset (GameWorld.ResetMapObjects). If a player is carrying the flag it is
+    /// force-thrown with DROP_RESET (no toss velocity), then the flag is respawned at its home base. This is what
+    /// restores a carried/dropped/passing flag's at-base state on an in-place round/map reset that doesn't re-run
+    /// Activate(). QC also clears flag.enemy (the takedamage-return back-link); the port has no flag-health bleed
+    /// so there is no enemy back-link to clear.
+    /// </summary>
+    private void FlagResetEntity(Entity self)
+    {
+        FlagState? flag = FlagForEntity(self);
+        if (flag is null)
+            return;
+
+        // QC: if(this.owner && IS_PLAYER(this.owner)) ctf_Handle_Throw(this.owner, NULL, DROP_RESET);
+        // DROP_RESET drops the flag in place with ZERO velocity (a force reset) and clears the carrier's VIP +
+        // collect-delay; the subsequent ctf_RespawnFlag then snaps it home. We collapse the throw+respawn into the
+        // direct reset since the immediately-following ResetToBase makes the in-place drop unobservable.
+        if (flag.Status == FlagStatus.Carried && flag.Carrier is { } carrier)
+            GametypeEntities.ScoringVip(carrier, false); // QC GameRules_scoring_vip(flag.owner, false) (DROP_RESET → Handle_Throw)
+
+        // QC ctf_RespawnFlag(this): clear the POJO + entity state and return the flag to its home base.
+        flag.ResetToBase();
+        RespawnFlagEntity(flag);
     }
 
     /// <summary>
@@ -1878,6 +1918,34 @@ public sealed class Ctf : GameType
         if (carried.Entity is Entity fe)
             GametypeEntities.AttachToCarrier(fe, player, FlagCarryOffset);
 
+        return false;
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(ctf, MatchEnd) (sv_ctf.qc:2587): the game is over — walk every flag and lock any
+    /// DROPPED or PASSING flag in place (MOVETYPE_NONE, DAMAGE_NO, SOLID_NOT, stop thinking) so a live flag can't
+    /// keep integrating, be touched, or auto-return during intermission. Base/carried flags are left untouched.
+    /// The gameplay outcome (no scoring after match end) is already enforced by the per-handler MatchEnded gate;
+    /// this freezes the physical flag entity to match Base. Returns false (does not consume the hook).
+    /// </summary>
+    private bool OnMatchEnd(ref MutatorHooks.MatchEndArgs args)
+    {
+        // QC sets the gametype's own MatchEnded gate here too (the handlers early-return once the match is over);
+        // the port latches MatchEnded in UpdateLeaderAndCheckLimit, but a timelimit/forced end runs through this
+        // hook without a capture, so mirror QC and latch it now so Tick/Pickup/etc. stop the state machine.
+        MatchEnded = true;
+        foreach (Entity e in FlagEntities)
+        {
+            var status = (FlagStatus)e.GtStatus;
+            if (status != FlagStatus.Dropped && status != FlagStatus.Passing)
+                continue; // QC: do nothing for FLAG_BASE / FLAG_CARRY
+            // QC: set_movetype(it, MOVETYPE_NONE); it.takedamage = DAMAGE_NO; it.solid = SOLID_NOT; it.nextthink = false;
+            e.MoveType = MoveType.None;
+            e.TakeDamage = DamageMode.No;
+            e.Solid = Solid.Not;
+            e.Velocity = Vector3.Zero;
+            e.NextThink = 0f; // QC nextthink = false: stop the per-flag think (no more auto-return / pass drive)
+        }
         return false;
     }
 

@@ -125,9 +125,15 @@ public sealed class OkMachinegun : Weapon
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.CurrentMaxShotDistance, penetrateWalls: true);
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/uzi_fire.wav");
 
-        // QC okmachinegun.qc:24-28 — punchangle recoil PRNG unless g_norecoil: random()-0.5 on pitch+yaw.
+        // QC okmachinegun.qc:24-28 — punchangle recoil PRNG unless g_norecoil: sets ONLY punchangle_x/_y
+        // (pitch/yaw), leaving the roll (Z) untouched. Read-modify-write to preserve Z (matching QC + Machinegun.Recoil).
         if ((actor.Flags & EntFlags.Client) != 0 && Api.Cvars.GetFloat("g_norecoil") == 0f)
-            actor.PunchAngle = new Vector3(Prandom.Float() - 0.5f, Prandom.Float() - 0.5f, 0f);
+        {
+            Vector3 p = actor.PunchAngle;
+            p.X = Prandom.Float() - 0.5f;
+            p.Y = Prandom.Float() - 0.5f;
+            actor.PunchAngle = p;
+        }
 
         // okmachinegun_spread = bound(spread_min, spread_min + spread_add * misc_bulletcounter, spread_max)
         float spread = QMath.Clamp(Cvars.SpreadMin + Cvars.SpreadAdd * st.MiscBulletCounter,
@@ -169,6 +175,12 @@ public sealed class OkMachinegun : Weapon
                 s2.State = WeaponFireState.Ready;
         });
     }
+
+    // METHOD(OverkillMachineGun, wr_aim) — okmachinegun.qc:64-68. Bots only press ATCK when the enemy is within
+    // a skill-scaled range (3000 - bound(0, skill, 10) * 200); beyond it they hold fire entirely (the bullet
+    // spread makes long-range fire wasteful). The shot itself is the generic accurate-hitscan aim.
+    public override bool BotForbidsFire(float enemyDistance, float skill)
+        => enemyDistance >= 3000f - QMath.Clamp(skill, 0f, 10f) * 200f;
 
     // METHOD(OverkillMachineGun, wr_checkammo1)
     public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Cvars.Ammo;

@@ -58,8 +58,9 @@ public sealed class MapVoteCandidate
 ///
 /// Deferred (cross-file): the network ballot UI (<c>ENT_CLIENT_MAPVOTE</c>), gametype voting
 /// (<c>GameTypeVote_*</c>), the per-client impulse plumbing that drives <see cref="CastVote"/>/<see cref="Abstain"/>
-/// (host <c>DispatchImpulse</c> drops impulses during intermission), the 2342 sentinel-health/scoreboard-hide,
-/// and the <c>:vote:reduce</c>/<c>:vote:finished</c> event-log lines.
+/// (host <c>DispatchImpulse</c> drops impulses during intermission), and the 2342 sentinel-health/scoreboard-hide.
+/// The <c>:vote:reduce</c>/<c>:vote:finished</c>/<c>:vote:suggestion_accepted</c> event-log lines ARE emitted via
+/// the <see cref="EventLogEcho"/> seam (wired by the host to <c>GameLog.Echo</c>, gated on <c>sv_eventlog</c>).
 /// </summary>
 public sealed class MapVoting
 {
@@ -126,6 +127,14 @@ public sealed class MapVoting
     /// apply the gametype switch before starting the map vote.
     /// </summary>
     public string VotedGametype { get; private set; } = "";
+
+    /// <summary>
+    /// QC <c>GameLogEcho(...)</c> seam for the vote event-log lines (<c>:vote:reduce</c>,
+    /// <c>:vote:finished</c>, <c>:vote:suggestion_accepted</c>) — server/mapvoting.qc:524/537/539/676/695.
+    /// The host wires this to <c>GameLog.Echo</c>, gating on <c>sv_eventlog</c> at the call site (same pattern
+    /// as Domination/Keepaway's <c>EventLogEcho</c>). When null (headless / tests) the emission is a no-op.
+    /// </summary>
+    public Action<string>? EventLogEcho { get; set; }
 
     public MapVoting(int seed = 0x5EED) => _rng = new Random(seed);
 
@@ -462,14 +471,26 @@ public sealed class MapVoting
         {
             // QC MapVote_TouchMask: strip GTV_AVAILABLE from every option past the reduce cutoff.
             _reduceTime = 0f;
+            // QC the :vote:reduce event-log line (mapvoting.qc:676-695): walk the ranked list emitting
+            // "<map>:<votes>" for each, insert a "::" separator at the reduce cutoff, end with ":didn't vote:N".
+            string result = ":vote:reduce";
+            int didntVote = ExpectedVoters;
+            bool emittedSeparator = false;
             bool remove = false;
             for (int idx = 0; idx < ranked.Count; idx++)
             {
+                didntVote -= ranked[idx].Votes;
+                result += ":" + ranked[idx].MapName + ":" + ranked[idx].Votes;
                 if (!remove && ReduceRemoveThis(keepExactly, idx, ranked))
+                {
+                    if (!emittedSeparator) { result += "::"; emittedSeparator = true; } // QC: kept|removed separator
                     remove = true;
+                }
                 if (remove && !ranked[idx].IsAbstain)
                     ranked[idx].Available = false;
             }
+            result += ":didn't vote:" + didntVote;
+            EventLogEcho?.Invoke(result);
             // recount so a now-unavailable option drops voters back to "no vote" on the next pass.
             RecountFromBallots();
         }
@@ -553,6 +574,30 @@ public sealed class MapVoting
         }
 
         WinningMap = winner?.MapName ?? "";
+
+        // QC MapVote_Finished (mapvoting.qc:522-540): emit the :vote:finished event-log line. Format:
+        //   :vote:finished:<winner>:<winnervotes>::[<map>:<votes>...]:didn't vote:<N>
+        // listing every still-available option (the winner first via the "::", then the rest), where
+        // "didn't vote" = voters minus all available-option selections.
+        if (winner is not null && EventLogEcho is not null)
+        {
+            string result = ":vote:finished:" + winner.MapName + ":" + winner.Votes + "::";
+            int didntVote = ExpectedVoters;
+            foreach (MapVoteCandidate c in _candidates)
+            {
+                if (!c.Available || c.IsAbstain)
+                    continue;
+                didntVote -= c.Votes;
+                if (!ReferenceEquals(c, winner))
+                    result += ":" + c.MapName + ":" + c.Votes;
+            }
+            result += ":didn't vote:" + didntVote;
+            EventLogEcho.Invoke(result);
+            // QC: a non-gametype vote whose winner was a player suggestion logs :vote:suggestion_accepted.
+            if (!IsGametypeVote && !string.IsNullOrEmpty(winner.Suggester))
+                EventLogEcho.Invoke(":vote:suggestion_accepted:" + winner.MapName);
+        }
+
         // QC GameTypeVote_Finished: record the winning gametype name for the host to apply the switch.
         if (IsGametypeVote)
             VotedGametype = WinningMap;

@@ -278,11 +278,6 @@ public sealed class Invasion : GameType
     /// <summary>QC the inv_roundcnt 0→1 edge: whether the round handler has started its first round yet.</summary>
     private bool _firstRoundStarted;
 
-    /// <summary>HUNT: whether at least one non-respawned monster has been seen alive — so an empty map doesn't
-    /// insta-win before its placed monsters spawn (QC's HUNT ends if none are placed, but the port spawns them
-    /// asynchronously, so we wait for the first to appear before treating "none left" as a win).</summary>
-    private bool _huntSawMonster;
-
     public override void OnInit()
     {
         // QC: monsters spawn at the map's invasion_spawnpoint entities (see SpawnPoints / AddSpawnPoint).
@@ -311,19 +306,27 @@ public sealed class Invasion : GameType
     public float SpawnDelay => TryCvar(CvarSpawnDelay, out float v) && v > 0f ? v : 0.25f;
 
     /// <summary>
-    /// The point limit in force (QC GameRules_limit_score(autocvar_g_invasion_point_limit)). The cvar default
-    /// is -1 = "use the mapinfo pointlimit" (50); a real positive value overrides it. We treat any value &lt;= 0
-    /// (the -1 sentinel, or an explicit 0/disable that QC's mapinfo path still resolves to 50 here) as the
-    /// mapinfo fallback, mirroring Base where -1 never means "no limit". 0 from <see cref="CheckPointLimit"/>'s
-    /// own guard is reserved for the truly-unset host case via <see cref="CvarFragLimit"/>.
+    /// The point limit in force (QC GameRules_limit_score(autocvar_g_invasion_point_limit)).
+    ///
+    /// Base semantics (sv_rules.qc GameRules_limit_score):
+    ///  - <c>g_invasion_point_limit &gt; 0</c> → sets fraglimit to that value (explicit limit).
+    ///  - <c>g_invasion_point_limit == 0</c> → sets fraglimit to 0 → WinningCondition_Scores gate
+    ///    <c>(limit &amp;&amp; …)</c> is false → <b>no limit</b> (play without a kill cap).
+    ///  - <c>g_invasion_point_limit &lt; 0</c> (default -1) → GameRules_limit_score returns early (no
+    ///    fraglimit write) → fraglimit resolves to the mapinfo default (50).
+    ///
+    /// Returns 0 when no limit is in effect (caller's <see cref="CheckPointLimit"/> already skips on 0).
     /// </summary>
     public int PointLimit
     {
         get
         {
-            // QC: g_invasion_point_limit default -1 -> fall back to the mapinfo pointlimit (50). Only a
-            // positive override changes the limit; -1 (and 0) resolve to the mapinfo default, never "no limit".
-            if (TryCvar(CvarPointLimit, out float pl) && pl > 0f) return (int)pl;
+            if (TryCvar(CvarPointLimit, out float pl))
+            {
+                if (pl > 0f) return (int)pl;  // positive → explicit limit
+                if (pl == 0f) return 0;        // explicit 0 → no limit (Base: fraglimit=0 → limit gate false)
+                // pl < 0 (-1 sentinel) → fall through to mapinfo default
+            }
             if (TryCvar(CvarFragLimit, out float fl) && fl > 0f) return (int)fl;
             return DefaultPointLimit;
         }
@@ -368,7 +371,6 @@ public sealed class Invasion : GameType
         Wave.MaxSpawned = ComputeWaveSize(Wave.Round);
         _monsterSkill = ComputeMonsterSkill(Wave.Round);
         _firstRoundStarted = false;
-        _huntSawMonster = false;
         _nextSpawnTime = 0f;
 
         // QC invasion_ScoreRules (sv_invasion.qc): GameRules_score_enabled(false); GameRules_scoring(0, 0, 0, {
@@ -545,25 +547,15 @@ public sealed class Invasion : GameType
             return;
         }
 
-        // HUNT: the win is derived from the live monster list, NOT the wave-fill counters (QC
-        // WinningCondition_Invasion INV_TYPE_HUNT: IL_EACH(g_monsters, !(it.spawnflags & MONSTERFLAG_RESPAWNED))
-        // — when no non-respawned monster remains, every alive player wins). HUNT maps place their monsters via
-        // the map's monster spawnfuncs (NATURAL, first-life), so the win source is the world's monster entities,
-        // not the ROUND wave fill loop. Mirror Base: count the alive, non-respawned monsters in the world and win
-        // when none remain. (Base ends immediately if no monsters were ever placed; we require >=1 to have lived,
-        // so an empty map doesn't insta-win before the map's monsters spawn.)
+        // HUNT: QC WinningCondition_Invasion INV_TYPE_HUNT —
+        //   IL_EACH(g_monsters, !(it.spawnflags & MONSTERFLAG_RESPAWNED), { ++found; });
+        //   if (found <= 0) { every alive player wins → WINNING_YES; }
+        // Win when no non-respawned monster remains in the world. Base note: "NOTE: this ends the round if no
+        // monsters are placed" — Base insta-wins on an empty HUNT map (first frame finds 0 remaining →
+        // WINNING_YES). We mirror that exactly: no _huntSawMonster guard, no counter-based fallback path.
         if (Type == InvasionType.Hunt)
         {
-            int remaining = LiveNonRespawnedMonsterCount();
-            if (remaining > 0)
-                _huntSawMonster = true;
-            // The port also tracks the wave-fill counters (used when monsters spawn through the wave loop and on
-            // headless tests with no live world entities); count that path as "a monster was present" too so the
-            // win fires when the whole set is cleared.
-            bool counterCleared = Wave.Spawned >= 1 && Wave.Killed >= Wave.MaxSpawned;
-            if (counterCleared)
-                _huntSawMonster = true;
-            if (remaining <= 0 && _huntSawMonster)
+            if (LiveNonRespawnedMonsterCount() <= 0)
                 MatchEnded = true;
             return;
         }

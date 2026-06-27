@@ -231,6 +231,16 @@ public sealed class Zombie : Monster
     // plays on a given roll byte-faithful to zombie.qc:122 rather than inverted).
     public override bool RollDeathVariant() => !(MonsterRandom.Next() > 0.5f);
 
+    // METHOD(Zombie, describe) — zombie.qc:178-189. The MENUQC bestiary prose (4 PAR() paragraphs) describing
+    // the zombie's behaviour: charge+leap, melee punch/bite, block, and destroy-the-corpse-to-stop-it-rising.
+    public override string? Describe() =>
+        "Zombies are the undead remains of deceased soldiers, risen with a ravenous hunger and no sense of self-preservation. " +
+        "When a Zombie senses a nearby player it will begin to charge its target at high speeds. " +
+        "While charging, a Zombie may leap towards the player, dealing massive damage on contact. " +
+        "If it gets close, the Zombie will punch and bite repeatedly. " +
+        "When threatened the Zombie may hold up its hands to block incoming attacks briefly. " +
+        "It is no small task to kill that which is already dead. Once a Zombie is defeated, destroy its corpse to prevent it from rising again!";
+
     // mr_anim (zombie.qc): the MD3 frame-group table. The first component of each animfixfps('N …') is the
     // group's start frame, which QC's setanim stamps onto .frame; the networked Entity.Frame drives the client
     // ModelAnimator (CSQCMODEL_AUTOUPDATE). MonsterAI.DriveAnimFrame calls this each think to play the phase.

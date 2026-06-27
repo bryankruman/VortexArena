@@ -825,6 +825,14 @@ public sealed partial class NetGame : Node3D
         cmd.GameTypeVoteHookHandler = name =>
             _serverWorld?.LoadedConfig?.ExecuteLine($"sv_vote_gametype_hook_{name}");
 
+        // QC localcmd("\nsv_hook_gameend\n") (NextLevel): the once-per-match end-of-match admin-script alias. Same
+        // alias-resolution path as the gametype hooks above — dispatch through LoadedConfig.ExecuteLine so the
+        // engine console expands the `sv_hook_gameend` alias. Stock config leaves it empty (a no-op, matching
+        // Base); a server.cfg that redefines the alias runs against the server's cvar store. LoadedConfig is null
+        // only on a bare unit-test world (no cfg load) — the `?.` then makes this a harmless no-op.
+        cmd.GameEndHookHandler = () =>
+            _serverWorld?.LoadedConfig?.ExecuteLine("sv_hook_gameend");
+
         // sandbox build mode (g_sandbox): wire the SandboxMutator's host seams (per-player print, crosshair trace,
         // owner-UID/name/view-yaw, real-client roster, per-map file storage). The `g_sandbox` command routes to
         // SandboxMutator.HandleCommand (Commands.CmdSandbox); without these the handler runs but every action is
@@ -4947,6 +4955,14 @@ public sealed partial class NetGame : Node3D
             forward = side = up = 0f;
             buttons &= ~(InputButtons.Jump | InputButtons.Crouch);
         }
+
+        // PHYS_INPUT_BUTTON_CHAT: tag the command as "typing" whenever the player has a text prompt open (the
+        // in-game console, where say / messagemode chat is entered). Set OUTSIDE the `active` gate above: opening
+        // the console makes input inactive (movement keys are released + zeroed), but the typing FLAG itself must
+        // still ride the command so the server can exempt the typist (camp-check g_campcheck_typecheck gate,
+        // type-frag classification, etc.). Mirrors QC PHYS_INPUT_BUTTON_CHAT being live while the chat box is up.
+        if (ConsoleState.IsOpen)
+            buttons |= InputButtons.Chat;
 
         // C2S impulse (QC usercmd.impulse): consume the one-shot weapon-switch/reload number a bind set this
         // frame (RunBoundCommand stamped it into _pendingImpulse, edge-triggered). Stamp it onto THIS command and

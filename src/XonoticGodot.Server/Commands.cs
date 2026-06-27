@@ -170,6 +170,15 @@ public sealed class Commands
     public Action<string>? GameTypeVoteHookHandler { get; set; }
 
     /// <summary>
+    /// QC <c>localcmd("\nsv_hook_gameend\n")</c> from <c>NextLevel</c> (server/world.qc:1463): the trailing
+    /// admin-script alias fired once per match the instant intermission begins, after the MatchEnd mutator hook.
+    /// The host may wire this to execute the server-side <c>sv_hook_gameend</c> console alias. The stock alias is
+    /// empty (a no-op, matching Base); a server.cfg that redefines it runs against the server's cvar store. When
+    /// unwired the end-of-match latch still happens; only the alias body doesn't run.
+    /// </summary>
+    public Action? GameEndHookHandler { get; set; }
+
+    /// <summary>
     /// The sim-clock deferred-command queue (DP <c>defer</c> / <c>Cbuf_Execute_Deferred</c>). Backs the
     /// <c>defer</c> + <c>nextframe</c> commands; pumped each server tick by <c>GameWorld.OnStartFrame</c>
     /// (<c>Commands.Deferred.Pump(Time, cmd =&gt; Commands.Execute(cmd, isServerConsole: true))</c>). The passed
@@ -558,6 +567,15 @@ public sealed class Commands
         // (mutators.cfg:12 seta cl_dodging 0). Non-Player entities (never reached for a real player) read false.
         DodgingMutator.ClientDodgingProvider = e =>
             e is Player p && GetClientCvarFloat(p, "cl_dodging", 0f) != 0f;
+
+        // Per-client double-tap window (QC dodging/sv_dodging.qc:50 PHYS_DODGING_TIMEOUT(s) =
+        // CS_CVAR(s).cvar_cl_dodging_timeout, a REPLICATE'd float). Base reads the timeout off the dodging
+        // player's own replicated cl_dodging_timeout each frame, so each client sets their own window. Point the
+        // mutator's per-client source at this world's replicated-cvar table — same seam as ClientDodgingProvider
+        // above. Without it the timeout is read once server-side at Hook() and shared by every client. Unset
+        // defaults to 0.2 (mutators.cfg seta cl_dodging_timeout 0.2). Non-Player entities read the same default.
+        DodgingMutator.TimeoutProvider = e =>
+            e is Player p ? GetClientCvarFloat(p, "cl_dodging_timeout", 0.2f) : 0.2f;
 
         // Per-client free-fly spectator wall-collision (QC server/client.qc:2589
         // wouldclip = CS_CVAR(this).cvar_cl_clippedspectating). Point ClientManager's free-fly movetype recompute at
@@ -1375,8 +1393,30 @@ public sealed class Commands
 
     private bool CmdShuffleTeams(CommandContext ctx)
     {
+        // QC GameCommand_shuffleteams (server/command/sv_cmd.qc:1382): if a gametype deferred the shuffle to the
+        // next round reset (CA/FreezeTag SV_ParseServerCommand set shuffleteams_on_reset_map = round-live), don't
+        // disrupt the live round — announce it and let reset_map run the shuffle (vote.qc:368-372). The CA/FT
+        // SV_ParseServerCommand hook is modeled here directly: defer iff the active round is live.
+        if (_world.Rounds is { IsRoundStarted: true } && _world.GameType is ClanArena)
+        {
+            _world.ShuffleTeamsOnResetMap = true;
+            ChatBroadcast?.Invoke("Players will be shuffled when this round is over.");
+            return true;
+        }
+
+        ShuffleTeamsNow(ctx);
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>shuffleteams()</c> (server/command/sv_cmd.qc:1340): the actual reservoir-shuffled round-robin team
+    /// redistribution. Invoked immediately by <see cref="CmdShuffleTeams"/>, or deferred to the next
+    /// <see cref="GameWorld.ResetMap"/> when a CA-style round was live (QC shuffleteams_on_reset_map).
+    /// </summary>
+    public void ShuffleTeamsNow(CommandContext? ctx = null)
+    {
         // QC shuffleteams() (sv_cmd.qc:1340).
-        if (!_world.Teamplay.IsTeamGame) { ctx.Print("Can't shuffle teams when currently not playing a team game."); return true; }
+        if (!_world.Teamplay.IsTeamGame) { ctx?.Print("Can't shuffle teams when currently not playing a team game."); return; }
 
         // QC FOREACH_CLIENT(IS_PLAYER||INGAME): the present playing roster (the port treats non-observers as in-game).
         var players = new List<Player>();
@@ -1387,10 +1427,10 @@ public sealed class Commands
         // QC: refuse the shuffle if any player is pinned to a forced team (g_forced_team_*).
         foreach (Player p in players)
             if (_world.Teamplay.HasRealForcedTeam(p))
-            { ctx.Print("Can't shuffle teams because at least one player has a forced team."); return true; }
+            { ctx?.Print("Can't shuffle teams because at least one player has a forced team."); return; }
 
         int teamCount = _world.Teamplay.TeamCount;
-        if (teamCount <= 0) { ctx.Print("Can't shuffle teams: no teams available."); return true; }
+        if (teamCount <= 0) { ctx?.Print("Can't shuffle teams: no teams available."); return; }
 
         // QC FOREACH_CLIENT_RANDOM (server/utils.qh): a reservoir shuffle of the roster using random(), so the
         // round-robin team assignment falls on a randomized order (not a stable one). Prandom.Float() == QC random().
@@ -1416,7 +1456,6 @@ public sealed class Commands
             teamIndex = (teamIndex + 1) % teamCount;
         }
         ChatBroadcast?.Invoke("Successfully shuffled the players around randomly.");
-        return true;
     }
 
     private bool CmdMovePlayer(CommandContext ctx)
@@ -2071,6 +2110,16 @@ public sealed class Commands
             _world.Cheats.Teleport(caller);
             return true;
         }
+        // QC CheatImpulse CHIMPULSE_SPEEDRUN (141, cheats.qc:188): teleport back to the personal speedrun checkpoint
+        // and restore the snapshotted resources/weapons/items/status-effects (the checkpoint is taken by SPEEDRUN_INIT
+        // = impulse 30, handled in the waypoint switch below). Gated as a cheat only when g_allow_checkpoints is off
+        // (Cheats.Speedrun runs that gate + the cheat count itself); a free reset otherwise. CLONE_MOVING(140)/
+        // CLONE_STANDING(142) remain unported (need a CopyBody entity-clone service the port doesn't expose).
+        if (imp == 141)
+        {
+            _world.Cheats.Speedrun(caller);
+            return true;
+        }
         // QC waypoint impulses (impulse.qc:414-521, all.qh:133-144): personal/here/danger waypoint-sprite deploy
         // and the HELP-ME follow ping + clear-personal/clear-all. The _here variants deploy at the player's origin,
         // the _crosshair variants at the server-side crosshair trace endpoint, the _death variants at the latched
@@ -2080,7 +2129,14 @@ public sealed class Commands
         //   danger_here=37, danger_crosshair=38, danger_death=39, clear_personal=47, clear_all=48.
         switch (imp)
         {
-            case 30: return CmdWaypointDeploy(ctx, WpDeploy.Personal, WpLocation.Here);
+            case 30:
+                // QC CHIMPULSE_SPEEDRUN_INIT (cheats.qc:144): impulse 30 is BOTH waypoint_personal_here AND the
+                // speedrun-checkpoint snapshot (same impulse number). CheatImpulse runs first and snapshots the
+                // player's restorable state into its .personal checkpoint (not a cheat — no sv_cheats gate, no count),
+                // then falls through to the IMPULSES registry which deploys the personal waypoint SPRITE. Reproduce
+                // that order: snapshot, then deploy the sprite.
+                _world.Cheats.SpeedrunInit(caller);
+                return CmdWaypointDeploy(ctx, WpDeploy.Personal, WpLocation.Here);
             case 31: return CmdWaypointDeploy(ctx, WpDeploy.Personal, WpLocation.Crosshair);
             case 32: return CmdWaypointDeploy(ctx, WpDeploy.Personal, WpLocation.Death);
             case 33: return CmdWaypointDeploy(ctx, WpDeploy.Helpme);
@@ -3107,6 +3163,9 @@ public sealed class Commands
         }
         // QC mapvoting.qc:160-161 — store the map AND the suggester's netname (mapvote_maps_suggesters[i]).
         _mapSuggestions.Add((map, ctx.Caller.NetName ?? ""));
+        // QC mapvoting.qc:163-164 — if(autocvar_sv_eventlog) GameLogEcho(":vote:suggested:<map>:<playerid>").
+        if (Cvars.Bool("sv_eventlog"))
+            _world.GameLog.Echo(":vote:suggested:" + map + ":" + ctx.Caller.PlayerId);
         // QC mapvoting.qc:165 — strcat("Suggestion of ", m, " accepted.").
         ctx.Print($"Suggestion of {map} accepted.");
         return true;

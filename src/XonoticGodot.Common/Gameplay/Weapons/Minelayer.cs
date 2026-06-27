@@ -176,6 +176,11 @@ public sealed class Minelayer : Weapon
         mine.Velocity = shot.Dir * Cvars.Speed;
         mine.Angles = QMath.VecToAngles(mine.Velocity);
 
+        // QC minelayer.qc:321-322 — flag the mine as a dodgeable hazard; rating = damage * 2 ("* 2 because it can
+        // detonate inflight which makes it even more dangerous"). Consumed by BotBrain.HavocbotDodge.
+        mine.BotDodge = true;
+        mine.BotDodgeRating = Cvars.Damage * 2f;
+
         // cnt = (lifetime - lifetime_countdown) + time is the forced-detonation deadline.
         float deathTime = Api.Clock.Time + (Cvars.Lifetime - Cvars.LifetimeCountdown);
         mine.Count = 0;       // bounce counter for re-grounding after a damage knock-off
@@ -187,11 +192,18 @@ public sealed class Minelayer : Weapon
         // W_MineLayer_Damage: knock the mine loose (damageforcescale) and/or destroy it when its HP is gone.
         mine.ProjectileDamage = (self, attacker) => OnMineDamage(self, attacker);
         // event_damage = W_MineLayer_Damage (minelayer.qc:327): install the shoot-down shim so the damage
-        // pipeline subtracts hp + fires ProjectileDamage. exception=1: combo-able (passes the stock
-        // g_projectiles_damage -2 gate like the electro orb / hagar rocket). The onHit side effect carries the
-        // damageforcescale knock-loose, which QC runs on EVERY surviving hit BEFORE the gate/TakeResource — the
-        // hp<=0 detonation stays in ProjectileDamage (OnMineDamage).
-        Projectiles.MakeShootable(mine, exception: 1f, onHit: OnMineHit);
+        // pipeline subtracts hp + fires ProjectileDamage. The onHit side effect carries the damageforcescale
+        // knock-loose, which QC runs on EVERY surviving hit BEFORE the gate/TakeResource — the hp<=0 detonation
+        // stays in ProjectileDamage (OnMineDamage).
+        //
+        // exception per hit = (is_from_enemy ? 1 : -1), is_from_enemy = inflictor.realowner != this.realowner
+        // (minelayer.qc:284-286). Under stock g_projectiles_damage -2 this means an ENEMY can shoot a mine down
+        // (exception 1 passes the gate) but the mine OWNER cannot shoot their own mine (exception -1 fails) — the
+        // mine is a hazard the owner can't disarm by shooting it. A fixed exception:1 would wrongly let the owner
+        // destroy their own mines; pass the inflictor-dependent exception instead.
+        Projectiles.MakeShootable(mine, exception: -1f, onHit: OnMineHit,
+            exceptionFn: (self, inflictor) =>
+                (inflictor is not null && ReferenceEquals(inflictor.RealOwner, self.RealOwner)) ? -1f : 1f);
 
         // MUTATOR_CALLHOOK(EditProjectile, actor, mine) (minelayer.qc).
         var ep = new MutatorHooks.EditProjectileArgs(actor, mine);

@@ -135,9 +135,17 @@ public static class MoveTypePhysics
 
         CheckVelocity(ent);
 
-        // gravity (Toss/Bounce only; Fly/Missile have none)
+        // gravity (Toss/Bounce only; Fly/Missile have none). toss.qc:31-38: half-step BEFORE the move
+        // when GRAVITYUNAFFECTEDBYTICRATE (Xonotic default 1), with the matching half-step AFTER the loop
+        // (toss.qc:153-154). The port runs with that fix on, so split into two 0.5 steps (matching FlyMove);
+        // move_didgravity tracks whether the pre-move step ran so the post-move step only fires for it.
+        bool didGravity = false;
         if (ent.MoveType == MoveType.Toss || ent.MoveType == MoveType.Bounce)
-            ent.Velocity.Z -= ctx.EntGravity(ent);
+        {
+            didGravity = true;
+            float g = ctx.EntGravity(ent);
+            ent.Velocity.Z -= ctx.GravityUnaffectedByTicrate ? g * 0.5f : g;
+        }
 
         // angular
         ent.Angles += ent.AVelocity * ctx.FrameTime;
@@ -145,23 +153,32 @@ public static class MoveTypePhysics
         float moveTime = ctx.FrameTime;
         for (int bump = 0; bump < FlyMove.MaxClipPlanes && moveTime > 0f; bump++)
         {
+            // toss.qc:51-52: a fully-stopped entity has nothing left to push this frame.
+            if (ent.Velocity == Vector3.Zero)
+                break;
+
             Vector3 move = ent.Velocity * moveTime;
-            // Fly traps may move while stuck (DP passes checkstuck=false for FLY); our PushEntity nudges
-            // out of solid inline for non-FLY movetypes (its own SV_NudgeOutOfSolid pass), so the
-            // _Movetype_UnstickEntity retry of toss.qc:60-82 is folded into that PushEntity call.
             if (!ctx.PushEntity(out TraceResult trace, ent, move, doTouch: true))
                 return; // teleported
             if (ent.IsFreed) return;
 
-            // toss.qc:60-82 bmodelstartsolid give-up: if after the push (and PushEntity's own unstick pass)
-            // the entity is STILL fully embedded in a brush model (allsolid, zero progress, hit a SOLID_BSP),
-            // it is immovably stuck — stop wasting CPU, zero velocity and rest on ground (matches Base).
-            // World-brush hits report a null trace.Ent in the port; a bmodel mover reports its Bsp entity.
+            // toss.qc:60-82 bmodelstartsolid retry: if the push starts fully embedded in a brush model
+            // (allsolid, zero progress, hit a SOLID_BSP), unstick the entity and retry the push once. If it
+            // is STILL allsolid at zero progress after the unstick it is immovably stuck — stop wasting CPU,
+            // zero velocity and rest on ground (matches Base). World-brush hits report a null trace.Ent in
+            // the port; a bmodel mover reports its Bsp entity (both count as a SOLID_BSP startsolid).
             if (trace.AllSolid && trace.Fraction == 0f && (trace.Ent == null || trace.Ent.Solid == Solid.Bsp))
             {
-                ent.Velocity = Vector3.Zero;
-                ent.Flags |= EntFlags.OnGround;
-                return;
+                ctx.TryNudgeOutOfSolid(ent);
+                if (!ctx.PushEntity(out trace, ent, move, doTouch: true))
+                    return; // teleported
+                if (ent.IsFreed) return;
+                if (trace.AllSolid && trace.Fraction == 0f)
+                {
+                    ent.Velocity = Vector3.Zero;
+                    ent.Flags |= EntFlags.OnGround;
+                    return;
+                }
             }
 
             if (trace.Fraction == 1f) break;
@@ -210,6 +227,11 @@ public static class MoveTypePhysics
                     {
                         ent.Flags |= EntFlags.OnGround;
                         ent.GroundEntity = trace.Ent;
+                        // toss.qc:130-131: only a brush-model (SOLID_BSP) resting ground counts as
+                        // "suspended in air" — so that freeing the mover later drops the corpse. A null
+                        // trace.Ent is the world brush (also SOLID_BSP in DP).
+                        if (trace.Ent == null || trace.Ent.Solid == Solid.Bsp)
+                            _suspendedInAir.Add(ent);
                         ent.Velocity = Vector3.Zero;
                         ent.AVelocity = Vector3.Zero;
                         moveTime = 0f;
@@ -224,9 +246,11 @@ public static class MoveTypePhysics
             }
         }
 
-        // remember if we came to rest on a (non-world) mover so a later free of that mover suspends us.
-        if ((ent.Flags & EntFlags.OnGround) != 0 && ent.GroundEntity != null)
-            _suspendedInAir.Add(ent);
+        // toss.qc:153-154: the trailing gravity half-step (GRAVITYUNAFFECTEDBYTICRATE) — fired only if the
+        // pre-move half-step ran (move_didgravity) and the entity is NOT resting on the ground. Together
+        // with the pre-move half-step this straddles the move, making fall distance tickrate-independent.
+        if (ctx.GravityUnaffectedByTicrate && didGravity && (ent.Flags & EntFlags.OnGround) == 0)
+            ent.Velocity.Z -= 0.5f * ctx.EntGravity(ent);
 
         // SV_CheckWaterTransition (sv_phys.c:2593) — watertype/waterlevel + splash event.
         CheckWaterTransition(ctx, ent);

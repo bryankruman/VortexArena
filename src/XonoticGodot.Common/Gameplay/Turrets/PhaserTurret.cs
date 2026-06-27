@@ -142,8 +142,9 @@ public sealed class PhaserTurret : Turret
 
         // phaser_weapon.qc wr_think: register the beam as a dodgeable threat so havocbots strafe out of it
         // (beam.bot_dodge = true; IL_PUSH(g_bot_dodge, beam); beam.bot_dodgerating = beam.shot_dmg — the per-tick
-        // damage). The g_bot_dodge danger-list CONSUMER is not yet ported (same as Blaster.cs), so this is
-        // producer-side parity scaffolding today; it becomes live when havocbot_dodge is ported.
+        // damage). The g_bot_dodge danger-list CONSUMER is now ported (BotBrain.HavocbotDodge scans every edict
+        // flagged Entity.BotDodge and steers away; Waypoint.UpdateDangerousObjects folds it into A* route cost),
+        // so this is LIVE: SUPERBOT-skill bots actively dodge the phaser beam.
         beam.BotDodge = true;
         beam.BotDodgeRating = perTickDamage;
 

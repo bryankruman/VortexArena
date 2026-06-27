@@ -342,6 +342,61 @@ public class MenuDataSourceTests
         Assert.Equal(1, reads); // second Get hits the cache (QC MapInfo_Cache_Retrieve)
     }
 
+    [Fact]
+    public void MapInfo_ForcedDuelOnDmMap_Default_Active()
+    {
+        // QC Duel.m_isForcedSupported (duel.qh:15-28): a map with "gametype dm" but NO "gametype duel"
+        // is auto-promoted to also support duel when g_duel_not_dm_maps=0 (default).
+        // MapInfoBackend.ForceDuelOnDmMaps defaults to true (matching the Base default).
+        var backend = new MapInfoBackend(
+            _ => "title Boil\ngametype dm\ngametype tdm\n",
+            _ => false);
+        // default: ForceDuelOnDmMaps = true
+        MapInfo info = backend.Get("boil");
+        Assert.True(info.Supports("dm"));
+        Assert.True(info.Supports("duel"));   // forced-in by m_isForcedSupported
+        Assert.True(info.Supports("tdm"));
+    }
+
+    [Fact]
+    public void MapInfo_ForcedDuelOnDmMap_Suppressed_By_Flag()
+    {
+        // When g_duel_not_dm_maps=1 (ForceDuelOnDmMaps=false), duel must NOT be auto-added for DM maps.
+        var backend = new MapInfoBackend(
+            _ => "title Boil\ngametype dm\ngametype tdm\n",
+            _ => false)
+        {
+            ForceDuelOnDmMaps = false, // g_duel_not_dm_maps 1
+        };
+        MapInfo info = backend.Get("boil");
+        Assert.True(info.Supports("dm"));
+        Assert.False(info.Supports("duel"));  // not forced — g_duel_not_dm_maps is set
+    }
+
+    [Fact]
+    public void MapInfo_ForcedDuelOnDmMap_NotAdded_When_Explicit()
+    {
+        // If the .mapinfo already lists "gametype duel", the forced-support logic is a no-op (HashSet → no dup).
+        var backend = new MapInfoBackend(
+            _ => "title Darkzone\ngametype dm\ngametype duel\n",
+            _ => false);
+        MapInfo info = backend.Get("darkzone");
+        Assert.True(info.Supports("dm"));
+        Assert.True(info.Supports("duel")); // explicitly listed — still present after forced-support pass
+    }
+
+    [Fact]
+    public void MapInfo_ForcedDuelOnDmMap_NonDmMap_Unaffected()
+    {
+        // A map without DM (e.g. CTF-only) must NOT get duel forced in.
+        var backend = new MapInfoBackend(
+            _ => "title Dance\ngametype ctf\n",
+            _ => false);
+        MapInfo info = backend.Get("dance");
+        Assert.False(info.Supports("dm"));
+        Assert.False(info.Supports("duel"));  // CTF-only map → no forced duel
+    }
+
     // -------------------------------------------------------------------------------------------------
     //  MenuTextFormat — strdecolorize + glob
     // -------------------------------------------------------------------------------------------------

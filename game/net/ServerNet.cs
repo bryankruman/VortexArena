@@ -1619,6 +1619,11 @@ public sealed class ServerNet : IDisposable
             // to re-aim a scoped shot straight from the eye (rifle.qc:16-20). The wire bit is already sent by
             // the client (NetGame.cs InputButtons.Zoom); this is the missing server-side decode.
             ButtonZoom = (b & InputButtons.Zoom) != 0,
+            // PHYS_INPUT_BUTTON_CHAT — the client is typing (chat prompt / console open). The client sends this
+            // bit even while it has otherwise gone input-inactive (movement zeroed), so the typing flag actually
+            // reaches the server. PlayerPhysics writes it onto player.ButtonChat, which the camp-check typecheck
+            // gate, the type-frag classifier, spawn-near-teammate and monster-typefrag all consult.
+            Typing = (b & InputButtons.Chat) != 0,
             // Carry the one-shot impulse (QC CS(this).impulse) so the spectator free-flight speed ladder
             // (PlayerPhysics.SpectatorControl) sees it. For a live PLAYER the impulse was already dispatched as
             // a weapon command in ProvideInput; PlayerPhysics' spectator branch is gated on IsObserver, so this
@@ -2170,11 +2175,16 @@ public sealed class ServerNet : IDisposable
                 hist = new AntilagBuffer();
                 _antilagEntities[e] = hist;
             }
-            // A monster/nade that teleported or (re)spawned in place gets its ring wiped first, mirroring the
-            // player-side antilag_clear, so a shot can't rewind it to a pre-jump position. altime is strictly
+            // A monster/nade/vehicle that teleported or (re)spawned in place gets its ring wiped first, mirroring
+            // the player-side antilag_clear, so a shot can't rewind it to a pre-jump position. altime is strictly
             // newer than every stored stamp, so SampleAt(altime) returns the head (last recorded) origin to
-            // diff against without a new API.
-            if (hist.HasData && (e.Origin - hist.SampleAt(altime)).Length() > TeleportTickDistance)
+            // diff against without a new API. The explicit one-shot AntilagNeedsClear flag is the QC
+            // antilag_clear lifecycle (vehicle enter/exit sets it on the body, sv_vehicles.qc) — it catches a
+            // board/unboard that doesn't move the body far enough to trip the jump heuristic.
+            bool explicitClear = e.AntilagNeedsClear;
+            e.AntilagNeedsClear = false;
+            if (explicitClear
+                || (hist.HasData && (e.Origin - hist.SampleAt(altime)).Length() > TeleportTickDistance))
                 hist.Clear();
             hist.Store(altime, e.Origin);
         }
@@ -2194,9 +2204,25 @@ public sealed class ServerNet : IDisposable
     }
 
     /// <summary>Is this non-player entity one the antilag engine rewinds — a monster (FL_MONSTER, the same flag test
-    /// <c>Invasion</c> uses) or a thrown nade (<c>classname == "nade"</c>)? (antilag.qc antilag_takeback_all set.)</summary>
+    /// <c>Invasion</c> uses), a thrown nade (<c>classname == "nade"</c>), or a MANNED vehicle body
+    /// (antilag.qc antilag_takeback_all set)? Base records/rewinds a vehicle through the piloting player's
+    /// <c>antilag_record</c>/<c>antilag_takeback</c> recursion into <c>e.vehicle</c> (skipping a VHF_PLAYERSLOT
+    /// gunner slot). The port instead tracks the occupied vehicle directly as an antilag entity — equivalent,
+    /// since the vehicle keeps its own ring and is rewound when other players' shots take back. A vehicle is
+    /// "manned" while it has a piloting <see cref="Entity.Owner"/>; an unoccupied vehicle has no shooter to
+    /// compensate for and Base never records it (no player recurses into it), so it drops out of the set.</summary>
     private static bool IsAntilagged(Entity e)
-        => (e.Flags & EntFlags.Monster) != 0 || e.ClassName == "nade";
+        => (e.Flags & EntFlags.Monster) != 0
+           || e.ClassName == "nade"
+           || IsMannedVehicle(e);
+
+    /// <summary>A non-PLAYERSLOT vehicle body with a piloting owner — the entity Base's <c>antilag_record</c>
+    /// recurses into via the player's <c>.vehicle</c> link (the <c>vehicle_flags != VHF_PLAYERSLOT</c> guard
+    /// skips a multislot gunner SLOT, whose movement is its parent vehicle's, not its own).</summary>
+    private static bool IsMannedVehicle(Entity e)
+        => (e.VehicleFlags & VehicleFlags.IsVehicle) != 0
+           && (e.VehicleFlags & VehicleFlags.PlayerSlot) == 0
+           && e.Owner is Player;
 
     /// <summary>
     /// Snapshot the score table for this tick (QC PlayerScore_SendEntity / TeamScore_SendEntity). Mirrors the
@@ -2485,19 +2511,24 @@ public sealed class ServerNet : IDisposable
             _world.Services.Entities.SetOrigin(kv.Key, kv.Value.SampleAt(t));
         }
 
-        // monsters + nades (IL_EACH g_monsters / IL_EACH g_projectiles[classname=="nade"] → antilag_takeback(it, it, ...)).
+        // monsters + nades + manned vehicles (IL_EACH g_monsters / IL_EACH g_projectiles[classname=="nade"] →
+        // antilag_takeback(it, it, ...); the vehicle case is Base's recursion into the player's `.vehicle`).
+        // The shooter's OWN vehicle is excluded too: Base reaches a vehicle via its pilot's antilag_takeback,
+        // and the player loop skips `it == ignore`, so a shooter piloting a vehicle never rewinds their own body.
+        Entity? shooterVehicle = sp.Vehicle;
         _antilagEntityRestore.Clear();
         foreach (KeyValuePair<Entity, AntilagBuffer> kv in _antilagEntities)
         {
-            if (ReferenceEquals(kv.Key, shooter) || kv.Key.IsFreed || !kv.Value.HasData)
+            if (ReferenceEquals(kv.Key, shooter) || ReferenceEquals(kv.Key, shooterVehicle)
+                || kv.Key.IsFreed || !kv.Value.HasData)
                 continue;
             _antilagEntityRestore[kv.Key] = kv.Key.Origin;
             _world.Services.Entities.SetOrigin(kv.Key, kv.Value.SampleAt(t));
         }
     }
 
-    /// <summary><see cref="ILagCompensation.End"/>: restore every rewound entity — players, monsters, nades — to
-    /// its authoritative present position (<c>antilag_restore_all</c>).</summary>
+    /// <summary><see cref="ILagCompensation.End"/>: restore every rewound entity — players, monsters, nades, and
+    /// manned vehicle bodies — to its authoritative present position (<c>antilag_restore_all</c>).</summary>
     public void EndLagComp()
     {
         if (!_lagCompActive)

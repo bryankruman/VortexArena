@@ -179,6 +179,12 @@ namespace XonoticGodot.Common.Gameplay
             _ => null,
         };
 
+        /// <summary>QC <c>autocvar_sv_mapformat_is_quake3</c> (set by the .bsp/.map format detect). Default true
+        /// (Q3 map format), so nailgun -> CRYLINK by default; a Q1 map sets it 0 -> ELECTRO. Public so the item
+        /// spawnfunc table (item_armor1 -> ArmorSmall on a Q3 map, ArmorMedium otherwise; spawning.qc:99) can read
+        /// the same flag at spawn time.</summary>
+        public static bool IsMapformatQuake3() => MapformatIsQuake3();
+
         // QC autocvar_sv_mapformat_is_quake3 (set by the .bsp/.map format detect). Default true (Q3 map format),
         // so nailgun -> CRYLINK by default; a Q1 map sets it 0 -> ELECTRO.
         private static bool MapformatIsQuake3()

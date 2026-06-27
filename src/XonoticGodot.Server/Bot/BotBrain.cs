@@ -135,6 +135,23 @@ public sealed class BotBrain
     public float OnslaughtAttackTime;
 
     /// <summary>
+    /// QC <c>havocbot_role</c> KH variant (sv_keyhunt.qc): which of the four KH sub-roles this bot is
+    /// currently playing. Set by <see cref="BotObjectiveRoles.RoleKeyHunt"/> on role transitions (pick up key →
+    /// carrier; drop key → freelancer; timeout → random offense/defense). Initial value of 0 means
+    /// "unassigned" — the first <see cref="BotObjectiveRoles.RoleKeyHunt"/> call picks a random starting role.
+    /// Maps to the QC <c>bot.havocbot_role</c> pointer (offense / defense / freelancer / carrier).
+    /// </summary>
+    public KhBotRole KhRole;
+
+    /// <summary>
+    /// QC <c>havocbot_role_timeout</c> KH variant: absolute sim time at which the current non-carrier KH role
+    /// expires and the bot randomly re-picks offense or defense (QC <c>random() &lt; 0.5</c>).
+    /// 0 = unset (stamped to <c>time + random()*10 + 10|20</c> on the next role invocation). Carrier never has
+    /// a timeout — it stays carrier until it loses the key.
+    /// </summary>
+    public float KhRoleTimeout;
+
+    /// <summary>
     /// QC the pre-game movement holds (bot_think:80-83 campaign hold + :122-127 countdown): when this returns
     /// true the bot keeps its buttons but emits zero movement. Wired by <see cref="BotPopulation"/> to
     /// <c>time &lt; game_starttime || (g_campaign &amp;&amp; !campaign_bots_may_start)</c>; null = no hold.
@@ -431,7 +448,7 @@ public sealed class BotBrain
             // QC per-weapon wr_aim total fire suppression: the Port-O-Launch's wr_aim only presses ATCK in the
             // non-secondary balance mode and never in stock (secondary) play (porto.qc:wr_aim), so a porto-holding
             // bot must hold fire entirely. Apply the weapon's veto after every other fire decision.
-            if (ChosenWeapon is { } fw && fw.BotForbidsFire())
+            if (ChosenWeapon is { } fw && fw.BotForbidsFire((enemy.Origin - bot.Origin).Length(), Skill))
             {
                 wantAttack = false;
                 wantAttack2 = false;
@@ -821,6 +838,9 @@ public sealed class BotBrain
         if (w is null) return false;
         // grenade/mortar-style splash weapons that aren't hitscan and have a gravity cvar set.
         if ((w.SpawnFlags & WeaponFlags.TypeHitscan) != 0) return false;
+        // QC wr_aim's gravity arg: a weapon may force the ballistic arc even though it has no per-weapon gravity
+        // cvar (the Mortar grenade lobs under world sv_gravity), via BotAimLobbed; else infer from the cvar.
+        if (w.BotAimLobbed is bool lobbed) return lobbed;
         return Api.Cvars.GetFloat(BalanceNames(w).Gravity) > 0f;
     }
 

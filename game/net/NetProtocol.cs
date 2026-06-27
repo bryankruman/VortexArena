@@ -83,8 +83,15 @@ public static class NetProtocol
     /// trailing 32-bit field so the TIMER panel's persistent "Overtime #N" / "Sudden Death" subtext shows on
     /// every client (the one-shot overtime center notifications were already wired). Same-build lockstep: the
     /// field is read unconditionally, so the version bump keeps the parity hash honest.
+    ///
+    /// v12: the C2S input button byte gained the PHYS_INPUT_BUTTON_CHAT bit (<see cref="InputButtons.Chat"/>,
+    /// 1&lt;&lt;7). The client sets it whenever a text prompt (the in-game console) is open and the server decodes
+    /// it into <c>MovementInput.Typing</c> → <c>player.ButtonChat</c>, so the typing exemption (camp-check
+    /// g_campcheck_typecheck, type-frag, spawn-near-teammate, monster-typefrag) is finally live for real network
+    /// clients. The byte size is unchanged (a previously-zero bit now carries meaning); the bump keeps the parity
+    /// hash honest so a mixed-build client can't silently mis-signal typing.
     /// </summary>
-    public const uint ProtocolVersion = 11;
+    public const uint ProtocolVersion = 12;
 
     /// <summary>Ordered, reliable ENet channel — handshake, spawns/removes, notifications, scores.</summary>
     public const int ReliableChannel = 0;

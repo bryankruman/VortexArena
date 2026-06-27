@@ -242,6 +242,9 @@ public static class MapObjectsRegistry
         // walker_checkpoint classname is a QC compat alias for the same spawnfunc.
         SpawnFuncs.Register("turret_checkpoint", TurretSpawnFuncs.Checkpoint);
         SpawnFuncs.Register("walker_checkpoint", TurretSpawnFuncs.Checkpoint);
+        // turret_targettrigger (common/turrets/targettrigger.qc): a touch volume that designates the toucher as a
+        // target to RECIEVETARGETS turrets (the HK) whose targetname matches the trigger's target (0.5s debounce).
+        SpawnFuncs.Register("turret_targettrigger", TurretSpawnFuncs.TargetTrigger);
 
         // vehicles (common/vehicles/vehicle/*.qc: spawnfunc(vehicle_X){ ... vehicle_initialize(this,VEH_X,false); }).
         SpawnFuncs.Register("vehicle_racer", VehicleSpawnFuncs.Racer);

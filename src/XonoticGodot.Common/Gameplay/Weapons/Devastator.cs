@@ -187,6 +187,11 @@ public sealed class Devastator : Weapon
         missile.Velocity = shot.Dir * Cvars.SpeedStart;
         missile.Angles = QMath.VecToAngles(missile.Velocity);
 
+        // QC devastator.qc:301-302 — flag the rocket as a dodgeable hazard; rating = damage * 2 ("* 2 because it
+        // can be detonated inflight which makes it even more dangerous"). Consumed by BotBrain.HavocbotDodge.
+        missile.BotDodge = true;
+        missile.BotDodgeRating = Cvars.Damage * 2f;
+
         float deathTime = Api.Clock.Time + Cvars.Lifetime;
         // QC missile.spawnshieldtime (devastator.qc:295-298): detonatedelay >= 0 sets a remote-detonation TIMER
         // gate; < 0 = proximity-safety based. Stored on the entity (Entity.ProjectileDetonateTime) — NOT a

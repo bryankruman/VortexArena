@@ -167,6 +167,13 @@ public sealed class Warpzone
     /// (portals.qc:192-194). Porto portals only (0 for a map warpzone).</summary>
     public float TeleportTime;
 
+    /// <summary>QC <c>portal.fade_time</c> (server/portals.qc:395-396, 211, 507-508): the absolute time a Porto portal
+    /// pair expires. Set to <c>time + g_balance_portal_lifetime</c> (default 15) when the pair connects
+    /// (Portal_Connect) and RECHARGED to a fresh <c>time + lifetime</c> on every successful crossing
+    /// (Portal_TeleportPlayer:211) so an actively-used portal keeps living; <c>Portal_Think</c> removes the pair once
+    /// <c>time &gt; fade_time</c>. 0 = no expiry (a map warpzone, or <c>g_balance_portal_lifetime &lt; 0</c>). Porto only.</summary>
+    public float FadeTime;
+
     public bool Linked => Transform.Valid;
 }
 
@@ -251,6 +258,16 @@ public sealed class WarpzoneManager
     {
         if (!wz.Linked) return false;
 
+        // QC server.qc:189 — "FIXME needs a better check to know what is safe to teleport": a MOVETYPE_FOLLOW
+        // entity (or one tag-attached to a parent, QC .tag_entity) is NOT teleported — it has no independent
+        // movement, it sticks to its carrier, so warping its origin would tear it off. MOVETYPE_NONE is the OTHER
+        // QC skip, but the port's MoveType defaults to None (0) and the live player/projectile paths don't all
+        // explicitly set MOVETYPE_WALK, so gating on None here would wrongly block real crossings — that half of
+        // the pre-gate is intentionally NOT modelled (see warpzones.teleport.player unresolved). FOLLOW is safe:
+        // nothing on the touch path is a follow-attached toucher, and a follow carrier rides its .aiment anyway.
+        if (e.MoveType == MoveType.Follow)
+            return false;
+
         // QC server.qc:186 — already teleported this frame (the entity emerges in/near the partner zone and would
         // immediately re-touch). Suppress until the guard expires.
         float now = MapMover.Now();
@@ -322,6 +339,15 @@ public sealed class WarpzoneManager
         // "pusher" for a hazard kill-credit window. The two are mutually exclusive (QC `if(tdeath_hit) … else if …`).
         // Map warpzones (no owner) run no tdeath and no kill-credit. The telefragger/inflictor is the portal owner so
         // the gib is scored to whoever placed the portal.
+        // QC Portal_TeleportPlayer:211/395-396 — a successful crossing RECHARGES both portals' lifetime to a fresh
+        // time + g_balance_portal_lifetime, so an actively-used Porto pair keeps living (only an idle pair times out).
+        if (wz.Owner is not null && wz.FadeTime != 0f)
+        {
+            float fresh = PortalFadeTime();
+            wz.FadeTime = fresh;
+            if (wz.Partner is { } portalPartner) portalPartner.FadeTime = fresh;
+        }
+
         if (wz.Owner is { IsFreed: false } portalOwner && (e.Flags & EntFlags.Client) != 0)
         {
             bool tdeathHit = Teleporters.PortalForceTelefrag(e, portalOwner, portalOwner, newOrigin);
@@ -484,6 +510,23 @@ public sealed class WarpzoneManager
     private readonly Dictionary<Entity, Warpzone> _portalOut = new();
 
     /// <summary>
+    /// QC <c>realowner.portal_in.portal_id</c>: the portal_id (the porto shot's time-id, encoded in the in-portal's
+    /// <c>porto_&lt;id&gt;_in</c> target name) of <paramref name="owner"/>'s CURRENT in-portal slot, or null when they
+    /// have none. Wire <c>Porto.PortalInId</c> to this so the combined-shot blue stage verifies the out-portal pairs
+    /// with the in-portal it just placed (porto.qc:263) before committing it.
+    /// </summary>
+    public int? PortalInId(Entity? owner)
+    {
+        if (owner is null || !_portalIn.TryGetValue(owner, out Warpzone? wz)) return null;
+        // TargetName is "porto_<id>_in"; recover <id>.
+        string name = wz.TargetName;
+        int us0 = name.IndexOf('_');
+        int us1 = us0 >= 0 ? name.IndexOf('_', us0 + 1) : -1;
+        if (us0 < 0 || us1 < 0) return null;
+        return int.TryParse(name.AsSpan(us0 + 1, us1 - us0 - 1), out int id) ? id : null;
+    }
+
+    /// <summary>
     /// QC Portal_SpawnIn/OutPortalAtTrace + Portal_SetInPortal/Portal_SetOutPortal: realise a Porto-weapon portal as
     /// a warpzone. The plane forward is the wall's surface normal (so an entity entering emerges out of the partner).
     /// Each owner holds at most one in-portal and one out-portal (the QC <c>own.portal_in</c>/<c>own.portal_out</c>
@@ -492,9 +535,14 @@ public sealed class WarpzoneManager
     /// filled. So re-firing after a completed pair replaces it instead of leaving two live pairs. Wire
     /// <c>Porto.PortalSpawner</c> to this on the host.
     /// </summary>
-    public void PlacePortoPortal(Vector3 origin, Vector3 surfaceNormal, bool isInPortal, int portalId, Entity? owner)
+    public void PlacePortoPortal(Vector3 origin, Vector3 surfaceNormal, Vector3 rightVector, bool isInPortal, int portalId, Entity? owner)
     {
-        Vector3 angles = QMath.FixedVecToAngles(surfaceNormal); // forward = the wall normal
+        // QC fixedvectoangles2(plane_normal, right_vector) (server/portals.qc): the wall normal is the portal's
+        // forward, and right_vector (carried + reflected on the porto projectile) fixes its roll. Fall back to the
+        // normal-only derivation when no usable roll axis was handed over.
+        Vector3 angles = rightVector.LengthSquared() > 0.0001f
+            ? QMath.FixedVecToAngles2(surfaceNormal, rightVector)
+            : QMath.FixedVecToAngles(surfaceNormal); // forward = the wall normal
         // QC Portal_Spawn (portals.qc:646): portal.portal_activatetime = time + 0.1 — a 0.1s grace where the owner
         // who just shot this portal isn't pulled straight back through it (see Warpzone.ActivateTime / Teleport).
         var wz = new Warpzone
@@ -590,6 +638,43 @@ public sealed class WarpzoneManager
         wz.Trigger = null;
     }
 
+    /// <summary>
+    /// QC <c>autocvar_g_balance_portal_lifetime</c> (server/portals.qh:4, balance-xonotic.cfg:272 = 15): the absolute
+    /// expiry time for a freshly-connected/used Porto portal pair — <c>(lifetime &gt;= 0) ? time + lifetime : 0</c>
+    /// (Portal_Connect:395, Portal_TeleportPlayer:211). A negative lifetime disables expiry (returns 0). Read live so a
+    /// server/balance override applies. (Read raw via GetFloat: the cvar is registered with a positive default, and a
+    /// negative value is a deliberate "never expire" — never masked.)
+    /// </summary>
+    private static float PortalFadeTime()
+    {
+        float lifetime = Api.Services is not null ? Api.Cvars.GetFloat("g_balance_portal_lifetime") : 15f;
+        if (Api.Services is not null && string.IsNullOrEmpty(Api.Cvars.GetString("g_balance_portal_lifetime")))
+            lifetime = 15f; // unregistered (test path) → the Base default
+        return lifetime >= 0f ? MapMover.Now() + lifetime : 0f;
+    }
+
+    /// <summary>
+    /// QC <c>Portal_Think</c> expiry sweep (server/portals.qc:507-508): remove any Porto portal pair whose lifetime has
+    /// elapsed (<c>fade_time &amp;&amp; time &gt; fade_time</c>). Base runs this per-portal in the portal's own think; the
+    /// warpzone realisation has no per-portal edict think, so the server drives this once per frame alongside
+    /// <see cref="ThinkMovingZones"/>. Removing one half of a pair tears down its partner too (Portal_Remove recurses
+    /// over <c>.enemy</c>), matching Base's both-portals-vanish-together expiry. Map warpzones (FadeTime 0) are skipped.
+    /// </summary>
+    public void ExpirePortals()
+    {
+        float now = MapMover.Now();
+        for (int i = _zones.Count - 1; i >= 0; i--)
+        {
+            if (i >= _zones.Count) continue; // a prior partner removal shrank the list
+            Warpzone wz = _zones[i];
+            if (wz.Owner is null || wz.FadeTime == 0f || now <= wz.FadeTime)
+                continue;
+            // QC Portal_Remove(this, 0): the natural-expiry teardown tears down both halves of the pair.
+            if (wz.Partner is { } partner) RemoveZone(partner);
+            RemoveZone(wz);
+        }
+    }
+
     /// <summary>Link two warpzones into a two-way portal (each transforms toward the other's IN plane).</summary>
     public void LinkPair(Warpzone a, Warpzone b)
     {
@@ -600,9 +685,14 @@ public sealed class WarpzoneManager
         b.Transform = new WarpzoneTransform(b.InOrigin, b.InAngles, a.InOrigin, a.InAngles);
         b.Partner = a;
         // QC Portal_Connect: teleporter.teleport_time = time — stamp the connect time on a Porto pair so a telefrag
-        // within 1s of creation awards the Amazing announcer (Teleport / Portal_TeleportPlayer:192-194).
+        // within 1s of creation awards the Amazing announcer (Teleport / Portal_TeleportPlayer:192-194). Also stamp
+        // the 15s expiry (QC Portal_Connect:395-396 fade_time = time + g_balance_portal_lifetime; both portals share
+        // it), so a Porto pair times out like Base instead of persisting for the whole match (ExpirePortals sweep).
         if (a.Owner is not null || b.Owner is not null)
+        {
             a.TeleportTime = b.TeleportTime = MapMover.Now();
+            a.FadeTime = b.FadeTime = PortalFadeTime();
+        }
     }
 
     // =============================================================================================

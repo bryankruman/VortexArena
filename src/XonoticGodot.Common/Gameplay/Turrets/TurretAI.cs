@@ -945,6 +945,33 @@ public static class TurretAI
         return damage;
     }
 
+    /// <summary>QC <c>RES_LIMIT_NONE</c> — the "no explicit cap; fall back to max_health" sentinel a heal source
+    /// passes when it wants to top up to the target's own maximum (server/resources.qh).</summary>
+    public const float ResLimitNone = -1f;
+
+    /// <summary>
+    /// Port of <c>turret_heal</c> (sv_turrets.qc:253) — the turret's installed <c>.event_heal</c> handler, the
+    /// <see cref="Entity.GtEventHeal"/> sink wired in <see cref="TurretSpawn.Init"/>. A friendly heal source (the
+    /// Arc heal-beam, a heal nade, the mage/bumblebee healgun) routes through <see cref="Combat.Heal"/> →
+    /// <c>target.GtEventHeal</c>, so a damaged-but-alive turret can be repaired by its team. Tops health toward
+    /// <paramref name="limit"/> (or <c>max_health</c> when limit is <see cref="ResLimitNone"/>), but never a dead
+    /// turret (health &lt;= 0) and never past the cap. Returns true if any health was actually added — mirroring
+    /// QC <c>bool turret_heal(targ, inflictor, amount, limit)</c> exactly (it sets TNSF_STATUS; the port has no
+    /// turret networking, so the net-flag is a no-op here).
+    /// </summary>
+    public static bool Heal(Entity turret, Entity? inflictor, float amount, float limit)
+    {
+        _ = inflictor; // QC turret_heal ignores the inflictor (only used for credit elsewhere).
+        float trueLimit = limit != ResLimitNone ? limit : turret.MaxHealth;
+        float hp = turret.GetResource(ResourceType.Health);
+        // QC: a dead turret (<=0) or one already at/over the limit takes no heal.
+        if (hp <= 0f || hp >= trueLimit)
+            return false;
+
+        turret.GiveResourceWithLimit(ResourceType.Health, amount, trueLimit);
+        return true;
+    }
+
     /// <summary>
     /// The turret's installed <c>.event_damage</c> (QC <c>turret_damage</c>, sv_turrets.qc) — the
     /// <see cref="Entity.GtEventDamage"/> shim wired in <see cref="TurretSpawn.Init"/>. The headless
@@ -1010,6 +1037,11 @@ public static class TurretAI
         turret.Enemy = null;
         st.Active = false;          // a dead turret runs no combat/movement think until respawn
 
+        // QC turret_die (sv_turrets.qc:176/243): event_heal = func_null — a dead turret cannot be healed back up.
+        // (Heal() also guards health<=0, so this is belt-and-braces, but it matches Base's explicit clear and
+        // makes a dead turret reject a heal beam even if some future caller bypasses the health gate.)
+        turret.GtEventHeal = null;
+
         // No death blast: Base turret_die has the ammo-scaled RadiusDamage commented out (sv_turrets.qc:182),
         // so a dying turret deals no area damage. (Was a port-added blast; removed to match Base.)
 
@@ -1074,6 +1106,9 @@ public static class TurretAI
         turret.TakeDamage = DamageMode.Aim;
         turret.Health = turret.MaxHealth;
         turret.SetResourceExplicit(ResourceType.Health, turret.MaxHealth);
+        // QC turret_respawn (sv_turrets.qc:276): event_heal = turret_heal — re-install the heal sink Die cleared,
+        // so a respawned (or round-reset) turret is repairable again.
+        turret.GtEventHeal = Heal;
         turret.Enemy = null;
         turret.AVelocity = Vector3.Zero;
         st.HeadAVelocity = Vector3.Zero;

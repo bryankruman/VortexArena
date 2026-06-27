@@ -316,11 +316,27 @@ public sealed class Porto : Weapon
         }
         else
         {
-            // blue shot landed: place the out-portal and finish.
-            PlacePortal(self, surf.Normal, isInPortal: false);
-            Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/create.wav");
-            NotifyOwner(self, "PORTO_CREATED_OUT"); // QC CENTER_PORTO_CREATED_OUT
-            PortoSuccess(self, slot);
+            // blue shot landed: place the out-portal and finish. QC (porto.qc:263) first verifies the owner's
+            // current in-portal is the one THIS shot placed (realowner.portal_in.portal_id == this.portal_id);
+            // on a mismatch (the in-portal was torn down/replaced mid-flight) it plays the unsupported cue, clears
+            // ALL owner portals, and fails — never leaving a dangling out-portal.
+            // When the host hook is unwired we can't verify the in-portal slot, so degrade to the prior
+            // unconditional placement; when wired, a null return means "owner has no in-portal" → mismatch → fail.
+            bool inMatches = PortalInId is null
+                || PortalInId.Invoke(self.Owner) is { } inId && inId == (int)self.LTime;
+            if (inMatches)
+            {
+                PlacePortal(self, surf.Normal, isInPortal: false);
+                Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/create.wav");
+                NotifyOwner(self, "PORTO_CREATED_OUT"); // QC CENTER_PORTO_CREATED_OUT
+                PortoSuccess(self, slot);
+            }
+            else
+            {
+                Api.Sound.Play(self, SoundChannel.ShotsAuto, "porto/unsupported.wav");
+                PortalClearAll?.Invoke(self.Owner); // QC Portal_ClearAll_PortalsOnly(realowner)
+                PortoFail(self, slot, failhard: false, planeNormal: surf.Normal);
+            }
         }
     }
 
@@ -403,11 +419,12 @@ public sealed class Porto : Weapon
     {
         public readonly System.Numerics.Vector3 Origin;        // the wall hit point
         public readonly System.Numerics.Vector3 SurfaceNormal; // the wall normal (warpzone forward, into the room)
+        public readonly System.Numerics.Vector3 RightVector;   // QC right_vector — the portal's roll axis (carried/reflected on the projectile)
         public readonly bool IsInPortal;                       // in (entry) vs out (exit) portal
         public readonly int PortalId;                          // pairs the in/out of one shot
         public readonly Entity? Owner;
-        public PortalRequest(System.Numerics.Vector3 origin, System.Numerics.Vector3 normal, bool isIn, int id, Entity? owner)
-        { Origin = origin; SurfaceNormal = normal; IsInPortal = isIn; PortalId = id; Owner = owner; }
+        public PortalRequest(System.Numerics.Vector3 origin, System.Numerics.Vector3 normal, System.Numerics.Vector3 rightVector, bool isIn, int id, Entity? owner)
+        { Origin = origin; SurfaceNormal = normal; RightVector = rightVector; IsInPortal = isIn; PortalId = id; Owner = owner; }
     }
 
     /// <summary>
@@ -430,6 +447,14 @@ public sealed class Porto : Weapon
     public static System.Action<Entity>? PortalClearAll;
 
     /// <summary>
+    /// Host hook for QC <c>realowner.portal_in.portal_id</c> — the portal_id of the owner's CURRENT in-portal slot, or
+    /// null when the owner has no in-portal placed. Used by the combined-shot (cnt&lt;0) blue stage to verify the
+    /// out-portal pairs with the in-portal THIS shot just placed before committing it (porto.qc:263). Null host =
+    /// unwired (the check then degrades to the prior unconditional placement).
+    /// </summary>
+    public static System.Func<Entity, int?>? PortalInId;
+
+    /// <summary>
     /// Place an in/out portal at the projectile's current position/orientation, realised as a warpzone via
     /// <see cref="PortalSpawner"/> (the warpzone teleporter the player walks through). The plane forward is the
     /// impact-surface normal recovered by <see cref="ProbeImpact"/> (the true wall plane, falling back to the
@@ -437,7 +462,10 @@ public sealed class Porto : Weapon
     /// matching QC SND_PORTO_CREATE timing.
     /// </summary>
     private void PlacePortal(Entity self, Vector3 normal, bool isInPortal)
-        => PortalSpawner?.Invoke(new PortalRequest(self.Origin, normal, isInPortal, (int)self.LTime, self.Owner));
+        // QC Portal_SpawnIn/OutPortalAtTrace(realowner, this.right_vector, this.portal_id): the warpzone derives the
+        // portal angles from fixedvectoangles2(plane_normal, right_vector), so hand over the carried+reflected
+        // right_vector (self.AVelocity) as the roll axis — not just the normal.
+        => PortalSpawner?.Invoke(new PortalRequest(self.Origin, normal, self.AVelocity, isInPortal, (int)self.LTime, self.Owner));
 
     /// <summary>QC Send_Notification(NOTIF_ONE, this.realowner, MSG_CENTER, CENTER_PORTO_*): center-print the
     /// portal create/fail status to the firing player (skipped if the owner is gone). No-op headless (no Sink wired).</summary>

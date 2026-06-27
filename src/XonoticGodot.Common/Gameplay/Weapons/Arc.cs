@@ -205,9 +205,52 @@ public sealed class Arc : Weapon
         }
         else if (fire == FireMode.Secondary && BoltEnabled)
         {
-            // Discrete bolt burst, refire-gated (QC weapon_prepareattack with bolt_refire).
-            if (PrepareAttack(actor, slot, fire))
-                AttackBoltBurst(actor, slot, st);
+            // QC arc.qc:599-627 wr_think (fire & 2): gate on weapon_prepareattack(..., true, 0) — the shared
+            // ATTACK_FINISHED is advanced by 0; the after-burst cooldown (bolt_refire2) is set by the burst loop
+            // itself once the last bolt fires. Then ammo-scale to_shoot, decrease ammo once, load
+            // misc_bulletcounter = -to_shoot (counts UP to 0), and fire the FIRST bolt; W_Arc_Attack_Bolt
+            // self-reschedules every bolt_refire for each remaining bolt.
+            if (PrepareAttack(actor, slot, fire, attackTime: 0f))
+            {
+                bool unlimited = actor.UnlimitedAmmo || (actor.Items & (1 << 0)) != 0; // IT_UNLIMITED_AMMO
+                // QC arc.qc:603-609: re-check ammo at the gate; bail (switch away) if dry and not unlimited.
+                if (!CheckAmmoSecondary(actor) && !unlimited)
+                {
+                    st.State = WeaponFireState.Ready;
+                    return;
+                }
+
+                // QC arc.qc:610-622: bolt_ammo is the cost of the WHOLE burst. Scale to_shoot down to the
+                // affordable fraction (floor(bolt_count * min(1, ammo/bolt_ammo))) so a near-empty mag fires
+                // fewer bolts instead of mag-dumping, and decrease ammo once by min(bolt_ammo, ammo).
+                int toShoot = Bolt.Count;
+                if (!unlimited)
+                {
+                    float ammoAvailable = actor.GetResource(AmmoType);
+                    if (Bolt.Ammo > 0f)
+                    {
+                        float burstFraction = MathF.Min(1f, ammoAvailable / Bolt.Ammo);
+                        toShoot = (int)MathF.Floor(toShoot * burstFraction);
+                    }
+                    float toUse = MathF.Min(Bolt.Ammo, ammoAvailable);
+                    actor.TakeResource(AmmoType, toUse);
+                }
+
+                // Bursting counts up to 0 from a negative (QC arc.qc:625 misc_bulletcounter = -to_shoot).
+                st.MiscBulletCounter = -toShoot;
+                if (toShoot > 0)
+                    AttackBolt(actor, slot, st);
+                else
+                    // to_shoot == 0 (custom balance where the burst can't afford even one bolt): wr_checkammo2
+                    // would normally have blocked this; don't enter AttackBolt (counter 0 would never re-reach 0
+                    // → infinite self-reschedule). Park READY after the fire anim.
+                    WeaponFireDriver.ScheduleThink(st, Bolt.Refire * WeaponRateFactor(actor), static (pl, sl) =>
+                    {
+                        WeaponSlotState s2 = pl.WeaponState(sl);
+                        if (s2.State == WeaponFireState.InUse)
+                            s2.State = WeaponFireState.Ready;
+                    });
+            }
         }
     }
 
@@ -515,73 +558,81 @@ public sealed class Arc : Weapon
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/arc_loop.wav", loop: true);
     }
 
-    // W_Arc_Attack_Bolt — fire bouncing energy bolt(s) that explode with radius damage. The refire2 cadence
-    // (every bolt_count-th bolt enforces the longer refire2) is tracked via misc_bulletcounter. arc.qc
-    private void AttackBoltBurst(Entity actor, WeaponSlot slot, WeaponSlotState st)
+    // W_Arc_Attack_Bolt (arc.qc:142-192) — fire ONE bouncing energy bolt that explodes with radius damage, then
+    // self-reschedule every bolt_refire while misc_bulletcounter counts up to 0; the bolt that reaches 0 (burst
+    // done) parks the after-burst cooldown (bolt_refire2) and becomes READY after bolt_refire, otherwise it
+    // re-schedules the next bolt after bolt_refire. The caller (wr_think fire&2) sets misc_bulletcounter = -to_shoot
+    // and fires the first bolt; each subsequent bolt re-samples the aim so the burst tracks the player mid-spray.
+    private void AttackBolt(Entity actor, WeaponSlot slot, WeaponSlotState st)
     {
-        // QC arc.qc:610-625: bolt_ammo is the cost of the WHOLE burst. Scale to_shoot down to the affordable
-        // fraction (floor(bolt_count * min(1, ammo/bolt_ammo))) so a near-empty mag fires fewer bolts instead of
-        // mag-dumping, and decrease ammo once by min(bolt_ammo, ammo) (never below 0). With stock bolt_count 1 /
-        // bolt_ammo 1 and the >=1 cells gate this is the same flat single-bolt consume as before.
-        int toShoot = Bolt.Count;
-        float ammoAvailable = actor.GetResource(AmmoType);
-        if (Bolt.Ammo > 0f)
-        {
-            float burstFraction = MathF.Min(1f, ammoAvailable / Bolt.Ammo);
-            toShoot = (int)MathF.Floor(toShoot * burstFraction);
-            float toUse = MathF.Min(Bolt.Ammo, ammoAvailable);
-            actor.TakeResource(AmmoType, toUse);
-        }
-
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, recoil: 2f); // QC arc.qc bolt recoil 2
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, recoil: 2f); // QC arc.qc:144 W_SetupShot recoil 2
 
-        // QC arc.qc:146 W_MuzzleFlash(thiswep, ...) — the Arc reuses the electro muzzle flash (EFFECT_ARC_MUZZLEFLASH
-        // -> electro_muzzleflash). Base emits one per bolt; the port fires the burst in one call, so (like the fire
-        // sound) emit it once at the shot origin.
+        // QC arc.qc:146 W_MuzzleFlash(thiswep, ...) — the Arc reuses the electro muzzle flash
+        // (EFFECT_ARC_MUZZLEFLASH -> electro_muzzleflash). Emitted per bolt, matching Base.
         EffectEmitter.Emit("ARC_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
-        int count = toShoot;
-        if (count < 1) count = 1;
-        for (int i = 0; i < count; ++i)
+        Entity missile = Api.Entities.Spawn();
+        missile.ClassName = "missile";
+        missile.Owner = actor;
+        missile.NetName = NetName;
+        missile.MoveType = MoveType.BounceMissile;
+        Projectiles.MakeTrigger(missile); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
+        missile.Flags = EntFlags.Item; // QC FL_PROJECTILE
+        missile.DamageForceScale = Bolt.DamageForceScale;
+        Api.Entities.SetSize(missile, Vector3.Zero, Vector3.Zero);
+        Api.Entities.SetOrigin(missile, shot.Origin);
+
+        missile.TakeDamage = DamageMode.Yes; // shootable
+        missile.Health = Bolt.Health;
+
+        // W_SetupProjVelocity_PRE(bolt_): velocity = w_shotdir * speed (with bolt_spread, normally 0).
+        missile.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, Vector3.UnitZ, Bolt.Speed, 0f, 0f, Bolt.Spread);
+        missile.Angles = QMath.VecToAngles(missile.Velocity);
+
+        // QC arc.qc:150-152 — flag the energy bolt as a dodgeable hazard (rating = bolt damage). (The sweeping
+        // beam is traced per-frame with no persistent entity in this port, so only the bolt is flaggable.)
+        missile.BotDodge = true;
+        missile.BotDodgeRating = Bolt.Damage;
+
+        missile.Count = 0; // QC .cnt = bounce counter
+        missile.Touch = (self, other) => BoltTouch(self, other);
+        missile.Think = self => ExplodeBolt(self); // adaptor_think2use_hittype_splash at lifetime
+        missile.ProjectileDamage = (self, _) => ExplodeBolt(self); // W_Arc_Bolt_Damage -> W_PrepareExplosionByDamage
+        missile.NextThink = Api.Clock.Time + Bolt.Lifetime;
+
+        // MUTATOR_CALLHOOK(EditProjectile, actor, missile) — fired per bolt (arc.qc W_Arc_Attack_Bolt).
+        var ep = new MutatorHooks.EditProjectileArgs(actor, missile);
+        MutatorHooks.EditProjectile.Call(ref ep);
+
+        // [W1-projectile-net] Route incoming damage through the shoot-down shim (QC W_Arc_Bolt_Damage):
+        // it runs the g_projectiles_damage gate, subtracts the damage from the bolt's RES_HEALTH, and only
+        // fires ProjectileDamage (ExplodeBolt) once HP <= 0 — so a partial-damage graze leaves the bolt
+        // alive instead of detonating it on any hit. The Arc bolt is not combo-able (exception -1, default).
+        Projectiles.MakeShootable(missile);
+
+        Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/electro_fire2.wav"); // QC SND_ARC_BOLT_FIRE (per bolt)
+
+        // QC arc.qc:184-191: the burst counter counts UP to 0. When it reaches 0 the burst is done — enforce the
+        // after-burst cooldown (bolt_refire2) and return to READY after bolt_refire; otherwise re-schedule the
+        // next bolt after bolt_refire (one bolt per bolt_refire until the burst is spent).
+        float rate = WeaponRateFactor(actor);
+        ++st.MiscBulletCounter;
+        if (st.MiscBulletCounter == 0)
         {
-            Entity missile = Api.Entities.Spawn();
-            missile.ClassName = "missile";
-            missile.Owner = actor;
-            missile.NetName = NetName;
-            missile.MoveType = MoveType.BounceMissile;
-            Projectiles.MakeTrigger(missile); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
-            missile.Flags = EntFlags.Item; // QC FL_PROJECTILE
-            missile.DamageForceScale = Bolt.DamageForceScale;
-            Api.Entities.SetSize(missile, Vector3.Zero, Vector3.Zero);
-            Api.Entities.SetOrigin(missile, shot.Origin);
-
-            missile.TakeDamage = DamageMode.Yes; // shootable
-            missile.Health = Bolt.Health;
-
-            // W_SetupProjVelocity_PRE(bolt_): velocity = w_shotdir * speed (with bolt_spread, normally 0).
-            missile.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, Vector3.UnitZ, Bolt.Speed, 0f, 0f, Bolt.Spread);
-            missile.Angles = QMath.VecToAngles(missile.Velocity);
-
-            missile.Count = 0; // QC .cnt = bounce counter
-            missile.Touch = (self, other) => BoltTouch(self, other);
-            missile.Think = self => ExplodeBolt(self); // adaptor_think2use_hittype_splash at lifetime
-            missile.ProjectileDamage = (self, _) => ExplodeBolt(self); // W_Arc_Bolt_Damage -> W_PrepareExplosionByDamage
-            missile.NextThink = Api.Clock.Time + Bolt.Lifetime;
-
-            // MUTATOR_CALLHOOK(EditProjectile, actor, missile) — fired per bolt (arc.qc W_Arc_Attack_Bolt).
-            var ep = new MutatorHooks.EditProjectileArgs(actor, missile);
-            MutatorHooks.EditProjectile.Call(ref ep);
-
-            // [W1-projectile-net] Route incoming damage through the shoot-down shim (QC W_Arc_Bolt_Damage):
-            // it runs the g_projectiles_damage gate, subtracts the damage from the bolt's RES_HEALTH, and only
-            // fires ProjectileDamage (ExplodeBolt) once HP <= 0 — so a partial-damage graze leaves the bolt
-            // alive instead of detonating it on any hit. The Arc bolt is not combo-able (exception -1, default).
-            Projectiles.MakeShootable(missile);
+            st.AttackFinished = Api.Clock.Time + Bolt.Refire2 * rate;
+            WeaponFireDriver.ScheduleThink(st, Bolt.Refire * rate, static (pl, sl) =>
+            {
+                WeaponSlotState s2 = pl.WeaponState(sl);
+                if (s2.State == WeaponFireState.InUse)
+                    s2.State = WeaponFireState.Ready;
+            });
         }
-
-        ++st.MiscBulletCounter; // refire2 cadence (every bolt_count-th shot waits refire2 in the weapon loop)
-        Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/electro_fire2.wav");
+        else
+        {
+            WeaponFireDriver.ScheduleThink(st, Bolt.Refire * rate, (pl, sl) =>
+                AttackBolt(pl, sl, pl.WeaponState(sl)));
+        }
     }
 
     // W_Arc_Bolt_Touch — explode on a damageable target or when bounces run out; otherwise bounce. arc.qc

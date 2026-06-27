@@ -508,9 +508,15 @@ public sealed class KeyHunt : GameType
             return;
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
 
+        // QC kh_WaitForPlayers / kh_StartRound: if(time < game_starttime) → defer until the match clock has
+        // started (prematch warmup gate). Same guard as Domination.cs and DamageSystem.cs.
+        float gameStart = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
+
         switch (Phase)
         {
             case RoundPhase.WaitingForPlayers:
+                if (now < gameStart)
+                    break; // QC: kh_Controller_SetThink(game_starttime - time + 0.1, kh_WaitForPlayers); return;
                 if (!AnyTeamMissing())
                 {
                     Phase = RoundPhase.Countdown;
@@ -521,6 +527,7 @@ public sealed class KeyHunt : GameType
                 break;
 
             case RoundPhase.Countdown:
+                if (now < gameStart) { Phase = RoundPhase.WaitingForPlayers; break; } // QC: same early-return
                 if (AnyTeamMissing()) { Phase = RoundPhase.WaitingForPlayers; break; }
                 if (now >= RoundStartTime)
                     StartRound();

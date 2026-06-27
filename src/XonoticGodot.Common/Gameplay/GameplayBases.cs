@@ -155,6 +155,17 @@ public abstract partial class Weapon : IRegistered
     public virtual bool BotForbidsFire() => false;
 
     /// <summary>
+    /// QC <c>wr_aim</c> distance-gated fire suppression: a weapon whose <c>wr_aim</c> only presses ATCK
+    /// within a skill-scaled range (and nothing beyond it) declines the shot when the enemy is out of that
+    /// range. The Overkill MachineGun / Heavy MachineGun gate this way: QC presses ATCK only when
+    /// <c>vdist(actor.origin - enemy.origin, &lt;, 3000 - bound(0, skill, 10) * 200)</c> (okmachinegun.qc:wr_aim,
+    /// okhmg.qc:wr_aim), so a bot beyond that distance holds fire entirely. Default falls through to the
+    /// no-arg <see cref="BotForbidsFire()"/> so existing weapons are unaffected. Checked by the brain AFTER
+    /// it has decided on a shot, suppressing both ATCK and ATCK2 when true.
+    /// </summary>
+    public virtual bool BotForbidsFire(float enemyDistance, float skill) => BotForbidsFire();
+
+    /// <summary>
     /// QC <c>wr_aim</c> projectile-speed override for the bot's shot lead. QC's wr_aim calls
     /// <c>bot_aim(actor, …, spd, …)</c> with a per-weapon speed; the brain leads the target by that speed. Most
     /// weapons just lead by their projectile's actual launch speed (the default = <paramref name="defaultSpeed"/>,
@@ -170,6 +181,16 @@ public abstract partial class Weapon : IRegistered
 
     /// <inheritdoc cref="BotAimShotSpeed(float)"/>
     public virtual float BotAimShotSpeed(float defaultSpeed, ref BotAimState ctx) => BotAimShotSpeed(defaultSpeed);
+
+    /// <summary>
+    /// QC <c>wr_aim</c>'s <c>gravity</c> argument to <c>bot_aim</c> (true ⇒ the bot leads with a ballistic arc
+    /// via <c>findtrajectorywithleading</c>). The brain normally infers this from a non-zero per-weapon
+    /// <c>g_balance_&lt;netname&gt;_primary_gravity</c> cvar; a weapon whose projectile lobs under WORLD gravity
+    /// instead of a per-weapon factor (the Mortar's bouncing grenade uses <c>sv_gravity</c> directly, with no
+    /// per-weapon gravity cvar) overrides this to <c>true</c> so the brain still arcs the shot. <c>null</c> = let
+    /// the brain infer from the gravity cvar (the default for every other weapon).
+    /// </summary>
+    public virtual bool? BotAimLobbed => null;
 
     /// <summary>
     /// QC <c>wr_aim</c>'s <c>shot_accurate</c> argument to <c>bot_aim</c> (the fire-deviation cone tightness):
@@ -203,6 +224,15 @@ public abstract partial class Weapon : IRegistered
 
     /// <summary>Called when the player is reset (round restart, etc.) (QC wr_resetplayer). A weapon must clear any per-player state held on the slot.</summary>
     public virtual void WrResetPlayer(Entity actor, WeaponSlot slot) { }
+
+    /// <summary>
+    /// One-time weapon warm-init (QC <c>wr_init</c>). In Base this is a client-side CSQC-only call that
+    /// precaches reticle images and computes shot origins; it is also called once by the NIX mutator's
+    /// MUTATOR_ONADD for every choosable weapon. The port performs equivalent initialisation at asset-load
+    /// time, so the default is a no-op. Override only if a weapon needs explicit server-side warm-up (currently
+    /// none do). This hook exists to match the QC hook structure used by <see cref="NixMutator.Hook"/>.
+    /// </summary>
+    public virtual void WrInit() { }
 
     /// <summary>
     /// Seed this weapon's balance block from the <c>g_balance_*</c> cvars (QC W_PROPS / WEP_CVAR). Called once

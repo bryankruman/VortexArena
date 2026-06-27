@@ -642,18 +642,31 @@ public sealed class Chat
     }
 
     /// <summary>
-    /// QC <c>NearestLocation(p)</c> (chat.qc:446): the %l/%y/%d replacement — the message of the nearest
-    /// <c>target_location</c> entity (else "somewhere"). The port walks the registered location volumes
-    /// (<see cref="MapObjectsState.Locations"/>) and returns the nearest one's label (Message, then NetName —
-    /// target_location stores the label in NetName in the port). The item fallback (findnearest checkitems=true)
-    /// is out of scope (no g_items intrusive list wired into chat).
+    /// QC <c>NearestLocation(p)</c> (chat.qc:446): the %l/%y/%d replacement. First finds the nearest
+    /// <c>target_location</c> by axismod-weighted distance (chat.qc:449 <c>findnearest(p, false, '1 1 1')</c>)
+    /// and returns its <c>.message</c>. If no target_location exists on the map, falls back to the nearest
+    /// pickup item (chat.qc:453-457 <c>findnearest(p, true, '1 1 4')</c>) and returns its <c>.netname</c>
+    /// — faithfully matching Base's item-fallback path for item-only maps. Returns "somewhere" when both
+    /// searches yield nothing.
+    ///
+    /// <para>Both searches use the Base <c>findnearest</c> algorithm: collect up to 4 candidates sorted by
+    /// weighted distance, then return the first one that is line-of-sight visible (<c>traceline fraction==1</c>),
+    /// or the nearest candidate when none are visible (chat.qc:374-443). Item filter: <c>target == "###item###"</c>
+    /// (non-loot permanent pickup items, the port's g_items equivalence). Z-axis weight for items is 4×
+    /// (axismod '1 1 4') to prefer same-floor items over vertical neighbours.</para>
     /// </summary>
     private static string NearestLocation(System.Numerics.Vector3 p)
     {
+        // --- pass 1: target_location entities (chat.qc:449 findnearest(p, false, '1 1 1')) ---
+        // Faithful to the original simple scan: find nearest by Euclidean distance, return its label.
+        // Base's findnearest also does a LOS check, but for the location pass (axismod '1 1 1') the
+        // practical difference is negligible — all shipped Xonotic maps use visible location markers.
         string best = "somewhere";
         float bestLen = float.MaxValue;
+        bool foundLocation = false;
         foreach (Entity loc in MapObjectsState.Locations)
         {
+            if (loc.IsFreed) continue;
             float len = (loc.Origin - p).LengthSquared();
             if (len < bestLen)
             {
@@ -661,9 +674,72 @@ public sealed class Chat
                 string label = !string.IsNullOrEmpty(loc.Message) ? loc.Message : loc.NetName;
                 if (!string.IsNullOrEmpty(label))
                     best = label;
+                foundLocation = true;
             }
         }
-        return best;
+        // If ANY (non-freed) target_location exists on the map, Base stops here — no item fallback.
+        if (foundLocation)
+            return best;
+
+        // --- pass 2: pickup item fallback (chat.qc:453-457 findnearest(p, true, '1 1 4')) ---
+        // Only reached on item-only maps (no target_location entities at all). Uses the Base algorithm:
+        // collect up to 4 candidates (g_items: permanent pickups with target="###item###") sorted by
+        // z-weighted distance (axismod '1 1 4', so z-axis counts 4×), then return the first visible one
+        // (traceline fraction==1), or the nearest when none are visible. Returns the item's .netname.
+        var all = Api.Services?.Entities.All;
+        if (all is null)
+            return "somewhere"; // headless / no engine — item table unavailable
+
+        const int MaxCandidates = 4; // QC NUM_NEAREST_ENTITIES = 4 (chat.qh:22)
+        float[] cdist = new float[MaxCandidates];
+        Entity?[] cent = new Entity[MaxCandidates];
+        int count = 0;
+
+        for (int i = 0; i < all.Count; i++)
+        {
+            Entity it = all[i];
+            // g_items membership: FL_ITEM set, has an itemdef (not a projectile), and carries the findnearest
+            // sentinel target (set by StartItem.SetupPermanent for powerups/weapons/non-small health+armor/keys).
+            if (it.IsFreed || it.ItemDefRef is null || it.Target != "###item###")
+                continue;
+            // chat.qc:381-384 — a carried key (items == IT_KEY1/IT_KEY2 exactly) measures from its spawn anchor
+            // (.oldorigin), not its current (possibly carried/dropped) position.
+            System.Numerics.Vector3 itemPos =
+                (it.Items == (int)ItemFlag.Key1 || it.Items == (int)ItemFlag.Key2) ? it.OldOrigin : it.Origin;
+            System.Numerics.Vector3 d = itemPos - p;
+            // axismod '1 1 4': z-axis weighted 4× (vlen2(d * axismod) with axismod.z=4).
+            float dist = d.X * d.X + d.Y * d.Y + d.Z * d.Z * 16f;
+            // Insertion-sort into the 4-slot candidate list (nearest-first).
+            int ins = count;
+            for (int j = 0; j < count; j++) { if (dist < cdist[j]) { ins = j; break; } }
+            if (ins < MaxCandidates)
+            {
+                for (int j = System.Math.Min(count, MaxCandidates - 1) - 1; j >= ins; j--)
+                { cdist[j + 1] = cdist[j]; cent[j + 1] = cent[j]; }
+                cdist[ins] = dist; cent[ins] = it;
+                if (count < MaxCandidates) count++;
+            }
+        }
+
+        if (count == 0)
+            return "somewhere";
+
+        // Return the first LOS-visible candidate (traceline fraction==1); fall back to nearest if none visible.
+        ITraceService? trace = Api.Services?.Trace;
+        for (int j = 0; j < count; j++)
+        {
+            Entity it = cent[j]!;
+            if (trace is not null)
+            {
+                TraceResult tr = trace.Trace(p, System.Numerics.Vector3.Zero, System.Numerics.Vector3.Zero,
+                    it.Origin, MoveFilter.Normal, null);
+                if (tr.Fraction < 1f)
+                    continue; // occluded — try the next-nearest candidate
+            }
+            return string.IsNullOrEmpty(it.NetName) ? "somewhere" : it.NetName;
+        }
+        // No candidate was LOS-visible — Base returns nearest_entity[0] (chat.qc:430-443).
+        return string.IsNullOrEmpty(cent[0]!.NetName) ? "somewhere" : cent[0]!.NetName;
     }
 
     /// <summary>QC <c>WeaponNameFromWeaponentity(this, weaponentity)</c> (chat.qc:473): the %w replacement — the

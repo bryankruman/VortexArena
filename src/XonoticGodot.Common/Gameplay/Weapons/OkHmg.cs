@@ -192,6 +192,11 @@ public sealed class OkHmg : Weapon
         });
     }
 
+    // METHOD(OverkillHeavyMachineGun, wr_aim) — okhmg.qc:65-69. Same skill-scaled range gate as the OK MachineGun:
+    // bots only press ATCK within 3000 - bound(0, skill, 10) * 200 units, and hold fire entirely beyond it.
+    public override bool BotForbidsFire(float enemyDistance, float skill)
+        => enemyDistance >= 3000f - QMath.Clamp(skill, 0f, 10f) * 200f;
+
     // METHOD(OverkillHeavyMachineGun, wr_checkammo1) — AMMO-ONLY (okhmg.qc:116-122). The superweapon gate is
     // NOT here: QC's wr_checkammo1 only tests bullets; the superweapon requirement is enforced inside the
     // attack (see SuperweaponGate) because Overkill's IT_UNLIMITED_AMMO short-circuits the shared ammo gate.

@@ -52,6 +52,7 @@ public sealed class BotPopulation
     private bool _tokenTaken = true;     // QC bot_strategytoken_taken (true → rotate next frame)
     private int _seedCounter = 1;
     private float _autoskillNextThink;   // QC autoskill_nextthink (5 s autoskill recheck clock)
+    private float _nextDangerTime;        // QC botframe_nextdangertime (danger-detection recompute clock)
     // QC the per-client totalfrags_lastcheck baseline: frags-since-last-autoskill is ScoreFrags - this.
     private readonly Dictionary<Player, int> _fragsLastCheck = new();
 
@@ -200,8 +201,22 @@ public sealed class BotPopulation
                 b.AutoReadied = false; // re-arm for the next warmup (ready set is cleared on restart)
         }
 
-        // (j) botframe_updatedangerousobjects (bot.qc:815-822) — per-waypoint danger costs; unported (the
-        // port's live danger check is the per-bot havocbot_checkdanger probe in BotBrain). See residuals.
+        // (j) botframe_updatedangerousobjects (bot.qc:815-822 → navigation.qc:1874): every
+        // bot_ai_dangerdetectioninterval (0.25 s) recompute each waypoint's static .dmg danger bias from the
+        // g_bot_dodge hazard list (in-flight rockets, turret beams). FindPath folds Waypoint.Danger into the A*
+        // cost so bots route AROUND hazards, complementing the per-frame havocbot_checkdanger brake in BotBrain.
+        if (Network is not null && time >= _nextDangerTime)
+        {
+            float interval = Cvars.FloatOr("bot_ai_dangerdetectioninterval", 0.25f);
+            // QC: catch up the clock if we fell more than 1.5 intervals behind, then advance one interval.
+            if (_nextDangerTime < time - interval * 1.5f)
+                _nextDangerTime = time;
+            _nextDangerTime += interval;
+
+            var all = Common.Services.Api.Entities.All;
+            if (all is not null)
+                Network.UpdateDangerousObjects(all, (int)Cvars.FloatOr("bot_ai_dangerdetectionupdates", 64f));
+        }
     }
 
     /// <summary>
@@ -234,11 +249,23 @@ public sealed class BotPopulation
     private bool FixCount(float time)
     {
         int activeRealPlayers = 0, realPlayers = 0;
+        // QC MUTATOR_HOOKFUNCTION(lms, Bot_FixCount, CBC_ORDER_EXCLUSIVE) (sv_lms.qc:693): LMS overrides the
+        // active-real-player count so that eliminated (out-of-game) players no longer keep a bot slot filled —
+        // only INGAME real clients count as activerealplayers. Mirror that by checking OutOfGame on LmsState.
+        bool lmsActive = _world.GameType is XonoticGodot.Common.Gameplay.LastManStanding;
+        XonoticGodot.Common.Gameplay.LastManStanding? lms =
+            lmsActive ? (XonoticGodot.Common.Gameplay.LastManStanding)_world.GameType! : null;
         foreach (ClientManager.ClientInfo c in _world.Clients.Clients)
         {
             if (c.IsBot) continue;
             realPlayers++;
-            if (!c.Player.IsObserver) activeRealPlayers++; // QC IS_PLAYER (joined, not observing)
+            if (!c.Player.IsObserver)
+            {
+                // QC IS_PLAYER (joined, not observing). For LMS, also require INGAME (not eliminated/out-of-game).
+                // Use LivesOf (0 when not in _states or Lives==0); a 0-lives player is out-of-game in LMS.
+                if (lms is null || lms.LivesOf(c.Player) > 0)
+                    activeRealPlayers++;
+            }
         }
 
         int target = TargetBotCount(

@@ -82,12 +82,20 @@ public static class Projectiles
     /// the scaled damage. Most projectiles leave this null (full damage). Used by Seeker missiles to implement
     /// <c>damage * 0.25</c> self-scaling when the firer shoots their own missile.</para>
     /// </summary>
+    /// <para><paramref name="exceptionFn"/> is an OPTIONAL per-hit override of the <paramref name="exception"/>
+    /// value. When supplied it is evaluated PER damaging hit with <c>(self, inflictor)</c> and its result is used
+    /// for the <see cref="CheckProjectileDamage"/> gate instead of the fixed <paramref name="exception"/>. This
+    /// reproduces the QC handlers whose exception depends on the inflictor (e.g. the Mine Layer's
+    /// <c>is_from_enemy ? 1 : -1</c> — an enemy may shoot a mine down, but the owner cannot shoot their own mine
+    /// under stock <c>g_projectiles_damage -2</c>). Most projectiles leave this null (fixed exception).</para>
     public static void MakeShootable(Entity e, float exception = -1f,
         Action<Entity, Entity?, Entity?, Vector3>? onHit = null,
-        Func<Entity, Entity?, float, float>? damageScale = null)
+        Func<Entity, Entity?, float, float>? damageScale = null,
+        Func<Entity, Entity?, float>? exceptionFn = null)
     {
         e.GtEventDamage = (self, inflictor, attacker, deathType, damage, _, force) =>
-            ShootDown(self, inflictor, attacker, deathType, damage, force, exception, onHit, damageScale);
+            ShootDown(self, inflictor, attacker, deathType, damage, force,
+                exceptionFn?.Invoke(self, inflictor) ?? exception, onHit, damageScale);
     }
 
     /// <summary>

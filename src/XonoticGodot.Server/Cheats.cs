@@ -338,6 +338,36 @@ public sealed class Cheats
         return false;
     }
 
+    /// <summary>
+    /// QC <c>CHIMPULSE_SPEEDRUN_INIT</c> (impulse 30, cheats.qc:144): snapshot the player's restorable state into
+    /// its personal speedrun checkpoint. NOT a cheat by itself — QC's case skips IS_CHEAT (the impulse shares the
+    /// <c>waypoint_personal_here</c> key) and never bumps the cheat count, so this runs unconditionally (no sv_cheats
+    /// gate) and adds nothing to the counters. The waypoint SPRITE half is deployed separately on the same impulse.
+    /// </summary>
+    public void SpeedrunInit(Player p)
+        => XonoticGodot.Common.Gameplay.Speedrun.SnapshotPersonal(p);
+
+    /// <summary>
+    /// QC <c>CHIMPULSE_SPEEDRUN</c> (impulse 141, cheats.qc:188): teleport the player back to its personal
+    /// checkpoint and restore the snapshotted state. QC gates it as a cheat ONLY when <c>g_allow_checkpoints</c> is
+    /// off: <c>if(!g_allow_checkpoints) IS_CHEAT(...)</c> at the top (refuse + don't restore when cheats disallowed)
+    /// and <c>if(!g_allow_checkpoints) DID_CHEAT()</c> after a successful restore (count it). With checkpoints
+    /// allowed it is a free reset (no gate, no count). Returns true when the restore ran.
+    /// </summary>
+    public bool Speedrun(Player p)
+    {
+        bool checkpointsAllowed = Cvars.Bool("g_allow_checkpoints");
+        // QC: if(!autocvar_g_allow_checkpoints) IS_CHEAT(...) — when checkpoints aren't a free reset, this is a
+        // cheat and the sv_cheats gate applies (IS_CHEAT breaks out of the switch on refusal, before restoring).
+        if (!checkpointsAllowed && !Allowed(p, logAttempt: true, cheatName: "impulse 141"))
+            return false;
+
+        bool restored = XonoticGodot.Common.Gameplay.Speedrun.RestorePersonal(p, Echo);
+        // QC: if(restored && !autocvar_g_allow_checkpoints) DID_CHEAT(); — count only the cheating (gated) restore.
+        if (restored && !checkpointsAllowed) AddCheats(p, 1);
+        return restored;
+    }
+
     // =============================================================================================
     // give (QC GiveItems — the cheat-side give parser, reduced to the gameplay-state slice)
     // =============================================================================================

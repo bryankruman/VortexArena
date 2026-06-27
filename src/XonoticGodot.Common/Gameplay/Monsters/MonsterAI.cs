@@ -192,6 +192,10 @@ public static class MonsterAI
 
         /// <summary>Armor value to restore when the shield expires.</summary>
         public float ShieldRestoreArmor;
+
+        /// <summary>QC <c>.sprite</c> — the floating WP_Monster health-bar waypoint sprite (spawned when
+        /// <c>g_monsters_healthbars</c>; updated on each hit, killed on death). Null when healthbars are off.</summary>
+        public Waypoints.WaypointSprite? Sprite;
     }
 
     /// <summary>
@@ -231,6 +235,15 @@ public static class MonsterAI
         e.Flags |= EntFlags.Monster;
         e.Solid = Solid.BBox;
         e.MoveType = MoveType.Step;
+
+        // QC Monster_Spawn:1479 — dphitcontentsmask = SOLID|BODY|BOTCLIP|MONSTERCLIP (+ PLAYERCLIP when
+        // g_monsters_playerclip_collisions, :1488). A monster is SOLID_BBOX, so without this the trace mask falls
+        // through to the generic SOLID|BODY|CORPSE default (TraceService.GenericHitMask) — the monster would ignore
+        // monster-clip/bot-clip AI brushes and wrongly clip corpses. Stamp the explicit Base mask here (the Invasion
+        // gametype already stamps the same SOLID|BODY|BOTCLIP|MONSTERCLIP value; this makes EVERY monster faithful).
+        e.DpHitContentsMask = SuperContentsSolid | SuperContentsBody | SuperContentsBotClip | SuperContentsMonsterClip;
+        if (Cvar("g_monsters_playerclip_collisions", 1f) != 0f) // monsters.cfg: g_monsters_playerclip_collisions 1
+            e.DpHitContentsMask |= SuperContentsPlayerClip;
         e.TakeDamage = DamageMode.Aim;
         e.DeadState = DeadFlag.No;
         e.Gravity = 1f;
@@ -266,12 +279,23 @@ public static class MonsterAI
         // Miniboss: spawnflag or random chance (QC Monster_Miniboss_Setup). Boosts health + flags loot.
         if (!st.Respawned)
         {
-            bool flagged = (e.SpawnFlags & MonsterFlag_Miniboss) != 0;
-            if (flagged || Prandom.Float() * 100f < Cvar("g_monsters_miniboss_chance", 0f))
+            // QC Monster_Miniboss_Setup:531 — a mutator may veto miniboss status, which clears MONSTERFLAG_MINIBOSS
+            // (so other code doesn't identify the monster as a miniboss) and skips the boost. No stock mutator uses
+            // this hook, but the chain is wired for parity (FireMonsterCheckBossFlag).
+            if (MutatorHooks.FireMonsterCheckBossFlag(e))
             {
-                e.Health += Cvar("g_monsters_miniboss_healthboost", 100f);
-                st.IsMiniboss = true;
-                e.Effects |= EfRed; // QC Monster_Miniboss_Setup:523 — the red glow that marks a miniboss
+                e.SpawnFlags &= ~MonsterFlag_Miniboss;
+            }
+            else
+            {
+                bool flagged = (e.SpawnFlags & MonsterFlag_Miniboss) != 0;
+                if (flagged || Prandom.Float() * 100f < Cvar("g_monsters_miniboss_chance", 0f))
+                {
+                    e.Health += Cvar("g_monsters_miniboss_healthboost", 100f);
+                    st.IsMiniboss = true;
+                    e.SpawnFlags |= MonsterFlag_Miniboss; // QC:543 — identifier for other code
+                    e.Effects |= EfRed; // QC Monster_Miniboss_Setup:523 — the red glow that marks a miniboss
+                }
             }
         }
 
@@ -386,9 +410,8 @@ public static class MonsterAI
 
     /// <summary>
     /// Port of <c>monster_changeteam</c> (sv_monsters.qc:200): only in teamplay — re-team the monster, (re)arm it
-    /// as an attackable target, and re-tint it for the new team. QC also updates the danger radar icon on the
-    /// monster's waypoint sprite; the port has no WP_Monster sprite yet (healthbar gap), so the radar-icon
-    /// update is a documented no-op until that sprite exists.
+    /// as an attackable target, re-tint it for the new team, and (if it has a healthbar sprite) re-color the danger
+    /// radar icon to the new team (QC:211-216 WaypointSprite_UpdateTeamRadar + sprite.team = newteam).
     /// </summary>
     public static void ChangeTeam(Entity e, float newTeam)
     {
@@ -400,7 +423,54 @@ public static class MonsterAI
         // valid target without an intrusive-list push; re-tint to the new team.
         MonsterState? st = StateOf(e);
         if (st is not null)
+        {
             SetupColors(e, st);
+            // QC monster_changeteam:211-216: if (this.sprite) { WaypointSprite_UpdateTeamRadar(this.sprite,
+            // RADARICON_DANGER, team?Team_ColorRGB:'1 0 0'); this.sprite.team = newteam; }
+            if (st.Sprite is not null)
+            {
+                Vector3 col = newTeam != 0f ? Teams.ColorRgb((int)newTeam) : new Vector3(1f, 0f, 0f);
+                Waypoints.WaypointSprites.UpdateTeamRadar(st.Sprite, st.Sprite.RadarIcon, col);
+                st.Sprite.Team = (int)newTeam;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Port of the healthbar block in <c>Monster_Spawn_Setup</c> (sv_monsters.qc:1366-1376): spawn the floating
+    /// WP_Monster waypoint sprite (RADARICON_DANGER) at <c>maxs.z + 15</c> above the monster, colored by team
+    /// (<see cref="Teams.ColorRgb"/>) or red in FFA, and prime its max-health/health bar unless the monster is
+    /// INVINCIBLE. The port's <c>UpdateHealth</c> takes a pre-normalized 0..1 fill (the CSQC client normalizes by
+    /// max in QC), so the bar is fed <c>health / max_health</c>. Stored on <see cref="MonsterState.Sprite"/>.
+    /// </summary>
+    private static void SpawnHealthbar(Entity e, MonsterState st)
+    {
+        Vector3 col = e.Team != 0f ? Teams.ColorRgb((int)e.Team) : new Vector3(1f, 0f, 0f);
+        // QC WaypointSprite_Spawn(WP_Monster, 0, 1024, this, '0 0 1'*(maxs.z+15), NULL, team, this, sprite, true,
+        // RADARICON_DANGER): lifetime 0 (persists), maxdist 1024, follows the monster at maxs.z+15, hideable true.
+        var offset = new Vector3(0f, 0f, e.Maxs.Z + 15f);
+        Waypoints.WaypointSprite wp = Waypoints.WaypointSprites.Spawn(
+            "Monster", 0f, 1024f, e, offset, e.Origin, (int)e.Team, col,
+            radarIcon: 1, rule: Waypoints.SpriteRule.Default, hideable: true);
+        st.Sprite = wp;
+
+        // QC: if (!(spawnflags & MONSTERFLAG_INVINCIBLE)) { UpdateMaxHealth(max_health); UpdateHealth(RES_HEALTH); }
+        if ((e.SpawnFlags & MonsterFlag_Invincible) == 0)
+        {
+            Waypoints.WaypointSprites.UpdateMaxHealth(wp, st.MaxHealth);
+            Waypoints.WaypointSprites.UpdateHealth(wp, st.MaxHealth > 0f ? e.Health / st.MaxHealth : -1f);
+        }
+    }
+
+    /// <summary>
+    /// Port of <c>WaypointSprite_UpdateHealth(this.sprite, GetResource(this, RES_HEALTH))</c> (sv_monsters.qc:1104
+    /// pain / :1155 corpse): refresh the floating health bar after a hit. No-op when healthbars are off (Sprite
+    /// null). Feeds the pre-normalized 0..1 fill the port's bar expects.
+    /// </summary>
+    public static void UpdateHealthbar(MonsterState st, float health)
+    {
+        if (st.Sprite is null) return;
+        Waypoints.WaypointSprites.UpdateHealth(st.Sprite, st.MaxHealth > 0f ? health / st.MaxHealth : -1f);
     }
 
     // ====================================================================================
@@ -491,6 +561,12 @@ public static class MonsterAI
         // colormap they were spawned with, so this is gated to the first life.
         if (!st.Respawned)
             SetupColors(e, st);
+
+        // QC Monster_Spawn_Setup:1366 — if (autocvar_g_monsters_healthbars) spawn a floating WP_Monster health-bar
+        // waypoint sprite at maxs.z+15, RADARICON_DANGER, colored by team (Team_ColorRGB) or red. Updated on each
+        // hit (MarkPain / MonsterDeadDamage) and killed on death (MarkDead). Default g_monsters_healthbars 0.
+        if (Cvar("g_monsters_healthbars", 0f) != 0f)
+            SpawnHealthbar(e, st);
 
         // QC: this.use = Monster_Use; (a trigger acquiring this monster points it at the activator).
         e.Use = (self, actor) =>
@@ -604,9 +680,17 @@ public static class MonsterAI
         return n <= 0 ? null : Monsters.All[Prandom.RangeInt(0, n)];
     }
 
-    /// <summary>QC Monster_Remove (sv_monsters.qc): forget the monster state and delete the edict.</summary>
+    /// <summary>QC Monster_Remove (sv_monsters.qc:947): kill the healthbar sprite, forget the monster state and
+    /// delete the edict.</summary>
     private static void Remove(Entity e)
     {
+        // QC Monster_Remove:959 — WaypointSprite_Kill(this.sprite): a removed monster must not leave an orphaned
+        // floating health bar (e.g. a SPAWNED monster culled on round restart, or a skill-culled one).
+        if (StateOf(e) is { Sprite: not null } st)
+        {
+            Waypoints.WaypointSprites.Kill(st.Sprite);
+            st.Sprite = null;
+        }
         Forget(e);
         if (Api.Services is not null)
             Api.Entities.Remove(e);
@@ -1727,6 +1811,11 @@ public static class MonsterAI
             MonsterSound(self, st, "pain", 1.2f, true, SoundChannel.PainAuto);
         }
 
+        // QC Monster_Damage:1104 — if (this.sprite) WaypointSprite_UpdateHealth(this.sprite, RES_HEALTH). Runs
+        // unconditionally (even on a 0-take hit), so the floating health bar tracks every damage event. No-op when
+        // healthbars are off (Sprite null).
+        UpdateHealthbar(st, self.Health);
+
         // Pause health regen after a hit (QC sets .dmg_time; the port's regen pause is .pauseregen_finished).
         // (QC's body-impact spamsound + the take>50/>100 extra gib splashes are client VFX/audio — named no-ops.)
         if (take > 0f)
@@ -1814,6 +1903,11 @@ public static class MonsterAI
 
         if ((self.Flags & (EntFlags.Fly | EntFlags.Swim)) == 0)
             self.Velocity = Vector3.Zero;
+
+        // QC Monster_Damage:1134 / Monster_Dead:961 — WaypointSprite_Kill(this.sprite): remove the floating
+        // health-bar waypoint sprite when the monster dies. No-op when healthbars are off (Sprite null).
+        Waypoints.WaypointSprites.Kill(st.Sprite);
+        st.Sprite = null;
 
         // QC Monster_Damage:1136 — MUTATOR_CALLHOOK(MonsterDies, this, attacker, deathtype). The port's
         // MonsterDies equivalent is the direct NadeBonus.OnMonsterDies (there is no MutatorHooks.MonsterDies
@@ -2013,6 +2107,9 @@ public static class MonsterAI
             // QC Monster_Miniboss_Setup:523-528 re-applies EF_RED on a RESPAWNED miniboss (MarkDead cleared
             // s.Effects to 0). A regular monster comes back with no glow.
             if (st.IsMiniboss) s.Effects |= EfRed;
+            // QC Monster_Respawn -> Monster_Spawn -> Monster_Spawn_Setup re-runs the healthbar block, so a
+            // respawned monster regains its floating WP_Monster sprite (MarkDead killed + nulled the old one).
+            if (st.Sprite is null && Cvar("g_monsters_healthbars", 0f) != 0f) SpawnHealthbar(s, st);
             // Re-arm the monster damage seam (the corpse left GtEventDamage installed, but a respawn re-establishes
             // the full live contract) + re-seed knockback receptivity for the generic apply-push.
             s.GtEventDamage = MonsterEventDamage;
@@ -2142,6 +2239,15 @@ public static class MonsterAI
 
     /// <summary>DP <c>EF_NODEPTHTEST = 8192</c> (dpextensions.qc:141) — draw-through-walls when g_nodepthtestplayers (QC Monster_Spawn:1485).</summary>
     public const int EfNodepthtest = 8192;
+
+    // SUPERCONTENTS_* bits for the monster's dphitcontentsmask (QC Monster_Spawn:1479/1488). Common can't
+    // reference XonoticGodot.Engine.Collision.SuperContents, so they are mirrored here EXACTLY as Invasion.cs /
+    // Nexball.cs / LagComp.cs do (DPCONTENTS_* values; TraceService honors Entity.DpHitContentsMask).
+    private const int SuperContentsSolid       = 0x00000001; // QC DPCONTENTS_SOLID
+    private const int SuperContentsBody        = 0x02000000; // QC DPCONTENTS_BODY
+    private const int SuperContentsPlayerClip  = 0x00000100; // QC DPCONTENTS_PLAYERCLIP
+    private const int SuperContentsMonsterClip = 0x00000200; // QC DPCONTENTS_MONSTERCLIP
+    private const int SuperContentsBotClip     = 0x00000800; // QC DPCONTENTS_BOTCLIP
 }
 
 /// <summary>QC monster skill levels (sv_monsters.qh: MONSTER_SKILL_*).</summary>

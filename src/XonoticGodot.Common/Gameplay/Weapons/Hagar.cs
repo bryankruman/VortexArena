@@ -154,6 +154,16 @@ public sealed class Hagar : Weapon
         }
     }
 
+    // METHOD(Hagar, wr_aim) — hagar.qc:wr_aim. random()>0.15 → primary (the rapid rocket); else (15%) the
+    // secondary burst. QC leads BOTH branches at the PRIMARY speed (it deliberately reuses primary_speed for
+    // the secondary "since these are only 15% and should cause some ricochets without re-aiming"). Non-lobbed
+    // (bot_aim grav=false), so the brain's straight-line lead applies. This hook owns only the button pick.
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
+        => ctx.Random01 <= 0.15f;
+
+    // Both modes lead at the primary projectile speed (matching the QC bot_aim call).
+    public override float BotAimShotSpeed(float defaultSpeed) => Primary.Speed;
+
     // Refire from the (cvar-seeded) balance blocks; the Hagar has no separate animtime cvar, so the refire
     // doubles as the fire-anim length (return 0 animtime so only the refire timer gates).
     public override float RefireFor(FireMode fire) => fire == FireMode.Secondary ? Secondary.Refire : Primary.Refire;
@@ -170,6 +180,10 @@ public sealed class Hagar : Weapon
         Entity missile = SpawnRocket(actor, shot.Origin, "missile", Primary.Health, MoveType.Fly);
         missile.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, up, Primary.Speed);
         missile.Angles = QMath.VecToAngles(missile.Velocity);
+
+        // QC hagar.qc:109-110 — flag the rocket as a dodgeable hazard (rating = primary damage).
+        missile.BotDodge = true;
+        missile.BotDodgeRating = Primary.Damage;
 
         float deathTime = Api.Clock.Time + Primary.Lifetime;
         missile.Touch = (self, other) => Explode(self, Primary.Damage, Primary.EdgeDamage, Primary.Radius, Primary.Force);
@@ -202,6 +216,10 @@ public sealed class Hagar : Weapon
         missile.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, up, Secondary.Speed, 0f, 0f, Secondary.Spread);
         missile.Angles = QMath.VecToAngles(missile.Velocity);
         missile.Count = 0; // bounce counter
+
+        // QC hagar.qc:154-155 — flag the secondary rocket as a dodgeable hazard (rating = secondary damage).
+        missile.BotDodge = true;
+        missile.BotDodgeRating = Secondary.Damage;
 
         // QC missile.projectiledeathtype = m_id | HITTYPE_SECONDARY (a bounced rocket later ORs HITTYPE_BOUNCE).
         string secDeath = Damage.DeathTypes.WithHitType(Damage.DeathTypes.FromWeapon(NetName), Damage.DeathTypes.Secondary);
@@ -381,6 +399,10 @@ public sealed class Hagar : Weapon
             Vector3 dir = QMath.Normalize(shot.Dir + right * s.Y + up * s.Z);
             missile.Velocity = WeaponFiring.ProjectileVelocity(dir, up, Secondary.Speed, 0f, 0f, perShot);
             missile.Angles = QMath.VecToAngles(missile.Velocity);
+
+            // QC hagar.qc:214-215 — flag each loaded-salvo rocket as a dodgeable hazard (rating = secondary damage).
+            missile.BotDodge = true;
+            missile.BotDodgeRating = Secondary.Damage;
 
             float deathTime = Api.Clock.Time + Secondary.LifetimeMin + Prandom.Float() * Secondary.LifetimeRand;
             // QC settouch(missile, W_Hagar_Touch) — "not bouncy": the loaded salvo flies straight and bursts on

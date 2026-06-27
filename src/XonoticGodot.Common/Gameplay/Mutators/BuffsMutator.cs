@@ -317,6 +317,10 @@ public sealed class BuffsMutator : MutatorBase
         e.Effects |= EffectFlags.FullBright | EffectFlags.Stardust | EffectFlags.NoShadow;
         e.BuffDef = buff;
         Api.Entities.SetModel(e, buff.Model ?? MdlBuff);
+        // QC buff_Init/buff_Think (sv_buffs.qc:305-307): this.skin = buff.m_skin — the relic.md3 ships one skin
+        // per buff type, so the picked buff renders in its own colour. (this.color/this.glowmod = buff.m_color
+        // are item-tint fields the port does not network for world items yet — see buffs.item.spawnfunc.)
+        e.Skin = buff.Skin;
         // QC: setsize(this, ITEM_D_MINS, ITEM_L_MAXS) = '-30 -30 0'..'30 30 70'.
         Api.Entities.SetSize(e, ItemBoxes.DefaultMins, ItemBoxes.LargeMaxs);
 
@@ -465,6 +469,8 @@ public sealed class BuffsMutator : MutatorBase
             MaybeRandomize(self);
             MaybeRelocate(self);
             Api.Entities.SetModel(self, self.BuffDef?.Model ?? MdlBuff);
+            // QC buff_Think type-change retint: this.skin = buff.m_skin after a re-randomize.
+            self.Skin = self.BuffDef?.Skin ?? 0;
             self.BuffActive = true;
             // QC buff_Think activate-cooldown elapse: SND_STRENGTH_RESPAWN + EFFECT_ITEM_RESPAWN on reactivation.
             SoundSystem.PlayOn(self, "STRENGTH_RESPAWN");

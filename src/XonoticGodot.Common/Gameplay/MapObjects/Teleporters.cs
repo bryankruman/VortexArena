@@ -330,13 +330,16 @@ public static class Teleporters
     {
         var sel = new MapMover.RandomSelection();
         sel.Reset();
+        // QC STAT(TELEPORT_TELEFRAG_AVOID, player) = autocvar_g_telefrags_avoid (teleporters.qc:198, registered
+        // default 1 — Cvars.cs). Read it LIVE here so `set g_telefrags_avoid 0` genuinely disables the avoidance
+        // (CvarOr honors an explicit 0 while still defaulting to 1 on the unregistered/test path).
+        bool telefragAvoid = CvarOr("g_telefrags_avoid", 1f) != 0f;
         foreach (Entity e in MapMover.FindByTargetName(teleporter.Target))
         {
             float weight = e.Cnt != 0 ? e.Cnt : 1;
             float priority = 1f;
             // QC STAT(TELEPORT_TELEFRAG_AVOID): prefer a destination that won't telefrag the teleportee.
-            // We treat the avoid as always-on for players (the common/safe case).
-            if ((player.Flags & EntFlags.Client) != 0)
+            if (telefragAvoid && (player.Flags & EntFlags.Client) != 0)
             {
                 Vector3 locout = e.Origin + new Vector3(0f, 0f, DestZNudge);
                 if (CheckTdeath(player, locout))
@@ -594,5 +597,18 @@ public static class Teleporters
         if (Api.Services is null) return fallback;
         float v = Api.Cvars.GetFloat(name);
         return v != 0f ? v : fallback;
+    }
+
+    /// <summary>
+    /// Read a float cvar but fall back to <paramref name="fallback"/> only when the cvar is unset/empty —
+    /// distinguishing "unset" (use the Base default) from an explicit "set to 0". Needed for a cvar whose
+    /// Base default is truthy but which a server may legitimately disable (e.g. <c>g_telefrags_avoid</c>),
+    /// where the plain <see cref="Cvar"/> helper would wrongly mask a deliberate 0 back to the default.
+    /// </summary>
+    private static float CvarOr(string name, float fallback)
+    {
+        if (Api.Services is null) return fallback;
+        string s = Api.Cvars.GetString(name);
+        return string.IsNullOrEmpty(s) ? fallback : Api.Cvars.GetFloat(name);
     }
 }

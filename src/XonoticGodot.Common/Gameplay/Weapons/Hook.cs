@@ -144,6 +144,14 @@ public sealed class Hook : Weapon
     /// <summary>g_grappling_hook_tarzan — 0 = straight reel, &gt;=2 = elastic rope that can pull players/nades.</summary>
     public int GrappleTarzan = 2;
 
+    /// <summary>
+    /// QC <c>hook_shotorigin[s]</c> (server/hook.qc GrappleHookInit): the gun-muzzle offset the reel pulls
+    /// toward, in view space (forward, -left, up). The offhand path hardcodes <c>'8 8 -12'</c> for every align;
+    /// the in-hand path derives it from the weapon model tag (~the same). Used by GrapplingHookThink so the
+    /// latch/length geometry matches Base's gun-hand offset rather than the player centre.
+    /// </summary>
+    public static readonly Vector3 HookShotOrigin = new(8f, 8f, -12f);
+
     // QC .hook_length on the chain edict: the current rubber-band rope length (the elastic/tarzan reel
     // shortens this toward minlength each tick). -1 = uninitialised (seeded to the current rope distance).
     // Kept off the chain entity via a per-hook weak table since WeaponSlotState (other file) carries no field.
@@ -224,6 +232,13 @@ public sealed class Hook : Weapon
                     {
                         actor.SetResource(AmmoType, 0f);
                         st.HookState |= HookState.Removing;
+                        // QC hook.qc: if (m_weapon != WEP_Null) W_SwitchWeapon_Force(actor, w_getbestweapon(...)).
+                        // The slot's m_weapon is non-null only for the IN-HAND hook (the offhand drives a dedicated
+                        // slot whose m_weapon stays WEP_Null, so the offhand never switches your main weapon away).
+                        // Mirror that: switch to best only when this Hook is the actor's active (in-hand) weapon.
+                        if (ReferenceEquals(Inventory.CurrentWeapon(actor), this)
+                            && Inventory.GetBestWeapon(actor) is { } best)
+                            Inventory.SwitchWeapon(actor, best);
                     }
                 }
             }
@@ -256,6 +271,13 @@ public sealed class Hook : Weapon
     // FireGrapplingHook (server/hook.qc) — launch the chain projectile that latches onto geometry.
     private void FireGrapplingHook(Entity actor, WeaponSlot slot, WeaponSlotState st)
     {
+        // QC FireGrapplingHook top guard: `if (weaponLocked(actor) || actor.vehicle) return;`. A frozen player
+        // (the reachable weaponLocked subset, mirroring WeaponFireDriver.WeaponLocked) or a player in a vehicle
+        // can't fire the hook. The offhand path also zeroes the key in a vehicle upstream (GameWorld.cs), but the
+        // direct weapon-fire path needs this guard too.
+        if (IsWeaponLocked(actor) || actor.Vehicle is not null)
+            return;
+
         Vector3 forward = QMath.Forward(actor.Angles);
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward);
         // QC FireGrapplingHook: W_MuzzleFlash(WEP_HOOK, actor, weaponentity, w_shotorg, '0 0 0') — the hook's
@@ -371,7 +393,16 @@ public sealed class Hook : Weapon
         if (hook.Aiment is { IsFreed: false } follow)
             Api.Entities.SetOrigin(hook, follow.Origin + hook.ViewOfs);
 
-        Vector3 myorg = actor.Origin + actor.ViewOfs;
+        // server/hook.qc GrapplingHookThink: the reel pulls toward the GUN MUZZLE, not the player centre —
+        //   makevectors(v_angle); vs = hook_shotorigin[s] ('8 8 -12'); vs = v_forward*vs.x + v_right*-vs.y + v_up*vs.z;
+        //   org = origin + view_ofs + vs;
+        // (hook_shotorigin is the same '8 8 -12' for all aligns in the offhand path, and ~that for in-hand.) The
+        // v_right*-vs.y term matches the port's v_right = -Left convention (BoneMatrix.cs). Use the player's view
+        // angles (NadeThrow/NadeProjectile convention) so the latch/length geometry matches Base's gun-hand offset.
+        Vector3 viewAngles = actor.ViewAngles == Vector3.Zero ? actor.Angles : actor.ViewAngles;
+        QMath.AngleVectors(viewAngles, out Vector3 vf, out Vector3 vr, out Vector3 vu);
+        Vector3 vs = vf * HookShotOrigin.X + vr * -HookShotOrigin.Y + vu * HookShotOrigin.Z;
+        Vector3 myorg = actor.Origin + actor.ViewOfs + vs;
         Vector3 toHook = hook.Origin - myorg;
         float dist = toHook.Length();
         Vector3 dir = dist != 0f ? toHook * (1f / dist) : Vector3.Zero;
@@ -438,7 +469,13 @@ public sealed class Hook : Weapon
                 actor.Flags &= ~EntFlags.OnGround;
             }
 
-            actor.Velocity = v;
+            // server/hook.qc: pull_entity.velocity is only written `if (!frozen_pulling && !(aiment.flags &
+            // FL_PROJECTILE))`. frozen_pulling needs g_balance_grapplehook_pull_frozen (port models it as 0 →
+            // always false), so the live guard is: don't reel off a projectile aiment (e.g. a hooked rocket).
+            bool aimentIsProjectile = hook.Aiment is { IsFreed: false } aimv
+                && (aimv.Flags & EntFlags.Item) != 0 && aimv.ClassName != "nade";
+            if (!aimentIsProjectile)
+                actor.Velocity = v;
         }
         else
         {
@@ -602,4 +639,13 @@ public sealed class Hook : Weapon
 
     // METHOD(Hook, wr_checkammo2) — hook.qc (secondary is ammo-free for now).
     public bool CheckAmmoSecondary(Entity actor) => true;
+
+    /// <summary>
+    /// QC <c>weaponLocked(player)</c> (server/weapons/weaponsystem.qc), the reachable subset — mirrors
+    /// <c>WeaponFireDriver.WeaponLocked</c> / CampcheckMutator.WeaponLocked: the gametype freeze stat
+    /// (<see cref="Entity.FrozenStat"/>, e.g. Freeze Tag) OR the <c>STATUSEFFECT_Frozen</c> status effect. The
+    /// game-start/game-stopped/player_blocked/LockWeapon halves are gated upstream / unmodeled in the port.
+    /// </summary>
+    private static bool IsWeaponLocked(Entity e)
+        => e.FrozenStat != 0 || (StatusEffectsCatalog.Frozen is { } f && StatusEffectsCatalog.Has(e, f));
 }

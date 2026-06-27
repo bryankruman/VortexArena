@@ -408,12 +408,17 @@ public static class WarpzoneRadiusQuery
             if (Vector3.Dot(org - wz.InOrigin, wz.Transform.InForward) < 0f)
                 continue;
 
-            // Step the blast through the portal (QC org_new = WarpZone_TransformOrigin(e, org)).
+            // Step the blast through the portal (QC org0_new = WarpZone_TransformOrigin(e, org)).
             Vector3 orgNew = wz.Transform.TransformOrigin(org);
 
-            // Reduce the radius by the travelled distance, clamped to [0, rad - 8] exactly as QC.
-            float travelled = distToZone;
-            float radNew = QClamp(rad - travelled, 0f, rad - RadiusRecurseMargin);
+            // QC WarpZone_FindRadius_Recurse (common.qc:650): the recursion radius is
+            // bound(0, rad - vlen(org_new - org0_new), rad - 8), where org0_new is the blast transformed THROUGH
+            // the zone and org_new = trace_endpos of a LOS traceline from the zone's target origin to org0_new.
+            // With a clear seam (the analytic port doesn't re-trace solid here) org_new == org0_new, so the
+            // travelled term is ~0 and the binding clamp is the rad-8 UPPER bound — Base recurses with very nearly
+            // the FULL remaining radius (only shaved by 8qu), NOT reduced by the distance to the portal mouth.
+            // (The previous port reduced by distToZone, under-budgeting far-side splash through a portal.)
+            float radNew = QClamp(rad, 0f, rad - RadiusRecurseMargin);
             if (radNew <= 0f) continue;
 
             // Accumulate the transform so far-side victims map back to the blast frame, and recurse.

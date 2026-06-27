@@ -68,6 +68,14 @@ public sealed class MapInfoBackend
     private readonly Func<string, bool> _imageExists;  // vpath → does the preview image exist
     private readonly Dictionary<string, MapInfo> _cache = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// QC <c>Duel.m_isForcedSupported</c> (duel.qh:15-28): when true, any map that supports DM but does
+    /// not explicitly list duel is auto-promoted to also support duel. Mirrors <c>!autocvar_g_duel_not_dm_maps</c>
+    /// (default 0 → forced support IS active). The menu host wires this from the cvar so the user can opt
+    /// out by setting <c>g_duel_not_dm_maps 1</c>. Default: true (Base default).
+    /// </summary>
+    public bool ForceDuelOnDmMaps { get; set; } = true;
+
     /// <param name="readText">Reads a map's .mapinfo text (e.g. "maps/foo.mapinfo"), or null if it isn't present.</param>
     /// <param name="imageExists">Probes whether a preview image vpath exists (the QC draw_PictureExists chain).</param>
     public MapInfoBackend(Func<string, string?> readText, Func<string, bool> imageExists)
@@ -80,6 +88,11 @@ public sealed class MapInfoBackend
     /// Get (and cache) the parsed info for map <paramref name="bspName"/> — QC <c>MapInfo_Get_ByName</c>
     /// with the cache-retrieve shortcut (mapinfo.qc:1050-1052). The bsp name is the file stem
     /// (e.g. "stormkeep"); a "/" in it is rejected like the QC (mapinfo.qc:1044-1048).
+    ///
+    /// After parsing, applies <c>Duel.m_isForcedSupported</c>: if DM is supported and duel is not, and
+    /// <see cref="ForceDuelOnDmMaps"/> is true (the default, matching <c>g_duel_not_dm_maps=0</c>), duel
+    /// is added to the supported set. This matches QC's <c>MapInfo_Get_ByName</c> (mapinfo.qc:1386):
+    /// <c>FOREACH(Gametypes, it.m_isForcedSupported(it), _MapInfo_Map_ApplyGametypeEx(...))</c>.
     /// </summary>
     public MapInfo Get(string bspName)
     {
@@ -87,8 +100,26 @@ public sealed class MapInfoBackend
             return cached;
 
         MapInfo info = Parse(bspName);
+        // QC Duel.m_isForcedSupported (duel.qh:15-28): add duel to any DM map unless g_duel_not_dm_maps.
+        ApplyForcedGametypes(info, forceDuelOnDmMaps: ForceDuelOnDmMaps);
         _cache[bspName] = info;
         return info;
+    }
+
+    /// <summary>
+    /// Apply <c>Duel.m_isForcedSupported</c> (duel.qh:15-28) to an already-parsed <see cref="MapInfo"/>:
+    /// if the map supports DM but not duel, and <paramref name="forceDuelOnDmMaps"/> is true (i.e.
+    /// <c>g_duel_not_dm_maps == 0</c>), add <c>"duel"</c> to the supported-gametype set. Can also be
+    /// called by callers that manage their own mapinfo cache (e.g. <c>MapInfoCache</c>).
+    /// </summary>
+    public static void ApplyForcedGametypes(MapInfo info, bool forceDuelOnDmMaps)
+    {
+        if (forceDuelOnDmMaps
+            && info.SupportedGametypes.Contains("dm")
+            && !info.SupportedGametypes.Contains("duel"))
+        {
+            info.SupportedGametypes.Add("duel");
+        }
     }
 
     /// <summary>Drop the cache (QC MapInfo_Cache invalidation on a content reload).</summary>

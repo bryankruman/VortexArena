@@ -622,6 +622,69 @@ public sealed class WaypointNetwork
 
     private float Heuristic(Waypoint a, Waypoint b) => (b.Origin - a.Origin).Length() / MaxSpeed;
 
+    // ---- per-waypoint static danger bias (QC botframe_updatedangerousobjects, navigation.qc:1874) ----
+
+    /// <summary>
+    /// Recompute each waypoint's static danger bias (QC <c>.dmg</c>, set by
+    /// <c>botframe_updatedangerousobjects</c>): for every dangerous object (an entity flagged
+    /// <see cref="Entity.BotDodge"/> — the g_bot_dodge intrusive list: in-flight rockets, turret beams, etc.),
+    /// add to a waypoint's danger when the object is close enough that a player at the waypoint couldn't outrun
+    /// its blast and has line of sight to it. The danger value is later folded into A* route costs
+    /// (<see cref="FindPath"/>: <c>gScore + link.Cost + nb.Danger</c>) so bots pre-emptively route AROUND
+    /// hazards instead of only braking at the last moment via the per-frame <see cref="BotDanger"/> probe.
+    ///
+    /// Faithful to navigation.qc:1874-1903: <c>d = waypoint_getlinearcost(rating) - waypoint_gettravelcost(o, v)</c>
+    /// where <c>o</c> is the hazard center, <c>v</c> the hazard origin clamped to the waypoint's box, and the
+    /// danger only counts when <c>d &gt; 0</c> AND the LOS traceline from <c>o</c> to <c>v</c> is unobstructed.
+    /// Matches Base's quirk of only ever updating the FIRST <paramref name="maxUpdate"/> waypoints per call (the
+    /// QC loop has no rotating cursor — it breaks at <c>c &gt;= maxupdate</c> from the head of g_waypoints).
+    /// </summary>
+    public void UpdateDangerousObjects(IReadOnlyList<XonoticGodot.Common.Framework.Entity> entities, int maxUpdate)
+    {
+        if (maxUpdate <= 0 || _nodes.Count == 0)
+            return;
+
+        bool canTrace = Api.Services is not null;
+        int c = 0;
+        foreach (var wp in _nodes)
+        {
+            Vector3 m1 = wp.AbsMin;
+            Vector3 m2 = wp.AbsMax;
+            float danger = 0f;
+
+            for (int i = 0; i < entities.Count; i++)
+            {
+                var it = entities[i];
+                if (it is null || it.IsFreed || !it.BotDodge) continue;
+
+                // QC: v = it.origin clamped into the waypoint's box; o = the hazard's bbox center.
+                Vector3 v = it.Origin;
+                v = new Vector3(
+                    QMath.Clamp(v.X, m1.X, m2.X),
+                    QMath.Clamp(v.Y, m1.Y, m2.Y),
+                    QMath.Clamp(v.Z, m1.Z, m2.Z));
+                Vector3 o = (it.AbsMin + it.AbsMax) * 0.5f;
+
+                // QC: d = linearcost(bot_dodgerating) - travelcost(o, v). The dodge object carries no waypoint
+                // flags (no JUMP/CROUCH), so the entity-overload waypoint_gettravelcost reduces to the plain
+                // (non-jump, non-crouch, non-submerged) travel cost here.
+                float d = LinearCost(it.BotDodgeRating) - TravelCost(o, v);
+                if (d > 0f)
+                {
+                    // QC: traceline(o, v, MOVE_NOMONSTERS, NULL); only count if unobstructed (fraction == 1).
+                    bool clear = !canTrace
+                        || Api.Trace.Trace(o, Vector3.Zero, Vector3.Zero, v, MoveFilter.NoMonsters, null).Fraction >= 1f;
+                    if (clear)
+                        danger += d;
+                }
+            }
+
+            wp.Danger = danger;
+            if (++c >= maxUpdate)
+                break;
+        }
+    }
+
     private static List<Waypoint> Reconstruct(Waypoint?[] cameFrom, Waypoint current)
     {
         var path = new List<Waypoint> { current };

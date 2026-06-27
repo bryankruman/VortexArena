@@ -233,6 +233,13 @@ public sealed class OkRpc : Weapon
         Api.Entities.Remove(self);
     }
 
+    // METHOD(OverkillRocketPropelledChainsaw, wr_aim) — okrpc.qc:144-147. The chainsaw is a slow projectile, so
+    // bots lead the target by its launch speed (WEP_CVAR_PRI speed = 2500) — QC passes that speed as bot_aim's
+    // lead argument. Without this override the brain would lead by the generic default speed and mis-aim the
+    // flying chainsaw. (The QC lifetime arg only widens the lead-prediction window; the brain already caps the
+    // lead by the weapon's primary speed, which is the dominant term.)
+    public override float BotAimShotSpeed(float defaultSpeed) => Cvars.Speed;
+
     // METHOD(OverkillRocketPropelledChainsaw, wr_checkammo1)
     public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Cvars.Ammo;
 

@@ -122,8 +122,11 @@ namespace XonoticGodot.Common.Framework
         // bezier branch with cubic_speedfunc(0,0,t) = -2t^3+3t^2 (smoothstep ease-in-out). An explicit
         // "platmovetype" key (set_platmovetype) or "1 1" selects the linear branch. Matching Base's default
         // here is what makes every stock door/plat/train S-curve eased rather than constant-velocity linear.
-        public int PlatMoveStart;          // QC .platmovetype_start — ease curve id (0 = smoothstep default)
-        public int PlatMoveEnd;            // QC .platmovetype_end   — ease curve id (0 = smoothstep default)
+        // QC .float platmovetype_start/_end — fractional ease factors ARE valid (cubic_speedfunc_is_sane
+        // documents (0.5, [0..3.8]), (1.5, [0..3.9]) etc.), so these must be float, not int — stof() in
+        // set_platmovetype yields the raw float and feeds cubic_speedfunc directly.
+        public float PlatMoveStart;        // QC .platmovetype_start — ease curve factor (0 = smoothstep default)
+        public float PlatMoveEnd;          // QC .platmovetype_end   — ease curve factor (0 = smoothstep default)
     }
 }
 
@@ -987,9 +990,10 @@ namespace XonoticGodot.Common.Gameplay
             string[] argv = s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
             int n = argv.Length;
 
-            // QC stof() yields 0 for an unparsable token.
-            e.PlatMoveStart = n > 0 ? (int)StofFloat(argv[0]) : 0;
-            e.PlatMoveEnd = n > 1 ? (int)StofFloat(argv[1]) : e.PlatMoveStart;
+            // QC stof() yields 0 for an unparsable token. platmovetype_start/_end are .float — keep the
+            // fractional value (0.5/1.5/2.5 ease factors are valid per cubic_speedfunc_is_sane), don't truncate.
+            e.PlatMoveStart = n > 0 ? StofFloat(argv[0]) : 0f;
+            e.PlatMoveEnd = n > 1 ? StofFloat(argv[1]) : e.PlatMoveStart;
 
             if (n > 2 && argv[2] == "force")
                 return true; // no checking, return immediately (QC)

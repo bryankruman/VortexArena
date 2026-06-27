@@ -24,6 +24,11 @@ namespace XonoticGodot.Common.Framework
         public int PressedKeys;
         /// <summary>QC PHYS_INPUT_BUTTON_CROUCH — crouch button currently held.</summary>
         public bool ButtonCrouch;
+        /// <summary>QC PHYS_INPUT_BUTTON_ATCK2 — secondary-fire button currently held. Published each frame
+        /// (alongside <see cref="OffhandFirePressed"/>) for the PlayerPreThink hooks that read it — e.g. the
+        /// Overkill countdown-blaster (sv_overkill.qc PlayerPreThink), which fires the secondary blaster during
+        /// a round countdown when the normal weapon-fire path has the fire buttons forbidden.</summary>
+        public bool ButtonAttack2;
         /// <summary>QC PHYS_INPUT_BUTTON_CHAT — the player has the chat console open (typing). Mirrors the input
         /// <c>Typing</c> intent; read by the campcheck mutator's typecheck gate (sv_campcheck.qc:43).</summary>
         public bool ButtonChat;

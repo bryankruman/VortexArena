@@ -120,8 +120,12 @@ public sealed class Spider : Monster
         float dist = (target.Origin - e.Origin).Length();
         if (dist <= st.AttackRange)
         {
-            // MONSTER_ATTACK_MELEE -> bite.
-            st.Anim = MonsterAI.MonsterAnim.Attack;
+            // MONSTER_ATTACK_MELEE -> bite. QC wr_think (fire & 2) picks the bite anim at random:
+            //   Monster_Attack_Melee(..., ((random() > 0.5) ? actor.anim_melee : actor.anim_shoot), ...)
+            // so each bite plays EITHER the melee group (anim_melee '0', the Attack phase) OR the shoot group
+            // (anim_shoot '3', the Shoot phase). Mirror that coin-flip onto the networked anim phase (the
+            // chosen frame is stamped on Entity.Frame by DriveAnimFrame, same as the random pain/death picks).
+            st.Anim = MonsterRandom.Next() > 0.5f ? MonsterAI.MonsterAnim.Shoot : MonsterAI.MonsterAnim.Attack;
             // spider.qc M_Spider_Attack melee: the bite is DEATH_MONSTER_SPIDER.
             MonsterAI.MeleeAttack(e, st, BiteDamage, st.AttackRange, BiteDelay,
                 DeathTypes.MonsterSpider);

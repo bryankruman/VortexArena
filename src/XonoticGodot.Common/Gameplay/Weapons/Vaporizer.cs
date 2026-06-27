@@ -404,6 +404,10 @@ public sealed class Vaporizer : Weapon
             proj.Velocity = v * speedFactor;
             proj.Angles = QMath.VecToAngles(proj.Velocity);
 
+            // QC vaporizer.qc:239-240 — flag the RM-laser bolt as a dodgeable hazard (rating = g_rm_laser_damage).
+            proj.BotDodge = true;
+            proj.BotDodgeRating = Cvar("g_rm_laser_damage", 150f);
+
             // Per-bolt damage. QC distinguishes the two explode paths: the DIRECT touch
             // (W_RocketMinsta_Laser_Touch, vaporizer.qc:212) just damages; the TIMEOUT (the .use think →
             // W_RocketMinsta_Laser_Explode, vaporizer.qc:194) additionally awards the Electrobitch achievement

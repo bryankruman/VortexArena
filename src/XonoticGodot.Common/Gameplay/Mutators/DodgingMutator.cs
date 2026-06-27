@@ -83,6 +83,15 @@ public sealed class DodgingMutator : MutatorBase
     /// </summary>
     public static Func<Entity, bool>? ClientDodgingProvider;
 
+    /// <summary>
+    /// PER-CLIENT double-tap window source (QC <c>PHYS_DODGING_TIMEOUT(s) = CS_CVAR(s).cvar_cl_dodging_timeout</c>,
+    /// replicated). Base reads the timeout off the dodging player's own replicated <c>cl_dodging_timeout</c> each
+    /// frame, so each client can set their own double-tap window. Defaults to the server-side <see cref="Timeout"/>
+    /// field (the listen-server / not-yet-replicated value); the server's replication layer installs a real
+    /// per-client provider. Mirrors <see cref="ClientDodgingProvider"/>.
+    /// </summary>
+    public static Func<Entity, float>? TimeoutProvider;
+
     public DodgingMutator() => NetName = "dodging";
 
     // QC SVQC: REGISTER_MUTATOR(dodging, cvar("g_dodging")).
@@ -165,6 +174,9 @@ public sealed class DodgingMutator : MutatorBase
         // QC PHYS_INPUT_BUTTON_DODGE — the dedicated +dodge button, checked unconditionally (no crouch exclusion).
         bool dodgeButton = DodgeButtonHeld(player);
 
+        // QC PHYS_DODGING_TIMEOUT(this) is read off the dodging player's own replicated cl_dodging_timeout.
+        float timeout = TimeoutFor(player);
+
         float tapX = 0f, tapY = 0f;
         bool detected = false;
 
@@ -175,25 +187,25 @@ public sealed class DodgingMutator : MutatorBase
         if (mvF < 0f && ((pressed & PressedKeyBits.Backward) == 0 || frozenNoDoubletap))
         {
             tapX -= 1f;
-            if ((now - player.DodgeLastBackwardTime) < Timeout || frozenNoDoubletap || dodgeButton) detected = true;
+            if ((now - player.DodgeLastBackwardTime) < timeout || frozenNoDoubletap || dodgeButton) detected = true;
             player.DodgeLastBackwardTime = now;
         }
         if (mvF > 0f && ((pressed & PressedKeyBits.Forward) == 0 || frozenNoDoubletap))
         {
             tapX += 1f;
-            if ((now - player.DodgeLastForwardTime) < Timeout || frozenNoDoubletap || dodgeButton) detected = true;
+            if ((now - player.DodgeLastForwardTime) < timeout || frozenNoDoubletap || dodgeButton) detected = true;
             player.DodgeLastForwardTime = now;
         }
         if (mvR < 0f && ((pressed & PressedKeyBits.Left) == 0 || frozenNoDoubletap))
         {
             tapY -= 1f;
-            if ((now - player.DodgeLastLeftTime) < Timeout || frozenNoDoubletap || dodgeButton) detected = true;
+            if ((now - player.DodgeLastLeftTime) < timeout || frozenNoDoubletap || dodgeButton) detected = true;
             player.DodgeLastLeftTime = now;
         }
         if (mvR > 0f && ((pressed & PressedKeyBits.Right) == 0 || frozenNoDoubletap))
         {
             tapY += 1f;
-            if ((now - player.DodgeLastRightTime) < Timeout || frozenNoDoubletap || dodgeButton) detected = true;
+            if ((now - player.DodgeLastRightTime) < timeout || frozenNoDoubletap || dodgeButton) detected = true;
             player.DodgeLastRightTime = now;
         }
 
@@ -238,6 +250,15 @@ public sealed class DodgingMutator : MutatorBase
     {
         if (ClientDodgingProvider is { } p) return p(player);
         return Api.Services is not null && Api.Cvars.GetFloat("cl_dodging") != 0f;
+    }
+
+    // QC PHYS_DODGING_TIMEOUT(s) = CS_CVAR(s).cvar_cl_dodging_timeout — the per-client double-tap window, read
+    // off the dodging player's own replicated cvar each frame. Uses the replicated provider if installed, else
+    // the server-side Timeout field (the shared / not-yet-replicated value).
+    private float TimeoutFor(Entity player)
+    {
+        if (TimeoutProvider is { } p) return p(player);
+        return Timeout;
     }
 
     // float determine_force(player) — a frozen player gets the flat frozen force; otherwise map the current

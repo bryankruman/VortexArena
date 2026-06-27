@@ -108,6 +108,14 @@ public sealed class GameWorld
     public RoundHandler? Rounds { get; private set; }
 
     /// <summary>
+    /// QC <c>shuffleteams_on_reset_map</c> (server/command/sv_cmd.qh:7): a <c>shuffleteams</c> command issued
+    /// while a round is live (CA <c>SV_ParseServerCommand</c> sets it to <c>!allowed_to_spawn</c>,
+    /// sv_clanarena.qc:637) is deferred so the live round isn't disrupted; the shuffle runs at the next
+    /// <see cref="ResetMap"/> (QC reset_map, vote.qc:368-372) instead of immediately.
+    /// </summary>
+    public bool ShuffleTeamsOnResetMap { get; set; }
+
+    /// <summary>
     /// Per-frame round-prep step (set by <see cref="ActivateGameType"/> for round-based modes): feed the live
     /// roster to the active gametype so the round handler's CheckTeams/CheckWinner predicates see it. Runs each
     /// frame right before <see cref="RoundHandler.Think"/>.
@@ -422,7 +430,11 @@ public sealed class GameWorld
         // Wire the Porto weapon's portal placement to the warpzone manager (QC the lib/warpzone portal subsystem):
         // each landed portal becomes a warpzone, the in/out pair linked two-way so a player can walk through.
         XonoticGodot.Common.Gameplay.Porto.PortalSpawner = r =>
-            Warpzones.PlacePortoPortal(r.Origin, r.SurfaceNormal, r.IsInPortal, r.PortalId, r.Owner);
+            Warpzones.PlacePortoPortal(r.Origin, r.SurfaceNormal, r.RightVector, r.IsInPortal, r.PortalId, r.Owner);
+        // QC realowner.portal_in.portal_id: lets the combined-shot blue stage confirm its out-portal pairs with the
+        // in-portal it just placed before committing (and clear-all + fail on a mismatch).
+        XonoticGodot.Common.Gameplay.Porto.PortalInId = owner =>
+            Warpzones.PortalInId(owner);
         // QC Portal_ClearWithID: when a combined cnt<0 porto shot soft-fails after already placing its in-portal,
         // tear that orphaned in-portal (+ any linked partner) back out so it doesn't outlive the failed shot.
         XonoticGodot.Common.Gameplay.Porto.PortalClearWithId = (owner, id) =>
@@ -637,6 +649,9 @@ public sealed class GameWorld
         // (CanPickupItems is tagged on each (re)spawn in ClientManager.Spawn; buff pickups self-spawn via the
         //  BuffsMutator hook in MutatorActivation.Apply above — no extra wiring needed here.)
         XonoticGodot.Common.Gameplay.StartItem.GameStartTimeProvider = () => GameStartTime;
+        // LogicGates.GameStartTimeProvider feeds trigger_gamestart's deferred fire (QC game_starttime + wait) so a
+        // wait>0 gamestart trigger fires relative to the real countdown end, not 0. Same live source as StartItem.
+        XonoticGodot.Common.Gameplay.LogicGates.GameStartTimeProvider = () => GameStartTime;
         XonoticGodot.Common.Gameplay.TargetUtilities.GiveItemHandler = (worldItem, actor) =>
         {
             // QC target/give.qc:16-19: on a successful give, play the item's pickup sound on the actor. The
@@ -848,6 +863,15 @@ public sealed class GameWorld
         Teamplay.LockTeamsGet = () => TeamsLocked;
         Teamplay.LockTeamsSet = locked => TeamsLocked = locked;
         Clients.OnAfterClientDisconnect = () => Teamplay.RemoveExcessPlayers(Clients.Players, Cvars.Bool("g_campaign"));
+        // QC SetPlayerTeam tail (teamplay.qc:293,309): LogTeamChange emits the :team: event-log line (gated on
+        // sv_eventlog + a valid playerid inside GameLog.TeamChange), and a warmup join re-runs ReadyCount so the
+        // nagger/badteams hold releases once teams balance. Both fire from Teamplay.SetTeam on a real change.
+        Teamplay.OnTeamChangeLog = (p, team, type) =>
+        {
+            if (Cvars.Bool("sv_eventlog"))
+                GameLog.TeamChange(p.PlayerId, team, type.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        };
+        Teamplay.RequestReadyCount = () => Warmup.ReadyCountCheck();
 
         // - timeout_status (ReadyCount top): cannot reset the game while a timeout is active/pending.
         Warmup.TimeoutActive = () => Timeout.Active;
@@ -1171,6 +1195,10 @@ public sealed class GameWorld
 
         // Map rotation + vote: the change-level pipeline applies the winner; current map seeds the cursor.
         MapVote.Reseed(unchecked((int)(uint)MapName.GetHashCode()));
+        // QC MapVote_Finished / MapVote_CheckRules_decide GameLogEcho (mapvoting.qc:524/537/676/695):
+        // wire the :vote:finished / :vote:reduce / :vote:suggestion_accepted event-log lines through
+        // GameLog.Echo, gating on sv_eventlog at the call site (same pattern as dom/ka EventLogEcho).
+        MapVote.EventLogEcho = line => { if (Cvars.Bool("sv_eventlog")) GameLog.Echo(line); };
         Rotation.Reseed(unchecked((int)(uint)MapName.GetHashCode()) ^ 0x1234);
 
         // QC clears + re-links the spawnpoint list per map (relocate_spawnpoint recomputes have_team_spawns at
@@ -1335,6 +1363,19 @@ public sealed class GameWorld
         // head. Gated on the mutator being added (g_bugrigs on); only a real client has a view (bots ignore it).
         if (!p.IsBot && Mutators.ByName("bugrigs") is BugrigsMutator bugrigsConnect && bugrigsConnect.Added)
             bugrigsConnect.OnClientConnect(p);
+
+        // QC ClientConnect (server/client.qc:1262-1264): sv_vote_master_ids auto-login. A connecting client whose
+        // cryptographically-signed idfp (this.crypto_idfp_signed && this.crypto_idfp) appears in the
+        // sv_vote_master_ids cvar is silently granted vote-master status (this.vote_master = true) — no login
+        // password or master-vote needed. The port's faithful idfp gate is a non-empty PersistentId (the same UID
+        // race records / playban lists key by; "" = anonymous/unsigned). QC uses strstrofs(list, idfp, 0) >= 0, a
+        // raw substring containment, which the Contains below mirrors.
+        if (!string.IsNullOrEmpty(p.PersistentId))
+        {
+            string masterIds = Cvars.String("sv_vote_master_ids");
+            if (!string.IsNullOrEmpty(masterIds) && masterIds.Contains(p.PersistentId, StringComparison.Ordinal))
+                Voting.GrantMaster(p);
+        }
     }
 
     /// <summary>
@@ -1740,6 +1781,10 @@ public sealed class GameWorld
         // zone manually each frame — the touch-trigger pass can't catch a non-solid mover. Both self-gate to a
         // no-op on a static map / a map with no warpzones.
         Warpzones.ThinkMovingZones();
+        // QC Portal_Think fade-time expiry (server/portals.qc:507-508): a Porto portal pair times out after
+        // g_balance_portal_lifetime (15s, recharged on each use). The warpzone realisation has no per-portal think,
+        // so the server sweeps expired pairs once per frame.
+        Warpzones.ExpirePortals();
         Warpzones.WarpObservers(Clients.Players);
 
         // QC CreatureFrame_All: contents (water/lava/slime) + fall damage for every player, gated by the
@@ -2146,6 +2191,16 @@ public sealed class GameWorld
             // QC weaponsystem.qc:609-611: zero the key in a vehicle or when weapon use is forbidden.
             p.OffhandFirePressed = hookPressed && p.Vehicle is null;
         }
+
+        // QC PHYS_INPUT_BUTTON_ATCK2: publish this tick's secondary-fire button onto the player BEFORE the
+        // PlayerPreThink hook so a PreThink subscriber can read it the same tick (the Overkill countdown-blaster
+        // hook fires the secondary blaster while a round countdown forbids the normal weapon-fire path). Humans
+        // only here — the same gate as the offhand publish above: reading InputProvider only primes the per-tick
+        // cache, whereas Bots.InputFor has a brain-produce side-effect that must stay at its QC-ordered movement
+        // slot below (a bot's countdown-blaster, the rare case, reads the button one tick stale instead). Zeroed
+        // in a vehicle (the seated player can't fire their hand weapon).
+        if (!p.IsBot)
+            p.ButtonAttack2 = p.Vehicle is null && (InputProvider(p)?.ButtonAttack2 ?? false);
 
         // ---- PlayerPreThink (QC client.qc PlayerPreThink) ----
         // QC PlayerPreThink (client.qc:2880) calls anticheat_prethink EVERY frame to zero the div0_evade offset,
@@ -2748,7 +2803,8 @@ public sealed class GameWorld
                         endDelay: 5f,
                         countdown: Cvars.FloatOr("g_domination_warmup", 5f),
                         roundTimeLimit: Cvars.FloatOr("g_domination_round_timelimit", 120f));
-                    dom.RoundEndTimeSource = () => domRounds.RoundEndTime; // QC round_handler_GetEndTime()
+                    dom.RoundEndTimeSource = () => domRounds.RoundEndTime;     // QC round_handler_GetEndTime()
+                    dom.RoundStartedSource = () => domRounds.IsRoundStarted;  // QC round_handler_IsRoundStarted()
                     Scores.TeamScoreSource = dom.GetTeamCaps;
                 }
                 else
@@ -2855,6 +2911,9 @@ public sealed class GameWorld
             // ---- FFA / non-team modes that still own a scoring handler ----
             case Keepaway ka:
                 ka.Activate();
+                // QC ka_EventLog seam (sv_keepaway.qc:44-48): wire GameLog.Echo (gated by sv_eventlog at the call
+                // site in Keepaway.cs) so pickup/drop emit the `:ka:pickup:<id>` / `:ka:dropped:<id>` event-log lines.
+                ka.EventLogEcho = line => { if (Cvars.Bool("sv_eventlog")) GameLog.Echo(line); };
                 // QC MUTATOR_HOOKFUNCTION(ka, Bot_ForbidAttack) (sv_keepaway.qc:542-556): a bot won't attack
                 // unless it or the target carries the ball, or the ball is loose — so bots contest the carrier
                 // instead of fragging bystanders. Non-player targets are never vetoed here.
@@ -2947,6 +3006,15 @@ public sealed class GameWorld
                 // QC the finish kill-delay re-teleport: re-place the racer at a (race-start) spawn point so they
                 // run again. Clients.Spawn goes through PutPlayerInServer, the host analogue of race_PreparePlayer.
                 race.OnFinishRetract = p => Clients.Spawn(p);
+                // QC race_setTime consent gate (server/race.qc:415): a record is only stored when the racer has
+                // BOTH cl_allow_uidtracking == 1 AND cl_allow_uid2name == 1 (else INFO_RACE_NEW_MISSING_NAME and
+                // the time is lost). Wire the gate to the per-client replicated-cvar store. Defaults mirror the
+                // shipped client seta values (cl_allow_uidtracking 1, cl_allow_uid2name -1 = "ask"), so a client
+                // that never replicated its choice (uid2name still -1) is treated as NOT consenting, exactly as
+                // Base does. Bots have no UID so they never reach this gate (RecordFinishTime short-circuits).
+                race.UidConsentProvider = p =>
+                    Commands.GetClientCvarFloat(p, "cl_allow_uidtracking", 1f) == 1f
+                    && Commands.GetClientCvarFloat(p, "cl_allow_uid2name", -1f) == 1f;
                 // QC trigger_race_checkpoint_spawn_evalfunc / race_respawn_spotref (server/race.qc:1055/808): a
                 // respawning racer is returned to the checkpoint they last passed, not a random grid start. Race
                 // sets the one-shot forced spawn (Player.SpawnPointTarg) here, before SelectSpawnPoint reads it.
@@ -2980,6 +3048,12 @@ public sealed class GameWorld
                 break;
             case Cts cts:
                 cts.Activate();
+                // QC CLASS(RaceCTS) gametype_init default args (cts.qh): "timelimit=20" — a CTS match is bounded
+                // ONLY by the time limit (no frag/lead win; cts.Activate cleared fraglimit/leadlimit to 0 per the
+                // MUTATOR_ONADD GameRules_limit_score/lead(0)). Assert the Base mapinfo timelimit default when
+                // nothing configured one, same pattern as the Duel/Survival arms above.
+                if (Cvars.FloatOr("timelimit", 0f) <= 0f)
+                    Cvars.Set("timelimit", 20f);   // QC gametype_init timelimit=20 (minutes)
                 // QC Race_FinalCheckpoint (sv_cts.qc:342) → ClientKill_Silent(player, g_cts_finish_kill_delay):
                 // the finish retract is a real *silent* self-kill (DEATH_KILL), not a teleport-respawn — so it
                 // produces a death event / obituary / death stat. CTS's PlayerDies hook forces an instant respawn
@@ -3822,14 +3896,18 @@ public sealed class GameWorld
         Demo.OnMatchEnd();
 
         // QC MUTATOR_CALLHOOK(MatchEnd): the trailing match-end hook (CTF flag cleanup, kh_finalize, instagib
-        // countdown stop). Fired last, mirroring NextLevel's order — just before the localcmd("sv_hook_gameend")
-        // admin-script alias, which has no stock-config behaviour in the port.
+        // countdown stop). Fired last, mirroring NextLevel's order.
         // NOTE: QC FixIntermissionClient also stamps RES_HEALTH = -2342 (the first-intermission-phase sentinel).
         // It is intentionally NOT reproduced here: DarkPlaces' SVC_INTERMISSION suppresses the whole gameplay HUD,
         // so the value is never shown; the port has no intermission HUD suppression, so the listen-server
         // HealthArmor panel (bound directly to Player.Health) would render a literal "-2342". The observable
         // view freeze (mouse-look lock + viewmodel hide + death-cam suppression) is handled client-side in NetGame.
         MutatorHooks.FireMatchEnd();
+
+        // QC localcmd("\nsv_hook_gameend\n") (server/world.qc:1463): the trailing admin-script alias, fired last.
+        // Stock config defines it as an empty alias (no-op, matching Base); a server.cfg that redefines it runs
+        // against the server's cvar store via the host-wired handler. Unwired (bare unit-test world) → harmless.
+        Commands.GameEndHookHandler?.Invoke();
     }
 
     /// <summary>QC the winner latch: set <see cref="Player.Winning"/> for the FFA leader / each winning-team member.</summary>
@@ -4187,6 +4265,12 @@ public sealed class GameWorld
             {
                 // No spawnfunc — KEEP the edict (it stays findable by classname/targetname, e.g. spawnpoints)
                 // and note the class for diagnostics. DP's SV_OnEntityNoSpawnFunction does not delete it.
+                // A no-spawnfunc edict never ran IndexRegister, so a targetname'd one (e.g. an Onslaught/Assault
+                // spawnpoint that a control-point relay targets to retag/deactivate it via spawnpoint_use/_setactive)
+                // would be invisible to SUB_UseTargets' FindByTargetName index lookup. Register it here so the
+                // target/relay chain can reach it — QC's find(world, targetname, ...) saw every edict naturally.
+                if (!string.IsNullOrEmpty(e.TargetName))
+                    XonoticGodot.Common.Gameplay.MapMover.IndexRegister(e);
                 if (!_unhandledClasses.Contains(cls))
                     _unhandledClasses.Add(cls);
             }
@@ -4455,6 +4539,15 @@ public sealed class GameWorld
 
         if (Rounds is not null)
             Rounds.Reset(GameStartTime);             // QC round_handler_Reset(game_starttime)
+
+        // QC reset_map (server/command/vote.qc:368-372): a shuffleteams deferred mid-round (CA/FreezeTag
+        // SV_ParseServerCommand set shuffleteams_on_reset_map) runs now, at the round/map reset boundary, then
+        // the flag is cleared. Done before the per-player respawn below so players spawn on their new teams.
+        if (ShuffleTeamsOnResetMap)
+        {
+            Commands?.ShuffleTeamsNow();
+            ShuffleTeamsOnResetMap = false;
+        }
 
         // QC: run each (non-client) map entity's .reset callback, then re-spawn the players.
         ResetMapObjects();

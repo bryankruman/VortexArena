@@ -87,6 +87,7 @@ public sealed class Keepaway : GameType
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
     private HookHandler<MutatorHooks.PlayerUseKeyArgs>? _useKeyHandler;
     private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _physicsHandler;
+    private HookHandler<MutatorHooks.PreferPlayerScore_ClearArgs>? _preferScoreClearHandler;
 
     // QC g_keepaway_noncarrier_warn (gametypes-server.cfg:446 = 1): centerprint-warn a non-carrier who frags
     // another non-carrier, nudging them toward the ball. Read in OnDeath (registry keepaway.warn.noncarrier).
@@ -106,6 +107,19 @@ public sealed class Keepaway : GameType
 
     /// <summary>The single ball's world entity (QC keepawayball edict), or null (headless).</summary>
     public Entity? BallEntity { get; private set; }
+
+    /// <summary>
+    /// QC <c>ka_EventLog</c> (sv_keepaway.qc:44-48) — the server gamelog echo seam. When wired (the host calls
+    /// <c>GameWorld.ActivateGameType</c>), <see cref="PickUp"/> / <see cref="Drop"/> emit
+    /// <c>:ka:pickup:&lt;playerid&gt;</c> / <c>:ka:dropped:&lt;playerid&gt;</c> to the server event log (gated by
+    /// <c>sv_eventlog</c> at the host call site). When null (headless / tests) the echo is a no-op.
+    /// QC: <c>if(autocvar_sv_eventlog) GameLogEcho(strcat(":ka:", mode, ((actor != NULL) ? strcat(":", ftos(actor.playerid)) : "")))</c>.
+    /// </summary>
+    public Action<string>? EventLogEcho { get; set; }
+
+    /// <summary>QC ka_EventLog: emit <c>:ka:&lt;mode&gt;[:&lt;playerid&gt;]</c> through the host event-log seam.</summary>
+    private void EmitEventLog(string mode, Player? actor)
+        => EventLogEcho?.Invoke(actor is not null ? ":ka:" + mode + ":" + actor.PlayerId : ":ka:" + mode);
 
     // ----- ball respawn + damage-scaling cvars (g_keepaway*) -----
     private const string CvarRespawnTime = "g_keepawayball_respawntime"; // loose-ball relocate timer
@@ -198,7 +212,17 @@ public sealed class Keepaway : GameType
         // powerup/buff factors (registry keepaway.carrier.highspeed — previously missing).
         _physicsHandler ??= OnPlayerPhysics;
         MutatorHooks.PlayerPhysics.Add(_physicsHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ka, PreferPlayerScore_Clear) { return true; }: ka is FFA, so it always prefers
+        // to keep the per-player score (vetoes the team-score-preference clear). Under g_score_resetonjoin -1 this
+        // veto is consulted by GameScores.ClearPlayerOnJoin on rejoin (registry keepaway.score.preferplayerscore).
+        _preferScoreClearHandler ??= OnPreferPlayerScoreClear;
+        MutatorHooks.PreferPlayerScore_Clear.Add(_preferScoreClearHandler);
     }
+
+    /// <summary>QC MUTATOR_HOOKFUNCTION(ka, PreferPlayerScore_Clear): ka always returns true — keep the per-player
+    /// FFA score (veto the clear), matching the QC hook that returns true unconditionally.</summary>
+    private bool OnPreferPlayerScoreClear(ref MutatorHooks.PreferPlayerScore_ClearArgs args) => true;
 
     /// <summary>QC MUTATOR_HOOKFUNCTION(ka, PlayerUseKey): a carrier pressing +use drops the ball (ka_DropEvent)
     /// and consumes the press (returns true). Otherwise the press falls through to other handlers.</summary>
@@ -300,6 +324,11 @@ public sealed class Keepaway : GameType
             MutatorHooks.PlayerPhysics.Remove(_physicsHandler);
             _physicsHandler = null;
         }
+        if (_preferScoreClearHandler is not null)
+        {
+            MutatorHooks.PreferPlayerScore_Clear.Remove(_preferScoreClearHandler);
+            _preferScoreClearHandler = null;
+        }
     }
 
     /// <summary>
@@ -322,6 +351,9 @@ public sealed class Keepaway : GameType
             SoundSystem.PlayOn(e, Sounds.ByName("KA_PICKEDUP")); // QC SND_KA_PICKEDUP, ATTEN_NONE
         }
 
+        // QC ka_TouchEvent: ka_EventLog("pickup", toucher) — write the :ka:pickup:<playerid> gamelog line.
+        EmitEventLog("pickup", player);
+
         // QC ka_TouchEvent messages: kill-feed line to all + centerprint to everyone-except + self centerprint.
         NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "KEEPAWAY_PICKUP", player.NetName);
         NotificationSystem.Send(NotifBroadcast.AllExcept, player, MsgType.Center, "KEEPAWAY_PICKUP", player.NetName);
@@ -343,6 +375,9 @@ public sealed class Keepaway : GameType
             global::XonoticGodot.Common.Gameplay.BallEntity.DropFromCarrier(e, RespawnTime, takesDamage: true);
             e.Think = RespawnBallThink;
         }
+
+        // QC ka_DropEvent: ka_EventLog("dropped", player) — write the :ka:dropped:<playerid> gamelog line.
+        EmitEventLog("dropped", carrier);
 
         // QC ka_DropEvent messages and sounds: kill-feed line to all + centerprint to all + global drop sfx.
         NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "KEEPAWAY_DROPPED", carrier.NetName);

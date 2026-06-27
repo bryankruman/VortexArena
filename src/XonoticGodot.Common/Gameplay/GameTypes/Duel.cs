@@ -34,8 +34,9 @@ namespace XonoticGodot.Common.Gameplay;
 /// Deferred (NOTE — cross-boundary, recorded as cross-file todos):
 ///  - the 'playerA vs playerB' duel title (QC Announcer_Duel → CenterPrintPanel.SetDuelTitle): the panel side
 ///    exists but the m_1v1 countdown driver that calls it is a client/HUD concern;
-///  - map-size support gating (m_isAlwaysSupported diameter &lt; 3250 / m_isForcedSupported on DM maps) — a
-///    map-pool/MapInfoBackend concern.
+///  - map-size support gating (m_isAlwaysSupported diameter &lt; 3250) — requires BSP world bounds not
+///    available in the menu's file-only parsing layer; the m_isForcedSupported (DM→duel auto-list) part
+///    IS implemented in MapInfoBackend.ApplyForcedGametypes + MapInfoCache.Get (duel.qh:15-28).
 /// </summary>
 [GameType]
 public sealed class Duel : GameType

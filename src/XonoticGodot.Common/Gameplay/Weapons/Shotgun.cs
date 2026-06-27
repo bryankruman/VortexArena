@@ -63,6 +63,20 @@ public sealed class Shotgun : Weapon
     public PrimaryBalance Primary;
     public SecondaryBalance Secondary;
 
+    // METHOD(Shotgun, describe) — common/weapons/weapon/shotgun.qc:416-428 (MENUQC).
+    // Four PAR() paragraphs describing primary fan, secondary slap, ammo, and range limitations.
+    // Name substitutions (%s COLORED_NAME) are pre-filled with literals (same convention as Electro/Tuba).
+    // The trailing W_Guide_Keybinds and W_Guide_DPS_primaryMultishot lines are owned by the guide page
+    // and not reproduced here (those helpers aren't ported to Common).
+    public override string? GuideDescription =>
+        "The Shotgun is one of the two main default weapons, firing a single shotgun round which spreads "
+      + "into multiple pellets upon exiting the barrel.\n\n"
+      + "The secondary fire swings the Shotgun, slapping players close enough with the head of the weapon. "
+      + "Since the slap takes a moment to land, timing this well is difficult.\n\n"
+      + "The primary fire consumes Shells ammo, although if you spawn in with the Shotgun you will already have some.\n\n"
+      + "The Shotgun damage drops off quickly as the range increases, so it is only useful for close combat "
+      + "or sometimes medium range combat.";
+
     /// <summary>QC IT_UNLIMITED_AMMO item bit (mirrors the local const used by WeaponFireGate/Vortex).</summary>
     private const int ItUnlimitedAmmo = 1 << 0;
 

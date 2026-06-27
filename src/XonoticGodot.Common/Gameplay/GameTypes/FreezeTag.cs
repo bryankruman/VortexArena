@@ -72,6 +72,7 @@ public sealed class FreezeTag : GameType
     private const string CvarReviveAutoProgress = "g_freezetag_revive_auto_progress"; // ramp the thaw ring from freeze time
     private const string CvarReviveSpawnShield = "g_freezetag_revive_spawnshield"; // post-revive spawn-shield seconds
     private const string CvarFrozenMaxtime = "g_freezetag_frozen_maxtime";   // auto-thaw after this many seconds (0 = off)
+    private const string CvarWeaponArena = "g_freezetag_weaponarena"; // QC gametypes-server.cfg:429 default "most_available"
     private const string CvarStartHealth = "g_ft_start_health";
     private const string CvarStartArmor  = "g_ft_start_armor";
     private const string CvarWarmup = "g_freezetag_warmup";
@@ -138,6 +139,10 @@ public sealed class FreezeTag : GameType
     private HookHandler<MutatorHooks.SetStartItemsArgs>? _startItemsHandler;
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _damageCalcHandler;
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _playerSpawnHandler;
+    private HookHandler<MutatorHooks.GiveFragsForKillArgs>? _giveFragsHandler;
+    private HookHandler<MutatorHooks.SetWeaponArenaArgs>? _weaponArenaHandler;
+    private HookHandler<MutatorHooks.PlayerRegenArgs>? _regenHandler;
+    private HookHandler<MutatorHooks.ItemTouchArgs>? _itemTouchHandler;
 
     public FreezeTag()
     {
@@ -262,6 +267,28 @@ public sealed class FreezeTag : GameType
         // naturally excluded — only a genuine mid-round join is caught.
         _playerSpawnHandler = OnPlayerSpawn;
         MutatorHooks.PlayerSpawn.Add(_playerSpawnHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ft, GiveFragsForKill, CBC_ORDER_FIRST): no normal frags are counted in Freeze
+        // Tag — the only scoring is the freeze ±1 SCORE matrix (freezetag_Add_Score) + the round wins. Zero the
+        // per-kill frag delta so an enemy freeze doesn't ALSO award a +1 engine kill on top (mirror CA/Keepaway).
+        _giveFragsHandler = OnGiveFragsForKill;
+        MutatorHooks.GiveFragsForKill.Add(_giveFragsHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ft, SetWeaponArena): default the weapon arena to g_freezetag_weaponarena
+        // ("most_available", gametypes-server.cfg:429) when no arena is otherwise set, so FT players spawn with
+        // (nearly) the full arsenal on top of the start loadout rather than just the start weapons.
+        _weaponArenaHandler = OnSetWeaponArena;
+        MutatorHooks.SetWeaponArena.Add(_weaponArenaHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ft, PlayerRegen): a frozen player's health/armor regen is suppressed (they
+        // stay at HP=1 while frozen, return STAT(FROZEN)).
+        _regenHandler = OnPlayerRegen;
+        MutatorHooks.PlayerRegen.Add(_regenHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ft, ItemTouch): a frozen toucher does NOT collect items (return
+        // MUT_ITEMTOUCH_RETURN) — a pushed/teleported frozen body can't illegitimately pick items up.
+        _itemTouchHandler = OnItemTouch;
+        MutatorHooks.ItemTouch.Add(_itemTouchHandler);
     }
 
     /// <summary>
@@ -279,6 +306,10 @@ public sealed class FreezeTag : GameType
         if (_startItemsHandler is not null) { MutatorHooks.SetStartItems.Remove(_startItemsHandler); _startItemsHandler = null; }
         if (_damageCalcHandler is not null) { MutatorHooks.DamageCalculate.Remove(_damageCalcHandler); _damageCalcHandler = null; }
         if (_playerSpawnHandler is not null) { MutatorHooks.PlayerSpawn.Remove(_playerSpawnHandler); _playerSpawnHandler = null; }
+        if (_giveFragsHandler is not null) { MutatorHooks.GiveFragsForKill.Remove(_giveFragsHandler); _giveFragsHandler = null; }
+        if (_weaponArenaHandler is not null) { MutatorHooks.SetWeaponArena.Remove(_weaponArenaHandler); _weaponArenaHandler = null; }
+        if (_regenHandler is not null) { MutatorHooks.PlayerRegen.Remove(_regenHandler); _regenHandler = null; }
+        if (_itemTouchHandler is not null) { MutatorHooks.ItemTouch.Remove(_itemTouchHandler); _itemTouchHandler = null; }
     }
 
     public int AssignTeam(Player joiner, IReadOnlyList<Player> roster)
@@ -837,6 +868,45 @@ public sealed class FreezeTag : GameType
     }
 
     /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ft, GiveFragsForKill, CBC_ORDER_FIRST)</c> (sv_freezetag.qc:590):
+    /// <c>M_ARGV(2, float) = 0; return true;</c> — no normal frags are counted in Freeze Tag. The freeze/revive
+    /// ±1 SCORE matrix and the round wins are the only scoring; without this an enemy freeze would also award a
+    /// +1 engine kill/score on top of <see cref="Freeze"/>'s own matrix (double-count). Mirrors CA/Keepaway.
+    /// </summary>
+    private bool OnGiveFragsForKill(ref MutatorHooks.GiveFragsForKillArgs args)
+    {
+        args.FragScore = 0f;
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ft, SetWeaponArena)</c> (sv_freezetag.qc:978): default the weapon arena to
+    /// g_freezetag_weaponarena ("most_available") when the configured arena is unset / "0", so FT players spawn
+    /// with (nearly) the full arsenal on top of the start loadout (mirrors CA's OnSetWeaponArena).
+    /// </summary>
+    private bool OnSetWeaponArena(ref MutatorHooks.SetWeaponArenaArgs args)
+    {
+        if (args.Arena == "0" || string.IsNullOrEmpty(args.Arena))
+            args.Arena = CvarString(CvarWeaponArena, "most_available");
+        return false;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ft, PlayerRegen)</c> (sv_freezetag.qc:887): <c>return STAT(FROZEN, player);</c>
+    /// — a frozen player's health/armor regen is suppressed (they stay at HP=1 while frozen).
+    /// </summary>
+    private bool OnPlayerRegen(ref MutatorHooks.PlayerRegenArgs args)
+        => args.Player is Player p && IsFrozen(p);
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ft, ItemTouch)</c> (sv_freezetag.qc:894): a frozen toucher does NOT collect
+    /// the item — return MUT_ITEMTOUCH_RETURN (true) to abort the pickup (QC's BuffTouch frozen gate is the same
+    /// rule for buffs; the port has no separate buff-touch hook so this single gate covers world-item pickups).
+    /// </summary>
+    private bool OnItemTouch(ref MutatorHooks.ItemTouchArgs args)
+        => args.Toucher is Player p && IsFrozen(p);
+
+    /// <summary>
     /// QC freezetag_CheckTeams (canRoundStart): a round may begin once every active team has a live,
     /// non-frozen player (and at least one player is present).
     /// </summary>
@@ -1033,6 +1103,13 @@ public sealed class FreezeTag : GameType
             return false;
         value = Api.Cvars.GetFloat(name);
         return true;
+    }
+
+    private static string CvarString(string name, string fallback)
+    {
+        if (Api.Services is null) return fallback;
+        string s = Api.Cvars.GetString(name);
+        return string.IsNullOrEmpty(s) ? fallback : s;
     }
 }
 

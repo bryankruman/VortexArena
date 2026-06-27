@@ -292,8 +292,8 @@ public static class MayhemScoring
 ///  - the point-limit + lead-limit end-of-match check;
 ///  - reset_map_players (<see cref="ResetMapPlayers"/>, called by the host on round/map reset): clear GtTotalDamageDealt.
 ///
-/// Deferred (NOTE — cross-boundary): score networking/HUD, the Scores_CountFragsRemaining suppression
-/// (announcer), and map-size support gating (m_isAlwaysSupported / m_isForcedSupported — map-pool concern).
+/// Deferred (NOTE — cross-boundary): score networking/HUD and map-size support gating
+/// (m_isAlwaysSupported / m_isForcedSupported — map-pool concern).
 /// </summary>
 [GameType]
 public sealed class Mayhem : GameType
@@ -702,6 +702,11 @@ public sealed class Mayhem : GameType
         if (leadLimit > 0f && best is not null && second is not null
             && (best.ScoreFrags - second.ScoreFrags) >= leadLimit)
             MatchEnded = true;
+
+        // QC MUTATOR_HOOKFUNCTION(mayhem, Scores_CountFragsRemaining) is commented out (disabled): Mayhem's
+        // upscaled score (damage-weight + frag-weight, often 1000+ limit) doesn't play well with per-frag
+        // announcements; a single shot (~40-80 dmg = 2-3 score) would trigger "2/3 frags left" as the match ends,
+        // leaving no time for the cue to process. The port matches this by not calling CountFragsRemaining.
     }
 
     // ----- cvar helpers (the gametype TryCvar idiom) ---------------------------------------------------

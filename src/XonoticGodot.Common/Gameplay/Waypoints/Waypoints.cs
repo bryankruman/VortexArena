@@ -233,6 +233,12 @@ public sealed class WaypointSprite
     public bool Dead;                     // marked for removal (lifetime expired / killed)
     public float DeadAt;                  // sim time when fade-out completes → drop
 
+    /// <summary>QC negative <c>_lifetime</c> (waypointsprites.qc:1058-1060): <c>fade_time</c> is stored negative so
+    /// the client never fades the sprite, yet <c>teleport_time = time + |lifetime|</c> still arms the Think kill.
+    /// Set true to reproduce a positive-but-NON-fading lifetime — at expiry the waypoint is killed outright (no
+    /// fade-out ramp), matching the <c>Weapon_whereis</c> WP_Weapon marker (lifetime -2, re-spawned each press).</summary>
+    public bool NoFade;
+
     /// <summary>QC <c>WaypointSprite_Ping</c> radar pulse: a ping is "active" (the net layer stamps bit 7 of the
     /// radar-icon byte once) while sim-time &lt; this. The 0.3s anti-spam window matches QC's ping cooldown so a
     /// rapid re-ping doesn't double-stamp the same frame; the client draws an expanding ring from each stamp.</summary>
@@ -284,12 +290,12 @@ public static class WaypointSprites
 
     private static float Now => GametypeEntities.Now;
 
-    /// <summary>QC Weapon_whereis spawns WP_Weapon with lifetime -2 (no auto-fade; the marker is RE-SPAWNED on
-    /// every weapon-key press, so it persists only as long as the player keeps pressing). The port has no
-    /// per-press re-spawn driver for an unowned weapon, so we give the marker a short positive lifetime — long
-    /// enough to read where the weapon is, then it fades — which reproduces the practical "flash a marker on the
-    /// spawn" effect of a single key press.</summary>
-    public const float WhereisLifetime = 2.5f;
+    /// <summary>QC Weapon_whereis spawns WP_Weapon with lifetime -2 (waypointsprites.qc:1058): <c>fade_time</c> is
+    /// stored negative so the client never fades it, while <c>teleport_time = time + 2</c> arms the Think kill — so
+    /// the marker shows at full alpha for 2s then disappears outright (no fade ramp), re-spawned on each weapon-key
+    /// press. The port reproduces this with a 2s lifetime + the <see cref="WaypointSprite.NoFade"/> flag, which
+    /// hard-kills at expiry rather than starting the deployed fade-out.</summary>
+    public const float WhereisLifetime = 2f;
 
     // ---- spawn ----------------------------------------------------------------------------------------
 
@@ -570,9 +576,18 @@ public static class WaypointSprites
                     wp.Health = -1f;
             }
 
-            // lifetime fade-out → mark dead, then drop after the fade.
+            // lifetime expiry. QC: if (fade_time && time >= teleport_time) Kill. A NoFade waypoint (fade_time
+            // stored negative — the Weapon_whereis -2 marker) is killed outright with no fade-out ramp; otherwise
+            // it begins the deployed fade-out (deadlifetime / 1s default).
             if (!wp.Dead && wp.Lifetime > 0f && now >= wp.SpawnTime + wp.Lifetime)
+            {
+                if (wp.NoFade)
+                {
+                    _active.RemoveAt(i);
+                    continue;
+                }
                 Disown(wp, wp.FadeTime > 0f ? wp.FadeTime : 1f);
+            }
 
             if (wp.Dead && now >= wp.DeadAt)
                 _active.RemoveAt(i);

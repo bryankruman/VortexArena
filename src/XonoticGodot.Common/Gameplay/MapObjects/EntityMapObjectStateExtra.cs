@@ -36,6 +36,11 @@ namespace XonoticGodot.Common.Framework
         /// <summary>QC <c>.state</c> as a logic-gate on/off latch (flipflop/monoflop/multivibrator).</summary>
         public int GateState;
 
+        // ---- trigger_relay_teamcheck saved team (QC .team_saved, IL g_saved_team) ----
+        /// <summary>QC <c>.team_saved</c> — the entity's spawn-time <c>.team</c>, restored by the relay_teamcheck
+        /// reset (relay_teamcheck.qc:33). Stamped at spawn so a round restart re-asserts the original team gate.</summary>
+        public float TeamSaved;
+
         // ---- target_kill / func_door_secret second obituary message (QC .message2) ----
         /// <summary>QC <c>.message2</c> — the "by &lt;attacker&gt;" obituary half (target_kill, door_secret).</summary>
         public string Message2 = "";

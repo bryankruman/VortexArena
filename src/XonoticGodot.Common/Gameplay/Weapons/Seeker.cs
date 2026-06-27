@@ -219,6 +219,10 @@ public sealed class Seeker : Weapon
         missile.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, up, Missile.Speed, Missile.SpeedUp);
         missile.Angles = QMath.VecToAngles(missile.Velocity);
 
+        // QC seeker.qc:178-179 — flag the seeker missile as a dodgeable hazard (rating = missile damage).
+        missile.BotDodge = true;
+        missile.BotDodgeRating = Missile.Damage;
+
         float deathTime = Api.Clock.Time + Missile.Lifetime;
         // QC this.wait — the per-missile adaptive smart-trace length (seeded at trace_max), kept in a closure
         // cell so it persists between this missile's MissileThink calls (the C# successor to the QC .wait field).
@@ -361,6 +365,10 @@ public sealed class Seeker : Weapon
         missile.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, up, Flac.Speed, Flac.SpeedUp, 0f, Flac.Spread);
         missile.Angles = QMath.VecToAngles(missile.Velocity);
 
+        // QC seeker.qc:281-282 — flag the flac projectile as a dodgeable hazard (rating = flac damage).
+        missile.BotDodge = true;
+        missile.BotDodgeRating = Flac.Damage;
+
         float deathTime = Api.Clock.Time + Flac.Lifetime + Prandom.Float() * Flac.LifetimeRand;
         missile.Touch = (self, other) => ExplodeFlac(self);
         missile.Think = self => ExplodeFlac(self); // adaptor_think2use_hittype_splash at lifetime
@@ -435,6 +443,10 @@ public sealed class Seeker : Weapon
         // W_SetupProjVelocity_PRE(tag_): velocity = w_shotdir * speed (with tag_spread, normally 0).
         missile.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, Vector3.UnitZ, Tag.Speed, 0f, 0f, Tag.Spread);
         missile.Angles = QMath.VecToAngles(missile.Velocity);
+
+        // QC seeker.qc:498-499 — flag the tag missile as a dodgeable hazard (rating = hardcoded 50).
+        missile.BotDodge = true;
+        missile.BotDodgeRating = 50f;
 
         missile.Touch = (self, other) => TagTouch(self, other, slot);
         missile.Think = self => Api.Entities.Remove(self);     // SUB_Remove at lifetime

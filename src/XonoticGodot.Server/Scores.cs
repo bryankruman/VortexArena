@@ -279,8 +279,8 @@ public sealed class WeaponAccuracy
 /// (<see cref="PlayerScoreRow.BestKillStreak"/>/<see cref="PlayerScoreRow.MultiKillBest"/>), and the
 /// AddPlayerScore hook (<see cref="AddPlayerScoreHook"/>).
 ///
-/// Deferred: the network scoreboard (Net_LinkEntity / SendFlags), playerstats reporting, and the SFL_*
-/// sort-flag metadata.
+/// The network scoreboard (ScoreInfoBlock / ScoreboardBlock), playerstats reporting (PlayerStats),
+/// and the SFL_* sort-flag metadata are all implemented.
 /// </summary>
 public sealed class Scores
 {
@@ -590,10 +590,11 @@ public sealed class Scores
         {
             string baseType = DeathTypes.BaseOf(deathType);
 
-            // QC Obituary_SpecialDeath (server/damage.qc:135): `if (g_cts && deathtype == DEATH_KILL.m_id) return;`
-            // — a /kill in CTS prints no obituary at all (the run is invalidated silently, no "died" line).
-            if (baseType == DeathTypes.Kill
-                && Api.Services is not null && Api.Cvars.GetFloat("g_cts") != 0f)
+            // QC Obituary_SpecialDeath (server/damage.qc:137): `if (g_cts && deathtype == DEATH_KILL.m_id) return;`
+            // — a /kill in CTS prints no obituary at all (the run is invalidated silently, no "died" line). QC's
+            // g_cts is the IS_GAMETYPE(CTS) macro, NOT a cvar; the port never stamps a g_cts cvar (Handicap.cs:26)
+            // and instead selects the gametype as the active GameScores.Gametype string.
+            if (baseType == DeathTypes.Kill && GameScores.Gametype == "cts")
                 return;
 
             // QC SUICIDE switch (server/damage.qc:271-273): TEAMCHANGE / AUTOTEAMCHANGE route to their own self
@@ -605,11 +606,13 @@ public sealed class Scores
             {
                 string tcName = baseType == DeathTypes.AutoTeamChange
                     ? "DEATH_SELF_AUTOTEAMCHANGE" : "DEATH_SELF_TEAMCHANGE";
-                // row args: "s1 death_team s2loc" (s1=victim, death_team=victim.team float, s2loc=location).
+                // row args (selector "s1 death_team s2loc"): SplitArgs takes ALL strings first (s1=victim,
+                // s2loc=location), then ALL floats (death_team=victim.team). QC passes the same: Obituary_SpecialDeath
+                // (server/damage.qc:272) -> s1=targ.netname, s2=deathlocation, ..., f1=targ.team.
                 NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Multi, tcName,
-                    victimName, victim.Team, deathloc);
+                    victimName, deathloc, victim.Team);
                 NotificationSystem.Send(NotifBroadcast.AllExcept, victim, MsgType.Info, tcName,
-                    victimName, victim.Team, deathloc);
+                    victimName, deathloc, victim.Team);
                 return;
             }
 
@@ -776,9 +779,14 @@ public sealed class Scores
     /// QC the ACCIDENT/TRAP BOTLIKE achievement (server/damage.qc:466-471): when a world/accident death (NO
     /// player attacker — <paramref name="attacker"/> is null) drives the victim's running SP_SCORE to exactly
     /// −5, announce ANNCE_ACHIEVEMENT_BOTLIKE to them. A genuine self-suicide (<c>targ == attacker</c>, a
-    /// non-null attacker) is NOT eligible — QC only checks this in the no-attacker ACCIDENT branch. The −1 frag
-    /// for this death has already been applied in <see cref="Obituary"/> before <see cref="EmitObituary"/> runs,
-    /// so the read here matches QC's post-GiveFrags <c>GameRules_scoring_add(targ, SCORE, 0)</c>.
+    /// non-null attacker) is NOT eligible — QC only checks this in the no-attacker ACCIDENT branch.
+    /// NOTE (live-path ordering caveat): QC reads SP_SCORE *after* its <c>GiveFrags(targ,targ,-1)</c>. In
+    /// sole-scorer mode (<see cref="OwnsScore"/>=true) the central <see cref="Obituary"/> applies that −1 before
+    /// this runs, so the read matches QC. In read-through mode (the live DM path, OwnsScore=false) the gametype's
+    /// own death handler applies <c>ScoreFrags-=1</c> *after* <see cref="Scores"/> (it subscribes to Combat.Death
+    /// later), so <c>Row(victim).Score</c> here still excludes this death's −1 — the −5 medal can therefore latch
+    /// one accident death late on that path. Cosmetic-only (the rare bot-like self-destruct medal); a faithful fix
+    /// would need the Scores/gametype death-handler ordering reconciled, which is out of this unit's scope.
     /// </summary>
     private void EmitBotlikeAchievement(Player? attacker, Player victim)
     {

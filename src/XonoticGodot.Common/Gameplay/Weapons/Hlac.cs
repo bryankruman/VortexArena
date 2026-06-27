@@ -260,6 +260,10 @@ public sealed class Hlac : Weapon
         missile.Velocity = WeaponFiring.ProjectileVelocity(dir, Vector3.UnitZ, speed, 0f, 0f, spread);
         missile.Angles = QMath.VecToAngles(missile.Velocity);
 
+        // QC hlac.qc:46-48,91-93 — flag the bolt as a dodgeable hazard (rating = this mode's damage).
+        missile.BotDodge = true;
+        missile.BotDodgeRating = damage;
+
         int deathType = RegistryId;
         // QC hlac.qc:113 — the secondary burst ORs HITTYPE_SECONDARY into projectiledeathtype (W_HLAC_Attack
         // leaves the plain weapon id). The int path can't pack the bit, so carry it as a string deathTag for

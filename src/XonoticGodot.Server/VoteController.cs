@@ -123,6 +123,14 @@ public sealed class VoteController
     /// <summary>Whether a player can become master (granted via login or a won master vote).</summary>
     public bool IsMaster(Player p) => _masters.Contains(p);
 
+    /// <summary>
+    /// QC <c>this.vote_master = true</c> auto-grant (server/client.qc:1262-1264): grant vote-master status to a
+    /// player directly, without a login password or a won master-vote. Used by the host on connect to honor
+    /// <c>sv_vote_master_ids</c> — a connecting client whose crypto idfp is listed in that cvar is silently made
+    /// master. Idempotent (a re-grant is a no-op).
+    /// </summary>
+    public void GrantMaster(Player p) => _masters.Add(p);
+
     /// <summary>QC the FOREACH_CLIENT(IS_REAL_CLIENT) voter count source — kept for back-compat.</summary>
     public void SetVoterCountSource(Func<int> voterCount) => _voterCount = voterCount;
 

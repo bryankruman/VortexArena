@@ -435,13 +435,16 @@ public static class SpawnSystem
         if (scored.Count == 0 && targetCheck)
             scored = ScoreAndFilter(forPlayer, spots, livePlayers, resolvedTeamCheck, targetCheck: false);
 
-        // QC SelectSpawnPoint (spawnpoints.qc:440-444): if even the targetcheck=false re-filter came back empty,
+        // QC SelectSpawnPoint (spawnpoints.qc:446-457): if even the targetcheck=false re-filter came back empty,
         // Spawn_WeightedPoint is called with a NULL firstspot and returns NULL (RandomSelection_chosen_ent = world).
         // Base then falls into `if(!spot)` → either GotoNextMap (spawn_debug) or `some_spawn_has_been_used` → NULL
-        // (team locked out) or error("Cannot find a spawn point"). The port mirrors this: return null here so the
-        // ClientManager caller can schedule a retry (or log the error), rather than seeding all spots at prio-0
-        // and placing the player in solid / the wrong team's area. Stock maps never trigger this path (every spot
-        // is active and at most one teamcheck pass fails before the -1/any fallback widens it).
+        // (team locked out by enemy control-point capture, a legitimate transient state) or error("Cannot find a
+        // spawn point"). The port mirrors this: return null here so the ClientManager caller can schedule a retry
+        // (or log the error), rather than seeding all spots at prio-0 and placing the player in solid / the wrong
+        // team's area. The some_spawn_has_been_used latch is now LIVE (SpawnPointUse sets it when a control point
+        // claims a team spot), so the "team can't spawn any more" case is genuinely reachable on Onslaught/Assault
+        // maps — the caller's 1s RespawnTime retry IS Base's "wait for your team to retake a point" behavior.
+        // Stock DM/CTF never trigger this path (every spot is active and the -1/any fallback widens the teamcheck).
         if (scored.Count == 0)
             return null;
 
@@ -624,10 +627,56 @@ public static class SpawnSystem
             foreach (Entity e in Api.Entities.FindByClass(cls))
             {
                 if (e is { IsFreed: false } && !list.Contains(e))
+                {
+                    // QC relocate_spawnpoint (spawnpoints.qc:151-153): `this.setactive = spawnpoint_setactive;
+                    // this.use = spawnpoint_use`. Each spawnpoint gets a Use + SetActive handler at link time so a
+                    // control point's target chain (Onslaught/Assault) that captures a spot retags it + latches
+                    // some_spawn_has_been_used, and a relay_(de)activate that toggles it flips SpawnActive (which
+                    // ScoreSpot's ACTIVE_ACTIVE gate honors). The port has no link-time pass, so install them lazily
+                    // here (idempotent: only set when unset; never clobbers a map-wired handler).
+                    e.Use ??= SpawnPointUse;
+                    e.SetActive ??= SpawnPointSetActive;
                     list.Add(e);
+                }
             }
         }
         return list;
+    }
+
+    /// <summary>
+    /// Port of <c>spawnpoint_use</c> (server/spawnpoints.qc:67-77): when a control point's target chain fires a
+    /// claimed team spawnpoint in teamplay (and team spawns are in use), retag the spot to the activator's team
+    /// and latch <see cref="SomeSpawnHasBeenUsed"/> — the enemy can no longer spawn there, and once a team has
+    /// lost all its spots <see cref="SelectSpawnPoint"/> returns null (team locked out) rather than error()ing.
+    /// </summary>
+    private static void SpawnPointUse(Entity self, Entity activator)
+    {
+        if (!GameScores.Teamplay)
+            return;
+        if (HaveTeamSpawns <= 0)
+            return;
+        self.Team = activator.Team;
+        SomeSpawnHasBeenUsed = true;
+    }
+
+    /// <summary>
+    /// Port of <c>spawnpoint_setactive</c> (server/spawnpoints.qc:84-99): toggle/set a spawnpoint's ACTIVE_*
+    /// state (a control-point loss/restore in Onslaught/Assault deactivates/reactivates its linked spawns via a
+    /// relay_(de)activate). ACTIVE_TOGGLE flips; otherwise the state is set directly. On an actual state CHANGE,
+    /// when teamplay + team spawns are in use, latch <see cref="SomeSpawnHasBeenUsed"/> (mappers can let players
+    /// disable enemy spawns). The spawnpoint's active state lives in <see cref="Entity.SpawnActive"/> (distinct
+    /// from the mover <c>.active</c>) so ScoreSpot's ACTIVE_ACTIVE gate reads back the new value immediately.
+    /// </summary>
+    private static void SpawnPointSetActive(Entity self, int act)
+    {
+        int old = self.SpawnActive;
+        if (act == MapMover.ActiveToggle)
+            self.SpawnActive = self.SpawnActive == MapMover.ActiveActive ? MapMover.ActiveNot : MapMover.ActiveActive;
+        else
+            self.SpawnActive = act;
+
+        if (self.SpawnActive != old && GameScores.Teamplay && HaveTeamSpawns > 0)
+            SomeSpawnHasBeenUsed = true;
     }
 
     /// <summary>

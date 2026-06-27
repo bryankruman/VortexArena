@@ -9,7 +9,7 @@
 //   LOOPED_ON  (1) — starts playing on spawn, loops continuously
 //   LOOPED_OFF (2) — starts silent, first trigger starts the loop (toggleable)
 //   GLOBAL     (4) — sets attenuation to ATTEN_NONE (heard everywhere, no distance falloff)
-//   ACTIVATOR  (8) — play only to the triggering REAL client (gated; plays to all for now — no MSG_ONE)
+//   ACTIVATOR  (8) — play only to the triggering REAL client (QC soundto MSG_ONE; wired via PlayToClientHandler)
 //
 // Behavior modes:
 //   1. LOOPED_ON without targetname: ambient sound — plays immediately and forever (ambientsound equivalent)
@@ -17,7 +17,7 @@
 //   3. LOOPED_OFF: starts silent, toggled on/off via .Use triggers
 //   4. Neither flag (one-shot): each .Use trigger plays the sound once (not looping)
 //   5. GLOBAL: sets ATTEN_NONE so the sound is heard at full volume everywhere
-//   6. ACTIVATOR: per-client sound (plays to all in this port — MSG_ONE not yet supported)
+//   6. ACTIVATOR: per-client sound — PlayToClientHandler seam wired in NetGame.StartListenServer (MSG_ONE faithful)
 //
 // *-prefixed noise: a per-player voice-message sample. QC resolves via GetVoiceMessageSampleField +
 // argv(1) random count against the activator's player-sounds manifest. The port resolves via
@@ -159,7 +159,8 @@ public static class TargetSpeaker
         if (self.Active != MapMover.ActiveActive)
             return;
 
-        StartLoop(self);
+        // QC target_speaker_use_on resolves a *-voice sample against the triggering actor.
+        StartLoop(self, activator);
         self.Use = SpeakerUseOff;
     }
 
@@ -182,7 +183,8 @@ public static class TargetSpeaker
         if (Api.Services is null)
             return;
 
-        string snd = ResolveNoise(self.Noise);
+        // QC target_speaker_use_on resolves a *-voice sample against the triggering actor.
+        string snd = ResolveNoise(self.Noise, activator);
         if (string.IsNullOrEmpty(snd))
             return;
 
@@ -335,13 +337,17 @@ public static class TargetSpeaker
     //  Loop start/stop helpers
     // ====================================================================
 
-    /// <summary>Start (or confirm) the looping sound on this speaker entity.</summary>
-    private static void StartLoop(Entity self)
+    /// <summary>
+    /// Start (or confirm) the looping sound on this speaker entity. <paramref name="activator"/> is the
+    /// triggering entity (NULL at spawn / round-reset), used only to resolve a <c>*</c>-prefixed voice sample
+    /// against the activating player's manifest — exactly as QC <c>target_speaker_use_on</c> does.
+    /// </summary>
+    private static void StartLoop(Entity self, Entity? activator = null)
     {
         if (Api.Services is null)
             return;
 
-        string snd = ResolveNoise(self.Noise);
+        string snd = ResolveNoise(self.Noise, activator);
         if (string.IsNullOrEmpty(snd))
             return;
 

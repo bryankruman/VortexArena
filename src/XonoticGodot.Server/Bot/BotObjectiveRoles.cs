@@ -440,53 +440,122 @@ public static class BotObjectiveRoles
 
     /// <summary>
     /// KeyHunt role (QC havocbot_role_kh_carrier / _defense / _offense / _freelancer + HavocBot_ChooseRole).
-    /// A faithful BEHAVIORAL COLLAPSE of the four QC roles into one rating function — the same pattern the port
-    /// uses for the CTF/Domination/Onslaught role trees: rather than carry a per-bot role-function pointer +
-    /// role_timeout and switch between four near-identical bodies, the single function picks the ratingscale
-    /// TRIPLE directly from the two pieces of state the QC roles actually branch on — the bot's carry state
-    /// (QC <c>this.kh_next</c>) and <see cref="KeyHunt.AllOwnedByWhichTeam"/> (QC kh_Key_AllOwnedByWhichTeam).
+    /// Implements the FULL four-role QC behavior tree with per-bot role timeouts and stochastic role transitions,
+    /// stored in <see cref="BotBrain.KhRole"/> / <see cref="BotBrain.KhRoleTimeout"/>:
     ///
-    /// The ratingscale triples are taken VERBATIM from the QC havocbot_goalrating_kh(team, dropped, enemy) calls.
-    /// All three non-carrier roles (defense/offense/freelancer) collapse to the SAME triple in two of their three
-    /// branches (defend-when-we-own-all = (10,0.1,0.05); emergency-when-enemy-owns-all = (0.1,0.1,5)); they differ
-    /// only in the "nobody owns all yet" branch, where this collapse uses the freelancer triple (1,10,2) — the
-    /// most balanced of the three (defense (4,1,0.05) leans home, offense (0.1,1,2) leans attack). The QC
-    /// random role timeouts only choose WHICH of those three "neutral" leans a bot takes; the collapse trades that
-    /// per-bot stochastic lean for the balanced middle, matching the documented residual in registry/keyhunt.yaml.
-    ///   - carrier, my team owns all → (10, 0.1, 0.05)  bring the keys home (QC havocbot_role_kh_carrier)
-    ///   - carrier, otherwise        → (4, 4, 0.5)       play defensively while carrying (QC carrier else-branch)
-    ///   - non-carrier, my team owns all → (10, 0.1, 0.05)  defend the gathering carriers
-    ///   - non-carrier, nobody owns all  → (1, 10, 2)       freelancer: prefer dropped keys
-    ///   - non-carrier, enemy owns all   → (0.1, 0.1, 5)    emergency: attack the enemy carriers
-    /// Keys are the spawned <c>item_kh_key</c> entities; a carried key's carrier is <see cref="Entity.GtCarrier"/>.
+    /// <list type="bullet">
+    ///   <item><see cref="KhBotRole.None"/> (initial): QC <c>HavocBot_ChooseRole</c> random()*3 → offense/defense/
+    ///     freelancer (equal thirds), matching Base sv_keyhunt.qc:1322-1335.</item>
+    ///   <item><see cref="KhBotRole.Carrier"/>: no role_timeout. If the bot loses its key → freelancer. Ratings:
+    ///     my-team-owns-all (10,0.1,0.05) else (4,4,0.5). QC havocbot_role_kh_carrier.</item>
+    ///   <item><see cref="KhBotRole.Defense"/>: role_timeout = time + random()*10+20 (20-30 s). If bot picks up a
+    ///     key → carrier. On timeout → freelancer. Neutral triple (4,1,0.05). QC havocbot_role_kh_defense.</item>
+    ///   <item><see cref="KhBotRole.Offense"/>: role_timeout = time + random()*10+20 (20-30 s). If bot picks up a
+    ///     key → carrier. On timeout → freelancer. Neutral triple (0.1,1,2). QC havocbot_role_kh_offense.</item>
+    ///   <item><see cref="KhBotRole.Freelancer"/>: role_timeout = time + random()*10+10 (10-20 s). If bot picks up
+    ///     a key → carrier. On timeout → random(0.5) offense|defense. Neutral triple (1,10,2). QC havocbot_role_kh_freelancer.</item>
+    /// </list>
+    ///
+    /// The two non-neutral branches (my-team-owns-all → (10,0.1,0.05); enemy-owns-all → (0.1,0.1,5)) are the
+    /// same for ALL three non-carrier roles and override the per-role neutral triple. Keys are the spawned
+    /// <c>item_kh_key</c> entities; a carried key's carrier is <see cref="Entity.GtCarrier"/>.
     /// </summary>
     public static void RoleKeyHunt(BotBrain brain, GoalRater rater)
     {
         var bot = brain.Bot;
         int myTeam = (int)bot.Team;
         var kh = brain.GameType as KeyHunt;
-        int allOwned = kh?.AllOwnedByWhichTeam() ?? Teams.None;
+        float now = Api.Clock.Time;
         bool botCarries = bot.GtCarried is not null; // QC this.kh_next — the bot is holding at least one key
 
-        float rsTeam, rsDropped, rsEnemy;
-        if (botCarries)
+        // ---- Role state machine (QC havocbot_role_kh_* + HavocBot_ChooseRole) ----
+
+        // Dead bots don't transition; the role persists across death (Base's dead-early-return in each role).
+        if (!bot.IsDead)
         {
-            // QC havocbot_role_kh_carrier: defend the gathering / bring keys home (no role timeout — carriers
-            // stay carriers until they lose the key, then fall back to freelancer).
-            if (allOwned == myTeam) { rsTeam = 10f; rsDropped = 0.1f; rsEnemy = 0.05f; } // bring home
-            else                    { rsTeam = 4f;  rsDropped = 4f;   rsEnemy = 0.5f;  } // play defensively
+            // QC HavocBot_ChooseRole (sv_keyhunt.qc:1322): initial random role pick (none → offense/defense/freelancer).
+            if (brain.KhRole == KhBotRole.None)
+            {
+                float r = (float)Prandom.Float() * 3f;
+                brain.KhRole = r < 1f ? KhBotRole.Offense : r < 2f ? KhBotRole.Defense : KhBotRole.Freelancer;
+                brain.KhRoleTimeout = 0f;
+            }
+
+            // QC all non-carrier roles: if the bot picks up a key → become carrier (no timeout).
+            if (brain.KhRole != KhBotRole.Carrier && botCarries)
+            {
+                brain.KhRole = KhBotRole.Carrier;
+                brain.KhRoleTimeout = 0f;
+            }
+            // QC havocbot_role_kh_carrier: if the bot loses its key → become freelancer.
+            else if (brain.KhRole == KhBotRole.Carrier && !botCarries)
+            {
+                brain.KhRole = KhBotRole.Freelancer;
+                brain.KhRoleTimeout = 0f;
+            }
+
+            // Per-role timeout handling.
+            switch (brain.KhRole)
+            {
+                case KhBotRole.Defense:
+                case KhBotRole.Offense:
+                    // QC defense/offense: role_timeout = time + random()*10+20 (20-30 s); on timeout → freelancer.
+                    if (brain.KhRoleTimeout == 0f)
+                        brain.KhRoleTimeout = now + (float)Prandom.Float() * 10f + 20f;
+                    if (now > brain.KhRoleTimeout)
+                    {
+                        brain.KhRole = KhBotRole.Freelancer;
+                        brain.KhRoleTimeout = 0f;
+                    }
+                    break;
+
+                case KhBotRole.Freelancer:
+                    // QC freelancer: role_timeout = time + random()*10+10 (10-20 s); on timeout → offense|defense.
+                    if (brain.KhRoleTimeout == 0f)
+                        brain.KhRoleTimeout = now + (float)Prandom.Float() * 10f + 10f;
+                    if (now > brain.KhRoleTimeout)
+                    {
+                        brain.KhRole = (float)Prandom.Float() < 0.5f ? KhBotRole.Offense : KhBotRole.Defense;
+                        brain.KhRoleTimeout = 0f;
+                    }
+                    break;
+
+                // Carrier: no timeout.
+                default:
+                    break;
+            }
+        }
+
+        // ---- Rating triple selection (QC havocbot_goalrating_kh(team_scale, dropped_scale, enemy_scale)) ----
+        int allOwned = kh?.AllOwnedByWhichTeam() ?? Teams.None;
+
+        float rsTeam, rsDropped, rsEnemy;
+        if (brain.KhRole == KhBotRole.Carrier)
+        {
+            // QC havocbot_role_kh_carrier ratings.
+            if (allOwned == myTeam) { rsTeam = 10f; rsDropped = 0.1f;  rsEnemy = 0.05f; } // bring home
+            else                    { rsTeam = 4f;  rsDropped = 4f;    rsEnemy = 0.5f;  } // play defensively
         }
         else if (allOwned == myTeam)
         {
-            rsTeam = 10f; rsDropped = 0.1f; rsEnemy = 0.05f; // defend the gathered carriers (all roles agree)
+            // All roles agree: defend the gathered carriers.
+            rsTeam = 10f; rsDropped = 0.1f; rsEnemy = 0.05f;
         }
-        else if (allOwned == Teams.None)
+        else if (allOwned != Teams.None)
         {
-            rsTeam = 1f; rsDropped = 10f; rsEnemy = 2f;      // freelancer: prefer dropped keys
+            // All roles agree: enemy owns all → emergency attack.
+            rsTeam = 0.1f; rsDropped = 0.1f; rsEnemy = 5f;
         }
         else
         {
-            rsTeam = 0.1f; rsDropped = 0.1f; rsEnemy = 5f;   // emergency: enemy owns all → attack (all roles agree)
+            // Nobody owns all yet → the per-role neutral triple:
+            //   defense (4,1,0.05) leans home; offense (0.1,1,2) leans attack; freelancer (1,10,2) prefers dropped.
+            switch (brain.KhRole)
+            {
+                case KhBotRole.Defense:    rsTeam = 4f;   rsDropped = 1f;  rsEnemy = 0.05f; break;
+                case KhBotRole.Offense:    rsTeam = 0.1f; rsDropped = 1f;  rsEnemy = 2f;    break;
+                default: /* Freelancer */  rsTeam = 1f;   rsDropped = 10f; rsEnemy = 2f;    break;
+            }
         }
 
         rater.Start();

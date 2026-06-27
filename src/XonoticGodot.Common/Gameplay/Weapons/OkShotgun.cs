@@ -34,6 +34,7 @@ public sealed class OkShotgun : Weapon
         public float Refire;            // g_balance_okshotgun_primary_refire
         public float SolidPenetration;  // g_balance_okshotgun_primary_solidpenetration
         public float Spread;            // g_balance_okshotgun_primary_spread
+        public float BotRange;          // g_balance_okshotgun_primary_bot_range (bot ATCK1/ATCK2 switch distance)
         public int   SecondaryRefireType; // g_balance_okshotgun_secondary_refire_type (1 = own jump_interval timer)
         public float ReloadAmmo;        // g_balance_okshotgun_reload_ammo
         public float ReloadTime;        // g_balance_okshotgun_reload_time
@@ -66,6 +67,7 @@ public sealed class OkShotgun : Weapon
         Cvars.Refire = Bal("g_balance_okshotgun_primary_refire", 0.75f);
         Cvars.SolidPenetration = Bal("g_balance_okshotgun_primary_solidpenetration", 3.8f);
         Cvars.Spread = Bal("g_balance_okshotgun_primary_spread", 0.07f);
+        Cvars.BotRange = Bal("g_balance_okshotgun_primary_bot_range", 512f);
         Cvars.SecondaryRefireType = BalInt("g_balance_okshotgun_secondary_refire_type", 1);
         Cvars.ReloadAmmo = Bal("g_balance_okshotgun_reload_ammo", 24f);
         Cvars.ReloadTime = Bal("g_balance_okshotgun_reload_time", 2f);
@@ -130,6 +132,12 @@ public sealed class OkShotgun : Weapon
         // Casing eject — W_Shotgun_Attack SpawnCasing (shotgun shell, type 1) when g_casings >= 1 (gate inside).
         WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Shell);
     }
+
+    // METHOD(OverkillShotgun, wr_aim) — okshotgun.qc:4-9. Beyond bot_range the bot presses the SECONDARY
+    // (the no-damage blaster, used as a ranged poke / mobility tool); within range it presses the pellet
+    // primary. Returning true routes the already-decided shot onto ATCK2 (BotBrain), matching QC's range split.
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
+        => enemyDistance > Cvars.BotRange;
 
     // METHOD(OverkillShotgun, wr_checkammo1)
     public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Cvars.Ammo;

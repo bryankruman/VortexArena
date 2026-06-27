@@ -258,6 +258,16 @@ public sealed class Race : GameType
     /// </summary>
     public System.Action<Player>? OnFinishRetract;
 
+    /// <summary>
+    /// QC <c>race_setTime</c> consent gate (server/race.qc:415): before a new record is stored the player must
+    /// have <c>cl_allow_uidtracking == 1</c> AND <c>cl_allow_uid2name == 1</c> (and not be an
+    /// <c>^1Unregistered Player</c>). The host wires this to its per-client replicated-cvar store
+    /// (Commands.GetClientCvar). Returns true when the racer consents to having their record stored + named.
+    /// Null ⇒ no host gate (the harness / a host that doesn't track consent) ⇒ treated as consenting, so the
+    /// uid-only fallback (a non-empty PersistentId) still files the record as before.
+    /// </summary>
+    public System.Func<Player, bool>? UidConsentProvider;
+
     /// <summary>The result of the most recent finish-time record attempt (for the host's INFO_RACE_* notification).</summary>
     public RaceRecordResult LastRecord { get; private set; }
     public Player? LastRecordPlayer { get; private set; }
@@ -822,10 +832,28 @@ public sealed class Race : GameType
     private void RecordFinishTime(Player p, float time)
     {
         string uid = p.PersistentId;
-        RaceRecordResult r = RaceRecords.SetTime(MapName, RecordType, time, uid, p.NetName);
-        LastRecord = r;
         LastRecordPlayer = p;
         LastRecordTime = Api.Services is not null ? Api.Clock.Time : 0f;
+
+        // QC race_setTime (server/race.qc:407-421): once the time is confirmed to be a NEW record (would rank,
+        // not a fail), there are two reasons it can still NOT be stored — and each fires its own notification
+        // BEFORE the table is touched: (1) the player has no UID at all (INFO_RACE_NEW_MISSING_UID); (2) the
+        // player has a UID but withheld consent — cl_allow_uidtracking != 1 || cl_allow_uid2name != 1 (or is an
+        // "^1Unregistered Player") — (INFO_RACE_NEW_MISSING_NAME). A non-ranking time still just fails through
+        // SetTime below, so the consent gate only matters for a would-be record.
+        if (UidConsentProvider is not null && !string.IsNullOrEmpty(uid)
+            && RaceRecords.WouldBeNewRecord(MapName, RecordType, time, uid)
+            && !UidConsentProvider(p))
+        {
+            // Record-worthy but consent withheld: announce the loss and DON'T store (QC NEW_MISSING_NAME).
+            LastRecord = new RaceRecordResult(RaceRecordKind.Fail, 0, 0, 0f, "");
+            if (Api.Services is not null)
+                NotificationSystem.Info("RACE_NEW_MISSING_NAME", p.NetName, Scoring.GameScores.TimeEncode(time));
+            return;
+        }
+
+        RaceRecordResult r = RaceRecords.SetTime(MapName, RecordType, time, uid, p.NetName);
+        LastRecord = r;
         SendRecordNotification(p, time, uid, r);
     }
 

@@ -91,6 +91,15 @@ public sealed class NixMutator : MutatorBase
             if (rt != 0f) RoundTime = rt;
             float it = Api.Cvars.GetFloat("g_balance_nix_incrtime");
             if (it != 0f) IncrTime = it;
+
+            // QC sv_nix.qc:43: FOREACH(Weapons, it != WEP_Null && NIX_CanChooseWeapon(it.m_id), it.wr_init(it)).
+            // In Base this warm pass precaches client-side resources (reticle images, shot origins) for the
+            // choosable weapons. The port's equivalents run at asset-load time, so WrInit() is a no-op for all
+            // current weapons; the call structure is present here for completeness and future overrides.
+            foreach (Weapon w in Weapons.All)
+            {
+                if (CanChooseWeapon(w)) w.WrInit();
+            }
         }
     }
 

@@ -276,6 +276,10 @@ public sealed class Fireball : Weapon
         proj.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, Vector3.UnitZ, Primary.Speed, 0f, 0f, Primary.Spread);
         proj.Angles = QMath.VecToAngles(proj.Velocity);
 
+        // QC fireball.qc:164-165 — flag the fireball as a dodgeable hazard (rating = primary damage).
+        proj.BotDodge = true;
+        proj.BotDodgeRating = Primary.Damage;
+
         // pushltime = time + lifetime is the explode-at-end-of-life deadline (W_Fireball_Think). cnt 0 = a
         // fresh fireball (not timed-out / shot-down): only then does the BFG sweep fire (W_Fireball_Explode).
         float deathTime = Api.Clock.Time + Primary.Lifetime;
@@ -506,6 +510,10 @@ public sealed class Fireball : Weapon
         // W_SetupProjVelocity_UP_SEC: velocity = normalize(w_shotdir + up*(speed_up/speed)) * speed.
         proj.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, up, Secondary.Speed, Secondary.SpeedUp, Secondary.SpeedZ, Secondary.Spread);
         proj.Angles = QMath.VecToAngles(proj.Velocity);
+
+        // QC fireball.qc:300-301 — flag the firemine as a dodgeable hazard (rating = secondary damage).
+        proj.BotDodge = true;
+        proj.BotDodgeRating = Secondary.Damage;
 
         float deathTime = Api.Clock.Time + Secondary.Lifetime;
         // QC sets proj.owner = proj.realowner = actor. The "make it hot" decouple later nulls only .owner; the

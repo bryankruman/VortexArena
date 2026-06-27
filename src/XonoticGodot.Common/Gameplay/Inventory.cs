@@ -360,8 +360,8 @@ public static class Inventory
     /// weapon they don't own — and <c>g_showweaponspawns</c> is on — spawn a short-lived <c>WP_Weapon</c> waypoint
     /// sprite over every matching weapon-spawn item, so the player can see where to pick it up. The markers use
     /// <c>RADARICON_NONE</c> (radar icon 0) so they appear only in-world, not on the team radar, and carry the
-    /// weapon id (QC <c>wp_extra</c>) for the client's weapon-icon resolution. Lifetime -2 (QC: instant, no fade —
-    /// shown for one frame then re-spawned on the next press). <c>g_showweaponspawns</c>: 1 = on-key when unowned,
+    /// weapon id (QC <c>wp_extra</c>) for the client's weapon-icon resolution. Lifetime -2 (QC: full alpha for 2s
+    /// with no fade ramp, then killed — re-spawned on each press). <c>g_showweaponspawns</c>: 1 = on-key when unowned,
     /// 2 = include dropped loot, 3 = all weapons sharing the impulse (the 3-case is dispatched by the caller).
     /// </summary>
     public static void Weapon_whereis(Weapon weapon, Entity requester)
@@ -395,14 +395,15 @@ public static class Inventory
             // QC WaypointSprite_Spawn(WP_Weapon, -2, 0, NULL, it.origin + ('0 0 1'*it.maxs.z)*1.2, cl, 0, NULL,
             //   enemy, 0, RADARICON_NONE); wp.wp_extra = this.m_id.
             // showto = cl → visible only to the requesting player (personal). RADARICON_NONE → radarIcon 0
-            // (in-world only). Lifetime -2 in QC means "no auto-fade, but flagged transient" — the marker is
-            // re-spawned each press; the port uses the deployed-dead lifetime so a single press shows it briefly.
+            // (in-world only). Lifetime -2 in QC means "full alpha for 2s, no fade ramp, then killed" (re-spawned
+            // each press); the port matches with a 2s lifetime + the NoFade flag (hard kill at expiry).
             System.Numerics.Vector3 head = it.Origin
                 + new System.Numerics.Vector3(0f, 0f, it.Maxs.Z * 1.2f);
             Waypoints.WaypointDef def = Waypoints.WaypointRegistry.Get("Weapon");
             Waypoints.WaypointSprite wp = Waypoints.WaypointSprites.Spawn(
                 "Weapon", Waypoints.WaypointSprites.WhereisLifetime, 0f, null, default, head,
                 0, def.Color, radarIcon: 0); // RADARICON_NONE
+            wp.NoFade = true;                 // QC lifetime -2: full alpha for the lifetime, then hard kill (no fade)
             wp.WpExtra = weapon.RegistryId;   // QC wp.wp_extra = this.m_id (client weapon-icon resolution)
             // QC showto = cl: personal, visible only to the requester.
             wp.VisibleForPlayer = viewer => ReferenceEquals(viewer, requesterPlayer);

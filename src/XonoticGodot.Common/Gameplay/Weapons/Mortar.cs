@@ -147,6 +147,31 @@ public sealed class Mortar : Weapon
         }
     }
 
+    // METHOD(Mortar, wr_aim) — mortar.qc:wr_aim. The bot holds a primary/secondary preference
+    // (.bot_secondary_grenademooth, carried here in ctx.SecondaryToggle): while preferring primary it lobs
+    // the direct grenade and, on each successful aim, has a 1% chance to flip to the airburst secondary;
+    // while preferring secondary it lobs the bounce grenade and has a 2% chance to flip back. Both modes are
+    // gravity-lobbed (bot_aim grav=true), so the brain's ballistic arc applies; this hook owns only the
+    // primary/secondary button pick + the per-mode lead speed, mirroring the two bot_aim calls.
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
+    {
+        if (!ctx.SecondaryToggle)
+        {
+            if (ctx.Random01 < 0.01f) ctx.SecondaryToggle = true;
+            return false; // press primary (the airburst direct grenade)
+        }
+        if (ctx.Random01 < 0.02f) ctx.SecondaryToggle = false;
+        return true; // press secondary (the bouncing grenade)
+    }
+
+    // Lead by the mode's launch speed (QC passes WEP_CVAR_PRI/SEC speed to bot_aim per branch).
+    public override float BotAimShotSpeed(float defaultSpeed, ref BotAimState ctx)
+        => ctx.SecondaryToggle ? Secondary.Speed : Primary.Speed;
+
+    // QC bot_aim grav=true for both mortar branches: the bouncing grenade lobs under world sv_gravity (it has no
+    // per-weapon gravity cvar), so the brain must arc the shot rather than aim straight (force-lobbed).
+    public override bool? BotAimLobbed => true;
+
     // Refire/animtime from the (cvar-seeded) per-mode balance blocks.
     public override float RefireFor(FireMode fire) => (fire == FireMode.Secondary ? Secondary : Primary).Refire;
     public override float AnimtimeFor(FireMode fire) => (fire == FireMode.Secondary ? Secondary : Primary).Animtime;
@@ -183,6 +208,11 @@ public sealed class Mortar : Weapon
         // W_SetupProjVelocity_UP: velocity = dir*speed + up*speed_up (no per-shot spread for grenades).
         gren.Velocity = WeaponFiring.ProjectileVelocity(dir, up, bal.Speed, bal.SpeedUp);
         gren.Angles = QMath.VecToAngles(gren.Velocity);
+
+        // QC mortar.qc:172-173,223-224 — flag the grenade as a dodgeable hazard (bot_dodge/bot_dodgerating =
+        // mode damage + IL_PUSH(g_bot_dodge)). Consumed by the SUPERBOT-gated BotBrain.HavocbotDodge.
+        gren.BotDodge = true;
+        gren.BotDodgeRating = bal.Damage;
 
         int type = bal.Type;
         float damage = bal.Damage, edge = bal.EdgeDamage, radius = bal.Radius, force = bal.Force;

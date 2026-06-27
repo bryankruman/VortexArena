@@ -104,6 +104,13 @@ public sealed class OverkillMutator : MutatorBase
     private HookHandler<MutatorHooks.FilterItemDefinitionArgs>? _onFilterItemDef;
     private HookHandler<MutatorHooks.RandomItemsClassNameArgs>? _onRandomItems;
     private HookHandler<MutatorHooks.NadeDamageArgs>? _onNadeDamage;
+    private HookHandler<MutatorHooks.PlayerPreThinkArgs>? _onPreThink;
+    private HookHandler<MutatorHooks.ItemRespawnCountdownArgs>? _onItemRespawnCountdown;
+    private HookHandler<MutatorHooks.ItemScheduleRespawnArgs>? _onItemScheduleRespawn;
+
+    /// <summary>QC autocvar_g_overkill_itemwaypoints (default 1): show respawn-countdown waypoints for the
+    /// surviving Mega/Big health+armor under Overkill.</summary>
+    public bool ItemWaypoints = true;
 
     public override void Hook()
     {
@@ -118,6 +125,9 @@ public sealed class OverkillMutator : MutatorBase
         _onFilterItemDef ??= OnFilterItemDefinition;
         _onRandomItems ??= OnRandomItemsGetClassName;
         _onNadeDamage ??= OnNadeDamage;
+        _onPreThink ??= OnPlayerPreThink;
+        _onItemRespawnCountdown ??= OnItemRespawnCountdown;
+        _onItemScheduleRespawn ??= OnItemScheduleRespawn;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc, HookOrder.Last); // QC CBC_ORDER_LAST
         MutatorHooks.PlayerDies.Add(_onPlayerDies);
@@ -130,6 +140,9 @@ public sealed class OverkillMutator : MutatorBase
         MutatorHooks.FilterItemDefinition.Add(_onFilterItemDef);
         MutatorHooks.RandomItemsGetClassName.Add(_onRandomItems);
         MutatorHooks.NadeDamage.Add(_onNadeDamage);
+        MutatorHooks.PlayerPreThink.Add(_onPreThink);
+        MutatorHooks.ItemRespawnCountdown.Add(_onItemRespawnCountdown);
+        MutatorHooks.ItemScheduleRespawn.Add(_onItemScheduleRespawn);
 
         if (Api.Services is not null)
         {
@@ -155,6 +168,10 @@ public sealed class OverkillMutator : MutatorBase
             FilterArmorMedium = ReadFilterCvar("g_overkill_filter_armormedium", true);
             FilterArmorBig = ReadFilterCvar("g_overkill_filter_armorbig", true);
             FilterArmorMega = Api.Cvars.GetFloat("g_overkill_filter_armormega") != 0f;
+
+            // QC autocvar_g_overkill_itemwaypoints = true (sv_overkill.qc:8): an UNSET cvar keeps the Base
+            // default of 1 (show waypoints), so resolve the empty string to true like the filter cvars.
+            ItemWaypoints = ReadFilterCvar("g_overkill_itemwaypoints", true);
         }
     }
 
@@ -179,6 +196,9 @@ public sealed class OverkillMutator : MutatorBase
         if (_onFilterItemDef is not null) MutatorHooks.FilterItemDefinition.Remove(_onFilterItemDef);
         if (_onRandomItems is not null) MutatorHooks.RandomItemsGetClassName.Remove(_onRandomItems);
         if (_onNadeDamage is not null) MutatorHooks.NadeDamage.Remove(_onNadeDamage);
+        if (_onPreThink is not null) MutatorHooks.PlayerPreThink.Remove(_onPreThink);
+        if (_onItemRespawnCountdown is not null) MutatorHooks.ItemRespawnCountdown.Remove(_onItemRespawnCountdown);
+        if (_onItemScheduleRespawn is not null) MutatorHooks.ItemScheduleRespawn.Remove(_onItemScheduleRespawn);
     }
 
     // QC the overkill g_overkill_items pool (sv_overkill.qh:35-39): the five overkill MAP items, by their
@@ -255,6 +275,12 @@ public sealed class OverkillMutator : MutatorBase
         var frozen = StatusEffectsCatalog.Frozen;
         return frozen is not null && StatusEffectsCatalog.Has(e, frozen);
     }
+
+    // QC weaponLocked(player) (server/weapons/weaponsystem.qc): the reachable subset (same as
+    // WeaponFireDriver.WeaponLocked / CampcheckMutator.WeaponLocked) — the gametype freeze stat OR the
+    // STATUSEFFECT_Frozen status effect. A frozen player can't fire the countdown blaster. The game_stopped /
+    // game-start halves are already covered by the PreThink caller (game_stopped) and the round gate.
+    private static bool WeaponLocked(Entity e) => e.FrozenStat != 0 || IsFrozen(e);
 
     // MUTATOR_HOOKFUNCTION(ok, PlayerDies) — drop loot + remember weapons for respawn.
     private bool OnPlayerDies(ref MutatorHooks.PlayerDiesArgs args)
@@ -479,4 +505,78 @@ public sealed class OverkillMutator : MutatorBase
         args.Damage = args.Nade.MaxHealth * 0.1f;
         return true; // Consumed: the hook handled the damage scaling.
     }
+
+    // MUTATOR_HOOKFUNCTION(ok, PlayerPreThink) — sv_overkill.qc:128-159. During an active round that hasn't
+    // started yet (round_handler_IsActive() && !round_handler_IsRoundStarted()), the normal weapon-fire path has
+    // its fire buttons forbidden (QC weaponUseForbidden → the port's WeaponFireDriver zeroes ATCK/ATCK2). Overkill
+    // re-enables ONLY the secondary blaster during that countdown so players can blaster-jump while they wait:
+    // for each slot's held weapon, run its secondary wr_think (the OK weapons' shared blaster-jump branch), then
+    // consume ATCK2 so it doesn't double-fire.
+    private bool OnPlayerPreThink(ref MutatorHooks.PlayerPreThinkArgs args)
+    {
+        Entity player = args.Player;
+
+        // QC: if (game_stopped) return; if (!IS_PLAYER(player) || IS_DEAD(player)) return;
+        if (Api.Services is null) return false;
+        if (!IsPlayer(player) || player.DeadState != DeadFlag.No) return false;
+
+        // QC: if (!PHYS_INPUT_BUTTON_ATCK2(player) || weaponLocked(player) ||
+        //         !(round_handler_IsActive() && !round_handler_IsRoundStarted())) return;
+        // The ATCK2 button is published onto the player each frame by the host (GameWorld.OnClientMove) before
+        // this hook runs; weaponLocked is the reachable freeze subset (same as WeaponFireDriver/CampcheckMutator);
+        // the round gate is the host-wired RoundHandler.RoundGateBlocks() seam.
+        if (!player.ButtonAttack2 || WeaponLocked(player) || !RoundHandler.RoundGateBlocks())
+            return false;
+
+        // QC: for each slot, run weaponentity.m_weapon.wr_think(..., 2) — the secondary fire. The port tracks a
+        // single active weapon carried by slot 0; iterate the slots for fidelity but only slot 0 is populated. The
+        // OK weapons' secondary IS the blaster-jump (OkWeapons.FireSecondaryBlasterJump on its own jump_interval
+        // gate), so this is exactly the countdown blaster jump. The QC `fire & 2` bitmask is mirrored by the
+        // per-slot ButtonAttack2 the weapon's secondary branch reads (the WeaponFireDriver normally sets it around
+        // its WrThink call, but that path is forbidden during the countdown — so set it here for the secondary
+        // call, then clear it so a later upkeep tick doesn't see a stale press).
+        Weapon? held = Inventory.CurrentWeapon(player);
+        if (held is not null)
+        {
+            var slot = new WeaponSlot(0);
+            WeaponSlotState st = player.WeaponState(slot);
+            bool prev = st.ButtonAttack2;
+            st.ButtonAttack2 = true;
+            held.WrThink(player, slot, FireMode.Secondary);
+            st.ButtonAttack2 = prev;
+        }
+
+        // QC: PHYS_INPUT_BUTTON_ATCK2(player) = false; — consume the button so the normal fire path (which is
+        // forbidden during the countdown anyway) and any later reader don't re-fire it this tick.
+        player.ButtonAttack2 = false;
+        return false;
+    }
+
+    // bool ok_HandleItemWaypoints(entity e) — sv_overkill.qc:227-242: under Overkill, the four surviving normal
+    // pickups (Mega health + Medium/Big/Mega armor) get a respawn-countdown waypoint (gated on
+    // g_overkill_itemwaypoints, default 1). The item kind is matched on the live entity's ClassName (the same
+    // stand-in the FilterItem hook uses), since the port's item registry isn't fully type-mapped.
+    private bool HandleItemWaypoints(Entity item)
+    {
+        if (!ItemWaypoints) return false; // QC: if (!autocvar_g_overkill_itemwaypoints) return false;
+        switch (item.ClassName)
+        {
+            case "item_health_mega":  // QC case ITEM_HealthMega
+            case "item_armor_medium": // QC case ITEM_ArmorMedium
+            case "item_armor_big":    // QC case ITEM_ArmorBig
+            case "item_armor_mega":   // QC case ITEM_ArmorMega
+                return true;
+        }
+        return false;
+    }
+
+    // MUTATOR_HOOKFUNCTION(ok, Item_RespawnCountdown) — sv_overkill.qc:249-253. Returning true lifts the
+    // spectator-only waypoint restriction so the surviving health/armor countdown waypoints show for everyone.
+    private bool OnItemRespawnCountdown(ref MutatorHooks.ItemRespawnCountdownArgs args)
+        => HandleItemWaypoints(args.Item);
+
+    // MUTATOR_HOOKFUNCTION(ok, Item_ScheduleRespawn) — sv_overkill.qc:255-259. Returning true forces the
+    // surviving health/armor onto the visible respawn-countdown (waypoint) path for a long respawn.
+    private bool OnItemScheduleRespawn(ref MutatorHooks.ItemScheduleRespawnArgs args)
+        => HandleItemWaypoints(args.Item);
 }

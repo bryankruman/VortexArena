@@ -346,3 +346,18 @@ public static class BotRoles
 
 /// <summary>A bot role: fills the rater with goal candidates for this frame (QC <c>.havocbot_role</c>).</summary>
 public delegate void BotRole(BotBrain brain, GoalRater rater);
+
+/// <summary>
+/// QC <c>havocbot_role</c> values for Key Hunt (sv_keyhunt.qc): the four possible KH bot sub-roles that
+/// <see cref="BotObjectiveRoles.RoleKeyHunt"/> cycles through.  <see cref="None"/> is the unassigned
+/// initial state that triggers the random-role-pick on the first invocation (mirrors Base's
+/// <c>HavocBot_ChooseRole</c> random pick of offense/defense/freelancer at bot-spawn time).
+/// </summary>
+public enum KhBotRole
+{
+    None      = 0, // unassigned → first call picks a random starting role (QC HavocBot_ChooseRole)
+    Freelancer,    // QC havocbot_role_kh_freelancer  (timeout 10-20 s, then random → offense|defense)
+    Defense,       // QC havocbot_role_kh_defense     (timeout 20-30 s, then → freelancer)
+    Offense,       // QC havocbot_role_kh_offense     (timeout 20-30 s, then → freelancer)
+    Carrier,       // QC havocbot_role_kh_carrier     (no timeout — stays carrier until key is dropped)
+}

@@ -585,6 +585,11 @@ public static class MapInfoCache
                 }
             }
         }
+        // QC Duel.m_isForcedSupported (duel.qh:15-28): any DM map also supports duel, unless
+        // g_duel_not_dm_maps is set. Mirrors MapInfoBackend.ApplyForcedGametypes.
+        bool forceDuelOnDm = MenuState.Cvars.GetFloat("g_duel_not_dm_maps") == 0f;
+        if (forceDuelOnDm && e.Gametypes.Contains("dm") && !e.Gametypes.Contains("duel"))
+            e.Gametypes.Add("duel");
         Cache[map] = e;
         return e;
     }

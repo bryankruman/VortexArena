@@ -255,6 +255,18 @@ public sealed class Electro : Weapon
         return fireSecondary;
     }
 
+    // QC wr_aim lead speed (electro.qc:599-626). The bot leads its shot by the projectile speed of the mode it is
+    // about to fire: the straight primary bolt at primary_speed (bot_aim(..., speed, 0, lifetime)), the lobbed
+    // secondary "electromooth" orb at secondary_speed (bot_aim(..., speed, speed_up, lifetime)). The brain calls
+    // BotAimShotSpeed(default, ref ctx) in CurrentShotSpeed BEFORE BotWantsSecondary rolls the flip, so
+    // ctx.SecondaryToggle here is the PRE-flip toggle — exactly the mode this frame's shot uses (same value
+    // BotWantsSecondary reads to route the button). The horizontal speed is all bot_shotlead consumes; the orb's
+    // speed_up=200 vertical component is the arc-only term (handled by the brain's lob arc), not the lead distance.
+    public override float BotAimShotSpeed(float defaultSpeed) => Primary.Speed; // fallback: primary lead
+
+    public override float BotAimShotSpeed(float defaultSpeed, ref BotAimState ctx)
+        => ctx.SecondaryToggle ? Secondary.Speed : Primary.Speed;
+
     // W_Electro_Attack_Bolt — fast straight bolt that bursts on impact. electro.qc
     private void AttackBolt(Entity actor, WeaponSlot slot)
     {
@@ -276,6 +288,10 @@ public sealed class Electro : Weapon
         // W_SetupProjVelocity_PRI: velocity = w_shotdir * speed.
         proj.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, Vector3.UnitZ, Primary.Speed);
         proj.Angles = QMath.VecToAngles(proj.Velocity);
+
+        // QC electro.qc:336-337 — flag the bolt as a dodgeable hazard (rating = primary damage).
+        proj.BotDodge = true;
+        proj.BotDodgeRating = Primary.Damage;
 
         float deathTime = Api.Clock.Time + Primary.Lifetime;
         proj.Touch = (self, other) => ExplodeBolt(self, other);
@@ -434,6 +450,10 @@ public sealed class Electro : Weapon
         // W_SetupProjVelocity_UP_SEC: velocity = normalize(dir + up*(speed_up/speed)) * speed.
         orb.Velocity = WeaponFiring.ProjectileVelocity(dir, up, Secondary.Speed, Secondary.SpeedUp);
         orb.Angles = QMath.VecToAngles(orb.Velocity);
+
+        // QC electro.qc:539-540 — flag the secondary orb as a dodgeable hazard (rating = secondary damage).
+        orb.BotDodge = true;
+        orb.BotDodgeRating = Secondary.Damage;
 
         // A bounced orb's kill line reads MURDER_COMBO (QC W_Electro_Orb_Touch:466 ORs HITTYPE_BOUNCE onto the
         // orb's projectiledeathtype). The port Entity has no projectiledeathtype field, so we track the bounce

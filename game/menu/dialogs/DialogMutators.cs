@@ -160,8 +160,12 @@ public partial class DialogMutators : MenuScreen
 
         // Blood loss — QC makeXonoticSliderCheckBox(0, 1, g_bloodloss[10..50], "Blood loss"): the checkbox is
         // checked while g_bloodloss != 0; on writes the saved value (20), off writes 0. The slider refines it.
+        // The port has no dedicated describe-page widget, so (following the Vampire / Cloaked / Hook pattern)
+        // the full MENUQC describe paragraph (bloodloss.qc:76-77) rides on the checkbox/slider tooltip.
         const string bloodlossTooltip =
-            "Amount of health below which players start bleeding out (health rots and they can't jump)";
+            "Blood loss is a mutator in which players below a certain health threshold (for example 25) will " +
+            "suffer blood loss. Blood loss makes players stunned, severely impairs their movement, and rapidly " +
+            "takes away health points until they either die or gain enough health to go above the health threshold.";
         var bloodEnable = new DialogMutatorsSliderCheckBox("g_bloodloss", "Blood loss", offValue: 0f, savedValue: 20f)
         {
             TooltipText = bloodlossTooltip,

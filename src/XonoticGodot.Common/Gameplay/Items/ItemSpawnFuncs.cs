@@ -84,10 +84,12 @@ public static class ItemSpawnFuncs
         RegisterBuffSpawnFuncs();
 
         // ---- compatibility spawn functions (server/items/spawning.qc:99-105) ----
-        // item_armor1: Quake green armor = a Xonotic armor SHARD (medium) — or small on a Q3 map. The port has
-        // no live q3compat flag in this layer, so default to the Xonotic mapping (ArmorMedium). (Q3-map armor1
-        // sizing is non-fatal; recorded as a deviation.)
-        AliasItem("item_armor1", "armor_medium");
+        // QC SPAWNFUNC_ITEM(item_armor1, autocvar_sv_mapformat_is_quake3 ? ITEM_ArmorSmall : ITEM_ArmorMedium)
+        // (spawning.qc:99): Quake green armor is a Xonotic armor SHARD (small) on a Q3-format map, a medium armor
+        // otherwise. Resolved at SPAWN time (like the QC per-spawn macro body) so the live sv_mapformat_is_quake3
+        // cvar (default true) picks the right size — defaulting to ArmorSmall on the stock Q3 map format.
+        SpawnFuncs.Register("item_armor1",
+            e => ItemSpawn(e, CompatRemaps.IsMapformatQuake3() ? "armor_small" : "armor_medium"));
         AliasItem("item_armor25", "armor_mega");          // Nexuiz Mega Armor
         AliasItem("item_armor_large", "armor_mega");
         AliasItem("item_health1", "health_small");

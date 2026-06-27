@@ -190,7 +190,13 @@ public sealed class Bans
     {
         if (!IsClientBanned(client))
             return false;
-        Echo($"^1NOTE:^7 banned client {client.NetName} just tried to enter");
+        // QC Ban_MaybeEnforceBan (server/ipban.qc:451-467): log netaddress (not netname), and include the
+        // crypto_idfp in parentheses when the client has one — used for admin audit trails.
+        string addr = client.NetAddress ?? client.NetName;
+        if (!string.IsNullOrEmpty(client.PersistentId))
+            Echo($"^1NOTE:^7 banned client {addr} ({client.PersistentId}) just tried to enter");
+        else
+            Echo($"^1NOTE:^7 banned client {addr} just tried to enter");
         if (Cvars.Bool("g_ban_telluser"))
             DropClient?.Invoke(client, "You are banned from this server.");
         else

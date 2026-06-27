@@ -48,6 +48,19 @@ public sealed class Teamplay
     /// <summary>QC <c>TEAM_FORCE_DEFAULT</c>: no real forced team — fall through to normal balance.</summary>
     public const int TeamForceDefault = 0;
 
+    /// <summary>QC <c>TEAM_CHANGE_AUTO</c> (server/teamplay.qh:129): the team was selected by autobalance.</summary>
+    public const int TeamChangeAuto = 2;
+
+    /// <summary>QC <c>TEAM_CHANGE_MANUAL</c> (server/teamplay.qh:130): the player manually selected their team.</summary>
+    public const int TeamChangeManual = 3;
+
+    /// <summary>QC <c>TEAM_CHANGE_SPECTATOR</c> (server/teamplay.qh:131): the player is joining spectators.</summary>
+    public const int TeamChangeSpectator = 4;
+
+    /// <summary>QC the admin-move team-change type (the literal <c>6</c> passed to <c>MoveToTeam</c> by the
+    /// <c>movetoteam</c>/<c>shuffleteams</c> admin commands, sv_cmd.qc:1139/1374): logged in the <c>:team:</c> line.</summary>
+    public const int TeamChangeAdmin = 6;
+
     /// <summary>Whether the active gametype is a team game (QC <c>teamplay</c>). FFA leaves teams at <see cref="Teams.None"/>.</summary>
     public bool IsTeamGame { get; }
 
@@ -130,6 +143,21 @@ public sealed class Teamplay
     /// this to <c>GameWorld.TeamsLocked</c>. A no-op until wired.
     /// </summary>
     public Action<bool> LockTeamsSet { get; set; } = static _ => { };
+
+    /// <summary>
+    /// QC <c>LogTeamChange(player.playerid, player.team, type)</c> (server/teamplay.qc:293, the <c>SetPlayerTeam</c>
+    /// tail): emit the <c>:team:&lt;playerid&gt;:&lt;team&gt;:&lt;type&gt;</c> event-log line on every team set.
+    /// Given (player, teamColorCode, TEAM_CHANGE_* type). The host wires this to <c>GameLog.TeamChange</c> (which
+    /// already self-gates on <c>sv_eventlog</c> + a valid player id). A no-op until wired.
+    /// </summary>
+    public Action<Player, int, int>? OnTeamChangeLog { get; set; }
+
+    /// <summary>
+    /// QC <c>if (warmup_stage) ReadyCount();</c> (server/teamplay.qc:308-309, the <c>SetPlayerTeam</c> tail): after a
+    /// player joins a real team, re-evaluate the warmup ready count since the teams might now be balanced (the
+    /// nagger/badteams hold can release). The host wires this to the warmup controller's ReadyCount. A no-op until wired.
+    /// </summary>
+    public Action? RequestReadyCount { get; set; }
 
     /// <summary>QC <c>remove_countdown</c>: the active excess-player removal countdown (null = none running).</summary>
     private RemoveCountdownState? _removeCountdown;
@@ -399,7 +427,7 @@ public sealed class Teamplay
     /// false propagation. Admin <c>moveplayer</c>/<c>shuffleteams</c> route through here so they bypass the lock
     /// exactly like Base (the lock is only enforced on the player <c>join</c>/<c>selectteam</c> path).
     /// </summary>
-    public bool MoveToTeam(Player client, int newTeam)
+    public bool MoveToTeam(Player client, int newTeam, int type = TeamChangeAdmin)
     {
         // QC SetPlayerTeam: the kill + score-clear only fire on a REAL change (team_index != old_team_index), so
         // snapshot the team before the (lock-disabled) set and skip the kill on a no-op move.
@@ -411,7 +439,7 @@ public sealed class Teamplay
         try
         {
             // QC: if (!SetPlayerTeam(client, team_index, type)) return false;
-            if (!SetTeam(client, newTeam))
+            if (!SetTeam(client, newTeam, type))
                 return false;
         }
         finally
@@ -442,7 +470,7 @@ public sealed class Teamplay
     /// change; the caller (the team-change command / shuffle / autobalance path) should then leave the team be.
     /// This is the single team-set seam that replaces a bare <c>player.Team = ...</c> so mutators can veto/react.
     /// </summary>
-    public bool SetTeam(Player player, int newTeam)
+    public bool SetTeam(Player player, int newTeam, int type = TeamChangeManual)
     {
         // QC: early-out if already on this team (the "already on this team" guard lives in Player_SetTeamIndex).
         if ((int)player.Team == newTeam)
@@ -471,8 +499,28 @@ public sealed class Teamplay
         // QC MUTATOR_CALLHOOK(Player_ChangedTeam, ...): react after the change (return value ignored).
         var post = new MutatorHooks.PlayerChangedTeamArgs(player, oldIndex, newIndex);
         MutatorHooks.PlayerChangedTeam.Call(ref post);
+
+        // QC SetPlayerTeam tail (server/teamplay.qc:293-310), run here since this seam IS the change point.
+        // LogTeamChange(player.playerid, player.team, type): the :team: event-log line on a real change.
+        OnTeamChangeLog?.Invoke(player, (int)player.Team, type);
+        // On a join to a REAL team (team_index != -1): broadcast INFO_JOIN_PLAY_TEAM + re-ReadyCount during warmup.
+        if (newTeam != Teams.None && newTeam != TeamForceSpectator)
+        {
+            // QC: Send_Notification(NOTIF_ALL, NULL, MSG_INFO, APP_TEAM_NUM(player.team, INFO_JOIN_PLAY_TEAM), ...).
+            NotificationSystem.Info($"JOIN_PLAY_TEAM_{TeamSuffix(newTeam)}", player.NetName);
+            // QC: if (warmup_stage) ReadyCount(); — teams might be balanced now.
+            if (IsWarmup())
+                RequestReadyCount?.Invoke();
+        }
         return true;
     }
+
+    /// <summary>QC <c>APP_TEAM_NUM</c> team-name suffix (common/teams.qh) for the JOIN_PLAY_TEAM_&lt;col&gt;
+    /// notification names. Falls back to RED for an unteamed/neutral value so the lookup always resolves.</summary>
+    private static string TeamSuffix(int team) => team switch
+    {
+        Teams.Red => "RED", Teams.Blue => "BLUE", Teams.Yellow => "YELLOW", Teams.Pink => "PINK", _ => "RED",
+    };
 
     /// <summary>
     /// QC <c>setcolor</c> (server/teamplay.qc:190): store <paramref name="player"/>'s packed
@@ -779,7 +827,7 @@ public sealed class Teamplay
             {
                 // QC SetPlayerTeam(bot, smallest, TEAM_CHANGE_AUTO): the move fires the team-change hooks (a mutator
                 // may veto). If vetoed, try the next-largest team instead of forcing the move.
-                if (SetTeam(bot, smallTeam))
+                if (SetTeam(bot, smallTeam, TeamChangeAuto))
                     return bot;
                 consideredLargest.Add(largeTeam);
                 continue;
