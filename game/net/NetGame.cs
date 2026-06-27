@@ -2629,13 +2629,9 @@ public sealed partial class NetGame : Node3D
             _fullHud.Crosshair.NadeTimer = LocalServerPlayer?.NadeTimer ?? 0f;
             _fullHud.Crosshair.ReviveProgress = LocalServerPlayer?.ReviveProgress ?? 0f;
 
-            // Weapon-stat crosshair rings (QC client/hud/crosshair.qc 476-557): feed the panel the active
-            // weapon slot's live charge/clip/load/heat off the host-side Player so the Vortex charge ring, the
-            // reload/ammo ring, the Hagar load + Mine Layer count rings, and the Arc overheat ring all render
-            // (host path; the per-slot weapon state is server-side, like QC's networked wepent fields). A pure
-            // remote client has no LocalServerPlayer here so the rings stay hidden (the wepent props would be
-            // the cross-client follow-up).
-            UpdateCrosshairWeaponRings();
+            // (weapon-ring feeder hoisted out of the host-only block — see the unconditional call before
+            // ProcessAnnouncerQueue below — so it also runs for a pure remote client; UpdateCrosshairWeaponRings
+            // now picks its source: LocalServerPlayer on a host, the networked ClientNet ring values on a client.)
 
             // [Wave5] in-vehicle HUD + aux lock crosshair (QC cl_vehicles.qc Vehicles_drawHUD / drawCrosshair +
             // the TE_CSQC_VEHICLESETUP dispatch). On the host path the local Player carries the live vehicle link
@@ -2659,6 +2655,13 @@ public sealed partial class NetGame : Node3D
             if (show)
                 _fullHud.ItemsTime.SetItemTimes(_client.ItemTimes);
         }
+
+        // Weapon-stat crosshair rings (QC client/hud/crosshair.qc 476-557): runs on EVERY path now (the feeder was
+        // hoisted out of the host-only block). On a listen host it reads the live slot state off LocalServerPlayer;
+        // a pure remote / dedicated-server client has no LocalServerPlayer, so the feeder hides the rings — the
+        // cross-client wepent-prop networking that would feed them is the follow-up (no networked ring state exists
+        // on ClientNet yet).
+        UpdateCrosshairWeaponRings();
 
         // Advance the announcer queue (play the next queued voice if the current one finished).
         _notifications?.ProcessAnnouncerQueue();
@@ -3198,7 +3201,10 @@ public sealed partial class NetGame : Node3D
     /// Hagar load (<c>hagar_load</c>) and Mine Layer count (<c>minelayer_mines</c>) rings; and the Arc overheat
     /// ring (<c>arc_heat_percent</c>). Each stat is reset to its "no data" sentinel when the active weapon isn't
     /// the one that owns it, so the panel only draws the ring for the weapon currently held — exactly like the QC
-    /// per-weapon if/else chain. Host path only (a pure remote client has no local slot state here).
+    /// per-weapon if/else chain. Called unconditionally each frame (the feeder was hoisted out of the host-only
+    /// block): on a listen host it reads the live slot state off <see cref="LocalServerPlayer"/>; on a pure remote
+    /// / dedicated-server client there is no LocalServerPlayer, so it falls through to the hide branch and the
+    /// rings stay blank (the cross-client wepent-prop networking that would feed a remote client is the follow-up).
     /// </summary>
     private void UpdateCrosshairWeaponRings()
     {
@@ -3207,7 +3213,8 @@ public sealed partial class NetGame : Node3D
         Weapon? active = p is not null ? Inventory.CurrentWeapon(p) : null;
         if (p is null || active is null || p.IsDead || p.IsObserver)
         {
-            // No live weapon → hide every ring (sentinels match the panel's "no data" defaults).
+            // No live weapon (or a pure remote client with no LocalServerPlayer) → hide every ring (sentinels
+            // match the panel's "no data" defaults).
             x.ChargeFraction = -1f; x.ChargePool = -1f;
             x.ClipLoad = -1f; x.ClipSize = 0f;
             x.HagarLoad = -1f; x.MineCount = -1f; x.ArcHeat = -1f;
@@ -3658,11 +3665,12 @@ public sealed partial class NetGame : Node3D
                         XonoticGodot.Common.Gameplay.GameTypes.ByName(c.MapName);
                     if (gt is not null)
                     {
-                        // Real built-in gametype: pretty name from the registry (QC MapInfo_Type_ToText). The port
-                        // has no per-gametype description field, so the desc stays empty for built-ins (a minor
-                        // presentation residual vs Base's MapInfo_Type_Description).
+                        // QC MapInfo_Type_Description (client/mapvoting.qc:767): for a real built-in gametype the
+                        // picker shows its MenuDescription prose (e.g. Deathmatch's 3-paragraph guide text from
+                        // deathmatch.qc:describe). A gametype that has not yet ported its describe() returns null,
+                        // which falls back to an empty string matching the pre-port behavior.
                         data = string.IsNullOrEmpty(gt.DisplayName) ? c.MapName : gt.DisplayName;
-                        desc = "";
+                        desc = gt.MenuDescription ?? "";
                     }
                     else
                     {
@@ -4025,6 +4033,17 @@ public sealed partial class NetGame : Node3D
                 ? (_server.PlayerByNetId(sid)?.NetName ?? "")
                 : "";
         }
+
+        // QC MUTATOR_HOOKFUNCTION(cl_ca, DrawInfoMessages) (cl_clanarena.qc): in CA, keep the info-message panel
+        // drawing for a SPECTATOR who has the scoreboard open (ENTCS_SPEC_IN_SCOREBOARD) — otherwise the panel
+        // self-blanks behind the scoreboard. The port knows the scoreboard-open state locally (+showscores) and the
+        // spectating state from the net client, so model the CA branch directly: force the panel visible while a CA
+        // spectator views the scoreboard. (In this port the manager already keeps infomessages always-on, so this
+        // mainly documents intent; it stays a faithful, harmless assertion of the QC behaviour.)
+        if (XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype == "ca"
+            && _client.Accepted && _client.SpectateeStatus != 0
+            && XonoticGodot.Engine.Console.BindTable.ShowScores)
+            im.Visible = true;
 
         // QC cl_lms DrawInfoMessages: in LMS, the local player is "out" once they hold an LMS rank (LMS_RANK > 0,
         // set on elimination). Read it from the local scoreboard row's networked LMS_RANK column.
@@ -4646,12 +4665,23 @@ public sealed partial class NetGame : Node3D
     /// vote for the 0-based ballot option. On a listen server this routes through the in-process server's impulse
     /// command (the same path a console <c>impulse N</c> takes — <see cref="Commands.DispatchImpulse"/> →
     /// <see cref="MapVoting.CastVote"/>). On a pure remote client there is no server-side MapVoting object, so the
-    /// cast is a no-op until a real ENT_CLIENT_MAPVOTE round-trip exists (see sv-mapvoting.net.sync).
+    /// cast rides the existing C2S impulse byte instead — <see cref="_pendingImpulse"/> is stamped and the next
+    /// <see cref="InputCommand"/> carries impulse <c>N</c> to the server's gated impulse path, which forwards it to
+    /// <see cref="MapVoting.CastVote"/> while the vote runs (the same call the listen path makes directly).
     /// </summary>
     private void CastMapVote(int index)
     {
+        // On a pure remote (--connect) client there is no in-process server: cast the vote by stamping the C2S
+        // impulse byte (QC MapVote_SendChoice → localcmd("impulse N")). The next InputCommand carries it to the
+        // server, whose gated impulse path (Commands.DispatchImpulse) routes impulse 1..N to MapVoting.CastVote
+        // while the vote runs — the same in-process call the listen path makes directly.
+        if (_serverWorld is null)
+        {
+            _pendingImpulse = index + 1; // edge-triggered: SampleInput stamps it onto the next command, then clears it
+            return;
+        }
         Player? me = LocalServerPlayer;
-        if (_serverWorld is null || me is null)
+        if (me is null)
             return;
         _serverWorld.Commands.Execute($"impulse {index + 1}", isServerConsole: false, caller: me);
     }

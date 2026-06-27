@@ -164,17 +164,16 @@ features:
       logic: faithful
       values: na
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The bprint summary wording differs (port \"^1banned: <names> (<reason>)\" vs Base per-client \"^1NOTE:^7 banned client <name>^7 has to go\\n\" + the \": affects <name>, ...\" reason-append). Functionally equivalent; cosmetic."
+    gaps: []
     verification:
-      - { kind: code, ref: "GameWorld.cs:1047-1048 wires Bans.Roster (Clients.Players) + Bans.DropClient (KickHandler+ClientDisconnect)", result: pass }
+      - { kind: code, ref: "Bans.cs:307-326 Enforce: per-client \"^1NOTE:^7 banned client <name>^7 has to go\\n\" lines + \": affects <name>, ...\" reason-append match Base ipban.qc:Ban_Enforce exactly; GameWorld.cs:1047-1048 wires Bans.Roster (Clients.Players) + Bans.DropClient (KickHandler+ClientDisconnect)", result: pass }
     confidence: high
-    notes: "Roster + DropClient wired by the host; drop behavior faithful, message wording diverges. Unchanged since baseline."
+    notes: "FIXED since prior baseline (presentation partial->faithful): Bans.cs:322 emits \"^1NOTE:^7 banned client <name>^7 has to go\\n\" and Bans.cs:318-320 appends \": affects <name>, ...\" to the reason, matching Base ipban.qc:Ban_Enforce line-for-line. Roster + DropClient wired by the host; drop behavior faithful. Gap note was stale registry drift."
 
   - id: sv-ipban.persist
     name: "Save/Load via g_banned_list (version-1 token string, seconds remaining)"
@@ -227,19 +226,18 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Ban_View footer wording differs: Base \"^2Done listing all active (N) bans.\" (+ a \"^2Listing all existing active bans:\" header), port \"{n} ban(s) active\" (no header). Per-line \"#i: <ip> is still banned for <secs> seconds\" matches."
       - "Ban_Delete's OnlineBanList_SendUnban side-effect is dropped (no online sync); slot deletion itself is faithful."
     verification:
       - { kind: test, ref: "ServerInfraTests.Bans_Delete_RemovesBan", result: pass }
-      - { kind: code, ref: "Bans.cs:334 View / Bans.cs:267 Delete; CmdUnban/CmdBanList registered", result: pass }
+      - { kind: code, ref: "Bans.cs:351 View emits header \"^2Listing all existing active bans:\"; Bans.cs:361 emits footer \"^2Done listing all active (N) bans.\" — both match Base ipban.qc:Ban_View exactly; Bans.cs:273 Delete; CmdUnban/CmdBanList registered", result: pass }
     confidence: high
-    notes: "Expired/deleted slots are left in place (not compacted) to keep unban #N indices stable, matching QC. Unchanged since baseline."
+    notes: "FIXED since prior baseline (presentation partial->faithful): Bans.cs:351 emits the \"^2Listing all existing active bans:\" header and Bans.cs:361 emits the \"^2Done listing all active (N) bans.\" footer, both matching Base. The old gap note ('port \"{n} ban(s) active\" no header') was stale registry drift. Expired/deleted slots are left in place (not compacted) to keep unban #N indices stable, matching QC."
 
   - id: sv-ipban.softban.chatban
     name: "Mute (g_chatban_list): admin mute/unmute + fake-accept muted chat + connect re-apply"

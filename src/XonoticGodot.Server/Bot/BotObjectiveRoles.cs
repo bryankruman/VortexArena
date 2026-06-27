@@ -645,6 +645,49 @@ public static class BotObjectiveRoles
         rater.End();
     }
 
+    // ============================================================================================
+    // Freeze Tag (QC havocbot_role_ft_offense / havocbot_role_ft_freeing + havocbot_goalrating_freeplayers)
+    // ============================================================================================
+
+    /// <summary>QC <c>havocbot_goalrating_freeplayers</c> ratingscale for a frozen teammate to thaw: the freeing
+    /// role rates them at 20000 (route to them and stand by to revive); the offense role at 9000 (still help if
+    /// nearby, but prioritise items/enemies). Collapsed here into a single role like CTF/Keepaway.</summary>
+    private const float RatingFrozenTeammate = 20000f;
+
+    /// <summary>
+    /// Freeze Tag role (QC the offense + freeing roles collapsed): route to any FROZEN teammate to thaw them
+    /// (havocbot_role_ft_freeing / havocbot_goalrating_freeplayers, rated 20000 so it dominates), while still
+    /// rating items, enemies, and roam waypoints (havocbot_role_ft_offense). The frozen set is read live from the
+    /// gametype's <see cref="FreezeTag.Frozen"/> map (driven each frame by GameWorld.DriveGametypeFrame). Falls
+    /// back to the DM goals when the gametype isn't FT.
+    /// </summary>
+    public static void RoleFreezeTag(BotBrain brain, GoalRater rater)
+    {
+        var bot = brain.Bot;
+        rater.Start();
+
+        if (brain.GameType is FreezeTag ft && bot is Player self)
+        {
+            // QC havocbot_goalrating_freeplayers: rate each frozen SAME-TEAM player as a revive goal so the bot
+            // walks into reviving range. A higher rating than enemies/items makes freeing the priority behaviour.
+            foreach (var e in brain.Players())
+            {
+                if (e is not Player mate || ReferenceEquals(mate, self) || mate.IsDead)
+                    continue;
+                if (!Teams.SameTeam(self, mate) || !ft.IsFrozen(mate))
+                    continue;
+                rater.Rate(bot.Origin, mate, mate.Origin, RatingFrozenTeammate, 10000f);
+            }
+        }
+
+        // QC the ft roles also rate items/enemies/roam (offense). Keep enemies modest so freeing wins when a frozen
+        // teammate is in reach but the bot still fights/collects otherwise.
+        BotRoles.GoalrateItems(brain, rater, bot.Origin, 10000f);
+        BotRoles.GoalrateEnemyPlayers(brain, rater, bot.Origin, 7000f);
+        BotRoles.GoalrateRoamWaypoints(brain, rater, bot.Origin, 3000f);
+        rater.End();
+    }
+
     private static Entity? FindBall()
     {
         if (Api.Services is null) return null;

@@ -94,6 +94,18 @@ public abstract partial class Monster : IRegistered
     public virtual bool RollDeathVariant() => false;
 
     /// <summary>
+    /// QC <c>(this.spawnflags &amp; MONSTER_SIZE_QUAKE)</c> (monster.qh, BIT for the Quake-imported monsters): this
+    /// monster's model was authored at the original Quake scale and Xonotic enlarges it 1.3x at spawn when
+    /// <c>g_monsters_quake_resize</c> is set (Monster_Spawn_Setup). The port's <see cref="MonsterAI.ApplySize"/>
+    /// reads this to scale the COLLISION bbox (mins/maxs) 1.3x on a non-respawn spawn; the matching visual
+    /// <c>scale *= 1.3</c> render enlargement needs a networked entity render-scale field the port doesn't have
+    /// (see the unportable note). None of the five stock port monsters carry the flag (zombie/golem/mage/spider/
+    /// wyvern are all Xonotic-native), so this is wired for parity with a future Quake-imported monster, latent
+    /// today exactly as in Base's stock set. Default false.
+    /// </summary>
+    public virtual bool SizeQuake => false;
+
+    /// <summary>
     /// QC <c>this.monsterdef.spawnflags &amp; MON_FLAG_RANGED</c> (monster.qh:10, BIT(9) "monster shoots
     /// projectiles"): whether this monster has a ranged attack. Used by <see cref="MonsterAI.ValidTarget"/> to
     /// reject a vehicle target for a melee-only monster (QC sv_monsters.qc:108 — "melee vs vehicle is useless").

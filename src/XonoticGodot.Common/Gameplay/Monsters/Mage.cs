@@ -54,6 +54,12 @@ public sealed class Mage : Monster
         NetName = "mage";
         DisplayName = "Mage";
         Model = "models/monsters/nanomage.dpm";
+        // Base ships NO models/monsters/nanomage.dpm_*.sounds file (find Base *.sounds = only golem + zombie),
+        // so QC Monster_Sound resolves every voice cue (pain/death/melee/sight/idle/spawn) to an EMPTY sample and
+        // sound7 plays nothing — the Base mage is silent for all voice cues (its spike/push/heal/teleport effects
+        // play their own SND_* directly). An empty SoundCues set mirrors that: MonsterSound advances the throttle
+        // window but emits no sample, so no port-invented monsters/mage_<cue> sound fires (matching Spider).
+        SoundCues = new System.Collections.Generic.HashSet<string>();
         StartHealth = 400f;             // g_monster_mage_health
         Damage = 45f;                   // spike damage
         Speed = 400f;                   // run speed

@@ -26,6 +26,7 @@
 // When there is no activator (ambient loop, null entity), the *-name resolves to silence (QC SND(Null)
 // fallback), exactly as before.
 
+using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;
 
@@ -144,8 +145,11 @@ public static class TargetSpeaker
         }
         else if (loopedOff)
         {
-            // LOOPED_OFF without a targetname: can never be activated. QC logs an error.
-            // Nothing to do — the entity is inert.
+            // LOOPED_OFF without a targetname: can never be activated. QC speaker.qc calls
+            // objerror(); the port emits a Warn diagnostic and leaves the entity inert (the
+            // behavioral outcome is identical: nothing plays, the entity is effectively garbage).
+            // QC: objerror("sound/speaker.qc: LOOPED_OFF without a targetname is not allowed");
+            Log.Warn($"target_speaker (noise='{this_.Noise}') has LOOPED_OFF spawnflag but no targetname — it can never be triggered (QC objerror); leaving inert.");
         }
     }
 

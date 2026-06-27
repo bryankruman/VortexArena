@@ -63,6 +63,16 @@ public static class EffectsList
         // to BeamRenderer.Arc (the crackling bolt), so the trail flag only governs networking, not the visual.
         Effects.Register("ARC_LIGHTNING", "arc_lightning", isTrail: true);
 
+        // The CYLINDRIC arc-weapon beam line (Base Draw_ArcBeam -> Draw_CylindricLine, the cl_arcbeam_simple
+        // default). DISTINCT from the arc_beam/arc_beam_heal PARTICLE trails above (which DP draws too, as
+        // trailparticles ALONGSIDE the cylinder): these two names carry no effectinfo block, so they short-circuit
+        // at the EffectSystem Beam route (drawn via BeamRenderer.Beam between origin and the velocity end-point)
+        // before the effectinfo lookup. Registered isTrail ONLY so the count-0 line emission survives the
+        // EffectEmitter.Emit point-count guard (same trick as ARC_LIGHTNING) — the trail flag governs networking,
+        // not the visual; the explicit Beam-class check in EffectSystem routes them to the drawn line.
+        Effects.Register("ARC_BEAM_LINE", "arc_beam_line", isTrail: true);
+        Effects.Register("ARC_BEAM_LINE_HEAL", "arc_beam_line_heal", isTrail: true);
+
         // ---- Machine Gun ----
         Effects.Register("MACHINEGUN_IMPACT", "machinegun_impact");
         Effects.Register("MACHINEGUN_MUZZLEFLASH", "uzi_muzzleflash");

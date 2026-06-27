@@ -78,6 +78,20 @@ public sealed class Deathmatch : GameType
     /// </summary>
     public override bool ReportsTie(IReadOnlyList<Player> roster) => FfaTie.TopTwoTied(roster);
 
+    /// <summary>
+    /// QC MENUQC <c>METHOD(Deathmatch, describe)</c> (deathmatch.qc:7-16, 3-paragraph PAGE_TEXT): the guide
+    /// text displayed under the Deathmatch icon in the gametype-vote picker. Faithful prose port — COLORED_NAME
+    /// placeholders for this, ITEM_HealthMega and ITEM_ArmorMega are resolved to their plain English names;
+    /// the map-vote panel renders this as a wrapped multi-line block (MapVotePanel.DrawDescription).
+    /// </summary>
+    public override string? MenuDescription =>
+        "Deathmatch is a simple free-for-all fight to the death, where everyone plays against everyone else, " +
+        "and the winner is the one with the most points. " +
+        "When fragged, you respawn with only the starter weapons, so any you collected will have to be picked up again.\n\n" +
+        "Scoring is quite simple, fragging an opponent adds one to your score, and fragging yourself subtracts one.\n\n" +
+        "Maps often have powerups and items like Mega Health and Mega Armor, which are usually highly contested " +
+        "since they sometimes have the power to make or break a game, so making good use of them is important.";
+
     /// <summary>QC INIT(Deathmatch) gametype_init: identity is set in the ctor; kept for parity / future cvar seeding.</summary>
     public override void OnInit()
     {

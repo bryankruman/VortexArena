@@ -440,6 +440,13 @@ public sealed class Cts : GameType
         OnFinishRetract?.Invoke(p);
     }
 
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(cts, AbortSpeedrun)</c> (sv_cts.qc): the SPEEDRUN cheat (impulse 141) teleported
+    /// the runner back to their personal checkpoint, invalidating the in-progress attempt — drop the run clock
+    /// (QC race_PreparePlayer) WITHOUT the finish-retract teleport (the speedrun cheat teleports itself).
+    /// </summary>
+    public void AbortSpeedrun(Player p) => AbandonRun(GetState(p));
+
     /// <summary>QC race_PreparePlayer / race_AbandonRaceCheck: drop an in-progress run — clear the run clock + the
     /// frame-accumulated <c>.race_movetime</c> so the next start timer re-stamps a fresh run from zero.</summary>
     private static void AbandonRun(CtsState st)

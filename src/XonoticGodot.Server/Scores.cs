@@ -632,6 +632,14 @@ public sealed class Scores
             s += "T";
         // QC: MUTATOR_CALLHOOK(LogDeath_AppendItemCodes, player, s) → S/I (powerups), F (ctf), …
         s = MutatorActivation.LogDeathAppendItemCodes(player, s);
+
+        // QC the per-GAMETYPE LogDeath_AppendItemCodes hook (ctf/sv_ctf.qc appends "F" for a flag carrier). The
+        // MutatorActivation chain above only iterates mutators; CTF is a GameType, so dispatch the active mode's
+        // virtual here. GameScores.Gametype is the live mode name and GameTypes.ByName returns the activated
+        // singleton, so its live flag-carrier state (CarriedBy) is correct; non-CTF modes return s unchanged.
+        if (GameTypes.ByName(GameScores.Gametype) is { } activeMode)
+            s = activeMode.LogDeathAppendItemCodes(player, s);
+
         return s;
     }
 
@@ -790,8 +798,20 @@ public sealed class Scores
             }
             else
             {
-                SendChoiceToOne(attacker, "FRAG", victimName, killCountToAttacker, victimPing);
-                SendChoiceToOne(victim, "FRAGGED", attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
+                // QC Obituary (server/damage.qc:371) fires MUTATOR_CALLHOOK(FragCenterMessage, attacker, targ,
+                // deathtype, ...) so a gametype can swap/suppress the personal frag centerprint. Freeze Tag swaps
+                // FRAG/FRAGGED for FRAG_FREEZE/FRAGGED_FREEZE ("You froze X" / "You were frozen by Y") and
+                // suppresses both when the target was already frozen (a void/lava re-kill). Scores' obituary
+                // handler runs BEFORE FreezeTag.OnDeath (SubscribeToDeaths is added to Combat.Death before the
+                // gametype Activate), so at hook time IsFrozen(victim) still reflects the PRE-death state, exactly
+                // matching QC's STAT(FROZEN, frag_target) test.
+                var fcm = new MutatorHooks.FragCenterMessageArgs(attacker, victim, deathType);
+                MutatorHooks.FragCenterMessage.Call(ref fcm);
+                if (!fcm.Suppress)
+                {
+                    SendChoiceToOne(attacker, fcm.AttackerChoice, victimName, killCountToAttacker, victimPing);
+                    SendChoiceToOne(victim, fcm.TargetChoice, attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
+                }
             }
 
             // QC HURTTRIGGER msg_from_ent (server/damage.qc:420-426): an enemy-credited trigger_hurt (DEATH_VOID)

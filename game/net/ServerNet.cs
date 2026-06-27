@@ -489,6 +489,7 @@ public sealed class ServerNet : IDisposable
             BroadcastSnapshots();
             SendMinigameState(); // [T38] push per-peer minigame session snapshots (reliable channel)
             SendMatchState();    // global match clock (GAMESTARTTIME/TIMELIMIT/warmup) → TIMER panel
+            SendMapVote();       // per-peer end-of-match map/gametype ballot (QC ENT_CLIENT_MAPVOTE) → MapVotePanel
             SendWaypoints(); // per-peer waypoint sprites (CTF flags + player pings…) → 3D markers + radar icons
             SendItemsTime(); // per-peer item respawn-time table (QC itemstime IT_Write) → ItemsTimePanel countdowns
             FlushEventBundles();
@@ -995,6 +996,93 @@ public sealed class ServerNet : IDisposable
         foreach (PeerState st in _peers.Values)   // real network peers (matches BroadcastSnapshots; excludes bots)
             if (st.Accepted && st.Player is not null)
                 _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
+    }
+
+    private float _nextMapVoteSend;
+    private bool _lastMapVoteShowing;
+
+    /// <summary>QC the <c>mapvote</c> net entity (server/mapvoting.qc) sent to every client: push the live
+    /// end-of-match ballot so a pure remote client's <c>MapVotePanel</c> (QC client/mapvoting.qc MapVote_Draw)
+    /// lights up. Sent PER-PEER because the own-vote field (QC <c>mv_ownvote</c>) differs per client — the rest of
+    /// the ballot is identical, but stamping each peer's <see cref="MapVoting.SelectionOf"/> is cheap. Throttled to
+    /// ~2×/s while the vote runs (live counts), plus an immediate edge send on the running→idle transition so the
+    /// panel hides promptly. Field order mirrors <c>ClientNet.HandleMapVote</c>. Reliable channel.</summary>
+    private void SendMapVote()
+    {
+        MapVoting vote = _world.MapVote;
+        // QC mv_active: the panel draws while the vote runs or while the finished winner is being revealed.
+        bool showing = vote.Running || (vote.Finished && !string.IsNullOrEmpty(vote.WinningMap));
+        if (!showing)
+        {
+            // Edge: send one final "not showing" frame so a remote panel clears, then go quiet.
+            if (!_lastMapVoteShowing)
+                return;
+            _lastMapVoteShowing = false;
+        }
+        else
+        {
+            // Throttle live updates to ~2×/s except on the first showing frame (push the ballot identity at once).
+            if (_lastMapVoteShowing && _world.Time < _nextMapVoteSend)
+                return;
+            _lastMapVoteShowing = true;
+            _nextMapVoteSend = _world.Time + 0.5f;
+        }
+
+        IReadOnlyList<MapVoteCandidate> cands = vote.Candidates;
+        // QC mv_timeout: send SECONDS-REMAINING (not absolute server time) so the client converts it against its own
+        // sim clock — the listen/remote clocks differ, and the panel counts down vs Api.Clock.Time.
+        float remaining = vote.Timeout > 0f ? System.Math.Max(0f, vote.Timeout - _world.Time) : -1f;
+        // QC mv_winner (1-based, 0 = not yet): the ballot index of the chosen map among the non-abstain options.
+        int winner1Based = 0;
+        if (vote.Finished && !string.IsNullOrEmpty(vote.WinningMap))
+        {
+            int slot = 0;
+            foreach (MapVoteCandidate c in cands)
+            {
+                if (c.IsAbstain) continue;
+                slot++;
+                if (string.Equals(c.MapName, vote.WinningMap, System.StringComparison.OrdinalIgnoreCase)) { winner1Based = slot; break; }
+            }
+        }
+
+        foreach (PeerState st in _peers.Values)   // real network peers (matches SendMatchState; excludes bots)
+        {
+            if (!st.Accepted || st.Player is null)
+                continue;
+
+            _scratchWriter.Reset();
+            _scratchWriter.WriteByte((byte)NetControl.MapVote);
+            _scratchWriter.WriteBool(showing);
+            _scratchWriter.WriteBool(vote.Finished);
+            _scratchWriter.WriteBool(vote.IsGametypeVote);
+            _scratchWriter.WriteBool(_world.Services.Cvars.GetFloat("sv_vote_gametype_detail") != 0f); // QC mv_detail
+            _scratchWriter.WriteFloat(remaining);
+            _scratchWriter.WriteShort(winner1Based);
+            // QC mv_ownvote: this peer's own selection (-1 = none / abstain), so the panel highlights the right cell.
+            int own = vote.SelectionOf(st.Player);
+            bool ownAbstain = own >= 0 && own < cands.Count && cands[own].IsAbstain;
+            _scratchWriter.WriteShort(ownAbstain ? -1 : own);
+            // QC mv_abstain: the appended "Don't care" slot is present on the ballot.
+            bool abstain = false;
+            foreach (MapVoteCandidate c in cands) if (c.IsAbstain) { abstain = true; break; }
+            _scratchWriter.WriteBool(abstain);
+            // Candidate list (excluding the abstain slot — the client renders it from the abstain flag). The
+            // client computes the pic/pretty-name/description from the name itself (GameTypes registry / map pic),
+            // exactly like the listen-server feed in NetGame.UpdateMapVotePanel, so only the raw fields ride here.
+            int n = 0;
+            foreach (MapVoteCandidate c in cands) if (!c.IsAbstain) n++;
+            _scratchWriter.WriteByte((byte)n);
+            foreach (MapVoteCandidate c in cands)
+            {
+                if (c.IsAbstain) continue;
+                _scratchWriter.WriteString(c.MapName);
+                _scratchWriter.WriteShort(c.Available ? c.Votes : -1); // QC mv_votes: -1 = unavailable/hidden
+                _scratchWriter.WriteBool(c.Available);
+                _scratchWriter.WriteString(c.Suggester ?? "");
+            }
+
+            _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
+        }
     }
 
     /// <summary>
@@ -2040,6 +2128,9 @@ public sealed class ServerNet : IDisposable
                 continue;
             if (!string.IsNullOrEmpty(e.Model) && e.Model.StartsWith('*'))
                 continue;                          // inline brush model — drawn by the map, not networked
+            if (e.PhysNetSuppressed)
+                continue;                          // QC setSendEntity(func_null): physical_items hid this item
+                                                   // behind its ghost — the real edict no longer networks
             NetEntityKind kind = Classify(e);
             if (kind == NetEntityKind.None)
                 continue;
@@ -2473,6 +2564,82 @@ public sealed class ServerNet : IDisposable
         return id;
     }
 
+    /// <summary>
+    /// [W-wepent-charges] Resolve the owner-only weapon-HUD ring values (QC the networked wepent.* fields:
+    /// vortex_charge / vortex_chargepool_ammo / clip_load / clip_size / hagar_load / minelayer_mines /
+    /// arc_heat_percent) for the local viewmodel slot, off the AUTHORITATIVE player. This is the server-side
+    /// twin of NetGame.UpdateCrosshairWeaponRings (which reads the same slot-0 scratch state on a listen host);
+    /// the resolved scalars ride the owner block (WriteOwnerState) so a PURE remote / dedicated-server client
+    /// gets the same crosshair rings the host already shows. Each value uses the panel's -1 'no data' sentinel
+    /// when the active weapon doesn't own that ring (so only the held weapon's ring draws), exactly like the host
+    /// feeder. Caps (HagarLoadMax / MineLimit) are sent resolved from the descriptor too, because a pure client's
+    /// g_balance_* cvars aren't guaranteed to match the server's.
+    /// </summary>
+    private void ResolveOwnerWeaponRings(
+        Player p,
+        out float charge, out float chargePool,
+        out float clipLoad, out float clipSize,
+        out float hagarLoad, out float hagarLoadMax,
+        out float mineCount, out float mineLimit,
+        out float arcHeat)
+    {
+        charge = chargePool = clipLoad = hagarLoad = mineCount = arcHeat = -1f;
+        clipSize = 0f;
+        hagarLoadMax = 4f; // CrosshairPanel defaults (only used when the matching ring is active)
+        mineLimit = 3f;
+
+        Weapon? active = Inventory.CurrentWeapon(p);
+        if (active is null || p.IsDead || p.IsObserver)
+            return; // no live weapon → every ring stays at its -1/0 sentinel (host feeder parity)
+
+        WeaponSlotState wst = p.WeaponState(new WeaponSlot(0));
+        string net = active.NetName ?? string.Empty;
+
+        // Vortex / Overkill-Nex charge ring (QC 482-496): vortex_charge / vortex_chargepool_ammo (both [0,1]).
+        if (net is "vortex" or "vaporizer" || net.Contains("nex"))
+        {
+            charge = wst.VortexCharge;
+            chargePool = wst.VortexChargePoolAmmo;
+        }
+
+        // Reload / ammo ring (QC 536-548): clip_load / clip_size, for any weapon with a clip.
+        if (wst.ClipSize > 0)
+        {
+            clipLoad = wst.ClipLoad;
+            clipSize = wst.ClipSize;
+        }
+
+        // Hagar burst-load ring (QC 529-535): hagar_load / load_max.
+        if (net == "hagar" && active is Hagar hg)
+        {
+            hagarLoad = wst.HagarLoad;
+            if (hg.Secondary.LoadMax > 0f) hagarLoadMax = hg.Secondary.LoadMax;
+        }
+
+        // Mine Layer count ring (QC 522-528): minelayer_mines / limit. Count this player's live mines (the same
+        // g_mines scan W_MineLayer_Count / the host feeder does), since the count isn't cached on the slot.
+        if (net == "minelayer" && active is Minelayer ml)
+        {
+            int mines = 0;
+            foreach (Entity e in _world.Services.Entities.FindByClass("mine"))
+                if (ReferenceEquals(e.Owner, p) && !e.IsFreed) ++mines;
+            mineCount = mines;
+            if (ml.Cvars.Limit > 0) mineLimit = ml.Cvars.Limit;
+        }
+
+        // Arc overheat ring (QC 474, 550-556 + Arc_GetHeat_Percent arc.qc:55-68): while a beam is live the ring is
+        // beam_heat/overheat_max; after release the latched arc_overheat timestamp decays the ring, scaled by the
+        // captured arc_cooldown. Same expression the host feeder uses, with the server sim clock.
+        if (net == "arc" && active is Arc arc && arc.Beam.OverheatMax > 0f)
+        {
+            float now = _world.Time;
+            float pct = wst.BeamHeat > 0f
+                ? wst.BeamHeat / arc.Beam.OverheatMax
+                : (wst.ArcOverheat > now ? (wst.ArcOverheat - now) / arc.Beam.OverheatMax * wst.ArcCooldown : 0f);
+            arcHeat = System.Math.Clamp(pct, 0f, 1f);
+        }
+    }
+
     /// <summary>Owner-replicated authoritative state: origin + velocity (full precision) + onground + HUD stats +
     /// the active weapon id (the local first-person viewmodel selector — QC wepent m_weapon, which the owner is
     /// excluded from the entity stream for). Fixed-layout: keep these in lockstep with
@@ -2504,6 +2671,14 @@ public sealed class ServerNet : IDisposable
             spec = 0;                    // a live player
         p.SpectateeStatus = spec;
         w.WriteShort(spec);
+
+        // QC STAT(PRESSED_KEYS) (server/client.qc GetPressedKeys :2840 / SpectateCopy :1820): the owner's held-key
+        // bitset (KEY_FORWARD/BACK/LEFT/RIGHT/JUMP/CROUCH/ATCK/ATCK2, bits 0..7 — the layout PressedKeysPanel reads).
+        // GetPressedKeys keeps p.PressedKeys current each server frame for a live owner, the observer branch clears
+        // it, and SpectateCopy copies the spectatee's bits onto a following observer — so this single owner-block
+        // field already carries the RIGHT keys whether the owner is playing or spectating someone, and the client
+        // HUD's pressedkeys/strafe cluster can show a SPECTATED player's keys (closes the frame.pressed_keys net gap).
+        w.WriteShort(p.PressedKeys);
 
         // QC view punch (PM_check_punch): the weapon-recoil view kick, decayed server-side and applied to the
         // owner's rendered view angles client-side. Owner-only (only the local player sees their own kick), so
@@ -2542,6 +2717,27 @@ public sealed class ServerNet : IDisposable
             w.WriteBytes(bytes.AsSpan(0, n));
             st.LastAccuracyGen = accGen;
         }
+
+        // [W-wepent-charges] the owner-only weapon-HUD ring values (QC networked wepent vortex_charge /
+        // vortex_chargepool_ammo / clip_load / clip_size / hagar_load / minelayer_mines / arc_heat_percent + the
+        // resolved caps). Resolved server-side off the authoritative player so a pure remote / dedicated-server
+        // client renders the same crosshair charge/clip/load/heat rings the listen host already does (previously
+        // host-only). Written at the END of the owner block, read in lockstep by ClientNet.HandleSnapshot.
+        ResolveOwnerWeaponRings(p,
+            out float wsCharge, out float wsChargePool,
+            out float wsClipLoad, out float wsClipSize,
+            out float wsHagarLoad, out float wsHagarLoadMax,
+            out float wsMineCount, out float wsMineLimit,
+            out float wsArcHeat);
+        w.WriteFloat(wsCharge);
+        w.WriteFloat(wsChargePool);
+        w.WriteFloat(wsClipLoad);
+        w.WriteFloat(wsClipSize);
+        w.WriteFloat(wsHagarLoad);
+        w.WriteFloat(wsHagarLoadMax);
+        w.WriteFloat(wsMineCount);
+        w.WriteFloat(wsMineLimit);
+        w.WriteFloat(wsArcHeat);
     }
 
     // =====================================================================================

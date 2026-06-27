@@ -145,6 +145,12 @@ public static class Cvars
         new("teamplay", "0", Notify),
         new("g_balance_teams", "1", Save, "automatic team balance"),
         new("g_balance_teams_prevent_imbalance", "1", Save),
+        // QC server/teamplay.qc QueueNeeded / TeamBalance_QueuedPlayersTagIn (xonotic-server.cfg): during a match
+        // (not warmup/campaign, >=2 humans) a joiner whose chosen team would unbalance the teams is held as an
+        // observer in a join queue and tagged in only when a deficit opens. Default off in Base. (The join-queue
+        // tag-in machinery itself is not yet ported — registering the cvar gives the gate real data; see
+        // sv-teamplay.queue.)
+        new("g_balance_teams_queue", "0", Save, "hold joiners in a queue during the match to keep teams balanced"),
         // QC server/teamplay.qc TeamBalance_RemoveExcessPlayers (xonotic-server.cfg:295-296): on a leave that
         // unbalances a 2-team match, move the NEWEST joiner on the overfull team to spectators — after a
         // g_balance_teams_remove_wait-second warning (0 = immediately). Default off in Base.
@@ -340,19 +346,23 @@ public static class Cvars
 
         // ---- idle kick (QC server/client.qc PlayerFrame sv_maxidle block) ----
         // sv_maxidle: seconds before an idle PLAYER or join-queue client is kicked (0 = disabled, the default).
-        // sv_maxidle_playertospectator: if > 0 and a player is idle, move-to-spec instead of kick (0 = disabled).
-        // sv_maxidle_minplayers: minimum human clients before the idle kick is active (0 = always active).
-        // sv_maxidle_alsokickspectators: also apply the idle kick to observers/spectators (default 0).
+        // sv_maxidle_playertospectator: if > 0 and a player is idle, move-to-spec instead of kick (Base 60).
+        // sv_maxidle_minplayers: minimum human clients before the idle kick is active (Base 2; 0 = always active).
+        // sv_maxidle_alsokickspectators: also apply the idle kick to observers/spectators (source default 0).
         // sv_maxidle_slots: free-slot threshold — if > 0 AND sv_dedicated, only kick when free slots <= this.
         // sv_maxidle_slots_countbots: count bots when computing the free-slot occupancy.
         new("sv_maxidle", "0", Save, "seconds of player inactivity before kick (0 = off)"),
-        new("sv_maxidle_playertospectator", "0", Save, "move-to-spec instead of kick when >0 (seconds)"),
-        new("sv_maxidle_minplayers", "0", Save, "minimum players before the idle kick activates"),
+        // Source autocvar defaults (server/client.qh:38-39): playertospectator 60, minplayers 2 — the port had
+        // shipped both at 0, which silently disabled move-to-spec and let the idle kick arm with no humans present.
+        new("sv_maxidle_playertospectator", "60", Save, "move-to-spec instead of kick when >0 (seconds)"),
+        new("sv_maxidle_minplayers", "2", Save, "minimum players before the idle kick activates"),
+        // Source autocvar default is 0 (the shipped xonotic-server.cfg:452 overrides it to 1); we keep the source
+        // default like the rest of this table so a loaded cfg still wins — registry marks this row match:true.
         new("sv_maxidle_alsokickspectators", "0", Save, "also idle-kick spectators/observers"),
         new("sv_maxidle_slots", "0", Save, "free-slot threshold for dedicated-server idle kick (0 = always)"),
         new("sv_maxidle_slots_countbots", "0", Save, "count bots toward sv_maxidle_slots occupancy"),
-        // g_maxplayers_spectator_blocktime: spectator grace before the sv_spectate=0 kick fires.
-        new("g_maxplayers_spectator_blocktime", "5", Save, "grace period (s) before kicking spectators when sv_spectate=0"),
+        // g_maxplayers_spectator_blocktime: spectator grace before the sv_spectate=0 kick fires (xonotic-server.cfg:33 ships 10).
+        new("g_maxplayers_spectator_blocktime", "10", Save, "grace period (s) before kicking spectators when sv_spectate=0"),
 
         // ---- server identity / admin (xonotic-server.cfg) ----
         new("sv_dedicated", "0", CvarFlags.ReadOnly),

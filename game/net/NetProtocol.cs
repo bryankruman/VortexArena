@@ -91,7 +91,15 @@ public static class NetProtocol
     /// clients. The byte size is unchanged (a previously-zero bit now carries meaning); the bump keeps the parity
     /// hash honest so a mixed-build client can't silently mis-signal typing.
     /// </summary>
-    public const uint ProtocolVersion = 12;
+    /// v13: added the end-of-match map-vote channel (<see cref="NetControl.MapVote"/>) — a per-peer S2C push of
+    /// the live ballot (running/finished flags, gametype/abstain/detail, the seconds-remaining countdown, each
+    /// candidate's name/votes/availability/suggester, the winner, and THIS peer's own-vote index) so a pure
+    /// remote (--connect) client can see the ballot and have its number-key vote highlighted. The vote CAST
+    /// itself rides the existing C2S <see cref="InputCommand.Impulse"/> byte (v5): the server's gated impulse path
+    /// (<c>Commands.DispatchImpulse</c>) already routes impulse 1..N to <c>MapVoting.CastVote</c> while the vote
+    /// runs, so only the S2C ballot needed a new opcode. Additive (old clients drop the unknown frame), but the
+    /// version bump keeps the parity hash honest.
+    public const uint ProtocolVersion = 13;
 
     /// <summary>Ordered, reliable ENet channel — handshake, spawns/removes, notifications, scores.</summary>
     public const int ReliableChannel = 0;
@@ -228,4 +236,15 @@ public enum NetControl : byte
     /// period. Sent once right after <see cref="HandshakeAccept"/> (the welcome/accept handshake). Decoded into
     /// <see cref="ClientNet"/>'s client-init constant stores; unknown to old clients (dispatch falls through).</summary>
     ClientInit = 21,
+
+    // ---- end-of-match map vote (the C# port of QC's networked ENT_CLIENT_MAPVOTE entity) ----
+    /// <summary>Server → client (reliable): the live end-of-match map/gametype ballot (QC client/mapvoting.qc
+    /// <c>MapVote_Draw</c> fed by the <c>mapvote</c> net entity). Carries the running/finished flags, the
+    /// gametype/abstain/detail flags, the seconds-remaining countdown, every candidate's name + vote count +
+    /// availability + suggester, the winner (1-based, 0 = not yet), and THIS peer's own-vote candidate index
+    /// (QC <c>mv_ownvote</c>, stamped per-peer from <c>MapVoting.SelectionOf</c>). Sent per-peer (the own-vote
+    /// field differs per client) on change + ~2×/s while a vote runs, so the MapVotePanel lights up for a pure
+    /// remote client (not just the listen host). The vote CAST rides the C2S impulse byte. Unknown to old
+    /// clients (dispatch falls through harmlessly).</summary>
+    MapVote = 22,
 }

@@ -335,6 +335,14 @@ public static class TurretAI
         // alpha-cloak: a target faded to <=0.3 alpha is invisible to the turret (QC alpha cull).
         if (target.Alpha != 0f && target.Alpha <= 0.3f) return false;
 
+        // QC turret_validate_target mutator hook (sv_turrets.qc): right after the alpha-cloak cull and before the
+        // NO/NOTARGET/dead checks, MUTATOR_CALLHOOK(TurretValidateTarget, e_turret, e_target, validate_flags) can
+        // FULLY REPLACE the validity result — `if (hook) return M_ARGV(3, float)`. A non-null override short-circuits
+        // the rest of the cascade (true = force valid, false = force reject). No stock mutator registers it.
+        // (target is provably non-null here — the null/self/owner guards above already returned.)
+        bool? mutatorValid = MutatorHooks.FireTurretValidateTarget(turret, target!, selectFlags);
+        if (mutatorValid is bool forced) return forced;
+
         // Untargetable / dead / not damageable.
         if ((target.Flags & EntFlags.NoTarget) != 0) return false;
         if (target.TakeDamage == DamageMode.No) return false;
@@ -607,7 +615,11 @@ public static class TurretAI
 
         float aimMaxPitch = p.AimMaxPitch > 0f ? p.AimMaxPitch : 20f;
         float aimMaxRot = p.AimMaxRot > 0f ? p.AimMaxRot : 90f;
-        float aimSpeed = p.AimSpeed > 0f ? p.AimSpeed : 36f;
+        // QC turret_initialize aim_speed default-fill (sv_turrets.qc): a STEPMOTOR turret that leaves aim_speed unset
+        // gets turret_initparams' 36 fallback, but a NON-stepmotor (fluid) turret defaults to 180 instead
+        // ("if (track_type != TRACKTYPE_STEPMOTOR) { if (!aim_speed) aim_speed = 180; ... }"). Match per track type.
+        // Every shipped turret passes a non-zero AimSpeed, so this only changes the never-hit unset fallback.
+        float aimSpeed = p.AimSpeed > 0f ? p.AimSpeed : (p.TrackType == TrackStepMotor ? 36f : 180f);
 
         switch (p.TrackType)
         {
@@ -662,6 +674,12 @@ public static class TurretAI
         TurretState st = State(turret);
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
         float frameTime = Api.Services is not null ? Api.Clock.FrameTime : 0f;
+
+        // QC turret_think (sv_turrets.qc) step 1: MUTATOR_CALLHOOK(TurretThink, this) before ammo regen / acquire
+        // / aim / fire. A mutator that returns true pauses the rest of the brain for this think (the turret skips
+        // its acquire/aim/fire pass). No stock mutator registers it, so this is a no-op fast-path in stock play.
+        if (MutatorHooks.FireTurretThink(turret))
+            return turret.Enemy;
 
         // Framework low-HP damage feedback (cl_turrets.qc turret_draw: spark/smoke tiers). Runs every think
         // regardless of active state (QC turret_draw is a per-frame client draw); ewheel/walker self-skip inside.
@@ -724,6 +742,16 @@ public static class TurretAI
 
         // Fire gate (QC turret_firecheck): refire/ammo, then the impact-entity branches, then the aim-tolerance
         // and too-close gates. Default firecheck_flags = DEAD|DISTANCES|LOS|AIMDIST|TEAMCHECK|AMMO_OWN|REFIRE.
+        // QC turret_firecheck top: MUTATOR_CALLHOOK(Turret_CheckFire, this) can force the whole result — a true
+        // override fires this think (skipping every gate below), a false override holds. No stock mutator registers
+        // it, so the fast path falls straight through to the normal gates in stock play.
+        bool? checkFire = MutatorHooks.FireTurretCheckFire(turret);
+        if (checkFire == true)
+        {
+            Fire(turret, enemy, in p, fire);
+            return enemy;
+        }
+        if (checkFire == false) return enemy;
         if (st.AttackFinished > now) return enemy;                    // TFL_FIRECHECK_REFIRE
         // Per-unit firecheck override (QC .turret_firecheckfunc, e.g. phaser.qc turret_phaser_firecheck): block fire
         // entirely while a custom fireflag state machine is mid-cycle. The phaser sets FireFlag=1 (beam active) /
@@ -847,6 +875,11 @@ public static class TurretAI
         // QC turret_fire master fire-disable: autocvar_g_turrets_nofire short-circuits the whole fire (no
         // weapon, no refire/ammo/volley bookkeeping) so the turret tracks but never shoots.
         if (Cvar("g_turrets_nofire", 0f) != 0f) return;
+
+        // QC turret_fire mutator gate: `if (MUTATOR_CALLHOOK(TurretFire, this)) return;` — the per-mutator twin of
+        // the nofire master gate. A handler returning true suppresses this shot entirely (no weapon, no refire/ammo/
+        // volley bookkeeping). No stock mutator registers it, so this is a no-op fast-path in stock play.
+        if (MutatorHooks.FireTurretFire(turret)) return;
 
         fire(turret, enemy);
 

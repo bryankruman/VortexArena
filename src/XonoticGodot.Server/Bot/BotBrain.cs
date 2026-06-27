@@ -89,6 +89,7 @@ public sealed class BotBrain
     private Entity? _ignoreGoal;    // QC .ignoregoal (a danger-unreachable goal, snubbed for a timeout)
     private float _ignoreGoalTime;  // QC .ignoregoaltime
     private bool _strategyForced;   // QC navigation_goalrating_timeout_force (re-rate on next token hold)
+    private bool _triggerHurtEscape; // QC trigger_hurt escape (skill>6): jetpack up / Devastator rocketjump out
 
     /// <summary>
     /// QC <c>bot_strategytoken == this</c>: only the token holder may run its role (goal rating + routing)
@@ -361,6 +362,7 @@ public sealed class BotBrain
         // the point we're about to occupy; lava/slime/void/cliff → brake; a trigger_hurt under a high goal →
         // the goal is unreachable (clear + ignore it for bot_ai_ignoregoal_timeout).
         bool dangerBrakeEngaged = false; // QC do_break/evadedanger this frame (forbids bunnyhop, havocbot.qc:1315)
+        _triggerHurtEscape = false;      // QC trigger_hurt escape intent (skill>6), set by the danger probe below
         if (Nav.Current is Vector3 cur)
         {
             Vector3 flat = new(cur.X - bot.Origin.X, cur.Y - bot.Origin.Y, 0f);
@@ -381,14 +383,36 @@ public sealed class BotBrain
                     _strategyForced = true;
                 }
                 else
+                {
                     danger = true;
+                    // QC havocbot_movetogoal trigger_hurt escape (skill > 6): a skilled bot tries to get OUT of a
+                    // hurt volume instead of only braking. Jetpack straight up if it owns the jetpack; else, if it
+                    // owns the Devastator and has the HP to eat the self-splash, rocketjump out (aim down + fire).
+                    if (Skill > 6f)
+                        _triggerHurtEscape = true;
+                }
             }
             if (danger)
             {
                 dangerBrakeEngaged = true; // QC: do_break/evadedanger set → bunnyhop forbidden this frame
-                // QC do_break: back off along -velocity (the port folds the AI_STATUS_DANGER_AHEAD evade into
-                // the brake; the lateral evade vector is a documented simplification).
-                move = Nav.WorldToLocalMove(-bot.Velocity, Aim.ViewAngles.Y);
+                // QC evadedanger: steer ALONG the safe edge, not straight back. Probe the danger to our left and
+                // right of the flight path; if one side is clear, blend a sideways component toward it so the bot
+                // sidesteps the hazard rather than reversing off it. Fall back to the reverse-velocity brake only
+                // when both sides are dangerous (a dead-end ledge).
+                Vector3 fwdFlat = new(cur.X - bot.Origin.X, cur.Y - bot.Origin.Y, 0f);
+                Vector3 fdir = fwdFlat.LengthSquared() > 0f ? QMath.Normalize(fwdFlat) : Vector3.Zero;
+                Vector3 sideDir = new(-fdir.Y, fdir.X, 0f); // left of the flight path
+                Vector3 probeBase = bot.Origin + Aim.ViewOffset;
+                int leftR = BotDanger.CheckDanger(bot, probeBase, probeBase + (fdir + sideDir) * 48f, cur.Z,
+                    Nav.Mins, Nav.Maxs, onGround, jumpHeld || Nav.WantJump, moving: true, committed: false);
+                int rightR = BotDanger.CheckDanger(bot, probeBase, probeBase + (fdir - sideDir) * 48f, cur.Z,
+                    Nav.Mins, Nav.Maxs, onGround, jumpHeld || Nav.WantJump, moving: true, committed: false);
+                bool leftSafe = leftR == 0, rightSafe = rightR == 0;
+                Vector3 evadeWorld;
+                if (leftSafe && !rightSafe) evadeWorld = sideDir - fdir * 0.5f;       // peel left along the edge
+                else if (rightSafe && !leftSafe) evadeWorld = -sideDir - fdir * 0.5f; // peel right
+                else evadeWorld = -bot.Velocity;                                     // both bad: brake straight back
+                move = Nav.WorldToLocalMove(evadeWorld, Aim.ViewAngles.Y);
                 if (Nav.GoalEntity is Player) // QC: a player goal past danger is unreachable
                 {
                     _ignoreGoal = Nav.GoalEntity;
@@ -505,18 +529,47 @@ public sealed class BotBrain
             }
         }
 
+        // 4d) trigger_hurt escape (QC havocbot_movetogoal, skill > 6): jetpack up if owned (best escape — no
+        // self-damage), else rocketjump out with the Devastator when HP can absorb the self-splash.
+        bool wantJetpack = false;
+        bool escapeJump = false;
+        if (_triggerHurtEscape)
+        {
+            // QC trigger_hurt escape: jetpack straight up if owned (best escape — no self-damage)…
+            if ((bot.Items & (int)ItemFlag.Jetpack) != 0)
+            {
+                wantJetpack = true;
+                escapeJump = true; // also press jump so a cl_jetpack_jump host activates the pack
+            }
+            // …else rocketjump out with the Devastator if HP can absorb the self-splash (QC's HP gate).
+            else if (Bot.HasWeapon("devastator")
+                     && Bot.Health + Bot.GetResource(ResourceType.Armor) > 80f)
+            {
+                if (Weapons.ByName("devastator") is { } rl)
+                {
+                    ChosenWeapon = rl;
+                    if (Bot.OwnedWeaponSet.Has(rl)) Inventory.SwitchWeapon(Bot, rl);
+                }
+                // aim straight down and fire (the blast launches the bot up out of the volume).
+                Aim.ViewAngles = new Vector3(80f, Aim.ViewAngles.Y, 0f); // Quake pitch: +down
+                wantAttack = true; wantAttack2 = false;
+            }
+        }
+
         // 5) assemble the command (the caller's same-tick physics/weapon drivers consume it).
         // QC havocbot.qc:1315: bunnyhop is suppressed when the danger brake (do_break/evadedanger) engaged this
         // frame. Steer keeps its bunnyhop intent in WantBunnyhop (separate from WantJump) precisely so this
         // late, post-danger-probe gate can be applied — a braking bot no longer keeps the jump button held.
-        bool wantJump = Nav.WantJump || dodgeJump || (Nav.WantBunnyhop && !dangerBrakeEngaged);
+        bool wantJump = Nav.WantJump || dodgeJump || escapeJump || (Nav.WantBunnyhop && !dangerBrakeEngaged);
         if (wantJump)
             _jumpTime = now;        // QC bot_jump_time: keep jump held ~0.2s so ramp jumps register
-        return Emit(bot, move, wantJump || jumpHeld, Nav.WantCrouch, wantAttack, wantAttack2, dt);
+        if (wantAttack || wantAttack2)
+            _lastAttackTime = now;  // QC last-attack time for the bot_ai_weapon_combo hold window
+        return Emit(bot, move, wantJump || jumpHeld, Nav.WantCrouch, wantAttack, wantAttack2, dt, wantJetpack);
     }
 
     /// <summary>Stamp the bot's view onto the entity and record + return the assembled command.</summary>
-    private MovementInput Emit(Player bot, Vector3 move, bool jump, bool crouch, bool attack, bool attack2, float dt)
+    private MovementInput Emit(Player bot, Vector3 move, bool jump, bool crouch, bool attack, bool attack2, float dt, bool jetpack = false)
     {
         var input = new MovementInput
         {
@@ -527,6 +580,7 @@ public sealed class BotBrain
             ButtonCrouch = crouch,
             ButtonAttack1 = attack,
             ButtonAttack2 = attack2,
+            ButtonJetpack = jetpack,
         };
         LastInput = input;
 
@@ -575,6 +629,10 @@ public sealed class BotBrain
     // combat-movement state (QC havocbot_dodge: a strafe direction that flips on a clock).
     private float _dodgeFlipTime;
     private float _dodgeSign = 1f;
+
+    // QC the bot's last-attack time (used by bot_ai_weapon_combo: hold the combo weapon for combo_threshold
+    // seconds after firing). Stamped when a fire button is emitted this frame.
+    private float _lastAttackTime;
 
     /// <summary>
     /// Adjust the wish-move while engaging an enemy (QC <c>havocbot_dodge</c> + the retreat behaviour): add a
@@ -683,36 +741,46 @@ public sealed class BotBrain
     public Weapon? ChosenWeapon { get; private set; }
 
     /// <summary>
-    /// Pick the best owned weapon for the current engagement range (QC <c>havocbot_chooseweapon</c>): with no
-    /// enemy, hold a mid-range weapon; with an enemy, prefer a hitscan weapon at long range and a splash
-    /// weapon up close (the QC close/mid/far distance buckets, default thresholds from
-    /// <c>bot_ai_custom_weapon_priority_distances</c> "300 850"). Among the candidates of the preferred type
-    /// it takes the highest-impulse (strongest) owned weapon. Sets <see cref="ChosenWeapon"/> and equips it
-    /// via <see cref="Inventory"/> so the weapon-frame + shot-speed read use it.
+    /// Pick the best owned weapon for the current engagement range (QC <c>havocbot_chooseweapon</c>): bucket the
+    /// engagement into close/mid/far by <c>bot_ai_custom_weapon_priority_distances</c> ("300 850"), then take the
+    /// first OWNED weapon from that band's ordered priority list
+    /// (<c>bot_ai_custom_weapon_priority_{close,mid,far}</c>) via <see cref="PickFromPriority"/>, falling back to
+    /// any owned weapon when the bot owns none of the listed ones. Honors the QC weapon-combo hold
+    /// (<c>bot_ai_weapon_combo</c>): within <c>bot_ai_weapon_combo_threshold</c> seconds after firing a
+    /// combo-capable splash weapon, keeps it for the follow-up shot rather than re-picking. Sets
+    /// <see cref="ChosenWeapon"/> and equips it via <see cref="Inventory"/> so the weapon-frame + shot-speed read use it.
     /// </summary>
     public void ChooseWeapon(Entity? enemy)
     {
         // Resolve the bot's owned weapons to Weapon descriptors (OwnedWeapons is the spawn-filled NetName set;
         // also fold in the WepSet in case the inventory path granted any).
         EnsureWepSetSynced();
-        bool wantHitscan, wantSplash;
 
+        // QC bot_ai_weapon_combo: within combo_threshold seconds after our last attack, keep the current
+        // (combo-capable splash) weapon for the follow-up combo shot rather than re-picking by range.
+        if (enemy is not null && Cvars.Bool("bot_ai_weapon_combo") && ChosenWeapon is { } held
+            && (held.SpawnFlags & WeaponFlags.TypeSplash) != 0
+            && Now - _lastAttackTime < Cvars.FloatOr("bot_ai_weapon_combo_threshold", 0.4f))
+            return; // hold the current weapon for the combo (QC keeps switchweapon on the combo window)
+
+        string distBand;
         if (enemy is null)
         {
-            wantHitscan = false; wantSplash = false; // mid-range: any usable weapon
+            distBand = "bot_ai_custom_weapon_priority_mid"; // no enemy: a mid-range general-purpose weapon
         }
         else
         {
             float dist = (enemy.Origin - Bot.Origin).Length();
             float distClose = 300f, distFar = 850f; // bot_ai_custom_weapon_priority_distances ships "300 850"
             ReadDistances(ref distClose, ref distFar);
-            if (dist > distFar) { wantHitscan = true; wantSplash = false; }       // far: hitscan
-            else if (dist <= distClose) { wantHitscan = false; wantSplash = true; } // close: splash
-            else { wantHitscan = false; wantSplash = false; }                       // mid: any
+            distBand = dist > distFar ? "bot_ai_custom_weapon_priority_far"
+                : (dist <= distClose ? "bot_ai_custom_weapon_priority_close"
+                : "bot_ai_custom_weapon_priority_mid");
         }
 
-        // Pass 1: prefer the requested type; Pass 2: any owned weapon (fallback).
-        Weapon? best = PickOwned(wantHitscan, wantSplash) ?? PickOwned(false, false);
+        // QC havocbot_chooseweapon: first owned weapon in the band's priority list; fall back to the old
+        // type-bucket / any-owned pick if the bot owns none of the listed weapons (defensive — non-stock lists).
+        Weapon? best = PickFromPriority(distBand) ?? PickOwned(false, false);
 
         if (best is not null)
         {
@@ -768,6 +836,26 @@ public sealed class BotBrain
     }
 
     private const int ReloadImpulse = 20; // common/impulses/all.qh IMP_weapon_reload
+
+    /// <summary>
+    /// QC havocbot_chooseweapon / bot_custom_weapon_priority_setup: pick the first OWNED weapon from the
+    /// distance-appropriate priority list (bot_ai_custom_weapon_priority_far/mid/close, shipped as ordered
+    /// NetName lists). Walks the list in priority order and returns the first weapon the bot owns, so bots
+    /// prefer e.g. Vortex at range and Shotgun up close exactly like stock. Returns null if none of the listed
+    /// weapons are owned (the caller then falls back to any owned weapon).
+    /// </summary>
+    private Weapon? PickFromPriority(string cvarName)
+    {
+        string list = Api.Cvars.GetString(cvarName);
+        if (string.IsNullOrWhiteSpace(list)) return null;
+        foreach (string netName in list.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!Bot.OwnedWeapons.Contains(netName)) continue;
+            Weapon? w = Weapons.ByName(netName);
+            if (w is not null) return w; // first owned in priority order wins (QC's ordered list scan)
+        }
+        return null;
+    }
 
     /// <summary>Pick the highest-impulse owned weapon matching the type preference (hitscan/splash/any).</summary>
     private Weapon? PickOwned(bool wantHitscan, bool wantSplash)

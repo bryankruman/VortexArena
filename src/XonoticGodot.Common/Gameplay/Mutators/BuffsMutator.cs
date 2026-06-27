@@ -18,8 +18,6 @@ namespace XonoticGodot.Common.Gameplay;
 /// <item>medic — boosts health regen + raises max + slows rot + can survive a fatal hit (PlayerRegen / Damage_Calculate)</item>
 /// <item>vampire — converts dealt damage into health (PlayerDamage_SplitHealthArmor)</item>
 /// <item>jump — higher jump velocity + fall-damage immunity (PlayerPhysics / Damage_Calculate)</item>
-/// <item>speed — scales movement + weapon rate (PlayerPhysics)</item>
-/// <item>invisible — lowers the carrier's alpha (PlayerPreThink)</item>
 /// <item>flight — crouch in midair flips gravity (PlayerPreThink)</item>
 /// <item>bash — more knockback dealt, immune to knockback (Damage_Calculate)</item>
 /// <item>disability — attacks slow the victim (Damage_Calculate + the Stunned effect)</item>
@@ -48,9 +46,6 @@ public sealed class BuffsMutator : MutatorBase
     private float _medicRot = 0.2f;              // g_buffs_medic_rot (rot_mod — slower rot above stable)
     private float _vampireSteal = 0.4f;          // g_buffs_vampire_damage_steal
     private float _jumpVelocity = 600f;          // g_buffs_jump_velocity
-    private float _speedSpeed = 1.5f;            // g_buffs_speed_speed
-    private float _speedRate = 0.8f;             // g_buffs_speed_rate (weapon fire-rate factor)
-    private float _invisibleAlpha = 0.5f;        // g_buffs_invisible_alpha
     private float _bashForce = 2f;               // g_buffs_bash_force
     private float _bashForceSelf = 1.2f;         // g_buffs_bash_force_self
     private float _disabilitySlowTime = 3f;      // g_buffs_disability_slowtime
@@ -116,9 +111,6 @@ public sealed class BuffsMutator : MutatorBase
             R(ref _medicRot, "g_buffs_medic_rot");
             R(ref _vampireSteal, "g_buffs_vampire_damage_steal");
             R(ref _jumpVelocity, "g_buffs_jump_velocity");
-            R(ref _speedSpeed, "g_buffs_speed_speed");
-            R(ref _speedRate, "g_buffs_speed_rate");
-            R(ref _invisibleAlpha, "g_buffs_invisible_alpha");
             R(ref _bashForce, "g_buffs_bash_force");
             R(ref _bashForceSelf, "g_buffs_bash_force_self");
             R(ref _disabilitySlowTime, "g_buffs_disability_slowtime");
@@ -802,10 +794,6 @@ public sealed class BuffsMutator : MutatorBase
         if (Active(player, "jump"))
             player.JumpVelocityOverride = _jumpVelocity;
 
-        // speed — scale the player's top speed (QC speed buff / disability use the highspeed stat).
-        if (Active(player, "speed"))
-            player.SpeedMultiplier *= _speedSpeed;
-
         // disability (Stunned) — slow the affected player down.
         var stunned = StatusEffectsCatalog.ByName("stunned");
         if (stunned is not null && StatusEffectsCatalog.Has(player, stunned))
@@ -937,7 +925,7 @@ public sealed class BuffsMutator : MutatorBase
     }
 
     // =====================================================================================
-    //  PlayerPreThink — flight gravity flip, invisible alpha, per-frame buff ticks
+    //  PlayerPreThink — flight gravity flip, per-frame buff ticks
     // =====================================================================================
 
     private bool OnPlayerPreThink(ref MutatorHooks.PlayerPreThinkArgs args)
@@ -957,12 +945,6 @@ public sealed class BuffsMutator : MutatorBase
                 player.Gravity *= -1f;
             }
         }
-
-        // invisible — keep the carrier's alpha lowered while held; restore when it lapses.
-        if (Active(player, "invisible"))
-            player.Alpha = _invisibleAlpha;
-        else if (player.Alpha == _invisibleAlpha)
-            player.Alpha = 1f;
 
         // Per-frame buff ticks (QC StatusEffect m_tick equivalents). NOTE: medic regen is NOT a tick — it is the
         // PlayerRegen hook (OnPlayerRegen) scaling the shared regen/rot/limit factors, exactly like QC.

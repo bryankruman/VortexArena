@@ -473,6 +473,42 @@ public static class MonsterAI
         Waypoints.WaypointSprites.UpdateHealth(st.Sprite, st.MaxHealth > 0f ? health / st.MaxHealth : -1f);
     }
 
+    /// <summary>
+    /// Set a monster's collision size, then apply the shared post-size finalization QC does in
+    /// <c>Monster_Spawn_Setup</c> (sv_monsters.qc) AFTER the descriptor's <c>mr_setup</c> stamped the base size:
+    /// (1) the Quake-resize (<c>if (g_monsters_quake_resize &amp;&amp; (spawnflags &amp; MONSTER_SIZE_QUAKE) &amp;&amp;
+    /// !RESPAWNED) { scale *= 1.3; setsize(mins*1.3, maxs*1.3); }</c>) — the port scales the COLLISION bbox here
+    /// (the visual <c>scale</c> needs a networked render-scale field the port lacks, see the unportable note);
+    /// and (2) <c>view_ofs = '0 0 0.35' * maxs.z</c> — the eye height every monster LOS/aim/danger trace reads
+    /// (<see cref="FindTarget"/>, <see cref="ValidTarget"/>, <see cref="FaceTarget"/>, <c>CheckDanger</c>,
+    /// <see cref="WanderTarget"/>). Concrete monsters call this in their <see cref="Monster.Spawn"/> in place of
+    /// the raw <c>Api.Entities.SetSize</c> so the eye is at ~35% of the bbox height, not at the origin/feet.
+    /// </summary>
+    public static void ApplySize(Monster def, Entity e, Vector3 mins, Vector3 maxs)
+    {
+        // QC Monster_Spawn_Setup: MONSTER_SIZE_QUAKE monsters spawn 1.3x larger (non-respawn only) when
+        // g_monsters_quake_resize. Scale the collision bbox; the matching visual scale*=1.3 is render-deferred
+        // (no Entity render-scale field — see unportable). Gated on the descriptor's SizeQuake flag (default off,
+        // so the stock five are unaffected — none are Quake-imported).
+        MonsterState? st = StateOf(e);
+        bool respawned = st?.Respawned ?? ((e.SpawnFlags & MonsterFlag_Respawned) != 0);
+        if (def.SizeQuake && !respawned && Cvar("g_monsters_quake_resize", 1f) != 0f) // monsters.cfg: g_monsters_quake_resize 1
+        {
+            mins *= 1.3f;
+            maxs *= 1.3f;
+        }
+
+        if (Api.Services is not null)
+            Api.Entities.SetSize(e, mins, maxs);
+        else
+            { e.Mins = mins; e.Maxs = maxs; e.Size = maxs - mins; }
+
+        // QC Monster_Spawn_Setup: this.view_ofs = '0 0 0.35' * this.maxs.z — the monster's eye sits at 35% of the
+        // bbox top. Without this seed view_ofs stays (0,0,0) and every eye-based trace (LOS/aim/danger) fires from
+        // the origin (feet/center), shooting low and seeing through the floor. Set from the FINAL maxs (post-resize).
+        e.ViewOfs = new Vector3(0f, 0f, 0.35f * maxs.Z);
+    }
+
     // ====================================================================================
     // Map-placement / code spawn driver (Monster_Spawn + spawnmonster, sv_monsters.qc / sv_spawn.qc)
     // ====================================================================================
@@ -1598,6 +1634,14 @@ public static class MonsterAI
     /// Approximate QC <c>tracetoss</c>: simulate the ballistic arc of <paramref name="self"/> launched at
     /// <paramref name="vel"/> under gravity and return the first thing it would hit. Stepped traceline
     /// integration (deterministic, headless) — enough to gate a leap on "will I land on my enemy?".
+    ///
+    /// [warpzones.combat.traceextras] WARPZONE-AWARE, matching QC <c>WarpZone_TraceToss_ThroughZone</c>
+    /// (lib/warpzone/common.qc): each integration segment is swept with <see cref="WarpzoneTrace.TraceBoxWarpzone"/>
+    /// so a toss arc that crosses a seamless portal continues on the far side — the segment endpoint comes back in
+    /// the FINAL (post-portal) frame and the running velocity is rotated through the accumulated portal chain, so a
+    /// monster's leap-aim correctly probes an enemy reached through a warpzone. With no warpzones in the world the
+    /// warpzone-aware sweep collapses to exactly one plain <see cref="ITraceService.Trace"/> per step, so the arc is
+    /// byte-for-byte unchanged on a non-warpzone map (the common case).
     /// </summary>
     private static TraceResult TraceToss(Entity self, Vector3 vel)
     {
@@ -1608,9 +1652,19 @@ public static class MonsterAI
         for (int i = 0; i < 80; i++) // ~4s of flight
         {
             Vector3 next = pos + v * step;
-            TraceResult tr = Api.Trace.Trace(pos, self.Mins, self.Maxs, next, MoveFilter.Normal, self);
+            // QC WarpZone_TraceToss runs each ballistic segment through WarpZone_TraceBox: a portal crossing
+            // transforms the remaining arc to the far side. AmbientManager is null on a non-warpzone world, where
+            // TraceBoxWarpzone is a single plain trace with an identity transform (arc unchanged).
+            WarpzoneTraceResult wr = Api.Trace.TraceBoxWarpzone(pos, self.Mins, self.Maxs, next,
+                MoveFilter.Normal, self);
+            TraceResult tr = wr.Trace;
             if (tr.Fraction < 1f) return tr;
-            pos = next;
+            // The segment endpoint is already in the FINAL portal frame; rotate the integrated velocity through the
+            // same portal chain so gravity keeps pulling "down" correctly on the far side (QC re-applies the
+            // warpzone transform to velocity across the seam). Identity chain == no-op on a non-warpzone map.
+            pos = tr.EndPos;
+            if (wr.ZonesCrossed > 0)
+                v = wr.Transform.TransformDirection(v);
             v.Z -= g * step;
         }
         return TraceResult.Miss(pos);

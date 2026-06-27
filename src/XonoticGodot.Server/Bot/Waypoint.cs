@@ -468,13 +468,94 @@ public sealed class WaypointNetwork
                 if (!string.IsNullOrEmpty(e.Target)) byTargetName.TryGetValue(e.Target, out dst);
                 var box = Add(e.Origin, e.Mins, e.Maxs, WaypointFlags.Generated | WaypointFlags.Teleport);
                 if (dst is not null)
-                    Link(box, DestFor(dst)); // one-way: enter the trigger → arrive at the destination
+                {
+                    var destWp = DestFor(dst);
+                    // QC waypoint_spawnforteleporter cost = the trigger's travel TIME, not the plain box→dest walk
+                    // cost: a teleporter is ~instant (a tiny fixed cost) while a jumppad's cost is the ballistic
+                    // flight time of its launch arc (waypoint_spawnforteleporter_wz / trigger_push_get_push_time).
+                    float cost = isJumppad ? JumppadFlightCost(e, box, destWp) : 0.05f;
+                    Link(box, destWp, cost: cost); // one-way: enter the trigger → arrive at the destination
+                }
             }
         }
 
         if (autoLink)
             AutoLink();
         return _nodes.Count - before;
+    }
+
+    /// <summary>
+    /// Ballistic flight time of a jumppad launch (QC trigger_push_get_push_time / the spawnforteleporter_wz cost):
+    /// the time the toucher spends airborne arcing from the pad to its destination. Computed from the pad's actual
+    /// launch velocity (the same <see cref="XonoticGodot.Common.Gameplay.Jumppads.CalculateVelocity"/> solver that
+    /// drives the pad in-game), so the auto-generated teleport link costs what the jump actually takes. Falls back
+    /// to the plain box→destination travel cost if the arc can't be solved (no upward launch).
+    /// </summary>
+    private float JumppadFlightCost(XonoticGodot.Common.Framework.Entity pad, Waypoint box, Waypoint destWp)
+    {
+        Vector3 org = pad.Origin;
+        Vector3 vel = XonoticGodot.Common.Gameplay.Jumppads.CalculateVelocity(org, pad.Enemy ?? pad, pad.Height, pad);
+        // flight time of a ballistic arc back to launch height: t = 2*vz/g (QC's spawnforteleporter_wz push time).
+        if (vel.Z > 0f && Gravity > 0f)
+            return 2f * vel.Z / Gravity;
+        return TravelCost(box.ClosestPoint(destWp.Origin), destWp.ClosestPoint(box.Origin));
+    }
+
+    // Reusable scratch for the multi-seed gather (NearestSeeds) — same single-threaded-sim safety as _nearScratch.
+    private readonly List<(Waypoint Wp, float Cost)> _seedScratch = new();
+
+    /// <summary>
+    /// Multiple route entry waypoints (QC navigation_markroutes_nearestwaypoints, navigation.qc:1043-1101): instead
+    /// of routing from the single <see cref="Nearest"/> node, Base seeds the Dijkstra flood with EVERY waypoint
+    /// reachable within an expanding radius — so the planner can pick a slightly-farther node that opens a better
+    /// route (the single nearest is sometimes behind a wall / on the wrong side of a ledge). The radius starts at
+    /// the increment and grows by it until at least one reachable seed is found, capped at the max: on-ground
+    /// increment 750 / max 50000, in-air 500 / max 1500 (navigation.qc:1054-1058). Each returned seed carries its
+    /// entry cost = the travel cost from <paramref name="pos"/> to that waypoint (the bot's initial gScore into the
+    /// graph), so the A* multi-seed search starts each seed pre-charged with how far the bot already is.
+    /// <paramref name="walkFromWp"/> follows navigation_findnearestwaypoint's direction sense (true = the bot walks
+    /// pos→waypoint, the start seed). Returns an empty list if nothing is reachable in range (the caller falls back
+    /// to <see cref="Nearest"/>).
+    /// </summary>
+    public IReadOnlyList<(Waypoint Wp, float Cost)> NearestSeeds(Vector3 pos, bool onGround, bool walkFromWp = true)
+    {
+        var seeds = _seedScratch;
+        seeds.Clear();
+        if (_nodes.Count == 0)
+            return seeds;
+
+        bool canTrace = Api.Services is not null;
+        // QC navigation_markroutes_nearestwaypoints radius growth (navigation.qc:1054-1058).
+        float inc = onGround ? 750f : 500f;
+        float max = onGround ? 50000f : 1500f;
+
+        for (float radius = inc; ; radius += inc)
+        {
+            float r2 = radius * radius;
+            for (int i = 0; i < _nodes.Count; i++)
+            {
+                Waypoint wp = _nodes[i];
+                Vector3 cp = wp.ClosestPoint(pos);
+                float d2 = (cp - pos).LengthSquared();
+                if (d2 > r2)
+                    continue;
+                // dedupe a node already taken at a tighter radius (QC re-scans from scratch each grow, but only
+                // adds a waypoint once via the wpcost seed-write; here an explicit check keeps the seed set unique).
+                bool seen = false;
+                for (int s = 0; s < seeds.Count; s++)
+                    if (ReferenceEquals(seeds[s].Wp, wp)) { seen = true; break; }
+                if (seen)
+                    continue;
+                bool reach = !canTrace || (walkFromWp
+                    ? BotTracewalk.CanWalk(pos, cp, _playerMins, _playerMaxs, wp.IsBox ? (wp.AbsMax.Z - cp.Z) : 0f)
+                    : BotTracewalk.CanWalk(cp, pos, _playerMins, _playerMaxs));
+                if (reach)
+                    seeds.Add((wp, TravelCost(pos, cp)));
+            }
+            if (seeds.Count > 0 || radius >= max)
+                break;
+        }
+        return seeds;
     }
 
     // Reusable scratch for Nearest's candidate sort — avoids a per-call allocation. The sim drives bots
@@ -530,6 +611,9 @@ public sealed class WaypointNetwork
         if (!canTrace)
             return cand[0].Wp; // no collision world: nearest by distance
 
+        // Track the nearest reachable TELEPORT box separately for the jumppad fallback below.
+        Waypoint? reachableTeleport = null;
+
         // Nearest-first: the first node we can actually walk to is the nearest reachable one. Direction follows
         // Base's walkfromwp: true → bot walks pos→waypoint (start node); false → player walks waypoint→pos
         // (goal node, the route arrives at the goal FROM the waypoint).
@@ -541,8 +625,17 @@ public sealed class WaypointNetwork
                 ? BotTracewalk.CanWalk(pos, cp, _playerMins, _playerMaxs, wp.IsBox ? (wp.AbsMax.Z - cp.Z) : 0f)
                 : BotTracewalk.CanWalk(cp, pos, _playerMins, _playerMaxs);
             if (reach)
-                return wp;
+            {
+                if (wp.HasFlag(WaypointFlags.Teleport))
+                    reachableTeleport ??= wp; // nearest-first, so the first one is the nearest reachable box
+                else
+                    return wp; // nearest reachable PLAIN waypoint wins outright
+            }
         }
+        // QC navigation_findnearestwaypoint tail (navigation.qc:1000, IL_EACH(g_jumppads)): no plain waypoint was
+        // reachable, so route via a reachable jumppad/teleporter box (its wp00 link carries the bot to the far side).
+        if (reachableTeleport is not null)
+            return reachableTeleport;
         return cand[0].Wp; // none reachable: fall back to the nearest by pure distance
     }
 
@@ -563,6 +656,77 @@ public sealed class WaypointNetwork
     private Waypoint?[] _cameFrom = Array.Empty<Waypoint?>();
     private bool[] _closed = Array.Empty<bool>();
     private MinHeap? _open;
+
+    /// <summary>
+    /// Multi-seed A* (QC navigation_markroutes seeds the flood from several near waypoints, not one): runs the
+    /// same least-cost search as <see cref="FindPath(Waypoint, Waypoint)"/> but starts with EVERY seed in
+    /// <paramref name="seeds"/> pre-charged with its entry cost (the travel cost from the bot to that seed,
+    /// produced by <see cref="NearestSeeds"/>). The reconstructed path therefore begins at whichever seed lies on
+    /// the cheapest overall route to <paramref name="to"/> — matching Base picking the best graph entry point
+    /// rather than forcing the single geometrically-nearest one. Returns null if no seed can reach the goal.
+    /// </summary>
+    public List<Waypoint>? FindPath(IReadOnlyList<(Waypoint Wp, float Cost)> seeds, Waypoint to)
+    {
+        if (seeds.Count == 0)
+            return null;
+
+        int n = _nodes.Count;
+        if (_gScore.Length < n)
+        {
+            _gScore = new float[n];
+            _fScore = new float[n];
+            _cameFrom = new Waypoint?[n];
+            _closed = new bool[n];
+        }
+        float[] gScore = _gScore, fScore = _fScore;
+        Waypoint?[] cameFrom = _cameFrom;
+        bool[] closed = _closed;
+        for (int i = 0; i < n; i++) { gScore[i] = float.PositiveInfinity; fScore[i] = float.PositiveInfinity; cameFrom[i] = null; closed[i] = false; }
+
+        MinHeap open = _open ??= new MinHeap(n);
+        open.Clear();
+        // seed each entry node with its bot→seed entry cost (QC the nearestwaypoints wpcost seeding). cameFrom stays
+        // null so Reconstruct stops at whichever seed the cheapest route used.
+        for (int s = 0; s < seeds.Count; s++)
+        {
+            var (wp, cost) = seeds[s];
+            if (wp.Index < 0) continue;
+            float g = MathF.Max(0f, cost) + wp.Danger; // include the seed's own static danger bias (QC cost2)
+            if (g < gScore[wp.Index])
+            {
+                gScore[wp.Index] = g;
+                fScore[wp.Index] = g + Heuristic(wp, to);
+                open.Push(wp.Index, fScore[wp.Index]);
+            }
+        }
+
+        while (open.TryPop(out int currentIdx))
+        {
+            if (closed[currentIdx]) continue;
+            var current = _nodes[currentIdx];
+            if (ReferenceEquals(current, to))
+                return Reconstruct(cameFrom, current);
+
+            closed[currentIdx] = true;
+
+            foreach (var link in current.Links)
+            {
+                var nb = link.To;
+                if (nb.Index < 0 || closed[nb.Index]) continue;
+                if (link.Cost >= 999f) continue; // known-unwalkable link
+
+                float tentative = gScore[currentIdx] + link.Cost + nb.Danger;
+                if (tentative < gScore[nb.Index])
+                {
+                    cameFrom[nb.Index] = current;
+                    gScore[nb.Index] = tentative;
+                    fScore[nb.Index] = tentative + Heuristic(nb, to);
+                    open.Push(nb.Index, fScore[nb.Index]);
+                }
+            }
+        }
+        return null;
+    }
 
     public List<Waypoint>? FindPath(Waypoint from, Waypoint to)
     {
@@ -621,6 +785,82 @@ public sealed class WaypointNetwork
     }
 
     private float Heuristic(Waypoint a, Waypoint b) => (b.Origin - a.Origin).Length() / MaxSpeed;
+
+    // ---- single-source route costs for goal rating (QC navigation_markroutes, navigation.qc) ----
+    // QC computes a Dijkstra cost-to-reach for EVERY waypoint once per strategy frame (the .wpcost field), then
+    // each navigation_routerating reads it. We mirror that: ComputeRouteCosts fills _routeCost[node] with the
+    // shortest path cost from the bot's nearest waypoint; RouteCostTo(goal) = that node's cost + the straight tail
+    // from the node to the goal. Seeded once per GoalRater.Start (token-gated, sim-thread), then read per candidate.
+    private float[] _routeCost = Array.Empty<float>();
+    private bool _routeCostValid;
+
+    /// <summary>
+    /// QC navigation_markroutes: single-source shortest-path (Dijkstra) cost from <paramref name="from"/>'s
+    /// nearest waypoint to every reachable node, cached in <see cref="_routeCost"/>. Run once at the start of a
+    /// strategy frame; <see cref="RouteCostTo"/> then reads it per rated goal. Reuses the A* working arrays +
+    /// heap (sim drives bots sequentially, so the shared scratch is safe). Marks the cache invalid (so callers
+    /// fall back to straight-line) when <paramref name="from"/> has no nearby waypoint.
+    /// </summary>
+    public void ComputeRouteCosts(Vector3 from)
+    {
+        _routeCostValid = false;
+        int n = _nodes.Count;
+        if (n == 0) return;
+        if (_routeCost.Length < n) _routeCost = new float[n];
+        if (_closed.Length < n)
+        {
+            _gScore = new float[n]; _fScore = new float[n];
+            _cameFrom = new Waypoint?[n]; _closed = new bool[n];
+        }
+        Waypoint? src = Nearest(from, walkFromWp: true);
+        if (src is null || src.Index < 0) return;
+
+        float[] cost = _routeCost;
+        bool[] closed = _closed;
+        for (int i = 0; i < n; i++) { cost[i] = float.PositiveInfinity; closed[i] = false; }
+
+        MinHeap open = _open ??= new MinHeap(n);
+        open.Clear();
+        // seed cost from the bot to its nearest waypoint (straight tail), matching QC's start-node seeding.
+        cost[src.Index] = (src.ClosestPoint(from) - from).Length() / MaxSpeed;
+        open.Push(src.Index, cost[src.Index]);
+        while (open.TryPop(out int curIdx))
+        {
+            if (closed[curIdx]) continue;
+            closed[curIdx] = true;
+            var cur = _nodes[curIdx];
+            foreach (var link in cur.Links)
+            {
+                var nb = link.To;
+                if (nb.Index < 0 || closed[nb.Index]) continue;
+                if (link.Cost >= 999f) continue; // known-unwalkable
+                // QC cost2 = cost + wp.dmg: include the destination's static danger bias so routing avoids hazards.
+                float tentative = cost[curIdx] + link.Cost + nb.Danger;
+                if (tentative < cost[nb.Index])
+                {
+                    cost[nb.Index] = tentative;
+                    open.Push(nb.Index, tentative);
+                }
+            }
+        }
+        _routeCostValid = true;
+    }
+
+    /// <summary>
+    /// Path cost (QC navigation_routerating's distance term) from the bot to a world goal: the cached route cost
+    /// to the goal's nearest waypoint plus the straight tail from that waypoint to the goal. Returns
+    /// <see cref="float.PositiveInfinity"/> when <see cref="ComputeRouteCosts"/> hasn't been seeded or the goal
+    /// has no reachable waypoint — the caller then falls back to straight-line distance (graphless roaming).
+    /// </summary>
+    public float RouteCostTo(Vector3 goal)
+    {
+        if (!_routeCostValid) return float.PositiveInfinity;
+        Waypoint? gw = Nearest(goal, walkFromWp: false);
+        if (gw is null || gw.Index < 0) return float.PositiveInfinity;
+        float c = _routeCost[gw.Index];
+        if (float.IsPositiveInfinity(c)) return float.PositiveInfinity;
+        return c + (gw.ClosestPoint(goal) - goal).Length() / MaxSpeed;
+    }
 
     // ---- per-waypoint static danger bias (QC botframe_updatedangerousobjects, navigation.qc:1874) ----
 

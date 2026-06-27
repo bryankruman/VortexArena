@@ -105,10 +105,15 @@ public class MenuWeaponOrderTests
         foreach (string ok in new[] { "okhmg", "okrpc", "oknex", "okmachinegun", "okshotgun" })
             Assert.Contains(ok, outNames);
 
-        // complete + dedup → a permutation of every registry weapon name (no special-attacks here).
+        // complete + dedup → a permutation of every registry weapon name MINUS the WEP_FLAG_SPECIALATTACK
+        // weapons that QC fixPriorityList drops during completion (e.g. the hidden Hunter-Killer player weapon
+        // WEP_HK). The Ball-Stealer is MUTATORBLOCKED|TYPE_OTHER (not SPECIALATTACK), so completion keeps it.
         int count = XonoticGodot.Common.Framework.Registry<Weapon>.Count;
-        Assert.Equal(count, outNames.Length);
-        Assert.Equal(count, outNames.Distinct().Count());
+        int specialAttacks = XonoticGodot.Common.Framework.Registry<Weapon>.All
+            .Count(w => (w.SpawnFlags & WeaponFlags.SpecialAttack) != 0);
+        int completable = count - specialAttacks;
+        Assert.Equal(completable, outNames.Length);
+        Assert.Equal(completable, outNames.Distinct().Count());
 
         // The known names keep their shipped relative order at the front (vaporizer before vortex before
         // fireball before mortar before machinegun ...).
@@ -128,9 +133,14 @@ public class MenuWeaponOrderTests
         const string defaultNames = "shotgun machinegun blaster";
         string result = WeaponOrder.FixWeaponOrderForceComplete("", defaultNames);
         int count = XonoticGodot.Common.Framework.Registry<Weapon>.Count;
+        // Completion drops WEP_FLAG_SPECIALATTACK weapons (e.g. the hidden Hunter-Killer WEP_HK), so the
+        // completed set is the registry minus those, not the bare registry count.
+        int specialAttacks = XonoticGodot.Common.Framework.Registry<Weapon>.All
+            .Count(w => (w.SpawnFlags & WeaponFlags.SpecialAttack) != 0);
+        int completable = count - specialAttacks;
         int[] ids = result.Split(' ').Select(int.Parse).ToArray();
-        Assert.Equal(count, ids.Length);                                  // completed to the full set
-        Assert.Equal(count, ids.Distinct().Count());                      // dedup'd
+        Assert.Equal(completable, ids.Length);                            // completed to the full completable set
+        Assert.Equal(completable, ids.Distinct().Count());                // dedup'd
         // The three default weapons lead.
         int Id(string n) => XonoticGodot.Common.Framework.Registry<Weapon>.ByName(n)!.RegistryId;
         Assert.Equal(new[] { Id("shotgun"), Id("machinegun"), Id("blaster") }, ids.Take(3).ToArray());

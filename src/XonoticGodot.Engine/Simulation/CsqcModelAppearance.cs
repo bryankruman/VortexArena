@@ -85,10 +85,14 @@ public static class CsqcModelAppearance
     /// <param name="cm">QC <c>cm</c> — this entity's resolved colormap (&gt;=1024).</param>
     /// <param name="playerLocalNum">QC <c>player_localnum</c>.</param>
     /// <param name="entityNum">QC <c>entnum</c> (or <c>sv_entnum</c>) for the unique-color combo.</param>
+    /// <param name="teamCount">QC active-team count — a friend-only force is suppressed if it equals ANY active
+    /// team's colormap (<c>1024 + 17*t</c> for <c>t</c> in <c>1..teamCount</c>), per csqcmodel_hooks.qc:281-292.
+    /// <c>&lt;= 1</c> (FFA/unknown) falls back to the local-team check only.</param>
     /// <returns>The forced colormap (&gt;=1024), or 0 to keep the entity's own colormap.</returns>
     public static int ResolveForcedColormap(
         bool forcePlayerColorsEnabled, int forceMyColors, int clColor, bool forceUnique,
-        bool isLocalPlayer, bool is1v1, bool teamplay, int myTeam, int cm, int playerLocalNum, int entityNum)
+        bool isLocalPlayer, bool is1v1, bool teamplay, int myTeam, int cm, int playerLocalNum, int entityNum,
+        int teamCount)
     {
         if (teamplay)
         {
@@ -106,11 +110,22 @@ public static class CsqcModelAppearance
                 if (forcecolorEnemy == myFull)
                     forcecolorEnemy = 0;
             }
-            // NOTE: QC also re-checks a friend-only force against every team color (csqcmodel_hooks.qc:281-292);
-            // the port doesn't network the team list here, so it compares against the LOCAL team only (the common
-            // collision). Documented parity gap — a friend force equal to another team's color isn't suppressed.
+            // QC re-checks a friend-only force against EVERY active team's color (csqcmodel_hooks.qc:281-292): a
+            // friend force equal to ANY team's color is ambiguous and must be suppressed, not only one equal to the
+            // local team's. The active team colormaps are 1024 + 17*t for t in 1..teamCount (the port's canonical
+            // team→colormap form, same as myFull). teamCount<=1 (FFA/unknown) falls back to the local-team check.
             if (forcecolorFriend != 0 && forcecolorEnemy == 0)
             {
+                int teams = teamCount > 1 ? teamCount : 1;
+                for (int t = 1; t <= teams; t++)
+                {
+                    if (forcecolorFriend == 1024 + 17 * t)
+                    {
+                        forcecolorFriend = 0;
+                        break;
+                    }
+                }
+                // Always also test the local team (covers teamCount==0/1 and a myteam outside 1..teamCount).
                 if (forcecolorFriend == myFull)
                     forcecolorFriend = 0;
             }

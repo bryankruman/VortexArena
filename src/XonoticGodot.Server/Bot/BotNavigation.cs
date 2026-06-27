@@ -100,6 +100,11 @@ public sealed class BotNavigation
     /// <summary>Set true while steering when an obstacle/up-step needs a jump (QC PHYS_INPUT_BUTTON_JUMP).</summary>
     public bool WantJump { get; private set; }
 
+    /// <summary>Force the jump intent for this frame (QC trigger_hurt jetpack escape sets +jump alongside the
+    /// jetpack so a cl_jetpack_jump host activates the pack). Used by <see cref="BotBrain"/>; Steer overwrites
+    /// WantJump next frame as usual.</summary>
+    public void ForceJump() => WantJump = true;
+
     /// <summary>Set true while steering when traversing a crouch waypoint (QC PHYS_INPUT_BUTTON_CROUCH).</summary>
     public bool WantCrouch { get; private set; }
 
@@ -205,8 +210,13 @@ public sealed class BotNavigation
     /// and load it onto the goal stack (QC navigation_routetogoal). If origin and goal are directly
     /// reachable (or there's no network), pushes just the goal. The final <paramref name="goalEntity"/>
     /// (item/enemy) is remembered as <see cref="GoalEntity"/>.
+    ///
+    /// <paramref name="onGround"/> mirrors Base's navigation_markroutes_nearestwaypoints on-ground-vs-air seed
+    /// radius growth (on-ground 750/50000, air 500/1500). It is threaded through to the network's nearest-seed
+    /// search; until that multi-seed flood lands in <see cref="WaypointNetwork"/> the single-nearest start is
+    /// used and this flag is informational. Defaults to true so non-brain callers (tests) keep compiling.
     /// </summary>
-    public void SetGoal(Vector3 origin, Vector3 goalPos, WaypointNetwork? net, Entity? goalEntity = null)
+    public void SetGoal(Vector3 origin, Vector3 goalPos, WaypointNetwork? net, Entity? goalEntity = null, bool onGround = true)
     {
         ClearRoute();
         GoalEntity = goalEntity;
@@ -246,6 +256,21 @@ public sealed class BotNavigation
                 && CanWalkStraight(origin, second.Center))
             {
                 path.RemoveAt(0);
+            }
+        }
+
+        // QC navigation_routetogoal teleport-goal forcing (navigation.qc:1318-1334): when the planned route ENDS
+        // at a teleporter/jumppad box, the goal isn't the box itself — it's the far side. Force the box's single
+        // outgoing destination (its wp00 link) onto the stack ahead of the box so the bot commits to the trigger
+        // and is steered toward where the teleport drops it, instead of trying to stand inside the trigger volume.
+        if (path.Count > 0)
+        {
+            Waypoint last = path[^1];
+            if (last.HasFlag(WaypointFlags.Teleport) && last.Links.Count > 0)
+            {
+                Waypoint exit = last.Links[0].To; // wp00 = the teleport destination
+                if (!ReferenceEquals(exit, goalWp))
+                    PushRoute(new Goal(exit.Center, exit.Flags, exit));
             }
         }
 

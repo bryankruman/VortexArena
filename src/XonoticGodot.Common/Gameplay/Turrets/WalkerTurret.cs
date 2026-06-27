@@ -21,8 +21,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// stop/roam idle cycle, gated by the TSL_ROAM spawnflag), LAST-SEEN PURSUIT (chase the enemy's last position for
 /// up to 10s), the turret_checkpoint WAYPOINT PATH-FOLLOWING (walker_findtarget + walker_move_path, incl. the
 /// TSF_NO_PATHBREAK "stick to path even with an enemy" flag), the per-gait model FRAME (turrets_setframe onto the
-/// networked Entity.Frame), and the waterlevel SWIM gait (pitch-toward + sinusoidal bob). The CSQC walker_draw
-/// 4-point ground-align + head avelocity spin stay client render; the rocket up-and-over loop lives in GuidedProjectile.
+/// networked Entity.Frame), and the waterlevel SWIM gait (pitch-toward + sinusoidal bob). Also ported: the CSQC
+/// walker_draw 4-point ground-align terrain pitch/roll (movelib_groundalign4point, folded onto the networked
+/// e.Angles pitch/roll on the ground gaits). Only the CSQC head avelocity spin stays client render; the rocket
+/// up-and-over loop lives in GuidedProjectile.
 /// </summary>
 [Turret]
 public sealed class WalkerTurret : Turret
@@ -282,7 +284,7 @@ public sealed class WalkerTurret : Turret
         // CSQC walker_draw low-health sparks (walker.qc:627): a damaged walker (< 127 hp) sparks at 15%/frame.
         // The QC draw hook runs client-side, but the spark is a networked temp-entity (reaches every viewing
         // client identically), so emit it server-side — same convention as EWheelTurret's ewheel_draw spark. The
-        // pure-client ground-align/head-spin/origin-advance stays client render.
+        // pure-client head-spin/origin-advance stays client render (the ground-align is folded onto the angles below).
         if (Api.Services is not null
             && e.GetResource(ResourceType.Health) < SparkHealthThreshold
             && Prandom.Float() < SparkChance)
@@ -291,16 +293,30 @@ public sealed class WalkerTurret : Turret
                 Prandom.Vec() * 256f + new Vector3(0f, 0f, 256f), 16);
         }
 
+        // CSQC walker_draw 4-point GROUND-ALIGN (walker.qc:615): movelib_groundalign4point(this,300,100,0.25,45)
+        // pitches/rolls the chassis to follow the terrain under it. The QC draw hook runs on the client-side render
+        // copy, but it writes ONLY pitch (angles.x) and roll (angles.z) — both networked quantities that reach every
+        // viewing client identically — and never the yaw (angles.y) that drives locomotion/aim. So, exactly like the
+        // low-hp spark and the gait frame above, fold it onto the server entity (the already-ported, Godot-free
+        // movelib_groundalign4point in VehiclePhysics). Skip it while swimming: Base's CSQC copy ground-aligns over
+        // terrain, while ApplyGait's SWIM case owns the in-water pitch bob — the two never co-occur on one entity, so
+        // gate on the ground gaits to avoid fighting the swim pitch (waterlevel < SWIMMING).
+        if (Api.Services is not null && ws.AnimFlag != Gait.Swim && e.WaterLevel < 2)
+        {
+            QMath.AngleVectors(e.Angles, out Vector3 ga_f, out Vector3 ga_r, out Vector3 ga_u);
+            VehiclePhysics.GroundAlign4Point(e, ga_f, ga_r, ga_u, 300f, 100f, 0.25f, 45f);
+        }
+
         // QC walker.qc:558 — turrets_setframe(it, it.animflag, false): stamp the active gait onto the networked
         // Entity.Frame (the same client model-animator seam monsters + the ewheel use), so the walker plays its
         // walk/run/melee/swim/idle animation. In QC the gait enum IS the model frame index (ANIM_NO=0 … ANIM_ROAM=11)
         // and this also sets SendFlags |= TNSF_ANIM + anim_start_time; here Entity.Frame is the net sync, so writing
-        // it is the whole job. (The CSQC walker_draw 4-point ground-align + head avelocity spin stay client render.)
+        // it is the whole job. (Only the CSQC walker_draw head avelocity spin now stays client render.)
         SetFrame(e, (float)ws.AnimFlag);
 
         // NOTE (client-render): QC also sets SendFlags |= TNSF_MOVE here to net origin/velocity to CSQC; the port
-        // networks the moved origin through the shared entity feed, and the CSQC ground-align/head-spin is the only
-        // remaining pure-client piece of walker_draw.
+        // networks the moved origin through the shared entity feed, and (with the ground-align now folded onto the
+        // networked angles above) the CSQC head avelocity spin is the only remaining pure-client piece of walker_draw.
         e.OldOrigin = e.Origin;
     }
 

@@ -218,6 +218,8 @@ public sealed class Ctf : GameType
     private HookHandler<MutatorHooks.VehicleEnterArgs>? _vehicleEnterHandler;
     private HookHandler<MutatorHooks.VehicleExitArgs>? _vehicleExitHandler;
     private HookHandler<MutatorHooks.MatchEndArgs>? _matchEndHandler;
+    private HookHandler<MutatorHooks.GiveFragsForKillArgs>? _giveFragsHandler;
+    private HookHandler<MutatorHooks.PreferPlayerScore_ClearArgs>? _preferScoreClearHandler;
 
     // ----- flagcarrier damage/force factors + auto-helpme (g_ctf_flagcarrier_*; gametypes-server.cfg, all 1) -----
     private const string CvarFcSelfDamage = "g_ctf_flagcarrier_selfdamagefactor"; // 1
@@ -356,6 +358,17 @@ public sealed class Ctf : GameType
         // live flag can't keep moving or be touched during intermission.
         _matchEndHandler = OnMatchEnd;
         MutatorHooks.MatchEnd.Add(_matchEndHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ctf, GiveFragsForKill): in CTF a regular kill awards no frag SCORE when the
+        // host sets g_ctf_ignore_frags (default 0 = faithful no-op). The hook always returns true (so the kill
+        // path reads our FragScore back); at the default it leaves the +1 frag intact, only zeroing it when the
+        // cvar is set. Fired live from Scores.Obituary's GiveFragsForKill.Call site.
+        _giveFragsHandler = OnGiveFragsForKill;
+        MutatorHooks.GiveFragsForKill.Add(_giveFragsHandler);
+        // QC MUTATOR_HOOKFUNCTION(ctf, PreferPlayerScore_Clear) { return true; }: under g_score_resetonjoin -1,
+        // CTF prefers to KEEP a rejoining player's accumulated score. Fired live from GameScores.ClearPlayerOnJoin.
+        _preferScoreClearHandler = OnPreferPlayerScoreClear;
+        MutatorHooks.PreferPlayerScore_Clear.Add(_preferScoreClearHandler);
     }
 
     /// <summary>
@@ -415,6 +428,16 @@ public sealed class Ctf : GameType
         {
             MutatorHooks.MatchEnd.Remove(_matchEndHandler);
             _matchEndHandler = null;
+        }
+        if (_giveFragsHandler is not null)
+        {
+            MutatorHooks.GiveFragsForKill.Remove(_giveFragsHandler);
+            _giveFragsHandler = null;
+        }
+        if (_preferScoreClearHandler is not null)
+        {
+            MutatorHooks.PreferPlayerScore_Clear.Remove(_preferScoreClearHandler);
+            _preferScoreClearHandler = null;
         }
     }
 
@@ -1867,10 +1890,42 @@ public sealed class Ctf : GameType
         }
     }
 
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ctf, LogDeath_AppendItemCodes)</c> (sv_ctf.qc): a player who dies while
+    /// carrying a flag gets the item code <c>"F"</c> appended to their death-log line (the <c>:items=</c> /
+    /// <c>:victimitems=</c> field of the <c>:kill:</c> event-log line). This overrides the per-GAMETYPE
+    /// <see cref="GameType.LogDeathAppendItemCodes"/> (CTF is a gametype, not a mutator — the per-mutator
+    /// variant on <see cref="MutatorBase"/> is a separate chain). Cosmetic server-log detail; no gameplay impact.
+    /// NOTE: this override is dormant until <c>Scores.AppendItemcodes</c> also invokes the ACTIVE gametype's
+    /// <c>LogDeathAppendItemCodes</c> (today it only fires the mutator chain via
+    /// <c>MutatorActivation.LogDeathAppendItemCodes</c>) — see the cross-file follow-up.
+    /// </summary>
+    public override string LogDeathAppendItemCodes(Player player, string s)
+        => CarriedBy(player) is not null ? s + "F" : s;
+
     /// <summary>QC ctf_RemovePlayer is hooked from both ClientDisconnect and MakePlayerObserver; this is the
     /// gametype's live leave-play hook (see <see cref="GameType.OnPlayerRemoved"/>) — it forwards to
     /// <see cref="RemovePlayer"/> so a leaving carrier drops the flag and stale back-links are cleared.</summary>
     public override void OnPlayerRemoved(Player player) => RemovePlayer(player);
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(ctf, GiveFragsForKill) (sv_ctf.qc): when g_ctf_ignore_frags is set, a regular
+    /// CTF kill awards no frag score (FragScore = 0); at the default (0) the +1 frag is left intact. Always
+    /// returns true so the GiveFrags path reads back the (possibly-zeroed) score. The CTF flag-carrier-kill
+    /// bonus is scored separately in <see cref="OnDeath"/> (CTF_FCKILLS + g_ctf_score_kill) and is unaffected.
+    /// </summary>
+    private bool OnGiveFragsForKill(ref MutatorHooks.GiveFragsForKillArgs args)
+    {
+        if (Cvar("g_ctf_ignore_frags", 0f) != 0f)
+            args.FragScore = 0f; // QC: M_ARGV(2, float) = 0 — regular frags give no points
+        return true;             // QC: return true (the kill path reads M_ARGV(2)/FragScore back)
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(ctf, PreferPlayerScore_Clear) { return true; }: CTF prefers to KEEP a rejoining
+    /// player's accumulated score (under g_score_resetonjoin -1 this veto prevents the score wipe).
+    /// </summary>
+    private bool OnPreferPlayerScoreClear(ref MutatorHooks.PreferPlayerScore_ClearArgs args) => true;
 
     /// <summary>
     /// QC MUTATOR_HOOKFUNCTION(ctf, VehicleEnter) (sv_ctf.qc:2537): when a flag-carrier boards a vehicle, either

@@ -54,6 +54,12 @@ public sealed class Wyvern : Monster
     public Wyvern()
     {
         NetName = "wyvern";
+        // Base ships NO models/monsters/wyvern.dpm_*.sounds file (find Base *.sounds = only golem + zombie), so
+        // QC Monster_Sound resolves every voice cue (pain/death/melee/sight/idle/spawn) to an EMPTY sample and
+        // sound7 plays nothing — the Base wyvern is silent for all voice cues (its fireball/burning effects play
+        // their own SND_* directly). An empty SoundCues set mirrors that: MonsterSound advances the throttle
+        // window but emits no sample, so no port-invented monsters/wyvern_<cue> sound fires (matching Spider/Mage).
+        SoundCues = new System.Collections.Generic.HashSet<string>();
         DisplayName = "Wyvern";
         Model = "models/monsters/wyvern.dpm";
         StartHealth = 150f;                 // g_monster_wyvern_health
@@ -65,7 +71,12 @@ public sealed class Wyvern : Monster
     public override void Spawn(Entity e)
     {
         var st = MonsterAI.Setup(this, e);
+        // QC wyvern mr_setup: setsize('-30 -30 -48', '30 30 30').
         Api.Entities.SetSize(e, new Vector3(-30, -30, -48), new Vector3(30, 30, 30));
+        // QC mr_setup also seeds the eye height: this.view_ofs = '0 0 1' * (this.maxs.z * 0.35). No port monster
+        // routes view_ofs through Setup, so (matching the registry's "folded into each descriptor's Spawn" note)
+        // seed it inline here: 0.35 * 30 = 10.5, used by the eye-origin traces (ValidTarget/aim) below.
+        e.ViewOfs = new Vector3(0, 0, 30f * 0.35f);
 
         // Clear any stale death-scatter flags so a respawned wyvern tumbles again when re-killed (the same
         // edict is reused across a death->respawn cycle; the weak-table entry would otherwise persist).

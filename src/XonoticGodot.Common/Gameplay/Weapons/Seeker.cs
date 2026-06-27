@@ -629,4 +629,12 @@ public sealed class Seeker : Weapon
     // METHOD(Seeker, wr_checkammo2) — seeker.qc (type 0: flac; type 1: tag).
     public bool CheckAmmoSecondary(Entity actor)
         => actor.GetResource(AmmoType) >= (Type == 1 ? Tag.Ammo : Flac.Ammo);
+
+    // METHOD(Seeker, wr_aim) — common/weapons/weapon/seeker.qc:wr_aim. The bot presses PRIMARY: in the default
+    // type 0 that is the tag dart (lead at tag_speed) which paints the enemy and auto-launches the homing missiles;
+    // in type 1 the missiles ARE the primary (lead at missile_speed). The flac/secondary is not bot-driven (the
+    // homing missiles do the work), so the default primary-only press stands; this hook only supplies the per-type
+    // lead speed. Non-lobbed, so the brain's straight-line lead applies.
+    public override float BotAimShotSpeed(float defaultSpeed)
+        => Type == 1 ? Missile.Speed : Tag.Speed;
 }

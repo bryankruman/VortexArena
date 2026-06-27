@@ -40,6 +40,21 @@ public sealed class Vaporizer : Weapon
     // sister Vortex. The crosshair (gfx/crosshairminstanex size 0.6) is wired centrally in CrosshairPanel.
     public override string? Reticle => "gfx/reticle_nex";
 
+    // METHOD(Vaporizer, describe) — common/weapons/weapon/vaporizer.qc (MENUQC): the in-menu weapon-guide
+    // prose shown by DialogMediaGuide. Four PAR() paragraphs (energy-beam superweapon overview + the instagib
+    // one-shot/ExtraLife caveat, the Blaster-laser secondary, the superweapon-rarity / instagib-spawn note, and
+    // the Cells ammo note). The QC builds these with COLORED_NAME(%s) substitutions — Vaporizer, the InstaGib
+    // mutator, the Extra Life item, the Blaster, and the Cells item — which are pre-filled here with their plain
+    // literals (same convention as Electro/Shotgun/Tuba). The trailing W_Guide_Keybinds(this) and
+    // W_Guide_DPS_onlyOne lines are owned by the guide page and not reproduced here (those helpers aren't ported).
+    public override string? GuideDescription =>
+        "The Vaporizer is a unique weapon, firing a deadly beam of energy dealing a huge amount of damage. "
+      + "In InstaGib, the beam has the ability to instantly kill enemies with a single shot, unless they have "
+      + "an Extra Life.\n\n"
+      + "The secondary fire shoots a laser identical to that fired by the Blaster, with strong knockback.\n\n"
+      + "It is a superweapon, so isn't often found in game, except in InstaGib where all players spawn with it.\n\n"
+      + "It consumes some Cells ammo with each shot.";
+
     public Vaporizer()
     {
         NetName = "vaporizer";
@@ -219,7 +234,18 @@ public sealed class Vaporizer : Weapon
         // QC vaporizer.qc:156-157: the cylindric rail beam (gauntletbeam on a hit, lgbeam otherwise) + muzzle
         // flash (EFFECT_VORTEX_MUZZLEFLASH). The port nets a sweep effect (VAPORIZER_BEAM_HIT when a player was
         // pierced, VAPORIZER_BEAM otherwise) and reuses the shared Vortex muzzle flash.
-        EffectEmitter.Emit(hit is not null ? "VAPORIZER_BEAM_HIT" : "VAPORIZER_BEAM", shot.Origin, endpos, 0);
+        // QC VaporizerBeam_Draw (vaporizer.qc, CSQC): the beam is tinted client-side. cl_vaporizerbeam_teamcolor
+        // (default 1) -> the SHOOTER's team palette color (colormapPaletteColor(team & 0x0F)); else the weapon's
+        // default Color ('0.592 0.557 0.824'). Then boosted: rgb *= 1 + cl_vaporizerbeam_colorboost (0.7). The port
+        // can't reproduce the bespoke cylindric gauntletbeam/lgbeam draw + 0.8 lifetime (CSQC-only), but it CAN tint
+        // the networked sweep via the RGB Emit overload — exactly how the instagib plasma turret sends a team-
+        // coloured VAPORIZER_BEAM (PlasmaTurret.cs). cl_vaporizerbeam_teamcolor defaults 1; read it without the
+        // Cvar(...) 0->fallback footgun so an explicit 0 (weapon-default color) is honoured.
+        bool beamTeamColor = Api.Services is null || Api.Cvars.GetFloat("cl_vaporizerbeam_teamcolor") != 0f;
+        Vector3 beamRgb = beamTeamColor ? Teams.ColorRgb((int)actor.Team) : Color;
+        beamRgb *= 1f + (Api.Services is null ? 0.7f : Api.Cvars.GetFloat("cl_vaporizerbeam_colorboost")); // colorboost 0.7
+        var beam = Effects.ByName(hit is not null ? "VAPORIZER_BEAM_HIT" : "VAPORIZER_BEAM");
+        EffectEmitter.Emit(beam, shot.Origin, endpos, 0, beamRgb, beamRgb, except: null);
         EffectEmitter.Emit("VORTEX_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
         // QC vaporizer.qc:407-413 wr_impacteffect: EFFECT_VORTEX_IMPACT + SND_VAPORIZER_IMPACT (neximpact) at

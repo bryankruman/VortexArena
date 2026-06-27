@@ -222,7 +222,12 @@ public sealed partial class MusicPlayer : Node
             RefreshMusicEntities();
 
             // Scan for active trigger_music whose touch is fresh (player inside it this frame).
+            // QC Ent_TriggerMusic_Think runs for the local client each frame; the LAST entity
+            // processed whose volume contains the player wins (latest in CL_LinkPacketEntities).
+            // Mirror that by picking the entry with the highest PushLTime stamp (most recently
+            // touched) — equivalent to "last one wins" when multiple volumes overlap.
             Entity? bestTrigger = null;
+            float bestTriggerTime = float.NegativeInfinity;
             for (int i = 0; i < _triggerMusic.Count; i++)
             {
                 Entity e = _triggerMusic[i];
@@ -230,13 +235,13 @@ public sealed partial class MusicPlayer : Node
                 if (e.Active != MapMover.ActiveActive) continue;
                 if (string.IsNullOrEmpty(e.Noise)) continue;
                 // The touch handler stamps PushLTime each frame the player overlaps.
-                // Consider it "active" if touched within the freshness window.
-                if (ServerTime - e.PushLTime <= TouchFreshnessWindow)
+                // Consider it "active" if touched within the freshness window; keep the
+                // most-recently-touched one (highest PushLTime) to match QC last-wins order.
+                if (ServerTime - e.PushLTime <= TouchFreshnessWindow
+                    && e.PushLTime > bestTriggerTime)
                 {
                     bestTrigger = e;
-                    // Don't break — last one wins if multiple overlap (QC uses the last-touched),
-                    // but for simplicity we take the first found.
-                    break;
+                    bestTriggerTime = e.PushLTime;
                 }
             }
             if (bestTrigger is not null)

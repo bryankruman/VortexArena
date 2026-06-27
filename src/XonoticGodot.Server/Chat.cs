@@ -928,9 +928,12 @@ public sealed class Chat
     /// <summary>QC IS_PLAYER — a live, non-spectator player.</summary>
     private static bool IsPlayer(Player p) => !IsObserver(p) && !p.IsDead;
 
-    /// <summary>QC (IS_PLAYER(it) || INGAME(it)) — in the match (the port has no separate .ingame round flag, so
-    /// an in-game player is any non-observer; eliminated round players are treated as observers here).</summary>
-    private static bool IsIngame(Player p) => !IsObserver(p);
+    /// <summary>QC <c>(IS_PLAYER(it) || INGAME(it))</c> (chat.qc routing guards): in the match = any non-observer,
+    /// OR an eliminated round player still holding a round slot (QC FRAGS_PLAYER_OUT_OF_GAME = -616, set by CA/LMS
+    /// on elimination). Matches QC's <c>INGAME(p)</c> macro (<c>p.frags == FRAGS_PLAYER_OUT_OF_GAME</c>): until the
+    /// round-elimination infrastructure in ClanArena/LMS sets <see cref="Player.FragsOutOfGame"/> on eliminated
+    /// players the extra branch is dormant but will fire correctly when those gametypes land.</summary>
+    private static bool IsIngame(Player p) => !IsObserver(p) || p.FragsStatus == Player.FragsOutOfGame;
 
     /// <summary>QC CHAT_NOSPECTATORS() (chat.qh:30): g_chat_nospectators 1, or 2 outside warmup.</summary>
     private bool ChatNoSpectators()

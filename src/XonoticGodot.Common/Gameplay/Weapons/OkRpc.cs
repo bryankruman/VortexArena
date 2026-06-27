@@ -141,6 +141,19 @@ public sealed class OkRpc : Weapon
         missile.TakeDamage = DamageMode.Yes;
         missile.Health = Cvars.Health;
 
+        // QC okrpc.qc: missile.bot_dodge = true; missile.bot_dodgerating = WEP_CVAR_PRI(damage) * 2; IL_PUSH on the
+        // g_bot_dodge danger list — bots swerve away from the in-flight chainsaw (consumed by the havocbot dodge
+        // scan, BotBrain/Waypoint, which iterates every non-client edict flagged BotDodge; no list-push needed).
+        missile.BotDodge = true;
+        missile.BotDodgeRating = Cvars.Damage * 2f;
+
+        // QC okrpc.qc: IL_PUSH(g_damagedbycontents, missile) — the flying chainsaw takes lava/slime contents
+        // damage and detonates (via its shoot-down shim, installed below). Consumed by the per-frame
+        // g_damagedbycontents sweep (GameWorld → PlayerFrameLogic.ProjectileContentsDamage), which scans the
+        // entity table for this flag. Inert in dry maps; correctly NOT gated by g_projectiles_damage (that gates
+        // only the shoot-down) — lava/slime use g_balance_contents_projectiledamage, matching Base.
+        missile.DamagedByContents = true;
+
         // W_SetupProjVelocity_Basic(missile, speed, 0) — launch straight along shotdir at speed.
         missile.Velocity = shot.Dir * Cvars.Speed;
         missile.Angles = QMath.VecToAngles(missile.Velocity);

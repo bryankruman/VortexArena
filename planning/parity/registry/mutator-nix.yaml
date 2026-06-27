@@ -5,9 +5,9 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 16
   worst_gaps:
-    - "add.wrinit: ONADD still omits the FOREACH(Weapons, choosable, wr_init) warm pass. QC itself comments the per-rotation re-init as 'too slow' and skips it elsewhere; the ONADD warm is cosmetic/perf with no gameplay effect. (Sole remaining real gap in the unit.)"
-    - "enable.gate: exclusion is now expressed against the underlying cvars (g_instagib/g_overkill/g_weaponarena) rather than QC's MUTATOR_IS_ENABLED(mutator_instagib)/MUTATOR_IS_ENABLED(ok)/m_weaponarena, since the port has no cross-mutator MUTATOR_IS_ENABLED helper. Behaviorally equivalent for stock play; flagged as an intended divergence (the same stand-in instagib/melee/vampire use)."
-    - "choose.canchoose: omits the g_weaponarena sub-branch (unreachable via the enable gate). Superweapons (Fireball etc.) never enter the NIX pool because they lack WEP_FLAG_NORMAL — matches Base."
+    - "No open gaps: all 16 features are logic/values faithful and live. (add.wrinit RESOLVED @ 2026-06-27 — the ONADD FOREACH(Weapons, choosable, wr_init) warm pass was already present in NixMutator.cs:99-102; the registry was stale.) The two notes below are intended divergences, not unresolved gaps."
+    - "enable.gate (intended divergence): exclusion is now expressed against the underlying cvars (g_instagib/g_overkill/g_weaponarena) rather than QC's MUTATOR_IS_ENABLED(mutator_instagib)/MUTATOR_IS_ENABLED(ok)/m_weaponarena, since the port has no cross-mutator MUTATOR_IS_ENABLED helper. Behaviorally equivalent for stock play (the same stand-in instagib/melee/vampire use)."
+    - "choose.canchoose (intended divergence): omits the g_weaponarena sub-branch (unreachable via the enable gate). Superweapons (Fireball etc.) never enter the NIX pool because they lack WEP_FLAG_NORMAL — matches Base."
 features:
   - id: mutator-nix.enable.gate
     name: "Enable predicate (g_nix + arena-mutator exclusion)"
@@ -44,7 +44,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:64 (Hook)"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -52,12 +52,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Port resets the rotation globals (_nixWeapon/_nixNextWeapon/_nixNextChange = 0) and reads cvars (Hook lines 81-94), but does NOT run the `FOREACH(Weapons, choosable, it.wr_init(it))` warm-init pass. QC itself comments the per-rotation re-init as 'too slow' and skips it; the ONADD warm is cosmetic/perf and has no observable gameplay effect."
+    gaps: []
     verification:
-      - { kind: code, ref: "Hook() resets _nixWeapon/_nixNextWeapon/_nixNextChange + reads g_nix_with_* / roundtime / incrtime; no wr_init loop vs sv_nix.qc:36-44", result: pass }
+      - { kind: code, ref: "Hook() resets _nixWeapon/_nixNextWeapon/_nixNextChange + reads g_nix_with_* / roundtime / incrtime (lines 81-94) + runs `foreach (Weapon w in Weapons.All) { if (CanChooseWeapon(w)) w.WrInit(); }` (lines 99-102) matching FOREACH(Weapons, choosable, it.wr_init(it)) in sv_nix.qc:43; WrInit() is a declared virtual on the Weapon base (GameplayBases.cs:235), currently a no-op (port warm runs at asset-load time) but structurally faithful", result: pass }
     confidence: high
-    notes: "Global reset + cvar read faithful; wr_init warm omitted (cosmetic). Unchanged."
+    notes: "FIXED (registry was stale @ 2026-06-27): the wr_init warm-init loop was already present in Hook() (NixMutator.cs:99-102) when the registry was last written — the gap note described the pre-loop state. All 16 features are now faithful/live; no open gaps remain in this unit."
 
   - id: mutator-nix.remove.restore
     name: "MUTATOR_ONREMOVE: restore start_ammo_* + start_weapons loadout"

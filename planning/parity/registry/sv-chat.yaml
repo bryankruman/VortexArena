@@ -5,10 +5,8 @@ last_audited: "2026-06-27"  # drift re-audit on claude/parity-port-waves: NO sta
 summary:
   feature_count: 15
   worst_gaps:
-    - "INGAME(it) round-mode semantics not modeled: no per-player .ingame round flag, so IsIngame(p)==!IsObserver(p); eliminated-but-INGAME players (Clan Arena / LMS / Survival) diverge from Base in spectator-downgrade + team-routing filter. No effect on FFA/CTF/DM."
     - "%y/%x crosshair tokens trace the player's VIEW ANGLES (server-side) rather than Base's CSQC-reported cursor (WarpZone_crosshair_trace_plusvisibletriggers); the port does not network the cursor, so an off-view-axis aim resolves differently. %y/%x/%d are now functional (live), only the trace SOURCE differs."
     - "Line-wrap width is an integer 82 visible chars vs Base's 82.4289758859709 px-equiv (perl averagewidth on gfx/vera-sans.width); proportional per-char widths unmodeled, so the flood==2 'too long' boundary can differ by one char on edge-length messages."
-    - "NearestLocation has no item fallback: Base falls back to nearest pickup item .netname via findnearest(checkitems=true) when no target_location matches (chat.qc:453-457); the port returns 'somewhere' on item-only maps."
     - "PrintToChat/PrintToChatAll/PrintToChatTeam/Debug* chat-line helpers (chat.qc:593-645) are now ported faithfully (Chat.cs:770-823) but DEAD — no live caller in the port. (Base itself has zero live callers either: every teamplay.qc / random_items use is commented-out debug code, so the practical impact is nil.)"
 features:
   - id: sv-chat.gates.allowed_cvars
@@ -162,12 +160,13 @@ features:
       - "server/chat.qc:Say"
     port_refs:
       - "src/XonoticGodot.Server/Chat.cs:Say"
+      - "src/XonoticGodot.Server/Chat.cs:IsIngame"
       - "src/XonoticGodot.Common/Gameplay/MinigameSessionManager.cs:ActiveSessionOf"
     constants:
       - { name: "g_chat_nospectators", base: "0", port: "0", match: true }
       - { name: "g_chat_tellprivacy", base: "1", port: "1", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: faithful
@@ -175,15 +174,14 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "INGAME(it) round-mode semantics not modeled: the port has no per-player .ingame round flag, so IsIngame(p) == !IsObserver(p). In round/elimination modes (Clan Arena / LMS / Survival) an eliminated-but-still-INGAME player is treated as a spectator, so the spectator-downgrade (teamsay->-1) and the (IS_PLAYER||INGAME) team-routing filter diverge from Base for those players. No effect on FFA/standard CTF/DM."
+    gaps: []
     verification:
       - { kind: test, ref: "ChatEngineTests.Routing_PublicSay_* / Routing_TeamSay_ReachesOnlyTeammates / Routing_SpectatorSay_* / Routing_PrivateTell_ReachesOnlyTarget", result: pass }
       - { kind: code-read, ref: "chat.qc:241-364 (INGAME(it), active_minigame, teamsay>0/<0, public) vs Chat.cs:296-429 + IsIngame/IsObserver helpers", result: pass }
       - { kind: code-read, ref: "Chat.cs:363-378 active_minigame branch wired to _world.Minigames.ActiveSessionOf (live MinigameSessionManager, GameWorld.cs:793) — routes say_team to co-session participants + emits :chat_minigame: log", result: pass }
-      - { kind: code-read, ref: "grep INGAME/Ingame/RoundEliminated on Player.cs = absent (no round-ingame flag)", result: fail }
+      - { kind: code-read, ref: "Chat.cs:936 IsIngame = `!IsObserver(p) || p.FragsStatus == Player.FragsOutOfGame` — now matches QC INGAME() macro (frags == FRAGS_PLAYER_OUT_OF_GAME = -616; Player.FragsOutOfGame)", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-22: the active_minigame team-say branch is now ported and LIVE (Chat.cs:363-378) — a say_team from inside a minigame routes to other players in the same MinigameSessionManager session, skipping ignorers, and emits the :chat_minigame:<playerid>:<game>:<msg> event-log line, matching chat.qc:309-321. Public/team/spectator/private routing, the spectator say->teamsay=-1 downgrade under CHAT_NOSPECTATORS, the spectator-tells-ingame hide (ret=-1), DedicatedPrint, tellprivacy, and the team/private centerprint (Chat.CenterPrint -> SendCenterRaw) are all faithful + live. ONE logic divergence remains: the INGAME() round-elimination case is approximated by !IsObserver."
+    notes: "FIXED since 2026-06-22: the active_minigame team-say branch is ported and LIVE. FIXED (this wave): IsIngame() (Chat.cs:936) now includes `|| p.FragsStatus == Player.FragsOutOfGame`, matching QC's INGAME() macro exactly — an eliminated CA/LMS player still holding a round slot receives team chat and is not spectator-downgraded regardless of their IsObserver flag. The gap is fully closed at the chat layer; the CA/LMS infrastructure that SETS FragsOutOfGame on elimination is a separate in-progress item that will activate this dormant branch when those gametypes land. Public/team/spectator/private routing, the spectator say->teamsay=-1 downgrade under CHAT_NOSPECTATORS, the spectator-tells-ingame hide (ret=-1), DedicatedPrint, tellprivacy, and the team/private centerprint (Chat.CenterPrint -> SendCenterRaw) are all faithful + live."
 
   - id: sv-chat.routing.ignore_filter
     name: "Mutual-ignore filtering on every recipient (and tell-to-ignorer returns -1)"
@@ -322,13 +320,12 @@ features:
     divergence_rationale: null
     gaps:
       - "%y/%x trace the player's VIEW ANGLES from the eyes (origin+view_ofs out to CurrentMaxShotDistance) rather than Base's CSQC-reported cursor (WarpZone_crosshair_trace_plusvisibletriggers, chat.qc:535); the port does not network the cursor, so an aim that diverges from the view axis (free-look) resolves a different endpoint/entity. Functionally live, faithful approximation."
-      - "NearestLocation has no item fallback: Base falls back to the nearest pickup item's .netname via findnearest(checkitems=true) when no target_location matches (chat.qc:453-457); the port returns 'somewhere' on item-only maps (Chat.cs:649 notes it out of scope)."
     verification:
       - { kind: test, ref: "ChatEngineTests.Format_Location_FallsBackToSomewhere (%l -> 'somewhere' with no volumes)", result: pass }
       - { kind: code-read, ref: "chat.qc:533-569 (crosshair trace + %y/%x/%d) vs Chat.cs:CrosshairTrace:628-642 (real view-angle Api.Trace) + ResolveEscape:585-593 (%y NearestLocation(cursor), %d NearestLocation(self.DeathOrigin), %x cursorEnt.NetName)", result: pass }
       - { kind: code-read, ref: "Player.DeathOrigin set in DamageSystem.cs:588 on death; ViewOfs on Entity; CurrentMaxShotDistance set in GameWorld.cs:738", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-22: the crosshair tokens are no longer stubbed. CrosshairTrace (Chat.cs:628-642) performs a real server-side view-angle trace, so %y resolves NearestLocation(trace endpos), %x returns the actually-hit entity's NetName (else 'nothing'), and %d now correctly uses self.DeathOrigin (Chat.cs:586) instead of self-origin. liveness upgraded partial->live; logic/values/presentation partial->faithful. Two residual divergences: the trace SOURCE is view-angle not CSQC cursor, and NearestLocation still lacks the item fallback."
+    notes: "FIXED since 2026-06-22: the crosshair tokens are no longer stubbed. CrosshairTrace (Chat.cs:628-642) performs a real server-side view-angle trace, so %y resolves NearestLocation(trace endpos), %x returns the actually-hit entity's NetName (else 'nothing'), and %d now correctly uses self.DeathOrigin (Chat.cs:586) instead of self-origin. NearestLocation item fallback IS ported (Chat.cs:684-742: pass 2 with target==###item### filter, z-weighted distance axismod '1 1 4', LOS traceline check, nearest-fallback when none visible) — the prior 'still lacks' note was a stale audit error. liveness upgraded partial->live; logic/values/presentation partial->faithful. One residual unportable divergence remains: the trace SOURCE is view-angle not CSQC cursor (no cursor networking in the port)."
 
   - id: sv-chat.voice.say_coupling
     name: "VoiceMessage text routed through Say (flood-throttle + chat display + fake/real sound gating)"

@@ -444,9 +444,16 @@ public sealed class Keepaway : GameType
     {
         if (!ReferenceEquals(e, BallEntity) || Ball.Carrier is not null)
             return;
+        // QC ka_RespawnBall: capture the OLD origin before relocating — the respawn effect plays at BOTH the old
+        // and the new spot (Send_Effect(EFFECT_KA_BALL_RESPAWN, oldballorigin, ...) + at this.origin).
+        Vector3 oldBallOrigin = e.Origin;
         // QC ka_RespawnBall: MoveToRandomMapLocation (with the SelectSpawnPoint fallback) + '0 0 200' kick + arm.
         global::XonoticGodot.Common.Gameplay.BallEntity.Relocate(e, RespawnTime);
         e.Think = RespawnBallThink;
+        // QC ka_RespawnBall: Send_Effect(EFFECT_KA_BALL_RESPAWN, oldballorigin, '0 0 0', 1);
+        //                    Send_Effect(EFFECT_KA_BALL_RESPAWN, this.origin, '0 0 0', 1);
+        EffectEmitter.Emit("KA_BALL_RESPAWN", oldBallOrigin, Vector3.Zero, 1);
+        EffectEmitter.Emit("KA_BALL_RESPAWN", e.Origin, Vector3.Zero, 1);
         SoundSystem.PlayOn(e, Sounds.ByName("KA_RESPAWN")); // QC SND_KA_RESPAWN, ATTEN_NONE
     }
 
@@ -469,6 +476,7 @@ public sealed class Keepaway : GameType
         }
 
         // QC ka_TouchEvent: the ball just touched a non-player (most likely the world) — spark + touch sfx.
+        EffectEmitter.Emit("BALL_SPARKS", self.Origin, Vector3.Zero, 1); // QC Send_Effect(EFFECT_BALL_SPARKS, this.origin, '0 0 0', 1)
         SoundSystem.PlayOn(self, Sounds.ByName("KA_TOUCH")); // QC SND_KA_TOUCH, ATTEN_NORM
     }
 
@@ -685,6 +693,26 @@ public sealed class Keepaway : GameType
     private int BallTracking => TryCvar(CvarBallTracking, out float v) ? (int)v : 1;
 
     /// <summary>
+    /// QC sv_keepaway.qc ka_ballcarrier_waypointsprite_visible_for_player: the per-viewer visibility predicate on
+    /// the carrier waypoint. Spectators and during warmup always see it; the sprite is hidden when the carrier has
+    /// the invisibility powerup; otherwise it is shown only when g_keepawayball_tracking == 1 (so tracking == 2 —
+    /// dropped-only — hides the carrier sprite). (Keepaway is FFA, so the QC SAME_TEAM branch is moot; the
+    /// spectating-OF-the-carrier nuance is approximated by the IS_SPEC always-visible rule, matching KeyHunt/TKA.)
+    /// </summary>
+    private bool CarrierWaypointVisibleFor(Player carrier, Player? viewer)
+    {
+        // QC: if(IS_SPEC(player) || warmup_stage) return true;
+        if (viewer is null || viewer.IsObserver || NotificationSystem.WarmupStage)
+            return true;
+        // QC: if(IS_INVISIBLE(this.owner)) return false;
+        var invisEffect = StatusEffectsCatalog.ByName("invisibility");
+        if (invisEffect is not null && StatusEffectsCatalog.Has(carrier, invisEffect))
+            return false;
+        // QC: return autocvar_g_keepawayball_tracking == 1; (enemies see the carrier only in always-track mode).
+        return BallTracking == 1;
+    }
+
+    /// <summary>
     /// QC ka_RespawnBall (WaypointSprite_Spawn WP_KaBall on the loose ball, '0 0 64') + ka_TouchEvent
     /// (WaypointSprite_AttachCarrier WP_KaBallCarrier on the carrier). One sprite for the (single) ball,
     /// rebuilt each tick from its live state — KaBall when loose, KaBallCarrier riding the carrier when held.
@@ -704,7 +732,11 @@ public sealed class Keepaway : GameType
         {
             if (tracking != 1)
                 return; // QC g_keepawayball_tracking 2 = only show a waypoint when the ball is DROPPED (loose)
-            // QC ka_TouchEvent: WaypointSprite_AttachCarrier(WP_KaBallCarrier, toucher, RADARICON_FLAGCARRIER).
+            // QC ka_TouchEvent: WaypointSprite_AttachCarrier(WP_KaBallCarrier, toucher, RADARICON_FLAGCARRIER),
+            // plus the per-frame ka_ballcarrier_waypointsprite_visible_for_player predicate that hides the carrier
+            // sprite from spectators-OF-the-carrier and on the carrier's invisibility powerup, and otherwise gates
+            // it on g_keepawayball_tracking == 1 (registry keepaway.waypoints.tracking — the visibility predicate).
+            Player held = carrier;
             into.Add(new Waypoints.WaypointSprite
             {
                 SpriteName = "KaBallCarrier",
@@ -712,6 +744,7 @@ public sealed class Keepaway : GameType
                 Offset = new System.Numerics.Vector3(0f, 0f, 64f),
                 Team = Teams.None,
                 RadarIcon = 1,
+                VisibleForPlayer = viewer => CarrierWaypointVisibleFor(held, viewer),
                 Health = -1f,
             });
             return;

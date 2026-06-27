@@ -81,7 +81,12 @@ public sealed class Zombie : Monster
     public override void Spawn(Entity e)
     {
         var st = MonsterAI.Setup(this, e);
+        // QC zombie mr_setup: setsize('-18 -18 -25', '18 18 47'). QC Monster_Spawn_Setup then seeds
+        // view_ofs = '0 0 1' * (maxs.z * 0.35) — the eye height the LOS/aim/danger traces read
+        // (self.Origin + self.ViewOfs). MonsterAI.Setup does not seed it, so without this the eye sits at
+        // the origin (ViewOfs 0). Folded into the descriptor's Spawn per the monster-framework parity note.
         Api.Entities.SetSize(e, new Vector3(-18, -18, -25), new Vector3(18, 18, 47));
+        e.ViewOfs = new Vector3(0, 0, 47f * 0.35f); // 0.35 * maxs.z = 16.45
 
         st.WalkSpeed = MonsterAI.Cvar("g_monster_zombie_speed_walk", SpeedWalk);
         st.RunSpeed = MonsterAI.Cvar("g_monster_zombie_speed_run", SpeedRun);

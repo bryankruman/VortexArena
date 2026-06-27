@@ -361,10 +361,20 @@ public static class MoveTypePhysics
     private const bool WallFriction = false;  // sv_wallfriction (DP engine default 1, but the SV_WallFriction body is #if 0 — a no-op regardless)
     private const bool NoStep = false;        // sv_nostep
     private const bool DownTraceOnGround = true; // sv_gameplayfix_downtracesupportsongroundflag
+    private const bool UnstickPlayers = true; // sv_gameplayfix_unstickplayers (Xonotic default 1, xonotic-server.cfg:575)
 
     public static void WalkMove(PhysicsContext ctx, Entity ent)
     {
         if (ctx.FrameTime <= 0f) return;
+
+        // _Movetype_Physics_Walk (walk.qc:9-10): if sv_gameplayfix_unstickplayers, extricate a body that
+        // begins the tick embedded in geometry BEFORE the slide move. DP's _Movetype_CheckStuck ->
+        // _Movetype_UnstickEntity ultimately falls through to SV_NudgeOutOfSolid, which is exactly
+        // ctx.TryNudgeOutOfSolid (the grow-from-pivot extrication). Drives monster/STEP bodies that can spawn
+        // or get shoved into a brush; without it the FlyMove startsolid-allsolid bail only stops runaway, it
+        // never frees the body.
+        if (UnstickPlayers)
+            CheckStuck(ctx, ent);
 
         // applygravity unless in water / waterjump. Base walk.qc:12 gates on WALK || STEP
         // (MOVETYPE_STEP aliases to _Movetype_Physics_Walk, so STEP bodies must get gravity too).
@@ -498,6 +508,27 @@ public static class MoveTypePhysics
         ctx.LinkEdict(ent);
         ctx.TouchAreaGrid(ent);
         _ = stepNormal;
+    }
+
+    // =============================================================================================
+    // _Movetype_CheckStuck (movetypes.qc, DP SV_CheckStuck) — extricate a body embedded in solid before its
+    // move. Probes the entity's own hull at its current origin; if it starts solid, nudge it out of the
+    // brush (Base's _Movetype_UnstickEntity ultimately calls SV_NudgeOutOfSolid == ctx.TryNudgeOutOfSolid)
+    // and relink. A clear start, or an unfixable bmodel-startsolid (TryNudgeOutOfSolid returns false), is
+    // left as-is — matching DP, which gives up on an entity wedged inside a brush model.
+    // =============================================================================================
+
+    private static void CheckStuck(PhysicsContext ctx, Entity ent)
+    {
+        // zero-length self-trace at the current origin: filter matches the body's own move select
+        // (NoMonsters for bmodel/trigger solids, Normal otherwise — same pick WalkMove's down-trace uses).
+        MoveFilter type = ent.Solid is Solid.Trigger or Solid.Not ? MoveFilter.NoMonsters : MoveFilter.Normal;
+        TraceResult tr = ctx.Trace.Trace(ent.Origin, ent.Mins, ent.Maxs, ent.Origin, type, ent);
+        if (!tr.StartSolid)
+            return; // not stuck — nothing to do (the common case)
+
+        if (ctx.TryNudgeOutOfSolid(ent))
+            ctx.LinkEdict(ent); // committed a freed origin — relink the broadphase/AbsMin/AbsMax
     }
 
     /// <summary>

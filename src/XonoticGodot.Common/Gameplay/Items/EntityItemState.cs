@@ -199,5 +199,17 @@ namespace XonoticGodot.Common.Framework
         /// exemption condition is <c>if (!this.cnt)</c> on all three callbacks.
         /// </summary>
         public bool PhysIsDropped;
+
+        // --- physical-items network suppression (set on the REAL item, not the ghost) ---
+        /// <summary>
+        /// QC <c>setSendEntity(item, func_null)</c> (sv_physical_items.qc) — once the physical_items mutator has
+        /// hidden the real item behind its physics ghost, the real item STOPS being networked entirely (the ghost
+        /// is the only thing clients see). DarkPlaces achieves this by clearing the item's SendEntity callback; the
+        /// port has no per-entity SendEntity, so this sticky flag is the equivalent: when set, ServerNet's snapshot
+        /// producer skips the entity (it stays a live server-side edict driving MOVETYPE_FOLLOW, but never enters
+        /// the entity feed). Set on the REAL item by <c>PhysicalItemsMutator.OnItemSpawn</c>, never cleared (QC's
+        /// suppression is permanent for the item's lifetime). Default false.
+        /// </summary>
+        public bool PhysNetSuppressed;
     }
 }

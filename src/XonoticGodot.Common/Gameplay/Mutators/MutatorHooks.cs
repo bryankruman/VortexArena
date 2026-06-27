@@ -584,6 +584,38 @@ public static class MutatorHooks
     public static readonly HookChain<GiveFragsForKillArgs> GiveFragsForKill = new();
 
     /// <summary>
+    /// EV_FragCenterMessage (server/mutators/events.qh) — fired from QC <c>Obituary</c> (server/damage.qc:371,
+    /// just before the frag/typefrag centerprints) so a gametype can REPLACE or SUPPRESS the per-kill personal
+    /// centerprint sent to the attacker ("You fragged X") and the victim ("You were fragged by Y"). Freeze Tag
+    /// swaps these for CHOICE_FRAG_FREEZE / CHOICE_FRAGGED_FREEZE ("You froze X" / "You were frozen by Y"), and
+    /// suppresses them entirely when the target was ALREADY frozen (re-killed in void/lava). Slot0 attacker,
+    /// slot1 target, slot2 deathtype; the in/out <see cref="AttackerChoice"/>/<see cref="TargetChoice"/> carry
+    /// the CHOICE name the obituary should send to each (default "FRAG"/"FRAGGED"), and <see cref="Suppress"/>
+    /// drops both lines. A handler returning <c>true</c> marks the message handled (QC's return-true contract);
+    /// the obituary then honours the (possibly-rewritten) slots.
+    /// </summary>
+    public struct FragCenterMessageArgs
+    {
+        public readonly Entity Attacker;   // MUTATOR_ARGV_0_entity
+        public readonly Entity Target;      // MUTATOR_ARGV_1_entity
+        public readonly string DeathType;   // the kill's deathtype tag
+        public string AttackerChoice;       // in/out: the CHOICE_* name sent to the attacker (default "FRAG")
+        public string TargetChoice;         // in/out: the CHOICE_* name sent to the target   (default "FRAGGED")
+        public bool Suppress;               // in/out: drop both centerprints entirely (already-frozen re-kill)
+
+        public FragCenterMessageArgs(Entity attacker, Entity target, string deathType)
+        {
+            Attacker = attacker;
+            Target = target;
+            DeathType = deathType;
+            AttackerChoice = "FRAG";
+            TargetChoice = "FRAGGED";
+            Suppress = false;
+        }
+    }
+    public static readonly HookChain<FragCenterMessageArgs> FragCenterMessage = new();
+
+    /// <summary>
     /// EV_PreferPlayerScore_Clear (server/mutators/events.qh) — fired from <c>Score_ClearOnJoin</c> when a
     /// player rejoins after going observer and <c>g_score_resetonjoin == -1</c> (admin config: rejoin clears
     /// score unless a mutator vetoes). A handler returning <c>true</c> VETOES the score wipe — the gametype
@@ -1286,6 +1318,127 @@ public static class MutatorHooks
     }
 
     // ---- turret hooks (server/mutators/events.qh) -------------------------------------------------------
+
+    /// <summary>
+    /// EV_TurretThink (server/mutators/events.qh) — fired at the TOP of QC <c>turret_think</c>
+    /// (common/turrets/sv_turrets.qc, step 1: <c>MUTATOR_CALLHOOK(TurretThink, this)</c>) every frame, before
+    /// ammo regen / acquire / aim / fire. A handler returning <c>true</c> short-circuits the rest of the brain
+    /// for that think (the turret skips its acquire/aim/fire pass this frame). Slot0 the turret. No stock
+    /// Xonotic mutator registers this hook; it is wired for parity (exactly like
+    /// <see cref="FusionReactorValidTarget"/>) so the <see cref="TurretAI.RunCombat"/> call site matches Base and
+    /// a future mod can pause/override a turret's per-frame logic.
+    /// </summary>
+    public struct TurretThinkArgs
+    {
+        public readonly Entity Turret;   // MUTATOR_ARGV_0_entity
+        public TurretThinkArgs(Entity turret) { Turret = turret; }
+    }
+    public static readonly HookChain<TurretThinkArgs> TurretThink = new();
+
+    /// <summary>
+    /// Fire <see cref="TurretThink"/> at the top of a turret's per-frame brain (QC
+    /// <c>MUTATOR_CALLHOOK(TurretThink, this)</c>). Returns true if a handler wants the rest of the think skipped.
+    /// The fast path (no handlers) avoids building the args struct on the per-frame turret path.
+    /// </summary>
+    public static bool FireTurretThink(Entity turret)
+    {
+        if (TurretThink.Count == 0) return false;   // fast path — no handlers registered
+        var a = new TurretThinkArgs(turret);
+        return TurretThink.Call(ref a);
+    }
+
+    /// <summary>
+    /// EV_TurretValidateTarget (server/mutators/events.qh) — fired inside QC <c>turret_validate_target</c>
+    /// (common/turrets/sv_turrets.qc), in the reject-cascade right after the alpha-cloak cull and before the
+    /// NO/NOTARGET/dead checks: <c>if (MUTATOR_CALLHOOK(TurretValidateTarget, e_turret, e_target, validate_flags))
+    /// return M_ARGV(3, float);</c>. A handler that sets <see cref="Override"/> (and returns <c>true</c>) FULLY
+    /// REPLACES the validity result — a positive override forces the target valid, a non-positive one rejects it.
+    /// The port models the QC float return as a nullable bool: <c>null</c> = fall through (normal cascade decides),
+    /// <c>true</c> = force valid, <c>false</c> = force reject. Slot0 the turret, slot1 the candidate target, slot2
+    /// the select flags. No stock Xonotic mutator registers this hook; it is wired for parity so
+    /// <see cref="TurretAI.ValidTarget"/> matches Base.
+    /// </summary>
+    public struct TurretValidateTargetArgs
+    {
+        public readonly Entity Turret;       // MUTATOR_ARGV_0_entity
+        public readonly Entity Target;        // MUTATOR_ARGV_1_entity
+        public readonly int ValidateFlags;    // MUTATOR_ARGV_2_float (target_select_flags)
+        /// <summary><c>null</c> = fall through; <c>true</c> = force valid; <c>false</c> = force reject
+        /// (in/out — set by handlers, read by the Fire helper).</summary>
+        public bool? Override;                // MUTATOR_ARGV_3 (in/out)
+        public TurretValidateTargetArgs(Entity turret, Entity target, int validateFlags)
+        { Turret = turret; Target = target; ValidateFlags = validateFlags; Override = null; }
+    }
+    public static readonly HookChain<TurretValidateTargetArgs> TurretValidateTarget = new();
+
+    /// <summary>
+    /// Fire <see cref="TurretValidateTarget"/> for a candidate target (QC
+    /// <c>MUTATOR_CALLHOOK(TurretValidateTarget, e_turret, e_target, validate_flags)</c>) and return the resolved
+    /// override: <c>true</c> force valid, <c>false</c> force reject, <c>null</c> fall through to the normal cascade.
+    /// </summary>
+    public static bool? FireTurretValidateTarget(Entity turret, Entity target, int validateFlags)
+    {
+        if (TurretValidateTarget.Count == 0) return null;   // fast path — no handlers registered
+        var a = new TurretValidateTargetArgs(turret, target, validateFlags);
+        TurretValidateTarget.Call(ref a);
+        return a.Override;
+    }
+
+    /// <summary>
+    /// EV_Turret_CheckFire (server/mutators/events.qh) — fired near the top of QC <c>turret_firecheck</c>
+    /// (common/turrets/sv_turrets.qc): <c>if (MUTATOR_CALLHOOK(Turret_CheckFire, this)) return M_ARGV(1,
+    /// float);</c>. A handler can FORCE the firecheck result: <see cref="Override"/> = true forces the turret to
+    /// fire this think (skipping the refire/ammo/distance/AFF/AIMDIST gates), false forces it to hold. The port
+    /// models the QC float return as a nullable bool (<c>null</c> = fall through). Slot0 the turret. No stock
+    /// Xonotic mutator registers this hook; wired for parity.
+    /// </summary>
+    public struct TurretCheckFireArgs
+    {
+        public readonly Entity Turret;   // MUTATOR_ARGV_0_entity
+        /// <summary><c>null</c> = fall through; <c>true</c> = force fire; <c>false</c> = force hold (in/out).</summary>
+        public bool? Override;           // MUTATOR_ARGV_1 (in/out)
+        public TurretCheckFireArgs(Entity turret) { Turret = turret; Override = null; }
+    }
+    public static readonly HookChain<TurretCheckFireArgs> TurretCheckFire = new();
+
+    /// <summary>
+    /// Fire <see cref="TurretCheckFire"/> at the top of the fire gate (QC
+    /// <c>MUTATOR_CALLHOOK(Turret_CheckFire, this)</c>). Returns the forced result: <c>true</c> force fire,
+    /// <c>false</c> force hold, <c>null</c> fall through to the normal firecheck gates.
+    /// </summary>
+    public static bool? FireTurretCheckFire(Entity turret)
+    {
+        if (TurretCheckFire.Count == 0) return null;   // fast path — no handlers registered
+        var a = new TurretCheckFireArgs(turret);
+        TurretCheckFire.Call(ref a);
+        return a.Override;
+    }
+
+    /// <summary>
+    /// EV_TurretFire (server/mutators/events.qh) — fired from QC <c>turret_fire</c>
+    /// (common/turrets/sv_turrets.qc) just before the turret runs its weapon: <c>if
+    /// (MUTATOR_CALLHOOK(TurretFire, this)) return;</c>. A handler returning <c>true</c> SUPPRESSES the shot
+    /// (no weapon, no refire/ammo/volley bookkeeping) for that fire — the per-mutator twin of the
+    /// <c>g_turrets_nofire</c> master gate. Slot0 the turret. No stock Xonotic mutator registers this hook;
+    /// wired for parity so the <see cref="TurretAI.Fire"/> call site matches Base.
+    /// </summary>
+    public struct TurretFireArgs
+    {
+        public readonly Entity Turret;   // MUTATOR_ARGV_0_entity
+        public TurretFireArgs(Entity turret) { Turret = turret; }
+    }
+    public static readonly HookChain<TurretFireArgs> TurretFire = new();
+
+    /// <summary>
+    /// Fire <see cref="TurretFire"/> just before a turret shoots (QC <c>MUTATOR_CALLHOOK(TurretFire, this)</c>).
+    /// Returns true if a handler wants the shot suppressed. Fast path skips the args struct when no handler is set.
+    /// </summary>
+    public static bool FireTurretFire(Entity turret)
+    {
+        if (TurretFire.Count == 0) return false;   // fast path — no handlers registered
+        var a = new TurretFireArgs(turret);
+        return TurretFire.Call(ref a);
+    }
 
     /// <summary>
     /// EV_FusionReactor_ValidTarget (server/mutators/events.qh:1194-1203) — fired from the Fusion Reactor

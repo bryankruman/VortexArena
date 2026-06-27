@@ -669,10 +669,30 @@ public sealed class WarpzoneManager
             Warpzone wz = _zones[i];
             if (wz.Owner is null || wz.FadeTime == 0f || now <= wz.FadeTime)
                 continue;
+            // QC Portal_Remove(this, 0) natural-expiry tail (server/portals.qc): a timed-out portal plays
+            // SND_PORTO_EXPIRE on CH_SHOTS at the portal before vanishing. (The CH_SHOTS SND_PORTO_EXPLODE +
+            // EFFECT_ROCKET_EXPLODE belong to the SHOT-DOWN path — Portal_Remove(this,1) on health<0 — which has
+            // no warpzone equivalent because the warpzone realisation carries no portal HEALTH entity; see
+            // unportable[]. The SUB_SetFade(time,0.5) visual fade likewise needs the absent portal model.) Both
+            // halves of the pair vanish together (Portal_Remove recurses over .enemy), so each plays its own cue.
+            EmitPortalExpire(wz);
             // QC Portal_Remove(this, 0): the natural-expiry teardown tears down both halves of the pair.
-            if (wz.Partner is { } partner) RemoveZone(partner);
+            if (wz.Partner is { } partner) { EmitPortalExpire(partner); RemoveZone(partner); }
             RemoveZone(wz);
         }
+    }
+
+    /// <summary>
+    /// QC <c>Portal_Remove</c> natural-expiry sound (server/portals.qc): <c>sound(this, CH_SHOTS, SND_PORTO_EXPIRE,
+    /// VOL_BASE, ATTEN_NORM)</c> — play the portal's expire cue at its location as it times out. Emitted at the
+    /// portal's IN-plane origin (the warpzone has no persistent portal edict, so it can't host an entity-channel
+    /// sound after teardown) on CH_SHOTS (-4), matching the SND_PORTO_* channel the Porto weapon uses elsewhere.
+    /// </summary>
+    private static void EmitPortalExpire(Warpzone wz)
+    {
+        if (Api.Services is null) return;
+        Vector3 at = wz.Trigger is { IsFreed: false } trig ? trig.Origin : wz.InOrigin;
+        Api.Sound.PlayAt(at, SoundChannel.ShotsAuto /* CH_SHOTS (-4) */, "porto/expire.wav");
     }
 
     /// <summary>Link two warpzones into a two-way portal (each transforms toward the other's IN plane).</summary>

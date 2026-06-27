@@ -162,6 +162,14 @@ public sealed class Teamplay
     /// <summary>QC <c>remove_countdown</c>: the active excess-player removal countdown (null = none running).</summary>
     private RemoveCountdownState? _removeCountdown;
 
+    /// <summary>QC the Nagger think throttle: the next sim time the unbalanced-teams center-print may be (re)sent.
+    /// The nag is refreshed at 1 Hz (matching the periodic Nagger SendFlags refresh) while teams stay unbalanced.</summary>
+    private float _nextTeamNagTime;
+
+    /// <summary>QC <c>nags &amp; BIT(5)</c> latch (server/client.qc): whether the unbalanced-teams center-print is
+    /// currently showing, so it stops being re-sent (and thus fades) exactly once when teams re-balance.</summary>
+    private bool _teamNagShowing;
+
     /// <summary>QC the <c>remove_countdown</c> entity state: the player to be removed, its remaining lifetime
     /// (whole seconds), and the next 1-second think time.</summary>
     private sealed class RemoveCountdownState
@@ -280,6 +288,150 @@ public sealed class Teamplay
     /// <summary>The bot's forced-team index (1..4), or 0 if unpinned.</summary>
     public int GetBotForcedTeam(Player bot) =>
         _botForcedTeam.TryGetValue(bot, out object? v) ? (int)v! : 0;
+
+    // ----- warmup/match join queue (QC QueueNeeded / TeamBalance_QueuedPlayersTagIn / QueuedPlayersReady) -----
+
+    /// <summary>QC the queued-player set (the observers waiting for a team to open). Each entry stores the player's
+    /// preferred team color (0 = any team) and FIFO join order so a deficit is filled oldest-first, specific-team
+    /// preference before any-team — matching TeamBalance_QueuedPlayersTagIn's two-pass tag-in.</summary>
+    private readonly List<QueuedPlayer> _joinQueue = new();
+
+    /// <summary>QC a queued observer: the player, its preferred team color (0 = any), and an enqueue sequence for FIFO order.</summary>
+    private sealed class QueuedPlayer
+    {
+        public Player Player = null!;   // the waiting observer
+        public int PreferTeam;          // preferred team color code, or 0 for "any available team"
+        public long Seq;                // enqueue order (oldest first)
+    }
+
+    private long _queueSeq;
+
+    /// <summary>QC <c>autocvar_g_balance_teams_queue</c>: hold joiners in a queue during a live match to keep balance.</summary>
+    private bool QueueEnabled =>
+        Api.Services is not null && Api.Cvars.GetFloat("g_balance_teams_queue") != 0f;
+
+    /// <summary>
+    /// QC <c>QueueNeeded</c> (server/teamplay.qc): should <paramref name="joiner"/> be held in the join queue
+    /// instead of joining now? Only when <c>g_balance_teams_queue</c> is set, the match has started (not warmup,
+    /// not campaign), there are at least two humans, and joining the <paramref name="prefTeam"/> (0 = any) would
+    /// leave teams more unbalanced than necessary — i.e. that team isn't a current best team. Returns false (join
+    /// immediately) for bots, in warmup, or with the cvar off, so stock servers are unaffected.
+    /// </summary>
+    public bool QueueNeeded(Player joiner, int prefTeam, IReadOnlyList<Player> roster, bool isWarmup, bool isCampaign)
+    {
+        if (!IsTeamGame || joiner.IsBot || isWarmup || isCampaign || !QueueEnabled)
+            return false;
+
+        // QC: only queue once there are >=2 humans actually playing (a 1-human match never queues).
+        int humans = 0;
+        for (int i = 0; i < roster.Count; i++)
+            if (!roster[i].IsBot && !roster[i].IsObserver && (int)roster[i].Team != Teams.None)
+                humans++;
+        if (humans < 2)
+            return false;
+
+        // QC: a specific-team request is queued when that team isn't a best team; an any-team request is queued
+        // when the teams aren't already balanced (a join would tip them). Reuse the same size->strength ladder.
+        if (prefTeam != Teams.None)
+            return !IsTeamAllowedForSwitch(joiner, prefTeam, roster, isWarmup);
+        return SizeDifference(roster) >= 1;
+    }
+
+    /// <summary>
+    /// QC enqueue: hold <paramref name="joiner"/> as a queued observer with its <paramref name="prefTeam"/>
+    /// preference (0 = any), networking the <c>JOIN_PREVENT_QUEUE[_TEAM_*]</c> center-print. Idempotent — a
+    /// re-queue just refreshes the preference. The host keeps the player an observer; <see cref="QueuedPlayersTagIn"/>
+    /// pulls them back in when a deficit opens.
+    /// </summary>
+    public void EnqueueJoin(Player joiner, int prefTeam)
+    {
+        QueuedPlayer? q = null;
+        for (int i = 0; i < _joinQueue.Count; i++)
+            if (ReferenceEquals(_joinQueue[i].Player, joiner)) { q = _joinQueue[i]; break; }
+        if (q is null)
+        {
+            q = new QueuedPlayer { Player = joiner, Seq = _queueSeq++ };
+            _joinQueue.Add(q);
+        }
+        q.PreferTeam = prefTeam;
+
+        // QC Send_Notification(NOTIF_ONE_ONLY, ..., CENTER_JOIN_PREVENT_QUEUE[_TEAM_<col>]): tell the player they wait.
+        if (!joiner.IsBot)
+        {
+            if (prefTeam != Teams.None)
+                NotificationSystem.Send(NotifBroadcast.OneOnly, joiner, MsgType.Center,
+                    $"JOIN_PREVENT_QUEUE_TEAM_{TeamSuffix(prefTeam)}");
+            else
+                NotificationSystem.Send(NotifBroadcast.OneOnly, joiner, MsgType.Center, "JOIN_PREVENT_QUEUE");
+        }
+    }
+
+    /// <summary>QC: drop <paramref name="player"/> from the join queue (on disconnect, spectate, or a successful tag-in).</summary>
+    public void DequeueJoin(Player player)
+    {
+        for (int i = _joinQueue.Count - 1; i >= 0; i--)
+            if (ReferenceEquals(_joinQueue[i].Player, player))
+                _joinQueue.RemoveAt(i);
+    }
+
+    /// <summary>True while <paramref name="player"/> is sitting in the join queue (host gates respawn/auto-join on this).</summary>
+    public bool IsQueued(Player player)
+    {
+        for (int i = 0; i < _joinQueue.Count; i++)
+            if (ReferenceEquals(_joinQueue[i].Player, player))
+                return true;
+        return false;
+    }
+
+    /// <summary>
+    /// QC <c>TeamBalance_QueuedPlayersTagIn</c> / <c>QueuedPlayersReady</c> (server/teamplay.qc): while the teams
+    /// have a deficit (a smaller team that a join would help balance), pull queued observers back into the match
+    /// oldest-first — a player whose preferred team is the deficient one first (the specific-team pass), then any
+    /// any-team waiter (the second pass). Each tagged-in player is removed from the queue, assigned the deficient
+    /// team via <see cref="AssignBestTeam"/>, and handed to <paramref name="join"/> (the host's PutPlayerInServer).
+    /// Call once per server frame; a no-op when the queue is empty or teams are already balanced. Returns the
+    /// number tagged in.
+    /// </summary>
+    public int QueuedPlayersTagIn(IReadOnlyList<Player> roster, Action<Player> join)
+    {
+        if (_joinQueue.Count == 0 || !IsTeamGame)
+            return 0;
+
+        int taggedIn = 0;
+        // QC: keep filling while a deficit remains and the queue has a willing player for it.
+        while (_joinQueue.Count > 0)
+        {
+            // QC: the team that most needs a player = the smallest active team, but only if it is strictly
+            // smaller than the largest (otherwise teams are balanced and nobody is owed a slot).
+            int small = SmallestTeam(roster, out int smallCount);
+            if (small == Teams.None)
+                break;
+            int large = LargestTeamExcluding(roster, new HashSet<int>(), out int largeCount);
+            if (large == Teams.None || largeCount - smallCount < 1)
+                break; // QC QueuedPlayersReady: teams balanced -> stop tagging in.
+
+            // QC two-pass tag-in: first a queued player who specifically wants the deficient team (oldest first),
+            // else the oldest any-team waiter. Specific-team preference wins the slot (the dibs rule).
+            QueuedPlayer? pick = null;
+            for (int i = 0; i < _joinQueue.Count; i++)
+                if (_joinQueue[i].PreferTeam == small && (pick is null || _joinQueue[i].Seq < pick.Seq))
+                    pick = _joinQueue[i];
+            if (pick is null)
+                for (int i = 0; i < _joinQueue.Count; i++)
+                    if (_joinQueue[i].PreferTeam == Teams.None && (pick is null || _joinQueue[i].Seq < pick.Seq))
+                        pick = _joinQueue[i];
+            if (pick is null)
+                break; // nobody in the queue wants/accepts the deficient team.
+
+            Player p = pick.Player;
+            DequeueJoin(p);
+            // QC SetPlayerTeam to the deficient team, then PutPlayerInServer (the host's join callback).
+            AssignBestTeam(p, roster); // honors the now-deficient team as the best team
+            join(p);
+            taggedIn++;
+        }
+        return taggedIn;
+    }
 
     /// <summary>
     /// QC <c>PlayerInList</c> (client.qc:1047): is the player's crypto id (<see cref="Player.PersistentId"/>) or
@@ -910,6 +1062,41 @@ public sealed class Teamplay
             if (c > max) max = c;
         }
         return max == int.MinValue ? 0 : max - min;
+    }
+
+    /// <summary>QC <c>Net_TeamNagger</c> (server/client.qc:143 Nagger SendFlags bit 5): the hardcoded
+    /// unbalanced-teams center-print string the client renders. Base shows a fixed localized line (no registered
+    /// notification template / cpid), so the port pushes the same literal via <see cref="NotificationSystem.SendCenterRaw"/>.</summary>
+    private const string TeamNagText = "^1Teams are unbalanced!";
+
+    /// <summary>
+    /// QC the Nagger network entity (server/client.qc:143, SendFlags bit 5 -&gt; client Net_TeamNagger): broadcast
+    /// the unbalanced-teams center-print to every client while <see cref="TeamsUnbalancedForNag"/> holds, refreshed
+    /// at 1 Hz (matching QC's periodic re-send) so the (groupless) raw center print does not time out while the
+    /// imbalance persists. The moment teams re-balance the re-send stops, so the line fades on its own — mirroring
+    /// the client retracting the nag when SendFlags bit 5 clears. Call once per server frame; it self-throttles via
+    /// <see cref="_nextTeamNagTime"/> and the <see cref="_teamNagShowing"/> latch so it neither spams the wire nor
+    /// re-sends needlessly. A no-op when <c>sv_teamnagger</c> is 0 / not a team game (the trigger self-gates).
+    /// </summary>
+    public void SendTeamNag(IReadOnlyList<Player> roster)
+    {
+        // QC: the nag is only networked while the size gap is at least sv_teamnagger; otherwise stop re-sending it.
+        if (!TeamsUnbalancedForNag(roster))
+        {
+            // QC: the client drops the nag once SendFlags bit 5 clears. The raw center print carries no cpid group
+            // to actively kill, so we simply stop refreshing it — it fades when the next re-send doesn't arrive.
+            _teamNagShowing = false;
+            return;
+        }
+
+        // QC: refresh the center-print roughly once a second (the Nagger entity re-sends on its think cadence) so a
+        // plain (groupless) center print does not time out while the imbalance persists.
+        float now = Now();
+        if (_teamNagShowing && now < _nextTeamNagTime)
+            return;
+        _nextTeamNagTime = now + 1f;
+        _teamNagShowing = true;
+        NotificationSystem.SendCenterRaw(NotifBroadcast.All, null, TeamNagText);
     }
 
     /// <summary>

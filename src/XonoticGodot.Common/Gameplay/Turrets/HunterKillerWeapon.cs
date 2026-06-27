@@ -38,14 +38,12 @@ namespace XonoticGodot.Common.Gameplay;
 /// and the re-seek logic in <see cref="GuidedProjectile.HkThink"/> will acquire the nearest valid target within
 /// 5000u on the first think.</para>
 /// </summary>
-// NOTE (deferred): [Weapon] is intentionally OFF — WEP_FLAG_SPECIALATTACK causes
-// WeaponByIdTests.ByIdOrder_Covers_Every_ImpulseReachable_Weapon_Exactly_Once to assert skipped==0 (currently
-// true: no port weapon has SpecialAttack). Re-adding [Weapon] here shifts the by-id skipped count to 1 and
-// breaks that test. The faithful impl is kept below for a future pass that updates those test contracts to allow
-// SpecialAttack hidden weapons; re-add [Weapon] then. The HK TURRET itself is fully live; this is only the
-// hidden player-weapon path that requires the [Weapon] registration for the fire gate to work through
-// WeaponFireDriver. Without the registration the WrThink is unreachable via the normal weapon system, but the
-// class still compiles and can be instantiated manually (e.g. in future integration tests).
+// The hidden player-fired HK weapon (WEP_HK / HunterKillerAttack). WEP_FLAG_SPECIALATTACK | WEP_FLAG_HIDDEN
+// (hk_weapon.qh) — like every other SpecialAttack weapon it is auto-skipped from the by-id / weapon-priority
+// order (WeaponOrder.ByIdOrder / fixPriorityList already filter SpecialAttack), so registering it only makes
+// the impulse-9 / `give weapon_turret_hk` fire path live through WeaponFireDriver; it never enters the normal
+// weapon cycle. The WeaponByIdTests `skipped` count is updated in lockstep (ball-stealer + this HK = 2).
+[Weapon]
 public sealed class HunterKillerWeapon : Weapon
 {
     // IMPORTANT — the player weapon does NOT use the HK *turret* balance.

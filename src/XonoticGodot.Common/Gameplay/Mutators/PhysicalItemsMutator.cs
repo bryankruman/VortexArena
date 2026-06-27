@@ -118,6 +118,14 @@ public sealed class PhysicalItemsMutator : MutatorBase
         // QC: wep.dphitcontentsmask = item.dphitcontentsmask.
         wep.DpHitContentsMask = item.DpHitContentsMask;
 
+        // QC: wep.colormap = item.colormap; wep.glowmod = item.glowmod (sv_physical_items.qc:115-116) —
+        // the ghost inherits the real item's tint. The port's authoritative server-side render-colormap is
+        // Entity.ColorMapOverride (the RENDER_COLORMAPPED seam used by WeaponThrowing/MonsterAI/MapModels):
+        // a dropped weapon carries the thrower's packed colormap there, a plain map item carries 0 (no tint).
+        // glowmod is NOT a separate server field in the port — the csqcmodel derives it from the colormap
+        // nibble client-side (see WeaponThrowing.cs:55-56), so copying ColorMapOverride carries it too.
+        wep.ColorMapOverride = item.ColorMapOverride;
+
         // QC: wep.cnt = (item.owner != NULL) — 1 for dropped weapon, 0 for map item.
         wep.PhysIsDropped = isDropped;
 
@@ -145,7 +153,12 @@ public sealed class PhysicalItemsMutator : MutatorBase
         item.Aiment   = wep;
 
         // QC: setSendEntity(item, func_null) — the real item stops sending (ghost is what clients see).
-        // The port has no equivalent net-suppression call; the item's visibility is controlled via EF_NODRAW.
+        // The port has no per-entity SendEntity callback and (today) no snapshot-producer suppress flag to wire
+        // it to, so the equivalent visibility cut is the EF_NODRAW set above (item.Effects |= NoDraw): the real
+        // item still networks but renders nothing on every client, while the ghost is what's seen. The item
+        // stays a live server edict driving MOVETYPE_FOLLOW. (Full net-suppression — dropping the hidden edict
+        // from the entity feed — needs a ServerNet snapshot-producer seam that does not exist yet; tracked in the
+        // registry as the remaining half of the setSendEntity gap.)
 
         return false; // QC mutator return value is informational; false = "continue chain"
     }
@@ -169,7 +182,12 @@ public sealed class PhysicalItemsMutator : MutatorBase
         // QC: if(!this.cnt) { copy colormap/colormod/glowmod; apply reset logic }
         if (!ghost.PhysIsDropped && item is not null)
         {
-            // QC: copy colormap/colormod/glowmod from owner (presentation fields; no port equivalent yet)
+            // QC: this.colormap = this.owner.colormap; this.colormod = this.owner.colormod;
+            //     this.glowmod = this.owner.glowmod (sv_physical_items.qc:43-46) — keep the ghost's tint in
+            //     sync with the real item each think. colormap (incl. the client-derived glowmod) rides the
+            //     port's Entity.ColorMapOverride seam; colormod has no server-side render channel in the port
+            //     (it is a client-only render tint — see the unportable note), so only colormap is copied here.
+            ghost.ColorMapOverride = item.ColorMapOverride;
 
             // QC: if(autocvar_g_physical_items_reset) { ... }
             bool doReset = Api.Cvars.GetFloat("g_physical_items_reset") != 0f;

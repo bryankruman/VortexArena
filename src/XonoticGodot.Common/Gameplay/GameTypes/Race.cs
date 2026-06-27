@@ -309,6 +309,7 @@ public sealed class Race : GameType
         Checkpoints.Clear();
         PenaltyZones.Clear();
         _punishWrongWay.Clear();
+        _useTargetsBeforeScore.Clear();
         HighestCheckpoint = 0;
         TimedCheckpoint = 0; // QC race_timed_checkpoint default 0 (closed-loop track: start line == finish)
         // QC race_ClearRecords: a fresh map has no checkpoint split records yet.
@@ -323,7 +324,8 @@ public sealed class Race : GameType
     /// crossing to <see cref="CrossCheckpoint"/>.
     /// </summary>
     public Entity? SpawnCheckpoint(Vector3 origin, int checkpointIndex, Vector3 mins = default, Vector3 maxs = default,
-        bool punishWrongWay = false, bool timed = false)
+        bool punishWrongWay = false, bool timed = false, string target = "", string message = "",
+        bool useTargetsBeforeScore = false)
     {
         if (maxs == default) { mins = new Vector3(-48f, -48f, -48f); maxs = new Vector3(48f, 48f, 48f); }
         Entity? e = GametypeEntities.SpawnObjective("trigger_race_checkpoint", origin, Teams.None, mins, maxs,
@@ -335,6 +337,13 @@ public sealed class Race : GameType
             // QC trigger_race_checkpoint spawnflag 4: a racer who crosses this checkpoint out of order is killed
             // (DEATH_HURTTRIGGER 10000), to forbid backwards/shortcut traversal.
             if (punishWrongWay) _punishWrongWay.Add(e);
+            // QC trigger_race_checkpoint .target/.message + spawnflag 2: a valid crossing fires the checkpoint's
+            // targets (SUB_UseTargets) and the message is blanked during that fire (no centerprint). The map
+            // target/message ride on the checkpoint edict (SpawnObjective doesn't copy them); the spawnflag-2 bit
+            // selects fire-before vs fire-after the lap-time registration (CheckpointTouch).
+            if (!string.IsNullOrEmpty(target)) e.Target = target;
+            if (!string.IsNullOrEmpty(message)) e.Message = message;
+            if (useTargetsBeforeScore) _useTargetsBeforeScore.Add(e);
             Checkpoints.Add(e);
             // QC spawnfunc(trigger_race_checkpoint) (server/race.qc:1111): the HIGHEST checkpoint determines the
             // timed (finish) line — if it carries spawnflag 8 the finish is that CP, otherwise the finish is CP 0
@@ -353,6 +362,14 @@ public sealed class Race : GameType
 
     /// <summary>Checkpoints with QC spawnflag 4 (kill on a wrong-order crossing). See <see cref="CheckpointTouch"/>.</summary>
     private readonly HashSet<Entity> _punishWrongWay = new();
+
+    /// <summary>
+    /// QC trigger_race_checkpoint spawnflag 2 (server/race.qc:checkpoint_passed): when SET, the checkpoint fires
+    /// its targets (SUB_UseTargets) BEFORE the lap time is registered; when clear, AFTER. The checkpoints in this
+    /// set fire-before; everything else fires-after. Tracked here (like <see cref="_punishWrongWay"/>) so the
+    /// checkpoint world entity needs no extra field. See <see cref="CheckpointTouch"/>.
+    /// </summary>
+    private readonly HashSet<Entity> _useTargetsBeforeScore = new();
 
     /// <summary>The penalty-zone trigger entities on the map (QC trigger_race_penalty).</summary>
     public readonly List<Entity> PenaltyZones = new();
@@ -425,7 +442,33 @@ public sealed class Race : GameType
         // start line (0) on a closed loop or the highest spawnflag-8 CP on a start!=finish track. Compute from the
         // live TimedCheckpoint (spawn-order independent) rather than the cached per-entity flag.
         bool isFinish = cpIndex == TimedCheckpoint;
+
+        // QC checkpoint_passed (server/race.qc): a valid crossing fires the checkpoint's targets (SUB_UseTargets,
+        // activator = the racer). spawnflag 2 selects whether they fire BEFORE the lap time is registered or AFTER
+        // (this.spawnflags & 2). The checkpoint's .message is blanked for the fire so the targets run silently (no
+        // centerprint) — QC: oldmsg = this.message; this.message = ""; SUB_UseTargets(); this.message = oldmsg.
+        bool fireBefore = _useTargetsBeforeScore.Contains(self);
+        if (fireBefore)
+            FireCheckpointTargets(self, p);
         CrossCheckpoint(p, cpIndex, isFinish);
+        if (!fireBefore)
+            FireCheckpointTargets(self, p);
+    }
+
+    /// <summary>
+    /// QC checkpoint_passed's SUB_UseTargets fire (server/race.qc): fire the checkpoint's <c>.target</c> chain with
+    /// the racer as activator, with the centerprint <c>.message</c> blanked for the duration (so a checkpoint with
+    /// a target — e.g. a defrag <c>target_init</c>/relay or a map effect — triggers without spamming a banner).
+    /// No-op when the checkpoint names no target (the common closed-loop case). See <see cref="CheckpointTouch"/>.
+    /// </summary>
+    private static void FireCheckpointTargets(Entity checkpoint, Player racer)
+    {
+        if (Api.Services is null || string.IsNullOrEmpty(checkpoint.Target))
+            return;
+        string oldMsg = checkpoint.Message;
+        checkpoint.Message = "";                       // QC: this.message = "" (blank the centerprint)
+        MapMover.UseTargets(checkpoint, racer, null);  // QC SUB_UseTargets(this, other=activator, NULL)
+        checkpoint.Message = oldMsg;                   // QC: this.message = oldmsg (restore)
     }
 
     /// <summary>
@@ -551,6 +594,42 @@ public sealed class Race : GameType
     /// <summary>QC <c>SPAWN_PRIO_RACE_PREVIOUS_SPAWN</c> (server/spawnpoints.qh:12): priority boost for a
     /// spot that matches the player's last-checkpoint respawn anchor in a non-qualifying race.</summary>
     public const int SpawnPrioRacePreviousSpawn = 50;
+
+    /// <summary>
+    /// QC the Race checkpoint waypoint sprites (spawnfunc(trigger_race_checkpoint) → WaypointSprite_SpawnFixed):
+    /// one fixed marker per checkpoint at its world origin, shown to everyone (showto = NULL), with the def chosen
+    /// from the checkpoint's role — WP_RaceStartFinish when CP 0 is also the timed finish (a closed loop),
+    /// WP_RaceStart for CP 0 on a start≠finish track, WP_RaceFinish for the timed finish CP, and WP_RaceCheckpoint
+    /// for every intermediate checkpoint. Rebuilt each tick like CTF's flag sprites; reached via
+    /// ServerNet.SendWaypoints (GameType.CollectWaypoints). Race has no teams to hide markers from, so all are
+    /// SPRITERULE_DEFAULT with team 0 (everyone-visible), matching the QC SpawnFixed showto=NULL.
+    /// </summary>
+    public override void CollectWaypoints(System.Collections.Generic.List<Waypoints.WaypointSprite> into)
+    {
+        foreach (Entity cp in Checkpoints)
+        {
+            if (cp.IsFreed)
+                continue;
+            int idx = cp.GtCheckpointIndex;
+            bool isFinish = idx == TimedCheckpoint; // QC race_timed_checkpoint — the lap-closing CP
+            // QC trigger_race_checkpoint: CP 0 that is ALSO the finish (closed loop) is the combined Start/Finish
+            // marker; CP 0 on a start≠finish track is Start; the timed finish CP is Finish; else an intermediate.
+            string sprite =
+                idx == 0 && isFinish ? "RaceStartFinish"
+              : idx == 0            ? "RaceStart"
+              : isFinish            ? "RaceFinish"
+                                    : "RaceCheckpoint";
+            into.Add(new Waypoints.WaypointSprite
+            {
+                SpriteName = sprite,
+                FixedOrigin = cp.Origin,
+                Team = 0,                          // QC SpawnFixed showto=NULL → shown to everyone
+                Color = new Vector3(1f, 0.5f, 0f), // WP_Race* default tint (orange)
+                RadarIcon = 1,                     // RADARICON_RACE
+                Health = -1f,
+            });
+        }
+    }
 
     /// <summary>
     /// QC <c>race_ScoreRules</c> (sv_race.qc): GameRules_score_enabled(false) — race has no SP_SCORE — then declare
@@ -932,6 +1011,25 @@ public sealed class Race : GameType
         st.RespawnSpot = null;
         st.Started = false;
         OnFinishRetract?.Invoke(p);
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(rc, AbortSpeedrun)</c> (sv_race.qc): the SPEEDRUN cheat (impulse 141) teleported
+    /// the racer back to their personal checkpoint, so the in-progress lap is no longer a legitimate run — drop the
+    /// lap clock / checkpoint progress (QC race_PreparePlayer) WITHOUT the finish-retract teleport (the speedrun
+    /// cheat does its own teleport). Identical timing reset to <see cref="RetractPlayer"/> minus <see cref="OnFinishRetract"/>.
+    /// </summary>
+    public void AbortSpeedrun(Player p)
+    {
+        RaceState st = GetState(p);
+        st.LapStartTime = 0f;
+        st.MoveTimeFrac = 0f;
+        st.MoveTimeCount = 0f;
+        st.RaceMoveTime = 0f;
+        st.NextCheckpoint = -1; // re-expect the start line
+        st.RespawnCheckpoint = 0;
+        st.RespawnSpot = null;
+        st.Started = false;
     }
 
     /// <summary>

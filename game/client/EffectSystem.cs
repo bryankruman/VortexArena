@@ -492,7 +492,12 @@ public partial class EffectSystem : Node3D
         if (kind == EffectClass.Beam && Beams is not null && velocity != default)
         {
             Color? beamTint = color is { } bc ? bc : null;
-            bool jagged = HasAny(effectName, "lightning", "arc", "shock", "electro", "tesla");
+            // Electric combo/turret zaps crackle (jagged te_csqc_lightningarc: ARC_LIGHTNING). The steady
+            // arc-WEAPON beam is a smooth cylinder (Base cl_arcbeam_simple default Draw_CylindricLine), so the
+            // ARC_BEAM_LINE family (ARC_BEAM_LINE / ARC_BEAM_LINE_HEAL) draws STRAIGHT even though the name
+            // contains "arc". HasAny is case-insensitive, so one "arc_beam_line" needle excludes both spellings.
+            bool jagged = HasAny(effectName, "lightning", "shock", "electro", "tesla")
+                || (HasAny(effectName, "arc") && !HasAny(effectName, "arc_beam_line"));
             return jagged ? Beams.Arc(origin, velocity, beamTint) : Beams.Beam(origin, velocity, beamTint);
         }
 
@@ -711,13 +716,16 @@ public partial class EffectSystem : Node3D
         string id = name;
         string net = effect?.NetName ?? name;
 
-        // Drawn line-beams (te_csqc_lightningarc + the Bumblebee heal/damage rays) — these are registered as
-        // trail Effects ONLY so the count-0 beam emission survives the EffectEmitter.Emit/Encode point-count
-        // guard and networks (see EffectsList ARC_LIGHTNING / HEAL_BEAM / DAMAGE_BEAM). They must classify as
-        // Beam (drawn via BeamRenderer between origin and the velocity end-point), NOT as a particle Trail, so
-        // this explicit check precedes the trail-flag branch. Particle-trail beams (arc_beam/nex_beam) are
-        // unaffected — they're matched only by the generic BEAM/trail rules below.
-        if (HasAny(id, "LIGHTNING", "HEAL_BEAM", "DAMAGE_BEAM") || HasAny(net, "lightning", "heal_beam", "damage_beam"))
+        // Drawn line-beams (te_csqc_lightningarc + the Bumblebee heal/damage rays + the Arc weapon's cylindric
+        // beam) — these are registered as trail Effects ONLY so the count-0 beam emission survives the
+        // EffectEmitter.Emit/Encode point-count guard and networks (see EffectsList ARC_LIGHTNING / HEAL_BEAM /
+        // DAMAGE_BEAM / ARC_BEAM_LINE[_HEAL]). They must classify as Beam (drawn via BeamRenderer between origin
+        // and the velocity end-point), NOT as a particle Trail, so this explicit check precedes the trail-flag
+        // branch. ARC_BEAM_LINE / ARC_BEAM_LINE_HEAL both contain the "arc_beam_line" substring, so one needle
+        // catches the heal and damage variants. Particle-trail beams (arc_beam/arc_beam_heal/nex_beam) are
+        // unaffected — they lack "_line" and are matched only by the generic BEAM/trail rules below.
+        if (HasAny(id, "LIGHTNING", "HEAL_BEAM", "DAMAGE_BEAM", "ARC_BEAM_LINE")
+            || HasAny(net, "lightning", "heal_beam", "damage_beam", "arc_beam_line"))
             return EffectClass.Beam;
 
         // Trails first — the catalog flag is authoritative; otherwise fall through to name heuristics.

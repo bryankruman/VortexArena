@@ -925,6 +925,7 @@ public sealed class Commands
         // ---- debug/admin tools (QC server/command/sv_cmd.qc debug commands) ----
         Register("adminmsg", "adminmsg <clients> \"<message>\" [infobartime] — send an admin message to players", CmdAdminMsg);
         Register("delrec", "delrec <rank> [map] — delete race records up to a rank", CmdDelRec);
+        Register("effectindexdump", "effectindexdump — dump the named-effect registry (EFFECT_* name → network id)", CmdEffectIndexDump);
     }
 
     private bool CmdSet(CommandContext ctx)
@@ -1529,6 +1530,20 @@ public sealed class Commands
                 NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Center, "JOIN_PLAYBAN");
             return true;
         }
+        // QC Join_Try -> QueueNeeded (server/teamplay.qc): during a live match (g_balance_teams_queue) a joiner who
+        // hasn't picked a team (wants_join 0 = any) is held in the join queue as an observer when joining now would
+        // unbalance the teams; QueuedPlayersTagIn later pulls them in when a deficit opens. Bots/warmup/cvar-off
+        // fall through to the immediate join. A forced-team player never queues. Checked BEFORE the observer→player
+        // transition below (QC checks QueueNeeded in Join_Try, before Join/PutClientInServer makes them a player),
+        // so a queued joiner genuinely stays an observer rather than being flipped to FragsPlayer first.
+        if (_world.Teamplay.IsTeamGame && (int)p.Team == Teams.None && !_world.TeamsLocked
+            && !_world.Teamplay.HasRealForcedTeam(p)
+            && _world.Teamplay.QueueNeeded(p, p.WantsJoin, _world.Clients.Players,
+                   _world.Warmup.WarmupStage, Cvars.Bool("g_campaign")))
+        {
+            _world.Teamplay.EnqueueJoin(p, p.WantsJoin);
+            return true; // stay an observer; tag-in happens from BalanceTeamsTick when a slot opens.
+        }
         if (p.FragsStatus == Player.FragsSpectator)
             p.FragsStatus = Player.FragsPlayer;
         if (_world.Teamplay.IsTeamGame && (int)p.Team == Teams.None && !_world.TeamsLocked)
@@ -1846,9 +1861,10 @@ public sealed class Commands
 
     /// <summary>QC <c>IMPULSE(waypoint_clear[_personal])</c> (server/impulse.qc:496-521): remove the caller's
     /// personal waypoint, or all of their deployed waypoints. In CTS/race with <c>g_allow_checkpoints</c> set, the
-    /// personal-waypoint clear also self-kills the runner (QC routes it through <c>ClientKill</c>) so a speedrunner
-    /// resets back to their personal checkpoint. The <c>.personal</c> checkpoint *entity* itself is still not
-    /// modeled, so the reset lands at the gametype's normal start/respawn spawn rather than a stored origin.</summary>
+    /// personal-waypoint clear additionally deletes the runner's <c>.personal</c> speedrun checkpoint and self-kills
+    /// them (QC routes it through <c>ClientKill</c>) so they reset to the start — but QC wraps both in
+    /// <c>if (this.personal)</c>, so a runner who never snapshotted a checkpoint is neither killed nor reset
+    /// (gated here on <see cref="Player.PersonalCheckpoint"/> being non-null).</summary>
     private bool CmdWaypointClear(CommandContext ctx, bool personalOnly)
     {
         if (ctx.Caller is null) { ctx.Print("waypoint is a client command"); return true; }
@@ -1863,14 +1879,19 @@ public sealed class Commands
             Waypoints.WaypointSprites.ClearOwned(p);
             ctx.Print("all waypoints cleared");
         }
-        // QC impulse.qc:504/517: `if((g_cts || g_race) && autocvar_g_allow_checkpoints) ClientKill(this);` — the
-        // checkpoint-reset self-kill, gated off by default (g_allow_checkpoints 0). Defer it through the same kill
-        // machinery as the `kill` command (CTS forces killtime 0 via the ClientKill hook → instant).
-        if ((_world.GameType is XonoticGodot.Common.Gameplay.Cts
+        // QC impulse.qc:504/517: in CTS/race with g_allow_checkpoints set, the personal-waypoint clear deletes the
+        // .personal speedrun checkpoint AND self-kills the runner so they reset to the start — but QC wraps BOTH in
+        // `if (this.personal)`: a runner who never snapshotted a checkpoint is NOT killed and nothing is deleted.
+        // Now that the .personal checkpoint is modelled (Player.PersonalCheckpoint via the SPEEDRUN_INIT snapshot),
+        // honor that gate: only act when a checkpoint exists, and clear it on the personal-waypoint clear.
+        if (personalOnly && p.PersonalCheckpoint is not null
+            && (_world.GameType is XonoticGodot.Common.Gameplay.Cts
                 || _world.GameType is XonoticGodot.Common.Gameplay.Race)
             && Cvars.Bool("g_allow_checkpoints")
             && !p.IsObserver && p.FragsStatus != Player.FragsSpectator && !p.IsDead)
         {
+            // QC: delete(this.personal); this.personal = NULL; ClientKill(this);
+            p.PersonalCheckpoint = null;
             _world.KillCountdown.Begin(p, 0);
         }
         return true;
@@ -2117,7 +2138,17 @@ public sealed class Commands
         // CLONE_STANDING(142) remain unported (need a CopyBody entity-clone service the port doesn't expose).
         if (imp == 141)
         {
-            _world.Cheats.Speedrun(caller);
+            // QC CHIMPULSE_SPEEDRUN trailing MUTATOR_CALLHOOK(AbortSpeedrun, this): on a successful teleport-back
+            // the in-progress race/CTS run is no longer legitimate, so reset that racer's lap clock/checkpoint
+            // progress (timing only — the Speedrun restore already did the teleport). Cheats.Speedrun returns true
+            // only when the restore actually ran (checkpoint existed + not start-solid + sv_cheats gate passed).
+            if (_world.Cheats.Speedrun(caller))
+            {
+                if (_world.GameType is XonoticGodot.Common.Gameplay.Race race)
+                    race.AbortSpeedrun(caller);
+                else if (_world.GameType is XonoticGodot.Common.Gameplay.Cts cts)
+                    cts.AbortSpeedrun(caller);
+            }
             return true;
         }
         // QC waypoint impulses (impulse.qc:414-521, all.qh:133-144): personal/here/danger waypoint-sprite deploy
@@ -2845,6 +2876,28 @@ public sealed class Commands
             : XonoticGodot.Common.Gameplay.RaceRecords.RaceRecord;
         XonoticGodot.Common.Gameplay.RaceRecords.DeleteTime(map, recordType, rank);
         ctx.Print($"Deleted records up to rank {rank} on map {map}");
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>sv_cmd.qc</c> <c>GameCommand_effectindexdump</c>: dump the networked named-effect registry —
+    /// each <c>EFFECT_*</c> entry's effectinfo name and its network id — bracketed by <c>begin</c>/<c>end</c>
+    /// lines, exactly as the QC <c>FOREACH(Effects, true, ...)</c> sprint loop does. QC also writes the dump to
+    /// <c>effectinfo_dump.txt</c> for the offline effectinfo round-trip tool; the headless core has no map-side
+    /// file write here, so this delivers the load-bearing console dump (the id↔name table). <see cref="Effects"/>
+    /// is the C# successor to QC's <c>REGISTRY(Effects)</c>; <see cref="Effects.All"/> is already network-id
+    /// ordered (post-<c>Effects.Sort</c>, <c>RegistryId == index</c>), matching the QC registry iteration order
+    /// and content hash so the dumped ids agree with what is networked on the wire.
+    /// </summary>
+    private bool CmdEffectIndexDump(CommandContext ctx)
+    {
+        // QC: sprint(caller, "begin\n"); FOREACH(Effects, true, { sprint(caller, ... it.eent_eff_name, it.m_id) });
+        // it.eent_eff_name is the effectinfo.txt name (port: Effect.NetName); it.m_id is the network id
+        // (port: Effect.RegistryId). EFFECT_Null (id 0, empty NetName) is included, like QC's FOREACH(..., true, ...).
+        ctx.Print("begin");
+        foreach (XonoticGodot.Common.Gameplay.Effect fx in XonoticGodot.Common.Gameplay.Effects.All)
+            ctx.Print($"effect {fx.NetName} is {fx.RegistryId}");
+        ctx.Print($"end ({XonoticGodot.Common.Gameplay.Effects.Count} effects)");
         return true;
     }
 

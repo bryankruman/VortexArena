@@ -94,7 +94,13 @@ public sealed class Spider : Monster
         StartHealth = MonsterAI.Cvar("g_monster_spider_health", StartHealth);
 
         var st = MonsterAI.Setup(this, e);
-        Api.Entities.SetSize(e, new Vector3(-30, -30, -25), new Vector3(30, 30, 30));
+        // QC spider mr_setup: setsize('-30 -30 -25', '30 30 30'). QC setsize() also seeds the eye height
+        // view_ofs = 0.35 * maxs.z (= 0.35 * 30 = 10.5) used by the monster's aim/LOS traces
+        // (MonsterAI uses self.Origin + self.ViewOfs); Api.Entities.SetSize only writes mins/maxs, so seed
+        // view_ofs explicitly here. (No Quake-resize: the spider is Xonotic-native, SizeQuake == false.)
+        var maxs = new Vector3(30, 30, 30);
+        Api.Entities.SetSize(e, new Vector3(-30, -30, -25), maxs);
+        e.ViewOfs = new Vector3(0, 0, 0.35f * maxs.Z);
 
         st.WalkSpeed = MonsterAI.Cvar("g_monster_spider_speed_walk", SpeedWalk);
         st.RunSpeed = MonsterAI.Cvar("g_monster_spider_speed_run", SpeedRun);

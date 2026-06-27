@@ -372,6 +372,14 @@ public abstract partial class GameType : IRegistered
     public bool TeamGame;
     public string RegistryName => NetName;
 
+    /// <summary>
+    /// QC MENUQC <c>METHOD(Gametype, describe)</c> (e.g. deathmatch.qc:7-16): the multi-paragraph guide text shown in
+    /// the gametype-vote picker under the gametype icon (QC <c>MapInfo_Type_Description</c> / the vote panel's
+    /// <c>Description</c> column). Returns <see langword="null"/> by default (most modes supply their own
+    /// override; null = no description, matching the port's prior behavior for modes not yet ported).
+    /// </summary>
+    public virtual string? MenuDescription => null;
+
     public virtual void OnInit() { }
 
     /// <summary>
@@ -423,4 +431,14 @@ public abstract partial class GameType : IRegistered
     /// orphaned helpers with different semantics, not this leave-play objective hook.
     /// </summary>
     public virtual void OnPlayerRemoved(Player player) { }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(&lt;mode&gt;, LogDeath_AppendItemCodes)</c> (e.g. ctf/sv_ctf.qc): append this
+    /// gametype's per-player death-log item code(s) to <paramref name="s"/> and return it (QC
+    /// <c>M_ARGV(1, string) = strcat(M_ARGV(1, string), "F")</c>). Built into the <c>:items=</c> /
+    /// <c>:victimitems=</c> field of the <c>:kill:</c> event-log line. CTF appends "F" for a flag carrier. The
+    /// per-MUTATOR variant lives on <see cref="MutatorBase.LogDeathAppendItemCodes"/>; this is the per-GAMETYPE
+    /// counterpart (CTF is a gametype, not a mutator). Default: no contribution (DM/TDM mark no carried item).
+    /// </summary>
+    public virtual string LogDeathAppendItemCodes(Player player, string s) => s;
 }

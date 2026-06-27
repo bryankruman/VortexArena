@@ -127,6 +127,20 @@ public sealed class PlayerPhysics : IPlayerPhysics
     /// </summary>
     public static System.Action<Player>? SpecialCommandGiveAll;
 
+    /// <summary>
+    /// QC <c>player_blocked</c> (server/clientkill.qc:228, common/physics/player.qc:395,728) — dom roundbased
+    /// variant only: during the pre-round grace window (warmup / countdown / end-delay) the dom
+    /// <c>reset_map_players</c> hook sets <c>it.player_blocked = 1</c> and <c>Domination_RoundStart</c> clears
+    /// it, zeroing the player's movement input and blocking jump while the round has not yet started.
+    /// The active round handler lives in the server <c>GameWorld</c>, out of reach of this headless Common
+    /// driver, so the host wires it via this static seam (matching the
+    /// <see cref="XonoticGodot.Common.Gameplay.WeaponFireDriver.RoundFireForbidden"/> pattern).
+    /// Null when no mode has player_blocked semantics (default). Wire:
+    /// <c>GameWorld.ActivateGameType</c> Domination-roundbased arm sets it; the ActivateGameType preamble
+    /// clears it before any arm runs.
+    /// </summary>
+    public static System.Func<Entity, bool>? RoundMoveForbidden { get; set; }
+
     public void Move(Entity player, IMovementInput input)
     {
         float dt = input.FrameTime;
@@ -213,6 +227,14 @@ public sealed class PlayerPhysics : IPlayerPhysics
 
         // ----- typing / chat guard (QC PM_check_blocked) -----
         if (input.Typing)
+            move = Vector3.Zero;
+
+        // ----- round-blocked movement clamp (QC player_blocked: common/physics/player.qc:728-732) -----
+        // Dom roundbased: during the pre-round window reset_map_players sets player_blocked=1 and
+        // Domination_RoundStart clears it; QC zeroes .movement and sets disableclientprediction=1.
+        // The port has no DP networking stat for disableclientprediction, but the movement zero is
+        // the observable effect reproduced here via the host-wired RoundMoveForbidden predicate.
+        if (RoundMoveForbidden?.Invoke(player) == true)
             move = Vector3.Zero;
 
         // ----- conveyors: fix velocity into the conveyor frame (QC sys_phys_update) -----
@@ -1037,6 +1059,10 @@ public sealed class PlayerPhysics : IPlayerPhysics
             return (true, false);               // no jumping while frozen
         if (input.Typing)
             return (true, false);               // no jumping while typing
+        // QC PlayerJump (common/physics/player.qc:395): if(this.player_blocked) return true — dom roundbased
+        // blocks jump for the same window that zeroes movement.
+        if (RoundMoveForbidden?.Invoke(player) == true)
+            return (true, false);               // no jumping while round-blocked
 
         // QC PlayerJump (common/physics/player.qc): the air-jump grant starts FALSE — sv_doublejump does NOT
         // pre-grant a free midair re-jump. The doublejump mutator (DoublejumpMutator, port of

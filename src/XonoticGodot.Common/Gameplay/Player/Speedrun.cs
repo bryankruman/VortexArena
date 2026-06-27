@@ -89,8 +89,12 @@ public static class Speedrun
     /// restore the snapshotted state, re-basing the pause timers + status-effect expiries off the elapsed time.
     /// Returns true when a checkpoint existed and the restore ran (so the caller can count a cheat when
     /// <c>g_allow_checkpoints</c> is off — matching QC's <c>if(!g_allow_checkpoints) DID_CHEAT()</c>).
-    /// <paramref name="log"/> receives the QC sprint() messages. The QC start-solid tracebox guard ("cannot move
-    /// there") and the <c>AbortSpeedrun</c> mutator hook (race timing) are not modeled.
+    /// <paramref name="log"/> receives the QC sprint() messages. The QC start-solid tracebox guard ("Cannot move
+    /// there, cheater") IS modeled: if the snapshot origin would start-solid against the world (a destination that
+    /// has since been blocked) the teleport is skipped (and the message printed) while the resources/weapons/items
+    /// /timers are still restored unconditionally, as in Base. The <c>AbortSpeedrun</c> mutator hook (which Base
+    /// fires only inside the teleport-success branch — CTS consumes it via <c>Cts.AbortSpeedrun</c> to drop the run
+    /// clock) is not driven from this restore path yet; that wiring lives in the server-side cheat dispatcher.
     /// </summary>
     public static bool RestorePersonal(Player p, System.Action<string>? log = null)
     {
@@ -105,14 +109,36 @@ public static class Speedrun
 
         p.Speedrunning = true;
 
-        // QC: setorigin(this, this.personal.origin); oldvelocity = velocity = personal.velocity;
-        //     angles = personal.v_angle; fixangle = true;
-        MapMover.SetOrigin(p, cp.Origin);
-        p.Velocity = cp.Velocity;
-        p.OldVelocity = cp.Velocity;
-        p.Angles = cp.ViewAngle;
-        p.FixAngle = true;
-        p.FixAngleAngles = cp.ViewAngle;
+        // QC cheats.qc:194 (CHIMPULSE_SPEEDRUN): tracebox the snapshot origin against the WORLD only
+        // (MOVE_WORLDONLY) with the player's own box BEFORE teleporting. If it would start-solid the destination
+        // is now blocked (e.g. a door/func closed since the snapshot), so Base sprints "Cannot move there, cheater"
+        // and does NOT teleport — but it still restores the resources/weapons/items/timers below (only the
+        // setorigin/velocity/angles block — and the AbortSpeedrun hook — sit inside the QC else branch). Use the
+        // live player box if set, else the stock standing hull the snapshot was taken with.
+        bool canTeleport = true;
+        if (Api.Services != null)
+        {
+            Vector3 mins = p.Mins != Vector3.Zero ? p.Mins : SpawnSystem.PlayerMins;
+            Vector3 maxs = p.Maxs != Vector3.Zero ? p.Maxs : SpawnSystem.PlayerMaxs;
+            TraceResult solid = Api.Trace.Trace(cp.Origin, mins, maxs, cp.Origin, MoveFilter.WorldOnly, p);
+            if (solid.StartSolid)
+            {
+                canTeleport = false;
+                log?.Invoke("Cannot move there, cheater - only waypoints set using waypoint_personal_here work");
+            }
+        }
+
+        // QC (else branch): setorigin(this, this.personal.origin); oldvelocity = velocity = personal.velocity;
+        //     angles = personal.v_angle; fixangle = true; MUTATOR_CALLHOOK(AbortSpeedrun, this);
+        if (canTeleport)
+        {
+            MapMover.SetOrigin(p, cp.Origin);
+            p.Velocity = cp.Velocity;
+            p.OldVelocity = cp.Velocity;
+            p.Angles = cp.ViewAngle;
+            p.FixAngle = true;
+            p.FixAngleAngles = cp.ViewAngle;
+        }
 
         // QC: SetResource(this, RES_*, GetResource(this.personal, RES_*)); STAT(WEAPONS) = personal; items = personal.
         p.AmmoRockets = cp.Rockets;

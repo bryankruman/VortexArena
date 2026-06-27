@@ -15,7 +15,9 @@ namespace XonoticGodot.Common.Gameplay;
 /// This port covers the bolt and orb projectiles, their contact/lifetime detonation, the multi-orb
 /// secondary burst (secondary_count), the in-flight midair-combo, the staggered combo chain (combo_speed
 /// delay + recursive re-trigger), orb bounce factor/stop, shoot-down-into-combo, and the splash damage.
-/// Only sticky orbs (MOVETYPE_FOLLOW), the combo explode-over-time variant, and orb networking are omitted.
+/// Sticky orbs (secondary_stick / MOVETYPE_FOLLOW), the orb limit (secondary_limit), and the combo
+/// explode-over-time field (combo_duration) are ported but off at the stock xonotic balance; only orb
+/// networking is omitted.
 /// </summary>
 [Weapon]
 public sealed class Electro : Weapon
@@ -62,6 +64,9 @@ public sealed class Electro : Weapon
         public float Speed;            // g_balance_electro_secondary_speed
         public float SpeedUp;          // g_balance_electro_secondary_speed_up
         public bool  TouchExplode;     // g_balance_electro_secondary_touchexplode
+        public bool  Stick;            // g_balance_electro_secondary_stick (orb glues to the surface it lands on)
+        public float StickLifetime;    // g_balance_electro_secondary_stick_lifetime (-1 = keep the orb's death_time; 0 = explode on stick)
+        public int   Limit;            // g_balance_electro_secondary_limit (max live orbs per firer; 0 = unlimited)
         public bool  DamagedByContents;// g_balance_electro_secondary_damagedbycontents (orb dies in lava/slime)
     }
 
@@ -73,6 +78,7 @@ public sealed class Electro : Weapon
         public float EdgeDamage;  // g_balance_electro_combo_edgedamage
         public float Force;       // g_balance_electro_combo_force
         public float Radius;      // g_balance_electro_combo_radius (blast radius of a combo)
+        public float Duration;    // g_balance_electro_combo_duration (explode-over-time field length; 0 = instant blast)
     }
 
     public PrimaryBalance Primary;
@@ -149,6 +155,9 @@ public sealed class Electro : Weapon
         Secondary.Speed = Bal("g_balance_electro_secondary_speed", 1000f);
         Secondary.SpeedUp = Bal("g_balance_electro_secondary_speed_up", 200f);
         Secondary.TouchExplode = BalBool("g_balance_electro_secondary_touchexplode", true);
+        Secondary.Stick = BalBool("g_balance_electro_secondary_stick", false);            // OFF by default in xonotic balance
+        Secondary.StickLifetime = Bal("g_balance_electro_secondary_stick_lifetime", -1f);  // -1 = inherit the orb's death_time
+        Secondary.Limit = BalInt("g_balance_electro_secondary_limit", 0);                  // 0 = unlimited
         Secondary.DamagedByContents = BalBool("g_balance_electro_secondary_damagedbycontents", true); // ON by default
 
         Combo.ComboRadius = Bal("g_balance_electro_combo_comboradius", 300f);
@@ -156,6 +165,7 @@ public sealed class Electro : Weapon
         Combo.EdgeDamage = Bal("g_balance_electro_combo_edgedamage", 25f);
         Combo.Force = Bal("g_balance_electro_combo_force", 120f);
         Combo.Radius = Bal("g_balance_electro_combo_radius", 150f);
+        Combo.Duration = Bal("g_balance_electro_combo_duration", 0f); // explode-over-time field length (OFF by default in xonotic balance; 1.5 in mario/testing)
         // QC WEP_CVAR(WEP_ELECTRO, combo_speed) — chain ripple delay = distance/speed. Was permanently 1000
         // (the field default) because Configure never seeded it; Base default is 2000.
         ComboSpeed = Bal("g_balance_electro_combo_speed", 2000f);
@@ -418,6 +428,13 @@ public sealed class Electro : Weapon
     // W_Electro_Attack_Orb — gravity-affected bouncing orb that detonates on timer/contact. electro.qc
     private void AttackOrb(Entity actor, WeaponSlot slot)
     {
+        // QC W_Electro_Attack_Orb:569-575 — secondary_limit (default 0 = unlimited): track live orbs per firer in
+        // LimitedElectroBallRubbleList and, once the firer's orb count would exceed the cap, detonate the OLDEST orb
+        // (adaptor_think2use_hittype_splash) before laying the new one. The port has no rubble linked-list, so scan
+        // electro_orb by owner and force the lowest-NextThink (oldest spawned) to explode. Inert while limit == 0.
+        if (Secondary.Limit > 0)
+            EnforceOrbLimit(actor);
+
         actor.TakeResource(AmmoType, Secondary.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out Vector3 up);
@@ -514,11 +531,102 @@ public sealed class Electro : Weapon
         // QC W_Electro_Orb_Touch:462 — don't bounce-sound off / stick to the firer's OWN other projectiles.
         if (ReferenceEquals(other.Owner, self.Owner) && other.ClassName == self.ClassName)
             return;
+        // QC W_Electro_Orb_Touch:464-475 sticky branch (g_balance_electro_secondary_stick, default 0 = OFF). On a
+        // world/body contact, if stick is enabled either explode immediately (stick_lifetime 0) or glue the orb to
+        // the surface it landed on (W_Electro_Orb_Stick). Inert while stick == false (the default), so the orb just
+        // bounces as before.
+        if (Secondary.Stick)
+        {
+            bounced[0] = true; // a stuck orb still reads MURDER_COMBO (HITTYPE_BOUNCE) on detonation
+            if (Secondary.StickLifetime == 0f)
+            {
+                ExplodeOrb(self, bounced);
+                return;
+            }
+            OrbStick(self, other, bounced);
+            return;
+        }
         // bounce off the world (engine MOVETYPE_BOUNCE handles the reflection); a bounced orb's kill reads
         // MURDER_COMBO (QC ORs HITTYPE_BOUNCE here).
         bounced[0] = true;
         Api.Sound.Play(self, SoundChannel.Body, "weapons/electro_bounce.wav");
         self.Angles = QMath.VecToAngles(self.Velocity);
+    }
+
+    // W_Electro_Orb_Stick (electro.qc:396-455) — glue a landed orb to the surface it touched, facing into the wall
+    // (vectoangles(-trace_plane_normal)), MOVETYPE_NONE; if the toucher is a MOVING bmodel, ride it via MOVETYPE_FOLLOW
+    // (SetMovetypeFollow, common/util.qc:2129). stick_lifetime >= 0 overrides the orb's remaining death_time; -1 keeps it.
+    // The orb stays shootable/touchable as a contact mine until it detonates. Off-by-default (Secondary.Stick).
+    private void OrbStick(Entity self, Entity other, bool[] bounced)
+    {
+        // Recover -trace_plane_normal at the impact point (the engine touch callback doesn't carry the collision
+        // globals) by re-probing a short worldonly traceline along the incoming velocity, like Minelayer/Porto do.
+        Vector3 vel = self.Velocity;
+        Vector3 dir = vel.LengthSquared() > 0.0001f ? Vector3.Normalize(vel) : new Vector3(0f, 0f, -1f);
+        TraceResult tr = Api.Trace.Trace(self.Origin, Vector3.Zero, Vector3.Zero,
+            self.Origin + dir * 32f, MoveFilter.WorldOnly, self);
+        Vector3 intoWall = tr.Fraction < 1f ? -tr.PlaneNormal : -dir; // = -trace_plane_normal
+
+        if (intoWall.LengthSquared() > 0f)
+            self.Angles = QMath.VecToAngles(intoWall); // angles = vectoangles(-trace_plane_normal)
+        self.Velocity = Vector3.Zero;
+        self.MoveType = MoveType.None; // lock in place (disables gravity)
+        self.Gravity = 0f;
+
+        // stick_lifetime: -1 inherits the orb's existing death_time (its lifetime think is left scheduled);
+        // a non-negative value re-arms the detonation timer to time + stick_lifetime (electro.qc:443-446).
+        if (Secondary.StickLifetime >= 0f)
+        {
+            self.Think = s => ExplodeOrb(s, bounced);
+            self.NextThink = Api.Clock.Time + Secondary.StickLifetime;
+        }
+
+        Api.Sound.Play(self, SoundChannel.Body, "weapons/electro_bounce.wav");
+
+        // If the surface is a MOVING bmodel (func_plat/func_door), glue the orb so it rides the platform (QC
+        // SetMovetypeFollow). Static-world hits (worldspawn sentinel / MOVETYPE_NONE) leave it locked in place.
+        if (other.MoveType != MoveType.None && other.ClassName != "worldspawn" && !ReferenceEquals(other, self))
+            SetMovetypeFollow(self, other);
+    }
+
+    // SetMovetypeFollow(ent, e) (common/util.qc:2129) — make a stuck orb ride a moving bmodel via MOVETYPE_FOLLOW.
+    // Mirrors the Minelayer port: relative origin/angle bookkeeping the PhysicsFollow integrator replays each tick,
+    // plus solid = NOT (a FOLLOW entity is always non-solid).
+    private static void SetMovetypeFollow(Entity ent, Entity e)
+    {
+        ent.MoveType = MoveType.Follow;
+        ent.Solid = Solid.Not;
+        ent.Aiment = e;
+        ent.PunchAngle = e.Angles;            // the original angles of the bmodel
+        ent.ViewOfs = ent.Origin - e.Origin;  // relative origin
+        ent.VAngle = ent.Angles - e.Angles;   // relative angles
+    }
+
+    // QC W_Electro_Attack_Orb:569-575 LimitedChildrenRubble prune — when secondary_limit > 0, count the firer's live
+    // electro_orb entities and detonate the OLDEST (lowest NextThink = earliest scheduled lifetime) once the cap is
+    // reached, so a new orb can be laid. Detonating an orb is its normal SECONDARY blast (adaptor_think2use_hittype
+    // _splash). Only called when Secondary.Limit > 0, so it never runs at stock defaults (limit 0 = unlimited).
+    private void EnforceOrbLimit(Entity actor)
+    {
+        if (Api.Services is null) return;
+        var mine = Api.Entities.FindByClass("electro_orb")
+            .Where(e => !e.IsFreed && ReferenceEquals(e.Owner, actor)).ToList();
+        // Account for the orb about to be spawned: prune until strictly fewer than the limit remain.
+        while (mine.Count >= Secondary.Limit)
+        {
+            Entity oldest = mine[0];
+            for (int i = 1; i < mine.Count; i++)
+                if (mine[i].NextThink < oldest.NextThink) oldest = mine[i];
+            mine.Remove(oldest);
+            // Force the oldest orb to detonate now (its captured bounced flag is gone here, so explode as a plain
+            // secondary blast — QC's adaptor_think2use is the orb's lifetime SECONDARY explode).
+            oldest.Touch = null; oldest.Think = null; oldest.TakeDamage = DamageMode.No;
+            WeaponSplash.RadiusDamage(oldest, oldest.Origin, Secondary.Damage, Secondary.EdgeDamage, Secondary.Radius,
+                oldest.Owner, RegistryId, Secondary.Force, accuracyWeapon: this, deathTag: DeathOrb);
+            EffectEmitter.Emit("ELECTRO_BALLEXPLODE", oldest.Origin);
+            WeaponSplash.ImpactSound(oldest, "weapons/electro_impact.wav");
+            Api.Entities.Remove(oldest);
+        }
     }
 
     // W_Electro_Explode (orb path) — orb blast (secondary balance). electro.qc
@@ -603,6 +711,15 @@ public sealed class Electro : Weapon
         // chain to orbs within combo_comboradius before blasting.
         TriggerCombo(self.Origin, Combo.ComboRadius, self.Owner);
         self.Think = null;
+        // QC W_Electro_ExplodeCombo:172-178 — combo_duration > 0 (default 0/OFF) replaces the instant blast with a
+        // persistent explode-over-time field (W_Electro_Orb_ExplodeOverTime) that ticks combo_damage every frame for
+        // combo_duration seconds. Inert at stock defaults (Combo.Duration 0 -> the instant RadiusDamage below).
+        if (Combo.Duration > 0f)
+        {
+            SpawnExplodeOverTime(self.Origin, self.Owner);
+            Api.Entities.Remove(self);
+            return;
+        }
         // QC W_Electro_ExplodeCombo:187 — deathtype = m_id | HITTYPE_BOUNCE (a combo can't use the primary's
         // plain tag because primary can't bounce), so the obituary reads MURDER_COMBO.
         WeaponSplash.RadiusDamage(self, self.Origin, Combo.Damage, Combo.EdgeDamage, Combo.Radius,
@@ -610,6 +727,37 @@ public sealed class Electro : Weapon
         EffectEmitter.Emit("ELECTRO_COMBO", self.Origin);
         WeaponSplash.ImpactSound(self, "weapons/electro_impact_combo.wav"); // QC SND_ELECTRO_IMPACT_COMBO
         Api.Entities.Remove(self);
+    }
+
+    // W_Electro_Orb_ExplodeOverTime / W_Electro_ExplodeComboThink (electro.qc:115-162) — the combo_duration field:
+    // a stationary orb that re-RadiusDamages every think for combo_duration seconds (a damage-over-time zone),
+    // dealing combo_damage * PHYS_INPUT_TIMELENGTH (frame-scaled) each tick and ORing HITTYPE_SPAM so the repeated
+    // hits don't re-spam blast effects/sounds. Only spawned when combo_duration > 0 (off-by-default in xonotic).
+    private void SpawnExplodeOverTime(Vector3 org, Entity? own)
+    {
+        Entity field = Api.Entities.Spawn();
+        field.ClassName = "electro_orb"; // QC keeps it an electro_orb so a fresh blast can still re-combo it
+        field.Owner = own;
+        field.NetName = NetName;
+        field.MoveType = MoveType.None;
+        field.TakeDamage = DamageMode.No;
+        Api.Entities.SetOrigin(field, org);
+
+        float endTime = Api.Clock.Time + Combo.Duration;
+        // QC HITTYPE_SPAM combo deathtype — the recurring ticks read as a combo kill but suppress repeat blast fx.
+        string spamDeath = Damage.DeathTypes.WithHitType(DeathCombo, Damage.DeathTypes.Spam);
+        void Tick(Entity self)
+        {
+            if (Api.Clock.Time >= endTime) { Api.Entities.Remove(self); return; }
+            float dt = Api.Clock.FrameTime; // PHYS_INPUT_TIMELENGTH
+            WeaponSplash.RadiusDamage(self, self.Origin, Combo.Damage * dt, Combo.EdgeDamage * dt, Combo.Radius,
+                self.Owner, RegistryId, Combo.Force * dt, accuracyWeapon: this, deathTag: spamDeath);
+            self.NextThink = Api.Clock.Time; // run every sim tick for the duration
+        }
+        field.Think = self => Tick(self);
+        field.NextThink = Api.Clock.Time;
+        EffectEmitter.Emit("ELECTRO_COMBO", org); // one spawn-time combo burst (HITTYPE_SPAM suppresses the per-tick repeats)
+        WeaponSplash.ImpactSound(field, "weapons/electro_impact_combo.wav");
     }
 
     // bool IsFlying(entity) — common/physics/player.qc:843, the airshot test: airborne, not swimming, and at

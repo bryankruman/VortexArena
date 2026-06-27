@@ -332,6 +332,12 @@ public sealed class FreezeTag : GameType
         if (MatchEnded)
             return false;
 
+        // QC freezetag PlayerDies (sv_freezetag.qc:484): freezetag_LastPlayerForTeam_Notify(frag_target) — if this
+        // freeze leaves exactly one still-living (unfrozen) teammate, that lone survivor gets CENTER_ALONE ("You
+        // are now alone!"). Evaluated BEFORE the freeze takes effect, with the victim passed as `leaving` (and
+        // excluded), so the count reflects who remains alive once the victim is frozen.
+        NotifyLastPlayerForTeam(victim, _roster);
+
         Freeze(victim, ev.Attacker as Player);
         return false;
     }
@@ -1044,6 +1050,33 @@ public sealed class FreezeTag : GameType
 
         Round.Number++; // mutual elimination → tied round, no score
         return Teams.None;
+    }
+
+    /// <summary>
+    /// QC <c>freezetag_LastPlayerForTeam_Notify</c> (sv_freezetag.qc) via <c>freezetag_LastPlayerForTeam</c>: when a
+    /// freeze/leave/spawn leaves exactly one still-living (unfrozen, undead) teammate, center-print
+    /// "You are now alone!" (CENTER_ALONE) to that last survivor. Only fires while a round is started (not warmup).
+    /// <paramref name="leaving"/> is the player being frozen/removed and is excluded from the survivor scan
+    /// (matching QC's <c>it != this</c>). A frozen teammate does NOT count as a survivor (QC counts only
+    /// !STAT(FROZEN) &amp;&amp; !IS_DEAD), so this uses <see cref="IsEliminated"/> — the FT-specific difference from CA.
+    /// </summary>
+    public void NotifyLastPlayerForTeam(Player leaving, IReadOnlyList<Player> roster)
+    {
+        if (Handler is not { IsRoundStarted: true }) // QC: !warmup_stage && round_handler_IsRoundStarted
+            return;
+        Player? last = null;
+        for (int i = 0; i < roster.Count; i++)
+        {
+            Player p = roster[i];
+            if (ReferenceEquals(p, leaving) || !Teams.SameTeam(leaving, p))
+                continue;
+            if (IsEliminated(p)) // QC: a frozen OR dead teammate is not a living survivor
+                continue;
+            if (last is null) last = p;
+            else return; // more than one teammate still alive → not alone
+        }
+        if (last is not null)
+            NotificationSystem.Center(last, "ALONE");
     }
 
     public int GetTeamRounds(int team) => Scoring.GameScores.TeamScore(team, Scoring.GameScores.TeamSlotSecondary);

@@ -108,7 +108,12 @@ public sealed class Golem : Monster
     public override void Spawn(Entity e)
     {
         var st = MonsterAI.Setup(this, e);
-        Api.Entities.SetSize(e, new Vector3(-24, -24, -20), new Vector3(24, 24, 88));
+        // QC golem mr_setup: setsize('-24 -24 -20', '24 24 88'). SetSize seeds mins/maxs/size + links the
+        // edict but leaves view_ofs at (0,0,0); seed the eye height (0.35 * maxs.z = 30.8) so the AI's
+        // CENTER_OR_VIEWOFS eye-origin (self.Origin + self.ViewOfs) traces from the head, not the feet.
+        Vector3 maxs = new Vector3(24, 24, 88);
+        Api.Entities.SetSize(e, new Vector3(-24, -24, -20), maxs);
+        e.ViewOfs = new Vector3(0, 0, 0.35f * maxs.Z);
 
         st.AttackRange = 150f; // golem.qc mr_setup: attack_range = 150
         st.WalkSpeed = MonsterAI.Cvar("g_monster_golem_speed_walk", SpeedWalk);

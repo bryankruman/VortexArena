@@ -982,6 +982,82 @@ public sealed class Onslaught : GameType
         return source is not null; // QC: only consumes the press (and opens the radar) when next to an own CP
     }
 
+    /// <summary>
+    /// QC the Onslaught control-point + generator waypoint sprites (sv_onslaught.qc: ons_GeneratorSetup spawns
+    /// WP_OnsGenShielded/WP_OnsGen, ons_ControlPoint_Setup + ons_ControlPoint_UpdateSprite resolve
+    /// WP_OnsCP / WP_OnsCPDefend / WP_OnsCPAttack per the captured/linked/shielded state). One fixed marker per
+    /// generator and per control point at its world origin, rebuilt each tick from the live power graph like CTF's
+    /// flag sprites. Generators: shielded (no enemy controls a linked CP) shows WP_OnsGenShielded, exposed shows
+    /// WP_OnsGen — both shown to everyone, tinted by the owning team. Control points: a neutral CP shows the plain
+    /// WP_OnsCP to all; a captured CP uses the SPRITERULE_TEAMPLAY three-image swap (own team sees WP_OnsCPDefend
+    /// with the per-def 0.5 blink, an enemy who can attack it sees WP_OnsCPAttack with the per-def 2.0 blink, and a
+    /// spectator/observer sees the plain WP_OnsCP) — resolved per peer by the net layer's SpriteFor() like the
+    /// KeyHunt/TeamKeepaway carriers. Reached via ServerNet.SendWaypoints (GameType.CollectWaypoints) per tick.
+    /// </summary>
+    public override void CollectWaypoints(System.Collections.Generic.List<Waypoints.WaypointSprite> into)
+    {
+        if (Api.Services is null)
+            return;
+
+        // ----- generators (WP_OnsGen / WP_OnsGenShielded), shown to everyone, tinted by the owning team -----
+        foreach (Entity gen in Api.Entities.FindByClass("onslaught_generator"))
+        {
+            if (gen.IsFreed)
+                continue;
+            int team = gen.GtHomeTeam != 0 ? gen.GtHomeTeam : (int)gen.Team;
+            OnsNode? node = GeneratorNode(team);
+            if (node is { Gen.Destroyed: true })
+                continue; // QC: a destroyed generator no longer carries a waypoint
+            bool shielded = node is null || node.Shielded;
+            into.Add(new Waypoints.WaypointSprite
+            {
+                // QC ons_GeneratorSetup: WaypointSprite_SpawnFixed(this.origin, WP_OnsGen, RADARICON_NONE, …) with
+                // the shielded/exposed sprite swapped by ons_ShowGeneratorSprite — shown to all, team-tinted radar.
+                SpriteName = shielded ? "OnsGenShielded" : "OnsGen",
+                FixedOrigin = gen.Origin,
+                Team = 0, // shown to everyone (the owning team lives in Color, not the visibility team)
+                Color = team != Teams.None ? Teams.ColorRgb(team) : new Vector3(1f, 1f, 1f),
+                RadarIcon = 1, // RADARICON_GENERATOR
+                Health = -1f,
+            });
+        }
+
+        // ----- control points (WP_OnsCP / WP_OnsCPDefend / WP_OnsCPAttack via the teamplay three-image swap) -----
+        foreach (Entity cp in Api.Entities.FindByClass("onslaught_controlpoint"))
+        {
+            if (cp.IsFreed)
+                continue;
+            OnsNode? node = ControlPointNode(cp.GtPointId);
+            int owner = node?.Captured == true ? node.Team : Teams.None;
+            var wp = new Waypoints.WaypointSprite
+            {
+                FixedOrigin = cp.Origin,
+                RadarIcon = 1, // RADARICON_CONTROLPOINT
+                Health = -1f,
+                Color = owner != Teams.None ? Teams.ColorRgb(owner) : new Vector3(1f, 0.5f, 0f), // WP_*color (orange neutral)
+            };
+            if (owner == Teams.None)
+            {
+                // QC: a neutral / uncaptured control point shows the plain WP_OnsCP to everyone.
+                wp.SpriteName = "OnsCP";
+                wp.Team = 0;
+                wp.Rule = Waypoints.SpriteRule.Default;
+            }
+            else
+            {
+                // QC ons_ControlPoint_UpdateSprite: a captured CP networks the three-image teamplay triple —
+                // model1 (enemy) = WP_OnsCPAttack, model2 (own team) = WP_OnsCPDefend, model3 (spectator) = WP_OnsCP.
+                // The net layer's SpriteFor() picks the right one per peer (SPRITERULE_TEAMPLAY shows to all).
+                wp.SpriteName = "OnsCPAttack";        // enemy image (per-def blink 2.0)
+                wp.SpriteNameOwn = "OnsCPDefend";     // own-team image (per-def blink 0.5)
+                wp.SpriteNameSpec = "OnsCP";          // spectator image
+                wp.Team = owner;
+                wp.Rule = Waypoints.SpriteRule.Teamplay;
+            }
+            into.Add(wp);
+        }
+    }
+
     private static bool TryCvar(string name, out float value)
     {
         value = 0f;

@@ -37,6 +37,9 @@ public sealed class Vortex : Weapon
         public float ChargeAnimLimit;    // g_balance_vortex_charge_animlimit
         public float ChargeShotMul;      // g_balance_vortex_charge_shot_multiplier
         public float ChargeRotPause;     // g_balance_vortex_charge_rot_pause
+        public float ChargeRotRate;            // g_balance_vortex_charge_rot_rate (decay/s toward charge_limit while equipped)
+        public float ChargeRotUnequippedRate;  // g_balance_vortex_charge_rot_unequipped_rate (decay/s while NOT the held weapon)
+        public float ChargeRotUnequippedLimit; // g_balance_vortex_charge_rot_unequipped_limit (floor the unequipped decay rots toward)
         public float ChargeVelocityRate; // g_balance_vortex_charge_velocity_rate
         public float ChargeMinSpeed;     // g_balance_vortex_charge_minspeed
         public float ChargeMaxSpeed;     // g_balance_vortex_charge_maxspeed
@@ -70,6 +73,13 @@ public sealed class Vortex : Weapon
         ItemModel = "g_nex.md3";   // MDL_VORTEX_ITEM
     }
 
+    // METHOD(Vortex, wr_aim) — common/weapons/weapon/vortex.qc:wr_aim. Hitscan primary only: QC calls bot_aim with
+    // an effectively infinite shot speed, so the bot aims straight at the enemy (no projectile lead) and presses
+    // primary. The stock secondary is the ZOOM (not a fire mode), so the bot never presses ATCK2. Returning 0
+    // marks it hitscan to the brain's lead path (no lead). (The charge mechanic is a held-primary behaviour the
+    // single-press bot AI does not drive in stock — there is no bot charge in vortex.qc wr_aim.)
+    public override float BotAimShotSpeed(float defaultSpeed) => 0f;
+
     // QC vortex.qh w_reticle + vortex.qc wr_zoom/wr_zoomdir: while g_balance_vortex_secondary is 0 (the stock
     // default — secondary is NOT a separate fire mode) holding ATTACK2 is the ZOOM ("the secondary fire zooms in
     // when held, allowing for ease of aiming"), and the scope overlay is gfx/reticle_nex. With secondary enabled,
@@ -94,6 +104,9 @@ public sealed class Vortex : Weapon
         Cvars.ChargeAnimLimit = Bal("g_balance_vortex_charge_animlimit", 0.5f);
         Cvars.ChargeShotMul = Bal("g_balance_vortex_charge_shot_multiplier", 0f);
         Cvars.ChargeRotPause = Bal("g_balance_vortex_charge_rot_pause", 0f);
+        Cvars.ChargeRotRate = Bal("g_balance_vortex_charge_rot_rate", 0f);
+        Cvars.ChargeRotUnequippedRate = Bal("g_balance_vortex_charge_rot_unequipped_rate", 0f);
+        Cvars.ChargeRotUnequippedLimit = Bal("g_balance_vortex_charge_rot_unequipped_limit", 0f);
         Cvars.ChargeVelocityRate = Bal("g_balance_vortex_charge_velocity_rate", 0f);
         Cvars.ChargeMinSpeed = Bal("g_balance_vortex_charge_minspeed", 400f);
         Cvars.ChargeMaxSpeed = Bal("g_balance_vortex_charge_maxspeed", 800f);
@@ -234,6 +247,53 @@ public sealed class Vortex : Weapon
                     Attack(actor, slot, st, isSecondary: true);
             }
         }
+    }
+
+    /// <summary>QC <c>W_TICSPERFRAME</c> (common/weapons/all.qh): weapon sub-frame ticks per server frame. The
+    /// charge-rot loop in QC PlayerThink runs ONCE per frame but scales its decay by <c>frametime / W_TICSPERFRAME</c>
+    /// (= frametime/2), so the effective per-second rot rate is half charge_rot_rate. Matched explicitly below.</summary>
+    private const float WTicsPerFrame = 2f;
+
+    // METHOD(Vortex, the PlayerThink charge-rot loop) — server/client.qc PlayerThink `if (frametime) { ... }`,
+    // the second `for(slot)` pass ("rot vortex charge to the charge limit"). Runs once per frame for EVERY alive
+    // (non-dead, frametime>0) player, INDEPENDENTLY of which weapon is held — that is how an *unequipped* Vortex's
+    // overcharge bleeds back down. QC decays vortex_charge DOWN toward charge_limit (equipped) or
+    // charge_rot_unequipped_limit (unequipped), at charge_rot_rate / charge_rot_unequipped_rate per second scaled
+    // by frametime/W_TICSPERFRAME, but only once vortex_charge_rottime has elapsed (the post-charge pause window
+    // wr_think pushes out via charge_rot_pause). The port carries the (single) Vortex charge on slot 0's state even
+    // while another weapon is active, so `equipped` is resolved from the player's ActiveWeaponId rather than a
+    // per-slot m_weapon. STOCK: all rot cvars are 0 → this is inert (the `chargerate != 0` gate below short-
+    // circuits), so it changes nothing at stock balance; it closes the mechanic for non-stock balances and gives
+    // the dead VortexChargeRotTime write a consumer. Drive this once/frame from the player post-think (see
+    // GameWorld.OnPlayerPostThink). `frametime` is the server tick length (QC `frametime`).
+    public void RotCharge(Entity actor, WeaponSlot slot, bool equipped, float frametime)
+    {
+        var st = actor.WeaponState(slot);
+
+        float chargelimit = Cvars.ChargeLimit;
+        float chargerate = Cvars.ChargeRotRate;
+        // QC: only switch to the unequipped pair when its rate is set AND this slot isn't the Vortex.
+        if (Cvars.ChargeRotUnequippedRate != 0f && !equipped)
+        {
+            chargelimit = Cvars.ChargeRotUnequippedLimit;
+            chargerate = Cvars.ChargeRotUnequippedRate;
+        }
+
+        if (chargerate != 0f && st.VortexCharge > chargelimit && st.VortexChargeRotTime < Api.Clock.Time)
+            st.VortexCharge = QMath.Bound(chargelimit,
+                st.VortexCharge - chargerate * frametime / WTicsPerFrame, 1f);
+    }
+
+    // METHOD(Vortex, the charge_always regen) — server/client.qc PlayerThink, the first `for(slot)` pass:
+    // `if (WEP_CVAR(WEP_VORTEX, charge_always)) W_Vortex_Charge(this, weaponentity, frametime);` runs BEFORE
+    // W_WeaponFrame, once per frame, at the FULL frametime. With charge_always set, wr_think's per-tick regen is
+    // gated OFF (see WrThink `if (!Cvars.ChargeAlways)`), and this always-on path regens instead — so a Vortex not
+    // currently firing still charges. STOCK charge_always is 0 → never called. Drive once/frame from the player
+    // post-think for the held Vortex, matching QC's pre-W_WeaponFrame order.
+    public void ChargeAlwaysRegen(Entity actor, WeaponSlot slot, float frametime)
+    {
+        if (!Cvars.ChargeAlways) return;
+        Charge(actor.WeaponState(slot), frametime); // QC passes the full frametime (NOT /W_TICSPERFRAME)
     }
 
     // W_Vortex_Charge (vortex.qc:174-178): regen toward charge_limit (a charge above the limit — e.g. from

@@ -53,6 +53,7 @@ public sealed class PhaserTurret : Turret
         NetName = "phaser";
         DisplayName = "Phaser Cannon";
         Model = "models/turrets/base.md3";
+        HeadModel = "models/turrets/phaser.md3";   // QC phaser.qh: head_model — the separate tracking head-bone model
         StartHealth = 500f;
         Range = TargetRange;
     }

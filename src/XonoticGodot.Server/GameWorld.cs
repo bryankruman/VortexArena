@@ -2471,9 +2471,34 @@ public sealed class GameWorld
             using (Prof.Sample("mp.fx"))
                 StatusEffectsCatalog.Tick(p, Time);
 
-            // QC the per-frame weapon driver (W_WeaponFrame): run the full fire state machine for the player.
-            using (Prof.Sample("mp.weapon"))
-                WeaponThink(p);
+            // QC PlayerThink `if (frametime) { for(slot) { if (charge_always) W_Vortex_Charge(...); W_WeaponFrame(...); } ... }`
+            // (server/client.qc). The Vortex's always-on charge regen runs BEFORE the weapon frame: with
+            // g_balance_vortex_charge_always set, wr_think's per-tick regen is gated off and THIS path charges the
+            // held Vortex every frame instead. Stock charge_always 0 → no-op. The single active weapon lives on
+            // slot 0 (WeaponFireDriver populatedSlots == 1), so we drive the held Vortex's slot-0 charge here.
+            if (Weapons.ByName("vortex") is Vortex vortexWep)
+            {
+                var vortexSlot = new WeaponSlot(0);
+                bool vortexEquipped = p.ActiveWeaponId == vortexWep.RegistryId;
+                if (vortexEquipped)
+                    vortexWep.ChargeAlwaysRegen(p, vortexSlot, Simulation.FrameTime);
+
+                // QC the per-frame weapon driver (W_WeaponFrame): run the full fire state machine for the player.
+                using (Prof.Sample("mp.weapon"))
+                    WeaponThink(p);
+
+                // QC PlayerThink's second slot loop ("rot vortex charge to the charge limit"): decay vortex_charge
+                // back DOWN toward charge_limit (held) or charge_rot_unequipped_limit (stowed) after its rot pause.
+                // Runs regardless of the held weapon — that is how a stowed, overcharged Vortex bleeds back down.
+                // Stock all rot cvars 0 → inert. Matches QC order (rot AFTER W_WeaponFrame).
+                vortexWep.RotCharge(p, vortexSlot, vortexEquipped, Simulation.FrameTime);
+            }
+            else
+            {
+                // QC the per-frame weapon driver (W_WeaponFrame): run the full fire state machine for the player.
+                using (Prof.Sample("mp.weapon"))
+                    WeaponThink(p);
+            }
         }
 
         // QC player_powerups() (client.qc:2356): called in PlayerThink AFTER the game_stopped early-out but
@@ -2732,6 +2757,9 @@ public sealed class GameWorld
         // Clear the round-grace weapon-fire block (QC round_handler_IsActive => round_handler != NULL): only a
         // round-based gametype's EnableRounds re-installs it, so a non-round mode never forbids fire.
         WeaponFireDriver.RoundFireForbidden = null;
+        // Clear the dom-roundbased movement-freeze block (QC player_blocked): only the Domination roundbased arm
+        // below re-installs it; all other modes leave it null so players are never movement-frozen.
+        PlayerPhysics.RoundMoveForbidden = null;
         // Same for the Common-side pre-round gate (QC round_handler_IsActive): a non-round mode has no live handler,
         // so the gate must read inert until a round-based gametype's EnableRounds re-installs it.
         XonoticGodot.Common.Gameplay.RoundHandler.RoundNotStartedProvider = null;
@@ -2800,6 +2828,12 @@ public sealed class GameWorld
                     _roundPrep = () => ca.SetRoster(Clients.Players);
                     _roundSync = () => MirrorRoundTiming(caRounds, ca.Handler);
                 }
+                // QC MUTATOR_HOOKFUNCTION(ca, ForbidSpawn) + PutClientInServer (sv_clanarena.qc): while a CA round is
+                // live, no client may spawn — refuse the join (force-observe) and mark the would-be joiner
+                // INGAME_STATUS_JOINING + send INFO_CA_JOIN_LATE so they enter next round. Mirrors the Survival gate
+                // install below. Keep the free-slot cap like the default/LMS gate (inert for CA's open team game).
+                Clients.GametypeJoinGate = p => ca.CanJoin(p, Rounds is { IsRoundStarted: true }) && GametypeHasFreeSlot(p);
+                Clients.GametypeOnJoin = p => { if (Rounds is { IsRoundStarted: true }) ca.OnJoinLate(p); };
                 break;
 
             // ---- the remaining team / objective modes ----
@@ -2830,6 +2864,10 @@ public sealed class GameWorld
                     dom.RoundEndTimeSource = () => domRounds.RoundEndTime;     // QC round_handler_GetEndTime()
                     dom.RoundStartedSource = () => domRounds.IsRoundStarted;  // QC round_handler_IsRoundStarted()
                     Scores.TeamScoreSource = dom.GetTeamCaps;
+                    // QC dom reset_map_players: it.player_blocked = 1 (when roundbased), Domination_RoundStart clears it.
+                    // Wire the movement-freeze predicate: while the round has not started players can't move or jump,
+                    // matching the QC zeroed-movement + jump-blocked effect of player_blocked.
+                    PlayerPhysics.RoundMoveForbidden = _ => !domRounds.IsRoundStarted;
                 }
                 else
                 {

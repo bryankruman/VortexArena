@@ -76,6 +76,16 @@ public sealed class MapInfoBackend
     /// </summary>
     public bool ForceDuelOnDmMaps { get; set; } = true;
 
+    /// <summary>
+    /// QC <c>TeamDeathmatch.m_isForcedSupported</c> (tdm.qh): when <c>autocvar_g_tdm_on_dm_maps</c> is set,
+    /// any map that supports DM but does not explicitly list TDM is auto-promoted to also support TDM.
+    /// NOTE the OPPOSITE polarity to Duel: <c>g_tdm_on_dm_maps</c> defaults to <b>0</b> ("make all DM maps
+    /// automatically support TDM" only when set), so forced TDM support is OFF by default — whereas
+    /// <c>g_duel_not_dm_maps</c> defaults to 0 meaning Duel forced support is ON. The menu host wires this
+    /// from the cvar. Default: false (Base default g_tdm_on_dm_maps 0).
+    /// </summary>
+    public bool ForceTdmOnDmMaps { get; set; } = false;
+
     /// <param name="readText">Reads a map's .mapinfo text (e.g. "maps/foo.mapinfo"), or null if it isn't present.</param>
     /// <param name="imageExists">Probes whether a preview image vpath exists (the QC draw_PictureExists chain).</param>
     public MapInfoBackend(Func<string, string?> readText, Func<string, bool> imageExists)
@@ -91,7 +101,10 @@ public sealed class MapInfoBackend
     ///
     /// After parsing, applies <c>Duel.m_isForcedSupported</c>: if DM is supported and duel is not, and
     /// <see cref="ForceDuelOnDmMaps"/> is true (the default, matching <c>g_duel_not_dm_maps=0</c>), duel
-    /// is added to the supported set. This matches QC's <c>MapInfo_Get_ByName</c> (mapinfo.qc:1386):
+    /// is added to the supported set. The same pass applies <c>TeamDeathmatch.m_isForcedSupported</c>
+    /// (tdm.qh): if DM is supported and TDM is not, and <see cref="ForceTdmOnDmMaps"/> is true (i.e.
+    /// <c>g_tdm_on_dm_maps</c> is set — default OFF), TDM is added too. This matches QC's
+    /// <c>MapInfo_Get_ByName</c> (mapinfo.qc:1386):
     /// <c>FOREACH(Gametypes, it.m_isForcedSupported(it), _MapInfo_Map_ApplyGametypeEx(...))</c>.
     /// </summary>
     public MapInfo Get(string bspName)
@@ -100,25 +113,38 @@ public sealed class MapInfoBackend
             return cached;
 
         MapInfo info = Parse(bspName);
-        // QC Duel.m_isForcedSupported (duel.qh:15-28): add duel to any DM map unless g_duel_not_dm_maps.
-        ApplyForcedGametypes(info, forceDuelOnDmMaps: ForceDuelOnDmMaps);
+        // QC m_isForcedSupported (mapinfo.qc:1386 FOREACH(Gametypes, it.m_isForcedSupported(it), ...)):
+        // add duel to any DM map unless g_duel_not_dm_maps, and add tdm to any DM map when g_tdm_on_dm_maps.
+        ApplyForcedGametypes(info, forceDuelOnDmMaps: ForceDuelOnDmMaps, forceTdmOnDmMaps: ForceTdmOnDmMaps);
         _cache[bspName] = info;
         return info;
     }
 
     /// <summary>
-    /// Apply <c>Duel.m_isForcedSupported</c> (duel.qh:15-28) to an already-parsed <see cref="MapInfo"/>:
-    /// if the map supports DM but not duel, and <paramref name="forceDuelOnDmMaps"/> is true (i.e.
-    /// <c>g_duel_not_dm_maps == 0</c>), add <c>"duel"</c> to the supported-gametype set. Can also be
-    /// called by callers that manage their own mapinfo cache (e.g. <c>MapInfoCache</c>).
+    /// Apply the <c>m_isForcedSupported</c> set-promotions to an already-parsed <see cref="MapInfo"/>:
+    /// <list type="bullet">
+    /// <item><c>Duel.m_isForcedSupported</c> (duel.qh:15-28): if the map supports DM but not duel, and
+    /// <paramref name="forceDuelOnDmMaps"/> is true (i.e. <c>g_duel_not_dm_maps == 0</c>), add <c>"duel"</c>.</item>
+    /// <item><c>TeamDeathmatch.m_isForcedSupported</c> (tdm.qh): if the map supports DM but not tdm, and
+    /// <paramref name="forceTdmOnDmMaps"/> is true (i.e. <c>g_tdm_on_dm_maps</c> is set — default OFF),
+    /// add <c>"tdm"</c>.</item>
+    /// </list>
+    /// Can also be called by callers that manage their own mapinfo cache (e.g. <c>MapInfoCache</c>).
     /// </summary>
-    public static void ApplyForcedGametypes(MapInfo info, bool forceDuelOnDmMaps)
+    public static void ApplyForcedGametypes(MapInfo info, bool forceDuelOnDmMaps, bool forceTdmOnDmMaps = false)
     {
         if (forceDuelOnDmMaps
             && info.SupportedGametypes.Contains("dm")
             && !info.SupportedGametypes.Contains("duel"))
         {
             info.SupportedGametypes.Add("duel");
+        }
+        // QC TeamDeathmatch.m_isForcedSupported (tdm.qh): g_tdm_on_dm_maps makes DM maps also support TDM.
+        if (forceTdmOnDmMaps
+            && info.SupportedGametypes.Contains("dm")
+            && !info.SupportedGametypes.Contains("tdm"))
+        {
+            info.SupportedGametypes.Add("tdm");
         }
     }
 

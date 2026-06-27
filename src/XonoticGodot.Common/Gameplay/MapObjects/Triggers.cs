@@ -288,6 +288,9 @@ public static class Triggers
     //  trigger_hurt
     // ===================================================================
 
+    /// <summary>QC hurt.qh <c>SPAWNFLAG_HURT_SLOW</c> = BIT(0): keep the 1s creature cooldown even under q3compat.</summary>
+    public const int HurtSlow = 1 << 0; // SPAWNFLAG_HURT_SLOW
+
     /// <summary><c>spawnfunc(trigger_hurt)</c> — damages anything damageable that touches it.</summary>
     public static void HurtSetup(Entity this_)
     {
@@ -297,8 +300,10 @@ public static class Triggers
         this_.Touch = HurtTouch;
         this_.Use = HurtUse;
         this_.Enemy = null; // "I hate you all" — attribute to the world unless taken over
+        // QC spawnfunc(trigger_hurt): default .dmg is 10000 on Xonotic maps but 5 on a q3compat import
+        // (the Q3 trigger_hurt is a gentle damage volume, not the instant-death pit Xonotic uses).
         if (this_.Dmg == 0f)
-            this_.Dmg = 10000f;
+            this_.Dmg = CompatRemaps.IsQ3Compat ? 5f : 10000f;
         if (string.IsNullOrEmpty(this_.Message))
             this_.Message = "was in the wrong place";
         MapMover.IndexRegister(this_);
@@ -329,8 +334,11 @@ public static class Triggers
 
         if (MapMover.IsCreature(toucher))
         {
-            // QC throttles creatures to one hit per second (per toucher).
-            if (MapMover.Now() >= toucher.TriggerHurtTime + 1f)
+            // QC throttles creatures to one hit per `gametime` cooldown (per toucher): 1s on stock Xonotic,
+            // but a fast 0.05s under q3compat UNLESS SPAWNFLAG_HURT_SLOW is set (hurt.qc creature branch). A
+            // q3 trigger_hurt is a low-damage volume that bites rapidly; HURT_SLOW restores the 1s cadence.
+            float cooldown = (CompatRemaps.IsQ3Compat && (self.SpawnFlags & HurtSlow) == 0) ? 0.05f : 1f;
+            if (MapMover.Now() >= toucher.TriggerHurtTime + cooldown)
             {
                 toucher.TriggerHurtTime = MapMover.Now();
                 Entity attacker = (self.Enemy is not null && (self.Enemy.Flags & EntFlags.Client) != 0)

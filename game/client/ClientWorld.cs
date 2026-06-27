@@ -117,6 +117,8 @@ public partial class ClientWorld : Node3D
         public bool IsPlayerModel;    // a skeletal/MD3 player model (gets the appearance/deathglow pass)
         public ItemDespawnFx? Despawn; // loot despawn animation (lazily created when ITS_EXPIRING first seen)
         public bool ItemFaded;        // a despawn/ghost transparency is currently applied (reset to opaque on the way back)
+        public NVec3 TrailTail;       // Quake-space tail of the last emitted CSQC-model trail segment (EF_BRIGHTFIELD / jetpack MF_ROCKET) — csqcmodel_hooks.qc trailparticles continuation
+        public bool HasTrailTail;     // false until the first frame a trail is active, so the first segment starts at the model origin (no spurious long streak on spawn)
         public float ItemFadeApplied; // last transparency pushed (§11 R9 change gate; 0 = opaque, the node default)
         public int ItemFadeMeshCount; // mesh-list size at last push (re-push after a cache rebuild)
     }
@@ -1150,10 +1152,15 @@ public partial class ClientWorld : Node3D
                                  || st.Effects.LastEffects != 0; // re-run ONE frame after effects clear so the
                                                                  // render-flags/visibility/light all reset (no stick)
             if (effectsActive)
-                // Trail return is unused here: entities in _entityNodes are non-projectiles (players/items/
-                // monsters); projectiles own their trail via ProjectileRenderer. EF_BRIGHTFIELD on a player
-                // model (rare) is the only dropped case — flagged as a known parity gap.
-                _ = CsqcModelEffects.Apply(Effects, node, e, st.Effects, modelFlags: 0, frameTime, Api.Services?.Sound, ghostBit, forced);
+            {
+                // CSQCModel_Effects_Apply returns the trail-effect name for this model (csqcmodel_hooks.qc:611/554):
+                // EF_BRIGHTFIELD -> TR_NEXUIZPLASMA, and the client-re-derived jetpack MF_ROCKET -> TR_ROCKET. Entities
+                // in _entityNodes are non-projectiles (players/items/monsters) — projectiles own their trail via
+                // ProjectileRenderer — but a player MODEL with EF_BRIGHTFIELD (and a jetpacking player's rocket plume)
+                // DOES trail in Base, so route the return through the faithful per-segment trail like the projectile path.
+                string? tref = CsqcModelEffects.Apply(Effects, node, e, st.Effects, modelFlags: 0, frameTime, Api.Services?.Sound, ghostBit, forced);
+                DriveModelTrail(e, st, tref, frameTime);
+            }
 
             // (4) ITEM VISIBILITY FX (item-only — these flags are never set on players/monsters): QC ItemDraw's
             //     alpha pass (client/items/items.qc:144-210). QC sets a base alpha from the DISTANCE fade
@@ -1164,6 +1171,7 @@ public partial class ClientWorld : Node3D
             if (IsItemEntity(e))
             {
                 float distAlpha = ItemDistanceAlpha(e, viewOrigin); // QC lines 144-158 base alpha
+                string cn = e.ClassName.ToLowerInvariant();
                 if (e.ItemExpiringFx)
                 {
                     DriveItemDespawnFx(e, node, st, distAlpha);
@@ -1172,6 +1180,20 @@ public partial class ClientWorld : Node3D
                 else if (!e.ItemAvailable)
                 {
                     DriveItemGhostFx(node, st, distAlpha);
+                    st.ItemFaded = true;
+                }
+                else if (cn.StartsWith("weapon_", System.StringComparison.Ordinal)
+                         && (e.Effects & CsqcModelEffectFlags.EF_STARDUST) != 0)
+                {
+                    // QC ItemDraw weapon-stay branch (client/items/items.qc): a still-pickable g_weapon_stay
+                    // ghost (Item_Show mode 0 set EF_STARDUST + cleared the live marker server-side; it stays
+                    // AVAILABLE so it falls through the ghost branch above) renders translucent at
+                    // cl_weapon_stay_alpha (0.75). The stay-marker isn't networked, so we infer it from the
+                    // weapon_ classname + the server-set EF_STARDUST that ONLY a weapon-stay ghost carries
+                    // (Item_Show ll.531). cl_weapon_stay_color ('2 0.5 0.5') is a per-item colormod multiply the
+                    // port can't apply to item meshes (player-shader-only colormod) -- alpha-only here, see the
+                    // items-pickups stay-weapon-tint gap.
+                    DriveItemStayFx(node, st, distAlpha);
                     st.ItemFaded = true;
                 }
                 else if (distAlpha < 0.999f)
@@ -1206,6 +1228,22 @@ public partial class ClientWorld : Node3D
     /// <c>'-1 -1 -1'</c> = no tint) is left for a follow-up. Reuses the per-instance transparency the despawn fade
     /// uses (never touches the shared/cached item materials); the bob+spin keeps running (driven in EntityNode).
     /// </summary>
+    /// <summary>
+    /// Render a still-pickable <c>g_weapon_stay</c> ghost as the translucent stay-weapon -- QC <c>ItemDraw</c>'s
+    /// weapon-stay branch (client/items/items.qc): <c>alpha *= cl_weapon_stay_alpha</c> (default 0.75) while the
+    /// item stays AVAILABLE (a stay weapon is pickable, just gives no ammo). Composed multiplicatively with the
+    /// distance fade, exactly like <see cref="DriveItemGhostFx"/> does for the unavailable ghost. The
+    /// <c>cl_weapon_stay_color</c> colormod multiply ('2 0.5 0.5') is NOT applied -- item meshes have no
+    /// per-instance colormod path (the SetColormod uniform is player-skin-shader-only); alpha-only here.
+    /// </summary>
+    private void DriveItemStayFx(EntityNode node, CsqcState st, float distAlpha = 1f)
+    {
+        float stay = Mathf.Clamp(CvarF("cl_weapon_stay_alpha", 0.75f), 0f, 1f); // xonotic-client.cfg default 0.75
+        float alpha = stay * Mathf.Clamp(distAlpha, 0f, 1f); // QC: alpha = distFade; then alpha *= cl_weapon_stay_alpha
+        SetTreeTransparency(node, st, 1f - alpha);
+        node.SetGameplayVisible(alpha > 0.001f);
+    }
+
     private void DriveItemGhostFx(EntityNode node, CsqcState st, float distAlpha = 1f)
     {
         float ghost = Mathf.Clamp(CvarF("cl_ghost_items", 0.45f), 0f, 1f); // QC autocvar_cl_ghost_items default 0.45
@@ -1325,6 +1363,31 @@ public partial class ClientWorld : Node3D
         // No alternate LOD model resolved → keep lod0 (the QC fexists-miss path). See doc comment.
     }
 
+    /// <summary>
+    /// Emit one frame of a CSQC-model trail (QC <c>CSQCModel_Effects_Apply</c>'s <c>trailparticles</c> continuation,
+    /// csqcmodel_hooks.qc:554/611): when the effects pass returned a trail name (EF_BRIGHTFIELD -> TR_NEXUIZPLASMA, or
+    /// the client-re-derived jetpack MF_ROCKET -> TR_ROCKET on this player/monster MODEL), spawn a faithful per-segment
+    /// trail from the model's previous position to its current one — the same <see cref="EffectSystem.SpawnTrailSegment"/>
+    /// path the projectile renderer uses (DP <c>CL_ParticleTrail</c>). The tail anchor is kept per-entity on
+    /// <see cref="CsqcState"/> so successive frames join up; it resets the first frame the trail (re)activates so a
+    /// spawn or a teleport doesn't draw one long streak. A null/empty trail clears the anchor (the trail stops cleanly).
+    /// </summary>
+    private void DriveModelTrail(Entity e, CsqcState st, string? tref, float frameTime)
+    {
+        if (string.IsNullOrEmpty(tref) || frameTime <= 0f)
+        {
+            st.HasTrailTail = false; // trail off this frame → next activation restarts the tail at the origin
+            return;
+        }
+        NVec3 cur = e.Origin;
+        // First active frame (or after a clear): start the segment at the current origin so we don't streak across
+        // the whole map from a stale tail (DP seeds trail_pos at the first emission too).
+        NVec3 from = st.HasTrailTail ? st.TrailTail : cur;
+        Effects.SpawnTrailSegment(tref!, from, cur, e.Velocity);
+        st.TrailTail = cur;
+        st.HasTrailTail = true;
+    }
+
     /// <summary>The active camera's Quake-space origin (CSQC <c>view_origin</c>) for LOD distance, or null.</summary>
     private NVec3? ViewOrigin()
     {
@@ -1397,7 +1460,7 @@ public partial class ClientWorld : Node3D
         int cm = 1024 + 17 * own;
         int forced = CsqcModelAppearance.ResolveForcedColormap(
             enabled, forceMyColors, clColor, forceUnique, isLocal, ctx.Is1v1, ctx.Teamplay, ctx.MyTeam,
-            cm, ctx.PlayerLocalNum, e.Index);
+            cm, ctx.PlayerLocalNum, e.Index, ctx.TeamCount);
         return forced != 0 ? forced : own;
     }
 

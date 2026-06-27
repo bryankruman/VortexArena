@@ -36,6 +36,13 @@ public sealed class GoalRater
     private GoalRating _best;
     private bool _has;
 
+    // Route context (QC navigation_markroutes' cached cost field): when set, Rate uses the waypoint-graph path
+    // cost instead of straight-line distance. Seeded by the brain each strategy frame via SeedRoute, BEFORE the
+    // role runs (and so before the role's own Start()); Start() must NOT clear these.
+    private WaypointNetwork? _routeNet;
+    private Vector3 _routeFrom;
+    private bool _routeSeeded;
+
     public bool HasGoal => _has;
     public GoalRating Best => _best;
 
@@ -51,12 +58,33 @@ public sealed class GoalRater
         _has = false;
     }
 
+    /// <summary>
+    /// Seed the waypoint route-cost field for this strategy frame (QC navigation_markroutes from the bot). After
+    /// this, <see cref="Rate"/> discounts a candidate by its real path cost from <paramref name="from"/> along the
+    /// graph, falling back to straight-line when the graph can't reach the candidate. Pass net = null to keep the
+    /// prior straight-line behaviour (graphless roaming / tests).
+    /// </summary>
+    public void SeedRoute(WaypointNetwork? net, Vector3 from)
+    {
+        _routeNet = net;
+        _routeFrom = from;
+        _routeSeeded = net is not null;
+        net?.ComputeRouteCosts(from);
+    }
+
     /// <summary>Rate a candidate goal (QC navigation_routerating): value <paramref name="f"/> discounted by distance.</summary>
     public void Rate(Vector3 from, Entity? target, Vector3 goalPos, float f, float rangeBias)
     {
         if (f <= 0f) return;
-        float dist = (goalPos - from).Length();
-        float rating = f * (rangeBias / (rangeBias + dist));
+        // QC navigation_routerating distance term: the Dijkstra path cost over the waypoint graph (.wpcost). When
+        // the route field is seeded and the goal is graph-reachable, use it; else fall back to a straight-line
+        // cost in the same unit (distance/MaxSpeed) so the rangebias scale matches the graph path.
+        float cost = float.PositiveInfinity;
+        if (_routeSeeded && _routeNet is not null)
+            cost = _routeNet.RouteCostTo(goalPos);
+        if (float.IsPositiveInfinity(cost))
+            cost = (goalPos - from).Length() / System.MathF.Max(1f, Cvars.MaxSpeed);
+        float rating = f * (rangeBias / (rangeBias + cost));
         if (!_has || rating > _best.Rating)
         {
             _best = new GoalRating(goalPos, target, rating);
@@ -97,6 +125,7 @@ public static class BotRoles
             "dom" or "domination" => BotObjectiveRoles.RoleDomination, // havocbot_role_dom
             "ons" or "onslaught" => BotObjectiveRoles.RoleOnslaught,   // havocbot_role_ons_*
             "ka" or "keepaway" or "tka" => BotObjectiveRoles.RoleKeepaway, // havocbot_role_ka_*
+            "freezetag" or "ft" => BotObjectiveRoles.RoleFreezeTag, // havocbot_role_ft_freeing/offense
             "nexball" or "nb" => BotObjectiveRoles.RoleNexball,         // havocbot_role_nexball
             "assault" or "as" => BotObjectiveRoles.RoleAssault,        // havocbot_role_ass_*
             "cts" => BotObjectiveRoles.RoleCts,                        // havocbot_role_cts (run the course)

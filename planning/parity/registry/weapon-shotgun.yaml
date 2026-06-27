@@ -6,10 +6,7 @@ summary:
   feature_count: 13
   worst_gaps:
     - "Antilag takeback is STILL per-pellet (each FireBullet calls LagComp.Begin) rather than ONCE for the whole volley as Base does outside the loop (shotgun.qc:23-26 antilag_takeback_all); functionally-equivalent hit-reg but redundant rewind work per pellet."
-    - "g_ballistics_penetrate_clips (default 1) / weapclip handling still not modeled (no weapclip distinction in FireBullet)."
-    - "Muzzleflash uziflash.md3 model attachment still not verified to render (only the SHOTGUN_MUZZLEFLASH particle is emitted)."
     - "SHOTGUN_IMPACT is emitted per pellet server-side (~12/shot) via a second WorldOnly trace (intended divergence — no CSQC layer), not the single CSQC w_org + w_backoff*2 impact; emits on the world hit even when the pellet struck a player."
-    - "pickup_ammo (15) not read in Shotgun.cs (item-pickup concern). MENUQC describe() weapon-guide prose has no port."
 
 features:
   - id: weapon-shotgun.primary.attack_fan
@@ -88,24 +85,24 @@ features:
     constants:
       - { name: "g_ballistics_solidpenetration_exponent", base: "1 (xonotic-server.cfg:474)", port: "1 (reads cvar, fallback 1, WeaponFiring.cs:300-301)", match: true }
       - { name: "g_ballistics_mindistance", base: "2 (xonotic-server.cfg:470)", port: "2 (reads cvar, fallback 2, WeaponFiring.cs:302-303)", match: true }
-      - { name: "g_ballistics_penetrate_clips", base: "1 (xonotic-server.cfg:473)", port: "not modeled (no weapclip distinction)", match: false }
+      - { name: "g_ballistics_penetrate_clips", base: "1 (xonotic-server.cfg:473)", port: "1 (reads g_ballistics_penetrate_clips cvar; isWeapclip detection WeaponFiring.cs:349-399)", match: true }
       - { name: "max_shot_distance", base: "32768 / per-map", port: "CurrentMaxShotDistance (per-map from world diagonal)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "g_ballistics_penetrate_clips (default 1) / weapclip handling still not modeled (no weapclip distinction in the penetration loop)."
+    gaps: []
     verification:
       - { kind: code, ref: "WeaponFiring.FireBullet penetration loop (damageFraction = penFrac^exponent) + ExponentialFalloff vs tracing.qc fireBullet_falloff", result: pass }
       - { kind: code, ref: "ballisticsMinDistance now reads g_ballistics_mindistance (fallback 2) WeaponFiring.cs:302-303; exponent reads g_ballistics_solidpenetration_exponent (fallback 1)", result: pass }
+      - { kind: code, ref: "g_ballistics_penetrate_clips: isWeapclip detection (NODRAW && !NONSOLID && !OPAQUE) WeaponFiring.cs:349-351; reads g_ballistics_penetrate_clips live and breaks on 0 (WeaponFiring.cs:396-399), porting tracing.qc:480-481", result: pass }
     confidence: high
-    notes: "FIX vs baseline (values partial -> still partial but mindistance closed). The baseline recorded g_ballistics_mindistance hardcoded to 1; the port now reads it live with the Base default 2. Only g_ballistics_penetrate_clips remains unmodeled. Penetration math, double-hit/self-hit guard, sky/out-of-world stop, warpzone-aware sweep all faithful. The shotgun passes no tracerEffect (Base shotgun has no tracer), so the tracer arg is inert here."
+    notes: "FIX vs baseline (values partial -> faithful). The baseline recorded g_ballistics_mindistance hardcoded to 1; the port now reads it live with the Base default 2. g_ballistics_penetrate_clips is now also modeled: the weapclip surface-flag check (NODRAW && !NONSOLID && !OPAQUE-content) reads the cvar live and stops the bullet when 0 (tracing.qc:480-481). Penetration math, double-hit/self-hit guard, sky/out-of-world stop, warpzone-aware sweep all faithful. The shotgun passes no tracerEffect (Base shotgun has no tracer), so the tracer arg is inert here."
 
   - id: weapon-shotgun.primary.setupshot_recoil
     name: "W_SetupShot: trueaim, muzzle offset, recoil punch"
@@ -251,11 +248,11 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WrReload/WReload/WReloadedAndReady"
     constants:
       - { name: "ammo_type", base: "RES_SHELLS", port: "ResourceType.Shells", match: true }
-      - { name: "pickup_ammo", base: "15 (bal-wep-xonotic.cfg:46)", port: "not read in Shotgun.cs", match: false }
+      - { name: "pickup_ammo", base: "15 (bal-wep-xonotic.cfg:46)", port: "read by framework: ItemSpawnFuncs.ItemInit (ItemSpawnFuncs.cs:441) reads g_balance_shotgun_pickup_ammo via CvarOr, matching WEP_CVAR(pickup_ammo)", match: true }
       - { name: "reload_ammo / reload_time", base: "0 / 2", port: "reloadable flag set; generic WReload pipeline in WeaponFireGate (reads g_balance_shotgun_reload_*)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
@@ -264,12 +261,12 @@ features:
     divergence_rationale: null
     gaps:
       - "wr_checkammo1/2 in Base also OR the clip load (weapon_load[m_id] >= ammo) (shotgun.qc:357,370); the port's CheckAmmoPrimary/Secondary DO include the GetWeaponLoad OR-term (Shotgun.cs:366-367,374-375), so the clip-load term is now present. reload_ammo defaults 0 so no clip is used by default."
-      - "pickup_ammo (15) still not read in Shotgun.cs (item-pickup concern, not the weapon's checkammo)."
     verification:
       - { kind: code, ref: "CheckAmmoPrimary/Secondary vs wr_checkammo1/2 (melee free, triple uses primary ammo); port DOES include the weapon_load OR-term (GetWeaponLoad >= ammo)", result: pass }
       - { kind: code, ref: "WeaponFireGate.WReload/WReloadedAndReady port W_Reload (reload sound, scheduled think, clip transfer) generically", result: pass }
-    confidence: medium
-    notes: "Re-audit found the clip-load OR-term IS present in CheckAmmoPrimary/Secondary (the baseline note that it was omitted is corrected). Generic shared reload pipeline (WeaponFireGate.WReload) makes reload timing faithful. pickup_ammo (item-pickup) still not read here. values stays partial only for pickup_ammo."
+      - { kind: code, ref: "pickup_ammo read by framework: ItemSpawnFuncs.ItemInit (ItemSpawnFuncs.cs:441) reads g_balance_shotgun_pickup_ammo via CvarOr, matching WEP_CVAR(pickup_ammo)=15", result: pass }
+    confidence: high
+    notes: "Re-audit found the clip-load OR-term IS present in CheckAmmoPrimary/Secondary (the baseline note that it was omitted is corrected). Generic shared reload pipeline (WeaponFireGate.WReload) makes reload timing faithful. pickup_ammo is read generically by the item framework (ItemSpawnFuncs.ItemInit reads g_balance_shotgun_pickup_ammo by NetName), so no Shotgun.cs entry is needed. values now faithful."
 
   - id: weapon-shotgun.bot.wr_aim
     name: "Bot aim: melee vs ranged selection"
@@ -311,7 +308,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:43-44 (SHOTGUN_IMPACT/MUZZLEFLASH registered)"
       - "game/net/ServerNet.cs:WriteEffect (EffectNetSink) ; game/client/ClientWorld.cs:OnEffect (RenderSink)"
     constants:
-      - { name: "muzzleflash effect", base: "EFFECT_SHOTGUN_MUZZLEFLASH + uziflash.md3 model", port: "SHOTGUN_MUZZLEFLASH particle (uziflash.md3 model attachment not verified)", match: false }
+      - { name: "muzzleflash effect", base: "EFFECT_SHOTGUN_MUZZLEFLASH + uziflash.md3 model", port: "SHOTGUN_MUZZLEFLASH particle + uziflash.md3 model (NetGame.MuzzleModelFor shotgun->models/uziflash.md3; ViewModel.SpawnMuzzleFlashModel attaches at muzzle socket + fades 3x0.05s ticks)", match: true }
       - { name: "impact effect emission", base: "EFFECT_SHOTGUN_IMPACT in CSQC wr_impacteffect, once per networked impact", port: "SHOTGUN_IMPACT emitted server-side per pellet via an EXTRA WorldOnly trace (~12/shot)", match: false }
     status:
       logic: partial
@@ -323,13 +320,13 @@ features:
     intended_divergence: true
     divergence_rationale: "Impact effect is emitted server-side per pellet (an extra WorldOnly trace in Shotgun.Attack finds the surface, then WeaponFiring.BulletImpactFx emits SHOTGUN_IMPACT) rather than from a CSQC wr_impacteffect, because the port has no CSQC layer. The effect sink is live on both ends (ServerNet EffectNetSink networks it; ClientWorld RenderSink renders it)."
     gaps:
-      - "Muzzleflash uziflash.md3 model attachment still not verified to render (only the SHOTGUN_MUZZLEFLASH particle is emitted)."
       - "SHOTGUN_IMPACT is still emitted per pellet server-side (~12/shot) via a second WorldOnly trace, not the single CSQC w_org + w_backoff*2 impact; it emits on the world hit point even when the pellet struck a player (the extra trace is WorldOnly, ignoring entities)."
     verification:
       - { kind: code, ref: "Shotgun.Attack: extra WorldOnly trace per pellet -> backoff -> WeaponFiring.BulletImpactFx(SHOTGUN_IMPACT); EffectsList.cs:43-44 registered", result: pass }
       - { kind: code, ref: "effect sink live: ServerNet WriteEffect (net) + ClientWorld RenderSink/OnEffect (listen)", result: pass }
+      - { kind: code, ref: "muzzleflash model: NetGame.MuzzleModelFor (NetGame.cs:2287-2292) returns models/uziflash.md3 for shotgun; ViewModel.SpawnMuzzleFlashModel (ViewModel.cs:537-592) attaches it at the muzzle marker and fades over 3x0.05s ticks (scale*=0.5, alpha-=0.25), porting W_MuzzleFlash_Model_Think", result: pass }
     confidence: medium
-    notes: "Unchanged from baseline. Behaviorally equivalent. Per-pellet-vs-per-impact count, the WorldOnly-trace mismatch on player hits, and the unverified muzzleflash MODEL remain open."
+    notes: "Muzzleflash uziflash.md3 model attachment is now verified (NetGame.MuzzleModelFor + ViewModel.SpawnMuzzleFlashModel, faithful to W_MuzzleFlash_Model). The remaining open item is the intended per-pellet impact divergence: SHOTGUN_IMPACT is emitted server-side per pellet (~12/shot) via an extra WorldOnly trace rather than the single CSQC w_org + w_backoff*2 impact, and emits on the world hit point even when the pellet struck a player. logic/presentation stay partial for that divergence."
 
   - id: weapon-shotgun.fx.impact_ricochet_audio
     name: "Impact ricochet sound + melee woosh + casing eject"
@@ -402,20 +399,24 @@ features:
     layer: [presentation]
     base_refs:
       - "common/weapons/weapon/shotgun.qc:describe (MENUQC, shotgun.qc:416-428)"
-    port_refs: []
-    constants: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:GuideDescription (Shotgun.cs:71-78)"
+      - "game/menu/dialogs/DialogMediaGuide.cs:194 (renders w.GuideDescription for the active weapon)"
+    constants:
+      - { name: "describe_paragraphs", base: "4 (primary fan / secondary slap timing / ammo / range falloff)", port: "4 (GuideDescription string, same 4 paragraphs)", match: true }
     status:
       logic: na
       values: na
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The MENUQC describe() weapon-guide prose (primary single round spreading into pellets, secondary slap timing, ammo/falloff blurb + W_Guide_Keybinds/DPS) has no port. Other weapons (Crylink/Electro/Tuba) reference a describe seam but the shotgun text is not ported. Menu-only documentation; no gameplay impact."
+      - "The two dynamic trailing lines (W_Guide_Keybinds player keybinds + W_Guide_DPS_primaryMultishot DPS metric, shotgun.qc:427) are not part of GuideDescription — omitted by design, exactly as the Electro/Tuba guides omit them (those helpers belong to the guide page, not the static prose)."
     verification:
-      - { kind: code, ref: "grep describe/PAGE_TEXT across src/.../Weapons: no Shotgun describe port; Base shotgun.qc:416-428 has the MENUQC describe()", result: fail }
+      - { kind: code, ref: "Shotgun.GuideDescription (Shotgun.cs:71-78): four paragraphs covering primary fan, secondary slap timing, ammo, and range limitations, matching the four PAR() blocks of shotgun.qc:416-428", result: pass }
+      - { kind: code, ref: "live via DialogMediaGuide.cs:194 (_description.Text = w.GuideDescription for the active weapon) — same path as Electro/Tuba", result: pass }
     confidence: high
-    notes: "New row (registry coverage gap, not a regression). MENUQC-only in-menu weapon guide prose; cosmetic documentation feature with no gameplay path."
+    notes: "CORRECTION vs baseline (presentation missing/na -> faithful/live). The baseline recorded the shotgun describe prose as unported (port_refs:[]), but Shotgun.GuideDescription (Shotgun.cs:71-78) ports the four describe() PAR paragraphs and DialogMediaGuide.cs:194 renders it live for the active weapon — same wiring as weapon-electro.describe_guide and weapon-tuba. Only the dynamic Keybinds/DPS trailing lines remain omitted, by design."

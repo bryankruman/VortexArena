@@ -103,6 +103,12 @@ public sealed class Arc : Weapon
         ItemModel = "g_arc.md3";  // MDL_ARC_ITEM
     }
 
+    // arc.qh: ATTRIB(Arc, w_crosshair, "gfx/crosshairhlac"); ATTRIB(Arc, w_crosshair_size, 0.7). The per-weapon
+    // crosshair the CSQC draws when crosshair_per_weapon is on (read client-side by the crosshair panel, the same
+    // seam Hook/Porto use). Closes the crosshair half of the identity.attributes presentation gap.
+    public override string? Crosshair => "gfx/crosshairhlac";
+    public override float CrosshairSize => 0.7f;
+
     public override void Configure()
     {
         Beam.Ammo = Bal("g_balance_arc_beam_ammo", 6f);
@@ -550,6 +556,15 @@ public sealed class Arc : Weapon
         // Sweep the beam trail origin->endpos. QC nets beam_type (MISS/WALL/HIT use the normal beam; HEAL uses
         // the heal-beam variant) — emit ARC_BEAM_HEAL on the heal branch, ARC_BEAM otherwise.
         EffectEmitter.Emit(healed ? "ARC_BEAM_HEAL" : "ARC_BEAM", shot.Origin, tr.EndPos, 0);
+        // QC Draw_ArcBeam draws the cylindric beam LINE (Draw_CylindricLine) in ADDITION to the trailparticles
+        // above. Emit the drawn line origin->hit-point (count 0, end in velocity — the Beam route convention).
+        // Tint: the damage beam uses the Arc's m_color blue (arc.qh '0.463 0.612 0.886'); the heal beam uses the
+        // arc_beam_heal green (effectinfo 0x20FF20). The per-beam_type thickness (8 normal / 14 burst), the
+        // spinning muzzle-flash entity, and the hit/muzzle dynamic lights are CSQC render plumbing not modelled
+        // here (tracked as the residual weapon-arc.beam.visual / burst_variant render gap).
+        Vector3 beamColor = healed ? new Vector3(0.125f, 1f, 0.125f) : Color;
+        EffectEmitter.Emit(Effects.ByName(healed ? "ARC_BEAM_LINE_HEAL" : "ARC_BEAM_LINE"),
+            shot.Origin, tr.EndPos, 0, beamColor, beamColor);
 
         st.ArcBeam = actor; // mark the beam as live this frame
         // Looping beam sound on (actor, CH_WEAPON) — DP loopsound(beam, CH_SHOTS_SINGLE, SND_ARC_LOOP). Emitted

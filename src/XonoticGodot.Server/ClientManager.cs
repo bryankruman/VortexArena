@@ -506,6 +506,20 @@ public sealed class ClientManager
     }
 
     /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, ClientCommand_Spectate)</c> (sv_clanarena.qc): intercept the <c>spectate</c>
+    /// command for an in-game CA player. CA force-spectates them (MUT_SPECCMD_FORCE) and sends INFO_CA_LEAVE; the
+    /// gametype records the leave so they re-enter next round. Returns true if CA consumed the command (so the
+    /// generic spectate path doesn't also run its default notice). No-op (returns false) for non-CA gametypes or a
+    /// client that is already spectating. Call from the spectate-command handler BEFORE the generic force-observe.
+    /// </summary>
+    public bool GametypeSpectateCommand(Player p)
+    {
+        if (_match.GameType is ClanArena ca)
+            return ca.OnSpectateCommand(p);
+        return false;
+    }
+
+    /// <summary>
     /// QC <c>PutObserverInServer</c> (server/client.qc:261): turn a live player (or a connecting client) into a
     /// free-fly OBSERVER — hide its model, strip its weapons, make it non-solid + non-damageable, give it the
     /// free-fly movetype (so <c>PlayerPhysics.SpectatorControl</c> flies it), and mark it a spectator on the
@@ -538,6 +552,14 @@ public sealed class ClientManager
         // notify the mutators a live player was demoted to observer so they can drop per-player state. Dodging
         // (sv_dodging.qc:328 dodging_ResetPlayer) clears its dodging_* fields here so a player who spectates
         // mid-dodge doesn't keep stale state into a re-join.
+        //
+        // QC PutObserverInServer (server/client.qc): .frags = FRAGS_SPECTATOR is assigned BEFORE the
+        // MUTATOR_CALLHOOK(MakePlayerObserver) fires, so a mode's MakePlayerObserver hook can OVERRIDE the
+        // default sentinel — CTS/Race set FRAGS_PLAYER_OUT_OF_GAME for an observer who already holds a ranked
+        // time (Cts.OnMakePlayerObserver, sv_cts.qc:194). The default must therefore precede the hook call;
+        // otherwise the later assignment clobbers the hook's override and the ranked-observer flag is dead.
+        p.FragsStatus = Player.FragsSpectator;   // QC RES_HEALTH/.frags = FRAGS_SPECTATOR (scoreboard sentinel)
+
         var observerArgs = new MutatorHooks.MakePlayerObserverArgs(p);
         MutatorHooks.MakePlayerObserver.Call(ref observerArgs);
 
@@ -551,7 +573,8 @@ public sealed class ClientManager
 
         p.Spectatee = null;
         p.SpectateeStatus = 0;
-        p.FragsStatus = Player.FragsSpectator;   // QC RES_HEALTH/.frags = FRAGS_SPECTATOR (scoreboard sentinel)
+        // (FragsStatus default is now set BEFORE the MakePlayerObserver hook above so a mode's hook — CTS's
+        //  FRAGS_PLAYER_OUT_OF_GAME for a ranked observer — can override it; QC PutObserverInServer order.)
 
         // QC: solid=SOLID_NOT, takedamage=DAMAGE_NO, MOVETYPE_FLY_WORLDONLY (free-fly), FL_CLIENT|FL_NOTARGET.
         p.DeadState = DeadFlag.No;

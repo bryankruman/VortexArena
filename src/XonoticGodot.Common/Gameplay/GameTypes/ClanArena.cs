@@ -68,6 +68,54 @@ public sealed class ClanArena : GameType
     /// <summary>The roster the round handler evaluates (set by the host before <see cref="Tick"/>).</summary>
     private IReadOnlyList<Player> _roster = System.Array.Empty<Player>();
 
+    /// <summary>
+    /// QC <c>INGAME_STATUS_JOINING</c> (sv_clanarena.qc PutClientInServer / ForbidSpawn): the set of players
+    /// who connected/joined WHILE a round was live (<c>!allowed_to_spawn</c>). They are force-observed until the
+    /// next round reset, are greyed on the scoreboard (<see cref="IsEliminatedPlayer"/>), and are flipped to
+    /// INGAME_JOINED on their first live spawn (<see cref="OnPlayerSpawn"/>) or the round reset
+    /// (<see cref="ResetMapPlayers"/>). The port has no separate INGAME enum, so this set models QC's
+    /// INGAME_STATUS_JOINING bit. A player NOT in this set and tracked as a live <see cref="Player"/> is the
+    /// INGAME_JOINED case.
+    /// </summary>
+    private readonly HashSet<Player> _joiningMidRound = new();
+
+    /// <summary>
+    /// QC <c>.prev_team</c> (sv_clanarena.qc CA_RoundStart / MatchEnd_RestoreSpectatorAndTeamStatus): the team a
+    /// player held before CA forced them between observer/player on a mid-round join. Snapshotted at round start so
+    /// the end-of-match scoreboard can restore who was actually playing (<see cref="OnMatchEndBeforeScores"/>).
+    /// </summary>
+    private readonly Dictionary<Player, int> _prevTeam = new();
+
+    /// <summary>
+    /// QC <c>ca_isEliminated</c> half: true while this player joined mid-round and is waiting out the round as an
+    /// observer (INGAME_STATUS_JOINING). Read by the host's force-observe path and the scoreboard grey-out.
+    /// </summary>
+    public bool IsJoiningMidRound(Player p) => _joiningMidRound.Contains(p);
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, ForbidSpawn)</c> + <c>PutClientInServer</c> (sv_clanarena.qc): while a round
+    /// is live (<c>!allowed_to_spawn</c>) no client may become a live player — ForbidSpawn forbids an in-game
+    /// player's respawn and PutClientInServer force-observes a fresh joiner, so the combined net outcome is "nobody
+    /// spawns mid-round". The port models that single outcome by refusing the join while the round is started; the
+    /// refused client stays an observer until the next round reset. Mirrors Survival.CanJoin (sv_survival.qc).
+    /// <paramref name="roundStarted"/> stands in for QC's <c>!allowed_to_spawn</c> (a non-warmup round is live).
+    /// Returns true to allow the join (pre-round / warmup), false to force-observe.
+    /// </summary>
+    public bool CanJoin(Player p, bool roundStarted) => !roundStarted;
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, PutClientInServer)</c> (sv_clanarena.qc): a client who tries to join while a
+    /// round is live is marked INGAME_STATUS_JOINING and told they enter next round (INFO_CA_JOIN_LATE). The host
+    /// calls this whenever a client's join is refused by <see cref="CanJoin"/> mid-round. Idempotent.
+    /// </summary>
+    public void OnJoinLate(Player p)
+    {
+        if (p is null || !_joiningMidRound.Add(p))
+            return;
+        // QC Send_Notification(NOTIF_ONE_ONLY, player, MSG_INFO, INFO_CA_JOIN_LATE): personal "you'll play next round".
+        NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Info, "CA_JOIN_LATE");
+    }
+
     public bool MatchEnded { get; private set; }
     public int LeaderTeam { get; private set; }
 
@@ -162,6 +210,7 @@ public sealed class ClanArena : GameType
     private HookHandler<MutatorHooks.MakePlayerObserverArgs>? _makeObserverHandler;
     private HookHandler<MutatorHooks.ClientDisconnectArgs>? _disconnectHandler;
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _spawnHandler;
+    private HookHandler<MutatorHooks.MatchEndBeforeScoresArgs>? _matchEndHandler;
 
     public void Activate()
     {
@@ -241,6 +290,14 @@ public sealed class ClanArena : GameType
         // (i.e. a game restart, NOT a per-round respawn) zero this player's damage2score decimal carry.
         _spawnHandler = OnPlayerSpawn;
         MutatorHooks.PlayerSpawn.Add(_spawnHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ca, MatchEnd_BeforeScores) (sv_clanarena.qc): before the final scoreboard is
+        // dumped, restore each player's pre-CA spectator/team status (MatchEnd_RestoreSpectatorAndTeamStatus) so a
+        // mid-round joiner who never actually played isn't reported as a live competitor. The port has no separate
+        // observer-restore, so we clear the INGAME-joining set + prev_team snapshot here (the joiners revert to plain
+        // observers, exactly the state the final scoreboard should show).
+        _matchEndHandler = OnMatchEndBeforeScores;
+        MutatorHooks.MatchEndBeforeScores.Add(_matchEndHandler);
     }
 
     /// <summary>
@@ -303,7 +360,10 @@ public sealed class ClanArena : GameType
         if (_makeObserverHandler is not null)   { MutatorHooks.MakePlayerObserver.Remove(_makeObserverHandler);    _makeObserverHandler = null; }
         if (_disconnectHandler is not null)     { MutatorHooks.ClientDisconnect.Remove(_disconnectHandler);        _disconnectHandler = null; }
         if (_spawnHandler is not null)          { MutatorHooks.PlayerSpawn.Remove(_spawnHandler);                  _spawnHandler = null; }
+        if (_matchEndHandler is not null)       { MutatorHooks.MatchEndBeforeScores.Remove(_matchEndHandler);       _matchEndHandler = null; }
         _scoreDecimal.Clear();
+        _joiningMidRound.Clear();
+        _prevTeam.Clear();
     }
 
     public int AssignTeam(Player joiner, IReadOnlyList<Player> roster)
@@ -499,9 +559,10 @@ public sealed class ClanArena : GameType
     /// boundary (Activate/Deactivate) already clears the whole map; this catches a mid-session game restart that
     /// re-runs game_starttime without tearing the gametype down, so a player's carried sub-point remainder is
     /// zeroed the QC way rather than persisting across the restart.
-    /// (The QC INGAME_STATUS_SET(JOINED) half is not modeled — the port has no INGAME state; see
-    /// clanarena.join.late_join_observer. The eliminatedPlayers.SendFlags resend is N/A: the port captures the
-    /// elimination list every frame.)
+    /// (The spawn tail also flips this player out of the mid-round INGAME_STATUS_JOINING set —
+    /// INGAME_STATUS_SET(JOINED) — so a late joiner who finally spawns stops being greyed; see
+    /// <see cref="_joiningMidRound"/> / clanarena.join.late_join_observer. The eliminatedPlayers.SendFlags resend
+    /// is N/A: the port captures the elimination list every frame.)
     /// </summary>
     private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)
     {
@@ -510,6 +571,9 @@ public sealed class ClanArena : GameType
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
         if (now <= Handler.GameStartTime)
             _scoreDecimal.Remove(player); // QC float2int_decimal_fld = 0 (a fresh game)
+        // QC ca PlayerSpawn tail: INGAME_STATUS_SET(player, INGAME_STATUS_JOINED). A player who actually spawns is
+        // no longer a mid-round JOINING observer — flip them to JOINED so they stop being greyed on the scoreboard.
+        _joiningMidRound.Remove(player);
         return false;
     }
 
@@ -614,6 +678,56 @@ public sealed class ClanArena : GameType
     {
         Teams.Red => "RED", Teams.Blue => "BLUE", Teams.Yellow => "YELLOW", Teams.Pink => "PINK", _ => "NEUTRAL",
     };
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, reset_map_players)</c> + <c>reset_map_global</c> (sv_clanarena.qc): on a round
+    /// reset, every in-game-or-joining client is cleared and re-transmuted to a live Player — clear killcount,
+    /// flip INGAME_STATUS_JOINING → JOINED, and snapshot prev_team (CA_RoundStart). reset_map_global sets
+    /// allowed_to_spawn = true; in the port the round-phase gate already re-allows spawning, so this only needs to
+    /// flush the per-round bookkeeping. Called by the host (GameWorld.ResetMap) on each map/round reset.
+    /// </summary>
+    public void ResetMapPlayers(IReadOnlyList<Player> roster)
+    {
+        _joiningMidRound.Clear();   // QC: INGAME_STATUS_SET(it, INGAME_STATUS_JOINED) for the whole joining set
+        for (int i = 0; i < roster.Count; i++)
+        {
+            Player p = roster[i];
+            p.GtKillCount = 0;      // QC reset_map_players: it.killcount = 0
+            _prevTeam[p] = (int)p.Team; // QC CA_RoundStart: prev_team snapshot for MatchEnd restore
+        }
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, MatchEnd_BeforeScores)</c> → <c>MatchEnd_RestoreSpectatorAndTeamStatus</c>
+    /// (sv_clanarena.qc): at match end, before the per-player scores are dumped, drop the mid-round INGAME-joining
+    /// flags (those players never actually competed) so the final scoreboard reflects who was really playing. The
+    /// prev_team snapshot is released here too. Subscribed to <see cref="MutatorHooks.MatchEndBeforeScores"/> in
+    /// <see cref="Activate"/>; fired live by the host's NextLevel (FireMatchEndBeforeScores).
+    /// </summary>
+    private bool OnMatchEndBeforeScores(ref MutatorHooks.MatchEndBeforeScoresArgs args)
+    {
+        _joiningMidRound.Clear();
+        _prevTeam.Clear();
+        return false;
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, ClientCommand_Spectate)</c> (sv_clanarena.qc): when an in-game CA player runs
+    /// the <c>spectate</c> command, force them to spectate (MUT_SPECCMD_FORCE) and, when sv_spectate allows it,
+    /// send INFO_CA_LEAVE ("you'll spectate next round"). The host calls this from the spectate-command path; it
+    /// records the leaver as a mid-round joiner-equivalent (so they re-enter next round) and emits the notice.
+    /// Returns true if CA consumed the command (the leaver was a live player), matching QC's force result.
+    /// </summary>
+    public bool OnSpectateCommand(Player p)
+    {
+        if (p is null || p.IsObserver)
+            return false; // already spectating/observer → CA does not force again (QC: only IS_PLAYER is forced)
+        // QC: Send_Notification(NOTIF_ONE_ONLY, player, MSG_INFO, INFO_CA_LEAVE) when sv_spectate is on.
+        if (Cvar("sv_spectate", 1f) != 0f)
+            NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Info, "CA_LEAVE");
+        _prevTeam.Remove(p);
+        return true; // MUT_SPECCMD_FORCE: the live player is forced to spectate
+    }
 
     /// <summary>
     /// QC <c>ca_LastPlayerForTeam_Notify</c> (sv_clanarena.qc:360): when a death/leave leaves exactly one living
@@ -758,12 +872,12 @@ public sealed class ClanArena : GameType
     public int AliveCount(int teamCode) => Round.AliveByTeam.TryGetValue(teamCode, out int n) ? n : 0;
 
     /// <summary>
-    /// QC <c>ca_isEliminated</c> (sv_clanarena.qc:243-250) approximated: QC = INGAME_JOINED &amp;&amp;
-    /// (IS_DEAD || frags == FRAGS_PLAYER_OUT_OF_GAME), or INGAME_JOINING. The port has no INGAME_JOINING /
-    /// FRAGS_PLAYER_OUT_OF_GAME state yet, so eliminated = dead — a late joiner waiting for the next round
-    /// won't grey on the scoreboard until a spectate/INGAME pass adds that state.
+    /// QC <c>ca_isEliminated</c> (sv_clanarena.qc:243-250): (INGAME_JOINED &amp;&amp;
+    /// (IS_DEAD || frags == FRAGS_PLAYER_OUT_OF_GAME)) || INGAME_JOINING. A live joined player greys when dead; a
+    /// mid-round late joiner greys while they wait out the round (INGAME_STATUS_JOINING, tracked in
+    /// <see cref="_joiningMidRound"/>). FRAGS_PLAYER_OUT_OF_GAME is N/A to CA (no per-life elimination column).
     /// </summary>
-    public bool IsEliminatedPlayer(Player p) => p.IsDead;
+    public bool IsEliminatedPlayer(Player p) => p.IsDead || _joiningMidRound.Contains(p);
 
     public void UpdateLeaderAndCheckLimit()
     {

@@ -112,6 +112,12 @@ public sealed class Blaster : Weapon
         if (best is not null) Inventory.SwitchWeapon(actor, best);
     }
 
+    // METHOD(Blaster, wr_aim) — common/weapons/weapon/blaster.qc:wr_aim. The bot only ever presses primary (the
+    // bolt); QC bot_aim leads at the projectile speed WEP_CVAR_PRI(blaster, speed). Lead by the balance bolt speed
+    // so a retuned bolt speed still leads correctly; the primary-only press is the default (no override needed for
+    // the button). Non-lobbed (bot_aim grav=false), so the brain's straight-line lead applies.
+    public override float BotAimShotSpeed(float defaultSpeed) => Primary.Speed;
+
     // Refire/animtime from the (cvar-seeded) balance block — the Blaster has a single primary fire mode.
     public override float RefireFor(FireMode fire) => Primary.Refire;
     public override float AnimtimeFor(FireMode fire) => Primary.Animtime;

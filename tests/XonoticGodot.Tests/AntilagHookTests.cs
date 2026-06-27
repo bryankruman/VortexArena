@@ -67,6 +67,36 @@ public class AntilagHookTests
     }
 
     [Fact]
+    public void Begin_Widens_Shooter_HitMask_To_Corpse_And_End_Restores_It()
+    {
+        // [sv-antilag.solidmask.corpse] Port of tracebox_antilag_force_wz (antilag.qc) + W_SetupShot
+        // (tracing.qc:44/50): the antilag bracket temporarily sets the SHOOTER's dphitcontentsmask to
+        // SOLID|BODY|CORPSE so the trace can hit gibbed/corpse bodies, then restores the original mask on End.
+        // This switch is UNCONDITIONAL in Base (outside the if(lag) gate), so it must happen even with NO
+        // provider installed (a bot-only/test server) — verify it fires on the static facade alone.
+        const int CorpseMask = SuperContents.Solid | SuperContents.Body | SuperContents.Corpse;
+
+        Api.Services = new EngineServices(new CollisionWorld());
+        try
+        {
+            Entity shooter = Api.Services.Entities.Spawn();
+            // A live player's own movement mask is SOLID|BODY|PLAYERCLIP (no CORPSE) — see SpawnSystem / NetGame.
+            int originalMask = SuperContents.Solid | SuperContents.Body | SuperContents.PlayerClip;
+            shooter.DpHitContentsMask = originalMask;
+
+            LagComp.Begin(shooter);                                 // antilag_takeback + the mask widen
+            Assert.Equal(CorpseMask, shooter.DpHitContentsMask);    // CORPSE bit now set so corpses are hittable
+
+            LagComp.End();                                          // antilag_restore + the mask restore
+            Assert.Equal(originalMask, shooter.DpHitContentsMask);  // shooter's own mask put back exactly
+        }
+        finally
+        {
+            LagComp.Provider = null;
+        }
+    }
+
+    [Fact]
     public void SetupShot_Brackets_Its_Trueaim_And_Muzzle_Traces_With_LagComp()
     {
         // QC tracing.qc:46/85/97 — at g_antilag==2 W_SetupShot's trueaim + muzzle-nudge traces run through the
