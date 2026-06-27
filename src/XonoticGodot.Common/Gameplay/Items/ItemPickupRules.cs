@@ -11,6 +11,7 @@
 // (the NetName set — dual-rep).
 
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -429,9 +430,45 @@ public static class ItemPickupRules
         if (item.SpawnShieldExpire == 0f)
             return;
 
-        // QC team-item: pick a random sibling of the same team to respawn (the others hide). The port's
-        // gametype team-item handling isn't wired here; for an untemmed item just respawn this one.
-        ScheduleRespawn(item);
+        // QC items.qc:762-780: if(this.team) pick a random sibling of the same team to respawn (hide all,
+        // then show and schedule the one that was randomly chosen — re-rolled each pickup so successive picks
+        // can land on different members). For an un-teamed item just respawn this one.
+        if (item.Team != 0f)
+        {
+            // QC: RandomSelection_Init(); IL_EACH(g_items, it.team == this.team, …hide + add to selection…);
+            // e = RandomSelection_chosen_ent; Item_Show(e, 1); Item_ScheduleRespawn(e);
+            var sel = new MapMover.RandomSelection();
+            sel.Reset();
+            if (Api.Services is not null && Api.Entities.All is { } all)
+            {
+                for (int i = 0; i < all.Count; i++)
+                {
+                    Entity it = all[i];
+                    if (!it.IsFreed && it.Team == item.Team && it.ItemDefRef is not null)
+                    {
+                        // QC: Item_Show(it, -1); scheduledrespawntime = 0; then add to random selection.
+                        Show(it, -1);
+                        it.ScheduledRespawnTime = 0f;
+                        sel.Add(it, it.Cnt != 0 ? it.Cnt : 1, 0f);
+                    }
+                }
+            }
+            else
+            {
+                // headless / no All list: fall back to just this item (safe stub — QC behaviour requires
+                // iterating g_items; the live path is always covered by the Api.Entities.All branch).
+                sel.Add(item, item.Cnt != 0 ? item.Cnt : 1, 0f);
+            }
+
+            Entity? e = sel.Chosen ?? item;
+            // QC: Item_Show(e, 1) — reset the chosen item's state so it is visible (extra sendflags ok).
+            Show(e, 1);
+            ScheduleRespawn(e);
+        }
+        else
+        {
+            ScheduleRespawn(item);
+        }
     }
 
     // =====================================================================================
@@ -764,6 +801,10 @@ public static class ItemPickupRules
                     ? Waypoints.SpriteRule.Spectator
                     : Waypoints.SpriteRule.Default,
                 hideable: true);
+            // QC: a WP_Weapon carries wp_extra = the weapon id so the client resolves the per-weapon icon/color
+            // (waypointsprites.qc spritelookuptext/color). Stamp it for weapon respawns (parity with Weapon_whereis).
+            if (isWeapon && item.OwnedWeaponSet is { IsEmpty: false } ws)
+                foreach (int wid in ws.Ids()) { wp.WpExtra = wid; break; }
             // WaypointSprite_UpdateBuildFinished drives the build-progress bar to full at the scheduled respawn.
             Waypoints.WaypointSprites.UpdateBuildFinished(wp, item.ScheduledRespawnTime);
             item.WaypointAttached = wp;
@@ -832,6 +873,74 @@ public static class ItemPickupRules
     public static void RemoveItem(Entity item)
     {
         MapMover.RemoveEntity(item);
+    }
+
+    // =====================================================================================
+    //  Item_Damage (items.qc:981) — loot destroyed by NEEDKILL damage (lava/slime/swamp).
+    // =====================================================================================
+
+    /// <summary>
+    /// QC <c>Item_Damage</c> (items.qc:981-985): the <c>event_damage</c> handler wired on loot items
+    /// (<see cref="StartItem.SpawnInternal"/> sets this on <see cref="Entity.GtEventDamage"/> when loot is
+    /// created with <c>TakeDamage = DamageMode.Yes</c>). If the deathtype is a NEEDKILL environmental kill
+    /// (DEATH_HURTTRIGGER/SLIME/LAVA/SWAMP — loot falling into lava after the initial NODROP-brush check),
+    /// the item is removed immediately. Any other damage type is ignored: items aren't intended to be shot down.
+    /// </summary>
+    public static void ItemDamage(Entity item, Entity? inflictor, Entity? attacker,
+        string deathType, float damage, System.Numerics.Vector3 hitLoc, System.Numerics.Vector3 force)
+    {
+        // QC: if(ITEM_DAMAGE_NEEDKILL(deathtype)) RemoveItem(this);
+        if (DeathTypes.ItemDamageNeedKill(deathType))
+            RemoveItem(item);
+    }
+
+    // =====================================================================================
+    //  item_use (items.qc:987) — trigger-to-spawn (a relay/trigger fires a targetname'd item).
+    //  item_setactive (items.qc:995) — show/hide via ACTIVE_* (relay_activate/_deactivate/_toggle).
+    // =====================================================================================
+
+    /// <summary>
+    /// QC <c>item_use(this, actor, trigger)</c> (items.qc:987-993): wired on permanent items that have a
+    /// <c>targetname</c> so a relay/trigger firing the item's targetname can spawn it into play.
+    /// <list type="bullet">
+    ///   <item>spawnflags &amp; 16 — q3compat immediate-touch: call the item's own touch handler with
+    ///     <paramref name="actor"/> as the toucher (as if the actor walked over the item).</item>
+    ///   <item>else (normal path) — call <see cref="Respawn"/> to make the item visible and start its
+    ///     respawn cycle, exactly as if its respawn timer had fired.</item>
+    /// </list>
+    /// </summary>
+    public static void ItemUse(Entity item, Entity actor)
+    {
+        if ((item.SpawnFlags & 16) != 0)
+        {
+            // QC: gettouch(this)(this, actor) — fire the touch handler directly (q3compat).
+            item.Touch?.Invoke(item, actor);
+        }
+        else
+        {
+            // QC: Item_Respawn(this) — make the item available and start its respawn cycle.
+            Respawn(item);
+        }
+    }
+
+    /// <summary>
+    /// QC <c>item_setactive(this, act)</c> (items.qc:995-1005): the per-item <c>.setactive</c> handler wired
+    /// by <see cref="StartItem.SpawnInternal"/> on every permanent item. Receives an <c>ACTIVE_*</c> state from
+    /// relay_activate / relay_deactivate / relay_activatetoggle (or any other <c>.setactive</c> dispatch) and
+    /// calls <see cref="Show"/> on the item to match — <c>ACTIVE_ACTIVE</c> shows it (<c>mode 1</c>),
+    /// <c>ACTIVE_NOT</c> hides it (<c>mode -1</c>). <c>ACTIVE_TOGGLE</c> flips the current state.
+    /// </summary>
+    public static void ItemSetActive(Entity item, int act)
+    {
+        // QC: old_status = this.active; toggle or set; if changed, Item_Show(1 or -1).
+        int oldStatus = item.Active;
+        if (act == MapMover.ActiveToggle)
+            item.Active = (item.Active == MapMover.ActiveActive) ? MapMover.ActiveNot : MapMover.ActiveActive;
+        else
+            item.Active = act;
+
+        if (item.Active != oldStatus)
+            Show(item, item.Active == MapMover.ActiveActive ? 1 : -1);
     }
 
     // QC ITEM_TOUCH_NEEDKILL(): the loot's spot is a NODROP brush (lava) or a sky surface. We trace a zero-length

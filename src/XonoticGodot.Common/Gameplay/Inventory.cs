@@ -329,7 +329,84 @@ public static class Inventory
             }
             return true;
         }
+
+        // Not owned. QC client_hasweapon (selection.qc:106-115): on the complain path, if the weapon EXISTS as a
+        // spawn somewhere on the map (weaponsInMap & WepSet), point the player at it with WP_Weapon spawn-markers
+        // (Weapon_whereis) instead of the "you don't have it" complaint. The port has no cached weaponsInMap flag,
+        // so Weapon_whereis scans the live item set directly (same answer: a marker per matching spawn, or none).
+        if (complain && e is Player { IsBot: false })
+        {
+            // QC selection.qc:109-112: g_showweaponspawns < 3 → just this weapon; == 3 → every weapon sharing the
+            // pressed weapon's impulse group (so all alternatives bound to the same key are revealed).
+            if (Api.Services is not null && (int)Api.Cvars.GetFloat("g_showweaponspawns") >= 3)
+            {
+                for (int i = 0; i < Registry<Weapon>.Count; i++)
+                {
+                    Weapon it = Registry<Weapon>.ById(i);
+                    if (it.Impulse == w.Impulse)
+                        Weapon_whereis(it, e);
+                }
+            }
+            else
+            {
+                Weapon_whereis(w, e);
+            }
+        }
         return false;
+    }
+
+    /// <summary>
+    /// Port of <c>Weapon_whereis</c> (server/weapons/selection.qc:26): when a player presses a weapon key for a
+    /// weapon they don't own — and <c>g_showweaponspawns</c> is on — spawn a short-lived <c>WP_Weapon</c> waypoint
+    /// sprite over every matching weapon-spawn item, so the player can see where to pick it up. The markers use
+    /// <c>RADARICON_NONE</c> (radar icon 0) so they appear only in-world, not on the team radar, and carry the
+    /// weapon id (QC <c>wp_extra</c>) for the client's weapon-icon resolution. Lifetime -2 (QC: instant, no fade —
+    /// shown for one frame then re-spawned on the next press). <c>g_showweaponspawns</c>: 1 = on-key when unowned,
+    /// 2 = include dropped loot, 3 = all weapons sharing the impulse (the 3-case is dispatched by the caller).
+    /// </summary>
+    public static void Weapon_whereis(Weapon weapon, Entity requester)
+    {
+        if (Api.Services is null || requester is not Player requesterPlayer)
+            return;
+        // QC: if (!autocvar_g_showweaponspawns || this.spawnflags & WEP_FLAG_HIDDEN) return;
+        int showSpawns = (int)Api.Cvars.GetFloat("g_showweaponspawns");
+        if (showSpawns == 0 || (weapon.SpawnFlags & WeaponFlags.Hidden) != 0)
+            return;
+
+        // QC IL_EACH(g_items, it.weapon == this.m_id && it.model, …): every live spawn of this weapon that
+        // currently has a model (i.e. is shown — Item_Show clears the model when hidden/picked-up). The port maps
+        // it.weapon == m_id to "the item's weapon set contains this weapon" (weapon pickups seed exactly one).
+        System.Collections.Generic.IReadOnlyList<Entity>? all = Api.Entities.All;
+        if (all is null)
+            return;
+        for (int i = 0; i < all.Count; i++)
+        {
+            Entity it = all[i];
+            if (it.IsFreed || it.ItemDefRef is null)
+                continue;
+            if (it.Pickup is not WeaponPickup || !it.OwnedWeaponSet.Has(weapon))
+                continue;
+            if (!it.ItemAvailable || string.IsNullOrEmpty(it.Model)) // QC: && it.model (shown only)
+                continue;
+            // QC: if (ITEM_IS_LOOT(it) && autocvar_g_showweaponspawns < 2) continue;
+            if (it.ItemIsLoot && showSpawns < 2)
+                continue;
+
+            // QC WaypointSprite_Spawn(WP_Weapon, -2, 0, NULL, it.origin + ('0 0 1'*it.maxs.z)*1.2, cl, 0, NULL,
+            //   enemy, 0, RADARICON_NONE); wp.wp_extra = this.m_id.
+            // showto = cl → visible only to the requesting player (personal). RADARICON_NONE → radarIcon 0
+            // (in-world only). Lifetime -2 in QC means "no auto-fade, but flagged transient" — the marker is
+            // re-spawned each press; the port uses the deployed-dead lifetime so a single press shows it briefly.
+            System.Numerics.Vector3 head = it.Origin
+                + new System.Numerics.Vector3(0f, 0f, it.Maxs.Z * 1.2f);
+            Waypoints.WaypointDef def = Waypoints.WaypointRegistry.Get("Weapon");
+            Waypoints.WaypointSprite wp = Waypoints.WaypointSprites.Spawn(
+                "Weapon", Waypoints.WaypointSprites.WhereisLifetime, 0f, null, default, head,
+                0, def.Color, radarIcon: 0); // RADARICON_NONE
+            wp.WpExtra = weapon.RegistryId;   // QC wp.wp_extra = this.m_id (client weapon-icon resolution)
+            // QC showto = cl: personal, visible only to the requester.
+            wp.VisibleForPlayer = viewer => ReferenceEquals(viewer, requesterPlayer);
+        }
     }
 
     /// <summary>

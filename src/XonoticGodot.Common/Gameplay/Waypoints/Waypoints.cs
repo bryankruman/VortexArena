@@ -185,6 +185,32 @@ public sealed class WaypointSprite
 {
     public int Id;
     public string SpriteName = "";        // current def name (UpdateSprites swaps it per state)
+
+    /// <summary>QC <c>WaypointSprite_UpdateSprites(e, m1, m2, m3)</c> three-image triple
+    /// (waypointsprites.qc:807). For a <see cref="SpriteRule.Teamplay"/> waypoint the client (here: the per-peer
+    /// serializer) picks <see cref="SpriteName"/> for the ENEMY team (QC <c>netname</c> / <c>model1</c>),
+    /// <see cref="SpriteNameOwn"/> for the OWN team (QC <c>netname2</c> / <c>model2</c>), and
+    /// <see cref="SpriteNameSpec"/> for SPECTATORS (QC <c>netname3</c> / <c>model3</c>). Null/empty falls back to
+    /// <see cref="SpriteName"/>, so non-teamplay producers (which set only <see cref="SpriteName"/>) are unchanged.
+    /// This reproduces the Draw_WaypointSprite SPRITERULE_TEAMPLAY image swap (waypointsprites.qc:514) without a
+    /// wire-format change: the port already serializes per peer, so the right image is chosen for each viewer.</summary>
+    public string? SpriteNameOwn;         // QC model2 (own team)
+    public string? SpriteNameSpec;        // QC model3 (spectator)
+
+    /// <summary>QC Draw_WaypointSprite SPRITERULE_TEAMPLAY image selection (waypointsprites.qc:514-521): resolve
+    /// which of the three sprite images this viewer sees. Returns "" (skip) only when an empty image was chosen
+    /// (QC <c>if (spriteimage == "") return;</c>); non-teamplay rules always return <see cref="SpriteName"/>.</summary>
+    public string SpriteFor(int viewerTeam, bool viewerIsSpectator)
+    {
+        if (Rule != SpriteRule.Teamplay)
+            return SpriteName;
+        // QC: spectator → netname3; same team → netname2; enemy → netname. Each falls back to netname when unset.
+        string chosen = viewerIsSpectator
+            ? (SpriteNameSpec ?? SpriteName)
+            : (Team != 0 && Team == viewerTeam ? (SpriteNameOwn ?? SpriteName) : SpriteName);
+        return chosen ?? "";
+    }
+
     public Entity? Owner;                 // follow this entity's origin (carriers / objectives), or null = fixed
     public Vector3 Offset;                // added to Owner.Origin (or the fixed origin)
     public Vector3 FixedOrigin;           // used when Owner is null
@@ -215,6 +241,12 @@ public sealed class WaypointSprite
     /// <summary>Sim-time of the most recent <see cref="WaypointSprites.Ping"/> (0 = never). The serializer stamps
     /// bit 7 of the radar-icon byte for the short window after it so every subscribed peer sees the radar pulse.</summary>
     public float PingStartedAt;
+
+    /// <summary>QC <c>.wp_extra</c> (waypointsprites.qh): a per-instance lookup id the client uses to resolve a
+    /// dynamic icon/color/blink — the weapon id for <c>WP_Weapon</c> (Weapon_whereis / itemstime weapon respawn),
+    /// the item id for <c>WP_Item</c>, the buff id for <c>WP_Buff</c>. -1 = unset. Currently consumed only by the
+    /// whereis weapon-spawn markers (the spec's wp_extra-driven blink override remains unmodeled — see notes).</summary>
+    public int WpExtra = -1;
 
     /// <summary>The player who deployed this waypoint (QC <c>.owner</c>), for clear-by-owner; null for objectives.</summary>
     public Player? DeployedBy;
@@ -251,6 +283,13 @@ public static class WaypointSprites
     }
 
     private static float Now => GametypeEntities.Now;
+
+    /// <summary>QC Weapon_whereis spawns WP_Weapon with lifetime -2 (no auto-fade; the marker is RE-SPAWNED on
+    /// every weapon-key press, so it persists only as long as the player keeps pressing). The port has no
+    /// per-press re-spawn driver for an unowned weapon, so we give the marker a short positive lifetime — long
+    /// enough to read where the weapon is, then it fades — which reproduces the practical "flash a marker on the
+    /// spawn" effect of a single key press.</summary>
+    public const float WhereisLifetime = 2.5f;
 
     // ---- spawn ----------------------------------------------------------------------------------------
 
@@ -397,6 +436,18 @@ public static class WaypointSprites
     public static void UpdateSprites(WaypointSprite? wp, string spriteName)
     {
         if (wp is not null) wp.SpriteName = spriteName;
+    }
+
+    /// <summary>QC <c>WaypointSprite_UpdateSprites(e, m1, m2, m3)</c> (waypointsprites.qc:807): set the three-image
+    /// triple for a SPRITERULE_TEAMPLAY waypoint — <paramref name="enemy"/> = the enemy-team image (QC model1 /
+    /// netname), <paramref name="own"/> = the own-team image (model2 / netname2), <paramref name="spectator"/> =
+    /// the spectator image (model3 / netname3). The per-peer serializer picks the right one per viewer.</summary>
+    public static void UpdateSprites(WaypointSprite? wp, string enemy, string? own, string? spectator)
+    {
+        if (wp is null) return;
+        wp.SpriteName = enemy;
+        wp.SpriteNameOwn = string.IsNullOrEmpty(own) ? null : own;
+        wp.SpriteNameSpec = string.IsNullOrEmpty(spectator) ? null : spectator;
     }
 
     /// <summary>QC <c>WaypointSprite_UpdateTeamRadar</c>: set the radar icon + color.</summary>

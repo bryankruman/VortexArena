@@ -50,10 +50,12 @@ public sealed class GlobalForcesMutator : MutatorBase
         {
             Scale = Api.Cvars.GetFloat("g_globalforces"); // enable cvar IS the scale (QC: damage_force * autocvar)
             NoSelf = ReadBool("g_globalforces_noself", true);
-            float ss = Api.Cvars.GetFloat("g_globalforces_self");
-            if (ss != 0f) SelfScale = ss;
-            float r = Api.Cvars.GetFloat("g_globalforces_range");
-            if (r != 0f) Range = r;
+            // QC reads autocvar_g_globalforces_self / _range directly, where 0 is a meaningful value
+            // (self=0 -> attacker takes no self-knockback; range=0 -> unlimited radius). Fall back to the
+            // QC AUTOCVAR defaults (sv_globalforces.qc:5-6: self=1, range=1000) only when the cvar is UNSET;
+            // an explicit 0 must be honored. The old `if (v != 0) ...` guard wrongly discarded a set-to-0.
+            SelfScale = ReadFloat("g_globalforces_self", 1f);
+            Range = ReadFloat("g_globalforces_range", 1000f);
         }
     }
 
@@ -133,5 +135,13 @@ public sealed class GlobalForcesMutator : MutatorBase
     {
         string s = Api.Cvars.GetString(name);
         return string.IsNullOrEmpty(s) ? fallback : Api.Cvars.GetFloat(name) != 0f;
+    }
+
+    // Read a float cvar, falling back to the QC AUTOCVAR default only when UNSET (empty string).
+    // An explicitly-set 0 is kept distinct from "unset" and honored.
+    private static float ReadFloat(string name, float fallback)
+    {
+        string s = Api.Cvars.GetString(name);
+        return string.IsNullOrEmpty(s) ? fallback : Api.Cvars.GetFloat(name);
     }
 }

@@ -40,6 +40,12 @@ public sealed class OverkillMutator : MutatorBase
     /// <summary>QC autocvar_g_overkill_loot_player_time — seconds the dropped loot lives (0 = no drop).</summary>
     public float LootPlayerTime = 5f;
 
+    /// <summary>QC autocvar_g_overkill_loot_monster — loot item classname dropped when a monster dies.</summary>
+    public string LootMonster = "armor_small";
+
+    /// <summary>QC autocvar_g_overkill_loot_monster_time — seconds the monster loot lives (0 = no drop).</summary>
+    public float LootMonsterTime = 5f;
+
     /// <summary>QC WEP_OVERKILL_RPC.weaponstart — start with the RPC in the loadout.</summary>
     public bool StartRpc;
 
@@ -89,6 +95,7 @@ public sealed class OverkillMutator : MutatorBase
 
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _onDamageCalc;
     private HookHandler<MutatorHooks.PlayerDiesArgs>? _onPlayerDies;
+    private HookHandler<MutatorHooks.MonsterDropItemArgs>? _onMonsterDrop;
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _onPlayerSpawn;
     private HookHandler<MutatorHooks.ForbidThrowCurrentWeaponArgs>? _onForbidThrow;
     private HookHandler<MutatorHooks.ForbidRandomStartWeaponsArgs>? _onForbidRandom;
@@ -102,6 +109,7 @@ public sealed class OverkillMutator : MutatorBase
     {
         _onDamageCalc ??= OnDamageCalculate;
         _onPlayerDies ??= OnPlayerDies;
+        _onMonsterDrop ??= OnMonsterDropItem;
         _onPlayerSpawn ??= OnPlayerSpawn;
         _onForbidThrow ??= OnForbidThrow;
         _onForbidRandom ??= OnForbidRandomStartWeapons;
@@ -113,6 +121,7 @@ public sealed class OverkillMutator : MutatorBase
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc, HookOrder.Last); // QC CBC_ORDER_LAST
         MutatorHooks.PlayerDies.Add(_onPlayerDies);
+        MutatorHooks.MonsterDropItem.Add(_onMonsterDrop);
         MutatorHooks.PlayerSpawn.Add(_onPlayerSpawn);
         MutatorHooks.ForbidThrowCurrentWeapon.Add(_onForbidThrow);
         MutatorHooks.ForbidRandomStartWeapons.Add(_onForbidRandom);
@@ -130,6 +139,10 @@ public sealed class OverkillMutator : MutatorBase
             if (!string.IsNullOrEmpty(lp)) LootPlayer = lp;
             float lpt = Api.Cvars.GetFloat("g_overkill_loot_player_time");
             if (lpt != 0f) LootPlayerTime = lpt;
+            string lm = Api.Cvars.GetString("g_overkill_loot_monster");
+            if (!string.IsNullOrEmpty(lm)) LootMonster = lm;
+            float lmt = Api.Cvars.GetFloat("g_overkill_loot_monster_time");
+            if (lmt != 0f) LootMonsterTime = lmt;
             StartRpc = Api.Cvars.GetFloat("g_weapon_overkill_rpc_weaponstart") > 0f
                        || Api.Cvars.GetFloat("g_start_weapon_okrpc") > 0f;
             StartHmg = Api.Cvars.GetFloat("g_weapon_overkill_hmg_weaponstart") > 0f
@@ -157,6 +170,7 @@ public sealed class OverkillMutator : MutatorBase
     {
         if (_onDamageCalc is not null) MutatorHooks.DamageCalculate.Remove(_onDamageCalc);
         if (_onPlayerDies is not null) MutatorHooks.PlayerDies.Remove(_onPlayerDies);
+        if (_onMonsterDrop is not null) MutatorHooks.MonsterDropItem.Remove(_onMonsterDrop);
         if (_onPlayerSpawn is not null) MutatorHooks.PlayerSpawn.Remove(_onPlayerSpawn);
         if (_onForbidThrow is not null) MutatorHooks.ForbidThrowCurrentWeapon.Remove(_onForbidThrow);
         if (_onForbidRandom is not null) MutatorHooks.ForbidRandomStartWeapons.Remove(_onForbidRandom);
@@ -257,6 +271,23 @@ public sealed class OverkillMutator : MutatorBase
         target.OkLastWeapon[0] = held?.NetName;
         for (int slot = 1; slot < MutatorConstants.MaxWeaponSlots; slot++)
             target.OkLastWeapon[slot] = null;
+        return false;
+    }
+
+    // MUTATOR_HOOKFUNCTION(ok, MonsterDropItem) — sv_overkill.qc:119-127. A monster dying under Overkill drops
+    // Overkill loot (g_overkill_loot_monster, default "armor_small") flung toward its killer, and its NORMAL drop
+    // is suppressed (M_ARGV(1, string) = "" — "item drops handled"). The MonsterDropItem chain is live: the
+    // monster loot driver (MonsterFramework.DropItem) fires it to resolve the item list, then bails on an empty
+    // list, so clearing the list here both spawns the OK loot and cancels the vanilla drop — matching Base.
+    private bool OnMonsterDropItem(ref MutatorHooks.MonsterDropItemArgs args)
+    {
+        Entity mon = args.Monster;
+        // QC: ok_DropItem(mon, frag_attacker, ...). The attacker may be null (environment/world kill); fall back
+        // to the monster itself so the launch direction is well-defined (the loot pops straight up off the corpse).
+        Entity launcher = args.Attacker ?? mon;
+        DropItem(mon, launcher, LootMonster, LootMonsterTime);
+
+        args.ItemList = ""; // QC M_ARGV(1, string) = "" — Overkill handled the drop; suppress the normal loot.
         return false;
     }
 

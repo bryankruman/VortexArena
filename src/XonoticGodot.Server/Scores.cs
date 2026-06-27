@@ -102,8 +102,13 @@ public sealed class PlayerScoreRow
     /// <summary>
     /// QC <c>PlayerScore_Clear</c> on a team change (KillPlayerForTeamChange): reset the auxiliary score
     /// columns + accuracy/streak counters so a mid-match team move doesn't carry kills/deaths to the new
-    /// team. Deliberately leaves SP_SCORE (the frag total) alone — DEATH_AUTOTEAMCHANGE "does not negate
-    /// frags" in QC — so the player's standing is preserved across the forced move.
+    /// team. Deliberately leaves SP_SCORE (the frag total) alone. The DEATH_TEAMCHANGE suicide that follows
+    /// in <see cref="Teamplay.KillPlayerForTeamChange"/> negates exactly one frag (the gametype's suicide
+    /// branch / Obituary SUICIDE −1), matching Base where DEATH_TEAMCHANGE (unlike AUTOTEAMCHANGE) is NOT in
+    /// the GiveFrags-skip exception (server/damage.qc:304). Note: Base's own SP_SCORE wipe lives in
+    /// PlayerScore_Clear and is gated on <c>g_score_resetonjoin</c> (default 0 → no-op), so by default Base
+    /// also keeps SP_SCORE; this port unconditionally clears only the aux columns (a separate scores-parity
+    /// concern), but the frag-negation result here matches stock Base.
     /// </summary>
     internal void ClearForTeamChange()
     {

@@ -88,4 +88,15 @@ public abstract partial class Pickup
     /// a no-op; the resource + powerup pickups override it. <paramref name="item"/> is the spawned world edict.
     /// </summary>
     public virtual void ItemInit(Entity item) { }
+
+    /// <summary>
+    /// QC <c>m_spawnfunc_hookreplace(this, e)</c> — called by the spawnfunc (before <c>StartItem</c>) to
+    /// optionally REPLACE this def with a different one. The returned def is what <c>StartItem</c> receives; if
+    /// it equals <c>this</c> the spawn is normal. The override in <see cref="JetpackItem"/> and
+    /// <see cref="FuelRegenItem"/> returns the plain <c>ITEM_Fuel</c> def when the player's start loadout
+    /// already grants the held item bit (jetpack/fuelregen), so a map item_jetpack / item_fuel_regen spawns as
+    /// a fuel ammo drop instead of a redundant held-bit pickup — exactly like QC jetpack.qc:6-11 and
+    /// fuelregen.qc:6-11.
+    /// </summary>
+    public virtual Pickup SpawnFuncHookReplace(Entity e) => this;
 }

@@ -38,10 +38,11 @@ namespace XonoticGodot.Common.Gameplay;
 /// player's latched <c>.death_origin</c> (<see cref="Player.DeathOrigin"/>). Both the look-at facing and the
 /// relocation facing are latched into the networked FixAngle channel so the spawn orientation reaches the client.
 ///
-/// NOTE (still approximated, flagged inline): the per-teammate <c>weaponLocked(it)</c> and
-/// <c>PHYS_INPUT_BUTTON_CHAT(it)</c> relocate gates are always false (the port has no reachable per-player weapon
-/// lock nor chat-button input) — a faithful subset that may relocate beside a mate QC would skip for a weapon lock
-/// or for typing.
+/// The per-teammate eligibility gates <c>weaponLocked(it)</c> and <c>PHYS_INPUT_BUTTON_CHAT(it)</c> are now
+/// ported: <c>IsChatting</c> reads <see cref="Entity.ButtonChat"/> (set by PlayerPhysics from the Typing intent,
+/// same field campcheck and typefrag use); <c>WeaponLocked</c> checks <see cref="Entity.FrozenStat"/> and the
+/// <c>STATUSEFFECT_Frozen</c> status effect (the reachable subset of QC's <c>weaponLocked</c> — the
+/// game_stopped/prematch and player_blocked/LockWeapon-hook portions are not observable on the spawn path).
 /// QC kept <c>.msnt_lookat</c> / <c>.msnt_timer</c> on the spot/player edicts; adding Entity fields is out of this
 /// task's edit scope, so both live in <see cref="ConditionalWeakTable{TKey,TValue}"/> maps keyed by the entity.
 /// </summary>
@@ -456,14 +457,25 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
     private static bool IsSpawnShielded(Entity e) =>
         StatusEffectsCatalog.SpawnShield is { } sh && StatusEffectsCatalog.Has(e, sh);
 
-    /// <summary>QC <c>weaponLocked(it)</c>: the player's weapon is locked (e.g. mid-switch / disabled). The port has
-    /// no per-player weapon-lock flag reachable here, so this is always false (a faithful subset — it won't skip a
-    /// teammate that QC would have for a weapon lock; flagged).</summary>
-    private static bool WeaponLocked(Entity e) => false;
+    /// <summary>QC <c>weaponLocked(it)</c> (server/weapons/weaponsystem.qc:435): true when
+    /// <c>(time &lt; game_starttime &amp;&amp; !sv_ready_restart_after_countdown) || game_stopped ||
+    /// player_blocked || StatusEffects_active(STATUSEFFECT_Frozen, it) || LockWeapon_hook</c>.
+    /// The game-start/game-stopped portions are not reachable here (spawns only fire during a live match);
+    /// <c>player_blocked</c> and the <c>LockWeapon</c> mutator hook have no port equivalent yet.
+    /// The reachable piece — mirroring <see cref="CampcheckMutator"/>'s <c>WeaponLocked</c> — is the
+    /// freeze check: the gametype freeze stat (<see cref="Entity.FrozenStat"/>, e.g. Freeze Tag) OR the
+    /// <c>STATUSEFFECT_Frozen</c> status effect (e.g. the Buffs swapper freeze).</summary>
+    private static bool WeaponLocked(Entity e) => e.FrozenStat != 0 || IsFrozen(e);
 
-    /// <summary>QC <c>PHYS_INPUT_BUTTON_CHAT(it)</c>: the teammate has the chat console open. The headless sim has
-    /// no chat-button input plumbed, so this is always false (a faithful subset — flagged like <see cref="WeaponLocked"/>).</summary>
-    private static bool IsChatting(Entity e) => false;
+    /// <summary>QC <c>StatusEffects_active(STATUSEFFECT_Frozen, it)</c> half of <c>weaponLocked</c>.</summary>
+    private static bool IsFrozen(Entity e) =>
+        StatusEffectsCatalog.Frozen is { } f && StatusEffectsCatalog.Has(e, f);
+
+    /// <summary>QC <c>PHYS_INPUT_BUTTON_CHAT(it)</c> (common/physics/player.qh:161 → CS(s).buttonchat):
+    /// the teammate has the chat console open. In the port this is written from the <c>Typing</c> input
+    /// intent in <c>PlayerPhysics</c> into <see cref="Entity.ButtonChat"/> — the same field campcheck
+    /// and the typefrag system read. Bots never set it (no Typing intent), matching QC behaviour.</summary>
+    private static bool IsChatting(Entity e) => e.ButtonChat;
 
     /// <summary>Deterministic Fisher–Yates shuffle (QC FOREACH_CLIENT_RANDOM order) via the shared <see cref="Prandom"/>.</summary>
     private static void Shuffle(List<Entity> list)

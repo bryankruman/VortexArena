@@ -126,8 +126,13 @@ public partial class DialogMutators : MenuScreen
 
         box.AddChild(Widgets.CheckBox("g_dodging", "Dodging",
             "Enable dodging (quick acceleration in a given direction). Double-tap a directional key to dodge"));
+        // Port of MutatorTouchExplode.describe() (touchexplode.qc:5-11): 2-paragraph info-page text. The port
+        // has no dedicated describe-page widget, so the describe text rides on the checkbox tooltip (same pattern
+        // as Cloaked, Vampire, New Toys, Piñata, and Hook above).
         box.AddChild(Widgets.CheckBox("g_touchexplode", "Touch explode",
-            "An explosion occurs when two players collide"));
+            "The Touch explode mutator causes an explosion when two players collide if it is enabled. " +
+            "This is a nice way to add some silly fun to a server, but it also does allow for the use of " +
+            "new tactics in some gametypes."));
         // Port of MutatorCloaked.describe() (cloaked.qc:6-13): "makes all players nearly invisible, similar to
         // the Invisibility powerup". The port has no dedicated describe-page widget, so the describe text rides
         // on the checkbox tooltip (same pattern as Piñata and New Toys above).

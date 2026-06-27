@@ -19,10 +19,16 @@ namespace XonoticGodot.Common.Gameplay;
 /// so this port runs it server-side. The forced 3rd-person <c>chase_active 1</c> camera on connect IS ported
 /// (<see cref="OnClientConnect"/>, dispatched from GameWorld.InfraClientConnect) and the mutator advertises
 /// itself in the active-mutator strings (<see cref="BuildMutatorsString"/> / <see cref="BuildMutatorsPrettyString"/>).
-/// The <c>disableclientprediction = 2</c> per-tick write is NOT ported: the port has no per-player
-/// prediction-disable plumbing (it would require networking the flag and gating the client movement-prediction
-/// /reconciliation layer), and bugrigs is server-authoritative here, so the write would land on a field nothing
-/// reads — left as a known follow-up rather than faked.
+/// The <c>disableclientprediction = 2</c> per-tick write is NOT ported, and is INERT in this port: in Base the
+/// field is a server→client DP-engine flag (dpextensions.qc) that tells the native DarkPlaces client to skip its
+/// built-in movement prediction for the rig; no QC reads it. The port has no such networked field, and — more to
+/// the point — its client prediction (game/net NetGame/ClientNet prediction carrier) runs the SAME RaceCarPhysics
+/// through the shared static <see cref="MutatorHooks.PMPhysics"/> chain on the shared <see cref="Api.Services"/>
+/// collision world (EntityMovementStep -> PlayerPhysics.Move -> CallPmPhysics), so the predicted rig is already in
+/// lockstep with authority — there is nothing for a prediction-disable flag to suppress. Implementing it for real
+/// would mean networking a new per-player flag AND gating the client prediction/reconciliation layer on it (a new
+/// cross-assembly subsystem), which would only re-create the lockstep the shared hook chain already gives. Not
+/// faked: writing to a field nothing reads would be dead code. Same stance as Race's freeze (Race.cs).
 ///
 /// Ported faithfully: the 15 <c>g_bugrigs_*</c> cvars (bugrigs_SetVars), <c>racecar_angle</c>, the whole
 /// <c>RaceCarPhysics</c> drive model (responsiveness factor, reverse speeding/spinning/stopping,
@@ -147,7 +153,10 @@ public sealed class BugrigsMutator : MutatorBase
         Entity player = args.Player;
         // #ifdef SVQC player.bugrigs_prevangles = player.angles; player.disableclientprediction = 2;
         player.BugrigsPrevAngles = player.Angles;
-        // disableclientprediction is a net/prediction concern (bugrigs is SVQC-only in Base); noted as a follow-up.
+        // QC also sets player.disableclientprediction = 2 here. That field is a DP server->client engine flag that
+        // disables the native client's movement prediction for the rig; no QC reads it. It is INERT in this port:
+        // the client prediction carrier runs the SAME RaceCarPhysics via the shared MutatorHooks.PMPhysics chain on
+        // the shared collision world, so prediction is already in lockstep with authority (see class doc-comment).
         return false;
     }
 

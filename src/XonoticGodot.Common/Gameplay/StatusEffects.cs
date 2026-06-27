@@ -139,11 +139,13 @@ public static class StatusEffectsCatalog
         // --- core debuffs / status (status_effect/*.qh) ---
         // STATUSEFFECT_Frozen (frozen.qh): m_color '0 0.62 1', hidden.
         R(new StatusEffectDef("frozen") { Hidden = true, Color = (0f, 0.62f, 1f) });
-        // STATUSEFFECT_Burning (burning.qc): EF_FLAME flame + Fire_ApplyDamage. m_persistent = burning while
+        // STATUSEFFECT_Burning (burning.qh): EF_FLAME flame + Fire_ApplyDamage. m_persistent = burning while
         // standing in lava (g_balance_contents_playerdamage_lava_burn, default 0). m_tick self-extinguishes in
         // non-lava water or while STAT(FROZEN). m_sound_rm = the steam-burst hiss (burning.qh SND_Burning_Remove).
         R(new StatusEffectDef("burning")
         {
+            DisplayName = "Burning",
+            Icon = "buff_inferno",
             Hidden = true,
             Lifetime = 10f,
             Color = (1f, 0.62f, 0f),   // QC m_color '1 0.62 0'
@@ -168,6 +170,8 @@ public static class StatusEffectsCatalog
         // (stunned.qc:5). m_sound_rm = the spark snap (ons_spark1).
         R(new StatusEffectDef("stunned")
         {
+            DisplayName = "Stunned",
+            Icon = "buff_disability",
             Hidden = true,
             Lifetime = 10f,
             Color = (0.67f, 0.84f, 1f),   // QC m_color '0.67 0.84 1'
@@ -195,10 +199,11 @@ public static class StatusEffectsCatalog
         // PowerupsMutator.PlayerPreThink (always enabled, self-gated on StatusEffectsCatalog.Has), ORing the bits
         // into the networked Entity.Effects each frame; the CSQC model hooks (CsqcModelEffects.Apply) light them.
         // So these defs intentionally carry no OnTick glow — the bits would otherwise be set in two places.
-        R(new StatusEffectDef("strength"));
-        R(new StatusEffectDef("shield"));      // QC ShieldStatusEffect netname "invincible"; consumers use "shield"
-        R(new StatusEffectDef("speed"));
-        R(new StatusEffectDef("invisibility"));
+        // QC powerups (strength.qh / shield.qh / speed.qh / invisibility.qh) m_name/m_icon/m_color:
+        R(new StatusEffectDef("strength") { DisplayName = "Strength", Icon = "strength", Color = (0f, 0f, 1f) });
+        R(new StatusEffectDef("shield") { DisplayName = "Shield", Icon = "shield", Color = (1f, 0f, 1f) });      // QC ShieldStatusEffect netname "invincible"; consumers use "shield"
+        R(new StatusEffectDef("speed") { DisplayName = "Speed", Icon = "buff_speed", Color = (0.1f, 1f, 0.84f) });
+        R(new StatusEffectDef("invisibility") { DisplayName = "Invisibility", Icon = "buff_invisible", Color = (0.5f, 0.5f, 1f) });
 
         // --- buffs (mutators/mutator/buffs/buff/*.qh): the exact QC set, offered by BuffsMutator ---
         foreach (var b in new[] { "ammo", "bash", "disability", "flight", "inferno", "jump", "luck",

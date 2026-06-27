@@ -681,7 +681,7 @@ public sealed class Teamplay
 
     /// <summary>
     /// QC <c>KillPlayerForTeamChange</c>: when a player is moved across teams mid-match, kill them
-    /// (DEATH_AUTOTEAMCHANGE — always lethal, does not negate frags) and clear their auxiliary score columns
+    /// (DEATH_TEAMCHANGE — a self-kill that negates a frag) and clear their auxiliary score columns
     /// so the move doesn't unfairly carry kills/deaths to the new team. Returns true if the player was alive
     /// (and thus killed). The caller re-spawns the player afterwards via the normal respawn path.
     /// </summary>
@@ -693,9 +693,10 @@ public sealed class Teamplay
         if (p.IsDead)
             return false;
 
-        // QC Damage(... DEATH_AUTOTEAMCHANGE ...): force-kill through the damage pipeline so the obituary
-        // bus + respawn timer fire exactly like any other death.
-        Combat.Damage(p, null, null, 100000f, DeathTypes.AutoTeamChange, p.Origin, System.Numerics.Vector3.Zero);
+        // QC server/teamplay.qc:1249: `Damage(player, player, player, 100000, DEATH_TEAMCHANGE.m_id, ...)`
+        // attacker == targ → SUICIDE branch; DEATH_TEAMCHANGE (unlike AUTOTEAMCHANGE) DOES negate a frag.
+        // The port passes the player as attacker (self-kill) matching Base exactly.
+        Combat.Damage(p, null, p, 100000f, DeathTypes.TeamChange, p.Origin, System.Numerics.Vector3.Zero);
         return true;
     }
 

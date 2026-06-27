@@ -1242,6 +1242,15 @@ public sealed class GameWorld
         // the connecting real client; a bot has no CSQC/dialog so it's skipped (matches the human-only effect).
         if (!p.IsBot && Cvars.Bool("g_campaign"))
             SendCampaignWelcome(p);
+        // QC SendWelcomeMessage (non-campaign branch, server/client.qc:1107): MUTATOR_CALLHOOK(BuildMutatorsPrettyString,
+        // "") builds the human-readable active-mutators "modifications" line (e.g. "Stale-move negation, Vampire"),
+        // networked to the joining client and rendered in its Welcome dialog. The port has no networked CSQC welcome
+        // channel, so — exactly as the campaign branch and the hook/offhand gameplay tips above do — surface the line
+        // to the connecting real client via the per-client chat sink. This is the LIVE consumer of the
+        // BuildMutatorsPrettyString chain (the prior code only wrote it to a never-read "modifications" cvar). Computed
+        // per-join (QC does the same; mutators don't change mid-match), skipped for bots (no Welcome dialog).
+        else if (!p.IsBot)
+            SendMutatorsWelcome(p);
 
         // QC cl_hook.qc:MUTATOR_HOOKFUNCTION(cl_hook, BuildGameplayTipsString) (cl_hook.qc:6-13): when the
         // grappling-hook mutator is active, append a tip "grappling hook is enabled, press <key> to use it"
@@ -1324,6 +1333,30 @@ public sealed class GameWorld
             Commands.ChatToPlayer.Invoke(p, line);
         else
             Campaign.Log?.Invoke(line); // bare host / test fallback (no per-client sink wired)
+    }
+
+    /// <summary>
+    /// QC the non-campaign branch of <c>SendWelcomeMessage</c> (server/client.qc:1107): build the human-readable
+    /// active-mutators "modifications" line via the <c>BuildMutatorsPrettyString</c> hook chain and surface it to the
+    /// connecting client. In Base this string is networked and rendered in the CSQC Welcome dialog; the port has no
+    /// networked welcome channel, so — like <see cref="SendCampaignWelcome"/> and the hook/offhand gameplay tips — it
+    /// goes to the one connecting client via the per-client chat sink. This is the sole LIVE consumer of the
+    /// <c>BuildMutatorsPrettyString</c> chain. The leading ", " the per-mutator hooks prepend is stripped once here
+    /// (QC: <c>substring(s, 2, strlen(s) - 2)</c>). When no mutator contributes, the line is empty and nothing is sent.
+    /// (The non-mutator modifications QC also appends — "No start weapons", "Low gravity", "Weapons stay", "Jetpack" —
+    /// are owned by their own units, not this mutator-string chain, so they are intentionally not added here.)
+    /// </summary>
+    private void SendMutatorsWelcome(Player p)
+    {
+        string prettyRaw = MutatorActivation.BuildMutatorsPrettyString("");
+        string modifications = prettyRaw.Length > 2 ? prettyRaw.Substring(2) : "";
+        if (string.IsNullOrEmpty(modifications))
+            return;
+        // QC client/main.qc:1438 renders it as strcat(_("Active modifications:"), " ^3", modifications) in the
+        // Welcome dialog (the ^3 color is Base's, verbatim).
+        string line = $"Active modifications: ^3{modifications}";
+        if (Commands.ChatToPlayer is not null)
+            Commands.ChatToPlayer.Invoke(p, line);
     }
 
     /// <summary>
@@ -4208,6 +4241,12 @@ public sealed class GameWorld
             // per-player LmsState carried stale lives/rank/leader across matches (the round resets never touched it).
             case LastManStanding lms: lms.ResetMapPlayers(Clients.Players); break;
         }
+
+        // QC MUTATOR_HOOKFUNCTION(nades, reset_map_global) (sv_nades.qc:932): FOREACH_CLIENT nades_RemovePlayer —
+        // on a round/map reset every player drops their held nade, banked bonus, and spawn-loc marker so none of
+        // it leaks across the reset (the port has no reset_map_global hook chain; the host drives it, gated on
+        // g_nades). Runs before the per-client respawn below (the PlayerSpawn nades hook re-assigns the offhand).
+        XonoticGodot.Common.Gameplay.Nades.NadesMutator.ResetMapGlobal(Clients.Players);
 
         if (Rounds is not null)
             Rounds.Reset(GameStartTime);             // QC round_handler_Reset(game_starttime)

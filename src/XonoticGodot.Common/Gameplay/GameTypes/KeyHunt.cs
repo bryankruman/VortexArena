@@ -1343,17 +1343,22 @@ public sealed class KeyHunt : GameType
         {
             if (key.Carrier is { } carrier)
             {
-                // QC kh_Key_AssignTo: WaypointSprite_AttachCarrier on the carrier, def per the carrier's team
-                // (flipped to WP_KeyCarrierFinish when all keys are on the same team). SPRITERULE_TEAMPLAY with a
-                // per-frame visibility predicate (kh_KeyCarrier_waypointsprite_visible_for_player).
-                string spriteName = allOwnedTeam == (int)carrier.Team
-                    ? "KeyCarrierFinish"                        // QC WP_KeyCarrierFinish "Run here"
-                    : CarrierSpriteForTeam((int)carrier.Team);  // QC WP_KeyCarrier{Red,Blue,Yellow,Pink}
-                Waypoints.WaypointDef cdef = Waypoints.WaypointRegistry.Get(spriteName);
+                // QC kh_Key_AssignTo (sv_keyhunt.qc:360-367,388-411): WaypointSprite_AttachCarrier on the carrier,
+                // SPRITERULE_TEAMPLAY three-image — ENEMY (model1) + SPECTATOR (model3) see the team-colored
+                // WP_KeyCarrier{Red,Blue,Yellow,Pink}; the carrier's OWN team (model2) sees WP_KeyCarrierFriend
+                // ("Key carrier", green), flipped to WP_KeyCarrierFinish ("Run here") for the own team ONLY when one
+                // team owns ALL keys. Per-frame visibility predicate (kh_KeyCarrier_waypointsprite_visible_for_player).
+                string teamSprite = CarrierSpriteForTeam((int)carrier.Team); // model1/model3 (enemy + spectator)
+                string ownSprite = allOwnedTeam == (int)carrier.Team
+                    ? "KeyCarrierFinish"                         // QC model2 when all keys owned → "Run here"
+                    : "KeyCarrierFriend";                        // QC model2 normally → green "Key carrier"
+                Waypoints.WaypointDef cdef = Waypoints.WaypointRegistry.Get(teamSprite);
                 Player held = carrier;
                 into.Add(new Waypoints.WaypointSprite
                 {
-                    SpriteName = spriteName,
+                    SpriteName = teamSprite,         // model1 (enemy)
+                    SpriteNameOwn = ownSprite,       // model2 (own team)
+                    SpriteNameSpec = teamSprite,     // model3 (spectator)
                     Owner = carrier,
                     // QC kh_Key_AssignTo: WaypointSprite_AttachCarrier rides the carrier at the standard head
                     // offset ('0 0 64'), like every other carrier sprite (CTF/Keepaway); the KH_KEY_WP_ZSHIFT (20)

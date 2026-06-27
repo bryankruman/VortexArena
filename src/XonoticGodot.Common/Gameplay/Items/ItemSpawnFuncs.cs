@@ -291,7 +291,11 @@ public static class ItemSpawnFuncs
             MapMover.RemoveEntity(e);
             return;
         }
-        StartItem.Spawn(e, def);
+        // QC m_spawnfunc_hookreplace(this, e): let the def optionally substitute itself with a different def
+        // before StartItem runs. This is how jetpack/fuelregen replace themselves with ITEM_Fuel when the
+        // player already gets the held-bit as a start item (jetpack.qc:6-11, fuelregen.qc:6-11).
+        Pickup effective = def.SpawnFuncHookReplace(e);
+        StartItem.Spawn(e, effective);
         // (StartItem removes the edict itself on a failed permanent spawn; nothing more to do here.)
     }
 

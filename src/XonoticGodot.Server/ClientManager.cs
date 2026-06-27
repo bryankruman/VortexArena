@@ -630,6 +630,11 @@ public sealed class ClientManager
         // the spectatee's keys. GetPressedKeys keeps target.PressedKeys current each server frame.
         spectator.PressedKeys = target.PressedKeys;
 
+        // QC MUTATOR_HOOKFUNCTION(nades, SpectateCopy) (sv_nades.qc:937): a following observer mirrors the
+        // spectatee's nade HUD/bonus stats (NADE_TIMER charge ring + NADE_BONUS_TYPE/pokenade_type/NADE_BONUS/
+        // NADE_BONUS_SCORE) so the nade readouts track the watched player. No-op when g_nades is off.
+        XonoticGodot.Common.Gameplay.Nades.NadesMutator.OnSpectateCopy(spectator, target);
+
         // QC SpectateCopy tail (server/client.qc:1837): anticheat_spectatecopy(this, spectatee) overrides the
         // observer's body angle with the spectatee's evade-tracked view angle. Runs last so it wins over the
         // raw .Angles copy above; no-op until the host wires it.
@@ -681,6 +686,12 @@ public sealed class ClientManager
         // with a clean status-effect store — StatusEffects_clearall so no burning/stunned/superweapon timer
         // bleeds across a respawn (and the cleared state networks via the dirty-mark).
         StatusEffectsCatalog.ClearAll(p);
+
+        // QC MUTATOR_HOOKFUNCTION(nades, PutClientInServer) (sv_nades.qc:470): nades_RemoveBonus(player) — a
+        // (re)spawning player's banked bonus + accrual is wiped so a bonus banked in a previous life doesn't
+        // carry into the new one. No-op when g_nades is off. Runs before the PlayerSpawn nades hook (which then
+        // re-assigns the offhand + nade_refire), matching the QC PutClientInServer→PlayerSpawn order.
+        XonoticGodot.Common.Gameplay.Nades.NadesMutator.OnPutClientInServer(p);
 
         SpawnSystem.PutPlayerInServer(p, sp.Value, warmup: IsWarmup?.Invoke() ?? false);
 

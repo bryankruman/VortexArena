@@ -32,6 +32,8 @@ public partial class DialogMediaGuide : Control
     private Label _entryNote = null!;
     // The Weapons topic's entries, parallel to _entryList rows (so a row index maps back to its weapon).
     private readonly List<Weapon> _weaponEntries = new();
+    // The Mutators topic's entries, parallel to _entryList rows (so a row index maps back to its mutator).
+    private readonly List<MutatorBase> _mutatorEntries = new();
 
     public override void _Ready()
     {
@@ -126,9 +128,26 @@ public partial class DialogMediaGuide : Control
     {
         _entryList.Clear();
         _weaponEntries.Clear();
+        _mutatorEntries.Clear();
 
         if (index < 0 || index >= Topics.Length)
             return;
+
+        if (Topics[index] == "Mutators")
+        {
+            // The QC Mutators topic lists the mutator registry; each entry's describe() feeds the description
+            // pane. We only have ported describe() text for some mutators, so list those that provide it.
+            foreach (MutatorBase m in Mutators.All)
+            {
+                if (m is null || m.NetName.Length == 0 || m.GuideDescription is not { Length: > 0 })
+                    continue;
+                _mutatorEntries.Add(m);
+                _entryList.AddItem(Humanize(m.NetName));
+            }
+            _entryNote.Text = "(select a mutator to read its description)";
+            _description.Text = "Mutators\n\nSelect a mutator from the entry list to read its description.";
+            return;
+        }
 
         if (Topics[index] == "Weapons")
         {
@@ -150,15 +169,41 @@ public partial class DialogMediaGuide : Control
         _description.Text = $"{Topics[index]}\n\n(entry list / descriptions for this topic — guide registry enumeration pending)";
     }
 
-    // An entry was picked: show the selected weapon's ported describe() prose (or a note if none is ported yet).
+    // An entry was picked: show the selected entry's ported describe() prose (or a note if none is ported yet).
     private void OnEntrySelected(long index)
     {
-        if (index < 0 || index >= _weaponEntries.Count)
+        if (index < 0)
+            return;
+
+        if (_mutatorEntries.Count > 0)
+        {
+            if (index >= _mutatorEntries.Count)
+                return;
+            MutatorBase m = _mutatorEntries[(int)index];
+            string mname = Humanize(m.NetName);
+            _description.Text = m.GuideDescription is { Length: > 0 } mdesc
+                ? $"{mname}\n\n{mdesc}"
+                : $"{mname}\n\n(no guide description ported for this mutator yet)";
+            return;
+        }
+
+        if (index >= _weaponEntries.Count)
             return;
         Weapon w = _weaponEntries[(int)index];
         string name = w.DisplayName.Length > 0 ? w.DisplayName : w.NetName;
         _description.Text = w.GuideDescription is { Length: > 0 } desc
             ? $"{name}\n\n{desc}"
             : $"{name}\n\n(no guide description ported for this weapon yet)";
+    }
+
+    // Render a registry NetName (e.g. "offhand_blaster") as a readable label ("Offhand Blaster") for the
+    // entry list — the port has no per-mutator localized display-name field (QC's `message` ATTRIB).
+    private static string Humanize(string netName)
+    {
+        string[] parts = netName.Split('_');
+        for (int i = 0; i < parts.Length; i++)
+            if (parts[i].Length > 0)
+                parts[i] = char.ToUpperInvariant(parts[i][0]) + parts[i].Substring(1);
+        return string.Join(" ", parts);
     }
 }

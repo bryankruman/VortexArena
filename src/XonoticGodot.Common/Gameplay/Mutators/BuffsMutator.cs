@@ -15,7 +15,7 @@ namespace XonoticGodot.Common.Gameplay;
 /// per-frame tick:
 /// <list type="bullet">
 /// <item>resistance — reduces damage taken (Damage_Calculate)</item>
-/// <item>medic — boosts health regen + can survive a fatal hit (PlayerRegen / Damage_Calculate / tick)</item>
+/// <item>medic — boosts health regen + raises max + slows rot + can survive a fatal hit (PlayerRegen / Damage_Calculate)</item>
 /// <item>vampire — converts dealt damage into health (PlayerDamage_SplitHealthArmor)</item>
 /// <item>jump — higher jump velocity + fall-damage immunity (PlayerPhysics / Damage_Calculate)</item>
 /// <item>speed — scales movement + weapon rate (PlayerPhysics)</item>
@@ -44,6 +44,8 @@ public sealed class BuffsMutator : MutatorBase
     private float _medicSurviveChance = 0.6f;    // g_buffs_medic_survive_chance
     private float _medicSurviveHealth = 5f;      // g_buffs_medic_survive_health
     private float _medicRegen = 1.7f;            // g_buffs_medic_regen
+    private float _medicMax = 1.5f;              // g_buffs_medic_max (limit_mod = max_mod)
+    private float _medicRot = 0.2f;              // g_buffs_medic_rot (rot_mod — slower rot above stable)
     private float _vampireSteal = 0.4f;          // g_buffs_vampire_damage_steal
     private float _jumpVelocity = 600f;          // g_buffs_jump_velocity
     private float _speedSpeed = 1.5f;            // g_buffs_speed_speed
@@ -80,6 +82,7 @@ public sealed class BuffsMutator : MutatorBase
     private HookHandler<MutatorHooks.WeaponRateFactorArgs>? _onRate;
     private HookHandler<MutatorHooks.ForbidThrowCurrentWeaponArgs>? _onForbidThrow;
     private HookHandler<MutatorHooks.PlayerUseKeyArgs>? _onUseKey;
+    private HookHandler<MutatorHooks.FilterItemArgs>? _onFilterItem;
 
     public override void Hook()
     {
@@ -91,6 +94,7 @@ public sealed class BuffsMutator : MutatorBase
         _onRate ??= OnWeaponRateFactor;
         _onForbidThrow ??= OnForbidThrowCurrentWeapon;
         _onUseKey ??= OnPlayerUseKey;
+        _onFilterItem ??= OnFilterItem;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
         GameHooks.PlayerDamageSplitHealthArmor.Add(_onSplit);
@@ -100,6 +104,7 @@ public sealed class BuffsMutator : MutatorBase
         MutatorHooks.WeaponRateFactor.Add(_onRate);
         MutatorHooks.ForbidThrowCurrentWeapon.Add(_onForbidThrow);
         MutatorHooks.PlayerUseKey.Add(_onUseKey);
+        MutatorHooks.FilterItem.Add(_onFilterItem);
 
         if (Api.Services is not null)
         {
@@ -107,6 +112,8 @@ public sealed class BuffsMutator : MutatorBase
             R(ref _medicSurviveChance, "g_buffs_medic_survive_chance");
             R(ref _medicSurviveHealth, "g_buffs_medic_survive_health");
             R(ref _medicRegen, "g_buffs_medic_regen");
+            R(ref _medicMax, "g_buffs_medic_max");
+            R(ref _medicRot, "g_buffs_medic_rot");
             R(ref _vampireSteal, "g_buffs_vampire_damage_steal");
             R(ref _jumpVelocity, "g_buffs_jump_velocity");
             R(ref _speedSpeed, "g_buffs_speed_speed");
@@ -153,6 +160,7 @@ public sealed class BuffsMutator : MutatorBase
         if (_onRate is not null) MutatorHooks.WeaponRateFactor.Remove(_onRate);
         if (_onForbidThrow is not null) MutatorHooks.ForbidThrowCurrentWeapon.Remove(_onForbidThrow);
         if (_onUseKey is not null) MutatorHooks.PlayerUseKey.Remove(_onUseKey);
+        if (_onFilterItem is not null) MutatorHooks.FilterItem.Remove(_onFilterItem);
     }
 
     private static void R(ref float field, string cvar)
@@ -758,10 +766,19 @@ public sealed class BuffsMutator : MutatorBase
     //  PlayerRegen — medic boosts health regen
     // =====================================================================================
 
-    // QC MedicBuff PlayerRegen tunes the regen/limit/rot factors; the headless PlayerRegen hook only models
-    // "disable regen", so returning false (don't disable) keeps regen running — the actual boosted heal is
-    // applied in the per-frame tick (MedicTick). No-op otherwise.
-    private bool OnPlayerRegen(ref MutatorHooks.PlayerRegenArgs args) => false;
+    // QC MUTATOR_HOOKFUNCTION(buffs, PlayerRegen) (buff/medic.qc:4-14): a medic carrier scales the regen tuning
+    // factors the shared regen/rot loop reads — rot_mod = g_buffs_medic_rot (0.2, slower health rot above stable),
+    // limit_mod = max_mod = g_buffs_medic_max (1.5, raised ceiling), regen_mod = g_buffs_medic_regen (1.7, faster
+    // heal). The port's PlayerRegen loop (PlayerFrameLogic.Regen) consumes MaxMod/RegenMod/RotMod/LimitMod exactly
+    // like QC's M_ARGV(1..4) slots, so setting them here reproduces the QC curve (no ad-hoc per-frame heal needed).
+    private bool OnPlayerRegen(ref MutatorHooks.PlayerRegenArgs args)
+    {
+        if (!Active(args.Player, "medic")) return false;
+        args.RotMod = _medicRot;                          // M_ARGV(3) rot_mod
+        args.LimitMod = args.MaxMod = _medicMax;          // M_ARGV(4) limit_mod = M_ARGV(1) max_mod
+        args.RegenMod = _medicRegen;                      // M_ARGV(2) regen_mod
+        return false;
+    }
 
     // =====================================================================================
     //  PlayerPhysics — jump height, speed, disability slow
@@ -885,6 +902,35 @@ public sealed class BuffsMutator : MutatorBase
     }
 
     // =====================================================================================
+    //  FilterItem — replace map powerups with buffs (g_buffs_replace_powerups)
+    // =====================================================================================
+
+    // QC MUTATOR_HOOKFUNCTION(buffs, FilterItem) (sv_buffs.qc:652) + buff_SpawnReplacement (507): in the g_buffs > 0
+    // ("replace") mode, every powerup item on the map is swapped for a random buff. A negative g_buffs (the default
+    // -1, "on but no auto-replace") leaves items alone. We spawn a fresh buff item at the powerup's origin/angles
+    // (keeping its suspended/noalign state) and return true so the powerup edict is deleted by the spawn driver.
+    private bool OnFilterItem(ref MutatorHooks.FilterItemArgs args)
+    {
+        if (Api.Services is null) return false;
+        // QC: if (autocvar_g_buffs < 0) return false; — no auto-replacing in the "-1" mode.
+        if (Api.Cvars.GetFloat("g_buffs") < 0f) return false;
+        if (Api.Cvars.GetFloat("g_buffs_replace_powerups") == 0f) return false;
+
+        Entity item = args.Item;
+        // QC: item.itemdef.instanceOfPowerup. The port's item def exposes IsPowerup on the resolved pickup.
+        if (item.Pickup?.IsPowerup != true) return false;
+
+        // QC buff_SpawnReplacement(spawn(), item): setorigin(ent, old.origin); ent.angles = old.angles;
+        // ent.noalign = ITEM_SHOULD_KEEP_POSITION(old); buff_Init(ent).
+        Entity e = Api.Entities.Spawn();
+        Api.Entities.SetOrigin(e, item.Origin);
+        e.Angles = item.Angles;
+        e.NoAlign = item.NoAlign;
+        ConfigureBuffEntity(e, null); // null type -> buff_NewType random pick (QC buff_Init)
+        return true; // delete the original powerup item
+    }
+
+    // =====================================================================================
     //  PlayerPreThink — flight gravity flip, invisible alpha, per-frame buff ticks
     // =====================================================================================
 
@@ -912,25 +958,12 @@ public sealed class BuffsMutator : MutatorBase
         else if (player.Alpha == _invisibleAlpha)
             player.Alpha = 1f;
 
-        // Per-frame buff ticks (QC StatusEffect m_tick equivalents):
-        if (Active(player, "medic")) MedicTick(player);
+        // Per-frame buff ticks (QC StatusEffect m_tick equivalents). NOTE: medic regen is NOT a tick — it is the
+        // PlayerRegen hook (OnPlayerRegen) scaling the shared regen/rot/limit factors, exactly like QC.
         if (Active(player, "magnet")) MagnetTick(player);
         if (Active(player, "ammo")) AmmoTick(player);
 
         return false;
-    }
-
-    // MedicBuff: boosted health regeneration toward the (raised) medic max, paced by frame time. QC's
-    // MedicBuff PlayerRegen scales the regen rate + raises the stable-health ceiling; modelled here as a
-    // per-frame fractional heal (health is a float, so no accumulator/shared-state is needed).
-    private void MedicTick(Entity player)
-    {
-        float baseMax = Cvar("g_balance_health_regenstable", 100f);
-        float medicMax = baseMax * Cvar("g_buffs_medic_max", 1.5f);
-        if (player.GetResource(ResourceType.Health) >= medicMax) return;
-
-        float regenPerSec = Cvar("g_balance_health_regen", 0.1f) * baseMax * _medicRegen;
-        player.GiveResourceWithLimit(ResourceType.Health, regenPerSec * Api.Clock.FrameTime, medicMax);
     }
 
     // MagnetBuff.m_tick: pull nearby items in. QC uses boxesoverlap(player.absmin/absmax expanded by the reach,

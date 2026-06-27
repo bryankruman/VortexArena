@@ -317,6 +317,58 @@ public static class MutatorHooks
     }
 
     /// <summary>
+    /// EV_MonsterDropItem (server/mutators/events.qh:383-390) — "called when a monster is dropping loot".
+    /// Slot0 the monster (read-only), slot1 the item-list string (in/out — a handler may replace it to override
+    /// what loot is dropped; setting it to "" suppresses the drop entirely), slot2 the attacker (read-only).
+    /// Mirrors QC <c>MUTATOR_CALLHOOK(MonsterDropItem, this, itemlist, attacker)</c> in <c>monster_dropitem</c>
+    /// (sv_monsters.qc:51-52): the updated M_ARGV(1) is used as the item list after the hook returns.
+    /// </summary>
+    public struct MonsterDropItemArgs
+    {
+        public readonly Entity Monster;   // MUTATOR_ARGV_0_entity
+        public string ItemList;           // MUTATOR_ARGV_1_string (in/out)
+        public readonly Entity? Attacker; // MUTATOR_ARGV_2_entity
+        public MonsterDropItemArgs(Entity monster, string itemList, Entity? attacker)
+        { Monster = monster; ItemList = itemList; Attacker = attacker; }
+    }
+    public static readonly HookChain<MonsterDropItemArgs> MonsterDropItem = new();
+
+    /// <summary>
+    /// Fire <see cref="MonsterDropItem"/> before the monster loot is resolved (QC
+    /// <c>MUTATOR_CALLHOOK(MonsterDropItem, this, itemlist, attacker); itemlist = M_ARGV(1, string);</c>).
+    /// Returns the (possibly overridden) item-list string; empty string suppresses the drop.
+    /// </summary>
+    public static string FireMonsterDropItem(Entity monster, string itemList, Entity? attacker)
+    {
+        var a = new MonsterDropItemArgs(monster, itemList, attacker);
+        MonsterDropItem.Call(ref a);
+        return a.ItemList;
+    }
+
+    /// <summary>
+    /// EV_MonsterSpawn (server/mutators/events.qh:357-361) — "called when a monster spawns". Slot0 the monster
+    /// entity (read/write — handlers may modify fields like .skin). A handler returning <c>true</c> cancels the
+    /// spawn (QC: <c>if (MUTATOR_CALLHOOK(MonsterSpawn, this)) return false;</c> in Monster_Spawn, line 1381).
+    /// </summary>
+    public struct MonsterSpawnArgs
+    {
+        public readonly Entity Monster; // MUTATOR_ARGV_0_entity
+        public MonsterSpawnArgs(Entity monster) { Monster = monster; }
+    }
+    public static readonly HookChain<MonsterSpawnArgs> MonsterSpawn = new();
+
+    /// <summary>
+    /// Fire <see cref="MonsterSpawn"/> just after the monster is fully set up (QC
+    /// <c>if (MUTATOR_CALLHOOK(MonsterSpawn, this)) return false;</c>). Returns true if any handler cancels
+    /// the spawn (causing <see cref="MonsterAI.SpawnFromMap"/> to remove the monster and return false).
+    /// </summary>
+    public static bool FireMonsterSpawn(Entity monster)
+    {
+        var a = new MonsterSpawnArgs(monster);
+        return MonsterSpawn.Call(ref a);
+    }
+
+    /// <summary>
     /// Fire <see cref="BotForbidAttack"/> for a bot/target pair (QC
     /// <c>MUTATOR_CALLHOOK(Bot_ForbidAttack, this, targ)</c>). Returns true if any mutator forbids the attack.
     /// </summary>

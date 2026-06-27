@@ -757,7 +757,13 @@ public sealed class TeamKeepaway : GameType
             Player held = carrier;
             into.Add(new Waypoints.WaypointSprite
             {
-                SpriteName = CarrierSpriteName(team),
+                // QC tka_TouchEvent WaypointSprite_UpdateSprites(spr, WP_TkaBallCarrier<team>, WP_KaBallCarrier,
+                // WP_TkaBallCarrier<team>) (sv_tka.qc:169): SPRITERULE_TEAMPLAY three-image — ENEMY (model1) +
+                // SPECTATOR (model3) see the team-colored TkaBallCarrier<team>; the OWN team (model2) sees the
+                // neutral WP_KaBallCarrier.
+                SpriteName = CarrierSpriteName(team),       // model1 (enemy)
+                SpriteNameOwn = "KaBallCarrier",           // model2 (own team)
+                SpriteNameSpec = CarrierSpriteName(team),  // model3 (spectator)
                 Owner = carrier,
                 Offset = new System.Numerics.Vector3(0f, 0f, 64f),
                 Team = team, // colormod / radar tint keyed on the carrier's team

@@ -303,6 +303,60 @@ public sealed class NadesMutator : MutatorBase
     }
 
     // =====================================================================================
+    //  reset_map_global (sv_nades.qc:932) + PutClientInServer (sv_nades.qc:470) — host seams
+    // =====================================================================================
+    // The port has no MutatorHooks chain for reset_map_global / PutClientInServer, so the host (GameWorld /
+    // ClientManager) drives these directly, gated on the nades mutator being active. Both are no-ops when
+    // g_nades is off, matching the REGISTER_MUTATOR(nades, autocvar_g_nades) gate on the QC hooks.
+
+    /// <summary>True when the nades mutator's hooks are active (QC autocvar_g_nades gate).</summary>
+    public static bool Active => Api.Services is not null && Api.Cvars.GetFloat("g_nades") != 0f;
+
+    /// <summary>
+    /// Port of <c>MUTATOR_HOOKFUNCTION(nades, reset_map_global)</c> (sv_nades.qc:932):
+    /// <c>FOREACH_CLIENT(IS_PLAYER(it), nades_RemovePlayer(it))</c>. On a round/map reset, every player drops
+    /// their held nade, banked bonus, and spawn-loc marker so none of it leaks across the reset. Called by the
+    /// host from <c>GameWorld.ResetMap</c> (the port's reset_map seam) before the per-client respawn.
+    /// </summary>
+    public static void ResetMapGlobal(System.Collections.Generic.IReadOnlyList<Entity> players)
+    {
+        if (!Active) return;
+        for (int i = 0; i < players.Count; i++)
+        {
+            Entity p = players[i];
+            if ((p.Flags & EntFlags.Client) != 0)
+                RemovePlayer(p);
+        }
+    }
+
+    /// <summary>
+    /// Port of <c>MUTATOR_HOOKFUNCTION(nades, PutClientInServer)</c> (sv_nades.qc:470):
+    /// <c>nades_RemoveBonus(player)</c>. A (re)spawning player's banked bonus + accrual is wiped, so a bonus
+    /// banked in a previous life doesn't carry into the new one. Called by the host from the respawn path.
+    /// </summary>
+    public static void OnPutClientInServer(Entity player)
+    {
+        if (!Active) return;
+        NadeBonus.RemoveBonus(player);
+    }
+
+    /// <summary>
+    /// Port of <c>MUTATOR_HOOKFUNCTION(nades, SpectateCopy)</c> (sv_nades.qc:937): mirror the spectatee's nade
+    /// HUD/bonus stats (NADE_TIMER / NADE_BONUS_TYPE / pokenade_type / NADE_BONUS / NADE_BONUS_SCORE) onto a
+    /// following observer so its nade charge ring + bonus readout track the watched player. Called by the host
+    /// from <c>ClientManager.SpectateCopy</c>.
+    /// </summary>
+    public static void OnSpectateCopy(Entity spectator, Entity spectatee)
+    {
+        if (!Active) return;
+        spectator.NadeTimer = spectatee.NadeTimer;
+        spectator.NadeBonusType = spectatee.NadeBonusType;
+        spectator.PokenadeType = spectatee.PokenadeType;
+        spectator.NadeBonus = spectatee.NadeBonus;
+        spectator.NadeBonusScore = spectatee.NadeBonusScore;
+    }
+
+    // =====================================================================================
     //  Damage_Calculate (sv_nades.qc:876) — freezetag revive-nade
     // =====================================================================================
     private bool OnDamageCalculate(ref MutatorHooks.DamageCalculateArgs args)

@@ -211,9 +211,13 @@ public static class MonsterFramework
         string itemList = st.MonsterLoot;
         if (st.IsMiniboss)
             itemList = MonsterAI.CvarString("g_monsters_miniboss_loot", "vortex");
-        if (string.IsNullOrEmpty(itemList)) return;
 
         if (Api.Services is null) return;
+
+        // QC sv_monsters.qc:51-52: MUTATOR_CALLHOOK(MonsterDropItem, this, itemlist, attacker);
+        //    itemlist = M_ARGV(1, string); — mutators (instagib) can override or clear the drop list.
+        itemList = MutatorHooks.FireMonsterDropItem(self, itemList, attacker);
+        if (string.IsNullOrEmpty(itemList)) return;
 
         // QC: entity loot_itemdef = Item_RandomFromList(itemlist); if (!loot_itemdef) return;
         Pickup? def = ItemRandomFromList(itemList);

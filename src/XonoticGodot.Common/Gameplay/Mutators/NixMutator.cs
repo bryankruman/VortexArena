@@ -183,6 +183,13 @@ public sealed class NixMutator : MutatorBase
     // MUTATOR_HOOKFUNCTION(nix, PlayerPreThink) — keep every live player on the current NIX weapon.
     private bool OnPlayerPreThink(ref MutatorHooks.PlayerPreThinkArgs args)
     {
+        // QC sv_nix.qc:265-268 gates on !game_stopped && !IS_DEAD && IS_PLAYER. The shared PlayerPreThink
+        // dispatch site fires unconditionally, so the game_stopped freeze (intermission / match-ended) has to
+        // be honoured here — otherwise the rotation clock would keep advancing and re-forcing the weapon set
+        // during intermission. VehicleCommon.GameStopped is the host's game_stopped mirror (same flat-namespace
+        // signal instagib/buffs/powerups read).
+        if (VehicleCommon.GameStopped) return false;
+
         Entity player = args.Player;
         if ((player.Flags & EntFlags.Client) != 0 && player.DeadState == DeadFlag.No)
             GiveCurrentWeapon(player);
@@ -264,8 +271,20 @@ public sealed class NixMutator : MutatorBase
 
             player.NixNextIncr = now + IncrTime;
 
-            if (!(dt >= 1f && dt <= 5f))
+            // QC sv_nix.qc:161-164: if this once-per-round sync lands inside the last-5s countdown window
+            // (e.g. a respawn near the end of a round), suppress the NEWWEAPON notification AND force the
+            // countdown block below to fire by poisoning the de-dupe sentinel (nix_lastinfotime = -42, which
+            // can never equal a real dt in [1,5]); otherwise announce the new weapon.
+            if (dt >= 1f && dt <= 5f)
+                player.NixLastInfoTime = -42f;
+            else
                 NotificationSystem.Center(player, "NIX_NEWWEAPON", _nixWeapon);
+
+            // QC sv_nix.qc:166: wpn.wr_resetplayer(wpn, this) — reset the weapon's per-player think state
+            // on every round flip (same reset SpawnSystem calls on respawn). Hagar clears its loaded-rocket
+            // counter, Porto drops the single-portal latch, Vaporizer clears its streak, etc.
+            // Slot 0 is always the active weapon slot in the current single-slot model.
+            wpn.WrResetPlayer(player, new WeaponSlot(0));
 
             // QC sv_nix.qc:168-176: a reloadable weapon must start fully loaded when the round flips —
             // weapon_load[nix_weapon] = wpn.reloading_ammo across every slot. The port models wr_resetplayer
@@ -383,4 +402,9 @@ public sealed class NixMutator : MutatorBase
 
     // MUTATOR_HOOKFUNCTION(nix, BuildMutatorsPrettyString) — sv_nix.qc:232.
     public override string BuildMutatorsPrettyString(string s) => s + ", NIX";
+
+    // MUTATOR_HOOKFUNCTION(nix, SetModname, CBC_ORDER_LAST) — sv_nix.qc:285: override the server modname
+    // to "NIX" so the server browser and client connection banner reflect the active game mode.
+    // Returns overridden=true so the chain stops here (QC: return true via CBC_ORDER_ANY early-exit).
+    public override (string name, bool overridden) SetModname(string name) => ("NIX", true);
 }

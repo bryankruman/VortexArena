@@ -392,6 +392,10 @@ public static class DeathTypes
         void Reg(string name, DeathCategory cat, string? self, string? murder)
             => d[name] = new DeathTypeDef(name, cat, self, murder);
 
+        // QC all.inc: special deaths that register both self and murder notification (or one of them).
+        // camp (all.inc:4): DEATH_SELF_CAMP self-only (NULL murder -> FRAG below), the campcheck anti-camping mutator.
+        Reg(Camp, DeathCategory.None, "DEATH_SELF_CAMP", null);
+
         // QC all.inc monster rows (message == "monster"): each monster has its OWN DEATH_SELF_MON_* self line;
         // ALL monsters share DEATH_MURDER_MONSTER for the murder line.
         Reg(MonsterMage,       DeathCategory.Monster, "DEATH_SELF_MON_MAGE",         "DEATH_MURDER_MONSTER");

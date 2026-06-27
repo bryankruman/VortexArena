@@ -16,6 +16,7 @@
 // (MDL_ONS_CP_PAD*), vehicle-touch, and the bot-target list — presentation / AI concerns. The capture
 // outcome + the build/heal/destroy timing + the scoring are reproduced faithfully.
 
+using System.Collections.Generic;
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay.Damage;
@@ -76,6 +77,12 @@ public sealed class OnslaughtControlPoint
     /// <summary>True once the overtime decay announcement has fired (QC wpforenemy_announced).</summary>
     public bool OvertimeAnnounced { get; private set; }
 
+    /// <summary>
+    /// Per-team last CP under-attack notification time (QC <c>ons_notification_time[team]</c>, sv_onslaught.qc:384).
+    /// Suppresses redundant <c>ONS_CONTROLPOINT_UNDERATTACK</c> play2team calls within 10 seconds per team.
+    /// </summary>
+    private readonly Dictionary<int, float> _cpNotifyTime = new();
+
     public OnslaughtControlPoint(Onslaught ons) => _ons = ons;
 
     /// <summary>Clear the icon/generator entity maps + the overtime latch (QC per-map reset). The graph itself
@@ -84,6 +91,7 @@ public sealed class OnslaughtControlPoint
     {
         _icons.Clear();
         _generators.Clear();
+        _cpNotifyTime.Clear();
         OvertimeAnnounced = false;
     }
 
@@ -241,12 +249,28 @@ public sealed class OnslaughtControlPoint
             }
             // QC ons_GeneratorDamage (sv_onslaught.qc:939-944): under-attack center (to the owning team) +
             // play2team alarm, debounced by pain_finished (10 s).
+            // Base: FOREACH_CLIENT(IS_PLAYER&&IS_REAL_CLIENT&&SAME_TEAM) -> center; play2team(this.team, ...).
             if (Now > self.GtPainFinished)
             {
                 self.GtPainFinished = Now + 10f;
-                Onslaught.Notify(NotifBroadcast.All, MsgType.Center, "GENERATOR_UNDERATTACK");
+                // QC (sv_onslaught.qc:942): FOREACH_CLIENT(IS_PLAYER && IS_REAL_CLIENT && SAME_TEAM(it, this))
+                //   -> Send_Notification(NOTIF_ONE, it, MSG_CENTER, CENTER_GENERATOR_UNDERATTACK).
+                // The center print goes ONLY to the generator's own team, not everyone — broadcasting to All
+                // would wrongly warn the attacking team that they're "under attack".
                 if (Api.Services is not null)
-                    SoundSystem.PlayGlobal(Sounds.ByName("ONS_GENERATOR_UNDERATTACK"));
+                {
+                    foreach (Entity e in Api.Entities.FindByClass("player"))
+                    {
+                        if (e is not Player p || (p.Flags & EntFlags.Client) == 0 || p.IsBot)
+                            continue;
+                        if ((int)p.Team != team)
+                            continue;
+                        NotificationSystem.Send(NotifBroadcast.One, p, MsgType.Center, "GENERATOR_UNDERATTACK");
+                    }
+                    // QC (sv_onslaught.qc:943): play2team(this.team, SND(ONS_GENERATOR_UNDERATTACK)).
+                    SoundSystem.Play2Team(team, Sounds.ByName("ONS_GENERATOR_UNDERATTACK"),
+                        new List<Entity>(Api.Entities.FindByClass("player")));
+                }
             }
         }
         else if (node is { Shielded: true })
@@ -575,6 +599,21 @@ public sealed class OnslaughtControlPoint
 
         self.GtObjHealth -= damage;
         self.GtPainFinished = Now + 1f;
+
+        // QC ons_ControlPoint_Icon_Damage (sv_onslaught.qc:383-388): notify the owning team that their CP is
+        // under attack (play2team, debounced per team by ons_notification_time[this.team] with a 10 s window).
+        // Base: if(IS_PLAYER(attacker)) if(time - ons_notification_time[this.team] > 10) { play2team(...); ... }
+        if (attacker is Player && Api.Services is not null)
+        {
+            int cpTeam = self.GtHomeTeam;
+            float lastNotify = _cpNotifyTime.GetValueOrDefault(cpTeam, float.MinValue);
+            if (Now - lastNotify > 10f)
+            {
+                _cpNotifyTime[cpTeam] = Now;
+                SoundSystem.Play2Team(cpTeam, Sounds.ByName("ONS_CONTROLPOINT_UNDERATTACK"),
+                    new List<Entity>(Api.Entities.FindByClass("player")));
+            }
+        }
 
         // QC ons_ControlPoint_Icon_Damage (sv_onslaught.qc:399-402): a hit sound on every hit (random 1/2).
         if (Api.Services is not null)

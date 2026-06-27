@@ -1,13 +1,16 @@
-// Port of StartItem (qcsrc/server/items/items.qc:1007) + Item_Reset (items.qc:783) — the spawn driver every
-// item_*/weapon_* funnels through. Seeds the world edict from a Pickup def: runs the per-item ItemInit, sets
-// the IT_* items mask + weapon set, the FL_ITEM flag, the model + bbox, then branches on loot vs permanent:
+// Port of StartItem (qcsrc/server/items/items.qc:1007) + Item_Reset (items.qc:783) + Item_FindTeam
+// (items.qc:813) + item_use/item_setactive (items.qc:987-1005) — the spawn driver every item_*/weapon_*
+// funnels through. Seeds the world edict from a Pickup def: runs the per-item ItemInit, sets the IT_* items
+// mask + weapon set, the FL_ITEM flag, the model + bbox, then branches on loot vs permanent:
 //   LOOT       — MOVETYPE_TOSS, gravity, Item_Think despawn at g_items_dropped_lifetime, anti-instant-pick
-//                spawnshield, takedamage, EXPIRING timer, NODROP-brush kill.
+//                spawnshield, takedamage (with Item_Damage NEEDKILL handler), EXPIRING timer, NODROP-kill.
 //   PERMANENT  — have_pickup_item gate (delete if mutator-blocked / g_pickup_items==0), respawntime default,
-//                spawnflags&1/noalign suspension, drop-to-floor, the ###item### findnearest target.
-// Tail: settouch(Item_Touch), Item_Reset (powerups + superweapons route to ScheduleInitialRespawn so they do
-// NOT spawn at match start). The FilterItem / Item_Spawn / waypoint / Net_LinkEntity hooks are CSQC/mutator
-// networking and are out of scope; the spawn STATE + the touch wiring are ported faithfully.
+//                spawnflags&1/noalign suspension, drop-to-floor, the ###item### findnearest target,
+//                item_use (trigger-to-spawn) + item_setactive (active/toggle relay) on targetname'd items.
+// Tail: settouch(Item_Touch), then if(team) Item_FindTeam else Item_Reset. Powerups + superweapons route to
+// ScheduleInitialRespawn (do NOT spawn at match start). The FilterItem / Item_Spawn / waypoint /
+// Net_LinkEntity hooks are CSQC/mutator networking and are out of scope; the spawn STATE + touch wiring are
+// ported faithfully.
 
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;
@@ -156,9 +159,21 @@ public static class StartItem
         item.NetName = def.NetName; // QC this.netname = def.m_name (items.qc:1190) — already hoisted before the
                                     // FilterItem hook above; re-assigning the same value here keeps the tail faithful.
 
-        // QC: if(team) Item_FindTeam else Item_Reset(this). The port has no team-item random-select group here;
-        // a non-teamed item resets normally. (Teamed map items are a gametype concern, wired separately.)
-        Item_Reset(item);
+        // QC items.qc:1216-1226: if(this.team) Item_FindTeam else Item_Reset. A teamed item marks itself with
+        // EF_NOGUNBOB (the search-marker sentinel used by Item_FindTeam to recognise un-initialised members),
+        // defers its first appearance via InitializeEntity (INITPRIO_FINDTARGET = after all spawns), and sets
+        // this.reset = Item_FindTeam (so map-reset re-runs the random pick). The port has no INITPRIO deferred
+        // queue, so we run Item_FindTeam directly — at map load all teamed items are already spawned because the
+        // BSP lump is processed sequentially before any gameplay ticks, so the full g_items set is available.
+        if (!isLoot && item.Team != 0f)
+        {
+            item.Cnt = item.Cnt != 0 ? item.Cnt : 1; // QC: if(!this.cnt) this.cnt = 1 — default weight
+            FindTeam(item);
+        }
+        else
+        {
+            Item_Reset(item);
+        }
 
         // QC: MUTATOR_CALLHOOK(Item_Spawn, this) (items.qc:1231) — physical_items subscribes here to attach a
         // physics ghost and hide the real item. The hook is notify-style; the return value is informational only.
@@ -200,6 +215,7 @@ public static class StartItem
         item.SpawnShieldExpire = 1f;             // live marker (loot is a normal live item, just non-respawning)
 
         item.TakeDamage = DamageMode.Yes;        // QC: takedamage = DAMAGE_YES; event_damage = Item_Damage
+        item.GtEventDamage = ItemPickupRules.ItemDamage; // QC items.qc:1077 event_damage = Item_Damage
 
         // QC: if EXPIRING, nextthink = max(strength/invincible/superweapons_finished) — the timers tick down on
         // the ground. (Set ItemIsExpiring on the edict before SpawnLoot to opt in; default off.)
@@ -275,6 +291,14 @@ public static class StartItem
 
         item.SpawnShieldExpire = 1f; // live marker
 
+        // QC items.qc:1152-1156: a targetname'd item gets item_use wired so a trigger firing its targetname
+        // spawns it (spawnflags&16 → immediate touch, else Item_Respawn). Every permanent item also gets
+        // item_setactive so relay_activate/_deactivate/_activatetoggle / target_activate can show/hide it.
+        if (!string.IsNullOrEmpty(item.TargetName))
+            item.Use = ItemPickupRules.ItemUse;     // QC: this.use = item_use (items.qc:1153)
+        item.SetActive = ItemPickupRules.ItemSetActive; // QC: this.setactive = item_setactive (items.qc:1155)
+        item.Active = MapMover.ActiveActive;            // QC: this.active = ACTIVE_ACTIVE (items.qc:1156)
+
         // QC: target = "###item###" (findnearest) for powerups, weapons, non-small health/armor, and keys.
         bool wantsTarget = def.IsPowerup || def.IsWeaponPickup
             || (def.IsHealth && !def.IsSmall)
@@ -301,6 +325,12 @@ public static class StartItem
         if (!string.IsNullOrEmpty(item.TargetName) && (item.SpawnFlags & 16) == 0)
         {
             ItemPickupRules.Show(item, -1);
+            // QC items.qc:788-789: WaypointSprite_Kill(this.waypointsprite_attached) before going dormant.
+            if (item.WaypointAttached is Waypoints.WaypointSprite hwp)
+            {
+                Waypoints.WaypointSprites.Kill(hwp);
+                item.WaypointAttached = null;
+            }
             item.NextThink = 0f;
             return;
         }
@@ -315,6 +345,13 @@ public static class StartItem
 
         item.Think = ItemPickupRules.ItemThink;
         item.NextThink = Now;
+        item.Active = MapMover.ActiveActive; // QC items.qc:802 this.active = ACTIVE_ACTIVE
+        // QC items.qc:803-806: drop any lingering respawn-countdown waypoint when (re)resetting a non-loot item.
+        if (item.WaypointAttached is Waypoints.WaypointSprite rwp)
+        {
+            Waypoints.WaypointSprites.Kill(rwp);
+            item.WaypointAttached = null;
+        }
 
         // QC: do NOT spawn powerups (or superweapon weapons) initially — schedule their first appearance instead.
         bool isPowerup = item.Pickup?.IsPowerup == true;
@@ -370,4 +407,91 @@ public static class StartItem
     // QC: this.classname = def.m_canonical_spawnfunc — the canonical "item_health_small" style classname. We map
     // each NetName to its spawnfunc classname; an unknown NetName keeps the def's NetName (defensive).
     private static string CanonicalClassName(Pickup def) => ItemSpawnFuncs.CanonicalSpawnFunc(def);
+
+    // =====================================================================================
+    //  Item_FindTeam (items.qc:813) — one-at-a-time team-item random select.
+    // =====================================================================================
+
+    /// <summary>
+    /// QC <c>Item_FindTeam(this)</c> (items.qc:813): among all non-freed world items sharing the same
+    /// <see cref="Entity.Team"/> key as <paramref name="anchor"/>, pick ONE at random (weighted by
+    /// <c>.cnt</c>) and show it; hide all others and clear their think timers. The chosen item gets
+    /// <c>Item_Reset</c> so it either appears immediately or schedules its initial respawn (powerups).
+    /// The anchor is allowed to be any member of the group — only its team key matters.
+    ///
+    /// <para>
+    /// In Base this is deferred via <c>InitializeEntity(this, Item_FindTeam, INITPRIO_FINDTARGET)</c> so it
+    /// runs after all map entities are spawned. The port has no INITPRIO queue; instead
+    /// <see cref="SpawnInternal"/> calls this directly from the spawn tail. Because the BSP entity lump is
+    /// fully parsed before the first gameplay tick, ALL items with the same team key exist in the entity
+    /// table by the time ANY spawn tail runs (the lump is a sequential list), so the direct call sees the
+    /// complete group. (The only edge case — a teamed item spawned mid-game — would need a deferred path
+    /// that doesn't exist yet; no stock Base map does this.)
+    /// </para>
+    /// </summary>
+    public static void FindTeam(Entity anchor)
+    {
+        float teamKey = anchor.Team;
+        if (teamKey == 0f) return;
+
+        // QC: RandomSelection_Init(); IL_EACH(g_items, it.team == this.team, RandomSelection_AddEnt(it, it.cnt, 0))
+        // Collect all registered items (FL_ITEM set, not freed) with the same team key.
+        var sel = new MapMover.RandomSelection();
+        sel.Reset();
+
+        // prefer Api.Entities.All (single scan, O(N)); fall back to findchain-by-flag (headless test fakes).
+        if (Api.Services is not null && Api.Entities.All is { } all)
+        {
+            for (int i = 0; i < all.Count; i++)
+            {
+                Entity it = all[i];
+                if (!it.IsFreed && it.Team == teamKey && it.ItemDefRef is not null)
+                    sel.Add(it, it.Cnt != 0 ? it.Cnt : 1, 0f);
+            }
+        }
+        else
+        {
+            // headless: iterate entities reachable via chain from the index (no All list).
+            // At minimum include the anchor itself so the method is never a no-op in tests.
+            sel.Add(anchor, anchor.Cnt != 0 ? anchor.Cnt : 1, 0f);
+        }
+
+        Entity? chosen = sel.Chosen;
+        if (chosen is null) return;
+
+        // QC: hide all members except the chosen one; clear think timers on the hidden ones;
+        // call Item_Reset on the chosen member so it shows / schedules its initial respawn normally.
+        // Also clear the EF_NOGUNBOB marker on every member except 'this' (the one whose reset pointer
+        // stays as Item_FindTeam for map-reset re-rolls) — the port keeps FindTeam wired unconditionally.
+        if (Api.Services is not null && Api.Entities.All is { } all2)
+        {
+            for (int i = 0; i < all2.Count; i++)
+            {
+                Entity it = all2[i];
+                if (!it.IsFreed && it.Team == teamKey && it.ItemDefRef is not null)
+                {
+                    if (!ReferenceEquals(it, chosen))
+                    {
+                        // QC: Item_Show(it, -1); kill waypoint; nextthink = 0
+                        ItemPickupRules.Show(it, -1);
+                        if (it.WaypointAttached is Waypoints.WaypointSprite wp2)
+                        {
+                            Waypoints.WaypointSprites.Kill(wp2);
+                            it.WaypointAttached = null;
+                        }
+                        it.NextThink = 0f;
+                    }
+                    else
+                    {
+                        Item_Reset(it); // QC: Item_Reset(e) for the chosen member
+                    }
+                }
+            }
+        }
+        else
+        {
+            // headless: just reset the chosen (anchor)
+            Item_Reset(chosen);
+        }
+    }
 }

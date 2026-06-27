@@ -217,7 +217,9 @@ public partial class PowerupsPanel : HudPanel
             // Remaining time (QC: bound(0, statuseffect_time - time, 99)).
             float left = s.ExpireTime > 0f ? Mathf.Clamp(s.ExpireTime - now, 0f, 99f) : 0f;
             if (s.ExpireTime > 0f && left <= 0f) continue; // expired this frame
-            bool infinite = s.ExpireTime <= 0f;            // permanent / passively granted (QC PERSISTENT)
+            // QC m_tick: PERSISTENT effects carry the flag and never time out (sv_status_effects.qc:20-22).
+            // The flag is set per-tick via the effect's m_persistent check, and networked in the PERSISTENT bit.
+            bool infinite = (s.Flags & StatusEffectFlags.Persistent) != 0; // passively granted (QC PERSISTENT)
             float life = def.Lifetime > 0f ? def.Lifetime : StatusEffectLifetime;
 
             string label, icon;

@@ -422,10 +422,10 @@ public static class PlayerFrameLogic
             Combat.Damage(p, null, null, dm, DeathTypes.Fall, p.Origin, Vector3.Zero);
 
         // QC shooting-star: moving faster than g_maxspeed is lethal (anticheat-ish guard); 0 = off.
-        // (DEATH_SHOOTING_STAR is a special deathtype carried as a free-form tag.)
+        // server/main.qc:180: `Damage(this, NULL, NULL, 100000, DEATH_SHOOTING_STAR.m_id, DMG_NOWEP, this.origin, '0 0 0')`
         float maxSpeed = Cvars.Float("g_maxspeed");
         if (maxSpeed > 0f && vel.Length() > maxSpeed)
-            Combat.Damage(p, null, null, 100000f, "shootingstar", p.Origin, Vector3.Zero);
+            Combat.Damage(p, null, null, 100000f, DeathTypes.ShootingStar, p.Origin, Vector3.Zero);
 
         st.OldVelocity = vel; // QC: it.oldvelocity = it.velocity at the end of CreatureFrame.
     }

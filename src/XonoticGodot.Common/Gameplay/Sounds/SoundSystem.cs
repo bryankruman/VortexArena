@@ -45,8 +45,10 @@ public static class SoundAllowedGate
     }
 
     /// <summary>
-    /// Returns false if the sound should be suppressed (QC <c>sound_allowed</c>):
-    /// when <c>bot_sound_monopoly</c> is 1, any sound emitted by a real client is denied.
+    /// Returns false if the sound should be suppressed (QC <c>sound_allowed</c>, all.qc:9-25):
+    /// first resolves <paramref name="emitter"/> through the owner-walk (QC <c>body→enemy / realowner /
+    /// owner</c>) to find the true sound-attributing entity, then applies the <c>bot_sound_monopoly</c> gate
+    /// (when the cvar is 1 and the resolved entity is a real client → deny).
     /// Null emitter always passes (QC: <c>if(!e) return true</c>).
     /// </summary>
     public static bool IsAllowed(Entity? emitter)
@@ -54,9 +56,15 @@ public static class SoundAllowedGate
         if (emitter is null) return true;
         if (Api.Services is null) return true; // headless / no cvar service
         if (Api.Cvars.GetFloat(BotSoundMonopolyCvar) == 0f) return true;
+        // Resolve the true owner (QC sound_allowed owner-walk: body→enemy / realowner / owner).
+        // This re-homes corpse/projectile sounds to the originating player so the monopoly check
+        // applies to the right entity — activates WalkOwner on the general emit path.
+        Entity? resolved = WalkOwner(emitter);
         // bot_sound_monopoly = 1: real clients (FL_CLIENT + not a bot) are denied.
-        bool isRealClient = (emitter.Flags & EntFlags.Client) != 0 && !emitter.IsCorpse
-                            && emitter is Player p && !p.IsBot;
+        bool isRealClient = resolved is not null
+                            && (resolved.Flags & EntFlags.Client) != 0
+                            && !resolved.IsCorpse
+                            && resolved is Player p && !p.IsBot;
         return !isRealClient;
     }
 }
@@ -170,39 +178,51 @@ public static class SoundSystem
     /// <summary>
     /// Play a registered sound emitted on <paramref name="emitter"/>, using the sound's default channel,
     /// volume and attenuation. Successor to QC <c>sound(e, def.chan, SND(def), def.vol, def.atten)</c>.
+    /// Applies the <c>bot_sound_monopoly</c> gate (QC <c>sound_allowed(MSG_BROADCAST, e)</c>, all.qc:9-25):
+    /// when <c>bot_sound_monopoly=1</c> and the emitter is a real client, the sound is suppressed.
     /// No-op if the sound is null.
     /// </summary>
     public static void PlayOn(Entity emitter, GameSound? sound)
     {
         if (sound is null) return;
+        if (!SoundAllowedGate.IsAllowed(emitter)) return;
         Api.Sound.Play(emitter, sound.EngineChannel, sound.Sample, sound.Volume, sound.Attenuation);
     }
 
-    /// <summary>Play a registered sound on <paramref name="emitter"/> with explicit volume/attenuation overrides.</summary>
+    /// <summary>Play a registered sound on <paramref name="emitter"/> with explicit volume/attenuation overrides.
+    /// Applies the <c>bot_sound_monopoly</c> gate (QC <c>sound_allowed</c>).</summary>
     public static void PlayOn(Entity emitter, GameSound? sound, float volume, float attenuation)
     {
         if (sound is null) return;
+        if (!SoundAllowedGate.IsAllowed(emitter)) return;
         Api.Sound.Play(emitter, sound.EngineChannel, sound.Sample, volume, attenuation);
     }
 
-    /// <summary>Play a registered sound on <paramref name="emitter"/> overriding the channel as well.</summary>
+    /// <summary>Play a registered sound on <paramref name="emitter"/> overriding the channel as well.
+    /// Applies the <c>bot_sound_monopoly</c> gate (QC <c>sound_allowed</c>).</summary>
     public static void PlayOn(Entity emitter, GameSound? sound, SoundChannel channel, float volume, float attenuation)
     {
         if (sound is null) return;
+        if (!SoundAllowedGate.IsAllowed(emitter)) return;
         Api.Sound.Play(emitter, channel, sound.Sample, volume, attenuation);
     }
 
-    /// <summary>Look the sound up by name (QC <c>SND_&lt;name&gt;</c>) then play it on <paramref name="emitter"/>.</summary>
+    /// <summary>Look the sound up by name (QC <c>SND_&lt;name&gt;</c>) then play it on <paramref name="emitter"/>.
+    /// Applies the <c>bot_sound_monopoly</c> gate.</summary>
     public static void PlayOn(Entity emitter, string soundName) => PlayOn(emitter, Sounds.ByName(soundName));
 
-    /// <summary>Play a raw sample path on <paramref name="emitter"/> (QC <c>sound()</c> with a string literal).</summary>
+    /// <summary>Play a raw sample path on <paramref name="emitter"/> (QC <c>sound()</c> with a string literal).
+    /// Applies the <c>bot_sound_monopoly</c> gate (QC <c>sound_allowed(MSG_BROADCAST, e)</c>).</summary>
     public static void PlayRaw(
         Entity emitter,
         string sample,
         SoundChannel channel = SoundChannel.Auto,
         float volume = SoundLevels.VolBase,
         float attenuation = SoundLevels.AttenNorm)
-        => Api.Sound.Play(emitter, channel, sample, volume, attenuation);
+    {
+        if (!SoundAllowedGate.IsAllowed(emitter)) return;
+        Api.Sound.Play(emitter, channel, sample, volume, attenuation);
+    }
 
     // ---- play2 / play2team — per-client / per-team 2D sends (QC play2, all.qc:116-140) ----
 
@@ -284,26 +304,39 @@ public static class SoundSystem
     /// Play a registered sound globally (heard by everyone, no spatialization) on the shared emitter.
     /// Forces ATTEN_NONE so distance doesn't attenuate it, matching QC announcer/global playback.
     /// Successor to QC <c>play2all(SND(def))</c> / a GlobalSound with ATTEN_NONE.
+    /// Applies QC <c>play2all</c>'s <c>bot_sound_monopoly</c> gate (all.qc:143-145):
+    /// when <c>bot_sound_monopoly=1</c>, global cues are suppressed entirely.
     /// </summary>
     public static void PlayGlobal(GameSound? sound)
     {
         if (sound is null) return;
+        // QC play2all (all.qc:143-145): if (autocvar_bot_sound_monopoly) return;
+        if (Api.Services is not null && Api.Cvars.GetFloat("bot_sound_monopoly") != 0f) return;
         Api.Sound.Play(GlobalEmitter, sound.EngineChannel, sound.Sample, sound.Volume, SoundLevels.AttenNone);
     }
 
-    /// <summary>Play a registered sound globally with an explicit volume.</summary>
+    /// <summary>Play a registered sound globally with an explicit volume.
+    /// Applies the <c>bot_sound_monopoly</c> gate (QC <c>play2all</c>, all.qc:143-145).</summary>
     public static void PlayGlobal(GameSound? sound, float volume)
     {
         if (sound is null) return;
+        // QC play2all (all.qc:143-145): if (autocvar_bot_sound_monopoly) return;
+        if (Api.Services is not null && Api.Cvars.GetFloat("bot_sound_monopoly") != 0f) return;
         Api.Sound.Play(GlobalEmitter, sound.EngineChannel, sound.Sample, volume, SoundLevels.AttenNone);
     }
 
-    /// <summary>Look the sound up by name then play it globally.</summary>
+    /// <summary>Look the sound up by name then play it globally.
+    /// Applies the <c>bot_sound_monopoly</c> gate.</summary>
     public static void PlayGlobal(string soundName) => PlayGlobal(Sounds.ByName(soundName));
 
-    /// <summary>Play a raw sample path globally (QC <c>play2all(samp)</c>).</summary>
+    /// <summary>Play a raw sample path globally (QC <c>play2all(samp)</c>).
+    /// Applies QC <c>play2all</c>'s <c>bot_sound_monopoly</c> gate (all.qc:143-145).</summary>
     public static void PlayGlobalRaw(string sample, float volume = SoundLevels.VolBase)
-        => Api.Sound.Play(GlobalEmitter, SoundChannel.Auto, sample, volume, SoundLevels.AttenNone);
+    {
+        // QC play2all (all.qc:143-145): if (autocvar_bot_sound_monopoly) return;
+        if (Api.Services is not null && Api.Cvars.GetFloat("bot_sound_monopoly") != 0f) return;
+        Api.Sound.Play(GlobalEmitter, SoundChannel.Auto, sample, volume, SoundLevels.AttenNone);
+    }
 
     /// <summary>
     /// Play an announcer cue globally by its short name (e.g. "begin", "impressive") — looks up

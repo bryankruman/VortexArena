@@ -404,12 +404,15 @@ public sealed class Assault : GameType
             Waypoints.WaypointSprites.Kill(w.Sprite);
             w.Sprite = null;
         }
-        // QC defend-side default is WP_AssaultDefend; the destructible's ATTACKER view is WP_AssaultDestroy. The
-        // port's per-peer filter (team/rule) picks defend vs destroy at render; we seed the attacker (destroy) def
-        // with the health bar, matching `it.sprite` in QC (the attacker-facing sprite carries the bar).
+        // QC sv_assault.qc:122-125: WaypointSprite_UpdateRule(spr, assault_attacker_team, SPRITERULE_TEAMPLAY)
+        // then WaypointSprite_UpdateSprites(spr, WP_AssaultDefend, WP_AssaultDestroy, WP_AssaultDestroy). With team =
+        // the ATTACKER team, the three-image rule means: the attacker's OWN team (model2) sees "Destroy", the ENEMY
+        // (defender, model1) sees "Defend", and SPECTATORS (model3) see "Destroy". The destroy sprite carries the
+        // health bar (QC `it.sprite`). The port resolves the per-viewer image in SendWaypoints via SpriteFor.
         Waypoints.WaypointSprite spr = Waypoints.WaypointSprites.SpawnFixed(
-            "AssaultDestroy", edict.Origin, State.AttackerTeam,
+            "AssaultDefend", edict.Origin, State.AttackerTeam,
             WaypointObjectiveColor, RadarIconObjective, Waypoints.SpriteRule.Teamplay);
+        Waypoints.WaypointSprites.UpdateSprites(spr, "AssaultDefend", "AssaultDestroy", "AssaultDestroy");
         spr.Owner = edict; // QC the sprite is spawned at 0.5*(absmin+absmax) and follows the wall edict
         Waypoints.WaypointSprites.UpdateMaxHealth(spr, w.MaxHealth);
         Waypoints.WaypointSprites.UpdateHealth(spr, w.MaxHealth > 0f ? w.Health / w.MaxHealth : -1f);

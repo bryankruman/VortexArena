@@ -547,6 +547,26 @@ public static class Cvars
         // solid / unvised map / dead-or-spectating recipient sends everything). Default 1 = DP's default.
         // See ServerNet.BuildEntitySet/RelevantEntitiesFor.
         new("sv_cullentities_pvs", "1", Save, "PVS-cull networked entities per client (DP SV_MarkWriteEntityStateToClient)"),
+
+        // ---- itemstime mutator (common/mutators/mutator/itemstime/itemstime.qc) ----
+        // The itemstime mutator tracks respawn times for "timed" items (Mega/Big Health+Armor, Strength, Shield,
+        // Superweapons) and sends them to clients so the HUD panel can draw countdowns. sv_itemstime (xonotic-
+        // server.cfg:421, default 1) is the SERVER gate: 0 off / 1 spectators+warmup / 2 also alive players. It
+        // gates both the HUD respawn-time table (ItemstimeMutator/ServerNet.SendItemsTime) AND the per-peer
+        // visibility of the SPRITERULE_SPECTATOR respawn waypoint sprites that Item_RespawnCountdown spawns for
+        // the SpectatorOnly set (Mega/Big health+armor) — see ServerNet.WaypointVisible, a faithful port of QC
+        // WaypointSprite_visible_for_player (waypointsprites.qc:982). MUST be registered: it is read with a
+        // default-0 fallback, so leaving it unregistered would read 0 and disable the whole mutator in production.
+        //
+        // NOTE: Base ALSO has a separate CLIENT draw-side cvar g_waypointsprite_itemstime (xonotic-client.cfg:518,
+        // default 2) used by Draw_WaypointSprite's SPRITERULE_SPECTATOR case (waypointsprites.qc:495) to decide
+        // whether a *received* spectator sprite is actually drawn. These are NOT the same cvar and do NOT share a
+        // default (server 1 vs client 2). The port has not ported the client-side g_waypointsprite_itemstime gate;
+        // it relies on the server-side sv_itemstime gate alone, which under stock cvars yields the same observable
+        // result (the server won't network a spectator sprite to a live player in a live round unless sv_itemstime
+        // ==2). Residual gap: a client overriding g_waypointsprite_itemstime to a non-default value has no effect,
+        // because the client never receives the sprite's rule to re-filter on (the rule is resolved server-side).
+        new("sv_itemstime", "1", Save, "0 off / 1 spectators/warmup only / 2 also playing players (item respawn HUD + waypoint visibility)"),
     };
 
     /// <summary>

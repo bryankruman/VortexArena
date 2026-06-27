@@ -98,6 +98,9 @@ public sealed class InstagibMutator : MutatorBase
     private HookHandler<MutatorHooks.FilterItemArgs>? _onFilterItem;
     private HookHandler<MutatorHooks.ItemTouchArgs>? _onItemTouch;
     private HookHandler<MutatorHooks.MakePlayerObserverArgs>? _onMakeObserver;
+    private HookHandler<MutatorHooks.MonsterDropItemArgs>? _onMonsterDropItem;
+    private HookHandler<MutatorHooks.MonsterSpawnArgs>? _onMonsterSpawn;
+    private HookHandler<MutatorHooks.RandomItemsClassNameArgs>? _onRandomItemsGetClassName;
 
     public override void Hook()
     {
@@ -115,6 +118,9 @@ public sealed class InstagibMutator : MutatorBase
         _onFilterItem ??= OnFilterItem;
         _onItemTouch ??= OnItemTouch;
         _onMakeObserver ??= OnMakePlayerObserver;
+        _onMonsterDropItem ??= OnMonsterDropItem;
+        _onMonsterSpawn ??= OnMonsterSpawn;
+        _onRandomItemsGetClassName ??= OnRandomItemsGetClassName;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
         MutatorHooks.PlayerDies.Add(_onPlayerDies);
@@ -137,6 +143,13 @@ public sealed class InstagibMutator : MutatorBase
         MutatorHooks.ItemTouch.Add(_onItemTouch);
         // QC MakePlayerObserver: stop a demoted player's no-ammo countdown (clear the FINDAMMO centerprint).
         MutatorHooks.MakePlayerObserver.Add(_onMakeObserver);
+        // QC MonsterDropItem (sv_instagib.qc:109-112): monsters always drop vaporizer_cells in instagib.
+        MutatorHooks.MonsterDropItem.Add(_onMonsterDropItem);
+        // QC MonsterSpawn (sv_instagib.qc:114-121): give the Mage skin=1 on spawn.
+        MutatorHooks.MonsterSpawn.Add(_onMonsterSpawn);
+        // QC RandomItems_GetRandomItemClassName (sv_instagib.qc:102-107): substitute the instagib item pool
+        // (VaporizerCells / ExtraLife / Invisibility / Speed) weighted by probability cvars.
+        MutatorHooks.RandomItemsGetClassName.Add(_onRandomItemsGetClassName);
 
         if (Api.Services is not null)
         {
@@ -181,6 +194,9 @@ public sealed class InstagibMutator : MutatorBase
         if (_onFilterItem is not null) MutatorHooks.FilterItem.Remove(_onFilterItem);
         if (_onItemTouch is not null) MutatorHooks.ItemTouch.Remove(_onItemTouch);
         if (_onMakeObserver is not null) MutatorHooks.MakePlayerObserver.Remove(_onMakeObserver);
+        if (_onMonsterDropItem is not null) MutatorHooks.MonsterDropItem.Remove(_onMonsterDropItem);
+        if (_onMonsterSpawn is not null) MutatorHooks.MonsterSpawn.Remove(_onMonsterSpawn);
+        if (_onRandomItemsGetClassName is not null) MutatorHooks.RandomItemsGetClassName.Remove(_onRandomItemsGetClassName);
     }
 
     private static bool IsPlayer(Entity? e) => e is not null && (e.Flags & EntFlags.Client) != 0;
@@ -717,6 +733,69 @@ public sealed class InstagibMutator : MutatorBase
         // StartLoadout has no separate warmup_* twins — its live values already mirror QC's warmup_start_*.
         l.ItemFlags.Add("UNLIMITED_SUPERWEAPONS");
         return false;
+    }
+
+    // MUTATOR_HOOKFUNCTION(mutator_instagib, MonsterDropItem) — sv_instagib.qc:109-112.
+    // EV_MonsterDropItem(monster, itemlist[in/out], attacker): set the drop-item list to "vaporizer_cells"
+    // so any monster killed during an instagib match always drops vaporizer cells instead of its normal loot.
+    // QC: M_ARGV(1, string) = "vaporizer_cells"; (no return value — not CBC_ORDER_EXCLUSIVE).
+    private bool OnMonsterDropItem(ref MutatorHooks.MonsterDropItemArgs args)
+    {
+        args.ItemList = "vaporizer_cells";
+        return false; // CBC_ORDER_ANY — does not cancel the drop
+    }
+
+    // MUTATOR_HOOKFUNCTION(mutator_instagib, MonsterSpawn) — sv_instagib.qc:114-121.
+    // EV_MonsterSpawn(monster): if the spawning monster is a Mage, give it skin 1.
+    // QC: entity mon = M_ARGV(0, entity); if (mon.monsterdef == MON_MAGE) mon.skin = 1;
+    // The comment "always refill ammo" in the original is a stale TODO — the actual change is only skin=1.
+    private bool OnMonsterSpawn(ref MutatorHooks.MonsterSpawnArgs args)
+    {
+        Entity mon = args.Monster;
+        // QC: mon.monsterdef == MON_MAGE — in the port the descriptor is stored in MonsterAI.StateOf(mon).Def;
+        // the Mage's netname is "mage" (Monsters.ByName("mage")). A null state means the entity isn't a monster.
+        if (MonsterAI.StateOf(mon)?.Def.NetName == "mage")
+            mon.Skin = 1f;
+        return false; // CBC_ORDER_ANY — does not cancel the spawn
+    }
+
+    // MUTATOR_HOOKFUNCTION(mutator_instagib, RandomItems_GetRandomItemClassName) — sv_instagib.qc:102-107.
+    // Port of RandomItems_GetRandomInstagibItemClassName(prefix) (sv_instagib.qc:24-39): weighted reservoir
+    // pick over the g_instagib_items pool {VaporizerCells, ExtraLife, Invisibility, Speed}, keyed by
+    // g_{prefix}_{m_canonical_spawnfunc}_probability cvars (same cvar naming as the vanilla random-items and
+    // overkill pools). A handler returning true signals the caller (RandomItemsMutator.GetRandomItemClassName)
+    // that the instagib pool was consumed and the vanilla weighted pick should NOT run.
+    // QC: IL_EACH(g_instagib_items, Item_IsDefinitionAllowed(it), { ... RandomSelection_AddString(spawnfunc, cvar(prob_cvar), 1); });
+    //     M_ARGV(1, string) = RandomSelection_chosen_string; return true;
+    private static readonly string[] InstagibItemNetNames =
+        { "vaporizer_cells", "extralife", "invisibility", "speed" };
+
+    private bool OnRandomItemsGetClassName(ref MutatorHooks.RandomItemsClassNameArgs args)
+    {
+        if (Api.Services is null) { args.ClassName = ""; return true; }
+        string prefix = args.Prefix;
+        string chosen = "";
+        float total = 0f;
+
+        // QC IL_EACH(g_instagib_items, Item_IsDefinitionAllowed(it)) — iterate the fixed 4-item instagib pool.
+        foreach (string netName in InstagibItemNetNames)
+        {
+            Pickup? def = Items.ByName(netName);
+            if (def is null) continue;
+            // QC Item_IsDefinitionAllowed: not MutatorBlocked and allowed for the current gametype.
+            if ((def.ItemDef.SpawnFlags & GameItemSpawnFlag.MutatorBlocked) != 0) continue;
+            if (!def.ItemDef.IsAllowed) continue;
+            // QC: cvar_name = sprintf("g_%s_%s_probability", prefix, it.m_canonical_spawnfunc).
+            string canonical = ItemSpawnFuncs.CanonicalSpawnFunc(def);
+            float prob = Api.Cvars.GetFloat($"g_{prefix}_{canonical}_probability");
+            if (prob <= 0f) continue;
+            // QC RandomSelection_AddString: reservoir pick — replace chosen with probability prob/total.
+            total += prob;
+            if (Prandom.Float() * total <= prob) chosen = canonical;
+        }
+
+        args.ClassName = chosen; // QC: M_ARGV(1, string) = RandomSelection_chosen_string.
+        return true;             // QC: return true — the instagib pool was consumed (skip vanilla pick).
     }
 
     // MUTATOR_HOOKFUNCTION(mutator_instagib, BuildMutatorsString) — sv_instagib.qc:415-418: append ":instagib"

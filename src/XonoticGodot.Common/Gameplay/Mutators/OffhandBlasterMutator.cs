@@ -22,6 +22,14 @@ public sealed class OffhandBlasterMutator : MutatorBase
     public override bool IsEnabled =>
         Api.Services is not null && Api.Cvars.GetFloat("g_offhand_blaster") != 0f;
 
+    // QC: MENUQC describe() — the per-mutator guide page text (common/mutators/mutator/offhand_blaster/offhand_blaster.qc:7-16).
+    // Three paragraphs: what it does (mutator+offhand+bind), what you can do with it (laser jumping), precedence vs hook.
+    public override string? GuideDescription =>
+        "The Offhand blaster mutator gives all players a Blaster as their offhand weapon, used with hook. " +
+        "It can be fired at any time, but the ordinary secondary fire can't be used.\n\n" +
+        "Since it's given as an offhand, you can fire it at the same time as the ordinary Blaster while laser jumping to achieve even more height.\n\n" +
+        "Note that it overrides the Grappling Hook mutator, since they use the same bind.";
+
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _onSpawn;
     private HookHandler<MutatorHooks.PlayerPreThinkArgs>? _onPreThink;
 

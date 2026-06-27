@@ -1049,7 +1049,11 @@ public sealed class ServerNet : IDisposable
                 _scratchWriter.WriteFloat(o.Y);
                 _scratchWriter.WriteFloat(o.Z);
                 _scratchWriter.WriteByte((byte)(wp.Team & 0xFF));
-                _scratchWriter.WriteString(wp.SpriteName);
+                // QC Draw_WaypointSprite SPRITERULE_TEAMPLAY (waypointsprites.qc:514): a teamplay waypoint shows a
+                // DIFFERENT image to own-team / enemy / spectator (model2 / model1 / model3). The port resolves it
+                // here, per peer, instead of networking the triple. Non-teamplay rules return SpriteName unchanged.
+                string spriteFor = wp.SpriteFor((int)peer.Team, peer.IsObserver);
+                _scratchWriter.WriteString(spriteFor);
                 // QC packs the radar-icon byte: low 7 bits = m_radaricon (0/1), bit 7 = "ping now" (cnt|BIT(7)),
                 // which the client turns into an expanding gfx/teamradar_ping ring. waypointsprites.qc:187-192.
                 int radarByte = (wp.RadarIcon & 0x7F);
@@ -1108,7 +1112,11 @@ public sealed class ServerNet : IDisposable
                 return true;
             }
             case XonoticGodot.Common.Gameplay.Waypoints.SpriteRule.Teamplay:
-                return wp.Team == 0 || wp.Team == (int)peer.Team;
+                // QC Draw_WaypointSprite SPRITERULE_TEAMPLAY (waypointsprites.qc:514) is visible to EVERYONE — it
+                // never hides on team; it only swaps the IMAGE (own/enemy/spectator, resolved in SendWaypoints via
+                // SpriteFor). The only "hide" is when the chosen image is "" (QC: if(spriteimage=="") return). So
+                // skip this viewer only when SpriteFor yields an empty image (e.g. a producer left model2 unset).
+                return !string.IsNullOrEmpty(wp.SpriteFor((int)peer.Team, !isPlayer));
             default: // SPRITERULE_DEFAULT
                 // QC: a team-set Default waypoint is visible only to the same team AND only to live players.
                 if (wp.Team != 0)
@@ -2684,7 +2692,11 @@ public sealed class ServerNet : IDisposable
         _notifyQueue.Clear();
     }
 
-    /// <summary>Does a notification's broadcast/target reach this player? (the QC NOTIF_ONE/ALL/EXCEPT routing).</summary>
+    /// <summary>
+    /// Does a notification's broadcast/target reach this player? (the QC NOTIF_ONE/ALL/EXCEPT routing).
+    /// Includes spectator-follow routing: IS_SPEC(to) && to.enemy == other for NOTIF_ONE/ALL_EXCEPT;
+    /// IS_SPEC(to) && to.enemy.team == other.team for NOTIF_TEAM[_EXCEPT].
+    /// </summary>
     private static bool NotificationReaches(in NotificationDispatch d, Player p)
     {
         switch (d.Broadcast)
@@ -2692,14 +2704,31 @@ public sealed class ServerNet : IDisposable
             case NotifBroadcast.All:
                 return true;
             case NotifBroadcast.AllExcept:
-                return !ReferenceEquals(d.Target, p);
+                // Exclude the target and spectators following the target.
+                return !ReferenceEquals(d.Target, p)
+                    && !(p.IsObserver && p.Spectatee == d.Target);
             case NotifBroadcast.One:
+                // Reach the target and spectators following the target.
+                return ReferenceEquals(d.Target, p)
+                    || (p.IsObserver && p.Spectatee == d.Target);
             case NotifBroadcast.OneOnly:
+                // Reach only the target, not spectators.
                 return ReferenceEquals(d.Target, p);
             case NotifBroadcast.Team:
-                return d.Target is Player t && t.Team == p.Team;
+                // Reach the target's team and spectators following the target's team.
+                if (d.Target is not Player t)
+                    return false;
+                return t.Team == p.Team
+                    || (p.IsObserver && p.Spectatee?.Team == t.Team);
             case NotifBroadcast.TeamExcept:
-                return d.Target is Player te && te.Team == p.Team && !ReferenceEquals(d.Target, p);
+                // Reach the target's team except the target, and spectators following the target's team
+                // (but not the target themselves).
+                if (d.Target is not Player te)
+                    return false;
+                // QC factors `to_client != other_client` over BOTH branches (all.qc:78-82): never reach the target.
+                return !ReferenceEquals(d.Target, p)
+                    && (te.Team == p.Team
+                        || (p.IsObserver && p.Spectatee != d.Target && p.Spectatee?.Team == te.Team));
             default:
                 return true;
         }

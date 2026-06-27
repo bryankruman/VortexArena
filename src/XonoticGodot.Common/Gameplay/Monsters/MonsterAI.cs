@@ -504,6 +504,15 @@ public static class MonsterAI
         // monster actually run; the simulation loop's SV_RunThink fires it.
         e.Think = self => { self.NextThink = Now; st.Def.Think(self); };
         e.NextThink = Now;
+
+        // QC sv_monsters.qc:1381: if (MUTATOR_CALLHOOK(MonsterSpawn, this)) return false; — a mutator may cancel
+        // the spawn (e.g. instagib sets Mage skin=1; no mutator returns true so no cancel in practice).
+        if (MutatorHooks.FireMonsterSpawn(e))
+        {
+            Remove(e);
+            return false;
+        }
+
         return true;
     }
 
@@ -1001,6 +1010,11 @@ public static class MonsterAI
             // nade_entrap_touch flags nade_entrap_time on monsters the same as on players.
             if (self.NadeEntrapTime > Now)
                 speed *= EntrapSpeed();
+            // Stunned: a monster hit by a disability-buff carrier runs/walks slower (QC buffs MonsterMove hook,
+            // disability.qc:19-28 — scales BOTH run and walk speed by g_buffs_disability_speed while Stunned).
+            var stunnedDef = StatusEffectsCatalog.Stunned;
+            if (stunnedDef is not null && StatusEffectsCatalog.Has(self, stunnedDef))
+                speed *= DisabilitySpeed();
             MoveSimple(self, forward, speed, flyOrSwim, vzKeep);
 
             if (Now > st.PainFinished && Now > st.AnimFinished && st.State == 0)
@@ -2025,6 +2039,10 @@ public static class MonsterAI
     /// <summary>Read a balance/config float, falling back when unset or services are absent (QC autocvar default).</summary>
     /// <summary>QC autocvar_g_nades_entrap_speed (mutators.cfg:299, default 0.5): the entrap move-speed factor.</summary>
     private static float EntrapSpeed() => Cvar("g_nades_entrap_speed", 0.5f);
+
+    // QC autocvar_g_buffs_disability_speed (0.7): the run/walk multiplier a Stunned monster moves at (buffs
+    // MonsterMove hook, disability.qc:25-26).
+    private static float DisabilitySpeed() => Cvar("g_buffs_disability_speed", 0.7f);
 
     public static float Cvar(string name, float fallback)
     {

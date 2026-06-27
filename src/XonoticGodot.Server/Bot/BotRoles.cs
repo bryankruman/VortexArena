@@ -306,7 +306,16 @@ public static class BotRoles
             return System.Math.Max(0.1f, missing * 0.6f);
         }
 
-        // Powerup / unknown pickup: a steady pull (QC powerups rate high; scaled by the caller's bias).
+        // Powerup / unknown pickup: use the item def's m_botvalue when available (QC generic_pickupevalfunc
+        // returns bot_pickupbasevalue directly; see powerups.qh CLASS(Powerup) m_botvalue = 11000, and the
+        // jetpack/fuelregen.qh overrides m_botvalue = 3000). Normalized against 11000 (the powerup ceiling)
+        // so the result lives in the same 0..1 range as the other branches above.
+        int botValue = item.Pickup?.ItemDef.BotValue ?? 0;
+        if (botValue > 0)
+            return System.Math.Clamp(botValue / 11000f, 0f, 1f);
+
+        // Legacy name-match fallback for items not yet carrying a Pickup ref (pre-existing behavior):
+        // the four glowing powerups rate at 1.0 (highest); everything else at 0.3.
         if (Mentions(name, "powerup") || Mentions(name, "strength") || Mentions(name, "shield")
             || Mentions(name, "invincible") || Mentions(name, "buff"))
             return 1.0f;

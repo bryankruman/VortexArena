@@ -294,6 +294,14 @@ public abstract partial class MutatorBase : IRegistered
     /// The first mutator to return true wins (matches QC CBC_ORDER_ANY early-exit on return true).
     /// </summary>
     public virtual (string name, bool overridden) SetModname(string name) => (name, false);
+
+    /// <summary>
+    /// QC MENUQC <c>describe()</c> (the per-mutator METHOD, e.g. vampire.qc:6-13 — the multi-paragraph mutator-guide
+    /// prose shown in the in-menu Guide's Mutators topic: what the mutator does, its interactions, and tactical notes).
+    /// <c>null</c> = no guide text ported yet for this mutator (the Guide falls back to a generic note).
+    /// Plain newline-separated paragraphs (the QC %s name substitutions are pre-filled with the literal names).
+    /// </summary>
+    public virtual string? GuideDescription => null;
 }
 
 /// <summary>
