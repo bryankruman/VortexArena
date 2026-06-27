@@ -506,7 +506,11 @@ public sealed class Scores
         {
             // SUICIDE / world death (QC "SUICIDE"/"ACCIDENT-TRAP"): +1 suicide; −1 frag (only if we own score).
             Row(victim).AddAux(ScoreField.Suicides, 1);
-            if (OwnsScore)
+            // QC server/damage.qc:304 special-cases DEATH_AUTOTEAMCHANGE (an auto-balance team move): the suicide
+            // frag is NOT negated. A manual DEATH_TEAMCHANGE still negates. (In the live path OwnsScore is false —
+            // each gametype owns its own suicide −1 and applies the same skip — so this gate guards the sole-scorer
+            // configuration; it is the central mirror of damage.qc:304.)
+            if (OwnsScore && !DeathTypes.IsAutoTeamChange(deathType))
             {
                 Add(victim, ScoreField.Score, -1);
                 if (teamGame) AddTeamScore((int)victim.Team, -1);
@@ -594,8 +598,9 @@ public sealed class Scores
 
             // QC SUICIDE switch (server/damage.qc:271-273): TEAMCHANGE / AUTOTEAMCHANGE route to their own self
             // line with f1 = targ.team (the death_team float arg the DEATH_SELF_*TEAMCHANGE rows render as the
-            // destination team name). The frag-negation skip for AUTOTEAMCHANGE is handled in the scoring path
-            // (ClearForTeamChange leaves SP_SCORE alone); here we only emit the correct obituary self-line.
+            // destination team name). The frag-negation skip for AUTOTEAMCHANGE is applied in the scoring branch
+            // above (and in each gametype's own suicide handler, e.g. Tdm.OnDeath) — here we only emit the
+            // correct obituary self-line.
             if (baseType == DeathTypes.TeamChange || baseType == DeathTypes.AutoTeamChange)
             {
                 string tcName = baseType == DeathTypes.AutoTeamChange

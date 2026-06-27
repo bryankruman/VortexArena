@@ -1,13 +1,12 @@
 unit: fx-deathtypes
 category: notification
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 11
   worst_gaps:
-    - "DEATH_CUSTOM (mapper deathmessage, ACCIDENT branch) is now WIRED in selection/emission (DeathTypes.Custom const + Scores.EmitObituary CUSTOM branch formats 'You were %s' onto DEATH_SELF_CUSTOM) but has NO live emitter: nothing in the port tags a death with DeathTypes.Custom, so the path is dead. The selector/handler is correct; it just never fires. (Contrast: Base's ACCIDENT branch is reachable via a trigger_hurt with a deathmessage field.)"
-    - "DEATH_SHOOTING_STAR is the last special with a selector (SelectSpecial maps it) but no live emitter — no jumppad/launch volume tags a kill with DeathTypes.ShootingStar. Latent faithfulness gap (Base registers it but it is itself a niche mutator death)."
-    - "All the previously-open high-impact gaps are now CLOSED: NADE family (live via the 5 nade booms when g_nades), KILL->DEATH_SELF_SUICIDE + CTS /kill suppression, MIRRORDAMAGE->DEATH_SELF_BETRAYAL, TEAMCHANGE/AUTOTEAMCHANGE self lines + death_team f1 arg, ROT (live via health-rot tick + bloodloss), CHEAT (live via Cheats.cs), TOUCHEXPLODE (live via mutator), and the ANNCE_ACHIEVEMENT_BOTLIKE accident announce."
+    - "DEATH_CUSTOM (mapper deathmessage, ACCIDENT branch) is WIRED in selection/emission (DeathTypes.Custom const + Scores.EmitObituary CUSTOM branch formats 'You were %s' onto DEATH_SELF_CUSTOM) but has NO live emitter: nothing in the port tags a death with DeathTypes.Custom (grep finds only the consumer at Scores.cs:615), so the path is dead. The selector/handler is correct; it just never fires. (Contrast: Base's ACCIDENT branch is reachable via a trigger_hurt with a deathmessage field.)"
+    - "Previously-open gaps now CLOSED: NADE family (live via the 5 nade booms when g_nades), KILL->DEATH_SELF_SUICIDE + CTS /kill suppression, MIRRORDAMAGE->DEATH_SELF_BETRAYAL, ROT (health-rot tick PlayerFrameLogic.cs:100), CHEAT (Cheats.cs:271), TOUCHEXPLODE (mutator), CAMP (CampcheckMutator), the ANNCE_ACHIEVEMENT_BOTLIKE accident announce, DEATH_SHOOTING_STAR (FallDamage over-speed guard), manual DEATH_TEAMCHANGE, and (FIXED 2026-06-27) DEATH_AUTOTEAMCHANGE — KillPlayerForTeamChange now routes the bot auto-balance kill to DEATH_AUTOTEAMCHANGE (auto self-line + frag-negation SKIP per damage.qc:304) while the manual switch stays DEATH_TEAMCHANGE."
 features:
   - id: fx-deathtypes.registry.packing
     name: "Deathtype encoding: packed int (weaponmask + HITTYPE bits + DT_FIRST registry) vs string tag"
@@ -157,7 +156,8 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:218-258 (SelectSpecial - NADE family + cheat/camp/rot/shooting_star/touchexplode ALL present)"
       - "src/XonoticGodot.Common/Gameplay/Nades/Booms/{NadeNormalBoom,NadeIceBoom,NadeHealBoom,NadeDarknessBoom,NadeNapalmBoom}.cs (emit NadeDeathTypes.Nade/Ice/Heal/Darkness/Napalm via Combat.Damage — LIVE when g_nades)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs (camp, LIVE when g_campcheck); TouchExplodeMutator.cs:122 (touchexplode, LIVE); src/XonoticGodot.Server/Cheats.cs:270 (cheat, LIVE); src/XonoticGodot.Server/PlayerFrameLogic.cs:100 + Mutators/BloodlossMutator.cs:79 (rot, LIVE)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:156,165 (camp, LIVE when g_campcheck); TouchExplodeMutator.cs:122 (touchexplode, LIVE); src/XonoticGodot.Server/Cheats.cs:271 (cheat, LIVE); src/XonoticGodot.Server/PlayerFrameLogic.cs:100 (rot, LIVE)"
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:464 (shooting_star, LIVE via the FallDamage g_maxspeed over-speed guard; FallDamage called per-frame from GameWorld.cs:2107)"
     constants:
       - { name: "camp self line", base: "DEATH_SELF_CAMP (NULL murder)", port: "DEATH_SELF_CAMP self / DEATH_MURDER_FRAG murder", match: true }
       - { name: "nade murder line", base: "DEATH_MURDER_NADE ('blown up by Y's Nade')", port: "DEATH_MURDER_NADE (NADE/_NAPALM/_ICE/_HEAL/_DARKNESS mapped)", match: true }
@@ -170,17 +170,16 @@ features:
       timing: na
       presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "DEATH_SHOOTING_STAR has a selector (SelectSpecial maps DeathTypes.ShootingStar -> SHOOTING_STAR) but NO live emitter in the port: no jumppad/launch volume tags a kill with it, so the path is dead. Latent-only (Base registers it but it is a niche death). All other rows in this family are now live."
+    gaps: []
     verification:
-      - { kind: code, ref: "SelectSpecial (DeathMessages.cs:218-258) now maps Camp/TouchExplode/Nade/NadeNapalm/NadeIce/NadeHeal/NadeDarkness/Cheat/ShootingStar/Rot, with self-only NULL-murder rows (CAMP/ROT) falling back to FRAG — matches all.inc cols 2/3 verbatim", result: pass }
-      - { kind: code, ref: "NADE family LIVE: 5 nade booms emit NadeDeathTypes.* via Combat.Damage (NadeNormalBoom:65, NadeIceBoom:79, NadeHealBoom:61, NadeDarknessBoom:75, NadeNapalmBoom:220) when g_nades enabled. CHEAT live (Cheats.cs:270), TOUCHEXPLODE live (TouchExplodeMutator.cs:122), ROT live (PlayerFrameLogic.cs:100 + BloodlossMutator.cs:79), CAMP live (CampcheckMutator)", result: pass }
-      - { kind: code, ref: "DEATH_*_NADE/CHEAT/ROT/SHOOTING_STAR/TOUCHEXPLODE notif rows present (NotificationsList.cs:1090/1116/1131-1142). ShootingStar has no Combat.Damage emitter (grep DeathTypes.ShootingStar -> selector only)", result: partial }
+      - { kind: code, ref: "SelectSpecial (DeathMessages.cs:218-258) maps Camp/TouchExplode/Nade/NadeNapalm/NadeIce/NadeHeal/NadeDarkness/Cheat/ShootingStar/Rot, with self-only NULL-murder rows (CAMP/ROT) falling back to FRAG — matches all.inc cols 2/3 verbatim", result: pass }
+      - { kind: code, ref: "NADE family LIVE: 5 nade booms emit NadeDeathTypes.* via Combat.Damage (NadeNormalBoom:65, NadeIceBoom:79, NadeHealBoom:61, NadeDarknessBoom:75, NadeNapalmBoom:220) when g_nades enabled. CHEAT live (Cheats.cs:271), TOUCHEXPLODE live (TouchExplodeMutator.cs:122), ROT live (PlayerFrameLogic.cs:100), CAMP live (CampcheckMutator.cs:156/165)", result: pass }
+      - { kind: code, ref: "SHOOTING_STAR now LIVE: PlayerFrameLogic.FallDamage:464 emits DeathTypes.ShootingStar via Combat.Damage when vel>g_maxspeed (g_maxspeed>0); FallDamage is called per-frame for every live player (GameWorld.cs:2107). DEATH_*_NADE/CHEAT/ROT/SHOOTING_STAR/TOUCHEXPLODE notif rows present (NotificationsList.cs:1090/1116/1131-1142)", result: pass }
     confidence: high
-    notes: "FIXED since baseline (Wave-6): NADE family (highest impact), cheat, rot, touchexplode are all now selected AND live-emitted; the previously-recorded NADE/cheat/rot gaps are closed. Only SHOOTING_STAR remains selector-only (dead emitter). liveness partial reflects that one latent member."
+    notes: "FIXED since the 2026-06-25 audit: DEATH_SHOOTING_STAR gained a live emitter (the FallDamage over-speed guard), closing the last latent member of this family. NADE family, cheat, rot, touchexplode, camp all remain selected AND live-emitted. liveness upgraded partial->live."
 
   - id: fx-deathtypes.message.betrayal_suicide_text
     name: "MIRRORDAMAGE -> DEATH_SELF_BETRAYAL and KILL -> DEATH_SELF_SUICIDE self lines (+ CTS /kill suppression)"
@@ -218,28 +217,29 @@ features:
       - "common/deathtypes/all.inc (AUTOTEAMCHANGE->DEATH_SELF_AUTOTEAMCHANGE; TEAMCHANGE->DEATH_SELF_TEAMCHANGE)"
       - "server/damage.qc:272-273 (SUICIDE branch: TEAMCHANGE/AUTOTEAMCHANGE -> Obituary_SpecialDeath with f1=targ.team); :304 (GiveFrags -1 SKIPPED for AUTOTEAMCHANGE)"
     port_refs:
-      - "src/XonoticGodot.Server/Scores.cs:594-604 (EmitObituary: TEAMCHANGE/AUTOTEAMCHANGE self-line + death_team=victim.Team f1 arg)"
-      - "src/XonoticGodot.Server/Teamplay.cs:698 (KillPlayerForTeamChange emits DeathTypes.AutoTeamChange, LIVE)"
-      - "src/XonoticGodot.Server/PlayerScoreRow.ClearForTeamChange (frag-negation skip via the scoring path)"
+      - "src/XonoticGodot.Server/Scores.cs:599-608 (EmitObituary: TEAMCHANGE/AUTOTEAMCHANGE self-line + death_team=victim.Team f1 arg)"
+      - "src/XonoticGodot.Server/Teamplay.cs:798-815 (KillPlayerForTeamChange(p, bool autoBalance): manual -> DeathTypes.TeamChange, auto-balance -> DeathTypes.AutoTeamChange; both LIVE)"
+      - "src/XonoticGodot.Server/GameWorld.cs:949 + Teamplay.cs:425 (MANUAL switch -> autoBalance:false -> TeamChange); GameWorld.cs:956 + 3253 (AUTO-balance -> autoBalance:true -> AutoTeamChange)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:283-290 + src/XonoticGodot.Server/Scores.cs:505-518 (suicide -1 SKIPPED for AUTOTEAMCHANGE via DeathTypes.IsAutoTeamChange — mirror of damage.qc:304)"
     constants:
-      - { name: "autoteamchange self line", base: "DEATH_SELF_AUTOTEAMCHANGE (f1=death_team)", port: "DEATH_SELF_AUTOTEAMCHANGE (f1=victim.Team)", match: true }
+      - { name: "autoteamchange self line", base: "DEATH_SELF_AUTOTEAMCHANGE (f1=death_team)", port: "DEATH_SELF_AUTOTEAMCHANGE (f1=victim.Team) — LIVE via KillPlayerForTeamChange(autoBalance:true)", match: true }
       - { name: "teamchange self line", base: "DEATH_SELF_TEAMCHANGE (f1=death_team)", port: "DEATH_SELF_TEAMCHANGE (f1=victim.Team)", match: true }
+      - { name: "auto-balance frag-negation skip", base: "GiveFrags(-1) SKIPPED for AUTOTEAMCHANGE (damage.qc:304)", port: "DeathTypes.IsAutoTeamChange gate skips the suicide -1 in Tdm.OnDeath + Scores.Obituary (manual TEAMCHANGE still negates)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
       presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "DEATH_TEAMCHANGE (manual team change) has no live emitter in the port: every force-kill team change routes through DeathTypes.AutoTeamChange (Teamplay.cs:698). The AUTOTEAMCHANGE branch IS live; the manual TEAMCHANGE self-line is selectable but dead. Minor — the rendered text differs only by the auto/manual wording."
+    gaps: []
     verification:
-      - { kind: code, ref: "EmitObituary (Scores.cs:594-604) routes baseType==TeamChange/AutoTeamChange to DEATH_SELF_(AUTO)TEAMCHANGE with (s1=victimName, death_team=victim.Team, s2loc) — matches all.inc:1/33 rows (s1 death_team s2loc) + damage.qc:272-273. AutoTeamChange emitter LIVE (Teamplay.cs:698)", result: pass }
-      - { kind: code, ref: "DEATH_SELF_TEAMCHANGE / DEATH_SELF_AUTOTEAMCHANGE Multi/Info/Center rows present with death_team float arg (NotificationsList.cs:271-273/513-515/612-613). Frag-negation skip handled via ClearForTeamChange. No live DeathTypes.TeamChange (manual) emitter found", result: partial }
+      - { kind: code, ref: "EmitObituary (Scores.cs:599-608) routes baseType==TeamChange/AutoTeamChange to DEATH_SELF_(AUTO)TEAMCHANGE with (s1=victimName, death_team=victim.Team, s2loc) — matches all.inc:1/33 + damage.qc:272-273. BOTH emitters LIVE: KillPlayerForTeamChange(p, autoBalance) emits TeamChange for manual (GameWorld.cs:949, Teamplay.cs:425) and AutoTeamChange for auto-balance (GameWorld.cs:956, 3253)", result: pass }
+      - { kind: code, ref: "frag-negation skip: DeathTypes.IsAutoTeamChange(deathType) gates the suicide -1 in Tdm.OnDeath (Tdm.cs:287 — both AddTeamScore and ScoreFrags skipped) and the central Scores.Obituary OwnsScore branch (Scores.cs:510), mirroring damage.qc:304 (AUTOTEAMCHANGE skips GiveFrags(-1), manual TEAMCHANGE does not). FreezeTag keeps its -1 by design — Base freezetag_Add_Score (sv_freezetag.qc:168) deducts on a self-freeze regardless of auto/manual", result: pass }
     confidence: high
-    notes: "FIXED since baseline (Wave-6): the AUTOTEAMCHANGE self-line + death_team f1 arg are now wired and live. Residual: manual DEATH_TEAMCHANGE has no live emitter (all team-change kills use AUTOTEAMCHANGE), so its selectable self-line is latent — liveness partial."
+    notes: "FIXED 2026-06-27 (regression introduced by Wave-12b then resolved): KillPlayerForTeamChange gained a bool autoBalance param so the manual switch emits DEATH_TEAMCHANGE (negates a frag) and the bot auto-balance emits DEATH_AUTOTEAMCHANGE (skips it), matching damage.qc:272-273/304. Both self-lines are now live; the -1 frag-skip is gated on DeathTypes.IsAutoTeamChange in the generic team-scoring path (Tdm + Scores central). logic/presentation/liveness restored faithful/live."
 
   - id: fx-deathtypes.message.mapper_custom
     name: "HURTTRIGGER mapper message (msg_from_ent / DEATH_*_VOID_ENT) + DEATH_CUSTOM (deathmessage)"

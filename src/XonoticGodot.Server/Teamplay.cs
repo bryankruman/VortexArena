@@ -791,11 +791,13 @@ public sealed class Teamplay
 
     /// <summary>
     /// QC <c>KillPlayerForTeamChange</c>: when a player is moved across teams mid-match, kill them
-    /// (DEATH_TEAMCHANGE — a self-kill that negates a frag) and clear their auxiliary score columns
-    /// so the move doesn't unfairly carry kills/deaths to the new team. Returns true if the player was alive
-    /// (and thus killed). The caller re-spawns the player afterwards via the normal respawn path.
+    /// (a self-kill that clears their auxiliary score columns so the move doesn't unfairly carry kills/deaths
+    /// to the new team) and re-spawn them on the new side. The death type distinguishes a MANUAL switch
+    /// (DEATH_TEAMCHANGE — the suicide DOES negate a frag) from an AUTO-balance move
+    /// (<paramref name="autoBalance"/> → DEATH_AUTOTEAMCHANGE — server/damage.qc:304 skips the frag negation,
+    /// since the player didn't choose to switch). Returns true if the player was alive (and thus killed).
     /// </summary>
-    public bool KillPlayerForTeamChange(Player p)
+    public bool KillPlayerForTeamChange(Player p, bool autoBalance = false)
     {
         // QC PlayerScore_Clear on a team change: reset this player's aux score columns.
         _scores?.Row(p).ClearForTeamChange();
@@ -803,10 +805,12 @@ public sealed class Teamplay
         if (p.IsDead)
             return false;
 
-        // QC server/teamplay.qc:1249: `Damage(player, player, player, 100000, DEATH_TEAMCHANGE.m_id, ...)`
-        // attacker == targ → SUICIDE branch; DEATH_TEAMCHANGE (unlike AUTOTEAMCHANGE) DOES negate a frag.
-        // The port passes the player as attacker (self-kill) matching Base exactly.
-        Combat.Damage(p, null, p, 100000f, DeathTypes.TeamChange, p.Origin, System.Numerics.Vector3.Zero);
+        // QC server/teamplay.qc:1249: `Damage(player, player, player, 100000, DEATH_*TEAMCHANGE.m_id, ...)`
+        // attacker == targ → SUICIDE branch. AUTOTEAMCHANGE (the auto-balance move) is special-cased in
+        // damage.qc:304 to NOT negate a frag; a manual TEAMCHANGE does. The port passes the player as attacker
+        // (self-kill) matching Base exactly; the gametype/scoring suicide path reads the death type to gate the −1.
+        string deathType = autoBalance ? DeathTypes.AutoTeamChange : DeathTypes.TeamChange;
+        Combat.Damage(p, null, p, 100000f, deathType, p.Origin, System.Numerics.Vector3.Zero);
         return true;
     }
 

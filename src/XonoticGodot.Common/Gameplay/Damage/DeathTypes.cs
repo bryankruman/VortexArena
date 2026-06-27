@@ -281,6 +281,10 @@ public static class DeathTypes
         return b == TeamChange || b == AutoTeamChange;
     }
 
+    /// <summary>QC: DEATH_AUTOTEAMCHANGE only — the auto-balance team move (server/damage.qc:304 special-cases it:
+    /// the suicide frag is NOT negated when the player was auto-switched, unlike a manual DEATH_TEAMCHANGE).</summary>
+    public static bool IsAutoTeamChange(string? deathType) => BaseOf(deathType) == AutoTeamChange;
+
     // ============================================================================================
     //  Special deathtype registry + .message category (QC deathtypes/all.qh DEATH_ISMONSTER/
     //  ISTURRET/ISVEHICLE + all.inc). Replaces brittle substring obituary checks with a registry

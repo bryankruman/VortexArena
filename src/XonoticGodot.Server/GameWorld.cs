@@ -953,7 +953,7 @@ public sealed class GameWorld
                     {
                         Player? moved = Teamplay.AutoBalanceBots(Clients.Players);
                         if (moved is not null)
-                            Teamplay.KillPlayerForTeamChange(moved);
+                            Teamplay.KillPlayerForTeamChange(moved, autoBalance: true);
                     }
                 }
             }
@@ -3250,7 +3250,7 @@ public sealed class GameWorld
             return;
         Player? moved = Teamplay.AutoBalanceBots(Clients.Players);
         if (moved is not null)
-            Teamplay.KillPlayerForTeamChange(moved); // respawns on the new team via the normal respawn path
+            Teamplay.KillPlayerForTeamChange(moved, autoBalance: true); // respawns on the new team; AUTOTEAMCHANGE skips the frag negation
     }
 
     private void DriveGametypeFrame()

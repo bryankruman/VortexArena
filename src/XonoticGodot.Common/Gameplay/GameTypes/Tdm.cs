@@ -282,8 +282,13 @@ public sealed class Tdm : GameType
         {
             // SUICIDE / world death: the victim's team loses a frag (QC GiveFrags(targ, targ, -1) team-routed),
             // and the victim's individual SP_SCORE drops by 1 (PlayerTeamScore_Add player side).
-            AddTeamScore(victim.Team, -1);
-            victim.ScoreFrags -= 1;
+            // QC server/damage.qc:304 special-cases DEATH_AUTOTEAMCHANGE (an auto-balance team move): the suicide
+            // frag is NOT negated, since the player didn't choose to switch. A manual DEATH_TEAMCHANGE still does.
+            if (!DeathTypes.IsAutoTeamChange(ev.DeathType))
+            {
+                AddTeamScore(victim.Team, -1);
+                victim.ScoreFrags -= 1;
+            }
         }
         else if (Teams.SameTeam(attacker, victim))
         {
