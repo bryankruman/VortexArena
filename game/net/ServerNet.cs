@@ -6,6 +6,7 @@ using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Physics;
+using XonoticGodot.Common.Services;
 using XonoticGodot.Net;
 using XonoticGodot.Server;
 using NVec3 = System.Numerics.Vector3;
@@ -870,6 +871,43 @@ public sealed class ServerNet : IDisposable
     /// <summary>QC <c>ignore_playerinlist(this, other)</c>: is <paramref name="other"/> on <paramref name="self"/>'s
     /// ignore list? Delegates to the chat engine's PersistentId-keyed check.</summary>
     public static bool IgnorePlayerInList(Player self, Player other) => Chat.IgnorePlayerInList(self, other);
+
+    /// <summary>
+    /// QC <c>soundto(MSG_ONE, emitter, channel, sample, volume, atten, 0)</c>: send one positional sound to a
+    /// single client only (the <c>target_speaker ACTIVATOR</c> BIT3 per-client sound). Encodes a one-record
+    /// <see cref="NetControl.SoundBundle"/> using the same <see cref="XonoticGodot.Net.SoundWire"/> codec as
+    /// <see cref="FlushSounds"/> and delivers it ONLY to <paramref name="client"/>'s peer (reliable so it
+    /// arrives even on a laggy connection — matching QC's reliable SOUND channel for MSG_ONE). No-op if the
+    /// player has no accepted peer (bot, unconnected, or non-remote entity).
+    /// </summary>
+    public void SendSoundToPlayer(
+        Player client, Entity emitter, SoundChannel channel, string sample, float volume, float attenuation)
+    {
+        if (client is null || string.IsNullOrEmpty(sample)) return;
+        if (!_byPlayer.TryGetValue(client, out PeerState? st) || !st.Accepted) return;
+
+        // Build a one-record SoundBundle using the shared SoundWire codec (same layout as FlushSounds).
+        _scratchWriter.Reset();
+        _scratchWriter.WriteByte((byte)NetControl.SoundBundle);
+        int countPos = ReserveCount(_scratchWriter);
+        var rec = new XonoticGodot.Net.SoundWire
+        {
+            Sample = sample,
+            Origin = emitter.Origin + (emitter.Mins + emitter.Maxs) * 0.5f,
+            Volume = volume,
+            Attenuation = attenuation,
+            Channel = (int)channel,
+            SourceNetId = NetIdForEntity(emitter),
+            Loop = false,
+            Stop = false,
+            Pitch = 1f,
+        };
+        rec.Write(_scratchWriter);
+        PatchCount(_scratchWriter, countPos, 1);
+        // Use reliable delivery — QC's soundto MSG_ONE goes on the reliable channel so the cue arrives
+        // even when unreliable packets are lost. Mirrors SendChatToPlayer's reliable send pattern.
+        _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
+    }
 
     /// <summary>[T38] Push each changed minigame session's snapshot to its participating peers (QC
     /// <c>minigame_resend</c> + <c>minigame_CheckSend</c>), each carrying that peer's own team; and an empty

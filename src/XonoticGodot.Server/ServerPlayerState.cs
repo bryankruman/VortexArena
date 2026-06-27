@@ -30,6 +30,11 @@ public sealed class ServerPlayerState
     // ---- fall-damage bookkeeping (QC .oldvelocity captured each CreatureFrame) ----
     public System.Numerics.Vector3 OldVelocity;
 
+    // ---- name enforcement (QC CS(this).netname_previous, server/client.qc:2901-2921) ----
+    // The last name we accepted for this client; PlayerFrame re-runs the nameless/too-long/invisible
+    // check only when the netname changed from this. "" = never checked yet (first frame after connect).
+    public string NetnamePrevious = "";
+
     // ---- idle detection (QC ecs/systems/sv_physics.qc parm_idlesince + server/client.qc PlayerFrame idle block) ----
     // parm_idlesince: the sim time of the player's last detectable input (buttons change, movement change, or
     // view-angle change while NOT typing).  0 = not yet set (treated as "just moved").

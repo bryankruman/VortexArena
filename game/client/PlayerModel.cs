@@ -8,6 +8,7 @@ using XonoticGodot.Common.Math;
 using XonoticGodot.Engine.Simulation;
 using XonoticGodot.Game.Loaders.Models;
 using SN = System.Numerics;
+using L = XonoticGodot.Engine.Simulation.LocomotionBlend.DirLocomotion;
 
 namespace XonoticGodot.Game.Client;
 
@@ -31,12 +32,13 @@ public partial class PlayerModel : Node3D
     private PlayerSkeleton _player = null!;
     private int _skel;
 
-    // legs locomotion clips by intent, plus a stable torso clip; resolved once from the model's framegroups.
-    private readonly FrameGroup[] _legClips = new FrameGroup[6];
+    // legs locomotion clips by directional intent (the faithful animdecide set), plus a stable torso clip;
+    // resolved once from the model's framegroups. Indexed by LocomotionBlend.DirLocomotion.
+    private readonly FrameGroup[] _legClips = new FrameGroup[21];
     private FrameGroup _torsoClip;
 
     private float _legsTime;     // seconds the legs clip has been playing (advances with the active locomotion)
-    private LocomotionBlend.Locomotion _lastLoco = (LocomotionBlend.Locomotion)(-1);
+    private LocomotionBlend.DirLocomotion _lastLoco = (LocomotionBlend.DirLocomotion)(-1);
 
     // 3.3: off-screen / distant pose-cull state (gated by cl_pose_cull at the call site). The notifier tracks
     // whether this model is on-screen; when culling is enabled we skip the interop pose PUSH for an off-screen
@@ -161,9 +163,13 @@ public partial class PlayerModel : Node3D
 
         if (!Active) return;
 
-        float speed2d = MathF.Sqrt(e.Velocity.X * e.Velocity.X + e.Velocity.Y * e.Velocity.Y);
         bool dead = e.DeadState is DeadFlag.Dying or DeadFlag.Dead || (e.Health <= 0f && e.MaxHealth > 0f);
-        LocomotionBlend.Locomotion loco = LocomotionBlend.SelectLegs(speed2d, e.OnGround, e.IsDucked, dead);
+        // Faithful animdecide locomotion: the 8-direction + duck-variant lower-body clip, inferred client-side
+        // from the networked velocity + angles + onground + ducked (Base decides locomotion CSQC-side too — only
+        // the upper-body ACTION overlays are networked, and those are still out of scope). Entity.Velocity/Angles
+        // are System.Numerics.Vector3 already, so they feed SelectLegsDirectional directly.
+        LocomotionBlend.DirLocomotion loco =
+            LocomotionBlend.SelectLegsDirectional(e.Velocity, e.Angles, e.OnGround, e.IsDucked, dead);
 
         if (loco != _lastLoco) { _legsTime = 0f; _lastLoco = loco; }
         else _legsTime += dt;
@@ -345,12 +351,40 @@ public partial class PlayerModel : Node3D
             return groups is { Count: > 0 } ? groups[0] : whole;
         }
 
-        _legClips[(int)LocomotionBlend.Locomotion.Idle] = Pick("idle", "stand");
-        _legClips[(int)LocomotionBlend.Locomotion.Walk] = Pick("walk", "forward");
-        _legClips[(int)LocomotionBlend.Locomotion.Run] = Pick("run", "forward", "walk");
-        _legClips[(int)LocomotionBlend.Locomotion.Jump] = Pick("jump");
-        _legClips[(int)LocomotionBlend.Locomotion.Crouch] = Pick("crouch", "duck");
-        _legClips[(int)LocomotionBlend.Locomotion.Dead] = Pick("death", "dead", "die");
+        // The faithful animdecide locomotion set. Fallbacks mirror animdecide_load_if_needed (animdecide.qc:80-95):
+        // the diagonal/back clips fall back to their straight strafe; runbackwards/strafe fall back to run; the
+        // duckwalk directional set falls back to plain duckwalk; idle/duckidle/jump/duckjump have their own clips.
+        // (Picking by name keyword with the listed fallbacks — a model that lacks e.g. "forwardright" reuses
+        // "straferight" then "run", exactly as Base's animfixfps fallback arg does.)
+        FrameGroup idle = Pick("idle", "stand");
+        FrameGroup run = Pick("run", "forward", "walk");
+        FrameGroup runback = Pick("runbackwards", "run");
+        FrameGroup strafeL = Pick("strafeleft", "run");
+        FrameGroup strafeR = Pick("straferight", "run");
+        FrameGroup duckidle = Pick("duckidle", "duck", "crouch");
+        FrameGroup duckwalk = Pick("duckwalk", "duck", "crouch");
+
+        _legClips[(int)L.Dead] = Pick("death", "dead", "die");
+        _legClips[(int)L.Idle] = idle;
+        _legClips[(int)L.Run] = run;
+        _legClips[(int)L.RunBackwards] = runback;
+        _legClips[(int)L.StrafeLeft] = strafeL;
+        _legClips[(int)L.StrafeRight] = strafeR;
+        _legClips[(int)L.ForwardLeft] = Pick("forwardleft", "strafeleft", "run");
+        _legClips[(int)L.ForwardRight] = Pick("forwardright", "straferight", "run");
+        _legClips[(int)L.BackLeft] = Pick("backleft", "strafeleft", "run");
+        _legClips[(int)L.BackRight] = Pick("backright", "straferight", "run");
+        _legClips[(int)L.Jump] = Pick("jump");
+        _legClips[(int)L.DuckIdle] = duckidle;
+        _legClips[(int)L.DuckWalk] = duckwalk;
+        _legClips[(int)L.DuckWalkBackwards] = Pick("duckwalkbackwards", "duckwalk", "duck");
+        _legClips[(int)L.DuckWalkStrafeLeft] = Pick("duckwalkstrafeleft", "duckwalk", "duck");
+        _legClips[(int)L.DuckWalkStrafeRight] = Pick("duckwalkstraferight", "duckwalk", "duck");
+        _legClips[(int)L.DuckWalkForwardLeft] = Pick("duckwalkforwardleft", "duckwalk", "duck");
+        _legClips[(int)L.DuckWalkForwardRight] = Pick("duckwalkforwardright", "duckwalk", "duck");
+        _legClips[(int)L.DuckWalkBackLeft] = Pick("duckwalkbackleft", "duckwalk", "duck");
+        _legClips[(int)L.DuckWalkBackRight] = Pick("duckwalkbackright", "duckwalk", "duck");
+        _legClips[(int)L.DuckJump] = Pick("duckjump", "jump");
         _torsoClip = Pick("idle", "stand", "aim");
     }
 }

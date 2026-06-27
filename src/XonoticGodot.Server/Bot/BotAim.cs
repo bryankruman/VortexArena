@@ -43,6 +43,20 @@ public sealed class BotAim
     public const float SuperbotSkill = 100f;
 
     /// <summary>
+    /// QC <c>.bot_aggresskill</c> (server/bot/default/bot.qc:282): the per-bot aggression modifier the brain
+    /// stamps each think. Added to <c>skill</c> in the fire decision (aim.qc:325-328) so an aggressive bot fires
+    /// more eagerly at long range and recovers faster between shots. Default 0 (stock READSKILL reward 0).
+    /// </summary>
+    public float AggresSkill;
+
+    /// <summary>
+    /// QC <c>.bot_aimskill</c> (server/bot/default/bot.qc:285): the per-bot aiming modifier the brain stamps
+    /// each think. Added to <c>skill</c> in the max-fire-deviation formula (aim.qc:372) so a higher-aim bot
+    /// requires a tighter aim before shooting. Default 0 (stock READSKILL reward 0).
+    /// </summary>
+    public float AimSkill;
+
+    /// <summary>
     /// Current view angles in degrees (pitch X, yaw Y, roll Z) — QC <c>.v_angle</c>. The brain copies this
     /// into the per-frame MovementInput.ViewAngles. Pitch uses Quake convention (down-positive).
     /// </summary>
@@ -257,17 +271,19 @@ public sealed class BotAim
         var deviation = WrapPitchYaw(QMath.VecToAngles(dir) - QMath.VecToAngles(ShotDir));
         if (MathF.Abs(deviation.X) < maxFireDeviation && MathF.Abs(deviation.Y) < maxFireDeviation)
         {
-            // QC bot_aim fire gate, including the aggression term: always fire when the impact point is near
-            // (close-range fast path, the range scaling with skill), otherwise the long-range fire chance
-            // rises with skill — a low-skill bot hesitates at distance (the Random01*Random01 vs skill term
-            // is the C# essence of QC's bot_aggresskill / random fire-delay at long range).
+            // QC bot_aim fire gate (aim.qc:325-328), including the aggression term: always fire when the impact
+            // point is near (close-range fast path, the range band scaling with skill+aggresskill), otherwise
+            // the long-range fire chance rises with skill+aggresskill — a low-skill/timid bot hesitates at
+            // distance (the Random01*Random01 vs the bound term is QC's random fire-delay at long range). The
+            // fire-timer cooldown also shortens with skill+aggresskill.
+            float aggr = skill + AggresSkill; // QC (skill + this.bot_aggresskill)
             var tr = Api.Trace.Trace(ShotOrigin, Vector3.Zero, Vector3.Zero,
                 ShotOrigin + ShotDir * 1000f, MoveFilter.Normal, null);
             float hitDist = (tr.EndPos - ShotOrigin).Length();
-            if (hitDist < 500f + 500f * QMath.Bound(0f, skill, 10f)
-                || Random01() * Random01() > QMath.Bound(0f, skill * 0.05f, 1f))
+            if (hitDist < 500f + 500f * QMath.Bound(0f, aggr, 10f)
+                || Random01() * Random01() > QMath.Bound(0f, aggr * 0.05f, 1f))
             {
-                _fireTimer = now + QMath.Bound(0.1f, 0.5f - skill * 0.05f, 0.5f);
+                _fireTimer = now + QMath.Bound(0.1f, 0.5f - aggr * 0.05f, 0.5f);
             }
         }
     }
@@ -281,7 +297,9 @@ public sealed class BotAim
         float dist = MathF.Max(10f, (leadPoint - ShotOrigin).Length());
         float dev = 1000f / (dist - 9f) - 0.35f;
         float f = accurate ? 1f : 1.6f;
-        f += QMath.Bound(0f, (10f - skill) * 0.3f, 3f);
+        // QC aim.qc:372: f += bound(0, (10 - (skill + this.bot_aimskill)) * 0.3, 3) — a higher aim skill
+        // narrows the fire cone (tighter aim required before the bot will shoot).
+        f += QMath.Bound(0f, (10f - (skill + AimSkill)) * 0.3f, 3f);
         return MathF.Min(90f, dev * f);
     }
 

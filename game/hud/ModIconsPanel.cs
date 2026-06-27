@@ -152,6 +152,13 @@ public partial class ModIconsPanel : HudPanel
     private const int CtfShielded = 4096;   // CTF_SHIELDED (ctf.qh:57)
     private const int CtfStalemate = 8192;  // CTF_STALEMATE (ctf.qh:58)
 
+    // QC cl_ctf.qc per-flag status-change tracking (redflag_prevframe/_prevstatus/_statuschange_time, …): when a
+    // flag's 2-bit status changes the OLD status crossfades out (drawpic_aspect_skin_expanding) while the NEW one
+    // fades in over 0.5s (f = bound(0, elapsed*2, 1)). Index 0..4 = red/blue/yellow/pink/neutral.
+    private readonly int[] _ctfFlagPrevFrame = new int[5];
+    private readonly int[] _ctfFlagPrevStatus = new int[5];
+    private readonly double[] _ctfFlagChangeTime = new double[5];
+
     // QC NUM_TEAM_* team-membership bits of _teams_available: BIT(0)=red BIT(1)=blue BIT(2)=yellow BIT(3)=pink.
     private const int Num1 = 1, Num2 = 2, Num3 = 3, Num4 = 4;
 
@@ -287,6 +294,22 @@ public partial class ModIconsPanel : HudPanel
         return DrawSkinPic(pic, fit, new Color(1f, 1f, 1f, alpha));
     }
 
+    /// <summary>QC <c>drawpic_aspect_skin_expanding</c> (client/draw.qc): draw <paramref name="pic"/> aspect-fitted,
+    /// scaled up around its center by the QC <c>expandingbox_sizefactor</c> (<c>1.2/(1.2-fadelerp)</c>) and faded by
+    /// <c>(1-fadelerp)</c>. Used by the CTF status-change crossfade for the OLD-status flag icon. Silent on a miss
+    /// (the new icon already draws the swatch fallback).</summary>
+    private void DrawIconExpanding(Rect2 box, string pic, float alpha, float fadelerp)
+    {
+        fadelerp = Mathf.Clamp(fadelerp, 0f, 1f);
+        Rect2 fit = AspectFit(box, 1f);
+        float sz = 1.2f / (1.2f - fadelerp);              // QC expandingbox_sizefactor_from_fadelerp
+        var newSize = fit.Size * sz;
+        var newPos = fit.Position + fit.Size * (0.5f * (1f - sz)); // QC expandingbox_resize_centered_box_offset
+        float a = alpha * (1f - fadelerp);               // QC theAlpha * (1 - fadelerp)
+        if (a > 0f)
+            DrawSkinPic(pic, new Rect2(newPos, newSize), new Color(1f, 1f, 1f, a));
+    }
+
     /// <summary>Resolve a skin pic (skin -> default fall-through) the same way <see cref="HudPanel.DrawSkinPic"/>
     /// does, returning the raw texture (or null on miss) — needed for region draws.</summary>
     private static Texture2D? ResolveSkinPic(string bareName)
@@ -336,18 +359,39 @@ public partial class ModIconsPanel : HudPanel
         double now = CurrentTime();
         float carryAlpha = Blink(0.85f, 0.15f, 5f, now);
 
-        // Resolve each flag's icon name + alpha (QC X(team, cond) macro).
-        string? redIcon = CtfIcon("red", redflag, s, MyTeam != Num1 && (nteams & (1 << 0)) != 0, carryAlpha, out float ra);
-        string? blueIcon = CtfIcon("blue", blueflag, s, MyTeam != Num2 && (nteams & (1 << 1)) != 0, carryAlpha, out float ba);
-        string? yellowIcon = CtfIcon("yellow", yellowflag, s, MyTeam != Num3 && (nteams & (1 << 2)) != 0, carryAlpha, out float ya);
-        string? pinkIcon = CtfIcon("pink", pinkflag, s, MyTeam != Num4 && (nteams & (1 << 3)) != 0, carryAlpha, out float pa);
+        // QC X(team) status-change tracker: latch prevstatus on each change, compute elapsed → expand factor f.
+        float fRed = CtfTrack(0, redflag, now);
+        float fBlue = CtfTrack(1, blueflag, now);
+        float fYellow = CtfTrack(2, yellowflag, now);
+        float fPink = CtfTrack(3, pinkflag, now);
+        float fNeutral = CtfTrack(4, neutralflag, now);
+
+        // Resolve each flag's current icon + alpha (QC X(team, cond) macro).
+        bool redCond = MyTeam != Num1 && (nteams & (1 << 0)) != 0;
+        bool blueCond = MyTeam != Num2 && (nteams & (1 << 1)) != 0;
+        bool yellowCond = MyTeam != Num3 && (nteams & (1 << 2)) != 0;
+        bool pinkCond = MyTeam != Num4 && (nteams & (1 << 3)) != 0;
+        string? redIcon = CtfIcon("red", redflag, s, redCond, carryAlpha, out float ra);
+        string? blueIcon = CtfIcon("blue", blueflag, s, blueCond, carryAlpha, out float ba);
+        string? yellowIcon = CtfIcon("yellow", yellowflag, s, yellowCond, carryAlpha, out float ya);
+        string? pinkIcon = CtfIcon("pink", pinkflag, s, pinkCond, carryAlpha, out float pa);
         string? neutralIcon = CtfIcon("neutral", neutralflag, s, oneFlag, carryAlpha, out float na);
+
+        // Resolve each flag's PREVIOUS-status icon + alpha (QC X switch on team##flag_prevstatus). The crossfade-out
+        // art uses the carrying icon while currently carrying (QC "make it more visible") and the same shielded gate.
+        string? redPrev = CtfPrevIcon("red", _ctfFlagPrevStatus[0], redflag, s, redCond, carryAlpha, out float rpa);
+        string? bluePrev = CtfPrevIcon("blue", _ctfFlagPrevStatus[1], blueflag, s, blueCond, carryAlpha, out float bpa);
+        string? yellowPrev = CtfPrevIcon("yellow", _ctfFlagPrevStatus[2], yellowflag, s, yellowCond, carryAlpha, out float ypa);
+        string? pinkPrev = CtfPrevIcon("pink", _ctfFlagPrevStatus[3], pinkflag, s, pinkCond, carryAlpha, out float ppa);
+        string? neutralPrev = CtfPrevIcon("neutral", _ctfFlagPrevStatus[4], neutralflag, s, oneFlag, carryAlpha, out float npa);
 
         // QC layout split factors by team count (cl_ctf.qc:123-132).
         float fs, fs2, fs3;
         if (oneFlag)
         {
-            redIcon = blueIcon = yellowIcon = pinkIcon = null; // only the neutral flag in one-flag mode
+            // only the neutral flag in one-flag mode (QC nulls the team icons + their prevstatus)
+            redIcon = blueIcon = yellowIcon = pinkIcon = null;
+            redPrev = bluePrev = yellowPrev = pinkPrev = null;
             fs = fs2 = fs3 = 1f;
         }
         else
@@ -380,11 +424,44 @@ public partial class ModIconsPanel : HudPanel
         // flag_size: e1 * fs * size1 (long axis) + e2 * size2 (short axis).
         Vector2 flagSize = wide ? new Vector2(fs * size1, size2) : new Vector2(size2, fs * size1);
 
-        DrawFlag(redIcon, OffsetPos(redOff, size1, wide), flagSize, ra, stalemate, "R", TeamColors[0]);
-        DrawFlag(blueIcon, OffsetPos(blueOff, size1, wide), flagSize, ba, stalemate, "B", TeamColors[1]);
-        DrawFlag(yellowIcon, OffsetPos(yellowOff, size1, wide), flagSize, ya, stalemate, "Y", TeamColors[2]);
-        DrawFlag(pinkIcon, OffsetPos(pinkOff, size1, wide), flagSize, pa, stalemate, "P", TeamColors[3]);
-        DrawFlag(neutralIcon, Vector2.Zero, flagSize, na, stalemate, "N", new Color(0.85f, 0.85f, 0.85f, 1f));
+        DrawFlag(redIcon, redPrev, fRed, OffsetPos(redOff, size1, wide), flagSize, ra, rpa, stalemate, "R", TeamColors[0]);
+        DrawFlag(blueIcon, bluePrev, fBlue, OffsetPos(blueOff, size1, wide), flagSize, ba, bpa, stalemate, "B", TeamColors[1]);
+        DrawFlag(yellowIcon, yellowPrev, fYellow, OffsetPos(yellowOff, size1, wide), flagSize, ya, ypa, stalemate, "Y", TeamColors[2]);
+        DrawFlag(pinkIcon, pinkPrev, fPink, OffsetPos(pinkOff, size1, wide), flagSize, pa, ppa, stalemate, "P", TeamColors[3]);
+        DrawFlag(neutralIcon, neutralPrev, fNeutral, Vector2.Zero, flagSize, na, npa, stalemate, "N", new Color(0.85f, 0.85f, 0.85f, 1f));
+    }
+
+    /// <summary>QC X(team) status-change tracker (cl_ctf.qc:63-70): when the flag's status differs from the
+    /// previous frame, latch the old status into prevstatus and stamp the change time. Returns
+    /// <c>f = bound(0, elapsed*2, 1)</c> — the 0→1 fade-in factor for the new icon (and 1→0 expand for the old).</summary>
+    private float CtfTrack(int idx, int flag, double now)
+    {
+        if (flag != _ctfFlagPrevFrame[idx])
+        {
+            _ctfFlagChangeTime[idx] = now;
+            _ctfFlagPrevStatus[idx] = _ctfFlagPrevFrame[idx];
+            _ctfFlagPrevFrame[idx] = flag;
+        }
+        float elapsed = (float)(now - _ctfFlagChangeTime[idx]);
+        return Mathf.Clamp(elapsed * 2f, 0f, 1f);
+    }
+
+    /// <summary>QC X(team) prevstatus icon resolver (cl_ctf.qc:95-107): the crossfade-out art for the OLD status.
+    /// Like <see cref="CtfIcon"/> but the default branch keeps the carrying icon when the flag is currently being
+    /// carried ("make it more visible"), else falls to the shielded icon under the same gate.</summary>
+    private string? CtfPrevIcon(string team, int prevStatus, int curFlag, int statItems, bool cond, float carryAlpha, out float alpha)
+    {
+        alpha = 1f;
+        switch (prevStatus)
+        {
+            case 1: return $"flag_{team}_taken";
+            case 2: return $"flag_{team}_lost";
+            case 3: alpha = carryAlpha; return $"flag_{team}_carrying";
+            default:
+                if (curFlag == 3) return $"flag_{team}_carrying";
+                if ((statItems & CtfShielded) != 0 && cond) return $"flag_{team}_shielded";
+                return null;
+        }
     }
 
     private Vector2 OffsetPos(float frac, float size1, bool wide)
@@ -406,18 +483,26 @@ public partial class ModIconsPanel : HudPanel
         }
     }
 
-    /// <summary>QC X(team) draw macro: optional stalemate overlay, then the flag icon (aspect-fit skin pic with
-    /// a colored-swatch + tag fallback).</summary>
-    private void DrawFlag(string? icon, Vector2 offset, Vector2 flagSize, float alpha, bool stalemate,
-        string fallbackLabel, Color fallbackColor)
+    /// <summary>QC X(team) draw macro (cl_ctf.qc:180-188): stalemate overlay (when a current icon is set), then the
+    /// PREVIOUS-status icon expanding+fading out while the transition factor <paramref name="f"/> &lt; 1, then the
+    /// current flag icon faded in by <paramref name="f"/> (aspect-fit skin pic with a colored-swatch + tag fallback).</summary>
+    private void DrawFlag(string? icon, string? prevIcon, float f, Vector2 offset, Vector2 flagSize,
+        float alpha, float prevAlpha, bool stalemate, string fallbackLabel, Color fallbackColor)
     {
-        if (string.IsNullOrEmpty(icon)) return;
         var box = new Rect2(offset, flagSize);
 
-        if (stalemate)
+        // QC: if (team##_icon && ctf_stalemate) draw flag_stalemate.
+        if (!string.IsNullOrEmpty(icon) && stalemate)
             DrawIconAspect(box, "flag_stalemate", LiveFgAlpha);
 
-        float a = LiveFgAlpha * alpha;
+        // QC: if (team##_icon_prevstatus && f < 1) drawpic_aspect_skin_expanding(... prevstatus, alpha_prevstatus, f).
+        if (!string.IsNullOrEmpty(prevIcon) && f < 1f)
+            DrawIconExpanding(box, prevIcon, LiveFgAlpha * prevAlpha, f);
+
+        if (string.IsNullOrEmpty(icon)) return;
+
+        // QC: if (team##_icon) drawpic_aspect_skin(... team##_icon, alpha * f).
+        float a = LiveFgAlpha * alpha * f;
         if (!DrawIconAspect(box, icon, a))
         {
             // Stand-in so the flag is never invisible: a team swatch + a short state tag.

@@ -408,7 +408,10 @@ public static class LogicGates
         this_.Use = GamestartUse;
         this_.ClassName = "trigger_gamestart";
         MapMover.IndexRegister(this_);
-        // QC: this.reset2 = spawnfunc_trigger_gamestart — dormant until reset infra exists.
+        // QC gamestart.qc:13: this.reset2 = spawnfunc_trigger_gamestart — on a map reset, re-run the spawnfunc to
+        // re-arm the deferred fire (the reset_map second pass drives .reset2 now). gamestart_use delete()s the
+        // trigger after it first fires its targets, so this only re-arms a trigger that is still alive at the reset.
+        this_.Reset2 = GamestartSetup;
 
         if (this_.Wait != 0f)
         {

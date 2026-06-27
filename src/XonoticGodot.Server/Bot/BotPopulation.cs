@@ -337,13 +337,18 @@ public sealed class BotPopulation
     /// The brain is created by the ClientManager OnBotConnected hook → <see cref="RegisterBot"/>.</summary>
     private BotBrain? SpawnBot(string? name, float? skill)
     {
-        (string botName, string model, string skin, int forcedTeam) = string.IsNullOrWhiteSpace(name)
-            ? PickNameAndModel()
-            : (name!, "", "", 0);
+        (string botName, string model, string skin, int forcedTeam, int color, float aggresSkill, float aimSkill)
+            = string.IsNullOrWhiteSpace(name)
+                ? PickNameAndModel()
+                : (name!, "", "", 0, -1, 0f, 0f);
 
         ClientManager.ClientInfo info = _world.Clients.ClientConnect(isBot: true, netName: botName);
         Player p = info.Player;
         p.BotSkill = skill ?? Cvars.Skill;                  // QC the global `skill` cvar seeds new bots
+        // QC the bots.txt per-bot fire-skill modifiers (bot.qc:282/285): carried so the aim fire decision +
+        // max-fire-deviation reflect each bot's aggression/aim personality (default 0 when no column present).
+        p.BotAggresSkill = aggresSkill;
+        p.BotAimSkill = aimSkill;
 
         // QC bot_forced_team (bot.qc:255-262 / client.qc:592): a bots.txt-pinned team (argv5) overrides the
         // auto-balance that ClientConnect just ran — but only in teamplay and not under bot_vs_human/2-team.
@@ -361,6 +366,17 @@ public sealed class BotPopulation
         // since ClientConnect already auto-joined+spawned the bot.
         if (int.TryParse(skin, NumberStyles.Integer, CultureInfo.InvariantCulture, out int skinIdx) && skinIdx >= 0)
             _preferredSkin[p] = skinIdx;
+
+        // QC bot_setnameandstuff:315-318: setcolor(this, 16*shirt+pants) then save bot_preferredcolors. In FFA
+        // the chosen shirt/pants is the bot's actual color; in a team game setcolor's team change is undone and
+        // the team color wins (bot.qc:316 + the team-join SetPlayerColors), so only apply the personal color in
+        // FFA where it's visible. Store the preference so it survives respawns (re-stamped in OnBotSpawned).
+        if (color >= 0)
+        {
+            _preferredColor[p] = color;
+            if (!_world.Teamplay.IsTeamGame)
+                _world.Teamplay.SetColor(p, color); // QC setcolor (FFA: team stays neutral, clientcolors = color)
+        }
 
         if (!string.IsNullOrEmpty(model))
             _preferredModel[p] = model;
@@ -450,6 +466,7 @@ public sealed class BotPopulation
         _tickInputs.Remove(p);
         _preferredModel.Remove(p);
         _preferredSkin.Remove(p);
+        _preferredColor.Remove(p);
         _fragsLastCheck.Remove(p);
         BotRemoved?.Invoke(p);
     }
@@ -468,6 +485,9 @@ public sealed class BotPopulation
     // QC .playerskin (bot.qc:343): the bots.txt skin index for a bot, re-applied after each spawn (which resets
     // p.Skin to sv_defaultplayerskin), matching QC FixPlayermodel honoring the client's playerskin.
     private readonly Dictionary<Player, int> _preferredSkin = new();
+    // QC .bot_preferredcolors (bot.qc:318): the bots.txt-derived packed shirt/pants color, re-applied (FFA only)
+    // after each spawn — mirrors QC re-stamping setcolor(e, e.bot_preferredcolors) for bots (bot.qc:418).
+    private readonly Dictionary<Player, int> _preferredColor = new();
 
     private void ApplyPreferredModel(Player p)
     {
@@ -480,6 +500,10 @@ public sealed class BotPopulation
         }
         if (_preferredSkin.TryGetValue(p, out int skin))
             p.Skin = skin; // QC this.playerskin → the player's rendered skin index
+        // QC bot.qc:418 re-stamps setcolor(e, e.bot_preferredcolors) for bots; in FFA the personal shirt/pants
+        // is the bot's color (a team game forces the team color, so skip there — the team join owns ClientColors).
+        if (_preferredColor.TryGetValue(p, out int color) && !_world.Teamplay.IsTeamGame)
+            _world.Teamplay.SetColor(p, color);
     }
 
     // =============================================================================================
@@ -575,11 +599,15 @@ public sealed class BotPopulation
     // bots.txt (QC bot_setnameandstuff — the name/model slice)
     // =============================================================================================
 
-    // QC bots.txt rows: name (argv0), model (argv1), skin (argv2) + the forced-team index (argv5, 1..4; 0 = none).
-    // The shirt/pants columns (argv3/argv4 → setcolor) need a server-side player-color/colormap field the port
-    // doesn't model yet, so they stay unparsed (see residuals); the 12 skill-modifier columns are the documented
-    // single-knob intended divergence (skill.modifiers).
-    private List<(string Name, string Model, string Skin, int ForcedTeam)>? _botRows; // parsed once per world
+    // QC bots.txt rows: name (argv0), model (argv1), skin (argv2), shirt (argv3), pants (argv4), forced-team
+    // (argv5, 1..4; 0 = none), then the 12 skill-modifier columns (argv6..17). The port carries the columns it
+    // can apply faithfully: shirt/pants → ClientColors (16*shirt+pants), and the two fire-relevant skill
+    // modifiers bot_aggresskill (argv11) + bot_aimskill (argv13) → the aim fire decision. The remaining 10 skill
+    // columns stay folded into the single BotSkill knob (the documented skill.modifiers intended divergence).
+    private readonly record struct BotRow(
+        string Name, string Model, string Skin, int ForcedTeam,
+        int Color, float AggresSkill, float AimSkill);
+    private List<BotRow>? _botRows; // parsed once per world
 
     /// <summary>
     /// Pick a name + model from the bot config file (QC bot_setnameandstuff over bot_config_file=bots.txt):
@@ -589,7 +617,7 @@ public sealed class BotPopulation
     /// small built-in name table when the file isn't mounted. The skin/shirt/pants columns and the 12 skill
     /// modifiers are unported (single-knob skill; see residuals).
     /// </summary>
-    private (string name, string model, string skin, int forcedTeam) PickNameAndModel()
+    private (string name, string model, string skin, int forcedTeam, int color, float aggresSkill, float aimSkill) PickNameAndModel()
     {
         _botRows ??= ParseBotFile();
 
@@ -602,22 +630,26 @@ public sealed class BotPopulation
         string suffix = Cvars.String("bot_suffix");
 
         // prefer rows whose decorated name is unused (QC prio weighting), random among the preferred set.
-        var candidates = new List<(string Name, string Model, string Skin, int ForcedTeam)>();
-        foreach ((string Name, string Model, string Skin, int ForcedTeam) row in _botRows)
+        var candidates = new List<BotRow>();
+        foreach (BotRow row in _botRows)
             if (!used.Contains(prefix + row.Name + suffix))
                 candidates.Add(row);
         if (candidates.Count == 0)
             candidates = _botRows;
 
         string baseName = "Bot", model = "", skin = "";
-        int forcedTeam = 0;
+        int forcedTeam = 0, color = -1;
+        float aggresSkill = 0f, aimSkill = 0f;
         if (candidates.Count > 0)
         {
-            (string Name, string Model, string Skin, int ForcedTeam) row = candidates[_nameRng.Next(candidates.Count)];
+            BotRow row = candidates[_nameRng.Next(candidates.Count)];
             baseName = row.Name;
             model = row.Model;
             skin = row.Skin;
             forcedTeam = row.ForcedTeam;
+            color = row.Color;
+            aggresSkill = row.AggresSkill;
+            aimSkill = row.AimSkill;
         }
 
         string name = prefix + baseName + suffix;
@@ -629,8 +661,14 @@ public sealed class BotPopulation
             name = $"{name}({i})";
         }
 
+        // QC bot_setnameandstuff:249-253: a blank/negative shirt or pants cell randomizes that nibble to 0..14.
+        // The whole-row color is packed 16*shirt+pants; if the row had no color cell at all (color < 0), draw
+        // both nibbles now so every bot still gets a faithful random colormap (matches QC's per-cell default).
+        if (color < 0)
+            color = _nameRng.Next(15) * 16 + _nameRng.Next(15);
+
         string modelPath = string.IsNullOrEmpty(model) ? "" : $"models/player/{model}.iqm"; // QC appends .iqm
-        return (name, modelPath, skin, forcedTeam);
+        return (name, modelPath, skin, forcedTeam, color, aggresSkill, aimSkill);
     }
 
     private readonly Random _nameRng = new(12345);
@@ -648,7 +686,7 @@ public sealed class BotPopulation
         _botRows ??= ParseBotFile();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var models = new List<string>();
-        foreach ((string Name, string Model, string Skin, int ForcedTeam) row in _botRows)
+        foreach (BotRow row in _botRows)
         {
             if (string.IsNullOrEmpty(row.Model)) continue;
             string path = $"models/player/{row.Model}.iqm";   // QC appends .iqm (matches PickNameAndModel)
@@ -658,9 +696,9 @@ public sealed class BotPopulation
     }
 
     /// <summary>Parse bot_config_file (bots.txt) rows via the world's ConfigReader; comments (// #) skipped.</summary>
-    private List<(string Name, string Model, string Skin, int ForcedTeam)> ParseBotFile()
+    private List<BotRow> ParseBotFile()
     {
-        var rows = new List<(string, string, string, int)>();
+        var rows = new List<BotRow>();
         string file = Cvars.String("bot_config_file");
         if (string.IsNullOrEmpty(file)) file = "bots.txt";
         string? text = _world.ConfigReader?.Invoke(file);
@@ -682,15 +720,48 @@ public sealed class BotPopulation
                 if (f.Length > 5 && int.TryParse(f[5].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int t)
                     && t >= 1 && t <= 4)
                     forcedTeam = t;
-                rows.Add((f[0].Trim(), f.Length > 1 ? f[1].Trim() : "", skin, forcedTeam));
+                // argv(3)/argv(4) = shirt/pants color nibbles (QC bot_setnameandstuff:249-253). A blank or
+                // negative cell → -1 here so PickNameAndModel randomizes that nibble (QC floor(random()*15)).
+                // The packed color is 16*shirt + pants (QC setcolor). Color < 0 = "no cell" (randomize whole row).
+                int shirt = ParseColorNibble(f, 3);
+                int pants = ParseColorNibble(f, 4);
+                int color = (shirt < 0 && pants < 0) ? -1 : System.Math.Max(0, shirt) * 16 + System.Math.Max(0, pants);
+                // The 12 READSKILL columns start at argv(6) (QC prio = 6). Only the two fire-relevant modifiers
+                // are carried: bot_aggresskill = stof(argv(11)) * 1 (prio 11), bot_aimskill = stof(argv(13)) * 2
+                // (prio 13). Blank cells → 0 (the stock READSKILL reward factor for both is 0).
+                float aggresSkill = ReadSkillColumn(f, 11, 1f);
+                float aimSkill = ReadSkillColumn(f, 13, 2f);
+                rows.Add(new BotRow(f[0].Trim(), f.Length > 1 ? f[1].Trim() : "", skin, forcedTeam,
+                    color, aggresSkill, aimSkill));
             }
         }
         if (rows.Count == 0)
         {
             // no bots.txt mounted: the old built-in table (kept so a bare test floor still names its bots).
             foreach (string n in new[] { "Hellfire", "Toxic", "Scorcher", "Discbot", "Nexus", "Eureka", "Sensible", "Mystery" })
-                rows.Add((n, "", "", 0));
+                rows.Add(new BotRow(n, "", "", 0, -1, 0f, 0f));
         }
         return rows;
+    }
+
+    /// <summary>QC bot_setnameandstuff:249-253 shirt/pants cell: a present, non-negative color nibble, else -1
+    /// (the caller randomizes a -1 nibble to 0..14, matching QC floor(random()*15)).</summary>
+    private static int ParseColorNibble(string[] f, int idx)
+    {
+        if (idx >= f.Length) return -1;
+        string s = f[idx].Trim();
+        if (s.Length == 0) return -1;
+        return int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out int v) && v >= 0 ? v : -1;
+    }
+
+    /// <summary>QC READSKILL(f, w, r) (bot.qc:266-272) for a present cell: <c>stof(argv(prio)) * w</c>. A blank
+    /// cell returns 0 (the carried columns both have stock reward factor r = 0, so absent → 0; the random
+    /// per-bot variance of the r&gt;0 columns is the documented single-knob skill.modifiers divergence).</summary>
+    private static float ReadSkillColumn(string[] f, int idx, float weight)
+    {
+        if (idx >= f.Length) return 0f;
+        string s = f[idx].Trim();
+        if (s.Length == 0) return 0f;
+        return float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out float v) ? v * weight : 0f;
     }
 }

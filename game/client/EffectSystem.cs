@@ -179,6 +179,20 @@ public partial class EffectSystem : Node3D
         // dominant combat-frame hitch. This tracer runs only on the main thread alongside the splat consumer
         // of the same (client-only) world, so it needs no gate.
         FaithfulParticles?.SetTrace(new TraceService(world));
+
+        // Give the casing sim a world-only tracer too, so brass does full MOVETYPE_BOUNCE world collision
+        // (reflect off real brush faces at cl_casings_ticrate) instead of the FloorZ ground-plane fallback —
+        // faithful to Base Movetype_Physics_MatchTicrate. Same client-only, gate-free tracer rationale as above
+        // (never the server world, never live entities). The sweep is a near-point box (casings are tiny brass).
+        if (Casings is not null)
+        {
+            var casingTrace = new TraceService(world);
+            Casings.TraceHook = (from, to) =>
+            {
+                TraceResult r = casingTrace.Trace(from, NVec3.Zero, NVec3.Zero, to, MoveFilter.WorldOnly, null);
+                return new ShellCasings.CasingTrace(r.Fraction, r.EndPos, r.PlaneNormal, r.StartSolid);
+            };
+        }
     }
 
     /// <summary>
@@ -696,6 +710,15 @@ public partial class EffectSystem : Node3D
         // libs reference effects by either spelling. Substring tests are ordinal/case-insensitive.
         string id = name;
         string net = effect?.NetName ?? name;
+
+        // Drawn line-beams (te_csqc_lightningarc + the Bumblebee heal/damage rays) — these are registered as
+        // trail Effects ONLY so the count-0 beam emission survives the EffectEmitter.Emit/Encode point-count
+        // guard and networks (see EffectsList ARC_LIGHTNING / HEAL_BEAM / DAMAGE_BEAM). They must classify as
+        // Beam (drawn via BeamRenderer between origin and the velocity end-point), NOT as a particle Trail, so
+        // this explicit check precedes the trail-flag branch. Particle-trail beams (arc_beam/nex_beam) are
+        // unaffected — they're matched only by the generic BEAM/trail rules below.
+        if (HasAny(id, "LIGHTNING", "HEAL_BEAM", "DAMAGE_BEAM") || HasAny(net, "lightning", "heal_beam", "damage_beam"))
+            return EffectClass.Beam;
 
         // Trails first — the catalog flag is authoritative; otherwise fall through to name heuristics.
         if ((effect?.IsTrail ?? false) || HasAny(net, "tr_", "_trail", "_thrust") || HasAny(id, "_TRAIL"))

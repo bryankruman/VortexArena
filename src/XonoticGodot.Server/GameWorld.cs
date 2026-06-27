@@ -562,6 +562,12 @@ public sealed class GameWorld
         // 3) match-loop glue + team manager + client roster.
         Match = new MatchController();
         Teamplay = new Teamplay(GameType?.TeamGame ?? false, TeamCountFor(GameType), Scores);
+        // Populate the shared GameScores gametype globals server-side from the active mode (QC server globals
+        // `gametype`/`teamplay`). On a pure client these are set on the ScoreInfo receive path; the authoritative
+        // server keeps no equivalent, so without this the map-teleporter telefrag gate's !g_race/!g_cts arm
+        // (Teleporters.TeleportRoundGateSuppressed reads GameScores.Gametype == "rc"/"cts") never fires server-side.
+        XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype = GameType?.NetName ?? DefaultGameType;
+        XonoticGodot.Common.Gameplay.Scoring.GameScores.Teamplay = GameType?.TeamGame ?? false;
         // Feed real per-bot skills into the skill-weighted team balance (QC m_skill_mu): a stronger bot counts
         // as "more" than a weaker one. Humans use the flat reference rating (no TrueSkill ratings modeled).
         Teamplay.SkillProvider = p => p.IsBot ? p.BotSkill : 5f;
@@ -686,6 +692,9 @@ public sealed class GameWorld
         // (QC monsters_total/monsters_killed are server globals cleared when a new map spawns). Without this the
         // scoreboard map-stats row accumulates across every Invasion map played in one process run.
         XonoticGodot.Common.Gameplay.MonsterAI.ResetCounters();
+        // QC num_autoscreenshot is a server global cleared each map; reset before the BSP lump spawns any
+        // info_autoscreenshot so the g_max_info_autoscreenshot cap counts per-map (not across the process run).
+        XonoticGodot.Common.Gameplay.InfoAutoScreenshot.ResetForMap();
         // QC sv_monsters.qc:846/1165 `(autocvar_g_campaign && !campaign_bots_may_start)`: in a campaign, monsters
         // freeze (like bots) until the human spawns. Wired here every Boot so it never goes stale; previously the
         // monster move/think gate ignored Campaign.BotsMayStart entirely.
@@ -834,6 +843,10 @@ public sealed class GameWorld
         // 2-team match, move the newest excess joiner to spectators after a g_balance_teams_remove_wait countdown.
         Teamplay.Now = () => Time;
         Teamplay.MoveToSpectator = p => Clients.PutObserverInServer(p);
+        // QC MoveToTeam (teamplay.qc:333-340): back up/disable/restore the team lock around an admin move so
+        // moveplayer/shuffleteams go through even with teams locked. Wire the lock get/set to the live state.
+        Teamplay.LockTeamsGet = () => TeamsLocked;
+        Teamplay.LockTeamsSet = locked => TeamsLocked = locked;
         Clients.OnAfterClientDisconnect = () => Teamplay.RemoveExcessPlayers(Clients.Players, Cvars.Bool("g_campaign"));
 
         // - timeout_status (ReadyCount top): cannot reset the game while a timeout is active/pending.
@@ -882,9 +895,27 @@ public sealed class GameWorld
         KillCountdown.RoundActiveNotStarted = () => Rounds is { IsRoundStarted: false };
         KillCountdown.GameStopped = () => GameStopped;
         KillCountdown.StateOf = PlayerStates.Of;
-        KillCountdown.PerformKill = static p =>
+        KillCountdown.PerformKill = p =>
+        {
+            // QC ClientKill_Now (clientkill.qc:38-45): if in a vehicle, eject the player first (VHEF_RELEASE),
+            // then (on a plain suicide — not a team change) kill the vehicle. The team-change path is routed
+            // through PerformTeamChange, so PerformKill is always the "just die" branch (targetteam == 0), making
+            // the killindicator_teamchange != 0 guard always false here — we always kill the vehicle.
+            Entity? vehicle = p.Vehicle;
+            if (vehicle is not null)
+            {
+                VehicleBoarding.Exit(p);            // QC vehicles_exit(this.vehicle, VHEF_RELEASE) — ejects p
+                // QC clientkill.qc:42-45: vehicle_health=-1 (sentinel) + Damage(this,this,this,1,DEATH_KILL) —
+                // the intent is to destroy the now-empty vehicle. In the port the sentinel lives on the vehicle's
+                // resource (we can't set a separate QC float), so deal enough damage to kill it outright.
+                VehicleCommon.DamageVehicle(vehicle, p, p,
+                    vehicle.GetResource(ResourceType.Health) + 1f,
+                    XonoticGodot.Common.Gameplay.Damage.DeathTypes.Kill,
+                    vehicle.Origin, System.Numerics.Vector3.Zero);
+            }
             XonoticGodot.Common.Gameplay.Damage.Combat.Damage(p, p, p, 100000f,
                 XonoticGodot.Common.Gameplay.Damage.DeathTypes.Kill, p.Origin, System.Numerics.Vector3.Zero);
+        };
         // QC MUTATOR_CALLHOOK(ClientKill, this, killtime) (clientkill.qc:101). The three live gametype hooks:
         //  - ft (sv_freezetag.qc:438): return STAT(FROZEN) → a frozen player CANNOT self-kill (closes the exploit
         //    where the eventual PerformKill defeated the freeze; frozen is health=1 but not IsDead, so CmdKill's
@@ -926,6 +957,11 @@ public sealed class GameWorld
                     }
                 }
             }
+            // QC ClientKill_Now_TeamChange tail (clientkill.qc:31-33): if no queued players are about to tag in
+            // AND g_balance_teams_remove is set, re-run excess-player removal. The port does not model the join
+            // queue (TeamBalance_QueuedPlayersTagIn), so we skip that gate — RemoveExcessPlayers is already
+            // guarded on g_balance_teams_remove == 0 (its default), so this is a no-op in stock config.
+            Teamplay.RemoveExcessPlayers(Clients.Players, Cvars.Bool("g_campaign"));
         };
 
         // QC spawnfunc(worldspawn) (server/world.qc:882-920): install the fixed animated-lightstyle table (the 12
@@ -1350,15 +1386,35 @@ public sealed class GameWorld
     /// </summary>
     private void SendMutatorsWelcome(Player p)
     {
+        if (Commands.ChatToPlayer is null)
+            return;
+
         string prettyRaw = MutatorActivation.BuildMutatorsPrettyString("");
         string modifications = prettyRaw.Length > 2 ? prettyRaw.Substring(2) : "";
-        if (string.IsNullOrEmpty(modifications))
-            return;
-        // QC client/main.qc:1438 renders it as strcat(_("Active modifications:"), " ^3", modifications) in the
-        // Welcome dialog (the ^3 color is Base's, verbatim).
-        string line = $"Active modifications: ^3{modifications}";
-        if (Commands.ChatToPlayer is not null)
-            Commands.ChatToPlayer.Invoke(p, line);
+        if (!string.IsNullOrEmpty(modifications))
+        {
+            // QC client/main.qc:1438 renders it as strcat(_("Active modifications:"), " ^3", modifications) in
+            // the Welcome dialog (the ^3 color is Base's, verbatim).
+            Commands.ChatToPlayer.Invoke(p, $"Active modifications: ^3{modifications}");
+        }
+
+        // QC SendWelcomeMessage (server/client.qc:1124-1132): the server mutator message (g_mutatormsg) and the
+        // MOTD (sv_motd, with "\n" escapes expanded to real newlines) are appended to the networked welcome blob
+        // and rendered in the CSQC Welcome dialog. Both default empty. The port has no networked welcome channel,
+        // so they are surfaced to the connecting client via the same per-client chat sink as the rest of the
+        // welcome (campaign line / mutators / gameplay tips). Sent only when non-empty so a stock server stays
+        // silent (matching Base, where an empty blob renders nothing).
+        string mutatorMsg = Api.Cvars.GetString("g_mutatormsg") ?? "";
+        if (!string.IsNullOrEmpty(mutatorMsg))
+            Commands.ChatToPlayer.Invoke(p, mutatorMsg);
+
+        string motd = Api.Cvars.GetString("sv_motd") ?? "";
+        if (!string.IsNullOrEmpty(motd))
+        {
+            // QC: strreplace("\\n", "\n", autocvar_sv_motd) — config stores literal "\n" sequences.
+            motd = motd.Replace("\\n", "\n");
+            Commands.ChatToPlayer.Invoke(p, motd);
+        }
     }
 
     /// <summary>
@@ -1815,6 +1871,11 @@ public sealed class GameWorld
                 }
             }
 
+            // ---- nameless / too-long / invisible name enforcement + GOD MODE info (QC client.qc:2900-2955) ----
+            // Real clients only (bots keep their assigned name and never carry FL_GODMODE from a console cheat).
+            if (!p.IsBot)
+                PlayerFrameNameAndGodMode(p);
+
             // ---- sv_maxidle idle-kick / move-to-spec (QC client.qc:2981-3073) ----
             if (!idleBlockActive) continue;
             if (p.IsBot) continue;  // QC IS_REAL_CLIENT guard
@@ -1906,6 +1967,119 @@ public sealed class GameWorld
                 st.IdleKickLastTimeLeft = timeLeft;
             }
         }
+    }
+
+    /// <summary>
+    /// QC <c>PlayerFrame</c> nameless/too-long/invisible-name enforcement + GOD MODE info
+    /// (server/client.qc:2900-2955). Runs once per server frame per real client.
+    /// <list type="bullet">
+    /// <item>Name check: only re-runs when <c>netname</c> changed from the last accepted value
+    /// (QC <c>netname_previous</c>). A name longer than <c>sv_name_maxlength</c> VISIBLE chars (color codes
+    /// not counted) is truncated + <c>^7</c> appended and the player warned; an invisible name (no visible
+    /// glyphs) becomes <c>Player#&lt;id&gt;</c> and the player warned. A genuine (non-assumed-unchanged) change
+    /// echoes a <c>:name:</c> event-log line when sv_eventlog is on.</item>
+    /// <item>GOD MODE info: when FL_GODMODE has dropped but the godmode damage tab (<c>max_armorvalue</c>) is
+    /// still set, send INFO_GODMODE_OFF with the absorbed-damage total and clear the tab.</item>
+    /// </list>
+    /// </summary>
+    private void PlayerFrameNameAndGodMode(Player p)
+    {
+        ServerPlayerState st = PlayerStates.Of(p);
+
+        // QC: if (this.netname == "" || this.netname != CS(this).netname_previous)
+        string netname = p.NetName ?? "";
+        if (netname == "" || netname != st.NetnamePrevious)
+        {
+            // QC: assume_unchanged = (netname_previous == "") — on the very first check (fresh connect) a clean
+            // name is accepted silently (no :name: spam for every joiner).
+            bool assumeUnchanged = st.NetnamePrevious == "";
+
+            float maxLen = Cvars.FloatOr("sv_name_maxlength", 64f);
+            if (maxLen > 0f && VisibleLength(netname) > (int)maxLen)
+            {
+                // QC: truncate to sv_name_maxlength visible chars then append ^7 (reset color).
+                netname = TruncateVisible(netname, (int)maxLen) + "^7";
+                p.NetName = netname;
+                Commands.ChatToPlayer?.Invoke(p,
+                    $"Warning: your name is longer than {(int)maxLen} characters, it has been truncated.\n");
+                assumeUnchanged = false;
+            }
+
+            if (IsInvisibleString(netname))
+            {
+                netname = $"Player#{p.PlayerId}";
+                p.NetName = netname;
+                Commands.ChatToPlayer?.Invoke(p, "Warning: invisible names are not allowed.\n");
+                assumeUnchanged = false;
+            }
+
+            // QC: if (!assume_unchanged && autocvar_sv_eventlog) GameLogEcho(":name:...")
+            if (!assumeUnchanged && Cvars.Bool("sv_eventlog"))
+                GameLog.NameChange(p);
+
+            st.NetnamePrevious = netname;
+        }
+
+        // QC GOD MODE info (client.qc:2950-2955): FL_GODMODE dropped but the absorbed-damage tab is still set.
+        if ((p.Flags & EntFlags.GodMode) == 0 && p.MaxArmorValue != 0f)
+        {
+            NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Info, "GODMODE_OFF", p.MaxArmorValue);
+            p.MaxArmorValue = 0f;
+        }
+    }
+
+    /// <summary>QC <c>strlennocol</c>: visible length of a string with Quake/DP color codes removed.</summary>
+    private static int VisibleLength(string s) =>
+        XonoticGodot.Common.Diagnostics.Log.StripColors(s).Length;
+
+    /// <summary>
+    /// QC <c>substring(s, 0, textLengthUpToLength(s, n, strlennocol))</c>: keep the leading run of the string
+    /// up to <paramref name="visibleMax"/> VISIBLE characters, preserving the color codes encountered along the
+    /// way (color codes don't count toward the visible budget).
+    /// </summary>
+    private static string TruncateVisible(string s, int visibleMax)
+    {
+        if (string.IsNullOrEmpty(s) || visibleMax <= 0) return "";
+        var sb = new System.Text.StringBuilder(s.Length);
+        int visible = 0;
+        for (int i = 0; i < s.Length && visible < visibleMax; i++)
+        {
+            char c = s[i];
+            if (c == '^' && i + 1 < s.Length)
+            {
+                char n = s[i + 1];
+                if (n == '^') { sb.Append("^^"); i++; visible++; continue; }         // ^^ renders as one '^'
+                if (n is >= '0' and <= '9') { sb.Append('^').Append(n); i++; continue; } // ^d color: free
+                if (n == 'x' && i + 4 < s.Length
+                    && IsHexDigit(s[i + 2]) && IsHexDigit(s[i + 3]) && IsHexDigit(s[i + 4]))
+                {
+                    sb.Append(s, i, 5); i += 4; continue;                            // ^xRGB color: free
+                }
+            }
+            sb.Append(c);
+            visible++;
+        }
+        return sb.ToString();
+    }
+
+    private static bool IsHexDigit(char c) =>
+        c is (>= '0' and <= '9') or (>= 'a' and <= 'f') or (>= 'A' and <= 'F');
+
+    /// <summary>QC <c>isInvisibleString</c> (lib/string.qh): a name with no visible glyphs once color codes are
+    /// stripped — empty, all-whitespace, or only the QC "invisible" code points (the nbsp/dot fillers). The port
+    /// approximates with the strip-colors + whitespace test, which catches the common "" / "^9 " abuse.</summary>
+    private static bool IsInvisibleString(string s)
+    {
+        string bare = XonoticGodot.Common.Diagnostics.Log.StripColors(s ?? "");
+        for (int i = 0; i < bare.Length; i++)
+        {
+            char c = bare[i];
+            // QC treats whitespace + control / no-break-space / zero-width filler glyphs as non-visible.
+            // A name is invisible when every character (after stripping color codes) is one of those.
+            if (!char.IsWhiteSpace(c) && !char.IsControl(c) && c != '​')
+                return false;
+        }
+        return true;
     }
 
     /// <summary>True when the match is frozen (intermission or ended) — QC <c>game_stopped</c>.
@@ -4291,6 +4465,13 @@ public sealed class GameWorld
             Player p = players[i];
             p.Velocity = System.Numerics.Vector3.Zero;
             p.AVelocity = System.Numerics.Vector3.Zero;
+            // QC reset_map (server/command/vote.qc:377-385): for each IS_PLAYER, player_powerups_remove_all(it, true)
+            // — strip the superweapon / unlimited-ammo / unlimited-superweapon item bits before the respawn re-gives
+            // the start loadout. The poweroff sound is self-suppressed (gameStart+1 guard + start-loadout-unlimited
+            // guard inside PlayerPowerupsRemoveAll), so a restart at countdown doesn't beep. (QC Inventory_clear of
+            // the per-player ammo/weapon store is subsumed by the Clients.Spawn → PutClientInServer re-give below.)
+            if (!p.IsObserver)
+                PlayerFrameLogic.PlayerPowerupsRemoveAll(p, true);
             // QC status_effects reset_map_global hook (sv_status_effects.qc:114-123): removeall(NORMAL) "just to
             // get rid of the pickup sound" then clearall, so no effect timer survives a map/round reset. (The
             // following Clients.Spawn -> PutClientInServer also clearall's, but Base plays the removal sounds here.)
@@ -4326,7 +4507,10 @@ public sealed class GameWorld
         // secret_reset), so a mover caught mid-cycle at a restart snaps home instead of staying put.
         if (Api.Services is null)
             return;
-        foreach (Entity e in new List<Entity>(ServerServices.ServerEntities.Inner.All))
+        // First pass — QC reset_map FOREACH_ENTITY_FLOAT_ORDERED(pure_data, ...) (server/command/vote.qc:390-401):
+        // delete leftover projectiles, fire each non-client entity's .reset (movers home, items re-arm).
+        var snapshot = new List<Entity>(ServerServices.ServerEntities.Inner.All);
+        foreach (Entity e in snapshot)
         {
             if (e.IsFreed || e is Player) continue;
             if (e.ClassName == "projectile" || e.ClassName.StartsWith("weapon_proj", System.StringComparison.Ordinal))
@@ -4335,6 +4519,17 @@ public sealed class GameWorld
                 continue;
             }
             e.Reset?.Invoke(e);
+        }
+
+        // Second pass — QC reset_map "Waypoints and assault start come LAST" (server/command/vote.qc:403-406):
+        // FOREACH_ENTITY_ORDERED(IS_NOT_A_CLIENT(it)) { if (it.reset2) it.reset2(it); }. The .reset2 objects
+        // (waypoint sprites, the Assault round-start trigger) depend on the movers/spawnpoints already reset by
+        // the first pass, so they must re-arm only after it completes. Re-snapshot the live set (the first pass may
+        // have deleted projectiles); the .reset pass itself never spawns new entities so the order stays stable.
+        foreach (Entity e in new List<Entity>(ServerServices.ServerEntities.Inner.All))
+        {
+            if (e.IsFreed || e is Player) continue;
+            e.Reset2?.Invoke(e);
         }
     }
 

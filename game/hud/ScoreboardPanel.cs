@@ -720,14 +720,20 @@ public partial class ScoreboardPanel : HudPanel
         return f is null ? 0 : r.Col(f);
     }
 
-    /// <summary>QC SP_PING colorization (scoreboard.qc:1060): green→yellow→red by ping bands (PING_LOW=75/MED=200/HIGH=500).</summary>
-    private static Color PingColor(int ping)
+    /// <summary>QC SP_PING colorization (scoreboard.qc:1060-1067): green→yellow→red by the ping bands
+    /// <c>hud_panel_scoreboard_ping_low=20</c> / <c>ping_medium=80</c> / <c>ping_high=200</c> with the QC default
+    /// band colors COLOR_LOW='0 1 0', COLOR_MED='1 1 0', COLOR_HIGH='1 0 0'. Read live from the shared store so
+    /// console/menu edits take effect (was previously hardcoded 75/200/500, an unintended value gap).</summary>
+    private Color PingColor(int ping)
     {
-        const int low = 75, med = 200, high = 500;
+        int low = (int)CvarF("ping_low", 20f);
+        int med = (int)CvarF("ping_medium", 80f);
+        int high = (int)CvarF("ping_high", 200f);
         Color cLow = new(0f, 1f, 0f, 1f), cMed = new(1f, 1f, 0f, 1f), cHigh = new(1f, 0f, 0f, 1f);
         if (ping < low) return cLow;
-        if (ping < med) return cLow.Lerp(cMed, (ping - low) / (float)(med - low));
-        if (ping < high) return cMed.Lerp(cHigh, (ping - med) / (float)(high - med));
+        // QC lerps use the band deltas directly; guard against degenerate (equal) bands.
+        if (ping < med) return cLow.Lerp(cMed, med > low ? (ping - low) / (float)(med - low) : 1f);
+        if (ping < high) return cMed.Lerp(cHigh, high > med ? (ping - med) / (float)(high - med) : 1f);
         return cHigh;
     }
 
@@ -925,6 +931,13 @@ public partial class ScoreboardPanel : HudPanel
         var teams = new List<KeyValuePair<int, int>>(_teamScores);
         teams.Sort((a, b) => CompareTeamTotals(b.Key, a.Key));
 
+        // QC autocvar_hud_panel_scoreboard_team_size_position (scoreboard.qc:79,2622-2671): 0 = off, 1 = on the
+        // left, 2 = on the right; when on, show "N/M" (this team's size / all teams' total size) beside the score.
+        int teamSizePos = (int)CvarF("team_size_position", 0f);
+        int teamSizeTotal = 0;
+        if (teamSizePos != 0)
+            foreach (var kv in teams) teamSizeTotal += TeamRowCount(kv.Key);
+
         float colW = w / Mathf.Max(1, teams.Count);
         for (int i = 0; i < teams.Count; i++)
         {
@@ -935,8 +948,29 @@ public partial class ScoreboardPanel : HudPanel
             DrawText(new Vector2(box.Position.X + 6f, box.Position.Y + 3f), Teams.Name(team), tc, 16);
             DrawTextRight(box.Position.X + box.Size.X - 6f, box.Position.Y + 3f, colW,
                 teams[i].Value.ToString(), tc, 18);
+            // QC the team-size "N/M" string (bold), placed on the chosen side of the team box.
+            if (teamSizePos != 0)
+            {
+                int size = TeamRowCount(team);
+                string sizeStr = $"{size}/{teamSizeTotal}";
+                if (teamSizePos == 1)
+                    DrawText(new Vector2(box.Position.X + 6f, box.Position.Y + 14f),
+                        sizeStr, new Color(tc.R, tc.G, tc.B, 0.85f * fade), 12);
+                else
+                    DrawTextRight(box.Position.X + box.Size.X - 6f, box.Position.Y + 14f, colW,
+                        sizeStr, new Color(tc.R, tc.G, tc.B, 0.85f * fade), 12);
+            }
         }
         return y + 32f;
+    }
+
+    /// <summary>QC <c>tm.team_size</c>: the count of (non-spectator) score rows on a team, computed locally from
+    /// the fed rows (the wire ships per-team totals but not the per-team head-count separately).</summary>
+    private int TeamRowCount(int team)
+    {
+        int n = 0;
+        foreach (ScoreRow r in _rows) if (r.Team == team) n++;
+        return n;
     }
 
     private void DrawGroupedByTeam(Layout layout, ref float y, float rowH, float fade)
@@ -1485,5 +1519,11 @@ public partial class ScoreboardPanel : HudPanel
         c.Register("hud_panel_scoreboard_spectators_showping", "1", CvarFlags.Save);
         // per-round score averaging (scoreboard.qc:105)
         c.Register("hud_panel_scoreboard_scores_per_round", "0", CvarFlags.Save);
+        // ping color bands (scoreboard.qc:1017-1019)
+        c.Register("hud_panel_scoreboard_ping_low", "20", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_ping_medium", "80", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_ping_high", "200", CvarFlags.Save);
+        // team-size side display position (scoreboard.qc:79)
+        c.Register("hud_panel_scoreboard_team_size_position", "0", CvarFlags.Save);
     }
 }

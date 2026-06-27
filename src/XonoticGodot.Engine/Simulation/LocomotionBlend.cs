@@ -1,3 +1,5 @@
+using System.Numerics;
+using XonoticGodot.Common.Math;
 using XonoticGodot.Formats.Sidecars;
 
 namespace XonoticGodot.Engine.Simulation;
@@ -83,5 +85,106 @@ public static class LocomotionBlend
         if (speed2d > 220f) return Locomotion.Run;
         if (speed2d > 20f) return Locomotion.Walk;
         return Locomotion.Idle;
+    }
+
+    // ---------------------------------------------------------------------------------------------------------
+    // Faithful animdecide locomotion (common/animdecide.qc)
+    //
+    // The networked anim_state / anim_upper_action / anim_lower_action / anim_time block (the upper-body ACTION
+    // overlays — shoot/pain/draw/taunt/melee) is still NOT networked, so torso actions remain out of scope. But
+    // the LOWER-body LOCOMOTION is decided CLIENT-SIDE in Base too: animdecide_setimplicitstate infers the
+    // 8-direction movement state purely from the entity's velocity + angles (both networked here), and
+    // animdecide_getloweranim maps that implicit state to the directional / duck-variant clip. None of that needs
+    // any new networked field, so it is ported faithfully below to replace the coarse 6-state speed heuristic.
+    // ---------------------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// The full set of lower-body locomotion clips Base selects in <c>animdecide_getloweranim</c> — the standing
+    /// 8-direction run set, the ducked 8-direction duckwalk set, plus idle/jump and their ducked variants and
+    /// death. <see cref="Locomotion"/> (the coarse 6-state) stays for the MD3 path; this is the skeletal path.
+    /// </summary>
+    public enum DirLocomotion
+    {
+        Dead,
+        Idle, Run, RunBackwards, StrafeLeft, StrafeRight,
+        ForwardLeft, ForwardRight, BackLeft, BackRight, Jump,
+        DuckIdle, DuckWalk, DuckWalkBackwards, DuckWalkStrafeLeft, DuckWalkStrafeRight,
+        DuckWalkForwardLeft, DuckWalkForwardRight, DuckWalkBackLeft, DuckWalkBackRight, DuckJump,
+    }
+
+    // animdecide implicit-state direction bits (animdecide.qh ANIMIMPLICITSTATE_*).
+    [System.Flags]
+    private enum ImplicitDir { None = 0, Forward = 1, Backwards = 2, Left = 4, Right = 8 }
+
+    /// <summary>
+    /// Port of <c>animdecide_setimplicitstate</c> (animdecide.qc:248-278): the 8-direction movement detection.
+    /// Projects velocity onto the entity's forward/right (from <c>makevectors(angles)</c>) and sets the
+    /// FORWARD/BACKWARDS/LEFT/RIGHT bits using the engine's 0.5 cot threshold, but only once moving
+    /// (<c>vdist(v, &gt;, 10)</c>). The INAIR bit is the caller's <paramref name="onGround"/>.
+    /// </summary>
+    private static ImplicitDir ImplicitDirection(Vector3 velocity, Vector3 angles)
+    {
+        QMath.AngleVectors(angles, out Vector3 fwd, out Vector3 right, out _);
+        float vx = Vector3.Dot(velocity, fwd);
+        float vy = Vector3.Dot(velocity, right);
+
+        ImplicitDir s = ImplicitDir.None;
+        // vdist(v, >, 10) with v.z forced to 0 — compare the 2D (forward/right) speed against 10.
+        if (vx * vx + vy * vy > 10f * 10f)
+        {
+            float ax = System.MathF.Abs(vx), ay = System.MathF.Abs(vy);
+            if (vx >  ay * 0.5f) s |= ImplicitDir.Forward;
+            if (vx < -ay * 0.5f) s |= ImplicitDir.Backwards;
+            if (vy >  ax * 0.5f) s |= ImplicitDir.Right;
+            if (vy < -ax * 0.5f) s |= ImplicitDir.Left;
+        }
+        return s;
+    }
+
+    /// <summary>
+    /// Faithful port of the lower-body locomotion pick in <c>animdecide_getloweranim</c> (animdecide.qc:155-243):
+    /// dead → death; in-air → jump (ducked: duckjump); else the standing or ducked 8-direction set keyed on the
+    /// implicit forward/back/left/right bits, falling back to idle (ducked: duckidle) when not moving. Decided
+    /// entirely from networked velocity + angles + onground + ducked — no anim_* networking needed.
+    /// </summary>
+    public static DirLocomotion SelectLegsDirectional(Vector3 velocity, Vector3 angles, bool onGround, bool ducked, bool dead)
+    {
+        if (dead) return DirLocomotion.Dead;
+
+        bool inAir = !onGround;
+        ImplicitDir dir = inAir ? ImplicitDir.None : ImplicitDirection(velocity, angles);
+        // Only the F/B/L/R bits matter for the directional switch (mask matches the QC switch arg).
+        ImplicitDir fblr = dir & (ImplicitDir.Forward | ImplicitDir.Backwards | ImplicitDir.Left | ImplicitDir.Right);
+
+        if (ducked)
+        {
+            if (inAir) return DirLocomotion.DuckJump;       // play the END of the jump anim
+            return fblr switch
+            {
+                ImplicitDir.Forward => DirLocomotion.DuckWalk,
+                ImplicitDir.Backwards => DirLocomotion.DuckWalkBackwards,
+                ImplicitDir.Right => DirLocomotion.DuckWalkStrafeRight,
+                ImplicitDir.Left => DirLocomotion.DuckWalkStrafeLeft,
+                ImplicitDir.Forward | ImplicitDir.Right => DirLocomotion.DuckWalkForwardRight,
+                ImplicitDir.Forward | ImplicitDir.Left => DirLocomotion.DuckWalkForwardLeft,
+                ImplicitDir.Backwards | ImplicitDir.Right => DirLocomotion.DuckWalkBackRight,
+                ImplicitDir.Backwards | ImplicitDir.Left => DirLocomotion.DuckWalkBackLeft,
+                _ => DirLocomotion.DuckIdle,
+            };
+        }
+
+        if (inAir) return DirLocomotion.Jump;               // play the END of the jump anim
+        return fblr switch
+        {
+            ImplicitDir.Forward => DirLocomotion.Run,
+            ImplicitDir.Backwards => DirLocomotion.RunBackwards,
+            ImplicitDir.Right => DirLocomotion.StrafeRight,
+            ImplicitDir.Left => DirLocomotion.StrafeLeft,
+            ImplicitDir.Forward | ImplicitDir.Right => DirLocomotion.ForwardRight,
+            ImplicitDir.Forward | ImplicitDir.Left => DirLocomotion.ForwardLeft,
+            ImplicitDir.Backwards | ImplicitDir.Right => DirLocomotion.BackRight,
+            ImplicitDir.Backwards | ImplicitDir.Left => DirLocomotion.BackLeft,
+            _ => DirLocomotion.Idle,
+        };
     }
 }

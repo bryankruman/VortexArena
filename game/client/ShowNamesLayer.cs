@@ -608,6 +608,12 @@ public partial class ShowNamesLayer : Control
     {
         if (!ChaseActive || LocalNetId == 0 || Net is null)
             return;
+        // QC self branch fires only for the VIEWED player (`this.sv_entnum == current_player + 1`). The local
+        // player is the viewed one only when NOT following a remote spectatee (CurrentViewedNetId == LocalNetId);
+        // while spectating someone else, the spectatee's tag is the one handled by the main loop, and the local
+        // observer's own slot must NOT get a synthesised tag (QC never draws it).
+        if (CurrentViewedNetId != LocalNetId)
+            return;
         // Skip if the local net id is already in RemoteIds (shouldn't happen, but guard it).
         foreach (int rid in remoteIds) if (rid == LocalNetId) return;
 

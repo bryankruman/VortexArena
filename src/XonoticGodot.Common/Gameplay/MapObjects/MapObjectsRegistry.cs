@@ -89,6 +89,10 @@ public static class MapObjectsRegistry
         SpawnFuncs.Register("target_items", TargetUtilities.ItemsSetup);
         SpawnFuncs.Register("target_spawn", TargetUtilities.SpawnSetup);
 
+        // ---- info_autoscreenshot (server/cheats.qc) — observe/screenshot point; the TELEPORT cheat's preferred
+        //      emergency destination. The findtarget aim is deferred to RunPostSpawn (INITPRIO_FINDTARGET). ----
+        SpawnFuncs.Register("info_autoscreenshot", InfoAutoScreenshot.Setup);
+
         // ---- func_door_secret (T22: func/door_secret.qc) — slide-back-then-side secret door. (Uses its own
         //      "door_secret" classname, NOT "door", to stay out of the regular-door shared death/link dispatch
         //      the port introduced; see TargetUtilities.DoorSecretSetup.) ----
@@ -333,6 +337,7 @@ public static class MapObjectsRegistry
         Follow.RunDeferredInit();
         AdvancedMovers.RunDeferredInit();
         Teleporters.RunDeferredInit(); // target_teleporter_checktarget disambiguation (dest/self-target/teleporter)
+        InfoAutoScreenshot.RunDeferredInit(); // aim each info_autoscreenshot at its .target (QC findtarget pass)
     }
 
     // ====================================================================

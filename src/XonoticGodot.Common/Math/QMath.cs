@@ -167,6 +167,45 @@ public static class QMath
         return a;
     }
 
+    /// <summary>
+    /// QC <c>AnglesTransform_Apply(transform, v)</c> (lib/warpzone/anglestransform.qc): rotate the vector
+    /// <paramref name="v"/> by the basis of <paramref name="transform"/> — <c>forward*v.x + right*-v.y + up*v.z</c>
+    /// where (forward,right,up) = <c>FIXED_MAKE_VECTORS(transform)</c> (which, with the default
+    /// POSITIVE_PITCH_IS_DOWN, is plain <see cref="AngleVectors"/>).
+    /// </summary>
+    public static Vector3 AnglesTransformApply(Vector3 transform, Vector3 v)
+    {
+        AngleVectors(transform, out Vector3 forward, out Vector3 right, out Vector3 up);
+        return forward * v.X + right * -v.Y + up * v.Z;
+    }
+
+    /// <summary>
+    /// QC <c>AnglesTransform_Multiply(t1, t2)</c> (lib/warpzone/anglestransform.qc): compose two angle
+    /// transforms — make the basis of <paramref name="t2"/>, rotate its forward+up by <paramref name="t1"/>, then
+    /// read the result back with <see cref="FixedVecToAngles2"/>.
+    /// </summary>
+    public static Vector3 AnglesTransformMultiply(Vector3 t1, Vector3 t2)
+    {
+        AngleVectors(t2, out Vector3 forward, out _, out Vector3 up);
+        forward = AnglesTransformApply(t1, forward);
+        up = AnglesTransformApply(t1, up);
+        return FixedVecToAngles2(forward, up);
+    }
+
+    /// <summary>
+    /// QC <c>AnglesTransform_ApplyToAngles(transform, v)</c> (default POSITIVE_PITCH_IS_DOWN branch): apply an
+    /// angle transform to a set of entity angles, accounting for the pitch-sign flip — negate pitch, multiply,
+    /// negate pitch back. Used by the <c>make</c> cheat's surface-align (<c>transform=fixedvectoangles2(normal,
+    /// forward)</c>, <c>v='-90 0 0'</c>) so unrotated models stand up on the hit surface.
+    /// </summary>
+    public static Vector3 AnglesTransformApplyToAngles(Vector3 transform, Vector3 v)
+    {
+        v.X = -v.X;
+        v = AnglesTransformMultiply(transform, v);
+        v.X = -v.X;
+        return v;
+    }
+
     public static float Clamp(float v, float lo, float hi) => v < lo ? lo : (v > hi ? hi : v);
 
     /// <summary>QuakeC bound(min, value, max).</summary>

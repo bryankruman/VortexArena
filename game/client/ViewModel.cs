@@ -181,6 +181,12 @@ public partial class ViewModel : Node3D
     private int _switchDir;
     private float _holsterGrace;
 
+    // The current model's authored shot-tag side offset (Quake view +Y = left), read from the resolved muzzle
+    // marker — this is Base's `vecs.y` (the per-model `tag_shot` Y that shotorg_adjustfromclient mirrors/zeroes).
+    // Null until a marker resolves; GunAlignOffset falls back to a representative value so left/right still differ
+    // on placeholder/early frames. Captured per model swap so cl_gunalign moves each gun by its OWN Base amount.
+    private float? _authoredShotSideY;
+
     // Sway running state (the QC static locals: follow/lean low/high-pass accumulators + bob phase).
     private SwayState _sway;
 
@@ -279,6 +285,7 @@ public partial class ViewModel : Node3D
                 return null;
             });
         }
+        CaptureAuthoredShotSide();
     }
 
     /// <summary>Set a weapon that has no model yet (uses a placeholder bar) but still flashes correctly.</summary>
@@ -311,6 +318,10 @@ public partial class ViewModel : Node3D
         var muzzle = new Marker3D { Name = "tag_shot", Position = new Vector3(24f, 0f, 0f) };
         _modelRoot.AddChild(muzzle);
         _muzzleMarker = muzzle;
+        // The placeholder is centered (no authored side); keep the representative-fallback so cl_gunalign
+        // left/right still read distinctly on the placeholder bar.
+        _authoredShotSideY = null;
+        ApplyRestPlacement();
     }
 
     /// <summary>
@@ -355,6 +366,11 @@ public partial class ViewModel : Node3D
                         // to the skeleton's bone rest and pin a Marker3D there so the flash/light park at the
                         // barrel, in the SAME model space as the rendered gun (so flash + shot origin coincide).
                         ?? ResolveMuzzleMarker(name => MarkerFromSkeletonBone(model, name));
+
+        // Capture the resolved shot tag's authored side offset (Base `vecs.y`) so cl_gunalign moves THIS gun by
+        // its own per-model amount. CaptureAuthoredShotSide composes the marker relative to _modelRoot, so it
+        // works for both a nested v_ Marker3D and a skeleton bone-rest marker.
+        CaptureAuthoredShotSide();
     }
 
     /// <summary>
@@ -380,6 +396,33 @@ public partial class ViewModel : Node3D
         // Parent under the skeleton so the marker shares the gun's exact built model space.
         skel.AddChild(marker);
         return marker;
+    }
+
+    /// <summary>
+    /// Capture the model's authored shot-tag side offset (Base <c>vecs.y</c>, the value
+    /// <c>shotorg_adjustfromclient</c> mirrors for left / zeroes for center) from the resolved muzzle marker, so
+    /// <c>cl_gunalign</c> moves THIS gun by its own per-model amount rather than a fixed representative value. The
+    /// marker sits in built-Godot model space where Quake +Y (left) maps to Godot −Z (see <see cref="ViewBasis"/>),
+    /// so the Quake side Y of the shot tag is the marker's local −Z. Rebuilds the rest placement so the change
+    /// takes effect immediately. Cleared (back to the representative fallback) when no marker resolves.
+    /// </summary>
+    private void CaptureAuthoredShotSide()
+    {
+        if (_muzzleMarker is not null && GodotObject.IsInstanceValid(_muzzleMarker)
+            && _muzzleMarker.IsInsideTree() && _modelRoot is not null && GodotObject.IsInstanceValid(_modelRoot)
+            && _modelRoot.IsInsideTree())
+        {
+            // The marker lives somewhere under _modelRoot (possibly nested through an attach transform / skeleton).
+            // Compose its transform relative to _modelRoot so we read the shot tag in the SAME built-model space the
+            // ViewBasis maps from. Quake +Y (left) maps to Godot −Z (see ViewBasis), so the side Y is the local −Z.
+            Transform3D rel = _modelRoot.GlobalTransform.AffineInverse() * _muzzleMarker.GlobalTransform;
+            _authoredShotSideY = -rel.Origin.Z;
+        }
+        else
+        {
+            _authoredShotSideY = null;
+        }
+        ApplyRestPlacement();
     }
 
     private Marker3D? ResolveMuzzleMarker(Func<string, Marker3D?> lookup)
@@ -1106,14 +1149,20 @@ public partial class ViewModel : Node3D
     }
 
     /// <summary>
-    /// The representative authored shot-origin side offset (Quake view +Y = left) used as <c>vecs.y</c> for the
-    /// cl_gunalign mirror/centre. The v_ models are authored holding the gun to the RIGHT of view centre; Base
-    /// mirrors/zeroes the model's own shot-tag Y, but the port keeps the gun at its authored position, so we use
-    /// a fixed representative side (~3.5u, the v_ models' typical shot-tag Y magnitude) so left (mirror) and
-    /// centre (zero) move the gun by the right amount and read distinctly from right. Negative because the gun is
-    /// held to the right of centre (Quake +Y is left).
+    /// The authored shot-origin side offset (Quake view +Y = left) used as Base <c>vecs.y</c> for the cl_gunalign
+    /// mirror/centre. When a muzzle marker has resolved this is the model's OWN <c>tag_shot</c> Y
+    /// (<see cref="_authoredShotSideY"/>, captured in <see cref="CaptureAuthoredShotSide"/>) — faithful to Base
+    /// where <c>shotorg_adjustfromclient</c> mirrors/zeroes the model's own shot-tag Y. Falls back to a
+    /// representative side (~3.5u, the v_ models' typical shot-tag Y magnitude) on placeholder/early frames so
+    /// left (mirror) and centre (zero) still read distinctly from right. The captured value is clamped to a sane
+    /// band so a stray marker can't fling the gun off-screen.
     /// </summary>
-    private static float AuthoredShotSideY() => -3.5f;
+    private float AuthoredShotSideY()
+    {
+        if (_authoredShotSideY is { } y && MathF.Abs(y) > 0.05f)
+            return Mathf.Clamp(y, -16f, 16f);
+        return -3.5f;
+    }
 
     // =================================================================================================
     //  Sway state + math helpers (ports of the view.qc macros)

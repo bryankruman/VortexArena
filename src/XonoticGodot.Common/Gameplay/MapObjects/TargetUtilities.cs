@@ -482,6 +482,7 @@ public static class TargetUtilities
     {
         this_.Use = ItemsUse;
         this_.ClassName = "target_items";
+        // NOTE: loot-toucher delete is modelled in ItemsUse (see QC items.qc:8-26).
 
         // QC seeds the powerup durations from the balance cvars when unset (so a bare "strength" token grants
         // the default duration). Mirror that onto the world-item timer fields the applier reads.
@@ -612,14 +613,42 @@ public static class TargetUtilities
     /// <summary>
     /// QC <c>target_items_use</c> + the give-token apply (a scoped GiveItems): give the activator the held-item
     /// flags, powerup status effects, and resources named in <c>.netname</c>. The weapon-set tokens (wr_init,
-    /// per-weapon ammo) and the loot-item delete branch are out of scope (no Inventory token applier here).
+    /// per-weapon ammo) are out of scope (no Inventory token applier here). The loot-toucher delete branch is
+    /// now modelled: an ITEM_IS_LOOT actor deletes itself (items.qc:8-13) and a player actor deletes all loot
+    /// items whose .enemy points at them (items.qc:23-26 IL_EACH delete-by-enemy pass).
     /// </summary>
     private static void ItemsUse(Entity self, Entity actor)
     {
-        if ((actor.Flags & EntFlags.Item) != 0)
-            return; // QC deletes a loot toucher here — not modelled (target_items is .use-only in the port).
+        // QC target_items_use items.qc:8-13:
+        //   if(ITEM_IS_LOOT(actor)) { EXACTTRIGGER_TOUCH(this, trigger); delete(actor); return; }
+        // A loot entity (dropped weapon / monster loot) that triggers target_items is simply deleted.
+        // EXACTTRIGGER_TOUCH validates the touch geometry — the port skips it (target_items has no bmodel,
+        // so the touch-validation is a no-op on the .use path, matching the QC comment "bones_was_here").
+        if (actor.ItemIsLoot)
+        {
+            MapMover.RemoveEntity(actor);
+            return;
+        }
+
         if ((actor.Flags & EntFlags.Client) == 0 || MapMover.IsDead(actor))
             return;
+
+        // QC items.qc:23-26: IL_EACH(g_items, it.enemy == actor && ITEM_IS_LOOT(it), { delete(it); })
+        // For a player activator, also delete any loot items that are "owned by" (enemy == actor) them —
+        // e.g. a weapon the player dropped before picking up from this target. Uses Api.Entities.All when
+        // available (the live server path); no-ops on headless test fakes that don't supply a full entity list.
+        if (Api.Services is not null && Api.Entities.All is { } allEnts)
+        {
+            List<Entity>? toLoot = null;
+            foreach (Entity it in allEnts)
+            {
+                if (it.ItemIsLoot && ReferenceEquals(it.Enemy, actor))
+                    (toLoot ??= new List<Entity>()).Add(it);
+            }
+            if (toLoot is not null)
+                foreach (Entity it in toLoot)
+                    MapMover.RemoveEntity(it);
+        }
 
         bool gave = ApplyGiveTokens(self, actor, self.NetName);
         if (gave)

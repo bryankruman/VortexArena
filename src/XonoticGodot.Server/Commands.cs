@@ -760,25 +760,25 @@ public sealed class Commands
         //      impulses; the port's QuickMenu/userbinds emit the named verbs through the client console, so they
         //      arrive here as client commands. Each routes to the WaypointSprites Deploy/Attach/Clear API. ----
         Register("waypoint_personal_here", "waypoint_personal_here — drop a personal waypoint at your feet",
-            ctx => CmdWaypointDeploy(ctx, WpDeploy.Personal));
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Personal, WpLocation.Here));
         Register("waypoint_personal_crosshair", "waypoint_personal_crosshair — drop a personal waypoint",
-            ctx => CmdWaypointDeploy(ctx, WpDeploy.Personal));
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Personal, WpLocation.Crosshair));
         Register("waypoint_personal_death", "waypoint_personal_death — drop a personal waypoint at your death spot",
-            ctx => CmdWaypointDeploy(ctx, WpDeploy.Personal));
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Personal, WpLocation.Death));
         Register("waypoint_here_follow", "waypoint_here_follow — attach a HELP ME marker that follows you",
             ctx => CmdWaypointDeploy(ctx, WpDeploy.Helpme));
         Register("waypoint_here_here", "waypoint_here_here — drop a HERE marker at your feet",
-            ctx => CmdWaypointDeploy(ctx, WpDeploy.Here));
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Here, WpLocation.Here));
         Register("waypoint_here_crosshair", "waypoint_here_crosshair — drop a HERE marker",
-            ctx => CmdWaypointDeploy(ctx, WpDeploy.Here));
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Here, WpLocation.Crosshair));
         Register("waypoint_here_death", "waypoint_here_death — drop a HERE marker at your death spot",
-            ctx => CmdWaypointDeploy(ctx, WpDeploy.Here));
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Here, WpLocation.Death));
         Register("waypoint_danger_here", "waypoint_danger_here — drop a DANGER marker at your feet",
-            ctx => CmdWaypointDeploy(ctx, WpDeploy.Danger));
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Danger, WpLocation.Here));
         Register("waypoint_danger_crosshair", "waypoint_danger_crosshair — drop a DANGER marker",
-            ctx => CmdWaypointDeploy(ctx, WpDeploy.Danger));
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Danger, WpLocation.Crosshair));
         Register("waypoint_danger_death", "waypoint_danger_death — drop a DANGER marker at your death spot",
-            ctx => CmdWaypointDeploy(ctx, WpDeploy.Danger));
+            ctx => CmdWaypointDeploy(ctx, WpDeploy.Danger, WpLocation.Death));
         Register("waypoint_clear_personal", "waypoint_clear_personal — clear your personal waypoint",
             ctx => CmdWaypointClear(ctx, personalOnly: true));
         Register("waypoint_clear", "waypoint_clear — clear all of your waypoints",
@@ -903,6 +903,10 @@ public sealed class Commands
         Register("editmob", "editmob <butcher|spawn|skin|movetarget|kill|name> [args] — edit/spawn monsters", CmdEditMob);
         Register("spawnmob", "spawnmob <type> [moveflag] — spawn a monster (alias of editmob spawn)", ctx => CmdEditMobAlias(ctx, "spawn"));
         Register("killmob", "killmob — kill the monster you're looking at (alias of editmob kill)", ctx => CmdEditMobAlias(ctx, "kill"));
+
+        // ---- debug/admin tools (QC server/command/sv_cmd.qc debug commands) ----
+        Register("adminmsg", "adminmsg <clients> \"<message>\" [infobartime] — send an admin message to players", CmdAdminMsg);
+        Register("delrec", "delrec <rank> [map] — delete race records up to a rank", CmdDelRec);
     }
 
     private bool CmdSet(CommandContext ctx)
@@ -1404,9 +1408,10 @@ public sealed class Commands
             int target = Teams.All[teamIndex % teamCount];
             if ((int)p.Team != target)
             {
-                // QC MoveToTeam → SetPlayerTeam: fire the team-change hooks (mutator veto) on each shuffle move.
-                if (_world.Teamplay.SetTeam(p, target))
-                    _world.Teamplay.KillPlayerForTeamChange(p);
+                // QC sv_cmd.qc:1374: shuffleteams moves each player via MoveToTeam(it, target, 6) — the lock is
+                // backed up/disabled/restored so the shuffle goes through even with teams locked, then the move
+                // kills + clears score on the real change (and fires the Player_ChangeTeam/ChangedTeam hooks).
+                _world.Teamplay.MoveToTeam(p, target);
             }
             teamIndex = (teamIndex + 1) % teamCount;
         }
@@ -1429,9 +1434,10 @@ public sealed class Commands
         if (!_world.Teamplay.IsTeamGame) { ctx.Print("not a team game"); return true; }
         int team = dest == "auto" ? _world.Teamplay.AssignBestTeam(target, _world.Clients.Players) : TeamFromName(dest);
         if (team == Teams.None) { ctx.Print($"invalid team \"{dest}\""); return true; }
-        // QC MoveToTeam → SetPlayerTeam: the team set fires the Player_ChangeTeam/ChangedTeam hooks (mutator veto).
-        if (_world.Teamplay.SetTeam(target, team))
-            _world.Teamplay.KillPlayerForTeamChange(target);
+        // QC sv_cmd.qc:1139: movetoteam routes through MoveToTeam(client, team_id, 6) — back up + disable + restore
+        // the team lock so the admin move bypasses lockteams (the lock is only enforced on the player join path),
+        // then kill + score-clear on the real change and fire the Player_ChangeTeam/ChangedTeam hooks (mutator veto).
+        _world.Teamplay.MoveToTeam(target, team);
         ctx.Print($"moved {target.NetName} to {Teams.Name(team)}");
         return true;
     }
@@ -1677,38 +1683,58 @@ public sealed class Commands
     private enum WpDeploy { Personal, Here, Danger, Helpme }
 
     /// <summary>
+    /// Which location a waypoint impulse targets — QC's three-way split across each sprite group
+    /// (impulse.qc:414-494): _here = player's current origin, _crosshair = endpoint of a server-side
+    /// crosshair trace (<c>WarpZone_crosshair_trace(this)</c>), _death = <c>this.death_origin</c>
+    /// (the position latched at the player's last death). The _death variants also guard on
+    /// <c>if (!this.death_origin) return;</c> — here we treat a zero DeathOrigin as "not set yet".
+    /// </summary>
+    private enum WpLocation { Here, Crosshair, Death }
+
+    /// <summary>
     /// QC the <c>IMPULSE(waypoint_personal_*/here_*/danger_*/here_follow)</c> handlers (server/impulse.qc:414-494):
     /// drop the corresponding marker through the <see cref="Waypoints.WaypointSprites"/> Deploy/Attach API so it
     /// rides the live per-tick waypoint net to every eligible client. A client command — needs a live player.
-    /// The <c>_crosshair</c>/<c>_death</c> variants reuse the player's current origin (the port has no reachable
-    /// server-side crosshair trace / death_origin here, the same simplification as Chat.cs's <c>%d</c> macro).
     /// </summary>
-    private bool CmdWaypointDeploy(CommandContext ctx, WpDeploy which)
+    private bool CmdWaypointDeploy(CommandContext ctx, WpDeploy which, WpLocation loc = WpLocation.Here)
     {
         if (ctx.Caller is null) { ctx.Print("waypoint is a client command"); return true; }
         Player p = ctx.Caller;
         if (p.FragsStatus == Player.FragsSpectator || p.IsObserver) return true; // not a live player
         int team = _world.Teamplay.IsTeamGame ? (int)p.Team : 0;
 
+        // Resolve the deploy position from the location specifier. QC WarpZone_crosshair_trace traces from the
+        // player's eyes along the view angles (like a hitscan); the death variant guards on this.death_origin!=0.
+        Vector3? pos = WaypointResolveLocation(p, loc);
+        if (pos is null) return true; // QC: death variant "if (!this.death_origin) return;" — silently skip
+
         switch (which)
         {
             case WpDeploy.Personal:
-                // QC WaypointSprite_DeployPersonal(WP_Waypoint, this, origin, RADARICON_WAYPOINT) — owner-only.
-                WaypointDeployPersonal(p);
-                ctx.Print("personal waypoint spawned at location");
+                // QC WaypointSprite_DeployPersonal(WP_Waypoint, this, origin/trace_endpos/death_origin, RADARICON_WAYPOINT)
+                WaypointDeployPersonal(p, pos.Value);
+                ctx.Print(loc == WpLocation.Crosshair ? "personal waypoint spawned at crosshair"
+                        : loc == WpLocation.Death     ? "personal waypoint spawned at death location"
+                                                      : "personal waypoint spawned at location");
                 break;
             case WpDeploy.Here:
-                // QC WaypointSprite_DeployFixed(WP_Here, false, this, origin, RADARICON_HERE).
-                WaypointDeployFixed(p, "Here", team);
-                ctx.Print("HERE spawned at location");
+                // QC WaypointSprite_DeployFixed(WP_Here, false, this, origin/trace_endpos/death_origin, RADARICON_HERE)
+                WaypointDeployFixed(p, "Here", team, pos.Value);
+                ctx.Print(loc == WpLocation.Crosshair ? "HERE spawned at crosshair"
+                        : loc == WpLocation.Death     ? "HERE spawned at death location"
+                                                      : "HERE spawned at location");
                 break;
             case WpDeploy.Danger:
-                // QC WaypointSprite_DeployFixed(WP_Danger, false, this, origin, RADARICON_DANGER).
-                WaypointDeployFixed(p, "Danger", team);
-                ctx.Print("DANGER spawned at location");
+                // QC WaypointSprite_DeployFixed(WP_Danger, false, this, origin/trace_endpos/death_origin, RADARICON_DANGER)
+                WaypointDeployFixed(p, "Danger", team, pos.Value);
+                ctx.Print(loc == WpLocation.Crosshair ? "DANGER spawned at crosshair"
+                        : loc == WpLocation.Death     ? "DANGER spawned at death location"
+                                                      : "DANGER spawned at location");
                 break;
             case WpDeploy.Helpme:
-                // QC IMPULSE(waypoint_here_follow): teamplay-only, live player only, attach WP_Helpme to the player.
+                // QC IMPULSE(waypoint_here_follow): teamplay-only, live player only. The MUTATOR_CALLHOOK(HelpMePing)
+                // override is modeled inside WaypointSprites.Attach: when a carrier sprite already rides the player,
+                // it pings that sprite instead of spawning a new helpme marker (matching the CTF hook's behavior).
                 if (!_world.Teamplay.IsTeamGame || p.IsDead) return true;
                 WaypointDeployHelpme(p, team);
                 ctx.Print("HELP ME attached");
@@ -1717,14 +1743,60 @@ public sealed class Commands
         return true;
     }
 
-    private static void WaypointDeployPersonal(Player p)
-        => Waypoints.WaypointSprites.DeployPersonal("Waypoint", p, p.Origin,
+    /// <summary>
+    /// Resolve the deploy position for a waypoint impulse.
+    /// <list type="bullet">
+    ///   <item><see cref="WpLocation.Here"/> — the player's current origin (QC <c>this.origin</c>).</item>
+    ///   <item><see cref="WpLocation.Crosshair"/> — endpoint of a server-side trace along the player's aim
+    ///         direction (QC <c>WarpZone_crosshair_trace(this)</c> → <c>trace_endpos</c>). Falls back to
+    ///         <c>p.Origin</c> when the trace service is unavailable.</item>
+    ///   <item><see cref="WpLocation.Death"/> — <c>Player.DeathOrigin</c> (QC <c>this.death_origin</c>).
+    ///         Returns <c>null</c> when zero (not yet set — QC guards <c>if (!this.death_origin) return;</c>).</item>
+    /// </list>
+    /// </summary>
+    private static Vector3? WaypointResolveLocation(Player p, WpLocation loc)
+    {
+        switch (loc)
+        {
+            case WpLocation.Here:
+                return p.Origin;
+
+            case WpLocation.Crosshair:
+                // QC WarpZone_crosshair_trace(this): traceline from the player's eyes along their view direction.
+                // The QC version also walks through WarpZones; the port does a plain server trace (no WarpZone
+                // redirect logic — acceptable simplification, as WarpZone awareness would need the warpzone spatial
+                // index the port doesn't expose from the impulse path).
+                if (Api.Services is not null)
+                {
+                    Vector3 eyes = p.Origin + p.ViewOfs;
+                    Vector3 aim  = p.ViewAngles != Vector3.Zero ? p.ViewAngles : p.Angles;
+                    XonoticGodot.Common.Math.QMath.AngleVectors(aim, out Vector3 fwd, out _, out _);
+                    Vector3 end = eyes + fwd * WeaponFiring.CurrentMaxShotDistance;
+                    var tr = Api.Trace.Trace(eyes, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, p);
+                    return tr.EndPos;
+                }
+                return p.Origin; // fallback for test/offline context
+
+            case WpLocation.Death:
+                // QC: if (!this.death_origin) return; — death_origin is zero until the player has died once.
+                // Player.DeathOrigin is latched in DamageSystem.Killed (Obituary path) and is Vector3.Zero by default.
+                if (p.DeathOrigin == Vector3.Zero)
+                    return null; // not set yet — skip silently, matching QC
+                return p.DeathOrigin;
+
+            default:
+                return p.Origin;
+        }
+    }
+
+    private static void WaypointDeployPersonal(Player p, Vector3 pos)
+        => Waypoints.WaypointSprites.DeployPersonal("Waypoint", p, pos,
             Waypoints.WaypointRegistry.Get("Waypoint").RadarIcon);
 
-    private static void WaypointDeployFixed(Player p, string sprite, int team)
+    private static void WaypointDeployFixed(Player p, string sprite, int team, Vector3 pos)
     {
         Waypoints.WaypointDef def = Waypoints.WaypointRegistry.Get(sprite);
-        Waypoints.WaypointSprites.DeployFixed(sprite, false, p, p.Origin, team, def.Color, def.RadarIcon);
+        Waypoints.WaypointSprites.DeployFixed(sprite, false, p, pos, team, def.Color, def.RadarIcon);
     }
 
     private static void WaypointDeployHelpme(Player p, int team)
@@ -1985,27 +2057,41 @@ public sealed class Commands
             return true;
         }
         // QC CheatImpulse CHIMPULSE_R00T (148, cheats.qc:264): nuke a random living enemy. Like GIVE_ALL it runs
-        // the sv_cheats gate + counts the cheat itself, and silently no-ops when disallowed. Clone (140/142),
-        // speedrun (30/141), teleport (143) and drag impulses need engine services and remain unported.
+        // the sv_cheats gate + counts the cheat itself, and silently no-ops when disallowed. Clone (140/142) and
+        // speedrun (141) impulses need engine services (CopyBody / personal-waypoint) and remain unported.
         if (imp == 148)
         {
             _world.Cheats.R00t(caller, _world.Clients.Players);
             return true;
         }
+        // QC CheatImpulse CHIMPULSE_TELEPORT (143, cheats.qc:235): emergency teleport (info_autoscreenshot, else a
+        // random map location). Runs the sv_cheats gate + counts the cheat itself, silently no-ops when disallowed.
+        if (imp == 143)
+        {
+            _world.Cheats.Teleport(caller);
+            return true;
+        }
         // QC waypoint impulses (impulse.qc:414-521, all.qh:133-144): personal/here/danger waypoint-sprite deploy
-        // and the HELP-ME follow ping + clear-personal/clear-all. The port already has the live deploy/clear
-        // handlers (CmdWaypointDeploy / CmdWaypointClear, registered as console commands); route the impulse
-        // numbers onto them so a bind firing `impulse 30..48` deploys/clears the sprite, not just the named alias.
-        // The _crosshair/_death variants reuse the player's origin (same simplification documented on CmdWaypointDeploy
-        // — no server-side crosshair trace / death_origin on this path).
+        // and the HELP-ME follow ping + clear-personal/clear-all. The _here variants deploy at the player's origin,
+        // the _crosshair variants at the server-side crosshair trace endpoint, the _death variants at the latched
+        // death position (guarded: no-op when death_origin is zero, i.e. the player hasn't died yet this life).
+        // QC impulse numbers: personal_here=30, personal_crosshair=31, personal_death=32,
+        //   here_follow(helpme)=33, here_here=34, here_crosshair=35, here_death=36,
+        //   danger_here=37, danger_crosshair=38, danger_death=39, clear_personal=47, clear_all=48.
         switch (imp)
         {
-            case 30: case 31: case 32: return CmdWaypointDeploy(ctx, WpDeploy.Personal);
-            case 33:                   return CmdWaypointDeploy(ctx, WpDeploy.Helpme);
-            case 34: case 35: case 36: return CmdWaypointDeploy(ctx, WpDeploy.Here);
-            case 37: case 38: case 39: return CmdWaypointDeploy(ctx, WpDeploy.Danger);
-            case 47:                   return CmdWaypointClear(ctx, personalOnly: true);
-            case 48:                   return CmdWaypointClear(ctx, personalOnly: false);
+            case 30: return CmdWaypointDeploy(ctx, WpDeploy.Personal, WpLocation.Here);
+            case 31: return CmdWaypointDeploy(ctx, WpDeploy.Personal, WpLocation.Crosshair);
+            case 32: return CmdWaypointDeploy(ctx, WpDeploy.Personal, WpLocation.Death);
+            case 33: return CmdWaypointDeploy(ctx, WpDeploy.Helpme);
+            case 34: return CmdWaypointDeploy(ctx, WpDeploy.Here,     WpLocation.Here);
+            case 35: return CmdWaypointDeploy(ctx, WpDeploy.Here,     WpLocation.Crosshair);
+            case 36: return CmdWaypointDeploy(ctx, WpDeploy.Here,     WpLocation.Death);
+            case 37: return CmdWaypointDeploy(ctx, WpDeploy.Danger,   WpLocation.Here);
+            case 38: return CmdWaypointDeploy(ctx, WpDeploy.Danger,   WpLocation.Crosshair);
+            case 39: return CmdWaypointDeploy(ctx, WpDeploy.Danger,   WpLocation.Death);
+            case 47: return CmdWaypointClear(ctx, personalOnly: true);
+            case 48: return CmdWaypointClear(ctx, personalOnly: false);
         }
 
         // QC IMPULSE(use) -> PlayerUseKey (impulse.qc:409, client.qc:2620): the +use key routed through the
@@ -2600,6 +2686,109 @@ public sealed class Commands
     private bool CmdPrintStats(CommandContext ctx)
     {
         DumpStats(final: false);
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>sv_cmd.qc:88</c> <c>GameCommand_adminmsg</c>: send an admin message to one or more players. Resolves
+    /// targets by entity ID or name (comma-separated), then to each valid target sends BOTH a centerprint
+    /// (<c>^3&lt;admin&gt;:\n^7&lt;msg&gt;</c>) AND a chat line (<c>^3&lt;admin&gt;^7: &lt;msg&gt;</c>), exactly as QC.
+    /// The admin name is QC <c>GetCallerName(NULL)</c> — note QC ALWAYS passes NULL here, so it is the server admin
+    /// nick (<c>sv_adminnick</c>, or "SERVER ADMIN" when unset), never the actual caller's name. The success summary
+    /// is broadcast (QC <c>bprint</c>). The headless core has no infobar, so the <c>infobartime</c> path falls back
+    /// to the centerprint/chat delivery; the value is accepted for cfg compatibility. Usage:
+    /// <c>sv_cmd adminmsg &lt;clients&gt; "&lt;message&gt;" [infobartime]</c>.
+    /// </summary>
+    private bool CmdAdminMsg(CommandContext ctx)
+    {
+        if (ctx.ArgCount < 3)
+        {
+            ctx.Print("usage: adminmsg <clients> \"<message>\" [infobartime]");
+            ctx.Print("  <clients> is a list (separated by commas) of player entity ID's or nicknames");
+            ctx.Print("  If infobartime is provided, the message would be sent to infobar (no infobar in headless core)");
+            ctx.Print("  Otherwise, it will be sent as a centerprint message.");
+            return true;
+        }
+
+        string clientArg = ctx.Arg(1).Replace(",", " "); // QC strreplace(",", " ", targets)
+        string message = ctx.Arg(2);
+        if (string.IsNullOrEmpty(message)) // QC guard: if ((targets) && (admin_message))
+            return true;
+
+        // QC GetCallerName(NULL): adminmsg always attributes to the server admin nick, NOT the caller.
+        // sv_adminnick when set, else "SERVER ADMIN" (server/command/common.qc:33-37).
+        string adminNick = Cvars.String("sv_adminnick");
+        if (string.IsNullOrEmpty(adminNick)) adminNick = "SERVER ADMIN";
+
+        var successful = new List<string>();
+        var tokens = clientArg.Split(new[] { ' ' }, System.StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (string token in tokens)
+        {
+            Player? target = FindPlayerByNameOrId(token);
+            if (target is null)
+            {
+                ctx.Print($"adminmsg: no player matching \"{token}\"");
+                continue;
+            }
+
+            // QC (infobartime == 0 path): centerprint(client, "^3<admin>:\n^7<msg>") AND
+            //   sprint(client, "...^3<admin>^7: <msg>\n"). The headless core has no infobar, so the infobartime
+            //   path also lands here. Centerprint via the live notification channel; chat line via ChatToPlayer.
+            NotificationSystem.SendCenterRaw(NotifBroadcast.OneOnly, target, $"^3{adminNick}:\n^7" + message);
+            ChatToPlayer?.Invoke(target, $"^3{adminNick}^7: {message}");
+            successful.Add(target.NetName);
+        }
+
+        // QC: if (successful) bprint("Successfully sent message '", admin_message, "' to ", successful, ".\n");
+        //     else LOG_INFO("No players given (...) could receive the message.");
+        if (successful.Count > 0)
+            ChatBroadcast?.Invoke($"Successfully sent message '{message}' to {string.Join(", ", successful)}.");
+        else
+            ctx.Print("No players could receive the message.");
+        return true;
+    }
+
+    /// <summary>
+    /// QC <c>sv_cmd.qc:628</c> <c>delrec</c> → <c>race_deleteTime(map, pos)</c> (server/race.qc:461): delete race
+    /// records from the given rank up through <c>RANKINGS_CNT</c> on the current map (or a specified map), shifting
+    /// higher ranks down. Usage: <c>sv_cmd delrec &lt;rank&gt; [&lt;map&gt;]</c>. The rank is 1-based (rank 1 = server
+    /// record). race_deleteTime operates on the single global <c>record_type</c> (RACE_RECORD by default,
+    /// CTS_RECORD under the CTS gametype) — NOT both tables — so this resolves the active gametype's record type
+    /// the same way QC's <c>record_type</c> global does (cf. CommandReplies.GetRankings).
+    /// </summary>
+    private bool CmdDelRec(CommandContext ctx)
+    {
+        if (ctx.ArgCount < 2)
+        {
+            ctx.Print("usage: delrec <rank> [map]");
+            ctx.Print("  <rank> is the ranking up to which records will be deleted");
+            ctx.Print("  if <map> is not provided it will use the current map");
+            return true;
+        }
+
+        if (!int.TryParse(ctx.Arg(1), out int rank) || rank < 1)
+        {
+            ctx.Print("rank must be a positive integer");
+            return true;
+        }
+
+        string map = ctx.ArgCount >= 3 ? ctx.Arg(2) : _world.MapName;
+        if (string.IsNullOrEmpty(map))
+        {
+            ctx.Print("no map loaded");
+            return true;
+        }
+
+        // QC race_deleteTime acts on the single global record_type, which is CTS_RECORD under the CTS gametype and
+        // RACE_RECORD otherwise (server/world.qc:872 default + the per-gametype overrides). Resolve it the same way
+        // CommandReplies.GetRankings does, so delrec deletes exactly the table the active mode files times into.
+        string gt = _world.GameType?.NetName ?? "";
+        string recordType = gt == "cts"
+            ? XonoticGodot.Common.Gameplay.RaceRecords.CtsRecord
+            : XonoticGodot.Common.Gameplay.RaceRecords.RaceRecord;
+        XonoticGodot.Common.Gameplay.RaceRecords.DeleteTime(map, recordType, rank);
+        ctx.Print($"Deleted records up to rank {rank} on map {map}");
         return true;
     }
 

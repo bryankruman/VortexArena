@@ -485,10 +485,31 @@ public static class Teleporters
     /// when <c>teamplay &amp;&amp; g_telefrags_teamplay &amp;&amp; same-team</c> (Base default g_telefrags_teamplay 1 =
     /// "never telefrag teammates"); a dead-body / monster teleportee gibs itself instead of telefragging others.
     /// </summary>
-    private static void Telefrag(Entity player, Entity teleporter, Entity telefragger, Vector3 at)
+    /// <summary>
+    /// QC <c>Portal_TeleportPlayer</c> force-telefrag (server/portals.qc:188-194): a Porto-portal crossing runs the
+    /// same <c>tdeath</c> box as a map teleporter but with <c>TELEPORT_FLAGS_PORTAL</c> (FORCE_TDEATH — telefrag even
+    /// with <c>g_telefrags 0</c>), and reports whether it hit a live player (the QC <c>tdeath_hit</c> counter) so the
+    /// caller can award the <c>ANNCE_ACHIEVEMENT_AMAZING</c> announcer on a telefrag within 1s of portal creation.
+    /// The warpzone crossing doesn't route through <see cref="TeleportPlayer"/>, so this is the dedicated entry it
+    /// calls instead. Honors the same <see cref="TeleportRoundGateSuppressed"/> / takedamage / not-dead gate as the
+    /// map-teleporter telefrag (FORCE_TDEATH bypasses only the <c>g_telefrags</c> cvar, not these).
+    /// </summary>
+    public static bool PortalForceTelefrag(Entity player, Entity teleporter, Entity telefragger, Vector3 at)
     {
         if (Api.Services is null)
-            return;
+            return false;
+        // QC TeleportPlayer telefrag gate (teleporters.qc:148-150) with FORCE_TDEATH: takedamage && !dead && !rc/cts
+        // && !pre-round. g_telefrags is bypassed by FORCE_TDEATH, so it's not consulted here.
+        if (player.TakeDamage == DamageMode.No || MapMover.IsDead(player) || TeleportRoundGateSuppressed())
+            return false;
+        return Telefrag(player, teleporter, telefragger, at);
+    }
+
+    private static bool Telefrag(Entity player, Entity teleporter, Entity telefragger, Vector3 at)
+    {
+        if (Api.Services is null)
+            return false;
+        bool hit = false;
 
         // QC TDEATHLOOP(player.origin): the box is the player's bbox at the destination (telefragmin/max are
         // zero here, so no union). deathradius covers the box; chain over findradius.
@@ -515,6 +536,7 @@ public static class Teleporters
                     continue;
                 if ((head.Flags & EntFlags.Client) == 0 || MapMover.IsDead(head) || head.GetResource(ResourceType.Health) < 1f)
                     continue;
+                hit = true; // QC ++tdeath_hit (counted before the damage, live-player telefrag only)
                 Combat.Damage(head, teleporter, telefragger, 10000f, DeathTypes.Telefrag, head.Origin, Vector3.Zero);
             }
             else
@@ -524,6 +546,7 @@ public static class Teleporters
                 break;
             }
         }
+        return hit;
     }
 
     /// <summary>

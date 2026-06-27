@@ -55,7 +55,13 @@ public static class EffectsList
         Effects.Register("ARC_OVERHEAT", "arc_overheat");
         Effects.Register("ARC_OVERHEAT_FIRE", "arc_overheat_fire");
         Effects.Register("ARC_SMOKE", "arc_smoke");
-        Effects.Register("ARC_LIGHTNING", "arc_lightning");
+        // ARC_LIGHTNING carries the te_csqc_lightningarc bolt (a from→hit-point line, the port's analogue of
+        // Base's dedicated TE_CSQC_ARC NET_TEMP; EffectEmitter.TeCsqcLightningArc emits it count-0 with the END
+        // point in velocity). Like ARC_BEAM/ARC_BEAM_HEAL it MUST be isTrail so EffectEmitter.Emit doesn't drop
+        // the count-0 emission as an empty point effect (the count-0 point guard) — without this the electro
+        // combo / Tesla turret / Golem zaps never network the arc to remote clients. The client routes the name
+        // to BeamRenderer.Arc (the crackling bolt), so the trail flag only governs networking, not the visual.
+        Effects.Register("ARC_LIGHTNING", "arc_lightning", isTrail: true);
 
         // ---- Machine Gun ----
         Effects.Register("MACHINEGUN_IMPACT", "machinegun_impact");
@@ -259,6 +265,31 @@ public static class EffectsList
 
         // ---- generic damage blood puff (te_blood analogue; not in all.inc but used by EffectEmitter.TeBlood) ----
         Effects.Register("BLOOD", "blood");
+
+        // ---- Bumblebee gunner heal/damage rays (port-specific; not in all.inc) ----
+        // Base draws these as a linked entity (bumble_raygun_send/_draw, a Draw_CylindricLine cylinder driven by
+        // the vehicle's own networked state), NOT a Send_Effect particle. The port carries them on the shared
+        // effect channel as beam-class emissions (EffectEmitter.TeBeam/TeHealBeam, the bolt's END point in
+        // velocity and the colormod in the wire color fields). Registering them as real trail Effects (like the
+        // casings precedent above) gives each a stable RegistryId so the beam ACTUALLY networks to remote
+        // clients — a null-Effect EmitByEffectInfoName request is dropped by ServerNet.WriteEffect, so without
+        // this only the listen-server in-process mirror ever rendered them. isTrail so the count-0 emission
+        // survives EffectEmitter.Emit's point-count guard and the velocity (end point) is networked; the client
+        // routes the "*_beam" name to BeamRenderer (a straight cylinder), tinted by the decoded wire color.
+        Effects.Register("HEAL_BEAM", "heal_beam", isTrail: true);
+        Effects.Register("DAMAGE_BEAM", "damage_beam", isTrail: true);
+
+        // ---- Sandbox material-impact bursts (QC g_sandbox Send_Effect_("impact_"+material, ...)) ----
+        // SandboxMutator emits these by effectinfo name (EmitByEffectInfoName, the port's Send_Effect_). The
+        // shipped effectinfo.txt defines impact blocks for exactly these four materials; in Base a Send_Effect_
+        // for any OTHER material falls through to __pointparticles(_particleeffectnum(name)) which returns -1
+        // (no particles), so registering only these four is faithful — an unknown material correctly renders
+        // nothing on both ends. Registered as point Effects so the burst networks by id (a null-Effect by-name
+        // request is dropped by ServerNet.WriteEffect, so it would otherwise render only on the listen server).
+        Effects.Register("IMPACT_METAL", "impact_metal");
+        Effects.Register("IMPACT_STONE", "impact_stone");
+        Effects.Register("IMPACT_WOOD", "impact_wood");
+        Effects.Register("IMPACT_FLESH", "impact_flesh");
 
         // Deterministic CL/SV ordering + ids (mirrors QC Registry sort at boot).
         Effects.Sort();

@@ -22,6 +22,15 @@ namespace XonoticGodot.Server.Bot;
 public sealed class BotNavigation
 {
     private const int MaxGoals = 32;        // QC goalstack depth (goalcurrent + goalstack01..31)
+
+    // Waypoint types whose first node must NOT be skipped by the path-optimization shortcut: they carry
+    // traversal semantics Steer needs (jump/crouch the link, climb a ladder, enter a teleporter trigger) or are
+    // hand-authored special links (QC WPFLAGMASK_NORELINK = TELEPORT|LADDER|JUMP|CUSTOM_JP|SUPPORT, extended here
+    // with CROUCH since the port encodes "crouch this link" on the node).
+    private const WaypointFlags WaypointFlagsNoSkip =
+        WaypointFlags.Teleport | WaypointFlags.Ladder | WaypointFlags.Jump
+        | WaypointFlags.CustomJp | WaypointFlags.Support | WaypointFlags.Crouch;
+
     private const float GoalReachedXY = 24f; // horizontal "touched the waypoint" radius
     private const float GoalReachedZ = 48f;  // vertical tolerance
     public const float StepHeight = 34f;    // QC stepheightvec.z default (sv_stepheight) — walkable step
@@ -212,14 +221,33 @@ public sealed class BotNavigation
         if (net is null || net.Count == 0)
             return; // no graph: just head toward the goal and rely on obstacle avoidance
 
-        var startWp = net.Nearest(origin);
-        var goalWp = net.Nearest(goalPos);
+        // QC navigation_findnearestwaypoint(ent, walkfromwp): the start node is reached by walking FROM the bot
+        // (walkfromwp = true); the goal node is reached by walking FROM the waypoint TO the goal (walkfromwp =
+        // false) — see routetogoal, which seeds the bot's nearest with walkfromwp and the goal's with !walkfromwp.
+        var startWp = net.Nearest(origin, walkFromWp: true);
+        var goalWp = net.Nearest(goalPos, walkFromWp: false);
         if (startWp is null || goalWp is null)
             return;
 
         var path = net.FindPath(startWp, goalWp);
         if (path is null || path.Count == 0)
             return;
+
+        // Path optimization (QC navigation_routetogoal:1488-1538 "often path can be optimized by not adding the
+        // nearest waypoint"): if the bot can walk straight to the SECOND node, the nearest (first) waypoint is a
+        // needless detour — drop it. Only when the shortcut is genuinely shorter than going via the first node
+        // (QC's vlen2 comparison), so we never trade a clear path for a longer straight line. Cheap one-trace win
+        // that keeps bots from doubling back to a waypoint behind them.
+        if (path.Count >= 2)
+        {
+            Waypoint first = path[0], second = path[1];
+            if ((first.Flags & WaypointFlagsNoSkip) == 0
+                && (origin - second.Center).LengthSquared() < (first.Center - second.Center).LengthSquared()
+                && CanWalkStraight(origin, second.Center))
+            {
+                path.RemoveAt(0);
+            }
+        }
 
         // Push intermediate waypoints in reverse so the FIRST waypoint ends up at the front of the stack,
         // ahead of the final goal point (which is already at the front). QC pushes goal first, then walks

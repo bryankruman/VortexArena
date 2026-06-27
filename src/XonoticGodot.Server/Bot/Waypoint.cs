@@ -493,8 +493,15 @@ public sealed class WaypointNetwork
     /// Performance: candidates are gathered then sorted nearest-first and the FIRST reachable one is returned —
     /// since closer-reachable always wins, this stops at the first successful <see cref="BotTracewalk.CanWalk"/>
     /// (typically one) instead of tracewalking every node in range as the old distance-keyed scan did.
+    ///
+    /// <paramref name="walkFromWp"/> picks the reachability direction, matching Base's
+    /// navigation_findnearestwaypoint(ent, walkfromwp): the START waypoint (seeded from the bot) tests "can
+    /// the bot walk FROM <paramref name="pos"/> TO the waypoint" (walkFromWp = true); the GOAL waypoint tests
+    /// "can a player walk FROM the waypoint TO <paramref name="pos"/>" (walkFromWp = false), because the route
+    /// approaches the goal from the waypoint, not the other way round. A one-way ledge/jump-down reaches in only
+    /// one direction, so the correct sense keeps the planner from picking a node it can't actually traverse.
     /// </summary>
-    public Waypoint? Nearest(Vector3 pos, float maxDist = 1050f, bool requireReachable = true)
+    public Waypoint? Nearest(Vector3 pos, float maxDist = 1050f, bool requireReachable = true, bool walkFromWp = true)
     {
         float maxD2 = maxDist * maxDist;
         bool canTrace = requireReachable && Api.Services is not null;
@@ -523,12 +530,17 @@ public sealed class WaypointNetwork
         if (!canTrace)
             return cand[0].Wp; // no collision world: nearest by distance
 
-        // Nearest-first: the first node we can actually walk to is the nearest reachable one.
+        // Nearest-first: the first node we can actually walk to is the nearest reachable one. Direction follows
+        // Base's walkfromwp: true → bot walks pos→waypoint (start node); false → player walks waypoint→pos
+        // (goal node, the route arrives at the goal FROM the waypoint).
         for (int i = 0; i < cand.Count; i++)
         {
             Waypoint wp = cand[i].Wp;
             Vector3 cp = wp.ClosestPoint(pos);
-            if (BotTracewalk.CanWalk(pos, cp, _playerMins, _playerMaxs, wp.IsBox ? (wp.AbsMax.Z - cp.Z) : 0f))
+            bool reach = walkFromWp
+                ? BotTracewalk.CanWalk(pos, cp, _playerMins, _playerMaxs, wp.IsBox ? (wp.AbsMax.Z - cp.Z) : 0f)
+                : BotTracewalk.CanWalk(cp, pos, _playerMins, _playerMaxs);
+            if (reach)
                 return wp;
         }
         return cand[0].Wp; // none reachable: fall back to the nearest by pure distance

@@ -19,10 +19,11 @@ namespace XonoticGodot.Server;
 /// <see cref="Player"/>-level <c>maycheat</c> override); dead players can't cheat unless <paramref name="ignoreDead"/>;
 /// at <c>sv_cheats &gt;= 2</c> non-players (observers) may cheat too. A refused cheat command broadcasts the QC
 /// "Player ... tried to use cheat '...'" notice (QC <c>CheatsAllowed</c>'s <c>logattempt</c> branch). The
-/// remaining trace/particle/file-I/O cheats (the emergency teleport-to-random-location/info_autoscreenshot,
-/// the clone/copybody, the speedrun personal-waypoint, the drag object-carry subsystem, and the
-/// particle/<c>make</c>/<c>penalty</c> + race map-editor tooling) depend on engine services outside this
-/// Godot-free core and are not part of it; the gameplay-state cheats above are complete.
+/// emergency <see cref="Teleport"/> impulse (info_autoscreenshot, else a random map location). The
+/// remaining cheats — the clone/copybody clones, the speedrun personal-waypoint snapshot/restore, and the
+/// drag object-carry subsystem + race map-editor tooling — depend on engine services (CopyBody, a per-frame
+/// cheat hook, te_lightning1, file I/O) outside this Godot-free core and are not part of it; the
+/// gameplay-state cheats above are complete.
 /// </summary>
 public sealed class Cheats
 {
@@ -282,6 +283,61 @@ public sealed class Cheats
     private static bool TeleportToTarget(Player p, string targetName)
         => Teleporters.TeleportToTarget(p, targetName);
 
+    /// <summary>
+    /// QC the <c>TELEPORT</c> impulse (impulse 143, <c>CheatImpulse</c> CHIMPULSE_TELEPORT): emergency teleport.
+    /// While noclipping, prefer the nearest <c>info_autoscreenshot</c> point (consumed on use); otherwise fall
+    /// back to <c>MoveToRandomMapLocation</c> — the QC engine builtin scattered points in the world bounds, but
+    /// here (lacking a headless world-bounds sampler) we use the spawnpoint-sampling fallback path QC itself drops
+    /// to (<see cref="BallEntity.RandomMapLocation"/>). On success: zero the velocity, snap the view (fixangle),
+    /// and count a cheat. Returns true when a destination was found.
+    /// </summary>
+    public bool Teleport(Player p)
+    {
+        if (!Allowed(p, logAttempt: true, cheatName: "impulse 143")) return false;
+        if (Api.Services is null) return false;
+
+        // QC: if(this.move_movetype == MOVETYPE_NOCLIP) { e = find(NULL, classname, "info_autoscreenshot"); ... }
+        if (p.MoveType == MoveType.Noclip)
+        {
+            Entity? shot = null;
+            foreach (Entity e in Api.Entities.FindByClass("info_autoscreenshot"))
+            {
+                if (!e.IsFreed) { shot = e; break; }
+            }
+            if (shot is not null)
+            {
+                Echo("Emergency teleport used info_autoscreenshot location");
+                MapMover.SetOrigin(p, shot.Origin);
+                p.Angles = shot.Angles;
+                p.FixAngle = true;
+                p.FixAngleAngles = shot.Angles;
+                p.Velocity = Vector3.Zero;
+                Api.Entities.Remove(shot); // QC delete(e) — the point is consumed
+                AddCheats(p, 1);
+                return true;
+            }
+        }
+
+        // QC: MoveToRandomMapLocation(...) — random reachable spot. We use the spawnpoint-sampling fallback.
+        Vector3 dest = BallEntity.RandomMapLocation(p.Origin);
+        if (dest != p.Origin)
+        {
+            Echo("Emergency teleport used random location");
+            MapMover.SetOrigin(p, dest);
+            // QC: this.angles_x = -this.angles.x; this.fixangle = true; (only pitch is flipped)
+            Vector3 a = new(-p.Angles.X, p.Angles.Y, p.Angles.Z);
+            p.Angles = a;
+            p.FixAngle = true;
+            p.FixAngleAngles = a;
+            p.Velocity = Vector3.Zero;
+            AddCheats(p, 1);
+            return true;
+        }
+
+        Echo("Emergency teleport could not find a good location, forget it!");
+        return false;
+    }
+
     // =============================================================================================
     // give (QC GiveItems — the cheat-side give parser, reduced to the gameplay-state slice)
     // =============================================================================================
@@ -323,15 +379,27 @@ public sealed class Cheats
     /// = the impact point (QC <c>trace_endpos</c>). Hit-nothing leaves a far endpos and a zero normal.
     /// </summary>
     private static bool AimTrace(Player p, float dist, out Vector3 normal, out Vector3 endPos)
+        => AimTrace(p, dist, out normal, out endPos, out _, out _);
+
+    /// <summary>
+    /// QC <c>crosshair_trace</c> / <c>W_SetupShot</c>+<c>traceline</c> variant that also reports the trace
+    /// fraction (<paramref name="fraction"/>, QC <c>trace_fraction</c>) and the hit surface's Q3 surface flags
+    /// (<paramref name="surfaceFlags"/>, QC <c>trace_dphitq3surfaceflags</c>) so the <c>make</c> cheat can apply
+    /// Base's full bad-surface guard (reject NOIMPACT/sky as well as hit-nothing).
+    /// </summary>
+    private static bool AimTrace(Player p, float dist, out Vector3 normal, out Vector3 endPos,
+        out float fraction, out int surfaceFlags)
     {
         Vector3 eyes = p.Origin + p.ViewOfs;
         Vector3 aim = p.ViewAngles != Vector3.Zero ? p.ViewAngles : p.Angles;
         XonoticGodot.Common.Math.QMath.AngleVectors(aim, out Vector3 forward, out _, out _);
         Vector3 end = eyes + forward * dist;
-        if (Api.Services is null) { normal = Vector3.Zero; endPos = end; return false; }
+        if (Api.Services is null) { normal = Vector3.Zero; endPos = end; fraction = 1f; surfaceFlags = 0; return false; }
         TraceResult tr = Api.Trace.Trace(eyes, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, p);
         normal = tr.PlaneNormal;
         endPos = tr.EndPos;
+        fraction = tr.Fraction;
+        surfaceFlags = tr.DpHitQ3SurfaceFlags;
         return tr.Fraction < 1f; // hit something
     }
 
@@ -345,8 +413,12 @@ public sealed class Cheats
     private bool Make(Player p, string model, int mode)
     {
         if (Api.Services is null) return false;
-        bool hit = AimTrace(p, 2048f, out Vector3 normal, out Vector3 endPos);
-        if (!hit)
+        AimTrace(p, 2048f, out Vector3 normal, out Vector3 endPos, out float fraction, out int surfaceFlags);
+        // QC cheats.qc:338 — reject when the surface is NOIMPACT (Q3SURFACEFLAG_NOIMPACT, set on sky too) OR the
+        // trace hit nothing (fraction == 1). The port previously only rejected on hit-nothing, so a sky/noimpact
+        // face would still get a breakable placed against it.
+        const int Q3SurfaceFlagNoImpact = 16; // dpextensions Q3SURFACEFLAG_NOIMPACT
+        if ((surfaceFlags & Q3SurfaceFlagNoImpact) != 0 || fraction >= 1f)
         {
             Echo("cannot make stuff there (bad surface)");
             return false;
@@ -360,12 +432,12 @@ public sealed class Cheats
         MapMover.SetOrigin(e, endPos);
         if (mode == 1)
         {
-            // QC: e.angles = fixedvectoangles2(trace_plane_normal, v_forward); then apply '-90 0 0' so unrotated
-            // models stand up. We approximate AnglesTransform_ApplyToAngles(angles,'-90 0 0') with a pitch offset.
+            // QC cheats.qc:352-353: e.angles = fixedvectoangles2(trace_plane_normal, v_forward);
+            //                      e.angles = AnglesTransform_ApplyToAngles(e.angles, '-90 0 0'); // stand models up
             XonoticGodot.Common.Math.QMath.AngleVectors(
                 p.ViewAngles != Vector3.Zero ? p.ViewAngles : p.Angles, out Vector3 fwd, out _, out _);
             Vector3 a = XonoticGodot.Common.Math.QMath.FixedVecToAngles2(normal, fwd);
-            a.X -= 90f;
+            a = XonoticGodot.Common.Math.QMath.AnglesTransformApplyToAngles(a, new Vector3(-90f, 0f, 0f));
             e.Angles = a;
         }
         Breakable.BreakableSetup(e);

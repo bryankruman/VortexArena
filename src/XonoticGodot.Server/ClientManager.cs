@@ -541,6 +541,14 @@ public sealed class ClientManager
         var observerArgs = new MutatorHooks.MakePlayerObserverArgs(p);
         MutatorHooks.MakePlayerObserver.Call(ref observerArgs);
 
+        // QC PutObserverInServer (server/client.qc:322-323): RemoveGrapplingHooks(this); Portal_ClearAll(this).
+        // A player demoted to observer must drop any latched grappling-hook chain (which would otherwise stay
+        // attached through the relocation and reel the free-fly camera) and tear down any portals they placed
+        // (a spectator owning live portals is a stuck-objective hazard). Hook removal is a Common.Gameplay
+        // function; Portal_ClearAll is a host hook (null on a bare/test host → a no-op, exactly like death).
+        Hook.RemoveGrapplingHooks(p);
+        Porto.PortalClearAll?.Invoke(p);
+
         p.Spectatee = null;
         p.SpectateeStatus = 0;
         p.FragsStatus = Player.FragsSpectator;   // QC RES_HEALTH/.frags = FRAGS_SPECTATOR (scoreboard sentinel)
@@ -789,6 +797,13 @@ public sealed class ClientManager
         // superweapon / unlimited item bits and play the power-off sound only if the leaver was a live player
         // (an observer carries no powerups). Mirrors the death-time strip so a recycled player object is clean.
         PlayerFrameLogic.PlayerPowerupsRemoveAll(p, !p.IsObserver);
+
+        // QC ClientDisconnect (client.qc:1318-1319): RemoveGrapplingHooks(this); Portal_ClearAll(this). A leaving
+        // player must drop any in-flight grappling-hook chain and tear down every portal they placed so neither
+        // outlives the owner (a dangling hook entity / an ownerless live portal). Hook removal lives in
+        // Common.Gameplay; Portal_ClearAll is a host hook (null on a bare/test host → no-op).
+        Hook.RemoveGrapplingHooks(p);
+        Porto.PortalClearAll?.Invoke(p);
 
         OnClientDisconnect?.Invoke(p); // §5 disconnect hooks (finalize stats, :part:, voter/timeout cleanup)
 

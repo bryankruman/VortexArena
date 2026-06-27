@@ -16,7 +16,8 @@
 // (multi_eventdamage via the damage pipeline's Death hook), the gravity-zone exit checker entity that
 // restores gravity when a non-sticky zone is left, per-player counters + the "sequence" notifications
 // (audible/secret-count parts), and the secret/swamp/impulse/keylock families. Genuinely out of scope:
-// CTS client-specific .wait buffers, warpzone exact-trigger clipping, and CSQC networking.
+// warpzone exact-trigger clipping and CSQC networking. CTS per-client .wait buffers are now ported
+// (trigger_multiple / multi_trigger CTS branch keyed by Entity.Index via CtsTriggerTimes Dictionary).
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
@@ -92,14 +93,22 @@ public static class Triggers
         MapMover.InitTrigger(this_);
         this_.ClassName = "trigger_multiple";
 
+        // QC spawnfunc(trigger_multiple): q3compat default .wait is 0.5 (vs Xonotic's 0.2). In q3compat
+        // the field also waits forever when explicitly set to 0 in the map; the port cannot distinguish
+        // "not set" from "set to 0" (both arrive as 0f), so we only apply the 0.5 default branch here.
+        // The explicit-0-means-forever edge is recorded as a residual gap (negligible: rare q3 map pattern).
+        bool isQ3 = CompatRemaps.IsQ3Compat;
         if (this_.Wait == 0f)
-            this_.Wait = 0.2f;
+            this_.Wait = isQ3 ? 0.5f : 0.2f;
 
         this_.Use = MultiUse;
 
-        // Shootable trigger (health): killed to fire (event_damage = multi_eventdamage). Otherwise touch.
-        if (this_.Health != 0f)
+        // QC spawnfunc(trigger_multiple): in CTS, health/damage mode is not supported (multi.qc:230-233) and
+        // instead we allocate the per-client .triggertimes buffer (multi.qc:246-248 `buf_create()`).
+        bool isCts = CompatRemaps.IsCtsActive?.Invoke() ?? false;
+        if (this_.Health != 0f && !isCts)
         {
+            // Shootable trigger (health): killed to fire (event_damage = multi_eventdamage). Otherwise touch.
             this_.MaxHealthMover = this_.Health;
             this_.TakeDamage = DamageMode.Yes;
             this_.Solid = Solid.BBox;
@@ -108,6 +117,10 @@ public static class Triggers
         else if ((this_.SpawnFlags & MapMover.SpawnNoTouch) == 0)
         {
             this_.Touch = MultiTouch;
+            // QC CTS branch: allocate the per-client wait-time dictionary (port of `buf_create()` +
+            // bufstr_get/set keyed by etof(enemy)). Non-CTS: CtsTriggerTimes stays null (shared nextthink).
+            if (isCts)
+                this_.CtsTriggerTimes = new System.Collections.Generic.Dictionary<int, float>();
         }
 
         MapMover.IndexRegister(this_);
@@ -135,11 +148,22 @@ public static class Triggers
         if ((self.SpawnFlags & MapMover.SpawnAllEntities) == 0 && !MapMover.IsCreature(toucher))
             return;
 
-        // team gate (QC multi_touch): a team-restricted trigger only fires for the matching team
-        // (or the opposite team with INVERT_TEAMS). Fire only when
-        //   (no-invert AND same-team) OR (invert AND different-team).
-        if (self.Team != 0f)
+        // QC multi_touch:110-117 q3compat red/blue spawnflag-1/2 team filter: in a 2-team Q3 map,
+        // spawnflag bit 1 = red (NUM_TEAM_1) only, bit 2 = blue (NUM_TEAM_2) only. Xonotic maps
+        // repurpose those bits for other meanings, so this gate is ONLY applied when q3compat is active.
+        if (CompatRemaps.IsQ3Compat)
         {
+            // AVAILABLE_TEAMS == 2 (2-team game) is implied for Q3 CTF maps; apply the filter when
+            // either bit is set (mirroring QC `if(((f1)&&t1!=R)||((f2)&&t2!=B)) return`).
+            if (((self.SpawnFlags & 1) != 0 && (int)toucher.Team != 1)    // spawnflag 1 = red team (NUM_TEAM_1 = 1)
+            ||  ((self.SpawnFlags & 2) != 0 && (int)toucher.Team != 2))   // spawnflag 2 = blue team (NUM_TEAM_2 = 2)
+                return;
+        }
+        else if (self.Team != 0f)
+        {
+            // team gate (QC multi_touch): a team-restricted trigger only fires for the matching team
+            // (or the opposite team with INVERT_TEAMS). Fire only when
+            //   (no-invert AND same-team) OR (invert AND different-team).
             bool noInvert = (self.SpawnFlags & MapMover.SpawnInvertTeams) == 0;
             if (noInvert == (self.Team != toucher.Team))
                 return;
@@ -174,16 +198,60 @@ public static class Triggers
         if ((self.SpawnFlags & MapMover.SpawnOnlyPlayers) != 0 && (self.Enemy?.Flags & EntFlags.Client) == 0)
             return; // only players
 
-        if (self.NextThink > MapMover.Now())
-            return; // already triggered, still in the wait window
+        float now = MapMover.Now();
+        Entity? enemy = self.Enemy;
 
-        MapMover.Sound(self.Enemy ?? self, SoundChannel.Auto, self.Noise);
+        // CTS per-client timing (QC multi_trigger:31-45): in CTS each client has its own independent
+        // re-trigger window keyed by etof(enemy) (= Entity.Index). The check is:
+        //   (a) if the client has a stored time AND hasn't respawned since → apply the wait/forever check
+        //   (b) otherwise (no prior record, or re-spawned) → allow firing
+        // Outside CTS the shared nextthink is used (same as before).
+        if (self.CtsTriggerTimes is { } ctsTimes && enemy is not null && (enemy.Flags & EntFlags.Client) != 0)
+        {
+            int cnum = enemy.Index;
+            if (ctsTimes.TryGetValue(cnum, out float storedTime))
+            {
+                // QC: `if (this.enemy.spawn_time <= triggertime)` → the player hasn't respawned since
+                // triggering, so the wait check applies. If they DID respawn (spawn_time > storedTime)
+                // the slot is stale — allow firing regardless of wait.
+                float spawnTime = enemy is Player p ? p.SpawnTime : 0f;
+                if (spawnTime <= storedTime)
+                {
+                    // Haven't respawned; apply the normal wait check.
+                    // QC: `wait <= 0 && (q3compat || wait >= -1)` → wait forever; `triggertime + wait > time` → too soon.
+                    // The port has no q3compat path, so the forever condition is `wait <= 0 && wait >= -1`
+                    // (i.e. wait in the [−1, 0] range that is NOT the xon no-wait branch).
+                    if ((self.Wait <= 0f && self.Wait >= -1f) || storedTime + self.Wait > now)
+                        return;
+                }
+            }
+        }
+        else
+        {
+            // Non-CTS: standard single shared timer check.
+            if (self.NextThink > now)
+                return; // already triggered, still in the wait window
+        }
+
+        MapMover.Sound(enemy ?? self, SoundChannel.Auto, self.Noise);
 
         self.TakeDamage = DamageMode.No; // don't re-trigger via damage until reset
 
-        MapMover.UseTargets(self, self.Enemy, self.GoalEntity);
+        MapMover.UseTargets(self, enemy, self.GoalEntity);
 
-        if (self.Wait > 0f)
+        // After firing: schedule rearm or disable, per-client or shared.
+        if (self.CtsTriggerTimes is { } ctsTimesPost && enemy is not null && (enemy.Flags & EntFlags.Client) != 0)
+        {
+            // CTS: store the trigger time for this specific client (QC bufstr_set/bufstr_add with etof−1 index).
+            ctsTimesPost[enemy.Index] = now;
+
+            // QC CTS else-branch (multi.qc:84-86): disable for NON-CLIENT touchers the same as non-CTS wait==−1.
+            // For clients, CTS triggers are always per-client: `this.nextthink = stof("inf")` blocks non-client
+            // re-triggers via the shared check, but that shared check is bypassed when CtsTriggerTimes != null.
+            // We keep NextThink at float.MaxValue to block the rare non-client path through the shared branch:
+            self.NextThink = float.MaxValue;
+        }
+        else if (self.Wait > 0f)
         {
             this_SetRearm(self);
         }

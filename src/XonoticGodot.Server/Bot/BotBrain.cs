@@ -250,6 +250,12 @@ public sealed class BotBrain
                 + MathF.Max(0.01f, interval * MathF.Min(14f / (Skill + 14f), 1f));
         }
 
+        // QC aim.qc reads the per-bot skill modifiers (skill + this.bot_aggresskill / bot_aimskill) live each
+        // bot_aim call; stamp the bot's modifier columns (parsed from bots.txt by BotPopulation, default 0)
+        // onto the aimer so the fire decision + max-fire-deviation carry the bot's aggression/aim personality.
+        Aim.AggresSkill = bot.BotAggresSkill;
+        Aim.AimSkill = bot.BotAimSkill;
+
         // ---- button baseline (QC clears all buttons each think; JUMP stays held for ramp jumps) ----
         bool jumpHeld = !bot.IsDead && now < _jumpTime + 0.2f; // QC bot_think:112
 

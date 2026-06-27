@@ -268,9 +268,26 @@ public static class EffectEmitter
     /// heal/damage ray (BRG_*) and other rail-style beams. The client's beam renderer draws a cylinder from
     /// <paramref name="from"/> to <paramref name="to"/>. <paramref name="effectName"/> must read as a beam
     /// (contains "beam") so it classifies correctly; a non-electric name keeps it straight (not jagged).
+    ///
+    /// When the effectinfo name is a registered (trail) Effect — heal_beam/damage_beam are registered for
+    /// exactly this — the beam is emitted by registry id so it NETWORKS to remote clients (the colormod rides
+    /// the wire eent_net_color_min/max fields, decoded back as the beam tint). Only a truly-unknown name falls
+    /// through to the null-Effect record, which the networking sink drops (engine-fallback path; Send_Effect_).
     /// </summary>
     public static void TeBeam(string effectName, Vector3 from, Vector3 to, Vector3 color)
-        => Sink.Emit(new EffectRequest(null, effectName, from, to, 0, color, color, null));
+    {
+        var effect = Effects.ByEffectInfoName(effectName);
+        if (effect is not null)
+        {
+            // Trail effect, count 0: the velocity is the beam END point (QC beam convention) and the colormod
+            // is carried as the min==max colour range (EFF_NET_COLOR_SAME), so the beam networks by id.
+            Emit(effect, from, to, 0, color, color);
+            return;
+        }
+        // engine-fallback: no registered effect for this name — record by name (the listen-server in-process
+        // mirror can still draw it; the networking sink drops a null-Effect request, matching __pointparticles).
+        Sink.Emit(new EffectRequest(null, effectName, from, to, 0, color, color, null));
+    }
 
     /// <summary>
     /// The Bumblebee pilot heal-beam (BRG_*): a straight beam from the gun to the heal target. Base's

@@ -117,6 +117,18 @@ public sealed class Warpzone
     /// static map warpzone (the common case).</summary>
     public bool Moving;
 
+    /// <summary>QC <c>.warpzone_isboxy</c> (util_server.qc <c>WarpZoneLib_ExactTrigger_Init</c>): the trigger is a
+    /// plain box (no inline brush model, OR the mapper overrode the model bounds with explicit mins/maxs), so Base
+    /// skips the per-touch exact-surface match (<c>EXACTTRIGGER_TOUCH</c>) and uses the AABB directly. The port's
+    /// touch already gates on the plane-side test + AABB overlap (no exact-surface trace), so this is recorded for
+    /// fidelity but the touch path is the same either way.</summary>
+    public bool IsBoxy;
+
+    /// <summary>QC <c>.scale</c> (server.qc:662 — defaults from <c>.modelscale</c> then 1): the warpzone trigger
+    /// volume is sized <c>mins*scale</c>..<c>maxs*scale</c> (util_server.qc:40). A mapper-set scale grows/shrinks the
+    /// crossing volume.</summary>
+    public float Scale = 1f;
+
     /// <summary>QC <c>warpzone_save_origin/_angles/_eorigin/_eangles</c> (server.qc:25-28): the cached brush
     /// origin/angles of this zone and its partner from the last transform derivation, so <c>WarpZone_Think</c> only
     /// re-derives when something actually moved.</summary>
@@ -139,11 +151,21 @@ public sealed class Warpzone
     /// Used by <see cref="WarpzoneManager.ClearAllPortoPortals"/> to tear down every portal of one owner on death/reset.</summary>
     public Entity? Owner;
 
+    /// <summary>For a Porto-weapon portal: whether this zone is the owner's IN-portal (true, QC <c>own.portal_in</c>) or
+    /// OUT-portal (false, QC <c>own.portal_out</c>). Used to enforce QC's one-in/one-out-per-owner replacement
+    /// (<c>Portal_SetInPortal</c>/<c>Portal_SetOutPortal</c>) so re-firing tears down the prior portal of that role.</summary>
+    public bool IsInPortal;
+
     /// <summary>QC <c>portal.portal_activatetime</c> (server/portals.qc:301-306): the time before which the portal
     /// OWNER (the player who just shot the in-portal, QC <c>this.aiment</c>) is NOT re-teleported by their own
     /// portal — instead the activate window slides forward 0.1s. Lets the owner step away from the muzzle of their
     /// fresh portal without immediately falling back through it. 0 for a map warpzone (no owner). Porto only.</summary>
     public float ActivateTime;
+
+    /// <summary>QC <c>portal.teleport_time</c> (server/portals.qc:399, set in Portal_Connect): the time the portal pair
+    /// was connected. A portal telefrag within 1s of this awards the <c>ANNCE_ACHIEVEMENT_AMAZING</c> announcer
+    /// (portals.qc:192-194). Porto portals only (0 for a map warpzone).</summary>
+    public float TeleportTime;
 
     public bool Linked => Transform.Valid;
 }
@@ -249,6 +271,27 @@ public sealed class WarpzoneManager
             return false;
         }
 
+        // Porto-portal-only crossing exclusions (QC Portal_Touch, server/portals.qc:275-314). Map warpzones (no
+        // owner) skip these — a flag CAN cross a map warpzone, and there is no independent-player gate there.
+        if (wz.Owner is { IsFreed: false } portalAiment)
+        {
+            // QC portals.qc:275-276 — the CTF flag is never portalled (it must travel the map, not warp).
+            if (e.ClassName == "item_flag_team")
+                return false;
+
+            // QC portals.qc:307-314 — you cannot walk through someone ELSE's portal in an independent-player
+            // (LMS-style) mode: the toucher (and, for a projectile, its aiment owner) is gated against the portal's
+            // owner. IsIndependentPlayer is currently always false (no independent mode ported), so this is a
+            // faithful no-op today that becomes live if such a mode is added.
+            if (!ReferenceEquals(e, portalAiment) && (e.Flags & EntFlags.Client) != 0
+                && (e.IsIndependentPlayer || portalAiment.IsIndependentPlayer))
+                return false;
+            if (e.Aiment is { } eAiment && !ReferenceEquals(eAiment, portalAiment)
+                && (eAiment.Flags & EntFlags.Client) != 0
+                && (eAiment.IsIndependentPlayer || portalAiment.IsIndependentPlayer))
+                return false;
+        }
+
         // QC server.qc:193 — WarpZone_PlaneDist(this, toucher.origin + toucher.view_ofs) >= 0 → wrong side, don't
         // teleport yet. PlaneDist = (point - warpzone_origin)·warpzone_forward; the entity must be PAST the plane
         // (negative side) before it warps. This is the plane-side test, NOT a velocity-direction gate.
@@ -273,21 +316,28 @@ public sealed class WarpzoneManager
         // time + PHYS_INPUT_FRAMETIME - dt as a back-teleport guard; with no per-move dt here we hold for one frame.
         _teleportFinishTime[e] = now + MapMover.FrameTime();
 
-        // QC Portal_TeleportPlayer kill-credit (server/portals.qc:196-201): when a Porto portal warps a player who
-        // is NOT its owner, the owner is credited as the "pusher" for a kill-credit window (g_maxpushtime, default
-        // 8s) — so a portal that drops a victim into a hazard scores for the portal's owner — and the victim's
-        // chat-button state is held for the typefrag flag. Both players must be live players; map warpzones (no
-        // owner) skip this. (The Amazing-on-portal-telefrag announcer needs the tdeath path the warpzone crossing
-        // does not run — see the portals.teleport unresolved gap.)
-        if (wz.Owner is { IsFreed: false } portalOwner
-            && !ReferenceEquals(e, portalOwner)
-            && (e.Flags & EntFlags.Client) != 0
-            && (portalOwner.Flags & EntFlags.Client) != 0)
+        // QC Portal_TeleportPlayer (server/portals.qc:188-201): a Porto-portal crossing force-telefrags whoever is
+        // standing at the exit (TELEPORT_FLAGS_PORTAL → FORCE_TDEATH), then EITHER awards the Amazing announcer (on a
+        // telefrag within 1s of portal creation) OR — if no telefrag — credits the portal owner as the victim's
+        // "pusher" for a hazard kill-credit window. The two are mutually exclusive (QC `if(tdeath_hit) … else if …`).
+        // Map warpzones (no owner) run no tdeath and no kill-credit. The telefragger/inflictor is the portal owner so
+        // the gib is scored to whoever placed the portal.
+        if (wz.Owner is { IsFreed: false } portalOwner && (e.Flags & EntFlags.Client) != 0)
         {
-            e.Pusher = portalOwner;
-            e.PushLTime = now + (Api.Services is not null && Api.Cvars.GetFloat("g_maxpushtime") != 0f
-                ? Api.Cvars.GetFloat("g_maxpushtime") : 8f);
-            e.IsTypeFrag = e.ButtonChat;
+            bool tdeathHit = Teleporters.PortalForceTelefrag(e, portalOwner, portalOwner, newOrigin);
+            if (tdeathHit)
+            {
+                // QC: if(time < teleporter.teleport_time + 1) Send_Notification(ANNCE_ACHIEVEMENT_AMAZING).
+                if (wz.TeleportTime != 0f && now < wz.TeleportTime + 1f)
+                    NotificationSystem.Announce(e, "ACHIEVEMENT_AMAZING");
+            }
+            else if (!ReferenceEquals(e, portalOwner) && (portalOwner.Flags & EntFlags.Client) != 0)
+            {
+                e.Pusher = portalOwner;
+                e.PushLTime = now + (Api.Services is not null && Api.Cvars.GetFloat("g_maxpushtime") != 0f
+                    ? Api.Cvars.GetFloat("g_maxpushtime") : 8f);
+                e.IsTypeFrag = e.ButtonChat;
+            }
         }
 
         // QC WarpZone_Touch fires the targets of BOTH this zone and its partner (this.enemy) on a crossing, with the
@@ -401,6 +451,7 @@ public sealed class WarpzoneManager
         {
             InOrigin = org, InAngles = ang, TargetName = targetName, Target = target, Trigger = brush,
             Aiment = aiment, Moving = (brush.SpawnFlags & 1) != 0,
+            Scale = brush.WarpzoneScale != 0f ? brush.WarpzoneScale : 1f, IsBoxy = brush.WarpzoneIsBoxy,
         };
         brush.ClassName = "trigger_warpzone";
         brush.Solid = Solid.Trigger;
@@ -422,37 +473,68 @@ public sealed class WarpzoneManager
         wz.Trigger = t;
     }
 
-    // Porto portals awaiting their partner (keyed by owner + the shot's portal id).
-    private readonly Dictionary<(Entity?, int), Warpzone> _pendingPorto = new();
     private static readonly Vector3 PortoMins = new(-48, -48, -48);
     private static readonly Vector3 PortoMaxs = new(48, 48, 48);
 
+    // QC own.portal_in / own.portal_out: the owner's CURRENT in/out portal slot. Each owner holds at most one of
+    // each; placing a fresh portal of a role tears down the prior one in that slot (Portal_SetInPortal /
+    // Portal_SetOutPortal, server/portals.qc:547-578). Keyed by owner so a re-fire after a completed pair replaces
+    // it rather than leaving a second live pair behind.
+    private readonly Dictionary<Entity, Warpzone> _portalIn = new();
+    private readonly Dictionary<Entity, Warpzone> _portalOut = new();
+
     /// <summary>
-    /// QC Portal_SpawnIn/OutPortalAtTrace: realise a Porto-weapon portal as a warpzone. The plane forward is the
-    /// wall's surface normal (so an entity entering emerges out of the partner). The in-portal is held pending
-    /// until its matching out-portal lands; then the pair is linked two-way (you can walk through either side).
-    /// Wire <c>Porto.PortalSpawner</c> to this on the host.
+    /// QC Portal_SpawnIn/OutPortalAtTrace + Portal_SetInPortal/Portal_SetOutPortal: realise a Porto-weapon portal as
+    /// a warpzone. The plane forward is the wall's surface normal (so an entity entering emerges out of the partner).
+    /// Each owner holds at most one in-portal and one out-portal (the QC <c>own.portal_in</c>/<c>own.portal_out</c>
+    /// slots): placing a new portal of a role first removes the owner's prior portal of that SAME role (Base
+    /// disconnects + Portal_Remove the old), keeping the other role, then re-links the pair when both slots are
+    /// filled. So re-firing after a completed pair replaces it instead of leaving two live pairs. Wire
+    /// <c>Porto.PortalSpawner</c> to this on the host.
     /// </summary>
     public void PlacePortoPortal(Vector3 origin, Vector3 surfaceNormal, bool isInPortal, int portalId, Entity? owner)
     {
         Vector3 angles = QMath.FixedVecToAngles(surfaceNormal); // forward = the wall normal
         // QC Portal_Spawn (portals.qc:646): portal.portal_activatetime = time + 0.1 — a 0.1s grace where the owner
         // who just shot this portal isn't pulled straight back through it (see Warpzone.ActivateTime / Teleport).
-        var wz = new Warpzone { InOrigin = origin, InAngles = angles, Owner = owner, ActivateTime = MapMover.Now() + 0.1f, TargetName = $"porto_{portalId}_{(isInPortal ? "in" : "out")}" };
+        var wz = new Warpzone
+        {
+            InOrigin = origin, InAngles = angles, Owner = owner, IsInPortal = isInPortal,
+            ActivateTime = MapMover.Now() + 0.1f, TargetName = $"porto_{portalId}_{(isInPortal ? "in" : "out")}",
+        };
         SpawnTriggerFor(wz, PortoMins, PortoMaxs);
         Add(wz);
 
-        var key = (owner, portalId);
-        if (isInPortal)
+        // A map/test caller with no owner can't track per-owner slots — fall back to immediate pairing by id.
+        if (owner is null)
         {
-            _pendingPorto[key] = wz;
+            // (legacy/no-owner path) link to a pending same-id zone if one is waiting.
+            foreach (Warpzone other in _zones)
+                if (!ReferenceEquals(other, wz) && other.Owner is null
+                    && other.TargetName == $"porto_{portalId}_{(isInPortal ? "out" : "in")}" && !other.Linked)
+                { LinkPair(other, wz); break; }
             return;
         }
-        if (_pendingPorto.TryGetValue(key, out Warpzone? inZone))
+
+        Dictionary<Entity, Warpzone> sameRole = isInPortal ? _portalIn : _portalOut;
+        Dictionary<Entity, Warpzone> otherRole = isInPortal ? _portalOut : _portalIn;
+
+        // QC Portal_SetInPortal: if(own.portal_in){ if(own.portal_out) Portal_Disconnect(in,out); Portal_Remove(in,0); }
+        // Remove the owner's prior portal of THIS role (disconnecting it from its partner first so the partner — the
+        // other role's slot — survives to be reconnected with the new portal).
+        if (sameRole.TryGetValue(owner, out Warpzone? prior))
         {
-            LinkPair(inZone, wz); // two-way Porto portal
-            _pendingPorto.Remove(key);
+            sameRole.Remove(owner);
+            if (prior.Partner is { } priorPartner) priorPartner.Partner = null; // Portal_Disconnect
+            RemoveZone(prior); // Portal_Remove(prior, 0): tear down just this role's old portal
         }
+
+        // own.portal_<role> = portal.
+        sameRole[owner] = wz;
+
+        // if(own.portal_<other>){ Portal_Connect(in, out); } — both slots filled, (re)link the two-way pair.
+        if (otherRole.TryGetValue(owner, out Warpzone? partner) && _zones.Contains(partner))
+            LinkPair(wz, partner);
     }
 
     /// <summary>
@@ -464,13 +546,7 @@ public sealed class WarpzoneManager
     /// </summary>
     public void ClearPortoPortal(Entity? owner, int portalId)
     {
-        var key = (owner, portalId);
-        if (_pendingPorto.TryGetValue(key, out Warpzone? pending))
-        {
-            RemoveZone(pending);
-            _pendingPorto.Remove(key);
-        }
-        // Also remove any zone (and its partner) already tagged for this shot's id (a fully-placed pair).
+        // Remove any zone (and, via RemoveZone, its slot bookkeeping) tagged for this shot's id.
         for (int i = _zones.Count - 1; i >= 0; i--)
         {
             Warpzone wz = _zones[i];
@@ -487,29 +563,28 @@ public sealed class WarpzoneManager
     /// </summary>
     public void ClearAllPortoPortals(Entity? owner)
     {
-        // Pending (unpartnered) in-portals of this owner.
-        var pendingKeys = new List<(Entity?, int)>();
-        foreach (var kv in _pendingPorto)
-            if (ReferenceEquals(kv.Key.Item1, owner)) pendingKeys.Add(kv.Key);
-        foreach (var k in pendingKeys)
-        {
-            if (_pendingPorto.TryGetValue(k, out Warpzone? z)) RemoveZone(z);
-            _pendingPorto.Remove(k);
-        }
-        // Any fully-placed Porto zone of this owner (and, via RemoveZone, its partner).
+        // Any Porto zone of this owner (in-portal, out-portal, pending or linked) — RemoveZone also clears the
+        // owner's portal_in/portal_out slots.
         for (int i = _zones.Count - 1; i >= 0; i--)
         {
             Warpzone wz = _zones[i];
             if (ReferenceEquals(wz.Owner, owner) && wz.TargetName.StartsWith("porto_", System.StringComparison.Ordinal))
                 RemoveZone(wz);
         }
+        if (owner is not null) { _portalIn.Remove(owner); _portalOut.Remove(owner); }
     }
 
-    /// <summary>Unregister a warpzone and free its trigger-volume edict (if the host owns one).</summary>
+    /// <summary>Unregister a warpzone and free its trigger-volume edict (if the host owns one). Also drops the zone
+    /// from its owner's portal_in/portal_out slot so a re-fire doesn't try to reconnect to a torn-down portal.</summary>
     private void RemoveZone(Warpzone wz)
     {
         _zones.Remove(wz);
         if (wz.Partner is { } partner) partner.Partner = null;
+        if (wz.Owner is { } own)
+        {
+            if (_portalIn.TryGetValue(own, out Warpzone? pin) && ReferenceEquals(pin, wz)) _portalIn.Remove(own);
+            if (_portalOut.TryGetValue(own, out Warpzone? pout) && ReferenceEquals(pout, wz)) _portalOut.Remove(own);
+        }
         if (wz.Trigger is { } trig && Api.Services is not null && !trig.IsFreed)
             Api.Entities.Remove(trig);
         wz.Trigger = null;
@@ -524,6 +599,10 @@ public sealed class WarpzoneManager
         b.OutOrigin = a.InOrigin; b.OutAngles = a.InAngles;
         b.Transform = new WarpzoneTransform(b.InOrigin, b.InAngles, a.InOrigin, a.InAngles);
         b.Partner = a;
+        // QC Portal_Connect: teleporter.teleport_time = time — stamp the connect time on a Porto pair so a telefrag
+        // within 1s of creation awards the Amazing announcer (Teleport / Portal_TeleportPlayer:192-194).
+        if (a.Owner is not null || b.Owner is not null)
+            a.TeleportTime = b.TeleportTime = MapMover.Now();
     }
 
     // =============================================================================================
@@ -548,8 +627,42 @@ public sealed class WarpzoneManager
     /// trigger volume + surface queries). The plane/link are finalized in <see cref="InitMapZones"/>.</summary>
     public void AddMapZone(Entity brush)
     {
-        if (Api.Services is not null && !string.IsNullOrEmpty(brush.Model))
+        // QC server.qc:662-665 — .scale defaults from .modelscale then 1.
+        float scale = brush.ScaleFactor != 0f ? brush.ScaleFactor
+            : (brush.ModelScale != 0f ? brush.ModelScale : 1f);
+        brush.ScaleFactor = scale;
+
+        // QC WarpZoneLib_ExactTrigger_Init (util_server.qc:8): a box trigger (no inline model) is "boxy" — Base
+        // skips the exact-surface match. With an inline model, mapper-set mins/maxs ALSO mark it boxy and override
+        // the model's bounds. Capture the mapper bounds BEFORE SetModel (which would replace them with model bounds).
+        Vector3 mapperMins = brush.Mins, mapperMaxs = brush.Maxs;
+        bool hasMapperBounds = mapperMins != Vector3.Zero || mapperMaxs != Vector3.Zero;
+        bool hasModel = !string.IsNullOrEmpty(brush.Model);
+
+        if (Api.Services is not null && hasModel)
             Api.Entities.SetModel(brush, brush.Model); // real "*N" bounds (touch volume) + findable surfaces
+
+        bool isBoxy;
+        if (!hasModel)
+            isBoxy = true; // QC: no model -> box trigger
+        else if (hasMapperBounds)
+        {
+            // QC: mapper mins/maxs override the model bounds + mark boxy.
+            brush.Mins = mapperMins; brush.Maxs = mapperMaxs;
+            isBoxy = true;
+        }
+        else isBoxy = false;
+
+        // QC util_server.qc:40 — size the trigger by .scale (mins*scale .. maxs*scale).
+        if (scale != 1f && scale != 0f)
+        {
+            Vector3 sMins = brush.Mins * scale, sMaxs = brush.Maxs * scale;
+            if (Api.Services is not null) Api.Entities.SetSize(brush, sMins, sMaxs);
+            else { brush.Mins = sMins; brush.Maxs = sMaxs; brush.Size = sMaxs - sMins; }
+        }
+
+        brush.WarpzoneScale = scale;
+        brush.WarpzoneIsBoxy = isBoxy;
         _pendingZones.Add(brush);
     }
 

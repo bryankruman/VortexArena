@@ -116,6 +116,21 @@ public sealed class Teamplay
     /// call). The host wires this to the live sim time.</summary>
     public Func<float> Now { get; set; } = static () => 0f;
 
+    /// <summary>
+    /// QC <c>lockteams</c> read accessor (server/teamplay.qc:333): the live admin team-lock state. Used only by
+    /// <see cref="MoveToTeam"/> to back up the lock before a forced move and restore it after — so an admin move
+    /// goes through even while teams are locked, exactly like QC <c>MoveToTeam</c>. The host wires this to
+    /// <c>GameWorld.TeamsLocked</c>. Defaults to "unlocked" (the backup/restore is then inert).
+    /// </summary>
+    public Func<bool> LockTeamsGet { get; set; } = static () => false;
+
+    /// <summary>
+    /// QC <c>lockteams</c> write accessor (server/teamplay.qc:334): set the live admin team-lock state. Paired with
+    /// <see cref="LockTeamsGet"/> for <see cref="MoveToTeam"/>'s temporary-disable-then-restore. The host wires
+    /// this to <c>GameWorld.TeamsLocked</c>. A no-op until wired.
+    /// </summary>
+    public Action<bool> LockTeamsSet { get; set; } = static _ => { };
+
     /// <summary>QC <c>remove_countdown</c>: the active excess-player removal countdown (null = none running).</summary>
     private RemoveCountdownState? _removeCountdown;
 
@@ -304,6 +319,19 @@ public sealed class Teamplay
         RecomputeServerSkillAverage(roster);
         bool joinerHuman = !joiner.IsBot;
 
+        // QC TeamBalance_FindBestTeams warmup branch: when in warmup AND sv_teamnagger AND g_balance_teams_skill,
+        // the "best" team is NOT the smallest/weakest but the team whose weighted-mean skill differs MOST from the
+        // joiner's (z-score, significance-gated) — this avoids piling all the weak players on one team when they
+        // join in the "wrong" order. Precompute the joiner's own skill mu/var (rated → fed skill at var 1;
+        // unranked → the server average at var (avg*0.25)^2) so the per-team z-scores can be taken.
+        bool warmupSkillBranch = IsWarmup() && SvTeamnagger() > 0f && SkillWeightingEnabled;
+        float joinerMu = 0f, joinerVar = 0f;
+        if (warmupSkillBranch)
+        {
+            if (IsRated(joiner)) { joinerMu = SkillProvider(joiner); joinerVar = SkillVariance; }
+            else { joinerMu = _serverSkillAverage; joinerVar = (_serverSkillAverage * 0.25f) * (_serverSkillAverage * 0.25f); }
+        }
+
         // QC TeamBalance_FindBestTeams + TeamBalance_FindBestTeam: gather ALL best (tied) teams, then pick one at
         // RANDOM among them (RandomSelection over the equal-best set) — Base randomizes ties; it does not pick a
         // fixed lowest index. A single best team is returned directly.
@@ -321,8 +349,11 @@ public sealed class Teamplay
 
             // QC TeamBalance_CompareTeamsInternal: order teams by player count first, then by team strength
             // (skill+score) as a tiebreak — a smaller team wins outright; equal-size teams break to the weaker.
+            // In the warmup-skill branch the comparison is instead the skill-distance rule (CompareForWarmupJoin).
             TeamStrength cand = MeasureTeam(team, roster, joiner, joinerHuman);
-            int cmp = bestTeam == Teams.None ? -1 : CompareTeams(cand, best);
+            int cmp = bestTeam == Teams.None ? -1
+                : warmupSkillBranch ? CompareForWarmupJoin(cand, best, joinerMu, joinerVar)
+                : CompareTeams(cand, best);
             if (cmp < 0)
             {
                 best = cand;
@@ -355,6 +386,44 @@ public sealed class Teamplay
         // QC SetPlayerTeam → SetPlayerColors: set .team AND .clientcolors (the auto-join skips the mutator hook).
         SetPlayerColors(joiner, bestTeam - 1);
         return bestTeam;
+    }
+
+    /// <summary>
+    /// QC <c>MoveToTeam</c> (server/teamplay.qc:330): force <paramref name="client"/> onto <paramref name="newTeam"/>
+    /// (a color code, or <see cref="Teams.None"/>/<see cref="TeamForceSpectator"/> to spectate) as an admin
+    /// move, temporarily disabling the team lock for the duration so the move always goes through, then restoring
+    /// it. This is the exact QC path: back up <c>lockteams</c>, clear it, run the <c>SetPlayerTeam</c>-equivalent
+    /// (<see cref="SetTeam"/> — fires the Player_ChangeTeam/ChangedTeam hooks, a mutator may still veto), then on
+    /// success kill + score-clear via <see cref="KillPlayerForTeamChange"/>, and restore the lock on every exit.
+    /// Returns false only when the team set itself was vetoed (mutator hook) — matching QC's <c>SetPlayerTeam</c>
+    /// false propagation. Admin <c>moveplayer</c>/<c>shuffleteams</c> route through here so they bypass the lock
+    /// exactly like Base (the lock is only enforced on the player <c>join</c>/<c>selectteam</c> path).
+    /// </summary>
+    public bool MoveToTeam(Player client, int newTeam)
+    {
+        // QC SetPlayerTeam: the kill + score-clear only fire on a REAL change (team_index != old_team_index), so
+        // snapshot the team before the (lock-disabled) set and skip the kill on a no-op move.
+        int oldTeam = (int)client.Team;
+
+        // QC: int lockteams_backup = lockteams; lockteams = 0;
+        bool lockBackup = LockTeamsGet();
+        LockTeamsSet(false);
+        try
+        {
+            // QC: if (!SetPlayerTeam(client, team_index, type)) return false;
+            if (!SetTeam(client, newTeam))
+                return false;
+        }
+        finally
+        {
+            // QC: lockteams = lockteams_backup; (restored on both success and the early-false return)
+            LockTeamsSet(lockBackup);
+        }
+
+        // QC SetPlayerTeam tail: KillPlayerForTeamChange + PlayerScore_Clear, but only when the team actually changed.
+        if ((int)client.Team != oldTeam)
+            KillPlayerForTeamChange(client);
+        return true;
     }
 
     /// <summary>QC <c>Team_TeamToIndex</c>: map a team color code (1..4 colors) to its 1..4 index, or 0 for none.</summary>
@@ -612,6 +681,47 @@ public sealed class Teamplay
         if (strengthA > strengthB) return 1;
         return 0;
     }
+
+    /// <summary>QC <c>autocvar_sv_teamnagger</c> (default 2): the team-size-diff nag threshold, which also gates the
+    /// warmup skill-aware join branch. 0 disables both. Reads the registered cvar (0 when services are unwired).</summary>
+    private static float SvTeamnagger() =>
+        Api.Services is not null ? Api.Cvars.GetFloat("sv_teamnagger") : 0f;
+
+    /// <summary>
+    /// QC <c>TeamBalance_FindBestTeams</c> warmup branch (teamplay.qc:1036-1067): order two candidate teams for a
+    /// joiner by how FAR each team's weighted-mean skill is from the joiner's (z-score), so a joiner is pushed to
+    /// the team whose skill profile differs most — this spreads skill instead of clumping noobs by join order.
+    /// Returns negative if <paramref name="a"/> is the better warmup pick. The QC rule: if the skill gap between
+    /// the teams isn't significant (|z_a - z_b| ≤ threshold) prefer the smaller team; otherwise (significant OR
+    /// equal size) prefer the team with the larger |z| (further from the joiner). Equal |z| and equal size → tie
+    /// (the reservoir then randomizes among them). <paramref name="jMu"/>/<paramref name="jVar"/> are the joiner's
+    /// own skill mu/var.
+    /// </summary>
+    private int CompareForWarmupJoin(in TeamStrength a, in TeamStrength b, float jMu, float jVar)
+    {
+        float threshold = Api.Services is not null
+            ? Api.Cvars.GetFloat("g_balance_teams_skill_significance_threshold")
+            : 0f;
+
+        // QC: z = (team.m_skill_mu - player_skill_mu) / sqrt(team.m_skill_var + player_skill_var).
+        float zaRaw = SafeZ(a.SkillMu - jMu, a.SkillVar + jVar);
+        float zbRaw = SafeZ(b.SkillMu - jMu, b.SkillVar + jVar);
+        bool significant = MathF.Abs(zaRaw - zbRaw) > threshold; // QC: |z_a - z_b| > threshold
+        float za = MathF.Abs(zaRaw); // QC: fabs AFTER the significance test (joiner may sit between the teams).
+        float zb = MathF.Abs(zbRaw);
+
+        // QC: (!significant && a_size < b_size) || ((significant || a_size == b_size) && z_a > z_b) → a is better.
+        if ((!significant && a.Count < b.Count)
+            || ((significant || a.Count == b.Count) && za > zb))
+            return -1;
+        // QC: z_a == z_b && a_size == b_size → equal (accumulate as a tied best team).
+        if (za == zb && a.Count == b.Count)
+            return 0;
+        return 1;
+    }
+
+    /// <summary>z = num / sqrt(denom), guarding a non-positive denominator (no rated players) → 0 (no skill signal).</summary>
+    private static float SafeZ(float num, float denom) => denom > 0f ? num / MathF.Sqrt(denom) : 0f;
 
     /// <summary>QC <c>TeamBalance_GetNumberOfPlayers</c>: count the roster on a given team.</summary>
     public int CountTeam(int team, IReadOnlyList<Player> roster) => TeamBalance.CountTeam(team, roster);

@@ -212,6 +212,8 @@ public sealed class Race : GameType
 
     private HookHandler<DeathEvent>? _deathHandler;
     private HookHandler<MutatorHooks.PlayerPhysicsArgs>? _physicsHandler;
+    // Cached delegate for SpawnSystem.SpotEvalScore so Deactivate can compare by identity (a new closure each time would fail ReferenceEquals).
+    private System.Func<Entity, Player, float>? _spotEvalScore;
 
     /// <summary>Optional sink for the host/controller to react to a death/finish.</summary>
     public IMatchEvents? Events;
@@ -488,7 +490,57 @@ public sealed class Race : GameType
         // the global PlayerPhysics chain (the same seam CTS uses) so it runs live every physics frame.
         _physicsHandler = OnPlayerPhysics;
         MutatorHooks.PlayerPhysics.Add(_physicsHandler);
+
+        // QC race_spawns (server/race.qh:16): the global counter is incremented once per registered
+        // trigger_race_checkpoint (race.qc:1241 `++race_spawns`). Spawn_Score gates on it: a spawnpoint without a
+        // target is invalid on a race map (spawnpoints.qc:246 `if(race_spawns) if(!spot.target) return '-1 0 0'`).
+        // In the port Checkpoints is the equivalent list; if any checkpoints were registered before Activate was
+        // called (the normal map-load order), enable the race-spawns target requirement gate.
+        SpawnSystem.RaceSpawnsActive = Checkpoints.Count > 0;
+
+        // QC trigger_race_checkpoint_spawn_evalfunc (server/race.qc:1055-1083) score-rewriting branch: when NOT
+        // qualifying, add SPAWN_PRIO_RACE_PREVIOUS_SPAWN=50 to a spot when it equals the player's respawn spotref
+        // (so the spot the racer last crossed is slightly preferred in the weighted pick). This is a secondary
+        // fallback: ApplyRespawnSpot already forces the exact checkpoint via SpawnPointTarg (the one-shot redirect
+        // SelectSpawnPoint short-circuits to), so the +50 path only fires on the rare edge case where the forced
+        // redirect was not applied (e.g. the racer's RespawnSpot is null / at checkpoint 0, or qualifying mode).
+        _spotEvalScore ??= RaceSpotEvalScore;    // cache once so Deactivate can compare by identity
+        SpawnSystem.SpotEvalScore = _spotEvalScore;
     }
+
+    /// <summary>
+    /// QC <c>trigger_race_checkpoint_spawn_evalfunc</c> score-rewriting branch (server/race.qc:1069-1071):
+    /// <c>if(this == player.race_respawn_spotref || spot == player.race_respawn_spotref) current.x += 50</c>.
+    /// This is called from <see cref="SpawnSystem.ScoreSpot"/> via <see cref="SpawnSystem.SpotEvalScore"/> when
+    /// race checkpoints exist on the map. Returns the prio delta to add (50 when the spot matches the player's
+    /// last-checkpoint respawn anchor, 0 otherwise). Only relevant on a non-qualifying race path when the spot
+    /// is the racer's <see cref="RaceState.RespawnSpot"/> entity (the <c>race_respawn_spotref</c>).
+    /// </summary>
+    private float RaceSpotEvalScore(Entity spot, Player player)
+    {
+        if (Qualifying) return 0f;  // qualifying evalfunc uses place-only filtering, not a prio bias
+        if (!_states.TryGetValue(player, out RaceState? st)) return 0f;
+        Entity? respawnSpot = st.RespawnSpot;
+        if (respawnSpot is null || respawnSpot.IsFreed) return 0f;
+        // QC: if(this == player.race_respawn_spotref || spot == player.race_respawn_spotref)
+        // 'this' = the checkpoint entity; 'spot' = the spawn spot entity. In the port the respawn spot IS the
+        // checkpoint entity itself (set by CheckpointTouch: st.RespawnSpot = self where self is the checkpoint).
+        // So this half matches when the spawn spot IS the checkpoint (rare: only if a map places an info_player_*
+        // ON the checkpoint trigger). The 'this=checkpoint' half corresponds to the spawn spot's target chain —
+        // when the spot targets a checkpoint that is the RespawnSpot, we also add the bias.
+        if (ReferenceEquals(spot, respawnSpot))
+            return SpawnPrioRacePreviousSpawn;
+        // Check whether the spot's target resolves to the respawn checkpoint entity (the 'this' half in QC).
+        string spotTarget = spot.Target;
+        if (!string.IsNullOrEmpty(spotTarget) && !string.IsNullOrEmpty(respawnSpot.TargetName)
+            && spotTarget == respawnSpot.TargetName)
+            return SpawnPrioRacePreviousSpawn;
+        return 0f;
+    }
+
+    /// <summary>QC <c>SPAWN_PRIO_RACE_PREVIOUS_SPAWN</c> (server/spawnpoints.qh:12): priority boost for a
+    /// spot that matches the player's last-checkpoint respawn anchor in a non-qualifying race.</summary>
+    public const int SpawnPrioRacePreviousSpawn = 50;
 
     /// <summary>
     /// QC <c>race_ScoreRules</c> (sv_race.qc): GameRules_score_enabled(false) — race has no SP_SCORE — then declare
@@ -536,6 +588,11 @@ public sealed class Race : GameType
         Combat.Death.Remove(_deathHandler);
         _deathHandler = null;
         if (_physicsHandler is not null) { MutatorHooks.PlayerPhysics.Remove(_physicsHandler); _physicsHandler = null; }
+        // QC: race_spawns is a global counter that persists until the next map load; clear the port's equivalents
+        // on gametype deactivation so a mode-switch doesn't leave the race spawn gates active in DM/CTF.
+        SpawnSystem.RaceSpawnsActive = false;
+        if (_spotEvalScore is not null && ReferenceEquals(SpawnSystem.SpotEvalScore, _spotEvalScore))
+            SpawnSystem.SpotEvalScore = null;
     }
 
     public RaceState GetState(Player p)

@@ -48,6 +48,14 @@ namespace XonoticGodot.Common.Framework
         // NOTE: door_secret's `.mangle` reuses the existing MAngle (MapObjectsCommon.cs); `.oldorigin` reuses
         // the engine OldOrigin field; `.speed` reuses Speed.
 
+        // ---- trigger_warpzone trigger sizing (QC .scale / .warpzone_isboxy, lib/warpzone) ----
+        /// <summary>QC <c>.scale</c> resolved for a warpzone trigger (server.qc:662 — modelscale then 1); the
+        /// trigger volume was sized mins*scale..maxs*scale. 1 for the common case.</summary>
+        public float WarpzoneScale = 1f;
+        /// <summary>QC <c>.warpzone_isboxy</c> (util_server.qc) — box trigger (no inline model, or mapper-overridden
+        /// bounds) so Base skips the exact-surface touch match.</summary>
+        public bool WarpzoneIsBoxy;
+
         // ---- target_changelevel keys (QC .chmap / .gametype / .chlevel_targ) ----
         /// <summary>QC <c>.chmap</c> — the map target_changelevel switches to ("" = end match).</summary>
         public string ChMap = "";
@@ -133,6 +141,18 @@ namespace XonoticGodot.Common.Framework
 
         // ---- SUB_UseTargets reuse latch + target_random (QC .sub_target_used / .target_random) ----
         public float SubTargetUsed = -1f; // QC .sub_target_used — last time a preventReuse fire hit this target
+
+        // ---- trigger_multiple CTS per-client wait buffers (QC .triggertimes buf_create/bufstr_*) ----
+        // In CTS/Race each client gets an independent re-trigger time keyed by their entity slot index
+        // (QC etof(enemy)). Allocated by MultipleSetup only when IS_GAMETYPE(CTS); null on non-CTS triggers.
+        // Dictionary<clientIndex, lastTriggerTime> — index == Entity.Index, time == server sim time.
+        /// <summary>
+        /// QC <c>.triggertimes</c> string-buffer (multi.qc): per-client last-trigger time keyed by
+        /// <see cref="Entity.Index"/>. Allocated in <see cref="XonoticGodot.Common.Gameplay.Triggers.MultipleSetup"/>
+        /// only when the gametype is CTS (mirrors <c>buf_create()</c> in <c>spawnfunc(trigger_multiple)</c>).
+        /// Null on non-CTS triggers (the shared <see cref="Entity.NextThink"/> path is used instead).
+        /// </summary>
+        public System.Collections.Generic.Dictionary<int, float>? CtsTriggerTimes;
     }
 }
 

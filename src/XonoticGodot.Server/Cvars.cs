@@ -359,6 +359,13 @@ public static class Cvars
         new("sv_spectate", "1", Save),
         new("hostname", "Xonotic XonoticGodot Server", Save),
         new("g_maplist", "", Save, "the map rotation"),
+        // QC server/client.qh:53 / xonotic-server.cfg:5: max player name length (not counting color codes)
+        // enforced by PlayerFrame; a longer name is truncated and the player warned. 0 = no limit.
+        new("sv_name_maxlength", "64", Save, "max player name length (not counting color codes) allowed by the server"),
+        // QC xonotic-server.cfg:370 / 503: the welcome-screen MOTD + mutator message shown to joining players
+        // (SendWelcomeMessage, server/client.qc:1130/1132). Both default empty (no extra welcome text).
+        new("sv_motd", "", Save, "additional information to show on the welcome screen that greets joining players"),
+        new("g_mutatormsg", "", Save, "mutator message shown on the welcome screen"),
 
         // ---- voting (server/command/vote.qc) ----
         new("sv_vote_call", "1", Save, "allow players to call votes"),

@@ -67,6 +67,15 @@ public sealed class Player : Entity
     public new float RespawnTime;
 
     /// <summary>
+    /// QC <c>.spawn_time</c> (server/client.qc:690) — the sim time this player most recently spawned.
+    /// Used by CTS trigger_multiple to detect whether a client has respawned since they last fired the trigger
+    /// (multi.qc multi_trigger: <c>this.enemy.spawn_time &lt;= triggertime</c> → "haven't respawned yet").
+    /// Set to <see cref="Services.IGameClock.Time"/> each time the player is placed in-world by
+    /// <see cref="SpawnSystem"/>. 0 at construction (player has never spawned).
+    /// </summary>
+    public float SpawnTime;
+
+    /// <summary>
     /// QC <c>STAT(WEAPONS, this)</c> — the owned-weapon set (a WEPSET bitfield in QC). Modeled here as a set
     /// of weapon NetNames ("blaster", "machinegun", …) so it reads against <see cref="Weapons"/> without a
     /// bit-index registry. Repopulated from the starting loadout on every spawn (QC <c>start_weapons</c>).
@@ -90,6 +99,23 @@ public sealed class Player : Entity
     /// on spawn to suppress bunnyhopping WITHOUT degrading aim/reaction (which key off <see cref="BotSkill"/>).
     /// </summary>
     public float BotMoveSkill;
+
+    /// <summary>
+    /// QC <c>.bot_aggresskill</c> (server/bot/default/bot.qc:282, READSKILL column 11): a per-bot aggression
+    /// modifier added to <see cref="BotSkill"/> in the fire decision (aim.qc:325-328) — it widens the
+    /// close-range "always fire" band, raises the long-range fire chance, and shortens the fire-timer cooldown,
+    /// so an aggressive bot shoots more eagerly at distance. Stock non-campaign default 0 (the READSKILL reward
+    /// factor is 0; populated only from the bots.txt skill columns). Read by <see cref="BotAim"/>.
+    /// </summary>
+    public float BotAggresSkill;
+
+    /// <summary>
+    /// QC <c>.bot_aimskill</c> (server/bot/default/bot.qc:285, READSKILL column 13): a per-bot aiming modifier
+    /// added to <see cref="BotSkill"/> in the max-fire-deviation formula (aim.qc:372) — a higher aim skill
+    /// narrows the fire cone (tighter aim required before shooting). Stock non-campaign default 0 (READSKILL
+    /// reward factor 0; populated only from the bots.txt skill columns). Read by <see cref="BotAim"/>.
+    /// </summary>
+    public float BotAimSkill;
 
     /// <summary>QC <c>.maycheat</c>: a per-player override that always permits cheats regardless of <c>sv_cheats</c>.</summary>
     public bool MayCheat;

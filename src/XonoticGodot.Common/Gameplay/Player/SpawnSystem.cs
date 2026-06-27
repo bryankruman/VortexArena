@@ -59,10 +59,14 @@ public readonly struct SpawnPoint
 /// </summary>
 public static class SpawnSystem
 {
-    /// <summary>The QC spawnpoint classnames searched, in priority order (info_player_deathmatch is canonical).</summary>
+    /// <summary>The QC spawnpoint classnames searched, in priority order (info_player_deathmatch is canonical).
+    /// <c>info_player_survivor</c> is a Survival-mode alias for info_player_deathmatch (spawnpoints.qc:182:
+    /// <c>spawnfunc(info_player_survivor) { spawnfunc_info_player_deathmatch(this); }</c>) with no team; Survival
+    /// mode is not ported but the class is registered here so maps that use those spots don't silently drop them.</summary>
     public static readonly string[] SpawnClassNames =
     {
         "info_player_deathmatch",
+        "info_player_survivor",   // QC spawnpoints.qc:182 alias; Survival-mode maps only, no team
         "info_player_start",
         "info_player_team1",
         "info_player_team2",
@@ -159,6 +163,30 @@ public static class SpawnSystem
     public static System.Func<Entity, bool>? SpotEvalReject;
 
     /// <summary>
+    /// Port of <c>race_spawns</c> (server/race.qh:16): when true, the Race gametype has registered at least one
+    /// <c>trigger_race_checkpoint</c> that was linked with <c>spawn_evalfunc = trigger_race_checkpoint_spawn_evalfunc</c>
+    /// (server/race.qc:1241 <c>++race_spawns</c>; spawnpoints.qc:246 <c>if(race_spawns) if(!spot.target) return '-1 0 0'</c>).
+    /// A spawnpoint without a target is always rejected on the target-checking path when this is true — only spots
+    /// targeting a checkpoint entity (and passing the checkpoint's spawn_evalfunc) are valid race spawns. Set by
+    /// <see cref="Race.Activate"/> when the map has at least one checkpoint; cleared by
+    /// <see cref="ResetTeamSpawns"/> on map/mode change and by <see cref="Race.Deactivate"/>. Non-race maps leave
+    /// this false, so the gate is a no-op in DM/CTF/etc.
+    /// </summary>
+    public static bool RaceSpawnsActive;
+
+    /// <summary>
+    /// Port of the score-rewriting branch of <c>spawn_evalfunc</c> (server/spawnpoints.qc:285:
+    /// <c>spawn_score = targ.spawn_evalfunc(targ, player, spot, spawn_score)</c>): unlike the REJECT path
+    /// (<see cref="SpotEvalReject"/>), this delegate ADDS a priority delta to the spot's score. Race uses it to
+    /// apply <c>SPAWN_PRIO_RACE_PREVIOUS_SPAWN = 50</c> when the spot is the player's last passed checkpoint
+    /// (<c>trigger_race_checkpoint_spawn_evalfunc</c>, server/race.qc:1071). The delegate receives the spot and
+    /// the spawning player; it returns a prio delta (0 = no change, positive = boost). Null = no score adjustment.
+    /// Only consulted on the target-checking spawn path. The active gametype installs this in Activate and clears
+    /// it in Deactivate; <see cref="ResetTeamSpawns"/> also clears it on map/mode change.
+    /// </summary>
+    public static System.Func<Entity, Player, float>? SpotEvalScore;
+
+    /// <summary>
     /// Port of <c>GameRules_spawning_teams(value)</c> (common/gametypes/sv_rules.qh): the active gametype declares
     /// whether it wants team-only spawnpoints. Sets <see cref="HaveTeamSpawns"/> to -1 (requested) or 0 (not), and
     /// records that the request was made explicitly (so <see cref="SelectSpawnPoint"/> trusts it over the auto
@@ -182,7 +210,9 @@ public static class SpawnSystem
         HaveTeamSpawnsForTeams = 0;
         SomeSpawnHasBeenUsed = false;
         _teamSpawnsRequestExplicit = false;
-        SpotEvalReject = null; // QC: the spawn_evalfunc chain is owned by the active gametype; clear on map/mode change.
+        SpotEvalReject = null;  // QC: the spawn_evalfunc chain is owned by the active gametype; clear on map/mode change.
+        RaceSpawnsActive = false;
+        SpotEvalScore = null;
     }
 
     /// <summary>
@@ -405,14 +435,15 @@ public static class SpawnSystem
         if (scored.Count == 0 && targetCheck)
             scored = ScoreAndFilter(forPlayer, spots, livePlayers, resolvedTeamCheck, targetCheck: false);
 
-        // QC: "note this returns the original list if none survived" — if even the targetcheck=false re-filter
-        // came back empty (e.g. a wrong-team filter, or all spots still embedded in solid), fall back to every
-        // spot at (prio 0, weight 0) so the player still gets placed somewhere rather than the select erroring.
+        // QC SelectSpawnPoint (spawnpoints.qc:440-444): if even the targetcheck=false re-filter came back empty,
+        // Spawn_WeightedPoint is called with a NULL firstspot and returns NULL (RandomSelection_chosen_ent = world).
+        // Base then falls into `if(!spot)` → either GotoNextMap (spawn_debug) or `some_spawn_has_been_used` → NULL
+        // (team locked out) or error("Cannot find a spawn point"). The port mirrors this: return null here so the
+        // ClientManager caller can schedule a retry (or log the error), rather than seeding all spots at prio-0
+        // and placing the player in solid / the wrong team's area. Stock maps never trigger this path (every spot
+        // is active and at most one teamcheck pass fails before the -1/any fallback widens it).
         if (scored.Count == 0)
-        {
-            foreach (var spot in spots)
-                scored.Add((spot, 0f, 0f));
-        }
+            return null;
 
         // QC SelectSpawnPoint: with probability (1 - g_spawn_furthest) use a near-uniform pick (1,1,1); otherwise
         // a strongly-far-biased pick (1,5000,5) — `if (random() > g_spawn_furthest)` takes the near branch, so a
@@ -458,6 +489,15 @@ public static class SpawnSystem
         //  - restriction: real client rejected by restriction==1; bot rejected by restriction==2
         if (teamCheck >= 0f && spot.Team != teamCheck)
             return (-1f, 0f);
+        // QC Spawn_Score (server/spawnpoints.qc:246-248): if(race_spawns) if(!spot.target || spot.target == "") return '-1 0 0';
+        // When race checkpoints exist, a spawnpoint without a target cannot be a valid race spawn — only spots that
+        // target a checkpoint entity (so the checkpoint's spawn_evalfunc fires) are admitted. This reject is
+        // UNCONDITIONAL in QC (NOT gated on targetcheck) and runs BEFORE the active gate — so it also fires on the
+        // emergency targetcheck=false re-filter: QC's "double check without targets" relaxes ONLY the active gate +
+        // the spawn_evalfunc target chain (line 277, which IS targetcheck-gated), never the race_spawns requirement.
+        // In practice DM/CTF leave RaceSpawnsActive=false, so this is a no-op outside Race.
+        if (RaceSpawnsActive && string.IsNullOrEmpty(spot.Target))
+            return (-1f, 0f);
         if (spot.SpawnActive != MapMover.ActiveActive && targetCheck)
             return (-1f, 0f);
         // QC Spawn_Score spawn_evalfunc chain (server/spawnpoints.qc): findchain(targetname, spot.target) →
@@ -493,11 +533,6 @@ public static class SpawnSystem
             }
         }
 
-        // NOTE: the race target requirement (race_spawns ⇒ spot must have a target) and the assault
-        // spawn_evalfunc target chain (findchain(targetname, spot.target) → targ.spawn_evalfunc) are
-        // genuinely cross-boundary: they need the race-mode flag and the target-graph + assault objective
-        // entities those gametypes own. Plain DM passes targetCheck=false, so neither is reachable here.
-
         // QC seeds 'shortest' with vlen(world.maxs - world.mins); without world bounds here we use a large
         // constant so a spot with no nearby players still gets a high (good) weight.
         float shortest = 1_000_000f;
@@ -514,6 +549,14 @@ public static class SpawnSystem
         }
 
         float prio = shortest > SpawnMinDist ? PrioGoodDistance : 0f;
+
+        // QC Spawn_Score spawn_evalfunc score-rewriting branch (server/spawnpoints.qc:285): after computing the base
+        // (prio, weight), pass the score through any installed spawn_evalfunc that can ADD to the priority (rather than
+        // just veto the spot). Race installs trigger_race_checkpoint_spawn_evalfunc (server/race.qc:1055/1071) which
+        // adds SPAWN_PRIO_RACE_PREVIOUS_SPAWN=50 when the spot is the player's last passed checkpoint, biasing the
+        // scorer toward respawning the racer at the checkpoint they most recently crossed. Only on the target-check path.
+        if (targetCheck && SpotEvalScore is not null)
+            prio += SpotEvalScore(spot, forPlayer);
 
         // MUTATOR_CALLHOOK(Spawn_Score, player, spawn_spot, spawn_score) — server/spawnpoints.qc Spawn_Score.
         // Mutators bias a spot's priority here: spawn_unique demotes a repeat spot, spawn_near_teammate
@@ -773,6 +816,10 @@ public static class SpawnSystem
         // The damage pipeline reads the shield off Entity.SpawnShieldExpire (an absolute sim time), so set it
         // here to now + g_spawnshieldtime. Firing a weapon clears it (handled by the weapon/damage side).
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
+
+        // QC client.qc:690 `this.spawn_time = time;` — stamp the player's most-recent spawn time for the CTS
+        // trigger_multiple per-client wait buffer ("haven't respawned since triggering" check in multi_trigger).
+        p.SpawnTime = now;
         // Honor an explicit g_spawnshieldtime 0 (disable the shield) — CvarOr distinguishes unset from 0 (SPAWN5).
         p.SpawnShieldExpire = now + CvarOr(CvarSpawnShieldTime, DefSpawnShieldTime);
 

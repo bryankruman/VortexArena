@@ -1326,6 +1326,40 @@ public static class MutatorHooks
     {
         return NadeDamage.Call(ref args);
     }
+
+    // ---- Client-side (HUD / presentation) ----
+
+    /// <summary>
+    /// EV_AnnouncerOption (client/mutators/events.qh) — "announcer string" hook that lets a mutator override the
+    /// announcer voice pack. Slot0 is the announcer string name (in/out); a handler may rewrite it to a different
+    /// voice-pack directory name. QC: <c>MUTATOR_CALLHOOK(AnnouncerOption, ret)</c> (client/announcer.qc:14-20),
+    /// then <c>ret = M_ARGV(0, string)</c> is consumed by <c>AnnouncerFilename()</c> to resolve the sound path.
+    /// Fired from NetGame when the HUD sound state is set up.
+    ///
+    /// NOTE: the hookable exists for parity, but NO stock Base mutator registers a handler for it (verified across
+    /// qcsrc — including overkill, which has zero announcer references and ships no "overkill" voice pack; Base
+    /// ships only the "default" pack). So out of the box this hook is a no-op pass-through, exactly like Base. Do
+    /// not add a handler that swaps to a voice pack that doesn't exist — that would silence the announcer.
+    /// </summary>
+    public struct AnnouncerOptionArgs
+    {
+        public string Voice;   // MUTATOR_ARGV_0_string (in/out)
+        public AnnouncerOptionArgs(string voice) { Voice = voice; }
+    }
+    public static readonly HookChain<AnnouncerOptionArgs> AnnouncerOption = new();
+
+    /// <summary>
+    /// Fire <see cref="AnnouncerOption"/> to let mutators override the announcer voice pack (QC
+    /// <c>MUTATOR_CALLHOOK(AnnouncerOption, voice); voice = M_ARGV(0, string);</c>). Returns the resolved voice
+    /// name. The HUD initialization path calls this after reading <c>cl_announcer</c>; with no handler registered
+    /// (the stock case) it returns <paramref name="voice"/> unchanged — matching Base's no-op pass-through.
+    /// </summary>
+    public static string FireAnnouncerOption(string voice)
+    {
+        var a = new AnnouncerOptionArgs(voice);
+        AnnouncerOption.Call(ref a);
+        return a.Voice;
+    }
 }
 
 /// <summary>

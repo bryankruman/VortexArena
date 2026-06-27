@@ -183,6 +183,27 @@ public static class RaceRecords
     /// <summary>Map a UID to a display name (QC the /uid2name/ store), used by the ranking display.</summary>
     public static void SetName(string uid, string name) { if (uid.Length != 0 && name.Length != 0) _names[uid] = name; }
 
+    /// <summary>
+    /// QC <c>race_deleteTime(rank, map)</c>: delete all records up to and including a given rank (1-based),
+    /// shifting higher ranks down to fill the gap. Used by the <c>sv_cmd delrec</c> command.
+    /// </summary>
+    public static void DeleteTime(string map, string type, int rank)
+    {
+        if (rank < 1 || rank > RankingsCnt) return;
+        // Shift all records from rank+1 down to rank, pushing out the record at RankingsCnt.
+        for (int i = rank; i < RankingsCnt; i++)
+        {
+            float t = ReadTime(map, type, i + 1);
+            string uid = ReadUid(map, type, i + 1);
+            if (t > 0f)
+                WriteSlot(map, type, i, t, uid);
+            else
+                WriteSlot(map, type, i, 0f, "");
+        }
+        // Clear the last slot.
+        WriteSlot(map, type, RankingsCnt, 0f, "");
+    }
+
     // ---- all-time best speed award (QC server/race.qc race_SpeedAwardFrame / race_SendAll) ----
     // QC persists the all-time best planar speed per map+record_type to ServerProgsDB under the keys
     // strcat(GetMapname(), record_type, "speed/speed") and ".../speed/crypto_idfp". Mirror those exact key

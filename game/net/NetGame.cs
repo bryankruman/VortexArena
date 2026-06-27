@@ -14,6 +14,7 @@ using XonoticGodot.Game.Loaders;
 using XonoticGodot.Game.Client;
 using XonoticGodot.Game.Console;
 using XonoticGodot.Game.Hud;
+using XonoticGodot.Game.Menu;
 using XonoticGodot.Net;
 using XonoticGodot.Server;
 using EngineServices = XonoticGodot.Engine.Simulation.EngineServices;
@@ -762,6 +763,23 @@ public sealed partial class NetGame : Node3D
             // map / gotomap / nextmap / map-vote / rotation / samelevel all funnel here (QC changelevel): record the
             // target; the deferred emit in _Process reboots the listen server on it (preserving gametype + bots).
             cmd.ChangeLevelHandler = RequestMapChange;
+
+            // QC DoNextMapOverride host exits: all three fire inside the server sim tick (DriveEndOfMatchMapFlow),
+            // so each must be DEFERRED (Callable.From...CallDeferred) exactly like MapChangeRequested — never tear
+            // down the game tree from inside the tick that drives it. The handlers route through MenuCommand so they
+            // behave identically to a player typing "quit" / "connect" / "disconnect" in the console.
+
+            // QC quit_when_empty → localcmd("quit"): shut the process when the last human leaves at match end.
+            cmd.QuitHandler = () => Callable.From(() => GetTree()?.Quit()).CallDeferred();
+
+            // QC quit_and_redirect → redirection_target: reconnect every client (here: the local player) to the
+            // target server. Routes through MenuCommand.Connect so Shell tears down the current game then connects.
+            cmd.RedirectHandler = addr => Callable.From(() => MenuCommand.Connect?.Invoke(addr)).CallDeferred();
+
+            // QC lastlevel → localcmd("set lastlevel 0\ntogglemenu 1\n"): after the final campaign/last-level map
+            // show the main menu instead of rotating. lastlevel is already cleared by the server before invoking this.
+            // MenuCommand.Disconnect (wired to Shell.ReturnToMainMenu) tears down the match and returns to the menu.
+            cmd.LastLevelHandler = () => Callable.From(() => MenuCommand.Disconnect?.Invoke()).CallDeferred();
         }
         else
         {
@@ -783,7 +801,29 @@ public sealed partial class NetGame : Node3D
             cmd.AddBotHandler = (name, skill) => { s.RunOnSimThread(() => _serverWorld?.Bots.AddBot(name, skill)); return true; };
             cmd.RemoveBotHandler = name => { s.RunOnSimThread(() => _serverWorld?.Bots.RemoveBot(name)); return true; };
             cmd.ChangeLevelHandler = map => s.RunOnSimThread(() => RequestMapChange(map));
+
+            // QC DoNextMapOverride host exits (threaded path): the handlers fire on the SIM thread (inside the
+            // server tick), so each uses CallDeferred to post the Godot tree operation to the main thread — the
+            // same pattern as the non-threaded path (no RunOnSimThread wrapper needed; the callers are already on
+            // the sim thread and just need to cross to the main thread, not the sim thread).
+            cmd.QuitHandler = () => Callable.From(() => GetTree()?.Quit()).CallDeferred();
+            cmd.RedirectHandler = addr => Callable.From(() => MenuCommand.Connect?.Invoke(addr)).CallDeferred();
+            cmd.LastLevelHandler = () => Callable.From(() => MenuCommand.Disconnect?.Invoke()).CallDeferred();
         }
+
+        // QC localcmd("\nsv_vote_gametype_hook_all\n") + localcmd("\nsv_vote_gametype_hook_", name, "\n") from
+        // GameTypeVote_SetGametype: fires on the sim thread (ApplyGametypeSwitch → DriveEndOfMatchMapFlow), so the
+        // handler runs synchronously on that thread — no RunOnSimThread wrapper needed on either path.
+        // These hooks are ALIASES (gametypes-server.cfg defines `sv_vote_gametype_hook_<name>` for every gametype,
+        // empty by default), NOT registered server commands — so they live in the ConfigInterpreter's alias table
+        // (GameWorld.LoadedConfig), not in Commands' verb dictionary. Routing through Commands.Execute would just
+        // print "Unknown command" and never run the alias body; we must dispatch through LoadedConfig.ExecuteLine,
+        // which resolves the alias (DP localcmd → engine console → alias expansion). Stock empty aliases are a
+        // no-op (matching Base); a server.cfg that redefines one (e.g. `alias sv_vote_gametype_hook_dm
+        // "g_maxplayers 8"`) now runs against the server's cvar store. LoadedConfig is null only on a bare
+        // unit-test world (no cfg load) — the `?.` then makes this a harmless no-op, same as no alias defined.
+        cmd.GameTypeVoteHookHandler = name =>
+            _serverWorld?.LoadedConfig?.ExecuteLine($"sv_vote_gametype_hook_{name}");
 
         // sandbox build mode (g_sandbox): wire the SandboxMutator's host seams (per-player print, crosshair trace,
         // owner-UID/name/view-yaw, real-client roster, per-map file storage). The `g_sandbox` command routes to
@@ -799,6 +839,27 @@ public sealed partial class NetGame : Node3D
         // be SET but the follow* switches have no roster and messages print nothing. Safe with g_superspectate 0
         // (the seams only fire while the mutator is added). Same sim-thread ownership as WireSandbox.
         WireSuperspec();
+
+        // target_speaker ACTIVATOR (BIT3) — QC soundto(MSG_ONE, …): play a one-shot sound to the TRIGGERING
+        // client ONLY (the `target_speaker_use_activator` path in speaker.qc). The Common layer exposes a
+        // PlayToClientHandler seam (TargetSpeaker.cs); without it the live path falls back to a broadcast play
+        // and every connected client hears the sound. Wire it here (after _server is live) using the new
+        // ServerNet.SendSoundToPlayer method, which encodes a per-peer SoundBundle via the same SoundWire codec
+        // as FlushSounds so the per-client sound rides an existing channel without protocol changes.
+        // The seam is re-wired on every server start (every NetGame.SetupListenServer call), so a map restart
+        // or gametype change never leaves it stale. On sv_threaded the seam fires on the sim thread (the
+        // GameWorld.Use → TargetSpeaker.SpeakerUseActivator call chain), which owns ServerNet writes — safe.
+        {
+            ServerNet sv = _server!;
+            XonoticGodot.Common.Gameplay.TargetSpeaker.PlayToClientHandler =
+                (client, emitter, ch, sample, vol, atten) =>
+                {
+                    // QC IS_REAL_CLIENT guard is already applied before this seam fires (SpeakerUseActivator).
+                    // Only route for a real Player; a bare Entity activator has no peer to target.
+                    if (client is Player p)
+                        sv.SendSoundToPlayer(p, emitter, ch, sample, vol, atten);
+                };
+        }
 
         // S5: spin up the dedicated server-sim worker now that ServerNet + the world + the sinks are all wired.
         // Install the shared gate on ServerNet (its Tick locks it) and hand the SAME object to the main thread
@@ -1421,11 +1482,16 @@ public sealed partial class NetGame : Node3D
         // (2s same-sound dedup window). Read from the client cvar store so the user setting actually takes effect
         // (HudNotifications consumes AnnouncerVoice in the sound/announcer/<voice>/ resolve and AntiSpamInterval in
         // the QueueRun dedup). Defaults match xonotic-client.cfg:357-358 when the cvars are unset.
+        // Then run the resolved voice through MUTATOR_CALLHOOK(AnnouncerOption) (QC AnnouncerFilename -> AnnouncerOption):
+        // a mutator MAY rewrite the voice pack via this hook. No stock Base mutator registers it (overkill included),
+        // so this is a no-op pass-through out of the box, exactly like Base.
         if (_sharedCvars is not null)
         {
             string voice = _sharedCvars.GetString("cl_announcer");
             if (!string.IsNullOrWhiteSpace(voice))
                 _notifications.AnnouncerVoice = voice;
+            // Fire the AnnouncerOption hook to allow mutators to override the voice (QC announcer.qc:14-20)
+            _notifications.AnnouncerVoice = MutatorHooks.FireAnnouncerOption(_notifications.AnnouncerVoice);
             if (_sharedCvars.Has("cl_announcer_antispam"))
                 _notifications.AntiSpamInterval = _sharedCvars.GetFloat("cl_announcer_antispam");
         }
@@ -2138,15 +2204,19 @@ public sealed partial class NetGame : Node3D
     };
 
     /// <summary>
-    /// The muzzle-flash MODEL vpath for a weapon — the QC <c>m_muzzlemodel</c> attrib. Only four stock weapons set
-    /// a non-null model: Devastator + MineLayer (<c>MDL_*_MUZZLEFLASH</c> → <c>models/flash.md3</c>) and Machinegun
-    /// + Shotgun (→ <c>models/uziflash.md3</c>). Every other weapon is <c>MDL_Null</c> and attaches NO model flash
-    /// (only the particle effect), so this returns <c>""</c> for them (the ViewModel skips the model spawn).
+    /// The muzzle-flash MODEL vpath for a weapon — the QC <c>m_muzzlemodel</c> attrib (each weapon's
+    /// <c>*.qh</c> ATTRIB). Only the weapons that set a non-null <c>m_muzzlemodel</c> attach a model flash:
+    /// Devastator + MineLayer + Overkill RPC (<c>flash.md3</c>) and Machinegun + Shotgun + Overkill HMG/MachineGun
+    /// (<c>uziflash.md3</c>). NOTE: Vortex/Vaporizer DEFINE a <c>VORTEX_MUZZLEFLASH</c>/<c>VAPORIZER_MUZZLEFLASH</c>
+    /// model (nexflash.md3) but their <c>m_muzzlemodel</c> attrib is <c>MDL_Null</c> — they attach NO model flash,
+    /// so they (and the Arc, also <c>MDL_Null</c>) are correctly absent here. Every other weapon is <c>MDL_Null</c>
+    /// and attaches NO model flash (only the particle effect), so this returns <c>""</c> for them (the ViewModel
+    /// skips the model spawn).
     /// </summary>
     private static string MuzzleModelFor(XonoticGodot.Common.Gameplay.Weapon w) => w.NetName switch
     {
-        "devastator" or "minelayer" => "models/flash.md3",
-        "machinegun" or "shotgun" => "models/uziflash.md3",
+        "devastator" or "minelayer" or "okrpc" => "models/flash.md3",
+        "machinegun" or "shotgun" or "okhmg" or "okmachinegun" => "models/uziflash.md3",
         _ => "",
     };
 
@@ -2852,6 +2922,7 @@ public sealed partial class NetGame : Node3D
         // listen server, so they reflect live local state as the spawn lands (QC the view player). A pure client
         // has no local Player actor — the NetHud crosshair/health covers it. Cheap: SetPlayer no-ops when same.
         UpdateFullHudPlayer();
+        UpdateCrosshairGate();
         UpdateInfoMessages();
 
         // Install / swap the first-person weapon model when the networked active weapon changes (CSQC view.qc:305
@@ -3493,15 +3564,41 @@ public sealed partial class NetGame : Node3D
                     pic = $"gfx/menu/{XonoticGodot.Game.Hud.HudSkin.SkinName}/gametype_{c.MapName}";
                 else
                     pic = string.IsNullOrEmpty(c.MapName) ? "" : $"maps/{c.MapName}";
-                // QC gametype detail: data = pretty name (sv_vote_gametype_<name>_name), desc = description.
-                // The port reads these from cvars; fall back to the NetName if unset.
-                string gtName = isGametypeVote ? Cvars.String($"sv_vote_gametype_{c.MapName}_name") : "";
-                string data = isGametypeVote
-                    ? (string.IsNullOrEmpty(gtName) ? c.MapName : gtName)
-                    : c.MapName;
-                string desc = isGametypeVote
-                    ? Cvars.String($"sv_vote_gametype_{c.MapName}_description")
-                    : "";
+                // QC ReadGameTypeVote (client/mapvoting.qc:762-780): the gametype-vote title + description split
+                // on the GTV_CUSTOM flag. A REAL (built-in) gametype shows MapInfo_Type_ToText (the gametype's
+                // pretty .message, e.g. "Deathmatch") + MapInfo_Type_Description (its built-in description); only a
+                // CUSTOM gametype (an alias that doesn't resolve to a built-in type) reads the per-name
+                // sv_vote_gametype_<name>_name / _description cvars (falling back to the ballot entry name when the
+                // name cvar is empty, exactly like Base). The previous port read the _name/_description cvars for
+                // EVERY option, so stock ballots (dm/tdm/ca/ctf — which set neither cvar) showed the raw "dm"
+                // entry name and an empty description instead of "Deathmatch" + its blurb.
+                string data;
+                string desc;
+                if (isGametypeVote)
+                {
+                    XonoticGodot.Common.Gameplay.GameType? gt =
+                        XonoticGodot.Common.Gameplay.GameTypes.ByName(c.MapName);
+                    if (gt is not null)
+                    {
+                        // Real built-in gametype: pretty name from the registry (QC MapInfo_Type_ToText). The port
+                        // has no per-gametype description field, so the desc stays empty for built-ins (a minor
+                        // presentation residual vs Base's MapInfo_Type_Description).
+                        data = string.IsNullOrEmpty(gt.DisplayName) ? c.MapName : gt.DisplayName;
+                        desc = "";
+                    }
+                    else
+                    {
+                        // Custom alias: per-name cvars, name falling back to the ballot entry (QC custom branch).
+                        string gtName = Cvars.String($"sv_vote_gametype_{c.MapName}_name");
+                        data = string.IsNullOrEmpty(gtName) ? c.MapName : gtName;
+                        desc = Cvars.String($"sv_vote_gametype_{c.MapName}_description");
+                    }
+                }
+                else
+                {
+                    data = c.MapName;
+                    desc = "";
+                }
                 list.Add(new XonoticGodot.Game.Hud.MapVotePanel.Candidate(
                     c.MapName, c.Votes, pic, data, desc, c.Available, c.Suggester));
             }
@@ -3763,6 +3860,8 @@ public sealed partial class NetGame : Node3D
         // CrosshairPanel, however, draws its reticle even without a Player (it doesn't gate on Player) — so on a
         // pure client it would DOUBLE NetHud's crosshair. Show the skinned crosshair only when a local Player is
         // present; otherwise NetHud (un-suppressed above) owns the reticle. No double crosshair in either case.
+        // The live per-frame suppression (dead/intermission/scoreboard/observing) is applied in UpdateCrosshairGate
+        // below — this only sets the player-presence base state on a player change.
         if (_fullHud.Crosshair.Visible != havePlayer)
             _fullHud.Crosshair.Visible = havePlayer;
 
@@ -3772,8 +3871,57 @@ public sealed partial class NetGame : Node3D
         // it useful without exposing the carrier's per-tick move-values to the client HUD layer.
         if (_fullHud.GetPanel<XonoticGodot.Game.Hud.StrafeHudPanel>() is { } strafe)
             strafe.Player = p;
+
+        // QC HUD_PressedKeys spectatee gate: a free-fly observer never shows the cluster, and while merely
+        // playing it shows only at enable 2. Feed the live spectatee_status (translated into the QC convention:
+        // ClientNet encodes free-fly as SpectateeStatus==LocalNetId, QC uses -1; following a player is >0).
+        if (_fullHud.GetPanel<XonoticGodot.Game.Hud.PressedKeysPanel>() is { } pressed)
+        {
+            int qcSpectatee = 0;
+            if (_client is not null)
+            {
+                if (_client.IsObserving) qcSpectatee = -1;            // free-fly observer
+                else if (_client.SpectatingNetId > 0) qcSpectatee = _client.SpectatingNetId; // following a player
+            }
+            pressed.SpectateeStatus = qcSpectatee;
+        }
     }
     private Player? _lastHudPlayer;
+
+    /// <summary>
+    /// Per-frame crosshair master-gating (QC client/hud/crosshair.qc HUD_Crosshair 226-241). Base skips drawing the
+    /// crosshair entirely — and resets its smoothing state — whenever the player is not in a live first-person
+    /// playing view: scoreboard active, intermission==2, GAME_STOPPED, lockview, <c>spectatee_status == -1</c>
+    /// (free-fly observer), <c>STAT(HEALTH) &lt;= 0</c> (dead), the dead-spectator CAMERA_SPECTATOR==2 mode, or a
+    /// non-FREEAIM viewloc. The previous port only gated on player-presence (havePlayer), so the skinned crosshair
+    /// kept drawing dead-centre while dead / at intermission / over the scoreboard. Reproduce the reachable subset
+    /// of the suppress set from state the port already tracks client-side (works on the host path where the skinned
+    /// panel draws; a pure remote client's reticle is owned by NetHud, gated separately). The crosshair only shows
+    /// when a local Player is present AND none of the suppress conditions hold.
+    /// </summary>
+    private void UpdateCrosshairGate()
+    {
+        if (_fullHud is null || _client is null)
+            return;
+
+        // Base: the crosshair draws only with a local first-person player (havePlayer mirrors QC's view player).
+        bool havePlayer = _lastHudPlayer is not null;
+
+        // QC HUD_Crosshair early-skips (the subset the port tracks client-side):
+        //   STAT(HEALTH) <= 0           → dead (LocalDeadNow covers host + remote)
+        //   intermission == 2 / GAME_STOPPED → MatchIntermission (the match-over scoreboard takes the screen)
+        //   scoreboard_active           → the scoreboard panel is up (+showscores / death / intermission)
+        //   spectatee_status == -1      → free-fly observer (IsObserving) — no own first-person aim to draw on
+        bool suppressed =
+            LocalDeadNow()
+            || _client.MatchIntermission
+            || (_scoreboard is not null && _scoreboard.Active)
+            || _client.IsObserving;
+
+        bool show = havePlayer && !suppressed;
+        if (_fullHud.Crosshair.Visible != show)
+            _fullHud.Crosshair.Visible = show;
+    }
 
     /// <summary>
     /// Feed the InfoMessages panel the networked dead/respawn + observing/spectating state each frame (QC the
