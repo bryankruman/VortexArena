@@ -304,6 +304,13 @@ public partial class ClientWorld : Node3D
     /// model/colors (overrides inert). NetGame wires it; a pure demo leaves it null.</summary>
     public Func<AppearanceContext?>? AppearanceProvider { get; set; }
 
+    /// <summary>[W14b LI3] Host-set accessor for the current SERVER clock time (<see cref="ClientNet.LatestServerTime"/>)
+    /// — the clock the networked <c>Entity.AnimActionTime</c> (the upper-body action start) is stamped on, so the
+    /// torso-action overlay computes the right play phase (<c>now − start</c>). NetGame wires it; null (a pure demo /
+    /// the --skeleton-smoke harness) disables the action overlay (PlayerModel.Pose falls back to the static aim pose),
+    /// keeping those paths bit-identical to before this wave.</summary>
+    public Func<float>? ServerTimeProvider { get; set; }
+
     /// <summary>
     /// Resolve a FORCED player model (QC <c>cl_forcemyplayermodel</c> / the <c>cl_forceplayermodels</c> →
     /// <c>_cl_playermodel</c> swap) to a render node for an entity: given the entity, the forced model NAME + skin,
@@ -967,6 +974,9 @@ public partial class ClientWorld : Node3D
         float cullDist = CvarF("cl_pose_cull_distance", 1500f);
         float cullDistSq = poseCull ? cullDist * cullDist : 0f;
         int localId = AppearanceProvider?.Invoke()?.LocalNetId ?? -1;
+        // [W14b LI3] the server clock the networked anim-action start is stamped on; NaN (no provider) disables the
+        // torso-action overlay so a pure demo / the smoke harness keeps the static aim pose unchanged.
+        float serverNow = ServerTimeProvider?.Invoke() ?? float.NaN;
         Godot.Vector3 viewG = ListenerPos();
         using (FrameProfiler.Scope("cw.players"))
         foreach (PlayerModel pm in _playerModels.Values)
@@ -976,7 +986,7 @@ public partial class ClientWorld : Node3D
             {
                 bool isLocal = e.Index == localId;
                 float distSq = poseCull ? (pm.GlobalPosition - viewG).LengthSquared() : 0f;
-                pm.Pose(e, (float)delta, poseCull, isLocal, distSq, cullDistSq);
+                pm.Pose(e, (float)delta, poseCull, isLocal, distSq, cullDistSq, serverNow);
             }
         }
 

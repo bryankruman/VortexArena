@@ -5,6 +5,7 @@ using XonoticGodot.Formats.Iqm;
 using XonoticGodot.Formats.Sidecars;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Math;
+using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Engine.Simulation;
 using XonoticGodot.Game.Loaders.Models;
 using SN = System.Numerics;
@@ -36,6 +37,12 @@ public partial class PlayerModel : Node3D
     // resolved once from the model's framegroups. Indexed by LocomotionBlend.DirLocomotion.
     private readonly FrameGroup[] _legClips = new FrameGroup[21];
     private FrameGroup _torsoClip;
+
+    // [W14b LI3] the upper-body ACTION clip table (SHOOT this wave; PAIN/DRAW/TAUNT/MELEE/DIE slot in at Stage 4),
+    // resolved once from the model's framegroups with the same name-keyword + fallback discipline as the legs. The
+    // SHOOT clip plays non-looping so SampleClip clamps it at the last frame (a held-but-expired shot holds its end
+    // pose). Indexed by AnimDecide.AnimUpperAction; None (0) is unused (the static aim pose covers idle).
+    private readonly FrameGroup[] _actionClips = new FrameGroup[9];
 
     private float _legsTime;     // seconds the legs clip has been playing (advances with the active locomotion)
     private LocomotionBlend.DirLocomotion _lastLoco = (LocomotionBlend.DirLocomotion)(-1);
@@ -182,7 +189,7 @@ public partial class PlayerModel : Node3D
     /// </para>
     /// </summary>
     public void Pose(Entity e, float dt, bool cullEnabled = false, bool isLocal = false,
-        float distSqToView = 0f, float cullDistSq = 0f)
+        float distSqToView = 0f, float cullDistSq = 0f, float serverNow = float.NaN)
     {
         // Render the networked per-entity alpha (Cloaked / fades) every frame, before the skeletal early-out so a
         // non-skeletal static prop / streaming placeholder also fades. Cheap when unchanged (idempotent).
@@ -202,7 +209,27 @@ public partial class PlayerModel : Node3D
         else _legsTime += dt;
 
         FrameGroup legs = _legClips[(int)loco];
+
+        // [W14b LI3] the upper-body ACTION overlay (SHOOT this wave). When the server has an active upper action for
+        // this player (the expiry-resolved NetEntityState.UpperAction networked onto e.UpperAction) AND we have the
+        // server clock (serverNow; NaN on a pure demo / smoke harness), the torso plays the action clip at its phase
+        // (now − start) instead of the static aim pose — the legs keep their velocity-derived locomotion. A dead
+        // player never overlays (death owns the whole body). Falls back to the static aim path otherwise, which is
+        // bit-identical to before this wave (FromFrames' static Lerp4 = 0).
+        // Default to the static aim pose (bit-identical to pre-W14b); the overlay path replaces it when an
+        // action is active. Initialized up front so the compiler sees `anim` definitely assigned regardless
+        // of the action-clip branch (the static Split for an overlaid frame is a rare, brief-window cost).
         SkeletonAnim anim = LocomotionBlend.Split(legs, _legsTime, _torsoClip, 0f);
+        if (!dead && !float.IsNaN(serverNow) && e.UpperAction != 0)
+        {
+            var (active, phase) = LocomotionBlend.SelectTorsoAction(e.UpperAction, e.AnimActionTime, serverNow);
+            if (active)
+            {
+                FrameGroup actionClip = _actionClips[e.UpperAction < _actionClips.Length ? e.UpperAction : 0];
+                if (actionClip.FrameCount > 0)
+                    anim = LocomotionBlend.Split(legs, _legsTime, actionClip, phase, _actionTag: true);
+            }
+        }
         _player.FromFrames(anim, e.Angles.X, dead);
 
         // 3.3: decide whether to PUSH the posed bones onto the Skeleton3D this frame. The synthesis above always
@@ -420,5 +447,19 @@ public partial class PlayerModel : Node3D
         _legClips[(int)L.DuckWalkBackRight] = Pick("duckwalkbackright", "duckwalk", "duck");
         _legClips[(int)L.DuckJump] = Pick("duckjump", "jump");
         _torsoClip = Pick("idle", "stand", "aim");
+
+        // [W14b LI3] the upper-body ACTION clips. SHOOT only this wave; the melee→shoot / duckwalk fallback the
+        // design calls for is baked into the Pick() chain (subsumes the fallbackframe remap). Force each clip
+        // NON-LOOPING and to the AnimDecide framerate (SHOOT = 5 fps / 0.2s) so the client play PHASE clamps at the
+        // last frame exactly when the SERVER expiry window elapses — producer and consumer agree on the duration.
+        FrameGroup ActionClip(AnimDecide.AnimUpperAction a, params string[] keys)
+        {
+            FrameGroup g = Pick(keys);
+            AnimDecide.AnimSpec spec = AnimDecide.SpecFor(a);
+            float fps = spec.FrameRate > 0f ? spec.FrameRate : (g.Fps > 0f ? g.Fps : 20f);
+            return new FrameGroup(g.FirstFrame, g.FrameCount, fps, loop: false, g.Name);
+        }
+        _actionClips[(int)AnimDecide.AnimUpperAction.Shoot] = ActionClip(AnimDecide.AnimUpperAction.Shoot, "shoot", "attack", "fire");
+        // Stage 4: draw / pain1 / pain2 / melee(→shoot) / taunt / die1 / die2 resolved the same way.
     }
 }

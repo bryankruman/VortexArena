@@ -47,4 +47,21 @@ public partial class Entity
     public byte ViewmodelSkin;
     /// <summary>QC the gun-align side (which hand/side the exterior weapon sits on).</summary>
     public byte GunAlign;
+
+    // =====================================================================================
+    //  [W14b LI1] SERVER-side animdecide producer state (the upper-body action latch)
+    // =====================================================================================
+    // The server DECIDES the upper-body action (SHOOT now; PAIN/DRAW/TAUNT/MELEE/DIE in Stage 4) via
+    // AnimDecide.SetAction at the fire site, expires it per frame with AnimDecide.GetUpperAnim, and networks the
+    // resolved (action, start) as NetEntityState.UpperAction/AnimActionTime in ServerNet.BuildEntitySet. These are
+    // SERVER-only producer fields (distinct from the client render-only mirrors UpperAction/AnimActionTime above):
+    // the server sim writes them, the client never sees these — only their networked, expiry-resolved projection.
+
+    /// <summary>QC <c>.anim_upper_action</c> — the latched upper-body action (None until the player shoots/etc.).
+    /// Set by <see cref="AnimDecide.SetAction"/> at the weapon-fire site; resolved/expired by
+    /// <see cref="AnimDecide.GetUpperAnim"/> each frame before it is networked.</summary>
+    public AnimDecide.AnimUpperAction AnimUpperAction;
+    /// <summary>QC <c>.anim_upper_time</c> — the server time the latched action began (the action's start time
+    /// networked as <c>AnimActionTime</c>; the running window is <c>start + numframes/framerate</c>).</summary>
+    public float AnimActionStart;
 }

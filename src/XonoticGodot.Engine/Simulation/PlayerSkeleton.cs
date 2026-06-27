@@ -129,7 +129,10 @@ public sealed class PlayerSkeleton
         bool haveFix = false;
         if (_cfg.FixBone && _cfg.BoneUpperBody > 0)
         {
-            SkeletonAnim a = anim; a.Lerp = 0; a.Lerp3 = saveLerp3 * 2; a.Lerp4 = 0;
+            // [W14b LI3] snapshot the split bone with the SAME upper-body weighting the real upper run uses below
+            // (frames 1+3+4, both doubled) so the re-anchor orientation matches the action-animated torso, not a
+            // stale frame3-only pose. Lerp4 = 0 for the static aim path keeps this bit-identical there.
+            SkeletonAnim a = anim; a.Lerp = 0; a.Lerp3 = saveLerp3 * 2; a.Lerp4 = saveLerp4 * 2;
             _mgr.Build(_skel, a, _model, 0f, 1, n);
             fixboneOrientation = _mgr.GetBoneAbs(_skel, _cfg.BoneUpperBody);
             haveFix = true;
@@ -144,8 +147,15 @@ public sealed class PlayerSkeleton
             for (bone++; bone < n && _boneType[bone] == type; bone++) { }
 
             SkeletonAnim a = anim;
-            if (type == BoneTypeUpper) { a.Lerp = 0; a.Lerp3 = saveLerp3 * 2; a.Lerp4 = 0; }            // frames 1+3
-            else { a.Lerp = saveLerp * 2; a.Lerp3 = 0; a.Lerp4 = saveLerp4 * 2; }                       // frames 1+2+4
+            // [W14b LI3] UPPER body = the torso/action frames 3+4 (frame1 weight → 0 when Lerp3+Lerp4 = 0.5),
+            // both DOUBLED so a (Lerp3,Lerp4) pair summing to 0.5 fully fills the upper body with the action clip
+            // (Frame3 current + Frame4 next). The static aim path passes Lerp4 = 0, so this stays bit-identical
+            // (frame3 only) there; an active action passes a non-zero Lerp4 to animate frame3→frame4.
+            if (type == BoneTypeUpper) { a.Lerp = 0; a.Lerp3 = saveLerp3 * 2; a.Lerp4 = saveLerp4 * 2; } // frames 1+3+4
+            // LOWER body = the LEGS frames 1+2 only. Frame4 carries the TORSO's next frame (LI3), which must NEVER
+            // bleed into the legs, so pin the lower Lerp4 to 0 (was saveLerp4*2 — a no-op for the static path where
+            // Lerp4 was always 0, but it would tear the torso into the legs once an action feeds a non-zero Lerp4).
+            else { a.Lerp = saveLerp * 2; a.Lerp3 = 0; a.Lerp4 = 0; }                                    // frames 1+2
             _mgr.Build(_skel, a, _model, 0f, firstBone + 1, bone); // 1-based inclusive [firstBone+1 .. bone]
         }
 

@@ -1,6 +1,7 @@
 using System.Numerics;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Formats.Sidecars;
+using XonoticGodot.Common.Gameplay;
 
 namespace XonoticGodot.Engine.Simulation;
 
@@ -68,6 +69,55 @@ public static class LocomotionBlend
             Lerp3 = 0.5f,               // doubled by the upper split → upper body == frame3 (torso)
             Lerp4 = 0f,                 // keep torso out of the lower body
         };
+    }
+
+    /// <summary>
+    /// [W14b LI3] Build the split <see cref="SkeletonAnim"/> for an ACTIVE upper-body ACTION (SHOOT this wave):
+    /// the legs animate from <paramref name="legs"/>/<paramref name="legsTime"/> exactly as the static
+    /// <see cref="Split(in FrameGroup,float,in FrameGroup,float)"/>, but the torso plays the action clip
+    /// <paramref name="action"/> at <paramref name="actionPhase"/> seconds — its current frame in Frame3, its
+    /// NEXT frame in Frame4, blended by the clip's inter-frame lerp. This is the half-wired 4-pose path the
+    /// design (Risk #1) flags: it feeds a non-zero <c>Lerp4</c> so <see cref="PlayerSkeleton.FromFrames"/>'s
+    /// UPPER branch animates frame3→frame4 — while the static path keeps <c>Lerp4 = 0</c> so a non-action torso
+    /// is bit-identical to today. The legs base (Frame/Frame2) is untouched, so the lower body never sees the
+    /// torso frames (FromFrames' lower branch pins its own Lerp4 to 0 — the fixbone re-anchor keeps the torso
+    /// rooted on the legs so it can't tear).
+    ///
+    /// <para>Encoding: the upper split in <c>FromFrames</c> DOUBLES Lerp3+Lerp4 (so a 0.5/0.5 pair → 1.0 total).
+    /// We therefore halve the torso blend here: <c>Lerp3 = (1−f)·0.5</c> on Frame3 (torso current),
+    /// <c>Lerp4 = f·0.5</c> on Frame4 (torso next), where f is the action clip's inter-frame fraction.</para>
+    /// </summary>
+    public static SkeletonAnim Split(in FrameGroup legs, float legsTime, in FrameGroup action, float actionPhase, bool _actionTag)
+    {
+        (int la, int lb, float ll) = SampleClip(legs, legsTime);
+        (int ta, int tb, float tf) = SampleClip(action, actionPhase);
+        return new SkeletonAnim
+        {
+            Frame = la,                 // legs current (lower-body base)
+            Frame2 = lb,                // legs next (lower-body inter-frame lerp)
+            Frame3 = ta,                // torso/action current
+            Frame4 = tb,                // torso/action next (now WEIGHTED into the upper body)
+            Lerp = ll * 0.5f,           // doubled by the lower split → full legs phase
+            Lerp3 = (1f - tf) * 0.5f,   // doubled by the upper split → (1−f) on the action's current frame
+            Lerp4 = tf * 0.5f,          // doubled by the upper split → f on the action's next frame
+        };
+    }
+
+    /// <summary>
+    /// [W14b LI3] Port of the upper-body half of <c>animdecide_getupperanim</c> (animdecide.qc:109-153) for the
+    /// CLIENT: given the networked action id <paramref name="action"/> (the server's expiry-resolved
+    /// <c>NetEntityState.UpperAction</c>) + its start time <paramref name="start"/> at <paramref name="now"/>,
+    /// decide whether an action overlay is playing and, if so, the clip's play PHASE (seconds since it began).
+    /// Returns <c>active = false</c> for None/idle (the caller uses the stable static aim pose); for an active
+    /// action it returns the elapsed phase, which the non-looping action clip clamps at its last frame
+    /// (<see cref="SampleClip"/>) so a finished-but-not-yet-cleared SHOOT holds its end pose, never wraps.
+    /// </summary>
+    public static (bool active, float phase) SelectTorsoAction(byte action, float start, float now)
+    {
+        var (resolved, _) = AnimDecide.GetUpperAnim((AnimDecide.AnimUpperAction)action, start, now);
+        if (resolved == AnimDecide.AnimUpperAction.None)
+            return (false, 0f);
+        return (true, now - start);
     }
 
     /// <summary>Coarse locomotion intent from the player's movement state (QC animdecide, simplified).</summary>

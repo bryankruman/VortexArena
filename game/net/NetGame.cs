@@ -1219,6 +1219,10 @@ public sealed partial class NetGame : Node3D
         // CSQC appearance context (FORCEMODEL/FORCECOLORS need the local player + gametype): read live each frame.
         _render.AppearanceProvider = BuildAppearanceContext;
 
+        // [W14b LI3] the server clock for the remote torso-action overlay — the networked Entity.AnimActionTime is
+        // stamped on this clock, so the client derives the action play phase as LatestServerTime − start.
+        _render.ServerTimeProvider = () => _client?.LatestServerTime ?? 0f;
+
         // Render the world geometry on the listen server: the client draws the worldmodel it loaded locally
         // (DP VF_DRAWWORLD=1 + renderscene(); the server ships no geometry). Reuses the SAME BSP + gametype filter
         // the collision was built from in StartListenServer — identical to GameDemo.cs:181's MapLoader.BuildMap.

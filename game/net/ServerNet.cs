@@ -12,6 +12,9 @@ using XonoticGodot.Server;
 using NVec3 = System.Numerics.Vector3;
 using BitWriter = XonoticGodot.Net.BitWriter;
 using BitReader = XonoticGodot.Net.BitReader;
+// [W14b LI1] alias the animdecide unit — the `Player` class in XonoticGodot.Common.Gameplay (imported above) shadows
+// the `...Gameplay.Player` namespace, so `Player.AnimDecide` would bind to the class. The alias resolves the unit.
+using AnimDecideUnit = XonoticGodot.Common.Gameplay.AnimDecide;
 
 namespace XonoticGodot.Game.Net;
 
@@ -1912,6 +1915,14 @@ public sealed class ServerNet : IDisposable
             }
             hist.Store(altime, p.Origin);
 
+            // [W14b LI1/LI3] resolve + expire the upper-body animdecide action for the wire. QC's
+            // animdecide_getupperanim runs per frame on the CLIENT; the port decides server-side (the set-site is the
+            // weapon-fire commit) and networks the EXPIRY-RESOLVED action so the client renders a stable contract: an
+            // ACTIVE action while its window (start + numframes/framerate, e.g. SHOOT = 0.2s) hasn't elapsed, else
+            // None. AnimActionTime is the action's start time (the death_time-class raw-float client-observed divergence).
+            var (resolvedAction, _) = AnimDecideUnit.GetUpperAnim(
+                p.AnimUpperAction, p.AnimActionStart, now);
+
             var s = new NetEntityState
             {
                 EntNum = netId,
@@ -1963,10 +1974,14 @@ public sealed class ServerNet : IDisposable
                 HitDamageDealtTotal = p.HitsoundDamageDealtTotal,
                 NadeTimer = p.NadeTimer,
                 ReviveProgress = p.ReviveProgress,
+                // [W14b LI1] the animdecide upper-body action overlay (SHOOT this wave) + its start time. The server
+                // latches the action at the weapon-fire commit (WeaponFireGate) and networks the expiry-resolved id
+                // (resolvedAction above): the client plays it as a torso overlay over the velocity-derived legs (LI3).
+                // None (idle) keeps the EntityField.AnimAction bit clear (Diff) so a not-shooting player costs nothing.
+                UpperAction = (byte)resolvedAction,
+                AnimActionTime = p.AnimActionStart,
                 // [W14a-wepent] the exterior-weapon block (QC common/wepent.qh) populated from the live slot-0 weapon
-                // state machine — the remote third-person held weapon's switch/transparency/skin. UpperAction /
-                // AnimActionTime are intentionally left at their defaults (idle); the server animdecide producer (LI1)
-                // is a later wave, so the AnimAction wire stays RESERVED but unused this wave.
+                // state machine — the remote third-person held weapon's switch/transparency/skin.
                 SwitchWeapon = p.WeaponState(new WeaponSlot(0)).SwitchWeaponId,
                 SwitchingWeapon = p.WeaponState(new WeaponSlot(0)).SwitchingWeaponId,
                 // QC the slot's WS_* .state compressed to the render-relevant phase: WS_RAISE → 1, WS_DROP → 2, else 0.

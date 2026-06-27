@@ -1,5 +1,7 @@
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;
+// Alias the animdecide unit so the call sites read unambiguously (it lives flat in XonoticGodot.Common.Gameplay).
+using AnimDecideUnit = XonoticGodot.Common.Gameplay.AnimDecide;
 
 namespace XonoticGodot.Common.Gameplay;
 
@@ -141,6 +143,27 @@ public abstract partial class Weapon
             if (s2.State == WeaponFireState.InUse)
                 s2.State = WeaponFireState.Ready;
         });
+
+        // [W14b LI1] animdecide upper-body action set-site. QC weapon_thinkf (weaponsystem.qc:415-423) latches the
+        // SHOOT (or MELEE) upper action only when it schedules a WFRAME_FIRE1/FIRE2 with a NON-ZERO animtime
+        // (`(fr == WFRAME_FIRE1 || fr == WFRAME_FIRE2) && t`). The committed attack is the port's WFRAME_FIRE
+        // analogue, so latch SHOOT now (restart = true to mirror QC's restartanim = fr != WFRAME_IDLE, so a
+        // held-trigger stream restarts the window each shot). A ZERO-animtime fire mode (QC's `&& t` fails) does
+        // NOT latch a torso overlay and, like QC's else-branch (weaponsystem.qc:422-423), CLEARS a lingering
+        // SHOOT/MELEE — a zero-animtime shot returns the torso to idle. MELEE (the melee-spawnflag branch) +
+        // PAIN/DRAW/TAUNT/DIE set-sites are Stage 4.
+        float fireNow = Api.Services is not null ? Api.Clock.Time : 0f;
+        if (animtime > 0f)
+        {
+            var (act, start) = AnimDecideUnit.SetAction(
+                actor.AnimUpperAction, actor.AnimActionStart, AnimDecideUnit.AnimUpperAction.Shoot, fireNow, restart: true);
+            actor.AnimUpperAction = act;
+            actor.AnimActionStart = start;
+        }
+        else if (actor.AnimUpperAction is AnimDecideUnit.AnimUpperAction.Shoot or AnimDecideUnit.AnimUpperAction.Melee)
+        {
+            actor.AnimUpperAction = AnimDecideUnit.AnimUpperAction.None;
+        }
 
         return true;
     }
