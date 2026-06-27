@@ -1,7 +1,7 @@
 unit: freezetag
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # drift re-check 2026-06-27: 4 prior coverage-gap rows now FIXED (GiveFragsForKill/SetWeaponArena/PlayerRegen/ItemTouch all subscribed + live); 1 new coverage row added (LastPlayerForTeam ALONE notif)
+last_audited: "2026-06-27"  # OPUS re-audit (Waves 16-17): re-verified live call sites (PlayerRegen.Call PlayerFrameLogic.cs:56, GiveFragsForKill.Call Scores.cs:556, FireItemTouch ItemPickupRules.cs:378, SetWeaponArena.Call SpawnSystem.cs:1005/1229, FragCenterMessage.Call Scores.cs:809). FIXED since the 06-27 row was written: freezetag.notif.alone (CENTER_ALONE) is now implemented + live (FreezeTag.NotifyLastPlayerForTeam, called from OnDeath:339). freezetag.frags.center_message stays open (hook+notif now exist + fire live, but FT subscribes NO FragCenterMessage handler).
 summary:
   feature_count: 30
   worst_gaps:
@@ -10,7 +10,8 @@ summary:
     - "FIXED 2026-06-27: frozen-player regen gate (FreezeTag.OnPlayerRegen, live PlayerFrameLogic.cs:56) and frozen-pickup gate (FreezeTag.OnItemTouch, live ItemPickupRules.cs:378) are both implemented. See freezetag.frozen.no_regen / freezetag.frozen.no_pickup."
     - "STILL OPEN: no ice (MDL_ICE) entity model — only the icy player-model colormod tint (ClientWorld.FrozenColormod). The signature ice cube is absent. Also no ANIMSTATE_FROZEN frozen pose (freezetag.presentation.frozen_anim)."
     - "STILL OPEN: void/lava NEEDKILL soft-kill relocate (g_frozen_damage_trigger 0) is still missing (FT OnDamageCalculate leaves NEEDKILL deathtypes alone; the relocate-to-spawn needs the server spawn selector and is not done). Default cvar 1 = die, so dormant at stock anyway."
-    - "STILL OPEN: the per-freeze CHOICE centerprint (FragCenterMessage 'You froze X'/'You were frozen by Y') has no FT producer (freezetag.frags.center_message). NEW coverage gap: the CENTER_ALONE 'you are now alone' last-survivor notification (freezetag_LastPlayerForTeam_Notify) is not sent by FT (freezetag.notif.alone)."
+    - "STILL OPEN: the per-freeze CHOICE centerprint (FragCenterMessage 'You froze X'/'You were frozen by Y') has no FT producer (freezetag.frags.center_message) — the MutatorHooks.FragCenterMessage chain + the FRAG_FREEZE/FRAGGED_FREEZE choices now exist and FragCenterMessage.Call fires live (Scores.cs:809), but FreezeTag.Activate subscribes NO handler, so the generic FRAG/FRAGGED centerprint still shows."
+    - "FIXED since the 06-27 row was written: the CENTER_ALONE 'you are now alone' last-survivor notification (freezetag.notif.alone) IS now sent — FreezeTag.NotifyLastPlayerForTeam (FreezeTag.cs:1063) is called from OnDeath (FreezeTag.cs:339, live via Combat.Death) and center-prints ALONE to a team's lone unfrozen survivor."
 features:
   - id: freezetag.mode.registration
     name: "Mode registration: teams, team-spawns, score/lead limits, FT scoring fields"
@@ -789,10 +790,12 @@ features:
     base_refs:
       - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, FragCenterMessage)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:CHOICE_FRAG_FREEZE/FRAGGED_FREEZE"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:FragCenterMessage (chain exists)"
+      - "src/XonoticGodot.Server/Scores.cs:809 (FragCenterMessage.Call — LIVE, but no FT subscriber)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1292 (CHOICE FRAG_FREEZE/FRAGGED_FREEZE)"
     constants:
-      - { name: "attacker line", base: "CHOICE_FRAG_FREEZE 'You froze X'", port: "declared (NotificationsList.cs:1270) — no FT producer wiring", match: false }
-      - { name: "target line", base: "CHOICE_FRAGGED_FREEZE 'You were frozen by Y'", port: "declared (NotificationsList.cs:1271) — no FT producer", match: false }
+      - { name: "attacker line", base: "CHOICE_FRAG_FREEZE 'You froze X'", port: "declared (NotificationsList.cs:1292) — hook chain exists, no FT subscriber", match: false }
+      - { name: "target line", base: "CHOICE_FRAGGED_FREEZE 'You were frozen by Y'", port: "declared (FRAGGED_FREEZE) — hook chain exists, no FT subscriber", match: false }
     status:
       logic: missing
       values: faithful
@@ -803,11 +806,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base ft FragCenterMessage replaces the generic kill centerprint with CHOICE_FRAG_FREEZE (attacker: 'You froze X', with kill count + ping) and CHOICE_FRAGGED_FREEZE (target: 'You were frozen by Y'), suppressing it entirely when the target was already frozen (pushed off a cliff). The choice notifications are DECLARED in NotificationsList.cs (1270-1271) but FreezeTag has no FragCenterMessage hook to emit them — they have no live producer. The kill-feed INFO lines (INFO_FREEZETAG_FREEZE/SELF) DO fire (covered by freezetag.presentation.notifications); only the per-kill CHOICE centerprint to the two involved players is missing."
+      - "STILL OPEN. The infrastructure now ALL exists and is live: the MutatorHooks.FragCenterMessage chain (MutatorHooks.cs:616), the FRAG_FREEZE/FRAGGED_FREEZE choices (NotificationsList.cs:1292), and FragCenterMessage.Call firing on every frag (Scores.cs:809, whose comment explicitly anticipates FreezeTag swapping in the freeze lines + suppressing when the victim was already frozen). The ONLY missing piece is the producer: FreezeTag.Activate subscribes no FragCenterMessage handler (grep across GameTypes/ → none), so fcm.AttackerChoice/TargetChoice stay the generic FRAG/FRAGGED and the personal 'You froze X' / 'You were frozen by Y' centerprint never fires. The kill-feed INFO lines (INFO_FREEZETAG_FREEZE/SELF) DO fire (covered by freezetag.presentation.notifications)."
     verification:
-      - { kind: code-read, ref: "FRAG_FREEZE/FRAGGED_FREEZE choices declared NotificationsList.cs:1270-1271; no FragCenterMessage hook or producer in FreezeTag.cs", result: fail }
+      - { kind: code-read, ref: "MutatorHooks.FragCenterMessage chain (MutatorHooks.cs:616) + FRAG_FREEZE choice (NotificationsList.cs:1292) + live FragCenterMessage.Call (Scores.cs:809); but no FragCenterMessage.Add in FreezeTag.cs Activate nor anywhere in GameTypes/ → no FT producer", result: fail }
     confidence: high
-    notes: "NEW row — registry coverage gap. Distinct from the INFO kill-feed lines (which are faithful); this is the personal centerprint the attacker/victim see on a freeze."
+    notes: "Re-audited (Waves 16-17): the hook + choice notifications + live call site landed, so the gap narrowed from 'no hook at all' to 'FT subscribes no handler'. Status unchanged (missing/dead) — the player-visible result is still the generic frag centerprint, not the freeze line. A one-line OnFragCenterMessage subscriber (set choices to FRAG_FREEZE/FRAGGED_FREEZE, Suppress when victim already frozen) would close it."
 
   - id: freezetag.presentation.frozen_anim
     name: "Frozen-pose player animation (PlayerAnim ANIMSTATE_FROZEN)"
@@ -839,21 +842,24 @@ features:
     base_refs:
       - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_LastPlayerForTeam"
       - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_LastPlayerForTeam_Notify"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:NotifyLastPlayerForTeam"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnDeath"
     constants:
-      - { name: "alone line", base: "CENTER_ALONE 'You are now alone!' to the team's last unfrozen survivor", port: "declared (NotificationsList.cs:850) — no FT producer", match: false }
+      - { name: "alone line", base: "CENTER_ALONE 'You are now alone!' to the team's last unfrozen survivor", port: "NotificationSystem.Center(last, \"ALONE\") (FreezeTag.cs:1079); CENTER_ALONE declared NotificationsList.cs:872 '^F4You are now alone!'", match: true }
+      - { name: "survivor test", base: "!STAT(FROZEN) && !IS_DEAD teammate, leaving player excluded, round started only", port: "!IsEliminated (frozen OR dead excluded) teammate, leaving excluded, gated on Handler.IsRoundStarted", match: true }
     status:
-      logic: missing
+      logic: faithful
       values: faithful
-      timing: na
-      presentation: missing
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base freezetag_LastPlayerForTeam_Notify (called from PlayerDies/PlayerSpawn/teamchange when a freeze leaves exactly one unfrozen teammate alive) sends CENTER_ALONE to that survivor — the 'you are now alone' warning. The port's FreezeTag never calls a NotifyLastPlayerForTeam (the method exists only on ClanArena.cs, not shared, and FreezeTag.Freeze/OnDeath/OnPlayerSpawn don't invoke it). The ALONE center notification IS declared (NotificationsList.cs:850) but has no live FT producer."
+      - "Base freezetag_LastPlayerForTeam_Notify is also invoked from the PlayerSpawn/teamchange paths (where a respawn/team-swap can leave a lone survivor); the port wires it ONLY through OnDeath (the freeze-on-frag path). The dominant freeze case is covered; a survivor created by a teammate's mid-round respawn/teamchange without a freeze would miss the ALONE cue — minor edge."
     verification:
-      - { kind: code-read, ref: "grep NotifyLastPlayerForTeam/ALONE in FreezeTag.cs → none; NotifyLastPlayerForTeam defined only on ClanArena.cs; ALONE notification declared NotificationsList.cs:850 but FT sends no center ALONE", result: fail }
+      - { kind: code-read, ref: "FreezeTag.NotifyLastPlayerForTeam (FreezeTag.cs:1063-1080) scans the same-team roster, excludes the leaving (just-frozen) player + any IsEliminated (frozen/dead) teammate, and on exactly one survivor sends NotificationSystem.Center(last, \"ALONE\"); called from OnDeath (FreezeTag.cs:339) which is live via Combat.Death.Add(OnDeath) in Activate. CENTER_ALONE declared NotificationsList.cs:872; NotificationSystem.Center is the live center-print convenience (NotificationSystem.cs:196).", result: pass }
     confidence: high
-    notes: "NEW row — registry coverage gap (analogous to CA's last-survivor notify, which CA does implement). FT omits the 'you are now alone' survivor warning Base fires on freeze/spawn. Cosmetic / awareness cue."
+    notes: "FIX since the prior 06-27 row (missing→faithful, dead→live). The 'you are now alone' last-survivor center-print IS now sent: FreezeTag grew its own NotifyLastPlayerForTeam (mirroring CA/Survival) and calls it from the death/freeze hook. FT-correct survivor test (frozen teammates don't count, via IsEliminated). Only the spawn/teamchange invocation site is not wired (OnDeath only) — minor coverage edge, hence the single gap."

@@ -5,7 +5,7 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 9
   worst_gaps:
-    - "Menu gametype-description prose (deathmatch.qc:describe) not ported — no GameType.Describe() in the port"
+    - "Menu gametype-description prose (deathmatch.qc:describe) now ported+live (MenuDescription) but only surfaces during a gametype vote (sv_vote_gametype, opt-in) on a listen server"
     - "Teamkill escalation curve (g_teamkill_punishing) unmodeled — unreachable in FFA DM"
     - "OnDeath writes victim.GtDeaths/GtSuicides which have no readers (harmless dead writes; scoreboard counts come from Scores.GiveFrags read-through)"
 features:
@@ -287,21 +287,29 @@ features:
     layer: [presentation]
     base_refs:
       - "common/gametypes/gametype/deathmatch/deathmatch.qc:METHOD(Deathmatch, describe) (MENUQC)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:MenuDescription"
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:GameType.MenuDescription (virtual, default null)"
+      - "game/net/NetGame.cs:UpdateMapVotePanel (reads gt.MenuDescription → Candidate.Description, gametype-vote branch)"
+      - "game/hud/MapVotePanel.cs:DrawDescription (renders the wrapped multi-line description on GametypeVote items)"
     constants:
-      - { name: "describe_text", base: "3-paragraph MENUQC PAGE_TEXT (FFA fight, scoring +1/-1, powerups/items)", port: "none", match: false }
+      - { name: "describe_text", base: "3-paragraph MENUQC PAGE_TEXT (FFA fight, scoring +1/-1, powerups/items)", port: "3-paragraph MenuDescription (FFA fight, +1/-1 scoring, Mega Health/Mega Armor)", match: true }
     status:
       logic: na
       values: na
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base's MENUQC METHOD(Deathmatch, describe) supplies the multi-paragraph gametype help text shown in the menu's gametype picker; the port's GameType base class has no Describe() override (monsters/weapons/mutators have Describe() but gametypes do not), so DM has no ported description. Pure menu cosmetic; no gameplay impact."
+      - "MenuDescription only renders during a GAMETYPE vote (sv_vote_gametype, opt-in default 0); a normal map vote and the static menu gametype-picker do not surface it. This matches Base (describe() is shown only in the gametype-vote ballot, GameTypeVote_DrawGameTypeItem), but means the prose is unseen at stock settings."
+      - "Listen-server only: the whole mapvote/gametype-vote ballot is fed from the in-process GameWorld.MapVote (NetGame.UpdateMapVotePanel); a dedicated-server / remote client has no ENT_CLIENT_MAPVOTE net entity, so it never sees the description. This is the broader mapvote-net gap tracked in sv-mapvoting / sv-intermission, not a DM-specific defect."
     verification:
-      - { kind: code, ref: "grep 'free-for-all fight'/Describe in src/ game/ → only monster/weapon/mutator describes; GameType.cs has no Describe member", result: fail }
+      - { kind: code, ref: "Deathmatch.MenuDescription (Deathmatch.cs:87) overrides GameType.MenuDescription (GameplayBases.cs:381, default null) with the 3-paragraph FFA prose — faithful structure vs deathmatch.qc:7-16 describe() (FFA fight / +1 -1 scoring / Mega Health+Armor powerups)", result: pass }
+      - { kind: code, ref: "NetGame.UpdateMapVotePanel (NetGame.cs:3772-3781): on isGametypeVote, GameTypes.ByName(c.MapName) → desc = gt.MenuDescription, packed into MapVotePanel.Candidate.Description; live every frame on the listen-server feed", result: pass }
+      - { kind: code, ref: "MapVotePanel.DrawDescription (MapVotePanel.cs:619) drawn when GametypeVote && !empty(c.Description) (MapVotePanel.cs:523,538) — the wrapped multi-line block under the gametype icon", result: pass }
+      - { kind: code, ref: "GameWorld.cs:4088 starts the gametype vote only when sv_vote_gametype != 0 (Cvars.cs:493 default 0) AND PlayerCount>0 — opt-in, matching Base's gametype-vote-only describe surface", result: pass }
     confidence: high
-    notes: "NEW row 2026-06-27 (registry coverage gap, not a regression). Base deathmatch.qc:7-16 defines a MENUQC-only describe() returning the gametype-guide prose. The port has no gametype description plumbing at all (no GameType.Describe), so this is missing across the board. Out-of-scope for live gameplay parity but recorded for completeness of the registry."
+    notes: "FIXED by Wave-16: Deathmatch now overrides MenuDescription (a faithful 3-paragraph port of deathmatch.qc:7-16 describe()), and it IS wired to a live reader — NetGame.UpdateMapVotePanel feeds it into MapVotePanel.Candidate.Description on the gametype-vote branch, and MapVotePanel.DrawDescription renders the wrapped block. So presentation is now faithful (was missing). Liveness is PARTIAL, not full live: the description surfaces only during a gametype vote (sv_vote_gametype, opt-in default 0 — faithful to Base, where describe() shows only in the gametype-vote picker) and only on a listen server (the dedicated/remote-client mapvote-net-entity gap is tracked in sv-mapvoting, not here). Corrects the 2026-06-27 baseline claim that 'the port's GameType base class has no Describe() override' — GameType.MenuDescription now exists and DM overrides it."

@@ -6,10 +6,10 @@ summary:
   feature_count: 16
   worst_gaps:
     - "simple items (sv_simple_items, Base default 1) STILL not ported: always renders the 3D model, never the flat _simple sprite (no _simple model resolver, no bob suppression). The only remaining ITS_* bit Item_Show doesn't honor."
-    - "loot sky-surface (Q3SURFACEFLAG_SKY) kill-on-touch NOT represented: ITEM_TOUCH_NEEDKILL's NODROP half is ported but the sky-surface half isn't (no sky flag on the port trace result). Loot landing on a sky brush isn't auto-killed."
+    - "stay-weapon COLORMOD (cl_weapon_stay_color) + vehicle-hud item tint (cl_items_vehicle_*) still not applied — item meshes have no per-instance colormod uniform (player-skin-shader-only). The stay-weapon ALPHA (cl_weapon_stay_alpha 0.75) IS now applied (Wave 16 DriveItemStayFx)."
     - "q3compat item-origin offset (z += -15 - mins.z) + item_armor1->ArmorSmall(shard) on Q3 maps remain DEAD: code present (StartItem) but gated on Q3CompatProvider, never wired."
-    - "FIXED 2026-06-25 (Wave 12b, commit 6da9e80): Item_Damage (loot destroyed by NEEDKILL/lava damage), item_use + item_setactive (targeted-item trigger-to-spawn + active-toggle relay), and Item_FindTeam (team-item one-at-a-time random spawn/respawn group) are ALL now ported AND live — the three rows the prior baseline recorded as missing/dead are now faithful."
-    - "FIXED 2026-06-25 (Wave 8e): respawn-countdown WP_Item/WP_Weapon waypoint sprites + per-second ITEMRESPAWNCOUNTDOWN sound now ported (ItemPickupRules.RespawnCountdown ll.771-826). Also FIXED: ItemTouch/ItemTouched mutator hook chain present + live; Item_Show now emits EF_NODEPTHTEST/EF_FULLBRIGHT/powerup-glow EF_ADDITIVE directly."
+    - "small-item clustering (setItemGroup / setItemGroupCount, 120qu radius -> item_group/item_group_count) still MISSING — itemstime HUD can't show a single 'xN' badge for a packed cluster. Presentation-only, low impact."
+    - "DRIFT FIX (re-audit, Waves 16-17 pass): loot sky-surface (Q3SURFACEFLAG_SKY) kill-on-touch was recorded as a gap but has actually been ported since Wave 13 (LootInNoDrop tests DpHitContents&NODROP | DpHitQ3SurfaceFlags&SKY on the live touch path) — stale row, now CLOSED. Stay-weapon ALPHA tint newly applied in Wave 16 (DriveItemStayFx)."
 features:
   - id: items-pickups.def.resource_items
     name: "Health / Armor / Ammo item definitions, models, colors, sounds, bboxes"
@@ -159,7 +159,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:FireItemTouch / FireItemTouched"
     constants:
       - { name: "gate conditions", base: "FL_PICKUPITEMS && !IS_DEAD && SOLID_TRIGGER && owner!=toucher && time>=item_spawnshieldtime", port: "same", match: true }
-      - { name: "loot NODROP/sky kill on touch", base: "ITEM_TOUCH_NEEDKILL -> RemoveItem", port: "LootInNoDrop -> RemoveItem (NODROP only; no sky-surface flag on the trace result)", match: partial }
+      - { name: "loot NODROP/sky kill on touch", base: "ITEM_TOUCH_NEEDKILL -> RemoveItem (DPCONTENTS_NODROP | Q3SURFACEFLAG_SKY)", port: "LootInNoDrop (ItemPickupRules.cs:969-976) -> RemoveItem: (tr.DpHitContents & NoDropContents) | (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagSky) — BOTH halves now tested; DpHitQ3SurfaceFlags is populated by TraceService.BuildResult (l.627)", match: true }
       - { name: "expiring-timer relativize/restore", base: "subtract time then restore if !gave", port: "same", match: true }
       - { name: "MUTATOR_CALLHOOK(ItemTouch) before give", base: "items.qc:706", port: "MutatorHooks.FireItemTouch (ItemPickupRules.cs:372) — LIVE; subscribers Instagib/LMS/SuperSpec", match: true }
       - { name: "MUTATOR_CALLHOOK(ItemTouched) after give + wasfreed guard", base: "items.qc:746", port: "MutatorHooks.FireItemTouched (ItemPickupRules.cs:417) + IsFreed re-check — LIVE; subscribers Powerups/RandomItems", match: true }
@@ -173,14 +173,13 @@ features:
       liveness: live
     intended_divergence: true
     divergence_rationale: "The only remaining divergence is the pickup-sound CHANNEL: QC plays a non-resource powerup's pickup sound on CH_TRIGGER_SINGLE (self-cutting) and everything else on CH_TRIGGER; the port plays all items on the auto/TriggerAuto channel so two quick pickups stack instead of one cutting the other off — a deliberate, documented choice in ItemPickupRules.PlayPickupSound."
-    gaps:
-      - "loot kill checks NODROP only via a zero-length trace; the QC Q3SURFACEFLAG_SKY surface test isn't represented (no sky-surface flag on the port trace result) — loot landing on a sky brush isn't auto-killed on touch."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "Item_Touch (items.qc:686-781) vs ItemTouch (ItemPickupRules.cs:349-435) — gate + give + tail match; ItemTouch (l.372) + ItemTouched (l.417) hooks now FIRED and have live subscribers (Instagib/LMS/SuperSpec ItemTouch.Add; Powerups/RandomItems ItemTouched.Add); pickup sound on TriggerAuto not CH_TRIGGER[_SINGLE]", result: pass }
-      - { kind: code_read, ref: "MutatorHooks.cs:671/725 declare ItemTouch/ItemTouched HookChains; FireItemTouch/FireItemTouched at 679/732; subscribers grep-confirmed in 5 mutator/gametype files", result: pass }
+      - { kind: code_read, ref: "Item_Touch (items.qc:686-781) vs ItemTouch (ItemPickupRules.cs:354-478) — gate + give + tail match; ItemTouch (l.378) + ItemTouched (l.424) hooks FIRED and have live subscribers (Instagib/LMS/SuperSpec ItemTouch.Add; Powerups/RandomItems ItemTouched.Add); pickup sound on TriggerAuto not CH_TRIGGER[_SINGLE]", result: pass }
+      - { kind: code_read, ref: "LootInNoDrop (ItemPickupRules.cs:969-976) NOW tests BOTH NODROP (DpHitContents) AND sky (DpHitQ3SurfaceFlags & Q3SurfaceFlagSky=0x4); fields populated by TraceService.BuildResult (l.626-627); identical idiom to BuffsMutator.cs:376 / MonsterFramework.cs:396", result: pass }
       - { kind: unit_test, ref: "ItemSpawnTouchTests.ItemTouch_Gate_RejectsNonPickerAndDeadAndOwner", result: pass }
     confidence: high
-    notes: "FIXED 2026-06-25: the ItemTouch/ItemTouched mutator hook chain (recorded MISSING in the prior baseline) is now present, fired in order (ItemTouch before give, ItemTouched after the pickup sound with the IsFreed/wasfreed re-check), and LIVE with real subscribers. RandomItems' re-randomize-on-pickup, SuperSpec's spectator item pass-through, Instagib/LMS item filtering all now flow. Remaining: pickup-sound channel (intended) + the sky-surface loot kill (gap)."
+    notes: "Sky-surface loot kill CLOSED (drift fix): the prior baseline still recorded NODROP-only/no-sky as a gap, but LootInNoDrop has tested DpHitQ3SurfaceFlags&SKY since Wave 13 (commit 5427e74) on the live touch path — the row was stale, not regressed. The ItemTouch/ItemTouched mutator hook chain (fired in order, IsFreed re-check) is live with real subscribers (RandomItems re-randomize, SuperSpec pass-through, Instagib/LMS filtering). Only remaining divergence is the pickup-sound channel (intended)."
 
   - id: items-pickups.respawn.scheduling
     name: "Respawn scheduling (ScheduleRespawn/In, countdown-vs-think split, player-count scaling, jitter, countdown waypoint+sound)"
@@ -455,7 +454,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Items/ItemBobAnim.cs:Sample"
       - "src/XonoticGodot.Common/Gameplay/Items/ItemDespawnFx.cs:Tick"
       - "game/EntityNode.cs:SyncFromEntity"
-      - "game/client/ClientWorld.cs:DriveItemGhostFx / DriveItemDespawnFx / ItemDistanceAlpha"
+      - "game/client/ClientWorld.cs:DriveItemGhostFx / DriveItemDespawnFx / DriveItemStayFx / ItemDistanceAlpha"
     constants:
       - { name: "ANIMATE1 bob/spin", base: "10 + 8*sin(2t) ; +180 deg/s", port: "same", match: true }
       - { name: "ANIMATE2 bob/spin", base: "8 + 4*sin(3t) ; -90 deg/s", port: "same", match: true }
@@ -463,9 +462,10 @@ features:
       - { name: "cl_items_animate", base: "7 (bob|fade|particles)", port: "7", match: true }
       - { name: "despawn puff cadence", base: "0.25 -> 0.0625 halving", port: "same", match: true }
       - { name: "pickup/respawn particles", base: "EFFECT_ITEM_PICKUP/_RESPAWN at (absmin+absmax)*0.5", port: "EmitItemEffect at origin+(mins+maxs)*0.5", match: true }
-      - { name: "distance fade (g_items_maxdist/cl_items_fadedist)", base: "4500 / 500 (client/items/items.qc:147-158)", port: "ClientWorld.ItemDistanceAlpha (ClientWorld.cs:1234+) reproduces the QC formula, composed as base alpha under ghost/despawn (ll.1146-1154); LIVE per-frame", match: true }
+      - { name: "distance fade (g_items_maxdist/cl_items_fadedist)", base: "4500 / 500 (client/items/items.qc:147-158)", port: "ClientWorld.ItemDistanceAlpha reproduces the QC formula, composed as base alpha under ghost/despawn/stay (ll.1171-1206); LIVE per-frame", match: true }
+      - { name: "stay-weapon alpha (cl_weapon_stay_alpha)", base: "0.75 (ItemDraw availability branch)", port: "DriveItemStayFx (ClientWorld.cs:1227-1244) applies 0.75 alpha on a weapon_* item carrying server-set EF_STARDUST (the networked weapon-stay marker); composed under distance fade — NEW in Wave 16", match: true }
       - { name: "simple items (sv_simple_items/cl_simple_items)", base: "swap to _simple sprite, no bob", port: "NOT ported (always 3D)", match: false }
-      - { name: "stay-weapon / vehicle-hud tint (cl_weapon_stay_alpha/color, cl_items_vehicle_*)", base: "applied in ItemDraw availability branch", port: "ghost (0.45) applied; stay-weapon + vehicle tints not applied", match: false }
+      - { name: "stay-weapon COLOR + vehicle-hud tint (cl_weapon_stay_color, cl_items_vehicle_*)", base: "colormod multiply in ItemDraw availability branch", port: "NOT applied — item meshes have no per-instance colormod path (player-skin-shader-only); alpha-only for stay weapons, no vehicle tint", match: false }
     status:
       logic: faithful
       values: faithful
@@ -476,14 +476,15 @@ features:
     intended_divergence: true
     divergence_rationale: "Pickup/respawn particles + ghost/despawn fades are driven from the authoritative server pickup/respawn EVENT + the client render flags rather than the CSQC ITS_AVAILABLE net transition (with its isnew/PVS guards). Documented in ItemPickupRules.EmitItemEffect as equivalent-but-guard-free: it fires only on the real gameplay event, never when an item merely streams into a client's PVS."
     gaps:
-      - "stay-weapon translucency tint (cl_weapon_stay_alpha 0.75 / cl_weapon_stay_color) and the vehicle-hud item tint (cl_items_vehicle_*) from ItemDraw's availability branch are not applied — only the unavailable-ghost (0.45) alpha is."
+      - "stay-weapon COLORMOD (cl_weapon_stay_color '2 0.5 0.5') and the vehicle-hud item tint (cl_items_vehicle_*) are still not applied — item meshes have no per-instance colormod uniform (it is player-skin-shader-only). The stay-weapon ALPHA (cl_weapon_stay_alpha 0.75) is now applied (Wave 16 DriveItemStayFx); only the color multiply + vehicle tint remain."
       - "simple items (sv_simple_items default 1 + cl_simple_items) not ported — always renders the full 3D model with bob, never the flat non-bobbing _simple sprite."
       - "distance-fade edge: ItemDistanceAlpha only runs for entities IsItemEntity accepts (ItemAnimate!=0 || expiring || !available). A non-animating, available item (e.g. spawnflag 1024 suppressing animation) skips the distance branch. Stock items animate, so this is a corner case."
     verification:
-      - { kind: code_read, ref: "EntityNode.SyncFromEntity bob/spin + ClientWorld.DriveItem*Fx + ItemDistanceAlpha (ClientWorld.cs:1146-1234) composed as base alpha under ghost/despawn; matches client/items/items.qc:144-210", result: pass }
+      - { kind: code_read, ref: "EntityNode.SyncFromEntity bob/spin + ClientWorld.DriveItem*Fx + DriveItemStayFx (ClientWorld.cs:1185-1198 branch + 1227-1244 body) + ItemDistanceAlpha composed as base alpha; stay branch reads networked EF_STARDUST (server-set in Item_Show ll.531); matches client/items/items.qc:144-210", result: pass }
+      - { kind: code_read, ref: "git: DriveItemStayFx added in Wave 16 (commit b3a9c06), AFTER the prior baseline that recorded the stay-weapon tint fully missing — genuinely new (alpha half only)", result: pass }
       - { kind: unit_test, ref: "ItemSpawnTouchTests.ItemBobAnim_MatchesQcWaveforms + ItemDespawnFx_FirstTick_* + ItemTouch_TakenItem_EmitsPickupEffectAtBboxCentre", result: pass }
     confidence: high
-    notes: "Distance alpha-fade (ItemDistanceAlpha) remains live, composed as base alpha under ghost/despawn. Bob/spin live on the render path (EntityNode); ghost-on-pickup + loot despawn fade+puffs live in ClientWorld. Still open: stay-weapon/vehicle tints + simple items."
+    notes: "PARTIAL drift fix (Wave 16): the stay-weapon ALPHA tint (cl_weapon_stay_alpha 0.75) is now applied live via DriveItemStayFx — branched on weapon_* classname + the networked EF_STARDUST weapon-stay marker, composed under the distance fade, placed after the unavailable-ghost branch (a stay weapon stays AVAILABLE). Presentation stays PARTIAL: the cl_weapon_stay_color colormod (no item colormod path), the vehicle-hud tint, and simple items are all still unported. Distance alpha-fade, bob/spin, ghost-on-pickup + loot despawn fade+puffs all remain live."
 
   - id: items-pickups.itemstime.hud_feed
     name: "itemstime mutator — timed-item respawn-countdown table for the HUD"

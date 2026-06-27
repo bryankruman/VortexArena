@@ -5,9 +5,9 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Round-based player-blocking (QC reset_map_players + PlayerSpawn set player_blocked = !IsRoundStarted; Domination_RoundStart clears it) is not mirrored as a per-player freeze flag — the port relies on the generic round-not-started gates (weapon-fire-forbidden + capture gate + no-respawn) for the same effect, but the QC movement freeze is not reproduced (round-based variant only, non-default)."
     - "dom_team palette entities (per-team point models/sounds/messages from map dom_team edicts) are not implemented; the port hardcodes the default dom_<color>.md3 palette in DomPointModel (non-default maps only)."
     - "WaypointSprite_Ping (one-shot radar ping on capture) is not emitted separately; the port rebuilds the sprite set each tick (pull model) so ownership/color updates flow, but the explicit ping flash is absent."
+    - "Round-based player-blocking now reproduces QC player_blocked's movement freeze (zeroed .movement + blocked jump) live via PlayerPhysics.RoundMoveForbidden, gated on the round handler's IsRoundStarted; the only residual is QC disableclientprediction=1, an intended divergence (no DP networking stat in the port). Round-based only, non-default."
 features:
   - id: domination.init.mutator_limits
     name: "Mutator register + score/lead limit + team setup"
@@ -394,21 +394,25 @@ features:
       - "common/gametypes/gametype/domination/sv_domination.qc:MUTATOR_HOOKFUNCTION(dom, reset_map_players)"
       - "common/gametypes/gametype/domination/sv_domination.qc:MUTATOR_HOOKFUNCTION(dom, PlayerSpawn)"
       - "common/gametypes/gametype/domination/sv_domination.qc:Domination_RoundStart"
+      - "common/physics/player.qc:395 (PlayerJump: if(this.player_blocked) return true)"
+      - "common/physics/player.qc:728-732 (sys_phys_update: player_blocked => movement = '0 0 0')"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:RoundStart"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:RoundMoveForbidden (decl @142; consumed in Move @237 + PlayerJump @1064)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (PlayerPhysics.RoundMoveForbidden wire @2881; preamble clear @2773)"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
-      timing: na
+      timing: faithful
       presentation: na
       audio: na
-      liveness: partial
-    intended_divergence: false
-    divergence_rationale: null
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC player_blocked also sets disableclientprediction=1 (a DarkPlaces networking stat that suppresses client-side movement prediction during the freeze). The port has no equivalent stat, so only the observable movement freeze (zeroed input + blocked jump) is reproduced; the prediction-suppression bit is intentionally not mirrored."
     gaps:
-      - "QC reset_map_players sets it.player_blocked = 1 on map reset (roundbased) and PlayerSpawn sets player.player_blocked = !round_handler_IsRoundStarted(); Domination_RoundStart clears player_blocked = false for all players. The port's RoundStart only clears LastRoundWinner — no per-player block FLAG is set on reset/spawn or cleared at round start. The generic round-not-started gates (WeaponFireDriver.RoundFireForbidden @GameWorld.cs:1621, the dompoint capture gate via the now-live RoundStartedSource, and respawn suppression @GameWorld.cs:3476) DO hold players in check during the pre-round countdown, but the QC movement-freeze semantics of player_blocked are not reproduced 1:1."
+      - "QC sets/clears a literal per-player player_blocked field (reset_map_players=1, PlayerSpawn=!IsRoundStarted, Domination_RoundStart=0); the port instead reads the round handler's IsRoundStarted directly as the freeze window (RoundMoveForbidden = _ => !domRounds.IsRoundStarted). Equivalent window + observable effect, but no per-player flag is stored. disableclientprediction=1 not mirrored (see divergence_rationale)."
     verification:
-      - { kind: code, ref: "RoundStart() clears LastRoundWinner only (no player_blocked); grep player_blocked in Domination.cs/Server -> no match; generic gates are live: WeaponFireDriver.RoundFireForbidden = Rounds.IsRoundStarted==false @1621, RoundStartedSource wired @2807, respawnAllowed gated on !IsRoundStarted @3476", result: fail }
-    confidence: medium
-    notes: "Reframed 2026-06-27 re-verify (liveness unchanged partial). The dom-specific player_blocked set/clear (reset_map_players, PlayerSpawn, Domination_RoundStart) is still not ported as a per-player flag. CORRECTION vs prior baseline: this is NO LONGER tied to a dead RoundStartedSource — that source is now wired (GameWorld.cs:2807), so the generic round-not-started checks (fire-forbidden, capture-blocked, no-respawn) are live and cover most of player_blocked's practical effect during round warmup. Residual gap = the literal movement freeze. Round-based-only (g_domination_roundbased 0 default), non-default."
+      - { kind: code, ref: "Wave 16 (b3a9c06) added PlayerPhysics.RoundMoveForbidden: GameWorld.ActivateGameType dom-roundbased arm wires it @2881 to (_ => !domRounds.IsRoundStarted) and the preamble nulls it @2773; PlayerPhysics.Move zeroes `move` when the predicate fires @237-238 and PlayerJump returns blocked @1064-1065 — both on the live movement driver. Reproduces QC player.qc:728 (movement='0 0 0') + PlayerJump:395 (return true) for the pre-round window.", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27 (re-verify): logic partial->faithful, timing na->faithful, liveness partial->live; intended_divergence false->true. Wave 16 ported the player_blocked movement freeze as a live host-wired seam (PlayerPhysics.RoundMoveForbidden), mirroring the WeaponFireDriver.RoundFireForbidden pattern: while the dom roundbased round is active-but-unstarted (warmup/countdown/end-delay) the player's movement input is zeroed and jump is blocked on the live PlayerPhysics path. The freeze window is driven off the same live round handler (domRounds.IsRoundStarted) that the QC player_blocked flag tracks, so the timing matches. The ONLY residual is QC's disableclientprediction=1, which has no port stat and is flagged as an intended divergence (not a defect). The generic round-not-started gates (fire-forbidden @1621, dompoint capture gate via RoundStartedSource @2876, respawn suppression @3476) remain live alongside it. Round-based-only (g_domination_roundbased 0 default), non-default variant."

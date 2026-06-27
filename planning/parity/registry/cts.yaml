@@ -1,13 +1,13 @@
 unit: cts
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-27"  # re-audited post Waves 16-17 (state-producers + presentation-consumers)
 summary:
   feature_count: 21
   worst_gaps:
     - "Intermediate/defrag checkpoints unimplemented (target_checkpoint/trigger_race_checkpoint are no-ops for CTS): no ordered progress, no 'went backwards' penalty, no per-cp splits. The Race port has per-checkpoint split records; CTS remains a single start->stop course."
     - "No CTS bot role (havocbot_role_cts): bots are not routed to race-checkpoint waypoints, so they do not run the CTS course."
-    - "Per-player race bookkeeping is only partly ported: PlayerSpawn (run-clock reset + checkpoint=-1) and MakePlayerObserver (FRAGS_PLAYER_OUT_OF_GAME + checkpoint=-1) are now live, but there are still no ClientConnect/PutClientInServer/AbortSpeedrun hooks (race_SendAll, race_RetractPlayer respawn branch, g_allow_checkpoints practice mode)."
+    - "Per-player race bookkeeping is only partly ported: PlayerSpawn (run-clock reset + checkpoint=-1), MakePlayerObserver (FRAGS_PLAYER_OUT_OF_GAME + checkpoint=-1), and (FIXED Wave-16/17) AbortSpeedrun (drop the run clock on a speedrun-cheat teleport-back, live via Commands.cs:2150 impulse-141 dispatch) are now live, but there are still no ClientConnect/PutClientInServer hooks (race_SendAll, race_RetractPlayer respawn branch, g_allow_checkpoints practice mode)."
     - "FIXED since last audit (2026-06-27): cts.mode.register_latch values partial->faithful — the timelimit=20 gametype default (now asserted at GameWorld:3055-3056 when unset) and the MUTATOR_ONADD GameRules_limit_score(0)/limit_lead(0) clears (now fraglimit=0/leadlimit=0 at Cts.cs:218-219) are both modeled and match Base; only the non-gameplay 'cloaked'/m_generate_mapinfo menu+mapinfo-listing surface remains."
     - "FIXED earlier (2026-06-25): the .race_movetime per-frame run-clock accumulator is ported+live in OnPlayerPhysics and read at FinishStage (deterministic run clock; was wall-clock). independent_players=1 is an authoritative latch read live by the damage independent-block + score rules. MakePlayerObserver (FRAGS_PLAYER_OUT_OF_GAME) is ported+live."
 features:
@@ -570,9 +570,12 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:OnPlayerSpawn (run-clock reset + race_checkpoint=-1)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:OnMakePlayerObserver (FRAGS_PLAYER_OUT_OF_GAME + race_checkpoint=-1)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:AbortSpeedrun (Cts.cs:448, drops the in-progress run clock)"
+      - "src/XonoticGodot.Server/Commands.cs:2150 (impulse-141 CHIMPULSE_SPEEDRUN dispatch -> cts.AbortSpeedrun on a successful Cheats.Speedrun restore)"
     constants:
-      - { name: "race_checkpoint init", base: "-1 on connect/observe/spawn", port: "set to -1 in OnPlayerSpawn (Cts.cs:705) + OnMakePlayerObserver (Cts.cs:622); NOT on ClientConnect (no hook)", match: false }
-      - { name: "FRAGS_PLAYER_OUT_OF_GAME", base: "set on a ranked observer", port: "OnMakePlayerObserver sets Player.FragsOutOfGame (-616) when FastestTimeOf(p)>0 (Cts.cs:617)", match: true }
+      - { name: "race_checkpoint init", base: "-1 on connect/observe/spawn", port: "set to -1 in OnPlayerSpawn (Cts.cs:719) + OnMakePlayerObserver (Cts.cs:636); NOT on ClientConnect (no hook)", match: false }
+      - { name: "FRAGS_PLAYER_OUT_OF_GAME", base: "set on a ranked observer", port: "OnMakePlayerObserver sets Player.FragsOutOfGame when FastestTimeOf(p)>0 (Cts.cs:631)", match: true }
+      - { name: "AbortSpeedrun (MUTATOR_CALLHOOK from CHIMPULSE_SPEEDRUN)", base: "drop the in-progress run on a speedrun teleport-back (teleport-success branch only)", port: "Cts.AbortSpeedrun => AbandonRun, fired from Commands.cs:2150 after Cheats.Speedrun() returns true", match: true }
       - { name: "g_allow_checkpoints (AbortSpeedrun practice mode)", base: "0", port: "not modeled", match: false }
     status:
       logic: partial
@@ -584,11 +587,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "OnPlayerSpawn now does the run-clock reset (AbandonRun, incl. the .race_movetime accumulator) AND race_checkpoint=-1 (Cts.cs:701-705) — the meaningful half of race_PreparePlayer for a single start->stop course. OnMakePlayerObserver is now ported+live (FRAGS_PLAYER_OUT_OF_GAME when the observer holds a ranked time, else FRAGS_SPECTATOR; AbandonRun + race_checkpoint=-1, Cts.cs:611-623), matching QC. Still MISSING: ClientConnect / PutClientInServer / AbortSpeedrun hooks (race_SendAll on connect, the PutClientInServer spawn==qualifying re-prepare-vs-race_RetractPlayer branch, the g_allow_checkpoints practice-mode re-prepare), and respawn-checkpoint/spotref recording."
+      - "OnPlayerSpawn now does the run-clock reset (AbandonRun, incl. the .race_movetime accumulator) AND race_checkpoint=-1 (Cts.cs:715-719) — the meaningful half of race_PreparePlayer for a single start->stop course. OnMakePlayerObserver is ported+live (FRAGS_PLAYER_OUT_OF_GAME when the observer holds a ranked time, else FRAGS_SPECTATOR; AbandonRun + race_checkpoint=-1, Cts.cs:625-638). FIXED in Wave-16/17: the AbortSpeedrun hook is now ported (Cts.AbortSpeedrun, Cts.cs:448) and LIVE — dispatched from the impulse-141 (CHIMPULSE_SPEEDRUN) cheat handler (Commands.cs:2145-2151) after a successful Cheats.Speedrun() restore, dropping the in-progress run clock (QC MUTATOR_CALLHOOK(AbortSpeedrun)). Still MISSING: ClientConnect / PutClientInServer hooks (race_SendAll on connect, the PutClientInServer spawn==qualifying re-prepare-vs-race_RetractPlayer branch), the g_allow_checkpoints practice-mode re-prepare, and respawn-checkpoint/spotref recording — so the feature stays partial."
+      - "Minor AbortSpeedrun fidelity residual: the port fires cts.AbortSpeedrun whenever Cheats.Speedrun() returns true, which includes the start-solid case (RestorePersonal returns true even when the teleport was skipped). QC fires AbortSpeedrun only inside the teleport-SUCCESS else-branch (not when 'Cannot move there, cheater'). For CTS the hook only drops the run clock and the start-solid restore already invalidates the run, so the divergence is negligible."
     verification:
-      - { kind: code, ref: "OnPlayerSpawn (Cts.cs:686-709) = ForceShotgunOnly + AbandonRun + NextCheckpoint=-1 (the run-clock + checkpoint half of race_PreparePlayer), live via MutatorHooks.PlayerSpawn (subscribed Activate:230). OnMakePlayerObserver (Cts.cs:611-623) sets FRAGS_PLAYER_OUT_OF_GAME/SPECTATOR + AbandonRun + NextCheckpoint=-1, live via MutatorHooks.MakePlayerObserver.Call (ClientManager.cs:542). No ClientConnect/PutClientInServer/AbortSpeedrun hooks; no race_SendAll/race_RetractPlayer.", result: pass }
+      - { kind: code, ref: "OnPlayerSpawn (Cts.cs:700-723) = ForceShotgunOnly + AbandonRun + NextCheckpoint=-1 (the run-clock + checkpoint half of race_PreparePlayer), live via MutatorHooks.PlayerSpawn (subscribed Activate:237). OnMakePlayerObserver (Cts.cs:625-638) sets FRAGS_PLAYER_OUT_OF_GAME/SPECTATOR + AbandonRun + NextCheckpoint=-1, live via MutatorHooks.MakePlayerObserver.Call (ClientManager.cs:564). AbortSpeedrun (Cts.cs:448) is LIVE via Commands.cs:2150 (impulse-141 dispatch). Still no ClientConnect/PutClientInServer hooks; no race_SendAll/race_RetractPlayer respawn branch.", result: pass }
     confidence: high
-    notes: "FIXED since baseline (logic missing->partial, values missing->partial, liveness na->partial): OnPlayerSpawn now resets the run clock + race_checkpoint=-1, and OnMakePlayerObserver is implemented + live (FRAGS_PLAYER_OUT_OF_GAME for a ranked observer + checkpoint reset). Residual: the ClientConnect/PutClientInServer/AbortSpeedrun hooks, race_SendAll, race_RetractPlayer respawn branch, and g_allow_checkpoints practice mode are still absent — so partial, not faithful."
+    notes: "FIXED in Wave-16/17: the AbortSpeedrun hook is now ported (Cts.AbortSpeedrun) and LIVE on the impulse-141 speedrun-cheat dispatch path (Commands.cs:2150) — one of the three previously-missing lifecycle hooks is closed. PlayerSpawn (run-clock reset + race_checkpoint=-1) and MakePlayerObserver (FRAGS_PLAYER_OUT_OF_GAME for a ranked observer) remain live from earlier waves. Residual keeping this partial (not faithful): ClientConnect/PutClientInServer hooks, race_SendAll, the race_RetractPlayer respawn branch, and g_allow_checkpoints practice mode are still absent. (Live-path line numbers re-anchored to the Wave-16/17 code.)"
 
   - id: cts.bot.role
     name: "CTS bot role: route to the next race-checkpoint waypoint (havocbot_role_cts)"

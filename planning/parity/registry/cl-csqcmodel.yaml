@@ -1,7 +1,7 @@
 unit: cl-csqcmodel
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-27"  # re-audited after Wave 16/17
 summary:
   feature_count: 12
   worst_gaps:
@@ -9,6 +9,7 @@ summary:
     - "MAJOR FIX (drift 2026-06-27): the upper-body ACTION state machine (shoot/melee/pain/draw/taunt/die torso overlays) — formerly the dominant baseline gap — is now FULLY PORTED AND LIVE end-to-end. Server producers latch actions (WeaponFireGate shoot/melee, WeaponFireDriver draw, DamageSystem pain1/pain2 + die1/die2, SoundSystem taunt) via AnimDecide.SetAction; the action+start are networked via the new EntityField.AnimAction bit (1<<18, NetEntity.UpperAction/AnimActionTime); the client decodes (ClientEntityView) and PlayerModel.Pose plays the torso action clip via LocomotionBlend.SelectTorsoAction with the priority cascade (DEAD>ACTIVE>IDLE) in AnimDecide.GetUpperAnim, and the per-anim framerates (die 0.5/shoot 5/jump 10/draw 3/taunt 0.33) are now USED (AnimDecide.SpecFor in PlayerModel.BuildClipTable ActionClip). The 8-direction + duck-variant LOCOMOTION (the prior drift fix) also remains faithful and live."
     - "CSQCMODEL networking contract spine still mostly unmapped, BUT alpha + UsingJetpack + the anim_* action block + the exterior-weapon (wepent) block are now ALL wired end-to-end. Still NOT networked: colormod (ALL entities, BIT(8)), scale (BIT(12)), traileffect (BIT(2)), non-jetpack modelflags (BIT(2)), non-player glowmod (BIT(8)), v_angle (BIT(10)), the anim_state LOCOMOTION bits (locomotion is inferred client-side from velocity/angles, which Base also does), and the networked colormap proper (only a team id is sent)."
     - "Per-player FORCED glowmod TINT (gametype/powerup role color RECOLORING the model surface over the colormap-derived glowmod) is built (ApplyForcedGlowmod + ForcedAppearance.HasForcedGlowmod) but STILL DEAD — no caller ever composes or passes a forced glowmod; the live jetpack composition passes forcedGlowmod (-1,-1,-1) = unset. (Distinct from the role-glow LIGHTS, which ARE live via PowerupsMutator EF_BLUE/EF_RED.)"
+    - "FIXES (drift 2026-06-27 Wave16/17): (a) the force-color FRIEND-collision check now walks EVERY active team's color (CsqcModelAppearance.ResolveForcedColormap teamCount loop; ClientWorld.cs:1461 passes ctx.TeamCount) reproducing Base's teams.sort_next walk — forcecolors.cascade logic partial->faithful; (b) the player-model EF_BRIGHTFIELD->TR_NEXUIZPLASMA trail is now LIVE (ClientWorld.DriveModelTrail routes the CsqcModelEffects.Apply trail return instead of discarding it). The Wave-14b animdecide upper-body ACTION machine + wepent + alpha + jetpack remain live/faithful (no regression)."
     - "Auto tag-index full QC cascade (h_/v_ model tag chain, recursive parent predraw, drawmask=0 on unresolved tag) still simplified to a tag_weapon marker attach, BUT the exterior-weapon (wepent) block (switch/raise-lower phase, skin, align, weapon alpha) is now networked + consumed by ViewEntityRenderer for the remote third-person held weapon (partial fix)."
 features:
   - id: cl-csqcmodel.predraw.dispatch_order
@@ -89,22 +90,21 @@ features:
       - { name: "team colormap encoding", base: "1024 + 17*team", port: "1024 + 17*team", match: true }
       - { name: "forceplayercolors fallback (Base: player_localnum+1 SLOT idx)", base: "player_localnum+1 (slot)", port: "1024+playerLocalNum+1 (biased into >=1024 form for ModelTint)", match: false }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: faithful
       audio: na
       liveness: partial
     intended_divergence: true
-    divergence_rationale: "The friend-only-force collision suppression (QC walks the live `teams` list to reject a forced friend color equal to any team's color) is reduced to a local-team-only compare because the port doesn't network the full team list to the client. The cascade is inert unless an AppearanceProvider is wired; on the live NetGame path it IS wired (NetGame.cs:BuildAppearanceContext), so it is live in a match but degrades to the entity's own colormap in a pure demo with no provider. The forcePlayerColorsEnabled branch returns 1024+playerLocalNum+1 rather than Base's bare slot index (player_localnum+1) so the port's ModelTint (which expects the >=1024 explicit-RGB form) paints correctly."
+    divergence_rationale: "The forcePlayerColorsEnabled branch returns 1024+playerLocalNum+1 rather than Base's bare slot index (player_localnum+1) so the port's ModelTint (which expects the >=1024 explicit-RGB form) paints correctly. The cascade is inert unless an AppearanceProvider is wired; on the live NetGame path it IS wired (NetGame.cs:BuildAppearanceContext), so it is live in a match but degrades to the entity's own colormap in a pure demo with no provider. (The friend-color collision reduction is NO LONGER a divergence — see notes.)"
     gaps:
-      - "Friend-color collision check compares only against the local team, not every team's color (QC's teams.sort_next walk); rare multi-team edge cases can differ."
       - "Without an AppearanceProvider (pure demo / no NetGame context) the override is inert and the entity keeps its server colormap."
       - "The forcePlayerColorsEnabled branch returns 1024+localnum+1 instead of Base's bare slot index (intended, for ModelTint contract-safety)."
     verification:
-      - { kind: code, ref: "ClientWorld.cs ResolveForcedColormap -> ForcePlayerColorsEnabled/ResolveForcedColormap/UniqueColormap; provider wired NetGame.cs:BuildAppearanceContext", result: pass }
+      - { kind: code, ref: "ClientWorld.cs:1461 ResolveForcedColormap passes ctx.TeamCount -> CsqcModelAppearance.ResolveForcedColormap walks t in 1..teamCount (1024+17*t) for the friend collision; provider (incl. TeamCount) wired NetGame.cs:BuildAppearanceContext", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-27 unchanged. Pure cascade math is a 1:1 port with unit tests; the divergences are the collision-check reduction, the provider dependency, and the >=1024 colormap bias."
+    notes: "FIX (drift 2026-06-27 Wave16/17): the friend-only-force collision check now walks EVERY active team's color (CsqcModelAppearance.ResolveForcedColormap teamCount loop t in 1..teamCount over 1024+17*t, plus the local-team fallback) instead of the prior local-team-only compare — ClientWorld.cs:1461 passes ctx.TeamCount on the live per-frame path. Because the port's team colors ARE canonically 1024+17*t, this reproduces Base's teams.sort_next color walk (csqcmodel_hooks.qc:281-292) for the practical case; logic upgraded partial->faithful. Pure cascade math remains a 1:1 port with unit tests. Residual divergences: the AppearanceProvider dependency (inert in a pure demo) and the >=1024 colormap bias (intended). liveness stays partial on the provider dependency."
   - id: cl-csqcmodel.glowmod.deathfade_ghost
     name: "Glowmod from colormap + death-fade + respawn-ghost"
     layer: [presentation]
@@ -339,7 +339,7 @@ features:
       - { name: "boxparticles(absmin..absmax,velocity) volume emission", base: "yes (box volume)", port: "point-burst at origin (no box-volume primitive)", match: false }
       - { name: "MF_ROCKET -> TR_ROCKET trail + jetpack (re-derived client-side)", base: "networked modelflags BIT(2)", port: "LIVE via UsingJetpack flag -> ComposeForcedAppearance(jetpackActive) -> modelFlags|=MF_ROCKET -> trail return + DriveJetpackLoop", match: true }
       - { name: "MF GRENADE/GIB/TRACER/ZOMGIB/TRACER2/TRACER3 -> TR_* trails", base: "networked modelflags", port: "mapped in CsqcModelEffectFlags but base modelFlags still 0 (only MF_ROCKET re-derived) — no caller supplies these bits", match: false }
-      - { name: "EF_BRIGHTFIELD -> TR_NEXUIZPLASMA trail", base: "yes", port: "dropped on player model (trail return unused for entity-node players)", match: false }
+      - { name: "EF_BRIGHTFIELD -> TR_NEXUIZPLASMA trail", base: "yes", port: "LIVE on player model: CsqcModelEffects.Apply returns BrightFieldTrail (TR_NEXUIZPLASMA); ClientWorld.DriveModelTrail routes it through EffectSystem.SpawnTrailSegment per-segment (same path as the jetpack MF_ROCKET->TR_ROCKET return)", match: true }
       - { name: "render-flags ADDITIVE/FULLBRIGHT/NODEPTHTEST/NOSHADOW/NODRAW", base: "yes", port: "per-instance override only (not shared/cached materials)", match: false }
       - { name: "MF_ROTATE spin (makevectors angles+'0 100 0'*fmod(time,3.6))", base: "yes", port: "none (no caller supplies the bit)", match: false }
       - { name: "EF_BLUE/EF_RED role-glow (Strength=BLUE, Shield=RED dynamic lights)", base: "server m_tick ORs EF_BLUE/EF_RED into actor.effects (strength.qc:31/shield.qc:31)", port: "LIVE via PowerupsMutator.cs:391-392 ORing StrengthGlow(EF_BLUE)/ShieldGlow(EF_RED) into player.Effects server-side -> normal Effects bit -> CsqcModelEffects.Apply renders EF_BLUE/EF_RED lights", match: true }
@@ -355,17 +355,18 @@ features:
     gaps:
       - "MF_ROCKET is LIVE (ClientWorld.DriveCsqcModelHooks composes ForcedAppearance(jetpackActive:true) from e.UsingJetpack -> CsqcModelEffects.Apply -> modelFlags|=MF_ROCKET drives both the rocket trail return and the jetpack loop). The OTHER MF trails (grenade/gib/tracer/zomgib/tracer2/tracer3) are mapped in CsqcModelEffectFlags but never supplied — base modelFlags is still 0 — so non-jetpack MF-driven trails never fire on this path."
       - "Strength/Shield role-glow is LIVE via PowerupsMutator (EF_BLUE/EF_RED ORed into player.Effects server-side, networked normally, rendered as the EF_BLUE/EF_RED dynamic lights). The dead-and-redundant code is the unused CsqcModelEffectFlags.RoleGlowFlags helper (colors inverted) + the ComposeForcedAppearance strength/shield args."
-      - "STILL OPEN (forced glowmod DEAD): the live composition passes forcedGlowmod (-1,-1,-1) = unset; ApplyForcedGlowmod has zero callers (re-verified 2026-06-27: only the definition at CsqcModelEffects.cs:228)."
-      - "EF_BRIGHTFIELD on a player model is dropped (the trail return is unused in the entity-node pass)."
+      - "STILL OPEN (forced glowmod DEAD): the live composition passes forcedGlowmod (-1,-1,-1) = unset; ApplyForcedGlowmod has zero callers (re-verified 2026-06-27 Wave16/17: still only the definition at CsqcModelEffects.cs:228, sole references are planning docs)."
+      - "FIXED (drift 2026-06-27 Wave16/17): EF_BRIGHTFIELD on a player model now trails — CsqcModelEffects.Apply returns TR_NEXUIZPLASMA and ClientWorld.DriveModelTrail (ClientWorld.cs:1162) spawns the per-segment trail on the live DriveCsqcModelHooks pass; the trail return is no longer discarded."
       - "Render-flags (additive/fullbright/nodepthtest) only apply to per-instance BaseMaterial3D overrides, not shared/cached shader materials."
       - "MF_ROTATE spin is not applied (no caller supplies the bit)."
       - "boxparticles volume emission (absmin..absmax) is reduced to a point-burst at the entity origin for EF_FLAME/EF_SHOCK/EF_STARDUST."
     verification:
       - { kind: code, ref: "ClientWorld.cs:~1145 composes `forced = e.UsingJetpack ? ComposeForcedAppearance(strength:false, shield:false, jetpackActive:true, (-1,-1,-1)) : default`; passes `forced` to CsqcModelEffects.Apply — MF_ROCKET path LIVE", result: pass }
       - { kind: code, ref: "PowerupsMutator.cs:391-392 ORs StrengthGlow(EF_BLUE)/ShieldGlow(EF_RED) into player.Effects; CsqcModelEffects.Apply renders EF_BLUE/EF_RED lights. Role-glow VISUAL is LIVE", result: pass }
+      - { kind: code, ref: "FIX (drift 2026-06-27 Wave16/17): ClientWorld.cs:1156-1162 captures `string? tref = CsqcModelEffects.Apply(...)` and calls DriveModelTrail(e, st, tref, frameTime) on the live effectsActive branch; CsqcModelEffects.cs:110-112 returns BrightFieldTrail for EF_BRIGHTFIELD — the player-model EF_BRIGHTFIELD trail now fires (was previously discarded `_ = Apply(...)`)", result: pass }
       - { kind: code, ref: "grep ApplyForcedGlowmod across game+src: ZERO callers (only the definition CsqcModelEffects.cs:228) — forced-glowmod TINT seam still DEAD; non-jetpack MF trails never supplied (base modelFlags still 0)", result: fail }
     confidence: high
-    notes: "Re-verified 2026-06-27 unchanged vs the Wave 5/8c state. EF_* light specs + EF_NODRAW/NOSHADOW/NODEPTHTEST render-flags live + faithful where networked. MF_ROCKET (jetpack) reaches via ComposeForcedAppearance per-frame; Strength/Shield role-glow is LIVE via PowerupsMutator EF_BLUE/EF_RED. Still genuinely dead/missing: the forced-glowmod TINT (ApplyForcedGlowmod, 0 callers), non-jetpack MF trails (grenade/gib/tracer, base modelFlags still 0), MF_ROTATE spin, and boxparticles volume emission (reduced to point-burst). Row stays presentation:partial on these residual gaps."
+    notes: "FIX (drift 2026-06-27 Wave16/17): the player-model EF_BRIGHTFIELD->TR_NEXUIZPLASMA trail (and the jetpack MF_ROCKET->TR_ROCKET return) is now LIVE — ClientWorld.DriveCsqcModelHooks captures the CsqcModelEffects.Apply trail return and routes it through DriveModelTrail/EffectSystem.SpawnTrailSegment (was discarded before). EF_* light specs + EF_NODRAW/NOSHADOW/NODEPTHTEST render-flags remain live + faithful where networked; MF_ROCKET (jetpack) via ComposeForcedAppearance per-frame; Strength/Shield role-glow LIVE via PowerupsMutator EF_BLUE/EF_RED. STILL genuinely dead/missing: the forced-glowmod TINT (ApplyForcedGlowmod, 0 callers), non-jetpack MF trails (grenade/gib/tracer — base modelFlags still 0), MF_ROTATE spin, render-flags on shared/cached materials, and boxparticles volume emission (reduced to point-burst). Row stays logic/values/presentation:partial on these residual gaps."
   - id: cl-csqcmodel.effects.jetpack_loop
     name: "Jetpack loop sound (MF_ROCKET)"
     layer: [presentation, audio]

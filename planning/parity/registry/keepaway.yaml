@@ -5,11 +5,11 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 19
   worst_gaps:
-    - "Loose-ball placement still uses the QC FALLBACK path (random info_player_* spawnpoint), NOT the full MoveToRandomMapLocation world-bounds sampler with SOLID/SLIME/LAVA/SKY content rejection — functionally close, not bit-identical."
-    - "Ball/carrier presentation residuals: no EFFECT_KA_BALL_RESPAWN particle at relocate, no EFFECT_BALL_SPARKS on world-touch, no client ball model/glow_trail render, carried-ball scale 0.75 + invisibility-alpha sync not applied."
+    - "Loose-ball placement still uses the QC FALLBACK path (random info_player_* spawnpoint + ±256 jitter), NOT the full MoveToRandomMapLocation world-bounds sampler with SOLID/SLIME/LAVA/SKY content rejection — functionally close, not bit-identical."
+    - "Ball/carrier presentation residuals: client ball MODEL/glow_trail RENDER + carried-ball scale 0.75 + invisibility-alpha sync are not applied. NOTE post Wave-16/17: the EFFECT_KA_BALL_RESPAWN (relocate, x2 origins) and EFFECT_BALL_SPARKS (world-touch) particle EMITS ARE now wired (Keepaway.cs:455-456/479) — only their CSQC render fidelity stays unverified."
     - "Multi-ball chaining (g_keepaway_ballcarrier_maxballs, cnt chain / ka_PlayerReset chain advance) is collapsed to a single ball; the structural carrier/collector bot-role split is one adaptive RoleKeepaway."
-    - "NOIMPACT fall-off respawn branch (ka_TouchEvent trace_dphitq3surfaceflags & Q3SURFACEFLAG_NOIMPACT) is unported; the NEEDKILL damage respawn branch IS covered."
-    - "FIXED post-2026-06-25: the :ka: gamelog echoes (ka_EventLog) AND PreferPlayerScore_Clear are now fully ported + live (EventLogEcho wired at GameWorld.cs:2916; OnPreferPlayerScoreClear on MutatorHooks.PreferPlayerScore_Clear, consulted live by GameScores.ClearPlayerOnJoin). reset_map_global remains a single-accumulator equivalent (cleared in Activate), not a per-client FOREACH reset."
+    - "NOIMPACT fall-off respawn branch (ka_TouchEvent trace_dphitq3surfaceflags & Q3SURFACEFLAG_NOIMPACT) is unported; the NEEDKILL damage respawn branch IS covered. The ka_ballcarrier_waypointsprite_visible_for_player spectator-of-carrier nuance is approximated, not exact."
+    - "RE-AUDITED Wave 16/17: the full live wiring chain re-traced against current line numbers — SpawnBall (GameWorld.cs:771), Activate/EventLogEcho/ForbidAttackHook (:2989-2997), Tick/RecomputeLeader (:3467-3470), winner=Leader (:4236), use-key drop (VehicleBoarding.cs:106), observe/disconnect drop (ClientManager.cs:549/:837), damage matrix (DamageSystem.cs:264), highspeed (PlayerPhysics.cs:283 after :253 seed), mod-icon (GametypeStatusBlock.cs:119 → NetGame.cs:4467), waypoints (ServerNet.cs:1196), bot ForbidAttack (BotBrain.cs:1087). All confirmed live; only line numbers had drifted from the baseline."
 features:
   - id: keepaway.ball.spawn
     name: "Ball spawn at map start (single keepawayball)"
@@ -41,7 +41,7 @@ features:
       - "SpawnBall is CALLED on the live match path — GameWorld.Boot (the NetGame match-start path) procedurally spawns the single ball at a RandomMapLocation right after the entity lump, replacing the missing QC ka_Handler_CheckBall driver."
       - "PRESENTATION residual: the EF_DIMLIGHT bit + glow_color/glow_trail are set as data on the edict, but the actual ball MODEL render + glow trail are client concerns not yet realized (model path models/orbs/orbblue.md3 is configured but the CSQC render of it is deferred)."
     verification:
-      - { kind: codetrace, ref: "GameWorld.cs:636-637 case Keepaway ka: ka.SpawnBall(BallEntity.RandomMapLocation(...)); reached from the live Boot/map-load path after MapObjectsRegistry.RunPostSpawn", result: pass }
+      - { kind: codetrace, ref: "GameWorld.cs:771-772 case Keepaway ka: ka.SpawnBall(BallEntity.RandomMapLocation(...)); reached from the live Boot/map-load path after the entity lump (RE-VERIFIED Wave 16/17)", result: pass }
       - { kind: codetrace, ref: "BallConfig.WithKindDefaults(KeepawayBall) sets classname keepawayball, bbox +-24, EF_DIMLIGHT=8, trail 254, damageforcescale 2 — all == Base ka_SpawnBalls", result: pass }
     confidence: high
     notes: "Entity layer is reachable and wired through the shared BallEntity framework. The only residual is client model/glow presentation. Unchanged."
@@ -64,7 +64,7 @@ features:
       logic: partial
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: faithful
       liveness: live
     intended_divergence: false
@@ -72,16 +72,16 @@ features:
     gaps:
       - "The relocate MOVES the ball — BallEntity.Relocate calls RandomMapLocation (a random spawnpoint, falling back to a jitter around home) + the '0 0 200' kick + re-arms NextThink; the loose-ball think (RespawnThink) is live via SpawnForGametype."
       - "SND_KA_RESPAWN plays at relocate (Keepaway.RespawnBall → SoundSystem.PlayOn KA_RESPAWN, ATTEN_NONE)."
-      - "FIXED (was STILL OPEN): the NEEDKILL ka_DamageEvent respawn path is now LIVE — AdoptBall installs OnBallDamage on the ball's Entity.GtEventDamage, the live DamageSystem.EventDamage (DamageSystem.cs:331-333) routes a non-player edict's damage to it, and a NEEDKILL hit (DeathTypes.ItemDamageNeedKill) force-respawns the loose ball (registry was 'no NEEDKILL respawn path')."
-      - "STILL OPEN (logic): RandomMapLocation uses the QC FALLBACK path (random info_player_* spawnpoint) only — it does NOT do the full MoveToRandomMapLocation world-bounds sampling with the SOLID/SLIME/LAVA/SKY content rejection. Functionally close (ball relocates to a reachable spawn) but not bit-identical placement."
-      - "STILL OPEN (logic): no NOIMPACT fall-off respawn branch (ka_TouchEvent trace_dphitq3surfaceflags & Q3SURFACEFLAG_NOIMPACT — a ball that touches a NOIMPACT surface, i.e. off the map, is not force-respawned; the NEEDKILL damage branch IS now covered)."
-      - "STILL OPEN (presentation): no EFFECT_KA_BALL_RESPAWN particle at the old + new origin (WP_KaBall waypoint sprite IS now spawned via CollectWaypoints — see keepaway.waypoints.tracking)."
+      - "FIXED post Wave-16/17 (presentation missing→partial): EFFECT_KA_BALL_RESPAWN IS now emitted at BOTH the old AND new origin — RespawnBall captures oldBallOrigin, Relocates, then calls EffectEmitter.Emit(\"KA_BALL_RESPAWN\", oldOrigin) + Emit(\"KA_BALL_RESPAWN\", e.Origin) (Keepaway.cs:455-456) == QC ka_RespawnBall's two Send_Effect calls. The effect is registered (EffectsList.cs:232). The server-side emit-API call is wired; the CSQC particle RENDER fidelity itself is unverified (→ partial, not faithful)."
+      - "NEEDKILL ka_DamageEvent respawn path is LIVE — AdoptBall installs OnBallDamage on the ball's Entity.GtEventDamage, the live DamageSystem.EventDamage (DamageSystem.cs:369-371) routes a non-player edict's damage to it, and a NEEDKILL hit (DeathTypes.ItemDamageNeedKill) force-respawns the loose ball."
+      - "STILL OPEN (logic, why partial): RandomMapLocation uses the QC FALLBACK path (random info_player_* spawnpoint, then a ±256 jitter around home) only — it does NOT do the full MoveToRandomMapLocation world-bounds sampling with the SOLID/SLIME/LAVA/SKY content rejection (BallEntity.cs:395-421). Functionally close (ball relocates to a reachable spawn) but not bit-identical placement."
+      - "STILL OPEN (logic): no NOIMPACT fall-off respawn branch (ka_TouchEvent trace_dphitq3surfaceflags & Q3SURFACEFLAG_NOIMPACT — a ball that touches a NOIMPACT surface, i.e. off the map, is not force-respawned; the NEEDKILL damage branch IS covered)."
     verification:
-      - { kind: codetrace, ref: "SpawnForGametype installs RespawnThink → Relocate; RespawnBall plays KA_RESPAWN; both reachable now the ball entity is live", result: pass }
-      - { kind: codetrace, ref: "AdoptBall sets e.GtEventDamage=OnBallDamage; DamageSystem.cs:331-333 dispatches non-player edict damage to GtEventDamage; OnBallDamage NEEDKILL→RespawnBall", result: pass }
-      - { kind: codetrace, ref: "Grep ka_TouchEvent NOIMPACT fall-off respawn — no port equivalent", result: fail }
+      - { kind: codetrace, ref: "SpawnForGametype installs RespawnThink → Relocate (BallEntity.cs:241,282); RespawnBall plays KA_RESPAWN + Emits KA_BALL_RESPAWN x2 (Keepaway.cs:451-457); reachable now the ball entity is live", result: pass }
+      - { kind: codetrace, ref: "AdoptBall sets e.GtEventDamage=OnBallDamage; DamageSystem.cs:369-371 dispatches non-player edict damage to GtEventDamage; OnBallDamage NEEDKILL→RespawnBall", result: pass }
+      - { kind: codetrace, ref: "RandomMapLocation = spawnpoint reservoir-sample + jitter fallback (BallEntity.cs:395), NOT MoveToRandomMapLocation world-bounds; no NOIMPACT fall-off branch", result: fail }
     confidence: high
-    notes: "NEEDKILL force-respawn is now wired live (was the prior worst gap on this row). Residuals: world-bounds sampling fidelity, NOIMPACT fall-off branch, and the respawn particle."
+    notes: "Re-audit (Wave 16/17): the EFFECT_KA_BALL_RESPAWN particle IS now emitted (presentation missing→partial) — the baseline row was stale on that gap. NEEDKILL force-respawn live. Residuals: world-bounds sampling fidelity, NOIMPACT fall-off branch, and CSQC render of the particle."
 
   - id: keepaway.ball.pickup
     name: "Ball pickup (attach to carrier, mark VIP, pickups++)"
@@ -109,15 +109,15 @@ features:
       - "Pickup is reachable — the live engine trigger-touch pass dispatches Solid.Trigger entities' Touch=BallTouchEntity, which calls PickUp; AttachToCarrier makes the ball SOLID_NOT + MOVETYPE_NONE + sets GtCarrier."
       - "SND_KA_PICKEDUP plays (PlayOn KA_PICKEDUP, ATTEN_NONE); INFO_KEEPAWAY_PICKUP (all) + CENTER_KEEPAWAY_PICKUP (all-except) + CENTER_KEEPAWAY_PICKUP_SELF (one) notifications all sent and registered."
       - "KEEPAWAY_PICKUPS column increment runs (AddCol on PickUp); the 0.5s self-recapture lockout is honored (BallTouchEntity → IsRecaptureLocked)."
-      - "The non-player world-touch branch plays SND_KA_TOUCH (ATTEN_NORM)."
-      - "STILL OPEN (values/presentation): carried scale 0.75 is not applied (no entity scale field). EFFECT_BALL_SPARKS particle on the non-player touch is not emitted (only the sound is)."
-      - "STILL OPEN (logic): GameRules_scoring_vip(toucher,true) has no direct port equivalent (the carrier role is tracked via Ball.Carrier instead); functionally the carrier is identified for the mod-icon, but the QC VIP flag/scoreboard marker is not modeled."
+      - "The non-player world-touch branch plays SND_KA_TOUCH (ATTEN_NORM) AND emits EFFECT_BALL_SPARKS — BallTouchEntity calls EffectEmitter.Emit(\"BALL_SPARKS\", self.Origin) (Keepaway.cs:479) before the touch sfx == QC ka_TouchEvent Send_Effect(EFFECT_BALL_SPARKS, ...). The effect is registered (EffectsList.cs:239)."
+      - "FIXED post Wave-16/17 (gap was stale): the EFFECT_BALL_SPARKS emit-API call IS now present on the non-player touch (the baseline row claimed 'only the sound is' emitted). CSQC particle render fidelity itself stays the client's, so presentation remains partial."
+      - "STILL OPEN (values/presentation, why partial): carried scale 0.75 (QC scale = 12/16) is not applied — the entity layer has no scale field. Note GtCarrier IS marked VIP: AttachToCarrier calls GametypeEntities.ScoringVip(carrier,true) (BallEntity.cs:310), so the prior 'VIP flag not modeled' gap is partly closed (the nades flagcarrier-bonus VIP flag is set; the scoreboard VIP marker is not separately modeled)."
       - "STILL OPEN (logic): multi-ball chaining (g_keepaway_ballcarrier_maxballs, cnt chain) is collapsed to a single ball (cnt=1)."
     verification:
-      - { kind: codetrace, ref: "TriggerTouch dispatches the ball's Touch=BallTouchEntity → PickUp; sounds + notifs + KEEPAWAY_PICKUPS all fire; SoundsList KA_PICKEDUP; Keepaway.cs:317-319 notifications", result: pass }
-      - { kind: value, ref: "SelfRecaptureLockout=0.5 == Base wait+0.5; carried scale 0.75 NOT applied", result: fail }
+      - { kind: codetrace, ref: "BallTouchEntity dispatched as the ball's Touch → PickUp; sounds + notifs + KEEPAWAY_PICKUPS all fire (Keepaway.cs:344-360); SoundsList KA_PICKEDUP; non-player branch Emits BALL_SPARKS + KA_TOUCH (Keepaway.cs:479-480)", result: pass }
+      - { kind: value, ref: "SelfRecaptureLockout=0.5 == Base wait+0.5; carried scale 0.75 NOT applied (no scale field)", result: fail }
     confidence: high
-    notes: "Core pickup (attach, lockout, scoring, sounds, notifications) is faithful + live. Residuals: carried scale, spark particle, VIP scoreboard flag, multi-ball chain. Unchanged."
+    notes: "Re-audit (Wave 16/17): EFFECT_BALL_SPARKS IS now emitted on world-touch + the carrier is VIP-flagged via ScoringVip — the baseline row was stale on both. Residuals: carried scale 0.75, scoreboard VIP marker, multi-ball chain. Core pickup faithful + live."
 
   - id: keepaway.ball.drop
     name: "Ball drop on death/use-key/disconnect/observe"
@@ -150,15 +150,15 @@ features:
     gaps:
       - "The drop velocity includes the crandom xy scatter (DropOffsetVelocity == Base '0 0 200' + '0 100 0'*crandom + '100 0 0'*crandom; Prandom.Signed == crandom); the 0.5s previous_owner/wait self-recapture lockout is armed (GtNextTakeTime + Owner=carrier)."
       - "SND_KA_DROPPED plays globally (PlayGlobal KA_DROPPED, ATTEN_NONE); INFO_KEEPAWAY_DROPPED (all) + CENTER_KEEPAWAY_DROPPED (all) notifications sent and registered."
-      - "FIXED (was STILL OPEN, liveness partial→live): ALL FOUR drop triggers are now wired. DEATH (OnDeath → Drop, Combat.Death bus); USE-KEY (OnUseKey on MutatorHooks.PlayerUseKey, fired live via VehicleBoarding.cs:106 FirePlayerUseKey on the +use impulse path); DISCONNECT + OBSERVE (OnPlayerRemoved, fired live at ClientManager.cs:473 PutObserver + :682 ClientDisconnect). QC's ClientDisconnect/MakePlayerObserver both ka_DropEvent."
+      - "ALL FOUR drop triggers are wired live (RE-VERIFIED Wave 16/17). DEATH (OnDeath → Drop, Combat.Death bus); USE-KEY (OnUseKey on MutatorHooks.PlayerUseKey, fired live via VehicleBoarding.cs:106 FirePlayerUseKey — the +use impulse tail that runs only when the press neither boarded nor exited a vehicle); DISCONNECT + OBSERVE (OnPlayerRemoved, fired live at ClientManager.cs:549 PutObserverInServer AND :837 ClientDisconnect path). QC's ClientDisconnect/MakePlayerObserver both ka_DropEvent."
       - "STILL OPEN (logic): no nudgeoutofsolid_OrFallback after placing the dropped ball; no multi-ball chain advance / ka_PlayerReset chain semantics (single ball only)."
-      - "STILL OPEN (presentation): EFFECT particle on drop is not emitted (the WP_KaBall waypoint sprite IS now re-spawned via CollectWaypoints when the ball is loose — see keepaway.waypoints.tracking)."
+      - "PRESENTATION note: QC ka_DropEvent emits NO drop particle (spec drop algorithm lists only the WP spawn) — so 'missing' here means only the WP_KaBall sprite, which IS now re-spawned via CollectWaypoints when the ball is loose (see keepaway.waypoints.tracking). There is no missing drop-particle emit in Base to port."
       - "NOTE: QC also drops via DropSpecialItems (the generic special-item drop hook); the port has no DropSpecialItems subscription, but death/disconnect/observe/use-key already cover every drop trigger DropSpecialItems would, so this is redundant rather than a gap."
     verification:
-      - { kind: codetrace, ref: "OnDeath victimCarried → Drop → DropFromCarrier (live death bus). DropOffsetVelocity scatter + GtNextTakeTime lockout verified; KA_DROPPED + KEEPAWAY_DROPPED registered (Keepaway.cs:339-341)", result: pass }
-      - { kind: codetrace, ref: "OnUseKey on MutatorHooks.PlayerUseKey, fired live (VehicleBoarding.cs:106 FirePlayerUseKey ← +use impulse); OnPlayerRemoved fired live (ClientManager.cs:473/:682)", result: pass }
+      - { kind: codetrace, ref: "OnDeath victimCarried → Drop → DropFromCarrier (live death bus, Keepaway.cs:614-615). DropOffsetVelocity scatter + GtNextTakeTime lockout verified (BallEntity.cs:334,338); KA_DROPPED + KEEPAWAY_DROPPED registered (Keepaway.cs:383-385)", result: pass }
+      - { kind: codetrace, ref: "OnUseKey on MutatorHooks.PlayerUseKey, fired live (VehicleBoarding.cs:106 FirePlayerUseKey ← +use impulse tail); OnPlayerRemoved fired live (ClientManager.cs:549 observe + :837 disconnect)", result: pass }
     confidence: high
-    notes: "FIXED post-baseline: all four QC drop triggers (death/use-key/disconnect/observe) are now wired live (was death-only). Residuals: nudgeoutofsolid, multi-ball chain, drop particle."
+    notes: "Re-audit (Wave 16/17): all four QC drop triggers (death/use-key/disconnect/observe) confirmed wired live (line refs corrected to :549/:837). Base has no drop particle, so presentation:missing = waypoint-only, now covered by the waypoints row. Residuals: nudgeoutofsolid, multi-ball chain."
 
   - id: keepaway.score.timepoints
     name: "Per-second carry scoring (score_timepoints * frametime)"
@@ -332,10 +332,10 @@ features:
       - "The matrix affects combat — OnDamageCalculate is registered on MutatorHooks.DamageCalculate in Activate, and the live DamageSystem DamageCalculate.Call invokes it on every player-vs-player hit (the IS_PLAYER guard mirrors QC: returns early for non-player attacker/target)."
       - "ScaleFactor/CvarVectorComponent parse the VECTOR cvar STRING and index the component (x=self, y=other-carrier, z=noncarrier), matching Base's single-vector autocvar. Component selection (attackerCarries→carrier vs noncarrier cvar; target==attacker→x, targetCarries→y, else→z) matches the QC branch table."
     verification:
-      - { kind: codetrace, ref: "Activate adds OnDamageCalculate to MutatorHooks.DamageCalculate; DamageSystem DamageCalculate.Call invokes it live", result: pass }
-      - { kind: codetrace, ref: "ScaleFactor component map (0/1/2) == QC Damage_Calculate .x/.y/.z branches; CvarVectorComponent parses 'a b c' vector string", result: pass }
+      - { kind: codetrace, ref: "Activate adds OnDamageCalculate to MutatorHooks.DamageCalculate (Keepaway.cs:201-202); DamageSystem.cs:264 DamageCalculate.Call invokes it live (RE-VERIFIED Wave 16/17)", result: pass }
+      - { kind: codetrace, ref: "ScaleFactor component map (0/1/2) == QC Damage_Calculate .x/.y/.z branches (Keepaway.cs:502-514); CvarVectorComponent parses 'a b c' vector string", result: pass }
     confidence: high
-    notes: "Wired + reads the real vector cvars. At default 1 1 1 there is no visible change, but a server tuning the matrix is honored faithfully. Unchanged."
+    notes: "Re-audit (Wave 16/17): wired + reads the real vector cvars (DamageSystem.cs:264). At default 1 1 1 no visible change, but a server tuning the matrix is honored faithfully."
 
   - id: keepaway.carrier.highspeed
     name: "Carrier speed multiplier (MOVEVARS_HIGHSPEED *= ballcarrier_highspeed)"
@@ -358,13 +358,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED (was missing/na→faithful/live): OnPlayerPhysics is registered on MutatorHooks.PlayerPhysics in Activate; the live PlayerPhysics step (PlayerPhysics.cs:221 MutatorHooks.PlayerPhysics.Call) fires it. When the player carries the ball it does `player.SpeedMultiplier *= BallCarrierHighspeed`, exactly QC's `STAT(MOVEVARS_HIGHSPEED, player) *= autocvar_g_keepaway_ballcarrier_highspeed`. SpeedMultiplier is reset to the HighSpeed seed each frame before the hook and folded via ApplyHighSpeed (PlayerPhysics.cs:201/252), so the multiply composes cleanly with powerup/buff factors."
-      - "Default is 1 (no effect), so the visible impact is nil unless a server sets it — but the hook is now present + live."
+      - "RE-VERIFIED Wave 16/17 (faithful/live): OnPlayerPhysics is registered on MutatorHooks.PlayerPhysics in Activate (Keepaway.cs:213-214); the live PlayerPhysics step fires it at PlayerPhysics.cs:283 (MutatorHooks.PlayerPhysics.Call). When the player carries the ball it does `player.SpeedMultiplier *= BallCarrierHighspeed` (Keepaway.cs:243-244), exactly QC's `STAT(MOVEVARS_HIGHSPEED, player) *= autocvar_g_keepaway_ballcarrier_highspeed`. CONFIRMED the seed ordering: SpeedMultiplier = mp.HighSpeed is set at PlayerPhysics.cs:253 BEFORE the hook Call at :283, so the multiply composes cleanly with powerup/swamp/buff factors."
+      - "Default is 1 (no effect), so the visible impact is nil unless a server sets it — but the hook is present + live."
     verification:
-      - { kind: codetrace, ref: "Activate adds OnPlayerPhysics to MutatorHooks.PlayerPhysics; PlayerPhysics.cs:221 PlayerPhysics.Call fires it on the live step; OnPlayerPhysics multiplies SpeedMultiplier for the carrier", result: pass }
+      - { kind: codetrace, ref: "Activate adds OnPlayerPhysics to MutatorHooks.PlayerPhysics (Keepaway.cs:213); PlayerPhysics.cs:283 PlayerPhysics.Call fires it after the SpeedMultiplier=HighSpeed seed at :253; OnPlayerPhysics multiplies SpeedMultiplier for the carrier (RE-VERIFIED Wave 16/17)", result: pass }
       - { kind: value, ref: "BallCarrierHighspeed reads g_keepaway_ballcarrier_highspeed (default 1) == Base autocvar default", result: pass }
     confidence: high
-    notes: "FIXED post-baseline: the carrier highspeed PlayerPhysics modifier is now implemented + live (was explicitly deferred/missing)."
+    notes: "Re-audit (Wave 16/17): carrier highspeed PlayerPhysics modifier confirmed live — seed-then-hook ordering (PlayerPhysics.cs:253 seed → :283 Call) verified, so the multiply composes."
 
   - id: keepaway.hud.modicon
     name: "Keepaway HUD mod-icon (blinking ball-carrying icon)"
@@ -390,11 +390,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The whole mod-icon stack is live end-to-end. Server packs ka.Ball.Carrier's net id into the per-recipient Keepaway status block (GametypeStatusBlock.cs:110-114, Kind.Keepaway=7), produced per-peer in the live snapshot writer. The client reads ms.CarrierNetId, sets panel.KeepawayCarrying = (CarrierNetId == LocalNetId) (NetGame.cs:3518-3520), and DrawKeepaway renders the keepawayball_carrying icon with the blink(0.85,0.15,5) pulse + the status-change expand transition — faithful to HUD_Mod_Keepaway."
+      - "The whole mod-icon stack is live end-to-end (RE-VERIFIED Wave 16/17). Server packs ka.Ball.Carrier's net id into the per-recipient Keepaway status block (GametypeStatusBlock.cs:115-120 writes netIdOf(carrier), Kind.Keepaway=7), produced per-peer in the live snapshot writer. The client reads ms.CarrierNetId, sets panel.KeepawayCarrying = (CarrierNetId != 0 && CarrierNetId == LocalNetId) (NetGame.cs:4467-4469), and DrawKeepaway renders the keepawayball_carrying icon with the blink(0.85,0.15,5) pulse + the status-change expand transition — faithful to HUD_Mod_Keepaway."
       - "MINOR (intended): the port transmits the carrier NET ID rather than a per-player KA_CARRYING bit; the client derives the local carrying flag from it (carrier == self). Equivalent result, and it also feeds the carrier waypoint."
       - "MINOR (presentation): when the keepawayball_carrying skin texture is missing the panel draws a ball-glyph + 'BALL' stand-in (a deliberate never-invisible fallback, not a Base behavior)."
     verification:
-      - { kind: codetrace, ref: "GametypeStatusBlock.cs:114 writes carrier net id; NetGame.cs:3518-3520 sets Mode=Keepaway + KeepawayCarrying; ModIconsPanel.cs DrawKeepaway blink/expand", result: pass }
+      - { kind: codetrace, ref: "GametypeStatusBlock.cs:119 writes netIdOf(carrier); NetGame.cs:4467-4469 sets Mode=Keepaway + KeepawayCarrying; ModIconsPanel.cs DrawKeepaway blink/expand (RE-VERIFIED Wave 16/17)", result: pass }
     confidence: high
     notes: "Complete, live, faithful mod-icon pipeline (server status block → client derive → panel render). Unchanged."
 
@@ -429,7 +429,7 @@ features:
       - "STILL OPEN (logic, why partial): the spectator/invisibility visibility rules (ka_ballcarrier_waypointsprite_visible_for_player: hide the carrier sprite from spectators-of-the-carrier and when the owner IS_INVISIBLE) are not modeled; QC also forces the sprite ON during warmup, but the host pull path has no warmup flag here so the cvar governs unconditionally."
       - "STILL OPEN (presentation): waypoint sprite RENDER fidelity is the client's; this row asserts the server-side spawn/attach + cvar gating, not the CSQC draw."
     verification:
-      - { kind: codetrace, ref: "ServerNet.cs:927 _world.GameType?.CollectWaypoints(_wpScratch) (live SendWaypoints); Keepaway.CollectWaypoints adds KaBall when loose / KaBallCarrier on carrier, gated by BallTracking (g_keepawayball_tracking)", result: pass }
+      - { kind: codetrace, ref: "ServerNet.cs:1196 _world.GameType?.CollectWaypoints(_wpScratch) inside SendWaypoints (called live at ServerNet.cs:493); Keepaway.CollectWaypoints adds KaBall when loose / KaBallCarrier on carrier, gated by BallTracking (g_keepawayball_tracking) — RE-VERIFIED Wave 16/17", result: pass }
       - { kind: codetrace, ref: "Waypoints.cs:137-138 registers KaBall/KaBallCarrier types with radar icons; CollectWaypoints uses offset (0,0,64) + RadarIcon", result: pass }
       - { kind: codetrace, ref: "ka_ballcarrier_waypointsprite_visible_for_player spectator/invisibility rules — not modeled", result: fail }
     confidence: high
@@ -452,7 +452,7 @@ features:
     constants:
       - { name: "ball_goalrating_scale", base: "8000", port: "RatingBall = 8000f", match: true }
       - { name: "routerating_dist", base: "2000", port: "2000f", match: true }
-      - { name: "ball_class", base: "keepawayball", port: "FindBall queries 'keepawayball' (BotObjectiveRoles.cs:387)", match: true }
+      - { name: "ball_class", base: "keepawayball", port: "FindBall queries 'keepawayball' (BotObjectiveRoles.cs:691-696) == live spawn classname (RE-VERIFIED Wave 16/17)", match: true }
       - { name: "carrier_field", base: "ball.owner (set on pickup, ka_TouchEvent)", port: "Entity.GtCarrier (port split: GtCarrier=carry, Owner=previous_owner/lockout)", match: true }
     status:
       logic: partial
@@ -464,15 +464,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "RoleKeepaway is live (set on the brain at bot creation via BotRoles.ChooseRole; 'ka'/'keepaway'/'tka' → RoleKeepaway) and engages the ball: FindBall() queries classname 'keepawayball' (BotObjectiveRoles.cs:387) == the live spawned ball; carrier read off ball.GtCarrier (the field AttachToCarrier sets). A loose ball is chased (collector behaviour: items 10000, enemies 500, ball 8000) and a carried ball's carrier is contested; carrying switches to carrier behaviour (items 10000, enemies 10000)."
-      - "FIXED (was STILL OPEN): the Bot_ForbidAttack equivalent is now wired LIVE. Keepaway.ForbidBotAttack(bot,targ) = `!targCarries && !botCarries && haveHeldBall` (== QC: neither carries + a held ball exists), installed at GameWorld.cs:2920 onto BotBrain.ForbidAttackHook (in the case Keepaway ka block of ActivateGameType) and consulted in bot_shouldattack (BotBrain.cs:797) on the live attack-eligibility path — so bots cluster the carrier instead of fragging bystanders."
+      - "RoleKeepaway is live (set on the brain at bot creation via BotRoles.ChooseRole; 'ka'/'keepaway'/'tka' → RoleKeepaway) and engages the ball: FindBall() queries classname 'keepawayball' (BotObjectiveRoles.cs:691-696) == the live spawned ball; carrier read off ball.GtCarrier (the field AttachToCarrier sets). A loose ball is chased and a carried ball's carrier is contested (RatingBall 8000, routerating 2000f, BotObjectiveRoles.cs:633-636); carrying switches to carrier behaviour."
+      - "Bot_ForbidAttack equivalent is wired LIVE (RE-VERIFIED Wave 16/17). Keepaway.ForbidBotAttack(bot,targ) = `!targCarries && !botCarries && haveHeldBall` (Keepaway.cs:265-271 == QC: neither carries + a held ball exists), installed at GameWorld.cs:2996-2997 onto BotBrain.ForbidAttackHook (in the case Keepaway ka block of ActivateGameType) and consulted in bot_shouldattack at BotBrain.cs:1087 on the live attack-eligibility path — so bots cluster the carrier instead of fragging bystanders."
       - "STILL OPEN (logic, why status stays partial): the collector/carrier split is collapsed into one adaptive RoleKeepaway (Base has two distinct havocbot_role_ka_carrier / havocbot_role_ka_collector functions with a per-bot role-timeout state machine). The port branches on carry-state inline with the same ratingscales rather than swapping the dedicated role function — a structural simplification, behaviourally equivalent at the rating level."
     verification:
-      - { kind: codetrace, ref: "FindBall queries 'keepawayball' (BotObjectiveRoles.cs:387) == live ball classname; RoleKeepaway reads ball.GtCarrier; role live via BotRoles.ChooseRole at spawn", result: pass }
-      - { kind: codetrace, ref: "GameWorld.cs:2920 sets BotBrain.ForbidAttackHook = ka.ForbidBotAttack in the case Keepaway block; BotBrain.cs:797 consults ForbidAttackHook in bot_shouldattack (live)", result: pass }
+      - { kind: codetrace, ref: "FindBall queries 'keepawayball' (BotObjectiveRoles.cs:691-696) == live ball classname; RoleKeepaway reads ball.GtCarrier; role live via BotRoles.ChooseRole at spawn (RE-VERIFIED Wave 16/17)", result: pass }
+      - { kind: codetrace, ref: "GameWorld.cs:2996-2997 sets BotBrain.ForbidAttackHook = ka.ForbidBotAttack in the case Keepaway block; BotBrain.cs:1087 consults ForbidAttackHook in bot_shouldattack (live)", result: pass }
       - { kind: value, ref: "RatingBall=8000f == Base goalrating_ball 8000; routerating 2000f == Base", result: pass }
     confidence: high
-    notes: "FIXED post-baseline: Bot_ForbidAttack is now wired live (was the residual STILL-OPEN item). RoleKeepaway finds + contests the ball with faithful ratings. Logic stays partial only for the structural carrier/collector role-function split."
+    notes: "Re-audit (Wave 16/17): Bot_ForbidAttack confirmed wired live (GameWorld.cs:2996 → BotBrain.cs:1087); FindBall class string 'keepawayball' matches the live ball. Logic stays partial only for the structural carrier/collector role-function split."
 
   - id: keepaway.warn.noncarrier
     name: "Non-carrier frag warning (CENTER_KEEPAWAY_WARN)"
@@ -557,7 +557,7 @@ features:
       - "FIXED (was missing/na→faithful/live): the :ka: gamelog echoes are now ported + live. PickUp calls EmitEventLog(\"pickup\", player) (Keepaway.cs:355) and Drop calls EmitEventLog(\"dropped\", carrier) (Keepaway.cs:380); EmitEventLog formats `:ka:<mode>:<playerid>` and invokes the EventLogEcho seam, which GameWorld.cs:2916 wires to `if (Cvars.Bool(\"sv_eventlog\")) GameLog.Echo(line)` on ka.Activate — exactly QC ka_EventLog (gated by autocvar_sv_eventlog, format strcat(\":ka:\", mode, \":\", ftos(actor.playerid)))."
       - "Low impact: affects only server-side stat-tracking log scraping, not gameplay or any client-visible behavior — but it is now wired end-to-end."
     verification:
-      - { kind: codetrace, ref: "Keepaway.cs:355/380 PickUp/Drop call EmitEventLog; EmitEventLog formats ':ka:<mode>:<id>' and calls EventLogEcho; GameWorld.cs:2916 wires EventLogEcho = line => sv_eventlog ? GameLog.Echo(line) on ka.Activate", result: pass }
+      - { kind: codetrace, ref: "Keepaway.cs:355/380 PickUp/Drop call EmitEventLog; EmitEventLog formats ':ka:<mode>:<id>' and calls EventLogEcho; GameWorld.cs:2992 wires EventLogEcho = line => sv_eventlog ? GameLog.Echo(line) in the case Keepaway block of ActivateGameType (RE-VERIFIED Wave 16/17)", result: pass }
     confidence: high
     notes: "FIXED post-2026-06-25 (was NEWLY MAPPED missing). The :ka: gamelog pickup/dropped echoes are now fully ported + live via the EventLogEcho seam, gated by sv_eventlog like Base."
 
@@ -610,8 +610,8 @@ features:
     divergence_rationale: null
     gaps:
       - "FIXED (was partial/na→faithful/live): the PreferPlayerScore_Clear hook is now ported + live. MutatorHooks.PreferPlayerScore_Clear exists (MutatorHooks.cs:598) with a global FirePreferPlayerScore_Clear dispatch (MutatorHooks.cs:604); ka.Activate registers OnPreferPlayerScoreClear on it (Keepaway.cs:220), which returns true unconditionally == QC `MUTATOR_HOOKFUNCTION(ka, PreferPlayerScore_Clear){ return true; }`."
-      - "Live path: GameScores.ClearPlayerOnJoin (GameScores.cs:629) is called on every player join (ClientManager.cs:294) and, under g_score_resetonjoin -1, consults FirePreferPlayerScore_Clear (GameScores.cs:637) — ka's handler vetoes the per-player score wipe, exactly the QC mechanism (server/scores.qc:289 PlayerScore_Clear -1 branch)."
+      - "Live path: GameScores.ClearPlayerOnJoin is called on every player join (ClientManager.cs:294) and, under g_score_resetonjoin -1, consults FirePreferPlayerScore_Clear (GameScores.cs:637) — ka's handler vetoes the per-player score wipe, exactly the QC mechanism (server/scores.qc:289 PlayerScore_Clear -1 branch). RE-VERIFIED Wave 16/17."
     verification:
-      - { kind: codetrace, ref: "Keepaway.cs:220 Activate adds OnPreferPlayerScoreClear (returns true) to MutatorHooks.PreferPlayerScore_Clear; ClientManager.cs:294 ClearPlayerOnJoin → GameScores.cs:637 FirePreferPlayerScore_Clear consults it on join under g_score_resetonjoin -1", result: pass }
+      - { kind: codetrace, ref: "Keepaway.cs:219-220 Activate adds OnPreferPlayerScoreClear (returns true) to MutatorHooks.PreferPlayerScore_Clear; ClientManager.cs:294 ClearPlayerOnJoin → GameScores.cs:637 FirePreferPlayerScore_Clear consults it on join under g_score_resetonjoin -1 (RE-VERIFIED Wave 16/17)", result: pass }
     confidence: high
     notes: "FIXED post-2026-06-25 (was NEWLY MAPPED partial, missing mechanism). The PreferPlayerScore_Clear hook is now a real MutatorHooks member, registered by ka.Activate and consulted live on the player-join score-clear path — the QC mechanism, not just the FFA-framing outcome."

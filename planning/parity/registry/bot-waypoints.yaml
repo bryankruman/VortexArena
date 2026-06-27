@@ -1,14 +1,14 @@
 unit: bot-waypoints
 category: bot
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-27b"
 summary:
   feature_count: 17
   worst_gaps:
     - "Runtime auto-waypointing/pruning toward players (botframe_autowaypoints / botframe_deleteuselesswaypoints), bot wander/unstuck (navigation_unstuck, bot_wander_enable), and runtime item/teleporter waypoint injection on shipped (.waypoints-bearing) maps are absent: the graph is static after load."
     - "No steerlib library and no waypoint editor: flocking/swarm/traceavoid/beamsteer primitives are missing and there is no in-game graph authoring (spawn/remove/hardwire/mirror/autowaypoint). .waypoints/.cache/.hardwired WRITERS exist (Waypoint.cs:SaveToText/SaveLinksToText/SaveHardwiredLinksToText) but are DEAD — zero callers (no editor or save command invokes them)."
     - "Two AutoLink subtleties remain: the it.SUPPORT_WP incoming-direction forbid (no port back-pointer field, omitted) and the jumppad-fallback nearest-waypoint search (navigation_findnearestwaypoint's IL_EACH(g_jumppads) tail) are not ported. PVS cull, the crouch<->normal 100qu short-link cap, the box/JUMP/SUPPORT outgoing forbid, and walkfromwp direction are now all FAITHFUL (drift fixes)."
-    - "The shortest-path search routes from a SINGLE Nearest start node, not Base's expanding multi-seed nearest-waypoints flood (navigation_markroutes_nearestwaypoints: on-ground 750/max 50000, air 500/max 1500). The per-waypoint static danger bias (.dmg) — previously DEAD — is now FULLY WIRED and LIVE (DRIFT FIX 2026-06-27): UpdateDangerousObjects is a faithful port of botframe_updatedangerousobjects, scheduled live at the Base interval/updates from BotPopulation, fed by ~15 weapons + PhaserTurret tagging .BotDodge."
+    - "The live shortest-path search STILL routes from a SINGLE Nearest start node, not Base's expanding multi-seed nearest-waypoints flood (navigation_markroutes_nearestwaypoints: on-ground 750/max 50000, air 500/max 1500). Wave 16 (b3a9c06) ADDED the multi-seed machinery (WaypointNetwork.NearestSeeds + the FindPath(seeds,to) overload) but it is DEAD: SetGoal (BotBrain.cs:336 -> BotNavigation.cs:237-242) still calls net.Nearest(origin) + the single-source FindPath(startWp,goalWp); the new SetGoal onGround arg is documented 'informational' (BotNavigation.cs:215-217); BotRoles route-costs also use single Nearest. So the markroutes logic gap remains OPEN. The per-waypoint static danger bias (.dmg) IS fully WIRED and LIVE (UpdateDangerousObjects, a faithful port of botframe_updatedangerousobjects, scheduled at the Base interval/updates from BotPopulation.cs:208-219, fed by ~15 weapons + PhaserTurret tagging .BotDodge)."
 features:
   - id: bot-waypoints.graph.node_model
     name: "Waypoint node + box/point model and flag bits"
@@ -289,7 +289,7 @@ features:
     constants:
       - { name: "search_dist", base: "1050 (bestdist)", port: "1050 (maxDist)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
       presentation: na
@@ -297,12 +297,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "No jumppad-fallback: Base's navigation_findnearestwaypoint tail (navigation.qc:1000, IL_EACH(g_jumppads)) returns a reachable jumppad's nearest waypoint when no plain waypoint is reachable; the port has no such fallback."
+    gaps: []
     verification:
-      - { kind: code, ref: "Nearest (Waypoint.cs:504-547): box-contains short-circuit, nearest-first reachable tracewalk, AND the walkfromwp direction (SetGoal seeds start with walkFromWp:true, goal with walkFromWp:false, BotNavigation.cs:227-228) all match navigation_findnearestwaypoint(ent, walkfromwp); only the jumppad fallback tail missing", result: pass }
+      - { kind: code, ref: "Nearest (Waypoint.cs:585-640): box-contains short-circuit, nearest-first reachable tracewalk, the walkfromwp direction (SetGoal seeds start with walkFromWp:true, goal with walkFromWp:false, BotNavigation.cs:237-238), AND the jumppad-fallback tail (tracks the nearest reachable Teleport box, returns it when no PLAIN waypoint is reachable, Waypoint.cs:614-638) all match navigation_findnearestwaypoint(ent, walkfromwp) incl. its IL_EACH(g_jumppads) tail (navigation.qc:1000). Live via SetGoal/ComputeRouteCosts.", result: pass }
     confidence: high
-    notes: "PARTIAL FIX since 2026-06-25: the walkfromwp (walk-TO vs walk-FROM) direction distinction is now ported — Nearest takes a walkFromWp arg and SetGoal seeds the start node with walkFromWp:true and the goal node with walkFromWp:false (BotNavigation.cs:227-228), matching navigation_routetogoal's seeding. logic stays partial only because the jumppad-fallback nearest search is still absent; the prior walkfromwp gap text is removed."
+    notes: "DRIFT FIX 2026-06-27b (Wave 16, b3a9c06): the jumppad-fallback tail is now ported — Nearest tracks the nearest reachable Teleport-flagged box and returns it when no plain waypoint is reachable (Waypoint.cs:614-638), the port-model equivalent of Base's IL_EACH(g_jumppads) tail (the port encodes teleporters/jumppads AS Teleport waypoint boxes whose wp00 link carries the bot across, so there is no separate g_jumppads list to iterate). With the walkfromwp direction already ported, this was the LAST open gap on this feature: logic partial->faithful, gaps cleared. Live via SetGoal + ComputeRouteCosts (single-Nearest route build)."
 
   - id: bot-waypoints.path.markroutes
     name: "Shortest-path search over the graph (navigation_markroutes Dijkstra flood) + danger bias"
@@ -312,7 +311,8 @@ features:
       - "server/bot/default/navigation.qc:navigation_markroutes_checkwaypoint"
       - "server/bot/default/navigation.qc:navigation_markroutes_nearestwaypoints"
     port_refs:
-      - "src/XonoticGodot.Server/Bot/Waypoint.cs:FindPath"
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:FindPath (single-source overload — the LIVE one)"
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:NearestSeeds + FindPath(seeds,to) (multi-seed flood — DEAD, no caller)"
       - "src/XonoticGodot.Server/Bot/Waypoint.cs:Waypoint.Danger"
       - "src/XonoticGodot.Server/Bot/Waypoint.cs:UpdateDangerousObjects"
       - "src/XonoticGodot.Server/Bot/BotPopulation.cs:UpdateDangerousObjects scheduler (~:204-219)"
@@ -333,12 +333,13 @@ features:
     intended_divergence: true
     divergence_rationale: "Port uses A* between the two nearest nodes (start, goal) instead of Base's single-source Dijkstra flood with per-edict scratch state. Both yield an optimal least-cost path over the cost terms both implement; the port re-plans per goal so it doesn't need Base's all-pairs flood, and keeping cost/back-pointer state out of the immutable node lets one WaypointNetwork be shared across all bots. The algorithm-shape change is intentional; the single-seed start (gap) is NOT part of the intended divergence."
     gaps:
-      - "No expanding multi-seed nearest search (Base navigation_markroutes_nearestwaypoints seeds several near waypoints with radius growth on-ground 750/max 50000, air 500/max 1500); the port routes from the single Nearest node. This is the only remaining logic gap (it is why logic stays partial)."
+      - "No expanding multi-seed nearest search ON THE LIVE PATH (Base navigation_markroutes_nearestwaypoints seeds several near waypoints with radius growth on-ground 750/max 50000, air 500/max 1500). Wave 16 ADDED the implementation (Waypoint.cs:NearestSeeds:520-559 + the multi-seed FindPath(seeds,to):668-729 — radius growth, walkFromWp dedup, per-seed entry cost all faithful), BUT it is DEAD SCAFFOLDING: zero callers. The live route build SetGoal (BotNavigation.cs:237-242) still does net.Nearest(origin) + FindPath(startWp,goalWp) (single source); SetGoal's onGround arg is wired to nothing ('informational', BotNavigation.cs:215-217); BotRoles ComputeRouteCosts/RouteCostTo also single-Nearest. This is why logic stays partial — the code-presence does NOT close the gap on the live path."
     verification:
-      - { kind: code, ref: "FindPath A* (Waypoint.cs:567-621, danger term `gScore + link.Cost + nb.Danger` at :610) == navigation.qc:1134 `cost2 = cost + wp.dmg`. UpdateDangerousObjects (Waypoint.cs:642-686) is a line-for-line port of botframe_updatedangerousobjects (navigation.qc:1874-1906): per-wp box-clamp v, hazard center o, d=linearcost(dodgerating)-travelcost(o,v), d>0 && traceline-clear, dmg sum, maxupdate break.", result: pass }
-      - { kind: code, ref: "Liveness: BotPopulation.cs:208-219 schedules UpdateDangerousObjects at bot_ai_dangerdetectioninterval (0.25) with the Base 1.5x catch-up, capped at bot_ai_dangerdetectionupdates (64), matching bot.qc:815-822. Producer-side Entity.BotDodge/.BotDodgeRating tagging now at ~15 weapons (Devastator/Crylink/Blaster/Arc/Mortar/Minelayer/Hagar/Electro/Fireball/Porto/Hlac/Vaporizer/Seeker) + PhaserTurret (grep 2026-06-27).", result: pass }
+      - { kind: code, ref: "FindPath A* single-source overload (Waypoint.cs:731-785, danger term `gScore + link.Cost + nb.Danger` at :774) == navigation.qc:1134 `cost2 = cost + wp.dmg`. UpdateDangerousObjects (Waypoint.cs:882-926) is a line-for-line port of botframe_updatedangerousobjects (navigation.qc:1874-1906): per-wp box-clamp v, hazard center o, d=linearcost(dodgerating)-travelcost(o,v), d>0 && traceline-clear, dmg sum, maxupdate break.", result: pass }
+      - { kind: code, ref: "DEAD-SCAFFOLDING check (grep 2026-06-27b): NearestSeeds + FindPath(seeds,to) have ZERO callers in src/. The only live route consumers are BotNavigation.SetGoal:242 (single-source FindPath) and BotRoles:72/84 (ComputeRouteCosts/RouteCostTo, single Nearest). So the multi-seed flood is implemented-but-unwired; markroutes logic gap NOT closed.", result: partial }
+      - { kind: code, ref: "Liveness (danger): BotPopulation.cs:208-219 schedules UpdateDangerousObjects at bot_ai_dangerdetectioninterval (0.25) with the Base 1.5x catch-up, capped at bot_ai_dangerdetectionupdates (64), matching bot.qc:815-822. Producer-side Entity.BotDodge/.BotDodgeRating tagging at ~15 weapons + PhaserTurret. Danger term consumed by the LIVE single-source FindPath AND ComputeRouteCosts.", result: pass }
     confidence: high
-    notes: "DRIFT FIX since 2026-06-25/last audit: the per-waypoint static danger bias (.dmg) is no longer dead scaffolding — it is now FULLY IMPLEMENTED and LIVE. Waypoint.UpdateDangerousObjects (a faithful port of botframe_updatedangerousobjects) writes Waypoint.Danger, scheduled from BotPopulation at the Base interval/updates with the 1.5x catch-up, fed by the grown .BotDodge producer set (~15 weapons + PhaserTurret), and consumed by FindPath's A* danger term — so bots now pre-emptively route AROUND lava/rocket/turret-beam zones, complementing the per-frame BotDanger brake. values partial->faithful; per_waypoint_danger_bias match false->true; danger-detection cvar constants added (match=true). logic STAYS partial only because of the single-seed nearest start (no multi-seed nearestwaypoints flood). The A* shape remains the intended-equivalent design change."
+    notes: "2026-06-27b re-audit (Waves 16-17): the danger-bias (.dmg) wiring credited at the prior audit STILL holds — UpdateDangerousObjects writes Waypoint.Danger, scheduled from BotPopulation, consumed by the live single-source FindPath + ComputeRouteCosts. NEW this wave: Wave 16 added the multi-seed nearestwaypoints flood (NearestSeeds + FindPath(seeds,to)) as a faithful implementation, BUT it is DEAD (no caller); SetGoal/BotRoles still route from the single Nearest node, so the markroutes logic gap is NOT closed — logic STAYS partial. values stay faithful (danger). The single-source-A* shape remains the intended-equivalent design change; the unfixed item is the single geometric-nearest seed vs Base's reachability-seeded multi-seed entry."
 
   - id: bot-waypoints.path.routetogoal
     name: "Route building onto the goal stack (navigation_routetogoal + goalstack)"
@@ -364,11 +365,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Teleport-goal forcing (push wp00 destination, set goalentity), dynamic/moving-target shortcut (bot_ai_strategyinterval_movingtarget 5.5) and the item incoming-link walkability cache are simplified/absent; the port pushes the A* node chain + goal directly. The path-optimization shortcut (drop the nearest node when the second is a shorter straight shot, BotNavigation.cs:241-250) IS ported."
+      - "Dynamic/moving-target shortcut (bot_ai_strategyinterval_movingtarget 5.5) and the item incoming-link walkability cache are still absent. Teleport-goal forcing IS now ported (DRIFT FIX Wave 16): when the route ends at a Teleport box, SetGoal pushes the box's wp00 destination ahead of it so the bot commits to the trigger (BotNavigation.cs:262-275, matching navigation.qc:1318-1334). The path-optimization shortcut (drop the nearest node when the second is a shorter straight shot, BotNavigation.cs:251-260) was already ported."
     verification:
-      - { kind: code, ref: "SetGoal (BotNavigation.cs:209-261) early-out tracewalk + reverse path push + path-optimization shortcut vs routetogoal", result: pass }
+      - { kind: code, ref: "SetGoal (BotNavigation.cs:219-286) early-out tracewalk + reverse path push + path-optimization shortcut + teleport-goal wp00 forcing (:262-275) vs routetogoal", result: pass }
     confidence: high
-    notes: "Unchanged at 2026-06-27. Stack structure, direct-reachable early-out, path-optimization shortcut, and front-to-back ordering match QC."
+    notes: "2026-06-27b re-audit (Wave 16, b3a9c06): teleport-goal forcing added (push the box's wp00 destination ahead when the route ends at a Teleport box). logic STAYS partial: the moving-target shortcut (strategyinterval_movingtarget 5.5, still match=false) and the item incoming-link walkability cache remain absent. Stack structure, direct-reachable early-out, path-optimization shortcut, and front-to-back ordering match QC."
 
   - id: bot-waypoints.steer.movetogoal
     name: "Steering / path follow (havocbot_movetogoal: jump/crouch/ladder/obstacle/brake/bunnyhop)"

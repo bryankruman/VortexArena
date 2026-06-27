@@ -9,7 +9,7 @@ summary:
     - "Capture-time PERSISTENT record (ctf_CaptureRecord ServerProgsDB write + cross-session g_ctf_leaderboard) is unported (needs a persistent DB); the in-match fastest-cap broadcast CTF_CAPTURE_TIME/_BROKEN/_UNBROKEN IS fired. The leaderboard send/record subsystem (ClientConnect/GetPressedKeys/GetRecords race_SendAll), the takedamage flag-return path (g_ctf_flag_health/_return_damage/_return_when_unreachable) and two-flag g_ctf_reverse remain unported."
     - "Pass completes as an instant transfer when viable (no physical arc / pass_directional cone) — a deliberate simplification; the flight velocity is still computed for an integrating host. VEHICLE board/leave carrier-drop is NOW wired (OnVehicleEnter/Exit, live); the PORTAL-teleport carrier-leave drop (g_ctf_portalteleport) is still not wired (the PortalTeleport hook has no port dispatch at all)."
     - "Capture shield spawns the physical ctf_captureshield push entity (model models/ctf/shield.md3, EF_ADDITIVE, force push, CENTER_CTF_CAPTURESHIELD_SHIELDED on touch) co-located with each flag; with the stock samual cfg the shield ratio is 0 (inert) by default exactly like Base, so nobody is shielded and the entity never pushes. Only missing nuance: the per-viewer same-team-hide customize (ctf_CaptureShield_Customize) is not networked."
-    - "Flag-damage / return-when-unreachable (g_ctf_flag_health, _return_damage, _return_when_unreachable lava/slime/needkill health bleed) not implemented; the dropped flag is TakeDamage.Yes but carries no health. Niche CTF hooks still unported: AbortSpeedrun (CTS-in-CTF flag-return), DropSpecialItems flag-eject, LogDeath 'F' item code, GiveFragsForKill frag suppression (g_ctf_ignore_frags), followfc superspectate command, PreferPlayerScore_Clear."
+    - "Flag-damage / return-when-unreachable (g_ctf_flag_health, _return_damage, _return_when_unreachable lava/slime/needkill health bleed) not implemented; the dropped flag is TakeDamage.Yes but carries no health. Niche CTF hooks still unported: AbortSpeedrun (CTS-in-CTF flag-return), DropSpecialItems flag-eject, followfc superspectate command. CLOSED Wave 16: LogDeath 'F' item code, GiveFragsForKill frag suppression (g_ctf_ignore_frags), and PreferPlayerScore_Clear are now ported + live."
 features:
   - id: ctf.flag.spawn_setup
     name: "Flag entity spawn + model/skin/bbox setup"
@@ -687,47 +687,50 @@ features:
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, LogDeath_AppendItemCodes)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:LogDeathAppendItemCodes"
+      - "src/XonoticGodot.Server/Scores.cs:640 (active-gametype dispatch in AppendItemcodes)"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "QC appends the item code 'F' to a player's death-log line when they die carrying the flag (LogDeath_AppendItemCodes). The port's death logging does not append the CTF flag item code."
+    gaps: []
     verification:
-      - { kind: code, ref: "no LogDeath_AppendItemCodes CTF hook in the port", result: fail }
-    confidence: low
-    notes: "Unmapped in the prior baseline. Cosmetic server-log detail (the 'F' marker in player_death log lines); no gameplay impact."
+      - { kind: code, ref: "Ctf.cs:LogDeathAppendItemCodes returns s+\"F\" when CarriedBy(player)!=null (== QC player.flagcarried, sv_ctf.qc:2701-2706). LIVE: Scores.AppendItemcodes (Scores.cs:619) now dispatches the active gametype's virtual at :640-641 (GameTypes.ByName(GameScores.Gametype).LogDeathAppendItemCodes) — added in the SAME wave as the override; base GameType virtual returns s unchanged so non-CTF modes no-op. EmitLogDeath (Scores.cs:599) fires on every Obituary branch; Scores.LogDeath wired at GameWorld.cs:852 -> GameLog.Echo gated on sv_eventlog.", result: pass }
+    confidence: high
+    notes: "FIX Wave 16 (missing/na -> faithful/live): the 'F' flag-carrier item code is appended to the :kill:...:items=/:victimitems= death-log line on the live server path. The Ctf.cs docstring still carries a stale 'NOTE: dormant until Scores.AppendItemcodes also invokes the active gametype virtual' caveat, but that cross-file follow-up (Scores.cs:640-641) landed in the same commit (b3a9c06), so the override is live, not dormant. Cosmetic server-log detail; no gameplay impact."
 
   - id: ctf.ignore_frags
     name: "Suppress frag score in CTF (g_ctf_ignore_frags)"
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, GiveFragsForKill)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:OnGiveFragsForKill"
+      - "src/XonoticGodot.Server/Scores.cs:556 (GiveFragsForKill.Call)"
     constants:
-      - { name: "g_ctf_ignore_frags", base: "0 (default off)", port: "n/a", match: false }
+      - { name: "g_ctf_ignore_frags", base: "0 (default off)", port: "cvar; default 0", match: true }
     status:
-      logic: missing
-      values: na
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC the ctf GiveFragsForKill hook zeroes the per-kill frag score (M_ARGV(2)=0) and, when g_ctf_ignore_frags is set, also suppresses the frag COUNT entirely. The port has no GiveFragsForKill hook for CTF, so a CTF kill still books a normal frag and g_ctf_ignore_frags is a no-op."
+      - "Mechanism nuance (no observable divergence): QC returns autocvar_g_ctf_ignore_frags so at the default (0) the GiveFrags caller does NOT read back M_ARGV(2) and the original f=1 frag stands; the port ALWAYS returns true and relies on the call site's FragScore defaulting to 1f (Scores.cs:555). Both yield the identical result — default = normal +1 frag, cvar set = 0 frag/score. The unconditional return-true would only matter if a second CTF GiveFragsForKill subscriber existed (none does)."
     verification:
-      - { kind: code, ref: "no GiveFragsForKill CTF hook in Ctf.cs; g_ctf_ignore_frags never read", result: fail }
-    confidence: low
-    notes: "Newly mapped 2026-06-27 (was unmapped). Default off, so faithful by default for the common case; only diverges on a host that sets g_ctf_ignore_frags 1."
+      - { kind: code, ref: "Ctf.cs:OnGiveFragsForKill zeroes args.FragScore only when g_ctf_ignore_frags!=0, returns true; verified against Base sv_ctf.qc:2366-2370 (M_ARGV(2)=0; return autocvar_g_ctf_ignore_frags) + the GiveFrags caller server/damage.qc:72-79 (f=M_ARGV(2) only if hook true; totalfrags+=f; SCORE+=f if f). Live: MutatorHooks.GiveFragsForKill.Call at Scores.cs:556 on the enemy-frag Obituary branch, frag=(int)gfk.FragScore read back.", result: pass }
+    confidence: high
+    notes: "FIX Wave 16 (missing/na -> faithful/live): OnGiveFragsForKill subscribed in Activate, fired on the live scoring path (Scores.cs:556 inside Obituary). Default 0 = normal +1 frag (faithful); g_ctf_ignore_frags 1 = no frag count/score. Observable behavior matches Base in both states; only the return-value mechanism differs (port returns true unconditionally, relying on FragScore default 1). The CTF FC-kill bonus (g_ctf_score_kill, OnDeath) is scored separately and unaffected."
 
   - id: ctf.leaderboard
     name: "Persistent cross-session capture leaderboard (g_ctf_leaderboard)"
@@ -784,20 +787,22 @@ features:
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, PreferPlayerScore_Clear)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:OnPreferPlayerScoreClear"
+      - "src/XonoticGodot.Server/GameScores.cs:637 (FirePreferPlayerScore_Clear in ClearPlayerOnJoin)"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC the ctf PreferPlayerScore_Clear hook returns true, signalling the scoreboard-clear path to prefer the per-player score representation in CTF. The port has no equivalent hook; the port's scoreboard-clear path does not branch on a gametype preference, so this nuance is unmodeled."
+      - "No-op on stock servers: g_score_resetonjoin defaults to 0, so ClearPlayerOnJoin short-circuits before the veto matters (faithful to Base, which also no-ops at 0). The veto only changes behavior under admin g_score_resetonjoin -1, where CTF then KEEPS the rejoiner's accumulated score."
     verification:
-      - { kind: code, ref: "no PreferPlayerScore_Clear CTF hook in the port", result: fail }
-    confidence: low
-    notes: "Newly mapped 2026-06-27 (was unmapped). Minor scoreboard-clear nuance; likely no observable gameplay effect in the port's current scoring path."
+      - { kind: code, ref: "Ctf.cs:OnPreferPlayerScoreClear returns true unconditionally (== Base sv_ctf.qc:2708-2711 { return true; }); subscribed to MutatorHooks.PreferPlayerScore_Clear in Activate. LIVE: GameScores.ClearPlayerOnJoin (GameScores.cs:637) ORs in FirePreferPlayerScore_Clear under g_score_resetonjoin -1; ClearPlayerOnJoin is called on every (re)join from ClientManager.Join (ClientManager.cs:294) — same live path verified for ka/TKA.", result: pass }
+    confidence: high
+    notes: "FIX Wave 16 (missing/na -> faithful/live): the PreferPlayerScore_Clear veto is now subscribed and consulted live via the global hook chain on the player-join score-clear path, identical mechanism to Keepaway/TKA. No-op at the default resetonjoin 0; under -1 it correctly preserves the rejoiner's CTF score."
