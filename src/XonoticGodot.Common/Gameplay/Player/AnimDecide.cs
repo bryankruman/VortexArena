@@ -7,9 +7,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// consumer (LocomotionBlend.SelectTorsoAction / PlayerModel.Pose), so the two agree on the action id space
 /// and the running-window timing.
 ///
-/// <para>Scope (Wave-14b Stage 3): SHOOT only. The action TABLE (per-anim fps/numframes) and the priority
-/// cascade are structured so PAIN/DRAW/TAUNT/MELEE/DIE slot in unchanged in Stage 4 — only their set-sites
-/// (pain/draw/taunt/death) and their (fps, numframes) rows need filling.</para>
+/// <para>Scope (Wave-14b Stage 4): the full action set — DRAW, PAIN1/PAIN2, SHOOT, MELEE, TAUNT, DIE1/DIE2 —
+/// is wired. Each has its Base (fps, numframes) row in <see cref="SpecFor"/> and a faithful server set-site
+/// (DRAW on weapon raise; PAIN on the pain debounce; SHOOT/MELEE at the fire-commit; TAUNT on the manual-taunt
+/// voice; DIE on death), mirroring Base's <c>animdecide_setaction</c> / <c>animdecide_setstate</c> call sites.</para>
 ///
 /// <para>Faithful mapping: Base's <c>animdecide_getupperanim</c> (animdecide.qc:109-153) chooses, in
 /// priority order, DEAD (die1/die2/frozen) &gt; ACTIVE (a running explicit action whose window
@@ -65,15 +66,17 @@ public static class AnimDecide
     /// </summary>
     public static AnimSpec SpecFor(AnimUpperAction action) => action switch
     {
-        // Base animdecide.qc:78 — e.anim_shoot = animfixfps(e, ANIM_VEC(shoot, 1, 5), none): numframes 1 @ 5 fps.
-        AnimUpperAction.Shoot => new AnimSpec(1, 5f), // 0.2s
-        // --- Stage 4 (set-sites + clips deferred): keep the Base numbers so the table is ready ---
-        // Draw   : ANIM_VEC(draw, 1, 3)   -> 0.333s
-        // Pain1/2: ANIM_VEC(pain*, 1, 2)  -> 0.5s
-        // Melee  : ANIM_VEC(melee, 1, 1)  -> 1.0s (fallback shoot)
-        // Taunt  : ANIM_VEC(taunt, 1, 0.33) -> ~3.03s
-        // Die1/2 : ANIM_VEC(die*, 1, 0.5) -> 2.0s
-        _ => new AnimSpec(0, 0f),
+        // Base animdecide.qc:68-88 — each row is `animfixfps(e, ANIM_VEC(<name>, numframes, rate), …)`: numframes
+        // 1 with the listed per-anim framerate, so the running window is `1 / rate` seconds (DurationSeconds).
+        AnimUpperAction.Draw => new AnimSpec(1, 3f),      // animdecide.qc:70 ANIM_VEC(draw, 1, 3)    -> 0.333s
+        AnimUpperAction.Pain1 => new AnimSpec(1, 2f),     // animdecide.qc:76 ANIM_VEC(pain1, 1, 2)   -> 0.5s
+        AnimUpperAction.Pain2 => new AnimSpec(1, 2f),     // animdecide.qc:77 ANIM_VEC(pain2, 1, 2)   -> 0.5s
+        AnimUpperAction.Shoot => new AnimSpec(1, 5f),     // animdecide.qc:78 ANIM_VEC(shoot, 1, 5)   -> 0.2s
+        AnimUpperAction.Melee => new AnimSpec(1, 1f),     // animdecide.qc:88 ANIM_VEC(melee, 1, 1)   -> 1.0s (clip falls back to shoot)
+        AnimUpperAction.Taunt => new AnimSpec(1, 0.33f),  // animdecide.qc:79 ANIM_VEC(taunt, 1, 0.33) -> ~3.03s
+        AnimUpperAction.Die1 => new AnimSpec(1, 0.5f),    // animdecide.qc:68 ANIM_VEC(die1, 1, 0.5)  -> 2.0s
+        AnimUpperAction.Die2 => new AnimSpec(1, 0.5f),    // animdecide.qc:69 ANIM_VEC(die2, 1, 0.5)  -> 2.0s
+        _ => new AnimSpec(0, 0f),                         // None / idle: no window (the static aim pose carries the torso).
     };
 
     /// <summary>

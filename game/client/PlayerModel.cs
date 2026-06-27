@@ -210,17 +210,19 @@ public partial class PlayerModel : Node3D
 
         FrameGroup legs = _legClips[(int)loco];
 
-        // [W14b LI3] the upper-body ACTION overlay (SHOOT this wave). When the server has an active upper action for
-        // this player (the expiry-resolved NetEntityState.UpperAction networked onto e.UpperAction) AND we have the
-        // server clock (serverNow; NaN on a pure demo / smoke harness), the torso plays the action clip at its phase
-        // (now − start) instead of the static aim pose — the legs keep their velocity-derived locomotion. A dead
-        // player never overlays (death owns the whole body). Falls back to the static aim path otherwise, which is
-        // bit-identical to before this wave (FromFrames' static Lerp4 = 0).
+        // [W14b LI3/Stage 4] the upper-body ACTION overlay (draw/pain/shoot/melee/taunt/die). When the server has an
+        // active upper action for this player (the expiry-resolved NetEntityState.UpperAction networked onto
+        // e.UpperAction) AND we have the server clock (serverNow; NaN on a pure demo / smoke harness), the torso plays
+        // the action clip at its phase (now − start) instead of the static aim pose — the legs keep their
+        // velocity-derived locomotion. The priority cascade lives in AnimDecide.GetUpperAnim (via SelectTorsoAction):
+        // DIE1/DIE2 (DEAD) outrank live actions and never expire, so a dead player's death torso is NEVER stomped by a
+        // late pain (and the server only ever networks DIE on a dead player). Falls back to the static aim path
+        // otherwise, which is bit-identical to before this wave (FromFrames' static Lerp4 = 0).
         // Default to the static aim pose (bit-identical to pre-W14b); the overlay path replaces it when an
         // action is active. Initialized up front so the compiler sees `anim` definitely assigned regardless
         // of the action-clip branch (the static Split for an overlaid frame is a rare, brief-window cost).
         SkeletonAnim anim = LocomotionBlend.Split(legs, _legsTime, _torsoClip, 0f);
-        if (!dead && !float.IsNaN(serverNow) && e.UpperAction != 0)
+        if (!float.IsNaN(serverNow) && e.UpperAction != 0)
         {
             var (active, phase) = LocomotionBlend.SelectTorsoAction(e.UpperAction, e.AnimActionTime, serverNow);
             if (active)
@@ -448,10 +450,12 @@ public partial class PlayerModel : Node3D
         _legClips[(int)L.DuckJump] = Pick("duckjump", "jump");
         _torsoClip = Pick("idle", "stand", "aim");
 
-        // [W14b LI3] the upper-body ACTION clips. SHOOT only this wave; the melee→shoot / duckwalk fallback the
-        // design calls for is baked into the Pick() chain (subsumes the fallbackframe remap). Force each clip
-        // NON-LOOPING and to the AnimDecide framerate (SHOOT = 5 fps / 0.2s) so the client play PHASE clamps at the
+        // [W14b LI3/Stage 4] the upper-body ACTION clips: draw / pain1 / pain2 / shoot / melee / taunt / die1 / die2.
+        // Force each clip NON-LOOPING and to the AnimDecide framerate (e.g. SHOOT = 5 fps / 0.2s, DRAW = 3 fps / 0.333s,
+        // PAIN = 2 fps / 0.5s, DIE = 0.5 fps / 2.0s, TAUNT = 0.33 fps / ~3.03s) so the client play PHASE clamps at the
         // last frame exactly when the SERVER expiry window elapses — producer and consumer agree on the duration.
+        // The Base fallback discipline (animdecide.qc:88 melee → shoot; the duckwalk-variant → duckwalk) is BAKED into
+        // each Pick() keyword chain here, which SUBSUMES the cl-csqcmodel.fallbackframe.remap (no runtime frame-id remap).
         FrameGroup ActionClip(AnimDecide.AnimUpperAction a, params string[] keys)
         {
             FrameGroup g = Pick(keys);
@@ -459,7 +463,15 @@ public partial class PlayerModel : Node3D
             float fps = spec.FrameRate > 0f ? spec.FrameRate : (g.Fps > 0f ? g.Fps : 20f);
             return new FrameGroup(g.FirstFrame, g.FrameCount, fps, loop: false, g.Name);
         }
+        _actionClips[(int)AnimDecide.AnimUpperAction.Draw] = ActionClip(AnimDecide.AnimUpperAction.Draw, "draw", "raise");
+        _actionClips[(int)AnimDecide.AnimUpperAction.Pain1] = ActionClip(AnimDecide.AnimUpperAction.Pain1, "pain1", "pain");
+        _actionClips[(int)AnimDecide.AnimUpperAction.Pain2] = ActionClip(AnimDecide.AnimUpperAction.Pain2, "pain2", "pain");
         _actionClips[(int)AnimDecide.AnimUpperAction.Shoot] = ActionClip(AnimDecide.AnimUpperAction.Shoot, "shoot", "attack", "fire");
-        // Stage 4: draw / pain1 / pain2 / melee(→shoot) / taunt / die1 / die2 resolved the same way.
+        // Base animdecide.qc:88 melee falls back to shoot — the keyword chain ends with the shoot keys so a model
+        // lacking a "melee" framegroup reuses the SHOOT clip (subsumes the fallbackframe melee→shoot remap).
+        _actionClips[(int)AnimDecide.AnimUpperAction.Melee] = ActionClip(AnimDecide.AnimUpperAction.Melee, "melee", "shoot", "attack", "fire");
+        _actionClips[(int)AnimDecide.AnimUpperAction.Taunt] = ActionClip(AnimDecide.AnimUpperAction.Taunt, "taunt");
+        _actionClips[(int)AnimDecide.AnimUpperAction.Die1] = ActionClip(AnimDecide.AnimUpperAction.Die1, "die1", "death1", "death", "dead", "die");
+        _actionClips[(int)AnimDecide.AnimUpperAction.Die2] = ActionClip(AnimDecide.AnimUpperAction.Die2, "die2", "death2", "death", "dead", "die");
     }
 }

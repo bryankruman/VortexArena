@@ -742,6 +742,12 @@ public static class SpawnSystem
         // reset. Without this, after the first death+respawn the player stayed flagged a corpse forever: it could
         // never re-enter PlayerDamage (so it couldn't die again or award a frag) and was bullet-penetrable.
         p.IsCorpse = false;
+        // [W14b Stage 4] QC PutPlayerInServer: animdecide_setstate(this, 0, false) (player.qc:150) clears the death
+        // anim state on (re)spawn. The port's upper-action latch carries the DIE1/DIE2 overlay (set on death, never
+        // windowed), so it MUST be cleared here or GetUpperAnim would keep returning DEAD priority on the live
+        // respawned player. None = the static aim pose until the spawned weapon's raise re-latches DRAW.
+        p.AnimUpperAction = AnimDecide.AnimUpperAction.None;
+        p.AnimActionStart = 0f;
         // [sv-antilag.clear.on_spawn] QC PutClientInServer fires antilag_clear(this, CS(this)) (client.qc:858)
         // so the freshly-(re)spawned player's lag-comp ring is wiped — a shot can't rewind it toward its old
         // (pre-respawn) position for the next ~0.4s. The net driver honors this flag on its next record pass.

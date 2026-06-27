@@ -26,11 +26,12 @@ public partial class Entity
     // RENDER-ONLY (the client fills them from ClientEntityView each frame); the server sim never reads them. The
     // SERVER-side animdecide producer fields (AnimUpperAction/AnimActionStart) land with LI1 in a later wave.
 
-    /// <summary>QC csqcmodel upper-body action id (0 = idle; SHOOT/MELEE/PAIN/DRAW/TAUNT/DEAD). Decoded from
-    /// <c>NetEntityState.UpperAction</c>; the client plays it as a torso overlay (LI3). RESERVED — no producer yet.</summary>
+    /// <summary>QC csqcmodel upper-body action id (0 = idle; DRAW/PAIN1/PAIN2/SHOOT/MELEE/TAUNT/DIE1/DIE2). Decoded
+    /// from <c>NetEntityState.UpperAction</c> (the server's expiry-resolved action); the client plays it as a torso
+    /// overlay (LI3). Produced by the server animdecide set-sites (W14b Stage 3 SHOOT/MELEE; Stage 4 the rest).</summary>
     public byte UpperAction;
     /// <summary>QC the action's start time (server clock); the client derives the play phase as <c>now − this</c>.
-    /// Decoded from <c>NetEntityState.AnimActionTime</c>. RESERVED — no producer yet.</summary>
+    /// Decoded from <c>NetEntityState.AnimActionTime</c>.</summary>
     public float AnimActionTime;
 
     /// <summary>QC <c>.m_switchweapon</c> — the weapon RegistryId the remote player is switching TO (-1 = none).
@@ -51,8 +52,9 @@ public partial class Entity
     // =====================================================================================
     //  [W14b LI1] SERVER-side animdecide producer state (the upper-body action latch)
     // =====================================================================================
-    // The server DECIDES the upper-body action (SHOOT now; PAIN/DRAW/TAUNT/MELEE/DIE in Stage 4) via
-    // AnimDecide.SetAction at the fire site, expires it per frame with AnimDecide.GetUpperAnim, and networks the
+    // The server DECIDES the upper-body action (DRAW on weapon raise, PAIN on the pain debounce, SHOOT/MELEE at the
+    // fire-commit, TAUNT on the manual taunt voice, DIE on death) via AnimDecide.SetAction at each faithful set-site,
+    // expires it per frame with AnimDecide.GetUpperAnim, and networks the
     // resolved (action, start) as NetEntityState.UpperAction/AnimActionTime in ServerNet.BuildEntitySet. These are
     // SERVER-only producer fields (distinct from the client render-only mirrors UpperAction/AnimActionTime above):
     // the server sim writes them, the client never sees these — only their networked, expiry-resolved projection.

@@ -147,16 +147,24 @@ public abstract partial class Weapon
         // [W14b LI1] animdecide upper-body action set-site. QC weapon_thinkf (weaponsystem.qc:415-423) latches the
         // SHOOT (or MELEE) upper action only when it schedules a WFRAME_FIRE1/FIRE2 with a NON-ZERO animtime
         // (`(fr == WFRAME_FIRE1 || fr == WFRAME_FIRE2) && t`). The committed attack is the port's WFRAME_FIRE
-        // analogue, so latch SHOOT now (restart = true to mirror QC's restartanim = fr != WFRAME_IDLE, so a
+        // analogue, so latch the action now (restart = true to mirror QC's restartanim = fr != WFRAME_IDLE, so a
         // held-trigger stream restarts the window each shot). A ZERO-animtime fire mode (QC's `&& t` fails) does
         // NOT latch a torso overlay and, like QC's else-branch (weaponsystem.qc:422-423), CLEARS a lingering
-        // SHOOT/MELEE — a zero-animtime shot returns the torso to idle. MELEE (the melee-spawnflag branch) +
-        // PAIN/DRAW/TAUNT/DIE set-sites are Stage 4.
+        // SHOOT/MELEE — a zero-animtime shot returns the torso to idle.
+        //
+        // SHOOT vs MELEE (weaponsystem.qc:417-419): a PRIMARY shot off a WEP_TYPE_MELEE_PRI weapon, or a SECONDARY
+        // shot off a WEP_TYPE_MELEE_SEC weapon (the Shotgun's bash), latches MELEE instead of SHOOT. The mode here is
+        // `fire`, so test the matching melee spawnflag for that mode. (Pain/Draw/Taunt/Die latch at their own sites.)
         float fireNow = Api.Services is not null ? Api.Clock.Time : 0f;
         if (animtime > 0f)
         {
+            bool primaryMelee = fire == FireMode.Primary && (SpawnFlags & WeaponFlags.TypeMeleePri) != 0;
+            bool secondaryMelee = fire == FireMode.Secondary && (SpawnFlags & WeaponFlags.TypeMeleeSec) != 0;
+            AnimDecideUnit.AnimUpperAction act0 = (primaryMelee || secondaryMelee)
+                ? AnimDecideUnit.AnimUpperAction.Melee
+                : AnimDecideUnit.AnimUpperAction.Shoot;
             var (act, start) = AnimDecideUnit.SetAction(
-                actor.AnimUpperAction, actor.AnimActionStart, AnimDecideUnit.AnimUpperAction.Shoot, fireNow, restart: true);
+                actor.AnimUpperAction, actor.AnimActionStart, act0, fireNow, restart: true);
             actor.AnimUpperAction = act;
             actor.AnimActionStart = start;
         }

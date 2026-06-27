@@ -289,6 +289,22 @@ public static class WeaponFireDriver
         newwep.WrSetup(player, slot); // QC newwep.wr_setup(...)
         st.State = WeaponFireState.Raise;
 
+        // [W14b Stage 4] animdecide DRAW set-site. The WS_RAISE transition (this is the port's WS_CLEAR→WS_RAISE
+        // "end switching" branch, weaponsystem.qc:539-561) is the weapon-raise moment; latch the DRAW upper-body
+        // action so a remote player visibly raises the new weapon (window = ANIM_VEC(draw, 1, 3) -> 0.333s). Base
+        // reserves ANIMACTION_DRAW in the getupperanim switch but never fires it; the design (LI3) wires it at this
+        // raise transition. restart = true (a re-equip should restart the draw). A dead player's death overlay still
+        // wins — GetUpperAnim gives DIE1/DIE2 absolute priority over any latched ACTIVE action — so a late raise can't
+        // stomp death; only the slot-0 raise drives the (single) per-player upper action.
+        if (slot.Index == 0)
+        {
+            float drawNow = Api.Services is not null ? Api.Clock.Time : 0f;
+            var (act, start) = AnimDecide.SetAction(
+                player.AnimUpperAction, player.AnimActionStart, AnimDecide.AnimUpperAction.Draw, drawNow, restart: true);
+            player.AnimUpperAction = act;
+            player.AnimActionStart = start;
+        }
+
         // Seed our clip load to the load of the weapon we switched to, if it's reloadable (QC weaponsystem.qc:
         // 552-559): clip_load = weapon_load[newwep.id]; clip_size = reloading_ammo. Else clip_load = clip_size = 0.
         if ((newwep.SpawnFlags & WeaponFlags.Reloadable) != 0 && newwep.ReloadingAmmo() != 0f)

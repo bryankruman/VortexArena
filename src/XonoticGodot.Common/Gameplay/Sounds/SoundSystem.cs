@@ -546,10 +546,18 @@ public static class SoundSystem
                 }
                 else
                 {
-                    // QC (globalsound.qc:406-407): a living TAUNT speaker triggers the taunt animation.
-                    // QC: if(IS_PLAYER(this) && !IS_DEAD(this)) animdecide_setaction(this, ANIMACTION_TAUNT, true)
-                    // The port has no animdecide_setaction seam yet (see DodgingMutator.cs:370, WalljumpMutator.cs:128).
-                    // When the anim-action seam is added, wire: if(!emitter.IsCorpse) emitter.AnimAction = AnimAction.Taunt.
+                    // [W14b Stage 4] QC (globalsound.qc:406-407): a living manual-TAUNT speaker triggers the taunt
+                    // animation BEFORE the sv_taunt / sv_gentle gates below (so the anim plays even with sv_taunt 0).
+                    // QC: if(IS_PLAYER(this) && !IS_DEAD(this)) animdecide_setaction(this, ANIMACTION_TAUNT, true).
+                    // IS_DEAD == deadflag != DEAD_NO; the port's corpse flag covers the same "not a live player" case.
+                    if (emitter is not null && !emitter.IsCorpse && emitter.DeadState == DeadFlag.No)
+                    {
+                        float tauntNow = Api.Services is not null ? Api.Clock.Time : 0f;
+                        var (act, start) = AnimDecide.SetAction(
+                            emitter.AnimUpperAction, emitter.AnimActionStart, AnimDecide.AnimUpperAction.Taunt, tauntNow, restart: true);
+                        emitter.AnimUpperAction = act;
+                        emitter.AnimActionStart = start;
+                    }
                 }
                 if (!CvarBool(VoiceCvars.SvTaunt)) break;
                 if (CvarBool(VoiceCvars.SvGentle)) break;

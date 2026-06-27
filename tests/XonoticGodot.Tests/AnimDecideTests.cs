@@ -26,6 +26,23 @@ public class AnimDecideTests
         Assert.Equal(ShootDur, spec.DurationSeconds, 5);
     }
 
+    // [W14b Stage 4] each remaining action's running window == Base animdecide.qc ANIM_VEC(name, 1, rate) -> 1/rate s.
+    [Theory]
+    [InlineData(A.Draw, 1, 3f, 1f / 3f)]      // animdecide.qc:70 ANIM_VEC(draw, 1, 3)     -> 0.333s
+    [InlineData(A.Pain1, 1, 2f, 0.5f)]        // animdecide.qc:76 ANIM_VEC(pain1, 1, 2)    -> 0.5s
+    [InlineData(A.Pain2, 1, 2f, 0.5f)]        // animdecide.qc:77 ANIM_VEC(pain2, 1, 2)    -> 0.5s
+    [InlineData(A.Melee, 1, 1f, 1f)]          // animdecide.qc:88 ANIM_VEC(melee, 1, 1)    -> 1.0s
+    [InlineData(A.Taunt, 1, 0.33f, 1f / 0.33f)] // animdecide.qc:79 ANIM_VEC(taunt, 1, 0.33) -> ~3.03s
+    [InlineData(A.Die1, 1, 0.5f, 2f)]         // animdecide.qc:68 ANIM_VEC(die1, 1, 0.5)   -> 2.0s
+    [InlineData(A.Die2, 1, 0.5f, 2f)]         // animdecide.qc:69 ANIM_VEC(die2, 1, 0.5)   -> 2.0s
+    public void SpecFor_Stage4Actions_MatchBaseWindows(A action, int numFrames, float rate, float dur)
+    {
+        AnimDecide.AnimSpec spec = AnimDecide.SpecFor(action);
+        Assert.Equal(numFrames, spec.NumFrames);
+        Assert.Equal(rate, spec.FrameRate);
+        Assert.Equal(dur, spec.DurationSeconds, 4);
+    }
+
     [Fact]
     public void GetUpperAnim_Idle_When_NoAction()
     {
@@ -59,6 +76,37 @@ public class AnimDecideTests
         // die1/die2 win regardless of velocity/time and are NEVER windowed (held until the state clears).
         Assert.Equal((A.Die1, P.Dead), AnimDecide.GetUpperAnim(A.Die1, start: 0f, now: 999f));
         Assert.Equal((A.Die2, P.Dead), AnimDecide.GetUpperAnim(A.Die2, start: 0f, now: 999f));
+    }
+
+    // [W14b Stage 4] each ACTIVE action is returned with ACTIVE priority within its window and expires to idle just
+    // past it (QC `time <= start + numframes/framerate`), exactly like SHOOT.
+    [Theory]
+    [InlineData(A.Draw, 1f / 3f)]
+    [InlineData(A.Pain1, 0.5f)]
+    [InlineData(A.Pain2, 0.5f)]
+    [InlineData(A.Melee, 1f)]
+    [InlineData(A.Taunt, 1f / 0.33f)]
+    public void GetUpperAnim_Stage4Action_Active_WithinWindow_Then_Expires(A action, float dur)
+    {
+        // strictly inside the window → ACTIVE; at the boundary still ACTIVE (QC <=); just past → idle/None.
+        Assert.Equal((action, P.Active), AnimDecide.GetUpperAnim(action, 10f, 10f + dur * 0.5f));
+        Assert.Equal(P.Active, AnimDecide.GetUpperAnim(action, 10f, 10f + dur).priority);
+        var (a, prio) = AnimDecide.GetUpperAnim(action, 10f, 10f + dur + 0.01f);
+        Assert.Equal(A.None, a);
+        Assert.Equal(P.Idle, prio);
+    }
+
+    [Fact]
+    public void GetUpperAnim_Death_Outranks_Pain_Cascade()
+    {
+        // The DEAD>ACTIVE>IDLE cascade: a DIE latch is held at DEAD priority forever, even at a `now` long past
+        // when a PAIN window (0.5s) would have expired — so a dead player's death overlay never falls back to idle
+        // and (since DIE is the only thing the producer sets on death) is never replaced by a late pain. Contrast a
+        // PAIN latch at the same late time, which has expired to IDLE.
+        Assert.Equal((A.Die1, P.Dead), AnimDecide.GetUpperAnim(A.Die1, start: 10f, now: 100f));
+        Assert.Equal((A.Die2, P.Dead), AnimDecide.GetUpperAnim(A.Die2, start: 10f, now: 100f));
+        // a PAIN at the same elapsed time is long gone (0.5s window) → IDLE, confirming PAIN can't outlive DEAD.
+        Assert.Equal((A.None, P.Idle), AnimDecide.GetUpperAnim(A.Pain1, start: 10f, now: 100f));
     }
 
     [Fact]
@@ -100,6 +148,16 @@ public class AnimDecideTests
     {
         var (active, _) = LocomotionBlend.SelectTorsoAction((byte)A.Shoot, start: 10f, now: 10f + ShootDur + 0.01f);
         Assert.False(active);
+    }
+
+    [Fact]
+    public void SelectTorsoAction_Die_Active_And_Never_Expires()
+    {
+        // [W14b Stage 4] the death torso overlay stays ACTIVE indefinitely (DIE is never windowed), so a dead player
+        // keeps playing the death pose (its non-looping clip clamps at the last frame) until respawn clears the latch.
+        var (active, phase) = LocomotionBlend.SelectTorsoAction((byte)A.Die1, start: 10f, now: 1000f);
+        Assert.True(active);
+        Assert.Equal(990f, phase, 3);
     }
 
     [Fact]

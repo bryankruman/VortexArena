@@ -501,6 +501,24 @@ public sealed class DamageSystem : IDamageSystem
                 if (Now() > targ.PainFinished && !IsFrozenStat(targ) && !HasStatusFrozen(targ))
                 {
                     targ.PainFinished = Now() + 0.5f;
+
+                    // [W14b Stage 4] animdecide PAIN set-site (QC player.qc:356-365): gated on sv_gentle<1 and the
+                    // corpse exclusion (classname != "body"); QC also gates on !animstate_override, which the port
+                    // doesn't model (no monster anim-override on players). Alternate PAIN1/PAIN2 by random()>0.5, the
+                    // SAME roll QC uses, with restart = true (a fresh hit restarts the pain window). A late pain on a
+                    // dead/dying corpse is excluded here, and even if one slipped through GetUpperAnim keeps DIE above
+                    // PAIN, so the death overlay is never stomped.
+                    if (SvGentle() < 1f && !targ.IsCorpse)
+                    {
+                        var painAct = Prandom.Float() > 0.5f
+                            ? AnimDecide.AnimUpperAction.Pain1
+                            : AnimDecide.AnimUpperAction.Pain2;
+                        var (act, start) = AnimDecide.SetAction(
+                            targ.AnimUpperAction, targ.AnimActionStart, painAct, Now(), restart: true);
+                        targ.AnimUpperAction = act;
+                        targ.AnimActionStart = start;
+                    }
+
                     EmitPainSound(targ, attacker, deathType, take);
                 }
                 if (take > 0f)
@@ -705,6 +723,17 @@ public sealed class DamageSystem : IDamageSystem
         victim.Flags &= ~EntFlags.OnGround;   // don't stick to the floor
         victim.DeadState = DeadFlag.Dying;    // dying animation (commits to DEAD across frames)
         victim.IsCorpse = true;               // route further hits to PlayerCorpseDamage
+
+        // [W14b Stage 4] animdecide DIE set-site (QC player.qc:571-575): on death, select DIE1 vs DIE2 by
+        // random()<0.5 — the SAME roll QC uses (animdecide_setstate ANIMSTATE_DEAD1/DEAD2). These are NEVER windowed:
+        // GetUpperAnim returns DIE with ANIMPRIO_DEAD unconditionally, so the death overlay holds (and outranks any
+        // late pain/shoot) until the player respawns and re-latches a live action. The start time is the death time
+        // (QC death_time = time), networked as AnimActionTime so the client plays the death torso from its start.
+        var dieAct = Prandom.Float() < 0.5f
+            ? AnimDecide.AnimUpperAction.Die1
+            : AnimDecide.AnimUpperAction.Die2;
+        victim.AnimUpperAction = dieAct;
+        victim.AnimActionStart = Now();
 
         // players have no think; corpse fade-out is host-side (SUB_SetFade) — left to the host.
         victim.Think = null;
