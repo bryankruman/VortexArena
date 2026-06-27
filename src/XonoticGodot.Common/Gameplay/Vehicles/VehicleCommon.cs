@@ -394,9 +394,16 @@ namespace XonoticGodot.Common.Gameplay
             if (Api.Services is not null)
                 Api.Entities.SetOrigin(vehic, vehic.SpawnPos);
 
-            // NOTE — cross-boundary: EFFECT_TELEPORT (client-render), the bot-target list (bot AI), the
-            // hud/viewport model reset + CSQCMODEL_AUTOINIT (client/net) and lock reset. The server spawn
-            // state — owner, movetype/solid/damage, FL_NOTARGET, angles, placement at the spawn point — is set above.
+            // QC vehicles_spawn (sv_vehicles.qc): Send_Effect(EFFECT_TELEPORT, this.origin, '0 0 0', 1) — the
+            // teleport-in flash when a vehicle (re)appears at its spawn point. This is a server-authoritative
+            // Send_Effect, the same one-shot the teleporter exit and the Tuba instrument-switch fire, so it goes
+            // through the live EffectEmitter seam (NOT a deferred CSQC visual). Closes the spawn flash presentation gap.
+            if (Api.Services is not null)
+                EffectEmitter.Emit("TELEPORT", vehic.Origin, Vector3.Zero, 1);
+
+            // NOTE — cross-boundary: the bot-target list (bot AI), the hud/viewport model reset +
+            // CSQCMODEL_AUTOINIT (client/net) and the lock reset remain deferred. The server spawn state — owner,
+            // movetype/solid/damage, FL_NOTARGET, angles, placement at the spawn point — is set above.
         }
 
         /// <summary>
@@ -914,6 +921,54 @@ namespace XonoticGodot.Common.Gameplay
             // full-health state at its spawn point (which also re-arms vehicles_think). The descriptor's Spawn folds
             // vehicle_initialize's per-vehicle setup + vehicles_spawn; SetReturn uses it as the return target too.
             vehic.VehicleDef?.Spawn(vehic);
+        }
+
+        // =====================================================================================
+        // DELAYSPAWN — port of the g_vehicles_delayspawn nextthink branch of vehicle_initialize
+        //              (sv_vehicles.qc ~1276-1281): stagger the FIRST activation of a map-placed vehicle.
+        // =====================================================================================
+
+        /// <summary>QC EF_NODRAW (dpextensions) — the model is not rendered while a vehicle is parked pre-spawn.</summary>
+        private const int EfNoDraw = 16; // EF_NODRAW
+
+        /// <summary>
+        /// Port of the <c>autocvar_g_vehicles_delayspawn</c> first-think branch of <c>vehicle_initialize</c>
+        /// (sv_vehicles.qc:1278-1280): <c>this.nextthink = time + this.respawntime + random() *
+        /// autocvar_g_vehicles_delayspawn_jitter;</c>. Base does NOT run <c>vehicles_spawn</c> at map-placement
+        /// under delayspawn — the vehicle stays hidden + inert and its think (which IS <c>vehicles_spawn</c>) only
+        /// fires after the staggered delay, so a row of stock-map vehicles activates at randomised offsets instead
+        /// of all at once at <c>game_starttime</c>. The port FOLDS <c>vehicles_spawn</c> into the descriptor's
+        /// <see cref="Vehicle.Spawn"/> (already run inline so the hull exists for the drop-to-floor trace), so to
+        /// reproduce the timing this PARKS the just-built vehicle — EF_NODRAW (hidden), SOLID_NOT + DAMAGE_NO
+        /// (un-shootable AND un-boardable: <c>FindBoardableInRadius</c> rejects a <c>DAMAGE_NO</c> vehicle, and
+        /// <c>DamageSystem</c> ignores a <c>DAMAGE_NO</c> target) — then re-arms the descriptor's Spawn as the
+        /// delayed think. When that think fires, Spawn re-places the vehicle at its (already floor-dropped)
+        /// SpawnPos/SpawnAngles and re-establishes SOLID/DAMAGE/model/idle-think, so we only clear EF_NODRAW.
+        /// </summary>
+        public static void ScheduleDelayedSpawn(Entity vehic, float jitter)
+        {
+            // QC: nextthink = time + respawntime + random() * jitter. RespawnTime was just set by def.Spawn.
+            float delay = vehic.RespawnTime + Prandom.Float() * jitter;
+
+            // Park the vehicle inert + hidden for the delay (QC: EF_NODRAW + the un-spawned vehicle is not yet
+            // shootable/boardable). DAMAGE_NO is the gate FindBoardableInRadius (VehicleBoarding.cs) keys off, so
+            // a player can't board the staggered vehicle early; DamageSystem skips a DAMAGE_NO target too.
+            vehic.Effects |= EfNoDraw;
+            vehic.Solid = Solid.Not;
+            vehic.TakeDamage = DamageMode.No;
+            vehic.MoveType = MoveType.None;
+            vehic.Velocity = Vector3.Zero;
+            vehic.AVelocity = Vector3.Zero;
+            vehic.Owner = null;
+
+            // The delayed think is the descriptor's Spawn (= the FOLDED vehicles_spawn), exactly as SetReturn and
+            // VehiclesReset use it as the (re)spawn target. Clear EF_NODRAW first since Spawn does not touch it.
+            vehic.Think = self =>
+            {
+                self.Effects &= ~EfNoDraw;
+                self.VehicleDef?.Spawn(self);
+            };
+            vehic.NextThink = Time + delay;
         }
 
         // =====================================================================================

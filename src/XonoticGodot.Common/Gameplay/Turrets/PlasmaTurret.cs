@@ -80,6 +80,7 @@ public class PlasmaTurret : Turret  // non-sealed: PlasmaDualTurret derives from
         NetName = "plasma";
         DisplayName = "Plasma Cannon";
         Model = "models/turrets/base.md3";
+        HeadModel = "models/turrets/plasma.md3";  // QC plasma.qh head_model ATTRIB (the spinning plasma-cannon head)
         StartHealth = 500f;
         Range = TargetRange;
     }

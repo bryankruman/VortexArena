@@ -1194,10 +1194,14 @@ public partial class CrosshairPanel : HudPanel
         if (tr.Ent is not Player hit || ReferenceEquals(hit, Player))
             return ShotType.HitWorld;
 
-        // QC: a spectator-team player is not a valid target (treated as world). Team 0 = no team.
-        // QC: teamplay && entcs_GetTeam == myteam → teammate (an invalid target). SAME_TEAM semantics:
-        // both players on the same nonzero team (only true in a team game, where teams are assigned).
-        if (Player is not null && hit.Team != 0f && hit.Team == Player.Team)
+        // QC EnemyHitCheck (crosshair.qc:64-67): a spectator-team player is HITWORLD; otherwise a same-team
+        // player (only when teamplay is on) is HITTEAM, any other player is HITENEMY. The port detects "teamplay
+        // on" the same way the rest of the client does — both players carry a real (nonzero) team only in a team
+        // game — so the `hit.Team != 0` guard doubles as the teamplay gate (in a non-team game everyone is team 0
+        // and 0 != 0 is false, i.e. no teammates, matching Base where the `teamplay &&` branch is never taken).
+        // A spectator is never a live Player trace-target here, so the QC NUM_SPECTATOR->HITWORLD branch is
+        // covered by the `tr.Ent is not Player` early-out above.
+        if (Player is not null && hit.Team > 0f && Player.Team > 0f && hit.Team == Player.Team)
             return ShotType.HitTeam;
 
         return ShotType.HitEnemy;

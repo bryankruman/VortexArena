@@ -247,4 +247,14 @@ public enum NetControl : byte
     /// remote client (not just the listen host). The vote CAST rides the C2S impulse byte. Unknown to old
     /// clients (dispatch falls through harmlessly).</summary>
     MapVote = 22,
+
+    // ---- onslaught radar links (the C# port of QC's networked ENT_CLIENT_RADARLINK entities) ----
+    /// <summary>Server → client (unreliable): the live Onslaught control-point/generator connection lines (QC
+    /// <c>ENT_CLIENT_RADARLINK</c> + <c>draw_teamradar_link</c>, client/teamradar.qc). Each entry is one power
+    /// link — the two endpoint world positions (XY) plus each end's owning team color code — so the radar can
+    /// draw the per-end team-colored connection quad between two linked nodes. Sent per-peer each network tick on
+    /// the unreliable channel (the graph + ownership change as points are captured); only emitted in Onslaught.
+    /// Decoded into <see cref="ClientNet"/>'s <c>RadarLinks</c> list; unknown to old clients (dispatch falls
+    /// through harmlessly).</summary>
+    RadarLinks = 23,
 }

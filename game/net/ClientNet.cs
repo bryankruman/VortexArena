@@ -367,6 +367,7 @@ public sealed class ClientNet : IDisposable
         _replicatedLastSent.Clear();
         _replicateSendAll = false;
         _radarPingTimes.Clear(); // drop stale per-waypoint radar ping stamps across reconnect/map change
+        _radarLinks.Clear();     // drop stale Onslaught radar links across reconnect/map change
         // Reset the echoed snapshot clock so the first post-reconnect input frame doesn't carry a stale large
         // server-time the server would read as a near-zero/negative RTT (it self-heals via the rtt<0 clamp, but
         // this avoids the brief under-report). 0 = "no snapshot yet", which the server treats as "measure nothing".
@@ -540,6 +541,7 @@ public sealed class ClientNet : IDisposable
             case NetControl.MatchState: HandleMatchState(ref r); break;
             case NetControl.Waypoints: HandleWaypoints(ref r); break;
             case NetControl.ItemsTime: HandleItemsTime(ref r); break;
+            case NetControl.RadarLinks: HandleRadarLinks(ref r); break;
             case NetControl.ClientInit: HandleClientInit(ref r); break;
             default: break;
         }
@@ -700,6 +702,38 @@ public sealed class ClientNet : IDisposable
     /// <summary>The server time of the most recent radar ping for <paramref name="waypointId"/>, or 0 if none.</summary>
     public float RadarPingTime(int waypointId)
         => _radarPingTimes.TryGetValue(waypointId, out float t) ? t : 0f;
+
+    // ---- onslaught radar links (S2C NetControl.RadarLinks; QC the networked ENT_CLIENT_RADARLINK entities) ----
+
+    /// <summary>One Onslaught radar-link segment for the radar (QC draw_teamradar_link): the two endpoint world
+    /// XY positions plus each end's team color code (0 = neutral/white). Z is irrelevant to the top-down radar.</summary>
+    public readonly record struct RadarLink(NVec3 A, int TeamA, NVec3 B, int TeamB);
+
+    private readonly List<RadarLink> _radarLinks = new();
+
+    /// <summary>The live Onslaught control-point/generator connection lines (QC g_radarlinks). Drives the radar's
+    /// draw_teamradar_link pass. Replaced wholesale each <see cref="NetControl.RadarLinks"/> message; empty in any
+    /// non-Onslaught mode. Read by <see cref="Game.Hud.RadarPanel"/>.</summary>
+    public IReadOnlyList<RadarLink> RadarLinks => _radarLinks;
+
+    private void HandleRadarLinks(ref BitReader r)
+    {
+        int count = r.ReadByte();
+        // Decode into a temp so a truncated packet never leaves a half-updated list on screen.
+        var tmp = new List<RadarLink>(count);
+        for (int i = 0; i < count; i++)
+        {
+            float ax = r.ReadFloat(), ay = r.ReadFloat();
+            int ta = r.ReadByte();
+            float bx = r.ReadFloat(), by = r.ReadFloat();
+            int tb = r.ReadByte();
+            tmp.Add(new RadarLink(new NVec3(ax, ay, 0f), ta, new NVec3(bx, by, 0f), tb));
+        }
+        if (r.BadRead)
+            return;
+        _radarLinks.Clear();
+        _radarLinks.AddRange(tmp);
+    }
 
     private void HandleWaypoints(ref BitReader r)
     {

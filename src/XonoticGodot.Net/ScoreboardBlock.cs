@@ -33,9 +33,13 @@ public readonly struct ScoreRowWire
     /// handicap. The client draws the <c>player_handicap</c> scoreboard icon (white@1 → red@16) when it's nonzero
     /// (scoreboard.qc:1003-1009). The port has no separate ENTCS stream, so it rides this scoreboard block.</summary>
     public readonly int HandicapLevel;
+    /// <summary>QC <c>pl.ping</c> (scoreboard.qc:1041, SP_PING): the player's round-trip time in milliseconds
+    /// (ENet RoundTripTime). -1 = unknown (a bot, or not measured); 0 renders as "N/A" (the QC connecting case),
+    /// a positive value colorizes by the ping bands. The port has no entcs ping slice, so it rides this block.</summary>
+    public readonly int PingMs;
     public ScoreRowWire(int netId, int[] columns, string name = "", int team = 0, bool isSpectator = false,
-        int packetLossByte = 0, int handicapLevel = 0)
-    { NetId = netId; Columns = columns; Name = name ?? ""; Team = team; IsSpectator = isSpectator; PacketLossByte = packetLossByte; HandicapLevel = handicapLevel; }
+        int packetLossByte = 0, int handicapLevel = 0, int pingMs = -1)
+    { NetId = netId; Columns = columns; Name = name ?? ""; Team = team; IsSpectator = isSpectator; PacketLossByte = packetLossByte; HandicapLevel = handicapLevel; PingMs = pingMs; }
 }
 
 /// <summary>The parsed scoreboard (client side after <see cref="ScoreboardBlock.Deserialize"/>).</summary>
@@ -93,7 +97,9 @@ public static class ScoreboardBlock
         foreach (var (netId, p) in players)
             rows.Add(new ScoreRowWire(netId, GameScores.CaptureColumns(p), p.NetName, (int)p.Team,
                 isSpectator: p is Player { IsObserver: true },
-                handicapLevel: p.HandicapLevel)); // QC ENTCS handicap_level slice (common/ent_cs.qc:180)
+                handicapLevel: p.HandicapLevel, // QC ENTCS handicap_level slice (common/ent_cs.qc:180)
+                pingMs: -1)); // QC SP_PING: CaptureRows has no transport, so ping stays unknown (the live
+                              // server path feeds the real RTT in ServerNet.BuildScoreboard).
         return rows;
     }
 
@@ -118,6 +124,10 @@ public static class ScoreboardBlock
             w.WriteBool(row.IsSpectator); // QC pl.team == NUM_SPECTATOR (drives Scoreboard_Spectators_Draw)
             w.WriteByte(row.PacketLossByte & 0xFF); // QC ping_packetloss byte (server/world.qc:74)
             w.WriteByte(row.HandicapLevel & 0xFF); // QC ENTCS handicap_level WriteByte (common/ent_cs.qc:181)
+            // QC SP_PING (scoreboard.qc:1041): the player's RTT in ms. -1 (unknown) is sent as the 0xFFFF
+            // sentinel; a real ping (0..65534) rides as a ushort so values past 255 ms survive (unlike packet
+            // loss, ping commonly exceeds a byte). Clamp a stray over-range value to 65534 so it can't alias 0xFFFF.
+            w.WriteUShort(row.PingMs < 0 ? 0xFFFF : System.Math.Min(row.PingMs, 0xFFFE));
             int m = System.Math.Min(row.Columns.Length, n);
             for (int j = 0; j < n; j++)
                 w.WriteInt24(j < m ? row.Columns[j] : 0);
@@ -171,9 +181,11 @@ public static class ScoreboardBlock
             bool isSpec = r.ReadBool();        // QC pl.team == NUM_SPECTATOR
             int plByte = r.ReadByte();          // QC ping_packetloss byte
             int handicap = r.ReadByte();        // QC ENTCS handicap_level ReadByte (common/ent_cs.qc:182)
+            int pingRaw = r.ReadUShort();       // QC SP_PING (0xFFFF = unknown)
+            int pingMs = pingRaw == 0xFFFF ? -1 : pingRaw;
             var cols = new int[n];
             for (int j = 0; j < n; j++) cols[j] = r.ReadInt24();
-            if (!r.BadRead) sb.Rows.Add(new ScoreRowWire(netId, cols, name, team, isSpec, plByte, handicap));
+            if (!r.BadRead) sb.Rows.Add(new ScoreRowWire(netId, cols, name, team, isSpec, plByte, handicap, pingMs));
         }
         int teams = r.ReadByte();
         for (int i = 0; i < teams; i++)

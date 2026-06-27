@@ -49,6 +49,7 @@ public sealed class TeslaTurret : Turret
         NetName = "tesla";
         DisplayName = "Tesla Coil";
         Model = "models/turrets/tesla_base.md3";
+        HeadModel = "models/turrets/tesla_head.md3";   // QC tesla.qh head_model ATTRIB (the spinning coil head)
         StartHealth = 1000f;
         Range = TargetRange;
     }

@@ -56,6 +56,44 @@ public sealed class OnslaughtControlPoint
     private const float  DefShieldForce  = 100f;  // QC autocvar_g_onslaught_shield_force default (gametypes-server.cfg:585)
     private const float  ShieldHitboxScale = 1.20f; // QC ons_CaptureShield_Spawn: hitbox 20% larger than the object
     private const int    EfAdditive = 32; // QC EF_ADDITIVE (dpextensions: additive-blend render mode)
+    private const int    EfLowPrecision = 4194304; // QC EF_LOWPRECISION (dpextensions): origin/angles bandwidth hint
+
+    // ----- QC world model paths (cl_generator.qc MDL_ONS_GEN.., cl_controlpoint.qc MDL_ONS_CP.., MDL_ONS_CP_PAD*) -----
+    // The server assigns these so the objective bodies actually RENDER on the client via the entity feed (the same
+    // path the CTF flag / Domination point use — Entity.Model networks + renders). Progressive damage-model swaps
+    // are server-authoritative (we pick the bucket model in GeneratorDamage/IconDamage), reproducing in effect what
+    // CSQC generator_damage/cpicon_damage would derive from the networked hp fraction. The bob/spin/punch ANIMATION,
+    // radar links, death-cam and explosion/particle FX remain genuinely client-side (see the spec's deferred note).
+    private const string MdlGen        = "models/onslaught/generator.md3";       // QC MDL_ONS_GEN (full health)
+    private const string MdlGenDead    = "models/onslaught/generator_dead.md3";  // QC MDL_ONS_GEN_DEAD (destroyed)
+    private const string MdlCpPad1     = "models/onslaught/controlpoint_pad.md3";  // QC MDL_ONS_CP_PAD1 (neutral pad)
+    private const string MdlCpPad2     = "models/onslaught/controlpoint_pad2.md3"; // QC MDL_ONS_CP_PAD2 (captured pad)
+    private const string MdlCpIcon     = "models/onslaught/controlpoint_icon.md3"; // QC MDL_ONS_CP (icon, full health)
+
+    /// <summary>
+    /// QC cl_generator.qc generator_damage: the progressive generator model for a 0..10 damage bucket (QC sends
+    /// frame = 10*(1-hp/max); CSQC swaps generator.md3 / generator_dmg1..9.md3 / generator_dead.md3 by that bucket).
+    /// We resolve it server-side so the body visibly degrades as it's shot.
+    /// </summary>
+    private static string GeneratorModelForBucket(int bucket)
+    {
+        if (bucket <= 0) return MdlGen;          // pristine
+        if (bucket >= 10) return MdlGenDead;     // destroyed
+        return $"models/onslaught/generator_dmg{bucket}.md3"; // dmg1..dmg9
+    }
+
+    /// <summary>
+    /// QC cl_controlpoint.qc cpicon_damage: the progressive build-icon model for a health fraction (QC swaps
+    /// controlpoint_icon.md3 / _dmg1 / _dmg2 / _dmg3 by 75/50/25% thresholds). Resolved server-side so a damaged
+    /// icon visibly cracks before it's destroyed.
+    /// </summary>
+    private static string IconModelForFraction(float frac)
+    {
+        if (frac > 0.75f) return MdlCpIcon;                              // QC MDL_ONS_CP
+        if (frac > 0.50f) return "models/onslaught/controlpoint_icon_dmg1.md3"; // QC MDL_ONS_CP1
+        if (frac > 0.25f) return "models/onslaught/controlpoint_icon_dmg2.md3"; // QC MDL_ONS_CP2
+        return "models/onslaught/controlpoint_icon_dmg3.md3";                   // QC MDL_ONS_CP3
+    }
 
     private const float DefCpHealth      = 1000f; // QC g_onslaught_cp_health default (gametypes-server.cfg:578)
     private const float DefCpBuildHealth = 100f;
@@ -151,6 +189,13 @@ public sealed class OnslaughtControlPoint
             e.Think = GeneratorThink;
             e.GtAlarmWait = 0f;
             e.NextThink = Now + GenThinkRate;
+            // QC ons_GeneratorSetup (sv_onslaught.qc): setmodel(this, MDL_ONS_GEN) — the generator body. The port
+            // previously left Model empty so the generator networked as an invisible point; assign the world model
+            // (+ EF_LOWPRECISION bandwidth hint) so it renders on the client like the CTF flag / Domination point.
+            // Frame tracks the 0..10 damage bucket (QC frame = 10*(1-hp/max)) for any client that animates by frame.
+            e.Model = MdlGen;
+            e.Frame = 0f;
+            e.Effects |= EfLowPrecision;
             _generators[team] = e;
             // QC ons_GeneratorSetup (sv_onslaught.qc:1079): ons_CaptureShield_Spawn(this, MDL_ONS_GEN_SHIELD) —
             // the spinning additive push-shield around the generator.
@@ -305,6 +350,12 @@ public sealed class OnslaughtControlPoint
             if (Api.Services is not null)
                 SoundSystem.PlayOn(self, Sounds.ByName("ONS_GENERATOR_EXPLODE"));
 
+            // QC ons_GeneratorDamage destroy (cl_generator.qc generator_construct/dead state): swap to the dead
+            // generator model so the destroyed body is the wrecked shell, not the pristine generator. Server-
+            // authoritative model swap (the entity feed re-networks Model — ClientEntityView.cs:236).
+            self.Model = MdlGenDead;
+            self.Frame = 10f;
+
             // QC: takedamage = DAMAGE_NO; event_damage = func_null; setthink(func_null).
             self.TakeDamage = DamageMode.No;
             self.GtEventDamage = null;
@@ -313,6 +364,18 @@ public sealed class OnslaughtControlPoint
         }
         else
         {
+            // QC cl_generator.qc generator_damage: the visible damage state degrades with health — QC networks
+            // frame = 10*(1 - hp/max) and CSQC swaps generator.md3 → generator_dmg1..9.md3 by that bucket. Resolve
+            // it server-side so the generator body visibly cracks as it's shot down (the 'generator damage frame'
+            // the spec lists as missing). Clamped 0..9 (the dead model is set only on the destroy branch above).
+            if (self.GtObjMaxHealth > 0f)
+            {
+                int bucket = (int)(10f * (1f - self.GtObjHealth / self.GtObjMaxHealth));
+                if (bucket < 0) bucket = 0; else if (bucket > 9) bucket = 9;
+                self.Frame = bucket;
+                self.Model = GeneratorModelForBucket(bucket);
+            }
+
             // QC ons_GeneratorDamage (sv_onslaught.qc:986-999): a hit sound on every (non-fatal) hit — a flaming
             // gib impact at chance damage/220, else ONS_HIT1/2 (random).
             if (Api.Services is not null)
@@ -359,6 +422,11 @@ public sealed class OnslaughtControlPoint
             // the map .target onto the CP entity so IconBuildThink can fire it on completion.
             e.Target = target ?? "";
             e.Solid = Solid.BBox; // QC SOLID_BBOX (the pad), the touch trigger volume is the bbox here
+            // QC ons_ControlPoint_Setup: setmodel(this, MDL_ONS_CP_PAD1) — the neutral control-point pad. Assign the
+            // world model (+ EF_LOWPRECISION) so the pad renders on the client (was an invisible point); it swaps to
+            // MDL_ONS_CP_PAD2 on capture (see IconBuildThink), reproducing the QC pad-model swap the spec lists as missing.
+            e.Model = MdlCpPad1;
+            e.Effects |= EfLowPrecision;
             // QC ons_ControlPoint_Setup (sv_onslaught.qc:787): ons_CaptureShield_Spawn(this, MDL_ONS_CP_SHIELD) —
             // the spinning additive push-shield around the control point.
             SpawnCaptureShield(e, "models/onslaught/controlpoint_shield.md3");
@@ -427,6 +495,10 @@ public sealed class OnslaughtControlPoint
         {
             icon.GtObjHealth = buildH;
             icon.GtObjMaxHealth = maxH;
+            // QC ons_ControlPoint_Icon_Spawn: setmodel(e, MDL_ONS_CP) — the build-icon body (full-health model).
+            // Assign it (+ EF_LOWPRECISION) so the capture icon renders + can swap to its damaged models as it's shot.
+            icon.Model = MdlCpIcon;
+            icon.Effects |= EfLowPrecision;
             icon.GtBuildRate = perTick;
             icon.GtIconCpId = cpId;
             icon.GtIconBuilt = false;
@@ -492,6 +564,11 @@ public sealed class OnslaughtControlPoint
             Entity? cpEnt = ControlPointEntity(cpId);
             Player? toucher = cpEnt?.GtCapturer as Player;
             _ons.CaptureControlPoint(cpId, self.GtHomeTeam, toucher);
+
+            // QC ons_ControlPoint_Icon_BuildThink (sv_onslaught.qc): setmodel(this.owner, MDL_ONS_CP_PAD2) — swap the
+            // captured control point's pad to the 'built' model. Server-authoritative model swap (re-networked).
+            if (cpEnt is not null)
+                cpEnt.Model = MdlCpPad2;
 
             // QC ons_ControlPoint_Icon_BuildThink (sv_onslaught.qc:605): SUB_UseTargets(this.owner, this, NULL) —
             // fire the captured control point's map .target (server-side map logic, e.g. open a gate). The icon
@@ -641,6 +718,12 @@ public sealed class OnslaughtControlPoint
 
         self.GtObjHealth -= damage;
         self.GtPainFinished = Now + 1f;
+
+        // QC cl_controlpoint.qc cpicon_damage: the icon's visible model cracks with its health fraction (QC swaps
+        // MDL_ONS_CP → CP1/CP2/CP3 by 75/50/25%). Resolve it server-side so a damaged capture icon shows the wear
+        // (one of the '4 CP icon models' the spec lists as missing). The build-bar alpha + punch-on-hit stay client-side.
+        if (self.GtObjMaxHealth > 0f && self.GtObjHealth > 0f)
+            self.Model = IconModelForFraction(self.GtObjHealth / self.GtObjMaxHealth);
 
         // QC ons_ControlPoint_Icon_Damage (sv_onslaught.qc:383-388): notify the owning team that their CP is
         // under attack (play2team, debounced per team by ons_notification_time[this.team] with a 10 s window).

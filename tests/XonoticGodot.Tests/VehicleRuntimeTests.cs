@@ -63,6 +63,10 @@ public class VehicleRuntimeTests
         Api.Cvars.Set("g_vehicles_enter_radius", "250");
         Api.Cvars.Set("g_vehicles_allow_bots", "0");
         Api.Cvars.Set("g_vehicles_steal", "0");
+        // These seams test immediate boarding/drive/impulse, not the first-think stagger. g_vehicles_delayspawn
+        // defaults ON (cfg default 1), which parks a map-placed vehicle inert+hidden until time+respawntime+jitter
+        // — un-boardable for the first ~35s — so opt out of the stagger and keep the ACTIVE_ACTIVE immediate spawn.
+        Api.Cvars.Set("g_vehicles_delayspawn", "0");
 
         // Determinism: the vehicle code draws spread/exit-attempt/death-timing samples from the seeded PRNG.
         Prandom.Seed(0xC0FFEE);

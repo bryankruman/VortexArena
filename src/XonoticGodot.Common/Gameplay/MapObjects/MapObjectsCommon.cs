@@ -676,6 +676,28 @@ namespace XonoticGodot.Common.Gameplay
         /// the sampled point next physics frame. When the move completes it hands the parent its real think
         /// back, frees itself, and runs that think.
         /// </summary>
+        /// <summary>
+        /// Port of <c>SUB_CalcMovePause</c> (subs.qc): when an EASED (bezier-controller) mover is blocked but is
+        /// NOT going to reverse (a wait&lt;0 / TOGGLE door blocked mid-swing), QC slides the controller's
+        /// animstate start/end times forward by the elapsed-since-last-controller-think so the cubic_speedfunc
+        /// phase stays put — the mover "pauses" on its easing curve instead of advancing while wedged, then
+        /// resumes smoothly when the blocker clears. A linear (no-controller) mover, or one that reverses (which
+        /// spawns a fresh controller via <see cref="CalcMoveBezier"/>), doesn't need this and is a no-op here.
+        /// </summary>
+        public static void CalcMovePause(Entity e)
+        {
+            Entity? ctl = e.MoveController;
+            if (ctl is null || !ReferenceEquals(ctl.Owner, e))
+                return; // linear mover (no controller) — nothing to pause
+
+            // QC: animstate_starttime/endtime += time - move_controller.nextthink + sys_frametime. ctl.NextThink
+            // is when the controller WOULD next sample; the gap (now - nextthink + frametime) is the paused span,
+            // shifting both endpoints keeps phasePos = (nexttick - start)/(end - start) unchanged on resume.
+            float pausedSpan = Now() - ctl.NextThink + FrameTime();
+            ctl.AnimStartTime += pausedSpan;
+            ctl.AnimEndTime += pausedSpan;
+        }
+
         public static void CalcMoveControllerThink(Entity ctl)
         {
             Entity own = ctl.Owner!;

@@ -78,6 +78,12 @@ public sealed class EWheelTurret : Turret
         DisplayName = "eWheel Turret";
         Model = "models/turrets/ewheel-base2.md3";
         StartHealth = 200f;
+        // QC ewheel.qh head_model ATTRIB — the separate gun head-bone model (ewheel-gun1.md3) carried on top of the
+        // wheeled base; Base alternates its two firing cannons via tur_head.frame (see the NOTE in Attack). Carried as
+        // identity data to match Base (the FusionReactor/Flac HeadModel pattern); no client turret render attaches the
+        // head at tag_head yet (whole-turret-family presentation gap), and the two-cannon frame cycle still needs that
+        // unported head sub-entity.
+        HeadModel = "models/turrets/ewheel-gun1.md3";
         Range = TargetRange;
     }
 

@@ -884,9 +884,15 @@ public sealed class SandboxMutator : MutatorBase
                             Print(player, $"^2SANDBOX - INFO: ^7Object is owned by \"^7{e.OwnerName}^7\", created \"^3{e.Created}^7\", last edited \"^3{e.Edited}^7\"");
                             return true;
                         case "mesh":
-                            Print(player, $"^2SANDBOX - INFO: ^7Object mesh is \"^3{e.Model}^7\" at animation frame ^3{F(e.Frame)} ^7containing the following tags: ");
-                            // TODO[cross-file]: FOR_EACH_TAG(e) tag enumeration needs the model skeleton service.
+                        {
+                            // QC: for(i = 1; i <= FOR_EACH_TAG(e); ++i) sb = strcat(sb, "^3", gettaginfo_name, "^7, ");
+                            string tags = "";
+                            if (MeshTagNamesProvider is not null)
+                                foreach (string tag in MeshTagNamesProvider(e.Model))
+                                    tags += $"^3{tag}^7, ";
+                            Print(player, $"^2SANDBOX - INFO: ^7Object mesh is \"^3{e.Model}^7\" at animation frame ^3{F(e.Frame)} ^7containing the following tags: {tags}");
                             return true;
+                        }
                         case "attachments":
                         {
                             string s = ""; int j = 0;
@@ -968,9 +974,11 @@ public sealed class SandboxMutator : MutatorBase
 
     private bool ModelExists(string path)
     {
-        // QC fexists(argv(2)). Use the model service when available; permissive headless (host validates).
-        if (Api.Services is null || string.IsNullOrEmpty(path)) return !string.IsNullOrEmpty(path);
-        return true; // TODO[cross-file]: route to a real model-existence check (IModelService has no fexists yet).
+        // QC fexists(argv(2)). Use the host seam when available; permissive headless (host validates).
+        if (string.IsNullOrEmpty(path)) return false;
+        // QC fexists(argv(2)): when a host wires the asset-VFS check, enforce the Base non-existent-model
+        // rejection; without one (headless / tests) stay permissive so in-session builds still work.
+        return ModelExistsProvider is null ? true : ModelExistsProvider(path);
     }
 
     private IReadOnlyList<Entity> RealClients()
@@ -992,6 +1000,16 @@ public sealed class SandboxMutator : MutatorBase
     public Func<Entity?, string>? CryptoIdfpProvider { get; set; }
     public Func<Entity?, string>? NetNameProvider { get; set; }
     public Func<Entity?, float>? ViewYawProvider { get; set; }
+
+    /// <summary>QC <c>fexists(model)</c> — a host-wired model-file-existence check (the engine has no fexists on
+    /// any <c>Api.*</c> seam; a host wires this to the asset VFS). Null ⇒ permissive (headless / tests), so the
+    /// build still works in-session; when wired, object_spawn rejects a non-existent model path like Base.</summary>
+    public Func<string, bool>? ModelExistsProvider { get; set; }
+
+    /// <summary>QC <c>FOR_EACH_TAG(e)</c> — a host-wired enumeration of an object's model tag (bone) names for
+    /// <c>object_info mesh</c>. Null ⇒ no tag list (the mesh subcommand prints the header only, current behavior).
+    /// A host wires this to the engine model-tag table (ModelService.ModelDef.Tags).</summary>
+    public Func<string, IReadOnlyList<string>>? MeshTagNamesProvider { get; set; }
 
     private string CryptoIdfpOf(Entity? p) => p is null ? "" : (CryptoIdfpProvider?.Invoke(p) ?? "");
     private string NetNameOf(Entity? p) => p is null ? "" : (NetNameProvider?.Invoke(p) ?? p.NetName);

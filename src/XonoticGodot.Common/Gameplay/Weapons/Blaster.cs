@@ -48,6 +48,13 @@ public sealed class Blaster : Weapon
         ItemModel = "g_laser.md3";   // MDL_BLASTER_ITEM
     }
 
+    // blaster.qh: ATTRIB(Blaster, w_crosshair, "gfx/crosshairlaser"); ATTRIB(Blaster, w_crosshair_size, 0.5). The
+    // per-weapon crosshair the CSQC draws when crosshair_per_weapon is on (read client-side by the crosshair panel,
+    // the same seam Arc/Hook/Porto use). The panel already resolves these via its PerWeaponPics fallback table; carrying
+    // them on the weapon makes the ATTRIB explicit (the faithful pattern) and authoritative on the Weapon object.
+    public override string? Crosshair => "gfx/crosshairlaser";
+    public override float CrosshairSize => 0.5f;
+
     public override void Configure()
     {
         Primary.Damage      = Bal("g_balance_blaster_primary_damage", 20f);

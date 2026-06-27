@@ -84,6 +84,13 @@ public sealed class Assault : GameType
     // QC MUTATOR_HOOKFUNCTION(as, PlayHitsound): return true for func_assault_destructible victims (force hitsound).
     private HookHandler<MutatorHooks.PlayHitsoundArgs>? _playHitsoundHandler;
 
+    // QC MUTATOR_HOOKFUNCTION(as, OnEntityPreSpawn): delete generic team spawns (info_player_team1..4) — Assault
+    // uses its own attacker/defender spawn points.
+    private HookHandler<MutatorHooks.OnEntityPreSpawnArgs>? _onEntityPreSpawnHandler;
+
+    // QC MUTATOR_HOOKFUNCTION(as, VehicleInit): push a fresh vehicle's first think out by 0.5s (does not abort init).
+    private HookHandler<MutatorHooks.VehicleInitArgs>? _vehicleInitHandler;
+
     /// <summary>Optional sink for the host/controller to react to a kill.</summary>
     public IMatchEvents? Events;
 
@@ -92,6 +99,15 @@ public sealed class Assault : GameType
 
     /// <summary>The winning team color code once decided, or 0 if none yet.</summary>
     public int WinningTeam { get; private set; }
+
+    /// <summary>
+    /// QC <c>bprint(...)</c> chat-log sink (the global server console/chat broadcast). Assigned by the host
+    /// (<c>GameWorld.Activate</c> → <c>Commands.ChatBroadcast</c>); null in a headless POJO. Used for the two
+    /// Assault round-flow chat lines ("&lt;attacker&gt; destroyed the objective in &lt;time&gt;" on a round-1 core
+    /// destruction, and "Starting second round..." when round 2 begins) — QC's <c>bprint</c> calls in
+    /// <c>WinningCondition_Assault</c> / <c>assault_new_round</c>.
+    /// </summary>
+    public System.Action<string>? BPrint;
 
     /// <summary>
     /// QC <c>as_round</c> entity: while the attackers have won round 1 (non-campaign) and the 5s
@@ -562,6 +578,11 @@ public sealed class Assault : GameType
         }
     }
 
+    /// <summary>QC <c>Team_ColoredFullName(teamnum)</c> baked to a plain chat label for the bprint lines
+    /// ("Red"/"Blue" — Assault is always red vs blue, teamplay_bitmask = BITS(2)). The full colored form lives
+    /// in the notification token layer; the bprint echoes use the plain name to keep this file dependency-free.</summary>
+    private static string TeamChatName(int team) => team == Teams.Red ? "^1Red team^7" : "^4Blue team^7";
+
     /// <summary>The team currently attacking (QC assault_attacker_team).</summary>
     public int AttackerTeam => State.AttackerTeam;
 
@@ -607,6 +628,20 @@ public sealed class Assault : GameType
         _playHitsoundHandler = OnPlayHitsound;
         MutatorHooks.PlayHitsound.Add(_playHitsoundHandler);
 
+        // QC MUTATOR_HOOKFUNCTION(as, OnEntityPreSpawn) (sv_assault.qc): Assault uses its OWN attacker/defender
+        // spawn points (info_player_attacker/defender), so it DELETES any generic team spawns the map placed
+        // (info_player_team1..4) — otherwise players would spawn at fixed team locations instead of the
+        // role-appropriate attacker/defender area. The port's SpawnSystem.SpawnClassNames lists
+        // info_player_team1..4 as live spawn classes, so without this an Assault map with team spawns would
+        // pick them. Returning true from the hook DELETES the edict (QC delete(this)).
+        _onEntityPreSpawnHandler = OnEntityPreSpawn;
+        MutatorHooks.OnEntityPreSpawn.Add(_onEntityPreSpawnHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(as, VehicleInit) (sv_assault.qc): nudge a just-initialised vehicle's first
+        // think out by 0.5s so it doesn't fire mid-roundstart. Returns false (does NOT abort init).
+        _vehicleInitHandler = OnVehicleInit;
+        MutatorHooks.VehicleInit.Add(_vehicleInitHandler);
+
         // QC target_objective sets .spawn_evalfunc = target_objective_spawn_evalfunc (sv_assault.qc:311): a spawn
         // spot whose .target names an objective that is inactive (health >= ASSAULT_VALUE_INACTIVE) or destroyed
         // (health < 0) scores '-1 0 0' (unusable), so attacker spawns near a not-yet/already-fallen objective are
@@ -648,6 +683,16 @@ public sealed class Assault : GameType
             MutatorHooks.PlayHitsound.Remove(_playHitsoundHandler);
             _playHitsoundHandler = null;
         }
+        if (_onEntityPreSpawnHandler is not null)
+        {
+            MutatorHooks.OnEntityPreSpawn.Remove(_onEntityPreSpawnHandler);
+            _onEntityPreSpawnHandler = null;
+        }
+        if (_vehicleInitHandler is not null)
+        {
+            MutatorHooks.VehicleInit.Remove(_vehicleInitHandler);
+            _vehicleInitHandler = null;
+        }
         // QC: the spawn_evalfunc chain is owned by the active gametype — drop the objective spawn bias on deactivate.
         if (SpawnSystem.SpotEvalReject == ShouldRejectSpawnSpot)
             SpawnSystem.SpotEvalReject = null;
@@ -678,6 +723,32 @@ public sealed class Assault : GameType
     /// classname is "func_assault_destructible" when it was spawned in the world; in a headless POJO test the
     /// damage path maps the edict back to a Destructible via <see cref="DestructibleFor"/>.
     /// </summary>
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(as, OnEntityPreSpawn): Assault spawns players at its own info_player_attacker /
+    /// info_player_defender points, so it DELETES any generic team spawn the map placed (info_player_team1..4)
+    /// — returning true tells the spawn loop to delete the edict (QC <c>delete(this)</c>). Other classnames are
+    /// left untouched (return false). The port's SpawnSystem otherwise treats info_player_team1..4 as live spawn
+    /// classes, which would put players at fixed team locations rather than the role-appropriate area.
+    /// </summary>
+    private bool OnEntityPreSpawn(ref MutatorHooks.OnEntityPreSpawnArgs args)
+    {
+        string cn = args.Entity.ClassName;
+        return cn == "info_player_team1" || cn == "info_player_team2"
+            || cn == "info_player_team3" || cn == "info_player_team4";
+    }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(as, VehicleInit): delay a just-initialised vehicle's first think by 0.5s
+    /// (<c>instance.nextthink = time + 0.5</c>) so it doesn't fire during a round restart. Returns false — this
+    /// does NOT abort vehicle init (QC returns no abort). No-op in a headless POJO with no live clock.
+    /// </summary>
+    private bool OnVehicleInit(ref MutatorHooks.VehicleInitArgs args)
+    {
+        if (Api.Services is not null)
+            args.Vehicle.NextThink = Api.Clock.Time + 0.5f; // QC instance.nextthink = time + 0.5
+        return false; // QC: does not abort vehicle initialisation
+    }
+
     private bool OnPlayHitsound(ref MutatorHooks.PlayHitsoundArgs args)
     {
         // QC: return (frag_victim.classname == "func_assault_destructible")
@@ -738,6 +809,11 @@ public sealed class Assault : GameType
         NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "ASSAULT_OBJ_DESTROYED",
             (float)System.Math.Ceiling(elapsedAttackSeconds));
 
+        // QC WinningCondition_Assault bprint: echo the core destruction to the server chat log (the centerprint
+        // above is the player-facing copy). QC strcat(Team_ColoredFullName(attacker), " destroyed the objective
+        // in ", process_time, "\n"). The seconds are ceil(time - game_starttime) (the attack duration).
+        BPrint?.Invoke($"{TeamChatName(State.AttackerTeam)} destroyed the objective in {(int)System.Math.Ceiling(elapsedAttackSeconds)} seconds");
+
         // QC WinningCondition_Assault: schedule the second round — create the `as_round` entity with
         // nextthink = time + AS_ROUND_DELAY and freeze the game (game_stopped = true). DriveFrame fires the swap
         // (as_round_think → assault_new_round) once the 5s delay elapses. The clock is the match clock; in a
@@ -775,6 +851,9 @@ public sealed class Assault : GameType
         // FirstRoundDestroyTime directly, but set the cvar too so the HUD/clock reads the round-2 limit.
         if (State.FirstRoundDestroyTime > 0f)
             SetTimelimitMinutes((float)System.Math.Ceiling(State.FirstRoundDestroyTime / 60f));
+
+        // QC assault_new_round bprint: announce the round swap to the server chat log.
+        BPrint?.Invoke("Starting second round...");
 
         ResetObjectives(); // QC assault_objective_reset on each new round
         OnSecondRoundRestart?.Invoke(); // QC ReadyRestart_force(true): full map/player reset + game_starttime re-stamp

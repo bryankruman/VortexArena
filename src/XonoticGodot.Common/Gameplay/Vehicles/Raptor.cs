@@ -440,7 +440,7 @@ public sealed class Raptor : Vehicle
             vehicle.VehAlarmNextTime = Time + 1f;
         }
 
-        // TODO(port,client): qcsrc/common/vehicles/vehicle/raptor.qc raptor_frame — EFFECT_RAPTOR_MUZZLEFLASH,
+        // TODO(port,client): qcsrc/common/vehicles/vehicle/raptor.qc raptor_frame —
         //                    vehicle_ammo2/reload2 HUD %, dropmark aux crosshair, aux lock crosshair color.
     }
 
@@ -565,7 +565,13 @@ public sealed class Raptor : Vehicle
             CannonDamage, CannonRadius, CannonForce, size: 0f,
             DeathTypes.VhRaptCannon, health: 0f, lifetime: 0f, // raptor_weapons.qc: DEATH_VH_RAPT_CANNON
             fireSound: "vehicles/lasergun_fire.wav");
-        // TODO(port,client): EFFECT_RAPTOR_MUZZLEFLASH + CSQCProjectile visual.
+        // QC vehicles_projectile (sv_vehicles.qc): Send_Effect(_mzlfx, proj.origin, proj.velocity, 1) — the
+        // muzzle flash at the bolt's spawn point thrown along its velocity. RaptorCannon passes
+        // EFFECT_RAPTOR_MUZZLEFLASH as _mzlfx (raptor_weapons.qc RaptorCannon.wr_think). The shared
+        // SpawnProjectile helper plays the fire sound but defers the muzzle effect; emit it here
+        // server-authoritative (same as Racer/Spiderbot/the turrets).
+        EffectEmitter.Emit("RAPTOR_MUZZLEFLASH", org, vel, 1);
+        // TODO(port,client): PROJECTILE_RAPTORCANNON in-flight bolt trail (CSQCProjectile visual).
     }
 
     // raptor_bombdrop -> raptor_bomb_burst — raptor_weapons.qc: drop two cluster bombs that burst into bomblets.

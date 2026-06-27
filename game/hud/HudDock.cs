@@ -77,8 +77,13 @@ public partial class HudDock : Control
             tint = new Color(tc.R * teamFactor, tc.G * teamFactor, tc.B * teamFactor, 1f);
         else
         {
+            // QC hud_dock_color literals: "team" tints the dock by the local team color (fed by the manager via
+            // TeamColor), else parse an rgb triple. Fall back to black when unresolved. (The QC "shirt"/"pants"
+            // colormap literals are NOT honoured here — the local-player colormap is not yet plumbed to the HUD;
+            // the panels punt on them too, see HudPanel.Resolve. Tracked by the cl-hud.engine.dock shirt/pants gap.)
             string colStr = MenuState.Cvars.GetString("hud_dock_color");
-            tint = HudPanel.TryParseRgbColor(colStr, out Color c) ? c : new Color(0f, 0f, 0f);
+            if (colStr == "team" && TeamColor is { } team) tint = team;
+            else tint = HudPanel.TryParseRgbColor(colStr, out Color c) ? c : new Color(0f, 0f, 0f);
         }
 
         float dockAlpha = MenuState.Cvars.GetFloat("hud_dock_alpha");

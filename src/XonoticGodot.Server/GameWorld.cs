@@ -2156,7 +2156,18 @@ public sealed class GameWorld
     /// NB: a timeout pause is deliberately NOT game_stopped (QC common.qc never sets game_stopped for a timeout —
     /// it runs the engine slowmo at TIMEOUT_SLOWMO_VALUE 0.0001 so players can still inch). The pause is realised
     /// through <see cref="TimeoutController.ApplySlowmo"/> driving the live <c>slowmo</c> cvar, not a hard freeze.</summary>
-    internal bool GameStopped => Intermission.Running || MatchEnded;
+    internal bool GameStopped => Intermission.Running || MatchEnded || IsAssaultRoundFreeze;
+
+    /// <summary>
+    /// QC <c>WinningCondition_Assault</c> (sv_assault.qc): when the attackers destroy the core in round 1 the
+    /// game is FROZEN for the 5s <c>AS_ROUND_DELAY</c> while the <c>as_round</c> entity counts down to the
+    /// round-2 swap (QC sets <c>game_stopped = true</c> for that window). The port models the freeze with
+    /// <see cref="Assault.SecondRoundPending"/>; fold it into <see cref="GameStopped"/> so player movement /
+    /// weapon firing / regen / score accrual / vehicles / creature-frame / respawns all halt during the
+    /// inter-round window exactly as Base does. <see cref="DriveGametypeFrame"/> still runs unconditionally and
+    /// fires <c>StartSecondRound</c> when the delay elapses, so the freeze self-clears.
+    /// </summary>
+    private bool IsAssaultRoundFreeze => GameType is Assault { SecondRoundPending: true };
 
     /// <summary>
     /// QC <c>CreatureFrame_All</c> (player slice): run the per-frame contents + fall damage for each player.
@@ -2954,6 +2965,9 @@ public sealed class GameWorld
                 // world entities) and re-stamp game_starttime so the round-2 clock runs from now. Assault's
                 // FirstRoundDestroyTime already drives DriveFrame's round-2 timelimit; here we just do the map reset.
                 // fakeRoundStart:true keeps the team objective scores (the 666 round-1 sentinel) across the swap.
+                // QC bprint(...) (WinningCondition_Assault / assault_new_round): wire the Assault round-flow chat
+                // lines to the server chat broadcast, mirroring Timeout.Broadcast / Voting.Broadcast.
+                aslt.BPrint = line => Commands.ChatBroadcast?.Invoke(line);
                 aslt.OnSecondRoundRestart = () =>
                 {
                     GameStartTime = Time;
@@ -3500,8 +3514,9 @@ public sealed class GameWorld
         // DEAD_DEAD), and forced respawn with g_forced_respawn.
         // This stays only as a SAFETY net for a dead player that somehow isn't being driven by OnClientMove
         // (e.g. not in the sim client list): force it back in after its forced ceiling elapses so it can't get
-        // stuck dead. Skipped for round modes and once the match ended (QC game_stopped gate).
-        if (MatchEnded || Intermission.Running)
+        // stuck dead. Skipped for round modes and once the match ended (QC game_stopped gate — now also covers
+        // the Assault inter-round freeze via GameStopped).
+        if (GameStopped)
             return;
         if (Rounds is { IsRoundStarted: true })
             return; // round-based: no mid-round respawns
@@ -3537,7 +3552,8 @@ public sealed class GameWorld
     {
         // Don't respawn while the match is over / between rounds (QC game_stopped + round gate). The kill-cam
         // still holds; STAT(RESPAWN_TIME) is suppressed so the client doesn't show a bogus countdown.
-        bool respawnAllowed = !MatchEnded && !Intermission.Running && !(Rounds is { IsRoundStarted: true });
+        // GameStopped now also covers the Assault inter-round freeze (the 5s AS_ROUND_DELAY window).
+        bool respawnAllowed = !GameStopped && !(Rounds is { IsRoundStarted: true });
         if (!respawnAllowed)
         {
             p.RespawnTimeStat = 0f;
@@ -3655,6 +3671,11 @@ public sealed class GameWorld
     // =============================================================================================
 
     private bool _nextLevelFired;
+    // QC checkrules_equality (server/world.qh): the degenerate-tie flag the score win-condition
+    // (WinningCondition_Scores / the ran-out-of-spawns draw) sets each CheckRules_World pass and
+    // CampaignPreIntermission later reads to deny a campaign win on an exact tie at the limit. Mirrored
+    // as a field here so RunCheckRulesWorld's resolution feeds NextLevel's Campaign.PreIntermission.
+    private bool _checkRulesEquality;
     private bool _mapFlowStarted;
     private bool _mapChangeApplied;
     // QC gametypevote_finished: true once the gametype vote has been resolved and its switch applied.
@@ -3772,6 +3793,9 @@ public sealed class GameWorld
             // report) → a winning code.
             bool limitReached = MatchHasEnded(out winner, out winnerTeam);
             bool equality = GameType is not null && GameType.ReportsTie(Clients.Players);
+            // QC WinningCondition_Scores stores its tie report in the checkrules_equality global so
+            // CampaignPreIntermission can deny a campaign win on a tie at the limit; carry it here.
+            _checkRulesEquality = equality;
             status = OverTimeManager.ResolveWinningCode(limitReached, equality);
         }
 
@@ -3869,6 +3893,7 @@ public sealed class GameWorld
         if (present == 0)
         {
             // QC: checkrules_equality = true; return WINNING_YES; — everyone gone at once → a draw.
+            _checkRulesEquality = true;
             winnerTeam = Teams.None;
             return true;
         }
@@ -3952,7 +3977,7 @@ public sealed class GameWorld
             Campaign.PreIntermission(
                 Clients.Players.Where(p => !p.IsBot),
                 p => p.Winning,
-                checkrulesEquality: false,
+                checkrulesEquality: _checkRulesEquality,
                 cheatCount: Cheats.CheatCountTotal,
                 timeNow: Time);
 
@@ -4534,6 +4559,7 @@ public sealed class GameWorld
         OverTime.Reset(); // [T42] clear the overtime / sudden-death checkrules state for the fresh match
         // re-arm the end-of-match flow + the per-match infrastructure so a fresh match runs clean.
         _nextLevelFired = _mapFlowStarted = _mapChangeApplied = _gametypeVoteApplied = false;
+        _checkRulesEquality = false; // QC: the checkrules_equality global is re-derived each CheckRules_World pass
         SelectedNextMap = "";
         PlayerStats.ResetAll(Clients.Players, Teamplay.IsTeamGame ? Teams.Active(Teamplay.TeamCount) : null);
         Warmup.ReadyRestart(forceWarmupEnd: true);   // ends warmup, arms the countdown, runs ResetMap

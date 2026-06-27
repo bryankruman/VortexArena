@@ -60,10 +60,13 @@ public partial class ScoreboardPanel : HudPanel
         /// <summary>QC <c>.handicap_level</c> (entcs, scoreboard.qc:1003): 0..16; 0 = no handicap. When nonzero the
         /// row draws the <c>player_handicap</c> icon tinted white@1 → red@16 next to the name.</summary>
         public readonly int HandicapLevel;
+        /// <summary>QC <c>pl.sv_entnum</c> stand-in: the player's stable net id, used for the playerid '#N' name
+        /// prefix (Scoreboard_AddPlayerId) and the final sort tiebreak. 0 = none.</summary>
+        public readonly int NetId;
 
         public ScoreRow(string name, int score, int team = 0, int deaths = -1, int ping = -1,
             bool isLocal = false, int[]? columns = null, bool eliminated = false, float packetLoss = 0f,
-            int handicapLevel = 0)
+            int handicapLevel = 0, int netId = 0)
         {
             Name = name ?? "";
             Score = score;
@@ -75,6 +78,7 @@ public partial class ScoreboardPanel : HudPanel
             Eliminated = eliminated;
             Columns = columns;
             HandicapLevel = handicapLevel;
+            NetId = netId;
         }
 
         /// <summary>QC <c>pl.(scores(field))</c>: read a column value (0 when not networked / no column data).</summary>
@@ -234,10 +238,10 @@ public partial class ScoreboardPanel : HudPanel
             {
                 // QC Scoreboard_Spectators_Draw (scoreboard.qc:2369): a spectator/observer is NOT a score-table
                 // row — list it in the spectator block instead. The wire carries the flag (the port has no
-                // NUM_SPECTATOR team sentinel). Ping isn't networked per row yet, so leave it unknown (-1).
+                // NUM_SPECTATOR team sentinel). Feed the networked per-row ping so spectators_showping renders it.
                 if (wr.IsSpectator)
                 {
-                    _spectators.Add(new SpectatorRow(wr.Name, ping: -1));
+                    _spectators.Add(new SpectatorRow(wr.Name, ping: wr.PingMs));
                     continue;
                 }
 
@@ -255,7 +259,7 @@ public partial class ScoreboardPanel : HudPanel
 
                 int score = scoreF is not null && (uint)scoreF.RegistryId < cols.Length ? cols[scoreF.RegistryId] : 0;
                 int deaths = deathsF is not null && (uint)deathsF.RegistryId < cols.Length ? cols[deathsF.RegistryId] : -1;
-                _rows.Add(new ScoreRow(wr.Name, score, wr.Team, deaths, ping: -1,
+                _rows.Add(new ScoreRow(wr.Name, score, wr.Team, deaths, ping: wr.PingMs,
                     isLocal: wr.NetId == localNetId, columns: cols,
                     // QC pl.ping_packetloss: de-quantize the networked 0..255 loss byte to a 0..1 fraction.
                     packetLoss: wr.PacketLossByte / 255f,
@@ -263,7 +267,9 @@ public partial class ScoreboardPanel : HudPanel
                     // rows the round-status block marked eliminated so DrawRow greys them.
                     eliminated: eliminatedNetIds is not null && eliminatedNetIds.Contains(wr.NetId),
                     // QC entcs handicap_level (scoreboard.qc:1003): the player_handicap icon level (0 = none).
-                    handicapLevel: wr.HandicapLevel));
+                    handicapLevel: wr.HandicapLevel,
+                    // QC pl.sv_entnum: the stable id for the playerid '#N' prefix + the final sort tiebreak.
+                    netId: wr.NetId));
             }
 
             _teamScores.Clear();
@@ -398,7 +404,11 @@ public partial class ScoreboardPanel : HudPanel
                 return ad.CompareTo(bd);
             }
             // ComparePlayers>0 means the first arg ranks ahead; we want the better row FIRST (negative).
-            return -CompareRows(a, b, primary, secondary);
+            int cmp = -CompareRows(a, b, primary, secondary);
+            if (cmp != 0) return cmp;
+            // QC Scoreboard_ComparePlayerScores final tiebreak (scoreboard.qc:1300): equal scores fall to
+            // sv_entnum so the order is stable frame-to-frame (List.Sort is not a stable sort in .NET).
+            return a.NetId.CompareTo(b.NetId);
         });
     }
 
@@ -617,8 +627,9 @@ public partial class ScoreboardPanel : HudPanel
         switch (col.Kind)
         {
             case ColumnKind.Ping:
-                // Ping isn't networked on the row yet (always -1); show a neutral dash rather than the QC
-                // ">>>" no-scores glyph (which has a specific meaning). When ping is networked this colorizes it.
+                // QC SP_PING (scoreboard.qc:1060): the networked per-row ping, colorized by the ping bands. A
+                // negative value (unknown / bot, not networked) shows a neutral dash rather than the QC ">>>"
+                // no-scores glyph (which has a specific meaning); 0 = connecting → "N/A".
                 if (r.Ping < 0) return new FieldText("-", new Color(1f, 1f, 1f, 0.5f));
                 if (r.Ping == 0) return new FieldText("N/A", white);
                 return new FieldText(r.Ping.ToString(), PingColor(r.Ping));
@@ -637,7 +648,18 @@ public partial class ScoreboardPanel : HudPanel
             }
 
             case ColumnKind.Name:
+            {
+                // QC Scoreboard_AddPlayerId (scoreboard.qc:1216): with hud_panel_scoreboard_playerid set, the
+                // name cell is prefixed with the player's id, e.g. "#3 " (playerid_prefix + sv_entnum + suffix).
+                // Off (0) by default → just the name. Read live so a console toggle takes effect.
+                if (CvarF("playerid", 0f) != 0f && r.NetId > 0)
+                {
+                    string pre = CvarStr("playerid_prefix"); if (pre.Length == 0) pre = "#";
+                    string suf = CvarStr("playerid_suffix"); if (suf.Length == 0) suf = " ";
+                    return new FieldText($"^7{pre}{r.NetId}{suf}{r.Name}", white);
+                }
                 return new FieldText(r.Name, white);
+            }
 
             case ColumnKind.Separator:
                 return new FieldText("", white);
@@ -793,6 +815,7 @@ public partial class ScoreboardPanel : HudPanel
         if (fade <= 0f) return; // QC: scoreboard_fade_alpha <= 0 → draw nothing
 
         EnsureColumns();
+        _overflowRows = 0; // QC Scoreboard_DrawOthers: reset the dropped-row counter for this draw
 
         // QC HUD_Panel_DrawBg: the configured luma skin frame (border_default 9-slice, bg color "0 0.3 0.5"
         // @ 0.7) — drawn via the base helper so the panel honors hud_panel_scoreboard_bg*/the live skin like
@@ -831,6 +854,15 @@ public partial class ScoreboardPanel : HudPanel
             const float rowH = 24f;
             if (TeamPlay) DrawGroupedByTeam(layout, ref y, rowH, fade);
             else DrawFlat(layout, _rows, ref y, rowH, startRank: 1, fade);
+        }
+
+        // QC Scoreboard_DrawOthers (scoreboard.qc:1571): if the table overflowed the panel, show how many
+        // players were hidden rather than silently truncating the list.
+        if (_overflowRows > 0 && y <= Size2.Y - 18f)
+        {
+            DrawTextCentered(new Vector2(x, y + 2f), w, $"... and {_overflowRows} more",
+                new Color(1f, 1f, 1f, 0.5f * fade), 14);
+            y += 18f;
         }
 
         // Footer blocks (QC spectators / map stats / respawn / accuracy / rankings / map name).
@@ -1069,6 +1101,10 @@ public partial class ScoreboardPanel : HudPanel
     private int RespawnDecimals() => (int)Mathf.Clamp(CvarF("respawntime_decimals", 1f), 0f, 3f);
     /// <summary>QC <c>..._accuracy</c> (true): show the accuracy stats block.</summary>
     private bool AccuracyEnabled() => CvarF("accuracy", 1f) != 0f;
+
+    /// <summary>QC <c>Scoreboard_AccuracyStats_WouldDraw</c> warmup gate (scoreboard.qc:1864): the accuracy block
+    /// is hidden during warmup (the stats aren't meaningful until the match proper). Fed by the match layer.</summary>
+    public bool MatchWarmup { get; set; }
     /// <summary>QC <c>..._spectators_showping</c> (true): show ping next to spectator names.</summary>
     private bool SpectatorsShowPing() => CvarF("spectators_showping", 1f) != 0f;
     /// <summary>QC <c>autocvar_hud_panel_scoreboard_scores_per_round</c> (scoreboard.qc:105, default 0): when set,
@@ -1076,11 +1112,15 @@ public partial class ScoreboardPanel : HudPanel
     /// interactive UI (not yet ported) — read live so a console "toggle" still takes effect.</summary>
     private bool ScoresPerRound() => CvarF("scores_per_round", 0f) != 0f;
 
+    /// <summary>QC <c>Scoreboard_DrawOthers</c> (scoreboard.qc:1571): how many rows were dropped because the
+    /// panel filled up, so the table can draw the "... and N more" overflow line. Reset each draw.</summary>
+    private int _overflowRows;
+
     /// <summary>Draw one player row across all columns; returns false once the panel is full.</summary>
     private bool DrawRow(Layout layout, in ScoreRow r, int rank, ref float y, float rowH,
         float fade, int rowParity, int team)
     {
-        if (y > Size2.Y - rowH) return false;
+        if (y > Size2.Y - rowH) { _overflowRows++; return false; }
 
         // QC scoreboard.qc:1531: alternate-row striping (sbt_highlight) on even rows, tinted by the team color
         // (the row rgb passed into Scoreboard_DrawItem is the team color, '1 1 1' in FFA).
@@ -1267,6 +1307,7 @@ public partial class ScoreboardPanel : HudPanel
     private float DrawAccuracy(float x, float w, float y, float fade)
     {
         if (!AccuracyEnabled()) return y;             // QC ..._accuracy gate
+        if (MatchWarmup) return y;                    // QC Scoreboard_AccuracyStats_WouldDraw: hidden in warmup
         // QC cl_invasion.qc MUTATOR_HOOKFUNCTION(cl_inv, DrawScoreboardItemStats) returns ISGAMETYPE(INVASION):
         // the item-stats (weapon accuracy) panel is hidden in Invasion because monsters are not valid accuracy
         // targets (sv_invasion.qc AccuracyTargetValid → MUT_ACCADD_INVALID), so the stats would be meaningless.
@@ -1551,6 +1592,13 @@ public partial class ScoreboardPanel : HudPanel
         c.Register("hud_panel_scoreboard_spectators_showping", "1", CvarFlags.Save);
         // per-round score averaging (scoreboard.qc:105)
         c.Register("hud_panel_scoreboard_scores_per_round", "0", CvarFlags.Save);
+        // playerid name prefix (scoreboard.qc:91-93): show "#<entnum> " before each name when enabled.
+        c.Register("hud_panel_scoreboard_playerid", "0", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_playerid_prefix", "#", CvarFlags.Save);
+        c.Register("hud_panel_scoreboard_playerid_suffix", " ", CvarFlags.Save);
+        // accuracy show-delay (scoreboard.qc:83) — registered for the HUD-skin round-trip (the warmup gate is wired;
+        // the time-since-start show-delay is a documented residual).
+        c.Register("hud_panel_scoreboard_accuracy_showdelay", "2", CvarFlags.Save);
         // ping color bands (scoreboard.qc:1017-1019)
         c.Register("hud_panel_scoreboard_ping_low", "20", CvarFlags.Save);
         c.Register("hud_panel_scoreboard_ping_medium", "80", CvarFlags.Save);

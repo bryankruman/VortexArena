@@ -803,8 +803,9 @@ public sealed class TeamKeepaway : GameType
     /// QC sv_tka.qc tka_ballcarrier_waypointsprite_visible_for_player: the per-viewer visibility predicate on the
     /// carrier waypoint. Spectators and the carrier's own team always see it; during warmup everyone does; otherwise
     /// an enemy sees it only when <c>g_tkaball_tracking == 1</c> (so <c>== 2</c> = dropped-only hides the carrier
-    /// sprite from enemies). The QC also hides it from spectators-of-the-carrier and on the carrier's invisibility
-    /// powerup; those two nuances are approximated (the predicate has no spectatee / invisibility field here).
+    /// sprite from enemies). The QC <c>IS_INVISIBLE(owner)</c> hide is ported (the carrier sprite is hidden from
+    /// enemies while the carrier holds the invisibility powerup). The remaining spectators-of-the-carrier nuance is
+    /// approximated (the predicate has no spectatee field here).
     /// </summary>
     private bool CarrierWaypointVisibleFor(Player carrier, Player? viewer)
     {
@@ -813,8 +814,14 @@ public sealed class TeamKeepaway : GameType
         // QC: if(IS_SPEC(player) || warmup_stage || SAME_TEAM(player, this.owner)) return true;
         if (viewer.IsObserver || NotificationSystem.WarmupStage || Teams.SameTeam(viewer, carrier))
             return true;
+        // QC: if(IS_INVISIBLE(this.owner)) return false; — hide the carrier sprite from ENEMIES while the carrier
+        // holds the invisibility powerup (this is AFTER the spec/warmup/same-team early-return, so spectators and
+        // teammates still see it). Mirrors Keepaway.CarrierWaypointVisibleFor (which already ports this hide).
+        var invisEffect = StatusEffectsCatalog.ByName("invisibility");
+        if (invisEffect is not null && StatusEffectsCatalog.Has(carrier, invisEffect))
+            return false;
         // QC: return autocvar_g_tkaball_tracking == 1; (enemies see the carrier only in the always-track mode,
-        // not in the dropped-only mode 2). The IS_INVISIBLE(owner) hide is approximated as visible.
+        // not in the dropped-only mode 2).
         return BallTracking == 1;
     }
 

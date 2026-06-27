@@ -46,6 +46,13 @@ public sealed class PlasmaDualTurret : PlasmaTurret
         NetName = "plasma_dual";
         DisplayName = "Dual Plasma Cannon";
         Model = "models/turrets/base.md3";
+        // QC plasma_dual.qh overrides head_model = "models/turrets/plasmad.md3" (the dual-cannon head bone, vs
+        // single plasma's plasma.md3). The port has no client tur_head render yet, but head_model is consumed
+        // server-side by the death-gib toss: TurretAI.TossDeathGibs (cl_turrets.qc turret_die) spawns the head as
+        // an exploding gib carrying the head's last angles + spin. Without it, plasma_dual death tosses only the
+        // base-gibs and silently skips its head gib (TossGib no-ops on an empty model) — every other standard
+        // turret already carries its HeadModel, so this matches Base identity + the family death-gib behaviour.
+        HeadModel = "models/turrets/plasmad.md3";
         StartHealth = 500f;
         Range = DualTargetRange;
     }

@@ -75,16 +75,29 @@ public static class VehicleSpawnFuncs
             }
         }
 
-        // QC vehicle_initialize:1178-1201 (targetname controller / vehicle_use) and the active-state-aware
-        // nextthink scheduling (1276-1281, ACTIVE_NOT / delayspawn jitter / game_starttime) remain DEFERRED:
-        // they need the map-scripted-activation subsystem the port does not yet have. Specifically the QC
-        // controller is resolved with find(NULL, target, this.targetname) — the entity whose .target equals this
-        // vehicle's .targetname — and there is no general find-by-.target facade enumerator (only the teleporter-
-        // restricted one); the .use trigger plumbing that lets that controller fire vehicle_use does not exist;
-        // and the delayspawn EF_NODRAW deferral has no home in the port's FOLDED spawn (def.Spawn already builds
-        // the vehicle fully + visibly and arms its per-frame Think, rather than scheduling the QC vehicles_spawn
-        // think for later). Without a controller every map vehicle is ACTIVE_ACTIVE and runs immediately, which
-        // is the common stock-map case. See registry vehicle-framework.init.initialize gaps.
+        // QC vehicle_initialize:1278-1280 — the g_vehicles_delayspawn first-think branch: a map-placed vehicle
+        // does not activate immediately but at `time + respawntime + random()*g_vehicles_delayspawn_jitter`,
+        // staggering a row of vehicles instead of popping them in together. def.Spawn already ran (the FOLDED
+        // vehicles_spawn — needed for the drop-to-floor hull above AND to set e.RespawnTime, which the jitter
+        // formula reads) and armed the per-frame Think; ScheduleDelayedSpawn re-parks the vehicle hidden
+        // (EF_NODRAW) + inert (SOLID_NOT / DAMAGE_NO / MOVETYPE_NONE) and re-arms the descriptor Spawn as the
+        // delayed think, so the FIRST live activation honours the jitter. Defaults: g_vehicles_delayspawn 1,
+        // g_vehicles_delayspawn_jitter 10 (vehicles.cfg). Headless (no clock) keeps the immediate activation.
+        if (Api.Services is not null && DelaySpawnEnabled())
+        {
+            float jitter = string.IsNullOrEmpty(Api.Cvars.GetString("g_vehicles_delayspawn_jitter"))
+                ? 10f : Api.Cvars.GetFloat("g_vehicles_delayspawn_jitter");
+            VehicleCommon.ScheduleDelayedSpawn(e, jitter);
+        }
+
+        // QC vehicle_initialize:1178-1201 (targetname controller / vehicle_use) and the ACTIVE_NOT active-state
+        // gating remain DEFERRED: they need the map-scripted-activation subsystem the port does not yet have.
+        // Specifically the QC controller is resolved with find(NULL, target, this.targetname) — the entity whose
+        // .target equals this vehicle's .targetname — and there is no general find-by-.target facade enumerator
+        // (only the teleporter-restricted one); the .use trigger plumbing that lets that controller fire
+        // vehicle_use does not exist. Without a controller every map vehicle is ACTIVE_ACTIVE and runs
+        // immediately (modulo the delayspawn stagger above), which is the common stock-map case. See registry
+        // vehicle-framework.init.initialize gaps.
 
         // QC vehicle_initialize tail (sv_vehicles.qc:1283): if (MUTATOR_CALLHOOK(VehicleInit, this)) return false;
         // — a mutator may veto this vehicle's one-time init, and the spawnfunc deletes the edict on a false return.
@@ -110,6 +123,19 @@ public static class VehicleSpawnFuncs
         string s = Api.Cvars.GetString(name);
         if (string.IsNullOrEmpty(s)) return true; // unset → enabled (cfg default is 1)
         return Api.Cvars.GetFloat(name) != 0f;     // present → 0 disables (QC !autocvar)
+    }
+
+    /// <summary>
+    /// QC <c>autocvar_g_vehicles_delayspawn</c> (sv_vehicles.qh, default 1): whether map-placed vehicles stagger
+    /// their first activation by <c>respawntime + random()*g_vehicles_delayspawn_jitter</c>. Absent/unset reads as
+    /// ON (the vehicles.cfg default); an explicit 0 makes every vehicle activate immediately at placement.
+    /// </summary>
+    private static bool DelaySpawnEnabled()
+    {
+        if (Api.Services is null) return false; // headless: no clock to schedule against, keep the immediate spawn
+        string s = Api.Cvars.GetString("g_vehicles_delayspawn");
+        if (string.IsNullOrEmpty(s)) return true; // unset → enabled (cfg default is 1)
+        return Api.Cvars.GetFloat("g_vehicles_delayspawn") != 0f;
     }
 
     /// <summary>

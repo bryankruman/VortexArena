@@ -208,6 +208,20 @@ public abstract class NetTransport : IDisposable
             Peer.DisconnectPeer(peerId, now);
         }
 
+        /// <summary>QC <c>CS(e).ping</c> (server/sv_main.qc bot_think / scoreboard.qc SP_PING): a connected
+        /// peer's round-trip time in milliseconds — ENet's own smoothed mean RTT estimate for the peer
+        /// (<see cref="ENetPacketPeer.PeerStatistic.RoundTripTime"/>, in ms), the "ping" the scoreboard shows.
+        /// Returns -1 for an unknown/disconnected peer (a bot / loopback host reads ~0). Mirrors the client-side
+        /// <see cref="Client.RoundTripMs"/> so the server can network each human's ping on the score row.</summary>
+        public int RoundTripMs(int peerId)
+        {
+            if (Peer is null) return -1;
+            ENetPacketPeer p = Peer.GetPeer(peerId);
+            if (p is null) return -1;
+            double rtt = p.GetStatistic(ENetPacketPeer.PeerStatistic.RoundTripTime);
+            return (int)System.Math.Round(rtt);
+        }
+
         /// <summary>QC <c>CS(e).ping_packetloss</c> (server/world.qc:74): a connected peer's measured packet loss
         /// as a 0..1 fraction. ENet reports <see cref="ENetPacketPeer.PeerStatistic.PacketLoss"/> on a 0..65536
         /// scale (ENET_PEER_PACKET_LOSS_SCALE); we normalize it. Returns 0 for an unknown/disconnected peer.</summary>

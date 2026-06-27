@@ -160,9 +160,16 @@ public sealed class Devastator : Weapon
 
         if (fire == FireMode.Secondary)
         {
-            // Flag every live rocket this actor owns to remote-detonate (gated by spawnshield/proximity in
+            // QC wr_think (devastator.qc): the secondary remote-detonate runs only inside
+            // `if (fire & 2) { if (actor.(weaponentity).m_switchweapon == thiswep) { ... } }` — you can only
+            // remote-detonate while the Devastator is still the slot's committed weapon. Once a switch AWAY is
+            // in progress (m_switchweapon != m_weapon == thiswep) the detonate is suppressed. Mirror the QC gate
+            // with the established "switching" idiom (Machinegun.cs:365): skip when the slot is switching to a
+            // different weapon. Then flag every live rocket this actor owns (gated by spawnshield/proximity in
             // the rocket's think, W_Devastator_RemoteExplode). This is a press action, not a refire-gated shot.
-            RemoteDetonate(actor);
+            bool switchingAway = st.SwitchWeaponId >= 0 && st.SwitchWeaponId != RegistryId;
+            if (!switchingAway)
+                RemoteDetonate(actor);
         }
     }
 
@@ -197,6 +204,13 @@ public sealed class Devastator : Weapon
         Projectiles.MakeTrigger(missile);
         missile.Flags = EntFlags.Item; // QC FL_PROJECTILE
         missile.DamageForceScale = Cvars.DamageForceScale;
+
+        // QC missile.damagedbycontents = true; IL_PUSH(g_damagedbycontents, missile) (devastator.qc:285) — the
+        // rocket explodes when it enters lava/slime. GameWorld.CreatureFrameAll sweeps every entity flagged
+        // Entity.DamagedByContents through PlayerFrameLogic.ProjectileContentsDamage (the same infra Electro orbs
+        // use); a NULL-inflictor contents hit then routes through the rocket's MakeShootable shoot-down shim ->
+        // ProjectileDamage (Explode) at hp<=0. Without this flag the rocket is excluded from the sweep.
+        missile.DamagedByContents = true;
 
         // setsize '-3 -3 -3'..'3 3 3' so the rocket can be shot down.
         Api.Entities.SetSize(missile, new Vector3(-3, -3, -3), new Vector3(3, 3, 3));
@@ -431,6 +445,9 @@ public sealed class Devastator : Weapon
             Cvars.RemoteRadius, owner, RegistryId, Cvars.RemoteForce, accuracyWeapon: this, deathTag: deathType);
         WeaponSplash.ImpactSound(self, "weapons/rocket_impact.wav"); // QC SND_ROCKET_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
+
+        // QC W_Devastator_DoRemoteExplode tail (devastator.qc:128-136): out-of-rockets auto-switch after the blast.
+        ForceSwitchIfOutOfAmmo(owner);
         Api.Entities.Remove(self);
     }
 
@@ -472,7 +489,33 @@ public sealed class Devastator : Weapon
 
         WeaponSplash.ImpactSound(self, "weapons/rocket_impact.wav"); // QC SND_ROCKET_IMPACT (wr_impacteffect)
         EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
+
+        // QC W_Devastator_Explode tail (devastator.qc:47-56): out-of-rockets auto-switch after the contact blast.
+        ForceSwitchIfOutOfAmmo(self.Owner);
         Api.Entities.Remove(self);
+    }
+
+    // W_Devastator_Explode / W_Devastator_DoRemoteExplode tail (devastator.qc:47-56, :128-136): after the blast, if
+    // the owner is still wielding the Devastator and the rocket resource is now depleted (and not IT_UNLIMITED_AMMO),
+    // force a switch to the best other owned weapon. QC: `cnt = WEP_DEVASTATOR.m_id; ATTACK_FINISHED(actor) = time;
+    // actor.(weaponentity).m_switchweapon = w_getbestweapon(actor)`. SwitchToOtherWeapon (WeaponFireGate) ports
+    // w_getbestweapon + the ATTACK_FINISHED/m_switchweapon assignment; the rocket carries no slot, so locate the
+    // slot currently holding the Devastator on the owner. Mirrors Minelayer.ForceSwitchIfOutOfAmmo.
+    private void ForceSwitchIfOutOfAmmo(Entity? owner)
+    {
+        if (owner is null || owner.IsFreed) return;
+        if (owner.UnlimitedAmmo || (owner.Items & (1 << 0)) != 0) return; // IT_UNLIMITED_AMMO = BIT(0)
+        if (CheckAmmoPrimary(owner)) return; // still has rockets for another shot — no switch
+
+        for (int i = 0; i < MutatorConstants.MaxWeaponSlots; ++i)
+        {
+            var slot = new WeaponSlot(i);
+            if (owner.WeaponState(slot).CurrentWeaponId == RegistryId)
+            {
+                SwitchToOtherWeapon(owner, slot);
+                return;
+            }
+        }
     }
 
     // W_Devastator_Unregister (devastator.qc:7-15) — clear owner.lastrocket on ALL weapon slots that point at this
@@ -523,6 +566,20 @@ public sealed class Devastator : Weapon
         }
         if (any)
             Api.Sound.Play(actor, SoundChannel.Body, "weapons/rocket_det.wav");
+    }
+
+    // METHOD(Devastator, wr_resetplayer) — common/weapons/weapon/devastator.qc:wr_resetplayer ("no revenge from
+    // the grave"): on (re)spawn / round reset, clear this slot's still-live rocket reference and re-arm the
+    // rl_release latch so the first primary press after respawn launches (instead of trying to guide a rocket
+    // that belonged to a previous life). QC clears lastrocket + rl_release on the weaponentity; the port dispatches
+    // WrResetPlayer per populated slot (SpawnSystem), so the per-slot clear here is the full reset. (Explode/
+    // DoRemoteExplode already call Unregister per-rocket, and OnThink's owner-alive gate stops a dead owner's
+    // guiding — this adds the proactive respawn-time clear QC does.)
+    public override void WrResetPlayer(Entity actor, WeaponSlot slot)
+    {
+        WeaponSlotState st = actor.WeaponState(slot);
+        st.LastRocket = null;
+        st.RlRelease = true;
     }
 
     // METHOD(Devastator, wr_checkammo1) — devastator.qc

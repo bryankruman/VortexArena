@@ -346,8 +346,20 @@ public sealed class Fireball : Weapon
         var sel = new MapMover.RandomSelection();
         sel.Reset();
         Vector3 chosenPoint = default;
-        foreach (Entity e in Api.Entities.FindInRadius(self.Origin, dist).ToList())
+        Vector3 chosenBlast = default;
+        // QC W_Fireball_LaserPlay finds with WarpZone_FindRadius(this.origin, dist, true) — the scorch reaches
+        // enemies through linked portals, each candidate tagged with the blast point shifted into ITS OWN frame
+        // (hit.LocalBlastOrigin) so the body-point / distance / burn-rate math is measured from the portal-shifted
+        // origin. With no warpzones in the world FindRadiusWarpzone returns exactly the plain FindInRadius set with
+        // identity transforms (LocalBlastOrigin == self.Origin), so non-warpzone maps are byte-for-byte unchanged.
+        // (Same warpzone-aware find WeaponSplash.RadiusDamage already uses for the direct blast.)
+        var hits = new List<WarpzoneRadiusHit>();
+        WarpzoneRadiusQuery.FindRadiusWarpzone(WarpzoneTrace.AmbientManager, self.Origin, dist, hits);
+        foreach (WarpzoneRadiusHit hit in hits)
         {
+            Entity e = hit.Entity;
+            // The blast origin in THIS victim's frame (identity for a same-room target).
+            Vector3 blastOrg = hit.LocalBlastOrigin;
             // QC skip: frozen (stat or status), the owner, independent players, non-AIM targets, and a same-team
             // player when the fireball has a (real)owner.
             if (e.TakeDamage != DamageMode.Aim || ReferenceEquals(e, owner) || e.IsIndependentPlayer)
@@ -365,21 +377,28 @@ public sealed class Fireball : Weapon
                 e.Mins.X + Prandom.Float() * (e.Maxs.X - e.Mins.X),
                 e.Mins.Y + Prandom.Float() * (e.Maxs.Y - e.Mins.Y),
                 e.Mins.Z + Prandom.Float() * (e.Maxs.Z - e.Mins.Z));
-            float d = (self.Origin - p).Length();
+            // Distance measured from the portal-shifted blast origin in the victim's frame (QC measures from
+            // this.origin, which WarpZone_FindRadius has already mapped into the far-side victim's frame).
+            float d = (blastOrg - p).Length();
             if (d >= dist) continue;
 
             // QC: e.fireball_impactvec = p; RandomSelection_AddEnt(e, 1/(1+d), !Burning). Priority arg is the
             // not-burning flag (1 wins over 0 = prefer not-yet-burning), weight 1/(1+d) breaks the tier ties.
             float priority = StatusEffectsCatalog.Has(e, burning) ? 0f : 1f;
             sel.Add(e, 1f / (1f + d), priority);
-            // The reservoir only keeps a reference; stash the body point so we can recover the chosen one's vec.
+            // The reservoir only keeps a reference; stash the body point AND the victim's blast frame so we can
+            // recover the chosen one's vec and measure its rate distance in the same (possibly portal-shifted) frame.
             if (ReferenceEquals(sel.Chosen, e))
+            {
                 chosenPoint = p;
+                chosenBlast = blastOrg;
+            }
         }
 
         if (sel.Chosen is { } chosen)
         {
-            float d = (self.Origin - chosenPoint).Length();
+            // Rate distance in the chosen target's own frame (chosenBlast == self.Origin for a same-room target).
+            float d = (chosenBlast - chosenPoint).Length();
             // QC: d = damage + (edgedamage-damage)*(d/dist) — the per-second burn rate scaled by distance.
             float rate = damage + (edgeDamage - damage) * (d / dist);
             // Fire_AddDamage(targ, owner, rate*burntime, burntime, projectiledeathtype | HITTYPE_BOUNCE):

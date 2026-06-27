@@ -110,6 +110,12 @@ public sealed class HudNotifications
     /// </summary>
     public void OnNotification(Notification? notif, MsgType type, string text, string[] strs, float[] flts)
     {
+        // QC ARG_CS key-bind tokens (pass_key/nade_key/join_key): the server formatted these to a sentinel
+        // because only the client knows its binds (Base resolves them CSQC-side via getcommandkey). Swap each
+        // sentinel for the local key now, before the text reaches the centerprint / kill-feed panels.
+        if (!string.IsNullOrEmpty(text) && text.Contains(NotifTokens.KeyBindSentinelPrefix, StringComparison.Ordinal))
+            text = SubstituteKeyBinds(text);
+
         switch (type)
         {
             case MsgType.Center:
@@ -159,6 +165,48 @@ public sealed class HudNotifications
     /// <summary>Convenience overload taking the same tuple <c>ClientNet.NotificationEvent</c> carries.</summary>
     public void OnNotification(in DecodedNotification ev)
         => OnNotification(ev.Notification, ev.Type, ev.Text, ev.StringArgs, ev.FloatArgs);
+
+    /// <summary>
+    /// Replace each QC <c>ARG_CS</c> key-bind sentinel (<see cref="NotifTokens.KeyBindSentinelPrefix"/> ..
+    /// <see cref="NotifTokens.KeyBindSentinelSuffix"/>, carrying the bare token name) with the display name of
+    /// the key currently bound to that command — the C# successor to QC resolving <c>pass_key</c>/<c>nade_key</c>/
+    /// <c>join_key</c> CSQC-side via <c>getcommandkey</c> (notifications/all.qh). The lookup uses the client's live
+    /// <see cref="XonoticGodot.Engine.Console.BindTable"/> (the same table NetGame reads for the respawn-jump hint);
+    /// an unbound command falls back to QC's human-readable descriptive name.
+    /// </summary>
+    private static string SubstituteKeyBinds(string text)
+    {
+        int idx;
+        while ((idx = text.IndexOf(NotifTokens.KeyBindSentinelPrefix, StringComparison.Ordinal)) >= 0)
+        {
+            int start = idx + NotifTokens.KeyBindSentinelPrefix.Length;
+            int end = text.IndexOf(NotifTokens.KeyBindSentinelSuffix, start, StringComparison.Ordinal);
+            if (end < 0)
+                break; // malformed: leave the rest as-is rather than loop forever
+            string token = text.Substring(start, end - start);
+            string key = ResolveKeyBind(token);
+            text = string.Concat(text.AsSpan(0, idx), key,
+                text.AsSpan(end + NotifTokens.KeyBindSentinelSuffix.Length));
+        }
+        return text;
+    }
+
+    /// <summary>
+    /// Map a key-bind token to the key bound to its command (QC <c>getcommandkey(descriptive, command)</c>).
+    /// The command strings are the ones the port's bind table actually stores from <c>binds-xonotic.cfg</c>:
+    /// <c>+use</c> (CTF flag-pass request / vehicle enter / onslaught teleport, key <c>f</c>), <c>weapon_drop</c>
+    /// (the drop-weapon bind that primes/throws the nade, keys <c>g</c>/<c>BACKSPACE</c>) and <c>+jump</c>
+    /// (spectator join, <c>SPACE</c>). When no key is bound,
+    /// <see cref="XonoticGodot.Engine.Console.BindTable.CommandKey"/> returns the descriptive fallback (Base's
+    /// <c>_("drop flag")</c>/<c>_("throw nade")</c>/<c>_("jump")</c>).
+    /// </summary>
+    private static string ResolveKeyBind(string token) => token switch
+    {
+        "pass_key" => XonoticGodot.Engine.Console.BindTable.CommandKey("drop flag", "+use"),
+        "nade_key" => XonoticGodot.Engine.Console.BindTable.CommandKey("throw nade", "weapon_drop"),
+        "join_key" => XonoticGodot.Engine.Console.BindTable.CommandKey("jump", "+jump"),
+        _ => "",
+    };
 
     /// <summary>A net-decoupled mirror of <c>ClientNet.NotificationEvent</c> the host can adapt to.</summary>
     public readonly record struct DecodedNotification(

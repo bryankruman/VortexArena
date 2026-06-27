@@ -1,6 +1,7 @@
 using System.Numerics;
 using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Collision;
 
@@ -600,6 +601,15 @@ public sealed class SoundService : ISoundService
 
     public void Play(Entity e, SoundChannel channel, string sample, float volume = 1f, float attenuation = 1f, bool loop = false, float pitch = 1f)
     {
+        // QC sound() macro wraps EVERY positional emit in sound_allowed(MSG_BROADCAST, e) (common/sounds/sound.qh:43,
+        // all.qc:9-25): when bot_sound_monopoly=1 a real-client-sourced sound is suppressed (and the owner-walk
+        // re-homes a corpse/projectile emit to its originating player first). Most port emits already pass through
+        // SoundSystem.PlayOn/SpamSound (which gate), but a handful of call sites hit Api.Sound.Play DIRECTLY (weapon
+        // UNAVAILABLE, monster/turret/map-object cues) and would otherwise bypass the gate. Applying it here — the
+        // single SV_StartSound chokepoint every Api.Sound.Play flows through — closes that bypass with one check.
+        // IsAllowed early-returns true when bot_sound_monopoly==0 (the default) so this is a no-op in normal play,
+        // and is idempotent for the SoundSystem family (re-checking returns the same answer). A null emitter passes.
+        if (!SoundAllowedGate.IsAllowed(e)) return;
         // SV_StartSound emits from the entity's box center (DP uses ent.origin + 0.5*(mins+maxs)).
         Vector3 origin = e.Origin + (e.Mins + e.Maxs) * 0.5f;
         Broadcast?.Invoke(new SoundEvent(e, channel, sample, volume, attenuation, origin, Loop: loop, Pitch: pitch));

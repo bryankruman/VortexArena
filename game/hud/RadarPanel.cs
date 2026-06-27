@@ -314,9 +314,18 @@ public partial class RadarPanel : HudPanel
         // ---- the real minimap image (QC draw_teamradar_background): a rotated, player-centered textured quad
         // covering the map's world bounds [mi_min, mi_max]. The corners map through WorldToScreen; the UVs match
         // QC's yinvert (image Y is top-down, world Y bottom-up). Clipped to the panel rect by ClipContents. ----
+        // QC HUD_Radar (radar.qc:203): the SMALL (non-maximized) radar is hard-gated on minimapname != "" — if no
+        // gfx/<map>_radar / gfx/<map>_mini image resolves, the whole panel early-returns (no playfield, no blips).
+        // The standalone NetGame radar is fed MapName + BSP bounds, so the image usually resolves; this only blanks
+        // the radar on maps that genuinely ship no minimap art, matching Base. (Guarded behind HasMapBounds + MapName
+        // so the degenerate no-bounds fallback path is unaffected.)
+        Texture2D? mini = (selfFinite && HasMapBounds && !string.IsNullOrEmpty(MapName))
+            ? TextureCache.GetFirst($"gfx/{MapName}_radar", $"gfx/{MapName}_mini")
+            : null;
+        if (HasMapBounds && !string.IsNullOrEmpty(MapName) && mini is null)
+            return; // QC minimapname == "" → no radar at all
         if (selfFinite && HasMapBounds && !string.IsNullOrEmpty(MapName))
         {
-            Texture2D? mini = TextureCache.GetFirst($"gfx/{MapName}_radar", $"gfx/{MapName}_mini");
             if (mini is not null)
             {
                 float x0 = MapMinXY.X, y0 = MapMinXY.Y, x1 = MapMaxXY.X, y1 = MapMaxXY.Y;
@@ -327,6 +336,28 @@ public partial class RadarPanel : HudPanel
                     Color mc = new(1f, 1f, 1f, fgAlpha);
                     DrawPolygon(pts, new[] { mc, mc, mc, mc }, uvs, mini);
                 }
+            }
+        }
+
+        // ---- Onslaught radar links (QC draw_teamradar_link over g_radarlinks, radar.qc:301): the control-point /
+        // generator power-connection lines, drawn UNDER the player blips + objective icons (QC draws links before
+        // the entcs players + icons). Each link is a quad between the two endpoints, colored at each end by that
+        // end's owning team (QC colormapPaletteColor per end — reproduced here by TeamColor, which already maps a
+        // NUM_TEAM_* code to the faithful Team_ColorRGB). Off in any non-Onslaught mode (the list is empty). ----
+        if (selfFinite)
+        {
+            foreach (ClientNet.RadarLink link in net.RadarLinks)
+            {
+                if (!float.IsFinite(link.A.X) || !float.IsFinite(link.A.Y) ||
+                    !float.IsFinite(link.B.X) || !float.IsFinite(link.B.Y))
+                    continue;
+                Vector2 a = WorldToScreen(link.A.X, link.A.Y);
+                Vector2 b = WorldToScreen(link.B.X, link.B.Y);
+                if (!float.IsFinite(a.X) || !float.IsFinite(a.Y) || !float.IsFinite(b.X) || !float.IsFinite(b.Y))
+                    continue;
+                Color ca = WithAlpha(TeamColor(link.TeamA), fgAlpha);
+                Color cb = WithAlpha(TeamColor(link.TeamB), fgAlpha);
+                DrawLinkQuad(a, b, ca, cb);
             }
         }
 
@@ -433,6 +464,26 @@ public partial class RadarPanel : HudPanel
         if (ping is not null)
             DrawTextureRect(ping, rect, false,
                 new Color(1f, 1f, 1f, Mathf.Clamp(alpha, 0f, 1f)));
+    }
+
+    /// <summary>QC draw_teamradar_link: a connection line between two radar points as a thin 4-vertex quad, each
+    /// END tinted by its own team color (QC builds the quad with the two per-end colors). A ~2px-wide band along
+    /// the A→B direction so it reads on the rotated minimap; degenerate (zero-length) links are skipped.</summary>
+    private void DrawLinkQuad(Vector2 a, Vector2 b, Color colorA, Color colorB)
+    {
+        Vector2 dir = b - a;
+        float len = dir.Length();
+        if (len < 0.001f)
+            return;
+        Vector2 perp = new Vector2(-dir.Y, dir.X) / len; // half-width 1px → ~2px band (QC link thickness)
+        var pts = new Vector2[]
+        {
+            a - perp, b - perp, b + perp, a + perp,
+        };
+        // Two verts per end carry that end's color so the line gradients between the two team colors, like QC's
+        // per-end colormapPaletteColor quad.
+        var cols = new Color[] { colorA, colorB, colorB, colorA };
+        DrawPolygon(pts, cols);
     }
 
     /// <summary>True when every point is finite (guards the textured-quad / polygon draw against a NaN vertex).</summary>

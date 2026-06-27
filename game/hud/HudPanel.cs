@@ -250,11 +250,20 @@ public abstract partial class HudPanel : Control
         if (string.IsNullOrWhiteSpace(bg)) bg = GlobalStr("hud_panel_bg");
         if (string.IsNullOrWhiteSpace(bg)) bg = "0";
 
-        // bg color: "" inherits hud_panel_bg_color; "shirt"/"pants" not yet supported → inherit.
+        // bg color: "" inherits hud_panel_bg_color; the QC HUD_Panel_GetColor literals "shirt"/"pants"/"team"
+        // resolve to the local player's colormap shirt/pants color (colormapPaletteColor) / team color when fed by
+        // the manager — else they fall back to inheriting the global bg color (no local player yet).
         string bgColStr = CvarStr("bg_color");
-        if (string.IsNullOrWhiteSpace(bgColStr) || bgColStr == "shirt" || bgColStr == "pants")
-            bgColStr = GlobalStr("hud_panel_bg_color");
-        Color bgCol = TryParseRgb(bgColStr, out Color c) ? c : new Color(0f, 0.14f, 0.25f);
+        Color bgCol;
+        if (bgColStr == "shirt" && LocalShirtColor is { } shirt) bgCol = shirt;
+        else if (bgColStr == "pants" && LocalPantsColor is { } pants) bgCol = pants;
+        else if (bgColStr == "team" && LocalTeamColor is { } team) bgCol = team;
+        else
+        {
+            if (string.IsNullOrWhiteSpace(bgColStr) || bgColStr == "shirt" || bgColStr == "pants" || bgColStr == "team")
+                bgColStr = GlobalStr("hud_panel_bg_color");
+            bgCol = TryParseRgb(bgColStr, out Color c) ? c : new Color(0f, 0.14f, 0.25f);
+        }
 
         float bgAlpha = CvarF("bg_alpha", GlobalF("hud_panel_bg_alpha", 1f));
         float bgBorder = CvarF("bg_border", GlobalF("hud_panel_bg_border", 2f));
@@ -560,6 +569,23 @@ public abstract partial class HudPanel : Control
             : Font.GetStringSize(text, HorizontalAlignment.Left, -1f, size).X;
 
     // ---- color helpers (QC HUD_Get_Num_Color: tint a value by how low it is) ----
+
+    /// <summary>The local player's resolved SHIRT (top-colormap) color (QC <c>HUD_Panel_GetColor</c>'s
+    /// <c>"shirt"</c> literal = <c>colormapPaletteColor(floor(_cl_color/16), false)</c>), or null when there is no
+    /// local player (pre-spawn / pure --connect). Fed once per frame by <see cref="Hud._Process"/>. Lets a panel's
+    /// <c>hud_panel_&lt;id&gt;_bg_color shirt</c> (and the dock's <c>hud_dock_color shirt</c>) tint to the player's
+    /// own upper color, matching Base; in a team game the engine forces both colormap nibbles to the team color, so
+    /// this naturally resolves to the team tint there.</summary>
+    public static Color? LocalShirtColor { get; set; }
+
+    /// <summary>The local player's resolved PANTS (bottom-colormap) color (QC <c>"pants"</c> literal =
+    /// <c>colormapPaletteColor(_cl_color % 16, true)</c>), or null when there is no local player. Fed once per frame
+    /// by <see cref="Hud._Process"/>. See <see cref="LocalShirtColor"/>.</summary>
+    public static Color? LocalPantsColor { get; set; }
+
+    /// <summary>The local player's TEAM color (QC <c>myteamcolors</c> — used by the <c>"team"</c> bg-color literal),
+    /// or null when not on a team / not teamplay. Fed once per frame by <see cref="Hud._Process"/>.</summary>
+    public static Color? LocalTeamColor { get; set; }
 
     /// <summary>The shared HUD clock (QC <c>time</c>), fed once per frame by <see cref="Hud._Process"/>. Drives
     /// the <see cref="NumColor"/> blink/pulse (and any other wall-clock HUD animation). Defaults to 0 so unit

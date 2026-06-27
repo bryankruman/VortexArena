@@ -96,11 +96,14 @@ public sealed class StatusEffectDef : IRegistered
 
     /// <summary>
     /// QC per-effect <c>m_remove</c> override (spawnshield.qc:5 clears EF_ADDITIVE|EF_FULLBRIGHT, stunned.qc:5
-    /// clears EF_SHOCK, frozen/burning clear their own .effects bit): invoked on ANY removal (NORMAL/TIMEOUT/
-    /// CLEAR) so the presentation flag the per-effect OnTick set is torn down — Base runs the SUPER m_remove
-    /// after the per-effect override, regardless of removal_type. Null = no per-effect removal mechanics.
+    /// clears EF_SHOCK, frozen/burning clear their own .effects bit, and the powerups' strength.qc:5-13 /
+    /// shield.qc / speed.qc / invisibility.qc m_remove fire the CENTER_POWERDOWN_X print on a TIMEOUT removal +
+    /// stopsound(CH_TRIGGER_SINGLE) on ANY removal): invoked on ANY removal (NORMAL/TIMEOUT/CLEAR) with the
+    /// removal cause so the handler can gate the timeout-only mechanics (the powerdown centerprint) — Base runs
+    /// the SUPER m_remove after the per-effect override, passing removal_type through. Null = no per-effect
+    /// removal mechanics.
     /// </summary>
-    public Action<Entity, ActiveStatusEffect>? OnRemove;
+    public Action<Entity, ActiveStatusEffect, StatusEffectRemoval>? OnRemove;
 
     /// <summary>
     /// QC per-effect <c>m_apply</c> override that runs only on the <c>!wasactive</c> transition (i.e. the first
@@ -221,10 +224,15 @@ public static class StatusEffectsCatalog
         // into the networked Entity.Effects each frame; the CSQC model hooks (CsqcModelEffects.Apply) light them.
         // So these defs intentionally carry no OnTick glow — the bits would otherwise be set in two places.
         // QC powerups (strength.qh / shield.qh / speed.qh / invisibility.qh) m_name/m_icon/m_color:
-        R(new StatusEffectDef("strength") { DisplayName = "Strength", Icon = "strength", Color = (0f, 0f, 1f) });
-        R(new StatusEffectDef("shield") { DisplayName = "Shield", Icon = "shield", Color = (1f, 0f, 1f) });      // QC ShieldStatusEffect netname "invincible"; consumers use "shield"
-        R(new StatusEffectDef("speed") { DisplayName = "Speed", Icon = "buff_speed", Color = (0.1f, 1f, 0.84f) });
-        R(new StatusEffectDef("invisibility") { DisplayName = "Invisibility", Icon = "buff_invisible", Color = (0.5f, 0.5f, 1f) });
+        // QC powerup m_remove (strength.qc:5-13 and the parallel shield/speed/invisibility): on a TIMEOUT removal
+        // CENTER_POWERDOWN_X is printed to the player, and on ANY removal stopsound(actor, CH_TRIGGER_SINGLE) cuts
+        // the long powerup pickup fanfare. PowerupsMutator.PlayerPreThink drives the rising-edge pickup notif +
+        // the glow/alpha/countdown; the FALLING-edge powerdown lives here (in m_remove) so it sees the real
+        // removal cause and only prints on TIMEOUT (a drop-on-death / +use drop is NORMAL and must stay silent).
+        R(new StatusEffectDef("strength") { DisplayName = "Strength", Icon = "strength", Color = (0f, 0f, 1f), OnRemove = PowerupRemove });
+        R(new StatusEffectDef("shield") { DisplayName = "Shield", Icon = "shield", Color = (1f, 0f, 1f), OnRemove = PowerupRemove });      // QC ShieldStatusEffect netname "invincible"; consumers use "shield"
+        R(new StatusEffectDef("speed") { DisplayName = "Speed", Icon = "buff_speed", Color = (0.1f, 1f, 0.84f), OnRemove = PowerupRemove });
+        R(new StatusEffectDef("invisibility") { DisplayName = "Invisibility", Icon = "buff_invisible", Color = (0.5f, 0.5f, 1f), OnRemove = PowerupRemove });
 
         // --- buffs (mutators/mutator/buffs/buff/*.qh): the exact QC set, offered by BuffsMutator ---
         // m_skin / m_color taken straight from each buff's .qh ATTRIB; the pickup item wears the skin and is
@@ -272,8 +280,46 @@ public static class StatusEffectsCatalog
         return false;
     }
 
+    /// <summary>
+    /// QC powerup <c>m_remove</c> (strength.qc:4-14 and the parallel shield/speed/invisibility m_remove): on a
+    /// TIMEOUT removal of a real player print <c>CENTER_POWERDOWN_X</c> to the owner (the INFO_POWERDOWN_X
+    /// broadcast is commented out in Base, so only the CENTER fires); on ANY removal cut the long pickup fanfare
+    /// with <c>stopsound(actor, CH_TRIGGER_SINGLE)</c> (CH_TRIGGER_SINGLE == SoundChannel.Item across the port).
+    /// The rising-edge pickup notif + glow/alpha/countdown stay in PowerupsMutator.PlayerPreThink; only the
+    /// falling edge needs the removal cause, which lives here in m_remove.
+    /// </summary>
+    private static void PowerupRemove(Entity e, ActiveStatusEffect s, StatusEffectRemoval removal)
+    {
+        if (Api.Services is null) return;
+        // QC strength.qc:5-9: Send_Notification(..., CENTER, ..., CENTER_POWERDOWN_X) only when
+        // removal_type == STATUSEFFECT_REMOVE_TIMEOUT && IS_PLAYER(actor). A drop (NORMAL) stays silent.
+        if (removal == StatusEffectRemoval.Timeout && (e.Flags & EntFlags.Client) != 0)
+        {
+            string? center = PowerdownCenter(s.DefId);
+            if (center != null)
+                NotificationSystem.Center(e, center);
+        }
+        // QC strength.qc:13: stopsound(actor, CH_TRIGGER_SINGLE) on ANY removal — cuts the powerup pickup fanfare.
+        Api.Sound.Stop(e, SoundChannel.Item); // CH_TRIGGER_SINGLE = 3 = SoundChannel.Item
+    }
+
+    /// <summary>Map a powerup status-effect def id to its <c>CENTER_POWERDOWN_X</c> notification name (null for
+    /// the non-powerup effects, which carry no powerdown print).</summary>
+    private static string? PowerdownCenter(int defId)
+    {
+        var def = ByIndexInRegistry(defId);
+        return def?.Name switch
+        {
+            "strength" => "POWERDOWN_STRENGTH",
+            "shield" => "POWERDOWN_SHIELD",
+            "speed" => "POWERDOWN_SPEED",
+            "invisibility" => "POWERDOWN_INVISIBILITY",
+            _ => null,
+        };
+    }
+
     /// <summary>QC Burning <c>m_remove</c> (burning.qc:4-8): clear EF_FLAME before the SUPER removal.</summary>
-    private static void BurningRemove(Entity e, ActiveStatusEffect s) => e.Effects &= ~EfFlame;
+    private static void BurningRemove(Entity e, ActiveStatusEffect s, StatusEffectRemoval removal) => e.Effects &= ~EfFlame;
 
     /// <summary>QC EF_FLAME (dpextensions.qc:125) — the burning flame the client turns into the orange light +
     /// EF_FLAME particle burst (CsqcModelEffects EF_FLAME). burning.qc:21 ORs it in m_tick, :6 clears in m_remove.</summary>
@@ -296,7 +342,7 @@ public static class StatusEffectsCatalog
     }
 
     /// <summary>QC Stunned <c>m_remove</c> (stunned.qc:5): clear EF_SHOCK before the SUPER removal.</summary>
-    private static void StunnedRemove(Entity e, ActiveStatusEffect s) => e.Effects &= ~EfShock;
+    private static void StunnedRemove(Entity e, ActiveStatusEffect s, StatusEffectRemoval removal) => e.Effects &= ~EfShock;
 
     /// <summary>QC SpawnShield <c>m_tick</c> (spawnshield.qc:11-13): OR EF_ADDITIVE|EF_FULLBRIGHT into the
     /// actor's networked .effects once the match clock has passed game_starttime (so warmup doesn't shimmer).</summary>
@@ -310,7 +356,7 @@ public static class StatusEffectsCatalog
     }
 
     /// <summary>QC SpawnShield <c>m_remove</c> (spawnshield.qc:5): clear EF_ADDITIVE|EF_FULLBRIGHT before SUPER.</summary>
-    private static void SpawnShieldRemove(Entity e, ActiveStatusEffect s) => e.Effects &= ~EfSpawnShieldShimmer;
+    private static void SpawnShieldRemove(Entity e, ActiveStatusEffect s, StatusEffectRemoval removal) => e.Effects &= ~EfSpawnShieldShimmer;
 
     /// <summary>QC Superweapon <c>m_persistent</c> (superweapons.qc:4-7): persistent while the entity carries
     /// IT_UNLIMITED_SUPERWEAPONS — this is what sets the networked PERSISTENT bit (the HUD infinity glyph)
@@ -592,7 +638,7 @@ public static class StatusEffectsCatalog
             var s = e.StatusEffects[i];
             // QC per-effect m_remove override (runs before SUPER on EVERY removal_type): clear the .effects
             // bit the per-effect m_tick set — spawnshield EF_ADDITIVE|EF_FULLBRIGHT, stunned EF_SHOCK.
-            def.OnRemove?.Invoke(e, s);
+            def.OnRemove?.Invoke(e, s, removal);
             // QC m_remove: sound(actor, CH_TRIGGER, m_sound_rm) on a NORMAL removal of an active,
             // non-persistent effect. (sv_status_effects.qc:46; persistent effects stay silent per #2620.)
             if (removal == StatusEffectRemoval.Normal

@@ -210,6 +210,13 @@ public static class MenuCommand
                 OpenDialog?.Invoke("quitdialog");
                 break;
 
+            // QC commands.cfg aliases `menu_showsandboxtools "menu_cmd directmenu SandboxTools"` (bound to F7 in
+            // binds-xonotic.cfg). The alias normally expands through the directmenu verb above, but route the bare
+            // command here too so the keybind opens the Sandbox Tools dialog even if the cfg alias isn't loaded.
+            case "menu_showsandboxtools":
+                OpenDialog?.Invoke("SandboxTools");
+                break;
+
             // The HUD-panel configuration host (the port's stand-in for QC's in-game HUD editor entry):
             // menu_showhudoptions is what the Game→HUD "Enter HUD editor" button issues.
             case "menu_showhudpanels":

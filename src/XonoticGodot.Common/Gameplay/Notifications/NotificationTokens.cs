@@ -21,6 +21,22 @@ namespace XonoticGodot.Common.Gameplay;
 /// </summary>
 public static class NotifTokens
 {
+    /// <summary>
+    /// Key-bind tokens (QC NOTIF_ARGUMENT_LIST <c>pass_key</c>/<c>nade_key</c>/<c>join_key</c>, all.qh) are
+    /// <c>ARG_CS</c> — CSQC-only — because only the client knows its own binds (QC resolves them via
+    /// <c>getcommandkey</c>). The port formats notification text SERVER-side, where binds are unknown, so we
+    /// cannot resolve them here. Instead each key token expands to a recoverable client-substitution
+    /// SENTINEL (<c>\x02KB:&lt;token&gt;\x02</c>) that survives the wire <c>WriteString</c> intact; the client
+    /// (<c>HudNotifications.SubstituteKeyBinds</c>) replaces each sentinel with the local
+    /// <c>BindTable.CommandKey</c> result. The STX delimiter never occurs in normal message/color-code text.
+    /// </summary>
+    public const string KeyBindSentinelPrefix = "KB:";
+
+    /// <summary>The closing marker of a key-bind sentinel — see <see cref="KeyBindSentinelPrefix"/>.</summary>
+    public const string KeyBindSentinelSuffix = "";
+
+    private static string KeyBindSentinel(string token) => KeyBindSentinelPrefix + token + KeyBindSentinelSuffix;
+
     /// <summary>The KILL_SPREE_LIST milestones (count -> phrase), QC notifications/all.qh.</summary>
     private static readonly (int Count, string Center, string Normal, string Gentle)[] SpreeList =
     {
@@ -108,6 +124,14 @@ public static class NotifTokens
         // path the port doesn't take). The "#" in the template is consumed verbatim alongside the %s.
         "s3#s2" => S(s, 2),
         "#s2" => S(s, 1),
+
+        // key-bind hints (QC ARG_CS pass_key/nade_key/join_key, getcommandkey lookups): resolved CLIENT-side
+        // (only the client knows its binds) — emit a sentinel the client swaps for the local key (see
+        // KeyBindSentinelPrefix). Used by CTF_PASS_REQUESTED/ONS_TELEPORT/VEHICLE_ENTER* (pass_key = +use),
+        // NADE_THROW (nade_key = the +hook/offhand button) and the spectator-join hint (join_key = +jump).
+        "pass_key" => KeyBindSentinel("pass_key"),
+        "nade_key" => KeyBindSentinel("nade_key"),
+        "join_key" => KeyBindSentinel("join_key"),
 
         // frag presentation (server passes the killed player's ping/health/armor as floats)
         "frag_ping" => FragPing(true, F(f, 1)),

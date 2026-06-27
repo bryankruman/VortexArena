@@ -137,8 +137,16 @@ public sealed class Campaign
     {
         _entries.Clear();
         Offset = offset;
-        string fn = $"maps/campaign{Name}.txt";
-        string? text = FileReader?.Invoke(fn);
+        // QC CampaignFile_Load wraps the name in language_filename() (i18n.qh): localized campaign briefings
+        // live in maps/campaign<Name>.<lang>.txt and override the base file when present, else fall back to it.
+        // Reproduce that: try the localized variant first when the active language is non-identity, else (or on
+        // a miss) read the un-localized base name.
+        string baseFn = $"maps/campaign{Name}.txt";
+        string? text = null;
+        string lang = Cvars.String("prvm_language");
+        if (!XonoticGodot.Common.Localization.Ctx.IsIdentityLanguage(lang))
+            text = FileReader?.Invoke($"maps/campaign{Name}.{lang}.txt");
+        text ??= FileReader?.Invoke(baseFn);
         if (text is null)
             return 0;
 

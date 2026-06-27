@@ -1696,6 +1696,15 @@ public partial class ClientWorld : Node3D
             if (EntityModelFactory?.Invoke(entity) is { } built)
             {
                 node.AddChild(built);
+                // CSQCMODEL_AUTOUPDATE for skeletal DPM monsters (golem/spider/mage/zombie/wyvern): a networked
+                // frame-driven entity plays the frame GROUP its server brain stamped onto Entity.Frame (QC mr_anim
+                // → MonsterAI.DriveAnimFrame). DpmBuilder bakes the .framegroups ranges into AnimationPlayer clips
+                // in group order; this binds the driver so the model actually plays idle/walk/run/melee/pain/spawn/
+                // die clips through their real .dpm fps timeline instead of holding the bind pose. The attach is
+                // inert for a DPM that carries no framegroup metadata (a single-clip prop) or a non-frame-driven
+                // (local/demo) entity, mirroring the MD3 ModelAnimator.FollowEntityFrame gate just below.
+                if (_frameDriven.Contains(entity.Index))
+                    DpmFrameDriver.TryAttach(built, entity);
                 return;
             }
 

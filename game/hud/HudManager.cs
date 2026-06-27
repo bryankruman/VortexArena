@@ -217,6 +217,27 @@ public partial class Hud : CanvasLayer
                 : (Color?)null;
         }
 
+        // Resolve the local player's colormap shirt/pants + team colors once per frame (QC HUD_Panel_GetColor's
+        // "shirt"/"pants"/"team" literals read _cl_color = clientcolors = 16*shirt+pants). Fed to the static so any
+        // panel's hud_panel_<id>_bg_color and the dock's hud_dock_color can tint to the player's own colors. Null
+        // when there is no local player (pre-spawn / pure --connect) — the literals then fall back to inherit.
+        if (Player is { } cp)
+        {
+            int cm = cp.ClientColors;
+            (float r, float g, float b) sh = XonoticGodot.Engine.Simulation.CsqcModelAppearance.ColormapPaletteColor(
+                (cm >> 4) & 0x0F, isPants: false, (float)_shakeClock);
+            (float r, float g, float b) pa = XonoticGodot.Engine.Simulation.CsqcModelAppearance.ColormapPaletteColor(
+                cm & 0x0F, isPants: true, (float)_shakeClock);
+            HudPanel.LocalShirtColor = new Color(sh.r, sh.g, sh.b);
+            HudPanel.LocalPantsColor = new Color(pa.r, pa.g, pa.b);
+            HudPanel.LocalTeamColor = XonoticGodot.Common.Gameplay.Scoring.GameScores.Teamplay
+                ? HudDock.TeamRgb((int)cp.Team) : (Color?)null;
+        }
+        else
+        {
+            HudPanel.LocalShirtColor = HudPanel.LocalPantsColor = HudPanel.LocalTeamColor = null;
+        }
+
         // Damage-keyed whole-HUD shake (QC Hud_Dynamic_Frame): nudge the HUD root by the per-frame shake offset.
         // QC added hud_dynamic_shake_realofs to hud_shift_current, which every panel's draw applied to its origin;
         // here the equivalent is shifting the whole CanvasLayer via its Offset (one move, all panels follow).

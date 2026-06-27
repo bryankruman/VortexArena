@@ -46,6 +46,8 @@ public static class GametypeStatusBlock
         TeamKeepaway = 8, // QC STAT(TKA_BALLSTATUS): per-recipient carrying / per-team taken / dropped bit pack
         Lms = 9,         // QC sv_lms.qc recycled STAT(REDALIVE)=lms_leaders, STAT(BLUEALIVE)=lms_leaders_lives_diff,
                          // STAT(OBJECTIVE_STATUS)=lms_visible_leaders: the leader-count mod-icon + the +N lives lead.
+        NexBall = 10,    // QC HUD_Mod_NexBall (cl_nexball.qc): the nexball_carrying mod-icon — shown (blinking) only
+                         // while the LOCAL player holds the ball. Carries the ball carrier's net id (0 = nobody).
     }
 
     // [W1-mod-icons] QC ctf.qh CTF_* OBJECTIVE_STATUS bit layout (2 bits per team slot: 1=taken, 2=lost,
@@ -133,6 +135,13 @@ public static class GametypeStatusBlock
                 w.WriteByte(System.Math.Clamp(lms.LeaderCount, 0, 255));
                 w.WriteByte(System.Math.Clamp(lms.LeadersLivesDiff, 0, 255));
                 w.WriteByte(lms.LeadersVisible ? 1 : 0);
+                return true;
+
+            case Nexball nb:
+                WriteHeader(w, Kind.NexBall, viewer, 0); // the QC nexball mod-icon is a self-carry indicator only
+                // QC HUD_Mod_NexBall keys off whether the LOCAL player holds the ball — networked as the carrier's
+                // stable net id (0 = nobody), resolved against the local net id on the client (same shape as Keepaway).
+                w.WriteUShort(nb.BallEntity?.GtCarrier is Player nbCarrier ? netIdOf(nbCarrier) : 0);
                 return true;
 
             case Survival surv:
@@ -321,7 +330,7 @@ public static class GametypeStatusBlock
     public static Decoded? Deserialize(ref BitReader r)
     {
         int mode = r.ReadByte();
-        if (mode < (int)Kind.ClanArena || mode > (int)Kind.Lms)
+        if (mode < (int)Kind.ClanArena || mode > (int)Kind.NexBall)
             return null; // unknown mode: build-parity should make this unreachable
         var d = new Decoded
         {
@@ -354,6 +363,9 @@ public static class GametypeStatusBlock
                 break;
             case Kind.Keepaway:
                 d.CarrierNetId = r.ReadUShort();
+                break;
+            case Kind.NexBall:
+                d.CarrierNetId = r.ReadUShort(); // QC nexball ball carrier net id (0 = nobody) → reused field
                 break;
             case Kind.TeamKeepaway:
                 d.TkaBallStatus = r.ReadByte();

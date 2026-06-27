@@ -692,6 +692,13 @@ public static class Doors
                 else
                     DoorGoDownAny(self);
             }
+            // QC door_blocked: a live blocker on a never-return / TOGGLE door (wait < 0) does NOT reverse the
+            // door; instead SUB_CalcMovePause(this) freezes the eased mover on its easing curve so it doesn't
+            // lurch forward when the blocker clears (linear doors have no controller, so this is a no-op there).
+            else if (!MapMover.IsDead(blocker) && blocker.TakeDamage != DamageMode.No && self.Wait < 0f)
+            {
+                MapMover.CalcMovePause(self);
+            }
             else if (self.Dmg != 0f && blocker.TakeDamage != DamageMode.No && MapMover.IsDead(blocker))
             {
                 Combat.Damage(blocker, self, self, 10000f, DeathTypes.Void, blocker.Origin, Vector3.Zero); // gib

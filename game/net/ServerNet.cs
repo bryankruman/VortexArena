@@ -491,6 +491,7 @@ public sealed class ServerNet : IDisposable
             SendMatchState();    // global match clock (GAMESTARTTIME/TIMELIMIT/warmup) → TIMER panel
             SendMapVote();       // per-peer end-of-match map/gametype ballot (QC ENT_CLIENT_MAPVOTE) → MapVotePanel
             SendWaypoints(); // per-peer waypoint sprites (CTF flags + player pings…) → 3D markers + radar icons
+            SendRadarLinks(); // Onslaught control-point/generator connection lines (QC ENT_CLIENT_RADARLINK) → radar
             SendItemsTime(); // per-peer item respawn-time table (QC itemstime IT_Write) → ItemsTimePanel countdowns
             FlushEventBundles();
         }
@@ -1244,6 +1245,45 @@ public sealed class ServerNet : IDisposable
             }
             _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: false);
         }
+    }
+
+    private readonly System.Collections.Generic.List<XonoticGodot.Common.Gameplay.Onslaught.RadarLinkSegment> _radarLinkScratch = new();
+    private bool _radarLinksWasNonEmpty;
+
+    /// <summary>Push the live Onslaught radar links (QC the networked ENT_CLIENT_RADARLINK entities) to every
+    /// accepted peer so the team radar can draw the control-point/generator connection lines (QC
+    /// draw_teamradar_link). Only Onslaught produces links; other modes never send (and send one clearing message
+    /// when a mode that HAD links drops to none, mirroring SendWaypoints). The set is identical for every peer
+    /// (links are not team-filtered — QC draws all of them), so it is encoded once and broadcast. Unreliable
+    /// (positions/ownership change as points are captured).</summary>
+    private void SendRadarLinks()
+    {
+        _radarLinkScratch.Clear();
+        if (_world.GameType is XonoticGodot.Common.Gameplay.Onslaught ons)
+            ons.CollectRadarLinks(_radarLinkScratch);
+
+        if (_radarLinkScratch.Count == 0 && !_radarLinksWasNonEmpty)
+            return; // link-less mode: never spam empty messages
+        _radarLinksWasNonEmpty = _radarLinkScratch.Count > 0;
+
+        int count = System.Math.Min(_radarLinkScratch.Count, 255);
+        _scratchWriter.Reset();
+        _scratchWriter.WriteByte((byte)NetControl.RadarLinks);
+        _scratchWriter.WriteByte((byte)count);
+        for (int i = 0; i < count; i++)
+        {
+            XonoticGodot.Common.Gameplay.Onslaught.RadarLinkSegment seg = _radarLinkScratch[i];
+            _scratchWriter.WriteFloat(seg.A.X);
+            _scratchWriter.WriteFloat(seg.A.Y);
+            _scratchWriter.WriteByte((byte)(seg.TeamA & 0xFF));
+            _scratchWriter.WriteFloat(seg.B.X);
+            _scratchWriter.WriteFloat(seg.B.Y);
+            _scratchWriter.WriteByte((byte)(seg.TeamB & 0xFF));
+        }
+
+        foreach (PeerState st in _peers.Values)
+            if (st.Accepted && st.Player is not null)
+                _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: false);
     }
 
     private static byte Clamp255(float c) => (byte)System.Math.Clamp((int)(c * 255f), 0, 255);
@@ -2439,8 +2479,14 @@ public sealed class ServerNet : IDisposable
             // QC ping_packetloss (server/world.qc:74): a connected human's measured ENet packet loss, quantized
             // to a 0..255 byte (min(ceil(loss*255),255)); bots and unmapped players send 0.
             int plByte = 0;
+            // QC SP_PING (scoreboard.qc:1041): a connected human's measured ENet round-trip time (ms); bots and
+            // unmapped players send -1 (unknown → the client renders the neutral '-' rather than a fake number).
+            int pingMs = -1;
             if (_byPlayer.TryGetValue(p, out PeerState? plSt))
+            {
                 plByte = System.Math.Min((int)System.MathF.Ceiling(_transport.PacketLoss(plSt.PeerId) * 255f), 255);
+                pingMs = _transport.RoundTripMs(plSt.PeerId);
+            }
             // carry the entcs name/team slice so the client can label/group the row without an entcs stream
             // (the port has no entcs name source; the scoreboard would otherwise have an opaque net id).
             _scoreRows.Add(new XonoticGodot.Net.ScoreRowWire(NetIdFor(p),
@@ -2448,7 +2494,8 @@ public sealed class ServerNet : IDisposable
                 // QC pl.team == NUM_SPECTATOR: an observer is listed in the scoreboard spectator block, not the
                 // score table. The port keeps the observer's last team color, so flag it explicitly here.
                 isSpectator: p.IsObserver || p.FragsStatus == Player.FragsSpectator,
-                packetLossByte: plByte));
+                packetLossByte: plByte,
+                pingMs: pingMs)); // QC SP_PING: the human's ENet RTT (-1 for bots / unmapped)
         }
 
         _scoreTeams.Clear();

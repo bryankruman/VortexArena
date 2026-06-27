@@ -888,6 +888,72 @@ public sealed class Onslaught : GameType
     }
 
     /// <summary>
+    /// QC the <c>g_radarlinks</c> set + <c>draw_teamradar_link</c> (client/teamradar.qc): collect every powered
+    /// power-graph LINK as a renderable segment for the team radar — the two endpoint world origins plus each
+    /// end's owning team color code. Mirrors the QC <c>ENT_CLIENT_RADARLINK</c> entities the server spawns per
+    /// link (one per <c>onslaught_link</c>): the line goes between the two linked nodes, colored at each end by
+    /// that node's team (a captured/owned node shows its team color; a neutral/unowned node is team 0 = white).
+    /// Each undirected neighbor edge is emitted exactly once (a&lt;b id guard). Endpoints are resolved from the
+    /// live world entities (onslaught_generator / onslaught_controlpoint origins), matching the existing
+    /// entity-walk pattern in <see cref="NearestControlPoint"/>. Cleared + refilled into <paramref name="into"/>.
+    /// </summary>
+    public void CollectRadarLinks(System.Collections.Generic.List<RadarLinkSegment> into)
+    {
+        into.Clear();
+        if (Api.Services is null || Nodes.Count == 0)
+            return;
+
+        // Resolve each graph node to its live world origin + display team. Generators key by team; control points
+        // key by their stable point id (the node Id). A node with no spawned world entity (headless / not yet
+        // built) is skipped — a link is only drawn when BOTH endpoints have a position, exactly like QC where the
+        // RADARLINK entity carries both origins.
+        Vector3 GenOrigin(int team)
+        {
+            foreach (Entity gen in Api.Entities.FindByClass("onslaught_generator"))
+            {
+                if (gen.IsFreed) continue;
+                int t = gen.GtHomeTeam != 0 ? gen.GtHomeTeam : (int)gen.Team;
+                if (t == team) return gen.Origin;
+            }
+            return new Vector3(float.NaN, float.NaN, float.NaN);
+        }
+        Vector3 CpOrigin(int id)
+        {
+            foreach (Entity cp in Api.Entities.FindByClass("onslaught_controlpoint"))
+                if (!cp.IsFreed && cp.GtPointId == id) return cp.Origin;
+            return new Vector3(float.NaN, float.NaN, float.NaN);
+        }
+        Vector3 NodeOrigin(OnsNode n) => n.IsGenerator ? GenOrigin(n.Team) : CpOrigin(n.Id);
+        // QC link end color: the node's team if it is captured/owned, else neutral (0 = white). A generator is
+        // always owned by its team; a control point shows its team only once captured.
+        int NodeTeam(OnsNode n) => (n.IsGenerator || n.Captured) ? n.Team : Teams.None;
+
+        foreach (OnsNode a in Nodes)
+        {
+            Vector3 oa = NodeOrigin(a);
+            if (float.IsNaN(oa.X)) continue;
+            int ta = NodeTeam(a);
+            foreach (OnsNode b in a.Neighbors)
+            {
+                // emit each undirected edge once: order generators-before-cps then by id so the pair is stable.
+                if (LinkKey(a) >= LinkKey(b))
+                    continue;
+                Vector3 ob = NodeOrigin(b);
+                if (float.IsNaN(ob.X)) continue;
+                into.Add(new RadarLinkSegment(oa, ta, ob, NodeTeam(b)));
+            }
+        }
+    }
+
+    /// <summary>Stable ordering key for the undirected-edge dedupe in <see cref="CollectRadarLinks"/>: generators
+    /// (negated team, always &lt; any cp id) sort before control points (their point id). Distinct per node.</summary>
+    private static int LinkKey(OnsNode n) => n.IsGenerator ? -1000 - n.Team : n.Id;
+
+    /// <summary>One Onslaught radar link segment (QC ENT_CLIENT_RADARLINK / draw_teamradar_link): the two
+    /// endpoint world origins plus each end's team color code (0 = neutral/white). Networked by ServerNet.</summary>
+    public readonly record struct RadarLinkSegment(Vector3 A, int TeamA, Vector3 B, int TeamB);
+
+    /// <summary>
     /// QC ons_Nearest_ControlPoint_2D (sv_onslaught.qc:1540): like <see cref="NearestControlPoint"/> but measures
     /// distance on the XY plane only (Z disregarded) — used for the click-radar pick, where the click is a 2D map
     /// position. Returns the nearest same-team captured CP / generator entity within <paramref name="maxDist"/>.

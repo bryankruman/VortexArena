@@ -117,6 +117,15 @@ public partial class ViewModel : Node3D
     [Export] public float FollowHighpass { get; set; } = 0.05f;
     [Export] public float FollowLowpass { get; set; } = 0.03f;
 
+    /// <summary>
+    /// <c>cl_followmodel_velocity_absolute</c> (default 0). When 0 (Base default) the follow sway uses the
+    /// <i>view-relative</i> velocity (forward/right/up projection) so the gun lags the direction you actually move.
+    /// When 1 it uses the raw world velocity components directly — Base's "ignore velocity direction changes" mode
+    /// (xonotic-client.cfg:162: "SIDE-EFFECT: causes a glitch when teleporting / passing through a warpzone").
+    /// Read live from the cvar in <see cref="RefreshCvars"/> and branched in <see cref="FollowModelOffset"/>.
+    /// </summary>
+    [Export] public bool FollowVelocityAbsolute { get; set; } = false;
+
     [Export] public bool LeanModel { get; set; } = true;
     [Export] public float LeanSpeed { get; set; } = 0.3f;
     [Export] public float LeanLimit { get; set; } = 30f;
@@ -189,6 +198,10 @@ public partial class ViewModel : Node3D
 
     // Sway running state (the QC static locals: follow/lean low/high-pass accumulators + bob phase).
     private SwayState _sway;
+
+    // One-shot teleport flag (Base csqcmodel_teleported): set by NotifyTeleported() on the predicted teleport tick,
+    // consumed in LeanModelOffset to re-seed the lean prev-angle so the gun doesn't snap-lean across a warpzone.
+    private bool _leanTeleported;
 
     // =================================================================================================
     //  Construction / weapon swap
@@ -712,6 +725,19 @@ public partial class ViewModel : Node3D
         _holsterGrace = 0f;     // confirmed — no auto-recovery needed
     }
 
+    /// <summary>
+    /// Reset the lean-sway accumulator to the current view angles so the gun does NOT snap-lean after a teleport /
+    /// warpzone view-angle jump — port of Base <c>viewmodel_animate</c>'s <c>csqcmodel_teleported</c> guard
+    /// (<c>gunangles_prev = view_angles</c> when the entity teleported this frame). Without this, the highpass in
+    /// <see cref="LeanModelOffset"/> sees the destination facing as one enormous angular delta and flings the gun.
+    /// Called from the host on the predicted teleport tick (NetGame.ConsumePredictedFixAngle). One-shot: the flag
+    /// is consumed on the next <see cref="LeanModelOffset"/> so the reset uses that frame's actual view angles.
+    /// </summary>
+    public void NotifyTeleported()
+    {
+        _leanTeleported = true;
+    }
+
     /// <summary>Advance the switch raise/lower animation one frame and recover a never-confirmed holster.</summary>
     private void UpdateSwitch(float dt)
     {
@@ -802,6 +828,7 @@ public partial class ViewModel : Node3D
 
         // Sway toggles (cl_followmodel / cl_leanmodel / cl_bobmodel — default 1).
         FollowModel = CvarFloat(cv, "cl_followmodel", FollowModel ? 1f : 0f) != 0f;
+        FollowVelocityAbsolute = CvarFloat(cv, "cl_followmodel_velocity_absolute", FollowVelocityAbsolute ? 1f : 0f) != 0f;
         LeanModel = CvarFloat(cv, "cl_leanmodel", LeanModel ? 1f : 0f) != 0f;
         BobModel = CvarFloat(cv, "cl_bobmodel", BobModel ? 1f : 0f) != 0f;
 
@@ -1022,12 +1049,26 @@ public partial class ViewModel : Node3D
     /// </summary>
     private Vector3 FollowModelOffset(ViewState vs, float frametime)
     {
-        // view-relative velocity: x = along forward, y = along right*-1, z = along up (QC convention).
-        AngleVectorsQuake(vs.ViewAnglesQuake, out NVec3 f, out NVec3 r, out NVec3 u);
-        Vector3 vel = new(
-            Dot(vs.VelocityQuake, f),
-            -Dot(vs.VelocityQuake, r),
-            Dot(vs.VelocityQuake, u));
+        // velocity for the follow lag. Base calc_followmodel_ofs:
+        //   if (cl_followmodel_velocity_absolute)  vel = view_velocity;        // raw world velocity, no projection
+        //   else { vel.x = view_velocity*v_forward; vel.y = -view_velocity*v_right; vel.z = view_velocity*v_up; }
+        // Absolute mode ignores look direction (the documented teleport/warpzone-glitch mode); the default 0
+        // path projects the world velocity into view space so the gun lags the way you actually move.
+        Vector3 vel;
+        if (FollowVelocityAbsolute)
+        {
+            // raw world velocity components used directly (Quake X fwd, Y left, Z up).
+            vel = new Vector3(vs.VelocityQuake.X, vs.VelocityQuake.Y, vs.VelocityQuake.Z);
+        }
+        else
+        {
+            // view-relative velocity: x = along forward, y = along right*-1, z = along up (QC convention).
+            AngleVectorsQuake(vs.ViewAnglesQuake, out NVec3 f, out NVec3 r, out NVec3 u);
+            vel = new Vector3(
+                Dot(vs.VelocityQuake, f),
+                -Dot(vs.VelocityQuake, r),
+                Dot(vs.VelocityQuake, u));
+        }
 
         // bound around the running average so a spike can't yank the gun across the screen.
         vel.X = Bound(_sway.FollowVelAvg.X - FollowLimit, vel.X, _sway.FollowVelAvg.X + FollowLimit);
@@ -1056,6 +1097,18 @@ public partial class ViewModel : Node3D
     private Vector3 LeanModelOffset(ViewState vs, float frametime)
     {
         Vector3 view = new(vs.ViewAnglesQuake.X, vs.ViewAnglesQuake.Y, vs.ViewAnglesQuake.Z);
+
+        // Teleport reset (Base csqcmodel_teleported -> gunangles_prev = view_angles): on the frame we teleported,
+        // re-seed the lean prev-angle + highpass store to THIS view so the angular delta below is zero and the gun
+        // doesn't fling toward the destination facing. Consume the one-shot.
+        if (_leanTeleported)
+        {
+            _leanTeleported = false;
+            _sway.LeanPrev = view;
+            _sway.LeanHighpass = Vector3.Zero;
+            _sway.LeanAdjHighpass = Vector3.Zero;
+            _sway.LeanAdjLowpass = Vector3.Zero;
+        }
 
         // store the DIFFERENCE to the actual view angles, unwrapped across the 360° seam (pitch+yaw).
         _sway.LeanHighpass += _sway.LeanPrev;

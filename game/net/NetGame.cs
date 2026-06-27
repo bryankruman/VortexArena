@@ -946,6 +946,19 @@ public sealed partial class NetGame : Node3D
         // directly on the shared store the local console reads. A remote client over a dedicated server still
         // can't be reached (no svc_stufftext channel), and is silently skipped (the documented residual).
         sandbox.Store = new SandboxObjectStore(SetSandboxClipboard);
+
+        // QC fexists(argv(2)): the asset VFS is the port's filesystem-existence check (DP's fexists). Wiring it
+        // makes object_spawn reject a model path that doesn't resolve in any mount, exactly like Base.
+        if (_vfs is not null)
+            sandbox.ModelExistsProvider = path => _vfs.Exists(path);
+
+        // QC FOR_EACH_TAG(e) for `object_info mesh`: enumerate the object model's tag (bone) names from the
+        // engine model-tag table (ModelService.ModelDef.Tags). Empty list when the model has no registered tags.
+        // _serverWorld.Services.ModelsImpl is the concrete ModelService (non-null), same accessor TraceImpl uses.
+        XonoticGodot.Engine.Simulation.ModelService models = _serverWorld.Services.ModelsImpl;
+        sandbox.MeshTagNamesProvider = model => models.TryGetModel(model, out var def)
+            ? new List<string>(def.Tags.Keys)
+            : (IReadOnlyList<string>)System.Array.Empty<string>();
     }
 
     /// <summary>
@@ -2621,13 +2634,10 @@ public sealed partial class NetGame : Node3D
                     _fullHud.ItemsTime.SetItemTimes(itm.CurrentTimes);
             }
 
-            // [T41] objective rings (QC view.qc HUD_Draw NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS): feed
-            // the crosshair panel the local player's held-nade charge each frame (host path; the local Player
-            // carries STAT(NADE_TIMER) live). The Freeze-Tag thaw ring reads STAT(REVIVE_PROGRESS), mirrored each
-            // frame onto the local Player by FreezeTag.ReviveTick (0 outside FT / when not frozen). CAPTURE has no
-            // producer yet, so it stays 0 and the panel hides that ring.
-            _fullHud.Crosshair.NadeTimer = LocalServerPlayer?.NadeTimer ?? 0f;
-            _fullHud.Crosshair.ReviveProgress = LocalServerPlayer?.ReviveProgress ?? 0f;
+            // [T41] objective-ring + hit-indication feed moved to UpdateCrosshairFeedback() (called
+            // unconditionally below, like UpdateCrosshairWeaponRings) so it also runs on a pure remote client
+            // off the networked LocalState slice. The host damagetext hit path below still owns the host
+            // crosshair flash + hitsound; UpdateCrosshairFeedback only fires the hit cue on the remote path.
 
             // (weapon-ring feeder hoisted out of the host-only block — see the unconditional call before
             // ProcessAnnouncerQueue below — so it also runs for a pure remote client; UpdateCrosshairWeaponRings
@@ -2662,6 +2672,13 @@ public sealed partial class NetGame : Node3D
         // cross-client wepent-prop networking that would feed them is the follow-up (no networked ring state exists
         // on ClientNet yet).
         UpdateCrosshairWeaponRings();
+
+        // [T41] objective rings (NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS) + the remote-client hit-
+        // indication flash. Runs on EVERY path (hoisted out of the host-only block): a listen host reads the
+        // live LocalServerPlayer stats; a pure remote client reads the networked LocalState slice the server
+        // already ships (ClientNet.LocalState), so the nade/thaw/capture rings and the hit flash now show for a
+        // remote client too (QC view.qc UpdateDamage + the HUD_Draw objective rings, both client-side).
+        UpdateCrosshairFeedback();
 
         // Advance the announcer queue (play the next queued voice if the current one finished).
         _notifications?.ProcessAnnouncerQueue();
@@ -3127,6 +3144,63 @@ public sealed partial class NetGame : Node3D
         return string.IsNullOrWhiteSpace(gt) ? _gametype : gt;
     }
 
+    // ---- crosshair objective rings + remote-client hit indication ----
+    // Remote-client hit-indication diff (QC view.qc UpdateDamage: STAT(HITSOUND_DAMAGE_DEALT_TOTAL) advances
+    // → unaccounted_damage → the crosshair hit flash + hitsound). On a pure remote client there is no local
+    // damagetext mutator, so we diff the networked cumulative-damage stat off ClientNet.LocalState instead.
+    private float _remoteHitDealtTotal;
+    private bool _remoteHitInit;
+
+    /// <summary>
+    /// Feed the crosshair panel the local player's objective-ring stats (QC view.qc HUD_Draw 1006-1022:
+    /// NADE_TIMER &gt; CAPTURE_PROGRESS &gt; REVIVE_PROGRESS) and, on the remote-client path, the hit-indication
+    /// flash (QC view.qc UpdateDamage). Runs on every path: a listen host reads the live
+    /// <see cref="LocalServerPlayer"/> (which carries STAT(NADE_TIMER)/STAT(REVIVE_PROGRESS) live); a pure
+    /// remote client reads the networked <see cref="ClientNet.LocalState"/> slice the server ships (the
+    /// EntityField.Feedback block — NadeTimer/CaptureProgress/ReviveProgress/HitDamageDealtTotal). CAPTURE has
+    /// no server producer yet, so it stays 0 and the panel hides that ring either way.
+    /// </summary>
+    private void UpdateCrosshairFeedback()
+    {
+        if (_fullHud is null)
+            return;
+        CrosshairPanel x = _fullHud.Crosshair;
+
+        if (LocalServerPlayer is { } host)
+        {
+            // Host / listen-server: the live local Player carries the stats. The host hit flash is driven by the
+            // damagetext drain above (so we don't diff HitDamageDealtTotal here — that would double-fire).
+            x.NadeTimer = host.NadeTimer;
+            x.ReviveProgress = host.ReviveProgress;
+            x.CaptureProgress = 0f; // no host producer yet (QC STAT(CAPTURE_PROGRESS) is gametype-set)
+            _remoteHitInit = false; // re-baseline the remote diff if we ever fall back to the client path
+            return;
+        }
+
+        // Pure remote client: read the networked own-entity slice. No slice yet (pre-spawn) → hide the rings.
+        if (_client is null || _client.LocalState is not { } ls)
+        {
+            x.NadeTimer = 0f; x.CaptureProgress = 0f; x.ReviveProgress = 0f;
+            _remoteHitInit = false;
+            return;
+        }
+
+        x.NadeTimer = ls.NadeTimer;
+        x.CaptureProgress = ls.CaptureProgress;
+        x.ReviveProgress = ls.ReviveProgress;
+
+        // QC UpdateDamage: when the cumulative dealt-damage stat advances, the crosshair flashes (and the
+        // hitsound beeps). Diff it against the last frame; skip the first sample so a non-zero baseline (joining
+        // mid-match) doesn't flash on the first snapshot.
+        if (_remoteHitInit && ls.HitDamageDealtTotal > _remoteHitDealtTotal)
+        {
+            x.HitFlash = 1f;
+            _hitSound?.OnHit(ls.HitDamageDealtTotal - _remoteHitDealtTotal);
+        }
+        _remoteHitDealtTotal = ls.HitDamageDealtTotal;
+        _remoteHitInit = true;
+    }
+
     // ---- pickup feed (QC HUD_Pickup / STAT(LAST_PICKUP)) ----
     // The port has no networked LAST_PICKUP stat, so on the listen server we detect pickups client-side off the
     // local Player: a NEW weapon in the owned set is an unambiguous pickup, and a per-frame resource JUMP above a
@@ -3384,23 +3458,57 @@ public sealed partial class NetGame : Node3D
         hud.ShowNoRightGunner = bumble && veh.VehGun1?.VehSlotPlayer is null;
         hud.ShowNoLeftGunner  = bumble && veh.VehGun2?.VehSlotPlayer is null;
 
-        // Centered main reticle + bomb dropmark (QC raptor vr_crosshair, raptor.qc:767-833). The raptor draws a
-        // per-secondary-mode reticle (RSM_BOMB → vCROSS_BURST, RSM_FLARE → vCROSS_RAIN) and, in bomb mode, a
-        // tracetoss-predicted bomb-impact dropmark (green while bombs are reloaded, red on the last impact after
-        // a drop until it expires). Pure presentation; the mode + reload state are server-authoritative.
+        // Centered main reticle + bomb dropmark (QC vr_crosshair). The raptor draws a per-secondary-mode reticle
+        // (RSM_BOMB → vCROSS_BURST, RSM_FLARE → vCROSS_RAIN) plus, in bomb mode, a tracetoss-predicted bomb-impact
+        // dropmark; the spiderbot draws a per-rocket-mode reticle (SBRM_VOLLY → vCROSS_BURST, SBRM_GUIDE →
+        // vCROSS_GUIDE, SBRM_ARTILLERY → vCROSS_RAIN, spiderbot.qc vr_crosshair). Pure presentation; the mode is
+        // server-authoritative (veh.VehW2Mode). FeedRaptorReticle clears the centered reticle for non-raptors, so
+        // FeedSpiderbotReticle runs after it and sets the spiderbot's (and is a no-op for the other vehicles).
         FeedRaptorReticle(hud, veh, p);
+        FeedSpiderbotReticle(hud, veh);
+    }
+
+    /// <summary>
+    /// Port of the spiderbot <c>vr_crosshair</c> client crosshair (common/vehicles/vehicle/spiderbot.qc): pick the
+    /// centered reticle by the active rocket mode — SBRM_VOLLY → vCROSS_BURST, SBRM_GUIDE → vCROSS_GUIDE,
+    /// SBRM_ARTILLERY → vCROSS_RAIN. No-op for the other vehicles (their reticle is left as the raptor/empty
+    /// feeder set it). The spiderbot has no bomb dropmark, so this only drives the centered reticle.
+    /// </summary>
+    private void FeedSpiderbotReticle(XonoticGodot.Game.Hud.VehicleHud hud, Entity veh)
+    {
+        if (veh.VehicleDef is not Spiderbot)
+            return;
+
+        // QC vr_crosshair: SBRM_VOLLY (1) → vCROSS_BURST; SBRM_GUIDE (2) → vCROSS_GUIDE; SBRM_ARTILLERY (3) →
+        // vCROSS_RAIN. veh.VehW2Mode is the server-authoritative SpiderbotRocketMode (default SBRM_GUIDE on enter).
+        hud.MainReticle = veh.VehW2Mode switch
+        {
+            (int)SpiderbotRocketMode.Volley    => "gfx/vehicles/crosshair_burst",
+            (int)SpiderbotRocketMode.Artillery => "gfx/vehicles/crosshair_rain",
+            _                                  => "gfx/vehicles/crosshair_guide", // SBRM_GUIDE (default)
+        };
+        hud.DropmarkActive = false; // the spiderbot has no bomb dropmark
     }
 
     /// <summary>
     /// Port of the raptor <c>vr_crosshair</c> client crosshair (raptor.qc): pick the centered reticle by the
-    /// secondary fire mode and, in bomb mode, project the tracetoss bomb-impact dropmark. No-op for the other
-    /// vehicles (they have their own reticle stories not yet ported); leaves the centered reticle cleared.
+    /// secondary fire mode and, in bomb mode, project the tracetoss bomb-impact dropmark. For other vehicles it
+    /// sets the bumblebee pilot's vCROSS_HEAL pointer and clears the reticle for the rest (the spiderbot's
+    /// per-mode reticle is set by the FeedSpiderbotReticle pass the caller runs afterward).
     /// </summary>
     private void FeedRaptorReticle(XonoticGodot.Game.Hud.VehicleHud hud, Entity veh, Player p)
     {
         if (veh.VehicleDef is not Raptor)
         {
-            hud.MainReticle = "";
+            // QC bumblebee vr_crosshair (bumblebee.qc:989): the PILOT draws a centered vCROSS_HEAL pointer
+            // (gfx/vehicles/crosshair_heal) — the heal-gun aiming reticle. It is shown for the bumblebee body
+            // pilot only (a seated gunner uses its own slot HUD, handled by the isGunner branch above and never
+            // reaches here). Damage-mode (g_vehicle_bumblebee_raygun 1, non-default) keeps the same reticle in
+            // Base — only the BEAM colour changes — so the pointer is unconditional. The shared
+            // Vehicles_drawCrosshair colorize path (cl_vehicles_crosshair_colorize) tints it like every vehicle
+            // reticle, matching QC. No bomb dropmark for the bumblebee. (The spiderbot's per-mode reticle is set
+            // by FeedSpiderbotReticle, which the caller runs after this clears it.)
+            hud.MainReticle = veh.VehicleDef is Bumblebee ? "gfx/vehicles/crosshair_heal" : "";
             hud.DropmarkActive = false;
             return;
         }
@@ -4134,6 +4242,8 @@ public sealed partial class NetGame : Node3D
             // QC scoreboard.qc:2792 getcommandkey(_("jump"), "+jump"): show the actual key bound to +jump in the
             // "press X to respawn" line, falling back to the literal "jump" when nothing is bound.
             _scoreboard.RespawnJumpKey = XonoticGodot.Engine.Console.BindTable.CommandKey("jump", "+jump");
+            // QC Scoreboard_AccuracyStats_WouldDraw (scoreboard.qc:1864): suppress the accuracy block during warmup.
+            _scoreboard.MatchWarmup = _client.MatchWarmup;
             // QC Scoreboard_MapStats_Draw reads STAT(MONSTERS_*)/STAT(SECRETS_*) every draw — they tick
             // independently of the score version, so feed the live map-stats counts every frame while shown
             // (not only inside the change-gated row feed below, which made monsters lag and never fed secrets).
@@ -4357,6 +4467,12 @@ public sealed partial class NetGame : Node3D
             case XonoticGodot.Net.GametypeStatusBlock.Kind.Keepaway:
                 panel.Mode = ModIconsPanel.ModIconsMode.Keepaway;
                 panel.KeepawayCarrying = ms.CarrierNetId != 0 && ms.CarrierNetId == _client.LocalNetId;
+                break;
+            // NexBall: the QC nexball_carrying mod-icon. Same shape as Keepaway — the wire carries the carrier's net
+            // id (0 = nobody); resolve it against the local net id so the icon shows only while WE hold the ball.
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.NexBall:
+                panel.Mode = ModIconsPanel.ModIconsMode.NexBall;
+                panel.NexBallCarrying = ms.CarrierNetId != 0 && ms.CarrierNetId == _client.LocalNetId;
                 break;
             // Team Keepaway: STAT(TKA_BALLSTATUS) — the carrying / per-team-taken / dropped bit pack is already
             // computed per-recipient on the server, so feed it straight to HUD_Mod_TeamKeepaway.
@@ -4825,6 +4941,11 @@ public sealed partial class NetGame : Node3D
             _viewAngles = _carrier.FixAngleAngles;
             _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
             _carrier.FixAngle = false;
+            // Tell the view-model we teleported so its lean sway re-seeds to the destination facing instead of
+            // snapping the gun across the screen (Base csqcmodel_teleported guard in viewmodel_animate). The
+            // fixangle edge is exactly the predicted single-dest teleporter / warpzone view-snap.
+            if (_viewModel is not null && GodotObject.IsInstanceValid(_viewModel))
+                _viewModel.NotifyTeleported();
         }
     }
 

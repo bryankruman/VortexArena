@@ -1,15 +1,15 @@
 unit: mutator-damagetext
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"  # drift re-audit on claude/parity-port-waves (post Wave-6); 3 baseline gaps now closed. 2026-06-26 re-audit: 0 status changes, only port_ref line-number drift corrected.
+last_audited: "2026-06-27"  # Wave-16 re-audit on claude/parity-port-waves. All 3 baseline gaps (ClientDisconnect / menu tab / world-basis-drift+color+font) re-verified still live & present. NEW this pass: the drawfontscale crisp-cell residual on the draw row is now ALSO implemented (DamageTextLayer.cs:317-340) -> presentation partial->faithful (codetrace-only, not in-game). port_ref line drift corrected (NetGame drain 2435->2594/2604; DamageSystem 548->577; ClientManager 788->855).
 summary:
   feature_count: 9
   worst_gaps:
-    - "Server visibility tiers collapsed (INTENDED host divergence): no Net_LinkEntity; DrainPending is a host-local queue consumed only on the host path (NetGame.cs 'if (_server is not null)'), so sv_damagetext 1/3 (spectators-only, all-players) and spectator/observer filtering are not modeled and a pure remote client sees no damage text."
-    - "Minor presentation residual on the world-number draw: the label uses a direct integer pixel size instead of QC's drawfontscale crisp-cell scaling (size/size_max cell rendered at size_max), so glyph metrics differ slightly. Color codes, the Xonotic HUD font, the full view-basis world drift, and horizontal centering are now all faithful."
-    - "FIXED post Wave-6: ClientDisconnect dent_attackers clear — the MutatorHooks.ClientDisconnect hook now exists (MutatorHooks.cs:61), is fired live (ClientManager.cs:788), and DamagetextMutator.OnClientDisconnect (DamagetextMutator.cs:214-224) removes the leaver from every live player's DentAttackers set."
-    - "FIXED post Wave-6: the Damage Text settings menu tab is now ported (DialogSettingsGameDamageText, DialogSettingsGame.cs:802) and wired live (DialogSettingsGame.cs:42) — faithful to ui_damagetext.qc (all widgets, cvar bindings, ranges, dependencies)."
-    - "FIXED post Wave-6: the world-number drift is now placed along the full view basis (forward/right/up via velocity_world+offset_world, DamageTextLayer.cs:277-291) and the label is drawn with color codes (HudText.Parse) in the Xonotic HUD font (HudPanel.HudFont, DamageTextLayer.cs:301-318) — both baseline worst-gaps closed."
+    - "ONLY remaining real gap (INTENDED host divergence): server visibility tiers collapsed — no Net_LinkEntity; DrainPending is a host-local queue consumed only on the host path (NetGame.cs:2594 'if (_server is not null)'), so sv_damagetext 1/3 (spectators-only, all-players) and spectator/observer filtering are not modeled and a pure remote client sees no damage text."
+    - "Whole-unit caveat: the client draw/placement (2D-vs-3D heuristics, view-basis drift, drawfontscale cell scaling, color/font) is verified by codetrace + constant-match only — NOT in-game (the Godot draw node needs a live viewport+camera; no unit test). Faithful on read, confidence medium."
+    - "CLOSED (prior waves, re-verified live this pass): ClientDisconnect dent_attackers clear (MutatorHooks.cs:61 -> ClientManager.cs:855 -> DamagetextMutator.cs:214-224)."
+    - "CLOSED (prior waves, re-verified live this pass): Damage Text settings menu tab (DialogSettingsGameDamageText, DialogSettingsGame.cs:802; wired live at :42) faithful to ui_damagetext.qc."
+    - "CLOSED (this pass): the drawfontscale crisp-cell residual on the world-number draw is now implemented — fixed size_max font cell + continuous size/size_max scale via DrawSetTransformMatrix with QC's topY = pos.Y + (size*0.5)*(1-scale) y-offset (DamageTextLayer.cs:317-340). Combined with the already-closed full view-basis drift + color codes (HudText.Parse) + Xonotic HUD font, the draw row's presentation is now faithful (codetrace-only)."
 features:
   - id: damagetext.sv.player_damaged_producer
     name: "Server PlayerDamaged producer (build + queue a damage-number event)"
@@ -19,7 +19,7 @@ features:
       - "server/player.qc:430 (MUTATOR_CALLHOOK(PlayerDamaged))"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/DamagetextMutator.cs:139 (OnPlayerDamaged)"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:548 (MutatorHooks.PlayerDamaged.Call)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:577 (MutatorHooks.PlayerDamaged.Call)"
     constants:
       - { name: "skip hit==attacker", base: "return", port: "return", match: true }
       - { name: "skip potential_damage==0", base: "return", port: "return", match: true }
@@ -38,7 +38,7 @@ features:
     gaps: []
     verification:
       - { kind: unit_test, ref: "MutatorBatchT51Tests.Damagetext_QueuesEvent_OnPlayerDamaged / _Disabled_QueuesNothing (tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:288,332)", result: pass }
-      - { kind: codetrace, ref: "DamageSystem.cs:489-498 fires PlayerDamaged on the live damage path AFTER health/armor subtract; return read back as forbidLoggingDamage; mutator [Mutator]-registered, IsEnabled gated on sv_damagetext>0", result: pass }
+      - { kind: codetrace, ref: "DamageSystem.cs:568-577 fires PlayerDamaged on the live damage path AFTER health/armor subtract; return read back as forbidLoggingDamage; mutator [Mutator]-registered, IsEnabled gated on sv_damagetext>0", result: pass }
     confidence: high
     notes: "2026-06-25 drift re-audit: unchanged & faithful. PlayerDamaged handler at DamagetextMutator.cs:139; the skips (hit==attacker, potential==0, instagib-vaporizer) and arg order are line-for-line. deathtype is a string tag in this port vs int in QC. The hook's return gates the score block (DamageSystem.cs) matching QC."
   - id: damagetext.sv.same_frame_accumulation
@@ -105,7 +105,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/DamagetextMutator.cs:190 (hit.DentAttackers.Add), :207 (OnPlayerSpawn clear), :214-224 (OnClientDisconnect clear)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs:132 (DentAttackers HashSet<Entity>)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:61 (ClientDisconnect HookChain)"
-      - "src/XonoticGodot.Server/ClientManager.cs:788 (MutatorHooks.ClientDisconnect.Call)"
+      - "src/XonoticGodot.Server/ClientManager.cs:855 (MutatorHooks.ClientDisconnect.Call)"
     constants:
       - { name: "bitset width", base: "11 ints x 24 bits = 255 clients", port: "HashSet<Entity> (unbounded)", match: false }
       - { name: "STOP_ACCUMULATION on first hit", base: "set bit + OR DTFLAG_STOP_ACCUMULATION", port: "DentAttackers.Add() true -> OR FlagStopAccumulation", match: true }
@@ -122,7 +122,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: codetrace, ref: "DamagetextMutator.cs:96-104 Hook() now subscribes PlayerDamaged + PlayerSpawn + ClientDisconnect; OnClientDisconnect (:214-224) iterates FindByClass('player') and removes the leaver from each live player's DentAttackers set (QC FOREACH_CLIENT(IS_PLAYER) it.dent_attackers &= ~BIT). MutatorHooks.ClientDisconnect (:61) is fired live from ClientManager.cs:788.", result: pass }
+      - { kind: codetrace, ref: "DamagetextMutator.cs:96-104 Hook() subscribes PlayerDamaged + PlayerSpawn + ClientDisconnect; OnClientDisconnect (:214-224) iterates FindByClass('player') and removes the leaver from each live player's DentAttackers set (QC FOREACH_CLIENT(IS_PLAYER) it.dent_attackers &= ~BIT). MutatorHooks.ClientDisconnect (:61) is fired live from ClientManager.cs:855.", result: pass }
     confidence: high
     notes: "2026-06-25 drift re-audit: GAP CLOSED (was logic:partial at baseline). The ClientDisconnect dent_attackers clear is now implemented and live — a new MutatorHooks.ClientDisconnect hook was added (MutatorHooks.cs:61, dispatched at ClientManager.cs:788) and DamagetextMutator now subscribes it (Hook() :103) and clears the leaver from every live player (:214-224). Representation still differs (HashSet<Entity> keyed by Entity ref vs fixed bit array keyed by etof-1) but live semantics now match QC on all three paths (first-hit add, PlayerSpawn clear, ClientDisconnect clear)."
   - id: damagetext.net.wire_and_visibility_tiers
@@ -133,7 +133,7 @@ features:
       - "common/mutators/mutator/damagetext/cl_damagetext.qc:219-235 (NET_HANDLE wire read)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/DamagetextMutator.cs:127 (DrainPending)"
-      - "game/net/NetGame.cs:2435-2449 (host-only drain -> DamageTextLayer.Add)"
+      - "game/net/NetGame.cs:2594-2608 (host-only drain -> DamageTextLayer.Add)"
     constants:
       - { name: "sv_damagetext tiers", base: "0 off / 1 spectators+observers / 2 +attacker / 3 all", port: "2 default (xonotic-server.cfg:692); only tier-2 local-attacker realized", match: false }
       - { name: "PRECISION_MULTIPLIER fixed-point wire (Short/Int24 by BIG_* flags)", base: "128 + WriteShort/WriteInt24_t; armor omitted on NO_ARMOR, potential on NO_POTENTIAL", port: "no net packet; un-multiplied amounts passed in DamageTextEvent, x128 + NO_*/BIG_* reconstruction in DamageTextLayer.Add", match: false }
@@ -150,9 +150,9 @@ features:
       - "sv_damagetext 1 (spectators-only) and 3 (all-players) tiers, plus the spectator/observer filtering in write_damagetext, are not modeled — only the local attacker sees text."
       - "A pure remote client (no local server) gets no damage text at all (the drain is guarded by 'if (_server is not null)' at NetGame.cs)."
     verification:
-      - { kind: codetrace, ref: "NetGame.cs:2435 'if (_server is not null)' guards the drain; :2445 foreach DrainPending -> DamageTextLayer.Add; in-process, no wire; the wire BIG_*/NO_* split is reconstructed client-side in DamageTextLayer.Add:104-111", result: fail }
+      - { kind: codetrace, ref: "NetGame.cs:2594 'if (_server is not null)' guards the drain; :2604 foreach DrainPending -> DamageTextLayer.Add; in-process, no wire; the wire BIG_*/NO_* split is reconstructed client-side in DamageTextLayer.Add:104-111", result: fail }
     confidence: high
-    notes: "2026-06-25 drift re-audit: unchanged. Intended divergence for the host model; the non-tier-2 visibility cases and the remote-client case are genuine functional gaps. The wire numeric reconstruction (x128 + NO_ARMOR->0 + NO_POTENTIAL->health+armor) IS faithful in DamageTextLayer.Add (game/client/DamageTextLayer.cs:104-111)."
+    notes: "2026-06-27 Wave-16 re-audit: unchanged (this is the ONLY remaining gap, an intended host divergence). The non-tier-2 visibility cases and the remote-client case are genuine functional gaps. The wire numeric reconstruction (x128 + NO_ARMOR->0 + NO_POTENTIAL->health+armor) IS faithful in DamageTextLayer.Add (game/client/DamageTextLayer.cs:104-111). Host guard relocated to NetGame.cs:2594 (line drift)."
   - id: damagetext.cl.format_and_size
     name: "Label format tokens + font-size mapping (DamageText_update)"
     layer: [presentation]
@@ -189,7 +189,7 @@ features:
       - "common/mutators/mutator/damagetext/cl_damagetext.qc:181-204 (CONSTRUCTOR 2D vs 3D fade/shrink rate select) + :206-210 (DESTRUCTOR --DamageText_screen_count)"
     port_refs:
       - "game/client/DamageTextLayer.cs:124-141 (too_close / prefer_in_view / prefer2d), :168-179 (is2d branch), :195-197 (overlap stagger + screen_count), :205-217 (ApplyPlacement 2D/3D rates), :221-227 (ProjectedOnScreen), :84 (DESTRUCTOR --_screenCount)"
-      - "game/net/NetGame.cs:2444,2449 (canUse2d = !_client.IsObserving -> Add)"
+      - "game/net/NetGame.cs:2603,2608 (canUse2d = !_client.IsObserving -> Add)"
     constants:
       - { name: "cl_damagetext_2d_close_range", base: "125", port: "125 (CloseRange2d), compared after *0.0254 QU->m conversion vs Camera.GlobalPosition (DamageTextLayer.cs:136-137)", match: true }
       - { name: "cl_damagetext_2d_out_of_view", base: "1", port: "1 (OutOfView2d) -> prefer_in_view = !ProjectedOnScreen (DamageTextLayer.cs:138-139)", match: true }
@@ -210,9 +210,9 @@ features:
       - "QC tests entcs.has_origin for can_use_3d; the port always has a worldPos so can_use_3d is effectively always true (same as the common case). Edge: QC's 'return nothing' branch (no entcs origin AND 2D-disabled-or-observer) cannot occur in the port — a number always renders as 3D world or 2D screen. Minor; matches Base for all reachable states."
       - "view_origin: QC uses the eye position; the port uses Camera.GlobalPosition (the host camera node). Close-range distance is computed in metres (QU*0.0254) which is dimensionally faithful but the camera origin vs QC eye origin may differ by a small view offset."
     verification:
-      - { kind: codetrace, ref: "DamageTextLayer.cs:124-179 builds tooClose/preferInView/prefer2d exactly as cl_damagetext.qc:253-256; :195-197 overlap stagger matches :301/:315 increment semantics; ApplyPlacement :205-217 mirrors CONSTRUCTOR :188-200; _screenCount-- on prune :84 mirrors DESTRUCTOR :209; canUse2d wired live at NetGame.cs:2444", result: pass }
+      - { kind: codetrace, ref: "DamageTextLayer.cs:124-179 builds tooClose/preferInView/prefer2d exactly as cl_damagetext.qc:253-256; :195-197 overlap stagger matches :301/:315 increment semantics; ApplyPlacement :205-217 mirrors CONSTRUCTOR :188-200; _screenCount-- on prune :84 mirrors DESTRUCTOR :209; canUse2d wired live at NetGame.cs:2603", result: pass }
     confidence: medium
-    notes: "2026-06-25 drift re-audit: unchanged & faithful (line numbers shifted; gap stayed closed since Wave-5). DamageTextLayer.Add computes too_close (close_range 125 QU->m), prefer_in_view (out_of_view via ProjectedOnScreen unproject+rect test), prefer_2d gated on canUse2d, applies the 2d_overlap_offset stagger with QC's pre/post-increment order, selects the 2D fade(1.3s)/shrink(3s) lifetimes in ApplyPlacement, and decrements _screenCount on prune. canUse2d is live-fed from NetGame.cs:2444. All 2D cvar defaults match Base (xonotic-client.cfg:584-592). Medium confidence: no unit test (Godot draw node needs a live viewport+camera); verified by codetrace + constant match, NOT in-game. The close_range view-origin (Camera node vs QC eye) is the one unverified detail."
+    notes: "2026-06-27 Wave-16 re-audit: unchanged & faithful (gap stayed closed since Wave-5; canUse2d feed relocated to NetGame.cs:2603, line drift). DamageTextLayer.Add computes too_close (close_range 125 QU->m), prefer_in_view (out_of_view via ProjectedOnScreen unproject+rect test), prefer_2d gated on canUse2d, applies the 2d_overlap_offset stagger with QC's pre/post-increment order, selects the 2D fade(1.3s)/shrink(3s) lifetimes in ApplyPlacement, and decrements _screenCount on prune. All 2D cvar defaults match Base (xonotic-client.cfg:584-592, re-confirmed in DamageTextConfig.cs:71-79). Medium confidence: no unit test (Godot draw node needs a live viewport+camera); verified by codetrace + constant match, NOT in-game. The close_range view-origin (Camera node vs QC eye) is the one unverified detail."
   - id: damagetext.cl.draw_fade_shrink_move
     name: "Per-frame draw: fade, shrink, world/screen drift, centering, color codes, font"
     layer: [presentation]
@@ -229,24 +229,23 @@ features:
       - { name: "velocity_world / offset_world along view forward/right/up basis", base: "0 0 20 / 0 25 0 along view forward/right/up basis", port: "full forward/right/up view-basis placement (wo.X*forward + wo.Y*right + wo.Z*up)*0.0254 QU->m (DamageTextLayer.cs:282-286)", match: true }
       - { name: "offset_screen / velocity_screen", base: "0 -45 0 / 0 0 0 (screen space)", port: "applied in screen space (DamageTextLayer.cs:289-290)", match: true }
       - { name: "2d_velocity / 2d_pos drift (2D path)", base: "-25 0 0 / 0.47 0.53 (screen space)", port: "stored ScreenPos (pos+overlap stagger) + Velocity2d*since (DamageTextLayer.cs:270-273)", match: true }
-      - { name: "string render", base: "drawcolorcodedstring2 + drawfontscale=size/size_max, size_max cell, hud font", port: "HudText.Parse (color codes) + HudPanel.HudFont (Xolonium) at integer pixel size (DamageTextLayer.cs:301-318)", match: false }
+      - { name: "string render", base: "drawcolorcodedstring2 + drawfontscale=size/size_max, size_max cell, hud font", port: "HudText.Parse (color codes) + HudPanel.HudFont (Xolonium) rasterized at a FIXED size_max cell and scaled by continuous size/size_max via DrawSetTransformMatrix, with QC topY=pos.Y+(size*0.5)*(1-scale) (DamageTextLayer.cs:317-340)", match: true }
       - { name: "per-weapon / friendlyfire color", base: "DEATH_WEAPONOF.m_color / friendlyfire_color", port: "Weapon.Color (by RegistryId) / FriendlyFireColor (DamageTextLayer.cs:293-298)", match: true }
       - { name: "horizontal centering", base: "screen_pos.x -= stringwidth*0.5", port: "pos.X - total*0.5 over the parsed runs (GetStringSize) (DamageTextLayer.cs:309-312)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "drawfontscale crisp-cell scaling: QC renders the string into a size_max-sized font cell scaled by drawfontscale = size/size_max, then offsets y by drawfontscale.x*size/2 (cl_damagetext.qc:91-93). The port draws at a direct integer pixel size with no drawfontscale cell, so glyph metrics and the small vertical re-centering differ slightly. Minor presentation residual; the visible number, color codes, font, drift and horizontal centering are otherwise faithful."
+    gaps: []
     verification:
-      - { kind: codetrace, ref: "DamageTextLayer.cs:282-286 builds the world offset along the full view basis (forward/right/up) from velocity_world+offset_world (x0.0254 QU->m) matching cl_damagetext.qc:42-54; :301-318 renders with HudText.Parse (color codes) in HudPanel.HudFont (Xolonium), centered by the parsed-run width; the only divergence is the absent drawfontscale cell scaling.", result: pass }
+      - { kind: codetrace, ref: "DamageTextLayer.cs:282-286 builds the world offset along the full view basis (forward/right/up) from velocity_world+offset_world (x0.0254 QU->m) matching cl_damagetext.qc:42-54; :317-340 renders with HudText.Parse (color codes) in HudPanel.HudFont (Xolonium): a FIXED size_max cell (RoundToInt(SizeMax)) scaled by continuous size/size_max via DrawSetTransformMatrix, with QC's topY=pos.Y+(size*0.5)*(1-scale) y-offset (= lines 56+93) and centered by the scaled parsed-run width; cell-top->baseline via GetAscent(cell).", result: pass }
     confidence: medium
-    notes: "2026-06-25 drift re-audit: BOTH baseline worst-gaps CLOSED. (1) World drift is now placed along the full view basis (forward/right/up) using velocity_world+offset_world with a dimensional QU->m (0.0254) conversion — the prior Z-only hardcoded rise is gone (values partial->faithful, presentation improved). (2) The label is now drawn with color codes honoured (HudText.Parse = drawcolorcodedstring2) in the Xonotic HUD font (HudPanel.HudFont = Xolonium) and centered by the parsed-run width (presentation partial mostly resolved). One minor presentation residual remains: the QC drawfontscale crisp-cell scaling (size/size_max cell rendered at size_max + the drawfontscale.x*size/2 y-offset) is replaced by a direct integer pixel size. NOT verified in-game (Godot draw node, no unit test) — medium confidence."
+    notes: "2026-06-27 Wave-16 re-audit: presentation partial->FAITHFUL (drawfontscale residual now closed). The three baseline worst-gaps were closed in prior waves (full view-basis world drift; color codes via HudText.Parse = drawcolorcodedstring2; Xonotic HUD font HudPanel.HudFont = Xolonium). This pass: the last residual — QC's drawfontscale crisp-cell scaling — is also implemented: each run is rasterized into a constant size_max-sized cell and the cell is scaled by a continuous size/size_max factor via DrawSetTransformMatrix (smooth shrink, no per-frame integer re-rasterize), with the QC y-offset topY=pos.Y+(size*0.5)*(1-scale) and the scaled-width horizontal centering (DamageTextLayer.cs:317-340). All draw constants now match Base. CAVEAT: still codetrace-only — the Godot draw node has no unit test and needs a live viewport+camera, so this is NOT verified in-game; confidence stays medium."
   - id: damagetext.ui.settings_tab
     name: "In-game Damage Text settings menu tab"
     layer: [presentation]

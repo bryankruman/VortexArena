@@ -31,7 +31,7 @@ namespace XonoticGodot.Game.Hud;
 public partial class ModIconsPanel : HudPanel
 {
     /// <summary>Which gametype's objective renderer to draw (QC <c>gametype.m_modicons</c> selection).</summary>
-    public enum ModIconsMode { None, Ctf, Keyhunt, Domination, ClanArena, FreezeTag, Survival, Assault, Keepaway, TeamKeepaway, Lms, Race }
+    public enum ModIconsMode { None, Ctf, Keyhunt, Domination, ClanArena, FreezeTag, Survival, Assault, Keepaway, TeamKeepaway, Lms, Race, NexBall }
 
     /// <summary>The active renderer; <see cref="ModIconsMode.None"/> draws nothing (QC: no m_modicons set).</summary>
     public ModIconsMode Mode { get; set; } = ModIconsMode.None;
@@ -75,6 +75,17 @@ public partial class ModIconsPanel : HudPanel
     /// <see cref="NetGame"/> resolves it against the local net id and sets this. The carrying icon flashes
     /// (<c>blink</c>) + does the QC status-change expand transition; false draws nothing.</summary>
     public bool KeepawayCarrying { get; set; }
+
+    /// <summary>NexBall (QC <c>HUD_Mod_NexBall</c>, cl_nexball.qc): true when the LOCAL player holds the nexball
+    /// (the wire carries the carrier net id; <see cref="NetGame"/> resolves it against the local net id). The
+    /// <c>nexball_carrying</c> icon flashes (<c>blink</c>) + does the QC status-change expand transition; false
+    /// draws nothing (QC mod_active forced 1 but nothing to show when not carrying).</summary>
+    public bool NexBallCarrying { get; set; }
+
+    // QC nexball prevstatus / statuschange_time: the carry edge + flip time for the expand transition (parallel to
+    // the Keepaway tracker).
+    private bool _nbPrevCarrying;
+    private double _nbStatusChangeTime;
 
     // QC kaball_prevstatus / kaball_statuschange_time: the carrying-state edge + the time it last flipped, so the
     // expanding-icon transition (drawpic_aspect_skin_expanding) plays for the first ~0.5s after pickup/loss.
@@ -211,6 +222,7 @@ public partial class ModIconsPanel : HudPanel
             case ModIconsMode.TeamKeepaway: DrawTeamKeepaway(); break;
             case ModIconsMode.Lms:        DrawLms(); break;
             case ModIconsMode.Race:       DrawRace(); break;
+            case ModIconsMode.NexBall:    DrawNexBall(); break;
             default: return; // None: draw nothing
         }
     }
@@ -887,6 +899,45 @@ public partial class ModIconsPanel : HudPanel
             int sz = (int)Mathf.Clamp(fit.Size.Y * 0.28f, 8f, 16f);
             DrawTextCentered(new Vector2(fit.Position.X, fit.Position.Y + fit.Size.Y * 0.62f),
                 fit.Size.X, carrying != 0 ? "BALL" : "TKA", new Color(1f, 1f, 1f, a), sz);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------ NexBall
+    // Port of HUD_Mod_NexBall (common/gametypes/gametype/nexball/cl_nexball.qc): one centered nexball_carrying icon
+    // shown only while the LOCAL player holds the ball. The carrying flag pulses (blink 0.85/0.15/5) and a
+    // status-change expand transition (drawpic_aspect_skin_expanding) plays for the first ~0.5s after the carry
+    // state flips — identical shape to HUD_Mod_Keepaway, with the nexball_carrying skin art (shipped in every skin).
+    private void DrawNexBall()
+    {
+        double now = CurrentTime();
+
+        // QC: nb != nb_prevstatus → record the change time (drives the expand transition's elapsed clock).
+        if (NexBallCarrying != _nbPrevCarrying)
+        {
+            _nbStatusChangeTime = now;
+            _nbPrevCarrying = NexBallCarrying;
+        }
+
+        if (!NexBallCarrying)
+            return; // QC mod_active is forced 1, but with no carry there's nothing to draw → blank panel
+
+        DrawBackground();
+
+        float nbAlpha = Blink(0.85f, 0.15f, 5f, now);
+        float f = Mathf.Clamp((float)(now - _nbStatusChangeTime) * 2f, 0f, 1f); // QC bound(0, elapsed*2, 1)
+
+        var box = new Rect2(Vector2.Zero, Size2);
+        float a = LiveFgAlpha * nbAlpha * f;
+        if (!DrawIconAspect(box, "nexball_carrying", a))
+        {
+            // Stand-in so the carry indicator is never invisible: a small ball glyph + "BALL" tag.
+            Rect2 fit = AspectFit(box, 1f);
+            var col = new Color(1f, 0.85f, 0.2f, a);
+            DrawRect(new Rect2(fit.Position.X + fit.Size.X * 0.3f, fit.Position.Y + fit.Size.Y * 0.18f,
+                fit.Size.X * 0.4f, fit.Size.Y * 0.4f), col);
+            int sz = (int)Mathf.Clamp(fit.Size.Y * 0.28f, 8f, 16f);
+            DrawTextCentered(new Vector2(fit.Position.X, fit.Position.Y + fit.Size.Y * 0.62f),
+                fit.Size.X, "BALL", new Color(1f, 1f, 1f, a), sz);
         }
     }
 
