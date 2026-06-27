@@ -122,6 +122,7 @@ public enum SoundChannel
     Pain = 6,
     Player = 7,
     Bgm = 8,
+    AmbientSingle = 9, // CH_AMBIENT_SINGLE — looping per-entity ambient (e.g. func_rotating .noise)
 }
 
 /// <summary>sound()/precache_sound (QC sound builtins), with DP's SV_StartSound entity+channel model.</summary>

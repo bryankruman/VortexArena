@@ -625,7 +625,12 @@ public partial class ShowNamesLayer : Control
         if (!float.IsFinite(selfOrigin.X) || !float.IsFinite(selfOrigin.Y) || !float.IsFinite(selfOrigin.Z))
             return;
 
-        bool selfDead = Net.Health <= 0;
+        // QC Draw_ShowNames_All: `dead = entcs_IsDead(i) || entcs_IsSpectating(i)`. Prefer the networked Dead flag
+        // from the captured local entcs slice (csqcmodel_isdead), falling back to the owner Health<=0 stat; OR in the
+        // observer case (free-fly: SpectateeStatus == LocalNetId) which entcs_IsSpectating would also mark dead.
+        bool selfDead = (Net.LocalState is { } ls && (ls.Flags & NetEntityFlags.Dead) != 0)
+                        || Net.Health <= 0
+                        || (SpectateeStatus != 0 && SpectateeStatus == LocalNetId);
         TagState selfTag = GetTag(LocalNetId);
         selfTag.Touched = _generation;
         selfTag.Origin = selfOrigin;

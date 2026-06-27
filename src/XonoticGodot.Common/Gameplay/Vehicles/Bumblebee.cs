@@ -106,6 +106,15 @@ public sealed class Bumblebee : Vehicle
             vehicle.VehGun2 = NewSlot(vehicle, 2, "cannon_left");
             vehicle.VehGun3 = NewSub(vehicle, "bumblebee_raygun", "raygun");
             vehicle.VehicleFlags |= VehicleFlags.MultiSlot;
+
+            // QC vr_spawn (bumblebee.qc:878-880): the three cosmetic cannon models — gun1 = CANNON_RIGHT
+            // (bumblebee_plasma_right.dpm), gun2 = CANNON_LEFT (bumblebee_plasma_left.dpm), gun3 = CANNON_CENTER
+            // (bumblebee_ray.dpm), attached at the cannon_right/cannon_left/raygun tags. So the side cannons and
+            // the center raygun render their real plasma/ray models while the airframe is alive (previously these
+            // model strings were only assigned at death, leaving the live gunship's guns invisible).
+            SetGunModel(vehicle.VehGun1, "models/vehicles/bumblebee_plasma_right.dpm");
+            SetGunModel(vehicle.VehGun2, "models/vehicles/bumblebee_plasma_left.dpm");
+            SetGunModel(vehicle.VehGun3, "models/vehicles/bumblebee_ray.dpm");
         }
 
         vehicle.MaxHealth = StartHealth;
@@ -821,6 +830,14 @@ public sealed class Bumblebee : Vehicle
         g.VehicleEnergy = CannonAmmoMax;
         if (Api.Services is not null) Api.Models.SetAttachment(g, vehicle, tag);
         return g;
+    }
+
+    // QC setmodel(gun, MDL_VEH_BUMBLEBEE_CANNON_*) — assign a cosmetic cannon model to a gun sub-entity so it
+    // renders attached at its tag. Used at spawn (live guns) and reused as the gib model at death.
+    private static void SetGunModel(Entity gun, string model)
+    {
+        gun.Model = model;
+        if (Api.Services is not null) Api.Entities.SetModel(gun, model);
     }
 
     private Entity NewSub(Entity vehicle, string cls, string tag)

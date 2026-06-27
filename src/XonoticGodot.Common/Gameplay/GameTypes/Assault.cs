@@ -414,6 +414,12 @@ public sealed class Assault : GameType
             WaypointObjectiveColor, RadarIconObjective, Waypoints.SpriteRule.Teamplay);
         Waypoints.WaypointSprites.UpdateSprites(spr, "AssaultDefend", "AssaultDestroy", "AssaultDestroy");
         spr.Owner = edict; // QC the sprite is spawned at 0.5*(absmin+absmax) and follows the wall edict
+        // QC sv_assault.qc:121: spr.waypointsprite_visible_for_player = assault_decreaser_sprite_visible — the
+        // marker is hidden once its linked objective is no longer active (RES_HEALTH >= ASSAULT_VALUE_INACTIVE, i.e.
+        // not-yet-activated; a destroyed objective drops to -1 and the sprite is Disown'd in DamageDestructible).
+        // The net layer (ServerNet.WaypointVisible) consults VisibleForPlayer first, so this gates every viewer.
+        Objective? obj = w.DecreaserRef?.ObjectiveRef;
+        spr.VisibleForPlayer = _ => obj is not null && obj.Health < ObjectiveInactive;
         Waypoints.WaypointSprites.UpdateMaxHealth(spr, w.MaxHealth);
         Waypoints.WaypointSprites.UpdateHealth(spr, w.MaxHealth > 0f ? w.Health / w.MaxHealth : -1f);
         w.Sprite = spr;

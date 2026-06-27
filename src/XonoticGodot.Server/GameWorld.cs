@@ -657,6 +657,16 @@ public sealed class GameWorld
         // LogicGates.GameStartTimeProvider feeds trigger_gamestart's deferred fire (QC game_starttime + wait) so a
         // wait>0 gamestart trigger fires relative to the real countdown end, not 0. Same live source as StartItem.
         XonoticGodot.Common.Gameplay.LogicGates.GameStartTimeProvider = () => GameStartTime;
+        // Tuba.TubaMelodyBprint feeds QC's W_Tuba_NoteOff recognized-melody broadcast (tuba.qc:115-131): when a
+        // magic-ear matches a played melody, bprint "* NAME played on the @!#%'n {instrument}: {text}" to everyone.
+        // The player display name (Player.NetName) and the chat broadcast primitive live host-side; compose here.
+        XonoticGodot.Common.Gameplay.Tuba.TubaMelodyBprint = (actor, instrument, text) =>
+        {
+            string name = actor is Player p ? p.NetName : "";
+            string label = XonoticGodot.Common.Gameplay.Tuba.InstrumentLabel(instrument);
+            // QC bprint(strcat("\{1}\{13}* ^3", netname, "^3 played on the ", label, ": ^7", s, "\n")).
+            Commands.Chat.PrintToChatAll($"\x0d* ^3{name}^3 played on the {label}: ^7{text}");
+        };
         XonoticGodot.Common.Gameplay.TargetUtilities.GiveItemHandler = (worldItem, actor) =>
         {
             // QC target/give.qc:16-19: on a successful give, play the item's pickup sound on the actor. The

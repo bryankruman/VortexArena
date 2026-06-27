@@ -29,11 +29,35 @@ public sealed class FusionReactorTurret : Turret
     // QC fusionreactor.qc tr_setup: team-checked, OWN-team only, range-limited (support, not combat).
     private const int Select = TurretAI.SelectTeamCheck | TurretAI.SelectOwnTeam | TurretAI.SelectRangeLimits;
 
+    // QC fusionreactor.qh ATTRIB spawnflags = TUR_FLAG_SUPPORT | TUR_FLAG_AMMOSOURCE. The reactor is the one
+    // SUPPORT/AMMOSOURCE turret. TUR_FLAG_AMMOSOURCE is purely declarative (never read in Base qcsrc), and
+    // TUR_FLAG_SUPPORT only selects turret_targetscore_support — which the reactor never invokes (it has no
+    // targetscore-driven path; the HITALLVALID sweep does its own gating). So the support behaviour is realised
+    // directly in this class's Think rather than dispatched from a stored flag; the flags are carried here as data
+    // to match Base identity.
+    public const int SpawnFlags = TurretAI.TurFlagSupport | TurretAI.TurFlagAmmoSource;
+
+    // QC fusionreactor.qc tr_setup: it.tur_head.scale = 0.75; it.tur_head.avelocity = '0 50 0' (head starts
+    // spinning at 50 deg/s yaw on setup, before the ammo-scaled tr_think rate takes over each think).
+    private const float HeadScale = 0.75f;
+    private static readonly Vector3 InitialHeadSpin = new(0f, 50f, 0f);
+
+    // QC fusionreactor.qc METHOD(FusionReactor, describe) MENUQC: the turret-info codex description. The %s refs
+    // resolve to the turret's own colored name ("Fusion Reactor"). The port has no MENUQC turret-describe page
+    // system, so (mirroring HkTurret.Description) the text is stored as a plain description string for any HUD or
+    // tooltip layer that wants to display turret info.
+    public const string Description =
+        "The Fusion Reactor is a bit of a unique turret, instead helping out other turrets rather than directly "
+        + "attacking its targets. It has no weapon of its own, and instead works by generating power for nearby "
+        + "turrets, so that they can attack their shared targets more often. "
+        + "This is the only turret that doesn't directly attack its targets.";
+
     public FusionReactorTurret()
     {
         NetName = "fusreac";
         DisplayName = "Fusion Reactor";
         Model = "models/turrets/base.md3";
+        HeadModel = "models/turrets/reactor.md3";   // QC fusionreactor.qh head_model ATTRIB
         StartHealth = 700f;
         Range = TargetRange;
     }
@@ -42,8 +66,25 @@ public sealed class FusionReactorTurret : Turret
     private const float RespawnTime = 90f;
 
     public override void Spawn(Entity e)
-        => TurretSpawn.Init(this, e, new Vector3(-34f, -34f, 0f), new Vector3(34f, 34f, 90f),
+    {
+        TurretState st = TurretSpawn.Init(this, e, new Vector3(-34f, -34f, 0f), new Vector3(34f, 34f, 90f),
             AmmoMax, AmmoRecharge, shotVolly: 0, respawnTime: RespawnTime);
+
+        // QC fusionreactor.qc tr_setup (called from turret_initialize AND turret_respawn): seed the head render
+        // scale (0.75) and the initial 50 deg/s yaw spin. tr_think then overwrites the avelocity each think with
+        // the ammo-scaled rate; this is the value the head spins at on the very first frame, before the first
+        // tr_think runs. (No client head render integrates it yet — carried on state for when one lands.)
+        SeedHead(st);
+        // QC turret_respawn re-runs tr_setup, so a respawned reactor re-arms the same head scale + 50 deg/s spin.
+        // TurretAI.Respawn zeroes HeadAVelocity/HeadScale-default-reset is NOT applied, so re-seed via OnRespawn.
+        st.OnRespawn = r => SeedHead(TurretAI.State(r));
+    }
+
+    private static void SeedHead(TurretState st)
+    {
+        st.HeadScale = HeadScale;
+        st.HeadAVelocity = InitialHeadSpin;
+    }
 
     public override void Think(Entity e)
     {
@@ -107,6 +148,12 @@ public sealed class FusionReactorTurret : Turret
         // compute it here, post-spend. Networked (TNSF_AVEL) and integrated by the client each render frame; here it
         // lives on the turret state for when the turret client-render lands. ('0 250 0' * ammo/ammo_max.)
         st.HeadAVelocity = new Vector3(0f, st.AmmoMax > 0f ? 250f * (st.Ammo / st.AmmoMax) : 0f, 0f);
+
+        // cl_turrets.qc turret_draw integrates the networked head avelocity into the head angle each render frame
+        // (tur_head.angles += dt * tur_head.avelocity). The port has no client turret render yet, so integrate it
+        // server-side onto the head state (same approach as TeslaTurret.TrThink) — the spin is then carried on
+        // state for when a head-bone render lands, instead of being computed and discarded.
+        st.HeadAngles += st.HeadAVelocity * frameTime;
     }
 
     public override bool ValidTarget(Entity self, Entity target)

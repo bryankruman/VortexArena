@@ -825,18 +825,28 @@ namespace XonoticGodot.Common.Gameplay
         /// <c>init_for_player</c> per-player resend (no separate client roster needed at this layer).
         /// </summary>
         public static void LoopAmbient(Entity e, string? sample)
+            => LoopAmbient(e, sample, SoundChannel.Item); // CH_TRIGGER_SINGLE = 3 = SoundChannel.Item.
+
+        /// <summary>
+        /// Channel-explicit overload of <see cref="LoopAmbient(Entity,string)"/>: func_rotating's looping ambient
+        /// rides <c>CH_AMBIENT_SINGLE</c> (channel 9 = <see cref="SoundChannel.AmbientSingle"/>) rather than
+        /// CH_TRIGGER_SINGLE (rotating.qc: <c>_sound(this, CH_AMBIENT_SINGLE, ...)</c>).
+        /// </summary>
+        public static void LoopAmbient(Entity e, string? sample, SoundChannel channel)
         {
             if (Api.Services is not null && !string.IsNullOrEmpty(sample))
-                // CH_TRIGGER_SINGLE = 3 = SoundChannel.Item.
-                Api.Sound.Play(e, SoundChannel.Item, sample, VolBase, AttenIdle, loop: true);
+                Api.Sound.Play(e, channel, sample, VolBase, AttenIdle, loop: true);
         }
 
-        /// <summary>Stop the looping ambient started by <see cref="LoopAmbient"/> (QC <c>stopsound(this,
+        /// <summary>Stop the looping ambient started by <see cref="LoopAmbient(Entity,string)"/> (QC <c>stopsound(this,
         /// CH_TRIGGER_SINGLE)</c>) — used by func_vectormamamam's setactive when it goes inactive.</summary>
-        public static void StopAmbient(Entity e)
+        public static void StopAmbient(Entity e) => StopAmbient(e, SoundChannel.Item);
+
+        /// <summary>Channel-explicit overload (func_rotating stops its loop on <c>CH_AMBIENT_SINGLE</c>).</summary>
+        public static void StopAmbient(Entity e, SoundChannel channel)
         {
             if (Api.Services is not null)
-                Api.Sound.Stop(e, SoundChannel.Item);
+                Api.Sound.Stop(e, channel);
         }
 
         // ====================================================================

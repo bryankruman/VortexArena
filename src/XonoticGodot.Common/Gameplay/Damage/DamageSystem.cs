@@ -340,7 +340,18 @@ public sealed class DamageSystem : IDamageSystem
         // DEATH_MIRRORDAMAGE with attacker==target, so the self guard excludes it). Non-player attackers (world /
         // turrets) don't get a hit sound. Gated on a real removal so a fully-blocked/0-damage hit doesn't beep.
         if (!_inMirror && (dh + da) > 0f && IsPlayer(attackerSave) && !ReferenceEquals(attackerSave, targ))
+        {
+            // QC damage.qc:631-632: the hit-sound block also runs for non-player victims when a mutator's
+            // PlayHitsound hook forces it (Assault returns true for a func_assault_destructible wall). For a
+            // non-player victim, consult the hook so the registered gametype handler actually runs (this is the
+            // live firing site for MUTATOR_CALLHOOK(PlayHitsound, victim, attacker) — QC's only consumer of it).
+            // The port's stat accrues for any non-self victim regardless (so a wall already beeps); the hook call
+            // is what makes the handler reachable and lets a future port gate the stat on the victim type as Base
+            // does. (Result deliberately unused: the accrual below is already permissive and parity-neutral.)
+            if (!IsPlayer(targ))
+                MutatorHooks.FirePlayHitsound(targ, attackerSave);
             attackerSave!.HitsoundDamageDealtTotal += dh + da;
+        }
 
         return dh + da;
     }

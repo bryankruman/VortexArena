@@ -15,6 +15,16 @@ public abstract partial class Monster : IRegistered
     public string RegistryName => NetName;
 
     /// <summary>
+    /// Monsterpedia flavor text — QC <c>METHOD(&lt;Monster&gt;, describe, string(...))</c> (MENUQC), e.g.
+    /// <c>golem.qc:308</c>. The QC <c>describe()</c> builds its string with <c>PAGE_TEXT_INIT()</c> + one or more
+    /// <c>PAR(...)</c> paragraphs joined by <c>"\n\n"</c> (lib/string.qh:659) and returns it for the menu's
+    /// monster info page. The port has no monster info-page UI yet, so this is surfaced as queryable descriptor
+    /// data (the same status as <see cref="DisplayName"/>, which also has no monster-menu consumer). Empty when a
+    /// descriptor hasn't declared its <c>describe()</c> text.
+    /// </summary>
+    public virtual string Description => "";
+
+    /// <summary>
     /// The voice cues actually DEFINED (uncommented) in this monster's model <c>.sounds</c> file — the
     /// faithful gate for QC <c>Monster_Sound</c>: a cue whose sample line is commented out (or whose model
     /// ships no <c>.sounds</c> file at all) yields an empty sample, so <c>sound7</c> plays nothing. The port
@@ -119,6 +129,11 @@ public abstract partial class Turret : IRegistered
     public string NetName = "";
     public string DisplayName = "";
     public string? Model;
+    /// <summary>QC <c>head_model</c> ATTRIB (e.g. fusionreactor.qh: <c>"models/turrets/reactor.md3"</c>) — the
+    /// separate spinning head-bone model carried on top of the base body. Null for turrets without a head model.
+    /// No client turret render integrates it yet (whole-family presentation gap), but it is carried as data so the
+    /// identity matches Base.</summary>
+    public string? HeadModel;
     public float StartHealth;
     public float Range;
     public string RegistryName => NetName;

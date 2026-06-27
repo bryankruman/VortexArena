@@ -305,9 +305,11 @@ public sealed class EWheelTurret : Turret
             Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/lasergun_fire.wav");
 
         // ewheel_weapon.qc:28 — Send_Effect(EFFECT_BLASTER_MUZZLEFLASH, tur_shotorg, shotdir*1000, 1). A networked
-        // point effect at the muzzle along the shot direction; emitted to every viewer except the firing turret
-        // (QC Send_Effect's self-exclude), matching the in-hand Blaster's muzzleflash emit (Blaster.Attack).
-        EffectEmitter.Emit("BLASTER_MUZZLEFLASH", st.ShotOrg, dir * 1000f, 1, except: turret);
+        // point effect at the muzzle along the shot direction. Base Send_Effect routes through
+        // Send_Effect_Except(..., NULL), so it excludes NO viewer — including the firer. (The in-hand Blaster
+        // passes except:actor to spare the player's first-person view, but a turret is not a view source, and
+        // matching Base means no exclusion here.)
+        EffectEmitter.Emit("BLASTER_MUZZLEFLASH", st.ShotOrg, dir * 1000f, 1);
 
         // NOTE (deferred — needs a head sub-entity): ewheel_weapon.qc:32-35 alternates the two firing cannons via
         // `tur_head.frame += 2; if > 3 -> 0` on the SEPARATE head model entity (ewheel-gun1.md3). The port has no

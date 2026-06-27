@@ -292,8 +292,11 @@ public sealed class SandboxMutator : MutatorBase
             e.Edict.Solid = Solid.Not;
             e.Edict.TakeDamage = DamageMode.No;
         }
-        // TODO[cross-file]: setattachment(e, parent, s) — engine tag-follow attach has no port seam; origin/angles
-        // are recomputed by the host from the parent tag each frame. Stored here so save/load round-trips faithfully.
+        // QC setattachment(e, parent, s): engine tag-follow attach. Api.Models.SetAttachment is the port's
+        // setattachment (same seam Follow/DynamicLight/the vehicles use), so the child now genuinely follows the
+        // parent's tag/bone each frame. e.owner = parent in QC is modeled by e.Parent above (used by save/info).
+        if (e.Edict is not null && parent.Edict is not null && Api.Services is not null)
+            Api.Models.SetAttachment(e.Edict, parent.Edict, s ?? "");
     }
 
     /// <summary>QC <c>sandbox_ObjectAttach_Remove</c>: detach every object attached to e, restoring its persisted state.</summary>
@@ -303,7 +306,16 @@ public sealed class SandboxMutator : MutatorBase
         {
             if (it.Parent != e) continue;
 
-            // objects change origin/angles when detached → keep current tag origin, kill spin/roll.
+            // QC: vector org = gettaginfo(it, 0); — the child's current world origin while attached (tag 0 is the
+            // entity origin). Capture it BEFORE detaching so the child stays where it is rather than snapping back.
+            if (it.Edict is not null && Api.Services is not null)
+                it.Origin = it.Edict.Origin;
+
+            // QC setattachment(it, NULL, ""): clear the engine tag-follow so the child stops tracking e's tag.
+            if (it.Edict is not null && Api.Services is not null)
+                Api.Models.SetAttachment(it.Edict, null!, "");
+
+            // objects change origin/angles when detached → apply previous position, kill spin/roll.
             it.Parent = null;
             it.AttachTag = "";
             it.Angles = e.Angles; // don't let detached objects spin or roll

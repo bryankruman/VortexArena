@@ -37,6 +37,17 @@ public sealed class Golem : Monster
     public float SpeedRun = 320f;           // g_monster_golem_speed_run
     public float SpeedStop = 300f;          // g_monster_golem_speed_stop
 
+    // METHOD(Golem, describe) — golem.qc:308 (MENUQC): the 3-paragraph monsterpedia entry, built via
+    // PAGE_TEXT_INIT() + three PAR(...) paragraphs joined by "\n\n" (lib/string.qh:659). Surfaced as descriptor
+    // data; the port has no monster info-page UI yet (same as DisplayName), so nothing renders it.
+    public override string Description =>
+        "Golems are large powerful brutes capable of taking and dealing a beating. Keeping your distance is advised."
+        + "\n\n"
+        + "The Golem's primary melee attack is a series of punches. "
+        + "On occasion the Golem may jump into the air, dealing massive damage in an area as it slams the ground."
+        + "\n\n"
+        + "To deal with distant foes, the Golem may throw a chunk of its electrified rocky exterior, zapping nearby targets on impact.";
+
     // METHOD(Golem, mr_pain) — golem.qc:240: actor.pain_finished = time + 0.5 (the golem holds its pain
     // reaction the full anim_pain1/pain2 '7/8 1 2' window of 0.5s, wider than the generic 0.34s).
     public override float PainWindow => 0.5f;

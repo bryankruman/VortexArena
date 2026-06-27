@@ -126,6 +126,7 @@ public sealed partial class NetGame : Node3D
     private ViewModel _viewModel = null!;       // first-person weapon view-model (CSQC viewmodel / wepent)
     private int _equippedWeaponId = int.MinValue; // weapon id currently in the viewmodel; rebuild only on a change
     private string _equippedVmOverride = "";       // per-weapon wr_viewmodel override (Tuba note model); rebuild on change
+    private bool _viewmodelReloading;              // last-frame reload state (clip_load==-1) — play the reload anim on the rising edge
     private bool _weaponsPrecached;             // PrecacheWeaponModels ran once (warm the per-weapon asset caches)
     private bool _readyComplete;                // _Ready finished — _Process can run its full body (before this, fields are half-built)
     private bool _captureMarked;                // one-shot guard: CaptureGate.MarkReady() fired at first spawn (--screenshot)
@@ -941,9 +942,31 @@ public sealed partial class NetGame : Node3D
         // QC sandbox_Database_Save/_Load: the per-map storage file is sandbox/storage_<name>_<map>.txt under the
         // writable user dir (DP writes to the gamedir; the port's writable root is ~/XonData via UserPaths). This
         // makes save/autosave/autoload genuinely persist. The object_duplicate copy clipboard (QC stuffcmd `set
-        // cl_sandbox_clipboard …`) stays inert: the port has no svc_stufftext transport to push a cvar down a
-        // remote client's console — that's a separate seam (see SandboxObjectStore.SetClipboard).
-        sandbox.Store = new SandboxObjectStore();
+        // cl_sandbox_clipboard …`) is now live for the listen-server local host: SetClipboard sets the cvar
+        // directly on the shared store the local console reads. A remote client over a dedicated server still
+        // can't be reached (no svc_stufftext channel), and is silently skipped (the documented residual).
+        sandbox.Store = new SandboxObjectStore(SetSandboxClipboard);
+    }
+
+    /// <summary>
+    /// QC <c>stuffcmd(player, strcat("set ", cvar, " \"", value, "\""))</c> for the <c>object_duplicate copy</c>
+    /// clipboard. The only console the port can reach in-process is the listen-server local host's, which reads
+    /// the SAME <see cref="_sharedCvars"/> store the menu/client use — so for that recipient we set the cvar
+    /// directly (the local equivalent of the svc_stufftext the QC sends). A pure remote client over a dedicated
+    /// server has no in-process cvar store here and no stufftext channel, so it is skipped (documented residual).
+    /// </summary>
+    private void SetSandboxClipboard(Entity player, string cvar, string value)
+    {
+        if (string.IsNullOrEmpty(cvar) || _sharedCvars is null)
+            return;
+        if (!ReferenceEquals(player, LocalServerPlayer))
+            return; // only the local host's console shares this cvar store
+        // HandleCommand escapes the serialized object (\" ) for the QC stuffcmd `set cvar "…"` console parse;
+        // the engine console UN-escapes it back to real quotes before storing the cvar. We set the cvar value
+        // directly (no console reparse), so undo that escaping here to store the same value paste/ObjectPortLoad
+        // (which tokenizes "-quoted tokens) expects.
+        _sharedCvars.Set(cvar, value.Replace("\\\"", "\""));
+        _sharedCvars.MarkArchived(cvar); // cl_sandbox_clipboard is an archived client cvar
     }
 
     /// <summary>
@@ -1033,6 +1056,9 @@ public sealed partial class NetGame : Node3D
     /// to set a remote client's cvar — see <see cref="SetClipboard"/>).</summary>
     private sealed class SandboxObjectStore : SandboxMutator.IObjectStore
     {
+        private readonly Action<Entity, string, string> _setClipboard;
+        public SandboxObjectStore(Action<Entity, string, string> setClipboard) => _setClipboard = setClipboard;
+
         private static string PathFor(string storageName, string mapName)
             => UserPaths.Resolve($"sandbox/storage_{storageName}_{mapName}.txt");
 
@@ -1048,10 +1074,11 @@ public sealed partial class NetGame : Node3D
         }
 
         // QC stuffcmd(player, strcat("set ", cvar, " \"", value, "\"")) — pushes the serialized object into the
-        // player's clipboard cvar. The port has no svc_stufftext channel to run a console command on a remote
-        // client, so object_duplicate copy is inert until that transport exists (paste from a manually-set cvar
-        // still works). Inert here, faithful to the registry's known clipboard gap.
-        public void SetClipboard(Entity player, string cvar, string value) { }
+        // player's clipboard cvar. The host callback handles the only transport the port has: setting the cvar
+        // directly on the SHARED cvar store when the target is the listen-server local host (whose console reads
+        // the same store the menu/client read). A remote client over a dedicated server still can't be reached
+        // (no svc_stufftext channel) — that recipient is silently skipped, matching the documented residual.
+        public void SetClipboard(Entity player, string cvar, string value) => _setClipboard(player, cvar, value);
     }
 
     /// <summary>
@@ -1698,6 +1725,12 @@ public sealed partial class NetGame : Node3D
         // source the shownames/scoreboard use (listen-server Player.Team, else the networked scoreboard row).
         UpdateViewModelTeamGlow();
 
+        // Reload animation (Base wframe WFRAME_RELOAD → anim_reload). The port does not network the wframe temp
+        // entity, but the reload state IS observable from the already-networked clip counter: clip_load == -1 is the
+        // QC "scheduled for reload" sentinel (set for the duration of the reload think). Play the viewmodel reload
+        // clip once on the rising edge so the gun visibly cycles through a reload, dropping back to idle when done.
+        UpdateViewModelReloadAnim();
+
         // Per-weapon wr_viewmodel override (Base viewmodel_draw 324-327: newname = wep.wr_viewmodel(wep, this)).
         // Only Tuba overrides it, swapping its v_ model by the currently played instrument (tuba/akordeon/
         // kleinbottle). Resolved live so a reload that cycles the instrument rebuilds the gun model. Empty = no
@@ -1777,6 +1810,32 @@ public sealed partial class NetGame : Node3D
         }
 
         _viewModel.SetTeamGlow(glow, teamColor, true);
+    }
+
+    /// <summary>
+    /// Drive the first-person reload animation from the networked clip state — the port's stand-in for Base's
+    /// networked <c>WFRAME_RELOAD</c> (all.qc <c>NET_HANDLE(wframe)</c> plays <c>anim_reload</c> when the server
+    /// reports a reload). The port doesn't network the <c>wframe</c> temp entity, but a reload is fully observable
+    /// from the already-networked magazine counter: <c>ClipLoad == -1</c> is the QC "scheduled for reload" sentinel
+    /// (<see cref="WeaponSlotState.ClipLoad"/>), held for the duration of the reload think. Play the viewmodel
+    /// reload clip ONCE on the rising edge (so it doesn't restart every frame); the viewmodel returns to its idle
+    /// clip when the one-shot reload clip finishes. Listen-server only reads the local <see cref="LocalServerPlayer"/>
+    /// slot state, same source the crosshair reload ring uses.
+    /// </summary>
+    private void UpdateViewModelReloadAnim()
+    {
+        if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel))
+            return;
+        bool reloading = false;
+        if (LocalServerPlayer is { } p && !p.IsDead && !p.IsObserver)
+        {
+            WeaponSlotState st = p.WeaponState(new WeaponSlot(0));
+            // clip_load == -1 = QC reload-in-progress sentinel; clip_size>0 guards non-reloadable weapons (clip 0).
+            reloading = st.ClipSize > 0 && st.ClipLoad < 0;
+        }
+        if (reloading && !_viewmodelReloading)
+            _viewModel.PlayReload();
+        _viewmodelReloading = reloading;
     }
 
     /// <summary>Port of <c>vortex_glowcolor</c> (weapon/vortex.qc:7): a charge-scaled blend of the player's team
@@ -3310,6 +3369,13 @@ public sealed partial class NetGame : Node3D
         // crewed the pilot sees that gunner's straight-fire marker too.
         FeedPilotGunnerAux(hud, veh.VehGun1, 1);
         FeedPilotGunnerAux(hud, veh.VehGun2, 2);
+
+        // QC bumblebee vr_hud (bumblebee.qc:977-987): the pilot's blinking "No right/left gunner!" prompts, shown
+        // while a side-gun seat is unmanned (the QC test is `!AuxiliaryXhair[1/2].draw2d` — no gunner aux crosshair
+        // this frame, i.e. the gun has no seated player). Only the bumblebee draws these.
+        bool bumble = veh.VehicleDef is Bumblebee;
+        hud.ShowNoRightGunner = bumble && veh.VehGun1?.VehSlotPlayer is null;
+        hud.ShowNoLeftGunner  = bumble && veh.VehGun2?.VehSlotPlayer is null;
 
         // Centered main reticle + bomb dropmark (QC raptor vr_crosshair, raptor.qc:767-833). The raptor draws a
         // per-secondary-mode reticle (RSM_BOMB → vCROSS_BURST, RSM_FLARE → vCROSS_RAIN) and, in bomb mode, a

@@ -370,10 +370,12 @@ public partial class ItemsTimePanel : HudPanel
             if (progressbarReduced) { pPos = numPos; pSize = new Vector2(((ar - 1f) / ar) * mySize.X, mySize.Y); }
             else { pPos = myPos; pSize = mySize; }
 
-            float frac = Mathf.Clamp(t / progressbarMaxtime, 0f, 1f);
-            // QC passes iconalign as the bar's baralign (so the bar grows away from the icon side).
-            DrawProgressBar(pPos, pSize, frac, iconalign ? 1 : 0, progressbarName,
-                new Color(color.R, color.G, color.B), pbAlpha);
+            // QC: HUD_Panel_DrawProgressBar(p_pos, p_size, name, t/maxtime, vertical=0, baralign=iconalign, color, alpha).
+            // Route through the shared faithful primitive (3-slice cap render + skin art resolve), not a flat fill —
+            // length_ratio is NOT pre-clamped here (the primitive clamps >1 internally, matching the QC).
+            float frac = t / progressbarMaxtime;
+            DrawProgressBar(new Rect2(pPos, pSize), progressbarName, frac, vertical: false,
+                baralign: iconalign ? 1 : 0, new Color(color.R, color.G, color.B), pbAlpha);
         }
 
         // Number / checkmark (QC: text on → seconds while t>0, else the checkmark in the number slot).
@@ -435,30 +437,6 @@ public partial class ItemsTimePanel : HudPanel
         float tx = box.Position.X + (box.Size.X - tw) * 0.5f;
         float ty = box.Position.Y + (box.Size.Y - sz) * 0.5f;
         DrawText(new Vector2(tx, ty), s, col, sz);
-    }
-
-    // -------------------------------------------------------------------------------------------------
-    //  Progress bar (QC HUD_Panel_DrawProgressBar — horizontal here; baralign 0 = grow-right, 1 = grow-left).
-    //  Renders the named skin art clipped to the fill rect; falls back to a tinted rect when art is missing.
-    // -------------------------------------------------------------------------------------------------
-    private void DrawProgressBar(Vector2 origin, Vector2 size, float lengthRatio, int baralign, string barName,
-        Color color, float alpha)
-    {
-        if (alpha <= 0f || lengthRatio <= 0f) return;
-        if (lengthRatio > 1f) lengthRatio = 1f;
-
-        var fill = new Color(color.R, color.G, color.B, alpha);
-        float w = size.X;
-        float left = origin.X;
-        if (baralign == 1) left += (1f - lengthRatio) * w;           // right align (grow left)
-        else if (baralign == 2) left += 0.5f * (1f - lengthRatio) * w; // center align
-        var fillRect = new Rect2(new Vector2(left, origin.Y), new Vector2(w * lengthRatio, size.Y));
-
-        if (!DrawSkinPic(barName, fillRect, fill))
-        {
-            DrawRect(new Rect2(origin, size), new Color(0f, 0f, 0f, alpha * 0.35f)); // track
-            DrawRect(fillRect, fill);
-        }
     }
 
     // -------------------------------------------------------------------------------------------------

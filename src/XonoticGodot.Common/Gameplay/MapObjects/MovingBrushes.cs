@@ -11,10 +11,12 @@
 //    makevectors-sine technique, ported faithfully).
 //  - func_train rides between path_corner waypoints via SUB_CalcMove, waiting `.wait` at each.
 //
-// Ported in full now: func_rotating target-toggled spin (setactive), the func_train path_corner chain with
-// per-corner speed/wait, TRAIN_TURN orientation toward the next corner, TRAIN_CURVE bezier control points
-// (curvetarget), TRAIN_NEEDACTIVATION (use to start), and target_random. Genuinely out of scope: the looping
-// ambient-sound networking and CSQC bits.
+// Ported in full now: func_rotating target-toggled spin (setactive) WITH its looping .noise ambient on
+// CH_AMBIENT_SINGLE (started/stopped in setactive, kicked off at spawn via reset, exactly as rotating.qc),
+// the func_train path_corner chain with per-corner speed/wait, TRAIN_TURN orientation toward the next corner,
+// TRAIN_CURVE bezier control points (curvetarget), TRAIN_NEEDACTIVATION (use to start), and target_random.
+// The looping ambient is a PERSISTENT facade loop (the headless analogue of QC's per-player MSG_ONE
+// init_for_player resend — no client roster at this layer). Genuinely out of scope: the CSQC bits.
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
@@ -73,16 +75,14 @@ public static class MovingBrushes
         this_.Blocked = MapMover.GenericPlatBlocked;
         this_.Use = RotatingUse;          // a targeted func_rotating toggles its spin when triggered
         this_.Reset = RotatingReset;      // QC rotating.qc: this.reset = func_rotating_reset (round restart)
-        this_.Active = MapMover.ActiveActive;
-
-        // STARTOFF: spawn stopped (and inactive).
-        if ((this_.SpawnFlags & RotatingStartOff) != 0)
-        {
-            this_.AVelocity = Vector3.Zero;
-            this_.Active = MapMover.ActiveNot;
-        }
 
         MapMover.IndexRegister(this_);
+
+        // QC rotating.qc:103-104: this.reset = func_rotating_reset; this.reset(this) — the spawn-time reset call
+        // is what sets the initial active state AND starts the looping .noise ambient via setactive(ACTIVE_ACTIVE)
+        // (STARTOFF -> setactive(ACTIVE_NOT), spun-down + silent). We mirror that here instead of poking .Active
+        // directly, so the ambient now starts at spawn exactly as Base does.
+        RotatingReset(this_);
 
         // QC parks a far-future think purely so PushMove keeps simulating it; the engine sim integrates the
         // constant avelocity. We leave Think null and rely on the MOVETYPE_PUSH integrator.
@@ -102,7 +102,18 @@ public static class MovingBrushes
         else
             this_.Active = state;
 
-        this_.AVelocity = this_.Active == MapMover.ActiveNot ? Vector3.Zero : this_.Pos1;
+        if (this_.Active == MapMover.ActiveNot)
+        {
+            // QC rotating.qc:16-20: avelocity 0 + stopsound(this, CH_AMBIENT_SINGLE).
+            this_.AVelocity = Vector3.Zero;
+            MapMover.StopAmbient(this_, SoundChannel.AmbientSingle);
+        }
+        else
+        {
+            // QC rotating.qc:21-28: restore the stored spin + (re)start the looping .noise on CH_AMBIENT_SINGLE.
+            this_.AVelocity = this_.Pos1;
+            MapMover.LoopAmbient(this_, this_.Noise, SoundChannel.AmbientSingle);
+        }
     }
 
     /// <summary>

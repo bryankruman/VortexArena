@@ -226,6 +226,14 @@ public sealed class Mage : Monster
         Api.Entities.SetOrigin(spike, e.Origin + fwd * 14f + new Vector3(0, 0, 30) + right * -14f);
         spike.Enemy = target;
         spike.AVelocity = new Vector3(300, 300, 300);
+        // QC M_Mage_Attack_Spike:238 — CSQCProjectile(missile, true, PROJECTILE_MAGE_SPIKE, true): the spike is
+        // networked as a CSQC projectile with the PROJECTILE_MAGE_SPIKE type (a glow sprite + EFFECT_TR_VORESPIKE
+        // violet trail + light, ProjectileCatalog.MageSpike). SpawnProjectile stamps NetName from the monster def
+        // ("mage"), which the client ProjectileCatalog.Classify already routes via its `Has(s, "mage")` branch to
+        // ProjectileType.MageSpike — but set the explicit "mage_spike" netname (the QC PROJECTILE_MAGE_SPIKE name)
+        // so the in-flight model/trail is unambiguous and self-documenting, exactly as Spider.cs pins "electro_orb"
+        // for its web. (ClassName stays monster_projectile, so the client's IsProjectile routing is unaffected.)
+        spike.NetName = "mage_spike";
         st.ActiveSpike = spike;
 
         Api.Sound.Play(e, SoundChannel.Weapon, "weapons/electro_fire.wav");
@@ -382,6 +390,17 @@ public sealed class Mage : Monster
                 // Ally monster: Send_Effect(EFFECT_HEALING) then heal toward its own max (no resource limit).
                 EffectEmitter.Emit("HEALING", it.Origin, fxVel, 5);
                 it.GiveResourceWithLimit(ResourceType.Health, HealAllies, it.MaxHealth);
+                // mage.qc:280-281 — if (!(it.spawnflags & MONSTERFLAG_INVINCIBLE) && it.sprite)
+                //     WaypointSprite_UpdateHealth(it.sprite, GetResource(it, RES_HEALTH));
+                // Refresh the healed ally's floating health bar so it reflects the new health (the monster carries
+                // its WaypointSprite on its own MonsterState; UpdateHealthbar normalizes by the ally's max_health
+                // and no-ops when it has no sprite / healthbars are off). The invincible guard mirrors QC.
+                if ((it.SpawnFlags & MonsterAI.MonsterFlag_Invincible) == 0)
+                {
+                    MonsterAI.MonsterState? allyState = MonsterAI.StateOf(it);
+                    if (allyState is not null)
+                        MonsterAI.UpdateHealthbar(allyState, it.Health);
+                }
             }
         }
 

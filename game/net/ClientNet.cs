@@ -88,6 +88,13 @@ public sealed class ClientNet : IDisposable
     /// <summary>The current predicted local origin (Quake space) — what the camera follows.</summary>
     public NVec3 PredictedOrigin => _reconciler.Predicted.Origin;
 
+    /// <summary>The local player's own latest decoded entity state (kind/model/health/team/flags), captured from
+    /// the snapshot before it is skipped for interpolation (we predict our own origin, not interpolate it). Lets
+    /// the own name tag (chase_active + hud_shownames_self) read the same entcs slice QC iterates for self. Null
+    /// until the first snapshot carrying the local entity arrives. Origin/angles here are the last SERVER values —
+    /// the camera/own-tag should pair this with <see cref="PredictedOrigin"/> for the live position.</summary>
+    public NetEntityState? LocalState { get; private set; }
+
     /// <summary>The current predicted local velocity (Quake space).</summary>
     public NVec3 PredictedVelocity => _reconciler.Predicted.Velocity;
 
@@ -351,6 +358,7 @@ public sealed class ClientNet : IDisposable
         _wasConnected = false;
         Accepted = false;
         _remotes.Clear();
+        LocalState = null; // drop the captured local entcs slice across reconnect/map change
         // session-scoped replication state: a fresh session re-sends all cvars and starts override-free.
         MovementParameters.PredictionOverride = null;
         _replicatedLastSent.Clear();
@@ -1141,7 +1149,12 @@ public sealed class ClientNet : IDisposable
         {
             int netId = kv.Key;
             if (netId == LocalNetId)
-                continue; // never interpolate our own entity (we predict it)
+            {
+                // Never interpolate our own entity (we predict it) — but keep its decoded slice so the own name tag
+                // (QC Draw_ShowNames self branch: chase_active + hud_shownames_self) can read kind/health/team/flags.
+                LocalState = kv.Value;
+                continue;
+            }
 
             NetEntityState s = kv.Value;
             RemoteEntity re = GetOrCreateRemote(netId);

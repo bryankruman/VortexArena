@@ -649,6 +649,39 @@ public partial class ViewModel : Node3D
         return _animator!.CurrentClip;
     }
 
+    /// <summary>
+    /// Play the weapon's <b>reload</b> animation once — the visible analog of Base's networked
+    /// <c>WFRAME_RELOAD</c> (all.qc <c>NET_HANDLE(wframe)</c> sets <c>anim_reload</c> when the server reports a
+    /// reload). The port does not network the <c>wframe</c> temp entity, so the host derives the reload edge from
+    /// the already-networked clip state (<c>clip_load == -1</c>, the QC "scheduled for reload" sentinel) and calls
+    /// this once per reload. Plays the model's "reload" clip (best-effort: only multi-frame v_/h_ rigs that ship a
+    /// reload clip animate; single-frame guns no-op gracefully). The clip is non-looping, so
+    /// <see cref="_Process"/> drops back to the idle clip when it finishes, matching <c>viewmodel_draw</c> 335-337
+    /// (<c>anim_set(this, anim_idle, ...)</c> once the override clip ends).
+    /// </summary>
+    public void PlayReload()
+    {
+        if (_animator is null)
+            return;
+        // Best-effort: only models that ship a reload clip animate the reload (Base picks anim_reload; a model
+        // without that frame group simply keeps idling, so a no-op here is the faithful degenerate case — we do
+        // NOT borrow the fire clip, which would read as the gun firing mid-reload).
+        foreach (string n in new[] { "reload", "reload1", "load" })
+            if (_animator.PlayIfChanged(n))
+                return;
+    }
+
+    /// <summary>Play the model's looping idle clip (Base <c>viewmodel_draw</c> 335-337: re-asserts
+    /// <c>anim_idle</c> when no fire/reload override is running). No-op when the model has no idle/anim.</summary>
+    private void PlayIdle()
+    {
+        if (_animator is null)
+            return;
+        foreach (string n in new[] { "idle", "still", "stand" })
+            if (_animator.PlayIfChanged(n))
+                return;
+    }
+
     // =================================================================================================
     //  Weapon switch raise/lower (Xonotic viewmodel_draw raise/drop — view.qc:339-362)
     // =================================================================================================
@@ -738,6 +771,12 @@ public partial class ViewModel : Node3D
 
         UpdateSwitch(dt);
         UpdateSway(dt);
+
+        // Idle recovery (Base viewmodel_draw 335-337: re-assert anim_idle once the fire/reload override clip ends).
+        // A one-shot fire/reload clip clears the animator's playing flag when its playhead reaches the end; drop
+        // back to the looping idle so the gun keeps subtly cycling rather than freezing on the last fire frame.
+        if (_animator is not null && !_animator.IsPlaying)
+            PlayIdle();
     }
 
     /// <summary>

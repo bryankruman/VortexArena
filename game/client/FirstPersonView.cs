@@ -403,6 +403,15 @@ public sealed class FirstPersonView
         // sin-wave of pitch/yaw/roll applies in both first-person and chase. Off by default (v_idlescale 0).
         ApplyIdleScaling(ref viewAngles);
 
+        // QC View_Lock (view.qc:1395, called from CSQC_UpdateView:1733 AFTER the event-chase camera "so that it
+        // still applies whenever necessary"): cl_lockview freezes the final rendered view. lock_type >= 1 pins the
+        // origin to the captured freeze_org; lock_type == 1 ALSO pins the angles to freeze_ang (2 = origin-only, so
+        // you can still look around a frozen point). lock_type 0 continuously captures the live origin/angles so the
+        // freeze starts from wherever the view was when it's next enabled. The UI-forced lock_type=1 conditions
+        // (hud_configure / clickable radar / minigame menu / quickmenu) are not on the net play path, so only the
+        // cl_lockview cvar is honored here. Applied to the final Quake values before they build the camera basis.
+        ApplyViewLock(ref camQuake, ref viewAngles);
+
         // Orientation: derive the camera basis from the SAME Quake view vectors the sim and aiming use
         // (QMath.AngleVectors), converted axis-by-axis into Godot space. This guarantees the camera looks
         // exactly where movement goes and where AimForwardQuake shoots. Building it from a separate negated-yaw
@@ -801,6 +810,32 @@ public sealed class FirstPersonView
 
     // The dt of the latest UpdateView, so ApplyEventChase advances the smoothed distance against the same step.
     private float _lastDt;
+
+    // QC View_Lock freeze_org / freeze_ang (view.qc:641): the captured render origin/angles cl_lockview pins the
+    // view to. Continuously refreshed while the lock is off so it engages from the live view; held while on.
+    private NVec3 _freezeOrg;
+    private NVec3 _freezeAng;
+
+    /// <summary>
+    /// Port of <c>View_Lock</c> (view.qc:1395). <c>cl_lockview</c> 0 = no lock (continuously capture the live
+    /// origin/angles into freeze_org/freeze_ang); &gt;= 1 = pin the origin to the captured freeze_org; == 1 = ALSO
+    /// pin the angles to freeze_ang (== 2 freezes only the origin, so you can still look around). Operates on the
+    /// final Quake render origin + view angles.
+    /// </summary>
+    private void ApplyViewLock(ref NVec3 camQuake, ref NVec3 viewAngles)
+    {
+        int lockType = (int)Cvar("cl_lockview", 0f);
+
+        if (lockType >= 1)
+            camQuake = _freezeOrg;
+        else
+            _freezeOrg = camQuake;
+
+        if (lockType == 1)
+            viewAngles = _freezeAng;
+        else
+            _freezeAng = viewAngles;
+    }
 
     /// <summary>
     /// Read a float cvar live, falling back to <paramref name="fallback"/> only when the cvar is genuinely unset

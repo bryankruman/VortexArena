@@ -195,16 +195,9 @@ namespace XonoticGodot.Common.Framework
         /// <summary>QC racer <c>.invincible_finished</c> (reused) — afterburn under-craft smoke-trail gate (next emit at time + 0.1 + rand*0.1).</summary>
         public float VehSmokeTime;
 
-        // =====================================================================================
-        // Secondary-weapon HUD mirror (racer vehicle_ammo2 / vehicle_reload2) — written onto the seated
-        // pilot each tick for the on-foot vehicle HUD's rocket ammo gauge + reload progress bar.
-        // =====================================================================================
-
-        /// <summary>QC player <c>.vehicle_ammo2</c> — secondary (rocket) ammo % for the HUD: 100 idle / 50 after shot 1 / 0 after the pair.</summary>
-        public float VehAmmo2;
-
-        /// <summary>QC player <c>.vehicle_reload2</c> — secondary reload progress 0..100 (bound(0,100*(time-lip)/(delay-lip),100)).</summary>
-        public float VehReload2;
+        // NOTE: the racer's secondary-weapon HUD mirror (QC player .vehicle_ammo2 / .vehicle_reload2) is written
+        // onto the seated pilot's VehicleAmmo2 / VehicleReload2 (the networked stats the on-foot vehicle HUD reads
+        // via NetGame -> VehicleHud), exactly like the Raptor/Bumblebee — NOT to a racer-private scratch field.
 
         // NOTE: QC vehicle <c>.mass</c> (spiderbot 5000 / racer 900 / raptor 1) is already promoted on the
         // Entity partial by Gameplay/Damage/DamageEntityState.cs (`public float Mass;`), where the damage

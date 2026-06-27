@@ -68,6 +68,11 @@ public sealed class TurretState
     /// <summary>QC <c>.tur_head.avelocity</c> — head angular velocity (fluid-inertia / fluid-precise motors).</summary>
     public Vector3 HeadAVelocity;
 
+    /// <summary>QC <c>.tur_head.scale</c> — the head-bone render scale (fusionreactor.qc tr_setup sets <c>0.75</c>;
+    /// most turrets leave it at the default 1). Presentation-only — carried so the head identity matches Base for
+    /// when the turret client render lands. Defaults to 1 (unscaled).</summary>
+    public float HeadScale = 1f;
+
     /// <summary>QC <c>.idle_aim</c> — the resting head pose (relative to the body) used when idle.</summary>
     public Vector3 IdleAim;
 
@@ -176,6 +181,15 @@ public sealed class TurretState
 /// </summary>
 public static class TurretAI
 {
+    // ---- turret class spawnflags (QC TUR_FLAG_*, turret.qh) — declarative identity carried per turret class ----
+    /// <summary>QC <c>TUR_FLAG_SUPPORT</c> — a support unit (e.g. fusion reactor). In Base this selects
+    /// <c>turret_targetscore_support</c> over <c>_generic</c>; the reactor never uses targetscore (its HITALLVALID
+    /// sweep gates directly), so the flag is carried as identity data, not as a scoring switch.</summary>
+    public const int TurFlagSupport = 1 << 0;
+    /// <summary>QC <c>TUR_FLAG_AMMOSOURCE</c> — declarative marker that this turret supplies ammo to others.
+    /// Verified to be NEVER read anywhere in Base qcsrc (purely declarative); carried only to match identity.</summary>
+    public const int TurFlagAmmoSource = 1 << 1;
+
     // ---- target-select flags (QC TFL_TARGETSELECT_*, turret.qh) used by ValidTarget gating ----
     public const int SelectLos        = 1 << 0;  ///< require line of sight
     public const int SelectPlayers    = 1 << 1;  ///< may target players

@@ -47,6 +47,25 @@ public sealed class Tuba : Weapon
 
     public Balance Cvars;
 
+    /// <summary>
+    /// Host seam for QC's <c>W_Tuba_NoteOff</c> recognized-melody broadcast (tuba.qc:115-131): when a magic-ear
+    /// matches a played melody, QC <c>bprint</c>s "* NAME played on the @!#%'n Tuba/Accordeon/Klein Bottle: TEXT"
+    /// to all clients. The arguments are <c>(actor, instrument, matchedText)</c>; the host composes the player
+    /// display name (not carried on the Common entity) and the per-instrument label and broadcasts it via the
+    /// chat pipeline. Unwired = the chat line is omitted (no regression, matching the prior behavior).
+    /// </summary>
+    public static System.Action<Entity, int, string>? TubaMelodyBprint;
+
+    /// <summary>The three instrument display labels for <see cref="TubaMelodyBprint"/> (QC's bprint switch,
+    /// tuba.qc:118-129): 0 = Tuba, 1 = Accordeon, 2 = Klein Bottle. Host composes
+    /// "* NAME played on the @!#%'n {label}: {text}".</summary>
+    public static string InstrumentLabel(int instrument) => instrument switch
+    {
+        1 => "@!#%'n Accordeon",
+        2 => "@!#%'n Klein Bottle",
+        _ => "@!#%'n Tuba",
+    };
+
     public Tuba()
     {
         NetName = "tuba";
@@ -244,9 +263,15 @@ public sealed class Tuba : Weapon
         st.TubaLastNotesCount = System.Math.Min(st.TubaLastNotesCount + 1, MaxTubaNotes); // bound(0, cnt+1, MAX)
 
         // QC then runs the just-played note buffer through every magic-ear in TUBA mode (an empty say message),
-        // so map melody triggers (W_Tuba_HasPlayed) fire. tuba.qc:114-131. The non-empty bprint chat line
-        // ("NAME played on the @!#%'n Tuba: ...") needs a broadcast-print seam absent in Common (see todos).
-        LogicGates.MagicEarProcessAllEars(actor, 0, null, "");
+        // so map melody triggers (W_Tuba_HasPlayed) fire. tuba.qc:114-131. When an ear MATCHES, it returns the
+        // ear's replacement text (s != ""), and QC bprints "* NAME played on the @!#%'n Tuba/Accordeon/Klein
+        // Bottle: s" to everyone. The compose+broadcast (player display name + bprint) lives host-side (the name
+        // is not on the Common entity and there is no broadcast-print primitive in Common), so we capture the
+        // matched text and the instrument and hand them to the host seam (TubaMelodyBprint). When unwired the
+        // chat line is simply omitted — identical to the prior behavior, no regression.
+        string melodyMatch = LogicGates.MagicEarProcessAllEars(actor, 0, null, "");
+        if (!string.IsNullOrEmpty(melodyMatch))
+            TubaMelodyBprint?.Invoke(actor, (int)note.Frame, melodyMatch); // note.Frame holds st.TubaInstrument (set at note spawn)
 
         // Stop the sustained note loop on CH_TUBA. QC's CSQC fades over cl_tuba_fadetime (Ent_TubaNote_Think
         // ramps tuba_volume down before sound(SND_Null)); we don't model the fade ramp (it needs a client-side

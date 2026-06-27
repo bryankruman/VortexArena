@@ -68,6 +68,17 @@ public partial class VehicleHud : HudPanel
     /// <summary>The dropmark image (QC <c>vCROSS_DROP</c>).</summary>
     public string DropmarkImage { get; set; } = "gfx/vehicles/crosshair_drop";
 
+    // =====================================================================================
+    //  Bumblebee "No right/left gunner!" prompts (QC bumblebee vr_hud, bumblebee.qc:977-987)
+    // =====================================================================================
+
+    /// <summary>QC bumblebee vr_hud: the pilot sees a blinking "No right gunner!" prompt while gun1's seat is
+    /// empty (the QC test is <c>!AuxiliaryXhair[1].draw2d</c> — no right-gunner aux crosshair this frame).</summary>
+    public bool ShowNoRightGunner { get; set; }
+    /// <summary>QC bumblebee vr_hud: the blinking "No left gunner!" prompt while gun2's seat is empty
+    /// (QC <c>!AuxiliaryXhair[2].draw2d</c>).</summary>
+    public bool ShowNoLeftGunner { get; set; }
+
     // Art base names selected by ConfigureForVehicle (the vehicle silhouette + weapon overlays).
     private string _vehiclePic = "vehicle_racer";
     private string? _weapon1Pic = "vehicle_racer_weapon1";
@@ -126,6 +137,8 @@ public partial class VehicleHud : HudPanel
         _aux.Clear();
         MainReticle = "";
         DropmarkActive = false;
+        ShowNoRightGunner = false;
+        ShowNoLeftGunner = false;
         StopAlarms(); // QC: the alarm channels stop when the vehicle HUD is dismissed
         QueueRedraw();
     }
@@ -346,6 +359,19 @@ public partial class VehicleHud : HudPanel
             new Color(1f, 1f, 1f, Ammo1 > 0f ? 1f : 0.2f));
         DrawSkinPic("vehicle_icon_ammo2", new Rect2(new Vector2(w * (624f / 768f), h * 0.5f), iconSize),
             new Color(1f, 1f, 1f, Ammo2 > 0f ? 1f : 0.2f));
+
+        // QC bumblebee vr_hud (bumblebee.qc:971-987): the pilot's blinking "No right/left gunner!" prompts while a
+        // side-gun seat is empty. blinkValue = 0.55 + sin(time*7)*0.45 (same pulse as the low-health alarm), text
+        // pure white at hud_fg_alpha * blink, positioned x = 520/768 across, y = 96/256 (right) / 160/256 (left).
+        if (ShowNoRightGunner || ShowNoLeftGunner)
+        {
+            float promptX = w * (520f / 768f);
+            var promptCol = new Color(1f, 1f, 1f, blink);
+            if (ShowNoRightGunner)
+                DrawText(new Vector2(promptX, h * (96f / 256f) - FontSize), "No right gunner!", promptCol);
+            if (ShowNoLeftGunner)
+                DrawText(new Vector2(promptX, h * (160f / 256f)), "No left gunner!", promptCol);
+        }
     }
 
     private static Color AmmoTint(float ammo) => new Color(1f, 1f, 1f) * ammo + new Color(1f, 0f, 0f) * (1f - ammo);

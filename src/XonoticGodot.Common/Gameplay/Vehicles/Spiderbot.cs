@@ -426,17 +426,14 @@ public sealed class Spiderbot : Vehicle
         {
             if (Time >= when)
             {
+                // QC spiderbot_blowup (spiderbot.qc:408-458): spawn the 4 physics gib entities (head/2 guns/body)
+                // BEFORE the radius blast, then deal damage and hide the originals. The flung head runs
+                // spiderbot_headfade, which emits the EFFECT_EXPLOSION_BIG + SND_ROCKET_IMPACT on its own final
+                // fade (not at the main blast — so this no longer pops EXPLOSION_BIG here).
+                SpawnDeathGibs(self);
+
                 // spiderbot.qc spiderbot_blowup: the final death blast is DEATH_VH_SPID_DEATH.
                 WeaponSplash.RadiusDamage(self, self.Origin, 250f, 15f, 250f, self.Enemy, 0, 250f, deathTag: DeathTypes.VhSpidDeath);
-
-                // QC spiderbot_blowup spawns 4 physics gib entities; the flung head runs spiderbot_headfade which
-                // — when it finally fades while still visible — plays SND_ROCKET_IMPACT + Send_Effect(EFFECT_EXPLOSION_BIG,
-                // origin + '0 0 100', ...). The port doesn't spawn the physics gibs server-side (the client
-                // VehicleVisuals does an approximate gib arc), but the head's final explosion is an
-                // authoritative server effect/sound, so reproduce it at the blast (mirrors the sibling Bumblebee
-                // blowup which emits EXPLOSION_BIG + SND_ROCKET_IMPACT at its final detonation).
-                if (Api.Services is not null) Api.Sound.Play(self, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav");
-                EffectEmitter.Emit("EXPLOSION_BIG", self.Origin + new Vector3(0f, 0f, 100f), Vector3.Zero, 1);
 
                 self.DeadState = DeadFlag.Dead;
                 self.MoveType = MoveType.None;
@@ -460,12 +457,132 @@ public sealed class Spiderbot : Vehicle
             }
         };
         vehicle.NextThink = Time;
-        // TODO(port,client): qcsrc/common/vehicles/vehicle/spiderbot.qc spiderbot_blowup — the 4 head/gun/body
-        //                    physics gib entities (head MF_ROCKET+EF_FLAME bounce + spiderbot_headfade, 2 tossed
-        //                    guns v_forward*700, body frame 11) are presentation, done approximately by the
-        //                    client VehicleVisuals gib arc; the authoritative burn EXPLOSION_SMALL + the
-        //                    head-fade EXPLOSION_BIG + SND_ROCKET_IMPACT are now emitted server-side above.
+        // The 4 head/gun/body physics gib entities (head EF_FLAME bounce + spiderbot_headfade, 2 tossed guns
+        // v_forward*700, body frame 11) are now spawned server-side in SpawnDeathGibs below — matching QC
+        // spiderbot_blowup (spiderbot.qc:408-458). The per-burn EXPLOSION_SMALL + impact sound (above) and the
+        // head's final EXPLOSION_BIG + SND_ROCKET_IMPACT (HeadFade) are authoritative server effects.
+        // TODO(port,client): the head's MF_ROCKET modelflag (rocket-smoke-trail render) is a client-only
+        //                    modelflag with no port Entity field; EF_FLAME (the burning glow) IS set.
     }
+
+    /// <summary>
+    /// Port of the gib-spawn tail of <c>spiderbot_blowup</c> (spiderbot.qc:408-458): scatter 4 physics debris
+    /// entities off the dying walker — the body (frame 11, in place), the head (MOVETYPE_BOUNCE, EF_FLAME, flung
+    /// up, fades + explodes via its own headfade think), and the two guns (MOVETYPE_TOSS, flung forward). All
+    /// darkened (<c>colormod '-2 -2 -2'</c>) and faded out. Pure presentation/physics — a gib deals no damage.
+    /// </summary>
+    private void SpawnDeathGibs(Entity vehic)
+    {
+        if (Api.Services is null) return;
+
+        // QC: makevectors is implied via the body angles; the guns are tossed along v_forward, the head up.
+        QMath.AngleVectors(vehic.Angles, out Vector3 forward, out _, out Vector3 _up);
+        Vector3 dark = new(-2f, -2f, -2f);             // QC: colormod = '-2 -2 -2'
+        float fadeGun = MathF.Min(RespawnTime, 10f);   // QC: SUB_SetFade(g, time, min(respawntime, 10))
+
+        // --- body (frame 11, stays at the vehicle origin, fades after 5s) ------------------------------
+        Entity b = Api.Entities.Spawn();
+        b.ClassName = "spiderbot_body";
+        b.Model = "models/vehicles/spiderbot.dpm"; // MDL_VEH_SPIDERBOT_BODY
+        Api.Entities.SetModel(b, b.Model);
+        Api.Entities.SetOrigin(b, vehic.Origin);
+        b.Frame = 11f;                                  // QC: b.frame = 11
+        b.Angles = vehic.Angles;
+        Api.Entities.SetSize(b, vehic.Mins, vehic.Maxs);
+        b.ColorModKey = dark;
+        FadeGib(b, Time + 5f, MathF.Min(RespawnTime, 1f)); // QC: SUB_SetFade(b, time+5, min(respawntime,1))
+
+        // --- head (MOVETYPE_BOUNCE, EF_FLAME, flung up + spinning, runs HeadFade) ----------------------
+        Entity h = Api.Entities.Spawn();
+        h.ClassName = "spiderbot_top";
+        h.Model = "models/vehicles/spiderbot_top.dpm"; // MDL_VEH_SPIDERBOT_TOP
+        Api.Entities.SetModel(h, h.Model);
+        h.Solid = Solid.BBox;                           // QC: SOLID_BBOX (set before setorigin)
+        Api.Entities.SetOrigin(h, VehiclePhysics.TagOrigin(vehic, "tag_head"));
+        h.MoveType = MoveType.Bounce;                   // QC: MOVETYPE_BOUNCE
+        h.Velocity = _up * (500f + Prandom.Float() * 500f) + Prandom.Vec() * 128f;
+        h.Effects |= EfFlame;                           // QC: effects = EF_FLAME | EF_LOWPRECISION (MF_ROCKET = client modelflag, not modeled)
+        h.AVelocity = Prandom.Vec() * 360f;
+        h.Alpha = 1f;
+        h.ColorModKey = dark;
+        // QC spiderbot_headfade closure state: cnt = time + 3.5*random() (death deadline), fade_rate = 1/min(respawntime,10),
+        // fade_time = time. Held in locals (HeadFade is the sole reader and re-arms itself), so no new entity fields.
+        float headDeadline = Time + 3.5f * Prandom.Float();
+        float headFadeRate = 1f / MathF.Min(RespawnTime, 10f);
+        float headFadeTime = Time;
+        void HeadFade(Entity self)
+        {
+            self.NextThink = headFadeTime;
+            self.Alpha = 1f - (Time - headFadeTime) * headFadeRate;
+            if (headDeadline < Time || self.Alpha < 0.1f)
+            {
+                if (self.Alpha > 0.1f)
+                {
+                    // QC: sound(CH_SHOTS, SND_ROCKET_IMPACT); Send_Effect(EFFECT_EXPLOSION_BIG, origin + '0 0 100', ...).
+                    Api.Sound.Play(self, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav");
+                    EffectEmitter.Emit("EXPLOSION_BIG", self.Origin + new Vector3(0f, 0f, 100f), Vector3.Zero, 1);
+                }
+                Api.Entities.Remove(self);
+            }
+        }
+        h.Think = HeadFade;
+        h.NextThink = Time;
+
+        // --- two guns (MOVETYPE_TOSS, flung forward + spinning, fade) ----------------------------------
+        SpawnGunGib("tag_hardpoint01", vehic, forward, dark, fadeGun);
+        SpawnGunGib("tag_hardpoint02", vehic, forward, dark, fadeGun);
+
+        // QC: hide the originals (alpha = -1) — the death scene is the gibs from here on.
+        vehic.Alpha = -1f;
+        if (vehic.TurHead is not null) vehic.TurHead.Alpha = -1f;
+        if (vehic.VehGun1 is not null) vehic.VehGun1.Alpha = -1f;
+        if (vehic.VehGun2 is not null) vehic.VehGun2.Alpha = -1f;
+    }
+
+    private void SpawnGunGib(string tag, Entity vehic, Vector3 forward, Vector3 dark, float fadeTime)
+    {
+        if (Api.Services is null) return;
+        Entity g = Api.Entities.Spawn();
+        g.ClassName = "spiderbot_gun";
+        g.Model = "models/vehicles/spiderbot_barrels.dpm"; // MDL_VEH_SPIDERBOT_GUN
+        Api.Entities.SetModel(g, g.Model);
+        g.Solid = Solid.Corpse;                         // QC: SOLID_CORPSE (set before setorigin)
+        Api.Entities.SetOrigin(g, VehiclePhysics.TagOrigin(vehic.TurHead ?? vehic, tag));
+        g.MoveType = MoveType.Toss;                     // QC: MOVETYPE_TOSS
+        g.Velocity = forward * 700f + Prandom.Vec() * 32f; // QC: v_forward*700 + randomvec()*32
+        g.AVelocity = Prandom.Vec() * 180f;             // QC: avelocity = randomvec()*180
+        g.ColorModKey = dark;
+        FadeGib(g, Time + fadeTime, fadeTime);          // QC: SUB_SetFade(g, time, min(respawntime,10))
+    }
+
+    /// <summary>QC EF_FLAME (the burning-glow effect bit; the gib's flaming death trail).</summary>
+    private const int EfFlame = 1024;
+
+    /// <summary>
+    /// Port of QC <c>SUB_SetFade</c> + <c>SUB_SetFade_Think</c> (subs.qc:57-84): wait until
+    /// <paramref name="when"/>, then fade <c>alpha -= frametime * (1/fadingTime)</c> each tick (so the gib
+    /// fully fades over <paramref name="fadingTime"/> seconds), then remove. Used for the body + gun gibs (the
+    /// head runs its own headfade closure instead).
+    /// </summary>
+    private static void FadeGib(Entity gib, float when, float fadingTime)
+    {
+        if (Api.Services is null) return;
+        if (fadingTime <= 0f) fadingTime = 0.01f; // QC SUB_SetFade clamp
+        float fadeRate = 1f / fadingTime;          // QC: ent.fade_rate = 1/fading_time
+        gib.Alpha = 1f;
+        gib.Think = self =>
+        {
+            if (Time < when) { self.NextThink = when; return; } // QC: nextthink = vanish_time
+            if (self.Alpha == 0f) self.Alpha = 1f;              // QC SUB_SetFade_Think guard
+            self.Alpha -= FadeStep * fadeRate;                 // QC: alpha -= frametime * fade_rate
+            if (self.Alpha < 0.01f) Api.Entities.Remove(self); // QC: SUB_VanishOrRemove
+            else self.NextThink = Time + FadeStep;
+        };
+        gib.NextThink = when;
+    }
+
+    // The gib-fade think re-arms at this cadence; QC steps by `frametime` each frame, the port steps by this dt.
+    private const float FadeStep = 0.1f;
 
     // ============================ WEAPONS ============================
 

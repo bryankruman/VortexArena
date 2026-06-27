@@ -534,7 +534,7 @@ public sealed class Racer : Vehicle
             if (vehicle.VehBulletCounter == 1)
             {
                 FireRocket(vehicle, player, "tag_rocket_r", targ);
-                player.VehAmmo2 = 50f; // QC: half the rocket pair spent
+                player.VehicleAmmo2 = 50f; // QC: half the rocket pair spent
             }
             else if (vehicle.VehBulletCounter >= 2)
             {
@@ -544,17 +544,19 @@ public sealed class Racer : Vehicle
                 vehicle.VehBulletCounter = 0;
                 vehicle.VehWeaponDelay = Time + RocketRefire;
                 vehicle.VehReloadStart = Time; // QC .lip — start of the reload bar
-                player.VehAmmo2 = 0f; // QC: both rockets spent
+                player.VehicleAmmo2 = 0f; // QC: both rockets spent
             }
         }
         else if (vehicle.VehBulletCounter == 0)
         {
-            player.VehAmmo2 = 100f; // QC: idle, full secondary ammo
+            player.VehicleAmmo2 = 100f; // QC: idle, full secondary ammo
         }
 
         // QC racer_frame: the reload progress bar runs from .lip (pair-complete) to .delay (next allowed shot).
+        // This is the player .vehicle_reload2 stat the on-foot vehicle HUD reads (NetGame -> VehicleHud.Reload2);
+        // the same networked stat every other vehicle (Raptor/Bumblebee) drives, NOT the dead VehReload2 scratch.
         float reloadSpan = vehicle.VehWeaponDelay - vehicle.VehReloadStart;
-        player.VehReload2 = reloadSpan > 0f
+        player.VehicleReload2 = reloadSpan > 0f
             ? QMath.Bound(0f, 100f * (Time - vehicle.VehReloadStart) / reloadSpan, 100f)
             : 100f;
     }
