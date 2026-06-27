@@ -1,12 +1,12 @@
 unit: sv-commands-votes
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # drift re-audit 2026-06-27: adminmsg / delrec / printstats are now implemented + live (faithful ports of GameCommand_adminmsg / delrec→race_deleteTime / printstats→DumpStats); removed from the debug_tools.missing row (9 verbs remain). GameWorld.cs port_refs path moved game/world/ → src/XonoticGodot.Server/. All vote/timeout/ban logic + constants unchanged and re-verified faithful.
+last_audited: "2026-06-27"  # drift re-audit 2026-06-27 (2nd pass): sv_vote_master_ids auto-login (Base ClientConnect client.qc:1262-1264) is now PORTED + LIVE — GameWorld.cs:1373-1377 InfraClientConnect grants vote-master to any connecting client whose PersistentId is contained in sv_vote_master_ids (Voting.GrantMaster), reached via ClientManager.cs:251 OnClientConnect.Invoke. The last vote.master gap is closed. (1st pass: adminmsg / delrec / printstats implemented + live, removed from debug_tools.missing — 9 verbs remain.) All other vote/timeout/ban logic + constants re-verified faithful & unchanged vs Base.
 summary:
   feature_count: 17
   worst_gaps:
     - "radarmap / gettaginfo / animbench / bbox / trace / stuffto / database / effectindexdump / make_mapinfo: still not registered as commands (missing). (anticheat, adminmsg, delrec, printstats ARE now implemented.)"
-    - "master vote: sv_vote_master_ids (auto-login by crypto fingerprint on connect) is still not honored (the cvar exists but only as a private-cvar mask entry in CommandReplies; no ClientConnect auto-login)."
+    - "FIXED in this re-audit (2026-06-27 2nd pass): master vote sv_vote_master_ids auto-login is now honored — InfraClientConnect (GameWorld.cs:1373-1377) grants vote-master to any connecting client whose PersistentId is contained in sv_vote_master_ids, reached on the live connect path (ClientManager.cs:251). The vote.master row now has no residual gaps."
     - "who: ping/packetloss columns carry 0 in the Godot-free core (the net host owns live ping); a documented core limitation, not a logic gap. Full column table + sv_status_privacy hiding are present."
     - "Cross-server online ban sync (uri_get / g_ban_sync_*) is deliberately out of the headless core (intended divergence; local ban store complete)."
     - "FIXED in this re-audit (2026-06-27): adminmsg / delrec / printstats are now registered + live faithful ports (Commands.cs CmdAdminMsg / CmdDelRec / CmdPrintStats) — removed from the debug_tools.missing row. Earlier-fixed (2026-06-25, retained): the vote/timeout presentation+audio cues are LIVE through the real NotificationSystem channel — Voting.AnnounceVoteCall/Accept/Fail → MSG_ANNCE VOTE_CALL/VOTE_ACCEPT/VOTE_FAIL (GameWorld.cs:998-1000), Timeout.CenterPrintBeginning/Ending → MSG_CENTER TIMEOUT_BEGINNING/ENDING with the COUNT arg (GameWorld.cs:1164-1167), Timeout.AnnouncePrepare → MSG_ANNCE PREPARE (GameWorld.cs:1169). (Prior fixes — IsClient/timeout/game_starttime guards, spectator exclusion, ValidateMap, checkargs, slowmo, full who table, randomized shuffleteams, anticheat — all retained and re-verified; constants unchanged vs Base.)"
@@ -204,12 +204,16 @@ features:
     layer: [authority]
     base_refs:
       - "server/command/vote.qc:VoteCommand_master"
+      - "server/client.qc:ClientConnect (sv_vote_master_ids auto-login, client.qc:1262-1264)"
     port_refs:
       - "src/XonoticGodot.Server/VoteController.cs:CmdMaster"
+      - "src/XonoticGodot.Server/VoteController.cs:GrantMaster"
+      - "src/XonoticGodot.Server/GameWorld.cs:InfraClientConnect (sv_vote_master_ids auto-login, :1373-1377)"
     constants:
       - { name: "sv_vote_master", base: "0", port: "0 (cvar)", match: true }
       - { name: "sv_vote_master_callable", base: "0", port: "0 (cvar)", match: true }
       - { name: "sv_vote_master_commands", base: "movetored movetoblue movetoyellow movetopink movetospec", port: "cvar", match: true }
+      - { name: "sv_vote_master_ids idfp match", base: "strstrofs(list, crypto_idfp, 0) >= 0 (substring)", port: "masterIds.Contains(PersistentId, Ordinal)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -219,13 +223,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "sv_vote_master_ids (auto-login by crypto fingerprint on connect) is still not honored."
+    gaps: []
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Vote_MasterLogin_GrantsAndDoRuns", result: pass }
-      - { kind: code, ref: "VoteController.cs:248 master-vote-call timeout_status guard (if (TimeoutActive()) ...); GameWorld.cs:931 Voting.TimeoutActive=()=>Timeout.Active now wired LIVE", result: pass }
+      - { kind: code, ref: "VoteController.cs:248 master-vote-call timeout_status guard (if (TimeoutActive()) ...); GameWorld.cs:1036 Voting.TimeoutActive=()=>Timeout.Active wired LIVE; GameWorld.cs:1373-1377 InfraClientConnect: if PersistentId non-empty && sv_vote_master_ids contains it -> Voting.GrantMaster(p); reached on the live connect path via ClientManager.cs:251 OnClientConnect.Invoke (wired GameWorld.cs:1215). VoteController.cs:132 GrantMaster = _masters.Add(p)", result: pass }
     confidence: high
-    notes: "FIX (since baseline, Wave 5/6): the master-vote-call timeout guard is now LIVE — Voting.TimeoutActive is wired in GameWorld.cs:931 (was default () => false, dead). logic upgraded partial->faithful. login (password), do (whitelist = commands+master_commands), and call-master-vote branches all present and live; master status persists across a vote reset like QC .vote_master. Sole residual: sv_vote_master_ids auto-login still absent."
+    notes: "FIX (drift re-audit 2026-06-27 2nd pass): the sv_vote_master_ids auto-login gap is CLOSED — InfraClientConnect (GameWorld.cs:1373-1377) silently grants vote-master to a connecting client whose signed idfp (port: non-empty PersistentId) is contained in sv_vote_master_ids, mirroring the QC strstrofs substring test at client.qc:1262-1264; it runs on the live OnClientConnect path. The row now has no residual gaps. (Earlier-retained fixes: master-vote-call timeout guard wired LIVE via Voting.TimeoutActive=()=>Timeout.Active, GameWorld.cs:1036; login (password), do (whitelist = commands+master_commands), call-master-vote branches all present and live; master status persists across a vote reset like QC .vote_master.)"
 
   - id: sv-commands-votes.timeout.state_machine
     name: "timeout / timein — LEADTIME->ACTIVE->resume pause with per-player allowance"

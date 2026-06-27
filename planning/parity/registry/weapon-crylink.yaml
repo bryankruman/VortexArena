@@ -3,7 +3,7 @@ category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
 summary:
-  feature_count: 12
+  feature_count: 13
   worst_gaps:
     - "LinkJoin head-dangle edge case: port keys the group on the C# group[0] list head and cannot re-head the ring to a live spike the way QC's queuenext/queueprev does. If the head spike dies before release the survivors don't converge (WrThink still clears wait-release so the player isn't stranded). Edge case, no stock-balance impact."
     - "WarpZone reference-frame transforms (WarpZone_RefSys_Transform*) in W_Crylink_LinkJoin omitted — no-op without warpzones."
@@ -309,9 +309,9 @@ features:
       - "common/effects/all.inc:48-51 (CRYLINK_IMPACT/IMPACT2/JOINEXPLODE/MUZZLEFLASH)"
       - "client/weapons/projectile.qc (PROJECTILE_CRYLINK / _BOUNCING + TR_CRYLINKPLASMA)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:75-78"
-      - "game/client/ProjectileCatalog.cs:146-149"
-      - "game/net/NetGame.cs:1989"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:81-84"
+      - "game/client/ProjectileCatalog.cs:91,272"
+      - "game/net/NetGame.cs:2202"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:Attack"
     constants:
       - { name: "CRYLINK_IMPACT (primary)", base: "crylink_impactbig", port: "crylink_impactbig", match: true }
@@ -330,10 +330,10 @@ features:
     divergence_rationale: "Muzzleflash/impact particle/trail are server-side-emitted-then-networked rather than from CSQC wr_impacteffect — the port-wide presentation convention, visually equivalent. The big/small impact-particle mapping (primary=impactbig, secondary=impact) matches Base exactly (EffectsList.cs:75-76 vs all.inc:48-49, re-verified line-for-line)."
     gaps: []
     verification:
-      - { kind: code_read, ref: "EffectsList.cs:75-78 vs all.inc:48-51 — impact big/small swap correct (CRYLINK_IMPACT=crylink_impactbig, CRYLINK_IMPACT2=crylink_impact); CRYLINK_JOINEXPLODE + CRYLINK_MUZZLEFLASH registered", result: pass }
-      - { kind: code_read, ref: "ProjectileCatalog.cs:146-149 Crylink/CrylinkBouncing -> TR_CRYLINKPLASMA PurplePlasma GlowSprite + light; NetGame:1787 'crylink'->CRYLINK_MUZZLEFLASH", result: pass }
+      - { kind: code_read, ref: "EffectsList.cs:81-84 vs all.inc:48-51 — impact big/small swap correct (CRYLINK_IMPACT=crylink_impactbig, CRYLINK_IMPACT2=crylink_impact); CRYLINK_JOINEXPLODE + CRYLINK_MUZZLEFLASH registered", result: pass }
+      - { kind: code_read, ref: "ProjectileCatalog.cs:91,272 Crylink/CrylinkBouncing -> TR_CRYLINKPLASMA PurplePlasma GlowSprite + light; NetGame:2202 'crylink'->CRYLINK_MUZZLEFLASH", result: pass }
     confidence: high
-    notes: "RE-AUDITED 2026-06-25. The convergence CRYLINK_JOINEXPLODE sparkle fires from the correct trigger (the meeting-time think, crylink.linkjoin.joinexplode_bonus) — no wrong-trigger emission from LinkExplode. Purple plasma shard trail for both bouncing and non-bouncing variants, faithful to projectile.qc. Effect names match all.inc:48-51 line-for-line (re-verified). NetGame muzzleflash mapping moved to NetGame.cs:1989 ('crylink' -> CRYLINK_MUZZLEFLASH). Impact-SOUND fidelity tracked under crylink.projectile.touch_bounce_fade. No status change vs baseline (port_ref line updated)."
+    notes: "RE-AUDITED 2026-06-27. The convergence CRYLINK_JOINEXPLODE sparkle fires from the correct trigger (the meeting-time think, crylink.linkjoin.joinexplode_bonus) — no wrong-trigger emission from LinkExplode. Purple plasma shard trail for both bouncing and non-bouncing variants, faithful to projectile.qc. Effect names match all.inc:48-51 line-for-line (re-verified). NetGame muzzleflash mapping at NetGame.cs:2202 ('crylink' -> CRYLINK_MUZZLEFLASH). Impact-SOUND fidelity tracked under crylink.projectile.touch_bounce_fade. No status change vs baseline (port_ref lines updated for drift)."
 
   - id: crylink.notifications.kill_suicide_message
     name: "Kill/suicide obituary messages (wr_killmessage / wr_suicidemessage)"
@@ -342,7 +342,7 @@ features:
       - "common/weapons/weapon/crylink.qc:wr_suicidemessage"
       - "common/weapons/weapon/crylink.qc:wr_killmessage"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:351-352"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:351-352,1187-1188"
       - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:51-52"
       - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:128-129"
     constants:
@@ -359,7 +359,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "NotificationsList.cs:351-352 registers CRYLINK_MURDER (\"felt the strong pull of ... Crylink\") + CRYLINK_SUICIDE; the multi WEAPON_CRYLINK_MURDER/SUICIDE at NotificationsList.cs:1184-1185; DeathMessages.cs:51-52,128-129 maps the 'crylink' deathtype string -> WEAPON_CRYLINK_MURDER / WEAPON_CRYLINK_SUICIDE (crylink.qc:575,580)", result: pass }
+      - { kind: code_read, ref: "NotificationsList.cs:351-352 registers CRYLINK_MURDER (\"felt the strong pull of ... Crylink\") + CRYLINK_SUICIDE; the multi WEAPON_CRYLINK_MURDER/SUICIDE at NotificationsList.cs:1187-1188; DeathMessages.cs:51-52,128-129 maps the 'crylink' deathtype string -> WEAPON_CRYLINK_MURDER / WEAPON_CRYLINK_SUICIDE (crylink.qc:580,575)", result: pass }
     confidence: high
     notes: "ADDED 2026-06-25 (registry coverage gap — feature existed unmapped). QC wr_killmessage->WEAPON_CRYLINK_MURDER and wr_suicidemessage->WEAPON_CRYLINK_SUICIDE are both ported: the notifications are registered and the crylink deathtype-string is mapped to them in DeathMessages (the obituary dispatch). Faithful and live via the death-message pipeline. spec file already marks this FAITHFUL (specs/weapon-crylink.md:118)."
 
@@ -371,7 +371,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:BotWantsSecondary"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:BotAimShotSpeed"
-      - "src/XonoticGodot.Server/Bot/BotBrain.cs:406"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:421-423"
     constants:
       - { name: "primary-fire bias", base: "random() < 0.10 -> primary, else secondary", port: "ctx.Random01 >= 0.10 -> secondary (i.e. 10% primary, 90% secondary)", match: true }
       - { name: "primary lead speed", base: "bot_aim(primary_speed,...)", port: "BotAimShotSpeed => Primary.Speed", match: true }
@@ -389,6 +389,29 @@ features:
       - "Secondary lead speed: QC's wr_aim leads the secondary shot at WEP_CVAR_SEC(speed) (3000); the port's BotAimShotSpeed returns a single speed (Primary.Speed=2000) regardless of which mode the 10/90 pick routes to. This is the shared port-wide wr_aim lead-speed simplification (the brain keys lead off one per-weapon BotAimShotSpeed, not per-fire-mode), tracked at bot-ai.aim.lead — not a crylink-specific logic defect. The mode-PICK and the primary lead are faithful."
     verification:
       - { kind: code_read, ref: "Crylink.cs:209-213 BotWantsSecondary returns ctx.Random01 >= 0.10f (10% primary, 90% secondary) == QC random()<0.10; Crylink.cs:219 BotAimShotSpeed => Primary.Speed", result: pass }
-      - { kind: code_read, ref: "live dispatch: BotBrain.cs:404-406 sets ctx.Random01 + ctx.Actor then calls w.BotWantsSecondary(...) on the real bot fire-decision path; base hook GameplayBases.cs:145 default false overridden by Crylink", result: pass }
+      - { kind: code_read, ref: "live dispatch: BotBrain.cs:421-423 sets ctx.Random01 then calls w.BotWantsSecondary(...) on the real bot fire-decision path; base hook default false overridden by Crylink", result: pass }
     confidence: high
-    notes: "RE-AUDITED 2026-06-27 (FIX vs baseline): the baseline recorded this as missing/na with empty port_refs. The port now implements the QC METHOD(Crylink, wr_aim) via the shared BotWantsSecondary/BotAimShotSpeed hooks (same Wave-12 pattern that closed bot-aim across Shotgun/Rifle/Fireball/Electro/Machinegun/Tuba/Vaporizer). The 10%-primary / 90%-secondary button pick is bit-faithful and LIVE via BotBrain.cs:406. Only residual is the single-speed lead (secondary uses 2000 not 3000), the documented shared bot-aim limitation. missing -> faithful, dead/na -> live."
+    notes: "RE-VERIFIED 2026-06-27 (still faithful/live, unchanged vs baseline 2026-06-27 entry). The port implements the QC METHOD(Crylink, wr_aim) via the shared BotWantsSecondary/BotAimShotSpeed hooks (same Wave-12 pattern that closed bot-aim across Shotgun/Rifle/Fireball/Electro/Machinegun/Tuba/Vaporizer). The 10%-primary / 90%-secondary button pick is bit-faithful and LIVE via BotBrain.cs:421-423. Only residual is the single-speed lead (secondary uses 2000 not 3000), the documented shared bot-aim limitation."
+
+  - id: crylink.menu.describe
+    name: "MENUQC weapon-guide prose (describe)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:describe (MENUQC, crylink.qc:609-626)"
+    port_refs: []
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The MENUQC describe() weapon-guide prose (burst of laser-like projectiles, converge-on-release, double-damage-on-bounce, secondary tight-group, cells ammo, 'crylink running' pull blurb + W_Guide_Keybinds/DPS_bothMultishot) has no port. Menu-only documentation; no gameplay impact. Consistent with the weapon-shotgun.menu.describe gap."
+    verification:
+      - { kind: code_read, ref: "grep describe/PAGE_TEXT across src/.../Weapons: no Crylink describe port; Base crylink.qc:609-626 has the MENUQC describe()", result: fail }
+    confidence: high
+    notes: "ADDED 2026-06-27 (registry coverage gap — feature existed in Base, unmapped in the baseline). MENUQC describe() weapon-guide text is not ported. Pure menu documentation, out of gameplay scope (same classification as weapon-shotgun.menu.describe). NOTE: the QH declares SOUND(CRYLINK_LINKJOIN, crylink_linkjoin) but Base's QC never calls it — dead in Base too, so it is not a port gap and gets no row."

@@ -3,7 +3,7 @@ category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
 summary:
-  feature_count: 16
+  feature_count: 17
   worst_gaps:
     - "Beam is STILL not charge-scaled (sqrt(charge) alpha/fade/trail-spacing): a barely-charged shot and a full shot look identical. The team-color tint (vortex_glowcolor) and the cl_particles_oldvortexbeam legacy-beam switch are now BOTH ported (EmitBeam in Vortex.cs), but EffectRequest carries no per-emission alpha so the sqrt(charge) brightness modulation has no port-side hook."
     - "Charge ring + view-model charge glow still partly blocked: vortex_charge is read only on the listen-server HOST path (NetGame reads LocalServerPlayer's slot state for both the HUD ring AND the new view-model glow); a PURE remote client has no charge stat. The beam team-tint is computed server-side from the firer's charge+team so it broadcasts to all clients, but the per-recipient cl_tracers_teamcolor nuance is collapsed to a single broadcast emit."
@@ -34,12 +34,14 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps: []
+    gaps:
+      - "charge_always non-stock divergence (latent, stock-OFF): QC's charge_always path regens charge EVERY frame in PlayerPreThink (server/client.qc:2464-2465, runs for every player slot regardless of which weapon is held). The port only handles charge_always as a GATE in WrThink (Vortex.cs:127 `if (!Cvars.ChargeAlways)` skips the per-tick regen) and never re-implements the always-on PlayerPreThink regen — so with g_balance_vortex_charge_always 1 (non-stock) the port would never charge at all. No observable effect at stock balance (charge_always 0)."
     verification:
       - { kind: codetrace, ref: "WrThink(Primary) calls Charge() each tick; driver runs it every tick", result: pass }
-      - { kind: value, ref: "bal-wep-xonotic.cfg:340 vs Vortex.cs:92", result: pass }
+      - { kind: value, ref: "bal-wep-xonotic.cfg:340 vs Vortex.cs:93", result: pass }
+      - { kind: codetrace, ref: "charge_always always-on regen (client.qc:2464-2465) NOT ported — only the WrThink gate (Vortex.cs:127) exists; no PlayerPreThink charge feeder", result: fail }
     confidence: high
-    notes: "Driver runs WrThink once/tick at full frametime; QC runs twice/frame at frametime/2 — same per-second rate."
+    notes: "Driver runs WrThink once/tick at full frametime; QC runs twice/frame at frametime/2 — same per-second rate. The toward-charge_limit per-tick regen is faithful; the only divergence is the non-stock charge_always always-on regen, which is unported (gap above)."
 
   - id: weapon-vortex.charge.regen_velocity
     name: "Velocity charging (charge while moving fast)"
@@ -479,3 +481,32 @@ features:
       - { kind: codetrace, ref: "Live path: BotBrain drives the bot's aim/fire each AimInterval (BotBrain.cs:33,525-545) and presses attack when the shot is lined up + accurate (BotAimAccurate default => null → accurate for the no-guidance hitscan rail). Vortex needs no per-weapon override because the base defaults already encode wr_aim's behavior for it.", result: pass }
     confidence: high
     notes: "FIXED THIS AUDIT (missing/na -> faithful/live). The baseline's 'bot weapon-aim is unported across the whole weapon system' is now stale: a generic bot-aim base (Weapon.BotWantsSecondary / BotAimShotSpeed / BotAimAccurate) + the BotBrain port now drive per-weapon bot aiming, and many weapons (MachineGun/Rifle/Vaporizer/Devastator/...) override it. The Vortex correctly needs NO override — its stock behavior (always-primary, hitscan straight-shot) IS the base default, so wr_aim is faithfully reproduced via the live generic path."
+
+  - id: weapon-vortex.charge.rot_decay
+    name: "Per-frame charge decay/rotation toward charge_limit (rot_rate / unequipped rot)"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:2470-2487 (PlayerPostThink charge-rot loop)"
+      - "common/weapons/weapon/vortex.qc:wr_think (vortex_charge_rottime push via charge_rot_pause)"
+    port_refs: []
+    constants:
+      - { name: "g_balance_vortex_charge_rot_rate", base: "0", port: "not read", match: false }
+      - { name: "g_balance_vortex_charge_rot_pause", base: "0", port: "0 (read; sets VortexChargeRotTime)", match: true }
+      - { name: "g_balance_vortex_charge_rot_unequipped_rate", base: "0", port: "not read", match: false }
+      - { name: "g_balance_vortex_charge_rot_unequipped_limit", base: "0", port: "not read", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The per-frame charge-decay loop (server/client.qc:2470-2487) is UNPORTED. QC drops vortex_charge back toward charge_limit (or the unequipped limit when the vortex is not the held weapon) at charge_rot_rate / charge_rot_unequipped_rate per frame, but only after vortex_charge_rottime (set in wr_think to time + charge_rot_pause). The port stores VortexChargeRotTime (EntityWeaponState.cs:312) and sets it during charging (Vortex.cs:176), but there is NO decay consumer and the rot_rate / unequipped cvars are never even read. So overcharge (e.g. from velocity charging above charge_limit) would never decay back in the port."
+    verification:
+      - { kind: codetrace, ref: "grep rot_rate/charge_rot_unequipped over src/+game/ — only ChargeRotPause + VortexChargeRotTime exist; no decay loop, no rot_rate read", result: fail }
+      - { kind: value, ref: "all rot cvars 0 at stock (bal-wep-xonotic.cfg:341-344) — no observable effect at stock balance", result: pass }
+    confidence: high
+    notes: "Newly mapped (registry coverage gap). Entirely stock-disabled (charge_rot_rate 0, unequipped_rate 0), so no observable defect at stock balance — but a real Base mechanic with zero port hook. Distinct Base symbol from regen_passive (this is DECAY toward the limit in PlayerPostThink, vs regen UP toward the limit in wr_think). The only related port residue is the dead VortexChargeRotTime write."

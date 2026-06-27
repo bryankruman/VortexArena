@@ -1,12 +1,11 @@
 unit: turret-phaser
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 14
   worst_gaps:
     - "No beam model visual (MDL_TUR_PHASER_BEAM scaled to impact) and no phaser.md3 head bone attached — the head charge/discharge FRAME animation (tr_think) is ported, but rides the turret edict's Entity.Frame with no visible head model"
-    - "Beam never registers on g_bot_dodge (port beam sets BotDodge/BotDodgeRating producer fields, but the havocbot danger-list CONSUMER is unported) — bots do not avoid the phaser beam"
 features:
   - id: turret-phaser.spawn.map_entity
     name: "Map placement + per-frame think wiring (spawnfunc turret_phaser)"
@@ -211,25 +210,34 @@ features:
     layer: [authority]
     base_refs:
       - "common/turrets/turret/phaser_weapon.qc:wr_think"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Attack"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:HavocbotDodge"
     constants:
-      - { name: "bot_dodge", base: "true", port: "none (beam never sets Entity.BotDodge)", match: false }
-      - { name: "bot_dodgerating", base: "shot_dmg (100)", port: "none", match: false }
+      - { name: "bot_dodge", base: "true", port: "true (beam.BotDodge = true)", match: true }
+      - { name: "bot_dodgerating", base: "shot_dmg (per-tick = shot_dmg/(shot_speed/frametime))", port: "perTickDamage (== ShotDamage/(ShotSpeed/FrameTime))", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base wr_think sets beam.bot_dodge=true, beam.bot_dodgerating=shot_dmg and IL_PUSHes the beam onto g_bot_dodge so havocbots actively strafe out of the phaser beam. The port's PhaserTurret.Attack/BeamThink spawn the beam without setting Entity.BotDodge/BotDodgeRating (those fields now EXIST on Entity and are set by e.g. Blaster.cs, but the phaser beam omits them). The havocbot_dodge danger-list CONSUMER is also still unported, so even producer-side wiring would be inert today."
+    gaps: []
     verification:
-      - { kind: code, ref: "phaser_weapon.qc wr_think bot_dodge/IL_PUSH(g_bot_dodge) vs PhaserTurret beam spawn (no BotDodge set) + no havocbot danger-list consumer in port", result: fail }
+      - { kind: code, ref: "phaser_weapon.qc wr_think (beam.bot_dodge=true; beam.bot_dodgerating=beam.shot_dmg; IL_PUSH(g_bot_dodge,beam)) vs PhaserTurret.Attack:148-149 (beam.BotDodge=true; beam.BotDodgeRating=perTickDamage)", result: pass }
+      - { kind: code, ref: "BotBrain.HavocbotDodge (SUPERBOT-gated, Skill > BotAim.SuperbotSkill) scans Api.Entities.All for head.BotDodge and steers away — the port's g_bot_dodge findchainfloat consumer; the stationary phaser beam (MoveType.None) falls in the slow/stationary back-away branch", result: pass }
     confidence: high
-    notes: "Two-part gap: (1) phaser beam doesn't even set the now-existing BotDodge producer fields; (2) the engine-wide g_bot_dodge avoidance consumer is unported. Minor in practice (bot quality vs this turret only). STILL OPEN — unchanged."
+    notes: >-
+      FIXED since baseline. The earlier audit recorded this as a two-part gap: (1) the phaser beam didn't set the
+      then-newly-existing Entity.BotDodge/BotDodgeRating producer fields, and (2) the g_bot_dodge danger-list
+      CONSUMER was unported. Both are now closed. PhaserTurret.Attack sets beam.BotDodge=true and
+      beam.BotDodgeRating=perTickDamage (==Base beam.shot_dmg per-tick). BotBrain.HavocbotDodge is the ported
+      consumer (SUPERBOT-gated like Base's `if(!SUPERBOT) return`), scanning every BotDodge-flagged edict and
+      returning a dodge vector folded into bot movement — so SUPERBOT-skill bots actively back away from the
+      phaser beam. Live on the real bot path.
 
   - id: turret-phaser.fire.target_select_bias
     name: "Per-unit target-selection scoring biases (range/angle/same/missile/player)"

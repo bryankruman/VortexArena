@@ -4,13 +4,13 @@ base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
 summary:
   feature_count: 17
-  reaudit_note: "DRIFT RE-AUDIT 2026-06-27 against current branch claude/parity-port-waves. Net movement since the 2026-06-26 baseline is strongly positive (3 dimension fixes, 1 gap closed via a new server wire, 0 regressions). The driver is a fresh batch of work landed AFTER the prior reaudit note (Warpzone.cs last committed 2026-06-26 23:20, GameWorld.cs gametype wire). NEW FIXES: (1) the map-teleporter telefrag !g_race/!g_cts half is now genuinely LIVE on the server — GameWorld.cs:569 now sets GameScores.Gametype = GameType.NetName during world setup (Race.NetName=\"rc\" Race.cs:274, Cts.NetName=\"cts\" Cts.cs:132), so TeleportRoundGateSuppressed (Teleporters.cs:587 `gt==\"rc\"||gt==\"cts\"`) finally fires in Race/CTS on the authoritative path; teleporters.core.telefrag logic partial->faithful and both the worst_gap and the row gap are closed. (2) The Porto-portal crossing now FORCE-TELEFRAGS the exit and awards the Amazing announcer: Warpzone.Teleport (Warpzone.cs:325-341) routes a client crossing through Teleporters.PortalForceTelefrag (TELEPORT_FLAGS_PORTAL / FORCE_TDEATH), then on a hit awards ANNCE_ACHIEVEMENT_AMAZING (Warpzone.cs:332, registered NotificationsList.cs:144) within 1s of TeleportTime, else credits the portal owner as pusher — closing the FORCE_TDEATH/Amazing/kill-credit gaps on portals.teleport.transform_and_amazing (logic partial->faithful, audio missing->faithful). (3) The Porto crossing now applies the portal-only exclusions: item_flag_team is never portalled (Warpzone.cs:279) and IS_INDEPENDENT_PLAYER gating is in place (Warpzone.cs:286-292, a faithful no-op while IsIndependentPlayer is always false) — closing the flag-exclusion + independent-player gaps on portals.weapon.hook_and_predict (logic missing->partial). CARRIED FORWARD (unchanged): teleport SOUND on CH_TRIGGER(-3), EF_TELEPORT_BIT XOR + istypefrag, RemoveGrapplingHooks on teleport, portal_activatetime self-skip + portal-owner kill-credit, death/reset/checkpoint PortalClearAll teardown (GameWorld.cs:431, Race.cs:411). RESIDUAL OPEN (architectural): the whole portal-ENTITY model (health 200, 15s lifetime/fade, MDL_PORTAL skins, EF glow, explode/expire sounds, Portal_Customize), Portal_WillHitPlane predict-ahead + grappling-hook teleport through the portal, the exact +/-48 plane-shift transform (warpzone transform substituted), re-shoot-replaces-prior-pair edge, g_telefrags_avoid still hardcoded for clients, EXACTTRIGGER_TOUCH brush-face precision."
+  reaudit_note: "DRIFT RE-AUDIT 2026-06-27 (second pass) against current branch claude/parity-port-waves. Code matches the 2026-06-26->27 baseline on every teleporter and portal-crossing row (re-verified faithful, only line refs shifted). NEW FIX since the prior reaudit note: the 15s Porto-portal LIFETIME/EXPIRY is now implemented on the warpzone path — Warpzone.cs adds FadeTime + PortalFadeTime() (reads g_balance_portal_lifetime live, default 15, recharged to a fresh time+lifetime on every crossing Warpzone.cs:344-349 and stamped in LinkPair:691-695), and WarpzoneManager.ExpirePortals() (Warpzone.cs:663-676) sweeps any pair past its fade_time, removing BOTH halves; this is wired LIVE once per server frame at GameWorld.cs:1787. So a Porto pair now times out after 15s like Base instead of persisting for the whole match. portals.weapon.cleanup timing partial->faithful (the 15s-expiry gap closed); portals.entity.lifecycle timing missing->partial (the timeout exists; the SUB_SetFade 0.5s visual fade-out + the recharge-to-200-health are still absent because the warpzone has no portal HEALTH entity). NOT registered: g_balance_portal_lifetime/_health are read raw via GetFloat with a 15f test-path fallback rather than via Cvars.cs registration (functionally correct at default; a `set g_balance_portal_lifetime N` would still apply since it's read live). CARRIED FORWARD (unchanged, all re-verified): the map-teleporter telefrag !rc/!cts half live via GameScores.Gametype=GameType.NetName (GameWorld.cs:581; Race.cs:284 \"rc\", Cts.cs:132 \"cts\"); the Porto-crossing FORCE_TDEATH + ANNCE_ACHIEVEMENT_AMAZING within 1s (Warpzone.cs:336-367, NotificationsList.cs:144) else portal-owner kill-credit; item_flag_team never portalled + independent-player gate (Warpzone.cs:296-309); teleport SOUND on CH_TRIGGER(-3), EF_TELEPORT_BIT XOR + istypefrag, RemoveGrapplingHooks on teleport, portal_activatetime self-skip; per-owner in/out slot replacement + PortalClearWithId/PortalClearAll teardown (GameWorld.cs:432-444, Race.cs PortalClearAll on checkpoint). RESIDUAL OPEN (architectural): the portal HEALTH entity (g_balance_portal_health=200, Portal_Damage shoot-down), MDL_PORTAL model/skins(0/1/2)/EF_RED/BLUE/STARDUST/ADDITIVE glow, explode/expire sounds (SND_PORTO_EXPLODE/_EXPIRE) + EFFECT_ROCKET_EXPLODE on destruction, SUB_SetFade 0.5s expiry fade, Portal_Customize; Portal_WillHitPlane predict-ahead + grappling-hook teleport through the portal; the exact +/-48 plane-shift / Portal_FindSafeOrigin transform (warpzone transform substituted); g_telefrags_avoid still hardcoded always-on for clients; EXACTTRIGGER_TOUCH brush-face precision."
   worst_gaps:
-    - "Porto portal ENTITY entirely replaced by a seamless warpzone pair: no portal health (200), no 15s lifetime/fade/recharge, no portal model/skins(0/1/2)/EF_RED/BLUE/STARDUST/ADDITIVE, no explode/expire sounds, no Portal_Customize independent-player hiding. (UNCHANGED — architectural.)"
-    - "Warpzone portals never EXPIRE: there is no 15s g_balance_portal_lifetime / fade-out, so a portal pair persists for the whole match (death/reset/checkpoint teardown is wired, but a living player's pair never times out). Re-shooting after a completed pair does not tear down the prior pair either (Base Portal_SetInPortal disconnects the old)."
-    - "Portal_WillHitPlane predict-ahead crossing (PHYS_GRAVITY-aware tracebox over velocity*2*frametime, portals.qc:237/317) and grappling-hook teleport through the portal (Portal_Think iterates weaponentity.hook) are still absent on the warpzone path — a fast mover relies on the fixed trigger overlap, and an active hook is not relocated. (Flag exclusion + Amazing + FORCE_TDEATH from this cluster are now DONE.)"
+    - "Porto portal ENTITY partially replaced by a seamless warpzone pair: no portal HEALTH (g_balance_portal_health=200, can't be shot down via Portal_Damage), no portal model/skins(0/1/2)/EF_RED/BLUE/STARDUST/ADDITIVE glow, no SND_PORTO_EXPLODE/_EXPIRE + EFFECT_ROCKET_EXPLODE, no SUB_SetFade 0.5s fade-out, no Portal_Customize independent-player hiding. (The 15s lifetime/timeout itself is now DONE — see below.)"
+    - "Portal_WillHitPlane predict-ahead crossing (PHYS_GRAVITY-aware tracebox over velocity*2*frametime, portals.qc:237/317) and grappling-hook teleport through the portal (Portal_Think iterates weaponentity.hook) are still absent on the warpzone path — a fast mover relies on the fixed trigger overlap, and an active hook is not relocated. (Flag exclusion + Amazing + FORCE_TDEATH + the 15s lifetime/expiry from this cluster are now DONE.)"
     - "Portal_FindSafeOrigin (move_out_of_solid 16u in front, portal_safe_origin) + CheckWireframeBox 96^3 clearance are not modeled on the warpzone realisation; the +/-48 plane-shift / Portal_ApplyTransformToPlayerAngle angle transform is substituted by the generic warpzone transform (correctness not behaviorally verified)."
     - "g_telefrags_avoid is registered but PickDestination/CheckTdeath still force telefrag-avoid always-on for clients rather than reading the cvar / STAT(TELEPORT_TELEFRAG_AVOID) — equivalent at the Base default (1) but a `set g_telefrags_avoid 0` would not actually disable avoidance."
+    - "g_balance_portal_lifetime / g_balance_portal_health are NOT registered in Cvars.cs (read raw via GetFloat with a 15f test-path fallback); lifetime is functionally correct at default and a live `set` applies, but the health cvar drives nothing (no portal-health entity)."
 features:
   - id: teleporters.core.teleport_player
     name: "TeleportPlayer relocate/sound/telefrag/kill-credit core"
@@ -49,7 +49,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportPlayer"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:Telefrag"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportRoundGateSuppressed"
-      - "src/XonoticGodot.Server/GameWorld.cs:569 (server-side GameScores.Gametype wire)"
+      - "src/XonoticGodot.Server/GameWorld.cs:581 (server-side GameScores.Gametype wire)"
     constants:
       - { name: "telefrag_damage", base: "10000", port: "10000", match: true }
       - { name: "deathtype", base: "DEATH_TELEFRAG", port: "DeathTypes.Telefrag", match: true }
@@ -382,30 +382,30 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:PlacePortoPortal"
     constants:
-      - { name: "g_balance_portal_health", base: "200", port: "none (indestructible warpzone)", match: false }
-      - { name: "g_balance_portal_lifetime", base: "15", port: "none (permanent warpzone)", match: false }
+      - { name: "g_balance_portal_health", base: "200", port: "none (indestructible warpzone; cvar unused)", match: false }
+      - { name: "g_balance_portal_lifetime", base: "15", port: "15 (read live via PortalFadeTime, Warpzone.cs:648-654; NOW IMPLEMENTED)", match: true }
       - { name: "skins", base: "0=in/1=out/2=waiting+broken", port: "none (transparent warpzone window)", match: false }
       - { name: "effects", base: "EF_RED / EF_STARDUST|EF_BLUE / EF_ADDITIVE", port: "none", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: partial
+      values: partial
+      timing: partial
       presentation: missing
       audio: missing
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Porto portals are realised as a seamless two-way warpzone, so there is no portal health (g_balance_portal_health=200) — Base portals can be shot down (Portal_Damage)."
-      - "No 15s portal lifetime (g_balance_portal_lifetime) / fade-out (SUB_SetFade time,0.5) / recharge-to-200+reset-fade on each use; port warpzone portals persist for the whole match (death/reset teardown is wired, but no time-based expiry)."
+      - "Porto portals are realised as a seamless two-way warpzone, so there is no portal health (g_balance_portal_health=200) — Base portals can be shot down (Portal_Damage); the cvar is unused."
+      - "Portal expiry is now modeled (15s g_balance_portal_lifetime, recharged on each crossing, ExpirePortals sweep at GameWorld.cs:1787) BUT the SUB_SetFade(time,0.5) 0.5s visual fade-out is absent — a timed-out pair is hard-removed, not faded; and the recharge-to-200-health half is moot (no portal health)."
       - "No portal model (MDL_PORTAL) / skins (0/1/2) or EF_RED / EF_BLUE|EF_STARDUST / EF_ADDITIVE glow; a warpzone is a transparent window, not a Quake portal disc."
       - "SND_PORTO_EXPLODE / SND_PORTO_EXPIRE (CH_SHOTS) and EFFECT_ROCKET_EXPLODE on destruction/expiry never play (Portal_Remove)."
       - "Portal_Customize visibility gating (hiding the portal model from players who can't use it, IS_INDEPENDENT_PLAYER) is absent."
       - "Portal_FindSafeOrigin (move_out_of_solid 16u in front, portal_safe_origin) and CheckWireframeBox 96^3 clearance are not modeled."
     verification:
-      - { kind: code, ref: "grep: no g_balance_portal_health/_lifetime, Portal_Damage/_Remove, MDL_PORTAL, EF_RED/STARDUST on the porto path; Porto.PortalSpawner -> Warpzone.PlacePortoPortal", result: fail }
+      - { kind: code, ref: "Warpzone.cs FadeTime/PortalFadeTime()/ExpirePortals() implement the 15s lifetime+recharge (wired GameWorld.cs:1787); still NO g_balance_portal_health/Portal_Damage shoot-down, MDL_PORTAL, EF_RED/STARDUST, explode/expire sounds, or SUB_SetFade visual on the porto path", result: partial }
     confidence: high
-    notes: "UNCHANGED. Architectural divergence: warpzone realisation instead of a portal model edict. The entire damageable/expiring/independent-gated portal entity is absent."
+    notes: "FIX (2026-06-27): the 15s portal LIFETIME/timeout is now implemented on the warpzone path (FadeTime, PortalFadeTime reading g_balance_portal_lifetime live, recharge-on-crossing Warpzone.cs:344-349, ExpirePortals sweep wired GameWorld.cs:1787 removing both halves). timing missing->partial, values missing->partial, logic missing->partial, liveness na->partial. STILL ARCHITECTURALLY ABSENT: the damageable portal-HEALTH entity (Portal_Damage shoot-down), the MDL_PORTAL model/skins/EF glow, explode/expire sounds + rocket-explode FX, the SUB_SetFade 0.5s fade-out, and Portal_Customize — so presentation/audio stay missing and timing is partial (hard removal, no fade)."
 
   - id: portals.teleport.transform_and_amazing
     name: "Portal teleport transform, two-way semantics, Amazing announcer, portal-owner kill-credit"
@@ -458,22 +458,24 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:ClearAllPortoPortals"
       - "src/XonoticGodot.Server/GameWorld.cs:424-431"
     constants: []
+    constants:
+      - { name: "g_balance_portal_lifetime", base: "15", port: "15 (read live, PortalFadeTime Warpzone.cs:648-654)", match: true }
     status:
       logic: faithful
-      values: na
-      timing: partial
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No 15s time-based expiry (g_balance_portal_lifetime) on the warpzone path — a living player's portals persist until death/reset (see portals.entity.lifecycle); only death/reset/checkpoint teardown is modeled, not the timer."
-      - "Death/reset teardown (PortalClearAll) is dispatched only for the player's CURRENTLY-held weapon slot (DamageSystem/SpawnSystem dispatch WrPlayerDeath/WrResetPlayer on the active weapon), whereas Base's Portal_ClearAll fires irrespective of held weapon — so portals could outlive the owner if they died holding a different weapon. (Mitigated: ClientManager.PutObserverInServer / ClientDisconnect also call PortalClearAll directly, ClientManager.cs:544/801.)"
+      - "Death/reset teardown (PortalClearAll) is dispatched only for the player's CURRENTLY-held weapon slot (DamageSystem/SpawnSystem dispatch WrPlayerDeath/WrResetPlayer on the active weapon), whereas Base's Portal_ClearAll fires irrespective of held weapon — so portals could outlive the owner if they died holding a different weapon. (Mitigated: ClientManager.PutObserverInServer / ClientDisconnect also call PortalClearAll directly.)"
+      - "The 15s timeout is a hard removal — Base's SUB_SetFade(time,0.5) 0.5s visual fade-out on expiry is absent (cosmetic; see portals.entity.lifecycle)."
     verification:
-      - { kind: code, ref: "GameWorld.cs:424-431 WIRES PortalSpawner/PortalClearWithId/PortalClearAll -> Warpzones.{PlacePortoPortal,ClearPortoPortal,ClearAllPortoPortals}; Porto.WrPlayerDeath (583-598) calls PortalClearAll; Race.cs:411 PortalClearAll on checkpoint; PlacePortoPortal (495-538) replaces the prior portal of the SAME ROLE per owner; ClearPorto/ClearAllPorto remove zones + partners + triggers", result: pass }
+      - { kind: code, ref: "GameWorld.cs:432-444 WIRES PortalSpawner/PortalClearWithId/PortalClearAll -> Warpzones.{PlacePortoPortal,ClearPortoPortal,ClearAllPortoPortals}; ExpirePortals wired GameWorld.cs:1787; Porto.WrPlayerDeath (611-614) calls PortalClearAll; PlacePortoPortal replaces the prior portal of the SAME ROLE per owner; FadeTime/PortalFadeTime/recharge-on-crossing implement the 15s lifetime", result: pass }
     confidence: high
-    notes: "FIX-carried + improved: PlacePortoPortal now keys per-owner in/out slots (_portalIn/_portalOut, Warpzone.cs:483-538) and tears down the owner's PRIOR portal of the same role before re-linking (Portal_SetInPortal/Portal_SetOutPortal semantics) — so the prior baseline's 're-shoot after a completed pair leaves two live pairs' gap is now handled for same-role re-fires. PortalClearWithId/PortalClearAll live (GameWorld.cs:428-431). Residual: no time-based 15s expiry; death dispatch is held-weapon-only on the weapon path (timing stays partial)."
+    notes: "FIX (2026-06-27): the 15s time-based expiry (g_balance_portal_lifetime) is NOW implemented — FadeTime is stamped on connect (LinkPair:691-695), recharged to a fresh time+15 on every crossing (Warpzone.cs:344-349), and ExpirePortals (Warpzone.cs:663-676) sweeps timed-out pairs once per server frame (wired GameWorld.cs:1787), removing both halves. timing partial->faithful; the prior 'no time-based 15s expiry' gap closed. CARRIED: PlacePortoPortal keys per-owner in/out slots and tears down the owner's prior portal of the same role before re-linking (Portal_SetInPortal/Portal_SetOutPortal); PortalClearWithId/PortalClearAll live. Residual: death dispatch is held-weapon-only on the weapon path (mitigated by direct PortalClearAll on observer/disconnect); the expiry visual fade is hard-cut not faded."
 
   - id: portals.weapon.hook_and_predict
     name: "Portal grappling-hook teleport + predict-ahead crossing (Portal_WillHitPlane) + flag exclusion"

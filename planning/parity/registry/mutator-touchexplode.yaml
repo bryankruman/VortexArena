@@ -28,7 +28,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "MutatorActivation.Apply (GameWorld.cs:614) adds when IsEnabled (MutatorActivation.cs:80-84); checkbox bound to g_touchexplode (DialogMutators.cs:132); g_touchexplode registered mutators.cfg:162", result: pass }
+      - { kind: code, ref: "MutatorActivation.Apply (GameWorld.cs:626) adds when IsEnabled (MutatorActivation.cs:80-84); checkbox bound to g_touchexplode (DialogMutators.cs:132); g_touchexplode registered mutators.cfg:162", result: pass }
     confidence: high
     notes: "expr_evaluate(string) vs float != 0 — equivalent for the 0/1 cvar. No mutator/gametype exclusions in Base; none in port."
 
@@ -39,7 +39,7 @@ features:
       - "common/mutators/mutator/touchexplode/sv_touchexplode.qc:29"   # MUTATOR_HOOKFUNCTION(touchexplode, PlayerPreThink)
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:76"   # OnPlayerPreThink
-      - "src/XonoticGodot.Server/GameWorld.cs:2171"                            # PlayerPreThink.Call per client per tick
+      - "src/XonoticGodot.Server/GameWorld.cs:2226"                            # PlayerPreThink.Call per client per tick
     constants:
       - { name: "outer_guard", base: "time>texp_time && !game_stopped && IS_PLAYER && !IS_DEAD && !FROZEN && !IS_INDEPENDENT_PLAYER", port: "same set (now>TouchExplodeTime + GameStopped + IsLivePlayer + IsFrozen + IsIndependentPlayer)", match: true }
       - { name: "overlap_test", base: "boxesoverlap(absmin,absmax)", port: "BoxesOverlap(AbsMin,AbsMax)", match: true }
@@ -55,7 +55,7 @@ features:
     gaps:
       - "IS_INDEPENDENT_PLAYER guard is a no-op: Entity.IsIndependentPlayer is hardcoded false; equivalent today since the port has no independent-players mode, but it won't gate if one is added."
     verification:
-      - { kind: code, ref: "per-tick frame builds PlayerPreThinkArgs and fires PlayerPreThink.Call per client (GameWorld.cs:2169-2171); IsFrozen via StatusEffectsCatalog.Frozen; AbsMin/AbsMax kept current in EngineServices.LinkEdict", result: pass }
+      - { kind: code, ref: "per-tick frame builds PlayerPreThinkArgs and fires PlayerPreThink.Call per client (GameWorld.cs:2226); IsFrozen via StatusEffectsCatalog.Frozen; AbsMin/AbsMax kept current in EngineServices.LinkEdict", result: pass }
     confidence: high
     notes: "QC FOREACH_CLIENT inner loop = port foreach(FindByClass('player')); handler invoked once per client so the all-players scan runs per-client just like QC. O(players^2)/frame in both, bounded by the debounce. IsLivePlayer folds in IS_PLAYER(EntFlags.Client) + !IS_DEAD(DeadState) + !IsFreed."
 
@@ -66,7 +66,7 @@ features:
       - "common/mutators/mutator/touchexplode/sv_touchexplode.qc:40"   # player.touchexplode_time = it.touchexplode_time = time + 0.2
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:99"   # player.TouchExplodeTime = other.TouchExplodeTime = now + 0.2f
-      - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs:52"    # .TouchExplodeTime field
+      - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs:57"    # .TouchExplodeTime field
     constants:
       - { name: "debounce_s", base: "0.2", port: "0.2", match: true }
     status:
@@ -111,7 +111,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: value, ref: "unconditional cvar read (TouchExplodeMutator.cs:54-57); class defaults 50/20/0/300 (TouchExplodeMutator.cs:25-34) matching mutators.cfg:163-166; cfg exec'd by ConfigLoader BEFORE MutatorActivation.Apply (GameWorld.cs:614) so Hook() reads the registered cfg values on the live path", result: pass }
+      - { kind: value, ref: "unconditional cvar read (TouchExplodeMutator.cs:54-57); class defaults 50/20/0/300 (TouchExplodeMutator.cs:25-34) matching mutators.cfg:163-166; cfg exec'd by ConfigLoader BEFORE MutatorActivation.Apply (GameWorld.cs:626) so Hook() reads the registered cfg values on the live path", result: pass }
     confidence: high
     notes: "Blast geometry (midpoint-at-feet, spawn/setorigin/RadiusDamage/delete inflictor, attacker null, DMG_NOWEP analogue) is faithful. The unconditional cfg read closes the edgedamage=0 case. WeaponSplash.RadiusDamage is the shared headless RadiusDamageForSource port. Note: a bare unit test that loads no cfg would read 0 from GetFloat and over-write the class defaults to 0 (radius 0 -> RadiusDamage early-returns), but the live match path loads the cfg first."
 

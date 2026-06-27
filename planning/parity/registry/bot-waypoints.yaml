@@ -5,10 +5,10 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 17
   worst_gaps:
-    - "Per-waypoint static danger bias (.dmg) is scaffolded but DEAD and out-of-scope to wire: Waypoint.Danger + the A* term (gScore + link.Cost + nb.Danger) exist, but NOTHING writes Danger. The faithful producer (botframe_updatedangerousobjects, BotPopulation.cs:203-205 'unported') needs the g_bot_dodge hazard summation. Producer-side tagging has GROWN (Blaster.cs:156, Porto.cs:192, PhaserTurret.cs:147 all set .BotDodge/.BotDodgeRating) but the consumer (havocbot_dodge danger-list AND the per-waypoint .dmg producer) is still absent — a cross-cutting subsystem. Routes still ignore lava/rocket zones at plan time and only react via the live per-frame BotDanger brake."
-    - "Runtime auto-waypointing/pruning toward players (botframe_autowaypoints / botframe_deleteuselesswaypoints) and runtime item/teleporter waypoint injection on shipped (.waypoints-bearing) maps are absent: the graph is static after load."
+    - "Runtime auto-waypointing/pruning toward players (botframe_autowaypoints / botframe_deleteuselesswaypoints), bot wander/unstuck (navigation_unstuck, bot_wander_enable), and runtime item/teleporter waypoint injection on shipped (.waypoints-bearing) maps are absent: the graph is static after load."
     - "No steerlib library and no waypoint editor: flocking/swarm/traceavoid/beamsteer primitives are missing and there is no in-game graph authoring (spawn/remove/hardwire/mirror/autowaypoint). .waypoints/.cache/.hardwired WRITERS exist (Waypoint.cs:SaveToText/SaveLinksToText/SaveHardwiredLinksToText) but are DEAD — zero callers (no editor or save command invokes them)."
     - "Two AutoLink subtleties remain: the it.SUPPORT_WP incoming-direction forbid (no port back-pointer field, omitted) and the jumppad-fallback nearest-waypoint search (navigation_findnearestwaypoint's IL_EACH(g_jumppads) tail) are not ported. PVS cull, the crouch<->normal 100qu short-link cap, the box/JUMP/SUPPORT outgoing forbid, and walkfromwp direction are now all FAITHFUL (drift fixes)."
+    - "The shortest-path search routes from a SINGLE Nearest start node, not Base's expanding multi-seed nearest-waypoints flood (navigation_markroutes_nearestwaypoints: on-ground 750/max 50000, air 500/max 1500). The per-waypoint static danger bias (.dmg) — previously DEAD — is now FULLY WIRED and LIVE (DRIFT FIX 2026-06-27): UpdateDangerousObjects is a faithful port of botframe_updatedangerousobjects, scheduled live at the Base interval/updates from BotPopulation, fed by ~15 weapons + PhaserTurret tagging .BotDodge."
 features:
   - id: bot-waypoints.graph.node_model
     name: "Waypoint node + box/point model and flag bits"
@@ -314,27 +314,31 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/Bot/Waypoint.cs:FindPath"
       - "src/XonoticGodot.Server/Bot/Waypoint.cs:Waypoint.Danger"
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:UpdateDangerousObjects"
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:UpdateDangerousObjects scheduler (~:204-219)"
     constants:
       - { name: "nearest_seed_increment_onground", base: "750 (max 50000)", port: "n/a (A* from single Nearest node)", match: false }
       - { name: "nearest_seed_increment_air", base: "500 (max 1500)", port: "n/a", match: false }
-      - { name: "per_waypoint_danger_bias", base: "cost2 = cost + wp.dmg per node", port: "gScore + link.Cost + nb.Danger (term present, but Danger never set -> 0)", match: false }
+      - { name: "per_waypoint_danger_bias", base: "cost2 = cost + wp.dmg per node", port: "gScore + link.Cost + nb.Danger; Danger now WRITTEN by UpdateDangerousObjects (Waypoint.cs:682) on the live path", match: true }
+      - { name: "bot_ai_dangerdetectioninterval", base: "0.25 (xonotic-server.cfg:144)", port: "0.25 (FloatOr fallback, BotPopulation.cs:210)", match: true }
+      - { name: "bot_ai_dangerdetectionupdates", base: "64 (xonotic-server.cfg:145)", port: "64 (FloatOr fallback, BotPopulation.cs:218)", match: true }
       - { name: "unwalkable_link_cost", base: "999 sentinel skipped", port: "999 sentinel skipped (link.Cost >= 999)", match: true }
     status:
       logic: partial
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: true
-    divergence_rationale: "Port uses A* between the two nearest nodes (start, goal) instead of Base's single-source Dijkstra flood with per-edict scratch state. Both yield an optimal least-cost path over the cost terms both implement; the port re-plans per goal so it doesn't need Base's all-pairs flood, and keeping cost/back-pointer state out of the immutable node lets one WaypointNetwork be shared across all bots. The algorithm-shape change is intentional; the missing/dead .dmg danger term and the single-seed start (gaps) are NOT part of the intended divergence."
+    divergence_rationale: "Port uses A* between the two nearest nodes (start, goal) instead of Base's single-source Dijkstra flood with per-edict scratch state. Both yield an optimal least-cost path over the cost terms both implement; the port re-plans per goal so it doesn't need Base's all-pairs flood, and keeping cost/back-pointer state out of the immutable node lets one WaypointNetwork be shared across all bots. The algorithm-shape change is intentional; the single-seed start (gap) is NOT part of the intended divergence."
     gaps:
-      - "STILL OPEN (danger bias, scaffolded-DEAD, OUT-OF-SCOPE to wire surgically): Waypoint.Danger and the A* term (gScore+link.Cost+nb.Danger, Waypoint.cs:610) exist, but NOTHING writes Danger (grep 2026-06-27: no `.Danger =` writer anywhere). The faithful producer botframe_updatedangerousobjects sums danger over the g_bot_dodge hazard-entity list and is unported (BotPopulation.cs:203-205). Producer-side .BotDodge/.BotDodgeRating tagging has GROWN since the last audit — Blaster.cs:156, Porto.cs:192, PhaserTurret.cs:147 now tag their projectiles/beams — but it remains inert: neither the havocbot_dodge danger-list consumer NOR the per-waypoint .dmg producer is wired, so the danger term stays a no-op. Routes still rely on the live per-frame BotDanger brake."
-      - "No expanding multi-seed nearest search (Base seeds several near waypoints with radius growth on-ground 750/max 50000, air 500/max 1500); the port routes from the single Nearest node."
+      - "No expanding multi-seed nearest search (Base navigation_markroutes_nearestwaypoints seeds several near waypoints with radius growth on-ground 750/max 50000, air 500/max 1500); the port routes from the single Nearest node. This is the only remaining logic gap (it is why logic stays partial)."
     verification:
-      - { kind: code, ref: "FindPath A* (Waypoint.cs:567-621, danger term at :610) vs navigation_markroutes; re-grep 2026-06-27 confirms STILL no `.Danger =` writer; botframe_updatedangerousobjects remains unported (BotPopulation.cs:203). Producer-side .BotDodge tagging now at 3 sites (Blaster/Porto/PhaserTurret) but consumer absent -> term stays dead", result: partial }
+      - { kind: code, ref: "FindPath A* (Waypoint.cs:567-621, danger term `gScore + link.Cost + nb.Danger` at :610) == navigation.qc:1134 `cost2 = cost + wp.dmg`. UpdateDangerousObjects (Waypoint.cs:642-686) is a line-for-line port of botframe_updatedangerousobjects (navigation.qc:1874-1906): per-wp box-clamp v, hazard center o, d=linearcost(dodgerating)-travelcost(o,v), d>0 && traceline-clear, dmg sum, maxupdate break.", result: pass }
+      - { kind: code, ref: "Liveness: BotPopulation.cs:208-219 schedules UpdateDangerousObjects at bot_ai_dangerdetectioninterval (0.25) with the Base 1.5x catch-up, capped at bot_ai_dangerdetectionupdates (64), matching bot.qc:815-822. Producer-side Entity.BotDodge/.BotDodgeRating tagging now at ~15 weapons (Devastator/Crylink/Blaster/Arc/Mortar/Minelayer/Hagar/Electro/Fireball/Porto/Hlac/Vaporizer/Seeker) + PhaserTurret (grep 2026-06-27).", result: pass }
     confidence: high
-    notes: "Unchanged status at 2026-06-27: field + A* term present but unwired (dead scaffolding). UPDATED context: producer-side .BotDodge/.BotDodgeRating tagging grew from 1 site (Blaster only) to 3 (Blaster, Porto, PhaserTurret) but the danger-list consumer and the per-waypoint .dmg producer are both still absent, so the route danger bias remains a no-op. The A* shape remains an intended-equivalent design change; single-seed start still a genuine gap."
+    notes: "DRIFT FIX since 2026-06-25/last audit: the per-waypoint static danger bias (.dmg) is no longer dead scaffolding — it is now FULLY IMPLEMENTED and LIVE. Waypoint.UpdateDangerousObjects (a faithful port of botframe_updatedangerousobjects) writes Waypoint.Danger, scheduled from BotPopulation at the Base interval/updates with the 1.5x catch-up, fed by the grown .BotDodge producer set (~15 weapons + PhaserTurret), and consumed by FindPath's A* danger term — so bots now pre-emptively route AROUND lava/rocket/turret-beam zones, complementing the per-frame BotDanger brake. values partial->faithful; per_waypoint_danger_bias match false->true; danger-detection cvar constants added (match=true). logic STAYS partial only because of the single-seed nearest start (no multi-seed nearestwaypoints flood). The A* shape remains the intended-equivalent design change."
 
   - id: bot-waypoints.path.routetogoal
     name: "Route building onto the goal stack (navigation_routetogoal + goalstack)"
@@ -457,7 +461,7 @@ features:
     verification:
       - { kind: code, ref: "BotDanger.CheckDanger 5-way classify (BotDanger.cs:32-74) vs havocbot_checkdanger:401-444; trigger_hurt via TraceHitsBox/HitsBox1D = exact port of trace_hits_box/_1d (util.qc:2197-2219); wired at BotBrain.Think danger block", result: pass }
     confidence: high
-    notes: "Unchanged at 2026-06-27. trigger_hurt detection uses Base's exact tracebox_hits_box -> trace_hits_box -> trace_hits_box_1d slab math. Eye->ahead traceline, 3000qu down-trace, sky/cliff/lava-slime/trigger_hurt classification all faithful and LIVE. (The STATIC route-cost .dmg bias is still missing/dead — see bot-waypoints.path.markroutes.)"
+    notes: "Unchanged at 2026-06-27. trigger_hurt detection uses Base's exact tracebox_hits_box -> trace_hits_box -> trace_hits_box_1d slab math. Eye->ahead traceline, 3000qu down-trace, sky/cliff/lava-slime/trigger_hurt classification all faithful and LIVE. (The complementary STATIC route-cost .dmg bias is now ALSO live — see bot-waypoints.path.markroutes, fixed 2026-06-27.)"
 
   - id: bot-waypoints.steer.steerlib
     name: "steerlib primitives (arrive/attract/repel/flock/swarm/traceavoid/beamsteer/wander)"
@@ -507,6 +511,6 @@ features:
       - "No in-game waypoint editor: cannot place/remove/hardwire/mirror waypoints (g_waypointeditor*); no editor visualization (waypoint model, link lightning beams, colormod by flag)."
       - "No runtime auto-waypointing toward players (botframe_autowaypoints) or useless-waypoint pruning (botframe_deleteuselesswaypoints): the loaded graph is static."
     verification:
-      - { kind: code, ref: "no editor/symmetry/autowaypoint symbols in Server.Bot; BotPopulation.cs:203-205 still notes botframe_updatedangerousobjects unported (no editor)", result: pass }
+      - { kind: code, ref: "no editor/symmetry/autowaypoint symbols in Server.Bot (grep 2026-06-27); navigation_unstuck/wander (bot_wander_enable) and botframe_autowaypoints/deleteuselesswaypoints remain unported. (Note: botframe_updatedangerousobjects IS now ported+live — see bot-waypoints.path.markroutes.)", result: pass }
     confidence: high
     notes: "Unchanged at 2026-06-27: still no in-game editor / autowaypoint / symmetry-mirror / pruning. Dev authoring tooling; not required for players. Symmetry header is parsed (LoadFromText) and file WRITERS exist (see bot-waypoints.file.save) but both are dead — there is no editor to drive a place->mirror->save round-trip."

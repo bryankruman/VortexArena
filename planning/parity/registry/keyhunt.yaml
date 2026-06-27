@@ -1,15 +1,14 @@
 unit: keyhunt
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"  # drift re-audit 06-26 (Wave 12a/12b edits, commit 6da9e80): KeyHunt.cs now 1568 lines; waypoint Friend sub-state FIXED
+last_audited: "2026-06-27"  # drift re-audit 06-27: Base sv_keyhunt.qc byte-identical to pin; port KeyHunt.cs now 1575 lines. NEW FIX: bot.role upgraded partial->faithful (full 4-role behavior tree now implemented in BotObjectiveRoles.RoleKeyHunt). All other rows match prior truth.
 summary:
   feature_count: 21
   worst_gaps:
-    - "NEW DRIFT since the 06-25 baseline (Wave 12a/12b, commit 6da9e80): the LAST waypoint residual is CLOSED. CollectWaypoints (KeyHunt.cs:1337-1394) now uses the FULL 3-state SPRITERULE_TEAMPLAY model — SpriteName=team-colored (enemy/model1), SpriteNameOwn=KeyCarrierFriend ('Key carrier', green) flipped to KeyCarrierFinish ('Run here') on all-owned (own team/model2), SpriteNameSpec=team-colored (spectator/model3) — exactly mirroring Base WaypointSprite_UpdateSprites(first, FriendOrFinish, third) (sv_keyhunt.qc:361-410). At the baseline commit (c59134e) KeyCarrierFriend/SpriteNameOwn were UNUSED (0 occurrences); now 3. keyhunt.waypoints.sprites: the teammate-facing 'Key carrier'(Friend) gap is removed."
-    - "Full waypoint system (landed pre-baseline, re-verified LIVE): WP_KeyDropped on each loose key + team-colored carrier markers, tracking-device gate + per-viewer visibility predicates (DroppedKeyWaypointVisibleFor/CarrierWaypointVisibleFor mirror kh_Key_/kh_KeyCarrier_waypointsprite_visible_for_player). All 7 defs in WaypointRegistry (Waypoints.cs:128-134). Consumed LIVE at game/net/ServerNet.cs:1060 (path moved from the baseline's ServerNet.cs:1022). The 3-state SpriteFor resolution is in Waypoints.cs:204-211."
-    - "Carried from the 06-25 Wave-6a baseline (all still TRUE/verified): carried-key orbit (OrbitCarriedKey, KH_KEY_XYDIST 24/XYSPEED 45/ZSHIFT 22 match), 9-way carrier/noncarrier damage+force matrix (OnDamageCalculate, live via MutatorHooks.DamageCalculate), lava/slime return_when_unreachable (KeyDamage via GtEventDamage), observe/disconnect drop (OnPlayerRemoved->DropAllKeys), per-carrier SP_SCORE + nades_GiveBonus on capture, full DistributeEvenly destroy split, per-team spawn angle. All faithful + live."
-    - "Bot role STILL only partial-logic (single collapsed freelancer-style rating vs Base's 4-role behavior tree carrier/defense/offense/freelancer with HavocBot_ChooseRole random pick + role timeouts) but LIVE and correct (FindByClass('item_kh_key') + key.GtCarrier; BotRoles.cs:96 dispatch)."
-    - "REMAINING gaps (now minor): bot 4-role tree collapsed to one rating (keyhunt.bot.role logic/values partial); DropSpecialItems drop edge unwired (covered by PlayerDies+observer+disconnect); damageforcescale unread (no-op at stock 1); push/carrier-frag/capture credited via ScoreFrags rather than the team-aware SCORE float2int pipeline (mechanism divergence, magnitude faithful); capture customflash approximated by TE_EXPLOSION; the dead AssignKey method (harmless, routes to correct geometry); minor waypoint nuance — Base's 3-state WaypointSprite_UpdateSprites shows teammates 'Key carrier'(WP_KeyCarrierFriend) vs enemies the team-colored sprite, while the port shows one team-colored sprite to both (KeyCarrierFriend def registered but unused on the live path)."
+    - "NEW DRIFT (06-27): keyhunt.bot.role is now FULLY FAITHFUL (logic/values partial->faithful). BotObjectiveRoles.RoleKeyHunt (BotObjectiveRoles.cs:463-567) implements the COMPLETE Base 4-role behavior tree: HavocBot_ChooseRole random()*3 initial pick (offense/defense/freelancer), per-role timeouts (defense/offense random()*10+20, freelancer random()*10+10), stochastic transitions (freelancer->offense|defense on timeout, any->carrier on pickup, carrier->freelancer on loss), and the AllOwnedByWhichTeam-driven ratingscale switching with each role's neutral triple (carrier 10/0.1/0.05|4/4/0.5; defense 4/1/0.05; offense 0.1/1/2; freelancer 1/10/2). State persists in BotBrain.KhRole/KhRoleTimeout (BotBrain.cs:144,152) via the KhBotRole enum; carried-key detection via bot.GtCarried; key/carrier rating via FindByClass('item_kh_key')+key.GtCarrier. Live (BotRoles.cs:96 dispatch). The baseline's last STILL-PARTIAL gap is CLOSED."
+    - "Full waypoint system (re-verified LIVE 06-27): WP_KeyDropped on each loose key + the 3-state SPRITERULE_TEAMPLAY carrier markers (SpriteName=team-colored enemy/model1, SpriteNameOwn=KeyCarrierFriend flipped to KeyCarrierFinish 'Run here' on all-owned/model2, SpriteNameSpec=team-colored spectator/model3), tracking-device gate + per-viewer visibility predicates (DroppedKeyWaypointVisibleFor/CarrierWaypointVisibleFor mirror kh_Key_/kh_KeyCarrier_waypointsprite_visible_for_player). All 7 defs in WaypointRegistry (Waypoints.cs:128-134). Consumed LIVE at game/net/ServerNet.cs:1060. The 3-state SpriteFor resolution is Waypoints.cs:204-211."
+    - "Carried from the prior baseline (all still TRUE/verified 06-27): carried-key orbit (OrbitCarriedKey, KH_KEY_XYDIST 24/XYSPEED 45/ZSHIFT 22 match), 9-way carrier/noncarrier damage+force matrix (OnDamageCalculate, live via MutatorHooks.DamageCalculate dispatched DamageSystem.cs:264), lava/slime return_when_unreachable (KeyDamage via GtEventDamage, DamageSystem.cs:358-360), observe/disconnect drop (OnPlayerRemoved->DropAllKeys), per-carrier SP_SCORE + nades_GiveBonus on capture, full DistributeEvenly destroy split, per-team spawn angle. All faithful + live."
+    - "REMAINING gaps (all minor): DropSpecialItems drop edge unwired (covered by PlayerDies+observer+disconnect); damageforcescale unread (no-op at stock 1, values partial on keyhunt.unreachable); push/carrier-frag/capture credited via ScoreFrags rather than the team-aware SCORE float2int pipeline (mechanism divergence, magnitude faithful); capture customflash approximated by TE_EXPLOSION; the dead AssignKey method (harmless, routes to correct geometry); OBJECTIVE_STATUS on-wire team encoding is the port index+1 convention (intended divergence, observationally identical icons)."
 features:
   - id: keyhunt.controller.round_loop
     name: "Controller round loop: wait-for-players -> countdown -> start round"
@@ -600,24 +599,34 @@ features:
       - "common/gametypes/gametype/keyhunt/sv_keyhunt.qc:havocbot_goalrating_kh"
       - "common/gametypes/gametype/keyhunt/sv_keyhunt.qc:havocbot_role_kh_freelancer"
       - "common/gametypes/gametype/keyhunt/sv_keyhunt.qc:havocbot_role_kh_carrier"
+      - "common/gametypes/gametype/keyhunt/sv_keyhunt.qc:havocbot_role_kh_defense"
+      - "common/gametypes/gametype/keyhunt/sv_keyhunt.qc:havocbot_role_kh_offense"
       - "common/gametypes/gametype/keyhunt/sv_keyhunt.qc:MUTATOR_HOOKFUNCTION(kh, HavocBot_ChooseRole)"
     port_refs:
       - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RoleKeyHunt"
+      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RateKeyHuntTargets"
       - "src/XonoticGodot.Server/Bot/BotRoles.cs:96"
-    constants: []
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:144 (KhRole) / :152 (KhRoleTimeout)"
+    constants:
+      - { name: "defense/offense role_timeout", base: "time + random()*10 + 20", port: "now + Prandom.Float()*10 + 20", match: true }
+      - { name: "freelancer role_timeout", base: "time + random()*10 + 10", port: "now + Prandom.Float()*10 + 10", match: true }
+      - { name: "carrier ratingscale (own-all / else)", base: "(10,0.1,0.05) / (4,4,0.5)", port: "(10,0.1,0.05) / (4,4,0.5)", match: true }
+      - { name: "defense neutral ratingscale", base: "(4,1,0.05)", port: "(4,1,0.05)", match: true }
+      - { name: "offense neutral ratingscale", base: "(0.1,1,2)", port: "(0.1,1,2)", match: true }
+      - { name: "freelancer neutral ratingscale", base: "(1,10,2)", port: "(1,10,2)", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL PARTIAL (logic): the four QC roles (carrier/defense/offense/freelancer with role timeouts + kh_Key_AllOwnedByWhichTeam-driven ratingscale switching + HavocBot_ChooseRole random role pick) are collapsed into a single freelancer-style rating. The collapsed role fires correctly (finds keys + rates ally-support vs grab/kill), but the per-role behavior tree + timeouts are absent."
+    gaps: []
     verification:
-      - { kind: code, ref: "BotObjectiveRoles.cs:305 FindByClass('item_kh_key') matches the spawn classname (KeyHunt.cs SpawnObjective('item_kh_key')); BotObjectiveRoles.cs:310 reads key.GtCarrier which matches AttachToCarrier's back-link (EntityGametypeState.cs:230 obj.GtCarrier=carrier). Same-team carrier rated lower.", result: pass }
-      - { kind: code, ref: "Dispatched live: BotRoles.cs:96 'keyhunt' or 'kh' => RoleKeyHunt. The spawned key entity is registered with Api.Entities (SpawnObjective) so FindByClass returns it; GtCarrier is set/cleared on that same entity by Attach/DetachFromCarrier.", result: pass }
+      - { kind: code, ref: "BotObjectiveRoles.cs:463-567 RoleKeyHunt: full 4-role tree — HavocBot_ChooseRole random()*3 initial pick (None->offense/defense/freelancer, :477-482), any-non-carrier->carrier on pickup (:485-489), carrier->freelancer on loss (:491-495), per-role timeouts (defense/offense random()*10+20 :503-510, freelancer random()*10+10 :514-520, freelancer->offense|defense on timeout), AllOwnedByWhichTeam-driven ratingscale switch (:530-559) with each role's neutral triple. State in BotBrain.KhRole/KhRoleTimeout. Matches Base havocbot_role_kh_* exactly.", result: pass }
+      - { kind: code, ref: "RateKeyHuntTargets (BotObjectiveRoles.cs:570-593) FindByClass('item_kh_key') matches the spawn classname (KeyHunt.cs SpawnObjective('item_kh_key')); reads key.GtCarrier (carrier back-link set in AttachToCarrier EntityGametypeState.cs:282 obj.GtCarrier=carrier, carrier.GtCarried=obj); own-key skip + same-team(rsTeam)/enemy(rsEnemy)/dropped(rsDropped) selection mirror havocbot_goalrating_kh.", result: pass }
+      - { kind: code, ref: "Dispatched live: BotRoles.cs:96 'keyhunt' or 'kh' => RoleKeyHunt. bot.GtCarried (set/cleared by Attach/Detach) drives the carrier-role transition.", result: pass }
     confidence: high
-    notes: "UNCHANGED (live, logic/values partial). classname item_kh_key + carrier read via GtCarrier both intact. Single collapsed freelancer rating vs Base's 4-role behavior tree remains the residual."
+    notes: "FIXED logic/values partial->faithful (06-27 drift): the four QC roles (carrier/defense/offense/freelancer) with role timeouts, HavocBot_ChooseRole random pick, and AllOwnedByWhichTeam-driven ratingscale switching are now FULLY implemented in RoleKeyHunt (was a single collapsed freelancer rating in the baseline). All role timeouts + ratingscale triples match Base. The classname item_kh_key + carrier read via GtCarrier remain intact. Last partial KH row is now faithful."

@@ -6,10 +6,10 @@ summary:
   feature_count: 13
   worst_gaps:
     - "Movetype_Physics_MatchTicrate (sub-tick interpolation: tic_* snapshots, floor(dt/tr) whole frames clamped to 32, residual-dt trace continuation + gravity half-step, sloppy straight-line interp) is STILL entirely missing — no between-tick interpolation in this layer for client-side moveables (gibs/casings/projectiles/trains). Re-grep 2026-06-27: zero hits for MatchTicrate/tic_origin/tic_velocity/tic_flags in src/."
-    - "Toss bmodelstartsolid retry: Base re-runs _Movetype_UnstickEntity on a bmodel-embedded bounce then retries the push and gives up (zero-vel + SET_ONGROUND) if still stuck (toss.qc:60-82); the port's PushEntity nudges inline but PhysicsToss does not replicate the explicit unstick-retry-give-up sequence."
-    - "NEW (recorded 2026-06-27, minor): the port sets its _suspendedInAir flag for ANY non-null GroundEntity on a toss-rest (MoveTypePhysics.cs:228-229), whereas Base sets move_suspendedinair ONLY when trace_ent.solid == SOLID_BSP (toss.qc:130-131). Diverges only in the corner case where a non-BSP, non-world mover is the ground and is later freed — the port treats that rest as suspended where Base would not. Low impact; toss row stays faithful overall."
-    - "(stable) push.pushmove MOVETYPE_PHYSICS-rider fast-path (push.qc:123-129 -> FlyMove.cs:409-414) and corpse/zero-thickness squash (push.qc:166-173 -> FlyMove.cs:444-452) remain implemented (commit faa4e89). Only residual is the non-behavioral findradius-vs-flat-scan broadphase style."
-    - "(stable) CheckWaterTransition emits no sound; both CheckWater and CheckWaterTransition route through the per-entity .ContentsTransition callback (MoveTypePhysics.cs:256/496), matching Base. checkwater row faithful (audio na)."
+    - "WalkMove omits the sv_gameplayfix_unstickplayers _Movetype_CheckStuck call that Base runs at the top of _Movetype_Physics_Walk (walk.qc:9; cvar default 1, xonotic-server.cfg:575). The port's WalkMove (which drives monster bodies / STEP entities) never unsticks a body that starts a tick embedded in geometry. Minor: control flow otherwise faithful; the FlyMove startsolid-allsolid bail still protects against runaway, and PushEntity has its own NudgeOutOfSolid."
+    - "(corrected 2026-06-27) The two toss.ballistic gaps recorded on the prior pass were re-audit errors — the port DOES replicate both: (a) the bmodelstartsolid unstick-retry-give-up sequence (MoveTypePhysics.cs:170-182 == toss.qc:60-82), and (b) the move_suspendedinair SOLID_BSP gate (MoveTypePhysics.cs:233-234 `trace.Ent==null || trace.Ent.Solid==Solid.Bsp` == toss.qc:130-131). Both verified against unchanged source (MoveTypePhysics.cs untouched since Wave 13). toss.ballistic is fully faithful with no residual gaps."
+    - "(stable) push.pushmove MOVETYPE_PHYSICS-rider fast-path (push.qc:123-129 -> FlyMove.cs:409-414) and corpse/zero-thickness squash (push.qc:166-173 -> FlyMove.cs:444-453) remain implemented (commit faa4e89). Only residual is the non-behavioral findradius-vs-flat-scan broadphase style."
+    - "(stable) CheckWaterTransition emits no sound; both CheckWater and CheckWaterTransition route through the per-entity .ContentsTransition callback (MoveTypePhysics.cs:280/520), matching Base. checkwater row faithful (audio na)."
 features:
   - id: physics-movetypes.dispatch.frame
     name: "Per-tick movetype dispatch + live server entity loop"
@@ -23,7 +23,7 @@ features:
       - "src/XonoticGodot.Engine/Simulation/SimulationLoop.cs:Tick"
     constants:
       - { name: "tickrate (PHYS_INPUT_TIMELENGTH)", base: "1/sys_frametime = 1/72 s", port: "TicRate (1/72)", match: true }
-      - { name: "delayprojectiles (spawn-frame move skip)", base: "newly-spawned ents move next frame (sv_gameplayfix_delayprojectiles 0 default)", port: "SimulationLoop snapshots count before integrate loop", match: true }
+      - { name: "delayprojectiles (spawn-frame move skip)", base: "newly-spawned ents move next frame (sv_gameplayfix_delayprojectiles 0 default)", port: "SimulationLoop.Tick snapshots count before integrate loop (SimulationLoop.cs:236)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -35,9 +35,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "RunEntity (MoveTypePhysics.cs:27) switch matches _Movetype_Physics_Frame branch-for-branch; Toss/Bounce/BounceMissile/FlyMissile/Fly/FlyWorldOnly fold into PhysicsToss (MoveTypePhysics.cs:78-86); clients skipped per SV_PlayerPhysics split", result: pass }
+      - { kind: code, ref: "RunEntity (MoveTypePhysics.cs:27) switch matches _Movetype_Physics_Frame (movetypes.qc:698) branch-for-branch; Toss/Bounce/BounceMissile/FlyMissile/Fly/FlyWorldOnly fold into PhysicsToss (MoveTypePhysics.cs:78-86 == movetypes.qc:724-731); clients skipped (SimulationLoop.cs:242 IsClient) per SV_PlayerPhysics split. Loop live: SimulationLoop.Tick:238-244 iterates _entities.All. Re-verified 2026-06-27.", result: pass }
     confidence: high
-    notes: "Switch order/branches still match _Movetype_Physics_Frame. STEP dispatches to WalkMove (not PhysicsStep) and now gets gravity correctly — see physics-movetypes.step.physics (regression closed by the 2026-06-22 second-pass fix-up, commit 4be8357)."
+    notes: "Switch order/branches still match _Movetype_Physics_Frame. STEP dispatches to WalkMove (not PhysicsStep) and gets gravity correctly — see physics-movetypes.step.physics (regression closed by the 2026-06-22 second-pass fix-up, commit 4be8357). MoveTypePhysics.cs unchanged since Wave 13 (5427e74)."
 
   - id: physics-movetypes.flymove.slide
     name: "FlyMove slide-and-step solver (clip planes, crease, gravity half-step)"
@@ -47,11 +47,11 @@ features:
     port_refs:
       - "src/XonoticGodot.Engine/Simulation/FlyMove.cs:Run"
     constants:
-      - { name: "MAX_CLIP_PLANES", base: "5", port: "5", match: true }
-      - { name: "floor normal.z threshold", base: "0.7", port: "0.7 (FloorNormalZ)", match: true }
-      - { name: "gravityunaffectedbyticrate (half-step)", base: "1 (Xonotic, MOVEFLAG)", port: "GravityUnaffectedByTicrate=true", match: true }
-      - { name: "nogravityonground gate", base: "MOVEFLAG_NOGRAVITYONGROUND (sv_gameplayfix_nogravityonground 1 default) gates BOTH gravity half-steps", port: "gravity applied only when !OnGround (cvar not modeled — hardcoded to the =1 behavior)", match: true }
-      - { name: "in-loop step gate", base: "GAMEPLAYFIX_STEPMULTIPLETIMES ? stepheight : 0 (default 1)", port: "stepHeight passed through when caller supplies it", match: true }
+      - { name: "MAX_CLIP_PLANES", base: "5", port: "5 (FlyMove.cs:540)", match: true }
+      - { name: "floor normal.z threshold", base: "0.7", port: "0.7 (FlyMove.FloorNormalZ:541)", match: true }
+      - { name: "gravityunaffectedbyticrate (half-step)", base: "1 (Xonotic, MOVEFLAG)", port: "GravityUnaffectedByTicrate=true (FlyMove.cs:61)", match: true }
+      - { name: "nogravityonground gate", base: "MOVEFLAG_NOGRAVITYONGROUND (sv_gameplayfix_nogravityonground 1 default) gates BOTH gravity half-steps (movetypes.qc:142,324)", port: "gravity applied only when !OnGround (FlyMove.cs:563,711) — cvar not modeled, hardcoded to the =1 behavior", match: true }
+      - { name: "in-loop step gate", base: "GAMEPLAYFIX_STEPMULTIPLETIMES ? stepheight : 0 (default 1)", port: "stepHeight passed through when caller supplies it (FlyMove.cs:614)", match: true }
       - { name: "blocked flags", base: "1 floor / 2 wall / 4 dead / 8 teleport", port: "same bitset", match: true }
     status:
       logic: faithful
@@ -63,12 +63,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FL_WATERJUMP easierwaterjump primal-velocity restore and the WALLCLIP pm_time primal-velocity restore at the tail of _Movetype_FlyMove are absent (port has no pm_time field). Player-centric (water-exit / wallclip) so low impact for the non-client entities this loop drives."
+      - "FL_WATERJUMP easierwaterjump primal-velocity restore (movetypes.qc:316) and the WALLCLIP pm_time primal-velocity restore (movetypes.qc:319) at the tail of _Movetype_FlyMove are absent (port has no pm_time field). Player-centric (water-exit / wallclip) so low impact for the non-client entities this loop drives."
       - "Port does not model sv_gameplayfix_nogravityonground as a cvar — it hardcodes the nogravityonground=1 behavior (gravity only when !OnGround) in BOTH half-steps. Matches Xonotic's default 1, so faithful in practice; would diverge only if the cvar were 0."
     verification:
-      - { kind: code, ref: "FlyMove.Run (FlyMove.cs:532) vs _Movetype_FlyMove: plane accumulation, crease, 0.001 progress reset, primal-velocity stop-dead, both gravity half-steps (FlyMove.cs:542,691, gated on applyGravity), return-3 startsolid-allsolid — all match", result: pass }
+      - { kind: code, ref: "FlyMove.Run (FlyMove.cs:550) vs _Movetype_FlyMove (movetypes.qc:120): plane accumulation, crease, 0.001 progress reset, primal-velocity stop-dead, both gravity half-steps (FlyMove.cs:560-570,709-713, gated on applyGravity), return-3 startsolid-allsolid (FlyMove.cs:593-597) — all match. Re-verified 2026-06-27.", result: pass }
     confidence: high
-    notes: "Unchanged by Wave-2. Core solver faithful. applyGravity is supplied by the caller; the WalkMove caller now mis-gates it for STEP (see physics-movetypes.step.physics) but FlyMove itself is correct."
+    notes: "Core solver faithful. applyGravity is supplied by the caller; the WalkMove caller now correctly gates it on WALK||STEP (physics-movetypes.step.physics / .walk.stepmove). FlyMove itself is correct. File unchanged since Wave 13."
 
   - id: physics-movetypes.clipvelocity
     name: "ClipVelocity (slide off plane with overbounce + STOP_EPSILON snap)"
@@ -91,9 +91,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "vel -= ((vel.norm)*norm)*f + per-axis 0.1 snap, byte-identical to movetypes.qc:639. File unchanged in Wave-2 diff.", result: pass }
+      - { kind: code, ref: "vel -= ((vel.norm)*norm)*f + per-axis 0.1 snap, byte-identical to movetypes.qc:639-648. File unchanged. Re-verified 2026-06-27.", result: pass }
     confidence: high
-    notes: "Unchanged. Exact port; covered by determinism-and-physics.md golden-trace contract."
+    notes: "Exact port; covered by determinism-and-physics.md golden-trace contract."
 
   - id: physics-movetypes.toss.ballistic
     name: "Toss/Fly ballistic move + ground-rest, suspended-corpse rules"
@@ -103,11 +103,13 @@ features:
     port_refs:
       - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:PhysicsToss"
     constants:
-      - { name: "upwardvelocityclearsongroundflag", base: "1 (vel.z >= 1/32 clears ONGROUND)", port: "vel.z >= 1/32 clears ONGROUND", match: true }
-      - { name: "noairborncorpse", base: "1 (Xonotic)", port: "NoAirborneCorpse=true", match: true }
-      - { name: "noairborncorpse_allowsuspendeditems", base: "1 (Xonotic) — suspended corpse returns after clearing groundentity", port: "always returns after clearing groundentity (cvar not modeled)", match: true }
-      - { name: "gravity (Toss/Bounce only)", base: "half/full step PHYS_GRAVITY x entgravity", port: "EntGravity half-step (Toss/Bounce only)", match: true }
+      - { name: "upwardvelocityclearsongroundflag", base: "1 (vel.z >= 1/32 clears ONGROUND, toss.qc:7)", port: "vel.z >= 1/32 clears ONGROUND (MoveTypePhysics.cs:111-114)", match: true }
+      - { name: "noairborncorpse", base: "1 (Xonotic)", port: "NoAirborneCorpse=true (MoveTypePhysics.cs:102)", match: true }
+      - { name: "noairborncorpse_allowsuspendeditems", base: "1 (Xonotic) — suspended corpse returns after clearing groundentity (toss.qc:19-20)", port: "always returns after clearing groundentity (MoveTypePhysics.cs:121-126; cvar not modeled)", match: true }
+      - { name: "gravity (Toss/Bounce only)", base: "half/full step PHYS_GRAVITY x entgravity (toss.qc:31-38,153-154)", port: "EntGravity half-step Toss/Bounce only (MoveTypePhysics.cs:143-148,252-253)", match: true }
       - { name: "floor normal.z", base: "0.7", port: "0.7", match: true }
+      - { name: "bmodelstartsolid unstick-retry-giveup", base: "toss.qc:60-82 (unstick, retry push, zero-vel + SET_ONGROUND if still allsolid)", port: "MoveTypePhysics.cs:170-182 (TryNudgeOutOfSolid, retry PushEntity, Velocity=0 + OnGround if still allsolid)", match: true }
+      - { name: "move_suspendedinair SOLID_BSP gate", base: "set ONLY when trace_ent.solid == SOLID_BSP (toss.qc:130-131)", port: "_suspendedInAir.Add only when trace.Ent==null (world) or trace.Ent.Solid==Solid.Bsp (MoveTypePhysics.cs:233-234)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -117,14 +119,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base re-runs _Movetype_UnstickEntity on a bmodelstartsolid bounce and retries the push (toss.qc:60-82); the port's PushEntity skips the nudge for MOVETYPE_FLY and otherwise nudges inside PushEntity — but PhysicsToss does NOT replicate the explicit unstick-then-retry-then-give-up (zero-velocity + SET_ONGROUND) sequence, so a projectile fully embedded in a bmodel is handled differently than Base's dedicated retry."
-      - "noairborncorpse_allowsuspendeditems is hardcoded to the =1 path (always returns after dropping the freed-mover groundentity). Matches Xonotic default 1."
-      - "NEW (2026-06-27): suspended-in-air flag condition is broader than Base. Base sets move_suspendedinair only when the ground is a brush model (trace_ent.solid == SOLID_BSP, toss.qc:130-131); the port adds the entity to _suspendedInAir for ANY non-null GroundEntity (MoveTypePhysics.cs:228-229). Only matters when a non-BSP, non-world mover is the resting ground and is later freed: the port then treats the rest as suspended (clears groundentity, keeps resting) where Base would fall through to re-simulate. Corner case, low impact; does not change the row's overall faithful status."
+    gaps: []
     verification:
-      - { kind: code, ref: "PhysicsToss (MoveTypePhysics.cs:105) vs toss.qc: onground early-outs (upward/world/suspended-mover/overlap MoveTypePhysics.cs:108-133), gravity half-step Toss/Bounce only (:139-140), avelocity (:143), bmodelstartsolid give-up (:160-165 vs toss.qc:75-81), default-branch rest all match. Divergence: _suspendedInAir.Add (:228-229) lacks Base's SOLID_BSP gate (toss.qc:130-131).", result: pass }
+      - { kind: code, ref: "PhysicsToss (MoveTypePhysics.cs:105) vs toss.qc:3-157: onground early-outs (upward/world/suspended-mover/overlap MoveTypePhysics.cs:108-133 == toss.qc:5-26), gravity half-step Toss/Bounce only (:143-148 == toss.qc:31-38), bmodelstartsolid unstick-retry-giveup (:170-182 == toss.qc:60-82), avelocity (:151), default-branch rest with SOLID_BSP suspended gate (:226-237 == toss.qc:124-141), trailing half-step (:252-253 == toss.qc:153-154) all match. MoveTypePhysics.cs unchanged since Wave 13 (5427e74). Re-verified 2026-06-27.", result: pass }
     confidence: high
-    notes: "Structurally unchanged. Live for dropped items, flags/keys, nades, gibs, projectiles, vehicles, monster gibs. Bounce-restitution numbers split into physics-movetypes.toss.bounce. 2026-06-27 re-audit: added the move_suspendedinair SOLID_BSP-gate divergence as a minor gap (logic faithful overall — only a freed non-BSP-mover ground corner case differs)."
+    notes: "2026-06-27 re-audit CORRECTION: the prior pass recorded two gaps that do not exist — the port DOES have both the bmodelstartsolid unstick-retry-giveup sequence (MoveTypePhysics.cs:170-182) and the move_suspendedinair SOLID_BSP gate (:233-234). Both verified against Base toss.qc:60-82 / :130-131 in unchanged source. Row is fully faithful, no residual gaps. Live for dropped items, flags/keys, nades, gibs, projectiles, vehicles, monster gibs. Bounce-restitution numbers split into physics-movetypes.toss.bounce."
 
   - id: physics-movetypes.toss.bounce
     name: "Bounce/BounceMissile restitution + bouncestop settle (grenades, casings, balls)"
@@ -135,17 +134,17 @@ features:
       - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:PhysicsToss"
       - "src/XonoticGodot.Common/Gameplay/Weapons/EntityWeaponState.cs:46"
     constants:
-      - { name: "bouncefactor (BOUNCE)", base: "(!this.bouncefactor)?0.5:this.bouncefactor", port: "ent.BounceFactor==0 ? 0.5 : ent.BounceFactor (MoveTypePhysics.cs:172)", match: true }
-      - { name: "bouncefactor (BOUNCEMISSILE)", base: "(!this.bouncefactor)?1.0:this.bouncefactor", port: "ent.BounceFactor==0 ? 1.0 : ent.BounceFactor (MoveTypePhysics.cs:163)", match: true }
-      - { name: "bouncestop (BOUNCE)", base: "(!this.bouncestop)?60/800:this.bouncestop", port: "ent.BounceStop==0 ? 60/800 : ent.BounceStop (MoveTypePhysics.cs:173)", match: true }
-      - { name: "mortar grenade bounce", base: "0.5 / 0.075 (g_balance_mortar_bounce*)", port: "wired Mortar.cs:169-170 (0.5/0.075)", match: true }
-      - { name: "electro-secondary orb bounce", base: "0.3 / 0.05 (g_balance_electro_secondary_bounce*)", port: "Electro.cs:137-138 reads cvars (0.3/0.05) -> wired orb.BounceFactor/BounceStop (Electro.cs:426-427)", match: true }
-      - { name: "raptor vehicle bounce", base: "0.2 / 0 (g_vehicle_raptor_bounce*)", port: "wired Raptor.cs:130-131 (0.2/0)", match: true }
-      - { name: "spider web projectile bounce", base: "0.3 / 0.05 (spider.qc:154-155)", port: "Spider.cs passes 0.3/0.05 -> SpawnProjectile ASSIGNS them (MonsterAI.cs:1608-1609)", match: true }
-      - { name: "golem zap projectile bounce", base: "0.5 / 0.075 (golem)", port: "Golem.cs passes 0.5/0.075 -> SpawnProjectile ASSIGNS them (MonsterAI.cs:1608-1609)", match: true }
+      - { name: "bouncefactor (BOUNCE)", base: "(!this.bouncefactor)?0.5:this.bouncefactor (toss.qc:99)", port: "ent.BounceFactor==0 ? 0.5 : ent.BounceFactor (MoveTypePhysics.cs:202)", match: true }
+      - { name: "bouncefactor (BOUNCEMISSILE)", base: "(!this.bouncefactor)?1.0:this.bouncefactor (toss.qc:91)", port: "ent.BounceFactor==0 ? 1.0 : ent.BounceFactor (MoveTypePhysics.cs:193)", match: true }
+      - { name: "bouncestop (BOUNCE)", base: "(!this.bouncestop)?60/800:this.bouncestop (toss.qc:100)", port: "ent.BounceStop==0 ? 60/800 : ent.BounceStop (MoveTypePhysics.cs:203)", match: true }
+      - { name: "mortar grenade bounce", base: "0.5 / 0.075 (g_balance_mortar_bounce*)", port: "Mortar.cs:68-69 reads cvars (0.5/0.075) -> wired gren.BounceFactor/BounceStop (Mortar.cs:194-195)", match: true }
+      - { name: "electro-secondary orb bounce", base: "0.3 / 0.05 (g_balance_electro_secondary_bounce*)", port: "Electro.cs:137-138 reads cvars (0.3/0.05) -> wired orb.BounceFactor/BounceStop (Electro.cs:442-443)", match: true }
+      - { name: "raptor vehicle bounce", base: "0.2 / 0 (g_vehicle_raptor_bounce*)", port: "Raptor.cs:88-89 fields 0.2/0 -> wired vehicle.BounceFactor/BounceStop (Raptor.cs:130-131)", match: true }
+      - { name: "spider web projectile bounce", base: "0.3 / 0.05 (spider.qc:154-155)", port: "Spider.cs passes 0.3/0.05 -> SpawnProjectile ASSIGNS them (MonsterAI.cs:1692-1693)", match: true }
+      - { name: "golem zap projectile bounce", base: "0.5 / 0.075 (golem)", port: "Golem.cs passes 0.5/0.075 -> SpawnProjectile ASSIGNS them (MonsterAI.cs:1692-1693)", match: true }
       - { name: "nexball basketball/football bounce", base: "0.6 / 0.075 (g_nexball_{basketball,football}_bounce*)", port: "BallConfig.WithKindDefaults sets 0.6/0.075 (BallEntity.cs:130-131) -> wired e.BounceFactor/BounceStop (BallEntity.cs:200-201)", match: true }
       - { name: "racer chassis bounce", base: "0.25 / 0 (g_vehicle_racer_bounce*)", port: "Racer.cs:57-58 fields 0.25/0 -> wired vehicle.BounceFactor/BounceStop (Racer.cs:205-206)", match: true }
-      - { name: "grenadebouncedownslopes (d source)", base: "1 -> d = trace_plane_normal * velocity (SIGNED)", port: "Vector3.Dot(normal, vel) (SIGNED) (MoveTypePhysics.cs:177)", match: true }
+      - { name: "grenadebouncedownslopes (d source)", base: "1 -> d = trace_plane_normal * velocity (SIGNED, toss.qc:105)", port: "Vector3.Dot(normal, vel) (SIGNED) (MoveTypePhysics.cs:207)", match: true }
       - { name: "slidemoveprojectiles", base: "0 (Xonotic) -> movetime=0 after bounce", port: "movetime=0 after bounce", match: true }
     status:
       logic: faithful
@@ -158,9 +157,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "MoveTypePhysics.cs:163,172-177,185-191 read ent.BounceFactor/BounceStop + signed Dot (toss.qc:89-142). All live producers wire correct values: Mortar.cs:169-170 (0.5/0.075), Electro.cs:426-427 (0.3/0.05), Raptor.cs:130-131 (0.2/0), MonsterAI.SpawnProjectile assigns the bounceFactor/bounceStop params (MonsterAI.cs:1608-1609; spider 0.3/0.05, golem 0.5/0.075), BallEntity.cs:130-131/200-201 (nexball 0.6/0.075), Racer.cs:57-58/205-206 (racer 0.25/0). All match Base. Re-verified 2026-06-27.", result: pass }
+      - { kind: code, ref: "MoveTypePhysics.cs:193,202-219 read ent.BounceFactor/BounceStop + signed Dot (toss.qc:89-142). All live producers wire correct values: Mortar.cs:194-195 (0.5/0.075), Electro.cs:442-443 (0.3/0.05), Raptor.cs:130-131 (0.2/0), MonsterAI.SpawnProjectile assigns the bounceFactor/bounceStop params (MonsterAI.cs:1692-1693; spider 0.3/0.05, golem 0.5/0.075), BallEntity.cs:130-131/200-201 (nexball 0.6/0.075), Racer.cs:205-206 (racer 0.25/0). All match Base. Re-verified 2026-06-27 (line numbers refreshed).", result: pass }
     confidence: high
-    notes: "Stable since the Wave-6e fix (faa4e89): all bounce producers ASSIGN proj/orb/ball/vehicle BounceFactor/BounceStop and the integrator reads them with the signed grenadebouncedownslopes d. 2026-06-27 re-audit: values unchanged, only verification line numbers refreshed (Electro/MonsterAI/Racer files were edited elsewhere, shifting the cited lines). Casings are NOT on this server path — they ride the client-only ShellCasings.cs system (own bounce 0.25 shell / 0.5 bullet, faithful), out of this unit's scope."
+    notes: "Stable since the Wave-6e fix (faa4e89): all bounce producers ASSIGN proj/orb/ball/vehicle BounceFactor/BounceStop and the integrator reads them with the signed grenadebouncedownslopes d. 2026-06-27 re-audit: values unchanged, verification line numbers refreshed. Casings are NOT on this server path — they ride the client-only ShellCasings.cs system (own bounce 0.25 shell / 0.5 bullet), out of this unit's scope."
 
   - id: physics-movetypes.step.physics
     name: "MOVETYPE_STEP integrator (monster bodies)"
@@ -173,69 +172,7 @@ features:
       - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:PhysicsStep"
     constants:
       - { name: "step->walk alias", base: "_Movetype_Physics_Step => _Movetype_Physics_Walk (step.qc:5, full slide+stair)", port: "STEP routes through WalkMove (RunEntity MoveTypePhysics.cs:59-71)", match: true }
-      - { name: "step gravity gate", base: "applygravity for `WALK || STEP` (walk.qc:12)", port: "WalkMove applyGravity == (MoveType.Walk || MoveType.Step) (MoveTypePhysics.cs:332) — STEP now included", match: true }
-    status:
-      logic: faithful
-      values: faithful
-      timing: faithful
-      presentation: na
-      audio: na
-      liveness: live
-    intended_divergence: false
-    divergence_rationale: null
-    gaps:
-      - "FIXED (Wave-2): STEP now dispatches to WalkMove (RunEntity MoveTypePhysics.cs:59-71) instead of the freefall-only PhysicsStep, matching Base step.qc:5 (the 1-line _Movetype_Physics_Walk alias). MOVETYPE_STEP bodies get the full Walk slide + explicit up/forward/down stair stepping. The old hardcoded misc/hitground.wav land cue is gone from the live path (PhysicsStep retained as dead reference only)."
-      - "FIXED (2026-06-22 second-pass fix-up, commit 4be8357): WalkMove's applyGravity gate is now `!inWater && (ent.MoveType == MoveType.Walk || ent.MoveType == MoveType.Step) && !WaterJump` (MoveTypePhysics.cs:332), matching Base walk.qc:12 `!CheckWater && (WALK || STEP) && !WATERJUMP`. The Wave-2 STEP-gravity regression (gate omitted Step, so a routed STEP body never free-fell) is closed — STEP bodies now both stair-step AND fall under gravity in this integrator."
-    verification:
-      - { kind: code, ref: "RunEntity MoveTypePhysics.cs:59 calls WalkMove for MoveType.Step. WalkMove:332 applyGravity now includes MoveType.Step (git show 4be8357 confirms the one-line fix landed after the baseline). step.qc:5 alias + walk.qc:12 dual WALK/STEP gravity confirmed in Base. Step is live: monsters MonsterAI.cs:213/1681, turrets/walker/ewheel, spiderbot vehicle.", result: pass }
-    confidence: high
-    notes: "Live (monster bodies, walker/ewheel turrets, spiderbot all set MoveType.Step). Wave-2 closed the stepping gap; the follow-up second-pass fix-up (4be8357, dated 2026-06-23) closed the gravity-gate omission. Net: STEP bodies now both step and fall. Fully faithful."
-
-  - id: physics-movetypes.walk.stepmove
-    name: "WalkMove slide + explicit stair up/down stepping"
-    layer: [shared]
-    base_refs:
-      - "common/physics/movetypes/walk.qc:_Movetype_Physics_Walk"
-    port_refs:
-      - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:WalkMove"
-    constants:
-      - { name: "sv_stepheight", base: "31 (physicsX.cfg, the default preset)", port: "31 (MoveTypePhysics.StepHeight)", match: true }
-      - { name: "sv_jumpstep", base: "1 (xonotic-server.cfg:119)", port: "JumpStep=true", match: true }
-      - { name: "sv_gameplayfix_stepdown", base: "2 (physicsX.cfg:59)", port: "StepDown=2", match: true }
-      - { name: "sv_gameplayfix_stepdown_maxspeed", base: "400 (physicsX.cfg:60)", port: "StepDownMaxSpeed=400 (vdist >= 400 skip)", match: true }
-      - { name: "sv_gameplayfix_stepmultipletimes", base: "1 (xonotic-server.cfg:563)", port: "in-loop step always enabled via stepHeight pass-through", match: true }
-      - { name: "sv_gameplayfix_downtraceonground", base: "engine default 1", port: "DownTraceOnGround=true", match: true }
-      - { name: "applygravity movetype gate", base: "WALK || STEP (walk.qc:12)", port: "MoveType.Walk || MoveType.Step (MoveTypePhysics.cs:332)", match: true }
-      - { name: "progress epsilon", base: "0.03125", port: "0.03125", match: true }
-      - { name: "sv_wallfriction body", base: "#if 0 no-op", port: "no-op", match: true }
-      - { name: "IS_ONSLICK exception on stepdown skip", base: "vdist(>=400) && !IS_ONSLICK (walk.qc:151)", port: "no onslick modeling — !onslick always taken", match: true }
-    status:
-      logic: faithful
-      values: faithful
-      timing: faithful
-      presentation: na
-      audio: na
-      liveness: live
-    intended_divergence: false
-    divergence_rationale: null
-    gaps:
-      - "FIXED (Wave-2): sv_stepheight 18->31, sv_gameplayfix_stepdown 1->2 (now SET_ONGROUND + groundentity on a good descending-stair landing, MoveTypePhysics.cs:441-445, matching walk.qc:171-175), and the sv_gameplayfix_stepdown_maxspeed 400 gate added (MoveTypePhysics.cs:426-428). The CheckWater gravity-gate-too-early bug is also closed (see physics-movetypes.checkwater)."
-      - "FIXED (2026-06-22 second-pass fix-up): applygravity (MoveTypePhysics.cs:332) now gates on `MoveType.Walk || MoveType.Step`, matching Base walk.qc:12 `WALK || STEP`. The earlier Walk-only omission (which also broke STEP-body gravity) is closed. No residual gaps on this row."
-    verification:
-      - { kind: code, ref: "MoveTypePhysics.cs:20 StepHeight=31, :319 StepDown=2, :320 StepDownMaxSpeed=400, :426-428 vdist gate, :441-445 SET_ONGROUND glue; all match walk.qc PHYS_STEPHEIGHT(31)/STEPDOWN(2)/STEPDOWN_MAXSPEED(400). applyGravity:332 now includes Step (WALK||STEP).", result: pass }
-    confidence: high
-    notes: "Wave-2 brought the Walk tunables to full parity (stepheight 31, stepdown==2 glue, maxspeed gate) and fixed the CheckWater gravity gate; the 2026-06-22 second-pass fix-up closed the applyGravity WALK||STEP omission. Control flow (primary FlyMove, downtraceonground re-probe, up/forward/down explicit step, revert-on-no-progress, down-step glue) faithful. No residual gaps."
-
-  - id: physics-movetypes.push.pusher
-    name: "MOVETYPE_PUSH movers (local-time advance + think)"
-    layer: [authority]
-    base_refs:
-      - "common/physics/movetypes/push.qc:_Movetype_Physics_Push"
-    port_refs:
-      - "src/XonoticGodot.Engine/Simulation/FlyMove.cs:PhysicsPusher"
-    constants:
-      - { name: "advance on ltime up to nextthink", base: "movetime = min(dt, nextthink-ltime), clamped >=0", port: "same", match: true }
-      - { name: "inline think on ltime cross", base: "getthink(this)(this) when nextthink in (oldltime, ltime]", port: "ent.Think?.Invoke inline, same gate", match: true }
+      - { name: "step gravity gate", base: "applygravity for `WALK || STEP` (walk.qc:12)", port: "WalkMove applyGravity == (MoveType.Walk || MoveType.Step) (MoveTypePhysics.cs:372) — STEP included", match: true }
     status:
       logic: faithful
       values: faithful
@@ -247,9 +184,70 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "PhysicsPusher (FlyMove.cs:277) vs _Movetype_Physics_Push (push.qc:201): local-time gate, movetime clamp, inline think on ltime cross all match. File unchanged in Wave-2.", result: pass }
+      - { kind: code, ref: "RunEntity MoveTypePhysics.cs:59 calls WalkMove for MoveType.Step. WalkMove:372 applyGravity includes MoveType.Step (WALK||STEP). step.qc:5 alias + walk.qc:12 dual WALK/STEP gravity confirmed in Base. Step is live: monsters MonsterAI.cs, turrets WalkerTurret/EWheelTurret, spiderbot vehicle (all set MoveType.Step, grep-confirmed 2026-06-27).", result: pass }
     confidence: high
-    notes: "Unchanged. Live for doors/plats/trains (MapObjectsCommon sets MoveType.Push)."
+    notes: "Live (monster bodies, walker/ewheel turrets, spiderbot all set MoveType.Step). Wave-2 closed the stepping gap; the follow-up second-pass fix-up (4be8357) closed the gravity-gate omission. Net: STEP bodies both step and fall. Fully faithful. (Shares the WalkMove CheckStuck-omission with physics-movetypes.walk.stepmove, but that is a minor logic detail and the row stays faithful.)"
+
+  - id: physics-movetypes.walk.stepmove
+    name: "WalkMove slide + explicit stair up/down stepping"
+    layer: [shared]
+    base_refs:
+      - "common/physics/movetypes/walk.qc:_Movetype_Physics_Walk"
+    port_refs:
+      - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:WalkMove"
+    constants:
+      - { name: "sv_stepheight", base: "31 (physicsX.cfg, the default preset)", port: "31 (MoveTypePhysics.StepHeight:20)", match: true }
+      - { name: "sv_jumpstep", base: "1 (xonotic-server.cfg:119)", port: "JumpStep=true (MoveTypePhysics.cs:358)", match: true }
+      - { name: "sv_gameplayfix_stepdown", base: "2 (physicsX.cfg:59)", port: "StepDown=2 (MoveTypePhysics.cs:359)", match: true }
+      - { name: "sv_gameplayfix_stepdown_maxspeed", base: "400 (physicsX.cfg:60)", port: "StepDownMaxSpeed=400 (vdist >= 400 skip, MoveTypePhysics.cs:360,466-468)", match: true }
+      - { name: "sv_gameplayfix_stepmultipletimes", base: "1 (xonotic-server.cfg:563)", port: "in-loop step always enabled via stepHeight pass-through (MoveTypePhysics.cs:381)", match: true }
+      - { name: "sv_gameplayfix_downtraceonground", base: "engine default 1", port: "DownTraceOnGround=true (MoveTypePhysics.cs:363)", match: true }
+      - { name: "applygravity movetype gate", base: "WALK || STEP (walk.qc:12)", port: "MoveType.Walk || MoveType.Step (MoveTypePhysics.cs:372)", match: true }
+      - { name: "progress epsilon", base: "0.03125", port: "0.03125", match: true }
+      - { name: "sv_wallfriction body", base: "#if 0 no-op (movetypes.qc:102)", port: "no-op (MoveTypePhysics.cs:458-461)", match: true }
+      - { name: "IS_ONSLICK exception on stepdown skip", base: "vdist(>=400) && !IS_ONSLICK (walk.qc)", port: "no onslick modeling — !onslick always taken", match: true }
+      - { name: "sv_gameplayfix_unstickplayers CheckStuck", base: "1 (xonotic-server.cfg:575) -> _Movetype_CheckStuck at top of walk (walk.qc:9-10)", port: "NOT modeled — WalkMove has no CheckStuck/unstick call", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "NEW (2026-06-27): WalkMove does NOT replicate Base's `if(GAMEPLAYFIX_UNSTICKPLAYERS(this)) _Movetype_CheckStuck(this)` at the top of _Movetype_Physics_Walk (walk.qc:9-10; cvar default 1, xonotic-server.cfg:575). A monster/STEP body that begins a tick embedded in geometry is not extricated before the slide move. Minor: the FlyMove startsolid-allsolid bail (FlyMove.cs:593-597 returns 3) and PushEntity's own NudgeOutOfSolid (FlyMove.cs:138-150) still prevent runaway, so the body just doesn't get the dedicated 6-direction/offset unstick probe Base runs first. logic stays faithful overall."
+      - "WALLCLIP pm_time primal-velocity restore at walk.qc:20 (and the FlyMove tail) is absent — the port has no pm_time field. Player-centric, low impact for the bodies this loop drives."
+    verification:
+      - { kind: code, ref: "MoveTypePhysics.cs:20 StepHeight=31, :359 StepDown=2, :360 StepDownMaxSpeed=400, :466-468 vdist gate, :482-486 SET_ONGROUND glue; all match walk.qc PHYS_STEPHEIGHT(31)/STEPDOWN(2)/STEPDOWN_MAXSPEED(400). applyGravity:372 includes Step (WALK||STEP). DIVERGENCE: no _Movetype_CheckStuck call (walk.qc:9-10 absent). Re-verified 2026-06-27.", result: pass }
+    confidence: high
+    notes: "Walk tunables at full parity (stepheight 31, stepdown==2 glue, maxspeed gate); applyGravity gates on WALK||STEP. Control flow (primary FlyMove, downtraceonground re-probe, up/forward/down explicit step, revert-on-no-progress, down-step glue) faithful. 2026-06-27 re-audit found one NEW minor gap: the sv_gameplayfix_unstickplayers _Movetype_CheckStuck call at the top of Base's walk is not ported. Logic remains faithful overall."
+
+  - id: physics-movetypes.push.pusher
+    name: "MOVETYPE_PUSH movers (local-time advance + think)"
+    layer: [authority]
+    base_refs:
+      - "common/physics/movetypes/push.qc:_Movetype_Physics_Push"
+    port_refs:
+      - "src/XonoticGodot.Engine/Simulation/FlyMove.cs:PhysicsPusher"
+    constants:
+      - { name: "advance on ltime up to nextthink", base: "movetime = min(dt, nextthink-ltime), clamped >=0", port: "same (FlyMove.cs:282-290)", match: true }
+      - { name: "inline think on ltime cross", base: "getthink(this)(this) when nextthink in (oldltime, ltime]", port: "ent.Think?.Invoke inline, same gate (FlyMove.cs:295-299)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PhysicsPusher (FlyMove.cs:277) vs _Movetype_Physics_Push (push.qc): local-time gate, movetime clamp, inline think on ltime cross all match. Re-verified 2026-06-27.", result: pass }
+    confidence: high
+    notes: "Live for doors/plats/trains (MapObjectsCommon sets MoveType.Push)."
 
   - id: physics-movetypes.push.pushmove
     name: "PushMove rider-carry, rotation, blocked-revert (door/plat crush)"
@@ -259,12 +257,12 @@ features:
     port_refs:
       - "src/XonoticGodot.Engine/Simulation/FlyMove.cs:PushMove"
     constants:
-      - { name: "SOLID_NOT/TRIGGER pusher", base: "translate+rotate, no riders, angle-wrap", port: "same (PushMove.cs:318-326)", match: true }
-      - { name: "skip movetypes", base: "NONE/PUSH/FOLLOW/NOCLIP/FLY_WORLDONLY", port: "same set", match: true }
-      - { name: "rotation pivot", base: "MAKE_VECTORS(-moveangle), left=-right, org+pivot", port: "AngleVectors(NegateAngles), left=-right", match: true }
-      - { name: "MOVETYPE_PHYSICS rider", base: "just translate (origin += move), no push", port: "special-cased: origin += move + relink + continue, skips PushEntity sweep (FlyMove.cs:407-414)", match: true }
-      - { name: "corpse/zero-thickness squash mins/maxs zero", base: "mins.x=mins.y=0; maxs=mins; continue (push.qc:166-173)", port: "same — zero-thickness skip + corpse box flattened to (0,0,mins.z) (FlyMove.cs:444-452)", match: true }
-      - { name: "blocked revert + .blocked", base: "revert pusher + all moved riders, call blocked", port: "same", match: true }
+      - { name: "SOLID_NOT/TRIGGER pusher", base: "translate+rotate, no riders, angle-wrap", port: "same (FlyMove.cs:318-326)", match: true }
+      - { name: "skip movetypes", base: "NONE/PUSH/FOLLOW/NOCLIP/FLY_WORLDONLY", port: "same set (FlyMove.cs:362-368)", match: true }
+      - { name: "rotation pivot", base: "MAKE_VECTORS(-moveangle), left=-right, org+pivot", port: "AngleVectors(NegateAngles), left=-right (FlyMove.cs:392-396)", match: true }
+      - { name: "MOVETYPE_PHYSICS rider", base: "just translate (origin += move), no push (push.qc:123-129)", port: "special-cased: origin += move + relink + continue, skips PushEntity sweep (FlyMove.cs:409-414)", match: true }
+      - { name: "corpse/zero-thickness squash mins/maxs zero", base: "mins.x=mins.y=0; maxs=mins; continue (push.qc:166-173)", port: "same — zero-thickness skip + corpse box flattened to (0,0,mins.z) (FlyMove.cs:444-453)", match: true }
+      - { name: "blocked revert + .blocked", base: "revert pusher + all moved riders, call blocked", port: "same (FlyMove.cs:455-471)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -277,9 +275,9 @@ features:
     gaps:
       - "Minor broadphase-style difference (not behavioral): Base gathers riders via findradius over the whole live entity list (FOREACH_ENTITY_RADIUS, push.qc:75); the port iterates Entities() with a swept-box + final-box overlap prefilter (FlyMove.cs:350,378-382) — a flat scan rather than the area-grid broadphase, but the resulting rider set is equivalent."
     verification:
-      - { kind: code, ref: "PushMove (FlyMove.cs:309) vs _Movetype_PushMove (push.qc:3): rider rotation about pivot, savesolid toggle, nudge-on-stuck, full revert + .blocked all match. MOVETYPE_PHYSICS rider fast-path NOW present (FlyMove.cs:407-414 translate+relink+continue == push.qc:123-129); corpse/zero-thickness squash now zeroes mins/maxs (FlyMove.cs:444-452 == push.qc:166-173). Both landed in commit faa4e89 (2026-06-25 22:30).", result: pass }
+      - { kind: code, ref: "PushMove (FlyMove.cs:309) vs _Movetype_PushMove (push.qc:3): rider rotation about pivot, savesolid toggle, nudge-on-stuck, full revert + .blocked all match. MOVETYPE_PHYSICS rider fast-path present (FlyMove.cs:409-414 == push.qc:123-129); corpse/zero-thickness squash zeroes mins/maxs (FlyMove.cs:444-453 == push.qc:166-173). Re-verified 2026-06-27.", result: pass }
     confidence: high
-    notes: "FIXED since the 2026-06-25 baseline (commit faa4e89, same-day but landed after the baseline audit ran): the two behavioral PushMove gaps are closed. (1) MOVETYPE_PHYSICS riders are now special-cased to translate+relink and skip the PushEntity/blocked sweep (FlyMove.cs:407-414), matching push.qc:123-129. (2) Corpse (SOLID_NOT/TRIGGER) and zero-thickness riders now get their box flattened to zero and are skipped rather than blocking (FlyMove.cs:444-452), matching push.qc:166-173. logic partial->faithful. Only residual is the non-behavioral broadphase-scan style difference (flat Entities() scan vs findradius); rider set is equivalent, so no behavior gap."
+    notes: "FIXED in commit faa4e89: the two behavioral PushMove gaps are closed. (1) MOVETYPE_PHYSICS riders are special-cased to translate+relink and skip the PushEntity/blocked sweep (FlyMove.cs:409-414). (2) Corpse (SOLID_NOT/TRIGGER) and zero-thickness riders get their box flattened to zero and are skipped (FlyMove.cs:444-453). Only residual is the non-behavioral broadphase-scan style difference; rider set is equivalent, so no behavior gap."
 
   - id: physics-movetypes.follow
     name: "MOVETYPE_FOLLOW rigid attach (held flag/key model)"
@@ -289,9 +287,9 @@ features:
     port_refs:
       - "src/XonoticGodot.Engine/Simulation/FlyMove.cs:PhysicsFollow"
     constants:
-      - { name: "fast path (no relative rot)", base: "origin = aiment.origin + view_ofs when aiment.angles==punchangle", port: "same (PushMove.cs:471-475)", match: true }
-      - { name: "rotated path", base: "rotate view_ofs from (-punchangle.x,y,z) frame into (-aiment.angles.x,y,z) frame", port: "same (QMath.AngleVectors, -x flips)", match: true }
-      - { name: "angles", base: "aiment.angles + this.v_angle", port: "e.Angles + ent.Angles (v_angle folded into Angles)", match: true }
+      - { name: "fast path (no relative rot)", base: "origin = aiment.origin + view_ofs when aiment.angles==punchangle", port: "same (FlyMove.cs:489-493)", match: true }
+      - { name: "rotated path", base: "rotate view_ofs from (-punchangle.x,y,z) frame into (-aiment.angles.x,y,z) frame", port: "same (FlyMove.cs:496-511, QMath.AngleVectors, -x flips)", match: true }
+      - { name: "angles", base: "aiment.angles + this.v_angle", port: "e.Angles + ent.Angles (v_angle folded into Angles) (FlyMove.cs:512)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -303,9 +301,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "PhysicsFollow (FlyMove.cs:465) vs follow.qc: both frames (fast + rotated) match transform-for-transform incl. the -x angle flips; v_angle folded into Entity.Angles. Live callers confirmed 2026-06-26: DynamicLight.cs:166, Follow.cs:120/138, Minelayer.cs:352 (mine-stick), PhysicalItemsMutator.cs:144, SandboxMutator.cs:283/291.", result: pass }
+      - { kind: code, ref: "PhysicsFollow (FlyMove.cs:483) vs follow.qc: both frames (fast + rotated) match transform-for-transform incl. the -x angle flips; v_angle folded into Entity.Angles. Live callers confirmed 2026-06-27 (grep MoveType.Follow): DynamicLight.cs, Follow.cs mapobject, Minelayer.cs (mine-stick), PhysicalItemsMutator.cs, SandboxMutator.cs.", result: pass }
     confidence: high
-    notes: "Port folds Base's separate .v_angle into Entity.Angles; equivalent IF callers store the follow offset angle in Angles. Liveness now CONFIRMED (was unconfirmed at baseline): MoveType.Follow is set by DynamicLight, the map Follow mapobject, stuck minelayer mines, the physical-items mutator, and the sandbox mutator — confidence raised medium->high."
+    notes: "Port folds Base's separate .v_angle into Entity.Angles; equivalent IF callers store the follow offset angle in Angles. Liveness CONFIRMED: MoveType.Follow is set by DynamicLight, the map Follow mapobject, stuck minelayer mines, the physical-items mutator, and the sandbox mutator."
 
   - id: physics-movetypes.matchticrate.interp
     name: "MatchTicrate sub-tick interpolation (sloppy, tic_* snapshots)"
@@ -317,9 +315,9 @@ features:
       - "client/weapons/projectile.qc:104"
     port_refs: []
     constants:
-      - { name: "frame clamp n", base: "bound(0, floor(dt/tr), 32)", port: "none", match: false }
-      - { name: "residual-dt trace continuation", base: "_Movetype_PushEntityTrace + gravity half-step", port: "none", match: false }
-      - { name: "sloppy straight-line interp", base: "origin += dt*velocity (sloppy/NOCLIP)", port: "none", match: false }
+      - { name: "frame clamp n", base: "bound(0, floor(dt/tr), 32) (movetypes.qc:870)", port: "none", match: false }
+      - { name: "residual-dt trace continuation", base: "_Movetype_PushEntityTrace + gravity half-step (movetypes.qc:900-931)", port: "none", match: false }
+      - { name: "sloppy straight-line interp", base: "origin += dt*velocity (sloppy/NOCLIP, movetypes.qc:915-918)", port: "none", match: false }
     status:
       logic: missing
       values: missing
@@ -330,9 +328,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "STILL OPEN: No Movetype_Physics_MatchTicrate equivalent and no tic_* snapshot fields on Entity (grep: zero hits in src/ for MatchTicrate/tic_origin/tic_velocity). Entities advance only on the fixed server tick, with no between-tick interpolation in this layer. In Base this smooths CSQC gibs/casings/projectiles/trains at render rate; whether visible in the port depends on its separate render-side interpolation (PredictionBuffer/ClientNet — out of this unit's scope)."
+      - "STILL OPEN: No Movetype_Physics_MatchTicrate equivalent and no tic_* snapshot fields on Entity (grep: zero hits in src/ for MatchTicrate/tic_origin/tic_velocity/tic_flags/sloppy). Entities advance only on the fixed server tick, with no between-tick interpolation in this layer. In Base this smooths CSQC gibs/casings/projectiles/trains at render rate; whether visible in the port depends on its separate render-side interpolation (PredictionBuffer/ClientNet — out of this unit's scope)."
     verification:
-      - { kind: code, ref: "no MatchTicrate/tic_origin/tic_velocity/tic_flags/sloppy symbols anywhere in src/ (re-grepped 2026-06-27, still zero hits); Entity.cs has no tic_* snapshot fields", result: fail }
+      - { kind: code, ref: "no MatchTicrate/tic_origin/tic_velocity/tic_flags/sloppy symbols anywhere in src/ (re-grepped 2026-06-27, zero hits); Entity.cs has no tic_* snapshot fields", result: fail }
     confidence: high
     notes: "Unchanged since baseline (re-confirmed 2026-06-27). Equivalent for server-authoritative entities (fixed-tick only); a smoothness gap for client-side moveables unless masked by a separate render interp layer (PredictionBuffer/ClientNet — out of this unit's scope)."
 
@@ -346,10 +344,10 @@ features:
       - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:CheckWater"
       - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:CheckWaterTransition"
     constants:
-      - { name: "waterlevel probe points", base: "feet (mins.z+1) / waist / eyes (view_ofs)", port: "same 3-point hull probe", match: true }
-      - { name: "CheckWater return value", base: "waterlevel > 1 (>= SWIMMING)", port: "WaterLevel > 1 (MoveTypePhysics.cs:514)", match: true }
-      - { name: "transition handler", base: "this.contentstransition(old,new) callback on watertype change; movetype layer emits NO sound", port: "ent.ContentsTransition?.Invoke(self, oldType, newType) on crossing in BOTH CheckWater (:496) and CheckWaterTransition (:256); no hardcoded cue", match: true }
-      - { name: "watertransition exit waterlevel", base: "GAMEPLAYFIX_WATERTRANSITION ? 0 : contents on exit", port: "always 0 on exit", match: true }
+      - { name: "waterlevel probe points", base: "feet (mins.z+1) / waist / eyes (view_ofs) (movetypes.qc:337,355,359)", port: "same 3-point hull probe (MoveTypePhysics.cs:513,528,532)", match: true }
+      - { name: "CheckWater return value", base: "waterlevel > 1 (>= SWIMMING) (movetypes.qc:365)", port: "WaterLevel > 1 (MoveTypePhysics.cs:538)", match: true }
+      - { name: "transition handler", base: "this.contentstransition(old,new) callback on watertype change; movetype layer emits NO sound (movetypes.qc:343-344,385-386)", port: "ent.ContentsTransition?.Invoke on crossing in BOTH CheckWater (:520) and CheckWaterTransition (:280); no hardcoded cue", match: true }
+      - { name: "watertransition exit waterlevel", base: "GAMEPLAYFIX_WATERTRANSITION ? 0 : contents on exit (movetypes.qc:397)", port: "always 0 on exit (MoveTypePhysics.cs:292)", match: true }
       - { name: "contentstransition setters", base: "essentially never set on movetype moveables (only strafehud/util.qc temporarily swaps it)", port: "no .ContentsTransition assignment anywhere — callback null on every moveable, matching Base in practice", match: true }
     status:
       logic: faithful
@@ -360,13 +358,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "FIXED (Wave-2): CheckWater now returns `ent.WaterLevel > 1` (>= SWIMMING) (MoveTypePhysics.cs:514), matching Base `waterlevel > 1`. The previous off-by-one-level return (>=1 wetfeet) that made WalkMove skip gravity a level too early is corrected — a Walk/Step entity with only its feet wet now correctly gets gravity."
-      - "FIXED (since 2026-06-25 baseline): the hardcoded misc/water_in.wav cue is GONE. Both CheckWater (MoveTypePhysics.cs:496) and CheckWaterTransition (:256) now fire the per-entity ent.ContentsTransition callback (Entity.ContentsTransition, Entity.cs:81) on a native-contents change and emit NO sound themselves — byte-for-byte the Base structure (movetypes.qc:340 + :385, which also emit no sound; the splash/exit/lava cue lives in the per-entity callback). As in Base, no movetype moveable actually assigns the callback (Base only strafehud/util.qc swaps it), so it is null in practice — faithful."
+    gaps: []
     verification:
-      - { kind: code, ref: "CheckWater (MoveTypePhysics.cs:486) 3-point probe matches movetypes.qc:334; `return ent.WaterLevel > 1` (:514) matches Base. CheckWaterTransition (:241) now routes through ent.ContentsTransition?.Invoke (:256) with NO PlaySound, matching movetypes.qc:368 _Movetype_CheckWaterTransition. Entity.ContentsTransition delegate added (Entity.cs:16/81). Base-side grep confirms .contentstransition has no real setters on moveables.", result: pass }
+      - { kind: code, ref: "CheckWater (MoveTypePhysics.cs:510) 3-point probe matches movetypes.qc:334; `return ent.WaterLevel > 1` (:538) matches Base. CheckWaterTransition (:265) routes through ent.ContentsTransition?.Invoke (:280) with NO PlaySound, matching movetypes.qc:368. Base-side grep confirms .contentstransition has no real setters on moveables. Re-verified 2026-06-27.", result: pass }
     confidence: high
-    notes: "FIX since baseline: the movetype-layer hardcoded water_in.wav is removed and replaced by the proper per-entity .ContentsTransition hook, matching Base which emits no sound in this layer. audio reclassified partial->na (the layer correctly makes no sound). logic/values/timing remain faithful; gravity gate correct. Both CheckWater and CheckWaterTransition fire the callback on a contents crossing exactly like Base."
+    notes: "The movetype-layer hardcoded water_in.wav is removed and replaced by the proper per-entity .ContentsTransition hook, matching Base which emits no sound in this layer (audio na). logic/values/timing faithful; gravity gate correct (CheckWater returns waterlevel>1). Both CheckWater and CheckWaterTransition fire the callback on a contents crossing exactly like Base."
 
   - id: physics-movetypes.pushentity.impact
     name: "PushEntity sweep + Impact dual-dispatch + NudgeOutOfSolid"
@@ -380,11 +376,11 @@ features:
       - "src/XonoticGodot.Engine/Simulation/FlyMove.cs:Impact"
       - "src/XonoticGodot.Engine/Simulation/FlyMove.cs:TryNudgeOutOfSolid"
     constants:
-      - { name: "movefilter select", base: "FLYMISSILE->MISSILE, FLY_WORLDONLY->WORLDONLY, trigger/not->NOMONSTERS, else NORMAL", port: "same (MoveFilterFor)", match: true }
-      - { name: "worldstartsolid retry", base: "retry with MOVE_WORLDONLY (movetypes.qc:673-684)", port: "Nudge + retry; abort on world startsolid", match: true }
-      - { name: "impact gate", base: "solid>=TRIGGER && fraction<1 && (!onground||groundentity!=trace_ent)", port: "same (+world sentinel for trace.Ent==null)", match: true }
-      - { name: "nudge epsilon", base: "0.03125", port: "0.03125", match: true }
-      - { name: "nudge 6-axis grow-from-pivot", base: "coord=2-(bump>>1), dir=bump&1, subbump<=10, bail on bmodel startsolid", port: "same loop structure", match: true }
+      - { name: "movefilter select", base: "FLYMISSILE->MISSILE, FLY_WORLDONLY->WORLDONLY, trigger/not->NOMONSTERS, else NORMAL (movetypes.qc:654-663)", port: "same (MoveFilterFor FlyMove.cs:179-185)", match: true }
+      - { name: "worldstartsolid retry", base: "retry with MOVE_WORLDONLY (movetypes.qc:673-684)", port: "Nudge + retry; abort on world startsolid (FlyMove.cs:138-150)", match: true }
+      - { name: "impact gate", base: "solid>=TRIGGER && fraction<1 && (!onground||groundentity!=trace_ent) (movetypes.qc:692)", port: "same (+world sentinel for trace.Ent==null) (FlyMove.cs:165-172)", match: true }
+      - { name: "nudge epsilon", base: "0.03125", port: "0.03125 (FlyMove.cs:253)", match: true }
+      - { name: "nudge 6-axis grow-from-pivot", base: "coord=2-(bump>>1), dir=bump&1, subbump<=10, bail on bmodel startsolid (movetypes.qc:23-93)", port: "same loop structure (FlyMove.cs:230-259)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -393,9 +389,9 @@ features:
       audio: na
       liveness: live
     intended_divergence: true
-    divergence_rationale: "Port traces return null trace.Ent for world-brush hits; PushEntity substitutes a shared inert WorldSentinel entity as 'other' on a blocked sweep so a projectile's .touch fires against the world (explode-on-wall). DP's worldspawn (edict 0) serves the same role; a faithful stand-in for QC's lack of a null-world distinction, not a behavior change. Also: DP passes checkstuck=false for MOVETYPE_FLY so PushEntity skips the nudge for FLY — reproduced."
+    divergence_rationale: "Port traces return null trace.Ent for world-brush hits; PushEntity substitutes a shared inert WorldSentinel entity as 'other' on a blocked sweep so a projectile's .touch fires against the world (explode-on-wall). DP's worldspawn (edict 0) serves the same role; a faithful stand-in for QC's lack of a null-world distinction, not a behavior change. Also: DP passes checkstuck=false for MOVETYPE_FLY so PushEntity skips the nudge for FLY — reproduced (FlyMove.cs:138)."
     gaps: []
     verification:
-      - { kind: code, ref: "PushEntity/Impact/TryNudgeOutOfSolid (FlyMove.cs:101-263) vs movetypes.qc:401-696: dual-dispatch, setorigin-teleport abort, worldstartsolid retry, 6-axis nudge all match. File unchanged in Wave-2.", result: pass }
+      - { kind: code, ref: "PushEntity/Impact/TryNudgeOutOfSolid (FlyMove.cs:101-263) vs movetypes.qc:401-696: dual-dispatch, setorigin-teleport abort, worldstartsolid retry, 6-axis nudge all match. Re-verified 2026-06-27.", result: pass }
     confidence: high
-    notes: "Unchanged. Impact dual-dispatch, setorigin-teleport abort, 6-axis nudge match. WorldSentinel + FLY-skip-nudge are the intentional structural differences."
+    notes: "Impact dual-dispatch, setorigin-teleport abort, 6-axis nudge match. WorldSentinel + FLY-skip-nudge are the intentional structural differences."

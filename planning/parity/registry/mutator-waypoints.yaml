@@ -3,13 +3,13 @@ category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
 summary:
-  feature_count: 17
+  feature_count: 18
   worst_gaps:
-    - "Objective-marker MANAGER carrier sub-API still has no live caller: AttachCarrier / DetachCarrier / UpdateTeamRadar are uncalled (CTF/KH/Ka/Tka/Dom/FT producers build WaypointSprite records directly in CollectWaypoints and bypass the manager). SpawnFixed/Spawn/UpdateHealth/UpdateMaxHealth/UpdateRule/UpdateBuildFinished/Ping/Kill/Disown are ALL live now (Assault objectives, itemstime respawn countdown, Seeker tags, powerup drops, Weapon_whereis)."
-    - "Producer coverage WIDENED again: CTF + Domination + FreezeTag + Keepaway + TeamKeepaway + Key Hunt + LMS emit via CollectWaypoints; Assault via the manager; itemstime item-respawn countdown + Seeker tagged-target + powerup-drop countdown + Weapon_whereis (g_showweaponspawns) via the manager. Still MISSING: Onslaught CP/generators, Nexball balls/goals, Race start/finish/checkpoint, monster/turret/vehicle/buff markers."
+    - "Objective-marker MANAGER carrier sub-API still has no live caller: AttachCarrier / DetachCarrier are uncalled (CTF/KH/Ka/Tka/Dom/FT producers build WaypointSprite records directly in CollectWaypoints and bypass the manager). FIX this audit: UpdateTeamRadar is now LIVE via MonsterAI.ChangeTeam (monster_changeteam). SpawnFixed/Spawn/UpdateHealth/UpdateMaxHealth/UpdateRule/UpdateBuildFinished/Ping/Kill/Disown are all live (Assault objectives, itemstime respawn countdown, Seeker tags, powerup drops, Weapon_whereis, monster healthbars)."
+    - "Producer coverage WIDENED again: CTF + Domination + FreezeTag + Keepaway + TeamKeepaway + Key Hunt + LMS emit via CollectWaypoints; Assault via the manager; itemstime item-respawn countdown + Seeker tagged-target + powerup-drop countdown + Weapon_whereis (g_showweaponspawns) + MONSTER healthbars (g_monsters_healthbars) via the manager. Still MISSING: Onslaught CP/generators, Nexball balls/goals, Race start/finish/checkpoint, turret/vehicle/buff markers."
     - "TEAMPLAY three-image (netname/2/3) per-audience swap still absent — the port networks a single SpriteName and does the team filter server-side only."
     - "Flag-carrier HEALTH BAR + auto-helpme-on-hit on CTF carriers still absent (AttachCarrier has no live caller; Ctf.CollectWaypoints sets Health=-1)."
-    - "wp_extra-driven per-instance blink (superweapon Weapon=2 / Item=m_waypointblink) still not modeled. Radar PING ring pulse is IMPLEMENTED (RadarPanel.DrawPingPulse + ClientNet bit-7 stamp), driven live by the itemstime respawn countdown. FIX this audit: Weapon_whereis (g_showweaponspawns) is now ported + live (Inventory.cs)."
+    - "wp_extra-driven per-instance blink (superweapon Weapon=2 / Item=m_waypointblink) still not modeled. Radar PING ring pulse is IMPLEMENTED (RadarPanel.DrawPingPulse + ClientNet bit-7 stamp), driven live by the itemstime respawn countdown. FIX this audit: monster healthbar markers (g_monsters_healthbars) are now ported + live (MonsterAI.cs)."
 features:
   - id: waypoints.registry.defs
     name: "Waypoint-kind registry (WP_* defs: text/icon/color/blink)"
@@ -38,7 +38,7 @@ features:
     divergence_rationale: null
     gaps:
       - "Residual: the wp_extra-DRIVEN spritelookupblinkvalue overrides (superweapon Weapon=2, Item=item.m_waypointblink) are not modeled — Weapon's def blink is a flat 1 and there is no per-instance wp_extra blink lookup. Harmless while those producers (superweapon pickups) are absent. The Seeker/Item/Weapon DEFS are now exercised by live producers; only the wp_extra per-instance blink override is unmodeled."
-      - "liveness: partial — defs are reachable only once their gametype emits waypoints; CTF + Domination + FreezeTag + Keepaway + TeamKeepaway + Assault + Key Hunt + LMS + itemstime (Item/Weapon) + Seeker + Weapon_whereis (Weapon def) + player-deployed pings now exercise their defs. Still NOT on the live path: Ons*/Nb*/Race*/Monster/Vehicle*/Buff."
+      - "liveness: partial — defs are reachable only once their gametype emits waypoints; CTF + Domination + FreezeTag + Keepaway + TeamKeepaway + Assault + Key Hunt + LMS + itemstime (Item/Weapon) + Seeker + Weapon_whereis (Weapon def) + Monster (g_monsters_healthbars) + player-deployed pings now exercise their defs. Still NOT on the live path: Ons*/Nb*/Race*/Vehicle*/Buff."
     verification:
       - { kind: code-read, ref: "all.inc (63 REGISTER_WAYPOINT) vs WaypointRegistry.Build (63 Add(...)) — names/text/icon/color/blink line-by-line; texts match", result: pass }
     confidence: high
@@ -57,6 +57,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:SpawnObjectiveSprite"
       - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:RespawnCountdown"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Seeker.cs:494"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:446"
     constants:
       - { name: "sv_waypointsprite_deployed_lifetime", base: "10", port: "10 (config + Cvar fallback)", match: true }
       - { name: "sv_waypointsprite_deadlifetime", base: "1", port: "1", match: true }
@@ -72,12 +73,12 @@ features:
     divergence_rationale: null
     gaps:
       - "DEPLOY + CLEAR + HELPME slice is live (DeployFixed/DeployPersonal/Attach/ClearPersonal/ClearOwned/HelpMePing from Commands.cs; Reset() + Think() in GameWorld; SendWaypoints merges WaypointSprites.Active per peer)."
-      - "OBJECTIVE/UPDATE slice is BROADLY live now: SpawnFixed/Spawn/UpdateMaxHealth/UpdateHealth/Disown/Kill via Assault (SpawnObjectiveSprite); Spawn/UpdateBuildFinished/Ping/Kill via itemstime (ItemPickupRules.RespawnCountdown, ItemPickupRules.cs:794/809/824); Spawn/UpdateRule/Kill via Seeker (Seeker.cs:496/514/519); Spawn/UpdateMaxHealth/UpdateHealth/Kill via powerup drops (PowerupsMutator.cs:541-575); Spawn (personal, radarIcon 0) via Weapon_whereis (Inventory.cs:403). FIX vs baseline which marked Ping/UpdateBuildFinished/UpdateRule zero-caller dead."
-      - "Still NO live caller: AttachCarrier, DetachCarrier, UpdateTeamRadar — the CTF/Dom/FreezeTag/Keepaway/KeyHunt/LMS producers build WaypointSprite records directly in CollectWaypoints (not via the manager carrier helper)."
+      - "OBJECTIVE/UPDATE slice is BROADLY live now: SpawnFixed/Spawn/UpdateMaxHealth/UpdateHealth/Disown/Kill via Assault (SpawnObjectiveSprite); Spawn/UpdateBuildFinished/Ping/Kill via itemstime (ItemPickupRules.RespawnCountdown, ItemPickupRules.cs:794/809/824); Spawn/UpdateRule/Kill via Seeker (Seeker.cs:496/514/519); Spawn/UpdateMaxHealth/UpdateHealth/Kill via powerup drops (PowerupsMutator.cs:541-575); Spawn (personal, radarIcon 0) via Weapon_whereis (Inventory.cs:403); Spawn/UpdateMaxHealth/UpdateHealth/UpdateTeamRadar/Kill via MONSTER healthbars (MonsterAI.cs:452/460/461/433/691)."
+      - "FIX this audit: UpdateTeamRadar is now LIVE — MonsterAI.ChangeTeam (monster_changeteam) re-colors the monster healthbar radar icon to the new team (MonsterAI.cs:433). Still NO live caller: AttachCarrier, DetachCarrier — the CTF/Dom/FreezeTag/Keepaway/KeyHunt/LMS carrier producers build WaypointSprite records directly in CollectWaypoints (not via the manager carrier helper)."
     verification:
-      - { kind: code-read, ref: "grep callers → Commands.cs (Deploy/Attach/Clear) + GameWorld.cs (Reset/Think) + Assault.cs:401/407/411/412/446/467/493/768 + ItemPickupRules.cs:712/740/757/768/783 + Seeker.cs:493/496/501/514/519/540 + PowerupsMutator.cs:346/541/543/545/563/566/575; AttachCarrier/DetachCarrier/UpdateTeamRadar → ZERO non-test callers", result: partial }
+      - { kind: code-read, ref: "grep callers → Commands.cs (Deploy/Attach/Clear) + GameWorld.cs (Reset/Think) + Assault.cs + ItemPickupRules.cs:794/809/824 + Seeker.cs:514/519 + PowerupsMutator.cs:541-575 + MonsterAI.cs:433/452/460/461/691 (UpdateTeamRadar/Spawn/UpdateMaxHealth/UpdateHealth/Kill); AttachCarrier/DetachCarrier → ZERO non-test callers", result: partial }
     confidence: high
-    notes: "FIX vs baseline: Ping/UpdateBuildFinished/UpdateRule now have live callers (itemstime + Seeker). liveness stays partial — only the carrier sub-API (AttachCarrier/DetachCarrier/UpdateTeamRadar) remains uncalled."
+    notes: "FIX vs baseline: UpdateTeamRadar now has a live caller (MonsterAI.ChangeTeam). liveness stays partial — only the carrier sub-API (AttachCarrier/DetachCarrier) remains uncalled."
 
   - id: waypoints.gametype.collect
     name: "Per-tick objective waypoint emit (per gametype)"
@@ -106,7 +107,7 @@ features:
     divergence_rationale: null
     gaps:
       - "Seven live CollectWaypoints producers now: CTF (flag base/dropped/carrier), Domination (control-point markers), FreezeTag (Frozen/Reviving + thaw-progress health bar), Keepaway (KaBall/KaBallCarrier, tracking-gated), TeamKeepaway (team-colored TkaBallCarrier<team>/KaBall, tracking-gated), Key Hunt (KeyDropped + KeyCarrier<team>/KeyCarrierFinish, tracking-gated per-viewer predicates), LMS (LmsLeader on each leader, show-window gated). Plus Assault via the manager API, and itemstime/Seeker/powerup-drop via the manager. All reached via ServerNet.SendWaypoints:1022 per tick. FIX vs baseline (was CTF+Dom+FT+Ka+Tka)."
-      - "Still missing as CollectWaypoints producers: Onslaught control points + generators, Nexball balls + goals, Race start/finish/checkpoint, monster/turret/vehicle/buff markers. (Weapon_whereis is now ported as an on-demand manager producer — see waypoints.weapon.whereis — not via CollectWaypoints.)"
+      - "Still missing as CollectWaypoints producers: Onslaught control points + generators, Nexball balls + goals, Race start/finish/checkpoint, turret/vehicle/buff markers. (Weapon_whereis and MONSTER healthbars are now ported as on-demand/persistent manager producers — see waypoints.weapon.whereis and waypoints.monster.healthbar — not via CollectWaypoints.)"
     verification:
       - { kind: code-read, ref: "grep 'override.*CollectWaypoints' → Ctf.cs:401 + Domination.cs:518 + FreezeTag.cs:770 + Keepaway.cs:659 + TeamKeepaway.cs:721 + KeyHunt.cs:1324 + LastManStanding.cs:836; all reached via ServerNet.SendWaypoints (ServerNet.cs:1022) per tick", result: partial }
     confidence: high
@@ -504,7 +505,7 @@ features:
     verification:
       - { kind: code-read, ref: "LastManStanding.CollectWaypoints:836 (show-window predicate) + Seeker.cs:514-520 (Spawn+UpdateRule) + PowerupsMutator.cs:541-575 (Spawn+UpdateMaxHealth+per-tick UpdateHealth+Kill)", result: pass }
     confidence: high
-    notes: "NEW ROW (was unmapped; baseline listed LMS leader + monster/turret/vehicle/buff as absent and didn't track Seeker/powerup-drop markers). LMS leader, Seeker tag and powerup-drop countdown are now live. Onslaught/Nexball/Race/monster/turret/vehicle/buff markers remain absent."
+    notes: "NEW ROW (was unmapped; baseline listed LMS leader + monster/turret/vehicle/buff as absent and didn't track Seeker/powerup-drop markers). LMS leader, Seeker tag and powerup-drop countdown are now live. Monster healthbars are now live too (see waypoints.monster.healthbar). Onslaught/Nexball/Race/turret/vehicle/buff markers remain absent."
 
   - id: waypoints.weapon.whereis
     name: "'Where is weapon' spawn markers (g_showweaponspawns / Weapon_whereis)"
@@ -540,3 +541,38 @@ features:
       - { kind: code-read, ref: "Inventory.Weapon_whereis (Inventory.cs:367-410): g_showweaponspawns guard + WEP_FLAG_HIDDEN skip + live item scan (WeaponPickup + OwnedWeaponSet.Has + ItemAvailable + shown model) + loot/showSpawns<2 skip + head offset maxs.z*1.2 + WP_Weapon Spawn radarIcon 0 + WpExtra=RegistryId + personal VisibleForPlayer; callers ClientHasWeapon complain-path (Inventory.cs:337-354) reached from GetCycleWeapon:503 + SwitchWeaponWithComplain:518 (server weapon-switch impulse)", result: pass }
     confidence: high
     notes: "FIX vs baseline (missing→faithful, dead→live): Weapon_whereis is now a live producer of on-demand WP_Weapon spawn-markers via the weapon-key complain path, with all three g_showweaponspawns modes. Residual: -2 vs 2.5s lifetime (values/timing partial) and un-networked wp_extra (generic icon). No dedicated test."
+
+  - id: waypoints.monster.healthbar
+    name: "Monster floating WP_Monster healthbar marker (g_monsters_healthbars)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:Monster_Spawn_Setup"
+      - "common/monsters/sv_monsters.qc:monster_changeteam"
+      - "common/mutators/mutator/waypoints/all.inc:REGISTER_WAYPOINT(Monster)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:SpawnHealthbar"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:UpdateHealthbar"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:ChangeTeam"
+    constants:
+      - { name: "g_monsters_healthbars (spawn gate)", base: "0 (autocvar_g_monsters_healthbars)", port: "0 (Cvar(\"g_monsters_healthbars\",0) != 0 gate, MonsterAI.cs:568)", match: true }
+      - { name: "WP_Monster Spawn args", base: "WaypointSprite_Spawn(WP_Monster, lifetime 0, maxdist 1024, this, '0 0 1'*(maxs.z+15), NULL, team, hideable true, RADARICON_DANGER)", port: "Spawn(\"Monster\", 0, 1024, e, (0,0,Maxs.Z+15), Origin, team, col, radarIcon 1, Default, hideable true)", match: true }
+      - { name: "team color / FFA fallback", base: "team ? Team_ColorRGB(team) : '1 0 0'", port: "Team!=0 ? Teams.ColorRgb(Team) : (1,0,0)", match: true }
+      - { name: "INVINCIBLE bar gate", base: "if (!(spawnflags & MONSTERFLAG_INVINCIBLE)) UpdateMaxHealth/UpdateHealth", port: "if ((SpawnFlags & MonsterFlag_Invincible)==0) UpdateMaxHealth+UpdateHealth", match: true }
+      - { name: "changeteam UpdateTeamRadar color", base: "WaypointSprite_UpdateTeamRadar(sprite, RADARICON_DANGER, team?Team_ColorRGB:'1 0 0')", port: "UpdateTeamRadar(Sprite, Sprite.RadarIcon, team?ColorRgb:(1,0,0)) + Sprite.Team=newteam", match: true }
+      - { name: "wp_extra = monsterid", base: "wp.wp_extra = this.monsterdef.monsterid", port: "WpExtra NOT set on monster sprite", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Live producer of the floating WP_Monster healthbar: SpawnHealthbar (MonsterAI.cs:446, called from Monster spawn at :568 under the g_monsters_healthbars gate) spawns WP_Monster at maxs.z+15 following the monster (maxdist 1024, hideable, RADARICON_DANGER), primes the bar unless INVINCIBLE, refreshes on hit (UpdateHealthbar / UpdateHealth), re-teams via ChangeTeam→UpdateTeamRadar, and is Killed on death (MonsterAI.cs:691/1909). Merged per peer via WaypointSprites.Active → ServerNet.SendWaypoints."
+      - "presentation: wp_extra (= monsterid, used client-side to resolve the monster's name/icon via get_monsterinfo) is not set on the sprite (and not networked), so the client renders the generic WP_Monster def text ('Monster') rather than the per-monster name. Cosmetic — same class as the other un-networked wp_extra gaps (waypoints.net.serialize)."
+    verification:
+      - { kind: code-read, ref: "MonsterAI.SpawnHealthbar:446-463 (gate :568) + UpdateHealthbar:470 + ChangeTeam:416 (UpdateTeamRadar:433) + Kill:691,1909 vs sv_monsters.qc:1366-1376 (Monster_Spawn_Setup) + :200-218 (monster_changeteam); args/gates/colors line-by-line; reaches the wire via WaypointSprites.Active merge (ServerNet.cs:1058)", result: pass }
+    confidence: high
+    notes: "NEW ROW (was unmapped; baseline listed monster markers as absent and UpdateTeamRadar as zero-caller dead). Monster healthbar is now a live persistent manager producer behind the (default-off) g_monsters_healthbars cvar, matching Base spawn args / team-color / INVINCIBLE / changeteam-radar. Sole gap: un-set wp_extra → generic 'Monster' text instead of the per-monster name. No dedicated test."

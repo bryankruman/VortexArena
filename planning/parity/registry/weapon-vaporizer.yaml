@@ -3,12 +3,13 @@ category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
 summary:
-  feature_count: 12
+  feature_count: 14
   worst_gaps:
     - "Primary rail beam is a generic networked trail (TE_TEI_G3/_HIT), not the bespoke team-colored cylindric VaporizerBeam (cl_vaporizerbeam_teamcolor/colorboost/lifetime CSQC path unmodeled)."
     - "Instagib flag hardcoded true on the class default — a bare non-instagib Vaporizer pickup treats ammo as instagib (1 cell) on the class default, though Attack/CheckAmmo re-read g_instagib so under-the-mutator behaviour is correct."
+    - "MENUQC describe() weapon-guide prose has no port (no GuideDescription override on Vaporizer.cs); the live DialogMediaGuide weapon-guide shows blank for the Vaporizer."
     - "RM-laser rapid stream omits weapon_thinkf WFRAME_FIRE2 rapid_animtime (cosmetic view-model anim frame only; logic/timing/values/bolt visual all faithful)."
-  verifier_notes: "Re-audit 2026-06-27 (drift check) on branch claude/parity-port-waves. ONE real FIX since the 2026-06-25 baseline + three liveness upgrades; no regressions. (1) RM-LASER CSQC BOLT VISUAL — the baseline's #1 worst_gap is RESOLVED. The port now carries a full distinct RocketMinstaLaser projectile descriptor (ProjectileCatalog.cs:222-224: ProjectileType.RocketMinstaLaser, ModelPath models/elaser.mdl, TrailEffect 'ROCKETMINSTA_LASER' = LaserRed thin red streak, GlowSprite fallback), the trail effect is registered (EffectsList.cs:264 ROCKETMINSTA_LASER -> rocketminsta_laser_neutral isTrail), the netname->type classifier matches 'rocketminsta' BEFORE the generic 'rocket' check (ProjectileCatalog.cs:269 — avoids the rocket-substring misclassification), and ProjectileRenderer.cs:127-128 applies the per-bolt team colormod (colormapPaletteColor) faithfully to PROJECTILE_ROCKETMINSTA_LASER. So Vaporizer.cs:379's netname 'rocketminsta' tag now resolves to the bespoke elaser/red-trail/team-colored bolt — rm.laser_barrage presentation partial->faithful, csqc_projectile match false->true. (2) LIVENESS — messages.kill_suicide upgraded unknown->live: Scores.cs:744 SelectKillMessage / Scores.cs:650 SelectSuicideMessage are on the real obituary path. (3) LIVENESS — rm.primary_explosion + rm.laser_barrage upgraded unknown->live: the RM dispatch chain is now fully confirmed (WrThink is live every tick via WeaponFireDriver.cs:166-168; the RocketMinstaMutator.cs sub-mode is REGISTERED [Mutator] with live Damage_Calculate/PlayerDies hooks gated on g_rm, matching Base REGISTER_MUTATOR(rm, autocvar_g_instagib)). RM mode is a deliberate non-default g_rm-gated sub-mode but the code is reachable on the live path when enabled. STILL OPEN: primary cylindric VaporizerBeam team-color/colorboost CSQC path (primary.beam_particle), Instagib-hardcoded-true bare class default (ammo.consumption), rapid_animtime view-model frame. The 2026-06-25 fixes (RM-explosion ROCKET_EXPLODE+rocket_impact presentation, gfx/reticle_nex client reticle, instagib alpha-yoda, achievements) all re-confirmed intact."
+  verifier_notes: "Re-audit 2026-06-27 (drift check, MODE=update) on branch claude/parity-port-waves. NO regressions, NO new gaps vs the 2026-06-25/-27 baseline — all 12 prior rows re-verified intact against current Base+port. The RM-laser bolt-visual fix (ProjectileCatalog.cs:222-224 RocketMinstaLaser descriptor + :269 'rocketminsta'-before-'rocket' classify + EffectsList.cs:264 ROCKETMINSTA_LASER trail + ProjectileRenderer.cs:123-127 per-bolt team colormod), the kill/suicide-message liveness (Scores.cs SelectKillMessage/SelectSuicideMessage on the obituary path — line numbers drifted to 747/653, call sites unchanged & live), the RM dispatch liveness (WrThink live every tick via WeaponFireDriver; RocketMinstaMutator.cs registered [Mutator] + Damage_Calculate/PlayerDies hooks gated on g_rm), the instagib integration, achievements, reticle, and impact effect ALL re-confirmed. ONE registry COVERAGE GAP found & ADDED this pass: the MENUQC describe() weapon-guide text (vaporizer.qc:436-448) had no row, the Vaporizer has no GuideDescription override (port_refs []), and the live DialogMediaGuide.cs:194 weapon guide would render it blank — sister weapon units (electro/shotgun/tuba) all track this as a dedicated row, so weapon-vaporizer.menu.describe is now added (missing). STILL OPEN (unchanged): primary cylindric VaporizerBeam team-color/colorboost CSQC path (primary.beam_particle), Instagib-hardcoded-true bare class default (ammo.consumption), rapid_animtime view-model frame."
 features:
   - id: weapon-vaporizer.primary.rail_beam
     name: "Primary rail beam (piercing hitscan + knockback + falloff)"
@@ -401,3 +402,26 @@ features:
       - { kind: code, ref: "Vaporizer.cs:41 Reticle => 'gfx/reticle_nex'; ReticleOverlay.cs:75-130 UpdateReticle (cl_reticle/cl_reticle_weapon gate, button_zoom/zoomscript, weapon-scope type 2 -> reticleImage); NetGame.cs:2842 calls it live with the active weapon vs vaporizer.qc:415-427 wr_init/wr_zoom. reticle_nex.tga asset present.", result: pass }
     confidence: high
     notes: "FIX vs 2026-06-25 baseline (was missing on all dims, liveness na, port_refs []): the Vaporizer now declares its scope reticle (gfx/reticle_nex, same image as the sister Vortex), drawn by the central ReticleOverlay when zooming with the weapon out (button_zoom || zoomscript_caught) under the cl_reticle && cl_reticle_weapon gate — wired live from NetGame. ZoomOnSecondary=false faithfully reproduces wr_zoom returning false on plain ATTACK2 (no weapon-specific secondary zoom)."
+
+  - id: weapon-vaporizer.menu.describe
+    name: "MENUQC weapon-guide prose (describe)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/vaporizer.qc:describe (METHOD Vaporizer, describe)"
+    port_refs: []
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The Base describe() weapon-guide prose (four PAR paragraphs: the energy-beam superweapon overview, the instagib one-shot caveat, the Blaster-laser secondary, and the cell-ammo note + W_Guide_Keybinds/W_Guide_DPS lines) is not ported — the Vaporizer has no GuideDescription override, so the live menu weapon guide (DialogMediaGuide) renders blank for the Vaporizer."
+    verification:
+      - { kind: code, ref: "vaporizer.qc:436-448 METHOD(Vaporizer, describe) exists; no GuideDescription override on Vaporizer.cs (grep) and no port_refs; DialogMediaGuide.cs:194 reads w.GuideDescription for the active weapon -> blank for Vaporizer", result: fail }
+    confidence: high
+    notes: "NEW ROW added 2026-06-27 (registry coverage gap, not a code regression): sister weapon units (weapon-electro.describe_guide, weapon-shotgun.menu.describe, weapon-tuba) all map this MENUQC describe() text as a dedicated row, but weapon-vaporizer had none. The Vaporizer's describe() is unported (no GuideDescription override) — MENUQC/encyclopedia-only, low gameplay priority, but the live DialogMediaGuide weapon guide shows it blank. Pure presentation/menu prose; no logic/values/timing/audio dimensions apply."

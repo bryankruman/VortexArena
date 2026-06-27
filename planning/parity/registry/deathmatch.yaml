@@ -1,10 +1,11 @@
 unit: deathmatch
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
-  feature_count: 8
+  feature_count: 9
   worst_gaps:
+    - "Menu gametype-description prose (deathmatch.qc:describe) not ported — no GameType.Describe() in the port"
     - "Teamkill escalation curve (g_teamkill_punishing) unmodeled — unreachable in FFA DM"
     - "OnDeath writes victim.GtDeaths/GtSuicides which have no readers (harmless dead writes; scoreboard counts come from Scores.GiveFrags read-through)"
 features:
@@ -279,4 +280,28 @@ features:
       - { kind: code, ref: "GameWorld.ShowRespawnCountdown (GameWorld.cs:2986-3006) is a line-faithful port of ShowRespawnCountdown (client.qc:2043-2060): IS_DEAD guard, ceil(respawn_time-time), number<=respawn_countdown, 0.5s overlap guard, NUM_RESPAWN_n send; called from DeadPlayerThink:2968 every dead tick → READER now LIVE (was fail in 2026-06-25 baseline)", result: pass }
       - { kind: code, ref: "NotificationsList NUM_RESPAWN_{n} registered enabled:false (matches Base opt-in announcer); AnnceIfEnabledTo gates on the shipped Enabled flag so it stays silent at defaults exactly like Base", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-25 baseline: the 10-9-8 respawn-countdown announcer is now implemented and LIVE. GameWorld.ShowRespawnCountdown (GameWorld.cs:2986) is a line-faithful port of Base ShowRespawnCountdown (client.qc:2043-2060), called from DeadPlayerThink (line 2968) on every dead-player tick (the same OnClientMove→DeadPlayerThink path that drives RespawnTiming.Calculate). It reads Player.RespawnCountdown (the value RespawnTiming seeds to 10 for waits>=5s), fires NUM_RESPAWN_n via AnnceIfEnabledTo→NotificationSystem.Send(OneOnly). Like Base, the NUM_RESPAWN announcer ships disabled (enabled:false), so it is silent at defaults until the player opts in — that is faithful, not a gap. The earlier 'no reader/announcer' fail is resolved. Deathmatch.ScheduleRespawn/RespawnDelay (the flat 2s) remains DEAD CODE (overridden in GameWorld), unchanged."
+    notes: "FIXED since 2026-06-25 baseline: the 10-9-8 respawn-countdown announcer is now implemented and LIVE. GameWorld.ShowRespawnCountdown (GameWorld.cs:3558) is a line-faithful port of Base ShowRespawnCountdown (client.qc:2043-2060), called from DeadPlayerThink (GameWorld.cs:3540) on every dead-player tick (the same OnClientMove→DeadPlayerThink path that drives RespawnTiming.Calculate). It reads Player.RespawnCountdown (the value RespawnTiming seeds to 10 for waits>=5s), fires NUM_RESPAWN_n via AnnceIfEnabledTo→NotificationSystem.Send(OneOnly). Like Base, the NUM_RESPAWN announcer ships disabled (enabled:false), so it is silent at defaults until the player opts in — that is faithful, not a gap. The earlier 'no reader/announcer' fail is resolved. Deathmatch.ScheduleRespawn/RespawnDelay (the flat 2s) remains DEAD CODE (overridden in GameWorld), unchanged. Re-verified 2026-06-27: no drift."
+
+  - id: deathmatch.menu.describe
+    name: "Menu gametype-description prose (free-for-all help text shown in the gametype picker)"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/deathmatch/deathmatch.qc:METHOD(Deathmatch, describe) (MENUQC)"
+    port_refs: []
+    constants:
+      - { name: "describe_text", base: "3-paragraph MENUQC PAGE_TEXT (FFA fight, scoring +1/-1, powerups/items)", port: "none", match: false }
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base's MENUQC METHOD(Deathmatch, describe) supplies the multi-paragraph gametype help text shown in the menu's gametype picker; the port's GameType base class has no Describe() override (monsters/weapons/mutators have Describe() but gametypes do not), so DM has no ported description. Pure menu cosmetic; no gameplay impact."
+    verification:
+      - { kind: code, ref: "grep 'free-for-all fight'/Describe in src/ game/ → only monster/weapon/mutator describes; GameType.cs has no Describe member", result: fail }
+    confidence: high
+    notes: "NEW row 2026-06-27 (registry coverage gap, not a regression). Base deathmatch.qc:7-16 defines a MENUQC-only describe() returning the gametype-guide prose. The port has no gametype description plumbing at all (no GameType.Describe), so this is missing across the board. Out-of-scope for live gameplay parity but recorded for completeness of the registry."

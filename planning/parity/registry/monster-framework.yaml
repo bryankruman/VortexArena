@@ -1,16 +1,17 @@
 unit: monster-framework
 category: monster
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-26"
+last_audited: "2026-06-27"
 summary:
   feature_count: 17
   worst_gaps:
-    - "Healthbar waypoint sprite (g_monsters_healthbars, WP_Monster) still not implemented: no monster health bars, no per-hit health update, no _Kill on death (the single largest remaining gap)."
     - "Monster sounds are GATED + THROTTLED, honour a per-monster .sounds cue set (SoundCues; Zombie={death,sight,idle}.ogg, Golem={death,sight,melee,pain,idle}.wav with variant counts, Spider=empty/silent), and route via a per-monster SoundDir/SoundExt/SoundCueCount (random-variant suffix) — but the path is still STATICALLY DERIVED from the descriptor, not the runtime .sounds-file GlobalSound parse + skin-keyed Monster_Sounds_Update. Mage/Wyvern still carry SoundCues==null (play-all) though Base ships no .sounds for them either (should be silent like Spider)."
-    - "g_monsters_quake_resize (MONSTER_SIZE_QUAKE x1.3) and g_monsters_playerclip_collisions (DPCONTENTS_PLAYERCLIP on the hit-contents mask) still not ported."
-    - "DRIFT FIX (2026-06-26b): ValidTarget is now FULLY faithful — the three previously-missing gates are all ported + live: checkpvs coarse cull (Api.Trace.CheckPvs, MonsterAI.cs:714), vehicle-vs-melee rejection (targ.VehicleDef && !Def.IsRanged, :669), and the alpha<0.5 fade gate (live Entity.Alpha written by PowerupsMutator/BuffsMutator/Cloaked, :700; the same alpha-drop now also fires in EnemyCheck:857). Typefrag/chat + crouch 75% range scaling remain live."
-    - "monster_changeteam is now ported (MonsterAI.ChangeTeam) but has NO live external caller (teamplay monster re-team is invoked only inside the monster module today); the team radar-icon update inside it is still a no-op pending the WP_Monster sprite."
-    - "MonsterCheckBossFlag (miniboss-veto) + MonsterDropItem mutator hooks remain unported (minor residuals)."
+    - "g_monsters_quake_resize (MONSTER_SIZE_QUAKE x1.3) and g_monsters_playerclip_collisions (DPCONTENTS_PLAYERCLIP on the hit-contents mask) still not ported (the largest remaining true gaps)."
+    - "DRIFT FIX (2026-06-27): Healthbar waypoint sprite (g_monsters_healthbars, WP_Monster) is NOW IMPLEMENTED + LIVE + NETWORKED — SpawnHealthbar (MonsterAI.cs:446) spawns a real WaypointSprite ('Monster', maxs.z+15, RADARICON_DANGER, team/red, maxdist 1024) gated on g_monsters_healthbars, UpdateHealthbar refreshes on pain/corpse (MarkPain:1817), Kill on death/remove (MarkDead:1909 / Monster_Remove:691); it serializes per-peer via ServerNet and renders the bar via the client WaypointSpriteLayer.DrawHealthBar. This closes the baseline's #1 worst gap."
+    - "DRIFT FIX (2026-06-27): monster_changeteam radar-icon update is no longer a no-op — ChangeTeam (MonsterAI.cs:430) now calls WaypointSprites.UpdateTeamRadar on the live sprite. ChangeTeam itself still has NO live external caller (only inside the monster module), so its liveness stays partial."
+    - "DRIFT FIX (2026-06-27): MonsterCheckBossFlag (miniboss-veto, MonsterAI.cs:285) AND MonsterDropItem (itemlist-rewrite, MonsterFramework.cs:219, used live by InstagibMutator) mutator hooks are NOW WIRED + LIVE — both previously-listed residuals are closed."
+    - "DRIFT FIX (2026-06-27): Monster_Move_2D is NOW FULLY PORTED (Move2D, MonsterAI.cs:1255), a line-for-line faithful port of sv_monsters.qc:1161 (forward trace + wall/monster/ledge reverse + game-stopped/campaign gate + walk/idle anim). Latent: no stock Base caller, so it has no live caller in the port either (matching Base)."
+    - "ValidTarget is FULLY faithful — checkpvs coarse cull (Api.Trace.CheckPvs, MonsterAI.cs:798), vehicle-vs-melee rejection (targ.VehicleDef && !Def.IsRanged, :749), alpha<0.5 fade gate (:784; same drop in EnemyCheck), typefrag/chat (:768) + crouch 75% range scaling all live."
 features:
   - id: monster-framework.spawn.master_switch
     name: "Master switch + validity + skill cull (Monster_Spawn front)"
@@ -103,13 +104,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "MonsterCheckBossFlag mutator hook (lets a mutator veto miniboss status, clearing MINIBOSS) is still not ported — minor residual."
+      - "DRIFT FIX (2026-06-27): the MonsterCheckBossFlag mutator hook (lets a mutator veto miniboss status, clearing MINIBOSS) is now WIRED + LIVE — Setup (MonsterAI.cs:285) calls MutatorHooks.FireMonsterCheckBossFlag and clears MonsterFlag_Miniboss on veto, exactly as QC Monster_Miniboss_Setup:531. No stock mutator uses the hook (same as Base), so the chain is wired for parity but never fires today. No residual gaps remain for this row."
     verification:
       - { kind: code, ref: "Setup miniboss block now sets e.Effects |= EfRed (=128, DP EF_RED) alongside health boost + vortex loot", result: pass }
-      - { kind: code, ref: "Respawn (MonsterAI.cs:1683) re-applies EfRed when st.IsMiniboss after MarkDead cleared Effects (QC Monster_Miniboss_Setup:523-528)", result: pass }
-      - { kind: code, ref: "Entity.Effects is an int and is networked to the client csqcmodel (EntityMutatorState comment); same bit the client reads", result: pass }
+      - { kind: code, ref: "Respawn (MonsterAI.cs:1875) re-applies EfRed when st.IsMiniboss after MarkDead cleared Effects (QC Monster_Miniboss_Setup:523-528)", result: pass }
+      - { kind: code, ref: "MonsterCheckBossFlag hook wired at MonsterAI.cs:285 (FireMonsterCheckBossFlag -> clears MonsterFlag_Miniboss), MutatorHooks.MonsterCheckBossFlag chain exists (MutatorHooks.cs:331)", result: pass }
     confidence: high
-    notes: "WAVE-2 FIX: EF_RED red glow now set at setup AND re-applied on respawn; minibosses are now visually distinct. Only the boss-veto mutator hook remains unported."
+    notes: "DRIFT FIX (2026-06-27): the MonsterCheckBossFlag boss-veto mutator hook is now wired (was the only residual). EF_RED red glow set at setup AND re-applied on respawn; minibosses are visually distinct. Row now fully faithful with no residual gaps."
 
   - id: monster-framework.lifecycle.appear_use_touch
     name: "Appear / Use / Touch acquisition (Monster_Appear/Use/Touch)"
@@ -368,7 +369,7 @@ features:
       - "DRIFT FIX (2026-06-25): the pain cue now routes through SoundChannel.PainAuto (QC CH_PAIN, -6) (MarkPain MonsterAI.cs:1587), not the earlier SoundChannel.Body — the channel now matches QC. Death is CH_VOICE in QC vs SoundChannel.Voice in the port (matches). The audio residual is now only the SND_BODYIMPACT1 placeholder below."
       - "The spamsound SND_BODYIMPACT1 body-impact placeholder on every non-drown/fire hit is still NOT implemented, and the take>50/>100 extra gib splashes are not implemented (client VFX). (UNCHANGED — this is why audio stays partial.)"
       - "QC restores target2 = oldtarget2 on death for a redirected-patrol respawn; the port has no .oldtarget2 (documented minor deferral). (UNCHANGED.)"
-      - "WaypointSprite_UpdateHealth on each hit + WaypointSprite_Kill on death are no-ops (no WP_Monster; see healthbar row). (UNCHANGED.)"
+      - "DRIFT FIX (2026-06-27): WaypointSprite_UpdateHealth on each hit + WaypointSprite_Kill on death are now PORTED + LIVE — MarkPain (MonsterAI.cs:1817) calls UpdateHealthbar(st, health) and MarkDead (:1909) calls WaypointSprites.Kill(st.Sprite), both no-ops only when healthbars are off (Sprite null). The WP_Monster sprite now exists (see healthbar row)."
       - "QC Monster_Dead swaps to mdl_dead corpse model + CSQCModel_UnlinkEntity + clears dphitcontentsmask BODY; the port sets DeadState/Solid.Corpse but the model-swap is presentation (deferred). (UNCHANGED.)"
     verification:
       - { kind: code, ref: "MonsterEventDamage dispatches live-vs-corpse on DeadState; armor split, gib thresholds (-100/-50), corpse lifetime +5, SUB_UseTargets, MonsterDies bonus all present", result: pass }
@@ -400,35 +401,42 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The MonsterDropItem mutator hook (QC sv_monsters.qc:51 — lets a mutator rewrite the itemlist) is not modeled; the port reads st.MonsterLoot / miniboss override directly. Minor residual (same hook family as MonsterCheckBossFlag), no live mutator uses it in the ported set."
+      - "DRIFT FIX (2026-06-27): the MonsterDropItem mutator hook (QC sv_monsters.qc:51 — lets a mutator rewrite the itemlist) is now WIRED + LIVE — DropItem (MonsterFramework.cs:219) calls MutatorHooks.FireMonsterDropItem(self, itemList, attacker) and aborts if the returned list is empty, exactly as QC. InstagibMutator registers a live handler (InstagibMutator.cs:742 OnMonsterDropItem) that rewrites the loot for instagib, so the hook fires on a real gameplay path. No residual gaps remain for this row."
     verification:
-      - { kind: code, ref: "DropItem honours .candrop + g_monsters_drop_time<=0 gate + miniboss loot override; spawns the def through StartItem.SpawnLoot (Item_Initialise loot path) with randomvec*175 + up velocity; called LIVE from MarkDead:1631 (QC Monster_Dead)", result: pass }
+      - { kind: code, ref: "DropItem honours .candrop + g_monsters_drop_time<=0 gate + miniboss loot override; spawns the def through StartItem.SpawnLoot (Item_Initialise loot path) with randomvec*175 + up velocity; called LIVE from MarkDead (QC Monster_Dead)", result: pass }
       - { kind: code, ref: "ItemRandomFromList mirrors Item_RandomFromList (equal-weight pick over the space-separated loot list; 'random' = any normal weapon/item)", result: pass }
+      - { kind: code, ref: "MonsterDropItem hook wired at MonsterFramework.cs:219 (FireMonsterDropItem rewrites itemList, empty => no drop); InstagibMutator.cs:742 registers a live OnMonsterDropItem handler", result: pass }
     confidence: high
-    notes: "NEW ROW (2026-06-26): the loot-drop mechanic (monster_dropitem) was previously only mentioned as a mutator-hook gap inside spawn.miniboss; it is in fact a fully-ported, live feature (corpse drops a random item from monster_loot / miniboss vortex, real item pipeline). Only the MonsterDropItem itemlist-rewrite hook is unported."
+    notes: "DRIFT FIX (2026-06-27): the MonsterDropItem itemlist-rewrite hook is now wired + live (InstagibMutator uses it) — the last residual on this row is closed. The loot-drop mechanic (monster_dropitem) is a fully-ported, live feature (corpse drops a random item from monster_loot / miniboss vortex, real item pipeline)."
 
   - id: monster-framework.move.straight_2d
     name: "2D straight-line mover (Monster_Move_2D)"
     layer: [authority]
     base_refs:
       - "common/monsters/sv_monsters.qc:1161 (Monster_Move_2D)"
-    port_refs: []
-    constants: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:1255 (Move2D)"
+    constants:
+      - { name: "forward trace distance", base: "32u", port: "32u", match: true }
+      - { name: "ledge down-trace distance", base: "32u", port: "32u", match: true }
+      - { name: "reverse turn", base: "+180 deg yaw", port: "AngleMod(Y - 180)", match: true }
+      - { name: "walk/idle velocity threshold", base: "vlen(velocity) (moving)", port: "Velocity.Length() > 10f", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
       liveness: na
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Monster_Move_2D (walk straight in facing direction, reverse on wall/ledge unless allow_jumpoff, with the game_stopped/round/campaign/spawn_time movement gate + walk/idle anim) is NOT ported. It is a public Base API with NO caller in stock Xonotic (declared sv_monsters.qh:111, defined :1161, never invoked) — used only by mapper/custom monsters — so the omission is latent: no stock monster behaves differently. Flagged for registry completeness."
+      - "DRIFT FIX (2026-06-27): Monster_Move_2D is now PORTED — Move2D (MonsterAI.cs:1255) is a line-for-line port of QC sv_monsters.qc:1161: forward 32u trace + reverse-on-wall/monster (not on a player) + ledge down-trace (32u, reverse unless allow_jumpoff) + the game_stopped/campaign/spawn_time movement gate (MatchHalted/CampaignMovementHeld) + walk/idle anim via DriveAnimFrame + movelib_brake_simple(0.6) on halt. It is a public Base API with NO caller in stock Xonotic (declared sv_monsters.qh:111, never invoked) — used only by mapper/custom monsters — so the port likewise has no live caller (liveness: na, matching Base's latent state). The omission is gone; the only remaining 'gap' is the latent no-caller, which mirrors Base exactly."
     verification:
-      - { kind: code, ref: "grep Monster_Move_2D in Base = definition + .qh decl only, zero call sites; grep Move2D/Move_2D in port src = a doc comment in MonsterAI.cs:1943 only, no implementation", result: fail }
+      - { kind: code, ref: "Move2D (MonsterAI.cs:1255) diffed vs QC Monster_Move_2D:1161-1209 — forward trace, wall/monster/player reverse logic, ledge check, 180 flip, movelib_move_simple_gravity blendrate-1 velocity set, walk/idle anim all present", result: pass }
+      - { kind: code, ref: "grep Monster_Move_2D in Base = definition + .qh decl only, zero call sites; grep Move2D in port = the real method (MonsterAI.cs:1255), no external caller (matches Base latent state)", result: pass }
     confidence: high
-    notes: "NEW ROW (2026-06-26): coverage gap in the registry — the 2D straight mover exists in Base but is dead there (no stock caller) and unimplemented in the port. Latent; no behavioral impact on the ported monster set."
+    notes: "DRIFT FIX (2026-06-27): the 2D straight mover is now a faithful port (was missing). It is dead in Base (no stock caller) and likewise has no live caller in the port (liveness na). Latent; no behavioral impact on the stock monster set, but now available for mapper/custom monsters at parity with Base."
 
   - id: monster-framework.lifecycle.respawn_reset
     name: "Respawn + round-restart reset + scoring (Monster_Respawn / Monster_Reset / score)"
@@ -514,24 +522,24 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:493 (live SetupColors call in SpawnFromMap)"
     constants:
       - { name: "skill colormaps", base: "1126/1075/1228/1092/1160 by skill tier (else team/owner color)", port: "1126/1075/1228/1092/1160 by skill tier (team 1024+(team-1)*17 / owner colormap)", match: true }
-      - { name: "team radar icon", base: "RADARICON_DANGER, Team_ColorRGB / '1 0 0'", port: "not implemented (no WP_Monster sprite — healthbar gap)", match: false }
+      - { name: "team radar icon", base: "RADARICON_DANGER, Team_ColorRGB / '1 0 0'", port: "ChangeTeam updates sprite radar via UpdateTeamRadar (MonsterAI.cs:430); spawn-time radar via SpawnHealthbar RADARICON_DANGER", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "monster_setupcolors is PORTED + LIVE — SetupColors (MonsterAI.cs:361) picks .colormap by team (1024+(team-1)*17) / owner / skill tier (1126/1075/1228/1092/1160) bit-faithful to QC, and is called from SpawnFromMap:493 for every natural (!RESPAWNED) monster (gated exactly as QC at sv_monsters.qc:1525). It writes Entity.ColorMapOverride with RENDER_COLORMAPPED set; the csqcmodel derives the glowmod from the colormap nibble client-side, so the QC .glowmod write is covered by the established colormap render seam (presentation: the actual client tint depends on that csqcmodel path being wired — verified for the same field g_model_setcolormaptoactivator uses)."
-      - "monster_changeteam is PORTED (ChangeTeam, MonsterAI.cs:393): re-teams + re-tints (SetupColors) in teamplay. But it has NO live external caller today (no dispatch site outside the monster module), so the teamplay monster re-team is dead-wired (liveness: partial). The team radar-icon update inside it is a documented no-op pending the WP_Monster sprite (healthbar gap)."
+      - "monster_setupcolors is PORTED + LIVE — SetupColors (MonsterAI.cs:385) picks .colormap by team (1024+(team-1)*17) / owner / skill tier (1126/1075/1228/1092/1160) bit-faithful to QC, and is called from SpawnFromMap (MonsterAI.cs:563) for every natural (!RESPAWNED) monster (gated exactly as QC at sv_monsters.qc:1525). It writes Entity.ColorMapOverride with RENDER_COLORMAPPED set; the csqcmodel derives the glowmod from the colormap nibble client-side, so the QC .glowmod write is covered by the established colormap render seam (presentation: the actual client tint depends on that csqcmodel path being wired — verified for the same field g_model_setcolormaptoactivator uses)."
+      - "DRIFT FIX (2026-06-27): monster_changeteam is PORTED (ChangeTeam, MonsterAI.cs:416): re-teams + re-tints (SetupColors) in teamplay, AND the team radar-icon update is now LIVE — ChangeTeam (:430) calls WaypointSprites.UpdateTeamRadar on st.Sprite + sets sprite.Team, exactly as QC monster_changeteam:211-216, because the WP_Monster sprite now exists (healthbar fix). RESIDUAL: ChangeTeam still has NO live external caller today (no dispatch site outside the monster module), so the teamplay monster re-team itself is dead-wired (liveness: partial). When healthbars are off the sprite is null and the radar update is a harmless no-op (matching QC's `if (this.sprite)` guard)."
     verification:
-      - { kind: code, ref: "SetupColors colormap tiers diffed vs QC monster_setupcolors:174-197 (team/owner/skill) — match; called LIVE at SpawnFromMap:493 (!Respawned, QC-gated)", result: pass }
-      - { kind: code, ref: "ChangeTeam ported (MonsterAI.cs:393) but grep for external .ChangeTeam( callers = none (only Teamplay.ChangeTeam, a player re-team, at Commands.cs:1511); radar-icon update no-op (no WP_Monster)", result: fail }
+      - { kind: code, ref: "SetupColors colormap tiers diffed vs QC monster_setupcolors:174-197 (team/owner/skill) — match; called LIVE at SpawnFromMap (MonsterAI.cs:563, !Respawned, QC-gated)", result: pass }
+      - { kind: code, ref: "ChangeTeam (MonsterAI.cs:416) radar update now LIVE: UpdateTeamRadar(st.Sprite, RadarIcon, team?ColorRgb:'1 0 0') + sprite.Team = newteam (MonsterAI.cs:430-434), QC monster_changeteam:211-216; but grep for external .ChangeTeam( callers = none (only Teamplay.ChangeTeam, a player re-team, Commands.cs:1677), so liveness stays partial", result: pass }
     confidence: high
-    notes: "DRIFT FIX (2026-06-25): the skill/team colormap layer (monster_setupcolors) is now ported + LIVE (logic/values faithful) — minibosses tint differently by difficulty as in Base. ChangeTeam is ported but has no live external caller (liveness partial), and the team radar icon stays missing until the WP_Monster sprite exists (presentation partial)."
+    notes: "DRIFT FIX (2026-06-27): the team radar-icon update inside ChangeTeam is now LIVE (was a no-op pending the WP_Monster sprite, which now exists), so presentation moves partial->faithful. The skill/team colormap layer (monster_setupcolors) is ported + LIVE. ChangeTeam itself still has no live external caller (liveness stays partial)."
 
   - id: monster-framework.presentation.healthbar_sounds_anim
     name: "Presentation: healthbar sprite + monster sounds + CSQC anim"
@@ -548,8 +556,10 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:45 (SoundCues={death,sight,idle}, .ogg, bit-faithful to zombie.dpm_0.sounds; RollDeathVariant random die1/die2)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/Golem.cs:88 (SoundCues={death,sight,melee,pain,idle} + SoundCueCount; melee/pain anim variants)"
       - "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs:43 (SoundCues=empty set — silent, Base ships NO spider .sounds; Wave-8e)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:446 (SpawnHealthbar WP_Monster) + 470 (UpdateHealthbar) + 1817 (UpdateHealthbar on pain) + 1909 (Kill on death) + 691 (Kill on remove)"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:184 (WaypointSprite, Health field) + game/client/WaypointSpriteLayer.cs:206 (DrawHealthBar)"
     constants:
-      - { name: "g_monsters_healthbars", base: "0", port: "not implemented (no WP_Monster)", match: false }
+      - { name: "g_monsters_healthbars", base: "0", port: "0 (Cvar default 0, gated in Setup MonsterAI.cs:568 + RunThink:2112)", match: true }
       - { name: "g_monsters_sounds", base: "1", port: "1 (gated in MonsterSound)", match: true }
       - { name: "monster sound cues", base: "8 cue fields (death/sight/ranged/melee/pain/spawn/idle/attack) via .sounds GlobalSound; a commented-out/absent cue => empty sample => silent (throttle still advances); count>0 picks a random variant suffix. ONLY zombie.dpm_0.sounds + golem.dpm_0.sounds exist in Base — spider/mage/wyvern ship NO .sounds, so all their voice cues are silent (attack sounds come from their per-weapon SND_* instead)", port: "path derived per-monster: monsters/<SoundDir>/<cue><1..count><SoundExt>, gated by per-monster SoundCues set + random-variant suffix from SoundCueCount. Zombie/Golem audited bit-faithful; Spider now SoundCues=empty (silent, matches Base); Mage/Wyvern still SoundCues==null (play-all — WRONG: should also be silent, see gap). Path is STATICALLY derived from the descriptor, NOT the runtime .sounds-file GlobalSound parse + skin-keyed Monster_Sounds_Update", match: false }
       - { name: "idle voice delay / pain delay", base: "7 / 1.2 (msound_delay throttle)", port: "7 / 1.2 (MSoundDelay throttle, delayToo)", match: true }
@@ -557,13 +567,13 @@ features:
       logic: partial
       values: partial
       timing: partial
-      presentation: missing
+      presentation: partial
       audio: partial
-      liveness: partial
+      liveness: live
     intended_divergence: true
-    divergence_rationale: "CSQC per-frame model frame playback (Monster_Anim frame groups, mr_anim, CSQCMODEL_AUTOUPDATE) is intentionally render-deferred — the headless authority port maintains only the server-side animation PHASE (idle/walk/run/attack/pain/death) that drives timing, the same authority/presentation split used by the turret and vehicle ports. The healthbar sprite is NOT an intended divergence (gap). The monster sound system is wired (gate + throttle + per-monster SoundCues cue-gate + per-monster SoundDir/SoundExt/variant suffix) but resolves the path STATICALLY from the descriptor instead of parsing the .sounds file at runtime via GlobalSound + skin-keyed Monster_Sounds_Update — that static-path approximation is a deliberate fidelity simplification (no runtime per-skin sound packs ported), not a missing API. The SoundCues set + SoundCueCount mirror the .sounds presence/variant test so a Base-silent cue stays silent and a multi-variant cue randomises (Spider now uses an empty set = fully silent, matching Base shipping no spider .sounds; Mage/Wyvern remain null). The Wave-8e server-side anim-variant/death-variant rolls are part of the same intended authority/presentation split (the server picks the animation GROUP; the per-frame playback is render-deferred)."
+    divergence_rationale: "CSQC per-frame model frame playback (Monster_Anim frame groups, mr_anim, CSQCMODEL_AUTOUPDATE) is intentionally render-deferred — the headless authority port maintains only the server-side animation PHASE (idle/walk/run/attack/pain/death) that drives timing, the same authority/presentation split used by the turret and vehicle ports. The healthbar sprite is now IMPLEMENTED + LIVE + NETWORKED + rendered (no longer a gap). The monster sound system is wired (gate + throttle + per-monster SoundCues cue-gate + per-monster SoundDir/SoundExt/variant suffix) but resolves the path STATICALLY from the descriptor instead of parsing the .sounds file at runtime via GlobalSound + skin-keyed Monster_Sounds_Update — that static-path approximation is a deliberate fidelity simplification (no runtime per-skin sound packs ported), not a missing API. The SoundCues set + SoundCueCount mirror the .sounds presence/variant test so a Base-silent cue stays silent and a multi-variant cue randomises (Spider now uses an empty set = fully silent, matching Base shipping no spider .sounds; Mage/Wyvern remain null). The Wave-8e server-side anim-variant/death-variant rolls are part of the same intended authority/presentation split (the server picks the animation GROUP; the per-frame playback is render-deferred)."
     gaps:
-      - "Healthbar waypoint sprite (WP_Monster) STILL entirely missing: no floating health bar above monsters, no WaypointSprite_UpdateMaxHealth/Health on hit, no _Kill on death, even with g_monsters_healthbars 1. (UNCHANGED — the single largest remaining gap.)"
+      - "DRIFT FIX (2026-06-27): Healthbar waypoint sprite (WP_Monster) is NOW IMPLEMENTED + LIVE + NETWORKED — SpawnHealthbar (MonsterAI.cs:446) spawns a real WaypointSprite ('Monster', maxs.z+15, RADARICON_DANGER, team/red color, lifetime 0, maxdist 1024, hideable, INVINCIBLE-gated) when g_monsters_healthbars!=0 (gated at Setup:568 and re-checked in RunThink:2112); UpdateHealthbar refreshes the bar on every hit (MarkPain:1817) and on corpse damage; WaypointSprites.Kill removes it on death (MarkDead:1909) and on Monster_Remove (:691). The sprite serializes per-peer via ServerNet and the client WaypointSpriteLayer renders the floating health bar via DrawHealthBar (game/client/WaypointSpriteLayer.cs:206, drawn when wp.Health>=0). This closes the baseline's #1 worst gap. RESIDUAL: the WaypointSprites infra defaults Health to a pre-normalized 0..1 fill (QC normalizes client-side by max_health) — equivalent display, different normalization placement."
       - "DRIFT FIX (2026-06-26, Wave-8e): Spider's SoundCues moved null->empty-set, so the spider is now correctly SILENT on voice cues — verified faithful: Base ships NO spider.sounds file (only zombie/golem .sounds exist), so all spider monstersound_* fields stay empty => silent in Base too; its attacks play directly via SND_SpiderAttack. RESIDUAL: Mage AND Wyvern still carry SoundCues==null (play-all), but neither has a Base .sounds file either, so they SHOULD likewise be empty/silent — keeping them null means MonsterSound attempts to play nonexistent monsters/<dir>/<cue> samples (a fidelity divergence, harmless at the audio layer since the files are absent). Per-cue resolution still STATIC-path, NOT the runtime .sounds-file GlobalSound parse + skin-keyed Monster_Sounds_Update; SND_BODYIMPACT1 body-impact placeholder still absent. Zombie ({death,sight,idle}.ogg) + Golem ({death,sight,melee,pain,idle}.wav, per-cue counts) remain audited bit-faithful."
       - "DRIFT (2026-06-26, Wave-8e) CSQC anim got closer (still the intended-divergence render-deferral): the server now maintains per-phase animation VARIANT indices (st.AnimVariant) and a death-variant roll (Def.RollDeathVariant() at MarkDead, e.g. zombie die1/die2, golem melee2/3 + pain1/2), driven into the descriptor's AnimFrame(phase,die2,variant) by DriveAnimFrame so the headless authority picks the same animation group QC would. The actual per-frame CSQCMODEL_AUTOUPDATE frame playback remains client-deferred."
       - "MONSTER_SIZE_QUAKE x1.3 resize (g_monsters_quake_resize, default 1) STILL not ported — no MONSTER_SIZE_QUAKE handling at all; latent today since no port monster carries the flag. (UNCHANGED.)"
@@ -572,6 +582,7 @@ features:
       - { kind: code, ref: "MonsterSound: gates on Cvar(g_monsters_sounds)!=0, honours delayToo vs MSoundDelay, emits monsters/<SoundDir>/<cue><variant><SoundExt> only when SoundCues is null OR Contains(cue), advances MSoundDelay regardless; called for spawn/sight/idle/melee/pain/death", result: pass }
       - { kind: code, ref: "Zombie.SoundCues={death,sight,idle}.ogg + Golem.SoundCues={death,sight,melee,pain,idle}.wav with SoundCueCount variant counts, both audited vs Base .sounds (commented-out cues stay silent); Spider.SoundCues=empty set (silent) faithful to Base shipping no spider .sounds", result: pass }
       - { kind: code, ref: "find Base for *.sounds = ONLY zombie.dpm_0.sounds + golem.dpm_0.sounds (+ ok_player models); spider/mage/wyvern have none, confirming their voice cues are Base-silent", result: pass }
-      - { kind: code, ref: "grep WP_Monster/healthbars(impl)/runtime .sounds-file lookup/quake_resize/playerclip across src+game = still none (re-verified)", result: fail }
+      - { kind: code, ref: "DRIFT FIX: healthbar now PORTED + LIVE — SpawnHealthbar (MonsterAI.cs:446) gated on g_monsters_healthbars, UpdateHealthbar on pain (:1817), Kill on death (:1909)/remove (:691); WaypointSprite serialized per-peer (ServerNet.cs:1058) + rendered (WaypointSpriteLayer.DrawHealthBar, :206)", result: pass }
+      - { kind: code, ref: "grep runtime .sounds-file lookup/quake_resize/playerclip across src+game = still none (re-verified — only comments)", result: fail }
     confidence: high
-    notes: "DRIFT FIX (2026-06-26, Wave-8e): Spider's SoundCues moved null->empty (now correctly silent, audited vs Base which ships no spider .sounds) — Spider joins Zombie/Golem as audited-faithful; only Mage/Wyvern remain null (also Base-silent, so still mildly wrong). Wave-8e also added server-side anim-variant + death-variant rolls (closer CSQC anim, still render-deferred). Audio stays partial (static-path, not runtime .sounds parse; Mage/Wyvern null). RESIDUAL biggest cluster: healthbar sprite (missing) + quake-resize/playerclip (missing)."
+    notes: "DRIFT FIX (2026-06-27): the healthbar waypoint sprite (WP_Monster, the baseline's #1 worst gap) is now IMPLEMENTED + LIVE + NETWORKED + rendered — presentation moves missing->partial and liveness partial->live (the remaining presentation residual is the intended render-deferred CSQC per-frame anim playback). Spider's SoundCues (null->empty) correctly silent; only Mage/Wyvern remain null (also Base-silent, mildly wrong). Audio stays partial (static-path, not runtime .sounds parse; Mage/Wyvern null). RESIDUAL true gaps: quake-resize + playerclip (both still missing); SND_BODYIMPACT1 placeholder; static sound-path."

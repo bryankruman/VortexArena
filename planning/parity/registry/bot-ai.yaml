@@ -2,40 +2,36 @@ unit: bot-ai
 category: bot
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
-# Drift re-audit (2026-06-27) on branch claude/parity-port-waves. The previous 2026-06-25 baseline was STALE
-# relative to the current code (BotBrain/BotAim/BotPopulation edited 2026-06-26). All drift this pass is FIXES;
-# NO regressions, NO newly-unmapped Base features. Concrete improvements found:
-#   (1) bot-ai.combat.dodge: havocbot_dodge is NOW PORTED (BotBrain.HavocbotDodge, called live from ThinkProduce):
-#       a faithful port of havocbot.qc:1773 — SUPERBOT-gated (skill>100) flight-path scan over bot_dodge-flagged
-#       edicts, returning a world-space evade vector folded into the wish-move (skill-scaled, checkdanger-vetoed,
-#       upward-dodge jump). The previous "havocbot_dodge not ported / deferred" gap is closed for the consumer;
-#       the generic CombatMovement strafe still runs for all skills as the non-SUPERBOT stand-in. Residual: only
-#       3 port projectiles set Entity.BotDodge (Blaster/Porto + PhaserTurret beam) vs Base's ~20+ producers.
-#   (2) bot-ai.weapon.wr_aim: coverage 8 -> 12 of Base's 18 wr_aim weapons (added Electro, Crylink, Arc, Porto).
-#       The ELECTRO combo (electromooth primary/secondary toggle) is now a faithful port; Porto's wr_aim fire-veto
-#       (BotForbidsFire in secondary mode) and CTS _independent_players fire-suppress are wired. Still missing:
-#       mortar airburst, hagar burst, vortex charge, seeker, hlac, blaster wr_aim; still no MAX_WEAPONSLOTS loop.
-#   (3) bot-ai.aim.fire: the long-range fire-hesitation chance + fire-timer now include the bot_aggresskill term
-#       (BotAim aggr = skill + AggresSkill); the previous "omits bot_aggresskill" gap is CLOSED -> values faithful.
-#   (4) bot-ai.aim.aimdir: the fire-cone factor now folds bot_aimskill (MaxFireDeviation f += (10-(skill+AimSkill))).
-#   (5) bot-ai.population.namemodel: shirt/pants color columns (argv3/4) are NOW parsed -> packed 16*shirt+pants,
-#       applied via Teamplay.SetColor in FFA + re-stamped after respawn (random-nibble fallback). logic -> faithful.
-#   (6) bot-ai.skill.modifiers: the per-bot modifier set now carries FOUR facets (single knob + MoveSkill +
-#       AggresSkill (argv11) + AimSkill (argv13)), not 1-2; bots.txt's two fire-relevant skill columns are read.
-#   (7) bot-ai.aim.lead: the per-weapon BotAimShotSpeed override is now used by Crylink + Fireball too (not only
-#       Devastator), narrowing the per-weaponentity-speed gap further.
+# Drift re-audit (2026-06-27, second pass) on branch claude/parity-port-waves. The on-disk bot-ai.yaml was last
+# COMMITTED in Wave 12 (37eea1e) even though its last_audited said 2026-06-27; Wave 13 (5427e74) then improved the
+# bot dodge/wr_aim code (weapon files) WITHOUT re-committing this registry, so the registry under-reported reality.
+# This pass corrects that. All drift this pass is FIXES; NO regressions, NO newly-unmapped Base features. Found:
+#   (1) bot-ai.combat.dodge: bot_dodge PRODUCER coverage rose from 3 -> 14 port files. The current code flags
+#       Entity.BotDodge live on Arc, Blaster, Crylink, Devastator, Electro(x2), Fireball(x2), Hagar(x3), Hlac,
+#       Minelayer, Mortar, Porto, Seeker, Vaporizer projectiles + PhaserTurret beam — i.e. essentially all the
+#       weapon producers (14/20 Base files). Base's remaining 6 producers are monsters (golem/spider), nades
+#       (napalm), overkill (okrpc shares OkRpc), hook, and the generic turret. The havocbot_dodge consumer was
+#       already ported (SUPERBOT-gated flight-path evade); now most incoming PROJECTILES are actually flagged, so
+#       dodge fires routinely rather than rarely. The previous "only 3 producers" residual is largely closed.
+#   (2) bot-ai.weapon.wr_aim: coverage rose 12 -> 14 of Base's 18 wr_aim weapons (added MORTAR grenademooth toggle
+#       + per-mode lead speed + lobbed flag, and HAGAR 15%-secondary burst pick at primary lead speed). Still
+#       missing: blaster, hlac, seeker, vortex (charge) wr_aim; still no MAX_WEAPONSLOTS per-slot loop. Note the OK
+#       overkill variants (OkHmg/OkMachinegun/OkRpc/OkShotgun) also carry bot fire-driver overrides now.
+#   (3) bot-ai.aim.fire / aim.aimdir / aim.lead / population.namemodel / skill.modifiers: unchanged vs the prior
+#       (uncommitted) 2026-06-27 notes — aggresskill/aimskill folded into fire+cone, shirt/pants color parsed,
+#       four skill facets carried, Crylink/Fireball use BotAimShotSpeed. All confirmed still faithful this pass.
 # Still-OPEN worst-gaps (unchanged): straight-line goal rating (not Dijkstra) + flat rangebias=2000, dead
-# danger-ROUTING producer, weapon-priority lists in weapon.choose, the 4 remaining headline combos
-# (mortar/hagar/vortex/seeker), jetpack/rocketjump, bot scripting.
+# danger-ROUTING producer, weapon-priority lists in weapon.choose, the remaining headline combos
+# (vortex charge / seeker / hlac), jetpack/rocketjump, bot scripting.
 summary:
   feature_count: 21
   worst_gaps:
     - "Goal rating still uses straight-line inverse distance (f*rangebias/(rangebias+vlen(dist))) instead of the QC waypoint-cost (Dijkstra) field, and rangebias is still hardcoded 2000 at every call; bots can prefer a goal near in a straight line but far by path. (UNCHANGED.)"
     - "Per-waypoint danger-cost ROUTING is still inert: a Waypoint.Danger field exists and A* adds it, but NOTHING sets Danger (no botframe_updatedangerousobjects producer), so it is always 0 — the consumer is dead. (UNCHANGED.)"
     - "Weapon picking is a hitscan-at-range / splash-up-close bucket choosing the highest-impulse owned weapon, not the QC ordered far/mid/close priority lists; bots mis-prioritize weapons vs stock. No weapon-combo holding behaviour. (UNCHANGED.)"
-    - "wr_aim is ported on 12 of Base's 18 weapons (up from 8) and there is still no MAX_WEAPONSLOTS per-slot loop; the remaining headline combos — mortar airburst, hagar burst, vortex charge (electro combo is now ported) — are NOT implemented. (NARROWED 2026-06-27.)"
+    - "wr_aim is ported on 14 of Base's 18 weapons (up from 12) and there is still no MAX_WEAPONSLOTS per-slot loop; the remaining headline combos — vortex charge, seeker, hlac, blaster — are NOT implemented (electro combo, mortar airburst + hagar burst are now ported). (NARROWED 2026-06-27 second pass.)"
     - "Bot scripting entirely missing: the bot_cmd command queue does nothing, so map/console bot scripts, cutscene-driven bots, and g_waypointeditor bot driving are inert. (UNCHANGED.)"
-    - "havocbot_dodge is now ported (SUPERBOT-gated projectile flight-path evade, live), but only 3 port projectiles flag Entity.BotDodge (Blaster/Porto + PhaserTurret) vs Base's ~20+ producers, so most incoming projectiles still aren't dodged; non-SUPERBOT bots still only strafe via the generic CombatMovement. (IMPROVED 2026-06-27.)"
+    - "havocbot_dodge is ported (SUPERBOT-gated projectile flight-path evade, live) and 14 port files now flag Entity.BotDodge (all weapon projectiles + PhaserTurret beam) vs Base's 20 producers — the missing 6 are monsters (golem/spider), nades (napalm), hook, and the generic turret. SUPERBOT dodge now fires routinely; non-SUPERBOT bots still only strafe via the generic CombatMovement. (IMPROVED 2026-06-27 second pass.)"
     - "Jetpack navigation and rocketjump/trigger_hurt escape are still missing. (UNCHANGED.)"
 
 features:
@@ -383,6 +379,8 @@ features:
       - "common/weapons/weapon/electro.qc:wr_aim"
       - "common/weapons/weapon/crylink.qc:wr_aim"
       - "common/weapons/weapon/porto.qc:wr_aim"
+      - "common/weapons/weapon/mortar.qc:wr_aim"
+      - "common/weapons/weapon/hagar.qc:wr_aim"
     port_refs:
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:AimAndDecideFire"
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:Emit"
@@ -392,11 +390,13 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:BotWantsSecondary"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:BotWantsSecondary"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:BotForbidsFire"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Mortar.cs:BotWantsSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs:BotWantsSecondary"
     constants:
       - { name: "weapon slots driven", base: "MAX_WEAPONSLOTS (all), each wr_aim", port: "1 (the ChosenWeapon's wr_aim hooks only)", match: false }
       - { name: "ButtonAttack2 (secondary)", base: "set by wr_aim per weapon", port: "driven by Weapon.BotWantsSecondary / BotWantsDetonate (not hardcoded false)", match: true }
-      - { name: "wr_aim weapon coverage", base: "18 weapons have wr_aim", port: "12 ported (Devastator/MachineGun/Rifle/Vaporizer/Minelayer/Fireball/Tuba/Shotgun/Electro/Crylink/Arc/Porto)", match: false }
-      - { name: "weapon combos (mortar airburst / hagar burst / vortex charge / seeker)", base: "wr_aim per weapon", port: "not implemented (electro combo IS ported)", match: false }
+      - { name: "wr_aim weapon coverage", base: "18 weapons have wr_aim", port: "14 ported (Devastator/MachineGun/Rifle/Vaporizer/Minelayer/Fireball/Tuba/Shotgun/Electro/Crylink/Arc/Porto/Mortar/Hagar); OK overkill variants also driven", match: false }
+      - { name: "weapon combos (electro / mortar airburst / hagar burst / vortex charge / seeker)", base: "wr_aim per weapon", port: "electro combo + mortar grenademooth + hagar burst IMPLEMENTED; vortex charge / seeker / hlac / blaster NOT", match: false }
     status:
       logic: partial
       values: na
@@ -408,12 +408,12 @@ features:
     divergence_rationale: null
     gaps:
       - "Only the ChosenWeapon's wr_aim is consulted — there is no MAX_WEAPONSLOTS per-slot loop (Base runs wr_aim for every owned weapon slot each think). (UNCHANGED.)"
-      - "wr_aim is ported on 12 of Base's 18 wr_aim weapons; still missing: mortar (airburst), hagar (burst), vortex (charge), seeker, hlac, blaster. (NARROWED 2026-06-27 from 8/18; electro combo + porto fire-veto + crylink/arc pick are now ported.)"
+      - "wr_aim is ported on 14 of Base's 18 wr_aim weapons; still missing: vortex (charge), seeker, hlac, blaster. (NARROWED 2026-06-27 second pass from 12/18; mortar grenademooth toggle + hagar 15%-secondary burst are now ported.)"
       - "lastfiredweapon combo bookkeeping is not modeled; combos that depend on the previously-fired weapon don't trigger."
     verification:
-      - { kind: code, ref: "Emit sets ButtonAttack2=wantAttack2; the brain consults ChosenWeapon.BotWantsSecondary (Electro electromooth toggle + range gate, Crylink 10/90 pick, MachineGun burst), BotWantsDetonate (Devastator full predicted-damage detonate), and BotForbidsFire (Porto secondary mode + CTS _independent_players). Mortar/Hagar/Vortex/Seeker/Hlac/Blaster have NO wr_aim override.", result: pass }
+      - { kind: code, ref: "Emit sets ButtonAttack2=wantAttack2; the brain consults ChosenWeapon.BotWantsSecondary (Electro electromooth toggle + range gate, Crylink 10/90 pick, MachineGun burst, Mortar grenademooth 1%/2% flip, Hagar 15% secondary), BotWantsDetonate (Devastator full predicted-damage detonate), BotForbidsFire (Porto secondary mode + CTS _independent_players, OkHmg/OkMachinegun), BotAimShotSpeed (Mortar per-mode, Hagar primary, OkRpc) and BotAimLobbed (Mortar=true). Vortex/Seeker/Hlac/Blaster have NO wr_aim override.", result: pass }
     confidence: high
-    notes: "DRIFT FIX (2026-06-27, coverage narrowed): wr_aim coverage rose 8 -> 12 weapons. New since the 2026-06-25 baseline: ELECTRO (faithful electromooth primary/secondary toggle = the electro combo decision), CRYLINK (10/90 primary/secondary pick), ARC (explicit no-secondary), PORTO (BotForbidsFire fire-veto in secondary mode; CTS _independent_players also suppresses fire). Devastator detonate is a full port of devastator.qc:360-450. STILL PARTIAL: only the ChosenWeapon is consulted (no per-slot loop), and the remaining headline combos (mortar airburst / hagar burst / vortex charge / seeker) are not ported."
+    notes: "DRIFT FIX (2026-06-27 second pass, coverage narrowed): wr_aim coverage rose 12 -> 14 weapons. New since the on-disk (Wave-12-committed) baseline: MORTAR (grenademooth primary/secondary toggle with 1%/2% flip chance + per-mode lead speed + lobbed-arc flag, a faithful port of mortar.qc wr_aim) and HAGAR (15%-secondary burst pick, both modes led at primary speed per hagar.qc). The OK overkill variants also carry bot fire-driver overrides. Electro/Crylink/Arc/Porto/Devastator unchanged. STILL PARTIAL: only the ChosenWeapon is consulted (no MAX_WEAPONSLOTS per-slot loop), and vortex charge / seeker / hlac / blaster wr_aim are not ported."
 
   - id: bot-ai.roles.goalrating
     name: "Roles + goal rating (havocbot_role_generic / objective roles, routerating)"
@@ -562,11 +562,13 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:HavocbotDodge"
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:CombatMovement"
+      - "src/XonoticGodot.Common/Framework/Entity.cs:BotDodge"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Mortar.cs:BotDodge (and 12 more weapon/turret producers)"
     constants:
       - { name: "dodge applies (SUPERBOT gate)", base: "SUPERBOT only (skill>100)", port: "HavocbotDodge SUPERBOT-gated (skill>100); generic CombatMovement strafe for all skills", match: true }
       - { name: "dodge basis", base: "scan bot_dodge edicts, evade perpendicular to flight path; bestdanger=-20", port: "HavocbotDodge = faithful flight-path scan (bestDanger=-20); plus generic strafe-flip+HP-bias", match: true }
       - { name: "dodge scale", base: "bound(0, 0.5 + (skill+bot_dodgeskill)*0.1, 1)", port: "clamp(0.5 + skill*0.1, 0, 1)", match: true }
-      - { name: "bot_dodge producer coverage", base: "~20+ projectile/beam types set bot_dodge", port: "3 (Blaster bolt, Porto grenade, PhaserTurret beam)", match: false }
+      - { name: "bot_dodge producer coverage", base: "20 files / 31 setters (projectiles, beams, monsters, nades, hook, turret)", port: "14 files (Arc/Blaster/Crylink/Devastator/Electro/Fireball/Hagar/Hlac/Minelayer/Mortar/Porto/Seeker/Vaporizer projectiles + PhaserTurret beam); all weapon producers, missing monsters/napalm/hook/generic-turret", match: false }
     status:
       logic: partial
       values: partial
@@ -577,13 +579,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Only 3 port projectiles flag Entity.BotDodge (Blaster bolt, Porto grenade, PhaserTurret beam) vs Base's ~20+ producers, so most incoming projectiles still aren't dodged even by a SUPERBOT. (NEW RESIDUAL after the dodge port.)"
+      - "14 of Base's 20 bot_dodge producer files are ported (all weapon projectiles + the PhaserTurret beam); the 6 still missing are monsters (golem/spider), the napalm nade, the grappling hook, and the generic sv_turrets producer, so dodge does not trigger for those hazards. (NARROWED 2026-06-27 second pass from 3 producers.)"
       - "Non-SUPERBOT bots still only do the generic CombatMovement strafe-flip + HP-bias (an invented behaviour), not a per-projectile dodge — Base also restricts havocbot_dodge to SUPERBOT, so this matches stock, but the generic strafe is not a Base behaviour. (UNCHANGED.)"
       - "The SUPERBOT random-direction combat jitter (havocbot_movetogoal:1280-1307) is not reproduced. (UNCHANGED.)"
     verification:
-      - { kind: code, ref: "HavocbotDodge (BotBrain.cs:608) is a faithful port of havocbot.qc:1773 — SUPERBOT gate, bestdanger=-20, flight-path component removal, perpendicular vs back-away branches; called live from ThinkProduce (BotBrain.cs:462), scaled + checkdanger-vetoed + folded into the wish-move with an upward-dodge jump. CombatMovement strafe stands in for non-SUPERBOT.", result: pass }
+      - { kind: code, ref: "HavocbotDodge (BotBrain.cs:625) is a faithful port of havocbot.qc:1773 — SUPERBOT gate, bestdanger=-20, flight-path component removal, perpendicular vs back-away branches; called live from ThinkProduce (BotBrain.cs:479), scaled + checkdanger-vetoed + folded into the wish-move with an upward-dodge jump. 14 weapon/turret files set Entity.BotDodge on live projectile spawn paths (verified Mortar.cs:214 on the real grenade toss). CombatMovement strafe stands in for non-SUPERBOT.", result: pass }
     confidence: high
-    notes: "DRIFT FIX (2026-06-27): havocbot_dodge is NOW PORTED and live (HavocbotDodge), a faithful port of the QC flight-path projectile evade, SUPERBOT-gated exactly like Base. The SUPERBOT gate + dodge-basis constants now MATCH. Residual: only 3 port projectiles set Entity.BotDodge (vs Base's many), so dodge fires rarely; and the generic CombatMovement strafe remains the invented non-SUPERBOT fallback. Previously this row's worst-gap was 'havocbot_dodge not ported'."
+    notes: "DRIFT FIX (2026-06-27 second pass): the bot_dodge PRODUCER coverage rose from 3 -> 14 port files in Wave 13 (5427e74), which the on-disk (Wave-12-committed) registry had not recorded. Entity.BotDodge is now flagged live on essentially every weapon projectile (Arc/Blaster/Crylink/Devastator/Electro/Fireball/Hagar/Hlac/Minelayer/Mortar/Porto/Seeker/Vaporizer) + the PhaserTurret beam, so the already-ported SUPERBOT HavocbotDodge consumer now fires routinely rather than rarely. Residual: 6 non-weapon Base producers (monsters/napalm/hook/generic-turret) unported, and the generic CombatMovement strafe remains the invented non-SUPERBOT fallback."
 
   - id: bot-ai.special.jetpack_rocketjump
     name: "Jetpack navigation + rocketjump/jetpack trigger_hurt escape"

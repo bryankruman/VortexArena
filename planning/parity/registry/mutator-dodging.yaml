@@ -8,7 +8,7 @@ summary:
     - "HEADLINE: the dodge mechanic is fully LIVE. PlayerPhysics.cs:249-253 writes player.MovementForward = input.MoveValues.X / MovementRight = input.MoveValues.Y / ButtonCrouch / ViewAngles (RAW, pre-frozen-clamp) immediately BEFORE the PlayerPhysics hook fires (PlayerPhysics.cs:261 MutatorHooks.PlayerPhysics.Call). The chain Movement.Move -> PlayerPhysics.Move -> bridge -> hook -> DodgingMutator.OnPlayerPhysics is live on the real match path; the mutator is activated via MutatorActivation.Apply (GameWorld.cs:614)."
     - "FIXED since 2026-06-22: the MakePlayerObserver reset is now wired. MutatorHooks.MakePlayerObserver HookChain now EXISTS (MutatorHooks.cs:47) and is dispatched live from ClientManager.cs:542 (PutObserverInServer). DodgingMutator subscribes to it (DodgingMutator.cs:104, 298-302) and calls ResetPlayer. Both Base reset triggers (PlayerSpawn + MakePlayerObserver) are now live — a player who spectates mid-dodge no longer keeps stale dodging_* fields."
     - "RESOLVED (Wave 8d): the dodge jump animation is faithful in its OBSERVABLE result. Base calls animdecide_setaction(ANIMACTION_JUMP) on the hop, but animdecide.qc:283 states verbatim 'currently, in CSQC this is the only jump detection, as the explicit jump action is never called!' — Base's own CLIENT renderer drives the jump clip off the IMPLICIT ground->air (ANIMIMPLICITSTATE_INAIR) transition, NOT the explicit server-pushed action. The port reconstructs the jump pose by the identical implicit path: the dodge does UNSET_ONGROUND + up-impulse (DodgingMutator.cs:365-366), and LocomotionBlend.SelectLegs returns Locomotion.Jump whenever !onGround (LocomotionBlend.cs:81). The explicit anim-action seam is absent server-side, but it has no distinct rendered effect in Base either, so the visible outcome is fully covered."
-    - "RESIDUAL: cl_dodging per-client opt-in IS replicated (Commands.cs:559-560 ClientDodgingProvider -> GetClientCvarFloat per-client store), but cl_dodging_timeout is registered as a replicate cvar (Commands.cs:224) yet has NO provider — it is still read once server-side at Hook() (DodgingMutator.cs:122) and shared by all clients. The Commands.cs:221-223 'TimeoutProvider' reference in the comment is to a seam that does not exist."
+    - "FIXED since the last audit: BOTH per-client cvars are now replicated. cl_dodging opt-in rides ClientDodgingProvider (Commands.cs:568-569 -> GetClientCvarFloat) AND cl_dodging_timeout now has a real per-client provider too — DodgingMutator.TimeoutProvider exists (DodgingMutator.cs:93) and is installed at Commands.cs:577-578 (GetClientCvarFloat 'cl_dodging_timeout' default 0.2). TimeoutFor (DodgingMutator.cs:258-262) consults it before falling back to the server-side Timeout field, so the double-tap window is now per-client, matching Base PHYS_DODGING_TIMEOUT(s) = CS_CVAR(s).cvar_cl_dodging_timeout. The baseline's 'TimeoutProvider seam does not exist' residual is resolved."
 features:
   - id: mutator-dodging.core.enable
     name: "Mutator registration + g_dodging enable gate"
@@ -47,7 +47,7 @@ features:
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:249-253 (INPUT BRIDGE — writes MovementForward/Right/ButtonCrouch/ViewAngles, RAW)"
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:261 (MutatorHooks.PlayerPhysics.Call — live)"
     constants:
-      - { name: "cl_dodging_timeout", base: "0.2", port: "0.2 (cl_dodging_timeout cvar; read server-side at Hook())", match: true }
+      - { name: "cl_dodging_timeout", base: "0.2", port: "0.2 (now per-client replicated via TimeoutProvider, Commands.cs:577-578; server-side Hook() value is the fallback)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -245,8 +245,10 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:84 ClientDodgingProvider"
       - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:237 ClientDodgingEnabled"
       - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:341-342 (PMDodging abort branch)"
-      - "src/XonoticGodot.Server/Commands.cs:224 (cl_dodging/cl_dodging_timeout registered replicate cvars)"
-      - "src/XonoticGodot.Server/Commands.cs:559-560 (ClientDodgingProvider -> per-client store)"
+      - "src/XonoticGodot.Server/Commands.cs:233 (cl_dodging/cl_dodging_timeout registered replicate cvars)"
+      - "src/XonoticGodot.Server/Commands.cs:568-569 (ClientDodgingProvider -> per-client store)"
+      - "src/XonoticGodot.Server/Commands.cs:577-578 (TimeoutProvider -> per-client store)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:93 (TimeoutProvider field) + :258 TimeoutFor"
     constants:
       - { name: "sv_dodging_clientselect", base: "0", port: "0 (cvar read)", match: true }
       - { name: "cl_dodging", base: "0", port: "0 (now per-client replicated via ClientDodgingProvider)", match: true }
@@ -259,12 +261,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "cl_dodging_timeout is registered as a replicate cvar (Commands.cs:224) but has NO provider — the timeout is still read once server-side at Hook() (DodgingMutator.cs:122) and shared by all clients. The Commands.cs:221-223 comment references a 'TimeoutProvider' seam that does not exist. So per-client double-tap-window customisation is not honoured (only the per-client cl_dodging opt-in is)."
+    gaps: []
     verification:
-      - { kind: code, ref: "ClientSelect read from sv_dodging_clientselect; PMDodging abort branch consults `ClientSelect && !ClientDodgingEnabled(player) && !frozenDodging` (matches Base); ClientDodgingEnabled uses ClientDodgingProvider, now installed at Commands.cs:559-560 to read each Player's replicated cl_dodging from the per-client cvar store (GetClientCvarFloat). cl_dodging IS registered as a replicate field (Commands.cs:224). Reached on the live path via the wired detector/PMDodging.", result: pass }
+      - { kind: code, ref: "ClientSelect read from sv_dodging_clientselect; PMDodging abort branch consults `ClientSelect && !ClientDodgingEnabled(player) && !frozenDodging` (matches Base); ClientDodgingEnabled uses ClientDodgingProvider, installed at Commands.cs:568-569 to read each Player's replicated cl_dodging from the per-client cvar store (GetClientCvarFloat). cl_dodging AND cl_dodging_timeout are BOTH registered replicate fields (Commands.cs:233) and BOTH now have per-client providers (ClientDodgingProvider Commands.cs:568-569, TimeoutProvider Commands.cs:577-578). TimeoutFor (DodgingMutator.cs:258) consults TimeoutProvider before the server-side fallback. Reached on the live path via the wired detector/PMDodging.", result: pass }
     confidence: high
-    notes: "FIX vs baseline: the per-client cl_dodging REPLICATE is now wired — Commands.cs:559-560 points ClientDodgingProvider at this world's per-client replicated-cvar store (GetClientCvarFloat), so each client opts in individually instead of sharing the server cvar (presentation partial->faithful, liveness dead->live). Residual: cl_dodging_timeout has no equivalent provider (the Commands.cs:221-223 comment still names a 'TimeoutProvider' seam that does not exist), so the double-tap window is not per-client. Defaults off (sv_dodging_clientselect 0) so practical impact is small."
+    notes: "FIX vs baseline: BOTH per-client REPLICATE seams are now wired. cl_dodging opt-in -> ClientDodgingProvider (Commands.cs:568-569). The PREVIOUS RESIDUAL — cl_dodging_timeout had no provider — is RESOLVED: DodgingMutator.TimeoutProvider now exists (DodgingMutator.cs:93) and is installed at Commands.cs:577-578, so the double-tap window is per-client too (TimeoutFor reads it). Each client now opts in and sets their own timeout individually instead of sharing the server cvar. Defaults off (sv_dodging_clientselect 0) so practical impact is small, but the seam is fully faithful now."
 
   - id: mutator-dodging.frozen.dodge
     name: "Frozen dodging (sv_dodging_frozen / _frozen_doubletap / horiz_force_frozen)"

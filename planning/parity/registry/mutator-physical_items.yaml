@@ -17,7 +17,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/PhysicalItemsMutator.cs:47 IsEnabled"
       - "src/XonoticGodot.Common/Gameplay/Mutators/PhysicalItemsMutator.cs:279 HasPhysicsEngine"
-      - "src/XonoticGodot.Server/GameWorld.cs:614 (MutatorActivation.Apply)"
+      - "src/XonoticGodot.Server/GameWorld.cs:626 (MutatorActivation.Apply)"
     constants:
       - { name: "physics_ode (engine cvar, required for activation)", base: "0 (off; needs DP_PHYSICS_ODE)", port: "no autocvar_physics_ode / no ODE engine", match: false }
     status:
@@ -32,7 +32,7 @@ features:
     gaps: []
     verification:
       - { kind: code, ref: "PhysicalItemsMutator.cs:47-48 IsEnabled = Api.Services!=null && g_physical_items!=0 && HasPhysicsEngine(); HasPhysicsEngine() (PhysicalItemsMutator.cs:279-289) returns false unconditionally after latched revert Log.Trace; revert string byte-identical to QC LOG_TRACE (sv_physical_items.qc:14)", result: pass }
-      - { kind: code, ref: "Activation entry on live path: MutatorActivation.Apply() at GameWorld.cs:614 iterates Mutators.All + evaluates IsEnabled (MutatorActivation.cs:82-84) → gate predicate IS reached on the live boot path", result: pass }
+      - { kind: code, ref: "Activation entry on live path: MutatorActivation.Apply() at GameWorld.cs:626 iterates Mutators.All + evaluates IsEnabled (MutatorActivation.cs:84) → gate predicate IS reached on the live boot path", result: pass }
       - { kind: test, ref: "MutatorBatchT19Tests.PhysicalItems_Disabled_NoPhysicsEngine: Boot(g_physical_items=1) → IsEnabled==false && Added==false (the mutator never activates without a physics engine)", result: pass }
     confidence: high
     notes: "RE-VERIFIED 2026-06-25 (drift check): the gate predicate IS reached on the live boot path (liveness=live correct) but always evaluates false. The static `_revertLogged` latch (PhysicalItemsMutator.cs:277-289) fires the revert Log.Trace once-per-process, matching QC's single MUTATOR_ONADD evaluation. With g_physical_items default 0, IsEnabled short-circuits on the cvar==0 check; the revert Log.Trace only fires if an operator sets the cvar to non-zero. Either way the mutator never adds and never hooks anything, exactly as Base reverts on a non-ODE build."
@@ -71,8 +71,8 @@ features:
       - "common/mutators/mutator/physical_items/sv_physical_items.qc:92 MUTATOR_HOOKFUNCTION(physical_items, Item_Spawn)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/PhysicalItemsMutator.cs:79 OnItemSpawn"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:1089 ItemSpawn HookChain / 1097 FireItemSpawn"
-      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:165 (FireItemSpawn call site)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:1274 ItemSpawn HookChain / 1282 FireItemSpawn"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:180 (FireItemSpawn call site)"
       - "src/XonoticGodot.Common/Gameplay/Items/EntityItemState.cs:187,193,201 (PhysSpawnOrigin/Angles/PhysIsDropped)"
     constants:
       - { name: "ghost solid", base: "SOLID_CORPSE", port: "Solid.Corpse (PhysicalItemsMutator.cs:107)", match: true }
@@ -98,7 +98,7 @@ features:
       - "Ghost colormap/glowmod are NOT copied from item.owner at spawn (QC sv_physical_items.qc:115-116 wep.colormap = item.owner.colormap; wep.glowmod = item.owner.glowmod) — cosmetic ghost-tint divergence, same class as the per-think colormap/colormod/glowmod omission in the think feature."
       - "DEAD: the whole hook is unreachable because IsEnabled is hard-false, so OnItemSpawn is never subscribed and never fires in a normal match."
     verification:
-      - { kind: code, ref: "RE-VERIFIED 2026-06-27 (drift check): OnItemSpawn (PhysicalItemsMutator.cs:79-151) fully ports the QC Item_Spawn body — spawns a ghost (Api.Entities.Spawn), copies model/size/origin/angles/velocity, sets Owner/Solid.Corpse/MoveType.Physics/DamageMode.Aim/EF_NOMODELFLAGS/DamageForceScale/DpHitContentsMask/PhysIsDropped, wires Think/Touch/event_damage, records PhysSpawnOrigin/Angles, hides the real item (NoDraw + Follow + Aiment). Subscribed in Hook() via MutatorHooks.ItemSpawn.Add (PhysicalItemsMutator.cs:62-63); HookChain + FireItemSpawn exist (MutatorHooks.cs:1089-1101); StartItem.cs:165 fires FireItemSpawn at the tail of every world-item spawn. The CHAIN is live, but the SUBSCRIBER never registers because the mutator never adds (gate hard-false)", result: pass }
+      - { kind: code, ref: "RE-VERIFIED 2026-06-27 (drift check): OnItemSpawn (PhysicalItemsMutator.cs:79-151) fully ports the QC Item_Spawn body — spawns a ghost (Api.Entities.Spawn), copies model/size/origin/angles/velocity, sets Owner/Solid.Corpse/MoveType.Physics/DamageMode.Aim/EF_NOMODELFLAGS/DamageForceScale/DpHitContentsMask/PhysIsDropped, wires Think/Touch/event_damage, records PhysSpawnOrigin/Angles, hides the real item (NoDraw + Follow + Aiment). Subscribed in Hook() via MutatorHooks.ItemSpawn.Add (PhysicalItemsMutator.cs:62-63); HookChain + FireItemSpawn exist (MutatorHooks.cs:1274-1286); StartItem.cs:180 fires FireItemSpawn at the tail of every world-item spawn. The CHAIN is live, but the SUBSCRIBER never registers because the mutator never adds (gate hard-false)", result: pass }
     confidence: high
     notes: "MAJOR DRIFT FIX vs prior baseline: this feature was recorded as fully `missing` with empty port_refs and a verification note claiming 'STILL no Item_Spawn hook chain ... grep returns nothing'. That note was factually stale — the current code has a complete, faithful implementation (the Item_Spawn HookChain, FireItemSpawn, the StartItem call site, and the EntityItemState ghost fields all exist). All re-derivable constants match Base. The remaining defects are: presentation `partial` (no setSendEntity equivalent; relies on EF_NODRAW), the DropToFloor settle divergence, and liveness `dead` (the mutator never adds, so the hook is never subscribed). Reclassified missing->faithful on logic/values/timing, missing->partial on presentation, na->dead on liveness."
   - id: mutator-physical_items.item_callbacks.think_touch_damage

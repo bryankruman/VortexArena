@@ -1,6 +1,6 @@
 # Parity Index
 
-_Generated 2026-06-27 from 154 units, 2101 features._
+_Generated 2026-06-27 from 154 units, 2114 features._
 
 Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liveness `live`/`DEAD`/`~`/`?`.
 
@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1813 | 103 | 25 | 153 | 4 | 3 |
-| values | 0 | 1699 | 79 | 220 | 90 | 0 | 13 |
-| timing | 0 | 1068 | 52 | 918 | 45 | 0 | 18 |
-| presentation | 0 | 571 | 138 | 1189 | 197 | 0 | 6 |
-| audio | 0 | 312 | 10 | 1756 | 19 | 1 | 3 |
-| liveness | 22 | 0 | 0 | 110 | 103 | 0 | 10 |
+| logic | 0 | 1840 | 91 | 28 | 148 | 4 | 3 |
+| values | 0 | 1723 | 68 | 226 | 84 | 0 | 13 |
+| timing | 0 | 1079 | 49 | 926 | 42 | 0 | 18 |
+| presentation | 0 | 574 | 138 | 1196 | 200 | 0 | 6 |
+| audio | 0 | 312 | 10 | 1769 | 19 | 1 | 3 |
+| liveness | 23 | 0 | 0 | 98 | 99 | 0 | 10 |
 
 ## Features by unit
 
@@ -57,7 +57,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `bot-waypoints.auto.spawnforitem` | Auto item/spawn waypoints (waypoint_spawnforitem) | OK | OK | - | - | - | ~ | high |
 | `bot-waypoints.auto.spawnforteleporter` | Auto teleporter/jumppad/warpzone waypoints (waypoint_spawnforteleporter/_wz) | ~ | ~ | - | - | - | ~ | medium |
 | `bot-waypoints.path.findnearest` | Nearest-waypoint query (navigation_findnearestwaypoint) | ~ | OK | - | - | - | live | high |
-| `bot-waypoints.path.markroutes` | Shortest-path search over the graph (navigation_markroutes Dijkstra flood) + danger bias *(intended)* | ~ | ~ | - | - | - | live | high |
+| `bot-waypoints.path.markroutes` | Shortest-path search over the graph (navigation_markroutes Dijkstra flood) + danger bias *(intended)* | ~ | OK | - | - | - | live | high |
 | `bot-waypoints.path.routetogoal` | Route building onto the goal stack (navigation_routetogoal + goalstack) | ~ | OK | - | - | - | live | high |
 | `bot-waypoints.steer.movetogoal` | Steering / path follow (havocbot_movetogoal: jump/crouch/ladder/obstacle/brake/bunnyhop) | ~ | OK | OK | - | - | live | high |
 | `bot-waypoints.steer.bunnyhop` | Bunnyhop maintenance (havocbot_bunnyhop) | ~ | OK | - | - | - | live | high |
@@ -337,7 +337,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `assault.config.warmup_incompatible` | Assault disables warmup + ready-restart-after-countdown (ReadLevelCvars) | OK | OK | - | - | - | live | high |
 | `assault.notify.play_hitsound` | Force a hitsound when shelling a func_assault_destructible (PlayHitsound hook) | OK | OK | - | - | stub | DEAD | high |
 
-### `clanarena` (gametype) — 27 features
+### `clanarena` (gametype) — 28 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -368,8 +368,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `clanarena.lifecycle.reset_map` | Round reset re-transmutes in-game players and re-allows spawn (reset_map_players/global) | ~ | - | - | - | - | - | medium |
 | `clanarena.spawn.ingame_status_decimal_reset` | PlayerSpawn: set INGAME_STATUS_JOINED + reset damage2score decimal on game restart | ~ | - | OK | - | - | live | high |
 | `clanarena.hud.spectator_info_messages` | Show HUD info messages to a CA spectator viewing the scoreboard (cl_ca DrawInfoMessages) | MISS | - | - | MISS | - | - | medium |
+| `clanarena.mapinfo.always_supported` | Map-support heuristic (m_isAlwaysSupported: spawnpoints>=8 && diameter>3250) | MISS | MISS | - | - | - | - | medium |
 
-### `ctf` (gametype) — 24 features
+### `ctf` (gametype) — 28 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -392,17 +393,21 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `ctf.win_condition` | Capture limit + lead limit win | OK | OK | OK | - | - | live | high |
 | `ctf.oneflag` | One-flag CTF (neutral carriable flag) | OK | OK | - | - | - | ~ | medium |
 | `ctf.bot_role` | Bot CTF role (grab/cap/return/escort) *(intended)* | ~ | ~ | - | - | - | live | medium |
-| `ctf.flag.map_reset` | Flag reset on map/round reset (ctf_Reset) | MISS | - | - | - | - | - | medium |
-| `ctf.match_end_freeze` | Freeze dropped/passing flags at match end (MatchEnd) | ~ | - | - | - | - | ~ | medium |
+| `ctf.flag.map_reset` | Flag reset on map/round reset (ctf_Reset) | OK | - | - | - | - | live | high |
+| `ctf.match_end_freeze` | Freeze dropped/passing flags at match end (MatchEnd) | OK | - | - | - | - | live | high |
 | `ctf.abort_speedrun` | Return carried flag on speedrun abort (AbortSpeedrun) | MISS | - | - | - | - | - | medium |
 | `ctf.drop_special_items` | Throw flag on DropSpecialItems | ~ | - | - | - | - | ~ | low |
 | `ctf.logdeath_itemcode` | Flag-carrier death-log item code ('F') | MISS | - | - | - | - | - | low |
+| `ctf.ignore_frags` | Suppress frag score in CTF (g_ctf_ignore_frags) | MISS | - | - | - | - | - | low |
+| `ctf.leaderboard` | Persistent cross-session capture leaderboard (g_ctf_leaderboard) | MISS | - | - | MISS | - | - | medium |
+| `ctf.followfc_superspec` | Superspectate 'follow flag carrier' command (followfc) | MISS | - | - | - | - | - | low |
+| `ctf.prefer_score_clear` | Prefer player-score on clear (PreferPlayerScore_Clear) | MISS | - | - | - | - | - | low |
 
 ### `cts` (gametype) — 21 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `cts.mode.register_latch` | CTS gametype registration + qualifying/independent-players latch | OK | ~ | - | - | - | live | high |
+| `cts.mode.register_latch` | CTS gametype registration + qualifying/independent-players latch | OK | OK | - | - | - | live | high |
 | `cts.score.rules` | Score rules: no SP_SCORE; rank by fastest time (qualifying) or laps/time/fastest | OK | OK | - | - | - | live | high |
 | `cts.timing.start_finish` | Stage run timer: start-timer stamps, stop-timer folds fastest time | OK | OK | OK | - | - | live | high |
 | `cts.timer.spawnfuncs` | target_startTimer / target_stopTimer trigger entities | OK | OK | - | - | - | live | high |
@@ -424,7 +429,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cts.bot.role` | CTS bot role: route to the next race-checkpoint waypoint (havocbot_role_cts) | MISS | MISS | - | - | - | - | medium |
 | `cts.records.getrecords` | Map-record listing reply (GetRecords): per-map rank-1 CTS time + holder | ~ | OK | - | - | - | live | high |
 
-### `deathmatch` (gametype) — 8 features
+### `deathmatch` (gametype) — 9 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -436,6 +441,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `deathmatch.winconditions.timelimit_overtime` | Time limit + overtime/sudden-death (tie at limit keeps playing) | OK | OK | OK | OK | - | live | high |
 | `deathmatch.announce.frags_remaining` | Remaining-frags announcer (1/2/3 frags left) | OK | OK | OK | OK | OK | live | high |
 | `deathmatch.respawn.timing` | Respawn delay scheduling (calculate_player_respawn_time) | OK | OK | OK | OK | OK | live | high |
+| `deathmatch.menu.describe` | Menu gametype-description prose (free-for-all help text shown in the gametype picker) | - | - | - | MISS | - | - | high |
 
 ### `domination` (gametype) — 14 features
 
@@ -468,9 +474,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `duel.timing.respawn_delay` | Respawn delay (effective 2s via global fallback) | OK | OK | OK | - | - | live | high |
 | `duel.presentation.duel_title` | Duel 'playerA vs playerB' centerprint title | OK | OK | OK | OK | - | live | high |
 | `duel.presentation.forced_colors` | Forced enemy player colors in 1v1 (cl_forceplayercolors / suppress unique) | OK | OK | - | OK | - | live | high |
-| `duel.mapsupport.gating` | Map-support gating (diameter < 3250; force duel on DM maps) | MISS | MISS | - | - | - | - | medium |
+| `duel.mapsupport.gating` | Map-support gating (diameter < 3250; force duel on DM maps) | ~ | ~ | - | - | - | live | high |
 
-### `freezetag` (gametype) — 29 features
+### `freezetag` (gametype) — 30 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -497,12 +503,13 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `freezetag.presentation.overlay_eventchase` | Full-screen frozen overlay tint + cl_eventchase_frozen cam + damage HUD | OK | OK | OK | ~ | - | live | high |
 | `freezetag.bots` | Bot freeing / offense roles + frozen-target gating | ~ | MISS | MISS | - | - | ~ | medium |
 | `freezetag.spawn.late` | Mid-round joiner spawns AS FROZEN (PlayerSpawn → SPAWN_LATE) | OK | OK | OK | OK | - | live | high |
-| `freezetag.scoring.no_kill_frags` | No engine frags counted on a freeze-kill (GiveFragsForKill → 0) | MISS | MISS | - | - | - | - | medium |
-| `freezetag.weaponarena` | FT default weapon arena (g_freezetag_weaponarena 'most_available') | MISS | MISS | - | - | - | - | high |
-| `freezetag.frozen.no_regen` | Frozen players don't regen health/armor (PlayerRegen) | MISS | - | - | - | - | - | medium |
-| `freezetag.frozen.no_pickup` | Frozen players can't pick up items or buffs (ItemTouch/BuffTouch) | MISS | - | - | - | - | - | medium |
+| `freezetag.scoring.no_kill_frags` | No engine frags counted on a freeze-kill (GiveFragsForKill → 0) | OK | OK | - | - | - | live | high |
+| `freezetag.weaponarena` | FT default weapon arena (g_freezetag_weaponarena 'most_available') | OK | OK | - | - | - | live | high |
+| `freezetag.frozen.no_regen` | Frozen players don't regen health/armor (PlayerRegen) | OK | - | - | - | - | live | high |
+| `freezetag.frozen.no_pickup` | Frozen players can't pick up items or buffs (ItemTouch/BuffTouch) | OK | - | - | - | - | ~ | high |
 | `freezetag.frags.center_message` | Per-freeze choice centerprint ('You froze X' / 'You were frozen by Y') | MISS | OK | - | MISS | - | DEAD | high |
 | `freezetag.presentation.frozen_anim` | Frozen-pose player animation (PlayerAnim ANIMSTATE_FROZEN) | MISS | - | - | MISS | - | - | medium |
+| `freezetag.notif.alone` | Last-survivor 'You are now alone!' centerprint (LastPlayerForTeam → CENTER_ALONE) | MISS | OK | - | MISS | - | DEAD | high |
 
 ### `invasion` (gametype) — 29 features
 
@@ -522,7 +529,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `invasion.round.fill_and_win_round_mode` | ROUND fill loop + round-cleared advance / win | OK | OK | OK | OK | - | live | high |
 | `invasion.round.handler_wiring` | ROUND round_handler with Invasion-specific start/end/players callbacks + warmup + timelimit | OK | OK | OK | - | - | live | high |
 | `invasion.round.timeout` | Round timeout: remove monsters, ROUND_OVER, restart round | OK | OK | OK | OK | - | live | high |
-| `invasion.win.hunt` | HUNT: win when all placed monsters are cleared | ~ | - | OK | - | - | live | medium |
+| `invasion.win.hunt` | HUNT: win when all placed monsters are cleared | OK | - | OK | - | - | live | high |
 | `invasion.win.stage` | STAGE: win when >=70% of players reach the level-end trigger | OK | OK | OK | - | - | live | high |
 | `invasion.win.point_limit` | Match end on banked-kill point limit (default 50) | OK | OK | OK | - | - | live | high |
 | `invasion.rules.no_pvp_damage` | Player-vs-player damage cancelled (Damage_Calculate) | OK | OK | - | - | - | live | high |
@@ -558,9 +565,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `keepaway.bot.role` | Bot ka roles (carrier/collector + ball goal rating + ForbidAttack) | ~ | OK | - | - | - | live | high |
 | `keepaway.warn.noncarrier` | Non-carrier frag warning (CENTER_KEEPAWAY_WARN) | OK | OK | - | OK | - | live | high |
 | `keepaway.score.countfragsremaining` | Suppress 'frags remaining' announce when timed scoring is on (Scores_CountFragsRemaining) | OK | - | - | OK | OK | live | high |
-| `keepaway.log.eventlog` | Gamelog :ka: pickup/dropped echoes (ka_EventLog) | MISS | - | - | - | - | - | high |
+| `keepaway.log.eventlog` | Gamelog :ka: pickup/dropped echoes (ka_EventLog) | OK | - | - | - | - | live | high |
 | `keepaway.score.resetmapglobal` | reset_map_global: clear per-client float2int decimal accumulator | ~ | OK | OK | - | - | live | high |
-| `keepaway.score.preferplayerscore` | PreferPlayerScore_Clear (suppress team-score preference in FFA ka) | ~ | - | - | - | - | - | medium |
+| `keepaway.score.preferplayerscore` | PreferPlayerScore_Clear (suppress team-score preference in FFA ka) | OK | - | - | - | - | live | high |
 
 ### `keyhunt` (gametype) — 21 features
 
@@ -586,7 +593,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `keyhunt.notify.center_info` | Center-print + info notification storm (START/SCAN/ROUNDSTART/INTERFERE/MEET/HELP + PICKUP/DROP/LOST/PUSHED/DESTROYED/CAPTURE) + capture VFX | OK | - | OK | OK | - | live | high |
 | `keyhunt.hud.objective_status` | OBJECTIVE_STATUS key-state pack + HUD modicons *(intended)* | OK | OK | OK | OK | - | live | high |
 | `keyhunt.waypoints.sprites` | Dropped-key + carrier waypoint sprites (Run here / Key Carrier) | OK | OK | - | OK | - | live | high |
-| `keyhunt.bot.role` | Bot KeyHunt role (carrier/defense/offense/freelancer goal rating) | ~ | ~ | - | - | - | live | high |
+| `keyhunt.bot.role` | Bot KeyHunt role (carrier/defense/offense/freelancer goal rating) | OK | OK | - | - | - | live | high |
 
 ### `lms` (gametype) — 26 features
 
@@ -613,7 +620,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `lms.item.extra_life` | Extra-life pickups grant lives | OK | OK | - | OK | - | live | high |
 | `lms.scoreboard.columns` | LMS scoreboard columns (lives + rank, sorted rank-then-lives) | OK | OK | - | OK | - | live | high |
 | `lms.forfeit.remove_player` | Disconnect/forfeit assigns a rank and reshuffles other ranks | OK | OK | - | - | - | live | high |
-| `lms.rules.no_throw_and_spec_lockout` | Can't drop weapon; ranked-out players can't become spectators | ~ | - | - | - | - | ~ | high |
+| `lms.rules.no_throw_and_spec_lockout` | Can't drop weapon; ranked-out players can't become spectators | OK | - | - | - | - | live | high |
 | `lms.reset.map_players` | Map/round reset restores eliminated players and clears lives/rank | OK | - | - | - | - | live | high |
 | `lms.bot.fixcount` | Bot_FixCount: only INGAME players count as active for bot balancing | MISS | - | - | - | - | - | medium |
 | `lms.respawn.deadflag_reset` | PlayerPreThink: DEAD_DYING → DEAD_RESPAWNING (auto-respawn living players) | ? | - | - | - | - | ? | low |
@@ -863,7 +870,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `mapobject-misc.subs.calcmove` | SUB_CalcMove / SUB_CalcAngleMove mover driver (linear + bezier + cubic_speedfunc) | OK | OK | OK | - | - | live | high |
 | `mapobject-misc.bgmscript.adsr` | bgmscript map-music ADSR animation (func_clientwall / func_pointparticles) | MISS | MISS | MISS | MISS | - | - | high |
 | `mapobject-misc.models.props_walls` | models.qc decoration props + static walls (spawn/solid/drop/colormap) *(intended)* | OK | OK | OK | ~ | - | live | high |
-| `mapobject-misc.models.clientwall_fade` | func_clientwall distance-fade + PVS alpha-cull + antiwall solid-toggle (Ent_Wall_PreDraw / g_clientmodel_use) | MISS | MISS | - | MISS | - | - | high |
+| `mapobject-misc.models.clientwall_fade` | func_clientwall distance-fade + PVS alpha-cull + antiwall solid-toggle (Ent_Wall_PreDraw / g_clientmodel_use) | ~ | ~ | - | MISS | - | ~ | high |
 
 ### `mapobject-movers-platforms` (mapobject) — 12 features
 
@@ -919,9 +926,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `teleporters.fx.flash` | Teleport flash effect at both ends | OK | OK | OK | OK | - | live | high |
 | `teleporters.fx.sound` | Teleport sound (misc/teleport, debounced, optional noise word-list) | OK | OK | OK | - | OK | live | high |
 | `portals.weapon.projectile` | Porto projectile launch/bounce/lifetime/one-portal latch + touch decision tree | OK | OK | OK | ~ | OK | live | high |
-| `portals.entity.lifecycle` | Portal edict: model, skins, EF effects, health, lifetime/fade, damage, explode/expire sounds, Customize | MISS | MISS | MISS | MISS | MISS | - | high |
+| `portals.entity.lifecycle` | Portal edict: model, skins, EF effects, health, lifetime/fade, damage, explode/expire sounds, Customize | ~ | ~ | ~ | MISS | MISS | ~ | high |
 | `portals.teleport.transform_and_amazing` | Portal teleport transform, two-way semantics, Amazing announcer, portal-owner kill-credit | OK | ~ | ? | - | OK | live | medium |
-| `portals.weapon.cleanup` | Portal pair lifecycle: one pair per owner, death/timeout clears both, ID-clear | OK | - | ~ | - | - | live | high |
+| `portals.weapon.cleanup` | Portal pair lifecycle: one pair per owner, death/timeout clears both, ID-clear | OK | OK | OK | - | - | live | high |
 | `portals.weapon.hook_and_predict` | Portal grappling-hook teleport + predict-ahead crossing (Portal_WillHitPlane) + flag exclusion | ~ | MISS | MISS | - | - | live | medium |
 
 ### `mapobject-triggers` (mapobject) — 24 features
@@ -929,7 +936,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `mapobject-triggers.common.sub_usetargets` | SUB_UseTargets — delay / killtarget / message / target_random fire primitive | OK | OK | OK | OK | OK | live | high |
-| `mapobject-triggers.multi.trigger_multiple` | trigger_multiple / trigger_once — repeatable/one-shot volume trigger | ~ | ~ | OK | - | OK | live | high |
+| `mapobject-triggers.multi.trigger_multiple` | trigger_multiple / trigger_once — repeatable/one-shot volume trigger | OK | OK | OK | - | OK | live | high |
 | `mapobject-triggers.hurt.trigger_hurt` | trigger_hurt — damage volume | OK | OK | OK | - | - | live | high |
 | `mapobject-triggers.heal.trigger_heal` | trigger_heal / target_heal — heal volume / relay | OK | OK | OK | - | OK | live | high |
 | `mapobject-triggers.gravity.trigger_gravity` | trigger_gravity — gravity zone + non-sticky exit checker | OK | OK | OK | - | OK | live | high |
@@ -946,7 +953,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `mapobject-triggers.relay_if.trigger_relay_if` | trigger_relay_if — cvar-compare gate | OK | - | - | - | - | live | high |
 | `mapobject-triggers.relay_teamcheck.trigger_relay_teamcheck` | trigger_relay_teamcheck — team gate on the activator | OK | - | - | - | - | live | high |
 | `mapobject-triggers.relay_activators.relay_activate` | relay_activate / relay_deactivate / relay_activatetoggle — set targets' active state | OK | - | - | - | - | live | high |
-| `mapobject-triggers.gamestart.trigger_gamestart` | trigger_gamestart — fire targets at game start, then delete *(intended)* | OK | ~ | ~ | - | - | ~ | medium |
+| `mapobject-triggers.gamestart.trigger_gamestart` | trigger_gamestart — fire targets at game start, then delete *(intended)* | OK | OK | OK | - | - | live | high |
 | `mapobject-triggers.magicear.trigger_magicear` | trigger_magicear — chat pattern match -> SUB_UseTargets / text replace | OK | OK | - | - | - | live | high |
 | `mapobject-triggers.keylock.trigger_keylock` | trigger_keylock — fire target when all required keys supplied | OK | OK | OK | OK | OK | live | high |
 | `mapobject-triggers.teleport.trigger_teleport` | trigger_teleport / target_teleporter — player teleport source *(intended)* | OK | OK | OK | OK | OK | live | high |
@@ -959,7 +966,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `warpzones.transform.algebra` | Seamless-portal transform math (origin/velocity/angles rotated through the seam) *(intended)* | OK | OK | - | - | - | live | high |
 | `warpzones.transform.chain` | Chained-transform accumulator (multi-portal composition) | OK | OK | - | - | - | live | high |
-| `warpzones.spawn.trigger` | trigger_warpzone / trigger_warpzone_position map spawnfuncs + registration | OK | ~ | - | - | - | live | high |
+| `warpzones.spawn.trigger` | trigger_warpzone / trigger_warpzone_position map spawnfuncs + registration | OK | OK | - | - | - | live | high |
 | `warpzones.spawn.brushplane` | Auto-orient IN plane from brush geometry (getsurface* area-weighted normal) | OK | OK | - | - | - | live | high |
 | `warpzones.spawn.link` | Pair zones by target/targetname (+ sv_warpzone_allow_selftarget) and deferred init | OK | OK | OK | - | - | live | high |
 | `warpzones.teleport.player` | Player/projectile crossing: warp origin/velocity/angles, momentum-preserved | OK | OK | OK | - | - | live | high |
@@ -992,11 +999,11 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `monster-framework.attack.primitives` | Melee / leap / projectile primitives (Monster_Attack_Melee/Leap + projectile spawns) | OK | OK | OK | - | OK | live | high |
 | `monster-framework.damage.pain_death` | Pain / death / corpse (Monster_Damage / Monster_Dead / Monster_Dead_Damage) *(intended)* | OK | OK | OK | - | ~ | live | high |
 | `monster-framework.damage.loot_drop` | Loot drop on death (monster_dropitem) | OK | OK | OK | - | - | live | high |
-| `monster-framework.move.straight_2d` | 2D straight-line mover (Monster_Move_2D) | MISS | MISS | MISS | - | - | - | high |
+| `monster-framework.move.straight_2d` | 2D straight-line mover (Monster_Move_2D) | OK | OK | OK | - | - | - | high |
 | `monster-framework.lifecycle.respawn_reset` | Respawn + round-restart reset + scoring (Monster_Respawn / Monster_Reset / score) | OK | OK | OK | - | - | live | high |
 | `monster-framework.spawn_drivers.stats` | Spawn drivers + monster_spawner + map-stats (spawnmonster / monster_spawner / monsters_setstatus) | OK | OK | - | - | - | live | high |
-| `monster-framework.presentation.team_colors` | Team / skill colors + radar (monster_setupcolors / monster_changeteam) | OK | OK | - | ~ | - | ~ | high |
-| `monster-framework.presentation.healthbar_sounds_anim` | Presentation: healthbar sprite + monster sounds + CSQC anim *(intended)* | ~ | ~ | ~ | MISS | ~ | ~ | high |
+| `monster-framework.presentation.team_colors` | Team / skill colors + radar (monster_setupcolors / monster_changeteam) | OK | OK | - | OK | - | ~ | high |
+| `monster-framework.presentation.healthbar_sounds_anim` | Presentation: healthbar sprite + monster sounds + CSQC anim *(intended)* | ~ | ~ | ~ | ~ | ~ | live | high |
 
 ### `monster-golem` (monster) — 12 features
 
@@ -1090,7 +1097,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `monster-zombie.death.mr_death` | Death: corpse + death anim + death sound + respawn machinery | OK | OK | OK | OK | OK | live | high |
 | `monster-zombie.respawn.undead` | Always-respawn at death point (undead): corpse rises unless gibbed | OK | OK | OK | - | - | live | medium |
 | `monster-zombie.presentation.animation` | Zombie model animation (mr_anim frame groups) | - | OK | ~ | OK | - | live | high |
-| `monster-zombie.menu.describe` | MENUQC monster-tooltip description text | - | MISS | - | MISS | - | - | high |
+| `monster-zombie.menu.describe` | MENUQC monster-tooltip description text | - | OK | - | OK | - | live | high |
 
 ### `mutator-bloodloss` (mutator) — 8 features
 
@@ -1177,7 +1184,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `campcheck.spawn.init` | PlayerSpawn: grace period (interval*2) + reset distance | OK | OK | OK | - | - | live | high |
 | `campcheck.notify.centerprint` | 'Don't camp!' centerprint warning | OK | OK | OK | OK | - | live | high |
 | `campcheck.death.obituary` | DEATH_CAMP obituary: 'Die camper!' / 'thought they found a nice camping ground' | OK | OK | - | OK | - | live | high |
-| `campcheck.realclient.gate` | Real-clients-only / not-typing / not-weapon-locked guard chain | OK | OK | - | - | - | ~ | high |
+| `campcheck.realclient.gate` | Real-clients-only / not-typing / not-weapon-locked guard chain | OK | OK | - | - | - | live | high |
 | `campcheck.prematch.reset` | Pre-match / round-not-started reset of timer + distance *(intended)* | OK | OK | OK | - | - | live | high |
 | `campcheck.lifecycle.misc` | PlayerDies centerprint clear, CopyBody clone origin, BuildMutatorsString advertise *(intended)* | OK | OK | - | OK | - | live | high |
 
@@ -1447,7 +1454,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `offhand_blaster.tips.gameplay_hint` | Client gameplay-tips line announcing the offhand blaster bind | OK | OK | - | OK | - | live | high |
 | `offhand_blaster.menu.describe` | Menu mutator-info describe text | OK | OK | - | OK | - | live | high |
 
-### `mutator-overkill` (mutator) — 17 features
+### `mutator-overkill` (mutator) — 18 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -1459,15 +1466,16 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `overkill.loot.drop_monster` | ok_DropItem on monster death (+ suppress normal drop) | OK | OK | OK | OK | - | live | high |
 | `overkill.respawn.remember_restore_weapon` | Remember held weapon at death, re-select on respawn (HMG->MG, RPC->Nex) | ~ | OK | OK | - | - | live | high |
 | `overkill.loadout.start_items` | SetStartItems: OK weapon set + unlimited ammo | OK | OK | - | - | - | live | high |
-| `overkill.countdown.blaster` | PlayerPreThink: allow secondary Blaster during round countdown | MISS | - | MISS | - | - | - | high |
+| `overkill.countdown.blaster` | PlayerPreThink: allow secondary Blaster during round countdown | OK | - | OK | - | - | live | high |
 | `overkill.filter.items_and_powerup_replace` | FilterItem: block normal health/armor + replace Strength/Shield with HMG/RPC superweapons | OK | OK | OK | OK | - | live | high |
 | `overkill.randomitems.inject_ok_items` | RandomItems_GetRandomItemClassName: weighted OK item/weapon pool | ~ | OK | - | - | - | ~ | high |
-| `overkill.itemwaypoints.respawn` | Item_RespawnCountdown/ScheduleRespawn: timed waypoints for surviving health/armor | MISS | MISS | MISS | MISS | - | - | high |
+| `overkill.itemwaypoints.respawn` | Item_RespawnCountdown/ScheduleRespawn: timed waypoints for surviving health/armor | OK | OK | OK | OK | - | live | high |
 | `overkill.forbid.throw_weapon` | ForbidThrowCurrentWeapon -> true | OK | - | - | - | - | live | high |
 | `overkill.forbid.random_start_weapons` | ForbidRandomStartWeapons -> true | OK | - | - | - | - | live | high |
 | `overkill.set_weapon_arena_off` | SetWeaponArena -> 'off' | OK | - | - | - | - | live | high |
 | `overkill.naming.mod_strings` | Mod-name strings: BuildMutatorsString ':OK', PrettyString ', Overkill', SetModname 'Overkill'; cl g_overkill cvar_settemp | OK | OK | - | OK | - | live | high |
 | `overkill.okhmg.nade_selfdamage_scale` | okhmg_nadesupport Nade_Damage: scale OK-HMG nade self-damage to 10% max health *(intended)* | OK | OK | - | - | - | live | high |
+| `overkill.oknex.charge_velocity` | oknex_charge GetPressedKeys: accumulate OK-Nex charge proportional to xy velocity | MISS | MISS | MISS | - | - | - | high |
 
 ### `mutator-physical_items` (mutator) — 4 features
 
@@ -1488,7 +1496,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `mutator-pinata.death.throw_impulse` | Burst throw impulse — randomvec()*175 + '0 0 325' | OK | OK | - | - | - | live | high |
 | `mutator-pinata.death.offhand_slots` | g_pinata_offhand — scatter off-hand (slot>0) weapons when dual-wielding *(intended)* | stub | OK | - | - | - | DEAD | high |
 | `mutator-pinata.report.mutators_string` | Active-mutators machine string hook — BuildMutatorsString (':Pinata') | OK | OK | - | - | - | live | high |
-| `mutator-pinata.report.mutators_pretty_string` | Active-mutators pretty string hook — BuildMutatorsPrettyString (', Piñata') | OK | OK | - | - | - | DEAD | high |
+| `mutator-pinata.report.mutators_pretty_string` | Active-mutators pretty string hook — BuildMutatorsPrettyString (', Piñata') | OK | OK | - | - | - | live | high |
 | `mutator-pinata.menu.metadata` | MENUQC metadata (describe text + create-game checkbox) | OK | OK | - | OK | - | live | high |
 
 ### `mutator-powerups` (mutator) — 16 features
@@ -1704,7 +1712,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `mutator-walljump.fx.anim_and_oldvel` | Jump animation action + post-impulse oldvelocity stash | OK | OK | - | MISS | - | live | high |
 | `mutator-walljump.menu.describe` | MENUQC mutator description text (Mutators dialog) | - | - | - | MISS | - | - | medium |
 
-### `mutator-waypoints` (mutator) — 17 features
+### `mutator-waypoints` (mutator) — 18 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -1725,6 +1733,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `waypoints.keyhunt.key_markers` | Key Hunt key/carrier waypoint sprites (dropped + carrier state machine) | OK | OK | OK | OK | - | live | high |
 | `waypoints.misc.lms_seeker_powerup` | Misc live producers: LMS leader, Seeker tag, powerup-drop countdown | OK | OK | OK | OK | - | live | high |
 | `waypoints.weapon.whereis` | 'Where is weapon' spawn markers (g_showweaponspawns / Weapon_whereis) | OK | ~ | ~ | OK | - | live | high |
+| `waypoints.monster.healthbar` | Monster floating WP_Monster healthbar marker (g_monsters_healthbars) | OK | OK | OK | ~ | - | live | high |
 
 ### `mutator-weaponarena_random` (mutator) — 6 features
 
@@ -1823,12 +1832,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `physics-player.air.cpm_aircontrol` | CPM air control (CPM_PM_Aircontrol: curve momentum toward wishdir) | OK | OK | OK | - | - | live | high |
 | `physics-player.air.warsowbunny` | Warsow-bunny air accel (PM_AirAccelerate) | OK | OK | OK | - | - | live | high |
 | `physics-player.jump.playerjump` | PlayerJump (guards, jumpspeedcap, landing friction, jump velocity) | OK | OK | OK | - | OK | live | high |
-| `physics-player.water.swim` | Swimming (water friction/accel, hold-jump rise, dive, frozen-resurface) | ~ | OK | OK | - | - | ? | medium |
-| `physics-player.ladder` | Ladder climb (gravity-free, func_water override) | ~ | OK | OK | - | - | ? | medium |
+| `physics-player.water.swim` | Swimming (water friction/accel, hold-jump rise, dive, frozen-resurface) | OK | OK | OK | - | - | ? | medium |
+| `physics-player.ladder` | Ladder climb (gravity-free, func_water override) | OK | OK | OK | - | - | ? | medium |
 | `physics-player.jetpack` | Jetpack thrust (PM_jetpack closed-form, fuel drain, pauseregen) | OK | OK | OK | - | - | ? | medium |
-| `physics-player.crouch` | Crouch hull resize + view offset (PM_ClientMovement_UpdateStatus) | ~ | OK | OK | OK | - | live | high |
+| `physics-player.crouch` | Crouch hull resize + view offset (PM_ClientMovement_UpdateStatus) | OK | OK | OK | OK | - | live | high |
 | `physics-player.integrator.walkmove_flymove` | Slide-and-step collision integrator (SV_WalkMove / SV_FlyMove + stair step/down) *(intended)* | OK | OK | OK | - | - | live | high |
-| `physics-player.movement_sounds` | Footsteps + landing sounds (PM_Footsteps / PM_check_hitground) *(intended)* | OK | OK | ~ | - | OK | live | high |
+| `physics-player.movement_sounds` | Footsteps + landing sounds (PM_Footsteps / PM_check_hitground) *(intended)* | OK | OK | OK | - | OK | live | high |
 | `physics-player.spectator_control` | Spectator free-flight speed ladder (sys_phys_spectator_control) *(intended)* | OK | OK | OK | - | - | live | high |
 | `physics-player.specialcommand` | PM_check_specialcommand (xwxw... button cheat-code -> give-all) | OK | OK | OK | - | - | live | high |
 | `physics-player.punch_decay` | View-punch decay (PM_check_punch: punchangle/punchvector bleed) | OK | OK | OK | - | - | live | high |
@@ -1875,7 +1884,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-anticheat.report.display_verdict` | anticheat_display N/Y/- verdict formatting + ANTICHEATS table | OK | OK | - | OK | - | live | high |
 | `sv-anticheat.spectate.evade_angle_copy` | anticheat_spectatecopy (spectator body follows spectatee evade angle) | OK | OK | - | OK | - | live | high |
 
-### `sv-antilag` (server) — 13 features
+### `sv-antilag` (server) — 14 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -1892,6 +1901,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-antilag.clear.on_spawn` | antilag_clear on (re)spawn / teleport / vehicle enter-exit | OK | OK | OK | - | - | live | high |
 | `sv-antilag.arc_beam` | Arc beam lag-compensated trace + antilag_takebackavgvelocity | OK | OK | OK | - | - | live | high |
 | `sv-antilag.melee.secondary` | Shotgun melee secondary trace is antilagged | OK | OK | OK | - | - | live | high |
+| `sv-antilag.turret.imobeam` | Turret ImoBeam (phaser) trace uses WarpZone_tracebox_antilag | OK | OK | - | - | - | live | medium |
 
 ### `sv-campaign` (server) — 14 features
 
@@ -1947,13 +1957,13 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-cheats.cmd.killtarget` | cmd killtarget — remove a named target (SUB_UseTargets killtarget) | OK | OK | OK | - | - | live | high |
 | `sv-cheats.impulse.give_all` | Cheat impulse GIVE_ALL (99) — give all | OK | OK | OK | - | - | live | high |
 | `sv-cheats.impulse.clone` | Cheat impulses CLONE_MOVING (140) / CLONE_STANDING (142) — CopyBody clones | MISS | MISS | MISS | MISS | - | - | high |
-| `sv-cheats.impulse.speedrun` | Cheat impulses SPEEDRUN_INIT (30) / SPEEDRUN (141) — personal waypoint snapshot + restore | MISS | MISS | MISS | - | - | - | high |
+| `sv-cheats.impulse.speedrun` | Cheat impulses SPEEDRUN_INIT (30) / SPEEDRUN (141) — personal waypoint snapshot + restore | ~ | OK | OK | - | - | live | high |
 | `sv-cheats.impulse.teleport` | Cheat impulse TELEPORT (143) — emergency teleport to autoscreenshot or random location | ~ | ~ | - | - | - | live | high |
 | `sv-cheats.impulse.r00t` | Cheat impulse R00T (148) — nuke a random enemy | OK | OK | - | OK | OK | live | high |
 | `sv-cheats.cmd.teleporttotarget` | cmd teleporttotarget — teleport player to a named teleport target | OK | - | - | - | - | live | high |
 | `sv-cheats.cmd.particles_make` | cmd pointparticles / trailparticles / make / penalty — debug/effect spawners | ~ | OK | - | OK | - | live | high |
 | `sv-cheats.frame.drag` | CheatFrame + Drag — per-frame object dragging + dragbox/dragpoint map editor | MISS | MISS | MISS | MISS | - | - | high |
-| `sv-cheats.mapent.info_autoscreenshot` | info_autoscreenshot map entity (observe/screenshot point, teleport target) | MISS | OK | - | - | - | - | high |
+| `sv-cheats.mapent.info_autoscreenshot` | info_autoscreenshot map entity (observe/screenshot point, teleport target) | ~ | OK | - | - | - | live | high |
 | `sv-cheats.campaign.start_block` | Campaign behavior when sv_cheats is enabled (load-time bailout) | OK | OK | OK | - | - | live | high |
 
 ### `sv-client-lifecycle` (server) — 22 features
@@ -2051,7 +2061,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-impulse.use.usekey` | use (impulse 21) / +use key -> PlayerUseKey | OK | OK | OK | - | - | live | high |
 | `sv-impulse.waypoints.sprites` | Waypoint-sprite impulses (personal/here/danger/helpme/clear, 30-39, 47-48) | OK | OK | OK | OK | - | live | high |
 | `sv-impulse.cheat.impulses` | Cheat impulses (give-all 99, teleport 143, r00t 148) | OK | OK | - | - | - | live | high |
-| `sv-impulse.cheat.command_impulse` | CheatImpulse 140-142 + SPEEDRUN_INIT 30 (clone-moving / speedrun / clone-standing / personal-checkpoint) | MISS | MISS | - | - | - | - | high |
+| `sv-impulse.cheat.command_impulse` | CheatImpulse 140-142 + SPEEDRUN_INIT 30 (clone-moving / speedrun / clone-standing / personal-checkpoint) | ~ | OK | OK | - | - | ~ | high |
 
 ### `sv-intermission` (server) — 15 features
 
@@ -2079,7 +2089,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `sv-ipban.mask.derive` | Client IP/identity mask derivation (IPv4 /8../32, IPv6 /32../64, crypto idfp) | OK | OK | - | - | - | live | high |
 | `sv-ipban.check.is_banned` | Ban check: 4 IP masks + crypto-id, idmode + crypto-always-wins | OK | OK | - | - | - | live | high |
-| `sv-ipban.enforce.on_connect` | Enforce ban on connect: notify (g_ban_telluser) + drop | ~ | OK | - | - | - | live | high |
+| `sv-ipban.enforce.on_connect` | Enforce ban on connect: notify (g_ban_telluser) + drop | OK | OK | - | - | - | live | high |
 | `sv-ipban.insert` | Ban_Insert: prolong-not-shorten, free/expired slot, evict-soonest, refuse-shorter | ~ | OK | - | - | - | live | high |
 | `sv-ipban.kickban` | Ban_KickBanClient: masksize pick + ban IP and crypto id, fallback plain kick | OK | OK | - | - | - | live | high |
 | `sv-ipban.enforce.roster` | Ban_Enforce: drop every connected client matching a slot (or all) | OK | - | - | ~ | - | live | high |
@@ -2129,7 +2139,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `sv-spawnpoints.fx.spawnpoint_idle_glow` | Idle spawn-point particle glow (Spawn_Draw) *(intended)* | OK | OK | OK | OK | - | live | high |
 | `sv-spawnpoints.mutator.spawn_near_teammate` | spawn_near_teammate: bias/relocate spawn near a teammate | ~ | OK | OK | - | - | live | high |
 | `sv-spawnpoints.mutator.spawn_unique` | spawn_unique: demote the player's last spawnpoint | OK | OK | - | - | - | live | high |
-| `sv-spawnpoints.net.spawnpoint_link_send` | SpawnPoint_Send / link_spawnpoint / spawnpoint_think networking *(intended)* | ~ | MISS | MISS | ~ | - | ~ | medium |
+| `sv-spawnpoints.net.spawnpoint_link_send` | SpawnPoint_Send / link_spawnpoint / spawnpoint_think networking *(intended)* | ~ | MISS | MISS | ~ | - | live | medium |
 
 ### `sv-teamplay` (server) — 17 features
 
@@ -2248,7 +2258,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-framework.lifecycle.round_reset` | Round-restart reset hook (turret_reset -> turret_respawn via .reset) | OK | OK | OK | - | - | live | high |
 | `turret-framework.net.sync` | Turret networking (turret_send / TNSF_* / ENT_CLIENT_TURRET) | MISS | MISS | MISS | MISS | - | - | high |
 | `turret-framework.client.presentation` | Client presentation (cl_turrets.qc: construct/draw/draw2d/die/gibs/changeteam) | ~ | ~ | ~ | ~ | ~ | ~ | high |
-| `turret-framework.mapents.path_trigger` | Waypoint path + receive-target entities (turret_checkpoint / targettrigger / manager) | ~ | ~ | ~ | - | - | ~ | high |
+| `turret-framework.mapents.path_trigger` | Waypoint path + receive-target entities (turret_checkpoint / targettrigger / manager) | OK | OK | OK | - | - | live | high |
 
 ### `turret-fusionreactor` (turret) — 9 features
 
@@ -2284,17 +2294,17 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `turret-hk.identity.def` | Identity, hitbox, models, spawnflags | OK | OK | - | ~ | - | live | high |
-| `turret-hk.setup.tr_setup` | tr_setup: aim/select/firecheck/shoot flags, ammo flags | OK | ~ | - | - | - | live | medium |
+| `turret-hk.setup.tr_setup` | tr_setup: aim/select/firecheck/shoot flags, ammo flags | OK | OK | - | - | - | live | high |
 | `turret-hk.spawn.liveness` | Map spawnfunc wiring + per-frame think (turret_hk placed on map) | OK | OK | OK | - | - | live | high |
 | `turret-hk.combat.brain` | Acquire/aim/track/fire combat brain (shared turret framework) | OK | OK | OK | - | - | live | high |
 | `turret-hk.weapon.fire` | wr_think (turret branch): launch the guided rocket | OK | OK | OK | OK | OK | live | high |
 | `turret-hk.weapon.guidance` | turret_hk_missile_think: obstacle-avoiding guided-rocket flight model | OK | OK | OK | - | - | live | high |
-| `turret-hk.target.recieve` | External target reception (turret_hk_addtarget / TUR_FLAG_RECIEVETARGETS) | MISS | MISS | - | - | - | - | high |
+| `turret-hk.target.recieve` | External target reception (turret_hk_addtarget / TUR_FLAG_RECIEVETARGETS) | OK | OK | OK | - | - | live | high |
 | `turret-hk.weapon.player` | WEP_HK player special-attack weapon (hidden, impulse 9) | OK | OK | OK | OK | OK | DEAD | high |
 | `turret-hk.damage.lifecycle` | Damage gating, retaliation, death + respawn | OK | OK | OK | - | ? | live | high |
 | `turret-hk.anim.head` | tr_think head-frame animation (launcher cycle 0..5) | OK | OK | OK | ~ | - | live | high |
 | `turret-hk.head.track` | Head rotation: track type + aim clamps | OK | OK | OK | - | - | live | high |
-| `turret-hk.menu.describe` | MENUQC describe: turret info page text | MISS | - | - | MISS | - | - | high |
+| `turret-hk.menu.describe` | MENUQC describe: turret info page text | MISS | - | - | ~ | - | DEAD | high |
 
 ### `turret-machinegun` (turret) — 14 features
 
@@ -2339,7 +2349,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-phaser.fire.beam_spawn` | wr_think: spawn the sustained PhaserTurret_beam | OK | OK | OK | - | - | live | high |
 | `turret-phaser.fire.beam_think_trace` | beam_think: per-frame trace, damage + slow, refire reset on end | OK | OK | OK | - | - | live | high |
 | `turret-phaser.fire.imobeam_multihit` | FireImoBeam penetrating multi-target hit + slow | OK | OK | OK | - | - | live | high |
-| `turret-phaser.fire.bot_dodge` | Beam registers as a dodgeable threat (bot_dodge / g_bot_dodge) | MISS | MISS | - | - | - | - | high |
+| `turret-phaser.fire.bot_dodge` | Beam registers as a dodgeable threat (bot_dodge / g_bot_dodge) | OK | OK | - | - | - | live | high |
 | `turret-phaser.fire.target_select_bias` | Per-unit target-selection scoring biases (range/angle/same/missile/player) | OK | OK | - | - | - | live | high |
 | `turret-phaser.fire.extra_slow_status` | Port-only layered slow/disability status effect *(intended)* | OK | - | OK | - | - | live | medium |
 | `turret-phaser.audio.beam_sound` | Phaser beam sound (start + 2s re-trigger + silence-on-end) and impact cue | OK | OK | OK | - | OK | live | high |
@@ -2409,7 +2419,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-walker.weapon.rocket` | Rocket volley: 4 homing rockets + reload (walker_fire_rocket / walker_rocket_think) | OK | OK | OK | OK | OK | live | high |
 | `turret-walker.weapon.melee` | Melee bite (walker_melee_do_dmg): radius hit in front | OK | OK | OK | - | - | live | high |
 | `turret-walker.head.track` | Head rotation: track type + aim clamps | OK | OK | OK | - | - | live | high |
-| `turret-walker.client.draw` | CSQC walker_draw + locomotion anim frames | ~ | ~ | ~ | ~ | - | ~ | high |
+| `turret-walker.client.draw` | CSQC walker_draw + locomotion anim frames | ~ | ~ | ~ | ~ | - | live | high |
 
 ### `vehicle-bumblebee` (vehicle) — 15 features
 
@@ -2534,11 +2544,11 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `overkill-weapons.shared.secondary_blaster_jump` | Shared secondary — Overkill blaster jump (own jump_interval timer) | ~ | OK | OK | MISS | OK | live | high |
 | `overkill-weapons.shared.forced_reload` | Forced reload when clip below a primary shot | OK | OK | OK | - | OK | live | high |
 | `overkill-weapons.shared.checkammo` | Per-weapon ammo checks (wr_checkammo1/2) dispatched to live gate | OK | OK | - | - | - | live | high |
-| `overkill-weapons.okhmg.nadesupport` | OK HMG nade self-damage scaled to 10% (okhmg_nadesupport) | MISS | MISS | - | - | - | - | high |
+| `overkill-weapons.okhmg.nadesupport` | OK HMG nade self-damage scaled to 10% (okhmg_nadesupport) | OK | OK | - | - | - | live | high |
 | `overkill-weapons.identity.attributes` | Weapon identity (ammo type, impulse, flags, color, models, netname) | OK | OK | - | OK | - | live | high |
 | `overkill-weapons.mode.enablement` | Overkill mode enablement (g_overkill → loadout + mutator + weapons live) | OK | OK | - | - | - | ~ | high |
 | `overkill-weapons.presentation.fx` | Fire/impact presentation — muzzle flash, casings, recoil, impact effects | - | - | - | OK | OK | live | high |
-| `overkill-weapons.shared.bot_ai` | Bot AI fire-button selection (wr_aim) for the five OK weapons | MISS | MISS | - | - | - | - | high |
+| `overkill-weapons.shared.bot_ai` | Bot AI fire-button selection (wr_aim) for the five OK weapons | OK | OK | - | - | - | live | high |
 | `overkill-weapons.oknex.zoom` | OK Nex sniper zoom (wr_zoom / wr_zoomdir) | MISS | - | - | MISS | - | - | medium |
 | `overkill-weapons.mode.weapons_activation` | Standalone ok_weapons activation via g_overkill_weapons (independent of g_overkill) | MISS | MISS | - | - | - | - | high |
 
@@ -2579,7 +2589,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-blaster.bot.aim_dodge` | Bot weapon aim (wr_aim projectile lead) + bot_dodge of incoming bolts | OK | OK | - | - | - | live | high |
 | `weapon-blaster.notification.kill_suicide` | Blaster kill/suicide death notifications (wr_killmessage / wr_suicidemessage) | OK | OK | - | OK | - | live | medium |
 
-### `weapon-crylink` (weapon) — 12 features
+### `weapon-crylink` (weapon) — 13 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -2595,6 +2605,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `crylink.fx.trail_muzzle_impact` | Trail (purple plasma), muzzle flash, impact particle, projectile render *(intended)* | OK | OK | OK | OK | - | live | high |
 | `crylink.notifications.kill_suicide_message` | Kill/suicide obituary messages (wr_killmessage / wr_suicidemessage) | OK | OK | - | OK | - | live | high |
 | `crylink.bot.wr_aim` | Bot aim (wr_aim): bias toward primary/secondary, lead the target | OK | OK | - | - | - | live | high |
+| `crylink.menu.describe` | MENUQC weapon-guide prose (describe) | - | - | - | MISS | - | - | high |
 
 ### `weapon-devastator` (weapon) — 13 features
 
@@ -2630,9 +2641,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `electro.ammo_reload` | Ammo checks + reload (cells, combo_safeammocheck) | OK | OK | - | - | - | live | high |
 | `electro.deathmessages` | Kill / suicide obituary lines (bolt/orb/combo variants) | OK | OK | - | OK | - | live | high |
 | `electro.electrobitch_announce` | ELECTROBITCH airshot announcement (direct bolt kill on flying enemy) | OK | OK | - | OK | OK | live | high |
-| `electro.bot_aim` | Bot aim heuristic (primary lead-aim, occasional secondary mortar lob) | OK | ~ | - | - | - | live | high |
+| `electro.bot_aim` | Bot aim heuristic (primary lead-aim, occasional secondary mortar lob) | OK | OK | - | - | - | live | high |
 | `electro.orb.csqc_netlink_draw` | Orb CSQC net-link + scale-pulse / spin draw | OK | ~ | - | ~ | OK | live | medium |
-| `electro.describe_guide` | Weapon-guide describe text (MENUQC) | MISS | - | - | MISS | - | - | medium |
+| `electro.describe_guide` | Weapon-guide describe text (MENUQC) | ~ | - | - | ~ | - | live | medium |
 | `electro.secondary.sticky_orb` | Sticky orb (stick to surface / follow corpse, MOVETYPE_FOLLOW) *(intended)* | MISS | MISS | - | MISS | MISS | - | high |
 | `electro.combo.explode_over_time` | Combo explode-over-time (combo_duration sustained damage field) *(intended)* | MISS | MISS | MISS | MISS | - | - | high |
 | `electro.secondary.orb_limit` | Secondary orb count limit (oldest-orb rubble cap) *(intended)* | MISS | MISS | - | - | - | - | high |
@@ -2768,7 +2779,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-porto.fire.refire_gate` | Fire gating: single-portal latch + porto_forbidden + refire | OK | OK | OK | - | - | live | high |
 | `weapon-porto.fire.aim_hold` | Secondary aim-hold (porto_v_angle) in non-secondary mode | OK | OK | OK | - | - | DEAD | high |
 | `weapon-porto.touch.placement_tree` | On-touch portal placement decision tree (in/out/combined red->blue) | ~ | OK | OK | - | OK | live | high |
-| `weapon-porto.touch.portal_spawn` | Realise the placed portal (Portal_SpawnIn/OutPortalAtTrace) as a warpzone *(intended)* | ~ | ? | ? | ? | - | live | medium |
+| `weapon-porto.touch.portal_spawn` | Realise the placed portal (Portal_SpawnIn/OutPortalAtTrace) as a warpzone *(intended)* | OK | ? | ? | ? | - | live | medium |
 | `weapon-porto.lifecycle.lifetime_self_destruct` | Lifetime self-destruct + success/soft-fail cleanup (Think/Fail/Success) | OK | OK | OK | - | OK | live | high |
 | `weapon-porto.lifecycle.death_reset_cleanup` | Death / respawn cleanup (W_Porto_Remove, wr_resetplayer) | OK | OK | OK | - | - | live | high |
 | `weapon-porto.presentation.trajectory_preview` | Portal-aim trajectory preview (Porto_Draw reflecting red/blue polyline) | MISS | MISS | MISS | MISS | - | - | high |
@@ -2849,7 +2860,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-tuba.identity.metadata` | Weapon identity, flags, models, ammo, bot aim, registration/liveness | OK | OK | - | ~ | - | live | high |
 | `weapon-tuba.describe.guide` | Weapon-guide describe text (MENUQC) | - | - | - | OK | - | live | high |
 
-### `weapon-vaporizer` (weapon) — 13 features
+### `weapon-vaporizer` (weapon) — 14 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -2866,8 +2877,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-vaporizer.instagib.integration` | InstaGib integration (start loadout, armor-as-lives, gib, blaster nullify, bleed-out) | OK | OK | OK | OK | OK | live | high |
 | `weapon-vaporizer.messages.kill_suicide` | Kill / suicide death messages (WEAPON_VAPORIZER_MURDER / WEAPON_THINKING_WITH_PORTALS) | OK | OK | - | - | - | live | high |
 | `weapon-vaporizer.client.reticle` | Client reticle / zoom (wr_init precache + wr_zoom button_zoom) | OK | OK | - | OK | - | live | high |
+| `weapon-vaporizer.menu.describe` | MENUQC weapon-guide prose (describe) | - | - | - | MISS | - | - | high |
 
-### `weapon-vortex` (weapon) — 16 features
+### `weapon-vortex` (weapon) — 17 features
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
@@ -2887,3 +2899,4 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-vortex.achievements` | Yoda (mid-air rail kill) + Impressive (consecutive long-range hit) announcements | OK | - | OK | - | OK | live | high |
 | `weapon-vortex.notify.death_messages` | Kill / suicide death messages (WEAPON_VORTEX_MURDER / WEAPON_THINKING_WITH_PORTALS) | OK | OK | - | OK | - | live | high |
 | `weapon-vortex.bot.wr_aim` | Bot aim hook (bot_aim straight-shot at 1000000 speed) | OK | OK | OK | - | - | live | high |
+| `weapon-vortex.charge.rot_decay` | Per-frame charge decay/rotation toward charge_limit (rot_rate / unequipped rot) | MISS | MISS | MISS | - | - | - | high |

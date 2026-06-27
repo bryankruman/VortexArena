@@ -9,7 +9,7 @@ summary:
     - "IS_INDEPENDENT_PLAYER owner-gate is ported in the midair path but Entity.IsIndependentPlayer is hardwired false (DamageEntityState.cs:158, no independent-player mode ported), so it is dead-OFF-equivalent; the non-midair W_Electro_TriggerCombo still omits the gate entirely (same harmless effect)."
     - "Combo explode-over-time (combo_duration, default 0) and sticky orbs (stick default 0, stick_lifetime -1) are intentionally omitted; harmless at xonotic defaults (tracked as dedicated rows)."
     - "FIXED 2026-06-27: Orb damagedbycontents (default 1, ON) is now ported+live (AttackOrb sets orb.DamagedByContents; GameWorld.CreatureFrameAll sweep -> PlayerFrameLogic.ProjectileContentsDamage detonates an orb resting in lava/slime as a SECONDARY blast). No more on-by-default unported electro feature."
-    - "FIXED 2026-06-27: bot wr_aim (electromooth) mode pick + 1000u range gate now ported+live (Electro.BotWantsSecondary, wired in BotBrain.cs:406); only the secondary lead VALUES remain off (the bot leads both modes at primary_speed 2500, not secondary_speed/speed_up — Electro does not override BotAimShotSpeed)."
+    - "FIXED 2026-06-27: bot wr_aim (electromooth) is now FULLY faithful — the mode pick + 1000u range gate (Electro.BotWantsSecondary, wired BotBrain.cs:423) AND the secondary lead speed: Electro overrides BotAimShotSpeed(float, ref ctx) (Electro.cs:267-268) returning secondary_speed 1000 in orb mode, which BotBrain.CurrentShotSpeed (BotBrain.cs:831) consumes. The baseline's lone bot values gap (lead used primary_speed) is now closed."
     - "Registry coverage gaps still tracked as rows: the Electro_Orb CSQC net-link/scale-pulse draw, the MENUQC weapon-guide describe text (now partial), the sticky-orb mechanic, combo explode-over-time, and the secondary orb_limit rubble cap (all off-by-default)."
 features:
   - id: electro.primary.fire_gate
@@ -35,7 +35,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Electro.WrThink (Electro.cs:142-150) mirrors time>=electro_secondarytime+refire2*rate && PrepareAttack(refire); WeaponFireDriver.Frame calls WrThink(Primary) every tick. Unchanged by Wave-2.", result: pass }
+      - { kind: code, ref: "Electro.WrThink (Electro.cs:172-180) mirrors time>=electro_secondarytime+refire2*rate && PrepareAttack(refire); WeaponFireDriver.Frame calls WrThink(Primary) every tick. Unchanged.", result: pass }
     confidence: high
     notes: "electro_secondarytime on EntityWeaponState; rate factor via WeaponRateFactor(). No change in this wave; remains faithful+live."
 
@@ -69,7 +69,7 @@ features:
     gaps:
       - "Minor: the trail/glow are the port's procedural ProjectileCatalog visual (blue plasma TR_NEXUIZPLASMA + saturated blue glow light + elaser model via the host ModelFactory), not a 1:1 CSQC particle replay; the trail spacing rides DP's faithful per-segment sim. Visual identity matches; exact particle counts are presentation-tuned."
     verification:
-      - { kind: code, ref: "AttackBolt (Electro.cs:200-232): MoveType.Fly + ProjectileVelocity==W_SetupProjVelocity_PRI; touch=ExplodeBolt(self,other), think=BoltThink, plays electro_fire + ELECTRO_MUZZLEFLASH. BoltThink default branch (Electro.cs:266) nextthink=deathTime (no per-tick), matching QC. ServerNet.Classify->NetEntityKind.Projectile (FL_PROJECTILE marker + owner + Fly); ProjectileCatalog.Classify('electro_bolt')->ElectroBeam; ClientWorld.IsProjectile matches 'electro'->Projectiles.OnSpawn renders model+blue trail+light.", result: pass }
+      - { kind: code, ref: "AttackBolt (Electro.cs:271-307): MoveType.Fly + ProjectileVelocity==W_SetupProjVelocity_PRI; touch=ExplodeBolt(self,other), think=BoltThink, plays electro_fire + ELECTRO_MUZZLEFLASH. BoltThink default branch (Electro.cs:336) nextthink=deathTime (no per-tick), matching QC. ServerNet.Classify->NetEntityKind.Projectile (FL_PROJECTILE marker + owner + Fly); ProjectileCatalog.Classify('electro_bolt')->ElectroBeam (catalog row at ProjectileCatalog.cs:134, Classify at :263); ClientWorld.IsProjectile matches 'electro'->Projectiles.OnSpawn renders model+blue trail+light.", result: pass }
     confidence: high
     notes: "MAJOR CORRECTION vs prior audit: ProjectileCatalog/ProjectileRenderer DO exist (game/client/, on main since 2026-06-12 commit 0ab5fba) — the earlier 'no client/ProjectileCatalog, in-flight invisible' claim only searched src/ and was WRONG. The bolt is networked as a projectile and rendered with the elaser-style glow body + TR_NEXUIZPLASMA blue plasma trail + dynamic light. Bolt has no fly loop in Base either. Timing gap (per-0.05s think) also closed: idle branch is nextthink=ltime."
 
@@ -99,7 +99,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ExplodeBolt (Electro.cs:275-302) calls WeaponSplash.RadiusDamage with primary balance + directHit (LOS-skip), emits ELECTRO_IMPACT particle, and now WeaponSplash.ImpactSound(self,'weapons/electro_impact.wav') — matching QC wr_impacteffect primary-no-bounce branch (EFFECT_ELECTRO_IMPACT + SND_ELECTRO_IMPACT). ImpactSound routes Api.Sound.Play on CH_SHOTS (live, networked).", result: pass }
+      - { kind: code, ref: "ExplodeBolt (Electro.cs:389-416) calls WeaponSplash.RadiusDamage (WeaponSplash.cs:55) with primary balance + directHit (LOS-skip), emits ELECTRO_IMPACT particle, and WeaponSplash.ImpactSound(self,'weapons/electro_impact.wav') (WeaponSplash.cs:282) — matching QC wr_impacteffect primary-no-bounce branch (EFFECT_ELECTRO_IMPACT + SND_ELECTRO_IMPACT). ImpactSound routes Api.Sound.Play on CH_SHOTS (live, networked).", result: pass }
     confidence: high
     notes: "FIXED: the bolt blast is no longer silent — ImpactSound (electro_impact) is now called. Particle blast (ELECTRO_IMPACT, EffectsList.cs) faithful+live. directHit threaded from the touch handler."
 
@@ -132,9 +132,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "IS_INDEPENDENT_PLAYER owner-gating in W_Electro_TriggerCombo (Electro.cs:480-511) is not ported here (it IS ported in the midair path); dead-OFF-equivalent since Entity.IsIndependentPlayer is hardwired false and default modes have no independent players."
+      - "IS_INDEPENDENT_PLAYER owner-gating in W_Electro_TriggerCombo (port TriggerCombo, Electro.cs:567-598) is not ported here (it IS ported in the midair path); dead-OFF-equivalent since Entity.IsIndependentPlayer is hardwired false and default modes have no independent players."
     verification:
-      - { kind: code, ref: "Configure (Electro.cs:131-132) now sets ComboSpeed=Bal(combo_speed,2000) and ComboComboRadiusThruwall=Bal(...,200). TriggerCombo (Electro.cs:431-462) snapshots electro_orb in radius, applies the thruwall LOS abort beyond ComboComboRadiusThruwall (Trace, frac<1 -> continue), renames to electro_orb_chain, schedules ExplodeCombo with (origin-org).Length()/ComboSpeed delay, recursing within Combo.ComboRadius. ExplodeCombo (465-477) re-triggers then RadiusDamage(combo, deathTag=DeathCombo) + ELECTRO_COMBO + ImpactSound(electro_impact_combo). Driven live from ExplodeBolt->TriggerCombo.", result: pass }
+      - { kind: code, ref: "Configure (Electro.cs:161-162) sets ComboSpeed=Bal(combo_speed,2000) and ComboComboRadiusThruwall=Bal(...,200). TriggerCombo (Electro.cs:567-598) snapshots electro_orb in radius, applies the thruwall LOS abort beyond ComboComboRadiusThruwall (Trace, frac<1 -> continue), renames to electro_orb_chain, schedules ExplodeCombo with (origin-org).Length()/ComboSpeed delay, recursing within Combo.ComboRadius. ExplodeCombo (601-613) re-triggers then RadiusDamage(combo, deathTag=DeathCombo) + ELECTRO_COMBO + ImpactSound(electro_impact_combo). Driven live from ExplodeBolt->TriggerCombo. Base electro.qc:73-193 unchanged.", result: pass }
     confidence: high
     notes: "FIXED (3 gaps): combo_speed seeded 2000 (was permanently 1000); combo_comboradius_thruwall LOS test added matching QC structure; combo blast now plays SND_ELECTRO_IMPACT_COMBO. Recursive chain faithful+live. Only the independent-player gate (dead-OFF-equivalent at defaults) remains."
 
@@ -163,10 +163,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD on the live path: midaircombo_radius defaults 0 (bal-wep-xonotic.cfg), so the BoltThink midair branch (Electro.cs:258-269 -> MidairTriggerCombo) never runs under stock xonotic balance. The branch IS reachable (and now faithful) under samual/xdf balance where the cvar is 100."
-      - "IS_INDEPENDENT_PLAYER orb-owner skip is ported (Electro.cs:291) but Entity.IsIndependentPlayer is hardwired false, so the guard is dead-OFF-equivalent (no independent-player mode is ported). Harmless: default modes have no independent players."
+      - "DEAD on the live path: midaircombo_radius defaults 0 (bal-wep-xonotic.cfg:232), so the BoltThink midair branch (Electro.cs:323-334 -> MidairTriggerCombo) never runs under stock xonotic balance. The branch IS reachable (and now faithful) under samual/xdf balance where the cvar is 100."
+      - "IS_INDEPENDENT_PLAYER orb-owner skip is ported (Electro.cs:356) but Entity.IsIndependentPlayer is hardwired false, so the guard is dead-OFF-equivalent (no independent-player mode is ported). Harmless: default modes have no independent players."
     verification:
-      - { kind: code, ref: "BoltThink (Electro.cs:258) guards on Primary.MidairComboRadius>0 (Bal default 0, verified bal-wep-xonotic.cfg). When on, it calls MidairTriggerCombo (Electro.cs:280-321): FindInRadius(electro_orb) -> per-orb own/teammate/enemy gate (own==e.Owner?MidairComboOwn : Teams.SameTeam?MidairComboTeammate : MidairComboEnemy), renames to electro_orb_chain, schedules ExplodeCombo with first-orb delay dist/MidairComboSpeed (0=instant->immediate), the recursive ExplodeCombo->TriggerCombo ripple then uses combo_speed. If found && MidairComboExplode -> ExplodeBolt, else reschedule min(time+0.1, deathTime). Mirrors Base electro.qc:261-309 line-for-line. Wave-5 (commit 023ba70) added this; FAILS only on liveness (radius 0 at xonotic default).", result: fail }
+      - { kind: code, ref: "BoltThink (Electro.cs:311-337) guards on Primary.MidairComboRadius>0 (Bal default 0, verified bal-wep-xonotic.cfg:232). When on, it calls MidairTriggerCombo (Electro.cs:345-386): FindInRadius(electro_orb) -> per-orb own/teammate/enemy gate (own==e.Owner?MidairComboOwn : Teams.SameTeam?MidairComboTeammate : MidairComboEnemy), renames to electro_orb_chain, schedules ExplodeCombo with first-orb delay dist/MidairComboSpeed (0=instant->immediate), the recursive ExplodeCombo->TriggerCombo ripple then uses combo_speed. If found && MidairComboExplode -> ExplodeBolt, else reschedule min(time+0.1, deathTime). Mirrors Base electro.qc:252-313 line-for-line. FAILS only on liveness (radius 0 at xonotic default).", result: fail }
     confidence: high
     notes: "FIX (logic+values partial->faithful) since the 2026-06-22 baseline: Wave-5 (commit 023ba70) replaced the old TriggerCombo-reuse with a dedicated MidairTriggerCombo (Electro.cs:280-321) that ports the full Base W_Electro_Bolt_Think midair loop — per-orb own/teammate/enemy team-gating (electro.qc:276-281) AND the separate midaircombo_speed first-orb delay with the rest on combo_speed (electro.qc:290-298). All midaircombo cvars now seeded in Configure (Electro.cs:108-114) and verified against bal-wep-*.cfg. STILL OPEN / liveness DEAD: midaircombo_radius is 0 in xonotic balance so the branch is unreachable in stock play (faithful-but-dead; it is live+faithful under samual/xdf where radius=100). This is a deliberate faithful port of an off-by-default feature, not a divergence."
 
@@ -195,7 +195,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "WrThink(Secondary) (Electro.cs:151-165) fires first orb, sets ElectroCount=count, ElectroSecondaryTime=time, ScheduleCheckAttack(animtime); CheckAttack (170-185) streams while ElectroCount>1 && ButtonAttack2 held, decrementing. Unchanged by Wave-2.", result: pass }
+      - { kind: code, ref: "WrThink(Secondary) (Electro.cs:181-195) fires first orb, sets ElectroCount=count, ElectroSecondaryTime=time, ScheduleCheckAttack(animtime); CheckAttack (200-215) streams while ElectroCount>1 && ButtonAttack2 held, decrementing. Matches QC wr_think fire&2 + W_Electro_CheckAttack (electro.qc:582-595,654-664).", result: pass }
     confidence: high
     notes: "ElectroCount/ElectroSecondaryTime on EntityWeaponState; held-button state propagated by WeaponFireDriver. No change this wave; faithful+live."
 
@@ -230,7 +230,7 @@ features:
     gaps:
       - "Minor: in-flight visual is the port's procedural ProjectileCatalog body (glow sprite + ebomb model via host ModelFactory) with the TR_NEXUIZPLASMA blue plasma trail + dynamic light; the CSQC electro_orb_draw scale-pulse is not reproduced (cosmetic)."
     verification:
-      - { kind: code, ref: "AttackOrb (Electro.cs:305-367): MoveType.Bounce + Gravity 1 + BounceFactor 0.3 + BounceStop 0.05 + Health 5 + ProjectileVelocity==W_SetupProjVelocity_UP_SEC + electro_fire2 + ELECTRO_MUZZLEFLASH. MoveTypePhysics Bounce case (MoveTypePhysics.cs:169-191) now uses bf=ent.BounceFactor?0.3:0.5 and bouncestop=ent.BounceStop?0.05:engine, so the orb's 0.3/0.05 are LIVE. ServerNet.Classify->Projectile; ProjectileCatalog.Classify('electro_orb')->Electro (ebomb model, electro_fly loop); ProjectileRenderer.AttachLoopSound plays the fly loop.", result: pass }
+      - { kind: code, ref: "AttackOrb (Electro.cs:419-503): MoveType.Bounce + Gravity 1 + BounceFactor 0.3 + BounceStop 0.05 + Health 5 + ProjectileVelocity==W_SetupProjVelocity_UP_SEC + electro_fire2 + ELECTRO_MUZZLEFLASH. MoveTypePhysics Bounce case reads ent.BounceFactor/BounceStop so the orb's 0.3/0.05 are LIVE. ServerNet.Classify->Projectile; ProjectileCatalog.Classify('electro_orb')->Electro (catalog row ProjectileCatalog.cs:129, ebomb model, electro_fly loop, Classify at :264); ProjectileRenderer.AttachLoopSound plays the fly loop.", result: pass }
     confidence: high
     notes: "FIXED (3 gaps): bounce VALUES now read from the entity (MoveTypePhysics.cs Bounce case reads ent.BounceFactor/BounceStop — cross-cutting engine fix, also helps Mortar); in-flight model+blue plasma trail+light now rendered (ProjectileCatalog Electro); electro_fly looping sound now attached. The earlier 'invisible orb / fabricated ProjectileCatalog' claim was WRONG (catalog is on main)."
 
@@ -262,7 +262,7 @@ features:
     gaps:
       - "Sticky-orb branch (stick, default 0) is intentionally omitted (no detonation/bounce effect at defaults)."
     verification:
-      - { kind: code, ref: "OrbTouch (Electro.cs:370-386): explode on DAMAGE_AIM/client with touchexplode; else, with the QC self-projectile guard (other.Owner==self.Owner && other.ClassName==self.ClassName -> return, no bounce-sound/stick), play electro_bounce + set bounced flag + reface. ExplodeOrb (389-405): RadiusDamage with secondary balance + deathTag carrying HITTYPE_SECONDARY (and HITTYPE_BOUNCE if bounced) + ELECTRO_BALLEXPLODE particle + ImpactSound(electro_impact). Matches QC secondary wr_impacteffect.", result: pass }
+      - { kind: code, ref: "OrbTouch (Electro.cs:506-522): explode on DAMAGE_AIM/client with touchexplode; else, with the QC self-projectile guard (other.Owner==self.Owner && other.ClassName==self.ClassName -> return, no bounce-sound/stick), play electro_bounce + set bounced flag + reface. ExplodeOrb (525-541): RadiusDamage with secondary balance + deathTag carrying HITTYPE_SECONDARY (and HITTYPE_BOUNCE if bounced) + ELECTRO_BALLEXPLODE particle + ImpactSound(electro_impact). Matches QC W_Electro_Orb_Touch (electro.qc:457-476) + secondary wr_impacteffect.", result: pass }
     confidence: high
     notes: "FIXED (2 gaps): orb detonation now plays SND_ELECTRO_IMPACT (was silent); the self-projectile bounce guard (don't bounce-sound off / stick to own projectiles) is now present; HITTYPE_BOUNCE folded onto the bounced-orb deathtype. Logic upgraded partial->faithful."
 
@@ -291,7 +291,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "AttackOrb sets ProjectileDamage (combo explode: RadiusDamage combo balance, deathTag=DeathCombo, ELECTRO_COMBO, ImpactSound electro_impact_combo) then Projectiles.MakeShootable(orb, exception:1). MakeShootable installs e.GtEventDamage=ShootDown; DamageSystem.EventDamage (DamageSystem.cs:331-335) dispatches a non-player victim's GtEventDamage. ShootDown (Projectiles.cs:82-99) runs CheckProjectileDamage (W_CheckProjectileDamage, exception 1 passes the stock g_projectiles_damage -2), subtracts hp, fires ProjectileDamage at hp<=0. So an orb CAN now be shot down into a combo on the live path.", result: pass }
+      - { kind: code, ref: "AttackOrb (Electro.cs:473-494) sets ProjectileDamage (combo explode: RadiusDamage combo balance, deathTag=DeathCombo, ELECTRO_COMBO, ImpactSound electro_impact_combo) then Projectiles.MakeShootable(orb, exception:1) (Projectiles.cs:91). MakeShootable installs e.GtEventDamage=ShootDown; DamageSystem.EventDamage (DamageSystem.cs:356-360) dispatches a non-player victim's GtEventDamage. ShootDown (Projectiles.cs:106) runs CheckProjectileDamage (W_CheckProjectileDamage, exception 1 passes the stock g_projectiles_damage -2), subtracts hp, fires ProjectileDamage at hp<=0. So an orb CAN be shot down into a combo on the live path.", result: pass }
     confidence: high
     notes: "FIXED — liveness dead->live: the orb's ProjectileDamage is now invoked via the Wave-1 GtEventDamage seam in DamageSystem.EventDamage (was only ever called by BreakablehookMutator). HP-subtract + g_projectiles_damage gate + combo exception now ported faithfully. Combo detonation sound added. Cross-cutting fix shared by every shoot-down weapon (Devastator/Mortar/Hagar/Minelayer/Arc)."
 
@@ -324,7 +324,7 @@ features:
     gaps:
       - "No Electro-specific wr_reload override (Base's is W_Reload(min(pri,sec) ammo, SND_RELOAD)); relies on the generic WeaponFireGate.WrReload. Acceptable since reload_ammo defaults 0; the reload amount min(4,2)=2 differs from the generic path only on a reload-enabled server (harmless at stock defaults)."
     verification:
-      - { kind: code, ref: "Configure seeds CombocSafeAmmoCheck=BalBool(combo_safeammocheck,true). CheckAmmoPrimary (Electro.cs:542-544): GetResource(Cells)>=Primary.Ammo OR GetWeaponLoad(state,RegistryId)>=Primary.Ammo — both terms now present, matching QC wr_checkammo1:669-671. CheckAmmoSecondary (Electro.cs:549-554): need = safeammocheck ? Secondary.Ammo+Primary.Ammo : Secondary.Ammo; GetResource(Cells)>=need OR GetWeaponLoad>=need — matches QC wr_checkammo2:677-687 incl. the clip-load OR-term. WeaponAmmo.Check routes Electro live; consumed by CheckAmmoWithAutoSwitch.", result: pass }
+      - { kind: code, ref: "Configure (Electro.cs:163) seeds CombocSafeAmmoCheck=BalBool(combo_safeammocheck,true). CheckAmmoPrimary (Electro.cs:629-631): GetResource(Cells)>=Primary.Ammo OR GetWeaponLoad(state,RegistryId)>=Primary.Ammo — both terms present, matching QC wr_checkammo1:667-671. CheckAmmoSecondary (Electro.cs:636-641): need = safeammocheck ? Secondary.Ammo+Primary.Ammo : Secondary.Ammo; GetResource(Cells)>=need OR GetWeaponLoad>=need — matches QC wr_checkammo2:674-687 incl. the clip-load OR-term. WeaponAmmo.Check routes Electro live; consumed by CheckAmmoWithAutoSwitch.", result: pass }
     confidence: high
     notes: "FIX since 2026-06-22 baseline (logic partial->faithful): the clip-load OR-term (weapon_load[m_id] >= ammo) is now present in BOTH CheckAmmoPrimary and CheckAmmoSecondary via GetWeaponLoad(...), so wr_checkammo1/2 are now line-for-line faithful (the baseline's sole logic gap is closed). combo_safeammocheck stays implemented. Only the cosmetic no-Electro-specific-wr_reload remains (no-op at stock reload_ammo 0)."
 
@@ -349,7 +349,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Electro.cs:420-422 builds DeathBolt=FromWeapon(netname), DeathOrb=Bolt|HITTYPE_SECONDARY, DeathCombo=Bolt|HITTYPE_BOUNCE as STRING deathtypes; passed as deathTag to RadiusDamage, which routes them through Damage.Combat.Damage (string pipeline) so the bits survive (NOT the int RegistryId path). DeathMessages.SelectKillMessage (DeathMessages.cs:57-58): SECONDARY->MURDER_ORBS else BOUNCE->MURDER_COMBO else MURDER_BOLT — matches electro.qc:703. ExplodeCombo passes DeathCombo (bounce->MURDER_COMBO); ExplodeOrb passes DeathOrb (secondary->MURDER_ORBS).", result: pass }
+      - { kind: code, ref: "Electro.cs:556-558 builds DeathBolt=FromWeapon(netname), DeathOrb=Bolt|HITTYPE_SECONDARY, DeathCombo=Bolt|HITTYPE_BOUNCE as STRING deathtypes; passed as deathTag to RadiusDamage, which routes them through Damage.Combat.Damage (string pipeline) so the bits survive (NOT the int RegistryId path). DeathMessages (DeathMessages.cs:58): SECONDARY->MURDER_ORBS else BOUNCE->MURDER_COMBO else MURDER_BOLT — matches electro.qc:703-716. ExplodeCombo passes DeathCombo (bounce->MURDER_COMBO); ExplodeOrb passes DeathOrb (secondary->MURDER_ORBS).", result: pass }
     confidence: high
     notes: "Confidence UPGRADED medium->high: the HITTYPE bit-propagation concern is resolved — the port now carries deathtype as a STRING tag (DeathCombo/DeathOrb) through WeaponSplash.RadiusDamage's deathTag string path, not the bit-losing int RegistryId path. Combo kills correctly read MURDER_COMBO."
 
@@ -362,8 +362,9 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:ExplodeBolt (ELECTROBITCH test)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:IsFlying"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:Announce"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:A(ACHIEVEMENT_ELECTROBITCH)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:Announce (NotificationSystem.cs:200)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:147 (A ACHIEVEMENT_ELECTROBITCH -> electrobitch)"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs:292 (electrobitch announcer sound)"
     constants: []
     status:
       logic: faithful
@@ -376,7 +377,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ExplodeBolt (Electro.cs:279-283) now tests directHit (threaded from the bolt Touch handler) TakeDamage==Aim && Flags&Client && !=owner && !SameTeam && DeadState==No && IsFlying(directHit) and calls NotificationSystem.Announce(owner,'ACHIEVEMENT_ELECTROBITCH'). IsFlying (481-488) ports the airshot test (not onground, not swimming, 24u floor clearance). ANNCE 'electrobitch' registered (NotificationsList.cs:85) + sound (SoundsList.cs:283).", result: pass }
+      - { kind: code, ref: "ExplodeBolt (Electro.cs:393-397) tests directHit (threaded from the bolt Touch handler) TakeDamage==Aim && Flags&Client && !=owner && !SameTeam && DeadState==No && IsFlying(directHit) and calls NotificationSystem.Announce(owner,'ACHIEVEMENT_ELECTROBITCH'). IsFlying (617-624) ports the airshot test (not onground, not swimming, 24u floor clearance). Matches W_Electro_Explode (electro.qc:197-200). ANNCE 'electrobitch' registered (NotificationsList.cs:147) + announcer sound (SoundsList.cs:292).", result: pass }
     confidence: high
     notes: "FIXED missing->faithful+live: the airshot ELECTROBITCH announcement is now ported and fired on a direct bolt kill of a flying enemy. Matches W_Electro_Explode:197-200. Resolves the standing audio-parity MEMORY note for electro."
 
@@ -386,27 +387,26 @@ features:
     base_refs:
       - "common/weapons/weapon/electro.qc:wr_aim (METHOD Electro, wr_aim)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:BotWantsSecondary"
-      - "src/XonoticGodot.Server/Bot/BotBrain.cs:406 (w.BotWantsSecondary dispatch)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:BotWantsSecondary (Electro.cs:239)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:423 (w.BotWantsSecondary dispatch)"
     constants:
-      - { name: "primary_speed", base: "2500", port: "2500 (lead via generic BotAimShotSpeed)", match: true }
-      - { name: "secondary_speed", base: "1000", port: "n/a (bot leads secondary at primary_speed 2500, not 1000)", match: false }
-      - { name: "secondary_speed_up", base: "200", port: "n/a (not used for the secondary lead)", match: false }
+      - { name: "primary_speed", base: "2500", port: "2500 (BotAimShotSpeed primary lead)", match: true }
+      - { name: "secondary_speed", base: "1000", port: "1000 (BotAimShotSpeed(ref ctx) returns Secondary.Speed when the electromooth toggle is secondary)", match: true }
+      - { name: "secondary_speed_up", base: "200", port: "200 (vertical arc term; handled by the brain's lob arc, not the horizontal lead distance — matches QC where speed_up is the arc component)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The secondary mortar-lob LEAD still uses primary_speed: Electro does not override Weapon.BotAimShotSpeed, so when the bot flips to the orb mode (electromooth), BotBrain leads the target as if the orb flew at primary_speed (2500) instead of the QC secondary_speed/speed_up (1000/200). The mode pick + 1000u range gate + flip probabilities are faithful; only the secondary lead-speed tuning is off (a shared limitation with the Rifle's secondary)."
+    gaps: []
     verification:
-      - { kind: code, ref: "Electro.BotWantsSecondary (Electro.cs:239-256) ports the electromooth toggle: vdist>1000 -> force primary (SecondaryToggle=false); preferring-primary -> random()<0.01 flip to secondary; preferring-secondary -> random()<0.03 flip back; returns the pre-flip button (electro.qc:599-626). Wired live: BotBrain.cs:404-409 stamps Random01/Actor and routes the result onto attack2. BotBrain.ShotSpeed (BotBrain.cs:809-814) calls w.BotAimShotSpeed(primary speed cvar) — Electro has no override, so the secondary lead is not retuned.", result: pass }
+      - { kind: code, ref: "Electro.BotWantsSecondary (Electro.cs:239-256) ports the electromooth toggle: vdist>1000 -> force primary (SecondaryToggle=false); preferring-primary -> random()<0.01 flip to secondary; preferring-secondary -> random()<0.03 flip back; returns the pre-flip button (electro.qc:599-626). Wired live: BotBrain.cs:423 stamps Random01/Actor and routes the result onto attack2. BotBrain ShotSpeed (BotBrain.cs:831) calls w.BotAimShotSpeed(speed cvar, ref ctx) — Electro DOES override BotAimShotSpeed(default, ref ctx) (Electro.cs:267-268) returning Secondary.Speed when the toggle is secondary, else Primary.Speed.", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-25 baseline (logic missing->faithful, liveness na->live): the electromooth mode-pick + range gate is now ported and dispatched live from BotBrain. values stays partial — the secondary lead-speed tuning (secondary_speed/speed_up) is not applied. Base electro.qc:599-626."
+    notes: "FIX since 2026-06-27 baseline (values partial->faithful): Electro now overrides BotAimShotSpeed(float, ref BotAimState) (Electro.cs:267-268) returning Secondary.Speed (1000) when the pre-flip electromooth toggle is secondary, else Primary.Speed (2500); BotBrain.CurrentShotSpeed (BotBrain.cs:831) calls exactly this ref-ctx overload, so the orb-mode lead is now tuned to secondary_speed. speed_up=200 is the vertical arc term (handled by the lob arc), not the horizontal lead, matching QC bot_aim. The baseline's lone bot gap (lead used primary_speed) is closed. Logic/liveness unchanged (faithful+live). Base electro.qc:599-626."
 
   - id: electro.orb.csqc_netlink_draw
     name: "Orb CSQC net-link + scale-pulse / spin draw"
@@ -434,7 +434,7 @@ features:
     gaps:
       - "The dedicated REGISTER_NET_LINKED(Electro_Orb) link/draw is not reproduced 1:1: Base streams the orb as its own CSQC entity (electro_orb_send writes origin+owner+lifetime; electro_orb_draw applies a (ltime-time)-based scale shrink as the orb nears expiry plus an avelocity spin '7 0 11', alpha 0.7). The port renders the orb via the generic ProjectileCatalog/ProjectileRenderer Electro body (ebomb model + TR_NEXUIZPLASMA trail + dynamic light + electro_fly loop). The in-flight identity matches; the time-based shrink pulse and explicit spin axis are cosmetic and unreproduced."
     verification:
-      - { kind: code, ref: "Base electro.qc:7-66 (electro_orb_draw scale pulse + electro_orb_send/NET_HANDLE) has no 1:1 port; the orb is instead networked as a generic projectile (ServerNet.Classify->Projectile) and drawn by ProjectileCatalog.Electro / ProjectileRenderer.OnSpawn. Loop sound (electro_fly) is attached. Overlaps electro.secondary.orb_projectile (which records the same scale-pulse omission).", result: pass }
+      - { kind: code, ref: "Base electro.qc:7-66 (electro_orb_draw scale pulse + electro_orb_send/NET_HANDLE) has no 1:1 port; the orb is instead networked as a generic projectile (ServerNet.Classify->Projectile) and drawn by ProjectileCatalog.Electro (ProjectileCatalog.cs:129) / ProjectileRenderer.OnSpawn. Loop sound (electro_fly) is attached. Note: ProjectileCatalog.cs:126-127 comment documents the '7 0 11' avelocity spin but the procedural body does not apply the per-frame scale shrink. Overlaps electro.secondary.orb_projectile.", result: pass }
     confidence: medium
     notes: "NEW ROW (registry coverage gap). The orb's in-flight render is already covered live under electro.secondary.orb_projectile; this row tracks the specific CSQC net-link entity + scale-pulse/spin draw as its own line. Visual identity is faithful; only the death-shrink pulse and explicit spin axis are missing (cosmetic)."
 
@@ -443,21 +443,22 @@ features:
     layer: [presentation]
     base_refs:
       - "common/weapons/weapon/electro.qc:describe (METHOD Electro, describe)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:GuideDescription (Electro.cs:104-113)"
     constants: []
     status:
-      logic: missing
+      logic: partial
       values: na
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The MENUQC weapon-guide describe paragraphs (electro.qc:753-767 — primary/secondary/combo description + DPS guide line) are not ported; the port has no in-menu weapon guide for electro."
+      - "GuideDescription (Electro.cs:104-113) ports the four describe() prose paragraphs but NOT the trailing W_Guide_Keybinds line nor the computed W_Guide_DPS_secondaryMultishotWithCombo metric line (electro.qc:764-765 — those helpers aren't ported)."
     verification:
-      - { kind: code, ref: "Base electro.qc:753-767 describe() (MENUQC) — the GuideDescription override in Electro.cs:103-112 reproduces the three prose paragraphs (primary/secondary/combo + ammo + tactical tip) with the COLORED_NAME substitutions pre-filled. NOT reproduced: the trailing W_Guide_Keybinds line and the computed W_Guide_DPS_secondaryMultishotWithCombo metric line (those helpers aren't ported).", result: partial }
+      - { kind: code, ref: "Base electro.qc:753-767 describe() (MENUQC) — the GuideDescription override in Electro.cs:104-113 reproduces the four prose paragraphs (primary/secondary/combo + ammo + tactical tip) with the COLORED_NAME substitutions pre-filled. NOT reproduced: the trailing W_Guide_Keybinds line and the computed W_Guide_DPS_secondaryMultishotWithCombo metric line (those helpers aren't ported).", result: partial }
     confidence: medium
     notes: "CORRECTION since baseline (missing->partial): the describe prose IS ported via Electro.GuideDescription (Electro.cs:103-112) — the baseline's port_refs:[] / status missing was stale. Only the keybind + computed-DPS guide lines are absent (helpers unported). Low priority, MENUQC-only."
 
@@ -482,9 +483,9 @@ features:
     intended_divergence: true
     divergence_rationale: "Sticky orbs (g_balance_electro_secondary_stick) default 0 in bal-wep-xonotic.cfg, so the stick/MOVETYPE_FOLLOW path is never reached in stock play; intentionally omitted (the OrbTouch self-projectile guard is ported, only the stick branch inside it is absent)."
     gaps:
-      - "W_Electro_Orb_Stick (re-spawn locked orb facing -trace_plane_normal, MOVETYPE_NONE, optional SetMovetypeFollow to the toucher with W_Electro_Orb_Follow_Think dropping it at the corpse on disconnect) and the stick_lifetime override are not ported. OrbTouch (Electro.cs:437-453) plays the bounce sound and sets the bounced flag but has no `if (stick)` branch."
+      - "W_Electro_Orb_Stick (re-spawn locked orb facing -trace_plane_normal, MOVETYPE_NONE, optional SetMovetypeFollow to the toucher with W_Electro_Orb_Follow_Think dropping it at the corpse on disconnect) and the stick_lifetime override are not ported. OrbTouch (Electro.cs:506-522) plays the bounce sound and sets the bounced flag but has no `if (stick)` branch."
     verification:
-      - { kind: code, ref: "Grep 'Stick'/'Follow' in Electro.cs -> no match; OrbTouch has no stick branch. Base electro.qc:396-455,468-474. stick default 0 (bal-wep-xonotic.cfg:261).", result: fail }
+      - { kind: code, ref: "Grep 'Stick'/'Follow' in Electro.cs -> no match; OrbTouch (Electro.cs:506-522) has no stick branch. Base electro.qc:396-476. stick default 0 (bal-wep-xonotic.cfg:261).", result: fail }
     confidence: high
     notes: "NEW ROW (registry coverage gap). Off-by-default; harmless at stock balance. Was previously only noted inline under electro.secondary.orb_touch_explode."
 
@@ -508,9 +509,9 @@ features:
     intended_divergence: true
     divergence_rationale: "g_balance_electro_combo_duration defaults 0 in bal-wep-xonotic.cfg (only 1.5 in bal-wep-mario / testing.cfg), so the explode-over-time path is dead in stock play; intentionally omitted."
     gaps:
-      - "When combo_duration>0 the combo detonation spawns a persistent field (W_Electro_Orb_ExplodeOverTime) that re-RadiusDamages every think (combo_damage*PHYS_INPUT_TIMELENGTH) until ltime, ORing HITTYPE_SPAM to suppress repeat effects. ExplodeCombo (Electro.cs:532-544) always does the single instantaneous RadiusDamage; the combo_duration branch (electro.qc:172-178) is absent."
+      - "When combo_duration>0 the combo detonation spawns a persistent field (W_Electro_Orb_ExplodeOverTime) that re-RadiusDamages every think (combo_damage*PHYS_INPUT_TIMELENGTH) until ltime, ORing HITTYPE_SPAM to suppress repeat effects. ExplodeCombo (Electro.cs:601-613) always does the single instantaneous RadiusDamage; the combo_duration branch (electro.qc:172-178) is absent."
     verification:
-      - { kind: code, ref: "ExplodeCombo (Electro.cs:532-544) has no combo_duration branch; no W_Electro_Orb_ExplodeOverTime/ExplodeComboThink analog. combo_duration default 0 (bal-wep-xonotic.cfg:214).", result: fail }
+      - { kind: code, ref: "ExplodeCombo (Electro.cs:601-613) has no combo_duration branch; no W_Electro_Orb_ExplodeOverTime/W_Electro_ExplodeComboThink analog (electro.qc:115-162). combo_duration default 0 (bal-wep-xonotic.cfg:214).", result: fail }
     confidence: high
     notes: "NEW ROW (registry coverage gap). Off-by-default; previously noted inline under electro.combo.trigger_chain (combo_duration constant). Tracked as its own line."
 
@@ -532,9 +533,9 @@ features:
     intended_divergence: true
     divergence_rationale: "g_balance_electro_secondary_limit defaults 0 (unlimited) in bal-wep-xonotic.cfg, so the rubble-cap never engages in stock play; intentionally omitted."
     gaps:
-      - "When secondary_limit>0 Base tracks live orbs in LimitedElectroBallRubbleList and detonates the oldest (adaptor_think2use_hittype_splash) once the per-player orb count exceeds the limit (ListNewChildRubble/LimitedChildrenRubble, electro.qc:569-575). AttackOrb (Electro.cs:372-434) has no orb-limit list/cap; a player can lay unbounded orbs."
+      - "When secondary_limit>0 Base tracks live orbs in LimitedElectroBallRubbleList and detonates the oldest (adaptor_think2use_hittype_splash) once the per-player orb count exceeds the limit (ListNewChildRubble/LimitedChildrenRubble, electro.qc:569-575). AttackOrb (Electro.cs:419-503) has no orb-limit list/cap; a player can lay unbounded orbs."
     verification:
-      - { kind: code, ref: "AttackOrb (Electro.cs:372-434) has no Limited*RubbleList logic. secondary_limit default 0 (bal-wep-xonotic.cfg:253).", result: fail }
+      - { kind: code, ref: "AttackOrb (Electro.cs:419-503) has no Limited*RubbleList logic. secondary_limit default 0 (bal-wep-xonotic.cfg:253).", result: fail }
     confidence: high
     notes: "NEW ROW (registry coverage gap). Off-by-default; harmless at stock balance. Same Limited*Rubble pattern is unported across the projectile weapons."
 
@@ -563,6 +564,6 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "AttackOrb (Electro.cs:432) sets orb.DamagedByContents = Secondary.DamagedByContents (BalBool damagedbycontents, default true). GameWorld.CreatureFrameAll (GameWorld.cs:2114-2124) scans the non-client entity table and, for each DamagedByContents entity not in MOVETYPE_NOCLIP, calls PlayerFrameLogic.ProjectileContentsDamage (PlayerFrameLogic.cs:404). That gates on contents<=WATER && waterlevel>0, rate-limits via ContentsDamageTime (g_balance_contents_damagerate 0.2), and for lava/slime applies g_balance_contents_projectiledamage*rate*waterlevel through Combat.Damage with a NULL inflictor -> the orb's GtEventDamage shoot-down shim subtracts HP and (null inflictor -> non-combo branch) detonates it as a plain SECONDARY blast. Matches QC W_Electro_Attack_Orb:561-563 + CreatureFrame_hotliquids + W_Electro_Orb_Damage non-combo path.", result: pass }
+      - { kind: code, ref: "AttackOrb (Electro.cs:448) sets orb.DamagedByContents = Secondary.DamagedByContents (BalBool damagedbycontents, default true). GameWorld.CreatureFrameAll (GameWorld.cs:2165-2167) scans the non-client entity table and, for each DamagedByContents entity not freed, calls PlayerFrameLogic.ProjectileContentsDamage (PlayerFrameLogic.cs:404). That gates on contents<=WATER && waterlevel>0, rate-limits via ContentsDamageTime (g_balance_contents_damagerate 0.2), and for lava/slime applies g_balance_contents_projectiledamage*rate*waterlevel through Combat.Damage with a NULL inflictor -> the orb's GtEventDamage shoot-down shim subtracts HP and (null inflictor -> non-combo branch) detonates it as a plain SECONDARY blast. Matches QC W_Electro_Attack_Orb:561-563 + CreatureFrame_hotliquids + W_Electro_Orb_Damage non-combo path.", result: pass }
     confidence: high
     notes: "FIX since 2026-06-25 baseline (logic/values missing->faithful, liveness na->live): the orb is now enrolled in the g_damagedbycontents sweep and detonates as a SECONDARY blast when resting in lava/slime. The lone on-by-default electro gap from the baseline is closed. The cross-cutting projectile-contents pipeline (GameWorld sweep + PlayerFrameLogic.ProjectileContentsDamage) is shared by any DamagedByContents projectile."

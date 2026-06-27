@@ -1,16 +1,15 @@
 unit: turret-hk
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 12
   worst_gaps:
-    - "No external target reception (turret_hk_addtarget / TUR_FLAG_RECIEVETARGETS): HK cannot be fed a designated target"
-    - "WEP_HK player special-attack weapon now FULLY ported (HunterKillerWeapon.cs) but DEAD — [Weapon] registration deferred (WeaponByIdTests SpecialAttack contract), so the impulse-9/give path has no live caller"
-    - "Head model (hk.md3) not instantiated as a separate head entity; no tag_head attachment"
-    - "Select/firecheck flag set still diverges (no SelectVehicles/SelectTriggerTarget consts; AFF not a discrete gate)"
-    - "tr_think head-frame cycler now ported on the turret edict's own frame (no separate tur_head entity), but no real head model to display the animation"
-    - "MENUQC describe page text (turret info panel) not ported — only a DisplayName is set (new_unmapped: turret-hk.menu.describe)"
+    - "WEP_HK player special-attack weapon FULLY ported (HunterKillerWeapon.cs) but DEAD — [Weapon] registration deferred (WeaponByIdTests SpecialAttack contract), so the impulse-9/give path has no live caller"
+    - "Head model (hk.md3) not instantiated as a separate head entity; no tag_head attachment (presentation-only; identity.def + anim.head)"
+    - "tr_think head-frame cycler ported on the turret edict's own frame (no separate tur_head entity), but no real head model to display the 0..5 launcher animation"
+    - "MENUQC describe page text (turret info panel) not ported — only a Description string + DisplayName are set (no live turret-describe page system)"
+    - "Re-seek candidate-set derivation differs (FindInRadius vs Base IL_EACH(g_damagedbycontents)); functionally equivalent valid-target scan"
 features:
   - id: turret-hk.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -26,7 +25,7 @@ features:
       - { name: "head_model", base: "models/turrets/hk.md3", port: "none (no head bone entity)", match: false }
       - { name: "netname", base: "hk", port: "hk", match: true }
       - { name: "health", base: "500", port: "500", match: true }
-      - { name: "spawnflags", base: "TUR_FLAG_SPLASH|MEDPROJ|PLAYER|RECIEVETARGETS", port: "SPLASH via radius damage; PLAYER implicit; RECIEVETARGETS not modeled", match: false }
+      - { name: "spawnflags", base: "TUR_FLAG_SPLASH|MEDPROJ|PLAYER|RECIEVETARGETS", port: "SPLASH via radius damage; PLAYER implicit; RECIEVETARGETS now modeled (AddTarget hook wired in Spawn)", match: false }
     status:
       logic: faithful
       values: faithful
@@ -37,12 +36,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Head model (hk.md3) not instantiated as a separate head entity; no tag_head attachment."
-      - "TUR_FLAG_RECIEVETARGETS spawnflag not modeled (see turret-hk.target.recieve)."
+      - "Head model (hk.md3) not instantiated as a separate head entity; no tag_head attachment (presentation only)."
     verification:
-      - { kind: code_read, ref: "hk.qh vs HkTurret ctor + Spawn (unchanged by Wave-2)", result: pass }
+      - { kind: code_read, ref: "hk.qh vs HkTurret ctor + Spawn; spawnflags RECIEVETARGETS now modeled via TurretState.AddTarget=AddTarget in Spawn (HkTurret.cs:106)", result: pass }
     confidence: high
-    notes: "Identity/hitbox/base model + health faithful; head bone and receive-targets flag not modeled. Unchanged from baseline."
+    notes: "Identity/hitbox/base model + health faithful. RECIEVETARGETS spawnflag now modeled (was 'not modeled' in baseline) — see turret-hk.target.recieve. Only residual is the separate hk.md3 head bone, still not instantiated (presentation partial). spawnflags constant still match=false because SPLASH/PLAYER are modeled implicitly, not as a literal flag set."
   - id: turret-hk.setup.tr_setup
     name: "tr_setup: aim/select/firecheck/shoot flags, ammo flags"
     layer: [authority]
@@ -56,25 +54,23 @@ features:
       - { name: "aim_flags", base: "TFL_AIM_SIMPLE", port: "aimSimple=true", match: true }
       - { name: "shoot_flags", base: "TFL_SHOOT_CLEARTARGET", port: "clearTarget=true", match: true }
       - { name: "ammo_flags", base: "TFL_AMMO_ROCKETS|RECHARGE", port: "ammo pool only (recharge)", match: false }
-      - { name: "select_flags", base: "LOS|VEHICLES|TRIGGERTARGET|RANGELIMITS|TEAMCHECK", port: "Los|Players|RangeLimits|TeamCheck|AngleLimits", match: false }
-      - { name: "firecheck_flags", base: "DEAD|TEAMCHECK|REFIRE|AFF", port: "framework firecheck (no discrete AFF)", match: false }
-      - { name: "target_validate_flags", base: "VEHICLES|TEAMCHECK", port: "framework ValidTarget", match: false }
+      - { name: "select_flags", base: "LOS|VEHICLES|TRIGGERTARGET|RANGELIMITS|TEAMCHECK", port: "SelectLos|SelectVehicles|SelectTriggerTarget|SelectRangeLimits|SelectTeamCheck (HkTurret.cs:69)", match: true }
+      - { name: "firecheck_flags", base: "DEAD|TEAMCHECK|REFIRE|AFF", port: "FireCheckDead|FireCheckTeamCheck|FireCheckRefire|FireCheckAff (HkTurret.cs:79; AFF consumed at TurretAI.cs:759)", match: true }
+      - { name: "target_validate_flags", base: "VEHICLES|TEAMCHECK", port: "SelectVehicles|SelectTeamCheck (ValidateFlags, HkTurret.cs:74)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Select flags differ: Base has VEHICLES + TRIGGERTARGET (no discrete ANGLELIMITS); port has Players + AngleLimits and NO SelectVehicles/SelectTriggerTarget flag (those flags do not exist in TurretAI) — vehicle acquirability unverified, trigger-target acquisition absent."
-      - "AFF (avoid-friendly-fire trace) firecheck flag not modeled as a discrete gate."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "hk.qc tr_setup vs HkTurret.Think Select const + TurretParams (unchanged by Wave-2)", result: pass }
-    confidence: medium
-    notes: "Core setup faithful (simple-aim, clear-target after fire); the select/firecheck flag SET still diverges (vehicles, triggertarget, AFF). Unchanged from baseline."
+      - { kind: code_read, ref: "hk.qc tr_setup vs HkTurret Select/FireCheck/ValidateFlags consts. Select now exactly LOS|VEHICLES|TRIGGERTARGET|RANGELIMITS|TEAMCHECK; FireCheckAff is a discrete gate consumed in RunCombat (TurretAI.cs:759); target_validate_flags VEHICLES|TEAMCHECK modeled via ValidateFlags. SelectVehicles/SelectTriggerTarget now exist in TurretAI (1<<9 / 1<<10).", result: pass }
+    confidence: high
+    notes: "BASELINE GAP CLOSED (values partial -> faithful). The select-flag set now matches Base exactly (Players/AngleLimits removed; Vehicles + TriggerTarget added); AFF is a discrete firecheck gate (FireCheckAff, consumed at TurretAI.cs:759); target_validate_flags (VEHICLES|TEAMCHECK) modeled as ValidateFlags and used by AddTarget. ammo_flags remains the lone match=false (port models the rocket+recharge pool without a literal TFL flag), but the behavior (recharge pool) is faithful."
   - id: turret-hk.spawn.liveness
     name: "Map spawnfunc wiring + per-frame think (turret_hk placed on map)"
     layer: [authority]
@@ -97,7 +93,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "SpawnFuncs.Register(turret_hk, TurretSpawnFuncs.Hk) -> Hk -> Spawn(e,'hk'); GameInit runs RegisterAll; Think re-armed each frame", result: pass }
+      - { kind: code_read, ref: "SpawnFuncs.Register(turret_hk, ...) at TurretSpawnFuncs.cs:198; Hk -> Spawn(e,'hk'); GameInit runs RegisterAll; Think re-armed each frame", result: pass }
     confidence: high
     notes: "Confirmed live by code-trace (registered spawnfunc, RegisterAll at boot, Think re-armed). Not yet confirmed that a stock map actually places turret_hk. Unchanged from baseline."
   - id: turret-hk.combat.brain
@@ -119,16 +115,16 @@ features:
       - { name: "ammo_recharge", base: "16", port: "16", match: true }
       - { name: "target_range", base: "6000", port: "6000", match: true }
       - { name: "target_range_min", base: "220", port: "220", match: true }
-      - { name: "target_range_optimal", base: "5000", port: "5000 (FIXED: was 3000)", match: true }
-      - { name: "target_select_rangebias", base: "0.5", port: "0.5 (FIXED: now passed via TurretParams, consumed at TurretAI.cs:325)", match: true }
-      - { name: "target_select_samebias", base: "0.01", port: "0.01 (FIXED: now passed; seed score *0.01 at TurretAI.cs:352)", match: true }
-      - { name: "target_select_anglebias", base: "0.1", port: "0.1 (FIXED: now passed; consumed at TurretAI.cs:326)", match: true }
+      - { name: "target_range_optimal", base: "5000", port: "5000", match: true }
+      - { name: "target_select_rangebias", base: "0.5", port: "0.5 (consumed at TurretAI.cs ScoreTarget)", match: true }
+      - { name: "target_select_samebias", base: "0.01", port: "0.01 (seed score *samebias in SelectTarget)", match: true }
+      - { name: "target_select_anglebias", base: "0.1", port: "0.1 (consumed in ScoreTarget)", match: true }
       - { name: "target_select_playerbias", base: "1", port: "1.0", match: true }
-      - { name: "target_select_missilebias", base: "0", port: "0 (FIXED: now passed; moot since SelectMissiles unset)", match: true }
+      - { name: "target_select_missilebias", base: "0", port: "0", match: true }
       - { name: "aim_speed", base: "100", port: "100", match: true }
       - { name: "aim_firetolerance_dist", base: "500", port: "500", match: true }
       - { name: "shot_volly", base: "0", port: "0", match: true }
-      - { name: "targetscan_maxdelay", base: "1", port: "1 (FIXED: now Cvar('g_turrets_targetscan_maxdelay',1f) at TurretAI.cs:552; was hardcoded 0.6)", match: true }
+      - { name: "targetscan_maxdelay", base: "1", port: "1 (Cvar('g_turrets_targetscan_maxdelay',1f) at TurretAI.cs:673)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -140,9 +136,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "Wave-2: HkTurret.Think now passes rangeBias 0.5/sameBias 0.01/angleBias 0.1/missileBias 0/playerBias 1 + rangeOptimal 5000; ScoreTarget (TurretAI.cs:325-328) + SelectTarget seed (:352) consume them; targetscan_maxdelay Cvar-backed default 1 (:552). turrets.cfg defaults confirmed.", result: pass }
+      - { kind: code_read, ref: "HkTurret.Think passes rangeBias 0.5/sameBias 0.01/angleBias 0.1/missileBias 0/playerBias 1 + rangeOptimal 5000; ScoreTarget + SelectTarget seed consume them; targetscan_maxdelay Cvar-backed default 1 (TurretAI.cs:673). turrets.cfg defaults confirmed (lines 167-207).", result: pass }
     confidence: high
-    notes: "BASELINE GAP CLOSED. Wave-2 threaded all the target-scoring biases (rangebias/samebias/anglebias/missilebias) through TurretParams and they are genuinely consumed in ScoreTarget/SelectTarget; target_range_optimal corrected to 5000; framework targetscan_maxdelay now reads the cvar default 1. samebias 0.01 makes the seed score 100x smaller (Base semantics: low samebias = easy to switch off current target — the baseline's 'too sticky' read was inverted; now matches Base)."
+    notes: "All target-scoring biases threaded through TurretParams and genuinely consumed; target_range_optimal 5000; framework targetscan_maxdelay reads cvar default 1. All cvar constants verified against turrets.cfg. Unchanged from baseline (already faithful)."
   - id: turret-hk.weapon.fire
     name: "wr_think (turret branch): launch the guided rocket"
     layer: [authority]
@@ -163,8 +159,8 @@ features:
       - { name: "missile_flags", base: "MIF_SPLASH|MIF_PROXY|MIF_GUIDED_AI", port: "splash via radius damage; proxy/guided implicit", match: true }
       - { name: "deathtype", base: "DEATH_TURRET_HK", port: "DeathTypes.TurretHk (turret_hk)", match: true }
       - { name: "fire sound", base: "SND rocket_fire (W_Sound)", port: "weapons/rocket_fire.wav", match: true }
-      - { name: "muzzle te_explosion", base: "yes (hk_weapon.qc:30)", port: "FIXED (Wave-8e): EffectEmitter.TeExplosion(missile.Origin) at HkTurret.cs:129", match: true }
-      - { name: "PROJECTILE_ROCKET trail", base: "yes (turret_projectile PROJECTILE_ROCKET)", port: "FIXED (Wave-8e): missile NetName='rocket' -> ProjectileCatalog Rocket (RocketSmoke trail + rocket.md3 + rocket_fly loop)", match: true }
+      - { name: "muzzle te_explosion", base: "yes (hk_weapon.qc:30)", port: "EffectEmitter.TeExplosion(missile.Origin) at HkTurret.cs:176", match: true }
+      - { name: "PROJECTILE_ROCKET trail", base: "yes (turret_projectile PROJECTILE_ROCKET)", port: "missile NetName='rocket' -> ProjectileCatalog Rocket (RocketSmoke trail + rocket.md3 + rocket_fly loop)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -176,9 +172,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "hk_weapon.qc wr_think (turret branch) vs HkTurret.Attack + GuidedProjectile.Launch; Wave-8e (412ca19) added EffectEmitter.TeExplosion(missile.Origin) (HkTurret.cs:129) and the missile is stamped NetName='rocket' in GuidedProjectile.Launch (:75) which ProjectileCatalog.Classify (:270) resolves to ProjectileType.Rocket -> RocketSmoke trail + rocket.md3 + weapons/rocket_fly loop.", result: pass }
+      - { kind: code_read, ref: "hk_weapon.qc wr_think (turret branch) vs HkTurret.Attack + GuidedProjectile.Launch; EffectEmitter.TeExplosion(missile.Origin) (HkTurret.cs:176) + Api.Sound.Play rocket_fire (:177); missile NetName='rocket' in GuidedProjectile.Launch (:75) resolves to ProjectileType.Rocket.", result: pass }
     confidence: high
-    notes: "BASELINE GAPS CLOSED (presentation). Launch ballistics/damage/flags faithful; fire sound (rocket_fire) plays. Wave-8e added the muzzle te_explosion flash (HkTurret.cs:129) and the PROJECTILE_ROCKET smoke trail (NetName='rocket' -> client RocketSmoke trail + rocket.md3 body + rocket_fly loop). Both presentation gaps from the baseline are now done; presentation upgraded partial -> faithful."
+    notes: "Launch ballistics/damage/flags faithful; fire sound (rocket_fire) plays; muzzle te_explosion flash + PROJECTILE_ROCKET smoke trail both present. Unchanged from baseline (fully faithful)."
   - id: turret-hk.weapon.guidance
     name: "turret_hk_missile_think: obstacle-avoiding guided-rocket flight model"
     layer: [authority]
@@ -190,19 +186,19 @@ features:
     constants:
       - { name: "shot_speed (band floor)", base: "500", port: "500", match: true }
       - { name: "shot_speed_max", base: "1000", port: "1000", match: true }
-      - { name: "shot_speed_turnrate", base: "0.25", port: "0.25 (HkTurret passes ShotTurnRate=0.25, consumed via g.TurnRate at HkThink:318)", match: true }
-      - { name: "shot_speed_accel", base: "1.025", port: "1.025 (FIXED: HkTurret passes ShotSpeedAccel=1.025 -> g.Accel, consumed at HkThink:260)", match: true }
-      - { name: "shot_speed_accel2", base: "1.05", port: "1.05 (FIXED: HkTurret passes ShotSpeedAccel2=1.05 -> g.Accel2, consumed at HkThink:297,303)", match: true }
-      - { name: "shot_speed_decel", base: "0.9", port: "0.9 (FIXED: HkTurret passes ShotSpeedDecel=0.9 -> g.Decel, consumed at HkThink:258)", match: true }
-      - { name: "proximity detonate", base: "shot_radius * 0.25 = 50", port: "Radius * 0.25 = 50", match: true }
+      - { name: "shot_speed_turnrate", base: "0.25", port: "0.25 (g.TurnRate at HkThink:324)", match: true }
+      - { name: "shot_speed_accel", base: "1.025", port: "1.025 (g.Accel at HkThink:266)", match: true }
+      - { name: "shot_speed_accel2", base: "1.05", port: "1.05 (g.Accel2 at HkThink:303,309)", match: true }
+      - { name: "shot_speed_decel", base: "0.9", port: "0.9 (g.Decel at HkThink:264)", match: true }
+      - { name: "proximity detonate", base: "shot_radius * 0.25 = 50", port: "Radius * 0.25 = 50 (HkThink:235)", match: true }
       - { name: "lead time clamp", base: "min(dist/speed, 0.5)", port: "min(dist/speed, 0.5)", match: true }
       - { name: "forward trace len", base: "myspeed * 3", port: "myspeed * 3", match: true }
       - { name: "seek trace len", base: "myspeed * 2.95", port: "myspeed * 2.95", match: true }
       - { name: "panic ff threshold", base: "ff < 0.5 -> pt_seek 1", port: "ff < 0.5 -> ptSeek 1", match: true }
       - { name: "clear-path dist", base: "1000", port: "1000", match: true }
-      - { name: "fuel window cnt", base: "time + 30", port: "FuelTime now+30 (HK lifecycle gate; ExpireTime/TTL never read in HkThink)", match: true }
-      - { name: "fuel-out behavior", base: "MOVETYPE_BOUNCE + nextthink=0 (inert dud)", port: "FIXED: MoveType.Bounce + Think=null + NextThink=0 at HkThink:307-314", match: true }
-      - { name: "re-seek radius (no enemy)", base: "5000 over g_damagedbycontents (hk_is_valid_target)", port: "FIXED: FindInRadius(5000) + HkIsValidTarget gate at HkThink:209-220", match: true }
+      - { name: "fuel window cnt", base: "time + 30", port: "FuelTime now+30 (HK lifecycle gate)", match: true }
+      - { name: "fuel-out behavior", base: "MOVETYPE_BOUNCE + nextthink=0 (inert dud)", port: "MoveType.Bounce + Think=null + NextThink=0 at HkThink:313-320", match: true }
+      - { name: "re-seek radius (no enemy)", base: "5000 over g_damagedbycontents (hk_is_valid_target)", port: "FindInRadius(5000) + HkIsValidTarget gate at HkThink:215-226", match: true }
     status:
       logic: faithful
       values: faithful
@@ -213,36 +209,40 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Re-seek iterates the port's FindInRadius spatial query rather than Base's IL_EACH(g_damagedbycontents) list; functionally equivalent valid-target scan (HkIsValidTarget mirrors hk_is_valid_target), but the candidate set is derived differently (any nearby entity vs the damaged-by-contents list)."
-      - "Minor: when enemy is null, port computes angular-offset 'ad' = 0 (explicit null guard, HkThink:252-254); Base derefs null enemy.origin = '0 0 0' yielding a non-zero ad. Post-re-seek the enemy is normally re-acquired, so this branch is rarely hit."
+      - "Re-seek iterates the port's FindInRadius spatial query rather than Base's IL_EACH(g_damagedbycontents) list; functionally equivalent valid-target scan (HkIsValidTarget mirrors hk_is_valid_target), but the candidate set is derived differently."
+      - "Minor: when enemy is null, port computes angular-offset 'ad' = 0 (explicit null guard, HkThink:258-260); Base derefs null enemy.origin = '0 0 0' yielding a non-zero ad. Post-re-seek the enemy is normally re-acquired, so this branch is rarely hit."
     verification:
-      - { kind: code_read, ref: "hk_weapon.qc turret_hk_missile_think vs GuidedProjectile.HkThink line-by-line + GuidanceState defaults; turrets.cfg consts. accel/decel/accel2 now threaded from HkTurret (ShotSpeedAccel 1.025 / Accel2 1.05 / Decel 0.9) and consumed via g.Accel/g.Accel2/g.Decel; fuel-out goes inert (MoveType.Bounce, Think=null, NextThink=0); re-seek scans FindInRadius(5000) with HkIsValidTarget.", result: pass }
+      - { kind: code_read, ref: "hk_weapon.qc turret_hk_missile_think vs GuidedProjectile.HkThink line-by-line; accel/decel/accel2 threaded from HkTurret (1.025/1.05/0.9) consumed via g.Accel/g.Accel2/g.Decel; fuel-out goes inert (MoveType.Bounce, Think=null, NextThink=0); re-seek scans FindInRadius(5000) with HkIsValidTarget (port of hk_is_valid_target).", result: pass }
     confidence: high
-    notes: "BASELINE GAPS CLOSED (3). (1) accel/decel/accel2 corrected 1.05/1.1/0.85 -> 1.025/1.05/0.9: HkTurret now passes them as ShotSpeedAccel/Accel2/Decel and HkThink consumes g.Accel/g.Accel2/g.Decel. (2) Fuel-out now goes inert (MoveType.Bounce + Think=null + NextThink=0, drops as a dud) instead of detonating; FuelTime is the sole HK lifecycle gate and TTL/ExpireTime is never read in HkThink (de-conflated). (3) Target re-seek implemented: when enemy lost, scans FindInRadius(5000) and applies the faithful HkIsValidTarget gate (port of hk_is_valid_target). Funnel-steering, lead-clamp, panic turn, trace lengths all remain faithful. Two minor residuals: re-seek candidate-set derivation differs (FindInRadius vs g_damagedbycontents list) and the null-enemy 'ad' edge case."
+    notes: "Funnel-steering, lead-clamp, panic turn, trace lengths, accel/decel band, fuel-out inert behavior, and target re-seek all faithful. Two minor residuals: re-seek candidate-set derivation differs (FindInRadius vs g_damagedbycontents) and the null-enemy 'ad' edge case. Unchanged from baseline."
   - id: turret-hk.target.recieve
     name: "External target reception (turret_hk_addtarget / TUR_FLAG_RECIEVETARGETS)"
     layer: [authority]
     base_refs:
       - "common/turrets/turret/hk.qc:36"
       - "common/turrets/turret/hk.qc:23"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HkTurret.cs:AddTarget"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:TargetTrigger"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:TargetTriggerTouch"
     constants:
-      - { name: "validate flags", base: "VEHICLES|TEAMCHECK", port: "none", match: false }
+      - { name: "validate flags", base: "VEHICLES|TEAMCHECK", port: "SelectVehicles|SelectTeamCheck (ValidateFlags)", match: true }
+      - { name: "touch debounce", base: "this.cnt = time + 0.5", port: "self.Wait = Now + 0.5f (TargetTriggerTouch)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: na
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "turret_hk_addtarget not implemented: the HK cannot receive a designated target from relays / other turrets (TUR_FLAG_RECIEVETARGETS); it can only self-acquire."
+      - "Re-seek/dispatch over the live entity table iterates Api.Entities.All (or per-class FindByClass fallback) filtered by classname 'turret_*' instead of Base's IL_EACH(g_turrets); functionally equivalent turret enumeration, candidate set derived differently."
     verification:
-      - { kind: code_read, ref: "no addtarget / cross-turret target-broadcast counterpart in port (HkTurret.Attack NOTE confirms it's still left out)", result: fail }
+      - { kind: code_read, ref: "turret_hk_addtarget (hk.qc:36) ported as HkTurret.AddTarget (validates against ValidateFlags=VEHICLES|TEAMCHECK then sets Enemy); wired via TurretState.AddTarget in Spawn (HkTurret.cs:106). turret_targettrigger spawnfunc registered (MapObjectsRegistry.cs:247 -> TurretSpawnFuncs.TargetTrigger:112); TargetTriggerTouch (:136) walks matching turrets and dispatches the AddTarget hook on a 0.5s debounce.", result: pass }
     confidence: high
-    notes: "Port comment in HkTurret.Attack still explicitly notes the receive-targets hook needs the cross-turret target-broadcast system, which isn't modeled. Unchanged from baseline."
+    notes: "FIX from baseline (was logic/values missing, liveness na, empty port_refs). The HK can now receive an externally-designated target: turret_hk_addtarget is ported (HkTurret.AddTarget) and wired via the .turret_addtarget hook; the turret_targettrigger map object is now a live registered spawnfunc whose touch handler dispatches the hook (0.5s debounce, VEHICLES|TEAMCHECK validation). Live on the real gameplay path (a mapper placing a matching turret_targettrigger feeds the HK targets); only caveat is whether a stock map places one, same as the turret_hk spawnfunc itself."
   - id: turret-hk.weapon.player
     name: "WEP_HK player special-attack weapon (hidden, impulse 9)"
     layer: [authority, presentation]
@@ -277,9 +277,9 @@ features:
     gaps:
       - "DEAD: HunterKillerWeapon carries NO [Weapon] attribute (registration intentionally deferred — WEP_FLAG_SPECIALATTACK would shift WeaponByIdTests.ByIdOrder_Covers... skipped count 0->1 and break the test). So the impulse-9 / `give weapon_turret_hk` fire path has no live caller through WeaponFireDriver; WrThink is unreachable in a normal match. Class compiles + is fully faithful, but never runs on the live path."
     verification:
-      - { kind: code_read, ref: "HunterKillerWeapon.cs fully ports the IS_PLAYER wr_think branch (PrepareAttack 1s + AnimtimeFor 0.5s + W_SetupShot_Dir via WeaponFiring.SetupShot + GuidedProjectile.Launch with turret_initparams GENERIC defaults 50/25/37.5/2500 + te_explosion + rocket_fire); grep '[Weapon]' in the file -> no attribute; no live caller of HunterKillerWeapon outside its own file + a doc xref in HkTurret.cs.", result: pass }
+      - { kind: code_read, ref: "HunterKillerWeapon.cs fully ports the IS_PLAYER wr_think branch (PrepareAttack 1s + AnimtimeFor 0.5s + WeaponFiring.SetupShot + GuidedProjectile.Launch with turret_initparams GENERIC defaults 50/25/37.5/2500 + te_explosion + rocket_fire); grep '[Weapon]' in the file -> no attribute (only a deferred-NOTE comment); no live caller of HunterKillerWeapon outside its own file + a doc xref in HkTurret.cs.", result: pass }
     confidence: high
-    notes: "FIX from baseline (was 'not ported at all', all dims missing). The hidden player weapon WEP_HK / HunterKillerAttack is now fully ported in HunterKillerWeapon.cs: faithful identity (Hidden|SpecialAttack, impulse 9, netname turret_hk), the IS_PLAYER wr_think fire sequence, the correct turret_initparams GENERIC fallback balance (50/25/37.5/2500, NOT the HK turret 120/200/600 — because a bare player has no tur_* fields), the shared guidance band autocvars, the IS_PLAYER head-kick skip, muzzle te_explosion + rocket_fire sound. ONLY gap remaining is liveness: dead — [Weapon] registration deferred pending a WeaponByIdTests SpecialAttack contract update, so impulse-9/give has no live dispatch."
+    notes: "The hidden player weapon WEP_HK / HunterKillerAttack is fully ported in HunterKillerWeapon.cs: faithful identity (Hidden|SpecialAttack, impulse 9, netname turret_hk), the IS_PLAYER wr_think fire sequence, the turret_initparams GENERIC fallback balance (50/25/37.5/2500), the shared guidance band autocvars, the IS_PLAYER head-kick skip, muzzle te_explosion + rocket_fire sound. ONLY gap remaining is liveness: dead — [Weapon] registration deferred pending a WeaponByIdTests SpecialAttack contract update. Unchanged from baseline."
   - id: turret-hk.damage.lifecycle
     name: "Damage gating, retaliation, death + respawn"
     layer: [authority]
@@ -293,7 +293,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
     constants:
-      - { name: "respawntime", base: "90", port: "90 (FIXED: HkTurret.Spawn now passes respawnTime=RespawnTime=90 to TurretSpawn.Init)", match: true }
+      - { name: "respawntime", base: "90", port: "90 (HkTurret.Spawn passes respawnTime=RespawnTime=90)", match: true }
       - { name: "takedamage", base: "DAMAGE_AIM", port: "DamageMode.Aim", match: true }
       - { name: "inactive/dead take no damage", base: "yes", port: "yes", match: true }
       - { name: "friendlyfire gate", base: "g_friendlyfire", port: "g_friendlyfire", match: true }
@@ -309,9 +309,9 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "TurretLifecycleTests (shared Damage_Dead/Inactive/SameTeam gates)", result: pass }
-      - { kind: code_read, ref: "Wave-2: TurretSpawn.Init wires e.GtEventDamage = TurretAI.EventDamage; DamageSystem.EventDamage (:331-333) routes non-player edicts with GtEventDamage to it -> turret pre-damage gate (TurretAI.Damage) + health subtract + Combat.Death on lethal -> OnAnyDeath -> Die (blast + respawn). HkTurret.Spawn now threads respawnTime=90.", result: pass }
+      - { kind: code_read, ref: "TurretSpawn.Init wires e.GtEventDamage = TurretAI.EventDamage; DamageSystem routes non-player edicts with GtEventDamage to it -> turret pre-damage gate (TurretAI.Damage) + health subtract + Combat.Death on lethal -> OnAnyDeath -> Die (blast + respawn). HkTurret.Spawn threads respawnTime=90.", result: pass }
     confidence: high
-    notes: "BASELINE GAP CLOSED. respawntime corrected 60->90 (HkTurret.Spawn now passes RespawnTime). Additionally Wave-2 wired the turret's own .event_damage (GtEventDamage) into the live DamageSystem path, so the pre-damage gate in TurretAI.Damage (previously bit-faithful but with no discrete live caller) now runs on the real damage route, mirroring Onslaught objectives."
+    notes: "respawntime 90 (HkTurret.Spawn passes RespawnTime); the turret's own .event_damage (GtEventDamage) wired into the live DamageSystem path, so the pre-damage gate runs on the real damage route. Unchanged from baseline."
   - id: turret-hk.anim.head
     name: "tr_think head-frame animation (launcher cycle 0..5)"
     layer: [authority, presentation]
@@ -322,8 +322,8 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/HkTurret.cs:Think"
       - "src/XonoticGodot.Common/Gameplay/Turrets/HkTurret.cs:Attack"
     constants:
-      - { name: "frame cycle", base: "if frame!=0: ++frame, wrap > 5 -> 0", port: "if Frame!=0: Frame+=1, Frame>5 -> 0 (HkTurret.Think:87-90)", match: true }
-      - { name: "fire-time kick", base: "if tur_head.frame==0: ++tur_head.frame (hk_weapon.qc:40-42)", port: "if turret.Frame==0: Frame+=1 (HkTurret.Attack:127-128)", match: true }
+      - { name: "frame cycle", base: "if frame!=0: ++frame, wrap > 5 -> 0", port: "if Frame!=0: Frame+=1, Frame>5 -> 0 (HkTurret.Think:114-117)", match: true }
+      - { name: "fire-time kick", base: "if tur_head.frame==0: ++tur_head.frame (hk_weapon.qc:40-42)", port: "if turret.Frame==0: Frame+=1 (HkTurret.Attack:182-183)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -338,7 +338,7 @@ features:
     verification:
       - { kind: code_read, ref: "HkTurret.Think advances e.Frame 0..5 each think (gated on Frame!=0); HkTurret.Attack kicks it off (Frame==0 -> ++Frame) mirroring hk_weapon.qc:40-42. tr_think logic faithful; no head model to render it.", result: pass }
     confidence: high
-    notes: "FIX from baseline: the tr_think head-frame cycler (0..5) AND the fire-time kick are now ported (run on the turret's own .Frame since there is no separate head entity). Logic/values/timing faithful; presentation still partial because no hk.md3 head model is instantiated to display the frame animation (see turret-hk.identity.def head_model gap)."
+    notes: "The tr_think head-frame cycler (0..5) AND the fire-time kick are ported (run on the turret's own .Frame since there is no separate head entity). Logic/values/timing faithful; presentation still partial because no hk.md3 head model is instantiated to display the frame animation. Unchanged from baseline."
   - id: turret-hk.head.track
     name: "Head rotation: track type + aim clamps"
     layer: [authority]
@@ -350,11 +350,11 @@ features:
     constants:
       - { name: "aim_speed", base: "100", port: "100", match: true }
       - { name: "aim_maxrot", base: "360", port: "360", match: true }
-      - { name: "aim_maxpitch", base: "20", port: "20 (FIXED: was 30)", match: true }
+      - { name: "aim_maxpitch", base: "20", port: "20", match: true }
       - { name: "track_type", base: "3 (fluid inertia)", port: "3 (FluidInertia)", match: true }
-      - { name: "track_accel_pitch", base: "0.25", port: "0.25 (FIXED: now passed; consumed at TurretAI.cs:497)", match: true }
-      - { name: "track_accel_rot", base: "0.6", port: "0.6 (FIXED: now passed; consumed at TurretAI.cs:498)", match: true }
-      - { name: "track_blendrate", base: "0.2", port: "0.2 (FIXED: now passed; consumed at TurretAI.cs:499)", match: true }
+      - { name: "track_accel_pitch", base: "0.25", port: "0.25 (consumed at TurretAI.cs:613)", match: true }
+      - { name: "track_accel_rot", base: "0.6", port: "0.6 (consumed at TurretAI.cs:614)", match: true }
+      - { name: "track_blendrate", base: "0.2", port: "0.2 (consumed at TurretAI.cs:615)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -366,29 +366,30 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "Wave-2: HkTurret.Think now passes aimMaxPitch=20 + trackAccelPitch 0.25/trackAccelRot 0.6/trackBlendRate 0.2; Track (TurretAI.cs:497-499) consumes them. turrets.cfg defaults confirmed.", result: pass }
+      - { kind: code_read, ref: "HkTurret.Think passes aimMaxPitch=20 + trackAccelPitch 0.25/trackAccelRot 0.6/trackBlendRate 0.2; Track (TurretAI.cs:613-615) consumes them. turrets.cfg defaults confirmed (lines 200-207).", result: pass }
     confidence: high
-    notes: "BASELINE GAP CLOSED. aim_maxpitch corrected 30->20; the three head-track motor rates (track_accel_pitch/rot/blendrate) now threaded through TurretParams and genuinely consumed in Track. track_type + aim_speed + aim_maxrot remain matched."
+    notes: "aim_maxpitch 20; the three head-track motor rates (track_accel_pitch/rot/blendrate) threaded through TurretParams and genuinely consumed in Track. track_type + aim_speed + aim_maxrot matched. Unchanged from baseline."
   - id: turret-hk.menu.describe
     name: "MENUQC describe: turret info page text"
     layer: [presentation]
     base_refs:
       - "common/turrets/turret/hk.qc:51"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HkTurret.cs:Description"
     constants:
-      - { name: "describe text", base: "'The %s fires a single powerful homing rocket ... similar to that of the %s.' (refs WEP_DEVASTATOR)", port: "none (only DisplayName='Hunter-Killer Turret')", match: false }
+      - { name: "describe text", base: "'The %s fires a single powerful homing rocket ... similar to that of the %s.' (refs WEP_DEVASTATOR)", port: "Description const string (HkTurret.cs:86) — verbatim text with names resolved literally; no live turret-describe page system", match: false }
     status:
       logic: missing
       values: na
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The MENUQC HunterKiller.describe page text (turret info / description panel) is not ported; the port sets only HkTurret.DisplayName ('Hunter-Killer Turret'), not the full PAGE_TEXT body that references WEP_DEVASTATOR."
+      - "The MENUQC HunterKiller.describe PAGE_TEXT body is stored as a plain HkTurret.Description string (with the %s name slots resolved literally to 'Hunter-Killer Turret' / 'Devastator'), but the port has no live turret-info/describe page system that renders it, so it is never displayed."
     verification:
-      - { kind: code_read, ref: "hk.qc:51 METHOD(HunterKiller, describe) (MENUQC); grep describe/PAGE_TEXT in HkTurret.cs -> only DisplayName set", result: fail }
+      - { kind: code_read, ref: "hk.qc:51 METHOD(HunterKiller, describe) (MENUQC); HkTurret.cs:86 Description const holds the body text verbatim; no live caller/page renderer (grep Description -> only the field definition + DisplayName)", result: fail }
     confidence: high
-    notes: "Newly-mapped coverage gap (was unmapped in the baseline registry). Menu-only description page; cosmetic. The port has no turret-describe page system, only a DisplayName string."
+    notes: "RECLASSIFIED from baseline (was logic/presentation missing, liveness na, empty port_refs). The describe body text is now present as the HkTurret.Description string (port_ref added), upgrading presentation missing -> partial: the text exists but there is no live turret-describe page system to render it (liveness dead). Cosmetic / menu-only."

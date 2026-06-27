@@ -1,8 +1,19 @@
 unit: mutator-buffs
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
-# Re-audited 2026-06-25 (drift check vs the prior 2026-06-25 baseline; branch claude/parity-port-waves).
+last_audited: "2026-06-27"
+# Re-audited 2026-06-27 (drift check vs the 2026-06-25 baseline; branch claude/parity-port-waves). NO DRIFT:
+# every row re-verified against current Base + port code and the recorded statuses/constants/liveness all still
+# hold. All 13 REGISTER_BUFF types still mapped; all MUTATOR_HOOKFUNCTION(buffs,...) hooks accounted for
+# (PlayerPhysics_UpdateStats/MonsterMove/WeaponSpeedFactor under buffs.disability gaps; MakePlayerObserver/
+# ClientDisconnect under buffs.observer_cleanup). Base cvar defaults unchanged (resistance 0.5, medic rot/max/
+# regen 0.2/1.5/1.7, vampire 0.4, jump 600, vengeance 0.4, bash 2, inferno 0.3, swapper 1500, luck 0.15,
+# disability speed/attack 0.7/1.5, weaponspeed still un-ported). Confirmed-live wiring intact: FilterItem via
+# StartItem.cs:119 FireFilterItem; map spawnfuncs via ItemSpawnFuncs.cs:84 RegisterBuffSpawnFuncs -> SpawnMapBuff;
+# medic PlayerRegen mods consumed in XonoticGodot.Server/PlayerFrameLogic.cs (port_ref path corrected from the
+# stale PlayerFrameLogic.cs:56-89 note — the file lives under XonoticGodot.Server, behavior unchanged). The
+# detailed 2026-06-25 history below is retained as-is.
+# --- 2026-06-25 history ---
 # TWO MAJOR FIXES since the prior write — 0 regressions:
 #   - buffs.replace_powerups (a recorded worst-gap; was missing/empty port_refs): the FilterItem powerup-replace
 #     obtain path is now FULLY IMPLEMENTED and LIVE. BuffsMutator subscribes MutatorHooks.FilterItem (Hook():107)
@@ -357,7 +368,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnPlayerRegen (BuffsMutator.cs:774-781) sets RotMod=g_buffs_medic_rot (0.2), LimitMod=MaxMod=g_buffs_medic_max (1.5), RegenMod=g_buffs_medic_regen (1.7) — QC M_ARGV(1..4) slots; PlayerFrameLogic.Regen (PlayerFrameLogic.cs:56-89) consumes all four on the live path (rot_mod gates rotFrameTime, max_mod scales health stable set-points, limit_mod scales the cap)", result: pass }
+      - { kind: code, ref: "OnPlayerRegen (BuffsMutator.cs:774-781) sets RotMod=g_buffs_medic_rot (0.2), LimitMod=MaxMod=g_buffs_medic_max (1.5), RegenMod=g_buffs_medic_regen (1.7) — QC M_ARGV(1..4) slots; XonoticGodot.Server/PlayerFrameLogic.cs Regen consumes all four on the live path (rot_mod gates rotFrameTime, max_mod scales health stable set-points, limit_mod scales the cap)", result: pass }
     confidence: high
     notes: "FIXED since the prior 2026-06-25 baseline: the ad-hoc MedicTick is DELETED; OnPlayerRegen now scales the shared regen/limit(max)/rot factors exactly like QC PlayerRegen (rot_mod=0.2 slower above-stable rot, limit_mod=max_mod=1.5 raised ceiling, regen_mod=1.7 faster heal). The live regen loop reads them. logic/values/timing partial->faithful; g_buffs_medic_rot now applied (was dropped); verification fail->pass."
 

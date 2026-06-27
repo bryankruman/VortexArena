@@ -5,7 +5,7 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 12
   worst_gaps:
-    - "func_clientwall distance-fade not rendered: fade_start/fade_end/alpha_max/alpha_min/fade_vertical_offset + PVS alpha-cull (Ent_Wall_PreDraw) are stored on the entity but no renderer applies them, and the antiwall solid-toggle relay (g_clientmodel_use) is unported"
+    - "func_clientwall distance-fade not rendered: fade_start/fade_end/alpha_max/alpha_min/fade_vertical_offset + PVS alpha-cull (Ent_Wall_PreDraw) are stored on the entity but no renderer applies them (the antiwall solid-toggle relay g_clientmodel_use IS now ported+live; only the client distance-fade render half remains)"
     - "bgmscript ADSR not ported: func_clientwall/func_pointparticles never animate alpha/position/emission to the map music"
     - "models.qc colormap value is stored on Entity.ColorMapOverride (RENDER_COLORMAPPED bit set) but no renderer team-tints the prop on screen yet"
 features:
@@ -257,7 +257,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:PathCornerSetup"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:SetPlatMoveType"
     constants:
-      - { name: "platmovetype string parse -> platmovetype_start/end", base: "set_platmovetype(this, platmovetype) tokenizes up to 2 floats + optional 'force'", port: "MapMover.SetPlatMoveType(this, Platmovetype) — same tokenizer", match: true }
+      - { name: "platmovetype string parse -> platmovetype_start/end", base: "set_platmovetype(this, platmovetype) tokenizes up to 2 floats + optional 'force'", port: "MapMover.SetPlatMoveType(this, Platmovetype) — same tokenizer; Wave 13 changed PlatMoveStart/End int->float so fractional ease factors (0.5/1.5) are no longer truncated (matches QC .float)", match: true }
       - { name: "one-token sets both ends", base: "n==1 -> end=start", port: "PlatMoveEnd = n>1 ? argv[1] : PlatMoveStart", match: true }
       - { name: "cubic_speedfunc_is_sane reject", base: "lib/math.qh:138", port: "CubicSpeedFuncIsSane (verbatim ellipse condition)", match: true }
     status:
@@ -291,7 +291,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcAngleMove"
     constants:
       - { name: "linear cutoff", base: "traveltime < 0.15", port: "< 0.15f", match: true }
-      - { name: "platmovetype_start/end DEFAULT", base: "0/0 => smoothstep ease cubic_speedfunc(0,0,t) = -2t^3+3t^2", port: "PlatMoveStart=0/PlatMoveEnd=0 => smoothstep ease", match: true }
+      - { name: "platmovetype_start/end DEFAULT", base: "0/0 => smoothstep ease cubic_speedfunc(0,0,t) = -2t^3+3t^2", port: "PlatMoveStart=0/PlatMoveEnd=0 (now .float, fractional ease factors preserved since Wave 13) => smoothstep ease", match: true }
       - { name: "explicit-linear platmovetype", base: "start==1 && end==1", port: "PlatMoveStart==1 && PlatMoveEnd==1", match: true }
       - { name: "non-positive traveltime fallback", base: "0.001", port: "0.001f", match: true }
       - { name: "angle short cutoff", base: "traveltime < 0.1", port: "< 0.1f", match: true }
@@ -385,25 +385,26 @@ features:
       - "common/mapobjects/models.qc:g_clientmodel_use"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectFieldsExtra.cs:FadeStartDist"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapModels.cs:ClientModelUse"
     constants:
-      - { name: "alpha = (alpha_min + alpha_max * bound(0,(fade_end-dist)/(fade_end-fade_start),1)) / 100", base: "yes", port: "fields stored, formula NOT applied", match: false }
-      - { name: "single-distance cut (fade_end==fade_start)", base: "alpha=0 past fade_start", port: "not applied", match: false }
-      - { name: "PVS cull -> alpha 0", base: "!checkpvs => alph=0", port: "not applied", match: false }
-      - { name: "inactive (antiwall) -> alpha 0 / solid toggle", base: "antiwall_flag 1=deactivate 2=activate", port: "not applied", match: false }
+      - { name: "alpha = (alpha_min + alpha_max * bound(0,(fade_end-dist)/(fade_end-fade_start),1)) / 100", base: "yes", port: "fields stored, render formula NOT applied", match: false }
+      - { name: "single-distance cut (fade_end==fade_start)", base: "alpha=0 past fade_start", port: "not applied (render)", match: false }
+      - { name: "PVS cull -> alpha 0", base: "!checkpvs => alph=0", port: "not applied (render)", match: false }
+      - { name: "inactive (antiwall) -> alpha 0 / solid toggle", base: "antiwall_flag 1=deactivate 2=activate", port: "solid-toggle + .inactive ported (ClientModelUse); the alpha-0-when-inactive RENDER half not applied", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: partial
       timing: na
       presentation: missing
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "func_clientwall distance-fade is not rendered: fade_start/fade_end/alpha_max/alpha_min/fade_vertical_offset are parsed onto the Entity (MapObjectFieldsExtra.cs) but NO renderer applies Ent_Wall_PreDraw's distance-fade alpha formula or its PVS alpha-cull — a clientwall meant to fade out with distance stays fully opaque. (The ClientWorld.cs:1234 ItemDistanceAlpha fade is the unrelated item-despawn fade; FadeEndDist is otherwise only read by WeatherSystem for rain/snow draw distance.)"
-      - "The antiwall relay (g_clientmodel_use: trigger sets antiwall_flag to toggle a func_clientwall/func_clientillusionary between its default_solid and SOLID_NOT, with the .inactive flag hiding it) is not ported — a map that toggles a clientwall solid/visible via a trigger has no effect."
+      - "The antiwall .inactive flag toggles SOLID server-side but does NOT also force the wall's render alpha to 0 (Ent_Wall_PreDraw sets alph=0 when inactive); a deactivated clientwall goes non-solid but stays VISIBLE until a wall renderer consumes .inactive."
     verification:
-      - { kind: code, ref: "MapObjectFieldsExtra.cs stores FadeStartDist/FadeEndDist/AlphaMax/AlphaMin/FadeVerticalOffset; grep across game/ + src/: no wall renderer consumes them (ClientWorld ItemDistanceAlpha = item despawn fade, not clientwall; WeatherSystem = rain/snow drawdist)", result: fail }
-      - { kind: grep, ref: "antiwall / g_clientmodel_use / antiwall_flag across game/ + src/ (excl. planning): no port", result: fail }
+      - { kind: code, ref: "MapObjectFieldsExtra.cs stores FadeStartDist/FadeEndDist/AlphaMax/AlphaMin/FadeVerticalOffset; grep across game/ + src/: no wall renderer consumes them for distance-fade (ClientWorld ItemDistanceAlpha = item despawn fade, not clientwall; WeatherSystem = rain/snow drawdist)", result: fail }
+      - { kind: code, ref: "FIXED (Waves 9-11, ff8a699): MapModels.cs:105-139 ClientModelUse ports g_clientmodel_use (antiwall_flag 1=deactivate->SOLID_NOT+inactive, 2=activate->restore DefaultSolid, then SetColormapToActivator); wired as ent.Use for func_clientwall/func_clientillusionary (MapModels.cs:93), antiwall_flag parsed (MapObjectFieldsExtra.cs:170), relayed through the trigger delay + SUB_UseTargets via MapMover.CurrentUseTrigger (MapObjectsCommon.cs:410/467) — LIVE on the server path", result: pass }
     confidence: high
-    notes: "STILL OPEN. Unchanged by Wave-8. No shipped stock map is known to depend on these; severity low for stock content but a correctness hole for custom maps."
+    notes: "DRIFT 2026-06-27: the SERVER-side antiwall solid-toggle relay (g_clientmodel_use) is now ported and LIVE — added in Waves 9-11 (ff8a699) but the prior baseline (which only audited through Wave-8) still recorded it unported. logic/values/liveness lifted missing/na -> partial: the authority half (solid toggle + .inactive + DefaultSolid restore + colormap re-apply) is faithful+live; the CLIENT render half (distance-fade alpha formula, PVS alpha-cull, alpha-0-when-inactive) is STILL missing — no wall renderer consumes the stored fade fields. presentation stays missing. No shipped stock map is known to depend on the render fade; severity low for stock content."

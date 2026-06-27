@@ -1,15 +1,15 @@
 unit: invasion
 category: gametype
-base_ref_rev: "v0.8.6-1779-g863cd3e84"  # port code re-audited at Wave-12 drift re-check (2026-06-25)
-last_audited: "2026-06-25"
+base_ref_rev: "v0.8.6-1779-g863cd3e84"  # port code re-audited at Wave-13 drift re-check (2026-06-27)
+last_audited: "2026-06-27"
 summary:
   feature_count: 29
   worst_gaps:
-    - "HUNT win is derived from the port's own Wave.MaxSpawned/Killed + LiveMonsters counters PLUS the live world monster list (Invasion.cs LiveNonRespawnedMonsterCount), not exclusively Base's g_monsters; fidelity unverified on a real HUNT map."
     - "MoveToRandomMapLocation spawn fallback still missing (monsters pile at world origin when a map registers no invasion_spawnpoint — PickSpawnOrigin returns Vector3.Zero)."
     - "spawn_point.target_range/target2 copy not modeled (no spawn-point entity in the port — only the origin is carried into SpawnMonsterDef)."
     - "g_monsters is not force-set (cvar_settemp); the port spawns monsters directly, so the equivalence relies on the spawn path rather than the global toggle."
-    - "Drift re-check (2026-06-25, Wave-12): FOUR rows that the prior baseline recorded as missing are now FAITHFUL + LIVE — AccuracyTargetValid (WeaponAccuracyEvents.TargetValidProvider wired in Activate), the MonsterSpawn dphitcontentsmask stamp (Invasion.cs:881 DpHitContentsMask honored by TraceService), and the AllowMobSpawning/AllowMobButcher console-command guards (Commands.cs:3357/3417 block spawnmob/butcher during an invasion); the m_configuremenu 'Point limit:' slider is also present (CreateGameScreen.cs ModeMenus['inv'], deliberately disabled exactly as Base passes string_null)."
+    - "STAGE roundend trigger's per-entity .count override (the win fraction) isn't carried from the map entity to TriggerRoundEnd — the touch always passes the default 0.7. Minor (maps rarely override count)."
+    - "Drift re-check (2026-06-27, Wave-13): the HUNT win is now Base-faithful — the port's earlier dual counter+world path and the _huntSawMonster 'must have seen >=1 monster' guard were removed; HUNT now wins purely on LiveNonRespawnedMonsterCount()<=0, including Base's empty-map insta-win (new test HuntType_EmptyMap_InstaWins). All Wave-12 fixes (AccuracyTargetValid via WeaponAccuracyEvents.TargetValidProvider, the MonsterSpawn dphitcontentsmask stamp — now also redundantly set on every monster by MonsterAI.Setup, the AllowMobSpawning/AllowMobButcher command guards, the m_configuremenu 'Point limit:' slider) remain faithful+live; only line numbers shifted."
 features:
   - id: invasion.core.registration
     name: "Invasion gametype registration + init (g_monsters forced, score limit)"
@@ -396,9 +396,10 @@ features:
       - "common/gametypes/gametype/invasion/sv_invasion.qc:WinningCondition_Invasion (INV_TYPE_HUNT)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:Tick (Hunt branch)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs:LiveNonRespawnedMonsterCount"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: faithful
       presentation: na
@@ -406,13 +407,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base derives the HUNT win solely from the live g_monsters list (no non-respawned monster remaining). The port now reads BOTH the live world monster list (LiveNonRespawnedMonsterCount: FindByClass(monster), alive, !Respawned) AND its own Wave.Spawned/Killed counters, requiring _huntSawMonster before treating 'none left' as a win. Closer to Base than before, but the dual-path + the 'must have seen >=1 monster' guard is still unverified on a real HUNT map."
+    gaps: []
     verification:
-      - { kind: test, ref: "InvasionVariantsTests.HuntType_WinsWhenAllSpawnedMonstersCleared / HuntType_DoesNotAdvanceRounds", result: pass }
-      - { kind: code, ref: "Invasion.cs:526-540 Tick Hunt branch: remaining=LiveNonRespawnedMonsterCount() (world list) OR counterCleared (Wave.Spawned>=1 && Killed>=MaxSpawned); MatchEnded when remaining<=0 && _huntSawMonster; LiveNonRespawnedMonsterCount:676-690 walks FindByClass(monster) excluding dead/Respawned (QC g_monsters !MONSTERFLAG_RESPAWNED)", result: partial }
-    confidence: medium
-    notes: "The port now consults the live world monster list (the Base-faithful win source) in addition to its wave counters — an improvement over the prior counters-only model — but the win is still gated on _huntSawMonster and fidelity to Base's map-placed-monster semantics is unverified on a real HUNT map. (HUNT's HUD count uses the natural map-placed totals — see invasion.hud.monster_count.)"
+      - { kind: test, ref: "InvasionVariantsTests.HuntType_WinsWhenAllSpawnedMonstersCleared / HuntType_DoesNotAdvanceRounds / HuntType_EmptyMap_InstaWins", result: pass }
+      - { kind: code, ref: "Invasion.cs:556-561 Tick Hunt branch: if(LiveNonRespawnedMonsterCount()<=0) MatchEnded=true — NO _huntSawMonster guard, NO counter fallback (drift fix: both removed). LiveNonRespawnedMonsterCount:697-711 walks FindByClass(monster) excluding IsFreed/dead/Health<=0 and MONSTERFLAG_RESPAWNED, exactly mirroring QC WinningCondition_Invasion HUNT: IL_EACH(g_monsters, !(it.spawnflags & MONSTERFLAG_RESPAWNED)) with GetResource(RES_HEALTH)>0; ticked live from DriveGametypeFrame", result: pass }
+    confidence: high
+    notes: "FIXED partial->faithful (drift re-check 2026-06-27, Wave-13): the prior dual counter+world-list path and the _huntSawMonster 'must have seen >=1 monster' guard were both removed; the HUNT win is now purely the live world monster list (LiveNonRespawnedMonsterCount()<=0), matching Base's WinningCondition_Invasion HUNT branch exactly — including Base's documented 'this ends the round if no monsters are placed' empty-map insta-win (covered by the new HuntType_EmptyMap_InstaWins test). HUNT's HUD count still uses the natural map-placed totals — see invasion.hud.monster_count."
 
   - id: invasion.win.stage
     name: "STAGE: win when >=70% of players reach the level-end trigger"

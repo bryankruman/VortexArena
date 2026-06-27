@@ -74,14 +74,15 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneSpawns"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:WarpzoneManager.AddMapZone"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:114"
-      - "src/XonoticGodot.Server/GameWorld.cs:436"
+      - "src/XonoticGodot.Server/GameWorld.cs:448"
     constants:
-      - { name: "scale default", base: "modelscale then 1", port: "not modeled (scale=1 implicit)", match: false }
+      - { name: "scale default", base: "this.scale || modelscale || 1 (server.qc:662-665)", port: "ScaleFactor || ModelScale || 1 (Warpzone.cs:721-723), trigger sized mins*scale..maxs*scale (Warpzone.cs:747-752)", match: true }
       - { name: "solid / movetype", base: "SOLID_TRIGGER / MOVETYPE_NONE", port: "Solid.Trigger / MoveType.None", match: true }
-      - { name: "warpzone_isboxy (box vs model trigger)", base: "set when no model / mapper mins+maxs", port: "not modeled (always uses model/brush bounds)", match: false }
+      - { name: "warpzone_isboxy (box vs model trigger)", base: "set when no model OR mapper mins+maxs (util_server.qc:21,35)", port: "isBoxy: no-model -> true; mapper-bounds-override-model -> true; else false (Warpzone.cs:735-744)", match: true }
+      - { name: "EF_NODEPTHTEST render flag + WarpZone_Send CSQC serialisation", base: "BITSET EF_NODEPTHTEST; setSendEntity(WarpZone_Send) (server.qc:667-669)", port: "none (no client warpzone entity)", match: false }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
@@ -89,12 +90,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "scale/modelscale and the warpzone_isboxy box-vs-exacttrigger distinction from WarpZoneLib_ExactTrigger_Init are not modeled; the EF_NODEPTHTEST render flag and WarpZone_Send CSQC serialisation are unported (no client entity)."
+      - "The EF_NODEPTHTEST render flag and WarpZone_Send CSQC serialisation are unported (no client warpzone entity — shared with the missing client render rows). scale + the warpzone_isboxy box-vs-exacttrigger distinction ARE now modeled in AddMapZone (Warpzone.cs:718-757)."
     verification:
       - { kind: unit_test, ref: "WarpzoneSpawnTests.MapWarpzones_Spawn_Orient_And_Link_FromBrushGeometry", result: pass }
-      - { kind: code, ref: "RE-AUDIT 2026-06-27: misc_warpzone_position alias still CLOSED. MapObjectsRegistry.cs:118 registers `misc_warpzone_position` -> WarpzoneSpawns.MiscWarpzonePositionSetup (Warpzone.cs:913), which re-classes the edict to trigger_warpzone_position and routes it through the same Sink. A map authored with the bare canonical name orients its zone identically.", result: pass }
+      - { kind: code, ref: "RE-AUDIT 2026-06-27: misc_warpzone_position alias still CLOSED. MapObjectsRegistry.cs:118 registers `misc_warpzone_position` -> WarpzoneSpawns.MiscWarpzonePositionSetup, which re-classes the edict to trigger_warpzone_position and routes it through the same Sink. A map authored with the bare canonical name orients its zone identically.", result: pass }
+      - { kind: code, ref: "RE-AUDIT 2026-06-27 (FIX): AddMapZone (Warpzone.cs:718-757) now models BOTH the .scale default chain (ScaleFactor || ModelScale || 1, matching server.qc:662-665) AND warpzone_isboxy (no-model OR mapper-bounds-override-model -> boxy, matching WarpZoneLib_ExactTrigger_Init util_server.qc:21,35), and sizes the trigger by scale (mins*scale..maxs*scale, util_server.qc:40-41). The baseline recorded both as `not modeled` (values: partial); they are now ported -> values partial->faithful. Only EF_NODEPTHTEST + WarpZone_Send (client-entity serialisation) remain.", result: pass }
     confidence: high
-    notes: "Three position spawnfuncs map (trigger_warpzone, trigger_warpzone_position, misc_warpzone_position; MapObjectsRegistry.cs:114-118). Sink WarpzoneSpawns.Sink wired in GameWorld.cs:436 to Warpzones.OnMapEntity; deferred plane/link in InitMapZones (GameWorld.cs:752). Residual values gap: scale/modelscale + warpzone_isboxy box-vs-exacttrigger (status stays values: partial). RE-AUDIT 2026-06-27: line refs refreshed, no status change."
+    notes: "Three position spawnfuncs map (trigger_warpzone, trigger_warpzone_position, misc_warpzone_position; MapObjectsRegistry.cs:114-118). Sink WarpzoneSpawns.Sink wired in GameWorld.cs:448 to Warpzones.OnMapEntity; deferred plane/link in InitMapZones (GameWorld.cs:767). NOTE: warpzone_isboxy + .scale ARE now modeled in AddMapZone (Warpzone.cs:718-757 — ScaleFactor/ModelScale default chain, mapper-bounds-or-no-model boxy test, SetSize by scale); the prior `not modeled` constants are stale (see constants). Residual values gap shrunk to: EF_NODEPTHTEST render flag + WarpZone_Send CSQC serialisation (no client entity). RE-AUDIT 2026-06-27: line refs refreshed; values reclassified partial->faithful (scale + isboxy now ported)."
   - id: warpzones.spawn.brushplane
     name: "Auto-orient IN plane from brush geometry (getsurface* area-weighted normal)"
     layer: [authority]

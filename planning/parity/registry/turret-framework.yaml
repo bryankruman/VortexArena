@@ -1,16 +1,15 @@
 unit: turret-framework
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 15
   worst_gaps:
     - "No turret networking: none of the TNSF_* send/parse / CSQC turret edict exists (port runs turrets directly in the shared sim) — so all the visible/audible turret feedback is server-side temp-entity/point-particle emit, not a turret edict sync."
-    - "Client presentation PARTIAL: muzzle flashes/tracers/beams/projectile trails/head-frame anims + death FX (Wave-8e/Wave-7) AND the framework-wide low-HP spark + SMOKE_LARGE/SMOKE_SMALL tiers (now via TurretAI.DrawFx, FIXED 06-25) are emitted server-side; still missing the tur_head MODEL rotation render, the draw2d waypoint sprite/healthbar, the changeteam team recolor, and the client gib toss (all need a CSQC turret edict)."
+    - "Client presentation PARTIAL: muzzle flashes/tracers/beams/projectile trails/head-frame anims + death FX (Wave-8e/Wave-7) AND the framework-wide low-HP spark + SMOKE_LARGE/SMOKE_SMALL tiers (TurretAI.DrawFx) are emitted server-side; still missing the tur_head MODEL rotation render, the draw2d waypoint sprite/healthbar, the changeteam team recolor, and the client gib toss (all need a CSQC turret edict)."
     - "Per-unit cvar table unported (load_unit_settings / TR_PROPS_COMMON / turret_scale_* / turret_initparams clamping / dumpturrets / turrets_manager_think reloadcvars) — per-unit balance is hardcoded C# const, mappers can't retune. (Framework-level g_turrets_* cvars ARE read live; per-unit g_turrets_unit_<name>_<field> are not.)"
-    - "turret_targettrigger (RECIEVETARGETS externally-fed targets, 0.5s debounce) is the only acquisition path still absent: the AddTarget reception hook now EXISTS on the turrets (HkTurret) but the turret_targettrigger map entity is not registered, so the hook is dead. (The turret_checkpoint/walker_checkpoint waypoint chains AND the turret_findtarget defendpoint wiring are now ported + live.)"
-    - "turret_heal / event_heal (repairable turrets) not ported — port turrets cannot be healed. (Death two-step turret_hide 0.2s + respawntime-0.2 IS now ported, FIXED 06-25; round-restart .reset hook IS now wired + live, FIXED 06-25.)"
     - "Per-shot firecheck LOS + TEAMCHECK branches not modeled — but Base itself marks TFL_FIRECHECK_LOS/TEAMCECK as un-implemented (the '-' rows in the firecheck legend), so the port matches Base; acquisition-time LOS/team gating is the only LOS/team test in both."
+    - "tur_head model render absent: the steady-state head MODEL rotation (turret_draw avelocity integrate) and per-shot head-frame anim ride the turret body's own Entity.Frame (no separate head bone / CSQC turret edict). (turret_heal repairable turrets, the death two-step, the round-restart .reset hook, and the turret_targettrigger external-target map entity are all now ported + live — FIXED 06-27.)"
 features:
   - id: turret-framework.registry.descriptor
     name: "Turret descriptor class + registry (REGISTER_TURRET / TR_PROPS_COMMON)"
@@ -331,7 +330,7 @@ features:
       - { name: "RETALIATE pick attacker", base: "flag set but never READ in Base (no this.enemy=attacker)", port: "intentionally omitted (matches Base no-op)", match: true }
       - { name: "HEADSHAKE damage jitter", base: "tur_head.angles.x/y += (random-0.5)*damage", port: "EventDamage: HeadAngles.X/Y += (Prandom-0.5)*take when HeadShake (NEW Wave-7)", match: true }
       - { name: "health subtract + death trigger", base: "TakeResource(RES_HEALTH); health<=0 -> turret_die", port: "EventDamage TakeResource(Health); health<=0 -> Combat.Death -> Die", match: true }
-      - { name: "turret_heal / event_heal", base: "yes", port: "not modeled", match: false }
+      - { name: "turret_heal / event_heal", base: "this.event_heal=turret_heal (sv_turrets.qc:253/1338): GiveResourceWithLimit RES_HEALTH up to max_health, reject if dead or >=limit", port: "TurretAI.Heal wired as e.GtEventHeal in TurretSpawn.Init (TurretSpawn.cs:100); cleared by Die (event_heal=func_null), re-installed by Respawn — live via Combat.Heal (FIXED 06-27)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -341,13 +340,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "turret_heal / event_heal (repairable turrets) not ported."
+    gaps: []
     verification:
       - { kind: test, ref: "TurretLifecycleTests.Use_*/Damage_* (call TurretAI.Use/Damage directly)", result: pass }
-      - { kind: code_read, ref: "TurretSpawn.Init sets e.GtEventDamage=TurretAI.EventDamage; DamageSystem.EventDamage(:357) routes non-player+GtEventDamage to it and returns; EventDamage runs Damage gate, health subtract, HEADSHAKE jitter, and the Combat.Death trigger on a lethal hit", result: pass }
+      - { kind: code_read, ref: "TurretSpawn.Init sets e.GtEventDamage=TurretAI.EventDamage AND e.GtEventHeal=TurretAI.Heal (TurretSpawn.cs:93/100); DamageSystem.EventDamage routes non-player+GtEventDamage to it and returns; Combat.Heal (DamageContracts.cs:102) dispatches to target.GtEventHeal, live caller Arc.cs:522 (heal-beam); TurretAI.Heal (TurretAI.cs:962) mirrors turret_heal (true_limit, dead/over-limit reject, GiveResourceWithLimit); Die clears GtEventHeal (TurretAI.cs:1043), Respawn re-installs (TurretAI.cs:1111)", result: pass }
     confidence: high
-    notes: "FIX vs baseline: HEADSHAKE damage-jitter (the last open gap on this row) is now modeled in EventDamage, gated by TurretState.HeadShake (set from the per-unit TFL_DMG_HEADSHAKE in Init). The retaliate omission matches Base (Base sets the flag but never reads it). Only turret_heal/event_heal remains unported."
+    notes: "FIX vs baseline (turret_heal now ported + live): the framework heal SINK turret_heal is ported as TurretAI.Heal, wired as the GtEventHeal sink in Init, cleared on death, re-installed on respawn — a friendly heal source (Arc heal-beam, the only live Combat.Heal caller) can now repair a damaged-but-alive turret toward max_health. HEADSHAKE damage-jitter (prior fix) stays modeled; the retaliate omission matches Base (flag set but never read). No remaining gaps on this row."
   - id: turret-framework.lifecycle.death_respawn
     name: "Death + respawn (turret_die / turret_hide / turret_respawn)"
     layer: [authority]
@@ -389,11 +387,11 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:102"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Respawn"
-      - "src/XonoticGodot.Server/GameWorld.cs:4521"
+      - "src/XonoticGodot.Server/GameWorld.cs:4614"
     constants:
       - { name: ".reset hook install", base: "turret_link sets this.reset = turret_reset (sv_turrets.qc:1158/1342)", port: "TurretSpawn.Init sets e.Reset = TurretAI.Respawn (TurretSpawn.cs:102) (FIXED 06-25)", match: true }
       - { name: "reset action", base: "turret_reset -> turret_respawn (full health/ammo/volley/head, re-active)", port: "Entity.Reset = TurretAI.Respawn (turret_respawn body: restore health/ammo/volley/head, re-active, re-install per-frame think)", match: true }
-      - { name: "reset caller (reset_map_global)", base: "server/world.qc reset_map fires each non-client entity's .reset on round/match restart", port: "GameWorld.ResetMapObjects loops the live entity set and fires e.Reset?.Invoke(e) (GameWorld.cs:4521), called from the round/match restart path (GameWorld.cs:4460)", match: true }
+      - { name: "reset caller (reset_map_global)", base: "server/world.qc reset_map fires each non-client entity's .reset on round/match restart", port: "GameWorld.ResetMapObjects loops the live entity set and fires e.Reset?.Invoke(e) (GameWorld.cs:4614), called from the round/match restart path (GameWorld.cs:4553)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -487,29 +485,29 @@ features:
       - "common/turrets/sv_turrets.qc:turret_findtarget"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:Checkpoint"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:TargetTrigger"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:243"
       - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:NextCheckpoint"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:FindTarget"
     constants:
       - { name: "turret_checkpoint chain", base: "drop-to-floor (1024u down, +32u) + .enemy=find(targetname,target)", port: "Checkpoint: WorldOnly down-trace +32u + MapMover index; chain resolved lazily by targetname in EWheel.NextCheckpoint", match: true }
       - { name: "walker_checkpoint compat alias", base: "spawnfunc_turret_checkpoint", port: "walker_checkpoint -> Checkpoint", match: true }
-      - { name: "turret_findtarget defendpoint", base: "tur_defend + idle_aim from .target key (sv_turrets.qc:1238-1239); defend-mode score 1-d_dist/target_range (sv_turrets.qc:88-92)", port: "TurretAI.FindTarget resolves .target -> DefendPoint + IdleAim, called live from the spawnfunc (TurretSpawnFuncs.cs:48); ScoreTarget defend-mode 1-dDist/RangeMax (FIXED 06-25)", match: true }
-      - { name: "turret_targettrigger debounce", base: "0.5s (RECIEVETARGETS turret_addtarget)", port: "AddTarget reception hook EXISTS (TurretState.AddTarget, wired by HkTurret) but the turret_targettrigger map entity is not registered, so the hook is dead", match: false }
+      - { name: "turret_findtarget defendpoint", base: "tur_defend + idle_aim from .target key (sv_turrets.qc:1238-1239); defend-mode score 1-d_dist/target_range (sv_turrets.qc:88-92)", port: "TurretAI.FindTarget resolves .target -> DefendPoint + IdleAim, called live from the spawnfunc (TurretSpawnFuncs.cs:48); ScoreTarget defend-mode 1-dDist/RangeMax", match: true }
+      - { name: "turret_targettrigger debounce", base: "0.5s (RECIEVETARGETS turret_addtarget, targettrigger.qc:16 this.cnt=time+0.5)", port: "TurretSpawnFuncs.TargetTrigger registered in MapObjectsRegistry:247; touch walks turrets by targetname, calls each AddTarget hook, 0.5s debounce via .Wait (FIXED 06-27)", match: true }
       - { name: "g_turrets_reloadcvars manager", base: "1s think re-load cvars (turret_findtarget auto-spawns turret_manager -> turrets_manager_think)", port: "none (consts)", match: false }
     status:
-      logic: partial
-      values: partial
-      timing: partial
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "turret_targettrigger (TUR_FLAG_RECIEVETARGETS externally-fed targets, 0.5s debounce, turret_addtarget) not ported as a map entity: the per-turret AddTarget reception hook now EXISTS (TurretState.AddTarget, wired by HkTurret.Spawn) but turret_targettrigger is not registered in MapObjectsRegistry, so the hook has no live caller (dead)."
-      - "turrets_manager_think + the turret_manager auto-spawn (g_turrets_reloadcvars: re-load every turret's per-unit cvars on a think) not ported — consistent with the per-unit cvar table being absent."
+      - "turrets_manager_think + the turret_manager auto-spawn (g_turrets_reloadcvars: re-load every turret's per-unit cvars on a think) not ported — consistent with the per-unit cvar table being absent. (Inert: g_turrets_reloadcvars defaults off and the per-unit cvar table itself is unported, so there is nothing for the manager to reload.)"
     verification:
       - { kind: test, ref: "TurretLifecycleTests / EWheel path-roam coverage (checkpoint chain advance)", result: pass }
-      - { kind: code_read, ref: "checkpoint.qc:turret_checkpoint_init vs TurretSpawnFuncs.Checkpoint (drop-to-floor + targetname index) + EWheel.NextCheckpoint lazy chain link; turret_checkpoint/walker_checkpoint registered in MapObjectsRegistry:243-244; turret_findtarget defendpoint half (sv_turrets.qc:1238-1239) ported as TurretAI.FindTarget, called from TurretSpawnFuncs.Spawn:48; turret_targettrigger map entity + turret_manager/turrets_manager_think still absent in port (AddTarget hook present but dead)", result: pass }
+      - { kind: code_read, ref: "checkpoint.qc:turret_checkpoint_init vs TurretSpawnFuncs.Checkpoint (drop-to-floor + targetname index) + EWheel.NextCheckpoint lazy chain link; turret_checkpoint/walker_checkpoint registered in MapObjectsRegistry:243-244; turret_findtarget defendpoint (sv_turrets.qc:1238-1239) ported as TurretAI.FindTarget, called from TurretSpawnFuncs.Spawn:48; turret_targettrigger.qc ported verbatim as TurretSpawnFuncs.TargetTrigger + TargetTriggerTouch (0.5s debounce, IL_EACH-by-targetname -> AddTarget) and REGISTERED in MapObjectsRegistry:247; only turret_manager/turrets_manager_think reloadcvars still absent", result: pass }
     confidence: high
-    notes: "FIX vs baseline (defendpoint wiring now ported + live): TurretAI.FindTarget resolves a stationary turret's .target key to its DefendPoint + resting IdleAim and is called live from the spawnfunc (TurretSpawnFuncs.cs:48), and ScoreTarget's defend-mode distance score mirrors Base — so a map_target-defending turret now prioritises threats near what it guards. The checkpoint/walker_checkpoint roam chain (Wave-7) stays live. Still missing: the turret_targettrigger MAP ENTITY (the AddTarget reception hook exists but is dead with no spawnfunc), and the turret_manager auto-spawn + reloadcvars think. Hence still partial; liveness partial because the AddTarget reception path is dead."
+    notes: "FIX vs baseline (turret_targettrigger now ported + live -> liveness partial->live, logic/values/timing partial->faithful): the turret_targettrigger MAP ENTITY is now a registered spawnfunc (MapObjectsRegistry:247) that faithfully ports targettrigger.qc — its touch handler walks every turret matching the trigger's .target and invokes each one's AddTarget reception hook (TUR_FLAG_RECIEVETARGETS + .turret_addtarget) on a 0.5s debounce. The HK's AddTarget hook (HkTurret) therefore now has a live caller, closing the last dead-path on this row. The checkpoint/walker_checkpoint roam chain (Wave-7) and the turret_findtarget defendpoint wiring stay live. Only the turret_manager auto-spawn + g_turrets_reloadcvars think remains unported (inert — the per-unit cvar table it would reload is itself absent)."

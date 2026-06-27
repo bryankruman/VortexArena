@@ -6,9 +6,8 @@ summary:
   feature_count: 13
   worst_gaps:
     - "No portal-aim trajectory preview (Porto_Draw): Base draws a reflecting red/blue Draw_CylindricLine polyline (16 points, up to 2 portals/reflections, slick-continue / noimpact-stop / CheckWireframeBox 96^3 gate) showing where the in/out portals would land while you hold porto. The port renders nothing. Still entirely missing — the single largest remaining porto gap."
-    - "ProbeImpact re-trace approximation: the touch path re-probes the impact face with a short worldonly traceline (Porto.cs:368-386) because the engine touch carries no per-contact trace_dphit* flags; on a glancing bounce the probe ray can miss or hit an adjacent face, so the slick/clip vs noimpact vs place branch selection (and the recovered plane normal handed to the warpzone) is approximate rather than exact."
-    - "Combined out-portal branch (blue) places unconditionally: Base's final 'else' verifies realowner.portal_in.portal_id == this.portal_id before placing the out-portal of a combined shot (and clears all on mismatch); the port's blue-shot branch (Porto.cs:317-324) has no portal_in id check or the mismatch->ClearAll fail path."
-    - "Portal roll axis (right_vector) is carried + reflected on the projectile but NOT handed to the warpzone spawner — PlacePortoPortal derives angles from the surface normal only (FixedVecToAngles), so portal roll may differ from Base's fixedvectoangles2(normal, right_vector)."
+    - "ProbeImpact re-trace approximation: the touch path re-probes the impact face with a short worldonly traceline (Porto.cs:384-402) because the engine touch carries no per-contact trace_dphit* flags; on a glancing bounce the probe ray can miss or hit an adjacent face, so the slick/clip vs noimpact vs place branch selection (and the recovered plane normal handed to the warpzone) is approximate rather than exact."
+    - "Projectile not flagged FL_PROJECTILE and dphitcontentsmask (SOLID|BODY|PLAYERCLIP) not set on the spawned bouncemissile — mostly cosmetic for porto (ProbeImpact recovers PLAYERCLIP independently), but the engine move uses its default contents mask rather than Base's."
 features:
   - id: weapon-porto.identity.attributes
     name: "Weapon identity, models, color, flags, ammo type"
@@ -159,12 +158,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Surface-flag gating logic differs from Base in WHERE the flags come from: Base reads trace_dphit* off the ORIGINAL bouncemissile collision trace; the port re-probes with a short worldonly traceline (ProbeImpact, Porto.cs:368-386) because the engine touch carries no per-contact flags. The TraceService fills DpHitQ3SurfaceFlags/DpHitContents/PlaneNormal from the BSP surface, so the slick/clip + noimpact branches are reachable and play the right cues — but the re-trace can disagree with the true contact face on a glancing bounce, so branch selection is approximate rather than exact."
-      - "Base's final 'else' branch verifies realowner.portal_in.portal_id == this.portal_id before placing the out-portal of a combined shot (and Portal_ClearAll on mismatch); the port's blue-shot branch (Porto.cs:317-324) places unconditionally with no portal_in id check or the mismatch->ClearAll fail path."
+      - "Surface-flag gating logic differs from Base in WHERE the flags come from: Base reads trace_dphit* off the ORIGINAL bouncemissile collision trace; the port re-probes with a short worldonly traceline (ProbeImpact, Porto.cs:384-402) because the engine touch carries no per-contact flags. The TraceService fills DpHitQ3SurfaceFlags/DpHitContents/PlaneNormal from the BSP surface, so the slick/clip + noimpact branches are reachable and play the right cues — but the re-trace can disagree with the true contact face on a glancing bounce, so branch selection is approximate rather than exact."
     verification:
-      - { kind: code, ref: "Porto.cs:OnTouch (225-325) + ProbeImpact (368-386) + CheckWireframeBox (340-349) vs porto.qc:W_Porto_Touch (166-286)", result: partial }
+      - { kind: code, ref: "Porto.cs:OnTouch (225-341) + ProbeImpact (384-402) + CheckWireframeBox (356-365) vs porto.qc:W_Porto_Touch (166-286)", result: partial }
     confidence: high
-    notes: "CheckWireframeBox 96^3 surface-size gate is now PRESENT in the touch path (Porto.cs:283-289 applies it before any placement branch; cnt<0 also clears all owner portals on a size-gate fail) — FIXED since 2026-06-25 baseline (was a recorded gap + a non-matching constant). Surface-flag branches re-trace the impact face (ProbeImpact) and read real Q3 surface flags + the true plane normal. Remaining divergences: the re-trace approximation and the missing portal_in id check on the final combined out-portal branch. Re-audited 2026-06-27."
+    notes: "FIXED since 2026-06-27 baseline (was a 2nd recorded gap): the combined-shot blue stage NOW verifies the owner's in-portal pairs with THIS shot before committing the out-portal — Porto.cs:325-339 reads PortalInId(owner) (wired GameWorld.cs:436-437 -> Warpzones.PortalInId) and, on a mismatch (or owner has no in-portal), plays the unsupported cue + PortalClearAll + PortoFail, exactly like porto.qc:263-284. The CheckWireframeBox 96^3 surface-size gate is present (Porto.cs:283-289, applied before any placement branch; cnt<0 also clears all owner portals on a size-gate fail). Surface-flag branches re-trace the impact face (ProbeImpact) and read real Q3 surface flags + the true plane normal. Only residual logic divergence: the ProbeImpact re-trace approximation (kept logic:partial). Re-audited 2026-06-27."
 
   - id: weapon-porto.touch.portal_spawn
     name: "Realise the placed portal (Portal_SpawnIn/OutPortalAtTrace) as a warpzone"
@@ -180,12 +178,12 @@ features:
       - "src/XonoticGodot.Server/GameWorld.cs:424"
     constants:
       - { name: "in/out pair link", base: "Portal_Connect two-way transform", port: "Warpzones.PlacePortoPortal pair link", match: true }
-      - { name: "portal angles", base: "fixedvectoangles2(plane_normal, right_vector)", port: "normal from ProbeImpact true plane (FixedVecToAngles in warpzone); right_vector not handed over", match: false }
+      - { name: "portal angles", base: "fixedvectoangles2(plane_normal, right_vector)", port: "FixedVecToAngles2(surfaceNormal, rightVector) in PlacePortoPortal (Warpzone.cs:543-544); right_vector now handed over (Porto.cs:468)", match: true }
       - { name: "portal bbox", base: "'-48 -48 -48' / '48 48 48'", port: "n/a (warpzone unit)", match: false }
       - { name: "g_balance_portal_health", base: "200", port: "n/a (warpzone unit)", match: false }
       - { name: "g_balance_portal_lifetime", base: "15 s (refreshed per use)", port: "n/a (warpzone unit)", match: false }
     status:
-      logic: partial
+      logic: faithful
       values: unknown
       timing: unknown
       presentation: unknown
@@ -194,12 +192,11 @@ features:
     intended_divergence: true
     divergence_rationale: "The port realises porto portals as the warpzone subsystem (linked warpzone pair via Warpzones.PlacePortoPortal) rather than a dedicated portal entity with MDL_PORTAL/health/SOLID_BSP. The teleport transform is shared with warpzones. Portal health/damage/lifetime/expire-explode behavior is delegated to (and audited by) the warpzone unit, not this weapon unit."
     gaps:
-      - "Portal angle derivation uses the TRUE impact-plane normal recovered by ProbeImpact, but Base uses fixedvectoangles2(normal, right_vector); the port passes only the normal to the warpzone (right_vector is carried+reflected but not handed to PlacePortoPortal), so portal roll may still differ."
       - "Portal health (200, damageable) / 15 s lifetime / expire (porto/expire) + explode (porto/explode + ROCKET_EXPLODE) and MDL_PORTAL visuals are not realised here (warpzone-unit scope)."
     verification:
-      - { kind: code, ref: "GameWorld.cs:424-425 wires Porto.PortalSpawner -> Warpzones.PlacePortoPortal; confirmed live in Boot", result: pass }
+      - { kind: code, ref: "GameWorld.cs:432-444 wires Porto.PortalSpawner/PortalInId/PortalClearWithId/PortalClearAll -> Warpzones.*; PlacePortoPortal (Warpzone.cs:538-545) uses FixedVecToAngles2(normal, rightVector)", result: pass }
     confidence: medium
-    notes: "PortalSpawner wired LIVE in GameWorld.Boot (line 424); PortalClearWithId (425/428) + PortalClearAll (431) also wired. Whether the realised warpzone teleports correctly + expires at 15s is unverified here (warpzone unit owns it). Re-audited 2026-06-27: wiring intact."
+    notes: "FIXED since 2026-06-27 baseline (was logic:partial, portal-angles match:false): the port NOW hands the carried+reflected right_vector to PlacePortoPortal (Porto.cs:468 passes self.AVelocity as the roll axis) and the warpzone derives angles via FixedVecToAngles2(surfaceNormal, rightVector) (Warpzone.cs:543-544) — matching Base's fixedvectoangles2(plane_normal, right_vector). Logic now faithful. PortalSpawner + PortalInId + PortalClearWithId + PortalClearAll all wired LIVE in GameWorld.Boot (432-444). Whether the realised warpzone teleports correctly + expires at 15s is unverified here (warpzone unit owns it; values/timing/presentation stay unknown). Re-audited 2026-06-27."
 
   - id: weapon-porto.lifecycle.lifetime_self_destruct
     name: "Lifetime self-destruct + success/soft-fail cleanup (Think/Fail/Success)"

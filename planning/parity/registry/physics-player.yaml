@@ -5,7 +5,7 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 19
   worst_gaps:
-    - "2026-06-27 drift re-audit: 0 regressions, 0 fixes, 0 reclassifications — every existing row re-derived against Base (ecs/systems/physics.qc + sv_physics.qc + common/physics/player.qc + walk.qc) and the port (PlayerPhysics.cs / PMAccelerate.cs) and confirmed byte-current. All core constants re-verified against physics.cfg (maxspeed 360, jumpvelocity 260, friction 6/slick 0.5, accelerate 15, airaccelerate 2, airaccel_qw -0.8, airstrafeaccel_qw -0.95, airspeedlimit_nonqw 900, maxairstrafespeed 100, airstrafeaccelerate 18, aircontrol 100, airstopaccelerate 3, warsowbunny_turnaccel 0) — all match. PM_check_punch decay (10/30) and the g_jump_grunt-gated playersound_jump confirmed. ONE registry coverage gap closed: added physics-player.landing_event (sys_phys_land / the phys_land subscription) — the jumppadcount reset is ported (live, inline in PlayerJump/swim), the speedmeter + jumppad-combo LOG_TRACEF debug logs are unported (debug-only). NOT added as rows (out of scope for this physics unit): sys_phys_monitor's parm_idlesince idle-stamp + anticheat_physics (server idle-kick / anticheat layer, not movement), sys_phys_ai (bot_think — bot unit), and WarpZone_PlayerPhysics_FixVAngle in sys_phys_fix (warpzone unit)."
+    - "2026-06-27 drift re-audit (post-Wave-13, commit 5427e74 'port 38 client+physics gaps live'): 0 regressions, 4 FIXES — Wave 13 closed several baseline-recorded sub-case gaps that the prior re-audit's row statuses had not yet caught up to. (1) physics-player.water.swim logic partial->faithful: the viewloc (1D-rail) water sub-cases are NOW ported — wishvel.z = -160 constant drift (PlayerPhysics.cs:760-761) + the separate plain-addspeed viewloc accel path with no QW pass (:793-801); the `viewloc drift speed -160` constant now matches (was match:false). (2) physics-player.ladder logic partial->faithful: the func_water waterlevel-from-volume override (PlayerPhysics.cs:833-852: clamp wish to ladder.speed, watertype=skin, compute waterlevel from origin.z+view_ofs.z vs maxs_z) AND the viewloc ladder sub-case (wishvel.z = movement_old.x, :828 via player.MovementForwardOld) are NOW ported. (3) physics-player.crouch logic partial->faithful: ALL three baseline sub-case gaps closed — viewloc force-crouch (:1265-1266), have_hook force-uncrouch (:1274-1278, walks the per-slot WeaponSlotState.Hook), in-vehicle force-uncrouch (:1279-1280, player.Vehicle), Q1BSP crouch-disable (:1293-1294, CrouchMaxs.Z == PlayerMaxs.Z). (4) physics-player.movement_sounds timing partial->faithful + the grappling-hook bail closed: the lastground+0.2 gate is NO LONGER inert (Move now captures priorLastGroundTime at :417 BEFORE updating LastGroundTime at :419 and passes it to Footsteps, read at :1956 — reproducing Base's one-tick-lagged gate), and PM_check_hitground's active-grappling-hook bail is NOW ported (CheckHitground :1927 walks the per-slot WeaponSlotState.Hook, live-set in Hook.cs:327). Core constants re-verified (maxspeed 360, jumpvelocity 260, friction 6/slick 0.5, accelerate 15, airaccelerate 2, airaccel_qw -0.8, airstrafeaccel_qw -0.95, airspeedlimit_nonqw 900, maxairstrafespeed 100, airstrafeaccelerate 18, aircontrol 100, airstopaccelerate 3, warsowbunny_turnaccel 0) — all match. PMAccelerate.cs (Accelerate/AirAccelerate/Aircontrol/AdjustAirAccelQW/GeomLerp/IsMoveInDirection) re-read and confirmed byte-1:1. PM_check_punch decay (10/30) + the g_jump_grunt-gated playersound_jump confirmed unchanged. NOT added as rows (out of scope for this physics unit): sys_phys_monitor's parm_idlesince idle-stamp + anticheat_physics (server idle-kick / anticheat layer), sys_phys_ai (bot_think — bot unit), WarpZone_PlayerPhysics_FixVAngle in sys_phys_fix (warpzone unit)."
     - "View-punch decay (PM_check_punch) was UNMAPPED in the baseline registry; now added as physics-player.punch_decay (ported as CheckPunch, faithful + live, server-authority only)."
     - "Jump audio FIXED 2026-06-25 re-audit (Wave-8e commit 412ca19): the port now gates the jump grunt on autocvar_g_jump_grunt (stock 0 = SILENT, matching Base) AND plays the per-model jump VOICE (PlayPlayerSound(player, \"jump\", ...) via the model .sounds manifest) instead of a fixed player/jump.wav — both baseline audio gaps closed, audio upgraded partial->faithful. RESIDUAL: the companion animdecide_setaction(ANIMACTION_JUMP) (player.qc:491) still has no anim-action seam in the port (same as the walljump port)."
     - "Movement-sound cadence is Base-faithful (g_footsteps gate + 0.3+random()*0.1 jitter + nextstep window + ladder bail all ported, re-confirmed live 2026-06-25); residuals: the lastground+0.2 gate is functionally inert because the port updates LastGroundTime BEFORE UpdateMovementSounds runs (so it reads now), and PM_check_hitground's active-grappling-hook bail is still unported (CheckHitground only does the ladder leg) — the ButtonHook input bit is now genuinely live (ServerNet.cs:1432 decodes InputButtons.Hook; WeaponFireDriver consumes it for the offhand-hook weapon), but there is still no shared per-weapon hook Entity field for CheckHitground to read, so the bail leg stays unported."
@@ -265,10 +265,10 @@ features:
       - { name: "shallow hold-jump rise", base: "200", port: "200", match: true }
       - { name: "QW waterjump-out launch", base: "fwd*50, z=310", port: "fwd*50, z=310", match: true }
       - { name: "drift-to-bottom speed", base: "-60", port: "-60", match: true }
-      - { name: "viewloc drift speed", base: "-160", port: "(not ported)", match: false }
+      - { name: "viewloc drift speed", base: "-160", port: "-160 (SwimMove:761)", match: true }
       - { name: "frozen resurface (submerged, vz>=-70)", base: "z=160", port: "z=160", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -277,12 +277,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Viewloc (1D-rail) water sub-cases not ported: physics.qc:269-270 sets wishvel.z = -160 when this.viewloc, and physics.qc:408-416 runs a SEPARATE accel path (plain addspeed accel, no PM_Accelerate QW pass) when in a viewloc. The port always runs the non-viewloc path. Inert on stock Xonotic maps (no 1D viewloc rails), so logic:partial not missing."
       - "Liveness of the swim path on a live water map not behaviorally confirmed this audit (depends on CheckWater correctly setting WaterLevel from map liquid contents — the SUPERCONTENTS bitmasks are mirrored as literals and untested against a real BSP water volume here)."
     verification:
       - { kind: code, ref: "SwimMove vs physics.qc:377-422 (water friction 1-dt*friction, 0.7 wishspeed, accel, hold-jump rise, crouch-dive, frozen-resurface) + QW waterjump physics.qc:218-247; CheckWater vs _Movetype_CheckWater", result: pass }
+      - { kind: code, ref: "viewloc water sub-cases NOW ported — wishvel.z = -160 constant drift (SwimMove PlayerPhysics.cs:760-761) matches physics.qc:269-270, and the separate plain-addspeed viewloc accel path (no QW pass) (PlayerPhysics.cs:793-801) matches physics.qc:408-416; non-viewloc leg still takes PM_Accelerate (:804)", result: pass }
     confidence: medium
-    notes: "Non-viewloc water physics ported faithfully incl. the QW water-jump-out launch and frozen-resurface. logic downgraded to partial for the unported viewloc sub-cases. liveness:unknown — code reachable from the branch chain but no in-game water-map check was run."
+    notes: "2026-06-27 DRIFT FIX (Wave-13): logic UPGRADED partial->faithful — the viewloc (1D-rail) water sub-cases that the baseline flagged as unported are now present (PlayerPhysics.cs:760-761 wishvel.z=-160 drift; :793-801 the separate viewloc plain-addspeed accel with no QW pass), and the `viewloc drift speed -160` constant now matches (was match:false). Non-viewloc water physics already faithful incl. the QW water-jump-out launch and frozen-resurface. liveness:unknown — code reachable from the branch chain but no in-game water-map check was run; the viewloc legs are additionally inert on stock 3D maps (ViewLoc always null)."
 
   - id: physics-player.ladder
     name: "Ladder climb (gravity-free, func_water override)"
@@ -293,7 +293,7 @@ features:
       - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:LadderMove"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -302,13 +302,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "func_water waterlevel-from-volume override (physics.qc:280-299: clamp wishvel to ladder_entity.speed, set watertype=skin, compute waterlevel from origin.z+view_ofs.z vs ladder maxs_z) is NOT computed in LadderMove — the port only EARLY-RETURNS from CheckWater for a func_water ladder (PlayerPhysics.cs:949) but never fills the waterlevel/watertype from the volume bounds, so a func_water ladder gives WaterLevelNone."
-      - "Viewloc ladder sub-case (physics.qc:277-278: wishvel.z = movement_old.x) not ported."
+      - "Not behaviorally tested on a live ladder map this audit; code-verified only (liveness:unknown). The func_water + viewloc ladder sub-cases are additionally inert on stock 3D maps (ViewLoc null; func_water ladder is a rare map feature)."
     verification:
       - { kind: code, ref: "LadderMove vs physics.qc:275-300 + 200-216 (air-friction half-step with com_phys_gravity folded out, full-3D PM_Accelerate)", result: pass }
-      - { kind: code, ref: "func_water waterlevel computation physics.qc:280-299 — absent from LadderMove (CheckWater only skips the probe)", result: fail }
+      - { kind: code, ref: "func_water waterlevel-from-volume override NOW ported — LadderMove (PlayerPhysics.cs:833-852) clamps the wish to ladder.speed, sets watertype=skin, and computes waterlevel from origin.z+view_ofs.z vs maxs_z exactly per physics.qc:280-299 (CheckWater early-returns and defers to this)", result: pass }
+      - { kind: code, ref: "viewloc ladder sub-case NOW ported — wishvel.z = movement_old.x (PlayerPhysics.cs:828 via player.MovementForwardOld, snapshotted at :430) matches physics.qc:277-278", result: pass }
     confidence: medium
-    notes: "Gravity-free climb via the half-step that cancels the WalkMove gravity. Reachable from the branch chain (player.LadderEntity != null). func_water + viewloc ladder sub-cases unported (rare map features); logic:partial. Not behaviorally tested on a ladder map this audit."
+    notes: "2026-06-27 DRIFT FIX (Wave-13): logic UPGRADED partial->faithful — both baseline gaps closed. The func_water waterlevel-from-volume override (PlayerPhysics.cs:833-852) and the viewloc ladder sub-case (:828, wishvel.z = movement_old.x via player.MovementForwardOld) are now ported, so a func_water ladder fills waterlevel/watertype from the volume bounds (no longer WaterLevelNone) and a 1D-rail ladder drives the vertical wish from the previous tick's forward wishmove. Gravity-free climb via the half-step that cancels the WalkMove gravity, reachable from the branch chain (player.LadderEntity != null). liveness:unknown — code-verified, not behaviorally tested on a ladder map."
 
   - id: physics-player.jetpack
     name: "Jetpack thrust (PM_jetpack closed-form, fuel drain, pauseregen)"
@@ -357,7 +357,7 @@ features:
       - { name: "PL_CROUCH_MIN/MAX", base: "-16 -16 -24 / 16 16 25", port: "-16 -16 -24 / 16 16 25", match: true }
       - { name: "PL_CROUCH_VIEW_OFS", base: "0 0 20", port: "0 0 20 (CrouchViewOfs)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: faithful
@@ -365,14 +365,14 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Viewloc force-crouch (player.qc:192-193: viewloc && !(VIEWLOC_FREEMOVE) && movement.x < 0 => do_crouch=true) is NOT ported."
-      - "have_hook force-uncrouch (player.qc:175-195: a grappling hook held in any weapon slot forces do_crouch=false) is NOT ported — the port models the frozen/dead/PlayerCanCrouch-hook force-false but not the hook or in-vehicle (PHYS_INVEHICLE) force-false sub-cases."
-      - "Q1BSP crouch-disable (PL_CROUCH_MAX.z == PL_MAX.z => do_crouch=false, player.qc:207-208) not modelled (Xonotic maps are Q3BSP, so inert)."
+    gaps: []
     verification:
       - { kind: code, ref: "UpdateCrouch vs PM_ClientMovement_UpdateStatus:170-232 (do_crouch decision, setsize, view_ofs, stand-up tracebox, PlayerCanCrouch hook)", result: pass }
+      - { kind: code, ref: "viewloc force-crouch NOW ported — PlayerPhysics.cs:1265-1266 (ViewLoc && !(SpawnFlags & VIEWLOC_FREEMOVE=4) && MoveValues.x < 0 => doCrouch=true) matches player.qc:192-193", result: pass }
+      - { kind: code, ref: "force-UNCROUCH chain NOW ported in QC precedence — have_hook (PlayerPhysics.cs:1274-1278, walks per-slot WeaponSlotState.Hook live-set in Hook.cs:327) -> in-vehicle (:1279-1280, player.Vehicle == PHYS_INVEHICLE) -> frozen/dead (:1281-1282), matching player.qc:194-201's else-if cascade", result: pass }
+      - { kind: code, ref: "Q1BSP crouch-disable NOW ported — PlayerPhysics.cs:1293-1294 (CrouchMaxs.Z == mp.PlayerMaxs.Z => doCrouch=false) matches player.qc:207-208", result: pass }
     confidence: high
-    notes: "Hull values match autocvar_sv_player_* exactly. Stand-up only when the standing hull fits (tracebox). Drives IsDucked which the ground/air branches read for the 0.5 wishspeed halving. PlayerCanCrouch mutator hook (bloodloss) wired. logic:partial for the unported viewloc/hook/in-vehicle force sub-cases (edge cases on stock maps)."
+    notes: "2026-06-27 DRIFT FIX (Wave-13): logic UPGRADED partial->faithful — ALL three baseline gaps closed. The viewloc force-crouch (:1265-1266), the full force-uncrouch cascade (have_hook :1274-1278 via the per-slot WeaponSlotState.Hook, in-vehicle :1279-1280 via player.Vehicle, frozen/dead :1281-1282) in QC's exact else-if precedence, and the Q1BSP crouch-disable (:1293-1294) are now ported. Hull values match autocvar_sv_player_* exactly. Stand-up only when the standing hull fits (tracebox). Drives IsDucked which the ground/air branches read for the 0.5 wishspeed halving. PlayerCanCrouch mutator hook (bloodloss) wired. The viewloc/Q1BSP legs are inert on stock Q3BSP maps but are now real-Base-faithful branches."
 
   - id: physics-player.integrator.walkmove_flymove
     name: "Slide-and-step collision integrator (SV_WalkMove / SV_FlyMove + stair step/down)"
@@ -434,24 +434,24 @@ features:
     status:
       logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: na
       audio: faithful
       liveness: live
     intended_divergence: true
     divergence_rationale: "The cosmetic random()*0.1 footstep-cadence jitter is drawn from a dedicated server-local System.Random (FootstepJitterRng), NOT the shared deterministic Prandom stream. Base's jitter is under #ifdef SVQC (server-only), so reproducing it from the shared Prandom would advance a stream the predicting client also consumes (spread/effects) and desync the seed. The value distribution (uniform 0..0.1 added to 0.3) is identical to Base; only the RNG SOURCE differs."
     gaps:
-      - "lastground+0.2 gate is FUNCTIONALLY INERT due to update ordering: the port sets player.LastGroundTime = Now() at PlayerPhysics.cs:358-359 (sys_phys_postupdate block) BEFORE calling UpdateMovementSounds at :363, so when Footsteps reads it (PlayerPhysics.cs:1705) LastGroundTime == now and `now >= LastGroundTime + 0.2` is always false → the gate never returns. Base runs PM_check_hitground/PM_Footsteps at ecs/systems/physics.qc:90-91 BEFORE sys_phys_postupdate sets `this.lastground = time` at physics.qc:188, so its lastground lags one tick and the gate genuinely suppresses the first grounded frame after a >0.2s fall. The port's landing frame is instead covered by CheckHitground setting LastFootstepTime to a future time, so the audible result matches on continuous ground and on normal landings — but the gate itself is not a 1:1 reproduction of Base's intent. CONFIRMED still present this audit (no change from baseline)."
-      - "PM_check_hitground's active-grappling-hook bail (player.qc:671-676: any weaponentity.hook held => return) is still unported (PlayerPhysics.cs:1677-1681 only does the ladder leg) — the per-weapon hook is not yet a shared Entity field CheckHitground can read. The IMovementInput.ButtonHook input bit is now genuinely LIVE end-to-end (ServerNet.cs:1432 decodes InputButtons.Hook; WeaponFireDriver.cs:66 sets player.OffhandFirePressed from it), but that drives the offhand-fire weapon think, NOT a queryable held-hook entity, so the landing-sound bail still cannot be reproduced. The ladder bail (player.qc:670) IS reproduced via player.LadderEntity (PlayerPhysics.cs:1680)."
       - "Minor: Base's speed gate is vdist(this.velocity, <=, ...) over the FULL 3D velocity; the port uses Vec2LenSq (XY only) and a strict `<` (vs Base `<=`). On ground velocity.z is ~0 (NOGRAVITYONGROUND), so the difference is negligible, but it is not byte-identical at the threshold."
+      - "No golden-trace/test coverage for footsteps (code-verified only)."
     verification:
-      - { kind: code, ref: "Footsteps (PlayerPhysics.cs:1694-1719) vs player.qc:689-708: g_footsteps gate (=='0' return), IS_DUCKED, lastground+0.2, maxspeed*0.6, nextstep window (time>nextstep||time<nextstep-10), nextstep=time+0.3+random()*0.1, NOSTEPS/METALSTEPS", result: pass }
-      - { kind: code, ref: "CheckHitground (PlayerPhysics.cs:1670-1689) vs player.qc:664-687: wasFlying latch, swimming bail, ladder bail (LadderEntity), nextstep jitter (Now()+0.3+FootstepJitter()), FALL/FALL_METAL + VOL_MUFFLED while ducked", result: pass }
+      - { kind: code, ref: "Footsteps (PlayerPhysics.cs:1942-1970) vs player.qc:689-708: g_footsteps gate (=='0' return), IS_DUCKED, lastground+0.2 (now reads priorLastGroundTime), maxspeed*0.6, nextstep window (time>nextstep||time<nextstep-10), nextstep=time+0.3+random()*0.1, NOSTEPS/METALSTEPS", result: pass }
+      - { kind: code, ref: "CheckHitground (PlayerPhysics.cs:1913-1937) vs player.qc:664-687: wasFlying latch, swimming bail, ladder bail (LadderEntity), grappling-hook bail (per-slot WeaponSlotState.Hook), nextstep jitter (Now()+0.3+FootstepJitter()), FALL/FALL_METAL + VOL_MUFFLED while ducked", result: pass }
       - { kind: value, ref: "g_footsteps default 1 (xonotic-server.cfg:306); port treats unset as on so default matches", result: pass }
-      - { kind: code, ref: "lastground update ORDER: PlayerPhysics.cs:358-359 (set LastGroundTime) precedes :363 (UpdateMovementSounds) — gate reads now, inert; Base order is reversed (physics.qc:90-91 then sys_phys_postupdate :188)", result: fail }
-      - { kind: code, ref: "liveness: Movement.Move live on the server tick (GameWorld.cs:1275/1286, EntityMovementStep.cs:84) -> UpdateMovementSounds (predicted-gated server-only)", result: pass }
+      - { kind: code, ref: "lastground+0.2 gate NOW FAITHFUL: Move captures priorLastGroundTime at PlayerPhysics.cs:417 BEFORE updating player.LastGroundTime at :419, then passes it to Footsteps (:423/:1942), read at :1956 as `now >= priorLastGroundTime + 0.2` — reproducing Base's one-tick-lagged gate (physics.qc:90-91 PM_Footsteps runs before sys_phys_postupdate sets lastground=time at :188)", result: pass }
+      - { kind: code, ref: "grappling-hook bail NOW PORTED: CheckHitground (PlayerPhysics.cs:1926-1929) walks the populated weapon slots via player.ForEachWeaponSlot and bails if any WeaponSlotState.Hook is set — the same per-slot field UpdateCrouch's have_hook reads, live-set in Hook.cs:327 — matching player.qc:671-676 (any weaponentity.hook held => return). The ladder bail (player.qc:670) reproduced via player.LadderEntity (:1924)", result: pass }
+      - { kind: code, ref: "liveness: Movement.Move live on the server tick -> UpdateMovementSounds (predicted-gated server-only, PlayerPhysics.cs:1887)", result: pass }
     confidence: high
-    notes: "Wave-2 closed 3 of the 4 baseline gaps: the autocvar_g_footsteps master gate, the 0.3+random()*0.1 jittered cadence (server-local RNG so the shared Prandom stream is untouched — a correct deliberate divergence), the nextstep re-arm window, and the ladder leg of the PM_check_hitground bail are all now ported and live on the server tick (UpdateMovementSounds, prediction-gated). logic+values+audio upgraded to faithful. timing kept at partial for ONE residual: the lastground+0.2 gate is inert because LastGroundTime is updated before Footsteps runs (the audible behavior still matches Base on continuous ground / normal landings via the nextstep future-time). 2026-06-25 RE-AUDIT (post-Wave-5): re-read the current Footsteps (PlayerPhysics.cs:1694-1719) / CheckHitground (:1670-1689) / postupdate (:357-363) code and Base player.qc:664-708 + physics.qc:88-91/188 — all three Wave-2 closures (g_footsteps gate, jittered 0.3+random()*0.1 cadence via the server-local FootstepJitterRng, nextstep re-arm window) CONFIRMED genuine and live; the lastground ordering bug is UNCHANGED (LastGroundTime still set at PlayerPhysics.cs:359 before UpdateMovementSounds at :363, read at :1705), so timing stays partial; no regression. Still open: the grappling-hook bail in CheckHitground (needs a shared per-weapon hook Entity field — the ButtonHook bit is now live in the net layer but only drives the offhand-fire think, not a queryable held-hook entity), and the 2D-vs-3D / `<` vs `<=` speed-gate micro-difference. No golden-trace/test coverage for footsteps (code-verified only)."
+    notes: "2026-06-27 DRIFT FIX (Wave-13): timing UPGRADED partial->faithful and the two residual gaps closed. (1) The lastground+0.2 gate is NO LONGER inert: Move now captures priorLastGroundTime (PlayerPhysics.cs:417) BEFORE updating LastGroundTime (:419) and threads it into Footsteps (:423 -> :1942 -> read at :1956), faithfully reproducing Base's one-tick-lagged gate that suppresses the first grounded frame after a >0.2s fall. (2) PM_check_hitground's active-grappling-hook bail is NOW ported — CheckHitground (:1926-1929) walks the per-slot WeaponSlotState.Hook (live-set in Hook.cs:327 when the offhand/onhand hook fires), matching player.qc:671-676; previously only the ladder leg was reproduced. Prior Wave-2 closures still genuine and live (g_footsteps master gate, jittered 0.3+random()*0.1 cadence via the server-local FootstepJitterRng — a correct deliberate RNG-source divergence, nextstep re-arm window). Only residual: the 2D-vs-3D / `<` vs `<=` speed-gate micro-difference (negligible on ground) and the absence of golden-trace coverage."
 
   - id: physics-player.spectator_control
     name: "Spectator free-flight speed ladder (sys_phys_spectator_control)"

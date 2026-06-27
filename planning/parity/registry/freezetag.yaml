@@ -1,16 +1,16 @@
 unit: freezetag
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"  # drift re-check 2026-06-25 (re-verified 2026-06-26: 23 prior rows unchanged; 6 new coverage rows added)
+last_audited: "2026-06-27"  # drift re-check 2026-06-27: 4 prior coverage-gap rows now FIXED (GiveFragsForKill/SetWeaponArena/PlayerRegen/ItemTouch all subscribed + live); 1 new coverage row added (LastPlayerForTeam ALONE notif)
 summary:
-  feature_count: 29
+  feature_count: 30
   worst_gaps:
-    - "NEW (coverage gap): FT does NOT subscribe MutatorHooks.GiveFragsForKill to zero the engine frag (unlike CA/Keepaway/TKA which do). GiveFragsForKill.Call fires live (Scores.cs:544) and awards a +1 kill/score on an enemy frag, ON TOP of FT's own freeze ±1 SCORE matrix — a likely engine-frag/score double-count. Base ft GiveFragsForKill sets the delta to 0. See freezetag.scoring.no_kill_frags."
-    - "NEW (coverage gap): g_freezetag_weaponarena default 'most_available' is NOT applied — Base ft SetWeaponArena defaults the FT arena so players spawn with (almost) the full arsenal; the port has no FT SetWeaponArena handler, so FT players get only the start loadout. See freezetag.weaponarena."
-    - "NEW (coverage gap): no PlayerRegen-while-frozen gate (Base ft PlayerRegen returns frozen → no health/armor regen). See freezetag.frozen.no_regen. Also no ItemTouch/BuffTouch frozen-pickup gate (freezetag.frozen.no_pickup)."
+    - "FIXED 2026-06-27: GiveFragsForKill→0 is now subscribed (FreezeTag.OnGiveFragsForKill, FreezeTag.cs:876) and live (Scores.cs:548) — the engine-frag double-count on an enemy freeze is closed. See freezetag.scoring.no_kill_frags."
+    - "FIXED 2026-06-27: g_freezetag_weaponarena 'most_available' is now applied (FreezeTag.OnSetWeaponArena, FreezeTag.cs:887) and live (SpawnSystem.cs:999/1223). FT players get the full arsenal arena over the start loadout. See freezetag.weaponarena."
+    - "FIXED 2026-06-27: frozen-player regen gate (FreezeTag.OnPlayerRegen, live PlayerFrameLogic.cs:56) and frozen-pickup gate (FreezeTag.OnItemTouch, live ItemPickupRules.cs:378) are both implemented. See freezetag.frozen.no_regen / freezetag.frozen.no_pickup."
     - "STILL OPEN: no ice (MDL_ICE) entity model — only the icy player-model colormod tint (ClientWorld.FrozenColormod). The signature ice cube is absent. Also no ANIMSTATE_FROZEN frozen pose (freezetag.presentation.frozen_anim)."
     - "STILL OPEN: void/lava NEEDKILL soft-kill relocate (g_frozen_damage_trigger 0) is still missing (FT OnDamageCalculate leaves NEEDKILL deathtypes alone; the relocate-to-spawn needs the server spawn selector and is not done). Default cvar 1 = die, so dormant at stock anyway."
-    - "FIXED (prior audit, still holds): nade self-revive, mid-round spawn-as-frozen, revive_auto_reducible, and frozen damage-immunity are all implemented and live."
+    - "STILL OPEN: the per-freeze CHOICE centerprint (FragCenterMessage 'You froze X'/'You were frozen by Y') has no FT producer (freezetag.frags.center_message). NEW coverage gap: the CENTER_ALONE 'you are now alone' last-survivor notification (freezetag_LastPlayerForTeam_Notify) is not sent by FT (freezetag.notif.alone)."
 features:
   - id: freezetag.mode.registration
     name: "Mode registration: teams, team-spawns, score/lead limits, FT scoring fields"
@@ -689,71 +689,73 @@ features:
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, GiveFragsForKill, CBC_ORDER_FIRST)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnGiveFragsForKill"
     constants:
-      - { name: "frag delta on kill", base: "M_ARGV(2,float) = 0 (return true)", port: "not subscribed → engine GiveFrags awards +1", match: false }
+      - { name: "frag delta on kill", base: "M_ARGV(2,float) = 0 (return true)", port: "args.FragScore = 0f; return true", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base ft GiveFragsForKill sets the per-kill frag delta to 0 (no normal frags in Freeze Tag; only the freeze ±1 SCORE matrix + round wins score). The port's FreezeTag.Activate does NOT subscribe MutatorHooks.GiveFragsForKill (CA, Keepaway, TeamKeepaway all do). The hook fires live in Scores.cs:544 and, on an enemy frag, GiveFrags(attacker, victim, +1) still runs — so an FT enemy freeze likely awards a +1 engine kill/score ON TOP of FreezeTag.Freeze's own ScoreFrags ±1 matrix, double-counting. Add an OnGiveFragsForKill that zeroes the delta (mirror CA/Keepaway)."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "grep GiveFragsForKill in FreezeTag.cs → only a doc-comment mention, no Add(); Scores.cs:543-546 fires GiveFragsForKill.Call then GiveFrags(...,+1)", result: fail }
-    confidence: medium
-    notes: "NEW row — registry coverage gap. Magnitude of the leak depends on whether the FT death/score path reaches Scores.GiveFrags for a frozen victim; the missing GiveFragsForKill→0 suppression is the same one CA implements and is almost certainly required for FT score parity."
+      - { kind: code-read, ref: "FreezeTag.Activate subscribes _giveFragsHandler = OnGiveFragsForKill onto MutatorHooks.GiveFragsForKill (FreezeTag.cs:274-275); OnGiveFragsForKill (FreezeTag.cs:876-880) sets args.FragScore = 0 and returns true; GiveFragsForKill.Call fires live in Scores.cs:548 BEFORE GiveFrags, so the per-kill engine frag is zeroed — no double-count on top of Freeze's ±1 matrix", result: pass }
+    confidence: high
+    notes: "FIX since 2026-06-25 (missing→faithful, na→live). The GiveFragsForKill→0 suppression is now implemented and live, mirroring CA/Keepaway. The engine-frag/score double-count the baseline flagged is closed."
 
   - id: freezetag.weaponarena
     name: "FT default weapon arena (g_freezetag_weaponarena 'most_available')"
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, SetWeaponArena)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnSetWeaponArena"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:SetWeaponArena.Call"
     constants:
-      - { name: "g_freezetag_weaponarena", base: "'most_available' (gametypes-server.cfg:429)", port: "none (no FT SetWeaponArena handler)", match: false }
+      - { name: "g_freezetag_weaponarena", base: "'most_available' (gametypes-server.cfg:429)", port: "CvarString(g_freezetag_weaponarena, 'most_available') when arena unset/'0'", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base ft SetWeaponArena defaults the weapon arena to g_freezetag_weaponarena ('most_available') when no arena is otherwise set, so FT players spawn with (nearly) the full arsenal rather than just the start loadout. The port has no FT SetWeaponArena handler (CA has OnSetWeaponArena for g_ca_weaponarena 'most'); FT players get only the OnSetStartItems loadout. Significant loadout divergence vs stock FT."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "no SetWeaponArena subscription in FreezeTag.cs; CA's OnSetWeaponArena is the model; g_freezetag_weaponarena 'most_available' confirmed in gametypes-server.cfg:429", result: fail }
+      - { kind: code-read, ref: "FreezeTag.Activate subscribes _weaponArenaHandler = OnSetWeaponArena onto MutatorHooks.SetWeaponArena (FreezeTag.cs:280-281); OnSetWeaponArena (FreezeTag.cs:887-892) sets the arena to g_freezetag_weaponarena ('most_available' fallback) when the configured arena is '0'/empty — bit-for-bit Base's `if(arena==\"0\"||\"\") arena = autocvar_g_freezetag_weaponarena`; SetWeaponArena.Call fires live in SpawnSystem.cs:999 (normal) and :1223 (warmup)", result: pass }
     confidence: high
-    notes: "NEW row — registry coverage gap. The start loadout (freezetag.startitems) is faithful, but the arena weapon set on top of it is missing."
+    notes: "FIX since 2026-06-25 (missing→faithful, na→live). FT now defaults the weapon arena to 'most_available' so players spawn with (nearly) the full arsenal on top of the start loadout, matching stock FT. Mirrors CA's OnSetWeaponArena."
 
   - id: freezetag.frozen.no_regen
     name: "Frozen players don't regen health/armor (PlayerRegen)"
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerRegen)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnPlayerRegen"
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:PlayerRegen.Call"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base ft PlayerRegen returns STAT(FROZEN) → a frozen player's health/armor regen is suppressed (they stay at HP=1 while frozen). No generic frozen-status regen gate found in the port (StatusEffects.cs gates fire-transfer/grapple on frozen, but not regen), and FreezeTag has no PlayerRegen handler (CA has OnPlayerRegen). A frozen FT player could slowly regen above HP=1. Default g_balance regen makes this minor (the freeze visual/score don't read HP), but it diverges from Base."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "no PlayerRegen subscription in FreezeTag.cs; no IsStatusFrozen check in any regen path (grep)", result: fail }
-    confidence: medium
-    notes: "NEW row — registry coverage gap. Effectively cosmetic unless regen interacts with the HP=1 frozen-body invariant elsewhere."
+      - { kind: code-read, ref: "FreezeTag.Activate subscribes _regenHandler = OnPlayerRegen onto MutatorHooks.PlayerRegen (FreezeTag.cs:285-286); OnPlayerRegen (FreezeTag.cs:898-899) returns true iff the player is frozen — Base's `return STAT(FROZEN)`; PlayerRegen.Call fires live in PlayerFrameLogic.cs:56 where a true return disables regen", result: pass }
+    confidence: high
+    notes: "FIX since 2026-06-25 (missing→faithful, na→live). A frozen player's health/armor regen is now suppressed (they stay at HP=1 while frozen), matching Base."
 
   - id: freezetag.frozen.no_pickup
     name: "Frozen players can't pick up items or buffs (ItemTouch/BuffTouch)"
@@ -761,23 +763,25 @@ features:
     base_refs:
       - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, ItemTouch)"
       - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, BuffTouch)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnItemTouch"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:FireItemTouch"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base ft ItemTouch returns MUT_ITEMTOUCH_RETURN and BuffTouch returns STAT(FROZEN) for a frozen toucher — a frozen player walking (or being shoved) over an item/buff does NOT collect it. No FT ItemTouch/BuffTouch handler in the port and no generic frozen-status item gate found. Edge-case (frozen players can't move on their own) but a pushed/teleported frozen body could illegitimately pick items up."
+      - "BuffTouch has no separate hook in the port — OnItemTouch (the world-item gate) is the only frozen-pickup gate; buff-pickups route through a different path that has no frozen gate. Minor: frozen players can't initiate movement, and buffs are a mutator. World-item pickups ARE correctly gated."
     verification:
-      - { kind: code-read, ref: "no ItemTouch/BuffTouch subscription in FreezeTag.cs; item-pickup paths show no frozen gate (grep)", result: fail }
-    confidence: medium
-    notes: "NEW row — registry coverage gap. Low impact because frozen players can't initiate movement, but Base explicitly blocks it."
+      - { kind: code-read, ref: "FreezeTag.Activate subscribes _itemTouchHandler = OnItemTouch onto MutatorHooks.ItemTouch (FreezeTag.cs:290-291); OnItemTouch (FreezeTag.cs:906-907) returns true (MUT_ITEMTOUCH_RETURN) iff the toucher is frozen; FireItemTouch fires live in ItemPickupRules.cs:378 BEFORE the give, aborting the pickup. No separate BuffTouch hook (folded into the single item gate per the doc-comment).", result: pass }
+    confidence: high
+    notes: "FIX since 2026-06-25 (missing→faithful for world items, na→partial). A frozen (pushed/teleported) body no longer collects world items. Liveness is partial only because the BuffTouch buff-specific gate has no dedicated port path; the world-item gate is live."
 
   - id: freezetag.frags.center_message
     name: "Per-freeze choice centerprint ('You froze X' / 'You were frozen by Y')"
@@ -828,3 +832,28 @@ features:
       - { kind: code-read, ref: "no ANIMSTATE_FROZEN / frozen-anim handling in src or game (grep)", result: fail }
     confidence: medium
     notes: "NEW row — registry coverage gap. Cosmetic; pairs with the missing MDL_ICE entity (freezetag.presentation.ice_model)."
+
+  - id: freezetag.notif.alone
+    name: "Last-survivor 'You are now alone!' centerprint (LastPlayerForTeam → CENTER_ALONE)"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_LastPlayerForTeam"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_LastPlayerForTeam_Notify"
+    port_refs: []
+    constants:
+      - { name: "alone line", base: "CENTER_ALONE 'You are now alone!' to the team's last unfrozen survivor", port: "declared (NotificationsList.cs:850) — no FT producer", match: false }
+    status:
+      logic: missing
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base freezetag_LastPlayerForTeam_Notify (called from PlayerDies/PlayerSpawn/teamchange when a freeze leaves exactly one unfrozen teammate alive) sends CENTER_ALONE to that survivor — the 'you are now alone' warning. The port's FreezeTag never calls a NotifyLastPlayerForTeam (the method exists only on ClanArena.cs, not shared, and FreezeTag.Freeze/OnDeath/OnPlayerSpawn don't invoke it). The ALONE center notification IS declared (NotificationsList.cs:850) but has no live FT producer."
+    verification:
+      - { kind: code-read, ref: "grep NotifyLastPlayerForTeam/ALONE in FreezeTag.cs → none; NotifyLastPlayerForTeam defined only on ClanArena.cs; ALONE notification declared NotificationsList.cs:850 but FT sends no center ALONE", result: fail }
+    confidence: high
+    notes: "NEW row — registry coverage gap (analogous to CA's last-survivor notify, which CA does implement). FT omits the 'you are now alone' survivor warning Base fires on freeze/spawn. Cosmetic / awareness cue."

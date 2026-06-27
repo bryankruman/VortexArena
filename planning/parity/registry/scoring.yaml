@@ -23,7 +23,7 @@ features:
       - { name: "MAX_SCORE", base: "64", port: "registry size (dynamic)", match: true }
       - { name: "SFL bit layout (LOWER_IS_BETTER..NOT_SORTABLE)", base: "BIT0..BIT7", port: "1<<0..1<<7", match: true }
       - { name: "SFL_ZERO_IS_WORST == SFL_TIME", base: "BIT6 alias", port: "ZeroIsWorst()==Time", match: true }
-      - { name: "full SP_* set (50 fields, RACE_LAPS..FRAGS)", base: "common/scores.qh REGISTER_SP list", port: "RegisterAll registers the identical 50 in QC order", match: true }
+      - { name: "full SP_* set (51 fields, RACE_LAPS..FRAGS incl. SURV_SURVIVALS/SURV_HUNTS)", base: "common/scores.qh REGISTER_SP list", port: "RegisterAll registers the identical 51 in QC order", match: true }
       - { name: "registration order = sort tiebreak", base: "declaration order (not sorted)", port: "declaration order (not sorted)", match: true }
     status:
       logic: faithful
@@ -36,7 +36,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "GameScores.RegisterAll vs common/scores.qh REGISTER_SP list (re-diffed 2026-06-27: all 50 SP_* present in QC declaration order) + SFL_* bits", result: pass }
+      - { kind: code_read, ref: "GameScores.RegisterAll vs common/scores.qh REGISTER_SP list (re-diffed 2026-06-27: all 51 SP_* present in byte-identical QC declaration order, name-for-name verified) + SFL_* bits", result: pass }
     confidence: high
     notes: "Full SP_* set registered in QC declaration order with bit-faithful SFL_* flags. SP_SKILL/SP_FPS are present but the skill column is an unpopulated stub (see scoring.rules.scorerules_basics)."
 
@@ -209,11 +209,11 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ResetFragsRemaining"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:300"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:389"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:644"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:679"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:791"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:1013"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:264"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:1147"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:1083"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:265"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:1175"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:731"
     constants:
       - { name: "announce thresholds", base: "fragsleft == 1 / 2 / 3 (once via fragsleft_last)", port: "fragsleft 1/2/3 once via _fragsLeftLast", match: true }
@@ -376,7 +376,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:AddScoreFloat2Int"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:OnSplitHealthArmor"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:438"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:468"
     constants:
       - { name: "carry remainder across calls", base: "decimal_field accumulates; emit floor(counter+0.5); subtract emitted", port: "_scoreDecimal[scorer] carry; whole=floor(carry+0.5); carry-=whole", match: true }
       - { name: "g_ca_damage2score", base: "100", port: "DefaultDamage2Score 100", match: true }
@@ -394,7 +394,7 @@ features:
     gaps:
       - "Powerup/excess edge: effective = FragDamage - max(0, FragDamage - take - save) mirrors QC, but the per-player _scoreDecimal carry is keyed by Player and cleared only on Activate/Deactivate (not per-round); QC's float2int_decimal_fld is a persistent player field too, so this matches, but a player object reused across a full map reset relies on the Activate clear. Low risk."
     verification:
-      - { kind: code_read, ref: "ClanArena.OnSplitHealthArmor subscribes to GameHooks.PlayerDamageSplitHealthArmor; that hook is Called unconditionally on the live damage path (DamageSystem.cs:438) for every damage application; CA.Activate (subscribed) is invoked live at GameWorld.cs", result: pass }
+      - { kind: code_read, ref: "ClanArena.OnSplitHealthArmor subscribes to GameHooks.PlayerDamageSplitHealthArmor; that hook is Called unconditionally on the live damage path (DamageSystem.cs:468) for every damage application; CA.Activate (subscribed) is invoked live at GameWorld.cs", result: pass }
       - { kind: code_read, ref: "AddScoreFloat2Int does carry += value*factor/100; whole=floor(carry+0.5); AddToPlayer(scorer,Score,whole); carry-=whole — the QC _GameRules_scoring_add_float2int accumulate-and-carry", result: pass }
     confidence: high
     notes: "LIVE for CA (hook subscribed at Activate, fired every damage app) and the rounding matches QC across many small hits. Still scoreboard-only (does not feed the round-win limit)."
@@ -409,7 +409,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:GameStopped"
       - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:AddToPlayer"
       - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:AddToTeam"
-      - "src/XonoticGodot.Server/GameWorld.cs:2452"
+      - "src/XonoticGodot.Server/GameWorld.cs:2507"
     constants:
       - { name: "game_stopped => delta 0 (unless mutator claimed)", base: "yes, central in PlayerScore_Add/TeamScore_AddToTeam", port: "static GameScores.GameStopped published live each tick (OnEndFrame); the central clamp fires", match: true }
     status:
@@ -423,9 +423,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "GameWorld.cs:2452 `GameScores.GameStopped = GameStopped;` runs in OnEndFrame (alongside the VehicleCommon.GameStopped publish), wired as Simulation.EndFrame → executes every server tick. GameWorld.GameStopped => Intermission.Running || MatchEnded || Timeout.IsPaused. The static flag the central clamps in AddToPlayer/AddToTeam read is raised on the live path. AddPlayerScore-claimed bypass is honored (forced); TeamScore_AddToTeam has no bypass (matches QC).", result: pass }
+      - { kind: code_read, ref: "GameWorld.cs:2507 `GameScores.GameStopped = GameStopped;` runs in OnEndFrame (alongside the VehicleCommon.GameStopped publish), wired as Simulation.EndFrame → executes every server tick. GameWorld.GameStopped => Intermission.Running || MatchEnded || Timeout.IsPaused. The static flag the central clamps in AddToPlayer/AddToTeam read is raised on the live path. AddPlayerScore-claimed bypass is honored (forced); TeamScore_AddToTeam has no bypass (matches QC).", result: pass }
     confidence: high
-    notes: "Faithful + live. Publish line drifted to GameWorld.cs:2452 (was 1984; OnEndFrame body unchanged in effect). The single QC clamp point in PlayerScore_Add/TeamScore_AddToTeam fires during intermission/match-end/timeout."
+    notes: "Faithful + live. Publish line drifted to GameWorld.cs:2507 (was 2452; OnEndFrame body unchanged in effect). The single QC clamp point in PlayerScore_Add/TeamScore_AddToTeam fires during intermission/match-end/timeout."
 
   - id: scoring.display.niceprint
     name: "Server `teamstatus` console standings dump (Score_NicePrint)"
@@ -458,10 +458,10 @@ features:
     gaps:
       - "Score_NicePrint's race/cts INTERMISSION broadcast (Base calls Score_NicePrint(NULL) at sv_race.qc:203 / sv_cts.qc:150 when the round ends, broadcasting the standings to all) is not auto-emitted at intermission in the port — only the on-demand `teamstatus` per-caller dump is wired. Low impact: race/cts players still see the networked scoreboard HUD."
     verification:
-      - { kind: code_read, ref: "Commands.cs CmdTeamStatus + NicePrintTeamHeader/NicePrintPlayer/NicePrintItemColor reproduce Score_NicePrint (header row + per-player row + spectators block, NAMEWIDTH/SCORESWIDTH, sort-prio colors, strlennocol pad/trim); registered as the `teamstatus` command (Commands.cs:866, ClientCommandRegistry.cs:90)", result: pass }
+      - { kind: code_read, ref: "Commands.cs CmdTeamStatus (Commands.cs:2396) + NicePrintTeamHeader/NicePrintPlayer/NicePrintItemColor reproduce Score_NicePrint (header row + per-player row + spectators block, NAMEWIDTH/SCORESWIDTH, sort-prio colors, strlennocol pad/trim); registered as the `teamstatus` command (Commands.cs:884)", result: pass }
       - { kind: code_read, ref: "Base CommonCommand_teamstatus (common.qc:593) -> Score_NicePrint(caller); the port wires the identical command; the race/cts intermission Score_NicePrint(NULL) broadcast is the only unported caller (grep Score_NicePrint over Race.cs 2026-06-27 -> no match)", result: pass }
     confidence: high
-    notes: "Fully ported as the `teamstatus` console command in Commands.cs with faithful column layout/colors/pad-trim, live and registered. Only the race/cts intermission auto-broadcast variant remains unported."
+    notes: "Fully ported as the `teamstatus` console command in Commands.cs (registered Commands.cs:884) with faithful column layout/colors/pad-trim, live and registered. Only the race/cts intermission auto-broadcast variant remains unported."
 
   - id: scoring.display.scorelog
     name: "Server score-log / event-log standings dump (DumpStats / GetPlayerScoreString / GetTeamScoreString)"
@@ -477,7 +477,7 @@ features:
       - "src/XonoticGodot.Server/Commands.cs:GetTeamScoreString"
       - "src/XonoticGodot.Server/Commands.cs:GetScoreLogLabel"
       - "src/XonoticGodot.Server/Commands.cs:CmdPrintStats"
-      - "src/XonoticGodot.Server/GameWorld.cs:3797"
+      - "src/XonoticGodot.Server/GameWorld.cs:3871"
     constants:
       - { name: ":labels:player: / :player:see-labels: / :teamscores: log lines (console/eventlog/sv_logscores file)", base: "DumpStats writes the formatted score-log via GetPlayerScoreString/GetTeamScoreString", port: "DumpStats emits :scores:/:status: + :labels:player: + :player:see-labels: + :teamscores: + :end", match: true }
       - { name: "GetScoreLogLabel suffixes (< lower-is-better, !! primary, ! secondary)", base: "server/scores.qc:599", port: "GetScoreLogLabel appends </!!/!", match: true }
@@ -495,7 +495,7 @@ features:
     gaps:
       - "The dedicated sv_logscores_filename file output (Base's fopen-append of the score-log to scores.log) is not written; only the console + eventlog sinks are emitted. The sv_logscores_file cvar is registered but does not drive a separate file. Low impact: server-admin file-logging convenience superseded by the event-log file."
     verification:
-      - { kind: code_read, ref: "Commands.cs:2619 DumpStats + GetPlayerScoreString/GetTeamScoreString/GetScoreLogLabel reproduce server/world.qc:1264 + scores.qc:599-726 (label header w/ </!!/! suffixes, per-player :player:see-labels: rows w/ elapsed+team+id+name, teamplay :teamscores: rows for active team colours, :end terminator)", result: pass }
-      - { kind: code_read, ref: "LIVE callers: GameWorld.cs:3797 DumpStats(final:true) at intermission (mirrors world.qc:1429); `printstats` server command -> CmdPrintStats -> DumpStats(final:false) registered Commands.cs:867", result: pass }
+      - { kind: code_read, ref: "Commands.cs:2675 DumpStats + GetPlayerScoreString/GetTeamScoreString/GetScoreLogLabel (Commands.cs:2546) reproduce server/world.qc:1264 + scores.qc:599-726 (label header w/ </!!/! suffixes, per-player :player:see-labels: rows w/ elapsed+team+id+name, teamplay :teamscores: rows for active team colours, :end terminator)", result: pass }
+      - { kind: code_read, ref: "LIVE callers: GameWorld.cs:3871 DumpStats(final:true) at intermission (mirrors world.qc:1429); `printstats` server command -> CmdPrintStats -> DumpStats(final:false) registered Commands.cs:885", result: pass }
     confidence: high
     notes: "FIX from baseline (was missing, empty port_refs): the score-log/eventlog text dump is now fully ported in Commands.cs and live at intermission + via `printstats`. cvars sv_logscores_console/file/filename/bots registered in Cvars.cs:423-426. Only the dedicated scores.log file sink is intentionally omitted in favor of sv_eventlog_files."

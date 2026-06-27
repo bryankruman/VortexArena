@@ -2,25 +2,22 @@ unit: sv-intermission
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
-# Re-audited 2026-06-27 (drift check) on branch claude/parity-port-waves (Base local checkout
-# xonotic-v0.8.6-151-gf6b1980; the pinned base_ref_rev above is the registry's reference revision and the
-# intermission/mapvoting/world symbols are byte-compatible with it). Net change vs the prior 2026-06-25 baseline:
-# THREE further end-of-match features were completed since that audit, all confirmed live this pass:
-#   (1) matchend.nextlevel: DumpStats(true) is now PORTED (Commands.DumpStats, Commands.cs:2619) and called live
-#       from NextLevel (GameWorld.cs:3797) — a faithful colon-delimited :scores: score-log block with the QC
-#       sink logic (sv_logscores_console / sv_eventlog / sv_eventlog_console / sv_logscores_bots). It was
-#       recorded as a permanent omission in the baseline. logic stays faithful; the row's gap shrinks to just
-#       WeaponStats_Shutdown + the trailing localcmd(sv_hook_gameend).
-#   (2) nextmap.override: ALL THREE previously-missing overrides are now implemented in DriveEndOfMatchMapFlow
-#       (GameWorld.cs:3880-3915) with LIVE host handlers wired by NetGame (QuitHandler/RedirectHandler/
-#       LastLevelHandler, NetGame.cs:773-782 + 809-811): quit_when_empty (player_count<=currentbots → quit),
-#       quit_and_redirect (redirect/reconnect), lastlevel (set lastlevel 0 + togglemenu). A new sv_vote_gametype
-#       pre-map gametype-vote branch was also added. logic partial→faithful, values partial→faithful,
-#       liveness partial→live.
-#   (3) overtime.cascade: STAT(OVERTIMES) is now NETWORKED via the MatchState packet (ServerNet.SendMatchState
-#       writes it as a 32-bit long at ServerNet.cs:982 — OVERTIME_SUDDENDEATH 1<<24 exceeds 24-bit — decoded to
-#       ClientNet.MatchOvertimes, ClientNet.cs:596, fed to TimerPanel.Overtimes, NetGame.cs:3457). The persistent
-#       HUD "Overtime #N" / "Sudden Death" banner now shows. presentation partial→faithful.
+# Re-audited 2026-06-27 (drift check, post-Wave-13 5427e74) on branch claude/parity-port-waves (Base local
+# checkout xonotic-v0.8.6-151-gf6b1980; the pinned base_ref_rev above is the registry's reference revision and the
+# intermission/mapvoting/world symbols are byte-compatible with it). Net change vs the prior 2026-06-27 baseline
+# (which had been written against the Wave-12 tree):
+#   ONE further end-of-match feature was completed since that baseline, confirmed live this pass:
+#   (*) matchend.nextlevel: the trailing QC localcmd("\nsv_hook_gameend\n") admin-script alias is now PORTED.
+#       NextLevel (GameWorld.cs:3910) invokes Commands.GameEndHookHandler, wired LIVE by NetGame on BOTH the
+#       non-threaded and threaded host paths (NetGame.cs:833 → _serverWorld.LoadedConfig.ExecuteLine
+#       ("sv_hook_gameend")), resolving the stock empty alias (no-op, matching Base) or any server.cfg redefine.
+#       The baseline recorded this as STILL OMITTED. logic stays faithful; the row's only remaining omission is
+#       now WeaponStats_Shutdown (per-weapon accuracy-stats export). kind=fix (a recorded gap closed).
+# Confirmed-still-true from the prior baseline (verified again this pass): DumpStats(true) ported+live
+#   (Commands.DumpStats Commands.cs:2675, called NextLevel GameWorld.cs:3871); nextmap.override all three exits
+#   (quit_when_empty/quit_and_redirect/lastlevel) live (DriveEndOfMatchMapFlow + NetGame.cs:773-782/809-811);
+#   overtime.cascade STAT(OVERTIMES) networked via MatchState (ServerNet.cs:982 → ClientNet.MatchOvertimes
+#   ClientNet.cs:596 → TimerPanel.Overtimes NetGame.cs:3465).
 # No regressions. UNCHANGED since the prior baseline (only line numbers shifted): matchend.freeze,
 # matchend.nextmap_broadcast, client.scoreboard_autoshow, timer.exittime, timer.input_early_exit,
 # maplist.rotation, nextmap.changelevel, client.view_freeze, client.autoscreenshot, audio.cdtrack.
@@ -31,7 +28,7 @@ summary:
   feature_count: 15
   worst_gaps:
     - "Map vote remains networked-incomplete for REMOTE clients: there is still no NetControl.MapVote opcode (NetProtocol.cs enum ends at MatchState=18 + waypoints), so the live ballot/cast path works ONLY on a listen server (the client reads the in-process GameWorld.MapVote directly). A pure --connect client has no in-process MapVoting, so it never sees the ballot and cannot vote; the panel feed honestly blanks for it."
-    - "NextLevel still omits WeaponStats_Shutdown() and the trailing localcmd(sv_hook_gameend) admin-script alias — but now DOES port DumpStats(true), VoteReset, MatchEnd_BeforeScores/MatchEnd hooks, Kill_Notification(NOTIF_ALL), and (client-side) target_music_kill."
+    - "NextLevel still omits WeaponStats_Shutdown() (per-weapon accuracy-stats export) — but now DOES port DumpStats(true), the trailing localcmd(sv_hook_gameend) admin-script alias (GameEndHookHandler), VoteReset, MatchEnd_BeforeScores/MatchEnd hooks, Kill_Notification(NOTIF_ALL), and (client-side) target_music_kill."
     - "Map-vote client UI has no mouse/cursor click-to-vote (Base MapVote_InputEvent); voting is number-key 1..9 only on the listen server."
 features:
   - id: sv-intermission.matchend.nextlevel
@@ -57,14 +54,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "NextLevel now reproduces the winner latch (MarkWinners), VoteReset (Voting.Stop), the MatchEnd_BeforeScores + MatchEnd mutator hooks, DumpStats(true) (Commands.DumpStats — colon-delimited :scores: score-log block), Kill_Notification(NOTIF_ALL) (SendCenterKill), the :gameover event log (sv_eventlog gated), PlayerStats_GameReport, the campaign PreIntermission decision, and the demo stop. STILL OMITS: WeaponStats_Shutdown() (per-weapon accuracy stats export) and the trailing localcmd(sv_hook_gameend) admin-script alias. (target_music_kill is ported but client-side — see sv-intermission.audio.cdtrack.)"
+      - "NextLevel now reproduces the winner latch (MarkWinners), VoteReset (Voting.Stop), the MatchEnd_BeforeScores + MatchEnd mutator hooks, DumpStats(true) (Commands.DumpStats — colon-delimited :scores: score-log block), Kill_Notification(NOTIF_ALL) (SendCenterKill), the :gameover event log (sv_eventlog gated), PlayerStats_GameReport, the campaign PreIntermission decision, the demo stop, AND the trailing localcmd(sv_hook_gameend) admin-script alias (Commands.GameEndHookHandler → LoadedConfig.ExecuteLine). STILL OMITS: WeaponStats_Shutdown() (per-weapon accuracy stats export) — the lone remaining gap. (target_music_kill is ported but client-side — see sv-intermission.audio.cdtrack.)"
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:GameWorld_EndOfMatch_RotatesToNextMap", result: pass }
-      - { kind: code-read, ref: "GameWorld.NextLevel (lines 3783-3833): Voting.Stop + FireMatchEndBeforeScores + MarkWinners + Commands.DumpStats(final:true) + GameLog.GameOver/Close (sv_eventlog) + PlayerStats.GameReport + SendCenterKill(NotifBroadcast.All) + Campaign.PreIntermission + Demo.OnMatchEnd + FireMatchEnd. No WeaponStats_Shutdown / sv_hook_gameend (2026-06-27).", result: pass }
-      - { kind: code-read, ref: "Commands.DumpStats (Commands.cs:2619-2682): faithful colon block — :scores:<gt>_<map>:<time>, :labels:player:, per-player :player:see-labels: rows (real + logscores_bots), teamplay :teamscores: rows, :end; sinks = sv_logscores_console / sv_eventlog / sv_eventlog_console doubling-suppression (2026-06-27).", result: pass }
-      - { kind: grep, ref: "no WeaponStats_Shutdown anywhere in src/XonoticGodot.Server; sv_hook_gameend only appears in a NextLevel comment (no localcmd) — 2026-06-27.", result: fail }
+      - { kind: code-read, ref: "GameWorld.NextLevel (lines 3857-3911): Voting.Stop + FireMatchEndBeforeScores + MarkWinners + Commands.DumpStats(final:true) + GameLog.GameOver/Close (sv_eventlog) + PlayerStats.GameReport + SendCenterKill(NotifBroadcast.All) + Campaign.PreIntermission + Demo.OnMatchEnd + FireMatchEnd + Commands.GameEndHookHandler?.Invoke() (sv_hook_gameend). No WeaponStats_Shutdown (2026-06-27).", result: pass }
+      - { kind: code-read, ref: "Commands.DumpStats (Commands.cs:2675): faithful colon block — :scores:<gt>_<map>:<time>, :labels:player:, per-player :player:see-labels: rows (real + logscores_bots), teamplay :teamscores: rows, :end; sinks = sv_logscores_console / sv_eventlog / sv_eventlog_console doubling-suppression (2026-06-27).", result: pass }
+      - { kind: code-read, ref: "sv_hook_gameend NOW WIRED: Commands.GameEndHookHandler (Commands.cs:179) invoked at NextLevel GameWorld.cs:3910; bound LIVE by NetGame.cs:833 (non-threaded) — also covered on the threaded path — to _serverWorld.LoadedConfig.ExecuteLine(\"sv_hook_gameend\"), resolving the stock empty alias (no-op, matching Base QC server/world.qc:1463 localcmd) or any server.cfg redefine (2026-06-27).", result: pass }
+      - { kind: grep, ref: "no WeaponStats_Shutdown anywhere in src/XonoticGodot.Server (the single remaining omission; Base server/world.qc:1433) — 2026-06-27.", result: fail }
     confidence: high
-    notes: "FIXED since the 2026-06-25 baseline: DumpStats(true) is now ported (Commands.DumpStats) and live on the NextLevel path — it was previously recorded as a permanent omission. The two remaining omissions (WeaponStats_Shutdown, sv_hook_gameend) are an accuracy-stats export seam and an admin-script alias with no stock-config gameplay effect."
+    notes: "FIXED since the prior 2026-06-27 baseline: the trailing localcmd(sv_hook_gameend) admin-script alias is now ported+live (Commands.GameEndHookHandler, wired on both host paths) — it was previously recorded as still-omitted. The lone remaining omission is WeaponStats_Shutdown (an accuracy-stats export seam with no stock-config gameplay effect). DumpStats(true) and the rest of the NextLevel bookkeeping remain ported and live."
 
   - id: sv-intermission.matchend.freeze
     name: "World freeze during intermission (game_stopped/intermission_running)"

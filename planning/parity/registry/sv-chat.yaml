@@ -1,7 +1,7 @@
 unit: sv-chat
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # drift re-audit on claude/parity-port-waves: NO status drift vs 2026-06-25 baseline. Re-verified all 15 rows against current Base (863cd3e84) + port; printtochat helpers still faithful-but-DEAD, ignore-full test now asserts at Chat.IgnoreMaxPlayers(16). Only cosmetic port_refs line shifts (CmdVoice moved to Commands.cs:~3019).
+last_audited: "2026-06-27"  # drift re-audit on claude/parity-port-waves: NO status drift. Re-verified all 15 rows against current Base (863cd3e84) + port; all chat cvar/flood/IGNORE_MAXPLAYERS(16) constants match server.cfg+cmd.qh, say/say_team/tell/voice all route Chat.Say (live), 0 chat-hook subscribers in Base (intended_divergence holds), printtochat helpers still faithful-but-DEAD (only Chat.cs defines them), ignore-full test asserts at Chat.IgnoreMaxPlayers. Only cosmetic port_refs line shift (CmdVoice now Commands.cs:3052).
 summary:
   feature_count: 15
   worst_gaps:
@@ -349,11 +349,11 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code-read, ref: "globalsound.qh:144-155 (VoiceMessage: ownteam=teamradio; int flood = Say(this,ownteam,NULL,msg,true); fake = IS_SPEC||IS_OBSERVER||flood<0; flood==0 break) vs Commands.cs:~3019-3036 CmdVoice", result: pass }
-      - { kind: code-read, ref: "Commands.cs:888 Register(\"voice\", CmdVoice) = live client-command path; CmdVoice (~3019) calls Chat.Say then derives fake and returns on flood==0", result: pass }
+      - { kind: code-read, ref: "globalsound.qh:144-155 (VoiceMessage: ownteam=teamradio; int flood = Say(this,ownteam,NULL,msg,true); fake = IS_SPEC||IS_OBSERVER||flood<0; flood==0 break) vs Commands.cs:3052-3097 CmdVoice", result: pass }
+      - { kind: code-read, ref: "Commands.cs:906 Register(\"voice\", CmdVoice) = live client-command path; CmdVoice (3052) calls Chat.Say then derives fake and returns on flood==0", result: pass }
       - { kind: code-read, ref: "SoundSystem.GlobalSound honors `fake` per-voicetype (TeamRadio fake->emitter-only; LastAttacker fake->skip attacker)", result: pass }
     confidence: high
-    notes: "CmdVoice (Commands.cs:2447-2500) routes the optional [<message>] arg through Chat.Say(p, ownteam?1:0, null, msg, true) — voice/radio text appears in chat, is flood-throttled, a spectator say downgrades — then derives fake (flood<0) and returns (no GlobalSound) on flood==0, matching the Base macro's break. ownteam = VoiceType.TeamRadio. The port returns early for dead/observer/spec BEFORE the Say call (Commands.cs:2274-2275), so the macro's IS_SPEC||IS_OBSERVER fake terms are mooted and fake==flood<0 is exactly equivalent on the reachable path. All five dimensions faithful + live."
+    notes: "CmdVoice (Commands.cs:3052-3097) routes the optional [<message>] arg through Chat.Say(p, ownteam?1:0, null, msg, true) — voice/radio text appears in chat, is flood-throttled, a spectator say downgrades — then derives fake (flood<0) and returns (no GlobalSound) on flood==0, matching the Base macro's break. ownteam = VoiceType.TeamRadio. The port returns early for dead/observer/spec BEFORE the Say call (Commands.cs:3069-3070), so the macro's IS_SPEC||IS_OBSERVER fake terms are mooted and fake==flood<0 is exactly equivalent on the reachable path. All five dimensions faithful + live."
 
   - id: sv-chat.delivery.dedicated_print_gating
     name: "dedicated_print gated on sv_dedicated (server-console echo)"

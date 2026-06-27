@@ -3,12 +3,12 @@ category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
 summary:
-  feature_count: 17
+  feature_count: 18
   worst_gaps:
-    - "Secondary Blaster does not work during the round countdown (Overkill does not subscribe the live PlayerPreThink chain)."
-    - "No item-respawn waypoints for surviving health/armor (Item_RespawnCountdown / Item_ScheduleRespawn hook chains do not exist)."
     - "MUTATOR_ONADD precache_all_playermodels(ok_player) and the g_overkill_items IntrusiveList are never built (player model missing; the random pool uses a hard-coded name list instead)."
     - "ok_weapons sub-mutator unblock-gate not modeled (OK weapons exist as direct registrations; no WEP_FLAG_MUTATORBLOCKED gating)."
+    - "oknex_charge GetPressedKeys velocity-charge accumulation is unported (charge off by default, so inert at shipped balance — registry coverage gap, see new row)."
+    - "ok_lastwep per-slot capture is slot-0-only (Overkill loadouts occupy slot 0, low practical impact)."
     - "Client cl_overkill cvar_settemp(g_overkill,1) sync is still absent (cosmetic/client only; the server-side mod-name strings, SetModname, and pretty-string are now live)."
 features:
   - id: overkill.enable.predicate
@@ -227,23 +227,24 @@ features:
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, PlayerPreThink)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnPlayerPreThink"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
-      timing: missing
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "During an active-but-not-started round, pressing ATCK2 does not fire the secondary Blaster: Overkill does not subscribe the PlayerPreThink chain (which IS live — PlayerPreThink.Call at GameWorld.cs:1294). Players cannot blaster-jump during the countdown, and the button is not consumed. UNCHANGED; re-verified 2026-06-22 post-impl."
+      - "Minor: Base iterates all weapon slots and runs each slot's m_weapon.wr_think(...,2); the port runs the secondary WrThink for slot 0's current weapon only (the port's inventory carries a single active weapon on slot 0). Functionally equivalent for OK loadouts. The QC weaponLocked() is approximated by the reachable freeze subset (FrozenStat || STATUSEFFECT_Frozen), same stand-in as WeaponFireDriver/CampcheckMutator."
     verification:
-      - { kind: code, ref: "OverkillMutator subscribes 8 chains (OverkillMutator.cs:93-100), none is PlayerPreThink; the chain itself is live at GameWorld.cs:1294", result: fail }
+      - { kind: code, ref: "OnPlayerPreThink (OverkillMutator.cs:515) subscribed to MutatorHooks.PlayerPreThink (Hook cs:143). The chain is LIVE: PlayerPreThink.Call at GameWorld.cs:2226. Guards match Base: bails on Api null / game-stopped (caller) / non-player / dead, then requires ButtonAttack2 && !WeaponLocked && RoundHandler.RoundGateBlocks() (== round_handler_IsActive() && !IsRoundStarted()). Runs held weapon's secondary WrThink with ATCK2 set, then consumes player.ButtonAttack2 = false.", result: pass }
     confidence: high
-    notes: "Only matters in round-based gametypes (e.g. CA/freezetag) run under Overkill; the live seam exists, Overkill simply never wires onto it."
+    notes: "FIX (logic/timing missing->faithful, liveness na->live). Since the baseline the port grew OnPlayerPreThink and subscribes the now-live PlayerPreThink chain (GameWorld.cs:2226). During an active-but-not-started round, ATCK2 now runs the OK weapons' secondary blaster-jump and the button is consumed — matching Base. Only matters in round-based gametypes (CA/freezetag) run under Overkill."
   - id: overkill.filter.items_and_powerup_replace
     name: "FilterItem: block normal health/armor + replace Strength/Shield with HMG/RPC superweapons"
     layer: [authority]
@@ -303,24 +304,27 @@ features:
       - "common/mutators/mutator/overkill/sv_overkill.qc:ok_HandleItemWaypoints"
       - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, Item_RespawnCountdown)"
       - "common/mutators/mutator/overkill/sv_overkill.qc:MUTATOR_HOOKFUNCTION(ok, Item_ScheduleRespawn)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnItemRespawnCountdown"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnItemScheduleRespawn"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:HandleItemWaypoints"
     constants:
-      - { name: "g_overkill_itemwaypoints", base: "1", port: "none", match: false }
+      - { name: "g_overkill_itemwaypoints", base: "1", port: "ItemWaypoints (ReadFilterCvar dflt true)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No respawn-timer waypoints are shown for HealthMega/ArmorMedium/ArmorBig/ArmorMega under Overkill. No Item_RespawnCountdown / Item_ScheduleRespawn mutator hook chains exist in the port. UNCHANGED by Wave-2."
+      - "Minor: Base matches on item.itemdef (ITEM_HealthMega/ArmorMedium/ArmorBig/ArmorMega); the port matches on the live entity's ClassName (item_health_mega/armor_medium/armor_big/armor_mega) — same stand-in the FilterItem hook uses since the port's item registry isn't fully type-mapped. End set is identical."
     verification:
-      - { kind: code, ref: "no Item_RespawnCountdown / Item_ScheduleRespawn mutator hook chain or Overkill handler in src/", result: fail }
+      - { kind: code, ref: "OnItemRespawnCountdown (OverkillMutator.cs:575) and OnItemScheduleRespawn (cs:580) subscribed to MutatorHooks.ItemRespawnCountdown/ItemScheduleRespawn (Hook cs:144-145). BOTH chains are LIVE: FireItemRespawnCountdown at ItemPickupRules.cs:811 (gates the SPRITERULE_SPECTATOR restriction so surviving Mega/Big health+armor countdown waypoints show for everyone), FireItemScheduleRespawn at ItemPickupRules.cs:667. HandleItemWaypoints (cs:559) gates on ItemWaypoints (g_overkill_itemwaypoints, default 1 via ReadFilterCvar cs:174) and returns true for the four item classes, matching ok_HandleItemWaypoints.", result: pass }
     confidence: high
-    notes: null
+    notes: "MAJOR FIX (all dimensions missing->faithful, liveness na->live). Since the baseline the Item_RespawnCountdown and Item_ScheduleRespawn hook chains were ADDED and wired into the live item-respawn path (ItemPickupRules.cs:811,667), and Overkill subscribes both. The g_overkill_itemwaypoints cvar (default 1) is now read and honored; surviving Mega/Big health+armor get respawn-countdown waypoints visible to all, matching Base."
   - id: overkill.forbid.throw_weapon
     name: "ForbidThrowCurrentWeapon -> true"
     layer: [authority]
@@ -441,3 +445,28 @@ features:
       - { kind: code, ref: "OnNadeDamage (OverkillMutator.cs:470) subscribed to MutatorHooks.NadeDamage (Hook cs:132 NadeDamage.Add). The NadeDamage chain is LIVE: FireNadeDamage (MutatorHooks.cs:1325) is called from NadeProjectile.cs:208 on the nade-damage path. Guard `args.Weapon != \"okhmg\" → no-op`, else args.Damage = Nade.MaxHealth*0.1 and return true (consumed) — matches okhmg.qc:8-11 exactly.", result: pass }
     confidence: high
     notes: "NEWLY MAPPED (was absent from the registry). The okhmg_nadesupport Nade_Damage hook was previously untracked; the port implements it inside OverkillMutator and it is live via NadeProjectile. Intended divergence: Base's separate always-on okhmg_nadesupport mutator is folded into the ok-gated OverkillMutator (functionally equivalent since the OK-HMG only exists under Overkill)."
+  - id: overkill.oknex.charge_velocity
+    name: "oknex_charge GetPressedKeys: accumulate OK-Nex charge proportional to xy velocity"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/overkill/oknex.qc:REGISTER_MUTATOR(oknex_charge) MUTATOR_HOOKFUNCTION(oknex_charge, GetPressedKeys)"
+    port_refs: []
+    constants:
+      - { name: "g_balance_oknex_charge", base: "0 (off)", port: "Cvars.Charge default false", match: true }
+      - { name: "charge_velocity_rate", base: "g_balance_oknex_charge_velocity_rate", port: "none", match: false }
+      - { name: "charge_minspeed/maxspeed", base: "g_balance_oknex_charge_{min,max}speed", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The velocity-based OK-Nex charge accumulation (oknex_charge GetPressedKeys: while holding OK-Nex above charge_minspeed, add up to charge_velocity_rate*f*frametime to oknex_charge, scaled by xy-speed between min/maxspeed) is NOT ported. OkNex.cs ports only the time-based charge regen (ChargeRate*FrameTime) and explicitly defers the velocity-charge path + chargepool (OkNex.cs:20-23 'don't port the charge path unless the cvar is set'). INERT at the shipped balance: g_balance_oknex_charge defaults 0, so neither path runs by default."
+    verification:
+      - { kind: code, ref: "No oknex_charge / GetPressedKeys velocity-charge handler in src/ (grep). OkNex.cs documents the deferral (cs:20-23) and only implements the cvar-gated time-based regen (cs:88-89). Base registers oknex_charge as a separate always-on mutator (oknex.qc:32, predicate true) and accumulates charge via the GetPressedKeys hook.", result: fail }
+    confidence: high
+    notes: "NEW-UNMAPPED row added 2026-06-27. This overkill-dir mutator (oknex_charge) had no registry coverage. Deferred-by-design because OK-Nex charge is off by default; only matters on servers/balances that set g_balance_oknex_charge 1. The OK-Nex weapon's other charge mechanics belong to the weapon unit; only the velocity-accumulation hook is in scope here."

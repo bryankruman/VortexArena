@@ -3,9 +3,8 @@ category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
 summary:
-  feature_count: 13
+  feature_count: 14
   worst_gaps:
-    - "Vehicle occupants are never rewound: Base recurses antilag into a manned vehicle's body, the port has no vehicle recursion, so high-ping shots at a moving vehicle hit its present position only."
     - "g_antilag modes 1 (verified client-side) and 3 (prydon cursor hitscan) are unimplemented: a server set to either gets NO lag compensation at all (port treats anything != 2 as no-rewind)."
     - "Shooter dphitcontentsmask is never widened to CORPSE during the antilag trace: Base force-sets SOLID|BODY|CORPSE around every antilag/fireBullet trace so a shot can hit gibbed/corpse bodies; the port's BeginLagComp only rewinds origins (no mask change)."
 features:
@@ -117,7 +116,7 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/AntilagTests.cs:ComputeTakebackTime_* (ping, 0.4 cap, negative->0)", result: pass }
-      - { kind: code, ref: "ComputeTakebackTime bounds [0,0.4]; ServerNet.cs:1280 MeasuredRtt = receivetime - cmd.time, low-passed; BeginLagComp (:2476) passes interpolationDelay 0", result: pass }
+      - { kind: code, ref: "ComputeTakebackTime bounds [0,0.4]; ServerNet.cs:1280 MeasuredRtt = receivetime - cmd.time, low-passed; BeginLagComp (:2502) passes interpolationDelay 0", result: pass }
     confidence: medium
     notes: "0.4s cap + no-added-ticrate are exact. Ping is a faithful re-impl of DP's cmd.receivetime-cmd.time with a 1st-order low-pass, but the port's smoothing constant (RttSmoothing) is not DP's, so the exact rewind depth under jitter can differ by a few ms — hence medium, not high."
 
@@ -134,8 +133,9 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireBullet"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireRailgunBullet"
     constants:
-      - { name: "rewound set", base: "players + monsters + nades (+ vehicles via recursion)", port: "players + monsters + nades", match: false }
+      - { name: "rewound set", base: "players + monsters + nades (+ vehicles via recursion)", port: "players + monsters + nades + manned vehicle bodies", match: true }
       - { name: "shooter excluded", base: "ignore == shooter", port: "ReferenceEquals(kv.Key, shooter) skip", match: true }
+      - { name: "shooter's own vehicle excluded", base: "reached via pilot's takeback; player loop skips it==ignore", port: "ReferenceEquals(kv.Key, shooterVehicle) skip", match: true }
       - { name: "re-entrancy", base: "shotgun does ONE bracket around all pellets (do_antilag=false per pellet)", port: "per-pellet Begin/End; _lagCompActive guard makes nesting a no-op", match: true }
     status:
       logic: faithful
@@ -146,13 +146,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Vehicle occupants are never rewound: Base recurses antilag into a manned vehicle's body, the port has no vehicle recursion, so high-ping shots at a moving vehicle hit its present position only."
+    gaps: []
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/AntilagHookTests.cs:FireBullet/FireRailgunBullet_Brackets_Its_Trace_With_LagComp", result: pass }
-      - { kind: code, ref: "WeaponFiring.cs:289 FireBullet + :470 FireRailgunBullet wrap the trace in LagComp.Begin/End (try/finally; End at :437/:574); BeginLagComp (ServerNet.cs:2460) rewinds _antilag (players, :2480) + _antilagEntities (monsters/nades, :2490); no e.vehicle recursion anywhere in BeginLagComp", result: pass }
+      - { kind: code, ref: "WeaponFiring.cs:289 FireBullet + :470 FireRailgunBullet wrap the trace in LagComp.Begin/End (try/finally; End at :437/:574); BeginLagComp (ServerNet.cs:2486) rewinds _antilag (players, :2506) + _antilagEntities (monsters/nades/MANNED VEHICLES, :2520) at the shooter's takeback; manned vehicle bodies recorded via IsAntilagged->IsMannedVehicle (ServerNet.cs:2217/2222), shooter's own vehicle excluded (:2518/2522)", result: pass }
     confidence: high
-    notes: "Bracket is live for every hitscan weapon routed through FireBullet/FireRailgunBullet (Shotgun/Machinegun/Rifle/Vortex/Vaporizer/Ok* + bullet turrets). Port brackets per-pellet rather than once-per-shot, but the _lagCompActive guard + identical rewind time make it behaviorally equivalent. Vehicle recursion is the missing breadth."
+    notes: "Bracket is live for every hitscan weapon routed through FireBullet/FireRailgunBullet (Shotgun/Machinegun/Rifle/Vortex/Vaporizer/Ok* + bullet turrets). Port brackets per-pellet rather than once-per-shot, but the _lagCompActive guard + identical rewind time make it behaviorally equivalent. VEHICLE GAP CLOSED since 2026-06-22 baseline: manned (non-PLAYERSLOT, player-owned) vehicle bodies are now recorded into _antilagEntities (IsAntilagged->IsMannedVehicle, ServerNet.cs:2214-2225) and rewound by BeginLagComp (:2520-2527), the structural port of Base's antilag_record/antilag_takeback recursion into a player's .vehicle (with the VHF_PLAYERSLOT guard -> VehicleFlags.PlayerSlot check). The shooter's own vehicle is excluded (:2518/2522), matching Base where the pilot's it==ignore skip prevents self-rewind. Vehicle enter/exit also raises AntilagNeedsClear on the body (VehicleBoarding.cs:241/276) so its ring is wiped on board/unboard. No dedicated vehicle-antilag unit test yet, so confidence is high-from-code, not test-backed."
 
   - id: sv-antilag.setupshot.trueaim
     name: "W_SetupShot trueaim + shotorg traces are antilagged (g_antilag==2)"
@@ -175,7 +174,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "WeaponFiring.cs:176 LagComp.Begin(actor) wraps the trueaim TraceLineWarpzone (:195) + the eye/muzzle-nudge Traces (:200/217/219), LagComp.End() in the finally at :225. Base tracing.qc:46/85/97 use the _antilag variants at g_antilag==2; LagComp.Begin no-ops unless a provider is installed and BeginLagComp's g_antilag==2 + cl_noantilag gate passes (ServerNet.cs:2464/2470), matching Base's `antilag` flag.", result: pass }
+      - { kind: code, ref: "WeaponFiring.cs:176 LagComp.Begin(actor) wraps the trueaim TraceLineWarpzone (:195) + the eye/muzzle-nudge Traces (:200/217/219), LagComp.End() in the finally at :225. Base tracing.qc:46/85/97 use the _antilag variants at g_antilag==2; LagComp.Begin no-ops unless a provider is installed and BeginLagComp's g_antilag==2 + cl_noantilag gate passes (ServerNet.cs:2490/2496), matching Base's `antilag` flag.", result: pass }
     confidence: high
     notes: "WAVE-5 FIX. SetupShot's trueaim + muzzle-nudge traces are now bracketed by the SHARED LagComp facade (the same machinery FireBullet/FireRailgunBullet/Arc use), so w_shotend/w_shotorg/w_shotdir are computed against rewound enemy positions for EVERY weapon (hitscan + every projectile) at g_antilag==2. The bracket is self-contained and balanced (Begin at :141, End in the finally at :190) and runs BEFORE the separate FireBullet/Arc damage-trace bracket — sequential, never nested, exactly like Base where W_SetupShot and the weapon's damage trace antilag independently. Gated identically (no-op for non-clients / cl_noantilag / modes != 2 / no provider). Class + method docstrings updated to drop the stale 'antilag deferred' claim. Remaining SetupShot gaps (warpzone untransform, trueaim minrange clamp, modes 1/3) are tracked elsewhere and out of scope here."
 
@@ -229,7 +228,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "BeginLagComp (ServerNet.cs:2460) early-returns on _antilagMode!=2 (:2464); :2470 GetClientCvarBool(sp,'cl_noantilag'); non-Player skip; ComputeTakebackTime clamps RTT<0->0. cl_noantilag in ClientNet.cs ReplicatedCvars list (PumpReplicatedCvars/PushReplicatedSet).", result: pass }
+      - { kind: code, ref: "BeginLagComp (ServerNet.cs:2486) early-returns on _antilagMode!=2 (:2490); :2496 GetClientCvarBool(sp,'cl_noantilag'); non-Player skip; ComputeTakebackTime clamps RTT<0->0. cl_noantilag in ClientNet.cs:770 ReplicatedCvars list (PumpReplicatedCvars/PushReplicatedSet).", result: pass }
     confidence: high
     notes: "cl_noantilag is replicated client->server (ClientNet.cs:770 ReplicatedCvars) and honored per-shooter. CORRECTION vs draft: g_antilag IS shipped in the port's xonotic-server.cfg:199 (set 2); the empty-cvar fallback to 2 still yields the correct default."
 
@@ -254,7 +253,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "BeginLagComp (ServerNet.cs:2464) gated on _antilagMode == 2, matching QC's autocvar_g_antilag != 2 -> lag = 0; _antilagMode read from g_antilag cvar at ServerNet.cs:1650 (empty -> 2)", result: pass }
+      - { kind: code, ref: "BeginLagComp (ServerNet.cs:2490) gated on _antilagMode == 2, matching QC's autocvar_g_antilag != 2 -> lag = 0; _antilagMode read from g_antilag cvar at ServerNet.cs:1655 (empty -> 2)", result: pass }
     confidence: high
     notes: "The stock default mode and the only one Xonotic servers normally run. The same g_antilag==2 gate now governs both the FireBullet/FireRailgunBullet/Arc hitscan-damage bracket AND the W_SetupShot trueaim/muzzle traces (sv-antilag.setupshot.trueaim, fixed Wave-5) — every SetupShot trace is rewound at mode 2."
 
@@ -280,7 +279,7 @@ features:
     gaps:
       - "g_antilag modes 1 (verified client-side) and 3 (prydon cursor hitscan) are unimplemented: a server set to either gets NO lag compensation at all (port treats anything != 2 as no-rewind)."
     verification:
-      - { kind: code, ref: "No w_shotdir aim-correction / cursor_trace_ent handling in the port; _antilagMode != 2 simply disables the bracket (ServerNet.cs:2464). Base modes: tracing.qc:117 (g_antilag==1 ghost trace) + :132 (g_antilag==3 cursor_trace_ent) + client.qc:1002", result: fail }
+      - { kind: code, ref: "No w_shotdir aim-correction / cursor_trace_ent handling in the port; _antilagMode != 2 simply disables the bracket (ServerNet.cs:2490). Base modes: tracing.qc:117 (g_antilag==1 ghost trace) + :132 (g_antilag==3 cursor_trace_ent) + client.qc:1002", result: fail }
     confidence: high
     notes: "Open question whether the port intends to support modes 1/3 at all. If servers only ever run mode 2 (stock default), this is a non-issue. liveness=na (no code on this dimension; corrected from draft's 'dead')."
 
@@ -313,9 +312,9 @@ features:
     gaps: []
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/AntilagTests.cs:Clear_* (ring reset)", result: pass }
-      - { kind: code, ref: "ServerNet.cs:1837-1858 BuildEntitySet honors p.AntilagNeedsClear (one-shot, :1844) AND the >TeleportTickDistance jump test (:1837), either of which calls hist.Clear() (:1855); flag set by SpawnSystem.cs:700 (PutPlayerInServer/PutClientInServer:858), Teleporters.cs:471 (teleport), VehicleBoarding.cs:238/271 (enter/exit). _antilagEntities still uses the jump heuristic only (RecordAntilagEntities ServerNet.cs:2177).", result: pass }
+      - { kind: code, ref: "ServerNet.cs:1815-1863 BuildEntitySet honors p.AntilagNeedsClear (one-shot, :1849) AND the >TeleportTickDistance jump test (:1842), either of which calls hist.Clear() (:1860); flag set by SpawnSystem.cs:749 (PutPlayerInServer/PutClientInServer), Teleporters.cs:474 (teleport), VehicleBoarding.cs:240/275 (player) + :241/276 (vehicle body, enter/exit). _antilagEntities now ALSO honors AntilagNeedsClear (RecordAntilagEntities ServerNet.cs:2184-2188) plus the jump heuristic.", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-22 baseline: the explicit antilag_clear LIFECYCLE is now wired via the one-shot Entity.AntilagNeedsClear flag — PutPlayerInServer (SpawnSystem.cs:700), teleport (Teleporters.cs:471), and vehicle enter+exit (VehicleBoarding.cs:238/271) all set it, and BuildEntitySet (ServerNet.cs:1837-1858) Clears the ring when it (or the >150u jump backstop) fires. This closes the baseline gap (a respawn/short-teleport landing within 150u of the prior origin now clears explicitly, not just via the heuristic). The clear MECHANISM (AntilagBuffer.Clear) was already faithful; the TRIGGER is now the explicit QC lifecycle plus the heuristic as a safety net. QC also fills the cleared ring with e.origin + sentinel -2342; the port's Clear just resets head/count, behaviorally equivalent. (Monster/nade rings — _antilagEntities — still rely on the movement heuristic alone, but Base has no explicit antilag_clear for those entities either.)"
+    notes: "FIXED since 2026-06-22 baseline: the explicit antilag_clear LIFECYCLE is now wired via the one-shot Entity.AntilagNeedsClear flag — PutPlayerInServer (SpawnSystem.cs:749), teleport (Teleporters.cs:474), and vehicle enter+exit (VehicleBoarding.cs:240/275 player + :241/276 body) all set it, and BuildEntitySet (ServerNet.cs:1815-1863) Clears the ring when it (or the >150u jump backstop) fires. This closes the baseline gap (a respawn/short-teleport landing within 150u of the prior origin now clears explicitly, not just via the heuristic). The clear MECHANISM (AntilagBuffer.Clear) was already faithful; the TRIGGER is now the explicit QC lifecycle plus the heuristic as a safety net. QC also fills the cleared ring with e.origin + sentinel -2342; the port's Clear just resets head/count, behaviorally equivalent. UPDATE 2026-06-27: the _antilagEntities path (monsters/nades AND the newly-recorded manned vehicle bodies) now ALSO honors the explicit AntilagNeedsClear flag (RecordAntilagEntities ServerNet.cs:2184-2188), not just the jump heuristic — so a vehicle board/unboard that doesn't move the body far enough still wipes its ring."
 
   - id: sv-antilag.arc_beam
     name: "Arc beam lag-compensated trace + antilag_takebackavgvelocity"
@@ -324,7 +323,7 @@ features:
       - "common/weapons/weapon/arc.qc:375 (WarpZone_traceline_antilag)"
       - "server/antilag.qc:antilag_takebackavgvelocity"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:BeamTick (LagComp.Begin/End bracket :423-442)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:BeamTick (LagComp.Begin/End bracket :466-485)"
     constants:
       - { name: "Arc damage trace antilag", base: "WarpZone_traceline_antilag at ANTILAG_LATENCY", port: "LagComp.Begin/End around the damage Trace (same takeback time as FireBullet)", match: true }
     status:
@@ -338,9 +337,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Arc.cs:423-442 wraps the per-frame swept damage Trace (:435) in LagComp.Begin(actor)/End() (try/finally); LagComp.Provider installed at ServerNet.cs:311 (torn down :2814); BeginLagComp (ServerNet.cs:2460) rewinds players+monsters+nades at the shooter's ANTILAG_LATENCY takeback time — the same machinery FireBullet uses. BeamTick (Arc.cs:314) is reached on the live primary/burst-beam fire path (Arc.cs:188).", result: pass }
+      - { kind: code, ref: "Arc.cs:466-485 wraps the per-frame swept damage Trace in LagComp.Begin(actor)/End() (try/finally); LagComp.Provider installed at ServerNet.cs:311 (torn down :2845); BeginLagComp (ServerNet.cs:2486) rewinds players+monsters+nades+manned-vehicles at the shooter's ANTILAG_LATENCY takeback time — the same machinery FireBullet uses. BeamTick reached on the live primary/burst-beam fire path (Arc.cs:188).", result: pass }
     confidence: high
-    notes: "WAVE-2 FIX (closes the baseline gap), RE-VERIFIED 2026-06-27 (bracket now at Arc.cs:423-442 after Wave-9..11 line shifts; structure unchanged; BeamTick reached live at Arc.cs:188). The Arc beam's per-frame damage trace is now bracketed by the SHARED LagComp facade rather than a custom path, so it reuses the verified ServerNet takeback (gated on g_antilag==2, honors cl_noantilag, no-op on bot-only/test). No-op when no provider is installed, so bot-only/test behavior is unchanged. The port still collapses Base's bezier-segmented beam into a single straight trace (a pre-existing render-side divergence tracked elsewhere, NOT an antilag gap). antilag_takebackavgvelocity (the Arc beam-teleport velocity helper) remains unported, but its only Base SVQC use — multijump.qc:95 — is itself commented out, so the live velocity path is matched."
+    notes: "WAVE-2 FIX (closes the baseline gap), RE-VERIFIED 2026-06-27 (bracket now at Arc.cs:466-485 after Wave-9..12 line shifts; structure unchanged; BeamTick reached live at Arc.cs:188). The Arc beam's per-frame damage trace is now bracketed by the SHARED LagComp facade rather than a custom path, so it reuses the verified ServerNet takeback (gated on g_antilag==2, honors cl_noantilag, no-op on bot-only/test). No-op when no provider is installed, so bot-only/test behavior is unchanged. The port still collapses Base's bezier-segmented beam into a single straight trace (a pre-existing render-side divergence tracked elsewhere, NOT an antilag gap). antilag_takebackavgvelocity (the Arc beam-teleport velocity helper) remains unported, but its only Base SVQC use — multijump.qc:95 — is itself commented out, so the live velocity path is matched."
 
   - id: sv-antilag.melee.secondary
     name: "Shotgun melee secondary trace is antilagged"
@@ -348,7 +347,7 @@ features:
     base_refs:
       - "common/weapons/weapon/shotgun.qc:124 (WarpZone_traceline_antilag)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:Melee (LagComp.Begin/End bracket :372-414)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:Melee (LagComp.Begin/End bracket :386-428)"
     constants:
       - { name: "melee swing trace antilag", base: "WarpZone_traceline_antilag at ANTILAG_LATENCY", port: "swing sweep bracketed by LagComp.Begin/End (same shared takeback as FireBullet)", match: true }
     status:
@@ -362,6 +361,30 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Shotgun.cs:372 LagComp.Begin(actor) wraps the whole swing sweep (the per-trace Api.Trace.Trace at :383), LagComp.End() in the finally at :414; Base shotgun.qc:124 W_Shotgun_Melee_Think uses WarpZone_traceline_antilag. Melee reached live from the secondary/out-of-ammo path.", result: pass }
+      - { kind: code, ref: "Shotgun.cs:386 LagComp.Begin(actor) wraps the whole swing sweep (the per-trace Api.Trace.Trace), LagComp.End() in the finally at :428; Base shotgun.qc:124 W_Shotgun_Melee_Think uses WarpZone_traceline_antilag. Melee reached live from the secondary/out-of-ammo path.", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-22 baseline: the Shotgun melee secondary's swing sweep is now bracketed by the SHARED LagComp facade (Begin at Shotgun.cs:372, End in the finally at :414), the same machinery FireBullet/Arc/SetupShot use — players/monsters/nades are rewound to the shooter's view-time for the slap, gated on g_antilag==2 + cl_noantilag, no-op on bot-only/test. The Shotgun.cs class docstring (:18) was corrected too and now truthfully states the melee trace is antilag-bracketed (the baseline's false-docstring WARNING is resolved). NOTE: like the rest of the port's antilag path, BeginLagComp does NOT widen the shooter's contents mask to CORPSE, so the melee can't newly hit corpse bodies (that residual is tracked by sv-antilag.solidmask.corpse, still missing)."
+    notes: "FIXED since 2026-06-22 baseline: the Shotgun melee secondary's swing sweep is now bracketed by the SHARED LagComp facade (Begin at Shotgun.cs:386, End in the finally at :428), the same machinery FireBullet/Arc/SetupShot use — players/monsters/nades are rewound to the shooter's view-time for the slap, gated on g_antilag==2 + cl_noantilag, no-op on bot-only/test. The Shotgun.cs class docstring (:18) was corrected too and now truthfully states the melee trace is antilag-bracketed (the baseline's false-docstring WARNING is resolved). NOTE: like the rest of the port's antilag path, BeginLagComp does NOT widen the shooter's contents mask to CORPSE, so the melee can't newly hit corpse bodies (that residual is tracked by sv-antilag.solidmask.corpse, still missing)."
+
+  - id: sv-antilag.turret.imobeam
+    name: "Turret ImoBeam (phaser) trace uses WarpZone_tracebox_antilag"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/util.qc:39 (FireImoBeam, WarpZone_tracebox_antilag)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs"
+    constants:
+      - { name: "turret beam rewind depth", base: "ANTILAG_LATENCY(this) but `this` is a turret, NOT a real client -> tracebox_antilag_force_wz sets lag=0 (IS_REAL_CLIENT(forent) false)", port: "n/a (turret fire path is non-client, no rewind applies)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Base common/turrets/util.qc:39 FireImoBeam calls WarpZone_tracebox_antilag(this, ...) with forent=o (the turret), but tracebox_antilag_force_wz (antilag.qc:174-175) forces lag=0 unless IS_REAL_CLIENT(forent) — a turret is never a real client, so the antilag rewind is a guaranteed no-op in Base. Port PhaserTurret.cs traces with present positions, matching the effective Base behavior. Newly mapped 2026-06-27.", result: pass }
+    confidence: medium
+    notes: "DEGENERATE Base feature added to the registry for coverage completeness. The WarpZone_tracebox_antilag call in FireImoBeam is syntactically an antilag trace, but because the firing entity is a turret (not IS_REAL_CLIENT), tracebox_antilag_force_wz zeroes the lag and NO rewind happens in Base. The port's turret beam therefore matches Base by also using present positions — there is no real antilag obligation here. (The same is true of any non-client antilag trace caller.) Marked medium confidence because the exact PhaserTurret beam-trace symbol was not line-pinned; the parity conclusion — no rewind required — is robust regardless."

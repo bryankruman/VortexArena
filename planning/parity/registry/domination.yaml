@@ -1,12 +1,11 @@
 unit: domination
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Round-not-started capture gate is dead: Domination.RoundStartedSource is never assigned by the host (GameWorld wires RoundEndTimeSource @2751 but NOT RoundStartedSource — zero references outside Domination.cs), so the QC `round_handler_IsActive && !IsRoundStarted` block never fires (round-based variant only, non-default)."
-    - "Round-based player-blocking (QC reset_map_players + PlayerSpawn set player_blocked = !IsRoundStarted) is not mirrored — the port's RoundStart clears no per-player block flag (round-based variant only, non-default)."
+    - "Round-based player-blocking (QC reset_map_players + PlayerSpawn set player_blocked = !IsRoundStarted; Domination_RoundStart clears it) is not mirrored as a per-player freeze flag — the port relies on the generic round-not-started gates (weapon-fire-forbidden + capture gate + no-respawn) for the same effect, but the QC movement freeze is not reproduced (round-based variant only, non-default)."
     - "dom_team palette entities (per-team point models/sounds/messages from map dom_team edicts) are not implemented; the port hardcodes the default dom_<color>.md3 palette in DomPointModel (non-default maps only)."
     - "WaypointSprite_Ping (one-shot radar ping on capture) is not emitted separately; the port rebuilds the sprite set each tick (pull model) so ownership/color updates flow, but the explicit ping flash is absent."
 features:
@@ -101,13 +100,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Round-not-started capture gate is DEAD: CapturePoint checks RoundStartedSource, but GameWorld.ActivateGameType never assigns it (only RoundEndTimeSource is wired @2751; RoundStartedSource has zero references outside Domination.cs), so in the round-based variant a captured point is NOT blocked while a round is active-but-unstarted (QC round_handler_IsActive && !IsRoundStarted)."
       - "IS_INDEPENDENT_PLAYER skip not mirrored (port has no independent-player concept here)."
       - "Capture is instant (no neutral interim state); Base's neutral-during-delay is purely cosmetic (capturetime path is commented out in QC), so functionally equivalent."
     verification:
-      - { kind: code, ref: "CapturePoint: Captime>0 && now<Captime+0.3 guard (Captime set at capture); RoundStartedSource grep -> only definition+read in Domination.cs, NO assignment in GameWorld/Server/game", result: pass }
+      - { kind: code, ref: "CapturePoint: Captime>0 && now<Captime+0.3 guard (Captime set at capture); RoundStartedSource now wired @GameWorld.cs:2807 in the dom.RoundBased branch (dom.RoundStartedSource = () => domRounds.IsRoundStarted), so the round_handler_IsActive && !IsRoundStarted capture block is LIVE in the round-based variant", result: pass }
     confidence: high
-    notes: "The 0.3s self-recapture guard is live (point.Captime armed at capture). The round-not-started gate code exists but its source is unwired -> dead (relevant only to the non-default round-based variant). Unchanged 2026-06-25 re-verify."
+    notes: "FIX 2026-06-27 (re-verify): the round-not-started capture gate is no longer dead. GameWorld.ActivateGameType now assigns dom.RoundStartedSource = () => domRounds.IsRoundStarted (GameWorld.cs:2807, inside the if(dom.RoundBased) arm alongside RoundEndTimeSource @2806), so CapturePoint's `if (RoundStartedSource is { } s && !s()) return;` actually fires in the round-based variant while a round is active-but-unstarted (QC round_handler_IsActive && !round_handler_IsRoundStarted). In the tick variant the source stays null (correctly inert). The 0.3s self-recapture guard remains live (point.Captime armed at capture). The prior baseline gap (source unwired -> dead) is closed."
 
   - id: domination.scoring.tick
     name: "Periodic per-point score tick to owning team + capturer"
@@ -409,8 +407,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC reset_map_players sets it.player_blocked = 1 on map reset (roundbased) and PlayerSpawn sets player.player_blocked = !round_handler_IsRoundStarted(); Domination_RoundStart clears player_blocked = false for all players. The port's RoundStart only clears LastRoundWinner — no per-player block flag is set on reset/spawn or cleared at round start, so players are not frozen during round warmup in the round-based variant."
+      - "QC reset_map_players sets it.player_blocked = 1 on map reset (roundbased) and PlayerSpawn sets player.player_blocked = !round_handler_IsRoundStarted(); Domination_RoundStart clears player_blocked = false for all players. The port's RoundStart only clears LastRoundWinner — no per-player block FLAG is set on reset/spawn or cleared at round start. The generic round-not-started gates (WeaponFireDriver.RoundFireForbidden @GameWorld.cs:1621, the dompoint capture gate via the now-live RoundStartedSource, and respawn suppression @GameWorld.cs:3476) DO hold players in check during the pre-round countdown, but the QC movement-freeze semantics of player_blocked are not reproduced 1:1."
     verification:
-      - { kind: code, ref: "RoundStart() clears LastRoundWinner only (no player_blocked); grep player_blocked in Domination.cs -> no match; round-based player-freeze (warmup) not mirrored", result: fail }
+      - { kind: code, ref: "RoundStart() clears LastRoundWinner only (no player_blocked); grep player_blocked in Domination.cs/Server -> no match; generic gates are live: WeaponFireDriver.RoundFireForbidden = Rounds.IsRoundStarted==false @1621, RoundStartedSource wired @2807, respawnAllowed gated on !IsRoundStarted @3476", result: fail }
     confidence: medium
-    notes: "Coverage gap added 2026-06-25 re-verify. Round-based-only (g_domination_roundbased 0 default) so non-default; the host round handler may apply a generic warmup freeze, but the dom-specific player_blocked set/clear (reset_map_players, PlayerSpawn, Domination_RoundStart) is not ported. Tied to the same dead RoundStartedSource wiring as domination.capture.touch."
+    notes: "Reframed 2026-06-27 re-verify (liveness unchanged partial). The dom-specific player_blocked set/clear (reset_map_players, PlayerSpawn, Domination_RoundStart) is still not ported as a per-player flag. CORRECTION vs prior baseline: this is NO LONGER tied to a dead RoundStartedSource — that source is now wired (GameWorld.cs:2807), so the generic round-not-started checks (fire-forbidden, capture-blocked, no-respawn) are live and cover most of player_blocked's practical effect during round warmup. Residual gap = the literal movement freeze. Round-based-only (g_domination_roundbased 0 default), non-default."

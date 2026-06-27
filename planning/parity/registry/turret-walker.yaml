@@ -1,12 +1,12 @@
 unit: turret-walker
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 12
   worst_gaps:
     - "No head entity (walker_head_minigun.md3): the minigun head is not a separate tracked/spinning tur_head entity (no tag attachment). The minigun muzzleflash now falls back to the shot org, and rocket muzzle alternation now selects tag_rocket01/02 via the model service but gracefully falls back to a single shot org when the body model is headless."
-    - "No CSQC walker_draw locomotion render: no 4-point ground-align over terrain and no head avelocity spin (pure client view). The per-gait Entity.Frame is now stamped server-side but the client EntityNode does not consume it as a model animation, so the walk/run/melee gait animations still do not visibly play."
+    - "No CSQC walker_draw locomotion render: no 4-point ground-align over terrain and no head avelocity spin (pure client view). The per-gait Entity.Frame IS now stamped server-side AND consumed client-side (the walker classifies as NetEntityKind.Generic -> frameDriven -> ModelAnimator.FollowEntityFrame), so the walk/run/melee gait animations now play; only the ground-align + head-spin remain absent."
 features:
   - id: turret-walker.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -388,13 +388,13 @@ features:
       timing: partial
       presentation: partial
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Gait frame is stamped server-side (DoMovement SetFrame(e, animflag) writes Entity.Frame, faithful to turrets_setframe), but the client EntityNode does not consume Entity.Frame as a model animation, so the walk/run/melee gait animations still do not visibly play. TNSF_MOVE origin/velocity netting also has no dedicated counterpart (origin rides the shared entity feed)."
-      - "No CSQC walker_draw 4-point ground-align over terrain and no head avelocity spin (pure client render, still absent)."
+      - "Gait frame is stamped server-side (DoMovement SetFrame(e, animflag) writes Entity.Frame, faithful to turrets_setframe) AND netted (ServerNet snapshot Frame=(int)e.Frame) AND consumed client-side: the walker classifies as NetEntityKind.Generic (ServerNet.Classify), which ClientEntityView routes with frameDriven:true, so ClientWorld attaches a ModelAnimator with FollowEntityFrame=true that plays Entity.Frame as the raw model frame (requires walker_body.md3 FrameCount>1). So the walk/run/melee/swim/idle gait animations now DO play. TNSF_MOVE origin/velocity netting still has no dedicated counterpart (origin rides the shared entity feed)."
+      - "No CSQC walker_draw 4-point ground-align over terrain (movelib_groundalign4point 300,100,0.25,45) and no head avelocity spin (pure client render, still absent — the values:partial / timing:partial / groundalign4point + client-movetype + anim-frames constants reflect these unported pieces)."
     verification:
-      - { kind: code_read, ref: "Low-hp te_spark (<127 hp, 15%/frame) emitted server-side in DoMovement (WalkerTurret.cs:286-292) as a networked temp-entity, faithful to walker.qc:627-629. SetFrame (WalkerTurret.cs:311-314) writes Entity.Frame = animflag, but game/EntityNode.cs does not read Entity.Frame for model animation (grep: no Frame consumer), so it is a no-op for presentation. Ground-align/head-spin counterpart still has no port.", result: pass }
+      - { kind: code_read, ref: "Low-hp te_spark (<127 hp, 15%/frame) emitted server-side in DoMovement (WalkerTurret.cs:286-292) as a networked temp-entity, faithful to walker.qc:627-629. SetFrame (WalkerTurret.cs:311-314) writes Entity.Frame=animflag; ServerNet.cs:1987 nets Frame=(int)e.Frame; ServerNet.Classify (ServerNet.cs:2370) returns NetEntityKind.Generic for the turret; ClientEntityView.cs:204 routes Generic with frameDriven:true; ClientWorld.cs:1636 sets ModelAnimator.FollowEntityFrame from _frameDriven; ModelAnimator.cs:268-282 plays Entity.Frame as the raw frame. So the gait frame IS now consumed for animation (was a no-op at last audit). Ground-align/head-spin counterpart still has no port.", result: pass }
     confidence: high
-    notes: "Largely unchanged since last audit: the low-hp te_spark (the one networked, viewer-independent part of walker_draw) is emitted server-side (same convention as EWheelTurret). The per-gait Entity.Frame is now stamped server-side BUT the client EntityNode does not consume it, so the gait animations still do not play; the pure-client ground-align + head-spin remain absent."
+    notes: "FIXED since last audit: the per-gait Entity.Frame is now consumed client-side (turret = NetEntityKind.Generic -> frameDriven -> ModelAnimator.FollowEntityFrame), so the walk/run/melee gait animations now play (the prior audit's grep found no Frame consumer; the ModelAnimator FollowEntityFrame seam now exists and is wired on the live Generic path). liveness partial->live. The low-hp te_spark stays emitted server-side. Still missing (presentation:partial, values:partial, timing:partial): the pure-client walker_draw 4-point ground-align + head avelocity spin."

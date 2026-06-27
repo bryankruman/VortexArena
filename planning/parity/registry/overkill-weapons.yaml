@@ -5,12 +5,12 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 17
   worst_gaps:
-    - "2026-06-27 drift re-audit: NO regressions or fixes on the 14 existing rows — the port (Ok*.cs, edited 2026-06-26) still matches the Wave-8b baseline exactly (all balance constants verified against bal-wep-xonotic.cfg:792-922; FX/casing/recoil/tracer/muzzle/impact seams all still wired LIVE). THREE newly-unmapped Base features added this pass: bot AI (wr_aim), oknex sniper zoom (wr_zoom/wr_zoomdir), and the standalone g_overkill_weapons activation path."
-    - "Wave-8b CLOSED the fire/impact presentation gap across ALL FIVE OK weapons (drift since the 2026-06-25 baseline, which recorded these as missing): okmachinegun/okhmg/okshotgun/oknex/okrpc now ALL emit W_MuzzleFlash (registered EFFECT names), wr_impacteffect impact puff + impact/ricochet sound, and the bullet weapons (okmg/okhmg/okshotgun) eject casings (g_casings gate) + recoil PRNG + EFFECT_RIFLE/RIFLE_WEAK tracer. The baseline's central claim that 'okhmg/okshotgun/oknex are byte-identical to main / got NONE of the FX seam' is now STALE — they were all migrated in commit 31aa799 (Wave 8b)."
+    - "2026-06-27 drift re-audit (post Wave-13, commit 5427e74): TWO FIXES vs the prior baseline, no regressions. (1) bot AI (overkill-weapons.shared.bot_ai) went missing->faithful+live: OkMachinegun/OkHmg now override BotForbidsFire (range gate 3000-clamp(skill,0,10)*200), OkShotgun overrides BotWantsSecondary (>bot_range 512 -> ATCK2 blaster poke), OkRpc overrides BotAimShotSpeed (lead by speed=2500); oknex keeps the generic always-primary fallback which matches QC at stock. (2) okhmg_nadesupport (overkill-weapons.okhmg.nadesupport) went missing->faithful+live: OverkillMutator.OnNadeDamage rewrites HMG nade self-damage to max_health*0.1 and is REGISTERED (MutatorHooks.NadeDamage.Add, OverkillMutator.cs:142) + fired first in NadeProjectile.NadeDamage (line 208)."
+    - "The 14 weapon/FX/mode rows are UNCHANGED from the prior baseline — all balance constants still verified against bal-wep-xonotic.cfg:792-922; the Wave-8b FX/casing/recoil/tracer/muzzle/impact seams all remain wired LIVE across all five OK weapons (commit 31aa799)."
     - "okrpc shoot-down remains LIVE+faithful: OkRpc.Attack:166 calls Projectiles.MakeShootable(missile, exception:-1); correctly inert under stock g_projectiles_damage=-2, exactly like Base."
     - "STILL OPEN (okrpc online/networking subset): missile not CSQC-networked (no visible flying chainsaw, CSQCProjectile(PROJECTILE_RPC) omitted), not registered for bot dodge (IL_PUSH g_bot_dodge), and not damagedbycontents (IL_PUSH g_damagedbycontents) — lava/slime won't detonate the in-flight chainsaw even at g_projectiles_damage>=0."
-    - "okhmg_nadesupport STILL missing: NadeProjectile.NadeDamage has no okhmg case, so HMG nade self-damage is not reduced to max_health*0.1."
     - "oknex charge subsystem still inert+deferred (charge default 0): velocity-charge GetPressedKeys hook, chargepool, wr_glow charge glow, SND_OK_NEX_CHARGE overcharge sound all unported (intended_divergence — matches the shipped Vortex-without-charge balance). oknex CSQC beam particle (SendCSQCVortexBeamParticle) and Yoda/Impressive announcements also still absent."
+    - "STILL OPEN (niche): standalone g_overkill_weapons activation path (un-block the 5 OK weapons without full g_overkill) has no reader in src/; oknex ATCK2-zoom non-default branch (secondary==0) unmodeled. Both dormant at stock balance."
     - "Overkill mode has no menu toggle (reachable only via ruleset/cvar) — but this MATCHES Base, so it is faithful, not a regression."
 features:
   - id: overkill-weapons.okmachinegun.primary_auto
@@ -366,24 +366,27 @@ features:
     layer: [authority]
     base_refs:
       - "common/mutators/mutator/overkill/okhmg.qc:5-12 (Nade_Damage hook)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnNadeDamage (496-507)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:142 (MutatorHooks.NadeDamage.Add registration)"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeProjectile.cs:208 (FireNadeDamage dispatch, hook fires first)"
     constants:
-      - { name: "nade_damage", base: "max_health * 0.1", port: "none", match: false }
+      - { name: "nade_damage", base: "max_health * 0.1", port: "Nade.MaxHealth * 0.1f", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN: throwing a nade while holding the OK HMG deals full nade self-damage instead of 10%. NadeProjectile.cs:186 explicitly defers the Nade_Damage mutator hook; no okhmg branch was added by Wave-8b (it only touched FX)."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "no Nade_Damage/okhmg hook in NadeProjectile.NadeDamage or OverkillMutator; NadeProjectile.cs:186 notes the hook is deferred", result: pass }
+      - { kind: code-read, ref: "OverkillMutator.OnNadeDamage: if (args.Weapon != \"okhmg\") return false; else args.Damage = args.Nade.MaxHealth * 0.1f; return true — matches okhmg.qc:7-12 (M_ARGV(1)!=WEP_OVERKILL_HMG guard + damage = max_health*0.1). Registered MutatorHooks.NadeDamage.Add(_onNadeDamage) OverkillMutator.cs:142", result: pass }
+      - { kind: code-read, ref: "NadeProjectile.NadeDamage:207-213 calls MutatorHooks.FireNadeDamage FIRST; on true it adopts the hook's damage/force and SKIPS the per-weapon default chain — matches QC sv_nades.qc:259 (Nade_Damage hook heads the if/else-if)", result: pass }
     confidence: high
-    notes: "Niche nade interaction; deferred per OkHmg.cs recon note. Depends on the nade-throw input which is a carried major."
+    notes: "FIX (2026-06-27 drift audit, Wave-13): previously logic/values=missing, liveness=na (NadeProjectile deferred the hook). The okhmg_nadesupport Nade_Damage hook is now ported (OverkillMutator.OnNadeDamage), registered on the live mutator-hook list, and dispatched before the per-weapon defaults — HMG nade self-damage is now reduced to 10% of max health, faithful to Base."
 
   - id: overkill-weapons.identity.attributes
     name: "Weapon identity (ammo type, impulse, flags, color, models, netname)"
@@ -499,30 +502,33 @@ features:
       - "common/mutators/mutator/overkill/oknex.qc:wr_aim (always primary; ATCK2 only if charge)"
       - "common/mutators/mutator/overkill/okrpc.qc:wr_aim (bot_aim with speed+lifetime lead)"
       - "common/mutators/mutator/overkill/okshotgun.qc:wr_aim (>bot_range 512 -> ATCK2 blaster poke, else ATCK1)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkMachinegun.cs:BotForbidsFire (range gate)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkHmg.cs:BotForbidsFire (range gate)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkShotgun.cs:BotWantsSecondary (>bot_range)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkRpc.cs:BotAimShotSpeed (lead by speed)"
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:145,166,180 (Weapon.BotWantsSecondary/BotForbidsFire/BotAimShotSpeed seams)"
     constants:
-      - { name: "okshotgun bot_range", base: "512", port: "none", match: false }
-      - { name: "okmg/okhmg bot range gate", base: "3000 - bound(0,skill,10)*200", port: "none", match: false }
-      - { name: "okrpc bot lead speed", base: "WEP_CVAR_PRI(speed)=2500", port: "default (no override)", match: false }
+      - { name: "okshotgun bot_range", base: "512", port: "512 (Cvars.BotRange)", match: true }
+      - { name: "okmg/okhmg bot range gate", base: "3000 - bound(0,skill,10)*200", port: "3000 - clamp(skill,0,10)*200", match: true }
+      - { name: "okrpc bot lead speed", base: "WEP_CVAR_PRI(speed)=2500", port: "Cvars.Speed=2500", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "NONE of the five OK weapons override the port's generic bot-aim seam (Weapon.BotWantsSecondary / BotAimShotSpeed / BotAimAccurate in GameplayBases.cs) — Ok*.cs have zero bot-AI overrides. Bots fall back to the default (always press PRIMARY, hitscan straight aim)."
-      - "okshotgun: QC fires ATCK2 (the no-damage blaster jump, as a ranged poke) when the target is beyond bot_range=512, and ATCK1 within range. The default never presses ATCK2 -> bots never do the ranged-blaster behavior."
-      - "okmachinegun + okhmg: QC only presses ATCK at all within 3000 - skill*200 units; the default presses ATCK at any range."
-      - "okrpc: QC leads the target by the projectile speed (2500) over its lifetime; the default BotAimShotSpeed returns defaultSpeed (no okrpc lead override) -> bots mis-lead the flying chainsaw."
-      - "oknex: QC presses ATCK2 only when charge is enabled (default off), so its default-primary behavior is the one case the generic fallback actually matches."
+      - "okrpc bot lead: QC bot_aim also passes the projectile LIFETIME (30) as the lead-prediction-window arg; the port override only sets the lead SPEED (2500). The brain caps the lead by speed (the dominant term), so the practical aim matches, but the lifetime widening of the prediction window is not modeled. Minor."
+      - "oknex has no bot override (relies on the generic always-primary fallback). This MATCHES QC at stock balance: oknex.qc:113-122 always presses ATCK1 and only presses ATCK2 when charge is enabled (default off). Faithful, not a gap, at stock."
     verification:
-      - { kind: code-read, ref: "grep wr_aim/BotWantsSecondary/BotAimShotSpeed in Ok*.cs returns nothing; Base okshotgun.qc:4-9, okmachinegun.qc:64-68, okhmg.qc:65-69, oknex.qc:113-122, okrpc.qc:144-147", result: pass }
+      - { kind: code-read, ref: "OkMachinegun.cs:182-183 + OkHmg.cs:197-198 BotForbidsFire >= 3000-clamp(skill,0,10)*200 == Base okmachinegun.qc:66 / okhmg.qc:67; OkShotgun.cs:139-140 BotWantsSecondary > BotRange == okshotgun.qc:6; OkRpc.cs:241 BotAimShotSpeed => Cvars.Speed == okrpc.qc:146 speed arg", result: pass }
+      - { kind: code-read, ref: "seams are live virtuals on Weapon (GameplayBases.cs:145/166/180) consumed by the bot brain; other ported weapons (Arc/Crylink/Mortar/etc.) use the same overrides", result: pass }
     confidence: high
-    notes: "NEW row (2026-06-27 drift audit) — previously unmapped. Bot-only; humans unaffected. Severity low: bots still fight with the OK loadout via the generic fallback, just with wrong range-gating / no projectile lead / no shotgun ranged-blaster poke. Other ported weapons (Arc/Crylink/etc.) DO override these seams, so the pattern exists; the OK weapons just never got it."
+    notes: "FIX (2026-06-27 drift audit, Wave-13 commit 5427e74): previously logic/values=missing, liveness=na (NO OK weapon overrode the bot seam). Now 4/5 OK weapons override matching QC wr_aim, and oknex's generic fallback matches QC at stock. Bot-only; humans unaffected."
 
   - id: overkill-weapons.oknex.zoom
     name: "OK Nex sniper zoom (wr_zoom / wr_zoomdir)"

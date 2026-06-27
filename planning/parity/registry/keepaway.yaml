@@ -1,7 +1,7 @@
 unit: keepaway
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 19
   worst_gaps:
@@ -9,7 +9,7 @@ summary:
     - "Ball/carrier presentation residuals: no EFFECT_KA_BALL_RESPAWN particle at relocate, no EFFECT_BALL_SPARKS on world-touch, no client ball model/glow_trail render, carried-ball scale 0.75 + invisibility-alpha sync not applied."
     - "Multi-ball chaining (g_keepaway_ballcarrier_maxballs, cnt chain / ka_PlayerReset chain advance) is collapsed to a single ball; the structural carrier/collector bot-role split is one adaptive RoleKeepaway."
     - "NOIMPACT fall-off respawn branch (ka_TouchEvent trace_dphitq3surfaceflags & Q3SURFACEFLAG_NOIMPACT) is unported; the NEEDKILL damage respawn branch IS covered."
-    - "Minor unported Base features (now MAPPED as rows): the :ka: gamelog echoes (ka_EventLog), reset_map_global float2int-decimal reset, and PreferPlayerScore_Clear are not modeled (low impact)."
+    - "FIXED post-2026-06-25: the :ka: gamelog echoes (ka_EventLog) AND PreferPlayerScore_Clear are now fully ported + live (EventLogEcho wired at GameWorld.cs:2916; OnPreferPlayerScoreClear on MutatorHooks.PreferPlayerScore_Clear, consulted live by GameScores.ClearPlayerOnJoin). reset_map_global remains a single-accumulator equivalent (cleared in Activate), not a per-client FOREACH reset."
 features:
   - id: keepaway.ball.spawn
     name: "Ball spawn at map start (single keepawayball)"
@@ -21,7 +21,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:SpawnBall"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:AdoptBall"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/BallEntity.cs:SpawnForGametype"
-      - "src/XonoticGodot.Server/GameWorld.cs:637"
+      - "src/XonoticGodot.Server/GameWorld.cs:756"
     constants:
       - { name: "g_keepawayball_count", base: "1", port: "1 (single ball only)", match: true }
       - { name: "ball_bbox", base: "+-24 24 24", port: "+-24 24 24 (BallConfig.WithKindDefaults KeepawayBall)", match: true }
@@ -448,7 +448,7 @@ features:
       - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:FindBall"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:ForbidBotAttack"
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:797"
-      - "src/XonoticGodot.Server/GameWorld.cs:2372"
+      - "src/XonoticGodot.Server/GameWorld.cs:2920"
     constants:
       - { name: "ball_goalrating_scale", base: "8000", port: "RatingBall = 8000f", match: true }
       - { name: "routerating_dist", base: "2000", port: "2000f", match: true }
@@ -465,11 +465,11 @@ features:
     divergence_rationale: null
     gaps:
       - "RoleKeepaway is live (set on the brain at bot creation via BotRoles.ChooseRole; 'ka'/'keepaway'/'tka' → RoleKeepaway) and engages the ball: FindBall() queries classname 'keepawayball' (BotObjectiveRoles.cs:387) == the live spawned ball; carrier read off ball.GtCarrier (the field AttachToCarrier sets). A loose ball is chased (collector behaviour: items 10000, enemies 500, ball 8000) and a carried ball's carrier is contested; carrying switches to carrier behaviour (items 10000, enemies 10000)."
-      - "FIXED (was STILL OPEN): the Bot_ForbidAttack equivalent is now wired LIVE. Keepaway.ForbidBotAttack(bot,targ) = `!targCarries && !botCarries && haveHeldBall` (== QC: neither carries + a held ball exists), installed at GameWorld.cs:1896 onto BotBrain.ForbidAttackHook and consulted in bot_shouldattack (BotBrain.cs:797) on the live attack-eligibility path — so bots cluster the carrier instead of fragging bystanders."
+      - "FIXED (was STILL OPEN): the Bot_ForbidAttack equivalent is now wired LIVE. Keepaway.ForbidBotAttack(bot,targ) = `!targCarries && !botCarries && haveHeldBall` (== QC: neither carries + a held ball exists), installed at GameWorld.cs:2920 onto BotBrain.ForbidAttackHook (in the case Keepaway ka block of ActivateGameType) and consulted in bot_shouldattack (BotBrain.cs:797) on the live attack-eligibility path — so bots cluster the carrier instead of fragging bystanders."
       - "STILL OPEN (logic, why status stays partial): the collector/carrier split is collapsed into one adaptive RoleKeepaway (Base has two distinct havocbot_role_ka_carrier / havocbot_role_ka_collector functions with a per-bot role-timeout state machine). The port branches on carry-state inline with the same ratingscales rather than swapping the dedicated role function — a structural simplification, behaviourally equivalent at the rating level."
     verification:
       - { kind: codetrace, ref: "FindBall queries 'keepawayball' (BotObjectiveRoles.cs:387) == live ball classname; RoleKeepaway reads ball.GtCarrier; role live via BotRoles.ChooseRole at spawn", result: pass }
-      - { kind: codetrace, ref: "GameWorld.cs:2372 sets BotBrain.ForbidAttackHook = ka.ForbidBotAttack on Activate; BotBrain.cs:797 consults ForbidAttackHook in bot_shouldattack (live)", result: pass }
+      - { kind: codetrace, ref: "GameWorld.cs:2920 sets BotBrain.ForbidAttackHook = ka.ForbidBotAttack in the case Keepaway block; BotBrain.cs:797 consults ForbidAttackHook in bot_shouldattack (live)", result: pass }
       - { kind: value, ref: "RatingBall=8000f == Base goalrating_ball 8000; routerating 2000f == Base", result: pass }
     confidence: high
     notes: "FIXED post-baseline: Bot_ForbidAttack is now wired live (was the residual STILL-OPEN item). RoleKeepaway finds + contests the ball with faithful ratings. Logic stays partial only for the structural carrier/collector role-function split."
@@ -537,26 +537,29 @@ features:
       - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_EventLog"
       - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_TouchEvent (ka_EventLog pickup)"
       - "common/gametypes/gametype/keepaway/sv_keepaway.qc:ka_DropEvent (ka_EventLog dropped)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:EmitEventLog"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:EventLogEcho"
+      - "src/XonoticGodot.Server/GameWorld.cs:2916"
     constants:
-      - { name: "log_format", base: "strcat(\":ka:\", mode, \":\", ftos(actor.playerid))", port: "none", match: false }
-      - { name: "guard", base: "autocvar_sv_eventlog", port: "none", match: false }
+      - { name: "log_format", base: "strcat(\":ka:\", mode, \":\", ftos(actor.playerid))", port: "\":ka:\" + mode + \":\" + actor.PlayerId (EmitEventLog)", match: true }
+      - { name: "guard", base: "autocvar_sv_eventlog", port: "if (Cvars.Bool(\"sv_eventlog\")) GameLog.Echo(line) (GameWorld.cs:2916)", match: true }
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ka_EventLog writes a `:ka:pickup:<playerid>` / `:ka:dropped:<playerid>` line to the server gamelog (GameLogEcho, gated by sv_eventlog) on every pickup (ka_TouchEvent) and drop (ka_DropEvent). The port's PickUp/Drop emit notifications + sounds but never call any gamelog/eventlog sink with the `:ka:` tag — grep for ':ka:' / ka_EventLog / GameLogEcho returns nothing in src/ or game/."
-      - "Low impact: affects only server-side stat-tracking log scraping, not gameplay or any client-visible behavior."
+      - "FIXED (was missing/na→faithful/live): the :ka: gamelog echoes are now ported + live. PickUp calls EmitEventLog(\"pickup\", player) (Keepaway.cs:355) and Drop calls EmitEventLog(\"dropped\", carrier) (Keepaway.cs:380); EmitEventLog formats `:ka:<mode>:<playerid>` and invokes the EventLogEcho seam, which GameWorld.cs:2916 wires to `if (Cvars.Bool(\"sv_eventlog\")) GameLog.Echo(line)` on ka.Activate — exactly QC ka_EventLog (gated by autocvar_sv_eventlog, format strcat(\":ka:\", mode, \":\", ftos(actor.playerid)))."
+      - "Low impact: affects only server-side stat-tracking log scraping, not gameplay or any client-visible behavior — but it is now wired end-to-end."
     verification:
-      - { kind: codetrace, ref: "Grep ':ka:' / ka_EventLog / GameLogEcho across src/ + game/ — no port equivalent on PickUp/Drop", result: fail }
+      - { kind: codetrace, ref: "Keepaway.cs:355/380 PickUp/Drop call EmitEventLog; EmitEventLog formats ':ka:<mode>:<id>' and calls EventLogEcho; GameWorld.cs:2916 wires EventLogEcho = line => sv_eventlog ? GameLog.Echo(line) on ka.Activate", result: pass }
     confidence: high
-    notes: "NEWLY MAPPED (was an unrecorded coverage gap noted only in summary.worst_gaps). The :ka: gamelog echoes are entirely unported. Pure server-logging feature, no gameplay effect."
+    notes: "FIXED post-2026-06-25 (was NEWLY MAPPED missing). The :ka: gamelog pickup/dropped echoes are now fully ported + live via the EventLogEcho seam, gated by sv_eventlog like Base."
 
   - id: keepaway.score.resetmapglobal
     name: "reset_map_global: clear per-client float2int decimal accumulator"
@@ -589,22 +592,26 @@ features:
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/keepaway/sv_keepaway.qc:MUTATOR_HOOKFUNCTION(ka, PreferPlayerScore_Clear)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:OnPreferPlayerScoreClear"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:Activate"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ClearPlayerOnJoin"
+      - "src/XonoticGodot.Server/ClientManager.cs:294"
     constants:
-      - { name: "return", base: "return true", port: "none", match: false }
+      - { name: "return", base: "return true", port: "OnPreferPlayerScoreClear returns true (Keepaway.cs:225)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC ka's PreferPlayerScore_Clear hook returns true, signalling the scoreboard/win logic to prefer per-PLAYER score over team score (ka is FFA). The port has no PreferPlayerScore_Clear hook on MutatorHooks and no subscription."
-      - "Functionally covered structurally: the port already models ka as FFA (TeamGame=false, keepaway.ffa.framing) so the scoring framework never applies a team-score preference in the first place — the QC hook is the mechanism by which the SAME outcome is reached in the shared QC scoring code. So the end state matches, but the explicit hook is unmodeled."
+      - "FIXED (was partial/na→faithful/live): the PreferPlayerScore_Clear hook is now ported + live. MutatorHooks.PreferPlayerScore_Clear exists (MutatorHooks.cs:598) with a global FirePreferPlayerScore_Clear dispatch (MutatorHooks.cs:604); ka.Activate registers OnPreferPlayerScoreClear on it (Keepaway.cs:220), which returns true unconditionally == QC `MUTATOR_HOOKFUNCTION(ka, PreferPlayerScore_Clear){ return true; }`."
+      - "Live path: GameScores.ClearPlayerOnJoin (GameScores.cs:629) is called on every player join (ClientManager.cs:294) and, under g_score_resetonjoin -1, consults FirePreferPlayerScore_Clear (GameScores.cs:637) — ka's handler vetoes the per-player score wipe, exactly the QC mechanism (server/scores.qc:289 PlayerScore_Clear -1 branch)."
     verification:
-      - { kind: codetrace, ref: "Grep PreferPlayerScore across src/ — no MutatorHooks member, no ka subscription; TeamGame=false already yields per-player FFA scoring", result: fail }
-    confidence: medium
-    notes: "NEWLY MAPPED (was noted only in summary.worst_gaps). The hook itself is unported, but its effect (per-player FFA scoring, no team preference) is already achieved by the port's FFA framing — equivalent outcome, missing mechanism."
+      - { kind: codetrace, ref: "Keepaway.cs:220 Activate adds OnPreferPlayerScoreClear (returns true) to MutatorHooks.PreferPlayerScore_Clear; ClientManager.cs:294 ClearPlayerOnJoin → GameScores.cs:637 FirePreferPlayerScore_Clear consults it on join under g_score_resetonjoin -1", result: pass }
+    confidence: high
+    notes: "FIXED post-2026-06-25 (was NEWLY MAPPED partial, missing mechanism). The PreferPlayerScore_Clear hook is now a real MutatorHooks member, registered by ka.Activate and consulted live on the player-join score-clear path — the QC mechanism, not just the FFA-framing outcome."

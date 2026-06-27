@@ -1,10 +1,10 @@
 unit: monster-zombie
 category: monster
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 12
-  reaudit_note: "Re-audited 2026-06-25 (drift check, re-run) against branch claude/parity-port-waves HEAD (post Wave 12a/12b commits 8563014/6da9e80). All 11 prior feature rows re-verified line-by-line against current Base zombie.qc + port Zombie.cs/MonsterAI.cs — ZERO behavioral drift. Code line numbers shifted ~+140 in MonsterAI.cs (Wave 12a inserted code above the monster anim/pain/death paths) but all wiring/behavior is intact: MarkPain rolls AnimVariant (MonsterAI.cs:1723, Next()>=0.5?1:0) and Zombie.AnimFrame maps Pain variant==1->20(pain1)/else->22(pain2) (Zombie.cs:254) so pain1/pain2 alternate; MarkDead calls st.DeathLanded=st.Def.RollDeathVariant() (MonsterAI.cs:1813) and Zombie.RollDeathVariant()=!(Next()>0.5) (Zombie.cs:232), AnimFrame(Death) die2?12:9 (Zombie.cs:255) so die1/die2 alternate. Spawn-window anim drives via Move2D's pre-spawn branch (MonsterAI.cs:1180-1182 sets Idle once spawned + DriveAnimFrame each tick). The MonsterAnimPhase enum (EntityClasses.cs:113 Idle..Shoot) and DriveAnimFrame->ToPhase (MonsterAI.cs:1344-1364) remain live. Live chain re-verified: Think->RunThink->DriveAnimFrame->AnimFrame->self.Frame; ServerNet networks Frame (ServerNet.cs:1982); ClientEntityView Generic->OnEntityUpdate(frameDriven:true) (ClientEntityView.cs:201-204); ClientWorld anim.FollowEntityFrame (ClientWorld.cs:1636). zombie.dpm_0.sounds re-read: death/sight/idle active, ranged/melee/pain/spawn commented out -> matches SoundCues={death,sight,idle}. NET vs prior 2026-06-25 baseline: 0 regressions, 0 fixes, 0 new-gaps on the existing 11 rows. ONE new_unmapped feature added: monster-zombie.menu.describe (the MENUQC describe() bestiary prose, present in Base zombie.qc:178-189 and tracked in the mage/golem/spider/wyvern registries but absent here) — port has NO Zombie.Describe method at all, so it is genuinely missing. feature_count 11->12."
+  reaudit_note: "Re-audited 2026-06-27 (drift check) against branch claude/parity-port-waves HEAD. All 11 gameplay feature rows re-verified line-by-line against current Base zombie.qc + port Zombie.cs/MonsterAI.cs — ZERO behavioral drift on those rows. Code line numbers drifted again (MarkPain now MonsterAI.cs:1785-1807, MarkDead 1853-1902, DeathLanded-reset 2106, DriveAnimFrame 1428, Move2D spawn-window branch 1261-1267) but all wiring/values intact: MarkPain rolls AnimVariant (Next()>=0.5?1:0, MonsterAI.cs:1807) and Zombie.AnimFrame maps Pain variant==1->20(pain1)/else->22(pain2) (Zombie.cs:264); MarkDead calls st.DeathLanded=st.Def.RollDeathVariant() (MonsterAI.cs:1902) and Zombie.RollDeathVariant()=!(Next()>0.5) (Zombie.cs:232), AnimFrame(Death) die2?12:9 (Zombie.cs:265) so die1/die2 alternate; spawn pose via st.Anim=Spawn (Zombie.cs:109) + Move2D pre-spawn branch DriveAnimFrame (MonsterAI.cs:1266) + RunThink DriveAnimFrame. PainWindow inherits Monster default 0.34 (EntityClasses.cs:53, no Zombie override) == Base time+0.34. SoundCues={death,sight,idle} still matches zombie.dpm_0.sounds. ONE NET CHANGE vs the 2026-06-25 baseline: monster-zombie.menu.describe is now FIXED — Zombie.cs:236-242 ports the 4-PAR bestiary prose verbatim AND it is surfaced LIVE as the spawn-radio tooltip in DialogMonsterTools.cs:27-33 (same describe surface as spider/wyvern/golem/mage). That row goes values missing->faithful, presentation missing->faithful, liveness na->live. No new_unmapped features (every Base zombie.qc symbol — identity/qh, mr_setup, mr_think, M_Zombie_Attack melee+block+leap, leap_touch, mr_pain, mr_death, mr_anim, describe, respawn — has a row). NET: 3 fixes (all on menu.describe), 0 regressions, 0 new-gaps."
   worst_gaps:
     - "Animation is now LIVE and FULLY FAITHFUL on frame selection: spawn (30), idle (19), walk/run (27), melee (4), block/blockend (8/7), leap-shoot (0), pain1/pain2 (20/22 alternating) and die1/die2 (9/12 alternating) are all stamped onto the networked Entity.Frame by DriveAnimFrame and played by the client ModelAnimator (FollowEntityFrame). The prior baseline's two residual random-variant losses (pain2 dropped, die2 unreachable) are CLOSED: MarkPain rolls AnimVariant and MarkDead rolls RollDeathVariant, both wired to the zombie's AnimFrame."
     - "Only residual presentation/timing gap: per-frame fps/duration (the second/third animfixfps components, e.g. die1 '9 1 0.5' = 2s) is not modeled by the phase enum — frame VALUES are byte-exact, the per-group PLAYBACK RATE is approximate (timing)."
@@ -375,21 +375,23 @@ features:
     layer: [presentation]
     base_refs:
       - "common/monsters/monster/zombie.qc:METHOD(Zombie, describe):178"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs:Describe (236-242)"
+      - "game/menu/dialogs/DialogMonsterTools.cs:27-33 (zombie spawn-radio tooltip == full describe prose)"
     constants:
-      - { name: "describe prose", base: "Zombies are the undead remains of deceased soldiers... (4 paragraphs: charge+leap, melee punch/bite, block, destroy the corpse to stop it rising)", port: "none", match: false }
+      - { name: "describe prose", base: "Zombies are the undead remains of deceased soldiers... (4 paragraphs: charge+leap, melee punch/bite, block, destroy the corpse to stop it rising)", port: "same prose verbatim (Zombie.Describe() Zombie.cs:236-242 + DialogMonsterTools zombie radio tooltip)", match: true }
     status:
       logic: na
-      values: missing
+      values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The zombie's MENUQC describe() bestiary prose (zombie.qc:178-189, 4 paragraphs) is NOT surfaced in the port. Unlike Mage/Spider (which port the prose verbatim into a dead Describe() method), Zombie.cs has NO Describe method at all — only DisplayName='Zombie' (Zombie.cs:69). No zombie describe text exists anywhere in src/ or assets/."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "grep 'Zombies are the undead' over src/ + assets/ returns no port match (only the Base .qc); Zombie.cs has no Describe method", result: fail }
+      - { kind: code-read, ref: "Zombie.cs:236-242 override string? Describe() returns the 4-PAR prose verbatim (== zombie.qc:182-187 PAR() text)", result: pass }
+      - { kind: code-read, ref: "DialogMonsterTools.cs:25-33 Monsters[] lists ('zombie','Zombie', <same prose>); BuildUi:100-101 feeds it as the radio-button tooltip via Widgets.RadioButton(..., describe) — the port's live describe surface (mirrors spider/wyvern/golem/mage + DialogMutators)", result: pass }
     confidence: high
-    notes: "NEWLY MAPPED (registry coverage gap, not new drift): monster-mage/golem/spider/wyvern registries already track their describe() row; monster-zombie was missing one. MENUQC-only flavor text, no gameplay impact — listed for completeness/parity with siblings."
+    notes: "FIX since the 2026-06-25 baseline (values/presentation missing->faithful, liveness na->live). The zombie's describe() prose is now BOTH ported verbatim (Zombie.cs:236-242) AND surfaced on screen as the spawn-radio tooltip in DialogMonsterTools — unlike the mage row (which is ported-but-dead), the zombie matches the spider/wyvern row (ported AND live via the tooltip surface). Intended divergence on the host widget (radio tooltip vs Base's dedicated monster-book page), but prose is word-for-word and reaches the user, so presentation is faithful. MENUQC-only flavor text, no gameplay impact."

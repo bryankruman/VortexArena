@@ -1,15 +1,15 @@
 unit: ctf
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
-  feature_count: 24
+  feature_count: 28
   worst_gaps:
     - "Flag model is static at base: no md3 wave/bob/rotate animation, no glow trail (g_ctf_flag_glowtrails), no dynamic team light (g_ctf_dynamiclights). Dropped/thrown/passed flags DO move under MoveType.Toss/Fly physics and the carried flag trails its carrier each tick."
-    - "Capture-time PERSISTENT record (ctf_CaptureRecord ServerProgsDB write + cross-session g_ctf_leaderboard) is unported (needs a persistent DB); the in-match fastest-cap broadcast CTF_CAPTURE_TIME/_BROKEN/_UNBROKEN IS now fired. The takedamage flag-return path (g_ctf_flag_health/_return_damage/_return_when_unreachable) and two-flag g_ctf_reverse remain unported."
-    - "Pass completes as an instant transfer when viable (no physical arc / pass_directional cone) — a deliberate simplification; the flight velocity is still computed for an integrating host. Portal/vehicle carrier-leave drop is still not wired into ctf_RemovePlayer (only disconnect + observe); the carried-flag vehicle COCKPIT offset is honored in Tick but boarding/leaving doesn't drop."
-    - "Capture shield now spawns the physical ctf_captureshield push entity (model models/ctf/shield.md3, EF_ADDITIVE, force push, CENTER_CTF_CAPTURESHIELD_SHIELDED on touch) co-located with each flag; with the stock samual cfg the shield ratio is 0 (inert) by default exactly like Base, so nobody is shielded and the entity never pushes. Only missing nuance: the per-viewer same-team-hide customize (ctf_CaptureShield_Customize) is not networked."
-    - "Flag-damage / return-when-unreachable (g_ctf_flag_health, _return_damage, _return_when_unreachable lava/slime/needkill health bleed) not implemented; the dropped flag is TakeDamage.Yes but carries no health."
+    - "Capture-time PERSISTENT record (ctf_CaptureRecord ServerProgsDB write + cross-session g_ctf_leaderboard) is unported (needs a persistent DB); the in-match fastest-cap broadcast CTF_CAPTURE_TIME/_BROKEN/_UNBROKEN IS fired. The leaderboard send/record subsystem (ClientConnect/GetPressedKeys/GetRecords race_SendAll), the takedamage flag-return path (g_ctf_flag_health/_return_damage/_return_when_unreachable) and two-flag g_ctf_reverse remain unported."
+    - "Pass completes as an instant transfer when viable (no physical arc / pass_directional cone) — a deliberate simplification; the flight velocity is still computed for an integrating host. VEHICLE board/leave carrier-drop is NOW wired (OnVehicleEnter/Exit, live); the PORTAL-teleport carrier-leave drop (g_ctf_portalteleport) is still not wired (the PortalTeleport hook has no port dispatch at all)."
+    - "Capture shield spawns the physical ctf_captureshield push entity (model models/ctf/shield.md3, EF_ADDITIVE, force push, CENTER_CTF_CAPTURESHIELD_SHIELDED on touch) co-located with each flag; with the stock samual cfg the shield ratio is 0 (inert) by default exactly like Base, so nobody is shielded and the entity never pushes. Only missing nuance: the per-viewer same-team-hide customize (ctf_CaptureShield_Customize) is not networked."
+    - "Flag-damage / return-when-unreachable (g_ctf_flag_health, _return_damage, _return_when_unreachable lava/slime/needkill health bleed) not implemented; the dropped flag is TakeDamage.Yes but carries no health. Niche CTF hooks still unported: AbortSpeedrun (CTS-in-CTF flag-return), DropSpecialItems flag-eject, LogDeath 'F' item code, GiveFragsForKill frag suppression (g_ctf_ignore_frags), followfc superspectate command, PreferPlayerScore_Clear."
 features:
   - id: ctf.flag.spawn_setup
     name: "Flag entity spawn + model/skin/bbox setup"
@@ -20,7 +20,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:SpawnFlag"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:SpawnNeutralFlag"
-      - "src/XonoticGodot.Server/GameWorld.cs:1399"
+      - "src/XonoticGodot.Server/GameWorld.cs:3095 (item_flag_team* sink)"
     constants:
       - { name: "FLAG_SCALE", base: "0.5625", port: "n/a (bbox hardcoded)", match: false }
       - { name: "flag bbox mins/maxs (vrint'd)", base: "-30 -30 -32 / 30 30 38", port: "-30 -30 -32 / 30 30 38", match: true }
@@ -298,8 +298,10 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:RemovePlayer"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:OnPlayerRemoved"
-      - "src/XonoticGodot.Server/ClientManager.cs:517"
-      - "src/XonoticGodot.Server/ClientManager.cs:770"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:OnVehicleEnter"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:OnVehicleExit"
+      - "src/XonoticGodot.Server/ClientManager.cs:MakePlayerObserver"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:198"
     constants: []
     status:
       logic: faithful
@@ -311,11 +313,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Portal/vehicle carry leave handling (g_ctf_portalteleport drop, vehicle board/leave drop) is still NOT wired into ctf_RemovePlayer — only the disconnect (ClientManager:770) + MakePlayerObserver (ClientManager:517) leave-play hooks are wired. The carried-flag vehicle COCKPIT offset IS honored in Tick (FlagVehicleCarryOffset, carrier.Vehicle), but boarding/leaving a vehicle or portal does not drop via this path."
+      - "PORTAL-teleport carry-leave drop (g_ctf_portalteleport) is still NOT wired — the ctf PortalTeleport hook has no port dispatch (the PortalTeleport event itself is never fired in the port; BuffsMutator/NadeTranslocateBoom note it omitted). Disconnect + MakePlayerObserver (OnPlayerRemoved) and vehicle board/leave (OnVehicleEnter/Exit) DO drop the flag now."
     verification:
-      - { kind: code, ref: "GameType.OnPlayerRemoved is overridden by Ctf.OnPlayerRemoved -> RemovePlayer; called from ClientManager.MakePlayerObserver:517 AND ClientManager.ClientDisconnect:770 (before roster removal).", result: pass }
+      - { kind: code, ref: "GameType.OnPlayerRemoved -> Ctf.OnPlayerRemoved -> RemovePlayer, called from ClientManager.MakePlayerObserver:535 + ClientDisconnect; OnVehicleEnter/Exit registered in Activate (MutatorHooks.VehicleEnter/Exit) and fired LIVE from VehicleBoarding.cs:198/245/289/305.", result: pass }
     confidence: high
-    notes: "Ctf.RemovePlayer drops the flag + clears pass_sender/pass_target/dropper back-links on disconnect and demote-to-observer. Liveness is `partial` only because the portal/vehicle leave hooks are not wired (the vehicle-carry display offset exists but the leave-drop trigger does not)."
+    notes: "FIX since last audit (the vehicle board/leave drop is now wired): Ctf.RemovePlayer drops the flag + clears pass_sender/pass_target/dropper on disconnect/observe; OnVehicleEnter drops a carried flag when neither g_ctf_allow_vehicle_carry nor _vehicle_touch is set (else Tick parks it at FlagVehicleCarryOffset), OnVehicleExit reattaches it. Liveness stays `partial` ONLY because the PortalTeleport hook is still completely unwired (no PortalTeleport dispatch exists in the port)."
 
   - id: ctf.flag.think_dropped
     name: "Dropped-flag think (landtime, auto-return timer, float, capture-radius)"
@@ -378,7 +380,7 @@ features:
     gaps:
       - "The per-viewer ctf_CaptureShield_Customize hide (shield model visible only to enemies, hidden from same-team) is not networked — the shield entity is shown to everyone. Minor; the model/force-push/centerprint are present."
     verification:
-      - { kind: code, ref: "Ctf.cs:CaptureShieldStatus scores by CtfShieldScore = (CAPS-PICKUPS)+(RETURNS+FCKILLS) (the QC composite), not net SCORE; ratio/force fallbacks match Base (0/100). SpawnShieldEntity called from SpawnFlag (live via GameWorld:2754); ShieldTouchEntity set as the entity Touch; UpdateCaptureShields called each tick from GameWorld:3015.", result: pass }
+      - { kind: code, ref: "Ctf.cs:CaptureShieldStatus scores by CtfShieldScore = (CAPS-PICKUPS)+(RETURNS+FCKILLS) (the QC composite), not net SCORE; ratio/force fallbacks match Base (0/100). SpawnShieldEntity called from SpawnFlag (live via the GameWorld item_flag_team* sink:3095); ShieldTouchEntity set as the entity Touch; UpdateCaptureShields called each tick from GameWorld:3356.", result: pass }
     confidence: high
     notes: "FIX since last audit (presentation missing -> faithful, audio missing -> na): the physical ctf_captureshield push entity is now spawned co-located with each flag (SpawnShieldEntity, QC ctf_CaptureShield_Spawn: model models/ctf/shield.md3, scale 0.5, avelocity '7 0 11', EF_ADDITIVE, MOVETYPE_NOCLIP, SOLID_TRIGGER). ShieldTouchEntity (QC ctf_CaptureShield_Touch) pushes a shielded enemy with g_ctf_shield_force along the outward normal (0-damage Damage call) and center-prints CTF_CAPTURESHIELD_SHIELDED. Base shield touch emits NO sound, so audio is na (was wrongly 'missing'). With Base default ratio 0 the feature is inert by default exactly like Base. Status still gates pickups (GtCaptureShielded) + reaches the HUD via PackCtfStatus CTF_SHIELDED. Only the same-team customize-hide remains unported."
 
@@ -589,46 +591,50 @@ features:
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/ctf/sv_ctf.qc:ctf_Reset"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:FlagResetEntity"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:SpawnFlag (e.Reset = FlagResetEntity)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ResetMapObjects"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC ctf_Reset (the flag edict's reset() hook, called by the engine on reset_map / round restart) throws any carried flag with DROP_RESET, clears flag.enemy, and ctf_RespawnFlag's it. The port has no flag reset() wiring — on a round/map reset the flag's at-base/dropped/carried state is not force-restored via this path. Flags ARE reset implicitly at Activate() (Flags dict reseed) but there is no per-round ctf_Reset equivalent."
+      - "QC ctf_Reset also throws a carried flag with DROP_RESET (a visible in-place drop) before respawning it; the port collapses the throw+respawn into a direct ResetToBase since the immediately-following respawn makes the in-place drop unobservable (no behavioural difference). flag.enemy clear is a no-op (the port has no flag-health back-link)."
     verification:
-      - { kind: code, ref: "no ctf_Reset / reset() hook on the flag entity in Ctf.cs; Activate() reseeds Flags but no DROP_RESET-on-reset path", result: fail }
-    confidence: medium
-    notes: "Unmapped in the prior baseline. Minor: matters only for in-place round/map resets that don't re-run Activate(). DROP_RESET (FlagDropType.Reset enum value exists) is never dispatched."
+      - { kind: code, ref: "Ctf.cs:FlagResetEntity (clears VIP on a carried flag, ResetToBase + RespawnFlagEntity) installed as e.Reset in SpawnFlag; fired LIVE by GameWorld.ResetMapObjects:4614 (e.Reset?.Invoke) on round/map reset.", result: pass }
+    confidence: high
+    notes: "FIX since last audit (logic missing -> faithful, liveness na -> live): the flag entity's .reset hook (QC ctf_Reset) is now ported as FlagResetEntity and wired at SpawnFlag (e.Reset = FlagResetEntity). The engine round/map reset (GameWorld.ResetMapObjects) fires every non-client entity's .reset, so a carried/dropped/passing flag is force-restored to base on an in-place reset that doesn't re-run Activate()."
 
   - id: ctf.match_end_freeze
     name: "Freeze dropped/passing flags at match end (MatchEnd)"
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, MatchEnd)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:OnMatchEnd"
+      - "src/XonoticGodot.Server/GameWorld.cs:FireMatchEnd"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "QC the ctf MatchEnd hook walks g_flags and, for any FLAG_DROPPED/FLAG_PASSING flag, locks it (MOVETYPE_NONE, DAMAGE_NO, SOLID_NOT, nextthink=false) so a live flag cannot move/be-touched after the game is over. The port has the MatchEnded gate (Pickup/Capture/Throw/Pass/Tick early-return when MatchEnded), which stops the STATE MACHINE, but it does not freeze the physical dropped/passing flag ENTITY: a MoveType.Toss dropped flag keeps integrating + its FlagThinkEntity keeps re-arming after MatchEnded."
+    gaps: []
     verification:
-      - { kind: code, ref: "Ctf.cs MatchEnded gates the gameplay handlers but FlagThinkEntity has no MatchEnded guard and the dropped-flag entity's MoveType.Toss / NextThink are not cleared at match end", result: fail }
-    confidence: medium
-    notes: "Unmapped in the prior baseline. Partial: the gameplay OUTCOME (no scoring after match end) is faithful via the MatchEnded gate, but the visible flag-freeze nuance is not reproduced."
+      - { kind: code, ref: "Ctf.cs:OnMatchEnd walks FlagEntities and, for each FLAG_DROPPED/FLAG_PASSING flag, sets MoveType.None / TakeDamage.No / Solid.Not / Velocity 0 / NextThink 0 (QC bit-for-bit) and latches MatchEnded; registered in Activate (MutatorHooks.MatchEnd) and fired LIVE by GameWorld.FireMatchEnd():3905.", result: pass }
+    confidence: high
+    notes: "FIX since last audit (logic partial -> faithful, liveness partial -> live): OnMatchEnd now freezes the physical dropped/passing flag entity exactly like QC MatchEnd (MOVETYPE_NONE, DAMAGE_NO, SOLID_NOT, nextthink stopped) AND latches MatchEnded so a timelimit/forced end (which runs through this hook without a capture) also stops the state machine. Base/carried flags are left untouched, matching QC."
 
   - id: ctf.abort_speedrun
     name: "Return carried flag on speedrun abort (AbortSpeedrun)"
@@ -698,3 +704,100 @@ features:
       - { kind: code, ref: "no LogDeath_AppendItemCodes CTF hook in the port", result: fail }
     confidence: low
     notes: "Unmapped in the prior baseline. Cosmetic server-log detail (the 'F' marker in player_death log lines); no gameplay impact."
+
+  - id: ctf.ignore_frags
+    name: "Suppress frag score in CTF (g_ctf_ignore_frags)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, GiveFragsForKill)"
+    port_refs: []
+    constants:
+      - { name: "g_ctf_ignore_frags", base: "0 (default off)", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC the ctf GiveFragsForKill hook zeroes the per-kill frag score (M_ARGV(2)=0) and, when g_ctf_ignore_frags is set, also suppresses the frag COUNT entirely. The port has no GiveFragsForKill hook for CTF, so a CTF kill still books a normal frag and g_ctf_ignore_frags is a no-op."
+    verification:
+      - { kind: code, ref: "no GiveFragsForKill CTF hook in Ctf.cs; g_ctf_ignore_frags never read", result: fail }
+    confidence: low
+    notes: "Newly mapped 2026-06-27 (was unmapped). Default off, so faithful by default for the common case; only diverges on a host that sets g_ctf_ignore_frags 1."
+
+  - id: ctf.leaderboard
+    name: "Persistent cross-session capture leaderboard (g_ctf_leaderboard)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, ClientConnect)"
+      - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, GetPressedKeys)"
+      - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, GetRecords)"
+    port_refs: []
+    constants:
+      - { name: "g_ctf_leaderboard", base: "0 (default off)", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC the g_ctf_leaderboard subsystem (ClientConnect race_SendAll, GetPressedKeys race_checkAndWriteName, GetRecords) sends + records the persistent cross-session fastest-capture leaderboard via the race record store + ServerProgsDB. The port ports neither the race record store nor any of these CTF hooks, so the persistent leaderboard does not exist (the in-match fastest-cap broadcast in ctf.flag.capture is unaffected)."
+    verification:
+      - { kind: code, ref: "no ClientConnect/GetPressedKeys/GetRecords CTF hooks in Ctf.cs; g_ctf_leaderboard never read; no race record store", result: fail }
+    confidence: medium
+    notes: "Newly mapped 2026-06-27 (was tracked only as a sub-gap of ctf.flag.capture). Needs a persistent DB + the race record subsystem. Default off."
+
+  - id: ctf.followfc_superspec
+    name: "Superspectate 'follow flag carrier' command (followfc)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, SV_ParseClientCommand)"
+    port_refs: []
+    constants:
+      - { name: "g_superspectate", base: "0 (default off)", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC the ctf SV_ParseClientCommand hook handles the spectator 'followfc [team]' command (gated by g_superspectate): a superspectator jumps to spectating the/an active flag carrier (optionally of a given team), or gets a 'No active flag carrier' message. The port has no followfc command and no superspectate subsystem."
+    verification:
+      - { kind: code, ref: "no SV_ParseClientCommand 'followfc' CTF hook in the port; superspec_Spectate not ported", result: fail }
+    confidence: low
+    notes: "Newly mapped 2026-06-27 (was unmapped). Niche: only reachable with g_superspectate enabled (default off) and a connected spectator."
+
+  - id: ctf.prefer_score_clear
+    name: "Prefer player-score on clear (PreferPlayerScore_Clear)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, PreferPlayerScore_Clear)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC the ctf PreferPlayerScore_Clear hook returns true, signalling the scoreboard-clear path to prefer the per-player score representation in CTF. The port has no equivalent hook; the port's scoreboard-clear path does not branch on a gametype preference, so this nuance is unmodeled."
+    verification:
+      - { kind: code, ref: "no PreferPlayerScore_Clear CTF hook in the port", result: fail }
+    confidence: low
+    notes: "Newly mapped 2026-06-27 (was unmapped). Minor scoreboard-clear nuance; likely no observable gameplay effect in the port's current scoring path."

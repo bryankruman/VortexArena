@@ -1,14 +1,15 @@
 unit: cts
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 21
   worst_gaps:
     - "Intermediate/defrag checkpoints unimplemented (target_checkpoint/trigger_race_checkpoint are no-ops for CTS): no ordered progress, no 'went backwards' penalty, no per-cp splits. The Race port has per-checkpoint split records; CTS remains a single start->stop course."
     - "No CTS bot role (havocbot_role_cts): bots are not routed to race-checkpoint waypoints, so they do not run the CTS course."
     - "Per-player race bookkeeping is only partly ported: PlayerSpawn (run-clock reset + checkpoint=-1) and MakePlayerObserver (FRAGS_PLAYER_OUT_OF_GAME + checkpoint=-1) are now live, but there are still no ClientConnect/PutClientInServer/AbortSpeedrun hooks (race_SendAll, race_RetractPlayer respawn branch, g_allow_checkpoints practice mode)."
-    - "FIXED since last audit (2026-06-25): the .race_movetime per-frame run-clock accumulator is now ported+live in OnPlayerPhysics and read at FinishStage (deterministic run clock; was wall-clock). independent_players=1 is now an authoritative latch read by the bot brain + score rules (was unmodeled). MakePlayerObserver (FRAGS_PLAYER_OUT_OF_GAME) is now ported+live."
+    - "FIXED since last audit (2026-06-27): cts.mode.register_latch values partial->faithful — the timelimit=20 gametype default (now asserted at GameWorld:3055-3056 when unset) and the MUTATOR_ONADD GameRules_limit_score(0)/limit_lead(0) clears (now fraglimit=0/leadlimit=0 at Cts.cs:218-219) are both modeled and match Base; only the non-gameplay 'cloaked'/m_generate_mapinfo menu+mapinfo-listing surface remains."
+    - "FIXED earlier (2026-06-25): the .race_movetime per-frame run-clock accumulator is ported+live in OnPlayerPhysics and read at FinishStage (deterministic run clock; was wall-clock). independent_players=1 is an authoritative latch read live by the damage independent-block + score rules. MakePlayerObserver (FRAGS_PLAYER_OUT_OF_GAME) is ported+live."
 features:
   - id: cts.mode.register_latch
     name: "CTS gametype registration + qualifying/independent-players latch"
@@ -21,13 +22,14 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:Qualifying"
       - "src/XonoticGodot.Server/GameWorld.cs:ResolveGameType"
     constants:
-      - { name: "timelimit (gametype default)", base: "20 min", port: "not set by mode", match: false }
+      - { name: "timelimit (gametype default)", base: "20 min", port: "asserted to 20 when unset (GameWorld:3055-3056, case Cts)", match: true }
       - { name: "g_race_qualifying", base: "1 (forced on add)", port: "forced to 1 in Activate() (Api.Cvars.Set), then read", match: true }
-      - { name: "independent_players", base: "1 (forced on add)", port: "forced to 1 in Activate() (_independent_players cvar); read by BotBrain fire-gate + GameScores independent columns", match: true }
-      - { name: "GameRules_limit_score(0)/limit_lead(0)", base: "score/lead limits cleared on add", port: "not modeled", match: false }
+      - { name: "independent_players", base: "1 (forced on add)", port: "forced to 1 in Activate() (_independent_players cvar); read live by the damage independent-block (DamageSystem.cs:172) + GameScores independent columns (DeclareScoreRules independent:true)", match: true }
+      - { name: "GameRules_limit_score(0)/limit_lead(0)", base: "score/lead limits cleared on add", port: "fraglimit=0 + leadlimit=0 set in Activate() (Cts.cs:218-219)", match: true }
+      - { name: "cloaked + m_generate_mapinfo target_startTimer", base: "gametype-listing 'cloaked' flag + mapinfo support keyed on target_startTimer", port: "not modeled (menu/mapinfo-listing concern, not a gameplay value)", match: false }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
@@ -35,11 +37,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Activate() now forces both g_race_qualifying=1 AND _independent_players=1 (Cts.cs:208-209, QC MUTATOR_ONADD) before declaring score rules, and the independent latch is now genuinely read live (BotBrain.cs:426 fire-gate, GameScores independent score columns). Residual: the gametype_init defaults (timelimit=20, cloaked, m_generate_mapinfo target_startTimer) and the MUTATOR_ONADD GameRules_limit_score(0)/limit_lead(0) score/lead-limit clears are still not modeled (values:partial)."
+      - "All four MUTATOR_ONADD gameplay clamps are now modeled+live: Activate() forces g_race_qualifying=1 AND _independent_players=1 (Cts.cs:208-209) AND clears fraglimit=0/leadlimit=0 (Cts.cs:218-219, QC GameRules_limit_score/lead(0)), and the ActivateGameType arm asserts timelimit=20 when unset (GameWorld:3055-3056, QC gametype_init default). The independent latch is genuinely read live (DamageSystem.cs:172 independent-block, GameScores independent score columns). Residual (non-gameplay-value): the gametype 'cloaked' listing flag + the m_generate_mapinfo(target_startTimer) mapinfo-support hook are menu/mapinfo-listing concerns, not modeled."
     verification:
-      - { kind: code, ref: "Cts.cs ctor + Qualifying; Activate() sets g_race_qualifying=1 + _independent_players=1 (Cts.cs:208-209); Deactivate() clears _independent_players (Cts.cs:269); _independent_players read at BotBrain.cs:426 + GameScores.cs independent columns; GameWorld.ActivateGameType case Cts -> cts.Activate() (GameWorld:2981-2982); ResolveGameType via NetName 'cts'", result: pass }
+      - { kind: code, ref: "Cts.cs ctor + Qualifying; Activate() sets g_race_qualifying=1 + _independent_players=1 + fraglimit=0 + leadlimit=0 (Cts.cs:208-219); Deactivate() clears _independent_players (Cts.cs:276); _independent_players read live at DamageSystem.cs:172 + GameScores independent columns; GameWorld.ActivateGameType case Cts -> cts.Activate() + timelimit=20 assert (GameWorld:3050-3056); ResolveGameType via NetName 'cts'", result: pass }
     confidence: high
-    notes: "GameType resolves live by NetName 'cts'; cts.Activate()/Tick() wired in GameWorld. SINCE BASELINE: independent_players is now modeled AND read live (was 'not modeled'); the constant now matches. timelimit=20 default + the limit_score/limit_lead clears remain unmodeled (values still partial)."
+    notes: "GameType resolves live by NetName 'cts'; cts.Activate()/Tick() wired in GameWorld. FIXED since baseline (values partial->faithful): the two previously-unmodeled gameplay-value items — the timelimit=20 gametype default (now asserted at GameWorld:3055-3056) and the GameRules_limit_score(0)/limit_lead(0) clears (now fraglimit=0/leadlimit=0 at Cts.cs:218-219) — are both modeled and match Base. The only residual is the non-gameplay 'cloaked'/m_generate_mapinfo menu+mapinfo-listing surface (values stays faithful)."
 
   - id: cts.score.rules
     name: "Score rules: no SP_SCORE; rank by fastest time (qualifying) or laps/time/fastest"
@@ -230,7 +232,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:ScheduleRetract"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:RetractRunner"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:Tick"
-      - "src/XonoticGodot.Server/GameWorld.cs:2989 (cts.OnFinishRetract = silent DEATH_KILL via Combat.Damage); cts.Tick in the server frame (GameWorld:3348)"
+      - "src/XonoticGodot.Server/GameWorld.cs:3063 (cts.OnFinishRetract = silent DEATH_KILL via Combat.Damage); cts.Tick in the server frame (GameWorld:3422)"
     constants:
       - { name: "g_cts_finish_kill_delay", base: "2 s (-1 instant, 0 off)", port: "read; DefaultFinishKillDelay=2 when cvar unset", match: true }
       - { name: "retract = ClientKill_Silent", base: "silent self-kill (DEATH_KILL through the damage pipeline)", port: "Combat.Damage(p,p,p,1e5,DeathTypes.Kill) (GameWorld:2993)", match: true }
@@ -245,7 +247,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Cts.cs:47 DefaultFinishKillDelay=2f; ScheduleRetract:422 falls back to 2f when cvar unset (0 = never, -1 = instant); cts.Tick fired in the server frame (GameWorld:3348); death cancels a pending retract (OnDeath:598 _retractAt.Remove). OnFinishRetract is a real silent DEATH_KILL (Combat.Damage 100000 DeathTypes.Kill, GameWorld:2989-2996), matching QC ClientKill_Silent.", result: pass }
+      - { kind: code, ref: "Cts.cs:47 DefaultFinishKillDelay=2f; ScheduleRetract falls back to 2f when cvar unset (0 = never, -1 = instant); cts.Tick fired in the server frame (GameWorld:3422); death cancels a pending retract (OnDeath _retractAt.Remove). OnFinishRetract is a real silent DEATH_KILL (Combat.Damage 100000 DeathTypes.Kill, GameWorld:3063-3070), matching QC ClientKill_Silent.", result: pass }
     confidence: high
     notes: "OnFinishRetract is a silent DEATH_KILL through the damage pipeline (QC ClientKill_Silent). Kill-delay default 2 s + the 0/-1 cases match Base; retract live via OnFinishRetract + per-frame Tick. Unchanged from baseline (line numbers re-anchored)."
 
@@ -288,7 +290,7 @@ features:
       - "common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts, Damage_Calculate)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:OnDamageCalculate"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:256 (MutatorHooks.DamageCalculate.Call)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:264 (MutatorHooks.DamageCalculate.Call)"
     constants:
       - { name: "g_cts_selfdamage default", base: "1 (gametypes-server.cfg:364)", port: "TryCvar -> treated as 1 when unset", match: true }
     status:
@@ -302,7 +304,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Cts.OnDamageCalculate (Cts.cs:635) subscribes MutatorHooks.DamageCalculate (live dispatch in DamageSystem.cs:256). Logic matches Base: if(target==attacker || deathtype==FALL) if(!g_cts_selfdamage) damage=0.", result: pass }
+      - { kind: code, ref: "Cts.OnDamageCalculate (Cts.cs:642) subscribes MutatorHooks.DamageCalculate (live dispatch in DamageSystem.cs:264). Logic matches Base: if(target==attacker || deathtype==FALL) if(!g_cts_selfdamage) damage=0.", result: pass }
     confidence: high
     notes: "Closed in Wave-2, still closed. Unchanged from baseline."
 
@@ -342,7 +344,7 @@ features:
       - "common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts, ForbidDropCurrentWeapon)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:OnForbidThrowCurrentWeapon"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponThrowing.cs:149/185 (ForbidThrowCurrentWeapon.Call)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponThrowing.cs:157/193 (ForbidThrowCurrentWeapon.Call)"
     constants: []
     status:
       logic: faithful
@@ -354,9 +356,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The port folds both QC hooks (ForbidThrowCurrentWeapon + ForbidDropCurrentWeapon) into the single ForbidThrowCurrentWeapon chain — a documented per-port simplification; the effect (no throw, no drop) is correct because the chain is consulted by both IsWeaponThrowable (drop test, WeaponThrowing.cs:149) and ThrowWeapon (WeaponThrowing.cs:185)."
+      - "The port folds both QC hooks (ForbidThrowCurrentWeapon + ForbidDropCurrentWeapon) into the single ForbidThrowCurrentWeapon chain — a documented per-port simplification; the effect (no throw, no drop) is correct because the chain is consulted by both IsWeaponThrowable (drop test, WeaponThrowing.cs:157) and ThrowWeapon (WeaponThrowing.cs:193)."
     verification:
-      - { kind: code, ref: "OnForbidThrowCurrentWeapon (Cts.cs:653) returns true; chain dispatched at WeaponThrowing.cs:149 (drop path) and :185 (throw path) — both vetoed for CTS", result: pass }
+      - { kind: code, ref: "OnForbidThrowCurrentWeapon (Cts.cs:660) returns true; chain dispatched at WeaponThrowing.cs:157 (drop path) and :193 (throw path) — both vetoed for CTS", result: pass }
     confidence: high
     notes: "Closed in Wave-2, live on both throw and drop paths. Unchanged from baseline."
 
@@ -399,7 +401,7 @@ features:
       - "common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts, MonsterDropItem)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:OnFilterItemDefinition"
-      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:103 (FilterItemDefinition.Call)"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:106 (FilterItemDefinition.Call)"
     constants:
       - { name: "g_cts_drop_monster_items default", base: "0 (gametypes-server.cfg:368)", port: "TryCvar -> 0 when unset", match: true }
     status:
@@ -416,7 +418,7 @@ features:
       - "Only the monster-drop SUB-CASE still keys off a classname tag (id.Contains(\"monster\"), Cts.cs:672) because the port has no .monster_item flag. This branch is inert on stock servers (g_cts_drop_monster_items defaults 0), so it only matters with an explicit g_cts_drop_monster_items 1 — minor residual."
       - "QC MonsterDropItem (blanking the dropped item string when !g_cts_drop_monster_items) is folded into the same FilterItem path rather than a separate hook."
     verification:
-      - { kind: code, ref: "OnFilterItemDefinition (Cts.cs:659) subscribes MutatorHooks.FilterItemDefinition (live dispatch in StartItem.cs:103). Uses a.Definition.ItemIsLoot for the ITEM_IS_LOOT test — faithful. Returns true (delete) for loot unless monster-drop && g_cts_drop_monster_items. Default drop_monster_items=0 matches Base.", result: pass }
+      - { kind: code, ref: "OnFilterItemDefinition (Cts.cs:666) subscribes MutatorHooks.FilterItemDefinition (live dispatch in StartItem.cs:106). Uses a.Definition.ItemIsLoot for the ITEM_IS_LOOT test — faithful. Returns true (delete) for loot unless monster-drop && g_cts_drop_monster_items. Default drop_monster_items=0 matches Base.", result: pass }
     confidence: high
     notes: "ITEM_IS_LOOT test reads the real Entity.ItemIsLoot flag (faithful). Only the monster-drop sub-case (default-off) still uses a classname tag. Unchanged from baseline."
 
@@ -431,7 +433,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:SpeedAwardFrame"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/RaceRecords.cs:ReadSpeedAwardBest/WriteSpeedAwardBest/ReadSpeedAwardBestHolder/SetName"
-      - "src/XonoticGodot.Server/GameWorld.cs:3348 (case Cts cts: cts.SpeedAwardFrame(Clients.Players))"
+      - "src/XonoticGodot.Server/GameWorld.cs:3422 (case Cts cts: cts.Tick(Time); cts.SpeedAwardFrame(Clients.Players))"
       - "game/net/ServerNet.cs:2285-2289 (_scoreSpeedAward from cts.SpeedAwardSpeed/Holder/Best/BestHolder)"
       - "game/hud/ScoreboardPanel.cs:DrawSpeedAward / SetSpeedAward"
     constants:
@@ -535,7 +537,7 @@ features:
       - "server/race.qc:race_ClearRecords"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:ResetMapGlobal"
-      - "src/XonoticGodot.Server/GameWorld.cs:4442 (case Cts c: c.ResetMapGlobal(Clients.Players))"
+      - "src/XonoticGodot.Server/GameWorld.cs:4526 (case Cts c: c.ResetMapGlobal(Clients.Players))"
     constants: []
     status:
       logic: partial
@@ -550,7 +552,7 @@ features:
       - "ResetMapGlobal resets every runner's in-progress run (AbandonRun: RunStartTime + .race_movetime accumulator zeroed), zeroes the round-best speed award, and cancels pending finish-retracts on map reset — live (GameWorld:4442). The persistent top-99 CTS records are intentionally kept (QC keeps them too)."
       - "Still not modeled: the cts_EventLog place echo per client (Score_NicePrint + the ftos(race_place) gamelog line) and the qualifying==2 -> race collapse (moot: CTS pins g_race_qualifying=1). The PlayerScore_Sort/race_place bookkeeping is also absent (CTS has no intermediate-checkpoint race_place tracking)."
     verification:
-      - { kind: code, ref: "Cts.ResetMapGlobal (Cts.cs:455-466) clears _retractAt, AbandonRun per player (RunStartTime + race_movetime accumulator zeroed), and resets the round-best speed award; wired live at GameWorld.cs:4442 in the reset-map dispatch. The event-log/place-scoring half of the QC hook is still absent.", result: pass }
+      - { kind: code, ref: "Cts.ResetMapGlobal (Cts.cs:462-473) clears _retractAt, AbandonRun per player (RunStartTime + race_movetime accumulator zeroed), and resets the round-best speed award; wired live at GameWorld.cs:4526 in the reset-map dispatch. The event-log/place-scoring half of the QC hook is still absent.", result: pass }
     confidence: high
     notes: "reset_map_global handler (ResetMapGlobal) is live on the map-reset path, dropping in-progress runs (incl. the race_movetime accumulator), pending retracts, and the round-best speed award. Residual: cts_EventLog place echo + qualifying==2 collapse (moot) — hence logic:partial. Unchanged from baseline."
 
