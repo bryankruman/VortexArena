@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1842 | 88 | 28 | 151 | 4 | 2 |
-| values | 0 | 1722 | 65 | 226 | 89 | 0 | 13 |
-| timing | 0 | 1081 | 46 | 927 | 44 | 0 | 17 |
-| presentation | 0 | 574 | 136 | 1197 | 202 | 0 | 6 |
+| logic | 0 | 1844 | 88 | 28 | 149 | 4 | 2 |
+| values | 0 | 1723 | 64 | 226 | 89 | 0 | 13 |
+| timing | 0 | 1084 | 45 | 926 | 43 | 0 | 17 |
+| presentation | 0 | 576 | 136 | 1197 | 200 | 0 | 6 |
 | audio | 0 | 312 | 10 | 1770 | 19 | 1 | 3 |
-| liveness | 23 | 0 | 0 | 95 | 100 | 0 | 9 |
+| liveness | 23 | 0 | 0 | 95 | 98 | 0 | 9 |
 
 ## Features by unit
 
@@ -129,10 +129,10 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-csqcmodel.forcecolors.cascade` | Force player colors + unique enemy colors *(intended)* | ~ | OK | - | OK | - | ~ | high |
 | `cl-csqcmodel.glowmod.deathfade_ghost` | Glowmod from colormap + death-fade + respawn-ghost *(intended)* | OK | OK | ~ | OK | - | live | high |
 | `cl-csqcmodel.lod.distance_swap` | LOD model selection + swap *(intended)* | ~ | OK | - | ~ | - | ~ | high |
-| `cl-csqcmodel.skeleton.upper_lower_aim` | Skeletal upper/lower split + aim bones + fixbone | OK | OK | OK | ~ | - | live | high |
-| `cl-csqcmodel.animdecide.state_machine` | animdecide locomotion + upper-body action state machine | ~ | ~ | ~ | ~ | - | ~ | high |
+| `cl-csqcmodel.skeleton.upper_lower_aim` | Skeletal upper/lower split + aim bones + fixbone | OK | OK | OK | OK | - | live | high |
+| `cl-csqcmodel.animdecide.state_machine` | animdecide locomotion + upper-body action state machine *(intended)* | OK | OK | OK | OK | - | live | high |
 | `cl-csqcmodel.fallbackframe.remap` | Fallback frame remap (missing-frame substitution) | OK | OK | - | OK | - | ~ | medium |
-| `cl-csqcmodel.tagindex.weapon_attach` | Auto tag-index (weapon/attachment bone resolution) | ~ | - | - | ~ | - | ~ | medium |
+| `cl-csqcmodel.tagindex.weapon_attach` | Auto tag-index (weapon/attachment bone resolution) | ~ | - | OK | ~ | - | ~ | medium |
 | `cl-csqcmodel.effects.ef_mf_trail_lights` | EF_*/MF_* effects: dynamic lights, particles, render-flags, trails | ~ | ~ | OK | ~ | - | ~ | high |
 | `cl-csqcmodel.effects.jetpack_loop` | Jetpack loop sound (MF_ROCKET) | OK | OK | OK | - | OK | live | high |
 | `cl-csqcmodel.networking.csqcmodel_contract` | CSQCMODEL networked-property contract (effects/modelflags/skin/traileffect/colormap/colormod/glowmod/scale/alpha/v_angle/anim_*) | ~ | ~ | - | ~ | - | ~ | high |
@@ -1762,7 +1762,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `net-entity-state.wepent.switch_alpha_misc` | wepent switch/alpha/gunalign/porto/tuba/skin viewmodel fields *(intended)* | ~ | ~ | ~ | ~ | - | ~ | high |
 | `net-entity-state.csqcmodel.appearance_hook` | csqcmodel appearance hook (force model/colors, unique enemy colors, death-fade) | OK | OK | - | OK | - | live | high |
 | `net-entity-state.replicate.client_cvars` | Client->server cvar replication (REPLICATE / cmd sentcvar) | OK | ~ | OK | - | - | live | high |
-| `net-entity-state.csqcmodel.anim_state` | csqcmodel networked anim action state (upper/lower-body action split) *(intended)* | ~ | MISS | MISS | ~ | - | ~ | high |
+| `net-entity-state.csqcmodel.anim_state` | csqcmodel networked anim action state (upper/lower-body action split) *(intended)* | OK | ~ | OK | ~ | - | live | high |
 | `net-entity-state.csqcmodel.alpha` | csqcmodel per-entity render alpha (m_alpha / .alpha transparency channel) *(intended)* | OK | OK | OK | OK | - | live | high |
 
 ### `fx-deathtypes` (notification) — 11 features

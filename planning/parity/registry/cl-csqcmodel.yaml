@@ -5,11 +5,11 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 12
   worst_gaps:
-    - "animdecide UPPER-BODY ACTIONS still not ported (shoot/pain/draw/taunt/melee torso overlays never play; anim_state/anim_upper/lower_action+time still not networked — grep confirms zero anim_* bits in NetEntity/ClientEntityView). BUT the 8-direction + duck-variant LOCOMOTION is now FAITHFULLY PORTED AND LIVE (drift fix 2026-06-27): LocomotionBlend.SelectLegsDirectional + ImplicitDirection (1:1 port of animdecide_setimplicitstate vdist>10/0.5-cot + animdecide_getloweranim 21-state directional/duckwalk switch) drives PlayerModel.Pose (PlayerModel.cs:199); BuildClipTable maps all 21 directional/duck clips with the animfixfps fallback cascade. Remaining locomotion gap = per-anim framerates (die 0.5/shoot 5/jump 10/draw 3/taunt 0.33) still unused (clips picked by name @ 20fps default)."
-    - "CSQCMODEL networking contract still mostly unmapped, BUT alpha is now FULLY wired end-to-end (Wave 5 closed the dead-on-consume gap): server QuantizeAlpha producer -> codec -> ClientEntityView maps s.Alpha->e.Alpha (0->opaque, else byte/255) -> PlayerModel.ApplyAlpha renders per-instance Transparency, so Cloaked/Invisibility/fade now render translucent. Still NOT networked: colormod (ALL entities, BIT(8)), scale (BIT(12)), traileffect (BIT(2)), modelflags (BIT(2)) except the client re-derives MF_ROCKET from the new UsingJetpack flag, non-player glowmod (BIT(8)), v_angle (BIT(10)), the whole anim_* block"
-    - "MF_* model flags still not networked, BUT MF_ROCKET is now re-derived client-side and LIVE: the new NetEntityFlags.UsingJetpack (1<<8) flows server->client->e.UsingJetpack->ComposeForcedAppearance(jetpackActive:true)->CsqcModelEffects.Apply(forced)->DriveJetpackLoop + rocket-trail return. So the jetpack loop + MF_ROCKET trail now fire for remote players. Still dead: the other MF trails (grenade/gib/tracer) for non-jetpack entities (modelFlags base still 0), and the forced-glowmod TINT (ApplyForcedGlowmod, zero callers). NOTE (2026-06-25 reclassification): the Strength/Shield EF_BLUE/EF_RED role-glow is NOT dead — it is achieved LIVE via PowerupsMutator setting player.Effects (the dead path is only the redundant ComposeForcedAppearance(strength,shield) seam)"
-    - "LOD swap is STILL a no-op (UNCHANGED, re-verified 2026-06-27): SelectLodIndex is computed faithfully (ClientWorld.cs:1314 `_ = CsqcModelLod.SelectLodIndex(...)`) but discarded — stock player models (erebus/gak/gakmasked) AND monsters (golem/spider/...) ship _lod1/_lod2, so with default cl_playerdetailreduction 4 distant players/monsters always render full-detail lod0 (real regression, persists)"
+    - "LOD swap is STILL a no-op (UNCHANGED, re-verified 2026-06-27): SelectLodIndex is computed faithfully (ClientWorld.cs:1324 `_ = CsqcModelLod.SelectLodIndex(...)`) but discarded — stock player models (erebus/gak/gakmasked) AND monsters (golem/spider/...) ship _lod1/_lod2, so with default cl_playerdetailreduction 4 distant players/monsters always render full-detail lod0 (real regression, persists). This is now the dominant open gap."
+    - "MAJOR FIX (drift 2026-06-27): the upper-body ACTION state machine (shoot/melee/pain/draw/taunt/die torso overlays) — formerly the dominant baseline gap — is now FULLY PORTED AND LIVE end-to-end. Server producers latch actions (WeaponFireGate shoot/melee, WeaponFireDriver draw, DamageSystem pain1/pain2 + die1/die2, SoundSystem taunt) via AnimDecide.SetAction; the action+start are networked via the new EntityField.AnimAction bit (1<<18, NetEntity.UpperAction/AnimActionTime); the client decodes (ClientEntityView) and PlayerModel.Pose plays the torso action clip via LocomotionBlend.SelectTorsoAction with the priority cascade (DEAD>ACTIVE>IDLE) in AnimDecide.GetUpperAnim, and the per-anim framerates (die 0.5/shoot 5/jump 10/draw 3/taunt 0.33) are now USED (AnimDecide.SpecFor in PlayerModel.BuildClipTable ActionClip). The 8-direction + duck-variant LOCOMOTION (the prior drift fix) also remains faithful and live."
+    - "CSQCMODEL networking contract spine still mostly unmapped, BUT alpha + UsingJetpack + the anim_* action block + the exterior-weapon (wepent) block are now ALL wired end-to-end. Still NOT networked: colormod (ALL entities, BIT(8)), scale (BIT(12)), traileffect (BIT(2)), non-jetpack modelflags (BIT(2)), non-player glowmod (BIT(8)), v_angle (BIT(10)), the anim_state LOCOMOTION bits (locomotion is inferred client-side from velocity/angles, which Base also does), and the networked colormap proper (only a team id is sent)."
     - "Per-player FORCED glowmod TINT (gametype/powerup role color RECOLORING the model surface over the colormap-derived glowmod) is built (ApplyForcedGlowmod + ForcedAppearance.HasForcedGlowmod) but STILL DEAD — no caller ever composes or passes a forced glowmod; the live jetpack composition passes forcedGlowmod (-1,-1,-1) = unset. (Distinct from the role-glow LIGHTS, which ARE live via PowerupsMutator EF_BLUE/EF_RED.)"
+    - "Auto tag-index full QC cascade (h_/v_ model tag chain, recursive parent predraw, drawmask=0 on unresolved tag) still simplified to a tag_weapon marker attach, BUT the exterior-weapon (wepent) block (switch/raise-lower phase, skin, align, weapon alpha) is now networked + consumed by ViewEntityRenderer for the remote third-person held weapon (partial fix)."
 features:
   - id: cl-csqcmodel.predraw.dispatch_order
     name: "Predraw dispatch + ordered pass (appearance->LOD->anim->tag->effects)"
@@ -30,12 +30,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Order is appearance->LOD->effects (skeletal anim runs in a separate PlayerModel.Pose pass, not interleaved here); the appearance-before-LOD ordering is moot because LOD is a no-op swap."
+      - "Order is appearance->LOD->effects (skeletal anim + torso-action overlay run in a separate PlayerModel.Pose pass, not interleaved here); the appearance-before-LOD ordering is moot because LOD is a no-op swap."
       - "AutoTagIndex recursion + drawmask=0 on null-model are not part of this pass (held weapons attach via ViewEntityRenderer)."
     verification:
       - { kind: code, ref: "ClientWorld.cs DriveCsqcModelHooks called every _Process frame; iterates _entityNodes; appearance + LOD + EF_*/forced effects per entity", result: pass }
     confidence: high
-    notes: "Live every frame from ClientWorld._Process. Wave 5 EXTENDED this pass: the effects step now composes a per-entity ForcedAppearance (MF_ROCKET when e.UsingJetpack) and passes it to CsqcModelEffects.Apply, and the item-fade branch gained a distance-fade compose. Dispatch structure unchanged vs baseline; still partial (no interleaved anim/tag, no-op LOD)."
+    notes: "Live every frame from ClientWorld._Process. Effects step composes a per-entity ForcedAppearance (MF_ROCKET when e.UsingJetpack) + the item-fade distance compose. Dispatch structure unchanged vs baseline; still partial (no interleaved anim/tag in this pass — the anim + torso-action overlay live in PlayerModel.Pose; no-op LOD)."
   - id: cl-csqcmodel.forcemodel.model_skin
     name: "Force player model / skin (cl_forceplayermodels family)"
     layer: [presentation]
@@ -66,7 +66,7 @@ features:
     verification:
       - { kind: code, ref: "ClientWorld.cs TryAttachModel -> TryAttachForcedModel (reads cl_forcemyplayermodel/cl_forceplayermodels/cl_forcemyplayerskin/_cl_playermodel, isfriend cascade); NetGame.cs ForcedModelResolver = BuildForcedPlayerModel (LIVE wiring)", result: pass }
     confidence: high
-    notes: "Unchanged by Wave 5. TryAttachForcedModel implements the full friend/all cascade reading all four cvars; NetGame wires ForcedModelResolver=BuildForcedPlayerModel on the live path; forced model gets FORCECOLORS via AttachForcedNode->ResolveForcedColormap. Live + faithful."
+    notes: "Re-verified 2026-06-27 unchanged. TryAttachForcedModel implements the full friend/all cascade reading all four cvars; NetGame wires ForcedModelResolver=BuildForcedPlayerModel on the live path; forced model gets FORCECOLORS via AttachForcedNode->ResolveForcedColormap. Live + faithful."
   - id: cl-csqcmodel.forcecolors.cascade
     name: "Force player colors + unique enemy colors"
     layer: [presentation]
@@ -104,7 +104,7 @@ features:
     verification:
       - { kind: code, ref: "ClientWorld.cs ResolveForcedColormap -> ForcePlayerColorsEnabled/ResolveForcedColormap/UniqueColormap; provider wired NetGame.cs:BuildAppearanceContext", result: pass }
     confidence: high
-    notes: "Unchanged behavior vs baseline (Wave 5 only added a const DefaultPlayerModel/DefaultPlayerSkin used by the forcemodel row; the slot-bias note is a clarifying comment). Pure cascade math is a 1:1 port with unit tests; the divergences are the collision-check reduction, the provider dependency, and the >=1024 colormap bias."
+    notes: "Re-verified 2026-06-27 unchanged. Pure cascade math is a 1:1 port with unit tests; the divergences are the collision-check reduction, the provider dependency, and the >=1024 colormap bias."
   - id: cl-csqcmodel.glowmod.deathfade_ghost
     name: "Glowmod from colormap + death-fade + respawn-ghost"
     layer: [presentation]
@@ -143,9 +143,9 @@ features:
     gaps:
       - "Death-fade origin (death_time) is client-observed, not server-networked, so the fade can start a frame or two late under packet loss."
     verification:
-      - { kind: code, ref: "ClientWorld.cs IsDeadModel + DeathTime capture; ModelTint.ApplyAppearance now routes through CsqcModelAppearance.RespawnGhostClearsColors/BaseGlowmod/GuardGlowmodZero/ApplyHdrGlowClamp/DeathGlowFactor (shared helpers)", result: pass }
+      - { kind: code, ref: "ClientWorld.cs IsDeadModel + DeathTime capture; ModelTint.ApplyAppearance routes through CsqcModelAppearance.RespawnGhostClearsColors/BaseGlowmod/GuardGlowmodZero/ApplyHdrGlowClamp/DeathGlowFactor (shared helpers)", result: pass }
     confidence: high
-    notes: "Wave REFACTORED the inline glowmod/ghost/hdr math in ModelTint into shared CsqcModelAppearance helpers (BaseGlowmod/GuardGlowmodZero/ApplyHdrGlowClamp/RespawnGhostClearsColors) — re-verified behavior-IDENTICAL (same formulas; the keepColors flip is preserved: RespawnGhostClearsColors(ghost, keepColors = Cvar!=0)). No regression; one source of truth for live + tested math."
+    notes: "Re-verified 2026-06-27 unchanged. Inline glowmod/ghost/hdr math is centralized in CsqcModelAppearance helpers (BaseGlowmod/GuardGlowmodZero/ApplyHdrGlowClamp/RespawnGhostClearsColors); behavior-identical (same formulas; keepColors flip preserved)."
   - id: cl-csqcmodel.lod.distance_swap
     name: "LOD model selection + swap"
     layer: [presentation]
@@ -172,13 +172,13 @@ features:
     intended_divergence: true
     divergence_rationale: "INTENDED only for the two unported renderer globals: view_quality (a renderer LOD-quality global) and current_viewzoom have no port equivalent, both pinned to 1 — adaptive-quality / zoom LOD scaling is deliberately absent. The missing _lodN SWAP is NOT an intended divergence (see gaps): it is deferred render work; stock player + monster models DO ship _lodN."
     gaps:
-      - "REAL REGRESSION (STILL OPEN, re-verified 2026-06-27): stock player models erebus/gak/gakmasked AND monsters golem/spider/nanomage/wyvern ship _lod1/_lod2 in Base/data; with default cl_playerdetailreduction 4, Base downshifts distant players/monsters to lod1/lod2, but the port discards the computed index (ClientWorld.cs:1314 `_ = CsqcModelLod.SelectLodIndex(...)`, immediately-following comment 'keep lod0 (the QC fexists-miss path)') and ALWAYS renders lod0. So distant detail never reduces for default content (perf + visible-detail parity gap)."
+      - "REAL REGRESSION (STILL OPEN, re-verified 2026-06-27): stock player models erebus/gak/gakmasked AND monsters golem/spider/nanomage/wyvern ship _lod1/_lod2 in Base/data; with default cl_playerdetailreduction 4, Base downshifts distant players/monsters to lod1/lod2, but the port discards the computed index (ClientWorld.cs:1324 `_ = CsqcModelLod.SelectLodIndex(...)`, immediately-following comment 'keep lod0 (the QC fexists-miss path)') and ALWAYS renders lod0. So distant detail never reduces for default content (perf + visible-detail parity gap)."
       - "view_quality and current_viewzoom are pinned to 1 (no port equivalent), so adaptive-quality / zoom LOD scaling is absent. (Intended.)"
     verification:
-      - { kind: code, ref: "ClientWorld.cs:1314 `_ = CsqcModelLod.SelectLodIndex(...)` result discarded; immediately-following comment 'keep lod0 (the QC fexists-miss path)' — re-verified 2026-06-27 still discarded", result: fail }
+      - { kind: code, ref: "ClientWorld.cs:1324 `_ = CsqcModelLod.SelectLodIndex(...)` result discarded; immediately-following comment 'keep lod0 (the QC fexists-miss path)' — re-verified 2026-06-27 still discarded", result: fail }
       - { kind: code, ref: "Base/data models/player/{erebus,gak,gakmasked}_lod{1,2}.iqm + models/monsters/{golem,spider,nanomage,wyvern}_lod1.dpm EXIST — the no-op swap regresses default content", result: fail }
     confidence: high
-    notes: "SelectLodIndex distance pick and NearestPointOnBox are faithful ports; the swap is the dead part. ApplyLod is live (called from DriveCsqcModelHooks) but inert. STILL OPEN — re-verified 2026-06-27 at ClientWorld.cs:1314 `_ = CsqcModelLod.SelectLodIndex(...)` discarded, immediately-following comment 'keep lod0 (the QC fexists-miss path)' — UNCHANGED."
+    notes: "SelectLodIndex distance pick and NearestPointOnBox are faithful ports; the swap is the dead part. ApplyLod is live (called from DriveCsqcModelHooks) but inert. STILL OPEN — re-verified 2026-06-27 at ClientWorld.cs:1324 `_ = CsqcModelLod.SelectLodIndex(...)` discarded — UNCHANGED. Now the dominant open gap for this unit (the animdecide action gap closed this cycle)."
   - id: cl-csqcmodel.skeleton.upper_lower_aim
     name: "Skeletal upper/lower split + aim bones + fixbone"
     layer: [presentation]
@@ -199,18 +199,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Presentation gap is on the ACTION side, not the split mechanism: the upper-body torso always shows a stable idle/aim frame (LocomotionBlend.Split torsoTime=0), so the bone split + fixbone + aim-pitch are structurally faithful but the torso never animates beyond the aim-bone pitch bend (the upper-body ACTION overlay is the animdecide feature's gap)."
       - "Aim pitch reads Entity.Angles.X instead of a separately-networked v_angle_x (BIT(10)); for remote players these can differ slightly (the visible head/torso bend may lag or use the body yaw-pitch rather than the true view pitch)."
     verification:
-      - { kind: code, ref: "PlayerModel.Pose live for skeletal IQM players; SelectLegs->Split->PlayerSkeleton.FromFrames; FromFrames implements fixbone + aim bones as a 1:1 port of player_skeleton.qc:114-208", result: pass }
+      - { kind: code, ref: "PlayerModel.Pose live for skeletal IQM players; SelectLegsDirectional->Split->PlayerSkeleton.FromFrames; FromFrames implements fixbone + aim bones as a 1:1 port of player_skeleton.qc:114-208", result: pass }
+      - { kind: code, ref: "PlayerModel.cs:224-234 — the torso now plays the networked upper-body ACTION overlay (LocomotionBlend.Split(legs,_legsTime,actionClip,phase,_actionTag:true)) when e.UpperAction!=0, so the upper-body split carries a real animating torso, not just the static aim pose", result: pass }
     confidence: high
-    notes: "fixbone IS faithfully ported. The bone-split, fixbone re-anchor, and aim-pitch math are all faithful 1:1 ports. The only real presentation gap is the static torso (captured by the animdecide feature) and the v_angle source. Wave 5 added an ApplyAlpha call at the TOP of Pose (the alpha-net seam — separate from the skeletal split, renders per-instance Transparency before the skeletal early-out); the split logic itself is unchanged."
+    notes: "FIX (drift 2026-06-27): the prior presentation gap (the upper-body torso always showed a stable idle/aim frame, torsoTime=0) is CLOSED — the bone-split now carries the live networked upper-body ACTION overlay (shoot/melee/pain/draw/taunt/die) via PlayerModel.Pose. The bone-split, fixbone re-anchor, and aim-pitch math remain faithful 1:1 ports; presentation upgraded partial->faithful. Residual gap is only the v_angle source (aim pitch reads body Angles.X, not a separately-networked v_angle_x)."
   - id: cl-csqcmodel.animdecide.state_machine
     name: "animdecide locomotion + upper-body action state machine"
     layer: [presentation, shared]
@@ -218,44 +218,47 @@ features:
       - "common/animdecide.qc:animdecide_setimplicitstate"
       - "common/animdecide.qc:animdecide_getloweranim"
       - "common/animdecide.qc:animdecide_getupperanim"
+      - "common/animdecide.qc:animdecide_setaction"
       - "common/animdecide.qc:animdecide_load_if_needed"
     port_refs:
       - "src/XonoticGodot.Engine/Simulation/LocomotionBlend.cs:SelectLegsDirectional"
       - "src/XonoticGodot.Engine/Simulation/LocomotionBlend.cs:ImplicitDirection"
-      - "src/XonoticGodot.Engine/Simulation/LocomotionBlend.cs:Split"
+      - "src/XonoticGodot.Engine/Simulation/LocomotionBlend.cs:SelectTorsoAction"
+      - "src/XonoticGodot.Common/Gameplay/Player/AnimDecide.cs:GetUpperAnim"
+      - "src/XonoticGodot.Common/Gameplay/Player/AnimDecide.cs:SetAction"
+      - "src/XonoticGodot.Common/Gameplay/Player/AnimDecide.cs:SpecFor"
       - "game/client/PlayerModel.cs:Pose"
       - "game/client/PlayerModel.cs:BuildClipTable"
     constants:
-      - { name: "8-direction detection (v.x/v.y with 0.5 cot threshold + vdist>10)", base: "yes (animdecide.qc:268-277)", port: "ImplicitDirection: vdist>10 + 0.5 cot fwd/back/right/left — match", match: true }
+      - { name: "8-direction detection (v.x/v.y with 0.5 cot threshold + vdist>10)", base: "yes (animdecide.qc:248-278)", port: "ImplicitDirection: vdist>10 + 0.5 cot fwd/back/right/left — match", match: true }
       - { name: "locomotion states", base: "~21 (run/runbackwards/strafeL/R/forwardL/R/backL/R + duckwalk 8-dir variants + idle/jump/duckidle/duckjump/death)", port: "DirLocomotion 21-state set (same enum), mapped 1:1", match: true }
       - { name: "directional switch (getloweranim fblr mask)", base: "animdecide.qc:196-239 (standing + ducked switches)", port: "SelectLegsDirectional standing+ducked switch — match", match: true }
       - { name: "clip fallback cascade (animfixfps fallback arg)", base: "diagonals->straight strafe->run; duckwalk dirs->duckwalk; etc (animdecide.qc:80-95)", port: "BuildClipTable Pick(...) keyword fallback chain — match", match: true }
-      - { name: "upper-body actions (draw/pain1/pain2/shoot/taunt/melee)", base: "yes (priority DEAD>ACTIVE>IDLE)", port: "none (static idle/aim torso, torsoTime=0)", match: false }
-      - { name: "die framerate (fps)", base: "0.5 (2s)", port: "fuzzy name match @ 20fps fallback", match: false }
-      - { name: "shoot framerate (fps)", base: "5", port: "n/a (no action overlay)", match: false }
-      - { name: "jump framerate (fps)", base: "10", port: "name-picked @ 20fps default", match: false }
-      - { name: "draw framerate (fps)", base: "3", port: "n/a (no action overlay)", match: false }
-      - { name: "taunt framerate (fps)", base: "0.33", port: "n/a (no action overlay)", match: false }
-      - { name: "networked anim inputs", base: "anim_state BIT(7), anim_time, anim_lower_action/time BIT(8), anim_upper_action/time BIT(9)", port: "none networked (locomotion needs none — inferred from velocity/angles; only the ACTION overlays need the wire)", match: false }
+      - { name: "upper-body actions (draw/pain1/pain2/shoot/taunt/melee/die1/die2)", base: "yes (priority DEAD>ACTIVE>IDLE, animdecide.qc:109-153)", port: "PORTED + LIVE: AnimDecide.GetUpperAnim priority cascade; PlayerModel.Pose plays the torso overlay via SelectTorsoAction", match: true }
+      - { name: "die framerate (fps)", base: "0.5 (2s)", port: "AnimDecide.SpecFor Die1/Die2 = 0.5fps — match", match: true }
+      - { name: "shoot framerate (fps)", base: "5", port: "AnimDecide.SpecFor Shoot = 5fps — match", match: true }
+      - { name: "draw framerate (fps)", base: "3", port: "AnimDecide.SpecFor Draw = 3fps — match", match: true }
+      - { name: "taunt framerate (fps)", base: "0.33", port: "AnimDecide.SpecFor Taunt = 0.33fps — match", match: true }
+      - { name: "pain framerate (fps)", base: "2 (0.5s)", port: "AnimDecide.SpecFor Pain1/Pain2 = 2fps — match", match: true }
+      - { name: "networked anim inputs", base: "anim_state BIT(7), anim_time, anim_lower_action/time BIT(8), anim_upper_action/time BIT(9)", port: "UpperAction (byte) + AnimActionTime (raw float) networked via EntityField.AnimAction bit (1<<18); locomotion needs no wire (inferred from velocity/angles, as Base does)", match: false }
     status:
-      logic: partial
-      values: partial
-      timing: partial
-      presentation: partial
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: partial
-    intended_divergence: false
-    divergence_rationale: null
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port decides the upper-body action SERVER-side at the producer site (weapon-fire commit / damage / draw / taunt) and networks the EXPIRY-RESOLVED (action, start) as a stable contract, whereas Base runs animdecide_getupperanim per-frame on the CLIENT from the networked anim_upper_action. The networked AnimActionTime is a raw float start time (the death_time-class client-observed divergence): under packet loss the torso-action phase can start a frame or two off. The 8-direction LOCOMOTION is inferred client-side from velocity+angles, which is also how Base's animdecide_setimplicitstate derives it (no extra wire needed)."
     gaps:
-      - "Upper-body ACTIONS still NOT ported: the networked anim_state / anim_upper_action / anim_lower_action / anim_time inputs are not sent or read (grep confirms zero anim_* bits in NetEntity/ClientEntityView), so shoot/melee/pain/draw/taunt torso overlays never play on the third-person model (the torso shows a single stable idle/aim clip, Split torsoTime=0)."
-      - "Per-anim framerates (die 0.5fps, shoot 5, jump 10, draw 3, taunt 0.33) and the per-clip framegroup names are not used; clips are picked by a fuzzy name Contains match with a 20fps default (BuildClipTable.Pick + FrameGroup(...,20f,...))."
-      - "The CSQC-side implicit jump detection (ground->air transition sets ANIMACTION_JUMP) is approximated by the inAir->Jump/DuckJump clip pick; no explicit end-of-jump-anim freeze (the comment 'play the END of the jump anim' notes the intent but the non-looping clamp is the approximation)."
+      - "AnimActionTime is a raw float start time (death_time-class): under packet loss the torso-action play phase can begin slightly off vs the server (the action-window expiry is still resolved server-side so the action never over/under-runs by more than the network jitter)."
+      - "The CSQC-side implicit jump detection (ground->air transition sets ANIMACTION_JUMP) is approximated by the inAir->Jump/DuckJump clip pick; no explicit end-of-jump-anim freeze."
     verification:
-      - { kind: code, ref: "PlayerModel.cs:199 `loco = LocomotionBlend.SelectLegsDirectional(e.Velocity, e.Angles, e.OnGround, e.IsDucked, dead)` on the live Pose path; _legClips[21] resolved in BuildClipTable (PlayerModel.cs:~401) — 8-direction + duck-variant LOCOMOTION now LIVE", result: pass }
-      - { kind: code, ref: "LocomotionBlend.cs:125-142 ImplicitDirection = 1:1 port of animdecide_setimplicitstate (vdist>10, 0.5 cot, F/B/L/R); :150-189 SelectLegsDirectional = animdecide_getloweranim standing+ducked switch", result: pass }
-      - { kind: code, ref: "grep anim_state/anim_upper_action/anim_lower_action across src+game net layer: absent (NetEntity EntityField has no anim_* bit) — upper-body ACTION overlays still not networked/ported", result: fail }
+      - { kind: code, ref: "PlayerModel.cs:206 SelectLegsDirectional on the live Pose path; LocomotionBlend.cs ImplicitDirection (1:1 animdecide_setimplicitstate) + SelectLegsDirectional (1:1 animdecide_getloweranim) — 8-dir + duck locomotion LIVE", result: pass }
+      - { kind: code, ref: "PlayerModel.cs:224-234 plays the torso ACTION overlay when e.UpperAction!=0; AnimDecide.GetUpperAnim (animdecide.qc:109-153) priority cascade DEAD>ACTIVE>IDLE; AnimDecide.SpecFor per-anim framerates (die 0.5/shoot 5/draw 3/taunt 0.33/pain 2) USED in BuildClipTable.ActionClip — upper-body ACTIONS now LIVE + faithful", result: pass }
+      - { kind: code, ref: "server producers: WeaponFireGate (shoot/melee), WeaponFireDriver (draw), DamageSystem (pain1/pain2 + die1/die2), SoundSystem (taunt) all set actor.AnimUpperAction via AnimDecide.SetAction; ServerNet.BuildEntitySet resolves+networks UpperAction/AnimActionTime — full producer chain LIVE", result: pass }
     confidence: high
-    notes: "DRIFT FIX 2026-06-27: the 8-direction + duck-variant LOCOMOTION (the baseline's dominant gap) is now FAITHFULLY PORTED AND LIVE. LocomotionBlend gained SelectLegsDirectional (21-state DirLocomotion) + ImplicitDirection (the animdecide_setimplicitstate vdist>10/0.5-cot 8-direction detection), both 1:1 ports, driven from PlayerModel.Pose (PlayerModel.cs:171) on the skeletal player path; BuildClipTable resolves all 21 directional/duck clips with the animfixfps fallback cascade. So remote players now show strafe/backward/diagonal/duckwalk-directional cycles, not a single forward run. logic upgraded partial->faithful on the locomotion mechanism (still partial overall because the ACTION state machine is absent); liveness stays partial (locomotion live, actions dead). STILL OPEN: upper-body ACTION overlays (shoot/pain/draw/taunt/melee), the anim_* networking they require, and the per-anim framerates. The coarse 6-state SelectLegs(speed 20/220) helper still exists for the MD3 path but the skeletal player path uses the faithful directional set."
+    notes: "MAJOR FIX (drift 2026-06-27): the upper-body ACTION state machine — the baseline's dominant gap (shoot/pain/draw/taunt/melee/die torso overlays) — is now FULLY PORTED AND LIVE end-to-end. AnimDecide.{GetUpperAnim,SetAction,SpecFor} port animdecide.qc:109-153/338-356 with the DEAD>ACTIVE>IDLE priority and correct per-anim framerates; producers latch server-side at the fire/damage/draw/taunt sites; the (action,start) network via the new EntityField.AnimAction bit; PlayerModel.Pose plays the torso clip via SelectTorsoAction. The 8-direction + duck-variant LOCOMOTION (prior drift fix) remains faithful + live. All dimensions upgraded to faithful + liveness live. Residual divergence is only the raw-float AnimActionTime timing (intended) and the approximated jump-freeze."
   - id: cl-csqcmodel.fallbackframe.remap
     name: "Fallback frame remap (missing-frame substitution)"
     layer: [presentation]
@@ -264,9 +267,10 @@ features:
     port_refs:
       - "src/XonoticGodot.Engine/Simulation/CsqcFallbackFrame.cs:Remap"
       - "game/client/ModelAnimator.cs:FrameDuration"
+      - "game/client/PlayerModel.cs:BuildClipTable"
     constants:
-      - { name: "melee(23) -> shoot(11)", base: "yes", port: "yes", match: true }
-      - { name: "duckwalk variants(24-30) -> duckwalk(4)", base: "yes", port: "yes", match: true }
+      - { name: "melee(23) -> shoot(11)", base: "yes", port: "yes (CsqcFallbackFrame.Remap table; ALSO baked into BuildClipTable Melee keyword chain ending in shoot)", match: true }
+      - { name: "duckwalk variants(24-30) -> duckwalk(4)", base: "yes", port: "yes (Remap + the duckwalk Pick keyword chain)", match: true }
       - { name: "static-model unfixable guard (frameduration(1)<=0)", base: "yes", port: "yes", match: true }
     status:
       logic: faithful
@@ -278,11 +282,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Live only on the MD3 ModelAnimator player path; skeletal-IQM players drive frames via LocomotionBlend, which never produces the high-numbered melee/duckwalk frame ids that the remap targets, so the remap rarely fires in practice."
+      - "The runtime frame-id Remap table is live only on the MD3 ModelAnimator player path; the skeletal-IQM player path drives frames by clip NAME (BuildClipTable Pick keyword chains), which BAKE the same fallback discipline (melee->shoot, duckwalk-variant->duckwalk) into the clip resolution rather than remapping a numeric frame id at runtime. So the runtime remap rarely fires for skeletal players, but the substitution behavior is preserved by the keyword cascade."
     verification:
-      - { kind: code, ref: "CsqcFallbackFrame.Remap reproduces the QC switch table; ModelAnimator.FrameDuration is the fexists/frameduration analogue — UNCHANGED by Wave 5", result: pass }
+      - { kind: code, ref: "CsqcFallbackFrame.Remap reproduces the QC switch table; ModelAnimator.FrameDuration is the fexists/frameduration analogue; PlayerModel.BuildClipTable bakes the melee->shoot + duckwalk-variant->duckwalk fallback into the Pick keyword chains (subsumes the runtime remap for skeletal players)", result: pass }
     confidence: medium
-    notes: "Faithful remap table; liveness is partial because the port's primary player path is skeletal, not the MD3 frame-id path that the fallback serves."
+    notes: "Faithful remap table; liveness is partial because the port's primary skeletal player path subsumes the substitution into the BuildClipTable keyword cascade rather than the runtime numeric-frame remap (which serves the MD3 path)."
   - id: cl-csqcmodel.tagindex.weapon_attach
     name: "Auto tag-index (weapon/attachment bone resolution)"
     layer: [presentation]
@@ -290,15 +294,17 @@ features:
       - "client/csqcmodel_hooks.qc:CSQCModel_AutoTagIndex_Apply"
     port_refs:
       - "game/client/ViewEntityRenderer.cs"
+      - "game/net/ClientEntityView.cs"
     constants:
       - { name: "weapon-on-player: skeleton bone_weapon", base: "yes", port: "tag_weapon marker attach", match: false }
       - { name: "weapon-on-weapon: gettagindex(weapon/tag_weapon)", base: "yes", port: "simplified", match: false }
       - { name: "shot/tag_shot fallback", base: "yes", port: "simplified", match: false }
+      - { name: "exterior-weapon (wepent) switch/phase/skin/align/alpha", base: "common/wepent.qh networked block", port: "networked (SwitchWeapon/SwitchingWeapon/WepPhase/ViewmodelSkin/GunAlign/WepAlpha) + consumed by ViewEntityRenderer (remote held-weapon raise/lower tween + transparency)", match: true }
       - { name: "recursive predraw of parent + drawmask=0 on unresolved tag", base: "yes", port: "none", match: false }
     status:
       logic: partial
       values: na
-      timing: na
+      timing: faithful
       presentation: partial
       audio: na
       liveness: partial
@@ -308,9 +314,10 @@ features:
       - "The QC h_/v_ model tag resolution cascade (weapon bone -> gettagindex weapon/tag_weapon -> shot/tag_shot, with recursive parent predraw and drawmask=0 when the tag can't resolve) is simplified to a tag_weapon marker attach; weapon-on-weapon and the shot-muzzle tag chain are not faithfully reproduced."
       - "No recursive predraw of the parent entity to fix forcemodel/LOD bone-index mismatch (forcemodel is live, so a forced-model bone-index mismatch on the held weapon attach is a possible edge case; LOD swap is still absent so no LOD-driven mismatch)."
     verification:
-      - { kind: code, ref: "ViewEntityRenderer attaches the held weapon via a tag_weapon marker; full QC tag cascade not reproduced — UNCHANGED by Wave 5", result: fail }
+      - { kind: code, ref: "ViewEntityRenderer attaches the held weapon via a tag_weapon marker; full QC tag cascade not reproduced", result: fail }
+      - { kind: code, ref: "FIX (drift 2026-06-27): the exterior-weapon (wepent) block is now networked (ServerNet.BuildEntitySet from the slot-0 weapon state machine -> NetEntity -> ClientEntityView e.SwitchWeapon/SwitchingWeapon/WepPhase/ViewmodelSkin/GunAlign/WepAlpha) and consumed by ViewEntityRenderer (WepPhase raise/lower dip, WepAlpha transparency, SwitchingWeapon display target) for the remote third-person held weapon", result: pass }
     confidence: medium
-    notes: "Held first-person/third-person weapon attachment is live; the full networked tag_networkentity attachment graph (arbitrary entity-on-tag) is not. forcemodel is live so a forced model's differing bone layout could misplace the held weapon (untested)."
+    notes: "PARTIAL FIX (drift 2026-06-27): the exterior-weapon (wepent, common/wepent.qh) block — remote third-person held weapon switch phase / raise-lower tween / skin / align / weapon alpha — is now networked end-to-end and consumed by ViewEntityRenderer. The full QC tag_networkentity attachment graph (arbitrary entity-on-tag, recursive predraw, drawmask=0) is still simplified to a tag_weapon marker, so logic/presentation stay partial."
   - id: cl-csqcmodel.effects.ef_mf_trail_lights
     name: "EF_*/MF_* effects: dynamic lights, particles, render-flags, trails"
     layer: [presentation]
@@ -335,7 +342,7 @@ features:
       - { name: "EF_BRIGHTFIELD -> TR_NEXUIZPLASMA trail", base: "yes", port: "dropped on player model (trail return unused for entity-node players)", match: false }
       - { name: "render-flags ADDITIVE/FULLBRIGHT/NODEPTHTEST/NOSHADOW/NODRAW", base: "yes", port: "per-instance override only (not shared/cached materials)", match: false }
       - { name: "MF_ROTATE spin (makevectors angles+'0 100 0'*fmod(time,3.6))", base: "yes", port: "none (no caller supplies the bit)", match: false }
-      - { name: "EF_BLUE/EF_RED role-glow (Strength=BLUE, Shield=RED dynamic lights)", base: "server m_tick ORs EF_BLUE/EF_RED into actor.effects (strength.qc:31/shield.qc:31)", port: "LIVE via a DIFFERENT mechanism than the dead ComposeForcedAppearance seam: PowerupsMutator.cs:391-392 ORs StrengthGlow(EF_BLUE)/ShieldGlow(EF_RED) into player.Effects server-side, networks via the normal Effects bit, and CsqcModelEffects.Apply renders the EF_BLUE(200/0.15,0.15,1.5)/EF_RED(200/1.5,0.15,0.15) lights — the role-glow VISUAL is achieved", match: true }
+      - { name: "EF_BLUE/EF_RED role-glow (Strength=BLUE, Shield=RED dynamic lights)", base: "server m_tick ORs EF_BLUE/EF_RED into actor.effects (strength.qc:31/shield.qc:31)", port: "LIVE via PowerupsMutator.cs:391-392 ORing StrengthGlow(EF_BLUE)/ShieldGlow(EF_RED) into player.Effects server-side -> normal Effects bit -> CsqcModelEffects.Apply renders EF_BLUE/EF_RED lights", match: true }
     status:
       logic: partial
       values: partial
@@ -346,21 +353,19 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIX (Wave 5): the per-player forced-effects seam is now LIVE for MF_ROCKET. ClientWorld.DriveCsqcModelHooks composes ForcedAppearance(jetpackActive:true) from the networked e.UsingJetpack and passes it to CsqcModelEffects.Apply(...,forced); forced.ModelFlags ORs MF_ROCKET into modelFlags, driving both the rocket trail return and the jetpack loop. So MF_ROCKET trail + loop now fire for remote players."
-      - "STILL OPEN: the OTHER MF trails (grenade/gib/tracer/zomgib/tracer2/tracer3) are mapped in CsqcModelEffectFlags but never supplied — base modelFlags is still 0 and only the jetpack composes MF_ROCKET, so non-jetpack MF-driven trails never fire on this path."
-      - "RECLASSIFIED (role-glow is actually LIVE): the baseline claimed Strength/Shield role-glow was DEAD because the ComposeForcedAppearance(strength,shield) seam is never fed true. But the role-glow VISUAL is achieved via a different, faithful path — PowerupsMutator.cs:391-392 ORs EF_BLUE(StrengthGlow)/EF_RED(ShieldGlow) into player.Effects server-side, which networks normally and renders the EF_BLUE/EF_RED dynamic lights in CsqcModelEffects.Apply. So Strength glows blue and Shield glows red for all players, live. The DEAD code is the unused CsqcModelEffectFlags.RoleGlowFlags helper (which also has the colors inverted) + the ComposeForcedAppearance strength/shield args — but they are dead-and-redundant, not a missing feature."
-      - "STILL OPEN (forced glowmod DEAD): the live composition passes forcedGlowmod (-1,-1,-1) = unset; ApplyForcedGlowmod has zero callers."
+      - "MF_ROCKET is LIVE (ClientWorld.DriveCsqcModelHooks composes ForcedAppearance(jetpackActive:true) from e.UsingJetpack -> CsqcModelEffects.Apply -> modelFlags|=MF_ROCKET drives both the rocket trail return and the jetpack loop). The OTHER MF trails (grenade/gib/tracer/zomgib/tracer2/tracer3) are mapped in CsqcModelEffectFlags but never supplied — base modelFlags is still 0 — so non-jetpack MF-driven trails never fire on this path."
+      - "Strength/Shield role-glow is LIVE via PowerupsMutator (EF_BLUE/EF_RED ORed into player.Effects server-side, networked normally, rendered as the EF_BLUE/EF_RED dynamic lights). The dead-and-redundant code is the unused CsqcModelEffectFlags.RoleGlowFlags helper (colors inverted) + the ComposeForcedAppearance strength/shield args."
+      - "STILL OPEN (forced glowmod DEAD): the live composition passes forcedGlowmod (-1,-1,-1) = unset; ApplyForcedGlowmod has zero callers (re-verified 2026-06-27: only the definition at CsqcModelEffects.cs:228)."
       - "EF_BRIGHTFIELD on a player model is dropped (the trail return is unused in the entity-node pass)."
       - "Render-flags (additive/fullbright/nodepthtest) only apply to per-instance BaseMaterial3D overrides, not shared/cached shader materials."
       - "MF_ROTATE spin is not applied (no caller supplies the bit)."
       - "boxparticles volume emission (absmin..absmax) is reduced to a point-burst at the entity origin for EF_FLAME/EF_SHOCK/EF_STARDUST."
     verification:
-      - { kind: code, ref: "ClientWorld.cs:~1126-1136 composes `forced = e.UsingJetpack ? ComposeForcedAppearance(strength:false, shield:false, jetpackActive:true, (-1,-1,-1)) : default`; passes `forced` to CsqcModelEffects.Apply — MF_ROCKET path LIVE", result: pass }
-      - { kind: code, ref: "CsqcModelEffects.Apply: `modelFlags |= forced.ModelFlags; effectsBits = e.Effects | (forced.ExtraEffects & ForcedEffectFlags)`; DriveJetpackLoop gated on (modelFlags & MF_ROCKET) — reachable now", result: pass }
-      - { kind: code, ref: "PowerupsMutator.cs:391-392 `if (strength) player.Effects |= StrengthGlow(EF_BLUE...)` / `if (shield) player.Effects |= ShieldGlow(EF_RED...)` — networks via normal Effects bit; CsqcModelEffects.cs:119-120 renders EF_BLUE/EF_RED lights. Role-glow VISUAL is LIVE", result: pass }
-      - { kind: code, ref: "grep ApplyForcedGlowmod across game+src: ZERO callers (only the definition) — forced-glowmod TINT seam still DEAD; the ComposeForcedAppearance strength/shield args are dead-redundant (role-glow comes from PowerupsMutator instead)", result: fail }
+      - { kind: code, ref: "ClientWorld.cs:~1145 composes `forced = e.UsingJetpack ? ComposeForcedAppearance(strength:false, shield:false, jetpackActive:true, (-1,-1,-1)) : default`; passes `forced` to CsqcModelEffects.Apply — MF_ROCKET path LIVE", result: pass }
+      - { kind: code, ref: "PowerupsMutator.cs:391-392 ORs StrengthGlow(EF_BLUE)/ShieldGlow(EF_RED) into player.Effects; CsqcModelEffects.Apply renders EF_BLUE/EF_RED lights. Role-glow VISUAL is LIVE", result: pass }
+      - { kind: code, ref: "grep ApplyForcedGlowmod across game+src: ZERO callers (only the definition CsqcModelEffects.cs:228) — forced-glowmod TINT seam still DEAD; non-jetpack MF trails never supplied (base modelFlags still 0)", result: fail }
     confidence: high
-    notes: "EF_* light specs + EF_NODRAW/NOSHADOW/NODEPTHTEST render-flags remain live + faithful where networked. RECLASSIFIED 2026-06-25 (drift fix, confirmed by Wave 8c commit + mutator-powerups.yaml): the baseline framed Strength/Shield role-glow as DEAD, but it is actually LIVE — PowerupsMutator ORs EF_BLUE/EF_RED into player.Effects server-side (the Base mechanism too: strength.qc:31/shield.qc:31 m_tick), networked normally, rendering the EF_BLUE/EF_RED dynamic lights. The ComposeForcedAppearance(strength,shield) seam + RoleGlowFlags helper are dead-but-redundant, NOT a missing feature. So role-glow presentation is faithful+live. MF_ROCKET (jetpack) also reaches via ComposeForcedAppearance per-frame. STILL genuinely dead/missing: the forced-glowmod TINT (ApplyForcedGlowmod, 0 callers), non-jetpack MF trails (grenade/gib/tracer, base modelFlags still 0), MF_ROTATE spin, and boxparticles volume emission (reduced to point-burst). Row stays presentation:partial on these residual gaps, but the role-glow reclassification removes a false 'DEAD' gap."
+    notes: "Re-verified 2026-06-27 unchanged vs the Wave 5/8c state. EF_* light specs + EF_NODRAW/NOSHADOW/NODEPTHTEST render-flags live + faithful where networked. MF_ROCKET (jetpack) reaches via ComposeForcedAppearance per-frame; Strength/Shield role-glow is LIVE via PowerupsMutator EF_BLUE/EF_RED. Still genuinely dead/missing: the forced-glowmod TINT (ApplyForcedGlowmod, 0 callers), non-jetpack MF trails (grenade/gib/tracer, base modelFlags still 0), MF_ROTATE spin, and boxparticles volume emission (reduced to point-burst). Row stays presentation:partial on these residual gaps."
   - id: cl-csqcmodel.effects.jetpack_loop
     name: "Jetpack loop sound (MF_ROCKET)"
     layer: [presentation, audio]
@@ -375,7 +380,7 @@ features:
       - { name: "SND_JETPACK_FLY on CH_TRIGGER_SINGLE(=3), looping", base: "yes", port: "JETPACK_FLY on channel 3 loop", match: true }
       - { name: "cl_jetpack_attenuation", base: "2", port: "2", match: true }
       - { name: "VOL_BASE", base: "1", port: "1", match: true }
-      - { name: "MF_ROCKET gate (IT_USING_JETPACK && !IS_DEAD && !intermission)", base: "player.qc:878", port: "p.UsingJetpack && !p.IsDead && !Intermission.Running — match", match: true }
+      - { name: "MF_ROCKET gate (IT_USING_JETPACK && !IS_DEAD && !intermission)", base: "common/physics/player.qc:878", port: "p.UsingJetpack && !p.IsDead && !Intermission.Running — match", match: true }
     status:
       logic: faithful
       values: faithful
@@ -390,7 +395,7 @@ features:
     verification:
       - { kind: code, ref: "ServerNet BuildEntitySet sets NetEntityFlags.UsingJetpack on (p.UsingJetpack && !p.IsDead && !Intermission.Running, QC player.qc:878); NetEntity codec WriteUShort/ReadUShort (enum widened byte->ushort for bit 8); ClientEntityView e.UsingJetpack = (s.Flags & UsingJetpack)!=0; ClientWorld composes ForcedAppearance(jetpackActive) -> CsqcModelEffects.Apply(forced) -> DriveJetpackLoop", result: pass }
     confidence: high
-    notes: "WIRED LIVE end-to-end (re-verified): IT_USING_JETPACK bit networked server->client->ComposeForcedAppearance->MF_ROCKET, DriveJetpackLoop start/stop fires on the CSQC-model path for remote players. Loop logic (start once, VOL_BASE/cl_jetpack_attenuation 2, stop on clear) is a faithful port. The same MF_ROCKET path also drives the rocket-trail return. Unchanged status vs baseline (already faithful/live); re-confirmed all wire hops present."
+    notes: "Re-verified 2026-06-27 unchanged. WIRED LIVE end-to-end: IT_USING_JETPACK bit networked server->client->ComposeForcedAppearance->MF_ROCKET, DriveJetpackLoop start/stop fires on the CSQC-model path for remote players. Loop logic (start once, VOL_BASE/cl_jetpack_attenuation 2, stop on clear) is a faithful port. The same MF_ROCKET path also drives the rocket-trail return."
   - id: cl-csqcmodel.networking.csqcmodel_contract
     name: "CSQCMODEL networked-property contract (effects/modelflags/skin/traileffect/colormap/colormod/glowmod/scale/alpha/v_angle/anim_*)"
     layer: [shared]
@@ -400,24 +405,27 @@ features:
       - "src/XonoticGodot.Common/Framework/Entity.cs"
       - "src/XonoticGodot.Net/NetEntity.cs"
       - "game/net/ServerNet.cs:QuantizeAlpha"
+      - "game/net/ServerNet.cs:BuildEntitySet"
       - "game/net/ClientEntityView.cs"
       - "game/client/PlayerModel.cs:ApplyAlpha"
     constants:
       - { name: "colormap BIT(0)", base: "networked (ReadShort)", port: "Entity.Team (team id only, reconstructed to 1024+17*team)", match: false }
       - { name: "effects BIT(1)", base: "networked (ReadInt24_t)", port: "Entity.Effects (int) — networked", match: true }
-      - { name: "modelflags BIT(2)", base: "networked (ReadByte)", port: "NOT networked as a field, but MF_ROCKET re-derived client-side from the new UsingJetpack flag (1<<8); other MF_* still 0", match: false }
+      - { name: "modelflags BIT(2)", base: "networked (ReadByte)", port: "NOT networked as a field, but MF_ROCKET re-derived client-side from the UsingJetpack flag (1<<8); other MF_* still 0", match: false }
       - { name: "skin BIT(2)", base: "networked (ReadByte)", port: "Entity.Skin — networked", match: true }
       - { name: "traileffect BIT(2)", base: "networked (ReadByte)", port: "NOT networked (Entity has no TrailEffect)", match: false }
-      - { name: "alpha BIT(3) scaled 254/-1/254", base: "networked", port: "FULLY networked end-to-end: EntityField.Alpha (1<<17) + ServerNet.QuantizeAlpha (players + entities) + codec read/write + ClientEntityView maps s.Alpha->e.Alpha (0->1f opaque, else byte/255) + PlayerModel.ApplyAlpha renders per-instance Transparency", match: true }
-      - { name: "UsingJetpack (IT_USING_JETPACK -> MF_ROCKET)", base: "from networked modelflags/items", port: "NEW NetEntityFlags.UsingJetpack 1<<8 (enum widened byte->ushort) networked + consumed", match: true }
+      - { name: "alpha BIT(3) scaled 254/-1/254", base: "networked", port: "FULLY networked end-to-end: EntityField.Alpha (1<<17) + ServerNet.QuantizeAlpha (players + entities) + codec read/write + ClientEntityView maps s.Alpha->e.Alpha (0->1f opaque, 255->-1f hidden, else byte/255) + PlayerModel.ApplyAlpha renders per-instance Transparency", match: true }
+      - { name: "UsingJetpack (IT_USING_JETPACK -> MF_ROCKET)", base: "from networked modelflags/items", port: "NetEntityFlags.UsingJetpack 1<<8 (enum widened byte->ushort) networked + consumed", match: true }
+      - { name: "anim_upper_action/time BIT(9)", base: "networked (player)", port: "NETWORKED: UpperAction (byte) + AnimActionTime (raw float) via EntityField.AnimAction bit (1<<18); server resolves expiry + networks, client plays the torso overlay (see animdecide row)", match: true }
+      - { name: "exterior-weapon (wepent) block: SwitchWeapon/SwitchingWeapon/WepPhase/skin/align/alpha", base: "common/wepent.qh networked block", port: "NETWORKED via EntityField.Wepent + consumed by ViewEntityRenderer (remote held-weapon switch tween + transparency, see tagindex row)", match: true }
       - { name: "death_time BIT(5) ReadApproxPastTime", base: "networked", port: "NOT networked — client-observed first-dead-frame instant (see deathfade row, intended)", match: false }
       - { name: "non-player glowmod BIT(8) scaled", base: "networked for !isplayer", port: "NOT networked (computed from colormap for player models only)", match: false }
       - { name: "colormod BIT(8) scaled 16/0/255 (ALL entities)", base: "networked for every entity", port: "NOT networked (ModelTint colormod stays white; only the frozen-tint override touches it)", match: false }
-      - { name: "anim_state BIT(7) + anim_time", base: "networked (player)", port: "NOT networked (locomotion inferred client-side, see animdecide row)", match: false }
-      - { name: "anim_lower_action/time BIT(8) (non-local) + anim_upper_action/time BIT(9)", base: "networked", port: "NOT networked (no torso actions, see animdecide row)", match: false }
+      - { name: "anim_state BIT(7) + anim_time (locomotion)", base: "networked (player)", port: "NOT networked — locomotion inferred client-side from velocity/angles (Base's animdecide_setimplicitstate does the same, see animdecide row)", match: false }
+      - { name: "anim_lower_action/time BIT(8) (non-local)", base: "networked", port: "NOT networked (lower body is the velocity-derived locomotion)", match: false }
       - { name: "v_angle_x BIT(10) ReadAngle", base: "networked", port: "NOT networked (aim pitch reads Entity.Angles.X)", match: false }
       - { name: "scale BIT(12) ReadCoord", base: "networked", port: "NOT networked (no per-entity model scale)", match: false }
-      - { name: "tag_networkentity BIT(7,!player) / tag_networkviewloc BIT(11)", base: "networked", port: "NOT networked as a generic attach graph (held weapon attaches via marker, see tagindex row)", match: false }
+      - { name: "tag_networkentity BIT(7,!player) / tag_networkviewloc BIT(11)", base: "networked", port: "NOT networked as a generic attach graph (held weapon attaches via marker + the wepent block, see tagindex row)", match: false }
       - { name: "CSQCPLAYER_FORCE_UPDATES (per s)", base: "4", port: "n/a (port net model differs)", match: false }
     status:
       logic: partial
@@ -429,13 +437,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIX (Wave 5): ALPHA is now FULLY wired end-to-end (closed the baseline 'half-wired/dead-on-consume' gap). The producer (ServerNet.QuantizeAlpha for players + entities), codec (WriteByte/ReadByte at EntityField.Alpha 1<<17), the client consume (ClientEntityView: `e.Alpha = s.Alpha == 0 ? 1f : s.Alpha/255f`), and the render (PlayerModel.ApplyAlpha sets per-instance GeometryInstance3D.Transparency on every mesh) are all live. A Cloaked (0.25) / Invisibility / fading player now renders translucent on the client."
-      - "FIX (Wave 5): UsingJetpack (IT_USING_JETPACK) is now networked (NetEntityFlags widened byte->ushort, bit 8) and consumed, letting the client re-derive MF_ROCKET (trail + jetpack loop) without networking the full modelflags field."
-      - "STILL NOT networked (unchanged-missing): colormap proper (only a team id is sent), the rest of modelflags, traileffect, non-player glowmod, the per-entity colormod (sent for EVERY entity in Base), scale, v_angle, and the entire anim_state/anim_upper/lower_action+time block."
-      - "Consequence chain (each also tracked in its feature row): no colormod => no server-driven per-model tint; no scale => no resized models; no traileffect/non-jetpack modelflags => no non-rocket MF trails; no anim_* => no upper-body actions / server-decided locomotion; no v_angle => aim pitch uses body angles; no networked colormap => force-color path leans on a reconstructed team id."
+      - "Now WIRED end-to-end: alpha (EntityField.Alpha 1<<17), UsingJetpack (NetEntityFlags 1<<8 -> client MF_ROCKET), the upper-body anim ACTION block (EntityField.AnimAction 1<<18 -> UpperAction/AnimActionTime), and the exterior-weapon (wepent) block (EntityField.Wepent -> SwitchWeapon/SwitchingWeapon/WepPhase/ViewmodelSkin/GunAlign/WepAlpha)."
+      - "STILL NOT networked (unchanged-missing): colormap proper (only a team id is sent), the rest of modelflags (non-jetpack MF_* still 0), traileffect, non-player glowmod, the per-entity colormod (sent for EVERY entity in Base), scale, v_angle, and the anim_state/anim_lower_action LOCOMOTION block (the lower body is inferred client-side, as Base does)."
+      - "Consequence chain (each also tracked in its feature row): no colormod => no server-driven per-model tint; no scale => no resized models; no traileffect/non-jetpack modelflags => no non-rocket MF trails; no v_angle => aim pitch uses body angles; no networked colormap => force-color path leans on a reconstructed team id."
     verification:
-      - { kind: code, ref: "NetEntity.cs EntityField.Alpha=1<<17 + codec WriteByte/ReadByte; ServerNet.cs Alpha=QuantizeAlpha(p.Alpha)/QuantizeAlpha(e.Alpha); ClientEntityView.cs `e.Alpha = s.Alpha==0?1f:s.Alpha/255f`; PlayerModel.cs ApplyAlpha -> GeometryInstance3D.Transparency — full alpha chain LIVE", result: pass }
-      - { kind: code, ref: "NetEntityFlags.UsingJetpack=1<<8, enum widened to ushort, codec WriteUShort/ReadUShort; ServerNet sets it (gated), ClientEntityView reads it onto e.UsingJetpack — LIVE", result: pass }
-      - { kind: code, ref: "grep anim_state/colormod/scale/v_angle/traileffect across net layer: ABSENT — rest of the contract still unmapped", result: fail }
+      - { kind: code, ref: "NetEntity.cs EntityField.Alpha=1<<17 + codec WriteByte/ReadByte; ServerNet.cs Alpha=QuantizeAlpha(p.Alpha)/QuantizeAlpha(e.Alpha); ClientEntityView.cs `e.Alpha = s.Alpha switch {0=>1f,255=>-1f,_=>s.Alpha/255f}`; PlayerModel.cs ApplyAlpha -> GeometryInstance3D.Transparency — full alpha chain LIVE", result: pass }
+      - { kind: code, ref: "EntityField.AnimAction=1<<18 + codec WriteByte(UpperAction)/WriteFloat(AnimActionTime); ServerNet.BuildEntitySet resolves+sends; ClientEntityView reads onto e.UpperAction/e.AnimActionTime — anim ACTION block LIVE (SnapshotDeltaTests cover the bit)", result: pass }
+      - { kind: code, ref: "grep anim_state-locomotion/colormod/scale/v_angle/traileffect across net layer: ABSENT — the rest of the contract still unmapped", result: fail }
     confidence: high
-    notes: "Wave 5 CLOSED the alpha consume gap (the baseline's 'producer live but client never consumes' is now fully wired — server->codec->ClientEntityView->PlayerModel.ApplyAlpha) and added the UsingJetpack flag end-to-end. The rest of the CSQCMODEL extra-properties contract (colormod for ALL entities, scale, non-jetpack modelflags, traileffect, v_angle, anim_*) is unchanged-missing. Status logic/values/presentation stay partial because the spine is still mostly unmapped, but liveness materially improved (alpha + jetpack now live). Layer=shared."
+    notes: "FIX (drift 2026-06-27): the upper-body anim ACTION block (UpperAction/AnimActionTime via EntityField.AnimAction 1<<18) and the exterior-weapon (wepent) block are now networked end-to-end, joining alpha (1<<17) and UsingJetpack (1<<8) from the prior wave. The rest of the CSQCMODEL extra-properties contract (colormod for ALL entities, scale, non-jetpack modelflags, traileffect, v_angle, anim_state/anim_lower locomotion, networked colormap proper) is unchanged-missing — but locomotion is inferred client-side as Base does, so its absence is not a defect. Status stays partial because the spine is still mostly unmapped; liveness materially improved again (anim actions + wepent now live). Layer=shared."
