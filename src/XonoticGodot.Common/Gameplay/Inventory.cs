@@ -325,7 +325,14 @@ public static class Inventory
                     || WeaponAmmo.Check(w, e, secondary: false)
                     || WeaponAmmo.Check(w, e, secondary: true);
                 if (!f)
+                {
+                    // QC selection.qc:91-95: owned but no ammo + complain + real client → the UNAVAILABLE cue.
+                    // play2(this, SND(UNAVAILABLE)) — a per-recipient 2D cue (CH_INFO / VOL_BASE / ATTEN_NONE);
+                    // "weapons/unavailable". (Send_WeaponComplain text routing is owned by the notification unit.)
+                    if (complain && e is Player { IsBot: false })
+                        SoundSystem.Play2(e, "UNAVAILABLE");
                     return false;
+                }
             }
             return true;
         }
@@ -351,6 +358,11 @@ public static class Inventory
             {
                 Weapon_whereis(w, e);
             }
+
+            // QC selection.qc:117: after the where-is markers (or the "modified ownership" complaint), the
+            // not-owned complain path always plays the UNAVAILABLE cue. play2(this, SND(UNAVAILABLE)) — a
+            // per-recipient 2D cue (CH_INFO / VOL_BASE / ATTEN_NONE), resolving to "weapons/unavailable".
+            SoundSystem.Play2(e, "UNAVAILABLE");
         }
         return false;
     }

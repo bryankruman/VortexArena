@@ -275,7 +275,10 @@ public static class VehiclePhysics
             if (vehic.VehLockTarget is not null && vehic.VehLockSoundTime < Time && Api.Services is not null)
             {
                 vehic.VehLockSoundTime = Time + 0.5f;
-                if (vehic.Owner is not null) Api.Sound.Play(vehic.Owner, SoundChannel.Auto, "vehicles/locked.wav");
+                // QC sv_vehicles.qc:114 play2(this.owner, "vehicles/locked.wav") — a per-recipient 2D send
+                // (CH_INFO / VOL_BASE 0.7 / ATTEN_NONE 0), not a positional ATTEN_LARGE emit. Route through
+                // SoundSystem.Play2Raw so the volume/attenuation match Base (was Api.Sound.Play default vol=1/atten=1).
+                if (vehic.Owner is not null) SoundSystem.Play2Raw(vehic.Owner, "vehicles/locked.wav");
             }
             return;
         }
@@ -297,12 +300,14 @@ public static class VehiclePhysics
         {
             if (vehic.VehLockStrength != 1f && vehic.VehLockStrength + incr >= 1f)
             {
-                Api.Sound.Play(vehic.Owner, SoundChannel.Auto, "vehicles/lock.wav");
+                // QC sv_vehicles.qc:134 play2(this.owner, "vehicles/lock.wav") — per-recipient 2D (VOL_BASE/ATTEN_NONE).
+                SoundSystem.Play2Raw(vehic.Owner, "vehicles/lock.wav");
                 vehic.VehLockSoundTime = Time + 0.8f;
             }
             else if (vehic.VehLockStrength != 1f && vehic.VehLockSoundTime < Time)
             {
-                Api.Sound.Play(vehic.Owner, SoundChannel.Auto, "vehicles/locking.wav");
+                // QC sv_vehicles.qc:139 play2(this.owner, "vehicles/locking.wav") — per-recipient 2D (VOL_BASE/ATTEN_NONE).
+                SoundSystem.Play2Raw(vehic.Owner, "vehicles/locking.wav");
                 vehic.VehLockSoundTime = Time + 0.3f;
             }
         }

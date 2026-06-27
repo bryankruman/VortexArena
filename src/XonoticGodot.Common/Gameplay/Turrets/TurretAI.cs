@@ -1062,15 +1062,15 @@ public static class TurretAI
         st.OnDeathFx?.Invoke(turret);
 
         // Death presentation (cl_turrets.qc:turret_die, run client-side on EVERY death via TNSF_STATUS health==0,
-        // not just NORESPAWN): the rocket-explode FX + impact sound. The port has no CSQC turret edict, so the
-        // server emits it directly at the death site for both the respawning and the permanent-death paths — this
-        // is the steady-state death effect a player sees when a turret is destroyed. (The per-type gib toss in
-        // cl_turrets.qc — turret_gibtoss/turret_gibboom — still needs a CSQC edict to spawn client gib entities
-        // and is left for the networking layer; the explosion is the substantive feedback.)
+        // not just NORESPAWN): the rocket-explode FX + impact sound, then the per-type debris gib toss. The port
+        // has no CSQC turret edict, so the server emits the FX directly at the death site for both the respawning
+        // and the permanent-death paths, and spawns the gibs as physics entities that render via the entity feed
+        // (the same server-side gib pattern the destroyed vehicles use, VehicleCommon.TossGib).
         if (Api.Services is not null)
         {
             Api.Sound.Play(turret, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav"); // SND_ROCKET_IMPACT
             EffectEmitter.Emit("ROCKET_EXPLODE", turret.Origin);                          // EFFECT_ROCKET_EXPLODE
+            TossDeathGibs(turret);                                                        // cl_turrets.qc turret_die gibs
         }
 
         if (st.NoRespawn)
@@ -1102,6 +1102,10 @@ public static class TurretAI
     public static void Hide(Entity turret)
     {
         TurretState st = State(turret);
+        // QC turret_hide (sv_turrets.qc:161): effects |= EF_NODRAW — hide the dead body for the respawn interval.
+        // (The single networked Entity.Effects stands in for the QC tur_head sub-entity, which the port folds into
+        // the turret edict; turret_respawn clears it again below.)
+        turret.Effects |= EffectFlags.NoDraw;
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
         turret.NextThink = now + System.Math.Max(st.RespawnTime - 0.2f, 0f);
         turret.Think = Respawn;
@@ -1116,6 +1120,8 @@ public static class TurretAI
     {
         TurretState st = State(turret);
         turret.DeadState = DeadFlag.No;
+        // QC turret_respawn (sv_turrets.qc:270): effects &= ~EF_NODRAW — un-hide the body the hide-frame set.
+        turret.Effects &= ~EffectFlags.NoDraw;
         turret.Solid = Solid.BBox;
         turret.TakeDamage = DamageMode.Aim;
         turret.Health = turret.MaxHealth;
@@ -1143,6 +1149,130 @@ public static class TurretAI
         st.OnRespawn?.Invoke(turret);
     }
 
+    /// <summary>QC <c>cl_gibs_lifetime</c> default (client.qc) — base seconds a turret debris gib persists.</summary>
+    private const float GibLifetime = 14f;
+    /// <summary>QC <c>EF_FLAME</c> (dpextensions.qc) — the burning-debris flame an exploding gib trails.</summary>
+    private const int EfFlame = 1024;
+
+    /// <summary>
+    /// Port of <c>turret_die</c>'s debris toss (cl_turrets.qc:319-348), the generic (non-ewheel/walker/tesla)
+    /// branch every standard turret — including the MLRS — uses. A 50% coin flip tosses either the three small
+    /// <c>base-gib2/3/4.md3</c> chunks (fade-out) or the single <c>base-gib1.md3</c> (exploding), then always a
+    /// <c>head_model</c> head gib (exploding) carrying the head's last angles + spin. The mobile ewheel/walker and
+    /// the tesla toss their whole model instead (handled in their own draws — skipped here by classname, as Base
+    /// branches on m_id). The port has no CSQC turret edict, so these are spawned server-side as physics entities
+    /// that render through the entity feed, exactly as the vehicle wreckage gibs are. No-op headless.
+    /// </summary>
+    private static void TossDeathGibs(Entity turret)
+    {
+        if (Api.Services is null) return;
+        // QC turret_die branches on m_id: ewheel/walker/tesla toss their own model (their draws own that); every
+        // other turret runs the generic base-gib + head_model branch. Mirror by classname so we don't double up.
+        if (turret.ClassName is "turret_ewheel" or "turret_walker" or "turret_tesla") return;
+
+        TurretState st = State(turret);
+        string? headModel = Turrets.ByName(turret.NetName)?.HeadModel;
+
+        if (Prandom.Float() > 0.5f)
+        {
+            // QC: three base-gib2/3/4 chunks, vel '0 0 50' + randomvec()*150, '0 0 0' cmod, non-exploding fade-out.
+            for (int i = 2; i <= 4; i++)
+                TossGib($"models/turrets/base-gib{i}.md3", turret.Origin + new Vector3(0f, 0f, 8f),
+                    new Vector3(0f, 0f, 50f) + Prandom.Vec() * 150f, cmod: Vector3.Zero, explode: false);
+        }
+        else
+        {
+            // QC: a single base-gib1 chunk, vel '0 0 0', '0 0 0' cmod, exploding.
+            TossGib("models/turrets/base-gib1.md3", turret.Origin + new Vector3(0f, 0f, 8f),
+                Vector3.Zero, cmod: Vector3.Zero, explode: true);
+        }
+
+        // QC: the head gib (head_model) from origin+'0 0 32', vel '0 0 200' + randomvec()*200, '-1 -1 -1' cmod,
+        // exploding, and it inherits the head's final angles + a randomized spin (avelocity.y *= 5) with halved gravity.
+        Entity? headgib = TossGib(headModel, turret.Origin + new Vector3(0f, 0f, 32f),
+            new Vector3(0f, 0f, 200f) + Prandom.Vec() * 200f, cmod: new Vector3(-1f, -1f, -1f), explode: true);
+        if (headgib is not null)
+        {
+            headgib.Angles = turret.Angles + st.HeadAngles;
+            Vector3 av = st.HeadAVelocity + Prandom.Vec() * 45f;
+            av.Y *= 5f;
+            headgib.AVelocity = av;
+            headgib.Gravity = 0.5f;
+        }
+    }
+
+    /// <summary>
+    /// Port of <c>turret_gibtoss</c> (cl_turrets.qc:282-313): spawn a bouncing model debris gib at
+    /// <paramref name="from"/> and toss it with <paramref name="to"/> as its launch velocity. A traceline from the
+    /// turret origin to the spawn point rejects gibs that would start inside solid (QC <c>trace_startsolid</c>).
+    /// Exploding gibs trail <c>EF_FLAME</c> and detonate via <see cref="GibBoom"/> after a short random window;
+    /// the rest fade out over <see cref="GibLifetime"/>. Pure presentation — a gib never deals damage. Returns the
+    /// gib (or null if it could not be placed / no model / headless).
+    /// </summary>
+    private static Entity? TossGib(string? model, Vector3 from, Vector3 to, Vector3 cmod, bool explode)
+    {
+        if (Api.Services is null || string.IsNullOrEmpty(model)) return null;
+
+        // QC turret_gibtoss:284: traceline(_from, _to, MOVE_NOMONSTERS, NULL); if (trace_startsolid) return NULL.
+        // The reject only consults trace_startsolid (is the SPAWN point inside solid?), so a zero-length trace at
+        // `from` captures the exact same gate without reproducing Base's quirk of tracing toward the velocity vector.
+        TraceResult tr = Api.Trace.Trace(from, Vector3.Zero, Vector3.Zero, from, MoveFilter.NoMonsters, null);
+        if (tr.StartSolid) return null;
+
+        Entity gib = Api.Entities.Spawn();
+        gib.ClassName = "turret_gib";
+        Api.Entities.SetModel(gib, model);
+        Api.Entities.SetSize(gib, new Vector3(-1f, -1f, -1f), new Vector3(1f, 1f, 1f));  // QC setsize '-1 -1 -1' '1 1 1'
+        Api.Entities.SetOrigin(gib, from);
+        gib.Solid = Solid.Corpse;                 // QC SOLID_CORPSE
+        gib.MoveType = MoveType.Bounce;           // QC MOVETYPE_BOUNCE
+        gib.Gravity = 1f;                         // QC gib.gravity = 1
+        gib.Velocity = to;                        // QC gib.velocity = _to
+        gib.AVelocity = Prandom.Vec() * 32f;      // QC gib.avelocity = prandomvec() * 32
+        gib.ColorModKey = cmod;                   // QC gib.colormod = _cmod ('-1 -1 -1' head gib, '0 0 0' base gibs)
+
+        float now = Api.Clock.Time;
+        if (explode)
+        {
+            // QC: nextthink = time + 0.2 * lifetime * (1 + prandom()*0.15); effects = EF_FLAME; then turret_gibboom.
+            gib.Effects |= EfFlame;
+            gib.NextThink = now + 0.2f * (GibLifetime * (1f + Prandom.Float() * 0.15f));
+            gib.Think = GibBoom;
+        }
+        else
+        {
+            // QC: nextthink = time + lifetime * (1 + prandom()*0.15); turret_gib_draw fades alpha to nothing.
+            gib.Alpha = 1f;
+            gib.NextThink = now + GibLifetime * (1f + Prandom.Float() * 0.15f);
+            gib.Think = static self =>
+            {
+                if (Api.Services is not null) Api.Entities.Remove(self);   // fade-out reached: clear the gib
+            };
+        }
+
+        return gib;
+    }
+
+    /// <summary>
+    /// Port of <c>turret_gibboom</c> (cl_turrets.qc:273-280): an exploding turret gib detonates — rocket-impact
+    /// sound + EFFECT_ROCKET_EXPLODE at its resting point, then four more <c>head-gib1..4.md3</c> sub-chunks fly
+    /// off (non-exploding fade-out), then the gib is removed. Pure presentation (no RadiusDamage).
+    /// </summary>
+    private static void GibBoom(Entity gib)
+    {
+        if (Api.Services is null) return;
+        Api.Sound.Play(gib, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav");  // QC SND_ROCKET_IMPACT
+        EffectEmitter.Emit("ROCKET_EXPLODE", gib.Origin);                          // QC EFFECT_ROCKET_EXPLODE
+
+        // QC: for (j = 1; j < 5; ++j) turret_gibtoss("head-gibJ.md3", origin+'0 0 2', velocity + randomvec()*700,
+        // '0 0 0', false).
+        for (int j = 1; j < 5; j++)
+            TossGib($"models/turrets/head-gib{j}.md3", gib.Origin + new Vector3(0f, 0f, 2f),
+                gib.Velocity + Prandom.Vec() * 700f, cmod: Vector3.Zero, explode: false);
+
+        Api.Entities.Remove(gib);
+    }
+
     /// <summary>
     /// Port of the low-HP feedback in the framework <c>turret_draw</c> (cl_turrets.qc:39-53) — the all-turret
     /// damage smoke/spark tiers: a turret under 127 hp throws a <c>te_spark</c> (3%/frame), under 85 hp a large
@@ -1153,7 +1283,7 @@ public static class TurretAI
     /// server-side (the temp-entities/point-particles network to every viewer identically). Called once per think
     /// from <see cref="RunCombat"/>; no-op headless (needs the effect service).
     /// </summary>
-    private static void DrawFx(Entity turret)
+    internal static void DrawFx(Entity turret)
     {
         if (Api.Services is null) return;
         // ewheel/walker replace turret_draw with their own draw (which emits its own spark) — don't double up.

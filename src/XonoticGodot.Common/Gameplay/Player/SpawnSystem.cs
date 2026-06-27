@@ -1229,13 +1229,14 @@ public static class SpawnSystem
         MutatorHooks.SetWeaponArena.Call(ref warmArenaArgs);
         WepSet warmArena = ExpandWeaponArena(warmArenaArgs.Arena, out bool warmArenaActive);
         var warmFlags = new StartLoadout();
+        var warmupLoadout = new StartLoadout();
 
         if (warmArenaActive)
         {
             foreach (Weapon w in Weapons.All)
                 if (warmArena.Has(w))
                 {
-                    p.OwnedWeapons.Add(w.NetName);
+                    warmupLoadout.Weapons.Add(w.NetName);
                     p.OwnedWeaponSet.Add(w);
                 }
             warmFlags.ItemFlags.Add("UNLIMITED_AMMO");
@@ -1250,7 +1251,7 @@ public static class SpawnSystem
             {
                 if ((w.SpawnFlags & WeaponFlags.Hidden) != 0) continue;
                 if ((w.SpawnFlags & WeaponFlags.MutatorBlocked) != 0) continue;
-                p.OwnedWeapons.Add(w.NetName);
+                warmupLoadout.Weapons.Add(w.NetName);
                 p.OwnedWeaponSet.Add(w);
             }
         }
@@ -1258,9 +1259,25 @@ public static class SpawnSystem
         {
             foreach (string w in DefaultLoadout)
             {
-                p.OwnedWeapons.Add(w);
+                warmupLoadout.Weapons.Add(w);
                 if (Weapons.ByName(w) is { } wep) p.OwnedWeaponSet.Add(wep);
             }
+        }
+
+        // QC world.qc:2161-2167: apply MUTATOR_CALLHOOK(SetStartItems) to warmup weapons just as for the live
+        // path, rearranging them through mutator-defined replacements (e.g. New Toys swap core→new-toy). Base
+        // applies the hook to both start_weapons AND warmup_start_weapons via the same seam (SetStartItems
+        // signature doesn't distinguish); the port now matches by firing the hook on the built warmupLoadout.
+        var warmupArgs = new MutatorHooks.SetStartItemsArgs(warmupLoadout);
+        MutatorHooks.SetStartItems.Call(ref warmupArgs);
+        warmupLoadout = warmupArgs.Loadout;
+
+        // Transfer the rearranged warmup weapons into the player's arsenal.
+        p.OwnedWeapons.Clear();
+        foreach (string w in warmupLoadout.Weapons)
+        {
+            p.OwnedWeapons.Add(w);
+            if (Weapons.ByName(w) is { } wep) p.OwnedWeaponSet.Add(wep);
         }
 
         // Fold the SetStartItems seam's IT_* flags (e.g. the hook mutator's FUEL_REGEN) into the warmup items

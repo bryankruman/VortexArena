@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using Godot;
 using XonoticGodot.Engine.Simulation;
+using XonoticGodot.Common.Gameplay;
 
 namespace XonoticGodot.Game.Menu;
 
@@ -215,13 +216,15 @@ public partial class DialogMutators : MenuScreen
         // New Toys + its auto-replacement radio set (QC setDependentWeird on a weapon-arena compatibility test;
         // approximated as the dominant "not InstaGib" dependency + enabled only when g_new_toys is on).
         // Port of MutatorNewToys.describe() (new_toys.qc:25): the picker info blurb — the gimmicky-weapons note,
-        // the InstaGib/Overkill exclusivity, and the current new-toy weapon list. The port has no dedicated
+        // the InstaGib/Overkill exclusivity, and a runtime enumeration of the current new-toy weapon list (Base
+        // uses FOREACH(Weapons, nt_IsNewToy(it.m_id)) to dynamically build the list). The port has no dedicated
         // describe-page widget, so the text is carried on the checkbox tooltip (closest faithful surface).
+        string newToysWeaponList = BuildNewToysWeaponList();
         var newToys = Widgets.CheckBox("g_new_toys", "New Toys",
             "The New Toys mutator, enabled by default, allows the spawning of new gimmicky weapons, " +
             "sometimes replacing a core weapon. Since these weapons can't spawn in InstaGib and Overkill, " +
             "the New Toys mutator can't be enabled concurrently. The current New Toys weapons are: " +
-            "Seeker, Mine Layer, HLAC, Rifle, Arc");
+            newToysWeaponList);
         box.AddChild(newToys);
         Dependent.Bind(newToys, "g_instagib", 0, 0);
 
@@ -324,6 +327,28 @@ public partial class DialogMutators : MenuScreen
         // every g_balance_*_weaponstartoverride. Selecting it zeroes them all; deselecting restores -1.
         box.AddChild(DialogMutatorsArenaRadio.StartWeapons(
             "No start weapons", _arenaGroup, StartWeaponMulti));
+    }
+
+    /// <summary>
+    /// Builds a runtime enumeration of new-toy weapon names (faithful to Base's FOREACH(Weapons, nt_IsNewToy)),
+    /// comma-separated for the describe() tooltip text. This mirrors QC's FOREACH loop that dynamically builds
+    /// the list so it auto-updates if the new-toy set ever changes (currently static, but the port mimics the
+    /// Base intent by avoiding a hardcoded list).
+    /// </summary>
+    private static string BuildNewToysWeaponList()
+    {
+        var names = new List<string>();
+        foreach (Weapon w in Weapons.All)
+        {
+            if (NewToysMutator.IsNewToy(w.NetName))
+                names.Add(string.IsNullOrEmpty(w.DisplayName) ? w.NetName : w.DisplayName);
+        }
+        // Faithful fallback ONLY if the registry hasn't populated (should not happen in the menu): use the
+        // Base m_name values (seeker.qh:50 "T.A.G. Seeker", minelayer.qh:38 "Mine Layer", hlac.qh:35 "Heavy
+        // Laser Assault Cannon", rifle.qh:34 "Rifle", arc.qh:38 "Arc"), NOT the abbreviated "Seeker"/"HLAC".
+        return names.Count > 0
+            ? string.Join(", ", names)
+            : "T.A.G. Seeker, Mine Layer, Heavy Laser Assault Cannon, Rifle, Arc";
     }
 }
 

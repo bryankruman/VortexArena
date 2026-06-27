@@ -445,7 +445,7 @@ namespace XonoticGodot.Common.Gameplay
                 // through the raw-centerprint channel (→ CenterPrintPanel.Add) and play the audible half.
                 int more = req - actor.FragsFilterCnt;
                 MapMover.Centerprint(actor, more == 1 ? "1 more frag needed" : $"{more} more frags needed");
-                MapMover.Sound(actor, SoundChannel.Voice, "misc/talk.wav");
+                MapMover.Play2(actor, "misc/talk.wav"); // QC quake3.qc:226 play2(actor, SND(TALK)) — 2D VOL_BASE/ATTEN_NONE
             }
         }
 
@@ -493,7 +493,7 @@ namespace XonoticGodot.Common.Gameplay
         private static void TargetPrintMessage(Entity actor, string? message)
         {
             MapMover.Centerprint(actor, message);
-            MapMover.Sound(actor, SoundChannel.Voice, "misc/talk.wav");
+            MapMover.Play2(actor, "misc/talk.wav"); // QC quake3.qc:246 play2(actor, SND(TALK)) — 2D VOL_BASE/ATTEN_NONE
         }
 
         // q3compat & Q3COMPAT_DEFI — the .defi-file flag the port never sets (default Q3 reading).

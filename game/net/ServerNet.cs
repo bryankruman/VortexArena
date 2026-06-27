@@ -2748,12 +2748,33 @@ public sealed class ServerNet : IDisposable
     /// </summary>
     private bool WriteEffect(BitWriter w, in EffectRequest r)
     {
-        byte[]? body = EffectNetProtocol.Encode(r);
-        if (body is null || r.Effect is null)
+        // Engine-fallback by-name path (QC Send_Effect_ → __pointparticles(_particleeffectnum(name))): no registered
+        // Effect carries the name, so write the ByNameSentinelId + the effectinfo NAME and let the client resolve it
+        // through its own effectinfo.txt catalog (DP's _particleeffectnum). This makes unregistered effectinfo names
+        // (arbitrary cheat args, non-canonical impact_<material>) reach REMOTE clients, not just the listen-server
+        // in-process mirror.
+        if (r.Effect is null)
+        {
+            byte[]? nameBody = EffectNetProtocol.EncodeByName(r);
+            if (nameBody is null)
+                return false;
+            w.WriteUShort(EffectNetProtocol.ByNameSentinelId);
+            // body = length-prefixed name string, then the EFF_NET payload (framed together so the reader knows the
+            // record extent from the single bodyLen, like the registered branch).
+            int namePos = ReserveCount(w); // reuse the ushort-length reservation helper for the body length prefix
+            int start = w.Length;
+            w.WriteString(r.EffectName);
+            w.WriteBytes(nameBody);
+            PatchCount(w, namePos, w.Length - start);
+            return true;
+        }
+
+        byte[]? regBody = EffectNetProtocol.Encode(r);
+        if (regBody is null)
             return false;
         w.WriteUShort(r.Effect.RegistryId);
-        w.WriteUShort(body.Length);
-        w.WriteBytes(body);
+        w.WriteUShort(regBody.Length);
+        w.WriteBytes(regBody);
         return true;
     }
 

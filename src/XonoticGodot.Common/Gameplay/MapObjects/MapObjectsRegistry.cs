@@ -358,7 +358,7 @@ public static class MapObjectsRegistry
     //     '0 100 0'*fmod(time,3.6) yaw spin (csqcmodel_hooks.qc:617) on the listen-server/demo path.
     //   * QC's objerror on a multi-bit / nameless / modelless key is a headless no-op here: the edict is left
     //     inert (removed) rather than crashing the map, matching how the port treats other objerror sites.
-    //   * play2(toucher, noise) (CH_TRIGGER, toucher-only) -> MapMover.Sound on the toucher.
+    //   * play2(toucher, noise) (toucher-only 2D cue) -> MapMover.Play2 (CH_INFO / VOL_BASE / ATTEN_NONE).
     //   * The Q3COMPAT_COMMON QL +8z origin nudge is omitted (no Q3 compat global in the port; keys.qc:125-127).
 
     private const string KeyDefaultModel = "models/keys/key.md3";
@@ -520,7 +520,7 @@ public static class MapObjectsRegistry
             return;
 
         toucher.ItemKeys |= this_.ItemKeys;
-        MapMover.Sound(toucher, SoundChannel.TriggerAuto, this_.Noise); // QC play2(toucher, noise)
+        MapMover.Play2(toucher, this_.Noise); // QC keys.qc:87 play2(toucher, this.noise) — 2D VOL_BASE/ATTEN_NONE
         MapMover.Centerprint(toucher, this_.Message);
 
         // Fire .target with the message blanked so SUB_UseTargets doesn't re-centerprint it (keys.qc:91-94).

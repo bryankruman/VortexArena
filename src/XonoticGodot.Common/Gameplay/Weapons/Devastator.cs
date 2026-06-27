@@ -73,6 +73,30 @@ public sealed class Devastator : Weapon
         ItemModel = "g_rl.md3";  // MDL_DEVASTATOR_ITEM
     }
 
+    /// <summary>
+    /// METHOD(Devastator, describe) — common/weapons/weapon/devastator.qc:583-599. The in-menu weapon-guide
+    /// prose: the remote-controlled / hold-to-guide rocket, the secondary remote detonation, the heavy ammo
+    /// drain (alternate with the Vortex), the all-round high-damage role, and "rocket flying" (best with the
+    /// Rocket Flying mutator). The QC builds it with PAR() paragraphs and COLORED_NAME(%s) substitutions (this
+    /// weapon, ITEM_Rockets, WEP_VORTEX, MUTATOR_rocketflying); the names are pre-filled with their literals
+    /// here. The trailing W_Guide_Keybinds + W_Guide_DPS_onlyOne_unnamed helper lines are not reproduced (those
+    /// helpers aren't ported), matching the rest of the ported weapon-guide entries.
+    /// </summary>
+    public override string? GuideDescription =>
+        "The Devastator launches a remote controlled rocket, dealing significant damage when it explodes on "
+      + "impact. If the primary fire is held, the rocket can be guided by the user's aim, allowing steering it "
+      + "towards enemies.\n\n"
+      + "The secondary fire can be used to immediately detonate rockets, allowing dealing damage to enemies even "
+      + "if the rocket barely missed colliding with them.\n\n"
+      + "It consumes a bunch of Rockets ammo for each rocket, which can end up being depleted quickly, so often "
+      + "players alternate with another weapon like the Vortex.\n\n"
+      + "Due to its high damage output, the Devastator is one of the most commonly used weapons. It can be used "
+      + "in almost any scenario, working best in medium range combat. In close range combat, the large splash "
+      + "radius often results in rockets damaging both you and your enemy.\n\n"
+      + "Due to the ability to remotely detonate rockets, a common usage is \"rocket flying,\" where you fire a "
+      + "rocket and immediately detonate it to boost yourself while mid-air, much more effective with the Rocket "
+      + "Flying mutator enabled.";
+
     public override void Configure()
     {
         Cvars.Ammo = Bal("g_balance_devastator_ammo", 4f);

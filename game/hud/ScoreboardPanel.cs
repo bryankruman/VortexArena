@@ -1119,15 +1119,21 @@ public partial class ScoreboardPanel : HudPanel
                 float nameX = layout.ColX[i];
                 // QC scoreboard.qc:1003-1009 — the player_handicap extra icon (a 32x32 square drawn next to the
                 // name) when handicap_level != 0, tinted '1 0 0' + '0 1 1' * ((16 - lvl) / 15): white at level 1,
-                // red at level 16. The panel has no gfx texture path, so render the square as a faithful colored
-                // marker with the EXACT tint, then offset the name so it doesn't overlap.
+                // red at level 16. Draw the REAL gfx/scoreboard/player_handicap art from the mounted game data
+                // (sbt_field_icon_extra[1]) tinted with the EXACT Base formula; fall back to a flat colored
+                // square if the texture can't be resolved. Offset the name so it doesn't overlap either way.
                 if (r.HandicapLevel != 0)
                 {
                     int lvl = r.HandicapLevel;
                     float t = (16f - lvl) / 15f; // 1.0 @ lvl 1 (white) → 0.0 @ lvl 16 (red)
                     Color hc = new(1f, t, t, rowAlpha); // '1 0 0' + '0 1 1' * t
                     float sq = rowH - 6f;
-                    DrawRect(new Rect2(nameX, y + 3f, sq, sq), hc);
+                    var iconRect = new Rect2(nameX, y + 3f, sq, sq);
+                    Texture2D? icon = TextureCache.Get("gfx/scoreboard/player_handicap");
+                    if (icon is not null)
+                        DrawTextureRect(icon, iconRect, false, hc);
+                    else
+                        DrawRect(iconRect, hc);
                     nameX += sq + 4f;
                 }
                 DrawColored(new Vector2(nameX, y + 3f), ft.Text, rowFg, 16);

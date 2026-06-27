@@ -333,15 +333,27 @@ public sealed class Rifle : Weapon
         for (int i = 0; i < shots; ++i)
         {
             // fireBullet_falloff: per-bullet spread, solid penetration multi-hit, distance falloff, force, tracer.
-            WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, bal.Damage,
-                deathType, bal.Spread, bal.SolidPenetration, force: bal.Force,
+            // Capture the first damageable entity hit (QC's fireBullet_trace_callback / Damage_DamageInfo species
+            // feed) so we can reproduce the impact-effect player-hit suppression below.
+            Entity? hit = WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance,
+                bal.Damage, deathType, bal.Spread, bal.SolidPenetration, force: bal.Force,
                 headshotMultiplier: bal.HeadshotMultiplier, tracerEffect: tracerEffect, deathTag: deathTag);
             Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
             TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
             // w_backoff = the impact surface normal (trace_plane_normal), -force_dir fallback when no hit.
             Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
             // wr_impacteffect (rifle.qc:213-218): EFFECT_RIFLE_IMPACT puff + a random ricochet ping (CH_SHOTS).
-            WeaponFiring.BulletImpactFx(actor, impTr.EndPos, backoff, "RIFLE_IMPACT");
+            // Base gates the impact in the CSQC damageinfo handler (damageeffects.qc:439-460):
+            //   * DEATH_ISSPECIAL is skipped here (rifle is a normal weapon).
+            //   * `if (!hitplayer || rad)` — for a hitscan bullet (rad == 0) the ground-impact puff + ricochet are
+            //     SUPPRESSED when the shot actually hit a player model (you don't get a wall-spark + ric off flesh).
+            //     The port emits server-side per bullet, so reproduce that gate here: skip the FX when this bullet
+            //     hit a damageable player. A wall/nothing hit still puffs + rics.
+            //   * a sky surface (or no surface) is silent — matches the MachineGun sibling's `silent` gate.
+            bool hitPlayer = hit is not null && (hit.Flags & EntFlags.Client) != 0;
+            bool silent = (impTr.DpHitQ3SurfaceFlags & WeaponFiring.Q3SurfaceFlagSky) != 0 || impTr.Fraction >= 1f;
+            if (!hitPlayer)
+                WeaponFiring.BulletImpactFx(actor, impTr.EndPos, backoff, "RIFLE_IMPACT", silent);
         }
 
         // QC: SpawnCasing (casing type 3) when g_casings >= 2 (rifle.qc:38-42); EjectCasing applies the gate.

@@ -83,6 +83,15 @@ public static class EffectNetProtocol
     public const int NetColorSame = 1 << 3; // EFF_NET_COLOR_SAME (min == max optimisation)
 
     /// <summary>
+    /// Sentinel "registered effect id" the transport writes in place of a real registry id when the request is
+    /// the engine-fallback by-name path (QC <c>Send_Effect_</c> → <c>__pointparticles(_particleeffectnum(name))</c>):
+    /// no registered <see cref="Effect"/> carries the name, so the wire carries the effectinfo NAME instead and the
+    /// receiver resolves it through its own effectinfo.txt catalog (DP's <c>_particleeffectnum</c> equivalent).
+    /// 0xFFFF is safe: the registry is BITS(8) (max 256 ids), so a real id never collides.
+    /// </summary>
+    public const int ByNameSentinelId = 0xFFFF;
+
+    /// <summary>
     /// Compute the extraflags byte from a request's velocity/colour, exactly as Net_Write_Effect does
     /// (velocity present; colour-min present; the min==max "same" optimisation, else colour-max present).
     /// </summary>
@@ -118,6 +127,31 @@ public static class EffectNetProtocol
         if (!trail && r.Count == 0) return null;
 
         var bytes = new List<byte>(20);
+        EncodeBody(bytes, r, trail);
+        return bytes.ToArray();
+    }
+
+    /// <summary>
+    /// Encode the EFF_NET body for the engine-fallback by-name path (QC <c>Send_Effect_</c> →
+    /// <c>__pointparticles(_particleeffectnum(name), …)</c>): no registered <see cref="Effect"/>, so the transport
+    /// writes <see cref="ByNameSentinelId"/> and this body, which carries the EFF_NET payload (origin / extraflags /
+    /// velocity / colours / count) for a POINT effect — <c>__pointparticles</c> is always a point spawn. The name
+    /// itself is framed by the transport (it owns the leading id/name slot, like <c>WriteRegistered</c>). Returns
+    /// null for the same drop the registered path applies (no name, or a count-0 point effect).
+    /// </summary>
+    public static byte[]? EncodeByName(in EffectRequest r)
+    {
+        if (r.Effect is not null) return null;          // not the by-name path
+        if (string.IsNullOrEmpty(r.EffectName)) return null;
+        if (r.Count == 0) return null;                  // point effect with no count → drop (Send_Effect_Except guard)
+
+        var bytes = new List<byte>(20);
+        EncodeBody(bytes, r, trail: false);             // __pointparticles is always a point effect
+        return bytes.ToArray();
+    }
+
+    private static void EncodeBody(List<byte> bytes, in EffectRequest r, bool trail)
+    {
         WriteVector(bytes, r.Origin);
 
         int flags = ExtraFlags(r);
@@ -141,8 +175,6 @@ public static class EffectNetProtocol
 
         if (!trail)
             bytes.Add((byte)(r.Count & 0xFF)); // WriteByte(channel, eent_net_count)
-
-        return bytes.ToArray();
     }
 
     // DarkPlaces WriteVector sends 3 little-endian 32-bit floats (the engine coord precision).
@@ -245,6 +277,10 @@ public static class EffectEmitter
 
     /// <summary>te_explosion — a generic explosion at <paramref name="origin"/> (maps to EFFECT_TE_EXPLOSION).</summary>
     public static void TeExplosion(Vector3 origin) => Emit("TE_EXPLOSION", origin, default, 1);
+
+    /// <summary>te_tarexplosion — the dark "tar" explosion builtin (QC te_tarexplosion(org)), distinct from
+    /// te_explosion; used by Key Hunt for a destroyed key. Maps to the dedicated TE_TAREXPLOSION effectinfo block.</summary>
+    public static void TeTarExplosion(Vector3 origin) => Emit("TE_TAREXPLOSION", origin, default, 1);
 
     /// <summary>te_smallflash — the engine smallflash builtin. In DP this resolves the effectinfo block named
     /// TE_SMALLFLASH (a generic bright flash), NOT any weapon's muzzleflash; mapped to the matching registry

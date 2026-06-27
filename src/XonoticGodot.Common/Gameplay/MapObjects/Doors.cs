@@ -465,9 +465,9 @@ public static class Doors
 
         if (door.Dmg == 0f && !string.IsNullOrEmpty(door.Message))
         {
-            // QC centerprint(toucher, message) + play2(toucher, noise).
+            // QC door.qc:313 centerprint(toucher, message) + play2(toucher, noise) — 2D VOL_BASE/ATTEN_NONE.
             MapMover.Centerprint(other, door.Message);
-            MapMover.Sound(other, SoundChannel.Voice, door.Noise);
+            MapMover.Play2(other, door.Noise);
         }
     }
 
@@ -522,7 +522,7 @@ public static class Doors
         if (door.ItemKeys == 0)
         {
             // all required keys given -> unlock (door.qc:182-186).
-            MapMover.Sound(player, SoundChannel.Voice, door.Noise);
+            MapMover.Play2(player, door.Noise); // QC door.qc:183 play2(player, door.noise) — 2D VOL_BASE/ATTEN_NONE
             NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, "DOOR_UNLOCKED");
             return true;
         }
@@ -533,7 +533,7 @@ public static class Doors
         // need …") (door.qc:189-209).
         if (player.KeyDoorMessageTime <= MapMover.Now())
         {
-            MapMover.Sound(player, SoundChannel.Voice, door.Noise3);
+            MapMover.Play2(player, door.Noise3); // QC door.qc:194/206 play2(player, door.noise3) — 2D VOL_BASE/ATTEN_NONE
             string keylist = MapObjectsRegistry.ItemKeysKeylist(door.ItemKeys);
             NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center,
                 valid == 0 ? "DOOR_LOCKED_NEED" : "DOOR_LOCKED_ALSONEED", keylist);

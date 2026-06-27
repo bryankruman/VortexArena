@@ -78,6 +78,17 @@ public static class NotifTokens
         "f1ord" => Ordinal((int)F(f, 0)),
         "f1time" => ProcessTime((int)F(f, 0)),
 
+        // race times: the float args carry TIME_ENCODE'd (hundredths) integers; TIME_ENCODED_TOSTRING(n, true)
+        // = clockedtime_tostring(n, true, true) is the compact mm:ss.hh / ss.hh string.
+        "f1race_time" => RaceTime((int)F(f, 0)),
+        "f2race_time" => RaceTime((int)F(f, 1)),
+        "f3race_time" => RaceTime((int)F(f, 2)),
+        // race_col: ^F1 when the position is 1 (a good/first time), else ^F2. Color codes left raw for the
+        // client's CCR expansion (QC CCR wraps it; the port's HudText.Expand does the same expansion).
+        "race_col" => (int)F(f, 0) == 1 ? "^F1" : "^F2",
+        // race_diff: ^3[+0.0] when equal, ^1[+diff] when f2 slower, ^2[-diff] when f2 faster (encoded ints).
+        "race_diff" => RaceDiff((int)F(f, 1), (int)F(f, 2)),
+
         // kill-spree phrasing
         "spree_cen" => ShowSprees() ? SpreeCen((int)F(f, 0)) : "",
         "spree_inf" => ShowSprees() ? SpreeInf(1, input, S(s, 1), (int)F(f, 1)) : "",
@@ -91,6 +102,12 @@ public static class NotifTokens
 
         // team names: SVQC uses f1 directly (1..4), CSQC uses f1-1; we take the server convention (f1 = team idx 1..4).
         "death_team" => TeamColoredFullName((int)F(f, 0)),
+
+        // hash-replace tokens: the port formats server-side, so we take the ARG_SV variants (all.qh:465-466):
+        // "s3#s2" -> s3, "#s2" -> s2 (the CSQC HASH_REPLACE in-template attacker-name splice is a client-only
+        // path the port doesn't take). The "#" in the template is consumed verbatim alongside the %s.
+        "s3#s2" => S(s, 2),
+        "#s2" => S(s, 1),
 
         // frag presentation (server passes the killed player's ping/health/armor as floats)
         "frag_ping" => FragPing(true, F(f, 1)),
@@ -141,6 +158,24 @@ public static class NotifTokens
     {
         int m = seconds / 60, s = seconds % 60;
         return $"{m}:{s:00}";
+    }
+
+    // QC TIME_ENCODED_TOSTRING(n, true) = clockedtime_tostring(n, true, true): an encoded-hundredths race
+    // time -> a compact "mm:ss.hh" / "ss.hh" string. Shares GameScores' exact clockedtime_tostring port.
+    private static string RaceTime(int encoded) => Scoring.GameScores.TimeEncodedToString(encoded, compact: true);
+
+    // QC "race_diff" (all.qh:448): the signed delta between two encoded race times.
+    //   |f2 - f3| renders as "0.00"  -> "^3[+0.0]"  (a tie)
+    //   f2 > f3 (this time slower)   -> "^1[+<mmssth(f2-f3)>]"
+    //   f2 < f3 (this time faster)   -> "^2[-<mmssth(f3-f2)>]"
+    // Color codes are left raw for the client's CCR expansion.
+    private static string RaceDiff(int f2, int f3)
+    {
+        if (RaceTime(System.Math.Abs(f2 - f3)) == "0.00")
+            return "^3[+0.0]";
+        return f2 > f3
+            ? $"^1[+{RaceTime(f2 - f3)}]"
+            : $"^2[-{RaceTime(f3 - f2)}]";
     }
 
     // QC notif_arg_spree_cen: centered spree banner (with " " suffix).

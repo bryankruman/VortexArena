@@ -690,9 +690,10 @@ public sealed class Minelayer : Weapon
         if (Api.Services is null) return;
         // Send_Notification(NOTIF_ONE, actor, MSG_MULTI, WEAPON_MINELAYER_LIMIT, limit) — f1 = the mine cap.
         NotificationSystem.Send(NotifBroadcast.One, actor, MsgType.Multi, "WEAPON_MINELAYER_LIMIT", (float)Cvars.Limit);
-        // play2(actor, SND(UNAVAILABLE)) — W_Sound("unavailable"). play2 is a client-local 2D cue; the closest
-        // faithful seam here is a weapon-channel one-shot on the actor.
-        Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/unavailable.wav");
+        // QC minelayer.qc:303 play2(actor, SND(UNAVAILABLE)) — a per-recipient 2D cue on CH_INFO at
+        // VOL_BASE 0.7 / ATTEN_NONE 0 (NOT a positional weapon-channel emit). SoundSystem.Play2 resolves the
+        // registered UNAVAILABLE sample and plays it 2D, matching Base's volume/attenuation/channel.
+        SoundSystem.Play2(actor, "UNAVAILABLE");
     }
 
     /// <summary>QC STAT(FROZEN, e): the gametype freeze stat OR the Frozen status effect (cf. WeaponFireDriver).</summary>

@@ -71,6 +71,7 @@ public sealed class HellionTurret : Turret
         NetName = "hellion";
         DisplayName = "Hellion Missile Turret";
         Model = "models/turrets/base.md3";
+        HeadModel = "models/turrets/hellion.md3";   // QC hellion.qh head_model ATTRIB (the spinning-launcher head)
         StartHealth = 500f;
         Range = TargetRange;
     }

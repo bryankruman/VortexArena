@@ -1098,7 +1098,7 @@ public sealed class KeyHunt : GameType
 
         SoundGlobal("KH_DESTROY");        // QC play2all(SND(KH_DESTROY))
         if (Api.Services is not null)
-            EffectEmitter.Emit("TE_EXPLOSION", boomOrigin); // QC te_tarexplosion(lostkey.origin)
+            EffectEmitter.TeTarExplosion(boomOrigin); // QC te_tarexplosion(lostkey.origin)
 
         // remove the key + end the round (QC kh_FinishRound). The waypoint sprites are transient (rebuilt each
         // tick by CollectWaypoints from live key state), so clearing the entity/carrier state drops them.

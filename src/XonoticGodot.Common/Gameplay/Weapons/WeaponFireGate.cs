@@ -298,8 +298,11 @@ public abstract partial class Weapon
             float now0 = Api.Services is not null ? Api.Clock.Time : 0f;
             if (st.ReloadComplain < now0)
             {
+                // QC weaponsystem.qc:794 play2(actor, SND(UNAVAILABLE)) — a per-recipient 2D cue on CH_INFO at
+                // VOL_BASE 0.7 / ATTEN_NONE 0. SND(UNAVAILABLE) resolves to "weapons/unavailable" (NOT
+                // "misc/unavailable"); SoundSystem.Play2 plays the registered cue 2D with Base's vol/atten/channel.
                 if (Api.Services is not null)
-                    Api.Sound.Play(actor, SoundChannel.Item, "misc/unavailable.wav");
+                    SoundSystem.Play2(actor, "UNAVAILABLE");
                 st.ReloadComplain = now0 + 1f;
             }
             // switch away if the amount of ammo is not enough to keep using this weapon.

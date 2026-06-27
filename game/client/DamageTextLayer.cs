@@ -304,29 +304,40 @@ public partial class DamageTextLayer : Control
             // HUD font (Xolonium), not the Godot fallback, matching the QC hud font cell. Center horizontally by
             // the full (decolorized) string width, as QC does (screen_pos.x -= stringwidth*0.5).
             //
-            // QC drawfontscale crisp-cell scaling (cl_damagetext.qc:56,91-97): QC renders into a fixed size_max font
-            // cell scaled by drawfontscale = size/size_max, anchored at the cell's TOP-LEFT, and offsets y by
+            // QC drawfontscale crisp-cell scaling (cl_damagetext.qc:56,91-97): the string is rendered into a FIXED
+            // size_max-sized font cell and the whole cell is scaled by drawfontscale = size/size_max (a continuous,
+            // sub-pixel factor), anchored at the cell's TOP-LEFT. The y is offset by
             //   screen_pos.y += size/2;                  (line 56, both 2D and 3D)
             //   screen_pos.y -= drawfontscale.x*size/2;  (line 93, = (size/size_max)*size/2)
-            // -> net y += (size/2)*(1 - size/size_max). The port draws at a direct pixel size (no separate cell), so
-            // it reproduces that net top-anchor offset directly and then converts QC's cell-top anchor to Godot's
-            // DrawString baseline anchor by adding the font ascent (same as the ShowNamesLayer sibling).
-            int isize = Mathf.Max(1, (int)size);
+            // -> net y += (size/2)*(1 - size/size_max). Reproduce this faithfully: rasterize each run at the constant
+            // integer size_max cell, then apply a continuous size/size_max scale about the text's top-left anchor via
+            // a draw transform. This keeps the shrink animation smooth (the prior direct (int)size draw stair-stepped
+            // the font size by whole pixels and never had a real size_max cell). The cell-top anchor is converted to
+            // Godot's DrawString baseline anchor by adding the cell ascent (same as the ShowNamesLayer sibling).
             Font font = HudPanel.HudFont ?? ThemeDB.FallbackFont;
             float sizeMax = cfg.SizeMax > 0f ? cfg.SizeMax : 1f;
-            float topY = pos.Y + (size * 0.5f) * (1f - size / sizeMax); // QC screen_pos.y after lines 56+93
-            float baselineY = topY + font.GetAscent(isize);             // QC cell-top -> Godot baseline
+            int cell = Mathf.Max(1, Mathf.RoundToInt(sizeMax)); // QC size_max font cell (constant rasterization size)
+            float scale = size / sizeMax;                       // QC drawfontscale.x (continuous)
+            float topY = pos.Y + (size * 0.5f) * (1f - scale);  // QC screen_pos.y after lines 56+93
             var runs = HudText.Parse(it.Text, rgb);
-            float total = 0f;
+            // QC centers by the rendered (scaled) width: stringwidth at the cell, times drawfontscale.
+            float cellWidth = 0f;
             foreach (HudText.Run run in runs)
-                total += font.GetStringSize(run.Text, HorizontalAlignment.Left, -1f, isize).X;
-            float rx = pos.X - total * 0.5f;
+                cellWidth += font.GetStringSize(run.Text, HorizontalAlignment.Left, -1f, cell).X;
+            float anchorX = pos.X - (cellWidth * scale) * 0.5f; // QC screen_pos.x -= stringwidth*0.5 (scaled)
+            // Scale the size_max cell about (anchorX, topY) so the visible glyphs are `size` px (= cell*scale) and the
+            // shrink is continuous — the QC drawfontscale path, not a per-frame integer re-rasterize.
+            DrawSetTransformMatrix(new Transform2D(
+                new Vector2(scale, 0f), new Vector2(0f, scale), new Vector2(anchorX, topY)));
+            float rx = 0f;                          // local cell-space x (anchorX is in the transform origin)
+            float baselineY = font.GetAscent(cell); // QC cell-top -> Godot baseline, in cell space
             foreach (HudText.Run run in runs)
             {
                 var rc = new Color(run.Color.R, run.Color.G, run.Color.B, alpha);
-                DrawString(font, new Vector2(rx, baselineY), run.Text, HorizontalAlignment.Left, -1f, isize, rc);
-                rx += font.GetStringSize(run.Text, HorizontalAlignment.Left, -1f, isize).X;
+                DrawString(font, new Vector2(rx, baselineY), run.Text, HorizontalAlignment.Left, -1f, cell, rc);
+                rx += font.GetStringSize(run.Text, HorizontalAlignment.Left, -1f, cell).X;
             }
+            DrawSetTransform(Vector2.Zero, 0f, Vector2.One); // reset (QC drawfontscale = drawfontscale_save)
         }
     }
 

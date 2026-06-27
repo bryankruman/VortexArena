@@ -68,6 +68,11 @@ public sealed class FlacTurret : Turret
         NetName = "flac";
         DisplayName = "FLAC Cannon";
         Model = "models/turrets/base.md3";
+        // QC flac.qh: head_model = strcat("models/turrets/", "flac.md3") — the separate head-bone model carried
+        // on top of the base body (the 4-frame cycle in Attack drives its frame). Carried as identity data
+        // (matches Base flac.qh:12 + the FusionReactorTurret.HeadModel pattern); no client turret render
+        // integrates the head bone yet (whole-turret-family presentation gap), but the head model is now set.
+        HeadModel = "models/turrets/flac.md3";
         StartHealth = 700f;
         Range = TargetRange;
     }
@@ -268,8 +273,10 @@ public sealed class FlacWeapon : Weapon
 
         // QC flac_weapon.qc:30 — Send_Effect(EFFECT_BLASTER_MUZZLEFLASH, tur_shotorg, tur_shotdir_updated*1000, 1).
         // This Send_Effect runs unconditionally (after the isPlayer block), so the player form flashes too; only
-        // the head-frame cycle (qc:32-37) is gated `if (!isPlayer)` and is correctly omitted here.
-        EffectEmitter.Emit("BLASTER_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+        // the head-frame cycle (qc:32-37) is gated `if (!isPlayer)` and is correctly omitted here. Base uses the
+        // plain Send_Effect (NOT Send_Effect_Except) → it networks to ALL clients including the firing player, so
+        // a player firing their own hidden weapon sees their own muzzle flash. No `except` to match.
+        EffectEmitter.Emit("BLASTER_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1);
     }
 
     /// <summary>QC <c>weapon_thinkf(…, WFRAME_FIRE1, 0.5, w_ready)</c> — return to READY after the 0.5 s animation.</summary>

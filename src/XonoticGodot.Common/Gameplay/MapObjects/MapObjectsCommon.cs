@@ -421,7 +421,7 @@ namespace XonoticGodot.Common.Gameplay
             {
                 MapMover.Centerprint(actor, self.Message);
                 if (string.IsNullOrEmpty(self.Noise))
-                    Sound(actor, SoundChannel.Voice, "misc/talk.wav");
+                    Play2(actor, "misc/talk.wav"); // QC triggers.qc:282 play2(actor, SND(TALK)) — 2D VOL_BASE/ATTEN_NONE
             }
 
             // --- killtargets: delete everything they name (QC) ---
@@ -809,6 +809,21 @@ namespace XonoticGodot.Common.Gameplay
         {
             if (Api.Services is not null && !string.IsNullOrEmpty(sample))
                 Api.Sound.Play(e, ch, sample);
+        }
+
+        /// <summary>
+        /// Faithful QC <c>play2(recipient, sample)</c> (common/sounds/all.qc:116-120) for the toucher-recipient
+        /// map-object cues (keylock / keys "unlocked"/"need key" beeps). QC <c>play2</c> is a per-recipient 2D send
+        /// at <b>CH_INFO / VOL_BASE 0.7 / ATTEN_NONE 0</b> — a UI-style cue heard at full volume regardless of
+        /// distance — NOT a positional emit. The generic <see cref="Sound"/> helper above plays at the facade
+        /// default vol=1 / atten=1 (ATTEN_LARGE), so it spatializes the beep; this routes through
+        /// <see cref="SoundSystem.Play2Raw"/> so the volume/attenuation match Base byte-for-byte.
+        /// (Per-recipient MSG_ONE targeting is still the documented broadcast approximation; this only fixes the mix.)
+        /// </summary>
+        public static void Play2(Entity recipient, string? sample)
+        {
+            if (Api.Services is not null && !string.IsNullOrEmpty(sample))
+                SoundSystem.Play2Raw(recipient, sample);
         }
 
         // VOL_BASE / ATTEN_IDLE (common/sounds/sound.qh:32,36) — the looping-ambient volume + attenuation the

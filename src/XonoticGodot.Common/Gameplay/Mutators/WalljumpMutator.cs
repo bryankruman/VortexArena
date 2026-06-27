@@ -36,6 +36,13 @@ public sealed class WalljumpMutator : MutatorBase
     public override bool IsEnabled =>
         Api.Services is not null && Api.Cvars.GetFloat("g_walljump") != 0f;
 
+    // QC: MENUQC describe() — the per-mutator guide page text (common/mutators/mutator/walljump/walljump.qc:77-85).
+    // Two paragraphs; the %s fills resolve to COLORED_NAME(this) = "Wall jump" and strcat("^3", _("jump"), "^7") = "jump".
+    public override string? GuideDescription =>
+        "Wall jump is a mutator that enables jumping off walls for added mobility. " +
+        "To do a wall jump, tap jump when against a wall.\n\n" +
+        "This mutator adds a bit of versatility, allowing for more dynamic and unpredictable movement.";
+
     private HookHandler<MutatorHooks.PlayerJumpArgs>? _onJump;
 
     public override void Hook()

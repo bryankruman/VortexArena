@@ -50,6 +50,10 @@ public sealed class MachinegunTurret : Turret
         NetName = "machinegun";
         DisplayName = "Machinegun Turret";
         Model = "models/turrets/base.md3";
+        // machinegun.qh head_model ATTRIB — the separate machinegun.md3 head-bone model on top of the base body.
+        // No client turret render attaches it at tag_head yet (whole-family presentation gap), but carrying it as
+        // data matches Base identity AND feeds the death-gib toss (TurretAI.Die tosses the head_model as a gib).
+        HeadModel = "models/turrets/machinegun.md3";
         StartHealth = 256f;
         Range = TargetRange;
     }

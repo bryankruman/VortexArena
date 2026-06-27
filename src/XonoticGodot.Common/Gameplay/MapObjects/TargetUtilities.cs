@@ -953,9 +953,10 @@ public static class TargetUtilities
 
         if (!string.IsNullOrEmpty(self.Message))
         {
-            // QC: if(IS_CLIENT(toucher)) centerprint(toucher, this.message); play2(toucher, this.noise).
+            // QC door_secret.qc:163-166: if(IS_CLIENT(toucher)) centerprint(toucher, this.message);
+            // play2(toucher, this.noise) — a per-recipient 2D send (VOL_BASE/ATTEN_NONE), not positional.
             MapMover.Centerprint(toucher, self.Message);
-            MapMover.Sound(toucher, SoundChannel.Voice, self.Noise);
+            MapMover.Play2(toucher, self.Noise);
         }
     }
 

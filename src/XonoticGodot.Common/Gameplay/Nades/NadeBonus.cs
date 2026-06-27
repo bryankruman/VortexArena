@@ -51,7 +51,10 @@ public static class NadeBonus
             // QC sv_nades.qc:456-457: Send_Notification(NOTIF_ONE, player, MSG_CENTER, CENTER_NADE_BONUS) +
             // play2(player, SND(NADE_BONUS)) (= SND_KH_ALARM) — tell the player they banked a bonus grenade.
             NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, "NADE_BONUS");
-            SoundSystem.PlayOn(player, "NADE_BONUS");
+            // QC play2(player, SND(NADE_BONUS)) — a per-recipient 2D send (CH_INFO / VOL_BASE 0.7 / ATTEN_NONE),
+            // NOT a positional emit. Play2 matches the channel/volume/attenuation Base uses for this banked-bonus
+            // cue (PlayOn would play it spatialized at the registered Item atten).
+            SoundSystem.Play2(player, "NADE_BONUS");
             ++player.NadeBonus;
             --player.NadeBonusScore;
         }

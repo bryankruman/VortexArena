@@ -241,8 +241,10 @@ public sealed class OnslaughtControlPoint
                 // QC ons_GeneratorDamage (sv_onslaught.qc:927-937): blocked-by-shield hint to the attacker.
                 if (attacker is Player blocked && Now > self.GtPainFinished)
                 {
+                    // QC sv_onslaught.qc:933 play2(attacker, SND(ONS_DAMAGEBLOCKEDBYSHIELD)) — a per-recipient 2D cue
+                    // (CH_INFO / VOL_BASE / ATTEN_NONE), not a positional emit on the attacker.
                     if (Api.Services is not null)
-                        SoundSystem.PlayOn(blocked, Sounds.ByName("ONS_DAMAGEBLOCKEDBYSHIELD"));
+                        SoundSystem.Play2(blocked, Sounds.ByName("ONS_DAMAGEBLOCKEDBYSHIELD"));
                     self.GtPainFinished = Now + 1f;
                 }
                 return;
@@ -628,8 +630,10 @@ public sealed class OnslaughtControlPoint
             // attacker (debounced by pain_finished).
             if (attacker is Player blocked && Now > self.GtPainFinished)
             {
+                // QC sv_onslaught.qc:375 play2(attacker, SND(ONS_DAMAGEBLOCKEDBYSHIELD)) — a per-recipient 2D cue
+                // (CH_INFO / VOL_BASE / ATTEN_NONE), not a positional emit on the attacker.
                 if (Api.Services is not null)
-                    SoundSystem.PlayOn(blocked, Sounds.ByName("ONS_DAMAGEBLOCKEDBYSHIELD"));
+                    SoundSystem.Play2(blocked, Sounds.ByName("ONS_DAMAGEBLOCKEDBYSHIELD"));
                 self.GtPainFinished = Now + 1f;
             }
             return;

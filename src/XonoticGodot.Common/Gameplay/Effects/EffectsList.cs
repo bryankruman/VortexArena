@@ -259,6 +259,10 @@ public static class EffectsList
         // TeGunshot wrappers network the correct block by id instead of a divergent substitute.
         Effects.Register("TE_SMALLFLASH", "TE_SMALLFLASH");
         Effects.Register("TE_GUNSHOT", "TE_GUNSHOT");
+        // te_tarexplosion() engine builtin (the dark "tar" explosion, distinct from te_explosion). KeyHunt fires
+        // it for a lost/destroyed key (sv_keyhunt.qc kh_Key_AssignTo te_tarexplosion(lostkey.origin)); effectinfo.txt
+        // ships a dedicated TE_TAREXPLOSION block, so map the wrapper to it rather than substituting TE_EXPLOSION.
+        Effects.Register("TE_TAREXPLOSION", "TE_TAREXPLOSION");
 
         // ---- RocketMinsta laser (neutral; per-team variants are commented out in QC) ----
         Effects.Register("ROCKETMINSTA_LASER", "rocketminsta_laser_neutral", isTrail: true);

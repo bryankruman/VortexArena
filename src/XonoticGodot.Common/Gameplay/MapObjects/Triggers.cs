@@ -1014,13 +1014,13 @@ public static class Triggers
             string keylist = MapObjectsRegistry.ItemKeysKeylist(self.ItemKeys);
             if (keyUsed)
             {
-                MapMover.Sound(toucher, SoundChannel.Voice, self.Noise1);
+                MapMover.Play2(toucher, self.Noise1); // QC keylock.qc:49 play2(toucher, this.noise1)
                 NotificationSystem.Send(NotifBroadcast.One, toucher, MsgType.Center, "DOOR_LOCKED_ALSONEED", keylist);
                 toucher.KeyDoorMessageTime = MapMover.Now() + 2f;
             }
             else if (toucher.KeyDoorMessageTime <= MapMover.Now())
             {
-                MapMover.Sound(toucher, SoundChannel.Voice, self.Noise2);
+                MapMover.Play2(toucher, self.Noise2); // QC keylock.qc:56 play2(toucher, this.noise2)
                 NotificationSystem.Send(NotifBroadcast.One, toucher, MsgType.Center, "DOOR_LOCKED_NEED", keylist);
                 toucher.KeyDoorMessageTime = MapMover.Now() + 2f;
             }
@@ -1035,7 +1035,7 @@ public static class Triggers
         else
         {
             // all keys supplied: fire target, kill killtarget, remove self.
-            MapMover.Sound(toucher, SoundChannel.Voice, self.Noise);
+            MapMover.Play2(toucher, self.Noise); // QC keylock.qc:75 play2(toucher, this.noise)
             MapMover.Centerprint(toucher, self.Message); // QC centerprint(toucher, "Unlocked!")
 
             if (!string.IsNullOrEmpty(self.Target))

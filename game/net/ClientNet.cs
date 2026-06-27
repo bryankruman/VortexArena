@@ -245,14 +245,17 @@ public sealed class ClientNet : IDisposable
     /// <summary>A decoded effect event (the client-side counterpart of <see cref="EffectRequest"/>).</summary>
     public readonly struct EffectEvent
     {
-        public readonly Effect? Effect;       // resolved from the registry id; null if unknown
+        public readonly Effect? Effect;       // resolved from the registry id; null if unknown / by-name fallback
+        public readonly string EffectName;    // effectinfo name carried on the by-name engine-fallback path (Effect null)
         public readonly NVec3 Origin;
         public readonly NVec3 Velocity;
         public readonly int Count;
         public readonly NVec3 ColorMin;
         public readonly NVec3 ColorMax;
         public EffectEvent(Effect? effect, NVec3 origin, NVec3 velocity, int count, NVec3 colorMin, NVec3 colorMax)
-        { Effect = effect; Origin = origin; Velocity = velocity; Count = count; ColorMin = colorMin; ColorMax = colorMax; }
+            : this(effect, effect?.Name ?? "", origin, velocity, count, colorMin, colorMax) { }
+        public EffectEvent(Effect? effect, string effectName, NVec3 origin, NVec3 velocity, int count, NVec3 colorMin, NVec3 colorMax)
+        { Effect = effect; EffectName = effectName; Origin = origin; Velocity = velocity; Count = count; ColorMin = colorMin; ColorMax = colorMax; }
     }
 
     /// <summary>A decoded positional sound (the client-side counterpart of the engine's <c>SoundEvent</c>). Kept
@@ -1231,8 +1234,43 @@ public sealed class ClientNet : IDisposable
             ReadOnlySpan<byte> body = r.ReadBytes(bodyLen);
             if (r.BadRead)
                 return;
-            DecodeEffect(effectId, body);
+            if (effectId == EffectNetProtocol.ByNameSentinelId)
+                DecodeEffectByName(body);
+            else
+                DecodeEffect(effectId, body);
         }
+    }
+
+    /// <summary>
+    /// Decode an engine-fallback by-name effect record (the QC <c>Send_Effect_</c> →
+    /// <c>__pointparticles(_particleeffectnum(name))</c> path): the body is a length-prefixed effectinfo NAME
+    /// followed by the usual EFF_NET payload for a POINT effect. We resolve nothing through the registry; the name
+    /// is carried verbatim so the renderer can look it up in the effectinfo.txt catalog (DP's _particleeffectnum
+    /// equivalent), exactly as the listen-server in-process mirror already does.
+    /// </summary>
+    private void DecodeEffectByName(ReadOnlySpan<byte> body)
+    {
+        var br = new BitReader(body);
+        string name = br.ReadString();
+
+        NVec3 origin = new(br.ReadFloat(), br.ReadFloat(), br.ReadFloat());
+        int flags = br.ReadByte();
+
+        NVec3 velocity = default, colorMin = default, colorMax = default;
+        if ((flags & EffectNetProtocol.NetVelocity) != 0)
+            velocity = new NVec3(br.ReadFloat(), br.ReadFloat(), br.ReadFloat());
+        if ((flags & EffectNetProtocol.NetColorMin) != 0)
+            colorMin = ReadColor(ref br);
+        if ((flags & EffectNetProtocol.NetColorSame) != 0)
+            colorMax = colorMin;
+        else if ((flags & EffectNetProtocol.NetColorMax) != 0)
+            colorMax = ReadColor(ref br);
+
+        int count = br.ReadByte(); // __pointparticles is always a point effect → count present
+        if (br.BadRead || string.IsNullOrEmpty(name))
+            return;
+
+        EffectReceived?.Invoke(new EffectEvent(null, name, origin, velocity, count, colorMin, colorMax));
     }
 
     /// <summary>

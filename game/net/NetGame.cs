@@ -5256,7 +5256,9 @@ public sealed partial class NetGame : Node3D
     {
         if (_render is null || !GodotObject.IsInstanceValid(_render))
             return;
-        string name = e.Effect?.Name ?? "";
+        // Prefer the registered name; fall back to the effectinfo name carried on the by-name engine-fallback path
+        // (QC Send_Effect_ → __pointparticles), which the renderer resolves through the effectinfo.txt catalog.
+        string name = e.Effect?.Name ?? e.EffectName ?? "";
         if (string.IsNullOrEmpty(name))
             return;
         Color? tint = (e.ColorMin != default || e.ColorMax != default)

@@ -59,6 +59,7 @@ public sealed class MlrsTurret : Turret
         NetName = "mlrs";
         DisplayName = "MLRS Turret";
         Model = "models/turrets/base.md3";
+        HeadModel = "models/turrets/mlrs.md3";  // QC mlrs.qh: head_model — the separate spinning head-bone model
         StartHealth = 500f;
         Range = TargetRange;
     }
@@ -101,6 +102,13 @@ public sealed class MlrsTurret : Turret
         {
             float now = Api.Services is not null ? Api.Clock.Time : 0f;
             float frameTime = Api.Services is not null ? Api.Clock.FrameTime : 0f;
+
+            // Base turret_draw (cl_turrets.qc) is a per-CLIENT-FRAME draw independent of the server combat brain, so
+            // the low-hp spark/smoke feedback keeps emitting even mid-volley. RunCombat runs DrawFx every think, but
+            // this mid-burst branch returns before RunCombat, so emit it here too — otherwise a damaged MLRS goes
+            // silent (no sparks/smoke) for the whole 6-rocket burst.
+            TurretAI.DrawFx(e);
+
             st.ShotOrg = TurretAI.ShotOrigin(e);
             if (st.Ammo < st.AmmoMax)
                 st.Ammo = System.Math.Min(st.Ammo + st.AmmoRecharge * frameTime, st.AmmoMax);
