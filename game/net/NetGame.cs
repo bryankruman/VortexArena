@@ -115,6 +115,8 @@ public sealed partial class NetGame : Node3D
     private XonoticGodot.Game.Hud.Hud _fullHud = null!;
     private XonoticGodot.Game.Client.DamageTextLayer? _damageText; // [T51] floating damage numbers (cl_damagetext)
     private XonoticGodot.Game.Client.WaypointSpriteLayer? _waypointLayer; // 3D in-world waypoint/objective markers
+    private Node3D? _mapRoot;                                              // the built map scene (holds the "Portals" child)
+    private XonoticGodot.Game.Client.PortalRenderer? _portalRenderer;      // see-through warpzone portal render (listen host)
     private XonoticGodot.Game.Client.ShowNamesLayer? _shownamesLayer; // [T68] floating player name + health/armor tags
     private XonoticGodot.Game.Client.HitSound? _hitSound;          // client-side hit-confirmation beep (cl_hitsound modes 0-3)
     private XonoticGodot.Game.Hud.ScoreboardPanel _scoreboard = null!; // the networked scoreboard (held while +showscores)
@@ -1268,8 +1270,11 @@ public sealed partial class NetGame : Node3D
         // the collision was built from in StartListenServer — identical to GameDemo.cs:181's MapLoader.BuildMap.
         // A pure --connect client has no BSP yet (see the map-name handshake follow-up), so this is gated on _bsp.
         if (_bsp is not null && _assets?.Assets is not null)
+        {
             // Pass the loaded map name so external lm_NNNN lightmaps resolve (stock maps have no internal lump).
-            AddChild(MapLoader.BuildMap(_bsp, _assets.Assets, _map, _droppedSubmodels));
+            _mapRoot = MapLoader.BuildMap(_bsp, _assets.Assets, _map, _droppedSubmodels);
+            AddChild(_mapRoot);
+        }
 
         // (§12.8) Hand the render world the map's PVS so it can DP-faithfully cull remote entities behind walls
         // (r_pvs_cull_entities). Cheap — BspPvs just wraps the parsed lumps. Null map keeps entity culling inert.
@@ -1627,6 +1632,17 @@ public sealed partial class NetGame : Node3D
         if (_client is not null)
             _waypointLayer.Source = () => _client.Waypoints;
         waypointLayer.AddChild(_waypointLayer);
+
+        // Warpzone PORTAL render (the C# stand-in for DP's engine r_water portal pass): turn the warpzone "window"
+        // meshes MapLoader extracted into live SubViewport renders of the linked exit. Listen-host only (reads the
+        // shared WarpzoneTrace.AmbientManager zone transforms); a pure remote client / a map with no warpzones / a
+        // surface that matches no zone all fall back to the dark-mirror placeholder. Gated by cl_portal_render.
+        if (_mapRoot is not null)
+        {
+            _portalRenderer = new XonoticGodot.Game.Client.PortalRenderer { Name = "PortalRenderer" };
+            AddChild(_portalRenderer);
+            _portalRenderer.Setup(_mapRoot, _camera);
+        }
 
         // [T68] Floating player name + health/armor tags (QC client/shownames.qc Draw_ShowNames_All): a 3D
         // in-world overlay projected through the first-person camera, on the SAME low layer as the waypoint

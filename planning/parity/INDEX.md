@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1879 | 64 | 28 | 141 | 4 | 1 |
-| values | 0 | 1741 | 50 | 225 | 88 | 0 | 13 |
-| timing | 0 | 1098 | 35 | 923 | 44 | 0 | 17 |
-| presentation | 0 | 614 | 105 | 1199 | 189 | 0 | 10 |
+| logic | 0 | 1880 | 63 | 28 | 141 | 4 | 1 |
+| values | 0 | 1741 | 49 | 225 | 89 | 0 | 13 |
+| timing | 0 | 1099 | 34 | 923 | 44 | 0 | 17 |
+| presentation | 0 | 614 | 104 | 1199 | 189 | 0 | 11 |
 | audio | 0 | 314 | 7 | 1772 | 20 | 0 | 4 |
-| liveness | 22 | 0 | 0 | 64 | 101 | 0 | 8 |
+| liveness | 22 | 0 | 0 | 63 | 102 | 0 | 8 |
 
 ## Features by unit
 
@@ -976,7 +976,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `warpzones.combat.traceline` | Hitscan/aim traces cross seamless portals (16-zone guard) *(intended)* | OK | OK | - | - | - | live | high |
 | `warpzones.combat.findradius` | Splash radius damage reaches victims through portals (blast-frame falloff) *(intended)* | OK | ~ | - | - | - | live | high |
 | `warpzones.porto` | Porto-weapon portals realised as warpzones (lifecycle + kill-credit + activate grace) | OK | OK | OK | MISS | - | live | high |
-| `warpzones.client.render` | Portal surface drawn as a live camera view of the linked OUT plane | MISS | MISS | MISS | MISS | - | - | high |
+| `warpzones.client.render` | Portal surface drawn as a live camera view of the linked OUT plane | OK | ~ | OK | ? | - | ~ | medium |
 | `warpzones.client.fixview` | Seamless view across the seam (FixView / FixNearClip / View_Inside / FixPMove) | MISS | MISS | MISS | MISS | - | - | high |
 | `warpzones.client.teleported_view` | Smooth view/input rotate on a server crossing (ENT_CLIENT_WARPZONE_TELEPORTED + CL_RotateMoves) | MISS | - | MISS | MISS | - | - | high |
 | `warpzones.client.prediction` | Client-side prediction of a warpzone crossing | OK | - | OK | MISS | - | live | high |
