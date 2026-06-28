@@ -63,6 +63,24 @@ public class WarpzoneTests
         Assert.True(System.MathF.Abs(e.Velocity.Length() - speedBefore) < 0.01f); // momentum preserved
     }
 
+    [Theory]
+    [InlineData(5f)]    // looking 5° DOWN (Quake +pitch) — the reported "straight up" case
+    [InlineData(-5f)]   // looking 5° UP
+    [InlineData(0f)]    // level
+    [InlineData(30f)]   // steeper down
+    public void TransformAngles_PreservesPitch_NeverPolesFromWrap(float entryPitch)
+    {
+        // Perpendicular pair: IN faces +X, OUT faces +Y. A view at (entryPitch, yaw 180=WEST) must emerge facing
+        // NORTH (yaw ~90) with its pitch PRESERVED and in canonical [−90,90] range. Regression for "player looks
+        // straight up through the warpzone": without the trailing AnglesTransform_Normalize, a downward exit
+        // forward yields pitch ≈ −355, which the view's Clamp(pitch,−89,89) turns into a vertical pole.
+        var t = new WarpzoneTransform(Vector3.Zero, Vector3.Zero, new Vector3(100, 0, 0), new Vector3(0, 90, 0));
+        Vector3 exit = t.TransformAngles(new Vector3(entryPitch, 180f, 0f));
+        Assert.True(exit.X > -90f && exit.X < 90f, $"pitch {exit.X} outside (−90,90) — a [−89,89] clamp would pole it");
+        Assert.True(System.MathF.Abs(exit.X - entryPitch) < 0.5f, $"pitch should be preserved ~{entryPitch}, was {exit.X}");
+        Assert.True(System.MathF.Abs(exit.Y - 90f) < 0.5f, $"yaw should re-orient to ~90 (North), was {exit.Y}");
+    }
+
     [Fact]
     public void Teleport_Client_StampsAuthoritativeFixAngleToExitFacing()
     {

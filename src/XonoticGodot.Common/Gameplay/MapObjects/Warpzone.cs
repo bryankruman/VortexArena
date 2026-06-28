@@ -57,11 +57,18 @@ public readonly struct WarpzoneTransform
     /// <summary>QC WarpZone_TransformVelocity: R·v (no translation).</summary>
     public Vector3 TransformVelocity(Vector3 v) => Rotate(v);
 
-    /// <summary>QC WarpZone_TransformAngles: rotate the view forward vector through the portal and re-derive angles.</summary>
+    /// <summary>
+    /// QC WarpZone_TransformVAngles: rotate the view forward vector through the portal, re-derive angles, and
+    /// NORMALIZE. The trailing <see cref="QMath.AnglesTransformNormalize"/> is essential — Base ends
+    /// WarpZone_TransformVAngles with AnglesTransform_Normalize, and the view consumer clamps pitch to [−89, 89];
+    /// without normalization a <see cref="QMath.FixedVecToAngles"/> result for an exit facing even slightly DOWN is
+    /// pitch ≈ −355, which clamps to −89 → the view snaps STRAIGHT UP (the warpzone exit-angle bug). Roll is not
+    /// modeled here (forward-only); a roll-imparting / tilted plane pair is a separate follow-up.
+    /// </summary>
     public Vector3 TransformAngles(Vector3 angles)
     {
         QMath.AngleVectors(angles, out Vector3 fwd, out _, out _);
-        return QMath.FixedVecToAngles(Rotate(fwd));
+        return QMath.AnglesTransformNormalize(QMath.FixedVecToAngles(Rotate(fwd)), minimizeRoll: false);
     }
 
     /// <summary>The inverse transform (the OUT→IN direction), for tracing/queries the other way.</summary>
