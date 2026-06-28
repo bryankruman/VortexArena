@@ -5,6 +5,32 @@ _Authored 2026-06-28. Executes **all ~210 "difficult (feature build)" items** fr
 2026-06-28). Phased by dependency; each phase is a single Workflow that parallelizes internally. Between
 phases the main loop commits, pushes, runs `parity-assemble`, and checks in._
 
+## RESULTS (2026-06-28 — all 5 code phases complete, green, pushed)
+
+| Phase | Commit | Tests | Dims closed |
+|---|---|---|---|
+| 1 Foundations (framework) | `54d2592` | 2888 | 10 |
+| 2 Frameworks + consumers (framework) | `cb7102c` | 2900 | 19 |
+| 3a World models — logic (surgical) | `def9a43` | 2900 | 31 |
+| 3b World models — render (framework) | `d29e0ae` | 2900 | 9 |
+| 4 Bots + gametype logic (surgical) | `c7cece5` | 2902 | 23 |
+| 5 Presentation/audio polish (surgical) | `b729987` | 2913 | 15 |
+
+**~107 gap-dimensions closed · tests 2854→2913 (+59) · feature-with-gap 462→445** (plus ~17 render features
+built-but-pending-verify, now in `needs-ingame` 34→51). Every phase passed its Gate on the first attempt with
+no manual fixes. **Lesson:** Phase 3 had to split — the surgical harness cannot build world-MODEL render
+(spawning Godot scene nodes); that work routed through the framework archetype as Phase 3b.
+
+### Remaining (correctly auto-deferred — each a future dedicated wave, NOT surgical)
+1. **Bot subsystems:** `bot_cmd` scripting VM, steerlib flocking/swarm/traceavoid, in-game waypoint editor +
+   runtime auto-waypointing + `.waypoints` save, jetpack point-to-point navigation, `tracetoss` ballistic
+   lead-aim. (Some constants blocked: the repo ships **compiled bot progs, not QC source**.)
+2. **Brush-entity per-node render arch:** `func_button` frame texture, `func_breakable` colormod + wreck/debris
+   model, `func_clientwall` distance-fade, `bgmscript` ADSR — all blocked by the same fact: `func_*` brush
+   faces are baked into the **static map mesh** with no per-entity render node. Needs a render-arch change
+   (extract brush → per-entity mesh + a `bgmtime` music clock for ADSR).
+3. **Phase 6 Verify** (below) — not a code wave.
+
 ## The two workflow archetypes
 
 The existing `_wave-port.workflow.js` (plan → apply → gate → verify) only fits **surgical edits** — "add a
