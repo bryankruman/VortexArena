@@ -1921,13 +1921,20 @@ public sealed class GameWorld
                     {
                         float spectatorTime = info.JoinTime; // QC spectatortime = jointime on PutObserverInServer
                         float cutoff = spectatorTime + blockTime;
-                        bool tooSoon = Time > cutoff + ClientManager.MinSpecTime * 0.5f
-                            || p.AutoJoinChecked == 0;
-                        if (tooSoon)
+                        // CRITICAL: do NOT touch info.JoinTime while the autojoin is still pending
+                        // (AutoJoinChecked == 0). The autojoin's ~1s grace (ClientManager.ObserverOrSpectatorThink)
+                        // uses the SAME info.JoinTime; resetting it here every tick pinned that grace open forever,
+                        // so a listen-server host (which sets sv_spectate 0 to auto-spawn) never joined and sat
+                        // stuck as an observer under the loading screen. The spectator-kick warning/grace-restart
+                        // only applies to a DELIBERATE spectator — one whose autojoin has already been decided.
+                        if (p.AutoJoinChecked == 0)
                         {
-                            info.JoinTime = Time; // reset grace period
-                            if (p.AutoJoinChecked != 0)
-                                NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Multi, "SPECTATE_WARNING", blockTime);
+                            // autojoin pending — leave the grace alone so the host actually spawns.
+                        }
+                        else if (Time > cutoff + ClientManager.MinSpecTime * 0.5f)
+                        {
+                            info.JoinTime = Time; // reset the warning grace period
+                            NotificationSystem.Send(NotifBroadcast.OneOnly, p, MsgType.Multi, "SPECTATE_WARNING", blockTime);
                         }
                         else if (Time > cutoff)
                         {
