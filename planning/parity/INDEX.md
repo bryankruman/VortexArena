@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1880 | 63 | 28 | 141 | 4 | 1 |
-| values | 0 | 1741 | 49 | 225 | 89 | 0 | 13 |
-| timing | 0 | 1099 | 34 | 923 | 44 | 0 | 17 |
-| presentation | 0 | 614 | 104 | 1199 | 189 | 0 | 11 |
+| logic | 0 | 1886 | 58 | 28 | 140 | 4 | 1 |
+| values | 0 | 1745 | 44 | 225 | 90 | 0 | 13 |
+| timing | 0 | 1101 | 30 | 925 | 44 | 0 | 17 |
+| presentation | 0 | 621 | 98 | 1199 | 187 | 0 | 12 |
 | audio | 0 | 314 | 7 | 1772 | 20 | 0 | 4 |
-| liveness | 22 | 0 | 0 | 63 | 101 | 0 | 8 |
+| liveness | 22 | 0 | 0 | 58 | 100 | 0 | 8 |
 
 ## Features by unit
 
@@ -103,7 +103,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `cl-crosshair.core.master_gating` | Master gating + enable/size/alpha early-outs | ~ | OK | - | OK | - | live | high |
-| `cl-crosshair.core.origin_chase` | Crosshair origin + third-person chase trace & body-alpha fade | MISS | MISS | - | MISS | - | - | high |
+| `cl-crosshair.core.origin_chase` | Crosshair origin + third-person chase trace & body-alpha fade | OK | OK | - | OK | - | live | high |
 | `cl-crosshair.trueaim.hit_classification` | True-aim forward trace + HITTEAM/HITENEMY/HITWORLD/HITOBSTRUCTION classification *(intended)* | ~ | OK | ~ | OK | - | live | medium |
 | `cl-crosshair.trueaim.showimpact` | Debug: draw crosshair at the reprojected impact point (crosshair_hittest_showimpact) | MISS | OK | - | MISS | - | - | high |
 | `cl-crosshair.color.special_modes` | Crosshair color: weapon / health+armor / fixed (crosshair_color_special) | ~ | OK | - | ~ | - | live | high |
@@ -233,8 +233,8 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-teamradar.icon.objective` | Objective radar icons (CTF flags / DOM / KH / waypoints) | OK | OK | - | OK | - | live | high |
 | `cl-teamradar.icon.ping` | Ping pulse rings (gfx/teamradar_ping, teamradar_times) | OK | OK | OK | OK | - | live | high |
 | `cl-teamradar.links.onslaught` | Onslaught radar links (control-point connection lines) | OK | ~ | OK | OK | - | live | high |
-| `cl-teamradar.maximized.map` | Maximized fullscreen tactical radar (m bind) | MISS | MISS | MISS | MISS | - | - | high |
-| `cl-teamradar.maximized.click` | Clickable radar: ONS spawn-point select + teleport, input/mouse/ESC | MISS | MISS | MISS | MISS | - | - | high |
+| `cl-teamradar.maximized.map` | Maximized fullscreen tactical radar (m bind) | OK | ~ | - | ~ | - | live | high |
+| `cl-teamradar.maximized.click` | Clickable radar: ONS spawn-point select + teleport, input/mouse/ESC | OK | ~ | - | OK | - | live | high |
 | `cl-teamradar.cvar.rotation` | Rotation modes (player-aligned vs cardinal lock) | OK | OK | - | OK | - | live | high |
 | `cl-teamradar.cvar.zoomscale` | Zoom / scale blend (bigsize vs normalsize) | OK | ~ | - | OK | - | live | high |
 | `cl-teamradar.cvar.defaults` | cvar registration + defaults / panel enable + visibility | OK | OK | - | OK | - | ~ | high |
@@ -381,7 +381,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `ctf.flag.capture` | Flag capture + caps/score/captime | OK | OK | OK | ~ | OK | live | high |
 | `ctf.flag.return` | Flag return (player + auto/timeout) | OK | OK | OK | OK | OK | live | high |
 | `ctf.flag.drop_on_death` | Carrier death drops the flag | OK | OK | OK | - | OK | live | high |
-| `ctf.flag.fckill_score` | Flag-carrier-kill score + damage/force factors + auto-helpme | OK | OK | OK | ~ | - | live | high |
+| `ctf.flag.fckill_score` | Flag-carrier-kill score + damage/force factors + auto-helpme | OK | OK | OK | OK | - | live | high |
 | `ctf.flag.throw` | Throw the flag (+use, g_ctf_throw) | OK | OK | OK | - | OK | live | high |
 | `ctf.flag.pass` | Pass the flag to a teammate (g_ctf_pass) *(intended)* | ~ | OK | OK | - | OK | live | high |
 | `ctf.flag.remove_player` | Carrier disconnect/observe/portal/vehicle drops flag | OK | - | - | - | - | ~ | high |
@@ -662,7 +662,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `nexball.ball.dropball` | DropBall / DropOwner / drop on death/disconnect/observe | OK | OK | OK | OK | - | live | high |
 | `nexball.carry.perframe` | Carry per-frame: view-ball follow, safe-pass lock, carrier-slowdown, carrying status | OK | OK | OK | MISS | - | live | high |
 | `nexball.weapon.ballstealer` | Ball-launcher weapon (BallStealer): primary launch, power meter, secondary tackle/safe-pass | OK | OK | OK | MISS | OK | live | high |
-| `nexball.weapon.power_meter` | Basketball power meter (charge-and-release launch strength) | OK | OK | OK | MISS | - | live | high |
+| `nexball.weapon.power_meter` | Basketball power meter (charge-and-release launch strength) | OK | OK | OK | OK | - | live | high |
 | `nexball.sound.cues` | Sound cues: bounce / drop / steal / shoot / goal | - | - | - | - | OK | live | high |
 | `nexball.hud.modicon` | HUD mod icon (carrying indicator + power-meter bar) + eventchase | ~ | ~ | ~ | ~ | - | ~ | high |
 | `nexball.goal.sentinel_encoding` | Goal fault/out sentinel encoding + ball_redgoal/bluegoal swap *(intended)* | OK | OK | - | - | - | live | high |
@@ -1154,7 +1154,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `buffs.swapper` | Swapper buff — swap places with nearest enemy | ~ | OK | OK | ~ | OK | live | high |
 | `buffs.carrier_model` | Carrier buff_model glow | MISS | MISS | MISS | MISS | - | - | high |
 | `buffs.buff_effect` | Carrier buff particle trail (buff_Effect / g_buffs_effects) | MISS | MISS | MISS | MISS | - | - | high |
-| `buffs.waypoint` | Buff item waypoint sprite (WP_Buff radar/HUD) | MISS | MISS | MISS | MISS | - | - | high |
+| `buffs.waypoint` | Buff item waypoint sprite (WP_Buff radar/HUD) | OK | OK | OK | OK | - | live | high |
 | `buffs.drop` | Drop held buff (PlayerUseKey / g_buffs_drop) | OK | OK | OK | - | OK | live | high |
 | `buffs.replace_powerups` | Replace map powerups with buffs (FilterItem) | OK | OK | - | ~ | - | live | high |
 | `buffs.mutator_string` | Report as active mutator (BuildMutatorsString / PrettyString) | OK | OK | - | - | - | live | high |
@@ -1721,7 +1721,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `waypoints.registry.defs` | Waypoint-kind registry (WP_* defs: text/icon/color/blink) | OK | OK | - | OK | - | ~ | high |
 | `waypoints.server.manager_api` | Server WaypointSprite_* spawn/update/kill API + manager | OK | OK | OK | - | - | ~ | high |
 | `waypoints.gametype.collect` | Per-tick objective waypoint emit (per gametype) | OK | OK | OK | - | - | live | high |
-| `waypoints.ctf.flag_markers` | CTF flag waypoint sprites (base/dropped/carrier state machine) | OK | OK | OK | ~ | - | live | medium |
+| `waypoints.ctf.flag_markers` | CTF flag waypoint sprites (base/dropped/carrier state machine) | OK | OK | OK | OK | - | live | high |
 | `waypoints.deploy.personal_here_danger` | Player-deployed pings (waypoint_personal/here/danger impulses) | OK | OK | OK | - | - | live | high |
 | `waypoints.deploy.helpme` | Team HELP-ME attach + ping (waypoint_here_follow) | OK | OK | OK | OK | - | live | high |
 | `waypoints.visibility.rules` | Per-peer visibility filter (SPRITERULE_DEFAULT/TEAMPLAY/SPECTATOR + CustomizeWaypoint) | OK | - | - | - | - | live | high |
@@ -2569,7 +2569,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-arc.bolt.secondary_burst` | Bolt secondary: fire a burst of bouncing explosive bolts | ~ | OK | ~ | OK | OK | live | high |
 | `weapon-arc.bolt.explode_bounce` | Bolt impact: bounce-or-explode with radius damage + shoot-down | OK | OK | OK | OK | OK | live | high |
 | `weapon-arc.checkammo` | Ammo checks (wr_checkammo1/2) + out-of-ammo auto-switch | OK | OK | - | - | - | live | high |
-| `weapon-arc.beam.visual` | Visible beam rendering (Draw_ArcBeam / ENT_CLIENT_ARC_BEAM) | ~ | ~ | ~ | ~ | - | live | high |
+| `weapon-arc.beam.visual` | Visible beam rendering (Draw_ArcBeam / ENT_CLIENT_ARC_BEAM) | ~ | OK | ~ | ~ | - | live | high |
 | `weapon-arc.heat_persistence` | Heat drop/pickup migration + reset on death (wr_drop/pickup/resetplayer/playerdeath) | ~ | - | - | - | - | live | high |
 | `weapon-arc.smoke_overheat_fx` | Arc_Smoke: overheat smoke, overheat fire particles, overheat loop sound | OK | OK | OK | OK | OK | live | high |
 | `weapon-arc.bot_aim` | Bot aiming for the beam (wr_aim — beam_botaimspeed / beam_botaimlifetime) | OK | OK | OK | - | - | live | medium |
@@ -2716,7 +2716,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-hook.secondary.blast_curve` | Secondary blast: duration-spread power-curve pull (W_Hook_ExplodeThink) | OK | OK | OK | OK | OK | live | high |
 | `weapon-hook.offhand.mutator` | Grappling Hook offhand mutator (g_grappling_hook) | OK | OK | OK | - | - | live | high |
 | `weapon-hook.mutator.vampirehook` | Vampire Hook (drain HP while hooked to an enemy) | OK | OK | OK | - | - | live | high |
-| `weapon-hook.presentation.rope_line` | CSQC rope line rendering (Draw_GrapplingHook) | MISS | MISS | MISS | MISS | - | - | high |
+| `weapon-hook.presentation.rope_line` | CSQC rope line rendering (Draw_GrapplingHook) | OK | OK | OK | ? | - | ~ | medium |
 
 ### `weapon-machinegun` (weapon) — 14 features
 
@@ -2894,9 +2894,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-vortex.attack.railgun_pierce` | Hitscan rail: pierce all targets, exponential falloff dmg+force, stop at world | OK | OK | OK | - | OK | live | high |
 | `weapon-vortex.attack.overcharge_sound` | Overcharge zap sound when charge > charge_animlimit | OK | OK | OK | - | OK | live | high |
 | `weapon-vortex.fx.beam` | Charged beam particle (EFFECT_VORTEX_BEAM) with charge-scale + team tint | OK | ~ | OK | ~ | - | live | high |
-| `weapon-vortex.fx.charge_glow` | Player-model charge glow (wr_glow / vortex_glowcolor) | ~ | OK | OK | ~ | - | ~ | high |
+| `weapon-vortex.fx.charge_glow` | Player-model charge glow (wr_glow / vortex_glowcolor) | OK | OK | OK | OK | - | live | high |
 | `weapon-vortex.fx.impact_muzzle` | Impact burst + muzzle flash | OK | OK | OK | OK | OK | live | medium |
-| `weapon-vortex.hud.charge_ring` | Charge ring (+ chargepool inner ring) on the crosshair | OK | OK | OK | OK | - | ~ | high |
+| `weapon-vortex.hud.charge_ring` | Charge ring (+ chargepool inner ring) on the crosshair | OK | OK | OK | OK | - | live | high |
 | `weapon-vortex.zoom.secondary_scope` | Secondary = zoom scope (reticle_nex) at stock balance | OK | OK | OK | OK | - | live | high |
 | `weapon-vortex.ammo.reload_checkammo` | Cells ammo, forced reload, checkammo1/2, charge seed *(intended)* | OK | OK | OK | - | - | live | high |
 | `weapon-vortex.achievements` | Yoda (mid-air rail kill) + Impressive (consecutive long-range hit) announcements | OK | - | OK | - | OK | live | high |
