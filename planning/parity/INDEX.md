@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1887 | 54 | 28 | 142 | 4 | 2 |
-| values | 0 | 1746 | 42 | 225 | 90 | 0 | 14 |
-| timing | 0 | 1103 | 28 | 924 | 44 | 0 | 18 |
-| presentation | 0 | 619 | 84 | 1199 | 187 | 0 | 28 |
+| logic | 0 | 1899 | 51 | 28 | 133 | 4 | 2 |
+| values | 0 | 1748 | 41 | 225 | 89 | 0 | 14 |
+| timing | 0 | 1105 | 27 | 925 | 42 | 0 | 18 |
+| presentation | 0 | 624 | 78 | 1199 | 188 | 0 | 28 |
 | audio | 0 | 314 | 4 | 1773 | 20 | 0 | 6 |
-| liveness | 21 | 0 | 0 | 56 | 99 | 0 | 8 |
+| liveness | 20 | 0 | 0 | 54 | 93 | 0 | 8 |
 
 ## Features by unit
 
@@ -33,7 +33,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `bot-ai.weapon.choose` | Weapon selection by range + combos (havocbot_chooseweapon) | OK | OK | OK | - | - | live | high |
 | `bot-ai.weapon.reload` | Idle weapon reload (havocbot_ai not-attacking branch) | OK | OK | OK | - | - | live | high |
 | `bot-ai.weapon.wr_aim` | Per-weapon fire driver wr_aim (secondary fire / detonate / combo / charge) | OK | - | - | - | - | live | high |
-| `bot-ai.roles.goalrating` | Roles + goal rating (havocbot_role_generic / objective roles, routerating) | ~ | ~ | OK | - | - | live | high |
+| `bot-ai.roles.goalrating` | Roles + goal rating (havocbot_role_generic / objective roles, routerating) | OK | ~ | OK | - | - | live | high |
 | `bot-ai.roles.freezetag` | Freeze Tag bot role (revive frozen teammates) | OK | OK | OK | - | - | live | high |
 | `bot-ai.move.steer` | Goal-stack steering + obstacle/step jump (havocbot_movetogoal) | ~ | OK | OK | - | - | live | high |
 | `bot-ai.move.bunnyhop` | Bunnyhopping toward far goals (havocbot_bunnyhop) | OK | OK | OK | - | - | live | high |
@@ -58,7 +58,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `bot-waypoints.auto.spawnforitem` | Auto item/spawn waypoints (waypoint_spawnforitem) | OK | OK | - | - | - | ~ | high |
 | `bot-waypoints.auto.spawnforteleporter` | Auto teleporter/jumppad/warpzone waypoints (waypoint_spawnforteleporter/_wz) | ~ | ~ | - | - | - | ~ | medium |
 | `bot-waypoints.path.findnearest` | Nearest-waypoint query (navigation_findnearestwaypoint) | OK | OK | - | - | - | live | high |
-| `bot-waypoints.path.markroutes` | Shortest-path search over the graph (navigation_markroutes Dijkstra flood) + danger bias *(intended)* | ~ | OK | - | - | - | live | high |
+| `bot-waypoints.path.markroutes` | Shortest-path search over the graph (navigation_markroutes Dijkstra flood) + danger bias *(intended)* | OK | OK | - | - | - | live | high |
 | `bot-waypoints.path.routetogoal` | Route building onto the goal stack (navigation_routetogoal + goalstack) | ~ | OK | - | - | - | live | high |
 | `bot-waypoints.steer.movetogoal` | Steering / path follow (havocbot_movetogoal: jump/crouch/ladder/obstacle/brake/bunnyhop) | ~ | OK | OK | - | - | live | high |
 | `bot-waypoints.steer.bunnyhop` | Bunnyhop maintenance (havocbot_bunnyhop) | ~ | OK | - | - | - | live | high |
@@ -354,20 +354,20 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `clanarena.items.no_pickups` | No item pickups on the map (FilterItem) *(intended)* | OK | OK | - | - | - | live | high |
 | `clanarena.scoring.match_limit` | Match win: round limit (10) / lead limit (6) | OK | OK | OK | - | - | live | high |
 | `clanarena.hud.alive_counts` | Per-team alive counts (REDALIVE..PINKALIVE) + mod-icons panel | OK | OK | OK | OK | - | live | medium |
-| `clanarena.hud.eliminated_greyout` | Eliminated-player scoreboard grey-out | ~ | - | OK | OK | - | live | medium |
+| `clanarena.hud.eliminated_greyout` | Eliminated-player scoreboard grey-out | OK | - | OK | OK | - | live | medium |
 | `clanarena.spectate.enemies_rule` | Spectate-enemies anti-ghost rule (g_ca_spectate_enemies) | OK | OK | - | - | - | live | medium |
 | `clanarena.notify.round_outcome` | Round-win / tied / over notifications + 'You are now alone' | OK | - | OK | OK | - | live | high |
 | `clanarena.round.grace_no_fire` | Round-start grace period: weapons cannot be fired | OK | OK | OK | - | - | live | high |
 | `clanarena.scoring.per_round_award` | Per-player ROUNDS_PL award at round start | OK | OK | OK | - | - | live | high |
 | `clanarena.spawn.no_regen_forced_spectate` | No health/armor regen; dead players forced to spectate (no respawn calc) | OK | - | OK | - | - | live | high |
-| `clanarena.join.late_join_observer` | Late joiner forced to Observer until next round (+ CA join-late info) | ~ | - | ~ | MISS | - | ~ | high |
+| `clanarena.join.late_join_observer` | Late joiner forced to Observer until next round (+ CA join-late info) | OK | - | OK | OK | - | live | high |
 | `clanarena.spawn.forbid_throw_weapon` | Cannot drop/throw the current weapon | OK | - | - | - | - | live | high |
 | `clanarena.notify.alone_on_leave` | 'You are now alone!' on teammate disconnect / make-observer | OK | - | OK | OK | - | live | high |
-| `clanarena.matchend.restore_status` | Restore spectator/team status before final scores (MatchEnd_BeforeScores) | ~ | - | - | - | - | ~ | medium |
-| `clanarena.spectate.force_spectate_cmd` | CA spectate-command force + 'leave the game' notice (ClientCommand_Spectate) | MISS | - | - | MISS | - | DEAD | high |
+| `clanarena.matchend.restore_status` | Restore spectator/team status before final scores (MatchEnd_BeforeScores) | ~ | - | - | - | - | live | medium |
+| `clanarena.spectate.force_spectate_cmd` | CA spectate-command force + 'leave the game' notice (ClientCommand_Spectate) | OK | - | - | OK | - | live | high |
 | `clanarena.cmd.shuffleteams_reset` | shuffleteams reschedules to next round (SV_ParseServerCommand) | OK | - | OK | - | - | live | high |
-| `clanarena.lifecycle.reset_map` | Round reset re-transmutes in-game players and re-allows spawn (reset_map_players/global) | ~ | - | - | - | - | DEAD | high |
-| `clanarena.spawn.ingame_status_decimal_reset` | PlayerSpawn: set INGAME_STATUS_JOINED + reset damage2score decimal on game restart | ~ | - | OK | - | - | live | high |
+| `clanarena.lifecycle.reset_map` | Round reset re-transmutes in-game players and re-allows spawn (reset_map_players/global) | OK | - | - | - | - | live | high |
+| `clanarena.spawn.ingame_status_decimal_reset` | PlayerSpawn: set INGAME_STATUS_JOINED + reset damage2score decimal on game restart | OK | - | OK | - | - | live | high |
 | `clanarena.hud.spectator_info_messages` | Show HUD info messages to a CA spectator viewing the scoreboard (cl_ca DrawInfoMessages) | MISS | - | - | MISS | - | - | medium |
 | `clanarena.mapinfo.always_supported` | Map-support heuristic (m_isAlwaysSupported: spawnpoints>=8 && diameter>3250) | MISS | MISS | - | - | - | - | medium |
 
@@ -384,7 +384,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `ctf.flag.fckill_score` | Flag-carrier-kill score + damage/force factors + auto-helpme | OK | OK | OK | OK | - | live | high |
 | `ctf.flag.throw` | Throw the flag (+use, g_ctf_throw) | OK | OK | OK | - | OK | live | high |
 | `ctf.flag.pass` | Pass the flag to a teammate (g_ctf_pass) *(intended)* | ~ | OK | OK | - | OK | live | high |
-| `ctf.flag.remove_player` | Carrier disconnect/observe/portal/vehicle drops flag | OK | - | - | - | - | ~ | high |
+| `ctf.flag.remove_player` | Carrier disconnect/observe/portal/vehicle drops flag | ~ | - | - | - | - | live | high |
 | `ctf.flag.think_dropped` | Dropped-flag think (landtime, auto-return timer, float, capture-radius) | OK | OK | OK | - | - | live | high |
 | `ctf.capture_shield` | Capture shield (block worst players from the flag) | OK | OK | OK | OK | - | live | high |
 | `ctf.stalemate` | Stalemate carrier reveal | OK | OK | OK | OK | - | live | high |
@@ -396,7 +396,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `ctf.bot_role` | Bot CTF role (grab/cap/return/escort) *(intended)* | ~ | ~ | - | - | - | live | medium |
 | `ctf.flag.map_reset` | Flag reset on map/round reset (ctf_Reset) | OK | - | - | - | - | live | high |
 | `ctf.match_end_freeze` | Freeze dropped/passing flags at match end (MatchEnd) | OK | - | - | - | - | live | high |
-| `ctf.abort_speedrun` | Return carried flag on speedrun abort (AbortSpeedrun) | MISS | - | - | - | - | - | medium |
+| `ctf.abort_speedrun` | Return carried flag on speedrun abort (AbortSpeedrun) | OK | - | - | - | - | DEAD | high |
 | `ctf.drop_special_items` | Throw flag on DropSpecialItems | ~ | - | - | - | - | ~ | low |
 | `ctf.logdeath_itemcode` | Flag-carrier death-log item code ('F') | OK | - | - | - | - | live | high |
 | `ctf.ignore_frags` | Suppress frag score in CTF (g_ctf_ignore_frags) | OK | OK | - | - | - | live | high |
@@ -475,7 +475,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `duel.timing.respawn_delay` | Respawn delay (effective 2s via global fallback) | OK | OK | OK | - | - | live | high |
 | `duel.presentation.duel_title` | Duel 'playerA vs playerB' centerprint title | OK | OK | OK | OK | - | live | high |
 | `duel.presentation.forced_colors` | Forced enemy player colors in 1v1 (cl_forceplayercolors / suppress unique) | OK | OK | - | OK | - | live | high |
-| `duel.mapsupport.gating` | Map-support gating (diameter < 3250; force duel on DM maps) | ~ | ~ | - | - | - | live | high |
+| `duel.mapsupport.gating` | Map-support gating (diameter < 3250; force duel on DM maps) | OK | OK | - | - | - | live | high |
 
 ### `freezetag` (gametype) — 30 features
 
@@ -502,14 +502,14 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `freezetag.presentation.waypoints` | Frozen / Reviving waypoint sprites over frozen players | OK | OK | OK | OK | - | live | high |
 | `freezetag.presentation.notifications` | Freeze/revive/self/auto-revive/spawn-late notifications (+ sounds) | OK | OK | OK | OK | OK | live | high |
 | `freezetag.presentation.overlay_eventchase` | Full-screen frozen overlay tint + cl_eventchase_frozen cam + damage HUD | OK | OK | OK | ~ | - | live | high |
-| `freezetag.bots` | Bot freeing / offense roles + frozen-target gating | ~ | MISS | MISS | - | - | ~ | medium |
+| `freezetag.bots` | Bot freeing / offense roles + frozen-target gating | OK | ~ | - | - | - | live | high |
 | `freezetag.spawn.late` | Mid-round joiner spawns AS FROZEN (PlayerSpawn → SPAWN_LATE) | OK | OK | OK | OK | - | live | high |
 | `freezetag.scoring.no_kill_frags` | No engine frags counted on a freeze-kill (GiveFragsForKill → 0) | OK | OK | - | - | - | live | high |
 | `freezetag.weaponarena` | FT default weapon arena (g_freezetag_weaponarena 'most_available') | OK | OK | - | - | - | live | high |
 | `freezetag.frozen.no_regen` | Frozen players don't regen health/armor (PlayerRegen) | OK | - | - | - | - | live | high |
-| `freezetag.frozen.no_pickup` | Frozen players can't pick up items or buffs (ItemTouch/BuffTouch) | OK | - | - | - | - | ~ | high |
+| `freezetag.frozen.no_pickup` | Frozen players can't pick up items or buffs (ItemTouch/BuffTouch) | OK | - | - | - | - | live | high |
 | `freezetag.frags.center_message` | Per-freeze choice centerprint ('You froze X' / 'You were frozen by Y') | OK | OK | OK | OK | - | live | high |
-| `freezetag.presentation.frozen_anim` | Frozen-pose player animation (PlayerAnim ANIMSTATE_FROZEN) | MISS | - | - | MISS | - | - | medium |
+| `freezetag.presentation.frozen_anim` | Frozen-pose player animation (PlayerAnim ANIMSTATE_FROZEN) | OK | - | - | OK | - | live | high |
 | `freezetag.notif.alone` | Last-survivor 'You are now alone!' centerprint (LastPlayerForTeam → CENTER_ALONE) | OK | OK | OK | OK | - | live | high |
 
 ### `invasion` (gametype) — 29 features
@@ -664,7 +664,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `nexball.weapon.ballstealer` | Ball-launcher weapon (BallStealer): primary launch, power meter, secondary tackle/safe-pass | OK | OK | OK | MISS | OK | live | high |
 | `nexball.weapon.power_meter` | Basketball power meter (charge-and-release launch strength) | OK | OK | OK | OK | - | live | high |
 | `nexball.sound.cues` | Sound cues: bounce / drop / steal / shoot / goal | - | - | - | - | OK | live | high |
-| `nexball.hud.modicon` | HUD mod icon (carrying indicator + power-meter bar) + eventchase | ~ | ~ | ~ | ~ | - | ~ | high |
+| `nexball.hud.modicon` | HUD mod icon (carrying indicator + power-meter bar) + eventchase | OK | OK | OK | OK | - | live | high |
 | `nexball.goal.sentinel_encoding` | Goal fault/out sentinel encoding + ball_redgoal/bluegoal swap *(intended)* | OK | OK | - | - | - | live | high |
 | `nexball.weapon_arena.player_setup` | Weapon-arena player setup: PlayerSpawn grants WEP_NEXBALL, PlayerPreThink strips normal weapons | ~ | OK | - | - | - | live | high |
 | `nexball.item.filter_block` | Item mutator hooks: FilterItem (no loot WEP_NEXBALL), ItemTouch (carriers get no weapons), ForbidThrow/Drop | ~ | - | - | - | - | live | high |
@@ -763,8 +763,8 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `tka.ball.spawn` | Ball spawn at match start (g_tkaball_count balls) | OK | OK | OK | ~ | - | live | high |
 | `tka.ball.respawn` | Loose-ball relocate timer + fall-off respawn | OK | OK | OK | MISS | ~ | live | high |
-| `tka.ball.pickup` | Ball pickup (attach to carrier, VIP, pickups++, orbit anim) | OK | ~ | OK | MISS | OK | live | high |
-| `tka.ball.drop` | Ball drop on death / use-key / disconnect / observe | OK | OK | OK | MISS | OK | live | high |
+| `tka.ball.pickup` | Ball pickup (attach to carrier, VIP, pickups++, orbit anim) | OK | ~ | OK | ~ | OK | live | high |
+| `tka.ball.drop` | Ball drop on death / use-key / disconnect / observe | OK | OK | OK | ~ | OK | live | high |
 | `tka.score.teamkill` | Team kill scoring (killac to team while team holds ball) | OK | OK | OK | - | - | live | high |
 | `tka.score.scoreteam` | g_tka_score_team: any teammate's kill scores while team holds ball | OK | OK | OK | - | - | live | high |
 | `tka.score.bckill` | Ball-carrier-kill bonus (bckill to team) + carrierkills column | OK | OK | OK | - | - | live | high |
@@ -2544,7 +2544,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `overkill-weapons.oknex.charge` | OK Nex charge / chargepool / velocity-charge / wr_glow *(intended)* | stub | ~ | ~ | MISS | MISS | DEAD | medium |
 | `overkill-weapons.okshotgun.primary_pellets` | OK Shotgun primary — pellet fan | OK | OK | OK | OK | OK | live | high |
 | `overkill-weapons.okrpc.primary_chainsaw_missile` | OK RPC primary — accelerating chainsaw missile (pass-through + explosion) | OK | OK | OK | ~ | OK | live | high |
-| `overkill-weapons.shared.secondary_blaster_jump` | Shared secondary — Overkill blaster jump (own jump_interval timer) | ~ | OK | OK | MISS | OK | live | high |
+| `overkill-weapons.shared.secondary_blaster_jump` | Shared secondary — Overkill blaster jump (own jump_interval timer) | OK | OK | OK | OK | OK | live | high |
 | `overkill-weapons.shared.forced_reload` | Forced reload when clip below a primary shot | OK | OK | OK | - | OK | live | high |
 | `overkill-weapons.shared.checkammo` | Per-weapon ammo checks (wr_checkammo1/2) dispatched to live gate | OK | OK | - | - | - | live | high |
 | `overkill-weapons.okhmg.nadesupport` | OK HMG nade self-damage scaled to 10% (okhmg_nadesupport) | OK | OK | - | - | - | live | high |
