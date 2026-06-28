@@ -1,10 +1,11 @@
 unit: mutator-nades
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-28"
+last_audited: "2026-06-28b"
 summary:
   feature_count: 22
   worst_gaps:
+    - "RE-AUDIT 2026-06-28b (post nade-presentation wave, OPUS — WORKING-TREE, uncommitted): a dedicated client-presentation wave landed and now drives the nades render/audio on the LIVE entity-stream path. New/changed code (builds clean, 0 errors): (a) NadeOrbRenderer.cs (NEW) — 3D sphere orb (models/sphere.md3 via host ModelFactory, additive-glow fallback) with QC orb_draw scale-up(×4)/expiry-fade/90deg-spin, fed by ClientEntityView NetEntityKind.NadeOrb spawn/update/remove and wired in NetGame.SetupRender (_render.NadeOrbs); (b) the orb networking — new NetEntityKind.NadeOrb (=8) + EntityField.NadeOrbState (bit 23) carrying OrbType/OrbExpire/OrbRadius, ServerNet.Classify('nade_orb') + empty-model-drop exemption + state pack (ServerNet.cs:2294/2698/2201); (c) ViewEffects.UpdateOrbColorFlash (orb_draw2d additive in-orb 2D color flash, hud_colorflash_alpha=0.5 registered) + ViewEffects.UpdateDarknessOverlay (HUD_DarkBlinking blinking near-black fill) + SND_BLIND ('misc/blind') one-shot on the darkness onset edge (NetGame); (d) the owner-only nade STATs NadeDarknessTime/NadeBonus/NadeBonusType/NadeBonusScore networked in the Feedback block (ServerNet.cs:2102, ClientEntityView decode, privacy-gated owner-only) → AmmoPanel.DrawAmmoNades (NEW) the bonus-nade cell (per-type m_icon, count text, progress bar, rainbow random tint), fed live from both host + remote local-state paths (NetGame.cs:3319/3341); (e) ProjectileCatalog — 11 per-type NadeNormal..NadeDarkness entries (grenademodel.md3 scale 1.5, per-type m_color GlowColor + matching trail) + the ServerNet 'nade <netname>' catalog key (ServerNet.cs:2219) + HasNadeClass classifier (held nade told apart from the mortar 'grenade'); (f) NadeBoom.EmitDetonationFx — the per-type colored detonation particle (Send_Effect_Except) through the live networked effect feed; (g) NadeSpawnBoom plants models/marker.md3 so the EF_STARDUST spawn-loc survives the feed + CosmeticModelLayer (NEW, ClientWorld) renders the spawn-loc marker / frozen ice block / buff glow. ALL of this is wired into the live per-frame client passes (ClientEntityView entity stream + NetGame per-frame view-effects + ClientWorld cosmetic/projectile passes) and the throw path is already live (Wave-5), so the data FLOWS. **BUT none of it is RUNTIME/visually verified** — no in-game screenshot, no playtest, ZERO new tests cover the renderers/overlays/ammo-cell. Per parity-diff discipline (visible fidelity not runtime-verified ⇒ unknown, not faithful): the newly-coded presentation rows move missing→UNKNOWN (liveness missing/partial→live: the render path IS reached), NOT missing→faithful. Models present: grenademodel.md3 ✓, marker.md3 ✓; sphere.md3 is at models/sphere/sphere.md3 (renderer requests 'models/sphere.md3' → may miss → graceful glow-sprite fallback, a path nit to verify). Logic/values/audio of the new presentation are code-faithful to QC by inspection but the visual result is unconfirmed. The earlier-closed authority rows (throw input live, IsEnabled, boom dispatch logic, all 11 boom gameplay, bonus economy, lifecycle) are UNCHANGED by this wave and still hold."
     - "RE-AUDIT 2026-06-28 (post parity Phase-1/Phase-2, OPUS): the Phase-1 (60d45f5) + Phase-2 (493c876) waves touched NO nades-mutator code — git show --stat confirms zero src/.../Nades/ files in either commit; they built the WaypointSprite subsystem, the wepent channel, the objective/turret entity stream, and weapon visuals. The `Grenade` hits in game/client/ProjectileCatalog.cs / ProjectileRenderer.cs are the MORTAR weapon projectile (string match `grenade|nade|mortar` for the GL bouncing model), NOT the nades-mutator offhand nade — so no nade-projectile/orb/trail presentation landed. All previously-closed rows RE-VERIFIED against current code and still hold: throw input live (GameWorld.cs:2225-2234 same-tick publish of OffhandFirePressed from InputProvider(p).ButtonHook BEFORE the PlayerPreThink hook — line drifted 2223->2225 from the phases' GameWorld edits, functionally identical, no regression; + ForbidThrowCurrentWeapon subscribed NadesMutator.cs:66 HookOrder.Last), IsEnabled = g_nades!=0 (NadesMutator.cs:31), BuildMutators*String overrides present (NadesMutator.cs:74+). No regressions, no newly-closed rows, no new gaps. The unit's open set is UNCHANGED from the 2026-06-27 audit: render/audio presentation (projectile model/trail, orb 3D model + 2D color flash, darkness blind overlay, EF_STARDUST, DrawAmmoNades) + a few logic seams (newton-style-0 blend, freezetag actual-unfreeze, g_nades_client_select per-client type, DropSpecialItems non-death toss, translocate move_out_of_solid robustness, blaster 0-damage dispatch)."
     - "RE-AUDIT 2026-06-27 (post Wave-16/17, OPUS): Waves 16/17 made NO changes to any src/.../Nades/ file (git show --stat b3a9c06/2f0bfdb confirms — they touched GameWorld.cs etc. but nothing nade-related). All previously-closed rows RE-VERIFIED against current code and still hold live: throw input (GameWorld.cs:2223-2227 same-tick publish + ForbidThrowCurrentWeapon subscribed NadesMutator.cs:66), host seams ResetMapGlobal/OnPutClientInServer/OnSpectateCopy with live callers (GameWorld.cs:4628, ClientManager.cs:743/685), nade_damage melee branch + FireNadeDamage hook (NadeProjectile.cs:208/236-244) + Overkill subscriber (OverkillMutator.cs:142/496), napalm water-damp/round-guard/damageforcescale-inert (NadeNapalmBoom.cs:37/119/94), ice revival-skip/round-guard (NadeIceBoom.cs:105/60), entrap/veil/lifetime in MonsterAI (1131/1067/1396), bonus notif+sound (NadeBonus.cs:53/57) + live MonsterDies (MonsterAI.cs:1970). ONE refinement: the throw.input_wire '1-tick latency' caveat is now obsolete for humans (input published before PreThink same-tick); only bots read stale and they don't bind +hook. No regressions, no newly-closed rows, no new gaps."
     - "THROW INPUT IS NOW LIVE (Wave-5, commit 66e378f): InputCommand.InputButtons gained the Hook bit (BIT(6) / PHYS_INPUT_BUTTON_HOOK, InputCommand.cs:20), and the full chain is wired end-to-end: the `+hook` bind (BindInput.cs:46 / KeyBindings.cs:43) -> BindTable._hook/HookHeld -> NetGame.cs:3984 sets the bit -> ServerNet.cs:1415 decodes ButtonHook -> WeaponFireDriver.Frame (GameWorld.cs:1368, live per-tick PostThink) sets player.OffhandFirePressed -> NadesMutator.OnPlayerPreThink reads it and drives NadeThrow.OffhandThink. The weapon_drop second-press path is ALSO live now: NadesMutator subscribes ForbidThrowCurrentWeapon (CBC_ORDER_LAST), which WeaponThrowing.ThrowWeapon/IsWeaponThrowable (the live impulse-17 `weapon_drop` path, WeaponImpulses.cs:117/181) dispatches -> NadeThrow.CheckThrow. So a player can now prime, charge, and throw a nade in a real match. The entire subsystem (charge, toss, all 11 booms, pickup, shoot-down, orbs, bonus economy) is reachable — liveness flips dead->live across nearly every row. Re-verified 2026-06-27 (post Wave-17; W16/W17 touched NO nade code — git show --stat confirms): for HUMANS the +hook button is now published BEFORE PlayerPreThink in the same tick (GameWorld.OnClientMove, GameWorld.cs:2223-2227: p.OffhandFirePressed = InputProvider(p).ButtonHook && Vehicle is null), so the offhand reacts same-tick with no latency (matching QC W_WeaponFrame). Only bots keep the WeaponFireDriver.cs:69 PostThink (1-tick stale) publish, and bots never bind +hook so the nade/offhand path is moot for them — the earlier 'all players 1-tick latency' caveat is superseded."
@@ -248,19 +249,20 @@ features:
       logic: faithful
       values: na
       timing: faithful
-      presentation: missing
+      presentation: unknown
       audio: partial
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The colored explosion particle (Send_Effect_Except with per-type EFFECT + player-color min/max via findbetterlocation) is omitted (render-only)."
+      - "Colored detonation particle NOW EMITTED but UNVERIFIED (2026-06-28b): NadeBoom.EmitDetonationFx (NadeBoom.cs:160) emits a per-type effect (napalm->EXPLOSION_BIG, ice->ICEORGLASS, heal->HEALING, ammo->AMMO_REGEN, else EXPLOSION_MEDIUM) tinted by NadeDef.Color through the live networked effect feed (Send_Effect_Except analog, except:null). Code-faithful but no in-game/visual confirmation; the chosen EFFECT_* names + the min==max tint range need a runtime check (presentation unknown, not faithful)."
       - "Base plays SND_Null on CH_SHOTS_SINGLE + SND_ROCKET_IMPACT on CH_SHOTS; the port plays only weapons/rocket_impact.wav."
     verification:
       - { kind: test, ref: "PowerupsAndNadesTests.BoomDispatch_RoutesToTheRegisteredHandler / BoomDispatch_DestroyedNade_FallsBackToNormal", result: pass }
-      - { kind: code, ref: "Now LIVE: Detonate reached from a live thrown nade's fuse/impact path", result: pass }
+      - { kind: code, ref: "Now LIVE: Detonate reached from a live thrown nade's fuse/impact path; EmitDetonationFx wired into the live effect feed (builds clean)", result: pass }
+      - { kind: visual, ref: "NO runtime check of the colored detonation particle", result: unknown }
     confidence: high
-    notes: "Reflection-discovered INadeBoom registry replaces the QC switch; destroyed (takedamage cleared) or Null -> NORMAL fallback faithful. RemoveHook of attached grapples on detonate present in QC (RemoveHook); port has no offhand-hook attach so no-op. liveness dead->live."
+    notes: "Reflection-discovered INadeBoom registry replaces the QC switch; destroyed (takedamage cleared) or Null -> NORMAL fallback faithful. RemoveHook of attached grapples on detonate present in QC; port has no offhand-hook attach so no-op. 2026-06-28b: EmitDetonationFx now emits the per-type colored boom particle through the live effect feed (presentation missing->unknown — coded+wired, not visually verified). liveness live."
 
   - id: mutator-nades.boom.normal
     name: "Normal nade explosion (RadiusDamage)"
@@ -278,18 +280,20 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: missing
+      presentation: unknown
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "DamageInfo (Damage_DamageInfo) network record omitted (render-only)."
+      - "Normal detonation particle NOW EMITTED but UNVERIFIED (2026-06-28b): NadeBoom.EmitDetonationFx emits EXPLOSION_MEDIUM (white tint = no recolor) through the live effect feed. Not visually verified."
     verification:
       - { kind: code, ref: "NadeBlast.RadiusDamage replicates WeaponSplash falloff/knockback + nade string deathtype", result: pass }
-      - { kind: code, ref: "Now LIVE (input wired)", result: pass }
+      - { kind: code, ref: "Now LIVE (input wired); EmitDetonationFx emits the normal boom particle on the live effect feed", result: pass }
+      - { kind: visual, ref: "NO runtime check of the explosion particle", result: unknown }
     confidence: high
-    notes: "Routes through Combat.Damage with NadeDeathTypes.Nade (string) instead of int-only WeaponSplash so the obituary names the nade. .enemy = direct hit. Shared by ice/darkness explode. liveness dead->live."
+    notes: "Routes through Combat.Damage with NadeDeathTypes.Nade (string) instead of int-only WeaponSplash so the obituary names the nade. .enemy = direct hit. Shared by ice/darkness explode. 2026-06-28b: detonation particle now emitted (EmitDetonationFx) — presentation missing->unknown. liveness live."
 
   - id: mutator-nades.boom.napalm
     name: "Napalm: fireballs + fountain fire damage"
@@ -316,13 +320,14 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: unknown
       audio: partial
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "EFFECT_FIREBALL_LASER trail + EF_FLAME ball effect omitted (render). SND_NADE_NAPALM_FIRE spamsound on ball-eject is not emitted (audio partial)."
+      - "Napalm presentation NOW PARTLY CODED but UNVERIFIED (2026-06-28b): the held napalm nade draws via ProjectileCatalog.NadeNapalm (orange grenademodel + FIREBALL trail) and EmitDetonationFx emits EXPLOSION_BIG on boom. The per-ball EF_FLAME / EFFECT_FIREBALL_LASER fireball trail (on the 6 spawned balls + fountain) is still NOT rendered (the balls are gameplay-only). Not visually verified."
+      - "SND_NADE_NAPALM_FIRE spamsound on ball-eject is not emitted (audio partial)."
     verification:
       - { kind: code, ref: "NadeNapalmBoom RandomSelection 1/(1+d) target pick + Fire_AddDamage->Burning(strength=dps) vs napalm_damage — match", result: pass }
       - { kind: code, ref: "DRIFT 2026-06-27 (fix): water-contents velocity damping is now ported (WaterDamp via Api.Trace.PointContents, NadeNapalmBoom.cs:37-46) and the round-not-started delete guard (RoundHandler.RoundGateBlocks, :119/143) is wired. damageforcescale=4 RECLASSIFIED non-divergent: Base sets proj.damageforcescale (napalm.qc:83) but the ball/fountain use PROJECTILE_MAKETRIGGER and never set takedamage=DAMAGE_AIM (napalm.qc:69-76), so a trigger that can't receive a damage event never has the scale applied — inert in Base too. logic/values partial->faithful.", result: pass }
@@ -346,13 +351,13 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: unknown
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The muzzleflash/icefield particle gate is omitted (render)."
+      - "Ice presentation NOW PARTLY CODED but UNVERIFIED (2026-06-28b): the held ice nade draws via ProjectileCatalog.NadeIce (blue grenademodel + plasma trail) and EmitDetonationFx emits ICEORGLASS on boom/ice_explode. The persistent icefield muzzleflash/field particle gate is still NOT rendered. Not visually verified."
     verification:
       - { kind: code, ref: "NadeIceBoom.IceThink declining current_freeze_time + teamcheck 0/1/2 + STATUSEFFECT_Frozen apply vs nade_ice_think", result: pass }
       - { kind: code, ref: "DRIFT 2026-06-27 (fix): the recently-revived re-freeze skip is now ported (NadeIceBoom.cs:105: if (it.RevivalTime != 0f && (now - it.RevivalTime) < 1.5f) continue == ice.qc:59), AND the round-not-started delete guard is wired (NadeIceBoom.cs:60 RoundHandler.RoundGateBlocks == ice.qc:14). logic partial->faithful.", result: pass }
@@ -373,7 +378,7 @@ features:
       logic: partial
       values: faithful
       timing: na
-      presentation: missing
+      presentation: unknown
       audio: na
       liveness: live
     intended_divergence: false
@@ -381,6 +386,7 @@ features:
     gaps:
       - "move_out_of_solid is a minimal upward-nudge approximation (no builtin), so embedded-in-solid recovery is less robust than Base's full search."
       - "MUTATOR_CALLHOOK(PortalTeleport) is not fired (no subscribers in port)."
+      - "Translocate presentation NOW PARTLY CODED but UNVERIFIED (2026-06-28b): the held translocate nade draws via ProjectileCatalog.NadeTranslocate (magenta grenademodel) and EmitDetonationFx emits a NadeDef.Color-tinted EXPLOSION_MEDIUM. Not visually verified."
     verification:
       - { kind: code, ref: "NadeTranslocateBoom.Boom resize/MoveOutOfSolid/tracebox-down/TeleportPlayer + DestroyDamage(true) vs translocate.qc", result: pass }
       - { kind: code, ref: "Now LIVE (input wired)", result: pass }
@@ -404,18 +410,19 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: missing
+      presentation: unknown
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "EF_STARDUST marker render + drawonlytoclient omitted (render)."
+      - "EF_STARDUST marker render NOW CODED but UNVERIFIED (2026-06-28b): NadeSpawnBoom plants models/marker.md3 + EffectFlags.Stardust on the nade_spawn_loc so the entity survives the empty-model feed drop, and CosmeticModelLayer (ClientWorld) renders the marker. No drawonlytoclient owner-only gating yet (the marker comment notes 'Owner-only is a follow-up'). Not visually verified."
     verification:
-      - { kind: code, ref: "NadeSpawnBoom plants nade_spawn_loc cnt=spawn_count; PlayerSpawn relocates + sets spawn health + decrements cnt", result: pass }
-      - { kind: code, ref: "Now LIVE end-to-end: the spawn nade can be thrown (input wired) to plant the marker, and the PlayerSpawn consume path was already live", result: pass }
+      - { kind: code, ref: "NadeSpawnBoom plants nade_spawn_loc cnt=spawn_count + models/marker.md3 + EF_STARDUST; PlayerSpawn relocates + sets spawn health + decrements cnt", result: pass }
+      - { kind: code, ref: "Now LIVE end-to-end: the spawn nade can be thrown (input wired) to plant the marker, the PlayerSpawn consume path was already live, and CosmeticModelLayer renders the marker on the live client pass (builds clean)", result: pass }
+      - { kind: visual, ref: "NO runtime check of the EF_STARDUST spawn-loc marker render", result: unknown }
     confidence: high
-    notes: "DestroyDamage hurts the OWNER and returns false (normal boom still runs) — distinct from translocate which returns true. Both plant + consume halves are now live. liveness partial->live."
+    notes: "DestroyDamage hurts the OWNER and returns false (normal boom still runs) — distinct from translocate which returns true. Both plant + consume halves are live. 2026-06-28b: EF_STARDUST marker now planted (models/marker.md3) + rendered via CosmeticModelLayer (presentation missing->unknown — coded+wired, not visually verified; owner-only gating is a follow-up). liveness live."
 
   - id: mutator-nades.boom.heal
     name: "Heal: healing orb (friend heal / foe harm / armor)"
@@ -435,18 +442,19 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: unknown
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "EFFECT_HEALING particle omitted (render)."
+      - "Heal orb 3D model NOW RENDERED but UNVERIFIED (2026-06-28b): the heal orb is networked as a NadeOrb entity and drawn by NadeOrbRenderer (red-tinted sphere, scale-up/fade/spin) + the in-orb 2D color flash; EFFECT_HEALING detonation particle via EmitDetonationFx. Not visually verified."
     verification:
       - { kind: code, ref: "NadeHealBoom.HealTouch rate*frametime*0.5, friend/foe mult, healthmega/armormega caps, DEATH_NADE_HEAL on foe vs nade_heal_touch", result: pass }
-      - { kind: code, ref: "Now LIVE (input wired)", result: pass }
+      - { kind: code, ref: "Now LIVE (input wired); the heal orb networks as NadeOrb + renders via NadeOrbRenderer", result: pass }
+      - { kind: visual, ref: "NO runtime check of the heal orb render", result: unknown }
     confidence: high
-    notes: "Orb via shared NadeBoom.SpawnOrb. armor_rate 0 default => no-op armor branch (faithful). liveness dead->live."
+    notes: "Orb via shared NadeBoom.SpawnOrb. armor_rate 0 default => no-op armor branch (faithful). 2026-06-28b: the orb now renders (NadeOrbRenderer) + colored boom FX (EmitDetonationFx) — presentation missing->unknown (coded+wired, not visually verified). liveness live."
 
   - id: mutator-nades.boom.ammo
     name: "Ammo: ammo orb (refill friend / drain foe)"
@@ -466,18 +474,20 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: unknown
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Per-weapon weapon_load[] persistent store collapsed onto each slot's live ClipLoad (port note). EFFECT_AMMO_REGEN particle omitted (render)."
+      - "Per-weapon weapon_load[] persistent store collapsed onto each slot's live ClipLoad (port note)."
+      - "Ammo orb 3D model NOW RENDERED but UNVERIFIED (2026-06-28b): the ammo orb networks as a NadeOrb + draws via NadeOrbRenderer (blue-tinted sphere) + in-orb color flash; EFFECT_AMMO_REGEN detonation particle via EmitDetonationFx. Not visually verified."
     verification:
       - { kind: code, ref: "NadeAmmoBoom.AmmoTouch clip refill/empty + give/drain 4 resources at pickup maxes vs nade_ammo_touch", result: pass }
-      - { kind: code, ref: "Now LIVE (input wired)", result: pass }
+      - { kind: code, ref: "Now LIVE (input wired); the ammo orb networks as NadeOrb + renders via NadeOrbRenderer", result: pass }
+      - { kind: visual, ref: "NO runtime check of the ammo orb render", result: unknown }
     confidence: high
-    notes: "Friend magazines stay full; foe clips bleed at clip_empty_rate (0 default). Ammo given/drained at rate*frametime*0.5. liveness dead->live."
+    notes: "Friend magazines stay full; foe clips bleed at clip_empty_rate (0 default). Ammo given/drained at rate*frametime*0.5. 2026-06-28b: the orb now renders (NadeOrbRenderer) + colored boom FX — presentation missing->unknown (coded+wired, not visually verified). liveness live."
 
   - id: mutator-nades.boom.entrap_veil_darkness
     name: "Entrap / Veil / Darkness orbs + fields"
@@ -500,19 +510,22 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
-      audio: missing
+      presentation: unknown
+      audio: unknown
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Veil tint of enemies (render colormod) omitted; only the teammate alpha-hide is ported."
-      - "Darkness blind overlay (HUD_DarkBlinking full-screen fill) + SND_BLIND are CSQC-only and missing; only the NadeDarknessTime deadline is set server-side."
+      - "Entrap/veil orb 3D models NOW RENDERED but UNVERIFIED (2026-06-28b): both network as NadeOrb entities + draw via NadeOrbRenderer (green/pale-green tinted spheres) + in-orb 2D color flash. Not visually verified."
+      - "Darkness blind overlay + SND_BLIND NOW CODED but UNVERIFIED (2026-06-28b): ViewEffects.UpdateDarknessOverlay draws the HUD_DarkBlinking blinking near-black fill from the networked NadeDarknessTime stat, and NetGame plays SND_BLIND ('misc/blind') once on the blind-onset edge. Wired live but no in-game confirmation (presentation/audio unknown, not faithful)."
+      - "Veil enemy-tint (render colormod on enemies) is STILL NOT ported — the orb renders + teammate alpha-hide works, but enemies are not recolored by the veil. Genuine residual render gap."
     verification:
       - { kind: code, ref: "EntrapTouch strength**dt damp + NadeEntrapSpeedMutator PlayerPhysics; VeilTouch alpha-hide; DarknessThink teamcheck+NadeDarknessTime vs the three .qc", result: pass }
       - { kind: code, ref: "DRIFT 2026-06-27 (fix): the entrap monster run/walk slow (MonsterAI.cs:1011-1012: if (self.NadeEntrapTime > Now) speed *= EntrapSpeed() == entrap.qc:48) AND the veil monster-alpha lapse (MonsterAI.cs:945-946) are now ported inline in MonsterAI.Move (the port has no MonsterMove hook chain; MonsterMove-hook effects are inlined there). Both are dormant for the same reason as Base: the orb touch only flags nade_entrap_time/nade_veil_time on real clients, never on monsters. logic partial->faithful.", result: pass }
+      - { kind: code, ref: "2026-06-28b: entrap/veil orbs render via NadeOrbRenderer (NadeOrb net kind); darkness blind overlay (ViewEffects.UpdateDarknessOverlay, HUD_DarkBlinking) + SND_BLIND ('misc/blind' on the onset edge, NetGame) now wired live off the networked NadeDarknessTime stat. Builds clean.", result: pass }
+      - { kind: visual, ref: "NO runtime check of the entrap/veil orb render, the darkness blink overlay, or the SND_BLIND cue", result: unknown }
     confidence: high
-    notes: "Entrap speed slow wired as a separate g_nades-gated [Mutator] on PlayerPhysics (SpeedMultiplier *= entrap_speed). Velocity damp is ticrate-independent (strength**dt, dt capped 0.15s). DRIFT 2026-06-27: entrap monster-slow + veil monster-alpha lapse now ported inline in MonsterAI.Move (logic partial->faithful); residual gaps are render (veil enemy tint, darkness overlay) + audio (SND_BLIND)."
+    notes: "Entrap speed slow wired as a separate g_nades-gated [Mutator] on PlayerPhysics (SpeedMultiplier *= entrap_speed). Velocity damp is ticrate-independent (strength**dt, dt capped 0.15s). DRIFT 2026-06-27: entrap monster-slow + veil monster-alpha lapse ported inline (logic faithful). 2026-06-28b: entrap/veil orb 3D models + darkness blind overlay (HUD_DarkBlinking) + SND_BLIND now CODED and wired live (presentation/audio missing->unknown — not visually verified). Residual genuine render gap: the veil ENEMY-tint colormod (only teammate alpha-hide is ported)."
 
   - id: mutator-nades.boom.monster
     name: "Pokenade: spawn monster"
@@ -650,27 +663,37 @@ features:
       - "common/mutators/mutator/nades/net.qc:orb_draw/orb_draw2d/orb_setup"
       - "common/mutators/mutator/nades/nade/darkness.qc:HUD_DarkBlinking"
     port_refs:
-      - "game/hud/CrosshairPanel.cs:NadeTimer (charge ring only)"
+      - "game/hud/CrosshairPanel.cs:NadeTimer (charge ring)"
+      - "game/client/NadeOrbRenderer.cs (orb 3D model: scale-up/fade/spin)"
+      - "game/client/ViewEffects.cs:UpdateOrbColorFlash / UpdateDarknessOverlay (orb_draw2d + HUD_DarkBlinking)"
+      - "game/client/ProjectileCatalog.cs:NadeNormal..NadeDarkness (held-nade projectile model/trail/tint)"
+      - "game/hud/AmmoPanel.cs:DrawAmmoNades (bonus-nade ammo cell)"
+      - "game/client/ClientWorld.cs:CosmeticModelLayer (spawn-loc marker / ice block / buff glow)"
+      - "game/net/{ServerNet.cs,ClientEntityView.cs,NetGame.cs}: NadeOrb net kind + NadeOrbState + owner-only nade STATs + SND_BLIND"
     constants:
       - { name: "nade_charge_ring", base: "cl_nade_timer modes", port: "CrosshairPanel.NadeTimer/NadeTimerMode networked", match: true }
+      - { name: "hud_colorflash_alpha", base: "0.5 (orb_draw2d)", port: "0.5 (ViewEffects, registered)", match: true }
+      - { name: "nade_model_scale", base: "1.5 (cl_nades grenademodel.md3)", port: "1.5 (ProjectileCatalog)", match: true }
+      - { name: "orb_scale/fade/spin", base: "grow×4 / fade×4 / avelocity '0 0 90'", port: "×4 / ×4 / 90deg-yaw (NadeOrbRenderer)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
-      audio: missing
-      liveness: partial
+      logic: unknown
+      values: unknown
+      timing: unknown
+      presentation: unknown
+      audio: unknown
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No nade projectile model/trail (nade_customize / nade_spawn CSQCProjectile + Nade_TrailEffect), no orb 3D model (orb_draw), no orb 2D full-screen color flash (orb_draw2d / hud_colorflash_alpha), no darkness blind overlay (HUD_DarkBlinking) + SND_BLIND, no spawn-loc EF_STARDUST render."
-      - "No DrawAmmoNades (cl_nades.qc:86): the ammo-panel bonus-nade count + progress bar + (rainbow) type icon is not drawn."
-      - "The held-nade charge ring (CrosshairPanel.NadeTimer) is wired + networked AND now functional: a nade can finally be primed (input wired in Wave-5), so NadeTimer climbs 0->1 and the ring appears during a charge."
+      - "NOT RUNTIME/VISUALLY VERIFIED (2026-06-28b): the full nade presentation stack (projectile model/trail, orb 3D model + 2D color flash, darkness blind overlay + SND_BLIND, EF_STARDUST spawn-loc marker, DrawAmmoNades bonus cell) is now CODED and WIRED on the live entity-stream + per-frame view passes — but no in-game screenshot/playtest confirms it draws correctly, and ZERO tests cover it. Status is unknown (not faithful) pending a behavioral check. Code is QC-faithful by inspection."
+      - "sphere.md3 path nit: NadeOrbRenderer requests 'models/sphere.md3' but the asset is at 'models/sphere/sphere.md3' — likely resolves to null and falls back to the additive glow sprite (graceful, but NOT the real sphere model). Verify the orb draws the intended body."
+      - "Owner-only nade STATs (NadeDarknessTime/NadeBonus/NadeBonusType/NadeBonusScore) are privacy-gated to the owning player; the DrawAmmoNades cell + darkness overlay only show for the local player (faithful — these are own-player HUD)."
     verification:
-      - { kind: code, ref: "grep DrawAmmoNades/HUD_DarkBlinking/orb_draw across game/ -> not implemented; only CrosshairPanel.NadeTimer present", result: fail }
-      - { kind: code, ref: "ServerNet.cs:1663 -> NetGame.cs:2100 networks NadeTimer to the crosshair ring; the ring now shows because priming is reachable", result: pass }
-    confidence: high
-    notes: "The port is headless server-authoritative; nade projectile/orb/overlay/ammo-panel presentation is broadly unimplemented (still missing). The one wired piece — the charge ring — is now live and visible (liveness dead->partial: the ring works, everything else is still missing)."
+      - { kind: code, ref: "NadeOrbRenderer (orb scale/fade/spin) + ViewEffects.UpdateOrbColorFlash/UpdateDarknessOverlay + ProjectileCatalog NadeNormal..NadeDarkness + AmmoPanel.DrawAmmoNades + NadeBoom.EmitDetonationFx all present and wired into the live client passes (ClientEntityView NadeOrb spawn/update/remove, NetGame per-frame UpdateDarknessOverlay/UpdateOrbColorFlash + AmmoPanel feed, ServerNet NadeOrb net kind + NadeOrbState + Feedback STATs). Builds clean (0 errors).", result: pass }
+      - { kind: code, ref: "ServerNet.cs:1663 -> NetGame.cs networks NadeTimer to the crosshair ring; the ring shows because priming is reachable (Wave-5)", result: pass }
+      - { kind: visual, ref: "NO runtime/visual check performed — orb sphere, 2D color flash, darkness blink, nade projectile tint, bonus-nade cell all UNVERIFIED in-game", result: unknown }
+    confidence: medium
+    notes: "2026-06-28b nade-presentation wave (WORKING-TREE, uncommitted): the previously-missing nade presentation is now broadly IMPLEMENTED and wired live — orb 3D model (NadeOrbRenderer), in-orb 2D additive color flash + darkness blind overlay (ViewEffects), per-type held-nade projectile model/trail/tint (ProjectileCatalog), bonus-nade ammo cell (AmmoPanel.DrawAmmoNades), spawn-loc EF_STARDUST marker (CosmeticModelLayer), the per-type colored detonation FX (NadeBoom.EmitDetonationFx), SND_BLIND, and the supporting NadeOrb net kind + owner-only nade STATs. Code is QC-faithful by inspection and compiles, but is NOT runtime-verified and has no test coverage, so every render/audio dimension sits at UNKNOWN (NOT faithful) per parity-diff discipline. liveness partial->live (the render path is reached on the live stream + the throw path is live). A behavioral/visual pass is the next step to upgrade unknown->faithful/partial."
 
   - id: mutator-nades.display.mutators_string
     name: "Mutator-list display token (BuildMutatorsString / BuildMutatorsPrettyString)"

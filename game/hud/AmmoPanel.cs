@@ -1,6 +1,7 @@
 using Godot;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
+using XonoticGodot.Common.Gameplay.Nades;
 using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Simulation;
 
@@ -47,6 +48,21 @@ public partial class AmmoPanel : HudPanel
     /// <summary>QC <c>hud_panel_ammo_onlycurrent</c>: show only the active weapon's pool, drawn large.
     /// Kept as a public property (net/demo layer may force it); when null the live cvar wins.</summary>
     public bool OnlyCurrent { get; set; }
+
+    // ---- nades-mutator bonus-nade cell (QC DrawAmmoNades, cl_nades.qc:86) ----
+
+    /// <summary>QC <c>STAT(NADE_BONUS)</c>: banked bonus-nade count (0..3), fed from the owning player's
+    /// <see cref="NetEntityState.NadeBonus"/>. When &gt; 0 (or <see cref="NadeBonusScoreFrac"/> &gt; 0) the
+    /// panel reserves one extra cell drawing the bonus-nade readout.</summary>
+    public int NadeBonusCount { get; set; }
+
+    /// <summary>QC <c>STAT(NADE_BONUS_TYPE)</c>: the <see cref="NadeRegistry"/> id (0..11) of the banked
+    /// bonus nade; 0 means "random" and draws the Normal icon with a cycling rainbow tint.</summary>
+    public int NadeBonusTypeId { get; set; }
+
+    /// <summary>QC <c>STAT(NADE_BONUS_SCORE)</c>: 0..1 fraction of progress toward the next bonus nade,
+    /// drawn as the cell's progressbar.</summary>
+    public float NadeBonusScoreFrac { get; set; }
 
     // ---- luma behavior defaults (registered below; read live each frame so console/menu edits apply) ----
     private const float DefaultNoncurrentAlpha = 0.6f;
@@ -125,9 +141,15 @@ public partial class AmmoPanel : HudPanel
         // (and divide-by-zero in the aspect clamp via cell.Y). Draw nothing rather than off-panel junk.
         if (size.X <= 0f || size.Y <= 0f) return;
 
-        // QC: onlycurrent → 1 cell; else AMMO_COUNT (== 4: the non-hidden pools — Fuel is hidden here).
-        // (Nade-bonus cell is omitted — that is a nades-mutator feature with no port hook yet.)
+        // QC HUD_Ammo: when the nades mutator is active and the player has banked bonus nades (or progress
+        // toward one), a dedicated bonus-nade cell is added to the grid alongside the ammo pools
+        // (cl_nades.qc DrawAmmoNades). Mirror that here: reserve ONE extra cell when nades are active.
+        bool showNades = NadeBonusCount > 0 || NadeBonusScoreFrac > 0f;
+
+        // QC: onlycurrent → 1 cell; else AMMO_COUNT (== 4: the non-hidden pools — Fuel is hidden here),
+        // plus one bonus-nade cell when active.
         int count = onlyCurrent ? 1 : VisiblePoolCount();
+        if (!onlyCurrent && showNades) count++;
 
         // QC HUD_GetRowCount(count, size, 3): pick the row count whose resulting cells stay closest to the
         // ideal 1:3 (width:height treated as 3:1) aspect, then derive columns.
@@ -176,6 +198,15 @@ public partial class AmmoPanel : HudPanel
 
             row++;
             if (row >= rows) { row = 0; column++; }
+        }
+
+        // QC DrawAmmoNades: the banked bonus-nade cell takes the next free grid slot (after the ammo pools).
+        if (showNades)
+        {
+            var nadePos = new Vector2(
+                pos.X + column * (cell.X + offset.X),
+                pos.Y + row * (cell.Y + offset.Y));
+            DrawAmmoNades(nadePos, cell);
         }
     }
 
@@ -313,6 +344,125 @@ public partial class AmmoPanel : HudPanel
         float topY = pos.Y + (size.Y - s) * 0.5f;
         DrawTextCentered(new Vector2(pos.X, topY), size.X, "∞",
             new Color(0.2f, 0.95f, 0f, LiveFgAlpha), s);
+    }
+
+    /// <summary>
+    /// Port of QC <c>DrawAmmoNades</c> (cl_nades.qc:86): the banked bonus-nade cell. Draws the per-type nade
+    /// icon (<see cref="NadeDef"/> <c>m_icon</c> "nade_&lt;type&gt;"; the Normal icon cycled through a rainbow
+    /// tint for the random/type-0 sentinel), the bonus-nade count text, and a progressbar of
+    /// <see cref="NadeBonusScoreFrac"/> toward the next bonus nade — all laid out like
+    /// <see cref="DrawAmmoItem"/> (icon = a square of side = cell height; text in the (2/3)·width box; icon
+    /// align follows <c>hud_panel_ammo_iconalign</c>). The bar is tinted the nade's <c>m_color</c>.
+    /// </summary>
+    private void DrawAmmoNades(Vector2 pos, Vector2 size)
+    {
+        // QC: REGISTRY_GET(Nades, max(1, bonusType)) — type 0 (random) borrows the Normal nade's def/icon.
+        int typeId = NadeBonusTypeId;
+        NadeDef? def = NadeRegistry.ById(typeId <= 0 ? 1 : typeId) ?? NadeRegistry.Normal;
+
+        // QC nadeColor: the typed nade's m_color, or a time-cycled rainbow for the random (type 0) sentinel.
+        Color nadeColor;
+        bool isRandom = typeId == 0;
+        if (!isRandom && def is not null)
+            nadeColor = new Color(def.Color.X, def.Color.Y, def.Color.Z);
+        else
+            nadeColor = RainbowHsv(NadeTime()); // QC hsv_to_rgb('time%2pi' 1 1)
+
+        // QC icon: m_icon == "nade_<netname>" except the monster nade (netname "pokenade" → "nade_monster").
+        // The random sentinel always uses the Normal icon "nade_normal".
+        string nadeIcon = isRandom ? "nade_normal" : NadeIconName(def);
+
+        // QC iiconalign/text-box layout — identical to DrawAmmoItem (icon = '1 1 0'*mySize.y square).
+        bool iconRight = CvarBool("iconalign");
+        float iconSide = size.Y;
+        float textWidth = (2f / 3f) * size.X;
+        Rect2 iconRect, textRect;
+        if (iconRight)
+        {
+            iconRect = new Rect2(pos.X + 2f * size.Y, pos.Y, iconSide, iconSide);
+            textRect = new Rect2(pos.X, pos.Y, textWidth, size.Y);
+        }
+        else
+        {
+            iconRect = new Rect2(pos.X, pos.Y, iconSide, iconSide);
+            textRect = new Rect2(pos.X + size.Y, pos.Y, textWidth, size.Y);
+        }
+
+        // QC DrawNadeProgressBar: full-cell bar (xoffset inset), color = nadeColor, alpha = hud_progressbar_alpha*fg.
+        float frac = Mathf.Clamp(NadeBonusScoreFrac, 0f, 1f);
+        if (frac > 0f)
+        {
+            float xoff = Mathf.Clamp(CvarF("progressbar_xoffset", 0f), 0f, 0.99f);
+            var barPos = new Vector2(pos.X + xoff * size.X, pos.Y);
+            var barSize = new Vector2(size.X - xoff * size.X, size.Y);
+            Color barColor = nadeColor;
+            barColor.A = GlobalF("hud_progressbar_alpha", 0.5f) * LiveFgAlpha;
+            DrawProgressBar(new Rect2(barPos, barSize), frac, barColor);
+        }
+
+        // QC count text: drawn plain white '1 1 1' at panel_fg_alpha (NOT the low-ammo / pool-tint scheme).
+        if (CvarF("text", 1f) != 0f)
+        {
+            string text = NadeBonusCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var textColor = new Color(1f, 1f, 1f, LiveFgAlpha);
+            // drawstring_aspect: height = cell height, shrink to fit width (same as DrawAmmoItem).
+            int fontPx = Mathf.Max(8, Mathf.RoundToInt(textRect.Size.Y * 0.85f));
+            float textW = MeasureText(text, fontPx);
+            if (textW > textRect.Size.X && textW > 0.001f)
+                fontPx = Mathf.Max(8, Mathf.RoundToInt(fontPx * textRect.Size.X / textW));
+            float topY = textRect.Position.Y + (textRect.Size.Y - fontPx) * 0.5f;
+            DrawTextCentered(new Vector2(textRect.Position.X, topY), textRect.Size.X, text, textColor, fontPx);
+        }
+
+        // QC icon: drawpic_aspect_skin(nadeIcon, '1 1 1' when typed else nadeColor) at panel_fg_alpha.
+        Color iconTint = isRandom ? nadeColor : new Color(1f, 1f, 1f);
+        var iconMod = new Color(iconTint.R, iconTint.G, iconTint.B, LiveFgAlpha);
+        if (!DrawSkinPic(nadeIcon, iconRect, iconMod))
+        {
+            // Art missing — draw a small tinted box so the bonus-nade cell is never invisible.
+            var c = nadeColor; c.A = LiveFgAlpha * 0.6f;
+            DrawRect(iconRect, c);
+        }
+    }
+
+    /// <summary>Skin-pic name for a nade type's icon (QC <c>m_icon</c>): "nade_&lt;netname&gt;", with the one
+    /// QC override where the monster nade (netname "pokenade") uses "nade_monster".</summary>
+    private static string NadeIconName(NadeDef? def)
+    {
+        if (def is null) return "nade_normal";
+        return def.NetName == "pokenade" ? "nade_monster" : "nade_" + def.NetName;
+    }
+
+    /// <summary>Client game time for the random-nade rainbow cycle (QC <c>time</c>).</summary>
+    private float NadeTime()
+    {
+        if (Api.Services is not null) return Api.Clock.Time;
+        return (float)(Time.GetTicksMsec() / 1000.0);
+    }
+
+    /// <summary>
+    /// QC random-nade rainbow: <c>hsv_to_rgb((time % 2π, 1, 1))</c>. Ported faithfully via QC
+    /// <c>hue_mi_ma_to_rgb(hue, 0, 1)</c> (color.qh) — note the hue is the raw <c>time % 2π</c> (0..~6.28)
+    /// treated as a 0..6 sextant index, NOT a normalized 0..1 hue, so the cycle period is 2π seconds.
+    /// </summary>
+    private static Color RainbowHsv(float t)
+    {
+        float hue = t % (2f * Mathf.Pi);
+        return HueMiMaToRgb(hue, 0f, 1f);
+    }
+
+    /// <summary>Port of QC <c>hue_mi_ma_to_rgb(hue, mi, ma)</c> (lib/color.qh): hue in 0..6 sextants.</summary>
+    private static Color HueMiMaToRgb(float hue, float mi, float ma)
+    {
+        hue -= 6f * Mathf.Floor(hue / 6f);
+        float r, g, b;
+        if (hue <= 1f)      { r = ma;                       g = hue * (ma - mi) + mi;       b = mi; }
+        else if (hue <= 2f) { r = (2f - hue) * (ma - mi) + mi; g = ma;                      b = mi; }
+        else if (hue <= 3f) { r = mi;                       g = ma;                         b = (hue - 2f) * (ma - mi) + mi; }
+        else if (hue <= 4f) { r = mi;                       g = (4f - hue) * (ma - mi) + mi; b = ma; }
+        else if (hue <= 5f) { r = (hue - 4f) * (ma - mi) + mi; g = mi;                      b = ma; }
+        else                { r = ma;                       g = mi;                         b = (6f - hue) * (ma - mi) + mi; }
+        return new Color(r, g, b);
     }
 
     /// <summary>

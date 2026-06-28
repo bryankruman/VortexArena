@@ -81,7 +81,7 @@ public sealed class FirstPersonView
     /// against the world so it doesn't clip. On local death the event-chase engages automatically regardless of
     /// this (QC <c>cl_eventchase_death</c>).
     /// </summary>
-    public enum ChaseMode { None, Chase, SpectatorFollow }
+    public enum ChaseMode { None, Chase, SpectatorFollow, Vehicle }
 
     /// <summary>The host-requested chase mode (QC user <c>chase_active</c> / spectator cam). Default first-person eye.</summary>
     public ChaseMode CameraMode { get; set; } = ChaseMode.None;
@@ -91,6 +91,24 @@ public sealed class FirstPersonView
     /// (<c>CSQCPlayer_ApplyChase</c>: <c>if (autocvar_chase_front &amp;&amp; spectatee_status)</c>). The host sets it each
     /// frame from the follow state so the spectator third-person camera can flip to the frontal view.</summary>
     public bool Spectating { get; set; }
+
+    /// <summary>True while the local player is seated in a vehicle (QC <c>hud != HUD_NORMAL</c> / the
+    /// TE_CSQC_VEHICLESETUP cockpit). Set each frame by <see cref="XonoticGodot.Game.Net.NetGame"/> from the
+    /// decoded <c>VehicleViewState.IsActive</c>. With <c>cl_eventchase_vehicle</c> set this engages the vehicle
+    /// chase/cockpit camera (QC <c>WantEventchase</c> vehicle branch, <see cref="ChaseCamera.ApplyVehicle"/>);
+    /// when off the view stays the seated first-person eye (the seated origin already sits in the cockpit, ViewOfs
+    /// is 0). The transition true→false resets the smoothed chase distance so the next board restarts the pull-back.</summary>
+    public bool InVehicle
+    {
+        get => _inVehicle;
+        set
+        {
+            if (_inVehicle && !value)
+                _eventChase = default;   // restart the smoothed pull-back distance on the next board (QC resets it)
+            _inVehicle = value;
+        }
+    }
+    private bool _inVehicle;
 
     /// <summary>Set each frame by the host from the <c>+zoom</c> bind's held state (QC <c>button_zoom</c>). The
     /// host is responsible for suppressing it when dead / paused / the console is open, so the view zooms out on
@@ -383,12 +401,27 @@ public sealed class FirstPersonView
         bool eventChaseWanted = WantEventChase(st);
         bool classicChase = CameraMode == ChaseMode.Chase && !eventChaseWanted;
 
+        // QC: while seated in a vehicle (hud != HUD_NORMAL) the vehicle chase/cockpit cam owns the frame
+        // (cl_eventchase_vehicle). It runs BEFORE the classic/event split — and like them sets ChaseActive so the
+        // shared first-person extras (punch/bob/idle-in-first-person and the warpzone seam fix) are suppressed. When
+        // cl_eventchase_vehicle is 0 we fall through to the normal first-person eye: the seated origin already places
+        // the eye in the cockpit (ViewOfs is 0) so no special handling is needed there.
+        bool vehicleChase = InVehicle && Cvar("cl_eventchase_vehicle", 1f) != 0f;
+
         // The classic chase may rewrite the view angles (chase_overhead forces pitch = chase_pitchangle;
         // chase_front flips the view to look back at the player). Resolve the final angles first, then build the
         // camera basis from them so the orientation matches the chosen perspective.
         NVec3 viewAngles = st.ViewAnglesQuake;
         NVec3 camQuake;
-        if (classicChase)
+        if (vehicleChase)
+        {
+            ChaseActive = true;
+            // Pull the camera back from the seated pivot along the view forward; ApplyVehicle owns the pivot lift +
+            // smoothed distance + world box-trace (port of View_EventChase's vehicle branch) and mutates _eventChase.
+            QMath.AngleVectors(viewAngles, out NVec3 forward, out _, out _);
+            camQuake = ChaseCamera.ApplyVehicle(st.OriginQuake, forward, _lastDt, ref _eventChase);
+        }
+        else if (classicChase)
         {
             ChaseActive = true;
             _eventChase = default;   // QC eventchase reset: clear distance + run latch while the classic cam owns the frame

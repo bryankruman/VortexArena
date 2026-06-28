@@ -17,6 +17,7 @@ public enum NetEntityKind : byte
     Generic = 5,     // any other networked entity (mapobject, turret, monster, …)
     ViewModel = 6,   // a weapon view-entity owned by a player (CL_SpawnWeaponentity / wepent)
     Nameplate = 7,   // ent_cs lightweight: position+team+health only (radar/nameplate, no model)
+    NadeOrb = 8,     // a nade_orb effect entity (heal/ammo/entrap/veil orb — model + color-flash containment field)
 }
 
 /// <summary>
@@ -50,7 +51,7 @@ public enum NetEntityFlags : ushort
 /// entity's delta; only the set fields follow on the wire, so an idle entity (mask 0) costs just its id.
 /// (Widened from 16-bit to 32-bit when <see cref="StatusEffects"/> was added — bit 16 overflowed the old
 /// <c>ushort</c>; <see cref="EntityStateCodec.WriteDelta"/>/<see cref="EntityStateCodec.ReadDelta"/> carry the
-/// mask as a 32-bit value accordingly.) Highest bit currently in use: bit 22 <see cref="ObjState"/> (the 32-bit
+/// mask as a 32-bit value accordingly.) Highest bit currently in use: bit 24 <see cref="VehicleView"/> (the 32-bit
 /// mask still has ample headroom).
 /// </summary>
 [Flags]
@@ -125,6 +126,20 @@ public enum EntityField : uint
     // the cpicon build-bar vs generator healthbar selector). Present only for objective entities whose health
     // fraction or build state changed. Bit 22, verified free.
     ObjState = 1 << 22,
+
+    // [W-nadeclient] QC nade_orb effect-entity STATE block (Nades registry id + expire time + radius). Present ONLY
+    // on a nade_orb entity (NetEntityKind.NadeOrb): selects the orb model/flash color, drives the spawn..expire
+    // scale-up/fade phase, and the in-orb color-flash containment radius. 0/default on every other entity so the bit
+    // stays clear and costs nothing. Bit 23, verified free (ObjState=1<<22 was the prior top bit).
+    NadeOrbState = 1 << 23,
+
+    // [W-vehicleview] QC per-player vehicle HUD view-state (health/shield/energy/ammo/reload bars + vehicle hud id +
+    // weapon-2 mode + lock strength/flags). Reaches all clients incl. the local pilot via LocalState; an on-foot /
+    // observing player keeps the bit clear (VehKind 0 == VehicleViewState.None) so it costs nothing. Bit 24, verified
+    // free. (NOTE: the design assumed bit 23, but [W-nadeclient] NadeOrbState landed in this same file at bit 23 this
+    // phase, so VehicleView took the next free bit 24 — both producers/consumers parse via the named EntityField bit,
+    // not a hardcoded ordinal, so the shift is transparent.)
+    VehicleView = 1 << 24,
 }
 
 /// <summary>
@@ -177,6 +192,19 @@ public struct NetEntityState
     public float CaptureProgress;
     /// <summary>QC STAT(REVIVE_PROGRESS): 0..1 freeze-tag thaw progress — the 3rd-priority ring (view.qc:1017).</summary>
     public float ReviveProgress;
+
+    // [W-nadeclient] QC owner-only nade STATs, carried in the SAME EntityField.Feedback block (appended after the four
+    // ring floats). Only meaningful on the LOCAL player's own entity; 0 everywhere else so the Feedback bit stays clear
+    // for remotes/projectiles.
+    /// <summary>QC STAT(NADE_DARKNESS_TIME): absolute server time the darkness-nade blind expires; the client computes
+    /// remaining = NadeDarknessTime − now to fade the darkness overlay.</summary>
+    public float NadeDarknessTime;
+    /// <summary>QC STAT(NADE_BONUS): banked nade-bonus count (0..3) — the HUD ammo-panel nade-bonus counter.</summary>
+    public int NadeBonus;
+    /// <summary>QC STAT(NADE_BONUS_TYPE): the banked nade's Nades registry id (0..11) — selects the bonus icon/color.</summary>
+    public int NadeBonusType;
+    /// <summary>QC STAT(NADE_BONUS_SCORE): 0..1 fraction toward the next nade bonus — the bonus progress bar.</summary>
+    public float NadeBonusScore;
 
     /// <summary>
     /// [A5 #3/#7] QC <c>ENT_CLIENT_STATUSEFFECTS</c> blob — the entity's full status-effect bitmap as produced by
@@ -243,8 +271,26 @@ public struct NetEntityState
     /// (the cpicon build-bar vs generator healthbar selector).</summary>
     public byte ObjState;
 
+    // [W-nadeclient] QC nade_orb STATE block — present ONLY on a NetEntityKind.NadeOrb entity (carried under
+    // EntityField.NadeOrbState). 0/default on every other entity so the bit stays clear. The orb's Origin rides the
+    // normal Origin field.
+    /// <summary>QC orb Nades registry id (1..11) — selects the orb model + flash color.</summary>
+    public byte OrbType;
+    /// <summary>QC absolute server time the orb expires; the client derives the spawn..expire scale-up/fade phase.</summary>
+    public float OrbExpire;
+    /// <summary>QC orb radius in qu (250..500) — the in-orb color-flash containment test + 3D model scale.</summary>
+    public int OrbRadius;
+
+    /// <summary>
+    /// [W-vehicleview] QC per-player vehicle HUD view-state block — the health/shield/energy/ammo/reload bars, the
+    /// vehicle hud id, the weapon-2 mode, and the lock strength/flags for the seated-pilot HUD and any remote/spectated
+    /// view (decoded via <see cref="VehicleViewState"/>). <see cref="VehicleViewState.None"/> (VehKind 0 = on-foot /
+    /// observing) keeps the <see cref="EntityField.VehicleView"/> bit clear so a non-pilot costs nothing on the wire.
+    /// </summary>
+    public VehicleViewState VehicleView;
+
     /// <summary>A fresh state carrying just an id (the implicit baseline for a never-seen entity — a "spawn").</summary>
-    public static NetEntityState Empty(int entNum) => new() { EntNum = entNum, SwitchWeapon = -1, SwitchingWeapon = -1 };
+    public static NetEntityState Empty(int entNum) => new() { EntNum = entNum, SwitchWeapon = -1, SwitchingWeapon = -1, VehicleView = VehicleViewState.None };
 
     /// <summary>The set of fields that differ between <paramref name="baseline"/> and <paramref name="current"/> (the SendFlags).</summary>
     public static EntityField Diff(in NetEntityState baseline, in NetEntityState current)
@@ -269,7 +315,11 @@ public struct NetEntityState
         if (baseline.HitDamageDealtTotal != current.HitDamageDealtTotal
             || baseline.NadeTimer != current.NadeTimer
             || baseline.CaptureProgress != current.CaptureProgress
-            || baseline.ReviveProgress != current.ReviveProgress) m |= EntityField.Feedback;
+            || baseline.ReviveProgress != current.ReviveProgress
+            || baseline.NadeDarknessTime != current.NadeDarknessTime
+            || baseline.NadeBonus != current.NadeBonus
+            || baseline.NadeBonusType != current.NadeBonusType
+            || baseline.NadeBonusScore != current.NadeBonusScore) m |= EntityField.Feedback;
         // The status-effect blob is a byte[]; compare by CONTENT (not reference) so the full bitmap is re-sent only
         // when it actually changes. null and empty both mean "no effects" and compare equal.
         if (!StatusBlobEqual(baseline.StatusEffects, current.StatusEffects)) m |= EntityField.StatusEffects;
@@ -296,6 +346,14 @@ public struct NetEntityState
         // [W-objstream] objective STATUS — re-send when the obj-health fraction byte or the build state changes.
         if (baseline.ObjHealthByte != current.ObjHealthByte
             || baseline.ObjState != current.ObjState) m |= EntityField.ObjState;
+        // [W-nadeclient] nade_orb STATE — re-send when the orb type, expire time, or radius differ. Default (0/0/0)
+        // keeps the bit clear on every non-orb entity.
+        if (baseline.OrbType != current.OrbType
+            || baseline.OrbExpire != current.OrbExpire
+            || baseline.OrbRadius != current.OrbRadius) m |= EntityField.NadeOrbState;
+        // [W-vehicleview] per-player vehicle HUD view-state — re-send when ANY field differs. None (VehKind 0 =
+        // on-foot/observing) keeps the bit clear so a non-pilot costs nothing.
+        if (!baseline.VehicleView.Equals(current.VehicleView)) m |= EntityField.VehicleView;
         return m;
     }
 
@@ -318,8 +376,10 @@ public struct NetEntityState
 /// the changed fields; <see cref="ReadDelta"/> applies them on top of the baseline. A spawn is just a delta
 /// against <see cref="NetEntityState.Empty"/>; an idle entity is a single zero mask. The append-only tail beyond
 /// the original 16-bit set is, in wire order: StatusEffects(16), Alpha(17), AnimAction(18), Wepent(19),
-/// WepentView(20), TurretHead(21), ObjState(22) — every new field MUST be appended AFTER the existing blocks in
-/// both WriteDelta and ReadDelta or every later field desyncs.
+/// WepentView(20), TurretHead(21), ObjState(22), NadeOrbState(23), VehicleView(24) — every new field MUST be
+/// appended AFTER the existing blocks in both WriteDelta and ReadDelta or every later field desyncs. (The
+/// NadeDarknessTime/NadeBonus/NadeBonusType/NadeBonusScore nade owner-stats are appended INSIDE the Feedback(14)
+/// block after ReviveProgress, in lockstep on both sides.)
 /// </summary>
 public static class EntityStateCodec
 {
@@ -352,6 +412,11 @@ public static class EntityStateCodec
             w.WriteFloat(current.NadeTimer);
             w.WriteFloat(current.CaptureProgress);
             w.WriteFloat(current.ReviveProgress);
+            // [W-nadeclient] owner-only nade STATs appended to the Feedback block (after ReviveProgress).
+            w.WriteFloat(current.NadeDarknessTime);
+            w.WriteUShort(current.NadeBonus);
+            w.WriteByte((byte)current.NadeBonusType);
+            w.WriteFloat(current.NadeBonusScore);
         }
         if ((mask & EntityField.StatusEffects) != 0)
         {
@@ -395,6 +460,15 @@ public static class EntityStateCodec
             w.WriteByte(current.ObjHealthByte);
             w.WriteByte(current.ObjState);
         }
+        // [W-nadeclient] nade_orb STATE block (orb id byte, expire float, radius ushort) — APPENDED after ObjState.
+        if ((mask & EntityField.NadeOrbState) != 0)
+        {
+            w.WriteByte(current.OrbType);
+            w.WriteFloat(current.OrbExpire);
+            w.WriteUShort(current.OrbRadius);
+        }
+        // [W-vehicleview] per-player vehicle HUD view-state — the FINAL block (fixed 11-byte VehicleViewCodec layout).
+        if ((mask & EntityField.VehicleView) != 0) VehicleViewCodec.Write(w, current.VehicleView);
         return mask;
     }
 
@@ -426,6 +500,11 @@ public static class EntityStateCodec
             s.NadeTimer = r.ReadFloat();
             s.CaptureProgress = r.ReadFloat();
             s.ReviveProgress = r.ReadFloat();
+            // [W-nadeclient] owner-only nade STATs — SAME order as WriteDelta (after ReviveProgress).
+            s.NadeDarknessTime = r.ReadFloat();
+            s.NadeBonus = r.ReadUShort();
+            s.NadeBonusType = r.ReadByte();
+            s.NadeBonusScore = r.ReadFloat();
         }
         if ((mask & EntityField.StatusEffects) != 0)
         {
@@ -467,6 +546,15 @@ public static class EntityStateCodec
             s.ObjHealthByte = (byte)r.ReadByte();
             s.ObjState = (byte)r.ReadByte();
         }
+        // [W-nadeclient] nade_orb STATE — SAME order as WriteDelta (orb id byte, expire float, radius ushort).
+        if ((mask & EntityField.NadeOrbState) != 0)
+        {
+            s.OrbType = (byte)r.ReadByte();
+            s.OrbExpire = r.ReadFloat();
+            s.OrbRadius = r.ReadUShort();
+        }
+        // [W-vehicleview] per-player vehicle HUD view-state — the FINAL block (SAME fixed VehicleViewCodec layout).
+        if ((mask & EntityField.VehicleView) != 0) s.VehicleView = VehicleViewCodec.Read(ref r);
         return s;
     }
 }

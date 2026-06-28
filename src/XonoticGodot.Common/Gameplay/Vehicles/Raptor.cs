@@ -561,17 +561,26 @@ public sealed class Raptor : Vehicle
         Vector3 dir = QMath.Normalize(fwd + Prandom.Vec() * CannonSpread);
         Vector3 vel = dir * CannonSpeed;
 
-        VehicleCommon.SpawnProjectile(vehicle, player, org, vel,
+        Entity bolt = VehicleCommon.SpawnProjectile(vehicle, player, org, vel,
             CannonDamage, CannonRadius, CannonForce, size: 0f,
             DeathTypes.VhRaptCannon, health: 0f, lifetime: 0f, // raptor_weapons.qc: DEATH_VH_RAPT_CANNON
             fireSound: "vehicles/lasergun_fire.wav");
+        // QC raptor_weapons.qc RaptorCannon.wr_think: CSQCProjectile(proj, true, PROJECTILE_RAPTORCANNON, true).
+        // The shared SpawnProjectile stamps the generic "vehicles_projectile" classname, which the client's
+        // ProjectileCatalog can't tell apart. Carry the PROJECTILE_RAPTORCANNON token on the NETNAME (not the
+        // classname) so ServerNet's ProjectileCatalogKey networks "vehicles_projectile raptorcannon" in the model
+        // field and the client classifier picks ProjectileType.RaptorCannon (the TR_NEXUIZPLASMA in-flight plasma
+        // trail + dlight) instead of the trailless Generic fallback. Using NetName — not ClassName — keeps the bolt
+        // in the "vehicles_projectile" group so the raptor's own missile-alarm / flare-retarget FindByClass scans
+        // (which iterate every vehicle projectile, like QC's g_projectiles) still see it; the bolt simply never
+        // matches their proj.Enemy == vehicle homing filter, exactly as in QC.
+        bolt.NetName = "raptorcannon";
         // QC vehicles_projectile (sv_vehicles.qc): Send_Effect(_mzlfx, proj.origin, proj.velocity, 1) — the
         // muzzle flash at the bolt's spawn point thrown along its velocity. RaptorCannon passes
         // EFFECT_RAPTOR_MUZZLEFLASH as _mzlfx (raptor_weapons.qc RaptorCannon.wr_think). The shared
         // SpawnProjectile helper plays the fire sound but defers the muzzle effect; emit it here
         // server-authoritative (same as Racer/Spiderbot/the turrets).
         EffectEmitter.Emit("RAPTOR_MUZZLEFLASH", org, vel, 1);
-        // TODO(port,client): PROJECTILE_RAPTORCANNON in-flight bolt trail (CSQCProjectile visual).
     }
 
     // raptor_bombdrop -> raptor_bomb_burst — raptor_weapons.qc: drop two cluster bombs that burst into bomblets.

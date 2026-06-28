@@ -117,6 +117,8 @@ public sealed partial class NetGame : Node3D
     private XonoticGodot.Game.Client.WaypointSpriteLayer? _waypointLayer; // 3D in-world waypoint/objective markers
     private Node3D? _mapRoot;                                              // the built map scene (holds the "Portals" child)
     private XonoticGodot.Game.Client.PortalRenderer? _portalRenderer;      // see-through warpzone portal render (listen host)
+    private XonoticGodot.Game.Client.PortalDiscRenderer? _portalDiscRenderer; // warpzone portal DISC (skinned model) — listen host, reads the same AmbientManager zones
+    private XonoticGodot.Game.Client.NadeOrbRenderer? _orbRenderer;        // 3D nade orb effect models (heal/ammo/entrap/veil/darkness) — fed by the entity stream, read for the in-orb color flash
     private XonoticGodot.Game.Client.ShowNamesLayer? _shownamesLayer; // [T68] floating player name + health/armor tags
     private XonoticGodot.Game.Client.HitSound? _hitSound;          // client-side hit-confirmation beep (cl_hitsound modes 0-3)
     private XonoticGodot.Game.Hud.ScoreboardPanel _scoreboard = null!; // the networked scoreboard (held while +showscores)
@@ -189,6 +191,7 @@ public sealed partial class NetGame : Node3D
     private bool _cameraReady;                   // C5: false until the first snapshot seeds the predicted eye
     private int _prevHealth = -1;               // previous networked local health, for the damage red-flash edge
     private bool _inputActive;                   // tracks the active→inactive edge to release held buttons (pause/console)
+    private bool _nadeDarknessActive;            // tracks the 0→positive darkness-remaining edge so SND_BLIND plays once per blind onset
 
     // C2S impulse (QC usercmd.impulse): a one-shot weapon-switch/reload number a weapon bind set this frame.
     // Edge-triggered — SampleInput stamps it onto the next InputCommand then clears it, so it is sent (and
@@ -1241,6 +1244,11 @@ public sealed partial class NetGame : Node3D
             // dead. The GpuWarmPass below warms these models' pipelines, so the restored MD3s cost no mid-match
             // SURFACE compile. (EffectSystem.ModelLoader propagates to its Gibs/Casings, both live post-AddChild.)
             _render.Effects.ModelLoader = m => _assets.LoadModel(m);
+
+            // The cosmetic add-on layer (freezetag ice block / buff-carrier glow) reads its model files through
+            // the same AssetLoader (cached): LoadMd3 for the .md3 morph path, LoadModel for IQM/DPM.
+            _render.CosmeticMd3Loader = m => _assets.LoadMd3(m);
+            _render.CosmeticModelLoader = (m, skin) => _assets.LoadModel(m, skin);
         }
 
         // Pre-warm the effect catalog + particlefont atlas now (map-load), so the FIRST weapon shot doesn't hitch
@@ -1649,6 +1657,17 @@ public sealed partial class NetGame : Node3D
             _portalRenderer = new XonoticGodot.Game.Client.PortalRenderer { Name = "PortalRenderer" };
             AddChild(_portalRenderer);
             _portalRenderer.Setup(_mapRoot, _camera);
+
+            // Warpzone portal DISC (the cosmetic skinned-model ring DP draws on a warpzone face, separate from the
+            // see-through SubViewport portal above). Client-only — it reads the SAME un-networked
+            // WarpzoneTrace.AmbientManager zone transforms PortalRenderer/WarpzoneFixView use, so it is LIVE on a
+            // listen host. The node self-drives via its own _Process once in the tree (same as _portalRenderer);
+            // we only construct + wire its skinned-model factory here. AssetLoader.LoadModel already supports the
+            // `_N.skin` variant via its (vpath, skinIndex=0) overload; tolerate a null _assets the same way the
+            // ProjectileRenderer.ModelFactory wiring (above) does.
+            _portalDiscRenderer = new XonoticGodot.Game.Client.PortalDiscRenderer { Name = "PortalDiscRenderer" };
+            AddChild(_portalDiscRenderer);
+            _portalDiscRenderer.Setup(_camera, (path, skin) => _assets?.LoadModel(path, skin));
         }
 
         // [T68] Floating player name + health/armor tags (QC client/shownames.qc Draw_ShowNames_All): a 3D
@@ -1674,6 +1693,20 @@ public sealed partial class NetGame : Node3D
         // own CanvasLayer (below the HUD), fed each frame in _Process from the networked stats + predicted eye.
         _viewEffects = new ViewEffects { Name = "ViewEffects" };
         AddChild(_viewEffects);
+
+        // Nade orb effect models (heal/ammo/entrap/veil/darkness orbs — the static field entities a nade spawns).
+        // Built next to the ProjectileRenderer and fed off the SAME entity stream: ClientEntityView routes a
+        // NetEntityKind.NadeOrb spawn/update/remove to _render.NadeOrbs, so the renderer NetGame creates here is
+        // also the one ClientWorld exposes — one shared instance. Its ModelFactory mirrors
+        // ProjectileRenderer.ModelFactory (AssetLoader.LoadModel, null-tolerant). Held in _orbRenderer so the
+        // per-frame view-effects feed can read ActiveOrbs() for the in-orb color flash. The node self-advances
+        // via its own _Process once in the tree (same as the ProjectileRenderer).
+        _orbRenderer = new XonoticGodot.Game.Client.NadeOrbRenderer { Name = "NadeOrbRenderer" };
+        AddChild(_orbRenderer);
+        if (_assets is not null)
+            _orbRenderer.ModelFactory = m => _assets.LoadModel(m);
+        if (_render is not null)
+            _render.NadeOrbs = _orbRenderer;
 
         // Screen-space vignette (cl_vignette_*): a soft darkened gradient framing the view edges, on its own
         // CanvasLayer above the world/ViewEffects tint but below the HUD. Self-contained — it registers its own
@@ -2714,15 +2747,9 @@ public sealed partial class NetGame : Node3D
             // off the networked LocalState slice. The host damagetext hit path below still owns the host
             // crosshair flash + hitsound; UpdateCrosshairFeedback only fires the hit cue on the remote path.
 
-            // (weapon-ring feeder hoisted out of the host-only block — see the unconditional call before
-            // ProcessAnnouncerQueue below — so it also runs for a pure remote client; UpdateCrosshairWeaponRings
-            // now picks its source: LocalServerPlayer on a host, the networked ClientNet ring values on a client.)
-
-            // [Wave5] in-vehicle HUD + aux lock crosshair (QC cl_vehicles.qc Vehicles_drawHUD / drawCrosshair +
-            // the TE_CSQC_VEHICLESETUP dispatch). On the host path the local Player carries the live vehicle link
-            // and the 0..100 stat mirror the descriptor Think writes each tick, so feed the VehicleHud panel
-            // straight from it (the cross-client VEHICLESTAT_* networking is the remote-client follow-up).
-            UpdateVehicleHud();
+            // (weapon-ring + vehicle-HUD feeders hoisted out of the host-only block — see the unconditional calls
+            // before ProcessAnnouncerQueue below — so they also run for a pure remote client; each now picks its
+            // source: LocalServerPlayer on a host, the networked ClientNet slice on a client.)
         }
         else if (_client is not null && _client.HasItemsTime)
         {
@@ -2748,6 +2775,15 @@ public sealed partial class NetGame : Node3D
         // cross-client wepent-prop networking that was the prior follow-up is wired (smoke consumer in
         // UpdateCrosshairWeaponRings; the full viewmodel/beam consumers land in Phase 2).
         UpdateCrosshairWeaponRings();
+
+        // [Wave5 + vehicleview] in-vehicle HUD + aux lock crosshair (QC cl_vehicles.qc Vehicles_drawHUD /
+        // drawCrosshair + the TE_CSQC_VEHICLESETUP dispatch). Runs on EVERY path now (hoisted out of the host-only
+        // block, like the weapon rings): a listen host reads the live local Player's vehicle link + 0..100 stat
+        // mirror; a pure remote pilot reads the networked VehicleViewState off ClientNet.LocalState; a spectator
+        // reads the followed entity's VehicleView slice. The camera's cockpit/chase pull-back keys off the panel's
+        // resolved InVehicle (see UpdateCamera). Skipped only when there is no full HUD yet.
+        if (_fullHud is not null)
+            UpdateVehicleHud();
 
         // [T41] objective rings (NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS) + the remote-client hit-
         // indication flash. Runs on EVERY path (hoisted out of the host-only block): a listen host reads the
@@ -3123,6 +3159,30 @@ public sealed partial class NetGame : Node3D
             bool isFrozen = localFrozen is { } lf && StatusEffectsCatalog.Frozen is { } frozenDef
                 && StatusEffectsCatalog.Has(lf, frozenDef);
             _viewEffects.UpdateFrozenOverlay(isFrozen, localFrozen?.ReviveProgress ?? 0f);
+
+            // Darkness-nade blind overlay (QC nade/darkness.qc → STAT(NADE_DARKNESS_TIME) → the CSQC full-screen
+            // fade). The stat is the ABSOLUTE server time the blind expires; the client renders the remaining
+            // window = NadeDarknessTime − now. The host reads the live local Player; a pure remote client reads
+            // the networked own-entity slice (the Feedback block ships NadeDarknessTime). _renderClock is the
+            // server-synced clock the stat is stamped against.
+            float clientNow = _renderClock;
+            float darknessRemaining = (LocalServerPlayer is { } lp
+                ? lp.NadeDarknessTime
+                : _client?.LocalState?.NadeDarknessTime ?? 0f) - clientNow;
+            darknessRemaining = Mathf.Max(0f, darknessRemaining);
+            _viewEffects.UpdateDarknessOverlay(darknessRemaining);
+            // SND_BLIND ("misc/blind"): a one-shot 2D cue on the 0→positive onset edge (QC plays it as the blind
+            // lands, not every frame). Edge-tracked so it fires once per darkness field, not while it lingers.
+            bool darknessNow = darknessRemaining > 0f;
+            if (darknessNow && !_nadeDarknessActive)
+                PlayLocal2DSound("misc/blind");
+            _nadeDarknessActive = darknessNow;
+
+            // In-orb color flash (QC hud_colorflash): tint the screen toward an orb's color while the predicted eye
+            // is inside that orb's radius. The orb set + their flash colors/alphas come from the NadeOrbRenderer
+            // (fed off the entity stream); the eye is the SAME final render origin the contents sample uses.
+            if (_orbRenderer is not null)
+                _viewEffects.UpdateOrbColorFlash(_view.RenderedEyeQuake, _orbRenderer.ActiveOrbs());
         }
 
         // Keep the radar oriented to the player's facing, and feed the live +zoom fraction so the radar's
@@ -3252,6 +3312,14 @@ public sealed partial class NetGame : Node3D
             x.NadeTimer = host.NadeTimer;
             x.ReviveProgress = host.ReviveProgress;
             x.CaptureProgress = 0f; // no host producer yet (QC STAT(CAPTURE_PROGRESS) is gametype-set)
+
+            // Bonus-nade readout for the ammo panel (QC STAT(NADE_BONUS)/NADE_BONUS_TYPE/NADE_BONUS_SCORE): banked
+            // count, the Nades registry id selecting the icon, and the 0..1 fraction toward the next bonus. Live off
+            // the local Player on the host.
+            _fullHud.Ammo.NadeBonusCount = host.NadeBonus;
+            _fullHud.Ammo.NadeBonusTypeId = host.NadeBonusType;
+            _fullHud.Ammo.NadeBonusScoreFrac = host.NadeBonusScore;
+
             _remoteHitInit = false; // re-baseline the remote diff if we ever fall back to the client path
             return;
         }
@@ -3260,6 +3328,7 @@ public sealed partial class NetGame : Node3D
         if (_client is null || _client.LocalState is not { } ls)
         {
             x.NadeTimer = 0f; x.CaptureProgress = 0f; x.ReviveProgress = 0f;
+            _fullHud.Ammo.NadeBonusCount = 0; _fullHud.Ammo.NadeBonusTypeId = 0; _fullHud.Ammo.NadeBonusScoreFrac = 0f;
             _remoteHitInit = false;
             return;
         }
@@ -3267,6 +3336,11 @@ public sealed partial class NetGame : Node3D
         x.NadeTimer = ls.NadeTimer;
         x.CaptureProgress = ls.CaptureProgress;
         x.ReviveProgress = ls.ReviveProgress;
+
+        // Bonus-nade readout from the networked own-entity slice (the Feedback block ships NadeBonus/Type/Score).
+        _fullHud.Ammo.NadeBonusCount = ls.NadeBonus;
+        _fullHud.Ammo.NadeBonusTypeId = ls.NadeBonusType;
+        _fullHud.Ammo.NadeBonusScoreFrac = ls.NadeBonusScore;
 
         // QC UpdateDamage: when the cumulative dealt-damage stat advances, the crosshair flashes (and the
         // hitsound beeps). Diff it against the last frame; skip the first sample so a non-zero baseline (joining
@@ -3502,8 +3576,18 @@ public sealed partial class NetGame : Node3D
         Player? p = LocalServerPlayer;
         Entity? veh = p?.Vehicle;
 
+        // No host-side local Player (a pure remote / dedicated-server client, OR a spectator following a pilot):
+        // source the panel from the networked VehicleViewState instead — the remote pilot's own-entity slice, or
+        // the followed spectatee's entity slice. UpdateVehicleHudRemote drives + returns; only fall through to the
+        // host path below when LocalServerPlayer is live.
+        if (p is null)
+        {
+            UpdateVehicleHudRemote(hud);
+            return;
+        }
+
         // Not piloting (on foot / observing / dead) → the hud_id == HUD_NORMAL exit case (hides + clears aux).
-        if (p is null || veh is null || p.IsDead || p.IsObserver)
+        if (veh is null || p.IsDead || p.IsObserver)
         {
             if (hud.InVehicle)
                 hud.Exit();
@@ -3532,6 +3616,11 @@ public sealed partial class NetGame : Node3D
         hud.Energy = Godot.Mathf.Clamp(p.VehicleEnergy * 0.01f, 0f, 1f);
         hud.Ammo1  = Godot.Mathf.Clamp(p.VehicleAmmo1 * 0.01f, 0f, 1f);
         hud.Ammo2  = Godot.Mathf.Clamp(p.VehicleAmmo2 * 0.01f, 0f, 1f);
+        // Mirror BOTH reload bars (QC 0.01 * STAT(VEHICLESTAT_RELOAD1/2)) — the NE bar falls back to Reload1 when
+        // Ammo1 is empty (DrawClippedBar: Ammo1 > 0 ? Ammo1 : Reload1), so leaving Reload1 stale on the host path
+        // made the host pilot's empty-reload bar diverge from the remote pilot's (which mirrors both). Keep them in
+        // lockstep with the resolver / UpdateVehicleHudRemote so host and pure-remote pilots draw identically.
+        hud.Reload1 = Godot.Mathf.Clamp(p.VehicleReload1 * 0.01f, 0f, 1f);
         hud.Reload2 = Godot.Mathf.Clamp(p.VehicleReload2 * 0.01f, 0f, 1f);
 
         if (isGunner)
@@ -3584,6 +3673,104 @@ public sealed partial class NetGame : Node3D
         // FeedSpiderbotReticle runs after it and sets the spiderbot's (and is a no-op for the other vehicles).
         FeedRaptorReticle(hud, veh, p);
         FeedSpiderbotReticle(hud, veh);
+    }
+
+    /// <summary>
+    /// Remote/spectator twin of <see cref="UpdateVehicleHud"/>: drives the vehicle HUD from the networked
+    /// <see cref="VehicleViewState"/> rather than a host-side <see cref="Player"/>. Source: the followed
+    /// spectatee's entity slice (<c>SpectatingNetId</c> → <c>TryGetRemoteState(...).VehicleView</c>, mirroring the
+    /// wepent spectatee branch in <see cref="UpdateCrosshairWeaponRings"/>) when spectating, else the local
+    /// client's own-entity slice (<c>ClientNet.LocalState.VehicleView</c>) for a pure remote pilot. When the block
+    /// is inactive (VehKind 0 = on foot / observing) the panel exits. The lock-target world position is NOT
+    /// networked, so the aux lock crosshair is cleared (host-only nicety); the reticle + bars + strength still draw.
+    /// </summary>
+    private void UpdateVehicleHudRemote(XonoticGodot.Game.Hud.VehicleHud hud)
+    {
+        // Pick the source VehicleViewState: the followed spectatee's (entity slice) while spectating, else the
+        // local client's own-entity slice (the remote pilot). Default to None when neither is available.
+        XonoticGodot.Net.VehicleViewState v = XonoticGodot.Net.VehicleViewState.None;
+        int specNet = _client?.SpectatingNetId ?? 0;
+        if (specNet != 0 && _client != null && _client.TryGetRemoteState(specNet, out var rs))
+            v = rs.VehicleView;
+        else if (_client?.LocalState is { } ls)
+            v = ls.VehicleView;
+
+        // Inactive (on foot / observing) → the HUD_NORMAL exit case.
+        if (!v.IsActive)
+        {
+            if (hud.InVehicle)
+                hud.Exit();
+            return;
+        }
+
+        // TE_CSQC_VEHICLESETUP: select the art set from the networked vehicle id (re-shows the panel). VehKind
+        // mirrors the QC hud id: 2 raptor, 3 spiderbot, 4 bumblebee, 5 bumblebee-gun (gunner); 1/other = racer.
+        hud.ConfigureForVehicle(v.VehKind switch
+        {
+            2 => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Raptor,
+            3 => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Spiderbot,
+            4 => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Bumblebee,
+            5 => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.BumblebeeGun,
+            _ => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Racer,
+        });
+
+        // The wire block already carries the [0,1] bars (VehicleViewState fields are pre-scaled), so mirror them
+        // straight onto the panel — no 0.01 * STAT(...) scaling like the host path.
+        hud.Health  = Godot.Mathf.Clamp(v.Health, 0f, 1f);
+        hud.Shield  = Godot.Mathf.Clamp(v.Shield, 0f, 1f);
+        hud.Energy  = Godot.Mathf.Clamp(v.Energy, 0f, 1f);
+        hud.Ammo1   = Godot.Mathf.Clamp(v.Ammo1, 0f, 1f);
+        hud.Ammo2   = Godot.Mathf.Clamp(v.Ammo2, 0f, 1f);
+        hud.Reload1 = Godot.Mathf.Clamp(v.Reload1, 0f, 1f);
+        hud.Reload2 = Godot.Mathf.Clamp(v.Reload2, 0f, 1f);
+
+        // The lock-target identity/world position is not on the wire (only LockTargetValid + LockStrength), so the
+        // precise aux lock crosshair can't be projected on the remote path — clear it (host-only nicety). The
+        // gunner side-aux markers are likewise host-only; the remote view keeps the reticle, bars and strength.
+        hud.ClearAuxiliaryXhair(0);
+        hud.ClearAuxiliaryXhair(1);
+        hud.ClearAuxiliaryXhair(2);
+        hud.ShowNoRightGunner = false;
+        hud.ShowNoLeftGunner = false;
+
+        // Centered per-mode reticle from the networked vehicle id + weapon-2 sub-mode (no host Entity, so the live
+        // tracetoss bomb dropmark is suppressed — the remote path draws the reticle only, never the green live mark).
+        FeedRemoteReticle(hud, v);
+    }
+
+    /// <summary>Drive the centered vehicle reticle on the REMOTE/spectator path from the networked
+    /// <see cref="VehicleViewState"/> (no host Entity available). Mirrors the per-mode reticle selection of
+    /// <see cref="FeedRaptorReticle"/>/<see cref="FeedSpiderbotReticle"/> off <c>VehKind</c> + <c>W2Mode</c>, but
+    /// the live bomb-dropmark prediction (which needs the vehicle entity for tracetoss) is suppressed — only the
+    /// reticle draws. <c>DropmarkPredictReady</c> is the networked "bombs ready" flag, kept for parity of intent.</summary>
+    private static void FeedRemoteReticle(XonoticGodot.Game.Hud.VehicleHud hud, in XonoticGodot.Net.VehicleViewState v)
+    {
+        // The remote path never draws the live green dropmark (tracetoss needs the server-side vehicle entity).
+        hud.DropmarkActive = false;
+        hud.DropmarkLive = false;
+
+        switch (v.VehKind)
+        {
+            case 2: // raptor — QC vr_crosshair: RSM_FLARE (2) → vCROSS_RAIN; RSM_BOMB (1)/default → vCROSS_BURST.
+                hud.MainReticle = v.W2Mode == (int)RaptorMode.Flare
+                    ? "gfx/vehicles/crosshair_rain"
+                    : "gfx/vehicles/crosshair_burst";
+                break;
+            case 3: // spiderbot — SBRM_VOLLY → vCROSS_BURST; SBRM_ARTILLERY → vCROSS_RAIN; SBRM_GUIDE (default) → vCROSS_GUIDE.
+                hud.MainReticle = v.W2Mode switch
+                {
+                    (int)SpiderbotRocketMode.Volley    => "gfx/vehicles/crosshair_burst",
+                    (int)SpiderbotRocketMode.Artillery => "gfx/vehicles/crosshair_rain",
+                    _                                  => "gfx/vehicles/crosshair_guide",
+                };
+                break;
+            case 4: // bumblebee pilot — the centered vCROSS_HEAL heal-gun pointer (QC bumblebee vr_crosshair).
+                hud.MainReticle = "gfx/vehicles/crosshair_heal";
+                break;
+            default: // racer / bumblebee-gun gunner — no centered per-mode reticle.
+                hud.MainReticle = "";
+                break;
+        }
     }
 
     /// <summary>
@@ -5575,6 +5762,11 @@ public sealed partial class NetGame : Node3D
             OnGround = _carrier?.OnGround ?? false,
             JumpHeld = BindTable.JumpHeld,
         };
+        // QC cl_eventchase_vehicle: while seated in a vehicle the shared view engages the cockpit/chase pull-back
+        // (FirstPersonView.ApplyVehicle). The HUD already resolved seated-ness this frame (VehicleHud.InVehicle,
+        // host or remote), so reuse it as the camera's gate. The chase pivot is the seated origin — st.OriginQuake
+        // is already glued to the vehicle origin + '0 0 32' for the seated carrier, so no extra origin plumbing.
+        _view.InVehicle = _fullHud.Vehicle.InVehicle;
         _view.UpdateView(_camera, st, dt);
     }
 
@@ -5649,6 +5841,23 @@ public sealed partial class NetGame : Node3D
             return;
         }
         _render.OnSound(e.Sample, e.Origin, e.Volume, e.Attenuation, e.Channel, e.SourceNetId, e.Pitch);
+    }
+
+    /// <summary>Play a one-shot NON-spatial 2D cue (DP <c>sound(world, …, ATTN_NONE)</c> / a CSQC local play) —
+    /// e.g. SND_BLIND on a darkness-nade onset. Loads through the same VFS <see cref="AssetLoader.LoadSound"/> the
+    /// HUD/announcer use, plays on the SFX bus, and self-frees when finished (no pooled emitter — these fire
+    /// rarely). No-op if the asset loader or the sample is missing.</summary>
+    private void PlayLocal2DSound(string sample)
+    {
+        if (_assets is null || string.IsNullOrEmpty(sample))
+            return;
+        AudioStream? stream = _assets.LoadSound(sample);
+        if (stream is null)
+            return;
+        var player = new AudioStreamPlayer { Name = "Local2DSound", Bus = "SFX", Stream = stream };
+        player.Finished += player.QueueFree; // one-shot: drop the node once the cue ends
+        AddChild(player);
+        player.Play();
     }
 
     /// <summary>

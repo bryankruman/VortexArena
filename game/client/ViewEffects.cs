@@ -40,6 +40,8 @@ public partial class ViewEffects : CanvasLayer
     private TextureRect _bloodSplat = null!;  // QC drawpic("gfx/blood", ...) — the centred blood splatter
     private ColorRect _contents = null!;
     private ColorRect _frozen = null!;
+    private ColorRect _darkBlind = null!; // Darkness nade blind: blinking near-black full-screen overlay (HUD_DarkBlinking)
+    private ColorRect _orbFlash = null!;  // In-orb 2D additive colour flash (orb_draw2d)
 
     // QC view.qc:1304 cl_gentle_damage==2: a randomized colour latched while the flash is gone (myhealth_gentlergb).
     private Color _myHealthGentleRgb = new(1f, 0.7f, 1f);
@@ -78,6 +80,9 @@ public partial class ViewEffects : CanvasLayer
     private const float DefDamageGentleAlphaMultiplier    = 0.10f; // hud_damage_gentle_alpha_multiplier
     private static readonly Color DefDamageGentleColor    = new(1f, 0.7f, 1f); // hud_damage_gentle_color "1 0.7 1"
 
+    // Nades — Darkness blind + in-orb colour flash (mutators/mutator/nades).
+    private const float DefColorFlashAlpha     = 0.5f;   // hud_colorflash_alpha (orb_draw2d screen-flash strength)
+
     private const float DefContentsWaterAlpha  = 0.5f;   // hud_contents_water_alpha
     private const float DefContentsLavaAlpha   = 0.7f;   // hud_contents_lava_alpha
     private const float DefContentsSlimeAlpha  = 0.7f;   // hud_contents_slime_alpha
@@ -100,10 +105,21 @@ public partial class ViewEffects : CanvasLayer
         _bloodSplat = MakeBloodSplat();
         _damage = MakeFullScreenRect("DamageFlash");
         _frozen = MakeFullScreenRect("FrozenOverlay");
+        _darkBlind = MakeFullScreenRect("DarknessBlind");
+        _orbFlash = MakeFullScreenRect("OrbColorFlash");
+        // orb_draw2d paints the screen ADDITIVELY (drawfill DRAWFLAG_ADDITIVE) so the orb's colour brightens the
+        // view rather than darkening it; a CanvasItemMaterial in Add blend mode reproduces that compositing.
+        _orbFlash.Material = new CanvasItemMaterial { BlendMode = CanvasItemMaterial.BlendModeEnum.Add };
         AddChild(_contents);
         AddChild(_bloodSplat); // the gfx/blood splatter — the default (non-gentle) damage flash
         AddChild(_damage);     // gentle-mode solid flash, on top of the liquid tint
         AddChild(_frozen);     // the Freeze-Tag icy overlay composites on top of both
+        AddChild(_darkBlind);  // Darkness-nade blind: blinking near-black, on top of the icy overlay
+        AddChild(_orbFlash);   // in-orb additive colour flash, the topmost view-effect layer
+
+        // hud_colorflash_alpha — the orb_draw2d screen-flash strength (Base default 0.5).
+        if (Api.Services is not null)
+            Api.Cvars.Register("hud_colorflash_alpha", "0.5");
 
         _myHealthPrev = 0f;
     }
@@ -386,6 +402,71 @@ public partial class ViewEffects : CanvasLayer
         // QC base col '0.25 0.90 1'; as col_fade rises the tint warms (R up, G/B down toward white-ish).
         Color col = new(0.25f + colFade, 0.90f - colFade, 1f - colFade);
         SetAlpha(_frozen, col, alphaFade);
+    }
+
+    /// <summary>
+    /// The Darkness-nade blind overlay — port of <c>HUD_DarkBlinking</c>
+    /// (mutators/mutator/nades/nades.qc). While the local player is blinded by a Darkness nade
+    /// (<c>STAT(NADE_DARKNESS_TIME) - time &gt; 0</c>) the whole screen is filled near-black with a BLINKING
+    /// alpha, so the view pulses dark while the blind lasts. Cleared when the blind has expired.
+    /// </summary>
+    /// <param name="darknessRemaining">Seconds of blind left (QC <c>NADE_DARKNESS_TIME - time</c>); &lt;= 0 = none.</param>
+    public void UpdateDarknessOverlay(float darknessRemaining)
+    {
+        if (darknessRemaining <= 0f)
+        {
+            SetAlpha(_darkBlind, new Color(0f, 0f, 0f), 0f);
+            return;
+        }
+
+        // QC HUD_DarkBlinking: drawfill('0 0 0', bound(0.2, sin(time*const)*0.25 + 0.75, 0.9)) — a near-black
+        // fill whose alpha throbs between 0.2 and 0.9. _time is the same frametime-accumulated clock the
+        // pain-threshold pulse uses, so the blink keeps ticking with the rest of the view effects.
+        float alpha = Mathf.Clamp(Mathf.Sin(_time * 10f) * 0.25f + 0.75f, 0.2f, 0.9f);
+        SetAlpha(_darkBlind, new Color(0f, 0f, 0f), alpha);
+    }
+
+    /// <summary>
+    /// The in-orb 2D colour flash — port of <c>orb_draw2d</c> (mutators/mutator/nades/nades.qc). When the eye
+    /// is inside a nade orb's radius, the screen is painted ADDITIVELY with that orb's colour at
+    /// <c>hud_colorflash_alpha * orb.Alpha</c>, so standing inside e.g. a heal/veil orb tints the view its colour.
+    /// When the eye sits inside several overlapping orbs the STRONGEST one wins (the QC orbs draw in turn but the
+    /// additive layer is dominated by the brightest contribution; we take the max so it reads stably).
+    /// </summary>
+    /// <param name="eyeOrigin">The local view origin in world space (QC <c>view_origin</c>), Quake units.</param>
+    /// <param name="orbs">The live orbs: each (world Origin, containment Radius, flash Color, per-orb Alpha 0..1).</param>
+    public void UpdateOrbColorFlash(
+        System.Numerics.Vector3 eyeOrigin,
+        System.Collections.Generic.IReadOnlyList<(System.Numerics.Vector3 Origin, float Radius, Color Color, float Alpha)> orbs)
+    {
+        float flashAlpha = Cvar("hud_colorflash_alpha", DefColorFlashAlpha);
+
+        // Find the strongest orb whose radius contains the eye (QC: each orb tints if vlen(view_origin-org) < radius).
+        bool any = false;
+        Color best = new(0f, 0f, 0f);
+        float bestAlpha = 0f;
+        if (orbs is not null)
+        {
+            for (int i = 0; i < orbs.Count; i++)
+            {
+                var orb = orbs[i];
+                if ((eyeOrigin - orb.Origin).Length() >= orb.Radius)
+                    continue;
+                float a = flashAlpha * orb.Alpha;
+                if (a <= bestAlpha)
+                    continue;
+                bestAlpha = a;
+                best = orb.Color;
+                any = true;
+            }
+        }
+
+        if (!any)
+        {
+            SetAlpha(_orbFlash, new Color(0f, 0f, 0f), 0f);
+            return;
+        }
+        SetAlpha(_orbFlash, best, bestAlpha);
     }
 
     private static void SetAlpha(ColorRect rect, Color rgb, float alpha)

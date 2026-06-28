@@ -75,6 +75,14 @@ public partial class PlayerModel : Node3D
     /// <summary>The networked entity this model renders (set when attached; <c>ClientWorld._Process</c> poses it).</summary>
     public Entity? Bound { get; set; }
 
+    /// <summary>
+    /// [freezetag.presentation.frozen_anim] When set, hold the skeleton in the frozen standing/idle pose: the
+    /// legs are pinned to the idle locomotion (the morph holds one frame, _legsTime is not advanced) and the
+    /// upper-body action overlay is skipped (a frozen player plays no shoot/pain torso). The body still aims with
+    /// view pitch (FromFrames runs unchanged), matching Base, which sets the frozen frame and stops the animation.
+    /// </summary>
+    public bool FrozenHold { get; set; }
+
     // --- streaming placeholder (perf §9.4 Wave 1) ---------------------------------------------------------
     // While the skeletal model parses on the thread pool, the player renders as this shared gray box (the
     // same one ClientWorld drops for an unresolvable model). Shared mesh+material: a per-shell
@@ -205,7 +213,16 @@ public partial class PlayerModel : Node3D
         LocomotionBlend.DirLocomotion loco =
             LocomotionBlend.SelectLegsDirectional(e.Velocity, e.Angles, e.OnGround, e.IsDucked, dead);
 
-        if (loco != _lastLoco) { _legsTime = 0f; _lastLoco = loco; }
+        // [freezetag.presentation.frozen_anim] A frozen player holds the standing/idle pose: force the idle
+        // locomotion and DO NOT advance _legsTime, so the legs morph is pinned to one frame (Base sets the frozen
+        // frame and stops the animation). The body still aims with view pitch via FromFrames below. The upper-body
+        // action overlay is skipped further down so a frozen player plays no shoot/pain torso.
+        if (FrozenHold)
+        {
+            loco = L.Idle;
+            _lastLoco = loco; // pin: equal-loco path increments _legsTime, so keep it consistent without advancing
+        }
+        else if (loco != _lastLoco) { _legsTime = 0f; _lastLoco = loco; }
         else _legsTime += dt;
 
         FrameGroup legs = _legClips[(int)loco];
@@ -222,7 +239,7 @@ public partial class PlayerModel : Node3D
         // action is active. Initialized up front so the compiler sees `anim` definitely assigned regardless
         // of the action-clip branch (the static Split for an overlaid frame is a rare, brief-window cost).
         SkeletonAnim anim = LocomotionBlend.Split(legs, _legsTime, _torsoClip, 0f);
-        if (!float.IsNaN(serverNow) && e.UpperAction != 0)
+        if (!FrozenHold && !float.IsNaN(serverNow) && e.UpperAction != 0)
         {
             var (active, phase) = LocomotionBlend.SelectTorsoAction(e.UpperAction, e.AnimActionTime, serverNow);
             if (active)

@@ -33,6 +33,25 @@ namespace XonoticGodot.Common.Framework
         public XonoticGodot.Net.WepentViewState WepentView = XonoticGodot.Net.WepentViewState.None;
 
         // =====================================================================================
+        //  [vehicleview] vehicle HUD / chase-cam render-proxy slice
+        // =====================================================================================
+        // Decoded from NetEntityState.VehicleView (the VehicleViewState block) onto the proxy so the vehicle
+        // HUD (health/shield/energy/ammo bars, weapon2 mode, lock reticle + lock strength) and the vehicle
+        // chase camera can drive off a remotely-networked pilot. A remote pilot reads its OWN block off
+        // ClientNet.LocalState; a spectator following a pilot reads it off the entity stream onto this proxy.
+        // All-zero (VehKind 0 == VehicleViewState.None) means on-foot/observing, so the wire bit stays clear
+        // and an ordinary player/projectile/item costs nothing for this group.
+
+        /// <summary>QC vehicle view-state block (HUD health/shield/energy/ammo + reload, vehicle kind,
+        /// weapon2 mode, lock strength + flags) decoded onto this client render proxy from
+        /// <c>NetEntityState.VehicleView</c>. Initialised to
+        /// <see cref="XonoticGodot.Net.VehicleViewState.None"/> (all-default, <c>IsActive == false</c>): a
+        /// player on foot / observing never sets the wire bit, so it stays None. A remote pilot reads its own
+        /// block off <c>ClientNet.LocalState</c>; a spectator following a pilot reads it off the entity stream
+        /// onto this proxy. Read by the vehicle HUD + vehicle chase camera; the server sim never reads it.</summary>
+        public XonoticGodot.Net.VehicleViewState VehicleView = XonoticGodot.Net.VehicleViewState.None;
+
+        // =====================================================================================
         //  [objstream] turret / objective render-proxy slice
         // =====================================================================================
         // Decoded from NetEntityState (EntityField.TurretHead / EntityField.ObjState) onto the proxy so the

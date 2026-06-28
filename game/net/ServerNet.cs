@@ -2102,6 +2102,17 @@ public sealed class ServerNet : IDisposable
                 HitDamageDealtTotal = p.HitsoundDamageDealtTotal,
                 NadeTimer = p.NadeTimer,
                 ReviveProgress = p.ReviveProgress,
+                // [W-nadeclient] owner-only nade STATs, carried in the SAME EntityField.Feedback block (appended after
+                // the four ring floats in NetEntity.cs). NadeDarknessTime = QC STAT(NADE_DARKNESS_TIME) (absolute
+                // expiry — the client computes remaining = NadeDarknessTime - now to fade the darkness overlay);
+                // NadeBonus/NadeBonusType/NadeBonusScore = the banked-bonus count/type-id/progress driving the
+                // ammo-panel nade-bonus counter + bonus-progress bar. All 0 on a fresh/no-nade player → the Feedback
+                // bit stays clear; the privacy gate already strips this whole block for non-owner viewers (it's owner-
+                // only state, never networked to remotes — see the WepentView/owner-block precedent).
+                NadeDarknessTime = p.NadeDarknessTime,
+                NadeBonus = p.NadeBonus,
+                NadeBonusType = p.NadeBonusType,
+                NadeBonusScore = p.NadeBonusScore,
                 // [W14b LI1] the animdecide upper-body action overlay (SHOOT this wave) + its start time. The server
                 // latches the action at the weapon-fire commit (WeaponFireGate) and networks the expiry-resolved id
                 // (resolvedAction above): the client plays it as a torso overlay over the velocity-derived legs (LI3).
@@ -2131,6 +2142,12 @@ public sealed class ServerNet : IDisposable
                 // no-charge player resolves to WepentViewState.None, which NetEntityState.Diff compares field-by-field
                 // against the baseline → the EntityField.WepentView bit stays clear and that player costs nothing here.
                 WepentView = XonoticGodot.Common.Gameplay.WepentResolver.Resolve(p, CountLiveMines, _world.Time),
+                // [W-vehicleview] the per-player vehicle HUD view-state — the seated-pilot health/shield/energy/ammo/
+                // reload bars, the vehicle hud id, weapon-2 mode, and lock strength/flags. Resolved off the
+                // authoritative player exactly like WepentView above; an on-foot / observing player resolves to
+                // VehicleViewState.None (VehKind 0), which NetEntityState.Diff compares field-by-field against the
+                // baseline → the EntityField.VehicleView bit stays clear and that player costs nothing here.
+                VehicleView = XonoticGodot.Common.Gameplay.VehicleViewResolver.Resolve(p),
                 // ViewmodelSkin / GunAlign have NO server-side producer in the port (the viewmodel skin variant and
                 // cl_gunalign side are client-local concepts; QC networks them off the wepent entity, which the port
                 // doesn't yet model server-side). Left at their defaults (0) — the wire is RESERVED for a later wave
@@ -2184,7 +2201,11 @@ public sealed class ServerNet : IDisposable
             // Projectiles carry NO server-side .model (QC sets the model client-side via CSQCProjectile); the
             // client renders them procedurally (ProjectileRenderer + ProjectileCatalog). So a projectile networks
             // even with an empty model — only NON-projectiles are dropped for having nothing to draw.
-            if (kind != NetEntityKind.Projectile && e.ModelIndex <= 0 && string.IsNullOrEmpty(e.Model))
+            // [W-nadeclient] a NadeOrb (like a Projectile) carries NO server-side model — the client renders it
+            // procedurally from the NadeOrbState block (OrbType/OrbExpire/OrbRadius). So exempt it from the
+            // empty-model drop alongside Projectile; only OTHER kinds are dropped for having nothing to draw.
+            if (kind != NetEntityKind.Projectile && kind != NetEntityKind.NadeOrb
+                && e.ModelIndex <= 0 && string.IsNullOrEmpty(e.Model))
                 continue;                          // nothing to render
 
             // Give a model-less projectile a catalog key so the client picks the right type (rocket/grenade/
@@ -2198,6 +2219,15 @@ public sealed class ServerNet : IDisposable
                 // the client picks PROJECTILE_GRENADE_BOUNCING (sideways tumble) instead of PROJECTILE_GRENADE.
                 if (e.CsqcProjectileBouncing)
                     netModel += " bouncing";
+                // [W-nadeclient] a thrown nade encodes its TYPE into the same catalog key so the client classifier
+                // picks the right CSQCProjectile model/trail (napalm/ice/heal/…) instead of the generic nade. The
+                // registry id 0 is the "random/null" sentinel (no specific type) — only append a concrete netname.
+                if (e.ClassName == "nade")
+                {
+                    var def = XonoticGodot.Common.Gameplay.Nades.NadeRegistry.ById(e.NadeBonusType);
+                    if (def is not null && def.Id != 0)
+                        netModel += " " + def.NetName;
+                }
             }
 
             int netId = EntityNetBase + e.Index;
@@ -2263,6 +2293,18 @@ public sealed class ServerNet : IDisposable
                 float frac = e.GtObjHealth / e.GtObjMaxHealth;
                 s.ObjHealthByte = (byte)System.Math.Clamp((int)MathF.Round(frac * 255f), 0, 255);
                 s.ObjState = ResolveObjState(e);
+            }
+            // [W-nadeclient] the nade_orb STATE block (QC the orb's networked id/expiry/radius — carried under
+            // EntityField.NadeOrbState, present ONLY on a NadeOrb entity). OrbType = the Nades registry id (selects the
+            // orb model + flash color); OrbExpire = the absolute expiry the client derives the scale-up/fade phase from
+            // (QC .ltime, stored on e.NadeOrbExpire by the boom); OrbRadius = the hull half-width doubled into the full
+            // qu diameter that drives the in-orb color-flash containment test + 3D model scale. The Origin rides the
+            // normal Origin field. Default on every other kind so the NadeOrbState bit stays clear.
+            if (kind == NetEntityKind.NadeOrb)
+            {
+                s.OrbType = (byte)e.NadeBonusType;
+                s.OrbExpire = e.NadeOrbExpire;
+                s.OrbRadius = (int)(e.Maxs.X * 2f);
             }
             _entityScratch[netId] = s;
             _entityBounds[netId] = RelevanceBounds(e.Origin, e.Mins, e.Maxs);
@@ -2407,6 +2449,16 @@ public sealed class ServerNet : IDisposable
                     state.Health = 0;
                     state.Armor = 0;
                 }
+            }
+
+            // [W-vehicleview] the cockpit block is owner-private: the host path reads only LocalServerPlayer.VehicleView,
+            // so a remote client must see its OWN seated HUD and never another pilot's bars. Reset every non-own player's
+            // VehicleView to None so EntityField.VehicleView stays clear for remotes (independent of the enemy-privacy
+            // gate above, which only fires for enemy recipients — vehicle state is private from teammates too).
+            if (applyPrivacy && !isOwn && state.Kind == NetEntityKind.Player
+                && !state.VehicleView.Equals(XonoticGodot.Net.VehicleViewState.None))
+            {
+                state.VehicleView = XonoticGodot.Net.VehicleViewState.None;
             }
 
             _relevantScratch[kv.Key] = state;
@@ -2645,6 +2697,12 @@ public sealed class ServerNet : IDisposable
         // (rocket/grenade/bolt/nade/mine/…). Same test as TurretAI.IsMissile; excludes ownerless map geometry.
         if ((e.Flags & EntFlags.Item) != 0 && e.Owner is not null && IsProjectileMoveType(e.MoveType))
             return NetEntityKind.Projectile;
+
+        // [W-nadeclient] the nade_orb effect entity (heal/ammo/entrap/veil/ice/darkness orb) is SOLID_TRIGGER, so the
+        // generic Trigger→Item branch below would mis-classify it as an Item AND then drop it for carrying no server
+        // model (orbs render procedurally, like projectiles). Classify it explicitly BEFORE that branch.
+        if (cn == "nade_orb")
+            return NetEntityKind.NadeOrb;
 
         if (cn.Contains("_item") || e.Solid == Solid.Trigger)
             return NetEntityKind.Item;

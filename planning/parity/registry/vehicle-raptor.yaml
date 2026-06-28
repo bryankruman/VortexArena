@@ -1,11 +1,11 @@
 unit: vehicle-raptor
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-28"
+last_audited: "2026-06-28b"
 summary:
   feature_count: 17
   worst_gaps:
-    - "RE-AUDIT 2026-06-28 (post Phase-1/2 framework+consumer wave, HEAD cb7102c): the wave that just landed touched ONLY beam visuals (game/client/EffectSystem.cs Arc/Vortex per-variant beam width + EffectsList.cs new ARC_BEAM_LINE_BURST) — it did NOT touch any raptor code, raptor presentation consumer (VehicleVisuals/VehicleHud/VehicleCatalog/ModelGibs), or raptor effect registration. NOTHING closed and nothing newly opened for the raptor this wave; the 2026-06-27b assessment stands verbatim. Only drift: the EffectsList.cs ARC_BEAM_LINE_BURST insertion shifted RAPTOR_MUZZLEFLASH (:156->:163) + RAPTOR_BOMB_SPREAD (:145->:162) line numbers — citations refreshed, registration + live EffectNetSink wiring unchanged (verified by grep + file-exists check on all consumers)."
+    - "RE-AUDIT 2026-06-28b (post Phase-3a world-model LOGIC wave, HEAD def9a43, commit 825ec91): Phase-3a DID touch raptor-relevant shared logic (the prior baseline's 'NOTHING touched the raptor' row described the EARLIER Phase-2 wave at HEAD cb7102c and is now stale). Two changes land for the raptor: (1) VehicleDef.FlagCarryOffset + Ctf.Tick:1859-1875 make the carried-CTF-flag-rides-the-craft behavior LIVE on the raptor every tick (raptor.enter: 'flag not modeled at all' -> modeled+live), BUT the raptor inherits the shared default '0 0 96' instead of its QC '-20 0 96' (Racer got its '-190 0 96' override this same wave; the raptor's '-20' was missed) -> raptor.enter values faithful->partial, a NEW value gap. (2) VehicleCommon.SpawnVehicle now stamps the vehicle_initialize base DpHitContentsMask (SOLID|BODY +PLAYERCLIP when g_playerclip_collisions) BEFORE the descriptor's per-vehicle LIQUIDSMASK |= — the liquids-sink mask raptor.spawn.setup already tracked stays live, the playerclip base is robustness only (no raptor-specific tracked constant changes). No presentation/render gap closed (Phase-3a explicitly deferred the world-MODEL render half to Phase-3b). Net: 0 dimensions fully CLOSED, 1 newly-OPENED (raptor.enter values:partial)."
     - "DRIFT FIX (2026-06-27 re-audit, Waves 15/17): the prior 2026-06-27 baseline was written from a STALE read — it still recorded the cannon muzzleflash + the entire CSQC HUD as NOT done, but both had since landed. Wave-17 (2f0bfdb) added the live RAPTOR_MUZZLEFLASH emit (Raptor.cs:573) + the full client VehicleHud (game/hud/VehicleHud.cs) fed live by NetGame.UpdateVehicleHud/FeedRaptorReticle; Wave-15 (5958904) fixed the cannon spread RNG to the QC normalize(fwd+randomvec()*spread). Verified by code trace + Common/test build green + 34 vehicle tests pass."
     - "raptor.hud_crosshair: NOW LIVE (was port_refs:[] / all-missing). game/hud/VehicleHud.cs + NetGame.UpdateVehicleHud (NetGame.cs:2650 live each render frame) draw the per-mode reticle (vCROSS_BURST bomb / vCROSS_RAIN flare), the ammo/reload bars, the aux lock crosshair colored by VehLockStrength, AND the signature bomb dropmark with a real tracetoss predictor (VehiclePhysics.BombDropPredict) + green-live/red-linger (dropmark.cnt=time+5) states. Pilot path is the host/listen-server local Player; the cross-client VEHICLESTAT_* networking for a PURE remote client is the documented follow-up."
     - "raptor.impact: CONFIRMED LIVE (fixup commit 4be8357) — Spawn() no longer nulls vehicle.Touch, Think() snapshots OldVelocity, Spawn seeds PlayTime; full dispatch chain MoveTypePhysics(BounceMissile)->PushEntity(doTouch)->FlyMove->VehicleCommon.Touch->VehicleDef.Impact->vehicles_impact. Symmetric with Racer."
@@ -97,9 +97,10 @@ features:
       - { name: "velocity nudge", base: "'0 0 1'", port: "'0 0 1'", match: true }
       - { name: "delay seed", base: "time + bombs_refire", port: "Time + BombsRefire", match: true }
       - { name: "lip seed", base: "time", port: "VehReloadStart = Time", match: true }
+      - { name: "carried-flag cockpit offset", base: "'-20 0 96' (raptor vr_enter)", port: "'0 0 96' (inherits VehicleDef.FlagCarryOffset default — Raptor does NOT override; Racer DOES to '-190 0 96')", match: false }
     status:
       logic: faithful
-      values: faithful
+      values: partial
       timing: faithful
       presentation: missing
       audio: na
@@ -108,12 +109,12 @@ features:
     divergence_rationale: null
     gaps:
       - "tur_head.exteriormodeltoclient owner-binding and CSQCVehicleSetup (client viewport/HUD) not done here (cross-boundary client/net)."
-      - "Carried-flag reparent ('-20 0 96') not modeled (CTF-on-raptor edge): a flag carried while boarding the raptor will not be repositioned to the cockpit mount."
+      - "DRIFT (Phase-3a, 825ec91): carried-flag-rides-vehicle is NOW MODELED + LIVE (was 'not modeled at all') — Ctf.Tick:1859-1875 repositions a seated carrier's flag to vehicle.VehicleDef.FlagCarryOffset (rotated by the craft yaw) EVERY tick. BUT the raptor inherits the shared VehicleDef default '0 0 96' (VehicleCommon.cs:138) and does NOT override it, whereas QC raptor vr_enter parks the flag at '-20 0 96' — so the x-offset is off by 20u (the flag rides 20u too far forward). Racer got its '-190 0 96' override this same wave; the raptor's '-20 0 96' override was missed. values:partial, not a full close."
     verification:
-      - { kind: code, ref: "Raptor.cs:Enter; VehicleBoarding.Enter guards/hooks", result: pass }
-      - { kind: test, ref: "VehicleRuntimeTests board path (UseKey) asserts pl.Vehicle == raptor, W2Mode == Bomb", result: pass }
+      - { kind: code, ref: "Raptor.cs:Enter; VehicleBoarding.Enter guards/hooks; carried-flag ride LIVE Ctf.Tick:1864-1873 (anchor=carrier.Vehicle, off=VehicleDef.FlagCarryOffset); Raptor inherits VehicleCommon.cs:138 default '0 0 96' (no override) vs QC '-20 0 96' — value mismatch", result: pass }
+      - { kind: test, ref: "VehicleRuntimeTests board path (UseKey) asserts pl.Vehicle == raptor, W2Mode == Bomb (no raptor-specific flag-offset assertion)", result: pass }
     confidence: high
-    notes: "Boarding is live via PlayerUseKey port wired into ServerNet +use. Unchanged by Wave-2."
+    notes: "Re-audited 2026-06-28b (Phase-3a, HEAD def9a43): boarding is live via PlayerUseKey -> ServerNet +use. Phase-3a's VehicleDef.FlagCarryOffset + Ctf.Tick per-tick reparent made the carried-flag-rides-the-craft behavior LIVE for the raptor (previously completely unmodeled) — logic/liveness faithful — but the raptor was not given its QC '-20 0 96' override (it inherits the shared '0 0 96'), so values:partial. CSQCVehicleSetup / tur_head exteriormodel still cross-boundary client work."
 
   - id: raptor.takeoff
     name: "Vertical takeoff sequence (raptor_takeoff)"

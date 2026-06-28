@@ -5,6 +5,8 @@ last_audited: "2026-06-28"
 summary:
   feature_count: 16
   worst_gaps:
+    - "REGRESSED-THIS-WAVE (enter.flag-reattach): the new generic Ctf.Tick vehicle flag-ride (Ctf.cs:1859-1874, motivated by the Racer's '-190 0 96' override) now re-parks a carried flag EVERY tick at carrier.Vehicle.VehicleDef.FlagCarryOffset. The spiderbot has NO FlagCarryOffset override -> falls back to the shared default '0 0 96' anchored to the chassis ORIGIN, OVERRIDING its faithful Enter head-bone attachment (setattachment(flag, tur_head) + '-20 0 120'). So a flag-carrier boarding a spiderbot now parks the flag above the body origin, not riding the head turret — a divergence on this initiative's CTF flag-rotation validation anchor. FIX: add `public override Vector3 FlagCarryOffset => new(-20f,0f,120f);` to Spiderbot (and keep the head-bone attachment the origin-anchored per-tick reposition discards). enter.logic/values demoted faithful->partial."
+    - "FIXED-THIS-WAVE (spawn.setup): VehicleCommon.SpawnVehicle now stamps DpHitContentsMask = SOLID|BODY (+PLAYERCLIP when g_playerclip_collisions, default 1), matching QC vehicle_initialize — the walker now collides against func_clip PLAYERCLIP brushes."
     - "FIXED-IN-WAVE-15 (719d377, verified this re-audit): the death blowup now spawns the 4 physics gib entities server-side (Spiderbot.SpawnDeathGibs: body frame 11 + colormod dark + SUB_SetFade; head MOVETYPE_BOUNCE + EF_FLAME + avelocity + the spiderbot_headfade closure that fires SND_ROCKET_IMPACT + EFFECT_EXPLOSION_BIG on its final fade; 2 guns MOVETYPE_TOSS v_forward*700 + fade), hides the originals (alpha=-1), and the gib entities replicate via the normal entity feed. The per-burn EFFECT_EXPLOSION_SMALL + SND_ROCKET_IMPACT and the 250-dmg blast + 45s respawn are faithful. ONLY RESIDUAL on the death scene = the head's MF_ROCKET modelflag (client rocket-smoke-trail render; no port Entity field — EF_FLAME IS set). death.blowup presentation upgraded partial->faithful."
     - "FIXED-SINCE-BASELINE: vr_impact / bouncepain (g_vehicle_spiderbot_bouncepain) is ported (Spiderbot.Impact) and live via VehicleCommon.Touch — a faithful no-op at the stock '0 0 0' default (the bouncepain cvar is not yet server-overridable). pushable IS set (vehicle.PushableFlag=true in Spawn — jumppad launches modeled). FIXED-THIS-AUDIT: mass=5000 is now modeled (Spiderbot.cs:119 vehicle.Mass=5000; the Entity.Mass field from DamageEntityState.cs is read by the blast-push pipeline DamageSystem.cs:791 — mass-scaled only for MOVETYPE_PHYSICS targets, matching QC where .mass affects knockback only on physics-movetype bodies; the spiderbot is MOVETYPE_STEP so neither Base nor port mass-scales its own knockback, but the field is now faithfully present)."
     - "FIXED-SINCE-BASELINE: the server-authoritative Send_Effect muzzle/launch effects are now emitted — EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH (FireMinigun) and EFFECT_SPIDERBOT_ROCKETLAUNCH (RocketDo). Still client-only TODO across the unit: gun barrel spin, aux crosshairs, vehicle_ammo2/reload2 HUD %, PROJECTILE_SPIDERROCKET in-flight CSQC visual, walk/strafe/idle engine sounds (re-architected client-side), and the per-pain EFFECT_SMOKE_SMALL puff (the gameplay-authoritative DmgShake jitter from vehicles_painframe IS produced)."
@@ -91,6 +93,7 @@ features:
       - { name: "pushable", base: "true (jumppads)", port: "vehicle.PushableFlag = true (Spiderbot.cs:136)", match: true }
       - { name: "health_regen / pause", base: "10 / 5", port: "10 / 5", match: true }
       - { name: "shield_regen / pause", base: "25 / 0.35", port: "25 / 0.35", match: true }
+      - { name: "dphitcontentsmask", base: "DPCONTENTS_SOLID|BODY (+PLAYERCLIP when g_playerclip_collisions, default 1)", port: "SpawnVehicle stamps Solid|Body|PlayerClip (VehicleCommon.cs, this wave)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -107,6 +110,7 @@ features:
       - { kind: code, ref: "Spawn no longer sets vehicle.Touch=null (commit 4be8357); SpawnVehicle installs VehicleCommon.Touch (crush/ram/board) and it now survives spawn — matches Base vr_spawn which has no settouch func_null (spiderbot.qc:581-605)", result: pass }
       - { kind: code, ref: "Spawn sets vehicle.PushableFlag=true (Spiderbot.cs:136); MapObjectsCommon.IsPushable (MapObjectsCommon.cs:190) checks .PushableFlag FIRST before the IS_VEHICLE exclusion, matching QC isPushable (triggers.qc:5) + vr_setup instance.pushable=true — the walker can now ride jumppads", result: pass }
       - { kind: code, ref: "Spawn sets vehicle.Mass=5000f (Spiderbot.cs:119), binding Entity.Mass (DamageEntityState.cs:128); the blast-push pipeline reads targ.Mass at DamageSystem.cs:791 (force/mass, MOVETYPE_PHYSICS branch). Matches QC vr_spawn instance.mass=5000.", result: pass }
+      - { kind: code, ref: "FIXED-THIS-WAVE: VehicleCommon.SpawnVehicle (called first in Spiderbot.Spawn) now stamps vehic.DpHitContentsMask = SOLID|BODY (+PLAYERCLIP when g_playerclip_collisions!=0, default 1), matching QC vehicle_initialize (sv_vehicles.qc). The walker's SOLID_SLIDEBOX move-trace now collides against func_clip PLAYERCLIP brushes mappers use to fence vehicles; previously fell back to the engine default hit mask.", result: pass }
     confidence: high
     notes: "FIXED-SINCE-BASELINE: (1) pushable is now modeled (PushableFlag=true -> jumppad/conveyor pushes, matching vr_setup); (2) Touch reset removed (4be8357) so run-over crush stays live, matching Base vr_spawn. FIXED-THIS-AUDIT: mass=5000 is now set (Spiderbot.cs:119, binding the Entity.Mass field from DamageEntityState.cs which the blast-push pipeline reads at DamageSystem.cs:791); values is now faithful. (The spiderbot is MOVETYPE_STEP, so neither Base nor port mass-scales its OWN knockback — .mass only scales force-at-pos for MOVETYPE_PHYSICS targets in both — but the descriptor value now matches Base.) Gun1/gun2 head sub-entities created once. tur_head.frame=1, body frame=5 (idle). VehicleAmmo1 seeded full."
 
@@ -121,10 +125,10 @@ features:
     constants:
       - { name: "default rocket mode on enter", base: "SBRM_GUIDE (2)", port: "Guided (2)", match: true }
       - { name: "movetype on enter", base: "MOVETYPE_STEP", port: "MoveType.Step", match: true }
-      - { name: "flagcarried reattach offset", base: "tur_head at '-20 0 120'", port: "tur_head at '-20 0 120'", match: true }
+      - { name: "flagcarried reattach offset", base: "setattachment(flag, tur_head) + setorigin '-20 0 120' (rides the HEAD bone, engine-carried)", port: "Enter does the same ONCE, but Ctf.Tick now re-parks it every tick at FlagCarryOffset='0 0 96' anchored to the vehicle ORIGIN (no spiderbot override) -> clobbers the head attachment", match: false }
     status:
-      logic: faithful
-      values: faithful
+      logic: partial
+      values: partial
       timing: na
       presentation: na
       audio: na
@@ -132,12 +136,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
+      - "REGRESSED-THIS-WAVE (Ctf.Tick vehicle flag-ride, Ctf.cs:1859-1874): the spiderbot's faithful Enter attachment (setattachment(flag, tur_head) + setorigin '-20 0 120' on the head turret bone) is now OVERRIDDEN every tick by the generic vehicle flag-ride, which reads carrier.Vehicle.VehicleDef.FlagCarryOffset. The spiderbot does NOT override VehicleCommon.FlagCarryOffset (Spiderbot.cs has no FlagCarryOffset), so it falls back to the shared default '0 0 96' anchored to the VEHICLE ORIGIN (yaw-rotated) — NOT the tur_head bone at '-20 0 120'. So a flag-carrier boarding a spiderbot now has the flag parked above the chassis origin instead of riding the head turret. Fix: add `public override Vector3 FlagCarryOffset => new(-20f, 0f, 120f);` to Spiderbot (and ideally keep the head-bone attachment, which the origin-anchored per-tick reposition discards)."
       - "QC seeds owner.vehicle_health/shield % on enter; the port mirrors health/shield each Think instead (functionally equivalent)."
     verification:
-      - { kind: code, ref: "Spiderbot.Enter (spiderbot.qc:552-556 ported): if player.GtCarried != null -> Api.Models.SetAttachment(flag, vehicle.TurHead, '') + Api.Entities.SetOrigin(flag, (-20,0,120))", result: pass }
-      - { kind: code, ref: "GtCarried is set by GametypeEntities.AttachToCarrier (EntityGametypeState.cs:218), live-called by Ctf.cs:433/778 on flag pickup; Api.Models.SetAttachment exists (Services.cs:160)", result: pass }
+      - { kind: code, ref: "Spiderbot.Enter (spiderbot.qc:552-556 ported): if player.GtCarried != null -> Api.Models.SetAttachment(flag, vehicle.TurHead, '') + Api.Entities.SetOrigin(flag, (-20,0,120)) — the ONE-TIME enter attach is still faithful (Spiderbot.cs:176-180)", result: pass }
+      - { kind: code, ref: "Ctf.Tick (Ctf.cs:1859-1874, added this wave) re-parks a carried flag every tick: anchor = carrier.Vehicle ?? carrier; off = carrier.Vehicle.VehicleDef?.FlagCarryOffset ?? FlagVehicleCarryOffset; pos = anchor.Origin + yaw-rotated off. Spiderbot has no FlagCarryOffset override -> default '0 0 96' on the vehicle origin, clobbering the Enter head attachment at '-20 0 120'", result: fail }
+      - { kind: code, ref: "GtCarried is set by GametypeEntities.AttachToCarrier (EntityGametypeState.cs:218), live-called by Ctf.cs on flag pickup; Api.Models.SetAttachment exists (Services.cs:160)", result: pass }
     confidence: high
-    notes: "FIXED in Wave-2: the CTF flag-reattach (the CTF flag-rotation validation anchor) is now ported and on the live path. TurHead is created in Spawn (non-null on the live path). Liveness via VehicleBoarding.UseKey on the +use rising edge (ServerNet.cs)."
+    notes: "FIXED in Wave-2: the CTF flag-reattach (the CTF flag-rotation validation anchor) was ported and on the live path. REGRESSED-THIS-WAVE: the new Ctf.Tick generic vehicle flag-ride (Racer's '-190 0 96' override is the motivating case) now repositions the carried flag every tick from VehicleDef.FlagCarryOffset, but the spiderbot has NO FlagCarryOffset override, so it gets the shared '0 0 96' on the chassis origin — overriding the faithful Enter head-bone attachment at '-20 0 120'. logic/values demoted faithful->partial. Notable because the CTF flag-rotation is this initiative's validation anchor. TurHead is created in Spawn (non-null). Liveness via VehicleBoarding.UseKey on the +use rising edge (ServerNet.cs)."
 
   - id: vehicle-spiderbot.exit
     name: "spiderbot_exit — unguide in-flight rockets, eject pilot with momentum/ahead-spot"

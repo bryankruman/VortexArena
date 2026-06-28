@@ -19,8 +19,10 @@
 // The "destroyed → normal explosion" and "unknown type → normal" fallbacks are handled here before dispatch
 // (QC nade_boom:121-126), so a boom file only implements its own special effect.
 
+using System.Numerics;
 using System.Reflection;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay.Nades;
@@ -119,9 +121,9 @@ public static class NadeBoom
 {
     /// <summary>
     /// Port of <c>nade_boom(entity this)</c>: resolve the effective nade type (a nade destroyed by lava/void or
-    /// the Null type detonates as NORMAL — sv_nades.qc:121-126), play the explosion sound, clear event_damage,
-    /// dispatch to the per-type <see cref="INadeBoom"/>, then delete the nade. The CSQC explosion particle
-    /// (Send_Effect) is render-only and omitted (consistent with the DamageInfoNetwork no-op convention).
+    /// the Null type detonates as NORMAL — sv_nades.qc:121-126), play the explosion sound, emit the per-type
+    /// colored detonation particle through the networked effect feed (QC <c>Send_Effect_Except</c>), clear
+    /// event_damage, dispatch to the per-type <see cref="INadeBoom"/>, then delete the nade.
     /// </summary>
     public static void Detonate(Entity nade)
     {
@@ -138,6 +140,12 @@ public static class NadeBoom
         if (Api.Services is not null)
             Api.Sound.Play(nade, SoundChannel.Auto, "weapons/rocket_impact.wav");
 
+        // QC: the per-type Send_Effect_Except colored boom (sv_nades.qc each nade_<type>_boom emits its own
+        // tinted detonation effect). Pushed through the SAME networked effect feed weapons use, with except:null
+        // so every client — including the listen-server's local one — shows the colored boom. The per-type boom
+        // files keep their own gameplay; this lands the central detonation FX exactly once per boom.
+        EmitDetonationFx(ntype, nade.Origin);
+
         // QC: this.event_damage = func_null; — don't re-enter damage from the boom.
         nade.TakeDamage = DamageMode.No;
         nade.GtEventDamage = null;
@@ -150,6 +158,37 @@ public static class NadeBoom
 
         if (Api.Services is not null)
             Api.Entities.Remove(nade);
+    }
+
+    /// <summary>
+    /// Emit the central per-type colored detonation particle through the networked effect feed
+    /// (QC <c>Send_Effect_Except(effect, this.origin, '0 0 0', 1)</c>). The effect name is keyed by the nade's
+    /// <see cref="NadeDef.NetName"/>; the per-type <see cref="NadeDef.Color"/> rides as the min==max tint range
+    /// (EFF_NET_COLOR_SAME), so the FE tints the boom where it supports it (normal's white = no visible tint).
+    /// <c>except:null</c> means EVERY client shows it (incl. the listen-server's local player). No-ops cleanly if
+    /// the effect name isn't registered (<see cref="EffectEmitter.Emit(string, Vector3, Vector3, int, Entity?)"/>
+    /// resolves to a null effect and drops) — but the chosen names are all faithful registered blocks.
+    /// </summary>
+    private static void EmitDetonationFx(NadeDef ntype, Vector3 origin)
+    {
+        // Per-type effect block (faithful EFFECT_* names registered in EffectsList):
+        //   normal   -> a generic explosion (white tint = no visible recolor),
+        //   napalm   -> the big fire explosion (orange),
+        //   ice      -> the blue ice/glass shatter,
+        //   heal     -> the red healing puff,  ammo -> the blue ammo-regen puff,
+        //   any other type (translocate/spawn/monster/entrap/veil/darkness) -> a generic explosion
+        //                 tinted by its own NadeDef.Color.
+        string effectName = ntype.NetName switch
+        {
+            "napalm" => "EXPLOSION_BIG",
+            "ice" => "ICEORGLASS",
+            "heal" => "HEALING",
+            "ammo" => "AMMO_REGEN",
+            _ => "EXPLOSION_MEDIUM",
+        };
+
+        Vector3 tint = ntype.Color; // QC m_color; zero (Null) emits with no override.
+        EffectEmitter.Emit(Effects.ByName(effectName), origin, Vector3.Zero, 1, tint, tint, except: null);
     }
 
     /// <summary>

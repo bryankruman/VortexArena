@@ -155,6 +155,20 @@ public sealed partial class ClientEntityView : Node
         // spectator following this player and any third-person beam consumer can read the watched player's live
         // weapon state — the all-clients counterpart of the owner-block rings.
         e.WepentView = s.WepentView;
+        // [W-vehicleview] decode the spectator-follow vehicle view-state (health/shield/energy/ammo/reload bars +
+        // veh kind + weapon-2 mode + lock strength/flags) onto the proxy so a spectator FOLLOWING this player can
+        // read the watched pilot's live vehicle HUD — the all-clients counterpart of the owner block. The LOCAL
+        // pilot does not read this; it reads its own decoded slice off ClientNet.LocalState (captured wholesale in
+        // ClientNet.HandleSnapshot). VehicleViewState.None (VehKind 0 = on-foot/observing) keeps the bit clear.
+        e.VehicleView = s.VehicleView;
+        // [W-nadeclient] decode the owner-only nade feedback fields (QC STAT(NADE_DARKNESS_TIME / NADE_BONUS /
+        // NADE_BONUS_TYPE / NADE_BONUS_SCORE)) onto the proxy. These are 0 on every non-owner entity (the Feedback
+        // bit stays clear for remotes), so they only carry data on the local player's own delta — NetGame reads them
+        // off the local proxy to drive the darkness overlay + the HUD bonus-nade count/score ring.
+        e.NadeDarknessTime = s.NadeDarknessTime;
+        e.NadeBonus = s.NadeBonus;
+        e.NadeBonusType = s.NadeBonusType;
+        e.NadeBonusScore = s.NadeBonusScore;
         // [W-objstream] decode the turret-head + objective view-state onto the per-id proxy each frame (decode only;
         // no render work here). These feed the Phase-3 turret-head node (HeadWorldAngles = Entity.Angles +
         // (TurHeadPitch,TurHeadYaw,0); integrate TurHeadAVelYaw*dt for the idle head spin) and the objective HUD
@@ -231,6 +245,21 @@ public sealed partial class ClientEntityView : Node
             case NetEntityKind.Gib:
                 // Animated networked actors: drive the model frame straight from the network (autoupdate).
                 _render.OnEntityUpdate(e, frameDriven: true);
+                break;
+
+            case NetEntityKind.NadeOrb:
+                // [W-nadeclient] heal/ammo/entrap/veil/darkness orb effect entity. Map the networked orb block onto
+                // the proxy and route it to the dedicated NadeOrbRenderer (wired through ClientWorld like the
+                // ProjectileRenderer). The orb is otherwise static — its Origin rides the normal Origin field, so use
+                // the RAW server origin (no two-snapshot interp) the same way projectiles do.
+                e.NadeBonusType = s.OrbType;
+                e.NadeOrbExpire = s.OrbExpire;
+                e.OrbRadiusClient = s.OrbRadius;
+                e.Origin = s.Origin;
+                // NadeOrbs is wired by NetGame.SetupCameraAndHud, which runs right after SetupRender (where this
+                // view is built); a stray orb delta before that wiring is a no-op rather than a null deref.
+                _render.NadeOrbs?.OnSpawn(e);
+                _render.NadeOrbs?.OnUpdate(e);
                 break;
 
             case NetEntityKind.Item:
@@ -320,6 +349,10 @@ public sealed partial class ClientEntityView : Node
             int id = _stale[i];
             Entity e = _proxies[id];
             _viewEntities.Remove(id);
+            // [W-nadeclient] tear down the orb render state for a departed id. The NadeOrbRenderer only tracks
+            // nade_orb ids, so this is a harmless no-op for any non-orb entity — same idempotent contract as
+            // ProjectileRenderer's removal path.
+            _render.NadeOrbs?.OnRemove(id);
             _render.OnEntityRemove(id, e.Origin);
             _proxies.Remove(id);
         }

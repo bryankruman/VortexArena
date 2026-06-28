@@ -1,11 +1,11 @@
 unit: vehicle-racer
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-28"
+last_audited: "2026-06-28b"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Remaining presentation is client-render only: the CSQCProjectile bolt/rocket trails (PROJECTILE_WAKICANNON / PROJECTILE_WAKIROCKET), the aux-crosshair lock colour (red/green/blue by lock_strength), the cockpit hud model + tag_viewport attachment, and the HUD gauges that READ the already-written ammo2/reload2/health/shield/energy % stats. The server-side Send_Effect emissions (booster puff, under-craft smoke, cannon muzzleflash, rocket-launch flash, death explosion) + the death colormod darken are now all emitted authority-side."
+    - "HUD-consumer wave (2026-06-28b): the on-foot vehicle HUD that READS the racer's ammo2/reload2/health/shield/energy % stats is now LIVE (game/hud/VehicleHud.cs panel: racer art set, health/shield/energy/ammo2/reload2 bars + alarms) and is driven on EVERY path — host pilot (NetGame.UpdateVehicleHud), pure remote pilot + spectator (NetGame.UpdateVehicleHudRemote off the networked VehicleViewState). The new VehicleViewState/VehicleViewCodec (11-byte block, EntityField.VehicleView bit 24, symmetric Write/Read) networks the per-pilot bars+lock to remote/spectator views. The aux-crosshair LOCK COLOUR is also live: NetGame.UpdateVehicleHud feeds SetAuxiliaryXhairLock(0, target.Origin, VehLockStrength, axh-target) tinted red->yellow->green (the // TODO in Racer.Frame is stale — feeding is central in NetGame, not Racer). REMAINING client-render: the CSQCProjectile bolt/rocket TRAILS (PROJECTILE_WAKICANNON / WAKIROCKET), the cockpit hud model + tag_viewport attachment. Authority-side Send_Effect emissions (booster/smoke/muzzle/launch/death) + colormod darken all already emitted."
     - "Cosmetic-only spawn values unset: scale 0.5 model hack (physics uses the real hitbox), view_ofs '0 0 50' + height 200 (cockpit camera offset/dist)."
     - "Shared-layer note: VehicleCommon.PainFrame still defers its low-health EFFECT_SMOKE_SMALL puff (the jitter/shake is live); that smoke is a VehicleCommon concern, not a racer-specific row."
     - "Minor fidelity notes: vr_impact NOIMPACT-surface skip not available headless; oldvelocity captured at Think-start not at the engine clip; LoadCvars zero-as-sentinel edge (a server explicitly setting a tunable to 0 keeps the Base default)."
@@ -282,12 +282,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The EFFECT_RACER_MUZZLEFLASH muzzle effect is now emitted; the CSQCProjectile (PROJECTILE_WAKICANNON) bolt trail remains a client-render concern and is unported."
+      - "The EFFECT_RACER_MUZZLEFLASH muzzle effect is emitted; only the CSQCProjectile (PROJECTILE_WAKICANNON) bolt TRAIL remains a client-render concern and is unported. (The aux-crosshair lock colour is no longer a cannon gap — it is fed centrally by NetGame.UpdateVehicleHud; see weapon.rocket.)"
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.Drive_PrimaryFire_SpawnsAVehicleProjectile + MonsterTurretVehicleObituaryTests (VhWakiGun)", result: pass }
-      - { kind: code_read, ref: "racer_weapon.qc wr_think fire&1 vs FireCannon; line 723 EffectEmitter.Emit('RACER_MUZZLEFLASH', org, vel, 1); fixed 'tag_fire1' (no veh.cnt alternation — matches the piloted W_SetupShot_Dir path). RACER_MUZZLEFLASH registered in EffectsList.cs", result: pass }
+      - { kind: code_read, ref: "racer_weapon.qc wr_think fire&1 vs FireCannon; line 735 EffectEmitter.Emit('RACER_MUZZLEFLASH', org, vel, 1); fixed 'tag_fire1' (no veh.cnt alternation — matches the piloted W_SetupShot_Dir path). RACER_MUZZLEFLASH registered in EffectsList.cs", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22: the EFFECT_RACER_MUZZLEFLASH muzzle flash is now emitted server-side via EffectEmitter (presentation missing->partial). Ballistics/damage/spread/refire/deathtype/sound faithful. Only the PROJECTILE_WAKICANNON CSQC bolt trail (client-render) still deferred."
+    notes: "Ballistics/damage/spread/refire/deathtype/sound faithful; EFFECT_RACER_MUZZLEFLASH emitted server-side. Only the PROJECTILE_WAKICANNON CSQC bolt trail (client-render) still deferred — presentation stays partial for the trail alone."
   - id: vehicle-racer.weapon.rocket
     name: "Secondary rocket pair (lock-on / homing / ground-hugging)"
     layer: [authority, presentation, audio]
@@ -326,12 +326,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The EFFECT_RACER_ROCKETLAUNCH launch effect is now emitted; the CSQCProjectile (PROJECTILE_WAKIROCKET) rocket trail remains a client-render concern and is unported."
+      - "The EFFECT_RACER_ROCKETLAUNCH launch effect is emitted; only the CSQCProjectile (PROJECTILE_WAKIROCKET) rocket TRAIL remains a client-render concern and is unported."
+      - "Aux-crosshair lock colour CLOSED 2026-06-28b: NetGame.UpdateVehicleHud feeds hud.SetAuxiliaryXhairLock(0, target.Origin, VehLockStrength, 'gfx/vehicles/axh-target') tinted red->yellow->green by lock strength on the host path; LockStrength + LockTargetValid ride the networked VehicleViewState (VehicleViewCodec) so a spectator/remote view also sees the reticle+strength. The `// TODO(port,client): UpdateAuxiliaryXhair lock-color` in Racer.Frame is STALE — the feeding is central in NetGame, not in Racer.Frame."
     verification:
       - { kind: test, ref: "MonsterTurretVehicleObituaryTests (VhWakiRocket murder line)", result: pass }
-      - { kind: code_read, ref: "FireRocket line 741 EffectEmitter.Emit('RACER_ROCKETLAUNCH', org, vel, 1); GuideRocket RacerHoming traces origin -> origin + fwd*64 - '0 0 32' and lifts newDir.Z += 16f*frametime when the ahead-trace hits a non-target; timeout passes deathTag DeathTypes.VhWakiRocket. RACER_ROCKETLAUNCH registered in EffectsList.cs", result: pass }
+      - { kind: code_read, ref: "FireRocket line 753 EffectEmitter.Emit('RACER_ROCKETLAUNCH', org, vel, 1); GuideRocket RacerHoming traces origin -> origin + fwd*64 - '0 0 32' and lifts newDir.Z += 16f*frametime when the ahead-trace hits a non-target; timeout passes deathTag DeathTypes.VhWakiRocket. RACER_ROCKETLAUNCH registered in EffectsList.cs. Aux lock crosshair fed at NetGame.cs:3648-3653 (SetAuxiliaryXhairLock, axh-target for non-bumblebee) tinted by VehLockStrength; VehicleHud.AuxLockColor does red/green/blue by strength", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-22: the EFFECT_RACER_ROCKETLAUNCH launch flash is now emitted server-side via EffectEmitter (presentation missing->partial). Homing tracker obstacle-avoid + 16*sys_frametime climb-lift implemented; owner-death/15s-timeout tagged DEATH_VH_WAKI_ROCKET. Only the PROJECTILE_WAKIROCKET CSQC trail (client-render) still deferred."
+    notes: "Homing tracker obstacle-avoid + 16*sys_frametime climb-lift implemented; owner-death/15s-timeout tagged DEATH_VH_WAKI_ROCKET; EFFECT_RACER_ROCKETLAUNCH emitted. Aux-crosshair LOCK COLOUR now live (NetGame.UpdateVehicleHud SetAuxiliaryXhairLock + networked LockStrength). Only the PROJECTILE_WAKIROCKET CSQC trail (client-render) still deferred — presentation stays partial for the trail alone."
   - id: vehicle-racer.weapon.rockethud
     name: "Secondary HUD ammo/reload mirror (vehicle_ammo2 / vehicle_reload2)"
     layer: [authority, presentation]
@@ -347,17 +348,16 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Authority-side ammo2/reload2 % stats are written each tick onto the pilot; the client HUD progressbar that READS them (Vehicles_drawHUD vehicle_icon_ammo2) is presentation/CSQC and not yet wired — a client-render concern, not an authority gap."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "Racer.Frame lines 527-561: player.VehicleAmmo2 set 100/50/0 across the rocket pair; player.VehicleReload2 = Bound(0, 100*(Time-VehReloadStart)/(VehWeaponDelay-VehReloadStart), 100); VehReloadStart (.lip) stamped on pair-complete (line 546) and read here; VehicleAmmo2/VehicleReload2 are the networked Entity fields in VehicleCommon.cs (the same stats Raptor/Bumblebee drive), NOT a racer-private scratch field", result: pass }
+      - { kind: code_read, ref: "Racer.Frame lines 527-561 write player.VehicleAmmo2 (100/50/0) + player.VehicleReload2; game/hud/VehicleHud.cs DRAWS Ammo2/Reload2 (DrawClippedBar); driven on the host path by NetGame.UpdateVehicleHud (hud.Reload2 = p.VehicleReload2*0.01) AND on the remote/spectator path by UpdateVehicleHudRemote off the networked VehicleViewState (Ammo2/Reload2 ride VehicleViewCodec, EntityField.VehicleView bit 24, symmetric 11-byte Write/Read)", result: pass }
     confidence: high
-    notes: "The rocket reload/ammo HUD percentages (vehicle_ammo2 100/50/0 and the vehicle_reload2 progress bar from .lip/.delay) are written authority-side onto the pilot via player.VehicleAmmo2 / player.VehicleReload2 — the networked stats the on-foot vehicle HUD reads (NetGame -> VehicleHud), identical to Raptor/Bumblebee. (Stale prior refs to a VehAmmo2/VehReload2 scratch field corrected 2026-06-27.) Only the client gauge that draws them remains (presentation)."
+    notes: "CLOSED 2026-06-28b: the rocket reload/ammo HUD bar (vehicle_ammo2 100/50/0 + vehicle_reload2 progress from .lip/.delay) is written authority-side onto the pilot AND now READ + DRAWN by the live VehicleHud panel on the host path (UpdateVehicleHud) and the remote/spectator path (UpdateVehicleHudRemote off the networked VehicleViewState). presentation: partial->faithful. No build-time test for the codec round-trip, but Write/Read are a symmetric pair and the build is green."
   - id: vehicle-racer.regen.resources
     name: "Per-frame shield/energy/health regen + player %-stat mirror"
     layer: [authority]
@@ -384,13 +384,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The authority-side %-mirror is written; the on-foot HUD that READS those stats (client gauge) is presentation/CSQC and not yet wired — a client-render concern, not an authority gap."
+    gaps: []
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.Drive_AfterburnInput_DrainsEnergy (energy regen at 90/s observed)", result: pass }
-      - { kind: code_read, ref: "Racer.Think writes player.VehicleHealth/Energy(/Shield if HasShield) each tick; Enter seeds all three; VehicleCommon.RegenResource also mirrors owner.VehicleHealth for RES_HEALTH", result: pass }
+      - { kind: code_read, ref: "Racer.Think writes player.VehicleHealth/Energy(/Shield if HasShield) each tick; Enter seeds all three; VehicleCommon.RegenResource also mirrors owner.VehicleHealth for RES_HEALTH. The %-mirror is now READ + DRAWN: game/hud/VehicleHud.cs health/shield/energy bars + alarms, fed by NetGame.UpdateVehicleHud (host) / UpdateVehicleHudRemote (remote/spectator off the networked VehicleViewState Health/Shield/Energy)", result: pass }
     confidence: high
-    notes: "VEHICLE_UPDATE_PLAYER %-mirror (vehicle_health/shield/energy onto the pilot) + the vr_enter one-shot seed produced on the authority side. Regen rates/pauses/healthscale faithful and live."
+    notes: "CLOSED 2026-06-28b: the VEHICLE_UPDATE_PLAYER %-mirror (vehicle_health/shield/energy onto the pilot, + the vr_enter seed) is produced authority-side AND now consumed by the live VehicleHud panel on host + remote/spectator paths. Regen rates/pauses/healthscale faithful and live; the prior client-render gap is resolved."
   - id: vehicle-racer.death.blowup
     name: "vr_death tumble -> deadtouch/timed blowup -> radius blast -> respawn"
     layer: [authority, presentation, audio]

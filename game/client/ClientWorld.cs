@@ -41,6 +41,12 @@ public partial class ClientWorld : Node3D
     /// <summary>Networked projectile visual renderer.</summary>
     public ProjectileRenderer Projectiles { get; private set; } = null!;
 
+    /// <summary>Networked nade-orb (heal/ammo/entrap/veil/darkness) effect renderer. Created and owned by
+    /// <see cref="XonoticGodot.Game.Net.NetGame"/> (next to the ProjectileRenderer) and assigned here, so the
+    /// entity-stream consumer (<c>ClientEntityView</c>) and the per-frame view-effects feed share the one
+    /// instance. Null until NetGame wires it.</summary>
+    public NadeOrbRenderer NadeOrbs { get; set; } = null!;
+
     /// <summary>The shared Draw_CylindricLine primitive (cross-ribbon segment pool) injected into every beam/rope/line
     /// renderer (Lasers, PortoPreview, the hook rope) so they all draw through one pooled node.</summary>
     public CylindricLine CylindricLines { get; private set; } = null!;
@@ -122,6 +128,16 @@ public partial class ClientWorld : Node3D
 
     /// <summary>Per-entity vehicle visual drivers (rotors/barrels/engine sound/gibs/heal-beam) for vehicle entities.</summary>
     private readonly Dictionary<int, VehicleVisuals> _vehicles = new();
+
+    /// <summary>
+    /// Owns the cosmetic add-on models that hang off a networked entity each frame (the QC
+    /// <c>csqcmodel_hooks.qc</c> add-on layer): the ice block on a Frozen player, the held <c>buff_*</c> glow, and
+    /// the nade spawn-loc marker. It networks nothing new — it reads the already-decoded StatusEffects blob + the
+    /// standard entity delta (Origin/Angles/Effects/EF_STARDUST) and attaches/updates/removes the cosmetic child
+    /// nodes off the supplied attach root. Driven from the per-frame entity + player-model passes; keyed by
+    /// entity index for teardown on removal.
+    /// </summary>
+    private CosmeticModelLayer _cosmetics = null!;
 
     /// <summary>Entity indices whose animation frame is networked (CSQCMODEL_AUTOUPDATE): their
     /// <see cref="ModelAnimator"/> follows <see cref="Entity.Frame"/> directly instead of the local
@@ -269,6 +285,19 @@ public partial class ClientWorld : Node3D
     public Func<Entity, Node3D?>? EntityModelFactory { get; set; }
 
     /// <summary>
+    /// Host-wired raw-MD3 reader for the cosmetic add-on layer (<c>AssetLoader.LoadMd3</c>, cached). Used by the
+    /// freezetag ice block / buff-carrier glow (<see cref="AttachedCosmeticModel"/>) to parse their <c>.md3</c>
+    /// files. Null in headless/teardown → no cosmetic models resolve.
+    /// </summary>
+    public Func<string, Md3Data?>? CosmeticMd3Loader { get; set; }
+
+    /// <summary>
+    /// Host-wired format-agnostic model reader for the cosmetic add-on layer (<c>AssetLoader.LoadModel</c>,
+    /// cached) — the IQM/DPM path for a non-MD3 cosmetic. Null in headless/teardown → those cosmetics don't draw.
+    /// </summary>
+    public Func<string, int, Node3D?>? CosmeticModelLoader { get; set; }
+
+    /// <summary>
     /// Resolves a player entity to a skeletal <see cref="PlayerModel"/> (an IQM with the CPU upper/lower-body
     /// split + view-pitch aim). Tried before <see cref="ModelResolver"/>: when it returns non-null the entity
     /// renders as a posed skeleton; null falls through to the MD3 morph path / placeholder. The host wires it
@@ -369,6 +398,14 @@ public partial class ClientWorld : Node3D
         // exists, push the particlefont/effectinfo loaders into it so the real sprites/decals are used.
         WireEffectAssets();
 
+        // The cosmetic add-on layer (frozen ice block, held buff_* glow, nade spawn-loc marker). It builds its
+        // models through the asset pipeline, which the host may set before OR after _Ready — so hand it a late-
+        // bound accessor (() => _assets) rather than the current (possibly-null) value.
+        _cosmetics = new CosmeticModelLayer(
+            () => _assets,
+            path => CosmeticMd3Loader?.Invoke(path),
+            (path, skin) => CosmeticModelLoader?.Invoke(path, skin));
+
         // Casing bounce sounds (Base Casing_Touch: brass*/casings* on touch at speed): route them through the
         // positional sound path at VOL_BASE on CH_SHOTS with ATTEN_LARGE (the DP atten value 1 → quieter/closer
         // falloff, since gain = (1 - min(1, dist*atten/radius))^exp). Matches sound(this, CH_SHOTS, s, VOL_BASE,
@@ -443,6 +480,9 @@ public partial class ClientWorld : Node3D
         // Detach our sink so a torn-down client doesn't keep mirroring into freed nodes.
         if (EffectEmitter.Sink is RenderSink rs)
             EffectEmitter.Sink = rs.Inner;
+
+        // Free every cosmetic add-on node the layer is still holding (ice blocks / buff glows / spawn-loc markers).
+        _cosmetics?.Clear();
     }
 
     // =================================================================================================
@@ -580,6 +620,8 @@ public partial class ClientWorld : Node3D
 
         if (Projectiles.IsTracking(index))
             Projectiles.OnRemove(index, lastOrigin, impactEffect);
+
+        _cosmetics?.Remove(index); // free any cosmetic add-on (ice block / buff glow / spawn-loc marker) for this entity
 
         if (_animators.Remove(index, out ModelAnimator? anim) && GodotObject.IsInstanceValid(anim))
             anim.QueueFree();
@@ -1045,7 +1087,13 @@ public partial class ClientWorld : Node3D
             {
                 bool isLocal = e.Index == localId;
                 float distSq = poseCull ? (pm.GlobalPosition - viewG).LengthSquared() : 0f;
+                // QC ENT_CLIENT_STATUSEFFECTS frozen: hold the skeletal pose static while encased (the ice block
+                // freezes the animation, not just the tint). Set from the networked StatusEffects bitmap before posing.
+                pm.FrozenHold = HasStatusEffect(e, StatusEffectsCatalog.Frozen);
                 pm.Pose(e, (float)delta, poseCull, isLocal, distSq, cullDistSq, serverNow);
+                // Cosmetic add-on layer also attaches to the skeletal player node (it follows origin/yaw like the
+                // EntityNode path) so the ice block / held buff glow ride the posed body too.
+                _cosmetics.Drive(e, pm);
             }
         }
 
@@ -1248,6 +1296,12 @@ public partial class ClientWorld : Node3D
                     st.Effects.Tint.Valid = false;
                 }
             }
+
+            // Cosmetic add-on layer (csqcmodel_hooks.qc add-ons): the Frozen ice block, the held buff_* glow, and
+            // the nade spawn-loc marker. Attach off the EntityNode — it already syncs origin/yaw each frame, so the
+            // ice/glow inherit the model's pose for free. The blue freeze tint + the ice block both render in Base,
+            // so the SetColormod above stays; this only adds the ice geometry.
+            _cosmetics.Drive(e, node);
 
             // (2) LOD: compute the index (faithful math) — see ApplyLod for the swap caveat.
             ApplyLod(e, node, st, viewOrigin);
