@@ -479,21 +479,11 @@ public sealed class Ctf : GameType
             int carrierTeam = (int)carrier.Team;
 
             // (1) wps_flagcarrier (WP_FlagCarrier, team = carrier.team): the OWN-TEAM "your carrier is here" marker
-            // with a HEALTH BAR and the auto-helpme flash. SPRITERULE_DEFAULT + team set ⇒ visible only to the
-            // carrier's own team and only to live players (WaypointSprite.Team carries that restriction).
-            // QC WaypointSprite_AttachCarrier: max_health = 2 * healtharmor_maxdamage(start_health, start_armor),
-            // health = healtharmor_maxdamage(carrier HP, carrier armor) → bar = health/max_health. We reuse the same
-            // (HP + armor) effective-health approximation as the auto-helpme path; CTF start HP is 100, start armor 0
-            // → max_health 200, so the bar reads full at spawn and empties as the carrier is hurt.
-            float maxHp = 2f * CarrierStartEffHealth;
-            float health = maxHp > 0f ? System.Math.Clamp((carrier.Health + carrier.ArmorValue) / maxHp, 0f, 1f) : -1f;
-            into.Add(new Waypoints.WaypointSprite
-            {
-                SpriteName = "FlagCarrier", Owner = carrier, Offset = FlagWaypointOffset,
-                Team = carrierTeam, // WPCOLOR_FLAGCARRIER(team): own-team-only visibility
-                Color = CarrierRadarColor(carrierTeam), // colormapPaletteColor(team-1) * 0.75
-                RadarIcon = 1, Health = health, MaxHealth = 1f, HelpmeUntil = carrier.GtHelpMeUntil,
-            });
+            // with a HEALTH BAR + the auto-helpme flash. This marker is NO LONGER emitted from the per-tick snapshot:
+            // it is now owned by the LIVE WaypointSprites registry via WaypointSprites.AttachCarrier, created in
+            // Pickup/RetrieveFlag and stored on flag.CarrierWaypoint (so its Health/MaxHealth bar + HelpmeUntil flash
+            // persist across ticks and are refreshed in Tick/UpdateCarrierHealth). Emitting it here too would draw a
+            // DOUBLE carrier marker, so the snapshot deliberately skips it — see EnsureCarrierWaypoint.
 
             // (2) wps_enemyflagcarrier (WP_FlagCarrierEnemy<carrier-team>): the ENEMY reveal. QC only creates this
             // when the carrier holds their OWN flag (the one-flag self-carry case, sv_ctf.qc:167) OR during a
@@ -553,6 +543,73 @@ public sealed class Ctf : GameType
     /// 0.75 (neutral → white). Built on the same <see cref="TeamRadarColor"/> the flag base/dropped markers use.</summary>
     private static Vector3 CarrierRadarColor(int team) =>
         team == Teams.None ? new Vector3(1f, 1f, 1f) : TeamRadarColor(team) * 0.75f;
+
+    /// <summary>QC <c>WaypointSprite_AttachCarrier</c> in-world tint: WP_FlagCarrier's def color (tan '0.8 0.8 0').
+    /// The radar tint is still the team color (CarrierRadarColor); this is the 3D sprite's body color.</summary>
+    private static readonly Vector3 CarrierSpriteColor = new(0.8f, 0.8f, 0f);
+
+    /// <summary>
+    /// QC <c>healtharmor_maxdamage(health, armor, blockpercent, deathtype)</c> approximation: the effective
+    /// health an attacker must remove to kill <paramref name="e"/> — modeled here as <c>health + armor</c> (the
+    /// armor-block percentage is per-deathtype and not available at this seam, so the unblocked HP+armor sum is
+    /// the faithful headless proxy, matching the auto-helpme effective-HP test in <see cref="OnDamageCalculate"/>).
+    /// Used for the carrier health-bar scale (the bar's max is <c>2 *</c> the spawn value, per QC AttachCarrier).
+    /// </summary>
+    private static float HealthArmorMaxDamage(Entity e) => e.Health + e.ArmorValue;
+
+    /// <summary>The carrier health-bar denominator (QC WaypointSprite_AttachCarrier <c>max_health =
+    /// 2 * healtharmor_maxdamage(start_health, start_armorvalue, ...)</c>; CTF spawns 100 HP / 0 armor → 200).</summary>
+    private static float CarrierMaxHealth => 2f * CarrierStartEffHealth;
+
+    /// <summary>QC AttachCarrier health bar fill: <c>healtharmor_maxdamage(carrier) / max_health</c>, clamped 0..1
+    /// (&lt;0 hides the bar when the carrier is gone/dead).</summary>
+    private static float CarrierHealthFraction(Player carrier)
+    {
+        float max = CarrierMaxHealth;
+        return max > 0f ? System.Math.Clamp(HealthArmorMaxDamage(carrier) / max, 0f, 1f) : -1f;
+    }
+
+    /// <summary>
+    /// QC ctf_FlagcarrierWaypoints (sv_ctf.qc:160) WaypointSprite_AttachCarrier(WP_FlagCarrier, player,
+    /// RADARICON_FLAGCARRIER) + WaypointSprite_UpdateMaxHealth(2*healtharmor_maxdamage) +
+    /// WaypointSprite_UpdateHealth(healtharmor_maxdamage(player)): spawn the LIVE own-team carrier waypoint that
+    /// rides <paramref name="carrier"/> with a health bar, and store it on the flag. Killing any prior sprite first
+    /// keeps a single owner of the carrier marker (a re-pickup/retrieve replaces, never doubles).
+    /// </summary>
+    private void EnsureCarrierWaypoint(FlagState flag, Player carrier)
+    {
+        Waypoints.WaypointSprites.Kill(flag.CarrierWaypoint); // drop any stale sprite (re-pickup / pass retrieve)
+        int carrierTeam = (int)carrier.Team;
+        Waypoints.WaypointSprite wp = Waypoints.WaypointSprites.AttachCarrier(
+            "FlagCarrier", carrier, carrierTeam, CarrierSpriteColor, radarIcon: 1, rule: Waypoints.SpriteRule.Default);
+        // QC WaypointSprite_UpdateMaxHealth(wp, 2 * healtharmor_maxdamage(start_health, start_armorvalue)) then
+        // WaypointSprite_UpdateHealth(wp, healtharmor_maxdamage(player)) — here Health is pre-normalized 0..1.
+        Waypoints.WaypointSprites.UpdateMaxHealth(wp, CarrierMaxHealth);
+        Waypoints.WaypointSprites.UpdateHealth(wp, CarrierHealthFraction(carrier));
+        // The radar tint stays the team color (WPCOLOR_FLAGCARRIER = team palette * 0.75); the sprite body is tan.
+        Waypoints.WaypointSprites.UpdateTeamRadar(wp, 1, CarrierRadarColor(carrierTeam));
+        flag.CarrierWaypoint = wp;
+    }
+
+    /// <summary>Refresh the live carrier waypoint's health bar from the current carrier each tick (QC the per-think
+    /// WaypointSprite_UpdateHealth on the flagcarrier sprite). No-op when the flag has no live carrier sprite.</summary>
+    private void RefreshCarrierWaypoint(FlagState flag)
+    {
+        if (flag.CarrierWaypoint is null)
+            return;
+        if (flag.Status == FlagStatus.Carried && flag.Carrier is { } carrier)
+            Waypoints.WaypointSprites.UpdateHealth(flag.CarrierWaypoint, CarrierHealthFraction(carrier));
+    }
+
+    /// <summary>QC the flag leaving the carrier (capture / return / drop / death / disconnect / reset): kill the
+    /// live carrier waypoint and null the back-link so no orphaned health-bar sprite rides a non-carrier.</summary>
+    private static void KillCarrierWaypoint(FlagState flag)
+    {
+        if (flag.CarrierWaypoint is null)
+            return;
+        Waypoints.WaypointSprites.Kill(flag.CarrierWaypoint);
+        flag.CarrierWaypoint = null;
+    }
 
     /// <summary>Flag team → the def-name suffix (QC the per-team WP_Flag*Red/Blue/Yellow/Pink/Neutral split).</summary>
     private static string FlagSuffix(int team) => team switch
@@ -624,6 +681,11 @@ public sealed class Ctf : GameType
             flag.Entity.GtStatus = (int)FlagStatus.Carried;
         }
         GametypeEntities.ScoringVip(player, true); // QC GameRules_scoring_vip(player, true) (sv_ctf.qc:746)
+
+        // QC ctf_FlagcarrierWaypoints: attach the LIVE own-team carrier waypoint (health bar + auto-helpme flash)
+        // to the new carrier. This is the single owner of the carried-flag marker — CollectWaypoints no longer
+        // emits a per-tick FlagCarrier sprite, so the bar persists + is refreshed each Tick (RefreshCarrierWaypoint).
+        EnsureCarrierWaypoint(flag, player);
 
         // QC ctf_Handle_Pickup: the global "flag taken" voice + the kill-feed line + the carrier's centerprint.
         FlagAnnounceSound(flag.HomeTeam, "TAKEN");
@@ -708,6 +770,7 @@ public sealed class Ctf : GameType
             EffectEmitter.Emit($"{TeamName(carried.HomeTeam)}_cap", capFe.Origin);
 
         // return the captured flag to its base, freeing the carrier (QC ctf_RespawnFlag(enemy_flag))
+        KillCarrierWaypoint(carried); // QC: the carried-flag waypoint is removed as the flag leaves the carrier
         carried.ResetToBase();
         RespawnFlagEntity(carried);
         GametypeEntities.ScoringVip(player, false); // QC GameRules_scoring_vip(player, false) on capture (sv_ctf.qc:1249)
@@ -787,6 +850,7 @@ public sealed class Ctf : GameType
         carried.DropOrigin = carrier.Origin;
         carried.DropTime = now;
         carried.Dropper = carrier;
+        KillCarrierWaypoint(carried); // QC: the carrier waypoint dies as the flag leaves the carrier (it's dropped now)
 
         // QC ctf_Handle_Drop scoring: the dropper's team is docked g_ctf_score_penalty_drop + CTF_DROPS +1.
         // QC GameRules_scoring_add_team(player, SCORE, -penalty) docks BOTH the player SP_SCORE and the team ST_SCORE.
@@ -990,6 +1054,9 @@ public sealed class Ctf : GameType
             fe.GtStatus = (int)FlagStatus.Carried;
         }
         GametypeEntities.ScoringVip(receiver, true); // QC GameRules_scoring_vip(player, true) (sv_ctf.qc:435)
+        // QC ctf_Handle_Retrieve: the flag has a NEW carrier now — re-attach the live carrier waypoint (health bar)
+        // to the receiver (EnsureCarrierWaypoint kills any prior sprite first, so the marker follows the new owner).
+        EnsureCarrierWaypoint(flag, receiver);
         // QC ctf_Handle_Retrieve (sv_ctf.qc:456): _sound(player, …, snd_flag_pass, ATTEN_NORM) — the positional
         // "pass received" cue on the receiver as the in-flight pass completes.
         if (Api.Services is not null)
@@ -1083,6 +1150,9 @@ public sealed class Ctf : GameType
         flag.DropOrigin = carrier.Origin;
         flag.DropTime = now;
         flag.Dropper = carrier;
+        // QC: the live carrier waypoint dies as the flag leaves the carrier (throw → dropped, pass → in-flight; a
+        // PASSING flag has no carrier marker — the receiver gets a fresh one on RetrieveFlag).
+        KillCarrierWaypoint(flag);
         carrier.GtNextTakeTime = now + FlagCollectDelay; // QC: dropper can't instantly re-take
         GametypeEntities.ScoringVip(carrier, false); // QC GameRules_scoring_vip(flag.owner, false) on throw/pass
 
@@ -1293,19 +1363,24 @@ public sealed class Ctf : GameType
                 a.Force  *= Cvar(CvarFcForce, 1f);
             }
         }
-        else if (CarriedBy(target) is not null && !target.IsDead
+        else if (CarriedBy(target) is { } targetFlag && !target.IsDead
                  && attacker is not null && (int)target.Team != (int)attacker.Team) // the target is an enemy flag carrier
         {
-            // QC: effective HP = healtharmor_maxdamage(health, armor, ...); we approximate with health + armor.
-            float effHp = target.Health + target.ArmorValue;
+            // QC MUTATOR_HOOKFUNCTION(ctf, Damage_Calculate) (sv_ctf.qc:2337): if the carrier's effective HP has
+            // dropped BELOW g_ctf_flagcarrier_auto_helpme_damage AND it's been at least g_ctf_flagcarrier_auto_helpme_time
+            // since the last auto-ping (antispam), flash HELP ME on their LIVE carrier waypoint. effective HP =
+            // healtharmor_maxdamage(health, armor, ...); the port approximates it with health + armor.
+            float effHp = HealthArmorMaxDamage(target);
             float now = Now;
+            float window = Cvar(CvarFcHelpMeTime, DefaultFcHelpMeTime);
             if (Cvar(CvarFcHelpMeDamage, DefaultFcHelpMeDamage) > effHp
-                && now > target.GtHelpMeTime + Cvar(CvarFcHelpMeTime, DefaultFcHelpMeTime))
+                && now > target.GtHelpMeTime + window)
             {
-                target.GtHelpMeTime = now;
-                // QC WaypointSprite_HelpMePing on the carrier sprite — lit for the helpme antispam window so the
-                // CollectWaypoints snapshot can flag the carrier-enemy sprite as "needs help".
-                target.GtHelpMeUntil = now + Cvar(CvarFcHelpMeTime, DefaultFcHelpMeTime);
+                target.GtHelpMeTime = now; // QC frag_target.wps_helpme_time = time (antispam baseline)
+                // QC WaypointSprite_HelpMePing(frag_target.wps_flagcarrier): flash the carrier waypoint's helpme
+                // state for the antispam window. Also stamp GtHelpMeUntil so the enemy-FC reveal snapshot lights up.
+                Waypoints.WaypointSprites.HelpMePing(targetFlag.CarrierWaypoint, window);
+                target.GtHelpMeUntil = now + window;
             }
         }
         return false;
@@ -1538,6 +1613,7 @@ public sealed class Ctf : GameType
             GametypeEntities.ScoringVip(carrier, false); // QC GameRules_scoring_vip(flag.owner, false) (DROP_RESET → Handle_Throw)
 
         // QC ctf_RespawnFlag(this): clear the POJO + entity state and return the flag to its home base.
+        KillCarrierWaypoint(flag); // a force-reset carried flag leaves its carrier — kill the live carrier waypoint
         flag.ResetToBase();
         RespawnFlagEntity(flag);
     }
@@ -1752,6 +1828,7 @@ public sealed class Ctf : GameType
         CaptureRecord(droppedFlag.HomeTeam, player, dropCapRunTime);
         FlagAnnounceSound(droppedFlag.HomeTeam, "CAPTURE");
 
+        KillCarrierWaypoint(droppedFlag); // defensive: a dropped-capture flag has no carrier, but clear any stale sprite
         droppedFlag.ResetToBase();
         RespawnFlagEntity(droppedFlag);
         player.GtNextTakeTime = Now + FlagCollectDelay; // QC player.next_take_time = time + collect_delay
@@ -1771,6 +1848,10 @@ public sealed class Ctf : GameType
         float returnTime = FlagReturnTime;
         foreach (var flag in Flags.Values)
         {
+            // QC ctf_FlagcarrierWaypoints per-think: refresh the live carrier waypoint's health bar from the
+            // current carrier's effective HP each tick (independent of the entity layer, so it tracks even when
+            // the world flag entity is headless). No-op when the flag has no live carrier sprite.
+            RefreshCarrierWaypoint(flag);
             // QC setattachment: a carried flag rides its carrier. AttachToCarrier only places it ONCE, so without
             // a per-tick reposition the networked flag entity stays at the pickup spot instead of travelling with
             // the player. Re-place it behind+above the carrier (FLAG_CARRY_OFFSET, rotated by the carrier's yaw so
@@ -2221,6 +2302,16 @@ public sealed class FlagState
     /// <summary>QC flag.pass_distance: the planar distance from the passer to the target when the pass began.</summary>
     public float PassDistance;
 
+    /// <summary>
+    /// QC <c>wps_flagcarrier</c> (sv_ctf.qc ctf_FlagcarrierWaypoints): the LIVE carrier waypoint sprite that rides
+    /// the current carrier — owned by the <see cref="Waypoints.WaypointSprites"/> registry (not the per-tick
+    /// <see cref="Ctf.CollectWaypoints"/> snapshot), so it carries a HEALTH BAR (UpdateMaxHealth/UpdateHealth) and
+    /// the auto-helpme flash (HelpMePing). Created in <see cref="Ctf.Pickup"/> / <see cref="Ctf.RetrieveFlag"/> via
+    /// <c>WaypointSprites.AttachCarrier</c>, refreshed each tick in <see cref="Ctf.Tick"/>, and killed the instant
+    /// the flag leaves the carrier (capture / return / drop / death / disconnect). Null when not carried.
+    /// </summary>
+    public Waypoints.WaypointSprite? CarrierWaypoint;
+
     public FlagState(int homeTeam) => HomeTeam = homeTeam;
 
     /// <summary>Reset to resting at base (QC ctf_RespawnFlag): clear carrier + drop + pass bookkeeping.</summary>
@@ -2234,5 +2325,8 @@ public sealed class FlagState
         PassTarget = null;
         PassSender = null;
         PassDistance = 0f;
+        // The live carrier sprite is killed by the call site (Capture/Return/Drop/etc.) before/around ResetToBase;
+        // null the back-link here too so a reset flag never holds a stale sprite reference (defensive).
+        CarrierWaypoint = null;
     }
 }

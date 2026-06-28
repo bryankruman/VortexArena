@@ -1,6 +1,11 @@
+using System;
 using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
+using XonoticGodot.Common.Gameplay.Damage;
+using XonoticGodot.Common.Services;
+using XonoticGodot.Engine.Collision;
+using XonoticGodot.Engine.Simulation;
 using XonoticGodot.Net;
 using Xunit;
 
@@ -24,9 +29,17 @@ namespace XonoticGodot.Tests;
 /// <para>Intended divergence (documented on the block): Base codes some pools at ×16; the port uses ×255
 /// uniformly for all [0,1] charge/pool/heat values — the same precision class as the existing 13i-coord /
 /// ×255-alpha divergences — so each of those fields round-trips to within 1/255.</para>
+///
+/// <para>The Phase-2 producer-fill tests (the <c>WepentResolver_*</c> facts at the bottom) drive the REAL
+/// <see cref="WepentResolver.Resolve"/> off an authoritative <see cref="Player"/> holding a registered weapon,
+/// so they boot the process-global weapon registries + <see cref="Api.Services"/> and therefore run in the
+/// <c>GlobalState</c> collection. The codec / <c>Diff</c> facts above touch no globals.</para>
 /// </summary>
-public class WepentViewStateTests
+[Collection("GlobalState")]
+public class WepentViewStateTests : IDisposable
 {
+    public void Dispose() => MutatorActivation.DeactivateAll();
+
     /// <summary>1/255 quantization tolerance for the ×255→byte→/255 [0,1] charge/pool/heat fields.</summary>
     private const float ChargeTol = 1f / 255f;
 
@@ -114,6 +127,41 @@ public class WepentViewStateTests
 
         Assert.Equal(13, blockBytes); // 4 bytes + 2 shorts (4) + 5 bytes = 13 bytes when present
         Assert.Equal(7, got.ClipLoad);
+        // The Phase-2 trailing two bytes (ViewmodelFrame, BeamState) are the LAST fields of the block, so they
+        // are the most sensitive to a Write/Read misalignment: if either were dropped, the 0xD00D sentinel above
+        // would land short and read garbage. NON-ZERO values must survive at the exact tail (Sample stamps
+        // ViewmodelFrame=4 / BeamState=0b101) — a producer that now fills them can't silently desync the stream.
+        Assert.Equal(4, got.ViewmodelFrame);
+        Assert.Equal(0b101, got.BeamState);
+    }
+
+    /// <summary>The 13-byte alignment guard, re-run with the Phase-2 ViewmodelFrame/BeamState bytes carrying the
+    /// MAXIMUM non-zero values (255 / 255). These trailing bytes were always present but produced 0 before the
+    /// resolver started filling them; this proves the codec already round-trips arbitrary non-zero tail bytes at
+    /// the byte-precision they are coded — i.e. the producer change is value-only, NOT a layout change.</summary>
+    [Fact]
+    public void Read_PreservesNonZeroTrailingViewmodelFrameAndBeamState()
+    {
+        var s = Sample;
+        s.ViewmodelFrame = 255; // full byte range
+        s.BeamState = 0b111;    // all three beam bits set
+
+        var w = new BitWriter();
+        w.WriteUShort(0xBEEF);
+        int before = w.Length;
+        WepentViewCodec.Write(w, s);
+        int blockBytes = w.Length - before;
+        w.WriteUShort(0xD00D);
+
+        var r = new BitReader(w.WrittenSpan);
+        Assert.Equal(0xBEEF, r.ReadUShort());
+        WepentViewState got = WepentViewCodec.Read(ref r);
+        Assert.Equal(0xD00D, r.ReadUShort()); // tail aligned: the two new bytes consumed exactly
+        Assert.False(r.BadRead);
+
+        Assert.Equal(13, blockBytes); // unchanged — still 13 bytes with the trailing two non-zero
+        Assert.Equal(255, got.ViewmodelFrame);
+        Assert.Equal(0b111, got.BeamState);
     }
 
     // ---- (2) NetEntityState.Diff sets WepentView iff WepentView changed -----------------------------------
@@ -310,5 +358,130 @@ public class WepentViewStateTests
         WepentViewState none = WepentViewState.None;
         Assert.True(none.Equals(got),
             "a dead/observer player must resolve to WepentViewState.None (no rings for this player)");
+    }
+
+    // ---- (5) Producer fill: WepentResolver stamps the two Phase-2 trailing fields ------------------------
+    //
+    // These drive the REAL resolver off an authoritative Player holding a registered weapon (so the producer's
+    // WeaponFireState -> ViewmodelFrame map and BeamBursting -> BeamState bit1 actually run), then round-trip the
+    // produced block through the codec to confirm the non-zero trailing bytes survive end-to-end. Together with
+    // the alignment facts above this is the full producer→wire→reader path for the two new bytes.
+
+    /// <summary>Boot the process-global weapon registries + Api.Services so a Player can hold a REGISTERED weapon
+    /// and <see cref="Inventory.CurrentWeapon"/> resolves it (the resolver's producer branches key off
+    /// <c>active.NetName</c>). Mirrors the HlacCrouchSpreadTests boot.</summary>
+    private static EngineServices Boot()
+    {
+        var facade = new EngineServices(new CollisionWorld());
+        Api.Services = facade;
+        VehicleCommon.GameStopped = false;
+        GameRegistries.Reset();
+        StatusEffectsCatalog.RegisterAll();
+        GameRegistries.Bootstrap();
+        Combat.System = new DamageSystem();
+        MutatorActivation.Apply();
+        return facade;
+    }
+
+    /// <summary>A live, alive, non-observer player holding the named registered weapon, with the slot 0 fire
+    /// state under the caller's control. Returns the player and its slot-0 scratch for direct stamping.</summary>
+    private static (Player p, WeaponSlotState st) ArmedPlayer(EngineServices f, string netName)
+    {
+        Weapon? w = Weapons.ByName(netName);
+        Assert.NotNull(w); // the requested weapon must be registered by Bootstrap
+
+        var p = new Player();
+        p.ActiveWeaponId = w!.RegistryId;     // Inventory.CurrentWeapon(p) now resolves to `w`
+        WeaponSlotState st = p.WeaponState(new WeaponSlot(0));
+        return (p, st);
+    }
+
+    [Theory]
+    [InlineData(WeaponFireState.Ready, 0f, 0)]  // idle (READY) -> frame 0
+    [InlineData(WeaponFireState.Clear, 0f, 0)]  // empty hands -> frame 0
+    [InlineData(WeaponFireState.Raise, 0f, 3)]  // WS_RAISE -> raise frame 3
+    [InlineData(WeaponFireState.Drop, 0f, 4)]   // WS_DROP -> drop frame 4
+    [InlineData(WeaponFireState.InUse, 20f, 1)] // WS_INUSE + refire gate still closed (AttackFinished > now) -> fire 1
+    [InlineData(WeaponFireState.InUse, 5f, 0)]  // WS_INUSE but refire gate already open (AttackFinished <= now) -> idle 0
+    public void WepentResolver_StampsViewmodelFrame_FromWeaponFireState(WeaponFireState state, float attackFinished, int expectedFrame)
+    {
+        // hagar holds a clip; ClipSize stays 0 here so the reload-priority branch (ClipSize>0 && ClipLoad<0) is
+        // NOT taken — this isolates the fire-state machine selector.
+        var (p, st) = ArmedPlayer(Boot(), "hagar");
+        st.ClipSize = 0;
+        st.ClipLoad = 0;
+        st.State = state;
+        st.AttackFinished = attackFinished;
+
+        WepentViewState got = WepentResolver.Resolve(p, _ => 0, now: 10f);
+        Assert.Equal(expectedFrame, got.ViewmodelFrame);
+    }
+
+    [Fact]
+    public void WepentResolver_StampsViewmodelFrame_ReloadSentinelTakesPriority()
+    {
+        // The QC WFRAME_RELOAD sentinel: a slot with a clip whose load went negative (-1 "needs reload" / mid-
+        // reload). The reload frame (2) must win even while the fire-state machine says WS_INUSE+firing.
+        var (p, st) = ArmedPlayer(Boot(), "hagar");
+        st.ClipSize = 12;     // has a clip
+        st.ClipLoad = -1;     // the reload sentinel
+        st.State = WeaponFireState.InUse;
+        st.AttackFinished = 20f; // would otherwise select fire (1)
+
+        WepentViewState got = WepentResolver.Resolve(p, _ => 0, now: 10f);
+        Assert.Equal(2, got.ViewmodelFrame); // WFRAME_RELOAD takes priority over fire
+    }
+
+    [Theory]
+    [InlineData(true, 0b11)]   // bursting -> bit0 (active, BeamHeat>0) | bit1 (burst)
+    [InlineData(false, 0b01)]  // not bursting -> bit0 only
+    public void WepentResolver_StampsBeamState_Bit1_FromBeamBursting(bool bursting, int expectedBeamState)
+    {
+        var (p, st) = ArmedPlayer(Boot(), "arc");
+        st.BeamHeat = 1f;          // bit0: arc beam active
+        st.BeamBursting = bursting; // bit1: arc beam burst (the NEW Phase-2 bit)
+
+        WepentViewState got = WepentResolver.Resolve(p, _ => 0, now: 10f);
+        Assert.Equal(expectedBeamState, got.BeamState);
+    }
+
+    [Fact]
+    public void WepentResolver_BeamState_NonArcWeapon_StaysZero()
+    {
+        // bit1 is arc-only: a non-arc weapon with BeamBursting set (impossible in practice, but it must not leak
+        // a burst bit) produces BeamState 0.
+        var (p, st) = ArmedPlayer(Boot(), "hagar");
+        st.BeamHeat = 1f;
+        st.BeamBursting = true;
+
+        WepentViewState got = WepentResolver.Resolve(p, _ => 0, now: 10f);
+        Assert.Equal(0, got.BeamState);
+    }
+
+    [Fact]
+    public void WepentResolver_ProducedNonZeroTrailingBytes_RoundTripThroughCodec()
+    {
+        // End-to-end: the resolver fills non-zero ViewmodelFrame + BeamState (arc, bursting, mid-raise), and the
+        // 13-byte codec preserves both at the exact tail — producer → wire → reader for the two new bytes.
+        var (p, st) = ArmedPlayer(Boot(), "arc");
+        st.BeamHeat = 1f;
+        st.BeamBursting = true;          // BeamState -> 0b11
+        st.State = WeaponFireState.Raise; // ViewmodelFrame -> 3
+        st.ClipSize = 0;
+        st.ClipLoad = 0;
+
+        WepentViewState produced = WepentResolver.Resolve(p, _ => 0, now: 10f);
+        Assert.Equal(3, produced.ViewmodelFrame);
+        Assert.Equal(0b11, produced.BeamState);
+
+        var w = new BitWriter();
+        WepentViewCodec.Write(w, produced);
+        var r = new BitReader(w.WrittenSpan);
+        WepentViewState got = WepentViewCodec.Read(ref r);
+
+        Assert.False(r.BadRead);
+        Assert.Equal(13, w.Length);            // still 13 bytes — value-only, not a layout change
+        Assert.Equal(3, got.ViewmodelFrame);   // non-zero frame survived the round-trip
+        Assert.Equal(0b11, got.BeamState);     // non-zero beam bitfield survived the round-trip
     }
 }

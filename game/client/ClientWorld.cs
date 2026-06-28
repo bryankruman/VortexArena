@@ -64,6 +64,13 @@ public partial class ClientWorld : Node3D
     /// the local player holds the porto in the non-default combined-shot mode; the host wires its providers.</summary>
     public PortoTrajectoryPreview PortoPreview { get; private set; } = null!;
 
+    /// <summary>The grappling-hook rope renderer (QC <c>Draw_GrapplingHook</c>): draws the segmented hook beam from
+    /// the firing player to the hook anchor, leasing its cross-ribbon segments from the shared
+    /// <see cref="CylindricLines"/> pool (it idles on a null <c>Lines</c>, so the host MUST inject the shared node —
+    /// mirroring <see cref="LaserRenderer"/>/<see cref="PortoPreview"/>). Self-driving off the ambient entity facade,
+    /// so LIVE on a listen host / demo and IDLE on a pure --connect client (the established ambient-renderer seam).</summary>
+    public HookRopeRenderer HookRope { get; private set; } = null!;
+
     /// <summary>The local player's first-person weapon view-model (optional; set by the host).</summary>
     public ViewModel? ViewModel { get; set; }
 
@@ -97,6 +104,21 @@ public partial class ClientWorld : Node3D
 
     /// <summary>Per-player floating nameplates (ent_cs): a billboarded health/id label above the head.</summary>
     private readonly Dictionary<int, Label3D> _nameplates = new();
+
+    /// <summary>
+    /// Crosshair-chase local-body fade targets keyed by local net id (QC <c>crosshair_chase_playeralpha</c>): the
+    /// third-person crosshair-chase view fades the LOCAL player's own body so it doesn't block the aim. Maps a net
+    /// id to the desired RENDER alpha in (0,1] (1 = opaque; caller passes 1 − crosshair_chase_playeralpha, e.g. the
+    /// 0.25 default → 0.75). Populated/cleared by <see cref="SetLocalBodyAlpha"/>; the per-frame model pass eases
+    /// the matching <see cref="PlayerModel"/> toward it. Empty on a non-chase frame, so that path pays nothing.
+    /// </summary>
+    private readonly Dictionary<int, float> _bodyAlphaTarget = new();
+
+    /// <summary>The currently-EASED body-fade render alpha per local net id (1 = opaque), driven toward
+    /// <see cref="_bodyAlphaTarget"/> each frame so the fade-in/out is smooth (and so a cleared target eases back to
+    /// opaque before the entry is dropped). Removed once the model is opaque again with no live target.</summary>
+    private readonly Dictionary<int, float> _bodyAlphaCurrent = new();
+    private readonly List<int> _bodyAlphaScratch = new(); // reused: ids to drop after they reach opaque
 
     /// <summary>Per-entity vehicle visual drivers (rotors/barrels/engine sound/gibs/heal-beam) for vehicle entities.</summary>
     private readonly Dictionary<int, VehicleVisuals> _vehicles = new();
@@ -398,6 +420,12 @@ public partial class ClientWorld : Node3D
         // the local player holds the porto in the non-default combined-shot mode (g_balance_porto_secondary 0).
         PortoPreview = new PortoTrajectoryPreview { Name = "PortoPreview", Lines = CylindricLines };
         AddChild(PortoPreview);
+
+        // Grappling-hook rope (Draw_GrapplingHook). Inject the SAME shared CylindricLine pool the beam/line
+        // renderers lease from — without it HookRopeRenderer gates on the null Lines and idles. Self-driving off
+        // the ambient entity facade, exactly like Lasers/PortoPreview above (live on a listen host/demo).
+        HookRope = new HookRopeRenderer { Name = "HookRope", Lines = CylindricLines };
+        AddChild(HookRope);
 
         // Mirror in-process effect emissions (server/local gameplay calling EffectEmitter.Emit) onto the
         // renderer. This is what makes a single-process demo show effects with no network layer present.
@@ -958,6 +986,24 @@ public partial class ClientWorld : Node3D
     /// <summary>The local player fired — drive the view-model muzzle flash (CSQC W_MuzzleFlash).</summary>
     public void OnMuzzleFlash(string? effectOverride = null) => ViewModel?.Fire(effectOverride);
 
+    /// <summary>
+    /// Set / clear the crosshair-chase body fade target for the local player model (QC
+    /// <c>crosshair_chase_playeralpha</c>): in the third-person crosshair-chase view the local body is faded so it
+    /// doesn't block the aim. <paramref name="alpha"/> is the desired RENDER alpha in (0,1]; the caller passes
+    /// <c>1 − crosshair_chase_playeralpha</c> (the 0.25 default → 0.75). Pass <c>alpha &lt;= 0</c> to CLEAR the fade
+    /// (the model eases back to opaque). A non-positive <paramref name="localNetId"/> is ignored. The per-frame
+    /// model pass eases the matching <see cref="PlayerModel"/> toward this each frame; with no target set it no-ops.
+    /// </summary>
+    public void SetLocalBodyAlpha(int localNetId, float alpha)
+    {
+        if (localNetId <= 0)
+            return;
+        if (alpha <= 0f)
+            _bodyAlphaTarget.Remove(localNetId);
+        else
+            _bodyAlphaTarget[localNetId] = Mathf.Clamp(alpha, 0f, 1f);
+    }
+
     // =================================================================================================
     //  Per-frame drive
     // =================================================================================================
@@ -1003,6 +1049,11 @@ public partial class ClientWorld : Node3D
             }
         }
 
+        // Crosshair-chase local-body fade: ease each targeted local model toward its desired alpha (and back to
+        // opaque once the target clears). No-op while no chase target is set (the common case pays a single
+        // dictionary-count check).
+        DriveBodyAlpha((float)delta);
+
         using (FrameProfiler.Scope("cw.pvscull")) ApplyEntityPvsCull(localId);
         using (FrameProfiler.Scope("cw.csqc")) DriveCsqcModelHooks((float)delta);
         using (FrameProfiler.Scope("cw.vehicles")) DriveVehicles((float)delta);
@@ -1024,6 +1075,63 @@ public partial class ClientWorld : Node3D
         {
             DriveLoopingSounds((float)delta, listener);
             DriveOneShots(listener);
+        }
+    }
+
+    /// <summary>cl_rollkillspeed-style ease per second toward the body-fade target — fast enough to feel responsive
+    /// on a chase toggle, slow enough to not pop.</summary>
+    private const float BodyAlphaEaseRate = 8f;
+
+    /// <summary>
+    /// Ease each targeted local <see cref="PlayerModel"/>'s render alpha toward its crosshair-chase
+    /// <see cref="_bodyAlphaTarget"/> (QC <c>crosshair_chase_playeralpha</c>) and push it through
+    /// <see cref="PlayerModel.ApplyAlpha"/> (per-instance <c>GeometryInstance3D.Transparency</c> — never a shared
+    /// material edit, the same knob the alpha-net seam uses). A cleared target eases the model back to opaque (1)
+    /// and is then dropped, so a chase exit restores the body smoothly. Whole-method no-op when no fade is active —
+    /// non-chase frames pay only the two empty-dictionary checks.
+    /// </summary>
+    private void DriveBodyAlpha(float delta)
+    {
+        if (_bodyAlphaTarget.Count == 0 && _bodyAlphaCurrent.Count == 0)
+            return;
+
+        float step = Mathf.Clamp(delta * BodyAlphaEaseRate, 0f, 1f);
+        _bodyAlphaScratch.Clear();
+
+        // Walk every model that currently has an eased value OR a fresh target.
+        foreach (int netId in _bodyAlphaCurrent.Keys)
+            _bodyAlphaScratch.Add(netId);
+        foreach (int netId in _bodyAlphaTarget.Keys)
+            if (!_bodyAlphaCurrent.ContainsKey(netId))
+                _bodyAlphaScratch.Add(netId);
+
+        for (int i = 0; i < _bodyAlphaScratch.Count; i++)
+        {
+            int netId = _bodyAlphaScratch[i];
+            // Target render alpha: the stored fade while a chase is active, else 1 (opaque) so a cleared target
+            // eases the body back in.
+            float target = _bodyAlphaTarget.TryGetValue(netId, out float t) ? t : 1f;
+            float current = _bodyAlphaCurrent.TryGetValue(netId, out float c) ? c : 1f;
+            current = Mathf.Lerp(current, target, step);
+            // Snap when within a hair so we converge (and can drop a fully-restored entry instead of easing forever).
+            if (Mathf.Abs(current - target) < 0.002f)
+                current = target;
+
+            if (_playerModels.TryGetValue(netId, out PlayerModel? pm) && GodotObject.IsInstanceValid(pm))
+            {
+                // PlayerModel.Pose already pushed the networked Entity.Alpha (Cloaked / fades) this frame; COMPOSE the
+                // chase fade on top of it (multiply) so a cloaked-in-chase body honors the lower of the two instead
+                // of overwriting the networked alpha. Bound is the model's entity; missing → treat as opaque (1).
+                float netAlpha = pm.Bound is { IsFreed: false } be ? be.Alpha : 1f;
+                if (netAlpha < 0f) netAlpha = 0f; // a hidden/gib alpha clamps like PlayerModel.ApplyAlpha does
+                pm.ApplyAlpha(current * Mathf.Min(1f, netAlpha));
+            }
+
+            // Once opaque again with no live target, forget the model (back to the model's own networked alpha).
+            if (target >= 0.999f && current >= 0.999f && !_bodyAlphaTarget.ContainsKey(netId))
+                _bodyAlphaCurrent.Remove(netId);
+            else
+                _bodyAlphaCurrent[netId] = current;
         }
     }
 

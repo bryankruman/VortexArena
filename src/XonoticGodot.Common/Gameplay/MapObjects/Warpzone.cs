@@ -1074,4 +1074,89 @@ public static class WarpzoneSpawns
     /// <summary>Host bridge for the reconnect <c>use</c> (mirrors <see cref="Sink"/>): wired to
     /// <see cref="WarpzoneManager.OnReconnectUse"/>. Null = no manager (unit tests without a host).</summary>
     public static System.Action<Entity>? ReconnectSink;
+
+    /// <summary>
+    /// QC <c>spawnfunc(func_camera)</c> / <c>spawnfunc(func_warpzone_camera)</c> (lib/warpzone/server.qc): a
+    /// map-placed security camera. The camera entity resolves its <see cref="Entity.Target"/> (a
+    /// <c>target_position</c> / <c>info_notnull</c> aim point), stores its camera POSE (origin + the angles that
+    /// look from the camera toward that target, exactly as <c>info_autoscreenshot</c> aims at its target), becomes a
+    /// non-moving trigger volume, and — on a CLIENT viewer crossing the trigger — stamps the viewer's
+    /// AUTHORITATIVE <see cref="Entity.FixAngle"/>/<see cref="Entity.FixAngleAngles"/>: the SAME view-orient channel
+    /// the warpzone owner block uses (<see cref="WarpzoneManager.Teleport"/>) and that <c>NetGame</c> consumes
+    /// (ConsumePredictedFixAngle). This closes the AUTHORITY half of <c>warpzones.camera</c> with no new wire
+    /// fields. The see-through camera-surface RENDER (the <c>dpcamera</c> portal view) stays delegated to
+    /// <c>PortalRenderer</c> on the listen host — out of scope here, consistent with the partial render liveness.
+    ///
+    /// The target is resolved lazily on the FIRST touch as well as at setup, because the <c>target_position</c> aim
+    /// point may not have spawned yet when the camera's spawnfunc runs (the BSP entity lump spawns in file order, so
+    /// a forward target reference is common — mirrors <c>info_autoscreenshot</c>'s deferred find-target pass).
+    /// </summary>
+    public static void FuncCameraSetup(Entity e)
+    {
+        e.ClassName = "func_camera";
+
+        // The camera presents a touchable view volume but never moves on its own (QC SOLID_TRIGGER / MOVETYPE_NONE).
+        e.Solid = Solid.Trigger;
+        e.MoveType = MoveType.None;
+
+        // The camera POSE (origin + the angles looking from the camera toward its target) is held in the touch
+        // closure rather than on the edict — there is no networked camera-pose field, and none is needed (the pose
+        // is pure server-side AUTHORITY that drives the existing FixAngle/FixAngleAngles channel). Resolve the aim
+        // target now if it already exists; otherwise the Touch handler resolves it lazily on the first crossing,
+        // because the target_position aim point may not have spawned yet when this spawnfunc runs (BSP lump order —
+        // mirrors info_autoscreenshot's deferred find-target pass).
+        bool posed = TryResolveCameraPose(e, out Vector3 cameraAngles);
+
+        e.Touch = (self, other) =>
+        {
+            if (other.IsFreed || other.Solid == Solid.Not) return;
+            // Only a CLIENT viewer's view is re-oriented (the same gate the warpzone teleport uses); a projectile or
+            // item crossing the camera volume is unaffected.
+            if ((other.Flags & EntFlags.Client) == 0) return;
+
+            // Lazy resolution: if the aim target hadn't spawned at setup time, resolve it on the first crossing.
+            if (!posed)
+            {
+                posed = TryResolveCameraPose(self, out cameraAngles);
+                if (!posed) return; // misconfigured camera (no resolvable target) — nothing to orient to
+            }
+
+            // Stamp the AUTHORITATIVE fixed-view channel — the host applies these angles verbatim (NetGame reads
+            // LocalServerPlayer.FixAngle / ConsumePredictedFixAngle), snapping the viewer to the camera's facing.
+            other.FixAngle = true;
+            other.FixAngleAngles = cameraAngles;
+        };
+
+        // Route to the match manager (mirrors the other warpzone spawnfuncs) so it participates on the normal path.
+        Sink?.Invoke(e);
+    }
+
+    /// <summary>
+    /// Resolve the camera's <see cref="Entity.Target"/> aim point and compute the camera POSE angles — the angles
+    /// looking from the camera toward the target (QC <c>info_autoscreenshot</c> aim: <c>vectoangles(target − origin)</c>
+    /// with the pitch flip). Falls back to the target's own explicit angles when the camera sits AT its target
+    /// (degenerate aim vector). Returns false (with <paramref name="angles"/> = default) when no target resolves yet.
+    /// </summary>
+    private static bool TryResolveCameraPose(Entity e, out Vector3 angles)
+    {
+        angles = default;
+        Entity? target = !string.IsNullOrEmpty(e.Target) ? MapMover.FindFirstByTargetName(e.Target) : null;
+        if (target is null) return false;
+
+        Vector3 dir = target.Origin - e.Origin;
+        if (dir.LengthSquared() > 0.0001f)
+        {
+            // QC info_autoscreenshot_findtarget: a = vectoangles(target - origin); a.x = -a.x (the pitch flip that
+            // matches the fixedvectoangles convention the view consumer expects).
+            angles = QMath.VecToAngles(dir);
+            angles.X = -angles.X;
+            angles.Z = e.Angles.Z; // preserve any mapper roll on the camera body
+        }
+        else
+        {
+            // Camera coincident with its target (or a self-aimed dpcamera): use the target's explicit orientation.
+            angles = target.Angles;
+        }
+        return true;
+    }
 }

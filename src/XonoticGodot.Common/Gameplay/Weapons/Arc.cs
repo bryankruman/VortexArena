@@ -559,11 +559,12 @@ public sealed class Arc : Weapon
         // QC Draw_ArcBeam draws the cylindric beam LINE (Draw_CylindricLine) in ADDITION to the trailparticles
         // above. Emit the drawn line origin->hit-point (count 0, end in velocity — the Beam route convention).
         // Tint: the damage beam uses the Arc's m_color blue (arc.qh '0.463 0.612 0.886'); the heal beam uses the
-        // arc_beam_heal green (effectinfo 0x20FF20). The per-beam_type thickness (8 normal / 14 burst), the
-        // spinning muzzle-flash entity, and the hit/muzzle dynamic lights are CSQC render plumbing not modelled
-        // here (tracked as the residual weapon-arc.beam.visual / burst_variant render gap).
+        // arc_beam_heal green (effectinfo 0x20FF20). The per-beam_type thickness is now broadcast by selecting the
+        // wider burst-line variant (Draw_CylindricLine thickness 8 normal / 14 burst) when this beam is the burst
+        // type, so all clients read the Base thickness. The spinning muzzle-flash entity and the hit/muzzle dynamic
+        // lights remain CSQC render plumbing not modelled here (residual weapon-arc.beam.visual render gap).
         Vector3 beamColor = healed ? new Vector3(0.125f, 1f, 0.125f) : Color;
-        EffectEmitter.Emit(Effects.ByName(healed ? "ARC_BEAM_LINE_HEAL" : "ARC_BEAM_LINE"),
+        EffectEmitter.Emit(Effects.ByName(healed ? "ARC_BEAM_LINE_HEAL" : (burst ? "ARC_BEAM_LINE_BURST" : "ARC_BEAM_LINE")),
             shot.Origin, tr.EndPos, 0, beamColor, beamColor);
 
         st.ArcBeam = actor; // mark the beam as live this frame

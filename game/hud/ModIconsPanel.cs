@@ -82,6 +82,13 @@ public partial class ModIconsPanel : HudPanel
     /// draws nothing (QC mod_active forced 1 but nothing to show when not carrying).</summary>
     public bool NexBallCarrying { get; set; }
 
+    /// <summary>NexBall power-meter phase (QC <c>HUD_Mod_NexBall</c> charge bar, cl_nexball.qc): the carrier's
+    /// <c>nb_pb_period</c> triangle-wave phase byte (0..255), networked in the NexBall status block and resolved by
+    /// <see cref="NetGame"/>. -1 = inactive (no charge → no bar drawn). While &gt;= 0 the local carrier is charging a
+    /// throw, and <see cref="DrawNexBall"/> draws the power bar whose length is the QC triangle wave
+    /// (launch power ramps minpower→maxpower→minpower over the meter period).</summary>
+    public int NexBallMeterPhase { get; set; } = -1;
+
     // QC nexball prevstatus / statuschange_time: the carry edge + flip time for the expand transition (parallel to
     // the Keepaway tracker).
     private bool _nbPrevCarrying;
@@ -939,6 +946,30 @@ public partial class ModIconsPanel : HudPanel
             DrawTextCentered(new Vector2(fit.Position.X, fit.Position.Y + fit.Size.Y * 0.62f),
                 fit.Size.X, "BALL", new Color(1f, 1f, 1f, a), sz);
         }
+
+        // QC HUD_Mod_NexBall power-meter bar (cl_nexball.qc): while the carrier is charging a throw, draw a
+        // progress bar whose length is the nb_pb_period triangle wave — launch power ramps minpower→maxpower→
+        // minpower across the meter period. NexBallMeterPhase carries the wave PHASE (0..255); -1 = not charging.
+        int meterPhase = NexBallMeterPhase;
+        if (meterPhase >= 0)
+        {
+            // QC nb_pb_period triangle wave: 0→127 ramps up, 128→255 ramps down (peak at the half period).
+            int mp = Mathf.Clamp(meterPhase, 0, 255);
+            float tri = mp < 128 ? mp / 127f : (255 - mp) / 127f;
+            tri = Mathf.Clamp(tri, 0f, 1f);
+
+            // Skin-tinted (hud_progressbar_nexball_color), QC default '1 0.85 0.2'. Sized to the panel box, sitting
+            // along the bottom band so it reads under the carrying icon — reuse the shared progress-bar primitive.
+            Color barCol = GlobalColor("hud_progressbar_nexball_color", new Color(1f, 0.85f, 0.2f));
+            float pad = Padding;
+            float barH = Mathf.Max(2f, Size2.Y * 0.18f);
+            var barBox = new Rect2(pad, Size2.Y - pad - barH, Mathf.Max(0f, Size2.X - pad * 2f), barH);
+            if (barBox.Size.X > 0f && barBox.Size.Y > 0f)
+            {
+                DrawRect(barBox, new Color(0f, 0f, 0f, 0.35f * LiveFgAlpha));
+                DrawProgressBar(barBox, "progressbar", tri, vertical: false, baralign: 0, barCol, LiveFgAlpha);
+            }
+        }
     }
 
     // ------------------------------------------------------------------------------------------ LMS
@@ -1182,4 +1213,10 @@ public partial class ModIconsPanel : HudPanel
         float a = baseAlpha + amplitude * Mathf.Sin((float)now * frequency);
         return float.IsFinite(a) ? Mathf.Clamp(a, 0f, 1f) : baseAlpha;
     }
+
+    /// <summary>Resolve a global <c>hud_progressbar_*_color</c> skin cvar to a Color (QC '1 0.85 0.2' RGB triplet),
+    /// falling back to <paramref name="fallback"/> when unset/unparseable. Same shape as the per-panel helper in
+    /// HealthArmorPanel/PhysicsPanel.</summary>
+    private static Color GlobalColor(string name, Color fallback)
+        => TryParseRgb(GlobalStr(name), out Color c) ? c : fallback;
 }

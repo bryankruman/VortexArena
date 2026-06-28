@@ -1,7 +1,7 @@
 unit: cl-viewmodel
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # re-audited (consolidated re-verify): casings timing partial->faithful + gap cleared; all other rows confirmed accurate against current port
+last_audited: "2026-06-28"  # re-audited post wepent-channel wave: anim.networked_frames — wframe-equiv networked selector (WepentView.ViewmodelFrame) landed + wired live to ViewModel.SetNetAnimFrame, but playback is a no-op on the live equip path (no animator built) so presentation/timing/values NOT closed (liveness stays partial). Casings/glow/muzzle/alpha rows unchanged from 06-27.
 summary:
   feature_count: 13
   worst_gaps:
@@ -47,9 +47,14 @@ features:
       - "common/weapons/all.qc:NET_HANDLE(wframe)"
       - "client/view.qc:viewmodel_draw (anim_update/anim_set idle, lines 335-337)"
     port_refs:
-      - "game/client/ViewModel.cs (best-effort local fire/idle clip via ModelAnimator)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WepentResolver.cs:113 (ViewmodelFrame selector 0/1/2/3/4)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WepentViewState.cs:58 (ViewmodelFrame field)"
+      - "src/XonoticGodot.Net/WepentViewCodec.cs:30/48 (network write/read)"
+      - "game/net/ServerNet.cs:2133 (WepentResolver.Resolve stamps WepentView per player)"
+      - "game/net/NetGame.cs:UpdateViewModelAnimFromNet (consumer, called from EquipNetworkedWeapon)"
+      - "game/client/ViewModel.cs:SetNetAnimFrame"
     constants:
-      - { name: "wframe states", base: "WFRAME_FIRE1 / WFRAME_FIRE2 / WFRAME_IDLE / WFRAME_RELOAD via networked attackrate+restartanim", port: "local fire/idle only; no network sync", match: false }
+      - { name: "wframe states", base: "WFRAME_FIRE1 / WFRAME_FIRE2 / WFRAME_IDLE / WFRAME_RELOAD via networked attackrate+restartanim", port: "WepentView.ViewmodelFrame selector 0 idle/1 fire/2 reload/3 raise/4 drop, networked per-player; SetNetAnimFrame plays a clip once on the rising edge (no per-frame frame= value, no server frame-timing sync)", match: false }
     status:
       logic: partial
       values: missing
@@ -60,11 +65,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No networked weapon fire/idle/reload animation (the QC wframe temp entity is not networked); the gun never visibly cycles or reloads."
+      - "Networked frame SELECTOR (wframe-equivalent) now exists and is wired live (WepentView.ViewmodelFrame: server WepentResolver -> codec -> NetGame.UpdateViewModelAnimFromNet -> ViewModel.SetNetAnimFrame), but it drives NO visible animation on the live equip path: SetWeaponModel (the EquipNetworkedWeapon path) always sets _animator = null, so SetNetAnimFrame's PlayIdle/FindFireClip/PlayReload all early-return — the gun still never visibly cycles or reloads."
+      - "Consumer is path-split: UpdateViewModelAnimFromNet only feeds the frame on the spectatee / pure-client branch (when following a player or no LocalServerPlayer); on the listen-host local player the host-derived UpdateViewModelReloadAnim owns it. No animator is built on either path."
+      - "No server frame-TIMING sync: Base networks the per-frame frame= via attackrate/restartanim; the port plays a local clip once on a rising edge of the 0/1/2/3/4 selector (no synced playhead, no animfixfps framegroup presets)."
     verification:
-      - { kind: code, ref: "grep: no wframe networking in port (the WFRAME refs in src/ are server-side weapon_thinkf, not networked viewmodel frames); ViewModel plays a best-effort local fire/idle clip via ModelAnimator when the model has one, no reload clip, no server-synced frame timing", result: pass }
+      - { kind: code, ref: "WepentResolver.Resolve (WepentResolver.cs:113) stamps ViewmodelFrame from the slot fire-state/clip sentinel; networked via WepentViewCodec + NetEntity.WepentView delta bit; ServerNet.cs:2133 produces it per player; NetGame.UpdateViewModelAnimFromNet (called in EquipNetworkedWeapon, the live per-frame path) consumes it for the spectatee/pure-client branch and calls ViewModel.SetNetAnimFrame. BUT the live equip path SetWeaponModel (NetGame:1804) sets _animator=null (ViewModel.cs:367), so SetNetAnimFrame's clip playback is a no-op in a real match (ModelAnimator only built by the unused SetWeapon(Md3Data) FrameCount>1 path). Selector LOGIC is faithful; visible playback is dead.", result: pass }
     confidence: high
-    notes: "Base networks the weapon frame (wframe_send -> NET_HANDLE) so fire/idle/reload play with server timing. Port has no wframe channel; it locally plays fire/idle best-effort and never plays a reload animation."
+    notes: "WAVE PROGRESS (networking channel landed, presentation still dead): the wframe-equivalent is now a real networked channel — WepentView.ViewmodelFrame produced by WepentResolver, written/read by WepentViewCodec, delta-gated by EntityField.WepentView, consumed by NetGame.UpdateViewModelAnimFromNet -> ViewModel.SetNetAnimFrame on the spectatee/pure-client path. The frame-SELECTOR mapping (idle/fire/reload/raise/drop) is faithful to the Base wframe states. NOT closed: presentation stays partial and effectively no-op because the live EquipNetworkedWeapon path (SetWeaponModel) never builds a ModelAnimator (_animator=null), so the networked frame plays no clip; there is no synced frame-timing (rising-edge clip, not the per-frame networked frame=); and the consumer is path-split (spectatee/pure-client only). liveness stays partial (selector live end-to-end, but the playback consumer is dead on the live equip path). values/timing remain missing."
 
   - id: cl-viewmodel.model.skin_colormap_glow_effects
     name: "Per-child skin / team colormap / glowmod / EF_NODEPTHTEST / cheap effects mask"

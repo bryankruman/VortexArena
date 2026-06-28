@@ -4,6 +4,7 @@
 //       + qcsrc/common/gametypes/gametype/survival/sv_survival.qc (SurvivalStatuses_SendEntity)
 //       + qcsrc/server/elimination.qc (EliminatedPlayers_SendEntity)
 using XonoticGodot.Common.Gameplay;
+using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Net;
 
@@ -47,7 +48,8 @@ public static class GametypeStatusBlock
         Lms = 9,         // QC sv_lms.qc recycled STAT(REDALIVE)=lms_leaders, STAT(BLUEALIVE)=lms_leaders_lives_diff,
                          // STAT(OBJECTIVE_STATUS)=lms_visible_leaders: the leader-count mod-icon + the +N lives lead.
         NexBall = 10,    // QC HUD_Mod_NexBall (cl_nexball.qc): the nexball_carrying mod-icon — shown (blinking) only
-                         // while the LOCAL player holds the ball. Carries the ball carrier's net id (0 = nobody).
+                         // while the LOCAL player holds the ball. Carries the ball carrier's net id (0 = nobody) plus
+                         // the carrier's power-meter PHASE byte (QC NB_METERSTART; 255 = no meter) for the charge bar.
     }
 
     // [W1-mod-icons] QC ctf.qh CTF_* OBJECTIVE_STATUS bit layout (2 bits per team slot: 1=taken, 2=lost,
@@ -141,7 +143,13 @@ public static class GametypeStatusBlock
                 WriteHeader(w, Kind.NexBall, viewer, 0); // the QC nexball mod-icon is a self-carry indicator only
                 // QC HUD_Mod_NexBall keys off whether the LOCAL player holds the ball — networked as the carrier's
                 // stable net id (0 = nobody), resolved against the local net id on the client (same shape as Keepaway).
-                w.WriteUShort(nb.BallEntity?.GtCarrier is Player nbCarrier ? netIdOf(nbCarrier) : 0);
+                Player? nbCarrier = nb.BallEntity?.GtCarrier as Player;
+                w.WriteUShort(nbCarrier is not null ? netIdOf(nbCarrier) : 0);
+                // QC NB_METERSTART → the basketball power-meter PHASE for the carrier's charge bar (progressbar_nexball).
+                // The carrier's slot-0 NbMeterStart is the server time the meter began (BallStealer.WrThink); the HUD
+                // wants the wrapped phase, not the raw start. Code it as a sawtooth byte 0..254 over one MeterPeriod
+                // (the client re-derives the triangle), with 255 the "no meter" sentinel (inactive → no bar drawn).
+                w.WriteByte(NexBallMeterPhaseByte(nb, nbCarrier));
                 return true;
 
             case Survival surv:
@@ -255,6 +263,33 @@ public static class GametypeStatusBlock
     }
 
     /// <summary>
+    /// QC NB_METERSTART → the basketball power-meter phase byte for the carrier's HUD charge bar
+    /// (progressbar_nexball in cl_nexball.qc). The carrier's slot-0 <c>NbMeterStart</c> is the server time the
+    /// meter began charging (BallStealer.WrThink); here we wrap the elapsed time over one
+    /// <see cref="Nexball.MeterPeriod"/> into a sawtooth byte 0..254. Returns the 255 sentinel ("no meter") when
+    /// the basketball meter is disabled, no one carries, or the carrier isn't charging — the client then draws no
+    /// bar. The client re-derives the triangle wave (BallStealer.DoLaunch's <c>2*phase; if &gt;1 → 2−phase</c>).
+    /// </summary>
+    private static byte NexBallMeterPhaseByte(Nexball nb, Player? carrier)
+    {
+        if (!nb.MeterEnabled || carrier is null)
+            return 255; // no meter / no carrier → no bar
+        float meterStart = carrier.WeaponState(new WeaponSlot(0)).NbMeterStart;
+        if (meterStart <= 0f)
+            return 255; // carrier holds the ball but isn't charging the meter
+
+        float period = nb.MeterPeriod;
+        if (period <= 0f)
+            return 255; // defensive: a non-positive period has no meaningful phase
+
+        float now = Api.Services is null ? 0f : Api.Clock.Time;
+        float phase = ((now - meterStart) % period) / period; // 0..1 sawtooth
+        if (phase < 0f) phase = 0f;
+        int b = (int)System.MathF.Round(phase * 255f);
+        return (byte)System.Math.Clamp(b, 0, 254); // 255 reserved for the "no meter" sentinel
+    }
+
+    /// <summary>
     /// QC EliminatedPlayers_SendEntity / the SurvivalStatuses hunter bitfield, re-shaped as an id list (count
     /// byte + that many ushort net ids — the port has stable net ids, not maxclients bit slots). Observers are
     /// skipped (QC's INGAME / IS_PLAYER gates). Two passes over the roster keep the write allocation-free and
@@ -308,8 +343,11 @@ public static class GametypeStatusBlock
         /// STAT(DOM_TOTAL_PPS / DOM_PPS_*)) — feeds the Domination mod-icon panel.</summary>
         public float[] DominationPps = new float[5];
         /// <summary>[W1-mod-icons] Keepaway: the net id of the current ball carrier (0 = nobody) — feeds the
-        /// KA_CARRYING mod-icon and carrier waypoint.</summary>
+        /// KA_CARRYING mod-icon and carrier waypoint. Also reused by NexBall for the ball carrier.</summary>
         public int CarrierNetId;
+        /// <summary>NexBall: the carrier's networked power-meter phase (QC NB_METERSTART → progressbar_nexball).
+        /// -1 = inactive/no bar; 0..254 = sawtooth phase byte the HUD folds into the triangle charge bar.</summary>
+        public int NexBallMeterPhase = -1;
         /// <summary>Team Keepaway: the per-recipient QC STAT(TKA_BALLSTATUS) bit pack (carrying / per-team taken /
         /// dropped) — feeds the TKA mod-icon (HUD_Mod_TeamKeepaway).</summary>
         public int TkaBallStatus;
@@ -366,6 +404,8 @@ public static class GametypeStatusBlock
                 break;
             case Kind.NexBall:
                 d.CarrierNetId = r.ReadUShort(); // QC nexball ball carrier net id (0 = nobody) → reused field
+                int mb = r.ReadByte(); // QC NB_METERSTART phase byte (255 = no meter)
+                d.NexBallMeterPhase = mb == 255 ? -1 : mb;
                 break;
             case Kind.TeamKeepaway:
                 d.TkaBallStatus = r.ReadByte();

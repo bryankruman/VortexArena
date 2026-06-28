@@ -1,11 +1,11 @@
 unit: weapon-arc
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 15
   worst_gaps:
-    - "FIX (Wave 16 b3a9c06): the visible beam now ALSO emits a CYLINDRIC line (ARC_BEAM_LINE/_HEAL -> EffectClass.Beam short-circuit -> Beams.Beam straight glow cylinder, networked live, tinted blue/heal-green) ALONGSIDE the arc_beam spark trail — matching Base Draw_ArcBeam (cylinder + trailparticles). Residual: fixed 6f width (not per-beam_type 8/14), drawn STRAIGHT (no curving render body), no spinning muzzle-flash entity, no hit/muzzle dynamic lights, no per-team tint. presentation stays PARTIAL (not runtime-captured)."
+    - "RE-AUDIT (2026-06-28, b3a9c06): the visible beam emits a CYLINDRIC line ALONGSIDE the arc_beam spark trail — matching Base Draw_ArcBeam (cylinder + trailparticles). The PER-BEAM_TYPE WIDTH is now correct: Arc.cs:567 emits ARC_BEAM_LINE_BURST for burst beams and EffectSystem.cs:510-521 selects width 14 (burst) / 8 (normal+heal), closing the prior 'fixed 6f width' worst_gap (the baseline was STALE — that selection was already present in b3a9c06). Residual: drawn STRAIGHT (no curving render body — only the gameplay trace curves), no spinning muzzle-flash entity, no hit/muzzle dynamic lights, no per-team tint, and NOT runtime-captured. presentation stays PARTIAL."
     - "Heat DROP/PICKUP migration (wr_drop/wr_pickup) still unported — no weapon-throw/heat-carry path (WeaponThrowing.cs:51 notes no weapon implements wr_drop). The reset-on-death/respawn half (wr_resetplayer/wr_playerdeath) is ported via WrSetup. UNCHANGED since prior audit."
     - "Bolt secondary still fires the whole bolt_count burst in one WrThink call (no per-bolt bolt_refire spacing, no bolt_refire2 tail); ammo-fraction scaling + muzzle flash present. Dormant at stock bolt_count 1. UNCHANGED."
     - "FIXED since prior audit: beam-curve bezier segmentation (tightness/degreespersegment/distancepersegment/ARC_MAX_SEGMENTS) is now FULLY IMPLEMENTED (Arc.cs:369-440) — the swept body is traced segment-by-segment along a quadratic bezier control point, matching W_Arc_Beam_Think arc.qc:318-460. The remaining beam-body divergence is only the warpzone TRANSFORM re-projection (identical to Base when no warpzones lie on the beam path)."
@@ -346,15 +346,15 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:BeamTick:558 (EffectEmitter.Emit ARC_BEAM/ARC_BEAM_HEAL trail each tick)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs:BeamTick:566 (EffectEmitter.Emit ARC_BEAM_LINE/ARC_BEAM_LINE_HEAL cylindric line each tick, tinted Arc m_color / heal-green)"
       - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:51-52,73-74 (ARC_BEAM trail + ARC_BEAM_LINE line, both isTrail:true)"
-      - "game/client/EffectSystem.cs:492-501 (EffectClass.Beam short-circuit -> Beams.Beam straight cylinder) + :727-729 (ARC_BEAM_LINE classified Beam)"
-      - "game/client/BeamRenderer.cs:56 (Beam() straight cylinder, width 6f) — wired live ClientWorld.cs:361,365"
+      - "game/client/EffectSystem.cs:492-541 (EffectClass.Beam short-circuit -> Beams.Beam cylinder; width 14 burst / 8 normal+heal selected by effect name :510-521) + :762-769 (ARC_BEAM_LINE* classified Beam)"
+      - "game/client/BeamRenderer.cs:56 (Beam(from,to,color,width) cylinder) — wired live ClientWorld.cs:394,398"
     constants:
-      - { name: "beam render", base: "Draw_CylindricLine straight beam (cl_arcbeam_simple default) + arc_beam trailparticles ALONGSIDE", port: "BeamRenderer.Beam straight cylinder (ARC_BEAM_LINE) + arc_beam spark trail (ARC_BEAM) — both now emitted", match: false }
-      - { name: "beam_thickness_normal", base: "8", port: "6f fixed (BeamRenderer.Beam default width, not per-beam_type)", match: false }
-      - { name: "beam_thickness_burst", base: "14", port: "6f fixed (no burst thickness)", match: false }
+      - { name: "beam render", base: "Draw_CylindricLine straight beam (cl_arcbeam_simple default) + arc_beam trailparticles ALONGSIDE", port: "BeamRenderer.Beam cylinder (ARC_BEAM_LINE/_HEAL/_BURST) + arc_beam spark trail (ARC_BEAM) — both emitted", match: false }
+      - { name: "beam_thickness_normal", base: "8", port: "8f (EffectSystem.cs:520 arc_beam_line branch)", match: true }
+      - { name: "beam_thickness_burst", base: "14", port: "14f (EffectSystem.cs:513 arc_beam_line_burst branch; emitted via Arc.cs:567 ARC_BEAM_LINE_BURST)", match: true }
     status:
       logic: partial
-      values: partial
+      values: faithful
       timing: partial
       presentation: partial
       audio: na
@@ -362,15 +362,16 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIX since prior audit (Wave 16 b3a9c06): the beam now ALSO emits a CYLINDRIC line. ARC_BEAM_LINE / ARC_BEAM_LINE_HEAL (EffectsList.cs:73-74, isTrail only so the count-0 emission survives the point guard) carry NO effectinfo block and classify as EffectClass.Beam (EffectSystem.cs:727-729), short-circuiting at :492-501 to Beams.Beam(origin, endpos, tint) — a real straight glow cylinder (BeamRenderer.cs:56), networked server->client via EffectNetSink (ServerNet.cs:303) -> RenderSink (ClientWorld.cs:393). The Arc m_color blue (damage) / 0.125,1,0.125 green (heal) tint is passed. The prior 'spark trail only, never reaches BeamRenderer.Beam' gap is CLOSED for the cylinder. The arc_beam SPARK TRAIL (ARC_BEAM/ARC_BEAM_HEAL) is still emitted alongside (Arc.cs:558) — which matches Base, where Draw_ArcBeam draws the cylinder AND trailparticles together."
-      - "Residual VALUES gap (now partial, was missing): the cylinder width is a fixed 6f (BeamRenderer.Beam default), NOT Base's per-beam_type thickness (8 normal / 14 burst). No burst-thickness selection."
-      - "Residual presentation gaps (UNCHANGED): no spinning MDL_ARC_MUZZLEFLASH flash entity on the beam, no hit/muzzle dynamic lights (ARC_BT_HIT hitlight 20 / muzzlelight 50), no team-color tint (heal vs damage tint IS selected, but not per-team). The beam is drawn STRAIGHT origin->hit-point (BeamRenderer 2-point path), not the curving bezier body — though the gameplay TRACE is now the multi-segment bezier (see beam.dps_core); only the rendered LINE is straight."
+      - "Cylindric line is emitted ALONGSIDE the spark trail: ARC_BEAM_LINE / ARC_BEAM_LINE_HEAL / ARC_BEAM_LINE_BURST (EffectsList.cs:73-81, isTrail only so the count-0 emission survives the point guard) carry NO effectinfo block and classify as EffectClass.Beam (EffectSystem.cs:762-769), short-circuiting at :492-541 to Beams.Beam(origin, endpos, tint, width) — a real glow cylinder (BeamRenderer.cs:56), networked server->client via the EffectEmitter.Sink chain -> RenderSink (ClientWorld.cs:432,1962). The Arc m_color blue (damage) / 0.125,1,0.125 green (heal) tint is passed. The arc_beam SPARK TRAIL (ARC_BEAM/ARC_BEAM_HEAL) is still emitted alongside (Arc.cs:558) — matching Base, where Draw_ArcBeam draws the cylinder AND trailparticles together."
+      - "VALUES gap CLOSED (was partial): the per-beam_type thickness now matches Base — burst beams emit ARC_BEAM_LINE_BURST (Arc.cs:567) and EffectSystem.cs:510-521 selects width 14 (burst) / 8 (normal+heal). The prior 'fixed 6f, no burst thickness' was a STALE baseline reading; the selection was already present in b3a9c06 but the baseline row hadn't credited it."
+      - "Residual presentation gaps (UNCHANGED): no spinning MDL_ARC_MUZZLEFLASH flash entity on the beam, no hit/muzzle dynamic lights (ARC_BT_HIT hitlight 20 / muzzlelight 50), no per-team tint (heal-vs-damage tint IS selected, but not per-team). The beam is drawn STRAIGHT origin->hit-point (BeamRenderer 2-point path), NOT the curving bezier body — though the gameplay TRACE is now the multi-segment bezier (see beam.dps_core); only the rendered LINE is straight. NOT runtime-captured (code-verified live only) -> presentation stays partial."
     verification:
-      - { kind: code-read, ref: "Arc.cs:566 emits ARC_BEAM_LINE/_HEAL (count 0, end=tr.EndPos, tint Color/heal-green); EffectsList.cs:73-74 registers both isTrail; EffectSystem.cs:727-729 Classify->Beam; :492-501 routes to Beams.Beam straight cylinder; BeamRenderer.cs:56 builds the cylinder", result: pass }
-      - { kind: liveness, ref: "Beams non-null on the live client (ClientWorld.cs:361,365); server emit networked via EffectNetSink (ServerNet.cs:303) -> client RenderSink (ClientWorld.cs:393). git: ARC_BEAM_LINE introduced in Wave 16 b3a9c06", result: pass }
+      - { kind: code-read, ref: "Arc.cs:567 emits ARC_BEAM_LINE_BURST (burst) / ARC_BEAM_LINE_HEAL (heal) / ARC_BEAM_LINE (normal), count 0, end=tr.EndPos, tint Color/heal-green; EffectsList.cs:73-81 registers all three isTrail; EffectSystem.cs:762-769 Classify->Beam; :492-541 routes to Beams.Beam at width 14/8", result: pass }
+      - { kind: code-read, ref: "EffectSystem.cs:510-521 per-type width: arc_beam_line_burst->14, arc_beam_line->8 (burst test sits before the line test); matches Base ARC_BT_BURST 14 / normal 8 (arc.qc Draw_ArcBeam)", result: pass }
+      - { kind: liveness, ref: "Beams non-null on the live client (ClientWorld.cs:394,398); RenderSink resolves request.Effect.Name -> width branch reads it (ClientWorld.cs:1978). EffectEmitter.Sink chain networks the emission. git: ARC_BEAM_LINE family present in b3a9c06", result: pass }
       - { kind: code-read, ref: "EffectsList.cs:51-52 arc_beam/arc_beam_heal trail still emitted alongside (Arc.cs:558); matches Base Draw_ArcBeam drawing cylinder + trailparticles", result: pass }
     confidence: high
-    notes: "RE-AUDIT FIX (Wave 16 b3a9c06; values missing->partial): the baseline row was STALE — it said the beam was a spark trail only and never reached BeamRenderer.Beam. Wave 16 added a SECOND emission, ARC_BEAM_LINE/_HEAL, that DOES route through the EffectClass.Beam short-circuit to Beams.Beam (a real straight glow cylinder), networked live, tinted blue (damage) / green (heal). So the visible beam is now a cylinder PLUS the spark trail — materially closer to Base's Draw_ArcBeam (which draws both). presentation stays PARTIAL (not faithful): fidelity is code-verified live but NOT runtime-captured, the cylinder width is a flat 6f (not the per-type 8/14), it is drawn STRAIGHT (no curving body render — only the gameplay trace curves), and the spinning muzzle-flash entity / hit & muzzle dlights / per-team tint are still absent."
+    notes: "RE-AUDIT (2026-06-28; values partial->faithful): the baseline row was STALE on the WIDTH dimension. The cylinder is drawn via Beams.Beam with the PER-BEAM_TYPE thickness already correct — Arc.cs:567 emits ARC_BEAM_LINE_BURST for burst beams and EffectSystem.cs:510-521 selects 14 (burst) / 8 (normal+heal), matching Base's Draw_CylindricLine widths. This selection was present in the same b3a9c06 the prior audit examined; the baseline simply hadn't credited it (recorded 'fixed 6f'). values -> faithful. presentation stays PARTIAL: code-verified live but NOT runtime-captured, drawn STRAIGHT (no curving render body — only the gameplay trace curves), and the spinning muzzle-flash entity / hit & muzzle dlights / per-team tint are still absent. logic/timing stay partial pending a runtime capture + the curving render body."
 
   - id: weapon-arc.heat_persistence
     name: "Heat drop/pickup migration + reset on death (wr_drop/pickup/resetplayer/playerdeath)"

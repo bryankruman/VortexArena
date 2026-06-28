@@ -695,6 +695,49 @@ public partial class ViewModel : Node3D
                 return;
     }
 
+    // The last networked viewmodel frame selector seen (so SetNetAnimFrame only restarts a clip on a rising
+    // edge, staying idempotent when called every frame). -1 = nothing networked yet.
+    private int _lastNetAnimFrame = -1;
+
+    /// <summary>
+    /// Drive the local viewmodel anim from the networked frame selector (Base CSQC <c>wframe</c> /
+    /// <c>WepentView.ViewmodelFrame</c>): 0 idle, 1 fire, 2 reload, 3 raise, 4 drop. Plays the matching clip
+    /// ONCE on a rising edge (when the value differs from the last frame seen) so it is safe to call every
+    /// frame — a repeated value is a no-op rather than a continually-restarted clip. This is the source for the
+    /// pure-remote-client / spectated-player branch, where there is no local weapon state to derive fire/reload
+    /// edges from; it COMPLEMENTS (does not replace) the host's <c>UpdateViewModelReloadAnim</c> / best-effort
+    /// <see cref="Fire"/> path for the local player.
+    ///
+    /// <para>Mapping: 0 → <see cref="PlayIdle"/>; 1 → the fire clip once (<see cref="FindFireClip"/>); 2 →
+    /// <see cref="PlayReload"/>; 3/4 (raise/drop) → no-op for the local viewmodel, since the raise/drop slide is
+    /// already handled by <see cref="PlayRaise"/> / <see cref="PlayHolster"/> on the weapon switch. No effect on
+    /// sway or weapon-switch logic.</para>
+    /// </summary>
+    public void SetNetAnimFrame(int frame)
+    {
+        if (frame == _lastNetAnimFrame)
+            return; // idempotent: only act on a rising edge (value change)
+        _lastNetAnimFrame = frame;
+
+        switch (frame)
+        {
+            case 0: // WFRAME_IDLE
+                PlayIdle();
+                break;
+            case 1: // WFRAME_FIRE1 — play the fire clip once (non-looping; _Process drops back to idle when done)
+                if (_animator is not null)
+                    _animator.Play(FindFireClip());
+                break;
+            case 2: // WFRAME_RELOAD
+                PlayReload();
+                break;
+            // case 3 (raise) / case 4 (drop): the PlayRaise/PlayHolster slide already covers the local viewmodel,
+            // so the networked raise/drop selector is a no-op here (no clip to start).
+            default:
+                break;
+        }
+    }
+
     // =================================================================================================
     //  Weapon switch raise/lower (Xonotic viewmodel_draw raise/drop — view.qc:339-362)
     // =================================================================================================

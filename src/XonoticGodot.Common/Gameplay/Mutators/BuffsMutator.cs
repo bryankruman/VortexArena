@@ -2,6 +2,7 @@ using System.Numerics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Gameplay.Scoring;
+using XonoticGodot.Common.Gameplay.Waypoints;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -57,6 +58,7 @@ public sealed class BuffsMutator : MutatorBase
     private float _magnetRangeItem = 250f;       // g_buffs_magnet_range_item
     private float _magnetRangeBuff = 100f;       // g_buffs_magnet_range_buff
     private float _pickupDelay = 0.7f;           // g_buffs_pickup_delay
+    private float _waypointDistance = 1024f;     // g_buffs_waypoint_distance (radar/HUD waypoint max view distance)
 
     // ---- inferno (burn-on-hit + fire/lava resistance) ----
     private float _infernoDamageMult = 0.3f;     // g_buffs_inferno_damagemultiplier
@@ -122,6 +124,7 @@ public sealed class BuffsMutator : MutatorBase
             R(ref _magnetRangeItem, "g_buffs_magnet_range_item");
             R(ref _magnetRangeBuff, "g_buffs_magnet_range_buff");
             R(ref _pickupDelay, "g_buffs_pickup_delay");
+            R(ref _waypointDistance, "g_buffs_waypoint_distance");
             R(ref _infernoDamageMult, "g_buffs_inferno_damagemultiplier");
             R(ref _infernoBurnMinTime, "g_buffs_inferno_burntime_min_time");
             R(ref _infernoBurnTargetDamage, "g_buffs_inferno_burntime_target_damage");
@@ -292,14 +295,14 @@ public sealed class BuffsMutator : MutatorBase
     private bool ConfigureBuffEntity(Entity e, StatusEffectDef? type)
     {
         // QC buff_Init: if (!autocvar_g_buffs) { delete(this); return; }
-        if (Api.Cvars.GetFloat("g_buffs") == 0f) { Api.Entities.Remove(e); return false; }
+        if (Api.Cvars.GetFloat("g_buffs") == 0f) { RemoveBuffEntity(e); return false; }
 
         StatusEffectDef? buff = type;
         // QC: a null type (item_buff_random) or an unavailable type with g_buffs_replace_available re-rolls.
         if (buff is null || (Api.Cvars.GetFloat("g_buffs_replace_available") != 0f && !BuffAvailable(buff)))
             buff = RandomBuff();
         // QC: still invalid/unavailable -> delete the item.
-        if (buff is null || !BuffAvailable(buff)) { Api.Entities.Remove(e); return false; }
+        if (buff is null || !BuffAvailable(buff)) { RemoveBuffEntity(e); return false; }
 
         e.ClassName = "item_buff";
         e.Solid = Solid.Trigger;
@@ -339,6 +342,8 @@ public sealed class BuffsMutator : MutatorBase
         // QC buff_Think reactivation: SND_STRENGTH_RESPAWN + Send_Effect(EFFECT_ITEM_RESPAWN, CENTER_OR_VIEWOFS).
         SoundSystem.PlayOn(item, "STRENGTH_RESPAWN");
         EffectEmitter.Emit("ITEM_RESPAWN", Center(item));
+        // QC buff_Init/buff_Think: attach the WP_Buff radar/HUD waypoint once the item is live (idempotent).
+        SpawnBuffWaypoint(item);
         MaybeRelocate(item); // QC buff_Reset: relocate on (re)activation if random_location / spawnflag 64
         float lifetime = Api.Cvars.GetFloat("g_buffs_random_lifetime");
         if (item.BuffLifetime == 0f && lifetime > 0f && (item.BuffAlwaysRelocate || Api.Cvars.GetFloat("g_buffs_random_location") != 0f))
@@ -416,6 +421,9 @@ public sealed class BuffsMutator : MutatorBase
         item.BuffActive = false;
         item.BuffLifetime = 0f; // QC: this.lifetime = 0 (a picked-up item no longer auto-relocates)
         item.Owner = toucher;
+        // QC buff_Touch: the collected item's waypoint goes away while it's on its respawn cooldown.
+        WaypointSprites.Kill(item.BuffWaypoint);
+        item.BuffWaypoint = null;
 
         // QC: bufftime = this.buffs_finished ? ... : thebuff.m_time(thebuff); fall back to 999 / cvar time.
         float bufftime = BuffTime(thebuff);
@@ -467,6 +475,11 @@ public sealed class BuffsMutator : MutatorBase
             // QC buff_Think activate-cooldown elapse: SND_STRENGTH_RESPAWN + EFFECT_ITEM_RESPAWN on reactivation.
             SoundSystem.PlayOn(self, "STRENGTH_RESPAWN");
             EffectEmitter.Emit("ITEM_RESPAWN", Center(self));
+            // QC buff_Think: the picked-up item's waypoint was killed on pickup — re-attach it for the fresh
+            // (possibly re-randomized) buff type. Kill any stale marker first so the colour/customize re-bind.
+            WaypointSprites.Kill(self.BuffWaypoint);
+            self.BuffWaypoint = null;
+            SpawnBuffWaypoint(self);
             BuffThink(self);
         };
     }
@@ -508,7 +521,7 @@ public sealed class BuffsMutator : MutatorBase
 
     // QC buff_Respawn: relocate an untouched/expired buff to a fresh random map spot (with the SelectSpawnPoint
     // fallback), launch it upward, unstick it, arm the lifetime timer, fire the two electro-combo bursts (old +
-    // new origin), and play the relocation sound. The WaypointSprite_Ping is omitted (no buff-waypoint service).
+    // new origin), play the relocation sound, and ping/re-tint the buff's radar waypoint at its new spot.
     private void BuffRespawn(Entity item)
     {
         if (Api.Services is null || VehicleCommon.GameStopped) return;
@@ -540,10 +553,66 @@ public sealed class BuffsMutator : MutatorBase
 
         // QC: sound(this, CH_TRIGGER, SND_KA_RESPAWN, VOL_BASE, ATTEN_NONE).
         SoundSystem.PlayOn(item, "KA_RESPAWN");
+
+        // QC buff_Respawn: WaypointSprite_Ping(this.buff_waypoint) — pulse the radar marker at the new spot, then
+        // resync its icon/colour to the (possibly re-randomized) buff type (QC re-tints the waypoint on a change).
+        WaypointSprites.Ping(item.BuffWaypoint);
+        if (item.BuffWaypoint is not null && item.BuffDef is not null)
+            WaypointSprites.UpdateTeamRadar(item.BuffWaypoint, 1, BuffColor(item.BuffDef));
+    }
+
+    // QC delete(this) on a buff item: tear down its radar/HUD waypoint before freeing the edict (QC's waypoint is
+    // owned by the item and would otherwise dangle on a freed reference).
+    private static void RemoveBuffEntity(Entity e)
+    {
+        WaypointSprites.Kill(e.BuffWaypoint);
+        e.BuffWaypoint = null;
+        Api.Entities.Remove(e);
     }
 
     // QC CENTER_OR_VIEWOFS(e): the entity-centre point used for effect emission (origin + (mins+maxs)*0.5).
     private static Vector3 Center(Entity e) => e.Origin + (e.Mins + e.Maxs) * 0.5f;
+
+    /// <summary>
+    /// QC buff_Waypoint_Spawn (sv_buffs.qc): attach the WP_Buff radar/HUD waypoint to a live buff item so the
+    /// buff shows on the radar + as a 3D sprite. The waypoint rides the item (reference), tinted by the buff's
+    /// colour, with the per-buff radar icon. QC's WaypointSprite_Spawn customize hides the marker from any viewer
+    /// who already holds that buff type, which the port mirrors via <see cref="WaypointSprite.VisibleForPlayer"/>.
+    /// Returns null (no waypoint) when buffs are off or the item carries no buff type. Idempotent per item via
+    /// <see cref="Entity.BuffWaypoint"/> — a second call returns the existing marker.
+    /// </summary>
+    public WaypointSprite? SpawnBuffWaypoint(Entity buffItem)
+    {
+        if (Api.Cvars.GetFloat("g_buffs") == 0f || buffItem.BuffDef is null) return null;
+        // QC: one waypoint per item — don't double-spawn (buff_Init only attaches once).
+        if (buffItem.BuffWaypoint is not null) return buffItem.BuffWaypoint;
+
+        StatusEffectDef def = buffItem.BuffDef;
+        WaypointSprite wp = WaypointSprites.Spawn(
+            "Buff",
+            lifetime: 0f,
+            maxDistance: Cvar("g_buffs_waypoint_distance", 1024f),
+            reference: buffItem,
+            offset: new Vector3(0f, 0f, 64f),
+            origin: default,
+            team: buffItem.TeamForced,
+            color: BuffColor(def),
+            radarIcon: 1,
+            rule: SpriteRule.Default,
+            hideable: true);
+
+        // QC buff_Waypoint_Spawn customize (WaypointSprite_FilterForLocalPlayer-style hide): a player already
+        // holding this buff type doesn't see its waypoint (no point chasing a buff you can't pick up anyway).
+        string shortName = ShortName(def);
+        wp.VisibleForPlayer = viewer => viewer is null || !Active(viewer, shortName);
+
+        buffItem.BuffWaypoint = wp;
+        return wp;
+    }
+
+    // QC Buff.m_color ('1 0.62 0' style triples) → the Vector3 the waypoint/radar tint expects.
+    private static Vector3 BuffColor(StatusEffectDef def)
+        => new(def.Color.R, def.Color.G, def.Color.B);
 
     // =====================================================================================
     //  Apply / remove (the buff-specific m_apply/m_remove side effects)

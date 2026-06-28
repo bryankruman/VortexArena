@@ -72,6 +72,13 @@ public static class EffectsList
         // not the visual; the explicit Beam-class check in EffectSystem routes them to the drawn line.
         Effects.Register("ARC_BEAM_LINE", "arc_beam_line", isTrail: true);
         Effects.Register("ARC_BEAM_LINE_HEAL", "arc_beam_line_heal", isTrail: true);
+        // The BURST arc-beam line (Base ARC_BT_BURST, a fatter cl_arcbeam burst-mode cylinder). Same Beam-route
+        // family as the two lines above — the name contains 'ARC_BEAM_LINE' so EffectSystem.ClassifyUncached's
+        // needle routes it to EffectClass.Beam, short-circuiting before the (absent) effectinfo lookup. The width
+        // difference (burst 14 vs steady 8) is applied downstream in EffectSystem, not here. Carries no effectinfo
+        // block; registered isTrail ONLY so the count-0 line emission survives EffectEmitter.Emit's point-count
+        // guard (same trick as ARC_BEAM_LINE/_HEAL) — the trail flag governs networking, not the visual.
+        Effects.Register("ARC_BEAM_LINE_BURST", "arc_beam_line_burst", isTrail: true);
 
         // ---- Machine Gun ----
         Effects.Register("MACHINEGUN_IMPACT", "machinegun_impact");

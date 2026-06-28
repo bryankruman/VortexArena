@@ -43,6 +43,13 @@ public sealed class ViewEntityRenderer
         public int WeaponId = int.MinValue;
         public float LastAlpha = float.NaN; // last applied render alpha (QC exteriorweaponentity.alpha)
 
+        // [wepentconsumers] Exterior vortex charge-glow (weapon-vortex.fx.charge_glow): a per-INSTANCE emission
+        // override on the carrier gun so EVERY observer sees the held weapon brighten with charge — the wr_glow
+        // the registry flagged as first-person/host-only. The v_*.md3 models are cached + shared, so we can't
+        // touch their material; we duplicate a StandardMaterial3D once per Held and drive its emission.
+        public StandardMaterial3D? GlowMaterial; // per-instance duplicated material carrying the charge emission
+        public Color LastGlow = new(float.NaN, float.NaN, float.NaN); // change gate (mirrors LastAlpha)
+
         // [W14a QW5] Remote weapon-switch render state (decoded from the wepent block onto the proxy Entity).
         public byte SwitchPhase;       // last seen WepPhase (0 ready, 1 = WS_RAISE, 2 = WS_DROP)
         public float SwitchOffset;     // [0,1] raise/lower lerp: 0 = fully raised (rest), 1 = fully lowered
@@ -108,6 +115,10 @@ public sealed class ViewEntityRenderer
                 h.Holder.AddChild(model);
             }
             h.LastAlpha = float.NaN; // fresh meshes start opaque — force a re-apply of the current alpha below
+            // The freshly-built (or swapped) model carries no glow override yet; drop the cached material + gate
+            // so the charge-glow block below re-builds and re-applies for the new mesh.
+            h.GlowMaterial = null;
+            h.LastGlow = new Color(float.NaN, float.NaN, float.NaN);
         }
 
         // [W14a QW5] Drive the raise/lower dip off the networked WepPhase (1 = WS_RAISE, 2 = WS_DROP); phase 0
@@ -141,7 +152,133 @@ public sealed class ViewEntityRenderer
             float clamped = weaponAlpha < 0f ? 0f : (weaponAlpha > 1f ? 1f : weaponAlpha);
             ApplyTransparency(h.Holder, 1f - clamped);
         }
+
+        // [wepentconsumers] Exterior vortex charge GLOW (weapon-vortex.fx.charge_glow / wr_glow): brighten the
+        // carrier weapon for EVERY observer as its owner charges the Vortex, closing the registry gap where the
+        // glow was only seen first-person / on the listen host. The charge fraction is decoded onto the proxy
+        // (Entity.WepentView.VortexCharge); the color uses the SAME team-palette ramp as the first-person
+        // viewmodel glow (NetGame.UpdateViewModelTeamGlow → VortexGlowColor). Players-only and team-only (the QC
+        // weaponentity_glowmod tints from the team/pants color); a non-vortex weapon or zero charge clears it.
+        if (playerHeld)
+            UpdateChargeGlow(h, (int)e.Team, displayWeaponId, e.WepentView.VortexCharge);
     }
+
+    /// <summary>
+    /// [wepentconsumers] Apply the exterior Vortex charge glow to the carrier weapon as a per-INSTANCE emission
+    /// (weapon-vortex.fx.charge_glow). Resolves the team color from the proxy colormap (low nibble — the same
+    /// source <see cref="ModelTint.ApplyAppearance"/> tints the player body with) and, while the held weapon is a
+    /// Vortex/Nex with charge, drives a duplicated <see cref="StandardMaterial3D"/> override's emission off the
+    /// shared <see cref="NetGame"/> charge ramp. The v_*.md3 world models are cached + shared by the asset
+    /// pipeline, so the glow MUST NOT mutate their material (every player's gun would light up — the same lesson
+    /// <see cref="ApplyTransparency"/> documents); we cache one duplicated material per <see cref="Held"/> and edit
+    /// only its emission. <see cref="Held.LastGlow"/> gates the re-apply (mirrors the alpha gate), and a
+    /// zero-charge / non-vortex / teamless gun disables the emission.
+    /// </summary>
+    private static void UpdateChargeGlow(Held h, int colormap, int displayWeaponId, float vortexCharge)
+    {
+        if (h.Model is null || !GodotObject.IsInstanceValid(h.Model))
+            return;
+
+        // Team color drives the glow (DP weaponentity_glowmod tints from the pants/team color); FFA / no team
+        // leaves the carrier with no charge glow, matching the first-person fall-through.
+        Color teamColor = ModelTint.TeamColor(colormap, out bool hasTeam);
+
+        // Only a Vortex-family weapon (vortex / vaporizer / *nex*) with live charge glows; everything else clears.
+        bool isVortexWeapon = false;
+        if (displayWeaponId >= 0 && displayWeaponId < XonoticGodot.Common.Gameplay.Weapons.Count)
+        {
+            XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(displayWeaponId);
+            string net = w?.NetName ?? "";
+            isVortexWeapon = net is "vortex" or "vaporizer" || net.Contains("nex");
+        }
+
+        bool glowing = hasTeam && isVortexWeapon && vortexCharge > 0f;
+        Color glow = glowing
+            ? VortexGlowColor(teamColor, Mathf.Max(0.25f, vortexCharge))
+            : Black;
+
+        if (glow == h.LastGlow)
+            return;
+        h.LastGlow = glow;
+
+        // Lazily build (and cache) the per-instance duplicated material override the first time we need it; reuse
+        // it thereafter so we never re-duplicate or touch the shared model material.
+        StandardMaterial3D mat = h.GlowMaterial ??= BuildGlowMaterial(h.Model);
+        if (glowing)
+        {
+            mat.EmissionEnabled = true;
+            mat.Emission = glow;
+            mat.EmissionEnergyMultiplier = 1f;
+        }
+        else
+        {
+            mat.EmissionEnabled = false;
+        }
+    }
+
+    /// <summary>Duplicate the carrier mesh's material into a per-instance <see cref="StandardMaterial3D"/> override
+    /// (so the charge glow can't leak onto the shared cached v_*.md3), apply it to every mesh under the held
+    /// weapon, and return it for the <see cref="Held"/> to drive. Falls back to a fresh material when the cached
+    /// model has none.</summary>
+    private static StandardMaterial3D BuildGlowMaterial(Node3D model)
+    {
+        // Seed the override from the first mesh's active material so the gun keeps its real albedo/texture while we
+        // layer the emission on top; a plain StandardMaterial3D is the safe fallback when none is resolvable.
+        StandardMaterial3D mat = ResolveSeedMaterial(model)?.Duplicate() as StandardMaterial3D
+            ?? new StandardMaterial3D();
+        ApplyMaterialOverride(model, mat);
+        return mat;
+    }
+
+    /// <summary>Find a surface material to seed the per-instance glow override from (the active override, then the
+    /// mesh's surface-0 material) on the first mesh under <paramref name="node"/>.</summary>
+    private static StandardMaterial3D? ResolveSeedMaterial(Node node)
+    {
+        if (node is MeshInstance3D mi && GodotObject.IsInstanceValid(mi))
+        {
+            if (mi.MaterialOverride is StandardMaterial3D ov)
+                return ov;
+            if (mi.GetSurfaceOverrideMaterialCount() > 0 && mi.GetActiveMaterial(0) is StandardMaterial3D active)
+                return active;
+        }
+        foreach (Node child in node.GetChildren())
+        {
+            StandardMaterial3D? found = ResolveSeedMaterial(child);
+            if (found is not null)
+                return found;
+        }
+        return null;
+    }
+
+    /// <summary>Set <paramref name="mat"/> as the per-instance <see cref="GeometryInstance3D.MaterialOverride"/> on
+    /// every mesh under the held weapon, so the charge emission affects only this carrier (never the shared
+    /// cached model material).</summary>
+    private static void ApplyMaterialOverride(Node node, Material mat)
+    {
+        if (node is MeshInstance3D mi && GodotObject.IsInstanceValid(mi))
+            mi.MaterialOverride = mat;
+        foreach (Node child in node.GetChildren())
+            ApplyMaterialOverride(child, mat);
+    }
+
+    /// <summary>Port of <c>vortex_glowcolor</c> (weapon/vortex.qc:7), duplicating <c>NetGame.VortexGlowColor</c>
+    /// EXACTLY: a charge-scaled blend of the team color ramping 0→0.3× up to the anim limit (0.5) then 0.3→1.0×
+    /// above it. <paramref name="charge"/> is the [0,1] charge fraction.</summary>
+    private static Color VortexGlowColor(Color teamColor, float charge)
+    {
+        const float animlimit = 0.5f; // g_balance_vortex_charge_animlimit default
+        float f = Mathf.Min(1f, charge / animlimit);
+        Color g = teamColor * (f * 0.3f);
+        if (charge > animlimit)
+        {
+            f = (charge - animlimit) / (1f - animlimit);
+            g += teamColor * (f * 0.7f);
+        }
+        return g;
+    }
+
+    /// <summary>Opaque-black sentinel for "no charge glow" (emission disabled).</summary>
+    private static readonly Color Black = new(0f, 0f, 0f);
 
     /// <summary>
     /// Resolve the exterior weapon entity's render alpha from its owner's networked alpha, porting the QC

@@ -1,14 +1,14 @@
 unit: weapon-vortex
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 17
   worst_gaps:
-    - "Beam is STILL not charge-scaled (sqrt(charge) alpha/fade/trail-spacing): a barely-charged shot and a full shot look identical. The team-color tint (vortex_glowcolor) and the cl_particles_oldvortexbeam legacy-beam switch are BOTH ported (EmitBeam in Vortex.cs), but EffectRequest carries no per-emission alpha so the sqrt(charge) brightness modulation has no port-side hook."
-    - "Cross-client charge delivery is still broken: vortex_charge is read only on the listen-server HOST path (NetGame.UpdateCrosshairWeaponRings + UpdateViewModelTeamGlow read LocalServerPlayer's slot state) for the HUD ring AND the view-model glow. W16 added a server-side producer (ServerNet.ResolveOwnerWeaponRings writes vortex_charge/chargepool into the owner block), but ClientNet.HandleSnapshot has NO matching reader — the value is dead-on-arrival, so a PURE remote client still has no charge ring/glow, and the unread owner-block fields (9 ring floats + PressedKeys short) leave the wire MISALIGNED (a net-entity-state concern, flagged below)."
-    - "Charge glow targets the FIRST-PERSON view model (the local player's own gun), not the EXTERIOR carrier/player model QC's wr_glow brightens for other players to see. The local player's gun brightens with charge (host path), but a remote observer still sees the carrier identical regardless of charge."
+    - "Beam is STILL not charge-scaled (sqrt(charge) alpha/fade/trail-spacing): a barely-charged shot and a full shot look identical. The team-color tint (vortex_glowcolor) and the cl_particles_oldvortexbeam legacy-beam switch are BOTH ported (EmitBeam in Vortex.cs), but the effect-emission path carries no per-emission alpha (no EffectRequest.Alpha field exists), so the sqrt(charge) brightness modulation has no port-side hook. THIS IS NOW THE ONLY remaining defect on the unit's presentation."
   notable_fixes_this_audit:
+    - "RE-AUDIT 2026-06-28 (waves wave) CLOSED the cross-client charge delivery on weapon-vortex.hud.charge_ring (liveness partial -> live): the W16 producer is no longer dead-on-arrival. ClientNet.HandleSnapshot now READS the owner block PressedKeys short (ClientNet.cs:1023) AND the 9 ring floats via OwnerWeaponRings.Read (ClientNet.cs:1055) in lockstep with ServerNet.WriteOwnerState's symmetric OwnerWeaponRings.Write (ServerNet.cs:2818-2831). NetGame.UpdateCrosshairWeaponRings's pure-client branch (NetGame.cs:3394-3403) now feeds the panel from _client.LocalWeaponRings, and a spectatee branch (NetGame.cs:3375-3388) feeds it from the per-player WepentView. Wire layout is a single Write/Read struct, test-guarded (OwnerWeaponRingsTests, WepentViewStateTests). The prior wire-misalignment + dead-on-arrival baseline is STALE — a pure remote client now draws the charge ring."
+    - "RE-AUDIT 2026-06-28 (waves wave) CLOSED the exterior-carrier glow + cross-client glow on weapon-vortex.fx.charge_glow (logic partial -> faithful, liveness partial -> live): the EXTERIOR carrier-weapon charge glow is now ported (ViewEntityRenderer.UpdateChargeGlow, ViewEntityRenderer.cs:177-217) as a per-instance StandardMaterial3D emission override driven by Entity.WepentView.VortexCharge off the LIVE entity feed (live-called from ViewEntityRenderer.Update:162-163 <- ClientEntityView.Update:217/227). So EVERY observer now sees the carrier brighten with charge — the QC wr_glow -> weaponentity_glowmod behaviour the baseline said was first-person-only. The first-person view-model glow also now reads the networked WepentView.VortexCharge for a pure-client / spectatee (NetGame.cs:1856-1862), so it lights on a remote client too. vortex_glowcolor ramp duplicated bit-faithfully (ViewEntityRenderer.VortexGlowColor == NetGame.VortexGlowColor). Both baseline gaps (first-person-only target, host-only charge) are STALE."
     - "RE-AUDIT 2026-06-27 CLOSED weapon-vortex.charge.rot_decay (missing/na -> faithful/live): the per-frame charge-DECAY loop is now a faithful, live host-path port. Vortex.RotCharge (Vortex.cs:269-285) decays VortexCharge down toward charge_limit (equipped) / charge_rot_unequipped_limit (stowed), dt-scaled by frametime/W_TICSPERFRAME, gated by the rot pause (VortexChargeRotTime, previously a dead write — now consumed); all four rot cvars read with correct Base-0 defaults (Vortex.cs:106-109). Live-called once/frame from GameWorld.cs:2501-2505 (player-postthink, after WeaponThink). Stock-inert (rot_rate 0) but mechanically complete. Baseline 'no decay consumer / rot cvars never read / port_refs []' is now STALE."
     - "RE-AUDIT 2026-06-27 CLOSED the charge_always gap on weapon-vortex.charge.regen_passive (gap -> []): Vortex.ChargeAlwaysRegen (Vortex.cs:293-297) now re-implements QC's always-on PlayerPreThink regen (full frametime), live-called for the held vortex from GameWorld.cs:2490-2495 BEFORE WeaponThink, matching QC order. WrThink's `if (!Cvars.ChargeAlways)` gate hands off cleanly. Stock charge_always 0 so inert, but the previously-flagged 'with charge_always 1 the port never charges' divergence is closed."
     - "RE-AUDIT 2026-06-27 confirmed-not-fixed weapon-vortex.hud.charge_ring stays partial-live: W16's ServerNet ResolveOwnerWeaponRings producer (ServerNet.cs:2773-2780) is DEAD-ON-ARRIVAL — ClientNet.HandleSnapshot never reads the 9 ring floats (nor the W16 PressedKeys short), so the snapshot owner block is wire-misaligned and the pure-client charge ring still never draws. Recorded as a residual gap on the row; the wire-alignment bug itself belongs to net-entity-state. fx.charge_glow line refs refreshed (NetGame.cs:1815/1857/1739)."
@@ -238,10 +238,10 @@ features:
       - "Beam is emitted at a constant intensity: alpha/fade/trail-spacing are NOT scaled by sqrt(charge), so a barely-charged shot and a full shot look identical. EffectRequest carries colorMin/colorMax but no per-emission alpha, so the sqrt(charge) brightness modulation has no port-side hook."
       - "Team tint is computed server-side from the FIRER's charge+team and broadcast as a single colour (EmitBeam), so the per-recipient cl_tracers_teamcolor / cl_particles_oldvortexbeam client-cvar nuance is collapsed to one broadcast emit (the broadcast reads the host's cvars)."
     verification:
-      - { kind: codetrace, ref: "Vortex.cs:312 now calls EmitBeam(actor, shot.Origin, impTr.EndPos, charge); EmitBeam (Vortex.cs:331-360) selects VORTEX_BEAM_OLD when cl_particles_oldvortexbeam!=0, and on (teamplay&&cl_tracers_teamcolor==1)||==2 computes vortex_glowcolor(actor.Team, max(0.25, sqrt(charge))) and emits via Emit(effect,origin,endpos,0,rgb,rgb). VORTEX_BEAM_OLD registered at EffectsList.cs:86.", result: pass }
-      - { kind: codetrace, ref: "EffectEmitter.Emit(Effect,origin,vel,count,colorMin,colorMax,except) (EffectEmitter.cs:205) carries colorMin/colorMax into EffectRequest — the team tint is genuinely plumbed, not a dead literal. No alpha field exists, so the sqrt(charge) scaling is still unported.", result: fail }
+      - { kind: codetrace, ref: "RE-AUDIT 2026-06-28: Vortex.cs:372 calls EmitBeam(actor, shot.Origin, impTr.EndPos, charge); EmitBeam (Vortex.cs:397-431) selects VORTEX_BEAM_OLD when cl_particles_oldvortexbeam!=0, and on (teamplay&&cl_tracers_teamcolor==1)||==2 computes VortexGlowColor(actor.Team, max(0.25, sqrt(charge))) and emits via Emit(effect,origin,endpos,0,rgb,rgb). VORTEX_BEAM_OLD registered in EffectsList.", result: pass }
+      - { kind: codetrace, ref: "RE-AUDIT 2026-06-28: confirmed NO EffectRequest.Alpha / colorMin/colorMax per-emission alpha field exists anywhere under src (grep). The team tint rides the colorMin/colorMax args of EffectEmitter.Emit (genuinely plumbed), but the sqrt(charge) ALPHA/fade/spacing scaling on the default (non-team) path is still unported — the default path emits with no colour override to preserve the native beam colour. So values+presentation stay partial.", result: fail }
     confidence: high
-    notes: "FIXED THIS AUDIT (presentation/logic improved): the Wave-6 EmitBeam port added the team-color tint (vortex_glowcolor → colorMin/colorMax) and the cl_particles_oldvortexbeam legacy-beam switch — both previously-recorded gaps are now closed. The beam is computed server-side from the firer's charge+team and broadcast, so the tint reaches all clients (no per-client charge stat needed for the colour). The ONE residual defect is the sqrt(charge) alpha/fade/spacing modulation: EffectRequest has no alpha channel, so values+presentation stay `partial`; logic is now faithful (branching + color derivation fully ported)."
+    notes: "RE-AUDIT 2026-06-28 (waves wave): status UNCHANGED. The team-color tint (vortex_glowcolor) and the cl_particles_oldvortexbeam legacy-beam switch remain ported (closed in an earlier wave). The ONE residual defect — the sqrt(charge) alpha/fade/trail-spacing modulation — is STILL open: there is no per-emission alpha field in the effect-request path, so a barely-charged beam and a full one look identical. This is now the only outstanding presentation defect on the whole unit (the charge-ring + carrier-glow cross-client delivery were both closed this wave)."
 
   - id: weapon-vortex.fx.charge_glow
     name: "Player-model charge glow (wr_glow / vortex_glowcolor)"
@@ -250,6 +250,8 @@ features:
       - "common/weapons/weapon/vortex.qc:wr_glow"
       - "common/weapons/weapon/vortex.qc:vortex_glowcolor"
     port_refs:
+      - "game/net/ViewEntityRenderer.cs:UpdateChargeGlow"
+      - "game/net/ViewEntityRenderer.cs:VortexGlowColor"
       - "game/net/NetGame.cs:UpdateViewModelTeamGlow"
       - "game/net/NetGame.cs:VortexGlowColor"
     constants:
@@ -257,23 +259,21 @@ features:
       - { name: "charge_animlimit (glow ramp split)", base: "0.5", port: "0.5 (inlined const)", match: true }
       - { name: "glow blend (below/above animlimit)", base: "f*colors*0.3 ; +f*colors*0.7", port: "f*colors*0.3 ; +f*colors*0.7", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Glow is applied to the FIRST-PERSON VIEW model (the local player's own gun, via ViewModel.SetTeamGlow), NOT the exterior player/carrier model that QC's wr_glow→weaponentity_glowmod brightens for OTHER players. So the local player's gun now brightens with charge, but a remote observer still sees the carrier identical regardless of charge."
-      - "Host-only: VortexCharge is read off LocalServerPlayer's slot state (NetGame.UpdateViewModelTeamGlow), so on a pure remote client there is no charge value and the glow stays at the base team color. Same cross-client-charge-STAT root cause as the charge ring and beam tint."
+    gaps: []
     verification:
-      - { kind: codetrace, ref: "RE-AUDIT: NetGame.cs:1815-1822 — for net=='vortex'/'vaporizer'/contains 'nex' && LocalServerPlayer alive+!observer, reads charge=max(0.25, WeaponState(0).VortexCharge) and computes glow=VortexGlowColor(teamColor,charge); near-zero result falls back to teamColor. VortexGlowColor (NetGame.cs:1857-1868) ports vortex_glowcolor: f=min(1,charge/0.5)*0.3 then +(charge-0.5)/0.5*0.7 above animlimit. Pushed via _viewModel.SetTeamGlow (NetGame.cs:1825).", result: pass }
-      - { kind: codetrace, ref: "Live path: UpdateViewModelTeamGlow() called at NetGame.cs:1739 on the per-frame weapon-model update (host path). Confirmed the ONLY vortex-charge-driven glow feeder in the codebase (CsqcModelEffects.ApplyForcedGlowmod is generic role/powerup/colormap glow, not charge).", result: pass }
-      - { kind: codetrace, ref: "Glow targets _viewModel (first-person view model), not the exterior CsqcModel player model; remote observers' carrier glow is unfed by charge. VortexCharge has no cross-client snapshot/STAT (host-only).", result: fail }
+      - { kind: codetrace, ref: "RE-AUDIT 2026-06-28: EXTERIOR carrier glow now PORTED. ViewEntityRenderer.UpdateChargeGlow (ViewEntityRenderer.cs:177-217) applies a per-INSTANCE StandardMaterial3D emission override (never the shared cached v_*.md3 material) to the carrier weapon, gated team-only + vortex-family + VortexCharge>0, color = VortexGlowColor(teamColor, max(0.25, charge)). Charge source = Entity.WepentView.VortexCharge (the networked per-player entity feed). VortexGlowColor (ViewEntityRenderer.cs:267) duplicates NetGame.VortexGlowColor exactly (animlimit 0.5, 0.3/0.7 blend).", result: pass }
+      - { kind: codetrace, ref: "Live path (exterior): ViewEntityRenderer.Update (ViewEntityRenderer.cs:162-163) calls UpdateChargeGlow each frame for every playerHeld weapon proxy; Update is the live third-person render path (ClientEntityView.Update:217/227). WepentView is populated server-side by WepentResolver.Resolve (ServerNet.cs:2133, networked via WepentViewCodec, EntityField.WepentView change-gated) and decoded onto Entity.WepentView (ClientEntityView.cs:157). So a REMOTE OBSERVER now sees the carrier brighten with the owner's charge.", result: pass }
+      - { kind: codetrace, ref: "First-person glow now cross-client too: NetGame.UpdateViewModelTeamGlow (NetGame.cs:1843-1870) reads VortexCharge off LocalServerPlayer's slot on a host, else off the watched player's networked WepentView.VortexCharge (NetGame.cs:1856-1862) for a pure remote / spectatee client; pushed via _viewModel.SetTeamGlow. Live each frame at NetGame.cs:1739.", result: pass }
     confidence: high
-    notes: "FIXED THIS AUDIT (missing/na -> partial/partial-live). The baseline's empty port_refs + 'no wr_glow override anywhere' is now stale: NetGame.UpdateViewModelTeamGlow is a faithful, live (host-path) port of wr_glow/vortex_glowcolor driving the FIRST-PERSON gun glow with charge. Values (animlimit 0.5, 0.3/0.7 blend, max(0.25,charge) floor) are bit-faithful. Downgraded only to partial (not faithful) because QC's wr_glow brightens the EXTERIOR carrier model seen by others, whereas the port glows the local view model; liveness partial because host-only (no cross-client charge STAT)."
+    notes: "RE-AUDIT 2026-06-28 (waves wave): CLOSED — logic partial -> faithful, presentation partial -> faithful, liveness partial -> live. Both prior gaps are stale: (1) the EXTERIOR carrier-model glow is now ported as a per-instance emission on the third-person weapon proxy (ViewEntityRenderer.UpdateChargeGlow), so OTHER players see the carrier brighten with charge — matching QC wr_glow -> weaponentity_glowmod; (2) the charge value now reaches a pure remote / spectatee client via the networked WepentView (entity feed) AND the owner block, so BOTH the first-person and exterior glow light cross-client, not host-only. vortex_glowcolor ramp duplicated bit-faithfully in both ViewEntityRenderer and NetGame. Per-instance material discipline (duplicate, never mutate the shared cached v_*.md3) is documented + correct."
 
   - id: weapon-vortex.fx.impact_muzzle
     name: "Impact burst + muzzle flash"
@@ -312,25 +312,23 @@ features:
       - "game/net/NetGame.cs:UpdateCrosshairWeaponRings"
     constants:
       - { name: "crosshair_ring_vortex", base: "1", port: "1 (read)", match: true }
-      - { name: "vortex_charge networked to client", base: "yes (STAT, all clients)", port: "host/listen-server local player only (read off LocalServerPlayer slot state)", match: false }
+      - { name: "vortex_charge networked to client", base: "yes (STAT, all clients)", port: "yes — owner-block OwnerWeaponRings (pure client) + per-player WepentView (spectatee); host reads LocalServerPlayer slot directly", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Host-only delivery: the charge ring is fed ONLY from LocalServerPlayer's slot state (NetGame.UpdateCrosshairWeaponRings, NetGame.cs:3303-3306). So the ring fills on a listen-server / single-player host, but a PURE remote client still sees no ring. NetGame's pure-client branch just hides every ring (NetGame.cs:3290-3295 sentinels); it does NOT consume any networked charge value."
-      - "CROSS-CLIENT PRODUCER IS DEAD-ON-ARRIVAL (W16 regression risk): ServerNet now WRITES vortex_charge/chargepool into the snapshot owner block (ServerNet.WriteOwnerState/ResolveOwnerWeaponRings, ServerNet.cs:2773-2780, the [W-wepent-charges] block) — but ClientNet.HandleSnapshot has NO matching reader (the 9 ring floats are never read; verified ClientNet.cs:986-1037 reads owner state -> accuracy -> straight to movevars). So the produced charge value is discarded, the pure-client ring still never draws, AND the unread 9 ring floats (+ the also-unread PressedKeys short, ServerNet.cs:2728) desync the owner-block wire offset. This is a net-protocol concern owned by net-entity-state, but it means the cross-client charge ring is still NOT delivered."
+    gaps: []
     verification:
-      - { kind: codetrace, ref: "RE-AUDIT: NetGame.UpdateCrosshairWeaponRings (NetGame.cs:3283) WRITES x.ChargeFraction=st.VortexCharge + x.ChargePool=st.VortexChargePoolAmmo for the active vortex slot (NetGame.cs:3303-3306); -1 sentinels otherwise (NetGame.cs:3292,3310-3311). Source is LocalServerPlayer (NetGame.cs:3286) -> host-only. Live: called unconditionally each frame at NetGame.cs:2674.", result: pass }
-      - { kind: codetrace, ref: "Render: CrosshairPanel.DrawStatRing draws when crosshair_ring_vortex!=0 && vortexLike && charge>0; ChargeRingValue returns Clamp(ChargeFraction); WeaponHud.IsChargeWeapon resolves Cvars.Charge (true stock). Inner ring from ChargePool.", result: pass }
-      - { kind: codetrace, ref: "RE-AUDIT (cross-client): ServerNet.cs:2773-2780 writes wsCharge/wsChargePool (resolved off the authoritative player) into the owner block, BUT ClientNet.HandleSnapshot (ClientNet.cs:986-1037) never reads them — accuracy block (1015-1029) is followed directly by movevars (1037), no ring-float reads, no PressedKeys read. The networked charge is discarded; a pure remote client still has no charge value AND the owner block is wire-misaligned by the unread fields.", result: fail }
+      - { kind: codetrace, ref: "Host branch: NetGame.UpdateCrosshairWeaponRings (NetGame.cs:3421-3425) writes x.ChargeFraction=st.VortexCharge + x.ChargePool=st.VortexChargePoolAmmo off LocalServerPlayer for the active vortex slot; -1 sentinels otherwise. Live: called unconditionally each frame.", result: pass }
+      - { kind: codetrace, ref: "Render: CrosshairPanel.DrawStatRing draws when crosshair_ring_vortex!=0 && vortexLike && charge>0; ChargeRingValue returns Clamp(ChargeFraction). Inner ring from ChargePool.", result: pass }
+      - { kind: codetrace, ref: "RE-AUDIT 2026-06-28 (cross-client now LIVE): ServerNet.WriteOwnerState (ServerNet.cs:2818-2831) appends OwnerWeaponRings.Write (9 floats); ClientNet.HandleSnapshot now READS them via OwnerWeaponRings.Read (ClientNet.cs:1055) AND the preceding PressedKeys short (ClientNet.cs:1023), so the owner block is wire-ALIGNED (single Write/Read struct, OwnerWeaponRingsTests). NetGame pure-client branch (NetGame.cs:3394-3403) feeds the panel from _client.LocalWeaponRings; spectatee branch (NetGame.cs:3375-3388) feeds it from the per-player WepentView (entity feed, WepentViewCodec). A pure remote client now draws the ring.", result: pass }
     confidence: high
-    notes: "RE-AUDIT 2026-06-27: status UNCHANGED (faithful render, partial liveness). The host-path ring (LocalServerPlayer feeder + DrawStatRing) is faithful and live, so a listen-server / single-player host sees the ring fill (charge 0.5->1.0 at stock). Liveness stays `partial` because cross-client delivery is still broken: W16 added a server-side producer (ServerNet ResolveOwnerWeaponRings) but the matching ClientNet consumer was never wired, so the value is dead-on-arrival on a pure remote client — and the unread owner-block fields (9 ring floats + PressedKeys) are a wire-alignment bug tracked under net-entity-state. Net of all this: a pure remote client STILL sees no Vortex charge ring."
+    notes: "RE-AUDIT 2026-06-28 (waves wave): CLOSED — liveness partial -> live. The W16 producer's dead-on-arrival defect is fixed: ClientNet now consumes both the PressedKeys short and the 9 ring floats (wire re-aligned, single OwnerWeaponRings Write/Read struct guarded by OwnerWeaponRingsTests), the NetGame pure-client branch feeds the panel from LocalWeaponRings, and a spectatee path feeds it from the networked WepentView. So a pure remote client AND a spectator now both see the Vortex charge ring — not just the listen host. Render fidelity was already faithful; the only thing that was missing (cross-client delivery) is now wired."
 
   - id: weapon-vortex.zoom.secondary_scope
     name: "Secondary = zoom scope (reticle_nex) at stock balance"

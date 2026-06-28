@@ -1,7 +1,7 @@
 unit: ctf
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 28
   worst_gaps:
@@ -207,17 +207,17 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Auto-helpme is modeled as a carrier-sprite helpme FLASH (GtHelpMeUntil networked via ServerNet, consumed in CollectWaypoints), not the full Base WaypointSprite_HelpMePing sprite; effective-HP test approximates healtharmor_maxdamage with health+armor."
+      - "effective-HP test approximates QC healtharmor_maxdamage with health+armor (the per-deathtype armor-block percentage is not available at this seam) — a values approximation, not a logic break."
     verification:
-      - { kind: code, ref: "Ctf.cs:OnDeath FC-kill branch; OnDamageCalculate registered in Activate (MutatorHooks.DamageCalculate.Add) and dispatched LIVE from DamageSystem; helpme flash reaches the HUD via CollectWaypoints/ServerNet", result: pass }
+      - { kind: code, ref: "Ctf.cs:OnDamageCalculate (registered in Activate via MutatorHooks.DamageCalculate, dispatched LIVE from DamageSystem) now calls Waypoints.WaypointSprites.HelpMePing(flag.CarrierWaypoint, window) — the real QC WaypointSprite_HelpMePing on the LIVE registry-owned carrier sprite (created in Pickup/RetrieveFlag via WaypointSprites.AttachCarrier); ping flag + fade networked via ServerNet.cs:1194 (WaypointSprites.Active)", result: pass }
     confidence: high
-    notes: "Flagcarrier damage/force multipliers (Damage_Calculate hook) ported AND live on the real damage pipeline (all factors 1 by default), kill-score fallback matches samual (5), low-HP auto-helpme ping wired as a networked carrier-sprite flash. FC-kill awards CTF_FCKILLS + score (teamkill penalized)."
+    notes: "FIX this wave (uncommitted, build green — presentation partial -> faithful): the auto-helpme is no longer a snapshot 'flash' approximation. The carrier waypoint is now a live registry sprite (WaypointSprites.AttachCarrier, owned via flag.CarrierWaypoint) and OnDamageCalculate fires the genuine WaypointSprite_HelpMePing on it (lit for g_ctf_flagcarrier_auto_helpme_time, antispam via GtHelpMeTime). Damage/force multipliers (all 1 default) + kill-score (5) unchanged + live. Only residual: the health+armor effective-HP proxy for the < auto_helpme_damage test."
 
   - id: ctf.flag.throw
     name: "Throw the flag (+use, g_ctf_throw)"
@@ -468,11 +468,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Base/dropped/carrier-own (health bar) + carrier-enemy (stalemate/self-carry reveal) sprites + the carrier helpme FLASH are emitted; no dedicated flag-return sprite, no on-pickup enemy-FC spotting reveal (g_ctf_flagcarrier_waypointforenemy_spotting)."
+      - "Base/dropped markers + carrier-enemy (stalemate/self-carry reveal) are emitted from the per-tick CollectWaypoints snapshot; no dedicated flag-return sprite, no on-pickup enemy-FC spotting reveal (g_ctf_flagcarrier_waypointforenemy_spotting). values stay partial pending those CTF-specific variants."
     verification:
-      - { kind: code, ref: "Ctf.cs:CollectWaypoints (flag base/dropped markers, carrier own-team health-bar sprite, enemy-FC reveal during Stalemate/self-carry gated by ctf_Stalemate_Customize, helpme flash on the carrier sprite) -> ServerNet.cs:924 networks the list -> client WaypointSpriteLayer.cs renders", result: pass }
+      - { kind: code, ref: "Two live paths: (1) CollectWaypoints (flag base/dropped markers + enemy-FC reveal during Stalemate/self-carry gated by ctf_Stalemate_Customize) -> ServerNet.cs:924; (2) the own-team carrier marker is now a registry sprite (WaypointSprites.AttachCarrier in Pickup/RetrieveFlag, refreshed each Tick via RefreshCarrierWaypoint, killed on capture/return/drop/death/disconnect/reset) -> ServerNet.cs:1194 (WaypointSprites.Active). Client WaypointSpriteLayer.cs renders both.", result: pass }
     confidence: high
-    notes: "FIX since last audit (the stalemate enemy-FC reveal is now wired): base/dropped/carrier sprites are live, FLAG_WAYPOINT_OFFSET (0 0 64) is now applied, the carrier helpme flash is wired (see ctf.flag.fckill_score), and the enemy-FC reveal sprites are emitted during a stalemate (gated to live enemies, hidden under Invisibility). The remaining CTF-specific variants (dedicated return sprite, on-pickup enemy-FC spotting) are still missing; values stay partial pending those."
+    notes: "REFACTOR this wave (uncommitted, build green): the own-team flagcarrier marker moved OUT of the per-tick CollectWaypoints snapshot INTO the live WaypointSprites registry (flag.CarrierWaypoint via AttachCarrier), so it now carries a PERSISTENT health bar (UpdateMaxHealth 2*healtharmor_maxdamage, UpdateHealth refreshed per Tick) + the real WaypointSprite_HelpMePing — matching QC ctf_FlagcarrierWaypoints far more closely (was a snapshot approximation). CollectWaypoints deliberately no longer emits a FlagCarrier sprite (would double-draw). Base/dropped/enemy-FC-reveal snapshot sprites unchanged + live; FLAG_WAYPOINT_OFFSET (0 0 64) applied. presentation stays partial ONLY for the still-missing dedicated return sprite + on-pickup enemy-FC spotting reveal."
 
   - id: ctf.scoring_rules
     name: "Scoreboard columns + team caps-primary ranking"

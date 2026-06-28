@@ -119,6 +119,14 @@ public static class MapObjectsRegistry
         // runtime / moving-warpzone re-link (server.qc:807-815). Both names spawn the same triggerable use-handler.
         SpawnFuncs.Register("trigger_warpzone_reconnect", WarpzoneSpawns.TriggerWarpzoneReconnectSetup);
         SpawnFuncs.Register("target_warpzone_reconnect", WarpzoneSpawns.TriggerWarpzoneReconnectSetup);
+        // map-placed security cameras (lib/warpzone/server.qc spawnfunc func_camera / func_warpzone_camera): the
+        // dpcamera/func_camera entity resolves its target, stores the camera pose, and on touch/view stamps the
+        // viewer's authoritative FixAngle/FixAngleAngles — the same view-orient channel the warpzone owner block
+        // uses (no new wire fields). Routed through the same WarpzoneSpawns.Sink the other warpzone spawnfuncs use
+        // (bridged in GameWorld.cs:453) so it realises on the normal match path. Client view-side presentation
+        // (FixView / portal render) is the listen-host/demo ambient seam, same as LaserRenderer / PortalRenderer.
+        SpawnFuncs.Register("func_camera", WarpzoneSpawns.FuncCameraSetup);
+        SpawnFuncs.Register("func_warpzone_camera", WarpzoneSpawns.FuncCameraSetup);
 
         // ---- teleporters (trigger/teleport.qc, misc/teleport_dest.qc) ----
         SpawnFuncs.Register("trigger_teleport", Teleporters.TeleportSetup);

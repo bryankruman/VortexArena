@@ -1,13 +1,13 @@
 unit: nexball
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 21
   worst_gaps:
     - "Ball-launcher weapon (BallStealer / WEP_NEXBALL) is FULLY PORTED and LIVE — a basketball carrier can charge-and-shoot the ball (power meter, primary launch), safe-pass to a locked teammate (homing arc), and tackle/steal (secondary projectile). The safe-pass CROSSHAIR LOCK is now also ported (CarryFrame -> UpdateSafePassLock runs crosshair_trace each frame and sets ball.enemy/ball.wait), so the secondary safe-pass branch is now reachable on the live path. The whole weapon + carry chain is faithful & live."
     - "The HUD CARRYING mod-icon IS now ported & live: the ball carrier's net id is networked via GametypeStatusBlock.Kind.NexBall (server ServerNet:1939, client NetGame:4473) and ModIconsPanel.DrawNexBall draws the blinking nexball_carrying icon. (Prior 'no nexball case in any GametypeStatusBlock / no carrying indicator' notes are STALE.)"
-    - "STILL missing on the HUD: the power-meter charge BAR (STAT(NB_METERSTART) is not networked — only the carrier net id rides the wire), the nexball EVENTCHASE (no cl_eventchase_nexball; FirstPersonView only does death/frozen chase), and hiding the accuracy/item-stats scoreboard panels for nexball."
+    - "The HUD power-meter charge BAR is now ALSO ported & live (2026-06-28 wave): STAT(NB_METERSTART) rides the wire as a meter-phase byte on GametypeStatusBlock.Kind.NexBall (NexBallMeterPhaseByte; ServerNet:1939 capture, NetGame:4623 decode) and ModIconsPanel.DrawNexBall draws the triangle-wave progress bar (hud_progressbar_nexball_color). STILL missing on the HUD: the nexball EVENTCHASE (no cl_eventchase_nexball; FirstPersonView only does death/frozen chase) and hiding the accuracy/item-stats scoreboard panels for nexball."
     - "Minor presentation: ball scale 1.3 + glow_trail render still client-deferred (SpawnForGametype never sets e.Scale); carrier glow + viewmodel scale (0.25) + EF_FLAME lock indicator client-deferred (QC ball_customize is CSQC). NOTE: the WP_NbBall + WP_NbGoal waypoint sprites ARE now ported & live (CollectWaypoints) — earlier 'client-deferred' notes were stale."
     - "SpectateCopy hook (copy NB_METERSTART to spectator) absent; ForbidDropCurrentWeapon's WEP_MORTAR special-case folded/approximated into ForbidThrow; LogNB :nexball: eventlog lines + the SendWaypoint radar-bit hook not ported (minor)."
 features:
@@ -425,17 +425,17 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "No HUD power-meter progress bar (the HUD_Mod_NexBall charge bar is client-deferred — see nexball.hud.modicon)."
+    gaps: []
     verification:
       - { kind: code-read, ref: "WrThink starts NbMeterStart=time on first press (meter on + carrying); fires on release with elapsed t. DoLaunch computes mul = mi + (ma-mi)*triangle(t%period/period) exactly as QC. MeterPeriod bit-faithful (rounded 1/32, min 2).", result: pass }
+      - { kind: code-read, ref: "HUD charge bar NOW networked+drawn: GametypeStatusBlock.cs:152 NexBallMeterPhaseByte encodes the carrier slot-0 NbMeterStart as a sawtooth phase over MeterPeriod (255=no meter), captured per-snapshot at ServerNet.cs:1939; NetGame.cs:4627 decodes NexBallMeterPhase (local-carrier only); ModIconsPanel.cs:953-972 DrawNexBall draws the triangle-wave progress bar tinted hud_progressbar_nexball_color.", result: pass }
     confidence: high
-    notes: "FIX (missing -> live/faithful). The charge-and-release power meter is now implemented in BallStealer with the QC triangle-wave between minpower 0.5 and maxpower 1.2 over the rounded meter period. Only the HUD bar (presentation) remains; the meter logic/values/timing are live and faithful."
+    notes: "DRIFT (FIX: presentation missing -> faithful). This wave networked NB_METERSTART (meter-phase byte in GametypeStatusBlock.Kind.NexBall) and drew the HUD_Mod_NexBall charge bar (ModIconsPanel.DrawNexBall triangle wave). The meter is now end-to-end faithful & live (logic/values/timing already done by the prior weapon wave). The prior 'only the HUD bar remains' note is STALE."
 
   - id: nexball.sound.cues
     name: "Sound cues: bounce / drop / steal / shoot / goal"
@@ -481,7 +481,7 @@ features:
       - "game/net/NetGame.cs:4473 (decode Kind.NexBall -> panel.NexBallCarrying vs LocalNetId)"
     constants:
       - { name: "cl_eventchase_nexball", base: "1", port: "none (no nexball eventchase; FirstPersonView only does death/frozen chase)", match: false }
-      - { name: "hud_progressbar_nexball_color", base: "(skin)", port: "none (no charge-meter bar drawn)", match: false }
+      - { name: "hud_progressbar_nexball_color", base: "(skin, default '1 0.85 0.2')", port: "GlobalColor(hud_progressbar_nexball_color) in DrawNexBall, same default", match: true }
       - { name: "nexball_carrying icon", base: "blink(0.85/0.15/5) + expand transition on carry edge", port: "DrawNexBall: same blink + drawpic-expand, nexball_carrying skin art", match: true }
     status:
       logic: partial
@@ -493,14 +493,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Power-meter charge bar NOT drawn: STAT(NB_METERSTART) is not networked (GametypeStatusBlock NexBall case writes ONLY the carrier net id), so HUD_Mod_NexBall's triangle-wave progress bar over nb_pb_period has no data and no drawer."
       - "No nexball event-chase (cl_eventchase_nexball — third-person when NOT carrying); FirstPersonView.WantEventChase only handles cl_eventchase_death + Freeze-Tag cl_eventchase_frozen."
       - "Accuracy / item-stats scoreboard panels not hidden for nexball (QC DrawScoreboardAccuracy/DrawScoreboardItemStats return false)."
     verification:
-      - { kind: code-read, ref: "ModIconsPanel.DrawNexBall (dispatched at :225) draws the blinking nexball_carrying icon; GametypeStatusBlock.Kind.NexBall (Capture :140 writes nb.BallEntity.GtCarrier net id, Deserialize :367); ServerNet.cs:1939 Capture per snapshot; NetGame.cs:4473 sets panel.NexBallCarrying = (CarrierNetId == LocalNetId). Carry indicator wired end-to-end.", result: pass }
-      - { kind: code-read, ref: "no charge-meter / progressbar_nexball / NbMeterStart in ModIconsPanel; NB_METERSTART not in any wire block; no cl_eventchase_nexball anywhere; no nexball scoreboard-panel hide", result: fail }
+      - { kind: code-read, ref: "ModIconsPanel.DrawNexBall (dispatched at :232) draws the blinking nexball_carrying icon; GametypeStatusBlock.Kind.NexBall (Capture :142 writes nb.BallEntity.GtCarrier net id + NexBallMeterPhaseByte, Deserialize :405); ServerNet.cs:1939 Capture per snapshot; NetGame.cs:4623 sets panel.NexBallCarrying = (CarrierNetId == LocalNetId). Carry indicator wired end-to-end.", result: pass }
+      - { kind: code-read, ref: "Power-meter charge BAR now wired: NexBallMeterPhaseByte (GametypeStatusBlock.cs:273) encodes the carrier slot-0 NbMeterStart phase; NetGame.cs:4627 decodes NexBallMeterPhase; ModIconsPanel.cs:953-972 draws the triangle-wave progress bar tinted hud_progressbar_nexball_color. STILL fail: no cl_eventchase_nexball anywhere; no nexball scoreboard-panel hide.", result: fail }
     confidence: high
-    notes: "DRIFT (the carry INDICATOR is now ported & live — prior audit's 'no drawer / not networked / NB_CARRYING absent' is STALE). The carrier net id IS networked via GametypeStatusBlock.Kind.NexBall (server ServerNet:1939, client NetGame:4473) and ModIconsPanel.DrawNexBall draws the blinking nexball_carrying icon with the expand transition. STILL OPEN: the power-meter charge BAR (NB_METERSTART unnetworked), the nexball EVENTCHASE, and hiding the accuracy/item-stats scoreboard panels."
+    notes: "DRIFT (FIX: the power-meter charge BAR is now ported & live — this wave's change). NB_METERSTART is networked as a meter-phase byte in GametypeStatusBlock.Kind.NexBall (ServerNet:1939 capture, NetGame:4623 decode) and ModIconsPanel.DrawNexBall draws the triangle-wave bar; the prior 'NB_METERSTART not networked / no charge bar' note is STALE. The carry INDICATOR was already ported in an earlier wave. STILL OPEN: the nexball EVENTCHASE (cl_eventchase_nexball) and hiding the accuracy/item-stats scoreboard panels — this row stays partial on those two."
 
   - id: nexball.goal.sentinel_encoding
     name: "Goal fault/out sentinel encoding + ball_redgoal/bluegoal swap"

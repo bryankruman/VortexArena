@@ -498,7 +498,47 @@ public partial class EffectSystem : Node3D
             // contains "arc". HasAny is case-insensitive, so one "arc_beam_line" needle excludes both spellings.
             bool jagged = HasAny(effectName, "lightning", "shock", "electro", "tesla")
                 || (HasAny(effectName, "arc") && !HasAny(effectName, "arc_beam_line"));
-            return jagged ? Beams.Arc(origin, velocity, beamTint) : Beams.Beam(origin, velocity, beamTint);
+            if (jagged)
+                return Beams.Arc(origin, velocity, beamTint);
+
+            // Per-variant cylindric-beam thickness (Base draws each beam at its own width — the BeamRenderer
+            // default of 6f is a single fallback that flattens those differences). Select by effect id so the
+            // broadcast arc/vortex beam draws at the right thickness/brightness on every client; the id reaches
+            // us as either the EFFECT_* name or the lower-case effectinfo name, and HasAny is case-insensitive,
+            // so one needle catches both spellings. No new wire data — render-side selection only.
+            float width = 6f;
+            if (HasAny(effectName, "arc_beam_line_burst"))
+            {
+                // Base ARC_BT_BURST: the fatter burst-mode cylinder (arc.qc cl_arcbeam burst width).
+                width = 14f;
+            }
+            else if (HasAny(effectName, "arc_beam_line"))
+            {
+                // Base normal/heal arc beam (ARC_BEAM_LINE / ARC_BEAM_LINE_HEAL): the standard 8f cylinder.
+                // HasAny(...arc_beam_line) also matches the burst spelling, so this branch sits AFTER the burst
+                // test above (burst wins).
+                width = 8f;
+            }
+            else if (HasAny(effectName, "vortex_beam", "nex_beam"))
+            {
+                // VORTEX_BEAM: QC scales the beam's alpha/fade by sqrt(charge) (vortex.qc:61) so a barely-charged
+                // shot draws faint and a full one bright. The port has no per-emission alpha on the wire, but in
+                // the team-tint path the broadcast colour IS vortex_glowcolor(team, max(0.25, sqrt(charge))), so
+                // the charge-derived brightness already lives in the tint's RGB magnitude. Recover it and fold it
+                // into the beam's ALPHA (and lightly into width) so a low-charge beam renders dimmer/thinner —
+                // matching the sqrt(charge) alpha gap without abusing the colour channel. On the default
+                // (no-tint) path beamTint is null, so the beam keeps its native effectinfo colour at full alpha.
+                if (beamTint is { } vt)
+                {
+                    // RGB magnitude of the charge-scaled glow stands in for sqrt(charge); clamp to the
+                    // max(0.25, sqrt(charge)) floor the team path already applies so the beam never vanishes.
+                    float brightness = Math.Clamp(MathF.Max(vt.R, MathF.Max(vt.G, vt.B)), 0.25f, 1f);
+                    beamTint = new Color(vt.R, vt.G, vt.B, vt.A * brightness);
+                    // Lerp the cylinder thickness from a thin low-charge beam (0.6×) up to the full 6f default.
+                    width = 6f * (0.6f + 0.4f * brightness);
+                }
+            }
+            return Beams.Beam(origin, velocity, beamTint, width);
         }
 
         // --- effectinfo.txt-driven path (T20) ------------------------------------------------------------

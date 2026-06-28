@@ -1,15 +1,14 @@
 unit: mutator-waypoints
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 18
   worst_gaps:
-    - "RE-AUDIT 2026-06-27 (post-W16/17 re-verify) DRIFT FIXES: (1) Race + Onslaught + Nexball are now live CollectWaypoints producers (prior row marked them missing) — Race.cs:607 / Onslaught.cs:1063 / Nexball.cs:1292, all reached via ServerNet.SendWaypoints per tick. (2) The TEAMPLAY three-image per-audience swap is now implemented + live (SpriteName/SpriteNameOwn/SpriteNameSpec + WaypointSprite.SpriteFor resolved per-peer in SendWaypoints), exercised by Assault / KeyHunt / TeamKeepaway / Onslaught CP — prior row marked it missing."
-    - "Objective-marker MANAGER carrier sub-API still has NO live caller: AttachCarrier / DetachCarrier remain uncalled (verified — only the def + doc-comments; CTF/KH/Ka/Tka/Nb carrier producers build WaypointSprite records directly in CollectWaypoints and bypass the carrier helper). The rest of the manager API is live: SpawnFixed/Spawn/UpdateSprites/UpdateHealth/UpdateMaxHealth/UpdateRule/UpdateBuildFinished/UpdateTeamRadar/Ping/Kill/Disown (Assault, itemstime, Seeker, powerup drops, Weapon_whereis, monster healthbars, player-deploy/helpme/clear)."
-    - "Flag-carrier HEALTH BAR + auto-helpme-on-hit on CTF carriers still absent (AttachCarrier has no live caller; Ctf.CollectWaypoints sets Health=-1)."
-    - "wp_extra-driven per-instance blink (superweapon Weapon=2 / Item=m_waypointblink) still not modeled, and wp_extra is not networked (generic icon/text for Weapon/Item/Monster). Radar PING ring pulse IS implemented + live (RadarPanel.DrawPingPulse + bit-7 stamp, driven by itemstime respawn countdown). Monster healthbars (g_monsters_healthbars) ported + live."
-    - "Still MISSING as waypoint producers: turret + vehicle + buff markers (Onslaught/Nexball/Race are now present — see the collect row)."
+    - "RE-AUDIT 2026-06-28 (parity-port-waves) DRIFT FIXES: (1) WaypointSprite_AttachCarrier is now LIVE — Ctf.EnsureCarrierWaypoint (Ctf.cs:583, called from pickup:688 / pass-retrieve:1059) attaches the own-team WP_FlagCarrier carrier marker WITH a health bar (UpdateMaxHealth 2*effHP + per-tick UpdateHealth, Ctf.cs:587-601) and the auto-helpme flash on carrier hit (HelpMePing at Ctf.cs:1382 under g_ctf_flagcarrier_auto_helpme_damage). The carrier Health is now SERIALIZED (ServerNet.cs:1240) + rendered (WaypointSpriteLayer DrawHealthBar). (2) BUFF markers are now a live producer — BuffsMutator.SpawnBuffWaypoint (:584, called from ActivateBuff:346 / respawn:482) spawns WP_Buff riding the buff item with per-buff radar tint + Ping on respawn."
+    - "Manager carrier sub-API: AttachCarrier is now live (CTF). ONLY DetachCarrier remains uncalled (the CTF carrier teardown uses Kill via KillCarrierWaypoint, not DetachCarrier). Rest of the manager API live: SpawnFixed/Spawn/AttachCarrier/UpdateSprites/UpdateHealth/UpdateMaxHealth/UpdateRule/UpdateBuildFinished/UpdateTeamRadar/Ping/HelpMePing/Kill/Disown (CTF carrier, Assault, itemstime, Seeker, powerup drops, Weapon_whereis, monster healthbars, buffs, player-deploy/helpme/clear)."
+    - "wp_extra-driven per-instance blink (superweapon Weapon=2 / Item=m_waypointblink) still not modeled, and wp_extra is not networked (generic icon/text for Weapon/Item/Monster/Buff). Radar PING ring pulse IS implemented + live (RadarPanel.DrawPingPulse + bit-7 stamp, driven by itemstime respawn countdown + buff respawn). Monster healthbars (g_monsters_healthbars) ported + live."
+    - "Still MISSING as waypoint producers: turret + vehicle markers (Buff is now present — see the collect/registry rows; Onslaught/Nexball/Race present since 2026-06-27)."
 features:
   - id: waypoints.registry.defs
     name: "Waypoint-kind registry (WP_* defs: text/icon/color/blink)"
@@ -38,7 +37,7 @@ features:
     divergence_rationale: null
     gaps:
       - "Residual: the wp_extra-DRIVEN spritelookupblinkvalue overrides (superweapon Weapon=2, Item=item.m_waypointblink) are not modeled — Weapon's def blink is a flat 1 and there is no per-instance wp_extra blink lookup. Harmless while those producers (superweapon pickups) are absent. The Seeker/Item/Weapon DEFS are now exercised by live producers; only the wp_extra per-instance blink override is unmodeled."
-      - "liveness: partial — defs are reachable only once their gametype emits waypoints; CTF + Domination + FreezeTag + Keepaway + TeamKeepaway + Assault + Key Hunt + LMS + itemstime (Item/Weapon) + Seeker + Weapon_whereis (Weapon def) + Monster (g_monsters_healthbars) + player-deployed pings now exercise their defs. Still NOT on the live path: Ons*/Nb*/Race*/Vehicle*/Buff."
+      - "liveness: partial — defs are reachable only once their gametype emits waypoints; CTF (incl. FlagCarrier carrier marker, NEW 2026-06-28) + Domination + FreezeTag + Keepaway + TeamKeepaway + Assault + Key Hunt + LMS + itemstime (Item/Weapon) + Seeker + Weapon_whereis (Weapon def) + Monster (g_monsters_healthbars) + Onslaught (Ons*) + Nexball (Nb*) + Race (Race*) + Buff (BuffsMutator, NEW 2026-06-28) + player-deployed pings now exercise their defs. Still NOT on the live path: Vehicle*/VehicleIntruder (no turret/vehicle producers)."
     verification:
       - { kind: code-read, ref: "all.inc (63 REGISTER_WAYPOINT) vs WaypointRegistry.Build (63 Add(...)) — names/text/icon/color/blink line-by-line; texts match", result: pass }
     confidence: high
@@ -73,12 +72,12 @@ features:
     divergence_rationale: null
     gaps:
       - "DEPLOY + CLEAR + HELPME slice is live (DeployFixed/DeployPersonal/Attach/ClearPersonal/ClearOwned/HelpMePing from Commands.cs; Reset() + Think() in GameWorld; SendWaypoints merges WaypointSprites.Active per peer)."
-      - "OBJECTIVE/UPDATE slice is BROADLY live now: SpawnFixed/Spawn/UpdateMaxHealth/UpdateHealth/Disown/Kill via Assault (SpawnObjectiveSprite); Spawn/UpdateBuildFinished/Ping/Kill via itemstime (ItemPickupRules.RespawnCountdown, ItemPickupRules.cs:794/809/824); Spawn/UpdateRule/Kill via Seeker (Seeker.cs:496/514/519); Spawn/UpdateMaxHealth/UpdateHealth/Kill via powerup drops (PowerupsMutator.cs:541-575); Spawn (personal, radarIcon 0) via Weapon_whereis (Inventory.cs:403); Spawn/UpdateMaxHealth/UpdateHealth/UpdateTeamRadar/Kill via MONSTER healthbars (MonsterAI.cs:452/460/461/433/691)."
-      - "FIX this audit: UpdateTeamRadar is now LIVE — MonsterAI.ChangeTeam (monster_changeteam) re-colors the monster healthbar radar icon to the new team (MonsterAI.cs:433). Still NO live caller: AttachCarrier, DetachCarrier — the CTF/Dom/FreezeTag/Keepaway/KeyHunt/LMS carrier producers build WaypointSprite records directly in CollectWaypoints (not via the manager carrier helper)."
+      - "OBJECTIVE/UPDATE slice is BROADLY live now: SpawnFixed/Spawn/UpdateMaxHealth/UpdateHealth/Disown/Kill via Assault (SpawnObjectiveSprite); Spawn/UpdateBuildFinished/Ping/Kill via itemstime (ItemPickupRules.RespawnCountdown, ItemPickupRules.cs:812/828/843); Spawn/UpdateRule/Kill via Seeker (Seeker.cs:508/513/526/531); Spawn/UpdateMaxHealth/UpdateHealth/Kill via powerup drops (PowerupsMutator.cs:557-591); Spawn (personal, radarIcon 0) via Weapon_whereis (Inventory.cs:415); Spawn/UpdateMaxHealth/UpdateHealth/UpdateTeamRadar/Kill via MONSTER healthbars (MonsterAI.cs:452/460/461/433/727); Spawn/Ping/UpdateTeamRadar/Kill via BUFF markers (BuffsMutator.cs:591/559/561/568)."
+      - "FIX this audit (2026-06-28): WaypointSprite_AttachCarrier is now LIVE — Ctf.EnsureCarrierWaypoint (Ctf.cs:583, from pickup:688 / pass-retrieve:1059) attaches the WP_FlagCarrier marker and primes its health bar (UpdateMaxHealth:587 + UpdateHealth:588 + UpdateTeamRadar:590). Still NO live caller: DetachCarrier ONLY — the CTF carrier teardown calls Kill (KillCarrierWaypoint, Ctf.cs:610) not DetachCarrier; the Dom/FreezeTag/Keepaway/KeyHunt/LMS carriers build WaypointSprite records directly in CollectWaypoints."
     verification:
-      - { kind: code-read, ref: "grep callers → Commands.cs (Deploy/Attach/Clear) + GameWorld.cs (Reset/Think) + Assault.cs + ItemPickupRules.cs:794/809/824 + Seeker.cs:514/519 + PowerupsMutator.cs:541-575 + MonsterAI.cs:433/452/460/461/691 (UpdateTeamRadar/Spawn/UpdateMaxHealth/UpdateHealth/Kill); AttachCarrier/DetachCarrier → ZERO non-test callers", result: partial }
+      - { kind: code-read, ref: "grep callers → Commands.cs (Deploy/Attach/Clear) + GameWorld.cs (Reset/Think) + Assault.cs + ItemPickupRules.cs:812/828/843 + Seeker.cs:508-531 + PowerupsMutator.cs:557-591 + MonsterAI.cs:433/452/460/461/727 + BuffsMutator.cs:591/559/561/568 + Ctf.EnsureCarrierWaypoint:583 (AttachCarrier+UpdateMaxHealth+UpdateHealth+UpdateTeamRadar); DetachCarrier → ZERO non-test callers (def only, Waypoints.cs:539)", result: partial }
     confidence: high
-    notes: "FIX vs baseline: UpdateTeamRadar now has a live caller (MonsterAI.ChangeTeam). liveness stays partial — only the carrier sub-API (AttachCarrier/DetachCarrier) remains uncalled."
+    notes: "FIX vs baseline (2026-06-28): AttachCarrier now has a live caller (Ctf.EnsureCarrierWaypoint). liveness stays partial — only DetachCarrier remains uncalled (CTF teardown uses Kill instead). Buff markers add another live Spawn/Ping/UpdateTeamRadar/Kill producer."
 
   - id: waypoints.gametype.collect
     name: "Per-tick objective waypoint emit (per gametype)"
@@ -110,7 +109,7 @@ features:
     divergence_rationale: null
     gaps:
       - "RE-AUDIT 2026-06-27 (post-W16/17): TEN live CollectWaypoints producers now — CTF (flag base/dropped/carrier), Domination (control points), FreezeTag (Frozen/Reviving + thaw-progress bar), Keepaway (KaBall/KaBallCarrier), TeamKeepaway (team-colored carrier/ball), Key Hunt (KeyDropped + KeyCarrier<team>/Finish), LMS (LmsLeader show-window-gated), AND now Race (Start/Finish/StartFinish/Checkpoint fixed markers, Race.cs:607), Onslaught (generators WP_OnsGen/Shielded + control points WP_OnsCP/Defend/Attack via the teamplay triple, Onslaught.cs:1063), Nexball (WP_NbBall on carrier-or-loose + WP_NbGoal shown to the enemy team, Nexball.cs:1292). Each is an override on the active GameType, called via _world.GameType?.CollectWaypoints in ServerNet.SendWaypoints per tick — live whenever that mode runs. DRIFT FIX: Onslaught/Nexball/Race were listed as MISSING in the prior row but are now ported + live."
-      - "Still NOT CollectWaypoints producers: turret + vehicle + buff markers. (Weapon_whereis and MONSTER healthbars are ported as manager producers — see waypoints.weapon.whereis / waypoints.monster.healthbar — not via CollectWaypoints. Assault + itemstime + Seeker + powerup-drop also emit via the manager, merged in SendWaypoints alongside CollectWaypoints.)"
+      - "Still NOT CollectWaypoints producers: turret + vehicle markers. (Weapon_whereis, MONSTER healthbars, BUFF markers (BuffsMutator.SpawnBuffWaypoint, NEW 2026-06-28), and the CTF flag-CARRIER health-bar marker (Ctf.EnsureCarrierWaypoint, NEW 2026-06-28) are ported as MANAGER producers — not via CollectWaypoints. Assault + itemstime + Seeker + powerup-drop also emit via the manager, merged in SendWaypoints alongside CollectWaypoints.)"
     verification:
       - { kind: code-read, ref: "grep 'override.*CollectWaypoints' → Ctf.cs:454 + Domination.cs:534 + FreezeTag.cs:825 + Keepaway.cs:722 + TeamKeepaway.cs:752 + KeyHunt.cs:1344 + LastManStanding.cs:875 + Race.cs:607 + Onslaught.cs:1063 + Nexball.cs:1292; base GameplayBases.cs:419 is virtual {} no-op; all reached via ServerNet.SendWaypoints (SendWaypoints():1196 calls _world.GameType?.CollectWaypoints) per tick", result: pass }
     confidence: high
@@ -130,19 +129,19 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No flag-carrier HEALTH BAR (QC WaypointSprite_AttachCarrier sets one from 2*healtharmor_maxdamage; the port's CollectWaypoints sets Health=-1 and AttachCarrier has no live caller). UNCHANGED."
-      - "No auto-helpme on carrier hit (g_ctf_flagcarrier_auto_helpme_damage 100) — depends on the uncalled AttachCarrier/HelpMePing-on-carrier path. UNCHANGED."
-      - "Enemy-flagcarrier waypoint reveal on stalemate not wired: the QC ctf_stalemate enemy-FC waypoint reveal is not produced from the port's stalemate state. UNCHANGED."
+      - "FIX (2026-06-28): flag-carrier HEALTH BAR is now PORTED + LIVE. Ctf.EnsureCarrierWaypoint (Ctf.cs:579) attaches the own-team WP_FlagCarrier via WaypointSprites.AttachCarrier, sets max = 2*healtharmor_maxdamage (CarrierMaxHealth, effHP approximated as health+armor) + per-tick UpdateHealth (RefreshCarrierWaypoint:596), serialized at ServerNet.cs:1240 and drawn by WaypointSpriteLayer.DrawHealthBar (:206). The QC armor-block-percent is approximated as the unblocked HP+armor sum (documented headless proxy)."
+      - "FIX (2026-06-28): auto-helpme on carrier hit is now LIVE — OnDamageCalculate (Ctf.cs:1366-1384) flashes HelpMePing on the live carrier waypoint when effHP < g_ctf_flagcarrier_auto_helpme_damage and the antispam window (g_ctf_flagcarrier_auto_helpme_time) elapsed, matching QC Damage_Calculate."
+      - "FIX (2026-06-28): stalemate + self-carry enemy-FC reveal is now PRODUCED — CollectWaypoints (Ctf.cs:499-535) emits WP_FlagCarrierEnemy<team> on the carrier during Stalemate or self-carry, gated to live enemy-team viewers and hidden while the carrier holds Invisibility (ctf_Stalemate_Customize), plus the WP_FlagReturn self-carry marker (carrier-only)."
     verification:
-      - { kind: code-read, ref: "Ctf.CollectWaypoints (Health=-1, FlagBase/Dropped/CarrierEnemy + suffix) → SendWaypoints → ClientNet → WaypointSpriteLayer/RadarPanel chain", result: pass }
-    confidence: medium
-    notes: "NO CHANGE vs baseline. State→def mapping (AtBase/Dropped/Carried x team suffix) faithful. Carrier health bar + auto-helpme + stalemate enemy-FC reveal still absent."
+      - { kind: code-read, ref: "Ctf.EnsureCarrierWaypoint:579 (AttachCarrier+UpdateMaxHealth:587+UpdateHealth:588) + RefreshCarrierWaypoint:596 + auto-helpme OnDamageCalculate:1366-1384 + stalemate/self-carry reveal CollectWaypoints:499-535; carrier Health serialized ServerNet.cs:1240, rendered WaypointSpriteLayer.cs:206", result: pass }
+    confidence: high
+    notes: "DRIFT FIX vs baseline (2026-06-28): all three prior gaps closed — carrier health bar (AttachCarrier+UpdateHealth, networked+drawn), auto-helpme-on-hit, and the stalemate/self-carry enemy-FC reveal are now ported + live. presentation partial→faithful. Carrier effHP uses the health+armor proxy (armor-block percent unavailable at this seam)."
 
   - id: waypoints.deploy.personal_here_danger
     name: "Player-deployed pings (waypoint_personal/here/danger impulses)"
@@ -292,7 +291,7 @@ features:
     verification:
       - { kind: code-read, ref: "SendWaypoints/HandleWaypoints round-trip; merges WaypointSprites.Active (ServerNet.cs:1020) + GameType.CollectWaypoints (1022); called per tick at ServerNet.cs:488; Helpme + per-peer VisibleForPlayer + ping bit-7 carried", result: pass }
     confidence: high
-    notes: "Live for CTF + Domination + FreezeTag + Keepaway + TeamKeepaway + Key Hunt + LMS + Assault + itemstime + Seeker + powerup-drop + player-deployed pings/helpme. Ping bit-7 now carried (FIX vs baseline ping no-op). Format diverges deliberately; functionally equivalent for the fields used."
+    notes: "Live for CTF (incl. carrier health bar — wp.Health now non-default, serialized ServerNet.cs:1240 + auto-helpme byte) + Onslaught + Nexball + Race + Domination + FreezeTag + Keepaway + TeamKeepaway + Key Hunt + LMS + Assault + itemstime + Seeker + powerup-drop + Buff + monster healthbars + player-deployed pings/helpme. Ping bit-7 carried; the carrier health-bar field is now exercised (FIX 2026-06-28). Format diverges deliberately; functionally equivalent for the fields used."
 
   - id: waypoints.client.draw
     name: "3D in-world sprite draw (icon/text + arrow + project)"
@@ -416,7 +415,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Radar PING ring pulse is now IMPLEMENTED: server stamps bit 7 of the radar byte while IsPinging (ServerNet.cs:1056), client stamps a per-id ping time (ClientNet.cs:632-639), RadarPanel.DrawPingPulse draws the expanding additive gfx/teamradar_ping ring (RadarPanel.cs:417-436). Live producer: itemstime respawn countdown (ItemPickupRules.cs:783). FIX vs baseline (was no-op)."
+      - "Radar PING ring pulse is now IMPLEMENTED: server stamps bit 7 of the radar byte while IsPinging (ServerNet.cs:1234), client stamps a per-id ping time, RadarPanel.DrawPingPulse draws the expanding additive gfx/teamradar_ping ring. Live producers: itemstime respawn countdown (ItemPickupRules.cs:843) + buff respawn (BuffsMutator.cs:559). FIX vs baseline (was no-op)."
     verification:
       - { kind: code-read, ref: "RadarPanel iterates net.Waypoints (RadarPanel.cs), draws teamradar_icon per RadarIcon>0 tinted by team radar color + DrawPingPulse for ~1s after a ping; ClientNet decodes bit 7 → _radarPingTimes", result: pass }
     confidence: high

@@ -1,15 +1,15 @@
 unit: cl-teamradar
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Maximized fullscreen radar entirely absent: no m-bind, no fullscreen tactical overview, no separate maximized rotation/zoom/scale runtime (cvars registered + dialog-exposed but never consumed)."
-    - "Clickable maximized radar absent: no ONS spawn-point select (cmd ons_spawn), no teleport-click, no mouse/key/ESC/showscores input, no 'Click to select…' prompt, no icon hover-glow."
     - "TeamRadar_Draw client mutator hook unported: mutators cannot add custom blips, and its return value (ORed into the per-icon hover-glow team gate) is unmodeled."
     - "dynamichud scaling toggle (hud_panel_radar_dynamichud) + HUD_Radar_Export cvar-to-skin round-trip unported: the radar never participates in dynamic-HUD scaling and its 8 aesthetic cvars don't export to a saved skin."
     - "Minimap bounds come from raw BSP worldspawn model mins/maxs, not the authored minimap texcoord rect (get_mi_min_max_texcoords); also scale2d is assumed 1 in the zoom/scale fit — both misalign on maps whose authored minimap rect != BSP bounds."
+    - "Maximized clickable prompt not gated on dead+showscores (no auto-hide); non-ONS teleport-click + death-time auto-open client-deferred (the maximized map + ONS spawn-pick themselves are now ported + LIVE)."
+    - "Radar-link per-end color uses Team_ColorRGB not Base's colormapPaletteColor; ping pulses collapse Base's 32-slot per-icon ring to one timestamp per waypoint id."
 
 features:
   - id: cl-teamradar.transform.coords
@@ -230,24 +230,28 @@ features:
       - "client/hud/panel/radar.qc:HUD_Radar_Show_Maximized"
       - "client/hud/panel/radar.qc:HUD_Radar (maximized branch, lines 212-230)"
     port_refs:
-      - "game/menu/dialogs/DialogHudPanelRadar.cs (config UI only)"
+      - "game/hud/RadarPanel.cs:SetMaximized / _maximized / ParseMaximizedSize (maximized draw branch, lines 122,232-240)"
+      - "game/net/NetGame.cs:5017 (+hud_panel_radar_maximized / 'hud radar 1' toggle → SetMaximized)"
+      - "game/net/NetGame.cs:3132-3136 (per-frame LocalYawDegrees/ZoomFraction/IsOnslaught feed) + 5126 (UiOwnsCursor frees cursor while maximized)"
+      - "game/menu/dialogs/DialogHudPanelRadar.cs (config UI)"
     constants:
-      - { name: "maximized_size bound", base: "0.2..1 of screen, centered, always default border", port: "none (no runtime; cvar registered but never consumed)", match: false }
+      - { name: "maximized_size bound", base: "0.2..1 of screen, centered, always default border", port: "ParseMaximizedSize clamps 0.2..1 per axis, centred on screen (DrawPanel _maximized branch); maximized reads its own _maximized_rotation/_scale/_zoommode overrides", match: partial }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Maximized fullscreen radar entirely absent: no m-bind (+hud_panel_radar_maximized → cl_cmd hud radar 1), no fullscreen tactical overview, no separate maximized rotation/zoom/scale runtime, no default-border swap."
+      - "No skin-default border swap for the maximized view: Base forces the default border on the maximized map; the port reuses the small panel's DrawBackground frame."
+      - "Maximized rect is a simple screen-fraction box; the QC dynamichud/centering nuances (and the read-only-vs-clickable border state) are simplified."
     verification:
-      - { kind: grep, ref: "no HUD_Radar_Show_Maximized / hud_panel_radar_maximized equivalent in port; DialogHudPanelRadar configures _maximized_* cvars but nothing consumes them", result: fail }
+      - { kind: code, ref: "NetGame.cs:5017 binds +hud_panel_radar_maximized / 'hud radar 1' to SetMaximized(toggle); RadarPanel DrawPanel _maximized branch (232-240) sizes the radar to vp*ParseMaximizedSize centred on screen and reads maximized_rotation/scale/zoommode; per-frame yaw/zoom/onslaught fed at NetGame.cs:3132-3136; UiOwnsCursor (5126) frees the cursor while maximized. End-to-end live.", result: pass }
     confidence: high
-    notes: "Config dialog exposes the cvars (incl maximized rotation/scale/zoom); no draw/state path implements the maximized map."
+    notes: "FIX since 2026-06-27 (was fully missing/na): the maximized fullscreen tactical radar is now ported and LIVE — a press-toggle m-bind ('+hud_panel_radar_maximized' / 'hud radar 1') flips SetMaximized, DrawPanel sizes to a screen-fraction rect centred on screen with its own maximized rotation/scale/zoommode overrides, and the cursor is freed via UiOwnsCursor. Residual: no forced default-border swap, simplified rect/centering (values/presentation partial)."
 
   - id: cl-teamradar.maximized.click
     name: "Clickable radar: ONS spawn-point select + teleport, input/mouse/ESC"
@@ -256,26 +260,31 @@ features:
       - "client/hud/panel/radar.qc:HUD_Radar_Mouse"
       - "client/hud/panel/radar.qc:HUD_Radar_InputEvent"
       - "client/hud/panel/radar.qc:HUD_Radar_Clickable"
-    port_refs: []
+    port_refs:
+      - "game/hud/RadarPanel.cs:Clickable (maximized && IsOnslaught && hud_panel_radar_mouse) + HandleClick (screen→world unproject, line 767) + hover-glow/prompt (DrawPanel lines 511-541)"
+      - "game/net/NetGame.cs:4858-4881 (maximized mouse/key input: motion→SetMousePosition, MOUSE1→HandleClick→'cmd ons_spawn x y z', MOUSE2/ESC→close)"
+      - "src/XonoticGodot.Server/Commands.cs:820 (Register 'ons_spawn') + CmdOnsSpawn → Onslaught.HandleOnsSpawnCommand (server pick, already live per onslaught.yaml)"
     constants:
-      - { name: "spawn command", base: "localcmd cmd ons_spawn x y z at picked world point", port: "none", match: false }
-      - { name: "hover-glow", base: "within 8px of icon: gfx/teamradar_icon_glow 16x16 at 1.5x brightened color", port: "none", match: false }
-      - { name: "prompt", base: "'Click to select spawn/teleport location' (health-gated)", port: "none", match: false }
+      - { name: "spawn command", base: "localcmd cmd ons_spawn x y z at picked world point", port: "MOUSE1 in clickable rect → HandleClick unprojects to world XY(Z) → _client.SendStringCommand('cmd ons_spawn x y z')", match: true }
+      - { name: "hover-glow", base: "within 8px of icon: gfx/teamradar_icon_glow 16x16 at 1.5x brightened color", port: "Clickable loop: waypoint within 8px of mouse → gfx/teamradar_icon_glow 16px at 1.5x-brightened wp.Color", match: true }
+      - { name: "prompt", base: "'Click to select spawn/teleport location' (health-gated)", port: "DrawTextCentered 'Click to select spawn location' (not health/dead-state gated)", match: partial }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No clickable ONS spawn-point selection (cmd ons_spawn), no teleport-click, no mouse/key input handling (MOUSE1/MOUSE2/ESC/console-key passthrough), no dead+showscores temp-hide, no 'Click to select…' prompt, no icon hover-glow."
+      - "Prompt is not gated on player health/dead+showscores state the way Base is (Base temp-hides on dead+showscores); the port closes on MOUSE2/ESC but has no dead+showscores auto-hide path."
+      - "Teleport-click (the non-ONS clickable-map teleport some modes allow) is not modeled; only the ONS spawn-pick (cmd ons_spawn) is wired. Death-time auto-open (Base PlayerDies stuffcmd hud clickradar gated on >1 self control point) is client-deferred (see onslaught.yaml)."
+      - "Console-key passthrough is via the ConsoleState.IsOpen guard on the whole input block rather than a per-key check (functionally equivalent: input is ignored while the console is open)."
     verification:
-      - { kind: grep, ref: "no ons_spawn / HUD_Radar_Mouse / HUD_Radar_InputEvent / teamradar_icon_glow equivalent in port", result: fail }
+      - { kind: code, ref: "NetGame.cs:4858-4881 — while _radar.Maximized && !console: mouse motion → SetMousePosition, MOUSE1 (when Clickable) → HandleClick → SendStringCommand('cmd ons_spawn x y z'), MOUSE2/ESC → SetMaximized(false). HandleClick (RadarPanel.cs:767) inverts the cached WorldToScreen. Hover-glow + prompt drawn in the Clickable branch (511-541). Server ons_spawn handler live (Commands.cs:820 → HandleOnsSpawnCommand, per onslaught.yaml).", result: pass }
     confidence: high
-    notes: "The entire interactive layer of the maximized radar is unported; depends on the maximized map existing first."
+    notes: "FIX since 2026-06-27 (was fully missing/na): the clickable maximized radar is now ported and LIVE end-to-end — Clickable gates on maximized+Onslaught+hud_panel_radar_mouse, the host feeds the mouse + routes MOUSE1 through HandleClick to emit 'cmd ons_spawn x y z' (server pick already live), MOUSE2/ESC close, and the hover-glow + 'Click to select spawn location' prompt draw. Residual: prompt not health/dead+showscores gated (values partial), non-ONS teleport-click + death-time auto-open client-deferred."
 
   - id: cl-teamradar.cvar.rotation
     name: "Rotation modes (player-aligned vs cardinal lock)"

@@ -109,7 +109,18 @@ public static class BindTable
 
         if (command[0] == '+' || command[0] == '-')
         {
-            SetButton(command, pressed);
+            // A '+'/'-' bind is normally a held engine BUTTON (movement/fire/zoom/use/hook/showscores) tracked by
+            // SetButton. But a few '+'-aliases are press-TOGGLES the engine runs as commands, not held buttons —
+            // notably +hud_panel_radar_maximized (the stock `m` bind → maximize the radar). SetButton has no case
+            // for those, so left here they would be silently swallowed and the bind would do nothing. Route any
+            // '+'/'-' command SetButton doesn't recognise to runCommand so the bound alias actually fires (the
+            // command sink — e.g. NetGame.RunBoundCommand — handles the press toggle and ignores the '-' release).
+            if (IsHeldButton(command))
+            {
+                SetButton(command, pressed);
+                return;
+            }
+            runCommand(command); // pass both the press '+form' and the release '-form'; the sink decides
             return;
         }
         // QC togglezoom alias (binds-xonotic.cfg: bind MOUSE3 togglezoom -> ${_togglezoom}zoom -> +button4):
@@ -130,6 +141,22 @@ public static class BindTable
         _fwd = _back = _left = _right = _up = _down = false;
         _attack = _attack2 = _zoom = _use = _hook = false;
         ShowScores = false;
+    }
+
+    /// <summary>True when a '+'/'-' bind command is one of the held engine BUTTONS <see cref="SetButton"/> tracks
+    /// (movement/fire/zoom/use/hook/showscores). Anything else (e.g. +hud_panel_radar_maximized) is a press-toggle
+    /// alias that <see cref="HandleBind"/> dispatches to the command sink instead of latching as a button. Kept in
+    /// lockstep with the <see cref="SetButton"/> switch.</summary>
+    private static bool IsHeldButton(string command)
+    {
+        string name = command.Substring(1).ToLowerInvariant();
+        return name switch
+        {
+            "forward" or "back" or "backward" or "moveleft" or "left" or "moveright" or "right"
+                or "jump" or "moveup" or "crouch" or "movedown" or "attack" or "fire" or "attack2"
+                or "altattack" or "fire2" or "zoom" or "use" or "hook" or "showscores" or "score" => true,
+            _ => false,
+        };
     }
 
     private static void SetButton(string command, bool state)

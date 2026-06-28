@@ -1,7 +1,7 @@
 unit: mutator-bugrigs
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-28"
 summary:
   feature_count: 7
   worst_gaps:
@@ -157,7 +157,7 @@ features:
       - { kind: code, ref: "Line-by-line RaceCarPhysics (:198-388) vs bugrigs.qc:104-306: reverse-speeding digital-brake, f responsiveness, steerfactor/accelfactor reverse_spinning/speeding branches, accel<0 vs >=0 friction_floor/brake branches incl reverse_stopping, planar 3-tracebox align (up 1024, xy move, down-to-surface) + <0.5 cancel + SET/UNSET_ONGROUND + NOCLIP, FLY fallback, 4u body-pitch trace, racecar_angle (:183 vs :86-102) all match", result: pass }
       - { kind: test, ref: "MutatorBatchT51Tests asserts rig movetype becomes Noclip/Fly after the hook (per suite green)", result: pass }
     confidence: medium
-    notes: "Algorithm and all 6 numeric constants match Base line-for-line (MathF vs QC float math). presentation downgraded faithful->unknown: the drive model's whole purpose is the rendered rig orientation (surface-snap + body lean + smoothing writes to self.Angles), but there is NO in-game/visual verification of the integrated rig feel or rendered body fidelity, and the forced chase camera that makes it observable is itself missing (see chase_camera row). Per SCHEMA rule 5, unverified visible fidelity is 'unknown', not 'faithful'."
+    notes: "Algorithm and all 6 numeric constants match Base line-for-line (MathF vs QC float math). presentation STAYS unknown after the 2026-06-28 re-audit: the drive model's whole purpose is the rendered rig orientation (surface-snap + body lean + smoothing writes to self.Angles), but there is STILL NO in-game/visual verification of the integrated rig feel or rendered body fidelity. The forced chase camera that makes it observable is now ported+live (see chase_camera row, NetGame.cs:3044 reads chase_active each frame), so the rig is now observable on a g_bugrigs 1 listen server — but no one has actually eyeballed it, so per SCHEMA rule 5 this remains 'unknown', not 'faithful'. This wave did NOT close it."
   - id: mutator-bugrigs.clientconnect.chase_camera
     name: "Force 3rd-person chase camera on player connect (chase_active 1)"
     layer: [presentation, authority]

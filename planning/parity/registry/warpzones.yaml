@@ -1,11 +1,11 @@
 unit: warpzones
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 18
   worst_gaps:
-    - "No client portal render: the warpzone surface is a static dark mirror placeholder (HeroMaterials.BuildPortal), not a SubViewport camera view of the linked OUT plane — you cannot see through a warpzone."
+    - "Client portal render IMPLEMENTED but UNVERIFIED (Wave-18): MapLoader.BuildPortalSurfaces + PortalRenderer (SubViewport camera = warp(main camera) of the linked OUT plane) replace the dark-mirror placeholder — but LISTEN-HOST ONLY (reads WarpzoneTrace.AmbientManager; a remote/dedicated client keeps the placeholder until the zone transforms are networked) and presentation:unknown (the rendered handedness/near-clip needs an in-game eyeball; cl_portal_render 0 reverts). Math unit-tested (WarpzonePortalTests 5/5)."
     - "No client view rotate across the seam (WarpZone_FixView / ENT_CLIENT_WARPZONE_TELEPORTED unported) — even though the ORIGIN is now predicted, the camera still snaps/rotates jarringly at the seam."
     - "No near-clip fix / roll-kill at the seam (WarpZone_FixNearClip / cl_rollkillspeed unported)."
     - "func_camera / func_warpzone_camera (fixed dpcamera view) not implemented."
@@ -329,8 +329,9 @@ features:
     verification:
       - { kind: code, ref: "MapLoader.BuildPortalSurfaces + IsWarpzoneShader (faces->window meshes); PortalRenderer.Setup/_Process (SubViewport+camera+screen-UV material, TryMatchZone by plane); NetGame wiring @1618; build green; WarpzonePortalTests 5/5 + full suite 2862/0.", result: pass }
       - { kind: ingame, ref: "NOT YET RUN — load a warpzone map on a listen host and confirm the surface shows the linked exit aligned/correct (handedness, near-clip). cl_portal_render toggles it.", result: unknown }
+      - { kind: code, ref: "RE-AUDIT 2026-06-28 (branch claude/parity-port-waves, OPUS re-verify of the portal-render wave): re-read PortalRenderer.cs end-to-end — Setup matches each 'Portals' window mesh (MapLoader.BuildPortalSurfaces, MapLoader.cs:365; tagged wz_origin/wz_normal in raw QUAKE, :421-422) to a linked zone via TryMatchZone (nearest InOrigin within 96u + |dot(normal,InForward)|>=0.7, PortalRenderer.cs:180) reading WarpzoneTrace.AmbientManager (WarpzoneRadiusQuery.cs:136); _Process re-derives the portal camera each frame from the main camera through WarpzoneTransform.Rotate (full basis) + TransformOrigin (PortalRenderer.cs:161-174). Live wiring confirmed: NetGame creates+Setups PortalRenderer after map+camera (NetGame.cs:1649-1651). All referenced port symbols (wz.Zones/Linked/Transform.Valid/InForward/InOrigin, Rotate, TransformOrigin) exist. Build green; WarpzonePortalTests 5/5 (whole Warpzone filter 32/32, this run). NO status change — presentation stays unknown (ingame result still unknown, SCHEMA rule 5), liveness stays partial (listen-host only). Not inflated.", result: pass }
     confidence: medium
-    notes: "Wave-18 portal render landed (listen-host, cl_portal_render default on). logic/timing faithful (SubViewport camera = warp(main camera), updated each frame); presentation:unknown pending the in-game eyeball (SCHEMA rule 5: unverified visible fidelity is unknown, not faithful); liveness:partial (live on a listen host, dead on a pure remote client). The crossing PREDICTION (EntityMovementStep) is separate + already live."
+    notes: "Wave-18 portal render landed (listen-host, cl_portal_render default on). logic/timing faithful (SubViewport camera = warp(main camera), updated each frame); presentation:unknown pending the in-game eyeball (SCHEMA rule 5: unverified visible fidelity is unknown, not faithful); liveness:partial (live on a listen host, dead on a pure remote client). The crossing PREDICTION (EntityMovementStep) is separate + already live. RE-AUDIT 2026-06-28 (OPUS re-verify): code path re-read + line refs re-confirmed against current src; build+tests re-run green (32/32 warpzone); cl_portal_render is read via Api.Cvars default-on (not a registered Cvars.cs default), functional. Statuses held — no inflation: presentation stays unknown until an in-game eyeball, liveness stays partial until the zone transforms are networked to remote clients."
   - id: warpzones.client.fixview
     name: "Seamless view across the seam (FixView / FixNearClip / View_Inside / FixPMove)"
     layer: [presentation]

@@ -95,14 +95,30 @@ public static class WepentResolver
             v.ArcHeat = System.Math.Clamp(pct, 0f, 1f);
         }
 
-        // BeamState (Phase-2 consumer): bit0 = arc beam active. bit2 (electro secondary beam active) has no
-        // dedicated slot flag yet — left 0, to be wired in Phase-2 when the electro beam state is tracked.
+        // BeamState (Phase-2 consumer, networked bitfield): bit0 = arc beam active (beam_heat > 0), bit1 = arc
+        // beam BURST (the latched st.BeamBursting read by Arc.cs:189 — a burst beam keeps bursting after ATCK2
+        // release until the beam ends, arc.qc:205-209). bit2 (electro continuous beam) has no slot flag — electro
+        // has no continuous beam, so it stays 0.
         int beamState = 0;
         if (net == "arc" && wst.BeamHeat > 0f) beamState |= 1 << 0;
-        // bit2 (electro beam): no WeaponSlotState flag exists yet → 0 (Phase-2).
+        if (net == "arc" && wst.BeamBursting) beamState |= 1 << 1;
+        // bit2 (electro beam): electro has no continuous beam → 0.
         v.BeamState = beamState;
 
-        // ViewmodelFrame: not resolved this phase (Phase-2 consumer) → left 0 (idle/none) via None default.
+        // ViewmodelFrame (Phase-2 consumer): the networked anim-frame selector ViewModel.SetNetAnimFrame reads
+        // (0 idle, 1 fire, 2 reload, 3 raise, 4 drop). Reload (the QC WFRAME_RELOAD sentinel — a slot with a clip
+        // whose load is the -1 "needs reload" / mid-reload marker) takes priority; otherwise the slot's fire-state
+        // machine selects: WS_RAISE -> raise, WS_DROP -> drop, WS_INUSE -> fire while the refire gate is still
+        // closed (AttackFinished > now), else idle.
+        v.ViewmodelFrame = (wst.ClipSize > 0 && wst.ClipLoad < 0)
+            ? 2 // reload (WFRAME_RELOAD)
+            : wst.State switch
+            {
+                WeaponFireState.Raise => 3,
+                WeaponFireState.Drop => 4,
+                WeaponFireState.InUse => wst.AttackFinished > now ? 1 : 0,
+                _ => 0, // idle (READY/CLEAR)
+            };
 
         return v;
     }

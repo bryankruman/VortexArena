@@ -1604,6 +1604,13 @@ public sealed partial class NetGame : Node3D
             Size = new Vector2(256, 256),
             Position = new Vector2(24, 24),
         };
+        // Maximized-radar wiring (QC HUD_Radar / +hud_panel_radar_maximized): the click-to-spawn channel is the same
+        // clc_stringcmd path a console command takes — emit `cmd ons_spawn <x> <y> <z>` (Onslaught.HandleOnsSpawnCommand
+        // parses argv 1..3 as world x/y/z). IsOnslaught gates the clickable spawn-point picking to Onslaught; it tracks
+        // the SAME gametype string the HUD/scoreboard read (the networked ScoreInfo block sets GameScores.Gametype,
+        // "ons" for Onslaught). Refreshed per-frame in _Process so a mid-match gametype change re-gates it.
+        _radar.SendServerCommand = line => _client.SendStringCommand(line);
+        _radar.IsOnslaught = XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype == "ons";
         // Feed the real minimap: the map name (resolves gfx/<map>_mini.jpg inside the map pk3 via the VFS) + the
         // map's world XY bounds (QC mi_min/mi_max = the BSP worldspawn model mins/maxs) so the image + blips align.
         _radar.MapName = _map;
@@ -1760,6 +1767,11 @@ public sealed partial class NetGame : Node3D
         // clip once on the rising edge so the gun visibly cycles through a reload, dropping back to idle when done.
         UpdateViewModelReloadAnim();
 
+        // Networked viewmodel anim-frame (Base wframe NET_HANDLE selector): on a listen host the reload anim above is
+        // already host-derived, but a pure client / a spectatee has no LocalServerPlayer slot — so drive the local
+        // viewmodel's fire/raise/drop/reload clip from the networked WepentView.ViewmodelFrame selector instead.
+        UpdateViewModelAnimFromNet();
+
         // Per-weapon wr_viewmodel override (Base viewmodel_draw 324-327: newname = wep.wr_viewmodel(wep, this)).
         // Only Tuba overrides it, swapping its v_ model by the currently played instrument (tuba/akordeon/
         // kleinbottle). Resolved live so a reload that cycles the instrument rebuilds the gun model. Empty = no
@@ -1828,13 +1840,33 @@ public sealed partial class NetGame : Node3D
         {
             XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(wid);
             string net = w?.NetName ?? "";
-            if ((net is "vortex" or "vaporizer" || net.Contains("nex")) && LocalServerPlayer is { } p
-                && !p.IsDead && !p.IsObserver)
+            if (net is "vortex" or "vaporizer" || net.Contains("nex"))
             {
-                float charge = Mathf.Max(0.25f, p.WeaponState(new WeaponSlot(0)).VortexCharge);
-                glow = VortexGlowColor(teamColor, charge);
-                if (glow.R + glow.G + glow.B <= 0.001f)
-                    glow = teamColor; // charge disabled → fall back to team color
+                // Charge source: a listen host with a live local slot reads it directly; a pure client (no
+                // LocalServerPlayer) or a followed spectatee instead reads the watched player's networked
+                // WepentView.VortexCharge off the entity stream, so the first-person glow also lights on a remote
+                // client / for a spectated charge. Same vortex_glowcolor ramp either way.
+                int specNet = _client?.SpectatingNetId ?? 0;
+                float? charge = null;
+                if (LocalServerPlayer is { } p && specNet == 0)
+                {
+                    if (!p.IsDead && !p.IsObserver)
+                        charge = p.WeaponState(new WeaponSlot(0)).VortexCharge;
+                }
+                else
+                {
+                    int watched = specNet != 0 ? specNet : (_client?.LocalNetId ?? 0);
+                    if (watched != 0 && _client != null && _client.TryGetRemoteState(watched, out var rs)
+                        && rs.WepentView.VortexCharge > 0f)
+                        charge = rs.WepentView.VortexCharge;
+                }
+
+                if (charge is { } c)
+                {
+                    glow = VortexGlowColor(teamColor, Mathf.Max(0.25f, c));
+                    if (glow.R + glow.G + glow.B <= 0.001f)
+                        glow = teamColor; // charge disabled → fall back to team color
+                }
             }
         }
 
@@ -1865,6 +1897,33 @@ public sealed partial class NetGame : Node3D
         if (reloading && !_viewmodelReloading)
             _viewModel.PlayReload();
         _viewmodelReloading = reloading;
+    }
+
+    /// <summary>
+    /// Drive the local view-model's anim frame from the networked <see cref="XonoticGodot.Net.WepentViewState.ViewmodelFrame"/>
+    /// selector (Base <c>wframe</c> NET_HANDLE: 0 idle, 1 fire, 2 reload, 3 raise, 4 drop). This is the pure-client /
+    /// spectatee path: a listen host derives the reload anim from <see cref="LocalServerPlayer"/> (see
+    /// <see cref="UpdateViewModelReloadAnim"/>) and needs nothing here, but a remote client / a followed spectatee has
+    /// no local slot — so resolve the WATCHED player's per-player WepentView slice off the entity stream and let
+    /// <see cref="ViewModel.SetNetAnimFrame"/> play the matching clip once on a rising edge (idempotent per frame).
+    /// When following a player use <see cref="ClientNet.SpectatingNetId"/>; otherwise (no spectatee) only feed it when
+    /// there is no <see cref="LocalServerPlayer"/> (pure client) — on a listen host the host path already owns it.
+    /// </summary>
+    private void UpdateViewModelAnimFromNet()
+    {
+        if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel) || _client is null)
+            return;
+
+        int watched;
+        if (_client.SpectatingNetId != 0)
+            watched = _client.SpectatingNetId;            // following another player → their networked anim frame
+        else if (LocalServerPlayer is null)
+            watched = _client.LocalNetId;                 // pure client (no local slot) → our own networked anim frame
+        else
+            return;                                        // listen host: the host-derived reload anim owns the frame
+
+        if (watched != 0 && _client.TryGetRemoteState(watched, out var rs))
+            _viewModel.SetNetAnimFrame(rs.WepentView.ViewmodelFrame);
     }
 
     /// <summary>Port of <c>vortex_glowcolor</c> (weapon/vortex.qc:7): a charge-scaled blend of the player's team
@@ -3072,6 +3131,9 @@ public sealed partial class NetGame : Node3D
         {
             _radar.LocalYawDegrees = _viewAngles.Y;
             _radar.ZoomFraction = _view.ZoomFraction;
+            // Keep the Onslaught gate live so the maximized radar's click-to-spawn only arms in Onslaught — the same
+            // networked gametype string the HUD/scoreboard read (ScoreInfo block → GameScores.Gametype, "ons" = ONS).
+            _radar.IsOnslaught = XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype == "ons";
         }
 
         // [T68] Shownames overlay (QC Draw_ShowNames_All): feed the per-frame view context — the local client's
@@ -4190,6 +4252,17 @@ public sealed partial class NetGame : Node3D
         xh.AimForward = _view.RenderedForwardQuake;
         xh.ChaseActive = _view.ChaseActive;
         xh.ChaseCamera3D = _camera;
+
+        // [viewconsumers] crosshair-chase body fade (QC crosshair_chase: when the third-person crosshair-chase camera
+        // is up, the player's OWN model is drawn at crosshair_chase_playeralpha so it doesn't block the chased aim).
+        // Only the local player's own third-person counts — when spectating someone else (SpectatingNetId != 0) the
+        // chased body is theirs, not the local model, so leave the local model alone. Drives ClientWorld's per-model
+        // alpha ease by local net id; 0 restores full opacity. Read both cvars live (CrosshairPanel registers them).
+        bool ownChase = _view.ChaseActive && (_client?.SpectatingNetId ?? 0) == 0
+            && CvarOr(Api.Cvars, "crosshair_chase", 0f) != 0f;
+        int localNet = _client?.LocalNetId ?? 0;
+        _render?.SetLocalBodyAlpha(localNet,
+            ownChase ? 1f - CvarOr(Api.Cvars, "crosshair_chase_playeralpha", 0.25f) : 0f);
     }
 
     /// <summary>
@@ -4548,6 +4621,11 @@ public sealed partial class NetGame : Node3D
             case XonoticGodot.Net.GametypeStatusBlock.Kind.NexBall:
                 panel.Mode = ModIconsPanel.ModIconsMode.NexBall;
                 panel.NexBallCarrying = ms.CarrierNetId != 0 && ms.CarrierNetId == _client.LocalNetId;
+                // QC HUD_Mod_NexBall keys the power-meter bar off the LOCAL NB_METERSTART — show the triangle-wave
+                // charge bar only while the local player is the carrier; otherwise feed -1 (inactive, no bar). The
+                // networked meter phase rides the NexBall block (GametypeStatusBlock.Decoded.NexBallMeterPhase).
+                panel.NexBallMeterPhase =
+                    (ms.CarrierNetId != 0 && ms.CarrierNetId == _client.LocalNetId) ? ms.NexBallMeterPhase : -1;
                 break;
             // Team Keepaway: STAT(TKA_BALLSTATUS) — the carrying / per-team-taken / dropped bit pack is already
             // computed per-recipient on the server, so feed it straight to HUD_Mod_TeamKeepaway.
@@ -4772,6 +4850,36 @@ public sealed partial class NetGame : Node3D
             return;
         }
 
+        // Maximized radar mouse input (QC HUD_Radar_Mouse / hud_panel_radar_maximized): while the radar is maximized
+        // it owns the mouse — cursor motion tracks the panel, a left click on a control point in Onslaught issues
+        // `cmd ons_spawn <x> <y> <z>` (the server's spawn-point pick), and right-click / Esc closes it. Mirrors the
+        // minigame/quickmenu pattern: active only while maximized and the console is closed, and it swallows the
+        // events so they never fall through to mouse-look / weapon binds. The cursor is freed in _Process.
+        if (_radar is { Maximized: true } && !ConsoleState.IsOpen)
+        {
+            switch (@event)
+            {
+                case InputEventMouseMotion:
+                    _radar.SetMousePosition(_radar.GetLocalMousePosition());
+                    GetViewport().SetInputAsHandled();
+                    return;
+                case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left }:
+                    if (_radar.Clickable
+                        && _radar.HandleClick(_radar.GetLocalMousePosition(), out System.Numerics.Vector3 wp))
+                        _client?.SendStringCommand($"cmd ons_spawn {wp.X} {wp.Y} {wp.Z}");
+                    GetViewport().SetInputAsHandled();
+                    return;
+                case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Right }:
+                    _radar.SetMaximized(false);
+                    GetViewport().SetInputAsHandled();
+                    return;
+                case InputEventKey { Pressed: true, Echo: false, Keycode: Key.Escape }:
+                    _radar.SetMaximized(false);
+                    GetViewport().SetInputAsHandled();
+                    return;
+            }
+        }
+
         // Map-vote panel input (QC client/mapvoting.qc MapVote_InputEvent): while the end-of-match ballot is
         // showing, arrows move the selection and enter/space/digits/click cast it as `impulse N` (routed through
         // the server's impulse path, the port's MapVote_SendChoice). Runs before the gameplay binds so a digit/
@@ -4901,6 +5009,20 @@ public sealed partial class NetGame : Node3D
             return;
         }
 
+        // Maximized radar (QC the `m` bind → +hud_panel_radar_maximized → cl_cmd hud radar 1): a toggle, like the
+        // quickmenu. BindInput emits the press form `+hud_panel_radar_maximized` (and `hud radar 1` if bound directly);
+        // both flip the maximized state. The release form (`-hud_panel_radar_maximized`) is a no-op — this is a press-
+        // toggle, not a held button, so we swallow it without un-maximizing. The cursor is freed/recaptured in _Process
+        // off _radar.Maximized (see the UiOwnsCursor block); _UnhandledInput drives the mouse-move / click-to-spawn.
+        if (command.Equals("+hud_panel_radar_maximized", StringComparison.OrdinalIgnoreCase)
+            || command.Equals("hud radar 1", StringComparison.OrdinalIgnoreCase))
+        {
+            _radar?.SetMaximized(!(_radar?.Maximized ?? false));
+            return;
+        }
+        if (command.Equals("-hud_panel_radar_maximized", StringComparison.OrdinalIgnoreCase))
+            return; // release of a press-toggle bind — ignored (matches the quickmenu toggle semantics)
+
         int imp = WeaponCommandToImpulse(command);
         if (imp != 0)
         {
@@ -4998,9 +5120,10 @@ public sealed partial class NetGame : Node3D
     private bool QuickMenuOpen
         => _fullHud?.GetPanel<XonoticGodot.Game.Hud.QuickMenuPanel>() is { IsOpen: true };
 
-    /// <summary>Any in-world HUD UI that should free the mouse cursor + suspend look/fire (minigame board/menu or
-    /// the quick-chat menu). The bind channel stays live so the toggling bind can still close the panel.</summary>
-    private bool UiOwnsCursor => MinigameMenuOpen || QuickMenuOpen;
+    /// <summary>Any in-world HUD UI that should free the mouse cursor + suspend look/fire (minigame board/menu, the
+    /// quick-chat menu, or the maximized radar). The bind channel stays live so the toggling bind can still close the
+    /// panel — the maximized radar's `m` toggle + Esc/right-click close all route through it.</summary>
+    private bool UiOwnsCursor => MinigameMenuOpen || QuickMenuOpen || (_radar?.Maximized ?? false);
 
     /// <summary>
     /// Teleporter view-snap (QC player.fixangle): after a prediction tick re-derives the carrier's .fixangle —

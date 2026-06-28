@@ -119,6 +119,13 @@ public sealed class FirstPersonView
     /// first-person viewmodel while chase is active — view.qc viewmodel_draw masks the gun when chase_active).</summary>
     public bool ChaseActive { get; private set; }
 
+    /// <summary>True when the eye straddles a warpzone seam this frame (QC <c>WarpZone_FixView</c> rotated the view).
+    /// The host uses it to hide the LOCAL exterior player model (so the player doesn't see the back of their own
+    /// head poking through the seam) and the matching near-clip push-out (<see cref="WarpzoneFixView.NearClipMultiplier"/>)
+    /// is applied to the camera. Listen-host / demo only — IDLE on a pure remote client where the zone transforms
+    /// aren't networked (no <c>WarpzoneTrace.AmbientManager</c>).</summary>
+    public bool InsideWarpzone { get; private set; }
+
     // --- the FINAL rendered view this frame (QC view_origin / view_forward) — the authoritative eye/forward the
     // Phase-2 crosshair-chase consumer reads to trace true-aim from exactly where the camera ended up (post chase
     // pull-back, post view-lock). Stashed at the tail of UpdateCamera once camQuake + viewAngles are resolved. ---
@@ -431,6 +438,27 @@ public sealed class FirstPersonView
         // cl_lockview cvar is honored here. Applied to the final Quake values before they build the camera basis.
         ApplyViewLock(ref camQuake, ref viewAngles);
 
+        // QC WarpZone_FixView (warpzonelib/client.qc): when the eye straddles a warpzone seam, rotate the eye origin
+        // and the view angles through the seam transform (and roll-kill) so the rendered view continues seamlessly
+        // out the far side. First-person only — a chase pull-back origin already sits outside the body, so the seam
+        // straddle test doesn't apply to it. No-op when there's no ambient zone manager (a pure remote client / a
+        // non-warpzone map), exactly like the already-live LaserRenderer / PortalRenderer ambient consumers.
+        bool insideZone = false;
+        if (!ChaseActive)
+            WarpzoneFixView.Apply(
+                XonoticGodot.Common.Gameplay.WarpzoneTrace.AmbientManager,
+                ref camQuake, ref viewAngles, _lastDt, out insideZone);
+        InsideWarpzone = insideZone;
+
+        // QC WarpZone_FixNearClip: while straddling a seam, push the near-clip plane out so the geometry on the
+        // near side of the portal doesn't poke through. Capture the authored near once so it restores cleanly.
+        if (!_baseNearCaptured)
+        {
+            _baseNear = camera.Near;
+            _baseNearCaptured = true;
+        }
+        camera.Near = _baseNear * (insideZone ? WarpzoneFixView.NearClipMultiplier : 1f);
+
         // Orientation: derive the camera basis from the SAME Quake view vectors the sim and aiming use
         // (QMath.AngleVectors), converted axis-by-axis into Godot space. This guarantees the camera looks
         // exactly where movement goes and where AimForwardQuake shoots. Building it from a separate negated-yaw
@@ -713,6 +741,11 @@ public sealed class FirstPersonView
 
     // The dt of the latest UpdateView, so ApplyEventChase advances the smoothed distance against the same step.
     private float _lastDt;
+
+    // QC r_nearclip baseline (WarpZone_FixNearClip): the camera's authored near-clip plane, captured once on the
+    // first UpdateCamera so the warpzone near-clip push-out (* NearClipMultiplier) restores cleanly to it.
+    private float _baseNear;
+    private bool _baseNearCaptured;
 
     // QC View_Lock freeze_org / freeze_ang (view.qc:641): the captured render origin/angles cl_lockview pins the
     // view to. Continuously refreshed while the lock is off so it engages from the live view; held while on.

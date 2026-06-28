@@ -72,6 +72,63 @@ public partial class RadarPanel : HudPanel
     /// </summary>
     public NVec3? CenterOrigin { get; set; }
 
+    // =================================================================================================
+    //  Maximized fullscreen / clickable tactical-overview mode (QC HUD_Radar maximized path +
+    //  HUD_Radar_Mouse / HUD_Radar_Clickable, radar.qc). Toggled by the host (keybind +showscores-like);
+    //  in Onslaught with hud_panel_radar_mouse it becomes a clickable spawn-location selector. None of this
+    //  touches the small-radar path: every maximized override is gated behind _maximized below.
+    // =================================================================================================
+
+    /// <summary>True while the radar is shown maximized over the whole screen (QC <c>hud_panel_radar_maximized</c>
+    /// state). Set via <see cref="SetMaximized"/>. When false the panel renders exactly as the small radar.</summary>
+    private bool _maximized;
+
+    /// <summary>Last mouse position in this panel's local space (QC <c>mousepos</c> mapped into the radar rect),
+    /// fed by the host each frame while maximized so the clickable spawn-selector can hover-glow the nearest
+    /// waypoint. Stored via <see cref="SetMousePosition"/>.</summary>
+    private Vector2 _mousePanelPos;
+
+    // ---- cached WorldToScreen parameters from the last maximized DrawPanel, so HandleClick can invert the exact
+    //      same transform the user clicked on (QC HUD_Radar_Mouse reads the live teamradar state). Only meaningful
+    //      while _maximized; refreshed every maximized frame. ----
+    private Vector2 _clickCenter;     // panel-local radar centre (center)
+    private Vector2 _clickSize;       // maximized rect size (for the in-rect hit test)
+    private float _clickWorldToPixels; // worldToPixels (px per world unit)
+    private float _clickYawRad;       // yawRad (the radar angle; cos/sin used -yawRad in the forward transform)
+    private float _clickFlipX = 1f;   // v_flipped X sign
+    private NVec3 _clickSelfOrigin;   // selfOrigin (radar centre in world XY; Z carried for the spawn pick)
+    private bool _clickValid;         // true when the cached transform is finite/usable
+
+    /// <summary>Whether the current gametype is Onslaught — gates the clickable spawn-selector (QC
+    /// <c>HUD_Radar_Clickable</c> requires <c>autocvar_g_onslaught</c>). Set by the host.</summary>
+    public bool IsOnslaught { get; set; }
+
+    /// <summary>True when the maximized radar is acting as the Onslaught spawn-location picker — QC
+    /// <c>HUD_Radar_Clickable</c> = maximized AND Onslaught AND <c>hud_panel_radar_mouse</c>. In this mode the
+    /// view is forced to the fit-arena zoom and clicks resolve to a world point (<see cref="HandleClick"/>).</summary>
+    public bool Clickable => _maximized && IsOnslaught && GlobalF("hud_panel_radar_mouse", 0f) != 0f;
+
+    /// <summary>True while maximized (QC <c>hud_panel_radar_maximized</c>). The host reads this to know whether the
+    /// radar is capturing the mouse / full-screen.</summary>
+    public bool Maximized => _maximized;
+
+    /// <summary>The console-command sink used to emit the Onslaught spawn pick (<c>cmd ons_spawn x y z</c>) when the
+    /// player clicks the clickable radar — wired by the host to <see cref="ClientNet.SendStringCommand"/>. The
+    /// server's <c>ons_spawn</c> command parses argv 1..3 as the world x/y/z. <c>null</c> standalone (no-op).</summary>
+    public System.Action<string>? SendServerCommand { get; set; }
+
+    /// <summary>Toggle the maximized fullscreen overview (QC opening/closing the maximized radar). Flips the state
+    /// and forces a repaint.</summary>
+    public void SetMaximized(bool on)
+    {
+        _maximized = on;
+        QueueRedraw();
+    }
+
+    /// <summary>Store the current mouse position in panel-local space (QC feeds the radar <c>mousepos</c>). Only the
+    /// clickable maximized path reads it (for the hover-glow); the small radar ignores it.</summary>
+    public void SetMousePosition(Vector2 panelLocalPos) => _mousePanelPos = panelLocalPos;
+
     /// <summary>The local player's facing arrow color (QC draws the own player white). Public so the integration
     /// layer can tint it (e.g. to the local team color) if desired.</summary>
     public Color LocalColorTint { get; set; } = new(0.95f, 0.95f, 0.95f, 1f);
@@ -164,10 +221,27 @@ public partial class RadarPanel : HudPanel
         // Draw in the live control size so this works both as a discovered panel (Size == Cfg.SizePx, set by
         // LoadConfig) and standalone (Size set manually by NetGame). panel-local space: origin = top-left.
         Vector2 size = Size;
+        Vector2 center = size * 0.5f;
+
+        // ---- maximized fullscreen overview (QC HUD_Radar maximized branch) ----
+        // When maximized the radar is sized as a fraction of the SCREEN (hud_panel_radar_maximized_size, QC bound
+        // 0.2..1 per axis) and centred on it, rather than honouring the small control rect. We keep drawing in this
+        // panel's local space, so the maximized rect's centre is the screen centre expressed local to this control
+        // (screenCentre - GlobalPosition). Everything below (WorldToScreen, blips, arrows) then uses the override
+        // size/center transparently. The small-radar path is untouched when _maximized is false.
+        if (_maximized)
+        {
+            Vector2 vp = GetViewportRect().Size;
+            Vector2 frac = ParseMaximizedSize();
+            Vector2 maxSize = new(vp.X * frac.X, vp.Y * frac.Y);
+            size = maxSize;
+            Vector2 screenCenter = vp * 0.5f;
+            center = screenCenter - GlobalPosition; // panel-local coords of the screen centre
+        }
+
         float radius = Mathf.Min(size.X, size.Y) * 0.5f;
         if (radius <= 0f)
             return;
-        Vector2 center = size * 0.5f;
 
         // ---- skin border frame (QC HUD_Panel_DrawBg → draw_BorderPicture). No-op when the panel's bg is "0". ----
         DrawBackground();
@@ -195,7 +269,8 @@ public partial class RadarPanel : HudPanel
         // The view yaw is host-supplied each frame and could be uninitialised / NaN before the first net update;
         // a NaN yaw would poison cos/sin and turn every blip into NaN. Sanitise it to a finite angle.
         float localYaw = float.IsFinite(LocalYawDegrees) ? LocalYawDegrees : 0f;
-        float rotationCvar = CvarF("rotation", 0f);
+        // QC teamradar_loadcvars: the maximized radar reads its own _maximized_rotation/_scale/_zoommode overrides.
+        float rotationCvar = _maximized ? CvarF("maximized_rotation", 1f) : CvarF("rotation", 0f);
         int rotation = float.IsFinite(rotationCvar) ? (int)rotationCvar : 0;
         float radarYawDeg = rotation != 0 ? 90f * rotation : localYaw - 90f;
 
@@ -213,11 +288,17 @@ public partial class RadarPanel : HudPanel
         // radar) and a "normal" size (a fixed scale) by the zoom factor. Our world→screen transform multiplies
         // the rotated world delta by `worldToPixels`, which IS Base's `teamradar_size`, so we reproduce the
         // bigsize/normalsize math directly in px-per-unit rather than the old RangeUnits heuristic.
-        float scale = CvarF("scale", 4096f); // QC teamradar_loadcvars code default
-        if (!float.IsFinite(scale) || scale <= 0f) scale = 4096f; // teamradar_loadcvars: 0 → 4096
-        float zoomCvar = CvarF("zoommode", 0f);
+        // QC teamradar_loadcvars maximized overrides: _maximized_scale / _maximized_zoommode replace the small ones.
+        float scale = _maximized ? CvarF("maximized_scale", 8192f) : CvarF("scale", 4096f); // teamradar code defaults
+        float scaleFallback = _maximized ? 8192f : 4096f;
+        if (!float.IsFinite(scale) || scale <= 0f) scale = scaleFallback; // teamradar_loadcvars: 0 → code default
+        float zoomCvar = _maximized ? CvarF("maximized_zoommode", 3f) : CvarF("zoommode", 0f);
         int zoommode = float.IsFinite(zoomCvar) ? (int)zoomCvar : 0;
         float zoomFactor = Mathf.Clamp(GetZoomFactor(zoommode), 0f, 1f);
+        // QC HUD_Radar: the clickable spawn-selector forces the fit-arena view so the whole map is reachable and the
+        // click→world inverse is well-defined (no per-player pan/zoom). Override after the zoommode resolve.
+        if (Clickable)
+            zoomFactor = 1f;
 
         float worldToPixels;
         if (HasMapBounds)
@@ -423,6 +504,58 @@ public partial class RadarPanel : HudPanel
             }
         }
 
+        // ---- maximized clickable spawn-selector overlay (QC HUD_Radar_Mouse, radar.qc): a hover-glow on the
+        // nearest waypoint under the cursor + the "Click to select spawn location" prompt. Only in the clickable
+        // (maximized + Onslaught + hud_panel_radar_mouse) state; the small radar and the non-clickable maximized
+        // view skip it entirely. ----
+        if (Clickable && selfFinite)
+        {
+            Texture2D? glow = TextureCache.Get("gfx/teamradar_icon_glow");
+            const float glowPx = 16f;
+            foreach (XonoticGodot.Common.Gameplay.Waypoints.WaypointNet wp in net.Waypoints)
+            {
+                if (!float.IsFinite(wp.Origin.X) || !float.IsFinite(wp.Origin.Y))
+                    continue;
+                Vector2 op = WorldToScreen(wp.Origin.X, wp.Origin.Y);
+                if (!float.IsFinite(op.X) || !float.IsFinite(op.Y))
+                    continue;
+                // QC: highlight the waypoint within 8px of the cursor (mouse hover pick radius).
+                if ((_mousePanelPos - op).Length() > 8f)
+                    continue;
+                // QC draws gfx/teamradar_icon_glow at 1.5x-brightened wp color (the selected highlight).
+                Color gc = new(
+                    Mathf.Min(wp.Color.X * 1.5f, 1f),
+                    Mathf.Min(wp.Color.Y * 1.5f, 1f),
+                    Mathf.Min(wp.Color.Z * 1.5f, 1f),
+                    fgAlpha);
+                var grect = new Rect2(op - new Vector2(glowPx, glowPx) * 0.5f, new Vector2(glowPx, glowPx));
+                if (glow is not null)
+                    DrawTextureRect(glow, grect, false, gc);
+                else
+                    DrawRect(grect, gc); // fallback highlight if the glow sprite is missing
+            }
+
+            // QC HUD_Radar: the centred call-to-action prompt across the radar rect.
+            DrawTextCentered(new Vector2(center.X - size.X * 0.5f, center.Y - radius - FontSize - 4f),
+                size.X, "Click to select spawn location", new Color(1f, 1f, 1f, fgAlpha));
+        }
+
+        // Cache the live WorldToScreen parameters so HandleClick can invert the exact transform the user sees.
+        if (_maximized)
+        {
+            _clickCenter = center;
+            _clickSize = size;
+            _clickWorldToPixels = worldToPixels;
+            _clickYawRad = yawRad;
+            _clickFlipX = flipX;
+            _clickSelfOrigin = selfOrigin;
+            _clickValid = selfFinite && float.IsFinite(worldToPixels) && worldToPixels > 0f;
+        }
+        else
+        {
+            _clickValid = false;
+        }
+
         // Local player last, on top: a facing arrow (QC draws own player white at view_angles). QC draws it at the
         // player's WORLD origin through the same transform, so once the big-zoom recentres on the map center the
         // own arrow drifts off the panel center too. WorldToScreen(viewOrigin) reproduces that; with no
@@ -598,6 +731,70 @@ public partial class RadarPanel : HudPanel
             Teams.Pink   => new Color(1f, 0.0625f, 1f, 1f),       // NUM_TEAM_4 (0xFF0FFF)
             _            => new Color(1f, 1f, 1f, 1f),            // white (no team / FFA)
         };
+    }
+
+    /// <summary>Parse <c>hud_panel_radar_maximized_size</c> ("w h", each a SCREEN fraction) and clamp to the QC
+    /// 0.2..1 bound per axis (radar.qc teamradar_loadcvars). Defaults to 0.5 0.5 when unset / malformed.</summary>
+    private Vector2 ParseMaximizedSize()
+    {
+        string s = CvarStr("maximized_size");
+        float w = 0.5f, h = 0.5f;
+        if (!string.IsNullOrWhiteSpace(s))
+        {
+            string[] p = s.Split(' ', System.StringSplitOptions.RemoveEmptyEntries);
+            if (p.Length >= 2 &&
+                float.TryParse(p[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float pw) &&
+                float.TryParse(p[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float ph))
+            {
+                w = pw;
+                h = ph;
+            }
+        }
+        if (!float.IsFinite(w)) w = 0.5f;
+        if (!float.IsFinite(h)) h = 0.5f;
+        return new Vector2(Mathf.Clamp(w, 0.2f, 1f), Mathf.Clamp(h, 0.2f, 1f));
+    }
+
+    /// <summary>
+    /// Invert <c>WorldToScreen</c> for the clickable maximized radar — the C# port of QC <c>HUD_Radar_Mouse</c>'s
+    /// screen→world unproject used by the Onslaught spawn picker. Given a panel-local click point, undoes the
+    /// recentre, the px-per-unit scale, the v_flipped/screen-Y flips, and the radar rotation (inverse uses
+    /// <c>+yawRad</c>) to recover the world ground-plane (x, y); the world Z is taken from the radar centre origin
+    /// (the server's <c>NearestControlPoint2D</c> only uses XY). Returns <c>false</c> (and leaves
+    /// <paramref name="worldPoint"/> default) when the click falls outside the maximized rect or the cached
+    /// transform is not usable.
+    /// </summary>
+    public bool HandleClick(Vector2 panelLocalPos, out NVec3 worldPoint)
+    {
+        worldPoint = default;
+        if (!_maximized || !_clickValid)
+            return false;
+
+        // In-rect hit test: the maximized rect is centred on _clickCenter with _clickSize extent (QC ignores clicks
+        // outside the radar rectangle).
+        Vector2 half = _clickSize * 0.5f;
+        if (panelLocalPos.X < _clickCenter.X - half.X || panelLocalPos.X > _clickCenter.X + half.X ||
+            panelLocalPos.Y < _clickCenter.Y - half.Y || panelLocalPos.Y > _clickCenter.Y + half.Y)
+            return false;
+
+        // Undo (p - center) and the px-per-unit scale.
+        float sx = (panelLocalPos.X - _clickCenter.X) / _clickWorldToPixels;
+        float sy = (panelLocalPos.Y - _clickCenter.Y) / _clickWorldToPixels;
+        // Undo the v_flipped X mirror (±1, self-inverse) and the screen-Y negate to recover the rotated world delta.
+        float rrx = sx * _clickFlipX;
+        float rry = -sy;
+        // Inverse rotation: the forward rotated by -yawRad, so undo with +yawRad.
+        float c = Mathf.Cos(_clickYawRad), s = Mathf.Sin(_clickYawRad);
+        float ddx = rrx * c - rry * s;
+        float ddy = rrx * s + rry * c;
+        float wx = ddx + _clickSelfOrigin.X;
+        float wy = ddy + _clickSelfOrigin.Y;
+        if (!float.IsFinite(wx) || !float.IsFinite(wy))
+            return false;
+
+        // Server NearestControlPoint2D uses only XY; carry the radar-centre Z so the emitted point is well-formed.
+        worldPoint = new NVec3(wx, wy, _clickSelfOrigin.Z);
+        return true;
     }
 
     private static bool IsNearWhite(Color c) => c.R > 0.85f && c.G > 0.85f && c.B > 0.85f;

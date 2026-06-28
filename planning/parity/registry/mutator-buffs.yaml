@@ -1,7 +1,22 @@
 unit: mutator-buffs
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
+# Re-audited 2026-06-28 (OPUS waypoint/presentation wave re-verify; branch claude/parity-port-waves). TWO ROWS DRIFTED
+# (both IMPROVEMENTS, 0 regressions): (1) buffs.waypoint went missing->IMPLEMENTED+LIVE — BuffsMutator.SpawnBuffWaypoint
+# (BuffsMutator.cs:584) spawns the registered "Buff" radar/HUD sprite (Waypoints.cs:164 Add("Buff",...,Orange)) tinted
+# by BuffColor with a VisibleForPlayer hide-if-already-held filter; the filter is CONSUMED on the live per-peer send
+# path (ServerNet.WaypointVisible:1297). Pinged + re-tinted on respawn (BuffRespawn:559-561), killed on pickup
+# (BuffTouch:425), re-attached on respawn (ScheduleRespawn:480-482); the WaypointSprites.Spawn overload + Ping/Kill/
+# UpdateTeamRadar all exist and match the call. logic/values/timing/presentation missing->faithful, liveness na->live.
+# (2) buffs.item.spawnfunc per-buff SKIN is now applied — ConfigureBuffEntity:318 e.Skin = buff.Skin (relic.md3 ships
+# one skin per buff so the pickup renders in its own colour); StatusEffectDef.Skin populated for all 13 buffs
+# (StatusEffects.cs:240+). Residual presentation gap on that row is now only the world-item color/glowmod TINT (Color
+# is read only for the waypoint, never networked to the item) + dynamic light + bot pickup value — still presentation:
+# partial, but the skin sub-gap closed and the item now also carries a waypoint. Everything else re-confirmed against
+# the current port code (per-perk hooks, FilterItem, drop, medic regen, ammo clip, swapper, inferno) — unchanged.
+# (Prior 2026-06-27 OPUS re-verify note retained below.)
+# --- 2026-06-27 history ---
 # Re-audited 2026-06-27 (OPUS consolidated re-verify post Waves 16/17; branch claude/parity-port-waves). NO STATUS
 # DRIFT: every row's status/liveness re-confirmed by reading the CURRENT port code, not assumed. Liveness spot-checks
 # this pass (all PASS): map item_buff_* spawnfuncs LIVE (ItemSpawnFuncs.RegisterBuffSpawnFuncs:207 -> SpawnFuncs.Register
@@ -51,7 +66,7 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 34
   worst_gaps:
-    - "Spawned buff items render as the uncolored relic: per-buff skin/color/glowmod (buff.m_skin/m_color) is not applied (presentation partial on buffs.item.spawnfunc); no carrier buff_model glow, no buff_Effect trail, no WP_Buff waypoint."
+    - "Spawned buff items now render in the per-buff SKIN (relic.md3 skin per type) AND carry a WP_Buff radar/HUD waypoint; residual presentation gaps are the world-item color/glowmod tint (Color is networked only to the waypoint, not the item), the carrier buff_model glow, and the buff_Effect particle trail."
     - "Disability buff fire-rate slow is LIVE (WeaponRateFactor x1.5), but projectile-speed (WeaponSpeedFactor x0.7) and monster run/walk (MonsterMove x0.7) slows are still absent."
     - "No observer/disconnect cleanup (buffs.observer_cleanup) — moot only because the carrier buff_model glow it cleans up is itself unimplemented."
 features:
@@ -93,7 +108,8 @@ features:
     constants:
       - { name: "model MDL_BUFF", base: "models/relics/relic.md3 (buff)", port: "models/relics/relic.md3 (MdlBuff fallback; asset present)", match: true }
       - { name: "box ITEM_D_MINS..ITEM_L_MAXS", base: "'-30 -30 0'..'30 30 70'", port: "ItemBoxes.DefaultMins..LargeMaxs", match: true }
-      - { name: "per-buff skin/color (m_skin/m_color/glowmod)", base: "set per buff", port: "not set (uncolored relic)", match: false }
+      - { name: "per-buff skin (m_skin)", base: "set per buff (relic.md3 skin)", port: "e.Skin = buff.Skin (ConfigureBuffEntity:318)", match: true }
+      - { name: "per-buff color/glowmod (m_color)", base: "set per buff (item tint)", port: "not networked to the item (Color used only for the waypoint tint)", match: false }
       - { name: "bot_pickupbasevalue", base: "1000", port: "none", match: false }
     status:
       logic: faithful
@@ -105,12 +121,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Per-buff visual (skin/color/glowmod) is NOT applied to the spawned item: ConfigureBuffEntity sets the relic model + size but never assigns buff.m_skin / buff.m_color / glowmod, so the pickup renders as the uncolored relic regardless of which buff it carries (QC buff_Think colors it). Presentation partial."
-      - "Minor lifecycle omissions vs buff_Init: PFLAGS_FULLDYNAMIC dynamic light + buff_Customize light pulse, bot_pickupbasevalue 1000 (bots don't weight buff items), and the buff_Waypoint_Spawn build-finished waypoint (see buffs.waypoint) are not ported."
+      - "FIXED this wave: the per-buff SKIN is now applied — ConfigureBuffEntity:318 sets e.Skin = buff.Skin (relic.md3 ships one skin per buff type, so the pickup renders in its own colour). Residual presentation gap is the per-buff COLOR/glowmod world-item tint (StatusEffectDef.Color is read only to tint the waypoint via BuffColor, never networked onto the item itself)."
+      - "Minor lifecycle omissions vs buff_Init: PFLAGS_FULLDYNAMIC dynamic light + buff_Customize light pulse and bot_pickupbasevalue 1000 (bots don't weight buff items) are not ported. The buff_Waypoint_Spawn waypoint is now ported + live (see buffs.waypoint)."
     verification:
       - { kind: code, ref: "ItemSpawnFuncs.RegisterBuffSpawnFuncs registers item_buff_random + item_buff_<13 types> + _team1.._team4 + 11 Q3/WOP compat classnames -> BuffsMutator.SpawnMapBuff -> ConfigureBuffEntity (model/box/movetype/effects/activate-cooldown/touch/think). LIVE: GameInit->MapObjectsRegistry.RegisterAll->ItemSpawnFuncs.Register; SpawnFuncs.TrySpawn at GameWorld.cs:3582 dispatches the BSP lump classnames", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-25: this was the registry's #1 worst-gap (port_refs empty, all-missing, the primary liveness blocker). Map buff pickups are now fully implemented AND live — item_buff_* + per-team + Q3/QL/WOP compat classnames all spawn real buff items via SpawnMapBuff/ConfigureBuffEntity (buff_Init), routed through the live SpawnFuncs map-spawn dispatch. Compat classname set matches Base BUFF_SPAWNFUNC_Q3COMPAT. Residual: per-buff skin/color (presentation) + dynamic light + bot pickup value. logic/values/timing missing->faithful, presentation missing->partial, liveness na->live."
+    notes: "Map buff pickups fully implemented AND live — item_buff_* + per-team + Q3/QL/WOP compat classnames all spawn real buff items via SpawnMapBuff/ConfigureBuffEntity (buff_Init), routed through the live SpawnFuncs map-spawn dispatch. Compat classname set matches Base BUFF_SPAWNFUNC_Q3COMPAT. UPDATED 2026-06-28: the per-buff SKIN sub-gap is now closed (e.Skin = buff.Skin at :318) and the item carries a WP_Buff waypoint (buffs.waypoint). Residual presentation: per-buff color/glowmod item tint (not networked to the item) + dynamic light + bot pickup value — presentation stays partial."
 
   - id: buffs.item.auto_spawn
     name: "Auto-spawn buffs when none exist (g_buffs_spawn_count)"
@@ -778,24 +794,31 @@ features:
       - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Waypoint_Spawn"
       - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Waypoint_visible_for_player"
       - "common/mutators/mutator/buffs/cl_buffs.qc"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:SpawnBuffWaypoint"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuffColor"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointSprites.Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointSprite.VisibleForPlayer"
     constants:
-      - { name: "g_buffs_waypoint_distance", base: "1024", port: "none", match: false }
+      - { name: "g_buffs_waypoint_distance", base: "1024", port: "1024 (read; maxDistance on Spawn)", match: true }
+      - { name: "WP_Buff sprite", base: "RADARICON_Buff", port: 'Add("Buff",...,Orange) registered (Waypoints.cs:164), radarIcon 1', match: true }
+      - { name: "head offset", base: "'0 0 64'", port: "(0,0,64)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No WP_Buff radar/HUD waypoint on buff items (no buff_Waypoint_Spawn, no RADARICON_Buff, no build-finished timer); the colored buff icon never appears on radar/screen edge, and there is no per-viewer hide-if-already-held logic."
+      - "Per-viewer hide-if-already-held is modelled: SpawnBuffWaypoint sets wp.VisibleForPlayer = viewer => !Active(viewer, buff) (BuffsMutator.cs:607), consumed on the live per-peer send path (ServerNet.WaypointVisible:1297). The waypoint is killed on pickup (BuffTouch:425), re-attached + re-tinted on respawn (ScheduleRespawn:480-482), and pinged + colour-resynced on relocation (BuffRespawn:559-561)."
+      - "Residual: the waypoint colour is the per-buff Color triple via BuffColor, but the 'build-finished' arming is collapsed (the marker is spawned at activation, not on a separate WP build timer); minor vs Base's buff_Waypoint build-finished sequence."
     verification:
-      - { kind: code, ref: "no WP_Buff waypoint spawn in port", result: fail }
+      - { kind: code, ref: "SpawnBuffWaypoint:584-611 spawns the registered 'Buff' sprite (lifetime 0, maxDistance g_buffs_waypoint_distance 1024, reference=item, offset 0 0 64, colour BuffColor, radarIcon 1, hideable) with a VisibleForPlayer hide-if-held filter; consumed by ServerNet.WaypointVisible:1297 on the per-peer send. Killed/re-attached/pinged across pickup/respawn/relocate", result: pass }
     confidence: high
-    notes: "Unchanged."
+    notes: "FIXED this wave (2026-06-28): was the registry's standing presentation worst-gap — port_refs empty, all dimensions missing, liveness na. The WP_Buff radar/HUD waypoint is now implemented AND live: it spawns on the live map buff items (the 'Buff' sprite type is registered in WaypointSprites), tints to the buff colour, hides from players already holding that buff (VisibleForPlayer, honored on the live per-peer net send), and is correctly killed/re-attached/pinged across the pickup/respawn/relocate lifecycle. logic/values/timing/presentation missing->faithful, liveness na->live."
 
   - id: buffs.drop
     name: "Drop held buff (PlayerUseKey / g_buffs_drop)"
