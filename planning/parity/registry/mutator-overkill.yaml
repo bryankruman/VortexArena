@@ -6,10 +6,10 @@ summary:
   feature_count: 18
   worst_gaps:
     - "MUTATOR_ONADD precache_all_playermodels(ok_player) and the g_overkill_items IntrusiveList are never built (player model missing; the random pool uses a hard-coded name list instead)."
-    - "ok_weapons sub-mutator unblock-gate not modeled (OK weapons exist as direct registrations; no WEP_FLAG_MUTATORBLOCKED gating)."
-    - "oknex_charge GetPressedKeys velocity-charge accumulation is unported (charge off by default, so inert at shipped balance — registry coverage gap, see new row)."
+    - "ok_weapons sub-mutator unblock-gate not modeled (OK weapons carry WEP_FLAG_MUTATORBLOCKED on the weapon class itself, but no ok_weapons mutator clears it under Overkill / re-blocks outside — the gate is not enforced via this hook)."
     - "ok_lastwep per-slot capture is slot-0-only (Overkill loadouts occupy slot 0, low practical impact)."
     - "Client cl_overkill cvar_settemp(g_overkill,1) sync is still absent (cosmetic/client only; the server-side mod-name strings, SetModname, and pretty-string are now live)."
+    - "Minor: oknex_charge chargepool drain + wr_glow visual unported (charge-gated, inert at shipped balance; the velocity-charge accumulation itself is now ported faithfully)."
 features:
   - id: overkill.enable.predicate
     name: "Mutator enable predicate (g_overkill + guards)"
@@ -242,7 +242,7 @@ features:
     gaps:
       - "Minor: Base iterates all weapon slots and runs each slot's m_weapon.wr_think(...,2); the port runs the secondary WrThink for slot 0's current weapon only (the port's inventory carries a single active weapon on slot 0). Functionally equivalent for OK loadouts. The QC weaponLocked() is approximated by the reachable freeze subset (FrozenStat || STATUSEFFECT_Frozen), same stand-in as WeaponFireDriver/CampcheckMutator."
     verification:
-      - { kind: code, ref: "OnPlayerPreThink (OverkillMutator.cs:515) subscribed to MutatorHooks.PlayerPreThink (Hook cs:143). The chain is LIVE: PlayerPreThink.Call at GameWorld.cs:2226. Guards match Base: bails on Api null / game-stopped (caller) / non-player / dead, then requires ButtonAttack2 && !WeaponLocked && RoundHandler.RoundGateBlocks() (== round_handler_IsActive() && !IsRoundStarted()). Runs held weapon's secondary WrThink with ATCK2 set, then consumes player.ButtonAttack2 = false.", result: pass }
+      - { kind: code, ref: "OnPlayerPreThink (OverkillMutator.cs:515) subscribed to MutatorHooks.PlayerPreThink (Hook cs:143). The chain is LIVE: PlayerPreThink.Call at src/XonoticGodot.Server/GameWorld.cs:2261 (per-tick player frame; re-verified 2026-06-27, prior cite Gameplay/GameWorld.cs:2226 was stale path+line). Guards match Base: bails on Api null / non-player / dead, then requires ButtonAttack2 && !WeaponLocked && RoundHandler.RoundGateBlocks() (== round_handler_IsActive() && !IsRoundStarted()). Runs held weapon's secondary WrThink with ATCK2 set, then consumes player.ButtonAttack2 = false.", result: pass }
     confidence: high
     notes: "FIX (logic/timing missing->faithful, liveness na->live). Since the baseline the port grew OnPlayerPreThink and subscribes the now-live PlayerPreThink chain (GameWorld.cs:2226). During an active-but-not-started round, ATCK2 now runs the OK weapons' secondary blaster-jump and the button is consumed — matching Base. Only matters in round-based gametypes (CA/freezetag) run under Overkill."
   - id: overkill.filter.items_and_powerup_replace
@@ -418,7 +418,7 @@ features:
     gaps:
       - "Minor: the client-side cl_overkill cvar_settemp(g_overkill,1) sync (cl_overkill.qc REGISTER_MUTATOR ONADD) is still absent — there is no client mutator-registration seam to settemp g_overkill on the joining client. Server-side reporting (machine token, pretty string, modname) is now fully live; this is the only remaining hole and is client-cosmetic."
     verification:
-      - { kind: code, ref: "OverkillMutator overrides BuildMutatorsString → \":OK\" (cs:411), BuildMutatorsPrettyString → \", Overkill\" (cs:415), and SetModname → (\"Overkill\", true) (cs:420). ALL THREE chains are now LIVE: BuildMutatorsString called from GameWorld.cs:1068 (gated on sv_eventlog, gamelog mutators field); BuildMutatorsPrettyString called from GameWorld.cs:1079 (PutClientInServer 'modifications' serverinfo, leading ', ' stripped); SetModname called from GameWorld.cs:609 (worldspawn modname override, CBC_ORDER_ANY first-wins). No cl_overkill client sync.", result: pass }
+      - { kind: code, ref: "OverkillMutator overrides BuildMutatorsString → \":OK\" (cs:468), BuildMutatorsPrettyString → \", Overkill\" (cs:472), and SetModname → (\"Overkill\", true) (cs:477). ALL THREE chains are LIVE (re-verified 2026-06-27 — callers are in src/XonoticGodot.Server/GameWorld.cs, not Gameplay/; line numbers shifted): BuildMutatorsString at GameWorld.cs:1161 (gamelog mutators field); BuildMutatorsPrettyString at GameWorld.cs:1172 (+:1336 welcome message); SetModname at GameWorld.cs:638 (worldspawn modname override). No cl_overkill client sync.", result: pass }
     confidence: high
     notes: "FIX (partial→faithful/live across logic/values/presentation/liveness). Since the prior audit the SetModname hook chain was ADDED and wired (MutatorActivation.SetModname → GameWorld.cs:604-612), and the BuildMutatorsPrettyString chain GAINED a live consumer (GameWorld.cs:1073-1081 sets the 'modifications' serverinfo key per QC PutClientInServer). Overkill's modname now resolves to 'Overkill' and the pretty token ', Overkill' is now emitted. Only the client cl_overkill cvar_settemp sync remains absent (cosmetic). Cosmetic / reporting only; no gameplay impact."
   - id: overkill.okhmg.nade_selfdamage_scale
@@ -450,23 +450,26 @@ features:
     layer: [shared]
     base_refs:
       - "common/mutators/mutator/overkill/oknex.qc:REGISTER_MUTATOR(oknex_charge) MUTATOR_HOOKFUNCTION(oknex_charge, GetPressedKeys)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkNex.cs:WrThink (velocity-charge accumulation, cs:118-127)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkNex.cs:Configure (charge cvar reads, cs:87-91)"
     constants:
-      - { name: "g_balance_oknex_charge", base: "0 (off)", port: "Cvars.Charge default false", match: true }
-      - { name: "charge_velocity_rate", base: "g_balance_oknex_charge_velocity_rate", port: "none", match: false }
-      - { name: "charge_minspeed/maxspeed", base: "g_balance_oknex_charge_{min,max}speed", port: "none", match: false }
+      - { name: "g_balance_oknex_charge", base: "0 (off)", port: "Cvars.Charge default false (BalBool)", match: true }
+      - { name: "charge_velocity_rate", base: "g_balance_oknex_charge_velocity_rate (0)", port: "ChargeVelocityRate (Bal dflt 0)", match: true }
+      - { name: "charge_minspeed", base: "g_balance_oknex_charge_minspeed (400)", port: "ChargeMinSpeed (Bal dflt 400)", match: true }
+      - { name: "charge_maxspeed", base: "g_balance_oknex_charge_maxspeed (800)", port: "ChargeMaxSpeed (Bal dflt 800)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
-    intended_divergence: false
-    divergence_rationale: null
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base registers oknex_charge as a SEPARATE always-on mutator (oknex.qc:32, predicate true) whose GetPressedKeys hook adds velocity-charge while m_weapon == WEP_OVERKILL_NEX; the port folds the same per-tick accumulation inline into OkNex.WrThink (the fire driver only calls WrThink for the held weapon, so the per-tick condition is identical — the same stand-in Vortex.cs uses for vortex_charge). The chargepool / wr_glow remain unported but are charge-gated and inert at the shipped balance."
     gaps:
-      - "The velocity-based OK-Nex charge accumulation (oknex_charge GetPressedKeys: while holding OK-Nex above charge_minspeed, add up to charge_velocity_rate*f*frametime to oknex_charge, scaled by xy-speed between min/maxspeed) is NOT ported. OkNex.cs ports only the time-based charge regen (ChargeRate*FrameTime) and explicitly defers the velocity-charge path + chargepool (OkNex.cs:20-23 'don't port the charge path unless the cvar is set'). INERT at the shipped balance: g_balance_oknex_charge defaults 0, so neither path runs by default."
+      - "Minor: the chargepool drain and wr_glow visual on the charge path remain unported; both are charge-gated (g_balance_oknex_charge default 0) so inert at the shipped balance. The velocity-charge accumulation itself is now present and bit-faithful."
     verification:
-      - { kind: code, ref: "No oknex_charge / GetPressedKeys velocity-charge handler in src/ (grep). OkNex.cs documents the deferral (cs:20-23) and only implements the cvar-gated time-based regen (cs:88-89). Base registers oknex_charge as a separate always-on mutator (oknex.qc:32, predicate true) and accumulates charge via the GetPressedKeys hook.", result: fail }
+      - { kind: code, ref: "OkNex.WrThink now implements the velocity-charge accumulation (cs:118-127): gated on Charge && ChargeVelocityRate>0 && maxspeed>minspeed, then for xyspeed>minspeed adds ChargeVelocityRate * f * FrameTime where f=(xyspeed-minspeed)/(maxspeed-minspeed) clamped to maxspeed — matches the oknex_charge GetPressedKeys algorithm exactly. Cvars read with Base defaults (velocity_rate 0, minspeed 400, maxspeed 800) at Configure cs:89-91. WrThink is the live held-weapon think path.", result: pass }
     confidence: high
-    notes: "NEW-UNMAPPED row added 2026-06-27. This overkill-dir mutator (oknex_charge) had no registry coverage. Deferred-by-design because OK-Nex charge is off by default; only matters on servers/balances that set g_balance_oknex_charge 1. The OK-Nex weapon's other charge mechanics belong to the weapon unit; only the velocity-accumulation hook is in scope here."
+    notes: "RE-AUDIT FIX (missing→faithful/live across logic/values/timing, liveness na→live). Since the 2026-06-27 NEW-UNMAPPED entry the port GAINED the velocity-charge accumulation inline in OkNex.WrThink (the earlier deferral comment is gone). Folded into the weapon's think instead of Base's separate always-on oknex_charge mutator (intended divergence, same vehicle as Vortex.cs). Inert at shipped balance (charge default off, matching Base); only the chargepool/wr_glow remain as a minor charge-gated gap."

@@ -6,25 +6,40 @@ verification follow-up. Read [EXECUTION-STRATEGY.md](EXECUTION-STRATEGY.md) for 
 
 ## Done
 
-Waves **1–2 + fix-up · 5 · 6a–6e · 7 · 8a–8e · 9–11 · 12a–12d · 13 · 14a–14b · 15a–15c** are complete and
-committed, each re-verified with 0 regressions. See `git log --grep parity`.
+Waves **1–2 + fix-up · 5 · 6a–6e · 7 · 8a–8e · 9–11 · 12a–12d · 13 · 14a–14b · 15a–15c · 16 · 17** are
+complete and committed, each re-verified with 0 regressions. See `git log --grep parity`.
 
-## Current state (2026-06-27)
+- **Wave 16 — state producers** (66 units, 244 edits) → `b3a9c06`; build green, 2854 tests / 0 failed.
+- **Wave 17 — presentation consumers** (46 units, 134 edits) → `2f0bfdb`; build green, 2854 tests / 0 failed.
+- **Consolidated re-verify** (112 units, 387 dimensions closed, 0 regressions) → `44252f3` + this pass; see
+  [DRIFT-2026-06-27-waves16-17.md](DRIFT-2026-06-27-waves16-17.md).
 
-`PARITY-GAPS.md`: **524 features carry an open gap-dimension**, but the makeup is now mostly *fidelity polish*,
-not absent features:
+## Current state (2026-06-27, post Waves 16/17)
 
-| worst dim | count | meaning |
-|---|---:|---|
-| presentation:partial | 123 | works, not pixel-faithful |
-| logic:partial | 116 | mostly-correct, edge cases unported |
-| logic:**missing** | 78 | genuinely absent behaviour |
-| presentation:**missing** | 65 | absent visual |
-| liveness:partial/dead | 68 | coded but partly/not on the live path |
+`PARITY-GAPS.md`: **465 features carry an open gap-dimension** (down from 524). The makeup is now overwhelmingly
+*fidelity polish* + deferred *feature builds*, not absent core behaviour:
+
+| worst dim | before → now | meaning |
+|---|---|---|
+| presentation:partial | 123 → 113 | works, not pixel-faithful |
+| logic:partial | 116 → 110 | mostly-correct, edge cases unported |
+| logic:**missing** | 78 → **54** | genuinely absent behaviour |
+| presentation:**missing** | 65 → **43** | absent visual |
+| liveness:partial/dead | 68 → 69 | coded but partly/not on the live path |
 | values/timing/audio | ~38 | constants / framerates / un-fired cues |
 
-`_remaining-plan.json` scopes the work as **112 units / 507 open gaps** across 5 streams:
-`gameplay 51·209 · presentation 46·222 · server-admin 9·26 · foundation 4·29 · bot 2·21`.
+## What remains — proposed Wave 18 (feature builds) + verification
+
+The surgical-edit gaps are largely closed. What's left clusters into two buckets that are **not** one-agent-per-
+file surgical work:
+
+1. **Wave 18 — feature builds** (the 357 `unportable` items): cross-cutting subsystems each needing their own
+   spec + Net/render plumbing — **waypoint-sprite networking + HUD/radar render** (Assault/CTF/ONS objective
+   markers), **wepent crosshair-ring + LAST_PICKUP networking** (remote-client weapon/pickup HUD), bot scripting
+   VM (`bot_cmd`), in-game waypoint editor, jetpack point-to-point navigation, ballistic `tracetoss` aim,
+   warpzone see-through render (SubViewport), hook rope-line, porto trajectory preview, vehicle/turret world
+   models. Best run as a small number of *dedicated* feature tasks, not a fan-out.
+2. **Verification** — the 33 [NEEDS-INGAME-CHECK.md](NEEDS-INGAME-CHECK.md) items need a live run (`/verify`).
 
 ## The plan — 2 porting waves (dependency-minimal)
 

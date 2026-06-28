@@ -1,14 +1,14 @@
 unit: monster-mage
 category: monster
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 11
   worst_gaps:
-    - "CSQC spike projectile model (PROJECTILE_MAGE_SPIKE) still not wired — the spike has no client-visible model/trail in flight (SpawnProjectile sets no projectile visual; detonation particle EXPLOSION_SMALL IS now emitted)."
-    - "Healed-ally waypoint-sprite health update (WaypointSprite_UpdateHealth, mage.qc:280-281) not invoked in the port."
+    - "In-flight CSQC spike is now WIRED but MISCLASSIFIED (post-baseline regression): spike.NetName=\"mage_spike\" trips the \"spike\"->Crylink branch in ProjectileCatalog.Classify BEFORE the \"mage\"->MageSpike branch, so it draws crylink purple shards instead of the violet vore-spike trail. (Detonation EXPLOSION_SMALL particle + grenade_impact sound are correct.)"
     - "RandomRelocate / mr_think need_help scans remain behavioral approximations of the QC builtins (not bit-exact)."
-    - "MENUQC describe() bestiary prose is now ported verbatim in Mage.Describe() but has NO caller/UI surface (dead — no bestiary tooltip exists in the port)."
+    - "anim.frames timing: animfixfps fps-normalization ('<start> 1 <fps>' rate component) not modeled — only the start frame index is stamped (timing: unknown)."
+    - "MENUQC describe() bestiary prose is ported verbatim in Mage.Describe() but has NO caller/UI surface (dead — no bestiary tooltip exists in the port)."
 features:
   - id: monster-mage.spawn.setup
     name: "Spawn + mr_setup (health, speeds, loot, size, attackfunc)"
@@ -112,13 +112,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CSQC spike projectile model (PROJECTILE_MAGE_SPIKE, mage.qc:238 CSQCProjectile) still not wired — SpawnProjectile sets no projectile visual/ProjectileType, so the spike has no client-visible model/trail in flight (cf. Spider.cs which DOES set PROJECTILE_ELECTRO)."
+      - "In-flight spike CSQC visual is now WIRED but MISCLASSIFIED (regression introduced post-baseline). FireSpike (Mage.cs:242) pins spike.NetName=\"mage_spike\"; the spike networks as a Projectile (ServerNet Classify: FL_ITEM+owner+FLYMISSILE) so it DOES reach ProjectileRenderer.OnSpawn -> ProjectileCatalog.Classify. But the combined key string contains the substring \"spike\" (from \"mage_spike\"), and Classify hits `Has(s,\"spike\",\"crylink\")` (ProjectileCatalog.cs:272) BEFORE the `Has(s,\"mage\")` MageSpike branch (cs:299) -> the spike renders as a CRYLINK bolt (purple shards) instead of PROJECTILE_MAGE_SPIKE (TR_VORESPIKE violet trail). Ironically the pre-edit default NetName \"mage\" would have classified correctly; the \"mage_spike\" override broke it. Fix: rename to a token without \"spike\" (e.g. just \"mage\") OR move the `mage` check above the `spike` check in Classify."
     verification:
-      - { kind: code, ref: "FireSpike:183 -> SpawnProjectile (think NextThink=Now) -> HomeProjectile per-frame; Explode (MonsterAI.cs:1497) RadiusDamage + onExplode + clears ActiveSpike", result: pass }
-      - { kind: code, ref: "onExplode (Mage.cs:190-194) plays weapons/grenade_impact.wav AND EffectEmitter.Emit(EXPLOSION_SMALL) -> EffectsList.cs:29 registered effect explosion_small; detonation particle is now LIVE-emitted (was missing at baseline)", result: pass }
-      - { kind: code, ref: "SpawnProjectile (MonsterAI.cs:1591-1676) sets ClassName=monster_projectile, no CSQCProjectile/ProjectileType -> no in-flight model; FireSpike sets no model either (re-verified 2026-06-25)", result: fail }
+      - { kind: code, ref: "FireSpike:188 -> SpawnProjectile (think NextThink=Now) -> HomeProjectile per-frame; Explode (MonsterAI.cs:1775-1790) RadiusDamage + onExplode + clears ActiveSpike", result: pass }
+      - { kind: code, ref: "onExplode (Mage.cs:215-219) plays weapons/grenade_impact.wav AND EffectEmitter.Emit(EXPLOSION_SMALL) -> EffectsList.cs:29 registered effect explosion_small; detonation particle is LIVE-emitted", result: pass }
+      - { kind: code, ref: "spike.NetName=\"mage_spike\" (Mage.cs:242); ServerNet Classify (ServerNet.cs:2595) -> Projectile -> ProjectileRenderer.OnSpawn (ClientWorld.cs:455); ProjectileCatalog.Classify (cs:254) builds `ClassName+Model+NetName` containing \"spike\" -> cs:272 Crylink branch wins over cs:299 MageSpike branch", result: fail }
     confidence: high
-    notes: "FIX since baseline: the EXPLOSION_SMALL detonation particle (mage.qc:133 Send_Effect) is now emitted via EffectEmitter (EffectsList registers EXPLOSION_SMALL->explosion_small; Sink is the host networking sink). presentation upgraded missing->partial: detonation particle done, but the in-flight CSQC spike MODEL remains unwired. Inline constants match Base; spike muzzle re-derives +30 up/-14 right via AngleVectors; FIRE sound electro_fire, IMPACT grenade_impact. Homing math faithful; one-at-a-time via st.ActiveSpike."
+    notes: "DRIFT since the 2026-06-25 baseline: the CSQC spike is no longer un-wired (presentation stays partial: the detonation EXPLOSION_SMALL particle + grenade_impact sound are correct, AND the in-flight projectile now reaches the renderer) but it draws the WRONG type. The post-baseline `spike.NetName=\"mage_spike\"` edit (meant to disambiguate the visual) collides with the \"spike\"->Crylink branch in ProjectileCatalog.Classify, so the spike renders as crylink purple shards, not the violet vore-spike (PROJECTILE_MAGE_SPIKE) trail. Inline constants match Base; spike muzzle re-derives +30 up/-14 right via AngleVectors; FIRE sound electro_fire, IMPACT grenade_impact. Homing math faithful; one-at-a-time via st.ActiveSpike."
 
   - id: monster-mage.attack.push
     name: "Explosive close-range push (AoE shove)"
@@ -233,19 +233,19 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Healed-ally waypoint-sprite health update (WaypointSprite_UpdateHealth, mage.qc:280-281) not invoked in the port — no WaypointSprite_UpdateHealth/UpdateHealth call anywhere in Gameplay/Monsters."
+    gaps: []
     verification:
-      - { kind: code, ref: "HealPulse:316 skin switch (player branch HEALING/AMMO_REGEN/ARMOR_REPAIR) + non-client branch GiveResourceWithLimit(Health,20,MaxHealth) vs M_Mage_Defend_Heal", result: pass }
-      - { kind: code, ref: "EffectEmitter.Emit(HEALING/AMMO_REGEN/ARMOR_REPAIR) per skin (Mage.cs:339/345/351/358) + HEALING for ally monsters (363) -> EffectsList.cs:177-179 registers all three; matches mage.qc Send_Effect — now LIVE-emitted (was missing at baseline)", result: pass }
-      - { kind: code, ref: "HealCheck:379 monster branch `Health < MaxHealth` (no self special-case) == M_Mage_Defend_Heal_Check:103-104 -> self-heals on EVERY skin toward 400", result: pass }
+      - { kind: code, ref: "HealPulse:350 skin switch (player branch HEALING/AMMO_REGEN/ARMOR_REPAIR) + non-client branch GiveResourceWithLimit(Health,20,MaxHealth) vs M_Mage_Defend_Heal", result: pass }
+      - { kind: code, ref: "EffectEmitter.Emit(HEALING/AMMO_REGEN/ARMOR_REPAIR) per skin (Mage.cs:371/379/384 + HEALING for ally monsters :397) -> EffectsList.cs:193-195 registers all three; matches mage.qc Send_Effect — LIVE-emitted", result: pass }
+      - { kind: code, ref: "Healed-ally waypoint-sprite update NOW wired: Mage.cs:404-409 guards (it.spawnflags & INVINCIBLE)==0 then MonsterAI.UpdateHealthbar(allyState, it.Health) (MonsterAI.cs:470 normalizes health/MaxHealth, no-ops when Sprite null) == mage.qc:280-281 WaypointSprite_UpdateHealth", result: pass }
+      - { kind: code, ref: "HealCheck:425 monster branch `Health < MaxHealth` (no self special-case) == M_Mage_Defend_Heal_Check:103-104 -> self-heals on EVERY skin toward 400", result: pass }
     confidence: high
-    notes: "FIX since baseline: the per-skin EFFECT_HEALING / AMMO_REGEN / ARMOR_REPAIR particles are now emitted via EffectEmitter -> presentation missing->partial (only the healed-ally waypoint-sprite health update remains). self-heal eligibility correct (monster branch, all skins). Player skin 0/1/2 branches and per-resource caps match Base. No invented heal sound (audio faithful)."
+    notes: "FIX since the 2026-06-25 baseline: the healed-ally waypoint-sprite health update (mage.qc:280-281) is NOW invoked — HealPulse calls MonsterAI.UpdateHealthbar for ally monsters behind the INVINCIBLE guard, closing the last presentation gap (partial->faithful). Per-skin EFFECT_HEALING/AMMO_REGEN/ARMOR_REPAIR particles emit via EffectEmitter. self-heal eligibility correct (monster branch, all skins). Player skin 0/1/2 branches + per-resource caps match Base. No invented heal sound (audio faithful)."
 
   - id: monster-mage.think.decide
     name: "Per-think heal/shield decision (mr_think)"

@@ -1,12 +1,12 @@
 unit: fx-notifications
 category: notification
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 16
   worst_gaps:
     - "FIXED this audit (Wave 12b, 2026-06-26): ServerNet.NotificationReaches now implements the QC spectator-follow clause `IS_SPEC(to) && to.enemy == other` for ALL four cases (One, AllExcept, Team, TeamExcept) via `p.IsObserver && p.Spectatee == d.Target`, including the TeamExcept `to.enemy != other` guard. Spectators following a player now receive that player's personal NOTIF_ONE/TEAM notifications. Residual: NOTIF_TEAM/TEAM_EXCEPT still require `d.Target is Player` (a null/non-Player target reaches nobody), a benign edge case."
-    - "Token expansion runs SERVER-side and reads the SERVER's notification_show_location / _show_sprees* cvars, so all clients get the server's preference (no per-client control) — the only residual is per-client preference, not a default-correctness defect. FIXED this audit: the three CvarBool fallback-polarity defects (location now defaults false, both *_specialonly now default true) and item_wepammo (now returns the real ammo type cells/rockets/shells/bullets/fuel). Race tokens (f*race_time/race_diff/race_col) and key-bind tokens (pass_key/nade_key/join_key) and the s3#s2/#s2 hash-replace tokens are still unimplemented in ResolveOne (drop to '')."
+    - "Token expansion runs SERVER-side and reads the SERVER's notification_show_location / _show_sprees* cvars, so all clients get the server's preference (no per-client control) — the only residual is per-client preference, not a default-correctness defect. FIXED (Wave 15+17, re-audit 2026-06-27): EVERY NOTIF_ARGUMENT_LIST token now resolves — race tokens (f*race_time/race_diff/race_col, landed Wave 15 322fc26 but missed by the prior audit), key-bind tokens (pass_key/nade_key/join_key via a server sentinel + client SubstituteKeyBinds->BindTable.CommandKey, Wave 17 2f0bfdb), and the s3#s2/#s2 hash-replace tokens are all implemented; CvarBool default polarities correct and item_wepammo returns the real ammo type. fx-notifications.args.tokens presentation -> faithful."
     - "Gentle-mode is LIVE but server-global: GameWorld mirrors sv_gentle onto NotificationSystem.GentleMode each tick, so per-CLIENT cl_gentle preference is lost (a deliberate consequence of server-side text formatting). Functionally correct for sv_gentle servers."
 features:
   - id: fx-notifications.registry.types
@@ -136,36 +136,37 @@ features:
       - "common/notifications/all.qh:486 (KILL_SPREE_LIST)"
       - "common/notifications/all.qh:294 (autocvar defaults: show_location=false, show_sprees=true, show_sprees_info=3)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationTokens.cs (ResolveOne case table; ShowLocation/ShowSprees/CvarBool)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationTokens.cs (ResolveOne case table; race/key-bind/hash tokens; ShowLocation/ShowSprees/CvarBool; KeyBindSentinel)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs (FormatTokens/Sprintf)"
+      - "game/hud/HudNotifications.cs:177 (SubstituteKeyBinds), :203 (ResolveKeyBind -> BindTable.CommandKey) — client-side key-bind sentinel resolution"
     constants:
       - { name: "KILL_SPREE_LIST milestones", base: "3/5/10/15/20/25/30", port: "3/5/10/15/20/25/30 (SpreeList)", match: true }
-      - { name: "notification_show_sprees", base: "1 (default true)", port: "CvarBool fallback true", match: true }
-      - { name: "notification_show_sprees_info", base: "3", port: "3 (CvarInt fallback)", match: true }
-      - { name: "notification_show_location default", base: "0 (false)", port: "CvarBool(..., false) (NotificationTokens.cs:104)", match: true }
-      - { name: "notification_show_sprees_info_specialonly default", base: "1 (true)", port: "CvarBool(..., true) (NotificationTokens.cs:180)", match: true }
-      - { name: "notification_show_sprees_center_specialonly default", base: "1 (true)", port: "CvarBool(..., true) (NotificationTokens.cs:156)", match: true }
-      - { name: "item_wepammo ammo name", base: "ammo_type.m_name (cells/rockets/shells/bullets/fuel)", port: "AmmoType -> shells/bullets/rockets/cells/fuel (NotificationTokens.WeaponAmmoName:228)", match: true }
+      - { name: "notification_show_sprees", base: "1 (default true)", port: "CvarBool fallback true (NotificationTokens.cs:146)", match: true }
+      - { name: "notification_show_sprees_info", base: "3", port: "3 (CvarInt fallback :148)", match: true }
+      - { name: "notification_show_location default", base: "0 (false)", port: "CvarBool(..., false) (NotificationTokens.cs:145)", match: true }
+      - { name: "notification_show_sprees_info_specialonly default", base: "1 (true)", port: "CvarBool(..., true) (NotificationTokens.cs:239)", match: true }
+      - { name: "notification_show_sprees_center_specialonly default", base: "1 (true)", port: "CvarBool(..., true) (NotificationTokens.cs:215)", match: true }
+      - { name: "item_wepammo ammo name", base: "ammo_type.m_name (cells/rockets/shells/bullets/fuel)", port: "AmmoType -> shells/bullets/rockets/cells/fuel (NotificationTokens.WeaponAmmoName:287)", match: true }
+      - { name: "race time/diff/col tokens", base: "TIME_ENCODED_TOSTRING(n,true) / signed delta / ^F1|^F2", port: "RaceTime->GameScores.TimeEncodedToString(compact), RaceDiff, race_col (NotificationTokens.cs:99-106)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Tokens are resolved SERVER-side reading the SERVER's notification_show_location / _show_sprees* cvars; in Base these are CSQC-side per-client, so the port loses per-client control of location/spree display (direct consequence of server-side formatting — see fx-notifications.net.protocol intended divergence). This is now the ONLY residual on the cvar-driven tokens (the default polarities are fixed)."
-      - "race tokens (f1race_time/f2race_time/f3race_time, race_col, race_diff) referenced by the RACE_* notifs in NotificationsList.cs are NOT implemented in ResolveOne (drop to '' at :99) — race split/record lines lose their time/diff/color text."
-      - "key-bind tokens (pass_key/nade_key/join_key — getcommandkey lookups) and the s3#s2/#s2 HASH_REPLACE tokens are not implemented in ResolveOne (drop to ''); used by CTF flag-pass / nade / spectator-join hints and a few hash-replace info lines."
+      - "Tokens are resolved SERVER-side reading the SERVER's notification_show_location / _show_sprees* cvars; in Base these are CSQC-side per-client, so the port loses per-client control of location/spree display (direct consequence of server-side formatting — see fx-notifications.net.protocol intended divergence). This is the ONLY residual on the token path — every QC NOTIF_ARGUMENT_LIST token is now resolved (race/key-bind/hash included)."
     verification:
-      - { kind: code, ref: "NotificationTokens.ResolveOne case table vs NOTIF_ARGUMENT_LIST: s1-4/s*loc/f*/spree/frag/location/ordinal/time/item_wepname/item_buffname/item_wepammo/death_team formatting present and matches; race_col/f*race_time/race_diff/pass_key/nade_key/join_key/s3#s2/#s2 NOT in the switch (drop to '' at :99)", result: partial }
-      - { kind: code, ref: "FIX: CvarBool defaults now match Base — show_location fallback false (Base 0, :104), both specialonly fallback true (Base 1, :156/:180); item_wepammo now returns the real ammo type via AmmoType switch (:228), no longer the literal stub", result: pass }
-      - { kind: code, ref: "Base autocvar defaults (all.qh:294/299/317): show_location=false, both _specialonly=true — port now equal", result: pass }
+      - { kind: code, ref: "NotificationTokens.ResolveOne case table vs NOTIF_ARGUMENT_LIST: s1-4/s*loc/f*/spree/frag/location/ordinal/time/item_wepname/item_buffname/item_wepammo/death_team ALL present; race tokens f1/f2/f3race_time (:99-101 -> GameScores.TimeEncodedToString), race_col (:104), race_diff (:106 -> RaceDiff) now resolved; s3#s2/#s2 hash-replace (:125-126) resolved; pass_key/nade_key/join_key (:132-134) emit a recoverable sentinel", result: pass }
+      - { kind: code, ref: "key-bind sentinel round-trips: NotifTokens.KeyBindSentinel (server, ARG_CS) -> wire WriteString -> HudNotifications.SubstituteKeyBinds (:177) -> ResolveKeyBind (:203) -> BindTable.CommandKey('drop flag','+use')/('throw nade','weapon_drop')/('jump','+jump') (verified BindTable.CommandKey exists, src/XonoticGodot.Engine/Console/BindTable.cs:64)", result: pass }
+      - { kind: code, ref: "CvarBool defaults match Base — show_location fallback false (Base 0, :145), both specialonly fallback true (Base 1, :215/:239); item_wepammo returns the real ammo type via AmmoType switch (:287)", result: pass }
+      - { kind: code, ref: "RaceTime delegates to the shared, verified Scoring.GameScores.TimeEncodedToString (compact) — same clockedtime_tostring port used by CommandReplies; Common project builds clean", result: pass }
       - { kind: test, ref: "NotificationPolishTests (token formatting), HeadshotTests", result: pass }
     confidence: high
-    notes: "FIX (this audit): NotificationTokens.cs corrected the three CvarBool default polarities (location->false, both specialonly->true) and gave WeaponAmmoName a real AmmoType->name switch. values now faithful. presentation stays partial only for the unimplemented race/key-bind/hash-replace tokens. CSQC-only tokens like frag_ping/frag_stats work because the server passes ping/health/armor as floats."
+    notes: "FIX (re-audit, Wave 15+17): the prior 2026-06-25 audit's 'race tokens / key-bind tokens / hash-replace NOT implemented (drop to '')' gaps were INACCURATE — the race tokens (f1/f2/f3race_time, race_col, race_diff) already landed in Wave 15 (322fc26) and the prior audit missed them; Wave 17 (2f0bfdb) then added the pass/nade/join key-bind sentinel tokens + the client-side SubstituteKeyBinds resolver and the s3#s2/#s2 hash-replace tokens. Every NOTIF_ARGUMENT_LIST token now resolves; presentation -> faithful. Sole residual is the intended per-client-cvar divergence (server-side formatting). Verified by reading the CURRENT NotificationTokens.cs (no '' drops for race/key/hash) + confirming the client key-bind path + a clean Common build."
 
   - id: fx-notifications.multi.fanout
     name: "MSG_MULTI fan-out to annce/info/center sub-notifications"

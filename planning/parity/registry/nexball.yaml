@@ -6,8 +6,8 @@ summary:
   feature_count: 21
   worst_gaps:
     - "Ball-launcher weapon (BallStealer / WEP_NEXBALL) is FULLY PORTED and LIVE — a basketball carrier can charge-and-shoot the ball (power meter, primary launch), safe-pass to a locked teammate (homing arc), and tackle/steal (secondary projectile). The safe-pass CROSSHAIR LOCK is now also ported (CarryFrame -> UpdateSafePassLock runs crosshair_trace each frame and sets ball.enemy/ball.wait), so the secondary safe-pass branch is now reachable on the live path. The whole weapon + carry chain is faithful & live."
-    - "STAT(OBJECTIVE_STATUS) NB_CARRYING bit is still not networked (no nexball case in any GametypeStatusBlock; no NB_CARRYING anywhere in the port); the HUD-only NB_METERSTART meter byte is not networked either."
-    - "No HUD mod-icon: no carrying indicator, no charge-meter progress bar, no nexball event-chase camera; accuracy/item-stats scoreboard panels not hidden for nexball. NB_METERSTART also not networked so a drawer would have no data."
+    - "The HUD CARRYING mod-icon IS now ported & live: the ball carrier's net id is networked via GametypeStatusBlock.Kind.NexBall (server ServerNet:1939, client NetGame:4473) and ModIconsPanel.DrawNexBall draws the blinking nexball_carrying icon. (Prior 'no nexball case in any GametypeStatusBlock / no carrying indicator' notes are STALE.)"
+    - "STILL missing on the HUD: the power-meter charge BAR (STAT(NB_METERSTART) is not networked — only the carrier net id rides the wire), the nexball EVENTCHASE (no cl_eventchase_nexball; FirstPersonView only does death/frozen chase), and hiding the accuracy/item-stats scoreboard panels for nexball."
     - "Minor presentation: ball scale 1.3 + glow_trail render still client-deferred (SpawnForGametype never sets e.Scale); carrier glow + viewmodel scale (0.25) + EF_FLAME lock indicator client-deferred (QC ball_customize is CSQC). NOTE: the WP_NbBall + WP_NbGoal waypoint sprites ARE now ported & live (CollectWaypoints) — earlier 'client-deferred' notes were stale."
     - "SpectateCopy hook (copy NB_METERSTART to spectator) absent; ForbidDropCurrentWeapon's WEP_MORTAR special-case folded/approximated into ForbidThrow; LogNB :nexball: eventlog lines + the SendWaypoint radar-bit hook not ported (minor)."
 features:
@@ -474,27 +474,33 @@ features:
     base_refs:
       - "common/gametypes/gametype/nexball/cl_nexball.qc:HUD_Mod_NexBall"
       - "common/gametypes/gametype/nexball/cl_nexball.qc:WantEventchase / DrawScoreboardAccuracy / DrawScoreboardItemStats"
-    port_refs: []
+    port_refs:
+      - "game/hud/ModIconsPanel.cs:DrawNexBall + NexBallCarrying (the blinking nexball_carrying carry icon + expand transition)"
+      - "src/XonoticGodot.Net/GametypeStatusBlock.cs:Kind.NexBall (Capture writes the carrier net id; Deserialize reads it)"
+      - "game/net/ServerNet.cs:1939 (GametypeStatusBlock.Capture per snapshot)"
+      - "game/net/NetGame.cs:4473 (decode Kind.NexBall -> panel.NexBallCarrying vs LocalNetId)"
     constants:
-      - { name: "cl_eventchase_nexball", base: "1", port: "none", match: false }
-      - { name: "hud_progressbar_nexball_color", base: "(skin)", port: "none", match: false }
+      - { name: "cl_eventchase_nexball", base: "1", port: "none (no nexball eventchase; FirstPersonView only does death/frozen chase)", match: false }
+      - { name: "hud_progressbar_nexball_color", base: "(skin)", port: "none (no charge-meter bar drawn)", match: false }
+      - { name: "nexball_carrying icon", base: "blink(0.85/0.15/5) + expand transition on carry edge", port: "DrawNexBall: same blink + drawpic-expand, nexball_carrying skin art", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "ModIconsPanel has no nexball drawer: no 'carrying' icon and no charge-meter progress bar (grep finds no nexball case in ModIcons / any GametypeStatusBlock)."
-      - "No event-chase (third-person) cam when not carrying; accuracy/item-stats scoreboard panels not hidden for nexball."
-      - "STAT(OBJECTIVE_STATUS) NB_CARRYING + STAT(NB_METERSTART) are not networked (NB_CARRYING does not exist anywhere in the port), so even a drawer would have no data."
+      - "Power-meter charge bar NOT drawn: STAT(NB_METERSTART) is not networked (GametypeStatusBlock NexBall case writes ONLY the carrier net id), so HUD_Mod_NexBall's triangle-wave progress bar over nb_pb_period has no data and no drawer."
+      - "No nexball event-chase (cl_eventchase_nexball — third-person when NOT carrying); FirstPersonView.WantEventChase only handles cl_eventchase_death + Freeze-Tag cl_eventchase_frozen."
+      - "Accuracy / item-stats scoreboard panels not hidden for nexball (QC DrawScoreboardAccuracy/DrawScoreboardItemStats return false)."
     verification:
-      - { kind: code-read, ref: "no NexBall case in the HUD ModIconsPanel; no nexball case in any GametypeStatusBlock; grep finds no nexball HUD/modicon code and no NB_CARRYING/NbCarrying symbol", result: fail }
+      - { kind: code-read, ref: "ModIconsPanel.DrawNexBall (dispatched at :225) draws the blinking nexball_carrying icon; GametypeStatusBlock.Kind.NexBall (Capture :140 writes nb.BallEntity.GtCarrier net id, Deserialize :367); ServerNet.cs:1939 Capture per snapshot; NetGame.cs:4473 sets panel.NexBallCarrying = (CarrierNetId == LocalNetId). Carry indicator wired end-to-end.", result: pass }
+      - { kind: code-read, ref: "no charge-meter / progressbar_nexball / NbMeterStart in ModIconsPanel; NB_METERSTART not in any wire block; no cl_eventchase_nexball anywhere; no nexball scoreboard-panel hide", result: fail }
     confidence: high
-    notes: "STILL OPEN. The weapon/power-meter logic now exists server-side, but neither NB_CARRYING nor NB_METERSTART is networked and there is no HUD drawer, so the carrying indicator + charge bar + eventchase remain entirely missing."
+    notes: "DRIFT (the carry INDICATOR is now ported & live — prior audit's 'no drawer / not networked / NB_CARRYING absent' is STALE). The carrier net id IS networked via GametypeStatusBlock.Kind.NexBall (server ServerNet:1939, client NetGame:4473) and ModIconsPanel.DrawNexBall draws the blinking nexball_carrying icon with the expand transition. STILL OPEN: the power-meter charge BAR (NB_METERSTART unnetworked), the nexball EVENTCHASE, and hiding the accuracy/item-stats scoreboard panels."
 
   - id: nexball.goal.sentinel_encoding
     name: "Goal fault/out sentinel encoding + ball_redgoal/bluegoal swap"

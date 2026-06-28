@@ -1,23 +1,28 @@
 unit: turret-flac
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
-# Re-audited 2026-06-25 (drift check). MAJOR DRIFT: Wave 8e (commit 412ca19, 2026-06-26) landed the FLAC presentation +
-# headshake work that the 2026-06-25 baseline recorded as missing/dead. THREE FIXES this pass:
-#   (1) damage.headshake: FlacTurret.Spawn now passes headShake:true (FlacTurret.cs:79) -> logic missing->faithful, liveness dead->live.
-#   (2) fire.flak_shell presentation missing->partial: BLASTER_MUZZLEFLASH now emitted (FlacTurret.cs:149), shell stamped
-#       NetName="hagar" so the client classifier resolves the HAGAR trail (FlacTurret.cs:114), and the 4-frame head cycle
-#       runs on turret.Frame (FlacTurret.cs:154). Server-emit side faithful; client-side trail RENDER is in the Godot
-#       project (outside qcsrc parity scope), so partial not faithful.
-#   (3) weapon.player_form presentation missing->partial: BLASTER_MUZZLEFLASH emitted (FlacTurret.cs:273). Still DEAD ([Weapon] off).
-# identity.spawn presentation stays missing (head model models/turrets/flac.md3 + bone still not set; only the frame cycle landed).
+last_audited: "2026-06-27"
+# Re-audited 2026-06-27 (Waves 16-17 consolidated re-verify). Re-read every port file. The Wave-8e presentation/headshake
+# work (412ca19) all still stands and re-verified clean. TWO genuine drifts closed this pass vs the 2026-06-25 baseline:
+#   (1) identity.spawn: HeadModel = "models/turrets/flac.md3" is now SET (FlacTurret.cs:75) AND consumed — TurretAI.TossDeathGibs
+#       (TurretAI.cs:1207,1225) spawns the flac.md3 head gib on death. So the head MODEL is no longer "none": the death-gib head
+#       toss is a live, visible use. The in-combat head-BONE render attachment is still absent (a whole-turret-family render gap,
+#       no client turret draw attaches any head bone). head-model constant match false->true; presentation missing->partial.
+#   (2) weapon.player_form: the player muzzleflash no longer passes except:actor (FlacTurret.cs:279 now Emit(...,1) with no except),
+#       matching Base's plain Send_Effect (networks to ALL incl. the firer). The baseline's "except:actor minor divergence" sub-gap
+#       is FIXED. Presentation stays partial only because the client hagar-trail RENDER is Godot-side/unverified; liveness STILL dead
+#       ([Weapon] registration intentionally OFF). NOT closed.
+# Line refs in port_refs drifted (MapObjectsRegistry turret_flac 209->233; FlacTurret/TurretAI offsets shifted ~+5) — refreshed.
+# Build of XonoticGodot.Common verified green this pass. No row regressed.
 summary:
   feature_count: 11
   worst_gaps:
-    - "head model models/turrets/flac.md3 + head-bone attachment still not set (identity.spawn presentation missing)"
-    - "client-side HAGAR trail RENDER + muzzleflash render not yet verified end-to-end (server emits correct cues; the trail/flash draw lives in the Godot client project, outside qcsrc parity scope) -> fire/player-form presentation = partial"
-    - "hidden player FLAC weapon (FlacWeapon) implemented faithfully but [Weapon] registration intentionally OFF (impulse-5 collision w/ Raptor + test-contract churn) -> liveness dead"
+    - "hidden player FLAC weapon (FlacWeapon) implemented faithfully but [Weapon] registration intentionally OFF (impulse-5 collision w/ Raptor + WeaponById/MenuWeaponOrder test churn) -> liveness DEAD (the only non-presentation gap in the unit)"
+    - "head-BONE render attachment for the in-combat head (the 4-frame cycle + headshake jolt drive head-local angles server-side, but no client turret draw attaches/renders a head bone) -> identity.spawn + fire presentation = partial. NOTE: the head MODEL flac.md3 IS now set + IS used for the death-gib head toss (TurretAI.cs:1225)."
+    - "client-side HAGAR shell trail RENDER + muzzleflash draw not yet verified end-to-end (server emits the correct cues; the trail/flash draw lives in the Godot client project, outside qcsrc parity scope) -> fire/player-form presentation = partial"
   notable_fixes_since_last_audit:
+    - "(2026-06-27 re-verify) identity.spawn presentation missing->partial: HeadModel='models/turrets/flac.md3' now SET (FlacTurret.cs:75) and consumed by TurretAI.TossDeathGibs (TurretAI.cs:1207,1225) to spawn the flac.md3 head gib on death — the head model is no longer 'none'. Only the in-combat head-BONE render attachment remains (whole-family render gap)."
+    - "(2026-06-27 re-verify) weapon.player_form: player muzzleflash 'except:actor' sub-gap FIXED — FlacTurret.cs:279 now Emit(...,1) with no except, matching Base's plain Send_Effect (to all clients). Liveness still dead ([Weapon] off)."
     - "damage.headshake logic missing->faithful, liveness dead->live (Wave 8e, 412ca19): FlacTurret.Spawn now passes headShake:true (FlacTurret.cs:79); TurretSpawn.Init sets st.HeadShake (TurretSpawn.cs:79); TurretAI.EventDamage head-jolt (TurretAI.cs:893-897) now runs for Flac (±take on head pitch+yaw), matching Base flac.qc:15 + sv_turrets.qc:228-234."
     - "fire.flak_shell presentation missing->partial (Wave 8e): BLASTER_MUZZLEFLASH emitted via EffectEmitter (FlacTurret.cs:149), shell NetName stamped 'hagar' so the client maps the HAGAR trail (FlacTurret.cs:114), 4-frame head cycle runs on turret.Frame (FlacTurret.cs:154). Server cues now faithful; only the Godot-side render is unverified (partial)."
     - "weapon.player_form presentation missing->partial (Wave 8e): BLASTER_MUZZLEFLASH emitted (FlacTurret.cs:273, except: actor). Logic/values/timing/audio remain faithful; liveness still dead ([Weapon] off)."
@@ -36,29 +41,31 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:FlacTurret(),Spawn"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:Flac"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:209"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:233"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:TossDeathGibs(1207,1225) (head-gib consumer of HeadModel)"
     constants:
       - { name: "m_mins", base: "-32 -32 0", port: "-32 -32 0", match: true }
       - { name: "m_maxs", base: "32 32 64", port: "32 32 64", match: true }
       - { name: "health", base: "700", port: "700", match: true }
       - { name: "body model", base: "models/turrets/base.md3", port: "models/turrets/base.md3", match: true }
-      - { name: "head model", base: "models/turrets/flac.md3", port: "none (no head bone)", match: false }
+      - { name: "head model", base: "models/turrets/flac.md3", port: "models/turrets/flac.md3 (HeadModel set FlacTurret.cs:75; used for the death-gib head toss, not yet an in-combat head-bone render)", match: true }
       - { name: "team default", base: "FLOAT_MAX", port: "float.MaxValue", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
-      presentation: missing
+      presentation: partial
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "head model models/turrets/flac.md3 not set (no head-bone attachment in port). NOTE: the head-FRAME cycle (++frame wrap 4) DID land in Wave 8e — it runs on the turret edict's own networked Entity.Frame (FlacTurret.cs:154) — but there is still no separate head model/bone to drive."
+      - "Head-BONE render attachment for the live in-combat head is still absent: no client turret draw attaches/renders a separate head bone, so the 4-frame head cycle (FlacTurret.cs:159, runs on the turret's own Entity.Frame) + the headshake jolt drive head-local angle/frame STATE server-side but nothing visibly articulates a head sub-model in combat. This is a whole-turret-family render gap, not flac-specific."
     verification:
-      - { kind: code, ref: "FlacTurret ctor + TurretSpawn.Init; MapObjectsRegistry.cs:209 registers turret_flac", result: pass }
+      - { kind: code, ref: "FlacTurret ctor (HeadModel='models/turrets/flac.md3' FlacTurret.cs:75) + TurretSpawn.Init; MapObjectsRegistry.cs:233 registers turret_flac", result: pass }
+      - { kind: code, ref: "HeadModel is consumed: TurretAI.TossDeathGibs (TurretAI.cs:1207 reads Turrets.ByName(netName).HeadModel; 1225 TossGib(headModel,...) spawns the flac.md3 head gib on death w/ the head's final angles+spin). So the head model is a LIVE, visible artifact on the death path — no longer 'none'.", result: pass }
     confidence: high
-    notes: "Identity/hitbox/health/body-model faithful. Head MODEL (models/turrets/flac.md3) + bone still deferred (presentation missing); the head-frame cycle now runs on the turret's own Entity.Frame (Wave 8e). spawnflags TUR_FLAG_SPLASH|FASTPROJ|MISSILE are Base attribs folded into the port's fire/aim params, not stored as a port flag field."
+    notes: "DRIFT this pass (2026-06-27): the head MODEL (models/turrets/flac.md3) is now set on the descriptor (FlacTurret.cs:75) and is actually used — TurretAI.TossDeathGibs spawns it as the exploding head gib on death (TurretAI.cs:1225), matching the cl_turrets.qc turret_die head_model gib. So head-model match false->true and presentation missing->partial. What remains: the in-combat head-BONE render attachment (the 4-frame cycle + headshake perturb head-local state server-side, but no client turret draw articulates a head sub-model during play) — a render gap shared across the whole turret family. Identity/hitbox/health/body-model faithful; spawnflags TUR_FLAG_SPLASH|FASTPROJ|MISSILE are Base attribs folded into the fire/aim params, not a port flag field."
 
   - id: turret-flac.spawnfunc.liveness
     name: "turret_flac map spawnfunc wired to a live per-frame think"
@@ -68,7 +75,7 @@ features:
       - "common/turrets/sv_turrets.qc:turret_link (setthink turret_think, nextthink=time)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:Spawn,Flac"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:209"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:233"
       - "src/XonoticGodot.Common/GameInit.cs:21"
     constants:
       - { name: "g_turrets master switch", base: "1 (on; turrets.cfg)", port: "MasterSwitchEnabled default-on (turrets.cfg sets 1)", match: true }
@@ -83,7 +90,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "MapObjectsRegistry.RegisterAll registers turret_flac (line 209); called from GameInit.cs:21; TurretSpawnFuncs.Spawn arms NextThink=Now each frame; g_turrets default 1 confirmed in both Base + port turrets.cfg", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.RegisterAll registers turret_flac (SpawnFuncs.Register at MapObjectsRegistry.cs:233); called from GameInit.cs:21; TurretSpawnFuncs.Spawn arms NextThink=Now each frame; g_turrets default 1 confirmed in both Base + port turrets.cfg", result: pass }
       - { kind: unverified, ref: "not observed in a running match; no flac-specific test (only generic MLRS turret-projectile obituary test)", result: unknown }
     confidence: medium
     notes: "Wiring complete and on the real BSP entity-lump path. Unexercised by any test; whether stock maps place turret_flac is open. ruleset-XPM sets g_turrets 0; default ruleset leaves it on."
@@ -244,12 +251,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Presentation partial (Wave 8e landed the server-emit side): BLASTER_MUZZLEFLASH is now emitted via EffectEmitter (FlacTurret.cs:149), the shell is stamped NetName='hagar' so the client ProjectileCatalog resolves the HAGAR trail (FlacTurret.cs:114), and the 4-frame head cycle runs on turret.Frame (FlacTurret.cs:154). REMAINING: the actual HAGAR trail RENDER + muzzleflash draw live in the Godot client project (not qcsrc) and are not yet verified end-to-end; the turret has no head MODEL/bone so the frame index drives nothing visible yet."
+      - "Presentation partial (Wave 8e landed the server-emit side, re-verified 2026-06-27): BLASTER_MUZZLEFLASH is emitted via EffectEmitter (FlacTurret.cs:154), the shell is stamped NetName='hagar' so the client ProjectileCatalog resolves the HAGAR trail (FlacTurret.cs:119), and the 4-frame head cycle runs on turret.Frame (FlacTurret.cs:159). REMAINING: the actual HAGAR trail RENDER + muzzleflash draw live in the Godot client project (not qcsrc) and are not yet verified end-to-end; the head MODEL flac.md3 is now set but is only consumed for the death-gib toss — no in-combat head-bone render attaches it, so the frame index articulates nothing visible during play yet."
     verification:
       - { kind: code, ref: "shot_spread now 0.02 (turrets.cfg:64), target_range_optimal now 1250 (turrets.cfg:71); FlacTurret.Attack reproduces snap-to-enemy + edge==core RadiusDamage; shot_dmg/radius/speed/force/refire match turrets.cfg:60-65", result: pass }
       - { kind: code, ref: "FIXED: FlacTurret.Attack:118 now uses st.ImpactTime; TurretAI.UpdateImpact (725-750) does a forward Trace from ShotOrg to ShotOrg+ShotDir*DistAimPos and sets ImpactTime = vlen(ShotOrg - trace_endpos)/shot_speed, matching Base sv_turrets.qc:519-523. Headless fallback keeps DistAimPos/shot_speed (== Base when path is clear)", result: pass }
       - { kind: code, ref: "fire sound weapons/hagar_fire.wav played on SoundChannel.Weapon (matches SND_FlacAttack_FIRE = W_Sound(hagar_fire))", result: pass }
-      - { kind: code, ref: "Wave 8e (412ca19): EffectEmitter.Emit('BLASTER_MUZZLEFLASH', st.ShotOrg, dir*1000, 1) at FlacTurret.cs:149 (Base flac_weapon.qc:30 Send_Effect(EFFECT_BLASTER_MUZZLEFLASH,...,1)); BLASTER_MUZZLEFLASH registered to 'laser_muzzleflash' (EffectsList.cs:40); shell.NetName='hagar' (FlacTurret.cs:114); head-frame cycle FlacTurret.cs:154-156 (++Frame wrap 4) matches flac_weapon.qc:32-37", result: pass }
+      - { kind: code, ref: "Wave 8e (412ca19), re-verified 2026-06-27: EffectEmitter.Emit('BLASTER_MUZZLEFLASH', st.ShotOrg, dir*1000, 1) at FlacTurret.cs:154 (Base flac_weapon.qc:30 Send_Effect(EFFECT_BLASTER_MUZZLEFLASH,...,1)); BLASTER_MUZZLEFLASH registered to 'laser_muzzleflash' (EffectsList.cs:40); shell.NetName='hagar' (FlacTurret.cs:119); head-frame cycle FlacTurret.cs:159-161 (++Frame wrap 4) matches flac_weapon.qc:32-37", result: pass }
     confidence: high
     notes: "Wave 8e (412ca19) upgraded presentation missing->partial: muzzleflash emission, hagar-trail netname stamp, and head-frame cycle now run server-side. Only the client-side trail/flash RENDER (Godot project, outside qcsrc parity) and the head MODEL/bone remain. The signature flak mechanic (forward-traced timed fuse + air-burst snap-to-enemy + full-radius damage), values, timing, and fire sound are all faithful."
 
@@ -322,7 +329,7 @@ features:
       - "common/turrets/turret/flac_weapon.qh:CLASS(FlacAttack)"
       - "common/turrets/turret/flac_weapon.qc:METHOD(FlacAttack, wr_think) (IS_PLAYER branch)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:FlacWeapon(168-261) (class FlacWeapon : Weapon; ctor + WrThink + AnimtimeFor + RefireFor)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs:FlacWeapon(188-289) (class FlacWeapon : Weapon; ctor + WrThink + AnimtimeFor + RefireFor)"
     constants:
       - { name: "impulse", base: "5", port: "5 (Impulse = 5)", match: true }
       - { name: "spawnflags", base: "WEP_FLAG_SPECIALATTACK | WEP_FLAG_HIDDEN", port: "WeaponFlags.SpecialAttack | WeaponFlags.Hidden", match: true }
@@ -341,13 +348,13 @@ features:
     divergence_rationale: null
     gaps:
       - "FlacWeapon is implemented but its [Weapon] registration is intentionally OFF (FlacTurret.cs:178): impulse 5 collides with the Raptor bomb-mode impulse and registering shifts WeaponById/MenuWeaponOrder, which would break those test contracts. So the hidden player FLAC weapon has NO live caller (liveness dead)."
-      - "presentation partial: BLASTER_MUZZLEFLASH is now emitted (FlacTurret.cs:273) — but with except: actor, whereas Base flac_weapon.qc:30 uses Send_Effect (networks to ALL incl. the firing player, not Send_Effect_Except). Minor: a player firing their own hidden weapon won't see their own muzzle flash. Also the hagar trail RENDER is client-side (Godot project, outside qcsrc parity)."
+      - "presentation partial: BLASTER_MUZZLEFLASH is emitted (FlacTurret.cs:279) and — FIXED since the baseline — now WITHOUT except, i.e. Emit(...,1) with except defaulting null, networking to ALL clients exactly like Base flac_weapon.qc:30's plain Send_Effect (the firer sees their own flash). The remaining presentation gap is only the client-side hagar trail RENDER (Godot project, outside qcsrc parity), so the partial here is driven by the same unverified-client-render reason as the turret form, not the prior except divergence."
     verification:
-      - { kind: code, ref: "FlacWeapon : Weapon (FlacTurret.cs:183-283) ports the IS_PLAYER branch of wr_think: Impulse 5, SpawnFlags SpecialAttack|Hidden, PlayerFuse 10f, WrThink (SetupShot + turret_projectile + fuse-think override + hagar_fire sound + BLASTER_MUZZLEFLASH), AnimtimeFor 0.5 / RefireFor 1. Constants match flac_weapon.qh/qc", result: pass }
-      - { kind: code, ref: "[Weapon] attribute is commented OFF (FlacTurret.cs:178); no WEP_FLAC/WEP_TUR_FLAC registration grep hit in src -> the class has no live dispatch path -> liveness dead", result: fail }
-      - { kind: code, ref: "Wave 8e: EffectEmitter.Emit('BLASTER_MUZZLEFLASH', shot.Origin, shot.Dir*1000, 1, except: actor) at FlacTurret.cs:273. Base flac_weapon.qc:30 uses Send_Effect (no except) -> minor except divergence", result: pass }
+      - { kind: code, ref: "FlacWeapon : Weapon (FlacTurret.cs:188-289) ports the IS_PLAYER branch of wr_think: Impulse 5, SpawnFlags SpecialAttack|Hidden, PlayerFuse 10f, WrThink (SetupShot + turret_projectile + fuse-think override + hagar_fire sound + BLASTER_MUZZLEFLASH), AnimtimeFor 0.5 / RefireFor 1. Constants match flac_weapon.qh/qc", result: pass }
+      - { kind: code, ref: "[Weapon] attribute is commented OFF (FlacTurret.cs:183-187); FlacWeapon carries NO [Weapon] attr (only FlacTurret has [Turret]); no WEP_FLAC/WEP_TUR_FLAC registration in src -> the class has no live dispatch path -> liveness dead", result: fail }
+      - { kind: code, ref: "Re-verified 2026-06-27: EffectEmitter.Emit('BLASTER_MUZZLEFLASH', shot.Origin, shot.Dir*1000, 1) at FlacTurret.cs:279 — NO except arg (the EffectEmitter.Emit(string,Vector3,Vector3,int,except=null) overload defaults except to null), so it networks to ALL clients matching Base flac_weapon.qc:30's plain Send_Effect. The baseline's except:actor minor divergence is FIXED.", result: pass }
     confidence: high
-    notes: "Wave 8e (412ca19) added the BLASTER_MUZZLEFLASH emission to the player form (presentation missing->partial). Logic/values/timing/audio remain faithful; the form is still DEAD (the [Weapon] registration is deliberately disabled to avoid the impulse-5/Raptor collision and WeaponById/MenuWeaponOrder test churn). Re-add [Weapon] in a future pass that updates those test contracts + makes impulse routing vehicle-context-aware. Shares balance constants with the turret via FlacTurret.Pub* aliases. Note: the player muzzleflash passes except:actor whereas Base Send_Effect networks to all."
+    notes: "Re-verified 2026-06-27. Logic/values/timing/audio faithful; the player muzzleflash except:actor sub-gap is now FIXED (FlacTurret.cs:279 emits with no except = networks to all, matching Base Send_Effect). The form is still DEAD (the [Weapon] registration is deliberately disabled to avoid the impulse-5/Raptor collision and WeaponById/MenuWeaponOrder test churn) -> NOT closed; liveness stays dead. Re-add [Weapon] in a future pass that updates those test contracts + makes impulse routing vehicle-context-aware. Shares balance constants with the turret via FlacTurret.Pub* aliases. Presentation stays partial only for the unverified client hagar-trail render."
 
   - id: turret-flac.damage.headshake
     name: "TFL_DMG_HEADSHAKE: head flinches off-aim when the turret is hit"

@@ -5,7 +5,7 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Map-support gating (m_isAlwaysSupported >=8 spawns & diameter>3250; g_tdm_on_dm_maps) not ported — map-pool/menu concern, no in-match impact"
+    - "Map-support gating: m_isAlwaysSupported (>=8 spawns & diameter>3250) unimplemented; the m_isForcedSupported (g_tdm_on_dm_maps) half is now CODED (MapInfoBackend.ApplyForcedGametypes) but DEAD (no live caller / cvar wiring) — map-pool/menu concern, no in-match impact"
     - "Custom per-map team config (spawnfunc tdm_team names/colors; mapinfo teams= -> g_tdm_teams) not ported — maps render with the stock team set"
 features:
   - id: tdm.identity.registration
@@ -336,25 +336,28 @@ features:
     base_refs:
       - "common/gametypes/gametype/tdm/tdm.qh:METHOD(TeamDeathmatch, m_isAlwaysSupported)"
       - "common/gametypes/gametype/tdm/tdm.qh:METHOD(TeamDeathmatch, m_isForcedSupported)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Menu/MapInfoBackend.cs:ApplyForcedGametypes"
     constants:
       - { name: "always_supported", base: "spawnpoints>=8 && diameter>3250", port: "none", match: false }
-      - { name: "g_tdm_on_dm_maps", base: "0 (DM maps also offer TDM when set)", port: "cvar present, gate unimplemented", match: false }
+      - { name: "g_tdm_on_dm_maps", base: "0 (DM maps also offer TDM when set)", port: "ApplyForcedGametypes promotes DM->TDM when ForceTdmOnDmMaps, BUT that flag is never wired from the cvar and MapInfoBackend has no live constructor (dead)", match: false }
     status:
-      logic: missing
+      logic: partial
       values: missing
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The mapinfo/map-pool support gating that decides which maps auto-offer TDM is not ported: m_isAlwaysSupported (auto-offer on maps with >=8 spawnpoints AND diameter>3250) and m_isForcedSupported (g_tdm_on_dm_maps makes DM maps support TDM too) have no port equivalent. The g_tdm_on_dm_maps cvar ships (default 0) but is read by nothing. Map-pool / menu concern; the port plays whatever map it is told to. Consistently deferred across gametypes (see Duel/Mayhem notes). NOT addressed by Wave-2."
+      - "m_isAlwaysSupported (auto-offer TDM on maps with >=8 spawnpoints AND diameter>3250) is still entirely unimplemented (no BSP world-bounds/spawn-count probe in the menu's file-only mapinfo layer)."
+      - "m_isForcedSupported (g_tdm_on_dm_maps -> DM maps also support TDM) now has CODE — MapInfoBackend.ApplyForcedGametypes adds 'tdm' to a DM map's supported set when forceTdmOnDmMaps — but it is DEAD: (a) no caller constructs MapInfoBackend anywhere in src, and (b) the ForceTdmOnDmMaps flag defaults false and is never set from the g_tdm_on_dm_maps cvar. The Duel.cs:39 comment claiming a live 'MapInfoCache.Get' caller is stale (no MapInfoCache.cs exists). So at runtime g_tdm_on_dm_maps still changes nothing."
     verification:
-      - { kind: code_read, ref: "grep isAlwaysSupported/isForcedSupported/on_dm_maps in src -> only doc-comment mentions (Duel.cs:33, Mayhem.cs:294, GameWorld.cs:1338), no implementation", result: fail }
+      - { kind: code_read, ref: "MapInfoBackend.ApplyForcedGametypes (MapInfoBackend.cs:134-149) adds 'tdm' to SupportedGametypes when forceTdmOnDmMaps && dm-supported && !tdm-supported; MapInfoBackend.Get (110) calls it with ForceTdmOnDmMaps (default false, never reassigned).", result: pass }
+      - { kind: code_read, ref: "grep 'new MapInfoBackend'/'ForceTdmOnDmMaps'/'ApplyForcedGametypes'/'g_tdm_on_dm_maps' across src -> only MapInfoBackend.cs self-references; no constructor, no cvar wiring, MapInfoCache.cs does not exist. m_isAlwaysSupported/diameter -> only doc comments. So the forced-support half is coded but unreachable, the always-supported half absent.", result: fail }
     confidence: high
-    notes: "Low gameplay impact (affects which maps a server/menu offers TDM on, not in-match behavior). Still open after Wave-2."
+    notes: "Drift since baseline: the m_isForcedSupported (g_tdm_on_dm_maps) HALF gained a port impl (MapInfoBackend.ApplyForcedGametypes, shared with Duel's forced-support), so the baseline 'no implementation at all' is stale -> bumped logic missing->partial. But the code is DEAD (no MapInfoBackend constructor, ForceTdmOnDmMaps never wired to the cvar), so liveness na->dead and the feature stays OPEN. m_isAlwaysSupported half remains fully missing. Low gameplay impact (map-pool/menu, not in-match). NOT closed by Wave 16/17."
 
   - id: tdm.rules.map_team_config
     name: "Map team config (spawnfunc tdm_team custom names/colors; mapinfo teams= -> g_tdm_teams via m_parse_mapinfo/m_setTeams)"

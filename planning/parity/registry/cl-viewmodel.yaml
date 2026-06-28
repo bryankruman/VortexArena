@@ -1,7 +1,7 @@
 unit: cl-viewmodel
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-27"  # re-audited (consolidated re-verify): casings timing partial->faithful + gap cleared; all other rows confirmed accurate against current port
 summary:
   feature_count: 13
   worst_gaps:
@@ -381,7 +381,7 @@ features:
       - { name: "cl_casings_bronze_time (bullet)", base: "10", port: "BulletTime 10", match: true }
       - { name: "cl_casings_shell_time (shell)", base: "30", port: "ShellTime 30", match: true }
       - { name: "cl_casings_maxcount", base: "100", port: "MaxCasings 100", match: true }
-      - { name: "cl_casings_ticrate", base: "0.03125 (Movetype_Physics_MatchTicrate)", port: "per-frame _PhysicsProcess (not the 0.03125 tic)", match: false }
+      - { name: "cl_casings_ticrate", base: "0.03125 (Movetype_Physics_MatchTicrate)", port: "fixed 0.03125 tic accumulator in CasingBody._PhysicsProcess (Ticrate const), catch-up clamped", match: true }
       - { name: "bouncefactor", base: "0.25 shell / 0.5 bullet", port: "0.25 shell / 0.5 bullet", match: true }
       - { name: "eject up-velocity", base: "30-rand*5 (shotgun shell) / 70-rand*5 (bullet)", port: "30-rand*5 shell / 70-rand*5 bullet (per casingtype)", match: true }
       - { name: "g_casings gate", base: ">=1 shotgun shell / >=2 bullet (default 2)", port: ">=1 Shell / >=2 Bullet (EjectCasing)", match: true }
@@ -390,18 +390,17 @@ features:
     status:
       logic: faithful
       values: faithful
-      timing: partial
+      timing: faithful
       presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Casing physics is a self-integrated gravity + single ground-plane bounce (FloorZ), not full MOVETYPE_BOUNCE world collision at cl_casings_ticrate (0.03125); on most maps no floorZ is supplied so the casing falls through and only the lifetime fade culls it."
+    gaps: []
     verification:
-      - { kind: code, ref: "Shotgun/Machinegun/Rifle/OkMachinegun call WeaponFiring.EjectCasing on the live fire path (per-casingtype gate + QC view-frame eject velocity) -> registered CASING_* effect networked (origin+velocity) -> ClientWorld.OnEffect -> EffectSystem.Spawn routes CASING_BULLET/CASING_SHELL to SpawnCasing -> ShellCasings.Spawn; ShellCasings BulletTime=10/ShellTime=30/MaxCasings=100 (match Base), avelocity '0 10 0'+100*prandomvec, CasingBody plays brass1-3/casings1-3 via SoundHook (wired live ClientWorld:334 -> OnSound CH_SHOTS) when vel>50, throttled 0.2s", result: pass }
+      - { kind: code, ref: "Machinegun/Shotgun/Rifle/OkMachinegun/OkHmg/OkShotgun call WeaponFiring.EjectCasing on the LIVE fire-attack path (verified Machinegun.cs:414 alongside the live impact/muzzle FX), per-casingtype g_casings gate (>=1 shell / >=2 bullet) + QC view-frame eject velocity (deterministic Prandom) -> EmitByEffectInfoName('casing_bullet'/'casing_shell') resolves the REGISTERED CASING_BULLET/CASING_SHELL effect (EffectsList:116-117) -> networks origin+velocity (non-null Effect, not a dropped null-effect) -> ClientWorld.OnEffect -> EffectSystem.Spawn routes CASING_BULLET/CASING_SHELL to SpawnCasing -> ShellCasings.Spawn. ShellCasings BulletTime=10/ShellTime=30/MaxCasings=100 (match Base), bouncefactor 0.25 shell/0.5 bullet, avelocity '0 10 0'+100*prandomvec; CasingBody._PhysicsProcess steps a FIXED cl_casings_ticrate=0.03125 tic accumulator (catch-up clamped) with a LIVE world-only TraceHook (EffectSystem:190, a TraceService over the per-map client collision world wired in SetCollisionWorld) doing full MOVETYPE_BOUNCE brush-face collision + trace_startsolid cull (FloorZ is only the no-tracer fallback); bounce sound brass1-3/casings1-3 via SoundHook (wired live ClientWorld:350 -> OnSound CH_SHOTS) when vel>50, throttled 0.2s", result: pass }
     confidence: high
-    notes: "values faithful (lifetimes 10/30 and maxcount 100 match Base), avelocity tumble is the QC '0 10 0'+100*prandomvec magnitude. audio faithful: the Casing_Touch bounce sound (brass*/casings* on CH_SHOTS when vdist>50, 0.2s throttle) is implemented AND wired live (ShellCasings.SoundHook set to ClientWorld.OnSound at ClientWorld:334). Sole residual gap is timing/physics: a self-integrated gravity + single ground-plane bounce instead of full MOVETYPE_BOUNCE world collision at the 0.03125 ticrate (and floorZ often unsupplied)."
+    notes: "RE-AUDIT UPGRADE (timing partial->faithful, gap cleared): the casing path is now FULLY LIVE and faithful end-to-end. logic/values/presentation/audio were already faithful (lifetimes 10/30, maxcount 100, avelocity '0 10 0'+100*prandomvec, bounce sounds on CH_SHOTS when vdist>50 / 0.2s throttle, all wired live). TIMING is now also faithful: contrary to the prior baseline note, the sim does NOT integrate per-frame with only a FloorZ ground plane — CasingBody._PhysicsProcess advances in whole 0.03125s cl_casings_ticrate tics (Movetype_Physics_MatchTicrate-style, catch-up clamped) AND a live world-only TraceHook (TraceService over the client collision world, wired in EffectSystem.SetCollisionWorld which NetGame calls per map) gives real MOVETYPE_BOUNCE brush collision + the trace_startsolid cull; FloorZ is only the degenerate no-tracer fallback. No residual gap."
 
   - id: cl-viewmodel.model.wr_viewmodel_override
     name: "Per-weapon view-model override (wr_viewmodel, e.g. Tuba note-driven model swap)"

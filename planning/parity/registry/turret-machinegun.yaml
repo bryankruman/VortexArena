@@ -1,16 +1,15 @@
 unit: turret-machinegun
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 14
   worst_gaps:
-    - "FIXED since baseline: the muzzle flash + EFFECT_BULLET tracer ARE now emitted on the live turret Attack path (MachinegunTurret.cs:91-98 — TurretCombat.FireBullet tracerEffect:\"BULLET\" sweeps EFFECT_BULLET via EffectEmitter.EmitTrail, and EffectEmitter.Emit(\"MACHINEGUN_MUZZLEFLASH\") fires the muzzleflash). Both effects are registered (EffectsList.cs:62 uzi_muzzleflash, :230 tr_bullet) and networked via the standard EffectRequest sink. The baseline recorded BOTH as missing/unported."
-    - "Residual CLIENT presentation still missing: no tur_head sub-entity/model at tag_head (head is angle-state only, so the head model never renders/animates and the muzzle flash is emitted at the muzzle ORIGIN rather than parented to a tag_fire bone), no head-bone frame anim, low-health sparks/smoke, team glow, waypoint sprite/healthbar, and death gibs (cl_turrets.qc). This is the dominant residual gap class."
-    - "FIXED since baseline: checkpvs is now in ValidTarget (TurretAI.cs:268, Api.Trace.CheckPvs before alpha/team/range, no-op on unvised maps like DarkPlaces) — the SECOND validate gate that the baseline recorded as STILL OPEN is closed."
-    - "FIXED since baseline: the fire-time on-target test now rides a REAL tracebox. UpdateImpact (TurretAI.cs:725, port of turret_do_updates) traces the muzzle forward to the aimpos distance; the AIMDIST firecheck (RunCombat:696-706) uses tur_dist_impact_to_aimpos from that trace when engine services exist (only headless does it fall back to the geometric OnTarget barrel-line). So a wall between muzzle and aimpos now blocks the shot — the port no longer fires through walls. The baseline recorded this as STILL OPEN."
-    - "FIXED since baseline: TFL_DMG_HEADSHAKE is now applied (EventDamage:886-891 jitters HeadAngles +-take on pitch+yaw on a hit). Still no separate tur_head edict (the jitter is on the angle-state head), so the recoil flinch is server-state only until the head model renders, but the behaviour the baseline recorded as ABSENT now runs."
-    - "FIXED since baseline: turret_firecheck is no longer simplified — target-of-opportunity / tur_impactent (RunCombat:665), AFF friendly-fire-avoidance (RunCombat:689, flag-gated), and the volley-status pre-ammo check (RunCombat:711) are all ported. Machinegun (default firecheck_flags, AFF off) keeps the same outward behaviour but the gates exist."
+    - "FIXED (re-verified 2026-06-27): the muzzle flash + EFFECT_BULLET tracer ARE emitted on the live turret Attack path (MachinegunTurret.cs:95-102 — TurretCombat.FireBullet tracerEffect:\"BULLET\" sweeps EFFECT_BULLET via EffectEmitter.EmitTrail >16u, and EffectEmitter.Emit(\"MACHINEGUN_MUZZLEFLASH\") fires the muzzleflash). Both effects are registered (EffectsList.cs:78 uzi_muzzleflash, :246 tr_bullet isTrail) and networked via the standard EffectRequest sink."
+    - "FIXED since the 2026-06-25 row-write (stale registry corrected): the NORMAL-respawn-path death FX, impact sound, and gib toss are now LIVE. TurretAI.Die:1102-1107 emits EFFECT_ROCKET_EXPLODE + plays weapons/rocket_impact.wav AND calls TossDeathGibs on EVERY death (not just NORESPAWN); TossDeathGibs/TossGib/GibBoom (:1199-1307) spawn the base-gib + head_model debris as server-side physics entities that render via the entity feed (the vehicle-wreckage pattern). The 2026-06-25 die_respawn row still recorded presentation/audio MISSING — that was stale (these landed in Wave 15, 322fc26)."
+    - "FIXED since the 2026-06-25 row-write: low-health sparks/smoke ARE emitted. TurretAI.DrawFx:1319-1337 (called every think from RunCombat:686) throws te_spark <127hp, SMOKE_LARGE <85hp, SMOKE_SMALL <32hp from one shared random roll, faithful to cl_turrets.qc:39-53. The summary previously listed this as still-missing."
+    - "Residual CLIENT presentation still missing (the true dominant residual): no tur_head sub-entity / machinegun.md3 HEAD MODEL at tag_head (head is angle-state only, so the head model never renders or frame-animates and the muzzle flash anchors at the muzzle ORIGIN not a tag_fire bone), no team glowmod/colormap, and no waypoint sprite / 2D healthbar (turret_draw2d). Sparks/smoke + death gibs + muzzleflash/tracer are now DONE; the head-model render, team glow, and waypoint/healthbar are what remain."
+    - "FIXED: checkpvs is in ValidTarget (TurretAI.cs:333, Api.Trace.CheckPvs before alpha/team/range, no-op on unvised maps like DarkPlaces); the fire-time AIMDIST on-target test rides a REAL tracebox (UpdateImpact:837, RunCombat:808-818 tests st.DistImpactToAimPos when engine services exist, geometric OnTarget only headless) so the port no longer fires through walls; TFL_DMG_HEADSHAKE is applied (EventDamage:1056-1060); and turret_firecheck is fully ported (target-of-opportunity :777, AFF :801 flag-gated, volley pre-ammo :823)."
 features:
   - id: turret-machinegun.spawn.spawnfunc
     name: "Map spawnfunc + g_turrets master gate"
@@ -66,11 +65,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No separate tur_head sub-entity / head model attached at tag_head (Base turret_initialize:1344 spawns a turret_head entity and _setmodel(head_model)); the port's head is angle-state only (TurretState.HeadAngles), so the head model never renders or animates."
+      - "No separate tur_head sub-entity / machinegun.md3 head model attached at tag_head (Base turret_initialize:1344 spawns a turret_head entity and _setmodel(head_model)); the port's head is angle-state only (TurretState.HeadAngles), so the head model never renders or frame-animates. The descriptor still CARRIES HeadModel (MachinegunTurret.cs:56) so the death-gib toss can throw the head model, but nothing attaches it as a live render bone. This is now the unit's primary presentation residual (sparks/smoke/gibs/muzzleflash/tracer all landed)."
     verification:
       - { kind: value, ref: "machinegun.qh vs MachinegunTurret ctor + TurretSpawn.Init — mins/maxs/health/body model all match", result: pass }
     confidence: high
-    notes: "Body identity faithful; head presentation is the missing half. Unchanged since baseline."
+    notes: "Body identity faithful; the head-MODEL render is the missing half (presentation: partial). Unchanged since baseline. Note (2026-06-27): the related low-health smoke/spark + death-gib presentation that the unit summary used to lump under this residual is now implemented elsewhere (DrawFx / TossDeathGibs) — only the head-model render, team glow, and waypoint/healthbar remain."
 
   - id: turret-machinegun.setup.flags
     name: "tr_setup behaviour flags (target/aim/ammo/damage/turret)"
@@ -339,7 +338,7 @@ features:
       - "Muzzle flash is emitted at the muzzle ORIGIN along the shot dir, not parented to a tag_fire bone of a head sub-entity (Base setattachment(muzzle_flash, tur_head, \"tag_fire\"), machinegun_weapon.qc:24) — because the port has no tur_head edict. The flash effect fires; its anchoring is approximate. Minor presentation residual tied to the head-model gap, not a missing emit."
     verification:
       - { kind: code, ref: "machinegun_weapon.qc:7-25 re-read: fireBullet(:22) + W_MuzzleFlash_Model(:23) + setattachment(:24) sit AFTER the `if (isPlayer){...}` block, so the turret path fires the bullet + muzzle flash + tracer but NO sound (the only SND_ is inside isPlayer). Port Attack(:81-98) fires the bullet silently AND emits the EFFECT_BULLET tracer (tracerEffect:\"BULLET\") + MACHINEGUN_MUZZLEFLASH — both now ported", result: pass }
-      - { kind: code, ref: "EffectsList.cs:62 registers MACHINEGUN_MUZZLEFLASH=uzi_muzzleflash and :230 registers BULLET=tr_bullet (isTrail). EffectEmitter.Emit/EmitTrail queue an EffectRequest on the standard networked Sink. Attack runs on the live Fire path, so both effects reach clients", result: pass }
+      - { kind: code, ref: "EffectsList.cs:78 registers MACHINEGUN_MUZZLEFLASH=uzi_muzzleflash and :246 registers BULLET=tr_bullet (isTrail). EffectEmitter.Emit/EmitTrail queue an EffectRequest on the standard networked Sink. Attack runs on the live Fire path, so both effects reach clients. Re-verified 2026-06-27 (line refs refreshed)", result: pass }
     confidence: high
     notes: "FIXED since baseline (presentation missing -> faithful): the muzzle flash + EFFECT_BULLET tracer that Base emits on the turret (non-player) path are now BOTH ported and live. MachinegunTurret.Attack(:91) calls TurretCombat.FireBullet with tracerEffect:\"BULLET\" (sweeps EFFECT_BULLET from muzzle to impact via EmitTrail, gated >16u like the player path) and Attack(:98) emits MACHINEGUN_MUZZLEFLASH. Hitscan bullet + spread (0.015) + force (20) + deathtype faithful; the turret path is correctly SILENT (Base's only sound emitter is inside the isPlayer block). Only residual: the flash is emitted at the muzzle origin rather than parented to a tag_fire bone (no tur_head edict)."
 
@@ -411,22 +410,24 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:907 (Die) + :949 (Respawn) + :796 (EnsureDeathHook/OnAnyDeath)"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs (Combat.Death.Call via TurretAI.EventDamage:897)"
     constants:
-      - { name: "respawntime", base: "60 (turret_hide: nextthink = time + respawntime - 0.2)", port: "60 (NextThink = now + RespawnTime)", match: true }
-      - { name: "death blast", base: "COMMENTED OUT (no RadiusDamage) at sv_turrets.qc:182", port: "NO RadiusDamage (TurretAI.Die:918 emits no area damage)", match: true }
+      - { name: "respawntime", base: "60 (turret_hide: nextthink = time + respawntime - 0.2)", port: "60 (Die schedules Hide@+0.2 -> Respawn@+respawntime-0.2)", match: true }
+      - { name: "death blast", base: "COMMENTED OUT (no RadiusDamage) at sv_turrets.qc:182", port: "NO RadiusDamage (TurretAI.Die:1092 emits no area damage)", match: true }
+      - { name: "death FX/sound", base: "cl_turrets.qc turret_die: EFFECT_ROCKET_EXPLODE + SND_ROCKET_IMPACT on EVERY death (TNSF_STATUS health==0)", port: "EFFECT_ROCKET_EXPLODE + weapons/rocket_impact.wav on every death (Die:1104-1105)", match: true }
+      - { name: "death gibs", base: "cl_turrets.qc:319-348 base-gib1..4 + head_model toss (50% coin flip), exploding head gib spins", port: "TossDeathGibs:1199-1235 — base-gib coin flip + head_model gib (spin/halved gravity), server-spawned physics gibs", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
-      audio: missing
+      presentation: faithful
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No client death FX: the non-NORESPAWN branch in Base turret_die does NO sound/effect (only the NORESPAWN branch plays SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE before delete — the port does port that NORESPAWN branch at Die:927-932); base/head gib toss lives in cl_turrets.qc (client). Port emits no client FX/gibs on the normal respawn path. Still open."
-      - "Respawn restores state but does not re-stamp a head model / send a full CSQC update (TNSF_FULL_UPDATE) — no networking layer. Still open."
+      - "Gibs render via server-spawned physics entities (the entity feed / vehicle-wreckage pattern), not a CSQC turret_die handler; the head gib reuses the descriptor's HeadModel even though the head model itself never renders on the live turret (the head-model gap is on the identity row, not here). Code-faithful; no runtime visual capture was run for this re-audit, so the rendered outcome is code-verified not behaviorally-verified."
+      - "Respawn restores state but does not re-stamp a head model / send a full CSQC update (TNSF_FULL_UPDATE) — no networking layer. Visual-only residual; tracks the identity-row head-model gap."
     verification:
       - { kind: test, ref: "TurretLifecycleTests.Die_Unsolidifies_StopsDamage_AndSchedulesRespawn / Respawn_RestoresFullCombatState / LethalDamage_ThroughTheSharedDeathHook_RunsDie", result: pass }
-      - { kind: code, ref: "TurretAI.Die:918 — NO RadiusDamage (Base sv_turrets.qc:182 is commented out); unsolidify/takedamage NO/respawn schedule matches turret_die. NORESPAWN branch (Die:923-934) ports the SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE + delete", result: pass }
-    confidence: high
-    notes: "Faithful rules. The ammo-scaled RadiusDamage death blast is correctly absent (Base sv_turrets.qc:182 commented out). Death+respawn live via Combat.Death through the EventDamage shim's lethal branch. The NORESPAWN explosion FX/sound IS ported; the normal-respawn client death FX/gibs (cl_turrets.qc) remain missing. Unchanged since baseline."
+      - { kind: code, ref: "TurretAI.Die:1092 — NO RadiusDamage (Base sv_turrets.qc:182 commented out). Die:1102-1107 emits ROCKET_EXPLODE + rocket_impact.wav + TossDeathGibs on the LIVE death path (both respawning and NORESPAWN); TossDeathGibs/TossGib/GibBoom:1199-1307 spawn base-gib + head_model debris. Effects registered (EffectsList.cs:132 ROCKET_EXPLODE) + networked via EffectEmitter sink; Api.Sound.Play is the live sound seam. Build green 2026-06-27", result: pass }
+    confidence: medium
+    notes: "FIXED since the 2026-06-25 row-write (presentation/audio missing -> faithful): the registry was STALE — the death FX (EFFECT_ROCKET_EXPLODE), impact sound (rocket_impact.wav), and the base-gib/head_model gib toss are emitted on EVERY death (Die:1102-1107 + TossDeathGibs), not just the NORESPAWN branch the old row credited. These landed in Wave 15 (322fc26) but the 2026-06-25 consolidated re-verify (44252f3) did not re-check this row. Rules faithful; RadiusDamage death blast correctly absent. Confidence medium (not high): emission code + wiring + build are verified, but no live in-engine render capture was run, so the visual is code-verified not runtime-verified."

@@ -1,7 +1,7 @@
 unit: turret-framework
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-27"  # re-audited post Wave-16/17: 3 turret mutator hooks + non-step aim_speed default now live
 summary:
   feature_count: 15
   worst_gaps:
@@ -124,7 +124,9 @@ features:
       - { name: "targetscan_maxdelay", base: "1 (turrets.cfg:6)", port: "Cvar(g_turrets_targetscan_maxdelay, 1f)", match: true }
       - { name: "aimidle_delay", base: "5 (turrets.cfg:7)", port: "Cvar(g_turrets_aimidle_delay, 5f)", match: true }
       - { name: "g_turrets_nofire", base: "0 (turrets.cfg:3) — master fire-disable gate", port: "Cvar(g_turrets_nofire,0)!=0 short-circuits Fire", match: true }
-      - { name: "TurretThink/TurretFire/Turret_CheckFire mutator hooks", base: "yes", port: "not modeled", match: false }
+      - { name: "TurretThink mutator hook", base: "MUTATOR_CALLHOOK(TurretThink,this) at top of turret_think; true pauses the brain", port: "RunCombat: MutatorHooks.FireTurretThink(turret) returns early (skips ammo/acquire/aim/fire) — TurretAI.cs:681 (FIXED Wave-16)", match: true }
+      - { name: "Turret_CheckFire mutator hook", base: "if(MUTATOR_CALLHOOK(Turret_CheckFire,this)) return M_ARGV(1,float) at top of turret_firecheck", port: "RunCombat: FireTurretCheckFire override forces fire (skip gates) / hold — TurretAI.cs:748 (FIXED Wave-16)", match: true }
+      - { name: "TurretFire mutator hook", base: "if(MUTATOR_CALLHOOK(TurretFire,this)) return in turret_fire (suppress the shot)", port: "Fire(): FireTurretFire(turret) true short-circuits before weapon+bookkeeping — TurretAI.cs:882 (FIXED Wave-16)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -135,12 +137,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "TurretFire/Turret_CheckFire/TurretThink mutator hooks not modeled (no mutator can rewrite/forbid a turret shot)."
       - "HITALLVALID / CUSTOM / VOLLYALWAYS shoot-mode branches are folded into per-turret Think rather than the shared driver (functionally covered by Tesla/Phaser/FusionReactor self-scan + the RunCombat VollyAlways path, but the generic dispatch is not in RunCombat)."
     verification:
-      - { kind: code_read, ref: "turret_think vs TurretAI.RunCombat/Fire; Cvar() helper reads turrets.cfg (exec'd live via ConfigLoader.LoadServerConfig) with Base-matching fallbacks", result: pass }
+      - { kind: code_read, ref: "turret_think vs TurretAI.RunCombat/Fire; Cvar() helper reads turrets.cfg (exec'd live via ConfigLoader.LoadServerConfig) with Base-matching fallbacks; the 3 turret mutator hooks (TurretThink/Turret_CheckFire/TurretFire) are real HookChain dispatchers (MutatorHooks.cs:1343/1409/1436) fired live from RunCombat/Fire (TurretAI.cs:681/748/882) with empty-chain fast-paths", result: pass }
     confidence: high
-    notes: "Brain faithful: scan delays + aimidle + nofire master gate cvar-backed; the VollyAlways mid-burst path is now in RunCombat. Only the TurretFire/Turret_CheckFire/TurretThink mutator hooks + the generic HITALLVALID/CUSTOM shoot-mode dispatch remain folded into per-turret Think."
+    notes: "FIX vs baseline (TurretThink/Turret_CheckFire/TurretFire mutator hooks now ported + live): Wave-16 wired all three brain/fire mutator hooks through the real HookChain dispatchers — a mutator can now pause a turret's think (TurretThink), force/hold its firecheck (Turret_CheckFire), or suppress an individual shot (TurretFire), matching the MUTATOR_CALLHOOK sites in turret_think/turret_firecheck/turret_fire. No stock mutator registers them (fast-path no-op in stock play), exactly like Base. Brain stays faithful (scan delays + aimidle + nofire master gate cvar-backed; VollyAlways mid-burst path in RunCombat). Only the generic HITALLVALID/CUSTOM shoot-mode dispatch remains folded into per-turret Think (functionally covered by the self-scanning Tesla/Phaser/FusionReactor)."
   - id: turret-framework.acquire.target
     name: "Target acquisition: radius scan + validate cascade + bias scoring"
     layer: [authority]
@@ -161,7 +162,7 @@ features:
       - { name: "LOS firetolerance", base: "aim_firetolerance_dist (sv_turrets.qc:791)", port: "p.FireToleranceDist (>0 ? unit value : 64f)", match: true }
       - { name: "out-of-range penalty", base: "score *= 0.001", port: "same", match: true }
       - { name: "support score func", base: "turret_targetscore_support", port: "no separate support score func", match: false }
-      - { name: "TurretValidateTarget mutator hook", base: "yes", port: "not modeled", match: false }
+      - { name: "TurretValidateTarget mutator hook", base: "if(MUTATOR_CALLHOOK(TurretValidateTarget,turret,target,flags)) return M_ARGV(3,float)", port: "ValidTarget calls MutatorHooks.FireTurretValidateTarget after the alpha-cull, before NO/dead; non-null override short-circuits (true=valid/false=reject) — TurretAI.cs:343 (FIXED Wave-16)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -173,12 +174,11 @@ features:
     divergence_rationale: null
     gaps:
       - "No separate turret_targetscore_support path (support units score like combat units)."
-      - "TurretValidateTarget mutator hook not modeled (no mutator can override target validity)."
     verification:
       - { kind: test, ref: "TurretTargetingTests.cs (validate cascade + scoring)", result: pass }
-      - { kind: code_read, ref: "turret_validate_target/select_target/targetscore_generic vs TurretAI; ValidTarget threads p.FireToleranceDist into the LOS reject AND now runs the checkpvs gate (Api.Trace.CheckPvs) before alpha/team/range", result: pass }
+      - { kind: code_read, ref: "turret_validate_target/select_target/targetscore_generic vs TurretAI; ValidTarget threads p.FireToleranceDist into the LOS reject, runs the checkpvs gate (Api.Trace.CheckPvs) before alpha/team/range, AND (Wave-16) fires MutatorHooks.FireTurretValidateTarget (real HookChain, fast-path when empty) right after the alpha-cull — a non-null override fully replaces the validity result (TurretAI.cs:343, MutatorHooks.cs:1379)", result: pass }
     confidence: high
-    notes: "Validate cascade + scoring faithful; Wave-7 added the checkpvs reject gate matching validate_target:688 (no-op on unvised maps exactly like DarkPlaces). Support-score func + validate mutator hook still diverge."
+    notes: "FIX vs baseline (TurretValidateTarget mutator hook now ported + live): Wave-16 wired the EV_TurretValidateTarget hook into ValidTarget (TurretAI.cs:343) via the real HookChain dispatcher (MutatorHooks.cs:1379) — a handler's nullable-bool override force-accepts/force-rejects a candidate, matching validate_target's `return M_ARGV(3,float)`. No stock mutator registers it (fast-path no-op in stock play), exactly like Base. Validate cascade + scoring stay faithful; the checkpvs reject gate (Wave-7) matches validate_target:688. Only the separate turret_targetscore_support path still diverges (support units score like combat units)."
   - id: turret-framework.aim.predict
     name: "Aim prediction: lead + shot-traveltime + z-gravity + splash (turret_aim_generic)"
     layer: [authority]
@@ -219,25 +219,24 @@ features:
       - { name: "FLUIDPRECISE(2)", base: "clamp move to aim_speed, integrate avel", port: "same", match: true }
       - { name: "track_blendrate", base: "0.35", port: "0.35f", match: true }
       - { name: "track_accel_pitch/rot", base: "0.5", port: "0.5f", match: true }
-      - { name: "non-step default aim_speed", base: "180", port: "not modeled (uses unit aim_speed)", match: false }
+      - { name: "non-step default aim_speed", base: "180 (turret_initialize: non-STEPMOTOR aim_speed default-fill)", port: "aimSpeed fallback now track-type-aware: StepMotor->36, else 180 (TurretAI.cs:622) (FIXED Wave-16)", match: true }
       - { name: "10th-frame TNSF_ANG force", base: "yes", port: "n/a (no networking)", match: false }
       - { name: "STEPMOTOR negative-pitch clamp", base: "BUGGED: sv_turrets.qc:574-575 sets angles.x=+aim_maxpitch on the < -aim_maxpitch branch", port: "symmetric Bound(-aimMaxPitch,..,aimMaxPitch) (TurretAI.cs:544)", match: false }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: true
     divergence_rationale: "Port silently corrects a QC bug: the STEPMOTOR pitch clamp in turret_track (sv_turrets.qc:574-575) sets tur_head.angles.x to +aim_maxpitch even on the under-limit (< -aim_maxpitch) branch, snapping the head to max-up instead of max-down. The port uses a symmetric Bound, so a stepmotor turret at the lower pitch limit holds -aim_maxpitch. Behaviourally affects only the rare stepmotor turret driven hard past its lower pitch limit."
-    gaps:
-      - "Non-stepmotor default aim_speed fill (180 in turret_initialize) not applied — fluid turrets that leave aim_speed unset would slew differently (port uses the unit's aim_speed const directly)."
+    gaps: []
     verification:
       - { kind: test, ref: "TurretAimTrackTests.cs (stepmotor/fluid clamp tests)", result: pass }
-      - { kind: code_read, ref: "turret_track vs TurretAI.Track", result: pass }
+      - { kind: code_read, ref: "turret_track vs TurretAI.Track; aimSpeed fallback is now track-type-aware (StepMotor->36, fluid->180) at TurretAI.cs:622", result: pass }
     confidence: high
-    notes: "All three track motors + per-axis clamps faithful; the fluid-mode aim_speed default-fill is the only value gap (none of the ported turrets rely on it). Unchanged 06-25."
+    notes: "FIX vs baseline (values partial -> faithful): Wave-16 ported the non-stepmotor aim_speed default-fill — the unset-aim_speed fallback is now 36 for STEPMOTOR and 180 for fluid motors (TurretAI.cs:622), matching turret_initialize's per-track-type default. All three track motors + per-axis clamps stay faithful. (Every shipped turret passes a non-zero AimSpeed, so this only corrects the never-hit unset fallback — but the value now matches Base.) The symmetric lower-pitch clamp remains a sanctioned intended_divergence (it fixes a QC bug). 10th-frame TNSF_ANG force is n/a (no turret networking)."
   - id: turret-framework.fire.gate
     name: "Fire gate + fire bookkeeping (turret_firecheck / turret_fire)"
     layer: [authority]

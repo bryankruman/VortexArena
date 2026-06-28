@@ -7,10 +7,9 @@ summary:
   worst_gaps:
     - "Maximized fullscreen radar entirely absent: no m-bind, no fullscreen tactical overview, no separate maximized rotation/zoom/scale runtime (cvars registered + dialog-exposed but never consumed)."
     - "Clickable maximized radar absent: no ONS spawn-point select (cmd ons_spawn), no teleport-click, no mouse/key/ESC/showscores input, no 'Click to select…' prompt, no icon hover-glow."
-    - "Onslaught radar links (ENT_CLIENT_RADARLINK / draw_teamradar_link) not networked or drawn — ONS radar shows control points but no connection lines."
     - "TeamRadar_Draw client mutator hook unported: mutators cannot add custom blips, and its return value (ORed into the per-icon hover-glow team gate) is unmodeled."
-    - "Minimap bounds come from raw BSP worldspawn model mins/maxs, not the authored minimap texcoord rect (get_mi_min_max_texcoords); misaligns on maps whose minimap rect != BSP bounds. Port also draws the dark playfield + blips even when no minimap image resolves (Base hard-gates the whole radar on minimapname != \"\")."
-    - "Zoom/scale is a RangeUnits=2500 + scale/4 heuristic, not the Base mi_scale/scale2d bigsize/normalsize blend (the actual arena-fit big size is approximated by a fixed 2500u range)."
+    - "dynamichud scaling toggle (hud_panel_radar_dynamichud) + HUD_Radar_Export cvar-to-skin round-trip unported: the radar never participates in dynamic-HUD scaling and its 8 aesthetic cvars don't export to a saved skin."
+    - "Minimap bounds come from raw BSP worldspawn model mins/maxs, not the authored minimap texcoord rect (get_mi_min_max_texcoords); also scale2d is assumed 1 in the zoom/scale fit — both misalign on maps whose authored minimap rect != BSP bounds."
 
 features:
   - id: cl-teamradar.transform.coords
@@ -199,24 +198,30 @@ features:
       - "client/teamradar.qc:draw_teamradar_link"
       - "client/teamradar.qc:NET_HANDLE(ENT_CLIENT_RADARLINK)"
       - "client/hud/panel/radar.qc:IL_EACH(g_radarlinks ...) (line 301)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:CollectRadarLinks (line 900)"
+      - "game/net/ServerNet.cs:SendRadarLinks (line 1259; called in the per-tick send loop, line 494)"
+      - "game/net/ClientNet.cs:HandleRadarLinks (line 719) + RadarLinks list (line 717)"
+      - "game/hud/RadarPanel.cs:DrawLinkQuad (line 472) + RadarLinks loop (lines 347-362)"
+      - "game/net/NetProtocol.cs:NetControl.RadarLinks = 23"
     constants:
-      - { name: "link colors", base: "colormapPaletteColor(colors&0x0F) / ((colors&0xF0)/0x10)", port: "none", match: false }
+      - { name: "link colors", base: "colormapPaletteColor(colors&0x0F) / ((colors&0xF0)/0x10)", port: "TeamColor(seg.TeamA/TeamB) = Team_ColorRGB per end (server sends each end's NUM_TEAM_* code; 0 = neutral/white)", match: partial }
+      - { name: "endpoints", base: "RADARLINK ent carries origin + velocity(=end) per link", port: "CollectRadarLinks walks the ONS node graph, emits one undirected edge per neighbor pair with both world XY origins", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Onslaught radar links (ENT_CLIENT_RADARLINK / draw_teamradar_link / g_radarlinks) not networked or drawn — ONS radar shows control points but no connection lines."
+      - "Per-end color uses Team_ColorRGB (the radar team palette) instead of Base's colormapPaletteColor(colors & 0x0F / 0xF0) console-palette lookup; the team intent matches but the exact RGBs can differ slightly. Neutral/uncaptured ends map to white (0), close to Base's neutral."
     verification:
-      - { kind: grep, ref: "no RADARLINK / g_radarlinks / draw_teamradar_link in port (only Base + onslaught spec mention it)", result: fail }
+      - { kind: code, ref: "Onslaught.CollectRadarLinks (node-graph edges, both endpoints required) → ServerNet.SendRadarLinks (NetControl.RadarLinks, broadcast unreliable, in the live send loop @494) → ClientNet.HandleRadarLinks (decode into RadarLinks) → RadarPanel DrawLinkQuad (per-end-tinted quad between the two screen points, drawn under blips/icons). Onslaught is a registered live gametype (NetName=ons).", result: pass }
     confidence: high
-    notes: "Depends on Onslaught being in scope at all for the port (see registry/onslaught.yaml)."
+    notes: "FIX since 2026-06-22 (was fully missing/na): the whole ONS radar-link path is now ported and live end-to-end — server collects control-point/generator connection edges from the node graph, broadcasts them each tick, client decodes + draws a per-end team-tinted quad between the endpoints under the blips. Only residual: per-end color source is Team_ColorRGB not colormapPaletteColor (values: partial)."
 
   - id: cl-teamradar.maximized.map
     name: "Maximized fullscreen tactical radar (m bind)"
@@ -310,27 +315,30 @@ features:
       - "game/hud/RadarPanel.cs:DrawPanel (rangeUnits blend)"
     constants:
       - { name: "hud_panel_radar_scale default", base: "4096 (teamradar_loadcvars when 0)", port: "registered 4096; draw also falls back to 4096 when <=0/non-finite", match: true }
-      - { name: "ScaleReferenceDivisor", base: "mi_scale/scale2d-derived normalsize, vlen_maxnorm2d", port: "scale/4 heuristic + RangeUnits=2500 bigsize", match: false }
+      - { name: "bigsize (fit-arena)", base: "vlen_minnorm2d(size)*scale2d / (1.05*vlen(mi_scale)) for rotation 0; rotated-bbox fit for fixed rotation", port: "exact: sizeMin*scale2d/(1.05*diag(miScale)) for rotation 0; rotates the 4 world corners and fits the axis-aligned span for fixed rotation (RadarPanel.cs:235-261)", match: partial }
+      - { name: "normalsize", base: "vlen_maxnorm2d(size)*scale2d / scale, floored to bigsize", port: "sizeMax*scale2d/scale, floored to bigsize (RadarPanel.cs:263-266)", match: true }
+      - { name: "scale2d", base: "vlen_maxnorm2d(mi_picmax - mi_picmin)", port: "hardcoded 1f (assumes the gfx/<map>_mini texcoord rect is the full [0,1] square)", match: partial }
+      - { name: "teamradar_size blend", base: "zoom*bigsize + (1-zoom)*normalsize", port: "zoomFactor*bigsize + (1-zoomFactor)*normalsize (RadarPanel.cs:268)", match: true }
       - { name: "zoommode 0", base: "current_zoomfraction (live +zoom lerp)", port: "ZoomFraction (host-fed current_zoomfraction)", match: true }
       - { name: "zoommode 1", base: "1 - current_zoomfraction", port: "1 - ZoomFraction", match: true }
       - { name: "zoommode 2/3", base: "0 (normal) / 1 (big)", port: "0 / 1", match: true }
-      - { name: "center", base: "zoom*mi_center + (1-zoom)*view_origin", port: "zoom*mapCenter + (1-zoom)*viewOrigin when HasMapBounds, else viewOrigin", match: partial }
+      - { name: "center", base: "zoom*mi_center + (1-zoom)*view_origin", port: "zoom*mapCenter + (1-zoom)*viewOrigin when HasMapBounds, else viewOrigin (RadarPanel.cs:289-295)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: partial
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Zoom/scale uses a RangeUnits=2500 + scale/ScaleReferenceDivisor heuristic for the bigsize/normalsize endpoints, not the Base mi_scale/scale2d-derived sizes; the actual arena-fit big size is approximated by a fixed 2500u range."
-      - "Big-zoom recentering only happens when map bounds are loaded (HasMapBounds); the standalone path always has bounds, so this is live there, but the heuristic scale endpoints still differ from Base's exact fit."
+      - "scale2d is hardcoded to 1 (assumes mi_picmin=(0,0)/mi_picmax=(1,1), i.e. the minimap image covers the full [mi_min,mi_max] rect); maps with a hand-authored _radar texcoord sub-rect would get a slightly wrong fit. Inherits the same BSP-bounds-vs-authored-rect caveat as background.minimap."
+      - "RangeUnits=2500 + scale/ScaleReferenceDivisor heuristic still exists but only on the degenerate no-map-bounds fallback (HasMapBounds false); the live standalone + discovered paths always have bounds and use the real Base bigsize/normalsize math."
     verification:
-      - { kind: code, ref: "GetZoomFactor uses live ZoomFraction for modes 0/1 (matches current_zoomfraction); center now blends mapCenter/viewOrigin by zoomFactor (RadarPanel.cs:235-241). Scale endpoints still ScaleReferenceDivisor=4 heuristic, not mi_scale/scale2d", result: partial }
+      - { kind: code, ref: "DrawPanel HasMapBounds branch (RadarPanel.cs:222-271) ports the Base mi_scale/scale2d bigsize (rotation-0 diagonal fit + fixed-rotation rotated-corner-span fit) and normalsize (sizeMax*scale2d/scale floored to bigsize), blended by zoomFactor — the old ScaleReferenceDivisor heuristic now only runs on the no-bounds fallback. GetZoomFactor uses live ZoomFraction for modes 0/1; center blends mi_center/view_origin by zoomFactor", result: pass }
     confidence: high
-    notes: "FIXES since 2026-06-22: zoommode 0/1 now follow the live ZoomFraction (was static 0/1), and the big-zoom map-center recentering (zoom*mi_center + (1-zoom)*view_origin) is now ported. Residual divergence is only the bigsize/normalsize scale heuristic (fixed 2500u range vs Base's mi_scale/scale2d fit)."
+    notes: "FIX since the prior pass: the RangeUnits=2500 + scale/4 heuristic that drove logic/presentation partial is REPLACED on the live (HasMapBounds) path by the actual Base mi_scale/scale2d bigsize/normalsize blend, including the rotated-arena-bbox fit for fixed rotation and the floor-to-bigsize. logic/presentation now faithful. values stays partial only because scale2d is assumed 1 (BSP-bounds == full minimap rect) rather than derived from the authored texcoords, and the heuristic survives on the unreachable-in-practice no-bounds fallback."
 
   - id: cl-teamradar.cvar.defaults
     name: "cvar registration + defaults / panel enable + visibility"

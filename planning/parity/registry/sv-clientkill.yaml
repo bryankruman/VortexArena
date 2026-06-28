@@ -7,6 +7,7 @@ summary:
   worst_gaps:
     - "Floating kill-indicator digit entity (setmodel MDL_NUM above the head + g_clones copies + colormod tint) is still not networked — only the announcer + center-print presentation subset is driven (indicator.entity unchanged)."
     - "`kill` still has no player_blocked gate (CmdKill checks FragsSpectator/IsDead + KillCountdown checks game_stopped, but Base also bails on this.player_blocked — a minor residual gate gap)."
+  reaudit_note: "2026-06-27 re-audit (Waves 16-17): re-read all current port files (KillCountdown.cs, GameWorld.cs host wiring, Commands.cs handlers + registrations, Cts.cs retract, Cvars.cs, NotificationsList.cs) and built the server project green. All 12 rows confirmed at their prior status — Waves 16-17 only shifted line numbers (~+70 lines: Tick drive GameWorld.cs:1850, cts.OnFinishRetract :3139, CmdKill Commands.cs:1696, ClientKillHook GameWorld.cs:968), no status change. Refreshed the drifted line refs below. Found one omission in the impulse.waypoint_kill row note: the live gate ALSO requires p.PersonalCheckpoint != null (QC `if(this.personal)` wrap) — that is MORE faithful than the row claimed, not a regression."
 features:
   - id: sv-clientkill.command.kill
     name: "`kill` console command → suicide"
@@ -15,9 +16,9 @@ features:
       - "server/clientkill.qc:226 ClientKill"
       - "server/command/cmd.qc:552"
     port_refs:
-      - "src/XonoticGodot.Server/Commands.cs:1642 CmdKill"
-      - "src/XonoticGodot.Server/Commands.cs:796 (Register \"kill\")"
-      - "src/XonoticGodot.Server/KillCountdown.cs Begin (CmdKill → KillCountdown.Begin(p,0))"
+      - "src/XonoticGodot.Server/Commands.cs:1696 CmdKill"
+      - "src/XonoticGodot.Server/Commands.cs:814 (Register \"kill\")"
+      - "src/XonoticGodot.Server/KillCountdown.cs:77 Begin (CmdKill → KillCountdown.Begin(p,0) at Commands.cs:1705)"
     constants: []
     status:
       logic: faithful
@@ -31,9 +32,9 @@ features:
     gaps:
       - "Base also bails on `this.player_blocked` before deferring; the port handles game_stopped (KillCountdown.Begin checks GameStopped) but has no player_blocked equivalent — a minor residual gate gap."
     verification:
-      - { kind: code, ref: "CmdKill (Commands.cs:1642-1652) defers through _world.KillCountdown.Begin(p,0) instead of an immediate Combat.Damage; PerformKill (GameWorld.cs:898-918) is Combat.Damage(p,p,p,100000,DEATH_KILL) — self as attacker/inflictor, matching Base Damage(this,this,this). Begin falls back to an immediate kill when delay<=0. Registered Commands.cs:796. FragsSpectator/IsDead guards at :1646-1647.", result: pass }
+      - { kind: code, ref: "CmdKill (Commands.cs:1696-1707) defers through _world.KillCountdown.Begin(p,0) (:1705) instead of an immediate Combat.Damage; PerformKill (GameWorld.cs:942-962) is Combat.Damage(p,p,p,100000,DEATH_KILL) — self as attacker/inflictor, matching Base Damage(this,this,this). Begin falls back to an immediate kill when delay<=0. Registered Commands.cs:814. FragsSpectator/IsDead guards at :1700-1701.", result: pass }
     confidence: high
-    notes: "Unchanged vs 2026-06-22 (faithful/live). CmdKill begins the g_balance_kill_delay countdown and the self-kill passes (p,p,p). Residual: player_blocked gate still not modeled."
+    notes: "2026-06-27 re-audit (Waves 16-17): re-confirmed faithful/live against the current tree, no change. CmdKill begins the g_balance_kill_delay countdown and the self-kill passes (p,p,p). Residual: player_blocked gate still not modeled."
   - id: sv-clientkill.countdown.delay
     name: "g_balance_kill_delay countdown timer before death"
     layer: [authority]
@@ -41,11 +42,11 @@ features:
       - "server/clientkill.qc:94 ClientKill_TeamChange"
       - "server/clientkill.qc:61 KillIndicator_Think"
     port_refs:
-      - "src/XonoticGodot.Server/Cvars.cs:164 (register g_balance_kill_delay \"2\")"
+      - "src/XonoticGodot.Server/Cvars.cs:170 (register g_balance_kill_delay \"2\")"
       - "src/XonoticGodot.Server/KillCountdown.cs Begin/Tick (ceil(killtime) countdown, per-second decrement, kill at 0)"
-      - "src/XonoticGodot.Server/GameWorld.cs:892 (KillDelay = Cvars.FloatOr g_balance_kill_delay 2); :1779-1781 Tick drive"
+      - "src/XonoticGodot.Server/GameWorld.cs:936 (KillDelay = Cvars.FloatOr g_balance_kill_delay 2); :1848-1850 Tick drive"
     constants:
-      - { name: "g_balance_kill_delay", base: "2 (s)", port: "2 (Cvars.cs:164, read via Cvars.FloatOr GameWorld.cs:892)", match: true }
+      - { name: "g_balance_kill_delay", base: "2 (s)", port: "2 (Cvars.cs:170, read via Cvars.FloatOr GameWorld.cs:936)", match: true }
       - { name: "round_unstarted_clamp", base: "min(killtime,1)", port: "min(killtime,1) when RoundActiveNotStarted (KillCountdown.cs:92-93)", match: true }
     status:
       logic: faithful
@@ -59,20 +60,20 @@ features:
     gaps:
       - "The lip-stagger first-think offset (nextthink = starttime + lip*0.05) is not modeled — the first think fires on the next driven tick (a cosmetic clones detail, KillCountdown.cs:136-138)."
     verification:
-      - { kind: code, ref: "Cvars.cs:164 registers g_balance_kill_delay default 2 (= Base xonotic-server.cfg:446). KillCountdown.Begin sets cnt=ceil(killtime) and clamps to min(killtime,1) when RoundActiveNotStarted (= Rounds.IsRoundStarted false, GameWorld.cs:895); Tick decrements once per whole second and fires PerformKill at cnt<=0. Driven over killCountdownPlayers each frame (GameWorld.cs:1779-1781).", result: pass }
+      - { kind: code, ref: "Cvars.cs:170 registers g_balance_kill_delay default 2 (= Base xonotic-server.cfg:446). KillCountdown.Begin sets cnt=ceil(killtime) and clamps to min(killtime,1) when RoundActiveNotStarted (= Rounds.IsRoundStarted false, GameWorld.cs:939); Tick decrements once per whole second and fires PerformKill at cnt<=0. Driven over killCountdownPlayers each frame (GameWorld.cs:1848-1850).", result: pass }
     confidence: high
-    notes: "Unchanged vs 2026-06-22 (faithful/live). The round-active-not-started <=1s clamp is present."
+    notes: "2026-06-27 re-audit (Waves 16-17): re-confirmed faithful/live, no change. The round-active-not-started <=1s clamp is present (KillCountdown.cs:92-93)."
   - id: sv-clientkill.antispam.penalty
     name: "g_balance_kill_antispam repeat-use penalty (clientkill_nexttime)"
     layer: [authority]
     base_refs:
       - "server/clientkill.qc:146 ClientKill_TeamChange"
     port_refs:
-      - "src/XonoticGodot.Server/Cvars.cs:167 (register g_balance_kill_antispam \"5\")"
-      - "src/XonoticGodot.Server/GameWorld.cs:894 (KillAntispam = Cvars.FloatOr g_balance_kill_antispam 5)"
+      - "src/XonoticGodot.Server/Cvars.cs:173 (register g_balance_kill_antispam \"5\")"
+      - "src/XonoticGodot.Server/GameWorld.cs:938 (KillAntispam = Cvars.FloatOr g_balance_kill_antispam 5)"
       - "src/XonoticGodot.Server/KillCountdown.cs:116-123 Begin (carry-forward: killtime=max(killtime, nexttime-now); nexttime=now+killtime+antispam, antispam clamped to min(.,2) while round unstarted)"
     constants:
-      - { name: "g_balance_kill_antispam", base: "5 (s); XPM/XDF set 0", port: "5 (Cvars.cs:167, read via Cvars.FloatOr GameWorld.cs:875)", match: true }
+      - { name: "g_balance_kill_antispam", base: "5 (s); XPM/XDF set 0", port: "5 (Cvars.cs:173, read via Cvars.FloatOr GameWorld.cs:938)", match: true }
       - { name: "round_unstarted_antispam_clamp", base: "min(antispam,2)", port: "min(antispam,2) when RoundActiveNotStarted (KillCountdown.cs:120-121)", match: true }
     status:
       logic: faithful
@@ -85,9 +86,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "KillCountdown.Begin (KillCountdown.cs:111-123) — when no countdown is running and the player is alive: killtime = max(killtime, KillCntdownNextTime - Now()) then KillCntdownNextTime = Now() + killtime + antispam, with antispam = min(KillAntispam(), 2) while RoundActiveNotStarted. KillCntdownNextTime persists on ServerPlayerState. Cvar registered Cvars.cs:167 default 5 (= Base xonotic-server.cfg:447); wired GameWorld.cs:894.", result: pass }
+      - { kind: code, ref: "KillCountdown.Begin (KillCountdown.cs:111-123) — when no countdown is running and the player is alive: killtime = max(killtime, KillCntdownNextTime - Now()) then KillCntdownNextTime = Now() + killtime + antispam, with antispam = min(KillAntispam(), 2) while RoundActiveNotStarted. KillCntdownNextTime persists on ServerPlayerState. Cvar registered Cvars.cs:173 default 5 (= Base xonotic-server.cfg:447); wired GameWorld.cs:938.", result: pass }
     confidence: high
-    notes: "FIXED in Wave 6c (commit ba3ae47): baseline recorded this fully missing + cvar unregistered. The cvar is now registered (default 5), wired, and the clientkill_nexttime carry-forward (raise killtime by the still-pending window, push next-allowed-kill out by killtime+antispam) is implemented including the round-unstarted min(antispam,2) clamp — bit-faithful to clientkill.qc:144-151."
+    notes: "FIXED in Wave 6c (commit ba3ae47); 2026-06-27 re-audit (Waves 16-17) re-confirmed faithful/live, no change. The cvar is registered (default 5), wired, and the clientkill_nexttime carry-forward (raise killtime by the still-pending window, push next-allowed-kill out by killtime+antispam) is implemented including the round-unstarted min(antispam,2) clamp — bit-faithful to clientkill.qc:144-151."
   - id: sv-clientkill.indicator.entity
     name: "Kill-indicator floating digit entity above the head"
     layer: [presentation]
@@ -114,9 +115,9 @@ features:
       - "Clones on g_clones ghosts (the IL_EACH(g_clones) killindicator copy on each non-respawnghost clone) are also absent."
       - "The digit-entity colormod tint (black / grey / Team_ColorRGB) is unmodeled."
     verification:
-      - { kind: grep, ref: "no killindicator/KillIndicator/MDL_NUM digit-entity symbol in the port src tree; KillCountdown.cs:12-14 + :238-240 document the digit entity as out of scope (not networked)", result: fail }
+      - { kind: grep, ref: "2026-06-27 re-audit: killindicator/MDL_NUM appear ONLY in comments (GameWorld.cs) + the KillCntdown* state-field subset (ServerPlayerState.cs, KillCountdown.cs) — no floating digit *entity* is spawned or networked. KillCountdown.cs:11-14 + :238-240 document the digit entity as out of scope.", result: fail }
     confidence: high
-    notes: "Unchanged from baseline. CSQC shows MDL_NUM digits 1..10 in Base; the port models only the spoken announcer + center-print countdown, never the world-space digit model."
+    notes: "Unchanged through Waves 16-17 (still missing/na). CSQC shows MDL_NUM digits 1..10 in Base; the port models only the spoken announcer + center-print countdown, never the world-space digit model. This is the only open dimension for the unit."
   - id: sv-clientkill.announcer.number
     name: "Spoken kill countdown announcer (ANNCE_NUM_KILL_n)"
     layer: [presentation]
@@ -124,9 +125,9 @@ features:
       - "server/clientkill.qc:84 KillIndicator_Think (Send_Notification MSG_ANNCE)"
       - "common/util.qc Announcer_PickNumber (CNT_KILL)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:177 (NUM_KILL_n enabled:false)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:177 (NUM_KILL_n generated enabled:false in the 1..10 loop)"
       - "src/XonoticGodot.Server/KillCountdown.cs:221-222 Tick (AnnceIfEnabled NUM_KILL_n)"
-      - "src/XonoticGodot.Server/GameWorld.cs:1779-1781 (KillCountdown.Tick drive)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1848-1850 (KillCountdown.Tick drive over Clients.Players)"
     constants:
       - { name: "NUM_KILL announcer set", base: "ANNCE_NUM_KILL_1..10 (CNT_KILL)", port: "NUM_KILL_n enabled:false (Base N___NEVER); sent per-second from KillCountdown.Tick gated on Enabled", match: true }
     status:
@@ -141,9 +142,9 @@ features:
     gaps:
       - "The spoken kill countdown stays silent by default (NUM_KILL ships disabled — Base N___NEVER), which is faithful; it becomes live the instant the player enables the kill announcer."
     verification:
-      - { kind: code, ref: "KillCountdown.Tick (KillCountdown.cs:221-222) sends MSG_ANNCE NUM_KILL_<cnt> each whole second for cnt<=10, gated via AnnceIfEnabled on the notification's shipped Enabled flag; driven from GameWorld.OnStartFrame (:1779-1781). Silent (CTS-finish) indicators skip the announcer (count==1 guard). Now reachable from suicide AND team-change/spectate (both route through Begin).", result: pass }
+      - { kind: code, ref: "KillCountdown.Tick (KillCountdown.cs:221-222) sends MSG_ANNCE NUM_KILL_<cnt> each whole second for cnt<=10, gated via AnnceIfEnabled on the notification's shipped Enabled flag; driven from GameWorld.OnStartFrame (:1848-1850). Silent (CTS-finish) indicators skip the announcer (count==1 guard). Reachable from suicide AND team-change/spectate (both route through Begin).", result: pass }
     confidence: high
-    notes: "Unchanged vs 2026-06-22 (faithful/live): the NUM_KILL announcer has a live per-second send path; now also driven on the deferred team-change/spectate path. Floating digit entity still not networked (separate row indicator.entity)."
+    notes: "2026-06-27 re-audit (Waves 16-17): re-confirmed faithful/live, no change. NUM_KILL ships enabled:false (NotificationsList.cs:177, = Base N___NEVER) and the Tick AnnceIfEnabled gate honors it; the announcer has a live per-second send path on both suicide and deferred team-change/spectate. Floating digit entity still not networked (separate row indicator.entity)."
   - id: sv-clientkill.centerprint.teamchange
     name: "Center-print 'Suicide/Changing to TEAM/Spectating in N'"
     layer: [presentation]
@@ -151,10 +152,10 @@ features:
       - "server/clientkill.qc:188 ClientKill_TeamChange (Send_Notification MSG_CENTER)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1054-1060 (CENTER_TEAMCHANGE_*)"
-      - "src/XonoticGodot.Server/KillCountdown.cs:141-148 Begin (CENTER_TEAMCHANGE_* send with ^COUNT)"
-      - "src/XonoticGodot.Server/Commands.cs:1584 CmdSelectTeam (TEAMCHANGE_ALREADYBEST)"
+      - "src/XonoticGodot.Server/KillCountdown.cs:141-148 Begin (CENTER_TEAMCHANGE_* send with ^COUNT) + :241-250 TeamChangeCenterName"
+      - "src/XonoticGodot.Server/Commands.cs:1638 CmdSelectTeam (TEAMCHANGE_ALREADYBEST)"
     constants:
-      - { name: "notif set", base: "CENTER_TEAMCHANGE_{SUICIDE,SPECTATE,RED,BLUE,YELLOW,PINK,ALREADYBEST}", port: "SUICIDE/SPECTATE/RED/BLUE/YELLOW/PINK emitted with ^COUNT by KillCountdown.Begin (now reachable on suicide AND team-change/spectate); ALREADYBEST emitted by CmdSelectTeam auto-path (Commands.cs:1584)", match: true }
+      - { name: "notif set", base: "CENTER_TEAMCHANGE_{SUICIDE,SPECTATE,RED,BLUE,YELLOW,PINK,ALREADYBEST}", port: "SUICIDE/SPECTATE/RED/BLUE/YELLOW/PINK emitted with ^COUNT by KillCountdown.Begin (reachable on suicide AND team-change/spectate); ALREADYBEST emitted by CmdSelectTeam auto-path (Commands.cs:1638)", match: true }
       - { name: "colormod", base: "black '0 0 0' / grey '0.5 0.5 0.5' / Team_ColorRGB", port: "none (digit-entity detail, not networked)", match: false }
     status:
       logic: faithful
@@ -168,9 +169,9 @@ features:
     gaps:
       - "colormod (the digit entity's tint) is not modeled — the digit entity is not networked (indicator.entity)."
     verification:
-      - { kind: code, ref: "KillCountdown.Begin (KillCountdown.cs:141-148) sends MSG_CENTER TEAMCHANGE_<target> with cnt as the ^COUNT arg; TeamChangeCenterName maps 0/-2/team→notif (:241-250). CmdKill→Begin(p,0)=SUICIDE; CmdSelectTeam→Begin(caller,team|best)=RED/BLUE/YELLOW/PINK; CmdSpectate→Begin(p,-2)=SPECTATE; the auto-path ALREADYBEST early-out fires CENTER_TEAMCHANGE_ALREADYBEST (Commands.cs:1584).", result: pass }
+      - { kind: code, ref: "KillCountdown.Begin (KillCountdown.cs:143-148) sends MSG_CENTER TEAMCHANGE_<target> with cnt as the ^COUNT arg; TeamChangeCenterName maps 0/-2/team→notif (:241-250). CmdKill→Begin(p,0)=SUICIDE; CmdSelectTeam→Begin(caller,team|best)=RED/BLUE/YELLOW/PINK; CmdSpectate→Begin(p,-2)=SPECTATE; the auto-path ALREADYBEST early-out fires CENTER_TEAMCHANGE_ALREADYBEST (Commands.cs:1638).", result: pass }
     confidence: high
-    notes: "Improved in Wave 6c: baseline had only the suicide path reachable (notif set partial, RED/BLUE/YELLOW/PINK/SPECTATE wired-but-unreachable, ALREADYBEST unreachable). Now CmdSelectTeam/CmdSpectate route through Begin so the whole CENTER_TEAMCHANGE_* set is live; notif-set constant partial→match. Dimension statuses were already faithful/live; only colormod (digit-entity tint) remains unmodeled."
+    notes: "Improved in Wave 6c; 2026-06-27 re-audit (Waves 16-17) re-confirmed faithful/live, no change. CmdSelectTeam/CmdSpectate route through Begin so the whole CENTER_TEAMCHANGE_* set is live; notif-set constant matches. Only colormod (digit-entity tint) remains unmodeled (indicator.entity)."
   - id: sv-clientkill.teamchange.deferred
     name: "Deferred team change via killindicator_teamchange (selectteam/spectate)"
     layer: [authority]
@@ -180,9 +181,9 @@ features:
       - "server/command/cmd.qc:764 (selectteam → ClientKill_TeamChange)"
       - "server/command/cmd.qc:288,889 (spectate → ClientKill_TeamChange -2)"
     port_refs:
-      - "src/XonoticGodot.Server/Commands.cs:1545 CmdSelectTeam (auto/explicit → KillCountdown.Begin)"
-      - "src/XonoticGodot.Server/Commands.cs:1507 CmdSpectate (→ KillCountdown.Begin(p,-2))"
-      - "src/XonoticGodot.Server/KillCountdown.cs:174-184 PerformKillNow / GameWorld.cs:935 PerformTeamChange"
+      - "src/XonoticGodot.Server/Commands.cs:1599 CmdSelectTeam (auto/explicit → KillCountdown.Begin :1643/:1667)"
+      - "src/XonoticGodot.Server/Commands.cs CmdSpectate (→ KillCountdown.Begin(p,-2) :1594)"
+      - "src/XonoticGodot.Server/KillCountdown.cs:174-184 PerformKillNow / GameWorld.cs:979 PerformTeamChange"
     constants: []
     status:
       logic: faithful
@@ -194,11 +195,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The deferred move resolves through KillCountdown.PerformTeamChange (GameWorld.cs:935): -2 → PutObserverInServer; >0 → SetTeam + KillPlayerForTeamChange (+ synchronous bot autobalance for a human) + RemoveExcessPlayers tail. The auto (-1) defer-to-Join when team<=0 and the 'already on a best team' early-out are both handled in CmdSelectTeam (Commands.cs:1566/1581). Residual: lip-stagger first-think offset on the indicator is cosmetic-only (shared with countdown.delay)."
+      - "The deferred move resolves through KillCountdown.PerformTeamChange (GameWorld.cs:979): -2 → PutObserverInServer; >0 → SetTeam + KillPlayerForTeamChange (+ synchronous bot autobalance for a human) + RemoveExcessPlayers tail. The auto (-1) defer-to-Join when team<=0 and the 'already on a best team' early-out are both handled in CmdSelectTeam (Commands.cs:1620/1635). Residual: lip-stagger first-think offset on the indicator is cosmetic-only (shared with countdown.delay)."
     verification:
-      - { kind: code, ref: "CmdSelectTeam (Commands.cs:1545-1616): auto with team<=0 → AssignBestTeam as pending join team, no countdown (defer-to-Join); auto with a team → AssignBestTeam computes best, restores live team, ALREADYBEST early-out (:1581) else Begin(caller,best); explicit → IsTeamAllowedForSwitch gate then Begin(caller,team). CmdSpectate (:1507) → Begin(p,-2). PerformTeamChange (GameWorld.cs:935) resolves -2/>0 on expiry. The killtime<=0 && silent-indicator instant-kill shortcut is in Begin (KillCountdown.cs:102-106).", result: pass }
+      - { kind: code, ref: "CmdSelectTeam (Commands.cs:1599-1670): auto with team<=0 → AssignBestTeam as pending join team, no countdown (defer-to-Join); auto with a team → AssignBestTeam computes best, restores live team, ALREADYBEST early-out (:1635) else Begin(caller,best :1643); explicit → IsTeamAllowedForSwitch gate then Begin(caller,team :1667). CmdSpectate → Begin(p,-2) (:1594). PerformTeamChange (GameWorld.cs:979-1009) resolves -2/>0 on expiry. The killtime<=0 && silent-indicator instant-kill shortcut is in Begin (KillCountdown.cs:102-106).", result: pass }
     confidence: high
-    notes: "FIXED in Wave 6c (commit ba3ae47): baseline had logic partial + timing/presentation/audio missing (the move was INSTANT — CmdSelectTeam/CmdSpectate bypassed the countdown). Now both route through KillCountdown.Begin, so the deferral, cancel window, TEAMCHANGE_* center-print and per-second announcer all fire; the auto-select defer-to-Join, ALREADYBEST early-out, and silent-indicator instant-kill shortcut are all modeled."
+    notes: "FIXED in Wave 6c (commit ba3ae47); 2026-06-27 re-audit (Waves 16-17) re-confirmed faithful/live, no change. Both CmdSelectTeam/CmdSpectate route through KillCountdown.Begin, so the deferral, cancel window, TEAMCHANGE_* center-print and per-second announcer all fire; the auto-select defer-to-Join, ALREADYBEST early-out, and silent-indicator instant-kill shortcut are all modeled."
   - id: sv-clientkill.mutator.hooks
     name: "ClientKill / ClientKill_Now mutator gating (freezetag block, cts/race killtime)"
     layer: [authority]
@@ -208,7 +209,7 @@ features:
       - "common/gametypes/gametype/cts/sv_cts.qc:337 (killtime=0)"
       - "common/gametypes/gametype/race/sv_race.qc:114 (killtime=0 while qualifying)"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:924-933 (KillCountdown.ClientKillHook)"
+      - "src/XonoticGodot.Server/GameWorld.cs:968-977 (KillCountdown.ClientKillHook)"
       - "src/XonoticGodot.Server/KillCountdown.cs:88-89 Begin (ClientKillHook gate)"
     constants: []
     status:
@@ -223,9 +224,9 @@ features:
     gaps:
       - "Models the three live gametype hooks (ft block / cts / race) via a single host-wired ClientKillHook; the generic EV_ClientKill_Now mutator pipeline (events.qh:951, beyond these three gametypes) is not a general dispatch — but no other Base mutator subscribes to it, so coverage is complete for the shipped set."
     verification:
-      - { kind: code, ref: "KillCountdown.ClientKillHook (GameWorld.cs:924-933): `if (GameType is FreezeTag ft && ft.IsFrozen(p)) return true` forbids a frozen self-kill (closes the prior exploit; FreezeTag.IsFrozen FreezeTag.cs:274); `if (GameType is Cts) killtime=0` / `else if (GameType is Race rc && rc.Qualifying) killtime=0`. Invoked from KillCountdown.Begin (:88-89) before the countdown is armed.", result: pass }
+      - { kind: code, ref: "KillCountdown.ClientKillHook (GameWorld.cs:968-977): `if (GameType is FreezeTag ft && ft.IsFrozen(p)) return true` forbids a frozen self-kill (closes the prior exploit); `if (GameType is Cts) killtime=0` / `else if (GameType is Race rc && rc.Qualifying) killtime=0`. Invoked from KillCountdown.Begin (:88-89) before the countdown is armed.", result: pass }
     confidence: high
-    notes: "FIXED in Wave 6c (commit ba3ae47): baseline recorded no ClientKill mutator hook anywhere (the confirmed frozen-self-kill exploit). The ClientKillHook is now wired and invoked from Begin: a frozen freezetag/CA player can no longer self-kill (ft returns FROZEN), and cts/race force killtime=0 (instant) — matching the three live Base hooks."
+    notes: "FIXED in Wave 6c (commit ba3ae47); 2026-06-27 re-audit (Waves 16-17) re-confirmed faithful/live, no change. The ClientKillHook is wired and invoked from Begin: a frozen freezetag/CA player can no longer self-kill (ft returns FROZEN), and cts/race force killtime=0 (instant) — matching the three live Base hooks."
   - id: sv-clientkill.silent.cts_finish
     name: "Silent finish kill (ClientKill_Silent, g_cts_finish_kill_delay)"
     layer: [authority]
@@ -235,7 +236,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:416 ScheduleRetract"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:430 RetractRunner"
-      - "src/XonoticGodot.Server/GameWorld.cs:2989 (cts.OnFinishRetract = silent Combat.Damage DEATH_KILL)"
+      - "src/XonoticGodot.Server/GameWorld.cs:3139 (cts.OnFinishRetract = silent Combat.Damage DEATH_KILL)"
     constants:
       - { name: "g_cts_finish_kill_delay", base: "2 (s); -1 instant, 0 never", port: "2 default; 0 = no retract (gated, Cts.cs:423-424); -1 = instant (Max(0,delay)=now); positive duration honored", match: true }
     status:
@@ -250,9 +251,9 @@ features:
     gaps:
       - "ScheduleRetract uses a private _retractAt timer rather than routing the CTS finish through KillCountdown.BeginSilent, but the expiry now runs the real silent DEATH_KILL (not a respawn), honors the kill delay, and handles 0/-1 — behaviorally equivalent to ClientKill_Silent."
     verification:
-      - { kind: code, ref: "Cts.ScheduleRetract (Cts.cs:416-427): `if (delay == 0f) return;` (Base 0 = never), else schedule now + Max(0,delay) so -1 fires this frame (= Base ceil(-1)→cnt<=0 instant). RetractRunner→OnFinishRetract; GameWorld.cs:2989 wires it to Combat.Damage(p,p,p,100000,DEATH_KILL) — a real silent self-kill producing a death event/obituary, with CTS's PlayerDies forcing an instant respawn.", result: pass }
+      - { kind: code, ref: "Cts.ScheduleRetract (Cts.cs:423-434): `if (delay == 0f) return;` (Base 0 = never), else schedule now + Max(0,delay) so -1 fires this frame (= Base ceil(-1)→cnt<=0 instant). RetractRunner (Cts.cs:437)→OnFinishRetract; GameWorld.cs:3139-3146 wires it to Combat.Damage(p,p,p,100000,DEATH_KILL) (gated on !IsDead/!IsObserver) — a real silent self-kill producing a death event/obituary, with CTS's PlayerDies forcing an instant respawn.", result: pass }
     confidence: high
-    notes: "FIXED in Wave 6c (commit ba3ae47): baseline had logic/values partial — OnFinishRetract was Clients.Spawn (a bare teleport-respawn, no death event) and Max(0,delay) collapsed both -1 and 0 to retract-now. Now the retract is a real DEATH_KILL (death/obituary/stat) and the 0 = never gate is honored (no retract scheduled), with -1 = instant correct."
+    notes: "FIXED in Wave 6c (commit ba3ae47); 2026-06-27 re-audit (Waves 16-17) re-confirmed faithful/live, no change. The retract is a real DEATH_KILL (death/obituary/stat), the 0 = never gate is honored (no retract scheduled), and -1 = instant is correct."
   - id: sv-clientkill.impulse.waypoint_kill
     name: "Impulse-driven kill on personal-waypoint clear (race/cts checkpoints)"
     layer: [authority]
@@ -260,9 +261,9 @@ features:
       - "server/impulse.qc:505 (waypoint clear → ClientKill)"
       - "server/impulse.qc:518 (waypoint_clear → ClientKill)"
     port_refs:
-      - "src/XonoticGodot.Server/Commands.cs:1813 CmdWaypointClear (→ KillCountdown.Begin :1835)"
+      - "src/XonoticGodot.Server/Commands.cs:1868 CmdWaypointClear (→ KillCountdown.Begin :1895)"
     constants:
-      - { name: "g_allow_checkpoints", base: "0", port: "0 (Cvars.cs:398)", match: true }
+      - { name: "g_allow_checkpoints", base: "0", port: "0 (Cvars.cs:408)", match: true }
     status:
       logic: faithful
       values: na
@@ -274,9 +275,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "CmdWaypointClear (Commands.cs:1813-1836): after clearing the sprite(s), `if ((GameType is Cts || GameType is Race) && Cvars.Bool(\"g_allow_checkpoints\") && !p.IsObserver && p.FragsStatus != FragsSpectator && !p.IsDead) KillCountdown.Begin(p,0)` — the checkpoint-reset self-kill. CTS forces killtime=0 via the ClientKill hook so the reset is instant. g_allow_checkpoints registered Cvars.cs:398 default 0. Routed from both waypoint_clear / waypoint_clear_personal (Commands.cs:782-785) and impulses 47/48 (:2093-2094).", result: pass }
+      - { kind: code, ref: "CmdWaypointClear (Commands.cs:1868-1898): after clearing the sprite(s), the personal-clear path `if (personalOnly && p.PersonalCheckpoint is not null && (GameType is Cts || GameType is Race) && Cvars.Bool(\"g_allow_checkpoints\") && !p.IsObserver && p.FragsStatus != FragsSpectator && !p.IsDead)` clears the checkpoint and runs KillCountdown.Begin(p,0) (:1894-1895) — the checkpoint-reset self-kill, gated on the QC `if(this.personal)` wrap. CTS forces killtime=0 via the ClientKill hook so the reset is instant. g_allow_checkpoints registered Cvars.cs:408 default 0. Routed from waypoint_clear_personal (Register Commands.cs:800).", result: pass }
     confidence: high
-    notes: "FIXED in Wave 6c (commit ba3ae47): baseline had this missing (waypoint clear removed the sprite only). The personal-checkpoint teleport-reset kill is now routed through the same kill machinery (Begin), gated on (cts||race)&&g_allow_checkpoints exactly like Base impulse.qc:504/517. Off by default (g_allow_checkpoints 0)."
+    notes: "FIXED in Wave 6c (commit ba3ae47); 2026-06-27 re-audit (Waves 16-17) re-confirmed faithful/live, no change. The personal-checkpoint teleport-reset kill routes through the same kill machinery (Begin), gated on personalOnly && PersonalCheckpoint!=null && (cts||race) && g_allow_checkpoints — the PersonalCheckpoint!=null gate models the Base `if(this.personal)` wrap (impulse.qc:504/517), MORE faithful than the prior note implied. Off by default (g_allow_checkpoints 0)."
   - id: sv-clientkill.clientkill_now.vehicle_exit
     name: "Eject from vehicle on self-kill (ClientKill_Now vehicles_exit)"
     layer: [authority]
@@ -284,12 +285,12 @@ features:
       - "server/clientkill.qc:38 ClientKill_Now (this.vehicle → vehicles_exit(VHEF_RELEASE))"
       - "server/clientkill.qc:41-45 (vehicle_health=-1; Damage(this,this,this,1,DEATH_KILL) when not a team-change)"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:904-915 (KillCountdown.PerformKill vehicle branch)"
+      - "src/XonoticGodot.Server/GameWorld.cs:948-961 (KillCountdown.PerformKill vehicle branch)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:261 Exit (VHEF_RELEASE eject)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:480 DamageVehicle (kill the empty vehicle)"
     constants:
       - { name: "exit_flag", base: "VHEF_RELEASE", port: "VehicleBoarding.Exit (release eject)", match: true }
-      - { name: "vehicle_dmg", base: "1 (DEATH_KILL) + vehicle_health=-1", port: "DamageVehicle(health+1, DEATH_KILL) — sentinel modeled as overkill since the QC vehicle_health float has no port field (GameWorld.cs:911-914)", match: true }
+      - { name: "vehicle_dmg", base: "1 (DEATH_KILL) + vehicle_health=-1", port: "DamageVehicle(health+1, DEATH_KILL) — sentinel modeled as overkill since the QC vehicle_health float has no port field (GameWorld.cs:955-958)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -302,19 +303,19 @@ features:
     gaps:
       - "Sentinel modeled differently: Base sets vehicle_health=-1 then deals 1 DEATH_KILL damage to trigger the death; the port can't set a separate QC float so it deals (health+1) DEATH_KILL to kill the empty vehicle outright. Behaviorally equivalent (vehicle dies). PerformKill always runs the kill-vehicle branch because team changes route through PerformTeamChange, so the QC `if (!killindicator_teamchange)` guard is implicitly always-true here (correct)."
     verification:
-      - { kind: code, ref: "KillCountdown.PerformKill (GameWorld.cs:904-918): if p.Vehicle is not null → VehicleBoarding.Exit(p) (QC vehicles_exit VHEF_RELEASE) then VehicleCommon.DamageVehicle(vehicle, p, p, health+1, DEATH_KILL) (QC vehicle_health=-1 + 1-dmg DEATH_KILL), then the unconditional self-kill Combat.Damage(p,p,p,100000,DEATH_KILL). VehicleBoarding.Exit (VehicleBoarding.cs:261) and DamageVehicle (VehicleCommon.cs:480) are real implementations.", result: pass }
+      - { kind: code, ref: "KillCountdown.PerformKill (GameWorld.cs:942-962): if p.Vehicle is not null → VehicleBoarding.Exit(p) (QC vehicles_exit VHEF_RELEASE) then VehicleCommon.DamageVehicle(vehicle, p, p, health+1, DEATH_KILL) (QC vehicle_health=-1 + 1-dmg DEATH_KILL), then the unconditional self-kill Combat.Damage(p,p,p,100000,DEATH_KILL). VehicleBoarding.Exit (VehicleBoarding.cs:261) and DamageVehicle (VehicleCommon.cs:480) are real implementations.", result: pass }
     confidence: high
-    notes: "FIXED since the 2026-06-25 baseline scan: PerformKill now ejects the player (VehicleBoarding.Exit = VHEF_RELEASE) and kills the now-empty vehicle before the self-kill damage, matching ClientKill_Now's vehicle branch (clientkill.qc:38-45). The vehicle_health=-1 sentinel is modeled as overkill damage (no separate port float), behaviorally equivalent."
+    notes: "FIXED since the 2026-06-25 baseline scan; 2026-06-27 re-audit (Waves 16-17) re-confirmed faithful/live, no change. PerformKill ejects the player (VehicleBoarding.Exit = VHEF_RELEASE) and kills the now-empty vehicle before the self-kill damage, matching ClientKill_Now's vehicle branch (clientkill.qc:38-45). The vehicle_health=-1 sentinel is modeled as overkill damage (no separate port float), behaviorally equivalent."
   - id: sv-clientkill.teamchange.excess_removal
     name: "TeamBalance_RemoveExcessPlayers after a deferred team change"
     layer: [authority]
     base_refs:
       - "server/clientkill.qc:31-33 ClientKill_Now_TeamChange (if !QueuedPlayersTagIn && g_balance_teams_remove → TeamBalance_RemoveExcessPlayers)"
     port_refs:
-      - "src/XonoticGodot.Server/GameWorld.cs:964 (PerformTeamChange tail → Teamplay.RemoveExcessPlayers)"
-      - "src/XonoticGodot.Server/Teamplay.cs:995 RemoveExcessPlayers (gated on RemoveExcessEnabled = g_balance_teams_remove != 0, :980-981)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1008 (PerformTeamChange tail → Teamplay.RemoveExcessPlayers)"
+      - "src/XonoticGodot.Server/Teamplay.cs:1230 RemoveExcessPlayers (gated on RemoveExcessEnabled = g_balance_teams_remove != 0, :1215-1216 + :1233)"
     constants:
-      - { name: "g_balance_teams_remove", base: "0 (default off)", port: "0 (Cvars.cs:151); consulted on the team-change-resolve path via RemoveExcessPlayers' internal RemoveExcessEnabled gate (Teamplay.cs:981)", match: true }
+      - { name: "g_balance_teams_remove", base: "0 (default off)", port: "0 (Cvars.cs:151); consulted on the team-change-resolve path via RemoveExcessPlayers' internal RemoveExcessEnabled gate (Teamplay.cs:1215-1216)", match: true }
     status:
       logic: faithful
       values: na
@@ -327,6 +328,6 @@ features:
     gaps:
       - "The QueuedPlayersTagIn guard (Base: skip removal when queued players are about to tag in) is not modeled — the port does not implement the join queue, so RemoveExcessPlayers is always called and self-gates on g_balance_teams_remove (default 0). Off by default, no behavioral divergence in stock config."
     verification:
-      - { kind: code, ref: "PerformTeamChange (GameWorld.cs:935-965): after SetTeam→KillPlayerForTeamChange + AutoBalanceBots, the tail calls Teamplay.RemoveExcessPlayers(Clients.Players, g_campaign) (GameWorld.cs:964). RemoveExcessPlayers (Teamplay.cs:995-999) early-outs unless IsTeamGame && TeamCount==2 && !campaign && RemoveExcessEnabled (g_balance_teams_remove != 0, Teamplay.cs:980-981). Same machinery is also invoked on the disconnect tail.", result: pass }
+      - { kind: code, ref: "PerformTeamChange (GameWorld.cs:979-1009): after SetTeam→KillPlayerForTeamChange + AutoBalanceBots, the tail calls Teamplay.RemoveExcessPlayers(Clients.Players, g_campaign) (GameWorld.cs:1008). RemoveExcessPlayers (Teamplay.cs:1230-1234) early-outs unless IsTeamGame && TeamCount==2 && !campaign && RemoveExcessEnabled (g_balance_teams_remove != 0, Teamplay.cs:1215-1216). Same machinery is also invoked on the disconnect tail.", result: pass }
     confidence: high
-    notes: "FIXED since the 2026-06-25 baseline scan: PerformTeamChange now re-runs excess-player removal (Teamplay.RemoveExcessPlayers, GameWorld.cs:964), matching the ClientKill_Now_TeamChange tail (clientkill.qc:31-33). The QueuedPlayersTagIn guard is skipped (no join-queue port) but harmless — removal self-gates on g_balance_teams_remove (default 0)."
+    notes: "FIXED since the 2026-06-25 baseline scan; 2026-06-27 re-audit (Waves 16-17) re-confirmed faithful/live, no change. PerformTeamChange re-runs excess-player removal (Teamplay.RemoveExcessPlayers, GameWorld.cs:1008), matching the ClientKill_Now_TeamChange tail (clientkill.qc:31-33). The QueuedPlayersTagIn guard is skipped (no join-queue port) but harmless — removal self-gates on g_balance_teams_remove (default 0)."

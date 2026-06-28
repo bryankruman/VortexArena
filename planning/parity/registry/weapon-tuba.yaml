@@ -1,15 +1,15 @@
 unit: weapon-tuba
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-27"  # OPUS re-audit: verified W16/17 edits landed; closed melody bprint gap, audio->unknown (headless)
 summary:
   feature_count: 11
   worst_gaps:
-    - "Note SOUND is now a SUSTAINED pitched loop: NoteOn plays Api.Sound.Play(loop:true) on CH_TUBA with the on-disk floor-neighbour sample (PitchStepBaseNote) AND the 2^(m/12) residual pitch-shift passed as the engine pitch, at VOL_BASE*cl_tuba_volume / cl_tuba_attenuation; NoteOff Stops it. Remaining residuals: the two-sample cos/sin crossfade (upper-neighbour timbre blend) and the cl_tuba_fadetime release ramp are unported, and there is no ENT_CLIENT_TUBANOTE networking (remote players' notes still not driven by a dedicated note entity)."
-    - "GetNote still derives movestate from velocity (intended divergence) and omits crouch/jump/team pitch shifts — now AUDIBLE since the note loop plays, but only changes which sample/pitch is heard, not whether a sound plays."
+    - "Note SOUND is a SUSTAINED pitched loop: NoteOn plays Api.Sound.Play(loop:true) on CH_TUBA with the on-disk floor-neighbour sample (PitchStepBaseNote) AND the 2^(m/12) residual pitch-shift passed as the engine pitch, at VOL_BASE*cl_tuba_volume / cl_tuba_attenuation; NoteOff Stops it. The server-side emission path carries loop+pitch (SoundService.Play -> SoundEvent.Pitch), but the AUDIBLE result is NOT runtime-verified (headless read) so the audio dimension is unknown. Remaining residuals: the two-sample cos/sin crossfade (upper-neighbour timbre blend), the cl_tuba_fadetime release ramp, and ENT_CLIENT_TUBANOTE networking (remote players' notes still not driven by a dedicated note entity)."
+    - "GetNote still derives movestate from velocity (intended divergence) and omits crouch/jump/team pitch shifts — only changes which sample/pitch is heard, not whether a sound plays."
     - "Per-instrument view models (h_akordeon/h_kleinbottle via CSQC weaponname/wr_viewmodel) still unwired (render-only)."
-    - "Melody recognition is LIVE+faithful (HasPlayed wired into the magic-ear pipeline); only the cosmetic 'NAME played on the @!#%'n Tuba: ...' bprint chat line on a recognised melody is still unwired."
-    - "MENUQC weapon-guide describe text is now PORTED (Tuba.GuideDescription, live via DialogMediaGuide); only the dynamic Keybinds/DPS trailing paragraphs are omitted (by design, matching the Electro guide)."
+    - "Melody recognition is LIVE+faithful (HasPlayed wired into the magic-ear pipeline) AND the recognised-melody bprint chat line is now wired (GameWorld.cs:663 -> Chat.PrintToChatAll) — the prior 'bprint still unwired' gap is CLOSED."
+    - "MENUQC weapon-guide describe text is PORTED (Tuba.GuideDescription, live via DialogMediaGuide); only the dynamic Keybinds/DPS trailing paragraphs are omitted (by design, matching the Electro guide)."
 features:
   - id: weapon-tuba.fire.note_blast
     name: "Held-fire note: refire-gated radius blast centered on player"
@@ -21,7 +21,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:WrThink"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteOn"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:RadiusDamage"
-      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:131"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:136-139 (same-team sound rule)"
     constants:
       - { name: "damage", base: "5", port: "5", match: true }
       - { name: "edgedamage", base: "0", port: "0", match: true }
@@ -89,8 +89,8 @@ features:
       - "common/weapons/weapon/tuba.qc:wr_reload"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:Reload"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:217"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:303"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:226 (tuba.Reload dispatch)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:335 (ScheduleThink)"
     constants:
       - { name: "instrument cycle 0->1->2->0", base: "wr_reload switch (tuba.qc:366-380)", port: "(TubaInstrument + 1) % 3 (Tuba.cs:243)", match: true }
       - { name: "WS_READY gate before cycling", base: "early-return if state != WS_READY (tuba.qc:363)", port: "if (st.State != Ready) return (Tuba.cs:239-240)", match: true }
@@ -235,11 +235,12 @@ features:
       values: partial
       timing: partial
       presentation: partial
-      audio: faithful
+      audio: unknown
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
+      - "Audible result NOT runtime-verified: this is a headless code read. The server-side emission carries the loop+pitch (SoundService.Play -> SoundEvent(Loop,Pitch), EngineServices.cs:615), but whether the CLIENT renderer actually applies the pitch shift on a looping (entity,channel) REPLACEMENT — vs treating a same-(entity,channel) re-emit as idempotent and ignoring the new pitch — is unobserved. Needs a behavioral/listen check before audio can be called faithful."
       - "No two-sample cos/sin crossfade: Base's in-range branch plays the floor sample at cos(pi/2 m/step) AND the upper neighbour at sin(...) for a smooth timbre blend; the port plays only the floor neighbour at full volume (residual PITCH is shifted via 2^(m/12), but the upper-neighbour timbre blend needs a second emitter and is unported)."
       - "No cl_tuba_fadetime release ramp: NoteOff Stops the loop cleanly rather than ramping volume down over 0.25s (needs a client-side per-frame volume think)."
       - "No ENT_CLIENT_TUBANOTE networking: remote players' tuba notes are not driven by a dedicated note entity (no per-listener re-origin / SendFlags broadcast)."
@@ -249,8 +250,9 @@ features:
       - { kind: read, ref: "vol=clamp(VOL_BASE*cl_tuba_volume,0,1), attenuation=cl_tuba_attenuation (TubaVolumeCvar/TubaAttenuationCvar, Tuba.cs:208-210,325-337) — matches tubasound _sound args", result: pass }
       - { kind: read, ref: "NoteOff (Tuba.cs:255) calls Api.Sound.Stop(actor, CH_TUBA) to end the held loop; SoundChannel.Tuba=5 single-channel (Services.cs:121) so re-emitting REPLACES rather than stacks", result: pass }
       - { kind: code, ref: "all four cl_tuba_* cvars registered in xonotic-client.cfg:337-340 (attenuation 0.5/fadetime 0.25/pitchstep 6/volume 1)", result: pass }
-    confidence: high
-    notes: "MAJOR FIX vs baseline (one-shot per tick -> sustained pitched loop). NoteOn now plays a held loop on CH_TUBA (loop:true) with the on-disk floor-neighbour sample AND the 2^(m/12) residual pitch-shift as the engine pitch, at VOL_BASE*cl_tuba_volume / cl_tuba_attenuation; NoteOff Stops it. logic missing-sustain->faithful; audio partial->faithful (correct loop+pitch+volume+attenuation API now called); timing missing->partial (sustain present, fade-on-release still missing); values partial (volume/attenuation/pitchstep/sound7-pitch now honored — only the cos/sin crossfade weights remain). Remaining: two-sample crossfade timbre blend, cl_tuba_fadetime ramp, ENT_CLIENT_TUBANOTE networking."
+      - { kind: read, ref: "SoundService.Play (EngineServices.cs:602-616) broadcasts SoundEvent with Loop+Pitch; loop is keyed by (entity,channel) and replaced by a later loop on the same key. The CLIENT-side render of a pitched looping REPLACEMENT is NOT runtime-observed -> audio dimension unknown", result: unknown }
+    confidence: medium
+    notes: "MAJOR FIX vs baseline (one-shot per tick -> sustained pitched loop), but audio fidelity NOT runtime-verified. NoteOn plays a held loop on CH_TUBA (loop:true) with the on-disk floor-neighbour sample AND the 2^(m/12) residual pitch-shift as the engine pitch, at VOL_BASE*cl_tuba_volume / cl_tuba_attenuation; NoteOff Stops it. logic missing-sustain->faithful; audio partial->UNKNOWN (the correct loop+pitch+volume+attenuation API is called and the server emission carries pitch, but the audible result — esp. whether a pitched loop REPLACEMENT actually re-pitches client-side rather than being treated as an idempotent re-emit — is unobserved in this headless audit); timing missing->partial (sustain present, fade-on-release still missing); values partial (volume/attenuation/pitchstep/sound7-pitch honored in the API call — only the cos/sin crossfade weights remain). Remaining: two-sample crossfade timbre blend, cl_tuba_fadetime ramp, ENT_CLIENT_TUBANOTE networking, AND a behavioral listen-check to upgrade audio from unknown."
 
   - id: weapon-tuba.melody.recognition
     name: "Melody recognition + magic-ear chat (W_Tuba_HasPlayed / lastnotes)"
@@ -261,8 +263,9 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:HasPlayed"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteOff"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/EntityWeaponState.cs:358-366 (TubaLastNotes ring)"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:521-550 (MagicEarProcessMessage TUBA branch)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/EntityWeaponState.cs:380-387 (TubaLastNotes ring)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:548-579 (MagicEarProcessMessage TUBA branch)"
+      - "src/XonoticGodot.Server/GameWorld.cs:663 (TubaMelodyBprint host seam -> Chat.PrintToChatAll)"
     constants:
       - { name: "MAX_TUBANOTES ring buffer", base: "32", port: "Tuba.MaxTubaNotes = 32; EntityWeaponState.TubaLastNotes = new Vector3[32]", match: true }
       - { name: "instrument filter (instrument<0 = any)", base: "if (instrument >= 0 && tuba_instrument != instrument) return false", port: "same (Tuba.cs:358-359)", match: true }
@@ -272,19 +275,19 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The cosmetic 'NAME played on the @!#%'n Tuba/Accordeon/Klein Bottle: ...' bprint chat line on a recognised melody is NOT emitted — the magic-ear TRIGGER (UseTargets) fires, but the broadcast-print of the matched message text needs a bprint seam absent in Common (Tuba.NoteOff:213-214 notes this)."
+    gaps: []
     verification:
-      - { kind: read, ref: "Tuba.HasPlayed (Tuba.cs:345-407) ports W_Tuba_HasPlayed (tuba.qc:13-97) — tokenize, count gate, instrument filter, backwards note walk w/ pitchshift, nolength rhythm bounds, clears count on match", result: pass }
-      - { kind: trace, ref: "Tuba.NoteOff records vec3(on,off,pitch) into TubaLastNotes ring + bumps count, then calls LogicGates.MagicEarProcessAllEars(actor,0,null,'') -> MagicEarProcessMessage TUBA branch (empty msg) -> Tuba.HasPlayed per slot -> UseTargets on match", result: pass }
-      - { kind: trace, ref: "MagicEarProcessAllEars also live from server Chat.cs:143 (the say pipeline); the TUBA-mode empty-message path is the melody trigger", result: pass }
+      - { kind: read, ref: "Tuba.HasPlayed (Tuba.cs:441-503) ports W_Tuba_HasPlayed (tuba.qc:13-97) — tokenize, count gate, instrument filter, backwards note walk w/ pitchshift, nolength rhythm bounds, clears count on match", result: pass }
+      - { kind: trace, ref: "Tuba.NoteOff (Tuba.cs:272-274) records vec3(on,off,pitch) into TubaLastNotes ring + bumps count, then calls LogicGates.MagicEarProcessAllEars(actor,0,null,'') -> MagicEarProcessMessage TUBA branch (empty msg, LogicGates.cs:548-579) -> Tuba.HasPlayed per slot -> UseTargets on match", result: pass }
+      - { kind: trace, ref: "trigger_magicear registered via spawnfunc (MapObjectsRegistry.cs:77 -> MagicEarSetup) so map ears populate the list at load; MagicEarProcessAllEars also live from Chat.cs:143 (the say pipeline)", result: pass }
+      - { kind: trace, ref: "On a TUBA match MagicEarProcessAllEars returns the ear NetName; Tuba.NoteOff invokes TubaMelodyBprint host seam (GameWorld.cs:663) -> Chat.PrintToChatAll composes '* NAME played on the @!#%'n {instrument}: TEXT' (real broadcast, Chat.cs:867) — the bprint chat line is LIVE", result: pass }
     confidence: high
-    notes: "FIXED vs baseline (missing/na -> faithful/live). The whole W_Tuba_HasPlayed melody-recognition engine is now ported (HasPlayed) AND the tuba_lastnotes history is recorded on NoteOff, which then drives the live magic-ear pipeline (MagicEarProcessMessage TUBA branch -> UseTargets). Maps that gate logic on a played tune now work. Only the cosmetic 'NAME played on the @!#%'n Tuba: ...' broadcast chat line remains unwired (needs a bprint seam) -> presentation: partial."
+    notes: "FIXED vs baseline (missing/na -> faithful/live), and the residual bprint gap is now ALSO closed. The W_Tuba_HasPlayed engine is ported (HasPlayed), tuba_lastnotes is recorded on NoteOff, driving the live magic-ear pipeline (MagicEarProcessMessage TUBA branch -> UseTargets). The recognised-melody chat line is now wired: NoteOff hands the matched text + instrument to TubaMelodyBprint, which GameWorld.cs:663 binds to Chat.PrintToChatAll (a real all-clients broadcast). presentation partial -> faithful. NOTE: the inline comment at LogicGates.cs:533/494 still says 'TUBA out of scope' but the code below it (548-579) is the live implementation — stale comment only."
 
   - id: weapon-tuba.setup.instrument_reset
     name: "wr_setup resets instrument to Tuba on (re)equip"

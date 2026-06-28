@@ -5,10 +5,10 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 15
   worst_gaps:
-    - "Drift re-audit 2026-06-27 (branch claude/parity-port-waves): ONE STATUS CHANGE — mutator-sandbox.object.touch_material_fx presentation FIXED (missing→faithful). The four sandbox impact particle effects are now REGISTERED in EffectsList.cs:289-292 (Effects.Register(\"IMPACT_METAL\",\"impact_metal\") + stone/wood/flesh), so EffectEmitter.EmitByEffectInfoName(\"impact_<mat>\") (SandboxMutator.cs:398) resolves a real Effect via Effect.ByEffectInfoName (matches NetName, Effect.cs:87) → Emit(effect,…) with a non-null Effect → ServerNet.WriteEffect no longer drops it (the null-Effect drop the prior baseline cited no longer applies). Point effect, count 1..10 (>0, survives Emit's count==0 guard EffectEmitter.cs ~ point-effect drop). Base effectinfo.txt defines impact blocks for exactly these four materials (effectinfo.txt:5529+); an unknown material correctly renders nothing on both ends. So the velocity-scaled impact particle burst now networks + renders, matching Base Send_Effect_(\"impact_\"+material,…)."
-    - "Command surface + host seams remain GENUINELY LIVE (line numbers refreshed this pass). `g_sandbox` is a client-callable command (Commands.cs:843 Register), the `sandbox` cfg alias emits `cmd g_sandbox …`, routed Commands.CmdSandbox (Commands.cs:2275, gated on sandbox.Added) → SandboxMutator.HandleCommand. NetGame.WireSandbox() (NetGame.cs:902, called on the live setup path at NetGame.cs:834) injects PrintTo (SendChatToPlayer NetGame.cs:910), Trace (SandboxTraceProvider NetGame.cs:1002/931 — real eye+forward TraceService resolving the hit object by edict match), CryptoIdfp(=PersistentId)/NetName/ViewYaw providers (914-916), RealClientsProvider (920, live non-bot roster), and Store (SandboxObjectStore NetGame.cs:1026/938 — real System.IO.File IO at ~/XonData/sandbox/storage_<name>_<map>.txt). MutatorActivation.Apply now GameWorld.cs:614. All 15 g_sandbox* cfg defaults re-diffed byte-identical Base↔port (mutators.cfg:95-109)."
-    - "The Sandbox_* veto hooks remain FULLY PORTED + fired: MutatorHooks.SandboxDragAllowed/SaveAllowed/EditAllowed hook chains (MutatorHooks.cs:1121/1142/1165) with FireSandbox* dispatchers (:1128/1148/1172), fired at all three Base-equivalent call sites (SandboxMutator.cs:346 think grab, :543 DatabaseSave, :620 command gate). No subscriber exists, exactly like Base (empty MUTATOR_CALLHOOK returns 0), so the gating logic is bit-faithful. physics-2 still maps to MoveType.Physics=32 (SandboxMutator.cs:811) == Base MOVETYPE_PHYSICS=32. Object touch material FX SOUND remains WIRED + LIVE — ObjectSpawn assigns e.Edict.Touch = (self,other)=>ObjectTouch(e, other.Velocity) (SandboxMutator.cs:204), reproducing Base settouch (sv_sandbox.qc:180)."
-    - "STILL DEAD/MISSING (unchanged): drag/grab (+button8) is entirely absent (no Drag/Drag_Begin/Drag_Finish; .Grab is computed by the think tick SandboxMutator.cs:347-351 but nothing consumes it). object_duplicate COPY clipboard is inert (SandboxObjectStore.SetClipboard is an empty body, NetGame.cs:1046 — no svc_stufftext transport; paste from a manually-set cvar works). CSQC object→client networking (CSQCMODEL_AUTOINIT/AUTOUPDATE) has no port seam (SandboxMutator.cs:236/364). object_info mesh tag enumeration is stubbed (SandboxMutator.cs:876). ModelExists is permissive (no fexists, SandboxMutator.cs:957)."
+    - "OPUS re-audit 2026-06-27 (branch claude/parity-port-waves): the prior baseline UNDER-claimed — reading the CURRENT code, FOUR gaps it still listed as open have actually been closed, plus the one it already credited. (1) touch_material_fx presentation missing→faithful: the four impact effects are registered in EffectsList.cs:303-306 (Effects.Register(\"IMPACT_METAL\",\"impact_metal\")+stone/wood/flesh), so EmitByEffectInfoName(\"impact_<mat>\") (SandboxMutator.cs:410) resolves a non-null Effect (Effect.ByEffectInfoName matches NetName, Effect.cs:87) and Emit (count 1..10 >0) is no longer dropped at ServerNet.WriteEffect; effectinfo.txt has the four blocks (5529+), unknown materials render nothing both ends. NOTE: networks-by-id is code-verified; the in-game particle was not visually re-confirmed (no kind:visual)."
+    - "(2) object.spawn ModelExists: NO LONGER permissive on the live path — NetGame.WireSandbox:952-953 wires ModelExistsProvider = _vfs.Exists, so object_spawn rejects a non-existent model (Base fexists). (3) object.attach presentation missing→faithful: ObjectAttachSet now calls Api.Models.SetAttachment (SandboxMutator.cs:298-299) → EngineServices.SetAttachment (:796) sets Aiment+tag; MOVETYPE_FOLLOW child tracked each step by FlyMove.PhysicsFollow (:483) → real tag-follow (bone-precise offset is a renderer detail, not visually re-confirmed). (4) object_info mesh: tag enumeration no longer stubbed — MeshTagNamesProvider wired to ModelService.Tags (NetGame.cs:958-961), SandboxMutator.cs:890-893 prints the real tag list."
+    - "CORRECTED: object.duplicate COPY clipboard is NOT an empty no-op (baseline was stale). SandboxObjectStore.SetClipboard → SetSandboxClipboard (NetGame.cs:948/971-983) sets cl_sandbox_clipboard (un-escaped, +MarkArchived) for the LOCAL-HOST player, so copy→paste works on a listen server. Residual: a remote client on a dedicated server is skipped (no svc_stufftext channel) → liveness stays partial. Command surface still GENUINELY LIVE: g_sandbox client-callable (Commands.cs:843), routed CmdSandbox (Commands.cs:2275, gated on sandbox.Added) → HandleCommand; WireSandbox (NetGame.cs:911, on the live setup path NetGame.cs:843) injects PrintTo/Trace/CryptoIdfp(=PersistentId)/NetName/ViewYaw/RealClients/Store/ModelExists/MeshTagNames; MutatorActivation.Apply at GameWorld.cs:631. All 15 g_sandbox* cfg defaults byte-identical (mutators.cfg:95-109)."
+    - "The Sandbox_* veto hooks remain FULLY PORTED + fired at SandboxMutator.cs:358 (think grab) / :555 (DatabaseSave) / :632 (command gate) with no subscriber (Base-faithful empty MUTATOR_CALLHOOK). physics-2 → MoveType.Physics=32 (:823) == Base MOVETYPE_PHYSICS=32. Touch FX SOUND live (settouch equiv :204, dispatched by FlyMove.cs:107). STILL DEAD/MISSING (genuinely unchanged): drag/grab (+button8) entirely absent — no Drag/Drag_Begin/Drag_Finish; .Grab is computed (:359/361/363) but nothing consumes it; objects cannot be physically carried. CSQC object→client networking (CSQCMODEL_AUTOINIT/AUTOUPDATE) has no port seam (:236/376), so a spawned object's client render is unverified. (Several baseline line-number refs were stale by ~10-15 lines; refreshed where load-bearing.)"
 features:
   - id: mutator-sandbox.core.registration
     name: "Mutator activation via g_sandbox + onadd autoload"
@@ -75,13 +75,14 @@ features:
     gaps:
       - "WIRED + LIVE: `g_sandbox` client-callable (ClientCommandRegistry:105) → CmdSandbox → HandleCommand; NetGame.WireSandbox assigns Trace (SandboxTraceProvider — real crosshair forward TraceService), so object_spawn lands at the trace endpoint with a real edict (Api.Entities.Spawn + SetModel + SetOrigin)."
       - "ObjectSpawn now DOES register the engine touch callback (e.Edict.Touch = ObjectTouch, SandboxMutator.cs:204) — the port equivalent of Base settouch (sv_sandbox.qc:180); see touch_material_fx row (now live). Think (setthink, sv_sandbox.qc:181) is driven externally by OnStartFrame over all objects rather than the per-edict engine think, which is faithful enough."
-      - "ModelExists() is permissive (returns true; no IModelService.fexists), so the Base non-existent-model rejection is not enforced."
-      - "presentation: CSQCMODEL_AUTOINIT (object→client networking) has no port seam (TODO SandboxMutator.cs:232) — client-side render of a spawned object is unverified (the object carries a real edict+model, so the generic entity feed MIGHT show it, but this was not confirmed in-game)."
+      - "FIXED (re-audit 2026-06-27): ModelExists is NO LONGER unconditionally permissive — NetGame.WireSandbox:952-953 wires sandbox.ModelExistsProvider = path => _vfs.Exists(path) when the asset VFS is present (it is, on the live setup path), so object_spawn now rejects a non-existent model path like Base fexists(argv(2)). Headless/tests (no VFS) stay permissive by design."
+      - "STILL OPEN — presentation: CSQCMODEL_AUTOINIT (object→client networking) has no port seam (TODO SandboxMutator.cs:236) — client-side render of a spawned object is unverified (the object carries a real edict+model, so the generic entity feed MIGHT show it, but this was not confirmed in-game)."
     verification:
       - { kind: code, ref: "ObjectSpawn + HandleCommand(object_spawn) implement flood timer (Now+EditorFlood), maxobjects cap, model-arg check, forward-trace placement, view-yaw angles, owner-UID/info setup — logic/values match Base line-by-line", result: pass }
       - { kind: code, ref: "Commands.cs:843 Register(\"g_sandbox\", …, CmdSandbox); CmdSandbox (Commands.cs:2275); commands.cfg alias sandbox → cmd g_sandbox; CmdSandbox routes to HandleCommand when sandbox.Added.", result: pass }
+      - { kind: code, ref: "ModelExistsProvider wired to _vfs.Exists in NetGame.WireSandbox:952-953; HandleCommand(object_spawn) calls ModelExists(A(2)) (SandboxMutator.cs:669) and rejects a non-existent path — Base fexists rejection now enforced on the live path.", result: pass }
     confidence: high
-    notes: "Confirmed: logic/values/timing faithful AND liveness live (command path + Trace genuinely wired). STILL OPEN: presentation (CSQC seam) + ModelExists permissive + no settouch (touch FX dead, separate row)."
+    notes: "Confirmed: logic/values/timing faithful AND liveness live (command path + Trace genuinely wired). FIX vs baseline: ModelExists no longer permissive on the live path (VFS provider wired). STILL OPEN: presentation (CSQC AUTOINIT seam — object→client render unverified)."
 
   - id: mutator-sandbox.object.think_grab
     name: "Per-object think: grab-class assignment + owner UID resync + CSQC update"
@@ -144,14 +145,14 @@ features:
     divergence_rationale: null
     gaps:
       - "WIRED + LIVE: ObjectSpawn assigns e.Edict.Touch = (self,other)=>ObjectTouch(e, other.Velocity) (SandboxMutator.cs:204), the port equivalent of Base settouch(e, sandbox_ObjectFunction_Touch) (sv_sandbox.qc:180). The object carries a real MOVETYPE_TOSS edict; the engine physics loop dual-dispatches e1.Touch on collision, so the velocity-scaled impact SOUND fires on the live match path. Touch averaging (object+toucher vel), >=min gate, offset, *factor clamp(0,1), 0.1s rate-limit all bit-faithful."
-      - "presentation: FIXED this audit (was missing) — the four impact effects are now REGISTERED in EffectsList.cs:289-292 (Effects.Register(\"IMPACT_METAL\",\"impact_metal\") + stone/wood/flesh, point effects). ObjectTouch's EffectEmitter.EmitByEffectInfoName(\"impact_<mat>\") (SandboxMutator.cs:398) now resolves a real Effect via Effect.ByEffectInfoName (matches NetName, Effect.cs:87) → Emit(effect,…) with a non-null Effect (EffectEmitter.cs:226-230) → networked by ServerNet.WriteEffect (no longer the null-Effect drop). Count = ceil(intensity*10) ∈ 1..10 (>0, survives Emit's point-effect count==0 guard). Base effectinfo.txt has impact blocks for exactly metal/stone/wood/flesh (effectinfo.txt:5529+); an unknown material renders nothing on both ends, matching Base's __pointparticles(-1) fallthrough. So the particle burst now networks + renders."
+      - "presentation: FIXED (was missing) — the four impact effects are now REGISTERED in EffectsList.cs:303-306 (Effects.Register(\"IMPACT_METAL\",\"impact_metal\") + stone/wood/flesh, point effects). ObjectTouch's EffectEmitter.EmitByEffectInfoName(\"impact_<mat>\") (SandboxMutator.cs:410) now resolves a real Effect via Effect.ByEffectInfoName (matches NetName ordinal, Effect.cs:87-93) → Emit(effect,…) with a non-null Effect (EffectEmitter.cs:240-242) → networked by ServerNet.WriteEffect (no longer the null-Effect drop). Count = ceil(intensity*10) ∈ 1..10 (>0, survives Emit's point-effect count==0 guard, EffectEmitter.cs:241). Base effectinfo.txt has impact blocks for exactly metal/stone/wood/flesh (effectinfo.txt:5529+); an unknown material renders nothing on both ends, matching Base's __pointparticles(-1) fallthrough. CAVEAT: this is CODE-verified (registered → networks by id, no longer dropped); the in-game particle render was NOT visually re-confirmed this pass (no kind:visual) — consistent with the sibling casing/beam rows' bar. (NB: the SandboxMutator.cs:405-407 source comment still claims by-name fallback works 'regardless of which effects are registered' — that comment is now stale but harmless; the live path takes the registered-Effect branch.)"
       - "audio: sound playback uses the right cue (object/impact_<mat>_N.wav, channel TriggerAuto, vol VOL_BASE*intensity, atten ATTEN_NORM) and is reachable; precache of the 5 variants is deferred to lazy Play (intentional)."
     verification:
       - { kind: code, ref: "ObjectTouch: intensity=avg(|vel|), >=min gate, offset+factor clamp, 0.1s rate-limit, ceil(random*5) variant, count=ceil(intensity*10), Api.Sound.Play(object/impact_<mat>_N.wav) — all faithful to Base sv_sandbox.qc touch", result: pass }
       - { kind: code, ref: "e.Edict.Touch assigned in ObjectSpawn (SandboxMutator.cs:204); engine dispatches e1.Touch for the MOVETYPE_TOSS object edict. Sound path is live.", result: pass }
-      - { kind: code, ref: "impact_metal/stone/wood/flesh registered in EffectsList.cs:289-292; EmitByEffectInfoName(\"impact_<mat>\") at SandboxMutator.cs:398 now resolves a non-null Effect (Effect.ByEffectInfoName matches NetName) → Emit networks it (EffectEmitter.cs:226-230), no longer dropped. presentation faithful.", result: pass }
+      - { kind: code, ref: "impact_metal/stone/wood/flesh registered in EffectsList.cs:303-306; EmitByEffectInfoName(\"impact_<mat>\") at SandboxMutator.cs:410 resolves a non-null Effect (Effect.ByEffectInfoName matches NetName, Effect.cs:87) → Emit networks it (EffectEmitter.cs:240-242), no longer dropped. Networks-by-id verified by code; in-game particle render not visually re-confirmed.", result: pass }
     confidence: high
-    notes: "FIX vs baseline: presentation missing→faithful. The four impact_<mat> effects are now registered (EffectsList.cs:289-292), so the particle burst resolves to a real Effect and networks instead of being dropped at ServerNet.WriteEffect. Touch callback wired (settouch equivalent :204), audio + sound path live, logic/values/timing faithful."
+    notes: "FIX vs baseline: presentation missing→faithful (matches the casing/beam registered-Effect bar). The four impact_<mat> effects are registered (EffectsList.cs:303-306), so the burst resolves to a real Effect and networks instead of being dropped at ServerNet.WriteEffect. Touch callback wired (settouch equivalent :204, dispatched FlyMove.cs:107), audio + sound path live, logic/values/timing faithful. Honest residual: in-game visual not re-confirmed (kind:code only)."
 
   - id: mutator-sandbox.object.edit_get
     name: "Edit-target trace + ownership permission check"
@@ -257,19 +258,19 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "WIRED + LIVE: object_attach get/set/remove reachable via CmdSandbox → HandleCommand."
-      - "presentation: setattachment (engine tag-follow) has no port seam (TODO SandboxMutator.cs:291) — attached children store the tag and old_solid/old_movetype faithfully but are not actually tag-followed."
+      - "FIXED (re-audit 2026-06-27): the setattachment seam is NO LONGER a TODO — ObjectAttachSet calls Api.Models.SetAttachment(e.Edict, parent.Edict, tag) (SandboxMutator.cs:298-299) and ObjectAttachRemove clears it (SandboxMutator.cs:315-316). EngineServices.SetAttachment (EngineServices.cs:796-803) sets e.Aiment=parent + records the tag; the child is set MOVETYPE_FOLLOW=12, and FlyMove.PhysicsFollow (SV_Physics_Follow, FlyMove.cs:483) rigidly tracks the parent's origin each server step — so the child genuinely follows the parent on the live physics path (same FOLLOW seam vehicles/heads use). Residual nuance: bone-precise tag OFFSET application is a renderer detail (SetAttachment stores the tag name for the renderer; the server follow tracks the parent ORIGIN), not runtime-verified in-game — but the attach is no longer a no-op."
     verification:
-      - { kind: code, ref: "Set persists OldSolid/OldMoveType, sets Follow(12)/Not/takedamage=false; Remove restores per-child state, freezes angles; 16-slot cap honored in save", result: pass }
-      - { kind: code, ref: "HandleCommand(object_attach) reachable via CmdSandbox; setattachment TODO still not implemented (no real tag-follow). MOVETYPE_FOLLOW=12 re-verified (dpextensions.qc:549) matches MoveType.Follow=12.", result: pass }
+      - { kind: code, ref: "Set persists OldSolid/OldMoveType, sets Follow(12)/Not/takedamage=false + Api.Models.SetAttachment(e,parent,tag); Remove restores per-child state, freezes angles, clears attachment; 16-slot cap honored in save", result: pass }
+      - { kind: code, ref: "EngineServices.SetAttachment (:796) sets Aiment+tag; FlyMove.PhysicsFollow (:483) moves a MOVETYPE_FOLLOW child to its Aiment each step → real tag-follow on the live path. MOVETYPE_FOLLOW=12 (dpextensions.qc:549) == MoveType.Follow=12.", result: pass }
     confidence: high
-    notes: "Confirmed: logic/values faithful AND liveness live. STILL OPEN: no real engine tag-follow (presentation:missing)."
+    notes: "FIX vs baseline: presentation missing→faithful. Real engine tag-follow now wired (Api.Models.SetAttachment + MOVETYPE_FOLLOW PhysicsFollow), so attached children actually follow the parent. logic/values faithful, liveness live. (Bone-precise tag offset is a renderer concern, not visually re-verified.)"
 
   - id: mutator-sandbox.object.remove
     name: "object_remove — delete object + detach children + clear selections"
@@ -322,13 +323,13 @@ features:
     divergence_rationale: null
     gaps:
       - "WIRED: copy/paste reachable via CmdSandbox → HandleCommand; PASTE is fully live (flood/cap/ObjectPortLoad)."
-      - "COPY clipboard STILL inert: SandboxObjectStore.SetClipboard is an empty body (NetGame.cs:1046) — the port has no svc_stufftext channel to set a remote client's cvar. Paste from a manually-set cl_sandbox_clipboard works."
+      - "CORRECTED (re-audit 2026-06-27): COPY clipboard is NO LONGER an empty no-op — SandboxObjectStore.SetClipboard now calls SetSandboxClipboard (NetGame.cs:948/971-983), which, FOR THE LOCAL-HOST player (ReferenceEquals(player, LocalServerPlayer)), un-escapes the serialized value and sets cl_sandbox_clipboard directly in the shared cvar store (+MarkArchived). So on a listen server, `object_duplicate copy` genuinely fills the local console's clipboard cvar, and a following paste reads it. Residual (now the only gap): a REMOTE client on a dedicated server is silently skipped — the port has no svc_stufftext channel to set a remote client's cvar. Hence liveness:partial (local-host live, remote dead)."
       - "Paste shares the flood + maxobjects gates with object_spawn (faithful)."
     verification:
       - { kind: code, ref: "copy: ObjectPortSave(e,false) + escape quotes + SetClipboard; paste: flood/empty/cap checks then ObjectPortLoad — faithful; serializer reproduces slot layout, %.9v vectors, ftos, db columns", result: pass }
-      - { kind: code, ref: "SandboxObjectStore.SetClipboard is `{ }` (empty, NetGame.cs:1046) — COPY can't push the cvar to the client; paste path is fully live.", result: fail }
+      - { kind: code, ref: "SandboxObjectStore.SetClipboard → SetSandboxClipboard (NetGame.cs:971): sets cl_sandbox_clipboard (un-escaped) on _sharedCvars for the local-host player; remote players skipped (no stufftext channel). COPY now LIVE for the listen-server host; paste fully live.", result: pass }
     confidence: high
-    notes: "Confirmed: logic/values/timing faithful (incl. textual serializer) AND PASTE live. STILL OPEN: COPY clipboard inert (SetClipboard no-op) → liveness:partial."
+    notes: "CORRECTED vs baseline: COPY clipboard is NOT inert — SetClipboard now sets cl_sandbox_clipboard for the local host (NetGame.cs:971-983), so copy→paste works on a listen server. logic/values/timing faithful (incl. serializer); PASTE live; COPY live for local host, dead for remote-dedicated → liveness stays partial."
 
   - id: mutator-sandbox.object.claim_info
     name: "object_claim + object_info object/mesh/attachments"
@@ -344,19 +345,19 @@ features:
       logic: faithful
       values: na
       timing: na
-      presentation: missing
+      presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "WIRED + LIVE: claim/info reachable via CmdSandbox → HandleCommand; CryptoIdfpProvider(=PersistentId)/NetNameProvider/PrintTo(=SendChatToPlayer) assigned in NetGame.WireSandbox, so claim/owner-name/info-print all work."
-      - "object_info mesh: tag enumeration (FOR_EACH_TAG) needs the model-skeleton service — not implemented (TODO SandboxMutator.cs:876); mesh subcommand prints the header but no tag list."
+      - "FIXED (re-audit 2026-06-27): object_info mesh tag enumeration (FOR_EACH_TAG) is NO LONGER stubbed — NetGame.WireSandbox:958-961 wires sandbox.MeshTagNamesProvider from ModelService.TryGetModel(...).Tags.Keys, and HandleCommand(object_info mesh) iterates it (SandboxMutator.cs:890-893) to print the ^3tag^7, … list. The mesh subcommand now prints the real tag (bone) list, not just the header."
     verification:
-      - { kind: code, ref: "claim: UID check, owner-name update, already-mine short-circuit, crypto_idfp set — faithful; info object/attachments faithful; info mesh stubs the tag loop", result: pass }
-      - { kind: code, ref: "CryptoIdfpProvider/NetNameProvider/PrintTo all assigned in WireSandbox; command reachable via CmdSandbox.", result: pass }
+      - { kind: code, ref: "claim: UID check, owner-name update, already-mine short-circuit, crypto_idfp set — faithful; info object/attachments faithful; info mesh now enumerates real tags via MeshTagNamesProvider", result: pass }
+      - { kind: code, ref: "CryptoIdfpProvider/NetNameProvider/PrintTo all assigned in WireSandbox; MeshTagNamesProvider wired to ModelService.Tags (NetGame.cs:958-961); command reachable via CmdSandbox.", result: pass }
     confidence: high
-    notes: "Confirmed: logic faithful AND liveness live (UID/name/print seams wired). STILL OPEN: mesh tag-enumeration TODO."
+    notes: "FIX vs baseline: mesh tag-enumeration TODO closed (MeshTagNamesProvider wired to ModelService.Tags). logic faithful, liveness live, presentation na (text print). All info subcommands now print real data."
 
   - id: mutator-sandbox.storage.persist
     name: "Per-map object storage: save/load + 5s auto-save + autoload at map start"

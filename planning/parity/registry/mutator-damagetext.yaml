@@ -1,7 +1,7 @@
 unit: mutator-damagetext
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # Wave-16 re-audit on claude/parity-port-waves. All 3 baseline gaps (ClientDisconnect / menu tab / world-basis-drift+color+font) re-verified still live & present. NEW this pass: the drawfontscale crisp-cell residual on the draw row is now ALSO implemented (DamageTextLayer.cs:317-340) -> presentation partial->faithful (codetrace-only, not in-game). port_ref line drift corrected (NetGame drain 2435->2594/2604; DamageSystem 548->577; ClientManager 788->855).
+last_audited: "2026-06-27"  # Consolidated re-verify (post W16/W17) on claude/parity-port-waves. Independently re-read all port files: every previously-closed gap re-confirmed LIVE — ClientDisconnect clear (MutatorHooks.cs:61 -> ClientManager.cs:855 -> DamagetextMutator.cs:214-224), menu tab (DialogSettingsGame.cs:42 -> :802-880), 2D/3D placement (DamageTextLayer.cs:124-217), and the draw row's drawfontscale crisp-cell scaling (DamageTextLayer.cs:317-340, presentation faithful BUT codetrace-only/not-in-game -> confidence stays medium). Only open gap = the intended host-local divergence on wire/visibility tiers (a pure remote client sees no text). Fixed one stale port_ref (first_hit_bitset notes said ClientManager.cs:788; live dispatch is :855).
 summary:
   feature_count: 9
   worst_gaps:
@@ -124,7 +124,7 @@ features:
     verification:
       - { kind: codetrace, ref: "DamagetextMutator.cs:96-104 Hook() subscribes PlayerDamaged + PlayerSpawn + ClientDisconnect; OnClientDisconnect (:214-224) iterates FindByClass('player') and removes the leaver from each live player's DentAttackers set (QC FOREACH_CLIENT(IS_PLAYER) it.dent_attackers &= ~BIT). MutatorHooks.ClientDisconnect (:61) is fired live from ClientManager.cs:855.", result: pass }
     confidence: high
-    notes: "2026-06-25 drift re-audit: GAP CLOSED (was logic:partial at baseline). The ClientDisconnect dent_attackers clear is now implemented and live — a new MutatorHooks.ClientDisconnect hook was added (MutatorHooks.cs:61, dispatched at ClientManager.cs:788) and DamagetextMutator now subscribes it (Hook() :103) and clears the leaver from every live player (:214-224). Representation still differs (HashSet<Entity> keyed by Entity ref vs fixed bit array keyed by etof-1) but live semantics now match QC on all three paths (first-hit add, PlayerSpawn clear, ClientDisconnect clear)."
+    notes: "2026-06-27 consolidated re-verify: GAP STAYS CLOSED & LIVE (re-read this pass). The ClientDisconnect dent_attackers clear is implemented and live — MutatorHooks.ClientDisconnect (MutatorHooks.cs:61) is dispatched live from ClientManager.cs:855 (MutatorHooks.ClientDisconnect.Call), and DamagetextMutator subscribes it (Hook() :103) and removes the leaver from every live player's set (:214-224). (Earlier 2026-06-25 note cited :788 for the dispatch; the live call is :855.) Representation still differs (HashSet<Entity> keyed by Entity ref vs fixed bit array keyed by etof-1) but live semantics match QC on all three paths (first-hit add, PlayerSpawn clear, ClientDisconnect clear)."
   - id: damagetext.net.wire_and_visibility_tiers
     name: "Wire encode/decode + sv_damagetext visibility tiers (spectators/attacker/all)"
     layer: [authority, presentation]

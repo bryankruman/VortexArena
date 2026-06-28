@@ -1,13 +1,13 @@
 unit: turret-mlrs
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 8
   worst_gaps:
-    - "No head entity / head model (mlrs.md3) instantiated as a separate tur_head bone: the ammo-gauge frame is driven onto the turret edict's OWN .Frame (logic/values faithful) but there is no tag_head attachment, so it is not netted as a distinct head and the head model never renders/animates separately"
-    - "No client turret_draw (cl_turrets.qc): head does not visibly spin (angles += avelocity*dt), no low-hp sparks (<127 hp te_spark) / large-smoke (<85 EFFECT_SMOKE_LARGE) / small-smoke (<32 EFFECT_SMOKE_SMALL)"
-    - "No turret death gib toss (base-gibN.md3 + head_model gibs from cl_turrets.qc turret_die/turret_gibtoss); the death rocket-explode FX + impact sound ARE now emitted server-side on every death path"
+    - "No live in-world head render: the head model (mlrs.md3) is NOT instantiated as a separate tur_head bone/tag_head attachment, so the head never visibly spins (cl_turrets.qc turret_draw angles += avelocity*dt) and the ammo-gauge frame — though now computed onto the turret edict's OWN .Frame (logic/values faithful) — rides no separately-netted head entity. HeadModel is set on the descriptor but only consumed for the death head-gib, not an in-world head."
+    - "Death-FX visible fidelity unverified: the turret_die rocket-explode FX + impact sound AND the base-gibN.md3 + head_model gib toss are now all emitted/spawned server-side on every death path (TurretAI.Die -> TossDeathGibs, live for MLRS), but the gibs render as physics entities through the entity feed and have NOT been runtime-verified to render correctly (presentation: partial, not faithful)."
+    - "No client turret_draw low-hp sparks/smoke is now emitted server-side (TurretAI.DrawFx, live) — sparks (<127 hp te_spark) / large-smoke (<85) / small-smoke (<32) — but, like the gibs, the visible result is unverified."
 features:
   - id: turret-mlrs.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -20,7 +20,7 @@ features:
       - { name: "mins", base: "'-32 -32 0'", port: "(-32,-32,0)", match: true }
       - { name: "maxs", base: "'32 32 64'", port: "(32,32,64)", match: true }
       - { name: "model", base: "models/turrets/base.md3", port: "models/turrets/base.md3", match: true }
-      - { name: "head_model", base: "models/turrets/mlrs.md3", port: "none (no head bone entity)", match: false }
+      - { name: "head_model", base: "models/turrets/mlrs.md3", port: "models/turrets/mlrs.md3 set on descriptor (consumed by the death head-gib only; no in-world head bone entity)", match: false }
       - { name: "netname", base: "mlrs", port: "mlrs", match: true }
       - { name: "fullname", base: "MLRS Turret", port: "MLRS Turret", match: true }
       - { name: "spawnflags", base: "TUR_FLAG_SPLASH|TUR_FLAG_MEDPROJ|TUR_FLAG_PLAYER", port: "SPLASH(aimSplash)+PLAYER(select) modeled; MEDPROJ cosmetic-only", match: true }
@@ -35,11 +35,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Head model (mlrs.md3) not instantiated as a separate tur_head entity; no tag_head attachment. The ammo-gauge frame now rides the turret's own .Frame (see turret-mlrs.anim.ammogauge) but the head model is not separately rendered/animated."
+      - "Head model (mlrs.md3) is now set on the descriptor (MlrsTurret.cs:62) but is NOT instantiated as a separate in-world tur_head entity; no tag_head attachment. The ammo-gauge frame rides the turret's own .Frame (see turret-mlrs.anim.ammogauge); the head_model string is consumed only by the death head-gib (TurretAI.TossDeathGibs), not rendered/animated as a live head bone."
     verification:
-      - { kind: code_read, ref: "mlrs.qh vs MlrsTurret ctor + Spawn", result: pass }
+      - { kind: code_read, ref: "mlrs.qh vs MlrsTurret ctor (mins/maxs/base model/health/netname/fullname match; HeadModel set) + Spawn", result: pass }
     confidence: high
-    notes: "Identity/hitbox/base model/health faithful; the separate head entity + head model are not modeled."
+    notes: "Identity/hitbox/base model/health faithful. HeadModel now populated (vs baseline 'none') but only feeds the death head-gib; no live in-world head entity, so presentation stays partial."
   - id: turret-mlrs.setup.tr_setup
     name: "tr_setup: ammo/aim/shoot flags, volley seed, select/track defaults"
     layer: [authority]
@@ -70,7 +70,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "mlrs.qc tr_setup (aim_flags=LEAD|SHOTTIMECOMPENSATE; VOLLYALWAYS; HEADSHAKE) vs MlrsTurret.Spawn(headShake:true) + Think params (zPredict:false; vollyAlways:true) + TurretSpawn.Init:79 st.HeadShake + TurretAI.EventDamage:887-891 head jolt", result: pass }
+      - { kind: code_read, ref: "mlrs.qc tr_setup (aim_flags=LEAD|SHOTTIMECOMPENSATE; VOLLYALWAYS; HEADSHAKE) vs MlrsTurret.Spawn(headShake:true) + Think params (zPredict:false; vollyAlways:true) + TurretSpawn.Init:79 st.HeadShake + TurretAI.EventDamage:1056-1060 head jolt", result: pass }
     confidence: high
     notes: "FIXED vs baseline: TFL_DMG_HEADSHAKE now implemented (Spawn passes headShake:true; EventDamage jolts HeadAngles.X/.Y by (Prandom.Float()-0.5)*take, bit-faithful to turret_damage:228-234). With ZPREDICT already removed, VOLLYALWAYS modeled, and HEADSHAKE now present, every tr_setup flag is faithful — logic upgraded partial->faithful."
   - id: turret-mlrs.spawn.liveness
@@ -81,8 +81,8 @@ features:
       - "common/turrets/sv_turrets.qc:turret_link"
       - "common/turrets/sv_turrets.qc:turret_initialize"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:54"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:208"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:69"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:232"
       - "src/XonoticGodot.Common/GameInit.cs"
     constants:
       - { name: "g_turrets master switch", base: "1 (default on)", port: "MasterSwitchEnabled(\"g_turrets\") default-on", match: true }
@@ -97,7 +97,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "MapObjectsRegistry.cs:208 registers turret_mlrs -> TurretSpawnFuncs.Mlrs -> Spawn(\"mlrs\") -> Turrets.ByName + def.Spawn + Think re-armed each frame (NextThink=Now); GameInit calls RegisterAll", result: pass }
+      - { kind: code_read, ref: "MapObjectsRegistry.cs:232 registers turret_mlrs -> TurretSpawnFuncs.Mlrs -> Spawn(\"mlrs\") -> Turrets.ByName + def.Spawn + Think re-armed each frame (NextThink=Now) + PerFrameThink recorded for respawn; GameInit calls RegisterAll", result: pass }
     confidence: high
     notes: "Confirmed live by code read. Not observed in an actual match (whether a loaded stock map places turret_mlrs is unconfirmed)."
   - id: turret-mlrs.combat.brain
@@ -243,7 +243,7 @@ features:
     verification:
       - { kind: code_read, ref: "mlrs_weapon.qc wr_think + turret_projectile vs MlrsTurret.Attack (spread 0.05, fuse floor ShotRadius 125) + TurretSpawn.Projectile", result: pass }
       - { kind: code_read, ref: "DeathTypes.cs TurretMlrs registered (DeathCategory.Turret); Api.Sound.Play weapons/rocket_fire on fire", result: pass }
-      - { kind: code_read, ref: "MlrsTurret.Attack:157 EffectEmitter.TeExplosion(rocket.Origin) (TE_EXPLOSION registered EffectsList.cs:247, same launch-flash convention as HellionTurret/HkTurret/WalkerTurret) == mlrs_weapon.qc:26 te_explosion(missile.origin); rocket.NetName='devastator' (Attack:143) feeds PROJECTILE_ROCKET CSQC smoke trail + rocket-fly loop", result: pass }
+      - { kind: code_read, ref: "MlrsTurret.Attack:165 EffectEmitter.TeExplosion(rocket.Origin) (TE_EXPLOSION registered EffectsList.cs:253, same launch-flash convention as HellionTurret/HkTurret/WalkerTurret) == mlrs_weapon.qc:26 te_explosion(missile.origin); projType 'devastator' (Attack:151) -> proj.NetName feeds ProjectileCatalog.cs:270 ProjectileType.Rocket -> CSQC smoke trail + rocket-fly loop", result: pass }
     confidence: high
     notes: "FIXED vs baseline: presentation upgraded missing->faithful. The muzzle te_explosion is now emitted at the rocket origin (mlrs_weapon.qc:26 parity) and the PROJECTILE_ROCKET CSQC trail is wired via rocket.NetName='devastator'. Damage/radius/speed/force/spread/health/lifetime/fuse/deathtype faithful, fire sound plays. Both prior presentation gaps (muzzle explosion + rocket trail) are resolved."
   - id: turret-mlrs.damage.lifecycle
@@ -275,12 +275,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Death gib toss still missing: Base cl_turrets.qc turret_die tosses base-gibN.md3 + head_model gibs (turret_gibtoss). The port has no CSQC turret edict to spawn client gib entities, so no gibs fly on death."
-      - "No client turret_draw (cl_turrets.qc): the head does not visibly spin (angles += avelocity*dt) and a damaged MLRS emits no low-health sparks (<127 hp -> te_spark) or smoke (<85 EFFECT_SMOKE_LARGE / <32 EFFECT_SMOKE_SMALL)."
+      - "Death gib toss is now PORTED + LIVE but visually unverified: TurretAI.Die -> TossDeathGibs (TurretAI.cs:1199-1235) runs the generic non-ewheel/walker/tesla branch for turret_mlrs, spawning base-gibN.md3 chunks + a head_model head-gib (with the head's last angles/spin, halved gravity, exploding via GibBoom -> head-gibN.md3 sub-chunks) as SERVER-SIDE physics entities through the entity feed (the vehicle-wreckage pattern). Bit-faithful to cl_turrets.qc turret_die/turret_gibtoss/turret_gibboom by code read, but the actual gib RENDER has not been runtime-verified, so presentation is partial not faithful."
+      - "Low-hp sparks/smoke now emitted server-side (TurretAI.DrawFx, TurretAI.cs:1319-1337, called from RunCombat AND the MlrsTurret.Think mid-burst branch): <127 hp te_spark / <85 SMOKE_LARGE / <32 SMOKE_SMALL with the single shared random roll. Code-read faithful; render unverified."
+      - "Still genuinely missing: the in-world head SPIN (cl_turrets.qc turret_draw angles += avelocity*dt) — there is no client turret edict, so the mlrs.md3 head is never rendered/spun in-world (FusionReactorTurret.cs:152-154 confirms 'no client turret render yet' for the whole family)."
     verification:
-      - { kind: code_read, ref: "turret_damage HEADSHAKE (sv_turrets.qc:228-234 jolts x+y) vs TurretAI.EventDamage:887-891 (st.HeadShake -> HeadAngles.X/.Y += (Prandom.Float()-0.5)*take) — MATCH; Die/Respawn respawnTime 60 == mlrs cfg", result: pass }
-      - { kind: code_read, ref: "TurretSpawn.Init e.GtEventDamage=TurretAI.EventDamage; DamageSystem.EventDamage routes non-player edict -> live; Init:79 st.HeadShake=headShake(true)", result: pass }
-      - { kind: code_read, ref: "TurretAI.Die:935-939 now plays weapons/rocket_impact (SND_ROCKET_IMPACT) + Emit ROCKET_EXPLODE on EVERY death path (respawning AND NORESPAWN), matching cl_turrets.qc:315-318 turret_die which fires on every TNSF_STATUS health==0 — audio FIXED, explosion FX present", result: pass }
-      - { kind: code_read, ref: "cl_turrets.qc turret_draw (head spin/sparks/smoke) + turret_gibtoss death gibs have no port counterpart", result: fail }
+      - { kind: code_read, ref: "turret_damage HEADSHAKE (sv_turrets.qc:228-234 jolts x+y) vs TurretAI.EventDamage:1056-1060 (st.HeadShake -> HeadAngles.X/.Y += (Prandom.Float()-0.5)*take) — MATCH; Die/Respawn respawnTime 60 == mlrs cfg", result: pass }
+      - { kind: code_read, ref: "TurretSpawn.Init:93 e.GtEventDamage=TurretAI.EventDamage; DamageSystem.EventDamage routes non-player edict -> live; Init:79 st.HeadShake=headShake(true)", result: pass }
+      - { kind: code_read, ref: "TurretAI.Die:1102-1107 plays weapons/rocket_impact (SND_ROCKET_IMPACT) + Emit ROCKET_EXPLODE + TossDeathGibs on EVERY death path (respawning AND NORESPAWN), matching cl_turrets.qc turret_die which fires on every TNSF_STATUS health==0 — audio + explosion FX + gib toss all present", result: pass }
+      - { kind: code_read, ref: "TurretAI.TossDeathGibs:1199-1235 + TossGib:1245-1287 + GibBoom:1294-1307 vs cl_turrets.qc turret_die/turret_gibtoss/turret_gibboom (base-gib2/3/4 OR base-gib1 + head_model, EF_FLAME explode, head-gib1..4 sub-chunks) — bit-faithful by read; ROCKET_EXPLODE/SMOKE_*/TE_SPARK/TE_EXPLOSION all registered in EffectsList.cs", result: pass }
+      - { kind: visual, ref: "in-world gib/spark/smoke/head render not observed in a match (server-side emit no-ops headless; no unit coverage of TossDeathGibs/DrawFx)", result: unknown }
     confidence: high
-    notes: "FIXED vs baseline (2 dims): (1) audio partial->faithful — Die now plays SND_ROCKET_IMPACT (weapons/rocket_impact) on the NORMAL respawning-death path too, not just NORESPAWN, matching cl_turrets.qc turret_die which fires on every death. (2) presentation missing->partial — the EFFECT_ROCKET_EXPLODE death FX is now emitted server-side at the death site on every death path (Die:938). Server HEADSHAKE aim jolt remains implemented (logic faithful). Still missing on presentation: the cl_turrets death gib toss (base-gibN.md3 + head_model) and turret_draw head spin / low-hp sparks+smoke — both need a CSQC turret edict."
+    notes: "FIXED vs the 2026-06-25 baseline (DRIFT — a fix landed Wave 16/17): the death gib toss (base-gibN.md3 + head_model gibs, TurretAI.TossDeathGibs) is now PORTED and on the live MLRS death path (Die -> TossDeathGibs), and DrawFx low-hp sparks/smoke now emit. The baseline still listed both as missing. Audio stays faithful (rocket_impact on every death path); HEADSHAKE logic faithful. Presentation stays PARTIAL (not faithful): the gib/spark/smoke emission is server-side+live but its visible render is unverified, and the in-world head spin / separately-attached head entity is still absent. Per the auditor rule (visible fidelity not runtime-verified = unknown, not faithful) presentation is NOT upgraded to faithful."

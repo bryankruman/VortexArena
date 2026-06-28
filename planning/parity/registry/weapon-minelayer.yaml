@@ -5,7 +5,7 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 15
   worst_gaps:
-    - "Whole weapon is WEP_FLAG_MUTATORBLOCKED: never in a normal-match loadout (GiveItems.cs:340 skips MutatorBlocked|Hidden), only reachable via weaponarena/NewToys/impulse-give → fire-path liveness stays partial, not live (verified unchanged)."
+    - "Whole weapon is WEP_FLAG_MUTATORBLOCKED (Minelayer.cs:67 SpawnFlags includes MutatorBlocked): never in a normal-match loadout (GiveItems.cs:340 skips MutatorBlocked|Hidden), only reachable via weaponarena/NewToys/impulse-give → fire-path liveness stays partial, not live (re-verified this pass against the actual SpawnFlags)."
     - "Mine shoot-down is fully LIVE and faithful: MakeShootable installs GtEventDamage (DamageSystem.EventDamage:358-360 dispatches non-player targets), a depleted mine detonates, AND the W_MineLayer_Damage knock-loose branch (damageforcescale bounce/re-stick/avelocity while hp>0) runs via the MakeShootable onHit per-hit seam (Projectiles.ShootDown fires onHit before the gate/hp-subtract per QC ordering). exception=1 is exactly the ML-mine case that passes stock g_projectiles_damage -2."
     - "Remote-detonate sound semantics: port plays mine_det if the actor has ANY placed mine (matches Base W_MineLayer_PlacedMines); remaining remote-detonate divergence is the inline-vs-next-tick detonation ordering (behaviorally equivalent)."
     - "FIXED since last audit: airshot achievement (Explode airshot branch -> NotificationSystem.Announce('ACHIEVEMENT_AIRSHOT'); structurally unreachable for the mine in Base too since every W_MineLayer_Explode caller passes directhitentity=NULL) AND the out-of-ammo forced weapon switch (ForceSwitchIfOutOfAmmo -> SwitchToOtherWeapon in WeaponFireGate) are NOW IMPLEMENTED on both the proximity/lifetime Explode and the RemoteDetonate tail."
@@ -44,7 +44,7 @@ features:
       - { kind: code, ref: "WeaponFireDriver.Frame -> WrThink(Primary); Attack reads cvars, sets Owner+Team+NetName, MakeTrigger, SetModel, MakeShootable; weapon is MutatorBlocked (Minelayer.cs:63)", result: pass }
       - { kind: value-diff, ref: "bal-wep-xonotic.cfg:178-208 — all 22 g_balance_minelayer_* match Configure() defaults", result: pass }
     confidence: high
-    notes: "Re-verified unchanged this pass. W_MuzzleFlash emitted (EffectEmitter.Emit('ROCKET_MUZZLEFLASH', shot.Origin, shot.Dir*1000, 1, except: actor) — registered EffectsList.cs:118) and the mine is SetModel'd (models/mine.md3 present under assets). mine_fire sound played; velocity = dir*speed (spread 0). cnt deadline = time + (lifetime - countdown). Liveness still partial: a normal match never grants this MUTATORBLOCKED weapon."
+    notes: "Re-verified end-to-end this pass. W_MuzzleFlash emitted (EffectEmitter.Emit('ROCKET_MUZZLEFLASH', shot.Origin, shot.Dir*1000, 1, except: actor) — 'ROCKET_MUZZLEFLASH' registered EffectsList.cs:134) and the mine is SetModel'd (models/mine.md3 confirmed present, 24KB, under assets/data/xonotic-data.pk3dir/models/mine.md3). mine_fire.ogg present; velocity = dir*speed (spread 0). cnt deadline = time + (lifetime - countdown). Liveness still partial: SpawnFlags includes WeaponFlags.MutatorBlocked (Minelayer.cs:67) so a normal match never grants this weapon (confirmed against the actual flag, not just the spec note)."
 
   - id: minelayer.fire.mine_limit
     name: "Per-player mine limit gate"
@@ -214,7 +214,7 @@ features:
       - "QC re-faces the mine (angles = vectoangles(velocity)) AFTER the g_projectiles_damage gate + TakeResource; the port performs the re-face inside onHit, BEFORE the gate. With stock g_projectiles_damage -2 + exception=1 the gate always passes for a mine, so behaviorally equivalent — ordering nuance only."
       - "Re-grounding a bouncing knocked-loose mine relies on the next BSP touch (OnTouch re-stick) rather than the QC IS_ONGROUND/UNSET_ONGROUND ground-flag toggle in W_MineLayer_Think — the port's movement model has no per-tick onground flag to clear, so this is a model difference, not a behavioral gap."
     verification:
-      - { kind: code, ref: "MakeShootable installs GtEventDamage; DamageSystem.EventDamage (DamageSystem.cs:331-334) routes non-player targ with GtEventDamage into ShootDown (onHit + gate + hp subtract + ProjectileDamage callback at hp<=0)", result: pass }
+      - { kind: code, ref: "MakeShootable (Projectiles.cs:91-99) installs GtEventDamage; DamageSystem.EventDamage (DamageSystem.cs:369-372: `if (!IsPlayer(targ) && targ.GtEventDamage is not null)`) routes non-player targ with GtEventDamage into ShootDown (Projectiles.cs:106 — onHit before gate + CheckProjectileDamage + hp subtract + ProjectileDamage callback scheduled at hp<=0)", result: pass }
       - { kind: code, ref: "ShootDown (Projectiles.cs) invokes onHit on EVERY surviving hit BEFORE CheckProjectileDamage; Minelayer wires onHit:OnMineHit (exception:1) which does the damageforcescale knock-loose (BOUNCE + LTime .wait + AVelocity + re-settouch + vectoangles re-face); OnMineDamage(ProjectileDamage) fires only at hp<=0 to Explode", result: pass }
       - { kind: value-diff, ref: "balance-xonotic.cfg:202 g_projectiles_damage -2 (exception-list includes 'ML mines'); exception:1 passes that gate", result: pass }
     confidence: high
@@ -400,9 +400,9 @@ features:
       - "Liveness moot in practice while the weapon stays MutatorBlocked, but the dispatch (BotBrain.BotWantsDetonate) IS on the live bot decision path when the weapon is granted."
     verification:
       - { kind: code, ref: "Minelayer.BotWantsDetonate (Minelayer.cs:525-653) reproduces wr_aim:387-461: skill>=2 gate, per-mine x per-target self/team/enemy damage with bound(0,edge+(core-edge)*sqrt(1-d/r),10000), desirabledamage = enemy - selfdamage*selfdamagepercent (shield) - teamdamage (teamplay), skill>9 tracking detonate, skill<=9 enemy-direction+random gate, 0.75*coredamage group threshold, skill>6.5 selfdamage>health veto", result: pass }
-      - { kind: code, ref: "BotBrain.cs:416-420 calls ChosenWeapon.BotWantsDetonate(bot, slot0, Skill, Players(), ShouldAttack) every think; on true sets wantAttack2=true (QC 'don't fire a new shot at the same time')", result: pass }
+      - { kind: code, ref: "BotBrain.cs:457-462 calls ChosenWeapon.BotWantsDetonate(bot, new WeaponSlot(0), Skill, Players(), ShouldAttack) every think; on true sets wantAttack=false + wantAttack2=true (QC 'don't fire a new shot at the same time'). Base virtual is GameplayBases.cs:211 (returns false); Minelayer overrides it", result: pass }
     confidence: high
-    notes: "FIXED since last audit: the baseline recorded this as logic:missing / port_refs:[] (wr_aim deferred for all weapons). The full mine-detonation AI is now ported in Minelayer.BotWantsDetonate and dispatched live by BotBrain. Damage model, desirability math, skill gates, and self-preservation veto all match Base. Residual: approximate frametime in the low-skill random gate + the primary-suppress site moved to WrThink."
+    notes: "FIXED since last audit, re-verified this pass: the pre-wave SPEC recorded this as logic:missing / port_refs:[] (wr_aim deferred for all weapons). The full mine-detonation AI is now ported in Minelayer.BotWantsDetonate (overriding the GameplayBases.cs:211 virtual) and dispatched LIVE by BotBrain.cs:458 (confirmed dispatch site; the earlier :416 line ref was approximate). Damage model, desirability math, skill gates, and self-preservation veto all match Base. Residual: approximate frametime (0.05f) in the low-skill random gate + the primary-suppress site moved to WrThink."
 
   - id: minelayer.player.reset
     name: "Per-player mine-count reset on respawn (wr_resetplayer)"

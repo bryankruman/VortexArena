@@ -2,6 +2,21 @@ unit: mapobject-func
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
+# OPUS re-verify 2026-06-27 (post-Wave-16/17, branch claude/parity-port-waves): re-read the CURRENT port files
+# against every claim below — NO STATUS DRIFT, all 17 feature rows stay faithful/live. Confirmed in code this pass:
+#   (1) MapObjectsCommon.cs Play2 (:845-849) -> SoundSystem.Play2Raw (SoundSystem.cs:255-256 =
+#       Api.Sound.Play(recipient, SoundChannel.Auto, sample, VolBase 0.7, AttenNone 0)) — the CH_INFO/2D-full-volume
+#       play2 mix is exact byte-for-byte (this is the Wave-16/17 audio refinement). UseTargets fires
+#       Play2(actor,"misc/talk.wav") at :424; Centerprint (:910) -> NotificationSystem.SendCenterRaw(OneOnly) at :919.
+#   (2) Doors.cs DoorTouch Centerprint+Play2 at :469-470; DoorCheckKeys (:510-543) faithful incl. valid==0?NEED:ALSONEED
+#       split + 2s KeyDoorMessageTime throttle + 3 live NotificationSystem.Send(MsgType.Center) calls; DoorReset assigned :73/:133.
+#   (3) Buttons.cs InstallEventDamage(ButtonDamage) :50, ButtonReset :42, fire via positional MapMover.Sound :156 (QC _sound, correct).
+#   (4) GameWorld.ResetMapObjects body :4683, e.Reset?.Invoke(e) :4704 (snapshot two-pass reset/reset2) — LIVE.
+#   (5) Notification names DOOR_UNLOCKED/LOCKED_NEED/LOCKED_ALSONEED defined NotificationsList.cs:962-964. Common build green (0/0).
+# DOC-FIX: prior passes cite the centerprint sink as "game/net/ServerNet.cs:300 / NotificationNetSink" — that exact path
+# is STALE (no such symbol/path in the repo now); the live seam is NotificationSystem.Sink, wired by the server host and
+# exercised by SendCenterRaw/Send. Seam is live; only the path string was outdated. No status impact.
+# ---- prior pass (2026-06-27 post-Wave-15/16) ----
 # re-audited 2026-06-27 post-Wave-15/16 (render/state-producer passes) on branch claude/parity-port-waves.
 # WAVE EDIT TO THIS UNIT = a narrow AUDIO-FIDELITY refinement, NO status change: the toucher-recipient map-object
 # cues (door touch .message beep, key-door unlocked/locked beeps, UseTargets default misc/talk.wav, key pickup)
@@ -172,7 +187,7 @@ features:
       - "no CSQC ENT_CLIENT_DOOR networking/draw (latent in Base too — door_link Net_LinkEntity is commented out); brush syncs via engine entity state."
     verification:
       - { kind: code_read, ref: "RE-VERIFIED 2026-06-27 post-Wave-16: door.qc:313 vs Doors.cs DoorTouch (Doors.cs:453) calls MapMover.Centerprint(other, door.Message) + MapMover.Play2(other, door.Noise); Centerprint (MapObjectsCommon.cs:910) routes to NotificationSystem.SendCenterRaw OneOnly (:919, CenterRaw channel) — LIVE on the match path, so the .message text shows; Play2 (MapObjectsCommon.cs:845) -> SoundSystem.Play2Raw (SoundSystem.cs:255) emits CH_INFO/VOL_BASE 0.7/ATTEN_NONE 0, matching QC play2 byte-for-byte (was the spatialized MapMover.Sound this wave). NOSPLASH early-out present in OnDeath; ApplyDoorSounds gated on Sounds (sounds key promoted); EF_LOWPRECISION set; LinkDoors/door_use/TOGGLE/auto-close/blocked-reverse reproduced", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(func_door) (MapObjectsRegistry.cs); MapObjectFieldsExtra.Apply runs before SpawnFuncs.TrySpawn so .sounds is set before ApplyDoorSounds reads it; centerprint reaches the client via NotificationSystem.Sink = new NotificationNetSink(this) (game/net/ServerNet.cs:300) -> CaptureNotification -> WriteNotification -> HudNotifications.cs:146", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_door) (MapObjectsRegistry.cs); MapObjectFieldsExtra.Apply runs before SpawnFuncs.TrySpawn so .sounds is set before ApplyDoorSounds reads it; centerprint reaches the client via the live NotificationSystem.Sink seam (SendCenterRaw, NotificationSystem.cs:267) -> host net sink -> HudNotifications (the old game/net/ServerNet.cs:300/NotificationNetSink path string is stale — symbol/path no longer exists; seam itself is live)", result: pass }
     confidence: high
     notes: "WAVE-5 FIX: door .message centerprint is now shown — MapObjectsCommon.Centerprint was rewired from the dead CenterprintHandler delegate to a direct NotificationSystem.SendCenterRaw(CenterRaw) call (live channel), closing the last real presentation gap (presentation partial->faithful). Only the CSQC draw remains, which is latent/commented-out in Base too. NOSPLASH + sounds-key + EF_LOWPRECISION from prior waves still hold. No dedicated unit test (code-read)."
 
@@ -237,8 +252,8 @@ features:
     gaps:
       - "key doors can't be damage-opened (faithful early-out in OnDeath: itemkeys!=0 keeps it alive) — the NOSPLASH branch and the itemkeys early-out are both independent OnDeath early-outs so order is immaterial."
     verification:
-      - { kind: code_read, ref: "RE-AUDITED 2026-06-27 post-Wave-16: door_check_keys vs DoorCheckKeys (Doors.cs:510-543): itemkeys & player.itemkeys consume; all-given -> play2(noise) + Send_Notification(CENTER_DOOR_UNLOCKED) reproduced as MapMover.Play2(player, door.Noise) (now CH_INFO/VOL_BASE/ATTEN_NONE, byte-exact play2; was MapMover.Sound this wave) + NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, \"DOOR_UNLOCKED\") (Doors.cs:526); partial -> Play2(noise3) + CENTER_DOOR_LOCKED_NEED (valid==0) / CENTER_DOOR_LOCKED_ALSONEED (valid!=0) with item_keys_keylist, throttled 2s (KeyDoorMessageTime), reproduced at Doors.cs:534-541 with the SAME valid==0 branch split. door_init_keys spawnflag->bits. Notification names defined in NotificationsList.cs:937-939 (DOOR_LOCKED_NEED/ALSONEED/UNLOCKED).", result: pass }
-      - { kind: liveness, ref: "NotificationSystem.Send(MsgType.Center) reaches the client via NotificationSystem.Sink = new NotificationNetSink(this) (game/net/ServerNet.cs:300) -> WriteNotification -> HudNotifications; ItemKeysKeylist defined MapObjectsRegistry.cs:379", result: pass }
+      - { kind: code_read, ref: "RE-AUDITED 2026-06-27 post-Wave-16: door_check_keys vs DoorCheckKeys (Doors.cs:510-543): itemkeys & player.itemkeys consume; all-given -> play2(noise) + Send_Notification(CENTER_DOOR_UNLOCKED) reproduced as MapMover.Play2(player, door.Noise) (now CH_INFO/VOL_BASE/ATTEN_NONE, byte-exact play2; was MapMover.Sound this wave) + NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, \"DOOR_UNLOCKED\") (Doors.cs:526); partial -> Play2(noise3) + CENTER_DOOR_LOCKED_NEED (valid==0) / CENTER_DOOR_LOCKED_ALSONEED (valid!=0) with item_keys_keylist, throttled 2s (KeyDoorMessageTime), reproduced at Doors.cs:534-541 with the SAME valid==0 branch split. door_init_keys spawnflag->bits. Notification names defined in NotificationsList.cs:962-964 (DOOR_LOCKED_NEED/ALSONEED/UNLOCKED — line shifted from the prior pass's :937-939 by later notification-table edits; names intact).", result: pass }
+      - { kind: liveness, ref: "NotificationSystem.Send(MsgType.Center) reaches the client via the live NotificationSystem.Sink seam -> host net sink -> HudNotifications (names DOOR_UNLOCKED/LOCKED_NEED/LOCKED_ALSONEED defined NotificationsList.cs:962-964; the old game/net/ServerNet.cs:300 path string is stale); ItemKeysKeylist defined MapObjectsRegistry.cs:379", result: pass }
     confidence: high
     notes: "DRIFT-FIX 2026-06-25: the key-door cpid notifications are now FAITHFUL — DoorCheckKeys was rewired from the prior 'CENTER_DOOR_UNLOCKED is client-side' sound-only stub to real NotificationSystem.Send(MsgType.Center) calls for all three messages, AND the QC NEED-vs-ALSONEED two-branch split (valid==0 ? NEED : ALSONEED) is now reproduced (the prior single-noise3-throttle collapse is gone). presentation missing->faithful, audio partial->faithful. QC reads keys off PS(player); port reads player.ItemKeys directly — equivalent."
 
@@ -612,7 +627,7 @@ features:
       - "no CSQC ENT_CLIENT draw/networking (latent in Base); brush syncs via engine entity state."
     verification:
       - { kind: code_read, ref: "door_secret.qc vs TargetUtilities.cs: SecretUse/touch (TargetUtilities.cs:509/805) call MapMover.Centerprint(...) which now routes to the live CenterRaw channel — the .message text shows. ApplySecretSounds selects the medieval/metal pack per the promoted sounds key; fd_secret_use back/down-then-side dest, move1-6 chain, OPEN_ONCE/wait<0 no-return, fd_secret_damage open-on-any-hit (via GtEventDamage), shootable-if-untargeted all reproduced", result: pass }
-      - { kind: liveness, ref: "SpawnFuncs.Register(func_door_secret); GtEventDamage dispatched by DamageSystem.EventDamage (DamageSystem.cs:331-333); OnSecretDeath subscribed to Combat.Death; centerprint reaches the client via NotificationNetSink (game/net/ServerNet.cs:300)", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_door_secret); GtEventDamage dispatched by DamageSystem.EventDamage (DamageSystem.cs:331-333); OnSecretDeath subscribed to Combat.Death; centerprint reaches the client via the live NotificationSystem.Sink seam (the old NotificationNetSink/game/net/ServerNet.cs:300 path string is stale; seam is live)", result: pass }
     confidence: high
     notes: "WAVE-5 FIX: secret .message centerprint now shows — MapObjectsCommon.Centerprint rewired to NotificationSystem.SendCenterRaw (live CenterRaw channel), closing the last real presentation gap (presentation partial->faithful). sounds-key soundpack (prior wave) still holds. Fully ported, live func/ map object (in TargetUtilities.cs due to the classname-dispatch issue)."
 

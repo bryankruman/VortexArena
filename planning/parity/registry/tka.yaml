@@ -2,6 +2,21 @@ unit: tka
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
+# 2026-06-27 (7th pass, post-Wave-16/17 drift re-verify): ONE fix on the 18 rows. tka.waypoints.tracking —
+#   the carrier-waypoint IS_INVISIBLE(owner) hide is now PORTED. Wave 16/17 added (git b3a9c06~1..2f0bfdb,
+#   confirmed live in HEAD) the QC `if(IS_INVISIBLE(this.owner)) return false;` branch to
+#   CarrierWaypointVisibleFor (TeamKeepaway.cs:817-822), AFTER the spec/warmup/same-team early-return so
+#   teammates+spectators still see it but enemies don't while the carrier holds invisibility. It reads the live
+#   invisibility StatusEffectDef (StatusEffects.cs:235 R(new StatusEffectDef("invisibility"))) via
+#   StatusEffectsCatalog.ByName/Has (StatusEffects.cs:134/579) and mirrors the already-faithful
+#   Keepaway.CarrierWaypointVisibleFor (Keepaway.cs:707-710). This closes ONE of the two residual presentation
+#   nuances on that row; presentation stays PARTIAL because the hide-from-spectators-of-the-carrier nuance
+#   (`view.ballcarried && IS_SPEC`) is still unmodeled (no spectatee field). Status unchanged: logic faithful,
+#   values faithful, presentation PARTIAL, liveness live. 1 nuance-fix, 0 dimension-flips, 0 regressions,
+#   0 newly-unmapped Base features. The only port change to TeamKeepaway.cs in W16/17 was this hide; BallEntity.cs
+#   untouched. Common build green. All other 17 rows re-confirmed unchanged vs the 6th-pass baseline (no further
+#   port edits to the unit since). Line numbers shifted: CarrierWaypointVisibleFor TeamKeepaway.cs:810,
+#   CollectWaypoints :765-784, ServerNet CollectWaypoints pull :1107 + per-peer predicate :1169.
 # 2026-06-27 (6th pass, drift re-verify): NO drift on any of the 18 rows. Every per-dimension status, constant,
 #   and liveness claim re-confirmed against current Base + port. 0 fixes, 0 regressions, 0 newly-unmapped gameplay
 #   features. Current live-wiring sites (line numbers shifted again): SpawnBall GameWorld.cs:775 (case TeamKeepaway),
@@ -85,7 +100,7 @@ summary:
   worst_gaps:
     - "Drop triggers: 3 of Base's 4 are now wired LIVE — death (OnDeath), use-key (OnUseKey on MutatorHooks.PlayerUseKey, fired via the +use impulse path), and observe/disconnect (OnPlayerRemoved, fired from ClientManager). Only DropSpecialItems (the special-item-strip drop edge) remains unwired."
     - "Multi-ball chaining (g_tkaball_count / g_tka_ballcarrier_maxballs, the ballcarried.cnt chain + cnt orbit offset) is still unported — the port models exactly one ball (the stock default count=1, so no stock divergence)."
-    - "tka.waypoints.tracking residual (presentation:partial): the carrier sprite now uses SPRITERULE_TEAMPLAY + a per-viewer VisibleForPlayer predicate (same-team/spectator/warmup/tracking==1 all faithful, and ==2 dropped-only is now distinguished). Only the two narrowest QC nuances remain approximated — hide-from-spectators-of-the-carrier and hide-on-IS_INVISIBLE(owner)."
+    - "tka.waypoints.tracking residual (presentation:partial): the carrier sprite uses SPRITERULE_TEAMPLAY + a per-viewer VisibleForPlayer predicate (same-team/spectator/warmup/tracking==1 faithful, ==2 dropped-only distinguished, and the IS_INVISIBLE(owner) hide now ported in Wave 16/17). Only ONE narrow QC nuance remains approximated — hide-from-spectators-of-the-carrier (no spectatee field on the predicate)."
     - "tka.ball.pickup minor: no scale 0.75 while carried, no alpha/invisibility sync, no EFFECT_BALL_SPARKS / EFFECT_KA_BALL_RESPAWN particles (the respawn/pickup/world-touch SOUNDS are all played; only the particle effects + the carried-scale shrink remain)."
 features:
   - id: tka.ball.spawn
@@ -589,13 +604,14 @@ features:
       - "FIXED (missing -> faithful logic/values + live): CollectWaypoints (TeamKeepaway.cs:713) produces a TEAM-COLORED carrier sprite (TkaBallCarrier<team> + per-team radar tint, offset '0 0 64', RADARICON_FLAGCARRIER, Rule=SPRITERULE_TEAMPLAY) while held, and the neutral KaBall sprite on the loose ball. Honors g_tkaball_tracking (0 = no waypoint). Pulled LIVE by ServerNet.SendWaypoints (ServerNet.cs:927 _world.GameType.CollectWaypoints), filtered per peer, networked, rendered by WaypointSpriteLayer + RadarPanel."
       - "FIXED (values partial -> faithful): g_tkaball_tracking's THREE Base modes (0 none / 1 always / 2 only-when-dropped) are now all distinguished — CarrierWaypointVisibleFor returns BallTracking==1 for the enemy case, so ==2 hides the carrier sprite from enemies (matching the QC `return autocvar_g_tkaball_tracking == 1`)."
       - "FIXED (presentation): the carrier sprite is now networked with SPRITERULE_TEAMPLAY + a per-viewer VisibleForPlayer predicate (CarrierWaypointVisibleFor), honored per-peer at ServerNet.cs:996. It models same-team-always, spectator-always, warmup-always, and enemy-tracking==1 faithfully."
-      - "RESIDUAL (presentation:partial): only the two narrowest QC nuances of tka_ballcarrier_waypointsprite_visible_for_player remain approximated — hide-from-spectators-of-the-carrier (`view.ballcarried && IS_SPEC(player)`) and hide-on-IS_INVISIBLE(owner). The predicate has no spectatee/invisibility field, so these resolve as visible."
+      - "FIXED (Wave 16/17, presentation): the QC IS_INVISIBLE(owner) hide is now ported — CarrierWaypointVisibleFor (TeamKeepaway.cs:817-822) returns false (hiding the carrier sprite from ENEMIES) when the carrier holds the invisibility powerup, placed AFTER the spec/warmup/same-team early-return so teammates+spectators still see it. Mirrors the already-faithful Keepaway.CarrierWaypointVisibleFor (Keepaway.cs:707-710). Reads the live invisibility StatusEffectDef (StatusEffects.cs:235) via StatusEffectsCatalog.ByName/Has; reachable on the live CollectWaypoints->VisibleForPlayer per-peer path."
+      - "RESIDUAL (presentation:partial): now ONLY the single narrowest QC nuance of tka_ballcarrier_waypointsprite_visible_for_player remains approximated — hide-from-spectators-of-the-carrier (`view.ballcarried && IS_SPEC(player)`). The predicate has no spectatee field, so this still resolves as visible."
     verification:
-      - { kind: codetrace, ref: "CollectWaypoints (TeamKeepaway.cs:713) sets Rule=Teamplay + VisibleForPlayer=CarrierWaypointVisibleFor; ServerNet.cs:927 _world.GameType?.CollectWaypoints inside SendWaypoints; predicate honored per-peer at ServerNet.cs:996 (WaypointVisible); client WaypointSpriteLayer + RadarPanel render", result: pass }
+      - { kind: codetrace, ref: "CollectWaypoints (TeamKeepaway.cs:765-784) sets Rule=Teamplay + VisibleForPlayer=CarrierWaypointVisibleFor; ServerNet.cs:1107 _world.GameType?.CollectWaypoints inside SendWaypoints; predicate honored per-peer at ServerNet.cs:1169 (WaypointVisible); client WaypointSpriteLayer + RadarPanel render", result: pass }
       - { kind: value, ref: "BallTracking distinguishes 0/1/2 (CarrierWaypointVisibleFor returns BallTracking==1 for enemies); Rule=SPRITERULE_TEAMPLAY matches Base", result: pass }
-      - { kind: codetrace, ref: "spectatee-of-carrier (view.ballcarried && IS_SPEC) + IS_INVISIBLE(owner) hide nuances not modeled -> presentation:partial", result: fail }
+      - { kind: codetrace, ref: "IS_INVISIBLE(owner) hide NOW ported (TeamKeepaway.cs:820-822, StatusEffectsCatalog Has(carrier, invisibility)) — verified present in current HEAD + Common build green; only spectatee-of-carrier (view.ballcarried && IS_SPEC) remains unmodeled -> presentation stays partial", result: pass }
     confidence: high
-    notes: "FIX this pass (values partial -> faithful): g_tkaball_tracking 0/1/2 now fully distinguished + the carrier sprite uses SPRITERULE_TEAMPLAY with the visible-for-player predicate. Presentation stays partial only for the two narrowest visibility nuances (spectatee-of-carrier + invisibility)."
+    notes: "FIX this pass (Wave 16/17): the IS_INVISIBLE(owner) carrier-sprite hide is now ported (mirroring the faithful Keepaway analogue), closing one of the two residual presentation nuances. Presentation stays PARTIAL for the single remaining spectatee-of-carrier nuance (no spectatee field on the predicate). g_tkaball_tracking 0/1/2 + SPRITERULE_TEAMPLAY remain faithful from prior passes."
 
   - id: tka.bot.role
     name: "Bot TKA roles (carrier/collector, team-aware goalrating, ForbidAttack)"

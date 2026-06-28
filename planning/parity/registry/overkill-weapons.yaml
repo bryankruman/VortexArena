@@ -5,11 +5,11 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 17
   worst_gaps:
-    - "2026-06-27 drift re-audit (post Wave-13, commit 5427e74): TWO FIXES vs the prior baseline, no regressions. (1) bot AI (overkill-weapons.shared.bot_ai) went missing->faithful+live: OkMachinegun/OkHmg now override BotForbidsFire (range gate 3000-clamp(skill,0,10)*200), OkShotgun overrides BotWantsSecondary (>bot_range 512 -> ATCK2 blaster poke), OkRpc overrides BotAimShotSpeed (lead by speed=2500); oknex keeps the generic always-primary fallback which matches QC at stock. (2) okhmg_nadesupport (overkill-weapons.okhmg.nadesupport) went missing->faithful+live: OverkillMutator.OnNadeDamage rewrites HMG nade self-damage to max_health*0.1 and is REGISTERED (MutatorHooks.NadeDamage.Add, OverkillMutator.cs:142) + fired first in NadeProjectile.NadeDamage (line 208)."
-    - "The 14 weapon/FX/mode rows are UNCHANGED from the prior baseline — all balance constants still verified against bal-wep-xonotic.cfg:792-922; the Wave-8b FX/casing/recoil/tracer/muzzle/impact seams all remain wired LIVE across all five OK weapons (commit 31aa799)."
-    - "okrpc shoot-down remains LIVE+faithful: OkRpc.Attack:166 calls Projectiles.MakeShootable(missile, exception:-1); correctly inert under stock g_projectiles_damage=-2, exactly like Base."
-    - "STILL OPEN (okrpc online/networking subset): missile not CSQC-networked (no visible flying chainsaw, CSQCProjectile(PROJECTILE_RPC) omitted), not registered for bot dodge (IL_PUSH g_bot_dodge), and not damagedbycontents (IL_PUSH g_damagedbycontents) — lava/slime won't detonate the in-flight chainsaw even at g_projectiles_damage>=0."
-    - "oknex charge subsystem still inert+deferred (charge default 0): velocity-charge GetPressedKeys hook, chargepool, wr_glow charge glow, SND_OK_NEX_CHARGE overcharge sound all unported (intended_divergence — matches the shipped Vortex-without-charge balance). oknex CSQC beam particle (SendCSQCVortexBeamParticle) and Yoda/Impressive announcements also still absent."
+    - "2026-06-27 Wave-16/17 re-audit (commit b3a9c06, build green): FOUR FIXES vs the prior baseline, NO regressions. (1+2) oknex.primary_rail: the networked CSQC rail beam (EFFECT_VORTEX_BEAM/_OLD, the SAME Vortex.EmitBeam treatment, routed through the live ServerNet EffectNetSink + ClientWorld RenderSink) AND the Yoda/Impressive announcements (OkNex.Announce -> NotificationSystem.Announce) are now wired — presentation partial->faithful. (3+4) okrpc.primary_chainsaw_missile: the missile now sets BotDodge+BotDodgeRating (consumed LIVE by BotBrain.HavocbotDodge SUPERBOT scan) and DamagedByContents (consumed LIVE by GameWorld.CreatureFrameAll's per-tick contents sweep) — two of the three okrpc STILL-OPEN items closed."
+    - "The other 13 rows are UNCHANGED — all balance constants still verified against bal-wep-xonotic.cfg:792-922; the Wave-8b FX/casing/recoil/tracer/muzzle/impact seams + Wave-13 bot_ai + okhmg_nadesupport all remain wired LIVE."
+    - "okrpc shoot-down remains LIVE+faithful: OkRpc.Attack:179 calls Projectiles.MakeShootable(missile, exception:-1); correctly inert under stock g_projectiles_damage=-2, exactly like Base."
+    - "STILL OPEN (okrpc, narrowed to ONE networking item): missile not CSQC-networked as a projectile body (no visible flying chainsaw, CSQCProjectile(PROJECTILE_RPC) omitted) + accuracy stat bookkeeping. Bot-dodge + damagedbycontents are now CLOSED."
+    - "oknex charge subsystem still inert+deferred (charge default 0): velocity-charge GetPressedKeys hook, chargepool, wr_glow charge glow, SND_OK_NEX_CHARGE overcharge sound all unported (intended_divergence — matches the shipped Vortex-without-charge balance). NOTE: the CSQC beam + Yoda/Impressive are NO LONGER in this list (Wave-16 closed them)."
     - "STILL OPEN (niche): standalone g_overkill_weapons activation path (un-block the 5 OK weapons without full g_overkill) has no reader in src/; oknex ATCK2-zoom non-default branch (secondary==0) unmodeled. Both dormant at stock balance."
     - "Overkill mode has no menu toggle (reachable only via ruleset/cvar) — but this MATCHES Base, so it is faithful, not a regression."
 features:
@@ -133,19 +133,22 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED (Wave-8b): wr_impacteffect now wired — Attack:150-158 traces the surface, emits EFFECT_VORTEX_IMPACT puff + SND_OK_NEX_IMPACT (neximpact) at the hit point (silent if sky/miss), plus a VORTEX_MUZZLEFLASH approximation. Closes the baseline's 'no client rail-impact particle / impact sound' gap."
-      - "STILL OPEN: no CSQC beam particle (SendCSQCVortexBeamParticle) — the actual rail beam between muzzle and impact is not networked (the port emits a muzzleflash + impact puff but not the beam itself). Yoda / Impressive achievement announcements never fire. wr_glow charge glow not present (covered by oknex.charge, default-off)."
+      - "FIXED (Wave-16, commit b3a9c06): CSQC rail beam now wired — OkNex.Attack:214-221 emits the actual muzzle->impact beam (EFFECT_VORTEX_BEAM, or VORTEX_BEAM_OLD under cl_particles_oldvortexbeam) as a count-0 trail, the SAME path Vortex.EmitBeam uses; the beam networks by registered id through the live effect sink (ServerNet EffectNetSink + ClientWorld RenderSink). Closes the baseline 'no SendCSQCVortexBeamParticle' gap."
+      - "FIXED (Wave-16, commit b3a9c06): Yoda + Impressive announcements now fire — OkNex.Attack:199 -> Announce() derives the impressive/yoda condition from the rail's first pierced victim (cross-team, damageable, the every-other-hit toggle via a per-actor weak side-table) and the shooter's pre-trace airborne status, calling NotificationSystem.Announce(ACHIEVEMENT_IMPRESSIVE/_YODA). Mirrors vortex.qc:141-162. Closes the baseline 'yoda/impressive never fire' gap."
+      - "FIXED earlier (Wave-8b): wr_impacteffect (Attack:204-212 EFFECT_VORTEX_IMPACT puff + SND_OK_NEX_IMPACT neximpact, silent on sky/miss) + VORTEX_MUZZLEFLASH."
+      - "wr_glow charge glow not present (covered by oknex.charge, default-off) — inert at stock balance."
     verification:
       - { kind: value-diff, ref: "bal-wep-xonotic.cfg:846-871", result: pass }
-      - { kind: code-read, ref: "OkNex.Attack:144-158 FireRailgunBullet(headshotNotify false) + VORTEX_IMPACT/neximpact + VORTEX_MUZZLEFLASH; matches oknex.qc:84-106 + wr_impacteffect oknex.qc:315-322. SendCSQCVortexBeamParticle/yoda/impressive omitted.", result: pass }
-    confidence: high
-    notes: "charge=1 at stock balance (charge off). Impact FX/sound now LIVE; presentation stays partial only for the missing networked beam particle. Audio upgraded partial->faithful (impact sound now plays)."
+      - { kind: code-read, ref: "OkNex.Attack:188-221 FireRailgunBullet(headshotNotify false) + Announce(yoda/impressive) + VORTEX_IMPACT/neximpact + VORTEX_MUZZLEFLASH + VORTEX_BEAM(_OLD) trail; matches oknex.qc:84-106 + wr_impacteffect oknex.qc:315-322 + SendCSQCVortexBeamParticle.", result: pass }
+      - { kind: code-read, ref: "VORTEX_BEAM registered EffectsList.cs:101-102 (isTrail); EffectEmitter routes via live ServerNet.cs:303 EffectNetSink + ClientWorld.cs:393 RenderSink. NotificationSystem.Announce:200 -> Send(MsgType.Annce). Build green.", result: pass }
+    confidence: medium
+    notes: "charge=1 at stock balance (charge off). Wave-16 closed the two prior STILL-OPEN gaps: the networked rail beam (now identical to Vortex's beam treatment) and the yoda/impressive announces. presentation upgraded partial->faithful via the same beam seam the Vortex registry already treats as faithful. confidence medium (not faithful->high) because the beam's on-screen appearance in a live OK match is not runtime-captured — same caveat the Vortex beam carries; mechanism verified by code-read + build."
 
   - id: overkill-weapons.oknex.charge
     name: "OK Nex charge / chargepool / velocity-charge / wr_glow"
@@ -264,19 +267,20 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED (Wave-8b): W_MuzzleFlash (Attack:171 EFFECT_ROCKET_MUZZLEFLASH — matches okrpc.qh m_muzzleeffect) and wr_impacteffect (Explode:230-231 EFFECT_ROCKET_EXPLODE puff + SND_ROCKET_IMPACT at the blast point) are now wired LIVE — closing the baseline 'no wr_impacteffect / no W_MuzzleFlash' gap."
-      - "Shoot-down LIVE+faithful (unchanged): OkRpc.Attack:166 Projectiles.MakeShootable(missile, exception:-1) installs the GtEventDamage shim DamageSystem dispatches; ShootDown runs W_CheckProjectileDamage(-1) + RES_HEALTH subtract → Explode at hp<=0. Correctly INERT under stock g_projectiles_damage=-2, exactly like Base."
-      - "STILL OPEN: missile not networked as a CSQC projectile (no visible flying chainsaw on clients) — CSQCProjectile(PROJECTILE_RPC) omitted."
-      - "STILL OPEN: missile not registered for bot dodge (QC bot_dodge=true, bot_dodgerating=damage*2, IL_PUSH g_bot_dodge)."
-      - "STILL OPEN: missile does NOT set damagedbycontents / IL_PUSH g_damagedbycontents, so lava/slime won't detonate the in-flight chainsaw even at g_projectiles_damage>=0 (QC does)."
+      - "FIXED (Wave-8b): W_MuzzleFlash (Attack:184 EFFECT_ROCKET_MUZZLEFLASH — matches okrpc.qh m_muzzleeffect) and wr_impacteffect (Explode:243-244 EFFECT_ROCKET_EXPLODE puff + SND_ROCKET_IMPACT at the blast point) are now wired LIVE — closing the baseline 'no wr_impacteffect / no W_MuzzleFlash' gap."
+      - "Shoot-down LIVE+faithful (unchanged): OkRpc.Attack:179 Projectiles.MakeShootable(missile, exception:-1) installs the GtEventDamage shim DamageSystem dispatches; ShootDown runs W_CheckProjectileDamage(-1) + RES_HEALTH subtract → Explode at hp<=0. Correctly INERT under stock g_projectiles_damage=-2, exactly like Base."
+      - "FIXED (Wave-16, commit b3a9c06): missile now registered for bot dodge — OkRpc.Attack:147-148 sets missile.BotDodge=true + BotDodgeRating=damage*2 (QC bot_dodge / bot_dodgerating). Consumed LIVE by the SUPERBOT-gated dodge scan BotBrain.HavocbotDodge:698-735 (iterates Api.Entities.All for the BotDodge flag, skips own shots). SUPERBOT gate matches QC (only high-skill bots specifically dodge bolts). Closes the baseline 'not registered for bot dodge' gap."
+      - "FIXED (Wave-16, commit b3a9c06): missile now sets missile.DamagedByContents=true (QC IL_PUSH g_damagedbycontents). Consumed LIVE by the per-frame contents sweep GameWorld.CreatureFrameAll:2194-2204 (scans Api.Entities.All for the flag, skips noclip) -> PlayerFrameLogic.ProjectileContentsDamage, so a chainsaw resting in lava/slime now takes contents damage and detonates via its shoot-down shim. Correctly NOT gated by g_projectiles_damage (contents use g_balance_contents_projectiledamage), matching Base. Closes the baseline 'damagedbycontents missing' gap."
+      - "STILL OPEN: missile not networked as a CSQC projectile (no visible flying chainsaw on clients) — CSQCProjectile(PROJECTILE_RPC) omitted. The muzzle flash + explosion FX network, but the in-flight chainsaw body does not."
       - "Accuracy bookkeeping (first-hit fired/hit add, explode 'add fired back') omitted (stat-only)."
       - "Pass-through victim filter is `(Flags & Client) && TakeDamage!=No` vs QC IS_PLAYER(trace_ent): could catch a spectator client edict carrying the Client flag. Minor; corpses filtered by TakeDamage."
     verification:
       - { kind: value-diff, ref: "bal-wep-xonotic.cfg:874-895 — all 14 okrpc cvars match", result: pass }
-      - { kind: code-read, ref: "OkRpc.Attack:166 MakeShootable(exception:-1) + ROCKET_MUZZLEFLASH; OkRpc.Explode:226-231 RadiusDamage + SND_ROCKET_IMPACT + ROCKET_EXPLODE; matches okrpc.qc:7-31/100-142 + wr_impacteffect okrpc.qc:232-238", result: pass }
-      - { kind: value-diff, ref: "Projectiles.CheckProjectileDamage at g_projectiles_damage=-2 (balance-xonotic.cfg:202) returns false → okrpc inert at stock balance, identical to Base", result: pass }
+      - { kind: code-read, ref: "OkRpc.Attack:147-155 BotDodge/BotDodgeRating + DamagedByContents set; :179 MakeShootable(exception:-1) + :184 ROCKET_MUZZLEFLASH; OkRpc.Explode:239-244 RadiusDamage + SND_ROCKET_IMPACT + ROCKET_EXPLODE; matches okrpc.qc:7-31/100-142 + wr_impacteffect okrpc.qc:232-238", result: pass }
+      - { kind: code-read, ref: "consumers LIVE: BotBrain.HavocbotDodge:698-735 reads Entity.BotDodge (SUPERBOT-gated); GameWorld.CreatureFrameAll:2200 reads Entity.DamagedByContents each tick. Build green.", result: pass }
+      - { kind: value-diff, ref: "Projectiles.CheckProjectileDamage at g_projectiles_damage=-2 (balance-xonotic.cfg:202) returns false → okrpc shoot-down inert at stock balance, identical to Base", result: pass }
     confidence: high
-    notes: "Flight/pass-through/contact-explosion/shoot-down faithful and live. Wave-8b added the muzzle flash + explosion impact FX/sound (presentation partial->still partial only for the missing CSQC flying-chainsaw networking; audio partial->faithful). Remaining gaps are CSQC networking / bot-dodge / damagedbycontents / accuracy stats."
+    notes: "Flight/pass-through/contact-explosion/shoot-down faithful and live. Wave-16 wired the bot-dodge danger registration AND the damagedbycontents sweep to LIVE consumers (BotBrain.HavocbotDodge / GameWorld.CreatureFrameAll). presentation stays partial: the ONLY residual is the missing CSQC flying-chainsaw projectile networking (no visible in-flight body); muzzle/explosion FX network. The remaining open items are CSQC body networking + accuracy stats."
 
   - id: overkill-weapons.shared.secondary_blaster_jump
     name: "Shared secondary — Overkill blaster jump (own jump_interval timer)"
@@ -487,7 +491,7 @@ features:
     divergence_rationale: null
     gaps:
       - "FIXED (Wave-8b, commit 31aa799): ALL FIVE OK weapons now emit W_MuzzleFlash (registered EFFECT names), wr_impacteffect impact puff + impact/ric sound, and the three bullet weapons (okmg/okhmg/okshotgun) eject casings (per-type g_casings gate) + recoil PRNG + EFFECT_RIFLE/RIFLE_WEAK tracer. This CLOSES the baseline's central regression (it recorded okhmg/okshotgun/oknex/okrpc + okmachinegun's muzzle/impact as all missing)."
-      - "Residual presentation gaps live in their per-weapon rows, NOT here: oknex still lacks the networked CSQC rail beam (SendCSQCVortexBeamParticle); okrpc still lacks the CSQC flying-chainsaw projectile; both bullet weapons + FIRE2 still lack the third-person fire-2 weapon-frame anim. The muzzle/casing/impact/ric/tracer seam itself is fully wired."
+      - "Residual presentation gaps live in their per-weapon rows, NOT here. UPDATED (Wave-16, b3a9c06): the oknex networked CSQC rail beam (SendCSQCVortexBeamParticle) is now WIRED (oknex.primary_rail closed it) — the only per-weapon networked-visual gap left is okrpc's missing CSQC flying-chainsaw projectile body. Both bullet weapons + FIRE2 still lack the third-person fire-2 weapon-frame anim. The muzzle/casing/impact/ric/tracer/beam seam itself is fully wired."
     verification:
       - { kind: code-read, ref: "OkMachinegun/OkHmg/OkShotgun/OkNex/OkRpc all call EffectEmitter.Emit(<muzzle>) + BulletImpactFx/ImpactSound + (bullet weapons) EjectCasing/recoil; effect names registered in EffectsList.cs (SHOTGUN/MACHINEGUN/VORTEX/ROCKET _MUZZLEFLASH+_IMPACT/_EXPLODE); seam BulletImpactFx/EjectCasing live in WeaponFiring.cs:578-641", result: pass }
     confidence: high

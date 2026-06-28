@@ -5,11 +5,11 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Movetype_Physics_MatchTicrate (sub-tick interpolation: tic_* snapshots, floor(dt/tr) whole frames clamped to 32, residual-dt trace continuation + gravity half-step, sloppy straight-line interp) is STILL entirely missing — no between-tick interpolation in this layer for client-side moveables (gibs/casings/projectiles/trains). Re-grep 2026-06-27: zero hits for MatchTicrate/tic_origin/tic_velocity/tic_flags in src/."
-    - "WalkMove omits the sv_gameplayfix_unstickplayers _Movetype_CheckStuck call that Base runs at the top of _Movetype_Physics_Walk (walk.qc:9; cvar default 1, xonotic-server.cfg:575). The port's WalkMove (which drives monster bodies / STEP entities) never unsticks a body that starts a tick embedded in geometry. Minor: control flow otherwise faithful; the FlyMove startsolid-allsolid bail still protects against runaway, and PushEntity has its own NudgeOutOfSolid."
-    - "(corrected 2026-06-27) The two toss.ballistic gaps recorded on the prior pass were re-audit errors — the port DOES replicate both: (a) the bmodelstartsolid unstick-retry-give-up sequence (MoveTypePhysics.cs:170-182 == toss.qc:60-82), and (b) the move_suspendedinair SOLID_BSP gate (MoveTypePhysics.cs:233-234 `trace.Ent==null || trace.Ent.Solid==Solid.Bsp` == toss.qc:130-131). Both verified against unchanged source (MoveTypePhysics.cs untouched since Wave 13). toss.ballistic is fully faithful with no residual gaps."
-    - "(stable) push.pushmove MOVETYPE_PHYSICS-rider fast-path (push.qc:123-129 -> FlyMove.cs:409-414) and corpse/zero-thickness squash (push.qc:166-173 -> FlyMove.cs:444-453) remain implemented (commit faa4e89). Only residual is the non-behavioral findradius-vs-flat-scan broadphase style."
-    - "(stable) CheckWaterTransition emits no sound; both CheckWater and CheckWaterTransition route through the per-entity .ContentsTransition callback (MoveTypePhysics.cs:280/520), matching Base. checkwater row faithful (audio na)."
+    - "Movetype_Physics_MatchTicrate (sub-tick interpolation: tic_* snapshots, floor(dt/tr) whole frames clamped to 32, residual-dt trace continuation + gravity half-step, sloppy straight-line interp) is STILL entirely missing — no between-tick interpolation in this layer for client-side moveables (gibs/casings/projectiles/trains). Re-grep 2026-06-27 (post-W16/17 re-audit): zero hits for MatchTicrate/tic_origin/tic_velocity/tic_flags in src/. This is the ONLY genuinely-open gap in the unit."
+    - "(CLOSED by Wave 16, commit b3a9c06) The sv_gameplayfix_unstickplayers _Movetype_CheckStuck call at the top of _Movetype_Physics_Walk (walk.qc:9-10) is now ported: WalkMove calls CheckStuck (MoveTypePhysics.cs:376-377), a self-trace + TryNudgeOutOfSolid extrication (MoveTypePhysics.cs:521-532). The prior 2026-06-27 row that logged this as a NEW open gap was stale — it cited Wave 16 for other edits but missed that the SAME commit added CheckStuck (verified: git diff 5427e74..b3a9c06 adds +31 lines incl. UnstickPlayers + CheckStuck). walk.stepmove + step.physics refreshed; only the player-centric WALLCLIP pm_time restore remains (low impact, no pm_time field)."
+    - "(stable) toss.ballistic replicates both the bmodelstartsolid unstick-retry-give-up sequence (MoveTypePhysics.cs:170-182 == toss.qc:60-82) and the move_suspendedinair SOLID_BSP gate (MoveTypePhysics.cs:233-234 == toss.qc:130-131). Fully faithful, no residual gaps."
+    - "(stable) push.pushmove MOVETYPE_PHYSICS-rider fast-path (push.qc:123-129 -> FlyMove.cs:409-414) and corpse/zero-thickness squash (push.qc:166-173 -> FlyMove.cs:444-453) both implemented (verified 2026-06-27). Only residual is the non-behavioral findradius-vs-flat-scan broadphase style."
+    - "(stable) toss.bounce: Entity.BounceFactor/BounceStop defined (EntityWeaponState.cs:46/49); all live producers wire real cvars (Mortar.cs:194-195, Electro.cs:459-460, Raptor, Racer, BallEntity, MonsterAI.SpawnProjectile:1746-1747); integrator reads them with the signed grenadebouncedownslopes d (MoveTypePhysics.cs:207). Engine builds green (verified 2026-06-27)."
 features:
   - id: physics-movetypes.dispatch.frame
     name: "Per-tick movetype dispatch + live server entity loop"
@@ -138,10 +138,10 @@ features:
       - { name: "bouncefactor (BOUNCEMISSILE)", base: "(!this.bouncefactor)?1.0:this.bouncefactor (toss.qc:91)", port: "ent.BounceFactor==0 ? 1.0 : ent.BounceFactor (MoveTypePhysics.cs:193)", match: true }
       - { name: "bouncestop (BOUNCE)", base: "(!this.bouncestop)?60/800:this.bouncestop (toss.qc:100)", port: "ent.BounceStop==0 ? 60/800 : ent.BounceStop (MoveTypePhysics.cs:203)", match: true }
       - { name: "mortar grenade bounce", base: "0.5 / 0.075 (g_balance_mortar_bounce*)", port: "Mortar.cs:68-69 reads cvars (0.5/0.075) -> wired gren.BounceFactor/BounceStop (Mortar.cs:194-195)", match: true }
-      - { name: "electro-secondary orb bounce", base: "0.3 / 0.05 (g_balance_electro_secondary_bounce*)", port: "Electro.cs:137-138 reads cvars (0.3/0.05) -> wired orb.BounceFactor/BounceStop (Electro.cs:442-443)", match: true }
+      - { name: "electro-secondary orb bounce", base: "0.3 / 0.05 (g_balance_electro_secondary_bounce*)", port: "Electro.cs:143-144 reads cvars (0.3/0.05) -> wired orb.BounceFactor/BounceStop (Electro.cs:459-460)", match: true }
       - { name: "raptor vehicle bounce", base: "0.2 / 0 (g_vehicle_raptor_bounce*)", port: "Raptor.cs:88-89 fields 0.2/0 -> wired vehicle.BounceFactor/BounceStop (Raptor.cs:130-131)", match: true }
-      - { name: "spider web projectile bounce", base: "0.3 / 0.05 (spider.qc:154-155)", port: "Spider.cs passes 0.3/0.05 -> SpawnProjectile ASSIGNS them (MonsterAI.cs:1692-1693)", match: true }
-      - { name: "golem zap projectile bounce", base: "0.5 / 0.075 (golem)", port: "Golem.cs passes 0.5/0.075 -> SpawnProjectile ASSIGNS them (MonsterAI.cs:1692-1693)", match: true }
+      - { name: "spider web projectile bounce", base: "0.3 / 0.05 (spider.qc:154-155)", port: "Spider.cs passes 0.3/0.05 -> SpawnProjectile ASSIGNS them (MonsterAI.cs:1746-1747)", match: true }
+      - { name: "golem zap projectile bounce", base: "0.5 / 0.075 (golem)", port: "Golem.cs passes 0.5/0.075 -> SpawnProjectile ASSIGNS them (MonsterAI.cs:1746-1747)", match: true }
       - { name: "nexball basketball/football bounce", base: "0.6 / 0.075 (g_nexball_{basketball,football}_bounce*)", port: "BallConfig.WithKindDefaults sets 0.6/0.075 (BallEntity.cs:130-131) -> wired e.BounceFactor/BounceStop (BallEntity.cs:200-201)", match: true }
       - { name: "racer chassis bounce", base: "0.25 / 0 (g_vehicle_racer_bounce*)", port: "Racer.cs:57-58 fields 0.25/0 -> wired vehicle.BounceFactor/BounceStop (Racer.cs:205-206)", match: true }
       - { name: "grenadebouncedownslopes (d source)", base: "1 -> d = trace_plane_normal * velocity (SIGNED, toss.qc:105)", port: "Vector3.Dot(normal, vel) (SIGNED) (MoveTypePhysics.cs:207)", match: true }
@@ -157,7 +157,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "MoveTypePhysics.cs:193,202-219 read ent.BounceFactor/BounceStop + signed Dot (toss.qc:89-142). All live producers wire correct values: Mortar.cs:194-195 (0.5/0.075), Electro.cs:442-443 (0.3/0.05), Raptor.cs:130-131 (0.2/0), MonsterAI.SpawnProjectile assigns the bounceFactor/bounceStop params (MonsterAI.cs:1692-1693; spider 0.3/0.05, golem 0.5/0.075), BallEntity.cs:130-131/200-201 (nexball 0.6/0.075), Racer.cs:205-206 (racer 0.25/0). All match Base. Re-verified 2026-06-27 (line numbers refreshed).", result: pass }
+      - { kind: code, ref: "MoveTypePhysics.cs:193,202-219 read ent.BounceFactor/BounceStop + signed Dot (toss.qc:89-142); Entity.BounceFactor/BounceStop defined EntityWeaponState.cs:46/49 (Engine builds green). All live producers wire correct values: Mortar.cs:194-195 (0.5/0.075), Electro.cs:459-460 (0.3/0.05), Raptor.cs:130-131 (0.2/0), MonsterAI.SpawnProjectile assigns the bounceFactor/bounceStop params (MonsterAI.cs:1746-1747; spider 0.3/0.05, golem 0.5/0.075), BallEntity.cs:130-131/200-201 (nexball 0.6/0.075), Racer.cs:205-206 (racer 0.25/0). All match Base. Re-verified 2026-06-27 (W16/17 re-audit, line numbers refreshed).", result: pass }
     confidence: high
     notes: "Stable since the Wave-6e fix (faa4e89): all bounce producers ASSIGN proj/orb/ball/vehicle BounceFactor/BounceStop and the integrator reads them with the signed grenadebouncedownslopes d. 2026-06-27 re-audit: values unchanged, verification line numbers refreshed. Casings are NOT on this server path — they ride the client-only ShellCasings.cs system (own bounce 0.25 shell / 0.5 bullet), out of this unit's scope."
 
@@ -186,7 +186,7 @@ features:
     verification:
       - { kind: code, ref: "RunEntity MoveTypePhysics.cs:59 calls WalkMove for MoveType.Step. WalkMove:372 applyGravity includes MoveType.Step (WALK||STEP). step.qc:5 alias + walk.qc:12 dual WALK/STEP gravity confirmed in Base. Step is live: monsters MonsterAI.cs, turrets WalkerTurret/EWheelTurret, spiderbot vehicle (all set MoveType.Step, grep-confirmed 2026-06-27).", result: pass }
     confidence: high
-    notes: "Live (monster bodies, walker/ewheel turrets, spiderbot all set MoveType.Step). Wave-2 closed the stepping gap; the follow-up second-pass fix-up (4be8357) closed the gravity-gate omission. Net: STEP bodies both step and fall. Fully faithful. (Shares the WalkMove CheckStuck-omission with physics-movetypes.walk.stepmove, but that is a minor logic detail and the row stays faithful.)"
+    notes: "Live (monster bodies, walker/ewheel turrets, spiderbot all set MoveType.Step). Wave-2 closed the stepping gap; the second-pass fix-up (4be8357) closed the gravity-gate omission; Wave 16 (b3a9c06) added the shared WalkMove CheckStuck unstick. Net: STEP bodies both step and fall, and an embedded body is extricated first. Fully faithful (re-verified 2026-06-27, W16/17 re-audit)."
 
   - id: physics-movetypes.walk.stepmove
     name: "WalkMove slide + explicit stair up/down stepping"
@@ -206,7 +206,7 @@ features:
       - { name: "progress epsilon", base: "0.03125", port: "0.03125", match: true }
       - { name: "sv_wallfriction body", base: "#if 0 no-op (movetypes.qc:102)", port: "no-op (MoveTypePhysics.cs:458-461)", match: true }
       - { name: "IS_ONSLICK exception on stepdown skip", base: "vdist(>=400) && !IS_ONSLICK (walk.qc)", port: "no onslick modeling — !onslick always taken", match: true }
-      - { name: "sv_gameplayfix_unstickplayers CheckStuck", base: "1 (xonotic-server.cfg:575) -> _Movetype_CheckStuck at top of walk (walk.qc:9-10)", port: "NOT modeled — WalkMove has no CheckStuck/unstick call", match: false }
+      - { name: "sv_gameplayfix_unstickplayers CheckStuck", base: "1 (xonotic-server.cfg:575) -> _Movetype_CheckStuck at top of walk (walk.qc:9-10)", port: "PORTED (Wave 16, b3a9c06): WalkMove calls CheckStuck (MoveTypePhysics.cs:376-377) -> self-trace + TryNudgeOutOfSolid extrication (MoveTypePhysics.cs:521-532)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -217,12 +217,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "NEW (2026-06-27): WalkMove does NOT replicate Base's `if(GAMEPLAYFIX_UNSTICKPLAYERS(this)) _Movetype_CheckStuck(this)` at the top of _Movetype_Physics_Walk (walk.qc:9-10; cvar default 1, xonotic-server.cfg:575). A monster/STEP body that begins a tick embedded in geometry is not extricated before the slide move. Minor: the FlyMove startsolid-allsolid bail (FlyMove.cs:593-597 returns 3) and PushEntity's own NudgeOutOfSolid (FlyMove.cs:138-150) still prevent runaway, so the body just doesn't get the dedicated 6-direction/offset unstick probe Base runs first. logic stays faithful overall."
       - "WALLCLIP pm_time primal-velocity restore at walk.qc:20 (and the FlyMove tail) is absent — the port has no pm_time field. Player-centric, low impact for the bodies this loop drives."
     verification:
-      - { kind: code, ref: "MoveTypePhysics.cs:20 StepHeight=31, :359 StepDown=2, :360 StepDownMaxSpeed=400, :466-468 vdist gate, :482-486 SET_ONGROUND glue; all match walk.qc PHYS_STEPHEIGHT(31)/STEPDOWN(2)/STEPDOWN_MAXSPEED(400). applyGravity:372 includes Step (WALK||STEP). DIVERGENCE: no _Movetype_CheckStuck call (walk.qc:9-10 absent). Re-verified 2026-06-27.", result: pass }
+      - { kind: code, ref: "MoveTypePhysics.cs:20 StepHeight=31, :359 StepDown=2, :360 StepDownMaxSpeed=400, :476-478 speed gate, :492-496 SET_ONGROUND glue; all match walk.qc PHYS_STEPHEIGHT(31)/STEPDOWN(2)/STEPDOWN_MAXSPEED(400). applyGravity:382 includes Step (WALK||STEP). CheckStuck NOW PORTED (:376-377 -> CheckStuck :521-532) — confirmed via git diff 5427e74..b3a9c06 (Wave 16 added +31 lines: UnstickPlayers const + CheckStuck method). Engine builds green. Re-verified 2026-06-27 (W16/17 re-audit).", result: pass }
     confidence: high
-    notes: "Walk tunables at full parity (stepheight 31, stepdown==2 glue, maxspeed gate); applyGravity gates on WALK||STEP. Control flow (primary FlyMove, downtraceonground re-probe, up/forward/down explicit step, revert-on-no-progress, down-step glue) faithful. 2026-06-27 re-audit found one NEW minor gap: the sv_gameplayfix_unstickplayers _Movetype_CheckStuck call at the top of Base's walk is not ported. Logic remains faithful overall."
+    notes: "Walk tunables at full parity (stepheight 31, stepdown==2 glue, maxspeed gate); applyGravity gates on WALK||STEP. Control flow (primary FlyMove, downtraceonground re-probe, up/forward/down explicit step, revert-on-no-progress, down-step glue) faithful. 2026-06-27 W16/17 re-audit: the sv_gameplayfix_unstickplayers _Movetype_CheckStuck call — logged as a NEW open gap on the prior 2026-06-27 pass — was actually CLOSED by Wave 16 (commit b3a9c06, the same commit the prior pass cited for OTHER edits but missed this one). Now fully faithful but for the player-centric WALLCLIP pm_time residual."
 
   - id: physics-movetypes.push.pusher
     name: "MOVETYPE_PUSH movers (local-time advance + think)"

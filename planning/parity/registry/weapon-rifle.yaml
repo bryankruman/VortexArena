@@ -1,33 +1,34 @@
 unit: weapon-rifle
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
-# Re-audited 2026-06-25 (drift check #2, branch claude/parity-port-waves): adversarial re-verification of
-# all 17 rows + Base re-scan against current Base (bal-wep-xonotic.cfg + rifle.{qh,qc}) and port (Rifle.cs).
-# ONE FIX since the prior 2026-06-25 baseline:
-#   * rifle.audio.ric (was the prior baseline's last open gap): NOW CLOSED. SoundSystem.PlayRic
-#     (SoundSystem.cs:370-378) now EXPLICITLY plays the ricochet on SoundChannel.ShotsAuto (== CH_SHOTS,
-#     -4) instead of the RIC sound's default channel hint (Weapon) — PlayOn(emitter, ric,
-#     SoundChannel.ShotsAuto, ric.Volume, ric.Attenuation), matching QC rifle.qc:218 byte-for-byte. The
-#     channel constant now matches; audio partial->faithful. The 0.25s prevric throttle + 5% roll
-#     (WeaponFiring.cs:585-594) remain faithful. Cross-cutting: the same PlayRic fix lights up every
-#     hitscan weapon's ricochet (MachineGun/Shotgun share BulletImpactFx).
-# Still open: NONE. All 5 dimensions of all 17 rows faithful & live (one MINOR single-slot CheckAmmo edge
-# case and the rifle.fx.impact server-emit-vs-CSQC presentation note remain as documented non-defects).
-# NO regressions. All 17 Base balance constants re-diffed against bal-wep-xonotic.cfg:587-630 — all match.
-# Verified all FX registrations (EffectsList.cs:100-107: CASING_BULLET/SHELL, RIFLE_IMPACT->machinegun_impact,
-# RIFLE_MUZZLEFLASH, RIFLE/RIFLE_WEAK tracers isTrail), zoom net wiring (ServerNet.cs:1575 ButtonZoom <-
-# InputButtons.Zoom; WeaponFireDriver.cs:61/180 mirror), bot dispatch (BotBrain.cs:367 BotWantsSecondary),
-# WrSetup dispatch (WeaponFireDriver.cs:289 on raise; SeedClipIfFresh cs:296), WrThink driver loop
-# (cs:166/168), deathtype-secondary deathTag + DeathMessages rifle case (cs:82-85) & suicide (cs:159).
-# NO new unmapped Base symbols (wr_init reticle precache + describe menu-help are presentation-trivial,
-# intentionally unmapped). Line numbers in Rifle.cs port_refs refreshed to current file (FireBullets cs:286,
-# zoom re-aim cs:315-321, deathTag cs:328-330).
+last_audited: "2026-06-27"
+# Re-audited 2026-06-27 (Wave 16/17 post-edit drift check, branch claude/parity-port-waves): adversarial
+# re-verification of all 17 rows against the CURRENT port. KEY FINDING: Waves 16-17 did NOT touch this unit's
+# gameplay logic — Rifle.cs was last edited in Wave 15 (322fc26). Wave 16 (b3a9c06) touched only EffectsList.cs,
+# and that edit added the UNRELATED ARC_BEAM_LINE/ARC_BEAM_LINE_HEAL (Arc weapon) entries, which merely shifted
+# the rifle effect registrations down ~25 lines (now EffectsList.cs:116-123) WITHOUT altering them. Wave 17
+# (2f0bfdb) touched nothing relevant. So NO dimension closed or regressed this pass.
+# OUTCOME vs the 2026-06-25 baseline: statuses UNCHANGED (all 5 dimensions of all 17 rows faithful & live, with
+#   the two documented NON-defects preserved: rifle.fx.impact presentation:partial server-emit-vs-CSQC, and the
+#   rifle.reload single-slot CheckAmmo edge case). The ONLY change is refreshing port_ref LINE NUMBERS that
+#   Wave 16's EffectsList insertion (and pre-existing drift) made stale.
+# Re-verified against current port (code trace, not runtime):
+#   * SoundSystem.PlayRic NOW at cs:403-411 (was cited :370-378) — still explicitly PlayOn(emitter, ric,
+#     SoundChannel.ShotsAuto, ...) == CH_SHOTS; audio:faithful holds. Throttle in WeaponFiring.BulletImpactFx
+#     cs:606-625 (0.25s prevric + 5% Prandom roll), org2 = pos + backoff*2.
+#   * Rifle FX registrations at EffectsList.cs:116-123 (CASING_BULLET/SHELL :116-117, RIFLE_IMPACT->
+#     machinegun_impact :120, RIFLE_MUZZLEFLASH :121, RIFLE/RIFLE_WEAK tracers isTrail :122-123).
+#   * Clip-aware DecreaseAmmo WeaponFireGate.cs:384-403 (reloadable -> drains ClipLoad); WReload reload.wav
+#     :326; GetWeaponLoad :408; SeedClipIfFresh :416. Driver wires WrSetup cs:289, SeedClipIfFresh cs:312,
+#     ButtonZoom mirror cs:180.
+#   * DeathMessages rifle kill case :82-85, suicide case :158-159. FireBullet tracerEffect param WeaponFiring.cs:282/298.
+# All 17 Base balance constants re-diffed against bal-wep-xonotic.cfg:587-630 — all match. NO regressions, NO new
+# unmapped Base symbols. Working tree clean (no uncommitted rifle edits).
 summary:
   feature_count: 17
   worst_gaps:
     - "(none open) All 17 rows faithful & live across all dimensions. Two documented NON-defects remain: (a) rifle.reload CheckAmmoPrimary/Secondary read the clip term from WeaponSlot(0) hardcoded — correct for the stock single-slot case; (b) rifle.fx.impact emits RIFLE_IMPACT server-side per bullet vs Base's CSQC damageinfo path (effect name + org2/backoff offsets match, fan-out differs)"
-    - "(now CLOSED) Ricochet CH_SHOTS channel: SoundSystem.PlayRic (cs:370-378) now explicitly plays SND_RIC_RANDOM on SoundChannel.ShotsAuto (== CH_SHOTS), matching QC rifle.qc:218 byte-for-byte (was the prior baseline's last open gap; audio partial->faithful)"
+    - "(closed prior pass) Ricochet CH_SHOTS channel: SoundSystem.PlayRic (cs:403-411) explicitly plays SND_RIC_RANDOM on SoundChannel.ShotsAuto (== CH_SHOTS), matching QC rifle.qc:218 byte-for-byte (audio faithful & live)"
     - "(closed prior pass) Zoom-from-eye shot re-aim: the +zoom button is decoded over the net (ServerNet.cs:1575) and Rifle.FireBullets re-aims from the eye when held (Rifle.cs:315-321), matching QC rifle.qc:16-20. Off at stock secondary 1 for the secondary-zoom path"
     - "(closed prior pass) Secondary HAIL kill message: Rifle.FireBullets builds deathTag=WithHitType(FromWeapon,Secondary) (Rifle.cs:328-330) -> FireBullet -> ApplyDamage; secondary kills print WEAPON_RIFLE_MURDER_HAIL. *_PIERCING variants correctly unused (Base never sets HITTYPE_BOUNCE on bullets either)"
     - "(closed Wave-5) Rifle bot wr_aim: BotWantsSecondary (Rifle.cs:133) ports the riflemooth pri/sec toggle, LIVE via BotBrain.cs:365 -> ButtonAttack2"
@@ -284,8 +285,8 @@ features:
       - "common/weapons/weapon/rifle.qc:W_Rifle_FireBullet (W_MuzzleFlash)"
       - "common/effects/all.inc:EFFECT(RIFLE_MUZZLEFLASH, rifle_muzzleflash)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (EffectEmitter.Emit RIFLE_MUZZLEFLASH, cs:289)"
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:96"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (EffectEmitter.Emit RIFLE_MUZZLEFLASH, cs:366)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:121"
     constants:
       - { name: "effect", base: "rifle_muzzleflash", port: "rifle_muzzleflash", match: true }
     status:
@@ -299,7 +300,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "EffectsList.cs:96 RIFLE_MUZZLEFLASH->rifle_muzzleflash; Rifle.cs:289 EffectEmitter.Emit(..., except: actor)", result: pass }
+      - { kind: code, ref: "EffectsList.cs:121 RIFLE_MUZZLEFLASH->rifle_muzzleflash; Rifle.cs:366 EffectEmitter.Emit(..., except: actor)", result: pass }
     confidence: medium
     notes: "Unchanged by Wave-2. Emit with except:actor so the firer's first-person view doesn't get the world muzzleflash. Actual particle render via the generic name-classified EffectSystem path; not visually verified in-game, hence medium."
 
@@ -311,11 +312,11 @@ features:
       - "common/effects/all.inc:EFFECT(RIFLE_IMPACT, machinegun_impact)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (WeaponFiring.BulletImpactFx RIFLE_IMPACT, cs:279)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:BulletImpactFx (cs:471)"
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:95"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:BulletImpactFx (cs:606)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:120"
     constants:
       - { name: "effect", base: "machinegun_impact", port: "machinegun_impact", match: true }
-      - { name: "impact origin", base: "org2 = w_org + w_backoff*2", port: "impactPos + backoff*2 (WeaponFiring.cs)", match: true }
+      - { name: "impact origin", base: "org2 = w_org + w_backoff*2", port: "impactPos + backoff*2 (WeaponFiring.cs:611)", match: true }
       - { name: "impact velocity", base: "w_backoff * 1000", port: "backoff * 1000", match: true }
     status:
       logic: faithful
@@ -329,7 +330,7 @@ features:
     gaps:
       - "Emit PATH still diverges from Base: the port emits RIFLE_IMPACT server-side per bullet inside FireBullets off a world-only re-trace; Base emits it CSQC in wr_impacteffect off the Damage_DamageInfo feed. The effect NAME + the org2/backoff offsets now match QC, but the per-bullet server emit is a different fan-out than the CSQC damageinfo path — remote-client render not visually verified."
     verification:
-      - { kind: code, ref: "EffectsList.cs:95 RIFLE_IMPACT->machinegun_impact; Rifle.cs:279 -> WeaponFiring.BulletImpactFx (now applies QC's org2 = pos + backoff*2 offset)", result: pass }
+      - { kind: code, ref: "EffectsList.cs:120 RIFLE_IMPACT->machinegun_impact; Rifle.cs:356 -> WeaponFiring.BulletImpactFx cs:606 (applies QC's org2 = pos + backoff*2 offset, cs:611)", result: pass }
     confidence: medium
     notes: "IMPROVED by Wave-2 (now routes through the shared BulletImpactFx, which applies the QC org2 = w_org + w_backoff*2 offset the prior direct Emit omitted), but presentation stays partial because the server-emit path still diverges from Base's CSQC damageinfo path. backoff (impact normal) from a world-only trace; falls back to -shotdir when no surface hit."
 
@@ -344,7 +345,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (tracerEffect = RIFLE/RIFLE_WEAK, cs:267/273)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireBullet (tracerEffect param + EmitTrail, cs:241-259/322-329)"
       - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:EmitTrail (cs:237)"
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:97-98"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:122-123"
     constants:
       - { name: "primary_tracer", base: "1 (tr_rifle)", port: "Primary.Tracer 1 -> 'RIFLE'", match: true }
       - { name: "secondary_tracer", base: "0 (tr_rifle_weak)", port: "Secondary.Tracer 0 -> 'RIFLE_WEAK'", match: true }
@@ -361,7 +362,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "EffectsList.cs:97-98 register tr_rifle/_weak isTrail:true; Rifle.cs:267/273 pass tracerEffect; WeaponFiring.FireBullet EmitTrail per segment (16u open-air, 4u in-solid) matches tracing.qc:357/519-520", result: pass }
+      - { kind: code, ref: "EffectsList.cs:122-123 register tr_rifle/_weak isTrail:true; Rifle.cs:332 selects tracerEffect (RIFLE/RIFLE_WEAK), passed to FireBullet cs:340; WeaponFiring.FireBullet EmitTrail per segment (16u open-air, 4u in-solid) matches tracing.qc:357/519-520", result: pass }
       - { kind: code, ref: "EmitTrail uses Sink.Emit(EffectRequest{Effect=non-null RIFLE/RIFLE_WEAK}) -> ServerNet.WriteEffect encodes (trail branch) -> client Spawn handles trail; networks live (unlike the casing null-Effect path)", result: pass }
     confidence: high
     notes: "WAVE-2 FIX: the rifle's signature visible tracer is now drawn. FireBullet gained a tracerEffect parameter + per-segment trailparticles emission; the rifle passes 'RIFLE'/'RIFLE_WEAK' (tracer!=0 selects the strong trail, exactly QC's ternary). Thresholds (16u/4u) match Base constant-for-constant. The effects are REGISTERED (non-null) so they actually network and render, unlike the casing emit."
@@ -401,12 +402,12 @@ features:
       - "common/weapons/weapon/rifle.qc:wr_impacteffect (sound CH_SHOTS, SND_RIC_RANDOM, !w_issilent)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (WeaponFiring.BulletImpactFx, cs:279)"
-      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:BulletImpactFx (SoundSystem.PlayRic, cs:471)"
-      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:PlayRic (cs:195)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:BulletImpactFx (SoundSystem.PlayRic, cs:622)"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:PlayRic (cs:403)"
     constants:
       - { name: "ricochet sound", base: "SND_RIC_RANDOM (ric1/ric2/ric3, weapons/ric*)", port: "RIC1..3 via PlayRic->PickRegistered (weapons/ric*)", match: true }
       - { name: "silence gate", base: "!w_issilent", port: "BulletImpactFx silent param (default false)", match: true }
-      - { name: "channel", base: "CH_SHOTS", port: "SoundChannel.ShotsAuto (== CH_SHOTS, -4) explicitly passed by PlayRic (SoundSystem.cs:377)", match: true }
+      - { name: "channel", base: "CH_SHOTS", port: "SoundChannel.ShotsAuto (== CH_SHOTS, -4) explicitly passed by PlayRic (SoundSystem.cs:410)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -418,10 +419,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Rifle.cs:344 BulletImpactFx -> WeaponFiring.cs:594 SoundSystem.PlayRic -> PlayOn(emitter, ric, SoundChannel.ShotsAuto, ric.Volume, ric.Attenuation) (SoundSystem.cs:370-378); RIC1..3 registered (weapons/ric*) + ric1-3.ogg present", result: pass }
-      - { kind: code, ref: "WeaponFiring.cs:585-594 ports the QC ricochet throttle (shotgun.qc:404-409): prevric 0.25s per-actor window + 5% w_random (Prandom.Float()<0.05) roll, prevric reset on every gate pass", result: pass }
+      - { kind: code, ref: "Rifle.cs:356 BulletImpactFx -> WeaponFiring.cs:622 SoundSystem.PlayRic -> PlayOn(emitter, ric, SoundChannel.ShotsAuto, ric.Volume, ric.Attenuation) (SoundSystem.cs:403-411); RIC1..3 registered (weapons/ric*) + ric1-3.ogg present", result: pass }
+      - { kind: code, ref: "WeaponFiring.cs:613-624 ports the QC ricochet throttle (shotgun.qc:404-409): prevric 0.25s per-actor window + 5% w_random (Prandom.Float()<0.05) roll, prevric reset on every gate pass", result: pass }
     confidence: high
-    notes: "FIX vs prior baseline (audio partial->faithful, channel match false->true). The last open gap is closed: PlayRic (SoundSystem.cs:370-378) now EXPLICITLY plays SND_RIC_RANDOM on SoundChannel.ShotsAuto (== CH_SHOTS, -4) — PlayOn(emitter, ric, ShotsAuto, vol, atten) — instead of the RIC sound's default channel hint (Weapon), matching QC rifle.qc:218 byte-for-byte. Deterministic ric1..3 (Prandom) through the live PlayOn seam. The QC ricochet THROTTLE (prevric 0.25s window + 5% roll, shotgun.qc:404-409) stays faithfully ported in BulletImpactFx (cs:585-594). Emitted server-side per bullet (broadcast) rather than CSQC-local like Base; matches the rifle.fx.impact server-emit divergence (documented non-defect). Same path serves the MachineGun/Shotgun."
+    notes: "Faithful & live (audio:faithful). PlayRic (SoundSystem.cs:403-411) EXPLICITLY plays SND_RIC_RANDOM on SoundChannel.ShotsAuto (== CH_SHOTS, -4) — PlayOn(emitter, ric, ShotsAuto, vol, atten) — instead of the RIC sound's default channel hint (Weapon), matching QC rifle.qc:218 byte-for-byte. Deterministic ric1..3 (Prandom) through the live PlayOn seam. The QC ricochet THROTTLE (prevric 0.25s window + 5% roll, shotgun.qc:404-409) stays faithfully ported in BulletImpactFx (cs:613-624). Emitted server-side per bullet (broadcast) rather than CSQC-local like Base; matches the rifle.fx.impact server-emit divergence (documented non-defect). Same path serves the MachineGun/Shotgun. (2026-06-27: line refs refreshed after Wave 16's EffectsList insertion shifted callers; behavior unchanged.)"
 
   - id: rifle.casings
     name: "Brass casing ejection (g_casings >= 2)"

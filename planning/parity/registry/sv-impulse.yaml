@@ -1,14 +1,13 @@
 unit: sv-impulse
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-27"  # re-audit pass (Waves 16/17 verify)
 summary:
   feature_count: 13
   worst_gaps:
     - "minigame impulses are ROUTED in the QC order (DispatchImpulse calls Minigames.Impulse before the timeout gate), but the P0 games have NO impulse->token table — an impulse merely re-runs the player's pending Move; the per-game discrete-token mapping QC's minigame_event('cmd') performs is not modeled, so most weapon-key impulses are consumed but produce no real minigame move."
-    - "the clone cheats CLONE_MOVING(140) and CLONE_STANDING(142) remain unported (need an engine CopyBody entity-clone service). GIVE_ALL(99), SPEEDRUN_INIT(30), SPEEDRUN(141), TELEPORT(143) and R00T(148) are now all routed and live."
-    - "custom-priority impulses (200-229) cycle the per-group cl_weaponpriority0..9 lists, but an unset group list falls back to the MAIN cl_weaponpriority instead of QC's empty-category no-op (minor divergence)."
-    - "SPEEDRUN's start-solid tracebox guard ('Cannot move there, cheater') and the AbortSpeedrun mutator hook (race timing) are not modeled; the CTS/race waypoint-clear self-kill does not check for / delete the .personal checkpoint (QC wraps it in `if(this.personal)`)."
+    - "the clone cheats CLONE_MOVING(140) and CLONE_STANDING(142) remain unported (need an engine CopyBody entity-clone service). GIVE_ALL(99), SPEEDRUN_INIT(30), SPEEDRUN(141 — now WITH the start-solid guard + AbortSpeedrun race/cts timing reset), TELEPORT(143) and R00T(148) are now all routed and live."
+    - "custom-priority impulses (200-229): the dispatch + handler + group-index threading are faithful, but the per-client cl_weaponpriority0..9 lists, though replicated+fixed-up+stored per client, are NOT read by the consumer — Inventory.PriorityProviderForGroup is NULL (never assigned in Commands.cs), so WeaponPriorityForGroup falls back to the SERVER-GLOBAL `cl_weaponpriority<N>` cvar facade, not the requesting player's value. Per-client per-group priority is not honored for remote clients (liveness:partial)."
 features:
   - id: sv-impulse.dispatch.commands_gate
     name: "ImpulseCommands dispatch + match-state gating"
@@ -22,13 +21,13 @@ features:
       - "server/impulse.qc:399 (CheatImpulse)"
       - "common/impulses/all.qh:3 (REGISTRY(IMPULSES, 255))"
     port_refs:
-      - "src/XonoticGodot.Server/Commands.cs:2038 (CmdImpulse)"
-      - "src/XonoticGodot.Server/Commands.cs:2052 (DispatchImpulse)"
-      - "src/XonoticGodot.Server/Commands.cs:2059 (MapVote.CastVote route)"
-      - "src/XonoticGodot.Server/Commands.cs:2074 (Minigames.Impulse, before timeout gate)"
-      - "src/XonoticGodot.Server/Commands.cs:2075 (Timeout.IsPaused gate)"
-      - "src/XonoticGodot.Server/Commands.cs:2082 (round-not-started gate: imp 17/20/21)"
-      - "src/XonoticGodot.Server/Commands.cs:2088 (VehicleBoarding.Impulse)"
+      - "src/XonoticGodot.Server/Commands.cs:2059 (CmdImpulse)"
+      - "src/XonoticGodot.Server/Commands.cs:2073 (DispatchImpulse)"
+      - "src/XonoticGodot.Server/Commands.cs:2080 (MapVote.CastVote route)"
+      - "src/XonoticGodot.Server/Commands.cs:2095 (Minigames.Impulse, before timeout gate)"
+      - "src/XonoticGodot.Server/Commands.cs:2096 (Timeout.IsPaused gate)"
+      - "src/XonoticGodot.Server/Commands.cs:2103 (round-not-started gate: imp 17/20/21)"
+      - "src/XonoticGodot.Server/Commands.cs:2109 (VehicleBoarding.Impulse)"
       - "game/net/ServerNet.cs (ProvideInput / ProvideInputPerFrame dispatch `impulse N`)"
     constants:
       - { name: "round_gate_impulses", base: "weapon_drop=17 / weapon_reload=20 / use=21", port: "17 / 20 / 21", match: true }
@@ -92,10 +91,11 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:78 (priority branches)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:145 (PriorityHandle -> CycleWeaponGroup, dir + number)"
-      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:489 (CycleWeaponGroup)"
-      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:200 (WeaponPriorityForGroup -> per-group list)"
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:579 (CycleWeaponGroup)"
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:200 (WeaponPriorityForGroup -> per-group list; PriorityProviderForGroup NULL -> server-global cvar facade fallback)"
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:191 (PriorityProviderForGroup field — DECLARED but NEVER ASSIGNED)"
     constants:
-      - { name: "priority_group_list", base: "cvar_cl_weaponpriorities[number] = cl_weaponpriority0..9 (per-group)", port: "cl_weaponpriorityN per-group (PriorityProviderForGroup / cvar facade), main fallback if unset", match: true }
+      - { name: "priority_group_list", base: "cvar_cl_weaponpriorities[number] = cl_weaponpriority0..9 (per-group, PER-CLIENT)", port: "WeaponPriorityForGroup -> server-global cl_weaponpriority<N> cvar facade (PriorityProviderForGroup is NULL, so the per-client replicated value is NOT consulted); main cl_weaponpriority fallback if unset", match: false }
       - { name: "dir_mapping", base: "prev=-1 / best=0 / next=+1", port: "prev=-1 / best=0 / next=+1", match: true }
     status:
       logic: faithful
@@ -103,15 +103,17 @@ features:
       timing: faithful
       presentation: na
       audio: na
-      liveness: live
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Minor divergence: when the group's priority cvar is unset/out-of-range, WeaponPriorityForGroup falls back to the MAIN cl_weaponpriority (so the bind still moves to a usable weapon) rather than QC's empty-category no-op. Faithful in the common case (a configured group list); diverges only for an empty/unconfigured category list."
+      - "BROKEN PER-CLIENT WIRING (re-audit 2026-06-27): Inventory.PriorityProviderForGroup is declared (Inventory.cs:191) but NEVER ASSIGNED anywhere (grep: no `PriorityProviderForGroup =` in the tree; only the MAIN Inventory.PriorityProvider is wired at Commands.cs:511). So WeaponPriorityForGroup's per-client branch (provider invoke) is always null/empty and it falls through to `Api.Cvars.GetString(\"cl_weaponpriority\"+number)` — the SERVER's own global cvar, not the requesting player's value. The client's cl_weaponpriority0..9 ARE replicated (SentCvarAllowlist, Commands.cs:222-224), fixed-up (CmdSentCvar:3330-3335, FixWeaponOrder allow-incomplete), and stored per-client (SetClientCvar:3337) — but NOTHING READS that store for the group lists. Result on the live remote-client path: a player's custom per-group priority category lists are ignored; the bind cycles whatever cl_weaponpriority<N> the server host happens to have (typically the stock default / empty -> main-list fallback). The handler/dispatch/group-index threading is faithful; only the data source is mis-wired. (A listen-server host whose client cvars ARE the server cvars would coincidentally see the right list.)"
+      - "Minor (secondary): when the group's priority cvar is unset/out-of-range, WeaponPriorityForGroup falls back to the MAIN cl_weaponpriority rather than QC's empty-category no-op."
     verification:
-      - { kind: code_read, ref: "PriorityHandle(actor, dir, number) (WeaponImpulses.cs:145) -> Inventory.CycleWeaponGroup(e, number, dir) (Inventory.cs:489) -> CycleWeapon(e, WeaponPriorityForGroup(e, number), dir). WeaponPriorityForGroup (Inventory.cs:200) consults PriorityProviderForGroup (sentcvar-replicated cl_weaponpriority0..9 in id form) then the cvar facade GetString(\"cl_weaponpriority\"+number); matches QC cvar_cl_weaponpriorities[number]. number = imp - block_first (prev 200/best 210/next 220).", result: pass }
+      - { kind: code_read, ref: "PriorityHandle(actor, dir, number) (WeaponImpulses.cs:145) -> Inventory.CycleWeaponGroup(e, number, dir) (Inventory.cs:579) -> CycleWeapon(e, WeaponPriorityForGroup(e, number), dir). number = imp - block_first (prev 200/best 210/next 220). Dispatch + dir + group-index FAITHFUL.", result: pass }
+      - { kind: code_read, ref: "WeaponPriorityForGroup (Inventory.cs:200-218): per = PriorityProviderForGroup?.Invoke(e,number) — but PriorityProviderForGroup is NULL (no assignment found, grep `PriorityProviderForGroup\\s*=`), so per is always null -> Api.Cvars.GetString(\"cl_weaponpriority\"+number) (SERVER global, not the per-client SetClientCvar store) -> main-list fallback. The replicated per-client value (SetClientCvar at Commands.cs:3337) has no reader. Data source NOT per-client faithful.", result: fail }
     confidence: high
-    notes: "Per-group cl_weaponpriority0..9 cycling faithful. Only the unset-group main-list fallback diverges from QC's empty-category behavior. Unchanged since baseline."
+    notes: "RE-AUDIT DRIFT 2026-06-27 (regression vs the 2026-06-22 baseline CLAIM, not a code regression): the prior row asserted WeaponPriorityForGroup `consults PriorityProviderForGroup (sentcvar-replicated cl_weaponpriority0..9)` — that provider is NULL and was never wired, so the assertion was wrong. Downgraded liveness:live->partial + the priority-group constant match->false. Fix is a one-line provider assignment in the Commands ctor mirroring PriorityProvider (Commands.cs:511) but reading GetClientCvar(p, \"cl_weaponpriority\"+number, \"\"). logic/values/timing stay faithful (the algorithm + group index are correct); only the live per-client data source is broken."
 
   - id: sv-impulse.weapon.byid
     name: "Direct weapon-by-id impulses (230-253)"
@@ -304,7 +306,7 @@ features:
       - "server/mutators/mutator/gamemode_ctf.qc:2452 (ctf PlayerUseKey hook)"
       - "server/mutators/mutator/gamemode_onslaught.qc:1990 (ons PlayerUseKey hook)"
     port_refs:
-      - "src/XonoticGodot.Server/Commands.cs:2160 (imp==21 -> VehicleBoarding.UseKey + Ctf.HandleUseKey / Onslaught.HandleUseKey)"
+      - "src/XonoticGodot.Server/Commands.cs:2191 (imp==21 -> VehicleBoarding.UseKey + Ctf.HandleUseKey / Onslaught.HandleUseKey)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:74 (UseKey)"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:106 (MutatorHooks.FirePlayerUseKey — the trailing hook)"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:1713 (HandleUseKey — throw/pass-request)"
@@ -326,7 +328,7 @@ features:
     gaps:
       - "Nexball voluntary drop via the PlayerUseKey hook is not yet a subscriber (the hook is fired and CTF/Keepaway/TeamKeepaway/KeyHunt/Buffs/Powerups subscribe; Nexball's use-key drop, if any, is not wired here). CTF pass-request and Onslaught click-radar both need the live roster/control-point context which DispatchImpulse passes explicitly (Ctf.HandleUseKey / Onslaught.HandleUseKey) — the generic PlayerUseKeyArgs chain carries only the player, so those two are driven outside the hook for the impulse path."
     verification:
-      - { kind: code_read, ref: "DispatchImpulse imp==21 (Commands.cs:2160): VehicleBoarding.UseKey(caller); then GameType is Ctf -> ctf.HandleUseKey(caller, roster), else GameType is Onslaught -> ons.HandleUseKey(caller). VehicleBoarding.UseKey (VehicleBoarding.cs:74) does vehicle enter/exit then FirePlayerUseKey(pl) at the tail (line 106) = QC's trailing MUTATOR_CALLHOOK(PlayerUseKey). Ctf.HandleUseKey: carrier->ThrowFlag, empty teammate->RequestPass.", result: pass }
+      - { kind: code_read, ref: "DispatchImpulse imp==21 (Commands.cs:2191): VehicleBoarding.UseKey(caller); then GameType is Ctf -> ctf.HandleUseKey(caller, roster), else GameType is Onslaught -> ons.HandleUseKey(caller). VehicleBoarding.UseKey (VehicleBoarding.cs:74) does vehicle enter/exit then FirePlayerUseKey(pl) at the tail (line 106) = QC's trailing MUTATOR_CALLHOOK(PlayerUseKey). Ctf.HandleUseKey: carrier->ThrowFlag, empty teammate->RequestPass.", result: pass }
       - { kind: code_read, ref: "MutatorHooks.FirePlayerUseKey fires PlayerUseKey.Call; live subscribers: Keepaway.OnUseKey (ka_DropEvent), TeamKeepaway, KeyHunt.OnUseKey (kh_Key_DropOne), BuffsMutator.OnPlayerUseKey (buff drop), PowerupsMutator.OnPlayerUseKey (powerup drop). All Add the handler on activation.", result: pass }
     confidence: high
     notes: "DRIFT since 2026-06-27 baseline: imp==21 line re-pinned (2104->2160). Behavior unchanged — CTF flag throw/pass-request + Onslaught own-control-point click-radar both explicitly wired alongside the live PlayerUseKey mutator-hook half (VehicleBoarding tail). No status change (already faithful/live)."
@@ -346,7 +348,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Waypoints/WaypointSprites.cs (DeployPersonal/DeployFixed/Attach/ClearPersonal/ClearOwned)"
     constants:
       - { name: "waypoint_impulse_range", base: "30-39 (here/crosshair/death x personal/here/danger) + 33 helpme + 47/48 clear", port: "30-39 routed (crosshair=server trace, death=DeathOrigin) + 47/48", match: true }
-      - { name: "checkpoint_selfkill_cvar", base: "g_allow_checkpoints (g_cts||g_race), gated on this.personal != NULL", port: "g_allow_checkpoints + (Cts||Race); NOT gated on PersonalCheckpoint existence", match: false }
+      - { name: "checkpoint_selfkill_cvar", base: "g_allow_checkpoints (g_cts||g_race), gated on this.personal != NULL; delete(this.personal)+ClientKill", port: "g_allow_checkpoints + (Cts||Race) + PersonalCheckpoint != null -> clears PersonalCheckpoint + KillCountdown.Begin", match: true }
     status:
       logic: faithful
       values: faithful
@@ -357,13 +359,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CmdWaypointClear self-kill (CTS/race + g_allow_checkpoints) is NOT gated on whether a .personal checkpoint exists (QC wraps both the delete and the ClientKill in `if (this.personal)`), and the port does not delete/clear Player.PersonalCheckpoint on a waypoint-clear. Minor: in practice the runner with no checkpoint set would still get self-killed in the port (QC would not), and the cleared checkpoint persists across the clear."
       - "WarpZone redirection in the crosshair trace is simplified: WaypointResolveLocation does a plain server trace from the eyes along view angles (QC WarpZone_crosshair_trace walks through warpzones). Acceptable simplification — warpzone awareness would need the warpzone spatial index the port doesn't expose from the impulse path."
     verification:
-      - { kind: code_read, ref: "DispatchImpulse switch (Commands.cs:2130): 30->SpeedrunInit snapshot then Personal(Here), 31->Personal(Crosshair), 32->Personal(Death), 33->Helpme, 34/35/36->Here(Here/Crosshair/Death), 37/38/39->Danger(Here/Crosshair/Death), 47->ClearPersonal, 48->ClearAll. CmdWaypointDeploy (1699): live-player gate, DeployPersonal/DeployFixed(team)/Attach(Helpme) at the resolved pos. WaypointResolveLocation (1757): Here=p.Origin, Crosshair=server trace endpos (eyes+fwd*CurrentMaxShotDistance), Death=p.DeathOrigin with zero-guard. CmdWaypointClear (1852): ClearPersonal/ClearOwned + (Cts||Race)&&g_allow_checkpoints -> KillCountdown.Begin(p,0).", result: pass }
+      - { kind: code_read, ref: "DispatchImpulse switch (Commands.cs:2161): 30->SpeedrunInit snapshot then Personal(Here), 31->Personal(Crosshair), 32->Personal(Death), 33->Helpme, 34/35/36->Here(Here/Crosshair/Death), 37/38/39->Danger(Here/Crosshair/Death), 47->ClearPersonal, 48->ClearAll. CmdWaypointDeploy (1699): live-player gate, DeployPersonal/DeployFixed(team)/Attach(Helpme) at the resolved pos. WaypointResolveLocation (1757): Here=p.Origin, Crosshair=server trace endpos (eyes+fwd*CurrentMaxShotDistance), Death=p.DeathOrigin with zero-guard.", result: pass }
+      - { kind: code_read, ref: "CmdWaypointClear (Commands.cs:1868): ClearPersonal/ClearOwned; the CTS/race self-kill is NOW gated `personalOnly && p.PersonalCheckpoint is not null && (Cts||Race) && g_allow_checkpoints && !observer && !spectator && !dead` (1887-1891) and DELETES the checkpoint (`p.PersonalCheckpoint = null`) before KillCountdown.Begin(p,0) — faithfully matching QC `if(this.personal){ delete(this.personal); this.personal=NULL; ClientKill(this); }`.", result: pass }
       - { kind: code_read, ref: "Player.DeathOrigin latched in DamageSystem.cs:612 on the Killed path; default Vector3.Zero -> WaypointResolveLocation returns null -> silent skip, matching QC `if(!this.death_origin) return;`. WaypointDeployHelpme -> WaypointSprites.Attach models the QC HelpMePing override.", result: pass }
     confidence: high
-    notes: "DRIFT since 2026-06-27 baseline: the .personal speedrun-checkpoint entity IS now modeled (Player.PersonalCheckpoint via Speedrun.cs) — that residual is now tracked under sv-impulse.cheat.command_impulse, which is fully ported for 141/30. The remaining residuals on THIS row are: (1) the waypoint-clear self-kill is not gated on / does not delete the .personal checkpoint (constant match->false, new minor gap), and (2) WarpZone redirection in the crosshair trace. Line numbers re-pinned (deploy switch 2083->2130, CmdWaypointClear 1809->1852)."
+    notes: "RE-AUDIT 2026-06-27: the waypoint-clear self-kill is NOW gated on `.personal` existence AND deletes the checkpoint (CmdWaypointClear:1887-1896) — that residual is CLOSED (constant match false->true, gap removed). Only the WarpZone crosshair-trace simplification remains (acceptable). Line numbers re-pinned (deploy switch 2130->2161, CmdWaypointClear 1852->1868)."
 
   - id: sv-impulse.cheat.impulses
     name: "Cheat impulses (give-all 99, teleport 143, r00t 148)"
@@ -376,9 +378,9 @@ features:
       - "server/cheats.qc:264 (CHIMPULSE_R00T)"
       - "common/impulses/all.qh:156-161 (CHIMPULSE GIVE_ALL=99 / TELEPORT=143 / R00T=148)"
     port_refs:
-      - "src/XonoticGodot.Server/Commands.cs:2093 (imp==99 -> Cheats.GiveAll)"
-      - "src/XonoticGodot.Server/Commands.cs:2101 (imp==148 -> Cheats.R00t)"
-      - "src/XonoticGodot.Server/Commands.cs:2108 (imp==143 -> Cheats.Teleport)"
+      - "src/XonoticGodot.Server/Commands.cs:2114 (imp==99 -> Cheats.GiveAll)"
+      - "src/XonoticGodot.Server/Commands.cs:2122 (imp==148 -> Cheats.R00t)"
+      - "src/XonoticGodot.Server/Commands.cs:2129 (imp==143 -> Cheats.Teleport)"
       - "src/XonoticGodot.Server/Cheats.cs:229 (GiveAll — sv_cheats gate + give all + cheat count)"
       - "src/XonoticGodot.Server/Cheats.cs:246 (R00t — sv_cheats gate + nuke random enemy + cheat count)"
       - "src/XonoticGodot.Server/Cheats.cs:294 (Teleport — sv_cheats gate + info_autoscreenshot/random-location + cheat count)"
@@ -399,11 +401,11 @@ features:
     gaps:
       - "Teleport's random-location fallback uses BallEntity.RandomMapLocation (spawnpoint-sampling) instead of QC's engine world-bounds scatter (MoveToRandomMapLocation), and the info_autoscreenshot path is faithful (nearest point consumed). Minor: the random fallback flips only the pitch (matching the QC angles_x = -angles.x), but samples from spawnpoints rather than free map points."
     verification:
-      - { kind: code_read, ref: "DispatchImpulse (Commands.cs:2093): `if (imp == 99) { _world.Cheats.GiveAll(caller); return true; }`. GiveAll (Cheats.cs:229) runs Allowed() (sv_cheats gate, logs), give-all, AddCheats(1). LIVE.", result: pass }
-      - { kind: code_read, ref: "DispatchImpulse (Commands.cs:2101): `if (imp == 148) { _world.Cheats.R00t(caller, _world.Clients.Players); return true; }`. R00t (Cheats.cs:246): Allowed() gate, reservoir-sample a living DIFF_TEAM enemy, EFFECT_ROCKET_EXPLODE + rocket_impact sound, RadiusDamage(1000/0/128/force 500/DEATH_CHEAT), AddCheats(1) — matches QC CHIMPULSE_R00T. LIVE.", result: pass }
-      - { kind: code_read, ref: "DispatchImpulse (Commands.cs:2108): `if (imp == 143) { _world.Cheats.Teleport(caller); return true; }`. Teleport (Cheats.cs:294): Allowed() gate, NOCLIP->nearest info_autoscreenshot (consumed via Remove), else BallEntity.RandomMapLocation; zero velocity, fixangle, AddCheats(1) — matches QC CHIMPULSE_TELEPORT. LIVE.", result: pass }
+      - { kind: code_read, ref: "DispatchImpulse (Commands.cs:2114): `if (imp == 99) { _world.Cheats.GiveAll(caller); return true; }`. GiveAll (Cheats.cs:229) runs Allowed() (sv_cheats gate, logs), give-all, AddCheats(1). LIVE.", result: pass }
+      - { kind: code_read, ref: "DispatchImpulse (Commands.cs:2122): `if (imp == 148) { _world.Cheats.R00t(caller, _world.Clients.Players); return true; }`. R00t (Cheats.cs:246): Allowed() gate, reservoir-sample a living DIFF_TEAM enemy, EFFECT_ROCKET_EXPLODE + rocket_impact sound, RadiusDamage(1000/0/128/force 500/DEATH_CHEAT), AddCheats(1) — matches QC CHIMPULSE_R00T. LIVE.", result: pass }
+      - { kind: code_read, ref: "DispatchImpulse (Commands.cs:2129): `if (imp == 143) { _world.Cheats.Teleport(caller); return true; }`. Teleport (Cheats.cs:294): Allowed() gate, NOCLIP->nearest info_autoscreenshot (consumed via Remove), else BallEntity.RandomMapLocation; zero velocity, fixangle, AddCheats(1) — matches QC CHIMPULSE_TELEPORT. LIVE.", result: pass }
     confidence: high
-    notes: "Line numbers re-pinned (99=2056->2093, 148=2065->2101, 143=2073->2108). THREE cheat impulses (99, 143, 148) live, unchanged. SPEEDRUN-related impulses (30/141) and the remaining unported clone impulses (140/142) are tracked in sv-impulse.cheat.command_impulse."
+    notes: "RE-AUDIT 2026-06-27: line numbers re-pinned (99=2093->2114, 148=2101->2122, 143=2108->2129). THREE cheat impulses (99, 143, 148) live, unchanged. SPEEDRUN-related impulses (30/141) and the remaining unported clone impulses (140/142) are tracked in sv-impulse.cheat.command_impulse."
 
   - id: sv-impulse.cheat.command_impulse
     name: "CheatImpulse 140-142 + SPEEDRUN_INIT 30 (clone-moving / speedrun / clone-standing / personal-checkpoint)"
@@ -416,13 +418,15 @@ features:
       - "server/cheats.qc:188 (CHIMPULSE_SPEEDRUN 141 — teleport back to .personal)"
       - "common/impulses/all.qh:155-159 (CHIMPULSE SPEEDRUN_INIT=30 / CLONE_MOVING=140 / SPEEDRUN=141 / CLONE_STANDING=142)"
     port_refs:
-      - "src/XonoticGodot.Server/Commands.cs:2118 (imp==141 -> Cheats.Speedrun)"
-      - "src/XonoticGodot.Server/Commands.cs:2138 (imp==30 -> Cheats.SpeedrunInit snapshot, then waypoint sprite)"
+      - "src/XonoticGodot.Server/Commands.cs:2139 (imp==141 -> Cheats.Speedrun, then Race/Cts.AbortSpeedrun on success)"
+      - "src/XonoticGodot.Server/Commands.cs:2163 (imp==30 -> Cheats.SpeedrunInit snapshot, then waypoint sprite)"
       - "src/XonoticGodot.Server/Cheats.cs:347 (SpeedrunInit -> Speedrun.SnapshotPersonal)"
       - "src/XonoticGodot.Server/Cheats.cs:357 (Speedrun -> g_allow_checkpoints gate + Speedrun.RestorePersonal + cheat count)"
       - "src/XonoticGodot.Common/Gameplay/Player/Speedrun.cs:56 (SnapshotPersonal — .personal snapshot)"
-      - "src/XonoticGodot.Common/Gameplay/Player/Speedrun.cs:95 (RestorePersonal — teleport-back + state restore + pause/statuseffect rebase)"
+      - "src/XonoticGodot.Common/Gameplay/Player/Speedrun.cs:99 (RestorePersonal — start-solid tracebox guard + teleport-back + state restore + pause/statuseffect rebase)"
       - "src/XonoticGodot.Common/Gameplay/Player/Speedrun.cs:16 (PersonalCheckpoint — the .personal value record)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:1022 (AbortSpeedrun — rc lap-clock reset, fired post-restore)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs:448 (AbortSpeedrun — cts run-clock reset, fired post-restore)"
     constants:
       - { name: "clone_moving_impulse", base: "140 (CopyBody + v_forward*300 nudge)", port: "not routed", match: false }
       - { name: "speedrun_impulse", base: "141 (teleport back to .personal checkpoint)", port: "141 (routed -> Cheats.Speedrun -> RestorePersonal)", match: true }
@@ -431,8 +435,10 @@ features:
       - { name: "speedrun_cheat_gate", base: "IS_CHEAT only if !g_allow_checkpoints; DID_CHEAT after restore if !g_allow_checkpoints", port: "Allowed() gate + AddCheats only when !g_allow_checkpoints", match: true }
       - { name: "speedrun_health_floor", base: "max(1, RES_HEALTH) on snapshot", port: "MathF.Max(1f, p.Health)", match: true }
       - { name: "pause_timer_rebase", base: "time + personal.pause_finished - personal.teleport_time", port: "cp.Pause*Finished + (Now - cp.TeleportTime)", match: true }
+      - { name: "speedrun_startsolid_guard", base: "tracebox(personal.origin, mins, maxs, MOVE_WORLDONLY); if(trace_startsolid) sprint('Cannot move there, cheater') and DO NOT teleport (resources still restored)", port: "Api.Trace.Trace(cp.Origin, mins, maxs, WorldOnly); if(StartSolid) skip the setorigin/velocity/angles block + print msg, restore RES/weapons/items/timers anyway (Speedrun.cs:118-141)", match: true }
+      - { name: "speedrun_abort_hook", base: "MUTATOR_CALLHOOK(AbortSpeedrun) inside the teleport-success branch -> rc/cts race-clock reset", port: "after Cheats.Speedrun()==true, Commands.cs:2147-2150 calls race.AbortSpeedrun / cts.AbortSpeedrun (real lap-clock/checkpoint resets)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
@@ -441,14 +447,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CLONE_MOVING (140) and CLONE_STANDING (142) are still unported — they need a CopyBody engine service (clone the player entity into a static decoy, ++this.lip, with the v_forward*300 momentary nudge for the moving variant) the port does not expose. Neither is routed in DispatchImpulse."
-      - "SPEEDRUN (141) restore omits the QC start-solid tracebox guard (`tracebox(personal.origin, mins, maxs, ..., MOVE_WORLDONLY); if(trace_startsolid) sprint('Cannot move there, cheater ...')`) — the port teleports unconditionally — and does NOT fire the AbortSpeedrun mutator hook (race-timing reset). Otherwise the teleport-back + resource/weapon/item/statuseffect restore + pause-timer/statuseffect rebase are faithful."
+      - "CLONE_MOVING (140) and CLONE_STANDING (142) are still unported — they need a CopyBody engine service (clone the player entity into a static decoy, ++this.lip, with the v_forward*300 momentary nudge for the moving variant) the port does not expose. Neither is routed in DispatchImpulse. (This is why liveness stays PARTIAL for the row: 30/141 are live, 140/142 are unreachable.)"
       - "SPEEDRUN_INIT (30) snapshot is faithful (origin/v_angle/velocity/RES_*/WEAPONS/items/statuseffects/pause timers/teleport_time into Player.PersonalCheckpoint, health floored at 1). The .personal is modeled as a value record on the Player, not a simulated edict (QC's personal_wp edict only ever stores fields, so this is behaviorally equivalent)."
       - "NOTE: there is no separate 'drag' or 'fixed-clone' CHIMPULSE — Drag is mouse-grab via CheatFrame/CheatCommand, not an impulse. The actual unported impulse set is exactly CLONE_MOVING(140) and CLONE_STANDING(142)."
     verification:
-      - { kind: code_read, ref: "DispatchImpulse (Commands.cs:2118): `if (imp == 141) { _world.Cheats.Speedrun(caller); return true; }`. (Commands.cs:2138): case 30 -> `_world.Cheats.SpeedrunInit(caller); return CmdWaypointDeploy(Personal, Here);` (snapshot BEFORE the sprite, matching QC CheatImpulse-then-IMPULSES order). No 140/142 branch reaches a Cheats handler.", result: pass }
+      - { kind: code_read, ref: "DispatchImpulse (Commands.cs:2139): `if (imp == 141) { if (Cheats.Speedrun(caller)) { Race.AbortSpeedrun / Cts.AbortSpeedrun } return true; }`. (Commands.cs:2163): case 30 -> `_world.Cheats.SpeedrunInit(caller); return CmdWaypointDeploy(Personal, Here);` (snapshot BEFORE the sprite, matching QC CheatImpulse-then-IMPULSES order). No 140/142 branch reaches a Cheats handler.", result: pass }
       - { kind: code_read, ref: "Cheats.SpeedrunInit (Cheats.cs:347) -> Speedrun.SnapshotPersonal (Speedrun.cs:56): snapshots Origin/ViewAngle/Velocity/Rockets/Bullets/Cells/Shells/Fuel/Health(max 1)/Armor/OwnedWeapons/Items/StatusEffects/pause-timers/TeleportTime into Player.PersonalCheckpoint. NOT a cheat (no Allowed gate, no AddCheats) — matches QC's no-IS_CHEAT case.", result: pass }
-      - { kind: code_read, ref: "Cheats.Speedrun (Cheats.cs:357): `if(!g_allow_checkpoints && !Allowed(...)) return false;` then RestorePersonal; `if(restored && !g_allow_checkpoints) AddCheats(1)`. RestorePersonal (Speedrun.cs:95): null-checkpoint sprints UR-DEAD/no-waypoint, else SetOrigin/Velocity/OldVelocity/Angles/FixAngle, restore RES_*/WEAPONS/Items, rebase pause timers + statuseffect expiries by (Now-TeleportTime). Missing: start-solid guard + AbortSpeedrun hook.", result: pass }
+      - { kind: code_read, ref: "Cheats.Speedrun (Cheats.cs:357): `if(!g_allow_checkpoints && !Allowed(...)) return false;` then RestorePersonal; `if(restored && !g_allow_checkpoints) AddCheats(1)`. RestorePersonal (Speedrun.cs:99): null-checkpoint sprints UR-DEAD/no-waypoint; tracebox(cp.Origin, mins/maxs, WorldOnly) -> StartSolid skips the teleport block + prints 'Cannot move there, cheater' (Speedrun.cs:118-128, NOW MODELED) but still restores RES/WEAPONS/Items + rebases pause/statuseffect timers by (Now-TeleportTime). returns true when a checkpoint existed.", result: pass }
+      - { kind: code_read, ref: "AbortSpeedrun hook (NOW FIRED): Commands.cs:2145 `if (Cheats.Speedrun(caller)) { if GameType is Race -> race.AbortSpeedrun(caller); else if Cts -> cts.AbortSpeedrun(caller); }`. Race.AbortSpeedrun (Race.cs:1022) clears LapStartTime/MoveTime*/RaceMoveTime/NextCheckpoint=-1/Started=false; Cts.AbortSpeedrun (Cts.cs:448)->AbandonRun clears the run clock. Real resets, not stubs — matches QC MUTATOR_HOOKFUNCTION(rc/cts, AbortSpeedrun).", result: pass }
       - { kind: code_read, ref: "common/impulses/all.qh:155-161 — the full CHIMPULSE set is SPEEDRUN_INIT=30, GIVE_ALL=99, CLONE_MOVING=140, SPEEDRUN=141, CLONE_STANDING=142, TELEPORT=143, R00T=148. Only CLONE_MOVING/CLONE_STANDING (140/142) are unported.", result: pass }
     confidence: high
-    notes: "MAJOR DRIFT since 2026-06-27 baseline: SPEEDRUN_INIT (30) and SPEEDRUN (141) are now FULLY PORTED via the new Speedrun.cs / Player.PersonalCheckpoint — the .personal speedrun-checkpoint state (the previous worst gap) is modeled. logic missing->partial, values missing->faithful, timing na->faithful, liveness na->partial. Remaining unported set is exactly CLONE_MOVING(140) + CLONE_STANDING(142) (need CopyBody). Residual within the ported 141: start-solid tracebox guard + AbortSpeedrun hook."
+    notes: "RE-AUDIT DRIFT 2026-06-27: the two residuals the baseline row listed for the ported SPEEDRUN(141) are BOTH now CLOSED — the start-solid tracebox guard ('Cannot move there, cheater') is modeled in Speedrun.RestorePersonal (Speedrun.cs:118-128) and the AbortSpeedrun mutator hook is fired (Commands.cs:2145-2150 -> real Race/Cts.AbortSpeedrun lap-clock resets). Upgraded logic partial->faithful + two new match:true constants. Liveness stays PARTIAL solely because CLONE_MOVING(140)+CLONE_STANDING(142) remain unrouted (need CopyBody). Note the Speedrun.cs doc-comment at lines 95-97 stale-claims the AbortSpeedrun hook 'is not driven from this restore path yet' — true of Speedrun.cs itself but the hook IS driven from the server dispatcher (Commands.cs); behavior is faithful. Line numbers re-pinned (141 branch 2118->2139, case 30 2138->2163)."

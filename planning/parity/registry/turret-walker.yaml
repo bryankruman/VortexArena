@@ -6,7 +6,7 @@ summary:
   feature_count: 12
   worst_gaps:
     - "No head entity (walker_head_minigun.md3): the minigun head is not a separate tracked/spinning tur_head entity (no tag attachment). The minigun muzzleflash now falls back to the shot org, and rocket muzzle alternation now selects tag_rocket01/02 via the model service but gracefully falls back to a single shot org when the body model is headless."
-    - "No CSQC walker_draw locomotion render: no 4-point ground-align over terrain and no head avelocity spin (pure client view). The per-gait Entity.Frame IS now stamped server-side AND consumed client-side (the walker classifies as NetEntityKind.Generic -> frameDriven -> ModelAnimator.FollowEntityFrame), so the walk/run/melee gait animations now play; only the ground-align + head-spin remain absent."
+    - "Remaining CSQC walker_draw gap is now ONLY the head avelocity spin (pure client view): the 4-point ground-align over terrain IS now ported (WalkerTurret.DoMovement folds movelib_groundalign4point(300,100,0.25,45) pitch/roll onto the networked e.Angles via the shared VehiclePhysics.GroundAlign4Point, gated to the ground gaits). The per-gait Entity.Frame IS stamped server-side AND consumed client-side (the walker classifies as NetEntityKind.Generic -> frameDriven -> ModelAnimator.FollowEntityFrame), so the walk/run/melee gait animations play when walker_body.md3 has frame groups (FrameCount>1)."
 features:
   - id: turret-walker.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -79,7 +79,7 @@ features:
       - "common/turrets/sv_turrets.qc:turret_link"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:Walker"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:228"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:238"
     constants:
       - { name: "g_turrets master switch", base: "1 (default on)", port: "MasterSwitchEnabled default-on", match: true }
     status:
@@ -376,25 +376,26 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/WalkerTurret.cs:DoMovement"
     constants:
-      - { name: "groundalign4point", base: "(300,100,0.25,45)", port: "none", match: false }
+      - { name: "groundalign4point", base: "(300,100,0.25,45)", port: "(300,100,0.25,45) — VehiclePhysics.GroundAlign4Point folds pitch(X)/roll(Z) onto networked e.Angles (WalkerTurret.cs:304-308), gated to ground gaits (skip while WaterLevel>=2 / Swim)", match: true }
       - { name: "spark health threshold", base: "127", port: "127 (SparkHealthThreshold)", match: true }
       - { name: "spark chance/frame", base: "0.15", port: "0.15 (SparkChance)", match: true }
       - { name: "spark TE", base: "te_spark(origin+'0 0 40', randomvec*256+'0 0 256', 16)", port: "EffectEmitter.TeSpark(origin+'0 0 40', Prandom.Vec*256+'0 0 256', 16)", match: true }
-      - { name: "client movetype", base: "MOVETYPE_BOUNCE + gravity 1", port: "none", match: false }
-      - { name: "anim frames", base: "12-state animflag via turrets_setframe + TNSF_MOVE", port: "none", match: false }
+      - { name: "client movetype", base: "MOVETYPE_BOUNCE + gravity 1 (client render copy)", port: "none (pure-client render movetype; server drives origin via MoveType.Step + shared entity feed)", match: false }
+      - { name: "anim frames", base: "12-state animflag via turrets_setframe + TNSF_MOVE", port: "Entity.Frame stamped server-side + consumed client-side via Generic->frameDriven->ModelAnimator.FollowEntityFrame (needs walker_body.md3 FrameCount>1)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: partial
-      timing: partial
+      timing: faithful
       presentation: partial
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Gait frame is stamped server-side (DoMovement SetFrame(e, animflag) writes Entity.Frame, faithful to turrets_setframe) AND netted (ServerNet snapshot Frame=(int)e.Frame) AND consumed client-side: the walker classifies as NetEntityKind.Generic (ServerNet.Classify), which ClientEntityView routes with frameDriven:true, so ClientWorld attaches a ModelAnimator with FollowEntityFrame=true that plays Entity.Frame as the raw model frame (requires walker_body.md3 FrameCount>1). So the walk/run/melee/swim/idle gait animations now DO play. TNSF_MOVE origin/velocity netting still has no dedicated counterpart (origin rides the shared entity feed)."
-      - "No CSQC walker_draw 4-point ground-align over terrain (movelib_groundalign4point 300,100,0.25,45) and no head avelocity spin (pure client render, still absent — the values:partial / timing:partial / groundalign4point + client-movetype + anim-frames constants reflect these unported pieces)."
+      - "Head avelocity spin is the ONLY remaining unported walker_draw piece: Base's CSQC copy spins the head model by its avelocity; the port has no tur_head sub-entity so the minigun head never visibly spins (tracked on the identity row's head-model gap). Everything else in walker_draw now has a server-side counterpart."
+      - "Client render-copy MOVETYPE_BOUNCE + gravity 1 has no direct counterpart (values:partial): the port drives the walker authoritatively on the server (MoveType.Step) and nets the origin through the shared entity feed instead of a CSQC bounce sim — gameplay-equivalent, but the client-side bounce/gravity render nicety is absent."
     verification:
-      - { kind: code_read, ref: "Low-hp te_spark (<127 hp, 15%/frame) emitted server-side in DoMovement (WalkerTurret.cs:286-292) as a networked temp-entity, faithful to walker.qc:627-629. SetFrame (WalkerTurret.cs:311-314) writes Entity.Frame=animflag; ServerNet.cs:1987 nets Frame=(int)e.Frame; ServerNet.Classify (ServerNet.cs:2370) returns NetEntityKind.Generic for the turret; ClientEntityView.cs:204 routes Generic with frameDriven:true; ClientWorld.cs:1636 sets ModelAnimator.FollowEntityFrame from _frameDriven; ModelAnimator.cs:268-282 plays Entity.Frame as the raw frame. So the gait frame IS now consumed for animation (was a no-op at last audit). Ground-align/head-spin counterpart still has no port.", result: pass }
+      - { kind: code_read, ref: "Low-hp te_spark (<127 hp, 15%/frame) emitted server-side in DoMovement (WalkerTurret.cs:288-294) as a networked temp-entity (EffectEmitter.TeSpark -> Sink.Emit), faithful to walker.qc:627-629. Gait frame: SetFrame (WalkerTurret.cs:315/327-330) writes Entity.Frame=animflag; ServerNet.cs:2210 nets Frame=(int)e.Frame; ServerNet.Classify (ServerNet.cs:2600) returns NetEntityKind.Generic for the turret; ClientEntityView.cs:216-219 routes Generic with frameDriven:true; ClientWorld.cs:1728 sets ModelAnimator.FollowEntityFrame from _frameDriven; ModelAnimator.cs:275-290 plays Entity.Frame as the raw frame (gated on FrameCount>1). Gait animation IS consumed.", result: pass }
+      - { kind: code_read, ref: "Ground-align: WalkerTurret.cs:304-308 calls VehiclePhysics.GroundAlign4Point(e, fwd, right, up, 300,100,0.25,45), gated to ws.AnimFlag != Swim && e.WaterLevel < 2. VehiclePhysicsHelpers.cs:135-165 4-point-traces the springs and writes ONLY pitch (ang.X) and roll (ang.Z) onto e.Angles via the blendRate lerp (yaw untouched) — both networked quantities reach every client; same shared helper Spiderbot uses. Folded server-side, faithful to movelib_groundalign4point(300,100,0.25,45) at walker.qc:615.", result: pass }
     confidence: high
-    notes: "FIXED since last audit: the per-gait Entity.Frame is now consumed client-side (turret = NetEntityKind.Generic -> frameDriven -> ModelAnimator.FollowEntityFrame), so the walk/run/melee gait animations now play (the prior audit's grep found no Frame consumer; the ModelAnimator FollowEntityFrame seam now exists and is wired on the live Generic path). liveness partial->live. The low-hp te_spark stays emitted server-side. Still missing (presentation:partial, values:partial, timing:partial): the pure-client walker_draw 4-point ground-align + head avelocity spin."
+    notes: "FIXED since the (already-re-audited) baseline: the CSQC walker_draw 4-point GROUND-ALIGN is now ported — DoMovement folds movelib_groundalign4point pitch/roll onto the networked e.Angles via the shared VehiclePhysics.GroundAlign4Point (gated to the ground gaits so it never fights the SWIM pitch). Combined with the already-consumed per-gait Entity.Frame (Generic->frameDriven->ModelAnimator.FollowEntityFrame) and the server-side low-hp te_spark, the only remaining walker_draw gap is the pure-client head avelocity spin (no tur_head sub-entity, tracked on the identity row) plus the client render-copy MOVETYPE_BOUNCE+gravity nicety. logic/timing -> faithful; presentation stays partial (head spin); values stays partial (client bounce movetype)."

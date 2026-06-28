@@ -5,8 +5,7 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 14
   worst_gaps:
-    - "g_antilag modes 1 (verified client-side) and 3 (prydon cursor hitscan) are unimplemented: a server set to either gets NO lag compensation at all (port treats anything != 2 as no-rewind)."
-    - "Shooter dphitcontentsmask is never widened to CORPSE during the antilag trace: Base force-sets SOLID|BODY|CORPSE around every antilag/fireBullet trace so a shot can hit gibbed/corpse bodies; the port's BeginLagComp only rewinds origins (no mask change)."
+    - "g_antilag modes 1 (verified client-side) and 3 (prydon cursor hitscan) are unimplemented: a server set to either gets NO lag compensation at all (port treats anything != 2 as no-rewind). This is the SOLE remaining gap — mode 2 (the stock default and only mode Xonotic normally runs) is fully faithful + live."
 features:
   - id: sv-antilag.history.record
     name: "Per-frame position-history ring (antilag_record)"
@@ -184,24 +183,28 @@ features:
     base_refs:
       - "server/antilag.qc:tracebox_antilag_force_wz"
       - "server/weapons/tracing.qc:W_SetupShot (dphitcontentsmask :44/50)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/LagComp.cs:Begin (mask widen :49-54)"
+      - "src/XonoticGodot.Common/Gameplay/LagComp.cs:End (mask restore :65-70)"
+      - "src/XonoticGodot.Engine/Collision/TraceService.cs:GenericHitMask (honors override :562-563)"
     constants:
-      - { name: "shooter solid override during trace", base: "DPCONTENTS_SOLID|BODY|CORPSE", port: "none", match: false }
+      - { name: "shooter solid override during trace", base: "DPCONTENTS_SOLID|BODY|CORPSE", port: "SuperContents.Solid|Body|Corpse (LagComp.cs:53)", match: true }
+      - { name: "switch is unconditional (outside if(lag))", base: "yes — set even at g_antilag==0 / bot / non-rewind", port: "yes — widen happens in LagComp.Begin before Provider?.Begin, no g_antilag gate", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base temporarily switches the shooter's hit-contents mask to also include CORPSE so a hitscan can hit gibbed/corpse bodies during the antilag trace (tracebox_antilag_force_wz, and W_SetupShot's pre-trace mask); the port's FireBullet/FireRailgunBullet/SetupShot do not adjust any contents mask around the trace. The port HAS corpse entities (Solid.Corpse / Entity.IsCorpse), so corpse-hitting behavior may differ unless the port's default trace already includes corpse-solids."
+    gaps: []
     verification:
-      - { kind: code, ref: "WeaponFiring.Fire*/SetupShot set no DpHitContentsMask around the trace; Entity.DpHitContentsMask exists (Entity.cs:56) but is not touched by the antilag path. Corpse entities exist (EntityEnums.cs Corpse=5, DamageEntityState.IsCorpse). Base force-mask in tracebox_antilag_force_wz antilag.qc:180.", result: fail }
-    confidence: medium
-    notes: "Whether this matters depends on the port's default trace/contents model for corpses; flagged as a behavioral divergence in the antilag trace wrapper. liveness=na (no code on this dimension)."
+      - { kind: test, ref: "tests/XonoticGodot.Tests/AntilagHookTests.cs:Begin_Widens_Shooter_HitMask_To_Corpse_And_End_Restores_It (PASS — widen to SOLID|BODY|CORPSE on Begin, exact restore on End, fires with NO provider installed)", result: pass }
+      - { kind: code, ref: "LagComp.Begin (LagComp.cs:49-54) saves shooter.DpHitContentsMask and sets it to SuperContentsSolid|Body|Corpse UNCONDITIONALLY (before the Provider?.Begin rewind, so it fires even at g_antilag==0/bot/no-provider — matching Base's force-mask outside the if(lag) gate); End (LagComp.cs:65-70) restores the saved mask. TraceService.GenericHitMask (TraceService.cs:562-563) returns Entity.DpHitContentsMask as an override when nonzero, so the widened mask makes Solid.Corpse bodies hittable for the bracket's duration. Bracket wraps every hitscan/SetupShot/Arc/melee trace (WeaponFiring.cs:176/289/470, Arc.cs:472, Shotgun.cs:386).", result: pass }
+    confidence: high
+    notes: "FIXED (landed Wave-6c ba3ae47 2026-06-25; the 2026-06-27 baseline row was STALE — it predated re-reading LagComp.cs). The corpse-mask widen/restore now lives in the SHARED LagComp facade Begin/End, so EVERY antilag-bracketed trace (FireBullet/FireRailgunBullet/SetupShot/Arc/Shotgun-melee) widens the shooter's dphitcontentsmask to SOLID|BODY|CORPSE for the trace and restores it after — the structural port of tracebox_antilag_force_wz (antilag.qc:177-180) + W_SetupShot's pre-trace mask (tracing.qc:44/50). Crucially the widen is UNCONDITIONAL (outside the rewind's g_antilag gate), exactly like Base, so corpse-hittability works even at g_antilag==0 / for a bot / on a provider-less server. The single saved-mask slot is safe because the server trace path is single-threaded and the _lagCompActive guard forbids re-entrant nesting across shooters."
 
   - id: sv-antilag.gate.cvars
     name: "Gating: g_antilag==0, cl_noantilag, lag<0.001, non-client shooter -> no rewind (antilag_getlag)"
@@ -281,7 +284,7 @@ features:
     verification:
       - { kind: code, ref: "No w_shotdir aim-correction / cursor_trace_ent handling in the port; _antilagMode != 2 simply disables the bracket (ServerNet.cs:2490). Base modes: tracing.qc:117 (g_antilag==1 ghost trace) + :132 (g_antilag==3 cursor_trace_ent) + client.qc:1002", result: fail }
     confidence: high
-    notes: "Open question whether the port intends to support modes 1/3 at all. If servers only ever run mode 2 (stock default), this is a non-issue. liveness=na (no code on this dimension; corrected from draft's 'dead')."
+    notes: "RE-VERIFIED 2026-06-27 (Wave 16/17 re-audit): still genuinely absent — no w_shotdir aim-correction / cursor_trace_ent path; the mode gate is now ServerNet.cs:2825 `if (_lagCompActive || _antilagMode != 2 || ...)` (line shifted since the older :2490 ref; behavior unchanged — anything != 2 disables the bracket). This is now the SOLE remaining sv-antilag gap after the corpse-mask fix (sv-antilag.solidmask.corpse) closed. Open question whether the port intends to support modes 1/3 at all; if servers only ever run mode 2 (stock default), this is a non-issue. liveness=na (no code on this dimension)."
 
   - id: sv-antilag.clear.on_spawn
     name: "antilag_clear on (re)spawn / teleport / vehicle enter-exit"

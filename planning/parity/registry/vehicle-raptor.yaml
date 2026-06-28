@@ -1,16 +1,18 @@
 unit: vehicle-raptor
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-27b"
 summary:
   feature_count: 17
   worst_gaps:
-    - "raptor.impact: CONFIRMED LIVE (fixup commit 4be8357) — Spawn() no longer nulls vehicle.Touch, Think() snapshots OldVelocity, Spawn seeds PlayTime; verified full dispatch chain MoveTypePhysics(BounceMissile)->PushEntity(doTouch)->FlyMove->VehicleCommon.Touch->VehicleDef.Impact->vehicles_impact. Wiring is symmetric with Racer."
-    - "raptor.painframe: WIRED LIVE — Raptor.Think calls VehicleCommon.PainFrame; faithful port of vehicles_painframe (<=50%-health shake/roll jitter live; only EFFECT_SMOKE_SMALL puff deferred — the headless Common layer has no particle emitter)."
-    - "DRIFT FIX (2026-06-25, post-Wave-12a): server-side audio + FX emission is now LIVE for several rows the prior baseline still recorded as missing — engine fly sound (SND_VEH_RAPTOR_SPEED, both Takeoff+Frame), death-tumble SND_ROCKET_IMPACT + EXPLOSION_MEDIUM/SMALL, and the cluster-bomb RAPTOR_BOMB_SPREAD puff are all emitted via Api.Sound.Play / EffectEmitter (Send_Effect equivalent). Audio upgraded missing->faithful (takeoff, flight, death); presentation upgraded missing->partial/faithful (bombs, death)."
-    - "Remaining presentation is client-render only: no rotor spinners/anglefix, no takeoff/land model animation frame, no cosmetic bomb/tail/cockpit models, no CSQCProjectile bolt/bomb trails, no RAPTOR_MUZZLEFLASH on the cannon (still TODO — racer got its muzzleflash, raptor did NOT), no flare flame glow/model, no low-health smoke."
-    - "No CSQC HUD/crosshair: missing the dual reticle + the dropmark bomb-impact marker + the aux lock crosshair color feedback (the reload2/ammo2 stats the HUD reads ARE now fed by Think — Wave-12a)."
-    - "mass=1 is set on the entity but is INERT — the port's MoveTypePhysics never reads .Mass, so the bounce-missile mass tuning has no behavioral effect (bouncefactor IS live, verified MoveTypePhysics.cs:163-164)."
+    - "DRIFT FIX (2026-06-27 re-audit, Waves 15/17): the prior 2026-06-27 baseline was written from a STALE read — it still recorded the cannon muzzleflash + the entire CSQC HUD as NOT done, but both had since landed. Wave-17 (2f0bfdb) added the live RAPTOR_MUZZLEFLASH emit (Raptor.cs:573) + the full client VehicleHud (game/hud/VehicleHud.cs) fed live by NetGame.UpdateVehicleHud/FeedRaptorReticle; Wave-15 (5958904) fixed the cannon spread RNG to the QC normalize(fwd+randomvec()*spread). Verified by code trace + Common/test build green + 34 vehicle tests pass."
+    - "raptor.hud_crosshair: NOW LIVE (was port_refs:[] / all-missing). game/hud/VehicleHud.cs + NetGame.UpdateVehicleHud (NetGame.cs:2650 live each render frame) draw the per-mode reticle (vCROSS_BURST bomb / vCROSS_RAIN flare), the ammo/reload bars, the aux lock crosshair colored by VehLockStrength, AND the signature bomb dropmark with a real tracetoss predictor (VehiclePhysics.BombDropPredict) + green-live/red-linger (dropmark.cnt=time+5) states. Pilot path is the host/listen-server local Player; the cross-client VEHICLESTAT_* networking for a PURE remote client is the documented follow-up."
+    - "raptor.impact: CONFIRMED LIVE (fixup commit 4be8357) — Spawn() no longer nulls vehicle.Touch, Think() snapshots OldVelocity, Spawn seeds PlayTime; full dispatch chain MoveTypePhysics(BounceMissile)->PushEntity(doTouch)->FlyMove->VehicleCommon.Touch->VehicleDef.Impact->vehicles_impact. Symmetric with Racer."
+    - "raptor.painframe: NOW FULLY FAITHFUL (2026-06-27b) — the EFFECT_SMOKE_SMALL low-health puff is now emitted (VehicleCommon.PainFrame:760), closing the last presentation gap; the <=50%-health shake/roll jitter was already live (Raptor.Think calls VehicleCommon.PainFrame)."
+    - "raptor.cb_shellfrag_gib: NOW LIVE (2026-06-27b, was port_refs:[]) — the cluster-bomb burst tosses the 3 cosmetic shell-fragment gibs client-side (Raptor.cs:631 emit -> EffectSystem.cs:477 -> ModelGibs.TossShellfrags) with the QC gravity/lifetime/fade/avelocity constants."
+    - "VehicleVisuals (game/client/VehicleVisuals.cs, Wave-17) renders a live vehicle body + SPINNING rotors + engine-sound crossfade + death gibs/explosion for the raptor, fed each frame by ClientWorld.DriveVehicles->Apply. BUT the rotors are PLACEHOLDER primitives (not the real rotor model + raptor_rotor_anglefix), and the takeoff/land VehAnimFrame still drives NO model frame (raptor is not FrameDrivenBody — only the spiderbot legs are). So these presentation rows are partial, not faithful."
+    - "Remaining unported presentation: rotor/cosmetic models are placeholders; no takeoff/land model-frame animation; no CSQCProjectile in-flight bolt/bomb/bomblet trails; no flare EF_FLAME glow/model; the cluster-bomb shell-fragment gibs (raptor.cb_shellfrag_gib) are still port_refs:[]."
+    - "mass=1 is set on the entity but is INERT — the port's MoveTypePhysics never reads .Mass, so the bounce-missile mass tuning has no behavioral effect (bouncefactor IS live, verified MoveTypePhysics.cs:190-193)."
 features:
   - id: raptor.spawn.setup
     name: "Spawn / setup (hitbox, resources, capability flags, sub-entities)"
@@ -21,6 +23,7 @@ features:
       - "common/vehicles/vehicle/raptor.qh"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:Spawn"
+      - "game/client/VehicleCatalog.cs:66 (Raptor Desc: body model, rotor specs, gun mounts) + game/client/VehicleVisuals.cs (renders body + spinning rotors)"
     constants:
       - { name: "health", base: "250", port: "250", match: true }
       - { name: "shield", base: "200", port: "200", match: true }
@@ -38,19 +41,19 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Cosmetic sub-entities not created: no raptor_spinner rotor entities (engine_left/right), no raptor_rotor_anglefix, no bomb1/bomb2/tur_head cosmetic models (gun1/gun2 ARE created for aim)."
+      - "DRIFT FIX (2026-06-27b): the client now renders a vehicle BODY model + two SPINNING rotors (engine_left +900°/s, engine_right -900°/s) + the gun mounts, via game/client/VehicleVisuals.cs fed live by ClientWorld.DriveVehicles. So presentation is no longer fully missing — but the rotors are PLACEHOLDER primitives (Placeholder('Prop',...) at VehicleVisuals.cs:177), NOT the real raptor rotor model, there is no raptor_rotor_anglefix yaw-overflow fix, and no bomb1/bomb2/tur_head cosmetic models. Hence partial, not faithful. (gun1/gun2 server aim-entities ARE created in Raptor.Spawn.)"
       - "mass=1 is set on the entity but has NO behavioral effect — the port's MoveTypePhysics solver never reads .Mass, so the QC bounce-missile mass tuning is inert (value set for fidelity only)."
       - "FIXED (Wave-2 fixup): Spawn() no longer nulls vehicle.Touch, so the VehicleCommon.Touch dispatcher SpawnVehicle installed stands (crush + vr_impact path now live, see raptor.impact). Matches QC vr_spawn (does NOT clear .touch) and Racer (Racer.cs:189-190)."
     verification:
-      - { kind: code, ref: "Raptor.cs:107-159 Spawn vs raptor.qc:vr_spawn value diff; bouncefactor consumed MoveTypePhysics.cs:190-193 (BounceMissile clip 1+bf); .Mass absent from MoveTypePhysics integrator (inert); fixup commit 4be8357 confirmed removed vehicle.Touch=null + seeds PlayTime=Time", result: pass }
+      - { kind: code, ref: "Raptor.cs:107-159 Spawn vs raptor.qc:vr_spawn value diff; bouncefactor consumed MoveTypePhysics.cs:190-193 (BounceMissile clip 1+bf); .Mass absent from MoveTypePhysics integrator (inert); client body+rotors VehicleVisuals.cs:144-182 (rotors are placeholder primitives) fed by ClientWorld.DriveVehicles", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-27. bouncefactor (BounceMissile clip MoveTypePhysics.cs:190-193) + the liquids sink mask are genuinely effective; mass=1 is inert (engine integrator never reads .Mass). Spawn no longer nulls vehicle.Touch and seeds PlayTime=Time, restoring the live impact path (see raptor.impact). bouncestop confirmed only consumed in the MOVETYPE_BOUNCE branch (MoveTypePhysics.cs:202-203), not BounceMissile — matches QC. MoveTypePhysics.cs now lives under src/XonoticGodot.Engine/Simulation/."
+    notes: "Re-audited 2026-06-27b: presentation missing->partial. The client VehicleVisuals (Wave-17) renders the raptor body + the two counter-spinning rotors + gun mounts live, but with placeholder rotor/cosmetic geometry (no real rotor model / anglefix / bomb-tail models). bouncefactor (MoveTypePhysics.cs:190-193) + the liquids sink mask are effective; mass=1 is inert. Spawn keeps vehicle.Touch + seeds PlayTime=Time (live impact path). bouncestop only in the MOVETYPE_BOUNCE branch (MoveTypePhysics.cs:202-203) — matches QC."
 
   - id: raptor.liveness.spawnfunc
     name: "Map placement spawnfunc + live think wiring"
@@ -127,18 +130,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Animation frame ramp tracked (VehAnimFrame) but drives no visible model; rotor avelocity ramp (90 + frame/25*25000) absent (no rotor entities) — presentation only."
+      - "Rotors now spin on the client (VehicleVisuals SpinRotors), BUT the takeoff animation-frame ramp (VehAnimFrame 0->25) still drives NO visible model frame — the raptor body is NOT FrameDrivenBody (only the spiderbot legs are; VehicleVisuals.DriveBodyFrame is a no-op for the raptor), so the gear/canopy/rotor-tilt takeoff pose is not shown, and the QC rotor avelocity RAMP (90 + frame/25*25000) is approximated by a constant 900°/s spin rather than the takeoff spool-up. Hence partial."
       - "Wave-2 added a button-clear (ATCK/ATCK2/CROUCH) at the end of Takeoff, but it writes vehicle.VehInput which GameWorld.cs:1104-1105 overwrites with fresh player input every tick BEFORE the next Think — so the clear is effectively a no-op on the live path. QC's per-tick button zero is faithful but the port's input-refresh architecture makes it inert (minor — input only reaches Frame, not Takeoff, so no fire/dive actually leaks)."
     verification:
-      - { kind: code, ref: "Raptor.cs:286-290 Takeoff plays vehicles/raptor_speed.wav on SoundChannel.Item gated on VehSoundNextTime (matches QC raptor_takeoff CH_TRIGGER_SINGLE/7.955812s); frame/rise math vs raptor_takeoff; VehInput refresh GameWorld.cs:1104", result: pass }
+      - { kind: code, ref: "Raptor.cs:286-290 Takeoff plays vehicles/raptor_speed.wav (CH_TRIGGER_SINGLE/7.955812s); frame/rise math vs raptor_takeoff; client rotors spin VehicleVisuals.cs:236-246 but body frame VehicleVisuals.cs:268-273 only applies to FrameDrivenBody (spiderbot), NOT the raptor", result: pass }
     confidence: high
-    notes: "DRIFT FIX 2026-06-25: audio missing->faithful. The SND_VEH_RAPTOR_SPEED engine note IS played in Takeoff (Raptor.cs:286-290) on the same VehSoundNextTime gate the flight phase uses, so the note carries seamlessly through the handoff — was already present at commit ff8a699 but the prior baseline still recorded audio:missing. Hand-off to flight modeled with VehSoundState 0->1. Only the rotor/frame model animation (presentation) remains."
+    notes: "Re-audited 2026-06-27b: presentation missing->partial. Client rotors now spin (Wave-17 VehicleVisuals), but the takeoff VehAnimFrame still drives no model pose (raptor is not FrameDrivenBody) and the spool-up ramp is a constant spin. audio:faithful unchanged — SND_VEH_RAPTOR_SPEED plays through the handoff (Raptor.cs:286-290) on the shared VehSoundNextTime gate."
 
   - id: raptor.flight_controller
     name: "Free-flight avelocity controller (raptor_frame physics)"
@@ -165,18 +168,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No visible model pitch/roll/yaw pose beyond entity angles; player glue origin+'0 0 32' done but no cockpit/exterior model (presentation only)."
+      - "The client now renders the raptor body model following the entity origin + YAW (ClientWorld.DriveVehicles:1503-1504 sets vis.Position + vis.Rotation = yaw-only), so the airframe is visible and turns. BUT DriveVehicles applies ONLY yaw — the pitch and roll the flight controller computes into vehicle.Angles (the nose-down/up + bank-on-strafe pose) are NOT applied to the visual node, so the body doesn't visibly pitch/bank. Hence partial. (Player glue origin+'0 0 32' is server-side and correct.)"
     verification:
-      - { kind: code, ref: "Raptor.cs:Frame vs raptor_frame yaw/pitch/thrust/hover-flip step-by-step; FixedVecToAngles confirmed equivalent to QC df=vectoangles+df.x=-df.x; engine fly sound Raptor.cs:417-421 plays vehicles/raptor_speed.wav gated on VehSoundNextTime (matches raptor_frame:158-164)", result: pass }
+      - { kind: code, ref: "Raptor.cs:Frame vs raptor_frame yaw/pitch/thrust/hover-flip; engine fly sound Raptor.cs:417-421; client body renders + follows yaw ClientWorld.cs:1503-1504 (DriveVehicles applies yaw only, drops pitch/roll)", result: pass }
       - { kind: test, ref: "VehicleRuntimeTests Drive_* (racer-driven, same shared seam) — input reaches the controller seam, velocity builds", result: pass }
     confidence: high
-    notes: "DRIFT FIX 2026-06-25: audio missing->faithful. The SND_VEH_RAPTOR_SPEED loop IS played in Frame (Raptor.cs:417-421) on the VehSoundNextTime gate, matching raptor_frame. Hover-flip guard, yaw-relative thrust (movestyle 1), roll-on-strafe with 0.95 decay all present. Only the cockpit/exterior model pose (presentation) remains."
+    notes: "Re-audited 2026-06-27b: presentation missing->partial. The body model now renders + follows origin/yaw (Wave-17 VehicleVisuals), but ClientWorld.DriveVehicles applies yaw only — the pitch/roll flight pose is dropped. audio:faithful unchanged (SND_VEH_RAPTOR_SPEED Raptor.cs:417-421). Hover-flip guard, yaw-relative thrust (movestyle 1), roll-on-strafe 0.95 decay all present server-side."
 
   - id: raptor.cannon_aim_lock
     name: "Twin-cannon turret aim + target lock + lead predict"
@@ -205,18 +208,19 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Aux lock crosshair color feedback (red==1 / green>0.5 / blue<0.5 by lock strength, UpdateAuxiliaryXhair) is client-only and not drawn."
+      - "DRIFT FIX (2026-06-27b): the aux lock crosshair color feedback (red→yellow→green by lock strength) IS now drawn — NetGame.UpdateVehicleHud:3443 calls hud.SetAuxiliaryXhairLock(0, target.Origin, veh.VehLockStrength, 'gfx/vehicles/axh-target') live each frame while veh.VehLockTarget is held. Closed the prior 'not drawn' gap."
       - "locktarget==2 alternate direct-trace lock path unimplemented (default is 1, so off the live path)."
+      - "AimTurret uses an Euler-subtract approximation of QC's AnglesTransform left-divide — behaviorally close but not bit-identical (the residual 'medium' caveat)."
     verification:
-      - { kind: code, ref: "Raptor.cs:Frame lock block + PredictAim vs raptor_frame locktarget==1 branch; LockTarget/AimTurret helpers reviewed", result: pass }
+      - { kind: code, ref: "Raptor.cs:Frame lock block + PredictAim vs raptor_frame locktarget==1 branch; LockTarget/AimTurret helpers reviewed; aux lock crosshair color NetGame.cs:3443 SetAuxiliaryXhairLock(VehLockStrength)", result: pass }
     confidence: medium
-    notes: "Both gun1 & gun2 slewed by AimTurret with the same limits/turnspeed; 4-iteration lead solve at cannon_speed matches QC. AimTurret uses an Euler-subtract approximation of QC's AnglesTransform left-divide; behaviorally close but not bit-identical — hence medium. Unchanged by Wave-2."
+    notes: "Re-audited 2026-06-27b: presentation missing->faithful — the lock-strength-colored aux crosshair is now drawn live (Wave-17 VehicleHud). Both gun1 & gun2 slewed by AimTurret with the same limits/turnspeed; 4-iteration lead solve at cannon_speed matches QC. Confidence stays MEDIUM only because AimTurret's Euler-subtract approximates QC's AnglesTransform left-divide (close, not bit-identical), and locktarget==2 is unported (off-default)."
 
   - id: raptor.cannon_fire
     name: "Primary fire — twin laser cannon (1-1-2-2 cadence)"
@@ -236,23 +240,26 @@ features:
       - { name: "cannon_refire", base: "0.033333", port: "0.033333", match: true }
       - { name: "refire double on 4th", base: "*(1 + ((cnt+1)>=4))", port: "same", match: true }
       - { name: "deathtype", base: "DEATH_VH_RAPT_CANNON", port: "DeathTypes.VhRaptCannon", match: true }
+      - { name: "muzzle FX (Send_Effect _mzlfx)", base: "EFFECT_RAPTOR_MUZZLEFLASH at proj.origin along proj.velocity", port: "EffectEmitter.Emit('RAPTOR_MUZZLEFLASH', org, vel, 1) — Raptor.cs:573 (Wave-17)", match: true }
+      - { name: "cannon spread RNG model", base: "normalize(dir + randomvec()*spread)*speed", port: "QMath.Normalize(fwd + Prandom.Vec()*CannonSpread)*CannonSpeed — Raptor.cs:561 (Wave-15)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No EFFECT_RAPTOR_MUZZLEFLASH and no CSQCProjectile (PROJECTILE_RAPTORCANNON) visual for the cannon bolt (server hit logic only)."
-      - "Spread sampling differs from Base: QC does normalize(dir + randomvec()*spread) (a cube offset added to forward, perturbing forward too); the port uses Prandom.Spread (uniform-in-disc projected onto right/up). Distribution shape differs — negligible at spread 0.01 but not bit-faithful."
+      - "DRIFT FIX (2026-06-27 re-audit): the EFFECT_RAPTOR_MUZZLEFLASH IS now emitted server-side — Raptor.cs:573 EffectEmitter.Emit('RAPTOR_MUZZLEFLASH', org, vel, 1), matching QC vehicles_projectile's Send_Effect(_mzlfx, proj.origin, proj.velocity, 1). This is LIVE: RAPTOR_MUZZLEFLASH registered EffectsList.cs:156 -> effectinfo raptor_cannon_muzzleflash (effectinfo.txt:5085) -> EffectEmitter.Sink is the live EffectNetSink (ServerNet.cs:303) -> networked -> client RenderSink (ClientWorld.cs:393) renders the particle. (Wave-17 added the emit; the registration/effectinfo always existed but had no caller.)"
+      - "Cannon spread RNG FIXED (Wave-15, Raptor.cs:561): the port now does QC's normalize(fwd + randomvec()*spread)*speed exactly (was the uniform-in-disc Prandom.Spread cone). Distribution shape now bit-faithful."
+      - "Remaining: no CSQCProjectile in-flight bolt trail (PROJECTILE_RAPTORCANNON) — a client-render trail on the moving bolt (server hit logic + muzzle FX are live)."
     verification:
-      - { kind: code, ref: "Raptor.cs:FireCannon vs RaptorCannon.wr_think alternating gun/energy/spread/refire", result: pass }
-      - { kind: test, ref: "VehicleRuntimeTests.Drive_PrimaryFire_SpawnsAVehicleProjectile (shared spawner)", result: pass }
+      - { kind: code, ref: "Raptor.cs:FireCannon vs RaptorCannon.wr_think alternating gun/energy/spread/refire; spread Raptor.cs:561 normalize(fwd+Prandom.Vec()*spread); muzzle Raptor.cs:573 Emit('RAPTOR_MUZZLEFLASH') -> EffectsList.cs:156 -> effectinfo.txt:5085 -> live EffectNetSink ServerNet.cs:303", result: pass }
+      - { kind: test, ref: "VehicleRuntimeTests.Drive_PrimaryFire_SpawnsAVehicleProjectile (shared spawner); 34 vehicle tests green", result: pass }
     confidence: high
-    notes: "Alternating gun1(<=2)/gun2(>2, reset at >=4) tag origins, energy gate + cnt regen-pause stamp, lasergun_fire.wav fire sound all match. Only the spread RNG model and the muzzle/projectile FX diverge. Unchanged by Wave-2."
+    notes: "Re-audited 2026-06-27b. Alternating gun1(<=2)/gun2(>2, reset at >=4) tag origins, energy gate + cnt regen-pause stamp, lasergun_fire.wav all match. presentation missing->partial: the cannon muzzleflash is now LIVE (Wave-17) and the spread RNG is now QC-faithful (Wave-15). The prior baseline's 'racer got its muzzleflash, raptor did NOT' is STALE. Only the in-flight CSQCProjectile bolt trail (presentation) remains. NOTE: this is the server-side Send_Effect path; the VehicleVisuals client-model muzzle (DriveMuzzle, gated on VehicleEffects.Firing) does NOT fire for the raptor because Raptor.cs never sets VehicleEffects.Firing (unlike Racer/Spiderbot) — but the server emit is the QC-faithful path anyway, so the flash still renders."
 
   - id: raptor.bombs
     name: "Secondary — cluster bombs burst into bomblets"
@@ -290,8 +297,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No CSQCProjectile visual (PROJECTILE_RAPTORBOMB / RAPTORBOMBLET) for the falling bomb/bomblet (client-render trail only)."
-      - "The burst FX is partial: RAPTOR_BOMB_SPREAD particle puff IS now emitted (Send_Effect equivalent), but the bomb-casing shell-fragment gibs (RaptorCBShellfragToss, the CSQC half of Damage_DamageInfo DEATH_VH_RAPT_FRAGMENT) are still client-only — see raptor.cb_shellfrag_gib."
+      - "Remaining presentation: no CSQCProjectile visual (PROJECTILE_RAPTORBOMB / RAPTORBOMBLET) for the FALLING bomb/bomblet in-flight trail."
+      - "DRIFT FIX (2026-06-27b): the burst FX is now MORE complete — the RAPTOR_BOMB_SPREAD particle puff AND the bomb-casing shell-fragment gibs (RaptorCBShellfragToss) BOTH render on burst now (see raptor.cb_shellfrag_gib, which went missing->faithful/live this re-audit). The only burst-FX piece left is the in-flight projectile trail above."
     verification:
       - { kind: code, ref: "Raptor.cs:DropOneBomb burst loop + clear-fall trace + touch-delay vs raptor_bomb_burst/raptor_bomblet_touch/raptor_bombdrop — direction (norm_vel*bomblet_alt), cnt=time+10 window, nextthink gating, random()*explode_delay all match; Raptor.cs:625 EffectEmitter.Emit('RAPTOR_BOMB_SPREAD', origin, velocity, 1) on burst (RAPTOR_BOMB_SPREAD registered EffectsList.cs:145)", result: pass }
     confidence: high
@@ -352,17 +359,18 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CSQCVehicleSetup (client HUD reticle update on mode change) not done (client concern)."
+      - "DRIFT FIX (2026-06-27b): the CSQCVehicleSetup-equivalent client HUD reticle update on mode change IS now done — NetGame.UpdateVehicleHud->FeedRaptorReticle (NetGame.cs:3517) reads the server-authoritative veh.VehW2Mode every render frame and re-selects vCROSS_BURST (bomb) / vCROSS_RAIN (flare), so switching the secondary flips the centered reticle (and toggles the bomb dropmark) live. Closed the prior 'not done' gap."
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.Impulse_Raptor_SetsBombAndFlareModes (set imp 1/2 + cycle/wrap imp 10) — live through VehicleBoarding.Impulse", result: pass }
+      - { kind: code, ref: "NetGame.cs:3517 FeedRaptorReticle reads veh.VehW2Mode -> per-mode reticle each frame (CSQCVehicleSetup analog)", result: pass }
     confidence: high
-    notes: "Routed live through Commands.cs -> VehicleBoarding.Impulse before weapon impulses. Unchanged by Wave-2."
+    notes: "Re-audited 2026-06-27b: presentation missing->faithful. Routed live through Commands.cs -> VehicleBoarding.Impulse before weapon impulses; the mode change now reflects on the client HUD reticle each frame via FeedRaptorReticle."
 
   - id: raptor.exit_land
     name: "Exit / auto-land (raptor_exit, raptor_land)"
@@ -385,19 +393,19 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Land animation frame from altitude (hgt<128: (hgt/128)*25) + rotor spin tracked-but-invisible (no model)."
+      - "Rotors now spin on the client during the land descent (VehicleVisuals self-drives them while alive), but the Land animation frame from altitude (Raptor.cs:472-473 VehAnimFrame = (hgt/128)*25 — added Wave-15) still drives NO visible model frame (raptor is not FrameDrivenBody). So the gear-down/settle pose is not shown — hence partial."
       - "antilag_clear on exit + CSQCVehicleSetup viewport restore are cross-boundary (net/client)."
     verification:
-      - { kind: code, ref: "Raptor.cs:Exit/Land vs raptor_exit/raptor_land eject + descend math", result: pass }
+      - { kind: code, ref: "Raptor.cs:Exit/Land vs raptor_exit/raptor_land eject + descend math; Land VehAnimFrame ramp Raptor.cs:472-473 (server-tracked, no model frame); client rotors spin VehicleVisuals.cs:236-246", result: pass }
       - { kind: test, ref: "VehicleRuntimeTests exit path (shared seam)", result: pass }
     confidence: high
-    notes: "FindGoodExit resolves safe exit spot; living raptor installs the Land think on exit. Unchanged by Wave-2."
+    notes: "Re-audited 2026-06-27b: presentation missing->partial. Client rotors now spin during land (Wave-17 VehicleVisuals); the land VehAnimFrame ramp (Wave-15) is tracked server-side but drives no model pose (raptor not FrameDrivenBody). FindGoodExit resolves a safe exit spot; a living raptor installs the Land think on exit."
 
   - id: raptor.impact
     name: "Bounce impact damage / occupant shake (vr_impact, bouncepain)"
@@ -439,6 +447,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:Death"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:Blowup"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:555 (Death dispatch)"
+      - "game/client/VehicleVisuals.cs:311 (Die — client death gibs + explosion + death sound)"
     constants:
       - { name: "diethink wait", base: "time + 5 + random()*5", port: "time + 5 + Range(0,5)", match: true }
       - { name: "death z-impulse", base: "velocity.z += 600", port: "+= 600", match: true }
@@ -461,12 +470,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "EXPLOSION_MEDIUM (death) + the per-think 5% EXPLOSION_SMALL ARE now emitted via EffectEmitter, but the findbetterlocation surface-nudge for the medium blast is not reproduced (FX at origin directly) — cosmetic offset only, matching every other vehicle vr_death port. No cosmetic wreck model / EF_NODRAW handling (presentation)."
+      - "EXPLOSION_MEDIUM (death) + the per-think 5% EXPLOSION_SMALL ARE emitted via EffectEmitter (server), and the client VehicleVisuals.Die (Wave-17) ALSO bursts generic gib debris chunks (GibCount 7) + an explosion + the death sound on the alive->dead edge and hides the intact body/guns/rotors. The findbetterlocation surface-nudge for the medium blast is not reproduced (FX at origin directly — cosmetic offset only), and the gibs are generic debris primitives, not the real raptor wreck/gib models. So presentation stays partial."
     verification:
       - { kind: code, ref: "Raptor.cs:500 EffectEmitter.Emit('EXPLOSION_MEDIUM', origin) + Raptor.cs:510-514 5% Api.Sound.Play(rocket_impact.wav, CH_SHOTS) + EffectEmitter EXPLOSION_SMALL during tumble vs vr_death/raptor_diethink/raptor_blowup; colormod set; Death invoked live via VehicleCommon.cs:555 when health<=0; EXPLOSION_MEDIUM/SMALL registered EffectsList.cs:29-30", result: pass }
       - { kind: test, ref: "MonsterTurretVehicleObituaryTests / NotificationPolishTests cover vh_raptor_* death strings", result: pass }
     confidence: high
-    notes: "DRIFT FIX 2026-06-25: presentation missing->partial, audio missing->faithful; the diethink-chance constant flipped match false->true. The EXPLOSION_MEDIUM death blast + the per-think 5% EXPLOSION_SMALL + SND_ROCKET_IMPACT (rocket_impact.wav on CH_SHOTS) are all emitted server-side (Send_Effect / sound equivalents) — were present at ff8a699 but the prior baseline still recorded these as NOT IMPLEMENTED/missing. Tumble + delayed touch/timeout blowup + reset-to-SpawnPos respawn (respawntime 40) + dying colormod '-0.5 -0.5 -0.5' all faithful and live via the vehicles_damage path. Only the findbetterlocation nudge + the wreck model (presentation) remain."
+    notes: "Re-audited 2026-06-27b: presentation stays partial (server EXPLOSION_MEDIUM/SMALL + the Wave-17 client gib debris/explosion/death-sound now render on the alive->dead edge, but the gibs are generic primitives not the raptor wreck/gib models, and the findbetterlocation nudge is unported). audio:faithful. Tumble + delayed touch/timeout blowup + reset-to-SpawnPos respawn (respawntime 40) + dying colormod '-0.5 -0.5 -0.5' all faithful and live via the vehicles_damage path."
 
   - id: raptor.painframe
     name: "Low-health pain frame (smoke + damage shake/roll jitter)"
@@ -487,17 +496,17 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "EFFECT_SMOKE_SMALL low-health smoke puff (origin + randomvec()*80) is not emitted — the headless Common layer has no particle/temp-entity emitter (noted VehicleCommon.cs PainFrame; presentation only)."
+      - "DRIFT FIX (2026-06-27b): the EFFECT_SMOKE_SMALL low-health smoke puff (origin + randomvec()*80) IS now emitted — VehicleCommon.PainFrame:760 EffectEmitter.Emit('SMOKE_SMALL', vehic.Origin + Prandom.Vec()*80, 1) (the old 'no headless emitter' deferral no longer holds; SMOKE_SMALL is a registered effect on the live EffectNetSink->client render path). Gated on myHealth<=50 exactly like QC. No remaining gap."
     verification:
-      - { kind: code, ref: "VehicleCommon.cs:726 PainFrame body vs sv_vehicles.qc:vehicles_painframe (threshold/cadence/shake/roll exact, myHealth<=50 at :741); wired live via Raptor.Think:278 matching QC vehicles_think; raptor sets DmgShake|DmgRoll Raptor.cs:149", result: pass }
+      - { kind: code, ref: "VehicleCommon.cs:748-760 PainFrame vs sv_vehicles.qc:vehicles_painframe (threshold myHealth<=50, cadence, shake, roll exact) + EFFECT_SMOKE_SMALL puff Emit('SMOKE_SMALL', origin+randomvec()*80); wired live via Raptor.Think:278; raptor sets DmgShake|DmgRoll Raptor.cs:149", result: pass }
     confidence: high
-    notes: "NEW row 2026-06-22. The fixup commit 4be8357 added the VehicleCommon.PainFrame(vehicle) call to Raptor.Think, wiring the <=50%-health damage-shake/roll jitter live (matches QC where vehicles_think calls vehicles_painframe every tick). Logic/values/timing faithful; only the EFFECT_SMOKE_SMALL puff (presentation) is deferred. The gameplay-authoritative velocity/angle jitter runs."
+    notes: "Re-audited 2026-06-27b: presentation missing->faithful. The EFFECT_SMOKE_SMALL low-health puff is now emitted server-side (VehicleCommon.PainFrame:760) on the live effect path, alongside the <=50%-health velocity/angle shake/roll jitter that was already live (fixup 4be8357 wired PainFrame into Raptor.Think). All dimensions now faithful + live."
 
   - id: raptor.hud_crosshair
     name: "CSQC vehicle HUD + dual reticle / bomb dropmark crosshair"
@@ -505,27 +514,35 @@ features:
     base_refs:
       - "common/vehicles/vehicle/raptor.qc:vr_hud (METHOD Raptor, CSQC)"
       - "common/vehicles/vehicle/raptor.qc:vr_crosshair (METHOD Raptor, CSQC)"
-    port_refs: []
+      - "common/vehicles/cl_vehicles.qc:Vehicles_drawHUD / Vehicles_drawCrosshair"
+    port_refs:
+      - "game/hud/VehicleHud.cs (the in-vehicle HUD overlay: bars, per-mode reticle, dropmark, aux crosshairs)"
+      - "game/net/NetGame.cs:3381 (UpdateVehicleHud — fed live each render frame, called NetGame.cs:2650)"
+      - "game/net/NetGame.cs:3499 (FeedRaptorReticle — per-mode reticle + dropmark predictor + linger)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehiclePhysicsHelpers.cs:358 (BombDropPredict — tracetoss impact predictor)"
     constants:
-      - { name: "bomb crosshair", base: "vCROSS_BURST", port: "none", match: false }
-      - { name: "flare crosshair", base: "vCROSS_RAIN", port: "none", match: false }
-      - { name: "dropmark image", base: "vCROSS_DROP (tracetoss predicted impact)", port: "none", match: false }
-      - { name: "lock crosshair", base: "vCROSS_LOCK (AuxiliaryXhair[1])", port: "none", match: false }
+      - { name: "bomb crosshair", base: "vCROSS_BURST", port: "gfx/vehicles/crosshair_burst (NetGame.cs:3518)", match: true }
+      - { name: "flare crosshair", base: "vCROSS_RAIN", port: "gfx/vehicles/crosshair_rain (NetGame.cs:3518)", match: true }
+      - { name: "dropmark image", base: "vCROSS_DROP (tracetoss predicted impact)", port: "gfx/vehicles/crosshair_drop + BombDropPredict tracetoss (VehiclePhysicsHelpers.cs:358)", match: true }
+      - { name: "dropmark linger", base: "dropmark.cnt = time + 5 (red after release)", port: "_raptorDropmarkLinger = _renderClock + 5 (NetGame.cs:3537)", match: true }
+      - { name: "lock crosshair", base: "vCROSS_LOCK / axh-target (AuxiliaryXhair) by lock strength", port: "gfx/vehicles/axh-target via SetAuxiliaryXhairLock(0, ..., VehLockStrength) (NetGame.cs:3443)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Entire CSQC HUD path absent: no Vehicles_drawHUD ammo bars, no per-mode reticle (vCROSS_BURST bomb / vCROSS_RAIN flare), no raptor_dropmark tracetoss bomb-impact predictor (gravity-bounce traced to a 2D drawpic marker, green while live / red after release), no aux lock crosshair (vCROSS_LOCK) color feedback. Client-only; the server logic these decorate (mode switch, lock strength) is all live elsewhere."
+      - "Pilot path is the host/listen-server LOCAL Player (the live single-player + listen-server pilot case): UpdateVehicleHud feeds the panel straight from LocalServerPlayer's 0..100 vehicle stat mirror + the live veh.VehW2Mode/VehLockTarget/VehLockStrength. The cross-client VEHICLESTAT_* networking so a PURE remote client (not the host) sees the same bars/reticle is the documented follow-up (NetGame.cs:2648 comment) — liveness:live for the normal local-pilot path, partial only for a non-host remote pilot."
+      - "Minor: the dropmark uses a fixed 0.05s integration step over 200 iterations (VehiclePhysicsHelpers.cs:BombDropPredict) rather than QC tracetoss's engine ballistic; impact point is close but not bit-identical."
     verification:
-      - { kind: code, ref: "raptor.qc:761-838 vr_hud/vr_crosshair (CSQC) has no port counterpart; Raptor.cs Frame TODO at :432-433 explicitly defers dropmark + aux lock crosshair", result: fail }
+      - { kind: code, ref: "game/hud/VehicleHud.cs DrawBombDropmark/DrawMainReticle/aux crosshairs; NetGame.cs:3381 UpdateVehicleHud (called :2650 each render frame) -> :3499 FeedRaptorReticle sets vCROSS_BURST/RAIN reticle + runs BombDropPredict when reload2>=1 (green) / lingers red 5s; :3443 SetAuxiliaryXhairLock(VehLockStrength); VehiclePhysicsHelpers.cs:358 BombDropPredict iterative tracetoss", result: pass }
+      - { kind: build, ref: "Common + Tests build green; 34 vehicle tests pass", result: pass }
     confidence: high
-    notes: "NEW row 2026-06-25 (registry coverage gap; previously only mentioned in worst_gaps + scattered in cannon_aim_lock/mode_switch gap text). Pure client presentation — no behavioral impact. The dropmark is the raptor's signature bomb-aiming UX."
+    notes: "DRIFT FIX 2026-06-27b: missing->faithful/live. The prior baseline (last_audited 2026-06-27) was a STALE read — it recorded port_refs:[] / all-missing, but Wave-17 (2f0bfdb) had already landed the full client VehicleHud + the live NetGame.UpdateVehicleHud/FeedRaptorReticle feed. The raptor's signature bomb dropmark IS ported with a real tracetoss predictor (BombDropPredict) + the green-live/red-linger states, alongside the per-mode reticle, the ammo/reload bars, and the lock-strength-colored aux crosshair. Live on the host pilot path; the remote-client VEHICLESTAT_* networking is the only remaining piece."
 
   - id: raptor.cb_shellfrag_gib
     name: "CSQC cluster-bomb shell-fragment gib effect"
@@ -533,27 +550,32 @@ features:
     base_refs:
       - "common/vehicles/vehicle/raptor_weapons.qc:RaptorCBShellfragToss (CSQC)"
       - "common/vehicles/vehicle/raptor_weapons.qc:RaptorCBShellfragDraw (CSQC)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:631 (emits RAPTOR_BOMB_SPREAD w/ bomb velocity on burst)"
+      - "game/client/EffectSystem.cs:477 (RAPTOR_BOMB_SPREAD -> SpawnRaptorShellfrags)"
+      - "game/client/ModelGibs.cs:111 (TossShellfrags — the 3 bouncing frag drawables)"
     constants:
-      - { name: "frag model", base: "MDL_VEH_RAPTOR_CB_FRAGMENT", port: "none", match: false }
-      - { name: "frag gravity", base: "0.15", port: "none", match: false }
-      - { name: "frag lifetime / fade", base: "nextthink time+3, fade after cnt=time+2", port: "none", match: false }
-      - { name: "damageforcescale", base: "4", port: "none", match: false }
+      - { name: "frag model", base: "MDL_VEH_RAPTOR_CB_FRAGMENT (clusterbomb_fragment.md3)", port: "models/vehicles/clusterbomb_fragment.md3 (ModelGibs.cs:118)", match: true }
+      - { name: "frag count", base: "3 (RaptorCBShellfragToss loop)", port: "3 (ModelGibs.cs:113)", match: true }
+      - { name: "frag gravity", base: "0.15", port: "0.15 (GravityScale, ModelGibs.cs:124)", match: true }
+      - { name: "frag lifetime / fade", base: "nextthink time+3, fade after cnt=time+2", port: "Lifetime 3 / FadeDuration 1 (ModelGibs.cs:125-126)", match: true }
+      - { name: "avelocity tumble", base: "avelocity = prandomvec()*vlen(vel) + randomvec()*15/draw", port: "AngularVel = RandomVecG()*|vel| + AngularJitter 15 (ModelGibs.cs:130-131)", match: true }
+      - { name: "damageforcescale", base: "4 (CSQC-only frag, non-damaging)", port: "n/a (cosmetic gib, no damage)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The bomb-casing shell-fragment gibs tossed client-side when the cluster bomb bursts (RaptorCBShellfragToss spawns MOVETYPE_BOUNCE drawables with avelocity jitter that fade over ~2-3s) are not ported. Purely cosmetic debris; the bomb burst gameplay (raptor.bombs) is fully live."
+      - "DRIFT FIX (2026-06-27b): NOW LIVE (was port_refs:[]). On burst Raptor.cs:631 emits RAPTOR_BOMB_SPREAD carrying the bomb's velocity; the client EffectSystem (EffectSystem.cs:477) routes RAPTOR_BOMB_SPREAD/raptor_bomb_spread to SpawnRaptorShellfrags -> ModelGibs.TossShellfrags, which spawns 3 clusterbomb_fragment.md3 drawables (gravity 0.15, |vel| avelocity seed + 15/draw jitter, 3s lifetime fading over the final second), THEN falls through to render the raptor_bomb_spread particle puff alongside. The only QC detail not reproduced is the surface force-dir backoff on the toss velocity (headless lacks the per-hit surface normal) — cosmetic only."
     verification:
-      - { kind: code, ref: "raptor_weapons.qc:244-284 (CSQC) RaptorCBShellfragToss/Draw — no port counterpart; the burst path (Raptor.cs:DropOneBomb Burst) spawns only the damaging bomblets, no cosmetic frags", result: fail }
+      - { kind: code, ref: "Raptor.cs:631 Emit('RAPTOR_BOMB_SPREAD', origin, bombVel) -> EffectSystem.cs:477 SpawnRaptorShellfrags -> ModelGibs.cs:111 TossShellfrags (3 frags, gravity 0.15, lifetime 3/fade 1, avelocity |vel|+15 jitter) vs raptor_weapons.qc:244-284 RaptorCBShellfragToss/Draw", result: pass }
     confidence: high
-    notes: "NEW row 2026-06-25 (registry coverage gap). CSQC-only debris FX triggered from the bomb burst; no server/gameplay effect."
+    notes: "DRIFT FIX 2026-06-27b: missing->faithful/live. The prior baseline recorded port_refs:[] / all-missing, but the Wave-17 presentation-consumer wave wired the full chain: server emits RAPTOR_BOMB_SPREAD on burst -> networked -> client tosses the 3 cosmetic shell-fragment gibs (ModelGibs.TossShellfrags) with the QC gravity/lifetime/fade/avelocity constants. CSQC-only debris; no gameplay effect (the damaging bomblets are raptor.bombs)."
 
   - id: raptor.missile_alarm
     name: "Incoming guided-missile alarm (per-pilot warning sound)"

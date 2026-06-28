@@ -1,7 +1,7 @@
 unit: turret-plasma_dual
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 11
   worst_gaps:
@@ -19,7 +19,7 @@ features:
       - "common/turrets/turret/plasma_dual.qh:DualPlasmaTurret"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:PlasmaDual"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:227"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:231"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
       - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Spawn"
     constants:
@@ -41,9 +41,9 @@ features:
     gaps:
       - "head_model plasmad.md3 not used server-side (head-bone/tag_head networking is client-render, skipped)."
     verification:
-      - { kind: code-trace, ref: "MapObjectsRegistry.cs:227 RegisterAll -> SpawnFuncs.Register('turret_plasma_dual', TurretSpawnFuncs.PlasmaDual) -> TurretSpawn.Init -> Turrets registry + per-frame Think", result: pass }
+      - { kind: code-trace, ref: "MapObjectsRegistry.cs:231 RegisterAll -> SpawnFuncs.Register('turret_plasma_dual', TurretSpawnFuncs.PlasmaDual:68) -> def.Spawn -> TurretSpawn.Init -> Turrets registry + per-frame Think (TurretSpawnFuncs.Spawn:55). Live BSP dispatch: GameWorld.cs:4349 SpawnFuncs.TrySpawn(cls,e).", result: pass }
     confidence: high
-    notes: "Registration line moved 221->227 (still live). g_turrets master switch honored. Subclass of PlasmaTurret per QC; registered [Turret]."
+    notes: "RE-VERIFIED 2026-06-27 (Wave 16/17 re-audit): registration line now 231 (still live, master-switch gated). Full chain re-traced end-to-end: BSP entity -> GameWorld.cs:4349 TrySpawn -> TurretSpawnFuncs.PlasmaDual -> Spawn(e,'plasma_dual') -> Turrets.ByName -> def.Spawn + per-frame Think. Subclass of PlasmaTurret per QC; registered [Turret]."
 
   - id: turret-plasma_dual.ai.think_loop
     name: "Per-frame AI: ammo regen, target scan throttle, validate, aim, track, firecheck, fire"
@@ -110,9 +110,9 @@ features:
       - "Two-barrel tag_fire alternation (plasmad.md3) not modeled — single computed ShotOrg muzzle (a head-bone render detail; the muzzleflash + projectile trail themselves are now emitted)."
     verification:
       - { kind: value-diff, ref: "turrets.cfg:366 g_turrets_unit_plasma_dual_shot_spread=0.015 == DualShotSpread 0.015f; PlasmaDualTurret.Attack re-emits its own TurretSpawn.Projectile with spread:DualShotSpread", result: pass }
-      - { kind: code-trace, ref: "PlasmaDualTurret.Attack now emits EffectEmitter.Emit('BLASTER_MUZZLEFLASH', ShotOrg, dir*1000, 1) (== plasma_weapon.qc:23) and stamps ball.NetName='electro_bolt' so ProjectileCatalog.Classify -> ElectroBeam blue trail (PROJECTILE_ELECTRO_BEAM). EffectEmitter.Sink wired LIVE: ServerNet.cs:299 EffectNetSink + ClientWorld.cs:384 RenderSink. EffectsList.cs:40 registers BLASTER_MUZZLEFLASH=laser_muzzleflash.", result: pass }
+      - { kind: code-trace, ref: "PlasmaDualTurret.Attack:125-134 emits TurretSpawn.Projectile(... projType:'electro_bolt') then EffectEmitter.Emit('BLASTER_MUZZLEFLASH', ShotOrg, dir*1000, 1) (== plasma_weapon.qc:23). EffectEmitter.Sink wired LIVE on the host boot path: ServerNet.cs:303 `EffectEmitter.Sink = new EffectNetSink(this)` + ClientWorld.cs:393 `EffectEmitter.Sink = new RenderSink(this, Sink)`. EffectsList.cs:40 registers BLASTER_MUZZLEFLASH=laser_muzzleflash.", result: pass }
     confidence: high
-    notes: "FIX (since last audit): presentation missing->faithful. The EFFECT_BLASTER_MUZZLEFLASH and PROJECTILE_ELECTRO_BEAM trail are now actually emitted (not NOTE-only) and rendered on the live path (EffectEmitter sink wired server+client). Dual re-emits the ball locally with DualShotSpread; same shot_dmg/radius/speed/force/edge0/9s lifetime; fire sound hagar_fire matches. Only the two-barrel tag muzzle-origin alternation (a head-bone detail) remains unmodeled."
+    notes: "RE-VERIFIED 2026-06-27: presentation faithful CONFIRMED (not inflated). Read PlasmaDualTurret.Attack:125-134 — the EFFECT_BLASTER_MUZZLEFLASH Emit call and electro_bolt projType stamp are real; the effect IS registered (EffectsList.cs:40); the EffectEmitter sink IS installed on the live host (ServerNet.cs:303 server-net + ClientWorld.cs:393 in-process render mirror). Sink line refs corrected 299->303 / 384->393 (stale-by-a-few, wiring substantively LIVE). Dual re-emits the ball with DualShotSpread 0.015; shot_dmg/radius/speed/force/edge0/9s lifetime + hagar_fire all match. Only the two-barrel tag muzzle-origin alternation (a head-bone detail) remains unmodeled."
 
   - id: turret-plasma_dual.attack.instagib_rail
     name: "tr_attack instagib branch: instant instakill railgun beam"
@@ -143,9 +143,9 @@ features:
     verification:
       - { kind: value-diff, ref: "plasma_dual.qc FireRailgunBullet(it,...,10000000000 /*dmg*/, false, 800 /*force*/,...) vs InstagibRailDamage=1e10 + InstagibRailForce=800", result: pass }
       - { kind: code-read, ref: "Dual inlines the instagib branch (does NOT call SUPER): FireInstagibBeam(spread 0, damage 1e10, force 800); no fire sound (Base passes none)", result: pass }
-      - { kind: code-trace, ref: "FireInstagibBeam (PlasmaTurret.cs:158) now emits EFFECT_VORTEX_MUZZLEFLASH (shotOrg, dir*1000, 1) + team-coloured EFFECT_VAPORIZER_BEAM (shotOrg->endPos, rgb=Teams.ColorRgb(turret.Team)) == plasma_dual.qc:27-32. Both registered in EffectsList.cs:88/91 (nex_muzzleflash / TE_TEI_G3 trail) and emitted via the live EffectEmitter sink (ServerNet EffectNetSink + ClientWorld RenderSink).", result: pass }
+      - { kind: code-trace, ref: "FireInstagibBeam (PlasmaTurret.cs:159-179) emits EFFECT_VORTEX_MUZZLEFLASH (shotOrg, dir*1000, 1) + team-coloured EFFECT_VAPORIZER_BEAM (shotOrg->endPos, rgb=Teams.ColorRgb(turret.Team)) == plasma_dual.qc:27-32. Both registered EffectsList.cs:104 (nex_muzzleflash) / 107 (TE_TEI_G3, isTrail) and emitted via the live EffectEmitter sink (ServerNet.cs:303 EffectNetSink + ClientWorld.cs:393 RenderSink).", result: pass }
     confidence: high
-    notes: "FIX (since last audit): presentation missing->faithful. EFFECT_VORTEX_MUZZLEFLASH and the team-coloured EFFECT_VAPORIZER_BEAM hit beam are now actually emitted (not NOTE-only) and rendered on the live path. Dual inlines the instagib branch (calls FireInstagibBeam directly, not base.Attack, to skip the single-plasma frame=1 start-kick). damage 1e10 / force 800 match Base; no fire sound."
+    notes: "RE-VERIFIED 2026-06-27: presentation faithful CONFIRMED. Read PlasmaTurret.FireInstagibBeam:172-178 — VORTEX_MUZZLEFLASH + the team-coloured VAPORIZER_BEAM Emit calls are real; both registered (EffectsList.cs:104/107); the live sink is installed (ServerNet.cs:303 + ClientWorld.cs:393). Registration line refs corrected (88/91 -> 104/107). Dual inlines the instagib branch (PlasmaDualTurret.Attack:118 calls FireInstagibBeam directly, not base.Attack, to skip the single-plasma frame=1 start-kick). damage 1e10 / force 800 match Base; no fire sound. FireBullet single-trace penetration falloff still deferred (gaps)."
 
   - id: turret-plasma_dual.values.engagement_envelope
     name: "Engagement envelope: refire, ranges, ammo, aim/track tunables"
@@ -321,8 +321,8 @@ features:
       - "common/turrets/sv_turrets.qc:turret_damage (TFL_DMG_HEADSHAKE branch, line 226)"
       - "common/turrets/turret/plasma.qc:tr_setup (damage_flags |= TFL_DMG_HEADSHAKE)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:EventDamage (HeadShake branch, lines 893-896)"
-      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init (headShake param -> TurretState.HeadShake)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:EventDamage (HeadShake branch, lines 1056-1060)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init:79 (headShake param -> TurretState.HeadShake)"
       - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Spawn (headShake: true)"
     constants:
       - { name: "headshake_jitter", base: "tur_head.angles.x/y += (random()-0.5)*damage", port: "stHit.HeadAngles.X/Y += (Prandom.Float()-0.5f)*take", match: true }
@@ -338,9 +338,10 @@ features:
     gaps:
       - "Server-side head-angle jolt is now applied, but the CLIENT-rendered head model (plasmad.md3) is not attached, so the visible flinch is not drawn (the head-angle state nudges the next shot's aim, which IS the gameplay effect). Base also nets TNSF_ANG to CSQC; the port has no turret CSQC net layer."
     verification:
-      - { kind: code-read, ref: "TurretAI.EventDamage lines 893-896: `if (stHit.HeadShake) { stHit.HeadAngles.X += (Prandom.Float()-0.5f)*take; .Y += ... }` — matches sv_turrets.qc:226-234 (random()-0.5)*damage on pitch+yaw, using post-friendlyfire-scaled damage. PlasmaDualTurret.Spawn passes headShake:true (inherits plasma tr_setup TFL_DMG_HEADSHAKE).", result: pass }
+      - { kind: code-read, ref: "TurretAI.EventDamage:1056-1060: `if (stHit.HeadShake) { stHit.HeadAngles.X += (Prandom.Float()-0.5f)*take; .Y += ... }` — matches sv_turrets.qc TFL_DMG_HEADSHAKE (random()-0.5)*damage on pitch+yaw, using post-friendlyfire-scaled `take` (gated in Damage() just above). PlasmaDualTurret.Spawn passes headShake:true -> TurretSpawn.Init:79 -> TurretState.HeadShake (inherits plasma tr_setup TFL_DMG_HEADSHAKE).", result: pass }
+      - { kind: code-trace, ref: "LIVE damage path re-confirmed: TurretSpawn.Init:93 sets e.GtEventDamage=TurretAI.EventDamage; the headshake branch is INSIDE EventDamage after the TakeResource, so any hit that passes the Damage() gate jolts the head. Not test-only.", result: pass }
     confidence: high
-    notes: "FIX (since last audit): headshake was previously NOT ported (port_refs empty, all dimensions missing). It is now implemented and LIVE — TurretSpawn.Init plumbs headShake:true into TurretState.HeadShake, and EventDamage (on the live GtEventDamage damage path) jolts HeadAngles by (random-0.5)*take on both pitch+yaw, bit-faithful to Base. The next Track tick slews it back so it reads as recoil + nudges aim. Only the CLIENT head-model render of the flinch remains unported (presentation)."
+    notes: "RE-VERIFIED 2026-06-27 (still faithful/live; not inflated): read EventDamage:1056-1060 directly — the HeadShake branch jolts HeadAngles ±take/2 on pitch+yaw on the live GtEventDamage path, bit-faithful to Base. Line ref corrected 893-896 -> 1056-1060. presentation stays MISSING: the server-side head-angle state nudges the next shot's aim (the gameplay effect IS present) but the CLIENT head model (plasmad.md3) is not attached, so the visible flinch is not drawn. No turret CSQC net layer."
 
   - id: turret-plasma_dual.presentation.head_frame_anim
     name: "Head-frame wheel animation (tr_think 0..6 + ++frame on fire)"
@@ -369,6 +370,6 @@ features:
       - "Server-authoritative head-frame state (Entity.Frame) is now ported and live, but the CLIENT render of the spinning plasmad.md3 head bone is absent — the static base.md3 body has no spin frames and there is no tur_head sub-entity / CSQC turret net layer, so the wheel is not visibly drawn."
       - "Two-barrel tag_fire alternation (tag_fire on plasmad.md3) not modeled — single computed ShotOrg muzzle."
     verification:
-      - { kind: code-read, ref: "PlasmaDualTurret.Think: `if (e.Frame!=0 && e.Frame!=3) e.Frame+=1; if (e.Frame>6) e.Frame=0` == plasma_dual.qc tr_think. Attack: `if (turret.Frame==0) Frame=1` (else branch, SUPER kick) then `turret.Frame += 1` (dual ++frame) == plasma_dual.qc tr_attack + SUPER plasma.qc.", result: pass }
+      - { kind: code-read, ref: "PlasmaDualTurret.Think:74-75: `if (e.Frame!=0 && e.Frame!=3) e.Frame+=1; if (e.Frame>6) e.Frame=0` == plasma_dual.qc tr_think. Attack:139,145: `if (turret.Frame==0) Frame=1` (non-instagib SUPER kick) then unconditional `turret.Frame += 1` (dual ++frame) == plasma_dual.qc tr_attack + SUPER plasma.qc. instagib branch skips the frame=1 kick (inlined, no SUPER) — matches Base.", result: pass }
     confidence: high
-    notes: "FIX (since last audit): the head-frame wheel was previously NOT ported (port_refs empty, all dimensions missing). The server-authoritative Frame cycle (0..6, idle at 0 AND 3, kick to 1 on the non-instagib branch, ++ each shot, advance+wrap each think) is now implemented on the turret edict's own Entity.Frame (HellionTurret/HkTurret pattern) and runs live in Think/Attack — logic/values/timing faithful. Only the CLIENT-rendered head-model spin + two-barrel tag alternation remain unported (presentation)."
+    notes: "RE-VERIFIED 2026-06-27 (still faithful/live; not inflated): read Think:74-75 + Attack:139,145 directly. The server-authoritative Frame cycle (0..6, idle at 0 AND 3, kick to 1 on the non-instagib branch only, ++ each shot, advance+wrap each think) runs live on the turret edict's own Entity.Frame (HellionTurret/HkTurret pattern) — logic/values/timing faithful. presentation stays MISSING: the static base.md3 body has no spin frames and there is no tur_head sub-entity / CSQC turret net layer, so the wheel is not visibly drawn; two-barrel tag_fire alternation also unmodeled (single ShotOrg muzzle)."

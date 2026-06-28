@@ -5,11 +5,11 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 18
   worst_gaps:
-    - "Objective-marker MANAGER carrier sub-API still has no live caller: AttachCarrier / DetachCarrier are uncalled (CTF/KH/Ka/Tka/Dom/FT producers build WaypointSprite records directly in CollectWaypoints and bypass the manager). FIX this audit: UpdateTeamRadar is now LIVE via MonsterAI.ChangeTeam (monster_changeteam). SpawnFixed/Spawn/UpdateHealth/UpdateMaxHealth/UpdateRule/UpdateBuildFinished/Ping/Kill/Disown are all live (Assault objectives, itemstime respawn countdown, Seeker tags, powerup drops, Weapon_whereis, monster healthbars)."
-    - "Producer coverage WIDENED again: CTF + Domination + FreezeTag + Keepaway + TeamKeepaway + Key Hunt + LMS emit via CollectWaypoints; Assault via the manager; itemstime item-respawn countdown + Seeker tagged-target + powerup-drop countdown + Weapon_whereis (g_showweaponspawns) + MONSTER healthbars (g_monsters_healthbars) via the manager. Still MISSING: Onslaught CP/generators, Nexball balls/goals, Race start/finish/checkpoint, turret/vehicle/buff markers."
-    - "TEAMPLAY three-image (netname/2/3) per-audience swap still absent — the port networks a single SpriteName and does the team filter server-side only."
+    - "RE-AUDIT 2026-06-27 (post-W16/17 re-verify) DRIFT FIXES: (1) Race + Onslaught + Nexball are now live CollectWaypoints producers (prior row marked them missing) — Race.cs:607 / Onslaught.cs:1063 / Nexball.cs:1292, all reached via ServerNet.SendWaypoints per tick. (2) The TEAMPLAY three-image per-audience swap is now implemented + live (SpriteName/SpriteNameOwn/SpriteNameSpec + WaypointSprite.SpriteFor resolved per-peer in SendWaypoints), exercised by Assault / KeyHunt / TeamKeepaway / Onslaught CP — prior row marked it missing."
+    - "Objective-marker MANAGER carrier sub-API still has NO live caller: AttachCarrier / DetachCarrier remain uncalled (verified — only the def + doc-comments; CTF/KH/Ka/Tka/Nb carrier producers build WaypointSprite records directly in CollectWaypoints and bypass the carrier helper). The rest of the manager API is live: SpawnFixed/Spawn/UpdateSprites/UpdateHealth/UpdateMaxHealth/UpdateRule/UpdateBuildFinished/UpdateTeamRadar/Ping/Kill/Disown (Assault, itemstime, Seeker, powerup drops, Weapon_whereis, monster healthbars, player-deploy/helpme/clear)."
     - "Flag-carrier HEALTH BAR + auto-helpme-on-hit on CTF carriers still absent (AttachCarrier has no live caller; Ctf.CollectWaypoints sets Health=-1)."
-    - "wp_extra-driven per-instance blink (superweapon Weapon=2 / Item=m_waypointblink) still not modeled. Radar PING ring pulse is IMPLEMENTED (RadarPanel.DrawPingPulse + ClientNet bit-7 stamp), driven live by the itemstime respawn countdown. FIX this audit: monster healthbar markers (g_monsters_healthbars) are now ported + live (MonsterAI.cs)."
+    - "wp_extra-driven per-instance blink (superweapon Weapon=2 / Item=m_waypointblink) still not modeled, and wp_extra is not networked (generic icon/text for Weapon/Item/Monster). Radar PING ring pulse IS implemented + live (RadarPanel.DrawPingPulse + bit-7 stamp, driven by itemstime respawn countdown). Monster healthbars (g_monsters_healthbars) ported + live."
+    - "Still MISSING as waypoint producers: turret + vehicle + buff markers (Onslaught/Nexball/Race are now present — see the collect row)."
 features:
   - id: waypoints.registry.defs
     name: "Waypoint-kind registry (WP_* defs: text/icon/color/blink)"
@@ -87,31 +87,34 @@ features:
       - "common/gamemodes/gamemode/ctf/sv_ctf.qc:ctf_FlagSetup"
       - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_SpawnFixed"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:CollectWaypoints"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:401"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:518"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:770"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:659"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:721"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:1324"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:836"
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:419"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:454"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:534"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:825"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:722"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:752"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:1344"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:875"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:607"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:1063"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:1292"
     constants: []
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Seven live CollectWaypoints producers now: CTF (flag base/dropped/carrier), Domination (control-point markers), FreezeTag (Frozen/Reviving + thaw-progress health bar), Keepaway (KaBall/KaBallCarrier, tracking-gated), TeamKeepaway (team-colored TkaBallCarrier<team>/KaBall, tracking-gated), Key Hunt (KeyDropped + KeyCarrier<team>/KeyCarrierFinish, tracking-gated per-viewer predicates), LMS (LmsLeader on each leader, show-window gated). Plus Assault via the manager API, and itemstime/Seeker/powerup-drop via the manager. All reached via ServerNet.SendWaypoints:1022 per tick. FIX vs baseline (was CTF+Dom+FT+Ka+Tka)."
-      - "Still missing as CollectWaypoints producers: Onslaught control points + generators, Nexball balls + goals, Race start/finish/checkpoint, turret/vehicle/buff markers. (Weapon_whereis and MONSTER healthbars are now ported as on-demand/persistent manager producers — see waypoints.weapon.whereis and waypoints.monster.healthbar — not via CollectWaypoints.)"
+      - "RE-AUDIT 2026-06-27 (post-W16/17): TEN live CollectWaypoints producers now — CTF (flag base/dropped/carrier), Domination (control points), FreezeTag (Frozen/Reviving + thaw-progress bar), Keepaway (KaBall/KaBallCarrier), TeamKeepaway (team-colored carrier/ball), Key Hunt (KeyDropped + KeyCarrier<team>/Finish), LMS (LmsLeader show-window-gated), AND now Race (Start/Finish/StartFinish/Checkpoint fixed markers, Race.cs:607), Onslaught (generators WP_OnsGen/Shielded + control points WP_OnsCP/Defend/Attack via the teamplay triple, Onslaught.cs:1063), Nexball (WP_NbBall on carrier-or-loose + WP_NbGoal shown to the enemy team, Nexball.cs:1292). Each is an override on the active GameType, called via _world.GameType?.CollectWaypoints in ServerNet.SendWaypoints per tick — live whenever that mode runs. DRIFT FIX: Onslaught/Nexball/Race were listed as MISSING in the prior row but are now ported + live."
+      - "Still NOT CollectWaypoints producers: turret + vehicle + buff markers. (Weapon_whereis and MONSTER healthbars are ported as manager producers — see waypoints.weapon.whereis / waypoints.monster.healthbar — not via CollectWaypoints. Assault + itemstime + Seeker + powerup-drop also emit via the manager, merged in SendWaypoints alongside CollectWaypoints.)"
     verification:
-      - { kind: code-read, ref: "grep 'override.*CollectWaypoints' → Ctf.cs:401 + Domination.cs:518 + FreezeTag.cs:770 + Keepaway.cs:659 + TeamKeepaway.cs:721 + KeyHunt.cs:1324 + LastManStanding.cs:836; all reached via ServerNet.SendWaypoints (ServerNet.cs:1022) per tick", result: partial }
+      - { kind: code-read, ref: "grep 'override.*CollectWaypoints' → Ctf.cs:454 + Domination.cs:534 + FreezeTag.cs:825 + Keepaway.cs:722 + TeamKeepaway.cs:752 + KeyHunt.cs:1344 + LastManStanding.cs:875 + Race.cs:607 + Onslaught.cs:1063 + Nexball.cs:1292; base GameplayBases.cs:419 is virtual {} no-op; all reached via ServerNet.SendWaypoints (SendWaypoints():1196 calls _world.GameType?.CollectWaypoints) per tick", result: pass }
     confidence: high
-    notes: "FIX vs baseline: Key Hunt + LMS added as live CollectWaypoints producers (per-viewer tracking/show-window predicates faithful). Onslaught/Nexball/Race/monster/turret/vehicle/buff still absent."
+    notes: "DRIFT FIX vs prior row (2026-06-27 re-audit): Race + Onslaught + Nexball are now live CollectWaypoints producers (were marked missing). Onslaught CP uses the three-image teamplay swap (SpriteNameOwn/Spec). Only turret/vehicle/buff remain absent. logic partial→faithful, liveness partial→live (the missing producers were the only logic gap)."
 
   - id: waypoints.ctf.flag_markers
     name: "CTF flag waypoint sprites (base/dropped/carrier state machine)"
@@ -241,23 +244,27 @@ features:
     base_refs:
       - "common/mutators/mutator/waypoints/waypointsprites.qc:Draw_WaypointSprite"
       - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_UpdateSprites"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:SpriteFor"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:UpdateSprites"
+      - "game/net/ServerNet.cs:SendWaypoints"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
-    intended_divergence: false
-    divergence_rationale: null
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port resolves the per-audience image (QC model1=enemy / model2=own-team / model3=spectator) on the SERVER, per peer, in SendWaypoints via WaypointSprite.SpriteFor(viewerTeam, viewerIsSpectator), rather than networking the model1/2/3 triple to the client and selecting there. Because the port already serializes the waypoint set per peer, the right image is chosen for each viewer with no wire-format change; the visible result matches QC's Draw_WaypointSprite SPRITERULE_TEAMPLAY image swap. WaypointSprite_UpdateSprites(e,m1,m2,m3) maps to the SpriteName/SpriteNameOwn/SpriteNameSpec triple."
     gaps:
-      - "Port still networks a single SpriteName; the own-team/enemy-team/spectator image triple (model1/2/3) and the client-side SPRITERULE_TEAMPLAY image selection are not modeled."
+      - "RE-AUDIT 2026-06-27 (post-W16/17): DRIFT FIX — the three-image teamplay swap is now IMPLEMENTED + LIVE. WaypointSprite carries SpriteName (model1/enemy) + SpriteNameOwn (model2) + SpriteNameSpec (model3); WaypointSprite.SpriteFor(viewerTeam, viewerIsSpectator) (Waypoints.cs:203) picks the right one per viewer, with null falling back to SpriteName so non-teamplay producers are unaffected. SendWaypoints calls SpriteFor((int)peer.Team, peer.IsObserver) per peer (ServerNet.cs:1229), and WaypointVisible skips a viewer only when the chosen image is empty (QC `if(spriteimage=='') return`). Live producers setting the triple: Assault (Defend/Destroy/Destroy via UpdateSprites), KeyHunt (KeyCarrier<team> / KeyCarrierFriend|Finish / KeyCarrier<team>), TeamKeepaway (Tka<team> / KaBallCarrier / Tka<team>), Onslaught CP (OnsCPAttack / OnsCPDefend / OnsCP)."
+      - "Residual: the QC client-side per-def blink that rides each of the three images (e.g. OnsCPDefend 0.5 / OnsCPAttack 2) IS carried because the chosen sprite NAME resolves the def + its blink client-side; only the wp_extra-driven per-instance blink override (waypoints.registry.defs) remains unmodeled. The mechanism (server-side per-peer resolution vs networking the triple) is a deliberate divergence, not a gap."
     verification:
-      - { kind: code-read, ref: "WaypointNet has one SpriteName; SendWaypoints writes one sprite name + a server-side rule filter only", result: fail }
+      - { kind: code-read, ref: "WaypointSprite.SpriteFor (Waypoints.cs:203-212) + SpriteNameOwn/Spec fields (:197-198) + UpdateSprites(wp,enemy,own,spectator) overload (:451-457); SendWaypoints picks per-peer via SpriteFor((int)peer.Team, peer.IsObserver) (ServerNet.cs:1229); producers Assault.cs:431 + KeyHunt.cs:1366-1368 + TeamKeepaway.cs:776-777 + Onslaught.cs:1117-1119 set the triple", result: pass }
     confidence: high
-    notes: "NO CHANGE vs baseline. Producers that use the TEAMPLAY rule (KeyHunt/TeamKeepaway/Assault) select the per-team sprite name server-side, not a client image triple, so no visible impact yet, but the mechanism is absent."
+    notes: "DRIFT FIX vs prior row (2026-06-27 re-audit): was missing/[]/fail. The per-audience image swap is now fully ported (server-side per-peer SpriteFor resolution — an intended wire-saving divergence) and exercised live by Assault, KeyHunt, TeamKeepaway, and Onslaught CP. logic missing→faithful, presentation missing→faithful, liveness na→live."
 
   - id: waypoints.net.serialize
     name: "Waypoint networking (S2C channel + per-peer filter)"

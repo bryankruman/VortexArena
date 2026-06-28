@@ -5,11 +5,13 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 17
   worst_gaps:
-    - "Beam is STILL not charge-scaled (sqrt(charge) alpha/fade/trail-spacing): a barely-charged shot and a full shot look identical. The team-color tint (vortex_glowcolor) and the cl_particles_oldvortexbeam legacy-beam switch are now BOTH ported (EmitBeam in Vortex.cs), but EffectRequest carries no per-emission alpha so the sqrt(charge) brightness modulation has no port-side hook."
-    - "Charge ring + view-model charge glow still partly blocked: vortex_charge is read only on the listen-server HOST path (NetGame reads LocalServerPlayer's slot state for both the HUD ring AND the new view-model glow); a PURE remote client has no charge stat. The beam team-tint is computed server-side from the firer's charge+team so it broadcasts to all clients, but the per-recipient cl_tracers_teamcolor nuance is collapsed to a single broadcast emit."
-    - "Charge glow targets the FIRST-PERSON view model (the local player's own gun), not the EXTERIOR carrier/player model QC's wr_glow brightens for other players to see. The local player's gun now brightens with charge (host path), but a remote observer still sees the carrier identical regardless of charge."
+    - "Beam is STILL not charge-scaled (sqrt(charge) alpha/fade/trail-spacing): a barely-charged shot and a full shot look identical. The team-color tint (vortex_glowcolor) and the cl_particles_oldvortexbeam legacy-beam switch are BOTH ported (EmitBeam in Vortex.cs), but EffectRequest carries no per-emission alpha so the sqrt(charge) brightness modulation has no port-side hook."
+    - "Cross-client charge delivery is still broken: vortex_charge is read only on the listen-server HOST path (NetGame.UpdateCrosshairWeaponRings + UpdateViewModelTeamGlow read LocalServerPlayer's slot state) for the HUD ring AND the view-model glow. W16 added a server-side producer (ServerNet.ResolveOwnerWeaponRings writes vortex_charge/chargepool into the owner block), but ClientNet.HandleSnapshot has NO matching reader — the value is dead-on-arrival, so a PURE remote client still has no charge ring/glow, and the unread owner-block fields (9 ring floats + PressedKeys short) leave the wire MISALIGNED (a net-entity-state concern, flagged below)."
+    - "Charge glow targets the FIRST-PERSON view model (the local player's own gun), not the EXTERIOR carrier/player model QC's wr_glow brightens for other players to see. The local player's gun brightens with charge (host path), but a remote observer still sees the carrier identical regardless of charge."
   notable_fixes_this_audit:
-    - "FIXED weapon-vortex.fx.charge_glow (missing -> partial / dead -> partial-live): a charge-driven wr_glow port now EXISTS and is LIVE on the host path. NetGame.UpdateViewModelTeamGlow (NetGame.cs:1734-1768, called every frame from EquipNetworkedWeapon NetGame.cs:1687) reads the local player's VortexCharge (max(0.25,charge)), runs a port of vortex_glowcolor (NetGame.VortexGlowColor NetGame.cs:1773 — f*color*0.3 below animlimit 0.5, +f*color*0.7 above) and pushes it to the first-person view model via SetTeamGlow, with the '0 0 0' -> team-color fallback. Baseline recorded this row as fully missing with empty port_refs; that is now stale. Residual gaps: (1) applied to the first-person VIEW model, not the exterior player/carrier model other players see; (2) host-only (no cross-client charge stat). Reclassified from missing/na to partial/partial-live."
+    - "RE-AUDIT 2026-06-27 CLOSED weapon-vortex.charge.rot_decay (missing/na -> faithful/live): the per-frame charge-DECAY loop is now a faithful, live host-path port. Vortex.RotCharge (Vortex.cs:269-285) decays VortexCharge down toward charge_limit (equipped) / charge_rot_unequipped_limit (stowed), dt-scaled by frametime/W_TICSPERFRAME, gated by the rot pause (VortexChargeRotTime, previously a dead write — now consumed); all four rot cvars read with correct Base-0 defaults (Vortex.cs:106-109). Live-called once/frame from GameWorld.cs:2501-2505 (player-postthink, after WeaponThink). Stock-inert (rot_rate 0) but mechanically complete. Baseline 'no decay consumer / rot cvars never read / port_refs []' is now STALE."
+    - "RE-AUDIT 2026-06-27 CLOSED the charge_always gap on weapon-vortex.charge.regen_passive (gap -> []): Vortex.ChargeAlwaysRegen (Vortex.cs:293-297) now re-implements QC's always-on PlayerPreThink regen (full frametime), live-called for the held vortex from GameWorld.cs:2490-2495 BEFORE WeaponThink, matching QC order. WrThink's `if (!Cvars.ChargeAlways)` gate hands off cleanly. Stock charge_always 0 so inert, but the previously-flagged 'with charge_always 1 the port never charges' divergence is closed."
+    - "RE-AUDIT 2026-06-27 confirmed-not-fixed weapon-vortex.hud.charge_ring stays partial-live: W16's ServerNet ResolveOwnerWeaponRings producer (ServerNet.cs:2773-2780) is DEAD-ON-ARRIVAL — ClientNet.HandleSnapshot never reads the 9 ring floats (nor the W16 PressedKeys short), so the snapshot owner block is wire-misaligned and the pure-client charge ring still never draws. Recorded as a residual gap on the row; the wire-alignment bug itself belongs to net-entity-state. fx.charge_glow line refs refreshed (NetGame.cs:1815/1857/1739)."
 features:
   - id: weapon-vortex.charge.regen_passive
     name: "Passive charge regen toward charge_limit"
@@ -20,6 +22,8 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:Charge"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:WrThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:ChargeAlwaysRegen"
+      - "src/XonoticGodot.Server/GameWorld.cs:2490-2495"
     constants:
       - { name: "g_balance_vortex_charge_rate", base: "0.6", port: "0.6", match: true }
       - { name: "g_balance_vortex_charge_limit", base: "1", port: "1", match: true }
@@ -34,14 +38,13 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "charge_always non-stock divergence (latent, stock-OFF): QC's charge_always path regens charge EVERY frame in PlayerPreThink (server/client.qc:2464-2465, runs for every player slot regardless of which weapon is held). The port only handles charge_always as a GATE in WrThink (Vortex.cs:127 `if (!Cvars.ChargeAlways)` skips the per-tick regen) and never re-implements the always-on PlayerPreThink regen — so with g_balance_vortex_charge_always 1 (non-stock) the port would never charge at all. No observable effect at stock balance (charge_always 0)."
+    gaps: []
     verification:
       - { kind: codetrace, ref: "WrThink(Primary) calls Charge() each tick; driver runs it every tick", result: pass }
-      - { kind: value, ref: "bal-wep-xonotic.cfg:340 vs Vortex.cs:93", result: pass }
-      - { kind: codetrace, ref: "charge_always always-on regen (client.qc:2464-2465) NOT ported — only the WrThink gate (Vortex.cs:127) exists; no PlayerPreThink charge feeder", result: fail }
+      - { kind: value, ref: "bal-wep-xonotic.cfg:340 vs Vortex.cs:92-103 Configure()", result: pass }
+      - { kind: codetrace, ref: "RE-AUDIT: charge_always now PORTED + LIVE. Vortex.ChargeAlwaysRegen (Vortex.cs:293-297) re-implements the always-on PlayerPreThink regen (full frametime, gated `if (!ChargeAlways) return`); GameWorld.cs:2490-2495 calls it once/frame BEFORE WeaponThink for the HELD vortex (vortexEquipped), matching QC's pre-W_WeaponFrame order. WrThink's `if (!Cvars.ChargeAlways)` gate (Vortex.cs:140) hands off cleanly. Previous baseline 'no PlayerPreThink charge feeder' is now STALE.", result: pass }
     confidence: high
-    notes: "Driver runs WrThink once/tick at full frametime; QC runs twice/frame at frametime/2 — same per-second rate. The toward-charge_limit per-tick regen is faithful; the only divergence is the non-stock charge_always always-on regen, which is unported (gap above)."
+    notes: "RE-AUDIT 2026-06-27: the charge_always always-on regen (previously the one open gap on this row) is now ported AND live on the host path (Vortex.ChargeAlwaysRegen ← GameWorld player-postthink loop). Per-tick toward-charge_limit regen + the charge_always always-on regen both faithful. Driver runs WrThink once/tick at full frametime; QC runs twice/frame at frametime/2 — same per-second rate. Stock charge_always 0, so the new path is inert at stock balance but the mechanic is now closed for non-stock balances."
 
   - id: weapon-vortex.charge.regen_velocity
     name: "Velocity charging (charge while moving fast)"
@@ -266,8 +269,8 @@ features:
       - "Glow is applied to the FIRST-PERSON VIEW model (the local player's own gun, via ViewModel.SetTeamGlow), NOT the exterior player/carrier model that QC's wr_glow→weaponentity_glowmod brightens for OTHER players. So the local player's gun now brightens with charge, but a remote observer still sees the carrier identical regardless of charge."
       - "Host-only: VortexCharge is read off LocalServerPlayer's slot state (NetGame.UpdateViewModelTeamGlow), so on a pure remote client there is no charge value and the glow stays at the base team color. Same cross-client-charge-STAT root cause as the charge ring and beam tint."
     verification:
-      - { kind: codetrace, ref: "NetGame.cs:1757-1764 — for net=='vortex'/'vaporizer'/contains 'nex' && LocalServerPlayer alive, reads charge=max(0.25, WeaponState(0).VortexCharge) and computes glow=VortexGlowColor(teamColor,charge); '0 0 0' falls back to teamColor. VortexGlowColor (NetGame.cs:1773-1784) ports vortex_glowcolor: f=min(1,charge/0.5)*0.3 then +(charge-0.5)/0.5*0.7 above animlimit. Pushed via _viewModel.SetTeamGlow.", result: pass }
-      - { kind: codetrace, ref: "Live path: EquipNetworkedWeapon (NetGame.cs:1669) calls UpdateViewModelTeamGlow() (NetGame.cs:1687) on the per-frame weapon-model update, host path. Confirmed the ONLY vortex-charge-driven glow feeder in the codebase (CsqcModelEffects.ApplyForcedGlowmod is generic role/powerup/colormap glow, not charge).", result: pass }
+      - { kind: codetrace, ref: "RE-AUDIT: NetGame.cs:1815-1822 — for net=='vortex'/'vaporizer'/contains 'nex' && LocalServerPlayer alive+!observer, reads charge=max(0.25, WeaponState(0).VortexCharge) and computes glow=VortexGlowColor(teamColor,charge); near-zero result falls back to teamColor. VortexGlowColor (NetGame.cs:1857-1868) ports vortex_glowcolor: f=min(1,charge/0.5)*0.3 then +(charge-0.5)/0.5*0.7 above animlimit. Pushed via _viewModel.SetTeamGlow (NetGame.cs:1825).", result: pass }
+      - { kind: codetrace, ref: "Live path: UpdateViewModelTeamGlow() called at NetGame.cs:1739 on the per-frame weapon-model update (host path). Confirmed the ONLY vortex-charge-driven glow feeder in the codebase (CsqcModelEffects.ApplyForcedGlowmod is generic role/powerup/colormap glow, not charge).", result: pass }
       - { kind: codetrace, ref: "Glow targets _viewModel (first-person view model), not the exterior CsqcModel player model; remote observers' carrier glow is unfed by charge. VortexCharge has no cross-client snapshot/STAT (host-only).", result: fail }
     confidence: high
     notes: "FIXED THIS AUDIT (missing/na -> partial/partial-live). The baseline's empty port_refs + 'no wr_glow override anywhere' is now stale: NetGame.UpdateViewModelTeamGlow is a faithful, live (host-path) port of wr_glow/vortex_glowcolor driving the FIRST-PERSON gun glow with charge. Values (animlimit 0.5, 0.3/0.7 blend, max(0.25,charge) floor) are bit-faithful. Downgraded only to partial (not faithful) because QC's wr_glow brightens the EXTERIOR carrier model seen by others, whereas the port glows the local view model; liveness partial because host-only (no cross-client charge STAT)."
@@ -320,14 +323,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Host-only: the charge stat is fed from LocalServerPlayer's slot state (NetGame.UpdateCrosshairWeaponRings), so the ring fills on a listen-server / single-player host but a PURE remote client has no charge data and still sees no ring. QC networks vortex_charge as a STAT to every client; the port still has no cross-client charge stat (the wepent-props follow-up)."
+      - "Host-only delivery: the charge ring is fed ONLY from LocalServerPlayer's slot state (NetGame.UpdateCrosshairWeaponRings, NetGame.cs:3303-3306). So the ring fills on a listen-server / single-player host, but a PURE remote client still sees no ring. NetGame's pure-client branch just hides every ring (NetGame.cs:3290-3295 sentinels); it does NOT consume any networked charge value."
+      - "CROSS-CLIENT PRODUCER IS DEAD-ON-ARRIVAL (W16 regression risk): ServerNet now WRITES vortex_charge/chargepool into the snapshot owner block (ServerNet.WriteOwnerState/ResolveOwnerWeaponRings, ServerNet.cs:2773-2780, the [W-wepent-charges] block) — but ClientNet.HandleSnapshot has NO matching reader (the 9 ring floats are never read; verified ClientNet.cs:986-1037 reads owner state -> accuracy -> straight to movevars). So the produced charge value is discarded, the pure-client ring still never draws, AND the unread 9 ring floats (+ the also-unread PressedKeys short, ServerNet.cs:2728) desync the owner-block wire offset. This is a net-protocol concern owned by net-entity-state, but it means the cross-client charge ring is still NOT delivered."
     verification:
-      - { kind: codetrace, ref: "NetGame.cs:3153-3154 WRITES x.ChargeFraction = st.VortexCharge and x.ChargePool = st.VortexChargePoolAmmo for the active vortex slot (net is 'vortex'/'vaporizer'/contains 'nex'); reset to -1 sentinels otherwise (NetGame.cs:3140,3158-3159). The previously-dead feeder has a live writer.", result: pass }
-      - { kind: codetrace, ref: "Live path: NetGame.cs:2567 calls UpdateCrosshairWeaponRings() every frame inside the local-player HUD update. Off LocalServerPlayer (null on a pure client), so host-only.", result: pass }
-      - { kind: codetrace, ref: "Render: CrosshairPanel.DrawStatRing (CrosshairPanel.cs:847) draws when crosshair_ring_vortex!=0 && vortexLike && charge>0; ChargeRingValue (CrosshairPanel.cs:961) returns Clamp(ChargeFraction). WeaponHud.IsChargeWeapon resolves the nested Cvars.Charge (true stock), so the ring is enabled. ChargePool drives the inner ring.", result: pass }
-      - { kind: codetrace, ref: "VortexCharge still written only by server gameplay (Vortex.cs); no cross-client snapshot/STAT carries it — so a non-host remote client still has no charge value.", result: fail }
+      - { kind: codetrace, ref: "RE-AUDIT: NetGame.UpdateCrosshairWeaponRings (NetGame.cs:3283) WRITES x.ChargeFraction=st.VortexCharge + x.ChargePool=st.VortexChargePoolAmmo for the active vortex slot (NetGame.cs:3303-3306); -1 sentinels otherwise (NetGame.cs:3292,3310-3311). Source is LocalServerPlayer (NetGame.cs:3286) -> host-only. Live: called unconditionally each frame at NetGame.cs:2674.", result: pass }
+      - { kind: codetrace, ref: "Render: CrosshairPanel.DrawStatRing draws when crosshair_ring_vortex!=0 && vortexLike && charge>0; ChargeRingValue returns Clamp(ChargeFraction); WeaponHud.IsChargeWeapon resolves Cvars.Charge (true stock). Inner ring from ChargePool.", result: pass }
+      - { kind: codetrace, ref: "RE-AUDIT (cross-client): ServerNet.cs:2773-2780 writes wsCharge/wsChargePool (resolved off the authoritative player) into the owner block, BUT ClientNet.HandleSnapshot (ClientNet.cs:986-1037) never reads them — accuracy block (1015-1029) is followed directly by movevars (1037), no ring-float reads, no PressedKeys read. The networked charge is discarded; a pure remote client still has no charge value AND the owner block is wire-misaligned by the unread fields.", result: fail }
     confidence: high
-    notes: "FIXED THIS AUDIT (stub/dead -> faithful/partial-live) by Wave-5 NetGame.UpdateCrosshairWeaponRings. The baseline's grep-conclusive 'zero ChargeFraction/ChargePool writers' is no longer true — NetGame now feeds both off the host-side LocalServerPlayer slot every frame. With stock cvars charge sits at 0.5 -> 1.0 so the ring genuinely fills on the host. Liveness downgraded from full `live` to `partial` only because it remains host-only (no cross-client charge STAT yet). The full ring rendering logic (DrawStatRing, ChargeFraction/-1 default, moving-avg fallback, inner chargepool ring) is present and correct."
+    notes: "RE-AUDIT 2026-06-27: status UNCHANGED (faithful render, partial liveness). The host-path ring (LocalServerPlayer feeder + DrawStatRing) is faithful and live, so a listen-server / single-player host sees the ring fill (charge 0.5->1.0 at stock). Liveness stays `partial` because cross-client delivery is still broken: W16 added a server-side producer (ServerNet ResolveOwnerWeaponRings) but the matching ClientNet consumer was never wired, so the value is dead-on-arrival on a pure remote client — and the unread owner-block fields (9 ring floats + PressedKeys) are a wire-alignment bug tracked under net-entity-state. Net of all this: a pure remote client STILL sees no Vortex charge ring."
 
   - id: weapon-vortex.zoom.secondary_scope
     name: "Secondary = zoom scope (reticle_nex) at stock balance"
@@ -488,25 +491,28 @@ features:
     base_refs:
       - "server/client.qc:2470-2487 (PlayerPostThink charge-rot loop)"
       - "common/weapons/weapon/vortex.qc:wr_think (vortex_charge_rottime push via charge_rot_pause)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:RotCharge"
+      - "src/XonoticGodot.Server/GameWorld.cs:2501-2505"
     constants:
-      - { name: "g_balance_vortex_charge_rot_rate", base: "0", port: "not read", match: false }
+      - { name: "g_balance_vortex_charge_rot_rate", base: "0", port: "0 (read; Cvars.ChargeRotRate)", match: true }
       - { name: "g_balance_vortex_charge_rot_pause", base: "0", port: "0 (read; sets VortexChargeRotTime)", match: true }
-      - { name: "g_balance_vortex_charge_rot_unequipped_rate", base: "0", port: "not read", match: false }
-      - { name: "g_balance_vortex_charge_rot_unequipped_limit", base: "0", port: "not read", match: false }
+      - { name: "g_balance_vortex_charge_rot_unequipped_rate", base: "0", port: "0 (read; Cvars.ChargeRotUnequippedRate)", match: true }
+      - { name: "g_balance_vortex_charge_rot_unequipped_limit", base: "0", port: "0 (read; Cvars.ChargeRotUnequippedLimit)", match: true }
+      - { name: "rot decay dt scaling", base: "frametime / W_TICSPERFRAME (=frametime/2)", port: "frametime / WTicsPerFrame (2f)", match: true }
     status:
-      logic: missing
-      values: missing
-      timing: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
       presentation: na
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "The per-frame charge-decay loop (server/client.qc:2470-2487) is UNPORTED. QC drops vortex_charge back toward charge_limit (or the unequipped limit when the vortex is not the held weapon) at charge_rot_rate / charge_rot_unequipped_rate per frame, but only after vortex_charge_rottime (set in wr_think to time + charge_rot_pause). The port stores VortexChargeRotTime (EntityWeaponState.cs:312) and sets it during charging (Vortex.cs:176), but there is NO decay consumer and the rot_rate / unequipped cvars are never even read. So overcharge (e.g. from velocity charging above charge_limit) would never decay back in the port."
+    gaps: []
     verification:
-      - { kind: codetrace, ref: "grep rot_rate/charge_rot_unequipped over src/+game/ — only ChargeRotPause + VortexChargeRotTime exist; no decay loop, no rot_rate read", result: fail }
-      - { kind: value, ref: "all rot cvars 0 at stock (bal-wep-xonotic.cfg:341-344) — no observable effect at stock balance", result: pass }
+      - { kind: codetrace, ref: "RE-AUDIT: the charge-rot loop is now PORTED. Vortex.RotCharge (Vortex.cs:269-285) decays VortexCharge DOWN toward charge_limit (equipped) or charge_rot_unequipped_limit (unequipped, when ChargeRotUnequippedRate!=0 && !equipped), gated on chargerate!=0 && VortexCharge>chargelimit && VortexChargeRotTime<time, scaled by frametime/WTicsPerFrame. All four rot cvars are now read in Configure() (Vortex.cs:106-109). The previous baseline 'no decay consumer, rot cvars never read' is STALE.", result: pass }
+      - { kind: codetrace, ref: "Live path: GameWorld.cs:2501-2505 calls vortexWep.RotCharge(p, slot0, vortexEquipped, FrameTime) once/frame in the player-postthink loop, AFTER WeaponThink (matching QC's rot-after-W_WeaponFrame order); equipped resolved from p.ActiveWeaponId==vortex RegistryId. VortexChargeRotTime now has a live consumer.", result: pass }
+      - { kind: value, ref: "all rot cvars 0 at stock (bal-wep-xonotic.cfg:341-344) — the chargerate!=0 gate short-circuits, so inert at stock balance", result: pass }
     confidence: high
-    notes: "Newly mapped (registry coverage gap). Entirely stock-disabled (charge_rot_rate 0, unequipped_rate 0), so no observable defect at stock balance — but a real Base mechanic with zero port hook. Distinct Base symbol from regen_passive (this is DECAY toward the limit in PlayerPostThink, vs regen UP toward the limit in wr_think). The only related port residue is the dead VortexChargeRotTime write."
+    notes: "RE-AUDIT 2026-06-27 (missing -> faithful/live): the per-frame charge-DECAY loop is now a faithful, live host-path port (Vortex.RotCharge ← GameWorld player-postthink). Decays toward charge_limit equipped / charge_rot_unequipped_limit stowed, dt-scaled by frametime/W_TICSPERFRAME, gated by the rot pause (VortexChargeRotTime — previously a dead write, now consumed). All four rot cvars read with the correct Base-0 defaults. Entirely stock-disabled (rot_rate 0, unequipped_rate 0) so no observable change at stock balance, but the mechanic is now closed for non-stock balances. Distinct Base symbol from regen_passive (DECAY toward the limit in PlayerPostThink vs regen UP in wr_think)."

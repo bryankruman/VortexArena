@@ -2,41 +2,64 @@ unit: assault
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
-# Re-audited 2026-06-27 (drift check): ONE real drift since the 2026-06-25 audit — the PlayHitsound hook
-# (assault.notify.play_hitsound) graduated from DEAD to LIVE. MutatorHooks.FirePlayHitsound (now
-# MutatorHooks.cs:635) is NOW called from DamageSystem.Apply (DamageSystem.cs:352): for every non-player
-# victim hit by a player attacker with damage actually removed (dh+da > 0), `if(!IsPlayer(targ))
-# MutatorHooks.FirePlayHitsound(targ, attackerSave)` runs — which dispatches the registered Assault
-# .OnPlayHitsound handler (returns true for a func_assault_destructible). Apply calls EventDamage (line 307,
-# routes the wall through GtEventDamage->DamageDestructible) THEN continues to the hitsound block (342-353),
-# so a shelled wall reaches the firing site. liveness dead->live (FIX). The forced-hitsound EFFECT is also
-# achieved: the HITSOUND_DAMAGE_DEALT_TOTAL accrual (line 353) runs for any non-self victim regardless of the
-# hook's return, so the wall produces a hitsound — audio stub->faithful (FIX). The hook's return value is
-# deliberately discarded (the stat path is already permissive), but the handler is now reachable on the live
-# damage path. This is the recurring "registered handler, no live caller" port failure mode finally closed.
-# All other 18 rows: no status/liveness drift this audit. Bot Assault role (assault.bot.objective_role) stays
-# timing-FAITHFUL (RoleAssault now BotObjectiveRoles.cs:731, was :662): 120s AssaultRoleTimeout (line 748,
-# reset 749-754), 2s AssaultAttackTime window (757, set line 828), PVS-best-waypoint shell 500..1500 step 500
-# (line 796), RatingGenerator 20000 (line 29), routerating 4000 (line 818). Waypoint-sprite presentation stays
-# MISSING (no client render/net path). Base rev moved (v0.8.6-1779-g863cd3e84 -> local f6b1980) but the
-# assault Base source is functionally identical to the recorded spec.
-# Port line numbers refreshed — GameWorld.cs grew further (AssaultTurretRoundstart 4546->4665,
-# AssaultSwapSpawnTeams 4580->4699, Assault Activate arm 2816-2826->2816-2826~, OnSecondRoundRestart
-# 2839->2919, GameStopped 2090->2159, DriveGametypeFrame 3256->3356, WireObjectiveSpawns 3013->3111,
-# AssaultTurretRoundstart initial call 727->757). RoleAssault BotObjectiveRoles.cs:662->731.
-# Two unmapped hooks remain with no port equivalent (OnEntityPreSpawn delete info_player_team1-4 — the hook
-# chain now exists, FireOnEntityPreSpawn GameWorld.cs:4280, but Assault registers no handler; VehicleInit
-# nextthink+0.5) — still new_unmapped.
+# OPUS re-audit 2026-06-27 (post Wave 16/17, commit 2f0bfdb): TWO real drifts, both UNDER-stated by the prior
+# audit — the prior pass grepped `src/XonoticGodot.Net` (which holds NO net code; the net layer lives in
+# `game/net/`) and so wrongly recorded the Assault waypoint sprites + the round freeze as missing/non-enforced.
+# Re-read the CURRENT port end-to-end; both gaps actually CLOSED in Wave 17 ("presentation consumers", 2f0bfdb):
+#
+# DRIFT 1 (FIX) — Objective waypoint sprite presentation: missing -> faithful, and the activate/heal sprite rows
+#   partial -> faithful. There IS now a full client render + per-peer networking path:
+#     - ServerNet.SendWaypoints (game/net/ServerNet.cs:1192, CALLED live at game/net/ServerNet.cs:493) iterates
+#       WaypointSprites.Active (the same manager Assault.SpawnObjectiveSprite writes into), gates per-peer via
+#       WaypointVisible (game/net/ServerNet.cs:1294 — honors VisibleForPlayer + SPRITERULE_TEAMPLAY), and writes
+#       per-viewer SpriteFor (Defend/Destroy image, line 1229), the RADARICON_OBJECTIVE byte (1233), the orange
+#       color, AND wp.Health (the objective HEALTH BAR, line 1240) + fade/helpme/maxdist.
+#     - NetProtocol v9 added NetControl.Waypoints; ClientNet.HandleWaypoints (game/net/ClientNet.cs:542) decodes
+#       into ClientNet.Waypoints (line 695).
+#     - WaypointSpriteLayer (game/client/WaypointSpriteLayer.cs) draws the floating marker, the edge arrow, AND
+#       the health bar (its header explicitly lists "Assault objectives" health bar). Wired in NetGame.cs:1618
+#       (constructed, camera set) with Source = () => _client.Waypoints (NetGame.cs:1628).
+#   So the attacker now gets an on-screen objective marker (Destroy/Defend), a health/progress bar, and a radar
+#   icon. Drift attributed to Wave 17 (2f0bfdb added ServerNet/WaypointSpriteLayer). presentation: code_read at
+#   BOTH ends confirms the full pipeline is wired + live; the visible pixels were not runtime-OBSERVED this audit
+#   (no game launched), so verification stays code_read, confidence high on existence (a visual check would be
+#   the only upgrade left).
+#
+# DRIFT 2 (FIX) — 5s AS_ROUND_DELAY inter-round FREEZE now enforced: the prior audit's residual gap on
+#   assault.win.attacker_round + assault.round.second_round ("GameStopped = Intermission.Running||MatchEnded
+#   ignores SecondRoundPending, so players keep moving during the window") is STALE. GameStopped is now
+#   `Intermission.Running || MatchEnded || IsAssaultRoundFreeze` (GameWorld.cs:2159) and IsAssaultRoundFreeze
+#   (GameWorld.cs:2170) = `GameType is Assault { SecondRoundPending: true }`. So movement/firing/regen/respawns
+#   all halt for the 5s window exactly as QC's game_stopped=true. Added in Wave 17 (2f0bfdb). The only residual
+#   round-flow gap left is the cosmetic bprint("Starting second round...") — which the port DOES emit via
+#   aslt.BPrint (GameWorld.cs:2970 -> Commands.ChatBroadcast) — so even THAT is closed; the round half is now
+#   fully faithful + live with no behavioral residual.
+#
+# No-drift rows (re-verified by reading the current code): mode.registration, objective.graph_spawn,
+#   inactive_sentinel (1000f exact), decrease_and_score, advance_chain, win.attacker_round (logic),
+#   round.second_round (logic), win.defender_timelimit, spawns.attacker_defender (AssaultSwapSpawnTeams
+#   GameWorld.cs:4763), turret.roundstart_teamswap (AssaultTurretRoundstart GameWorld.cs:4729),
+#   spawns.objective_evalfunc, config.warmup_incompatible (GameWorld.cs:2945-2955), notify.role_and_destroyed,
+#   notify.play_hitsound (still live), mapobject.assault_wall (timing partial: per-frame vs 0.2s, parity-neutral).
+# Bot Assault role (assault.bot.objective_role) stays timing-FAITHFUL: RoleAssault now BotObjectiveRoles.cs:774
+#   (was :731), 120s AssaultRoleTimeout (line 791), 2s AssaultAttackTime window (set line 871), shell 500..1500.
+# Port line numbers refreshed: RoleAssault 731->774; MutatorHooks.FirePlayHitsound 635->667; DamageSystem call
+#   stays :352; GameWorld GameStopped 2159 (now includes IsAssaultRoundFreeze @2170); DriveGametypeFrame Assault
+#   arm 3458; AssaultTurretRoundstart 4729; AssaultSwapSpawnTeams 4763; OnSecondRoundRestart 2971; Assault
+#   Activate arm 2936; ReadLevelCvars override 2945-2955; WireObjectiveSpawns Assault arm 3223.
+# Two unmapped hooks NOW MAPPED since the prior audit: OnEntityPreSpawn (Assault.OnEntityPreSpawn @Assault.cs:733
+#   deletes info_player_team1-4, registered Assault.cs:637) and VehicleInit (Assault.OnVehicleInit @Assault.cs:745
+#   nextthink+0.5, registered Assault.cs:642). The prior "still new_unmapped" note is stale.
 summary:
   feature_count: 19
   worst_gaps:
-    - "Wave 6a closed most of the round-flow + UX-logic gaps; all still LIVE this re-audit (line numbers drifted, symbols intact). Spawn-point team swap (AssaultSwapSpawnTeams, GameWorld.cs:4699), roundstart turret team-swap + unteamed-turret seeding (AssaultTurretRoundstart, GameWorld.cs:4665), the objective waypoint-sprite server state (SpawnObjectiveSprite + WaypointSprites.Think), the destructible heal path (HealDestructible + GtEventHeal), the objective-aware spawn evalfunc (ShouldRejectSpawnSpot wired in SpawnSystem.ScoreSpot), the warmup-incompatible ReadLevelCvars override (g_warmup=0 + sv_ready_restart_after_countdown=0, GameWorld.cs:2896-2899) and the timelimit=20 mapinfo default (GameWorld.cs:2905) are all LIVE."
-    - "FIX (this audit): PlayHitsound (assault.notify.play_hitsound) is now LIVE. MutatorHooks.FirePlayHitsound (MutatorHooks.cs:635) is called from DamageSystem.Apply (DamageSystem.cs:352) for every non-player victim hit by a player attacker (after EventDamage routes the wall through DamageDestructible). The registered Assault.OnPlayHitsound handler is now reached on the live damage path. liveness dead->live; audio stub->faithful (the wall produces a hitsound via the live HITSOUND_DAMAGE_DEALT_TOTAL accrual that runs for any non-self victim)."
-    - "Bot Assault role stays timing-FAITHFUL (no drift this audit). RoleAssault (now BotObjectiveRoles.cs:731) has the 120s havocbot_role_timeout, the per-target PVS-best-waypoint pick (radius shell 500->1500, lowest VisitCount, routerating 4000), and the havocbot_attack_time 2s commitment window. Radii (650/3000), ast ratingscale (20000), items (30000/10000) unchanged."
-    - "Residual round machinery (UNCHANGED): (1) the 5s AS_ROUND_DELAY freeze still does NOT actually freeze the game — GameStopped (GameWorld.cs:2159 = Intermission.Running||MatchEnded) ignores SecondRoundPending, so players keep moving/firing/respawning during the inter-round window (QC sets game_stopped=true). DriveFrame still correctly awards no win while pending. (2) bprint('Starting second round...') chat line is not emitted (cosmetic; the centerprint IS sent)."
-    - "Presentation: the waypoint sprites + health bars are spawned/updated/ticked SERVER-SIDE (WaypointSprites.Active exists, Waypoints.cs:244) but there is NO client render/networking path yet — nothing in src/XonoticGodot.Net reads WaypointSprites, so no on-screen objective marker, health bar, or radar icon reaches the player. The destructible-heal sprite update is likewise server-only. The objective-marker LOGIC is faithful+live; the visible presentation is still absent."
-    - "Bot fidelity: RoleAssault (BotObjectiveRoles.cs:731) is timing-faithful — active-objective destructible filter, Base radii/ratingscale, the 120s havocbot_role_timeout, the PVS-best-waypoint pick around each target (radius shell 500->1500), and the havocbot_attack_time 2s commitment window are all present."
-    - "Unmapped Base hooks (registry coverage gaps): MUTATOR_HOOKFUNCTION(as, OnEntityPreSpawn) deletes info_player_team1-4 (foreign team spawns) — the OnEntityPreSpawn hook chain now exists (MutatorHooks.cs:749, used by NixMutator) but Assault registers no handler on it; MUTATOR_HOOKFUNCTION(as, VehicleInit) sets veh.nextthink=time+0.5. Neither has a port equivalent. (PlayHitsound is no longer here — it graduated to a feature row.)"
+    - "FIX (Wave 17, 2f0bfdb): the objective WAYPOINT SPRITES are now fully presented to the player. The prior audit recorded presentation:missing because it grepped src/XonoticGodot.Net (empty) — the net layer is in game/net/. The real pipeline: Assault.SpawnObjectiveSprite -> WaypointSprites.Active -> ServerNet.SendWaypoints (game/net/ServerNet.cs:1192, called live @493) serializes per-peer SpriteFor (Defend/Destroy) + RADARICON_OBJECTIVE + orange color + wp.Health (the health BAR) -> ClientNet.HandleWaypoints (game/net/ClientNet.cs:542) -> WaypointSpriteLayer (game/client/WaypointSpriteLayer.cs, drawn; health bar listed in its header) wired in NetGame.cs:1618/1628. The attacker now sees the objective marker, health/progress bar, and radar icon. presentation missing->faithful (waypoint_sprite); activate + destructible_heal sprite rows partial->faithful."
+    - "FIX (Wave 17, 2f0bfdb): the 5s AS_ROUND_DELAY inter-round FREEZE is now enforced. GameStopped (GameWorld.cs:2159) = Intermission.Running || MatchEnded || IsAssaultRoundFreeze, and IsAssaultRoundFreeze (GameWorld.cs:2170) = Assault{SecondRoundPending:true} — so movement/firing/regen/respawns halt for the window exactly as QC's game_stopped=true. The prior 'does NOT actually freeze' residual on win.attacker_round + round.second_round is CLOSED. bprint('Starting second round...') IS emitted (Assault.cs:856 via aslt.BPrint=Commands.ChatBroadcast, GameWorld.cs:2970), so the round half has NO behavioral residual left."
+    - "Round-flow logic all LIVE (no drift): spawn-point team swap (AssaultSwapSpawnTeams GameWorld.cs:4763), roundstart turret team-swap + unteamed seeding (AssaultTurretRoundstart GameWorld.cs:4729), destructible heal (HealDestructible + GtEventHeal), objective-aware spawn evalfunc (ShouldRejectSpawnSpot in SpawnSystem.ScoreSpot), warmup-incompatible ReadLevelCvars override (g_warmup=0 + sv_ready_restart_after_countdown=0, GameWorld.cs:2945-2949) + timelimit=20 mapinfo default (GameWorld.cs:2954)."
+    - "PlayHitsound (assault.notify.play_hitsound) stays LIVE (no drift): MutatorHooks.FirePlayHitsound (MutatorHooks.cs:667, was 635) called from DamageSystem.Apply (DamageSystem.cs:352) for every non-player victim hit by a player attacker; the registered Assault.OnPlayHitsound handler is reached on the live damage path. liveness live, audio faithful."
+    - "Bot Assault role stays timing-FAITHFUL (no drift). RoleAssault (now BotObjectiveRoles.cs:774, was :731): 120s AssaultRoleTimeout (line 791), 2s AssaultAttackTime window (set line 871), PVS-best-waypoint shell 500->1500, RatingGenerator 20000, radii 650/3000, items 30000/10000."
+    - "Two previously-unmapped Base hooks NOW MAPPED (since the prior audit): OnEntityPreSpawn (Assault.OnEntityPreSpawn @Assault.cs:733 deletes info_player_team1-4, registered :637) and VehicleInit (Assault.OnVehicleInit @Assault.cs:745 nextthink+0.5, registered :642). Prior 'still new_unmapped' note is stale."
+    - "Residual (cosmetic only): mapobject.assault_wall re-evaluates per-frame vs QC's 0.2s nextthink (parity-neutral, transition-gated); QC's func_breakable_colormod color tint on a healed wall is not modeled. No behavioral gaps remain."
 features:
   - id: assault.mode.registration
     name: "Assault gametype registration + scoring layout (always red vs blue)"
@@ -137,19 +160,18 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "ActivateObjective also spawns the objective's waypoint sprite (SpawnObjectiveSprite → WP_AssaultDestroy + health bar) on the server, matching QC's WaypointSprite_SpawnFixed. But there is no client render/networking path, so the sprite is not visible on-screen (see assault.objective.waypoint_sprite). Logic/state is faithful; the visible marker is still absent."
+    gaps: []
     verification:
       - { kind: test, ref: "AssaultSpawnTests.cs:PostSpawn_ArmsTheFirstObjective", result: pass }
       - { kind: test, ref: "AssaultSpawnTests.cs:WinPath_DestroyingTheChain_EndsWithAttackersWinning", result: pass }
-      - { kind: code_read, ref: "Assault.cs:381 ActivateObjective calls SpawnObjectiveSprite per armed destructible; no client renderer reads WaypointSprites.Active (Net grep empty)", result: pass }
+      - { kind: code_read, ref: "Assault.cs:385 ActivateObjective calls SpawnObjectiveSprite per armed destructible; the sprite now reaches the client via ServerNet.SendWaypoints (game/net/ServerNet.cs:1192,called @493) -> ClientNet (game/net/ClientNet.cs:542) -> WaypointSpriteLayer (game/client/WaypointSpriteLayer.cs)", result: pass }
     confidence: high
-    notes: "Re-arms d.Spent=false and destructible.Active=true for every decreaser/destructible aimed at the objective, and spawns the objective marker server-side. Presentation stays partial: the sprite exists server-side but is never rendered client-side."
+    notes: "FIX (re-audit, Wave 17): re-arms d.Spent=false and destructible.Active=true for every decreaser/destructible aimed at the objective, and spawns the objective marker. The marker is now RENDERED on the client (full net + draw path, see assault.objective.waypoint_sprite), so presentation partial->faithful. Visible pixels confirmed by code-read at both ends (not yet runtime-observed)."
 
   - id: assault.objective.decrease_and_score
     name: "Shoot destructible -> decreaser fires -> strip objective health + award score"
@@ -218,11 +240,11 @@ features:
       - "src/XonoticGodot.Server/GameWorld.cs:IsMatchOver (Assault arm)"
       - "src/XonoticGodot.Server/GameWorld.cs:TryGetWinner (Assault arm)"
       - "src/XonoticGodot.Server/GameWorld.cs:Boot (TargetUtilities.IsCampaign assignment)"
-      - "src/XonoticGodot.Server/GameWorld.cs:GameStopped (GameWorld.cs:2159 — does NOT include SecondRoundPending)"
+      - "src/XonoticGodot.Server/GameWorld.cs:GameStopped (GameWorld.cs:2159 = Intermission.Running || MatchEnded || IsAssaultRoundFreeze) + IsAssaultRoundFreeze (GameWorld.cs:2170 = Assault{SecondRoundPending:true})"
     constants:
       - { name: "winning_team_score_sentinel", base: "ST_ASSAULT_OBJECTIVES set to 666", port: "SetTeamScore(slot, 666)", match: true }
       - { name: "campaign_single_round_end", base: "ent.cnt == 1 || autocvar_g_campaign => WINNING_YES", port: "isFinalRound || Round>=1 || (IsCampaign?.Invoke() ?? false)", match: true }
-      - { name: "AS_ROUND_DELAY", base: "5 (inter-round freeze before round 2)", port: "RoundDelay = 5f (SecondRoundPending due-time)", match: true }
+      - { name: "AS_ROUND_DELAY", base: "5 (inter-round freeze before round 2)", port: "RoundDelay = 5f (SecondRoundPending due-time); freeze now enforced via GameStopped", match: true }
     status:
       logic: faithful
       values: faithful
@@ -232,14 +254,14 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Residual (cosmetic-flow): the 5s AS_ROUND_DELAY between a round-1 attacker win and the round-2 swap is modeled as SecondRoundPending/_secondRoundDueAt but does NOT actually freeze the game — GameStopped (GameWorld.cs:2159 = Intermission.Running||MatchEnded) ignores SecondRoundPending, so players keep moving/firing during the window (QC sets game_stopped=true). DriveFrame still correctly returns false (awards no win) while pending, so the match outcome is unaffected; only the visible freeze is missing."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "Assault.cs:717 campaign = TargetUtilities.IsCampaign?.Invoke(); IsCampaign assigned in Boot (=> Cvars.Bool('g_campaign')). Campaign single-round end terminates the match.", result: pass }
-      - { kind: code_read, ref: "Assault.cs:719 if(isFinalRound||Round>=1||campaign) MatchEnded=true; else (round-1 non-campaign) SecondRoundPending=true + _secondRoundDueAt=now+RoundDelay. DriveFrame fires StartSecondRound when due — LIVE via DriveGametypeFrame.", result: pass }
+      - { kind: code_read, ref: "Assault.cs:797 campaign = TargetUtilities.IsCampaign?.Invoke(); IsCampaign assigned in Boot (=> Cvars.Bool('g_campaign')). Campaign single-round end terminates the match.", result: pass }
+      - { kind: code_read, ref: "Assault.cs:799 if(isFinalRound||Round>=1||campaign) MatchEnded=true; else (round-1 non-campaign) SecondRoundPending=true + _secondRoundDueAt=now+RoundDelay. DriveFrame fires StartSecondRound when due — LIVE via DriveGametypeFrame (GameWorld.cs:3458).", result: pass }
+      - { kind: code_read, ref: "GameStopped (GameWorld.cs:2159) NOW folds in IsAssaultRoundFreeze (GameWorld.cs:2170 = Assault{SecondRoundPending:true}) — the 5s window actually freezes movement/firing/regen/respawns as QC's game_stopped=true. Closed in Wave 17 (2f0bfdb).", result: pass }
       - { kind: test, ref: "AssaultSpawnTests.cs:AttackerWin_SchedulesSecondRound_ThenSwapsRolesAfterTheDelay", result: pass }
     confidence: high
-    notes: "Unchanged since the Wave-5 fix. The round-1 attacker win schedules round 2 (SecondRoundPending) and DriveFrame runs StartSecondRound after AS_ROUND_DELAY. Only residual is the non-enforced 5s game freeze (cosmetic)."
+    notes: "FIX (re-audit, Wave 17): the round-1 attacker win schedules round 2 (SecondRoundPending) and DriveFrame runs StartSecondRound after AS_ROUND_DELAY. The prior 'non-enforced 5s freeze' residual is CLOSED — GameStopped now includes IsAssaultRoundFreeze (GameWorld.cs:2159/2170), so play actually halts during the window. No residual gaps."
 
   - id: assault.round.second_round
     name: "Two-round match: swap roles, re-clock round 2 to round 1 destruction time, 5s round delay"
@@ -265,13 +287,13 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Residual: the 5s AS_ROUND_DELAY freeze is timed correctly (DriveFrame waits _secondRoundDueAt) but does NOT set game_stopped — play is not actually frozen during the window (see assault.win.attacker_round). bprint('Starting second round...') chat line is not emitted (cosmetic)."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "DriveFrame Assault.cs:861-866: if(SecondRoundPending){ if(now>=_secondRoundDueAt) StartSecondRound(); return false; } — LIVE per-tick (DriveGametypeFrame GameWorld.cs:3356). OnSecondRoundRestart (GameWorld.cs:2919) re-stamps GameStartTime, ResetMap(fakeRoundStart:true), AssaultSwapSpawnTeams(), AssaultTurretRoundstart().", result: pass }
+      - { kind: code_read, ref: "DriveFrame Assault.cs:949-954: if(SecondRoundPending){ if(now>=_secondRoundDueAt) StartSecondRound(); return false; } — LIVE per-tick (DriveGametypeFrame GameWorld.cs:3458). OnSecondRoundRestart (GameWorld.cs:2971) re-stamps GameStartTime, ResetMap(fakeRoundStart:true), AssaultSwapSpawnTeams(), AssaultTurretRoundstart().", result: pass }
+      - { kind: code_read, ref: "The 5s freeze is now enforced (GameStopped includes IsAssaultRoundFreeze, GameWorld.cs:2159/2170) AND bprint('Starting second round...') IS emitted (Assault.cs:856 via aslt.BPrint = Commands.ChatBroadcast, GameWorld.cs:2970). Both prior residuals closed in Wave 17 (2f0bfdb).", result: pass }
       - { kind: test, ref: "AssaultSpawnTests.cs:AttackerWin_SchedulesSecondRound_ThenSwapsRolesAfterTheDelay (Round->1, AttackerTeam Red->Blue, chain re-armed, restart fired)", result: pass }
     confidence: high
-    notes: "OnSecondRoundRestart swaps spawn-point teams + runs the turret roundstart team-swap. Only remaining residuals are the non-enforced freeze and the missing bprint line. Unchanged."
+    notes: "FIX (re-audit, Wave 17): OnSecondRoundRestart swaps spawn-point teams + runs the turret roundstart team-swap; the 5s freeze is now actually enforced (IsAssaultRoundFreeze in GameStopped) and the 'Starting second round...' bprint IS emitted. No residual gaps — the two-round flow is fully faithful + live."
 
   - id: assault.win.defender_timelimit
     name: "Timelimit elapses without core destruction -> defenders win"
@@ -354,13 +376,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Minor (cosmetic): QC pairs CENTER_ASSAULT_OBJ_DESTROYED with bprint('Starting second round...'); the port emits the centerprint (correct text/args) but not the chat bprint line. The notification is correctly followed by a live round 2 (StartSecondRound is live), so it is not a dead-end."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "Assault.cs:656 OnPlayerSpawn fired live via MutatorHooks.PlayerSpawn; Assault.cs:660-662 Send(One, player, Center, ASSAULT_ATTACKING/DEFENDING)", result: pass }
-      - { kind: code_read, ref: "Assault.cs:729 Send(All, null, Center, ASSAULT_OBJ_DESTROYED, ceil(elapsed)) on the live round-1-win (non-campaign) branch, followed by a live second round", result: pass }
+      - { kind: code_read, ref: "Assault.cs:710 OnPlayerSpawn fired live via MutatorHooks.PlayerSpawn (registered Assault.cs:623); Assault.cs:714-716 Send(One, player, Center, ASSAULT_ATTACKING/DEFENDING)", result: pass }
+      - { kind: code_read, ref: "Assault.cs:809 Send(All, null, Center, ASSAULT_OBJ_DESTROYED, ceil(elapsed)) on the live round-1-win (non-campaign) branch, followed by a live second round; the paired bprint('... destroyed the objective ...') / ('Starting second round...') chat lines ARE emitted via aslt.BPrint (Assault.cs:815/856 -> Commands.ChatBroadcast, GameWorld.cs:2970)", result: pass }
     confidence: high
-    notes: "Role centerprint fires per spawn keyed on the live (swappable) attacker team; ASSAULT_OBJ_DESTROYED sent on the live round-1 destruction branch. Text/args match Base exactly. Unchanged."
+    notes: "FIX (re-audit): role centerprint fires per spawn keyed on the live (swappable) attacker team; ASSAULT_OBJ_DESTROYED sent on the live round-1 destruction branch. Text/args match Base exactly. The prior 'bprint not emitted' residual is now closed (both Assault round-flow chat lines are wired through aslt.BPrint). No residual gaps."
 
   - id: assault.objective.waypoint_sprite
     name: "Objective waypoint sprites (defend/push/destroy + health bars + radar icon)"
@@ -369,29 +390,32 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:target_objective_decrease_activate (WaypointSprite_SpawnFixed)"
       - "common/gametypes/gametype/assault/sv_assault.qc:assault_decreaser_sprite_visible"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:SpawnObjectiveSprite"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DisownSprite"
-      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointSprites (SpawnFixed/UpdateHealth/UpdateMaxHealth/Disown/Kill; Active=Waypoints.cs:244)"
-      - "src/XonoticGodot.Server/GameWorld.cs (WaypointSprites.Think per-tick)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:SpawnObjectiveSprite (Assault.cs:413)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:DisownSprite (Assault.cs:490)"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointSprites (SpawnFixed/UpdateHealth/UpdateMaxHealth/Disown/Kill; Active)"
+      - "game/net/ServerNet.cs:SendWaypoints (game/net/ServerNet.cs:1192, called @493) + WaypointVisible (:1294)"
+      - "game/net/ClientNet.cs:HandleWaypoints (:542) -> ClientNet.Waypoints (:695)"
+      - "game/client/WaypointSpriteLayer.cs (client draw incl. health bar) wired in game/net/NetGame.cs:1618/1628"
+      - "src/XonoticGodot.Server/GameWorld.cs:2613 (WaypointSprites.Think per-tick)"
     constants:
-      - { name: "sprite_defend", base: "WP_AssaultDefend (radar RADARICON_OBJECTIVE)", port: "RadarIconObjective=1 + WaypointObjectiveColor orange", match: true }
-      - { name: "sprite_attacker_view", base: "WP_AssaultDestroy + UpdateMaxHealth/UpdateHealth", port: "SpawnObjectiveSprite('AssaultDestroy', UpdateMaxHealth/UpdateHealth)", match: true }
+      - { name: "sprite_defend", base: "WP_AssaultDefend (radar RADARICON_OBJECTIVE)", port: "RadarIconObjective=1 + WaypointObjectiveColor orange (networked: ServerNet.cs:1233,1237)", match: true }
+      - { name: "sprite_attacker_view", base: "WP_AssaultDestroy + UpdateMaxHealth/UpdateHealth", port: "SpawnObjectiveSprite('AssaultDestroy', UpdateMaxHealth/UpdateHealth); per-peer SpriteFor + wp.Health networked (ServerNet.cs:1229,1240)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Presentation only: the objective waypoint sprite is spawned, health-bar-updated, disowned-on-destroy, and ticked SERVER-SIDE (SpawnObjectiveSprite + WaypointSprites.Think; WaypointSprites.Active = Waypoints.cs:244). But there is NO client render/networking path — nothing in src/XonoticGodot.Net reads WaypointSprites to serialize/render it. So the attacker has no on-screen objective marker, health bar, or radar icon yet. The state machine is faithful; the visible pixels are absent."
+      - "The prior audit's 'no client render path' gap is CLOSED (Wave 17, 2f0bfdb) — it had grepped src/XonoticGodot.Net (no net code there; the net layer is game/net/). The visible result is rendered by a faithful QC port of Draw_WaypointSprite but was NOT runtime-observed in this code-read re-audit (game not launched); a live visual check would be the only remaining upgrade."
     verification:
-      - { kind: code_read, ref: "Assault.cs:397 SpawnObjectiveSprite (WP_AssaultDestroy + UpdateMaxHealth/UpdateHealth); DamageDestructible updates the bar each hit; DisownSprite on destroy. WaypointSprites.Think() ticked live.", result: pass }
-      - { kind: code_read, ref: "grep WaypointSprite across src/XonoticGodot.Net: empty — no client serialize/render of waypoint sprites", result: fail }
+      - { kind: code_read, ref: "Assault.cs:413 SpawnObjectiveSprite (WP_AssaultDestroy + UpdateMaxHealth/UpdateHealth); DamageDestructible updates the bar each hit; DisownSprite on destroy. WaypointSprites.Think() ticked live (GameWorld.cs:2613).", result: pass }
+      - { kind: code_read, ref: "game/net/ServerNet.cs:1192 SendWaypoints iterates WaypointSprites.Active, per-peer WaypointVisible gate (honors VisibleForPlayer + SPRITERULE_TEAMPLAY), writes SpriteFor (Defend/Destroy) + RADARICON_OBJECTIVE + orange + wp.Health (health bar) + fade; CALLED live @ServerNet.cs:493. ClientNet.HandleWaypoints (:542) decodes; WaypointSpriteLayer (game/client/WaypointSpriteLayer.cs) draws marker+arrow+HEALTH BAR; wired NetGame.cs:1618/1628 (Source=()=>_client.Waypoints). NetProtocol v9 channel.", result: pass }
     confidence: high
-    notes: "Server-side waypoint-sprite state for the objective (spawn/update/disown/think) is faithful + live. Presentation stays MISSING because no client-side renderer/networking surfaces the sprite. Unchanged."
+    notes: "FIX (re-audit, Wave 17 2f0bfdb): the objective waypoint sprite (defend/push/destroy image + health bar + radar icon) is spawned/updated/disowned/ticked server-side AND serialized per-peer + rendered client-side end-to-end. The attacker now sees an on-screen objective marker, health/progress bar, and radar icon. presentation missing->faithful. The prior MISSING was a directory mistake (grepped src/XonoticGodot.Net instead of game/net/). Code-read confirmed at both ends; not yet runtime-observed."
 
   - id: assault.mapobject.assault_wall
     name: "func_assault_wall cosmetic wall toggles with its objective's health"
@@ -460,17 +484,17 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:havocbot_role_ast_defense"
       - "common/gametypes/gametype/assault/sv_assault.qc:havocbot_goalrating_ast_targets"
     port_refs:
-      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RoleAssault (BotObjectiveRoles.cs:731)"
-      - "src/XonoticGodot.Server/Bot/BotRoles.cs:ChooseRole (assault/as, BotRoles.cs:101)"
+      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RoleAssault (BotObjectiveRoles.cs:774)"
+      - "src/XonoticGodot.Server/Bot/BotRoles.cs:ChooseRole (assault/as)"
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:AssaultRoleTimeout/AssaultAttackTime"
     constants:
       - { name: "offense_enemyplayers_radius", base: "650 (havocbot_goalrating_enemyplayers org-radius, offense)", port: "650 (attacker)", match: true }
       - { name: "defense_enemyplayers_radius", base: "3000 (havocbot_goalrating_enemyplayers org-radius, defense)", port: "3000 (defender)", match: true }
       - { name: "ast_targets_ratingscale", base: "20000", port: "RatingGenerator=20000 (BotObjectiveRoles.cs:29)", match: true }
       - { name: "items_ratingscale", base: "30000 radius 10000", port: "30000 radius 10000", match: true }
-      - { name: "role_timeout_s", base: "120 (havocbot_role_timeout = time+120)", port: "120f (AssaultRoleTimeout = now+120, BotObjectiveRoles.cs:748)", match: true }
-      - { name: "attack_time_window_s", base: "2 (havocbot_attack_time = time+2)", port: "now+2f (AssaultAttackTime, BotObjectiveRoles.cs:828)", match: true }
-      - { name: "waypoint_radius_shell", base: "500..1500 step 500 (FOREACH_ENTITY_RADIUS)", port: "500f..1500f step 500f (BotObjectiveRoles.cs:796)", match: true }
+      - { name: "role_timeout_s", base: "120 (havocbot_role_timeout = time+120)", port: "120f (AssaultRoleTimeout = now+120, BotObjectiveRoles.cs:791)", match: true }
+      - { name: "attack_time_window_s", base: "2 (havocbot_attack_time = time+2)", port: "now+2f (AssaultAttackTime, BotObjectiveRoles.cs:871)", match: true }
+      - { name: "waypoint_radius_shell", base: "500..1500 step 500 (FOREACH_ENTITY_RADIUS)", port: "500f..1500f step 500f", match: true }
     status:
       logic: faithful
       values: faithful
@@ -482,9 +506,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "BotObjectiveRoles.cs:731 RoleAssault: rates only Active-objective destructibles at RatingGenerator(20000, BotObjectiveRoles.cs:29); per target picks the lowest-VisitCount !GENERATED waypoint within an expanding 500->1500 PVS shell (routerating dist 4000, BotObjectiveRoles.cs:796,818) and ++VisitCount load-balances; sets AssaultAttackTime=now+2 (line 828) when the bot has PVS to both wall and waypoint; 120s AssaultRoleTimeout (line 748) resets the role; enemyplayers attacker 650 / defender 3000; items 30000/10000; roam 3000. BotRoles.ChooseRole (BotRoles.cs:101) dispatches it live for assault/as.", result: pass }
+      - { kind: code_read, ref: "BotObjectiveRoles.cs:774 RoleAssault: rates only Active-objective destructibles at RatingGenerator(20000); per target picks the lowest-VisitCount !GENERATED waypoint within an expanding 500->1500 PVS shell (routerating dist 4000) and ++VisitCount load-balances; sets AssaultAttackTime=now+2 (line 871) when the bot has PVS to both wall and waypoint; 120s AssaultRoleTimeout (line 791) resets the role; enemyplayers attacker 650 / defender 3000; items 30000/10000; roam 3000. BotRoles.ChooseRole dispatches it live for assault/as.", result: pass }
     confidence: high
-    notes: "Timing faithful (no drift this audit). RoleAssault (moved 662->731) faithfully implements havocbot_goalrating_ast_targets in full — the active-objective filter + Base radii/ratingscale PLUS the 120s havocbot_role_timeout, the per-target PVS-best-waypoint pick (radius shell 500->1500, lowest VisitCount, ++VisitCount load-balance), and the havocbot_attack_time 2s commitment window. role_timeout_s + attack_time_window_s constants match."
+    notes: "Timing faithful (no drift this audit). RoleAssault (moved 731->774) faithfully implements havocbot_goalrating_ast_targets in full — the active-objective filter + Base radii/ratingscale PLUS the 120s havocbot_role_timeout, the per-target PVS-best-waypoint pick (radius shell 500->1500, lowest VisitCount, ++VisitCount load-balance), and the havocbot_attack_time 2s commitment window. role_timeout_s + attack_time_window_s constants match."
 
   - id: assault.spawns.objective_evalfunc
     name: "Objective-aware spawn-point eval (deprioritize spots near inactive/destroyed objectives)"
@@ -534,11 +558,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Presentation: the heal updates the wall's waypoint-sprite health bar server-side (WaypointSprites.UpdateHealth) but, like all the Assault sprites, that bar is not surfaced to the client (no waypoint render/network path). QC's func_breakable_colormod (the visible color tint on a healed wall) is not modeled. The heal LOGIC + health restoration is faithful + live."
+      - "Presentation (downgraded but not closed): the heal now updates the wall's waypoint-sprite health bar AND that bar IS surfaced to the client (Wave 17 added the full net+render path — see assault.objective.waypoint_sprite), so the healed-bar-rising is visible. The ONLY residual is QC's func_breakable_colormod (the visible green->red color tint on the wall MESH itself as it heals), which the port does not model. The heal LOGIC + health restoration + sprite bar are faithful + live; only the mesh colormod tint is missing (minor cosmetic)."
     verification:
-      - { kind: code_read, ref: "HealDestructible (Assault.cs:485): true_limit + already-destroyed/full guard + GiveResourceWithLimit clamp + sprite UpdateHealth. Wired live via e.GtEventHeal; Combat.Heal (DamageContracts.cs:102) dispatches to GtEventHeal for a non-player target.", result: pass }
+      - { kind: code_read, ref: "HealDestructible (Assault.cs:510): true_limit + already-destroyed/full guard + GiveResourceWithLimit clamp + sprite UpdateHealth (now networked + drawn). Wired live via e.GtEventHeal (GameWorld.cs:3273); Combat.Heal (DamageContracts.cs) dispatches to GtEventHeal for a non-player target.", result: pass }
     confidence: high
-    notes: "Unchanged. destructible_heal as HealDestructible + the func_assault_destructible GtEventHeal seam, reachable live from the heal-beam/nade pipeline. presentation partial (the sprite-bar update is server-only and func_breakable_colormod is absent)."
+    notes: "FIX (re-audit, Wave 17): the sprite health-bar update is now networked + rendered (was server-only). presentation partial REMAINS only because func_breakable_colormod (the wall-mesh color tint while healing) is still absent; everything else (logic, values, the bar) is faithful + live."
 
   - id: assault.config.warmup_incompatible
     name: "Assault disables warmup + ready-restart-after-countdown (ReadLevelCvars)"
@@ -574,7 +598,7 @@ features:
       - "common/gametypes/gametype/assault/sv_assault.qc:MUTATOR_HOOKFUNCTION(as, PlayHitsound)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:OnPlayHitsound"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:PlayHitsound (chain) / FirePlayHitsound (MutatorHooks.cs:635)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:PlayHitsound (chain) / FirePlayHitsound (MutatorHooks.cs:667)"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:352 (live firing site: FirePlayHitsound(targ, attackerSave) for non-player victims)"
     constants:
       - { name: "force_for_victim", base: "return (frag_victim.classname == 'func_assault_destructible')", port: "victim.ClassName == 'func_assault_destructible' (or DestructibleFor != null) => true", match: true }
@@ -590,7 +614,7 @@ features:
     gaps:
       - "Minor (parity-neutral): the hook's RETURN VALUE is deliberately discarded at the firing site (DamageSystem.cs:351-353) — the port's HITSOUND_DAMAGE_DEALT_TOTAL accrual (line 353) already runs for ANY non-self victim a player hits, so a func_assault_destructible already produces a hitsound regardless of the hook. In Base the PlayHitsound hook is ORed into the hitsound-firing condition (which otherwise gates on player/turret/monster victims); the port's stat path is more permissive, so the observable effect (the wall beeps) matches Base, but the hook is consulted for reachability/parity rather than being load-bearing. Wiring the return into a victim-type gate would make it strictly load-bearing as Base."
     verification:
-      - { kind: code_read, ref: "Assault.cs:681 OnPlayHitsound returns true for a func_assault_destructible victim (or a tracked Destructible); registered into MutatorHooks.PlayHitsound at Assault.cs:607-608.", result: pass }
-      - { kind: code_read, ref: "DamageSystem.cs:351-352: if(!IsPlayer(targ)) MutatorHooks.FirePlayHitsound(targ, attackerSave) — runs inside Apply's hitsound block (lines 342-353) for a non-player victim hit by a player attacker with damage removed. Apply calls EventDamage (line 307, routes the wall through GtEventDamage->DamageDestructible) then continues to this block, so a shelled wall reaches it. FirePlayHitsound defined MutatorHooks.cs:635.", result: pass }
+      - { kind: code_read, ref: "Assault.cs:752 OnPlayHitsound returns true for a func_assault_destructible victim (or a tracked Destructible); registered into MutatorHooks.PlayHitsound at Assault.cs:628-629.", result: pass }
+      - { kind: code_read, ref: "DamageSystem.cs:352: if(!IsPlayer(targ)) MutatorHooks.FirePlayHitsound(targ, attackerSave) — runs inside Apply's hitsound block for a non-player victim hit by a player attacker with damage removed. Apply calls EventDamage (routes the wall through GtEventDamage->DamageDestructible) then continues to this block, so a shelled wall reaches it. FirePlayHitsound defined MutatorHooks.cs:667.", result: pass }
     confidence: high
     notes: "FIX this audit: liveness dead->live, audio stub->faithful. The QC PlayHitsound hook is now fired live from DamageSystem.Apply (DamageSystem.cs:352) for non-player victims, dispatching the registered Assault.OnPlayHitsound handler on the real damage path. The forced hitsound on a shelled wall is now both reachable AND audible (the live stat accrual produces it). Predicate matches QC exactly; only residual is that the hook's return is discarded in favor of the already-permissive stat path (parity-neutral, observable effect matches Base)."

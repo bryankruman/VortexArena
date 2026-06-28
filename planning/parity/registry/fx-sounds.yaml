@@ -1,14 +1,14 @@
 unit: fx-sounds
 category: sound
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 15
   worst_gaps:
-    - "_GlobalSound AUTOTAUNT per-recipient probability roll (tauntrand < cl_autotaunt) still omitted (per-client cvar not networked); TAUNT animdecide_setaction(ANIMACTION_TAUNT) still not fired (no anim-action seam)."
-    - "GlobalSound_pitch model-scale pitch shift (scale != 1 squeak/deepen) still not ported; wire carries a flat pitch byte."
-    - "play2 per-recipient MSG_ONE targeting is still a broadcast approximation (SoundWire has no per-client send); exact only on a single-human listen server. Vehicle lock/locking play2 sites remain unwired."
-    - "sound_allowed gate (IsAllowed + owner-walk) is now live on the SoundSystem.PlayOn/SpamSound family, but raw Api.Sound.Play (SV_StartSound) direct calls still bypass it; MSG_ONE 'sounds to self always pass' branch still omitted."
+    - "GlobalSound_pitch model-scale pitch shift (scale != 1 squeak/deepen) still not ported; wire carries a flat pitch byte — the only genuine match:false logic/values hole left in the unit."
+    - "_GlobalSound AUTOTAUNT per-recipient probability roll (tauntrand < cl_autotaunt) still omitted (per-client cvar not networked; TAUNT animaction IS now fired — that gap closed)."
+    - "play2 per-recipient MSG_ONE targeting is still a broadcast approximation (SoundWire has no per-client send); exact only on a single-human listen server."
+    - "sound_allowed MSG_ONE 'sounds to self always pass' branch still omitted (cosmetic; no msg_entity context at the gate). The raw-Api.Sound.Play bypass is now CLOSED (gate applied at EngineServices.Play chokepoint)."
 features:
   - id: fx-sounds.registry.sound_table
     name: "Sound registry (SOUND(name,path) table) + path resolution"
@@ -195,13 +195,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Raw Api.Sound.Play (SV_StartSound) direct calls still bypass the gate — IsAllowed/owner-walk is applied by the SoundSystem.PlayOn/PlayRaw/SpamSound family (the primary emit idiom, ~50 live call sites) but a few callers emit via Api.Sound.Play directly (e.g. weapon UNAVAILABLE, some map-object cues), which are ungated."
-      - "QC MSG_ONE 'sounds to self always pass' branch omitted (no per-recipient msg_entity context at the gate; documented cosmetic edge-case)."
+      - "QC MSG_ONE 'sounds to self always pass' branch omitted (no per-recipient msg_entity context at the gate; documented cosmetic edge-case — only matters under bot_sound_monopoly 1, default 0)."
     verification:
       - { kind: code, ref: "SoundAllowedGate.WalkOwner mirrors body->enemy/realowner/owner; IsAllowed (SoundSystem.cs:54-69) walks the owner chain then mirrors `autocvar_bot_sound_monopoly && IS_REAL_CLIENT(e)` -> deny", result: pass }
-      - { kind: grep, ref: "IsAllowed now called by every SoundSystem.PlayOn/PlayRaw/SpamSound overload (SoundSystem.cs:188/197/206/223/361/379) + VehicleCommon.cs:507/516/527; SoundSystem.PlayOn/SpamSound used at ~50 live call sites across DamageSystem/Ctf/KeyHunt/OnslaughtControlPoint/etc. WalkOwner is reached via IsAllowed on the general emit path (no longer dead).", result: pass }
+      - { kind: code, ref: "EngineServices.Play (EngineServices.cs:612) now applies SoundAllowedGate.IsAllowed(e) at the single SV_StartSound chokepoint EVERY Api.Sound.Play flows through — so even raw Api.Sound.Play call sites (weapon UNAVAILABLE, monster/turret/map-object cues) are gated. The baseline 'raw direct calls bypass the gate' gap is CLOSED.", result: pass }
+      - { kind: grep, ref: "IsAllowed also called by every SoundSystem.PlayOn/PlayRaw/SpamSound overload (SoundSystem.cs:188/197/206/223/361/379) — idempotent double-check (re-asks the same question). Build green (Common.csproj).", result: pass }
     confidence: high
-    notes: "FIX since baseline: IsAllowed now calls WalkOwner internally (SoundSystem.cs:62) so owner-walk re-home is LIVE on every gated emit (was DEAD), and the bot_sound_monopoly gate is now applied on the general SoundSystem.PlayOn/SpamSound emit family (was only the vehicle paths). liveness partial->live; the two baseline gaps (WalkOwner dead, gate only on vehicle paths) are resolved. Residual: raw Api.Sound.Play direct calls bypass the gate; MSG_ONE self-pass branch omitted."
+    notes: "Re-audit 2026-06-27: gate is now UNIVERSAL. IsAllowed calls WalkOwner internally (SoundSystem.cs:62) so owner-walk re-home is live, AND EngineServices.Play (line 612) applies the gate at the SV_StartSound chokepoint, so raw Api.Sound.Play emits are gated too (was the baseline residual gap — now closed). bot_sound_monopoly default 0 => no-op in normal play. Only residual: the MSG_ONE self-pass branch (cosmetic, monopoly-only)."
 
   - id: fx-sounds.emit.play2_family
     name: "play2 / play2team / play2all / spamsound"
@@ -230,14 +230,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "play2 per-recipient targeting is a broadcast approximation: QC play2 sends MSG_ONE (msg_entity=e) so EXACTLY one client hears it; the port's SoundWire has no per-client send, so Play2/Play2Team broadcast to all connected clients — exact only on a single-human listen server."
-      - "Vehicle lock/locking play2 sites (sv_vehicles.qc:114-139) remain unwired; a couple of map-object/weapon cues use Api.Sound.Play directly rather than the SoundSystem.Play2 idiom (functionally audible, but not per-recipient and not gated)."
+      - "play2 per-recipient targeting is a broadcast approximation: QC play2 sends MSG_ONE (msg_entity=e) so EXACTLY one client hears it; the port's SoundWire has no per-client send, so Play2/Play2Team broadcast to all connected clients — exact only on a single-human listen server. This is the SOLE residual reason liveness stays partial."
     verification:
       - { kind: code, ref: "SpamSound/SpamSoundRaw mirror QC spamsound (sound_allowed gate + time>spamtime + set spamtime); Entity.SpamTime added; Play2/Play2Raw/Play2Team/Play2TeamRaw mirror play2/play2team (CH_INFO/VOL_BASE/ATTEN_NONE; play2team monopoly+team filter)", result: pass }
-      - { kind: grep, ref: "Play2 LIVE: GameWorld.cs:1966 (idle-kick TALK2), OnslaughtControlPoint.cs:856 (ONS shield-block). Play2Team LIVE: OnslaughtControlPoint.cs:271 (ONS_GENERATOR_UNDERATTACK), :613 (ONS_CONTROLPOINT_UNDERATTACK). spamsound LIVE: NadeProjectile.cs + VehicleCommon.cs. play2all -> PlayGlobal (live, KH/ONS/DOM gametype callers). Other play2 sites wired: Minelayer/WeaponFireGate UNAVAILABLE, Doors, VoiceScript, target_print TALK, MapMover.Sound", result: pass }
-      - { kind: code, ref: "PlayGlobal/PlayGlobalRaw (SoundSystem.cs:310-339) now apply the bot_sound_monopoly early-return, matching QC play2all (all.qc:143-145)", result: pass }
+      - { kind: grep, ref: "Play2 LIVE: GameWorld.cs:2035 (idle-kick TALK2), Inventory.cs:333/365 + Minelayer.cs:696 + WeaponFireGate.cs:305 (UNAVAILABLE), OnslaughtControlPoint.cs:292/713/987 (ONS shield-block), NadeBonus.cs:57. Play2Team LIVE: OnslaughtControlPoint.cs:318 (ONS_GENERATOR_UNDERATTACK), :738 (ONS_CONTROLPOINT_UNDERATTACK). Play2Raw LIVE: VehiclePhysicsHelpers.cs:281/304/310 (vehicles/locked|lock|locking — vehicle lock cues now wired), MapObjectsCommon.cs:848. spamsound LIVE: NadeProjectile.cs:154 + VehicleCommon.cs:521/530/541. play2all -> PlayGlobal (live, KH/ONS/Keepaway gametype callers). MapMover.Play2 wired: Doors, VoiceScript, target_print/keylock TALK, MapObjectsRegistry, Triggers.", result: pass }
+      - { kind: code, ref: "PlayGlobal/PlayGlobalRaw (SoundSystem.cs:310-339) apply the bot_sound_monopoly early-return, matching QC play2all (all.qc:143-145). Vehicle lock play2 (VehiclePhysicsHelpers.LockTarget:264-313) routes the 3 QC sv_vehicles.qc:114/134/139 cues through Play2Raw (VOL_BASE/ATTEN_NONE).", result: pass }
     confidence: high
-    notes: "FIX since baseline: (1) Play2Team is now LIVE — wired to BOTH ONS underattack cues (OnslaughtControlPoint.cs:271/613) with the QC per-team roster filter, replacing the prior PlayGlobal divergence (dead->live, resolves the per-team->global divergence). (2) PlayGlobal/PlayGlobalRaw now honor play2all's bot_sound_monopoly gate (the baseline's NEW gap is closed; play2all constant match false->true). (3) Many previously-unwired play2 sites are now wired (UNAVAILABLE, doors, voicescript, target_print, mapmover). liveness stays partial only because the MSG_ONE per-recipient targeting is a broadcast approximation and vehicle lock cues remain unwired."
+    notes: "Re-audit 2026-06-27: the baseline gap 'Vehicle lock/locking play2 sites remain unwired' is now STALE/CLOSED — VehiclePhysicsHelpers.LockTarget wires all three sv_vehicles.qc lock cues (locked/lock/locking) through SoundSystem.Play2Raw with the correct VOL_BASE/ATTEN_NONE (was Api.Sound.Play default vol=1/atten=1). Prior fixes hold: Play2Team live on both ONS underattack cues (per-team roster filter), play2all monopoly gate present, ~14 play2 sites wired. liveness stays partial for ONE reason only: MSG_ONE per-recipient targeting is a broadcast approximation (SoundWire has no per-client send), exact only on a single-human listen server."
 
   - id: fx-sounds.voice.playersound_registry
     name: "PlayerSounds / GlobalSounds registries (body sound ids)"
@@ -300,7 +299,7 @@ features:
       - "common/effects/qc/globalsound.qc:_GlobalSound"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:_GlobalSound"
-      - "src/XonoticGodot.Server/Commands.cs:1682"
+      - "src/XonoticGodot.Server/Commands.cs:3149"
     constants:
       - { name: "sv_taunt", base: "1", port: "reads cvar (gate honored)", match: true }
       - { name: "sv_autotaunt", base: "1", port: "reads cvar (gate honored)", match: true }
@@ -318,14 +317,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "AUTOTAUNT per-recipient probability roll (tauntrand < CS_CVAR(it).cl_autotaunt) still omitted: per-client cl_autotaunt is not networked, so autotaunts that clear sv_autotaunt always play for all recipients (documented deferral; a single global cl_autotaunt default 0 would wrongly silence ALL autotaunts)."
-      - "TAUNT does not trigger animdecide_setaction(ANIMACTION_TAUNT) on the living speaker (no anim-action seam yet)."
+      - "AUTOTAUNT per-recipient probability roll (tauntrand < CS_CVAR(it).cl_autotaunt) still omitted: per-client cl_autotaunt is not networked, so autotaunts that clear sv_autotaunt always play for all recipients (documented deferral; a single global cl_autotaunt default 0 would wrongly silence ALL autotaunts). This is the SOLE remaining reason logic stays partial."
     verification:
       - { kind: code, ref: "_GlobalSound LASTATTACKER[_ONLY]/TEAMRADIO/AUTOTAUNT/TAUNT/PLAYERSOUND recipient sets + sv_taunt/sv_autotaunt/sv_gentle gates + fake (MSG_ONE) handling vs globalsound.qc; sample via PlayerSoundSample", result: pass }
-      - { kind: code, ref: "directional atten now reads cl_voice_directional (==1 -> ATTEN_MIN else ATTEN_NONE) and taunt atten applies bound(ATTEN_MIN, cl_voice_directional_taunt_attenuation, ATTEN_MAX) — both previously-missing presentation gaps now ported", result: pass }
-      - { kind: grep, ref: "voicemessage cmd (Commands.cs:1682) passes Clients.Players roster -> live recipient routing reachable", result: pass }
+      - { kind: code, ref: "TAUNT now fires the taunt animation on a living speaker BEFORE the sv_taunt/sv_gentle gates (SoundSystem.cs:553-560): AnimDecide.SetAction(AnimUpperAction.Taunt, restart) mirrors QC animdecide_setaction(this, ANIMACTION_TAUNT, true) — the baseline 'no anim-action seam' gap is CLOSED.", result: pass }
+      - { kind: code, ref: "directional atten reads cl_voice_directional (==1 -> ATTEN_MIN else ATTEN_NONE); taunt atten applies bound(ATTEN_MIN, cl_voice_directional_taunt_attenuation, ATTEN_MAX)", result: pass }
+      - { kind: grep, ref: "voicemessage cmd (Commands.cs:3149) passes _world.Clients.Players roster -> live recipient routing reachable (fake = spec/observer/flood)", result: pass }
     confidence: high
-    notes: "FIX since baseline: the directional per-recipient attenuation (cl_voice_directional) and the taunt-attenuation bound (cl_voice_directional_taunt_attenuation) are now ported, so the presentation dimension goes partial->faithful and 2 of the 3 baseline gaps are closed. Logic stays PARTIAL only for the per-client autotaunt probability roll (deferred — per-client cvar not networked) and the TAUNT animaction (no animdecide seam). Recipient sets + sv_* gates + fake/self handling faithful & live."
+    notes: "Re-audit 2026-06-27: the TAUNT animdecide_setaction(ANIMACTION_TAUNT) seam is now WIRED (SoundSystem.cs:553-560, fires on a living speaker before the sv_taunt/sv_gentle gates) — closes one of the two baseline logic gaps. Directional + taunt-attenuation already ported (presentation faithful). Logic stays PARTIAL ONLY for the per-client autotaunt probability roll (deferred — per-client cvar not networked). Recipient sets + sv_* gates + fake/self handling faithful & live; reached by the voicemessage cmd (Commands.cs:3149)."
 
   - id: fx-sounds.voice.live_body_callers
     name: "PlayerSound/GlobalSound call sites (footstep/fall/pain/death/jump)"

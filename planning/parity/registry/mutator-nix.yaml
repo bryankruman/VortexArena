@@ -5,7 +5,8 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 16
   worst_gaps:
-    - "No open gaps: all 16 features are logic/values faithful and live. (add.wrinit RESOLVED @ 2026-06-27 — the ONADD FOREACH(Weapons, choosable, wr_init) warm pass was already present in NixMutator.cs:99-102; the registry was stale.) The two notes below are intended divergences, not unresolved gaps."
+    - "No open gaps: all 16 features are logic/values faithful and live. CONSOLIDATED RE-VERIFY @ 2026-06-27 (post-Wave-16/17): re-read NixMutator.cs end-to-end and traced every live dispatch site — FireForbidRandomStartWeapons (SpawnSystem.cs:1173), FireOnEntityPreSpawn (GameWorld.cs:4343), PlayerSpawn.Call (ClientManager.cs:772), PlayerPreThink.Call (GameWorld.cs:2261), FilterItemDefinition.Call (StartItem.cs:106), ForbidThrowCurrentWeapon.Call (WeaponThrowing.cs:157), and the SetModname/BuildMutatorsString/BuildMutatorsPrettyString consumers (GameWorld.cs:638/1161/1172/1453, ServerNet.cs:613) — all live; WrInit/WrResetPlayer real virtuals (GameplayBases.cs:235/226). All claims hold; only port_ref line numbers had drifted (now refreshed). No status changes."
+    - "(add.wrinit RESOLVED @ 2026-06-27 — the ONADD FOREACH(Weapons, choosable, wr_init) warm pass is present in NixMutator.cs:99-102; WrInit() is a real but no-op virtual.) The two notes below are intended divergences, not unresolved gaps."
     - "enable.gate (intended divergence): exclusion is now expressed against the underlying cvars (g_instagib/g_overkill/g_weaponarena) rather than QC's MUTATOR_IS_ENABLED(mutator_instagib)/MUTATOR_IS_ENABLED(ok)/m_weaponarena, since the port has no cross-mutator MUTATOR_IS_ENABLED helper. Behaviorally equivalent for stock play (the same stand-in instagib/melee/vampire use)."
     - "choose.canchoose (intended divergence): omits the g_weaponarena sub-branch (unreachable via the enable gate). Superweapons (Fireball etc.) never enter the NIX pool because they lack WEP_FLAG_NORMAL — matches Base."
 features:
@@ -16,7 +17,7 @@ features:
       - "common/mutators/mutator/nix/sv_nix.qc:34 (REGISTER_MUTATOR nix expr)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:45 (IsEnabled)"
-      - "src/XonoticGodot.Server/GameWorld.cs:626 (MutatorActivation.Apply)"
+      - "src/XonoticGodot.Server/GameWorld.cs:631 (MutatorActivation.Apply)"
     constants:
       - { name: "g_nix", base: "0", port: "0 (mutators.cfg:145)", match: true }
     status:
@@ -31,7 +32,7 @@ features:
     gaps: []
     verification:
       - { kind: code, ref: "IsEnabled (lines 45-50): g_nix!=0 && g_instagib==0 && g_overkill==0 && g_weaponarena==0 — now mirrors sv_nix.qc:34's exclusions via the cvar stand-in", result: pass }
-      - { kind: code, ref: "[Mutator] discovery -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:626) activates when IsEnabled", result: pass }
+      - { kind: code, ref: "[Mutator] discovery -> Mutators.All -> MutatorActivation.Apply (GameWorld.cs:631) activates when IsEnabled; re-verified @ 2026-06-27", result: pass }
     confidence: high
     notes: "FIXED post-Wave-6 (was logic:partial @ 2026-06-22): the instagib/overkill/weaponarena exclusion is now present (cvar-based). Activation path live; Apply shifted 539->563->626."
 
@@ -149,8 +150,8 @@ features:
     gaps: []
     verification:
       - { kind: code, ref: "dt=ceil(nextchange-time), first-round start-now, nextchange+=roundtime, once-per-round NixLastChangeId gate (lines 236-311) vs sv_nix.qc:105-180", result: pass }
-      - { kind: code, ref: "PlayerPreThink.Call (GameWorld.cs:2226) drives it each tick (now game_stopped-gated via VehicleCommon.GameStopped, NixMutator.cs:200, matching QC sv_nix.qc:265); globals are instance fields (one per process)", result: pass }
-      - { kind: code, ref: "wpn.WrResetPlayer(player, slot 0) NOW called on the per-round flip (NixMutator.cs:287) — WrResetPlayer is a real WeaponBase virtual (GameplayBases.cs:205) overridden by Hagar/Hook/Porto/Vaporizer; reloadable full-clip prefill also ported (lines 294-308)", result: pass }
+      - { kind: code, ref: "PlayerPreThink.Call (GameWorld.cs:2261, was :2226) drives it each tick (now game_stopped-gated via VehicleCommon.GameStopped, NixMutator.cs:200, matching QC sv_nix.qc:265); globals are instance fields (one per process)", result: pass }
+      - { kind: code, ref: "wpn.WrResetPlayer(player, new WeaponSlot(0)) called on the per-round flip (NixMutator.cs:296) — WrResetPlayer is a real Weapon virtual (GameplayBases.cs:226) overridden by Hagar/Devastator/Hook/Porto/Vaporizer; reloadable full-clip prefill also ported (NixMutator.cs:303-317)", result: pass }
     confidence: high
     notes: "FIXED since baseline (logic partial->faithful @ 2026-06-27): wpn.wr_resetplayer — the last structural omission @ 2026-06-25 — is now called on every round flip (NixMutator.cs:296). Round clock/timing remain bit-faithful; the prethink dispatch is now also game_stopped-gated. Live caller PlayerPreThink.Call at GameWorld.cs:2226."
 
@@ -222,7 +223,7 @@ features:
       - "common/notifications/all.inc:765 (MSG_CENTER_NOTIF NIX_NEWWEAPON, durcnt 1, item_wepname, CPID_NIX)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:268 (NotificationSystem.Center NIX_NEWWEAPON)"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1010 (register)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1032 (register)"
     constants: []
     status:
       logic: faithful
@@ -235,7 +236,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "register (NotificationsList.cs:1010) f1count 0 durcnt 1 item_wepname CPID_NIX text matches all.inc:765; item_wepname resolves weapon-id->name; suppressed when dt in [1,5] (line 287)", result: pass }
+      - { kind: code, ref: "register (NotificationsList.cs:1032) f1count 0 durcnt 1 item_wepname CPID_NIX text '^F2Active weapon: ^F1%s' matches all.inc:765; item_wepname resolves weapon-id->name; suppressed when dt in [1,5] (NixMutator.cs:287)", result: pass }
     confidence: medium
     notes: "Registration text/args/CPID match QC exactly; arg (weapon-id) order matches. Not runtime-verified on the live HUD."
 
@@ -247,7 +248,7 @@ features:
       - "common/notifications/all.inc:764 (MSG_CENTER_NOTIF NIX_COUNTDOWN, durcnt 2, item_wepname, CPID_NIX, args \"1 f2\")"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:295 (NotificationSystem.Center NIX_COUNTDOWN)"
-      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1009 (register)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1031 (register)"
     constants: []
     status:
       logic: faithful
@@ -260,7 +261,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "de-duped on NixLastInfoTime != dt; fires only for dt in [1,5] (lines 323-328); args (next-weapon, dt) match QC order; register (NotificationsList.cs:1009) durcnt 2 / item_wepname / CPID_NIX / ^COUNT text + args \"1 f2\" matches all.inc:764", result: pass }
+      - { kind: code, ref: "de-duped on NixLastInfoTime != dt; fires only for dt in [1,5] (NixMutator.cs:323-328); args (next-weapon, dt) match QC order; register (NotificationsList.cs:1031) durcnt 2 / item_wepname / CPID_NIX / ^COUNT text + args \"1 f2\" (NotificationsList.cs:104) matches all.inc:764", result: pass }
     confidence: medium
     notes: "^COUNT durcnt index and live HUD render not runtime-verified; registration and arg order match QC."
 
@@ -322,8 +323,8 @@ features:
       - "common/mutators/mutator/nix/sv_nix.qc:276 (PlayerSpawn)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:171 (OnPlayerSpawn)"
-      - "src/XonoticGodot.Server/ClientManager.cs:749 (PlayerSpawn.Call)"
-      # (PlayerSpawn.Call confirmed still at ClientManager.cs:749 @ 2026-06-27)
+      - "src/XonoticGodot.Server/ClientManager.cs:772 (PlayerSpawn.Call)"
+      # (PlayerSpawn.Call confirmed at ClientManager.cs:772 @ 2026-06-27 re-verify; was :749)
     constants: []
     status:
       logic: faithful
@@ -336,8 +337,8 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnPlayerSpawn (lines 171-181): NixLastChangeId=-1 + GiveCurrentWeapon + player.Items |= IT_UNLIMITED_SUPERWEAPONS (line 179) vs sv_nix.qc:280-282", result: pass }
-      - { kind: code, ref: "PlayerSpawn.Call live at ClientManager.cs:749; PlayerPowerups/SuperweaponTimeout live and now honours the flag; Fireball lacks WeaponFlags.Normal so excluded by CanChooseWeapon", result: pass }
+      - { kind: code, ref: "OnPlayerSpawn (NixMutator.cs:180-190): NixLastChangeId=-1 + GiveCurrentWeapon + player.Items |= (int)ItemFlag.UnlimitedSuperweapons (line 188) vs sv_nix.qc:280-282; ItemFlag.UnlimitedSuperweapons exists (ItemFlags.cs:27)", result: pass }
+      - { kind: code, ref: "PlayerSpawn.Call live at ClientManager.cs:772 (was :749); PlayerPowerups/SuperweaponTimeout live and now honours the flag; Fireball lacks WeaponFlags.Normal so excluded by CanChooseWeapon", result: pass }
     confidence: high
     notes: "FIXED post-Wave-6 (was logic:partial @ 2026-06-22): IT_UNLIMITED_SUPERWEAPONS is now set on spawn (line 179), so a superweapon NIX weapon would not expire under the live SuperweaponTimeout pass. Still latent in stock play (no superweapon is NIX-choosable under the Normal-flag requirement) but now bit-faithful. PlayerSpawn.Call shifted 649->656."
 
@@ -360,8 +361,8 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnForbidRandomStartWeapons returns true (NixMutator.cs:163), registered into the hook chain (Hook line 68/75)", result: pass }
-      - { kind: code, ref: "FireForbidRandomStartWeapons live caller: SpawnSystem.ApplyStartLoadout gates GiveRandomWeapons on it, on the real PutPlayerInServer non-warmup spawn path", result: pass }
+      - { kind: code, ref: "OnForbidRandomStartWeapons returns true (NixMutator.cs:172), registered into the hook chain (Hook line 68/75)", result: pass }
+      - { kind: code, ref: "FireForbidRandomStartWeapons (MutatorHooks.cs:764) live caller: SpawnSystem.ApplyStartLoadout gates GiveRandomWeapons on `randomCount > 0 && !FireForbidRandomStartWeapons(p)` (SpawnSystem.cs:1173), on the real PutPlayerInServer non-warmup spawn path; re-verified @ 2026-06-27", result: pass }
     confidence: high
     notes: "Live and faithful; the random-start grant in SpawnSystem.ApplyStartLoadout calls FireForbidRandomStartWeapons before GiveRandomWeapons, matching QC client.qc:644. Same live pattern shared by instagib/melee_only/overkill."
 
@@ -371,9 +372,9 @@ features:
     base_refs:
       - "common/mutators/mutator/nix/sv_nix.qc:253 (OnEntityPreSpawn -> delete target_items)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:167 (OnEntityPreSpawn)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:573 (FireOnEntityPreSpawn)"
-      - "src/XonoticGodot.Server/GameWorld.cs:4254 (FireOnEntityPreSpawn caller, map spawn loop)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:176 (OnEntityPreSpawn)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:866 (FireOnEntityPreSpawn)"
+      - "src/XonoticGodot.Server/GameWorld.cs:4343 (FireOnEntityPreSpawn caller, map spawn loop)"
     constants: []
     status:
       logic: faithful
@@ -386,8 +387,8 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "OnEntityPreSpawn returns (Entity.ClassName == \"target_items\") (NixMutator.cs:167-168) vs sv_nix.qc:257-258; registered into MutatorHooks.OnEntityPreSpawn (Hook line 78)", result: pass }
-      - { kind: code, ref: "MutatorHooks.OnEntityPreSpawn hook chain + FireOnEntityPreSpawn (MutatorHooks.cs:834) called live in the map-entity spawn loop (GameWorld.cs:4254); a true return removes the edict (Api.Entities.Remove)", result: pass }
+      - { kind: code, ref: "OnEntityPreSpawn returns (Entity.ClassName == \"target_items\") (NixMutator.cs:176-177) vs sv_nix.qc:257-258; registered into MutatorHooks.OnEntityPreSpawn (Hook line 78)", result: pass }
+      - { kind: code, ref: "MutatorHooks.OnEntityPreSpawn hook chain + FireOnEntityPreSpawn (MutatorHooks.cs:866) called live in the map-entity spawn loop (GameWorld.cs:4343 — Api.Entities.Remove(e)+continue on true return); re-verified @ 2026-06-27", result: pass }
     confidence: high
     notes: "FIXED post-Wave-6 (was logic:missing @ 2026-06-22 — no handler AND no hook chain): both the OnEntityPreSpawn hook chain and a live caller now exist (GameWorld.cs:4254), and NixMutator deletes target_items, matching QC sv_nix.qc:253."
 
@@ -402,9 +403,9 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:401 (BuildMutatorsString override)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:404 (BuildMutatorsPrettyString override)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/NixMutator.cs:409 (SetModname override)"
-      - "src/XonoticGodot.Server/GameWorld.cs:1141 (MutatorActivation.BuildMutatorsString live consumer, GameLogInit)"
-      - "src/XonoticGodot.Server/GameWorld.cs:1152/1433 + game/net/ServerNet.cs:608 (BuildMutatorsPrettyString live consumers)"
-      - "src/XonoticGodot.Server/GameWorld.cs:633 (MutatorActivation.SetModname live consumer, worldspawn)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1161 (MutatorActivation.BuildMutatorsString live consumer, GameLogInit)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1172/1453 + game/net/ServerNet.cs:613 (BuildMutatorsPrettyString live consumers)"
+      - "src/XonoticGodot.Server/GameWorld.cs:638 (MutatorActivation.SetModname live consumer, worldspawn)"
     constants: []
     status:
       logic: faithful
@@ -418,7 +419,7 @@ features:
     gaps: []
     verification:
       - { kind: code, ref: "NixMutator overrides all three virtuals: BuildMutatorsString ':NIX' (line 401), BuildMutatorsPrettyString ', NIX' (line 404), SetModname 'NIX' (line 409) vs sv_nix.qc:227/232/285", result: pass }
-      - { kind: code, ref: "MutatorActivation.BuildMutatorsString live at GameWorld.cs:1141 (GameLogInit); BuildMutatorsPrettyString now has live consumers at GameWorld.cs:1152, GameWorld.cs:1433 (modifications line) and ServerNet.cs:608 -> NIX contributes ', NIX'", result: pass }
-      - { kind: code, ref: "SetModname is now a real MutatorBase virtual (GameplayBases.cs:314) and is consumed live at GameWorld.cs:633 (worldspawn MUTATOR_CALLHOOK(SetModname), first-override-wins) -> sets modname serverinfo to 'NIX'", result: pass }
+      - { kind: code, ref: "MutatorActivation.BuildMutatorsString live at GameWorld.cs:1161 (GameLogInit); BuildMutatorsPrettyString now has live consumers at GameWorld.cs:1172, GameWorld.cs:1453 (modifications line) and ServerNet.cs:613 -> NIX contributes ', NIX'; re-verified @ 2026-06-27", result: pass }
+      - { kind: code, ref: "SetModname is a real MutatorBase virtual and is consumed live at GameWorld.cs:638 (worldspawn MUTATOR_CALLHOOK(SetModname), first-override-wins: resolved!=base => Cvars.Set('modname',...)) -> NixMutator.SetModname returns ('NIX', true)", result: pass }
     confidence: high
-    notes: "FIXED since baseline (logic partial->faithful, liveness partial->live @ 2026-06-27): all three string virtuals are now ported AND live. SetModname — wholly absent @ 2026-06-25 (no virtual/hook) — is now a MutatorBase virtual overridden to 'NIX' and consumed at worldspawn (GameWorld.cs:621). BuildMutatorsPrettyString — had zero consumer @ 2026-06-25 — now feeds the welcome/modifications line + serverinfo at three live sites. Same trio went live for instagib/overkill."
+    notes: "FIXED since baseline (logic partial->faithful, liveness partial->live), re-verified @ 2026-06-27: all three string virtuals are ported AND live. SetModname is a MutatorBase virtual overridden to ('NIX', true) and consumed at worldspawn (GameWorld.cs:638, first-override-wins). BuildMutatorsPrettyString feeds the welcome/modifications line + serverinfo at three live sites (GameWorld.cs:1172/1453, ServerNet.cs:613). Same trio went live for instagib/overkill."

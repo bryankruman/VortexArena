@@ -7,7 +7,6 @@ summary:
   worst_gaps:
     - "Interactive scoreboard UI still entirely absent (arrow navigation, team-selection/join screen, spectate, vote-kick/tell, scoreboard_columns_set cycling, scores_per_round toggle)."
     - "Item-stats block (per-item pickup-count icon grid) still entirely missing (no SetItemStats/DrawItemStats; inventory not networked for it)."
-    - "Ping column still never networked (SetWireRows always passes ping -1 → dim '-'); the value cell stays dead until per-row ping is added to the wire."
     - "fps and skill columns still never render; packet-loss (pl) movement-loss '~N' suffix not tracked."
     - "Name cell handicap icon LIVE (handicap_level networked end-to-end, exact '1 0 0'+'0 1 1'*((16-lvl)/15) tint); still missing player-color square, ready, ignored, and the (Q) wants-join marker."
     - "Accuracy block still drawn as plain '%' text, not the per-weapon icon grid; no showdelay/warmup/doublerows/nocolors."
@@ -15,7 +14,8 @@ summary:
     - "Rankings still single-column (no multi-column wrap / horizontal scroll)."
     - "Secondary teamscore (e.g. keyhunt) still not networked (only the primary team slot rides the wire)."
   notable_fixes_since_last_audit:
-    - "RE-AUDIT 2026-06-27 (drift check): TWO new fixes since the prior audit, 0 regressions. (1) PING COLOR BANDS now match Base: PingColor (ScoreboardPanel.cs:727-738) reads hud_panel_scoreboard_ping_low=20/medium=80/high=200 live from the shared store (registered RegisterDefaults:1523-1525) with the QC band colors '0 1 0'/'1 1 0'/'1 0 0' and the exact lerp — was hardcoded 75/200/500 (an unintended value gap). The ping cell itself is still dead (ping not networked → always -1), but the colorization values are now faithful for when it is fed. (2) TEAM-SIZE side display (team_size_position) now PORTED on cl-scoreboard.teams.grouping_totals: DrawTeamTotals (ScoreboardPanel.cs:934-962) reads hud_panel_scoreboard_team_size_position (0/1/2, registered :1527) and draws the 'N/M' team-size string on the chosen side of each team box — was 'team_size_position absent'. All prior fixes (death/intermission auto-show, secrets feed, speed award, handicap icon, respawn jump-key, fade, spectators) re-confirmed live."
+    - "RE-AUDIT 2026-06-27 (W16/W17 drift check): ONE material fix, 0 regressions. PER-ROW PING is now NETWORKED + LIVE end-to-end — the prior worst-gap ('ping never networked → SetWireRows hardcodes -1 → dim dash') is CLOSED. ServerNet.BuildScoreboard (ServerNet.cs:2484-2498) feeds pingMs = _transport.RoundTripMs(peerId) (NetTransport.cs:216-219, ENet PeerStatistic.RoundTripTime in ms) for connected humans, -1 for bots/unmapped; it rides ScoreRowWire.PingMs as a ushort (ScoreboardBlock.cs:130 serialize / :185 deserialize, 0xFFFF=-1); SetWireRows now passes ping: wr.PingMs to BOTH player rows (ScoreboardPanel.cs:262) and spectator rows (:244) — NOT the hardcoded -1 the prior audit recorded. GetField Ping colorizes a real ping by the (already-faithful) 20/80/200 bands; bots/loopback-host still show the neutral '-'. Both cl-scoreboard.field.ping (was dead) and the spectator-list showping gap flipped to live/faithful. NOTE: the prior 2026-06-27 audit line below is now partly stale — it asserted 'the ping cell is still dead / ScoreRowWire carries no ping field', which is no longer true."
+    - "RE-AUDIT 2026-06-27 (drift check): TWO fixes. (1) PING COLOR BANDS now match Base: PingColor (ScoreboardPanel.cs:727-738) reads hud_panel_scoreboard_ping_low=20/medium=80/high=200 live from the shared store (registered RegisterDefaults:1523-1525) with the QC band colors '0 1 0'/'1 1 0'/'1 0 0' and the exact lerp — was hardcoded 75/200/500 (an unintended value gap). The ping cell itself is still dead (ping not networked → always -1), but the colorization values are now faithful for when it is fed. (2) TEAM-SIZE side display (team_size_position) now PORTED on cl-scoreboard.teams.grouping_totals: DrawTeamTotals (ScoreboardPanel.cs:934-962) reads hud_panel_scoreboard_team_size_position (0/1/2, registered :1527) and draws the 'N/M' team-size string on the chosen side of each team box — was 'team_size_position absent'. All prior fixes (death/intermission auto-show, secrets feed, speed award, handicap icon, respawn jump-key, fade, spectators) re-confirmed live."
     - "RE-AUDIT 2026-06-25 (drift check): THREE fixes. (1) Death/intermission auto-show is LIVE on cl-scoreboard.toggle.showscores: UpdateScoreboard (NetGame.cs:3991-4073) implements the cl_deathscoreboard/_delay death scoreboard (4006-4020, client-side death_time stand-in via RESPAWN_TIME), intermission==1 force-up (4000), intermission==2/mapvote suppression (3999,4022), and the CTS-while-dead suppression hook (4013-4018); cl_deathscoreboard=1/_delay=1 cvars registered (NetGame.cs:1659-1660) and read live. (2) The map-stats SECRETS row is FED on cl-scoreboard.block.mapstats via FeedMapStats. (3) The race/CTS SPEED-AWARD line is ported + LIVE on cl-scoreboard.block.rankings (SetSpeedAward NetGame.cs:4065 → DrawSpeedAward ScoreboardPanel.cs:1291)."
     - "RE-AUDIT 2026-06-25 PRIOR: the name-cell HANDICAP icon is LIVE end-to-end (Entity.HandicapLevel → ScoreboardBlock.CaptureRows → ScoreRowWire.HandicapLevel → SetWireRows → DrawRow:1109-1117 colored square at the EXACT QC tint '1 0 0' + '0 1 1' * ((16-lvl)/15)). The other 4 name icons (player-color swatch, ready, ignored, (Q) wants-join) remain missing."
     - "Cross-fade in/out: LIVE (re-confirmed). NetGame.UpdateScoreboard:4026 sets ScoreboardPanel.Active=show; Active setter + _Process:747 ramp + _everActive:778 drive PanelFade on the real match path."
@@ -163,25 +163,29 @@ features:
     port_refs:
       - "game/hud/ScoreboardPanel.cs:GetField (Ping)"
       - "game/hud/ScoreboardPanel.cs:PingColor"
+      - "game/hud/ScoreboardPanel.cs:SetWireRows (PingMs)"
+      - "src/XonoticGodot.Net/ScoreboardBlock.cs:ScoreRowWire (PingMs)"
+      - "game/net/ServerNet.cs:BuildScoreboard (RoundTripMs)"
+      - "game/net/NetTransport.cs:RoundTripMs"
     constants:
       - { name: "hud_panel_scoreboard_ping_low", base: "20", port: "20", match: true }
       - { name: "hud_panel_scoreboard_ping_medium", base: "80", port: "80", match: true }
       - { name: "hud_panel_scoreboard_ping_high", base: "200", port: "200", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: true
-    divergence_rationale: "Ping is still not networked on the score row (SetWireRows hardcodes ping -1) so the cell shows a neutral dim '-' instead of QC's '>>>' no-scores glyph — a documented placeholder until ping is networked. The color-band VALUES are now Base-faithful (read live from the cvar store), so the only residual is the dead value cell + the unnetworked ping data."
+    divergence_rationale: "A bot / unmapped / loopback-host row sends ping -1, which the port renders as a neutral dim '-' rather than QC's '>>>' no-scores glyph — a deliberate placeholder for the no-real-ping case (a remote human now shows a real number). The ENet RTT is networked as a per-row ushort (not QC's entcs ping slice) — a faithful re-implementation, not a behavior change."
     gaps:
-      - "Ping column always shows a dim '-' (SetWireRows hardcodes ping:-1, ScoreboardPanel.cs:249/231). Unchanged this audit — spectator-row ping is also still -1; ScoreRowWire carries no ping field."
+      - "A bot / unmapped player / loopback-host (~0 RTT) row still shows the neutral dim '-' (PingMs -1) instead of QC's '>>>' no-scores / 'N/A' connecting glyphs; a connected REMOTE human's row shows the real ENet RTT, colorized by the bands."
     verification:
-      - { kind: code, ref: "SetWireRows ping:-1 always (ScoreboardPanel.cs:249); PingColor (ScoreboardPanel.cs:727-738) now reads ping_low=20/medium=80/high=200 from the shared store (CvarF) with QC band colors '0 1 0'/'1 1 0'/'1 0 0' and the exact lerp; defaults registered RegisterDefaults:1523-1525. Base scoreboard.qc:1017-1028 PING_LOW=20/MED=80/HIGH=200 + matching colors. Re-verified 2026-06-27.", result: fail }
+      - { kind: code, ref: "LIVE PING NETWORKED END-TO-END (drift check 2026-06-27): ServerNet.BuildScoreboard (ServerNet.cs:2484-2498) feeds pingMs = _transport.RoundTripMs(peerId) (NetTransport.cs:216-219, ENet PeerStatistic.RoundTripTime ms) for connected humans, -1 for bots/unmapped → ScoreRowWire.PingMs ushort serialize (ScoreboardBlock.cs:130) / deserialize 0xFFFF=-1 (:185) → SetWireRows passes ping: wr.PingMs (ScoreboardPanel.cs:262 players, :244 spectators) → GetField Ping (:633-635): -1 → dim '-', 0 → 'N/A', else int colorized by PingColor. PingColor (:758-769) reads ping_low=20/medium=80/high=200 from the shared store with QC band colors '0 1 0'/'1 1 0'/'1 0 0' + exact lerp. Fed on the live UpdateScoreboard path (NetGame.cs:4265). Base scoreboard.qc:1041 SP_PING.", result: pass }
     confidence: high
-    notes: "FIXED this audit (drift check): the color bands now match Base (20/80/200, cvar-driven) — was an unintended hardcoded 75/200/500 value gap. The value cell stays dead because per-row ping is not networked. PingPanel/serverlist use yet other ping ramps — still three ramps in the port."
+    notes: "FIXED this audit (drift check): per-row ping is now NETWORKED + LIVE (real ENet RTT) — was the prior worst-gap 'ping never networked → SetWireRows hardcodes -1'. The earlier audit's 'SetWireRows ping:-1 always, ScoreRowWire carries no ping field' is now stale: ScoreRowWire DOES carry PingMs and SetWireRows passes wr.PingMs. Color bands were already fixed (20/80/200, cvar-driven). Only residual: bots/host show the neutral '-'. PingPanel/serverlist still use other ping ramps in the port."
 
   - id: cl-scoreboard.field.packetloss
     name: "Packet-loss (pl) column"
@@ -408,12 +412,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Spectator-row ping is still -1 (per-row ping not networked) so showping shows a dim '-' rather than a real value."
       - "spectators_position (0/1/2/3 placement around the blocks) and spectators_aligned column alignment not implemented (drawn after the table only)."
     verification:
-      - { kind: code, ref: "ServerNet.BuildScoreboard sets isSpectator: p.IsObserver || p.FragsStatus==FragsSpectator on the wire; ScoreboardBlock serializes it; ScoreboardPanel.SetWireRows (line 229) routes IsSpectator rows into _spectators; UpdateScoreboard is the live caller; DrawSpectators (ScoreboardPanel.cs:1099) renders the block. Re-verified 2026-06-25.", result: pass }
+      - { kind: code, ref: "ServerNet.BuildScoreboard sets isSpectator: p.IsObserver || p.FragsStatus==FragsSpectator on the wire; ScoreboardBlock serializes it; ScoreboardPanel.SetWireRows (line 242) routes IsSpectator rows into _spectators WITH the networked per-row ping (ping: wr.PingMs, :244); UpdateScoreboard is the live caller; DrawSpectators (ScoreboardPanel.cs:1194) renders the block incl. showping (a remote human now shows a real number; -1 bot/host shows '-'). Re-verified 2026-06-27.", result: pass }
     confidence: high
-    notes: "Fed live by the networked IsSpectator wire flag via SetWireRows. The old SetSpectators(...) overloads remain but are dead/unused. Unchanged this audit."
+    notes: "FIXED this audit (drift check): spectator-row showping now renders the real networked ping (was 'spectator-row ping still -1') — same PingMs feed that un-deaded the score-table ping column. Fed live by the networked IsSpectator wire flag via SetWireRows. The old SetSpectators(...) overloads remain but are dead/unused."
 
   - id: cl-scoreboard.block.accuracy
     name: "Accuracy stats block"

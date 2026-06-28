@@ -5,10 +5,11 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 35
   worst_gaps:
-    - "Radar maximized clickable mode (ons spawn / teleport select) is still unported; the discovered radar panel stays force-hidden and the live one is the standalone _radar. (The BSP _mini minimap texture + bigsize/normalsize math ARE now ported — fixed since baseline by Wave 8c.)"
-    - "Pure --connect (remote) clients still have no vote / mapvote net channel; those panels stay blank there (listen-server only)."
+    - "Radar maximized clickable mode (ons spawn / teleport select) is still unported; the discovered radar panel stays force-hidden and the live one is the standalone _radar. (Onslaught radar links + the minimapname=='' gate were added by Wave 17; the BSP _mini minimap + bigsize/normalsize math by Wave 8c.)"
+    - "Pure --connect (remote) clients still have no vote / mapvote net channel; those panels stay blank there (listen-server only). (Map-vote casting now rides the C2S impulse byte on a remote client — Wave 16 — but the candidate-grid feed is still listen-server only.)"
     - "Race timer / checkpoints fed from host-side Race state, not the TE_CSQC_RACE wire — no splits on a pure --connect client."
-    - "Scoreboard still ignores hud_panel_scoreboard_pos/_size (manual Configure rect, intended divergence); spectator-row ping not networked per-row."
+    - "Scoreboard still ignores hud_panel_scoreboard_pos/_size (manual Configure rect, intended divergence); the accuracy show-DELAY timer is unwired (only the binary warmup gate is). Per-row ping IS now networked (Wave 17)."
+    - "HUD dock still punts on the hud_dock_color shirt/pants colormap literals (the 'team' literal + rgb + team-factor ARE wired; Wave 17 added the 'team' literal). The panels' bg_color shirt/pants/team literals ARE now resolved (Wave 17)."
 features:
   - id: cl-hud.engine.registry_and_order
     name: "Panel registry, z-order, panel-order cvar"
@@ -48,12 +49,11 @@ features:
     status: { logic: faithful, values: faithful, timing: faithful, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "_bg_color shirt/pants/team-blend not implemented (inherits global bg color instead)."
+    gaps: []
     verification:
-      - { kind: code, ref: "HudPanel.Resolve mirrors QC '' / '0' inherit rules", result: pass }
+      - { kind: code, ref: "HudPanel.Resolve mirrors QC '' / '0' inherit rules; Wave 17 (2f0bfdb) added the QC HUD_Panel_GetColor 'shirt'/'pants'/'team' bg_color literals: HudManager._Process resolves the local player's colormap shirt/pants (CsqcModelAppearance.ColormapPaletteColor on cp.ClientColors nibbles) + team color once per frame into HudPanel.LocalShirtColor/LocalPantsColor/LocalTeamColor, and HudPanel.Resolve maps bgColStr shirt/pants/team to them (inherit fallback when there is no local player).", result: pass }
     confidence: high
-    notes: "Live cvar reads via MenuState.Cvars so console set / menu dialogs move panels live; reload on cvar Changed + viewport resize. HudPanel.TryParseRgbColor exposed publicly so HudDock can share the parser."
+    notes: "FIXED since baseline (Wave 17 2f0bfdb): the _bg_color shirt/pants/team-blend literals are now resolved from the local player's colormap (ColormapPaletteColor) + team color, fed each frame by HudManager — closing the prior 'inherits global bg color' gap on the listen-server path. Live cvar reads via MenuState.Cvars so console set / menu dialogs move panels live; reload on cvar Changed + viewport resize. HudPanel.TryParseRgbColor exposed publicly so HudDock can share the parser. (On a pure --connect client with no local Player the literals fall back to inherit — same as Base when no colormap is known.)"
 
   - id: cl-hud.engine.skin_border
     name: "9-slice skin border (draw_BorderPicture)"
@@ -176,11 +176,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "shirt/pants colormap dock tint (hud_dock_color shirt/pants) not implemented; team + rgb tints are."
+      - "shirt/pants colormap dock tint (hud_dock_color shirt/pants) still not implemented (the dock reads its own TeamColor, not HudPanel.LocalShirtColor/LocalPantsColor, so it punts on the colormap literals). hud_dock_color 'team' + rgb + the hud_dock_color_team factor tints ARE implemented."
     verification:
-      - { kind: code, ref: "HudDock._Draw fills the viewport with gfx/hud/<skin>/<dock>→dock_medium at hud_dock_alpha*hud_fade_alpha; Hud._Ready adds it first (lowest z); HudManager._Process feeds HudFadeAlpha + TeamColor each frame", result: pass }
+      - { kind: code, ref: "HudDock._Draw fills the viewport with gfx/hud/<skin>/<dock>→dock_medium at hud_dock_alpha*hud_fade_alpha; Hud._Ready adds it first (lowest z); HudManager._Process feeds HudFadeAlpha + TeamColor each frame; Wave 17 (2f0bfdb) added the explicit hud_dock_color 'team' literal (was only the hud_dock_color_team factor path before)", result: pass }
     confidence: high
-    notes: "WIRED: HudDock is a full-screen Control added behind every panel; self-blanks while hud_dock is off (the default)."
+    notes: "WIRED: HudDock is a full-screen Control added behind every panel; self-blanks while hud_dock is off (the default). Wave 17 (2f0bfdb) added the literal 'team' dock-color case; the shirt/pants colormap literals remain unported for the dock specifically (the panels' bg_color now resolves them via HudPanel.LocalShirt/PantsColor, but HudDock isn't fed those statics) — gap narrowed, not closed."
 
   - id: cl-hud.engine.configure_mode
     name: "HUD configure-mode editor (hud_config.qc)"
@@ -341,9 +341,9 @@ features:
     gaps:
       - "Maximized clickable mode (ons spawn / teleport select) is still unported; the discovered radar panel is force-hidden (StartHiddenIds) to avoid a double radar and the live radar is the standalone _radar."
     verification:
-      - { kind: code, ref: "standalone _radar fed MapName + MapMinXY/MapMaxXY (BSP worldspawn bounds) from NetGame ~line 1481; _fullHud radar in StartHiddenIds; Wave 8c (0d649bb) ported the real gfx/<map>_mini minimap texture render (rotated player-centered textured quad via DrawPolygon, RadarPanel.cs:314-331) + the faithful bigsize/normalsize teamradar_size math + the v_flipped X-mirror; Wave 6e added the zoommode/rotation modes", result: pass }
+      - { kind: code, ref: "standalone _radar fed MapName + MapMinXY/MapMaxXY (BSP worldspawn bounds) from NetGame ~line 1481; _fullHud radar in StartHiddenIds; Wave 8c (0d649bb) ported the real gfx/<map>_mini minimap texture render (rotated player-centered textured quad via DrawPolygon) + the faithful bigsize/normalsize teamradar_size math + the v_flipped X-mirror; Wave 6e added the zoommode/rotation modes; Wave 17 (2f0bfdb) added the QC minimapname=='' early-return (no minimap art → blank radar) and the Onslaught draw_teamradar_link control-point/generator connection lines (DrawLinkQuad over ClientNet.RadarLinks, fed end-to-end by Onslaught.CollectRadarLinks → ServerNet.SendRadarLinks → ClientNet.HandleRadarLinks)", result: pass }
     confidence: medium
-    notes: "Improved since baseline (Wave 8c 0d649bb): the BSP _mini minimap texture is now rendered (resolves gfx/<map>_radar / gfx/<map>_mini through the VFS and draws the rotated world-bounds quad) and the zoom scaling is the faithful bigsize/normalsize (teamradar_size) math from the real map bounds, not the old RangeUnits heuristic. Remaining gap: no maximized clickable mode; still the standalone _radar only (liveness partial)."
+    notes: "Improved since baseline. Wave 8c (0d649bb): the BSP _mini minimap texture is rendered + the faithful bigsize/normalsize (teamradar_size) zoom math. Wave 17 (2f0bfdb): the QC minimapname=='' gate (maps with no minimap art blank the radar, matching Base) AND the Onslaught radar links (per-end team-colored connection quads, fully wired S2C). Remaining gap (UNCLOSED): no maximized clickable mode (ons spawn / teleport select); still the standalone _radar only — presentation + liveness stay partial."
 
   - id: cl-hud.panel.score
     name: "Score overlay panel (#7)"
@@ -412,17 +412,16 @@ features:
     port_refs:
       - "game/hud/ModIconsPanel.cs"
     constants:
-      - { name: "mode coverage", base: "11 HUD_Mod handlers (CA/CTF/Dom/FreezeTag/KH/Keepaway/LMS/NexBall/Race/Survival/TeamKeepaway)", port: "10 ported (CTF/Keyhunt/Dom/CA/FreezeTag/Survival/Assault/Keepaway/TeamKeepaway/LMS/Race); NexBall missing", match: false }
+      - { name: "mode coverage", base: "11 HUD_Mod handlers (CA/CTF/Dom/FreezeTag/KH/Keepaway/LMS/NexBall/Race/Survival/TeamKeepaway)", port: "11 ported (CTF/Keyhunt/Dom/CA/FreezeTag/Survival/Assault/Keepaway/TeamKeepaway/LMS/Race/NexBall)", match: true }
     status: { logic: faithful, values: unknown, timing: unknown, presentation: faithful, audio: na, liveness: live }
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "NexBall modicon (HUD_Mod_NexBall) is not ported (the port has no NexBall gametype yet)."
-      - "Per-gametype icon-art fidelity (dom point-ownership icons) is approximate; not all runtime-verified."
+      - "Per-gametype icon-art fidelity (dom point-ownership icons, nexball_carrying art) is approximate; not all runtime-verified. The NexBall icon has a vector stand-in (ball glyph + 'BALL' tag) when nexball_carrying art is missing from the skin."
     verification:
-      - { kind: code, ref: "ModIconsPanel.DrawPanel switches over Ctf/Keyhunt/Domination/ClanArena/FreezeTag/Survival/Assault/Keepaway/TeamKeepaway/Lms/Race; Wave 12d (0b3c2a8) ported the QC CTF per-flag status-change crossfade (CtfTrack prevstatus latch + DrawIconExpanding drawpic_aspect_skin_expanding, f=bound(0,elapsed*2,1)); NetGame sets ModIcons.Mode + KeepawayCarrying from the GametypeStatusBlock", result: pass }
+      - { kind: code, ref: "ModIconsPanel.DrawPanel switches over Ctf/Keyhunt/Domination/ClanArena/FreezeTag/Survival/Assault/Keepaway/TeamKeepaway/Lms/Race/NexBall; Wave 12d (0b3c2a8) ported the QC CTF per-flag status-change crossfade; Wave 17 (2f0bfdb) added DrawNexBall (HUD_Mod_NexBall: centered nexball_carrying icon, blink 0.85/0.15/5 + status-change expand transition f=bound(0,elapsed*2,1)) fed by NetGame from GametypeStatusBlock.Kind.NexBall (carrier net id vs LocalNetId), with the server producer (Nexball.cs BallEntity.GtCarrier → GametypeStatusBlock) live", result: pass }
     confidence: medium
-    notes: "Improved since baseline (Wave 12d 0b3c2a8): the CTF flag status-change crossfade is now a line-for-line port (old status expands+fades out via drawpic_aspect_skin_expanding while new fades in), and LMS/Race/TeamKeepaway modes were added — now 10 of Base's 11 HUD_Mod handlers. Remaining: NexBall modicon (no NexBall gametype in the port) + approximate dom icon art."
+    notes: "Improved since baseline (Wave 17 2f0bfdb): the NexBall modicon (HUD_Mod_NexBall) is now ported AND wired — a real Nexball gametype exists (src/.../GameTypes/Nexball.cs), its ball-carrier net id rides GametypeStatusBlock.Kind.NexBall, and NetGame.UpdateModIcons feeds NexBallCarrying; the panel draws the blinking nexball_carrying carry-indicator with the QC expand transition. Now 11 of Base's 11 HUD_Mod handlers (closing the prior 'no NexBall gametype' gap). Earlier (Wave 12d 0b3c2a8): the CTF flag status-change crossfade is a line-for-line port and LMS/Race/TeamKeepaway were added. Remaining: approximate dom/nexball icon art fidelity (unverified)."
 
   - id: cl-hud.panel.pressedkeys
     name: "Pressed-keys panel (#11)"
@@ -598,11 +597,11 @@ features:
     intended_divergence: true
     divergence_rationale: "The networked scoreboard is a standalone _scoreboard placed by a manual Configure rect (fed from ClientNet); _fullHud's discovered Scoreboard is left unfed to avoid a double scoreboard. The cvar pos/size therefore doesn't move the live board."
     gaps:
-      - "Scoreboard ignores hud_panel_scoreboard_pos/_size (manual rect, intended divergence). Spectator-row ping is not networked per-row yet (shown as unknown / N/A)."
+      - "Scoreboard ignores hud_panel_scoreboard_pos/_size (manual rect, intended divergence). The time-since-start accuracy show-delay (hud_panel_scoreboard_accuracy_showdelay) is registered but only the binary warmup gate is wired (the delay timer itself is a documented residual)."
     verification:
-      - { kind: code, ref: "_scoreboard fed SetWireRows (splitting IsSpectator rows into the spectator block) + RespawnStat/RespawnServerTime/RespawnJumpKey (3-state respawn line) + SetAccuracy + FeedScoreboardHeader from ClientNet; Wave 8c (0d649bb) added the per-round scores averaging + leadlimit header + SP_SKILL formatting; Wave 12d (0b3c2a8) fixed PingColor to read the QC ping_low/medium/high bands (20/80/200, was hardcoded 75/200/500) and added the team_size_position 'N/M' team head-count display", result: pass }
+      - { kind: code, ref: "_scoreboard fed SetWireRows (splitting IsSpectator rows into the spectator block) + RespawnStat/RespawnServerTime/RespawnJumpKey + SetAccuracy + FeedScoreboardHeader from ClientNet; Wave 17 (2f0bfdb) networks SP_PING per row (ScoreRowWire.PingMs = server ENet RTT via _transport.RoundTripMs(peerId), serialized as a ushort in ScoreboardBlock, consumed by ScoreboardPanel for both player rows AND the spectator block), adds the playerid '#N' name prefix (hud_panel_scoreboard_playerid), the Scoreboard_DrawOthers '... and N more' overflow line (_overflowRows), the sv_entnum sort tiebreak (stable sort), and the Scoreboard_AccuracyStats_WouldDraw warmup gate (MatchWarmup fed from ClientNet); Wave 12d (0b3c2a8) fixed PingColor bands (20/80/200) + team_size_position 'N/M'; Wave 8c (0d649bb) per-round averaging + leadlimit header + SP_SKILL", result: pass }
     confidence: medium
-    notes: "Improved since baseline (Wave 12d 0b3c2a8): the SP_PING colorization bands now match the QC defaults (20/80/200, read live) instead of the old hardcoded 75/200/500 value gap, and the team_size_position 'N/M' (team size / total) team-box term is ported. Earlier (Wave 8c) fixes: per-round column averaging, leadlimit/fraglimit header math, SP_SKILL formatting, spectator/observer block split, 3-state respawn line. Remaining: the layout cvar-pos divergence (intended) + per-row spectator ping not networked."
+    notes: "Improved since baseline (Wave 17 2f0bfdb): the per-row ping is now genuinely networked end-to-end — the server writes each human's ENet RTT into the wire row (bots/unmapped = -1), the wire carries it as a ushort, and the panel colorizes both score rows and the spectator block by the QC ping bands, closing the prior 'spectator-row ping not networked per-row' gap. Also added: playerid '#N' prefix, '... and N more' overflow line, sv_entnum sort tiebreak (stable order), and the warmup accuracy-block gate. Wave 12d: PingColor bands (20/80/200) + team_size_position 'N/M'. Wave 8c: per-round averaging, leadlimit/fraglimit header, SP_SKILL, spectator/observer split, 3-state respawn line. Remaining: the layout cvar-pos divergence (intended) + the accuracy show-DELAY timer (only the binary warmup gate is wired)."
 
   - id: cl-hud.panel.strafehud
     name: "Strafe HUD panel"

@@ -2,11 +2,12 @@ unit: monster-spider
 category: monster
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
+reverify_wave: "16-17 consolidated re-verify (opus)"
 summary:
   feature_count: 17
   worst_gaps:
-    - "Client DPM frame playback still not wired: the server now computes + networks the correct per-phase MD3 frame (DriveAnimFrame -> Spider.AnimFrame -> Entity.Frame, LIVE), but the CLIENT renders the spider's spider.dpm through the EntityModelFactory/DpmBuilder path, which builds an AnimationPlayer NOT bound to the entity and never consumes the networked Entity.Frame (only the MD3 ModelAnimator morph path honours FollowEntityFrame). So the spider's server anim PHASE is now correct/networked but the visible DPM model still does not play walk/bite/web/pain/die from it. Shared monster-presentation gap (all DPM/IQM monsters)."
-    - "Player-wielded SpiderAttack weapon (impulse 9, IS_PLAYER path: attack_range 60, weapon_prepareattack, Monster_FindTarget) still unported — reachable only via MON_FLAG_RIDE monster-riding (no riding mode) or dev tooling; low gameplay impact."
+    - "Player-wielded SpiderAttack weapon (impulse 9, IS_PLAYER path: attack_range 60, weapon_prepareattack, Monster_FindTarget) still unported — reachable only via MON_FLAG_RIDE monster-riding (no riding mode) or dev tooling; low gameplay impact. This is the only fully-open feature."
+    - "Client DPM frame playback is now WIRED end-to-end (Wave 17): the server networks the per-phase frame-group ordinal on Entity.Frame (DriveAnimFrame) AND the client consumes it — monsters route NetEntityKind.Generic -> frameDriven:true -> ClientWorld marks _frameDriven; a DPM resolved via EntityModelFactory then gets DpmFrameDriver.TryAttach (ClientWorld.cs:1707), which each frame reads Entity.Frame and plays the matching baked .framegroups clip (DpmBuilder writes FrameGroupClipsMeta per group). The prior 'CLIENT does not consume Entity.Frame' gap is CLOSED in code. Held at presentation:unknown (not faithful) only because the visible animation is code-traced, not runtime-rendered/verified."
 features:
   - id: monster-spider.identity.registration
     name: "Spider monster type registration + identity (model, name, hitbox, spawnflags)"
@@ -113,18 +114,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: unknown
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC bite picks a random melee anim (anim_melee vs anim_shoot via setanim). The port now sets the Attack anim PHASE (frame 0 mapped server-side via AnimFrame) but does NOT randomise melee/shoot, and (more importantly) the client DPM model does not render the networked Entity.Frame at all (see monster-spider.anim.mr_anim) — presentation only."
+      - "QC bite picks a random melee anim (anim_melee '0' vs anim_shoot '3' via setanim). The port NOW reproduces that coin-flip: Spider.Attack sets st.Anim = random > 0.5 ? Shoot : Attack (Spider.cs:134), and the chosen frame is networked AND consumed client-side by DpmFrameDriver (the prior 'client DPM doesn't render it' gap is closed in code — see monster-spider.anim.mr_anim). presentation:unknown only because the bite anim is code-traced, not rendered/observed."
       - "QC NPC bite uses actor.attack_range (= g_monsters_attack_range 120); the player-wielded path forces attack_range 60. Port uses st.AttackRange for the NPC path (faithful); the 60 player path is part of the unported player-wielded SpiderAttack (see monster-spider.attack.player_wielded)."
     verification:
-      - { kind: code, ref: "Spider.Attack dist<=AttackRange -> MeleeAttack(e,st,BiteDamage 35, AttackRange, BiteDelay 1.5, DeathTypes.MonsterSpider); MeleeAttack on a connecting hit calls MonsterSound(self,st,'melee',0,false,Voice) (MonsterAI.cs:1559). The spider's SoundCues set is EMPTY so MonsterSound emits NO sample — matching the Base spider's silent (no-.sounds) melee cue. QC Monster_Attack_Check fires monstersound_melee==\"\" -> silence too.", result: pass }
+      - { kind: code, ref: "Spider.Attack dist<=AttackRange -> sets st.Anim random Shoot/Attack (Spider.cs:134) then MeleeAttack(e,st,BiteDamage 35, AttackRange, BiteDelay 1.5, DeathTypes.MonsterSpider); MeleeAttack on a connecting hit calls MonsterSound(self,st,'melee',...). The spider's SoundCues set is EMPTY (Spider.cs:43) so MonsterSound emits NO sample — matching the Base spider's silent (no-.sounds) melee cue. QC Monster_Attack_Check fires monstersound_melee==\"\" -> silence too. Covered by MonsterTurretVehicleObituaryTests.SpiderBite_RealAttack_TagsMonsterSpider.", result: pass }
     confidence: high
-    notes: "FIX since prior audit: audio downgrade was REVERSED. The Wave-2 audit had this at audio:partial because the port emitted a port-invented monsters/spider_melee.wav. The spider's SoundCues are now an EMPTY set, so MonsterSound advances the throttle window but plays no sample — bit-faithful to the Base spider's silent melee cue (no .sounds file). Damage logic/values/timing unchanged faithful. Presentation still partial (frame networked but client DPM doesn't render it)."
+    notes: "logic/values/timing/audio faithful (dmg 35 / delay 1.5 / DEATH_MONSTER_SPIDER; silent empty-SoundCues melee cue bit-matching Base's no-.sounds spider). DRIFT vs baseline: presentation partial->unknown — the random melee/shoot bite anim coin-flip is now wired (Spider.cs:134) AND its frame is consumed client-side by DpmFrameDriver (Wave 17), closing the baseline's 'client DPM doesn't render it' note. Held at unknown (not faithful) per the not-runtime-verified rule. Real melee path unit-tested (obituary)."
 
   - id: monster-spider.attack.web_projectile
     name: "Ranged web projectile (bouncing plasma, no direct damage)"
@@ -332,7 +333,11 @@ features:
       - "common/monsters/monster/spider.qc:METHOD(Spider, mr_anim)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs:AnimFrame (61-73)"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:DriveAnimFrame (1428)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:DriveAnimFrame (1464)"
+      - "game/net/ClientEntityView.cs:219 (monster -> Generic frameDriven:true)"
+      - "game/client/ClientWorld.cs:1706-1707 (DpmFrameDriver.TryAttach for frame-driven DPM)"
+      - "game/client/DpmFrameDriver.cs (reads Entity.Frame -> plays framegroup clip)"
+      - "game/loaders/models/DpmBuilder.cs:151-158 (bakes per-framegroup clips + FrameGroupClipsMeta)"
     constants:
       - { name: "anim_melee", base: "frame 0", port: "Attack -> 0", match: true }
       - { name: "anim_die1/die2", base: "frames 1/2", port: "Death -> 1/2 (die2 flag)", match: true }
@@ -344,17 +349,17 @@ features:
       logic: na
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: unknown
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CLIENT DPM PLAYBACK STILL MISSING. The server now maps the logical MonsterAnim phase to the spider's DPM frame-group start index (Spider.AnimFrame) and stamps it onto the networked Entity.Frame each think (MonsterAI.DriveAnimFrame, called in RunThink/MarkPain/MarkDead) — this IS live and the frame values match mr_anim exactly. BUT the client renders the spider's spider.dpm via ClientWorld.EntityModelFactory -> NetGame.BuildEntityModel -> AssetLoader.LoadModel -> DpmBuilder (an AnimationPlayer-backed node that is NOT bound to the Entity and NEVER consumes the networked Entity.Frame). Only the MD3 morph path (ClientWorld ModelAnimator with FollowEntityFrame) honours Entity.Frame, and ResolveEntityModel returns null for a DPM, so the spider never takes that path. Net: the server anim PHASE is correct + networked, but the visible DPM model does not play walk/bite/web/pain/die. Shared monster-presentation gap (all DPM/IQM monsters)."
+      - "CLIENT DPM PLAYBACK NOW WIRED (Wave 17) — not runtime-verified. The server maps the logical MonsterAnim phase to the spider's DPM frame-group ordinal (Spider.AnimFrame) and stamps it on the networked Entity.Frame each think (DriveAnimFrame, called in RunThink/Move/MarkPain/MarkDead), AND the client now consumes it: monsters route NetEntityKind.Generic -> OnEntityUpdate(frameDriven:true) -> ClientWorld._frameDriven; a DPM resolved via EntityModelFactory then gets DpmFrameDriver.TryAttach (ClientWorld.cs:1707), and DpmFrameDriver._Process each frame reads Entity.Frame, clamps to the framegroup count, and plays the matching baked clip. DpmBuilder bakes one AnimationPlayer clip per .framegroups range in group order and records FrameGroupClipsMeta. The prior 'client never consumes Entity.Frame / only the MD3 path honours it' gap is CLOSED in code. Remaining: presentation:unknown (not faithful) because the on-screen animation is code-traced, not behaviorally rendered/observed in a live match."
     verification:
-      - { kind: code, ref: "Spider.AnimFrame maps every phase to the mr_anim frame (Idle 5/Walk 10/Run 10/Attack 0/Shoot 3/Pain 7|8/Death 1|2); DriveAnimFrame (MonsterAI.cs:1428) writes it to self.Frame, called from RunThink (1312), dead branch (1370/1388), pain (1419). Server-side LIVE. Client: ClientEntityView routes monsters as NetEntityKind.Generic frameDriven:true, but ClientWorld only wires FollowEntityFrame on the MD3 ModelAnimator (1636) — the EntityModelFactory fallback (1613) adds the built node with no Entity binding, so the DPM never plays Entity.Frame. spider.dpm is DARKPLACESMODEL magic -> ModelResolver returns null -> factory path.", result: fail }
-    confidence: high
-    notes: "FIX (partial) since prior audit: the prior audit recorded this fully missing (values/timing/presentation:missing, liveness:na, port_refs empty) and claimed 'MonsterAI.cs:1058-1059 still explicitly defers CSQC monster anim'. That deferral is GONE — a full descriptor-layer anim system now exists (Monster.AnimFrame/PainWindow/RollDeathVariant + MonsterAI.DriveAnimFrame) and the spider populates its frame map, computed + networked live on Entity.Frame. The remaining gap is purely client-side: the DPM render path (DpmBuilder/AnimationPlayer) does not consume the networked frame. values/timing missing->faithful (fix), liveness na->partial (fix), presentation stays missing."
+      - { kind: code, ref: "Spider.AnimFrame maps every phase to the mr_anim frame (Idle 5/Walk 10/Run 10/Attack 0/Shoot 3/Pain 7|8/Death 1|2); DriveAnimFrame (MonsterAI.cs:1464) writes it to self.Frame, called from RunThink (1455), dead branch (1406), spawn gate (1424), Move (1348). CLIENT: ClientEntityView.cs:219 routes the monster (classname 'monster' -> ServerNet.Classify Generic) as frameDriven:true; ClientWorld.OnEntityUpdate adds to _frameDriven (449); TryAttachModel resolves the DPM via EntityModelFactory (MD3 resolver null for DARKPLACESMODEL) and calls DpmFrameDriver.TryAttach when _frameDriven.Contains (1706-1707); DpmFrameDriver._Process plays _clipsByGroup[Entity.Frame]. DpmBuilder.BuildAnimations emits one clip per framegroup in order + SetMeta(FrameGroupClipsMeta) (151-158). End-to-end wiring present.", result: pass }
+    confidence: medium
+    notes: "FIX since baseline (drift): the baseline marked this presentation:missing/liveness:partial claiming 'the CLIENT renders the DPM via EntityModelFactory/DpmBuilder which NEVER consumes Entity.Frame; only the MD3 morph path honours FollowEntityFrame.' That is now FALSE — DpmFrameDriver.cs (the DPM analog of ModelAnimator.FollowEntityFrame) landed in Wave 17 (2f0bfdb 'presentation consumers') and is wired in ClientWorld.cs:1707 for frame-driven DPM monsters, with DpmBuilder writing the per-group clip metadata it consumes. presentation missing->unknown, liveness partial->live. Held at unknown (confidence medium) per the 'visible fidelity not runtime-verified = unknown' rule — the chain is code-complete but not observed rendering. Shared infra: closes the same gap for all DPM monsters (golem/mage/zombie/wyvern)."
 
   - id: monster-spider.pain.mr_pain
     name: "Pain reaction + anim (mr_pain: random pain1/pain2, pain_finished)"
@@ -373,17 +378,17 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: unknown
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Pain anim variant is now picked (MarkPain sets st.AnimVariant random 0/1 -> AnimFrame Pain 7/8) and the pain-window now matches the QC anim length (0.44s), but the CLIENT DPM model does not render the networked Entity.Frame (see monster-spider.anim.mr_anim), so the pain twitch is computed server-side yet not visible. Presentation partial."
+      - "Pain twitch is fully wired: MarkPain sets st.Anim=Pain + st.AnimVariant random 0/1 (-> AnimFrame Pain 7/8), the pain-window matches the QC anim length (0.44s), and the chosen frame is now BOTH networked (Entity.Frame) AND consumed client-side by DpmFrameDriver (see monster-spider.anim.mr_anim — the prior 'client DPM doesn't render it' gap is closed in code). presentation:unknown only because the on-screen pain anim is code-traced, not rendered/observed."
     verification:
-      - { kind: code, ref: "Spider.PainWindow => 11f/25f (0.44s) overrides the generic 0.34s; the damage path (MonsterAI.cs:1803) sets PainFinished = Now + def.PainWindow, st.Anim=Pain, st.AnimVariant = random 0/1 (1807). Pain cue: MonsterSound(self,st,'pain',1.2f,true,PainAuto) (1811) — but the spider's SoundCues set is EMPTY, so it advances the 1.2s throttle and plays NO sample (matching the Base spider's silent monstersound_pain='').", result: pass }
+      - { kind: code, ref: "Spider.PainWindow => 11f/25f (0.44s) overrides the generic 0.34s; the damage path (MonsterAI.cs:1857) sets PainFinished = Now + def.PainWindow, st.Anim=Pain, st.AnimVariant = random 0/1 (1861). Pain cue: MonsterSound(self,st,'pain',1.2f,true,PainAuto) (1865) — the spider's SoundCues set is EMPTY (Spider.cs:43), so MonsterSound (cueDefined=false at MonsterAI.cs:926) advances the 1.2s throttle and plays NO sample (matching the Base spider's silent monstersound_pain=''). Networked Pain frame consumed by DpmFrameDriver (anim.mr_anim row).", result: pass }
     confidence: high
-    notes: "FIXES since prior audit: (1) TIMING partial->faithful — PainWindow override (11/25 = 0.44s) now matches the QC pain1/pain2 anim length (animstate_endtime), replacing the generic 0.34s. (2) VALUES partial->faithful — the random pain1/pain2 pick is now wired via st.AnimVariant. (3) AUDIO partial->faithful — the pain cue is now SILENT (empty SoundCues) bit-matching Base's no-.sounds spider, instead of the prior port-invented monsters/spider_pain.wav. Presentation stays partial (frame networked, client DPM doesn't render it). Damage math handled faithfully in the shared path."
+    notes: "Mostly unchanged since baseline + one drift fix. logic/values/timing/audio stay faithful (PainWindow 0.44s, random pain1/pain2 via AnimVariant, silent empty-SoundCues cue all verified). DRIFT: presentation partial->unknown — the baseline held presentation:partial because 'the client DPM does not render the networked Entity.Frame'; that consumer (DpmFrameDriver, Wave 17) now exists and is wired, so the pain frame IS consumed client-side. Held at unknown (not faithful) per the not-runtime-verified rule."
 
   - id: monster-spider.death.mr_death
     name: "Death reaction + anim (mr_death: random die1/die2)"
@@ -403,17 +408,17 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: unknown
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "CLIENT DPM playback missing: the chosen die1/die2 frame is networked on Entity.Frame but the DPM model does not consume it (see monster-spider.anim.mr_anim), so neither death variant is visually rendered. Presentation partial; the random pick itself is now wired server-side."
+      - "Death anim fully wired: the random die1/die2 pick is rolled server-side (RollDeathVariant -> DeathLanded), networked on Entity.Frame (die2 ? 2 : 1), and now CONSUMED client-side by DpmFrameDriver (the prior 'client DPM does not render it' gap is closed in code — see monster-spider.anim.mr_anim). presentation:unknown only because the death pose is code-traced, not rendered/observed."
     verification:
-      - { kind: code, ref: "Spider.RollDeathVariant() => MonsterRandom.Next() > 0.5f (Spider.cs:80); MonsterAI.MarkDead sets st.Anim=Death, st.DeathLanded = def.RollDeathVariant() (MonsterAI.cs:1902) -> AnimFrame Death-> die2 ? 2f : 1f. High roll -> die2 (frame 2), low -> die1 (frame 1), matching QC `random()>0.5 ? anim_die2 : anim_die1` exactly. Death cue: MonsterSound(self,st,'death',0f,false,Voice) — empty SoundCues -> silent, matching Base's no-.sounds spider. Corpse lifetime +5s, gib at -100 (live)/-50 (corpse), scoring, MonsterDies->NadeBonus all faithful.", result: pass }
+      - { kind: code, ref: "Spider.RollDeathVariant() => MonsterRandom.Next() > 0.5f (Spider.cs:80); MonsterAI.MarkDead sets st.Anim=Death, st.DeathLanded = def.RollDeathVariant() (MonsterAI.cs:1956) -> AnimFrame Death -> die2 ? 2f : 1f. High roll -> die2 (frame 2), low -> die1 (frame 1), matching QC `random()>0.5 ? anim_die2 : anim_die1`. Death cue: MonsterSound(self,st,'death',0f,false,Voice) — empty SoundCues -> silent, matching Base's no-.sounds spider. Networked Death frame consumed by DpmFrameDriver. Corpse lifetime +5s, gib at -100 (live)/-50 (corpse), scoring, MonsterDies->NadeBonus all faithful.", result: pass }
     confidence: high
-    notes: "FIX since prior audit: VALUES partial->faithful (death-anim constant match false->true) — Spider now overrides RollDeathVariant() (Spider.cs:80) so the QC random()>0.5 die1/die2 pick is wired server-side (matching the sibling Zombie). The Death frame is mapped (die1/die2) AND the random pick now selects between them. Presentation stays partial only because the client DPM doesn't render the networked frame. Corpse/loot/scoring/NadeBonus all faithful; audio silent (empty SoundCues) matching Base."
+    notes: "Mostly unchanged + one drift fix. logic/values/timing/audio stay faithful (RollDeathVariant random die1/die2, corpse/loot/scoring/NadeBonus, silent empty-SoundCues cue all verified). DRIFT: presentation partial->unknown — the baseline held presentation:partial because 'the client DPM doesn't render the networked frame'; that consumer (DpmFrameDriver, Wave 17) now exists and is wired, so the die1/die2 frame IS consumed client-side. Held at unknown (not faithful) per the not-runtime-verified rule."
 
   - id: monster-spider.think.brain
     name: "Per-frame brain: enemy acquire, move, attack-check (Monster_Think)"

@@ -2,7 +2,19 @@ unit: mutator-buffs
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
-# Re-audited 2026-06-27 (drift check vs the 2026-06-25 baseline; branch claude/parity-port-waves). NO DRIFT:
+# Re-audited 2026-06-27 (OPUS consolidated re-verify post Waves 16/17; branch claude/parity-port-waves). NO STATUS
+# DRIFT: every row's status/liveness re-confirmed by reading the CURRENT port code, not assumed. Liveness spot-checks
+# this pass (all PASS): map item_buff_* spawnfuncs LIVE (ItemSpawnFuncs.RegisterBuffSpawnFuncs:207 -> SpawnFuncs.Register
+# -> BuffsMutator.SpawnMapBuff:356); FilterItem powerup-replace LIVE (StartItem.cs:119 MutatorHooks.FireFilterItem ->
+# OnFilterItem:906); medic PlayerRegen mods CONSUMED on the live path (XonoticGodot.Server/PlayerFrameLogic.cs:56-62 reads
+# RotMod/RegenMod/MaxMod/LimitMod back from the hook); jump-velocity override is genuinely LIVE+READ (PlayerPhysics.cs:1079-1080
+# mjumpheight = player.JumpVelocityOverride — the historical DEAD gap is closed); disability fire-rate slow LIVE
+# (WeaponFireGate.cs:489 WeaponRateFactor.Call); +use drop LIVE (VehicleBoarding.cs:106 FirePlayerUseKey). StatusEffects
+# catalog (StatusEffects.cs:240-252) registers EXACTLY the 13 QC buffs (buff_ammo..buff_vengeance); 'speed'/'invisibility'
+# are POWERUP defs (no buff_ prefix, :234-235), so the port-extra speed/invisible branches remain inert dead code. NOTE:
+# some verification-ref line numbers below have minor drift vs the current file (e.g. OnDamageCalculate now :627, OnFilterItem
+# :906, OnPlayerUseKey :877, RandomBuff :225, resistance clamp :642) — symbols/behavior unchanged, only offsets moved.
+# (Prior 2026-06-27 drift-check note retained below.)
 # every row re-verified against current Base + port code and the recorded statuses/constants/liveness all still
 # hold. All 13 REGISTER_BUFF types still mapped; all MUTATOR_HOOKFUNCTION(buffs,...) hooks accounted for
 # (PlayerPhysics_UpdateStats/MonsterMove/WeaponSpeedFactor under buffs.disability gaps; MakePlayerObserver/

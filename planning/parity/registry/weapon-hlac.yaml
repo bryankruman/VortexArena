@@ -1,13 +1,12 @@
 unit: weapon-hlac
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 9
   worst_gaps:
-    - "wr_aim (bot projectile-lead aim) still not implemented — bots lead/aim HLAC bolts worse than Base"
-    - "bolt client render via CSQCProjectile(PROJECTILE_HLAC) (bolt model/trail) still unverified on the live render path"
-    - "muzzle/impact green->blaster v0.8.6 compat fallback not ported (cosmetic; both green effects are registered)"
+    - "HLAC bolt renders as a generic glow sprite, not the dedicated models/hlac_bullet.md3 (no ModelPath on ProjectileType.Hlac; Blaster wires its laser.mdl but HLAC does not). Trail correctly absent (Base = EFFECT_Null)."
+    - "Port bot-aim adds a ~10% secondary-burst chance (Hlac.BotWantsSecondary) that Base wr_aim does NOT have — QC HLAC wr_aim only ever presses primary (hlac.qc:156-159). Minor behavioral divergence; lead-at-primary-speed itself is now faithful + live."
 features:
   - id: weapon-hlac.primary.attack
     name: "Primary rapid-fire single bolt with held-fire spread accumulation"
@@ -244,23 +243,23 @@ features:
     constants:
       - { name: "fire sound", base: "SND_HLAC_FIRE=lasergun_fire", port: "weapons/lasergun_fire.wav", match: true }
       - { name: "impact sound", base: "SND_LASERIMPACT", port: "weapons/laserimpact.wav", match: true }
-      - { name: "muzzle effect", base: "GREEN_HLAC_MUZZLEFLASH (blaster fallback)", port: "GREEN_HLAC_MUZZLEFLASH (no fallback)", match: false }
-      - { name: "impact effect", base: "GREEN_HLAC_IMPACT (blaster fallback)", port: "GREEN_HLAC_IMPACT (no fallback)", match: false }
+      - { name: "muzzle effect", base: "GREEN_HLAC_MUZZLEFLASH (blaster fallback)", port: "GREEN_HLAC_MUZZLEFLASH -> BLASTER_MUZZLEFLASH fallback (Hlac.cs:331-337)", match: true }
+      - { name: "impact effect", base: "GREEN_HLAC_IMPACT (blaster fallback)", port: "GREEN_HLAC_IMPACT -> BLASTER_IMPACT fallback (Hlac.cs:345-351)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Runtime green->blaster effect fallback (v0.8.6 compat, hlac.qc:225-228) not ported; cosmetic, only matters on a build missing the green HLAC effects (both are registered in the port). Unchanged by Wave-2."
+    gaps: []
     verification:
-      - { kind: trace, ref: "EffectsList.cs registers GREEN_HLAC_MUZZLEFLASH/IMPACT; Hlac emits them (Attack/Attack2/Explode)", result: pass }
-    confidence: medium
-    notes: "Fire+impact audio cues and channels match. Effect names match; only the compat fallback path is absent (cosmetic)."
+      - { kind: read, ref: "Hlac.EmitMuzzleFlash (Hlac.cs:331-337) + EmitImpactEffect (Hlac.cs:345-351): Effects.ByName(GREEN_HLAC_*) ?? Effects.ByName(BLASTER_*) -> the v0.8.6 green->blaster compat fallback (hlac.qc:224-228) is now ported. Effects.ByName returns null for an unregistered name (Effect.cs:61), so the ?? branch is reachable on a missing-asset build", result: pass }
+      - { kind: trace, ref: "EffectsList.cs:97-98 registers GREEN_HLAC_IMPACT/MUZZLEFLASH; :39-40 registers BLASTER_IMPACT/MUZZLEFLASH; Hlac.Attack/Attack2 emit muzzle, Explode emits impact (all on the live fire path)", result: pass }
+    confidence: high
+    notes: "WAVE-16/17 RE-AUDIT (presentation partial->faithful, fallback gap closed). The runtime green->blaster compat fallback that the prior audit flagged as 'not ported' IS now present in EmitMuzzleFlash/EmitImpactEffect (Effects.ByName null-coalesce to the BLASTER effect). Both green effects are registered so the fallback is dormant on a normal build, but the path now matches Base for a hypothetical missing-asset build. Fire+impact audio cues/channels match."
 
   - id: weapon-hlac.identity.metadata
     name: "Weapon identity, kill/suicide notifications, registration/liveness"
@@ -272,9 +271,13 @@ features:
       - "common/weapons/weapon/hlac.qc:wr_aim"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Hlac (ctor)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:BotWantsSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:BotAimShotSpeed"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponOrder.cs:209"
       - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:66"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:368"
+      - "game/client/ProjectileCatalog.cs:165 (ProjectileType.Hlac desc)"
+      - "game/client/ProjectileCatalog.cs:297 (hlacbolt -> ProjectileType.Hlac)"
     constants:
       - { name: "impulse", base: "6", port: "6", match: true }
       - { name: "ammo_type", base: "cells", port: "Cells", match: true }
@@ -286,17 +289,18 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: faithful
+      presentation: partial
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "wr_aim (bot projectile-lead aim, hlac.qc:156-159 bot_aim) STILL not implemented for HLAC -> bots lead/aim HLAC bolts worse. No wr_aim/BotAim in Hlac.cs. Unchanged by Wave-2."
-      - "Bolt client render via CSQCProjectile(PROJECTILE_HLAC) (bolt model/trail) STILL not verified on the live render path. Unchanged by Wave-2."
+      - "Bot-aim (wr_aim) is now IMPLEMENTED + LIVE but DIVERGES: QC HLAC wr_aim (hlac.qc:156-159) only ever sets PHYS_INPUT_BUTTON_ATCK (primary) via bot_aim at primary speed — it never presses secondary. The port's Hlac.BotWantsSecondary (Hlac.cs:184-185) returns secondary on ~10% of bot decisions (ctx.Random01 <= 0.1), so port HLAC bots occasionally alt-fire where Base bots never do. The lead itself (BotAimShotSpeed => Primary.Speed, Hlac.cs:188) is faithful (primary==secondary speed 6000)."
+      - "HLAC bolt now has a DEDICATED client render type (ProjectileType.Hlac, ProjectileCatalog.cs:165/297) — no longer the generic fallback — and its NO-trail matches Base (PROJECTILE_HLAC traileffect=EFFECT_Null, projectile.qc:356). But the body is a generic GlowSprite (no ModelPath); Base sets MDL_PROJECTILE_HLAC=models/hlac_bullet.md3 (all.inc:65). So the bolt renders as a glow sprite, not the dedicated MD3 model (contrast Blaster, which wires models/laser.mdl)."
     verification:
       - { kind: trace, ref: "WeaponOrder.cs:209 registration; CompatRemaps maps weapon_plasmagun/ammo_cells -> hlac; impulse 6", result: pass }
       - { kind: trace, ref: "DeathMessages.cs / NotificationsList.cs HLAC_MURDER/SUICIDE wired", result: pass }
-      - { kind: read, ref: "grep wr_aim/BotAim/PROJECTILE_HLAC in Hlac.cs -> no match; both gaps remain", result: fail }
+      - { kind: read, ref: "Hlac.BotWantsSecondary/BotAimShotSpeed (Hlac.cs:184-188) override the base virtuals; BotBrain.cs:447 calls BotWantsSecondary live (re-routes the decided shot to ATCK2) and BotBrain.cs:919 calls BotAimShotSpeed live in CurrentShotSpeed -> bot-aim is wired on the real bot path. The bolt is flagged BotDodge=true with rating=damage (Hlac.cs:274-275) so bots evade it (Waypoint/BotBrain g_bot_dodge scan)", result: pass }
+      - { kind: read, ref: "ProjectileCatalog.cs:297 maps hlacbolt/hlac -> ProjectileType.Hlac; :165 desc = GlowSprite body, no ModelPath, no trail. vs Base projectile.qc:356 (HLAC traileffect=EFFECT_Null, model MDL_PROJECTILE_HLAC=hlac_bullet.md3). Trail faithful; model not wired", result: partial }
     confidence: high
-    notes: "Identity, flags, color, ammo type and notifications all match. Reachable via impulse, weapon order, NewToys/NIX mutators, and CompatRemaps. wr_aim + per-type bolt render are the open presentation/bot gaps (unchanged by Wave-2)."
+    notes: "WAVE-16/17 RE-AUDIT. TWO baseline gaps moved: (1) the 'wr_aim not implemented' gap is CLOSED on the lead/liveness axis — BotWantsSecondary/BotAimShotSpeed now override + are called live by BotBrain, and the bolt is bot-dodgeable — but the port introduces a NEW minor divergence (10% secondary-burst chance that QC's wr_aim does not have). (2) the 'bolt render unverified' gap is now CHARACTERIZED, not closed: a dedicated ProjectileType.Hlac exists and its no-trail is faithful, but it renders as a generic glow sprite instead of models/hlac_bullet.md3 -> presentation downgraded faithful->partial to reflect the real, now-verified model gap. Identity/flags/color/ammo/notifications all still match; reachable via impulse/order/CompatRemaps/NewToys/NIX."

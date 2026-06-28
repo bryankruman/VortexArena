@@ -6,7 +6,6 @@ summary:
   feature_count: 9
   worst_gaps:
     - "SetStartItems has no start_weapons_defaultmask: the port rewrites the WHOLE StartLoadout.Weapons set rather than only the default-mask bits. Unobservable with the stock blaster-only default; would diverge if a server set a partial start_weapons_defaultmask."
-    - "Warmup loadout STILL bypasses the NewToys SetStartItems weapon swap: ApplyWarmupLoadout (SpawnSystem.cs:1148) calls ComputeStartItems() only to read the warmup fuel value, then builds the warmup weapon set from the arena/allguns/normal split — it never applies the ALWAYS/RANDOM core->new-toy rearrange to warmup_start_weapons (Base rearranges warmup_start_weapons via the same hook). Masked in stock play (autoreplace default 0)."
     - "weapon_defaultspawnfunc's WEP_FLAG_MUTATORBLOCKED map-spawn rejection is intentionally NOT enforced in WeaponSpawn (ItemSpawnFuncs.cs:310 NOTE): a blocked weapon placed directly on a map still spawns. Deferred as a separate broad-impact parity item; orthogonal to New Toys' own replacement chain (which is now ported)."
 features:
   - id: mutator-new_toys.enable.predicate
@@ -115,7 +114,7 @@ features:
       - { name: "RANDOM mode result", base: "OR BOTH core+newtoy bits (player gets BOTH)", port: "OR BOTH tokens into the resolved set (NewToysMutator.cs:146-152)", match: true }
       - { name: "ALWAYS mode result", base: "newtoy bit only (core dropped)", port: "newtoy token only (resolved set drops core)", match: true }
       - { name: "applies under start_weapons_defaultmask", base: "newdefault &= start_weapons_defaultmask", port: "operates on whole StartLoadout.Weapons (no defaultmask concept)", match: false }
-      - { name: "warmup_start_weapons rearrange", base: "yes (warmup_newdefault & warmup_start_weapons_defaultmask)", port: "none — ApplyWarmupLoadout (SpawnSystem.cs:1148) builds the warmup weapon set from the arena/allguns split, never applies the NewToys swap", match: false }
+      - { name: "warmup_start_weapons rearrange", base: "yes (warmup_newdefault & warmup_start_weapons_defaultmask)", port: "yes — ApplyWarmupLoadout (SpawnSystem.cs:1271-1273) NOW fires MutatorHooks.SetStartItems.Call on the built warmupLoadout, applying the same NewToys ALWAYS/RANDOM swap to the warmup arsenal", match: true }
     status:
       logic: faithful
       values: faithful
@@ -127,12 +126,11 @@ features:
     divergence_rationale: null
     gaps:
       - "No start_weapons_defaultmask: the port rewrites the whole StartLoadout.Weapons set (l.Weapons.Clear() + union rebuild) rather than only the bits in the default mask. Unobservable with the stock blaster-only default; would diverge if a server set a partial start_weapons_defaultmask."
-      - "No warmup-loadout rearrange: ApplyWarmupLoadout (SpawnSystem.cs:1148) calls ComputeStartItems() only to read the warmup fuel value, then builds the warmup weapon set from the arena/allguns/normal split (SetWeaponArena seam) — the NewToys ALWAYS/RANDOM core->new-toy swap never applies to warmup_start_weapons (Base rearranges it via the same SetStartItems hook). g_warmup_allguns DOES include the now-unblocked new toys (it filters on the cleared MutatorBlocked flag) but does NOT perform the per-weapon core->new-toy replacement."
     verification:
-      - { kind: code, ref: "OnSetStartItems (cs:133-158) ORs EVERY token of nt_GetReplacement into a HashSet then rebuilds Weapons from the union — matches QC's bit-OR-both (RANDOM keeps core+newtoy, ALWAYS drops core). SetStartItems.Call fired live in SpawnSystem.ComputeStartItems (cs:984). Warmup uses ApplyWarmupLoadout (cs:1148) which calls ComputeStartItems only for fuel + fires SetWeaponArena but does NOT apply the SetStartItems weapon swap to the warmup arsenal", result: pass }
+      - { kind: code, ref: "OnSetStartItems (cs:133-158) ORs EVERY token of nt_GetReplacement into a HashSet then rebuilds Weapons from the union — matches QC's bit-OR-both (RANDOM keeps core+newtoy, ALWAYS drops core). SetStartItems.Call fired live on BOTH spawn paths: the live spawn via SpawnSystem.ComputeStartItems (cs:1038-1039) and the warmup spawn via ApplyWarmupLoadout (cs:1271-1273) which now fires SetStartItems.Call on the built warmupLoadout so the swap reaches warmup_start_weapons too", result: pass }
       - { kind: behavioral, ref: "default DefaultLoadout={blaster} has no replacement so the hook is a no-op in stock play (matches Base); autoreplace default 0 (NEVER) so even configured maps don't swap unless explicitly set", result: pass }
     confidence: high
-    notes: "Unchanged this audit. RANDOM-mode is bit-faithful (ORs BOTH core+newtoy, not a coin-flip). Two gaps remain, both masked in stock play: (1) no start_weapons_defaultmask, (2) the warmup loadout path still bypasses the SetStartItems weapon rearrange (it only reads the seam's fuel value)."
+    notes: "Re-audited Wave-16/17: the WARMUP gap is now CLOSED — ApplyWarmupLoadout (SpawnSystem.cs:1271-1273) fires MutatorHooks.SetStartItems.Call on the built warmupLoadout, so the NewToys ALWAYS/RANDOM core->new-toy swap reaches warmup_start_weapons just like the live path (matching Base, which rearranges both via the same hook). RANDOM-mode stays bit-faithful (ORs BOTH core+newtoy, not a coin-flip). ONE residual gap: no start_weapons_defaultmask (the port rewrites the whole start set), masked by the stock blaster-only default."
 
   - id: mutator-new_toys.mapreplace.set_weaponreplace
     name: "SetWeaponreplace — rewrite a map weapon_* entity's spawn (map \"new_toys\" key or auto mapping)"
@@ -208,9 +206,11 @@ features:
       - "common/mutators/mutator/new_toys/new_toys.qc:25 METHOD(MutatorNewToys, describe)"
       - "common/mutators/mutator/new_toys/new_toys.qh:6 CLASS(MutatorNewToys, Mutator)"
     port_refs:
-      - "game/menu/dialogs/DialogMutators.cs:213-220 (describe() text carried on the New Toys checkbox tooltip)"
+      - "game/menu/dialogs/DialogMutators.cs:218-227 (describe() text carried on the New Toys checkbox tooltip)"
+      - "game/menu/dialogs/DialogMutators.cs:338-352 BuildNewToysWeaponList (runtime FOREACH(Weapons, IsNewToy) enumeration)"
     constants:
-      - { name: "describe() info page", base: "yes (PAGE_TEXT: gimmicky-weapons intro + instagib/ok exclusivity + FOREACH new-toy weapon list)", port: "yes — full text on the g_new_toys checkbox tooltip: intro + 'can't be enabled concurrently' note + 'Seeker, Mine Layer, HLAC, Rifle, Arc'", match: true }
+      - { name: "describe() info page", base: "yes (PAGE_TEXT: gimmicky-weapons intro + instagib/ok exclusivity + FOREACH new-toy weapon list)", port: "yes — full text on the g_new_toys checkbox tooltip: intro + 'can't be enabled concurrently' note + the runtime-enumerated weapon list", match: true }
+      - { name: "weapon list = runtime FOREACH(Weapons, nt_IsNewToy)", base: "yes (describe() FOREACH loop)", port: "yes — BuildNewToysWeaponList (cs:338) iterates Weapons.All gated on NewToysMutator.IsNewToy (hardcoded literal only as an unreachable fallback)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -221,11 +221,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The describe() content (gimmicky-weapons intro, InstaGib/Overkill mutual-exclusivity note, and the current new-toy weapon list) IS ported, but as the New Toys checkbox tooltip rather than a dedicated PAGE_TEXT describe-page widget (the port has no describe-page surface — DialogMutators.cs:214 comment). Presentation surface differs; text is faithful. The weapon list is a hardcoded literal ('Seeker, Mine Layer, HLAC, Rifle, Arc') instead of Base's runtime FOREACH(Weapons, nt_IsNewToy) enumeration, so it would not auto-update if the new-toy set changed — inert at the current fixed set."
+      - "The describe() content (gimmicky-weapons intro, InstaGib/Overkill mutual-exclusivity note, and the current new-toy weapon list) IS ported, but as the New Toys checkbox tooltip rather than a dedicated PAGE_TEXT describe-page widget (the port has no describe-page surface — DialogMutators.cs:220-221 comment). Presentation SURFACE differs from Base's PAGE_TEXT; the text content (including the weapon list) is faithful."
     verification:
-      - { kind: code, ref: "DialogMutators.cs:213-220 — comment 'Port of MutatorNewToys.describe() (new_toys.qc:25)'; the checkbox tooltip carries the full describe() text (intro + InstaGib/Overkill exclusivity + the Seeker/Mine Layer/HLAC/Rifle/Arc list). Live on the create-game mutators dialog", result: pass }
+      - { kind: code, ref: "DialogMutators.cs:218-227 — comment 'Port of MutatorNewToys.describe() (new_toys.qc:25)'; the checkbox tooltip carries the full describe() text (intro + InstaGib/Overkill exclusivity + a runtime-enumerated weapon list). BuildNewToysWeaponList (cs:338-352) iterates Weapons.All gated on NewToysMutator.IsNewToy — Base's FOREACH(Weapons, nt_IsNewToy), so the list auto-updates if the new-toy set changes (the 'T.A.G. Seeker, Mine Layer, ...' literal is only an unreachable fallback). Live on the create-game mutators dialog", result: pass }
     confidence: high
-    notes: "FIXED this audit (was missing/missing in the 2026-06-25 baseline): MutatorNewToys.describe() is now ported as the New Toys checkbox tooltip (DialogMutators.cs:213-220) — faithful text content (intro + instagib/ok exclusivity + new-toy weapon list). Presentation kept partial because it rides on a tooltip rather than a dedicated describe-page widget, and the weapon list is a hardcoded literal rather than the runtime FOREACH enumeration."
+    notes: "Re-audited Wave-16/17: the prior 'hardcoded literal weapon list' note is now STALE — the weapon list is a runtime FOREACH (BuildNewToysWeaponList, DialogMutators.cs:338-352, iterating Weapons.All gated on NewToysMutator.IsNewToy), faithful to Base's describe() FOREACH. Presentation stays PARTIAL only because the describe text rides on the checkbox tooltip rather than a dedicated PAGE_TEXT describe-page widget (the port has no describe-page surface — a shared menu limitation across all port mutators); text content is faithful."
 
   - id: mutator-new_toys.menu.create_game_controls
     name: "Create-game menu: New Toys checkbox + Never/Always/Randomly autoreplace radios"

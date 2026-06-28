@@ -2,9 +2,19 @@ unit: onslaught
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
-# NOTE: drift re-audit 2026-06-27 — NO drift. All 18 feature rows re-verified against current Base
-# (sv_onslaught.qc) + port (Onslaught.cs / OnslaughtControlPoint.cs, both touched 2026-06-27 but content
-# unchanged vs the 2026-06-25 truth). All Base cvar defaults reconfirmed in gametypes-server.cfg (gen 2500,
+# NOTE: W16/W17 re-audit 2026-06-27 — ONE row drifted: onslaught.presentation.csqc all-missing -> partial.
+# W16 (b3a9c06) added Onslaught.CollectWaypoints (generator/CP waypoint sprites). W17 (2f0bfdb) added the
+# objective WORLD-MODEL assignment (SpawnGenerator/SpawnControlPoint/SpawnIcon set Entity.Model + progressive
+# damage-model swaps GeneratorModelForBucket/IconModelForFraction + PAD1->PAD2 capture swap + generator damage
+# Frame) AND Onslaught.CollectRadarLinks. All five producers are LIVE-WIRED and consumed/rendered on the client:
+# ServerNet.cs:493-494 SendWaypoints()/SendRadarLinks() per advanced frame -> ClientNet HandleWaypoints/
+# HandleRadarLinks -> WaypointSpriteLayer + RadarPanel.DrawLinkQuad; networked .Model -> ClientEntityView.cs:236
+# ApplyIdentity render (the CTF-flag pattern). NOT faithful: icon bob/spin/punch animation, the ons_camSetup
+# objective death-cam, the generator explosion sequence, and the particle EFFECTS (EFFECT_SPARKS/CAP/RAGE/
+# ROCKET_EXPLODE) are UNTOUCHED -> the row stays partial (timing/audio still missing). The other 17 rows are
+# UNCHANGED (W16/W17 touched no combat/graph/round/spawn/captureshield/audio/bot logic; no regressions).
+# Prior 2026-06-27 baseline re-verified all 18 rows vs current Base (sv_onslaught.qc) + port; cvar defaults
+# reconfirmed in gametypes-server.cfg (gen 2500,
 # cp 1000, buildhealth 100, buildtime 5, regen 20, round_timelimit 500, warmup 5, teleport_radius 200,
 # teleport_wait 5, spawn_choose 1, click_radius 500, shield_force 100 — all match). Live wiring intact:
 # Commands.cs ons_spawn + impulse-21 +use; GameWorld WireObjectiveSpawns + ons.ResolveLinks() + ons.Tick().
@@ -18,7 +28,7 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 18
   worst_gaps:
-    - "No CSQC presentation: no generator/control-point/icon world models RENDERED on the client, no progressive damage-model swaps, no icon bob/spin/punch animation, no radar link lines, no objective death-cam (ons_camSetup), no generator explosion sequence, and no particle effects (EFFECT_SPARKS/CAP/RAGE/ROCKET_EXPLODE) or waypoint-sprite build/health bars. (Server-side the shield/icon/generator entities now carry a Model + EF_ADDITIVE + avelocity, but rendering them is still client-deferred.)"
+    - "Partial CSQC presentation (W16/W17): generator/control-point/icon world MODELS, progressive damage-model swaps, generator damage frame, RADAR LINK lines, and generator/CP WAYPOINT SPRITES now produced server-side AND consumed/rendered live on the client (SendWaypoints/SendRadarLinks -> WaypointSpriteLayer/RadarPanel; networked .Model -> ClientEntityView). STILL MISSING: icon bob/spin/punch animation, the objective death-cam (ons_camSetup), the generator explosion sequence (rays/shockwave/gibs/electricity), and particle effects (EFFECT_SPARKS/CAP/RAGE/ROCKET_EXPLODE) + build/health-bar overlays."
     - "Bot Onslaught role filters by shield + team-neighbor off the live graph and skips CPs when a generator is attackable; residual: no waypoint-near-objective routing (navigation_routerating), no havocbot_attack_time throttle, no enemyplayers rating, no havocbot_ons_target teammate-cost balancing (timing partial)."
     - "Spawn/teleport residual (now LIVE): the click-radar server pick (ons_spawn cmd + HandleOnsSpawnCommand) and the +use gate (HandleUseKey) are ported and wired; the CLIENT-side click-radar HUD that generates the clicked 2D map position, plus the death-time auto-open (PlayerDies stuffcmd `qc_cmd_cl hud clickradar` gated on ons_Count_SelfControlPoints>1), are still client-deferred. spawn_at_controlpoints / spawn_at_generator placement live (default OFF)."
     - "FIXED this pass: onslaught.spawn.teleport_choose liveness partial→live — the ons_spawn client command + HandleOnsSpawnCommand now SET GtOnsSpawnBy (+RESPAWN_FORCE) on the live path, so the spawn_choose teleport-on-respawn branch actually fires; +use (impulse 21) routes to HandleUseKey; g_onslaught_click_radius now ported (match false→true)."
@@ -469,26 +479,37 @@ features:
       - "common/gametypes/gametype/onslaught/cl_generator.qc:generator_damage"
       - "common/gametypes/gametype/onslaught/cl_controlpoint.qc:cpicon_draw"
       - "common/gametypes/gametype/onslaught/onslaught.qc:WantEventchase"
-    port_refs: []
+      - "client/teamradar.qc:draw_teamradar_link"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:SpawnGenerator/SpawnControlPoint/SpawnIcon (Entity.Model = generator/pad/icon md3 + EF_LOWPRECISION)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/OnslaughtControlPoint.cs:GeneratorModelForBucket / IconModelForFraction (progressive damage-model swap) + GeneratorDamage (Frame=10*(1-hp/max)) + IconBuildThink (PAD1->PAD2)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:CollectWaypoints (W16: generator/CP waypoint sprites)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:CollectRadarLinks / RadarLinkSegment (W17: power-graph radar lines)"
+      - "game/net/ServerNet.cs:SendWaypoints (CollectWaypoints) + SendRadarLinks (CollectRadarLinks) — live per-frame send"
+      - "game/net/ClientNet.cs:HandleRadarLinks/RadarLinks + HandleWaypoints/Waypoints; game/hud/RadarPanel.cs:349 DrawLinkQuad; game/client/WaypointSpriteLayer.cs; game/net/ClientEntityView.cs:236 ApplyIdentity (networked .Model -> rendered)"
     constants:
-      - { name: "generator_damage_models", base: "MDL_ONS_GEN..GEN9/DEAD (11 states)", port: "none", match: false }
-      - { name: "cpicon_damage_models", base: "MDL_ONS_CP..CP3 (4 states)", port: "none", match: false }
-      - { name: "cpicon_spin_rate", base: "45 deg/s yaw + bob 9*(1-cos(1.875*t))", port: "none", match: false }
+      - { name: "generator_damage_models", base: "MDL_ONS_GEN..GEN9/DEAD (11 states)", port: "generator.md3/generator_dmg1..9.md3/generator_dead.md3 by 0..10 bucket (server-resolved, networked)", match: true }
+      - { name: "cpicon_damage_models", base: "MDL_ONS_CP..CP3 (4 states)", port: "controlpoint_icon.md3/_dmg1/_dmg2/_dmg3 by 75/50/25% (server-resolved)", match: true }
+      - { name: "cpicon_spin_rate", base: "45 deg/s yaw + bob 9*(1-cos(1.875*t))", port: "none (icon bob/spin/punch animation still client-deferred)", match: false }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: partial
       timing: missing
-      presentation: missing
+      presentation: partial
       audio: missing
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No generator/control-point/icon world models on the client; no progressive damage-model swaps; no icon bob/spin/punch-on-hit animation; no generator damage `frame`; no radar link lines; no objective death-cam (ENT_ONSCAMERA/WantEventchase/ons_camSetup) on round loss; no generator explosion sequence (rays/shockwave/gibs/electricity); no particle effects (EFFECT_SPARKS/CAP/RAGE/ROCKET_EXPLODE) or waypoint-sprite build/health bars."
+      - "LANDED (W16/W17, server-authoritative + live-rendered): generator/control-point/icon WORLD MODELS now assigned (Entity.Model + EF_LOWPRECISION) and networked+rendered via the entity feed (ClientEntityView.ApplyIdentity, the CTF-flag pattern); progressive DAMAGE-MODEL swaps (GeneratorModelForBucket 0..10, IconModelForFraction 75/50/25%) + the pad PAD1->PAD2 capture swap; the generator damage FRAME (Frame=10*(1-hp/max)); the RADAR LINK lines round-trip (CollectRadarLinks -> SendRadarLinks -> ClientNet.RadarLinks -> RadarPanel.DrawLinkQuad, rendered); the generator/CP WAYPOINT SPRITES (CollectWaypoints -> SendWaypoints -> WaypointSpriteLayer/RadarPanel). Models resolved server-side approximate what CSQC generator_damage/cpicon_damage would derive from the networked hp fraction."
+      - "STILL MISSING (untouched by W16/W17): icon BOB/SPIN/PUNCH-on-hit animation (timing missing); the objective DEATH-CAM (ENT_ONSCAMERA/WantEventchase/ons_camSetup) on round loss; the generator EXPLOSION sequence (rays/shockwave/gibs/electricity); all particle EFFECTS (EFFECT_SPARKS/CAP/RAGE/ROCKET_EXPLODE — audio cues emit elsewhere but particles do not); the build-bar/health-bar alpha overlay. liveness PARTIAL because the model/sprite/radar producers are live but the animation/death-cam/explosion/particle half has no code at all."
     verification:
-      - { kind: code_read, ref: "no CSQC onslaught entity handlers in port; effects registered as data only", result: fail }
-    confidence: medium
-    notes: "Re-verified UNCHANGED. Cross-boundary (client). Port comments explicitly defer all CSQC models/animation/FX/particles."
+      - { kind: code_read, ref: "OnslaughtControlPoint.cs SpawnGenerator/SpawnControlPoint/SpawnIcon set Entity.Model (generator/pad/icon md3) + EF_LOWPRECISION; GeneratorDamage Frame + GeneratorModelForBucket/IconModelForFraction swap by hp; IconBuildThink PAD1->PAD2 — W17 diff 2f0bfdb", result: pass }
+      - { kind: code_read, ref: "Onslaught.cs CollectWaypoints (W16 b3a9c06) + CollectRadarLinks (W17 2f0bfdb); ServerNet.cs:493-494 SendWaypoints()/SendRadarLinks() called per advanced frame; ServerNet.cs:1259 SendRadarLinks broadcasts NetControl.RadarLinks", result: pass }
+      - { kind: code_read, ref: "ClientNet.cs:544 HandleRadarLinks -> RadarLinks list; RadarPanel.cs:349-361 draws each link quad; ClientEntityView.cs:236 ApplyIdentity assigns networked .Model for render", result: pass }
+      - { kind: code_read, ref: "NO icon bob/spin/punch anim, NO ons_camSetup death-cam, NO generator explosion sequence, NO particle pointparticles in port — confirmed by grep; these remain client/FX-deferred", result: fail }
+    confidence: high
+    notes: "DRIFT (W16/W17 presentation pass): row moves from all-missing -> partial. W16 added CollectWaypoints (generator/CP sprites); W17 added the world-model assignment + progressive damage-model swaps + generator damage frame + pad swap + CollectRadarLinks. All FIVE producers are live-wired AND consumed/rendered on the client (SendWaypoints/SendRadarLinks -> WaypointSpriteLayer/RadarPanel; .Model -> ClientEntityView). NOT faithful: timing(anim)/audio(particle-fx) stay missing, the death-cam + explosion sequence + particle effects are untouched. liveness partial (model/sprite/radar half live, anim/cam/fx half absent)."
 
   - id: onslaught.audio.cues
     name: "Onslaught notifications + sounds emission"

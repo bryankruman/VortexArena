@@ -1,13 +1,13 @@
 unit: sv-chat
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # drift re-audit on claude/parity-port-waves: NO status drift. Re-verified all 15 rows against current Base (863cd3e84) + port; all chat cvar/flood/IGNORE_MAXPLAYERS(16) constants match server.cfg+cmd.qh, say/say_team/tell/voice all route Chat.Say (live), 0 chat-hook subscribers in Base (intended_divergence holds), printtochat helpers still faithful-but-DEAD (only Chat.cs defines them), ignore-full test asserts at Chat.IgnoreMaxPlayers. Only cosmetic port_refs line shift (CmdVoice now Commands.cs:3052).
+last_audited: "2026-06-27"  # W16/17 re-audit (opus, parity-diff): ONE drift — sv-chat.helpers.printtochat liveness dead->partial (PrintToChatAll now has a live caller: Tuba melody bprint Tuba.cs:274 -> GameWorld.cs:668). Other 14 rows re-verified accurate vs current port: chat cvar/flood/IGNORE_MAXPLAYERS(16) match server.cfg+cmd.qh; say/say_team/tell/ignore/voice all route Chat.Say/Ignore* (live, code-read in Commands.cs); CmdVoice derives fake from Chat.Say return (3105-3151); DedicatedPrint sv_dedicated-gated (814); minigame branch live via Minigames.ActiveSessionOf; IsIngame includes FragsOutOfGame(-616); PlayerHealth 2342-mapvote via MapVote.Running; crosshair trace + NearestLocation item fallback present; 0 chat-hook subscribers in Base (intended_divergence holds). Supporting symbols (DeathOrigin, ViewOfs/ViewAngles, SendCenterRaw, ActiveSessionOf, MapVoting.Running) all confirmed present. Note CmdVoice is now Commands.cs:3105.
 summary:
   feature_count: 15
   worst_gaps:
     - "%y/%x crosshair tokens trace the player's VIEW ANGLES (server-side) rather than Base's CSQC-reported cursor (WarpZone_crosshair_trace_plusvisibletriggers); the port does not network the cursor, so an off-view-axis aim resolves differently. %y/%x/%d are now functional (live), only the trace SOURCE differs."
     - "Line-wrap width is an integer 82 visible chars vs Base's 82.4289758859709 px-equiv (perl averagewidth on gfx/vera-sans.width); proportional per-char widths unmodeled, so the flood==2 'too long' boundary can differ by one char on edge-length messages."
-    - "PrintToChat/PrintToChatAll/PrintToChatTeam/Debug* chat-line helpers (chat.qc:593-645) are now ported faithfully (Chat.cs:770-823) but DEAD — no live caller in the port. (Base itself has zero live callers either: every teamplay.qc / random_items use is commented-out debug code, so the practical impact is nil.)"
+    - "PrintToChat-family chat-line helpers (chat.qc:593-645) are ported faithfully (Chat.cs:770-823). PrintToChatAll is now LIVE — the Tuba recognized-melody bprint (Tuba.cs:274 W_Tuba_NoteOff) is wired to Commands.Chat.PrintToChatAll via GameWorld.cs:668. The other five (PrintToChat / PrintToChatTeam / DebugPrintToChat*) remain DEAD (Base has no live caller for those either)."
 features:
   - id: sv-chat.gates.allowed_cvars
     name: "Four g_chat_*_allowed entry gates (chat/private/spectator/team)"
@@ -395,17 +395,18 @@ features:
       timing: na
       presentation: faithful
       audio: na
-      liveness: dead
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "All six helpers (PrintToChat / DebugPrintToChat / PrintToChatAll / DebugPrintToChatAll / PrintToChatTeam / DebugPrintToChatTeam) are now ported faithfully (Chat.cs:770-823): the \\{1}^7 (\\x01^7) chat marker + trailing \\n, the autocvar_developer>0 gate on the Debug* variants (Cvars.Float(\"developer\") > 0), and the bprint server-console echo (modeled by the sv_dedicated-gated DedicatedPrint tail). BUT they are DEAD — nothing in the port calls them. NOTE this matches Base: every PrintToChatAll/PrintToChatTeam use in teamplay.qc and the random_items mutator is COMMENTED-OUT debug code, so there is no live stock caller to wire to in the first place."
+      - "All six helpers (PrintToChat / DebugPrintToChat / PrintToChatAll / DebugPrintToChatAll / PrintToChatTeam / DebugPrintToChatTeam) are ported faithfully (Chat.cs:770-823): the \\{1}^7 (\\x01^7) chat marker + trailing \\n, the autocvar_developer>0 gate on the Debug* variants (Cvars.Float(\"developer\") > 0), and the bprint server-console echo (modeled by the sv_dedicated-gated DedicatedPrint tail). LIVENESS is now PARTIAL: PrintToChatAll has ONE live caller (the Tuba recognized-melody broadcast — Tuba.cs:274 invokes Tuba.TubaMelodyBprint, wired in GameWorld.cs:663-668 to Commands.Chat.PrintToChatAll, the QC W_Tuba_NoteOff bprint). The other five (PrintToChat / PrintToChatTeam / DebugPrintToChat / DebugPrintToChatAll / DebugPrintToChatTeam) remain DEAD — no port caller, matching Base (every teamplay.qc / sv_random_items.qc use of those is commented-out debug)."
     verification:
       - { kind: code-read, ref: "Chat.cs:770-823 = all six helpers present + faithful formatting (\\x01^7 marker, \\n suffix, developer-gate, DedicatedPrint echo)", result: pass }
-      - { kind: code-read, ref: "grep '\\.PrintToChat|PrintToChatAll|PrintToChatTeam|DebugPrintToChat' over port/src = only the Chat.cs definitions + internal Debug*->Print* delegation; NO external caller (dead)", result: fail }
+      - { kind: code-read, ref: "grep '\\.PrintToChatAll' over port/src = GameWorld.cs:668 (Tuba.TubaMelodyBprint seam) -> LIVE caller; invoked at Tuba.cs:274 on the W_Tuba_NoteOff melody-match path", result: pass }
+      - { kind: code-read, ref: "grep '\\.PrintToChat\\b|\\.PrintToChatTeam|\\.DebugPrintToChat' over port/src = only Chat.cs defs + internal Debug*->Print* delegation; NO external caller (those five dead)", result: fail }
       - { kind: code-read, ref: "grep uncommented 'PrintToChat|DebugPrintToChat' over Base qcsrc (excl chat.qc) = 0 live callers; all teamplay.qc + sv_random_items.qc uses are //-commented debug", result: pass }
     confidence: high
-    notes: "FIXED since 2026-06-22 on the impl axis: the helpers went missing->faithful (logic + presentation) — the formatting, developer-gate, and broadcast/per-team/single fan-out all match Base chat.qc:593-645. liveness moved na->dead: the code now exists but has no live caller (the port's player-visible notices still flow through NotificationSystem / direct sprints, not these helpers). This is the expected end state given Base has zero live callers itself, so it is NOT a regression worth wiring — left dead deliberately-but-unmarked (kept intended_divergence=false since the row tracks the genuine 'no live caller' fact rather than a deliberate behavioral change)."
+    notes: "DRIFT FOUND 2026-06-27 (re-audit): liveness moved dead->partial. The prior 'nothing in the port calls them' note was STALE — PrintToChatAll acquired a live caller via the Tuba melody-recognition bprint (Tuba.cs:274 -> TubaMelodyBprint -> GameWorld.cs:668 -> Commands.Chat.PrintToChatAll). Impl axis unchanged (logic/presentation faithful, formatting + developer-gate + fan-out all match Base chat.qc:593-645). The remaining five helpers are still dead, deliberately (Base has no live caller for them); intended_divergence stays false since the row tracks the genuine reachability fact."
 
   - id: sv-chat.mutator.hooks
     name: "Chat mutator hooks (ChatMessage / ChatMessageTo / PreFormatMessage / FormatMessage)"

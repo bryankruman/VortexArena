@@ -5,11 +5,10 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Primary rail beam is a generic networked trail (TE_TEI_G3/_HIT), not the bespoke team-colored cylindric VaporizerBeam (cl_vaporizerbeam_teamcolor/colorboost/lifetime CSQC path unmodeled)."
-    - "Instagib flag hardcoded true on the class default — a bare non-instagib Vaporizer pickup treats ammo as instagib (1 cell) on the class default, though Attack/CheckAmmo re-read g_instagib so under-the-mutator behaviour is correct."
-    - "MENUQC describe() weapon-guide prose has no port (no GuideDescription override on Vaporizer.cs); the live DialogMediaGuide weapon-guide shows blank for the Vaporizer."
+    - "Primary rail beam is a generic networked TE_TEI_G3/_HIT trail (now team-colored via cl_vaporizerbeam_teamcolor/colorboost), NOT the bespoke cylindric gauntletbeam/lgbeam CSQC draw; the 0.8 cl_vaporizerbeam_lifetime cvar is unmodeled."
+    - "MENUQC describe() guide omits only the trailing W_Guide_Keybinds / W_Guide_DPS helper lines (keybind hints + computed DPS); the four prose paragraphs ARE ported."
     - "RM-laser rapid stream omits weapon_thinkf WFRAME_FIRE2 rapid_animtime (cosmetic view-model anim frame only; logic/timing/values/bolt visual all faithful)."
-  verifier_notes: "Re-audit 2026-06-27 (drift check, MODE=update) on branch claude/parity-port-waves. NO regressions, NO new gaps vs the 2026-06-25/-27 baseline — all 12 prior rows re-verified intact against current Base+port. The RM-laser bolt-visual fix (ProjectileCatalog.cs:222-224 RocketMinstaLaser descriptor + :269 'rocketminsta'-before-'rocket' classify + EffectsList.cs:264 ROCKETMINSTA_LASER trail + ProjectileRenderer.cs:123-127 per-bolt team colormod), the kill/suicide-message liveness (Scores.cs SelectKillMessage/SelectSuicideMessage on the obituary path — line numbers drifted to 747/653, call sites unchanged & live), the RM dispatch liveness (WrThink live every tick via WeaponFireDriver; RocketMinstaMutator.cs registered [Mutator] + Damage_Calculate/PlayerDies hooks gated on g_rm), the instagib integration, achievements, reticle, and impact effect ALL re-confirmed. ONE registry COVERAGE GAP found & ADDED this pass: the MENUQC describe() weapon-guide text (vaporizer.qc:436-448) had no row, the Vaporizer has no GuideDescription override (port_refs []), and the live DialogMediaGuide.cs:194 weapon guide would render it blank — sister weapon units (electro/shotgun/tuba) all track this as a dedicated row, so weapon-vaporizer.menu.describe is now added (missing). STILL OPEN (unchanged): primary cylindric VaporizerBeam team-color/colorboost CSQC path (primary.beam_particle), Instagib-hardcoded-true bare class default (ammo.consumption), rapid_animtime view-model frame."
+  verifier_notes: "OPUS re-audit 2026-06-27 (post-Wave-16/17, skeptical re-verify against current Base+port on branch claude/parity-port-waves). The current Vaporizer.cs is substantially MORE complete than the 2026-06-22 spec text (which still lists beam/muzzle/impact/achievements as missing and Instagib hardcoded true) — those were closed in earlier waves and the spec prose is now stale (registry rows reflect the real code). TWO rows CLOSED this pass vs the prior baseline: (1) weapon-vaporizer.menu.describe — the Vaporizer NOW has a GuideDescription override (Vaporizer.cs:50-56, four describe() paragraphs) rendered live at DialogMediaGuide.cs:194; upgraded missing/na -> presentation faithful + live (residual: only the W_Guide_Keybinds/DPS helper lines). (2) weapon-vaporizer.ammo.consumption — the Instagib flag is NOT hardcoded (no Instagib bool field exists, grep); the lone InstagibActive (Vaporizer.cs:537) reads the live g_instagib cvar and ALL consumers (reload floor :95, Attack decrement :264, CheckAmmoPrimary :523) use it, so a bare non-instagib pickup spends the full primary_ammo (10) — values upgraded partial -> faithful, gap removed. ONE row REFINED: weapon-vaporizer.primary.beam_particle — the networked beam IS now team-colored (Vaporizer.cs:244-248 reads cl_vaporizerbeam_teamcolor + colorboost, emits via the RGB EffectEmitter.Emit overload EffectEmitter.cs:237); the two team-color constants flip false->true, but presentation stays partial (bespoke cylindric draw + 0.8 lifetime cvar still absent) and the stale EffectsList.cs:91-92 ref corrected to :107-108. NO regressions and NO new gaps; the RM bolt visual (ProjectileCatalog/ProjectileRenderer), kill/suicide-message liveness, RM dispatch liveness, instagib integration, achievements, reticle, impact effect, headshot, fire-sound and primary rail logic/values/timing all re-confirmed faithful+live. STILL OPEN: bespoke cylindric VaporizerBeam draw + 0.8 lifetime (primary.beam_particle), W_Guide_Keybinds/DPS helper lines (menu.describe), rapid_animtime view-model frame (rm.laser_barrage)."
 features:
   - id: weapon-vaporizer.primary.rail_beam
     name: "Primary rail beam (piercing hitscan + knockback + falloff)"
@@ -105,13 +104,13 @@ features:
       - "common/weapons/weapon/vaporizer.qc:VaporizerBeam_Draw"
       - "common/weapons/weapon/vaporizer.qc:W_Vaporizer_Attack (W_MuzzleFlash thiswep)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:Attack (EffectEmitter.Emit VAPORIZER_BEAM/_HIT + VORTEX_MUZZLEFLASH)"
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:91-92 (VAPORIZER_BEAM/_HIT trails)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:Attack (EffectEmitter.Emit VAPORIZER_BEAM/_HIT with team-color RGB + VORTEX_MUZZLEFLASH)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:107-108 (VAPORIZER_BEAM/_HIT trails)"
     constants:
       - { name: "beam_tex", base: "particles/gauntletbeam (hit) / particles/lgbeam", port: "VAPORIZER_BEAM_HIT (TE_TEI_G3_HIT) / VAPORIZER_BEAM (TE_TEI_G3)", match: false }
       - { name: "cl_vaporizerbeam_lifetime", base: "0.8", port: "engine trail default", match: false }
-      - { name: "cl_vaporizerbeam_teamcolor", base: "1", port: "none (no team-color tint)", match: false }
-      - { name: "cl_vaporizerbeam_colorboost", base: "0.7", port: "none", match: false }
+      - { name: "cl_vaporizerbeam_teamcolor", base: "1", port: "read (Vaporizer.cs:244): tints the networked beam to the shooter team palette (Teams.ColorRgb), else weapon Color; honours an explicit 0", match: true }
+      - { name: "cl_vaporizerbeam_colorboost", base: "0.7", port: "read (Vaporizer.cs:246): beamRgb *= 1 + colorboost", match: true }
       - { name: "muzzle_effect", base: "EFFECT_VORTEX_MUZZLEFLASH (W_MuzzleFlash thiswep)", port: "VORTEX_MUZZLEFLASH (reused)", match: true }
     status:
       logic: faithful
@@ -123,11 +122,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Beam is a generic networked trail effect (TE_TEI_G3 / _HIT), not the Base cylindric gauntletbeam/lgbeam beam; no team-color (cl_vaporizerbeam_teamcolor) or colorboost tint, no 0.8 beam lifetime cvar."
+      - "Beam is a generic networked trail effect (TE_TEI_G3 / _HIT) tinted with the team-color/colorboost RGB, NOT the Base bespoke cylindric gauntletbeam/lgbeam draw; the 0.8 cl_vaporizerbeam_lifetime cvar is unmodeled (engine trail default lifetime)."
     verification:
-      - { kind: code, ref: "Vaporizer.cs:216-217 Emit(VAPORIZER_BEAM/_HIT, origin->endpos) + Emit(VORTEX_MUZZLEFLASH); EffectsList.cs:91-92 registers the trails; EffectEmitter.Sink networks them to clients", result: pass }
+      - { kind: code, ref: "Vaporizer.cs:244-248 reads cl_vaporizerbeam_teamcolor (Teams.ColorRgb shooter team else Color) + cl_vaporizerbeam_colorboost (rgb *= 1+0.7), passes beamRgb,beamRgb to the EffectEmitter.Emit(effect,origin,velocity,count,colorMin,colorMax) RGB overload (EffectEmitter.cs:237); :249 Emit(VORTEX_MUZZLEFLASH); EffectsList.cs:107-108 registers the trails", result: pass }
     confidence: high
-    notes: "Unchanged — rail beam + muzzle flash networked server-side. Residual: a plain swept trail rather than the bespoke team-coloured cylindric VaporizerBeam; the CSQC team-color/colorboost path is not modeled."
+    notes: "REFINED vs the 2026-06-27 baseline (team-color/colorboost constants false->true): the networked beam IS now team-colored — Vaporizer.cs:244-248 reads cl_vaporizerbeam_teamcolor (default 1 -> shooter team palette via Teams.ColorRgb, else weapon Color, honouring an explicit 0 without the Cvar 0->fallback footgun) and cl_vaporizerbeam_colorboost (0.7, rgb *= 1+boost), then emits the trail with that tint range. Residual (presentation still partial): the bespoke CSQC cylindric gauntletbeam/lgbeam DRAW and the 0.8 beam-lifetime cvar are not reproduced — it remains a generic swept TE_TEI_G3 trail at the engine default lifetime. Muzzle flash reuses VORTEX_MUZZLEFLASH."
 
   - id: weapon-vaporizer.primary.impact_effect
     name: "Beam impact effect + sound (VORTEX_IMPACT / neximpact)"
@@ -296,25 +295,24 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:WrThink (forced reload)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:BotWantsSecondary (wr_aim)"
     constants:
-      - { name: "primary_ammo (non-instagib)", base: "10", port: "10 (Instagib hardcoded true on the class default)", match: false }
-      - { name: "instagib_per_shot", base: "1 (g_instagib ? 1 : ammo)", port: "1 (InstagibActive re-reads g_instagib in Attack)", match: true }
+      - { name: "primary_ammo (non-instagib)", base: "10 (g_instagib ? 1 : primary_ammo)", port: "10 (InstagibActive reads live g_instagib; non-instagib pickup spends Primary.Ammo)", match: true }
+      - { name: "instagib_per_shot", base: "1 (g_instagib ? 1 : ammo)", port: "1 (InstagibActive re-reads g_instagib in Attack/CheckAmmoPrimary/WrThink)", match: true }
       - { name: "reload_ammo / reload_time", base: "0 / 0", port: "ReloadingAmmo() default 0; forced-reload branch ported (latent at default)", match: true }
       - { name: "wr_aim primary/secondary pick", base: "(items&UNLIMITED || ammo>0) ? ATCK : ATCK2", base_extra: "bot_aim 1000000 / blaster speed", port: "BotWantsSecondary returns !hasAmmo (unlimited||ammo>0)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Instagib flag is hardcoded true on the class default; in non-instagib play the bare default loadout/CheckAmmoPrimary treat it as instagib (1 cell). Attack/CheckAmmoPrimary DO re-read g_instagib via InstagibActive for the actual decrement/check, so under the mutator it is correct — but the bare class default is wrong."
+    gaps: []
     verification:
-      - { kind: code, ref: "Vaporizer.cs:232 TakeResource(InstagibActive?1:Primary.Ammo); :472 CheckAmmoPrimary; :477 CheckAmmoSecondary; :80-91 WrThink forced-reload via WrReload; :174 BotWantsSecondary (wr_aim) vs vaporizer.qc:173/362-392/278-284", result: pass }
+      - { kind: code, ref: "Vaporizer.cs:264 TakeResource(InstagibActive?1:Primary.Ammo); :523 CheckAmmoPrimary (InstagibActive?1:Primary.Ammo); :527 CheckAmmoSecondary; :93-104 WrThink forced-reload via WrReload; :195 BotWantsSecondary (wr_aim); :537 InstagibActive => g_instagib cvar (no hardcoded field, grep) vs vaporizer.qc:173/362-392/278-284", result: pass }
     confidence: high
-    notes: "FIXES vs baseline: (1) wr_aim NOW ported as BotWantsSecondary — bots fire the rail PRIMARY with ammo/unlimited, fall back to the Blaster SECONDARY out of ammo (defined GameplayBases.cs, invoked BotBrain.cs); bots can now use the Vaporizer. (2) wr_reload + the wr_think forced-reload branch NOW ported (WrThink:80-91 calls WrReload + clears hagar_load; latent at reload_ammo default 0). STILL OPEN: the Instagib-hardcoded-true bare class default (re-read correctly under the mutator, wrong only on a raw non-instagib pickup)."
+    notes: "FIX vs the 2026-06-27 baseline (values partial -> faithful, gap removed): the Instagib flag is NO LONGER hardcoded true — there is no Instagib bool field on the class (grep). The lone InstagibActive (Vaporizer.cs:537) reads the live g_instagib cvar, and EVERY consumer uses it consistently: the WrThink reload floor (:95), the Attack decrement (:264), and CheckAmmoPrimary (:523). So a bare non-instagib Vaporizer pickup correctly spends/checks the full primary_ammo (10 cells), and under the mutator it is 1 cell — matching Base's `g_instagib ? 1 : primary_ammo` everywhere. wr_aim (BotWantsSecondary), wr_reload, and the forced-reload branch all remain ported. liveness stays partial only because the non-instagib map-pickup equip path of the Vaporizer (vs the instagib loadout) is not separately confirmed live."
 
   - id: weapon-vaporizer.instagib.integration
     name: "InstaGib integration (start loadout, armor-as-lives, gib, blaster nullify, bleed-out)"
@@ -408,20 +406,23 @@ features:
     layer: [presentation]
     base_refs:
       - "common/weapons/weapon/vaporizer.qc:describe (METHOD Vaporizer, describe)"
-    port_refs: []
-    constants: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:GuideDescription"
+    constants:
+      - { name: "guide_paragraphs", base: "4 PAR (energy-beam superweapon overview + instagib/ExtraLife one-shot, Blaster-laser secondary, superweapon-rarity/instagib-spawn note, Cells ammo note)", port: "4 paragraphs (same content; COLORED_NAME(%s) substitutions pre-filled with plain literals, same convention as Electro/Shotgun/Tuba)", match: true }
+      - { name: "W_Guide_Keybinds / W_Guide_DPS_onlyOne", base: "appended by describe()", port: "not reproduced (guide-page helpers unported)", match: false }
     status:
       logic: na
       values: na
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The Base describe() weapon-guide prose (four PAR paragraphs: the energy-beam superweapon overview, the instagib one-shot caveat, the Blaster-laser secondary, and the cell-ammo note + W_Guide_Keybinds/W_Guide_DPS lines) is not ported — the Vaporizer has no GuideDescription override, so the live menu weapon guide (DialogMediaGuide) renders blank for the Vaporizer."
+      - "The trailing W_Guide_Keybinds(this) + W_Guide_DPS_onlyOne lines of describe() (keybind hints + a computed DPS figure) are not reproduced — those helpers aren't ported. The four prose paragraphs ARE present. Cosmetic/menu-only."
     verification:
-      - { kind: code, ref: "vaporizer.qc:436-448 METHOD(Vaporizer, describe) exists; no GuideDescription override on Vaporizer.cs (grep) and no port_refs; DialogMediaGuide.cs:194 reads w.GuideDescription for the active weapon -> blank for Vaporizer", result: fail }
+      - { kind: code, ref: "Vaporizer.cs:50-56 GuideDescription override returns the four-paragraph weapon-guide prose; DialogMediaGuide.cs:194 reads w.GuideDescription for the active weapon and renders it live (non-blank). vs vaporizer.qc:436-448 METHOD(Vaporizer, describe)", result: pass }
     confidence: high
-    notes: "NEW ROW added 2026-06-27 (registry coverage gap, not a code regression): sister weapon units (weapon-electro.describe_guide, weapon-shotgun.menu.describe, weapon-tuba) all map this MENUQC describe() text as a dedicated row, but weapon-vaporizer had none. The Vaporizer's describe() is unported (no GuideDescription override) — MENUQC/encyclopedia-only, low gameplay priority, but the live DialogMediaGuide weapon guide shows it blank. Pure presentation/menu prose; no logic/values/timing/audio dimensions apply."
+    notes: "FIX vs the 2026-06-27 baseline (was missing/na, port_refs []): the Vaporizer NOW carries a GuideDescription override (Vaporizer.cs:50-56) with the four describe() paragraphs, matching how Electro/Shotgun/Tuba/Devastator override it; DialogMediaGuide.cs:194 renders it live for the active weapon, so the menu weapon guide is no longer blank for the Vaporizer. Residual: only the W_Guide_Keybinds/W_Guide_DPS helper lines (keybind+DPS) are omitted (helpers unported) — pure menu prose, no logic/values/timing/audio."

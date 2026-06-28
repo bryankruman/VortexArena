@@ -1,12 +1,11 @@
 unit: turret-tesla
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 8
   worst_gaps:
-    - "Head coil never visually spins: tr_think computes HeadAVelocity/HeadAngles server-side (logic/values/timing faithful) but no head-bone entity (tesla_head.md3) renders it — grep confirms HeadAngles has zero render-node consumer, so the menacing charge spin is invisible."
-    - "Idle crackle arc reach distribution: Prandom.Vec() returns a cube [-1,1]^3 while QC randomvec() (#91) reject-samples a uniform unit-sphere direction; the *350 idle endpoint is a slightly different shape (cosmetic-only)."
+    - "Head coil never visually spins: tr_think computes HeadAVelocity/HeadAngles server-side (logic/values/timing faithful) but no head-bone entity (tesla_head.md3) renders it — grep (2026-06-27) confirms HeadAngles has zero render-node consumer (only TurretAI track-motor/gib + TeslaTurret.TrThink write it), so the menacing charge spin is invisible. The single remaining real gap for this unit."
 features:
   - id: turret-tesla.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -19,7 +18,7 @@ features:
       - { name: "mins", base: "'-60 -60 0'", port: "(-60,-60,0)", match: true }
       - { name: "maxs", base: "'60 60 128'", port: "(60,60,128)", match: true }
       - { name: "model", base: "models/turrets/tesla_base.md3", port: "models/turrets/tesla_base.md3", match: true }
-      - { name: "head_model", base: "models/turrets/tesla_head.md3", port: "none (no head-bone entity; grep tesla_head -> 0 hits in src/)", match: false }
+      - { name: "head_model", base: "models/turrets/tesla_head.md3", port: "TeslaTurret.cs:52 sets HeadModel = tesla_head.md3 (identity data only); no head-bone entity / render attach consumes it", match: false }
       - { name: "netname", base: "tesla", port: "tesla", match: true }
       - { name: "health", base: "1000 (turrets.cfg:397)", port: "StartHealth 1000", match: true }
       - { name: "spawnflags", base: "TUR_FLAG_HITSCAN|TUR_FLAG_PLAYER|TUR_FLAG_MISSILE", port: "implicit (fixed emplaced, players+missiles selected)", match: true }
@@ -35,9 +34,9 @@ features:
     gaps:
       - "Head model (tesla_head.md3) not instantiated as a separate head/coil entity; no tag_head attachment. TrThink computes head spin as state (HeadAngles) but grep confirms no head-bone node consumes HeadAngles, so the coil never visibly spins (see anim feature)."
     verification:
-      - { kind: code_read, ref: "tesla.qh vs TeslaTurret ctor + Spawn (mins/maxs/model/netname/health all confirmed); grep HeadAngles -> only TeslaTurret/TurretAI/TurretSpawn (no render consumer); grep tesla_head -> 0 hits in src/", result: pass }
+      - { kind: code_read, ref: "tesla.qh vs TeslaTurret ctor + Spawn (mins/maxs/model/netname/health/spawnflags all confirmed); grep HeadAngles (2026-06-27) -> only TeslaTurret/TurretAI/TurretSpawn (no render consumer); grep tesla_head -> 1 hit (TeslaTurret.cs:52 identity assignment only, no render attach)", result: pass }
     confidence: high
-    notes: "Identity/hitbox/base model/health faithful and live; head coil model still not modeled as an entity (no visual spin even though the spin state is computed). Unchanged from prior audit."
+    notes: "Re-verified 2026-06-27: identity/hitbox/base model/health faithful and live; head coil model still not modeled as a separate head-bone entity (no visual spin even though the spin state is computed in TrThink). Unchanged from prior audit."
   - id: turret-tesla.setup.tr_setup
     name: "tr_setup: select/validate flags, ammo flags, custom firecheck, no aim/track"
     layer: [authority]
@@ -72,7 +71,7 @@ features:
     verification:
       - { kind: code_read, ref: "tesla.qc tr_setup vs TeslaTurret.Spawn/Think + TurretSpawn.Init (flags + solid/movetype); custom Discharge path, no RunCombat/Track call confirmed", result: pass }
     confidence: high
-    notes: "Omnidirectional no-aim/no-track + custom-fire setup faithfully reproduced; select/validate flag sets match exactly. Live."
+    notes: "Re-verified 2026-06-27: omnidirectional no-aim/no-track + custom-fire setup faithfully reproduced (TeslaTurret.Spawn->TurretSpawn.Init solid/movetype/takedamage; custom Think Discharge, no RunCombat/Track call); select/validate flag sets match exactly. Faithful and live."
   - id: turret-tesla.damage.lifecycle
     name: "Damage gating, ammo regen, death blast + respawn"
     layer: [authority]
@@ -107,7 +106,7 @@ features:
     verification:
       - { kind: code_read, ref: "turrets.cfg:398 respawntime 120 == TeslaTurret.RespawnTime 120 passed via Spawn(respawnTime:); EventDamage live path (GtEventDamage shim) routes hits -> Damage gate -> health subtract -> Combat.Death -> OnAnyDeath -> Die/Respawn", result: pass }
     confidence: high
-    notes: "Wave-2 fix holds: Spawn passes respawnTime: RespawnTime (120), matching g_turrets_unit_tesla_respawntime 120 (was inheriting the generic 60s default). Damage routed through the live EventDamage seam; chassis damage gating + ammo regen + death/respawn lifecycle all faithful and live."
+    notes: "Re-verified 2026-06-27: Spawn passes respawnTime: RespawnTime (TeslaTurret.cs:36 const 120, :59 Spawn arg), matching g_turrets_unit_tesla_respawntime 120 (no longer inheriting the generic 60s default). Damage routed through the live EventDamage seam; chassis damage gating + ammo regen + death/respawn lifecycle all faithful and live."
   - id: turret-tesla.spawn.liveness
     name: "Map spawnfunc wiring + per-frame think (turret_tesla placed on map)"
     layer: [authority]
@@ -116,7 +115,7 @@ features:
       - "common/turrets/sv_turrets.qc:turret_link"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:Tesla"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:227"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:237"
       - "src/XonoticGodot.Common/GameInit.cs:21"
     constants:
       - { name: "g_turrets master switch", base: "1 (default on)", port: "MasterSwitchEnabled default-on", match: true }
@@ -131,9 +130,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "SpawnFuncs.Register(\"turret_tesla\", TurretSpawnFuncs.Tesla) at MapObjectsRegistry.cs:227 -> Tesla -> Spawn(\"tesla\") -> def.Spawn + per-frame e.Think=self=>{NextThink=Now; def.Think(self);}; GameInit.cs:21 calls MapObjectsRegistry.RegisterAll", result: pass }
+      - { kind: code_read, ref: "SpawnFuncs.Register(\"turret_tesla\", TurretSpawnFuncs.Tesla) at MapObjectsRegistry.cs:237 -> Tesla -> Spawn(e,\"tesla\") -> def.Spawn(e) + per-frame driver self=>{self.NextThink=Now; def.Think(self);} re-armed each frame (TurretSpawnFuncs.cs:55-57); GameInit.cs:21 calls MapObjectsRegistry.RegisterAll at boot", result: pass }
     confidence: high
-    notes: "Confirmed live: spawnfunc registered (line 227), RegisterAll runs at boot, Think re-armed each frame; [Turret] descriptor resolves by name. Unchanged."
+    notes: "Re-verified 2026-06-27: spawnfunc registered (MapObjectsRegistry.cs:237 — line ref refreshed from 227), RegisterAll runs at boot (GameInit.cs:21), Think driver re-armed every frame; [Turret] descriptor resolves by name. Fully faithful and live."
   - id: turret-tesla.firecheck.custom
     name: "Custom firecheck: rescan throttle + re-validate + cooldown + ammo + target gate"
     layer: [authority]
@@ -165,7 +164,7 @@ features:
     verification:
       - { kind: code_read, ref: "tesla.qc turret_tesla_firecheck (do_target_scan via maxdelay OR invalid-target, suppressed by mindelay, then turret_firecheck refire+ammo, enemy!=NULL) vs TeslaTurret.Think:83-114 — full scan-throttle now ported: cvar-backed mindelay/maxdelay (TurretAI.Cvar defaults 0.1/1), TargetSelectTime stamp, 0.5s re-validate, then AttackFinished/Ammo/enemy gates. Matches Base structure line-for-line.", result: pass }
     confidence: high
-    notes: "FIXED since prior audit: the scan-throttle that was previously simplified away (SelectTarget ran every think) is now fully ported — TeslaTurret.Think:83-110 replicates turret_tesla_firecheck's do_target_scan logic with cvar-backed mindelay(0.1)/maxdelay(1) gating via TargetSelectTime, only re-selecting on maxdelay-elapsed OR held-target-invalid and suppressing under mindelay. Cooldown+ammo+target gate + 0.5s re-validate also faithful and live. Fully faithful now."
+    notes: "Re-verified 2026-06-27: the scan-throttle remains fully ported — TeslaTurret.Think:84-111 replicates turret_tesla_firecheck's do_target_scan logic with cvar-backed mindelay(0.1)/maxdelay(1) gating via TargetSelectTime, only re-selecting on maxdelay-elapsed OR held-target-invalid and suppressing under mindelay; then enemy!=null + AttackFinished cooldown + Ammo>=ShotDamage gates (Think:113-115) + 0.5s re-validate. Faithful and live."
   - id: turret-tesla.weapon.chain
     name: "Chain-lightning discharge (toast loop): nearest-LOS first hop, 10-hop decay"
     layer: [authority]
@@ -203,7 +202,7 @@ features:
     verification:
       - { kind: code_read, ref: "tesla_weapon.qc wr_think+toast vs Discharge+Toast: first-hop full range, 0.75/0.85 decay, RANGELIMITS dropped on chain, no-repeat HashSet, WorldOnly LOS, distance metric, deathtype, force Vector3.Zero, realowner-skip all confirmed; turrets.cfg:402 shot_force 400 confirmed never applied (Base toast force '0 0 0')", result: pass }
     confidence: high
-    notes: "Wave-2 fixes hold: damage force is '0 0 0' (no shove) and the realowner-skip branch is present (target != Owner ?? turret); for a map-placed turret Owner is null so this reduces to never-skip, matching Base (a map turret's realowner is world/null, never validates as a target). Chain mechanic + falloffs + no-self-hit set + RANGELIMITS drop all faithful and live."
+    notes: "Re-verified 2026-06-27: damage force is Vector3.Zero (no shove, TeslaTurret.cs:222) and the realowner-skip branch is present (target != Owner ?? turret, :220); for a map-placed turret Owner is null so this reduces to never-skip, matching Base (a map turret's realowner is world/null, never validates as a target). Chain mechanic (first-hop full range, 0.75/0.85 decay over 10 hops, RANGELIMITS dropped on chain via ChainSelect, no-repeat HashSet, WorldOnly LOS, distance metric, DEATH_TURRET_TESLA) all faithful and live."
   - id: turret-tesla.weapon.arc_fx
     name: "Per-hop lightning arc visual + discharge sound"
     layer: [presentation, authority]
@@ -230,7 +229,7 @@ features:
     verification:
       - { kind: code_read, ref: "tesla_weapon.qc wr_think isPlayer-gated W_SetupShot_Dir (only player path emits SND_TeslaCoilTurretAttack_FIRE) vs Discharge: no Api.Sound.Play present; EffectEmitter.TeCsqcLightningArc:263 wired and called from Toast each hop", result: pass }
     confidence: high
-    notes: "Wave-2 fix holds: the over-emitted weapons/electro_fire.wav is gone — a Base tesla TURRET is silent server-side (electro_fire is player-only via W_SetupShot_Dir in the isPlayer branch). Per-hop arc visual genuinely wired (TeCsqcLightningArc) and called live each hop. Fully faithful."
+    notes: "Re-verified 2026-06-27: no discharge sound — Discharge (TeslaTurret.cs:159-181) has no Api.Sound.Play; a Base tesla TURRET is silent server-side (electro_fire is player-only via W_SetupShot_Dir in the isPlayer branch). Per-hop arc visual genuinely wired: TeCsqcLightningArc -> EmitByEffectInfoName(\"arc_lightning\", from, to, 0) (real networked TE_CSQC_ARC beam, EffectEmitter.cs:299-300, NOT a stub), called live each hop in Toast (:216). Fully faithful."
   - id: turret-tesla.anim.tr_think
     name: "tr_think head spin-up + idle random crackle arc"
     layer: [authority, presentation]
@@ -244,7 +243,7 @@ features:
       - { name: "head avelocity zeroed when inactive", base: "'0 0 0' if !active", port: "Vector3.Zero if !Active", match: true }
       - { name: "idle arc chance", base: "f=ammo/ammo_max; f*f>random() && random()<0.1", port: "f=Ammo/AmmoMax; f*f>Prandom.Float() && Prandom.Float()<0.1f", match: true }
       - { name: "idle arc gated on cooled down", base: "attack_finished[0] <= time", port: "AttackFinished <= now (else return)", match: true }
-      - { name: "idle arc reach", base: "te_csqc_lightningarc(shotorg, shotorg+randomvec()*350)", port: "TeCsqcLightningArc(ShotOrg, ShotOrg + Prandom.Vec()*350f)", match: true }
+      - { name: "idle arc reach", base: "te_csqc_lightningarc(shotorg, shotorg+randomvec()*350)", port: "TeCsqcLightningArc(ShotOrg, ShotOrg + Prandom.Vec()*350f); Prandom.Vec() now rejection-samples the unit ball (Prandom.cs:85-94), matching DP randomvec() #91", match: true }
     status:
       logic: faithful
       values: faithful
@@ -255,9 +254,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Head spin not rendered: TrThink computes HeadAVelocity ('0 45 0' low-ammo / '0 180 0' charged, scaled by ammo/shot_dmg, zeroed when inactive) and integrates HeadAngles, but grep confirms no head-bone/coil entity (tesla_head.md3) consumes HeadAngles — the coil never visibly spins. Server-side state only."
-      - "Idle crackle arc reach distribution: Prandom.Vec() returns each component in [-1,1] (a cube) whereas QC randomvec() (DP builtin #91) rejection-samples a uniform direction inside the unit sphere; the *350 idle crackle endpoint is thus a slightly different shape. Cosmetic-only (idle muzzle crackle)."
+      - "Head spin not rendered: TrThink computes HeadAVelocity ('0 45 0' low-ammo / '0 180 0' charged, scaled by ammo/shot_dmg, zeroed when inactive) and integrates HeadAngles, but grep (2026-06-27) confirms no head-bone/coil entity (tesla_head.md3) consumes HeadAngles — the only readers are TurretAI track-motor/death-gib logic + TeslaTurret.TrThink itself. The coil never visibly spins; server-side state only. This is the last real gap on this unit."
     verification:
-      - { kind: code_read, ref: "tesla.qc tr_think (head avelocity branches + cooled-down idle-arc) vs TeslaTurret.TrThink — called every Think; idle arc emits via TeCsqcLightningArc; HeadAngles has no render consumer (grep); randomvec #91 = unit-sphere reject-sample vs Prandom.Vec cube confirmed", result: pass }
+      - { kind: code_read, ref: "tesla.qc tr_think (head avelocity branches + cooled-down idle-arc) vs TeslaTurret.TrThink:127-153 — called every Think; idle arc emits via wired TeCsqcLightningArc -> EmitByEffectInfoName(\"arc_lightning\") (real networked TE_CSQC_ARC beam, not a stub); HeadAngles has no render consumer (grep src/ 2026-06-27); Prandom.Vec() reads the unit-ball reject-sample (x^2+y^2+z^2<=1, Prandom.cs:85-94) — NOT a cube", result: pass }
     confidence: high
-    notes: "Wave-2 fix holds on logic/values/timing: TrThink reproduces the head spin-up scaling and the probabilistic idle crackle arc, called live each Think; the idle arc visual is genuinely emitted. STILL OPEN on presentation: head model is not an entity, so the computed spin is never visible; and the crackle endpoint uses a cube rather than QC's unit-sphere randomvec (cosmetic). Discharge arc and idle crackle ARE visible."
+    notes: "Re-verified 2026-06-27. Logic/values/timing faithful + live: TrThink reproduces the head spin-up scaling and the probabilistic idle crackle arc, called live each Think; the idle arc visual is genuinely emitted via the wired arc emitter. CLOSED since prior audit: the 'Prandom.Vec returns a cube' gap is STALE — the current Prandom.Vec() (Prandom.cs:85-94) rejection-samples the unit ball, matching QC randomvec() #91, so the idle-arc endpoint shape now matches Base. STILL OPEN on presentation only: the head model is not modeled as a head-bone entity, so the computed spin is never rendered (discharge arc + idle crackle ARE visible)."

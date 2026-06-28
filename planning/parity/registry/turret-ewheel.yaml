@@ -1,12 +1,12 @@
 unit: turret-ewheel
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 12
   worst_gaps:
     - "CSQC ewheel_draw rolling integration (origin += velocity*dt, head angles += avelocity*dt, MOVETYPE_BOUNCE+gravity) not ported — the low-health spark temp-entity IS now emitted server-side"
-    - "Head model (ewheel-gun1.md3) not instantiated as a separate head bone entity (no tag_head attachment); ROAM spawnflag not modeled"
+    - "Head model (ewheel-gun1.md3) is now CARRIED as identity data (Wave-17 HeadModel field) but still NOT instantiated as a separate head bone entity (no tag_head attachment, no client render; its sole consumer TurretAI.TossDeathGibs skips ewheel); ROAM spawnflag not modeled"
     - "Two-cannon head-frame alternation (tur_head.frame += 2, wrap > 3 -> 0) still absent — needs the unported head sub-entity (EFFECT_BLASTER_MUZZLEFLASH + PROJECTILE_BLASTER trail are now emitted, Wave-8e)"
     - "ammo_flags ENERGY|RECHARGE|RECIEVE modeled only as an ammo pool (no energy/recharge/receive bookkeeping); recharge rate itself honored"
 features:
@@ -21,7 +21,7 @@ features:
       - { name: "mins", base: "'-32 -32 0'", port: "(-32,-32,0)", match: true }
       - { name: "maxs", base: "'32 32 48'", port: "(32,32,48)", match: true }
       - { name: "model", base: "models/turrets/ewheel-base2.md3", port: "models/turrets/ewheel-base2.md3", match: true }
-      - { name: "head_model", base: "ewheel-gun1.md3", port: "none (no head bone entity)", match: false }
+      - { name: "head_model", base: "ewheel-gun1.md3", port: "models/turrets/ewheel-gun1.md3 (carried as identity data; NOT instantiated as a head bone entity / not rendered)", match: false }
       - { name: "netname", base: "ewheel", port: "ewheel", match: true }
       - { name: "spawnflags", base: "TUR_FLAG_PLAYER|TUR_FLAG_MOVE|TUR_FLAG_ROAM", port: "movable=true (MOVE); PLAYER select implicit; ROAM not modeled", match: false }
     status:
@@ -34,13 +34,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Head model (ewheel-gun1.md3) not instantiated as a separate head entity; no tag_head attachment."
+      - "Head model (ewheel-gun1.md3) string is now CARRIED as identity data (HeadModel field, Wave-17) but is still not instantiated as a separate head bone entity; no tag_head attachment and no client render of the head. Its only consumer (TurretAI.TossDeathGibs head-gib) explicitly skips turret_ewheel (ClassName guard at TurretAI.cs:1204, because Base tosses the whole ewheel model in its own CSQC draw), so for ewheel the field is presently inert identity data — presentation stays partial, NOT closed."
       - "ROAM spawnflag not modeled as an explicit flag (the path-roaming behavior it gates is now implemented and live — see turret-ewheel.drive.path)."
     verification:
       - { kind: test, ref: "TurretLifecycleTests.EwheelSpawn_PinsHealthAndCoreSetup", result: pass }
-      - { kind: code_read, ref: "ewheel.qh vs EWheelTurret ctor + Spawn", result: pass }
+      - { kind: code_read, ref: "ewheel.qh vs EWheelTurret ctor + Spawn — Wave-17 added HeadModel='models/turrets/ewheel-gun1.md3'; consumer TurretAI.TossDeathGibs returns early for turret_ewheel so the head model is not rendered/gibbed for ewheel", result: pass }
     confidence: high
-    notes: "Identity/hitbox/base model faithful; head bone + ROAM flag not modeled. Unchanged by Wave-1/2."
+    notes: "RE-AUDIT (2026-06-27, post Wave-16/17): the ONLY ewheel-specific change in Waves 16-17 was Wave-17 adding the HeadModel identity string (matching ewheel.qh head_model ATTRIB) — a faithful identity-data improvement, but the head is still not instantiated/attached/rendered (sole consumer skips ewheel by classname), so presentation remains partial. Identity/hitbox/base model faithful; head bone render + ROAM flag still not modeled. (Wave-16 TurretAI edits were mutator-hook plumbing + a non-stepmotor aim_speed default-fill — both no-ops for stock ewheel.)"
   - id: turret-ewheel.setup.tr_setup
     name: "tr_setup: SlideBox/Step creature, select flags, ammo flags, home pose"
     layer: [authority]

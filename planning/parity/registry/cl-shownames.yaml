@@ -6,8 +6,7 @@ summary:
   feature_count: 13
   worst_gaps:
     - "LOS trace is a Fraction>=0.99 heuristic, not the QC trace_networkentity/entnum self-exclusion check (intended divergence — port can't map a remote to a trace-set entnum)"
-    - "Chase own-tag (truly-local player) still can't draw: predicted local player is never in ClientNet.RemoteIds — only the spectatee arm of the self branch is live"
-    - "MUTATOR_CALLHOOK(ShowNames_Draw) not invoked (stock no-op — no shipped mutator implements it)"
+    - "MUTATOR_CALLHOOK(ShowNames_Draw) not invoked (stock no-op — no shipped mutator implements it; harmless today)"
 features:
   - id: cl-shownames.core.master_enable
     name: "Master enable + per-client iteration"
@@ -30,10 +29,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ShowNamesLayer.cs:148 _Draw gated on CvarBool(hud_shownames); instantiated+AddChild NetGame.cs:1513-1516; fed NetGame.cs:2897-2911", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:148 _Draw gated on CvarBool(hud_shownames); instantiated NetGame.cs:1636 (SetupCameraAndHud); fed NetGame.cs:3064-3078 (_Process)", result: pass }
       - { kind: test, ref: "ShowNamesTests.CvarDefaults_MatchShippedBaseValues / EveryCvar_IsPrefixedHudShownames", result: pass }
     confidence: high
-    notes: "VERIFIED live: ShowNamesLayer instantiated + AddChild in SetupCameraAndHud (NetGame.cs:1513), fed each frame from NetGame._Process (2897), _Process->QueueRedraw->_Draw. Iterates ClientNet.RemoteIds filtered to NetEntityKind.Player (QC iterates per-maxclient entcs slots) — equivalent set."
+    notes: "RE-VERIFIED 2026-06-27 live: ShowNamesLayer instantiated in SetupCameraAndHud (NetGame.cs:1636, Camera+Net set), fed each frame from NetGame._Process (3064-3078), _Process->QueueRedraw->_Draw gated on hud_shownames. Iterates ClientNet.RemoteIds filtered to NetEntityKind.Player (QC iterates per-maxclient entcs slots) — equivalent set. 35/35 ShowNamesTests green."
   - id: cl-shownames.gate.team_enemy
     name: "Team / enemy visibility gate"
     layer: [presentation]
@@ -57,7 +56,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ShowNamesLayer.cs:205-209 entcsPrivate = !isSelf && (sameTeamColor || radar_showenemies || LocalIsSpectating) — reproduces QC _entcs_send's three-arm private-slice gate (ent_cs.qc); LocalIsSpectating fed from NetGame.cs:2908 (spectatee_status!=0)", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:205-209 entcsPrivate = !isSelf && (sameTeamColor || radar_showenemies || LocalIsSpectating) — reproduces QC _entcs_send's three-arm private-slice gate (ent_cs.qc); LocalIsSpectating fed from NetGame.cs:3075 (spectatee_status!=0)", result: pass }
       - { kind: code, ref: "ShowNamesLayer.cs:215 enemy-gate exempts the viewed self/spectatee (!isViewed), matching QC where the viewed player carries the private slice and is never enemy-gated", result: pass }
       - { kind: test, ref: "ShowNamesTests.Enemy_IsOnlyShown_WhenEnemiesCvarSet / SameTeam_RequiresTeamplay_AndMatchingTeam", result: pass }
     confidence: high
@@ -68,9 +67,10 @@ features:
     base_refs:
       - "client/shownames.qc:Draw_ShowNames"
     port_refs:
-      - "game/client/ShowNamesLayer.cs:_Draw"
-      - "game/net/NetGame.cs:UpdateHud (feeds CurrentViewedNetId/SpectateeStatus/SpectateeStatusChangedTime)"
-      - "game/net/ClientNet.cs:SpectatingNetId / SpectateeStatus / SpectateeStatusChangedTime"
+      - "game/client/ShowNamesLayer.cs:_Draw (spectatee arm)"
+      - "game/client/ShowNamesLayer.cs:TryDrawSelfTag (synthetic local-player own-tag from PredictedOrigin)"
+      - "game/net/NetGame.cs:_Process (feeds CurrentViewedNetId/SpectateeStatus/SpectateeStatusChangedTime/ChaseActive)"
+      - "game/net/ClientNet.cs:SpectatingNetId / SpectateeStatus / SpectateeStatusChangedTime / PredictedOrigin / LocalState"
     constants:
       - { name: "hud_shownames_self", base: "0", port: "0", match: true }
       - { name: "spectatee_status grace (s)", base: "1", port: "1", match: true }
@@ -78,18 +78,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Chase own-tag for the truly-local player still can't draw: the predicted local player is never in ClientNet.RemoteIds (HandleSnapshot skips LocalNetId), so the self branch only fires for the spectatee. In stock play this matters only for hud_shownames_self + chase_active on your OWN model in third person — a residual deferral; the spectatee path (the common observed case) is live."
+    gaps: []
     verification:
-      - { kind: code, ref: "ShowNamesLayer.cs:185-195 (isViewed = netId==CurrentViewedNetId; ChaseActive gate + hud_shownames_self || grace window spectatee_status>0 && now<=changed_time+1) vs QC:42-51", result: pass }
-      - { kind: code, ref: "NetGame.cs:2899-2904 feeds CurrentViewedNetId = SpectatingNetId!=0 ? SpectatingNetId : LocalNetId; SpectateeStatus/ChangedTime from ClientNet (live per-frame in UpdateHud)", result: pass }
-    confidence: high
-    notes: "Spectatee/self branch wired end-to-end via CurrentViewedNetId (ClientNet.SpectatingNetId) and the 1s grace window is exact (spectatee_status>0 && now<=changed+1). Residual: the truly-local predicted player still isn't a remote, so its OWN chase tag is still a deferral. Not covered by a dedicated unit test (verified by code-read)."
+      - { kind: code, ref: "ShowNamesLayer.cs:185-195 (isViewed = netId==CurrentViewedNetId; ChaseActive gate + hud_shownames_self || grace window spectatee_status>0 && now<=changed_time+1) vs QC:42-51 — spectatee arm", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:606-713 TryDrawSelfTag (called unconditionally from _Draw:415): synthesises the local predicted player's OWN tag from ClientNet.PredictedOrigin + live Health/Armor when ChaseActive && CurrentViewedNetId==LocalNetId && (hud_shownames_self || grace) — closes the truly-local chase-own-tag deferral the predicted player isn't in RemoteIds for", result: pass }
+      - { kind: code, ref: "NetGame.cs:3066-3077 feeds CurrentViewedNetId = SpectatingNetId!=0 ? SpectatingNetId : LocalNetId; SpectateeStatus/ChangedTime/LocalIsSpectating/ChaseActive(_view.ChaseActive) from ClientNet (live per-frame in _Process)", result: pass }
+    confidence: medium
+    notes: "RE-VERIFIED 2026-06-27 (liveness partial->live, presentation partial->faithful — the chase own-tag deferral is CLOSED): TryDrawSelfTag now synthesises the truly-local predicted player's own tag from ClientNet.PredictedOrigin + live Health/Armor (the predicted player is never in RemoteIds), reusing the same projection/fade/distance/resize/status path the tested remote arm uses, gated by ChaseActive + CurrentViewedNetId==LocalNetId + (hud_shownames_self || 1s grace). Spectatee arm wired via CurrentViewedNetId(SpectatingNetId) with the exact 1s grace (spectatee_status>0 && now<=changed+1). Confidence MEDIUM not high: the chase own-tag path is verified by code-read (it reuses tested helpers) but has NO dedicated unit test and was NOT runtime-observed in chase this audit."
   - id: cl-shownames.los.traceline
     name: "Line-of-sight occlusion test"
     layer: [presentation]
@@ -331,7 +331,7 @@ features:
       - "MUTATOR_CALLHOOK(ShowNames_Draw) still not invoked (no-op in stock Base — no shipped mutator implements MUTATOR_HOOKFUNCTION(*, ShowNames_Draw); confirmed by grep — but a custom mutator hooking it would not run). Harmless in stock gameplay."
     verification:
       - { kind: code, ref: "ShowNamesLayer.cs:311-320 (a = hud_shownames_alpha*tag.Alpha; then if !sameteam||netId==LocalNetId: f = s.Alpha==0?1:Alpha/255 clamp 0..1; a*=f) vs QC:131-138", result: pass }
-      - { kind: code, ref: "ServerNet.cs:1726 Alpha=QuantizeAlpha(p.Alpha) on the player entity feed; p.Alpha set live by Cloaked/RunningGuns/Powerups(invisibility)/Buffs(invisible)/Nades(veil) and reset to 1 on spawn", result: pass }
+      - { kind: code, ref: "ServerNet.cs:2070 Alpha=QuantizeAlpha(p.Alpha) on the player entity feed; p.Alpha set live by Cloaked/RunningGuns/Powerups(invisibility)/Buffs(invisible)/Nades(veil) and reset to 1 on spawn", result: pass }
       - { kind: code, ref: "NetEntity.cs Alpha is a real networked field (delta bit EntityField.Alpha=1<<17, write/read byte); ClientNet exposes it on NetEntityState.Alpha — full produce->wire->consume chain live", result: pass }
       - { kind: code, ref: "Base grep: only events.qh hook definition + shownames.qc:139 CALLHOOK exist; zero MUTATOR_HOOKFUNCTION(*, ShowNames_Draw)", result: pass }
     confidence: high
@@ -358,8 +358,8 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "ServerNet.cs:1930-1940 RelevantEntitiesFor strips Health/Armor for enemy recipients of a PLAYER entity (sameTeam = teamplay && ownerTeam!=0 && Colormap==ownerTeam; else zero) — server-side withholding matching QC ANDing HEALTH/ARMOR out of an enemy's SendFlags", result: pass }
-      - { kind: code, ref: "ShowNamesLayer.cs:399-400 tag.Health/Armor = entcsPrivate ? s.Health : s 0 — client-side mirror of QC Draw_ShowNames_All:237-248 (private slice only); entcsPrivate is the m_entcs_private port (radar_showenemies||sameteam||observer)", result: pass }
+      - { kind: code, ref: "ServerNet.cs:2349-2358 RelevantEntitiesFor strips Health/Armor for enemy recipients of a PLAYER entity (sameTeam = teamplay && ownerTeam!=0 && Colormap==ownerTeam; else state.Health/Armor=0) — server-side withholding matching QC ANDing HEALTH/ARMOR out of an enemy's SendFlags", result: pass }
+      - { kind: code, ref: "ShowNamesLayer.cs:400-401 tag.Health/Armor = entcsPrivate ? s.Health/s.Armor : 0 — client-side mirror of QC Draw_ShowNames_All:237-248 (private slice only); entcsPrivate is the m_entcs_private port (radar_showenemies||sameteam||observer)", result: pass }
       - { kind: test, ref: "ShowNamesTests.HealthAndArmor_RoundTripTogether_ForATeammateTag / Armor_RoundTripsThroughTheDelta", result: pass }
     confidence: high
     notes: "WAVE-6 FIX (logic partial->faithful, the enemy info-parity divergence is CLOSED): enemy health/armor is now withheld BOTH server-side (ServerNet.RelevantEntitiesFor zeroes Health/Armor for enemy recipients of a player entity) AND client-side (ShowNamesLayer reads s.Health/s.Armor only when entcsPrivate, mirroring QC's m_entcs_private gate). Previously the port read the always-present remote slice regardless of team."

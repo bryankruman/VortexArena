@@ -1,11 +1,11 @@
 unit: vehicle-spiderbot
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 16
   worst_gaps:
-    - "Death blowup is still simplified on presentation: no 4 physics gib entities (head MF_ROCKET+EF_FLAME bounce+fade via spiderbot_headfade, 2 tossed guns body-vel v_forward*700, body frame 11). FIXED-SINCE-BASELINE: the per-burn EFFECT_EXPLOSION_SMALL AND the head-fade EFFECT_EXPLOSION_BIG are now emitted server-side (EffectEmitter.Emit, Send_Effect-equivalent). The ~10% burn-tick SND_ROCKET_IMPACT audio + the 250-dmg blast + 45s respawn remain faithful. Residual presentation gap = the physics gib bodies only."
+    - "FIXED-IN-WAVE-15 (719d377, verified this re-audit): the death blowup now spawns the 4 physics gib entities server-side (Spiderbot.SpawnDeathGibs: body frame 11 + colormod dark + SUB_SetFade; head MOVETYPE_BOUNCE + EF_FLAME + avelocity + the spiderbot_headfade closure that fires SND_ROCKET_IMPACT + EFFECT_EXPLOSION_BIG on its final fade; 2 guns MOVETYPE_TOSS v_forward*700 + fade), hides the originals (alpha=-1), and the gib entities replicate via the normal entity feed. The per-burn EFFECT_EXPLOSION_SMALL + SND_ROCKET_IMPACT and the 250-dmg blast + 45s respawn are faithful. ONLY RESIDUAL on the death scene = the head's MF_ROCKET modelflag (client rocket-smoke-trail render; no port Entity field — EF_FLAME IS set). death.blowup presentation upgraded partial->faithful."
     - "FIXED-SINCE-BASELINE: vr_impact / bouncepain (g_vehicle_spiderbot_bouncepain) is ported (Spiderbot.Impact) and live via VehicleCommon.Touch — a faithful no-op at the stock '0 0 0' default (the bouncepain cvar is not yet server-overridable). pushable IS set (vehicle.PushableFlag=true in Spawn — jumppad launches modeled). FIXED-THIS-AUDIT: mass=5000 is now modeled (Spiderbot.cs:119 vehicle.Mass=5000; the Entity.Mass field from DamageEntityState.cs is read by the blast-push pipeline DamageSystem.cs:791 — mass-scaled only for MOVETYPE_PHYSICS targets, matching QC where .mass affects knockback only on physics-movetype bodies; the spiderbot is MOVETYPE_STEP so neither Base nor port mass-scales its own knockback, but the field is now faithfully present)."
     - "FIXED-SINCE-BASELINE: the server-authoritative Send_Effect muzzle/launch effects are now emitted — EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH (FireMinigun) and EFFECT_SPIDERBOT_ROCKETLAUNCH (RocketDo). Still client-only TODO across the unit: gun barrel spin, aux crosshairs, vehicle_ammo2/reload2 HUD %, PROJECTILE_SPIDERROCKET in-flight CSQC visual, walk/strafe/idle engine sounds (re-architected client-side), and the per-pain EFFECT_SMOKE_SMALL puff (the gameplay-authoritative DmgShake jitter from vehicles_painframe IS produced)."
     - "view_ofs '0 0 70' / height 170 (seated camera offset + chase distance) still not modeled on the headless server descriptor (client-view concern)."
@@ -51,7 +51,7 @@ features:
       - "common/vehicles/vehicle/spiderbot.qc:spawnfunc(vehicle_spiderbot)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:Spiderbot"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:249"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:252"
     constants:
       - { name: "g_vehicle_spiderbot (master)", base: "true (1)", port: "MasterSwitchEnabled('g_vehicle_spiderbot')", match: true }
     status:
@@ -445,7 +445,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:SetMode"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:CycleMode"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:Impulse"
-      - "src/XonoticGodot.Server/Commands.cs:2049"
+      - "src/XonoticGodot.Server/Commands.cs:2109"
     constants:
       - { name: "SBRM_VOLLY/GUIDE/ARTILLERY", base: "1/2/3", port: "1/2/3", match: true }
       - { name: "impulse map", base: "1->VOLLY 2->GUIDE 3->ARTILLERY; next(10)/prev(11,12) cycle [1..3] wrap", port: "same", match: true }
@@ -462,7 +462,7 @@ features:
       - "CSQCVehicleSetup HUD/crosshair networking on the QC mode-set is deferred; the W2MODE state itself is set + networked via the vehicle stat."
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.Impulse_Spiderbot_SetsAndCyclesRocketMode — board, default GUIDE, set 1->VOLLY/3->ARTILLERY, cycle 10/12 wrap", result: pass }
-      - { kind: code, ref: "Commands.cs:2049 routes VehicleBoarding.Impulse before the weapon-impulse path for a seated pilot; VehicleBoarding Spiderbot case (VehicleBoarding.cs:360) maps 1/2/3 + 10/11/12", result: pass }
+      - { kind: code, ref: "Commands.cs:2109 routes VehicleBoarding.Impulse before the weapon-impulse path for a seated pilot; VehicleBoarding Spiderbot case maps 1/2/3 + 10/11/12", result: pass }
     confidence: high
     notes: "Unchanged by Waves 1-2. VehicleBoarding resolves the gunner-slot body via VehSlotOwner before dispatch."
 
@@ -486,22 +486,25 @@ features:
       - { name: "blast force", base: "250", port: "250", match: true }
       - { name: "blast deathtype", base: "DEATH_VH_SPID_DEATH", port: "DeathTypes.VhSpidDeath", match: true }
       - { name: "respawntime", base: "45 (vehicles_spawn after blowup)", port: "45", match: true }
-      - { name: "gib entities (head/2 guns/body)", base: "4 physics gibs + headfade", port: "MISSING (server); approximate gib arc client-side", match: false }
+      - { name: "gib entities (head/2 guns/body)", base: "4 physics gibs + headfade", port: "Spiderbot.SpawnDeathGibs: body frame 11, head BOUNCE+EF_FLAME+headfade, 2 guns TOSS v_forward*700 (Wave 15)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Presentation still simplified: no 4 physics gib entities (head MF_ROCKET+EF_FLAME bounce+fade via spiderbot_headfade, 2 tossed guns body-vel v_forward*700, body frame 11). FIXED-SINCE-BASELINE: the per-burn EFFECT_EXPLOSION_SMALL (Spiderbot.cs:459) and the spiderbot_headfade EFFECT_EXPLOSION_BIG (Spiderbot.cs:440) are now emitted server-side via EffectEmitter.Emit (the Send_Effect equivalent; effect names registered EffectsList.cs:29/31). The head EF_FLAME flag + the physics gib bodies stay a TODO (client VehicleVisuals does an approximate scripted gib arc)."
+      - "Residual: the head gib's MF_ROCKET modelflag (the QC rocket-smoke-trail render) is a client-only modelflag with no port Entity field, so it is not produced (EF_FLAME IS set on the head gib). The client VehicleVisuals ALSO does its own approximate scripted Godot-mesh gib arc (GibCount) on the alive->dead edge — a non-1:1 presentation overlap with the now-faithful server gibs, not a missing feature. Everything else (4 networked physics gib entities, headfade EXPLOSION_BIG+impact, per-burn EXPLOSION_SMALL+impact, 250-dmg blast, 45s respawn) is faithful."
     verification:
-      - { kind: code, ref: "Death: HP 0, DAMAGE_NO, MOVETYPE_TOSS, burn-timer think; ~10%/0.1s plays weapons/rocket_impact.wav (CH_SHOTS) + EffectEmitter.Emit('EXPLOSION_SMALL', randomvec*80 + origin+'0 0 100') during the burn; at expiry RadiusDamage(self,origin,250,15,250,enemy,0,250,VhSpidDeath) + SND_ROCKET_IMPACT + EffectEmitter.Emit('EXPLOSION_BIG', origin+'0 0 100'), SOLID_NOT, then respawn (SetOrigin SpawnPos, NextThink=+45, Think=Spawn)", result: pass }
+      - { kind: code, ref: "Death: HP 0, DAMAGE_NO, MOVETYPE_TOSS, burn-timer think; ~10%/0.1s plays weapons/rocket_impact.wav (CH_SHOTS) + EffectEmitter.Emit('EXPLOSION_SMALL', randomvec*80 + origin+'0 0 100') during the burn; at expiry SpawnDeathGibs(self) THEN RadiusDamage(self,origin,250,15,250,enemy,0,250,VhSpidDeath), SOLID_NOT, respawn (SetOrigin SpawnPos, NextThink=+45, Think=Spawn)", result: pass }
+      - { kind: code, ref: "SpawnDeathGibs (Spiderbot.cs:474-540, added Wave 15 719d377): Api.Entities.Spawn() 4 gibs — body(frame 11,dark,FadeGib), head(MODEL spiderbot_top, SOLID_BBOX, MOVETYPE_BOUNCE, vel up*(500+rnd*500)+rndvec*128, EF_FLAME, avelocity rndvec*360, HeadFade closure: alpha ramp, on death plays rocket_impact + EffectEmitter.Emit('EXPLOSION_BIG')), 2 guns(SOLID_CORPSE, MOVETYPE_TOSS, v_forward*700+rndvec*32, avel*180, FadeGib); originals alpha=-1. Networked via the normal entity feed.", result: pass }
+      - { kind: code, ref: "EffectEmitter.Emit (string overload, EffectEmitter.cs:246) -> Effects.ByName; EXPLOSION_SMALL/BIG registered EffectsList.cs:29/31 -> effectinfo explosion_small/big present in assets/data/.../effectinfo.txt; live host swaps EffectEmitter.Sink to EffectNetSink (ServerNet.cs:303) -> CaptureEffect -> unreliable EventBundle flush to clients", result: pass }
+      - { kind: build, ref: "dotnet build XonoticGodot.Common Debug — 0 warn / 0 err; tests: 24 Spiderbot/VehicleRuntime pass", result: pass }
     confidence: high
-    notes: "FIXED-SINCE-BASELINE: the per-burn EFFECT_EXPLOSION_SMALL and the head-fade EFFECT_EXPLOSION_BIG are now emitted server-side (EffectEmitter.Emit, Send_Effect-equivalent), narrowing the presentation gap to the physics gib bodies only. The ~10%/0.1s burn SND_ROCKET_IMPACT was already server-side. The functional death (blast + respawn) is faithful. Presentation stays partial because the 4 physics gib entities are still not spawned server-side."
+    notes: "FIXED-IN-WAVE-15 (719d377), VERIFIED this re-audit by reading the current Spiderbot.cs + building + running tests: SpawnDeathGibs now spawns the 4 physics gib entities server-side (body frame 11, head BOUNCE+EF_FLAME+spiderbot_headfade closure, 2 guns TOSS v_forward*700), hides the originals, and the head's final EXPLOSION_BIG+impact fires from HeadFade — matching spiderbot_blowup/spiderbot_headfade. presentation upgraded partial->faithful; gib-entities constant match false->true. (Spiderbot.cs was NOT touched by Waves 16/17 — most recent edit was Wave 15; the 2026-06-25 baseline that called gibs MISSING predated that wave.) Only the head's client-modelflag MF_ROCKET smoke-trail is unmodeled."
 
   - id: vehicle-spiderbot.impact.bouncepain
     name: "vr_impact — bounce/fall impact pain (g_vehicle_spiderbot_bouncepain)"

@@ -5,10 +5,10 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 10
   worst_gaps:
-    - "`stainless` keyword is a no-op in the port but in DP it DISABLES stains (sets staintex[0]=-2 + resets stain fields); harmless today (0 occurrences in the shipped file) but a latent logic divergence"
-    - "No unit test covers the effectinfo.txt parser / keyword table / baseline defaults, nor a wire-protocol encode/decode round-trip; verified by code read only"
+    - "No unit test covers the effectinfo.txt parser / keyword table / baseline defaults, nor a wire-protocol encode/decode round-trip; verified by code read only (confirmed: only ParticleParityTests/ParticleAnalyticTrace exist, neither hits EffectInfo.Parse/ApplyKeyword/EffectNetProtocol)"
     - "Heuristic fallback BuildFromInfo clamps derived life to [0.05,6]s + midpoint (intended; only when faithful/modern backend un-routed)"
     - "te_* helper -> registry-name mapping is a port convention; caller coverage of these specific wrappers not exhaustively traced (beam/arc temp-effects route to BeamRenderer, not the particle catalog)"
+    - "by-name engine-fallback (Send_Effect_) records unregistered names but the null-Effect request does not network/render unless the name also resolves in effectinfo.txt — used only by beam/arc temp-effects that BeamRenderer draws"
 features:
   - id: fx-effectinfo.registry.named_effects
     name: "Named EFFECT_* registry (all.inc) + ordering/content hash"
@@ -35,9 +35,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "EffectsList.cs is a complete ordered port of all.inc; names/trail flags/team variants match; RegisterAll called from GameInit.cs:22", result: pass }
+      - { kind: code, ref: "EffectsList.cs is a complete ordered port of all.inc; names/trail flags/team variants match; RegisterAll called from GameInit.cs:22. Wave 16 (b3a9c06) added ARC_BEAM_LINE/ARC_BEAM_LINE_HEAL (EffectsList.cs:73-74) — emitted live from Arc.cs:566 and routed to the Beam class (EffectSystem.cs:497,727)", result: pass }
     confidence: high
-    notes: "Effects.Hash content-hashes EFFECT_* names in order (CL/SV handshake). Trail flag distinguishes pointparticles vs trailparticles. RegisterAll is live (GameInit)."
+    notes: "Effects.Hash content-hashes EFFECT_* names in order (CL/SV handshake). Trail flag distinguishes pointparticles vs trailparticles. RegisterAll is live (GameInit). Wave 16 added the arc cylindric-beam line names (ARC_BEAM_LINE[_HEAL], registered isTrail only so the count-0 line survives the point-count guard) — they carry no effectinfo block and short-circuit to BeamRenderer.Beam; live caller is Arc.cs Draw_ArcBeam."
 
   - id: fx-effectinfo.emit.send_effect
     name: "Server effect emission (Send_Effect / pointparticles / trailparticles)"
@@ -241,23 +241,22 @@ features:
       - { name: "trailspacing -> count = 1/spacing", base: "DP derives countmultiplier", port: "CountMultiplier = 1/TrailSpacing", match: true }
       - { name: "tex range second-index-exclusive", base: "tex 0 8 = 0..7", port: "Tex0/Tex1 ints", match: true }
       - { name: "color/staincolor hex (0xRRGGBB)", base: "readints strtol base 0", port: "H() 0x or decimal", match: true }
-      - { name: "`stainless` semantics", base: "staintex[0]=-2; reset staincolor/alpha/size (DISABLES stains)", port: "no-op break", match: false }
+      - { name: "`stainless` semantics", base: "staintex[0/1]=-2; reset staincolor/alpha/size (DISABLES stains)", port: "EffectInfo.cs:271-280 stamps StainTex0/1=-2 + resets staincolor(0xFFFFFFFF)/alpha(1)/size(2)", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: true
     divergence_rationale: "Engine-only render keywords (lightshadow, lightcubemapnum, lightcorona, forcenearest) are parsed-and-ignored: Godot has no analogue for particle coronas, per-light cubemaps, or nearest-filtering. Unknown keywords are silently ignored rather than warned (DP prints a warning). These are deliberate, cosmetic-only omissions."
     gaps:
-      - "`stainless` is treated as a no-op, but in DP it actively DISABLES a stain (sets staintex[0]=-2 and resets staincolor/stainalpha/stainsize). A block using `stainless` to suppress an inherited baseline stain would still stain in the port. Harmless TODAY (0 occurrences in the shipped effectinfo.txt) but a latent logic bug — hence logic:partial."
-      - "Engine-only keywords (lightcorona/lightcubemapnum/lightshadow/forcenearest) unmodelled — cosmetic dlight/decal detail lost (intended)."
+      - "Engine-only keywords (lightcorona/lightcubemapnum/lightshadow/forcenearest) unmodelled — cosmetic dlight/decal detail lost (intended divergence, not a defect)."
     verification:
-      - { kind: code, ref: "ApplyKeyword switch vs EFFECTINFO_PARSER + DP parser (cl_particles.c:398-472); all gameplay keywords present, type table matches; stainless mismatch confirmed against cl_particles.c:468", result: pass }
+      - { kind: code, ref: "ApplyKeyword switch (EffectInfo.cs:175-292) vs EFFECTINFO_PARSER + DP parser (cl_particles.c:398-472); all gameplay keywords present, type table matches; stainless now mirrors DP's disable (staintex=-2 + stain-field reset, EffectInfo.cs:271-280) — confirmed against cl_particles.c:468", result: pass }
     confidence: high
-    notes: "Field consumption confirmed in FaithfulParticleBackend (count/jitter/bounce/friction/gravity/water/stretch/stain/velmult). stainless downgraded logic to partial (was 'parsed-and-ignored' in the draft, which mislabeled DP's disable semantic)."
+    notes: "FIXED in Wave 17 (2f0bfdb): `stainless` moved out of the parsed-and-ignored group into a DP-faithful disable (StainTex0/1=-2, staincolor/alpha/size reset to baseline) — the 2026-06-22 'no-op latent logic bug' is RESOLVED, so logic/presentation upgraded partial->faithful. Field consumption confirmed in FaithfulParticleBackend (count/jitter/bounce/friction/gravity/water/stretch/stain/velmult). 0 stainless occurrences in the shipped file so no observable runtime change, but the keyword is now bit-faithful. The only remaining divergence is the intended engine-only-keyword omission."
 
   - id: fx-effectinfo.consume.lifetime_fallback
     name: "Heuristic fallback lifetime/burst (BuildFromInfo) approximation"

@@ -5,10 +5,10 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Ammo-refund auto-switch (cnt=m_id; ATTACK_FINISHED=time; m_switchweapon=w_getbestweapon when out of rockets after a blast) is STILL not ported on either contact (devastator.qc:47-56) or remote (devastator.qc:128-136) explode."
-    - "wr_resetplayer (clear lastrocket + rl_release on all slots on death) is STILL not overridden for the Devastator; Unregister(self) on explode clears lastrocket per-rocket, but a respawn/reset does not proactively clear a still-live rocket reference or reset rl_release. (Confirmed 2026-06-27: Devastator.cs has no WrResetPlayer override; Hagar/Hook/Porto/Vortex/Vaporizer/Rifle/Arc do.)"
-    - "missile.damagedbycontents / IL_PUSH(g_damagedbycontents) (a rocket explodes when it enters lava/slime) is STILL not ported — but the cause has SHIFTED: GameWorld.CreatureFrameAll (GameWorld.cs:2114-2124) NOW sweeps projectiles flagged Entity.DamagedByContents and routes them through PlayerFrameLogic.ProjectileContentsDamage->Combat.Damage (Electro orbs use this). The Devastator rocket simply never sets missile.DamagedByContents=true in Devastator.Attack, so it is excluded from the sweep. One-line gap, infra already present."
-    - "wr_think secondary gate omits the QC `m_switchweapon == thiswep` precondition (you can only remote-detonate while the Devastator is the active weapon); RemoteDetonate flags any owned rocket regardless of active weapon. Minor."
+    - "Muzzle-flash MODEL (models/flash.md3) is still not attached at the muzzle — only the ROCKET_MUZZLEFLASH particle effect is emitted (presentation.flight_fx)."
+    - "presentation.flight_fx liveness PARTIAL: the client projectile renderer Classifies a 'rocket' but it is NOT runtime-confirmed that a server-spawned rocket reaches the client renderer in a live match (no behavioral check available in this pass)."
+    - "Crosshair image/size (gfx/crosshairrocketlauncher, 0.7) still unaudited (presentation.flight_fx)."
+    - "RESOLVED since 2026-06-27 baseline (re-verified this pass): ammo-refund auto-switch (Devastator.ForceSwitchIfOutOfAmmo, live on both Explode and DoRemoteExplode), wr_resetplayer override (Devastator.WrResetPlayer + SpawnSystem.cs:960 per-slot dispatch), missile.damagedbycontents (Attack sets DamagedByContents=true + live GameWorld.CreatureFrameAll sweep), the m_switchweapon secondary precondition (WrThink switchingAway gate via SwitchWeaponId), and the MENUQC weapon-guide describe (GuideDescription rendered by DialogMediaGuide) are ALL now ported and live."
 features:
   - id: weapon-devastator.fire.launch
     name: "Primary fire: launch accelerating rocket (rl_release latch, refire gate, ammo)"
@@ -133,13 +133,13 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Ammo-refund auto-switch (cnt = m_id; ATTACK_FINISHED = time; m_switchweapon = w_getbestweapon when out of rockets) is not ported (devastator.qc:47-56)."
+    gaps: []
     verification:
       - { kind: test, ref: "DevastatorForceXyScaleTests.ContactExplode_ForceXyScale_ScalesXY_NotZ / ZeroXyScale_LeavesForceUnscaled", result: pass }
       - { kind: code, ref: "WeaponSplash.RadiusDamage(self, origin, damage, edge, radius, owner, RegistryId, force, forceScale:(xy,xy,1), directHit, deathTag) matches QC force_xyzscale + directhitentity LOS-skip; airshot + Unregister + HITTYPE_BOUNCE-on-timeout present", result: pass }
+      - { kind: code, ref: "Explode tail calls ForceSwitchIfOutOfAmmo(self.Owner) (Devastator.cs:494) -> when out of rockets (and not unlimited) locates the slot holding the Devastator and SwitchToOtherWeapon (WeaponFireGate.cs:503 = w_getbestweapon). The ammo-refund auto-switch is now ported.", result: pass }
     confidence: high
-    notes: "airshot achievement detected+announced (see explode.airshot row); W_Devastator_Unregister called on contact explode (Unregister scans ALL slots, clears matching lastrocket); lifetime-expiry sets HITTYPE_BOUNCE (bounced:true in the timeout branch) so wr_killmessage classifies a timed-out rocket as SPLASH. RadiusDamage forceScale (xyscale,xyscale,1) + directHit LOS-skip faithful (test-pinned). Only the ammo-refund auto-switch remains open. Unchanged this pass."
+    notes: "FIXED since 2026-06-27 baseline: the ammo-refund auto-switch (devastator.qc:47-56) is now ported — Explode calls ForceSwitchIfOutOfAmmo which runs SwitchToOtherWeapon (w_getbestweapon) once rockets are depleted (mirrors Minelayer). Remaining QC nuance: the port sets m_switchweapon via Inventory.SwitchWeapon but does NOT separately stamp ATTACK_FINISHED=time / cnt=m_id (no observable effect on the live single-slot path). airshot achievement detected+announced (see explode.airshot row); Unregister scans ALL slots; lifetime-expiry sets HITTYPE_BOUNCE so wr_killmessage classifies a timed-out rocket as SPLASH. RadiusDamage forceScale + directHit LOS-skip test-pinned."
 
   - id: weapon-devastator.explode.remote
     name: "Secondary remote detonation (rl_detonate_later + spawnshield/proximity gate + rocket-jump variant)"
@@ -176,14 +176,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Ammo-refund auto-switch on remote explode is not ported (same as contact, devastator.qc:128-136)."
-      - "wr_think secondary gate omits the QC `m_switchweapon == thiswep` precondition (you can only remote-detonate while the Devastator is the active weapon); RemoteDetonate flags any owned rocket regardless of active weapon. Minor; rl_detonate_later still gated by spawnshield/proximity."
       - "QC passes the rocket-jump target (head) as the RadiusDamage forceintersect arg (force-application target) for the plain remote blast; the port's RadiusDamage has no forceintersect param. Inert at point-blank rocket-jump range (no LOS reduction engages)."
     verification:
       - { kind: test, ref: "RocketFlyingGateTests.Devastator_RocketFlying_DetonatesImmediately / Devastator_NoMutator_HeldByDetonateDelayTimer", result: pass }
       - { kind: code, ref: "Gate (timer vs proximity via Entity.ProjectileDetonateTime) + remote blast values + rl_detonate_later latch (DeadState=Dying) + rocket_det sound; DoRemoteExplode ORs HITTYPE_BOUNCE + calls Unregister (all slots); rocket-jump branch (remote_jump_* + AllowRocketJumping hook + velocity bump + dedicated RadiusDamage) ported and live via RocketFlyingMutator.OnAllowRocketJumping", result: pass }
+      - { kind: code, ref: "DoRemoteExplode calls ForceSwitchIfOutOfAmmo (Devastator.cs:450) — ammo-refund auto-switch now ported on the remote path too. WrThink secondary now gates on `switchingAway` (st.SwitchWeaponId>=0 && != RegistryId, Devastator.cs:170) — the QC m_switchweapon==thiswep precondition (RemoteDetonate is skipped while switching AWAY).", result: pass }
     confidence: high
-    notes: "FIXED vs baseline: the rocket-jump variant is now FULLY ported and LIVE — DoRemoteExplode seeds allow_rocketjump from remote_jump cvar, fires the AllowRocketJumping hook (MutatorHooks.FireAllowRocketJumping; RocketFlyingMutator forces it true), and when owner is within remote_jump_radius applies the optional velocity-z bump + the dedicated remote_jump_* blast. DoRemoteExplode ORs HITTYPE_BOUNCE onto the remote-blast deathtype and clears lastrocket on ALL slots (Unregister). Remaining: ammo refund, the m_switchweapon secondary precondition, and the forceintersect refinement."
+    notes: "Rocket-jump variant FULLY ported and LIVE (DoRemoteExplode seeds allow_rocketjump from remote_jump cvar, fires AllowRocketJumping via MutatorHooks.FireAllowRocketJumping; RocketFlyingMutator forces it true; within remote_jump_radius applies the optional velocity-z bump + dedicated remote_jump_* blast). FIXED since 2026-06-27 baseline: (1) the ammo-refund auto-switch on remote explode is now ported (DoRemoteExplode -> ForceSwitchIfOutOfAmmo, same as contact); (2) the QC m_switchweapon==thiswep secondary precondition is now enforced (WrThink switchingAway gate via SwitchWeaponId). DoRemoteExplode ORs HITTYPE_BOUNCE onto the remote-blast deathtype and clears lastrocket on ALL slots. Sole remaining gap: the forceintersect (head) refinement, inert at point-blank rocket-jump range."
 
   - id: weapon-devastator.rocket.shootdown
     name: "Shootable rocket (event_damage destroys it -> explode)"
@@ -209,13 +208,13 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "missile.damagedbycontents / IL_PUSH(g_damagedbycontents) (rocket explodes when it enters lava/slime) is not ported. CORRECTED 2026-06-27: the prior reason (loop iterates only players) is STALE — GameWorld.CreatureFrameAll (GameWorld.cs:2114-2124) now sweeps any entity with Entity.DamagedByContents through PlayerFrameLogic.ProjectileContentsDamage->Combat.Damage (which would route through the rocket's MakeShootable HP/explode shim). The remaining defect is just that Devastator.Attack never sets missile.DamagedByContents=true, so the rocket is excluded; the supporting infra now exists (Electro orbs use it)."
+    gaps: []
     verification:
-      - { kind: code, ref: "Devastator.Attack:223 calls Projectiles.MakeShootable(missile, exception:-1) which installs GtEventDamage; DamageSystem.EventDamage dispatches GtEventDamage for any non-player damageable victim -> LIVE shoot-down path", result: pass }
+      - { kind: code, ref: "Devastator.Attack:266 calls Projectiles.MakeShootable(missile, exception:-1) which installs GtEventDamage; DamageSystem.EventDamage dispatches GtEventDamage for any non-player damageable victim -> LIVE shoot-down path", result: pass }
       - { kind: code, ref: "MakeShootable shim: hp<=0 recursion guard, CheckProjectileDamage(g_projectiles_damage) gate, Health -= damage, fires ProjectileDamage (Explode bounced:true) only at hp<=0 — matches W_Devastator_Damage -> W_PrepareExplosionByDamage (devastator.qc:270-282)", result: pass }
+      - { kind: code, ref: "Devastator.Attack:213 sets missile.DamagedByContents=true; GameWorld.CreatureFrameAll (GameWorld.cs:2200) sweeps Services.Entities.All for the flag each tick -> PlayerFrameLogic.ProjectileContentsDamage (:404) -> Combat.Damage(proj,null,null,...) routes the lava/slime hit through the rocket's MakeShootable shim and detonates it. Sweep + flag both LIVE.", result: pass }
     confidence: high
-    notes: "Projectiles.MakeShootable installs the shoot-down on GtEventDamage (the channel DamageSystem.EventDamage dispatches for non-player damageables), wraps W_CheckProjectileDamage + incremental RES_HEALTH subtraction, and only detonates at hp<=0 with HITTYPE_BOUNCE. Under stock balance-xonotic g_projectiles_damage -2 no projectile is shootable at all — faithful to Base. Sole remaining gap: lava/slime damagedbycontents — and the contents-sweep infra now EXISTS (GameWorld.cs:2114; reclassified 2026-06-27), the rocket just isn't enrolled (missing missile.DamagedByContents=true). Logic/values/timing still faithful (shoot-down is the live primary path)."
+    notes: "FIXED since 2026-06-27 baseline: missile.damagedbycontents / IL_PUSH(g_damagedbycontents) is now ported AND live — Devastator.Attack:213 sets missile.DamagedByContents=true and the rocket is enrolled in the live GameWorld.CreatureFrameAll contents sweep (the same infra Electro orbs use), so a rocket resting in lava/slime detonates. Projectiles.MakeShootable installs the shoot-down on GtEventDamage (the channel DamageSystem.EventDamage dispatches for non-player damageables), wraps W_CheckProjectileDamage + incremental RES_HEALTH subtraction, and only detonates at hp<=0 with HITTYPE_BOUNCE. Under stock balance-xonotic g_projectiles_damage -2 no projectile is shootable by GUNFIRE at all (faithful) — the contents path is the live damageable path. No remaining gaps on this row."
 
   - id: weapon-devastator.firer.transparency
     name: "Rocket transparent to firer (PROJECTILE_MAKETRIGGER SOLID_CORPSE)"
@@ -258,6 +257,8 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:CheckAmmoPrimary"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:WrSetup"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:WrResetPlayer"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:960 (WrResetPlayer per-slot dispatch on respawn)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:SelectKillMessage (devastator branch)"
     constants:
       - { name: "reload_ammo", base: "0 (no clip reload)", port: "0 (base ReloadingAmmo)", match: true }
@@ -274,13 +275,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "wr_resetplayer (clear lastrocket + rl_release on all slots on death/reset, 'no revenge from the grave') is not overridden for the Devastator. Mitigated: Explode/DoRemoteExplode call Unregister (per-rocket lastrocket clear) and the OnThink owner-alive gate stops a dead owner's guiding — but a still-live rocket on respawn is not proactively unregistered and rl_release is not reset on death."
       - "wr_suicidemessage (WEAPON_DEVASTATOR_SUICIDE) not separately verified in the port."
     verification:
       - { kind: code, ref: "CheckAmmoPrimary returns rockets >= ammo (wr_checkammo1 #else branch); secondary checkammo (false) implicit; WrSetup overridden (RlRelease=true on equip) + called live by WeaponFireDriver", result: pass }
       - { kind: code, ref: "wr_killmessage: DeathMessages keys on (bounce || splash) -> WEAPON_DEVASTATOR_MURDER_SPLASH else MURDER_DIRECT; both notifications registered; obituary path live via Scores.EmitObituary -> SelectKillMessage", result: pass }
+      - { kind: code, ref: "WrResetPlayer (Devastator.cs:578) clears st.LastRocket + sets st.RlRelease=true; dispatched per populated slot on respawn by SpawnSystem.cs:960 (wep.WrResetPlayer for each populated slot). 'no revenge from the grave' now ported.", result: pass }
     confidence: high
-    notes: "wr_setup overridden (WrSetup) and live; wr_killmessage split (HITTYPE_BOUNCE|HITTYPE_SPLASH -> MURDER_SPLASH vs MURDER_DIRECT) implemented end-to-end. checkammo1 (rockets >= ammo) faithful. Remaining: wr_resetplayer override and an unverified suicide message. Unchanged this pass."
+    notes: "FIXED since 2026-06-27 baseline: wr_resetplayer is now overridden (Devastator.WrResetPlayer clears LastRocket + re-arms RlRelease) and dispatched per populated slot on respawn (SpawnSystem.cs:960). wr_setup overridden (WrSetup) and live; wr_killmessage split (HITTYPE_BOUNCE|HITTYPE_SPLASH -> MURDER_SPLASH vs MURDER_DIRECT) implemented end-to-end; checkammo1 (rockets >= ammo) faithful. Sole remaining gap: the unverified suicide message."
 
   - id: weapon-devastator.presentation.flight_fx
     name: "Flying rocket model/trail/spin/light/fly-sound + muzzle flash"
@@ -314,7 +315,7 @@ features:
     verification:
       - { kind: code, ref: "ProjectileCatalog.cs Rocket entry (model/scale/spin/trail/light/loopsound) + Classify('rocket'); EffectEmitter Sink swapped by host for networking", result: pass }
     confidence: medium
-    notes: "Flying rocket presentation wired via the projectile catalog (live when the host wires ProjectileRenderer). Liveness PARTIAL pending a runtime confirmation the server-spawned 'rocket' reaches the client renderer in a match; muzzle-flash model + crosshair are the presentation gaps. Unchanged this pass."
+    notes: "Flying rocket presentation wired via the projectile catalog (ProjectileRenderer.Classify('rocket'), live when the host wires ProjectileRenderer). Liveness PARTIAL pending a runtime confirmation the server-spawned 'rocket' reaches the client renderer in a match; muzzle-flash model (models/flash.md3, only the ROCKET_MUZZLEFLASH particle emits) + crosshair are the presentation gaps. RE-VERIFIED this pass (Waves 16-17 did not touch the flight-FX wiring): still partial/partial — these are now the unit's worst remaining gaps."
 
   - id: weapon-devastator.explode.airshot
     name: "Airshot achievement on a mid-air direct enemy kill (ANNCE_ACHIEVEMENT_AIRSHOT)"
@@ -413,20 +414,22 @@ features:
     layer: [presentation]
     base_refs:
       - "common/weapons/weapon/devastator.qc:describe (MENUQC)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs:GuideDescription"
+      - "game/menu/dialogs/DialogMediaGuide.cs:194 (renders Weapon.GuideDescription)"
     constants: []
     status:
       logic: na
       values: na
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The MENUQC weapon-guide paragraphs (remote-controlled rocket, hold-to-guide, ammo drain, rocket-flying with the rocketflying mutator, keybinds, DPS) are not ported — the port has no in-game weapon-guide page for the Devastator."
+      - "The trailing W_Guide_Keybinds + W_Guide_DPS_onlyOne_unnamed helper lines (per-binding keybind hints + DPS figure) are not reproduced — those QC helpers are unported across the whole weapon-guide. The narrative paragraphs (remote-controlled rocket, hold-to-guide, ammo drain / alternate-with-Vortex, high-damage role, rocket-flying) ARE present."
     verification:
-      - { kind: code, ref: "No port symbol renders the Devastator weapon-guide description; MENUQC weapon-guide pages are unported across the registry", result: fail }
+      - { kind: code, ref: "Devastator.GuideDescription (Devastator.cs:85-98) returns the condensed describe() prose; DialogMediaGuide.cs:194 sets _description.Text = w.GuideDescription in the live in-game weapon-guide media dialog (same path Electro/Shotgun/Vaporizer/Tuba use)", result: pass }
     confidence: medium
-    notes: "Newly mapped 2026-06-25 (was an unmapped Base MENUQC symbol). Documentation-only weapon-guide text; missing in the port like the rest of the MENUQC weapon-guide. Low gameplay impact."
+    notes: "FIXED since 2026-06-27 baseline: the Devastator weapon-guide describe() prose is now ported (GuideDescription override) AND rendered live in the in-game media weapon-guide (DialogMediaGuide). Documentation-only text. Sole residual: the QC W_Guide_Keybinds / W_Guide_DPS helper trailers (unported registry-wide). Low gameplay impact. Confidence medium: not runtime-screenshot-verified, but the live render path is read-confirmed."

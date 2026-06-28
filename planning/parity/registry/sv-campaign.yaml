@@ -1,13 +1,13 @@
 unit: sv-campaign
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 14
   worst_gaps:
-    - "checkrulesEquality is still hardcoded false at the live PreIntermission call site (GameWorld.NextLevel): a degenerate exact-tie at the limit is scored a win where Base could score it a loss (out-of-scope known caveat, unchanged)."
-    - "Welcome presentation is a per-client CHAT LINE not Base's CSQC Welcome menu DIALOG (presentation partial). The level number AND the per-level description (shortdesc+longdesc, sourced from the all-levels catalogue) AND the +jump keybind are now all reproduced faithfully on the line; the only residual gap is the dialog-vs-chat surface (the in-process listen server has no networked CSQC welcome channel). The 'no per-level description string' gap recorded in the 2026-06-22 baseline was CLOSED in Wave 8e (commit 412ca19)."
+    - "Welcome presentation is a per-client CHAT LINE not Base's CSQC Welcome menu DIALOG (presentation partial). The level number AND the per-level description (shortdesc+longdesc, sourced from the all-levels catalogue) AND the +jump keybind are all reproduced faithfully on the line; the only residual gap is the dialog-vs-chat surface (the in-process listen server has no networked CSQC welcome channel)."
     - "Cosmetic: Base wraps the campaign filename in language_filename() (localized briefings, e.g. campaignxonoticbeta.de.txt); the port reads the un-localized base name only (English-only fidelity; non-English falls back to the base file)."
+    - "RESOLVED since the 2026-06-25 baseline: checkrulesEquality is no longer hardcoded false. GameWorld.NextLevel now feeds the live _checkRulesEquality field, derived from GameType.ReportsTie(roster) (the per-mode tie report on all 12 timed score modes) + the all-players-gone draw case; the degenerate exact-tie-at-the-limit case is now scored exactly as Base."
 features:
   - id: sv-campaign.file.parse
     name: "Campaign .txt quoted-CSV parse (CampaignFile_Load)"
@@ -176,15 +176,15 @@ features:
       - "common/gametypes/gametype/lms/sv_lms.qc:85"
     port_refs:
       - "src/XonoticGodot.Server/Campaign.cs:BotsMayStart"
-      - "src/XonoticGodot.Server/GameWorld.cs:InfraClientSpawn (sets true for non-bot, line 1382)"
-      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:MovementHeld (line 457-459, bot.qc:77 gate)"
+      - "src/XonoticGodot.Server/GameWorld.cs:InfraClientSpawn (sets true for non-bot; SendCampaignWelcome path; client.qc:2082)"
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:MovementHeld (line 507-509, bot.qc:77 gate) + consumed line 141 (bot_think)"
       - "src/XonoticGodot.Server/RoundHandler.cs:CampaignBotHold (line 120) + consumed line 237 (round_handler.qc:38 gate)"
-      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:CampaignBotHold (1948) + CampaignMovementHeld consumed Monster_Move line 889 (sv_monsters.qc:846/1165)"
-      - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:CampaignBotHold (55) + consumed line 141 (sv_campcheck.qc:51)"
-      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:CampaignBotsMayStart (563) + consumed line 604 (sv_lms.qc:85)"
-      - "src/XonoticGodot.Server/GameWorld.cs:Boot (wires monster/LMS/campcheck gates lines 686/689/692 + RoundHandler gate line 1472, every Boot)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:CampaignBotHold (2246) + CampaignMovementHeld consumed Monster_Move (line 1045) + idle (1297) (sv_monsters.qc:846/1165)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:CampaignBotHold (55) + consumed prethink (sv_campcheck.qc:51)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:CampaignBotsMayStart (602) + consumed win condition (line 643) (sv_lms.qc:85)"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (wires monster/LMS/campcheck gates lines 731/734/737 + RoundHandler gate line 1637, every Boot)"
     constants:
-      - { name: "set true on", base: "first real client spawn (client.qc:2082)", port: "InfraClientSpawn (non-bot) GameWorld.cs:1221", match: true }
+      - { name: "set true on", base: "first real client spawn (client.qc:2082)", port: "InfraClientSpawn (non-bot human)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -196,14 +196,14 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "InfraClientSpawn (GameWorld.cs:1382) sets Campaign.BotsMayStart = true for the non-bot human on spawn (QC client.qc:2082)", result: pass }
-      - { kind: code, ref: "bot MOVEMENT: BotPopulation.MovementHeld (459) checks g_campaign && !Campaign.BotsMayStart (bot.qc:77)", result: pass }
-      - { kind: code, ref: "round handler: GameWorld.Boot:1472 wires Rounds.CampaignBotHold = g_campaign && !BotsMayStart; consumed in RoundHandler.cs:237 (CanStart() && !CampaignBotHold) — round_handler.qc:38 gate, no longer deferred", result: pass }
-      - { kind: code, ref: "monster move: GameWorld.Boot:686 wires MonsterAI.CampaignBotHold; consumed in Monster_Move (MonsterAI.cs:889 via CampaignMovementHeld) — sv_monsters.qc:846/1165", result: pass }
-      - { kind: code, ref: "campcheck: GameWorld.Boot:692 wires CampcheckMutator.CampaignBotHold; consumed in the prethink (CampcheckMutator.cs:141) — sv_campcheck.qc:51", result: pass }
-      - { kind: code, ref: "LMS: GameWorld.Boot:689 wires LastManStanding.CampaignBotsMayStart = () => BotsMayStart; consumed in the win condition (LastManStanding.cs:604) — sv_lms.qc:85 human-lost early end", result: pass }
+      - { kind: code, ref: "InfraClientSpawn sets Campaign.BotsMayStart = true for the non-bot human on spawn (QC client.qc:2082)", result: pass }
+      - { kind: code, ref: "bot MOVEMENT: BotPopulation.MovementHeld (507-509) checks g_campaign && !Campaign.BotsMayStart; consumed in bot_think (line 141) (bot.qc:77)", result: pass }
+      - { kind: code, ref: "round handler: GameWorld.Boot:1637 wires Rounds.CampaignBotHold = g_campaign && !BotsMayStart; consumed in RoundHandler.cs:237 (CanStart() && !CampaignBotHold) — round_handler.qc:38 gate, no longer deferred", result: pass }
+      - { kind: code, ref: "monster move: GameWorld.Boot:731 wires MonsterAI.CampaignBotHold; consumed in Monster_Move (MonsterAI.cs:1045) + idle (1297) via CampaignMovementHeld — sv_monsters.qc:846/1165", result: pass }
+      - { kind: code, ref: "campcheck: GameWorld.Boot:737 wires CampcheckMutator.CampaignBotHold; consumed in the prethink — sv_campcheck.qc:51", result: pass }
+      - { kind: code, ref: "LMS: GameWorld.Boot:734 wires LastManStanding.CampaignBotsMayStart = () => BotsMayStart; consumed in the win condition (LastManStanding.cs:643) — sv_lms.qc:85 human-lost early end", result: pass }
     confidence: high
-    notes: "FIXED since the 2026-06-22 baseline. Baseline had this logic: partial / liveness: partial because the only consumer was BotPopulation.MovementHeld and the round-handler / monster / campcheck / LMS gates were deferred. ALL FIVE Base consumers of campaign_bots_may_start are now wired live: bot movement (bot.qc:77), round-handler countdown (round_handler.qc:38), monster move (sv_monsters.qc:846/1165), campcheck re-grace (sv_campcheck.qc:51), and the LMS human-lost early end (sv_lms.qc:85). All four host-layer probes are assigned every Boot (GameWorld.cs) so they never go stale across a map/gametype change."
+    notes: "FIXED since the 2026-06-22 baseline; wiring re-verified intact after Waves 16-17 (line numbers drifted but all five consumers still consult the gate). ALL FIVE Base consumers of campaign_bots_may_start are wired live: bot movement (bot.qc:77), round-handler countdown (round_handler.qc:38), monster move (sv_monsters.qc:846/1165), campcheck re-grace (sv_campcheck.qc:51), and the LMS human-lost early end (sv_lms.qc:85). All four host-layer probes are assigned every Boot (GameWorld.cs) so they never go stale across a map/gametype change."
 
   - id: sv-campaign.winlose.decision
     name: "Win/lose decision: sole-human-winner + beat-the-clock (CampaignPreIntermission)"
@@ -212,12 +212,15 @@ features:
       - "server/campaign.qc:CampaignPreIntermission"
     port_refs:
       - "src/XonoticGodot.Server/Campaign.cs:PreIntermission"
-      - "src/XonoticGodot.Server/GameWorld.cs:NextLevel (PreIntermission call, line 3213-3219)"
+      - "src/XonoticGodot.Server/GameWorld.cs:NextLevel (PreIntermission call, line 3976-3982)"
+      - "src/XonoticGodot.Server/GameWorld.cs:_checkRulesEquality field (line 3678) + RunCheckRulesWorld assignment (line 3795-3798, 3896)"
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:GameType.ReportsTie (virtual, line 412) + per-mode overrides (DM/Duel/Mayhem/Keepaway/TDM/CTF/Dom/KH/TeamMayhem/TeamKeepaway/Nexball/LMS)"
     constants:
       - { name: "win condition", base: "won==1 && lost==0 && checkrules_equality==0 (bots excluded)", port: "same; non-bot clients only (p.IsBot filter)", match: true }
       - { name: "time-up loss (sole-winner branch)", base: "timelimit!=0 && fraglimit!=0 && time>timelimit*60 -> LOST", port: "same", match: true }
       - { name: "time-up loss (fallback branch)", base: "timelimit!=0 && time>timelimit*60 -> LOST", port: "same (overTime)", match: true }
       - { name: "testrun/forcewin overrides", base: "_campaign_testrun -> won; campaign_forcewin -> won", port: "same", match: true }
+      - { name: "checkrulesEquality source", base: "WinningConditionHelper_equality global (set by WinningCondition_Scores / all-gone draw)", port: "_checkRulesEquality = GameType.ReportsTie(roster) | all-players-gone draw; fed live to PreIntermission", match: true }
     status:
       logic: faithful
       values: faithful
@@ -227,14 +230,13 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "checkrulesEquality is hardcoded false at the live call site (GameWorld.cs:3217): a degenerate exact-tie at the limit would be scored a win in the port where Base could score it a loss. Out-of-scope known caveat, unchanged."
+    gaps: []
     verification:
       - { kind: unit_test, ref: "CampaignFlowTests.PreIntermission_SoloWinAdvancesFrontier / _LossDoesNotAdvance / _ForceWinAlwaysWins / _SoleWinnerButTimeUpIsALoss / _BotsAreNotCountedAsWinnersOrLosers", result: pass }
-      - { kind: code, ref: "GameWorld.NextLevel feeds checkrulesEquality:false (hardcoded, GameWorld.cs:3217)", result: fail }
-      - { kind: code, ref: "ForceWin override branch now reachable in production: TargetUtilities.NextLevelHandler (GameWorld.cs:577-582) sets Campaign.ForceWin=true on a real-client target_changelevel before EndMatch -> intermission -> NextLevel -> PreIntermission consumes it", result: pass }
+      - { kind: code, ref: "GameWorld.NextLevel:3980 now feeds checkrulesEquality:_checkRulesEquality (NO LONGER hardcoded false). _checkRulesEquality is set in RunCheckRulesWorld from GameType.ReportsTie(Clients.Players) (GameWorld.cs:3795-3798) and the all-players-gone draw (3896), reset each CheckRules pass (4562). ReportsTie has a real per-mode override on every timed score mode (GameplayBases.cs:412 base returns false; 12 overrides verified), so a degenerate exact-tie at the limit is now scored a LOSS exactly as Base.", result: pass }
+      - { kind: code, ref: "ForceWin override branch reachable in production: TargetUtilities.NextLevelHandler (GameWorld.cs:692-697) sets Campaign.ForceWin=true on a real-client target_changelevel before EndMatch -> intermission -> NextLevel -> PreIntermission consumes it", result: pass }
     confidence: high
-    notes: "Branch order matches QC exactly. Wave-5 closed the previously-unreachable forcewin override: ForceWin now has a LIVE setter via the target_changelevel campaign-win path (see mapentity.levelwarp), so the forcewin branch of this decision is now exercised in production, not only in unit tests. bprint WON/LOST lines route through Campaign.Log -> Commands.ChatBroadcast. No campaign-specific audio in Base."
+    notes: "FIXED since the 2026-06-25 baseline: the long-standing checkrulesEquality=hardcoded-false gap (the prior #1 worst gap) is CLOSED. NextLevel now passes the live _checkRulesEquality, derived from the gametype-supplied GameType.ReportsTie tie report (the QC WinningConditionHelper_equality equivalent) + the all-gone draw case — so the degenerate exact-tie-at-the-limit case is now scored a loss like Base, not a win. Branch order still matches QC exactly. Wave-5's forcewin override (live setter via target_changelevel campaign-win path, see mapentity.levelwarp) is also exercised in production. bprint WON/LOST lines route through Campaign.Log -> Commands.ChatBroadcast. No campaign-specific audio in Base."
 
   - id: sv-campaign.progress.save
     name: "Frontier progress persistence to campaign.cfg (CampaignSaveCvar + the save gate)"

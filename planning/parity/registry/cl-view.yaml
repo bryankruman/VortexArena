@@ -1,13 +1,13 @@
 unit: cl-view
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # drift re-audit: no status change since 2026-06-25 — code unchanged (Wave 8c already incorporated; Wave 12d only shifted NetGame line numbers + added unrelated ViewModel code). NetGame port_ref line numbers refreshed to current.
+last_audited: "2026-06-27"  # Wave 16/17 re-audit (opus parity-diff): code-verified the full port (FirstPersonView/ViewEffects/ReticleOverlay + NetGame wiring + ClientNet/ServerNet PunchVector + PlayerPhysics.CheckPunch). All the "FIXED since 2026-06-22" rows confirmed faithful + live by reading the current source — no inflated confidence found. One drift CAUGHT: cl_lockview (View_Lock) is now ported+live (FirstPersonView.ApplyViewLock, called every frame in UpdateCamera) but the demo/lockview/ortho row still read missing — upgraded that row to partial. NetGame port_ref line numbers shifted again (Wave 16/17) but left as-is except where edited.
 summary:
   feature_count: 21
   worst_gaps:
     - "Spectator-camera SERVER mode toggle (STAT(CAMERA_SPECTATOR) 1/2 + IMP_weapon_drop cycling, View_SpectatorCamera's chase_active<=0 auto-switch path) is not ported — the user chase_active-driven third-person spectate IS now live (NetGame UpdateCamera sets _view.Spectating + Chase, anchored to the spectatee pose) and chase_front is now reachable, but pressing weapon-drop to cycle the server-side spectator camera mode is absent."
     - "GLSL blur/sharpen post-process (damage/content blur, powerup edge-sharpen, View_BlurTest) and night-vision are not implemented (engine shader cvars, no Godot analogue)."
-    - "viewloc (2.5D side-scroller View Location camera, GetViewLocationFOV), demo free camera (CSQC_Demo_Camera), lockview, orthoview, and the server FPS report are not ported (niche dev/demo tools, off the normal-match camera path)."
+    - "viewloc (2.5D side-scroller View Location camera, GetViewLocationFOV), demo free camera (CSQC_Demo_Camera), orthoview, and the server FPS report are not ported (niche dev/demo tools, off the normal-match camera path). NOTE: lockview (cl_lockview / View_Lock) IS now ported+live (FirstPersonView.ApplyViewLock) — no longer a gap."
 features:
   - id: cl-view.zoom.fov_state_machine
     name: "Zoom / FOV state machine (current_viewzoom integration, 0.75 frustum, sensitivity)"
@@ -641,22 +641,28 @@ features:
       - "client/view.qc:View_Ortho (1568)"
       - "client/view.qc:GetViewLocationFOV (612)"
       - "client/view.qc:fpscounter_update (398)"
-    port_refs: []
+    port_refs:
+      - "game/client/FirstPersonView.cs:ApplyViewLock (825) — View_Lock port (cl_lockview only)"
+      - "game/client/FirstPersonView.cs:UpdateCamera (ApplyViewLock call, 413)"
     constants:
-      - { name: "cl_lockview", base: "0", port: "none", match: false }
+      - { name: "cl_lockview", base: "0 (0=off; 1=freeze origin+angles; 2=freeze origin only)", port: "0 (read live; lock_type 1/2 both ported)", match: true }
       - { name: "cl_orthoview", base: "0", port: "none", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No demo free/chase camera (CSQC_Demo_Camera), no view lock (cl_lockview), no orthographic radar-render view (cl_orthoview / View_Ortho), no viewloc 2.5D side-scroller camera (GetViewLocationFOV), and no FPS report to the server (fpscounter_update STAT(SHOWFPS))."
+      - "Demo free/chase camera (CSQC_Demo_Camera) not ported (tracked separately on the demo-cinematics branch)."
+      - "Orthographic radar-render view (cl_orthoview / View_Ortho) not ported (dev/radar tool)."
+      - "viewloc 2.5D side-scroller camera (GetViewLocationFOV) not ported (niche 2.5D-map feature)."
+      - "FPS report to the server (fpscounter_update STAT(SHOWFPS)) not ported."
+      - "cl_lockview: only the bare cvar lock_type is honored; the UI-forced lock_type=1 conditions (hud_configure / clickable radar / minigame menu / quickmenu) are not on the net play path so they are not modelled (documented in ApplyViewLock)."
     verification:
-      - { kind: grep, ref: "no CSQC_Demo_Camera / cl_lockview / cl_orthoview / viewloc / GetViewLocationFOV / fpscounter implementation in src/ or game/", result: fail }
+      - { kind: code, ref: "cl_lockview is now ported: FirstPersonView.ApplyViewLock (FirstPersonView:825) freezes the final Quake render origin/angles (lock_type>=1 pins origin to freeze_org; ==1 also pins angles to freeze_ang; ==2 origin-only with continuous capture while off), called every frame from UpdateCamera:413 (live on the net path via UpdateView). The other 4 features (demo cam / orthoview / viewloc / FPS report) remain unimplemented in src/ or game/.", result: pass }
     confidence: high
-    notes: "Demo replay camera is tracked separately on the demo-cinematics branch. Orthoview is a dev/radar tool; viewloc is a niche 2.5D-map feature; lockview and the server FPS report are minor. None are on the normal-match camera path."
+    notes: "PARTIAL FIX since the 2026-06-27 baseline: cl_lockview (View_Lock) is now ported and live — it freezes the rendered view at the captured origin/angles (lock_type 1=both, 2=origin-only), read live each frame from the cvar (default 0=off so a stock match is unaffected). The remaining four features (demo free camera, orthoview radar render, viewloc 2.5D camera, server FPS report) are still unported — none are on the normal-match camera path. Status is partial (was missing) because this row bundles five features and only lockview landed."

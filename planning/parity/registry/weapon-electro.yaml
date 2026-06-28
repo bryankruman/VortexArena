@@ -9,8 +9,9 @@ summary:
     - "IS_INDEPENDENT_PLAYER owner-gate is ported in the midair path but Entity.IsIndependentPlayer is hardwired false (DamageEntityState.cs:158, no independent-player mode ported), so it is dead-OFF-equivalent; the non-midair W_Electro_TriggerCombo still omits the gate entirely (same harmless effect)."
     - "Combo explode-over-time (combo_duration, default 0) and sticky orbs (stick default 0, stick_lifetime -1) are intentionally omitted; harmless at xonotic defaults (tracked as dedicated rows)."
     - "FIXED 2026-06-27: Orb damagedbycontents (default 1, ON) is now ported+live (AttackOrb sets orb.DamagedByContents; GameWorld.CreatureFrameAll sweep -> PlayerFrameLogic.ProjectileContentsDamage detonates an orb resting in lava/slime as a SECONDARY blast). No more on-by-default unported electro feature."
-    - "FIXED 2026-06-27: bot wr_aim (electromooth) is now FULLY faithful — the mode pick + 1000u range gate (Electro.BotWantsSecondary, wired BotBrain.cs:423) AND the secondary lead speed: Electro overrides BotAimShotSpeed(float, ref ctx) (Electro.cs:267-268) returning secondary_speed 1000 in orb mode, which BotBrain.CurrentShotSpeed (BotBrain.cs:831) consumes. The baseline's lone bot values gap (lead used primary_speed) is now closed."
+    - "FIXED 2026-06-27: bot wr_aim (electromooth) is now FULLY faithful — the mode pick + 1000u range gate (Electro.BotWantsSecondary, wired BotBrain.cs:447) AND the secondary lead speed: Electro overrides BotAimShotSpeed(float, ref ctx) (Electro.cs:277-278) returning secondary_speed 1000 in orb mode, which BotBrain.CurrentShotSpeed (BotBrain.cs:919) consumes. The baseline's lone bot values gap (lead used primary_speed) is now closed."
     - "Registry coverage gaps still tracked as rows: the Electro_Orb CSQC net-link/scale-pulse draw, the MENUQC weapon-guide describe text (now partial), the sticky-orb mechanic, combo explode-over-time, and the secondary orb_limit rubble cap (all off-by-default)."
+    - "RE-AUDIT 2026-06-27 (post-Waves 16/17): independently re-traced every FIXED claim against the current port — ProjectileCatalog.cs/ProjectileRenderer.cs exist with Electro/ElectroBeam rows + Classify (game/client/), ClientWorld.OnEntitySpawn:452 routes IsProjectile('electro')->Projectiles.OnSpawn->AttachLoopSound:164; MoveTypePhysics.cs Bounce case:202-203 reads ent.BounceFactor/BounceStop; WeaponSplash.ImpactSound:282 is a live Api.Sound.Play wrapper called from all explode paths; DamageSystem.EventDamage:369-371 dispatches non-player GtEventDamage->Projectiles.ShootDown:156-161 fires ProjectileDamage at hp<=0; ELECTROBITCH+IsFlying ported in ExplodeBolt. Common project builds clean (0 errors). All scores below CONFIRMED, no inflation."
 features:
   - id: electro.primary.fire_gate
     name: "Primary bolt fire gate (refire + refire2 interlock)"
@@ -387,8 +388,8 @@ features:
     base_refs:
       - "common/weapons/weapon/electro.qc:wr_aim (METHOD Electro, wr_aim)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:BotWantsSecondary (Electro.cs:239)"
-      - "src/XonoticGodot.Server/Bot/BotBrain.cs:423 (w.BotWantsSecondary dispatch)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs:BotWantsSecondary (Electro.cs:249); BotAimShotSpeed(float, ref ctx) (Electro.cs:277-278)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:447 (w.BotWantsSecondary dispatch); BotBrain.cs:919 (CurrentShotSpeed -> w.BotAimShotSpeed(s, ref ctx))"
     constants:
       - { name: "primary_speed", base: "2500", port: "2500 (BotAimShotSpeed primary lead)", match: true }
       - { name: "secondary_speed", base: "1000", port: "1000 (BotAimShotSpeed(ref ctx) returns Secondary.Speed when the electromooth toggle is secondary)", match: true }
@@ -404,9 +405,9 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "Electro.BotWantsSecondary (Electro.cs:239-256) ports the electromooth toggle: vdist>1000 -> force primary (SecondaryToggle=false); preferring-primary -> random()<0.01 flip to secondary; preferring-secondary -> random()<0.03 flip back; returns the pre-flip button (electro.qc:599-626). Wired live: BotBrain.cs:423 stamps Random01/Actor and routes the result onto attack2. BotBrain ShotSpeed (BotBrain.cs:831) calls w.BotAimShotSpeed(speed cvar, ref ctx) — Electro DOES override BotAimShotSpeed(default, ref ctx) (Electro.cs:267-268) returning Secondary.Speed when the toggle is secondary, else Primary.Speed.", result: pass }
+      - { kind: code, ref: "Electro.BotWantsSecondary (Electro.cs:249-266) ports the electromooth toggle: vdist>1000 -> force primary (SecondaryToggle=false); preferring-primary -> random()<0.01 flip to secondary; preferring-secondary -> random()<0.03 flip back; returns the pre-flip button (electro.qc:599-626). Wired live: BotBrain.cs:447 routes the result onto attack2. BotBrain.CurrentShotSpeed (BotBrain.cs:907-919) calls w.BotAimShotSpeed(speed cvar, ref ctx) — Electro DOES override BotAimShotSpeed(default, ref ctx) (Electro.cs:277-278) returning Secondary.Speed when the toggle is secondary, else Primary.Speed. RE-VERIFIED 2026-06-27 against current code.", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-27 baseline (values partial->faithful): Electro now overrides BotAimShotSpeed(float, ref BotAimState) (Electro.cs:267-268) returning Secondary.Speed (1000) when the pre-flip electromooth toggle is secondary, else Primary.Speed (2500); BotBrain.CurrentShotSpeed (BotBrain.cs:831) calls exactly this ref-ctx overload, so the orb-mode lead is now tuned to secondary_speed. speed_up=200 is the vertical arc term (handled by the lob arc), not the horizontal lead, matching QC bot_aim. The baseline's lone bot gap (lead used primary_speed) is closed. Logic/liveness unchanged (faithful+live). Base electro.qc:599-626."
+    notes: "FIX since 2026-06-27 baseline (values partial->faithful): Electro now overrides BotAimShotSpeed(float, ref BotAimState) (Electro.cs:277-278) returning Secondary.Speed (1000) when the pre-flip electromooth toggle is secondary, else Primary.Speed (2500); BotBrain.CurrentShotSpeed (BotBrain.cs:919) calls exactly this ref-ctx overload, so the orb-mode lead is now tuned to secondary_speed. speed_up=200 is the vertical arc term (handled by the lob arc), not the horizontal lead, matching QC bot_aim. The baseline's lone bot gap (lead used primary_speed) is closed. Logic/liveness unchanged (faithful+live). Base electro.qc:599-626."
 
   - id: electro.orb.csqc_netlink_draw
     name: "Orb CSQC net-link + scale-pulse / spin draw"

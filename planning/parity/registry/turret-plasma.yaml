@@ -1,13 +1,13 @@
 unit: turret-plasma
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 13
   worst_gaps:
-    - "No turret HEAD presentation: head never visibly aims/spins (the body is a static base.md3 with no head sub-entity / CSQC turret net layer rendering plasma.md3/plasmad.md3), no team color glowmod, no waypoint sprite/healthbar, no damage smoke/sparks at <127/<85/<32 HP. NOTE: head-spin frame logic + head-shake jitter run server-side (e.Frame / TurretState.HeadAngles); only the client RENDER of the head is missing."
+    - "No live turret HEAD render: the head never visibly aims/spins (the body is a static base.md3 with no rendered tur_head sub-entity / CSQC turret net layer for plasma.md3/plasmad.md3), no team color glowmod, no waypoint sprite/healthbar. NOTE: head-spin frame logic, head-shake jitter, AND the low-HP damage smoke/sparks (<127/<85/<32 HP, DrawFx) all now run server-side (e.Frame / TurretState.HeadAngles / EffectEmitter); only the client RENDER of the aiming/spinning head model itself is missing. The death head GIB (plasma.md3/plasmad.md3) IS now tossed server-side."
     - "Unit balance is still baked into C# consts rather than read from g_turrets_unit_plasma_* — the values MATCH the cfg, but server cvar overrides / turret_scale_* / g_turrets_reloadcvars still have no effect (the framework cvars targetscan/aimidle/nofire ARE read)."
-    - "Death client gibs (base-gib1..4 + head gib toss/boom) are still not spawned — needs a CSQC turret edict. (The death EXPLOSION + impact sound ARE now emitted server-side; only the per-type gib entities remain.)"
+    - "Plasma turret aim_flags wrongly include nothing extra — confirmed faithful (LEAD|SHOTTIMECOMPENSATE|SPLASH, zPredict:false). No remaining LOGIC/VALUES/AUDIO gaps: damage gate, death FX+gibs, muzzle/beam FX, and head-spin frame logic are all live and faithful; the ONLY residual is the client head-model render + cvar-driven balance."
 features:
   - id: turret-plasma.spawn.mapplacement
     name: "Map placement spawnfunc + initialize (turret_plasma / turret_plasma_dual)"
@@ -50,7 +50,7 @@ features:
     constants:
       - { name: "mins/maxs", base: "'-32 -32 0' / '32 32 64'", port: "(-32,-32,0)/(32,32,64)", match: true }
       - { name: "body model", base: "models/turrets/base.md3", port: "models/turrets/base.md3", match: true }
-      - { name: "head_model", base: "plasma.md3 / plasmad.md3", port: "none (no head entity)", match: false }
+      - { name: "head_model", base: "plasma.md3 / plasmad.md3", port: "HeadModel set on both ctors (Wave 17); consumed server-side by the death-gib head toss, but NOT rendered as a live tur_head", match: true }
       - { name: "health", base: "500", port: "500", match: true }
       - { name: "spawnflags", base: "SPLASH|MEDPROJ|PLAYER", port: "modeled via aimSplash + Select players", match: true }
     status:
@@ -63,11 +63,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "head_model (plasma.md3/plasmad.md3) is never loaded or rendered — there is no tur_head sub-entity, only the base body."
+      - "head_model (plasma.md3/plasmad.md3) is now SET (ctors) and consumed server-side by TossDeathGibs, but there is still no rendered tur_head sub-entity — the live turret shows only the static base.md3 body, never the aiming head."
     verification:
-      - { kind: value, ref: "plasma.qh/plasma_dual.qh ATTRIBs vs PlasmaTurret/PlasmaDualTurret ctor + Spawn (mins/maxs/base.md3/health 500 all equal); head_model absent in port", result: pass }
+      - { kind: value, ref: "plasma.qh/plasma_dual.qh ATTRIBs vs PlasmaTurret/PlasmaDualTurret ctor + Spawn (mins/maxs/base.md3/health 500 all equal); HeadModel=plasma.md3/plasmad.md3 now present on both ctors (EntityClasses.cs:148 Turret.HeadModel), read by TurretAI.TossDeathGibs via Turrets.ByName(NetName).HeadModel", result: pass }
     confidence: high
-    notes: "Dual is a PlasmaTurret subclass per QC CLASS(DualPlasmaTurret, PlasmaTurret). Body model + hitbox + health faithful; head model still not rendered (presentation partial). Unchanged this audit."
+    notes: "Dual is a PlasmaTurret subclass per QC CLASS(DualPlasmaTurret, PlasmaTurret). Body model + hitbox + health faithful. CHANGE (Wave 17 2f0bfdb): HeadModel is now set on both ctors and used server-side (death head gib) — identity now matches Base, head_model constant match:false->true. Presentation stays PARTIAL: the head model is never rendered as the live aiming/spinning head (no tur_head sub-entity / CSQC turret net layer)."
 
   - id: turret-plasma.balance.cvars
     name: "Balance constants (damage/refire/range/ammo/aim) from g_turrets_unit_plasma_*"
@@ -405,21 +405,20 @@ features:
     constants:
       - { name: "respawntime", base: "60", port: "60", match: true }
       - { name: "death blast", base: "COMMENTED OUT (no blast, sv_turrets.qc:182)", port: "no blast (RadiusDamage removed)", match: true }
-      - { name: "death explosion + sound (client)", base: "EFFECT_ROCKET_EXPLODE + SND_ROCKET_IMPACT", port: "EffectEmitter.Emit(\"ROCKET_EXPLODE\") + rocket_impact.wav (server-emitted on death, TurretAI.cs:937-938)", match: true }
-      - { name: "death gibs (client)", base: "base-gib1..4 + head gib toss/boom", port: "none (needs CSQC turret edict)", match: false }
+      - { name: "death explosion + sound (client)", base: "EFFECT_ROCKET_EXPLODE + SND_ROCKET_IMPACT", port: "EffectEmitter.Emit(\"ROCKET_EXPLODE\") + rocket_impact.wav (server-emitted on death, TurretAI.Die:1104-1105)", match: true }
+      - { name: "death gibs (client)", base: "base-gib1..4 + head gib toss/boom", port: "TurretAI.TossDeathGibs (server-spawned physics gibs via entity feed): base-gib2/3/4 OR base-gib1, then head_model gib (exploding -> GibBoom: rocket_impact + ROCKET_EXPLODE + head-gib1..4)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Death client gibs (base-gib1..4 + head gib toss/turret_gibboom) are still not spawned — needs a CSQC turret edict. The explosion + impact sound ARE now emitted."
+    gaps: []
     verification:
-      - { kind: code, ref: "Base turret_die RadiusDamage commented (sv_turrets.qc:182); port Die has no blast — matches. Die now Emits ROCKET_EXPLODE + plays weapons/rocket_impact.wav (TurretAI.cs:935-939) on EVERY death (respawning + permanent), matching cl_turrets.qc:317-318 turret_die. Death flows live via EventDamage -> Combat.Death -> OnAnyDeath -> Die; respawn via NextThink", result: pass }
+      - { kind: code, ref: "Base turret_die RadiusDamage commented (sv_turrets.qc:182); port Die has no blast — matches. Die Emits ROCKET_EXPLODE + plays weapons/rocket_impact.wav (TurretAI.cs:1104-1105) on EVERY death (respawning + permanent), matching cl_turrets.qc turret_die, then calls TossDeathGibs (TurretAI.cs:1199): 50/50 base-gib2-4 fade OR base-gib1 explode, always a head_model gib (plasma.md3/plasmad.md3 from Turrets.ByName(NetName).HeadModel) carrying head angles+spin, GibBoom spawns head-gib1..4 sub-chunks. Death flows live via EventDamage -> Combat.Death -> OnAnyDeath -> Die; respawn via NextThink", result: pass }
       - { kind: test, ref: "tests/XonoticGodot.Tests/TurretLifecycleTests.cs Die/Respawn", result: pass }
     confidence: high
-    notes: "FIX (Wave 8e, commit 412ca19): the death EFFECT_ROCKET_EXPLODE + SND_ROCKET_IMPACT are now emitted server-side at the death site for both respawning and permanent-death paths — baseline recorded both as missing (presentation/audio missing). audio missing->faithful, presentation missing->partial. Remaining gap: the per-type gib toss (turret_gibtoss/turret_gibboom) still needs a CSQC turret edict. Logic/values/no-blast faithful."
+    notes: "FIX (Wave 8e 412ca19 + Wave 17 2f0bfdb): death ROCKET_EXPLODE + rocket_impact (W8e) AND the full base-gib + head_model gib toss (TossDeathGibs/TossGib/GibBoom, server-spawned physics gibs rendered via the entity feed like vehicle wreckage) are now live. Wave 17 added HeadModel=plasma.md3/plasmad.md3 to the ctors so the head gib actually tosses (was silently skipped on an empty model). presentation partial->faithful. Logic/values/no-blast/audio faithful. Server-side gib spawn (not a CSQC turret edict) but visible to every viewer — functionally equivalent to Base's client turret_die toss."

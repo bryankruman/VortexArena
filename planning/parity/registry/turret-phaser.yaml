@@ -5,7 +5,7 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 14
   worst_gaps:
-    - "No beam model visual (MDL_TUR_PHASER_BEAM scaled to impact) and no phaser.md3 head bone attached — the head charge/discharge FRAME animation (tr_think) is ported, but rides the turret edict's Entity.Frame with no visible head model"
+    - "Presentation only: no MDL_TUR_PHASER_BEAM beam-model visual (scaled to impact) and no phaser.md3 head bone attached — the head charge/discharge FRAME animation (tr_think) is ported live but rides the turret edict's Entity.Frame with no visible head model to show it. All authority/shared logic (penetrating multi-hit beam, audio, fireflag firecheck, bot_dodge, biases, track tuning, 90s respawn) re-verified faithful+live 2026-06-27 against current code."
 features:
   - id: turret-phaser.spawn.map_entity
     name: "Map placement + per-frame think wiring (spawnfunc turret_phaser)"
@@ -228,7 +228,7 @@ features:
     gaps: []
     verification:
       - { kind: code, ref: "phaser_weapon.qc wr_think (beam.bot_dodge=true; beam.bot_dodgerating=beam.shot_dmg; IL_PUSH(g_bot_dodge,beam)) vs PhaserTurret.Attack:148-149 (beam.BotDodge=true; beam.BotDodgeRating=perTickDamage)", result: pass }
-      - { kind: code, ref: "BotBrain.HavocbotDodge (SUPERBOT-gated, Skill > BotAim.SuperbotSkill) scans Api.Entities.All for head.BotDodge and steers away — the port's g_bot_dodge findchainfloat consumer; the stationary phaser beam (MoveType.None) falls in the slow/stationary back-away branch", result: pass }
+      - { kind: code, ref: "BotBrain.HavocbotDodge (BotBrain.cs:683, SUPERBOT-gated Skill <= BotAim.SuperbotSkill returns zero — faithful to QC `if(!SUPERBOT) return '0 0 0'`) scans Api.Entities.All for head.BotDodge and steers away; called live at BotBrain.cs:503 (worldDodge folded into the move) and Waypoint.UpdateDangerousObjects:898 folds BotDodge edicts into A* cost (BotPopulation.cs:218). The stationary phaser beam (MoveType.None, vel~0) falls in the slow/stationary back-away branch", result: pass }
     confidence: high
     notes: >-
       FIXED since baseline. The earlier audit recorded this as a two-part gap: (1) the phaser beam didn't set the
@@ -356,17 +356,19 @@ features:
       - "No PhaserTurret_beam model spawned/scaled to the impact distance (MDL_TUR_PHASER_BEAM + .scale = vlen/256 + setattachment tag_fire); acknowledged TODO comment in Attack (PhaserTurret.cs:161-165). The server-side beam logic/damage IS done; only the visible beam model is absent."
       - "phaser.md3 head model is not attached as a separate tracking head bone — the head-frame animation drives the turret edict's own networked Entity.Frame, so the frame VALUE animates faithfully but there is no visible phaser.md3 head to show it (presentation gap shared with identity.model_hitbox)."
     verification:
-      - { kind: code, ref: "PhaserTurret.TrThinkHeadAnim (fireflag==1 cycle 1..10; fireflag==2 advance to 15 then reset to 0, fireflag=0) == phaser.qc tr_think; FireFlag set in Attack (=1) and BeamThink end (=2) — head FRAME state machine ported and live", result: pass }
-      - { kind: code, ref: "MDL_TUR_PHASER_BEAM setmodel + .scale = vlen/256 — still no port equivalent (PhaserTurret.cs:161 NOTE)", result: fail }
+      - { kind: code, ref: "PhaserTurret.TrThinkHeadAnim (fireflag==1 cycle 1..10; fireflag==2 advance to 15 then reset to 0, fireflag=0) == phaser.qc tr_think; FireFlag set in Attack (=1) and BeamThink end (=2) — head FRAME state machine ported and live (PhaserTurret.cs:100-118,171,201-202)", result: pass }
+      - { kind: code, ref: "MDL_TUR_PHASER_BEAM setmodel + .scale = vlen/256 — still no port equivalent (PhaserTurret.cs:175-179 NOTE: no Entity.Scale / setattachment / server->client beam-model render path)", result: fail }
     confidence: high
     notes: >-
-      DRIFT (FIX) since baseline. The earlier audit recorded BOTH the beam model AND the head charge/discharge
-      animation as fully missing. The tr_think head-frame state machine is now ported live (TrThinkHeadAnim driven
-      by TurretState.FireFlag, landed Wave 8e / 412ca19): fireflag==1 cycles the head frame 1..10 while firing,
-      fireflag==2 advances 10->15 then resets to idle (frame=0, fireflag=0). The frame logic/values/timing now match
-      Base. STILL OPEN: the visible MDL_TUR_PHASER_BEAM beam model (scaled to the hit distance) and the phaser.md3
-      head-bone attachment — both pure client-render, so presentation remains missing even though the head frame
-      value is now driven faithfully on Entity.Frame."
+      DRIFT (FIX) since baseline; re-confirmed 2026-06-27 (post Wave 16/17) against current PhaserTurret.cs. The
+      earlier audit recorded BOTH the beam model AND the head charge/discharge animation as fully missing. The
+      tr_think head-frame state machine is now ported live (TrThinkHeadAnim driven by TurretState.FireFlag):
+      fireflag==1 cycles the head frame 1..10 while firing, fireflag==2 advances 10->15 then resets to idle
+      (frame=0, fireflag=0). The frame logic/values/timing now match Base exactly. STILL OPEN: the visible
+      MDL_TUR_PHASER_BEAM beam model (scaled to the hit distance) and the phaser.md3 head-bone attachment — both
+      pure client-render with no port path, so presentation stays missing even though the head frame value is
+      driven faithfully on Entity.Frame. Statuses kept partial (not faithful) because the combined feature's
+      beam-visual half is entirely absent; presentation fidelity is not runtime-verified."
 
   - id: turret-phaser.aim.head_track_tuning
     name: "Per-unit head-tracking motor tuning (track_type / accel_pitch / accel_rot / blendrate)"

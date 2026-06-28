@@ -1,15 +1,15 @@
 unit: sv-commands-votes
 category: server
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # drift re-audit 2026-06-27 (2nd pass): sv_vote_master_ids auto-login (Base ClientConnect client.qc:1262-1264) is now PORTED + LIVE — GameWorld.cs:1373-1377 InfraClientConnect grants vote-master to any connecting client whose PersistentId is contained in sv_vote_master_ids (Voting.GrantMaster), reached via ClientManager.cs:251 OnClientConnect.Invoke. The last vote.master gap is closed. (1st pass: adminmsg / delrec / printstats implemented + live, removed from debug_tools.missing — 9 verbs remain.) All other vote/timeout/ban logic + constants re-verified faithful & unchanged vs Base.
+last_audited: "2026-06-27"  # OPUS re-audit 2026-06-27 (3rd pass, post-Wave16/17): effectindexdump is now REGISTERED + LIVE (Commands.cs:928 → CmdEffectIndexDump, a faithful port of GameCommand_effectindexdump iterating Effects.All printing name→network-id) — removed from debug_tools.missing, leaving 8 verbs (radarmap/gettaginfo/stuffto/trace/bbox/database/make_mapinfo/animbench). All other rows RE-VERIFIED against current port: vote announce/IsPlayer/IsClient/TimeoutActive/GameStartTime/ValidateMap/GrantMaster wiring all present & live (GameWorld.cs:1034-1067, :1397); Voting.Think pumped :1821, Timeout.Think :1793; slowmo→Simulation.TimeScale (ServerNet.cs:452); GameStopped excludes Timeout.IsPaused (:2159); all notif keys registered (NotificationsList.cs:114-115/181/191-193/1090-1091). 197 unit tests green. (2nd pass: sv_vote_master_ids auto-login PORTED+LIVE, vote.master closed. 1st pass: adminmsg/delrec/printstats implemented+live.)
 summary:
   feature_count: 17
   worst_gaps:
-    - "radarmap / gettaginfo / animbench / bbox / trace / stuffto / database / effectindexdump / make_mapinfo: still not registered as commands (missing). (anticheat, adminmsg, delrec, printstats ARE now implemented.)"
+    - "radarmap / gettaginfo / animbench / bbox / trace / stuffto / database / make_mapinfo: still not registered as commands (missing) — 8 verbs. (effectindexdump NOW implemented this re-audit; anticheat/adminmsg/delrec/printstats implemented earlier.)"
     - "FIXED in this re-audit (2026-06-27 2nd pass): master vote sv_vote_master_ids auto-login is now honored — InfraClientConnect (GameWorld.cs:1373-1377) grants vote-master to any connecting client whose PersistentId is contained in sv_vote_master_ids, reached on the live connect path (ClientManager.cs:251). The vote.master row now has no residual gaps."
     - "who: ping/packetloss columns carry 0 in the Godot-free core (the net host owns live ping); a documented core limitation, not a logic gap. Full column table + sv_status_privacy hiding are present."
     - "Cross-server online ban sync (uri_get / g_ban_sync_*) is deliberately out of the headless core (intended divergence; local ban store complete)."
-    - "FIXED in this re-audit (2026-06-27): adminmsg / delrec / printstats are now registered + live faithful ports (Commands.cs CmdAdminMsg / CmdDelRec / CmdPrintStats) — removed from the debug_tools.missing row. Earlier-fixed (2026-06-25, retained): the vote/timeout presentation+audio cues are LIVE through the real NotificationSystem channel — Voting.AnnounceVoteCall/Accept/Fail → MSG_ANNCE VOTE_CALL/VOTE_ACCEPT/VOTE_FAIL (GameWorld.cs:998-1000), Timeout.CenterPrintBeginning/Ending → MSG_CENTER TIMEOUT_BEGINNING/ENDING with the COUNT arg (GameWorld.cs:1164-1167), Timeout.AnnouncePrepare → MSG_ANNCE PREPARE (GameWorld.cs:1169). (Prior fixes — IsClient/timeout/game_starttime guards, spectator exclusion, ValidateMap, checkargs, slowmo, full who table, randomized shuffleteams, anticheat — all retained and re-verified; constants unchanged vs Base.)"
+    - "FIXED in this re-audit (2026-06-27 3rd pass): effectindexdump is now registered + a live faithful port (Commands.cs:928 CmdEffectIndexDump — begin / 'effect <name> is <id>' over Effects.All / end count, mirroring GameCommand_effectindexdump's FOREACH(Effects) dump) — removed from the debug_tools.missing row (now 8 verbs). Earlier-fixed (2026-06-27, retained): adminmsg / delrec / printstats are registered + live faithful ports (Commands.cs CmdAdminMsg / CmdDelRec / CmdPrintStats). Earlier-fixed (2026-06-25, retained): the vote/timeout presentation+audio cues are LIVE through the real NotificationSystem channel — Voting.AnnounceVoteCall/Accept/Fail → MSG_ANNCE VOTE_CALL/VOTE_ACCEPT/VOTE_FAIL (GameWorld.cs:998-1000), Timeout.CenterPrintBeginning/Ending → MSG_CENTER TIMEOUT_BEGINNING/ENDING with the COUNT arg (GameWorld.cs:1164-1167), Timeout.AnnouncePrepare → MSG_ANNCE PREPARE (GameWorld.cs:1169). (Prior fixes — IsClient/timeout/game_starttime guards, spectator exclusion, ValidateMap, checkargs, slowmo, full who table, randomized shuffleteams, anticheat — all retained and re-verified; constants unchanged vs Base.)"
 features:
   - id: sv-commands-votes.dispatch.client_parse
     name: "Client command dispatch (cmd <verb>) + privilege split + flood/UTF-8/ban pre-gates"
@@ -62,7 +62,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "~9 SERVER_COMMANDS still unimplemented (see sv-commands-votes.debug_tools.missing row); the dispatch shell itself is faithful. (Down from ~12 — adminmsg/delrec/printstats now implemented, after anticheat earlier.)"
+      - "8 SERVER_COMMANDS still unimplemented (see sv-commands-votes.debug_tools.missing row); the dispatch shell itself is faithful. (Down from ~12 — effectindexdump now implemented this re-audit, after adminmsg/delrec/printstats, after anticheat.)"
     verification:
       - { kind: test, ref: "tests/XonoticGodot.Tests/ServerClientCommandsTests.cs", result: pass }
       - { kind: code, ref: "Commands.cs Execute gate + RegisterBuiltins", result: pass }
@@ -513,7 +513,7 @@ features:
     notes: "FIX (drift re-audit 2026-06-27): adminmsg / delrec / printstats moved missing→faithful + na→live. All three are now registered + faithful ports of GameCommand_adminmsg / delrec (race_deleteTime) / printstats (DumpStats(false)). Removed from the debug_tools.missing row (now 9 verbs remain). adminmsg attributes to the server admin nick (QC GetCallerName(NULL), NOT the caller); delrec resolves the active gametype's record_type the same way CommandReplies.GetRankings does; printstats calls the same DumpStats path as the eventlog dump."
 
   - id: sv-commands-votes.debug_tools.missing
-    name: "radarmap / gettaginfo / animbench / bbox / trace / stuffto / database / effectindexdump / make_mapinfo"
+    name: "radarmap / gettaginfo / animbench / bbox / trace / stuffto / database / make_mapinfo"
     layer: [authority]
     base_refs:
       - "server/command/radarmap.qc:GameCommand_radarmap"
@@ -534,8 +534,8 @@ features:
     divergence_rationale: null
     gaps:
       - "radarmap is not registered: no in-game radar-image (XPM) generation for the minimap."
-      - "gettaginfo / animbench / bbox / trace / stuffto / database / effectindexdump / make_mapinfo console verbs are unimplemented (no Register() calls)."
+      - "gettaginfo / animbench / bbox / trace / stuffto / database / make_mapinfo console verbs are unimplemented (no Register() calls)."
     verification:
-      - { kind: code, ref: "Commands.cs grep Register(\"radarmap|gettaginfo|stuffto|trace|bbox|database|effectindexdump|make_mapinfo|animbench\") -> no matches; Register(\"adminmsg\"|\"delrec\"|\"printstats\"|\"anticheat\") DO match (now implemented, moved out of this row)", result: fail }
+      - { kind: code, ref: "Commands.cs grep Register(\"radarmap|gettaginfo|stuffto|trace|bbox|database|make_mapinfo|animbench\") -> no matches (re-verified 2026-06-27 3rd pass); Register(\"adminmsg\"|\"delrec\"|\"printstats\"|\"anticheat\"|\"effectindexdump\") DO match (now implemented, moved out of this row — effectindexdump at Commands.cs:928 → CmdEffectIndexDump:2892)", result: fail }
     confidence: high
-    notes: "FIX (drift re-audit 2026-06-27): adminmsg / delrec / printstats are now implemented (faithful ports — see the new sv-commands-votes.admin.adminmsg_delrec_printstats row) and are REMOVED from this missing-row, leaving 9 verbs (was 12). The `anticheat` command was likewise removed in a prior wave. The remaining 9 (radarmap is #ifdef RADARMAP, the rest are offline-mapper / admin-debug / scripting tools) are still absent. Not on the live match path."
+    notes: "FIX (OPUS re-audit 2026-06-27 3rd pass): effectindexdump is now implemented (Commands.cs:928 CmdEffectIndexDump, a faithful port of GameCommand_effectindexdump — `begin` / `effect <NetName> is <RegistryId>` over Effects.All / end-count) and is REMOVED from this missing-row, leaving 8 verbs (was 9). Earlier: adminmsg/delrec/printstats removed (own row), anticheat removed in a prior wave. The remaining 8 (radarmap is #ifdef RADARMAP, the rest are offline-mapper / admin-debug / scripting tools) are still absent. Not on the live match path."

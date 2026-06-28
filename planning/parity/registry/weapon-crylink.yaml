@@ -1,7 +1,7 @@
 unit: weapon-crylink
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # re-audit pass: port files unchanged this wave; all 13 rows re-verified vs current code, no status drift
+last_audited: "2026-06-27"  # re-audit (post Wave-16/17): port files (Crylink.cs/WeaponSplash.cs) UNCHANGED since Wave-13 — Wave-16/17 touched only this yaml's last_audited comment. All 13 rows re-verified line-by-line vs current code; no status drift. (BotBrain dispatch line drifted to :447.)
 summary:
   feature_count: 13
   worst_gaps:
@@ -371,7 +371,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:BotWantsSecondary"
       - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:BotAimShotSpeed"
-      - "src/XonoticGodot.Server/Bot/BotBrain.cs:421-423"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:447"
     constants:
       - { name: "primary-fire bias", base: "random() < 0.10 -> primary, else secondary", port: "ctx.Random01 >= 0.10 -> secondary (i.e. 10% primary, 90% secondary)", match: true }
       - { name: "primary lead speed", base: "bot_aim(primary_speed,...)", port: "BotAimShotSpeed => Primary.Speed", match: true }
@@ -389,9 +389,9 @@ features:
       - "Secondary lead speed: QC's wr_aim leads the secondary shot at WEP_CVAR_SEC(speed) (3000); the port's BotAimShotSpeed returns a single speed (Primary.Speed=2000) regardless of which mode the 10/90 pick routes to. This is the shared port-wide wr_aim lead-speed simplification (the brain keys lead off one per-weapon BotAimShotSpeed, not per-fire-mode), tracked at bot-ai.aim.lead — not a crylink-specific logic defect. The mode-PICK and the primary lead are faithful."
     verification:
       - { kind: code_read, ref: "Crylink.cs:209-213 BotWantsSecondary returns ctx.Random01 >= 0.10f (10% primary, 90% secondary) == QC random()<0.10; Crylink.cs:219 BotAimShotSpeed => Primary.Speed", result: pass }
-      - { kind: code_read, ref: "live dispatch: BotBrain.cs:421-423 sets ctx.Random01 then calls w.BotWantsSecondary(...) on the real bot fire-decision path; base hook default false overridden by Crylink", result: pass }
+      - { kind: code_read, ref: "live dispatch: BotBrain.cs:445-447 sets _botAimState.Random01 then calls w.BotWantsSecondary(...) on the real bot fire-decision path; base hook default false overridden by Crylink", result: pass }
     confidence: high
-    notes: "RE-VERIFIED 2026-06-27 (still faithful/live, unchanged vs baseline 2026-06-27 entry). The port implements the QC METHOD(Crylink, wr_aim) via the shared BotWantsSecondary/BotAimShotSpeed hooks (same Wave-12 pattern that closed bot-aim across Shotgun/Rifle/Fireball/Electro/Machinegun/Tuba/Vaporizer). The 10%-primary / 90%-secondary button pick is bit-faithful and LIVE via BotBrain.cs:421-423. Only residual is the single-speed lead (secondary uses 2000 not 3000), the documented shared bot-aim limitation."
+    notes: "RE-VERIFIED 2026-06-27 (post Wave-16/17 re-audit — Crylink.cs unchanged since Wave-13, still faithful/live). The port implements the QC METHOD(Crylink, wr_aim) via the shared BotWantsSecondary/BotAimShotSpeed hooks (same Wave-12 pattern that closed bot-aim across Shotgun/Rifle/Fireball/Electro/Machinegun/Tuba/Vaporizer). The 10%-primary / 90%-secondary button pick (Crylink.cs:212) is bit-faithful and LIVE via BotBrain.cs:447 (line drifted from the prior :421-423 ref). Only residual is the single-speed lead (secondary uses 2000 not 3000), the documented shared bot-aim limitation."
 
   - id: crylink.menu.describe
     name: "MENUQC weapon-guide prose (describe)"

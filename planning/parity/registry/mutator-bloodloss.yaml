@@ -2,11 +2,11 @@ unit: mutator-bloodloss
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
-# re-verified 2026-06-27 (drift check): no status changes; port_ref line numbers refreshed only (GameWorld.cs Apply 614->626, PlayerPreThink.Call 2171->2226, BuildMutatorsString gamelog 1117->1141, 'modifications' 1128->1152, SendMutatorsWelcome 1291/1387->1319/1428/1433, PlayerPhysics PlayerJump.Call ->1067 / PlayerCanCrouch.Call ->1286, DamageSystem self-damage ->270-271). Base bloodloss.qc fully mapped (8 rows), no new unmapped features.
+# re-verified 2026-06-27 (OPUS post-Wave-16/17 re-audit): no status changes — Waves 16/17 touched state-producer/presentation-consumer code elsewhere but did not close or regress any bloodloss gap. All 8 rows re-read against the CURRENT port. Every live caller re-confirmed real (not dead): MutatorActivation.Apply (GameWorld.cs:631), PlayerPreThink.Call (GameWorld.cs:2261), PlayerJump.Call (PlayerPhysics.cs:1093, true→abort jump), PlayerCanCrouch.Call (PlayerPhysics.cs:1312, pre-clamp dead/frozen/vehicle then read DoCrouch back), self-damage cut DamageSystem.cs:270-271 (ReferenceEquals(attacker,targ)→*=g_balance_selfdamagepercent). The 4 BuildMutators* consumers re-confirmed live (gamelog 1161, 'modifications' serverinfo 1172, SendMutatorsWelcome 1339→1453/1459, ServerNet.BuildServerInfo 613). MUT_BLOODLOSS/mut_set_active/active_mutators STILL 0 functional hits (only TouchExplodeMutator.cs:128-133 comment). port_ref line numbers refreshed (drifted in-session after the morning drift check): Apply 626->631, PlayerPreThink.Call 2226->2261, BuildMutatorsString gamelog 1141->1161, 'modifications' 1152->1172, SendMutatorsWelcome 1319/1428/1433->1339/1453/1459, ServerNet 608->613, PlayerJump.Call 1067->1093, PlayerCanCrouch.Call 1286->1312, DialogMutators 161-175->162-179. Base bloodloss.qc fully mapped (8 rows), no new unmapped features.
 summary:
   feature_count: 8
   worst_gaps:
-    - "Active-mutators signalling is LIVE for all server-side strings (re-audit 2026-06-27): BloodlossMutator overrides BuildMutatorsString (':bloodloss', LIVE via MutatorActivation.BuildMutatorsString → GameWorld.cs:1141 gamelog init, gated on sv_eventlog) and BuildMutatorsPrettyString (', Blood loss', LIVE via THREE consumers — the 'modifications' serverinfo cvar at GameWorld.cs:1152, the per-join Welcome chat line SendMutatorsWelcome at GameWorld.cs:1319/1428, AND the server-browser infostring ServerNet.BuildServerInfo at game/net/ServerNet.cs:608). The util.qc:309 MUT_BLOODLOSS GameType row and the CSQC mut_set_active(MUT_BLOODLOSS) HUD active-mutator icon are STILL entirely unported (no MUT_BLOODLOSS / mut_set_active / active_mutators surface in the port)."
+    - "Active-mutators signalling is LIVE for all server-side strings (re-audit 2026-06-27, post-Wave-16/17): BloodlossMutator overrides BuildMutatorsString (':bloodloss', LIVE via MutatorActivation.BuildMutatorsString→ GameWorld.cs:1161 gamelog init, gated on sv_eventlog) and BuildMutatorsPrettyString (', Blood loss', LIVE via THREE consumers — the 'modifications' serverinfo cvar at GameWorld.cs:1172, the per-join Welcome chat line SendMutatorsWelcome at GameWorld.cs:1339/1453, AND the server-browser infostring ServerNet.BuildServerInfo at game/net/ServerNet.cs:613). The util.qc:309 MUT_BLOODLOSS GameType row and the CSQC mut_set_active(MUT_BLOODLOSS) HUD active-mutator icon are STILL entirely unported (no MUT_BLOODLOSS / mut_set_active / active_mutators surface in the port)."
     - "CSQC client-prediction hooks (PlayerCanCrouch/PlayerJump with the extra STAT(HEALTH)>0 guard, REGISTER_STAT(BLOODLOSS), REGISTER_MUTATOR(bloodloss,true)) are unported — acceptable because the port runs a headless server sim with no CSQC prediction, but it means crouch/jump are NOT locally predicted (server-round-trip latency vs Base)."
     - "MENUQC describe paragraph (stun + impaired movement + rapid health drain) is condensed to a one-line tooltip on the menu checkbox/slider."
 features:
@@ -19,7 +19,7 @@ features:
       - "xonotic-server.cfg:304 (set g_bloodloss 0)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:30-31 (IsEnabled => Cvars.GetFloat(\"g_bloodloss\") != 0f)"
-      - "src/XonoticGodot.Server/GameWorld.cs:626 (MutatorActivation.Apply)"
+      - "src/XonoticGodot.Server/GameWorld.cs:631 (MutatorActivation.Apply)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs (Apply → Add → Hook)"
     constants:
       - { name: "g_bloodloss default", base: "0 (disabled)", port: "0 via cvar; no static 25f field fallback any more (Threshold is now a live cvar read)", match: true }
@@ -36,7 +36,7 @@ features:
     gaps:
       - "Base REGISTER_STAT(BLOODLOSS) networks the threshold to CSQC for crouch/jump prediction; the port has no STAT(BLOODLOSS) and no CSQC mutator registration. Faithful in effect (server-authoritative) but the prediction path is absent."
     verification:
-      - { kind: code, ref: "[Mutator] BloodlossMutator in Mutators.All; MutatorActivation.Apply at GameWorld.cs:626 on the live server boot; IsEnabled reads g_bloodloss", result: pass }
+      - { kind: code, ref: "[Mutator] BloodlossMutator in Mutators.All; MutatorActivation.Apply at GameWorld.cs:631 on the live server boot; IsEnabled reads g_bloodloss", result: pass }
     confidence: high
     notes: "The cvar value is simultaneously the enable switch AND the health threshold. Base has NO IsEnabled-side exclusion (unlike instagib/arena/nix) — REGISTER_MUTATOR keys directly on the cvar — so the port's bare != 0f is faithful (no missing-exclusion gap). Menu greys it out under g_instagib but that is UI-only. Wave-2 removed the dead 25f field; enable predicate unchanged."
 
@@ -49,7 +49,7 @@ features:
       - "server/damage.qc:483 Damage() + :614-615 (targ==attacker → damage *= g_balance_selfdamagepercent)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:58-85 (OnPlayerPreThink)"
-      - "src/XonoticGodot.Server/GameWorld.cs:2226 (PlayerPreThink.Call on the live per-client move)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2261 (PlayerPreThink.Call on the live per-client move)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/EntityMutatorState.cs (BloodlossTimer)"
       - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:270-271 (self-damage *= g_balance_selfdamagepercent 0.65 when attacker==targ, ReferenceEquals(attacker,targ))"
     constants:
@@ -70,7 +70,7 @@ features:
     gaps:
       - "No runtime/automated test confirms the rot tick cadence or that the rot damage actually removes health in a live match (static + cross-file trace only; no bloodloss test in tests/)."
     confidence: medium
-    notes: "Guards verified: game_stopped → VehicleCommon.GameStopped (BloodlossMutator.cs:64); IS_DEAD → DeadState==DeadFlag.No; IS_PLAYER → EntFlags.Client. Live caller re-verified 2026-06-27: MutatorHooks.PlayerPreThink.Call fires per client every tick (GameWorld.cs:2226; line drifted from 2171). VERIFIED both Base and port multiply the 1-hp rot by g_balance_selfdamagepercent (0.65) because target==attacker (DamageSystem.cs:270-271 ReferenceEquals(attacker,targ)) — effective drain ~0.65 hp/tick in BOTH. Rot damage goes through Combat.Damage(...,\"rot\",...) (BloodlossMutator.cs:79); IsSpecial(\"rot\")==true (non-weapon), armor applies in both. Drift check left logic/values/timing unchanged."
+    notes: "Guards verified: game_stopped → VehicleCommon.GameStopped (BloodlossMutator.cs:64); IS_DEAD → DeadState==DeadFlag.No; IS_PLAYER → EntFlags.Client. Live caller re-verified 2026-06-27 (post-Wave-16/17): MutatorHooks.PlayerPreThink.Call fires per client every frame on the move path (GameWorld.cs:2261; line drifted from 2226). VERIFIED both Base and port multiply the 1-hp rot by g_balance_selfdamagepercent (0.65) because target==attacker (DamageSystem.cs:270-271 ReferenceEquals(attacker,targ)) — effective drain ~0.65 hp/tick in BOTH. Rot damage goes through Combat.Damage(...,\"rot\",...) (BloodlossMutator.cs:79); IsSpecial(\"rot\")==true (non-weapon), armor applies in both. Re-audit left logic/values/timing unchanged."
 
   - id: mutator-bloodloss.rot.vehicle_eject
     name: "Eject the player from any vehicle on each rot tick (VHEF_RELEASE)"
@@ -104,7 +104,7 @@ features:
       - "common/physics/player.qc:~198-203 (do_crouch pre-clamped false for vehicle/frozen/dead, THEN MUTATOR_CALLHOOK(PlayerCanCrouch))"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:88-93 (OnPlayerCanCrouch)"
-      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs (UpdateCrouch: pre-clamp dead/frozen → PlayerCanCrouch.Call → read DoCrouch back)"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:1312 (UpdateCrouch: pre-clamp hook/dead/frozen/vehicle at :1300-1308 → PlayerCanCrouch.Call → read cc.DoCrouch back at :1313)"
     constants:
       - { name: "trigger", base: "RES_HEALTH <= autocvar_g_bloodloss → do_crouch=true (no HEALTH>0 guard in SVQC)", port: "Health <= Threshold → DoCrouch=true (no Health>0 guard)", match: true }
     status:
@@ -129,7 +129,7 @@ features:
       - "common/physics/player.qc:~403 (if (MUTATOR_CALLHOOK(PlayerJump,...)) return true; aborts the jump)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:96-101 (OnPlayerJump → return true)"
-      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:1067 (if (PlayerJump.Call(ref pj)) → abort the jump)"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:1093 (if (PlayerJump.Call(ref pj)) → abort the jump via return (true, ...))"
       - "src/XonoticGodot.Common/Framework/Hooks.cs:39-47 (HookChain.Call ORs handler returns)"
     constants:
       - { name: "trigger", base: "RES_HEALTH <= autocvar_g_bloodloss → return true (forbid, no HEALTH>0 guard SVQC)", port: "Health <= Threshold → return true", match: true }
@@ -145,7 +145,7 @@ features:
     gaps:
       - "CSQC variant (bloodloss.qc:63-67) adds STAT(HEALTH)>0; the port has no CSQC prediction, so jump-block is server-authoritative only (no local prediction)."
     confidence: high
-    notes: "VERIFIED HookChain.Call (Hooks.cs:45 `handled |= cb`) ORs returns, so a true return aborts the jump exactly like QC's `if (MUTATOR_CALLHOOK(PlayerJump,...)) return true;`. Live call site PlayerPhysics.cs:1067 aborts the jump on a true hook (line drifted from 819-821). Reads Threshold live (cvar). Unchanged hook logic by drift check."
+    notes: "VERIFIED HookChain.Call (Hooks.cs:45 `handled |= cb`) ORs returns, so a true return aborts the jump exactly like QC's `if (MUTATOR_CALLHOOK(PlayerJump,...)) return true;`. Live call site PlayerPhysics.cs:1093 aborts the jump on a true hook (`if (MutatorHooks.PlayerJump.Call(ref pj)) return (true, pj.Multijump);`; line drifted from 1067). Reads Threshold live (cvar). Unchanged hook logic by post-Wave-16/17 re-audit."
 
   - id: mutator-bloodloss.threshold.live_reread
     name: "Threshold value tracks the g_bloodloss cvar mid-match"
@@ -184,10 +184,10 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs:107 (BuildMutatorsPrettyString override → s + \", Blood loss\")"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108 (BuildMutatorsString aggregator over Added mutators)"
       - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:121 (BuildMutatorsPrettyString aggregator — has live callers)"
-      - "src/XonoticGodot.Server/GameWorld.cs:1141 (MutatorActivation.BuildMutatorsString live call in GameLogInit, gated on sv_eventlog)"
-      - "src/XonoticGodot.Server/GameWorld.cs:1152 (MutatorActivation.BuildMutatorsPrettyString live call → 'modifications' serverinfo cvar at match init)"
-      - "src/XonoticGodot.Server/GameWorld.cs:1319,1428,1433 (SendMutatorsWelcome — BuildMutatorsPrettyString live call → per-join Welcome chat line 'Active modifications: ^3...' to the connecting client)"
-      - "game/net/ServerNet.cs:608 (MutatorActivation.BuildMutatorsPrettyString live call in BuildServerInfo → 'modifications' key of the DP server-browser infostring)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1161 (MutatorActivation.BuildMutatorsString live call in GameLogInit, gated on sv_eventlog)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1172 (MutatorActivation.BuildMutatorsPrettyString live call → 'modifications' serverinfo cvar at match init)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1339,1453,1459 (SendMutatorsWelcome — BuildMutatorsPrettyString live call → per-join Welcome chat line 'Active modifications: ^3...' to the connecting client)"
+      - "game/net/ServerNet.cs:613 (MutatorActivation.BuildMutatorsPrettyString live call in BuildServerInfo → 'modifications' key of the DP server-browser infostring)"
     constants:
       - { name: "serverinfo code tag", base: "\":bloodloss\"", port: "\":bloodloss\" (BloodlossMutator.cs:104)", match: true }
       - { name: "pretty tag", base: "\", Blood loss\"", port: "\", Blood loss\" (BloodlossMutator.cs:107; consumed by the 'modifications' serverinfo cvar, the per-join Welcome chat line, AND the server-browser infostring)", match: true }
@@ -205,9 +205,9 @@ features:
       - "The util.qc:309 X(\"Blood loss\", MUT_BLOODLOSS, g_bloodloss>0) GameType active-mutator row and the CSQC mut_set_active(MUT_BLOODLOSS) HUD active-mutator icon are STILL entirely unported — the port has no MUT_BLOODLOSS / mut_set_active / active_mutators flag surface at all, so the menu/server-browser HUD active-mutator ICON can never light up (the textual 'modifications' string IS now surfaced, but not the bitmask/icon)."
       - "BuildMutatorsString (':bloodloss') is LIVE but only via the gamelog/eventlog feed (sv_eventlog-gated) and the 'modifications' serverinfo; it is not consumed by an in-game scoreboard."
     verification:
-      - { kind: code, ref: "BloodlossMutator.cs:104,107 override both string hooks; MutatorActivation.BuildMutatorsString called live at GameWorld.cs:1141 (gamelog init). BuildMutatorsPrettyString aggregator (MutatorActivation.cs:121) has THREE live callers: GameWorld.cs:1152 ('modifications' cvar), GameWorld.cs:1319→SendMutatorsWelcome:1428/1433 (per-join Welcome chat line to the connecting client), and ServerNet.BuildServerInfo at game/net/ServerNet.cs:608 (server-browser infostring, wired to _master.GetInfoRequested). MUT_BLOODLOSS/mut_set_active/active_mutators = 0 functional hits in src/+game/ (TouchExplodeMutator.cs:128-133 comment only).", result: partial }
+      - { kind: code, ref: "BloodlossMutator.cs:104,107 override both string hooks; MutatorActivation.BuildMutatorsString called live at GameWorld.cs:1161 (gamelog init). BuildMutatorsPrettyString aggregator (MutatorActivation.cs:123) has THREE live callers: GameWorld.cs:1172 ('modifications' cvar), GameWorld.cs:1339→SendMutatorsWelcome:1453/1459 (per-join Welcome chat line to the connecting client), and ServerNet.BuildServerInfo at game/net/ServerNet.cs:613 (server-browser infostring, wired to _master.GetInfoRequested). MUT_BLOODLOSS/mut_set_active/active_mutators = 0 functional hits in src/+game/ (TouchExplodeMutator.cs:128-133 comment only).", result: partial }
     confidence: high
-    notes: "RE-AUDIT 2026-06-27 (drift check): no status change; only line numbers refreshed. BuildMutatorsPrettyString has THREE live consumers: SendMutatorsWelcome (GameWorld.cs:1428/1433, called per-join at GameWorld.cs:1319) surfaces 'Active modifications: ^3<list>' to the connecting client via the per-client chat sink (Base networks this in the CSQC Welcome dialog; client/main.qc:1438); the 'modifications' serverinfo cvar (GameWorld.cs:1152); and the server-browser infostring (ServerNet.cs:608). All THREE server-side textual outputs are live, so ', Blood loss' reaches the server browser AND the joining player. The remaining gap is unchanged: only the MUT_BLOODLOSS bitmask / mut_set_active HUD active-mutator ICON surface (util.qc:309 + CSQC) is unported. logic stays partial (textual signalling complete, icon/bitmask missing); presentation stays missing (the HUD icon); liveness stays partial (server strings live, HUD icon surface absent). Cosmetic only — no gameplay effect."
+    notes: "RE-AUDIT 2026-06-27 (post-Wave-16/17 OPUS): no status change; line numbers refreshed (drifted in-session). BuildMutatorsPrettyString has THREE live consumers, all re-confirmed by reading the call sites: SendMutatorsWelcome (def GameWorld.cs:1448, BuildMutatorsPrettyString at :1453, chat emit at :1459; called per-join at GameWorld.cs:1339) surfaces 'Active modifications: ^3<list>' to the connecting client via Commands.ChatToPlayer (Base networks this in the CSQC Welcome dialog; client/main.qc:1438); the 'modifications' serverinfo cvar (GameWorld.cs:1172); and the server-browser infostring (ServerNet.cs:613, only emitted when prettyMutators non-empty). BuildMutatorsString (':bloodloss') is live at GameWorld.cs:1161 (gamelog, sv_eventlog-gated). All server-side textual outputs are live, so ', Blood loss' reaches the server browser AND the joining player. Remaining gap UNCHANGED: only the MUT_BLOODLOSS bitmask / mut_set_active HUD active-mutator ICON surface (util.qc:309 + CSQC) is unported (grep: 0 functional hits, TouchExplodeMutator.cs:128-133 comment only). logic stays partial (textual signalling complete, icon/bitmask missing); presentation stays missing (the HUD icon); liveness stays partial (server strings live, HUD icon surface absent). Cosmetic only — no gameplay effect."
 
   - id: mutator-bloodloss.menu.dialog
     name: "Multiplayer-create mutators dialog (slider 10-50 + enable checkbox, g_instagib dependency, describe text)"
@@ -217,7 +217,7 @@ features:
       - "common/mutators/mutator/bloodloss/bloodloss.qh:4-8 (MutatorBloodLoss message \"Blood loss\")"
       - "common/mutators/mutator/bloodloss/bloodloss.qc:72-79 (MENUQC describe paragraph: stun + impaired movement + rapid health drain)"
     port_refs:
-      - "game/menu/dialogs/DialogMutators.cs:161-175 (DialogMutatorsSliderCheckBox g_bloodloss off=0/saved=20 at :169, slider 10-50 step 1 at :175, Dependent.Bind on g_instagib)"
+      - "game/menu/dialogs/DialogMutators.cs:162-179 (DialogMutatorsSliderCheckBox g_bloodloss off=0/saved=20 at :170, slider 10-50 step 1 at :176, Dependent.Bind on g_instagib at :175/:179)"
     constants:
       - { name: "slider range/step", base: "10..50 step 1", port: "10f..50f step 1f", match: true }
       - { name: "checkbox off/saved", base: "off=0, saved value (20)", port: "offValue=0f, savedValue=20f", match: true }

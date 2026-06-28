@@ -1,7 +1,7 @@
 unit: vehicle-racer
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-27"
 summary:
   feature_count: 13
   worst_gaps:
@@ -9,6 +9,7 @@ summary:
     - "Cosmetic-only spawn values unset: scale 0.5 model hack (physics uses the real hitbox), view_ofs '0 0 50' + height 200 (cockpit camera offset/dist)."
     - "Shared-layer note: VehicleCommon.PainFrame still defers its low-health EFFECT_SMOKE_SMALL puff (the jitter/shake is live); that smoke is a VehicleCommon concern, not a racer-specific row."
     - "Minor fidelity notes: vr_impact NOIMPACT-surface skip not available headless; oldvelocity captured at Think-start not at the engine clip; LoadCvars zero-as-sentinel edge (a server explicitly setting a tunable to 0 keeps the Base default)."
+    - "Carried-flag position divergence (re-audit 2026-06-27): a CTF flag-carrier who boards the racer keeps the flag at the SHARED VEHICLE_FLAG_OFFSET (0,0,96) applied each tick by Ctf.Tick, NOT the racer-specific vr_enter '-190 0 96' (190u behind the cockpit). The flag IS live and rides the moving craft (equivalent-or-stronger logic); only the world position is off ~190u forward (board.usekey values: faithful->partial)."
 features:
   - id: vehicle-racer.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -135,10 +136,10 @@ features:
       - { name: "g_vehicles_enter_radius", base: "250", port: "250", match: true }
       - { name: "vehicle_enter_delay", base: "time+2 on exit", port: "Time+2", match: true }
       - { name: "g_vehicles_allow_bots", base: "0", port: "0", match: true }
-      - { name: "flag-carrier flag reposition on board", base: "setorigin(flagcarried, '-190 0 96')", port: "Ctf.Tick anchors carrier-in-vehicle flag to FlagVehicleCarryOffset (-190,0,96)", match: true }
+      - { name: "flag-carrier flag reposition on board", base: "racer vr_enter: setorigin(flagcarried, '-190 0 96')", port: "Ctf.Tick anchors carrier-in-vehicle flag to FlagVehicleCarryOffset (0,0,96) — the shared sv_ctf.qh VEHICLE_FLAG_OFFSET, NOT the racer-specific -190 0 96", match: false }
     status:
       logic: faithful
-      values: faithful
+      values: partial
       timing: faithful
       presentation: na
       audio: na
@@ -146,12 +147,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port anchors the boarding flag-carrier's flag each tick via Ctf.Tick (rides the craft continuously at -190 0 96) rather than the single setorigin at vr_enter; behaviourally equivalent or stronger (flag follows the moving craft)."
+      - "Flag offset diverges: the port anchors a boarding carrier's flag at (0,0,96) (the shared CTF VEHICLE_FLAG_OFFSET applied every tick by Ctf.Tick when carrier.Vehicle != null), whereas the racer's vr_enter does a one-shot setorigin to '-190 0 96' (190u BEHIND the cockpit). Logic is live and equivalent-or-stronger (the flag follows the moving craft each tick), but the carried-flag world position is off by ~190u forward vs Base on the racer. Cosmetic/position only."
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.UseKey_BoardsNearbyRacer_LinksAndFreezesPilot (+ guard tests + Exit/Death eject)", result: pass }
-      - { kind: code_read, ref: "Ctf.cs FlagVehicleCarryOffset=(-190,0,96), applied when carrier.Vehicle != null; VehicleCommon.Touch boards toucher when Cvar('g_vehicles_enter')==0; Racer.Exit sets player.OldVelocity (QC racer_exit oldvelocity), Think sets player.OldOrigin (QC racer_frame)", result: pass }
+      - { kind: code_read, ref: "Ctf.cs:169 FlagVehicleCarryOffset=(0,0,96) (NOT -190,0,96), applied in Tick (line 1784) when carrier.Vehicle != null; VehicleCommon.Touch boards toucher when Cvar('g_vehicles_enter')==0; Racer.Exit sets player.OldVelocity (QC racer_exit oldvelocity), Think sets player.OldOrigin (QC racer_frame)", result: pass }
     confidence: high
-    notes: "CTF flag-carrier reposition (-190 0 96) is LIVE via Ctf.Tick (FlagVehicleCarryOffset). Exit oldvelocity + Think oldorigin fall-damage negation both modeled."
+    notes: "Board/exit/guards LIVE + tested (31 racer+obituary tests green 2026-06-27). CTF flag-carrier reposition IS live (flag rides the craft via Ctf.Tick) but at the shared (0,0,96) offset, NOT the racer-specific vr_enter '-190 0 96' — a ~190u forward position divergence (values: partial). Exit oldvelocity + Think oldorigin fall-damage negation both modeled."
   - id: vehicle-racer.drive.hover4point
     name: "racer_align4point: 4 engine springs + pitch/roll torque + stabilizer"
     layer: [authority]
@@ -338,11 +339,11 @@ features:
     base_refs:
       - "common/vehicles/vehicle/racer.qc:racer_frame (vehicle_ammo2/reload2 writes)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:Frame (VehAmmo2 / VehReload2 writes)"
-      - "src/XonoticGodot.Common/Gameplay/Vehicles/EntityVehicleStateExtra.cs:VehAmmo2,VehReload2"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:Frame (player.VehicleAmmo2 / player.VehicleReload2 writes)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:Entity.VehicleAmmo2,VehicleReload2 (the networked stat the on-foot HUD reads)"
     constants:
-      - { name: "vehicle_ammo2", base: "100 idle / 50 after shot1 / 0 after pair", port: "100 idle / 50 after shot1 / 0 after pair (player.VehAmmo2)", match: true }
-      - { name: "vehicle_reload2", base: "bound(0,100*(time-lip)/(delay-lip),100)", port: "Bound(0,100*(Time-VehReloadStart)/(VehWeaponDelay-VehReloadStart),100)", match: true }
+      - { name: "vehicle_ammo2", base: "100 idle / 50 after shot1 / 0 after pair", port: "100 idle / 50 after shot1 / 0 after pair (player.VehicleAmmo2)", match: true }
+      - { name: "vehicle_reload2", base: "bound(0,100*(time-lip)/(delay-lip),100)", port: "Bound(0,100*(Time-VehReloadStart)/(VehWeaponDelay-VehReloadStart),100) -> player.VehicleReload2", match: true }
     status:
       logic: faithful
       values: faithful
@@ -355,9 +356,9 @@ features:
     gaps:
       - "Authority-side ammo2/reload2 % stats are written each tick onto the pilot; the client HUD progressbar that READS them (Vehicles_drawHUD vehicle_icon_ammo2) is presentation/CSQC and not yet wired — a client-render concern, not an authority gap."
     verification:
-      - { kind: code_read, ref: "Racer.Frame lines 527-559: player.VehAmmo2 set 100/50/0 across the rocket pair; VehReload2 = Bound(0, 100*(Time-VehReloadStart)/(VehWeaponDelay-VehReloadStart), 100); VehReloadStart (.lip) stamped on pair-complete and read here; fields exist on EntityVehicleStateExtra", result: pass }
+      - { kind: code_read, ref: "Racer.Frame lines 527-561: player.VehicleAmmo2 set 100/50/0 across the rocket pair; player.VehicleReload2 = Bound(0, 100*(Time-VehReloadStart)/(VehWeaponDelay-VehReloadStart), 100); VehReloadStart (.lip) stamped on pair-complete (line 546) and read here; VehicleAmmo2/VehicleReload2 are the networked Entity fields in VehicleCommon.cs (the same stats Raptor/Bumblebee drive), NOT a racer-private scratch field", result: pass }
     confidence: high
-    notes: "The rocket reload/ammo HUD percentages (vehicle_ammo2 100/50/0 and the vehicle_reload2 progress bar from .lip/.delay) are written authority-side via VehAmmo2/VehReload2. Only the client gauge that draws them remains (presentation)."
+    notes: "The rocket reload/ammo HUD percentages (vehicle_ammo2 100/50/0 and the vehicle_reload2 progress bar from .lip/.delay) are written authority-side onto the pilot via player.VehicleAmmo2 / player.VehicleReload2 — the networked stats the on-foot vehicle HUD reads (NetGame -> VehicleHud), identical to Raptor/Bumblebee. (Stale prior refs to a VehAmmo2/VehReload2 scratch field corrected 2026-06-27.) Only the client gauge that draws them remains (presentation)."
   - id: vehicle-racer.regen.resources
     name: "Per-frame shield/energy/health regen + player %-stat mirror"
     layer: [authority]

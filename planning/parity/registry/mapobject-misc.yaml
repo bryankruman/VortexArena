@@ -71,7 +71,7 @@ features:
     verification:
       - { kind: code, ref: "LaserRenderer.cs:296-301 emits Effects.Spawn every frame at count=FrameTime*1000 (EndFxInterval throttle REMOVED in Wave-8e); LaserRenderer.cs:262-272 Mix-at-alpha vs Add-at-0.5 blend split matches Draw_Laser:325-330; Uv1Offset=-now*3 tiled scroll; SKY|NOIMPACT suppress at 217-219", result: pass }
     confidence: high
-    notes: "FIXED (Wave-8e). The two residual baseline gaps are closed: the end-fx is now emitted EVERY frame at count=drawframetime*1000 (the EndFxInterval ~10Hz throttle was removed), and the additive-when-no-alpha-key path is now a real Mix-vs-Add blend split (AlphaKey>0 => normal blend at .alpha, else additive 0.5). Live on listen-server/demo via the ambient-facade scan; idles on a pure --connect client. In-game visual not separately observed but the code is now byte-faithful to Draw_Laser."
+    notes: "FIXED (Wave-8e). The two residual baseline gaps are closed: the end-fx is now emitted EVERY frame at count=drawframetime*1000 (the EndFxInterval ~10Hz throttle was removed), and the additive-when-no-alpha-key path is now a real Mix-vs-Add blend split (AlphaKey>0 => normal blend at .alpha, else additive 0.5). Live on listen-server/demo via the ambient-facade scan; idles on a pure --connect client. In-game visual not separately observed but the code is now byte-faithful to Draw_Laser. Re-audit 2026-06-27 (post Waves 16/17): LaserRenderer.cs UNCHANGED by W16/17; still wired live in ClientWorld.cs:371-374 (new LaserRenderer + AddChild). presentation:faithful rests on code-read fidelity, not a runtime capture."
 
   - id: mapobject-misc.follow.attach_follow
     name: "misc_follow attach / MOVETYPE_FOLLOW ride at spawn"
@@ -175,7 +175,7 @@ features:
       - { kind: code, ref: "DynamicLightRenderer.cs:60-166 — per-frame OmniLight3D from e.Active/e.LightLev/e.LightColor/e.Origin; style brightness via LightStyles.Sample; ClientWorld.cs:367 instantiates DynamicLightRenderer and AddChild on the live client path", result: pass }
       - { kind: code, ref: "ClientWorld.cs:51 DynamicLights property, :367 'new DynamicLightRenderer' + AddChild — wired into the live client world", result: pass }
     confidence: high
-    notes: "FIXED (Wave-8e). The baseline worst-gap (server runs but no realtime-light consumer => authored map lights invisible) is closed: a new DynamicLightRenderer drives a persistent OmniLight3D per dynlight from the server entity each frame, honoring radius/color/toggle/path-travel/FOLLOW, with .style animation via the new LightStyles table. The only residual is animated world-brush LIGHTMAP modulation (a separate world-lighting subsystem), not the dynlight node itself."
+    notes: "FIXED (Wave-8e). The baseline worst-gap (server runs but no realtime-light consumer => authored map lights invisible) is closed: a new DynamicLightRenderer drives a persistent OmniLight3D per dynlight from the server entity each frame, honoring radius/color/toggle/path-travel/FOLLOW, with .style animation via the new LightStyles table. The only residual is animated world-brush LIGHTMAP modulation (a separate world-lighting subsystem), not the dynlight node itself. Re-audit 2026-06-27 (post Waves 16/17): DynamicLightRenderer.cs + LightStyles.cs UNCHANGED by W16/17; still wired live in ClientWorld.cs:376-377 (new DynamicLightRenderer + AddChild). presentation:faithful rests on code-read fidelity, not a runtime light capture."
 
   - id: mapobject-misc.keys.item_key
     name: "item_key* pickup keys (spawn, touch, grant itemkeys, model rotate)"
@@ -219,7 +219,7 @@ features:
       - { kind: code, ref: "consumer chain consistent: KeyTouch grants toucher.ItemKeys (line 519); Doors.cs/Triggers.cs read the same Entity.ItemKeys — a granted key actually opens a keylock/key-gated door", result: pass }
       - { kind: code, ref: "MapObjectsRegistry.cs:521 KeyTouch calls MapMover.Centerprint(toucher, this_.Message); MapObjectsCommon.Centerprint (MapObjectsCommon.cs:860-871) now routes through NotificationSystem.SendCenterRaw(NotifBroadcast.OneOnly, actor, message) -> Sink.Dispatch -> CenterPrintPanel (a live channel), no longer dependent on the unassigned CenterprintHandler delegate, so the pickup message reaches the toucher on the live path", result: pass }
     confidence: high
-    notes: "FIXED 2026-06-27 (this audit). The last residual presentation gap closed: MapObjectsCommon.Centerprint was rewired (the same 2026-06-25 fix recorded in mapobject-func/target/triggers) from the dead CenterprintHandler delegate to a direct NotificationSystem.SendCenterRaw(CenterRaw) call, so the 'You've picked up the X key!' centerprint now reaches the activator. CenterprintHandler remains as an OPTIONAL extra observer hook (fired in addition), no longer the delivery path. MF_ROTATE key spin (Wave-8e), grant logic, pickup sound, and consumer chain (Doors/Triggers read same Entity.ItemKeys) all live and faithful. presentation partial->faithful."
+    notes: "FIXED 2026-06-27 (prior audit). The last residual presentation gap closed: MapObjectsCommon.Centerprint was rewired (the same 2026-06-25 fix recorded in mapobject-func/target/triggers) from the dead CenterprintHandler delegate to a direct NotificationSystem.SendCenterRaw(CenterRaw) call, so the 'You've picked up the X key!' centerprint now reaches the activator. CenterprintHandler remains as an OPTIONAL extra observer hook (fired in addition), no longer the delivery path. MF_ROTATE key spin (Wave-8e), grant logic, pickup sound, and consumer chain (Doors/Triggers read same Entity.ItemKeys) all live and faithful. presentation partial->faithful. Re-audit 2026-06-27 (post Waves 16/17): KeySetup/SpawnItemKey/KeyTouch + the item_key/item_key1/2/gold/silver/master registrations (MapObjectsRegistry.cs:164-169) and MapObjectsCommon.Centerprint (910-921 via SendCenterRaw) UNCHANGED by W16/17; no regression. presentation:faithful is code-read (pickup not run in-game)."
 
   - id: mapobject-misc.teleport_dest.marker
     name: "info_teleport_destination / misc_teleporter_dest endpoint"
@@ -288,6 +288,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMove"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMoveBezier"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMoveControllerThink"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMovePause"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcAngleMove"
     constants:
       - { name: "linear cutoff", base: "traveltime < 0.15", port: "< 0.15f", match: true }
@@ -308,10 +309,11 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "MapObjectsCommon.cs PlatMoveStart/End default 0 (matching QC float default) — the (start==1 && end==1) linear shortcut FAILS by default, so long movers run bezier with cubic_speedfunc(0,0,t)=-2t^3+3t^2 (smoothstep), exactly as Base", result: pass }
+      - { kind: code, ref: "MapObjectsCommon.cs:128-129/593 PlatMoveStart/End default 0 (matching QC float default) — the (start==1 && end==1) linear shortcut FAILS by default, so long movers run bezier with cubic_speedfunc(0,0,t)=-2t^3+3t^2 (smoothstep), exactly as Base", result: pass }
       - { kind: code, ref: "CalcMove/CalcMoveBezier/CalcMoveControllerThink/CalcAngleMove vs subs.qc:114-389 — branch split, controller sub-entity, cubic_speedfunc, .ltime scheduling, SUB_CalcMoveDone snap+think1 all faithful", result: pass }
+      - { kind: code, ref: "Wave-17 (2f0bfdb) ADDED CalcMovePause (SUB_CalcMovePause, MapObjectsCommon.cs:687-699): an eased (bezier-controller) mover blocked mid-swing slides animstate_start/end by (now-ctl.nextthink+frametime) so cubic_speedfunc phase holds and it resumes smoothly. LIVE — called from Doors.cs:700 on the door-blocked path. Completes the eased-mover blocked-pause that was previously absent", result: pass }
     confidence: high
-    notes: "Re-verified Wave-8. Used by every door/plat/train/button — the most-live feature in the unit; timing/values-faithful. A mapper-set platmovetype key flows through SetPlatMoveType (see corner.path_corner)."
+    notes: "Re-audited 2026-06-27 (post Waves 16/17). Used by every door/plat/train/button — the most-live feature in the unit; timing/values-faithful. A mapper-set platmovetype key flows through SetPlatMoveType (see corner.path_corner). Wave-17 added the SUB_CalcMovePause eased-mover blocked-pause (live via Doors.cs:700), strengthening completeness; status already faithful/live, unchanged."
 
   - id: mapobject-misc.bgmscript.adsr
     name: "bgmscript map-music ADSR animation (func_clientwall / func_pointparticles)"

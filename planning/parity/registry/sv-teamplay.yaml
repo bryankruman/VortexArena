@@ -5,10 +5,10 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 17
   worst_gaps:
-    - "Join queue (g_balance_teams_queue) still entirely missing: no deficit-filling tag-in, wants_join exists as a field but is never consulted for queueing."
+    - "Join queue (g_balance_teams_queue) is HALF-WIRED after Wave 16: enqueue (QueueNeeded/EnqueueJoin) is live from CmdJoin, but QueuedPlayersTagIn has ZERO callers — a queued joiner is stranded as an observer forever. Enabling the cvar is now a functional trap (default off, so stock servers unaffected)."
+    - "Team-nagger center-print: SendTeamNag now EXISTS (Wave 16) but has ZERO callers — the visible unbalanced-teams nag is still never networked to players (the warmup-hold half is live; the presentation half is dead-coded)."
     - "No TrueSkill ratings: humans still default to skill 5 (bots feed real BotSkill, the unranked_factor 0.666 + time-scaled score ramp are now consumed, so the balance ALGORITHM is faithful, but human-vs-human ties remain count-only because the human skill DATA is flat)."
-    - "Team-nagger network center-print still missing: warmup is now HELD while unbalanced, but players are never sent the unbalanced-teams nag notification (no SendFlags bits 5/6 Nagger entity)."
-    - "Player_ChangeTeam / Player_ChangedTeam mutator hooks now exist and fire on every team-set, but no port mutator yet subscribes to them (the hook chain is live but has no consumers)."
+    - "Player_ChangeTeam / Player_ChangedTeam mutator hooks fire on every team-set, but no port mutator yet subscribes to them (the hook chain is live but has zero consumers)."
     - "Bot autobalance still polls on a 3s cadence (Base is per-event) and uses frag score not SP_SCORE for the lowest-scorer tiebreak."
     - "No unified Team_* global-entity API (winner/alive/owned-item queries reimplemented per gametype); out of this unit's narrow scope."
 features:
@@ -211,25 +211,29 @@ features:
       - "server/teamplay.qc:QueueNeeded"
       - "server/teamplay.qc:TeamBalance_QueuedPlayersTagIn"
       - "server/teamplay.qc:QueuedPlayersReady"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Server/Teamplay.cs:QueueNeeded / EnqueueJoin / DequeueJoin / IsQueued (LIVE enqueue half)"
+      - "src/XonoticGodot.Server/Teamplay.cs:QueuedPlayersTagIn (tag-in half — DEAD, zero callers)"
+      - "src/XonoticGodot.Server/Commands.cs:1539-1546 (CmdJoin: QueueNeeded -> EnqueueJoin)"
+      - "src/XonoticGodot.Server/Cvars.cs:153 (g_balance_teams_queue registration)"
     constants:
-      - { name: "g_balance_teams_queue", base: "0", port: "none (unregistered)", match: false }
+      - { name: "g_balance_teams_queue", base: "0", port: "0 (registered, Cvars.cs:153)", match: true }
     status:
-      logic: missing
-      values: missing
+      logic: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No join-queue: players join immediately regardless of balance; the deficit-filling tag-in (TeamBalance_QueuedPlayersTagIn: specific-team-first then any-team) and QueueNeeded / QueuedPlayersReady are absent."
-      - "wants_join (WantsJoin) exists on Player.cs:172 and is only ever assigned 0 (connect/observer transitions, plus KickTeamkillerMutator.cs:152 on a kicked attacker); it is never set >0 or consulted for queueing — the field is plumbed but inert."
+      - "DRIFT (Wave 16, b3a9c06): the queue ENQUEUE half is now ported AND live — QueueNeeded + EnqueueJoin are called from CmdJoin (Commands.cs:1539-1546): on a live-match join that would unbalance teams the joiner is held as an observer. But the TAG-IN half is DEAD: QueuedPlayersTagIn has ZERO callers anywhere in src (BalanceTeamsTick does NOT call it, despite the Commands.cs:1545 comment claiming 'tag-in happens from BalanceTeamsTick'). So a queued player is enqueued but NEVER tagged back in — they are stuck as an observer indefinitely. This is a one-way trap when g_balance_teams_queue is enabled."
+      - "QueueNeeded's specific-team preference is inert: WantsJoin is still only ever ASSIGNED 0 (ClientManager.cs:235/286, GameWorld.cs:2016, KickTeamkillerMutator.cs:152) — never set to a preferred team color — so EnqueueJoin(p, p.WantsJoin) always enqueues with prefTeam=0 (any) and QueueNeeded always takes the any-team SizeDifference>=1 branch."
     verification:
-      - { kind: grep, ref: "no QueueNeeded/QueuedPlayersTagIn/g_balance_teams_queue in src; WantsJoin only ever assigned 0", result: fail }
+      - { kind: grep, ref: "QueueNeeded/EnqueueJoin defined (Teamplay.cs) AND called from Commands.cs:1544 (LIVE); QueuedPlayersTagIn/SendTeamNag have ZERO callers in src; WantsJoin only ever assigned 0", result: partial }
     confidence: high
-    notes: "Unchanged (re-verified 2026-06-27): no QueueNeeded/QueuedPlayersTagIn/QueuedPlayersReady/g_balance_teams_queue anywhere in src; WantsJoin is still only ever assigned 0. Default is off (0) in Base, so absence is low-impact for stock servers but still a parity gap when enabled."
+    notes: "DRIFT vs the prior 'missing' baseline (the 2026-06-27 'no QueueNeeded in src' re-verify was STALE/WRONG): Wave 16 added the queue code. logic missing->partial (enqueue/QueueNeeded ported & faithful to QueueNeeded; the QueuedPlayersTagIn deficit-fill tag-in exists but is unwired); values missing->faithful (g_balance_teams_queue registered, default 0 matches Base); liveness na->PARTIAL (enqueue live via CmdJoin, tag-in DEAD). NOT closed — half the loop is dead, and with the tag-in missing the feature is a functional trap when enabled (player queues and never returns). Default off in Base, so stock servers are unaffected, but enabling g_balance_teams_queue is now WORSE than the prior no-op (it strands joiners)."
 
   - id: sv-teamplay.remove.excess_players
     name: "Remove excess players on leave (g_balance_teams_remove)"
@@ -276,6 +280,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Server/Teamplay.cs:SizeDifference"
       - "src/XonoticGodot.Server/Teamplay.cs:TeamsUnbalancedForNag"
+      - "src/XonoticGodot.Server/Teamplay.cs:SendTeamNag (center-print networker — DEAD, zero callers)"
       - "src/XonoticGodot.Server/WarmupController.cs:BadTeams (ReadyCount hold)"
       - "src/XonoticGodot.Server/GameWorld.cs:855 (BadTeams = Teamplay.TeamsUnbalancedForNag)"
     constants:
@@ -286,17 +291,17 @@ features:
       timing: na
       presentation: missing
       audio: na
-      liveness: live
+      liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No Nagger network entity / center-print: warmup is now HELD while teams are unbalanced, but players are never SENT the unbalanced-teams warning (no SendFlags bits 5/6, no center-print). The visible nag is absent."
+      - "The unbalanced-teams center-print is still NOT shown on the live path: SendTeamNag (Teamplay.cs:1081) was ADDED in Wave 16 and would broadcast the nag via NotificationSystem.SendCenterRaw, but it has ZERO callers anywhere in src — BalanceTeamsTick / the server frame never invoke it. So the visible nag is DEAD-CODED, not networked. (The warmup HOLD half is live; only the player-facing warning is unwired.)"
       - "Warmup-hold uses SizeDifference over the full roster; Base TeamBalance_SizeDifference(NULL) is the same NULL-ignore form, so the hold trigger is faithful."
     verification:
-      - { kind: code-read, ref: "GameWorld.cs:855 wires Warmup.BadTeams = () => Teamplay.TeamsUnbalancedForNag(Clients.Players); WarmupController.ReadyCount gates restart on badteams (badteams = totalPlayers>0 && BadTeams()). Matches QC ReadyCount badteams clause.", result: pass }
-      - { kind: code-read, ref: "TeamsUnbalancedForNag reads sv_teamnagger (registered, default 2) and returns false when <=0 (disabled) or non-team game; SizeDifference >= nagger. Faithful to QC.", result: pass }
+      - { kind: code-read, ref: "GameWorld.cs:855 wires Warmup.BadTeams = () => Teamplay.TeamsUnbalancedForNag(Clients.Players); WarmupController.ReadyCount gates restart on badteams (badteams = totalPlayers>0 && BadTeams()). Matches QC ReadyCount badteams clause. The warmup-hold half is LIVE.", result: pass }
+      - { kind: grep, ref: "SendTeamNag is DEFINED (Teamplay.cs:1081) but has ZERO callers in src — the center-print presentation is dead-coded, not wired into BalanceTeamsTick or any server-frame tick.", result: partial }
     confidence: high
-    notes: "FIX (Wave-5): the size-difference logic is now WIRED — sv_teamnagger is registered (default 2) and TeamsUnbalancedForNag drives the warmup ReadyCount hold (Warmup.BadTeams), so warmup no longer ends while teams are unbalanced. logic stub->faithful; values partial->faithful (cvar registered); liveness dead->live. Still open: the visible nag center-print / Nagger network entity is not networked (presentation stays missing)."
+    notes: "DRIFT (Wave 16, b3a9c06): SendTeamNag (NotificationSystem.SendCenterRaw broadcast, with a 1 Hz refresh + show-latch) now EXISTS but is DEAD — no caller invokes it, so the visible unbalanced-teams nag still never reaches players. presentation stays MISSING (existence != live). liveness downgraded live->PARTIAL to reflect that the warmup-hold half is live but the nag-presentation half is dead-coded. NOT closed: wiring is one .SendTeamNag(roster) call (e.g. in BalanceTeamsTick) away, but that call does not exist."
 
   - id: sv-teamplay.bot_vs_human.team_split
     name: "bot_vs_human team partitioning (bots vs humans on separate teams)"

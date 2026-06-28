@@ -5,7 +5,6 @@ last_audited: "2026-06-27"
 summary:
   feature_count: 13
   worst_gaps:
-    - "Laser scorch find is still a plain radius (FindInRadius), not WarpZone_FindRadius — no warpzone-spanning scorch (shared port omission). The selection itself is now the faithful stochastic RandomSelection reservoir (weight 1/(1+d), prefer not-burning), no longer a deterministic argmax."
     - "Shootable fireball is wired live via Projectiles.MakeShootable: the W_CheckProjectileDamage gate + RES_HEALTH subtraction + explode-on-deplete + the owner-reassign-to-attacker (gated on g_projectiles_keep_owner) are all present, and the default-0-HP no-op-on-shot matches Base exactly. Residual: the depletion explode is synchronous, not next-frame-deferred, and the PrepareExplosionByDamage mutator hook is not called (shared MakeShootable simplification; only observable when a server raises fireball_health)."
     - "Render-side trails/visuals still deferred: plasma_prim FIREBALL flight trail, firemine trail, and the sphere.md3 BFG ball (effect EMITS are wired; the CSQC render fidelity is a separate layer, like every other weapon)."
     - "IS_INDEPENDENT_PLAYER(e) is checked everywhere it should be but Entity.IsIndependentPlayer is a hardcoded false stub (DamageEntityState.cs:158) — a no-op until independent-player modes are wired."
@@ -225,8 +224,8 @@ features:
       - { name: "primary laserradius/damage/edgedamage/burntime", base: "256/80/20/0.5", port: "256/80/20/0.5", match: true }
       - { name: "scorch rate", base: "damage + (edgedamage-damage)*(d/dist)", port: "same formula", match: true }
       - { name: "skip filter", base: "FROZEN || STATUSEFFECT_Frozen || owner || INDEPENDENT || !DAMAGE_AIM || (PLAYER && realowner && SAME_TEAM)", port: "frozen-stat || Frozen-status || owner || IsIndependentPlayer || !Aim || (player && realowner && SameTeam)", match: true }
-      - { name: "selection", base: "RandomSelection_AddEnt weight 1/(1+d), prefer !burning (stochastic reservoir)", port: "MapMover.RandomSelection reservoir (Prandom weight 1/(1+d), prefer !burning) — stochastic", match: true }
-      - { name: "find radius", base: "WarpZone_FindRadius (warpzone-aware)", port: "FindInRadius (plain)", match: false }
+      - { name: "selection", base: "RandomSelection_AddEnt weight 1/(1+d), prefer !burning (stochastic reservoir)", port: "MapObjectsCommon.RandomSelection reservoir (Prandom weight 1/(1+d), prefer !burning) — stochastic", match: true }
+      - { name: "find radius", base: "WarpZone_FindRadius (warpzone-aware)", port: "WarpzoneRadiusQuery.FindRadiusWarpzone (warpzone-aware)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -237,12 +236,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "find is a plain radius (FindInRadius), not WarpZone_FindRadius (no warpzone-spanning scorch); same omission as all radius finds in the port."
-      - "EFFECT_FIREBALL_LASER scorch beam is Emit-wired (render fidelity deferred)."
+      - "EFFECT_FIREBALL_LASER scorch beam is Emit-wired; its render fidelity (the actual beam visual) is the deferred CSQC layer, same as every weapon."
     verification:
-      - { kind: codetrace, ref: "LaserPlay (Fireball.cs:316): full skip filter (frozen/owner/independent/!Aim/same-team), random body point, MapMover.RandomSelection reservoir (Prandom-driven weight 1/(1+d), not-burning priority), rate=damage+(edge-damage)*(d/dist), FireAddDamage(rate*burntime, burntime, deathtype|HITTYPE_BOUNCE), FIREBALL_LASER Emit.", result: pass }
+      - { kind: codetrace, ref: "LaserPlay (Fireball.cs:333): full skip filter (frozen/owner/independent/!Aim/same-team), random body point, WarpzoneRadiusQuery.FindRadiusWarpzone (Fireball.cs:357, the same warpzone-aware find WeaponSplash.RadiusDamage uses) with per-victim LocalBlastOrigin, MapObjectsCommon.RandomSelection reservoir (Prandom-driven weight 1/(1+d), not-burning priority), rate=damage+(edge-damage)*(d/dist), FireAddDamage(rate*burntime, burntime, deathtype|HITTYPE_BOUNCE), FIREBALL_LASER Emit.", result: pass }
     confidence: high
-    notes: "FIX vs prior baseline on the selection dimension: the port now uses the faithful stochastic MapMover.RandomSelection reservoir (MapObjectsCommon.cs:1012 — Prandom.Float() reservoir sampling with priority tier), not the deterministic argmax the prior audit recorded. The weight 1/(1+d) + prefer-not-burning priority + the full frozen/independent/same-team skip filter all match QC RandomSelection_AddEnt. Residual divergence is now ONLY the warpzone-unaware find."
+    notes: "RE-AUDIT 2026-06-27 (Waves 16-17): the warpzone-unaware-find gap recorded in the prior baseline is now CLOSED. LaserPlay calls WarpzoneRadiusQuery.FindRadiusWarpzone (Fireball.cs:357) — the same warpzone-aware radius query WeaponSplash.RadiusDamage uses — with each candidate's LocalBlastOrigin used for the body-point/distance/rate math (identity transforms on non-warpzone maps, so byte-for-byte unchanged there). The stochastic MapObjectsCommon.RandomSelection reservoir (MapObjects/MapObjectsCommon.cs:1106 — Prandom.Float() weighted reservoir with a priority tier) + weight 1/(1+d) + prefer-not-burning + the full frozen/independent/same-team skip filter all match QC RandomSelection_AddEnt. Now faithful on every dimension; only the deferred CSQC beam-render visual remains."
 
   - id: weapon-fireball.primary.shootable
     name: "Shootable fireball (event_damage destroys it; default health 0)"
@@ -291,7 +289,7 @@ features:
       - { name: "speed/speed_up/speed_z/spread", base: "900/100/0/0", port: "900/100/0/0", match: true }
       - { name: "movetype/gravity", base: "MOVETYPE_BOUNCE / gravity 1", port: "Bounce / Gravity 1", match: true }
       - { name: "fire sound", base: "SND_FIREBALL_FIRE", port: "weapons/fireball_fire.wav", match: true }
-      - { name: "bulletcounter f_diff muzzle nudge", base: "4-corner cycle + traceline nudge", port: "none (fires from shot.Origin)", match: false }
+      - { name: "bulletcounter f_diff muzzle nudge", base: "c=bulletcounter%4 4-corner cycle (±1.25 up ±3.75 right) + traceline(w_shotorg, +f_diff) nudge", port: "BulletCounter&3 same 4-corner cycle + Trace nudge to corner (Fireball.cs:498-512)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -302,12 +300,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Port omits the bulletcounter%4 muzzle-corner f_diff offset + traceline nudge (cosmetic spawn-point spread of consecutive mines); all mines spawn from the same muzzle point. Unchanged from baseline."
-      - "No firemine flight sound / FIREMINE trail attached (deferred CSQC render)."
+      - "No firemine flight sound / FIREMINE trail attached (deferred CSQC render), same as every weapon."
     verification:
-      - { kind: codetrace, ref: "Attack2 (Fireball.cs:413) spawns grenade MOVETYPE_BOUNCE ±4, ProjectileVelocity(dir,up,900,100,0,0) = W_SetupProjVelocity_UP_SEC, gravity 1, fire sound + muzzleflash, EditProjectile hook.", result: pass }
+      - { kind: codetrace, ref: "Attack2 (Fireball.cs:489) spawns grenade MOVETYPE_BOUNCE ±4, ProjectileVelocity(dir,up,900,100,0,0) = W_SetupProjVelocity_UP_SEC, gravity 1, fire sound; the bulletcounter%4 muzzle-corner f_diff (BulletCounter&3 -> ±1.25 up ±3.75 right) + traceline nudge to that corner (498-512) sets the spawn origin AND the muzzleflash origin; EditProjectile hook.", result: pass }
     confidence: high
-    notes: "Unchanged/faithful. Arc launch + bbox + balance faithful; the missing f_diff is a small visual nicety, not damage-affecting. CONFIRMED (2026-06-22 re-audit): neither Base Attack2 nor the port sets proj.team on the firemine (only the primary fireball Attack1 sets team in both) — so the firemine's same-team LaserPlay gate compares against an UNSET team identically in Base and port; this shared quirk is faithful, not a divergence."
+    notes: "RE-AUDIT 2026-06-27 (Waves 16-17): the bulletcounter%4 muzzle-corner f_diff + traceline nudge gap recorded in the prior baseline is now CLOSED. Attack2 reads BulletCounter&3 (EntityWeaponState.BulletCounter, incremented by the fire gate), maps it to the same four corners as W_Fireball_Attack2's f_diff (±1.25 up / ±3.75 right), traces from w_shotorg to that corner, and spawns the mine + emits the muzzleflash from the nudged origin — matching QC. Arc launch + bbox + balance remain faithful. CONFIRMED (carried): neither Base Attack2 nor the port sets proj.team on the firemine (only the primary fireball Attack1 sets team in both) — so the firemine's same-team LaserPlay gate compares against an UNSET team identically in Base and port; this shared quirk is faithful, not a divergence."
 
   - id: weapon-fireball.secondary.firemine.lifecycle
     name: "Firemine think/touch: scorch nearby, self-destruct at lifetime, ignite-on-touch-or-bounce"

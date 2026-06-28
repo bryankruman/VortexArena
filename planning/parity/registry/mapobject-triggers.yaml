@@ -8,7 +8,6 @@ summary:
     - "trigger_viewlocation: no client 2.5D side-scroller camera consumer — server still stamps player.ViewLoc each frame but the view is never locked to the start->end line (presentation missing / liveness partial). The port client is free-look only."
     - "target_music fade curve is a two-AudioStreamPlayer A/B crossfade approximation rather than QC's per-source frametime/fade_time(in)/fade_rate(out) easing (values/timing/presentation partial)."
     - "trigger_push: no animdecide_setaction(ANIMACTION_JUMP) third-person jump pose on launch (jumppads.qc) — needs the cross-file networked anim-action seam (same gap as PlayerPhysics jump / walljump grunt). presentation stays partial; the jumppadcount/jumppadsused bookkeeping + q3 gravity correction + q3 1.5s debounce are now ported."
-    - "trigger_hurt: q3compat creature cooldown 0.05s and q3 default dmg 5 still unported (1s/10000 hard-coded, no q3 path) — negligible on stock Xonotic maps."
     - "trigger_gamestart wait>0 fidelity is now byte-faithful via the now-wired LogicGates.GameStartTimeProvider, but game_starttime still defaults to 0 in the headless gametype (the host applies the real countdown upstream) — intended_divergence."
 features:
   - id: mapobject-triggers.common.sub_usetargets
@@ -83,8 +82,9 @@ features:
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:HurtSetup"
       - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:HurtTouch"
     constants:
-      - { name: "dmg default", base: "10000 (q3compat 5)", port: "10000 (no q3 path)", match: false }
-      - { name: "creature cooldown", base: "1s (q3compat non-HURT_SLOW 0.05s)", port: "1s (no q3 path)", match: false }
+      - { name: "dmg default", base: "10000 (q3compat 5)", port: "IsQ3Compat ? 5 : 10000 (HurtSetup:306)", match: true }
+      - { name: "creature cooldown", base: "1s (q3compat non-HURT_SLOW 0.05s)", port: "(IsQ3Compat && !HurtSlow) ? 0.05 : 1 (HurtTouch:340)", match: true }
+      - { name: "SPAWNFLAG_HURT_SLOW", base: "BIT(0) (keeps 1s under q3)", port: "1<<0 (Triggers.HurtSlow:292)", match: true }
       - { name: "deathtype", base: "DEATH_HURTTRIGGER (routes to DEATH_SELF/MURDER_VOID notif, all.inc:11)", port: "DeathTypes.Void", match: true }
       - { name: "default message", base: "\"was in the wrong place\"", port: "same", match: true }
       - { name: "INVERT_TEAMS gate", base: "((spawnflags&INVERT_TEAMS)==0)==(team!=toucher.team)", port: "exact match", match: true }
@@ -97,12 +97,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "q3compat creature cooldown 0.05s and q3 default dmg 5 not applied (1s/10000 hard-coded, no q3 path; hurt.qc:26/64)"
+    gaps: []
     verification:
-      - { kind: code_read, ref: "hurt.qc vs Triggers.cs HurtTouch (team gate present; non-creature gated on IsPushable as the damagedbytriggers stand-in); all.inc:11 HURTTRIGGER->VOID notif; hurt.qc:26/64 q3 values confirmed still unported", result: pass }
+      - { kind: code_read, ref: "hurt.qc:26/64 q3 values vs Triggers.cs HurtSetup:306 (dmg = IsQ3Compat ? 5 : 10000) + HurtTouch:340 (cooldown = (IsQ3Compat && (spawnflags & HurtSlow)==0) ? 0.05 : 1) + HurtSlow=1<<0; team gate present; non-creature gated on IsPushable as the damagedbytriggers stand-in; all.inc:11 HURTTRIGGER->VOID notif. IsQ3Compat is live (CompatRemaps, set per-map at load)", result: pass }
     confidence: high
-    notes: "RE-VERIFIED 2026-06-27 (unchanged): team/INVERT gate present, non-creature branch gates on MapMover.IsPushable (port stand-in for damagedbytriggers). 1s creature throttle, use-attacker takeover, stock dmg=10000, DEATH_HURTTRIGGER->Void all faithful. q3 path still absent (gap stands)."
+    notes: "FIX (re-audit 2026-06-27): the q3compat gap is now CLOSED — the baseline row was STALE. The current port DOES apply the q3 path: HurtSetup:306 sets dmg = IsQ3Compat ? 5 : 10000, and HurtTouch:340 uses the 0.05s creature cooldown under q3compat UNLESS SPAWNFLAG_HURT_SLOW (Triggers.HurtSlow=1<<0) restores the 1s cadence. values partial->faithful, gap cleared. team/INVERT gate, non-creature IsPushable gate (damagedbytriggers stand-in), use-attacker takeover, DEATH_HURTTRIGGER->Void all faithful and live."
 
   - id: mapobject-triggers.heal.trigger_heal
     name: "trigger_heal / target_heal — heal volume / relay"
