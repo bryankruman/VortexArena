@@ -136,14 +136,15 @@ public partial class PortalRenderer : Node3D
             GD.Print($"[PortalRenderer] {_portals.Count} live portal(s)");
     }
 
-    /// <summary><c>cl_portal_render</c> — default OFF. The see-through SubViewport render is not yet
-    /// production-ready: the screen-UV sampling is only an approximation (the portal image shifts/offsets and
-    /// doesn't line up with the surface like a true window — it needs an oblique near-clip at the exit plane +
-    /// proper projected UVs, which require live in-game visual tuning). Until that's done the surface keeps the
-    /// stable dark-mirror placeholder; set <c>cl_portal_render 1</c> to opt in and iterate. (The warpzone
-    /// TELEPORT is unaffected and works — only this cosmetic render is gated.)</summary>
+    /// <summary><c>cl_portal_render</c> — default ON (unset/empty enables it); explicit <c>0</c> falls back to the
+    /// dark-mirror placeholder.</summary>
     private static bool PortalRenderEnabled()
-        => Api.Services is not null && Api.Cvars.GetFloat("cl_portal_render") != 0f;
+    {
+        if (Api.Services is null)
+            return false;
+        string s = Api.Cvars.GetString("cl_portal_render");
+        return string.IsNullOrWhiteSpace(s) || Api.Cvars.GetFloat("cl_portal_render") != 0f;
+    }
 
     public override void _Process(double delta)
     {

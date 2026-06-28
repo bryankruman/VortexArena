@@ -226,6 +226,7 @@ public static class TriggerTouch
             mover.Velocity = t.TransformVelocity(mover.Velocity);
             mover.AVelocity = t.TransformVelocity(mover.AVelocity);
             Vector3 newAngles = t.TransformAngles(mover.Angles);
+            System.Console.WriteLine($"[wzpredict] entryAng={mover.Angles} exitAng={newAngles} | inFwd={t.InForward} outFwd={t.OutForward}");
             mover.Angles = newAngles;
             Api.Entities.SetOrigin(mover, newOrigin);
             mover.OldOrigin = newOrigin;            // QC: cancel interpolation across the seam (a teleport, not a slide)

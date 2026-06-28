@@ -317,8 +317,11 @@ public sealed class WarpzoneManager
             return false; // not yet across the seam
 
         Vector3 newOrigin = wz.Transform.TransformOrigin(e.Origin);
+        Vector3 _dbgEntryAng = e.Angles;
         e.Velocity = wz.Transform.TransformVelocity(e.Velocity);
         e.Angles = wz.Transform.TransformAngles(e.Angles);
+        if ((e.Flags & EntFlags.Client) != 0)
+            System.Console.WriteLine($"[wzteleport] entryAng={_dbgEntryAng} exitAng={e.Angles} | inFwd={wz.Transform.InForward} outFwd={wz.Transform.OutForward}");
         e.AVelocity = wz.Transform.TransformVelocity(e.AVelocity);
         if (Api.Services is not null) Api.Entities.SetOrigin(e, newOrigin);
         else e.Origin = newOrigin;
@@ -977,8 +980,11 @@ public sealed class WarpzoneManager
             else if (now <= finish) return;
         }
         Vector3 newOrigin = wz.Transform.TransformOrigin(e.Origin);
+        Vector3 _dbgEntryAng = e.Angles;
         e.Velocity = wz.Transform.TransformVelocity(e.Velocity);
         e.Angles = wz.Transform.TransformAngles(e.Angles);
+        if ((e.Flags & EntFlags.Client) != 0)
+            System.Console.WriteLine($"[wzteleport] entryAng={_dbgEntryAng} exitAng={e.Angles} | inFwd={wz.Transform.InForward} outFwd={wz.Transform.OutForward}");
         e.AVelocity = wz.Transform.TransformVelocity(e.AVelocity);
         if (Api.Services is not null) Api.Entities.SetOrigin(e, newOrigin);
         else e.Origin = newOrigin;
