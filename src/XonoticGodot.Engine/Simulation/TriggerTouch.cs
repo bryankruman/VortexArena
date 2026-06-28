@@ -226,15 +226,15 @@ public static class TriggerTouch
             mover.Velocity = t.TransformVelocity(mover.Velocity);
             mover.AVelocity = t.TransformVelocity(mover.AVelocity);
             Vector3 newAngles = t.TransformAngles(mover.Angles);
-            System.Console.WriteLine($"[wzpredict] entryAng={mover.Angles} exitAng={newAngles} | inFwd={t.InForward} outFwd={t.OutForward}");
             mover.Angles = newAngles;
             Api.Entities.SetOrigin(mover, newOrigin);
             mover.OldOrigin = newOrigin;            // QC: cancel interpolation across the seam (a teleport, not a slide)
             mover.Flags &= ~EntFlags.OnGround;      // QC UNSET_ONGROUND
 
             // QC player.fixangle = true: snap the local view to the rotated facing across the seam this tick
-            // (the host reads FixAngle/FixAngleAngles off the carrier after the prediction step). Predicted only —
-            // the server stamps its own authoritative fixangle.
+            // (the host reads FixAngle/FixAngleAngles off the carrier after the prediction step). This is the
+            // PREDICTED snap; the server stamps its own AUTHORITATIVE fixangle in WarpzoneManager.Teleport, which
+            // is what the listen host actually relies on (this one-shot flag is cleared by every replayed tick).
             mover.FixAngle = true;
             mover.FixAngleAngles = newAngles;
             return; // one warp per tick — the mover has moved off this (fixed) overlap box

@@ -64,6 +64,49 @@ public class WarpzoneTests
     }
 
     [Fact]
+    public void Teleport_Client_StampsAuthoritativeFixAngleToExitFacing()
+    {
+        // Stormkeep-style PERPENDICULAR pair: IN faces +X (yaw 0), OUT faces +Y (yaw 90) — 90° apart. A client
+        // crossing IN while looking WEST (−X, into the seam, yaw 180) must emerge looking NORTH (+outForward, yaw
+        // 90) AND have the SERVER-AUTHORITATIVE fixangle stamped (QC WarpZone_TeleportPlayer `player.fixangle =
+        // true`) so the listen host snaps the local view. Regression for the "comes out 90° sideways" report: the
+        // body/velocity warped but the view never re-oriented because the snap was never stamped server-side.
+        var mgr = new WarpzoneManager();
+        var a = mgr.Spawn(new Vector3(0, 0, 0), new Vector3(0, 0, 0), "wzA", "wzB", new Vector3(-8, -64, -64), new Vector3(8, 64, 64));
+        mgr.Spawn(new Vector3(100, 0, 0), new Vector3(0, 90, 0), "wzB", "wzA", new Vector3(-8, -64, -64), new Vector3(8, 64, 64));
+        mgr.Link();
+
+        var e = new Entity
+        {
+            Flags = EntFlags.Client,
+            Origin = new Vector3(0, 0, 0),
+            ViewOfs = new Vector3(-1, 0, 0),    // probe past the seam (Base gate uses origin + view_ofs)
+            Velocity = new Vector3(-200, 0, 0), // moving into the IN surface
+            Angles = new Vector3(0, 180, 0),    // looking WEST, into the seam
+        };
+
+        Assert.True(mgr.Teleport(e, a));
+        Assert.True(e.FixAngle);                       // authoritative view-snap stamped for the host to consume
+        Assert.Equal(e.Angles, e.FixAngleAngles);      // host applies the already-transformed exit facing verbatim
+        // Exit faces +outForward (North): yaw ≈ 90, NOT the entry yaw 180 — the view IS re-oriented to the new plane.
+        Assert.True(System.MathF.Abs(e.FixAngleAngles.Y - 90f) < 0.5f);
+    }
+
+    [Fact]
+    public void Teleport_NonClient_DoesNotStampFixAngle()
+    {
+        // A projectile (no Client flag) warps origin/velocity/angles but must NOT stamp the view-snap fixangle.
+        var mgr = new WarpzoneManager();
+        var a = mgr.Spawn(new Vector3(0, 0, 0), new Vector3(0, 0, 0), "wzA", "wzB", new Vector3(-8, -64, -64), new Vector3(8, 64, 64));
+        mgr.Spawn(new Vector3(100, 0, 0), new Vector3(0, 180, 0), "wzB", "wzA", new Vector3(-8, -64, -64), new Vector3(8, 64, 64));
+        mgr.Link();
+
+        var e = new Entity { Origin = new Vector3(0, 0, 0), ViewOfs = new Vector3(-1, 0, 0), Velocity = new Vector3(-200, 0, 0) };
+        Assert.True(mgr.Teleport(e, a));
+        Assert.False(e.FixAngle); // no spurious view-snap on a non-client
+    }
+
+    [Fact]
     public void Teleport_SkipsWhenMovingOutOfZone()
     {
         var mgr = new WarpzoneManager();

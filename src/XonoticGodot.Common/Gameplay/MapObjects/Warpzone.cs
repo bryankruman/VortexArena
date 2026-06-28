@@ -317,11 +317,23 @@ public sealed class WarpzoneManager
             return false; // not yet across the seam
 
         Vector3 newOrigin = wz.Transform.TransformOrigin(e.Origin);
-        Vector3 _dbgEntryAng = e.Angles;
         e.Velocity = wz.Transform.TransformVelocity(e.Velocity);
         e.Angles = wz.Transform.TransformAngles(e.Angles);
+        // QC WarpZone_TeleportPlayer (server.qc:51) — `player.fixangle = true`. The exit facing is
+        // SERVER-AUTHORITATIVE in Base: the engine snaps the client view to the teleported `player.angles`. Stamp
+        // the same fixangle channel here so the listen host snaps the LOCAL view to the rotated facing
+        // (NetGame reads `LocalServerPlayer.FixAngle`). Without this the only view-snap was the client predictor's
+        // one-shot `carrier.FixAngle` (TriggerTouch.PredictWarpzonesAmbient) — which EntityMovementStep clears
+        // every replayed tick, and which the server-warps-then-reconciles race on a 0-latency listen host drops
+        // before it is read: the body + velocity warp but the VIEW stays put, so you emerge looking 90° into the
+        // now-perpendicular exit corridor (the "comes out at the wrong angle / rotated sideways" report). The math
+        // (TransformAngles) was already Base-faithful for these perpendicular vertical-wall zones — the snap simply
+        // never fired. FixAngleAngles carries the already-transformed exit facing the host applies verbatim.
         if ((e.Flags & EntFlags.Client) != 0)
-            System.Console.WriteLine($"[wzteleport] entryAng={_dbgEntryAng} exitAng={e.Angles} | inFwd={wz.Transform.InForward} outFwd={wz.Transform.OutForward}");
+        {
+            e.FixAngle = true;
+            e.FixAngleAngles = e.Angles;
+        }
         e.AVelocity = wz.Transform.TransformVelocity(e.AVelocity);
         if (Api.Services is not null) Api.Entities.SetOrigin(e, newOrigin);
         else e.Origin = newOrigin;
@@ -980,11 +992,16 @@ public sealed class WarpzoneManager
             else if (now <= finish) return;
         }
         Vector3 newOrigin = wz.Transform.TransformOrigin(e.Origin);
-        Vector3 _dbgEntryAng = e.Angles;
         e.Velocity = wz.Transform.TransformVelocity(e.Velocity);
         e.Angles = wz.Transform.TransformAngles(e.Angles);
+        // QC WarpZone_TeleportPlayer fixangle — a free-flying observer has a view too; snap it to the exit facing
+        // authoritatively (same channel the host reads). See the note in Teleport for why the predictor's one-shot
+        // snap is not reliable on its own.
         if ((e.Flags & EntFlags.Client) != 0)
-            System.Console.WriteLine($"[wzteleport] entryAng={_dbgEntryAng} exitAng={e.Angles} | inFwd={wz.Transform.InForward} outFwd={wz.Transform.OutForward}");
+        {
+            e.FixAngle = true;
+            e.FixAngleAngles = e.Angles;
+        }
         e.AVelocity = wz.Transform.TransformVelocity(e.AVelocity);
         if (Api.Services is not null) Api.Entities.SetOrigin(e, newOrigin);
         else e.Origin = newOrigin;
