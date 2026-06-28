@@ -2124,6 +2124,13 @@ public sealed class ServerNet : IDisposable
                 // (DefaultWeaponAlpha = +1), and Cloaked fades both; the exterior-weapon alpha is the SetDefaultAlpha
                 // hook's DefaultWeaponAlpha, networked independently of the body Alpha above so the two can differ.
                 WepAlpha = (byte)QuantizeAlpha(XonoticGodot.Common.Gameplay.MutatorHooks.DefaultWeaponAlpha),
+                // [W-wepent-view] the per-player wepent HUD view-state — the spectatee/third-person counterpart of
+                // the owner-block OwnerWeaponRings; every client viewing this player gets its charge/clip/heat/beam.
+                // Resolved by the SAME WepentResolver the owner block uses (ResolveOwnerWeaponRings now delegates to
+                // it), so the owner's own rings and other players' views of this player stay in lockstep. An idle /
+                // no-charge player resolves to WepentViewState.None, which NetEntityState.Diff compares field-by-field
+                // against the baseline → the EntityField.WepentView bit stays clear and that player costs nothing here.
+                WepentView = XonoticGodot.Common.Gameplay.WepentResolver.Resolve(p, CountLiveMines, _world.Time),
                 // ViewmodelSkin / GunAlign have NO server-side producer in the port (the viewmodel skin variant and
                 // cl_gunalign side are client-local concepts; QC networks them off the wepent entity, which the port
                 // doesn't yet model server-side). Left at their defaults (0) — the wire is RESERVED for a later wave
@@ -2229,6 +2236,35 @@ public sealed class ServerNet : IDisposable
                         | (e.ItemAnimate == 2 ? NetEntityFlags.ItemAnimate2 : NetEntityFlags.None)
                         | (kind == NetEntityKind.Item && !e.ItemAvailable ? NetEntityFlags.ItemGhost : NetEntityFlags.None),
             };
+
+            // [objstream] Fold the turret-head + objective-state extras into the SAME snapshot record (no second
+            // loop): both groups stay default on every non-turret/non-objective entity, so NetEntityState.Diff
+            // leaves EntityField.TurretHead / EntityField.ObjState clear and a normal item/projectile costs nothing
+            // for them. Read the struct back, set the extras, write it back (NetEntityState is a value type).
+            var s = _entityScratch[netId];
+            // TURRET head aim/active (QC cl_turrets tur_head.angles/.avelocity + .active/DEAD_DEAD): TryGetState is the
+            // non-allocating probe (State(e) would alloc for every non-turret entity each tick), so only a real turret
+            // populates the head block; everything else leaves it default.
+            if (XonoticGodot.Common.Gameplay.TurretAI.TryGetState(e, out var tst))
+            {
+                s.TurHeadPitch = tst.HeadAngles.X;
+                s.TurHeadYaw = tst.HeadAngles.Y;
+                s.TurHeadAVelYaw = tst.HeadAVelocity.Y;
+                byte tf = 0;
+                if (tst.Active) tf |= 1;             // bit0 = QC .active (awake / team-owned)
+                if (e.DeadState != DeadFlag.No) tf |= 2; // bit1 = QC DEAD_DEAD (destroyed pose)
+                s.TurFlags = tf;
+            }
+            // OBJECTIVE health fraction + build/own state (QC generator/CP-pad/icon STATUS hp/255 + build-bar): only
+            // an entity that carries objective health (GtObjMaxHealth > 0) sets these — a normal entity has 0 max and
+            // leaves the block default so the EntityField.ObjState bit stays clear.
+            if (e.GtObjMaxHealth > 0f)
+            {
+                float frac = e.GtObjHealth / e.GtObjMaxHealth;
+                s.ObjHealthByte = (byte)System.Math.Clamp((int)MathF.Round(frac * 255f), 0, 255);
+                s.ObjState = ResolveObjState(e);
+            }
+            _entityScratch[netId] = s;
             _entityBounds[netId] = RelevanceBounds(e.Origin, e.Mins, e.Maxs);
         }
 
@@ -2253,6 +2289,21 @@ public sealed class ServerNet : IDisposable
         return (
             new NVec3(MathF.Min(lo.X, origin.X - minHalf), MathF.Min(lo.Y, origin.Y - minHalf), MathF.Min(lo.Z, origin.Z - minHalf)),
             new NVec3(MathF.Max(hi.X, origin.X + minHalf), MathF.Max(hi.Y, origin.Y + minHalf), MathF.Max(hi.Z, origin.Z + minHalf)));
+    }
+
+    /// <summary>
+    /// [objstream] The objective entity's networked state byte (QC the cpicon build-bar vs generator healthbar
+    /// selector): 3 = destroyed (no health left); for a control-point build icon (classname
+    /// <c>onslaught_controlpoint_icon</c>) 1 = building / 2 = built; otherwise (a generator / Domination pad) 2 when
+    /// the objective is team-owned, else 0 = neutral/idle. Mirrors the client's decoded <c>Entity.ObjState</c>.
+    /// </summary>
+    private static byte ResolveObjState(Entity e)
+    {
+        if (e.GtObjHealth <= 0f)
+            return 3; // destroyed
+        if (e.ClassName == "onslaught_controlpoint_icon")
+            return e.GtIconBuilt ? (byte)2 : (byte)1; // mid-build vs captured
+        return e.Team != 0f && e.Team != Teams.None ? (byte)2 : (byte)0; // owned vs neutral
     }
 
     /// <summary>
@@ -2630,61 +2681,55 @@ public sealed class ServerNet : IDisposable
         out float mineCount, out float mineLimit,
         out float arcHeat)
     {
-        charge = chargePool = clipLoad = hagarLoad = mineCount = arcHeat = -1f;
-        clipSize = 0f;
-        hagarLoadMax = 4f; // CrosshairPanel defaults (only used when the matching ring is active)
-        mineLimit = 3f;
+        // The owner block and the per-player WepentView field are produced by the SAME resolver
+        // (WepentResolver.Resolve) so they can never drift. The resolver returns the unified WepentViewState
+        // (charges/clip/load/heat) off the authoritative player; this method maps that struct into the owner
+        // block's existing out-params (translating the struct's 0-means-inactive representation into the
+        // CrosshairPanel -1 "no ring" sentinel the owner wire expects) and resolves the two owner-only CAPS
+        // (HagarLoadMax / MineLimit) locally — those caps are NOT on the per-player WepentView wire (the design
+        // keeps resolved caps owner-only; the client clamps the per-player view against the panel defaults).
+        WepentViewState v = XonoticGodot.Common.Gameplay.WepentResolver.Resolve(p, CountLiveMines, _world.Time);
 
+        // [0,1] charge/pool/heat: the struct carries 0 when the active weapon doesn't own that ring; the owner
+        // wire hides a ring with -1, so translate 0 → -1 (a held charge weapon at exactly 0 reads as hidden for
+        // that frame, which matches "no ring to draw"). Clip uses matching sentinels already (-1 load / 0 size).
+        charge = NoRingOr(v.VortexCharge);
+        chargePool = NoRingOr(v.VortexChargePool);
+        clipLoad = v.ClipLoad;                       // -1 = needs-reload sentinel preserved straight
+        clipSize = v.ClipSize;                       // 0 = weapon has no clip → ring hidden
+        hagarLoad = v.HagarLoad <= 0 ? -1f : v.HagarLoad;
+        mineCount = v.MinelayerMines <= 0 ? -1f : v.MinelayerMines;
+        arcHeat = NoRingOr(v.ArcHeat);
+
+        // Resolved caps (owner-only): default to the CrosshairPanel defaults, overridden from the live weapon
+        // descriptor when the matching ring is active so a pure client's g_balance_* needn't match the server.
+        hagarLoadMax = 4f;
+        mineLimit = 3f;
         Weapon? active = Inventory.CurrentWeapon(p);
         if (active is null || p.IsDead || p.IsObserver)
-            return; // no live weapon → every ring stays at its -1/0 sentinel (host feeder parity)
+            return;
+        if (active is Hagar hg && hg.Secondary.LoadMax > 0f)
+            hagarLoadMax = hg.Secondary.LoadMax;
+        if (active is Minelayer ml && ml.Cvars.Limit > 0)
+            mineLimit = ml.Cvars.Limit;
 
-        WeaponSlotState wst = p.WeaponState(new WeaponSlot(0));
-        string net = active.NetName ?? string.Empty;
+        // Local helper: map the resolver's 0-means-inactive [0,1] value to the owner wire's -1 "no ring" sentinel.
+        static float NoRingOr(float value) => value > 0f ? value : -1f;
+    }
 
-        // Vortex / Overkill-Nex charge ring (QC 482-496): vortex_charge / vortex_chargepool_ammo (both [0,1]).
-        if (net is "vortex" or "vaporizer" || net.Contains("nex"))
-        {
-            charge = wst.VortexCharge;
-            chargePool = wst.VortexChargePoolAmmo;
-        }
-
-        // Reload / ammo ring (QC 536-548): clip_load / clip_size, for any weapon with a clip.
-        if (wst.ClipSize > 0)
-        {
-            clipLoad = wst.ClipLoad;
-            clipSize = wst.ClipSize;
-        }
-
-        // Hagar burst-load ring (QC 529-535): hagar_load / load_max.
-        if (net == "hagar" && active is Hagar hg)
-        {
-            hagarLoad = wst.HagarLoad;
-            if (hg.Secondary.LoadMax > 0f) hagarLoadMax = hg.Secondary.LoadMax;
-        }
-
-        // Mine Layer count ring (QC 522-528): minelayer_mines / limit. Count this player's live mines (the same
-        // g_mines scan W_MineLayer_Count / the host feeder does), since the count isn't cached on the slot.
-        if (net == "minelayer" && active is Minelayer ml)
-        {
-            int mines = 0;
-            foreach (Entity e in _world.Services.Entities.FindByClass("mine"))
-                if (ReferenceEquals(e.Owner, p) && !e.IsFreed) ++mines;
-            mineCount = mines;
-            if (ml.Cvars.Limit > 0) mineLimit = ml.Cvars.Limit;
-        }
-
-        // Arc overheat ring (QC 474, 550-556 + Arc_GetHeat_Percent arc.qc:55-68): while a beam is live the ring is
-        // beam_heat/overheat_max; after release the latched arc_overheat timestamp decays the ring, scaled by the
-        // captured arc_cooldown. Same expression the host feeder uses, with the server sim clock.
-        if (net == "arc" && active is Arc arc && arc.Beam.OverheatMax > 0f)
-        {
-            float now = _world.Time;
-            float pct = wst.BeamHeat > 0f
-                ? wst.BeamHeat / arc.Beam.OverheatMax
-                : (wst.ArcOverheat > now ? (wst.ArcOverheat - now) / arc.Beam.OverheatMax * wst.ArcCooldown : 0f);
-            arcHeat = System.Math.Clamp(pct, 0f, 1f);
-        }
+    /// <summary>
+    /// [W-wepent-view] Count this player's live mines (QC the W_MineLayer_Count <c>g_mines</c> scan) — the
+    /// Mine Layer count ring's current value, which isn't cached on the weapon slot. Extracted from the old
+    /// ResolveOwnerWeaponRings so BOTH the owner block and the per-player WepentView (which pass this as the
+    /// <c>mineCounter</c> delegate to <see cref="XonoticGodot.Common.Gameplay.WepentResolver.Resolve"/>)
+    /// reuse the same authoritative count.
+    /// </summary>
+    private int CountLiveMines(Player p)
+    {
+        int n = 0;
+        foreach (Entity e in _world.Services.Entities.FindByClass("mine"))
+            if (ReferenceEquals(e.Owner, p) && !e.IsFreed) ++n;
+        return n;
     }
 
     /// <summary>Owner-replicated authoritative state: origin + velocity (full precision) + onground + HUD stats +

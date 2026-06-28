@@ -3,6 +3,7 @@ using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
+using XonoticGodot.Game.Client;
 using NVec3 = System.Numerics.Vector3;
 
 namespace XonoticGodot.Game.Hud;
@@ -240,6 +241,22 @@ public partial class CrosshairPanel : HudPanel
 
     /// <summary>The latest true-aim classification (QC <c>shottype</c>), recomputed each <see cref="_Process"/>.</summary>
     public ShotType ShotResult { get; private set; } = ShotType.HitWorld;
+
+    // ---- crosshair_chase: third-person crosshair re-projection (QC crosshair.qc HUD_Crosshair chase block) ----
+
+    /// <summary>
+    /// QC <c>chase_active</c>: true while the third-person chase camera is live. Fed by the view layer (NetGame).
+    /// When set (and <see cref="ChaseCamera3D"/> + <see cref="Player"/> are present and <c>crosshair_chase</c> is on)
+    /// the crosshair is drawn at the screen-projection of the chase impact point rather than the geometric panel
+    /// centre, so it tracks where the shot would actually land from the offset chase eye.
+    /// </summary>
+    public bool ChaseActive { get; set; }
+
+    /// <summary>
+    /// The live render camera used to re-project the chase impact point to screen space (QC <c>project_3d_to_2d</c>).
+    /// Fed by the view layer (NetGame) alongside <see cref="ChaseActive"/>; <c>null</c> = no chase re-projection.
+    /// </summary>
+    public Camera3D? ChaseCamera3D { get; set; }
 
     // ---- T21: weapon-switch cross-fade (QC wcross_name_changestarttime / changedonetime) ----
 
@@ -564,6 +581,22 @@ public partial class CrosshairPanel : HudPanel
     protected override void DrawPanel()
     {
         Vector2 center = Size2 * 0.5f;
+
+        // crosshair_chase (QC crosshair.qc HUD_Crosshair, the chase_active block + crosshairs.cfg:51): in third
+        // person the geometric panel centre no longer matches where the shot lands, so re-project. Trace forward
+        // from the player origin (CrosshairTrace.ChaseImpact does the eye-height + max_shot_distance worldonly
+        // trace) and project the impact through the live chase camera; draw the crosshair there instead of dead
+        // centre. Falls back to the geometric centre when chase is off, the cvar disables it, no camera is fed, or
+        // the impact projects off-screen (behind the camera). This closes registry cl-crosshair.core.origin_chase.
+        // DEFERRED (Phase 2 third-person wiring): the crosshair_chase_playeralpha 0.25 body-alpha fade while the
+        // chase view is obstructed needs a player-model alpha hook that does not exist on this path yet.
+        if (GlobalF("crosshair_chase", 1f) != 0f && ChaseActive && ChaseCamera3D is not null && Player is not null
+            && TryGetChaseForward(out NVec3 chaseForward))
+        {
+            NVec3 impact = CrosshairTrace.ChaseImpact(Player.Origin, ViewHeight, chaseForward);
+            if (CrosshairTrace.ProjectToScreen(ChaseCamera3D, impact, out Vector2 sp))
+                center = sp;
+        }
 
         // [T41] objective rings (QC view.qc HUD_Draw 1006-1022): NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS,
         // drawn FIRST so they're independent of the crosshair master toggle below — in QC these live in HUD_Draw,
@@ -1096,7 +1129,6 @@ public partial class CrosshairPanel : HudPanel
         (NVec3 mins, NVec3 maxs) = ProjectileBox(weapon);
 
         float range = WeaponFiring.MaxShotDistance; // QC max_shot_distance
-        NVec3 end = origin + forward * range;
 
         // The two forward traces reach into the live engine trace service. A failure there must NOT escape into
         // _Process (it runs every frame — an unhandled throw would spam the log and stall HUD repaint); degrade
@@ -1106,8 +1138,10 @@ public partial class CrosshairPanel : HudPanel
         try
         {
             // 1) Aim line: where is the player pointing? (QC traceline(traceorigin, ... view_forward * max_shot_distance)).
-            TraceResult aim = Api.Trace.Trace(origin, NVec3.Zero, NVec3.Zero, end, aimFilter, Player);
-            NVec3 trueAimPoint = aim.EndPos + forward; // QC nudges the point a little forward for the final box trace
+            // Routed through the shared CrosshairTrace primitive (dedup of the zero-box forward trace) — same eye,
+            // forward, range, filter and ignore-self as the direct Api.Trace.Trace it replaces.
+            CrosshairTrace.Hit aim = CrosshairTrace.TraceForward(origin, forward, range, aimFilter, Player);
+            NVec3 trueAimPoint = aim.PointQuake + forward; // QC nudges the point a little forward for the final box trace
 
             // QC g_trueaim_minrange: keep the aim point at least a short distance ahead so close-range tracing is stable.
             const float trueAimMinRange = 44f; // Xonotic g_trueaim_minrange default
@@ -1183,6 +1217,29 @@ public partial class CrosshairPanel : HudPanel
             return ShotType.HitObstruction;
 
         return ShotType.HitWorld;
+    }
+
+    /// <summary>
+    /// Resolve the look direction used to re-project the chase crosshair (QC <c>view_forward</c>). Prefers the
+    /// view-layer-fed <see cref="AimForward"/> (the authoritative render look direction); otherwise derives it from
+    /// the <see cref="Player"/>'s view angles (QC <c>AngleVectors(view_angles)</c>). Returns false when neither a
+    /// fed forward nor a player is available (the caller then keeps the geometric centre).
+    /// </summary>
+    private bool TryGetChaseForward(out NVec3 forward)
+    {
+        if (AimForward is { } f && f != NVec3.Zero)
+        {
+            forward = System.Numerics.Vector3.Normalize(f);
+            return true;
+        }
+        if (Player is null)
+        {
+            forward = default;
+            return false;
+        }
+        QMath.AngleVectors(Player.Angles, out NVec3 fq, out _, out _);
+        forward = fq;
+        return forward != NVec3.Zero;
     }
 
     /// <summary>

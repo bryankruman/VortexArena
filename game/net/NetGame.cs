@@ -2684,9 +2684,10 @@ public sealed partial class NetGame : Node3D
 
         // Weapon-stat crosshair rings (QC client/hud/crosshair.qc 476-557): runs on EVERY path now (the feeder was
         // hoisted out of the host-only block). On a listen host it reads the live slot state off LocalServerPlayer;
-        // a pure remote / dedicated-server client has no LocalServerPlayer, so the feeder hides the rings — the
-        // cross-client wepent-prop networking that would feed them is the follow-up (no networked ring state exists
-        // on ClientNet yet).
+        // a pure remote / dedicated-server client mirrors the networked owner-block rings; and when FOLLOWING another
+        // player (spectator) it now reads that player's per-player WepentView slice off the entity stream — the
+        // cross-client wepent-prop networking that was the prior follow-up is wired (smoke consumer in
+        // UpdateCrosshairWeaponRings; the full viewmodel/beam consumers land in Phase 2).
         UpdateCrosshairWeaponRings();
 
         // [T41] objective rings (NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS) + the remote-client hit-
@@ -3301,6 +3302,28 @@ public sealed partial class NetGame : Node3D
     {
         CrosshairPanel x = _fullHud.Crosshair;
         Player? p = LocalServerPlayer;
+
+        // [W-wepent-view smoke consumer] when following another player, read the watched player's networked wepent
+        // view-state (charge/clip/heat) off the entity stream and drive the same crosshair rings — previously a
+        // spectator saw no rings because the owner-block rings only resolve off the local owner. The owner block
+        // (OwnerWeaponRings) is delta-excluded from the entity feed, so for a SPECTATEE we instead pull the
+        // per-player WepentView slice that ServerNet networks on every entity; each field maps to the panel's
+        // -1/0 'no data' sentinel exactly like the pure-remote owner branch below.
+        int specNet = _client?.SpectatingNetId ?? 0;
+        if (specNet != 0 && _client != null && _client.TryGetRemoteState(specNet, out var rs))
+        {
+            var v = rs.WepentView;
+            x.ChargeFraction = v.VortexCharge > 0 ? v.VortexCharge : -1f;
+            x.ChargePool = v.VortexChargePool > 0 ? v.VortexChargePool : -1f;
+            x.ClipLoad = v.ClipSize > 0 ? v.ClipLoad : -1f;
+            x.ClipSize = v.ClipSize;
+            x.HagarLoad = v.HagarLoad > 0 ? v.HagarLoad : -1f;
+            x.HagarLoadMax = 4f;
+            x.MineCount = v.MinelayerMines > 0 ? v.MinelayerMines : -1f;
+            x.MineLimit = 3f;
+            x.ArcHeat = v.ArcHeat > 0 ? v.ArcHeat : -1f;
+            return;
+        }
 
         // Pure remote / dedicated-server client: no LocalServerPlayer, so feed the rings from the networked
         // owner-block scalars (ServerNet.ResolveOwnerWeaponRings → OwnerWeaponRings, read by ClientNet). The
@@ -4154,6 +4177,19 @@ public sealed partial class NetGame : Node3D
         bool show = havePlayer && !suppressed;
         if (_fullHud.Crosshair.Visible != show)
             _fullHud.Crosshair.Visible = show;
+
+        // [viewprim] Feed the authoritative rendered aim ray + chase state into the crosshair so the shared
+        // CrosshairTrace primitive traces from the real render eye (closing the dead AimForward/AimOrigin feed).
+        // UpdateCamera → FirstPersonView.UpdateView has already run this frame, so RenderedEyeQuake/
+        // RenderedForwardQuake carry the final rendered eye/forward (derived from the already-predicted local pose —
+        // no new networking). This replaces CrosshairPanel's dead reconstruction fallback (TryGetAimRay was never
+        // fed) with the real eye/forward, and lights up the crosshair_chase origin trace whenever chase is active
+        // (own-player + spectate both set CameraMode=Chase, surfaced as _view.ChaseActive).
+        CrosshairPanel xh = _fullHud.Crosshair;
+        xh.AimOrigin = _view.RenderedEyeQuake;
+        xh.AimForward = _view.RenderedForwardQuake;
+        xh.ChaseActive = _view.ChaseActive;
+        xh.ChaseCamera3D = _camera;
     }
 
     /// <summary>

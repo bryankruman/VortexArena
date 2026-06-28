@@ -151,6 +151,20 @@ public sealed partial class ClientEntityView : Node
         e.ViewmodelSkin = s.ViewmodelSkin;
         e.GunAlign = s.GunAlign;
         e.WepAlpha = s.WepAlpha switch { 0 => 1f, 255 => -1f, _ => s.WepAlpha / 255f };
+        // [W-wepent-view] decode the per-player wepent HUD view-state (charge/clip/heat/beam) onto the proxy so a
+        // spectator following this player and any third-person beam consumer can read the watched player's live
+        // weapon state — the all-clients counterpart of the owner-block rings.
+        e.WepentView = s.WepentView;
+        // [W-objstream] decode the turret-head + objective view-state onto the per-id proxy each frame (decode only;
+        // no render work here). These feed the Phase-3 turret-head node (HeadWorldAngles = Entity.Angles +
+        // (TurHeadPitch,TurHeadYaw,0); integrate TurHeadAVelYaw*dt for the idle head spin) and the objective HUD
+        // healthbar/build-bar. ObjHealthFrac defaults to full (1f) unless the entity is an active/damaged objective.
+        e.TurHeadPitch = s.TurHeadPitch;
+        e.TurHeadYaw = s.TurHeadYaw;
+        e.TurHeadAVelYaw = s.TurHeadAVelYaw;
+        e.TurActive = (s.TurFlags & 1) != 0;
+        e.ObjState = s.ObjState;
+        e.ObjHealthFrac = (s.ObjState != 0 || s.ObjHealthByte != 0) ? s.ObjHealthByte / 255f : 1f;
         // QC ITS_EXPIRING (item snapshot flag): drives ClientWorld's loot despawn animation. Refreshed every
         // frame so it tracks the networked status (only ever set by the server on an expiring loot item).
         e.ItemExpiringFx = (s.Flags & NetEntityFlags.ItemExpiring) != 0;

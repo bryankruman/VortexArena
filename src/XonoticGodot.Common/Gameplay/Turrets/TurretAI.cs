@@ -266,6 +266,15 @@ public static class TurretAI
     public static void Forget(Entity e) => _states.Remove(e);
 
     /// <summary>
+    /// Non-allocating turret probe for the per-tick snapshot producer (ServerNet): is <paramref name="e"/> a
+    /// live turret, and if so hand back its existing <see cref="TurretState"/> WITHOUT creating one. Unlike
+    /// <see cref="State"/>, this never inserts a default <see cref="TurretState"/>, so the snapshot loop can ask
+    /// "is this entity a turret?" for every projectile/item/gib each tick without allocating a state bag for the
+    /// (overwhelming) non-turret majority. Returns false (and <paramref name="state"/> = null) for non-turrets.
+    /// </summary>
+    public static bool TryGetState(Entity e, out TurretState state) => _states.TryGetValue(e, out state!);
+
+    /// <summary>
     /// Read a turret framework cvar (QC <c>autocvar_g_turrets_*</c>), falling back to the turrets.cfg default
     /// when there are no engine services or the cvar isn't registered in the store. The turret cvars aren't
     /// seeded in the port's cvar table, so <c>GetFloat</c> alone would read 0 — which is wrong for the non-zero

@@ -1,7 +1,7 @@
 unit: cl-csqcmodel
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # re-audited after Wave 16/17
+last_audited: "2026-06-28"  # re-verified after warpzone wave (NO cl-csqcmodel change: only NetGame/ServerNet portal-render + wepent crosshair-ring HUD edits touched these files; every feature row unchanged vs the 2026-06-27 Wave 16/17 re-audit)
 summary:
   feature_count: 12
   worst_gaps:

@@ -1,7 +1,18 @@
 unit: onslaught
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
+# NOTE: OPUS re-audit 2026-06-28 (post-W16/W17) — re-verified the wave's ONE drifted row end-to-end and
+# confirmed it truthful; no other row moved. onslaught_*.cs last-modifying commits ARE W16 (b3a9c06) + W17
+# (2f0bfdb) and nothing after, so the combat/graph/round/spawn/captureshield/audio/bot rows are untouched by
+# this wave (re-confirmed in source: GeneratorThink alarm + IconThink sparks + all SoundSystem/NotificationSystem
+# emits present as described). Producer->consumer chain VERIFIED LIVE: ServerNet.cs:493-494 SendWaypoints()/
+# SendRadarLinks() per advanced frame -> ClientNet.cs:555/557 HandleWaypoints/HandleRadarLinks -> RadarPanel.cs:
+# 349-360 DrawLinkQuad + ClientEntityView.cs:245-257 ApplyIdentity (networked .Model renders). STILL-MISSING half
+# RE-CONFIRMED by grep: NO camSetup/WantEventchase death-cam, NO icon bob/spin/punch anim, NO particle/pointparticles
+# calls in Onslaught*.cs — only deferral comments. So presentation.csqc stays logic/values partial, timing/audio
+# missing, presentation partial, liveness PARTIAL (model+sprite+radar producers live; anim/cam/fx half absent).
+# --- prior W16/W17 re-audit 2026-06-27 below (carried, still accurate) ---
 # NOTE: W16/W17 re-audit 2026-06-27 — ONE row drifted: onslaught.presentation.csqc all-missing -> partial.
 # W16 (b3a9c06) added Onslaught.CollectWaypoints (generator/CP waypoint sprites). W17 (2f0bfdb) added the
 # objective WORLD-MODEL assignment (SpawnGenerator/SpawnControlPoint/SpawnIcon set Entity.Model + progressive

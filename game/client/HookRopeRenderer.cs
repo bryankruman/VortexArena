@@ -10,14 +10,14 @@
 // the rope endpoints are read straight off them, so the line matches the server's reel geometry. A pure
 // --connect client has no entity facade yet, so this idles there — the established ambient-renderer seam.
 //
-// One long-lived cross-ribbon mesh per live hook (two perpendicular textured quads — the cheap Draw_CylindricLine
-// stand-in shared with LaserRenderer/PortoTrajectoryPreview/BeamRenderer), updated IN PLACE each frame and tinted
-// by the firer's team colour (ModelTint.TeamColor; the port's stand-in for the particles/hook_<team> texture set,
-// white for FFA / team 0). The muzzle end mirrors Hook.GrapplingHookThink's reel origin
-// (owner.origin + view_ofs + hook_shotorigin '8 8 -12' rotated by the owner's view angles), so the rope is
-// anchored where the reel pulls toward; the far end is the chain entity's origin. The line draws while the hook is
-// in flight (complementing the Hookbomb-spike head ProjectileCatalog renders) and persists after the latch (when
-// the MoveType.None head drops out of the snapshot), closing the "never a rope" presentation gap.
+// One CylindricLine.Segment per live hook (the shared Draw_CylindricLine cross-ribbon successor, owned by the
+// host-injected CylindricLine node), updated IN PLACE each frame and tinted by the firer's team colour
+// (ModelTint.TeamColor; the port's stand-in for the particles/hook_<team> texture set, white for FFA / team 0).
+// The muzzle end mirrors Hook.GrapplingHookThink's reel origin (owner.origin + view_ofs + hook_shotorigin
+// '8 8 -12' rotated by the owner's view angles), so the rope is anchored where the reel pulls toward; the far
+// end is the chain entity's origin. The line draws while the hook is in flight (complementing the Hookbomb-spike
+// head ProjectileCatalog renders) and persists after the latch (when the MoveType.None head drops out of the
+// snapshot), closing the "never a rope" presentation gap.
 
 using System.Collections.Generic;
 using Godot;
@@ -26,7 +26,6 @@ using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 using NVec3 = System.Numerics.Vector3;
-using GVec3 = Godot.Vector3;
 
 namespace XonoticGodot.Game.Client;
 
@@ -40,16 +39,16 @@ public sealed partial class HookRopeRenderer : Node3D
     private const float DefaultAlpha = 1f;       // cl_grapplehook_alpha
     private const float RescanInterval = 0.5f;   // facade re-scan cadence (hooks fire/expire continually)
 
-    private static readonly QuadMesh SharedQuad = new() { Size = new Vector2(1f, 1f) };
+    /// <summary>Host-injected shared cylindric-line node (the Draw_CylindricLine successor). Each live rope
+    /// acquires one <see cref="CylindricLine.Segment"/> from it and draws into it in place each frame. Until the
+    /// host wires this (e.g. on a pure --connect client before the facade exists) the renderer simply idles.</summary>
+    public CylindricLine Lines { get; set; } = null!;
 
-    // One persistent cross-ribbon per live hook chain (keyed by the chain entity), updated in place each frame.
+    // One persistent cylindric-line segment per live hook chain (keyed by the chain entity), updated in place.
     private sealed class Rope
     {
-        public Entity Hook = null!;              // the grapplinghook chain edict
-        public Node3D Root = null!;              // positioned at the muzzle, +X aimed at the hook end
-        public MeshInstance3D RibbonA = null!;   // the two crossed quads
-        public MeshInstance3D RibbonB = null!;
-        public StandardMaterial3D Material = null!;
+        public Entity Hook = null!;                  // the grapplinghook chain edict
+        public CylindricLine.Segment Seg = null!;    // the Draw_CylindricLine cross-ribbon for this chain
     }
 
     private readonly Dictionary<Entity, Rope> _ropes = new();
@@ -58,7 +57,7 @@ public sealed partial class HookRopeRenderer : Node3D
 
     public override void _Process(double delta)
     {
-        if (Api.Services is null)
+        if (Api.Services is null || Lines is null)
             return;
 
         using var _prof = FrameProfiler.Scope("clientmisc");
@@ -75,7 +74,7 @@ public sealed partial class HookRopeRenderer : Node3D
     }
 
     // =================================================================================================
-    //  Facade scan / node lifecycle (mirrors LaserRenderer.Rescan)
+    //  Facade scan / segment lifecycle (mirrors LaserRenderer.Rescan)
     // =================================================================================================
 
     private void Rescan()
@@ -94,32 +93,15 @@ public sealed partial class HookRopeRenderer : Node3D
                 _dead.Add(kv.Key);
         foreach (Entity e in _dead)
         {
-            if (GodotObject.IsInstanceValid(_ropes[e].Root))
-                _ropes[e].Root.QueueFree();
+            _ropes[e].Seg.Free();
             _ropes.Remove(e);
         }
     }
 
     private Rope BuildRope(Entity hook)
     {
-        var root = new Node3D { Name = $"hookrope#{hook.Index}" };
-        var mat = new StandardMaterial3D
-        {
-            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-            BlendMode = BaseMaterial3D.BlendModeEnum.Mix, // QC Draw_CylindricLine DRAWFLAG_NORMAL at cl_grapplehook_alpha
-            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-            DisableReceiveShadows = true,
-        };
-        // Cross-ribbon: two unit quads parked at +0.5 X so the root sits at the rope START (the muzzle), scaled
-        // per frame to (length, width) — the same Draw_CylindricLine stand-in LaserRenderer/PortoPreview use.
-        var ribbonA = new MeshInstance3D { Mesh = SharedQuad, MaterialOverride = mat, Position = new GVec3(0.5f, 0f, 0f) };
-        var ribbonB = new MeshInstance3D { Mesh = SharedQuad, MaterialOverride = mat, Position = new GVec3(0.5f, 0f, 0f) };
-        ribbonB.RotationDegrees = new GVec3(90f, 0f, 0f); // cross plane
-        root.AddChild(ribbonA);
-        root.AddChild(ribbonB);
-        AddChild(root);
-        return new Rope { Hook = hook, Root = root, RibbonA = ribbonA, RibbonB = ribbonB, Material = mat };
+        // One cylindric-line segment from the shared host node — the Draw_CylindricLine cross-ribbon stand-in.
+        return new Rope { Hook = hook, Seg = Lines.AcquireSegment() };
     }
 
     // =================================================================================================
@@ -129,12 +111,12 @@ public sealed partial class HookRopeRenderer : Node3D
     private void UpdateRope(Rope r)
     {
         Entity hook = r.Hook;
-        if (hook.IsFreed || !GodotObject.IsInstanceValid(r.Root))
+        if (hook.IsFreed)
             return;
         // No firer (shouldn't happen for a live chain) → hide until the next rescan sweeps it.
         if (hook.Owner is not { IsFreed: false } owner)
         {
-            r.Root.Visible = false;
+            r.Seg.Hide();
             return;
         }
 
@@ -149,34 +131,15 @@ public sealed partial class HookRopeRenderer : Node3D
         NVec3 muzzle = owner.Origin + owner.ViewOfs + vs;
         NVec3 end = hook.Origin;
 
-        GVec3 a = Coords.ToGodot(muzzle);
-        GVec3 b = Coords.ToGodot(end);
-        GVec3 seg = b - a;
-        float len = seg.Length();
-        if (len < 1f)
-        {
-            r.Root.Visible = false;
-            return;
-        }
-
-        r.Root.Visible = true;
-        r.Root.Position = a;
-        // +X along the rope (the stable-basis trick from LaserRenderer/ProjectileRenderer.OrientToVelocity).
-        GVec3 x = seg / len;
-        GVec3 upRef = Mathf.Abs(x.Dot(GVec3.Up)) > 0.99f ? GVec3.Forward : GVec3.Up;
-        GVec3 z = x.Cross(upRef).Normalized();
-        GVec3 y = z.Cross(x).Normalized();
-        r.Root.Basis = new Basis(x, y, z);
-        // QC width 8; Quake unit ≈ render unit at this scale, the same scaling LaserRenderer applies to its ribbon.
-        r.RibbonA.Scale = new GVec3(len, RopeWidth, 1f);
-        r.RibbonB.Scale = new GVec3(len, RopeWidth, 1f);
-
         // QC team-coloured rope (particles/hook_<team>); the port tints a white ribbon by the firer's team colour
         // (ModelTint.TeamColor — the stand-in used by ProjectileRenderer.ApplyTeamColormod). Team 0 (FFA) → white.
         Color tint = ModelTint.TeamColor((int)owner.Team, out bool hasTeam);
         if (!hasTeam)
             tint = Colors.White;
-        r.Material.AlbedoColor = new Color(tint, Alpha());
+
+        // QC Draw_CylindricLine width 8 at DRAWFLAG_NORMAL (Mix). The segment owns the muzzle→hook geometry,
+        // length-gating and the cross-ribbon basis (its degenerate-length guard hides the ribbon itself).
+        r.Seg.Update(muzzle, end, RopeWidth, new Color(tint, Alpha()), BaseMaterial3D.BlendModeEnum.Mix);
     }
 
     /// <summary>QC autocvar_cl_grapplehook_alpha (default 1) — the rope's draw alpha. An explicit value is honoured;

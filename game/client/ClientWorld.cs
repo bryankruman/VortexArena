@@ -41,6 +41,10 @@ public partial class ClientWorld : Node3D
     /// <summary>Networked projectile visual renderer.</summary>
     public ProjectileRenderer Projectiles { get; private set; } = null!;
 
+    /// <summary>The shared Draw_CylindricLine primitive (cross-ribbon segment pool) injected into every beam/rope/line
+    /// renderer (Lasers, PortoPreview, the hook rope) so they all draw through one pooled node.</summary>
+    public CylindricLine CylindricLines { get; private set; } = null!;
+
     /// <summary>Lightning-arc / beam renderer (te_csqc_lightningarc: electro combo, Golem zaps, Tesla arcs).</summary>
     public BeamRenderer Beams { get; private set; } = null!;
 
@@ -358,6 +362,13 @@ public partial class ClientWorld : Node3D
         Projectiles.AudioLoader = s => AudioLoader?.Invoke(s);
         AddChild(Projectiles);
 
+        // The one shared Draw_CylindricLine primitive (cross-ribbon segment pool). Every beam/rope/line renderer
+        // leases its segments from this single node, so the host MUST inject it into each consumer below — without
+        // it Lasers/PortoPreview/the hook rope idle (they gate on a null Lines). Added first so the consumers can
+        // reference it as they're built.
+        CylindricLines = new CylindricLine { Name = "CylindricLines" };
+        AddChild(CylindricLines);
+
         Beams = new BeamRenderer { Name = "Beams" };
         AddChild(Beams);
         // Let the effect system route beam-class effects (lightning/arc/laser) to the real beam renderer
@@ -368,7 +379,7 @@ public partial class ClientWorld : Node3D
         // emitters, func_rain/func_snow weather. All self-driving ambient-facade scanners (the
         // TriggerTouch.Predict*Ambient pattern) — live on the listen-server/demo paths; a pure --connect
         // client has no entity facade (or BSP) yet, so they idle there (the established seam).
-        Lasers = new LaserRenderer { Name = "Lasers", Effects = Effects };
+        Lasers = new LaserRenderer { Name = "Lasers", Effects = Effects, Lines = CylindricLines };
         if (_assets is not null)
             Lasers.TextureLoader = _assets.LoadTexture;
         AddChild(Lasers);
@@ -385,7 +396,7 @@ public partial class ClientWorld : Node3D
 
         // Porto aim-trajectory preview (Porto_Draw). Self-driving; idle until the host wires its providers and
         // the local player holds the porto in the non-default combined-shot mode (g_balance_porto_secondary 0).
-        PortoPreview = new PortoTrajectoryPreview { Name = "PortoPreview" };
+        PortoPreview = new PortoTrajectoryPreview { Name = "PortoPreview", Lines = CylindricLines };
         AddChild(PortoPreview);
 
         // Mirror in-process effect emissions (server/local gameplay calling EffectEmitter.Emit) onto the

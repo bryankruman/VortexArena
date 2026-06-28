@@ -119,6 +119,25 @@ public sealed class FirstPersonView
     /// first-person viewmodel while chase is active — view.qc viewmodel_draw masks the gun when chase_active).</summary>
     public bool ChaseActive { get; private set; }
 
+    // --- the FINAL rendered view this frame (QC view_origin / view_forward) — the authoritative eye/forward the
+    // Phase-2 crosshair-chase consumer reads to trace true-aim from exactly where the camera ended up (post chase
+    // pull-back, post view-lock). Stashed at the tail of UpdateCamera once camQuake + viewAngles are resolved. ---
+    private NVec3 _renderedEyeQuake;
+    private NVec3 _renderedForwardQuake;
+    private GVec3 _renderedEyeGodot;
+
+    /// <summary>The FINAL rendered eye/camera origin in Quake space (QC <c>view_origin</c>) — the chase pull-back
+    /// origin during a chase, the eye otherwise, after view-lock. The crosshair true-aim trace starts here.</summary>
+    public NVec3 RenderedEyeQuake => _renderedEyeQuake;
+
+    /// <summary>The FINAL rendered view forward in Quake space (QC <c>view_forward</c>) — derived from the resolved
+    /// view angles (post chase/overhead/front rewrite, death-tilt, roll, idle-wave, view-lock).</summary>
+    public NVec3 RenderedForwardQuake => _renderedForwardQuake;
+
+    /// <summary>The FINAL rendered camera origin in Godot space (= <c>camera.GlobalPosition</c>) — the same view
+    /// origin as <see cref="RenderedEyeQuake"/>, in engine coords, for screen-projecting the crosshair impact.</summary>
+    public GVec3 RenderedEyeGodot => _renderedEyeGodot;
+
     // --- zoom state (view.qc GetCurrentFov: current_viewzoom drives the rendered fov) ---
     // current_viewzoom in (0,1]: 1 = unzoomed, 1/zoomfactor = fully zoomed. Lerped each frame toward the target.
     private float _currentViewZoom = 1f;
@@ -132,8 +151,9 @@ public sealed class FirstPersonView
     private const float MaxZoomFactor = 30f;
 
     // --- death / event-chase camera state (view.qc View_EventChase: eventchase_current_distance) ---
-    private float _eventChaseDistance;   // current (smoothed) pull-back distance behind the eye
-    private bool _eventChaseRunning;     // latches the chase on once death starts (QC eventchase_running)
+    // The smoothed pull-back distance + the run latch now live in a ChaseCamera.EventState that ApplyEvent
+    // owns and mutates (replacing the old _eventChaseDistance/_eventChaseRunning fields).
+    private ChaseCamera.EventState _eventChase;
 
     // --- view-effect clock (QC `time`): accumulated from dt so the sin-cycle bob / idle-wave advance in real time
     // even though FirstPersonView is a plain helper with no engine clock of its own. ---
@@ -364,8 +384,7 @@ public sealed class FirstPersonView
         if (classicChase)
         {
             ChaseActive = true;
-            _eventChaseRunning = false;
-            _eventChaseDistance = 0f;
+            _eventChase = default;   // QC eventchase reset: clear distance + run latch while the classic cam owns the frame
             camQuake = ApplyClassicChase(eyeQuake, ref viewAngles);
         }
         else
@@ -425,6 +444,13 @@ public sealed class FirstPersonView
         camera.GlobalBasis = new Basis(right, up, -fwd);
 
         camera.GlobalPosition = Coords.ToGodot(camQuake);
+
+        // Stash the FINAL rendered view (QC view_origin / view_forward): camQuake is the authoritative render origin
+        // (post chase pull-back + view-lock), fq the forward built from the resolved view angles, and the Godot eye
+        // is exactly where the camera was placed. The Phase-2 crosshair-chase consumer reads these to trace true-aim.
+        _renderedEyeQuake = camQuake;
+        _renderedForwardQuake = fq;
+        _renderedEyeGodot = camera.GlobalPosition;
 
         // QC HUD_Contents samples pointcontents(view_origin) at the FINAL render origin (view.qc:1176) — the
         // pulled-back cam during a chase, the eye otherwise — so the liquid tint reflects where the camera is.
@@ -647,7 +673,7 @@ public sealed class FirstPersonView
         float chaseDeath = Cvar("cl_eventchase_death", 2f);
         bool deathChase = st.IsDead && (
             chaseDeath == 1f
-            || (chaseDeath == 2f && (st.VelocityQuake == NVec3.Zero || _eventChaseRunning)));
+            || (chaseDeath == 2f && (st.VelocityQuake == NVec3.Zero || _eventChase.Running)));
         // QC MUTATOR_HOOKFUNCTION(cl_ft, WantEventchase): while frozen in Freeze Tag, cl_eventchase_frozen pulls the
         // camera to third person so the encased player can see around themselves.
         bool frozenChase = st.IsFrozen && Cvar("cl_eventchase_frozen", 0f) != 0f;
@@ -662,64 +688,15 @@ public sealed class FirstPersonView
         if (!wantChase)
         {
             // reset so the next death starts the pull-back from 0 (QC sets eventchase_current_distance = 0).
-            _eventChaseRunning = false;
-            _eventChaseDistance = 0f;
+            _eventChase = default;
             return eyeQuake;
         }
-        _eventChaseRunning = true;
 
-        // QC cl_eventchase_mins/maxs "-12 -12 -8"/"12 12 8" (xonotic-client.cfg:217-218). Needed both for the
-        // viewoffset ceiling clamp (uses maxs.z) and the pull-back box-trace.
-        NVec3 mins = new(-12f, -12f, -8f), maxs = new(12f, 12f, 8f);
-
-        // QC view.qc:807,812,823-828: the pull-back PIVOT is the RAW player origin (csqcplayer.origin /
-        // pmove_org), lifted by cl_eventchase_viewoffset "0 0 20" (xonotic-client.cfg:219) — NOT the eye.
-        // The lift is ceiling-aware: trace world-up by view_offset + maxs.z; if clear take the full offset,
-        // else clamp the rise so the camera box (height maxs.z) stays below the blocking surface.
-        NVec3 pivot = st.OriginQuake;
-        NVec3 viewOffset = new(0f, 0f, 20f);
-        if (viewOffset != NVec3.Zero && Api.Services is not null)
-        {
-            NVec3 ceilTo = pivot + viewOffset + new NVec3(0f, 0f, maxs.Z);
-            TraceResult ct = Api.Trace.Trace(pivot, NVec3.Zero, NVec3.Zero, ceilTo, MoveFilter.WorldOnly, null);
-            if (ct.Fraction == 1f)
-                pivot += viewOffset;
-            else
-                pivot.Z += Mathf.Max(0f, (ct.EndPos.Z - pivot.Z) - maxs.Z);
-        }
-        else if (viewOffset != NVec3.Zero)
-        {
-            pivot += viewOffset;
-        }
-
-        float chaseDistance = Cvar("cl_eventchase_distance", 140f);
-        float chaseSpeed = Cvar("cl_eventchase_speed", 1.3f);
-
-        // ease the distance out (slow down the further back we get) — QC eventchase_current_distance integration.
-        // A frametime-scaled exponential approach, as in QC.
-        float frametime = _lastDt > 0f ? _lastDt : 0.0166667f;
-        if (chaseSpeed != 0f && _eventChaseDistance < chaseDistance)
-            _eventChaseDistance += chaseSpeed * (chaseDistance - _eventChaseDistance) * frametime;
-        else if (!Mathf.IsEqualApprox(_eventChaseDistance, chaseDistance))
-            _eventChaseDistance = chaseDistance;
-
-        NVec3 target = pivot - forwardQuake * _eventChaseDistance;
-
-        // Box-trace from the pivot to the target against the world only (QC WarpZone_TraceBox MOVE_WORLDONLY): a
-        // small box so the camera keeps a little clearance from walls (QC cl_eventchase_mins/maxs).
-        if (Api.Services is not null)
-        {
-            TraceResult tr = Api.Trace.Trace(pivot, mins, maxs, target, MoveFilter.WorldOnly, null);
-            if (tr.StartSolid)
-            {
-                // Camera box started in solid (pivot against a wall): fall back to a line trace (QC behaviour) and
-                // stop just short, lifted off the surface by the box extent.
-                TraceResult lt = Api.Trace.Trace(pivot, NVec3.Zero, NVec3.Zero, target, MoveFilter.WorldOnly, null);
-                return lt.EndPos - forwardQuake * mins.Z;
-            }
-            return tr.EndPos;
-        }
-        return target;
+        // Delegate the pivot lift + smoothed pull-back box-trace to ChaseCamera.ApplyEvent (port of View_EventChase).
+        // It reads the RAW player origin (lifts it by cl_eventchase_viewoffset itself — NOT the eye) and mutates the
+        // run-latch / smoothed distance in _eventChase. dt comes from the latest UpdateView step.
+        float dt = _lastDt > 0f ? _lastDt : 0.0166667f;
+        return ChaseCamera.ApplyEvent(st.OriginQuake, forwardQuake, dt, ref _eventChase);
     }
 
     /// <summary>
@@ -732,81 +709,7 @@ public sealed class FirstPersonView
     /// the caller's basis matches. Operates on the eye position <paramref name="v"/> (= QC vieworg post-smoothing).
     /// </summary>
     private NVec3 ApplyClassicChase(NVec3 v, ref NVec3 viewAngles)
-    {
-        // DarkPlaces engine defaults: chase_back 48, chase_up 24, chase_front 0, chase_overhead 0, chase_pitchangle 0.
-        float chaseBack = Cvar("chase_back", 48f);
-        float chaseUp = Cvar("chase_up", 24f);
-        bool chaseFront = Cvar("chase_front", 0f) != 0f;
-        bool chaseOverhead = Cvar("chase_overhead", 0f) != 0f;
-        // Spectating-only test (QC CSQCPlayer_ApplyChase: `if (autocvar_chase_front && spectatee_status)`): chase_front
-        // is honored ONLY while following a player. For one's own chase cam Spectating is false, so chase_front does
-        // nothing — matching the QC guard. While spectating with chase_active set it engages the frontal selfie view.
-        bool spectating = Spectating;
-
-        if (chaseOverhead)
-        {
-            // QC: flatten pitch, sample a 5×5 grid of overhead trace destinations and keep the LOWEST ceiling hit.
-            viewAngles.X = 0f;
-            QMath.AngleVectors(viewAngles, out NVec3 forward, out _, out NVec3 up);
-
-            NVec3 BackUp(NVec3 ofs) => new(
-                v.X - forward.X * chaseBack + up.X * chaseUp + ofs.X,
-                v.Y - forward.Y * chaseBack + up.Y * chaseUp + ofs.Y,
-                v.Z - forward.Z * chaseBack + up.Z * chaseUp + ofs.Z);
-
-            NVec3 best = TraceEnd(v, BackUp(NVec3.Zero));
-            for (float ox = -16f; ox <= 16f; ox += 8f)
-                for (float oy = -16f; oy <= 16f; oy += 8f)
-                {
-                    NVec3 end = TraceEnd(v, BackUp(new NVec3(ox, oy, 0f)));
-                    if (best.Z > end.Z) best.Z = end.Z;
-                }
-            best.Z -= 8f;
-            viewAngles.X = Cvar("chase_pitchangle", 0f);
-            return best;
-        }
-
-        // Default branch: pull back along forward (negated, flipped for chase_front selfie) + lift by chase_up.
-        QMath.AngleVectors(viewAngles, out NVec3 fwd, out _, out _);
-        if (chaseFront && spectating)
-            fwd = -QMath.Normalize(fwd);
-
-        float cdist = -chaseBack - 8f; // QC trace "a little further" so it hits a surface consistently
-        NVec3 chaseDest = new(
-            v.X + fwd.X * cdist,
-            v.Y + fwd.Y * cdist,
-            v.Z + fwd.Z * cdist + chaseUp);
-
-        // QC traceline(v, chase_dest, MOVE_NOMONSTERS, NULL); then back off 8 along forward + 4 along the plane normal.
-        NVec3 endPos = chaseDest;
-        NVec3 planeNormal = NVec3.Zero;
-        if (Api.Services is not null)
-        {
-            TraceResult tr = Api.Trace.Trace(v, NVec3.Zero, NVec3.Zero, chaseDest, MoveFilter.WorldOnly, null);
-            endPos = tr.EndPos;
-            if (tr.Fraction < 1f) planeNormal = tr.PlaneNormal;
-        }
-        NVec3 result = new(
-            endPos.X + 8f * fwd.X + 4f * planeNormal.X,
-            endPos.Y + 8f * fwd.Y + 4f * planeNormal.Y,
-            endPos.Z + 8f * fwd.Z + 4f * planeNormal.Z);
-
-        if (chaseFront && spectating)
-        {
-            // QC: flip the view so the player looks at themselves — inverse pitch, yaw toward the (flipped) forward.
-            NVec3 newAng = QMath.VecToAngles(fwd);
-            viewAngles.X = -viewAngles.X;
-            viewAngles.Y = newAng.Y;
-        }
-        return result;
-    }
-
-    /// <summary>QC <c>traceline(start, end, MOVE_NOMONSTERS, NULL)</c> → trace_endpos; world-only line trace.</summary>
-    private static NVec3 TraceEnd(NVec3 start, NVec3 end)
-    {
-        if (Api.Services is null) return end;
-        return Api.Trace.Trace(start, NVec3.Zero, NVec3.Zero, end, MoveFilter.WorldOnly, null).EndPos;
-    }
+        => ChaseCamera.ApplyClassic(v, ref viewAngles, Spectating);
 
     // The dt of the latest UpdateView, so ApplyEventChase advances the smoothed distance against the same step.
     private float _lastDt;
@@ -842,7 +745,7 @@ public sealed class FirstPersonView
     /// (its string value is empty). An explicit <c>0</c> is honored — important for toggle cvars like
     /// <c>cl_eventchase_death 0</c> where 0 must not be reinterpreted as "use the default".
     /// </summary>
-    private static float Cvar(string name, float fallback)
+    internal static float Cvar(string name, float fallback)
     {
         if (Api.Services is null)
             return fallback;

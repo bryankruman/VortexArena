@@ -8,10 +8,11 @@
 // faces (reflect + continue) and stopping at noimpact/oversize faces, building a 16-point polyline; the
 // segments BEFORE the first portal point are drawn red, the rest blue (Draw_CylindricLine width 4).
 //
-// Like LaserRenderer this is a persistent self-driving client node hosted by ClientWorld. It keeps ONE
-// long-lived cross-ribbon mesh per polyline segment (the cheap Draw_CylindricLine stand-in used by
-// LaserRenderer/BeamRenderer), updated in place each frame, and reads the local player's eye/aim from the
-// host-supplied providers (camera + view angles + active weapon id). It draws nothing unless a porto is held.
+// Like LaserRenderer this is a persistent self-driving client node hosted by ClientWorld. It draws each
+// polyline segment through the shared CylindricLine segment pool (the proper Draw_CylindricLine stand-in),
+// acquiring one pooled segment per leg and updating it in place each frame, and reads the local player's
+// eye/aim from the host-supplied providers (camera + view angles + active weapon id). It draws nothing
+// unless a porto is held.
 
 using System;
 using System.Collections.Generic;
@@ -21,7 +22,6 @@ using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 using NVec3 = System.Numerics.Vector3;
-using GVec3 = Godot.Vector3;
 
 namespace XonoticGodot.Game.Client;
 
@@ -40,6 +40,10 @@ public sealed partial class PortoTrajectoryPreview : Node3D
     /// preview, QC Porto_Draw:19 spectatee_status || intermission || STAT(HEALTH) &lt;= 0).</summary>
     public Func<bool>? SuppressedProvider { get; set; }
 
+    /// <summary>Host-injected shared cylindric-line segment pool (the Draw_CylindricLine stand-in). Null = idle;
+    /// the preview acquires one pooled <see cref="CylindricLine.Segment"/> per polyline leg.</summary>
+    public CylindricLine? Lines { get; set; }
+
     // QC Porto_Draw constants.
     private const int PolylineLength = 16;          // QC polyline_length
     private const float LineWidth = 4f;             // QC Draw_CylindricLine width 4
@@ -52,22 +56,13 @@ public sealed partial class PortoTrajectoryPreview : Node3D
     private static readonly Color Red = new(1f, 0f, 0f);
     private static readonly Color Blue = new(0f, 0f, 1f);
 
-    // One persistent cross-ribbon per polyline segment (LaserRenderer technique), rebuilt-in-place each frame.
-    private sealed class Segment
-    {
-        public Node3D Root = null!;
-        public MeshInstance3D RibbonA = null!;
-        public MeshInstance3D RibbonB = null!;
-        public StandardMaterial3D Material = null!;
-    }
-
-    private readonly List<Segment> _segments = new();
-    private static readonly QuadMesh SharedQuad = new() { Size = new Vector2(1f, 1f) };
+    // One pooled CylindricLine segment per polyline leg (acquired from the shared pool, updated in place).
+    private readonly List<CylindricLine.Segment> _segments = new();
 
     public override void _Process(double delta)
     {
         // QC Porto_Draw early-returns unless a porto is held in the non-secondary mode and the player is alive.
-        if (Api.Services is null || ViewAnglesProvider is null || ActiveWeaponProvider is null)
+        if (Api.Services is null || ViewAnglesProvider is null || ActiveWeaponProvider is null || Lines is null)
         {
             HideAll();
             return;
@@ -163,9 +158,10 @@ public sealed partial class PortoTrajectoryPreview : Node3D
         NVec3 viewUp = ViewUp(viewAngles);
         for (int s = 0; s < _segments.Count; ++s)
         {
+            CylindricLine.Segment seg = _segments[s];
             if (s >= wanted)
             {
-                _segments[s].Root.Visible = false;
+                seg.Hide();
                 continue;
             }
             NVec3 p = poly[s];
@@ -173,7 +169,8 @@ public sealed partial class PortoTrajectoryPreview : Node3D
             if (s == 0)
                 p -= viewUp * 16f; // QC: "line from player" (drop the first point below the eye)
             Color rgb = s < portal1Idx ? Red : Blue;
-            UpdateSegment(_segments[s], p, q, rgb);
+            // QC Draw_CylindricLine width 4 at alpha 0.5, additive (DRAWFLAG draws over the world).
+            seg.Update(p, q, LineWidth * 0.0625f, new Color(rgb, 0.5f), BaseMaterial3D.BlendModeEnum.Add);
         }
     }
 
@@ -214,66 +211,21 @@ public sealed partial class PortoTrajectoryPreview : Node3D
     }
 
     // =================================================================================================
-    //  Segment ribbon lifecycle (the Draw_CylindricLine stand-in, mirrors LaserRenderer)
+    //  Pooled segment lifecycle (the Draw_CylindricLine stand-in, backed by the shared CylindricLine pool)
     // =================================================================================================
 
+    /// <summary>Grow the local segment list to <paramref name="wanted"/> by acquiring more pooled segments.</summary>
     private void EnsureSegments(int wanted)
     {
-        while (_segments.Count < wanted)
-            _segments.Add(BuildSegment());
-    }
-
-    private Segment BuildSegment()
-    {
-        var root = new Node3D { Name = $"portoline#{_segments.Count}" };
-        var mat = new StandardMaterial3D
-        {
-            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-            BlendMode = BaseMaterial3D.BlendModeEnum.Add, // QC DRAWFLAG_NORMAL at alpha 0.5 — additive reads well
-            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-            DisableReceiveShadows = true,
-            VertexColorUseAsAlbedo = false,
-        };
-        var ribbonA = new MeshInstance3D { Mesh = SharedQuad, MaterialOverride = mat, Position = new GVec3(0.5f, 0f, 0f) };
-        var ribbonB = new MeshInstance3D { Mesh = SharedQuad, MaterialOverride = mat, Position = new GVec3(0.5f, 0f, 0f) };
-        ribbonB.RotationDegrees = new GVec3(90f, 0f, 0f); // cross plane
-        root.AddChild(ribbonA);
-        root.AddChild(ribbonB);
-        AddChild(root);
-        return new Segment { Root = root, RibbonA = ribbonA, RibbonB = ribbonB, Material = mat };
-    }
-
-    private static void UpdateSegment(Segment seg, NVec3 fromQuake, NVec3 toQuake, Color color)
-    {
-        GVec3 a = Coords.ToGodot(fromQuake);
-        GVec3 b = Coords.ToGodot(toQuake);
-        GVec3 segVec = b - a;
-        float len = segVec.Length();
-        if (len < 1f)
-        {
-            seg.Root.Visible = false;
+        if (Lines is null)
             return;
-        }
-        seg.Root.Visible = true;
-        seg.Root.Position = a;
-        // +X along the line (the stable-basis trick from LaserRenderer/ProjectileRenderer.OrientToVelocity).
-        GVec3 x = segVec / len;
-        GVec3 upRef = Mathf.Abs(x.Dot(GVec3.Up)) > 0.99f ? GVec3.Forward : GVec3.Up;
-        GVec3 z = x.Cross(upRef).Normalized();
-        GVec3 y = z.Cross(x).Normalized();
-        seg.Root.Basis = new Basis(x, y, z);
-        // Width in Godot units (Quake unit ≈ render unit at this scale; LineWidth is the QC width 4 → a thin beam).
-        float width = LineWidth * 0.0625f; // 4 qu wire → ~0.25 render units, like the laser ribbon width
-        seg.RibbonA.Scale = new GVec3(len, width, 1f);
-        seg.RibbonB.Scale = new GVec3(len, width, 1f);
-        seg.Material.AlbedoColor = new Color(color, 0.5f); // QC alpha 0.5
+        while (_segments.Count < wanted)
+            _segments.Add(Lines.AcquireSegment());
     }
 
     private void HideAll()
     {
-        foreach (Segment s in _segments)
-            if (GodotObject.IsInstanceValid(s.Root))
-                s.Root.Visible = false;
+        foreach (CylindricLine.Segment s in _segments)
+            s.Hide();
     }
 }

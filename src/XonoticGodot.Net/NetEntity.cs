@@ -50,7 +50,8 @@ public enum NetEntityFlags : ushort
 /// entity's delta; only the set fields follow on the wire, so an idle entity (mask 0) costs just its id.
 /// (Widened from 16-bit to 32-bit when <see cref="StatusEffects"/> was added — bit 16 overflowed the old
 /// <c>ushort</c>; <see cref="EntityStateCodec.WriteDelta"/>/<see cref="EntityStateCodec.ReadDelta"/> carry the
-/// mask as a 32-bit value accordingly.)
+/// mask as a 32-bit value accordingly.) Highest bit currently in use: bit 22 <see cref="ObjState"/> (the 32-bit
+/// mask still has ample headroom).
 /// </summary>
 [Flags]
 public enum EntityField : uint
@@ -107,6 +108,23 @@ public enum EntityField : uint
     // remote player's weapon switch (raise/lower), exterior-weapon transparency (Cloaked/Running-Guns gun fade), the
     // viewmodel skin, and the gun-align side. Sent only when any wepent field differs from the baseline.
     Wepent = 1 << 19,
+
+    // [W-wepent-view] QC per-player wepent HUD view-state (vortex/oknex charge+pool, clip_load/size, hagar_load,
+    // minelayer_mines, arc_heat, viewmodel frame, beam state). Reaches ALL clients (spectators, third-person),
+    // unlike the owner-block OwnerWeaponRings which is local-only. Bit 20, verified free (Wepent=1<<19 is the prior
+    // top bit).
+    WepentView = 1 << 20,
+
+    // [W-objstream/turret] QC turret head aim block (tur_head.angles pitch/yaw, tur_head.avelocity.y idle-spin, and
+    // the .active / DEAD_DEAD flags). Present only for turret-class Generic entities whose head aim/active changed
+    // vs baseline; zero/default on every other entity so the bit stays clear and costs nothing. Bit 21, verified free.
+    TurretHead = 1 << 21,
+
+    // [W-objstream/obj] QC objective entity STATUS block (generator/CP-pad/build-icon): the GtObjHealth/GtObjMaxHealth
+    // fraction as an hp/255 byte plus a build-state enum (0 neutral, 1 building, 2 built/captured, 3 destroyed —
+    // the cpicon build-bar vs generator healthbar selector). Present only for objective entities whose health
+    // fraction or build state changed. Bit 22, verified free.
+    ObjState = 1 << 22,
 }
 
 /// <summary>
@@ -198,6 +216,33 @@ public struct NetEntityState
     /// <summary>QC the gun-align side (cl_gunalign / w_gunalign) — which hand/side the exterior weapon sits on.</summary>
     public byte GunAlign;
 
+    /// <summary>
+    /// [W-wepent-view] QC per-player wepent HUD view-state block — the vortex/oknex charge+pool, clip load/size,
+    /// hagar load, minelayer mine count, arc heat, viewmodel anim frame, and beam state for the third-person /
+    /// spectated player's weapon rings (decoded via <see cref="WepentViewState"/>). All-default (no charge, no clip)
+    /// keeps the <see cref="EntityField.WepentView"/> bit clear so an idle player costs nothing on the wire.
+    /// </summary>
+    public WepentViewState WepentView;
+
+    // [W-objstream] QC turret head aim + objective STATUS blocks. Both default to 0 on non-turret/non-objective
+    // entities, so NetEntityState.Diff leaves the TurretHead / ObjState bits clear and a normal player/projectile/item
+    // costs nothing for these groups.
+    /// <summary>QC <c>tur_head.angles.x</c> — body-relative head pitch (deg).</summary>
+    public float TurHeadPitch;
+    /// <summary>QC <c>tur_head.angles.y</c> — body-relative head yaw (deg).</summary>
+    public float TurHeadYaw;
+    /// <summary>QC <c>tur_head.avelocity.y</c> — head yaw angular velocity (deg/s) the client integrates for the
+    /// idle head spin (FusionReactor/Tesla; cl_turrets turret_draw <c>tur_head.angles += avelocity*dt</c>).</summary>
+    public float TurHeadAVelYaw;
+    /// <summary>QC turret render flags: bit0 = Active (.active != 0), bit1 = Dead (DEAD_DEAD).</summary>
+    public byte TurFlags;
+    /// <summary>QC generator/cpicon STATUS byte: clamp(round(GtObjHealth/GtObjMaxHealth*255),0,255); 0 = destroyed,
+    /// 255 = full. Client recovers fraction = ObjHealthByte/255.</summary>
+    public byte ObjHealthByte;
+    /// <summary>QC objective state: 0 = neutral/idle, 1 = building, 2 = built/captured/owned, 3 = destroyed
+    /// (the cpicon build-bar vs generator healthbar selector).</summary>
+    public byte ObjState;
+
     /// <summary>A fresh state carrying just an id (the implicit baseline for a never-seen entity — a "spawn").</summary>
     public static NetEntityState Empty(int entNum) => new() { EntNum = entNum, SwitchWeapon = -1, SwitchingWeapon = -1 };
 
@@ -240,6 +285,17 @@ public struct NetEntityState
             || baseline.ViewmodelSkin != current.ViewmodelSkin
             || baseline.WepAlpha != current.WepAlpha
             || baseline.GunAlign != current.GunAlign) m |= EntityField.Wepent;
+        // [W-wepent-view] the per-player HUD view-state block — re-send when ANY field differs (charge/pool/clip/heat/
+        // frame/beam). All-default (no charge, no clip) keeps the bit clear.
+        if (!baseline.WepentView.Equals(current.WepentView)) m |= EntityField.WepentView;
+        // [W-objstream] turret head aim — re-send when head pitch/yaw, head yaw avel, or the active/dead flags change.
+        if (baseline.TurHeadPitch != current.TurHeadPitch
+            || baseline.TurHeadYaw != current.TurHeadYaw
+            || baseline.TurHeadAVelYaw != current.TurHeadAVelYaw
+            || baseline.TurFlags != current.TurFlags) m |= EntityField.TurretHead;
+        // [W-objstream] objective STATUS — re-send when the obj-health fraction byte or the build state changes.
+        if (baseline.ObjHealthByte != current.ObjHealthByte
+            || baseline.ObjState != current.ObjState) m |= EntityField.ObjState;
         return m;
     }
 
@@ -258,9 +314,12 @@ public struct NetEntityState
 /// <summary>
 /// Serializes a <see cref="NetEntityState"/> as a delta against a baseline — the change-mask codec that
 /// powers both snapshot delta-compression and CSQC entity updates (QC <c>SendEntity</c>/<c>ReadEntity</c> with
-/// <c>SendFlags</c>). <see cref="WriteDelta"/> emits a 16-bit <see cref="EntityField"/> mask followed by only
+/// <c>SendFlags</c>). <see cref="WriteDelta"/> emits a 32-bit <see cref="EntityField"/> mask followed by only
 /// the changed fields; <see cref="ReadDelta"/> applies them on top of the baseline. A spawn is just a delta
-/// against <see cref="NetEntityState.Empty"/>; an idle entity is a single zero mask.
+/// against <see cref="NetEntityState.Empty"/>; an idle entity is a single zero mask. The append-only tail beyond
+/// the original 16-bit set is, in wire order: StatusEffects(16), Alpha(17), AnimAction(18), Wepent(19),
+/// WepentView(20), TurretHead(21), ObjState(22) — every new field MUST be appended AFTER the existing blocks in
+/// both WriteDelta and ReadDelta or every later field desyncs.
 /// </summary>
 public static class EntityStateCodec
 {
@@ -321,6 +380,21 @@ public static class EntityStateCodec
             w.WriteByte(current.WepAlpha); // 0 = opaque; 1..254 = alpha/255; 255 = hidden (-1)
             w.WriteByte(current.GunAlign);
         }
+        // [W-wepent-view] per-player HUD view-state block (fixed 13-byte layout, see WepentViewCodec.Write).
+        if ((mask & EntityField.WepentView) != 0) WepentViewCodec.Write(w, current.WepentView);
+        // [W-objstream] turret head aim: head angles (Low, roll always 0), the yaw avel float, then the flags byte.
+        if ((mask & EntityField.TurretHead) != 0)
+        {
+            w.WriteAngles(new System.Numerics.Vector3(current.TurHeadPitch, current.TurHeadYaw, 0f), NetPrecision.Low);
+            w.WriteFloat(current.TurHeadAVelYaw);
+            w.WriteByte(current.TurFlags);
+        }
+        // [W-objstream] objective STATUS: the hp/255 fraction byte, then the build-state enum byte.
+        if ((mask & EntityField.ObjState) != 0)
+        {
+            w.WriteByte(current.ObjHealthByte);
+            w.WriteByte(current.ObjState);
+        }
         return mask;
     }
 
@@ -375,6 +449,23 @@ public static class EntityStateCodec
             s.ViewmodelSkin = (byte)r.ReadByte();
             s.WepAlpha = (byte)r.ReadByte();
             s.GunAlign = (byte)r.ReadByte();
+        }
+        // [W-wepent-view] per-player HUD view-state block — SAME order as WriteDelta (the fixed WepentViewCodec layout).
+        if ((mask & EntityField.WepentView) != 0) s.WepentView = WepentViewCodec.Read(ref r);
+        // [W-objstream] turret head aim — SAME order as WriteDelta (head angles Low, yaw avel float, flags byte).
+        if ((mask & EntityField.TurretHead) != 0)
+        {
+            var ha = r.ReadAngles(NetPrecision.Low);
+            s.TurHeadPitch = ha.X;
+            s.TurHeadYaw = ha.Y;
+            s.TurHeadAVelYaw = r.ReadFloat();
+            s.TurFlags = (byte)r.ReadByte();
+        }
+        // [W-objstream] objective STATUS — SAME order as WriteDelta (hp/255 byte, then build-state byte).
+        if ((mask & EntityField.ObjState) != 0)
+        {
+            s.ObjHealthByte = (byte)r.ReadByte();
+            s.ObjState = (byte)r.ReadByte();
         }
         return s;
     }

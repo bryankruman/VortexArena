@@ -1,7 +1,7 @@
 unit: cl-view
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # Wave 16/17 re-audit (opus parity-diff): code-verified the full port (FirstPersonView/ViewEffects/ReticleOverlay + NetGame wiring + ClientNet/ServerNet PunchVector + PlayerPhysics.CheckPunch). All the "FIXED since 2026-06-22" rows confirmed faithful + live by reading the current source — no inflated confidence found. One drift CAUGHT: cl_lockview (View_Lock) is now ported+live (FirstPersonView.ApplyViewLock, called every frame in UpdateCamera) but the demo/lockview/ortho row still read missing — upgraded that row to partial. NetGame port_ref line numbers shifted again (Wave 16/17) but left as-is except where edited.
+last_audited: "2026-06-28"  # Re-verify (opus parity-diff, claude/parity-port-waves): re-read FirstPersonView/ChaseCamera/ViewEffects/ReticleOverlay + NetGame wiring + ClientNet/ServerNet against current source. NO DRIFT vs the 2026-06-27 Wave 16/17 audit — all feature scores hold. The only post-06-27 changes to cl-view-relevant files (commits c7470c5/1179874) inserted PressedKeys into the owner block BETWEEN SpectateeStatus and PunchAngle/PunchVector (a HUD/net concern, not cl-view); the punch seam is intact (ClientNet still reads PunchAngle then PunchVector immediately after; NetGame:5440 PunchOriginQuake=_client.PunchVector still feeds the first-person camera). Live wiring spot-confirmed: UpdateView NetGame:5455 (own) / 5335 (spectate); CameraMode from chase_active 2985/5324; Spectating=true 5323; TriggerSpawnZoom 2963; NotifyZoomScroll on wheel 4796; ZoomScriptCaught->reticle 3027. NetGame port_ref line numbers shifted again (warpzone/wepent waves) but left as-is except where edited.
 summary:
   feature_count: 21
   worst_gaps:

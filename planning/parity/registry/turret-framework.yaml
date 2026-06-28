@@ -1,7 +1,7 @@
 unit: turret-framework
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # re-audited post Wave-16/17: 3 turret mutator hooks + non-step aim_speed default now live
+last_audited: "2026-06-28"  # OPUS re-verify: Wave-16 4 turret mutator hooks (Think/Validate/CheckFire/Fire) + track-type aim_speed default CONFIRMED live (build green, 58 turret tests pass); dispatchers real, zero handler .Add (Base-faithful no-op)
 summary:
   feature_count: 15
   worst_gaps:
@@ -139,7 +139,8 @@ features:
     gaps:
       - "HITALLVALID / CUSTOM / VOLLYALWAYS shoot-mode branches are folded into per-turret Think rather than the shared driver (functionally covered by Tesla/Phaser/FusionReactor self-scan + the RunCombat VollyAlways path, but the generic dispatch is not in RunCombat)."
     verification:
-      - { kind: code_read, ref: "turret_think vs TurretAI.RunCombat/Fire; Cvar() helper reads turrets.cfg (exec'd live via ConfigLoader.LoadServerConfig) with Base-matching fallbacks; the 3 turret mutator hooks (TurretThink/Turret_CheckFire/TurretFire) are real HookChain dispatchers (MutatorHooks.cs:1343/1409/1436) fired live from RunCombat/Fire (TurretAI.cs:681/748/882) with empty-chain fast-paths", result: pass }
+      - { kind: code_read, ref: "turret_think vs TurretAI.RunCombat/Fire; Cvar() helper reads turrets.cfg (exec'd live via ConfigLoader.LoadServerConfig) with Base-matching fallbacks; the 3 turret mutator hooks (TurretThink/Turret_CheckFire/TurretFire) are real HookChain dispatchers (MutatorHooks.cs:1343/1409/1436) fired live from RunCombat (TurretAI.cs:690), the checkFire gate (757), and Fire (891) with empty-chain fast-paths", result: pass }
+      - { kind: test, ref: "OPUS 06-28 re-verify: XonoticGodot.Common build green + 58 turret tests pass; grep confirms ZERO MutatorHooks.Turret{Think,CheckFire,Fire}.Add callers (dispatch seam live, no handler registered — Base-faithful, no stock mutator registers EV_Turret*)", result: pass }
     confidence: high
     notes: "FIX vs baseline (TurretThink/Turret_CheckFire/TurretFire mutator hooks now ported + live): Wave-16 wired all three brain/fire mutator hooks through the real HookChain dispatchers — a mutator can now pause a turret's think (TurretThink), force/hold its firecheck (Turret_CheckFire), or suppress an individual shot (TurretFire), matching the MUTATOR_CALLHOOK sites in turret_think/turret_firecheck/turret_fire. No stock mutator registers them (fast-path no-op in stock play), exactly like Base. Brain stays faithful (scan delays + aimidle + nofire master gate cvar-backed; VollyAlways mid-burst path in RunCombat). Only the generic HITALLVALID/CUSTOM shoot-mode dispatch remains folded into per-turret Think (functionally covered by the self-scanning Tesla/Phaser/FusionReactor)."
   - id: turret-framework.acquire.target
@@ -176,7 +177,8 @@ features:
       - "No separate turret_targetscore_support path (support units score like combat units)."
     verification:
       - { kind: test, ref: "TurretTargetingTests.cs (validate cascade + scoring)", result: pass }
-      - { kind: code_read, ref: "turret_validate_target/select_target/targetscore_generic vs TurretAI; ValidTarget threads p.FireToleranceDist into the LOS reject, runs the checkpvs gate (Api.Trace.CheckPvs) before alpha/team/range, AND (Wave-16) fires MutatorHooks.FireTurretValidateTarget (real HookChain, fast-path when empty) right after the alpha-cull — a non-null override fully replaces the validity result (TurretAI.cs:343, MutatorHooks.cs:1379)", result: pass }
+      - { kind: code_read, ref: "turret_validate_target/select_target/targetscore_generic vs TurretAI; ValidTarget threads p.FireToleranceDist into the LOS reject, runs the checkpvs gate (Api.Trace.CheckPvs) before alpha/team/range, AND (Wave-16) fires MutatorHooks.FireTurretValidateTarget (real HookChain, fast-path when empty) right after the alpha-cull — a non-null override fully replaces the validity result (TurretAI.cs:352, MutatorHooks.cs:1379)", result: pass }
+      - { kind: test, ref: "OPUS 06-28 re-verify: build green + 58 turret tests pass (TurretTargetingTests incl.); the TurretValidateTarget dispatch seam is live but unregistered (no .Add), matching Base where no stock mutator hooks it", result: pass }
     confidence: high
     notes: "FIX vs baseline (TurretValidateTarget mutator hook now ported + live): Wave-16 wired the EV_TurretValidateTarget hook into ValidTarget (TurretAI.cs:343) via the real HookChain dispatcher (MutatorHooks.cs:1379) — a handler's nullable-bool override force-accepts/force-rejects a candidate, matching validate_target's `return M_ARGV(3,float)`. No stock mutator registers it (fast-path no-op in stock play), exactly like Base. Validate cascade + scoring stay faithful; the checkpvs reject gate (Wave-7) matches validate_target:688. Only the separate turret_targetscore_support path still diverges (support units score like combat units)."
   - id: turret-framework.aim.predict
