@@ -2772,6 +2772,9 @@ public sealed class GameWorld
         // same world); only the active round-based gametype's case below re-installs them.
         _roundPrep = null;
         _roundSync = null;
+        // Clear CA's join-refused hook so a gametype switch away from CA doesn't leave mid-round join
+        // notifications firing for the new mode (mirrors the GametypeJoinGate/GametypeOnJoin clears below).
+        Clients.GametypeOnJoinRefused = null;
         // Clear the round-grace weapon-fire block (QC round_handler_IsActive => round_handler != NULL): only a
         // round-based gametype's EnableRounds re-installs it, so a non-round mode never forbids fire.
         WeaponFireDriver.RoundFireForbidden = null;
@@ -2851,7 +2854,14 @@ public sealed class GameWorld
                 // INGAME_STATUS_JOINING + send INFO_CA_JOIN_LATE so they enter next round. Mirrors the Survival gate
                 // install below. Keep the free-slot cap like the default/LMS gate (inert for CA's open team game).
                 Clients.GametypeJoinGate = p => ca.CanJoin(p, Rounds is { IsRoundStarted: true }) && GametypeHasFreeSlot(p);
-                Clients.GametypeOnJoin = p => { if (Rounds is { IsRoundStarted: true }) ca.OnJoinLate(p); };
+                // QC MUTATOR_HOOKFUNCTION(ca, PutClientInServer): when a mid-round join is REFUSED by CanJoin
+                // (round is live), mark the would-be joiner INGAME_STATUS_JOINING + send INFO_CA_JOIN_LATE.
+                // GametypeOnJoinRefused fires in JoinAllowed exactly when GametypeJoinGate returns false, which
+                // is the only condition under which OnJoinLate should notify. The old wiring used GametypeOnJoin
+                // (fired only on SUCCESSFUL joins) with an IsRoundStarted guard — mutually exclusive, so
+                // OnJoinLate was permanently unreachable.
+                Clients.GametypeOnJoinRefused = p => { if (Rounds is { IsRoundStarted: true }) ca.OnJoinLate(p); };
+                Clients.GametypeOnJoin = null; // CA has no successful-join hook (LMS/Survival use this, CA does not)
                 break;
 
             // ---- the remaining team / objective modes ----
@@ -3086,6 +3096,15 @@ public sealed class GameWorld
                 break;
             case Race race:
                 race.Activate();
+                // QC race.qh CLASS(Race) gametype_init default args "timelimit=20 qualifying_timelimit=5
+                // laplimit=7 teamlaplimit=15 leadlimit=0": a Race map defaults to a 20-minute timelimit. The port
+                // reads the live `timelimit` cvar in DriveFrame, so an unconfigured boot would otherwise run
+                // unlimited (the lap-limit win could still fire, but a never-finished qualifying/race would never
+                // time out). Assert the Base mapinfo default when nothing configured one — same pattern as the
+                // Cts/Duel/Assault/Survival arms below. NB: do this BEFORE the qualifying-timelimit swap block
+                // (which stashes + replaces `timelimit`), so the stashed value is the faithful 20-minute default.
+                if (Cvars.FloatOr("timelimit", 0f) <= 0f)
+                    Cvars.Set("timelimit", "20");   // QC gametype_init timelimit=20 (minutes)
                 // QC the finish kill-delay re-teleport: re-place the racer at a (race-start) spawn point so they
                 // run again. Clients.Spawn goes through PutPlayerInServer, the host analogue of race_PreparePlayer.
                 race.OnFinishRetract = p => Clients.Spawn(p);
@@ -4616,6 +4635,11 @@ public sealed class GameWorld
         {
             case Mayhem m: m.ResetMapPlayers(Clients.Players); break;
             case TeamMayhem tm: tm.ResetMapPlayers(Clients.Players); break;
+            // QC MUTATOR_HOOKFUNCTION(ca, reset_map_players) (sv_clanarena.qc): on each round reset, clear the
+            // INGAME_STATUS_JOINING set so mid-round joiners can participate next round, zero each player's
+            // killcount, and snapshot prev_team for the MatchEnd status restore. ResetMapPlayers was implemented
+            // in Wave-16/17 but lacked this caller, leaving it permanently dead.
+            case ClanArena ca: ca.ResetMapPlayers(Clients.Players); break;
             // QC MUTATOR_HOOKFUNCTION(cts, reset_map_global) → race_ClearRecords + race_PreparePlayer per client:
             // re-prepare every CTS runner (drop any in-progress run so they restart from the start timer). The
             // persistent top-99 records survive (QC keeps the ServerProgsDB table); only the in-memory run state

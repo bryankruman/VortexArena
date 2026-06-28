@@ -221,6 +221,11 @@ public sealed class Ctf : GameType
     private HookHandler<MutatorHooks.GiveFragsForKillArgs>? _giveFragsHandler;
     private HookHandler<MutatorHooks.PreferPlayerScore_ClearArgs>? _preferScoreClearHandler;
 
+    /// <summary>Per-entity handler for the WarpzoneManager.OnPortalTeleport callback: a flag-carrier who
+    /// crosses a Porto portal drops the flag (QC MUTATOR_HOOKFUNCTION(ctf, PortalTeleport), sv_ctf.qc:2404,
+    /// gated by autocvar_g_ctf_portalteleport). Null when CTF is not active.</summary>
+    private System.Action<Entity>? _portalTeleportHandler;
+
     // ----- flagcarrier damage/force factors + auto-helpme (g_ctf_flagcarrier_*; gametypes-server.cfg, all 1) -----
     private const string CvarFcSelfDamage = "g_ctf_flagcarrier_selfdamagefactor"; // 1
     private const string CvarFcSelfForce  = "g_ctf_flagcarrier_selfforcefactor";  // 1
@@ -369,6 +374,13 @@ public sealed class Ctf : GameType
         // CTF prefers to KEEP a rejoining player's accumulated score. Fired live from GameScores.ClearPlayerOnJoin.
         _preferScoreClearHandler = OnPreferPlayerScoreClear;
         MutatorHooks.PreferPlayerScore_Clear.Add(_preferScoreClearHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ctf, PortalTeleport) (sv_ctf.qc:2404): when a carrier crosses a Porto
+        // portal, drop the flag (DROP_NORMAL) if autocvar_g_ctf_portalteleport is set (default 0 = disabled;
+        // with ratio 0 the stock config is inert, exactly like Base). The WarpzoneManager.OnPortalTeleport
+        // callback fires for every client crossing a Porto-owned warpzone — a player-only path.
+        _portalTeleportHandler = OnPortalTeleport;
+        WarpzoneManager.OnPortalTeleport += _portalTeleportHandler;
     }
 
     /// <summary>
@@ -438,6 +450,11 @@ public sealed class Ctf : GameType
         {
             MutatorHooks.PreferPlayerScore_Clear.Remove(_preferScoreClearHandler);
             _preferScoreClearHandler = null;
+        }
+        if (_portalTeleportHandler is not null)
+        {
+            WarpzoneManager.OnPortalTeleport -= _portalTeleportHandler;
+            _portalTeleportHandler = null;
         }
     }
 
@@ -1958,6 +1975,27 @@ public sealed class Ctf : GameType
     }
 
     /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ctf, AbortSpeedrun)</c> (sv_ctf.qc): when a speedrun is aborted via
+    /// impulse 141 (the SPEEDRUN cheat), any flag the carrier holds is force-respawned and
+    /// <c>INFO_CTF_FLAGRETURN_ABORTRUN</c> is broadcast (QC <c>ctf_RespawnFlag</c> + announce). The port
+    /// collapses the QC <c>ctf_RespawnFlag</c> into <see cref="AutoReturnFlag"/> which already handles the
+    /// reset + voice + info line; the ABORTRUN variant sends the dedicated notification instead.
+    /// </summary>
+    public void AbortSpeedrun(Player p)
+    {
+        FlagState? carried = CarriedBy(p);
+        if (carried is null)
+            return;
+        // QC MUTATOR_HOOKFUNCTION(ctf, AbortSpeedrun): ctf_RespawnFlag(player.flagcarried) +
+        // INFO_CTF_FLAGRETURN_ABORTRUN broadcast + snd_flag_respawn global voice.
+        FlagAnnounceSound(carried.HomeTeam, "RETURNED"); // QC snd_flag_respawn (ATTEN_NONE)
+        NotificationSystem.Info($"CTF_FLAGRETURN_ABORTRUN_{TeamSuffix(carried.HomeTeam)}");
+        KillCarrierWaypoint(carried);
+        carried.ResetToBase();
+        RespawnFlagEntity(carried);
+    }
+
+    /// <summary>
     /// QC ctf_RemovePlayer (sv_ctf.qc:2372), called from the MakePlayerObserver / ClientDisconnect / portal /
     /// vehicle hooks: a carrier who leaves play (disconnect, spectate, portal, board a vehicle) drops the flag
     /// where they stand, and any flag still referencing this player as pass sender / pass target / dropper has
@@ -1993,6 +2031,22 @@ public sealed class Ctf : GameType
     /// gametype's live leave-play hook (see <see cref="GameType.OnPlayerRemoved"/>) — it forwards to
     /// <see cref="RemovePlayer"/> so a leaving carrier drops the flag and stale back-links are cleared.</summary>
     public override void OnPlayerRemoved(Player player) => RemovePlayer(player);
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ctf, PortalTeleport)</c> (sv_ctf.qc:2404): when a carrier crosses a Porto
+    /// portal (player-placed via the Porto weapon), drop the flag with DROP_NORMAL — gated by
+    /// <c>autocvar_g_ctf_portalteleport</c> (default 0 = disabled, matching Base). Subscribed to
+    /// <see cref="WarpzoneManager.OnPortalTeleport"/> (fires for every client crossing a Porto-owned portal).
+    /// </summary>
+    private void OnPortalTeleport(Entity e)
+    {
+        if (MatchEnded || Cvar("g_ctf_portalteleport", 0f) == 0f)
+            return;
+        if (e is not Player player)
+            return;
+        // QC: ctf_RemovePlayer(player) — the same drop-and-clear path used by disconnect/observe/vehicle.
+        RemovePlayer(player);
+    }
 
     /// <summary>
     /// QC MUTATOR_HOOKFUNCTION(ctf, GiveFragsForKill) (sv_ctf.qc): when g_ctf_ignore_frags is set, a regular

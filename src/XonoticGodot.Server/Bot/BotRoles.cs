@@ -64,12 +64,12 @@ public sealed class GoalRater
     /// graph, falling back to straight-line when the graph can't reach the candidate. Pass net = null to keep the
     /// prior straight-line behaviour (graphless roaming / tests).
     /// </summary>
-    public void SeedRoute(WaypointNetwork? net, Vector3 from)
+    public void SeedRoute(WaypointNetwork? net, Vector3 from, bool onGround = true)
     {
         _routeNet = net;
         _routeFrom = from;
         _routeSeeded = net is not null;
-        net?.ComputeRouteCosts(from);
+        net?.ComputeRouteCosts(from, onGround);
     }
 
     /// <summary>Rate a candidate goal (QC navigation_routerating): value <paramref name="f"/> discounted by distance.</summary>

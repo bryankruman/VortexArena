@@ -703,6 +703,11 @@ public sealed class FreezeTag : GameType
             if (n == 0 && st.FrozenTimeout > 0f && now >= st.FrozenTimeout)
                 n = -1;
 
+            // QC WaypointSprite_UpdateSprites: WP_Reviving when n>0 (a reviver is actively in range). Mirror
+            // that state into FrozenState.HasReviver so CollectWaypoints can reproduce the exact QC condition
+            // (n>0 || progress>0.95) without a second full O(n) scan.
+            st.HasReviver = n > 0;
+
             // QC base_progress: with auto-revive-progress on, the thaw ring fills smoothly from freeze time so the
             // bar reflects the auto-thaw countdown even with no reviver near.
             float baseProgress = 0f;
@@ -841,7 +846,10 @@ public sealed class FreezeTag : GameType
             if (!Frozen.TryGetValue(p, out var st) || !st.IsFrozen || p.IsDead)
                 continue;
             int team = (int)p.Team;
-            bool reviving = st.ReviveProgress > 0f; // QC WP_Reviving once thaw progress is accruing
+            // QC WaypointSprite_UpdateSprites (sv_freezetag.qc): WP_Reviving when n>0 (an active reviver is
+            // standing in range) OR when progress>0.95 (nearly thawed, cosmetic warning). The port previously
+            // used ReviveProgress>0 which fires too early (the auto-thaw ramp makes progress>0 immediately).
+            bool reviving = st.HasReviver || st.ReviveProgress >= 0.95f;
             into.Add(new Waypoints.WaypointSprite
             {
                 // QC WaypointSprite_Spawn(WP_Frozen, ..., '0 0 64', NULL, targ.team, targ, ...): owner = the frozen
@@ -1190,6 +1198,13 @@ public sealed class FrozenState
 {
     /// <summary>QC STAT(FROZEN): the player is encased in ice and counts as eliminated.</summary>
     public bool IsFrozen;
+
+    /// <summary>
+    /// True iff at least one living unfrozen same-team reviver was within range last <see cref="FreezeTag.ReviveTick"/>
+    /// call (QC <c>n &gt; 0</c>). Used by <see cref="FreezeTag.CollectWaypoints"/> to decide the
+    /// WP_Frozen → WP_Reviving swap (Base swaps on <c>n&gt;0 || progress&gt;0.95</c>).
+    /// </summary>
+    public bool HasReviver;
 
     /// <summary>QC STAT(REVIVE_PROGRESS): 0..1 thaw progress from nearby teammates.</summary>
     public float ReviveProgress;

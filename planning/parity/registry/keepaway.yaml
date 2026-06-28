@@ -1,7 +1,7 @@
 unit: keepaway
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 19
   worst_gaps:
@@ -9,7 +9,7 @@ summary:
     - "Ball/carrier presentation residuals: client ball MODEL/glow_trail RENDER + carried-ball scale 0.75 + invisibility-alpha sync are not applied. NOTE post Wave-16/17: the EFFECT_KA_BALL_RESPAWN (relocate, x2 origins) and EFFECT_BALL_SPARKS (world-touch) particle EMITS ARE now wired (Keepaway.cs:455-456/479) — only their CSQC render fidelity stays unverified."
     - "Multi-ball chaining (g_keepaway_ballcarrier_maxballs, cnt chain / ka_PlayerReset chain advance) is collapsed to a single ball; the structural carrier/collector bot-role split is one adaptive RoleKeepaway."
     - "NOIMPACT fall-off respawn branch (ka_TouchEvent trace_dphitq3surfaceflags & Q3SURFACEFLAG_NOIMPACT) is unported; the NEEDKILL damage respawn branch IS covered. The ka_ballcarrier_waypointsprite_visible_for_player spectator-of-carrier nuance is approximated, not exact."
-    - "RE-AUDITED Wave 16/17: the full live wiring chain re-traced against current line numbers — SpawnBall (GameWorld.cs:771), Activate/EventLogEcho/ForbidAttackHook (:2989-2997), Tick/RecomputeLeader (:3467-3470), winner=Leader (:4236), use-key drop (VehicleBoarding.cs:106), observe/disconnect drop (ClientManager.cs:549/:837), damage matrix (DamageSystem.cs:264), highspeed (PlayerPhysics.cs:283 after :253 seed), mod-icon (GametypeStatusBlock.cs:119 → NetGame.cs:4467), waypoints (ServerNet.cs:1196), bot ForbidAttack (BotBrain.cs:1087). All confirmed live; only line numbers had drifted from the baseline."
+    - "RE-AUDITED 2026-06-28 (post-wave): the full live wiring chain re-traced against CURRENT line numbers — SpawnBall (GameWorld.cs:772), Activate/EventLogEcho/ForbidAttackHook (case Keepaway :3006/:3009/:3013), Tick/RecomputeLeader (:3493/:3496), winner=Leader (:4260), use-key drop (VehicleBoarding.cs:106 FirePlayerUseKey), observe/disconnect drop (ClientManager.cs:564/:852 OnPlayerRemoved), damage matrix (DamageSystem.cs:264 DamageCalculate.Call), highspeed (PlayerPhysics.cs:283 PlayerPhysics.Call), mod-icon (GametypeStatusBlock.cs:121 netIdOf(carrier) → NetGame.cs:4804 KeepawayCarrying), waypoints (ServerNet.cs:1196 CollectWaypoints), bot ForbidAttack (BotBrain.cs:1097). All confirmed live against the actual port code; NO row changed status this wave — the Wave 16/17 statuses were already accurate. Line numbers drifted only (~+20–30 lines)."
 features:
   - id: keepaway.ball.spawn
     name: "Ball spawn at map start (single keepawayball)"
@@ -150,13 +150,13 @@ features:
     gaps:
       - "The drop velocity includes the crandom xy scatter (DropOffsetVelocity == Base '0 0 200' + '0 100 0'*crandom + '100 0 0'*crandom; Prandom.Signed == crandom); the 0.5s previous_owner/wait self-recapture lockout is armed (GtNextTakeTime + Owner=carrier)."
       - "SND_KA_DROPPED plays globally (PlayGlobal KA_DROPPED, ATTEN_NONE); INFO_KEEPAWAY_DROPPED (all) + CENTER_KEEPAWAY_DROPPED (all) notifications sent and registered."
-      - "ALL FOUR drop triggers are wired live (RE-VERIFIED Wave 16/17). DEATH (OnDeath → Drop, Combat.Death bus); USE-KEY (OnUseKey on MutatorHooks.PlayerUseKey, fired live via VehicleBoarding.cs:106 FirePlayerUseKey — the +use impulse tail that runs only when the press neither boarded nor exited a vehicle); DISCONNECT + OBSERVE (OnPlayerRemoved, fired live at ClientManager.cs:549 PutObserverInServer AND :837 ClientDisconnect path). QC's ClientDisconnect/MakePlayerObserver both ka_DropEvent."
+      - "ALL FOUR drop triggers are wired live (RE-VERIFIED Wave 16/17). DEATH (OnDeath → Drop, Combat.Death bus); USE-KEY (OnUseKey on MutatorHooks.PlayerUseKey, fired live via VehicleBoarding.cs:106 FirePlayerUseKey — the +use impulse tail that runs only when the press neither boarded nor exited a vehicle); DISCONNECT + OBSERVE (OnPlayerRemoved, fired live at ClientManager.cs:564 PutObserverInServer AND :852 ClientDisconnect path). QC's ClientDisconnect/MakePlayerObserver both ka_DropEvent."
       - "STILL OPEN (logic): no nudgeoutofsolid_OrFallback after placing the dropped ball; no multi-ball chain advance / ka_PlayerReset chain semantics (single ball only)."
       - "PRESENTATION note: QC ka_DropEvent emits NO drop particle (spec drop algorithm lists only the WP spawn) — so 'missing' here means only the WP_KaBall sprite, which IS now re-spawned via CollectWaypoints when the ball is loose (see keepaway.waypoints.tracking). There is no missing drop-particle emit in Base to port."
       - "NOTE: QC also drops via DropSpecialItems (the generic special-item drop hook); the port has no DropSpecialItems subscription, but death/disconnect/observe/use-key already cover every drop trigger DropSpecialItems would, so this is redundant rather than a gap."
     verification:
       - { kind: codetrace, ref: "OnDeath victimCarried → Drop → DropFromCarrier (live death bus, Keepaway.cs:614-615). DropOffsetVelocity scatter + GtNextTakeTime lockout verified (BallEntity.cs:334,338); KA_DROPPED + KEEPAWAY_DROPPED registered (Keepaway.cs:383-385)", result: pass }
-      - { kind: codetrace, ref: "OnUseKey on MutatorHooks.PlayerUseKey, fired live (VehicleBoarding.cs:106 FirePlayerUseKey ← +use impulse tail); OnPlayerRemoved fired live (ClientManager.cs:549 observe + :837 disconnect)", result: pass }
+      - { kind: codetrace, ref: "OnUseKey on MutatorHooks.PlayerUseKey, fired live (VehicleBoarding.cs:106 FirePlayerUseKey ← +use impulse tail); OnPlayerRemoved fired live (ClientManager.cs:564 observe + :852 disconnect) — RE-VERIFIED 2026-06-28", result: pass }
     confidence: high
     notes: "Re-audit (Wave 16/17): all four QC drop triggers (death/use-key/disconnect/observe) confirmed wired live (line refs corrected to :549/:837). Base has no drop particle, so presentation:missing = waypoint-only, now covered by the waypoints row. Residuals: nudgeoutofsolid, multi-ball chain."
 
@@ -394,7 +394,7 @@ features:
       - "MINOR (intended): the port transmits the carrier NET ID rather than a per-player KA_CARRYING bit; the client derives the local carrying flag from it (carrier == self). Equivalent result, and it also feeds the carrier waypoint."
       - "MINOR (presentation): when the keepawayball_carrying skin texture is missing the panel draws a ball-glyph + 'BALL' stand-in (a deliberate never-invisible fallback, not a Base behavior)."
     verification:
-      - { kind: codetrace, ref: "GametypeStatusBlock.cs:119 writes netIdOf(carrier); NetGame.cs:4467-4469 sets Mode=Keepaway + KeepawayCarrying; ModIconsPanel.cs DrawKeepaway blink/expand (RE-VERIFIED Wave 16/17)", result: pass }
+      - { kind: codetrace, ref: "GametypeStatusBlock.cs:121 writes netIdOf(carrier) (Kind.Keepaway); NetGame.cs:4804 sets KeepawayCarrying = CarrierNetId==LocalNetId; ModIconsPanel.cs DrawKeepaway blink/expand (RE-VERIFIED 2026-06-28)", result: pass }
     confidence: high
     notes: "Complete, live, faithful mod-icon pipeline (server status block → client derive → panel render). Unchanged."
 
@@ -469,7 +469,7 @@ features:
       - "STILL OPEN (logic, why status stays partial): the collector/carrier split is collapsed into one adaptive RoleKeepaway (Base has two distinct havocbot_role_ka_carrier / havocbot_role_ka_collector functions with a per-bot role-timeout state machine). The port branches on carry-state inline with the same ratingscales rather than swapping the dedicated role function — a structural simplification, behaviourally equivalent at the rating level."
     verification:
       - { kind: codetrace, ref: "FindBall queries 'keepawayball' (BotObjectiveRoles.cs:691-696) == live ball classname; RoleKeepaway reads ball.GtCarrier; role live via BotRoles.ChooseRole at spawn (RE-VERIFIED Wave 16/17)", result: pass }
-      - { kind: codetrace, ref: "GameWorld.cs:2996-2997 sets BotBrain.ForbidAttackHook = ka.ForbidBotAttack in the case Keepaway block; BotBrain.cs:1087 consults ForbidAttackHook in bot_shouldattack (live)", result: pass }
+      - { kind: codetrace, ref: "GameWorld.cs:3013 sets BotBrain.ForbidAttackHook = ka.ForbidBotAttack in the case Keepaway block; BotBrain.cs:1097 consults ForbidAttackHook in bot_shouldattack (live) — RE-VERIFIED 2026-06-28", result: pass }
       - { kind: value, ref: "RatingBall=8000f == Base goalrating_ball 8000; routerating 2000f == Base", result: pass }
     confidence: high
     notes: "Re-audit (Wave 16/17): Bot_ForbidAttack confirmed wired live (GameWorld.cs:2996 → BotBrain.cs:1087); FindBall class string 'keepawayball' matches the live ball. Logic stays partial only for the structural carrier/collector role-function split."

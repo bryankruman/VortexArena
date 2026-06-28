@@ -1,11 +1,11 @@
 unit: duel
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 9
   worst_gaps:
-    - "ALL duel-specific rules + presentation re-verified faithful+live post Waves 16-17 (player-cap both paths, powerup filter, duel title, forced colors). Only residual: m_isAlwaysSupported diameter<3250 map-size gate unported (mapsupport.gating, PARTIAL — affects map listing, not in-match) + leadlimit/respawn-override layers inert at defaults."
+    - "ALL 9 duel features now faithful+live: this wave closed the last open dimension — the m_isAlwaysSupported diameter<3250 map-size gate landed (ApplyForcedGametypes now reads MapInfo.Diameter against a 3250f threshold; two new diameter tests). Player-cap (both paths), powerup filter, duel title, forced colors, frag matrix, match-end latch, respawn, identity all re-verified faithful+live post Waves 16-17. Residuals are inert at defaults: leadlimit=0 unmodeled (N/A for 1v1 FFA), g_duel_respawn_* override layer (falls back to the matching generic 2s), and the null-diameter conservative-allow edge in forced-duel (map-listing only, arguably closer to Base m_isForcedSupported which applies no size check)."
 features:
   - id: duel.identity.registration
     name: "Duel gametype identity + default match limits"
@@ -255,17 +255,19 @@ features:
       - "common/gametypes/gametype/duel/duel.qh:m_isAlwaysSupported"
       - "common/gametypes/gametype/duel/duel.qh:m_isForcedSupported"
     port_refs:
-      - "src/XonoticGodot.Common/Menu/MapInfoBackend.cs:134:ApplyForcedGametypes"
-      - "src/XonoticGodot.Common/Menu/MapInfoBackend.cs:110:Get (calls ApplyForcedGametypes)"
-      - "src/XonoticGodot.Common/Menu/MapInfoBackend.cs:77:ForceDuelOnDmMaps"
+      - "src/XonoticGodot.Common/Menu/MapInfoBackend.cs:145:ApplyForcedGametypes"
+      - "src/XonoticGodot.Common/Menu/MapInfoBackend.cs:121:Get (calls ApplyForcedGametypes)"
+      - "src/XonoticGodot.Common/Menu/MapInfoBackend.cs:88:ForceDuelOnDmMaps"
+      - "src/XonoticGodot.Common/Menu/MapInfoBackend.cs:60:MapInfo.Diameter (parsed, not yet gated on)"
+      - "src/XonoticGodot.Common/Menu/MapInfoBackend.cs:226:Parse (size case -> Diameter)"
       - "game/menu/CreateGameScreen.cs:590:forceDuelOnDm (g_duel_not_dm_maps wiring)"
       - "game/menu/dialogs/DialogCreateGameMapInfo.cs:50:ForceDuelOnDmMaps (g_duel_not_dm_maps wiring)"
     constants:
       - { name: "g_duel_not_dm_maps", base: "0 (=> force duel on DM maps)", port: "read via ForceDuelOnDmMaps = (g_duel_not_dm_maps==0), default true", match: true }
-      - { name: "max_diameter", base: "3250 (units)", port: "none (m_isAlwaysSupported diameter gate not ported)", match: false }
+      - { name: "max_diameter", base: "3250 (units)", port: "3250f literal in ApplyForcedGametypes guard (MapInfoBackend.cs:154); Diameter parsed (cs:248) AND now gated on", match: true }
     status:
-      logic: partial
-      values: partial
+      logic: faithful
+      values: faithful
       timing: na
       presentation: na
       audio: na
@@ -273,9 +275,10 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FIXED (m_isForcedSupported half): MapInfoBackend.ApplyForcedGametypes (MapInfoBackend.cs:134-141) promotes any DM map to also support duel unless g_duel_not_dm_maps, called live from MapInfoBackend.Get (MapInfoBackend.cs:118) and wired from the menu cvar at CreateGameScreen.cs + DialogCreateGameMapInfo.cs. Unit-tested in MenuDataSourceTests.cs (both g_duel_not_dm_maps=0 forces-in and =1 excludes). Matches QC MapInfo_Get_ByName FOREACH(Gametypes, it.m_isForcedSupported...)."
-      - "STILL OPEN (m_isAlwaysSupported half): no port logic gates duel auto-support by map size (diameter<3250). grep 3250 / m_isAlwaysSupported / diameter over src -> only doc-comments (Duel.cs, Mayhem.cs). A too-large map could still be offered for duel. Requires BSP world bounds not available in the menu's file-only mapinfo parsing layer (per Duel.cs:36-38 note). UNCHANGED by Waves 16-17."
+      - "FIXED (m_isForcedSupported half): MapInfoBackend.ApplyForcedGametypes (MapInfoBackend.cs:145-165) promotes any DM map to also support duel unless g_duel_not_dm_maps, called live from MapInfoBackend.Get and wired from the menu cvar at CreateGameScreen.cs + DialogCreateGameMapInfo.cs. Unit-tested in MenuDataSourceTests.cs:346-428. Matches QC MapInfo_Get_ByName FOREACH(Gametypes, it.m_isForcedSupported...)."
+      - "FIXED THIS WAVE (m_isAlwaysSupported diameter<3250 half): the .mapinfo 'size x1 y1 z1 x2 y2 z2' line is parsed into MapInfo.Diameter = vlen(maxs-mins) (MapInfoBackend.cs:231-250, with the QC mins<maxs guard), AND ApplyForcedGametypes now reads it — the forced-duel branch carries the `!(info.Diameter.HasValue && info.Diameter.Value >= 3250f)` term (MapInfoBackend.cs:154), so a sized map with diameter >= 3250 is no longer promoted to duel. The 3250f literal exists in src (cs:154; also doc-referenced cs:57). Tests MapInfo_ForcedDuelOnDmMap_Suppressed_When_DiameterTooLarge (MenuDataSourceTests.cs:401) and _AllowedWhenDiameterSmall (:418) exercise both sides of the threshold."
+      - "RESIDUAL (minor, intended-conservative): when a map declares NO 'size' line, Diameter is null and the port ALLOWS forced-duel (MapInfoBackend.cs:152-153 comment: cannot prove the map is too large from .mapinfo alone). Base m_isAlwaysSupported returns diameter<3250, which is false for an unknown/zero diameter — but Base's m_isForcedSupported (the path mirrored here) does not actually apply the size check at all (duel.qh:19 TODO), so the port is if anything closer to Base intent. The pure-BSP autogeneration path (no .mapinfo => Diameter null) thus also forces-in duel. Low impact (map-listing only)."
     verification:
-      - { kind: code_read, ref: "m_isForcedSupported: ApplyForcedGametypes (MapInfoBackend.cs:134-148) adds 'duel' when forceDuelOnDmMaps && supports 'dm' && !supports 'duel'; called from Get (MapInfoBackend.cs:118) so it runs on every cached lookup; ForceDuelOnDmMaps default true (MapInfoBackend.cs:77), driven from g_duel_not_dm_maps==0 at the two menu call sites; covered by MenuDataSourceTests. m_isAlwaysSupported diameter<3250 gate: NO port symbol (grep 3250/diameter over src returns only Duel.cs + Mayhem.cs doc-comments).", result: pass }
+      - { kind: code_read, ref: "ApplyForcedGametypes (MapInfoBackend.cs:145-165) adds 'duel' when forceDuelOnDmMaps && supports 'dm' && !supports 'duel' && !(Diameter>=3250) — the diameter term is now present (cs:154). MapInfo.Diameter parsed from the size line (Parse size case, MapInfoBackend.cs:231-250, sqrt(dx^2+dy^2+dz^2) with the mins<maxs guard). ForceDuelOnDmMaps default true (MapInfoBackend.cs:88) from g_duel_not_dm_maps==0 at the two menu call sites. grep 3250 over src now hits MapInfoBackend.cs:57/154 (was zero last audit). Tests: MenuDataSourceTests.cs:401 (Suppressed_When_DiameterTooLarge, bounds give >=3250) + :418 (AllowedWhenDiameterSmall, ~1536) both present and assert Diameter parsed.", result: pass }
     confidence: high
-    notes: "PARTIAL (re-verified post Waves 16-17, unchanged). The m_isForcedSupported (force duel on DM maps) predicate is fully implemented + live + tested in MapInfoBackend; only the m_isAlwaysSupported diameter<3250 size gate remains unported. Low gameplay impact (affects map listing, not in-match behavior). (Line refs drifted: ApplyForcedGametypes MapInfoBackend.cs:134, Get 118.)"
+    notes: "FAITHFUL + LIVE (advanced from partial this wave). The m_isAlwaysSupported diameter<3250 gate landed: ApplyForcedGametypes now consults MapInfo.Diameter with the 3250f threshold and the two diameter tests the prior audit said were missing now exist. Both halves of duel map-support gating (m_isForcedSupported DM->duel forcing + m_isAlwaysSupported size cap) are implemented, live (called from MapInfoBackend.Get on the menu path), and unit-tested. Only residual is the null-diameter conservative-allow edge (no size line => forced-in), which is arguably closer to Base m_isForcedSupported (no size check) than to m_isAlwaysSupported. Low gameplay impact (map listing, not in-match)."

@@ -529,6 +529,16 @@ public sealed class Race : GameType
         if (Api.Services is not null)
             Api.Cvars.Set("radar_showenemies", "1");
 
+        // QC MUTATOR_HOOKFUNCTION(rc, FixClientCvars) (sv_race.qc): the server stuffs `cl_cmd settemp
+        // cl_movecliptokeyboard 2` to every client so their LOCAL input-clip matches the server's force-keyboard
+        // octant snap (OnPlayerPhysics slice 3) — without it a remote client would predict an un-snapped analog
+        // move and rubber-band. In this in-process listen server the client input reads the cvar directly, so the
+        // faithful analogue of the per-client stuffcmd is to set cl_movecliptokeyboard=2 globally at activation
+        // (the same listen-server stuffcmd analogue BugrigsMutator.OnClientConnect uses for chase_active). The
+        // server-side snap is already authoritative; this aligns the client's own clip so prediction agrees.
+        if (Api.Services is not null)
+            Api.Cvars.Set("cl_movecliptokeyboard", "2");
+
         // QC rc_SetLimits: g_race_teams 2..4 makes race a team game (members add up laps to ST_RACE_LAPS).
         TeamGame = RaceTeams >= 2;
         if (TeamGame)

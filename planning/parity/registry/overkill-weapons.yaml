@@ -1,10 +1,11 @@
 unit: overkill-weapons
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 17
   worst_gaps:
+    - "2026-06-28 re-audit (OkWeapons.cs FIRE2-anim edit, Common build green): ONE FIX, NO regressions. shared.secondary_blaster_jump: the animdecide_setaction(ANIMACTION_SHOOT,true) torso overlay is now driven on the refire_type==1 jump path (OkWeapons.FireSecondaryBlasterJump:89-93 -> AnimDecide.SetAction, the same overlay PrepareAttack latches for primary fire, networked ServerNet.cs:2052/2121 + rendered PlayerModel.cs:486). presentation missing->faithful, logic partial->faithful — the lone residual is the non-default refire_type==0 secondary-button gate nuance. This closes the last presentation gap on that row; third-person observers now see a fire pose on the blaster jump."
     - "2026-06-27 Wave-16/17 re-audit (commit b3a9c06, build green): FOUR FIXES vs the prior baseline, NO regressions. (1+2) oknex.primary_rail: the networked CSQC rail beam (EFFECT_VORTEX_BEAM/_OLD, the SAME Vortex.EmitBeam treatment, routed through the live ServerNet EffectNetSink + ClientWorld RenderSink) AND the Yoda/Impressive announcements (OkNex.Announce -> NotificationSystem.Announce) are now wired — presentation partial->faithful. (3+4) okrpc.primary_chainsaw_missile: the missile now sets BotDodge+BotDodgeRating (consumed LIVE by BotBrain.HavocbotDodge SUPERBOT scan) and DamagedByContents (consumed LIVE by GameWorld.CreatureFrameAll's per-tick contents sweep) — two of the three okrpc STILL-OPEN items closed."
     - "The other 13 rows are UNCHANGED — all balance constants still verified against bal-wep-xonotic.cfg:792-922; the Wave-8b FX/casing/recoil/tracer/muzzle/impact seams + Wave-13 bot_ai + okhmg_nadesupport all remain wired LIVE."
     - "okrpc shoot-down remains LIVE+faithful: OkRpc.Attack:179 calls Projectiles.MakeShootable(missile, exception:-1); correctly inert under stock g_projectiles_damage=-2, exactly like Base."
@@ -297,21 +298,22 @@ features:
       - { name: "secondary_refire_type", base: "1 (own jump_interval timer)", port: "1", match: true }
       - { name: "blaster_refire (jump_interval step)", base: "g_balance_blaster_primary_refire 0.7", port: "0.7 fallback", match: true }
     status:
-      logic: partial
+      logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: faithful
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "refire_type==0 secondary path (blaster on the shared ATTACK_FINISHED timer) is not handled; only refire_type==1 is. Default is 1 for all five OK weapons, so no observable gap at stock balance."
-      - "FIRE2 weapon animation / animdecide_setaction not driven (no third-person fire-2 pose)."
+      - "FIXED (this wave, OkWeapons.cs:89-93): the animdecide_setaction(actor, ANIMACTION_SHOOT, true) on the refire_type==1 jump path is now driven — FireSecondaryBlasterJump latches AnimDecide.AnimUpperAction.Shoot (restart:true == QC restartanim) on actor.AnimUpperAction/AnimActionStart, the SAME overlay+call PrepareAttack uses for primary fire (WeaponFireGate.cs:166). Networked via ServerNet.cs:2052/2121 and rendered by PlayerModel.cs:486 (Shoot->shoot/attack/fire frame group), so third-person observers now see a fire pose on the blaster-jump. Closes the baseline 'no third-person fire-2 pose' gap. refire_type==0 path latches the same overlay via PrepareAttack."
+      - "refire_type==0 secondary path: only the non-default secondary-button GATE nuance differs (QC oknex also requires WEP_CVAR secondary==2 on that branch). refire_type default is 1 for all five OK weapons, so no observable gap at stock balance."
     verification:
-      - { kind: code-read, ref: "OkWeapons.FireSecondaryBlasterJump → Blaster.FirePrimaryDirect on actor.JumpInterval; unchanged", result: pass }
+      - { kind: code-read, ref: "OkWeapons.FireSecondaryBlasterJump:82-93 → Blaster.FirePrimaryDirect on actor.JumpInterval + AnimDecide.SetAction(Shoot, restart:true); AnimDecide.SetAction (AnimDecide.cs:115) == QC animdecide_setaction; same call as primary PrepareAttack (WeaponFireGate.cs:166)", result: pass }
+      - { kind: code-read, ref: "liveness of the overlay: networked ServerNet.cs:2052/2121 (AnimUpperAction/AnimActionStart), consumed by PlayerModel.cs:486 (AnimUpperAction.Shoot -> shoot/attack/fire FrameGroup). Build green (Common csproj).", result: pass }
     confidence: high
-    notes: "Blaster damage/force are nullified by OverkillMutator.Damage_Calculate (separate unit). Jump_interval is per-player, scaled by W_WeaponRateFactor — faithful."
+    notes: "Blaster damage/force are nullified by OverkillMutator.Damage_Calculate (separate unit). Jump_interval is per-player, scaled by W_WeaponRateFactor — faithful. This wave closed the FIRE2 third-person fire-pose gap by driving the SHOOT torso overlay on the jump path (was the lone presentation gap on this row). presentation missing->faithful, logic partial->faithful (the only residual is the non-default refire_type==0 button-gate nuance, captured as a sub-note not a presentation/logic defect)."
 
   - id: overkill-weapons.shared.forced_reload
     name: "Forced reload when clip below a primary shot"

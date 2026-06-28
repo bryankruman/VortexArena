@@ -395,6 +395,11 @@ public sealed class BuffsMutator : MutatorBase
 
         if (!item.BuffActive || item.BuffDef is null) return;
         if (!IsPlayer(toucher) || toucher.DeadState != DeadFlag.No) return;
+        // QC MUTATOR_HOOKFUNCTION(ft, BuffTouch) (sv_freezetag.qc): a frozen toucher does NOT collect
+        // buffs — mirrors the ItemTouch gate. A frozen body can be pushed or teleported into a buff pickup;
+        // without this guard it would collect the buff silently. IsFrozen reads the shared Frozen status effect
+        // that FreezeTag.Freeze applies, so this works without a FreezeTag type-cast.
+        if (IsFrozen(toucher)) return;
         // QC buff_Touch: a team-forced buff item can only be picked up by its team; a vehicle occupant can't.
         if ((item.TeamForced != 0 && (int)toucher.Team != item.TeamForced) || toucher.Vehicle is not null) return;
         if (Api.Clock.Time < toucher.BuffShield) return; // recently dropped/replaced a buff

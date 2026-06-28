@@ -326,6 +326,13 @@ public sealed class BotBrain
             {
                 _strategyTime = now + strategyInterval;
                 _strategyForced = false;
+                // QC navigation_markroutes (navigation.qc): before the role rates goals, flood the waypoint graph
+                // ONCE from the bot's position so every navigation_routerating reads the real Dijkstra path cost
+                // (.wpcost) instead of straight-line distance — bots stop preferring goals that are geometrically
+                // near but graph-distant (across a wall/chasm), where GoalRater.Rate would otherwise fall back to
+                // straight-line. Token-gated + sim-thread, so the per-frame cost is paid by exactly one bot.
+                // Network == null (graphless tests/roaming) keeps the straight-line fallback.
+                _rater.SeedRoute(Network, bot.Origin);
                 Role(this, _rater);
                 if (_rater.HasGoal)
                 {
@@ -333,7 +340,10 @@ public sealed class BotBrain
                     // QC .ignoregoal: skip a goal that danger marked unreachable, for ignoregoal_timeout secs.
                     if (!(g.Target is not null && ReferenceEquals(g.Target, _ignoreGoal) && now < _ignoreGoalTime))
                         using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.path")) // [profiling] A* route build
-                            Nav.SetGoal(bot.Origin, g.Position, Network, g.Target);
+                            // QC navigation_routetogoal seeds the route from navigation_markroutes_nearestwaypoints
+                            // (several near entry nodes), not the single geometrically-nearest one; pass onGround so
+                            // SetGoal's multi-seed search uses Base's on-ground vs in-air seed-radius growth.
+                            Nav.SetGoal(bot.Origin, g.Position, Network, g.Target, bot.OnGround);
                 }
             }
             OnStrategyTokenUsed?.Invoke(); // QC bot_strategytoken_taken = true (used this frame)

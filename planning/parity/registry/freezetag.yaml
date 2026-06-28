@@ -1,14 +1,14 @@
 unit: freezetag
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-28"  # OPUS re-audit (parity-port-waves): freezetag.frags.center_message CLOSED this wave — FreezeTag.Activate now subscribes OnFragCenterMessage (FreezeTag.cs:298-299,934-948), swapping the personal frag centerprint to FRAG_FREEZE/FRAGGED_FREEZE and suppressing on an already-frozen re-kill; the producer was the sole missing piece, the rest of the chain (hook MutatorHooks.cs:616, live call Scores.cs:809 + consumer :810-814, choices NotificationsList.cs:1292-1293) was already in place. missing/dead → faithful/live. Common builds clean.
+last_audited: "2026-06-28"  # OPUS re-audit (parity-port-waves): registry-drift corrections — frozen_anim (PlayerModel.FrozenHold), bots (BotObjectiveRoles.RoleFreezeTag), frozen.no_pickup BuffTouch guard (BuffsMutator.cs:402), and the waypoints Frozen→Reviving swap (st.HasReviver) all flipped to faithful/live. Also: freezetag.frags.center_message CLOSED this wave — FreezeTag.Activate now subscribes OnFragCenterMessage (FreezeTag.cs:298-299,934-948), swapping the personal frag centerprint to FRAG_FREEZE/FRAGGED_FREEZE and suppressing on an already-frozen re-kill; the producer was the sole missing piece, the rest of the chain (hook MutatorHooks.cs:616, live call Scores.cs:809 + consumer :810-814, choices NotificationsList.cs:1292-1293) was already in place. missing/dead → faithful/live. Common builds clean.
 summary:
   feature_count: 30
   worst_gaps:
     - "FIXED 2026-06-27: GiveFragsForKill→0 is now subscribed (FreezeTag.OnGiveFragsForKill, FreezeTag.cs:876) and live (Scores.cs:548) — the engine-frag double-count on an enemy freeze is closed. See freezetag.scoring.no_kill_frags."
     - "FIXED 2026-06-27: g_freezetag_weaponarena 'most_available' is now applied (FreezeTag.OnSetWeaponArena, FreezeTag.cs:887) and live (SpawnSystem.cs:999/1223). FT players get the full arsenal arena over the start loadout. See freezetag.weaponarena."
     - "FIXED 2026-06-27: frozen-player regen gate (FreezeTag.OnPlayerRegen, live PlayerFrameLogic.cs:56) and frozen-pickup gate (FreezeTag.OnItemTouch, live ItemPickupRules.cs:378) are both implemented. See freezetag.frozen.no_regen / freezetag.frozen.no_pickup."
-    - "STILL OPEN: no ice (MDL_ICE) entity model — only the icy player-model colormod tint (ClientWorld.FrozenColormod). The signature ice cube is absent. Also no ANIMSTATE_FROZEN frozen pose (freezetag.presentation.frozen_anim)."
+    - "STILL OPEN: no ice (MDL_ICE) entity model — only the icy player-model colormod tint (ClientWorld.FrozenColormod). The signature ice cube is absent. (The ANIMSTATE_FROZEN frozen pose is now LIVE via PlayerModel.FrozenHold — see freezetag.presentation.frozen_anim — registry drift corrected this wave.)"
     - "STILL OPEN: void/lava NEEDKILL soft-kill relocate (g_frozen_damage_trigger 0) is still missing (FT OnDamageCalculate leaves NEEDKILL deathtypes alone; the relocate-to-spawn needs the server spawn selector and is not done). Default cvar 1 = die, so dormant at stock anyway."
     - "FIXED this wave: the per-freeze CHOICE centerprint (FragCenterMessage 'You froze X'/'You were frozen by Y') now has its FT producer (freezetag.frags.center_message) — FreezeTag.Activate subscribes OnFragCenterMessage (FreezeTag.cs:298-299) which sets FRAG_FREEZE/FRAGGED_FREEZE and suppresses both on an already-frozen re-kill; FragCenterMessage.Call (Scores.cs:809) consumes the result (Scores.cs:810-814). missing/dead → faithful/live."
     - "FIXED since the 06-27 row was written: the CENTER_ALONE 'you are now alone' last-survivor notification (freezetag.notif.alone) IS now sent — FreezeTag.NotifyLastPlayerForTeam (FreezeTag.cs:1063) is called from OnDeath (FreezeTag.cs:339, live via Combat.Death) and center-prints ALONE to a team's lone unfrozen survivor."
@@ -544,7 +544,7 @@ features:
     constants:
       - { name: "WP offset", base: "'0 0 64'", port: "new Vector3(0,0,64)", match: true }
       - { name: "WP health bar", base: "REVIVE_PROGRESS 0..1", port: "Health = clamp(ReviveProgress,0,1), MaxHealth=1", match: true }
-      - { name: "Frozen→Reviving swap", base: "WP_Reviving once a reviver is in range (n>0 or progress>0.95)", port: "Reviving sprite once ReviveProgress>0", match: false }
+      - { name: "Frozen→Reviving swap", base: "WP_Reviving once a reviver is in range (n>0 or progress>0.95)", port: "st.HasReviver (n>0) || ReviveProgress>=0.95f", match: true }
       - { name: "sprite colors", base: "WP_FROZEN_COLOR / WP_REVIVING_COLOR", port: "(0.25,0.9,1) / (1,0.5,0)", match: true }
     status:
       logic: faithful
@@ -556,11 +556,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Frozen→Reviving swap heuristic is ReviveProgress>0 (the auto-progress ramp also makes ReviveProgress>0 from freeze time, so the sprite may read 'Reviving' even with no live reviver near) rather than Base's strict n>0 || progress>0.95 test — cosmetic."
+      - "Frozen→Reviving swap heuristic: FIXED — FrozenState.HasReviver is now set in ReviveTick (n>0, FreezeTag.cs:709) and CollectWaypoints uses st.HasReviver || st.ReviveProgress>=0.95f (FreezeTag.cs:852), matching Base's n>0 || progress>0.95 exactly."
     verification:
       - { kind: code-read, ref: "CollectWaypoints overrides GameType.CollectWaypoints, emits one Frozen/Reviving sprite per frozen roster player with the thaw-progress bar; ServerNet.SendWaypoints calls GameType.CollectWaypoints and serializes the per-peer subset over the live waypoint channel (same path as CTF flag sprites)", result: pass }
     confidence: high
-    notes: "Spawns the Frozen/Reviving sprites (offset 64, progress health bar, team-tinted) shipped through the live SendWaypoints path. Only the Frozen↔Reviving swap heuristic diverges cosmetically from Base's exact reviver-in-range gate. Unchanged (live)."
+    notes: "Spawns the Frozen/Reviving sprites (offset 64, progress health bar, team-tinted) shipped through the live SendWaypoints path. FIX: the Frozen↔Reviving swap now matches Base exactly (st.HasReviver = n>0 set in ReviveTick, CollectWaypoints swaps on HasReviver || progress>=0.95) — the prior ReviveProgress>0 heuristic gap is closed."
 
   - id: freezetag.presentation.notifications
     name: "Freeze/revive/self/auto-revive/spawn-late notifications (+ sounds)"
@@ -636,26 +636,29 @@ features:
       - "common/gametypes/gametype/freezetag/sv_freezetag.qc:havocbot_role_ft_freeing"
       - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, HavocBot_ChooseRole/Bot_ForbidAttack)"
     port_refs:
-      - "src/XonoticGodot.Server/Bot/BotBrain.cs:ShouldAttack (frozen-target skip)"
+      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RoleFreezeTag (664-689)"
+      - "src/XonoticGodot.Server/Bot/BotRoles.cs:128 (ChooseRole \"freezetag\"/\"ft\" → RoleFreezeTag)"
+      - "src/XonoticGodot.Server/Bot/BotController.cs:101 (AddBot → Role = ChooseRole)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:1093 (ShouldAttack frozen-target skip)"
     constants:
-      - { name: "role timeout", base: "time + 10..20 s (random)", port: "none", match: false }
-      - { name: "free-player rating", base: "offense 9000 / freeing 20000", port: "none", match: false }
+      - { name: "role timeout", base: "time + 10..20 s (random)", port: "none (RoleFreezeTag assigned once at AddBot, no re-roll)", match: false }
+      - { name: "free-player rating", base: "freeing 20000 / offense items+enemies", port: "RatingFrozenTeammate 20000 (frozen same-team), items 10000, enemies 7000, roam 3000", match: true }
     status:
-      logic: partial
-      values: missing
-      timing: missing
+      logic: faithful
+      values: partial
+      timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Bots have no FT-specific freeing/offense roles — they won't deliberately route to and revive frozen teammates (havocbot_role_ft_freeing/offense + havocbot_goalrating_ft_freeplayers absent)."
-      - "The frozen-target ATTACK gate (Bot_ForbidAttack) IS effectively covered: BotBrain.ShouldAttack (BotBrain.cs:793) skips a target carrying the shared Frozen status effect, so bots don't waste fire on frozen enemies. The dedicated FT Bot_ForbidAttack hook is not registered, but the generic frozen-skip yields the same outcome."
+      - "Role-timeout re-pick (10-20 s random) not implemented: Base periodically re-evaluates the role; the port assigns RoleFreezeTag once at spawn. Cosmetic for FT because freeing+offense is always the right combined role. Only values: partial for this."
+      - "BotBrain.FtRoleTimeout field absent — does not affect observable FT behaviour at stock settings."
     verification:
-      - { kind: code-read, ref: "BotBrain.ShouldAttack returns false for a Frozen-status target (BotBrain.cs:792-793); no havocbot_role_ft / freeplayers-rating references in src (only the generic frozen-skip)", result: partial }
-    confidence: medium
-    notes: "PARTIAL FIX since last audit: the frozen-target attack gating is now satisfied via BotBrain's generic frozen-status skip (the baseline recorded it as not modeled). The FT-specific freeing/offense ROLE logic (route to + revive frozen teammates) remains missing — generic combat may still wander into range and incidentally revive."
+      - { kind: code-read, ref: "BotObjectiveRoles.RoleFreezeTag (BotObjectiveRoles.cs:664-689) rates frozen same-team players at RatingFrozenTeammate=20000 (BotObjectiveRoles.cs:655) plus offense goals (items 10000, enemies 7000, roam 3000); BotRoles.ChooseRole (BotRoles.cs:128) maps \"freezetag\"/\"ft\" → RoleFreezeTag, assigned at BotController.AddBot (BotController.cs:101). BotBrain.ShouldAttack returns false for a Frozen-status target (BotBrain.cs:1093). Only the 10-20 s role-timeout re-roll is absent.", result: pass }
+    confidence: high
+    notes: "FIX (registry drift): BotObjectiveRoles.RoleFreezeTag (BotObjectiveRoles.cs:664-689) implements both the freeing role (rates frozen same-team players at 20000 — dominant over items/enemies) and the offense goals (items 10000, enemies 7000, roam 3000). BotRoles.ChooseRole (BotRoles.cs:128) dispatches \"freezetag\" or \"ft\" → RoleFreezeTag, wired in BotController.AddBot (BotController.cs:101). The frozen-target attack gate (ShouldAttack BotBrain.cs:1093) is also live. The prior 'logic: partial/values: missing' entry was written before RoleFreezeTag landed. Role-timeout randomisation (10-20 s) is absent (Base re-rolls the role; port uses a static per-session assignment) — cosmetic for FT since the combined freeing+offense role is always appropriate."
 
   - id: freezetag.spawn.late
     name: "Mid-round joiner spawns AS FROZEN (PlayerSpawn → SPAWN_LATE)"
@@ -774,15 +777,14 @@ features:
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "BuffTouch has no separate hook in the port — OnItemTouch (the world-item gate) is the only frozen-pickup gate; buff-pickups route through a different path that has no frozen gate. Minor: frozen players can't initiate movement, and buffs are a mutator. World-item pickups ARE correctly gated."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "FreezeTag.Activate subscribes _itemTouchHandler = OnItemTouch onto MutatorHooks.ItemTouch (FreezeTag.cs:290-291); OnItemTouch (FreezeTag.cs:906-907) returns true (MUT_ITEMTOUCH_RETURN) iff the toucher is frozen; FireItemTouch fires live in ItemPickupRules.cs:378 BEFORE the give, aborting the pickup. No separate BuffTouch hook (folded into the single item gate per the doc-comment).", result: pass }
+      - { kind: code-read, ref: "FreezeTag.Activate subscribes _itemTouchHandler = OnItemTouch onto MutatorHooks.ItemTouch (FreezeTag.cs:290-291); OnItemTouch (FreezeTag.cs:906-907) returns true (MUT_ITEMTOUCH_RETURN) iff the toucher is frozen; FireItemTouch fires live in ItemPickupRules.cs:378. BuffsMutator.BuffTouch (BuffsMutator.cs:385) now also has a direct IsFrozen(toucher) guard (BuffsMutator.cs:402) inserted after the DeadState check (:397), covering buff pickups without needing a separate MutatorHooks.BuffTouch chain.", result: pass }
     confidence: high
-    notes: "FIX since 2026-06-25 (missing→faithful for world items, na→partial). A frozen (pushed/teleported) body no longer collects world items. Liveness is partial only because the BuffTouch buff-specific gate has no dedicated port path; the world-item gate is live."
+    notes: "FIX (missing→faithful, na→live). A frozen (pushed/teleported) body no longer collects world items (OnItemTouch gate) OR buffs — BuffsMutator.BuffTouch now has its own IsFrozen(toucher) guard, so both pickup paths are gated. Both Base ft ItemTouch and BuffTouch behaviours are covered."
 
   - id: freezetag.frags.center_message
     name: "Per-freeze choice centerprint ('You froze X' / 'You were frozen by Y')"
@@ -818,24 +820,25 @@ features:
     layer: [presentation]
     base_refs:
       - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerAnim)"
-    port_refs: []
+    port_refs:
+      - "game/client/PlayerModel.cs:FrozenHold"
+      - "game/client/ClientWorld.cs:1092 (pm.FrozenHold = HasStatusEffect(e, Frozen) before Pose)"
     constants:
-      - { name: "anim flag", base: "M_ARGV(1,int) |= ANIMSTATE_FROZEN when STAT(FROZEN)", port: "none", match: false }
+      - { name: "anim flag", base: "M_ARGV(1,int) |= ANIMSTATE_FROZEN when STAT(FROZEN)", port: "PlayerModel.FrozenHold: pins loco=Idle, skips _legsTime advance and upper-body action overlay", match: true }
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
-      presentation: missing
+      presentation: faithful
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Base ft PlayerAnim ORs ANIMSTATE_FROZEN into the player's animation state so a frozen player holds the static frozen pose. The port conveys frozen-ness only via the FrozenColormod tint (freezetag.presentation.ice_model); the frozen animation-state freeze is not applied, so a frozen player's normal animation may keep playing under the tint."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "no ANIMSTATE_FROZEN / frozen-anim handling in src or game (grep)", result: fail }
-    confidence: medium
-    notes: "NEW row — registry coverage gap. Cosmetic; pairs with the missing MDL_ICE entity (freezetag.presentation.ice_model)."
+      - { kind: code-read, ref: "ClientWorld.cs:1092 sets pm.FrozenHold = HasStatusEffect(e, StatusEffectsCatalog.Frozen) every frame before pm.Pose(); PlayerModel.Pose (PlayerModel.cs:220-226) when FrozenHold: forces loco=Idle, does NOT advance _legsTime (pins the frame), skips the upper-body action overlay (FrozenHold guard at :242). The live Frozen status effect is applied by FreezeTag.Freeze and cleared by Unfreeze via StatusEffectsCatalog.", result: pass }
+    confidence: high
+    notes: "FIX (registry drift): the frozen-pose animation IS implemented and live — ClientWorld sets PlayerModel.FrozenHold every frame from the networked Frozen status effect, and PlayerModel.Pose pins the idle locomotion frame + skips upper-body overlays when FrozenHold. The prior 'logic: missing' entry was written before this feature landed. Pairs with the still-open MDL_ICE ice-cube entity (freezetag.presentation.ice_model)."
 
   - id: freezetag.notif.alone
     name: "Last-survivor 'You are now alone!' centerprint (LastPlayerForTeam → CENTER_ALONE)"

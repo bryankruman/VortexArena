@@ -48,6 +48,17 @@ public sealed class MapInfo
     /// <summary>True if a usable .mapinfo (or .arena/.defi — not ported) was found; false when the parser fell back to bare defaults.</summary>
     public bool HasMapInfoFile;
 
+    /// <summary>
+    /// QC <c>vlen(MapInfo_Map_maxs - MapInfo_Map_mins)</c> (mapinfo.qc:414): the 3-D bounding diameter of
+    /// the map in game units, derived from the <c>size x1 y1 z1 x2 y2 z2</c> line when present.
+    /// <c>null</c> when no <c>size</c> line was found (i.e. the bounds are unknown at parse time).
+    ///
+    /// Used by <see cref="MapInfoBackend.ApplyForcedGametypes"/> to apply the
+    /// <c>Duel.m_isAlwaysSupported(diameter &lt; 3250)</c> guard: if the diameter is known AND ≥ 3250,
+    /// forced-duel is suppressed even for DM maps (matching the intent of duel.qh:19's TODO comment).
+    /// </summary>
+    public float? Diameter;
+
     /// <summary>Does this map support <paramref name="gametypeNetName"/>? (QC MapInfo_Map_supportedGametypes &amp; flags.)</summary>
     public bool Supports(string gametypeNetName) => SupportedGametypes.Contains(gametypeNetName);
 }
@@ -135,7 +146,12 @@ public sealed class MapInfoBackend
     {
         if (forceDuelOnDmMaps
             && info.SupportedGametypes.Contains("dm")
-            && !info.SupportedGametypes.Contains("duel"))
+            && !info.SupportedGametypes.Contains("duel")
+            // QC Duel.m_isAlwaysSupported (duel.qh:12-14): duel auto-supports only maps with diameter < 3250.
+            // Applied here to the forced-support path too (matching duel.qh:19's TODO: size check should guard
+            // m_isForcedSupported as well). When Diameter is null (no size line in .mapinfo), we conservatively
+            // allow forced-duel — the map might be small enough, and we can't prove otherwise from the .mapinfo.
+            && !(info.Diameter.HasValue && info.Diameter.Value >= 3250f))
         {
             info.SupportedGametypes.Add("duel");
         }
@@ -212,7 +228,28 @@ public sealed class MapInfoBackend
                         info.SupportedGametypes.Add(netName);
                     break;
                 }
-                // has / size / fog / cdtrack / settemp_for_type / flags: parsed-and-ignored here (the menu
+                case "size":
+                {
+                    // QC mapinfo.qc:1236-1271: "size x1 y1 z1 x2 y2 z2" — the lightgrid / world bounding box.
+                    // Parse into MapInfo_Map_mins/maxs and compute vlen(maxs-mins) for the diameter gate
+                    // (QC _MapInfo_Generate:414; used here for Duel.m_isAlwaysSupported diameter<3250).
+                    // The QC rejects lines where mins >= maxs on any axis; we mirror that guard.
+                    string[] tok = rest.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (tok.Length >= 6
+                        && float.TryParse(tok[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float sx1)
+                        && float.TryParse(tok[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float sy1)
+                        && float.TryParse(tok[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float sz1)
+                        && float.TryParse(tok[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float sx2)
+                        && float.TryParse(tok[4], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float sy2)
+                        && float.TryParse(tok[5], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float sz2)
+                        && sx1 < sx2 && sy1 < sy2 && sz1 < sz2)  // mapinfo.qc:1260-1262 mins-must-be-less-than-maxs guard
+                    {
+                        float dx = sx2 - sx1, dy = sy2 - sy1, dz = sz2 - sz1;
+                        info.Diameter = (float)System.Math.Sqrt(dx * dx + dy * dy + dz * dz); // vlen(maxs-mins)
+                    }
+                    break;
+                }
+                // has / fog / cdtrack / settemp_for_type / flags: parsed-and-ignored here (the menu
                 // map-info dialog only displays title/author/description/preview + the gametype checklist).
                 default:
                     break;

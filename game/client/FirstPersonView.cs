@@ -61,6 +61,12 @@ public sealed class FirstPersonView
         /// this engages the event-chase third-person camera (QC MUTATOR_HOOKFUNCTION(cl_ft, WantEventchase)).</summary>
         public bool IsFrozen;
 
+        /// <summary>True while the local player is in Nexball and is NOT carrying the ball (QC
+        /// <c>cl_nexball.qc:WantEventchase</c> — <c>cl_eventchase_nexball</c> engages the third-person cam when the
+        /// player is a nexball participant but not the current ball-carrier). Set each frame by
+        /// <see cref="XonoticGodot.Game.Net.NetGame"/> from the decoded NexBall status block.</summary>
+        public bool IsNexBallNonCarrier;
+
         /// <summary>The view-origin recoil kick in Quake space (QC <c>view_punchvector</c>, decayed 30u/s). Added to
         /// the rendered eye in FIRST PERSON ONLY (<c>vieworg += view_punchvector</c>, cl_player.qc:570 — inside the
         /// non-chase branch), so it kicks the camera without skewing the aim. Suppressed while chase is active.</summary>
@@ -738,7 +744,10 @@ public sealed class FirstPersonView
         // QC MUTATOR_HOOKFUNCTION(cl_ft, WantEventchase): while frozen in Freeze Tag, cl_eventchase_frozen pulls the
         // camera to third person so the encased player can see around themselves.
         bool frozenChase = st.IsFrozen && Cvar("cl_eventchase_frozen", 0f) != 0f;
-        return deathChase || frozenChase;
+        // QC cl_nexball.qc WantEventchase: cl_eventchase_nexball=1 (default) -> third-person cam when the local player
+        // is in nexball but is NOT the ball-carrier. Disabled while dead (the death-cam already owns the frame).
+        bool nexballChase = !st.IsDead && st.IsNexBallNonCarrier && Cvar("cl_eventchase_nexball", 1f) != 0f;
+        return deathChase || frozenChase || nexballChase;
     }
 
     private NVec3 ApplyEventChase(in ViewState st, NVec3 eyeQuake, NVec3 forwardQuake)

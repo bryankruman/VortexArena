@@ -590,6 +590,12 @@ public static class MapInfoCache
         bool forceDuelOnDm = MenuState.Cvars.GetFloat("g_duel_not_dm_maps") == 0f;
         if (forceDuelOnDm && e.Gametypes.Contains("dm") && !e.Gametypes.Contains("duel"))
             e.Gametypes.Add("duel");
+        // QC TeamDeathmatch.m_isForcedSupported (tdm.qh): any DM map also supports TDM when
+        // g_tdm_on_dm_maps is set (default 0 = off, opposite polarity to g_duel_not_dm_maps).
+        // Mirrors MapInfoBackend.ApplyForcedGametypes (the dead MapInfoBackend path; this is the live one).
+        bool forceTdmOnDm = MenuState.Cvars.GetFloat("g_tdm_on_dm_maps") != 0f;
+        if (forceTdmOnDm && e.Gametypes.Contains("dm") && !e.Gametypes.Contains("tdm"))
+            e.Gametypes.Add("tdm");
         Cache[map] = e;
         return e;
     }

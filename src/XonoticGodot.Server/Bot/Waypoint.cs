@@ -801,7 +801,7 @@ public sealed class WaypointNetwork
     /// heap (sim drives bots sequentially, so the shared scratch is safe). Marks the cache invalid (so callers
     /// fall back to straight-line) when <paramref name="from"/> has no nearby waypoint.
     /// </summary>
-    public void ComputeRouteCosts(Vector3 from)
+    public void ComputeRouteCosts(Vector3 from, bool onGround = true)
     {
         _routeCostValid = false;
         int n = _nodes.Count;
@@ -812,8 +812,17 @@ public sealed class WaypointNetwork
             _gScore = new float[n]; _fScore = new float[n];
             _cameFrom = new Waypoint?[n]; _closed = new bool[n];
         }
-        Waypoint? src = Nearest(from, walkFromWp: true);
-        if (src is null || src.Index < 0) return;
+        // QC navigation_markroutes seeds the Dijkstra flood from EVERY reachable nearby waypoint (the expanding
+        // navigation_markroutes_nearestwaypoints search), each pre-charged with its bot->seed entry cost — not just
+        // the single geometrically-nearest node. Gather the seeds; fall back to the single nearest when nothing is
+        // reachable in range so the cache still seeds (and a graphless bot just gets the straight-line fallback).
+        IReadOnlyList<(Waypoint Wp, float Cost)> seeds = NearestSeeds(from, onGround, walkFromWp: true);
+        if (seeds.Count == 0)
+        {
+            Waypoint? src = Nearest(from, walkFromWp: true);
+            if (src is null || src.Index < 0) return;
+            seeds = new[] { (src, (src.ClosestPoint(from) - from).Length() / MaxSpeed) };
+        }
 
         float[] cost = _routeCost;
         bool[] closed = _closed;
@@ -821,9 +830,19 @@ public sealed class WaypointNetwork
 
         MinHeap open = _open ??= new MinHeap(n);
         open.Clear();
-        // seed cost from the bot to its nearest waypoint (straight tail), matching QC's start-node seeding.
-        cost[src.Index] = (src.ClosestPoint(from) - from).Length() / MaxSpeed;
-        open.Push(src.Index, cost[src.Index]);
+        // seed each entry waypoint with its bot->seed entry cost (the straight tail), matching QC's multi-seed
+        // wpcost seeding; the cheapest seed for any given node wins via the relaxation below.
+        for (int s = 0; s < seeds.Count; s++)
+        {
+            var (seedWp, entry) = seeds[s];
+            if (seedWp.Index < 0) continue;
+            float g = MathF.Max(0f, entry) + seedWp.Danger; // include the seed's own static danger bias (QC cost2)
+            if (g < cost[seedWp.Index])
+            {
+                cost[seedWp.Index] = g;
+                open.Push(seedWp.Index, g);
+            }
+        }
         while (open.TryPop(out int curIdx))
         {
             if (closed[curIdx]) continue;

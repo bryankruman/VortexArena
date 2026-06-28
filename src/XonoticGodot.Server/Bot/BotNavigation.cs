@@ -213,8 +213,9 @@ public sealed class BotNavigation
     ///
     /// <paramref name="onGround"/> mirrors Base's navigation_markroutes_nearestwaypoints on-ground-vs-air seed
     /// radius growth (on-ground 750/50000, air 500/1500). It is threaded through to the network's nearest-seed
-    /// search; until that multi-seed flood lands in <see cref="WaypointNetwork"/> the single-nearest start is
-    /// used and this flag is informational. Defaults to true so non-brain callers (tests) keep compiling.
+    /// search (<see cref="WaypointNetwork.NearestSeeds"/>), which seeds the multi-seed A*; the single-nearest
+    /// start is used only as a fallback when no seed is reachable. Defaults to true so non-brain callers (tests)
+    /// keep compiling.
     /// </summary>
     public void SetGoal(Vector3 origin, Vector3 goalPos, WaypointNetwork? net, Entity? goalEntity = null, bool onGround = true)
     {
@@ -231,15 +232,27 @@ public sealed class BotNavigation
         if (net is null || net.Count == 0)
             return; // no graph: just head toward the goal and rely on obstacle avoidance
 
-        // QC navigation_findnearestwaypoint(ent, walkfromwp): the start node is reached by walking FROM the bot
-        // (walkfromwp = true); the goal node is reached by walking FROM the waypoint TO the goal (walkfromwp =
-        // false) — see routetogoal, which seeds the bot's nearest with walkfromwp and the goal's with !walkfromwp.
-        var startWp = net.Nearest(origin, walkFromWp: true);
+        // QC navigation_findnearestwaypoint(ent, walkfromwp): the goal node is reached by walking FROM the
+        // waypoint TO the goal (walkfromwp = false) — see routetogoal, which seeds the goal's with !walkfromwp.
         var goalWp = net.Nearest(goalPos, walkFromWp: false);
-        if (startWp is null || goalWp is null)
+        if (goalWp is null)
             return;
 
-        var path = net.FindPath(startWp, goalWp);
+        // QC navigation_routetogoal seeds the flood from navigation_markroutes_nearestwaypoints — EVERY waypoint
+        // reachable within an expanding radius (on-ground 750/50000, air 500/1500), each pre-charged with its
+        // bot→seed entry cost — then A*s from that seed set to the goal node, so the planner picks the best graph
+        // entry point rather than forcing the single geometrically-nearest one (the nearest is sometimes behind a
+        // wall / on the wrong side of a ledge, so a slightly-farther seed can open the cheaper overall route).
+        // Fall back to the single-nearest start node when no seed is reachable (e.g. no collision world in tests).
+        var seeds = net.NearestSeeds(origin, onGround, walkFromWp: true);
+        List<Waypoint>? path = seeds.Count > 0 ? net.FindPath(seeds, goalWp) : null;
+        if (path is null || path.Count == 0)
+        {
+            var startWp = net.Nearest(origin, walkFromWp: true);
+            if (startWp is null)
+                return;
+            path = net.FindPath(startWp, goalWp);
+        }
         if (path is null || path.Count == 0)
             return;
 

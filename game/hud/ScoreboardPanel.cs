@@ -1312,6 +1312,10 @@ public partial class ScoreboardPanel : HudPanel
         // the item-stats (weapon accuracy) panel is hidden in Invasion because monsters are not valid accuracy
         // targets (sv_invasion.qc AccuracyTargetValid → MUT_ACCADD_INVALID), so the stats would be meaningless.
         if (GameScores.Gametype == "inv") return y;
+        // QC cl_nexball.qc MUTATOR_HOOKFUNCTION(cl_nb, DrawScoreboardAccuracy) / DrawScoreboardItemStats: both return
+        // false in Nexball — there is no firing (football mode) or only the BallStealer (basketball), so per-weapon
+        // accuracy stats are irrelevant. QC DrawScoreboardAccuracy returns false unconditionally for nexball.
+        if (GameScores.Gametype == "nb") return y;
         if (_accuracy.Count == 0) return y;           // not networked yet — block hidden (QC gates on data)
         if (y > Size2.Y - 40f) return y;
 

@@ -2,7 +2,20 @@ unit: onslaught
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-28"
-# NOTE: OPUS re-audit 2026-06-28 (post-W16/W17) — re-verified the wave's ONE drifted row end-to-end and
+# NOTE: OPUS re-audit 2026-06-28b (post Phase 1-3b render-plumbing wave) — re-verified the presentation row's
+# producer->CONSUMER chain end-to-end. The W16/W17 PRODUCERS (CollectWaypoints/CollectRadarLinks + world-model
+# assignment) were already registered; this wave (60d45f5 Phase 1 objective entity stream + 493c876 Phase 2
+# WaypointSprite subsystem/view consumers + 0e77bf5 Phase 3b world-model render plumbing) BUILT the matching
+# CONSUMER half, so the chain is now genuinely live (not aspirational): ServerNet SendWaypoints/SendRadarLinks
+# (493-494) -> ClientNet HandleWaypoints/HandleRadarLinks (555/557) -> RadarPanel DrawLinkQuad (605) +
+# WaypointSpriteLayer + ClientEntityView ApplyIdentity (274) networked .Model render; objective entity stream
+# (ServerNet 2337+ ObjState byte, GameWorld WireObjectiveSpawns 3189) carries the onslaught generator/CP/icon
+# models. Onslaught.cs/OnslaughtControlPoint.cs SOURCE was NOT modified this wave (only the consumer files were).
+# Re-confirmed STILL-MISSING by grep on the onslaught source: NO camSetup/WantEventchase death-cam, NO icon
+# bob/spin/punch anim, NO particle/pointparticles calls — only deferral comments. So presentation.csqc stays
+# liveness PARTIAL (model+sprite+radar producers+consumers live; anim/cam/fx half still has no code). No row moved
+# this pass; refreshed the stale consumer line refs. All other 17 rows untouched (no onslaught source edits).
+# --- prior OPUS re-audit 2026-06-28 (post-W16/W17) below — re-verified the wave's ONE drifted row end-to-end and
 # confirmed it truthful; no other row moved. onslaught_*.cs last-modifying commits ARE W16 (b3a9c06) + W17
 # (2f0bfdb) and nothing after, so the combat/graph/round/spawn/captureshield/audio/bot rows are untouched by
 # this wave (re-confirmed in source: GeneratorThink alarm + IconThink sparks + all SoundSystem/NotificationSystem
@@ -517,7 +530,7 @@ features:
     verification:
       - { kind: code_read, ref: "OnslaughtControlPoint.cs SpawnGenerator/SpawnControlPoint/SpawnIcon set Entity.Model (generator/pad/icon md3) + EF_LOWPRECISION; GeneratorDamage Frame + GeneratorModelForBucket/IconModelForFraction swap by hp; IconBuildThink PAD1->PAD2 — W17 diff 2f0bfdb", result: pass }
       - { kind: code_read, ref: "Onslaught.cs CollectWaypoints (W16 b3a9c06) + CollectRadarLinks (W17 2f0bfdb); ServerNet.cs:493-494 SendWaypoints()/SendRadarLinks() called per advanced frame; ServerNet.cs:1259 SendRadarLinks broadcasts NetControl.RadarLinks", result: pass }
-      - { kind: code_read, ref: "ClientNet.cs:544 HandleRadarLinks -> RadarLinks list; RadarPanel.cs:349-361 draws each link quad; ClientEntityView.cs:236 ApplyIdentity assigns networked .Model for render", result: pass }
+      - { kind: code_read, ref: "ClientNet.cs:557/732 NetControl.RadarLinks->HandleRadarLinks->RadarLinks list (730); RadarPanel.cs:430-441 iterates RadarLinks + DrawLinkQuad (605); ClientEntityView.cs:274-286 ApplyIdentity assigns networked .Model for render — consumer plumbing built by Phase 1-3b (60d45f5/493c876/0e77bf5), verified live 2026-06-28", result: pass }
       - { kind: code_read, ref: "NO icon bob/spin/punch anim, NO ons_camSetup death-cam, NO generator explosion sequence, NO particle pointparticles in port — confirmed by grep; these remain client/FX-deferred", result: fail }
     confidence: high
     notes: "DRIFT (W16/W17 presentation pass): row moves from all-missing -> partial. W16 added CollectWaypoints (generator/CP sprites); W17 added the world-model assignment + progressive damage-model swaps + generator damage frame + pad swap + CollectRadarLinks. All FIVE producers are live-wired AND consumed/rendered on the client (SendWaypoints/SendRadarLinks -> WaypointSpriteLayer/RadarPanel; .Model -> ClientEntityView). NOT faithful: timing(anim)/audio(particle-fx) stay missing, the death-cam + explosion sequence + particle effects are untouched. liveness partial (model/sprite/radar half live, anim/cam/fx half absent)."

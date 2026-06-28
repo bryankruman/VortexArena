@@ -1,7 +1,7 @@
 unit: bot-ai
 category: bot
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 # Drift RE-AUDIT (2026-06-27, THIRD pass) on branch claude/parity-port-waves, after Waves 16-17. Wave 17 made NO bot
 # changes; Wave 16 (b3a9c06) edited 5 bot files (BotBrain/BotNavigation/BotRoles/BotObjectiveRoles/Waypoint) + ~12
 # weapon files. Build green, 46 bot tests pass (BotLiveLoopTests incl.). Each Wave-16 edit was re-read for LIVENESS:
@@ -36,18 +36,34 @@ last_audited: "2026-06-27"
 #       finds it.
 #   (8) population.namemodel / skill.modifiers / aim.* / move.bunnyhop / move.keyboard / target.* / weapon.reload /
 #       think.throttle / population.* : unchanged vs the prior pass (still faithful where they were).
-# Still-OPEN worst-gaps: DEAD Dijkstra goal-rating (straight-line still live) + flat rangebias=2000, dead
+# DRIFT RE-AUDIT (2026-06-28, FOURTH pass) on branch claude/parity-port-waves. This wave WIRED the two top
+# dead-on-arrival features the third pass flagged. Build green, 46 bot tests pass. Verified caller chains:
+#   (A) roles.goalrating: SeedRoute is NOW LIVE — BotBrain.ThinkProduce:335 calls _rater.SeedRoute(Network,
+#       bot.Origin) inside the strategy-token block immediately BEFORE Role():336. _routeSeeded now true, so
+#       GoalRater.Rate uses the multi-seed Dijkstra path cost (RouteCostTo / ComputeRouteCosts), straight-line
+#       only on the unreachable fallback; SetGoal (BotBrain:346, 5-arg onGround) routes via NearestSeeds +
+#       FindPath(seeds). The headline 'straight-line not Dijkstra' gap CLOSES. logic partial->faithful.
+#   (B) move.danger: the botframe_updatedangerousobjects PRODUCER is NOW LIVE — BotPopulation.ServerFrame:208-219
+#       calls Network.UpdateDangerousObjects(all, 64) on the 0.25 s bot_ai_dangerdetectioninterval clock;
+#       UpdateDangerousObjects sets wp.Danger (faithful navigation.qc:1874-1903 math) and the live A*/
+#       ComputeRouteCosts fold it in. wp.Danger is no longer always 0 — the dead danger-ROUTING consumer CLOSES.
+#   Both fixes are verified by caller-chain code-read + build/tests; NO dedicated route-cost behavioral test
+#   exists, so the 'does the route choice feel like stock' judgment is still code-confidence, not in-game.
+# Still-OPEN worst-gaps: generic-DM-role flat rangebias=2000 (objective roles now vary it), wr_aim per-slot
+# loop, jetpack NAVIGATION, bot scripting, non-weapon bot_dodge producers (monsters/napalm/hook/turret).
+# Prior (third pass) header retained below for history.
+# Still-OPEN (third pass): DEAD Dijkstra goal-rating (straight-line still live) + flat rangebias=2000, dead
 # danger-ROUTING producer (Danger always 0), wr_aim per-slot loop, jetpack NAVIGATION, bot scripting.
 summary:
   feature_count: 22
   worst_gaps:
-    - "Goal rating: a full Dijkstra route-cost field was CODED in Wave 16 (SeedRoute/ComputeRouteCosts/RouteCostTo + multi-seed NearestSeeds/FindPath) but is DEAD — SeedRoute has NO caller, so Rate always falls through to straight-line inverse distance and SetGoal still uses single-nearest FindPath; rangebias is still hardcoded 2000. Bots still prefer a goal near in a straight line but far by path. (UNWIRED 2026-06-27 third pass.)"
-    - "Per-waypoint danger-cost ROUTING is still inert: a Waypoint.Danger field exists and A*/ComputeRouteCosts add it, but NOTHING sets Danger (no botframe_updatedangerousobjects producer), so it is always 0 — the consumer is dead. (UNCHANGED.)"
-    - "wr_aim has no MAX_WEAPONSLOTS per-slot loop — only the ChosenWeapon's wr_aim is consulted each think; Base runs wr_aim for every owned slot. (Per-weapon coverage is now faithful for the 18 headline weapons.) (NARROWED 2026-06-27 third pass.)"
     - "Bot scripting entirely missing: the bot_cmd command queue does nothing, so map/console bot scripts, cutscene-driven bots, and g_waypointeditor bot driving are inert. (UNCHANGED.)"
-    - "havocbot_dodge is ported (SUPERBOT-gated projectile flight-path evade, live) and 15 port files now flag Entity.BotDodge (all weapon projectiles + OkRpc + PhaserTurret beam) vs Base's 20 producers — the missing ones are monsters (golem/spider), the napalm nade, the grappling hook, and the generic sv_turrets producer. Non-SUPERBOT bots still only strafe via the generic CombatMovement. (IMPROVED 2026-06-27 third pass: +OkRpc.)"
-    - "Jetpack NAVIGATION (cross jetpack-only gaps) is still missing; the trigger_hurt jetpack/rocketjump ESCAPE half is now live (skill>6). (NARROWED 2026-06-27 third pass.)"
-    - "Weapon picking now reads the QC far/mid/close priority lists + combo-hold (faithful) but still omits bot_rangepreference (per-bot sniper/spammer range shift). (NARROWED 2026-06-27 third pass.)"
+    - "Jetpack NAVIGATION (cross jetpack-only gaps) is still missing; the trigger_hurt jetpack/rocketjump ESCAPE half is live (skill>6). (UNCHANGED 2026-06-28 fourth pass.)"
+    - "wr_aim has no MAX_WEAPONSLOTS per-slot loop — only the ChosenWeapon's wr_aim is consulted each think; Base runs wr_aim for every owned slot. (Per-weapon coverage is faithful for the 18 headline weapons.) (UNCHANGED.)"
+    - "havocbot_dodge is ported (SUPERBOT-gated projectile flight-path evade, live) and 15 port files flag Entity.BotDodge (all weapon projectiles + OkRpc + PhaserTurret beam) vs Base's 20 producers — missing: monsters (golem/spider), the napalm nade, the grappling hook, the generic sv_turrets producer. Non-SUPERBOT bots still only strafe via the generic CombatMovement. (UNCHANGED.)"
+    - "Ballistic aim is a closed-form gravity-drop approximation, not QC's 10-trace tracetoss search; lobbed-weapon aim (mortar/nade) is less accurate and never traces the world to confirm the toss lands. (UNCHANGED.)"
+    - "Goal rating route-cost is NOW WIRED (multi-seed Dijkstra via SeedRoute, live) — residual: the generic DM role still passes a flat rangebias=2000 for items/enemies/roam (objective roles like CTS vary it), and there is no separate _movingtarget (5.5 s) strategy interval. (NARROWED 2026-06-28 fourth pass.)"
+    - "Weapon picking reads the QC far/mid/close priority lists + combo-hold (faithful) but still omits bot_rangepreference (per-bot sniper/spammer range shift). (UNCHANGED.)"
 
 features:
   - id: bot-ai.population.fixcount
@@ -441,24 +457,27 @@ features:
       - "server/bot/default/havocbot/havocbot.qc:havocbot_goalrating_items"
     port_refs:
       - "src/XonoticGodot.Server/Bot/BotRoles.cs:GoalRater.Rate"
-      - "src/XonoticGodot.Server/Bot/BotRoles.cs:GoalRater.SeedRoute (DEAD: no caller)"
+      - "src/XonoticGodot.Server/Bot/BotRoles.cs:GoalRater.SeedRoute (LIVE: called from BotBrain.cs:335)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:ThinkProduce (calls SeedRoute before Role)"
       - "src/XonoticGodot.Server/Bot/BotRoles.cs:RoleGeneric"
       - "src/XonoticGodot.Server/Bot/BotRoles.cs:GoalrateItems"
       - "src/XonoticGodot.Server/Bot/BotRoles.cs:GoalrateEnemyPlayers"
       - "src/XonoticGodot.Server/Bot/BotRoles.cs:GoalrateRoamWaypoints"
-      - "src/XonoticGodot.Server/Bot/Waypoint.cs:ComputeRouteCosts (DEAD: only called by the dead SeedRoute)"
-      - "src/XonoticGodot.Server/Bot/Waypoint.cs:RouteCostTo (DEAD: gated on _routeSeeded which is never set)"
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:ComputeRouteCosts (LIVE: multi-seed Dijkstra, called from SeedRoute)"
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:RouteCostTo (LIVE: read by GoalRater.Rate when _routeSeeded)"
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:NearestSeeds (LIVE: feeds SetGoal FindPath(seeds) + ComputeRouteCosts)"
+      - "src/XonoticGodot.Server/Bot/BotNavigation.cs:SetGoal (multi-seed NearestSeeds + FindPath(seeds))"
       - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs"
     constants:
-      - { name: "distance metric", base: "navigation_routerating cost over the waypoint graph (Dijkstra path length)", port: "straight-line vlen(goal-from)/MaxSpeed — the Dijkstra path RouteCostTo exists but is never seeded (dead)", match: false }
-      - { name: "rating discount", base: "f * rangebias/(rangebias+pathcost)", port: "f * rangebias/(rangebias+straightcost) (route branch present but dead)", match: false }
-      - { name: "rangebias (items/enemies/roam)", base: "per-rating-call (e.g. items 2000, enemies BOT_RATING_ENEMY)", port: "2000 (all calls)", match: false }
+      - { name: "distance metric", base: "navigation_routerating cost over the waypoint graph (Dijkstra path length)", port: "multi-seed Dijkstra path cost (RouteCostTo); straight-line only as the graphless/unreachable fallback — NOW WIRED via SeedRoute", match: true }
+      - { name: "rating discount", base: "f * rangebias/(rangebias+pathcost)", port: "f * rangebias/(rangebias+pathcost) (route branch now executes; straight-line tail for the unreachable case)", match: true }
+      - { name: "rangebias (items/enemies/roam)", base: "per-rating-call (e.g. items 2000, enemies BOT_RATING_ENEMY)", port: "objective roles vary it (CTS 5000); the GENERIC DM role still passes flat 2000 for items/enemies/roam", match: false }
       - { name: "item time-item lead", base: "powerups: clamp(skill/10)*6s; items: skill>=9 -> 4s; powerups rated even when jittered", port: "same (powerup clamp(skill/10)*6, item skill>=9 -> 4, powerup jitter-exempt)", match: true }
       - { name: "enemyplayers gates", base: "bot_nofire return; waterlevel>WETFEET return; skip vel>2×maxspeed", port: "same three gates", match: true }
       - { name: "roam shell", base: "range 500, sradius peel, stop at first contributing shell, wp_goal_prev deprioritize", port: "range 500 shell peel + recent-goal (prev0) deprioritize (0.1)", match: true }
       - { name: "strategy interval", base: "bot_ai_strategyinterval 7 (5.5 moving target)", port: "7 (cvar); no separate moving-target interval", match: false }
     status:
-      logic: partial
+      logic: faithful
       values: partial
       timing: faithful
       presentation: na
@@ -467,14 +486,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD CODE: a full QC navigation_routerating Dijkstra route-cost field WAS coded in Wave 16 (GoalRater.SeedRoute → WaypointNetwork.ComputeRouteCosts/RouteCostTo, plus a multi-seed NearestSeeds + FindPath(seeds) A*) but NOTHING CALLS SeedRoute (grep-verified across all of src/). GoalRater._routeSeeded therefore stays false, so Rate ALWAYS uses straight-line vlen distance and the Dijkstra branch never executes. The headline 'straight-line not Dijkstra' divergence is NOT closed; a future pass must wire SeedRoute into BotBrain before Role() and switch SetGoal to FindPath(NearestSeeds(...), goalWp). (UNWIRED 2026-06-27 third pass.)"
-      - "rangebias is still hardcoded 2000 for every rate call (items/enemies/roam) instead of the per-rating-call bias QC uses. (UNCHANGED.)"
+      - "rangebias: the generic DM role still passes flat 2000 for items/enemies/roam rather than QC's per-rating-call bias (objective roles like CTS now do vary it, e.g. 5000). Minor scaling divergence only — the path-cost metric itself is now faithful. (NARROWED 2026-06-28 fourth pass.)"
       - "No separate _movingtarget (5.5s) strategy interval for goals that can move. (UNCHANGED.)"
       - "enemyplayers aggression refinement: QC skill>3 nudges the t factor by Strength/Shield powerup timers (StatusEffects_gettime); the port has no status-effect-expiry accessor yet, so that refinement is deferred."
     verification:
-      - { kind: code, ref: "GoalRater.Rate has a route-cost branch (BotRoles.cs:82-86) BUT it is gated on _routeSeeded, which is only set by SeedRoute (line 67), and grep -rn '\\.SeedRoute' over src/ finds ZERO call sites — so Rate always falls through to straight-line. BotBrain.cs:329 calls Role(this,_rater) WITHOUT a preceding SeedRoute. SetGoal (BotBrain.cs:336, 4-arg) uses the single-nearest FindPath(from,to); NearestSeeds/FindPath(seeds) have no callers. Powerup time-item lead + jitter exemption, enemyplayers nofire/water/speed gates, roam-shell peel all present & matching Base roles.qc:176-228.", result: fail }
+      - { kind: code, ref: "SeedRoute is NOW WIRED: BotBrain.cs:335 calls _rater.SeedRoute(Network, bot.Origin) inside the strategy-token block immediately BEFORE Role(this,_rater) at :336 (token-gated, one bot/frame). SeedRoute sets _routeSeeded=true and runs ComputeRouteCosts (multi-seed Dijkstra over the graph, Waypoint.cs:804). GoalRater.Rate (BotRoles.cs:83-86) then reads RouteCostTo for the path-cost discount, straight-line only on the unreachable/graphless fallback. SetGoal (BotBrain.cs:346, 5-arg onGround overload) routes via NearestSeeds + FindPath(seeds) (BotNavigation.cs:247-248), single-nearest only as fallback. Build green, 46 bot tests pass. Powerup time-item lead + jitter exemption, enemyplayers nofire/water/speed gates, roam-shell peel all present & matching Base roles.qc:176-228.", result: pass }
     confidence: high
-    notes: "Wave 16 ADDED a complete Dijkstra route-cost implementation (ComputeRouteCosts/RouteCostTo + multi-seed NearestSeeds/FindPath(seeds)) — but it is DEAD ON ARRIVAL: SeedRoute is never called, so the live path is still straight-line inverse distance with flat rangebias=2000 (exactly the prior status). NOT a closed gap — the recurring 'coded but unwired' failure mode. The role dispatch (generic DM + per-gametype objective roles) remains live & wired; SetGoal still does single-nearest A* only AFTER the (straight-line) pick. Logged the dead methods in port_refs so the wire-up is findable."
+    notes: "DRIFT FIX (2026-06-28 fourth pass, logic partial->faithful, distance-metric+rating-discount constants ->match): the Dijkstra route-cost field that was DEAD-ON-ARRIVAL in Wave 16 is NOW WIRED. BotBrain.ThinkProduce calls GoalRater.SeedRoute(Network, bot.Origin) before running the role, so Rate discounts each candidate by its real graph path cost (RouteCostTo) instead of straight-line; SetGoal routes from the multi-seed NearestSeeds set. The headline 'prefers a goal near in a straight line but far by path' divergence is CLOSED. Behavioral 'does the route choice feel like stock in-game' is verified by caller-chain code-read, not an in-game/route-cost behavioral test (no dedicated route-cost test exists). Residual: the generic DM role's flat rangebias=2000 (objective roles now vary it) and no _movingtarget interval. Role dispatch (generic DM + objective roles) remains live & wired."
 
   - id: bot-ai.roles.freezetag
     name: "Freeze Tag bot role (revive frozen teammates)"
@@ -579,11 +597,15 @@ features:
       - "src/XonoticGodot.Server/Bot/BotDanger.cs:CheckDanger"
       - "src/XonoticGodot.Server/Bot/BotDanger.cs:HitsTriggerHurt"
       - "src/XonoticGodot.Server/Bot/BotBrain.cs:ThinkProduce"
+      - "src/XonoticGodot.Server/Bot/Waypoint.cs:UpdateDangerousObjects (LIVE: called from BotPopulation.cs:218)"
+      - "src/XonoticGodot.Server/Bot/BotPopulation.cs:ServerFrame (0.25 s danger-detection clock)"
     constants:
       - { name: "down-probe depth", base: "3000 qu", port: "3000 qu", match: true }
       - { name: "cliff threshold", base: ">100 qu below feet & goal", port: ">100 qu", match: true }
       - { name: "bot_ai_ignoregoal_timeout", base: "3 s", port: "3 s (cvar)", match: true }
       - { name: "trigger_hurt overlap test", base: "tracebox_hits_box (Minkowski-expand + slab clip)", port: "TraceHitsBox / HitsBox1D (exact slab port)", match: true }
+      - { name: "bot_ai_dangerdetectioninterval / updates", base: "0.25 s / 64 waypoints per call", port: "0.25 s (cvar) / bot_ai_dangerdetectionupdates 64 (cvar)", match: true }
+      - { name: "per-waypoint danger d", base: "linearcost(bot_dodgerating) - travelcost(o,v), only when d>0 AND LOS clear", port: "LinearCost(BotDodgeRating) - TravelCost(o,v), d>0 + NoMonsters traceline clear", match: true }
     status:
       logic: faithful
       values: faithful
@@ -593,12 +615,11 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Per-waypoint danger-cost ROUTING is inert: a Waypoint.Danger field exists and A*/ComputeRouteCosts add nb.Danger, but no botframe_updatedangerousobjects producer ever SETS Danger (always 0), so routing still does not avoid chronically dangerous waypoints — the consumer is dead. (UNCHANGED.)"
+    gaps: []
     verification:
-      - { kind: code, ref: "CheckDanger classifies SKY/cliff/lava/trigger_hurt 0-4; HitsTriggerHurt runs the exact tracebox_hits_box slab math. The danger handler (BotBrain.cs:395-415) now probes CheckDanger left/right of the flight path (+/-48qu) and peels toward the safe side (evadeWorld = +/-sideDir - fdir*0.5), braking straight back only when BOTH sides are dangerous — live in ThinkProduce. Waypoint.Danger added to A* but never assigned (botframe_updatedangerousobjects unported).", result: pass }
+      - { kind: code, ref: "CheckDanger classifies SKY/cliff/lava/trigger_hurt 0-4; HitsTriggerHurt runs the exact tracebox_hits_box slab math. The danger handler (BotBrain.cs:395-415) probes CheckDanger left/right of the flight path (+/-48qu) and peels toward the safe side, braking straight back only when BOTH sides are dangerous — live in ThinkProduce. Per-waypoint danger ROUTING is NOW WIRED: BotPopulation.ServerFrame (:208-219) calls Network.UpdateDangerousObjects(all, 64) on the bot_ai_dangerdetectioninterval (0.25 s) clock; UpdateDangerousObjects (Waypoint.cs:901) sets wp.Danger = sum over BotDodge hazards of (LinearCost(rating)-TravelCost(o,v)) gated on d>0 + a clear NoMonsters traceline — the exact navigation.qc:1874-1903 math — and ComputeRouteCosts/FindPath fold nb.Danger into the (now-live) A* route cost. Build green, 46 bot tests pass.", result: pass }
     confidence: high
-    notes: "DRIFT FIX (2026-06-27 third pass, logic partial->faithful): Wave 16 replaced the brake-ONLY evade with the QC evadedanger lateral steer — the handler probes danger to the left and right of the flight path and blends a sideways component toward whichever side is clear, sidestepping the hazard along its edge instead of reversing off it; the reverse brake is now only the dead-end fallback. The trigger_hurt overlap test remains an exact port of QC tracebox_hits_box. STILL OPEN: the per-waypoint danger ROUTING consumer is wired (ComputeRouteCosts adds nb.Danger) but its producer (botframe_updatedangerousobjects) is missing, so Danger is always 0 (dead)."
+    notes: "DRIFT FIX (2026-06-28 fourth pass, last gap CLOSED): the per-waypoint danger-cost ROUTING that was inert (Danger always 0) is NOW LIVE. Wave wired the botframe_updatedangerousobjects PRODUCER — BotPopulation.ServerFrame calls Waypoint.UpdateDangerousObjects every 0.25 s (bot_ai_dangerdetectioninterval, 64 waypoints/call), a faithful port of navigation.qc:1874-1903 (d = linearcost - travelcost, only when d>0 and the hazard has LOS to the clamped waypoint point). wp.Danger is now non-zero and folded into the live ComputeRouteCosts/A* route cost (this row's routing consumer + the goalrating Dijkstra both consume it), so bots route AROUND chronically dangerous waypoints, not just brake at the last moment. The lateral evadedanger steer (third pass) and the exact tracebox_hits_box trigger_hurt test remain faithful. No remaining gaps on this row."
 
   - id: bot-ai.combat.dodge
     name: "Combat movement (projectile dodge + retreat)"

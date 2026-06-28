@@ -354,7 +354,12 @@ public sealed class ClientManager
         // QC the gametype ForbidSpawn gate (LMS lms_AddPlayer lockout): refuse the late join when the gametype
         // denies it (e.g. LMS once the match is locked to new joiners). No-op when unwired.
         if (GametypeJoinGate is not null && !GametypeJoinGate(p))
+        {
+            // QC MUTATOR_HOOKFUNCTION(ca, PutClientInServer): mark the refused mid-round joiner
+            // INGAME_STATUS_JOINING and send INFO_CA_JOIN_LATE so they know to wait for next round.
+            GametypeOnJoinRefused?.Invoke(p);
             return false;
+        }
         return true;
     }
 
@@ -372,6 +377,16 @@ public sealed class ClientManager
     /// (the client stays an observer). LMS uses this for its mid-match lives lockout. Null ⇒ no gametype gate.
     /// </summary>
     public Func<Player, bool>? GametypeJoinGate { get; set; }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, PutClientInServer)</c> side-channel: called when the gametype gate
+    /// (<see cref="GametypeJoinGate"/>) specifically refuses a join attempt, so the gametype can mark the
+    /// would-be joiner as INGAME_STATUS_JOINING and send the "you'll play next round" notice. Injected by
+    /// the host for round-based gametypes (CA) that need to know about refused mid-round joins; null elsewhere.
+    /// Unlike <see cref="GametypeOnJoin"/> (which fires on a SUCCESSFUL join), this fires on the path where
+    /// the gametype gate returned false.
+    /// </summary>
+    public Action<Player>? GametypeOnJoinRefused { get; set; }
 
     /// <summary>
     /// QC the gametype's <c>PutClientInServer</c> / lms_AddPlayer seed: called when an observer successfully joins

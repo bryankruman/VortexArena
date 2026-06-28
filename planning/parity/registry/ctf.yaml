@@ -9,7 +9,7 @@ summary:
     - "Capture-time PERSISTENT record (ctf_CaptureRecord ServerProgsDB write + cross-session g_ctf_leaderboard) is unported (needs a persistent DB); the in-match fastest-cap broadcast CTF_CAPTURE_TIME/_BROKEN/_UNBROKEN IS fired. The leaderboard send/record subsystem (ClientConnect/GetPressedKeys/GetRecords race_SendAll), the takedamage flag-return path (g_ctf_flag_health/_return_damage/_return_when_unreachable) and two-flag g_ctf_reverse remain unported."
     - "Pass completes as an instant transfer when viable (no physical arc / pass_directional cone) — a deliberate simplification; the flight velocity is still computed for an integrating host. VEHICLE board/leave carrier-drop is NOW wired (OnVehicleEnter/Exit, live); the PORTAL-teleport carrier-leave drop (g_ctf_portalteleport) is still not wired (the PortalTeleport hook has no port dispatch at all)."
     - "Capture shield spawns the physical ctf_captureshield push entity (model models/ctf/shield.md3, EF_ADDITIVE, force push, CENTER_CTF_CAPTURESHIELD_SHIELDED on touch) co-located with each flag; with the stock samual cfg the shield ratio is 0 (inert) by default exactly like Base, so nobody is shielded and the entity never pushes. Only missing nuance: the per-viewer same-team-hide customize (ctf_CaptureShield_Customize) is not networked."
-    - "Flag-damage / return-when-unreachable (g_ctf_flag_health, _return_damage, _return_when_unreachable lava/slime/needkill health bleed) not implemented; the dropped flag is TakeDamage.Yes but carries no health. Niche CTF hooks still unported: AbortSpeedrun (CTS-in-CTF flag-return), DropSpecialItems flag-eject, followfc superspectate command. CLOSED Wave 16: LogDeath 'F' item code, GiveFragsForKill frag suppression (g_ctf_ignore_frags), and PreferPlayerScore_Clear are now ported + live."
+    - "Flag-damage / return-when-unreachable (g_ctf_flag_health, _return_damage, _return_when_unreachable lava/slime/needkill health bleed) not implemented; the dropped flag is TakeDamage.Yes but carries no health. THIS WAVE landed two CTF hooks but NEITHER cleanly closes: (1) PortalTeleport carrier-drop is now LIVE (Warpzone.cs:415 -> Ctf.OnPortalTeleport) but its g_ctf_portalteleport gate is INVERTED (drops when cvar!=0; Base drops at the default 0) — logic faithful->partial; (2) AbortSpeedrun(Player) is now logic-faithful but DEAD (Commands.cs:2150 impulse-141 dispatch is Race/Cts-only, never calls the CTF override). Niche CTF hooks still unported: DropSpecialItems flag-eject, followfc superspectate command. CLOSED Wave 16: LogDeath 'F' item code, GiveFragsForKill frag suppression (g_ctf_ignore_frags), and PreferPlayerScore_Clear are now ported + live."
 features:
   - id: ctf.flag.spawn_setup
     name: "Flag entity spawn + model/skin/bbox setup"
@@ -300,24 +300,27 @@ features:
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:OnPlayerRemoved"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:OnVehicleEnter"
       - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:OnVehicleExit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:OnPortalTeleport"
       - "src/XonoticGodot.Server/ClientManager.cs:MakePlayerObserver"
       - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:198"
-    constants: []
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:415 (OnPortalTeleport event fire)"
+    constants:
+      - { name: "g_ctf_portalteleport drop polarity", base: "0 default => DROP on portal cross (cvar=1 KEEPS)", port: "INVERTED: drops only when cvar!=0; keeps at default 0", match: false }
     status:
-      logic: faithful
+      logic: partial
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "PORTAL-teleport carry-leave drop (g_ctf_portalteleport) is still NOT wired — the ctf PortalTeleport hook has no port dispatch (the PortalTeleport event itself is never fired in the port; BuffsMutator/NadeTranslocateBoom note it omitted). Disconnect + MakePlayerObserver (OnPlayerRemoved) and vehicle board/leave (OnVehicleEnter/Exit) DO drop the flag now."
+      - "PORTAL-teleport branch is now WIRED + LIVE (OnPortalTeleport subscribed to WarpzoneManager.OnPortalTeleport, fired on the live Porto-portal crossing at Warpzone.cs:415) but the cvar gate is INVERTED: Base QC drops the flag when !autocvar_g_ctf_portalteleport (i.e. at the default 0), and KEEPS it when the cvar is 1; the port does the opposite (returns early without dropping when g_ctf_portalteleport==0, drops only when !=0). So on a stock server a carrier crossing a Port-O-Launch portal WRONGLY keeps the flag (Base would drop it). Disconnect + MakePlayerObserver (OnPlayerRemoved) and vehicle board/leave (OnVehicleEnter/Exit) drop the flag faithfully."
     verification:
-      - { kind: code, ref: "GameType.OnPlayerRemoved -> Ctf.OnPlayerRemoved -> RemovePlayer, called from ClientManager.MakePlayerObserver:535 + ClientDisconnect; OnVehicleEnter/Exit registered in Activate (MutatorHooks.VehicleEnter/Exit) and fired LIVE from VehicleBoarding.cs:198/245/289/305.", result: pass }
+      - { kind: code, ref: "GameType.OnPlayerRemoved -> Ctf.OnPlayerRemoved -> RemovePlayer (ClientManager.MakePlayerObserver:535 + ClientDisconnect); OnVehicleEnter/Exit fired LIVE from VehicleBoarding.cs:198/245/289/305; OnPortalTeleport subscribed in Activate, fired LIVE from Warpzone.cs:415 (Porto-portal crossing). BUT OnPortalTeleport (Ctf.cs:2041) returns when Cvar(g_ctf_portalteleport,0)==0 — inverted vs Base (cvar desc: 'allow carriers to go through portals WITHOUT dropping the flag'), so the default-0 drop never fires and the cvar=1 keep is instead a drop.", result: fail }
     confidence: high
-    notes: "FIX since last audit (the vehicle board/leave drop is now wired): Ctf.RemovePlayer drops the flag + clears pass_sender/pass_target/dropper on disconnect/observe; OnVehicleEnter drops a carried flag when neither g_ctf_allow_vehicle_carry nor _vehicle_touch is set (else Tick parks it at FlagVehicleCarryOffset), OnVehicleExit reattaches it. Liveness stays `partial` ONLY because the PortalTeleport hook is still completely unwired (no PortalTeleport dispatch exists in the port)."
+    notes: "THIS WAVE (uncommitted, build green): the PortalTeleport carrier-drop is finally dispatched on the live path (Warpzone.cs:415 OnPortalTeleport event -> Ctf.OnPlayerRemoved/RemovePlayer), so liveness partial -> live. HOWEVER the new branch's cvar gate is inverted (drops only when g_ctf_portalteleport!=0, Base drops when ==0), so logic faithful -> partial: on a stock server (cvar 0) a carrier crossing a Porto portal keeps the flag where Base would drop it. Disconnect/observe/vehicle paths remain faithful. Fix is a one-line gate flip (drop when ==0)."
 
   - id: ctf.flag.think_dropped
     name: "Dropped-flag think (landtime, auto-return timer, float, capture-radius)"
@@ -641,23 +644,24 @@ features:
     layer: [authority]
     base_refs:
       - "common/gametypes/gametype/ctf/sv_ctf.qc:MUTATOR_HOOKFUNCTION(ctf, AbortSpeedrun)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:AbortSpeedrun (Ctf.cs:1984)"
     constants: []
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: na
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "QC the ctf AbortSpeedrun hook: when a player aborts a speedrun (CTS/race-style speedrunning) while carrying a flag, the flag is force-respawned (ctf_RespawnFlag) and INFO_CTF_FLAGRETURN_ABORTRUN is broadcast. The port has no AbortSpeedrun dispatch (the speedrun/CTS abort path is not wired into CTF), so a carried flag is not auto-returned on a speedrun abort."
+      - "AbortSpeedrun(Player) now exists and is logic-faithful (force-return the carried flag via ResetToBase + RespawnFlagEntity, the snd_flag_respawn voice, and the INFO_CTF_FLAGRETURN_ABORTRUN broadcast). BUT it has NO LIVE CALLER: the impulse-141 (CHIMPULSE_SPEEDRUN) dispatch at Commands.cs:2150-2155 only invokes Race.AbortSpeedrun / Cts.AbortSpeedrun in a hardcoded if/else-if on the active GameType — it never reaches Ctf.AbortSpeedrun (CTF is never a Race/Cts). QC instead fires MUTATOR_CALLHOOK(AbortSpeedrun) which the ctf mutator subscribes to globally; the port's gametype-typed dispatch excludes CTF, so a carried flag is still NOT auto-returned on a speedrun abort. Method is dead code until Commands.cs also dispatches to the active GameType's AbortSpeedrun (e.g. a Ctf branch or a virtual)."
     verification:
-      - { kind: code, ref: "no AbortSpeedrun hook in Ctf.cs; INFO_CTF_FLAGRETURN_ABORTRUN never fired", result: fail }
-    confidence: medium
-    notes: "Unmapped in the prior baseline. Niche: only reachable on a speedrun-enabled map (CTS-in-CTF), an uncommon combination."
+      - { kind: code, ref: "Ctf.cs:1984 AbortSpeedrun present + faithful. Commands.cs:2150 `if (Cheats.Speedrun(caller)) { if GameType is Race race -> race.AbortSpeedrun; else if Cts cts -> cts.AbortSpeedrun; }` — no CTF branch, so Ctf.AbortSpeedrun is never called. INFO_CTF_FLAGRETURN_ABORTRUN never fired on the live path.", result: fail }
+    confidence: high
+    notes: "THIS WAVE (uncommitted, build green): logic missing -> faithful (the AbortSpeedrun method landed with the correct QC body). Liveness na -> DEAD, NOT live: the impulse-141 dispatcher (Commands.cs:2150) hardcodes a Race/Cts-only if/else-if and never calls the CTF override, so the new method has no live caller. NOT closed. Niche path regardless (only a speedrun-enabled CTF map). Wiring needs a Ctf branch (or a polymorphic AbortSpeedrun dispatch) at Commands.cs:2150."
 
   - id: ctf.drop_special_items
     name: "Throw flag on DropSpecialItems"

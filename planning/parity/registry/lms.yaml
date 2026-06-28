@@ -1,7 +1,7 @@
 unit: lms
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 26
   worst_gaps:
@@ -146,7 +146,7 @@ features:
     verification:
       - { kind: code, ref: "StartingLives (LastManStanding.cs:248) reads g_lms_lives_override (>0), else the live fraglimit (mapinfo lives stand-in), else DefaultLives=5, capped at fraglimit. NOTE the doc reference to g_lms_lives is in the CvarLivesDefault const = g_lms_lives_override; the actual fallthrough uses fraglimit, not a g_lms_lives cvar.", result: pass }
     confidence: high
-    notes: "Unchanged. logic+values partial: the mapinfo-driven mechanism and legacy switch are not modeled even though the modern default value is correct. Seeded lazily via GetState AND explicitly via the live AddPlayer join path."
+    notes: "UNCHANGED this pass (re-audited 2026-06-28). logic+values partial: the mapinfo-driven `lives=N` mechanism and the legacy-9 switch are still not modeled even though the modern default value (5) and the explicit g_lms_lives_override land correctly. This wave's MapInfoBackend.cs change added ONLY a `size`/`Diameter` parse for the Duel diameter gate (forceDuel guard) — it did NOT add a `lives=N` game-parameter key; the parser still recognises only title/description/author/hidden/type/gametype/size, and there is no m_legacydefaults machinery in src/. So the sole structural gap behind this row remains open. Seeded lazily via GetState AND explicitly via the live AddPlayer join path."
 
   - id: lms.join.new_player_lives_gate
     name: "Late-join lives gate (lowest-lives clamp + can't-join lockout)"

@@ -1,7 +1,23 @@
 unit: tka
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
+# 2026-06-28 (8th pass, post-parity-port-waves Phase-3b re-verify): ONE nuance fix landed on the 18 rows
+#   (the only port change to the unit this wave was an uncommitted TeamKeepaway.cs edit, +5/-2). The
+#   carried-ball INVISIBILITY ALPHA-SYNC is now ported, touching TWO presentation rows:
+#   - tka.ball.pickup: presentation missing -> PARTIAL. Tick now sets `e.Alpha = carrier.Alpha` each frame
+#     (TeamKeepaway.cs:687), the QC tka_BallThink_Carried `this.alpha = this.owner.alpha`. Entity.Alpha
+#     (DamageEntityState.cs:149) is the live per-entity render-alpha that ServerNet.cs:2255 networks via
+#     QuantizeAlpha(e.Alpha) and ClientEntityView.cs:135 decodes back for EntityNode to apply — so when the
+#     carrier holds Invisibility (PowerupsMutator.cs:399 drops player.Alpha to _invisibilityAlpha) the orbiting
+#     ball fades with them. Presentation stays PARTIAL (not faithful) because scale-0.75-while-carried +
+#     EFFECT_BALL_SPARKS remain unported; values stays partial (scale 0.75); logic/values/timing/liveness unchanged.
+#   - tka.ball.drop: presentation missing -> PARTIAL. The QC tka_DropEvent `ball.alpha = 1` opacity restore is
+#     ported (TeamKeepaway.cs:524 `e.Alpha = 1f`), so a ball dropped by an invisible carrier returns to full
+#     opacity. Presentation stays PARTIAL: nudgeoutofsolid_OrFallback + DropSpecialItems edge still unported.
+#   0 dimension-flips to faithful, 0 liveness changes, 0 regressions, 0 newly-unmapped Base features. Common
+#   build green (dotnet build XonoticGodot.Common, 0 warn/0 err). All other 16 rows re-confirmed unchanged vs the
+#   7th-pass baseline. NOTE: this edit is uncommitted in the working tree at audit time.
 # 2026-06-27 (7th pass, post-Wave-16/17 drift re-verify): ONE fix on the 18 rows. tka.waypoints.tracking —
 #   the carrier-waypoint IS_INVISIBLE(owner) hide is now PORTED. Wave 16/17 added (git b3a9c06~1..2f0bfdb,
 #   confirmed live in HEAD) the QC `if(IS_INVISIBLE(this.owner)) return false;` branch to
@@ -101,7 +117,7 @@ summary:
     - "Drop triggers: 3 of Base's 4 are now wired LIVE — death (OnDeath), use-key (OnUseKey on MutatorHooks.PlayerUseKey, fired via the +use impulse path), and observe/disconnect (OnPlayerRemoved, fired from ClientManager). Only DropSpecialItems (the special-item-strip drop edge) remains unwired."
     - "Multi-ball chaining (g_tkaball_count / g_tka_ballcarrier_maxballs, the ballcarried.cnt chain + cnt orbit offset) is still unported — the port models exactly one ball (the stock default count=1, so no stock divergence)."
     - "tka.waypoints.tracking residual (presentation:partial): the carrier sprite uses SPRITERULE_TEAMPLAY + a per-viewer VisibleForPlayer predicate (same-team/spectator/warmup/tracking==1 faithful, ==2 dropped-only distinguished, and the IS_INVISIBLE(owner) hide now ported in Wave 16/17). Only ONE narrow QC nuance remains approximated — hide-from-spectators-of-the-carrier (no spectatee field on the predicate)."
-    - "tka.ball.pickup minor: no scale 0.75 while carried, no alpha/invisibility sync, no EFFECT_BALL_SPARKS / EFFECT_KA_BALL_RESPAWN particles (the respawn/pickup/world-touch SOUNDS are all played; only the particle effects + the carried-scale shrink remain)."
+    - "tka.ball.pickup minor (presentation:partial): the carried-ball invisibility ALPHA-SYNC is now ported + networked (this wave); residual is no scale 0.75 while carried + no EFFECT_BALL_SPARKS / EFFECT_KA_BALL_RESPAWN particles (the respawn/pickup/world-touch SOUNDS are all played; only the particle effects + the carried-scale shrink remain)."
 features:
   - id: tka.ball.spawn
     name: "Ball spawn at match start (g_tkaball_count balls)"
@@ -189,7 +205,7 @@ features:
       logic: faithful
       values: partial
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: faithful
       liveness: live
     intended_divergence: false
@@ -197,13 +213,14 @@ features:
     gaps:
       - "GiveBall is LIVE: BallTouchEntity is the ball's touch handler (registered in the live SpawnBall), so a player touching the loose ball becomes the carrier, with SND_KA_PICKEDUP, INFO/CENTER_KEEPAWAY_PICKUP[_SELF] notifications, the 0.5s self-recapture lockout, AttachToCarrier, and TKA_PICKUPS+1."
       - "The carried-ball orbit anim (Tick -> BallEntity.CarryOrbit, BALL_XYSPEED 100 / XYDIST 24) runs — GameWorld.cs:2583 calls tka.Tick(Simulation.FrameTime) every frame. The ball orbits the carrier."
-      - "No scale 0.75 while carried, no GameRules_scoring_vip equivalent, no alpha-sync invisibility, no multi-ball chaining (this.ballcarried insert + cnt offset)."
-      - "World-touch non-player branch plays SND_KA_TOUCH but omits the EFFECT_BALL_SPARKS particle (presentation)."
+      - "FIXED this wave (presentation missing -> partial): the carried-ball alpha/invisibility sync (QC tka_BallThink_Carried `this.alpha = this.owner.alpha`) is now ported — Tick sets `e.Alpha = carrier.Alpha` each frame (TeamKeepaway.cs:687). Entity.Alpha (DamageEntityState.cs:149) is the live render-alpha that is networked per-entity (ServerNet.cs:2255 QuantizeAlpha(e.Alpha)) and decoded back into e.Alpha client-side (ClientEntityView.cs:135) for EntityNode to apply, so when the carrier holds Invisibility (PowerupsMutator drops player.Alpha to _invisibilityAlpha) the orbiting ball now fades with them. Common build green."
+      - "RESIDUAL presentation: still no scale 0.75 while carried, and the world-touch non-player branch omits the EFFECT_BALL_SPARKS particle — so presentation stays partial (not faithful)."
+      - "No GameRules_scoring_vip equivalent, no multi-ball chaining (this.ballcarried insert + cnt offset)."
     verification:
       - { kind: codetrace, ref: "BallTouchEntity (live touch) -> GiveBall: Carrier set, AddCol TKA_PICKUPS, AttachToCarrier, SND_KA_PICKEDUP, 3 notifications, IsRecaptureLocked honored", result: pass }
-      - { kind: codetrace, ref: "Orbit: GameWorld.cs:2583 case TeamKeepaway tka: tka.Tick(Simulation.FrameTime) -> Tick calls BallEntity.CarryOrbit + GametypeEntities.SetOrigin each frame", result: pass }
+      - { kind: codetrace, ref: "Orbit + alpha sync: GameWorld.cs:2583 tka.Tick -> Tick sets pos via CarryOrbit + e.Alpha = carrier.Alpha (TeamKeepaway.cs:681-687); ServerNet.cs:2255 networks e.Alpha; ClientEntityView.cs:135 decodes it", result: pass }
     confidence: high
-    notes: "values:partial kept only because scale 0.75 while carried is still unmodeled. Residual: scale/VIP/sparks/multi-ball unported."
+    notes: "presentation upgraded missing -> partial this wave: carried-ball invisibility alpha-sync now ported + networked. values:partial kept (scale 0.75 still unmodeled); presentation stays partial for scale-shrink + EFFECT_BALL_SPARKS. Residual: scale/VIP/sparks/multi-ball unported."
 
   - id: tka.ball.drop
     name: "Ball drop on death / use-key / disconnect / observe"
@@ -226,13 +243,14 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
+      presentation: partial
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "DropBall is invoked from OnDeath (LIVE death hook) when the victim carried. It detaches, drops at the feet with the crandom xy scatter, arms the 0.5s self-recapture lockout, re-arms the relocate think, plays SND_KA_DROPPED, sends INFO/CENTER_KEEPAWAY_DROPPED, and (via CollectWaypoints next tick) shows the loose-ball waypoint."
+      - "FIXED this wave (presentation missing -> partial): the QC tka_DropEvent `ball.alpha = 1` opacity restore is now ported (TeamKeepaway.cs:524 `e.Alpha = 1f`), so a ball dropped by an invisible carrier returns to full opacity (it had been faded to the carrier's alpha while carried). Entity.Alpha is networked (ServerNet.cs:2255) so the restore is visible client-side."
       - "FIXED (liveness partial -> live): the use-key, observer, and disconnect drop triggers are now wired. OnUseKey subscribes MutatorHooks.PlayerUseKey (Activate, TeamKeepaway.cs:387) and is fired live via VehicleBoarding.cs:106 FirePlayerUseKey on the +use impulse path (QC tka PlayerUseKey -> tka_DropEvent, consumes the press). OnPlayerRemoved (TeamKeepaway.cs:406) drops the ball when the carrier is demoted to observer or disconnects, dispatched from ClientManager.cs:513 (PutObserverInServer/MakePlayerObserver) + :761 (ClientDisconnect) — QC MakePlayerObserver/ClientDisconnect both tka_DropEvent."
       - "RESIDUAL: DropSpecialItems (the special-item-strip drop edge) is still not wired — 3 of Base's 4 drop hooks are now live. Also: no nudgeoutofsolid_OrFallback, no multi-ball chain advance / tka_PlayerReset VIP clear."
     verification:
@@ -240,7 +258,7 @@ features:
       - { kind: codetrace, ref: "OnUseKey on MutatorHooks.PlayerUseKey (TeamKeepaway.cs:387), fired live via VehicleBoarding.cs:106 FirePlayerUseKey (+use impulse); OnPlayerRemoved (TeamKeepaway.cs:406) fired live from ClientManager.cs:513 (observer) + :761 (disconnect)", result: pass }
       - { kind: codetrace, ref: "DropSpecialItems hook still has no port analogue (no dispatch site) -> 1 of 4 drop edges remains unwired", result: fail }
     confidence: high
-    notes: "FIX this pass (liveness partial -> live): death + use-key + observe/disconnect drops are all LIVE + faithful. Only the narrow DropSpecialItems edge remains unwired."
+    notes: "FIX this wave (presentation missing -> partial): the ball.alpha=1 opacity restore on drop is now ported + networked. Prior pass: death + use-key + observe/disconnect drops are all LIVE + faithful. Residual: DropSpecialItems edge unwired + no nudgeoutofsolid -> presentation stays partial."
 
   - id: tka.score.teamkill
     name: "Team kill scoring (killac to team while team holds ball)"

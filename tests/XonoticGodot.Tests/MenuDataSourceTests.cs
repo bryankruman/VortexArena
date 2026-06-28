@@ -397,6 +397,38 @@ public class MenuDataSourceTests
         Assert.False(info.Supports("duel"));  // CTF-only map → no forced duel
     }
 
+    [Fact]
+    public void MapInfo_ForcedDuelOnDmMap_Suppressed_When_DiameterTooLarge()
+    {
+        // QC Duel.m_isAlwaysSupported diameter guard (mirrored by MapInfoBackend.ApplyForcedGametypes +
+        // MapInfo.Diameter, MapInfoBackend.cs:51-60): a "size" line whose bounding diameter >= 3250
+        // suppresses forced duel even on a DM map. This mirrors the implosion case — gametype dm, no
+        // gametype duel, size line giving diameter ~8874 (vlen of (6336, 5888, 1984)).
+        var backend = new MapInfoBackend(
+            _ => "title Implosion\ngametype dm\nsize -960 -5888 -576 5376 0 1408\n",
+            _ => false);
+        MapInfo info = backend.Get("implosion");
+        Assert.True(info.Supports("dm"));
+        Assert.NotNull(info.Diameter);              // size line was parsed
+        Assert.True(info.Diameter!.Value >= 3250f); // well above the duel threshold
+        Assert.False(info.Supports("duel"));        // forced-duel suppressed by the diameter gate
+    }
+
+    [Fact]
+    public void MapInfo_ForcedDuelOnDmMap_AllowedWhenDiameterSmall()
+    {
+        // The other branch of the diameter guard (MapInfoBackend.cs:51-60): a small DM map whose size
+        // line gives a diameter below 3250 still gets forced duel. Bounds (1000, 1000, 600) → ~1536.
+        var backend = new MapInfoBackend(
+            _ => "title Tiny\ngametype dm\nsize -500 -500 -300 500 500 300\n",
+            _ => false);
+        MapInfo info = backend.Get("tiny");
+        Assert.True(info.Supports("dm"));
+        Assert.NotNull(info.Diameter);              // size line was parsed
+        Assert.True(info.Diameter!.Value < 3250f);  // below threshold
+        Assert.True(info.Supports("duel"));         // small map → forced duel still allowed
+    }
+
     // -------------------------------------------------------------------------------------------------
     //  MenuTextFormat — strdecolorize + glob
     // -------------------------------------------------------------------------------------------------

@@ -408,6 +408,11 @@ public sealed class WarpzoneManager
                     ? Api.Cvars.GetFloat("g_maxpushtime") : 8f);
                 e.IsTypeFrag = e.ButtonChat;
             }
+
+            // QC MUTATOR_CALLHOOK(PortalTeleport, player) (server/portals.qc): fire after the Porto-portal
+            // crossing completes (telefrag + kill-credit already applied) so subscribers (CTF flag-drop, etc.)
+            // see the player in its post-teleport state. Only for Porto portals (map warpzones have no owner).
+            OnPortalTeleport?.Invoke(e);
         }
 
         // QC WarpZone_Touch fires the targets of BOTH this zone and its partner (this.enemy) on a crossing, with the
@@ -421,6 +426,14 @@ public sealed class WarpzoneManager
                 skipTargets: MapMover.SkipTarget1 | MapMover.SkipTarget2);
         return true;
     }
+
+    /// <summary>
+    /// QC <c>MUTATOR_CALLHOOK(PortalTeleport, player)</c> (server/portals.qc): fired once per successful
+    /// Porto-portal crossing by a client (non-projectile) entity. Subscribers (CTF, Buffalo mutator, etc.)
+    /// react to a player walking through a player-placed portal — drop a carried flag, swap teleport buffs,
+    /// etc. Null when no subscriber is registered (fast path: the Warpzone teleport is extremely hot).
+    /// </summary>
+    public static event System.Action<Entity>? OnPortalTeleport;
 
     /// <summary>
     /// QC trigger_warpzone spawnfunc: create + register a warpzone from explicit IN/OUT plane parameters and a

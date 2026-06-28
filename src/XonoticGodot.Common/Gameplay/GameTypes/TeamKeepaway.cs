@@ -521,6 +521,7 @@ public sealed class TeamKeepaway : GameType
             // and re-arm the relocate timer (QC tka_DropEvent: setattachment NULL + '0 0 200'+crandom + wait).
             global::XonoticGodot.Common.Gameplay.BallEntity.DropFromCarrier(e, RespawnTime, takesDamage: true);
             e.Think = RespawnBallThink;
+            e.Alpha = 1f; // QC tka_DropEvent: ball.alpha = 1 — restore full opacity in case the carrier had an invisibility effect
         }
         if (carrier is null)
             return;
@@ -680,8 +681,10 @@ public sealed class TeamKeepaway : GameType
                 Vector3 pos = global::XonoticGodot.Common.Gameplay.BallEntity.CarryOrbit(
                     carrier.Origin, GametypeEntities.Now, cnt: 1, chainCount: 1);
                 GametypeEntities.SetOrigin(e, pos);
-                // QC also syncs ball.alpha to owner.alpha (invisibility); the entity layer has no alpha field yet,
-                // so that visual sync is deferred to presentation (see todos).
+                // QC tka_BallThink_Carried: this.alpha = this.owner.alpha — sync the invisibility effect from the
+                // carrier to the ball entity each frame (Entity.Alpha is defined on the partial Entity in
+                // DamageEntityState.cs; setting it here lets the client-side binding read and apply it).
+                e.Alpha = carrier.Alpha;
             }
         }
 

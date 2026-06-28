@@ -5753,6 +5753,12 @@ public sealed partial class NetGame : Node3D
             // path; the local Player carries the Frozen status effect). A pure remote client reads false here.
             IsFrozen = LocalServerPlayer is { } frozenSelf && StatusEffectsCatalog.Frozen is { } frozenDef2
                 && StatusEffectsCatalog.Has(frozenSelf, frozenDef2),
+            // QC cl_nexball.qc WantEventchase: cl_eventchase_nexball=1 pulls the cam to third person whenever the
+            // local player is a nexball participant but is NOT the ball carrier. The NexBall status block (decoded
+            // above in UpdateModIcons) already holds the resolved carrying flag; we need the INVERSE of it, gated
+            // on the mode being NexBall so non-nexball matches are unaffected.
+            IsNexBallNonCarrier = _fullHud.ModIcons.Mode == ModIconsPanel.ModIconsMode.NexBall
+                && !_fullHud.ModIcons.NexBallCarrying,
             // Eye drops while crouched: the predicted carrier carries the live view offset (PlayerPhysics.UpdateCrouch
             // sets ViewOfs to the crouch/standing value each predicted tick, QC STAT(PL_CROUCH_VIEW_OFS)/PL_VIEW_OFS).
             // In faithful mode this is the viewheightavg-blended height (smooth crouch); else the raw live offset.

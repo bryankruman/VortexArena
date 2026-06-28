@@ -1587,6 +1587,11 @@ public sealed class Commands
             ctx.Print("now spectating");
             return true;
         }
+        // QC MUTATOR_HOOKFUNCTION(ca, ClientCommand_Spectate) (sv_clanarena.qc): before the generic kill-
+        // countdown spectate, let CA intercept the command. For a live CA player this sends INFO_CA_LEAVE
+        // (MUT_SPECCMD_FORCE) and records _prevTeam. The actual PutObserverInServer still runs below via the
+        // countdown; GametypeSpectateCommand only sets up the CA state. Non-CA modes return false (no-op).
+        _world.Clients.GametypeSpectateCommand(p);
         // QC ClientCommand_spectate (cmd.qc:886): a plain `spectate` defers the observer transition through
         // ClientKill_TeamChange(caller, -2) — the g_balance_kill_delay countdown (grey CENTER_TEAMCHANGE_SPECTATE
         // print + the cancel window), not an instant PutObserverInServer. Begin resolves -2 → PutObserverInServer

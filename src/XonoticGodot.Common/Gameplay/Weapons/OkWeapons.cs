@@ -35,7 +35,7 @@ internal static class OkWeapons
     /// if (refire_type == 1 &amp;&amp; (fire &amp; 2) &amp;&amp; time &gt;= actor.jump_interval) {
     ///     actor.jump_interval = time + blaster_refire * W_WeaponRateFactor;
     ///     W_Blaster_Attack(actor, weaponentity);
-    ///     animdecide_setaction(actor, ANIMACTION_SHOOT, true);   // [third-person anim — not yet ported]
+    ///     animdecide_setaction(actor, ANIMACTION_SHOOT, true);   // latches the SHOOT torso overlay
     /// }
     /// // refire_type 0: shared ATTACK_FINISHED
     /// if ((fire &amp; 2) &amp;&amp; refire_type == 0) {
@@ -46,9 +46,10 @@ internal static class OkWeapons
     /// </code>
     ///
     /// The QC default is 1 for all five OK weapons at stock balance, so the refire_type==0 path is NOT
-    /// used at stock balance. The third-person FIRE2 weapon animation (animdecide_setaction / wframe_send)
-    /// is a CSQC presentation feature that requires a full upper-body animation state machine not yet ported;
-    /// it is left as a known unresolved gap (no third-person fire-2 pose).
+    /// used at stock balance. <c>animdecide_setaction(actor, ANIMACTION_SHOOT, true)</c> is ported on the
+    /// refire_type==1 path (the SHOOT torso overlay is latched via <see cref="AnimDecide.SetAction"/>); on the
+    /// refire_type==0 path the overlay is latched by <c>PrepareAttack</c>. The networked, expiry-resolved
+    /// projection of that action drives the remote third-person fire pose (the same overlay used by primary fire).
     /// </summary>
     /// <param name="refireType0AmmoCheck">
     /// QC's <c>secondary</c> arg of <c>weapon_prepareattack</c> on the refire_type==0 path: okmachinegun and
@@ -79,9 +80,17 @@ internal static class OkWeapons
 
             // makevectors(actor.v_angle); W_Blaster_Attack(actor, weaponentity);
             blaster.FirePrimaryDirect(actor, slot);
-            // animdecide_setaction(actor, ANIMACTION_SHOOT, true) — third-person FIRE2 pose;
-            // NOT ported: requires the full CSQC upper-body animation subsystem (LocomotionBlend has no
-            // weapon-frame overlay yet). Known unresolved gap: no third-person fire-2 animation on secondary.
+
+            // animdecide_setaction(actor, ANIMACTION_SHOOT, true) — latch the torso SHOOT overlay so
+            // third-person observers see a fire animation on the secondary blaster-jump. FireSecondaryBlasterJump
+            // bypasses PrepareAttack on this path, so the overlay (which PrepareAttack latches for the primary
+            // fire) must be set here explicitly. restart:true mirrors QC restartanim=true: a rapid jump-spam
+            // restarts the 0.2s SHOOT window each shot, matching held-trigger primary behaviour.
+            var (jumpAct, jumpStart) = AnimDecide.SetAction(
+                actor.AnimUpperAction, actor.AnimActionStart,
+                AnimDecide.AnimUpperAction.Shoot, now, restart: true);
+            actor.AnimUpperAction = jumpAct;
+            actor.AnimActionStart = jumpStart;
         }
         else if (secondaryRefireType == 0)
         {
@@ -101,8 +110,8 @@ internal static class OkWeapons
             // W_Blaster_Attack(actor, weaponentity) — the blaster jump shot (damage/force zeroed by mutator).
             blaster.FirePrimaryDirect(actor, slot);
             // weapon_thinkf(actor, weaponentity, WFRAME_FIRE2, blaster_animtime, w_ready) — the animtime
-            // return-to-ready is already handled by PrepareAttack above (it schedules the w_ready callback);
-            // the WFRAME_FIRE2 third-person pose is not ported (same gap as refire_type==1 above).
+            // return-to-ready is already handled by PrepareAttack above (it schedules the w_ready callback),
+            // and PrepareAttack also latches the SHOOT torso overlay for the WFRAME_FIRE2 third-person pose.
         }
     }
 
